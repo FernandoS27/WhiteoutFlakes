@@ -1,0 +1,9 @@
+[submodule "externals/WhiteoutLib"]
+	path = externals/WhiteoutLib
+	url = https://github.com/FernandoS27/WhiteoutLib
+[submodule "externals/dr_libs"]
+	path = externals/dr_libs
+	url = https://github.com/mackron/dr_libs.git
+[submodule "externals/Wc3Shaders"]
+	path = externals/Wc3Shaders
+	url = https://github.com/FernandoS27/Wc3Shaders
