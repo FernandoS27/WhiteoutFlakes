@@ -1,0 +1,6 @@
+LIBRARY WhiteoutDexExtractor
+EXPORTS
+    LibDescription
+    LibNumberClasses
+    LibClassDesc
+    LibVersion

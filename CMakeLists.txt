@@ -279,3 +279,12 @@ if(MSVC)
         /wd4100 /wd4127 /wd4244 /wd4267
     )
 endif()
+
+# ---- Optional: 3ds Max plugin (.dlx) ----
+option(WDX_BUILD_MAX_PLUGIN
+    "Build the WhiteoutFlakes 3ds Max plugin (requires Max SDK + -DMAX_VERSION)"
+    OFF)
+
+if(WDX_BUILD_MAX_PLUGIN)
+    add_subdirectory(tools/max_plugin)
+endif()
