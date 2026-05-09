@@ -31,9 +31,14 @@ public:
 
     void SetContentProvider(io::IContentProvider* p);
 
-    void SetTeamColor(u8 r, u8 g, u8 b);
-
-    u32 GetTeamColorRaw() const noexcept { return teamColor_; }
+    // Re-bake every registered actor whose Actor::teamColorDirty bit is set,
+    // clearing the bit. Hosts mutate team color via Actor::SetTeamColor (or
+    // by writing teamColor + teamColorDirty directly); the renderer calls
+    // this once per frame so the texture pixels catch up. Children inherit
+    // their parent's color at spawn time; if the parent's color changes
+    // after children exist, callers must mark children dirty explicitly
+    // (this method does NOT walk parent→children relationships).
+    void RebakeDirtyActors();
 
     void SetTileset(io::Tileset ts);
 
@@ -43,10 +48,12 @@ public:
 
     void UnregisterModel(model::Actor& mi);
 
-    gfx::TextureHandle GetHdSwatchTexture();
-
-    gfx::TextureHandle GetSdTeamColorTexture();
-    gfx::TextureHandle GetSdTeamGlowTexture();
+    // Per-color swatch textures. The render paths pass the owning actor's
+    // team color; this manager maintains a small color->texture cache so
+    // multiple actors with the same color share one 1x1 texture.
+    gfx::TextureHandle GetHdSwatchTextureFor(u32 rgba);
+    gfx::TextureHandle GetSdTeamColorTextureFor(u32 rgba);
+    gfx::TextureHandle GetSdTeamGlowTextureFor(u32 rgba);
 
     void Shutdown();
 
@@ -62,15 +69,12 @@ private:
     gfx::IGFXDevice&     gfx_;
     TextureAssetManager& textures_;
 
-    u32               teamColor_ = 0x000000FFu;
     std::atomic<bool> dirty_{false};
 
-    gfx::TextureHandle hdSwatchTex_    = gfx::TextureHandle::Invalid;
-    u32                lastSwatchRgba_ = 0xFFFFFFFFu;
-
-    gfx::TextureHandle sdTeamColorTex_     = gfx::TextureHandle::Invalid;
-    gfx::TextureHandle sdTeamGlowTex_      = gfx::TextureHandle::Invalid;
-    u32                lastSdSwatchRgba_   = 0xFFFFFFFFu;
+    // Color-keyed caches. One 1x1 texture per unique team color; small N.
+    std::unordered_map<u32, gfx::TextureHandle> hdSwatchByColor_;
+    std::unordered_map<u32, gfx::TextureHandle> sdTeamColorByColor_;
+    std::unordered_map<u32, gfx::TextureHandle> sdTeamGlowByColor_;
 
     struct Slot { i32 textureId; u8 replaceableId; };
     std::unordered_map<model::Actor*, std::vector<Slot>> slots_;

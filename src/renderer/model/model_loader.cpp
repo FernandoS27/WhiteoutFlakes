@@ -41,15 +41,83 @@ using namespace ::whiteout::flakes::io;
 ModelLoader::ModelLoader(RenderService& rs) : rs_(rs) {}
 ModelLoader::~ModelLoader() = default;
 
-void ModelLoader::Clear() {
+Actor* ModelLoader::SpawnChild(Actor& parent,
+                               ActorRole role,
+                               std::shared_ptr<ModelTemplate> tmpl,
+                               const Matrix44f& initialTm,
+                               u32 forceHandle) {
+    if (!tmpl) return nullptr;
+
+    const u32 childH = forceHandle != 0 ? forceHandle
+                                        : rs_.Scene().AllocActorId();
+    auto child = std::make_unique<Actor>();
+    child->handle         = childH;
+    child->parent         = parent.handle;
+    child->role           = role;
+    child->treeDepth      = parent.treeDepth + 1;
+    child->worldTransform = initialTm;
+    child->teamColor      = parent.teamColor;   // inherit
+    if (tmpl->adapter) child->animation.Bind(tmpl->adapter);
+
+    // Default birth-time policy by role: Attachment / PE1 children pause with
+    // their ancestor (use ancestor's actorTimeMs so paused parents pause their
+    // visual children too); SPN children continue using the wall clock since
+    // their lifetime is wall-clock-managed by SpnSpawner.
+    // Callers may override via animation.SetBirthTimeMs after this call.
+    if (role == ActorRole::SPN) {
+        child->animation.SetBirthTimeMs(rs_.Scene().GetAnimationTime());
+    } else {
+        child->animation.SetBirthTimeMs(
+            AncestorActorTimeMs(parent, rs_.Scene().Actors()));
+    }
+
+    StageActor(child.get(), tmpl);
+    parent.children.push_back(childH);
+
+    Actor* ptr = child.get();
+    rs_.Scene().Actors().All()[childH] = std::move(child);
+    if (role == ActorRole::PE1) rs_.Scene().IncrementPE1Instances();
+    return ptr;
+}
+
+void ModelLoader::DestroyActor(u32 handle) {
+    auto& actors = rs_.Scene().Actors().All();
+    auto it = actors.find(handle);
+    if (it == actors.end()) return;
+
+    // Recurse into children first — destroying them while the parent's
+    // services are still alive avoids any reentrant lookups.
+    // Copy because each DestroyActor call mutates the parent's vector.
+    auto childList = it->second->children;
+    for (u32 ch : childList) DestroyActor(ch);
+
+    it = actors.find(handle);
+    if (it == actors.end()) return;
+    Actor& a = *it->second;
+
+    if (a.parent != 0) {
+        if (auto* p = rs_.Scene().Actors().Find(a.parent)) {
+            auto& cs = p->children;
+            cs.erase(std::remove(cs.begin(), cs.end(), handle), cs.end());
+        }
+    }
+
+    if (a.role == ActorRole::PE1)
+        rs_.Scene().DecrementPE1Instances();
+
+    rs_.Replaceables().UnregisterModel(a);
+    if (rs_.Pipeline().Gfx())
+        a.ReleaseGPU(*rs_.Pipeline().Gfx());
+    actors.erase(it);
+    rs_.Particles().RemoveModel(handle);
+}
+
+void ModelLoader::RequestClearAll() {
     for (auto& [h, mi] : rs_.Scene().Actors().All()) {
         mi->render.stagedClear = true;
         mi->render.stagedDirty = true;
     }
-    rs_.Scene().FocusRef() = 0;
-
     rs_.Particles().Clear();
-
     rs_.Splats().Clear();
     rs_.Spn().Clear();
 }
@@ -159,10 +227,6 @@ void ModelLoader::UpdateMaterials(u32 handle, const std::vector<MaterialData>& m
     mi->render.stagedDirty = true;
 }
 
-void ModelLoader::UpdateMaterials(const std::vector<MaterialData>& materials,
-                                  const std::vector<TextureData>& textures) {
-    UpdateMaterials(rs_.Scene().FocusRef(), materials, textures);
-}
 
 u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
                           const std::vector<TextureData>& textures,
@@ -172,7 +236,7 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
                           const std::vector<ParticleEmitterConfig>& particleConfigs,
                           const std::vector<RibbonEmitterConfig>& ribbonConfigs,
                           const std::vector<CollisionShapeData>& collisions) {
-    u32 handle = rs_.Scene().NextActorIdRef()++;
+    u32 handle = rs_.Scene().AllocActorId();
     auto mi = std::make_unique<Actor>();
     mi->handle = handle;
 
@@ -268,21 +332,22 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
     }
 
     mi->render.stagedDirty = true;
-    if (rs_.Scene().FocusRef() == 0) rs_.Scene().FocusRef() = handle;
     rs_.Scene().Actors().All()[handle] = std::move(mi);
     return handle;
 }
 
-u32 ModelLoader::AddModelByPath(const std::string& mdxPath) {
+u32 ModelLoader::AddModelByPath(const std::string& mdxPath,
+                                const Matrix44f&   initialTm) {
 
     auto tmpl = rs_.Scene().Templates().GetOrLoadSync(mdxPath);
     if (!tmpl) return 0;
 
     u32 handle;
     {
-        handle = rs_.Scene().NextActorIdRef()++;
+        handle = rs_.Scene().AllocActorId();
         auto mi = std::make_unique<Actor>();
-        mi->handle = handle;
+        mi->handle         = handle;
+        mi->worldTransform = initialTm;
         StageActor(mi.get(), tmpl);
         for (auto& cs : tmpl->collisionConfigs) {
             CollisionShape shape;
@@ -302,28 +367,15 @@ u32 ModelLoader::AddModelByPath(const std::string& mdxPath) {
     return handle;
 }
 
-u32 ModelLoader::LoadModelByPath(const std::string& mdxPath) {
-    Clear();
-    u32 h = AddModelByPath(mdxPath);
-    if (h == 0) return 0;
-
-    {
-        rs_.Scene().FocusRef() = h;
-    }
-
-    return h;
-}
-
-Actor* ModelLoader::LoadFromMdx(const std::string& mdxPath) {
-    const u32 h = LoadModelByPath(mdxPath);
+Actor* ModelLoader::SpawnUnit(const std::string& mdxPath,
+                              const Matrix44f&   initialTm) {
+    const u32 h = AddModelByPath(mdxPath, initialTm);
     if (h == 0) return nullptr;
-    Actor* actor = rs_.Scene().Actors().Find(h);
-
-    if (actor) actor->ignoreNonLooping = rs_.Scene().IgnoreNonLooping();
-    return actor;
+    return rs_.Scene().Actors().Find(h);
 }
 
-Actor* ModelLoader::SpawnFromLiveSource(std::shared_ptr<IModelSource> source) {
+Actor* ModelLoader::SpawnUnitFromSource(std::shared_ptr<IModelSource> source,
+                                        const Matrix44f& initialTm) {
     if (!source) return nullptr;
 
     source->SetTextureCacheQuery(
@@ -337,11 +389,8 @@ Actor* ModelLoader::SpawnFromLiveSource(std::shared_ptr<IModelSource> source) {
     Actor* actor = rs_.Scene().Actors().Find(h);
     if (!actor) return nullptr;
 
+    actor->worldTransform = initialTm;
     actor->animation.Bind(source);
-
-    actor->externallyDriven = true;
-
-    actor->ignoreNonLooping = rs_.Scene().IgnoreNonLooping();
 
     if (!data.attachmentConfigs.empty())
         SetAttachmentConfigs(h, data.attachmentConfigs);
@@ -613,17 +662,12 @@ void ModelLoader::CreateNodePalette(Actor& mi) {
 }
 
 void ModelLoader::CommitPendingUploads() {
-    for (auto it = rs_.Scene().Actors().All().begin(); it != rs_.Scene().Actors().All().end(); ) {
-        if (it->second->render.stagedClear) {
-            const u32 clearedHandle = it->first;
-            rs_.Replaceables().UnregisterModel(*it->second);
-            it->second->ReleaseGPU(*rs_.Pipeline().Gfx());
-            it = rs_.Scene().Actors().All().erase(it);
-            rs_.Particles().RemoveModel(clearedHandle);
-        } else {
-            ++it;
-        }
-    }
+    // Reap actors flagged by RequestClearAll(). Collect handles first to avoid mutating
+    // the actor map while iterating.
+    std::vector<u32> toReap;
+    for (auto& [h, mi] : rs_.Scene().Actors().All())
+        if (mi->render.stagedClear) toReap.push_back(h);
+    for (u32 h : toReap) DestroyActor(h);
 
     for (auto& [h, miPtr] : rs_.Scene().Actors().All()) {
         auto* mi = miPtr.get();

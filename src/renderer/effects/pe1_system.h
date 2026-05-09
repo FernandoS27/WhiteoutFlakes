@@ -3,11 +3,18 @@
 #include "common_types.h"
 #include "types.h"
 #include "model/model_types.h"
+#include <functional>
 #include <unordered_map>
 #include <vector>
 #include <random>
 
 namespace whiteout::flakes::renderer::effects {
+
+// Tree-depth and instance caps for the PE1 ("particles that ARE models")
+// subsystem. FrameTicker reads these to throttle PE1 spawns; raise with care
+// since each PE1 instance is a full Actor with GPU resources.
+constexpr i32 kMaxPE1Depth     = 3;
+constexpr i32 kMaxPE1Instances = 256;
 
 struct PE1EmitterState {
     Matrix44f transform = Matrix44f::identity();
@@ -56,10 +63,16 @@ public:
     i32  GetTotalParticleCount() const;
     const model::PE1EmitterConfig* GetConfig(i32 emitterId) const;
 
-    PE1SimResult Simulate(f32 dt, u32& nextHandle);
+    // `allocHandle` is invoked once per particle birth to mint a fresh
+    // ActorId (the caller routes this through SceneManager::AllocActorId so
+    // the renderer doesn't expose a mutable counter).
+    using HandleAllocator = std::function<u32()>;
+    PE1SimResult Simulate(f32 dt, const HandleAllocator& allocHandle);
 
 private:
-    void SpawnParticle(PE1Emitter& em, f32 dt, u32& nextHandle, PE1SimResult& result);
+    void SpawnParticle(PE1Emitter& em, f32 dt,
+                       const HandleAllocator& allocHandle,
+                       PE1SimResult& result);
     f32 RandF(f32 lo, f32 hi);
 
     std::unordered_map<i32, PE1Emitter> emitters_;

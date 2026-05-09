@@ -1,11 +1,9 @@
 // ============================================================================
-// FrameTicker — extracted from RenderService.
+// FrameTicker — per-frame scene-update orchestration.
 //
 // Drives one frame's worth of scene updates: attachment loading, animation
 // evaluation, particle / PE1 / ribbon simulation, bone-palette CB writes.
-// Reaches into RenderService::Impl directly via friend access for the same
-// reasons the other in-tree subsystems do (DebugRenderer, SpnSpawner,
-// shadow::ShadowPass) — see render_service_impl.h.
+// Uses only the public RenderService accessors.
 // ============================================================================
 
 #include "frame_ticker.h"
@@ -35,9 +33,9 @@ using namespace ::whiteout::flakes::renderer::shadow;
 
 void FrameTicker::Tick(f32 dt) {
     rs_.Scene().Templates().Tick();
+    rs_.Replaceables().RebakeDirtyActors();
     UpdateAttachments();
-    EvaluateTopLevelActors();
-    EvaluatePE1Children();
+    EvaluateActorTree();
     UpdateAnimation();
     UpdateParticles(dt);
     UpdatePE1(dt);
@@ -58,105 +56,93 @@ void FrameTicker::UpdateAttachments() {
             auto tmpl = rs_.Scene().Templates().GetOrLoadAsync(slot.config.modelPath);
             if (!tmpl) continue;
 
-            slot.loaded = true;
-
-            u32 childH = rs_.Scene().NextActorIdRef()++;
-            auto child = std::make_unique<Actor>();
-            child->handle = childH;
-            child->parent = mi->handle;
-            child->isPE1Child = true;
-            child->pe1Depth = mi->pe1Depth + 1;
-            child->animation.Bind(tmpl->adapter);
-            child->animation.SetBirthTimeMs(rs_.Scene().GetAnimationTime());
-
+            auto* child = rs_.Loader().SpawnChild(*mi, ActorRole::Attachment, tmpl);
+            if (!child) continue;
             auto seqs = tmpl->adapter->GetSequences();
             if (!seqs.empty())
                 child->animation.SetActiveSequenceIndex(rand() % (i32)seqs.size());
 
-            rs_.Loader().StageActor(child.get(), tmpl);
-            rs_.Scene().Actors().All()[childH] = std::move(child);
-            slot.childModelHandle = childH;
+            slot.loaded           = true;
+            slot.childModelHandle = child->handle;
         }
     }
 }
 
-void FrameTicker::EvaluateTopLevelActors() {
-
-    struct ActorEval {
-        Actor* actor;
-        std::shared_ptr<IAnimationSource> adapter;
-        Matrix44f worldTransform;
-        i32 seqIdx;
-        i32 localTimeMs;
-        i32 globalTimeMs;
-    };
-    std::vector<ActorEval> toEval;
+void FrameTicker::EvaluateActorTree() {
     const ActorEvalContext ctx = rs_.MakeActorEvalContext();
 
-    {
-        const i32 now = ctx.sceneAnimationTimeMs;
-        for (auto& [h, mi] : rs_.Scene().Actors().All()) {
-            if (mi->isPE1Child) continue;
-            if (mi->externallyDriven) continue;
-            if (!mi->animation.HasSource()) continue;
-            const i32 localTime  = mi->animation.TimeMs();
-            const i32 globalTime = now - mi->animation.BirthTimeMs();
-            toEval.push_back({mi.get(), mi->animation.Source(), mi->worldTransform,
-                              mi->animation.ActiveSequenceIndex(),
-                              localTime, globalTime});
-        }
+    // Walk every top-level actor (Unit + External). External actors are
+    // evaluated by the host (Max plugin) directly, so we only RECURSE into
+    // their children — we don't re-evaluate the External itself here. Unit
+    // actors are evaluated normally. The top-level actor's actorTimeMs is
+    // threaded down so Attachment/PE1 children pause when their ancestor
+    // pauses (playbackSpeed=0).
+    std::vector<u32> tops;
+    tops.reserve(rs_.Scene().Actors().All().size());
+    for (auto& [h, mi] : rs_.Scene().Actors().All()) {
+        if (!mi->IsChild()) tops.push_back(h);
     }
-
-    for (auto& ae : toEval) {
-        FrameState fs = ae.adapter->Evaluate(ae.seqIdx, ae.localTimeMs, ae.globalTimeMs,
-                                             ae.worldTransform, ctx.camPos);
-        ae.actor->ApplyFrameState(fs, ae.localTimeMs, ctx);
+    for (u32 h : tops) {
+        if (auto* a = rs_.Scene().Actors().Find(h))
+            EvaluateActorTreeRec(*a, ctx, a->cursor.actorTimeMs);
     }
 }
 
-void FrameTicker::EvaluatePE1Children() {
-    struct ChildEval {
-        Actor* actor;
-        std::shared_ptr<IAnimationSource> adapter;
-        i32 localTimeMs;
-        i32 seqIdx;
-        i32 globalTimeMs;
-        Matrix44f worldTransform;
-    };
-    std::vector<ChildEval> toEval;
-    const ActorEvalContext ctx = rs_.MakeActorEvalContext();
+void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx,
+                                       i32 ancestorClock) {
+    if (actor.IsChild() && actor.parentVisibility <= 0.02f) return;
 
-    {
-        i32 timeMs = ctx.sceneAnimationTimeMs;
-        for (auto& [h, mi] : rs_.Scene().Actors().All()) {
-            if (!mi->isPE1Child || !mi->animation.HasSource()) continue;
-            if (mi->parentVisibility <= 0.02f) continue;
-            i32 localTime = timeMs - mi->animation.BirthTimeMs();
+    if (actor.role != ActorRole::External && actor.animation.HasSource()) {
+        i32 localTimeMs;
+        i32 globalTimeMs;
+        const i32 seqIdx = actor.animation.ActiveSequenceIndex();
+
+        if (actor.role == ActorRole::Unit) {
+            // Top-level: trust the actor's own clock (set by Actor::Advance).
+            localTimeMs  = actor.animation.TimeMs();
+            globalTimeMs = ctx.sceneAnimationTimeMs - actor.animation.BirthTimeMs();
+        } else {
+            // Child: derive local time from a clock chosen by role.
+            //   - Attachment / PE1: use ancestor's actorTimeMs so paused
+            //     parents pause their visual children's animation cursors.
+            //   - SPN: keep using the wall clock — SPN children have a
+            //     wall-clock expiry that the spawner manages, and decoupling
+            //     the cursor from that expiry would let visuals run past the
+            //     scheduled despawn time.
+            const i32 clock = (actor.role == ActorRole::SPN)
+                                  ? ctx.sceneAnimationTimeMs
+                                  : ancestorClock;
+            i32 localTime = clock - actor.animation.BirthTimeMs();
             if (localTime < 0) localTime = 0;
-            i32 globalTime = localTime;
-            auto seqs = mi->animation.Sequences();
-            const i32 seqIdx = mi->animation.ActiveSequenceIndex();
+            const auto seqs = actor.animation.Sequences();
             if (!seqs.empty()) {
                 const i32 boundedSeq = seqIdx % (i32)seqs.size();
                 const auto& seq = seqs[boundedSeq];
                 const i32 dur = seq.endMs - seq.startMs;
                 if (dur > 0) {
-
-                    if (seq.nonLooping && !mi->ignoreNonLooping)
+                    if (seq.nonLooping && !actor.ignoreNonLooping)
                         localTime = seq.startMs + (std::min)(localTime, dur);
                     else
                         localTime = seq.startMs + (localTime % dur);
                 }
             }
-            toEval.push_back({mi.get(), mi->animation.Source(), localTime, seqIdx,
-                              globalTime, mi->worldTransform});
+            localTimeMs  = localTime;
+            globalTimeMs = localTime;
         }
+
+        FrameState fs = actor.animation.Source()->Evaluate(
+            seqIdx, localTimeMs, globalTimeMs, actor.worldTransform, ctx.camPos);
+        actor.ApplyFrameState(fs, localTimeMs, ctx);
     }
 
-    for (auto& ce : toEval) {
-        FrameState fs = ce.adapter->Evaluate(ce.seqIdx, ce.localTimeMs, ce.globalTimeMs,
-                                             ce.worldTransform, ctx.camPos);
-        ce.actor->ApplyFrameState(fs, ce.localTimeMs, ctx);
+    // Recurse — copy the list because ApplyFrameState may have mutated
+    // children's state (worldTransform, parentVisibility) but cannot add or
+    // remove children mid-walk in the current model. The copy guards against
+    // any future change to that contract.
+    auto childList = actor.children;
+    for (u32 ch : childList) {
+        if (auto* c = rs_.Scene().Actors().Find(ch))
+            EvaluateActorTreeRec(*c, ctx, ancestorClock);
     }
 }
 
@@ -196,31 +182,23 @@ void FrameTicker::UpdatePE1(f32 dt) {
     for (u32 h : handles) {
         auto* mi = rs_.Scene().Actors().Find(h);
         if (!mi) continue;
-        if (mi->pe1Depth >= SceneManager::kMaxPE1Depth) continue;
+        if (mi->treeDepth >= effects::kMaxPE1Depth) continue;
         if (!mi->render.pe1.HasEmitters()) continue;
         if (mi->parentVisibility <= 0.02f) continue;
 
-        auto result = mi->render.pe1.Simulate(dt, rs_.Scene().NextActorIdRef());
+        auto result = mi->render.pe1.Simulate(dt,
+            [&] { return rs_.Scene().AllocActorId(); });
 
         for (auto& birth : result.born) {
-            if (rs_.Scene().PE1InstanceCountRef() >= SceneManager::kMaxPE1Instances) continue;
+            if (rs_.Scene().PE1InstanceCount() >= effects::kMaxPE1Instances) continue;
             auto* cfg = mi->render.pe1.GetConfig(birth.emitterId);
             if (!cfg) continue;
             auto tmpl = rs_.Scene().Templates().GetOrLoadAsync(cfg->modelPath);
             if (!tmpl) continue;
 
-            auto child = std::make_unique<Actor>();
-            child->handle = birth.handle;
-            child->parent = mi->handle;
-            child->worldTransform = birth.worldTransform;
-            child->isPE1Child = true;
-            child->pe1Depth = mi->pe1Depth + 1;
-            child->animation.Bind(tmpl->adapter);
-            child->animation.SetBirthTimeMs(rs_.Scene().GetAnimationTime());
-
-            rs_.Loader().StageActor(child.get(), tmpl);
-            rs_.Scene().Actors().All()[birth.handle] = std::move(child);
-            rs_.Scene().PE1InstanceCountRef()++;
+            auto* child = rs_.Loader().SpawnChild(*mi, ActorRole::PE1, tmpl,
+                                                  birth.worldTransform, birth.handle);
+            if (!child) continue;
         }
 
         for (u32 childH : result.died) toRemove.push_back(childH);
@@ -230,17 +208,7 @@ void FrameTicker::UpdatePE1(f32 dt) {
         }
     }
 
-    for (u32 rh : toRemove) {
-        auto it = rs_.Scene().Actors().All().find(rh);
-        if (it != rs_.Scene().Actors().All().end()) {
-            rs_.Replaceables().UnregisterModel(*it->second);
-            it->second->ReleaseGPU(*rs_.Pipeline().Gfx());
-            rs_.Scene().Actors().All().erase(it);
-            rs_.Scene().PE1InstanceCountRef()--;
-        }
-
-        rs_.Particles().RemoveModel(rh);
-    }
+    for (u32 rh : toRemove) rs_.Loader().DestroyActor(rh);
 
     rs_.Spn().Tick(rs_.Scene().GetAnimationTime());
 }

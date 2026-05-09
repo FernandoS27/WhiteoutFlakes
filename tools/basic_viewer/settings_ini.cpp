@@ -36,7 +36,7 @@ constexpr const wchar_t* kSection = L"Display";
 
 }
 
-void LoadSettingsIni(RenderService& service) {
+void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy) {
     const std::wstring iniPath = SettingsIniPath();
 
     {
@@ -93,7 +93,7 @@ void LoadSettingsIni(RenderService& service) {
     {
         const i32 v = ::GetPrivateProfileIntW(kSection, L"LoopNonLooping",
                                               -1, iniPath.c_str());
-        if (v == 0 || v == 1) service.Scene().SetIgnoreNonLooping(v != 0);
+        if (v == 0 || v == 1) loopNonLoopingPolicy = (v != 0);
     }
 
     {
@@ -167,7 +167,7 @@ void LoadSettingsIni(RenderService& service) {
     }
 }
 
-void SaveSettingsIni(const RenderService& service) {
+void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy) {
     const std::wstring iniPath = SettingsIniPath();
 
     {
@@ -193,7 +193,7 @@ void SaveSettingsIni(const RenderService& service) {
     }
     {
         ::WritePrivateProfileStringW(kSection, L"LoopNonLooping",
-                                     service.Scene().IgnoreNonLooping() ? L"1" : L"0",
+                                     loopNonLoopingPolicy ? L"1" : L"0",
                                      iniPath.c_str());
     }
     {

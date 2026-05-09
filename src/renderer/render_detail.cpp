@@ -35,6 +35,7 @@ CollectedRenderables CollectSortedRenderables(
         view.worldTransform   = mi->worldTransform;
         view.parentVisibility = mi->parentVisibility;
         view.hasLods          = mi->render.hasLods;
+        view.teamColor        = mi->teamColor;
 
         const i32 modelLod = mi->render.hasLods ? selectedLod : 0;
         const i32 geosetCount = static_cast<i32>(mi->render.gpuGeosets.size());

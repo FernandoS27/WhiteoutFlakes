@@ -1,7 +1,7 @@
 #pragma once
 
 // ============================================================================
-// FrameTicker — per-frame scene-update orchestration extracted from RenderService.
+// FrameTicker — per-frame scene-update orchestration.
 //
 // The application calls Tick(dt) once per frame BEFORE RenderFrame. Tick walks
 // the scene's actors and advances their animation, attachments, particles,
@@ -9,17 +9,20 @@
 // on RenderService::RenderFrame; FrameTicker is pure scene-update logic plus
 // bone-palette CB writes.
 //
-// FrameTicker is a friend of RenderService so it can read/write the shared
-// state in RenderService::Impl directly. This mirrors how other in-tree
-// renderer subsystems (DebugRenderer, SpnSpawner, shadow::ShadowPass) reach
-// into RenderService.
+// FrameTicker reaches the renderer's other subsystems through the public
+// RenderService accessors (Scene, Replaceables, Particles, Splats, Spn,
+// Loader, Pipeline) — no friend declarations.
 // ============================================================================
 
 #include "common_types.h"
 
+namespace whiteout::flakes::renderer::animation { struct ActorEvalContext; }
+
 namespace whiteout::flakes::renderer {
 
 class RenderService;
+
+namespace model { struct Actor; }
 
 class FrameTicker {
 public:
@@ -33,8 +36,10 @@ public:
 
 private:
     void UpdateAttachments();
-    void EvaluateTopLevelActors();
-    void EvaluatePE1Children();
+    void EvaluateActorTree();
+    void EvaluateActorTreeRec(model::Actor& actor,
+                              const animation::ActorEvalContext& ctx,
+                              i32 ancestorClock);
     void UpdateAnimation();
     void UpdateParticles(f32 dt);
     void UpdatePE1(f32 dt);

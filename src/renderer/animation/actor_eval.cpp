@@ -23,6 +23,7 @@
 #include "sound_emitter.h"
 #include "effects/spn_spawner.h"
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -214,7 +215,7 @@ void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
 void ApplyAttachmentStates(Actor& mi, const FrameState& state,
                            const ActorEvalContext& ctx) {
     if (!ctx.scene) return;
-    const i32 sceneNow = ctx.sceneAnimationTimeMs;
+    const i32 ancestorClock = AncestorActorTimeMs(mi, ctx.scene->Actors());
     for (auto& as : state.attachmentStates) {
         if (as.attachmentIndex < 0 ||
             as.attachmentIndex >= (i32)mi.attachmentSlots.size()) continue;
@@ -227,7 +228,7 @@ void ApplyAttachmentStates(Actor& mi, const FrameState& state,
         child->worldTransform = as.transform;
 
         if (visible && !slot.wasVisible) {
-            child->animation.SetBirthTimeMs(sceneNow);
+            child->animation.SetBirthTimeMs(ancestorClock);
             auto seqs = child->animation.Sequences();
             if (!seqs.empty())
                 child->animation.SetActiveSequenceIndex(rand() % (i32)seqs.size());
@@ -278,6 +279,39 @@ void Actor::ApplyFrameState(const FrameState& state, i32 localTimeMs,
                     ctx.spnSpawner,
                     ctx.sound);
     }
+}
+
+void Actor::Advance(f32 dtSec) {
+    if (!animation.HasSource()) return;
+
+    const i32 dtMs = (dtSec > 0.0f) ? (i32)(dtSec * playbackSpeed * 1000.0f + 0.5f) : 0;
+    cursor.actorTimeMs += dtMs;
+    const i32 now = cursor.actorTimeMs;
+
+    const auto seqs = animation.Sequences();
+    if (seqs.empty()) return;
+
+    const i32 rawIdx     = animation.ActiveSequenceIndex();
+    const i32 boundedIdx = ((rawIdx % (i32)seqs.size()) + (i32)seqs.size()) % (i32)seqs.size();
+    if (rawIdx != cursor.prevActiveSequence) {
+        cursor.sequenceStartTimeMs = now;
+        cursor.prevActiveSequence  = rawIdx;
+    }
+
+    const auto& seq      = seqs[boundedIdx];
+    const i32   duration = seq.endMs - seq.startMs;
+    i32 elapsed = now - cursor.sequenceStartTimeMs;
+    if (elapsed < 0) elapsed = 0;
+
+    i32 frameMs;
+    if (duration <= 0) {
+        frameMs = seq.startMs;
+    } else if (seq.nonLooping && !ignoreNonLooping) {
+        frameMs = seq.startMs + (std::min)(elapsed, duration);
+    } else {
+        frameMs = seq.startMs + (elapsed % duration);
+    }
+    animation.SetTimeMs(frameMs);
 }
 
 void Actor::EvaluateAndApply(const ActorEvalContext& ctx) {

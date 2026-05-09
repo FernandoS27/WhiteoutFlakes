@@ -43,8 +43,6 @@ void SpnSpawner::Tick(i32 nowMs) {
             auto tmpl = rs_.Scene().Templates().GetOrLoadAsync(p.mdxPath);
             if (!tmpl) { stillPending.push_back(std::move(p)); continue; }
 
-            const i32 parentDepth = pit->second->pe1Depth;
-
             i32 durationMs = 1000;
             std::vector<SequenceInfo> seqs;
             if (tmpl->adapter) seqs = tmpl->adapter->GetSequences();
@@ -53,23 +51,15 @@ void SpnSpawner::Tick(i32 nowMs) {
                 durationMs = (span > 0) ? span : 1000;
             }
 
-            u32 childH = rs_.Scene().NextActorIdRef()++;
-            auto child = std::make_unique<Actor>();
-            child->handle         = childH;
-            child->parent         = p.parentActor;
-            child->isPE1Child     = true;
-            child->pe1Depth       = parentDepth + 1;
-            child->worldTransform = p.parentWorld;
-            child->animation.Bind(std::static_pointer_cast<IAnimationSource>(tmpl->adapter));
+            auto* child = rs_.Loader().SpawnChild(*pit->second, ActorRole::SPN,
+                                                  tmpl, p.parentWorld);
+            if (!child) { stillPending.push_back(std::move(p)); continue; }
             child->animation.SetActiveSequenceIndex(0);
             child->animation.SetBirthTimeMs(p.birthMs);
 
-            rs_.Loader().StageActor(child.get(), tmpl);
-            rs_.Scene().Actors().All()[childH] = std::move(child);
-
             Active a;
             a.parentActor = p.parentActor;
-            a.handle      = childH;
+            a.handle      = child->handle;
             a.expiryMs    = p.birthMs + durationMs;
             active_.push_back(a);
         }
@@ -80,13 +70,7 @@ void SpnSpawner::Tick(i32 nowMs) {
     auto it = active_.begin();
     while (it != active_.end()) {
         if (nowMs < it->expiryMs) { ++it; continue; }
-        auto found = rs_.Scene().Actors().All().find(it->handle);
-        if (found != rs_.Scene().Actors().All().end()) {
-            rs_.Replaceables().UnregisterModel(*found->second);
-            if (rs_.Pipeline().Gfx())     found->second->ReleaseGPU(*rs_.Pipeline().Gfx());
-            rs_.Scene().Actors().All().erase(found);
-        }
-        rs_.Particles().RemoveModel(it->handle);
+        rs_.Loader().DestroyActor(it->handle);
         it = active_.erase(it);
     }
 }
@@ -99,27 +83,14 @@ void SpnSpawner::RemoveSpawnsOf(u32 parentActor) {
     auto it = active_.begin();
     while (it != active_.end()) {
         if (it->parentActor != parentActor) { ++it; continue; }
-        auto found = rs_.Scene().Actors().All().find(it->handle);
-        if (found != rs_.Scene().Actors().All().end()) {
-            rs_.Replaceables().UnregisterModel(*found->second);
-            if (rs_.Pipeline().Gfx())     found->second->ReleaseGPU(*rs_.Pipeline().Gfx());
-            rs_.Scene().Actors().All().erase(found);
-        }
-        rs_.Particles().RemoveModel(it->handle);
+        rs_.Loader().DestroyActor(it->handle);
         it = active_.erase(it);
     }
 }
 
 void SpnSpawner::Clear() {
     pending_.clear();
-    for (auto& a : active_) {
-        auto found = rs_.Scene().Actors().All().find(a.handle);
-        if (found == rs_.Scene().Actors().All().end()) continue;
-        rs_.Replaceables().UnregisterModel(*found->second);
-        if (rs_.Pipeline().Gfx())     found->second->ReleaseGPU(*rs_.Pipeline().Gfx());
-        rs_.Scene().Actors().All().erase(found);
-        rs_.Particles().RemoveModel(a.handle);
-    }
+    for (auto& a : active_) rs_.Loader().DestroyActor(a.handle);
     active_.clear();
 }
 

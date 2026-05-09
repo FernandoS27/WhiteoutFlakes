@@ -701,7 +701,7 @@ MaterialLayerInfo MaxSceneAdapter::ExtractWc3MaterialLayer(Mtl* mtl) {
     //   (a) a Wc3 replaceable=1 placeholder (Wc3Bitmap with replaceableId=1,
     //       usually no path) → renderer fills with the live UI swatch at
     //       draw time. We map this to kHdTeamColorActive so the HD draw
-    //       knows to bind GetHdSwatchTexture() at t4.
+    //       knows to bind the per-actor HD swatch at t4.
     //   (b) any other Wc3Bitmap (custom mask BLP / DDS the artist dropped
     //       in this slot) → carry the real loaded texture id through and
     //       let the HD draw bind it like a regular material slot.

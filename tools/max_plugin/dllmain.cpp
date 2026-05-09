@@ -94,7 +94,7 @@ static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
     // Hot-reload check.
     auto result = g_adapter->RefreshMaterials();
     if (result.changed) {
-        g_renderer->Loader().UpdateMaterials(result.materials, result.textures);
+        g_renderer->Loader().UpdateMaterials(g_actor->handle, result.materials, result.textures);
     }
 
     // Re-evaluate when the timeline is idle — picks up non-animated
@@ -123,7 +123,7 @@ static void NdxCleanup() {
     }
     g_running = false;
     if (g_renderer) {
-        g_renderer->Loader().Clear();
+        g_renderer->Loader().RequestClearAll();
     }
     if (g_renderWindow) {
         g_renderWindow->Close();
@@ -250,17 +250,20 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count)
     // actor's AnimationDriver to the adapter (which is also an
     // IAnimationSource). Replaces ~15 lines of GetX + LoadModel + SetX boilerplate.
     mprintf(_M("WhiteoutDex: Loading model...\n"));
-    g_actor = g_renderer->Loader().SpawnFromLiveSource(g_adapter);
+    g_actor = g_renderer->Loader().SpawnUnitFromSource(g_adapter);
     if (!g_actor) {
-        mprintf(_M("WhiteoutDex: ERROR - SpawnFromLiveSource failed\n"));
+        mprintf(_M("WhiteoutDex: ERROR - SpawnUnitFromSource failed\n"));
         NdxCleanup();
         return Integer::intern(-1);
     }
+    // Max scrubs Max's timeline; the renderer's per-frame ticker must skip
+    // its own evaluation pass and let EvalFromMax push the cursor instead.
+    g_actor->role = whiteout::flakes::renderer::model::ActorRole::External;
     g_renderer->Settings().SetRenderMode(g_actor->PreferredRenderMode());
 
-    // Camera presets (Max-specific extension; not part of IModelDataSource).
-    if (auto cameras = g_adapter->GetCameraPresets(); !cameras.empty())
-        g_scene->SetCameraPresets(std::move(cameras));
+    // Camera presets are no longer plumbed into the renderer — Max owns its
+    // own viewport so MaxSceneAdapter::GetCameraPresets() is currently unused
+    // by the plugin. Re-add a Max-side preset UI if needed.
 
     // Restore Max's time and run the initial eval so the model is visible
     // before TimeChanged starts firing.
@@ -308,12 +311,12 @@ def_visible_primitive(ndxRefreshMaterials, "ndxRefreshMaterials");
 Value* ndxRefreshMaterials_cf(Value** /*arg_list*/, i32 count)
 {
     check_arg_count(ndxRefreshMaterials, 0, count);
-    if (!g_running || !g_renderer || !g_adapter)
+    if (!g_running || !g_renderer || !g_adapter || !g_actor)
         return &false_value;
 
     auto result = g_adapter->RefreshMaterials();
     if (result.changed) {
-        g_renderer->Loader().UpdateMaterials(result.materials, result.textures);
+        g_renderer->Loader().UpdateMaterials(g_actor->handle, result.materials, result.textures);
         mprintf(_M("WhiteoutDex: Materials refreshed (%d materials, %d textures)\n"),
                 (i32)result.materials.size(), (i32)result.textures.size());
         return &true_value;

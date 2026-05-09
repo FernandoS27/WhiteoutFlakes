@@ -46,6 +46,7 @@ struct RenderableView {
     Matrix44f                                                   worldTransform = Matrix44f::identity();
     f32                                                         parentVisibility = 1.0f;
     bool                                                        hasLods        = false;
+    u32                                                         teamColor      = 0x000000FFu;
 };
 
 struct GeosetRef {

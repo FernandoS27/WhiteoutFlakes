@@ -91,7 +91,9 @@ int wmain(int argc, wchar_t* argv[]) {
         return 1;
     }
 
-    whiteout::flakes::LoadSettingsIni(renderer);
+    bool loopPolicy = renderWindow.LoopNonLoopingPolicy();
+    whiteout::flakes::LoadSettingsIni(renderer, loopPolicy);
+    renderWindow.SetLoopNonLoopingPolicy(loopPolicy);
 
     renderWindow.SyncViewMenuFromService();
 
@@ -101,11 +103,15 @@ int wmain(int argc, wchar_t* argv[]) {
         scene.ActiveContentProvider()));
 
     std::cout << "Loading " << whiteout::flakes::io::PathToUtf8(mdxPath.filename()) << "...\n";
-    whiteout::flakes::renderer::model::Actor* hero = renderer.Loader().LoadFromMdx(whiteout::flakes::io::PathToUtf8(mdxPath));
+    renderer.Loader().RequestClearAll();
+    whiteout::flakes::renderer::model::Actor* hero =
+        renderer.Loader().SpawnUnit(whiteout::flakes::io::PathToUtf8(mdxPath));
     if (!hero) {
         std::cerr << "Failed to load MDX.\n";
         return 1;
     }
+    renderWindow.SetFocusActor(hero->handle);
+    hero->ignoreNonLooping = renderWindow.LoopNonLoopingPolicy();
     renderer.Settings().SetRenderMode(hero->PreferredRenderMode());
 
     auto sequences = hero->animation.Sequences();
@@ -117,8 +123,7 @@ int wmain(int argc, wchar_t* argv[]) {
         std::vector<std::string> names;
         names.reserve(sequences.size());
         for (auto& s : sequences) names.push_back(s.name);
-        scene.SetSequences(std::move(names));
-        scene.SetSequenceRanges(sequences);
+        renderWindow.SetSequences(std::move(names), sequences);
         std::cout << "Playing: " << sequences[0].name
                   << " [" << sequences[0].startMs << "-" << sequences[0].endMs << "ms]\n";
     }
@@ -129,7 +134,7 @@ int wmain(int argc, wchar_t* argv[]) {
     scene.Camera().SetTarget(0, 0, 50.0f);
 
     if (hero->sourceTemplate && !hero->sourceTemplate->cameraPresets.empty())
-        scene.SetCameraPresets(hero->sourceTemplate->cameraPresets);
+        renderWindow.SetCameraPresets(hero->sourceTemplate->cameraPresets);
 
     struct WalkDrift {
         i32   prevSeqIdx  = -1;
@@ -155,7 +160,7 @@ int wmain(int argc, wchar_t* argv[]) {
         if (!hero) return;
         if (scene.Camera().GetMode() != whiteout::flakes::renderer::Camera::Mode::Orbital) return;
         const i32   idx  = hero->animation.ActiveSequenceIndex();
-        const auto& seqs = scene.SequenceRanges();
+        const auto& seqs = renderWindow.SequenceRanges();
         f32 delta = 0.0f;
         if (idx != drift.prevSeqIdx) {
 

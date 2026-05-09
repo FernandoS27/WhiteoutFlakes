@@ -59,4 +59,18 @@ private:
     Map actors_;
 };
 
+// Walk up the parent chain from `start` to find the top-level (Unit/External)
+// ancestor and return its cursor's actorTimeMs. Children of paused parents
+// inherit the ancestor's frozen clock so their animation cursors pause too.
+// Returns `start.cursor.actorTimeMs` for actors that are themselves top-level.
+inline i32 AncestorActorTimeMs(const Actor& start, const ActorManager& actors) {
+    const Actor* a = &start;
+    while (a->IsChild()) {
+        const Actor* p = actors.Find(a->parent);
+        if (!p) break;
+        a = p;
+    }
+    return a->cursor.actorTimeMs;
+}
+
 }

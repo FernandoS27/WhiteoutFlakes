@@ -36,7 +36,7 @@ const PE1EmitterConfig* PE1System::GetConfig(i32 emitterId) const {
     return (it != emitters_.end()) ? &it->second.config : nullptr;
 }
 
-PE1SimResult PE1System::Simulate(f32 dt, u32& nextHandle) {
+PE1SimResult PE1System::Simulate(f32 dt, const HandleAllocator& allocHandle) {
     PE1SimResult result;
     dt = ClampDeltaTime(dt);
 
@@ -54,7 +54,7 @@ PE1SimResult PE1System::Simulate(f32 dt, u32& nextHandle) {
         if (IsEmitterVisible(em.state.visibility) && em.state.emissionRate > 0) {
             em.accumEmission += em.state.emissionRate * dt;
             while (em.accumEmission >= 1.0f) {
-                SpawnParticle(em, dt, nextHandle, result);
+                SpawnParticle(em, dt, allocHandle, result);
                 em.accumEmission -= 1.0f;
             }
         }
@@ -77,7 +77,8 @@ PE1SimResult PE1System::Simulate(f32 dt, u32& nextHandle) {
 }
 
 void PE1System::SpawnParticle(PE1Emitter& em, f32 dt,
-                               u32& nextHandle, PE1SimResult& result) {
+                               const HandleAllocator& allocHandle,
+                               PE1SimResult& result) {
     PE1Particle p;
     auto& cfg = em.config;
     auto& st = em.state;
@@ -104,7 +105,7 @@ void PE1System::SpawnParticle(PE1Emitter& em, f32 dt,
     p.lifeSpan = cfg.lifespan;
     p.initLife = cfg.lifespan;
     p.emitterId = 0;
-    p.childModelHandle = nextHandle++;
+    p.childModelHandle = allocHandle();
 
     f32 subAge = dt * RandF(0.0f, 1.0f);
     if (subAge > 0 && subAge < p.lifeSpan) {

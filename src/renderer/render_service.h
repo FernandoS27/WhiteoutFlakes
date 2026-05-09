@@ -83,10 +83,9 @@ public:
     const RenderPipeline& Pipeline() const;
 
     // ---- Model loading & state ----
-    // Loader() owns model creation, staging, and GPU upload. Tools (and a
-    // few in-tree call sites) reach the historical RenderService entry
-    // points via Loader().LoadFromMdx / SpawnFromLiveSource / Clear /
-    // UpdateMaterials. See model_loader.h.
+    // Loader() owns model creation, staging, and GPU upload. Hosts compose
+    // multi-actor scenes via Loader().SpawnUnit / SpawnUnitFromSource /
+    // SpawnChild / DestroyActor / Clear. See model_loader.h.
     model::ModelLoader&       Loader();
     const model::ModelLoader& Loader() const;
 

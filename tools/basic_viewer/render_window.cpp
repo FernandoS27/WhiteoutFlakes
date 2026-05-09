@@ -89,8 +89,7 @@ void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
         lastParentTimeMs = curParentMs;
         f32 parentDt = (f32)parentDtMs / 1000.0f;
 
-        ProcessCameraPresets();
-        ProcessSequences();
+        UpdateCameraPresetAnimator();
         if (service_.Replaceables().ConsumeDirty()) InvalidateTeamColorSwatch();
 
         (void)service_.Settings().ConsumeRenderModeDirty();
@@ -424,7 +423,12 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         service_.Debug().SetViewCubeHovered(
             cur.x >= vcr.left && cur.x <= vcr.right &&
             cur.y >= vcr.top  && cur.y <= vcr.bottom);
-        if (!service_.Scene().CameraLocked()) {
+        bool locked;
+        {
+            std::lock_guard<std::mutex> lk(hostMutex_);
+            locked = cameraLocked_;
+        }
+        if (!locked) {
             auto& cam = service_.Scene().Camera();
             if (lmbDown_) cam.Rotate(dx, dy);
             if (rmbDown_) cam.Pan(-dx, dy);
@@ -433,7 +437,12 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         return 0;
     }
     case WM_MOUSEWHEEL: {
-        if (!service_.Scene().CameraLocked()) {
+        bool locked;
+        {
+            std::lock_guard<std::mutex> lk(hostMutex_);
+            locked = cameraLocked_;
+        }
+        if (!locked) {
             i32 delta = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
             service_.Scene().Camera().Zoom(delta * 30);
         }
@@ -446,7 +455,10 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
         DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
         if (dis->CtlID == IDC_TEAMCOLOR) {
-            COLORREF tc = service_.Replaceables().GetTeamColorRaw();
+            auto* focus = service_.Scene().Actors().Find(
+                focusActor_.load(std::memory_order_relaxed));
+            COLORREF tc = focus ? (COLORREF)(focus->teamColor & 0x00FFFFFFu)
+                                : RGB(255, 0, 0);
             HBRUSH brush = CreateSolidBrush(tc);
             FillRect(dis->hDC, &dis->rcItem, brush);
             DeleteObject(brush);
@@ -464,7 +476,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             v = !v;
             CheckMenuItem(hMenuBar_, menuId, MF_BYCOMMAND | (v ? MF_CHECKED : MF_UNCHECKED));
             service_.Settings().SetDisplayFlags(df);
-            SaveSettingsIni(service_);
+            SaveSettingsIni(service_, loopNonLoopingPolicy_);
         };
 
         if (id == IDM_SETTINGS) {
@@ -489,7 +501,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             CheckMenuRadioItem(hMenuTileset_, IDM_TILESET_BASE, IDM_TILESET_LAST,
                                id, MF_BYCOMMAND);
             service_.Replaceables().SetTileset(static_cast<whiteout::flakes::io::Tileset>(idx));
-            SaveSettingsIni(service_);
+            SaveSettingsIni(service_, loopNonLoopingPolicy_);
             return 0;
         }
 
@@ -509,18 +521,20 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
         switch (id) {
             case IDC_TEAMCOLOR: {
+                auto* focus = service_.Scene().Actors().Find(
+                    focusActor_.load(std::memory_order_relaxed));
+                if (!focus) break;
                 CHOOSECOLORW cc = {};
                 static COLORREF customColors[16] = {};
                 cc.lStructSize = sizeof(cc);
                 cc.hwndOwner = hwnd_;
-                cc.rgbResult = service_.Replaceables().GetTeamColorRaw();
+                cc.rgbResult = (COLORREF)(focus->teamColor & 0x00FFFFFFu);
                 cc.lpCustColors = customColors;
                 cc.Flags = CC_FULLOPEN | CC_RGBINIT;
                 if (ChooseColorW(&cc)) {
-                    service_.Replaceables().SetTeamColor(
-                        GetRValue(cc.rgbResult),
-                        GetGValue(cc.rgbResult),
-                        GetBValue(cc.rgbResult));
+                    focus->SetTeamColor(GetRValue(cc.rgbResult),
+                                        GetGValue(cc.rgbResult),
+                                        GetBValue(cc.rgbResult));
                     InvalidateRect(btnTeamColor_, nullptr, TRUE);
                 }
                 break;
@@ -528,16 +542,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             case IDC_CAMERA: {
                 if (code == CBN_SELCHANGE) {
                     i32 sel = (i32)SendMessageW(cmbCamera_, CB_GETCURSEL, 0, 0);
-                    if (sel == 0) {
-                        service_.Scene().ActivateCameraPreset(-1);
-                        service_.Scene().SetCameraLocked(false);
-                    } else {
-                        i32 idx = sel - 1;
-                        if (idx >= 0 && idx < (i32)cameraPresets_.size()) {
-                            service_.Scene().ActivateCameraPreset(idx);
-                            service_.Scene().SetCameraLocked(cameraPresets_[idx].isLive);
-                        }
-                    }
+                    ActivateCameraPreset(sel <= 0 ? -1 : sel - 1);
                 }
                 break;
             }
@@ -545,9 +550,10 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 if (code == CBN_SELCHANGE) {
                     const i32 sel = (i32)SendMessageW(cmbSequence_, CB_GETCURSEL, 0, 0);
                     if (sel < 0) break;
-                    auto* focusActor = service_.Scene().FocusActor();
-                    const i32 prev = focusActor ? focusActor->animation.ActiveSequenceIndex() : 0;
-                    if (focusActor) focusActor->animation.SetActiveSequenceIndex(sel);
+                    auto* focus = service_.Scene().Actors().Find(
+                        focusActor_.load(std::memory_order_relaxed));
+                    const i32 prev = focus ? focus->animation.ActiveSequenceIndex() : 0;
+                    if (focus) focus->animation.SetActiveSequenceIndex(sel);
                     if (sel == prev) break;
 
                     auto containsCi = [](const std::string& hay, const char* needle) {
@@ -565,9 +571,12 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         return false;
                     };
                     bool keep = false;
-                    if (sel < (i32)sequenceNames_.size()) {
-                        const std::string& name = sequenceNames_[sel];
-                        keep = containsCi(name, "decay") || containsCi(name, "dissipate");
+                    {
+                        std::lock_guard<std::mutex> lk(hostMutex_);
+                        if (sel < (i32)sequenceNames_.size()) {
+                            const std::string& name = sequenceNames_[sel];
+                            keep = containsCi(name, "decay") || containsCi(name, "dissipate");
+                        }
                     }
                     if (!keep) service_.Splats().Clear();
                 }
@@ -594,34 +603,131 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-void RenderWindow::ProcessCameraPresets() {
-    auto pending = service_.Scene().TakePendingCameraPresets();
-    if (!pending || !cmbCamera_) return;
-    SendMessageW(cmbCamera_, CB_RESETCONTENT, 0, 0);
-    SendMessageW(cmbCamera_, CB_ADDSTRING, 0, (LPARAM)L"Free Camera");
-    for (auto& p : *pending)
-        SendMessageW(cmbCamera_, CB_ADDSTRING, 0, (LPARAM)p.name.c_str());
-    cameraPresets_ = std::move(*pending);
-    SendMessageW(cmbCamera_, CB_SETCURSEL, 0, 0);
-    service_.Scene().SetCameraLocked(false);
+void RenderWindow::SetCameraPresets(std::vector<CameraPreset> presets) {
+    if (cmbCamera_) {
+        SendMessageW(cmbCamera_, CB_RESETCONTENT, 0, 0);
+        SendMessageW(cmbCamera_, CB_ADDSTRING, 0, (LPARAM)L"Free Camera");
+        for (auto& p : presets)
+            SendMessageW(cmbCamera_, CB_ADDSTRING, 0, (LPARAM)p.name.c_str());
+        SendMessageW(cmbCamera_, CB_SETCURSEL, 0, 0);
+    }
+    std::lock_guard<std::mutex> lk(hostMutex_);
+    cameraPresets_         = std::move(presets);
+    activeCameraPresetIdx_ = -1;
+    cameraLocked_          = false;
 }
 
-void RenderWindow::ProcessSequences() {
-    auto pending = service_.Scene().TakePendingSequences();
-    if (!pending || !cmbSequence_) return;
-    SendMessageW(cmbSequence_, CB_RESETCONTENT, 0, 0);
-    for (auto& n : *pending) {
-        std::wstring wn(n.begin(), n.end());
-        SendMessageW(cmbSequence_, CB_ADDSTRING, 0, (LPARAM)wn.c_str());
+void RenderWindow::SetSequences(std::vector<std::string> names,
+                                std::vector<SequenceInfo> ranges) {
+    if (cmbSequence_) {
+        SendMessageW(cmbSequence_, CB_RESETCONTENT, 0, 0);
+        for (auto& n : names) {
+            std::wstring wn(n.begin(), n.end());
+            SendMessageW(cmbSequence_, CB_ADDSTRING, 0, (LPARAM)wn.c_str());
+        }
+        if (!names.empty()) {
+            ShowWindow(lblSequence_, SW_SHOW);
+            ShowWindow(cmbSequence_, SW_SHOW);
+            SendMessageW(cmbSequence_, CB_SETCURSEL, 0, 0);
+            if (auto* focus = service_.Scene().Actors().Find(
+                    focusActor_.load(std::memory_order_relaxed)))
+                focus->animation.SetActiveSequenceIndex(0);
+        }
     }
-    sequenceNames_ = std::move(*pending);
-    if (!sequenceNames_.empty()) {
-        ShowWindow(lblSequence_, SW_SHOW);
-        ShowWindow(cmbSequence_, SW_SHOW);
-        SendMessageW(cmbSequence_, CB_SETCURSEL, 0, 0);
-        if (auto* focusActor = service_.Scene().FocusActor())
-            focusActor->animation.SetActiveSequenceIndex(0);
+    std::lock_guard<std::mutex> lk(hostMutex_);
+    sequenceNames_  = std::move(names);
+    sequenceRanges_ = std::move(ranges);
+}
+
+std::vector<SequenceInfo> RenderWindow::SequenceRanges() const {
+    std::lock_guard<std::mutex> lk(hostMutex_);
+    return sequenceRanges_;
+}
+
+void RenderWindow::ActivateCameraPreset(i32 idx) {
+    auto& cam = service_.Scene().Camera();
+
+    // Snapshot the preset under lock so we don't hold it across the
+    // animator() callback (which can run arbitrary user code).
+    CameraPreset preset;
+    bool         haveValidPreset = false;
+    {
+        std::lock_guard<std::mutex> lk(hostMutex_);
+        if (idx < 0 || idx >= (i32)cameraPresets_.size()) {
+            activeCameraPresetIdx_ = -1;
+            cameraLocked_          = false;
+        } else {
+            preset                 = cameraPresets_[idx];
+            activeCameraPresetIdx_ = idx;
+            cameraLocked_          = preset.isLive;
+            haveValidPreset        = true;
+        }
     }
+
+    if (!haveValidPreset) {
+        cam.SetOrbitalMode();
+        cam.SetFovDiagonal(Camera::kDefaultFovDiagonal);
+        cam.SetClip(Camera::kDefaultNearZ, Camera::kDefaultFarZ);
+        return;
+    }
+
+    Vector3f pos  = preset.position;
+    Vector3f tgt  = preset.target;
+    f32      roll = preset.staticRoll;
+    if (preset.animator) {
+        i32 seqStart = 0, seqEnd = 0;
+        auto* focus = service_.Scene().Actors().Find(
+            focusActor_.load(std::memory_order_relaxed));
+        i32   seqIdx = focus ? focus->animation.ActiveSequenceIndex() : 0;
+        {
+            std::lock_guard<std::mutex> lk(hostMutex_);
+            if (seqIdx >= 0 && seqIdx < (i32)sequenceRanges_.size()) {
+                seqStart = sequenceRanges_[seqIdx].startMs;
+                seqEnd   = sequenceRanges_[seqIdx].endMs;
+            }
+        }
+        if (seqStart == 0 && seqEnd == 0) seqEnd = 1 << 30;
+        const i32 sampleMs = focus ? focus->animation.TimeMs()
+                                   : service_.Scene().GetAnimationTime();
+        preset.animator(pos, tgt, roll, sampleMs, seqStart, seqEnd);
+    }
+
+    cam.SetDirectPose(pos, tgt, roll);
+    const f32 fov = (preset.fovDiagonal > 1e-3f) ? preset.fovDiagonal
+                                                 : Camera::kDefaultFovDiagonal;
+    cam.SetFovDiagonal(fov);
+    cam.SetClip(preset.zNear, preset.zFar);
+}
+
+void RenderWindow::UpdateCameraPresetAnimator() {
+    CameraPreset preset;
+    i32 seqStart = 0, seqEnd = 0;
+    {
+        std::lock_guard<std::mutex> lk(hostMutex_);
+        if (activeCameraPresetIdx_ < 0
+            || activeCameraPresetIdx_ >= (i32)cameraPresets_.size()) return;
+        preset = cameraPresets_[activeCameraPresetIdx_];
+        if (!preset.animator) return;
+
+        auto* focus = service_.Scene().Actors().Find(
+            focusActor_.load(std::memory_order_relaxed));
+        const i32 seqIdx = focus ? focus->animation.ActiveSequenceIndex() : 0;
+        if (seqIdx >= 0 && seqIdx < (i32)sequenceRanges_.size()) {
+            seqStart = sequenceRanges_[seqIdx].startMs;
+            seqEnd   = sequenceRanges_[seqIdx].endMs;
+        }
+    }
+    if (seqStart == 0 && seqEnd == 0) seqEnd = 1 << 30;
+
+    auto* focus = service_.Scene().Actors().Find(
+        focusActor_.load(std::memory_order_relaxed));
+    Vector3f pos  = preset.position;
+    Vector3f tgt  = preset.target;
+    f32      roll = preset.staticRoll;
+    const i32 sampleMs = focus ? focus->animation.TimeMs()
+                               : service_.Scene().GetAnimationTime();
+    preset.animator(pos, tgt, roll, sampleMs, seqStart, seqEnd);
+    service_.Scene().Camera().SetDirectPose(pos, tgt, roll);
 }
 
 void RenderWindow::SetTitle(const wchar_t* title) {
@@ -755,7 +861,7 @@ void RenderWindow::EnsureSettingsWindow() {
         12, rowY, 280, 22, hwndSettings_,
         (HMENU)(INT_PTR)IDC_LOOP_NONLOOP, hInst, nullptr);
     SendMessageW(chkLoopNonLoop_, BM_SETCHECK,
-                 service_.Scene().IgnoreNonLooping() ? BST_CHECKED : BST_UNCHECKED, 0);
+                 loopNonLoopingPolicy_ ? BST_CHECKED : BST_UNCHECKED, 0);
 
     rowY += 38;
     CreateWindowW(L"STATIC", L"Time of Day:",
@@ -893,7 +999,7 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
                 SetWindowTextW(lblExposure_, buf);
             }
 
-            SaveSettingsIni(service_);
+            SaveSettingsIni(service_, loopNonLoopingPolicy_);
             return 0;
         }
         if (src == sldSndVolume_ && sldSndVolume_) {
@@ -905,7 +1011,7 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
                 swprintf_s(buf, L"%.2f", volume);
                 SetWindowTextW(lblSndVolume_, buf);
             }
-            SaveSettingsIni(service_);
+            SaveSettingsIni(service_, loopNonLoopingPolicy_);
             return 0;
         }
         if (src == sldTimeOfDay_ && sldTimeOfDay_) {
@@ -919,7 +1025,7 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
                 swprintf_s(buf, L"%02d:%02d", hh, mm);
                 SetWindowTextW(lblTimeOfDay_, buf);
             }
-            SaveSettingsIni(service_);
+            SaveSettingsIni(service_, loopNonLoopingPolicy_);
             return 0;
         }
         break;
@@ -941,29 +1047,36 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
                     GetGValue(cc.rgbResult),
                     GetBValue(cc.rgbResult));
                 if (btnBgColor_) InvalidateRect(btnBgColor_, nullptr, TRUE);
-                SaveSettingsIni(service_);
+                SaveSettingsIni(service_, loopNonLoopingPolicy_);
             }
             return 0;
         }
         if (id == IDC_LOOP_NONLOOP) {
             const bool on = chkLoopNonLoop_
                 && SendMessageW(chkLoopNonLoop_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-            service_.Scene().SetIgnoreNonLooping(on);
-            SaveSettingsIni(service_);
+            loopNonLoopingPolicy_ = on;
+            // Apply to every actor currently in the scene. Tools that load
+            // additional units later are responsible for applying the policy
+            // to those actors themselves (test_main does this after Loader().SpawnUnit).
+            for (auto& [h, mi] : service_.Scene().Actors().All()) {
+                if (mi->IsChild()) continue;
+                mi->ignoreNonLooping = on;
+            }
+            SaveSettingsIni(service_, loopNonLoopingPolicy_);
             return 0;
         }
         if (id == IDC_ANIMATE_TOD) {
             const bool on = chkAnimateTod_
                 && SendMessageW(chkAnimateTod_, BM_GETCHECK, 0, 0) == BST_CHECKED;
             if (auto* dnc = service_.GetDncService()) dnc->SetTodScale(on ? 1.0f : 0.0f);
-            SaveSettingsIni(service_);
+            SaveSettingsIni(service_, loopNonLoopingPolicy_);
             return 0;
         }
         if (id == IDC_IBL_MODE && HIWORD(wParam) == CBN_SELCHANGE && cmbIblMode_) {
             const i32 sel = (i32)SendMessageW(cmbIblMode_, CB_GETCURSEL, 0, 0);
             if (sel >= 0 && sel <= static_cast<i32>(IblMode::Sunset)) {
                 service_.Settings().SetIblMode(static_cast<IblMode>(sel));
-                SaveSettingsIni(service_);
+                SaveSettingsIni(service_, loopNonLoopingPolicy_);
             }
             return 0;
         }
@@ -974,7 +1087,7 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
                 p.enabled       = (sel > 0);
                 p.cascadeCount  = (sel > 0) ? sel : 1;
                 shadow->SetParams(p);
-                SaveSettingsIni(service_);
+                SaveSettingsIni(service_, loopNonLoopingPolicy_);
             }
             return 0;
         }
@@ -985,7 +1098,7 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
                 if (editDncPath_) {
                     SetWindowTextA(editDncPath_, dnc::DncService::kDefaultUnitMdl);
                 }
-                SaveSettingsIni(service_);
+                SaveSettingsIni(service_, loopNonLoopingPolicy_);
             }
             return 0;
         }
@@ -1003,7 +1116,7 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
                 }
                 if (auto* dnc = service_.GetDncService()) {
                     dnc->SetUnitMdl(utf8);
-                    SaveSettingsIni(service_);
+                    SaveSettingsIni(service_, loopNonLoopingPolicy_);
                 }
             }
             return 0;

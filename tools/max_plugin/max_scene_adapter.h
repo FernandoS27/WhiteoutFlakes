@@ -233,7 +233,7 @@ private:
                         std::string sharedKey = {});
     // HD-sentinel allocation removed — adapters set teamColorMapId to
     // kHdTeamColorActive directly when the HD layer flags its team-colour
-    // slot as live-driven. See ReplaceableTextureManager::GetHdSwatchTexture.
+    // slot as live-driven. The HD draw binds the per-actor HD swatch at t4.
     std::wstring GetMaxFilePath();
 
     // Loaded texture pixel data (kept for GetTextures()).

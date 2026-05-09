@@ -11,12 +11,19 @@
 #include <atomic>
 #include <filesystem>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
 namespace whiteout::flakes::renderer {
 
+// SceneManager is the renderer's container for runtime scene state. It owns
+// the actor map, the model template cache, the content provider, the wall
+// clock, and the Camera (which the host mutates via Camera() each frame).
+//
+// Viewer-unique behavior — focus actor tracking, sequence-name caches, camera
+// presets and preset activation, walk-drift, sequence pickers — does NOT live
+// here. Hosts (basic_viewer, max_plugin) own those concerns and drive the
+// renderer through Loader().SpawnUnit / Actor field mutators / Camera().
 class SceneManager {
 public:
     SceneManager()
@@ -32,62 +39,17 @@ public:
     const model::ActorManager& Actors() const { return actors_; }
     model::ActorId             AllocActorId() { return nextActorId_++; }
 
-    model::ActorId&            NextActorIdRef() { return nextActorId_; }
-
-    model::ActorId Focus() const             { return focusActor_; }
-    void    SetFocus(model::ActorId id)      { focusActor_ = id; }
-    model::Actor*  FocusActor() const        { return actors_.Find(focusActor_); }
-
-    model::ActorId&       FocusRef()         { return focusActor_; }
-    const model::ActorId& FocusRef() const   { return focusActor_; }
-
     ::whiteout::flakes::renderer::Camera&       Camera()       { return camera_; }
     const ::whiteout::flakes::renderer::Camera& Camera() const { return camera_; }
 
-    void SetCameraPresets(std::vector<model::CameraPreset> presets) {
-        cameraPresets_        = presets;
-        pendingCameraPresets_ = std::move(presets);
-        cameraDirty_          = true;
-        activeCameraPresetIdx_ = -1;
-    }
-    const std::vector<model::CameraPreset>& CameraPresets() const { return cameraPresets_; }
-    i32   ActiveCameraPresetIdx() const { return activeCameraPresetIdx_; }
-    void  SetActiveCameraPresetIdx(i32 idx) { activeCameraPresetIdx_ = idx; }
-    bool  CameraLocked() const          { return cameraLocked_; }
-    void  SetCameraLocked(bool locked)  { cameraLocked_ = locked; }
-    std::optional<std::vector<model::CameraPreset>> TakePendingCameraPresets() {
-        if (!cameraDirty_) return std::nullopt;
-        cameraDirty_ = false;
-        return std::move(pendingCameraPresets_);
-    }
-
-    void SetSequences(std::vector<std::string> names) {
-        pendingSequenceNames_ = std::move(names);
-        sequencesDirty_ = true;
-    }
-    void SetSequenceRanges(std::vector<model::SequenceInfo> ranges) {
-        sequenceRanges_ = std::move(ranges);
-    }
-    const std::vector<model::SequenceInfo>& SequenceRanges() const { return sequenceRanges_; }
-    std::optional<std::vector<std::string>> TakePendingSequences() {
-        if (!sequencesDirty_) return std::nullopt;
-        sequencesDirty_ = false;
-        auto out = std::move(pendingSequenceNames_);
-        pendingSequenceNames_.clear();
-        return out;
-    }
-
     void SetAnimationTime(i32 ms)      { animationTimeMs_ = ms; }
     i32  GetAnimationTime() const      { return animationTimeMs_.load(); }
-    std::atomic<i32>& AnimationTimeAtomic() { return animationTimeMs_; }
 
+    // Advances the wall clock and each top-level Unit actor's playback clock
+    // by dtSec (scaled per-actor by Actor::playbackSpeed). Hosts that want
+    // fully bespoke per-actor scheduling can skip this and call Actor::Advance
+    // directly on the actors they care about.
     void Update(f32 dtSec);
-
-    // Switch the camera to one of the registered presets, or pass -1 to
-    // reset to the default orbital pose. Reads the focus actor's animation
-    // index when the preset has an animator callback so live-camera tracks
-    // can sample the actor's current sequence.
-    void ActivateCameraPreset(i32 idx);
 
     io::FileContentProvider&       GetContentProvider()       { return contentProvider_; }
     const io::FileContentProvider& GetContentProvider() const { return contentProvider_; }
@@ -110,39 +72,15 @@ public:
     model::ModelTemplateManager&       Templates()       { return *templates_; }
     const model::ModelTemplateManager& Templates() const { return *templates_; }
 
-    static constexpr i32 kMaxPE1Depth     = 3;
-    static constexpr i32 kMaxPE1Instances = 256;
-    i32  PE1InstanceCount() const           { return pe1InstanceCount_; }
-    i32& PE1InstanceCountRef()              { return pe1InstanceCount_; }
-    void SetPE1InstanceCount(i32 n)         { pe1InstanceCount_ = n; }
-
-    // Scene-wide animation policy: when true, non-looping sequences hold their
-    // last frame instead of restarting. Newly-spawned actors inherit it; the
-    // setter fans the flag out to existing actors.
-    bool IgnoreNonLooping() const { return ignoreNonLooping_; }
-    void SetIgnoreNonLooping(bool on) {
-        ignoreNonLooping_ = on;
-        for (auto& [h, mi] : actors_.All()) {
-            if (mi->isPE1Child) continue;
-            mi->ignoreNonLooping = on;
-        }
-    }
+    i32  PE1InstanceCount() const     { return pe1InstanceCount_; }
+    void IncrementPE1Instances()      { ++pe1InstanceCount_; }
+    void DecrementPE1Instances()      { if (pe1InstanceCount_ > 0) --pe1InstanceCount_; }
 
 private:
     model::ActorManager actors_;
     model::ActorId      nextActorId_ = 1;
-    model::ActorId      focusActor_  = 0;
 
     ::whiteout::flakes::renderer::Camera camera_;
-    std::vector<model::CameraPreset>     cameraPresets_;
-    std::vector<model::CameraPreset>     pendingCameraPresets_;
-    bool                                 cameraDirty_           = false;
-    bool                                 cameraLocked_          = false;
-    i32                                  activeCameraPresetIdx_ = -1;
-
-    std::vector<std::string>             pendingSequenceNames_;
-    bool                                 sequencesDirty_ = false;
-    std::vector<model::SequenceInfo>     sequenceRanges_;
 
     std::atomic<i32>                     animationTimeMs_{0};
 
@@ -153,8 +91,7 @@ private:
 
     std::unique_ptr<model::ModelTemplateManager> templates_;
 
-    i32  pe1InstanceCount_  = 0;
-    bool ignoreNonLooping_  = true;
+    i32  pe1InstanceCount_ = 0;
 };
 
 }

@@ -74,7 +74,7 @@ bool ShadowPass::Run(ShadowService& service) {
 
             for (auto& [h, mi] : rs_.Scene().Actors().All()) {
                 if (!mi)               continue;
-                if (mi->isPE1Child)    continue;
+                if (mi->IsChild())     continue;
                 if (mi->parentVisibility <= 0.02f) continue;
 
                 const i32 modelLod = mi->render.hasLods ? selectedLod : 0;

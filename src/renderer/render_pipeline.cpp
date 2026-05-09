@@ -205,12 +205,13 @@ bool RenderPipeline::RenderParticlesBls() {
         const u32 wrapFlags = 0x3;
 
         gfx::TextureHandle peTex = gfx::TextureHandle::Invalid;
+        Actor* owner = rs_.Scene().Actors().Find(dl.model);
+        const u32 ownerColor = owner ? (owner->teamColor | 0xFF000000u) : 0xFF0000FFu;
         if (dl.material.replaceableId == 1) {
-            peTex = rs_.Replaceables().GetSdTeamColorTexture();
+            peTex = rs_.Replaceables().GetSdTeamColorTextureFor(ownerColor);
         } else if (dl.material.replaceableId == 2) {
-            peTex = rs_.Replaceables().GetSdTeamGlowTexture();
+            peTex = rs_.Replaceables().GetSdTeamGlowTextureFor(ownerColor);
         } else {
-            Actor* owner = rs_.Scene().Actors().Find(dl.model);
             if (owner && owner->render.textures && dl.material.textureId >= 0)
                 peTex = owner->render.textures->Get(dl.material.textureId);
         }
@@ -955,35 +956,6 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
     if (rs_.Settings().ConsumeIblModeDirty())
         ApplyIblMode(rs_.Settings().GetIblMode());
 
-    {
-        const i32 activeIdx = rs_.Scene().ActiveCameraPresetIdx();
-        const auto& presets = rs_.Scene().CameraPresets();
-        if (activeIdx >= 0 && activeIdx < (i32)presets.size()) {
-            const auto& preset = presets[activeIdx];
-            if (preset.animator) {
-                i32 seqStart = 0, seqEnd = 0;
-                Actor* focus = rs_.Scene().FocusActor();
-                i32 idx = focus ? focus->animation.ActiveSequenceIndex() : 0;
-                const auto& ranges = rs_.Scene().SequenceRanges();
-                if (idx >= 0 && idx < (i32)ranges.size()) {
-                    seqStart = ranges[idx].startMs;
-                    seqEnd   = ranges[idx].endMs;
-                }
-                if (seqStart == 0 && seqEnd == 0) {
-                    seqEnd = 1 << 30;
-                }
-                Vector3f pos  = preset.position;
-                Vector3f tgt  = preset.target;
-                f32      roll = preset.staticRoll;
-
-                const i32 sampleMs = focus ? focus->animation.TimeMs()
-                                           : rs_.Scene().GetAnimationTime();
-                preset.animator(pos, tgt, roll, sampleMs, seqStart, seqEnd);
-                rs_.Scene().Camera().SetDirectPose(pos, tgt, roll);
-            }
-        }
-    }
-
     auto* cmd = impl_->gfx_->GetImmediateContext();
 
     const bool useHdr = (rs_.Settings().GetRenderMode() == RenderMode::HD);
@@ -1046,13 +1018,13 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
             if (sample.valid) lightDirWS = sample.worldDir;
         }
 
-        Vector3f sceneCenter = { 0.0f, 0.0f, 0.0f };
+        // Center the shadow cascade on the camera target (the host's "what
+        // they're looking at"). Multi-actor scenes can have no single hero,
+        // so we don't probe a focus actor here — orbital target is the most
+        // useful proxy and the host can move it explicitly if needed.
+        const Vector3f camTarget = rs_.Scene().Camera().GetTarget();
+        Vector3f sceneCenter = { camTarget.x, camTarget.y, camTarget.z };
         f32      sceneRadius = 150.0f;
-        if (auto* hero = rs_.Scene().FocusActor(); hero) {
-            sceneCenter.x = hero->worldTransform.data[3][0];
-            sceneCenter.y = hero->worldTransform.data[3][1];
-            sceneCenter.z = hero->worldTransform.data[3][2];
-        }
         if (rs_.Scene().Camera().GetMode() == Camera::Mode::Orbital) {
             sceneRadius = std::max(50.0f, rs_.Scene().Camera().GetDistance() * 0.6f);
         }
@@ -1309,8 +1281,6 @@ public:
     }
 
     void BindPassResources(gfx::IGFXCommandList* cmd, bls::FrameInputs& frame) {
-
-        rs_.Replaceables().GetHdSwatchTexture();
 
         const bool useDayNight = rs_.Pipeline().impl_->iblDayNightLoaded_
                               && rs_.GetDncService() != nullptr
@@ -1628,8 +1598,9 @@ public:
             bindMaterialTex(3, layer.emissiveMapId,  defs.Black,      nullptr);
 
             if (layer.teamColorMapId == kHdTeamColorActive) {
+                const u32 ownerRgba = view_.teamColor | 0xFF000000u;
                 cmd->BindShaderResource(gfx::ShaderStage::Pixel, 4,
-                                        rs_.Replaceables().GetHdSwatchTexture());
+                                        rs_.Replaceables().GetHdSwatchTextureFor(ownerRgba));
             } else if (layer.teamColorMapId >= 0) {
                 bindMaterialTex(4, layer.teamColorMapId, defs.Black, nullptr);
             } else {
