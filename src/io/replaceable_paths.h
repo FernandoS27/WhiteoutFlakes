@@ -2,11 +2,11 @@
 
 #include "common_types.h"
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io {
 class IContentProvider;
 }
 
-namespace WhiteoutDex::io {
+namespace whiteout::flakes::io {
 
 enum class Tileset : u8 {
     LordaeronSummer = 0,

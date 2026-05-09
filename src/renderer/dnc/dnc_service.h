@@ -8,11 +8,9 @@
 #include <memory>
 #include <string>
 
-namespace WhiteoutDex {
-class IContentProvider;
-}
+namespace whiteout::flakes::io { class IContentProvider; }
 
-namespace WhiteoutDex::dnc {
+namespace whiteout::flakes::renderer::dnc {
 
 class  DncCache;
 struct DncAsset;
@@ -26,7 +24,7 @@ struct DncSample {
 
 class DncService {
 public:
-    explicit DncService(IContentProvider* contentProvider);
+    explicit DncService(io::IContentProvider* contentProvider);
     ~DncService();
 
     DncService(const DncService&) = delete;
@@ -78,7 +76,7 @@ public:
     EnvMapBlend ComputeEnvMapBlend() const;
 
 private:
-    IContentProvider*           contentProvider_ = nullptr;
+    io::IContentProvider*           contentProvider_ = nullptr;
     std::unique_ptr<DncCache>   cache_;
     DncAsset*                   unitAsset_       = nullptr;
     std::string                 unitPath_;

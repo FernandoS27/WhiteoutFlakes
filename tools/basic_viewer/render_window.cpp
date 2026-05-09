@@ -1,9 +1,12 @@
 #include "render_window.h"
 #include "common_types.h"
 #include "renderer/render_service.h"
+#include "renderer/render_pipeline.h"
+#include "renderer/frame_ticker.h"
 #include "settings_ini.h"
 #include "renderer/debug/debug_renderer.h"
-#include "renderer/replaceable_texture_manager.h"
+#include "renderer/particle/splat_service.h"
+#include "renderer/assets/replaceable_texture_manager.h"
 #include "io/replaceable_paths.h"
 #include "resource.h"
 #include <windowsx.h>
@@ -19,7 +22,11 @@
 
 #pragma comment(lib, "comdlg32.lib")
 
-namespace WhiteoutDex {
+namespace whiteout::flakes {
+
+using namespace whiteout::flakes::io;
+using namespace whiteout::flakes::renderer;
+using namespace whiteout::flakes::renderer::model;
 
 static const wchar_t* WINDOW_CLASS   = L"WhiteoutDexRendererClass";
 static const wchar_t* RENDER_CLASS   = L"WhiteoutDexRenderSurface";
@@ -53,11 +60,11 @@ bool RenderWindow::IsOpen() const { return running_ && initialized_; }
 
 void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
     if (!Create(w, h))              { running_ = false; return; }
-    if (!service_.InitDevice(api))  { running_ = false; Destroy(); return; }
+    if (!service_.Pipeline().InitDevice(api))  { running_ = false; Destroy(); return; }
 
-    targetId_ = service_.CreateSwapChainTarget(static_cast<void*>(hwndRender_), w, h);
-    if (targetId_ == 0)           { running_ = false; service_.ShutdownDevice(); Destroy(); return; }
-    service_.SetPrimaryTarget(targetId_);
+    targetId_ = service_.Pipeline().CreateSwapChainTarget(static_cast<void*>(hwndRender_), w, h);
+    if (targetId_ == 0)           { running_ = false; service_.Pipeline().Shutdown(); Destroy(); return; }
+    service_.Pipeline().SetPrimaryTarget(targetId_);
 
     Show();
     initialized_ = true;
@@ -86,17 +93,17 @@ void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
         ProcessSequences();
         if (service_.Replaceables().ConsumeDirty()) InvalidateTeamColorSwatch();
 
-        (void)service_.ConsumeRenderModeDirty();
+        (void)service_.Settings().ConsumeRenderModeDirty();
 
-        service_.Tick(parentDt);
-        service_.RenderFrame(targetId_);
-        service_.Present(targetId_);
+        service_.Ticker().Tick(parentDt);
+        service_.Pipeline().RenderFrame(targetId_);
+        service_.Pipeline().Present(targetId_);
         frameCount++;
 
         f64 fpsDt = (f64)(now.QuadPart - fpsTimer.QuadPart) / freq.QuadPart;
         if (fpsDt >= 1.0) {
             i32 nGeo = 0, nTex = 0, nNodes = 0, nParts = 0, nSegs = 0;
-            service_.GetFrameStats(nGeo, nTex, nNodes, nParts, nSegs);
+            service_.Pipeline().GetFrameStats(nGeo, nTex, nNodes, nParts, nSegs);
             wchar_t title[300];
             swprintf_s(title,
                 L"WhiteoutFlakes \u2014 %d FPS | %d geo, %d tex, %d nodes, %d parts, %d segs",
@@ -108,7 +115,7 @@ void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
         }
     }
 
-    service_.ShutdownDevice();
+    service_.Pipeline().Shutdown();
     Destroy();
     initialized_ = false;
 }
@@ -149,7 +156,7 @@ bool RenderWindow::Create(i32 w, i32 h) {
     if (!RegisterClassExW(&rc))
         if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
 
-    DisplayFlags df = service_.GetDisplayFlags();
+    DisplayFlags df = service_.Settings().GetDisplayFlags();
     hMenuBar_      = CreateMenu();
     hMenuView_     = CreatePopupMenu();
     hMenuDebug_    = CreatePopupMenu();
@@ -167,15 +174,15 @@ bool RenderWindow::Create(i32 w, i32 h) {
 
     hMenuTileset_ = CreatePopupMenu();
     {
-        const i32 n = static_cast<i32>(WhiteoutDex::io::Tileset::Count);
+        const i32 n = static_cast<i32>(whiteout::flakes::io::Tileset::Count);
         for (i32 i = 0; i < n; ++i) {
-            const char* nm = WhiteoutDex::io::TilesetName(
-                static_cast<WhiteoutDex::io::Tileset>(i));
+            const char* nm = whiteout::flakes::io::TilesetName(
+                static_cast<whiteout::flakes::io::Tileset>(i));
             wchar_t wbuf[64];
             MultiByteToWideChar(CP_UTF8, 0, nm, -1, wbuf, 64);
             AppendMenuW(hMenuTileset_, MF_STRING, IDM_TILESET_BASE + i, wbuf);
         }
-        const i32 curIdx = static_cast<i32>(service_.GetTileset());
+        const i32 curIdx = static_cast<i32>(whiteout::flakes::io::GetCurrentTileset());
         CheckMenuRadioItem(hMenuTileset_,
                            IDM_TILESET_BASE, IDM_TILESET_LAST,
                            IDM_TILESET_BASE + curIdx, MF_BYCOMMAND);
@@ -199,7 +206,7 @@ bool RenderWindow::Create(i32 w, i32 h) {
     };
     for (i32 i = 0; i < 8; ++i)
         AppendMenuW(hMenuDebugVis_, MF_STRING, IDM_DBGVIS_BASE + i, kDebugVisLabels[i]);
-    const i32 initDbg = service_.GetHdDebugMode();
+    const i32 initDbg = service_.Settings().HdDebugMode();
     CheckMenuRadioItem(hMenuDebugVis_,
                        IDM_DBGVIS_BASE, IDM_DBGVIS_BASE + 7,
                        IDM_DBGVIS_BASE + (initDbg >= 0 && initDbg < 8 ? initDbg : 0),
@@ -215,7 +222,7 @@ bool RenderWindow::Create(i32 w, i32 h) {
     };
     for (i32 i = 0; i < 5; ++i)
         AppendMenuW(hMenuLod_, MF_STRING, IDM_LOD_BASE + i, kLodLabels[i]);
-    const i32 initLod = service_.GetLodOverride();
+    const i32 initLod = service_.Settings().LodOverride();
     const i32 lodCheckIdx = (initLod < 0) ? 0 : (1 + std::clamp(initLod, 0, 3));
     CheckMenuRadioItem(hMenuLod_,
                        IDM_LOD_BASE, IDM_LOD_LAST,
@@ -282,7 +289,7 @@ bool RenderWindow::Create(i32 w, i32 h) {
     SendMessageW(cmbLighting_, CB_ADDSTRING, 0, (LPARAM)L"Glue");
     SendMessageW(cmbLighting_, CB_ADDSTRING, 0, (LPARAM)L"Dynamic");
     SendMessageW(cmbLighting_, CB_SETCURSEL,
-                 static_cast<WPARAM>(service_.GetLightingMode()), 0);
+                 static_cast<WPARAM>(service_.Settings().GetLightingMode()), 0);
     x += 108;
 
     return true;
@@ -375,7 +382,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         i32 renderH = h - kToolbarH;
         if (w > 0 && renderH > 0) {
             if (hwndRender_) MoveWindow(hwndRender_, 0, kToolbarH, w, renderH, TRUE);
-            if (service_.IsDeviceReady()) service_.ResizePrimaryTarget(w, renderH);
+            if (service_.Pipeline().IsDeviceReady()) service_.Pipeline().ResizePrimaryTarget(w, renderH);
         }
         return 0;
     }
@@ -383,8 +390,8 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         i32 mx = GET_X_LPARAM(lParam), my = GET_Y_LPARAM(lParam);
         i32 vcHit = service_.Debug().HitTestViewCube(mx, my);
         if (vcHit >= 0) {
-            if (vcHit == 6) service_.ResetCamera();
-            else            service_.SnapCameraToFace(vcHit);
+            if (vcHit == 6) service_.Scene().Camera().Reset();
+            else            service_.Scene().Camera().SnapToViewCubeFace(vcHit);
             return 0;
         }
         lmbDown_ = true;
@@ -418,16 +425,17 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             cur.x >= vcr.left && cur.x <= vcr.right &&
             cur.y >= vcr.top  && cur.y <= vcr.bottom);
         if (!service_.Scene().CameraLocked()) {
-            if (lmbDown_) service_.RotateCamera(dx, dy);
-            if (rmbDown_) service_.PanCamera(-dx, dy);
-            if (mmbDown_) service_.ZoomCameraSmooth(dy);
+            auto& cam = service_.Scene().Camera();
+            if (lmbDown_) cam.Rotate(dx, dy);
+            if (rmbDown_) cam.Pan(-dx, dy);
+            if (mmbDown_) cam.ZoomSmooth(f32(dy) * cam.GetDistance() / whiteout::flakes::renderer::Camera::kFactorRelDist);
         }
         return 0;
     }
     case WM_MOUSEWHEEL: {
         if (!service_.Scene().CameraLocked()) {
             i32 delta = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
-            service_.ZoomCamera(delta * 30);
+            service_.Scene().Camera().Zoom(delta * 30);
         }
         return 0;
     }
@@ -451,11 +459,11 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         i32 code = HIWORD(wParam);
 
         auto toggleView = [&](UINT menuId, bool DisplayFlags::*field) {
-            DisplayFlags df = service_.GetDisplayFlags();
+            DisplayFlags df = service_.Settings().GetDisplayFlags();
             bool& v = df.*field;
             v = !v;
             CheckMenuItem(hMenuBar_, menuId, MF_BYCOMMAND | (v ? MF_CHECKED : MF_UNCHECKED));
-            service_.SetDisplayFlags(df);
+            service_.Settings().SetDisplayFlags(df);
             SaveSettingsIni(service_);
         };
 
@@ -476,11 +484,11 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 
         if (id >= (i32)IDM_TILESET_BASE && id <= (i32)IDM_TILESET_LAST) {
             const i32 idx = id - IDM_TILESET_BASE;
-            const i32 n   = static_cast<i32>(WhiteoutDex::io::Tileset::Count);
+            const i32 n   = static_cast<i32>(whiteout::flakes::io::Tileset::Count);
             if (idx < 0 || idx >= n) return 0;
             CheckMenuRadioItem(hMenuTileset_, IDM_TILESET_BASE, IDM_TILESET_LAST,
                                id, MF_BYCOMMAND);
-            service_.SetTileset(static_cast<WhiteoutDex::io::Tileset>(idx));
+            service_.Replaceables().SetTileset(static_cast<whiteout::flakes::io::Tileset>(idx));
             SaveSettingsIni(service_);
             return 0;
         }
@@ -488,14 +496,14 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         if (id >= (i32)IDM_DBGVIS_BASE && id <= (i32)IDM_DBGVIS_LAST) {
             const i32 mode = id - IDM_DBGVIS_BASE;
             CheckMenuRadioItem(hMenuDebugVis_, IDM_DBGVIS_BASE, IDM_DBGVIS_LAST, id, MF_BYCOMMAND);
-            service_.SetHdDebugMode(mode);
+            service_.Settings().SetHdDebugMode(mode);
             return 0;
         }
 
         if (id >= (i32)IDM_LOD_BASE && id <= (i32)IDM_LOD_LAST) {
             const i32 idx = id - IDM_LOD_BASE;
             CheckMenuRadioItem(hMenuLod_, IDM_LOD_BASE, IDM_LOD_LAST, id, MF_BYCOMMAND);
-            service_.SetLodOverride(idx == 0 ? -1 : (idx - 1));
+            service_.Settings().SetLodOverride(idx == 0 ? -1 : (idx - 1));
             return 0;
         }
 
@@ -509,7 +517,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 cc.lpCustColors = customColors;
                 cc.Flags = CC_FULLOPEN | CC_RGBINIT;
                 if (ChooseColorW(&cc)) {
-                    service_.SetTeamColor(
+                    service_.Replaceables().SetTeamColor(
                         GetRValue(cc.rgbResult),
                         GetGValue(cc.rgbResult),
                         GetBValue(cc.rgbResult));
@@ -521,12 +529,12 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 if (code == CBN_SELCHANGE) {
                     i32 sel = (i32)SendMessageW(cmbCamera_, CB_GETCURSEL, 0, 0);
                     if (sel == 0) {
-                        service_.ActivateCameraPreset(-1);
+                        service_.Scene().ActivateCameraPreset(-1);
                         service_.Scene().SetCameraLocked(false);
                     } else {
                         i32 idx = sel - 1;
                         if (idx >= 0 && idx < (i32)cameraPresets_.size()) {
-                            service_.ActivateCameraPreset(idx);
+                            service_.Scene().ActivateCameraPreset(idx);
                             service_.Scene().SetCameraLocked(cameraPresets_[idx].isLive);
                         }
                     }
@@ -537,8 +545,9 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 if (code == CBN_SELCHANGE) {
                     const i32 sel = (i32)SendMessageW(cmbSequence_, CB_GETCURSEL, 0, 0);
                     if (sel < 0) break;
-                    const i32 prev = service_.GetActiveSequenceIndex();
-                    service_.SetActiveSequence(sel);
+                    auto* focusActor = service_.Scene().FocusActor();
+                    const i32 prev = focusActor ? focusActor->animation.ActiveSequenceIndex() : 0;
+                    if (focusActor) focusActor->animation.SetActiveSequenceIndex(sel);
                     if (sel == prev) break;
 
                     auto containsCi = [](const std::string& hay, const char* needle) {
@@ -560,7 +569,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                         const std::string& name = sequenceNames_[sel];
                         keep = containsCi(name, "decay") || containsCi(name, "dissipate");
                     }
-                    if (!keep) service_.ClearSplats();
+                    if (!keep) service_.Splats().Clear();
                 }
                 break;
             }
@@ -568,7 +577,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 if (code == CBN_SELCHANGE) {
                     i32 sel = (i32)SendMessageW(cmbLighting_, CB_GETCURSEL, 0, 0);
                     if (sel >= 0 && sel <= 2)
-                        service_.SetLightingMode(static_cast<LightingMode>(sel));
+                        service_.Settings().SetLightingMode(static_cast<LightingMode>(sel));
                 }
                 break;
             }
@@ -586,7 +595,7 @@ LRESULT RenderWindow::HandleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 }
 
 void RenderWindow::ProcessCameraPresets() {
-    auto pending = service_.TakePendingCameraPresets();
+    auto pending = service_.Scene().TakePendingCameraPresets();
     if (!pending || !cmbCamera_) return;
     SendMessageW(cmbCamera_, CB_RESETCONTENT, 0, 0);
     SendMessageW(cmbCamera_, CB_ADDSTRING, 0, (LPARAM)L"Free Camera");
@@ -598,7 +607,7 @@ void RenderWindow::ProcessCameraPresets() {
 }
 
 void RenderWindow::ProcessSequences() {
-    auto pending = service_.TakePendingSequences();
+    auto pending = service_.Scene().TakePendingSequences();
     if (!pending || !cmbSequence_) return;
     SendMessageW(cmbSequence_, CB_RESETCONTENT, 0, 0);
     for (auto& n : *pending) {
@@ -610,7 +619,8 @@ void RenderWindow::ProcessSequences() {
         ShowWindow(lblSequence_, SW_SHOW);
         ShowWindow(cmbSequence_, SW_SHOW);
         SendMessageW(cmbSequence_, CB_SETCURSEL, 0, 0);
-        service_.SetActiveSequence(0);
+        if (auto* focusActor = service_.Scene().FocusActor())
+            focusActor->animation.SetActiveSequenceIndex(0);
     }
 }
 
@@ -628,7 +638,7 @@ i32 RenderWindow::GetActiveCameraIndex() const {
 
 void RenderWindow::SyncViewMenuFromService() {
     if (!hMenuView_) return;
-    const DisplayFlags df = service_.GetDisplayFlags();
+    const DisplayFlags df = service_.Settings().GetDisplayFlags();
     auto syncToggle = [&](UINT id, bool checked) {
         CheckMenuItem(hMenuBar_, id,
                       MF_BYCOMMAND | (checked ? MF_CHECKED : MF_UNCHECKED));
@@ -638,8 +648,8 @@ void RenderWindow::SyncViewMenuFromService() {
     syncToggle(IDM_VIEW_RIBBONS,   df.showRibbons);
     syncToggle(IDM_VIEW_EVENTS,    df.showEvents);
     if (hMenuTileset_) {
-        const i32 n      = static_cast<i32>(WhiteoutDex::io::Tileset::Count);
-        const i32 curIdx = std::clamp(static_cast<i32>(service_.GetTileset()), 0, n - 1);
+        const i32 n      = static_cast<i32>(whiteout::flakes::io::Tileset::Count);
+        const i32 curIdx = std::clamp(static_cast<i32>(whiteout::flakes::io::GetCurrentTileset()), 0, n - 1);
         CheckMenuRadioItem(hMenuTileset_,
                            IDM_TILESET_BASE, IDM_TILESET_LAST,
                            IDM_TILESET_BASE + curIdx, MF_BYCOMMAND);
@@ -710,10 +720,10 @@ void RenderWindow::EnsureSettingsWindow() {
         (HMENU)(INT_PTR)IDC_EXPOSURE, hInst, nullptr);
     SendMessageW(sldExposure_, TBM_SETRANGE, TRUE, MAKELPARAM(0, 300));
     SendMessageW(sldExposure_, TBM_SETPOS,   TRUE,
-                 (LPARAM)(i32)(service_.GetTonemapExposure() * 100.0f));
+                 (LPARAM)(i32)(service_.Settings().GetTonemapExposure() * 100.0f));
     {
         wchar_t buf[16];
-        swprintf_s(buf, L"%.2f", service_.GetTonemapExposure());
+        swprintf_s(buf, L"%.2f", service_.Settings().GetTonemapExposure());
         lblExposure_ = CreateWindowW(L"STATIC", buf,
             WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
             264, rowY, 44, 22, hwndSettings_, nullptr, hInst, nullptr);
@@ -729,10 +739,10 @@ void RenderWindow::EnsureSettingsWindow() {
         (HMENU)(INT_PTR)IDC_SND_VOLUME, hInst, nullptr);
     SendMessageW(sldSndVolume_, TBM_SETRANGE, TRUE, MAKELPARAM(0, 100));
     SendMessageW(sldSndVolume_, TBM_SETPOS,   TRUE,
-                 (LPARAM)(i32)(service_.GetSoundVolume() * 100.0f));
+                 (LPARAM)(i32)(service_.Sound().GetVolume() * 100.0f));
     {
         wchar_t buf[16];
-        swprintf_s(buf, L"%.2f", service_.GetSoundVolume());
+        swprintf_s(buf, L"%.2f", service_.Sound().GetVolume());
         lblSndVolume_ = CreateWindowW(L"STATIC", buf,
             WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
             264, rowY, 44, 22, hwndSettings_, nullptr, hInst, nullptr);
@@ -745,7 +755,7 @@ void RenderWindow::EnsureSettingsWindow() {
         12, rowY, 280, 22, hwndSettings_,
         (HMENU)(INT_PTR)IDC_LOOP_NONLOOP, hInst, nullptr);
     SendMessageW(chkLoopNonLoop_, BM_SETCHECK,
-                 service_.GetIgnoreNonLooping() ? BST_CHECKED : BST_UNCHECKED, 0);
+                 service_.Scene().IgnoreNonLooping() ? BST_CHECKED : BST_UNCHECKED, 0);
 
     rowY += 38;
     CreateWindowW(L"STATIC", L"Time of Day:",
@@ -801,7 +811,7 @@ void RenderWindow::EnsureSettingsWindow() {
     SendMessageW(cmbIblMode_, CB_ADDSTRING, 0, (LPARAM)L"Dungeon");
     SendMessageW(cmbIblMode_, CB_ADDSTRING, 0, (LPARAM)L"Sunset");
     SendMessageW(cmbIblMode_, CB_SETCURSEL,
-                 static_cast<WPARAM>(service_.GetIblMode()), 0);
+                 static_cast<WPARAM>(service_.Settings().GetIblMode()), 0);
 
     rowY += 38;
     CreateWindowW(L"STATIC", L"Shadows:",
@@ -861,7 +871,7 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
     case WM_DRAWITEM: {
         DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam;
         if (dis->CtlID == IDC_BGCOLOR) {
-            COLORREF bc = service_.GetBackgroundColorRaw();
+            COLORREF bc = service_.Settings().BackgroundColorRaw();
             HBRUSH brush = CreateSolidBrush(bc);
             FillRect(dis->hDC, &dis->rcItem, brush);
             DeleteObject(brush);
@@ -876,7 +886,7 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
         if (src == sldExposure_ && sldExposure_) {
             i32 pos = (i32)SendMessageW(sldExposure_, TBM_GETPOS, 0, 0);
             f32 exposure = (f32)pos / 100.0f;
-            service_.SetTonemapExposure(exposure);
+            service_.Settings().SetTonemapExposure(exposure);
             if (lblExposure_) {
                 wchar_t buf[16];
                 swprintf_s(buf, L"%.2f", exposure);
@@ -889,7 +899,7 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
         if (src == sldSndVolume_ && sldSndVolume_) {
             i32 pos = (i32)SendMessageW(sldSndVolume_, TBM_GETPOS, 0, 0);
             f32 volume = (f32)pos / 100.0f;
-            service_.SetSoundVolume(volume);
+            service_.Sound().SetVolume(volume);
             if (lblSndVolume_) {
                 wchar_t buf[16];
                 swprintf_s(buf, L"%.2f", volume);
@@ -922,11 +932,11 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
             static COLORREF customColors[16] = {};
             cc.lStructSize  = sizeof(cc);
             cc.hwndOwner    = hwnd;
-            cc.rgbResult    = service_.GetBackgroundColorRaw();
+            cc.rgbResult    = service_.Settings().BackgroundColorRaw();
             cc.lpCustColors = customColors;
             cc.Flags        = CC_FULLOPEN | CC_RGBINIT;
             if (ChooseColorW(&cc)) {
-                service_.SetBackgroundColor(
+                service_.Settings().SetBackgroundColor(
                     GetRValue(cc.rgbResult),
                     GetGValue(cc.rgbResult),
                     GetBValue(cc.rgbResult));
@@ -938,7 +948,7 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
         if (id == IDC_LOOP_NONLOOP) {
             const bool on = chkLoopNonLoop_
                 && SendMessageW(chkLoopNonLoop_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-            service_.SetIgnoreNonLooping(on);
+            service_.Scene().SetIgnoreNonLooping(on);
             SaveSettingsIni(service_);
             return 0;
         }
@@ -952,7 +962,7 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
         if (id == IDC_IBL_MODE && HIWORD(wParam) == CBN_SELCHANGE && cmbIblMode_) {
             const i32 sel = (i32)SendMessageW(cmbIblMode_, CB_GETCURSEL, 0, 0);
             if (sel >= 0 && sel <= static_cast<i32>(IblMode::Sunset)) {
-                service_.SetIblMode(static_cast<IblMode>(sel));
+                service_.Settings().SetIblMode(static_cast<IblMode>(sel));
                 SaveSettingsIni(service_);
             }
             return 0;

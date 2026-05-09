@@ -5,7 +5,7 @@
 using namespace whiteout;
 using namespace whiteout::mdx;
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io {
 
 namespace {
 

@@ -5,7 +5,7 @@
 
 #include <string_view>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io {
 
 enum class ImageUsage : i32 {
     Default   = 0,

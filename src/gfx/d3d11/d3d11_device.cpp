@@ -7,7 +7,7 @@
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 
-namespace WhiteoutDex::gfx::d3d11 {
+namespace whiteout::flakes::gfx::d3d11 {
 
 D3D11Device::D3D11Device() = default;
 

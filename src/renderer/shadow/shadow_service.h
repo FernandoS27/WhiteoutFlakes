@@ -7,7 +7,7 @@
 
 #include <array>
 
-namespace WhiteoutDex::shadow {
+namespace whiteout::flakes::renderer::shadow {
 
 struct Cascade {
     gfx::TextureHandle depth         = gfx::TextureHandle::Invalid;

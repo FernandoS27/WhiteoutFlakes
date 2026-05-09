@@ -1,11 +1,11 @@
 #pragma once
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::renderer { class RenderService; }
 
-class RenderService;
+namespace whiteout::flakes {
 
-void LoadSettingsIni(RenderService& service);
+void LoadSettingsIni(renderer::RenderService& service);
 
-void SaveSettingsIni(const RenderService& service);
+void SaveSettingsIni(const renderer::RenderService& service);
 
 }

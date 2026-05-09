@@ -2,7 +2,7 @@
 #include "d3d11_device.h"
 #include <cassert>
 
-namespace WhiteoutDex::gfx::d3d11 {
+namespace whiteout::flakes::gfx::d3d11 {
 
 D3D11CommandList::D3D11CommandList(D3D11Device& device)
     : device_(device) {}

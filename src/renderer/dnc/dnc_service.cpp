@@ -9,7 +9,9 @@
 #include <cmath>
 #include <cstdio>
 
-namespace WhiteoutDex::dnc {
+namespace whiteout::flakes::renderer::dnc {
+
+using namespace ::whiteout::flakes::io;
 
 namespace {
 

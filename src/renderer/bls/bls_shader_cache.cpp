@@ -3,7 +3,9 @@
 #include <cctype>
 #include <cstdio>
 
-namespace WhiteoutDex::bls {
+namespace whiteout::flakes::renderer::bls {
+
+using namespace ::whiteout::flakes::io;
 
 BlsShaderCache::BlsShaderCache(gfx::IGFXDevice* device, IContentProvider* contentProvider)
     : device_(device), contentProvider_(contentProvider) {}

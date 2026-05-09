@@ -12,7 +12,7 @@
 
 #include "gfx/gfx_types.h"
 
-namespace WhiteoutDex::gfx::d3d12 {
+namespace whiteout::flakes::gfx::d3d12 {
 
 template<typename T>
 inline void SafeRelease(T*& ptr) {

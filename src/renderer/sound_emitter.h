@@ -5,9 +5,9 @@
 
 #include <memory>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io { struct SndEntry; }
 
-namespace io { struct SndEntry; }
+namespace whiteout::flakes::renderer {
 
 class ISoundEmitter {
 public:

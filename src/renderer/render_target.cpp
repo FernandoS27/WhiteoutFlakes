@@ -1,5 +1,5 @@
 ﻿#include "renderer/render_target.h"
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::renderer {
 
 }

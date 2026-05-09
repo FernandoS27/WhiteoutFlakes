@@ -2,20 +2,21 @@
 
 #include "io/content_provider.h"
 #include "gfx/gfx.h"
-#include "model_source_utils.h"
-#include "texture_asset_manager.h"
+#include "model/model_source_utils.h"
+#include "assets/texture_asset_manager.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
+namespace whiteout::flakes::renderer::particle {
 
-namespace WhiteoutDex::particle {
+using namespace ::whiteout::flakes::renderer::assets;
+using namespace ::whiteout::flakes::renderer::model;
+using namespace ::whiteout::flakes::io;
 
 SplatService::SplatService()  = default;
 SplatService::~SplatService() = default;
@@ -30,19 +31,19 @@ void SplatService::Configure(gfx::IGFXDevice*       gfx,
 }
 
 void SplatService::Tick() {
-    LARGE_INTEGER freq, now;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&now);
+    using namespace std::chrono;
+    const i64 nowNs = duration_cast<nanoseconds>(
+                          steady_clock::now().time_since_epoch()).count();
 
     std::lock_guard<std::mutex> lk(mutex_);
 
-    if (lastTickQpc_ < 0) {
-        lastTickQpc_ = now.QuadPart;
+    if (lastTickNs_ < 0) {
+        lastTickNs_ = nowNs;
         return;
     }
 
-    const f64 dtSec = (f64)(now.QuadPart - lastTickQpc_) / (f64)freq.QuadPart;
-    lastTickQpc_ = now.QuadPart;
+    const f64 dtSec = (f64)(nowNs - lastTickNs_) * 1e-9;
+    lastTickNs_ = nowNs;
 
     const f32 dt = (f32)std::min(dtSec, 0.5);
     if (dt <= 0.f) return;
@@ -68,7 +69,7 @@ void SplatService::Clear() {
         }
     }
     textureCache_.clear();
-    lastTickQpc_ = -1;
+    lastTickNs_ = -1;
 }
 
 i32 SplatService::Count() const {

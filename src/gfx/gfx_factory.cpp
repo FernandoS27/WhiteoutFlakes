@@ -4,7 +4,7 @@
 
 #include <stdexcept>
 
-namespace WhiteoutDex::gfx {
+namespace whiteout::flakes::gfx {
 
 std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api) {
     switch (api) {

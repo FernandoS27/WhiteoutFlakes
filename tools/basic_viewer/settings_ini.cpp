@@ -2,6 +2,7 @@
 
 #include "common_types.h"
 #include "renderer/render_service.h"
+#include "renderer/assets/replaceable_texture_manager.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -15,7 +16,10 @@
 #endif
 #include <windows.h>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes {
+
+using namespace whiteout::flakes::renderer;
+using namespace whiteout::flakes::renderer::assets;
 
 namespace {
 
@@ -45,7 +49,7 @@ void LoadSettingsIni(RenderService& service) {
             if (endptr != buf) {
                 const u32 v = static_cast<u32>(val);
 
-                service.SetBackgroundColor(
+                service.Settings().SetBackgroundColor(
                     static_cast<u8>(v        & 0xFF),
                     static_cast<u8>((v >> 8) & 0xFF),
                     static_cast<u8>((v >> 16) & 0xFF));
@@ -65,7 +69,7 @@ void LoadSettingsIni(RenderService& service) {
                 f32 clamped = static_cast<f32>(val);
                 if (clamped < 0.0f) clamped = 0.0f;
                 if (clamped > 3.0f) clamped = 3.0f;
-                service.SetTonemapExposure(clamped);
+                service.Settings().SetTonemapExposure(clamped);
             }
         }
     }
@@ -81,7 +85,7 @@ void LoadSettingsIni(RenderService& service) {
                 f32 clamped = static_cast<f32>(val);
                 if (clamped < 0.0f) clamped = 0.0f;
                 if (clamped > 1.0f) clamped = 1.0f;
-                service.SetSoundVolume(clamped);
+                service.Sound().SetVolume(clamped);
             }
         }
     }
@@ -89,11 +93,11 @@ void LoadSettingsIni(RenderService& service) {
     {
         const i32 v = ::GetPrivateProfileIntW(kSection, L"LoopNonLooping",
                                               -1, iniPath.c_str());
-        if (v == 0 || v == 1) service.SetIgnoreNonLooping(v != 0);
+        if (v == 0 || v == 1) service.Scene().SetIgnoreNonLooping(v != 0);
     }
 
     {
-        DisplayFlags df = service.GetDisplayFlags();
+        DisplayFlags df = service.Settings().GetDisplayFlags();
         bool dirty = false;
         auto loadFlag = [&](const wchar_t* key, bool& field) {
             const i32 v = ::GetPrivateProfileIntW(kSection, key, -1,
@@ -107,22 +111,22 @@ void LoadSettingsIni(RenderService& service) {
         loadFlag(L"ShowParticles", df.showParticles);
         loadFlag(L"ShowRibbons",   df.showRibbons);
         loadFlag(L"ShowEvents",    df.showEvents);
-        if (dirty) service.SetDisplayFlags(df);
+        if (dirty) service.Settings().SetDisplayFlags(df);
     }
 
     {
         const i32 v = ::GetPrivateProfileIntW(kSection, L"Tileset", -1,
                                               iniPath.c_str());
         const i32 n = static_cast<i32>(io::Tileset::Count);
-        if (v >= 0 && v < n) service.SetTileset(static_cast<io::Tileset>(v));
+        if (v >= 0 && v < n) service.Replaceables().SetTileset(static_cast<io::Tileset>(v));
     }
 
     {
         const i32 v = ::GetPrivateProfileIntW(kSection, L"IblMode",
                                               -1, iniPath.c_str());
         if (v >= 0 && v <= static_cast<i32>(IblMode::Sunset)
-            && static_cast<IblMode>(v) != service.GetIblMode()) {
-            service.SetIblMode(static_cast<IblMode>(v));
+            && static_cast<IblMode>(v) != service.Settings().GetIblMode()) {
+            service.Settings().SetIblMode(static_cast<IblMode>(v));
         }
     }
 
@@ -169,31 +173,31 @@ void SaveSettingsIni(const RenderService& service) {
     {
         wchar_t buf[32] = {};
         ::swprintf_s(buf, L"0x%08X",
-                     static_cast<u32>(service.GetBackgroundColorRaw()));
+                     static_cast<u32>(service.Settings().BackgroundColorRaw()));
         ::WritePrivateProfileStringW(kSection, L"BackgroundColor",
                                      buf, iniPath.c_str());
     }
     {
         wchar_t buf[32] = {};
         ::swprintf_s(buf, L"%.3f",
-                     static_cast<f64>(service.GetTonemapExposure()));
+                     static_cast<f64>(service.Settings().GetTonemapExposure()));
         ::WritePrivateProfileStringW(kSection, L"Exposure",
                                      buf, iniPath.c_str());
     }
     {
         wchar_t buf[32] = {};
         ::swprintf_s(buf, L"%.3f",
-                     static_cast<f64>(service.GetSoundVolume()));
+                     static_cast<f64>(service.Sound().GetVolume()));
         ::WritePrivateProfileStringW(kSection, L"SoundVolume",
                                      buf, iniPath.c_str());
     }
     {
         ::WritePrivateProfileStringW(kSection, L"LoopNonLooping",
-                                     service.GetIgnoreNonLooping() ? L"1" : L"0",
+                                     service.Scene().IgnoreNonLooping() ? L"1" : L"0",
                                      iniPath.c_str());
     }
     {
-        const DisplayFlags df = service.GetDisplayFlags();
+        const DisplayFlags df = service.Settings().GetDisplayFlags();
         auto saveFlag = [&](const wchar_t* key, bool v) {
             ::WritePrivateProfileStringW(kSection, key, v ? L"1" : L"0",
                                          iniPath.c_str());
@@ -206,13 +210,13 @@ void SaveSettingsIni(const RenderService& service) {
     {
         wchar_t buf[8] = {};
         ::swprintf_s(buf, L"%u",
-                     static_cast<u32>(service.GetTileset()));
+                     static_cast<u32>(io::GetCurrentTileset()));
         ::WritePrivateProfileStringW(kSection, L"Tileset", buf, iniPath.c_str());
     }
     {
         wchar_t buf[8] = {};
         ::swprintf_s(buf, L"%u",
-                     static_cast<u32>(service.GetIblMode()));
+                     static_cast<u32>(service.Settings().GetIblMode()));
         ::WritePrivateProfileStringW(kSection, L"IblMode", buf, iniPath.c_str());
     }
     if (const auto* shadow = service.GetShadowService()) {

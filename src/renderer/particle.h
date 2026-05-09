@@ -3,7 +3,7 @@
 #include "common_types.h"
 #include "types.h"
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::renderer {
 
 struct ParticleEmitterConfig {
     i32   textureId    = -1;

@@ -2,7 +2,7 @@
 
 #include <initializer_list>
 
-namespace WhiteoutDex::bls {
+namespace whiteout::flakes::renderer::bls {
 
 namespace {
 

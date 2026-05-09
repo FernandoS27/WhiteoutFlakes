@@ -17,7 +17,7 @@
 #include <fstream>
 #include <cstdio>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io {
 
 namespace fs = std::filesystem;
 

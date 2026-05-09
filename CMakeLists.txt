@@ -132,22 +132,28 @@ set_property(CACHE WDX_DEFAULT_COORD_SPACE PROPERTY STRINGS "Blizzard" "Max")
 
 # ---- Static library: standalone renderer + MDX adapter ----
 add_library(WhiteoutFlakesLib STATIC
+    src/renderer/animation/actor_eval.cpp
+    src/renderer/animation/animation_driver.cpp
+    src/renderer/frame_ticker.cpp
+    src/renderer/model/model_loader.cpp
+    src/renderer/model/model_template.cpp
+    src/renderer/model/model_template_manager.cpp
+    src/renderer/model/render_model.cpp
+    src/renderer/render_pipeline.cpp
     src/renderer/render_service.cpp
-    src/renderer/render_service_internal.cpp
-    src/renderer/sampler_asset_manager.cpp
-    src/renderer/texture_asset_manager.cpp
-    src/renderer/replaceable_texture_manager.cpp
-    src/renderer/model_template.cpp
-    src/renderer/model_template_manager.cpp
-    src/renderer/scene_manager.cpp
-    src/renderer/animation_driver.cpp
-    src/renderer/render_model.cpp
+    src/renderer/render_detail.cpp
     src/renderer/render_target.cpp
-    src/renderer/viewcube_atlas.cpp
+    src/renderer/scene_manager.cpp
     src/renderer/coordinate_system.cpp
+    src/renderer/assets/sampler_asset_manager.cpp
+    src/renderer/assets/texture_asset_manager.cpp
+    src/renderer/assets/replaceable_texture_manager.cpp
+    src/renderer/assets/viewcube_atlas.cpp
     src/renderer/debug/debug_renderer.cpp
-    src/renderer/ribbon.cpp
-    src/renderer/pe1_system.cpp
+    src/renderer/effects/event_emitter_pool.cpp
+    src/renderer/effects/pe1_system.cpp
+    src/renderer/effects/ribbon.cpp
+    src/renderer/effects/spn_spawner.cpp
     src/renderer/particle/rnd_seed.cpp
     src/renderer/particle/particle_key.cpp
     src/renderer/particle/particle_pool.cpp
@@ -161,8 +167,6 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/dnc/dnc_service.cpp
     src/renderer/shadow/shadow_service.cpp
     src/renderer/shadow/shadow_pass.cpp
-    src/renderer/event_emitter_pool.cpp
-    src/renderer/spn_spawner.cpp
     src/renderer/bls/bls_container.cpp
     src/renderer/bls/bls_shader_cache.cpp
     src/renderer/bls/bls_permuter.cpp

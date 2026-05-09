@@ -9,7 +9,7 @@
 #include "coordinate_system.h"
 #include "types.h"
 
-namespace WhiteoutDex::particle {
+namespace whiteout::flakes::renderer::particle {
 
 void  SetGlobalEmissionScaler(f32 s);
 f32   GetGlobalEmissionScaler();

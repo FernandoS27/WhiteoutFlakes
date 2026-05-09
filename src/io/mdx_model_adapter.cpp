@@ -3,11 +3,16 @@
 #include "io/content_provider.h"
 #include "team_glow_data.h"
 #include "texture_image_usage.h"
-#include "renderer/model_source_utils.h"
+#include "renderer/model/model_source_utils.h"
 #include <cmath>
 #include <cstdio>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io {
+
+using namespace ::whiteout::flakes::renderer;
+using namespace ::whiteout::flakes::renderer::model;
+using namespace ::whiteout::flakes::renderer::effects;
+namespace particle = ::whiteout::flakes::renderer::particle;
 
 inline gfx::Format WhiteoutFormatToGfx(whiteout::textures::PixelFormat pf, bool srgb) {
     using PF = whiteout::textures::PixelFormat;

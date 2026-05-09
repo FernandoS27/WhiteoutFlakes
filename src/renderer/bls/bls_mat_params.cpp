@@ -1,6 +1,9 @@
 #include "bls_mat_params.h"
 
-namespace WhiteoutDex::bls {
+namespace whiteout::flakes::renderer::bls {
+
+using namespace ::whiteout::flakes::renderer::model;
+using namespace ::whiteout::flakes::renderer::particle;
 
 GxMatAlpha FilterToGxAlpha(i32 filterMode) {
     switch (filterMode) {

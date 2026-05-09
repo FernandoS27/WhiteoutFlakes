@@ -3,7 +3,7 @@
 #include "common_types.h"
 #include "types.h"
 
-namespace WhiteoutDex::particle {
+namespace whiteout::flakes::renderer::particle {
 
 struct ImVector {
     u8 a = 0, r = 0, g = 0, b = 0;

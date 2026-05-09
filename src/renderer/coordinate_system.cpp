@@ -4,7 +4,7 @@
 #include <cassert>
 #include <cmath>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::renderer {
 
 namespace {
 

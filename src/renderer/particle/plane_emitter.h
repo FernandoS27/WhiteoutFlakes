@@ -3,9 +3,9 @@
 #include "common_types.h"
 #include "particle2_emitter.h"
 
-namespace WhiteoutDex { struct ParticleEmitterConfig; }
+namespace whiteout::flakes::renderer { struct ParticleEmitterConfig; }
 
-namespace WhiteoutDex::particle {
+namespace whiteout::flakes::renderer::particle {
 
 struct PlaneEmitterInit {
 

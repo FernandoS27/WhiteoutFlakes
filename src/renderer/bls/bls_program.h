@@ -8,7 +8,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace WhiteoutDex::bls {
+namespace whiteout::flakes::renderer::bls {
 
 struct BlsProgram {
     GxShaderID   id;

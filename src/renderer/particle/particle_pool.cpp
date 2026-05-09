@@ -1,6 +1,6 @@
 #include "renderer/particle/particle_pool.h"
 
-namespace WhiteoutDex::particle {
+namespace whiteout::flakes::renderer::particle {
 
 namespace {
 

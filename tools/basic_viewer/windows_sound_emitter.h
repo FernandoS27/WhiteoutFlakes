@@ -7,9 +7,12 @@
 #include <mutex>
 #include <vector>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io { class IContentProvider; }
 
-class IContentProvider;
+namespace whiteout::flakes {
+
+using namespace whiteout::flakes::io;
+using namespace whiteout::flakes::renderer;
 
 class WindowsSoundEmitter : public ISoundEmitter {
 public:

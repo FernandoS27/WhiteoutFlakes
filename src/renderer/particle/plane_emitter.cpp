@@ -3,7 +3,7 @@
 
 #include <cmath>
 
-namespace WhiteoutDex::particle {
+namespace whiteout::flakes::renderer::particle {
 
 PlaneEmitter::PlaneEmitter() {
     type_ = EmitterType::Plane;

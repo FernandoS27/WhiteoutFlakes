@@ -3,7 +3,7 @@
 #include "common_types.h"
 #include "types.h"
 
-namespace WhiteoutDex::particle {
+namespace whiteout::flakes::renderer::particle {
 
 struct Particle2 {
     Vector3f position  { 0, 0, 0 };

@@ -5,9 +5,9 @@
 
 #include <string>
 
-namespace WhiteoutDex { class IContentProvider; }
+namespace whiteout::flakes::io { class IContentProvider; }
 
-namespace WhiteoutDex::ibl {
+namespace whiteout::flakes::renderer::ibl {
 
 inline constexpr const char* kDayIblPath   =
     "Environment/EnvironmentMap/LordaeronSummer/Day_IBL.dds";
@@ -27,9 +27,9 @@ struct LoadedEnvProbe {
     i32                mipCount = 0;
 };
 
-LoadedEnvProbe LoadEnvProbe(gfx::IGFXDevice&       gfx,
-                            const IContentProvider& content,
-                            const std::string&      relPath);
+LoadedEnvProbe LoadEnvProbe(gfx::IGFXDevice&             gfx,
+                            const io::IContentProvider&  content,
+                            const std::string&           relPath);
 
 LoadedEnvProbe LoadEnvProbeFromFile(gfx::IGFXDevice&   gfx,
                                      const std::string& absPath,

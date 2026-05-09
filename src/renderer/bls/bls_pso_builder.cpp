@@ -3,7 +3,7 @@
 #include <array>
 #include <cstddef>
 
-namespace WhiteoutDex::bls {
+namespace whiteout::flakes::renderer::bls {
 
 namespace {
 

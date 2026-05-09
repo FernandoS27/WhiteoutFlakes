@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io {
 
 class FileContentProvider : public IContentProvider {
 public:

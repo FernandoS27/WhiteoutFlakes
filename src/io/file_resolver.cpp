@@ -2,7 +2,7 @@
 #include "common_types.h"
 #include "io/path_utf8.h"
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io {
 namespace fs = std::filesystem;
 
 static constexpr const char* kTextureExts[] = {".blp", ".dds", ".tga", ".png"};

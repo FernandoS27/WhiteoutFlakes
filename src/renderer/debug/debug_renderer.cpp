@@ -1,20 +1,25 @@
 #include "renderer/debug/debug_renderer.h"
 #include "render_service.h"
-#include "render_service_internal.h"
+#include "renderer/render_service_impl.h"
+#include "renderer/render_pipeline.h"
+#include "renderer/render_pipeline_impl.h"
+#include "render_detail.h"
 #include "compiled_shaders.h"
 #include "constants.h"
-#include "sampler_asset_manager.h"
-#include "texture_asset_manager.h"
-#include "viewcube_atlas.h"
+#include "assets/sampler_asset_manager.h"
+#include "assets/texture_asset_manager.h"
+#include "assets/viewcube_atlas.h"
 #include "coordinate_system.h"
 
 #include <cmath>
 #include <cstring>
-#include <mutex>
 #include <numbers>
 #include <vector>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::renderer::debug {
+
+using namespace ::whiteout::flakes::renderer::model;
+using namespace ::whiteout::flakes::renderer::assets;
 
 bool DebugRenderer::CreateResources() {
     if (!CreateGridResources())     return false;
@@ -23,19 +28,20 @@ bool DebugRenderer::CreateResources() {
 }
 
 void DebugRenderer::DestroyResources() {
-    if (!rs_.gfx_) return;
-    rs_.gfx_->Destroy(gridVB_);        gridVB_      = gfx::BufferHandle::Invalid;
-    rs_.gfx_->Destroy(vcCubeVB_);      vcCubeVB_    = gfx::BufferHandle::Invalid;
-    rs_.gfx_->Destroy(vcCubeIB_);      vcCubeIB_    = gfx::BufferHandle::Invalid;
-    rs_.gfx_->Destroy(vcOutlineVB_);   vcOutlineVB_ = gfx::BufferHandle::Invalid;
-    rs_.gfx_->Destroy(vcHomeVB_);      vcHomeVB_    = gfx::BufferHandle::Invalid;
+    auto* dev = rs_.Pipeline().Gfx();
+    if (!dev) return;
+    dev->Destroy(gridVB_);        gridVB_      = gfx::BufferHandle::Invalid;
+    dev->Destroy(vcCubeVB_);      vcCubeVB_    = gfx::BufferHandle::Invalid;
+    dev->Destroy(vcCubeIB_);      vcCubeIB_    = gfx::BufferHandle::Invalid;
+    dev->Destroy(vcOutlineVB_);   vcOutlineVB_ = gfx::BufferHandle::Invalid;
+    dev->Destroy(vcHomeVB_);      vcHomeVB_    = gfx::BufferHandle::Invalid;
 
-    if (rs_.textures_) rs_.textures_->ReleaseOwned(kViewCubeFaceTexName);
+    rs_.Textures().ReleaseOwned(kViewCubeFaceTexName);
     vcFaceTex_   = gfx::TextureHandle::Invalid;
-    rs_.gfx_->Destroy(viewCubePSOHdr_); viewCubePSOHdr_ = gfx::PipelineHandle::Invalid;
-    rs_.gfx_->Destroy(viewCubePSOSd_);  viewCubePSOSd_  = gfx::PipelineHandle::Invalid;
-    rs_.gfx_->Destroy(viewCubeVS_);    viewCubeVS_  = gfx::ShaderHandle::Invalid;
-    rs_.gfx_->Destroy(viewCubePS_);    viewCubePS_  = gfx::ShaderHandle::Invalid;
+    dev->Destroy(viewCubePSOHdr_); viewCubePSOHdr_ = gfx::PipelineHandle::Invalid;
+    dev->Destroy(viewCubePSOSd_);  viewCubePSOSd_  = gfx::PipelineHandle::Invalid;
+    dev->Destroy(viewCubeVS_);    viewCubeVS_  = gfx::ShaderHandle::Invalid;
+    dev->Destroy(viewCubePS_);    viewCubePS_  = gfx::ShaderHandle::Invalid;
     gridVertCount_ = 0;
 }
 
@@ -57,7 +63,7 @@ bool DebugRenderer::CreateGridResources() {
     }
     gridVertCount_ = (i32)lines.size();
 
-    gridVB_ = rs_.gfx_->CreateBuffer({
+    gridVB_ = rs_.Pipeline().Gfx()->CreateBuffer({
         .size  = sizeof(LineVertex) * lines.size(),
         .usage = gfx::BufferUsage::Vertex,
     }, lines.data());
@@ -69,13 +75,13 @@ bool DebugRenderer::CreateViewCubeResources() {
     {
         i32 tw, th;
         auto pixels = GenerateViewCubeAtlas(tw, th);
-        vcFaceTex_ = rs_.gfx_->CreateTexture({
+        vcFaceTex_ = rs_.Pipeline().Gfx()->CreateTexture({
             .width  = tw,
             .height = th,
             .format = gfx::Format::R8G8B8A8_UNORM,
             .usage  = gfx::TextureUsage::ShaderResource,
         }, pixels.data());
-        if (rs_.textures_) rs_.textures_->RegisterOwned(kViewCubeFaceTexName, vcFaceTex_);
+        rs_.Textures().RegisterOwned(kViewCubeFaceTexName, vcFaceTex_);
     }
 
     f32 s = 0.5f;
@@ -122,7 +128,7 @@ bool DebugRenderer::CreateViewCubeResources() {
         addFace(i, f.p0, f.p1, f.p2, f.p3, f.n);
     }
 
-    vcCubeVB_ = rs_.gfx_->CreateBuffer({
+    vcCubeVB_ = rs_.Pipeline().Gfx()->CreateBuffer({
         .size  = sizeof(Vertex) * verts.size(),
         .usage = gfx::BufferUsage::Vertex,
     }, verts.data());
@@ -132,7 +138,7 @@ bool DebugRenderer::CreateViewCubeResources() {
         u32 base = f * 4;
         idx.insert(idx.end(), {base, base+1, base+2, base, base+2, base+3});
     }
-    vcCubeIB_ = rs_.gfx_->CreateBuffer({
+    vcCubeIB_ = rs_.Pipeline().Gfx()->CreateBuffer({
         .size  = sizeof(u32) * idx.size(),
         .usage = gfx::BufferUsage::Index,
     }, idx.data());
@@ -153,14 +159,14 @@ bool DebugRenderer::CreateViewCubeResources() {
     edges.push_back({{ e, e,-e}, ec}); edges.push_back({{ e, e, e}, ec});
     edges.push_back({{-e, e,-e}, ec}); edges.push_back({{-e, e, e}, ec});
 
-    vcOutlineVB_ = rs_.gfx_->CreateBuffer({
+    vcOutlineVB_ = rs_.Pipeline().Gfx()->CreateBuffer({
         .size  = sizeof(LineVertex) * edges.size(),
         .usage = gfx::BufferUsage::Vertex,
     }, edges.data());
 
-    using namespace WhiteoutDex::Shaders;
-    viewCubeVS_ = rs_.gfx_->CreateShader(gfx::ShaderStage::Vertex, kViewCubeVS, sizeof(kViewCubeVS));
-    viewCubePS_ = rs_.gfx_->CreateShader(gfx::ShaderStage::Pixel,  kViewCubePS, sizeof(kViewCubePS));
+    using namespace whiteout::flakes::Shaders;
+    viewCubeVS_ = rs_.Pipeline().Gfx()->CreateShader(gfx::ShaderStage::Vertex, kViewCubeVS, sizeof(kViewCubeVS));
+    viewCubePS_ = rs_.Pipeline().Gfx()->CreateShader(gfx::ShaderStage::Pixel,  kViewCubePS, sizeof(kViewCubePS));
     if (viewCubeVS_ == gfx::ShaderHandle::Invalid ||
         viewCubePS_ == gfx::ShaderHandle::Invalid) {
         return false;
@@ -182,11 +188,11 @@ bool DebugRenderer::CreateViewCubeResources() {
     vcDesc.rasterizer.cull     = gfx::CullMode::None;
     vcDesc.rasterizer.frontCCW = true;
 
-    vcDesc.rtvFormat = RenderService::kHdrSceneFormat;
-    viewCubePSOHdr_  = rs_.gfx_->CreateGraphicsPipeline(vcDesc);
+    vcDesc.rtvFormat = RenderPipeline::kHdrSceneFormat;
+    viewCubePSOHdr_  = rs_.Pipeline().Gfx()->CreateGraphicsPipeline(vcDesc);
 
-    vcDesc.rtvFormat = RenderService::kSdSceneFormat;
-    viewCubePSOSd_   = rs_.gfx_->CreateGraphicsPipeline(vcDesc);
+    vcDesc.rtvFormat = RenderPipeline::kSdSceneFormat;
+    viewCubePSOSd_   = rs_.Pipeline().Gfx()->CreateGraphicsPipeline(vcDesc);
 
     return vcCubeVB_       != gfx::BufferHandle::Invalid &&
            vcCubeIB_       != gfx::BufferHandle::Invalid &&
@@ -197,10 +203,10 @@ bool DebugRenderer::CreateViewCubeResources() {
 
 void DebugRenderer::RenderGrid() {
     if (gridVB_ == gfx::BufferHandle::Invalid) return;
-    auto* cmd = rs_.gfx_->GetImmediateContext();
-    cmd->BindPipeline(rs_.CurrentLinePSO());
+    auto* cmd = rs_.Pipeline().Gfx()->GetImmediateContext();
+    cmd->BindPipeline(rs_.Pipeline().CurrentLinePSO());
     cmd->BindVertexBuffer(0, gridVB_, sizeof(LineVertex));
-    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.cbPerFrame_);
+    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.Pipeline().CbPerFrame());
     cmd->Draw(gridVertCount_, 0);
 }
 
@@ -208,17 +214,16 @@ void DebugRenderer::RenderCollisions() {
     std::vector<CollisionShape> shapes;
     Matrix44f viewMat;
     {
-        std::lock_guard<std::mutex> lock(rs_.dataMutex_);
-        for (auto& [h, mi] : rs_.scene_->Actors().All()) {
+        for (auto& [h, mi] : rs_.Scene().Actors().All()) {
             if (mi->parentVisibility <= 0.02f) continue;
             shapes.insert(shapes.end(), mi->render.collisionShapes.begin(), mi->render.collisionShapes.end());
         }
         if (shapes.empty()) return;
-        viewMat = rs_.scene_->Camera().GetViewMatrix();
+        viewMat = rs_.Scene().Camera().GetViewMatrix();
     }
 
-    auto* cmd = rs_.gfx_->GetImmediateContext();
-    cmd->BindPipeline(rs_.CurrentLinePSO());
+    auto* cmd = rs_.Pipeline().Gfx()->GetImmediateContext();
+    cmd->BindPipeline(rs_.Pipeline().CurrentLinePSO());
 
     struct LV { Vector3f pos; Vector4f col; };
     Vector4f col = {0.0f, 1.0f, 0.3f, 1.0f};
@@ -309,15 +314,15 @@ void DebugRenderer::RenderCollisions() {
     if (lines.empty()) return;
 
     {
-        f32 aspect = (rs_.height_ > 0) ? (f32)rs_.width_ / (f32)rs_.height_ : 1.0f;
+        f32 aspect = (rs_.Pipeline().Height() > 0) ? (f32)rs_.Pipeline().Width() / (f32)rs_.Pipeline().Height() : 1.0f;
         render_detail::CbPerFrameDesc d;
         d.view         = viewMat;
-        d.projection   = rs_.scene_->Camera().ProjectionRH(aspect);
+        d.projection   = rs_.Scene().Camera().ProjectionRH(aspect);
         d.lightColor   = kCollisionLightColor;
         d.ambientColor = kCollisionAmbientColor;
-        render_detail::WriteCbPerFrame(rs_.gfx_.get(), rs_.cbPerFrame_, d);
+        render_detail::WriteCbPerFrame(rs_.Pipeline().Gfx(), rs_.Pipeline().CbPerFrame(), d);
     }
-    DrawWireLines(rs_.gfx_.get(), cmd, rs_.cbPerFrame_, lines);
+    DrawWireLines(rs_.Pipeline().Gfx(), cmd, rs_.Pipeline().CbPerFrame(), lines);
 }
 
 void DebugRenderer::RenderLightMarkers() {
@@ -331,8 +336,7 @@ void DebugRenderer::RenderLightMarkers() {
     std::vector<MarkerLight> lights;
     Matrix44f viewMat;
     {
-        std::lock_guard<std::mutex> lock(rs_.dataMutex_);
-        for (auto& [h, mi] : rs_.scene_->Actors().All()) {
+        for (auto& [h, mi] : rs_.Scene().Actors().All()) {
             if (mi->parentVisibility <= 0.02f) continue;
             for (const auto& L : mi->render.activeLights) {
                 const bool dir = (L.kind == FrameState::LightKind::Directional);
@@ -347,11 +351,11 @@ void DebugRenderer::RenderLightMarkers() {
             }
         }
         if (lights.empty()) return;
-        viewMat = rs_.scene_->Camera().GetViewMatrix();
+        viewMat = rs_.Scene().Camera().GetViewMatrix();
     }
 
-    auto* cmd = rs_.gfx_->GetImmediateContext();
-    cmd->BindPipeline(rs_.CurrentLinePSO());
+    auto* cmd = rs_.Pipeline().Gfx()->GetImmediateContext();
+    cmd->BindPipeline(rs_.Pipeline().CurrentLinePSO());
 
     struct LV { Vector3f pos; Vector4f col; };
     std::vector<LV> verts;
@@ -397,48 +401,47 @@ void DebugRenderer::RenderLightMarkers() {
     if (verts.empty()) return;
 
     {
-        f32 aspect = (rs_.height_ > 0) ? (f32)rs_.width_ / (f32)rs_.height_ : 1.0f;
+        f32 aspect = (rs_.Pipeline().Height() > 0) ? (f32)rs_.Pipeline().Width() / (f32)rs_.Pipeline().Height() : 1.0f;
         render_detail::CbPerFrameDesc d;
         d.view       = viewMat;
-        d.projection = rs_.scene_->Camera().ProjectionRH(aspect);
-        render_detail::WriteCbPerFrame(rs_.gfx_.get(), rs_.cbPerFrame_, d);
+        d.projection = rs_.Scene().Camera().ProjectionRH(aspect);
+        render_detail::WriteCbPerFrame(rs_.Pipeline().Gfx(), rs_.Pipeline().CbPerFrame(), d);
     }
-    DrawWireLines(rs_.gfx_.get(), cmd, rs_.cbPerFrame_, verts);
+    DrawWireLines(rs_.Pipeline().Gfx(), cmd, rs_.Pipeline().CbPerFrame(), verts);
 }
 
 Rect DebugRenderer::GetViewCubeRect() const {
     i32 s = kViewCubeSize;
     i32 margin = 10;
     i32 cubeTop = margin + 28;
-    return { rs_.width_ - s - margin, margin, rs_.width_ - margin, cubeTop + s };
+    return { rs_.Pipeline().Width() - s - margin, margin, rs_.Pipeline().Width() - margin, cubeTop + s };
 }
 
 void DebugRenderer::RenderViewCube() {
     if (vcCubeVB_ == gfx::BufferHandle::Invalid ||
         vcCubeIB_ == gfx::BufferHandle::Invalid) return;
 
-    auto* cmd = rs_.gfx_->GetImmediateContext();
+    auto* cmd = rs_.Pipeline().Gfx()->GetImmediateContext();
 
     i32 s = kViewCubeSize;
     i32 margin = 10;
     gfx::Viewport vp = {
-        (f32)(rs_.width_ - s - margin),
+        (f32)(rs_.Pipeline().Width() - s - margin),
         (f32)(margin + 28),
         (f32)s, (f32)s,
         0.0f, 1.0f
     };
     cmd->SetViewport(vp);
 
-    auto* pt = rs_.primaryTarget();
+    auto* pt = rs_.Pipeline().PrimaryTarget();
     if (!pt) return;
     cmd->ClearDepth(pt->depth, 1.0f, 0);
 
     Matrix44f vcView;
     {
-        std::lock_guard<std::mutex> lock(rs_.dataMutex_);
         f32 dist = 3.5f;
-        f32 cosP = cosf(rs_.scene_->Camera().GetPitch()), sinP = sinf(rs_.scene_->Camera().GetPitch());
-        f32 cosY = cosf(rs_.scene_->Camera().GetYaw()),   sinY = sinf(rs_.scene_->Camera().GetYaw());
+        f32 cosP = cosf(rs_.Scene().Camera().GetPitch()), sinP = sinf(rs_.Scene().Camera().GetPitch());
+        f32 cosY = cosf(rs_.Scene().Camera().GetYaw()),   sinY = sinf(rs_.Scene().Camera().GetYaw());
         Vector3f eye = { dist * cosP * cosY, dist * cosP * sinY, dist * sinP };
         Vector3f tgt = { 0, 0, 0 };
         Vector3f up  = { 0, 0, 1 };
@@ -453,26 +456,26 @@ void DebugRenderer::RenderViewCube() {
         d.lightDir     = render_detail::NormalizedLightDir4(kViewCubeLightDir);
         d.lightColor   = kViewCubeLightColor;
         d.ambientColor = kViewCubeAmbientColor;
-        render_detail::WriteCbPerFrame(rs_.gfx_.get(), rs_.cbPerFrame_, d);
+        render_detail::WriteCbPerFrame(rs_.Pipeline().Gfx(), rs_.Pipeline().CbPerFrame(), d);
     }
 
-    const auto vcPso = (rs_.renderMode_ == RenderMode::HD)
+    const auto vcPso = (rs_.Settings().GetRenderMode() == RenderMode::HD)
                        ? viewCubePSOHdr_ : viewCubePSOSd_;
     cmd->BindPipeline(vcPso);
     cmd->BindVertexBuffer(0, vcCubeVB_, sizeof(Vertex));
     cmd->BindIndexBuffer(vcCubeIB_, gfx::Format::R32_UINT);
-    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.cbPerFrame_);
-    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, rs_.cbPerFrame_);
-    cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.samplers_->LinearWrap());
+    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.Pipeline().CbPerFrame());
+    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel,  0, rs_.Pipeline().CbPerFrame());
+    cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.Samplers().LinearWrap());
     if (vcFaceTex_ != gfx::TextureHandle::Invalid)
         cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, vcFaceTex_);
     else
-        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, rs_.textures_->GetDefaults().White);
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, rs_.Textures().GetDefaults().White);
     cmd->DrawIndexed(36, 0, 0);
 
-    cmd->BindPipeline(rs_.CurrentLinePSO());
+    cmd->BindPipeline(rs_.Pipeline().CurrentLinePSO());
     cmd->BindVertexBuffer(0, vcOutlineVB_, sizeof(LineVertex));
-    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.cbPerFrame_);
+    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.Pipeline().CbPerFrame());
     cmd->Draw(24, 0);
 
     if (vcHovered_) {
@@ -489,7 +492,7 @@ void DebugRenderer::RenderViewCube() {
             d.projection   = Matrix44f::orthographic_rh(2.0f, 2.0f, -1.0f, 1.0f);
             d.ambientColor = {1, 1, 1, 1};
             d.extraParams  = {1, 0, 0, 0};
-            render_detail::WriteCbPerFrame(rs_.gfx_.get(), rs_.cbPerFrame_, d);
+            render_detail::WriteCbPerFrame(rs_.Pipeline().Gfx(), rs_.Pipeline().CbPerFrame(), d);
         }
 
         if (vcHomeVB_ == gfx::BufferHandle::Invalid) {
@@ -502,7 +505,7 @@ void DebugRenderer::RenderViewCube() {
                 {{ 0.5f,  0.0f, 0}, hc}, {{ 0.0f,  0.6f, 0}, hc},
                 {{-0.5f,  0.0f, 0}, hc}, {{ 0.5f,  0.0f, 0}, hc},
             };
-            vcHomeVB_ = rs_.gfx_->CreateBuffer({
+            vcHomeVB_ = rs_.Pipeline().Gfx()->CreateBuffer({
                 .size  = sizeof(house),
                 .usage = gfx::BufferUsage::Vertex,
             }, house);
@@ -513,15 +516,14 @@ void DebugRenderer::RenderViewCube() {
         }
     }
 
-    cmd->SetViewport({0, 0, (f32)rs_.width_, (f32)rs_.height_, 0.0f, 1.0f});
+    cmd->SetViewport({0, 0, (f32)rs_.Pipeline().Width(), (f32)rs_.Pipeline().Height(), 0.0f, 1.0f});
 
     Matrix44f view, proj;
     {
-        std::lock_guard<std::mutex> lock(rs_.dataMutex_);
-        view = rs_.scene_->Camera().GetViewMatrix();
+        view = rs_.Scene().Camera().GetViewMatrix();
     }
-    f32 aspect = (rs_.height_ > 0) ? (f32)rs_.width_ / (f32)rs_.height_ : 1.0f;
-    proj = rs_.scene_->Camera().ProjectionRH(aspect);
+    f32 aspect = (rs_.Pipeline().Height() > 0) ? (f32)rs_.Pipeline().Width() / (f32)rs_.Pipeline().Height() : 1.0f;
+    proj = rs_.Scene().Camera().ProjectionRH(aspect);
     {
         render_detail::CbPerFrameDesc d;
         d.view         = view;
@@ -529,7 +531,7 @@ void DebugRenderer::RenderViewCube() {
         d.lightDir     = render_detail::NormalizedLightDir4(kDefaultLightDir);
         d.lightColor   = kGeosetLightColor;
         d.ambientColor = {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z, 0.0f};
-        render_detail::WriteCbPerFrame(rs_.gfx_.get(), rs_.cbPerFrame_, d);
+        render_detail::WriteCbPerFrame(rs_.Pipeline().Gfx(), rs_.Pipeline().CbPerFrame(), d);
     }
 }
 
@@ -544,14 +546,14 @@ i32 DebugRenderer::HitTestViewCube(i32 mx, i32 my) const {
         return -1;
 
     i32 s = kViewCubeSize;
-    f32 vcX = (f32)(rs_.width_ - s - 10);
+    f32 vcX = (f32)(rs_.Pipeline().Width() - s - 10);
     f32 vcY = 10.0f + 28.0f;
 
     Matrix44f vcView;
     {
         f32 dist = 3.5f;
-        f32 cosP = cosf(rs_.scene_->Camera().GetPitch()), sinP = sinf(rs_.scene_->Camera().GetPitch());
-        f32 cosY = cosf(rs_.scene_->Camera().GetYaw()),   sinY = sinf(rs_.scene_->Camera().GetYaw());
+        f32 cosP = cosf(rs_.Scene().Camera().GetPitch()), sinP = sinf(rs_.Scene().Camera().GetPitch());
+        f32 cosY = cosf(rs_.Scene().Camera().GetYaw()),   sinY = sinf(rs_.Scene().Camera().GetYaw());
         Vector3f eye = { dist*cosP*cosY, dist*cosP*sinY, dist*sinP };
         Vector3f up  = { 0, 0, 1 };
         vcView = Matrix44f::look_at_rh(eye, {0,0,0}, up);
@@ -562,8 +564,8 @@ i32 DebugRenderer::HitTestViewCube(i32 mx, i32 my) const {
     Vector3f centers[] = {{0,.5f,0},{0,-.5f,0},{-.5f,0,0},{.5f,0,0},{0,0,.5f},{0,0,-.5f}};
     Vector3f normals[] = {{0,1,0},{0,-1,0},{-1,0,0},{1,0,0},{0,0,1},{0,0,-1}};
 
-    f32 cosP = cosf(rs_.scene_->Camera().GetPitch()), sinP = sinf(rs_.scene_->Camera().GetPitch());
-    f32 cosY = cosf(rs_.scene_->Camera().GetYaw()),   sinY = sinf(rs_.scene_->Camera().GetYaw());
+    f32 cosP = cosf(rs_.Scene().Camera().GetPitch()), sinP = sinf(rs_.Scene().Camera().GetPitch());
+    f32 cosY = cosf(rs_.Scene().Camera().GetYaw()),   sinY = sinf(rs_.Scene().Camera().GetYaw());
     Vector3f camDir = { -cosP*cosY, -cosP*sinY, -sinP };
 
     i32 bestFace = -1;

@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::renderer {
 
 struct CameraMatrices {
     Matrix44f viewLH, viewRH;
@@ -175,6 +175,32 @@ public:
 
     Matrix44f GetViewMatrix() const { return ViewRH(); }
     Vector3f GetUp() const { return Vector3f(0.f, 0.f, 1.f); }
+
+    // Snap to one of the 6 standard view-cube faces (Max-space face indices,
+    // matching the debug viewcube widget). Index out of range is a no-op.
+    void SnapToViewCubeFace(i32 faceIndex) {
+        if (faceIndex < 0 || faceIndex > 5) return;
+        static constexpr Vector3f kFaceNormalsMax[6] = {
+            { 0,  1,  0},
+            { 0, -1,  0},
+            {-1,  0,  0},
+            { 1,  0,  0},
+            { 0,  0,  1},
+            { 0,  0, -1},
+        };
+        const Vector3f n = CoordinateSystem::ConvertDirection(
+            CoordSpace::Max, CoordinateSystem::Default(),
+            kFaceNormalsMax[faceIndex]);
+
+        constexpr f32 kTopBottomPitch = 1.55f;
+        if (std::abs(n.z) > 0.99f) {
+            SetYaw(kDefaultYaw);
+            SetPitch(n.z > 0 ? kTopBottomPitch : -kTopBottomPitch);
+        } else {
+            SetYaw(std::atan2(n.y, n.x));
+            SetPitch(0.0f);
+        }
+    }
 
 private:
 

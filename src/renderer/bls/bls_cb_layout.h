@@ -3,7 +3,7 @@
 #include "common_types.h"
 #include "types.h"
 
-namespace WhiteoutDex::bls {
+namespace whiteout::flakes::renderer::bls {
 
 struct ShaderBone {
     Vector4f row0;

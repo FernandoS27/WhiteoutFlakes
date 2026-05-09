@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io {
 
 class IContentProvider {
 public:

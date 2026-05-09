@@ -1,11 +1,52 @@
 #include "renderer/scene_manager.h"
 
-#include "renderer/model_instance.h"
-#include "renderer/model_source.h"
+#include "renderer/model/model_instance.h"
+#include "renderer/model/model_source.h"
 
 #include <algorithm>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::renderer {
+
+using namespace ::whiteout::flakes::renderer::model;
+
+void SceneManager::ActivateCameraPreset(i32 idx) {
+    if (idx < 0 || idx >= (i32)cameraPresets_.size()) {
+        camera_.SetOrbitalMode();
+        camera_.SetFovDiagonal(Camera::kDefaultFovDiagonal);
+        camera_.SetClip(Camera::kDefaultNearZ, Camera::kDefaultFarZ);
+        activeCameraPresetIdx_ = -1;
+        return;
+    }
+    const auto& p = cameraPresets_[idx];
+    Vector3f pos  = p.position;
+    Vector3f tgt  = p.target;
+    f32      roll = p.staticRoll;
+
+    if (p.animator) {
+        i32 seqStart = 0, seqEnd = 0;
+
+        Actor* focus  = FocusActor();
+        i32    seqIdx = focus ? focus->animation.ActiveSequenceIndex() : 0;
+        if (seqIdx >= 0 && seqIdx < (i32)sequenceRanges_.size()) {
+            seqStart = sequenceRanges_[seqIdx].startMs;
+            seqEnd   = sequenceRanges_[seqIdx].endMs;
+        }
+
+        if (seqStart == 0 && seqEnd == 0) seqEnd = 1 << 30;
+
+        const i32 sampleMs = focus ? focus->animation.TimeMs()
+                                   : animationTimeMs_.load();
+        p.animator(pos, tgt, roll, sampleMs, seqStart, seqEnd);
+    }
+
+    camera_.SetDirectPose(pos, tgt, roll);
+
+    const f32 fov = (p.fovDiagonal > 1e-3f) ? p.fovDiagonal
+                                            : Camera::kDefaultFovDiagonal;
+    camera_.SetFovDiagonal(fov);
+    camera_.SetClip(p.zNear, p.zFar);
+    activeCameraPresetIdx_ = idx;
+}
 
 void SceneManager::Update(f32 dtSec) {
     const i32 dtMs = (dtSec > 0.0f) ? (i32)(dtSec * 1000.0f + 0.5f) : 0;

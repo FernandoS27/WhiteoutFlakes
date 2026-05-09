@@ -3,7 +3,7 @@
 #include "common_types.h"
 #include "gfx/gfx.h"
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::renderer {
 
 struct Rect {
     i32 left, top, right, bottom;

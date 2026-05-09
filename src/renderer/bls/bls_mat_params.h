@@ -2,11 +2,11 @@
 
 #include "common_types.h"
 #include "bls_permuter.h"
-#include "model_types.h"
+#include "model/model_types.h"
 #include "particle/particle_material.h"
 #include "types.h"
 
-namespace WhiteoutDex::bls {
+namespace whiteout::flakes::renderer::bls {
 
 enum class GxMatAlpha : u8 {
     Opaque     = 0,

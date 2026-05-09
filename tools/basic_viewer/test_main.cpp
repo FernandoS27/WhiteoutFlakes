@@ -1,9 +1,10 @@
 #include "common_types.h"
+#include "renderer/model/model_loader.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #include "renderer/camera.h"
-#include "renderer/model_instance.h"
-#include "renderer/model_template.h"
+#include "renderer/model/model_instance.h"
+#include "renderer/model/model_template.h"
 #include "windows_sound_emitter.h"
 #include "render_window.h"
 #include "settings_ini.h"
@@ -22,9 +23,9 @@
 #include <windows.h>
 #include <commdlg.h>
 
-using WhiteoutDex::i32;
-using WhiteoutDex::f32;
-using WhiteoutDex::usize;
+using whiteout::flakes::i32;
+using whiteout::flakes::f32;
+using whiteout::flakes::usize;
 
 static std::filesystem::path OpenFileDialog() {
     wchar_t filename[MAX_PATH] = {};
@@ -42,7 +43,7 @@ static std::filesystem::path OpenFileDialog() {
 
 int wmain(int argc, wchar_t* argv[]) {
 
-    WhiteoutDex::gfx::GfxApi backend = WhiteoutDex::gfx::GfxApi::D3D12;
+    whiteout::flakes::gfx::GfxApi backend = whiteout::flakes::gfx::GfxApi::D3D12;
     std::filesystem::path mdxPath;
 
     for (i32 i = 1; i < argc; ++i) {
@@ -50,9 +51,9 @@ int wmain(int argc, wchar_t* argv[]) {
         if ((std::wcscmp(a, L"--backend") == 0 || std::wcscmp(a, L"-b") == 0) && i + 1 < argc) {
             const wchar_t* v = argv[++i];
             if      (_wcsicmp(v, L"d3d11") == 0 || _wcsicmp(v, L"dx11") == 0)
-                backend = WhiteoutDex::gfx::GfxApi::D3D11;
+                backend = whiteout::flakes::gfx::GfxApi::D3D11;
             else if (_wcsicmp(v, L"d3d12") == 0 || _wcsicmp(v, L"dx12") == 0)
-                backend = WhiteoutDex::gfx::GfxApi::D3D12;
+                backend = whiteout::flakes::gfx::GfxApi::D3D12;
             else {
                 std::wcerr << L"Unknown backend: " << v << L" (valid: d3d11, d3d12)\n";
                 return 1;
@@ -74,37 +75,38 @@ int wmain(int argc, wchar_t* argv[]) {
     }
     if (!std::filesystem::exists(mdxPath)) {
 
-        std::cerr << "File not found: " << WhiteoutDex::PathToUtf8(mdxPath) << "\n";
+        std::cerr << "File not found: " << whiteout::flakes::io::PathToUtf8(mdxPath) << "\n";
         return 1;
     }
 
     std::cout << "Backend: "
-              << (backend == WhiteoutDex::gfx::GfxApi::D3D11 ? "D3D11" : "D3D12") << "\n";
+              << (backend == whiteout::flakes::gfx::GfxApi::D3D11 ? "D3D11" : "D3D12") << "\n";
 
-    WhiteoutDex::SceneManager  scene;
-    WhiteoutDex::RenderService renderer(scene);
+    whiteout::flakes::renderer::SceneManager  scene;
+    whiteout::flakes::renderer::RenderService renderer(scene);
 
-    WhiteoutDex::RenderWindow  renderWindow(renderer);
+    whiteout::flakes::RenderWindow  renderWindow(renderer);
     if (!renderWindow.Open(1024, 768, backend)) {
         std::cerr << "Failed to open renderer window\n";
         return 1;
     }
 
-    WhiteoutDex::LoadSettingsIni(renderer);
+    whiteout::flakes::LoadSettingsIni(renderer);
 
     renderWindow.SyncViewMenuFromService();
 
     scene.SetPE1BasePath(mdxPath.parent_path());
 
-    renderer.SetSoundEmitter(std::make_unique<WhiteoutDex::WindowsSoundEmitter>(
+    renderer.SwapSoundEmitter(std::make_unique<whiteout::flakes::WindowsSoundEmitter>(
         scene.ActiveContentProvider()));
 
-    std::cout << "Loading " << WhiteoutDex::PathToUtf8(mdxPath.filename()) << "...\n";
-    WhiteoutDex::Actor* hero = renderer.LoadActorFromMdx(WhiteoutDex::PathToUtf8(mdxPath));
+    std::cout << "Loading " << whiteout::flakes::io::PathToUtf8(mdxPath.filename()) << "...\n";
+    whiteout::flakes::renderer::model::Actor* hero = renderer.Loader().LoadFromMdx(whiteout::flakes::io::PathToUtf8(mdxPath));
     if (!hero) {
         std::cerr << "Failed to load MDX.\n";
         return 1;
     }
+    renderer.Settings().SetRenderMode(hero->PreferredRenderMode());
 
     auto sequences = hero->animation.Sequences();
     std::cout << "Loaded: " << hero->render.gpuMaterials.size() << " materials, "
@@ -145,13 +147,13 @@ int wmain(int argc, wchar_t* argv[]) {
         }
         return false;
     };
-    auto effectiveMoveSpeed = [&](const WhiteoutDex::SequenceInfo& s) {
+    auto effectiveMoveSpeed = [&](const whiteout::flakes::renderer::model::SequenceInfo& s) {
         if (!containsWalk(s.name)) return 0.0f;
         return s.moveSpeed != 0.0f ? s.moveSpeed : kDefaultWalkSpeed;
     };
     auto applyWalkDrift = [&](f32 dt) {
         if (!hero) return;
-        if (scene.Camera().GetMode() != WhiteoutDex::Camera::Mode::Orbital) return;
+        if (scene.Camera().GetMode() != whiteout::flakes::renderer::Camera::Mode::Orbital) return;
         const i32   idx  = hero->animation.ActiveSequenceIndex();
         const auto& seqs = scene.SequenceRanges();
         f32 delta = 0.0f;

@@ -6,7 +6,7 @@
 #include <string>
 #include <span>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io {
 
 class FileResolver {
 public:

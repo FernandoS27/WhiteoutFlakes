@@ -4,7 +4,7 @@
 #include "constants.h"
 #include <algorithm>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::renderer {
 
 inline f32 ClampDeltaTime(f32 dt) {
     return std::clamp(dt, 0.0f, kMaxSimulationDt);

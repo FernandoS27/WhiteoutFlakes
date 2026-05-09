@@ -8,9 +8,9 @@
 #include <cstring>
 #include <vector>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::renderer { class RenderService; }
 
-class RenderService;
+namespace whiteout::flakes::renderer::debug {
 
 template <class LV>
 void DrawWireLines(gfx::IGFXDevice*      gfx,

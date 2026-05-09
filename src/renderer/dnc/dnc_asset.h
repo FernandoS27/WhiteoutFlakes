@@ -9,13 +9,13 @@
 
 #include <string>
 
-namespace WhiteoutDex::dnc {
+namespace whiteout::flakes::renderer::dnc {
 
 struct DncAsset {
 
     std::string                 key;
     whiteout::mdx::Model        model;
-    MdxHierarchy                hierarchy;
+    io::MdxHierarchy            hierarchy;
     i32                         seqStartMs   = 0;
     i32                         seqEndMs     = 0;
     i32                         lightNodeIdx = -1;

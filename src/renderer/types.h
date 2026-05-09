@@ -19,7 +19,7 @@ using whiteout::Vector4f;
 using whiteout::Matrix44f;
 using whiteout::Quaternion;
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::renderer {
 
 struct Vertex {
     Vector3f position;
@@ -56,9 +56,3 @@ struct alignas(16) CBPerFrame {
 };
 
 }
-
-#ifdef WHITEOUTDEX_RENDERER_EXPORTS
-    #define WHITEOUTDEX_API extern "C" __declspec(dllexport)
-#else
-    #define WHITEOUTDEX_API extern "C" __declspec(dllimport)
-#endif

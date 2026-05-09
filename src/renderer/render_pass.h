@@ -2,14 +2,14 @@
 
 #include "common_types.h"
 #include "renderer/render_service.h"
-#include "render_service_internal.h"
-#include "renderer/sampler_asset_manager.h"
+#include "renderer/render_pipeline.h"
+#include "renderer/render_pipeline_impl.h"
+#include "render_detail.h"
+#include "renderer/assets/sampler_asset_manager.h"
 #include "bls/bls_draw_helpers.h"
 #include "bls/bls_frame.h"
 
-#include <mutex>
-
-namespace WhiteoutDex {
+namespace whiteout::flakes::renderer {
 
 enum class GeosetBucket : u8 { All = 0, Opaque = 1, Transparent = 2 };
 
@@ -22,12 +22,12 @@ public:
     bool Run() {
         Derived&  d  = self();
         if (!d.IsAvailable()) return false;
-        if (rs_.scene_->Actors().All().empty()) return true;
+        if (rs_.Scene().Actors().All().empty()) return true;
 
-        auto* cmd = rs_.gfx_->GetImmediateContext();
+        auto* cmd = rs_.Pipeline().Gfx()->GetImmediateContext();
 
         auto collected = render_detail::CollectSortedRenderables(
-            rs_.scene_->Actors().All(), rs_.ComputeSelectedLod());
+            rs_.Scene().Actors().All(), rs_.Pipeline().ComputeSelectedLod());
         if (collected.refs.empty()) return true;
 
         Matrix44f view, proj;
@@ -36,11 +36,11 @@ public:
         bls::FrameInputs frame;
         frame.view         = view;
         frame.projection   = proj;
-        frame.effectTime   = rs_.scene_->GetAnimationTime() * 0.001f;
+        frame.effectTime   = rs_.Scene().GetAnimationTime() * 0.001f;
         frame.numLights    = 0;
-        frame.viewportRect = { (f32)rs_.width_, (f32)rs_.height_, 0.0f, 0.0f };
+        frame.viewportRect = { (f32)rs_.Pipeline().Width(), (f32)rs_.Pipeline().Height(), 0.0f, 0.0f };
 
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.samplers_->LinearWrap());
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.Samplers().LinearWrap());
         d.BindPassResources(cmd, frame);
 
         const bls::BaselineLights baseline = d.Baseline(view);
@@ -58,7 +58,7 @@ public:
 
             const i32 lightCount = bls::BuildLightPalette(
                 frame, *view_.activeLights, view, baseline,
-                rs_.GetLightingMode());
+                rs_.Settings().GetLightingMode());
 
             d.DrawGeoset(ref, frame, view, cmd, lightCount);
         }

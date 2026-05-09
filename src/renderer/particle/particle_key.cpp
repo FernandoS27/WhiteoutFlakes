@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace WhiteoutDex::particle {
+namespace whiteout::flakes::renderer::particle {
 
 namespace {
 

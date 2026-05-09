@@ -5,7 +5,7 @@
 
 #include <array>
 
-namespace WhiteoutDex::gfx::d3d12 {
+namespace whiteout::flakes::gfx::d3d12 {
 
 class D3D12Device;
 

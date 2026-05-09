@@ -8,11 +8,11 @@
 #include <string>
 #include <unordered_map>
 
-namespace WhiteoutDex::dnc {
+namespace whiteout::flakes::renderer::dnc {
 
 class DncCache {
 public:
-    explicit DncCache(IContentProvider* contentProvider);
+    explicit DncCache(io::IContentProvider* contentProvider);
     ~DncCache();
 
     DncCache(const DncCache&) = delete;
@@ -26,7 +26,7 @@ private:
     static std::string NormalizeKey(const std::string& path);
     static bool        IsTextPath(const std::string& key);
 
-    IContentProvider* contentProvider_ = nullptr;
+    io::IContentProvider* contentProvider_ = nullptr;
     std::unordered_map<std::string, std::unique_ptr<DncAsset>> entries_;
 };
 

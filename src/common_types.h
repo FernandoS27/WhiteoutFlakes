@@ -9,7 +9,7 @@
 
 #include <cstddef>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes {
 
 using whiteout::u8;
 using whiteout::u16;
@@ -44,4 +44,4 @@ using whiteout::fixed16_9;
 using whiteout::fixed16_11;
 using whiteout::fixed32_16;
 
-} // namespace WhiteoutDex
+} // namespace whiteout::flakes

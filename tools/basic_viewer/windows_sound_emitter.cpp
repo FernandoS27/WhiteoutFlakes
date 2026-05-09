@@ -20,7 +20,10 @@
 
 #pragma comment(lib, "winmm.lib")
 
-namespace WhiteoutDex {
+namespace whiteout::flakes {
+
+using namespace whiteout::flakes::io;
+using namespace whiteout::flakes::renderer;
 
 namespace {
 

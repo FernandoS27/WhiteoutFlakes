@@ -3,7 +3,7 @@
 #include "common_types.h"
 #include "io/event_data.h"
 #include "types.h"
-#include "model_types.h"
+#include "model/model_types.h"
 #include "gfx/gfx.h"
 
 #include <mutex>
@@ -11,12 +11,10 @@
 #include <unordered_map>
 #include <vector>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io { class IContentProvider; }
+namespace whiteout::flakes::renderer::assets { class TextureAssetManager; }
 
-class IContentProvider;
-class TextureAssetManager;
-
-namespace particle {
+namespace whiteout::flakes::renderer::particle {
 
 struct Splat {
 
@@ -51,9 +49,9 @@ public:
     SplatService();
     ~SplatService();
 
-    void Configure(gfx::IGFXDevice*       gfx,
-                   TextureAssetManager*   textures,
-                   const IContentProvider* contentProvider);
+    void Configure(gfx::IGFXDevice*             gfx,
+                   assets::TextureAssetManager* textures,
+                   const io::IContentProvider*  contentProvider);
 
     void Tick();
 
@@ -94,13 +92,13 @@ private:
     std::vector<Splat>      splats_;
 
     gfx::IGFXDevice*        gfx_       = nullptr;
-    TextureAssetManager*    textures_  = nullptr;
-    const IContentProvider* content_   = nullptr;
+    assets::TextureAssetManager* textures_  = nullptr;
+    const io::IContentProvider* content_   = nullptr;
 
     std::unordered_map<std::string, gfx::TextureHandle> textureCache_;
 
-    i64 lastTickQpc_ = -1;
+    // -1 means "no prior sample" — first Tick() seeds the timer.
+    i64 lastTickNs_ = -1;
 };
 
-}
 }

@@ -18,7 +18,9 @@ Model convertMdlToModel(std::string_view source, std::vector<std::string>& issue
 }
 }
 
-namespace WhiteoutDex::dnc {
+namespace whiteout::flakes::renderer::dnc {
+
+using namespace ::whiteout::flakes::io;
 
 namespace {
 using whiteout::mdx::Model;

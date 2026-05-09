@@ -11,16 +11,14 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include "dbg_print.h"
+
 #include <fstream>
 #include <vector>
 
-#if defined(_WIN32)
-extern "C" __declspec(dllimport) void __stdcall OutputDebugStringA(const char* s);
-#else
-inline void OutputDebugStringA(const char*) {}
-#endif
+namespace whiteout::flakes::renderer::ibl {
 
-namespace WhiteoutDex::ibl {
+using namespace ::whiteout::flakes::io;
 
 namespace {
 
@@ -30,7 +28,7 @@ void DbgLogf(const char* fmt, ...) {
     va_start(ap, fmt);
     std::vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    OutputDebugStringA(buf);
+    DbgPrint(buf);
 }
 
 const char* TypeName(whiteout::textures::TextureType t) {

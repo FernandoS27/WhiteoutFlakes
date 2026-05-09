@@ -4,7 +4,7 @@
 #include "gfx/gfx_types.h"
 #include <memory>
 
-namespace WhiteoutDex::gfx {
+namespace whiteout::flakes::gfx {
 
 enum class BufferHandle    : u64 { Invalid = 0 };
 enum class TextureHandle   : u64 { Invalid = 0 };

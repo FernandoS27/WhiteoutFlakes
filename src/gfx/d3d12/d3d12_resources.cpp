@@ -1,6 +1,6 @@
 #include "d3d12_resources.h"
 
-namespace WhiteoutDex::gfx::d3d12 {
+namespace whiteout::flakes::gfx::d3d12 {
 
 bool UploadRing::Init(ID3D12Device* device, u64 sizeBytes) {
     capacity_ = sizeBytes;

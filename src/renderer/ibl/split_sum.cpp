@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <numbers>
 
-namespace WhiteoutDex::ibl {
+namespace whiteout::flakes::renderer::ibl {
 
 namespace {
 

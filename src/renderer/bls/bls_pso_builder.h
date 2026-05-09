@@ -9,7 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace WhiteoutDex::bls {
+namespace whiteout::flakes::renderer::bls {
 
 enum class VertexLayoutKind : u8 {
     MeshSD        = 0,

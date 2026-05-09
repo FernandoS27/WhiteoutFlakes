@@ -15,10 +15,11 @@
 
 #include "max_scene_adapter.h"
 #include "common_types.h"
-#include "renderer/model_instance.h"   // Actor
+#include "renderer/model/model_instance.h"   // Actor
+#include "renderer/model/model_loader.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
-#include "renderer/replaceable_texture_manager.h"
+#include "renderer/assets/replaceable_texture_manager.h"
 #include "windows_sound_emitter.h"
 #include "render_window.h"
 
@@ -33,16 +34,16 @@
 #include <maxscript/foundation/numbers.h>
 #include <maxscript/macros/define_instantiation_functions.h>
 
-using namespace WhiteoutDex;
+using namespace whiteout::flakes;
 
 // ============================================================================
 // Global state
 // ============================================================================
-static std::shared_ptr<WhiteoutDex::MaxSceneAdapter> g_adapter;
-static WhiteoutDex::Actor*           g_actor        = nullptr;   // borrowed; owned by g_scene
-static WhiteoutDex::SceneManager*    g_scene        = nullptr;
-static WhiteoutDex::RenderService*   g_renderer     = nullptr;
-static WhiteoutDex::RenderWindow*    g_renderWindow = nullptr;
+static std::shared_ptr<whiteout::flakes::MaxSceneAdapter> g_adapter;
+static whiteout::flakes::renderer::model::Actor*    g_actor        = nullptr;   // borrowed; owned by g_scene
+static whiteout::flakes::renderer::SceneManager*    g_scene        = nullptr;
+static whiteout::flakes::renderer::RenderService*   g_renderer     = nullptr;
+static whiteout::flakes::RenderWindow*              g_renderWindow = nullptr;
 static bool                          g_running      = false;
 static HINSTANCE                     g_hInstance    = nullptr;
 static DWORD                         g_lastTimeChangedTick = 0;
@@ -63,7 +64,7 @@ static void EvalFromMax(i32 timeMs) {
     if (!g_actor || !g_renderer || !g_scene) return;
     g_actor->animation.SetTimeMs(timeMs);
     g_scene->SetAnimationTime(timeMs);
-    g_renderer->EvaluateAndApply(*g_actor);
+    g_actor->EvaluateAndApply(g_renderer->MakeActorEvalContext());
 }
 
 // ============================================================================
@@ -93,7 +94,7 @@ static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
     // Hot-reload check.
     auto result = g_adapter->RefreshMaterials();
     if (result.changed) {
-        g_renderer->UpdateMaterials(result.materials, result.textures);
+        g_renderer->Loader().UpdateMaterials(result.materials, result.textures);
     }
 
     // Re-evaluate when the timeline is idle — picks up non-animated
@@ -122,7 +123,7 @@ static void NdxCleanup() {
     }
     g_running = false;
     if (g_renderer) {
-        g_renderer->ClearModel();
+        g_renderer->Loader().Clear();
     }
     if (g_renderWindow) {
         g_renderWindow->Close();
@@ -191,9 +192,9 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count)
     if (g_running) NdxCleanup();
 
     // Host owns SceneManager + RenderService + RenderWindow.
-    g_scene        = new WhiteoutDex::SceneManager();
-    g_renderer     = new WhiteoutDex::RenderService(*g_scene);
-    g_renderWindow = new WhiteoutDex::RenderWindow(*g_renderer);
+    g_scene        = new whiteout::flakes::renderer::SceneManager();
+    g_renderer     = new whiteout::flakes::renderer::RenderService(*g_scene);
+    g_renderWindow = new whiteout::flakes::RenderWindow(*g_renderer);
     if (!g_renderWindow->Open(800, 600)) {
         mprintf(_M("WhiteoutDex: ERROR - Could not open renderer window\n"));
         delete g_renderWindow; g_renderWindow = nullptr;
@@ -226,11 +227,11 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count)
     // Borrows the scene's content provider for CASC/MPQ lookup so SND
     // EventObjects play through the host OS during preview. Without
     // this, the renderer's default null emitter drops every fire.
-    g_renderer->SetSoundEmitter(std::make_unique<WhiteoutDex::WindowsSoundEmitter>(
+    g_renderer->SwapSoundEmitter(std::make_unique<whiteout::flakes::WindowsSoundEmitter>(
         g_scene->ActiveContentProvider()));
 
     // ---- Build the live adapter ----
-    g_adapter = std::make_shared<WhiteoutDex::MaxSceneAdapter>();
+    g_adapter = std::make_shared<whiteout::flakes::MaxSceneAdapter>();
     // Cross-model dedup: skip BLP/CASC decode for textures that other models
     // already uploaded. SpawnActorFromLiveSource sets this too, but we set
     // it now so CollectScene's incidental texture reads also benefit.
@@ -249,12 +250,13 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count)
     // actor's AnimationDriver to the adapter (which is also an
     // IAnimationSource). Replaces ~15 lines of GetX + LoadModel + SetX boilerplate.
     mprintf(_M("WhiteoutDex: Loading model...\n"));
-    g_actor = g_renderer->SpawnActorFromLiveSource(g_adapter);
+    g_actor = g_renderer->Loader().SpawnFromLiveSource(g_adapter);
     if (!g_actor) {
-        mprintf(_M("WhiteoutDex: ERROR - SpawnActorFromLiveSource failed\n"));
+        mprintf(_M("WhiteoutDex: ERROR - SpawnFromLiveSource failed\n"));
         NdxCleanup();
         return Integer::intern(-1);
     }
+    g_renderer->Settings().SetRenderMode(g_actor->PreferredRenderMode());
 
     // Camera presets (Max-specific extension; not part of IModelDataSource).
     if (auto cameras = g_adapter->GetCameraPresets(); !cameras.empty())
@@ -311,7 +313,7 @@ Value* ndxRefreshMaterials_cf(Value** /*arg_list*/, i32 count)
 
     auto result = g_adapter->RefreshMaterials();
     if (result.changed) {
-        g_renderer->UpdateMaterials(result.materials, result.textures);
+        g_renderer->Loader().UpdateMaterials(result.materials, result.textures);
         mprintf(_M("WhiteoutDex: Materials refreshed (%d materials, %d textures)\n"),
                 (i32)result.materials.size(), (i32)result.textures.size());
         return &true_value;

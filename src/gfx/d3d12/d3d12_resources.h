@@ -8,7 +8,7 @@
 #include <cassert>
 #include <cstring>
 
-namespace WhiteoutDex::gfx::d3d12 {
+namespace whiteout::flakes::gfx::d3d12 {
 
 inline constexpr u32 kFramesInFlight = 2;
 

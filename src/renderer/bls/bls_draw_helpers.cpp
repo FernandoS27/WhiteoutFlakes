@@ -3,7 +3,9 @@
 
 #include <cmath>
 
-namespace WhiteoutDex::bls {
+namespace whiteout::flakes::renderer::bls {
+
+using namespace ::whiteout::flakes::renderer::model;
 
 i32 BuildLightPalette(FrameInputs&                                     frame,
                       const std::vector<FrameState::LightState>&       activeLights,

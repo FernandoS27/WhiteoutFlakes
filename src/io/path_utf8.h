@@ -14,7 +14,7 @@
     #include <windows.h>
 #endif
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io {
 
 inline std::filesystem::path FsPathFromUtf8(std::string_view utf8) {
 #ifdef _WIN32

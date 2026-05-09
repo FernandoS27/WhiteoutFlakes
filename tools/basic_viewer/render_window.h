@@ -1,7 +1,7 @@
 #pragma once
 
 #include "common_types.h"
-#include "model_types.h"
+#include "model/model_types.h"
 #include "render_target.h"
 #include "gfx/gfx_types.h"
 #include <vector>
@@ -17,9 +17,15 @@
 #endif
 #include <windows.h>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::renderer { class RenderService; }
 
-class RenderService;
+namespace whiteout::flakes {
+
+// Tools live at `whiteout::flakes` while the renderer types live in nested
+// sub-namespaces. Re-export the renderer's commonly-used types so the tool's
+// existing flat references continue to compile.
+using namespace whiteout::flakes::renderer;
+using namespace whiteout::flakes::renderer::model;
 
 class RenderWindow {
 public:

@@ -7,7 +7,7 @@
 #include <string_view>
 #include <vector>
 
-namespace WhiteoutDex::io {
+namespace whiteout::flakes::io {
 
 class SlkTable {
 public:

@@ -3,7 +3,7 @@
 #include "common_types.h"
 #include "gfx/gfx.h"
 
-namespace WhiteoutDex::bls {
+namespace whiteout::flakes::renderer::bls {
 
 template <class T>
 class ScopedCb {

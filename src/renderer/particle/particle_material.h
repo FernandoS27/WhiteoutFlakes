@@ -2,7 +2,7 @@
 
 #include "common_types.h"
 
-namespace WhiteoutDex::particle {
+namespace whiteout::flakes::renderer::particle {
 
 enum class FilterMode : u8 {
     Blend       = 0,

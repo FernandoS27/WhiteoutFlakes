@@ -9,7 +9,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace WhiteoutDex::io {
+namespace whiteout::flakes::io {
 
 namespace {
 

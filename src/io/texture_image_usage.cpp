@@ -5,7 +5,7 @@
 #include <cctype>
 #include <string>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io {
 
 namespace {
 

@@ -4,7 +4,7 @@
 
 #include <array>
 
-namespace WhiteoutDex::bls {
+namespace whiteout::flakes::renderer::bls {
 
 enum class GxShaderID : u8 {
     SD                     = 0x00,

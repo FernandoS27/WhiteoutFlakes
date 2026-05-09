@@ -2,7 +2,7 @@
 
 #include "gfx/gfx.h"
 
-namespace WhiteoutDex::gfx::d3d11 {
+namespace whiteout::flakes::gfx::d3d11 {
 
 class D3D11Device;
 

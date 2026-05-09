@@ -9,7 +9,7 @@
 #include "io/content_provider.h"
 #include "io/texture_image_usage.h"
 #include "renderer/coordinate_system.h"
-#include "renderer/model_source_utils.h"
+#include "renderer/model/model_source_utils.h"
 
 #include <maxscript/maxscript.h>
 #include <maxscript/foundation/numbers.h>
@@ -21,7 +21,11 @@
 #include <numbers>
 #include <fstream>
 
-using namespace WhiteoutDex;
+using namespace whiteout::flakes;
+using namespace whiteout::flakes::io;
+using namespace whiteout::flakes::renderer;
+using namespace whiteout::flakes::renderer::model;
+using namespace whiteout::flakes::renderer::effects;
 
 static Point3 GetVNormal(Mesh& mesh, i32 faceIdx, i32 vertIdx);
 

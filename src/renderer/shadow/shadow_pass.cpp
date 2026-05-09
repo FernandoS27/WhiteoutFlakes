@@ -2,15 +2,21 @@
 
 #include "common_types.h"
 #include "renderer/render_service.h"
-#include "renderer/render_service_internal.h"
+#include "renderer/render_pipeline.h"
+#include "renderer/render_detail.h"
 #include "renderer/scene_manager.h"
-#include "renderer/model_instance.h"
-#include "renderer/render_model.h"
+#include "renderer/model/model_instance.h"
+#include "renderer/model/render_model.h"
 #include "renderer/bls/bls_cb_layout.h"
 #include "renderer/bls/scoped_cb.h"
 #include "renderer/types.h"
 
-namespace WhiteoutDex::shadow {
+namespace whiteout::flakes::renderer::shadow {
+
+using namespace ::whiteout::flakes::renderer::model;
+using namespace ::whiteout::flakes::renderer::animation;
+using namespace ::whiteout::flakes::renderer::assets;
+using namespace ::whiteout::flakes::renderer::render_detail;
 
 namespace {
 
@@ -32,14 +38,15 @@ void BuildShadowVsCb(bls::HdVsCb&     out,
 bool ShadowPass::Run(ShadowService& service) {
     if (!service.IsEnabled()) return false;
 
-    auto* gfx = rs_.GetGfxDevice();
+    auto* gfx = rs_.Pipeline().Gfx();
     if (!gfx) return false;
     auto* cmd = gfx->GetImmediateContext();
     if (!cmd) return false;
 
-    const gfx::PipelineHandle psoSkinned = rs_.shadowPSO_;
-    const gfx::PipelineHandle psoRigid   = rs_.shadowPSORigid_;
-    const gfx::BufferHandle   vsCb       = rs_.shadowVsCb_;
+    const auto                shadow     = rs_.Pipeline().Shadow();
+    const gfx::PipelineHandle psoSkinned = shadow.psoSkinned;
+    const gfx::PipelineHandle psoRigid   = shadow.psoRigid;
+    const gfx::BufferHandle   vsCb       = shadow.vsCb;
     const bool                anyPso =
         (psoSkinned != gfx::PipelineHandle::Invalid ||
          psoRigid   != gfx::PipelineHandle::Invalid)
@@ -61,12 +68,11 @@ bool ShadowPass::Run(ShadowService& service) {
         if (anyPso) {
             const Matrix44f& cascadeVP = service.cascadeVP(c);
 
-            const i32 selectedLod = rs_.ComputeSelectedLod();
+            const i32 selectedLod = rs_.Pipeline().ComputeSelectedLod();
 
             gfx::PipelineHandle currentPso = gfx::PipelineHandle::Invalid;
 
-            std::lock_guard<std::mutex> lock(rs_.dataMutex_);
-            for (auto& [h, mi] : rs_.scene_->Actors().All()) {
+            for (auto& [h, mi] : rs_.Scene().Actors().All()) {
                 if (!mi)               continue;
                 if (mi->isPE1Child)    continue;
                 if (mi->parentVisibility <= 0.02f) continue;
@@ -78,7 +84,7 @@ bool ShadowPass::Run(ShadowService& service) {
                     if (geo.ib          == gfx::BufferHandle::Invalid) continue;
                     if (geo.indexCount  == 0)                          continue;
 
-                    if (!RenderService::GeosetPassesLod(geo.lod, modelLod))
+                    if (!GeosetPassesLod(geo.lod, modelLod))
                         continue;
 
                     const f32 geoAlpha =

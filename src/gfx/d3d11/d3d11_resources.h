@@ -5,7 +5,7 @@
 #include <vector>
 #include <cassert>
 
-namespace WhiteoutDex::gfx::d3d11 {
+namespace whiteout::flakes::gfx::d3d11 {
 
 static constexpr u64 kIndexBits = 48;
 static constexpr u64 kIndexMask = (u64{1} << kIndexBits) - 1;

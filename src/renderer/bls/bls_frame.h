@@ -5,7 +5,7 @@
 #include "bls_mat_params.h"
 #include "types.h"
 
-namespace WhiteoutDex::bls {
+namespace whiteout::flakes::renderer::bls {
 
 struct FrameInputs {
     Matrix44f  world          = Matrix44f::identity();

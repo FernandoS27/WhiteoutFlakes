@@ -11,7 +11,8 @@
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 
-using namespace WhiteoutDex;
+using namespace whiteout::flakes;
+using namespace whiteout::flakes::renderer::bls;
 
 using Microsoft::WRL::ComPtr;
 namespace fs = std::filesystem;
@@ -39,7 +40,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "cannot read %s\n", input.string().c_str());
         return 1;
     }
-    WhiteoutDex::bls::BlsContainer bls;
+    whiteout::flakes::renderer::bls::BlsContainer bls;
     std::string err;
     if (!bls.Load(bytes, &err)) {
         std::fprintf(stderr, "load failed: %s\n", err.c_str());

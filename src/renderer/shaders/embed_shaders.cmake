@@ -24,7 +24,7 @@ set(header [=[#pragma once
 // ============================================================================
 #include <cstdint>
 
-namespace WhiteoutDex::Shaders {
+namespace whiteout::flakes::Shaders {
 
 ]=])
 
@@ -42,7 +42,7 @@ foreach(binpath IN LISTS dxbc_files)
     string(APPEND header "inline constexpr uint8_t ${varname}[] = {\n    ${hex}\n};\n\n")
 endforeach()
 
-string(APPEND header "} // namespace WhiteoutDex::Shaders\n")
+string(APPEND header "} // namespace whiteout::flakes::Shaders\n")
 
 file(WRITE "${OUTPUT}" "${header}")
 message(STATUS "Generated compiled_shaders.h (${bin_count} shaders)")

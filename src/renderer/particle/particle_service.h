@@ -11,7 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace WhiteoutDex::particle {
+namespace whiteout::flakes::renderer::particle {
 
 using ModelId = u32;
 

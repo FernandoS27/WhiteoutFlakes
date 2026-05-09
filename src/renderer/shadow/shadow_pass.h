@@ -3,11 +3,9 @@
 #include "renderer/shadow/shadow_service.h"
 #include "gfx/gfx.h"
 
-namespace WhiteoutDex {
-class RenderService;
-}
+namespace whiteout::flakes::renderer { class RenderService; }
 
-namespace WhiteoutDex::shadow {
+namespace whiteout::flakes::renderer::shadow {
 
 class ShadowPass {
 public:

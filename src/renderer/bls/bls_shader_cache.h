@@ -11,7 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace WhiteoutDex::bls {
+namespace whiteout::flakes::renderer::bls {
 
 struct BlsShader {
     std::string                    name;
@@ -26,7 +26,7 @@ struct BlsShader {
 
 class BlsShaderCache {
 public:
-    BlsShaderCache(gfx::IGFXDevice* device, IContentProvider* contentProvider);
+    BlsShaderCache(gfx::IGFXDevice* device, io::IContentProvider* contentProvider);
     ~BlsShaderCache();
 
     BlsShader* Acquire(gfx::ShaderStage stage, const std::string& name);
@@ -37,7 +37,7 @@ private:
     static constexpr usize kStageCount = 3;
 
     gfx::IGFXDevice*  device_          = nullptr;
-    IContentProvider* contentProvider_ = nullptr;
+    io::IContentProvider* contentProvider_ = nullptr;
 
     std::array<std::unordered_map<std::string, std::unique_ptr<BlsShader>>, kStageCount> byStage_;
 

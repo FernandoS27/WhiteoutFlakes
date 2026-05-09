@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace WhiteoutDex::shadow {
+namespace whiteout::flakes::renderer::shadow {
 
 namespace {
 

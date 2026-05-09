@@ -2,7 +2,7 @@
 
 #include "common_types.h"
 
-namespace WhiteoutDex::shadow {
+namespace whiteout::flakes::renderer::shadow {
 
 struct ShadowParams {
 

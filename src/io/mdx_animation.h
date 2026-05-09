@@ -1,14 +1,14 @@
 #pragma once
 
 #include "common_types.h"
-#include "model_types.h"
+#include "model/model_types.h"
 #include <whiteout/models/mdx/types.h>
 #include <whiteout/models/mdx/structures.h>
 #include <whiteout/vector_types.h>
 #include <vector>
 #include <cmath>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io {
 
 f32 EvaluateTrackF32(const whiteout::mdx::Track<whiteout::f32>& track,
                      i32 timeMs, i32 seqStart, i32 seqEnd, f32 defaultVal, bool forceNoInterp = false);

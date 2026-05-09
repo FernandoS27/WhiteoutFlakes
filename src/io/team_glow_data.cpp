@@ -4,7 +4,7 @@
 #include <whiteout/textures/tga/tga.h>
 #include <whiteout/textures/texture.h>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io {
 
 static const u8 kTeamGlowTGA[] = {
   0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

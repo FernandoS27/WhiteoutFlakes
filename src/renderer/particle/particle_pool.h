@@ -4,7 +4,7 @@
 #include "particle2.h"
 #include <vector>
 
-namespace WhiteoutDex::particle {
+namespace whiteout::flakes::renderer::particle {
 
 class ParticlePool {
 public:

@@ -4,7 +4,7 @@
 #include "gfx/gfx.h"
 #include <vector>
 
-namespace WhiteoutDex::ibl {
+namespace whiteout::flakes::renderer::ibl {
 
 constexpr i32 kSplitSumSize    = 128;
 constexpr i32 kSplitSumSamples = 128;

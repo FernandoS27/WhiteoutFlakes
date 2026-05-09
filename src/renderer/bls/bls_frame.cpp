@@ -4,7 +4,7 @@
 #include <cmath>
 #include <cstring>
 
-namespace WhiteoutDex::bls {
+namespace whiteout::flakes::renderer::bls {
 
 namespace {
 

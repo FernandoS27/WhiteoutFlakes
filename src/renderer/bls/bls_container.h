@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace WhiteoutDex::bls {
+namespace whiteout::flakes::renderer::bls {
 
 inline constexpr u32 kHsxgMagic   = 0x47585348u;
 inline constexpr u32 kHsxgVersion = 0x00010008u;

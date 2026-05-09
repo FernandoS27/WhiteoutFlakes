@@ -7,7 +7,7 @@
 #include <functional>
 #include <vector>
 
-namespace WhiteoutDex::particle {
+namespace whiteout::flakes::renderer::particle {
 
 using FogSampler = std::function<ImVector(const Vector3f&  )>;
 

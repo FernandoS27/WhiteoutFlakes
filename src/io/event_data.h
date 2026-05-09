@@ -6,11 +6,11 @@
 #include <string_view>
 #include <vector>
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::io {
 class IContentProvider;
 }
 
-namespace WhiteoutDex::io {
+namespace whiteout::flakes::io {
 
 struct SpnEntry {
     std::string modelPath;

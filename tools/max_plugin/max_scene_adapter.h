@@ -24,8 +24,8 @@
 #include <functional>
 
 #include "common_types.h"
-#include "renderer/model_source.h"
-#include "renderer/model_types.h"
+#include "renderer/model/model_source.h"
+#include "renderer/model/model_types.h"
 #include "io/file_content_provider.h"
 
 // ============================================================================
@@ -53,7 +53,12 @@
 // ============================================================================
 // Collected data structures (Max-specific; not exposed to renderer)
 // ============================================================================
-namespace WhiteoutDex {
+namespace whiteout::flakes {
+
+// Inside this namespace, `renderer` and `io` already resolve to
+// `::whiteout::flakes::renderer` and `::whiteout::flakes::io` via parent
+// lookup — used directly below.
+
 
 struct BoneInfo {
     INode* node = nullptr;
@@ -138,7 +143,7 @@ struct CollisionShapeInfo {
 // MaxSceneAdapter — implements IModelSource
 // ============================================================================
 
-class MaxSceneAdapter : public IModelSource {
+class MaxSceneAdapter : public renderer::model::IModelSource {
 public:
     MaxSceneAdapter();
     ~MaxSceneAdapter() override;
@@ -149,32 +154,32 @@ public:
     // Re-read material properties and textures from the scene.
     // Returns true if anything changed and the renderer should be updated.
     struct MaterialRefreshResult {
-        std::vector<MaterialData> materials;
-        std::vector<TextureData>  textures;
+        std::vector<renderer::model::MaterialData> materials;
+        std::vector<renderer::model::TextureData>  textures;
         bool changed = false;
     };
     MaterialRefreshResult RefreshMaterials();
 
     // IModelSource interface
-    std::vector<MeshData>              GetMeshes()          override;
-    std::vector<TextureData>           GetTextures()        override;
-    std::vector<MaterialData>          GetMaterials()       override;
-    SkeletonData                       GetSkeleton()        override;
-    std::vector<SkinWeightData>        GetSkinWeights()     override;
-    std::vector<ParticleEmitterConfig> GetParticleConfigs() override;
-    std::vector<RibbonEmitterConfig>   GetRibbonConfigs()   override;
-    std::vector<CollisionShapeData>    GetCollisionShapes() override;
-    std::vector<AttachmentConfig>      GetAttachmentConfigs() override;
-    std::vector<PE1EmitterConfig>      GetPE1Configs()      override;
+    std::vector<renderer::model::MeshData>              GetMeshes()          override;
+    std::vector<renderer::model::TextureData>           GetTextures()        override;
+    std::vector<renderer::model::MaterialData>          GetMaterials()       override;
+    renderer::model::SkeletonData                       GetSkeleton()        override;
+    std::vector<renderer::model::SkinWeightData>        GetSkinWeights()     override;
+    std::vector<renderer::ParticleEmitterConfig>        GetParticleConfigs() override;
+    std::vector<renderer::effects::RibbonEmitterConfig> GetRibbonConfigs()   override;
+    std::vector<renderer::model::CollisionShapeData>    GetCollisionShapes() override;
+    std::vector<renderer::model::AttachmentConfig>      GetAttachmentConfigs() override;
+    std::vector<renderer::model::PE1EmitterConfig>      GetPE1Configs()      override;
 
     // ---- IAnimationSource ----
-    FrameState Evaluate(i32 sequenceIdx, i32 timeMs, i32 globalTimeMs,
-                        const Matrix44f& worldTransform,
-                        const Vector3f&  cameraPos) const override;
-    std::vector<SequenceInfo> GetSequences() const override;
+    renderer::model::FrameState Evaluate(i32 sequenceIdx, i32 timeMs, i32 globalTimeMs,
+                                         const Matrix44f& worldTransform,
+                                         const Vector3f&  cameraPos) const override;
+    std::vector<renderer::model::SequenceInfo> GetSequences() const override;
 
     // Camera presets from scene (Max cameras + "Active Viewport")
-    std::vector<WhiteoutDex::CameraPreset> GetCameraPresets();
+    std::vector<whiteout::flakes::renderer::model::CameraPreset> GetCameraPresets();
 
 private:
     // Collection phases
@@ -262,7 +267,7 @@ private:
     i32 nextTexId_ = 0;
     i32 nextMatId_ = 0;
 
-    FileContentProvider contentProvider_;
+    io::FileContentProvider contentProvider_;
 
     // Material change detection: snapshot of per-material properties
     struct MaterialSnapshot {
@@ -286,4 +291,4 @@ private:
     void UpdateMaterialSnapshots();
 };
 
-} // namespace WhiteoutDex
+} // namespace whiteout::flakes

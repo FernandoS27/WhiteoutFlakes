@@ -8,7 +8,7 @@
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
 
-namespace WhiteoutDex::gfx::d3d12 {
+namespace whiteout::flakes::gfx::d3d12 {
 
 D3D12Device::D3D12Device() = default;
 

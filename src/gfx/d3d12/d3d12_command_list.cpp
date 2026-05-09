@@ -2,7 +2,7 @@
 #include "d3d12_device.h"
 #include <cassert>
 
-namespace WhiteoutDex::gfx::d3d12 {
+namespace whiteout::flakes::gfx::d3d12 {
 
 D3D12CommandList::D3D12CommandList(D3D12Device& device) : device_(device) {
     OnFrameBegin();

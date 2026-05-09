@@ -1,6 +1,6 @@
 #include "bls_program.h"
 
-namespace WhiteoutDex::bls {
+namespace whiteout::flakes::renderer::bls {
 
 BlsProgramCatalog::BlsProgramCatalog(BlsShaderCache* cache) : cache_(cache) {}
 

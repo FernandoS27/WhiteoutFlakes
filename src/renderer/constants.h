@@ -4,7 +4,7 @@
 #include "common_types.h"
 #include "renderer/coordinate_system.h"
 
-namespace WhiteoutDex {
+namespace whiteout::flakes::renderer {
 
 using whiteout::Vector3f;
 using whiteout::Vector4f;

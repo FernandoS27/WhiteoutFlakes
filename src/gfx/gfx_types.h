@@ -4,7 +4,7 @@
 
 #include <span>
 
-namespace WhiteoutDex::gfx {
+namespace whiteout::flakes::gfx {
 
 enum class GfxApi { D3D11, D3D12, Vulkan };
 
