@@ -1,33 +1,98 @@
 #pragma once
 
-#include "common_types.h"
+// ============================================================================
+// WhiteoutFlakes — model-data POD value types and per-frame state.
+//
+// Public canonical home for every value type the renderer's model loader and
+// per-frame evaluator exchange with hosts: meshes, textures, materials,
+// skeletons, skinning, collision, attachment / PE1 / corn / event configs,
+// particle / ribbon configs, and FrameState.
+//
+// Types live in their original sub-namespaces (renderer::model::*,
+// renderer::*, renderer::effects::*) to keep all existing internal source
+// code working unchanged. The public top-level namespace `whiteout::flakes`
+// re-exports the consumer-facing names via using-aliases.
+// ============================================================================
+
 #include "types.h"
-#include "../gfx/gfx_types.h"
+#include "enums.h"
+#include "display.h"
+#include "gfx_types.h"
+
 #include <vector>
 #include <string>
 #include <functional>
 
+// ----------------------------------------------------------------------------
+// Particle / ribbon emitter configs.
+// Particle emitter SIMULATION state (ParticleEmitterState, RibbonEmitterState,
+// RibbonSegment, RibbonEmitter, RibbonSystem) lives in src/renderer/particle.h
+// and src/renderer/effects/ribbon.h — internal to the renderer.
+// ----------------------------------------------------------------------------
+namespace whiteout::flakes::renderer {
+
+struct ParticleEmitterConfig {
+    i32   textureId    = -1;
+    i32   filterMode   = 0;
+    i32   rows = 1, cols = 1;
+    bool  unshaded     = false;
+
+    f32   lifeSpan     = 1.0f;
+    bool  squirt       = false;
+
+    Vector3f startColor  = {1,1,1};
+    Vector3f midColor    = {0.5f,0.5f,0.5f};
+    Vector3f endColor    = {0,0,0};
+    f32 startAlpha = 255, midAlpha = 128, endAlpha = 0;
+    f32 startScale = 10, midScale = 10, endScale = 10;
+    f32 midTime    = 0.5f;
+
+    i32   particleType = 1;
+    f32   tailLength   = 1.0f;
+
+    i32 headLifeStart=0, headLifeEnd=0, headLifeRepeat=1;
+    i32 headDecayStart=0, headDecayEnd=0, headDecayRepeat=1;
+    i32 tailLifeStart=0, tailLifeEnd=0, tailLifeRepeat=1;
+    i32 tailDecayStart=0, tailDecayEnd=0, tailDecayRepeat=1;
+
+    bool modelSpace  = false;
+    bool xyQuad      = false;
+    bool sortZ       = false;
+    bool lineEmitter = false;
+    bool unfogged    = false;
+
+    i32  count         = 0;
+    i32  priorityPlane = 0;
+    i32  replaceableId = 0;
+};
+
+}  // namespace whiteout::flakes::renderer
+
+namespace whiteout::flakes::renderer::effects {
+
+struct RibbonEmitterConfig {
+    i32   textureId  = -1;
+    i32   filterMode = 0;
+    i32   rows = 1, cols = 1;
+    bool  unshaded   = false;
+    bool  twoSided   = true;
+    f32   emission   = 10.0f;
+    f32   life       = 1.0f;
+    f32   gravity    = 0.0f;
+
+    i32   priorityPlane = 0;
+};
+
+}  // namespace whiteout::flakes::renderer::effects
+
 namespace whiteout::flakes::renderer::model {
 
-struct CameraPreset {
-    std::wstring name;
-    bool isLive = false;
-
-    Vector3f position{0.f, 0.f, 0.f};
-    Vector3f target  {0.f, 0.f, 0.f};
-    f32      fovDiagonal = 0.95f;
-    f32      zNear       = 1.0f;
-    f32      zFar        = 10000.0f;
-    f32      staticRoll  = 0.0f;
-
-    f32 pitch    = 0.0f;
-    f32 yaw      = 0.0f;
-    f32 distance = 100.0f;
-
-    std::function<void(Vector3f& pos, Vector3f& target,
-                       f32& roll, i32 timeMs,
-                       i32 seqStart, i32 seqEnd)> animator;
-};
+// CameraPreset / SequenceInfo are canonical in display.h; using-import them
+// here so existing internal code that says
+// `whiteout::flakes::renderer::model::CameraPreset` /
+// `whiteout::flakes::renderer::model::SequenceInfo` keeps compiling.
+using ::whiteout::flakes::CameraPreset;
+using ::whiteout::flakes::SequenceInfo;
 
 struct AttachmentConfig {
     i32 attachmentId = 0;
@@ -54,7 +119,7 @@ struct CornEmitterInit {
     f32          defaultSpeed           = 0.0f;
     Vector4f     defaultColor           = {1, 1, 1, 1};
     i32          replaceableId          = 0;
-    bool         cornEffectsScaling         = false;   // Node flag bit 0x40000
+    bool         cornEffectsScaling     = false;   // Node flag bit 0x40000
 };
 
 struct EventObjectConfig {
@@ -70,38 +135,28 @@ struct EventObjectConfig {
     std::vector<u32> eventTrackTimes;
 };
 
-enum FilterMode {
-    FILTER_NONE        = 0,
-    FILTER_TRANSPARENT = 1,
-    FILTER_BLEND       = 2,
-    FILTER_ADDITIVE    = 3,
-    FILTER_ADD_ALPHA   = 4,
-    FILTER_MODULATE    = 5,
-    FILTER_MODULATE_2X = 6,
-};
+// Canonical filter mode + helpers + material flags + bone billboard flags
+// live in enums.h. Re-export under this nested namespace so existing
+// internal code that writes `whiteout::flakes::renderer::model::FILTER_BLEND`
+// or `model::MapFilterMode(...)` keeps compiling.
+using ::whiteout::flakes::FilterMode;
+using ::whiteout::flakes::FILTER_NONE;
+using ::whiteout::flakes::FILTER_TRANSPARENT;
+using ::whiteout::flakes::FILTER_BLEND;
+using ::whiteout::flakes::FILTER_ADDITIVE;
+using ::whiteout::flakes::FILTER_ADD_ALPHA;
+using ::whiteout::flakes::FILTER_MODULATE;
+using ::whiteout::flakes::FILTER_MODULATE_2X;
+using ::whiteout::flakes::MapFilterMode;
+using ::whiteout::flakes::MapPE2BlendMode;
 
-inline i32 MapFilterMode(i32 raw) {
-    if (raw < 0) return FILTER_NONE;
-    if (raw > 6) return FILTER_MODULATE_2X;
-    return raw;
-}
-
-inline i32 MapPE2BlendMode(i32 blendMode) {
-    static constexpr i32 table[] = {
-        FILTER_BLEND, FILTER_ADDITIVE, FILTER_MODULATE, FILTER_MODULATE_2X, FILTER_TRANSPARENT
-    };
-    if (blendMode >= 0 && blendMode < 5) return table[blendMode];
-    return FILTER_BLEND;
-}
-
-enum MaterialFlags {
-    MAT_TWO_SIDED    = 1,
-    MAT_UNSHADED     = 2,
-    MAT_UNFOGGED     = 4,
-    MAT_NO_DEPTH_TEST = 8,
-    MAT_NO_DEPTH_SET  = 16,
-    MAT_CONSTANT_COLOR = 32,
-};
+using ::whiteout::flakes::MaterialFlags;
+using ::whiteout::flakes::MAT_TWO_SIDED;
+using ::whiteout::flakes::MAT_UNSHADED;
+using ::whiteout::flakes::MAT_UNFOGGED;
+using ::whiteout::flakes::MAT_NO_DEPTH_TEST;
+using ::whiteout::flakes::MAT_NO_DEPTH_SET;
+using ::whiteout::flakes::MAT_CONSTANT_COLOR;
 
 struct MeshData {
     i32 geosetId;
@@ -163,14 +218,13 @@ struct MaterialData {
     i32 sortOrder;
 };
 
-enum BoneBillboardFlag : u32 {
-    BONE_BILLBOARD_NONE            = 0,
-    BONE_BILLBOARD_FULL            = 1,
-    BONE_BILLBOARD_LOCK_X          = 2,
-    BONE_BILLBOARD_LOCK_Y          = 4,
-    BONE_BILLBOARD_LOCK_Z          = 8,
-    BONE_BILLBOARD_CAMERA_ANCHORED = 16,
-};
+using ::whiteout::flakes::BoneBillboardFlag;
+using ::whiteout::flakes::BONE_BILLBOARD_NONE;
+using ::whiteout::flakes::BONE_BILLBOARD_FULL;
+using ::whiteout::flakes::BONE_BILLBOARD_LOCK_X;
+using ::whiteout::flakes::BONE_BILLBOARD_LOCK_Y;
+using ::whiteout::flakes::BONE_BILLBOARD_LOCK_Z;
+using ::whiteout::flakes::BONE_BILLBOARD_CAMERA_ANCHORED;
 
 struct SkeletonData {
     i32 nodeCount;
@@ -324,4 +378,24 @@ struct FrameState {
     std::vector<CornFrameState> cornStates;
 };
 
+}  // namespace whiteout::flakes::renderer::model
+
+// Public re-exports.
+namespace whiteout::flakes {
+using ::whiteout::flakes::renderer::ParticleEmitterConfig;
+using ::whiteout::flakes::renderer::effects::RibbonEmitterConfig;
+using ::whiteout::flakes::renderer::model::AttachmentConfig;
+using ::whiteout::flakes::renderer::model::PE1EmitterConfig;
+using ::whiteout::flakes::renderer::model::CornEmitterInit;
+using ::whiteout::flakes::renderer::model::EventObjectConfig;
+using ::whiteout::flakes::renderer::model::MeshData;
+using ::whiteout::flakes::renderer::model::TextureData;
+using ::whiteout::flakes::renderer::model::MaterialLayerData;
+using ::whiteout::flakes::renderer::model::MaterialData;
+using ::whiteout::flakes::renderer::model::SkeletonData;
+using ::whiteout::flakes::renderer::model::VertexInfluence;
+using ::whiteout::flakes::renderer::model::GroupAverageRecord;
+using ::whiteout::flakes::renderer::model::SkinWeightData;
+using ::whiteout::flakes::renderer::model::CollisionShapeData;
+using ::whiteout::flakes::renderer::model::FrameState;
 }

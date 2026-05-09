@@ -1,6 +1,6 @@
 #include "renderer/dnc/dnc_cache.h"
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 
 #include <whiteout/models/mdx/parser.h>
 

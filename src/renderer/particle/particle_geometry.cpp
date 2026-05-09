@@ -1,5 +1,5 @@
 #include "renderer/particle/particle_geometry.h"
-#include "coordinate_system.h"
+#include "whiteout/flakes/util/coordinate_system.h"
 
 #include <algorithm>
 #include <cmath>

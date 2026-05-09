@@ -1,7 +1,7 @@
 #include "renderer/scene_manager.h"
 
 #include "renderer/model/model_instance.h"
-#include "renderer/model/model_source.h"
+#include "whiteout/flakes/model_source.h"
 
 namespace whiteout::flakes::renderer {
 

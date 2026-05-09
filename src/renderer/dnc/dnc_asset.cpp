@@ -1,6 +1,6 @@
 #include "renderer/dnc/dnc_asset.h"
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "io/mdx_animation.h"
 
 #include <whiteout/vector_types.h>

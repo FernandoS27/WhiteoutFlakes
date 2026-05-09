@@ -16,7 +16,7 @@
 // these models has been destroyed. CornEffectsService enforces this ordering.
 // ============================================================================
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 
 #include <cornflakes/interface/asset/asset_reader.hpp>
 #include <cornflakes/interface/core/arena.hpp>

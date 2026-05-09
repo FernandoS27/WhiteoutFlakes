@@ -1,7 +1,7 @@
 #include "env_probe.h"
 
-#include "common_types.h"
-#include "io/content_provider.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/content_provider.h"
 
 #include <whiteout/textures/dds/parser.h>
 #include <whiteout/textures/dds/writer.h>

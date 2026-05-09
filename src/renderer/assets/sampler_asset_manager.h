@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "gfx/gfx.h"
 #include <functional>
 #include <unordered_map>

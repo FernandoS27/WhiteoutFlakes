@@ -2,10 +2,10 @@
 
 #include "renderer/model/model_instance.h"
 #include "particle/splat_service.h"
-#include "renderer/sound_emitter.h"
+#include "whiteout/flakes/sound_emitter.h"
 #include "renderer/effects/spn_spawner.h"
 
-#include "io/event_data.h"
+#include "whiteout/flakes/event_data.h"
 
 #include <algorithm>
 #include <cmath>

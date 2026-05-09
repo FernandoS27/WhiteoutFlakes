@@ -1,9 +1,19 @@
 #pragma once
 
-#include "common_types.h"
-#include "model/model_types.h"
-#include "particle.h"
-#include "effects/ribbon.h"
+// ============================================================================
+// WhiteoutFlakes — model-source interfaces.
+//
+// IModelSource is the abstract contract a host implements to feed the
+// renderer mesh/material/animation data from a custom source (e.g. the Max
+// plugin's MaxSceneAdapter, a procedural builder, etc.). The renderer's
+// ModelLoader takes a shared_ptr<IModelSource> and snapshots its data at
+// load time, then asks IAnimationSource::Evaluate() once per frame for
+// per-actor playback.
+// ============================================================================
+
+#include "types.h"
+#include "model_types.h"
+#include "display.h"  // SequenceInfo
 
 #include <functional>
 #include <span>
@@ -12,16 +22,6 @@
 #include <vector>
 
 namespace whiteout::flakes::renderer::model {
-
-struct SequenceInfo {
-    std::string name;
-    i32         startMs = 0;
-    i32         endMs   = 0;
-
-    f32         moveSpeed = 0.0f;
-
-    bool        nonLooping = false;
-};
 
 struct ModelData {
     std::vector<MeshData>              meshes;
@@ -108,4 +108,11 @@ public:
     }
 };
 
+}  // namespace whiteout::flakes::renderer::model
+
+namespace whiteout::flakes {
+using ::whiteout::flakes::renderer::model::IModelSource;
+using ::whiteout::flakes::renderer::model::IAnimationSource;
+using ::whiteout::flakes::renderer::model::IModelDataSource;
+using ::whiteout::flakes::renderer::model::ModelData;
 }

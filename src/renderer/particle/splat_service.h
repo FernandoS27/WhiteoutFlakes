@@ -1,9 +1,9 @@
 #pragma once
 
-#include "common_types.h"
-#include "io/event_data.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/event_data.h"
 #include "types.h"
-#include "model/model_types.h"
+#include "whiteout/flakes/model_types.h"
 #include "gfx/gfx.h"
 
 #include <mutex>

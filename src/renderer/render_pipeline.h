@@ -16,7 +16,7 @@
 // individual public getters.
 // ============================================================================
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "gfx/gfx.h"
 #include "render_target.h"
 #include "types.h"

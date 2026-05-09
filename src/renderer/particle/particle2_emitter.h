@@ -1,12 +1,12 @@
 #pragma once
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "particle2.h"
 #include "particle_key.h"
 #include "particle_material.h"
 #include "particle_pool.h"
 #include "rnd_seed.h"
-#include "coordinate_system.h"
+#include "whiteout/flakes/util/coordinate_system.h"
 #include "types.h"
 
 namespace whiteout::flakes::renderer::particle {

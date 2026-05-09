@@ -1,9 +1,9 @@
 #pragma once
 
 #include "../gfx/gfx.h"
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "animation/animation.h"
-#include "model/model_types.h"
+#include "whiteout/flakes/model_types.h"
 #include "particle.h"
 #include "effects/pe1_system.h"
 #include "effects/ribbon.h"

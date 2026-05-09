@@ -10,7 +10,7 @@
 // instead of holding a back-pointer to the renderer.
 // ============================================================================
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "types.h"  // Vector3f
 
 namespace whiteout::flakes::renderer {

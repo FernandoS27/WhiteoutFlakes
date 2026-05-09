@@ -11,9 +11,9 @@
 // RenderFrame so GPU resource teardown happens on the render thread).
 // ============================================================================
 
-#include "common_types.h"
-#include "model/model_types.h"
-#include "model/model_source.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/model_types.h"
+#include "whiteout/flakes/model_source.h"
 #include "types.h"  // Matrix44f
 
 #include <memory>

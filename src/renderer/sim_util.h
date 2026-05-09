@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "constants.h"
 #include <algorithm>
 

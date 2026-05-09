@@ -1,7 +1,7 @@
 #pragma once
 
-#include "common_types.h"
-#include "model/model_types.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/model_types.h"
 #include "types.h"
 #include <memory>
 #include <unordered_map>

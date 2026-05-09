@@ -1,5 +1,5 @@
 #include "io/mdx_animation.h"
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include <algorithm>
 
 using namespace whiteout;

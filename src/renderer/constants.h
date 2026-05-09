@@ -1,8 +1,8 @@
 #pragma once
 
 #include <whiteout/vector_types.h>
-#include "common_types.h"
-#include "renderer/coordinate_system.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/util/coordinate_system.h"
 
 namespace whiteout::flakes::renderer {
 

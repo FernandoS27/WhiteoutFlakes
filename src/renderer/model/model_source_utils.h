@@ -1,7 +1,7 @@
 #pragma once
 
-#include "common_types.h"
-#include "renderer/model/model_types.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/model_types.h"
 
 #include <whiteout/textures/blp/blp.h>
 #include <whiteout/textures/dds/parser.h>

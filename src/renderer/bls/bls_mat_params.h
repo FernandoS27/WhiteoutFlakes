@@ -1,8 +1,8 @@
 #pragma once
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "bls_permuter.h"
-#include "model/model_types.h"
+#include "whiteout/flakes/model_types.h"
 #include "particle/particle_material.h"
 #include "types.h"
 

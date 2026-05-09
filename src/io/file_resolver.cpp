@@ -1,6 +1,6 @@
 #include "file_resolver.h"
-#include "common_types.h"
-#include "io/path_utf8.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/util/path_utf8.h"
 
 namespace whiteout::flakes::io {
 namespace fs = std::filesystem;

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "common_types.h"
-#include "content_provider.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/content_provider.h"
 
 #include <filesystem>
 #include <memory>

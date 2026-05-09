@@ -1,11 +1,11 @@
 #pragma once
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "model/actor_manager.h"
-#include "model/model_types.h"
-#include "model/model_source.h"
+#include "whiteout/flakes/model_types.h"
+#include "whiteout/flakes/model_source.h"
 #include "render_target.h"
-#include "gfx/gfx_types.h"
+#include "whiteout/flakes/gfx_types.h"
 #include <vector>
 #include <string>
 #include <thread>

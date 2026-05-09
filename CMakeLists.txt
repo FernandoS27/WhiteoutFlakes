@@ -169,6 +169,7 @@ set_target_properties(WhiteoutFlakesGfx PROPERTIES
 )
 
 target_include_directories(WhiteoutFlakesGfx PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
@@ -250,6 +251,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/io/event_data.cpp
     src/io/slk.cpp
     src/io/texture_image_usage.cpp
+    src/public_api/renderer_api.cpp
 )
 
 add_dependencies(WhiteoutFlakesLib WhiteoutFlakesShaders)
@@ -260,6 +262,7 @@ set_target_properties(WhiteoutFlakesLib PROPERTIES
 )
 
 target_include_directories(WhiteoutFlakesLib PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/io"
@@ -328,6 +331,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/bls/bls_reflect_tool.cpp")
       RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/standalone"
   )
   target_include_directories(BlsReflect PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/include"
       "${CMAKE_CURRENT_SOURCE_DIR}/src"
       "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer")
   target_link_libraries(BlsReflect PRIVATE whiteout_lib d3d11.lib d3dcompiler.lib)

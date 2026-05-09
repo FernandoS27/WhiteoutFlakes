@@ -1,7 +1,7 @@
 #include "io/file_content_provider.h"
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "file_resolver.h"
-#include "io/path_utf8.h"
+#include "whiteout/flakes/util/path_utf8.h"
 
 #include <whiteout/utils/blizzard_game_finder.h>
 

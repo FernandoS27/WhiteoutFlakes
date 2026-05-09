@@ -1,6 +1,16 @@
 #pragma once
 
-#include "common_types.h"
+// ============================================================================
+// WhiteoutFlakes — event-data POD types + lookup.
+//
+// SpnEntry / SplEntry / UbrEntry / SndEntry are read from .slk files and
+// indexed by event id. Renderer subsystems and host code (sound emitter)
+// look them up via the FindXxx helpers. Loading is one-shot via
+// LoadEventDataFiles, called by the host once a content provider is
+// available.
+// ============================================================================
+
+#include "types.h"
 
 #include <string>
 #include <string_view>
@@ -60,4 +70,11 @@ const SplEntry* FindSpl(std::string_view id);
 const UbrEntry* FindUbr(std::string_view id);
 const SndEntry* FindSnd(std::string_view id);
 
+}  // namespace whiteout::flakes::io
+
+namespace whiteout::flakes {
+using ::whiteout::flakes::io::SndEntry;
+using ::whiteout::flakes::io::SpnEntry;
+using ::whiteout::flakes::io::SplEntry;
+using ::whiteout::flakes::io::UbrEntry;
 }

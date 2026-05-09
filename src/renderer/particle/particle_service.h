@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "particle_geometry.h"
 #include "plane_emitter.h"
 #include "types.h"

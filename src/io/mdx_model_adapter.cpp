@@ -1,8 +1,8 @@
 #include "mdx_model_adapter.h"
-#include "common_types.h"
-#include "io/content_provider.h"
-#include "team_glow_data.h"
-#include "texture_image_usage.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/content_provider.h"
+#include "whiteout/flakes/util/team_glow_data.h"
+#include "whiteout/flakes/util/texture_image_usage.h"
 #include "renderer/model/model_source_utils.h"
 #include <cmath>
 #include <cstdio>

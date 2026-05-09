@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "renderer/types.h"
 #include "renderer/bls/bls_cb_layout.h"
 #include "renderer/bls/bls_mat_params.h"

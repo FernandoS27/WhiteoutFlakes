@@ -1,6 +1,6 @@
 #include "settings_ini.h"
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "renderer/render_service.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 

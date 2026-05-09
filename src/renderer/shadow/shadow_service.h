@@ -1,7 +1,7 @@
 #pragma once
 
-#include "common_types.h"
-#include "shadow_params.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/shadow_params.h"
 #include "renderer/types.h"
 #include "gfx/gfx.h"
 

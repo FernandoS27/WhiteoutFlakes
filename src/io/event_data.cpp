@@ -1,6 +1,6 @@
-#include "io/event_data.h"
-#include "common_types.h"
-#include "io/content_provider.h"
+#include "whiteout/flakes/event_data.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/content_provider.h"
 #include "slk.h"
 
 #include <cctype>

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "common_types.h"
-#include "model/model_source.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/model_source.h"
 #include "types.h"
 
 #include <memory>

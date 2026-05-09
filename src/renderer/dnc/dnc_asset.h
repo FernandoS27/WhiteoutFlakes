@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "io/mdx_animation.h"
 #include "renderer/dnc/dnc_service.h"
 #include "renderer/types.h"

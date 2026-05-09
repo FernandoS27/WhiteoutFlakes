@@ -1,10 +1,10 @@
 #pragma once
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "bls_frame.h"
 #include "bls_permuter.h"
 #include "bls_pso_builder.h"
-#include "model/model_types.h"
+#include "whiteout/flakes/model_types.h"
 #include "render_target.h"
 #include "types.h"
 

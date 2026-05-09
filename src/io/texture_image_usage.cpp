@@ -1,5 +1,5 @@
-#include "texture_image_usage.h"
-#include "common_types.h"
+#include "whiteout/flakes/util/texture_image_usage.h"
+#include "whiteout/flakes/types.h"
 
 #include <algorithm>
 #include <cctype>

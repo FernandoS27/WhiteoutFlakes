@@ -1,9 +1,9 @@
 #include "renderer/dnc/dnc_service.h"
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "dnc_asset.h"
 #include "dnc_cache.h"
-#include "io/content_provider.h"
+#include "whiteout/flakes/content_provider.h"
 
 #include <algorithm>
 #include <cmath>

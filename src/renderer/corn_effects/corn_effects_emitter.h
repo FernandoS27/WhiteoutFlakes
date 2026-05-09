@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "renderer/types.h"
 #include "renderer/corn_effects/corn_effects_gfx_backend.h"
 

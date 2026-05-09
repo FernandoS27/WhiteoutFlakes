@@ -1,5 +1,5 @@
 #include "render_window.h"
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "renderer/render_service.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/frame_ticker.h"
@@ -7,7 +7,7 @@
 #include "renderer/debug/debug_renderer.h"
 #include "renderer/particle/splat_service.h"
 #include "renderer/assets/replaceable_texture_manager.h"
-#include "io/replaceable_paths.h"
+#include "whiteout/flakes/util/replaceable_paths.h"
 #include "resource.h"
 #include <windowsx.h>
 #include <commdlg.h>

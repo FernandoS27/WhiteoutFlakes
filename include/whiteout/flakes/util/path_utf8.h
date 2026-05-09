@@ -1,6 +1,10 @@
 #pragma once
 
-#include "common_types.h"
+// ============================================================================
+// WhiteoutFlakes — UTF-8 / std::filesystem::path helpers.
+// ============================================================================
+
+#include "../types.h"
 
 #include <filesystem>
 #include <string>
@@ -36,4 +40,9 @@ inline std::string PathToUtf8(const std::filesystem::path& p) {
     return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
 }
 
+}  // namespace whiteout::flakes::io
+
+namespace whiteout::flakes {
+using ::whiteout::flakes::io::FsPathFromUtf8;
+using ::whiteout::flakes::io::PathToUtf8;
 }

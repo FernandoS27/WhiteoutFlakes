@@ -1,6 +1,10 @@
 #pragma once
 
-#include "common_types.h"
+// ============================================================================
+// WhiteoutFlakes — tileset enumeration + replaceable-path resolver.
+// ============================================================================
+
+#include "../types.h"
 
 namespace whiteout::flakes::io {
 class IContentProvider;
@@ -39,4 +43,13 @@ const char* ReplaceableCanonicalPath(i32 replaceableId);
 
 void LoadGameDataFiles(IContentProvider* cp, bool force = false);
 
+}  // namespace whiteout::flakes::io
+
+namespace whiteout::flakes {
+using ::whiteout::flakes::io::Tileset;
+using ::whiteout::flakes::io::TilesetName;
+using ::whiteout::flakes::io::SetCurrentTileset;
+using ::whiteout::flakes::io::GetCurrentTileset;
+using ::whiteout::flakes::io::ReplaceableCanonicalPath;
+using ::whiteout::flakes::io::LoadGameDataFiles;
 }

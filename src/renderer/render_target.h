@@ -1,43 +1,23 @@
 #pragma once
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "gfx/gfx.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/enums.h"
+#include "whiteout/flakes/display.h"
 
 namespace whiteout::flakes::renderer {
 
-struct Rect {
-    i32 left, top, right, bottom;
-};
-
-using RenderTargetId = u32;
-
-enum class RenderMode : u8 {
-    SD = 0,
-    HD = 1,
-};
-
-enum class LightingMode : u8 {
-    InGame  = 0,
-    Glue    = 1,
-    Dynamic = 2,
-};
-
-enum class IblMode : u8 {
-    Portrait = 0,
-    DayNight = 1,
-    Dungeon  = 2,
-    Sunset   = 3,
-};
-
-struct DisplayFlags {
-    bool showGrid       = true;
-    bool showParticles  = true;
-    bool showRibbons    = true;
-    bool showCollisions = false;
-    bool showLights     = false;
-    bool showEvents     = true;
-    RenderMode renderMode = RenderMode::SD;
-};
+// Public-API value types are re-imported into the renderer-internal namespace
+// so existing code that says `whiteout::flakes::renderer::Rect` /
+// `whiteout::flakes::renderer::RenderMode` / etc. keeps compiling. The
+// canonical definitions live in include/whiteout/flakes/{types,enums,display}.h.
+using ::whiteout::flakes::Rect;
+using ::whiteout::flakes::RenderTargetId;
+using ::whiteout::flakes::RenderMode;
+using ::whiteout::flakes::LightingMode;
+using ::whiteout::flakes::IblMode;
+using ::whiteout::flakes::DisplayFlags;
 
 struct RenderTarget {
     RenderTargetId        id     = 0;

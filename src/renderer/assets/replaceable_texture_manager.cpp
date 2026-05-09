@@ -1,9 +1,9 @@
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/assets/texture_asset_manager.h"
-#include "team_glow_data.h"
-#include "io/content_provider.h"
-#include "io/event_data.h"
-#include "io/replaceable_paths.h"
+#include "whiteout/flakes/util/team_glow_data.h"
+#include "whiteout/flakes/content_provider.h"
+#include "whiteout/flakes/event_data.h"
+#include "whiteout/flakes/util/replaceable_paths.h"
 #include "model/model_source_utils.h"
 #include "dbg_print.h"
 

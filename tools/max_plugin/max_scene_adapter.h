@@ -23,9 +23,9 @@
 #include <string>
 #include <functional>
 
-#include "common_types.h"
-#include "renderer/model/model_source.h"
-#include "renderer/model/model_types.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/model_source.h"
+#include "whiteout/flakes/model_types.h"
 #include "io/file_content_provider.h"
 
 // ============================================================================

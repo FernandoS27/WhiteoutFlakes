@@ -1,7 +1,15 @@
 #pragma once
 
-#include "common_types.h"
-#include "types.h"
+// ============================================================================
+// WhiteoutFlakes — coordinate-system helpers.
+//
+// Convert between Blizzard / Max axis conventions. Used by adapters that
+// import data authored in foreign coord spaces.
+// ============================================================================
+
+#include "../types.h"
+
+#include <cmath>
 
 namespace whiteout::flakes::renderer {
 
@@ -46,4 +54,12 @@ public:
     static Matrix44f  ToDefault(CoordSpace from, const Matrix44f& M)      { return ConvertTransform(from, Default(), M); }
 };
 
+}  // namespace whiteout::flakes::renderer
+
+namespace whiteout::flakes {
+using ::whiteout::flakes::renderer::CoordSpace;
+using ::whiteout::flakes::renderer::CoordinateSystem;
+using ::whiteout::flakes::renderer::ForwardAxis;
+using ::whiteout::flakes::renderer::DefaultForwardAxis;
+using ::whiteout::flakes::renderer::kDefaultCoordSpace;
 }

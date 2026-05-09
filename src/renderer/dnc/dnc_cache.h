@@ -1,8 +1,8 @@
 #pragma once
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "dnc_asset.h"
-#include "io/content_provider.h"
+#include "whiteout/flakes/content_provider.h"
 
 #include <memory>
 #include <string>

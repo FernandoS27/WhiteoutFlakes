@@ -1,10 +1,10 @@
 #pragma once
 
 #include "../gfx/gfx.h"
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "animation/animation_driver.h"
 #include "effects/event_emitter_pool.h"
-#include "model/model_source.h"
+#include "whiteout/flakes/model_source.h"
 #include "model/model_template.h"
 #include "model/render_model.h"
 #include "render_target.h"  // RenderMode

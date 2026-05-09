@@ -9,7 +9,7 @@
 #include "assets/sampler_asset_manager.h"
 #include "assets/texture_asset_manager.h"
 #include "assets/viewcube_atlas.h"
-#include "coordinate_system.h"
+#include "whiteout/flakes/util/coordinate_system.h"
 
 #include <cmath>
 #include <cstring>

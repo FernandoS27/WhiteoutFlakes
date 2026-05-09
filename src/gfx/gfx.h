@@ -1,7 +1,8 @@
 #pragma once
 
-#include "common_types.h"
-#include "gfx/gfx_types.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/gfx_types.h"
+#include "gfx/gfx_pipeline_types.h"
 #include <memory>
 
 namespace whiteout::flakes::gfx {

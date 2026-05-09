@@ -1,6 +1,6 @@
 #include "renderer/corn_effects/corn_effects_asset_cache.h"
 
-#include "io/content_provider.h"
+#include "whiteout/flakes/content_provider.h"
 
 #include <cornflakes/interface/asset/effect_asset_model.hpp>
 #include <cornflakes/interface/asset/pkb_reader.hpp>

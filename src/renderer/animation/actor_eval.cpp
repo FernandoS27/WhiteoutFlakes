@@ -11,18 +11,18 @@
 // ============================================================================
 
 #include "animation/actor_eval_context.h"
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "constants.h"
-#include "coordinate_system.h"
+#include "whiteout/flakes/util/coordinate_system.h"
 #include "model/model_instance.h"
 #include "model/model_template.h"
-#include "model/model_types.h"
+#include "whiteout/flakes/model_types.h"
 #include "particle/particle_service.h"
 #include "particle/splat_service.h"
 #include "corn_effects/corn_effects_service.h"
 #include "corn_effects/corn_effects_emitter.h"
 #include "scene_manager.h"
-#include "sound_emitter.h"
+#include "whiteout/flakes/sound_emitter.h"
 #include "effects/spn_spawner.h"
 
 #include <algorithm>

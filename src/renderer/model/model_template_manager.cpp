@@ -1,9 +1,9 @@
 #include "renderer/model/model_template_manager.h"
 
 #include "gfx/gfx.h"
-#include "io/content_provider.h"
+#include "whiteout/flakes/content_provider.h"
 #include "io/mdx_model_adapter.h"
-#include "io/path_utf8.h"
+#include "whiteout/flakes/util/path_utf8.h"
 #include "renderer/animation/animation.h"
 #include <whiteout/models/mdx/parser.h>
 

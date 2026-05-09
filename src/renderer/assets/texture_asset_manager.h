@@ -1,7 +1,7 @@
 #pragma once
 
 #include "../gfx/gfx.h"
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "assets/sampler_asset_manager.h"
 
 #include <functional>

@@ -1,5 +1,5 @@
 #pragma once
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include <vector>
 
 namespace whiteout::flakes::renderer::assets {

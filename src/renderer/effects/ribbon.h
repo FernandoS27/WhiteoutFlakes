@@ -1,7 +1,13 @@
 #pragma once
 
-#include "common_types.h"
+// Internal ribbon simulation system. The public RibbonEmitterConfig
+// canonically lives in include/whiteout/flakes/model_types.h; this header
+// adds the emitter / segment / system internals built on top of it.
+
+#include "whiteout/flakes/types.h"
 #include "types.h"
+#include "whiteout/flakes/model_types.h"
+
 #include <vector>
 #include <unordered_map>
 #include <cmath>
@@ -13,19 +19,6 @@ struct RibbonSegment {
     Vector3f top = {0,0,0};
     Vector3f bot = {0,0,0};
     f32      age = 0;
-};
-
-struct RibbonEmitterConfig {
-    i32   textureId  = -1;
-    i32   filterMode = 0;
-    i32   rows = 1, cols = 1;
-    bool  unshaded   = false;
-    bool  twoSided   = true;
-    f32   emission   = 10.0f;
-    f32   life       = 1.0f;
-    f32   gravity    = 0.0f;
-
-    i32   priorityPlane = 0;
 };
 
 struct RibbonEmitterState {

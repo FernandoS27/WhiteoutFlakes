@@ -1,4 +1,4 @@
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "bls_container.h"
 
 #include <cstdio>

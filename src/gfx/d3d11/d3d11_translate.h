@@ -10,7 +10,7 @@
 #include <dxgi.h>
 #include <cassert>
 
-#include "gfx/gfx_types.h"
+#include "gfx/gfx_pipeline_types.h"
 
 namespace whiteout::flakes::gfx::d3d11 {
 

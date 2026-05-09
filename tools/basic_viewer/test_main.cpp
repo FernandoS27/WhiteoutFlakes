@@ -1,4 +1,4 @@
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "renderer/model/model_loader.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
@@ -8,8 +8,8 @@
 #include "windows_sound_emitter.h"
 #include "render_window.h"
 #include "settings_ini.h"
-#include "gfx/gfx_types.h"
-#include "io/path_utf8.h"
+#include "whiteout/flakes/gfx_types.h"
+#include "whiteout/flakes/util/path_utf8.h"
 
 #include <cctype>
 #include <chrono>

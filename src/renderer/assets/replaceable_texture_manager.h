@@ -1,8 +1,8 @@
 #pragma once
 
 #include "../gfx/gfx.h"
-#include "../io/replaceable_paths.h"
-#include "common_types.h"
+#include "whiteout/flakes/util/replaceable_paths.h"
+#include "whiteout/flakes/types.h"
 #include "model/model_instance.h"
 
 #include <atomic>

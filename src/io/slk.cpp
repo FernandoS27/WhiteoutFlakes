@@ -1,5 +1,5 @@
 #include "slk.h"
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 
 #include <cctype>
 #include <string_view>

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "common_types.h"
-#include "sound_emitter.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/sound_emitter.h"
 
 #include <atomic>
 #include <mutex>

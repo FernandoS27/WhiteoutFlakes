@@ -12,7 +12,7 @@
 // and reacts on the next frame.
 // ============================================================================
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "render_target.h"  // DisplayFlags, RenderMode, LightingMode, IblMode
 
 #include <atomic>

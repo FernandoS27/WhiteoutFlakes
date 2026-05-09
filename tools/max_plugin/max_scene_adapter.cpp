@@ -4,11 +4,11 @@
 // ============================================================================
 
 #include "max_scene_adapter.h"
-#include "common_types.h"
-#include "io/team_glow_data.h"
-#include "io/content_provider.h"
-#include "io/texture_image_usage.h"
-#include "renderer/coordinate_system.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/util/team_glow_data.h"
+#include "whiteout/flakes/content_provider.h"
+#include "whiteout/flakes/util/texture_image_usage.h"
+#include "whiteout/flakes/util/coordinate_system.h"
 #include "renderer/model/model_source_utils.h"
 
 #include <maxscript/maxscript.h>

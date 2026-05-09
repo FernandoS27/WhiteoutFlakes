@@ -1,11 +1,11 @@
 #pragma once
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "model/actor_manager.h"
 #include "camera.h"
-#include "model/model_source.h"
+#include "whiteout/flakes/model_source.h"
 #include "model/model_template_manager.h"
-#include "model/model_types.h"
+#include "whiteout/flakes/model_types.h"
 #include "../io/file_content_provider.h"
 
 #include <atomic>

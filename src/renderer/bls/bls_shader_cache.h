@@ -1,8 +1,8 @@
 #pragma once
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "bls_container.h"
-#include "content_provider.h"
+#include "whiteout/flakes/content_provider.h"
 #include "gfx/gfx.h"
 
 #include <array>

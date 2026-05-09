@@ -14,7 +14,7 @@
 // Loader, Pipeline) — no friend declarations.
 // ============================================================================
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 
 namespace whiteout::flakes::renderer::animation { struct ActorEvalContext; }
 

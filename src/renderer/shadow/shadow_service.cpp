@@ -1,6 +1,6 @@
 #include "renderer/shadow/shadow_service.h"
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 
 #include <algorithm>
 #include <cmath>

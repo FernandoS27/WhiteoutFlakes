@@ -1,6 +1,6 @@
 #include "shadow_pass.h"
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "renderer/render_service.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_detail.h"

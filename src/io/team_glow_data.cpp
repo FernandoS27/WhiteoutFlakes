@@ -1,5 +1,5 @@
-#include "team_glow_data.h"
-#include "common_types.h"
+#include "whiteout/flakes/util/team_glow_data.h"
+#include "whiteout/flakes/types.h"
 
 #include <whiteout/textures/tga/tga.h>
 #include <whiteout/textures/texture.h>

@@ -10,8 +10,8 @@
 #include "renderer/dnc/dnc_service.h"
 #include "renderer/shadow/shadow_service.h"
 #include "renderer/model/model_source_utils.h"
-#include "io/content_provider.h"
-#include "io/texture_image_usage.h"
+#include "whiteout/flakes/content_provider.h"
+#include "whiteout/flakes/util/texture_image_usage.h"
 
 #include <cstdio>
 #include <filesystem>

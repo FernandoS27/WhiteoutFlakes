@@ -1,8 +1,8 @@
 #pragma once
 
 #include "../gfx/gfx.h"
-#include "common_types.h"
-#include "model/model_types.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/model_types.h"
 #include "particle.h"
 #include "render_target.h"  // RenderMode
 #include "effects/ribbon.h"

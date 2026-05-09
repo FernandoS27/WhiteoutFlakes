@@ -1,7 +1,7 @@
 #include "windows_sound_emitter.h"
 
-#include "io/content_provider.h"
-#include "io/event_data.h"
+#include "whiteout/flakes/content_provider.h"
+#include "whiteout/flakes/event_data.h"
 
 #include <algorithm>
 #include <cstdio>

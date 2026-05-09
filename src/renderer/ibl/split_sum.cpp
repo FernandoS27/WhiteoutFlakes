@@ -1,6 +1,6 @@
 #include "split_sum.h"
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 
 #include <cmath>
 #include <algorithm>

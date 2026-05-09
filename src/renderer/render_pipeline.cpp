@@ -25,7 +25,7 @@
 #include "renderer/model/model_template.h"
 #include "renderer/model/model_template_manager.h"
 #include "compiled_shaders.h"
-#include "team_glow_data.h"
+#include "whiteout/flakes/util/team_glow_data.h"
 #include "bls/bls_shader_cache.h"
 #include "bls/bls_program.h"
 #include "bls/bls_pso_builder.h"

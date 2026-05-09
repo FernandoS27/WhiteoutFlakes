@@ -1,8 +1,8 @@
 #pragma once
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "types.h"
-#include "model/model_types.h"
+#include "whiteout/flakes/model_types.h"
 #include <functional>
 #include <unordered_map>
 #include <vector>

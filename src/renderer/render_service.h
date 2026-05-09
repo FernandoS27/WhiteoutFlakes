@@ -1,18 +1,18 @@
 #pragma once
 
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "types.h"
 #include "gfx/gfx.h"
-#include "../io/replaceable_paths.h"
+#include "whiteout/flakes/util/replaceable_paths.h"
 
 #include "animation/actor_eval_context.h"
 #include "model/model_instance.h"
-#include "model/model_types.h"
+#include "whiteout/flakes/model_types.h"
 #include "render_settings.h"
-#include "sound_emitter.h"
+#include "whiteout/flakes/sound_emitter.h"
 #include "render_target.h"
 #include "scene_manager.h"
-#include "model/model_source.h"
+#include "whiteout/flakes/model_source.h"
 
 // Tool code (and a few subsystem .cpps) historically reaches DncService /
 // ShadowService through this header. The renderer's own private state

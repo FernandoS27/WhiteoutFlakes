@@ -1,6 +1,6 @@
 #include "renderer/particle/splat_service.h"
 
-#include "io/content_provider.h"
+#include "whiteout/flakes/content_provider.h"
 #include "gfx/gfx.h"
 #include "model/model_source_utils.h"
 #include "assets/texture_asset_manager.h"

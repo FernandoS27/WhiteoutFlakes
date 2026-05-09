@@ -14,7 +14,7 @@
 // ============================================================================
 
 #include "max_scene_adapter.h"
-#include "common_types.h"
+#include "whiteout/flakes/types.h"
 #include "renderer/model/model_instance.h"   // Actor
 #include "renderer/model/model_loader.h"
 #include "renderer/render_service.h"
