@@ -27,7 +27,7 @@ enum class GxShaderID : u8 {
     FFXCMAAEdge1           = 0x11,
     FFXCMAAEdgeCombine     = 0x12,
     FFXCMAAProcessAndApply = 0x13,
-    PopcornFX              = 0x14,
+    CornFx              = 0x14,
     ConeIndicator          = 0x15,
     CliffBlightMiscTerrain = 0x16,
     Distortion             = 0x17,

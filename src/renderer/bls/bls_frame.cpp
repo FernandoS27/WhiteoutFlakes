@@ -54,7 +54,7 @@ void BuildHdVsCb(HdVsCb& out, const FrameInputs& in, const MatParams& mat) {
     out.worldView     = wv;
     out.worldViewProj = wvp;
 
-    out.misc          = { in.effectTime, mat.popcornScale, 0.0f, 0.0f };
+    out.misc          = { in.effectTime, mat.cornEffectsScale, 0.0f, 0.0f };
     out.diffuseColor  = mat.diffuseColor;
     out.texMtx0       = in.texMtx0;
     out.texMtx1       = in.texMtx1;

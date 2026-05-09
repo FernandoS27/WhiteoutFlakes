@@ -34,6 +34,7 @@ struct ModelData {
     std::vector<CollisionShapeData>    collisionConfigs;
     std::vector<AttachmentConfig>      attachmentConfigs;
     std::vector<PE1EmitterConfig>      pe1Configs;
+    std::vector<CornEmitterInit>       cornEmitterInits;
     std::vector<EventObjectConfig>     eventObjects;
     std::vector<CameraPreset>          cameraPresets;
     std::vector<SequenceInfo>          sequences;
@@ -83,6 +84,7 @@ public:
     virtual std::vector<CollisionShapeData>    GetCollisionShapes()  = 0;
     virtual std::vector<AttachmentConfig>      GetAttachmentConfigs() { return {}; }
     virtual std::vector<PE1EmitterConfig>      GetPE1Configs()       { return {}; }
+    virtual std::vector<CornEmitterInit>       GetCornEmitterInits() { return {}; }
     virtual std::vector<EventObjectConfig>     GetEventObjects()     { return {}; }
     virtual std::vector<u32>                   GetGlobalSequences()  { return {}; }
 
@@ -98,6 +100,7 @@ public:
         d.collisionConfigs  = GetCollisionShapes();
         d.attachmentConfigs = GetAttachmentConfigs();
         d.pe1Configs        = GetPE1Configs();
+        d.cornEmitterInits  = GetCornEmitterInits();
         d.eventObjects      = GetEventObjects();
         d.globalSequences   = GetGlobalSequences();
         d.sequences         = GetSequences();

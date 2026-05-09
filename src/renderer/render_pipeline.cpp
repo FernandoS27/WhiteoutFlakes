@@ -20,6 +20,8 @@
 #include "renderer/assets/texture_asset_manager.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/scene_manager.h"
+#include "renderer/corn_effects/corn_effects_service.h"
+#include "renderer/corn_effects/corn_effects_gfx_backend.h"
 #include "renderer/model/model_template.h"
 #include "renderer/model/model_template_manager.h"
 #include "compiled_shaders.h"
@@ -332,6 +334,29 @@ bool RenderPipeline::RenderSplatsBls() {
     return true;
 }
 
+void RenderPipeline::RenderCornEffects() {
+    // Cornflakes-driven CornFx emitters. The backend is per-emitter and
+    // built lazily on first spawn; this pass just sets the per-frame inputs
+    // (cmd / view / proj / viewport / effectTime) and runs Simulate which
+    // ticks every emitter — submit() emits GPU draws inline during the
+    // tick, so we MUST run inside the active render pass.
+    if (!impl_->blsCornFxProgram_ || !impl_->blsPsoBuilder_) return;
+    auto* cmd = impl_->gfx_->GetImmediateContext();
+    const f32 aspect = (impl_->height_ > 0) ? (f32)impl_->width_ / (f32)impl_->height_ : 1.0f;
+
+    corn_effects::CornEffectsFrameInputs fi;
+    fi.cmd          = cmd;
+    fi.view         = rs_.Scene().Camera().ViewLH();
+    fi.projection   = rs_.Scene().Camera().ProjectionLH(aspect);
+    fi.viewportRect = { (f32)impl_->width_, (f32)impl_->height_, 0.0f, 0.0f };
+    fi.effectTime   = rs_.Scene().GetAnimationTime() * 0.001f;
+    fi.rtvFormat    = (rs_.Settings().GetRenderMode() == RenderMode::HD)
+                          ? gfx::Format::R16G16B16A16_FLOAT
+                          : gfx::Format::R8G8B8A8_UNORM;
+    rs_.CornEffects().SetFrameInputs(fi);
+    rs_.CornEffects().Simulate(rs_.CornEffects().PendingDt());
+}
+
 void RenderPipeline::RenderRibbons() {
     if (!impl_->blsSdProgram_ || !impl_->blsPsoBuilder_) return;
     auto* cmd = impl_->gfx_->GetImmediateContext();
@@ -526,6 +551,37 @@ bool RenderPipeline::InitBlsShaders() {
     impl_->blsCrystalProgram_ = impl_->blsPrograms_->Load({
         bls::GxShaderID::Crystal, "HD", "Crystal"
     });
+
+    // The BLS catalog name strings are the engine's wire-format shader
+    // filenames on disk — preserved verbatim for interoperability with
+    // shipped game data. Our own symbol names (GxShaderID::CornFx,
+    // blsCornFxProgram_) are trademark-neutral.
+    impl_->blsCornFxProgram_ = impl_->blsPrograms_->Load({
+        bls::GxShaderID::CornFx, "PopcornFX", "PopcornFX"
+    });
+
+    // Hand the corn fx service the renderer's gfx + BLS resources so its
+    // per-emitter CornEffectsGfxBackend can issue draws. The texture resolver
+    // uses TextureAssetManager's path-based lookup; corn fx diffuse paths
+    // come from the .pkb's renderer property block.
+    if (impl_->blsCornFxProgram_) {
+        corn_effects::CornEffectsGfxBackend::Init pInit;
+        pInit.device     = impl_->gfx_.get();
+        pInit.program    = impl_->blsCornFxProgram_;
+        pInit.psoBuilder = impl_->blsPsoBuilder_.get();
+        pInit.textures   = &rs_.Textures();
+        pInit.samplers   = &rs_.Samplers();
+        // Resolve diffuse paths to gfx::TextureHandle by loading them on
+        // demand through the active content provider. CornEffects .pkb assets
+        // reference textures (DDS/TGA/BLP) that live outside the MDX's
+        // own texture list, so a pure shared-cache lookup misses — the
+        // service-level loader caches the result under the normalised
+        // path key so subsequent spawns hit instead of re-decoding.
+        pInit.resolver = [&rs = rs_](std::string_view path) -> gfx::TextureHandle {
+            return rs.LoadCornEffectsTexture(path);
+        };
+        rs_.CornEffects().SetBackendInit(pInit);
+    }
 
     if (impl_->blsHdProgram_ && impl_->blsHdProgram_->vs &&
         !impl_->blsHdProgram_->vs->permuteHandles.empty()) {
@@ -1061,6 +1117,7 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
     if (rs_.Settings().ShowEvents())    RenderSplatsBls();
     RenderGeosets(GeosetBucket::Transparent);
     if (rs_.Settings().ShowParticles()) RenderParticlesBls();
+    if (rs_.Settings().ShowParticles()) RenderCornEffects();
     if (rs_.Settings().ShowRibbons())   RenderRibbons();
     if (rs_.Settings().ShowCollisions()) rs_.Debug().RenderCollisions();
     if (rs_.Settings().ShowLights())     rs_.Debug().RenderLightMarkers();

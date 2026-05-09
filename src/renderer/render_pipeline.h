@@ -105,6 +105,7 @@ private:
     bool RenderGeosetsBls(GeosetBucket bucket);
     bool RenderGeosetsHd(GeosetBucket bucket);
     void RenderRibbons();
+    void RenderCornEffects();
     void RenderGeosets(GeosetBucket bucket);
     void ApplyIblMode(IblMode mode);
     void SetEnvProbe(const std::string& relPath);

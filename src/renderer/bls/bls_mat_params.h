@@ -31,7 +31,7 @@ struct MatParams {
     u32        disables     = 0;
     Vector4f   diffuseColor = {1, 1, 1, 1};
     Vector4f   vertexPad    = {-3.4028235e38f, 1.0f, 0.0f, 0.0f};
-    f32        popcornScale = 1.0f;
+    f32        cornEffectsScale = 1.0f;
     f32        emissiveGain = 0.0f;
     u32        spriteFlags  = 0;
 

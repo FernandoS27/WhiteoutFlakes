@@ -88,9 +88,24 @@ void FrameTicker::EvaluateActorTree() {
     }
 }
 
+void FrameTicker::SilenceCornEmittersRec(Actor& actor) {
+    rs_.CornEffects().SetOwningAgentVisibilityForModel(actor.handle, false);
+    for (u32 ch : actor.children) {
+        if (auto* c = rs_.Scene().Actors().Find(ch))
+            SilenceCornEmittersRec(*c);
+    }
+}
+
 void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx,
                                        i32 ancestorClock) {
-    if (actor.IsChild() && actor.parentVisibility <= 0.02f) return;
+    if (actor.IsChild() && actor.parentVisibility <= 0.02f) {
+        // Hidden subtree: still tell descendants' corn fx emitters they're
+        // invisible so they don't keep playing on stale state. Other
+        // per-frame work (animation eval, particle sim, ribbon sim) is
+        // already gated elsewhere on parentVisibility.
+        SilenceCornEmittersRec(actor);
+        return;
+    }
 
     if (actor.role != ActorRole::External && actor.animation.HasSource()) {
         i32 localTimeMs;
@@ -171,6 +186,12 @@ void FrameTicker::UpdateAnimation() {
 void FrameTicker::UpdateParticles(f32 dt) {
     rs_.Particles().Simulate(dt);
     rs_.Splats().Tick();
+    // CornFx deliberately is NOT ticked here — its cornflakes runtime
+    // emits GPU draws inline during runtime->tick() via the backend's
+    // submit(), so the tick must run inside a render pass. RenderPipeline
+    // calls CornEffects().Simulate(dt) from its corn fx pass; we just stash
+    // dt for the pipeline to pick up.
+    rs_.CornEffects().SetPendingDt(dt);
 }
 
 void FrameTicker::UpdatePE1(f32 dt) {

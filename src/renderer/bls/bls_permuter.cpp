@@ -50,7 +50,7 @@ PermuteIndices SelectPermutes(const RenderState& s) {
     PermuteIndices out{0, 0};
 
     switch (s.shaderId) {
-        case GxShaderID::PopcornFX: {
+        case GxShaderID::CornFx: {
 
             out.vs = Pack({2,2,2,3,3}, {
                 (flags >> 5) & 1u,
@@ -223,7 +223,7 @@ PermuteIndices SelectPermutes(const RenderState& s) {
 
 PermuteCounts ExpectedPermuteCounts(GxShaderID id) {
     switch (id) {
-        case GxShaderID::PopcornFX:              return {  72, 2304 };
+        case GxShaderID::CornFx:              return {  72, 2304 };
         case GxShaderID::HD:
         case GxShaderID::Crystal:                return { 144,  512 };
         case GxShaderID::SD_on_HD:               return { 144,  384 };

@@ -844,6 +844,10 @@ FrameState MdxModelAdapter::Evaluate(i32 sequenceIdx, i32 timeMs, i32 globalTime
         auto [t, s, e] = effectiveTime(tr.globalSequenceId);
         return EvaluateTrackVec3(tr, t, s, e, def);
     };
+    auto evalVec4 = [&](const Track<Vector4f>& tr, const Vector4f& def) {
+        auto [t, s, e] = effectiveTime(tr.globalSequenceId);
+        return EvaluateTrackVec4(tr, t, s, e, def);
+    };
     auto evalQuat = [&](const Track<Quaternion>& tr, const Quaternion& def) {
         auto [t, s, e] = effectiveTime(tr.globalSequenceId);
         return EvaluateTrackQuat(tr, t, s, e, def);
@@ -1023,6 +1027,73 @@ FrameState MdxModelAdapter::Evaluate(i32 sequenceIdx, i32 timeMs, i32 globalTime
         fs.pe1States.push_back(ps);
     }
 
+    // ---- CornEmitter (CornFx) per-frame state ---------------------
+    // The corn fx host wrapper expects:
+    //   1. World-space transform of the emitter node.
+    //   2. Pre-strip scale extracted from row magnitudes (engine `m_scale`).
+    //   3. The transform with the scale stripped (orthonormal rotation).
+    //   4. A +π/2 Z-rotation to match the engine's MDX→corn fx spawn
+    //      frame (treats the emitter node's local +Y as spawn-forward,
+    //      same correction PE2 receives at spawn).
+    // KPP* tracks: WhiteoutLib's parser routes them into mis-named fields:
+    //   KPPA → `lifeSpanTracks`         (engine alphaKeys)
+    //   KPPC → `colorTracks`            (engine colorKeys)
+    //   KPPE → `emissionRateTracks`     (engine emissionRateKeys)
+    //   KPPL → `lifeSpanVariationTracks`(engine lifespanKeys)
+    //   KPPS → `speedTracks`            (engine speedKeys)
+    //   KPPV → `visibilityTracks`       (parsed but engine never reads)
+    fs.cornStates.resize(model_.cornEmitters.size());
+    const Matrix44f kCornFxSpawnFrameRotation = Matrix44f::rotation_z(
+        1.5707963267948966f);
+    for (i32 i = 0; i < (i32)model_.cornEmitters.size(); ++i) {
+        const auto& ce = model_.cornEmitters[i];
+        auto& cs = fs.cornStates[i];
+        const i32 nodeIdx = nodeOf(ce.node);
+
+        Matrix44f baseM = worldOf(nodeIdx) * worldTransform;
+
+        auto rowMag = [&](i32 r) {
+            const f32 x = baseM.data[r][0];
+            const f32 y = baseM.data[r][1];
+            const f32 z = baseM.data[r][2];
+            return std::sqrt(x * x + y * y + z * z);
+        };
+        const f32 sX = rowMag(0);
+        const f32 sY = rowMag(1);
+        const f32 sZ = rowMag(2);
+        const f32 scale = (sX + sY + sZ) / 3.0f;
+
+        auto normalizeRow = [&](i32 r, f32 mag) {
+            if (mag > 1.0e-6f) {
+                const f32 inv = 1.0f / mag;
+                baseM.data[r][0] *= inv;
+                baseM.data[r][1] *= inv;
+                baseM.data[r][2] *= inv;
+            }
+        };
+        normalizeRow(0, sX);
+        normalizeRow(1, sY);
+        normalizeRow(2, sZ);
+
+        cs.emitterId       = i;
+        cs.transform       = kCornFxSpawnFrameRotation * baseM;
+        cs.scale           = scale;
+        // The current WhiteoutLib parses CornEmitter tracks into the
+        // engine's actual semantic names (no more KPPL/KPPC mis-mapping):
+        //   lifeSpanTracks     → KPPL particle lifespan
+        //   emissionRateTracks → KPPE
+        //   speedTracks        → KPPS
+        //   colorTracks        → KPPC (Vector3f RGB)
+        //   alphaTracks        → KPPA (folded into color.w for the
+        //                              Game.ColorMultiplier attribute)
+        cs.lifeSpanMul     = evalF32(ce.lifeSpanTracks,     ce.lifeSpan);
+        cs.emissionRateMul = evalF32(ce.emissionRateTracks, ce.emissionRate);
+        cs.speedMul        = evalF32(ce.speedTracks,        ce.speed);
+        const Vector3f rgb = evalVec3(ce.colorTracks,       ce.color);
+        cs.color           = { rgb.x, rgb.y, rgb.z, evalF32(ce.alphaTracks, ce.alpha) };
+        cs.visibility      = gateByBoneAncestors(nodeIdx);
+    }
+
     fs.ribbonStates.resize(model_.ribbonEmitters.size());
 
     for (i32 i = 0; i < (i32)model_.ribbonEmitters.size(); i++) {
@@ -1153,6 +1224,37 @@ std::vector<PE1EmitterConfig> MdxModelAdapter::GetPE1Configs() {
         cfg.lifespan  = pe.lifespan;
         cfg.scale     = 1.0f;
         result.push_back(cfg);
+    }
+    return result;
+}
+
+// CornFx (CornEmitter) per-emitter static config. The runtime hands
+// each init off to CornEffectsService::AddCornEmitter which constructs a
+// cornflakes EffectRuntime keyed by the resolved .pkb path. Per-frame
+// values flow separately through FrameState::cornStates.
+std::vector<CornEmitterInit> MdxModelAdapter::GetCornEmitterInits() {
+    std::vector<CornEmitterInit> result;
+    result.reserve(model_.cornEmitters.size());
+
+    using namespace whiteout::mdx;
+    // CornEffectsScaling flag bit on CornEmitter nodes (preview.exe
+    // ILoadParticleEmittersCornEffects @ 0x7ff609b6ddf0).
+    constexpr whiteout::u32 kCornFxScalingBit = 0x40000;
+
+    for (i32 i = 0; i < (i32)model_.cornEmitters.size(); ++i) {
+        const auto& ce = model_.cornEmitters[i];
+        CornEmitterInit init;
+        init.emitterId           = i;
+        init.pkbPath             = ce.path;
+        init.animVisibilityGuide = ce.animVisibilityGuide;
+        init.defaultLifeSpan     = ce.lifeSpan;
+        init.defaultEmissionRate = ce.emissionRate;
+        init.defaultSpeed        = ce.speed;
+        init.defaultColor        = { ce.color.x, ce.color.y, ce.color.z, ce.alpha };
+        init.replaceableId       = static_cast<i32>(ce.replaceableId);
+        const whiteout::u32 nf   = static_cast<whiteout::u32>(ce.node.flags);
+        init.cornEffectsScaling      = (nf & kCornFxScalingBit) != 0;
+        result.push_back(std::move(init));
     }
     return result;
 }

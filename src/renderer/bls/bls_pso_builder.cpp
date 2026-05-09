@@ -71,6 +71,16 @@ constexpr gfx::InputElement kMeshHDSkinnedNoTangent[] = {
     { "ATTR", 6, gfx::Format::R8G8B8A8_UINT,      4,  1 },
 };
 
+// CornEffects (BasicUV-mode subset). Matches the corn fx VS HAS_VC=1 /
+// HAS_NT=0 / HAS_RANDOM=0 permute — slot 0 only, 64 B / vertex,
+// trivially memcpy-able. See CornEffectsVertex in corn_effects_vertex.h.
+constexpr gfx::InputElement kCornFx[] = {
+    { "ATTR", 0, gfx::Format::R32G32B32_FLOAT,    0,  0 },  // position
+    { "ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 16, 0 },  // color (vc)
+    { "ATTR", 3, gfx::Format::R32G32_FLOAT,       32, 0 },  // uv0
+    { "ATTR", 8, gfx::Format::R32G32B32A32_FLOAT, 48, 0 },  // pivot (particle origin)
+};
+
 }
 
 std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k) {
@@ -85,6 +95,7 @@ std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k) {
         case VertexLayoutKind::MeshHDSkinned: return {kMeshHDSkinned, std::size(kMeshHDSkinned)};
         case VertexLayoutKind::MeshHDSkinnedNoTangent:
             return {kMeshHDSkinnedNoTangent, std::size(kMeshHDSkinnedNoTangent)};
+        case VertexLayoutKind::CornFx:       return {kCornFx,       std::size(kCornFx)};
     }
     return {kMeshSD, std::size(kMeshSD)};
 }

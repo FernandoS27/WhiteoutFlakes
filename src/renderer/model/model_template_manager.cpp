@@ -200,6 +200,7 @@ ModelTemplateManager::ParseAndBuild(const std::string& mdxPath) {
     tmpl->ribbonConfigs     = adapter->GetRibbonConfigs();
     tmpl->collisionConfigs  = adapter->GetCollisionShapes();
     tmpl->pe1Configs        = adapter->GetPE1Configs();
+    tmpl->cornEmitterInits  = adapter->GetCornEmitterInits();
     tmpl->attachmentConfigs = adapter->GetAttachmentConfigs();
     tmpl->eventObjects      = adapter->GetEventObjects();
     tmpl->globalSequences   = adapter->GetGlobalSequences();

@@ -19,6 +19,8 @@
 #include "model/model_types.h"
 #include "particle/particle_service.h"
 #include "particle/splat_service.h"
+#include "corn_effects/corn_effects_service.h"
+#include "corn_effects/corn_effects_emitter.h"
 #include "scene_manager.h"
 #include "sound_emitter.h"
 #include "effects/spn_spawner.h"
@@ -212,6 +214,67 @@ void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
     }
 }
 
+void ApplyCornFrameStates(Actor& mi, const FrameState& state,
+                          const ActorEvalContext& ctx) {
+    if (!ctx.cornEffects) return;
+
+    // Resolve the active sequence name once per actor so each emitter can
+    // re-evaluate its `animVisibilityGuide` against it. Mirrors the engine's
+    // CParticleEmitter (corn fx)::SetCurrentAnimationName call site.
+    // `Sequences()` returns by VALUE — keep the std::string alive across
+    // the loop or the .c_str() pointers go invalid.
+    std::string curAnimName;
+    {
+        const i32 sidx = mi.animation.ActiveSequenceIndex();
+        const auto seqs = mi.animation.Sequences();
+        if (sidx >= 0 && sidx < (i32)seqs.size()) curAnimName = seqs[sidx].name;
+    }
+
+    // Per-actor team color — Actor::teamColor is packed 0x00BBGGRR with
+    // alpha implicit 0xFF (matches Actor::SetTeamColor's encoding). Each
+    // corn fx emitter owns the color it pushes to cornflakes via the
+    // Game.TeamColor attribute, so every actor's emitters get THIS
+    // actor's swatch even when two actors of the same MDX coexist.
+    const Vector4f teamRGBA = {
+        ((mi.teamColor       ) & 0xFF) / 255.0f,
+        ((mi.teamColor >>  8 ) & 0xFF) / 255.0f,
+        ((mi.teamColor >> 16 ) & 0xFF) / 255.0f,
+        1.0f,
+    };
+
+    // Effective owning-agent visibility: the actor's own parentVisibility
+    // (carries the attachment-slot signal) AND the visibility of every
+    // ancestor up to the root (PE1 / SPN / Attachment children inherit the
+    // hide signal of the unit they belong to, even when the immediate
+    // parentVisibility field on the child has never been written by an
+    // attachment driver). cs.visibility carries the per-emitter bone-chain
+    // gate computed by gateByBoneAncestors in the MDX evaluator.
+    bool ancestorVisible = mi.parentVisibility > 0.0f;
+    if (ctx.scene) {
+        for (u32 ph = mi.parent; ph != 0 && ancestorVisible; ) {
+            auto* p = ctx.scene->Actors().Find(ph);
+            if (!p) break;
+            if (p->parentVisibility <= 0.0f) { ancestorVisible = false; break; }
+            ph = p->parent;
+        }
+    }
+
+    for (const auto& cs : state.cornStates) {
+        auto* em = ctx.cornEffects->GetEmitter(mi.handle, cs.emitterId);
+        if (!em) continue;
+        em->SetCurrentAnimationName(curAnimName.c_str());
+        em->SetReplaceableColor(teamRGBA);
+        em->SetModelToWorld(cs.transform);
+        em->SetScale(cs.scale);
+        em->SetEmissionRateMultiplier(cs.emissionRateMul);
+        em->SetLifeSpanMultiplier(cs.lifeSpanMul);
+        em->SetSpeedMultiplier(cs.speedMul);
+        em->SetColor(cs.color);
+        const bool nodeVisible = cs.visibility > 0.0f;
+        em->SetOwningAgentVisibility(ancestorVisible && nodeVisible);
+    }
+}
+
 void ApplyAttachmentStates(Actor& mi, const FrameState& state,
                            const ActorEvalContext& ctx) {
     if (!ctx.scene) return;
@@ -258,6 +321,7 @@ void Actor::ApplyFrameState(const FrameState& state, i32 localTimeMs,
         render.collisionShapes[i].transform = state.collisionTransforms[i];
 
     ApplyAttachmentStates(*this, state, ctx);
+    ApplyCornFrameStates(*this, state, ctx);
 
     if (ctx.fireEvents && !events.Empty()) {
         const i32 activeSeq = animation.ActiveSequenceIndex();

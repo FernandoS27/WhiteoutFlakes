@@ -143,6 +143,13 @@ TextureAssetManager::TryAcquireShared(std::string_view key) {
     return it->second.handle;
 }
 
+gfx::TextureHandle
+TextureAssetManager::LookupShared(std::string_view key) const {
+    std::lock_guard<std::mutex> lock(sharedMutex_);
+    auto it = shared_.find(key);
+    return (it != shared_.end()) ? it->second.handle : gfx::TextureHandle::Invalid;
+}
+
 TextureAssetManager::SharedStats
 TextureAssetManager::GetSharedStats() const {
     std::lock_guard<std::mutex> lock(sharedMutex_);

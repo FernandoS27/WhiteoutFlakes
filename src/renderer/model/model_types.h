@@ -40,6 +40,23 @@ struct PE1EmitterConfig {
     f32 scale    = 1.0f;
 };
 
+// Per-emitter static config for one CornFx (CornEmitter) MDX node.
+// Mirrors what CParticleEmitterCornEffects pulls out of MDLDATA at load time:
+// .pkb path, animation visibility guide, initial multipliers, and the
+// cornEffectsScaling node-flag bit. Used once at registration; per-frame
+// values flow through FrameState::cornStates.
+struct CornEmitterInit {
+    i32          emitterId        = -1;            // Index into model.cornEmitters
+    std::string  pkbPath;                          // CornEmitter::path (.pkb / .pkfx)
+    std::string  animVisibilityGuide;              // Anim-state gate (parsed by emitter)
+    f32          defaultLifeSpan        = 0.0f;
+    f32          defaultEmissionRate    = 0.0f;
+    f32          defaultSpeed           = 0.0f;
+    Vector4f     defaultColor           = {1, 1, 1, 1};
+    i32          replaceableId          = 0;
+    bool         cornEffectsScaling         = false;   // Node flag bit 0x40000
+};
+
 struct EventObjectConfig {
     enum class Kind : u8 { SPN, SPL, UBR, FPT, SND, Unknown };
 
@@ -289,6 +306,22 @@ struct FrameState {
         f32 gravity, visibility;
     };
     std::vector<PE1FrameState> pe1States;
+
+    // Per-emitter CornFx state. Sampled by MdxModelAdapter::Evaluate
+    // from CornEmitter tracks (KPPL→lifeSpanMul, KPPE→emissionRateMul,
+    // KPPS→speedMul, KPPC→color.xyz, KPPA→color.w). The renderer's
+    // ApplyCornFrameStates pushes these into the matching CornEffectsEmitter.
+    struct CornFrameState {
+        i32       emitterId        = 0;
+        Matrix44f transform        = Matrix44f::identity();
+        f32       scale            = 1.0f;  // engine `m_scale` (avg of row magnitudes pre-strip)
+        f32       lifeSpanMul      = 1.0f;  // KPPL / static lifeSpan
+        f32       emissionRateMul  = 1.0f;  // KPPE / static emissionRate
+        f32       speedMul         = 1.0f;  // KPPS / static speed
+        Vector4f  color            = {1, 1, 1, 1};  // .xyz = KPPC, .w = KPPA
+        f32       visibility       = 1.0f;  // gateByBoneAncestors(node): 0/1 bone-chain gate
+    };
+    std::vector<CornFrameState> cornStates;
 };
 
 }

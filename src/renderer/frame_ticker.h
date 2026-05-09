@@ -40,6 +40,7 @@ private:
     void EvaluateActorTreeRec(model::Actor& actor,
                               const animation::ActorEvalContext& ctx,
                               i32 ancestorClock);
+    void SilenceCornEmittersRec(model::Actor& actor);
     void UpdateAnimation();
     void UpdateParticles(f32 dt);
     void UpdatePE1(f32 dt);

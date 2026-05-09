@@ -110,6 +110,7 @@ void ModelLoader::DestroyActor(u32 handle) {
         a.ReleaseGPU(*rs_.Pipeline().Gfx());
     actors.erase(it);
     rs_.Particles().RemoveModel(handle);
+    rs_.CornEffects().RemoveModel(handle);
 }
 
 void ModelLoader::RequestClearAll() {
@@ -120,6 +121,7 @@ void ModelLoader::RequestClearAll() {
     rs_.Particles().Clear();
     rs_.Splats().Clear();
     rs_.Spn().Clear();
+    rs_.CornEffects().Clear();
 }
 
 void ModelLoader::SetAttachmentConfigs(u32 handle, const std::vector<AttachmentConfig>& configs) {
@@ -192,6 +194,34 @@ void ModelLoader::StageActor(Actor* mi,
 
     for (i32 i= 0; i < (i32)tmpl->pe1Configs.size(); i++)
         mi->render.pe1.AddEmitter(i, tmpl->pe1Configs[i]);
+
+    // CornFx (CornEmitter) — register one emitter per init in the
+    // service's per-(actor, emitterId) map. The emitter loads its .pkb
+    // asset through CornEffectsAssetCache (deduped by path); per-frame state
+    // flows through FrameState::cornStates → ApplyCornFrameStates.
+    const Vector4f teamRGBA = {
+        ((mi->teamColor       ) & 0xFF) / 255.0f,
+        ((mi->teamColor >>  8 ) & 0xFF) / 255.0f,
+        ((mi->teamColor >> 16 ) & 0xFF) / 255.0f,
+        1.0f,
+    };
+    for (const auto& cinit : tmpl->cornEmitterInits) {
+        if (cinit.pkbPath.empty()) continue;
+        auto em = std::make_unique<corn_effects::CornEffectsEmitter>(
+            rs_.CornEffects().Cache(),
+            cinit.pkbPath,
+            cinit.animVisibilityGuide,
+            cinit.replaceableId,
+            cinit.cornEffectsScaling);
+        em->SetEmissionRateMultiplier(cinit.defaultEmissionRate);
+        em->SetLifeSpanMultiplier(cinit.defaultLifeSpan);
+        em->SetSpeedMultiplier(cinit.defaultSpeed);
+        em->SetColor(cinit.defaultColor);
+        // Seed Game.TeamColor from the actor's own swatch so the first
+        // frame's color matches even before ApplyCornFrameStates runs.
+        em->SetReplaceableColor(teamRGBA);
+        rs_.CornEffects().AddCornEmitter(mi->handle, cinit.emitterId, std::move(em));
+    }
 
     mi->events.Reset(tmpl->eventObjects, tmpl->globalSequences);
 

@@ -9,6 +9,12 @@
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/dnc/dnc_service.h"
 #include "renderer/shadow/shadow_service.h"
+#include "renderer/model/model_source_utils.h"
+#include "io/content_provider.h"
+#include "io/texture_image_usage.h"
+
+#include <cstdio>
+#include <filesystem>
 
 namespace whiteout::flakes::renderer {
 
@@ -49,6 +55,7 @@ DebugRenderer& RenderService::Debug()                    { return *impl_->debug_
 
 particle::ParticleService& RenderService::Particles()    { return impl_->particleService_; }
 particle::SplatService&    RenderService::Splats()       { return impl_->splatService_; }
+corn_effects::CornEffectsService&   RenderService::CornEffects()      { return impl_->cornEffectsService_; }
 SpnSpawner&                RenderService::Spn()          { return *impl_->spnSpawner_; }
 
 dnc::DncService*       RenderService::GetDncService()       { return impl_->dncService_.get(); }
@@ -78,6 +85,7 @@ ActorEvalContext RenderService::MakeActorEvalContext() {
     ctx.scene                = impl_->scene_;
     ctx.particles            = &impl_->particleService_;
     ctx.splats               = &impl_->splatService_;
+    ctx.cornEffects              = &impl_->cornEffectsService_;
     ctx.spnSpawner           = impl_->spnSpawner_.get();
     ctx.sound                = impl_->soundEmitter_.get();
     return ctx;
@@ -85,6 +93,56 @@ ActorEvalContext RenderService::MakeActorEvalContext() {
 
 bool RenderService::HasCachedTexture(std::string_view key) const {
     return impl_->textures_ && impl_->textures_->IsCachedShared(key);
+}
+
+gfx::TextureHandle RenderService::LoadCornEffectsTexture(std::string_view path) {
+    if (path.empty() || !impl_->textures_) return gfx::TextureHandle::Invalid;
+    const std::string key = NormalizeTextureKey(path);
+    if (auto cached = impl_->textures_->TryAcquireShared(key);
+        cached != gfx::TextureHandle::Invalid) {
+        return cached;
+    }
+    auto* content = impl_->scene_ ? impl_->scene_->ActiveContentProvider() : nullptr;
+    if (!content) return gfx::TextureHandle::Invalid;
+
+    const std::string pathStr(path);
+    std::string foundExt;
+    auto bytes = content->ReadFile(pathStr, &foundExt);
+    if (!bytes) {
+        // Reforged HD texture paths are sometimes referenced through
+        // CASC virtual roots like `_HD.w3mod/Textures/...`. Try once
+        // without the leading prefix.
+        constexpr std::string_view kHdPrefix = "_HD.w3mod/";
+        if (pathStr.size() > kHdPrefix.size() &&
+            std::string_view(pathStr).substr(0, kHdPrefix.size()) == kHdPrefix) {
+            const std::string stripped = pathStr.substr(kHdPrefix.size());
+            bytes = content->ReadFile(stripped, &foundExt);
+        }
+    }
+    if (!bytes) {
+        std::fprintf(stderr, "[corn_fx] tex read FAIL '%.*s'\n",
+                     (int)path.size(), path.data());
+        return gfx::TextureHandle::Invalid;
+    }
+    if (foundExt.empty()) foundExt = ExtensionLower(std::filesystem::path(pathStr));
+
+    std::vector<u8> rgba;
+    i32 w = 0, h = 0;
+    if (!DecodeToRGBA8(std::span<const u8>{bytes->data(), bytes->size()},
+                       foundExt, rgba, w, h)
+        || w <= 0 || h <= 0) {
+        std::fprintf(stderr, "[corn_fx] tex decode FAIL '%.*s' ext='%s' bytes=%zu\n",
+                     (int)path.size(), path.data(), foundExt.c_str(), bytes->size());
+        return gfx::TextureHandle::Invalid;
+    }
+
+    gfx::TextureDesc desc;
+    desc.width     = w;
+    desc.height    = h;
+    desc.mipLevels = 1;
+    desc.format    = io::ApplyTextureSrgbPolicy(gfx::Format::R8G8B8A8_UNORM, path);
+    desc.usage     = gfx::TextureUsage::ShaderResource;
+    return impl_->textures_->AcquireShared(key, desc, rgba.data());
 }
 
 bool RenderService::HasDeviceAssetManagers() const {
@@ -95,6 +153,11 @@ void RenderService::CreateDeviceAssetManagers(gfx::IGFXDevice& gfx) {
     impl_->samplers_     = std::make_unique<SamplerAssetManager>(gfx);
     impl_->textures_     = std::make_unique<TextureAssetManager>(gfx);
     impl_->replaceables_ = std::make_unique<ReplaceableTextureManager>(gfx, *impl_->textures_);
+    // Forward the scene's content provider to the corn fx asset cache —
+    // corn fx .pkb assets resolve through the same CASC/MPQ stack as the
+    // rest of the renderer's textures. Hosts that swap the provider at
+    // runtime should re-call CornEffects().SetContentProvider().
+    impl_->cornEffectsService_.SetContentProvider(impl_->scene_->ActiveContentProvider());
 }
 
 void RenderService::ResetDeviceAssetManagers() {

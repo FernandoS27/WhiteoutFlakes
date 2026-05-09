@@ -10,6 +10,7 @@
 #include "particle.h"
 #include "particle/particle_service.h"
 #include "particle/splat_service.h"
+#include "corn_effects/corn_effects_service.h"
 #include "dnc/dnc_service.h"
 #include "shadow/shadow_service.h"
 #include "effects/ribbon.h"
@@ -43,6 +44,7 @@ struct RenderService::Impl {
     SceneManager*                                 scene_ = nullptr;
     particle::ParticleService                     particleService_;
     particle::SplatService                        splatService_;
+    corn_effects::CornEffectsService                       cornEffectsService_;
     std::unique_ptr<dnc::DncService>              dncService_;
     std::unique_ptr<shadow::ShadowService>        shadowService_;
     std::unique_ptr<effects::SpnSpawner>          spnSpawner_;

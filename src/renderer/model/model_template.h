@@ -44,6 +44,7 @@ struct ModelTemplate {
     std::vector<effects::RibbonEmitterConfig> ribbonConfigs;
     std::vector<CollisionShapeData>           collisionConfigs;
     std::vector<PE1EmitterConfig>             pe1Configs;
+    std::vector<CornEmitterInit>              cornEmitterInits;
     std::vector<AttachmentConfig>             attachmentConfigs;
     std::vector<EventObjectConfig>            eventObjects;
     std::vector<u32>                          globalSequences;

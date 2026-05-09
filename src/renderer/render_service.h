@@ -51,6 +51,7 @@ namespace particle {
     class ParticleService;
     class SplatService;
 }
+namespace corn_effects { class CornEffectsService; }
 
 struct LineVertex {
     Vector3f position;
@@ -109,6 +110,7 @@ public:
     // ---- Per-actor effect services ----
     particle::ParticleService&   Particles();
     particle::SplatService&      Splats();
+    corn_effects::CornEffectsService&     CornEffects();
     effects::SpnSpawner&         Spn();
 
     // ---- App-tunable knobs ----
@@ -131,6 +133,16 @@ public:
     // InitDevice has created the texture manager — so the loader's probe
     // path needs a safe accessor that handles the pre-init window.
     bool HasCachedTexture(std::string_view key) const;
+
+    // Load (or fetch from cache) a corn-fx-referenced diffuse texture.
+    // The .pkb's renderer property block carries paths that aren't part
+    // of the model's MDX texture list, so the corn fx backend's resolver
+    // can't just hit the existing shared cache — this helper reads the
+    // file via the active content provider, decodes it (BLP/DDS/TGA),
+    // and inserts under the normalised path key. Subsequent lookups via
+    // TextureAssetManager::LookupShared then hit. Returns Invalid on
+    // miss (no provider, file not found, or decode failure).
+    gfx::TextureHandle LoadCornEffectsTexture(std::string_view path);
 
     // ---- Pipeline-coordination hooks ----
     // RenderService owns the asset managers; RenderPipeline drives their

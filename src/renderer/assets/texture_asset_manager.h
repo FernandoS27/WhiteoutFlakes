@@ -31,6 +31,12 @@ public:
 
     gfx::TextureHandle TryAcquireShared(std::string_view key);
 
+    // Read-only path→handle lookup. Unlike TryAcquireShared(), does NOT
+    // increment refcount — meant for per-frame resolvers (e.g. corn fx
+    // backend's diffuse resolver) that want to peek at the cache without
+    // owning a reference. Returns Invalid if not cached.
+    gfx::TextureHandle LookupShared(std::string_view key) const;
+
     struct SharedStats {
         usize uniqueEntries = 0;
         usize totalAcquires = 0;

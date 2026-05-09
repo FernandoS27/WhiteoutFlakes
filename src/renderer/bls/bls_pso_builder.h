@@ -24,6 +24,12 @@ enum class VertexLayoutKind : u8 {
     MeshHDSkinned = 5,
 
     MeshHDSkinnedNoTangent = 6,
+
+    // CornFx (BasicUV path, slot 0 only). Matches wc3_shaders/types/
+    // vs_io.slang::CornFxVSInput's HAS_VC=1 / HAS_NT=0 / HAS_RANDOM=0
+    // permute. CornEffectsVertex (corn_effects_vertex.h) is the host-side struct
+    // with the same field offsets so VB writes are trivially memcpy-able.
+    CornFx = 8,
 };
 
 std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k);

@@ -47,6 +47,7 @@ struct RenderPipeline::Impl {
     const bls::BlsProgram*                  blsSdOnHdProgram_  = nullptr;
     const bls::BlsProgram*                  blsHdProgram_      = nullptr;
     const bls::BlsProgram*                  blsCrystalProgram_ = nullptr;
+    const bls::BlsProgram*                  blsCornFxProgram_ = nullptr;
 
     gfx::BufferHandle blsSdVsCb_          = gfx::BufferHandle::Invalid;
     gfx::BufferHandle blsSdPsCb_          = gfx::BufferHandle::Invalid;

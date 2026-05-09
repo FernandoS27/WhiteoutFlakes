@@ -144,6 +144,15 @@ static Vector3f ApplyV3(ScalarFn fn, const Vector3f& a, const Vector3f& ota,
             fn(a.z, ota.z, itb.z, b.z, t)};
 }
 
+template<typename ScalarFn>
+static Vector4f ApplyV4(ScalarFn fn, const Vector4f& a, const Vector4f& ota,
+                        const Vector4f& itb, const Vector4f& b, f32 t) {
+    return {fn(a.x, ota.x, itb.x, b.x, t),
+            fn(a.y, ota.y, itb.y, b.y, t),
+            fn(a.z, ota.z, itb.z, b.z, t),
+            fn(a.w, ota.w, itb.w, b.w, t)};
+}
+
 template<typename T, typename LerpFn, typename CurveFn>
 static T EvaluateTrackImpl(const Track<T>& track, i32 timeMs, i32 seqStart, i32 seqEnd,
                            const T& defaultVal, LerpFn lerp, CurveFn curve,
@@ -196,6 +205,18 @@ Vector3f EvaluateTrackVec3(const Track<Vector3f>& track, i32 timeMs, i32 seqStar
             return it == InterpolationType::Hermite
                 ? ApplyV3(HermiteInterp, a, ota, itb, b, t)
                 : ApplyV3(BezierInterp, a, ota, itb, b, t);
+        });
+}
+
+Vector4f EvaluateTrackVec4(const Track<Vector4f>& track, i32 timeMs, i32 seqStart, i32 seqEnd,
+                           Vector4f defaultVal) {
+    return EvaluateTrackImpl<Vector4f>(track, timeMs, seqStart, seqEnd, defaultVal,
+        [](const Vector4f& a, const Vector4f& b, f32 t) { return Vector4f::lerp(a, b, t); },
+        [](const Vector4f& a, const Vector4f& ota, const Vector4f& itb,
+           const Vector4f& b, f32 t, InterpolationType it) {
+            return it == InterpolationType::Hermite
+                ? ApplyV4(HermiteInterp, a, ota, itb, b, t)
+                : ApplyV4(BezierInterp, a, ota, itb, b, t);
         });
 }
 
@@ -284,6 +305,12 @@ void MdxHierarchy::Build(const whiteout::mdx::Model& model) {
     addAll(model.ribbonEmitters,    HierarchyNode::Source::RibbonEmitter);
     addAll(model.collisionShapes,   HierarchyNode::Source::CollisionShape);
     addAll(model.attachments,       HierarchyNode::Source::Attachment);
+    // CornEmitter (CornFx) nodes need their own palette slot for the
+    // node-anim sweep — without this, MdxModelAdapter's nodeOf(ce.node)
+    // returns -1 and CornEffectsEmitter::SetModelToWorld receives identity,
+    // dumping every emitter at the model origin instead of following its
+    // parented bone's animated transform.
+    addAll(model.cornEmitters,      HierarchyNode::Source::CornEmitter);
     addAll(model.lights,            HierarchyNode::Source::Light);
 
     addAll(model.eventObjects,      HierarchyNode::Source::EventObject);

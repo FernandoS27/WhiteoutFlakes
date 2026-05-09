@@ -13,6 +13,65 @@ set(WHITEOUT_ENABLE_CASC ON CACHE BOOL "Enable CASC archive support" FORCE)
 set(WHITEOUT_ENABLE_MPQ  ON CACHE BOOL "Enable MPQ archive support"  FORCE)
 add_subdirectory(externals/WhiteoutLib)
 
+# cornflakes is folded directly into WhiteoutFlakesLib as a renderer module
+# the cornflakes determinism + warnings INTERFACE targets the upstream project
+# defines are replaced by inline compile flags on WhiteoutFlakesLib.
+set(CORNFLAKES_MODULE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/corn_effects/cornflakes")
+set(CORNFLAKES_SOURCES
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/version.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/core/arena.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/diagnostics/issue.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/diagnostics/frame_trace.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/scheduler/serial_worker_pool.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/service/cornflakes_service.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/asset/asset_reader.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/asset/pkb_reader.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/asset/text_pkfx_reader.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/asset/war3_compatibility_validator.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/asset/object_accessors.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/asset/field_defs_generated.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/binding/effect_binder.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/binding/program_binder.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/binding/renderer_binder.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/binding/sampler_binder.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/binding/external_binding.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/binding/ir_to_cbem_lowerer.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/binding/sampler_resource.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/binding/spatial_layer_resource.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/vm/bytecode_trace.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/vm/cbem/cbem_interpreter.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/vm/cbem/cbem_ir_ops.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/vm/cbem/cbem_cbem_ops.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/vm/cbem/cbem_dispatchers.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/vm/math_functions.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/vm/bytecode_decoder.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sampler/shape.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sampler/curve.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sampler/texture.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sampler/turbulence.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/particle_page.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/spawn_processor.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/spawn_evaluator_driver.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/evolve_page_task.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/simulation_runtime.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/layer_tick_harness.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/particle_pool.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/effect_runtime.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/events/payload_cache_store.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/events/payload_builder.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/events/event_generator.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/events/event_router.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/events/kick_processor.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/render/semantic_slot_reader.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/render/renderer_class_bucket.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/render/render_extractor.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/render/pool_extractor.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/render/ribbon_geometry.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/render/shader_perm.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/render/instance_stream.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/validation/batch_resource_tracker.cpp"
+)
+
 # ============================================================================
 # Slang shader compilation (compile-time: .slang → DXBC → embedded C++ header)
 # ============================================================================
@@ -154,6 +213,11 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/effects/pe1_system.cpp
     src/renderer/effects/ribbon.cpp
     src/renderer/effects/spn_spawner.cpp
+    src/renderer/corn_effects/corn_effects_asset_cache.cpp
+    src/renderer/corn_effects/corn_effects_emitter.cpp
+    src/renderer/corn_effects/corn_effects_gfx_backend.cpp
+    src/renderer/corn_effects/corn_effects_service.cpp
+    ${CORNFLAKES_SOURCES}
     src/renderer/particle/rnd_seed.cpp
     src/renderer/particle/particle_key.cpp
     src/renderer/particle/particle_pool.cpp
@@ -201,6 +265,29 @@ target_include_directories(WhiteoutFlakesLib PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/io"
     "${SHADER_OUT_DIR}"
 )
+# cornflakes module include layout:
+#   src/renderer/corn_effects          → so <cornflakes/interface/...> resolves
+#                                    (public headers used by corn-fx host code).
+#   cornflakes/internal           → so <cornflakes/...> resolves to the
+#                                    private impl-side headers (e.g.
+#                                    cornflakes/asset/field_defs.hpp lives at
+#                                    cornflakes/internal/cornflakes/asset/...).
+target_include_directories(WhiteoutFlakesLib PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/corn_effects"
+    "${CORNFLAKES_MODULE_DIR}/internal"
+)
+
+# cornflakes' core/determinism.hpp asserts CORNFLAKES_DETERMINISM_FLAGS_APPLIED
+# is defined as 1 in every TU that includes it. Upstream's INTERFACE target
+# also pins MSVC FP semantics to /fp:precise /fp:except- to keep corn-fx
+# evaluation bit-deterministic. Since cornflakes is now part of WhiteoutFlakesLib,
+# we apply the same flags to the whole library.
+target_compile_definitions(WhiteoutFlakesLib PRIVATE
+    CORNFLAKES_DETERMINISM_FLAGS_APPLIED=1
+)
+if(MSVC)
+    target_compile_options(WhiteoutFlakesLib PRIVATE /fp:precise /fp:except-)
+endif()
 
 target_link_libraries(WhiteoutFlakesLib PUBLIC
     whiteout_lib

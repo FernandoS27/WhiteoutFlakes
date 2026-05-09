@@ -33,6 +33,7 @@ public:
     std::vector<::whiteout::flakes::renderer::model::CollisionShapeData>    GetCollisionShapes() override;
     std::vector<::whiteout::flakes::renderer::model::AttachmentConfig>      GetAttachmentConfigs() override;
     std::vector<::whiteout::flakes::renderer::model::PE1EmitterConfig>      GetPE1Configs()      override;
+    std::vector<::whiteout::flakes::renderer::model::CornEmitterInit>       GetCornEmitterInits() override;
     std::vector<::whiteout::flakes::renderer::model::EventObjectConfig>     GetEventObjects()    override;
     std::vector<u32>                                                        GetGlobalSequences() override;
 

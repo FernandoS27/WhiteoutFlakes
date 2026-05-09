@@ -20,6 +20,10 @@ whiteout::Vector3f EvaluateTrackVec3(const whiteout::mdx::Track<whiteout::Vector
                                      i32 timeMs, i32 seqStart, i32 seqEnd,
                                      whiteout::Vector3f defaultVal);
 
+whiteout::Vector4f EvaluateTrackVec4(const whiteout::mdx::Track<whiteout::Vector4f>& track,
+                                     i32 timeMs, i32 seqStart, i32 seqEnd,
+                                     whiteout::Vector4f defaultVal);
+
 whiteout::Quaternion EvaluateTrackQuat(const whiteout::mdx::Track<whiteout::Quaternion>& track,
                                        i32 timeMs, i32 seqStart, i32 seqEnd,
                                        whiteout::Quaternion defaultVal);
@@ -34,7 +38,7 @@ struct HierarchyNode {
     const whiteout::mdx::Track<whiteout::Quaternion>* rotation  = nullptr;
     const whiteout::mdx::Track<whiteout::Vector3f>* scaling     = nullptr;
 
-    enum class Source { Bone, Helper, ParticleEmitter, ParticleEmitter2, RibbonEmitter, CollisionShape, Attachment, Light, EventObject, Other };
+    enum class Source { Bone, Helper, ParticleEmitter, ParticleEmitter2, RibbonEmitter, CollisionShape, Attachment, Light, EventObject, CornEmitter, Other };
     Source source = Source::Other;
     i32 sourceIndex = 0;
 };
