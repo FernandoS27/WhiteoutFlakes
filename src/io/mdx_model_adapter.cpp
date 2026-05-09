@@ -59,8 +59,10 @@ void transformTrack(Track<T>& track, Fn fn) {
             fn(k.outTan);
         }
     } else {
-        for (auto& k : track.keys()) {
-            fn(k.value);
+        // keys() returns span<T> directly (no .value wrapper after the
+        // WhiteoutLib timestamps split).
+        for (auto& v : track.keys()) {
+            fn(v);
         }
     }
 }

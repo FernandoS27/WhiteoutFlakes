@@ -69,31 +69,34 @@ struct KeyBracket {
     f32 t = 0.0f;
 };
 
-template<typename KeyType>
-static KeyBracket FindBracket(const KeyType* keys, i32 count, i32 timeMs,
+// Timestamps are stored in a parallel `track.timestamps` vector since the
+// WhiteoutLib MDX rework split them off the keyframe payload — this helper
+// brackets timeMs against that timestamp array and returns the same lo/hi/t
+// triple we used to compute from key.frame inline.
+static KeyBracket FindBracket(const u32* timestamps, i32 count, i32 timeMs,
                               i32 seqStart, i32 seqEnd) {
     KeyBracket b;
     if (count == 0) return b;
 
     {
         i32 lo = 0, hi = count;
-        while (lo < hi) { i32 m = (lo + hi) >> 1; if ((i32)keys[m].frame < seqStart) lo = m + 1; else hi = m; }
+        while (lo < hi) { i32 m = (lo + hi) >> 1; if ((i32)timestamps[m] < seqStart) lo = m + 1; else hi = m; }
         b.lo = lo;
     }
     i32 rangeLo = b.lo;
-    if (rangeLo >= count || (i32)keys[rangeLo].frame > seqEnd) { b.lo = -1; return b; }
+    if (rangeLo >= count || (i32)timestamps[rangeLo] > seqEnd) { b.lo = -1; return b; }
 
     {
         i32 lo = rangeLo, hi = count;
-        while (lo < hi) { i32 m = (lo + hi) >> 1; if ((i32)keys[m].frame <= seqEnd) lo = m + 1; else hi = m; }
+        while (lo < hi) { i32 m = (lo + hi) >> 1; if ((i32)timestamps[m] <= seqEnd) lo = m + 1; else hi = m; }
         b.hi = lo - 1;
     }
     i32 rangeHi = b.hi;
 
     if (rangeLo == rangeHi) { b.lo = b.hi = rangeLo; return b; }
 
-    i32 firstFrame = (i32)keys[rangeLo].frame;
-    i32 lastFrame  = (i32)keys[rangeHi].frame;
+    i32 firstFrame = (i32)timestamps[rangeLo];
+    i32 lastFrame  = (i32)timestamps[rangeHi];
 
     if (timeMs < firstFrame || timeMs >= lastFrame) {
         i32 loopLen = seqEnd - seqStart;
@@ -110,11 +113,11 @@ static KeyBracket FindBracket(const KeyType* keys, i32 count, i32 timeMs,
 
     {
         i32 lo = rangeLo, hi = rangeHi;
-        while (lo < hi) { i32 m = (lo + hi + 1) >> 1; if ((i32)keys[m].frame <= timeMs) lo = m; else hi = m - 1; }
+        while (lo < hi) { i32 m = (lo + hi + 1) >> 1; if ((i32)timestamps[m] <= timeMs) lo = m; else hi = m - 1; }
         b.lo = lo;
         b.hi = lo + 1;
-        i32 denom = (i32)keys[b.hi].frame - (i32)keys[b.lo].frame;
-        b.t = denom > 0 ? (f32)(timeMs - (i32)keys[b.lo].frame) / (f32)denom : 0.0f;
+        i32 denom = (i32)timestamps[b.hi] - (i32)timestamps[b.lo];
+        b.t = denom > 0 ? (f32)(timeMs - (i32)timestamps[b.lo]) / (f32)denom : 0.0f;
     }
     return b;
 }
@@ -151,21 +154,25 @@ static T EvaluateTrackImpl(const Track<T>& track, i32 timeMs, i32 seqStart, i32 
     const bool useCurve = (interp == InterpolationType::Hermite ||
                            interp == InterpolationType::Bezier);
 
+    const u32* timestamps = track.timestamps.data();
+    const i32  count      = (i32)track.timestamps.size();
+
     auto& mut = const_cast<Track<T>&>(track);
     if (useCurve) {
         auto keys = mut.tangentKeys();
-        auto br = FindBracket(keys.data(), (i32)keys.size(), timeMs, seqStart, seqEnd);
+        auto br = FindBracket(timestamps, count, timeMs, seqStart, seqEnd);
         if (br.lo < 0) return defaultVal;
         if (br.lo == br.hi || forceNoInterp) return keys[br.lo].value;
         return curve(keys[br.lo].value, keys[br.lo].outTan,
                      keys[br.hi].inTan, keys[br.hi].value, br.t, interp);
     }
+    // Linear / None: keys() returns span<T> directly (no Key wrapper anymore).
     auto keys = mut.keys();
-    auto br = FindBracket(keys.data(), (i32)keys.size(), timeMs, seqStart, seqEnd);
+    auto br = FindBracket(timestamps, count, timeMs, seqStart, seqEnd);
     if (br.lo < 0) return defaultVal;
     if (br.lo == br.hi || forceNoInterp || interp == InterpolationType::None)
-        return keys[br.lo].value;
-    return lerp(keys[br.lo].value, keys[br.hi].value, br.t);
+        return keys[br.lo];
+    return lerp(keys[br.lo], keys[br.hi], br.t);
 }
 
 f32 EvaluateTrackF32(const Track<f32>& track, i32 timeMs, i32 seqStart, i32 seqEnd,
@@ -205,20 +212,21 @@ Quaternion EvaluateTrackQuat(const Track<Quaternion>& track, i32 timeMs, i32 seq
 u32 EvaluateTrackU32(const Track<u32>& track, i32 timeMs, i32 seqStart, i32 seqEnd, u32 defaultVal) {
     if (!track.isUsed || track.keyCount == 0) return defaultVal;
     auto keys = const_cast<Track<u32>&>(track).keys();
-    i32 count = (i32)keys.size();
+    const u32* timestamps = track.timestamps.data();
+    i32 count = (i32)track.timestamps.size();
     if (count == 0) return defaultVal;
 
     i32 rangeLo = -1, rangeHi = -1;
     for (i32 i = 0; i < count; i++) {
-        i32 f = (i32)keys[i].frame;
+        i32 f = (i32)timestamps[i];
         if (f > seqEnd) break;
         if (f >= seqStart) { if (rangeLo < 0) rangeLo = i; rangeHi = i; }
     }
     if (rangeLo < 0) return defaultVal;
 
-    u32 val = keys[rangeLo].value;
+    u32 val = keys[rangeLo];
     for (i32 i = rangeLo; i <= rangeHi; i++) {
-        if ((i32)keys[i].frame <= timeMs) val = keys[i].value;
+        if ((i32)timestamps[i] <= timeMs) val = keys[i];
         else break;
     }
     return val;
