@@ -15,6 +15,12 @@ public:
     void SetBasePath(const std::filesystem::path& basePath) { basePath_ = basePath; }
     const std::filesystem::path& BasePath() const { return basePath_; }
 
+    // Secondary lookup path checked AFTER basePath_. Used by the host to
+    // surface engine-shipped assets (shaders, etc.) that live next to the
+    // executable rather than alongside the loaded model.
+    void SetSystemBasePath(const std::filesystem::path& p) { systemBasePath_ = p; }
+    const std::filesystem::path& SystemBasePath() const { return systemBasePath_; }
+
     std::filesystem::path Resolve(const std::string& relativePath,
                                   std::span<const char* const> extensions) const;
 
@@ -26,6 +32,7 @@ public:
 
 private:
     std::filesystem::path basePath_;
+    std::filesystem::path systemBasePath_;
 };
 
 }

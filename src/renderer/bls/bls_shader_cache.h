@@ -26,7 +26,8 @@ struct BlsShader {
 
 class BlsShaderCache {
 public:
-    BlsShaderCache(gfx::IGFXDevice* device, io::IContentProvider* contentProvider);
+    BlsShaderCache(gfx::IGFXDevice* device, io::IContentProvider* contentProvider,
+                   gfx::GfxApi api);
     ~BlsShaderCache();
 
     BlsShader* Acquire(gfx::ShaderStage stage, const std::string& name);
@@ -38,6 +39,7 @@ private:
 
     gfx::IGFXDevice*  device_          = nullptr;
     io::IContentProvider* contentProvider_ = nullptr;
+    gfx::GfxApi       api_             = gfx::GfxApi::D3D11;
 
     std::array<std::unordered_map<std::string, std::unique_ptr<BlsShader>>, kStageCount> byStage_;
 

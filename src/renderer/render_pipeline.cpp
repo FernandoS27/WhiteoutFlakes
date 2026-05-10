@@ -511,12 +511,12 @@ bool RenderPipeline::InitDevice(gfx::GfxApi api) {
     if (!CreatePipelines())        { CleanupGFX(); return false; }
     if (!CreateDefaultResources()) { CleanupGFX(); return false; }
 
-    if (!InitBlsShaders()) { CleanupGFX(); return false; }
+    if (!InitBlsShaders(api)) { CleanupGFX(); return false; }
 
     return true;
 }
 
-bool RenderPipeline::InitBlsShaders() {
+bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     if (!impl_->gfx_ || !rs_.Scene().ActiveContentProvider()) return false;
 
     rs_.Replaceables().SetContentProvider(rs_.Scene().ActiveContentProvider());
@@ -534,7 +534,8 @@ bool RenderPipeline::InitBlsShaders() {
         });
     }
 
-    impl_->blsShaderCache_ = std::make_unique<bls::BlsShaderCache>(impl_->gfx_.get(), rs_.Scene().ActiveContentProvider());
+    impl_->blsShaderCache_ = std::make_unique<bls::BlsShaderCache>(
+        impl_->gfx_.get(), rs_.Scene().ActiveContentProvider(), api);
     impl_->blsPrograms_    = std::make_unique<bls::BlsProgramCatalog>(impl_->blsShaderCache_.get());
     impl_->blsPsoBuilder_  = std::make_unique<bls::BlsPsoBuilder>(impl_->gfx_.get());
 
@@ -719,12 +720,29 @@ bool RenderPipeline::InitBlsShaders() {
     ApplyIblMode(rs_.Settings().GetIblMode());
     rs_.Settings().ConsumeIblModeDirty();
 
-    return impl_->blsSdProgram_     != nullptr
+    const bool ok =
+           impl_->blsSdProgram_     != nullptr
         && impl_->blsSdOnHdProgram_ != nullptr
         && impl_->blsHdProgram_     != nullptr
         && impl_->blsSpriteVs_      != nullptr
         && impl_->blsTonemapPs_     != nullptr
         && impl_->tonemapPSO_       != gfx::PipelineHandle::Invalid;
+
+    if (!ok) {
+        std::fprintf(stderr,
+            "[bls] InitBlsShaders incomplete: "
+            "SD=%p SD_on_HD=%p HD=%p Crystal=%p CornFx=%p "
+            "spriteVs=%p tonemapPs=%p tonemapPSO=%llu\n",
+            (void*)impl_->blsSdProgram_,
+            (void*)impl_->blsSdOnHdProgram_,
+            (void*)impl_->blsHdProgram_,
+            (void*)impl_->blsCrystalProgram_,
+            (void*)impl_->blsCornFxProgram_,
+            (void*)impl_->blsSpriteVs_,
+            (void*)impl_->blsTonemapPs_,
+            (unsigned long long)impl_->tonemapPSO_);
+    }
+    return ok;
 }
 
 void RenderPipeline::SetEnvProbe(const std::string& relPath) {

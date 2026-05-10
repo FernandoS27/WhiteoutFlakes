@@ -153,6 +153,136 @@ add_custom_command(
 
 add_custom_target(WhiteoutFlakesShaders DEPENDS "${COMPILED_SHADERS_H}")
 
+# ============================================================================
+# Wc3Shaders — opt-in build of the externals/Wc3Shaders Slang reconstruction.
+#
+# When WDX_BUILD_WC3_SHADERS=ON, drives the submodule's two-step Python
+# pipeline (compile_all_slang.py → DXBC + DXIL, then build_bls.py → .bls)
+# and copies the resulting BLS bundles next to the standalone exe under
+# Shaders/{ps,vs}/. Packing requires the shipped war3.w3mod/shaders/ tree
+# (binding-metadata templates), supplied via -DWDX_SHADER_TEMPLATES=<path>.
+# Both DXBC (sm 5.0, primary — what the BLS loader reads) and DXIL (sm 6.0,
+# kept as raw .dxil under wc3_shaders/slang_out/ for future use) targets
+# are produced.
+# ============================================================================
+
+option(WDX_BUILD_WC3_SHADERS
+    "Compile the externals/Wc3Shaders Slang sources and pack BLS bundles"
+    OFF)
+
+if(WDX_BUILD_WC3_SHADERS)
+    set(WC3_SHADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/externals/Wc3Shaders")
+
+    if(NOT EXISTS "${WC3_SHADERS_DIR}/compile_all_slang.py")
+        message(FATAL_ERROR
+            "WDX_BUILD_WC3_SHADERS=ON but externals/Wc3Shaders/ is empty. "
+            "Initialize the submodule with: git submodule update --init externals/Wc3Shaders")
+    endif()
+
+    # Default to the locally-vendored war3.w3mod/shaders/ tree at the
+    # project root (gitignored). Users can still override with
+    # -DWDX_SHADER_TEMPLATES=<path> when their templates live elsewhere.
+    if(NOT DEFINED WDX_SHADER_TEMPLATES OR WDX_SHADER_TEMPLATES STREQUAL "")
+        set(WDX_SHADER_TEMPLATES "${CMAKE_CURRENT_SOURCE_DIR}/war3.w3mod/shaders"
+            CACHE PATH "Path to extracted war3.w3mod/shaders/ BLS templates")
+    endif()
+    if(NOT EXISTS "${WDX_SHADER_TEMPLATES}")
+        message(FATAL_ERROR
+            "WDX_SHADER_TEMPLATES does not exist: ${WDX_SHADER_TEMPLATES}\n"
+            "Point at an extracted war3.w3mod/shaders/ directory containing "
+            "the shipped {ps,vs}/*.bls templates, or place the tree at "
+            "${CMAKE_CURRENT_SOURCE_DIR}/war3.w3mod/shaders/ to use the default.")
+    endif()
+
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    message(STATUS "Wc3Shaders: Python = ${Python3_EXECUTABLE}")
+    message(STATUS "Wc3Shaders: BLS templates = ${WDX_SHADER_TEMPLATES}")
+
+    # The Python scripts hardcode their output under <repo>/slang_out and
+    # <repo>/bls_out (both gitignored inside the submodule). We use a stamp
+    # file pattern for dependency tracking — globs catch source / config
+    # changes; the slangc the renderer's debug shaders found is forwarded
+    # so we don't need to re-resolve.
+    file(GLOB_RECURSE WC3_SLANG_SOURCES
+        "${WC3_SHADERS_DIR}/wc3_shaders/*.slang"
+        "${WC3_SHADERS_DIR}/custom_shaders/*.slang")
+    set(WC3_BUILD_SCRIPTS
+        "${WC3_SHADERS_DIR}/compile_all_slang.py"
+        "${WC3_SHADERS_DIR}/build_bls.py"
+        "${WC3_SHADERS_DIR}/shader_config.py"
+        "${WC3_SHADERS_DIR}/wc3_shaders.json"
+        "${WC3_SHADERS_DIR}/custom_shaders.json")
+
+    set(WC3_SLANG_OUT  "${WC3_SHADERS_DIR}/slang_out")
+    set(WC3_BLS_OUT    "${WC3_SHADERS_DIR}/bls_out")
+
+    set(WC3_DXBC_STAMP "${CMAKE_CURRENT_BINARY_DIR}/wc3_shaders_dxbc.stamp")
+    set(WC3_DXIL_STAMP "${CMAKE_CURRENT_BINARY_DIR}/wc3_shaders_dxil.stamp")
+    set(WC3_BLS_STAMP  "${CMAKE_CURRENT_BINARY_DIR}/wc3_shaders_bls.stamp")
+
+    add_custom_command(
+        OUTPUT  "${WC3_DXBC_STAMP}"
+        COMMAND "${Python3_EXECUTABLE}" "${WC3_SHADERS_DIR}/compile_all_slang.py"
+                --target d3d11 --slangc "${SLANGC}"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${WC3_DXBC_STAMP}"
+        WORKING_DIRECTORY "${WC3_SHADERS_DIR}"
+        DEPENDS ${WC3_SLANG_SOURCES} ${WC3_BUILD_SCRIPTS}
+        COMMENT "Wc3Shaders: compiling Slang -> DXBC (d3d11)"
+        VERBATIM)
+
+    add_custom_command(
+        OUTPUT  "${WC3_DXIL_STAMP}"
+        COMMAND "${Python3_EXECUTABLE}" "${WC3_SHADERS_DIR}/compile_all_slang.py"
+                --target d3d12 --slangc "${SLANGC}"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${WC3_DXIL_STAMP}"
+        WORKING_DIRECTORY "${WC3_SHADERS_DIR}"
+        DEPENDS ${WC3_SLANG_SOURCES} ${WC3_BUILD_SCRIPTS}
+        COMMENT "Wc3Shaders: compiling Slang -> DXIL (d3d12)"
+        VERBATIM)
+
+    # Single build_bls.py run produces both the v1.8 DXBC bundles
+    # (bls_out/{ps,vs}/) AND the v1.14 DXIL bundles (bls_out/{ps 6.0,vs 6.0}/)
+    # — the script's d3d12 path auto-fires whenever the slang_out/d3d12/
+    # tree carries .dxil blobs. Depending on both DXBC and DXIL stamps
+    # ensures both compile passes are done before the pack runs.
+    add_custom_command(
+        OUTPUT  "${WC3_BLS_STAMP}"
+        COMMAND "${Python3_EXECUTABLE}" "${WC3_SHADERS_DIR}/build_bls.py"
+                --templates "${WDX_SHADER_TEMPLATES}"
+                --output    "${WC3_BLS_OUT}"
+                --strip
+        COMMAND "${CMAKE_COMMAND}" -E touch "${WC3_BLS_STAMP}"
+        WORKING_DIRECTORY "${WC3_SHADERS_DIR}"
+        DEPENDS "${WC3_DXBC_STAMP}" "${WC3_DXIL_STAMP}" ${WC3_BUILD_SCRIPTS}
+        COMMENT "Wc3Shaders: packing .bls (v1.8 DXBC + v1.14 DXIL)"
+        VERBATIM)
+
+    # Stage the freshly packed bundles into the standalone exe's output
+    # directory the moment Wc3Shaders rebuilds — independently of whether
+    # the exe itself relinks. POST_BUILD on the exe target wouldn't fire
+    # on a BLS-only change. The standalone exe lands at
+    # ${CMAKE_BINARY_DIR}/standalone (set via RUNTIME_OUTPUT_DIRECTORY
+    # below), so we know the path up-front.
+    set(WC3_STAGE_DIR   "${CMAKE_BINARY_DIR}/standalone/shaders")
+    set(WC3_STAGE_STAMP "${CMAKE_CURRENT_BINARY_DIR}/wc3_shaders_stage.stamp")
+    add_custom_command(
+        OUTPUT  "${WC3_STAGE_STAMP}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                "${WC3_BLS_OUT}/ps"       "${WC3_STAGE_DIR}/ps"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                "${WC3_BLS_OUT}/vs"       "${WC3_STAGE_DIR}/vs"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                "${WC3_BLS_OUT}/ps 6.0"   "${WC3_STAGE_DIR}/d3d12/ps"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                "${WC3_BLS_OUT}/vs 6.0"   "${WC3_STAGE_DIR}/d3d12/vs"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${WC3_STAGE_STAMP}"
+        DEPENDS "${WC3_BLS_STAMP}"
+        COMMENT "Wc3Shaders: staging BLS bundles into ${WC3_STAGE_DIR}"
+        VERBATIM)
+
+    add_custom_target(Wc3Shaders ALL DEPENDS "${WC3_STAGE_STAMP}")
+endif()
+
 # ---- Static library: GFX Service (backend-agnostic abstraction) ----
 add_library(WhiteoutFlakesGfx STATIC
     src/gfx/gfx_factory.cpp
@@ -373,6 +503,10 @@ if(MSVC)
         /W3 /EHsc
         /wd4100 /wd4127 /wd4244 /wd4267
     )
+endif()
+
+if(WDX_BUILD_WC3_SHADERS)
+    add_dependencies(WhiteoutFlakesStandalone Wc3Shaders)
 endif()
 
 # ---- Optional: 3ds Max plugin (.dlx) ----

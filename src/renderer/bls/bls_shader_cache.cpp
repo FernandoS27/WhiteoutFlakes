@@ -7,8 +7,9 @@ namespace whiteout::flakes::renderer::bls {
 
 using namespace ::whiteout::flakes::io;
 
-BlsShaderCache::BlsShaderCache(gfx::IGFXDevice* device, IContentProvider* contentProvider)
-    : device_(device), contentProvider_(contentProvider) {}
+BlsShaderCache::BlsShaderCache(gfx::IGFXDevice* device, IContentProvider* contentProvider,
+                               gfx::GfxApi api)
+    : device_(device), contentProvider_(contentProvider), api_(api) {}
 
 BlsShaderCache::~BlsShaderCache() {
     ReleaseAll();
@@ -40,7 +41,10 @@ BlsShader* BlsShaderCache::Acquire(gfx::ShaderStage stage, const std::string& na
         return it->second.get();
     }
 
-    const std::string path = std::string("Shaders/") + StagePrefix(stage) + "/" + key + ".bls";
+    // D3D12 backend pulls DXIL bundles from shaders/d3d12/<stage>/. D3D11
+    // and Vulkan use the default DXBC bundles under shaders/<stage>/.
+    const char* apiPrefix = (api_ == gfx::GfxApi::D3D12) ? "shaders/d3d12/" : "shaders/";
+    const std::string path = std::string(apiPrefix) + StagePrefix(stage) + "/" + key + ".bls";
     auto bytes = contentProvider_->ReadFile(path);
     if (!bytes || bytes->empty()) {
         std::fprintf(stderr,

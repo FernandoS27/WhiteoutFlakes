@@ -924,7 +924,31 @@ PipelineHandle D3D12Device::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
     entry.isCompute = false;
     entry.topology  = ToD3D12Topology(desc.topology);
     HRESULT hr = device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&entry.pso));
-    if (FAILED(hr)) return PipelineHandle::Invalid;
+    if (FAILED(hr)) {
+        std::fprintf(stderr,
+                     "[d3d12] CreateGraphicsPipelineState FAILED hr=0x%08x "
+                     "vs_size=%zu ps_size=%zu\n",
+                     (unsigned)hr, vs->bytecode.size(),
+                     ps ? ps->bytecode.size() : 0u);
+        ID3D12InfoQueue* iq = nullptr;
+        if (SUCCEEDED(device_->QueryInterface(IID_PPV_ARGS(&iq))) && iq) {
+            UINT64 n = iq->GetNumStoredMessages();
+            for (UINT64 i = 0; i < n; ++i) {
+                SIZE_T sz = 0;
+                iq->GetMessage(i, nullptr, &sz);
+                std::vector<u8> buf(sz);
+                auto* msg = reinterpret_cast<D3D12_MESSAGE*>(buf.data());
+                if (SUCCEEDED(iq->GetMessage(i, msg, &sz))) {
+                    std::fprintf(stderr, "[d3d12]   %.*s\n",
+                                 (int)msg->DescriptionByteLength,
+                                 msg->pDescription);
+                }
+            }
+            iq->ClearStoredMessages();
+            iq->Release();
+        }
+        return PipelineHandle::Invalid;
+    }
 
     return static_cast<PipelineHandle>(pipelines_.Insert(std::move(entry)));
 }

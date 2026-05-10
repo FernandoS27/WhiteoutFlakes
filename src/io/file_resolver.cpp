@@ -25,12 +25,19 @@ fs::path FileResolver::Resolve(const std::string& relativePath,
     fs::path relPath = FsPathFromUtf8(norm);
     fs::path filename = relPath.filename();
 
-    const fs::path candidates[] = {
-        basePath_ / relPath,
-        basePath_ / filename,
-    };
+    fs::path candidates[4];
+    usize    nCand = 0;
+    if (!basePath_.empty()) {
+        candidates[nCand++] = basePath_ / relPath;
+        candidates[nCand++] = basePath_ / filename;
+    }
+    if (!systemBasePath_.empty()) {
+        candidates[nCand++] = systemBasePath_ / relPath;
+        candidates[nCand++] = systemBasePath_ / filename;
+    }
 
-    for (const auto& base : candidates) {
+    for (usize i = 0; i < nCand; ++i) {
+        const auto& base = candidates[i];
 
         if (fs::exists(base))
             return base;

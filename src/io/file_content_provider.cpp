@@ -17,6 +17,14 @@
 #include <fstream>
 #include <cstdio>
 
+#ifdef _WIN32
+    #define WIN32_LEAN_AND_MEAN
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #include <windows.h>
+#endif
+
 namespace whiteout::flakes::io {
 
 namespace fs = std::filesystem;
@@ -26,6 +34,22 @@ static constexpr const char* kMpqNames[] = {
     "War3x.mpq",
     "war3.mpq",
 };
+
+// Returns the directory containing the running executable, or {} on failure.
+// Used as a fallback search root for engine-shipped assets (shaders, etc.)
+// that ship next to the binary rather than alongside the loaded model.
+static fs::path DiscoverExecutableDirectory() {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH * 4] = {};
+    DWORD len = ::GetModuleFileNameW(nullptr, buf, static_cast<DWORD>(std::size(buf)));
+    if (len == 0 || len >= std::size(buf)) return {};
+    return fs::path(std::wstring(buf, buf + len)).parent_path();
+#else
+    // POSIX impl can read /proc/self/exe etc. — not needed for the standalone
+    // tool today.
+    return {};
+#endif
+}
 
 struct FileContentProvider::Impl {
     std::string wc3Path;
@@ -108,6 +132,18 @@ struct FileContentProvider::Impl {
 FileContentProvider::FileContentProvider()
     : impl_(std::make_unique<Impl>()) {
     impl_->Discover();
+
+    // Surface the directory containing the host executable as a secondary
+    // lookup root. The model-specific basePath is set later via
+    // SetBasePath(); engine-shipped assets like the v1.8 / v1.14 BLS
+    // bundles staged next to the exe by the build are reached through
+    // this fallback.
+    const fs::path exeDir = DiscoverExecutableDirectory();
+    if (!exeDir.empty()) {
+        impl_->resolver.SetSystemBasePath(exeDir);
+        std::printf("[FileContentProvider] Executable dir: %s\n",
+                    PathToUtf8(exeDir).c_str());
+    }
 }
 
 FileContentProvider::~FileContentProvider() = default;

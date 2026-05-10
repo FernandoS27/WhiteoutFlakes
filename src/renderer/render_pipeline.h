@@ -98,7 +98,7 @@ private:
     bool CreateDefaultResources();
     void ReleaseModelGPU();
     void RunTonemapPass(const RenderTarget& target);
-    bool InitBlsShaders();
+    bool InitBlsShaders(gfx::GfxApi api);
     void ShutdownBlsShaders();
     bool RenderParticlesBls();
     bool RenderSplatsBls();
