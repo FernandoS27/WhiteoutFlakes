@@ -9,10 +9,13 @@
 cmake_minimum_required(VERSION 3.16)
 
 file(GLOB dxbc_files "${SHADER_DIR}/*.dxbc")
+file(GLOB spv_files  "${SHADER_DIR}/*.spv")
 list(SORT dxbc_files)
+list(SORT spv_files)
 
-list(LENGTH dxbc_files bin_count)
-if(bin_count EQUAL 0)
+list(LENGTH dxbc_files dxbc_count)
+list(LENGTH spv_files  spv_count)
+if(dxbc_count EQUAL 0)
     message(FATAL_ERROR "No .dxbc files found in ${SHADER_DIR}")
 endif()
 
@@ -28,21 +31,37 @@ namespace whiteout::flakes::Shaders {
 
 ]=])
 
+# DXBC blobs (consumed by D3D11 / D3D12 backends): emitted as `<varname>`.
 foreach(binpath IN LISTS dxbc_files)
     get_filename_component(varname "${binpath}" NAME_WE)
 
     file(READ "${binpath}" hex HEX)
     file(SIZE "${binpath}" bytesize)
 
-    # Format hex pairs as "0x??, " and remove trailing comma
     string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1, " hex "${hex}")
     string(REGEX REPLACE ", $" "" hex "${hex}")
 
-    string(APPEND header "// ${varname} — ${bytesize} bytes\n")
+    string(APPEND header "// ${varname} — ${bytesize} bytes (DXBC sm_5_0)\n")
     string(APPEND header "inline constexpr uint8_t ${varname}[] = {\n    ${hex}\n};\n\n")
+endforeach()
+
+# SPIR-V blobs (consumed by the Vulkan backend): emitted as `<varname>Spv`.
+# Vulkan callers pick the `*Spv` variant; the existing D3D call sites
+# stay unchanged.
+foreach(binpath IN LISTS spv_files)
+    get_filename_component(varname "${binpath}" NAME_WE)
+
+    file(READ "${binpath}" hex HEX)
+    file(SIZE "${binpath}" bytesize)
+
+    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1, " hex "${hex}")
+    string(REGEX REPLACE ", $" "" hex "${hex}")
+
+    string(APPEND header "// ${varname}Spv — ${bytesize} bytes (SPIR-V)\n")
+    string(APPEND header "inline constexpr uint8_t ${varname}Spv[] = {\n    ${hex}\n};\n\n")
 endforeach()
 
 string(APPEND header "} // namespace whiteout::flakes::Shaders\n")
 
 file(WRITE "${OUTPUT}" "${header}")
-message(STATUS "Generated compiled_shaders.h (${bin_count} shaders)")
+message(STATUS "Generated compiled_shaders.h (${dxbc_count} dxbc + ${spv_count} spv)")

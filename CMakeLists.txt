@@ -108,7 +108,7 @@ set(SHADER_ENTRIES
 )
 
 set(SHADER_DXBC_FILES "")
-set(SHADER_DXBC_NAMES "")
+set(SHADER_SPV_FILES  "")
 
 foreach(entry IN LISTS SHADER_ENTRIES)
     string(REPLACE "|" ";" parts "${entry}")
@@ -118,6 +118,7 @@ foreach(entry IN LISTS SHADER_ENTRIES)
     list(GET parts 3 var_name)
 
     set(dxbc_path "${SHADER_OUT_DIR}/${var_name}.dxbc")
+    set(spv_path  "${SHADER_OUT_DIR}/${var_name}.spv")
 
     add_custom_command(
         OUTPUT  "${dxbc_path}"
@@ -131,9 +132,25 @@ foreach(entry IN LISTS SHADER_ENTRIES)
         COMMENT "Slang: ${src_file} [${entry_name}] → ${var_name}.dxbc"
         VERBATIM
     )
-
     list(APPEND SHADER_DXBC_FILES "${dxbc_path}")
-    list(APPEND SHADER_DXBC_NAMES "${var_name}")
+
+    # SPIR-V variant for the Vulkan backend. The embed script picks these
+    # up alongside the .dxbc blobs and emits a parallel `<var>Spv[]` array
+    # in compiled_shaders.h. Compiled here unconditionally — the resulting
+    # bytes are unused (and harmless) when WDX_HAS_VULKAN is off.
+    add_custom_command(
+        OUTPUT  "${spv_path}"
+        COMMAND "${SLANGC}" "${SHADER_SRC_DIR}/${src_file}"
+                ${SLANG_COMMON_FLAGS}
+                -entry ${entry_name} -stage ${stage}
+                -target spirv -profile glsl_450
+                -o "${spv_path}"
+        DEPENDS "${SHADER_SRC_DIR}/${src_file}"
+                "${SHADER_SRC_DIR}/common.slang"
+        COMMENT "Slang: ${src_file} [${entry_name}] → ${var_name}.spv"
+        VERBATIM
+    )
+    list(APPEND SHADER_SPV_FILES "${spv_path}")
 endforeach()
 
 # Embed all DXBC blobs into a single C++ header
@@ -145,7 +162,7 @@ add_custom_command(
             "-DSHADER_DIR=${SHADER_OUT_DIR}"
             "-DOUTPUT=${COMPILED_SHADERS_H}"
             -P "${SHADER_SRC_DIR}/embed_shaders.cmake"
-    DEPENDS ${SHADER_DXBC_FILES}
+    DEPENDS ${SHADER_DXBC_FILES} ${SHADER_SPV_FILES}
             "${SHADER_SRC_DIR}/embed_shaders.cmake"
     COMMENT "Embedding compiled shaders into compiled_shaders.h"
     VERBATIM
@@ -284,7 +301,12 @@ if(WDX_BUILD_WC3_SHADERS)
 endif()
 
 # ---- Static library: GFX Service (backend-agnostic abstraction) ----
-add_library(WhiteoutFlakesGfx STATIC
+# The Vulkan backend compiles in whenever the Vulkan SDK is installed
+# (find_package(Vulkan) succeeds). It targets Vulkan 1.3 + dynamic
+# rendering and pulls VMA from the SDK's bundled vk_mem_alloc.h.
+find_package(Vulkan QUIET)
+
+set(WHITEOUTFLAKES_GFX_SOURCES
     src/gfx/gfx_factory.cpp
     src/gfx/d3d11/d3d11_device.cpp
     src/gfx/d3d11/d3d11_command_list.cpp
@@ -292,6 +314,17 @@ add_library(WhiteoutFlakesGfx STATIC
     src/gfx/d3d12/d3d12_command_list.cpp
     src/gfx/d3d12/d3d12_resources.cpp
 )
+if(Vulkan_FOUND)
+    list(APPEND WHITEOUTFLAKES_GFX_SOURCES
+        src/gfx/vulkan/vulkan_device.cpp
+        src/gfx/vulkan/vulkan_command_list.cpp
+        src/gfx/vulkan/vulkan_swap_chain.cpp
+        src/gfx/vulkan/vulkan_pipeline.cpp
+        src/gfx/vulkan/vulkan_vma.cpp
+    )
+endif()
+
+add_library(WhiteoutFlakesGfx STATIC ${WHITEOUTFLAKES_GFX_SOURCES})
 
 set_target_properties(WhiteoutFlakesGfx PROPERTIES
     CXX_STANDARD          20
@@ -307,6 +340,38 @@ target_link_libraries(WhiteoutFlakesGfx
     PUBLIC  whiteout_lib
     PRIVATE d3d11.lib d3d12.lib dxgi.lib
 )
+
+if(Vulkan_FOUND)
+    message(STATUS "WhiteoutFlakesGfx: Vulkan = ${Vulkan_LIBRARIES} "
+                   "(SDK=${Vulkan_INCLUDE_DIRS})")
+    target_link_libraries(WhiteoutFlakesGfx PRIVATE Vulkan::Vulkan)
+    target_compile_definitions(WhiteoutFlakesGfx PRIVATE
+        WDX_HAS_VULKAN=1
+        VK_USE_PLATFORM_WIN32_KHR=1
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+        # vulkan.hpp config: no exceptions, default-dispatch (the dynamic
+        # dispatcher would let us use the loader without linking
+        # vulkan-1.lib, but we already link it). Result-based error
+        # handling keeps with the codebase's no-throw style.
+        VULKAN_HPP_NO_EXCEPTIONS
+        VULKAN_HPP_NO_SMART_HANDLE
+        # Removes the explicit constructors on vk::*CreateInfo / Desc
+        # structs so they become aggregates — designated initializers
+        # (`{ .field = value }`) become legal. sType is still default-
+        # initialised correctly via the in-class initializer.
+        VULKAN_HPP_NO_CONSTRUCTORS
+    )
+    # VMA ships under <Vulkan SDK>/Include/vma/vk_mem_alloc.h. The single
+    # vulkan_vma.cpp TU defines VMA_IMPLEMENTATION before including it;
+    # everywhere else we include without the implementation macro.
+    target_include_directories(WhiteoutFlakesGfx PRIVATE
+        "${Vulkan_INCLUDE_DIRS}/vma"
+    )
+else()
+    message(STATUS "WhiteoutFlakesGfx: Vulkan SDK not found — Vulkan backend disabled")
+    target_compile_definitions(WhiteoutFlakesGfx PRIVATE WDX_HAS_VULKAN=0)
+endif()
 
 if(MSVC)
     target_compile_options(WhiteoutFlakesGfx PRIVATE

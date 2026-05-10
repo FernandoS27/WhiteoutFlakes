@@ -2,6 +2,10 @@
 #include "gfx/d3d11/d3d11_device.h"
 #include "gfx/d3d12/d3d12_device.h"
 
+#if WDX_HAS_VULKAN
+#include "gfx/vulkan/vulkan_device.h"
+#endif
+
 #include <stdexcept>
 
 namespace whiteout::flakes::gfx {
@@ -20,9 +24,18 @@ std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api) {
                 return nullptr;
             return device;
         }
-        default:
+        case GfxApi::Vulkan: {
+#if WDX_HAS_VULKAN
+            auto device = std::make_unique<vulkan::VulkanDevice>();
+            if (!device->Init())
+                return nullptr;
+            return device;
+#else
             return nullptr;
+#endif
+        }
     }
+    return nullptr;
 }
 
 }
