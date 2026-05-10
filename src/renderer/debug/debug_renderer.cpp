@@ -23,6 +23,13 @@ using namespace ::whiteout::flakes::renderer::assets;
 
 bool DebugRenderer::CreateResources() {
     if (!CreateGridResources())     return false;
+    // Phase 1 Vulkan: skip the viewcube. It needs an SRV texture in
+    // eShaderReadOnlyOptimal layout, which currently relies on the
+    // d3d-side state-tracker to transition lazily on bind. The Vulkan
+    // backend doesn't have that bind-time barrier path yet.
+    if (rs_.Pipeline().Gfx()->GetApi() == gfx::GfxApi::Vulkan) {
+        return true;
+    }
     if (!CreateViewCubeResources()) return false;
     return true;
 }
@@ -165,8 +172,13 @@ bool DebugRenderer::CreateViewCubeResources() {
     }, edges.data());
 
     using namespace whiteout::flakes::Shaders;
-    viewCubeVS_ = rs_.Pipeline().Gfx()->CreateShader(gfx::ShaderStage::Vertex, kViewCubeVS, sizeof(kViewCubeVS));
-    viewCubePS_ = rs_.Pipeline().Gfx()->CreateShader(gfx::ShaderStage::Pixel,  kViewCubePS, sizeof(kViewCubePS));
+    const bool vk = rs_.Pipeline().Gfx()->GetApi() == gfx::GfxApi::Vulkan;
+    const u8*  vcVsBytes = vk ? kViewCubeVSSpv : kViewCubeVS;
+    usize      vcVsSize  = vk ? sizeof(kViewCubeVSSpv) : sizeof(kViewCubeVS);
+    const u8*  vcPsBytes = vk ? kViewCubePSSpv : kViewCubePS;
+    usize      vcPsSize  = vk ? sizeof(kViewCubePSSpv) : sizeof(kViewCubePS);
+    viewCubeVS_ = rs_.Pipeline().Gfx()->CreateShader(gfx::ShaderStage::Vertex, vcVsBytes, vcVsSize);
+    viewCubePS_ = rs_.Pipeline().Gfx()->CreateShader(gfx::ShaderStage::Pixel,  vcPsBytes, vcPsSize);
     if (viewCubeVS_ == gfx::ShaderHandle::Invalid ||
         viewCubePS_ == gfx::ShaderHandle::Invalid) {
         return false;

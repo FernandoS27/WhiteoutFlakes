@@ -33,6 +33,8 @@
 #include <vk_mem_alloc.h>
 
 #include <array>
+#include <memory>
+#include <utility>
 #include <vector>
 
 namespace whiteout::flakes::gfx::vulkan {
@@ -87,15 +89,21 @@ struct SamplerEntry {
 };
 
 // One bundle per frame in flight. The command buffer is reset (not
-// freed) at the start of its frame; semaphores + fence guard the
-// acquire → submit → present chain.
+// freed) at the start of its frame; the fence limits in-flight depth.
+// Acquire AND render-done semaphores are owned by the swap chain
+// (per-image, not per frame slot) — binary semaphore reuse rules
+// require both to be pinned to the swap-chain image's acquire/present
+// cycle, not the host-side frame-slot rotation.
 struct FrameContext {
-    vk::raii::CommandPool   commandPool   = nullptr;
-    vk::raii::CommandBuffer commandBuffer = nullptr;
-    vk::raii::Semaphore     acquireSem    = nullptr;
-    vk::raii::Semaphore     renderDoneSem = nullptr;
-    vk::raii::Fence         inFlightFence = nullptr;
-    bool                    recording     = false;
+    vk::raii::CommandPool   commandPool      = nullptr;
+    vk::raii::CommandBuffer commandBuffer    = nullptr;
+    vk::raii::Fence         inFlightFence    = nullptr;
+    // Set by AcquireSwapChainImageIfNeeded — point at the per-image
+    // acquire / render-done semaphores inside the SwapChainEntry. Used
+    // as the wait + signal semaphores on submit2 / presentKHR.
+    VkSemaphore             acquireWaitSem   = VK_NULL_HANDLE;
+    VkSemaphore             renderDoneSem    = VK_NULL_HANDLE;
+    bool                    recording        = false;
 };
 
 struct SwapChainEntry {
@@ -111,12 +119,58 @@ struct SwapChainEntry {
     std::vector<vk::raii::ImageView> viewsSrgb;
     std::vector<vk::raii::ImageView> viewsLinear;
 
+    // Per-image acquire + render-done semaphores. Both are pinned to
+    // the swap-chain image's acquire/present cycle so binary-semaphore
+    // reuse rules don't fire when the host-side frame slot rotates
+    // faster than the swap chain. Acquire uses a swap-with-spare
+    // dance because we don't know the image index until acquire
+    // returns; render-done is straightforward per-image.
+    std::vector<vk::raii::Semaphore> imageAcquireSems;
+    vk::raii::Semaphore              spareAcquireSem = nullptr;
+    std::vector<vk::raii::Semaphore> imageRenderDoneSems;
+
     u32             imageIndex        = 0;       // last acquired index
     bool            acquiredThisFrame = false;
 
     TextureHandle   proxySrgb    = TextureHandle::Invalid;
     TextureHandle   proxyLinear  = TextureHandle::Invalid;
 };
+
+// Deferred-delete entry. Each Destroy(handle) call moves the entry's
+// VMA / vk::raii::* state into a lambda and pushes it here, tagged
+// with `timelineValue` — the timeline semaphore value the next submit
+// will signal. The drain pass at frame start frees every queued
+// deleter whose value the GPU has reached.
+//
+// We can't use std::function: the captured vk::raii::* objects are
+// move-only, but std::function requires copy-constructible callables
+// (and C++20 has no std::move_only_function). A unique_ptr to a
+// virtual base is the simplest move-only type-erased callable.
+struct VulkanDeviceState;
+struct PendingDelete {
+    struct DeleterBase {
+        virtual ~DeleterBase() = default;
+        virtual void Run(VulkanDeviceState& s) = 0;
+    };
+    template <typename F>
+    struct DeleterImpl : DeleterBase {
+        F fn;
+        explicit DeleterImpl(F&& f) : fn(std::move(f)) {}
+        void Run(VulkanDeviceState& s) override { fn(s); }
+    };
+
+    u64                          timelineValue = 0;
+    std::unique_ptr<DeleterBase> deleter;
+};
+
+template <typename F>
+inline PendingDelete MakePendingDelete(u64 v, F&& f) {
+    PendingDelete pd;
+    pd.timelineValue = v;
+    pd.deleter = std::make_unique<PendingDelete::DeleterImpl<std::decay_t<F>>>(
+        std::forward<F>(f));
+    return pd;
+}
 
 // Aggregates every Vulkan-owned object the device manages. Everything
 // non-VMA is RAII; VMA's allocator handle is raw and destroyed
@@ -141,6 +195,14 @@ struct VulkanDeviceState {
     vk::raii::DescriptorSetLayout    pushDescSetLayout = nullptr;
     vk::raii::PipelineLayout         pipelineLayout    = nullptr;
 
+    // Timeline semaphore + deferred-delete queue. The submit signals
+    // `timelineSem` at `nextSubmitValue` then increments it; Destroy()
+    // queues entries tagged with that pending value so they free
+    // automatically once the GPU reaches that point.
+    vk::raii::Semaphore        timelineSem    = nullptr;
+    u64                        nextSubmitValue = 1;
+    std::vector<PendingDelete> pendingDeletes;
+
     SlotMap<BufferEntry>    buffers;
     SlotMap<TextureEntry>   textures;
     SlotMap<ShaderEntry>    shaders;
@@ -152,11 +214,29 @@ struct VulkanDeviceState {
     u32                                       frameIndex = 0;
 };
 
-// Push-descriptor binding slots — keep small for Phase 1 (line shader
-// uses one CB on binding 0) but leave headroom for the typical
-// camera/material CBs the BLS pipelines need in Phase 2.
-inline constexpr u32 kCbBindingBase   = 0;     // 0..3
-inline constexpr u32 kCbBindingCount  = 4;
+// Drains every pending-delete entry whose timeline value the GPU has
+// reached. Called once per frame just before the host starts recording
+// the next command buffer.
+void DrainPendingDeletes(VulkanDeviceState& s);
+
+// Push-descriptor binding layout used by every PSO. Slang's SPIR-V
+// emit puts everything into set 0 with sequential bindings starting at
+// 0 (CB → SRVs → samplers). We mirror that contiguous numbering: CBs
+// 0..3, SRVs 4..7, samplers 8..11. The viewcube shader (debug
+// renderer) uses CB[0] / SRV[0] / sampler[0] — i.e. bindings 0, 4, 8.
+//
+// NOTE: Slang's default emit numbers them 0, 1, 2 (without a gap).
+// We resolve that mismatch by passing -fvk-bind-globals or per-shader
+// [vk::binding] annotations once we revisit the shader build. For
+// Phase 1 the line shader uses only CB[0] which lands at binding 0
+// either way — the viewcube needs the layout below to match its
+// 0/1/2 default emit.
+inline constexpr u32 kCbBindingBase     = 0;
+inline constexpr u32 kCbBindingCount    = 1;
+inline constexpr u32 kSrvBindingBase    = kCbBindingBase + kCbBindingCount;     // 1
+inline constexpr u32 kSrvBindingCount   = 1;
+inline constexpr u32 kSamplerBindingBase  = kSrvBindingBase + kSrvBindingCount; // 2
+inline constexpr u32 kSamplerBindingCount = 1;
 
 // Defined in vulkan_swap_chain.cpp. Called from the command list when
 // a swap-chain proxy texture is bound as a render target — acquires

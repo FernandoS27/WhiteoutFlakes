@@ -54,12 +54,14 @@ int wmain(int argc, wchar_t* argv[]) {
                 backend = whiteout::flakes::gfx::GfxApi::D3D11;
             else if (_wcsicmp(v, L"d3d12") == 0 || _wcsicmp(v, L"dx12") == 0)
                 backend = whiteout::flakes::gfx::GfxApi::D3D12;
+            else if (_wcsicmp(v, L"vulkan") == 0 || _wcsicmp(v, L"vk") == 0)
+                backend = whiteout::flakes::gfx::GfxApi::Vulkan;
             else {
-                std::wcerr << L"Unknown backend: " << v << L" (valid: d3d11, d3d12)\n";
+                std::wcerr << L"Unknown backend: " << v << L" (valid: d3d11, d3d12, vulkan)\n";
                 return 1;
             }
         } else if (std::wcscmp(a, L"--help") == 0 || std::wcscmp(a, L"-h") == 0) {
-            std::cout << "Usage: WhiteoutFlakes.exe [--backend d3d11|d3d12] [<mdx-path>]\n";
+            std::cout << "Usage: WhiteoutFlakes.exe [--backend d3d11|d3d12|vulkan] [<mdx-path>]\n";
             return 0;
         } else if (mdxPath.empty()) {
             mdxPath = a;
@@ -79,8 +81,11 @@ int wmain(int argc, wchar_t* argv[]) {
         return 1;
     }
 
-    std::cout << "Backend: "
-              << (backend == whiteout::flakes::gfx::GfxApi::D3D11 ? "D3D11" : "D3D12") << "\n";
+    const char* backendName =
+        backend == whiteout::flakes::gfx::GfxApi::D3D11  ? "D3D11"  :
+        backend == whiteout::flakes::gfx::GfxApi::D3D12  ? "D3D12"  :
+        backend == whiteout::flakes::gfx::GfxApi::Vulkan ? "Vulkan" : "?";
+    std::cout << "Backend: " << backendName << "\n";
 
     whiteout::flakes::renderer::SceneManager  scene;
     whiteout::flakes::renderer::RenderService renderer(scene);
@@ -112,7 +117,15 @@ int wmain(int argc, wchar_t* argv[]) {
     }
     renderWindow.SetFocusActor(hero->handle);
     hero->ignoreNonLooping = renderWindow.LoopNonLoopingPolicy();
-    renderer.Settings().SetRenderMode(hero->PreferredRenderMode());
+    // Phase 1 of the Vulkan backend doesn't ship the tonemap PSO that the
+    // HD path relies on, so force SD mode — the renderer skips the HDR
+    // offscreen + tonemap pass and writes the scene directly to the
+    // backbuffer.
+    if (backend == whiteout::flakes::gfx::GfxApi::Vulkan) {
+        renderer.Settings().SetRenderMode(whiteout::flakes::renderer::RenderMode::SD);
+    } else {
+        renderer.Settings().SetRenderMode(hero->PreferredRenderMode());
+    }
 
     auto sequences = hero->animation.Sequences();
     std::cout << "Loaded: " << hero->render.gpuMaterials.size() << " materials, "

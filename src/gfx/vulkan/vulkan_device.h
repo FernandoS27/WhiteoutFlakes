@@ -67,11 +67,18 @@ private:
 
     VulkanDevice& device_;
 
-    // Pending CB writes — buffered by BindConstantBuffer, flushed by
-    // the next Draw*. Indexed by binding slot (0..kCbBindingCount-1).
-    struct PendingCb { BufferHandle buffer{}; bool dirty = false; };
-    std::array<PendingCb, 4> pendingCBs_{};
-    bool                     anyDescriptorDirty_ = false;
+    // Pending Bind* writes — buffered until the next Draw* / Dispatch
+    // flushes them via vkCmdPushDescriptorSetKHR. Slot indices match
+    // the public BindXxx(stage, slot, ...) API; the layout in
+    // vulkan_resources.h decides which descriptor binding each slot
+    // lands on.
+    struct PendingCb  { BufferHandle  buffer{};  bool dirty = false; };
+    struct PendingSrv { TextureHandle texture{}; bool dirty = false; };
+    struct PendingSmp { SamplerHandle sampler{}; bool dirty = false; };
+    std::array<PendingCb,  4> pendingCBs_{};
+    std::array<PendingSrv, 4> pendingSRVs_{};
+    std::array<PendingSmp, 4> pendingSamplers_{};
+    bool                      anyDescriptorDirty_ = false;
 };
 
 class VulkanDevice final : public IGFXDevice {

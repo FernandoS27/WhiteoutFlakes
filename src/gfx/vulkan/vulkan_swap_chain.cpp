@@ -110,6 +110,31 @@ bool CreateSwapchainObjects(VulkanDeviceState& s, SwapChainEntry& sc,
         sc.viewsSrgb.push_back(MakeBackbufferView(s.device, image, sc.formatSrgb));
         sc.viewsLinear.push_back(MakeBackbufferView(s.device, image, sc.formatLinear));
     }
+
+    // Allocate one acquire semaphore per image plus one spare. The
+    // acquire dance in AcquireSwapChainImageIfNeeded swaps the spare
+    // with the per-image slot on every call, so a semaphore is never
+    // re-used while the prior present using it is still in flight.
+    // The render-done semaphores follow the same per-image pinning —
+    // signaled by submit, waited on by present, freed implicitly by
+    // the next acquire of the same image.
+    sc.imageAcquireSems.clear();
+    sc.imageRenderDoneSems.clear();
+    sc.imageAcquireSems.reserve(sc.images.size());
+    sc.imageRenderDoneSems.reserve(sc.images.size());
+    for (usize i = 0; i < sc.images.size(); ++i) {
+        auto r1 = s.device.createSemaphore({});
+        auto r2 = s.device.createSemaphore({});
+        if (r1.result != vk::Result::eSuccess ||
+            r2.result != vk::Result::eSuccess) return false;
+        sc.imageAcquireSems.push_back(std::move(r1.value));
+        sc.imageRenderDoneSems.push_back(std::move(r2.value));
+    }
+    {
+        auto r = s.device.createSemaphore({});
+        if (r.result != vk::Result::eSuccess) return false;
+        sc.spareAcquireSem = std::move(r.value);
+    }
     return true;
 }
 
@@ -237,15 +262,30 @@ u32 AcquireSwapChainImageIfNeeded(VulkanDeviceState& s, SwapChainEntry& sc,
                                    FrameContext& frame) {
     if (sc.acquiredThisFrame) return sc.imageIndex;
 
-    auto r = sc.swapchain.acquireNextImage(UINT64_MAX, *frame.acquireSem, VK_NULL_HANDLE);
+    // Per-image acquire-semaphore swap dance:
+    //  1. Use the spare to acquire — it's known free (either freshly
+    //     created, or just finished its prior use one cycle ago).
+    //  2. After acquire, swap the spare with the per-image slot so the
+    //     newly-signaled semaphore is owned by that image. The slot's
+    //     previous semaphore (released N acquires ago for that image)
+    //     becomes the new spare.
+    // The frame's submit then waits on imageAcquireSems[idx], which is
+    // guaranteed to be the freshly-signaled one.
+    auto r = sc.swapchain.acquireNextImage(UINT64_MAX,
+                                           *sc.spareAcquireSem,
+                                           VK_NULL_HANDLE);
     if (r.result != vk::Result::eSuccess && r.result != vk::Result::eSuboptimalKHR) {
         std::fprintf(stderr, "[vk] acquireNextImage failed (%s)\n",
                      vk::to_string(r.result).c_str());
         return UINT32_MAX;
     }
     const u32 idx = r.value;
+    std::swap(sc.spareAcquireSem, sc.imageAcquireSems[idx]);
+
     sc.imageIndex        = idx;
     sc.acquiredThisFrame = true;
+    frame.acquireWaitSem = *sc.imageAcquireSems[idx];
+    frame.renderDoneSem  = *sc.imageRenderDoneSems[idx];
 
     if (auto* p = s.textures.Get(static_cast<u64>(sc.proxySrgb))) {
         p->image         = sc.images[idx];
@@ -288,23 +328,35 @@ void VulkanDevice::Present(SwapChainHandle handle) {
         frame.recording = false;
 
         vk::SemaphoreSubmitInfo waitInfo{
-            .semaphore = *frame.acquireSem,
+            .semaphore = vk::Semaphore(frame.acquireWaitSem),
             .stageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
         };
-        vk::SemaphoreSubmitInfo signalInfo{
-            .semaphore = *frame.renderDoneSem,
-            .stageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        // Two signals: the per-image binary render-done semaphore for
+        // present, and the timeline semaphore at this submit's value
+        // for deferred-delete tracking.
+        std::array<vk::SemaphoreSubmitInfo, 2> signalInfos{
+            vk::SemaphoreSubmitInfo{
+                .semaphore = vk::Semaphore(frame.renderDoneSem),
+                .stageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            },
+            vk::SemaphoreSubmitInfo{
+                .semaphore = *s.timelineSem,
+                .value     = s.nextSubmitValue,
+                .stageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            },
         };
         vk::CommandBufferSubmitInfo cbInfo{ .commandBuffer = *frame.commandBuffer };
         vk::SubmitInfo2 submit{
             .waitSemaphoreInfoCount   = 1, .pWaitSemaphoreInfos      = &waitInfo,
             .commandBufferInfoCount   = 1, .pCommandBufferInfos      = &cbInfo,
-            .signalSemaphoreInfoCount = 1, .pSignalSemaphoreInfos    = &signalInfo,
+            .signalSemaphoreInfoCount = static_cast<u32>(signalInfos.size()),
+            .pSignalSemaphoreInfos    = signalInfos.data(),
         };
         (void)s.queue.submit2(submit, *frame.inFlightFence);
+        s.nextSubmitValue++;
     }
 
-    const VkSemaphore waitSem = *frame.renderDoneSem;
+    const VkSemaphore waitSem = frame.renderDoneSem;
     const VkSwapchainKHR swap = *sc->swapchain;
     const u32 idx = sc->imageIndex;
     vk::PresentInfoKHR pi{

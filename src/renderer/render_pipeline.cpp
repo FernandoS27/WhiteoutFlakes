@@ -519,6 +519,19 @@ bool RenderPipeline::InitDevice(gfx::GfxApi api) {
 bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     if (!impl_->gfx_ || !rs_.Scene().ActiveContentProvider()) return false;
 
+    // Phase 1 of the Vulkan backend doesn't ship BLS bundles in SPIR-V
+    // form yet — the wc3_shaders pipeline produces .spv per perm but
+    // we don't have a SPIR-V BLS container parser. Short-circuit so
+    // grid + viewcube come up; the BLS-driven render passes (HD, SD,
+    // tonemap, corn fx, etc.) gate themselves on these program
+    // pointers being non-null and silently skip when they aren't.
+    if (api == gfx::GfxApi::Vulkan) {
+        std::printf("[bls] InitBlsShaders: skipped on Vulkan — "
+                    "BLS programs unavailable, only debug grid + viewcube "
+                    "render in Phase 1.\n");
+        return true;
+    }
+
     rs_.Replaceables().SetContentProvider(rs_.Scene().ActiveContentProvider());
 
     rs_.Splats().Configure(impl_->gfx_.get(), &rs_.Textures(),
@@ -972,8 +985,16 @@ void RenderPipeline::CleanupGFX() {
 bool RenderPipeline::CreateShaders() {
     using namespace whiteout::flakes::Shaders;
 
-    impl_->lineVS_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Vertex, kLineVS, sizeof(kLineVS));
-    impl_->linePS_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Pixel,  kLinePS, sizeof(kLinePS));
+    // Vulkan consumes the SPIR-V variant emitted alongside DXBC; D3D11
+    // and D3D12 keep using the DXBC blob (sm_5_0 is accepted by both).
+    const bool vk = impl_->gfx_->GetApi() == gfx::GfxApi::Vulkan;
+    const u8*  vsBytes = vk ? kLineVSSpv : kLineVS;
+    usize      vsSize  = vk ? sizeof(kLineVSSpv) : sizeof(kLineVS);
+    const u8*  psBytes = vk ? kLinePSSpv : kLinePS;
+    usize      psSize  = vk ? sizeof(kLinePSSpv) : sizeof(kLinePS);
+
+    impl_->lineVS_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Vertex, vsBytes, vsSize);
+    impl_->linePS_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Pixel,  psBytes, psSize);
 
     return impl_->lineVS_ != gfx::ShaderHandle::Invalid
         && impl_->linePS_ != gfx::ShaderHandle::Invalid;

@@ -121,8 +121,17 @@ VulkanDevice::~VulkanDevice() {
         s.device.waitIdle();
     }
 
-    // Tear down VMA-owned resources (everything in the slot maps that's
-    // raw VkXxx + VmaAllocation) before the allocator goes away.
+    // Run every queued deleter — after waitIdle, all timeline values
+    // are safe and the GPU has stopped touching anything. Manually
+    // bump `pendingDeletes` lambdas through; we can't go through the
+    // normal Drain because it gates on getSemaphoreCounterValue and
+    // we want unconditional teardown here.
+    for (auto& pd : s.pendingDeletes) pd.deleter->Run(s);
+    s.pendingDeletes.clear();
+
+    // Tear down whatever's still live in the slot maps (resources the
+    // renderer never explicitly destroyed). Slot-map entries hold raw
+    // VkXxx + VmaAllocation; raii fields auto-destroy on Clear().
     s.buffers.ForEach([&](BufferEntry& e) {
         if (e.buffer && e.allocation)
             vmaDestroyBuffer(s.allocator, e.buffer, e.allocation);
@@ -222,6 +231,10 @@ bool VulkanDevice::Init() {
     std::vector<const char*> deviceExts = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
+        // Required to set VkSwapchainCreateInfo::flags to MUTABLE_FORMAT
+        // — pairs with VkImageFormatListCreateInfo so a single swap-
+        // chain image can have both sRGB and linear views.
+        VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME,
     };
 
     i32 bestScore = -1;
@@ -252,9 +265,22 @@ bool VulkanDevice::Init() {
         .pQueuePriorities = &queuePriority,
     };
 
+    // Vulkan 1.2 feature struct — needed for `timelineSemaphore`, which
+    // gates the deferred-delete queue (see PendingDelete). The 1.3 struct
+    // chains onto this one's pNext.
+    vk::PhysicalDeviceVulkan12Features vk12{
+        .timelineSemaphore = vk::True,
+    };
+
     vk::PhysicalDeviceVulkan13Features vk13{
+        .pNext            = &vk12,
         .synchronization2 = vk::True,
         .dynamicRendering = vk::True,
+    };
+
+    vk::PhysicalDeviceFeatures coreFeatures{
+        // Required for VK_IMAGE_VIEW_TYPE_CUBE_ARRAY (IBL probes etc).
+        .imageCubeArray = vk::True,
     };
 
     vk::DeviceCreateInfo dci{
@@ -263,6 +289,7 @@ bool VulkanDevice::Init() {
         .pQueueCreateInfos       = &qci,
         .enabledExtensionCount   = static_cast<u32>(deviceExts.size()),
         .ppEnabledExtensionNames = deviceExts.data(),
+        .pEnabledFeatures        = &coreFeatures,
     };
 
     auto deviceResult = s.physicalDevice.createDevice(dci);
@@ -290,20 +317,37 @@ bool VulkanDevice::Init() {
     // descriptor set regardless of which pipeline is bound. Push
     // descriptors avoid per-frame pool/set allocation.
     {
-        std::array<vk::DescriptorSetLayoutBinding, kCbBindingCount> cbBindings{};
+        std::vector<vk::DescriptorSetLayoutBinding> bindings;
+        const auto bothStages = vk::ShaderStageFlagBits::eVertex
+                              | vk::ShaderStageFlagBits::eFragment;
         for (u32 i = 0; i < kCbBindingCount; ++i) {
-            cbBindings[i] = vk::DescriptorSetLayoutBinding{
+            bindings.push_back({
                 .binding         = kCbBindingBase + i,
                 .descriptorType  = vk::DescriptorType::eUniformBuffer,
                 .descriptorCount = 1,
-                .stageFlags      = vk::ShaderStageFlagBits::eVertex
-                                 | vk::ShaderStageFlagBits::eFragment,
-            };
+                .stageFlags      = bothStages,
+            });
+        }
+        for (u32 i = 0; i < kSrvBindingCount; ++i) {
+            bindings.push_back({
+                .binding         = kSrvBindingBase + i,
+                .descriptorType  = vk::DescriptorType::eSampledImage,
+                .descriptorCount = 1,
+                .stageFlags      = bothStages,
+            });
+        }
+        for (u32 i = 0; i < kSamplerBindingCount; ++i) {
+            bindings.push_back({
+                .binding         = kSamplerBindingBase + i,
+                .descriptorType  = vk::DescriptorType::eSampler,
+                .descriptorCount = 1,
+                .stageFlags      = bothStages,
+            });
         }
         auto dslR = s.device.createDescriptorSetLayout({
             .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
-            .bindingCount = static_cast<u32>(cbBindings.size()),
-            .pBindings    = cbBindings.data(),
+            .bindingCount = static_cast<u32>(bindings.size()),
+            .pBindings    = bindings.data(),
         });
         if (dslR.result != vk::Result::eSuccess) {
             std::fprintf(stderr, "[vk] createDescriptorSetLayout failed (%s)\n",
@@ -325,7 +369,27 @@ bool VulkanDevice::Init() {
         s.pipelineLayout = std::move(plR.value);
     }
 
-    // ---- 6. Per-frame command pool + sync ---------------------------------
+    // ---- 6. Timeline semaphore (deferred-delete tracking) ----------------
+    // Submit signals `timelineSem` at `nextSubmitValue` (a monotonic
+    // counter). Destroy() tags resources with the pending value so they
+    // free automatically once the GPU reaches that point — replaces a
+    // device-wide vkDeviceWaitIdle on every Destroy.
+    {
+        vk::SemaphoreTypeCreateInfo typeInfo{
+            .semaphoreType = vk::SemaphoreType::eTimeline,
+            .initialValue  = 0,
+        };
+        auto r = s.device.createSemaphore({ .pNext = &typeInfo });
+        if (r.result != vk::Result::eSuccess) {
+            std::fprintf(stderr, "[vk] createSemaphore (timeline) failed (%s)\n",
+                         vk::to_string(r.result).c_str());
+            return false;
+        }
+        s.timelineSem = std::move(r.value);
+        s.nextSubmitValue = 1;
+    }
+
+    // ---- 7. Per-frame command pool + sync ---------------------------------
     for (u32 i = 0; i < kFramesInFlight; ++i) {
         auto& f = s.frames[i];
 
@@ -350,16 +414,6 @@ bool VulkanDevice::Init() {
             return false;
         }
         f.commandBuffer = std::move(cbsR.value[0]);
-
-        auto sem1 = s.device.createSemaphore({});
-        auto sem2 = s.device.createSemaphore({});
-        if (sem1.result != vk::Result::eSuccess ||
-            sem2.result != vk::Result::eSuccess) {
-            std::fprintf(stderr, "[vk] createSemaphore failed (frame %u)\n", i);
-            return false;
-        }
-        f.acquireSem    = std::move(sem1.value);
-        f.renderDoneSem = std::move(sem2.value);
 
         auto fenceR = s.device.createFence({
             .flags = vk::FenceCreateFlagBits::eSignaled,
@@ -504,9 +558,19 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc,
                                : vk::ImageAspectFlags{}))
                        : vk::ImageAspectFlags(vk::ImageAspectFlagBits::eColor);
 
+    // For cube images, eCube requires layerCount==6 and eCubeArray
+    // requires layerCount that's a multiple of 6 — the renderer
+    // creates IBL probes as cube arrays with arraySize == 12 (two
+    // cubes), which has to use eCubeArray.
+    vk::ImageViewType viewType = vk::ImageViewType::e2D;
+    if (desc.isCube) {
+        viewType = (desc.arraySize > 6)
+                       ? vk::ImageViewType::eCubeArray
+                       : vk::ImageViewType::eCube;
+    }
     auto viewR = s.device.createImageView({
         .image    = vk::Image(t.image),
-        .viewType = desc.isCube ? vk::ImageViewType::eCube : vk::ImageViewType::e2D,
+        .viewType = viewType,
         .format   = fmt,
         .subresourceRange = {
             .aspectMask     = t.aspect,
@@ -531,8 +595,59 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc,
     return static_cast<TextureHandle>(s.textures.Insert(std::move(t)));
 }
 
-TextureHandle VulkanDevice::CreateColorTarget(i32, i32, Format) {
-    return TextureHandle::Invalid;  // Phase 2
+TextureHandle VulkanDevice::CreateColorTarget(i32 w, i32 h, Format f) {
+    auto& s = *state_;
+    const vk::Format fmt = ToVkFormat(f);
+    if (fmt == vk::Format::eUndefined) return TextureHandle::Invalid;
+
+    VkImageCreateInfo ici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    ici.imageType     = VK_IMAGE_TYPE_2D;
+    ici.format        = static_cast<VkFormat>(fmt);
+    ici.extent        = { static_cast<u32>(w), static_cast<u32>(h), 1 };
+    ici.mipLevels     = 1;
+    ici.arrayLayers   = 1;
+    ici.samples       = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage         = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT
+                      | VK_IMAGE_USAGE_SAMPLED_BIT
+                      | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    ici.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo aci{};
+    aci.usage = VMA_MEMORY_USAGE_AUTO;
+
+    TextureEntry t{};
+    if (vmaCreateImage(s.allocator, &ici, &aci, &t.image, &t.allocation, nullptr)
+            != VK_SUCCESS) {
+        return TextureHandle::Invalid;
+    }
+    t.aspect = vk::ImageAspectFlagBits::eColor;
+
+    auto viewR = s.device.createImageView({
+        .image    = vk::Image(t.image),
+        .viewType = vk::ImageViewType::e2D,
+        .format   = fmt,
+        .subresourceRange = {
+            .aspectMask     = t.aspect,
+            .baseMipLevel   = 0,
+            .levelCount     = 1,
+            .baseArrayLayer = 0,
+            .layerCount     = 1,
+        },
+    });
+    if (viewR.result != vk::Result::eSuccess) {
+        vmaDestroyImage(s.allocator, t.image, t.allocation);
+        return TextureHandle::Invalid;
+    }
+    t.ownedView     = std::move(viewR.value);
+    t.view          = *t.ownedView;
+    t.format        = fmt;
+    t.currentLayout = vk::ImageLayout::eUndefined;
+    t.width         = w;
+    t.height        = h;
+    t.ownsImage     = true;
+    return static_cast<TextureHandle>(s.textures.Insert(std::move(t)));
 }
 
 TextureHandle VulkanDevice::CreateDepthTarget(i32 w, i32 h, Format f) {
@@ -820,28 +935,98 @@ SamplerHandle VulkanDevice::CreateSampler(const SamplerDesc& desc) {
 
 // ---- Destruction --------------------------------------------------------
 
+// Drain queued deletes whose timeline value the GPU has reached.
+void DrainPendingDeletes(VulkanDeviceState& s) {
+    if (s.pendingDeletes.empty()) return;
+    auto vR = s.timelineSem.getCounterValue();
+    if (vR.result != vk::Result::eSuccess) return;
+    const u64 completed = vR.value;
+    auto it = s.pendingDeletes.begin();
+    while (it != s.pendingDeletes.end()) {
+        if (it->timelineValue <= completed) {
+            it->deleter->Run(s);
+            it = s.pendingDeletes.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+// Each Destroy(handle) moves the resource state out of the slot map
+// (so the renderer's handle is invalidated immediately) and queues a
+// deleter tagged with the next-submit timeline value. Once the GPU
+// reaches that value the per-frame drain runs the lambda — no
+// vkDeviceWaitIdle needed.
 void VulkanDevice::Destroy(BufferHandle h) {
     auto& s = *state_;
     auto* b = s.buffers.Get(static_cast<u64>(h));
     if (!b) return;
-    if (b->buffer && b->allocation)
-        vmaDestroyBuffer(s.allocator, b->buffer, b->allocation);
+    BufferEntry moved = std::move(*b);
     s.buffers.Remove(static_cast<u64>(h));
+    s.pendingDeletes.push_back(MakePendingDelete(
+        s.nextSubmitValue,
+        [m = std::move(moved)](VulkanDeviceState& st) mutable {
+            if (m.buffer && m.allocation)
+                vmaDestroyBuffer(st.allocator, m.buffer, m.allocation);
+        }));
 }
 
 void VulkanDevice::Destroy(TextureHandle h) {
     auto& s = *state_;
     auto* t = s.textures.Get(static_cast<u64>(h));
     if (!t) return;
-    if (t->ownsImage && t->image && t->allocation) {
-        vmaDestroyImage(s.allocator, t->image, t->allocation);
-    }
+    TextureEntry moved = std::move(*t);
     s.textures.Remove(static_cast<u64>(h));
+    s.pendingDeletes.push_back(MakePendingDelete(
+        s.nextSubmitValue,
+        [m = std::move(moved)](VulkanDeviceState& st) mutable {
+            // vk::raii::ImageView (m.ownedView) auto-destroys when m
+            // goes out of scope. The VMA-owned image only frees when
+            // we created it — proxy textures (m.ownsImage==false)
+            // borrow swap-chain-owned images and skip vmaDestroyImage.
+            if (m.ownsImage && m.image && m.allocation)
+                vmaDestroyImage(st.allocator, m.image, m.allocation);
+        }));
 }
 
-void VulkanDevice::Destroy(ShaderHandle h)   { state_->shaders.Remove(static_cast<u64>(h));   }
-void VulkanDevice::Destroy(PipelineHandle h) { state_->pipelines.Remove(static_cast<u64>(h)); }
-void VulkanDevice::Destroy(SamplerHandle h)  { state_->samplers.Remove(static_cast<u64>(h));  }
+void VulkanDevice::Destroy(ShaderHandle h) {
+    auto& s = *state_;
+    auto* e = s.shaders.Get(static_cast<u64>(h));
+    if (!e) return;
+    ShaderEntry moved = std::move(*e);
+    s.shaders.Remove(static_cast<u64>(h));
+    s.pendingDeletes.push_back(MakePendingDelete(
+        s.nextSubmitValue,
+        [m = std::move(moved)](VulkanDeviceState&) mutable {
+            // vk::raii::ShaderModule destroys on scope exit.
+        }));
+}
+
+void VulkanDevice::Destroy(PipelineHandle h) {
+    auto& s = *state_;
+    auto* e = s.pipelines.Get(static_cast<u64>(h));
+    if (!e) return;
+    PipelineEntry moved = std::move(*e);
+    s.pipelines.Remove(static_cast<u64>(h));
+    s.pendingDeletes.push_back(MakePendingDelete(
+        s.nextSubmitValue,
+        [m = std::move(moved)](VulkanDeviceState&) mutable {
+            // vk::raii::Pipeline destroys on scope exit.
+        }));
+}
+
+void VulkanDevice::Destroy(SamplerHandle h) {
+    auto& s = *state_;
+    auto* e = s.samplers.Get(static_cast<u64>(h));
+    if (!e) return;
+    SamplerEntry moved = std::move(*e);
+    s.samplers.Remove(static_cast<u64>(h));
+    s.pendingDeletes.push_back(MakePendingDelete(
+        s.nextSubmitValue,
+        [m = std::move(moved)](VulkanDeviceState&) mutable {
+            // vk::raii::Sampler destroys on scope exit.
+        }));
+}
 
 // ---- Buffer map / update ------------------------------------------------
 

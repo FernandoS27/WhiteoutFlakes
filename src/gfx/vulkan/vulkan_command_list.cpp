@@ -47,6 +47,10 @@ void EnsureRecording(VulkanDeviceState& s, FrameContext& frame) {
     if (frame.recording) return;
     (void)s.device.waitForFences(*frame.inFlightFence, vk::True, UINT64_MAX);
     s.device.resetFences(*frame.inFlightFence);
+    // Frame fence reached → run any deferred destroys whose timeline
+    // value the GPU has caught up to. Cheap: just queries one counter
+    // and walks the list.
+    DrainPendingDeletes(s);
     frame.commandBuffer.reset({});
     (void)frame.commandBuffer.begin({
         .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
@@ -139,9 +143,12 @@ void VulkanCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
     };
     frame.commandBuffer.beginRendering(info);
 
-    // Default viewport / scissor (renderer typically overrides).
-    vk::Viewport vp{ 0.0f, 0.0f,
-                     static_cast<f32>(width), static_cast<f32>(height),
+    // Default viewport / scissor — flip Y to match D3D conventions
+    // (renderer hands us projection matrices that assume top-left
+    // origin going down). Vulkan 1.1+ permits negative viewport
+    // height, equivalent to a Y-flip without extra matrix work.
+    vk::Viewport vp{ 0.0f, static_cast<f32>(height),
+                     static_cast<f32>(width), -static_cast<f32>(height),
                      0.0f, 1.0f };
     frame.commandBuffer.setViewport(0, vp);
     vk::Rect2D scissor{ {0, 0}, { static_cast<u32>(width), static_cast<u32>(height) } };
@@ -160,7 +167,9 @@ void VulkanCommandList::SetViewport(const Viewport& v) {
     auto& s     = device_.State();
     auto& frame = s.frames[s.frameIndex];
     if (!frame.recording) return;
-    vk::Viewport vp{ v.x, v.y, v.width, v.height, v.minDepth, v.maxDepth };
+    // Flip Y: see comment in BeginRenderPass.
+    vk::Viewport vp{ v.x, v.y + v.height, v.width, -v.height,
+                     v.minDepth, v.maxDepth };
     frame.commandBuffer.setViewport(0, vp);
 }
 
@@ -220,14 +229,24 @@ void VulkanCommandList::BindConstantBuffer(ShaderStage /*stage*/, u32 slot,
     anyDescriptorDirty_ = true;
 }
 
-// SRV/UAV/Sampler push-descriptor bindings: scaffold only — Phase 1
-// grid/viewcube paths don't need them, so we leave them as no-ops. The
-// shape of the layout (kCbBindingBase / kCbBindingCount in
-// vulkan_resources.h) is what the next milestone extends.
-void VulkanCommandList::BindShaderResource(ShaderStage, u32, TextureHandle) {}
-void VulkanCommandList::BindShaderResource(ShaderStage, u32, BufferHandle)  {}
-void VulkanCommandList::BindUnorderedAccess(u32, BufferHandle)              {}
-void VulkanCommandList::BindSampler       (ShaderStage, u32, SamplerHandle) {}
+void VulkanCommandList::BindShaderResource(ShaderStage /*stage*/, u32 slot,
+                                            TextureHandle texture) {
+    if (slot >= pendingSRVs_.size()) return;
+    pendingSRVs_[slot] = { texture, true };
+    anyDescriptorDirty_ = true;
+}
+
+// Buffer-shaped SRVs and UAVs aren't wired in Phase 1; the BLS path
+// uses them but we don't compile BLS for Vulkan yet.
+void VulkanCommandList::BindShaderResource(ShaderStage, u32, BufferHandle) {}
+void VulkanCommandList::BindUnorderedAccess(u32, BufferHandle)             {}
+
+void VulkanCommandList::BindSampler(ShaderStage /*stage*/, u32 slot,
+                                     SamplerHandle sampler) {
+    if (slot >= pendingSamplers_.size()) return;
+    pendingSamplers_[slot] = { sampler, true };
+    anyDescriptorDirty_ = true;
+}
 
 void VulkanCommandList::FlushDescriptors() {
     if (!anyDescriptorDirty_) return;
@@ -235,14 +254,19 @@ void VulkanCommandList::FlushDescriptors() {
     auto& s     = device_.State();
     auto& frame = s.frames[s.frameIndex];
 
-    std::array<vk::DescriptorBufferInfo, kCbBindingCount> infos{};
-    std::array<vk::WriteDescriptorSet,   kCbBindingCount> writes{};
+    // CBs, SRVs, and samplers all push at once. Use small fixed-size
+    // arrays sized to the per-kind binding budget so we don't allocate.
+    constexpr u32 kMaxWrites = 12;
+    std::array<vk::DescriptorBufferInfo, kMaxWrites> bufInfos{};
+    std::array<vk::DescriptorImageInfo,  kMaxWrites> imgInfos{};
+    std::array<vk::WriteDescriptorSet,   kMaxWrites> writes{};
     u32 writeCount = 0;
-    for (u32 i = 0; i < pendingCBs_.size(); ++i) {
+
+    for (u32 i = 0; i < pendingCBs_.size() && i < kCbBindingCount; ++i) {
         if (!pendingCBs_[i].dirty) continue;
         auto* b = s.buffers.Get(static_cast<u64>(pendingCBs_[i].buffer));
         if (!b) continue;
-        infos[writeCount] = vk::DescriptorBufferInfo{
+        bufInfos[writeCount] = vk::DescriptorBufferInfo{
             .buffer = vk::Buffer(b->buffer),
             .offset = 0,
             .range  = VK_WHOLE_SIZE,
@@ -251,10 +275,43 @@ void VulkanCommandList::FlushDescriptors() {
             .dstBinding      = kCbBindingBase + i,
             .descriptorCount = 1,
             .descriptorType  = vk::DescriptorType::eUniformBuffer,
-            .pBufferInfo     = &infos[writeCount],
+            .pBufferInfo     = &bufInfos[writeCount],
         };
         ++writeCount;
         pendingCBs_[i].dirty = false;
+    }
+    for (u32 i = 0; i < pendingSRVs_.size() && i < kSrvBindingCount; ++i) {
+        if (!pendingSRVs_[i].dirty) continue;
+        auto* t = s.textures.Get(static_cast<u64>(pendingSRVs_[i].texture));
+        if (!t) continue;
+        imgInfos[writeCount] = vk::DescriptorImageInfo{
+            .imageView   = vk::ImageView(t->view),
+            .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+        };
+        writes[writeCount] = vk::WriteDescriptorSet{
+            .dstBinding      = kSrvBindingBase + i,
+            .descriptorCount = 1,
+            .descriptorType  = vk::DescriptorType::eSampledImage,
+            .pImageInfo      = &imgInfos[writeCount],
+        };
+        ++writeCount;
+        pendingSRVs_[i].dirty = false;
+    }
+    for (u32 i = 0; i < pendingSamplers_.size() && i < kSamplerBindingCount; ++i) {
+        if (!pendingSamplers_[i].dirty) continue;
+        auto* sm = s.samplers.Get(static_cast<u64>(pendingSamplers_[i].sampler));
+        if (!sm) continue;
+        imgInfos[writeCount] = vk::DescriptorImageInfo{
+            .sampler = *sm->sampler,
+        };
+        writes[writeCount] = vk::WriteDescriptorSet{
+            .dstBinding      = kSamplerBindingBase + i,
+            .descriptorCount = 1,
+            .descriptorType  = vk::DescriptorType::eSampler,
+            .pImageInfo      = &imgInfos[writeCount],
+        };
+        ++writeCount;
+        pendingSamplers_[i].dirty = false;
     }
 
     if (writeCount > 0) {
