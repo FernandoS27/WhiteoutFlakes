@@ -41,11 +41,22 @@ namespace whiteout::flakes::gfx::vulkan {
 
 inline constexpr u32 kFramesInFlight = 2;
 
+// CpuWritable buffers (constant buffers, dynamic vertex buffers) back
+// onto a ring of `slotCount` slots, each `slotStride` bytes. MapBuffer
+// rotates to the next slot and returns its pointer; BindConstantBuffer
+// captures the current offset so each draw reads its own data even
+// when the renderer maps the same logical buffer multiple times per
+// frame. Non-CpuWritable buffers use a single slot at offset 0.
 struct BufferEntry {
     VkBuffer        buffer     = VK_NULL_HANDLE;   // VMA-owned
     VmaAllocation   allocation = VK_NULL_HANDLE;
     void*           mapped     = nullptr;          // persistent map for CpuWritable
-    BufferDesc      desc{};
+    BufferDesc      desc{};                        // .size is the LOGICAL slot size
+
+    u64             slotStride = 0;                // bytes between ring slots (aligned)
+    u32             slotCount  = 1;                // 1 for non-ring buffers
+    u32             currentSlot = 0;               // last MapBuffer wrote into this slot
+    u64             currentOffset() const { return slotStride * currentSlot; }
 };
 
 struct TextureEntry {
@@ -98,6 +109,12 @@ struct FrameContext {
     vk::raii::CommandPool   commandPool      = nullptr;
     vk::raii::CommandBuffer commandBuffer    = nullptr;
     vk::raii::Fence         inFlightFence    = nullptr;
+    // Per-frame transient descriptor pool. Reset at frame start; refilled
+    // every flush by allocating one set per (CB / SRV / Sampler) layout.
+    // The renderer issues many draws per frame and our Bind* surface
+    // updates the full set on every transition, so we pre-size the pool
+    // for thousands of allocations and never recover individual sets.
+    vk::raii::DescriptorPool descriptorPool  = nullptr;
     // Set by AcquireSwapChainImageIfNeeded — point at the per-image
     // acquire / render-done semaphores inside the SwapChainEntry. Used
     // as the wait + signal semaphores on submit2 / presentKHR.
@@ -192,7 +209,28 @@ struct VulkanDeviceState {
     vk::raii::Queue                  queue          = nullptr;
     VmaAllocator                     allocator      = VK_NULL_HANDLE;
 
-    vk::raii::DescriptorSetLayout    pushDescSetLayout = nullptr;
+    // Cached at Init() time from VkPhysicalDeviceProperties. Drives the
+    // slot-stride alignment used by the per-CB ring buffer in
+    // CreateBuffer / MapBuffer (CpuWritable path).
+    u64                              minUniformBufferAlign = 256;
+    // Number of ring slots per CpuWritable buffer. The renderer can
+    // update a single CB up to this many times per frame before the
+    // ring wraps; with 2 frames in flight, slots N/2..N-1 belong to
+    // last frame's GPU reads, so we need at least
+    // (max_updates_per_frame * kFramesInFlight) slots. 256 is generous.
+    static constexpr u32             kCbRingSlots         = 256;
+
+    // Three push-descriptor set layouts, one per resource type, matching
+    // the [[vk::binding(N, S)]] convention applied to the Slang sources:
+    //   set 0 = constant buffers (uniformBuffer, bindings 0..N-1)
+    //   set 1 = shader resources  (sampledImage,  bindings 0..N-1)
+    //   set 2 = samplers         (sampler,       bindings 0..N-1)
+    // The split avoids type collisions across HLSL's b/t/s register
+    // namespaces (which are flattened to a single binding-number space
+    // in SPIR-V) without exceeding any single set's push-descriptor cap.
+    vk::raii::DescriptorSetLayout    cbSetLayout       = nullptr;
+    vk::raii::DescriptorSetLayout    srvSetLayout      = nullptr;
+    vk::raii::DescriptorSetLayout    samplerSetLayout  = nullptr;
     vk::raii::PipelineLayout         pipelineLayout    = nullptr;
 
     // Timeline semaphore + deferred-delete queue. The submit signals
@@ -210,6 +248,16 @@ struct VulkanDeviceState {
     SlotMap<SamplerEntry>   samplers;
     SlotMap<SwapChainEntry> swapchains;
 
+    // Newly-created sampled textures sit in VK_IMAGE_LAYOUT_UNDEFINED and
+    // can't be sampled from until they're transitioned to
+    // eShaderReadOnlyOptimal. The renderer's gfx layer has no explicit
+    // barrier API, and image-layout transitions are illegal inside an
+    // active dynamic-rendering scope, so CreateTexture stages the
+    // transition here and EnsureRecording (frame start, before any
+    // render pass begins) drains the queue with one batched
+    // pipelineBarrier2.
+    std::vector<u64>           pendingSrvTransitions;
+
     std::array<FrameContext, kFramesInFlight> frames{};
     u32                                       frameIndex = 0;
 };
@@ -219,24 +267,31 @@ struct VulkanDeviceState {
 // the next command buffer.
 void DrainPendingDeletes(VulkanDeviceState& s);
 
-// Push-descriptor binding layout used by every PSO. Slang's SPIR-V
-// emit puts everything into set 0 with sequential bindings starting at
-// 0 (CB → SRVs → samplers). We mirror that contiguous numbering: CBs
-// 0..3, SRVs 4..7, samplers 8..11. The viewcube shader (debug
-// renderer) uses CB[0] / SRV[0] / sampler[0] — i.e. bindings 0, 4, 8.
+// Per-set binding counts. Each set covers bindings 0..N-1, split into a
+// per-stage range. The slang sources annotate each VS resource at its
+// raw HLSL register index (b<N>/t<N>/s<N>) and each PS resource at
+// register-index + kStageBindingShift, so a (set, binding) pair is
+// unique per stage. The Vulkan backend mirrors that shift when
+// translating BindConstantBuffer / BindShaderResource / BindSampler
+// (stage, slot) calls into descriptor writes.
 //
-// NOTE: Slang's default emit numbers them 0, 1, 2 (without a gap).
-// We resolve that mismatch by passing -fvk-bind-globals or per-shader
-// [vk::binding] annotations once we revisit the shader build. For
-// Phase 1 the line shader uses only CB[0] which lands at binding 0
-// either way — the viewcube needs the layout below to match its
-// 0/1/2 default emit.
-inline constexpr u32 kCbBindingBase     = 0;
-inline constexpr u32 kCbBindingCount    = 1;
-inline constexpr u32 kSrvBindingBase    = kCbBindingBase + kCbBindingCount;     // 1
-inline constexpr u32 kSrvBindingCount   = 1;
-inline constexpr u32 kSamplerBindingBase  = kSrvBindingBase + kSrvBindingCount; // 2
-inline constexpr u32 kSamplerBindingCount = 1;
+// Set layout:
+//   set 0 (Cb)     : bindings 0..N-1 — VS  CBs (b<slot> + 0)
+//                    bindings N..2N-1 — PS  CBs (b<slot> + 16)
+//   set 1 (Srv)    : bindings 0..N-1 — VS  SRVs
+//                    bindings N..2N-1 — PS  SRVs
+//   set 2 (Sampler): bindings 0..N-1 — VS  samplers
+//                    bindings N..2N-1 — PS  samplers
+//
+// Future GS/TS/RT stages get their own shift (kStageBindingShift * k)
+// so per-stage slot conflicts can never reappear.
+inline constexpr u32 kCbSetIndex        = 0;
+inline constexpr u32 kSrvSetIndex       = 1;
+inline constexpr u32 kSamplerSetIndex   = 2;
+inline constexpr u32 kStageBindingShift = 16;
+inline constexpr u32 kCbBindingCount      = 32;  // 16 VS + 16 PS
+inline constexpr u32 kSrvBindingCount     = 32;  // 16 VS + 16 PS
+inline constexpr u32 kSamplerBindingCount = 32;  // 16 VS + 16 PS
 
 // Defined in vulkan_swap_chain.cpp. Called from the command list when
 // a swap-chain proxy texture is bound as a render target — acquires

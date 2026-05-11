@@ -5,6 +5,8 @@
 #include "renderer/render_pipeline.h"
 #include "renderer/render_pipeline_impl.h"
 #include "render_detail.h"
+
+#include <cstdio>
 #include "renderer/assets/sampler_asset_manager.h"
 #include "bls/bls_draw_helpers.h"
 #include "bls/bls_frame.h"

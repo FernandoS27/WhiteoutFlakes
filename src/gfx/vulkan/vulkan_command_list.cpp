@@ -34,7 +34,16 @@ void TransitionImageLayout(vk::raii::CommandBuffer& cb, VkImage image,
         .oldLayout     = oldLayout,
         .newLayout     = newLayout,
         .image         = vk::Image(image),
-        .subresourceRange = { aspect, 0, 1, 0, 1 },
+        // VK_REMAINING_{MIP_LEVELS,ARRAY_LAYERS} cover every subresource
+        // — render-target attachments have only mip 0 / layer 0, but
+        // sampled textures may be mip-chained or cube arrays. Keeping
+        // the range whole keeps the texture's tracked currentLayout in
+        // sync regardless of which view the renderer binds.
+        .subresourceRange = {
+            aspect,
+            0, VK_REMAINING_MIP_LEVELS,
+            0, VK_REMAINING_ARRAY_LAYERS,
+        },
     };
     vk::DependencyInfo dep{
         .imageMemoryBarrierCount = 1,
@@ -51,11 +60,54 @@ void EnsureRecording(VulkanDeviceState& s, FrameContext& frame) {
     // value the GPU has caught up to. Cheap: just queries one counter
     // and walks the list.
     DrainPendingDeletes(s);
+    // Reset the transient descriptor pool — every set allocated during
+    // the previous frame is freed in one shot. Sets are owned by the
+    // pool, so we don't need to track individual handles. NOTE: the
+    // raii DescriptorPool::reset(flags) call wraps vkResetDescriptorPool
+    // (it does NOT destroy the pool object — that's the destructor).
+    frame.descriptorPool.reset(vk::DescriptorPoolResetFlags{});
     frame.commandBuffer.reset({});
     (void)frame.commandBuffer.begin({
         .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
     });
     frame.recording = true;
+
+    // Drain SRV transitions queued by CreateTexture. Batch every
+    // pending texture into a single pipelineBarrier2 so a frame that
+    // creates many textures doesn't pay one barrier each. Must happen
+    // BEFORE the first BeginRenderPass — image-layout transitions
+    // aren't allowed inside a dynamic-rendering scope.
+    if (!s.pendingSrvTransitions.empty()) {
+        std::vector<vk::ImageMemoryBarrier2> barriers;
+        barriers.reserve(s.pendingSrvTransitions.size());
+        for (u64 slot : s.pendingSrvTransitions) {
+            auto* t = s.textures.Get(slot);
+            if (!t || !t->image) continue;
+            if (t->currentLayout == vk::ImageLayout::eShaderReadOnlyOptimal) continue;
+            barriers.push_back(vk::ImageMemoryBarrier2{
+                .srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands,
+                .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+                .dstStageMask  = vk::PipelineStageFlagBits2::eAllCommands,
+                .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
+                .oldLayout     = t->currentLayout,
+                .newLayout     = vk::ImageLayout::eShaderReadOnlyOptimal,
+                .image         = vk::Image(t->image),
+                .subresourceRange = {
+                    t->aspect,
+                    0, VK_REMAINING_MIP_LEVELS,
+                    0, VK_REMAINING_ARRAY_LAYERS,
+                },
+            });
+            t->currentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        }
+        if (!barriers.empty()) {
+            frame.commandBuffer.pipelineBarrier2(vk::DependencyInfo{
+                .imageMemoryBarrierCount = static_cast<u32>(barriers.size()),
+                .pImageMemoryBarriers    = barriers.data(),
+            });
+        }
+        s.pendingSrvTransitions.clear();
+    }
 }
 
 }  // namespace
@@ -205,7 +257,10 @@ void VulkanCommandList::BindVertexBuffer(u32 slot, BufferHandle h,
     auto* b = s.buffers.Get(static_cast<u64>(h));
     if (!b) return;
     const vk::Buffer     buf = vk::Buffer(b->buffer);
-    const vk::DeviceSize off = offset;
+    // CpuWritable vertex buffers (ribbons, particles) ride the same
+    // per-Map ring as CBs — add the buffer's current ring offset so
+    // the GPU reads the slot the CPU just wrote, not slot 0.
+    const vk::DeviceSize off = offset + b->currentOffset();
     frame.commandBuffer.bindVertexBuffers(slot, buf, off);
 }
 
@@ -218,21 +273,41 @@ void VulkanCommandList::BindIndexBuffer(BufferHandle h, Format f) {
     const vk::IndexType type = (f == Format::R16_UINT)
                                     ? vk::IndexType::eUint16
                                     : vk::IndexType::eUint32;
-    frame.commandBuffer.bindIndexBuffer(vk::Buffer(b->buffer), 0, type);
+    // Same ring-offset rule for dynamic index buffers.
+    frame.commandBuffer.bindIndexBuffer(vk::Buffer(b->buffer),
+                                         b->currentOffset(), type);
 }
 
-void VulkanCommandList::BindConstantBuffer(ShaderStage /*stage*/, u32 slot,
+// Translate a renderer-facing (stage, slot) pair into a global
+// descriptor binding number. The slang sources annotate every PS-side
+// resource at `register_index + PsBindingOffset`, so we mirror the
+// same shift here. Future stages claim their own slice
+// (GsBindingOffset = 32, …) when added.
+static u32 BindingForStage(ShaderStage stage, u32 slot) {
+    return slot + (stage == ShaderStage::Pixel ? kStageBindingShift : 0);
+}
+
+void VulkanCommandList::BindConstantBuffer(ShaderStage stage, u32 slot,
                                             BufferHandle buffer)
 {
-    if (slot >= pendingCBs_.size()) return;
-    pendingCBs_[slot] = { buffer, true };
+    const u32 binding = BindingForStage(stage, slot);
+    if (binding >= pendingCBs_.size()) return;
+    // Capture the buffer's CURRENT ring offset so subsequent MapBuffer
+    // rotations don't move the data this draw is supposed to read.
+    // The range used in the descriptor write is computed from the
+    // buffer's slot stride at flush time.
+    auto& s = device_.State();
+    auto* b = s.buffers.Get(static_cast<u64>(buffer));
+    const u64 off = b ? b->currentOffset() : 0;
+    pendingCBs_[binding] = { buffer, off, true };
     anyDescriptorDirty_ = true;
 }
 
-void VulkanCommandList::BindShaderResource(ShaderStage /*stage*/, u32 slot,
+void VulkanCommandList::BindShaderResource(ShaderStage stage, u32 slot,
                                             TextureHandle texture) {
-    if (slot >= pendingSRVs_.size()) return;
-    pendingSRVs_[slot] = { texture, true };
+    const u32 binding = BindingForStage(stage, slot);
+    if (binding >= pendingSRVs_.size()) return;
+    pendingSRVs_[binding] = { texture, true };
     anyDescriptorDirty_ = true;
 }
 
@@ -241,10 +316,11 @@ void VulkanCommandList::BindShaderResource(ShaderStage /*stage*/, u32 slot,
 void VulkanCommandList::BindShaderResource(ShaderStage, u32, BufferHandle) {}
 void VulkanCommandList::BindUnorderedAccess(u32, BufferHandle)             {}
 
-void VulkanCommandList::BindSampler(ShaderStage /*stage*/, u32 slot,
+void VulkanCommandList::BindSampler(ShaderStage stage, u32 slot,
                                      SamplerHandle sampler) {
-    if (slot >= pendingSamplers_.size()) return;
-    pendingSamplers_[slot] = { sampler, true };
+    const u32 binding = BindingForStage(stage, slot);
+    if (binding >= pendingSamplers_.size()) return;
+    pendingSamplers_[binding] = { sampler, true };
     anyDescriptorDirty_ = true;
 }
 
@@ -254,74 +330,151 @@ void VulkanCommandList::FlushDescriptors() {
     auto& s     = device_.State();
     auto& frame = s.frames[s.frameIndex];
 
-    // CBs, SRVs, and samplers all push at once. Use small fixed-size
-    // arrays sized to the per-kind binding budget so we don't allocate.
-    constexpr u32 kMaxWrites = 12;
-    std::array<vk::DescriptorBufferInfo, kMaxWrites> bufInfos{};
-    std::array<vk::DescriptorImageInfo,  kMaxWrites> imgInfos{};
-    std::array<vk::WriteDescriptorSet,   kMaxWrites> writes{};
-    u32 writeCount = 0;
+    // Each resource class lives in its own descriptor set (set 0 = CBs,
+    // set 1 = SRVs, set 2 = samplers). Per draw we allocate one set
+    // from the per-frame transient pool, write its full binding range,
+    // then bind it. Pool resets in EnsureRecording free everything in
+    // one shot at frame start.
+    // Bypass the raii allocateDescriptorSets() — its raii::DescriptorSet
+    // destructor calls vkFreeDescriptorSets, which is illegal on pools
+    // created without VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
+    // (we rely on whole-pool reset at frame start instead). Going through
+    // the C API skips the destructor and returns a raw VkDescriptorSet
+    // whose lifetime is owned by the pool.
+    auto allocSet = [&](VkDescriptorSetLayout layout) -> VkDescriptorSet {
+        VkDescriptorSetAllocateInfo ai{
+            .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            .descriptorPool     = *frame.descriptorPool,
+            .descriptorSetCount = 1,
+            .pSetLayouts        = &layout,
+        };
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        if (vkAllocateDescriptorSets(*s.device, &ai, &set) != VK_SUCCESS) {
+            return VK_NULL_HANDLE;
+        }
+        return set;
+    };
 
-    for (u32 i = 0; i < pendingCBs_.size() && i < kCbBindingCount; ++i) {
-        if (!pendingCBs_[i].dirty) continue;
-        auto* b = s.buffers.Get(static_cast<u64>(pendingCBs_[i].buffer));
-        if (!b) continue;
-        bufInfos[writeCount] = vk::DescriptorBufferInfo{
-            .buffer = vk::Buffer(b->buffer),
-            .offset = 0,
-            .range  = VK_WHOLE_SIZE,
-        };
-        writes[writeCount] = vk::WriteDescriptorSet{
-            .dstBinding      = kCbBindingBase + i,
-            .descriptorCount = 1,
-            .descriptorType  = vk::DescriptorType::eUniformBuffer,
-            .pBufferInfo     = &bufInfos[writeCount],
-        };
-        ++writeCount;
-        pendingCBs_[i].dirty = false;
-    }
-    for (u32 i = 0; i < pendingSRVs_.size() && i < kSrvBindingCount; ++i) {
-        if (!pendingSRVs_[i].dirty) continue;
-        auto* t = s.textures.Get(static_cast<u64>(pendingSRVs_[i].texture));
-        if (!t) continue;
-        imgInfos[writeCount] = vk::DescriptorImageInfo{
-            .imageView   = vk::ImageView(t->view),
-            .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
-        };
-        writes[writeCount] = vk::WriteDescriptorSet{
-            .dstBinding      = kSrvBindingBase + i,
-            .descriptorCount = 1,
-            .descriptorType  = vk::DescriptorType::eSampledImage,
-            .pImageInfo      = &imgInfos[writeCount],
-        };
-        ++writeCount;
-        pendingSRVs_[i].dirty = false;
-    }
-    for (u32 i = 0; i < pendingSamplers_.size() && i < kSamplerBindingCount; ++i) {
-        if (!pendingSamplers_[i].dirty) continue;
-        auto* sm = s.samplers.Get(static_cast<u64>(pendingSamplers_[i].sampler));
-        if (!sm) continue;
-        imgInfos[writeCount] = vk::DescriptorImageInfo{
-            .sampler = *sm->sampler,
-        };
-        writes[writeCount] = vk::WriteDescriptorSet{
-            .dstBinding      = kSamplerBindingBase + i,
-            .descriptorCount = 1,
-            .descriptorType  = vk::DescriptorType::eSampler,
-            .pImageInfo      = &imgInfos[writeCount],
-        };
-        ++writeCount;
-        pendingSamplers_[i].dirty = false;
+    std::array<VkDescriptorSet, 3> setsToBind{ VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    bool anyBound = false;
+
+    // ---- Set 0: CBs ----
+    {
+        std::array<vk::DescriptorBufferInfo, kCbBindingCount> infos{};
+        std::array<vk::WriteDescriptorSet,   kCbBindingCount> writes{};
+        u32 count = 0;
+        VkDescriptorSet set = allocSet(*s.cbSetLayout);
+        if (set != VK_NULL_HANDLE) {
+            for (u32 i = 0; i < pendingCBs_.size() && i < kCbBindingCount; ++i) {
+                pendingCBs_[i].dirty = false;
+                auto* b = s.buffers.Get(static_cast<u64>(pendingCBs_[i].buffer));
+                if (!b) continue;
+                infos[count] = vk::DescriptorBufferInfo{
+                    .buffer = vk::Buffer(b->buffer),
+                    .offset = pendingCBs_[i].offset,
+                    .range  = b->slotCount > 1 ? b->desc.size : VK_WHOLE_SIZE,
+                };
+                writes[count] = vk::WriteDescriptorSet{
+                    .dstSet          = vk::DescriptorSet(set),
+                    .dstBinding      = i,
+                    .descriptorCount = 1,
+                    .descriptorType  = vk::DescriptorType::eUniformBuffer,
+                    .pBufferInfo     = &infos[count],
+                };
+                ++count;
+            }
+            if (count > 0) {
+                s.device.updateDescriptorSets(
+                    vk::ArrayProxy<const vk::WriteDescriptorSet>{ count, writes.data() },
+                    nullptr);
+            }
+            setsToBind[kCbSetIndex] = set;
+            anyBound = true;
+        }
     }
 
-    if (writeCount > 0) {
-        frame.commandBuffer.pushDescriptorSetKHR(
+    // ---- Set 1: SRVs ----
+    {
+        std::array<vk::DescriptorImageInfo, kSrvBindingCount> infos{};
+        std::array<vk::WriteDescriptorSet,  kSrvBindingCount> writes{};
+        u32 count = 0;
+        VkDescriptorSet set = allocSet(*s.srvSetLayout);
+        if (set != VK_NULL_HANDLE) {
+            for (u32 i = 0; i < pendingSRVs_.size() && i < kSrvBindingCount; ++i) {
+                pendingSRVs_[i].dirty = false;
+                auto* t = s.textures.Get(static_cast<u64>(pendingSRVs_[i].texture));
+                if (!t) continue;
+                infos[count] = vk::DescriptorImageInfo{
+                    .imageView   = vk::ImageView(t->view),
+                    .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                };
+                writes[count] = vk::WriteDescriptorSet{
+                    .dstSet          = vk::DescriptorSet(set),
+                    .dstBinding      = i,
+                    .descriptorCount = 1,
+                    .descriptorType  = vk::DescriptorType::eSampledImage,
+                    .pImageInfo      = &infos[count],
+                };
+                ++count;
+            }
+            if (count > 0) {
+                s.device.updateDescriptorSets(
+                    vk::ArrayProxy<const vk::WriteDescriptorSet>{ count, writes.data() },
+                    nullptr);
+            }
+            setsToBind[kSrvSetIndex] = set;
+            anyBound = true;
+        }
+    }
+
+    // ---- Set 2: Samplers ----
+    {
+        std::array<vk::DescriptorImageInfo, kSamplerBindingCount> infos{};
+        std::array<vk::WriteDescriptorSet,  kSamplerBindingCount> writes{};
+        u32 count = 0;
+        VkDescriptorSet set = allocSet(*s.samplerSetLayout);
+        if (set != VK_NULL_HANDLE) {
+            for (u32 i = 0; i < pendingSamplers_.size() && i < kSamplerBindingCount; ++i) {
+                pendingSamplers_[i].dirty = false;
+                auto* sm = s.samplers.Get(static_cast<u64>(pendingSamplers_[i].sampler));
+                if (!sm) continue;
+                infos[count] = vk::DescriptorImageInfo{
+                    .sampler = *sm->sampler,
+                };
+                writes[count] = vk::WriteDescriptorSet{
+                    .dstSet          = vk::DescriptorSet(set),
+                    .dstBinding      = i,
+                    .descriptorCount = 1,
+                    .descriptorType  = vk::DescriptorType::eSampler,
+                    .pImageInfo      = &infos[count],
+                };
+                ++count;
+            }
+            if (count > 0) {
+                s.device.updateDescriptorSets(
+                    vk::ArrayProxy<const vk::WriteDescriptorSet>{ count, writes.data() },
+                    nullptr);
+            }
+            setsToBind[kSamplerSetIndex] = set;
+            anyBound = true;
+        }
+    }
+
+    if (anyBound) {
+        // bindDescriptorSets requires every set in [firstSet, firstSet+N)
+        // be valid — sets allocated above default to fully-valid even
+        // when no writes were issued (descriptors are uninitialised but
+        // unused by the bound shader stages).
+        frame.commandBuffer.bindDescriptorSets(
             vk::PipelineBindPoint::eGraphics,
             *s.pipelineLayout,
-            /*set*/ 0,
-            vk::ArrayProxy<const vk::WriteDescriptorSet>{
-                writeCount, writes.data() });
+            /*firstSet*/ 0,
+            vk::ArrayProxy<const vk::DescriptorSet>{
+                static_cast<u32>(setsToBind.size()),
+                reinterpret_cast<const vk::DescriptorSet*>(setsToBind.data()) },
+            /*dynamicOffsets*/ nullptr);
     }
+
     anyDescriptorDirty_ = false;
 }
 

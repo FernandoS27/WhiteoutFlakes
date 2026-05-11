@@ -31,6 +31,7 @@ bool ReadU32(std::span<const u8> data, usize off, u32& out) {
 bool BlsContainer::Load(std::span<const u8> fileBytes, std::string* error) {
     loaded_ = false;
     version_ = 0;
+    platformTag_ = 0;
     permutes_.clear();
     bytes_.clear();
 
@@ -152,6 +153,16 @@ bool BlsContainer::LoadV1_14(std::span<const u8> fileBytes, std::string* error) 
 
     BlsHeaderV14 h{};
     std::memcpy(&h, fileBytes.data(), sizeof(BlsHeaderV14));
+    platformTag_ = h.platformTag;
+
+    // We accept the two backends we actually emit + load: DX SM6 (DXIL) for
+    // d3d12 and SPIR-V for Vulkan. Others (GLSL, WGSL) get rejected.
+    const bool isDx6   = (h.platformTag == kPlatformTag_DX6);
+    const bool isSpirv = (h.platformTag == kPlatformTag_SPIRV);
+    if (!isDx6 && !isSpirv) {
+        SetError(error, "v1.14: unsupported platformTag (expected '06XD' or 'RIPS')");
+        return false;
+    }
 
     if (h.permCount == 0) {
         SetError(error, "v1.14: permutation count is zero");
@@ -231,46 +242,85 @@ bool BlsContainer::LoadV1_14(std::span<const u8> fileBytes, std::string* error) 
 
         const u8* permBytes = bytes_.data() + cursor;
 
-        // §3.2 inner header.
-        BlsV14DxInnerHeader inner{};
-        if (sz < sizeof(BlsV14DxInnerHeader) + 48 + 8) {
-            SetError(error, "v1.14: perm too small for §3.2 DX inner header");
-            permutes_.clear();
-            bytes_.clear();
-            return false;
-        }
-        std::memcpy(&inner, permBytes, sizeof(BlsV14DxInnerHeader));
-        if (inner.headerSize != sizeof(BlsV14DxInnerHeader)) {
-            SetError(error, "v1.14: §3.2 DX inner header size mismatch");
-            permutes_.clear();
-            bytes_.clear();
-            return false;
-        }
+        const u8* blobStart = nullptr;
+        u32       blobSize  = 0;
 
-        // dxbc_size at offset 0x58, dxbc bytes start at 0x60.
-        u32 dxbcSize = 0;
-        std::memcpy(&dxbcSize, permBytes + 0x58, sizeof(u32));
-        const u32 dxbcOffset = 0x60;
-        if (static_cast<u64>(dxbcOffset) + dxbcSize > sz) {
-            SetError(error, "v1.14: DXBC blob out of bounds within perm");
-            permutes_.clear();
-            bytes_.clear();
-            return false;
-        }
-        const u8* dxbcStart = permBytes + dxbcOffset;
-        u32 dxbcMagic = 0;
-        std::memcpy(&dxbcMagic, dxbcStart, sizeof(u32));
-        if (dxbcMagic != kDxbcMagic) {
-            SetError(error, "v1.14: inner blob is not a DXBC/DXIL container");
-            permutes_.clear();
-            bytes_.clear();
-            return false;
+        if (isDx6) {
+            // §3.2 inner: 40-byte header + 48-byte resource info + 8-byte
+            // dxbc prefix + DXBC/DXIL blob. dxbc_size at 0x58, blob at 0x60.
+            if (sz < sizeof(BlsV14DxInnerHeader) + 48 + 8) {
+                SetError(error, "v1.14: perm too small for §3.2 DX inner header");
+                permutes_.clear();
+                bytes_.clear();
+                return false;
+            }
+            BlsV14DxInnerHeader inner{};
+            std::memcpy(&inner, permBytes, sizeof(BlsV14DxInnerHeader));
+            if (inner.headerSize != sizeof(BlsV14DxInnerHeader)) {
+                SetError(error, "v1.14: §3.2 DX inner header size mismatch");
+                permutes_.clear();
+                bytes_.clear();
+                return false;
+            }
+            std::memcpy(&blobSize, permBytes + 0x58, sizeof(u32));
+            const u32 dxbcOffset = 0x60;
+            if (static_cast<u64>(dxbcOffset) + blobSize > sz) {
+                SetError(error, "v1.14: DXBC blob out of bounds within perm");
+                permutes_.clear();
+                bytes_.clear();
+                return false;
+            }
+            blobStart = permBytes + dxbcOffset;
+            u32 dxbcMagic = 0;
+            std::memcpy(&dxbcMagic, blobStart, sizeof(u32));
+            if (dxbcMagic != kDxbcMagic) {
+                SetError(error, "v1.14: inner blob is not a DXBC/DXIL container");
+                permutes_.clear();
+                bytes_.clear();
+                return false;
+            }
+        } else {
+            // §3.6 opaque-blob inner (used for SPIR-V/GLSL/WGSL):
+            //   bytes 0x00..0x14: 20 bytes zero
+            //   bytes 0x14:       u32 payload_size (= 0x14 + blob_size)
+            //   bytes 0x18:       u32 stage (= 1)
+            //   bytes 0x1C:       u32 entry_count (= 1)
+            //   bytes 0x20:       u32 blob_size
+            //   bytes 0x24:       u32 (= 8)
+            //   bytes 0x28:       u32 (= 1)
+            //   bytes 0x2C..:     blob, then 1-byte 0x00 trailer.
+            constexpr u32 kInnerHeader = 0x2C;
+            if (sz < kInnerHeader + 1) {
+                SetError(error, "v1.14: perm too small for §3.6 opaque-blob header");
+                permutes_.clear();
+                bytes_.clear();
+                return false;
+            }
+            std::memcpy(&blobSize, permBytes + 0x20, sizeof(u32));
+            if (static_cast<u64>(kInnerHeader) + blobSize > sz) {
+                SetError(error, "v1.14: §3.6 blob out of bounds within perm");
+                permutes_.clear();
+                bytes_.clear();
+                return false;
+            }
+            blobStart = permBytes + kInnerHeader;
+            // SPIR-V starts with the magic 0x07230203 (little-endian).
+            if (isSpirv && blobSize >= 4) {
+                u32 spvMagic = 0;
+                std::memcpy(&spvMagic, blobStart, sizeof(u32));
+                if (spvMagic != 0x07230203u) {
+                    SetError(error, "v1.14: SPIR-V blob magic mismatch");
+                    permutes_.clear();
+                    bytes_.clear();
+                    return false;
+                }
+            }
         }
 
         // The v1.14 inner header is shaped differently from the v1.8
         // PermuteHeader, but no consumer reads PermuteHeader fields today —
         // we leave it default-initialised as a placeholder.
-        permutes_.push_back({ PermuteHeader{}, std::span<const u8>(dxbcStart, dxbcSize) });
+        permutes_.push_back({ PermuteHeader{}, std::span<const u8>(blobStart, blobSize) });
 
         cursor += sz;
     }

@@ -41,9 +41,13 @@ BlsShader* BlsShaderCache::Acquire(gfx::ShaderStage stage, const std::string& na
         return it->second.get();
     }
 
-    // D3D12 backend pulls DXIL bundles from shaders/d3d12/<stage>/. D3D11
-    // and Vulkan use the default DXBC bundles under shaders/<stage>/.
-    const char* apiPrefix = (api_ == gfx::GfxApi::D3D12) ? "shaders/d3d12/" : "shaders/";
+    // D3D11 → DXBC under shaders/<stage>/.
+    // D3D12 → DXIL under shaders/d3d12/<stage>/.
+    // Vulkan → SPIR-V under shaders/vulkan/<stage>/.
+    const char* apiPrefix =
+        (api_ == gfx::GfxApi::D3D12)  ? "shaders/d3d12/"  :
+        (api_ == gfx::GfxApi::Vulkan) ? "shaders/vulkan/" :
+                                        "shaders/";
     const std::string path = std::string(apiPrefix) + StagePrefix(stage) + "/" + key + ".bls";
     auto bytes = contentProvider_->ReadFile(path);
     if (!bytes || bytes->empty()) {

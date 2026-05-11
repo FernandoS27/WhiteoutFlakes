@@ -13,6 +13,15 @@ inline constexpr u32 kHsxgVersion_1_8  = 0x00010008u;  // shipped DX (DXBC sm5)
 inline constexpr u32 kHsxgVersion_1_14 = 0x0001000eu;  // shipped DX (DXIL sm6)
 inline constexpr u32 kDxbcMagic        = 0x43425844u;  // also the DXIL outer magic
 
+// v1.14 platform tags — FourCC at BlsHeaderV14::platformTag.
+//   'DXBC' (0x43425844) — DX SM5 (we don't emit; reserved for v1.8 outer)
+//   '06XD' (0x44583630) — DX SM6 (DXIL inside DXBC; §3.2 inner layout)
+//   'RIPS' (0x53504952) — Vulkan SPIR-V (§3.6 opaque-blob inner layout)
+//   'LSLG' (0x474C534C) — OpenGL GLSL (§3.6 opaque-blob)
+//   'LSGW' (0x5753474C) — WebGPU WGSL (§3.6 opaque-blob)
+inline constexpr u32 kPlatformTag_DX6   = 0x44583630u;  // '06XD'
+inline constexpr u32 kPlatformTag_SPIRV = 0x53504952u;  // 'RIPS'
+
 // v1.8 wire format ------------------------------------------------------------
 #pragma pack(push, 1)
 struct BlsHeader {
@@ -74,7 +83,11 @@ static_assert(sizeof(BlsV14DxInnerHeader) == 40);
 
 struct PermuteView {
     PermuteHeader      header;
-    std::span<const u8> dxbc;  // DXBC (sm5) for v1.8, DXIL-in-DXBC (sm6) for v1.14
+    // Raw bytecode span. Format depends on Version() + PlatformTag():
+    //   v1.8                          → DXBC (sm5)
+    //   v1.14 + kPlatformTag_DX6      → DXIL-in-DXBC (sm6)
+    //   v1.14 + kPlatformTag_SPIRV    → SPIR-V (vulkan)
+    std::span<const u8> dxbc;
 };
 
 class BlsContainer {
@@ -84,6 +97,7 @@ public:
 
     bool           IsLoaded()        const { return loaded_; }
     u32            Version()         const { return version_; }
+    u32            PlatformTag()     const { return platformTag_; }  // 0 for v1.8
     usize          PermuteCount()    const { return permutes_.size(); }
     PermuteView    Permute(usize i) const { return permutes_[i]; }
 
@@ -93,6 +107,7 @@ private:
 
     bool                     loaded_  = false;
     u32                      version_ = 0;
+    u32                      platformTag_ = 0;
     // v1.8: stores the original file. v1.14: stores the decompressed inner
     // payload so the per-perm spans we hand out remain valid for the
     // container's lifetime.

@@ -230,7 +230,6 @@ bool VulkanDevice::Init() {
 
     std::vector<const char*> deviceExts = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-        VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
         // Required to set VkSwapchainCreateInfo::flags to MUTABLE_FORMAT
         // — pairs with VkImageFormatListCreateInfo so a single swap-
         // chain image can have both sRGB and linear views.
@@ -250,12 +249,16 @@ bool VulkanDevice::Init() {
     if (!*s.physicalDevice) {
         std::fprintf(stderr,
                      "[vk] no physical device meets requirements "
-                     "(Vulkan 1.3 + swapchain + push_descriptor)\n");
+                     "(Vulkan 1.3 + swapchain + swapchain_mutable_format)\n");
         return false;
     }
     const auto props = s.physicalDevice.getProperties();
     deviceName_ = props.deviceName.data();
     s.queueFamily = static_cast<u32>(PickGraphicsQueueFamily(s.physicalDevice));
+    // Per-CB ring slot stride must be aligned to the device's
+    // minUniformBufferOffsetAlignment (commonly 64 on NVIDIA, 256 on
+    // AMD/Intel; Vulkan spec guarantees ≤ 256). Cached here once.
+    s.minUniformBufferAlign = props.limits.minUniformBufferOffsetAlignment;
 
     // ---- 3. Logical device + dynamic-rendering / sync2 features -----------
     const f32 queuePriority = 1.0f;
@@ -265,10 +268,19 @@ bool VulkanDevice::Init() {
         .pQueuePriorities = &queuePriority,
     };
 
+    // Vulkan 1.1 feature struct — `shaderDrawParameters` satisfies the
+    // SPIR-V DrawParameters capability that slangc emits for any shader
+    // using SV_VertexID / SV_InstanceID-derived built-ins (which is most
+    // of the BLS catalog).
+    vk::PhysicalDeviceVulkan11Features vk11{
+        .shaderDrawParameters = vk::True,
+    };
+
     // Vulkan 1.2 feature struct — needed for `timelineSemaphore`, which
     // gates the deferred-delete queue (see PendingDelete). The 1.3 struct
     // chains onto this one's pNext.
     vk::PhysicalDeviceVulkan12Features vk12{
+        .pNext             = &vk11,
         .timelineSemaphore = vk::True,
     };
 
@@ -312,54 +324,60 @@ bool VulkanDevice::Init() {
         return false;
     }
 
-    // ---- 5. Shared pipeline layout + push-descriptor set layout ----------
-    // One layout for every PSO so Bind* calls can target the same
-    // descriptor set regardless of which pipeline is bound. Push
-    // descriptors avoid per-frame pool/set allocation.
+    // ---- 5. Shared pipeline layout + per-type descriptor set layouts -----
+    // Three set layouts, one per resource class — Slang's SPIR-V emit
+    // (with [[vk::binding(N, S)]] annotations on every declaration) puts
+    // CBs in set 0, SRVs in set 1, and samplers in set 2.
+    //
+    // Push descriptors aren't usable here: VUID-VkPipelineLayoutCreateInfo-
+    // pSetLayouts-00293 forbids more than one push-descriptor set per
+    // pipeline layout, and we have three. Instead we allocate transient
+    // sets out of a per-frame descriptor pool and free everything at
+    // frame start by resetting the pool.
     {
-        std::vector<vk::DescriptorSetLayoutBinding> bindings;
         const auto bothStages = vk::ShaderStageFlagBits::eVertex
                               | vk::ShaderStageFlagBits::eFragment;
-        for (u32 i = 0; i < kCbBindingCount; ++i) {
-            bindings.push_back({
-                .binding         = kCbBindingBase + i,
-                .descriptorType  = vk::DescriptorType::eUniformBuffer,
-                .descriptorCount = 1,
-                .stageFlags      = bothStages,
-            });
-        }
-        for (u32 i = 0; i < kSrvBindingCount; ++i) {
-            bindings.push_back({
-                .binding         = kSrvBindingBase + i,
-                .descriptorType  = vk::DescriptorType::eSampledImage,
-                .descriptorCount = 1,
-                .stageFlags      = bothStages,
-            });
-        }
-        for (u32 i = 0; i < kSamplerBindingCount; ++i) {
-            bindings.push_back({
-                .binding         = kSamplerBindingBase + i,
-                .descriptorType  = vk::DescriptorType::eSampler,
-                .descriptorCount = 1,
-                .stageFlags      = bothStages,
-            });
-        }
-        auto dslR = s.device.createDescriptorSetLayout({
-            .flags = vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR,
-            .bindingCount = static_cast<u32>(bindings.size()),
-            .pBindings    = bindings.data(),
-        });
-        if (dslR.result != vk::Result::eSuccess) {
-            std::fprintf(stderr, "[vk] createDescriptorSetLayout failed (%s)\n",
-                         vk::to_string(dslR.result).c_str());
-            return false;
-        }
-        s.pushDescSetLayout = std::move(dslR.value);
 
-        const VkDescriptorSetLayout rawDsl = *s.pushDescSetLayout;
+        auto buildSet = [&](vk::DescriptorType type, u32 count,
+                            vk::raii::DescriptorSetLayout& outLayout,
+                            const char* what) -> bool {
+            std::vector<vk::DescriptorSetLayoutBinding> bindings;
+            bindings.reserve(count);
+            for (u32 i = 0; i < count; ++i) {
+                bindings.push_back({
+                    .binding         = i,
+                    .descriptorType  = type,
+                    .descriptorCount = 1,
+                    .stageFlags      = bothStages,
+                });
+            }
+            auto r = s.device.createDescriptorSetLayout({
+                .bindingCount = static_cast<u32>(bindings.size()),
+                .pBindings    = bindings.data(),
+            });
+            if (r.result != vk::Result::eSuccess) {
+                std::fprintf(stderr,
+                             "[vk] createDescriptorSetLayout (%s) failed (%s)\n",
+                             what, vk::to_string(r.result).c_str());
+                return false;
+            }
+            outLayout = std::move(r.value);
+            return true;
+        };
+
+        if (!buildSet(vk::DescriptorType::eUniformBuffer, kCbBindingCount,
+                      s.cbSetLayout, "CB")) return false;
+        if (!buildSet(vk::DescriptorType::eSampledImage, kSrvBindingCount,
+                      s.srvSetLayout, "SRV")) return false;
+        if (!buildSet(vk::DescriptorType::eSampler, kSamplerBindingCount,
+                      s.samplerSetLayout, "Sampler")) return false;
+
+        const std::array<VkDescriptorSetLayout, 3> rawSets = {
+            *s.cbSetLayout, *s.srvSetLayout, *s.samplerSetLayout,
+        };
         auto plR = s.device.createPipelineLayout({
-            .setLayoutCount = 1,
-            .pSetLayouts    = reinterpret_cast<const vk::DescriptorSetLayout*>(&rawDsl),
+            .setLayoutCount = static_cast<u32>(rawSets.size()),
+            .pSetLayouts    = reinterpret_cast<const vk::DescriptorSetLayout*>(rawSets.data()),
         });
         if (plR.result != vk::Result::eSuccess) {
             std::fprintf(stderr, "[vk] createPipelineLayout failed (%s)\n",
@@ -423,6 +441,43 @@ bool VulkanDevice::Init() {
             return false;
         }
         f.inFlightFence = std::move(fenceR.value);
+
+        // Transient descriptor pool — reset (not freed) at the top of
+        // each frame in EnsureRecording. Sized for the worst case the
+        // BLS catalog can throw at us: thousands of geosets per frame
+        // with one set allocation per (CB / SRV / Sampler) per draw.
+        // Pool exhaustion → vkAllocateDescriptorSets returns
+        // OutOfPoolMemory and the draw silently skips; the values here
+        // give comfortable headroom on a busy MDX scene.
+        constexpr u32 kMaxSetsPerFrame      = 4096;
+        constexpr u32 kMaxCbsPerFrame       = 4096 * kCbBindingCount;
+        constexpr u32 kMaxSrvsPerFrame      = 4096 * kSrvBindingCount;
+        constexpr u32 kMaxSamplersPerFrame  = 4096 * kSamplerBindingCount;
+        const std::array<vk::DescriptorPoolSize, 3> poolSizes = {
+            vk::DescriptorPoolSize{
+                .type = vk::DescriptorType::eUniformBuffer,
+                .descriptorCount = kMaxCbsPerFrame,
+            },
+            vk::DescriptorPoolSize{
+                .type = vk::DescriptorType::eSampledImage,
+                .descriptorCount = kMaxSrvsPerFrame,
+            },
+            vk::DescriptorPoolSize{
+                .type = vk::DescriptorType::eSampler,
+                .descriptorCount = kMaxSamplersPerFrame,
+            },
+        };
+        auto poolR2 = s.device.createDescriptorPool({
+            .maxSets       = kMaxSetsPerFrame * 3,  // 3 sets per flush worst case
+            .poolSizeCount = static_cast<u32>(poolSizes.size()),
+            .pPoolSizes    = poolSizes.data(),
+        });
+        if (poolR2.result != vk::Result::eSuccess) {
+            std::fprintf(stderr, "[vk] createDescriptorPool failed (frame %u): %s\n",
+                         i, vk::to_string(poolR2.result).c_str());
+            return false;
+        }
+        f.descriptorPool = std::move(poolR2.value);
     }
 
     std::printf("[vk] device='%s' api=%u.%u.%u queueFamily=%u%s\n",
@@ -444,8 +499,31 @@ IGFXCommandList* VulkanDevice::GetImmediateContext() { return immediate_.get(); 
 BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc, const void* initial) {
     auto& s = *state_;
 
+    BufferEntry e{};
+    e.desc       = desc;
+    e.slotStride = desc.size;
+    e.slotCount  = 1;
+    e.currentSlot = 0;
+
+    // CpuWritable buffers (typically dynamic CBs) back onto a ring of
+    // VulkanDeviceState::kCbRingSlots slots, each `slotStride` bytes.
+    // Each MapBuffer rotates to the next slot so a renderer that
+    // updates the same logical buffer once per draw still hands each
+    // GPU read its own data — without this, all draws in a frame see
+    // the final CB state (the GPU reads buffer contents at execution,
+    // not at command-recording time).
+    const bool ring = hasFlag(desc.usage, BufferUsage::CpuWritable) && desc.size > 0;
+    if (ring) {
+        // Round per-slot stride up to the device's minUniformBufferAlign
+        // so VkDescriptorBufferInfo::offset stays legal.
+        const u64 align = std::max<u64>(1, s.minUniformBufferAlign);
+        e.slotStride = (desc.size + align - 1) / align * align;
+        e.slotCount  = VulkanDeviceState::kCbRingSlots;
+    }
+    const u64 totalSize = e.slotStride * e.slotCount;
+
     VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-    bci.size  = desc.size;
+    bci.size  = totalSize;
     bci.usage = ToVkBufferUsage(desc.usage);
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
@@ -458,8 +536,6 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc, const void* init
         aci.usage = VMA_MEMORY_USAGE_AUTO;
     }
 
-    BufferEntry e{};
-    e.desc = desc;
     VmaAllocationInfo info{};
     if (vmaCreateBuffer(s.allocator, &bci, &aci, &e.buffer, &e.allocation, &info)
             != VK_SUCCESS) {
@@ -516,8 +592,190 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc, const void* init
     return static_cast<BufferHandle>(s.buffers.Insert(std::move(e)));
 }
 
+namespace {
+
+// Per-subresource byte size for a mip level, in linear order
+// (matching D3D12::GetCopyableFootprints + DXTex slice ordering).
+// Compressed formats are sized in 4x4 blocks; the renderer ships
+// initial-pixel data tightly packed (no row padding).
+struct SubresLayout {
+    u32 width;
+    u32 height;
+    u64 rowsInBlocks;
+    u64 rowSizeBytes;
+    u64 sliceSizeBytes;
+};
+
+SubresLayout ComputeSubresLayout(Format fmt, u32 width, u32 height) {
+    SubresLayout L{};
+    L.width  = width;
+    L.height = height;
+    const u32 bytesPerBlock = FormatBytesPerBlock(fmt);
+    if (IsBlockCompressed(fmt)) {
+        const u32 blocksW = std::max(1u, (width  + 3) / 4);
+        const u32 blocksH = std::max(1u, (height + 3) / 4);
+        L.rowSizeBytes   = static_cast<u64>(blocksW) * bytesPerBlock;
+        L.rowsInBlocks   = blocksH;
+    } else {
+        L.rowSizeBytes   = static_cast<u64>(width)  * bytesPerBlock;
+        L.rowsInBlocks   = height;
+    }
+    L.sliceSizeBytes = L.rowSizeBytes * L.rowsInBlocks;
+    return L;
+}
+
+// Submit a one-time command buffer that uploads `initialPixels` into
+// `image`. Allocates a host-visible staging buffer via VMA, copies the
+// renderer-packed mip chain into it, then runs a [transition →
+// copyBufferToImage → transition] sequence on a dedicated transient
+// command buffer and waits for the queue to drain. Slow but simple —
+// texture loads only happen at MDX load time so the latency is
+// acceptable until M5 introduces a deferred uploader.
+bool UploadTexturePixels(VulkanDeviceState& s,
+                          VkImage image, const TextureDesc& desc,
+                          vk::ImageAspectFlags aspect,
+                          const void* initialPixels)
+{
+    const u32 mipLevels = std::max(1u, static_cast<u32>(desc.mipLevels));
+    const u32 layers    = std::max(1u, static_cast<u32>(desc.arraySize));
+
+    // Walk the mip chain once to size the staging buffer and capture
+    // per-subresource offsets for the copy regions.
+    struct Subres {
+        u64 stagingOffset;
+        u32 width;
+        u32 height;
+        u64 sizeBytes;
+    };
+    std::vector<Subres> subs;
+    subs.reserve(static_cast<usize>(mipLevels) * layers);
+    u64 totalBytes = 0;
+    for (u32 layer = 0; layer < layers; ++layer) {
+        u32 w = desc.width;
+        u32 h = desc.height;
+        for (u32 mip = 0; mip < mipLevels; ++mip) {
+            const auto L = ComputeSubresLayout(desc.format, w, h);
+            subs.push_back({ totalBytes, w, h, L.sliceSizeBytes });
+            totalBytes += L.sliceSizeBytes;
+            w = std::max(1u, w / 2);
+            h = std::max(1u, h / 2);
+        }
+    }
+    if (totalBytes == 0) return true;
+
+    // ---- Staging buffer (host-visible + mapped) ----
+    VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    bci.size  = totalBytes;
+    bci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VmaAllocationCreateInfo aci{};
+    aci.usage = VMA_MEMORY_USAGE_AUTO;
+    aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+              | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VkBuffer       stagingBuf  = VK_NULL_HANDLE;
+    VmaAllocation  stagingAlloc = VK_NULL_HANDLE;
+    VmaAllocationInfo stagingInfo{};
+    if (vmaCreateBuffer(s.allocator, &bci, &aci, &stagingBuf, &stagingAlloc, &stagingInfo)
+            != VK_SUCCESS) {
+        return false;
+    }
+    std::memcpy(stagingInfo.pMappedData, initialPixels, totalBytes);
+    // VMA *prefers* HOST_COHERENT for SEQUENTIAL_WRITE allocations but
+    // can fall back to non-coherent host memory; an explicit flush is
+    // a no-op on coherent memory and required on non-coherent so the
+    // memcpy is visible to the GPU before submit2 below.
+    vmaFlushAllocation(s.allocator, stagingAlloc, 0, totalBytes);
+
+    // ---- One-shot command buffer ----
+    auto poolR = s.device.createCommandPool({
+        .flags = vk::CommandPoolCreateFlagBits::eTransient,
+        .queueFamilyIndex = s.queueFamily,
+    });
+    if (poolR.result != vk::Result::eSuccess) {
+        vmaDestroyBuffer(s.allocator, stagingBuf, stagingAlloc);
+        return false;
+    }
+    vk::raii::CommandPool pool = std::move(poolR.value);
+    auto cbsR = s.device.allocateCommandBuffers({
+        .commandPool        = *pool,
+        .level              = vk::CommandBufferLevel::ePrimary,
+        .commandBufferCount = 1,
+    });
+    if (cbsR.result != vk::Result::eSuccess) {
+        vmaDestroyBuffer(s.allocator, stagingBuf, stagingAlloc);
+        return false;
+    }
+    vk::raii::CommandBuffer cb = std::move(cbsR.value[0]);
+    (void)cb.begin({ .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit });
+
+    // Transition: Undefined → TransferDstOptimal (whole resource).
+    vk::ImageMemoryBarrier2 toCopy{
+        .srcStageMask  = vk::PipelineStageFlagBits2::eTopOfPipe,
+        .srcAccessMask = vk::AccessFlagBits2::eNone,
+        .dstStageMask  = vk::PipelineStageFlagBits2::eCopy,
+        .dstAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .oldLayout     = vk::ImageLayout::eUndefined,
+        .newLayout     = vk::ImageLayout::eTransferDstOptimal,
+        .image         = vk::Image(image),
+        .subresourceRange = { aspect, 0, mipLevels, 0, layers },
+    };
+    cb.pipelineBarrier2({ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &toCopy });
+
+    // One buffer-image copy per subresource.
+    std::vector<vk::BufferImageCopy> regions;
+    regions.reserve(subs.size());
+    for (u32 layer = 0; layer < layers; ++layer) {
+        for (u32 mip = 0; mip < mipLevels; ++mip) {
+            const auto& sub = subs[layer * mipLevels + mip];
+            regions.push_back(vk::BufferImageCopy{
+                .bufferOffset = sub.stagingOffset,
+                .imageSubresource = {
+                    aspect, mip, layer, 1,
+                },
+                .imageOffset = { 0, 0, 0 },
+                .imageExtent = { sub.width, sub.height, 1 },
+            });
+        }
+    }
+    cb.copyBufferToImage(vk::Buffer(stagingBuf), vk::Image(image),
+                          vk::ImageLayout::eTransferDstOptimal,
+                          regions);
+
+    // Transition: TransferDstOptimal → ShaderReadOnlyOptimal so the
+    // renderer can sample immediately. Skips the per-frame pending
+    // SRV transition for this texture.
+    vk::ImageMemoryBarrier2 toRead{
+        .srcStageMask  = vk::PipelineStageFlagBits2::eCopy,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
+        .dstStageMask  = vk::PipelineStageFlagBits2::eAllCommands,
+        .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
+        .oldLayout     = vk::ImageLayout::eTransferDstOptimal,
+        .newLayout     = vk::ImageLayout::eShaderReadOnlyOptimal,
+        .image         = vk::Image(image),
+        .subresourceRange = { aspect, 0, mipLevels, 0, layers },
+    };
+    cb.pipelineBarrier2({ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &toRead });
+    (void)cb.end();
+
+    // Submit + wait for completion. waitIdle on the queue is the
+    // simplest synchronization that lets us free the staging buffer
+    // immediately after.
+    vk::CommandBufferSubmitInfo cbInfo{ .commandBuffer = *cb };
+    vk::SubmitInfo2 si{
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos    = &cbInfo,
+    };
+    (void)s.queue.submit2(si);
+    s.queue.waitIdle();
+
+    vmaDestroyBuffer(s.allocator, stagingBuf, stagingAlloc);
+    return true;
+}
+
+}  // namespace
+
 TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc,
-                                          const void* /*initialPixels*/)
+                                          const void* initialPixels)
 {
     auto& s = *state_;
     const vk::Format fmt = ToVkFormat(desc.format);
@@ -592,7 +850,32 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc,
     t.width         = desc.width;
     t.height        = desc.height;
     t.ownsImage     = true;
-    return static_cast<TextureHandle>(s.textures.Insert(std::move(t)));
+
+    const bool sampled       = hasFlag(desc.usage, TextureUsage::ShaderResource);
+    const bool hasInitData   = sampled && initialPixels != nullptr;
+    const VkImage rawImage   = t.image;
+
+    // Upload `initialPixels` synchronously while the texture entry is
+    // still local — keeps every UpdateTexture-shaped state out of the
+    // SlotMap until we know the data landed. Failure here orphans the
+    // VMA image; the entry-level destroy below picks that up.
+    if (hasInitData) {
+        if (!UploadTexturePixels(s, rawImage, desc, t.aspect, initialPixels)) {
+            vmaDestroyImage(s.allocator, t.image, t.allocation);
+            return TextureHandle::Invalid;
+        }
+        t.currentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    }
+
+    const u64 slot = s.textures.Insert(std::move(t));
+    // Queue sampled textures with NO initial data for a layout
+    // transition at the next frame's start — UploadTexturePixels
+    // already left initialised textures in eShaderReadOnlyOptimal so
+    // they don't need the deferred transition.
+    if (sampled && !hasInitData) {
+        s.pendingSrvTransitions.push_back(slot);
+    }
+    return static_cast<TextureHandle>(slot);
 }
 
 TextureHandle VulkanDevice::CreateColorTarget(i32 w, i32 h, Format f) {
@@ -711,6 +994,13 @@ TextureHandle VulkanDevice::CreateDepthTarget(i32 w, i32 h, Format f) {
 ShaderHandle VulkanDevice::CreateShader(ShaderStage stage,
                                         const void* bytecode, usize size)
 {
+    // Null perms in a BLS bundle hand the cache an empty span — slang
+    // strips perms whose `Conditional<>` features collapse to nothing,
+    // and the cache pushes every slot through CreateShader regardless.
+    // Vulkan rejects codeSize == 0 (VUID-VkShaderModuleCreateInfo-
+    // codeSize-01085) so just return Invalid for those slots; the
+    // renderer never picks a null perm at draw time.
+    if (size == 0 || bytecode == nullptr) return ShaderHandle::Invalid;
     auto& s = *state_;
     auto modR = s.device.createShaderModule({
         .codeSize = size,
@@ -763,8 +1053,22 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         const auto& el = desc.inputLayout[i];
         if (el.inputSlot >= slotUsed.size()) continue;
         slotUsed[el.inputSlot] = true;
+        // Vulkan binds attributes by location number. The renderer mixes
+        // two semantic conventions:
+        //   1. BLS layouts (kMeshSD, kCornFx, …) use "ATTR" + a numeric
+        //      semantic index. Slang's SPIR-V emit maps each `: ATTR<N>`
+        //      VS input to `Location = N`, so the index *is* the location.
+        //   2. Debug-shader layouts (grid lines, tonemap blit, view-cube)
+        //      use HLSL-style names like POSITION/COLOR/TEXCOORD with
+        //      `semanticIndex = 0` everywhere. Slang's SPIR-V emit just
+        //      hands them sequential locations in declaration order.
+        // Detect the convention from the semantic prefix.
+        const bool useSemanticIndex =
+            el.semantic && el.semantic[0] == 'A' && el.semantic[1] == 'T'
+                        && el.semantic[2] == 'T' && el.semantic[3] == 'R'
+                        && el.semantic[4] == '\0';
         attrs.push_back(vk::VertexInputAttributeDescription{
-            .location = i,
+            .location = useSemanticIndex ? el.semanticIndex : i,
             .binding  = el.inputSlot,
             .format   = ToVkFormat(el.format),
             .offset   = el.offset,
@@ -821,6 +1125,12 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
     vk::PipelineRasterizationStateCreateInfo rs{
         .polygonMode = ToVkPolygonMode(desc.rasterizer.fill),
         .cullMode    = ToVkCull(desc.rasterizer.cull),
+        // Renderer convention matches Vulkan 1:1 — `frontCCW=true`
+        // means CCW-wound triangles are front. The negative-height
+        // viewport applied in BeginRenderPass flips Y for D3D-style
+        // top-left origin without changing which winding the
+        // rasterizer treats as front (Vulkan re-evaluates winding in
+        // clip space, before the viewport transform).
         .frontFace   = desc.rasterizer.frontCCW
                            ? vk::FrontFace::eCounterClockwise
                            : vk::FrontFace::eClockwise,
@@ -1035,8 +1345,15 @@ void VulkanDevice::UpdateBuffer(BufferHandle h, const void* data, usize size) {
     auto* b = s.buffers.Get(static_cast<u64>(h));
     if (!b) return;
     if (b->mapped) {
-        std::memcpy(b->mapped, data, size);
-        vmaFlushAllocation(s.allocator, b->allocation, 0, size);
+        // Treat UpdateBuffer like Map+memcpy+Unmap on the ring so the
+        // next Bind* captures the freshly-written slot. Non-ring buffers
+        // (slotCount==1) keep writing into slot 0 in place.
+        if (b->slotCount > 1) {
+            b->currentSlot = (b->currentSlot + 1) % b->slotCount;
+        }
+        const u64 off = b->currentOffset();
+        std::memcpy(static_cast<u8*>(b->mapped) + off, data, size);
+        vmaFlushAllocation(s.allocator, b->allocation, off, size);
     } else {
         // Slow path: map for the duration of the copy. Used only by
         // non-mappable buffers — the renderer's hot path uses CpuWritable
@@ -1054,7 +1371,15 @@ void* VulkanDevice::MapBuffer(BufferHandle h) {
     auto& s = *state_;
     auto* b = s.buffers.Get(static_cast<u64>(h));
     if (!b) return nullptr;
-    if (b->mapped) return b->mapped;          // persistently mapped
+    if (b->mapped) {
+        // Rotate to the next ring slot so this Map's data is visible
+        // independently of the previous slot's content. UnmapBuffer
+        // flushes just the new slot.
+        if (b->slotCount > 1) {
+            b->currentSlot = (b->currentSlot + 1) % b->slotCount;
+        }
+        return static_cast<u8*>(b->mapped) + b->currentOffset();
+    }
     void* p = nullptr;
     vmaMapMemory(s.allocator, b->allocation, &p);
     return p;
@@ -1065,8 +1390,10 @@ void VulkanDevice::UnmapBuffer(BufferHandle h) {
     auto* b = s.buffers.Get(static_cast<u64>(h));
     if (!b) return;
     if (b->mapped) {
-        // Persistently mapped — flush + leave mapped.
-        vmaFlushAllocation(s.allocator, b->allocation, 0, b->desc.size);
+        // Persistently mapped — flush just the current ring slot (or
+        // the whole buffer for slotCount == 1) and leave mapped.
+        vmaFlushAllocation(s.allocator, b->allocation,
+                           b->currentOffset(), b->desc.size);
     } else {
         vmaUnmapMemory(s.allocator, b->allocation);
     }

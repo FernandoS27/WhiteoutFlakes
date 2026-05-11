@@ -72,12 +72,23 @@ private:
     // the public BindXxx(stage, slot, ...) API; the layout in
     // vulkan_resources.h decides which descriptor binding each slot
     // lands on.
-    struct PendingCb  { BufferHandle  buffer{};  bool dirty = false; };
+    // CapturedOffset locks in the buffer's ring slot at BindConstantBuffer
+    // time; FlushDescriptors writes (buffer, capturedOffset, slotSize) so
+    // each draw reads its own data even if the buffer is rotated by
+    // subsequent MapBuffer calls before the descriptor is flushed.
+    struct PendingCb  { BufferHandle  buffer{};  u64 offset = 0; bool dirty = false; };
     struct PendingSrv { TextureHandle texture{}; bool dirty = false; };
     struct PendingSmp { SamplerHandle sampler{}; bool dirty = false; };
-    std::array<PendingCb,  4> pendingCBs_{};
-    std::array<PendingSrv, 4> pendingSRVs_{};
-    std::array<PendingSmp, 4> pendingSamplers_{};
+    // Sized to match the per-set binding budgets in vulkan_resources.h
+    // (kCbBindingCount / kSrvBindingCount / kSamplerBindingCount).
+    // The arrays are split into per-stage halves:
+    //   indices [0, kStageBindingShift)        — VS slots
+    //   indices [kStageBindingShift, 2*…)      — PS slots (slot N + 16)
+    // BindConstantBuffer/Resource/Sampler does the (stage, slot) →
+    // binding translation in vulkan_command_list.cpp.
+    std::array<PendingCb,  32> pendingCBs_{};
+    std::array<PendingSrv, 32> pendingSRVs_{};
+    std::array<PendingSmp, 32> pendingSamplers_{};
     bool                      anyDescriptorDirty_ = false;
 };
 

@@ -117,15 +117,10 @@ int wmain(int argc, wchar_t* argv[]) {
     }
     renderWindow.SetFocusActor(hero->handle);
     hero->ignoreNonLooping = renderWindow.LoopNonLoopingPolicy();
-    // Phase 1 of the Vulkan backend doesn't ship the tonemap PSO that the
-    // HD path relies on, so force SD mode — the renderer skips the HDR
-    // offscreen + tonemap pass and writes the scene directly to the
-    // backbuffer.
-    if (backend == whiteout::flakes::gfx::GfxApi::Vulkan) {
-        renderer.Settings().SetRenderMode(whiteout::flakes::renderer::RenderMode::SD);
-    } else {
-        renderer.Settings().SetRenderMode(hero->PreferredRenderMode());
-    }
+    // Pick the model's preferred render mode (HD for Reforged-era
+    // assets, SD for classic). All backends drive the same HDR +
+    // tonemap pipeline now.
+    renderer.Settings().SetRenderMode(hero->PreferredRenderMode());
 
     auto sequences = hero->animation.Sequences();
     std::cout << "Loaded: " << hero->render.gpuMaterials.size() << " materials, "

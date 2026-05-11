@@ -519,19 +519,6 @@ bool RenderPipeline::InitDevice(gfx::GfxApi api) {
 bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     if (!impl_->gfx_ || !rs_.Scene().ActiveContentProvider()) return false;
 
-    // Phase 1 of the Vulkan backend doesn't ship BLS bundles in SPIR-V
-    // form yet — the wc3_shaders pipeline produces .spv per perm but
-    // we don't have a SPIR-V BLS container parser. Short-circuit so
-    // grid + viewcube come up; the BLS-driven render passes (HD, SD,
-    // tonemap, corn fx, etc.) gate themselves on these program
-    // pointers being non-null and silently skip when they aren't.
-    if (api == gfx::GfxApi::Vulkan) {
-        std::printf("[bls] InitBlsShaders: skipped on Vulkan — "
-                    "BLS programs unavailable, only debug grid + viewcube "
-                    "render in Phase 1.\n");
-        return true;
-    }
-
     rs_.Replaceables().SetContentProvider(rs_.Scene().ActiveContentProvider());
 
     rs_.Splats().Configure(impl_->gfx_.get(), &rs_.Textures(),
