@@ -118,6 +118,7 @@ private:
     HWND cmbShadows_     = nullptr;
     HWND cmbDefaultBackend_ = nullptr;
     HWND chkGraphicsDebug_  = nullptr;
+    HWND cmbPreferredDev_   = nullptr;
     HMENU hMenuBar_      = nullptr;
     HMENU hMenuView_     = nullptr;
     HMENU hMenuTileset_  = nullptr;
@@ -144,6 +145,7 @@ private:
         IDC_SHADOWS,
         IDC_DEFAULT_BACKEND,
         IDC_GRAPHICS_DEBUG,
+        IDC_PREFERRED_DEVICE,
 
         IDM_VIEW_GRID      = 1100,
         IDM_VIEW_PARTICLES,

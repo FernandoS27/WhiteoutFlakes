@@ -2,12 +2,76 @@
 #include "d3d11_command_list.h"
 #include <algorithm>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 
+namespace whiteout::flakes::gfx {
+// Defined in gfx_factory.cpp; module-scope preferred-device name set
+// by SetPreferredDevice. Empty string = "best by VRAM".
+const std::string& GetPreferredDevice();
+}
+
 namespace whiteout::flakes::gfx::d3d11 {
+
+namespace {
+
+// DXGI hands us wide strings; the gfx public API is UTF-8. Manual
+// conversion keeps us off the broken-mbstowcs CRT path and avoids
+// pulling in <windows.h>'s WideCharToMultiByte just for adapter
+// names (Description is a stack-allocated wchar_t[128]).
+std::string WideToUtf8(const wchar_t* wide) {
+    if (!wide) return {};
+    std::string out;
+    for (; *wide; ++wide) {
+        u32 cp = static_cast<u32>(*wide);
+        // UTF-16 surrogate pair → single codepoint.
+        if (cp >= 0xD800 && cp <= 0xDBFF && wide[1]) {
+            const u32 low = static_cast<u32>(wide[1]);
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+            ++wide;
+        }
+        if (cp < 0x80) {
+            out.push_back(static_cast<char>(cp));
+        } else if (cp < 0x800) {
+            out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else if (cp < 0x10000) {
+            out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        } else {
+            out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+std::vector<std::string> EnumerateAdapterNames() {
+    std::vector<std::string> names;
+    IDXGIFactory1* factory = nullptr;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
+                                   reinterpret_cast<void**>(&factory)))) {
+        return names;
+    }
+    IDXGIAdapter1* adapter = nullptr;
+    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+        DXGI_ADAPTER_DESC1 desc{};
+        adapter->GetDesc1(&desc);
+        adapter->Release();
+        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
+        names.push_back(WideToUtf8(desc.Description));
+    }
+    factory->Release();
+    return names;
+}
 
 D3D11Device::D3D11Device() = default;
 
@@ -38,6 +102,11 @@ bool D3D11Device::Init(bool enableValidation) {
                                     reinterpret_cast<void**>(&factory_));
     if (FAILED(hr)) return false;
 
+    // Preferred-device matching: if the host set a non-empty name via
+    // gfx::SetPreferredDevice and that name appears in DXGI's list,
+    // pick it. Otherwise (empty preference or unknown name) fall back
+    // to "highest dedicated VRAM, ignoring software adapters".
+    const std::string& preferred = gfx::GetPreferredDevice();
     IDXGIAdapter1* bestAdapter = nullptr;
     SIZE_T bestVRAM = 0;
     {
@@ -46,6 +115,12 @@ bool D3D11Device::Init(bool enableValidation) {
             DXGI_ADAPTER_DESC1 desc{};
             adapter->GetDesc1(&desc);
             if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) { adapter->Release(); continue; }
+            if (!preferred.empty() && WideToUtf8(desc.Description) == preferred) {
+                if (bestAdapter) bestAdapter->Release();
+                bestAdapter = adapter;
+                bestVRAM = desc.DedicatedVideoMemory;
+                break;  // exact name match wins regardless of VRAM
+            }
             if (desc.DedicatedVideoMemory > bestVRAM) {
                 if (bestAdapter) bestAdapter->Release();
                 bestAdapter = adapter;

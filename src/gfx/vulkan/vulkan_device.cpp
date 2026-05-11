@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <vector>
 
 // Forward-declared in the parent gfx namespace — defined in
@@ -23,7 +24,39 @@ namespace whiteout::flakes::gfx {
 const std::filesystem::path& GetPipelineCachePath();
 }
 
+namespace whiteout::flakes::gfx {
+const std::filesystem::path& GetPipelineCachePath();
+// Defined in gfx_factory.cpp; module-scope preferred-device name set
+// by SetPreferredDevice. Empty string = "best by VRAM / score".
+const std::string& GetPreferredDevice();
+}
+
 namespace whiteout::flakes::gfx::vulkan {
+
+std::vector<std::string> EnumerateAdapterNames() {
+    std::vector<std::string> names;
+    vk::raii::Context ctx;
+    vk::ApplicationInfo appInfo{
+        .pApplicationName = "WhiteoutFlakes",
+        .apiVersion       = VK_API_VERSION_1_3,
+    };
+    vk::InstanceCreateInfo ici{ .pApplicationInfo = &appInfo };
+    auto instResult = ctx.createInstance(ici);
+    if (instResult.result != vk::Result::eSuccess) return names;
+    vk::raii::Instance instance = std::move(instResult.value);
+    auto [r, pds] = instance.enumeratePhysicalDevices();
+    if (r != vk::Result::eSuccess) return names;
+    for (const auto& pd : pds) {
+        // Filter to devices that meet our 1.3 + extension requirements
+        // so the picker matches what CreateDevice can actually open.
+        const auto props = pd.getProperties();
+        if (VK_API_VERSION_MAJOR(props.apiVersion) < 1 ||
+            (VK_API_VERSION_MAJOR(props.apiVersion) == 1 &&
+             VK_API_VERSION_MINOR(props.apiVersion) < 3)) continue;
+        names.emplace_back(props.deviceName.data());
+    }
+    return names;
+}
 
 // VulkanDeviceState lives in vulkan_resources.h.
 
@@ -354,10 +387,22 @@ bool VulkanDevice::Init(bool enableValidation) {
         VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
     };
 
+    // Preferred-device match first: if gfx::GetPreferredDevice() names
+    // a physical device we can actually use, pick it outright. Falls
+    // back to score-based selection (discrete > integrated, ties broken
+    // by VRAM) when the preference is empty or unmatched.
+    const std::string& preferred = gfx::GetPreferredDevice();
     i32 bestScore = -1;
     for (auto& pd : pds) {
         if (!DeviceSupportsExtensions(pd, deviceExts)) continue;
         if (PickGraphicsQueueFamily(pd) < 0) continue;
+        if (!preferred.empty() &&
+            preferred == std::string(pd.getProperties().deviceName.data()))
+        {
+            s.physicalDevice = std::move(pd);
+            bestScore = std::numeric_limits<i32>::max();  // lock in
+            break;
+        }
         const i32 score = ScoreDevice(pd);
         if (score > bestScore) {
             bestScore = score;

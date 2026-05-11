@@ -20,8 +20,15 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace whiteout::flakes::gfx::vulkan {
+
+// See gfx::EnumerateDevices — spins up a throw-away VkInstance and
+// returns each physical device's marketing name. The instance is
+// created without validation / debug-utils, so this is cheap enough
+// to call from a Settings dialog every time it opens.
+std::vector<std::string> EnumerateAdapterNames();
 
 class VulkanDevice;
 

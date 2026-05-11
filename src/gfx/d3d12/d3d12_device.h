@@ -5,8 +5,13 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace whiteout::flakes::gfx::d3d12 {
+
+// See gfx::EnumerateDevices — DXGI-backed device name listing.
+std::vector<std::string> EnumerateAdapterNames();
+
 
 class D3D12CommandList;
 

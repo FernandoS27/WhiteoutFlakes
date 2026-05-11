@@ -3,12 +3,73 @@
 
 #include <cstring>
 #include <algorithm>
+#include <string>
 #include <vector>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
 
+namespace whiteout::flakes::gfx {
+const std::string& GetPreferredDevice();
+}
+
 namespace whiteout::flakes::gfx::d3d12 {
+
+namespace {
+
+// Same UTF-16 → UTF-8 conversion as in d3d11_device.cpp. Duplicated
+// rather than pulled into a shared header because gfx_factory.cpp is
+// the only consumer and both backends already touch DXGI directly.
+std::string WideToUtf8(const wchar_t* wide) {
+    if (!wide) return {};
+    std::string out;
+    for (; *wide; ++wide) {
+        u32 cp = static_cast<u32>(*wide);
+        if (cp >= 0xD800 && cp <= 0xDBFF && wide[1]) {
+            const u32 low = static_cast<u32>(wide[1]);
+            cp = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+            ++wide;
+        }
+        if (cp < 0x80)        { out.push_back(static_cast<char>(cp)); }
+        else if (cp < 0x800)  { out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
+                                out.push_back(static_cast<char>(0x80 | (cp & 0x3F))); }
+        else if (cp < 0x10000){ out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
+                                out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                                out.push_back(static_cast<char>(0x80 | (cp & 0x3F))); }
+        else                  { out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
+                                out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+                                out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+                                out.push_back(static_cast<char>(0x80 | (cp & 0x3F))); }
+    }
+    return out;
+}
+
+}  // namespace
+
+std::vector<std::string> EnumerateAdapterNames() {
+    std::vector<std::string> names;
+    IDXGIFactory1* factory = nullptr;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
+                                   reinterpret_cast<void**>(&factory)))) {
+        return names;
+    }
+    IDXGIAdapter1* adapter = nullptr;
+    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+        DXGI_ADAPTER_DESC1 desc{};
+        adapter->GetDesc1(&desc);
+        // Skip both software adapters and ones that aren't D3D12-capable —
+        // EnumerateDevices(D3D12) should mirror what CreateDevice can use.
+        const bool isSoftware =
+            (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
+        const bool isD3D12Capable = !isSoftware &&
+            SUCCEEDED(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0,
+                                         __uuidof(ID3D12Device), nullptr));
+        adapter->Release();
+        if (isD3D12Capable) names.push_back(WideToUtf8(desc.Description));
+    }
+    factory->Release();
+    return names;
+}
 
 D3D12Device::D3D12Device() = default;
 
@@ -80,6 +141,10 @@ bool D3D12Device::CreateDeviceAndQueue() {
     HRESULT hr = CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&factory_));
     if (FAILED(hr)) return false;
 
+    // Preferred-device matching: exact UTF-8 name match against
+    // gfx::GetPreferredDevice() wins outright; otherwise fall back to
+    // highest-VRAM D3D12-capable adapter.
+    const std::string& preferred = gfx::GetPreferredDevice();
     IDXGIAdapter1* bestAdapter = nullptr;
     SIZE_T bestVRAM = 0;
     {
@@ -91,6 +156,12 @@ bool D3D12Device::CreateDeviceAndQueue() {
 
             if (SUCCEEDED(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0,
                                             __uuidof(ID3D12Device), nullptr))) {
+                if (!preferred.empty() && WideToUtf8(desc.Description) == preferred) {
+                    if (bestAdapter) bestAdapter->Release();
+                    bestAdapter = adapter;
+                    bestVRAM    = desc.DedicatedVideoMemory;
+                    break;  // exact name match wins regardless of VRAM
+                }
                 if (desc.DedicatedVideoMemory > bestVRAM) {
                     if (bestAdapter) bestAdapter->Release();
                     bestAdapter = adapter;

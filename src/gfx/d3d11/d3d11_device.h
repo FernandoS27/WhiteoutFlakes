@@ -3,8 +3,15 @@
 #include "gfx/gfx.h"
 #include "d3d11_resources.h"
 #include <string>
+#include <vector>
 
 namespace whiteout::flakes::gfx::d3d11 {
+
+// Enumerates DXGI adapters' marketing names (DXGI_ADAPTER_DESC1::Description).
+// Used by gfx::EnumerateDevices to populate the "preferred device" picker
+// without having to spin up an actual D3D11 device. Skips DXGI software
+// adapters (Microsoft Basic Render Driver etc.).
+std::vector<std::string> EnumerateAdapterNames();
 
 class D3D11CommandList;
 

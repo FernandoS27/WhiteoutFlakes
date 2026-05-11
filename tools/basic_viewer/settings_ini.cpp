@@ -57,6 +57,25 @@ void LoadStartupSettingsFromIni(RenderService& service) {
                 service.Settings().SetDefaultBackend(GfxApi::Vulkan);
         }
     }
+    {
+        // PreferredDevice is a verbatim adapter name (UTF-8 once
+        // converted from the INI's UTF-16 storage). Empty = "let the
+        // backend pick" — the same behaviour as before this knob
+        // existed.
+        wchar_t buf[256] = {};
+        ::GetPrivateProfileStringW(kSection, L"PreferredDevice", L"",
+                                   buf, 256, iniPath.c_str());
+        if (buf[0]) {
+            const i32 len = ::WideCharToMultiByte(CP_UTF8, 0, buf, -1,
+                                                  nullptr, 0, nullptr, nullptr);
+            if (len > 1) {
+                std::string utf8(len - 1, '\0');
+                ::WideCharToMultiByte(CP_UTF8, 0, buf, -1,
+                                      utf8.data(), len, nullptr, nullptr);
+                service.Settings().SetPreferredDevice(std::move(utf8));
+            }
+        }
+    }
 }
 
 void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy) {
@@ -233,6 +252,23 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy) {
         }
         ::WritePrivateProfileStringW(kSection, L"DefaultBackend",
                                      name, iniPath.c_str());
+    }
+    {
+        const std::string& pref = service.Settings().PreferredDevice();
+        if (pref.empty()) {
+            ::WritePrivateProfileStringW(kSection, L"PreferredDevice",
+                                         L"", iniPath.c_str());
+        } else {
+            const i32 wlen = ::MultiByteToWideChar(CP_UTF8, 0,
+                                                   pref.c_str(), -1, nullptr, 0);
+            if (wlen > 0) {
+                std::wstring wname(wlen, L'\0');
+                ::MultiByteToWideChar(CP_UTF8, 0, pref.c_str(), -1,
+                                      wname.data(), wlen);
+                ::WritePrivateProfileStringW(kSection, L"PreferredDevice",
+                                             wname.c_str(), iniPath.c_str());
+            }
+        }
     }
     {
         const DisplayFlags df = service.Settings().GetDisplayFlags();

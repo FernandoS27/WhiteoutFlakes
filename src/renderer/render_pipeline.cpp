@@ -499,6 +499,12 @@ i32 RenderPipeline::ComputeSelectedLod() const {
 
 bool RenderPipeline::InitDevice(gfx::GfxApi api) {
 
+    // Preferred-device hint to the gfx layer: empty string falls back
+    // to the backend's "best by VRAM / score" default. Setting it
+    // here keeps the gfx layer's module-scope state in sync with
+    // whatever the host loaded from .ini.
+    gfx::SetPreferredDevice(rs_.Settings().PreferredDevice().c_str());
+
     impl_->gfx_ = gfx::CreateDevice(api, rs_.Settings().GraphicsDebug());
     if (!impl_->gfx_) return false;
 

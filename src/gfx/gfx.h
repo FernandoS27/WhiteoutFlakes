@@ -4,6 +4,8 @@
 #include "whiteout/flakes/gfx_types.h"
 #include "gfx/gfx_pipeline_types.h"
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace whiteout::flakes::gfx {
 
@@ -121,5 +123,21 @@ std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api,
 // XDG_CACHE_HOME, etc.) is a host concern; gfx never calls
 // GetModuleFileName / readlink / SHGetKnownFolderPath itself.
 void SetPipelineCachePath(const char* utf8Path);
+
+// Enumerate the physical devices a given backend can present to the
+// host. Used by Settings UIs to populate a "preferred device" picker.
+// Cheap: each backend spins up the smallest amount of state it needs
+// (DXGI factory for d3d11/d3d12, a throw-away VkInstance for vulkan).
+// Returns each device's marketing name in driver-reported order; on
+// failure (no driver / no compatible adapter) returns an empty vector.
+std::vector<std::string> EnumerateDevices(GfxApi api);
+
+// Set the preferred adapter / physical device by *exact name match*
+// against EnumerateDevices(api). Empty (the default) means "highest-
+// VRAM discrete or fall back to integrated", matching what each
+// backend used to do unconditionally. Must be called before
+// CreateDevice; like SetPipelineCachePath, this is module-scope
+// state on the gfx layer that the next CreateDevice consumes.
+void SetPreferredDevice(const char* utf8Name);
 
 }

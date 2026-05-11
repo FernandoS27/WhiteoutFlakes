@@ -18,6 +18,11 @@ namespace {
 // d3d11 / d3d12 paths (which don't use it) stay unchanged. The Vulkan
 // device reads it in Init via GetPipelineCachePath().
 std::filesystem::path g_pipelineCachePath;
+
+// Host-selected preferred device name (matched verbatim against the
+// strings returned by EnumerateDevices). Empty = "best by VRAM / type"
+// — the default each backend used before this knob existed.
+std::string g_preferredDevice;
 }  // namespace
 
 void SetPipelineCachePath(const char* utf8Path) {
@@ -31,6 +36,14 @@ void SetPipelineCachePath(const char* utf8Path) {
 
 const std::filesystem::path& GetPipelineCachePath() {
     return g_pipelineCachePath;
+}
+
+void SetPreferredDevice(const char* utf8Name) {
+    g_preferredDevice = (utf8Name && *utf8Name) ? utf8Name : std::string{};
+}
+
+const std::string& GetPreferredDevice() {
+    return g_preferredDevice;
 }
 
 std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api, bool enableValidation) {
@@ -60,6 +73,20 @@ std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api, bool enableValidation) {
         }
     }
     return nullptr;
+}
+
+std::vector<std::string> EnumerateDevices(GfxApi api) {
+    switch (api) {
+        case GfxApi::D3D11:  return d3d11::EnumerateAdapterNames();
+        case GfxApi::D3D12:  return d3d12::EnumerateAdapterNames();
+        case GfxApi::Vulkan:
+#if WDX_HAS_VULKAN
+            return vulkan::EnumerateAdapterNames();
+#else
+            return {};
+#endif
+    }
+    return {};
 }
 
 }

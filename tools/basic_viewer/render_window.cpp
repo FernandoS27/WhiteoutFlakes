@@ -788,7 +788,7 @@ void RenderWindow::EnsureSettingsWindow() {
         return;
 
     constexpr i32 kClientW = 380;
-    constexpr i32 kClientH = 464;
+    constexpr i32 kClientH = 502;
     RECT rc = {0, 0, kClientW, kClientH};
 
     const DWORD style   = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
@@ -994,6 +994,54 @@ void RenderWindow::EnsureSettingsWindow() {
     }
 
     rowY += 38;
+    CreateWindowW(L"STATIC", L"Device:",
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+        12, rowY, 90, 22, hwndSettings_, nullptr, hInst, nullptr);
+    cmbPreferredDev_ = CreateWindowW(L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        108, rowY, 260, 200, hwndSettings_,
+        (HMENU)(INT_PTR)IDC_PREFERRED_DEVICE, hInst, nullptr);
+    // First entry is the "auto" sentinel — empty preferred-device string
+    // means "let the backend pick". Subsequent entries come from
+    // gfx::EnumerateDevices(currentBackend); we use the saved
+    // DefaultBackend as the enumeration target so the picker is
+    // populated even when the running process used a different
+    // backend (e.g. CLI override).
+    SendMessageW(cmbPreferredDev_, CB_ADDSTRING, 0,
+                 (LPARAM)L"(Auto — highest VRAM)");
+    {
+        const auto names = gfx::EnumerateDevices(
+            service_.Settings().DefaultBackend());
+        for (const auto& n : names) {
+            const i32 wlen = ::MultiByteToWideChar(CP_UTF8, 0,
+                                                    n.c_str(), -1, nullptr, 0);
+            if (wlen <= 0) continue;
+            std::wstring w(wlen, L'\0');
+            ::MultiByteToWideChar(CP_UTF8, 0, n.c_str(), -1,
+                                  w.data(), wlen);
+            SendMessageW(cmbPreferredDev_, CB_ADDSTRING, 0, (LPARAM)w.c_str());
+        }
+    }
+    {
+        const std::string& cur = service_.Settings().PreferredDevice();
+        i32 sel = 0;  // default to "Auto"
+        if (!cur.empty()) {
+            const i32 wlen = ::MultiByteToWideChar(CP_UTF8, 0,
+                                                    cur.c_str(), -1, nullptr, 0);
+            if (wlen > 0) {
+                std::wstring w(wlen, L'\0');
+                ::MultiByteToWideChar(CP_UTF8, 0, cur.c_str(), -1,
+                                      w.data(), wlen);
+                const LRESULT found = SendMessageW(
+                    cmbPreferredDev_, CB_FINDSTRINGEXACT,
+                    (WPARAM)-1, (LPARAM)w.c_str());
+                if (found != CB_ERR) sel = static_cast<i32>(found);
+            }
+        }
+        SendMessageW(cmbPreferredDev_, CB_SETCURSEL, sel, 0);
+    }
+
+    rowY += 38;
     chkGraphicsDebug_ = CreateWindowW(L"BUTTON",
         L"Graphics Debug (validation, restart required)",
         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
@@ -1141,6 +1189,32 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
             const bool on = chkGraphicsDebug_
                 && SendMessageW(chkGraphicsDebug_, BM_GETCHECK, 0, 0) == BST_CHECKED;
             service_.Settings().SetGraphicsDebug(on);
+            SaveSettingsIni(service_, loopNonLoopingPolicy_);
+            return 0;
+        }
+        if (id == IDC_PREFERRED_DEVICE && HIWORD(wParam) == CBN_SELCHANGE && cmbPreferredDev_) {
+            const i32 sel = (i32)SendMessageW(cmbPreferredDev_, CB_GETCURSEL, 0, 0);
+            // Index 0 is the "(Auto — highest VRAM)" sentinel; anything
+            // higher is a verbatim device name from EnumerateDevices.
+            if (sel <= 0) {
+                service_.Settings().SetPreferredDevice("");
+            } else {
+                const i32 wlen = (i32)SendMessageW(cmbPreferredDev_, CB_GETLBTEXTLEN, sel, 0);
+                if (wlen > 0) {
+                    std::wstring w(wlen, L'\0');
+                    SendMessageW(cmbPreferredDev_, CB_GETLBTEXT,
+                                 sel, (LPARAM)w.data());
+                    const i32 u8len = ::WideCharToMultiByte(CP_UTF8, 0,
+                                                            w.data(), wlen,
+                                                            nullptr, 0, nullptr, nullptr);
+                    if (u8len > 0) {
+                        std::string utf8(u8len, '\0');
+                        ::WideCharToMultiByte(CP_UTF8, 0, w.data(), wlen,
+                                              utf8.data(), u8len, nullptr, nullptr);
+                        service_.Settings().SetPreferredDevice(std::move(utf8));
+                    }
+                }
+            }
             SaveSettingsIni(service_, loopNonLoopingPolicy_);
             return 0;
         }

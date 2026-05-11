@@ -17,6 +17,7 @@
 #include "render_target.h"  // DisplayFlags, RenderMode, LightingMode, IblMode
 
 #include <atomic>
+#include <string>
 
 namespace whiteout::flakes::renderer {
 
@@ -119,6 +120,18 @@ public:
     gfx::GfxApi DefaultBackend() const         { return defaultBackend_; }
     void        SetDefaultBackend(gfx::GfxApi b) { defaultBackend_ = b; }
 
+    // ---- Preferred GFX device ----
+    // Exact-match name of the physical adapter the host wants the
+    // selected backend to open (compared verbatim against the names
+    // returned by gfx::EnumerateDevices). Empty (the default) means
+    // "let the backend pick — highest VRAM / discrete over integrated".
+    // Plumbed in InitDevice via gfx::SetPreferredDevice before
+    // gfx::CreateDevice. Takes effect on the next process launch.
+    const std::string& PreferredDevice() const     { return preferredDevice_; }
+    void               SetPreferredDevice(std::string name) {
+        preferredDevice_ = std::move(name);
+    }
+
 private:
     // Display flags — plain bools; readers tolerate single-byte tearing.
     bool showGrid_       = true;
@@ -154,6 +167,9 @@ private:
     // Host-only: default backend when --backend is not on the command
     // line. D3D12 matches the long-standing test_main default.
     gfx::GfxApi defaultBackend_ = gfx::GfxApi::D3D12;
+
+    // Host-only: preferred physical device name. Empty = default pick.
+    std::string preferredDevice_;
 };
 
 }
