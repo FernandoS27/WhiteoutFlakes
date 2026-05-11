@@ -15,7 +15,7 @@ public:
     D3D12Device();
     ~D3D12Device() override;
 
-    bool Init();
+    bool Init(bool enableValidation);
 
     BufferHandle   CreateBuffer (const BufferDesc&,  const void* initial) override;
     TextureHandle  CreateTexture(const TextureDesc&, const void* initialPixels) override;
@@ -131,6 +131,7 @@ private:
 
     std::unique_ptr<D3D12CommandList> immediateCtx_;
     std::string                       deviceName_;
+    bool                              enableValidation_ = false;
 };
 
 }

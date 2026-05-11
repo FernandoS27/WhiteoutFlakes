@@ -14,4 +14,11 @@ void LoadSettingsIni(renderer::RenderService& service,
 void SaveSettingsIni(const renderer::RenderService& service,
                      bool loopNonLoopingPolicy);
 
+// Reads only the keys that must land on RenderSettings *before* the
+// render thread spins up — currently `GraphicsDebug` (the validation
+// layer is wired in at gfx::CreateDevice time) and `DefaultBackend`
+// (test_main consults it when --backend is omitted). Default values
+// stay in place when the keys are missing.
+void LoadStartupSettingsFromIni(renderer::RenderService& service);
+
 }

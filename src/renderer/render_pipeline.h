@@ -59,6 +59,11 @@ public:
     const gfx::IGFXDevice* Gfx() const;
     gfx::PipelineHandle    CurrentLinePSO() const;
     gfx::Format            SceneTargetFormat() const;
+    // Render mode snapshot for the in-flight frame. See the comment on
+    // `Impl::frameRenderMode_`. Use this anywhere a per-frame decision
+    // depends on HD vs SD; reading `Settings().GetRenderMode()` mid-
+    // frame is racy.
+    RenderMode             FrameRenderMode() const;
 
     // ---- Surface size + per-frame CB exposed for non-friend consumers
     //      (DebugRenderer, BLS pass templates, etc.) ----

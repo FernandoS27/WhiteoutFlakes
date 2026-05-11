@@ -52,7 +52,8 @@ D3D12Device::~D3D12Device() {
     SafeRelease(factory_);
 }
 
-bool D3D12Device::Init() {
+bool D3D12Device::Init(bool enableValidation) {
+    enableValidation_ = enableValidation;
     if (!CreateDeviceAndQueue())   return false;
     if (!CreateCommandInfra())     return false;
     if (!CreateDescriptorPools())  return false;
@@ -67,8 +68,7 @@ bool D3D12Device::Init() {
 bool D3D12Device::CreateDeviceAndQueue() {
     UINT factoryFlags = 0;
 
-#ifdef _DEBUG
-    {
+    if (enableValidation_) {
         ID3D12Debug* debug = nullptr;
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
             debug->EnableDebugLayer();
@@ -76,7 +76,6 @@ bool D3D12Device::CreateDeviceAndQueue() {
             factoryFlags = DXGI_CREATE_FACTORY_DEBUG;
         }
     }
-#endif
 
     HRESULT hr = CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&factory_));
     if (FAILED(hr)) return false;
@@ -116,8 +115,7 @@ bool D3D12Device::CreateDeviceAndQueue() {
         bestAdapter->Release();
     }
 
-#ifdef _DEBUG
-    {
+    if (enableValidation_) {
         ID3D12InfoQueue* iq = nullptr;
         if (SUCCEEDED(device_->QueryInterface(IID_PPV_ARGS(&iq)))) {
             iq->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
@@ -125,7 +123,6 @@ bool D3D12Device::CreateDeviceAndQueue() {
             iq->Release();
         }
     }
-#endif
 
     D3D12_COMMAND_QUEUE_DESC qd{};
     qd.Type     = D3D12_COMMAND_LIST_TYPE_DIRECT;

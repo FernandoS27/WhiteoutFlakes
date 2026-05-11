@@ -157,7 +157,7 @@ VulkanDevice::~VulkanDevice() {
 VulkanDeviceState&       VulkanDevice::State()       { return *state_; }
 const VulkanDeviceState& VulkanDevice::State() const { return *state_; }
 
-bool VulkanDevice::Init() {
+bool VulkanDevice::Init(bool enableValidation) {
     auto& s = *state_;
 
     // ---- 1. Instance ------------------------------------------------------
@@ -175,17 +175,18 @@ bool VulkanDevice::Init() {
     };
     std::vector<const char*> instLayers;
 
-#ifndef NDEBUG
-    const bool wantValidation =
+    // GraphicsDebug setting (host-side, persisted to .ini) gates the
+    // Khronos validation layer + debug-utils extension. We still
+    // require both to be available — the layer ships with the Vulkan
+    // SDK, not the runtime, so on a clean end-user box the request
+    // silently no-ops rather than failing instance creation.
+    const bool wantValidation = enableValidation &&
         HasInstanceLayer(s.ctx, "VK_LAYER_KHRONOS_validation") &&
         HasInstanceExtension(s.ctx, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     if (wantValidation) {
         instLayers.push_back("VK_LAYER_KHRONOS_validation");
         instExts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
-#else
-    constexpr bool wantValidation = false;
-#endif
 
     vk::InstanceCreateInfo ici{
         .pApplicationInfo        = &appInfo,
@@ -1215,6 +1216,7 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
     PipelineEntry e{};
     e.pipeline       = std::move(pR.value);
     e.isCompute      = false;
+    e.colorFormat    = rtvFmt;
     return static_cast<PipelineHandle>(s.pipelines.Insert(std::move(e)));
 }
 

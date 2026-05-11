@@ -13,6 +13,7 @@
 // ============================================================================
 
 #include "whiteout/flakes/types.h"
+#include "whiteout/flakes/gfx_types.h"  // gfx::GfxApi
 #include "render_target.h"  // DisplayFlags, RenderMode, LightingMode, IblMode
 
 #include <atomic>
@@ -98,6 +99,26 @@ public:
     f32  GetTonemapExposure() const     { return tonemapExposure_; }
     void SetTonemapExposure(f32 e)      { tonemapExposure_ = e; }
 
+    // ---- Graphics debug ----
+    // Mirrored as an init-time flag: read once at device creation in
+    // RenderPipeline::InitDevice and passed into gfx::CreateDevice,
+    // which routes it to the per-backend validation layer (Vulkan
+    // VK_LAYER_KHRONOS_validation, d3d11 DEBUG flag, d3d12 debug layer
+    // + InfoQueue break-on-error). Changing it mid-run has no effect
+    // until the next process start — the host persists it to .ini so
+    // the next launch picks the new value up.
+    bool GraphicsDebug()    const     { return graphicsDebug_; }
+    void SetGraphicsDebug(bool v)     { graphicsDebug_ = v; }
+
+    // ---- Default GFX backend ----
+    // The host (basic_viewer) reads this when no `--backend` argument
+    // was given on the command line. RenderSettings stores it so the
+    // existing INI save/load + Settings-window infrastructure can be
+    // reused; the renderer itself never inspects it (its backend is
+    // already fixed by the time RenderPipeline::InitDevice runs).
+    gfx::GfxApi DefaultBackend() const         { return defaultBackend_; }
+    void        SetDefaultBackend(gfx::GfxApi b) { defaultBackend_ = b; }
+
 private:
     // Display flags — plain bools; readers tolerate single-byte tearing.
     bool showGrid_       = true;
@@ -125,6 +146,14 @@ private:
 
     // Tonemap exposure.
     f32 tonemapExposure_ = 1.0f;
+
+    // Graphics-debug (validation layers). Off by default — turning it
+    // on costs frame time and noise. Set before InitDevice runs.
+    bool graphicsDebug_ = false;
+
+    // Host-only: default backend when --backend is not on the command
+    // line. D3D12 matches the long-standing test_main default.
+    gfx::GfxApi defaultBackend_ = gfx::GfxApi::D3D12;
 };
 
 }

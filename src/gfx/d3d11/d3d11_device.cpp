@@ -32,7 +32,7 @@ D3D11Device::~D3D11Device() {
     SafeRelease(device_);
 }
 
-bool D3D11Device::Init() {
+bool D3D11Device::Init(bool enableValidation) {
 
     HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1),
                                     reinterpret_cast<void**>(&factory_));
@@ -57,9 +57,7 @@ bool D3D11Device::Init() {
     }
 
     UINT flags = 0;
-#ifdef _DEBUG
-    flags |= D3D11_CREATE_DEVICE_DEBUG;
-#endif
+    if (enableValidation) flags |= D3D11_CREATE_DEVICE_DEBUG;
 
     D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_0;
     hr = D3D11CreateDevice(

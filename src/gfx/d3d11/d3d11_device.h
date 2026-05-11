@@ -13,7 +13,7 @@ public:
     D3D11Device();
     ~D3D11Device() override;
 
-    bool Init();
+    bool Init(bool enableValidation);
 
     BufferHandle   CreateBuffer (const BufferDesc&,  const void* initial) override;
     TextureHandle  CreateTexture(const TextureDesc&, const void* initialPixels) override;

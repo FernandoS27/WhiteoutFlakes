@@ -43,7 +43,11 @@ static std::filesystem::path OpenFileDialog() {
 
 int wmain(int argc, wchar_t* argv[]) {
 
+    // `--backend <api>` overrides the persisted DefaultBackend; resolved
+    // from the INI a few lines down. Track whether the CLI set it so we
+    // know to fall back to the saved default.
     whiteout::flakes::gfx::GfxApi backend = whiteout::flakes::gfx::GfxApi::D3D12;
+    bool backendFromCli = false;
     std::filesystem::path mdxPath;
 
     for (i32 i = 1; i < argc; ++i) {
@@ -60,6 +64,7 @@ int wmain(int argc, wchar_t* argv[]) {
                 std::wcerr << L"Unknown backend: " << v << L" (valid: d3d11, d3d12, vulkan)\n";
                 return 1;
             }
+            backendFromCli = true;
         } else if (std::wcscmp(a, L"--help") == 0 || std::wcscmp(a, L"-h") == 0) {
             std::cout << "Usage: WhiteoutFlakes.exe [--backend d3d11|d3d12|vulkan] [<mdx-path>]\n";
             return 0;
@@ -81,14 +86,21 @@ int wmain(int argc, wchar_t* argv[]) {
         return 1;
     }
 
+    whiteout::flakes::renderer::SceneManager  scene;
+    whiteout::flakes::renderer::RenderService renderer(scene);
+
+    // Read the startup-only settings (GraphicsDebug + DefaultBackend)
+    // before Open() spins up the render thread: the validation layer
+    // is wired in at gfx::CreateDevice time, and the backend choice
+    // below picks up DefaultBackend when --backend wasn't on the CLI.
+    whiteout::flakes::LoadStartupSettingsFromIni(renderer);
+    if (!backendFromCli) backend = renderer.Settings().DefaultBackend();
+
     const char* backendName =
         backend == whiteout::flakes::gfx::GfxApi::D3D11  ? "D3D11"  :
         backend == whiteout::flakes::gfx::GfxApi::D3D12  ? "D3D12"  :
         backend == whiteout::flakes::gfx::GfxApi::Vulkan ? "Vulkan" : "?";
     std::cout << "Backend: " << backendName << "\n";
-
-    whiteout::flakes::renderer::SceneManager  scene;
-    whiteout::flakes::renderer::RenderService renderer(scene);
 
     whiteout::flakes::RenderWindow  renderWindow(renderer);
     if (!renderWindow.Open(1024, 768, backend)) {

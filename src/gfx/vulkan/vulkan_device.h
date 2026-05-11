@@ -90,6 +90,16 @@ private:
     std::array<PendingSrv, 32> pendingSRVs_{};
     std::array<PendingSmp, 32> pendingSamplers_{};
     bool                      anyDescriptorDirty_ = false;
+
+    TextureHandle activeColorAttachment_ = TextureHandle::Invalid;
+    // Format of the color attachment in the active render pass, as a
+    // raw u32 (VkFormat). Stored untyped so this header stays free of
+    // <vulkan/vulkan.h>. Used in BindPipeline to sanity-check that the
+    // bound pipeline's pColorAttachmentFormats[0] matches — the
+    // validator's VUID-vkCmdDraw-08910 fires here too, but this lets us
+    // name the C++ call site.
+    u32           activeColorFormat_   = 0;  // VK_FORMAT_UNDEFINED
+    PipelineHandle lastBoundPipeline_  = PipelineHandle::Invalid;
 };
 
 class VulkanDevice final : public IGFXDevice {
@@ -100,7 +110,7 @@ public:
     // Returns true when instance + physical device + logical device + VMA
     // came up successfully. CreateDevice in gfx_factory.cpp returns nullptr
     // when this returns false.
-    bool Init();
+    bool Init(bool enableValidation);
 
     // ---- IGFXDevice ----
     BufferHandle   CreateBuffer (const BufferDesc&,  const void* initial) override;

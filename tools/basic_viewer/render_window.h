@@ -116,6 +116,8 @@ private:
     HWND btnDncReset_    = nullptr;
     HWND cmbIblMode_     = nullptr;
     HWND cmbShadows_     = nullptr;
+    HWND cmbDefaultBackend_ = nullptr;
+    HWND chkGraphicsDebug_  = nullptr;
     HMENU hMenuBar_      = nullptr;
     HMENU hMenuView_     = nullptr;
     HMENU hMenuTileset_  = nullptr;
@@ -140,6 +142,8 @@ private:
         IDC_DNC_RESET,
         IDC_IBL_MODE,
         IDC_SHADOWS,
+        IDC_DEFAULT_BACKEND,
+        IDC_GRAPHICS_DEBUG,
 
         IDM_VIEW_GRID      = 1100,
         IDM_VIEW_PARTICLES,

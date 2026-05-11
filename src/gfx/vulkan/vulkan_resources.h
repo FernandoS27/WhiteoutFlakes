@@ -93,6 +93,12 @@ struct ShaderEntry {
 struct PipelineEntry {
     vk::raii::Pipeline pipeline  = nullptr;
     bool               isCompute = false;
+    // Stored alongside the VkPipeline so VulkanCommandList::Draw can
+    // sanity-check at submit time that the bound pipeline's expected
+    // color-attachment format matches the active render pass's
+    // imageView format — easier to diagnose than VUID-vkCmdDraw-08910
+    // alone (which doesn't name the failing C++ call site).
+    vk::Format         colorFormat = vk::Format::eUndefined;
 };
 
 struct SamplerEntry {

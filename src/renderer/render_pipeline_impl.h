@@ -25,6 +25,8 @@ struct RenderPipeline::Impl {
     i32 width_  = 800;
     i32 height_ = 600;
 
+    RenderMode frameRenderMode_ = RenderMode::SD;
+
     // ---- Line / debug pipelines ----
     gfx::ShaderHandle   lineVS_     = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle   linePS_     = gfx::ShaderHandle::Invalid;

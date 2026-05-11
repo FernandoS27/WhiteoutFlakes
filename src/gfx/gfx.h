@@ -101,6 +101,14 @@ public:
     virtual const char* GetDeviceName() const = 0;
 };
 
-std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api);
+// `enableValidation` turns on the API's debug / validation machinery:
+//   • d3d11: D3D11_CREATE_DEVICE_DEBUG
+//   • d3d12: D3D12 debug layer + DXGI debug + InfoQueue break-on-error
+//   • vulkan: VK_LAYER_KHRONOS_validation + VK_EXT_debug_utils messenger
+// Off by default — turning it on costs frame time and requires the
+// platform's debug/validation runtimes to be installed (Graphics Tools
+// optional feature on Windows; Vulkan SDK for the Khronos layer).
+std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api,
+                                          bool enableValidation = false);
 
 }

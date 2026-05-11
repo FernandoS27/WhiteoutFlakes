@@ -10,27 +10,28 @@
 
 namespace whiteout::flakes::gfx {
 
-std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api) {
+std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api, bool enableValidation) {
     switch (api) {
         case GfxApi::D3D11: {
             auto device = std::make_unique<d3d11::D3D11Device>();
-            if (!device->Init())
+            if (!device->Init(enableValidation))
                 return nullptr;
             return device;
         }
         case GfxApi::D3D12: {
             auto device = std::make_unique<d3d12::D3D12Device>();
-            if (!device->Init())
+            if (!device->Init(enableValidation))
                 return nullptr;
             return device;
         }
         case GfxApi::Vulkan: {
 #if WDX_HAS_VULKAN
             auto device = std::make_unique<vulkan::VulkanDevice>();
-            if (!device->Init())
+            if (!device->Init(enableValidation))
                 return nullptr;
             return device;
 #else
+            (void)enableValidation;
             return nullptr;
 #endif
         }

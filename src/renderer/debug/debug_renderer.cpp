@@ -471,7 +471,7 @@ void DebugRenderer::RenderViewCube() {
         render_detail::WriteCbPerFrame(rs_.Pipeline().Gfx(), rs_.Pipeline().CbPerFrame(), d);
     }
 
-    const auto vcPso = (rs_.Settings().GetRenderMode() == RenderMode::HD)
+    const auto vcPso = (rs_.Pipeline().FrameRenderMode() == RenderMode::HD)
                        ? viewCubePSOHdr_ : viewCubePSOSd_;
     cmd->BindPipeline(vcPso);
     cmd->BindVertexBuffer(0, vcCubeVB_, sizeof(Vertex));

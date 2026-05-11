@@ -42,7 +42,7 @@ struct PsoRequest {
     VertexLayoutKind       layout     = VertexLayoutKind::MeshSD;
     gfx::PrimitiveTopology topology   = gfx::PrimitiveTopology::TriangleList;
 
-    gfx::Format            rtvFormat  = gfx::Format::R16G16B16A16_FLOAT;
+    gfx::Format            rtvFormat  = gfx::Format::R11G11B10_FLOAT;
     gfx::Format            dsvFormat  = gfx::Format::D24_UNORM_S8_UINT;
     bool                   wireframe  = false;
 

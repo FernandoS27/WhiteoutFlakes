@@ -68,8 +68,12 @@ gfx::IGFXDevice*       RenderPipeline::Gfx()       { return impl_->gfx_.get(); }
 const gfx::IGFXDevice* RenderPipeline::Gfx() const { return impl_->gfx_.get(); }
 
 gfx::Format RenderPipeline::SceneTargetFormat() const {
-    return rs_.Settings().GetRenderMode() == RenderMode::HD
+    return impl_->frameRenderMode_ == RenderMode::HD
         ? kHdrSceneFormat : kSdSceneFormat;
+}
+
+RenderMode RenderPipeline::FrameRenderMode() const {
+    return impl_->frameRenderMode_;
 }
 
 RenderTarget* RenderPipeline::PrimaryTarget() {
@@ -350,9 +354,7 @@ void RenderPipeline::RenderCornEffects() {
     fi.projection   = rs_.Scene().Camera().ProjectionLH(aspect);
     fi.viewportRect = { (f32)impl_->width_, (f32)impl_->height_, 0.0f, 0.0f };
     fi.effectTime   = rs_.Scene().GetAnimationTime() * 0.001f;
-    fi.rtvFormat    = (rs_.Settings().GetRenderMode() == RenderMode::HD)
-                          ? gfx::Format::R16G16B16A16_FLOAT
-                          : gfx::Format::R8G8B8A8_UNORM;
+    fi.rtvFormat    = SceneTargetFormat();
     rs_.CornEffects().SetFrameInputs(fi);
     rs_.CornEffects().Simulate(rs_.CornEffects().PendingDt());
 }
@@ -497,7 +499,7 @@ i32 RenderPipeline::ComputeSelectedLod() const {
 
 bool RenderPipeline::InitDevice(gfx::GfxApi api) {
 
-    impl_->gfx_ = gfx::CreateDevice(api);
+    impl_->gfx_ = gfx::CreateDevice(api, rs_.Settings().GraphicsDebug());
     if (!impl_->gfx_) return false;
 
     rs_.CreateDeviceAssetManagers(*impl_->gfx_);
@@ -1016,7 +1018,7 @@ bool RenderPipeline::CreatePipelines() {
 }
 
 gfx::PipelineHandle RenderPipeline::CurrentLinePSO() const {
-    return rs_.Settings().GetRenderMode() == RenderMode::HD ? impl_->linePSOHdr_ : impl_->linePSOSd_;
+    return impl_->frameRenderMode_ == RenderMode::HD ? impl_->linePSOHdr_ : impl_->linePSOSd_;
 }
 
 bool RenderPipeline::CreateDefaultResources() {
@@ -1040,7 +1042,14 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
 
     auto* cmd = impl_->gfx_->GetImmediateContext();
 
-    const bool useHdr = (rs_.Settings().GetRenderMode() == RenderMode::HD);
+    // Snapshot the render mode for the duration of this frame. The
+    // host may flip Settings().SetRenderMode() from another thread
+    // (test_main.cpp does this once per model load), and every
+    // per-frame decision below must agree on the value — otherwise
+    // the scene pass attaches the SRGB swap chain while CurrentLinePSO
+    // hands out the HDR-rtv line PSO. See `Impl::frameRenderMode_`.
+    impl_->frameRenderMode_ = rs_.Settings().GetRenderMode();
+    const bool useHdr = (impl_->frameRenderMode_ == RenderMode::HD);
     const gfx::TextureHandle sceneTarget = useHdr ? target.hdrColor : target.color;
 
     auto srgbByteToLinear = [](u8 b) {
@@ -1382,9 +1391,18 @@ public:
         }
 
         const gfx::SamplerHandle linWrap = rs_.Samplers().LinearWrap();
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 1, linWrap);
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 2, linWrap);
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 3, linWrap);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 1,  linWrap);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 2,  linWrap);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 3,  linWrap);
+        // The HD pixel shader also samples s_teamColor (s4) and the IBL
+        // probes / BRDF LUT at s13..s15. They were never bound explicitly
+        // — d3d11/d3d12 forgive the missing slots silently, but Vulkan
+        // fires VUID-vkCmdDrawIndexed-None-08114 the first time a draw
+        // touches the unbound descriptor.
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 4,  linWrap);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 13, linWrap);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 14, linWrap);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 15, linWrap);
 
         gfx::TextureHandle from = gfx::TextureHandle::Invalid;
         gfx::TextureHandle to   = gfx::TextureHandle::Invalid;
@@ -1717,7 +1735,7 @@ bool RenderPipeline::RenderGeosetsHd(GeosetBucket bucket) {
 
 void RenderPipeline::RenderGeosets(GeosetBucket bucket) {
 
-    if (rs_.Settings().GetRenderMode() == RenderMode::HD) {
+    if (impl_->frameRenderMode_ == RenderMode::HD) {
         RenderGeosetsHd(bucket);
     } else {
         RenderGeosetsBls(bucket);

@@ -136,6 +136,11 @@ void VulkanCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
         }
     }
 
+    activeColorAttachment_ = colorTex ? color : TextureHandle::Invalid;
+    activeColorFormat_     = colorTex
+        ? static_cast<u32>(colorTex->format)
+        : static_cast<u32>(vk::Format::eUndefined);
+
     vk::RenderingAttachmentInfo colorAttach{};
     if (colorTex) {
         TransitionImageLayout(frame.commandBuffer, colorTex->image,
@@ -210,9 +215,34 @@ void VulkanCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
 void VulkanCommandList::EndRenderPass() {
     auto& s     = device_.State();
     auto& frame = s.frames[s.frameIndex];
-    if (frame.recording) {
-        frame.commandBuffer.endRendering();
+    if (!frame.recording) return;
+    frame.commandBuffer.endRendering();
+
+    // Eagerly transition the color attachment to eShaderReadOnlyOptimal
+    // so the next pass can sample it (HDR → tonemap is the canonical
+    // case). The transition is illegal inside an active rendering scope
+    // — endRendering above closes it — and the renderer never exposes
+    // explicit barriers through the gfx API, so doing it here is the
+    // only place we know the attachment write is finished. Swap-chain
+    // proxies aren't sampled (they're consumed by Present), so we skip
+    // them; their layout is driven by the Present path instead.
+    if (activeColorAttachment_ != TextureHandle::Invalid) {
+        auto* t = s.textures.Get(static_cast<u64>(activeColorAttachment_));
+        if (t && t->image && t->swapChainProxy == SwapChainHandle::Invalid &&
+            t->currentLayout != vk::ImageLayout::eShaderReadOnlyOptimal)
+        {
+            TransitionImageLayout(frame.commandBuffer, t->image, t->aspect,
+                t->currentLayout, vk::ImageLayout::eShaderReadOnlyOptimal,
+                vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                vk::AccessFlagBits2::eColorAttachmentWrite,
+                vk::PipelineStageFlagBits2::eFragmentShader,
+                vk::AccessFlagBits2::eShaderRead);
+            t->currentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+        }
     }
+    activeColorAttachment_ = TextureHandle::Invalid;
+    activeColorFormat_     = static_cast<u32>(vk::Format::eUndefined);
+    lastBoundPipeline_     = PipelineHandle::Invalid;
 }
 
 void VulkanCommandList::SetViewport(const Viewport& v) {
@@ -242,6 +272,25 @@ void VulkanCommandList::BindPipeline(PipelineHandle h) {
     if (!frame.recording) return;
     auto* p = s.pipelines.Get(static_cast<u64>(h));
     if (!p) return;
+    // Catch VUID-vkCmdDraw-dynamicRenderingUnusedAttachments-08910
+    // pre-Draw so we can attribute the mismatch to a C++ call site
+    // (BindPipeline) rather than digging through the validation layer's
+    // command-buffer dump. Skipped for compute pipelines + depth-only
+    // passes (pipeline.colorFormat == eUndefined).
+    const vk::Format activeFmt = static_cast<vk::Format>(activeColorFormat_);
+    if (!p->isCompute &&
+        p->colorFormat != vk::Format::eUndefined &&
+        activeFmt != vk::Format::eUndefined &&
+        p->colorFormat != activeFmt)
+    {
+        std::fprintf(stderr,
+            "[vk] BindPipeline format mismatch: pipeline=%s renderpass=%s "
+            "(handle=%llu)\n",
+            vk::to_string(p->colorFormat).c_str(),
+            vk::to_string(activeFmt).c_str(),
+            static_cast<unsigned long long>(h));
+    }
+    lastBoundPipeline_ = h;
     frame.commandBuffer.bindPipeline(
         p->isCompute ? vk::PipelineBindPoint::eCompute
                      : vk::PipelineBindPoint::eGraphics,

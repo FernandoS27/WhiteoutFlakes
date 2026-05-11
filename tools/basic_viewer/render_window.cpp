@@ -753,6 +753,8 @@ void RenderWindow::SyncViewMenuFromService() {
     syncToggle(IDM_VIEW_PARTICLES, df.showParticles);
     syncToggle(IDM_VIEW_RIBBONS,   df.showRibbons);
     syncToggle(IDM_VIEW_EVENTS,    df.showEvents);
+    syncToggle(IDM_DBG_COLLISIONS, df.showCollisions);
+    syncToggle(IDM_DBG_LIGHTS,     df.showLights);
     if (hMenuTileset_) {
         const i32 n      = static_cast<i32>(whiteout::flakes::io::Tileset::Count);
         const i32 curIdx = std::clamp(static_cast<i32>(whiteout::flakes::io::GetCurrentTileset()), 0, n - 1);
@@ -786,7 +788,7 @@ void RenderWindow::EnsureSettingsWindow() {
         return;
 
     constexpr i32 kClientW = 380;
-    constexpr i32 kClientH = 388;
+    constexpr i32 kClientH = 464;
     RECT rc = {0, 0, kClientW, kClientH};
 
     const DWORD style   = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
@@ -965,6 +967,40 @@ void RenderWindow::EnsureSettingsWindow() {
             SetWindowTextW(editDncPath_, wpath.c_str());
         }
     }
+
+    // --- Startup-only graphics settings (apply on next launch) ----------
+    // Both controls just persist to the .ini; the validation layer and
+    // the backend selection are locked in at gfx::CreateDevice time so
+    // they don't take effect until the process is restarted.
+    rowY += 38;
+    CreateWindowW(L"STATIC", L"Backend:",
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE,
+        12, rowY, 90, 22, hwndSettings_, nullptr, hInst, nullptr);
+    cmbDefaultBackend_ = CreateWindowW(L"COMBOBOX", L"",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        108, rowY, 200, 200, hwndSettings_,
+        (HMENU)(INT_PTR)IDC_DEFAULT_BACKEND, hInst, nullptr);
+    SendMessageW(cmbDefaultBackend_, CB_ADDSTRING, 0, (LPARAM)L"D3D11");
+    SendMessageW(cmbDefaultBackend_, CB_ADDSTRING, 0, (LPARAM)L"D3D12");
+    SendMessageW(cmbDefaultBackend_, CB_ADDSTRING, 0, (LPARAM)L"Vulkan");
+    {
+        i32 sel = 1;  // D3D12 default
+        switch (service_.Settings().DefaultBackend()) {
+            case gfx::GfxApi::D3D11:  sel = 0; break;
+            case gfx::GfxApi::D3D12:  sel = 1; break;
+            case gfx::GfxApi::Vulkan: sel = 2; break;
+        }
+        SendMessageW(cmbDefaultBackend_, CB_SETCURSEL, sel, 0);
+    }
+
+    rowY += 38;
+    chkGraphicsDebug_ = CreateWindowW(L"BUTTON",
+        L"Graphics Debug (validation, restart required)",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
+        12, rowY, 320, 22, hwndSettings_,
+        (HMENU)(INT_PTR)IDC_GRAPHICS_DEBUG, hInst, nullptr);
+    SendMessageW(chkGraphicsDebug_, BM_SETCHECK,
+                 service_.Settings().GraphicsDebug() ? BST_CHECKED : BST_UNCHECKED, 0);
 }
 
 LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -1089,6 +1125,23 @@ LRESULT RenderWindow::HandleSettingsMessage(HWND hwnd, UINT msg, WPARAM wParam, 
                 shadow->SetParams(p);
                 SaveSettingsIni(service_, loopNonLoopingPolicy_);
             }
+            return 0;
+        }
+        if (id == IDC_DEFAULT_BACKEND && HIWORD(wParam) == CBN_SELCHANGE && cmbDefaultBackend_) {
+            const i32 sel = (i32)SendMessageW(cmbDefaultBackend_, CB_GETCURSEL, 0, 0);
+            gfx::GfxApi b = gfx::GfxApi::D3D12;
+            if      (sel == 0) b = gfx::GfxApi::D3D11;
+            else if (sel == 1) b = gfx::GfxApi::D3D12;
+            else if (sel == 2) b = gfx::GfxApi::Vulkan;
+            service_.Settings().SetDefaultBackend(b);
+            SaveSettingsIni(service_, loopNonLoopingPolicy_);
+            return 0;
+        }
+        if (id == IDC_GRAPHICS_DEBUG) {
+            const bool on = chkGraphicsDebug_
+                && SendMessageW(chkGraphicsDebug_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            service_.Settings().SetGraphicsDebug(on);
+            SaveSettingsIni(service_, loopNonLoopingPolicy_);
             return 0;
         }
         if (id == IDC_DNC_RESET && btnDncReset_) {

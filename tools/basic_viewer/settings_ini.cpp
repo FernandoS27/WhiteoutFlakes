@@ -36,6 +36,29 @@ constexpr const wchar_t* kSection = L"Display";
 
 }
 
+void LoadStartupSettingsFromIni(RenderService& service) {
+    const std::wstring iniPath = SettingsIniPath();
+    {
+        const i32 v = ::GetPrivateProfileIntW(kSection, L"GraphicsDebug",
+                                               -1, iniPath.c_str());
+        if (v == 0 || v == 1) service.Settings().SetGraphicsDebug(v != 0);
+    }
+    {
+        wchar_t buf[16] = {};
+        ::GetPrivateProfileStringW(kSection, L"DefaultBackend", L"",
+                                   buf, 16, iniPath.c_str());
+        if (buf[0]) {
+            using gfx::GfxApi;
+            if      (_wcsicmp(buf, L"d3d11")  == 0)
+                service.Settings().SetDefaultBackend(GfxApi::D3D11);
+            else if (_wcsicmp(buf, L"d3d12")  == 0)
+                service.Settings().SetDefaultBackend(GfxApi::D3D12);
+            else if (_wcsicmp(buf, L"vulkan") == 0)
+                service.Settings().SetDefaultBackend(GfxApi::Vulkan);
+        }
+    }
+}
+
 void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy) {
     const std::wstring iniPath = SettingsIniPath();
 
@@ -195,6 +218,21 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy) {
         ::WritePrivateProfileStringW(kSection, L"LoopNonLooping",
                                      loopNonLoopingPolicy ? L"1" : L"0",
                                      iniPath.c_str());
+    }
+    {
+        ::WritePrivateProfileStringW(kSection, L"GraphicsDebug",
+                                     service.Settings().GraphicsDebug() ? L"1" : L"0",
+                                     iniPath.c_str());
+    }
+    {
+        const wchar_t* name = L"d3d12";
+        switch (service.Settings().DefaultBackend()) {
+            case gfx::GfxApi::D3D11:  name = L"d3d11";  break;
+            case gfx::GfxApi::D3D12:  name = L"d3d12";  break;
+            case gfx::GfxApi::Vulkan: name = L"vulkan"; break;
+        }
+        ::WritePrivateProfileStringW(kSection, L"DefaultBackend",
+                                     name, iniPath.c_str());
     }
     {
         const DisplayFlags df = service.Settings().GetDisplayFlags();

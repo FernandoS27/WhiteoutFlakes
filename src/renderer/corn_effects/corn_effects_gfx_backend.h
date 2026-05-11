@@ -35,7 +35,7 @@ struct CornEffectsFrameInputs {
     Vector4f              viewportRect = {1280, 720, 0, 0};
     f32                   effectTime   = 0.0f;
     f32                   cornEffectsScale = 100.0f;
-    gfx::Format           rtvFormat    = gfx::Format::R16G16B16A16_FLOAT;
+    gfx::Format           rtvFormat    = gfx::Format::R11G11B10_FLOAT;
 };
 
 using TextureResolver = std::function<gfx::TextureHandle(std::string_view path)>;
