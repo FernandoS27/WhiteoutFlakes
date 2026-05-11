@@ -327,10 +327,31 @@ void VulkanDevice::Present(SwapChainHandle handle) {
         (void)frame.commandBuffer.end();
         frame.recording = false;
 
-        vk::SemaphoreSubmitInfo waitInfo{
+        // Build the wait list. Always wait on the swap-chain acquire
+        // semaphore. When `hasAsyncTransfer` is true and at least one
+        // upload has happened, also wait on the transfer timeline at
+        // its latest signaled value so any draw in this submit sees
+        // the uploaded data. The wait is essentially free if the
+        // timeline has already reached that value (cheap timeline-wait
+        // semantics).
+        std::array<vk::SemaphoreSubmitInfo, 2> waitInfos{};
+        waitInfos[0] = vk::SemaphoreSubmitInfo{
             .semaphore = vk::Semaphore(frame.acquireWaitSem),
             .stageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
         };
+        u32 waitCount = 1;
+        if (s.hasAsyncTransfer && s.transferLastSignaled > 0) {
+            waitInfos[1] = vk::SemaphoreSubmitInfo{
+                .semaphore = *s.transferTimelineSem,
+                .value     = s.transferLastSignaled,
+                // Block any draw or copy that consumes uploaded data.
+                // Vertex/index/uniform fetches happen pre-rasterization;
+                // sampled images can be read at any shader stage.
+                .stageMask = vk::PipelineStageFlagBits2::eVertexInput
+                           | vk::PipelineStageFlagBits2::eAllGraphics,
+            };
+            waitCount = 2;
+        }
         // Two signals: the per-image binary render-done semaphore for
         // present, and the timeline semaphore at this submit's value
         // for deferred-delete tracking.
@@ -347,8 +368,8 @@ void VulkanDevice::Present(SwapChainHandle handle) {
         };
         vk::CommandBufferSubmitInfo cbInfo{ .commandBuffer = *frame.commandBuffer };
         vk::SubmitInfo2 submit{
-            .waitSemaphoreInfoCount   = 1, .pWaitSemaphoreInfos      = &waitInfo,
-            .commandBufferInfoCount   = 1, .pCommandBufferInfos      = &cbInfo,
+            .waitSemaphoreInfoCount   = waitCount, .pWaitSemaphoreInfos      = waitInfos.data(),
+            .commandBufferInfoCount   = 1,         .pCommandBufferInfos      = &cbInfo,
             .signalSemaphoreInfoCount = static_cast<u32>(signalInfos.size()),
             .pSignalSemaphoreInfos    = signalInfos.data(),
         };

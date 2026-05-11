@@ -76,20 +76,29 @@ private:
     // time; FlushDescriptors writes (buffer, capturedOffset, slotSize) so
     // each draw reads its own data even if the buffer is rotated by
     // subsequent MapBuffer calls before the descriptor is flushed.
-    struct PendingCb  { BufferHandle  buffer{};  u64 offset = 0; bool dirty = false; };
-    struct PendingSrv { TextureHandle texture{}; bool dirty = false; };
-    struct PendingSmp { SamplerHandle sampler{}; bool dirty = false; };
+    struct PendingCb  { BufferHandle  buffer{};  u64 offset = 0; };
+    struct PendingSrv { TextureHandle texture{}; };
+    struct PendingSmp { SamplerHandle sampler{}; };
     // Sized to match the per-set binding budgets in vulkan_resources.h
     // (kCbBindingCount / kSrvBindingCount / kSamplerBindingCount).
     // The arrays are split into per-stage halves:
     //   indices [0, kStageBindingShift)        — VS slots
     //   indices [kStageBindingShift, 2*…)      — PS slots (slot N + 16)
     // BindConstantBuffer/Resource/Sampler does the (stage, slot) →
-    // binding translation in vulkan_command_list.cpp.
+    // binding translation in vulkan_command_list.cpp. Bind* compares
+    // the new value against the pending slot and only sets the
+    // corresponding set-dirty flag when they actually differ — most
+    // back-to-back draws in the geoset loop bind identical samplers
+    // and SRVs, so this short-circuits the push / pool-allocate paths
+    // in FlushDescriptors.
     std::array<PendingCb,  32> pendingCBs_{};
     std::array<PendingSrv, 32> pendingSRVs_{};
     std::array<PendingSmp, 32> pendingSamplers_{};
-    bool                      anyDescriptorDirty_ = false;
+    // Per-set dirty flags. FlushDescriptors skips the corresponding
+    // set's push / alloc / write / bind work when its flag is false.
+    bool cbSetDirty_      = false;
+    bool srvSetDirty_     = false;
+    bool samplerSetDirty_ = false;
 
     TextureHandle activeColorAttachment_ = TextureHandle::Invalid;
     // Format of the color attachment in the active render pass, as a

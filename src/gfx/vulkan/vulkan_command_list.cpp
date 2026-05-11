@@ -60,6 +60,11 @@ void EnsureRecording(VulkanDeviceState& s, FrameContext& frame) {
     // value the GPU has caught up to. Cheap: just queries one counter
     // and walks the list.
     DrainPendingDeletes(s);
+    // Same drain on the transfer-timeline list — staging buffers and
+    // one-shot transfer command buffers from completed uploads get
+    // reaped here. Cheap when empty; only polls the timeline counter
+    // when there's something to consider.
+    DrainPendingTransferDeletes(s);
     // Reset the SRV/sampler descriptor pool — the CB set is push-
     // descriptor (no allocation, lives in the command buffer) so the
     // pool only carries the two non-push sets. vkResetDescriptorPool
@@ -121,7 +126,19 @@ void VulkanCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
     auto& s     = device_.State();
     auto& frame = s.frames[s.frameIndex];
 
+    // Detect the frame-start transition: pool reset (Sets 1/2) + cmd-
+    // buffer reset (Set 0 push state) both happen inside EnsureRecording,
+    // which means whatever Bind* we did during the previous frame is
+    // gone from the GPU side. Force every set-dirty so the first
+    // FlushDescriptors this frame rebuilds them; after that the
+    // equality short-circuit in Bind* keeps unchanged sets cheap.
+    const bool startingNewFrame = !frame.recording;
     EnsureRecording(s, frame);
+    if (startingNewFrame) {
+        cbSetDirty_      = true;
+        srvSetDirty_     = true;
+        samplerSetDirty_ = true;
+    }
 
     auto* colorTex = s.textures.Get(static_cast<u64>(color));
     auto* depthTex = s.textures.Get(static_cast<u64>(depth));
@@ -140,15 +157,31 @@ void VulkanCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
         ? static_cast<u32>(colorTex->format)
         : static_cast<u32>(vk::Format::eUndefined);
 
+    // Batch the color + depth attachment transitions into a single
+    // pipelineBarrier2. The driver wants every {image, oldLayout,
+    // newLayout, stage masks} tuple it has — calling
+    // pipelineBarrier2 twice with one barrier each costs two API
+    // round-trips and two driver-side scheduling decisions for what
+    // is conceptually one frame-boundary handoff.
+    std::array<vk::ImageMemoryBarrier2, 2> attachBarriers{};
+    u32 barrierCount = 0;
+
     vk::RenderingAttachmentInfo colorAttach{};
     if (colorTex) {
-        TransitionImageLayout(frame.commandBuffer, colorTex->image,
-            vk::ImageAspectFlagBits::eColor,
-            colorTex->currentLayout,
-            vk::ImageLayout::eColorAttachmentOptimal,
-            vk::PipelineStageFlagBits2::eTopOfPipe, {},
-            vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-            vk::AccessFlagBits2::eColorAttachmentWrite);
+        attachBarriers[barrierCount++] = vk::ImageMemoryBarrier2{
+            .srcStageMask  = vk::PipelineStageFlagBits2::eTopOfPipe,
+            .srcAccessMask = {},
+            .dstStageMask  = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
+            .oldLayout     = colorTex->currentLayout,
+            .newLayout     = vk::ImageLayout::eColorAttachmentOptimal,
+            .image         = vk::Image(colorTex->image),
+            .subresourceRange = {
+                vk::ImageAspectFlagBits::eColor,
+                0, VK_REMAINING_MIP_LEVELS,
+                0, VK_REMAINING_ARRAY_LAYERS,
+            },
+        };
         colorTex->currentLayout = vk::ImageLayout::eColorAttachmentOptimal;
 
         vk::ClearColorValue cc{};
@@ -165,15 +198,22 @@ void VulkanCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
 
     vk::RenderingAttachmentInfo depthAttach{};
     if (depthTex) {
-        TransitionImageLayout(frame.commandBuffer, depthTex->image,
-            depthTex->aspect,
-            depthTex->currentLayout,
-            vk::ImageLayout::eDepthStencilAttachmentOptimal,
-            vk::PipelineStageFlagBits2::eTopOfPipe, {},
-            vk::PipelineStageFlagBits2::eEarlyFragmentTests
-              | vk::PipelineStageFlagBits2::eLateFragmentTests,
-            vk::AccessFlagBits2::eDepthStencilAttachmentRead
-              | vk::AccessFlagBits2::eDepthStencilAttachmentWrite);
+        attachBarriers[barrierCount++] = vk::ImageMemoryBarrier2{
+            .srcStageMask  = vk::PipelineStageFlagBits2::eTopOfPipe,
+            .srcAccessMask = {},
+            .dstStageMask  = vk::PipelineStageFlagBits2::eEarlyFragmentTests
+                           | vk::PipelineStageFlagBits2::eLateFragmentTests,
+            .dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead
+                           | vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+            .oldLayout     = depthTex->currentLayout,
+            .newLayout     = vk::ImageLayout::eDepthStencilAttachmentOptimal,
+            .image         = vk::Image(depthTex->image),
+            .subresourceRange = {
+                depthTex->aspect,
+                0, VK_REMAINING_MIP_LEVELS,
+                0, VK_REMAINING_ARRAY_LAYERS,
+            },
+        };
         depthTex->currentLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
 
         depthAttach = vk::RenderingAttachmentInfo{
@@ -185,6 +225,13 @@ void VulkanCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
                 .depthStencil = { clearDepth, clearStencil },
             },
         };
+    }
+
+    if (barrierCount > 0) {
+        frame.commandBuffer.pipelineBarrier2({
+            .imageMemoryBarrierCount = barrierCount,
+            .pImageMemoryBarriers    = attachBarriers.data(),
+        });
     }
 
     const i32 width  = colorTex ? colorTex->width  : (depthTex ? depthTex->width  : 0);
@@ -347,16 +394,20 @@ void VulkanCommandList::BindConstantBuffer(ShaderStage stage, u32 slot,
     auto& s = device_.State();
     auto* b = s.buffers.Get(static_cast<u64>(buffer));
     const u64 off = b ? b->currentOffset() : 0;
-    pendingCBs_[binding] = { buffer, off, true };
-    anyDescriptorDirty_ = true;
+    auto& cur = pendingCBs_[binding];
+    if (cur.buffer == buffer && cur.offset == off) return;  // identical → no-op
+    cur = { buffer, off };
+    cbSetDirty_ = true;
 }
 
 void VulkanCommandList::BindShaderResource(ShaderStage stage, u32 slot,
                                             TextureHandle texture) {
     const u32 binding = BindingForStage(stage, slot);
     if (binding >= pendingSRVs_.size()) return;
-    pendingSRVs_[binding] = { texture, true };
-    anyDescriptorDirty_ = true;
+    auto& cur = pendingSRVs_[binding];
+    if (cur.texture == texture) return;  // identical → no-op
+    cur = { texture };
+    srvSetDirty_ = true;
 }
 
 // Buffer-shaped SRVs and UAVs aren't wired in Phase 1; the BLS path
@@ -368,12 +419,14 @@ void VulkanCommandList::BindSampler(ShaderStage stage, u32 slot,
                                      SamplerHandle sampler) {
     const u32 binding = BindingForStage(stage, slot);
     if (binding >= pendingSamplers_.size()) return;
-    pendingSamplers_[binding] = { sampler, true };
-    anyDescriptorDirty_ = true;
+    auto& cur = pendingSamplers_[binding];
+    if (cur.sampler == sampler) return;  // identical → no-op
+    cur = { sampler };
+    samplerSetDirty_ = true;
 }
 
 void VulkanCommandList::FlushDescriptors() {
-    if (!anyDescriptorDirty_) return;
+    if (!cbSetDirty_ && !srvSetDirty_ && !samplerSetDirty_) return;
 
     auto& s     = device_.State();
     auto& frame = s.frames[s.frameIndex];
@@ -387,14 +440,19 @@ void VulkanCommandList::FlushDescriptors() {
     //   • set 2 (Samplers) — pool-allocated per Flush. push sets to
     //                         one per pipeline layout, so the lower-
     //                         churn sets stay on the pool path.
+    //
+    // Per-set dirty flags let unchanged sets skip work entirely.
+    // Within a frame, an already-bound SRV/sampler set stays bound on
+    // the pipeline-layout slot until something else replaces it, so
+    // skipping its re-alloc + re-bind is safe across consecutive
+    // draws that re-use it (common in the geoset loop).
 
     // ---- Set 0: CBs (push descriptors, no allocation) ----
-    {
+    if (cbSetDirty_) {
         std::array<vk::DescriptorBufferInfo, kCbBindingCount> infos{};
         std::array<vk::WriteDescriptorSet,   kCbBindingCount> writes{};
         u32 count = 0;
         for (u32 i = 0; i < pendingCBs_.size() && i < kCbBindingCount; ++i) {
-            pendingCBs_[i].dirty = false;
             auto* b = s.buffers.Get(static_cast<u64>(pendingCBs_[i].buffer));
             if (!b) continue;
             infos[count] = vk::DescriptorBufferInfo{
@@ -418,111 +476,117 @@ void VulkanCommandList::FlushDescriptors() {
                 kCbSetIndex,
                 vk::ArrayProxy<const vk::WriteDescriptorSet>{ count, writes.data() });
         }
+        cbSetDirty_ = false;
     }
 
     // ---- Sets 1 & 2: pool-allocated path ----------------------------
+    // Treat SRV + sampler as a unit: if either is dirty we re-alloc
+    // and re-bind both, since bindDescriptorSets takes a contiguous
+    // range starting at firstSet. The cost is one extra pool alloc /
+    // descriptor write per unchanged set in the pair — small.
     // Bypass the raii allocateDescriptorSets() — its raii::DescriptorSet
     // destructor calls vkFreeDescriptorSets, which is illegal on pools
     // created without FREE_DESCRIPTOR_SET_BIT (we whole-pool reset at
     // frame start instead).
-    auto allocSet = [&](VkDescriptorSetLayout layout) -> VkDescriptorSet {
-        VkDescriptorSetAllocateInfo ai{
-            .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-            .descriptorPool     = *frame.descriptorPool,
-            .descriptorSetCount = 1,
-            .pSetLayouts        = &layout,
+    if (srvSetDirty_ || samplerSetDirty_) {
+        auto allocSet = [&](VkDescriptorSetLayout layout) -> VkDescriptorSet {
+            VkDescriptorSetAllocateInfo ai{
+                .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+                .descriptorPool     = *frame.descriptorPool,
+                .descriptorSetCount = 1,
+                .pSetLayouts        = &layout,
+            };
+            VkDescriptorSet set = VK_NULL_HANDLE;
+            if (vkAllocateDescriptorSets(*s.device, &ai, &set) != VK_SUCCESS) {
+                return VK_NULL_HANDLE;
+            }
+            return set;
         };
-        VkDescriptorSet set = VK_NULL_HANDLE;
-        if (vkAllocateDescriptorSets(*s.device, &ai, &set) != VK_SUCCESS) {
-            return VK_NULL_HANDLE;
+
+        std::array<VkDescriptorSet, 2> setsToBind{ VK_NULL_HANDLE, VK_NULL_HANDLE };
+
+        // ---- Set 1: SRVs ----
+        {
+            std::array<vk::DescriptorImageInfo, kSrvBindingCount> infos{};
+            std::array<vk::WriteDescriptorSet,  kSrvBindingCount> writes{};
+            u32 count = 0;
+            VkDescriptorSet set = allocSet(*s.srvSetLayout);
+            if (set != VK_NULL_HANDLE) {
+                for (u32 i = 0; i < pendingSRVs_.size() && i < kSrvBindingCount; ++i) {
+                    auto* t = s.textures.Get(static_cast<u64>(pendingSRVs_[i].texture));
+                    if (!t) continue;
+                    infos[count] = vk::DescriptorImageInfo{
+                        .imageView   = vk::ImageView(t->view),
+                        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+                    };
+                    writes[count] = vk::WriteDescriptorSet{
+                        .dstSet          = vk::DescriptorSet(set),
+                        .dstBinding      = i,
+                        .descriptorCount = 1,
+                        .descriptorType  = vk::DescriptorType::eSampledImage,
+                        .pImageInfo      = &infos[count],
+                    };
+                    ++count;
+                }
+                if (count > 0) {
+                    s.device.updateDescriptorSets(
+                        vk::ArrayProxy<const vk::WriteDescriptorSet>{ count, writes.data() },
+                        nullptr);
+                }
+                setsToBind[0] = set;
+            }
         }
-        return set;
-    };
 
-    std::array<VkDescriptorSet, 2> setsToBind{ VK_NULL_HANDLE, VK_NULL_HANDLE };
-
-    // ---- Set 1: SRVs ----
-    {
-        std::array<vk::DescriptorImageInfo, kSrvBindingCount> infos{};
-        std::array<vk::WriteDescriptorSet,  kSrvBindingCount> writes{};
-        u32 count = 0;
-        VkDescriptorSet set = allocSet(*s.srvSetLayout);
-        if (set != VK_NULL_HANDLE) {
-            for (u32 i = 0; i < pendingSRVs_.size() && i < kSrvBindingCount; ++i) {
-                pendingSRVs_[i].dirty = false;
-                auto* t = s.textures.Get(static_cast<u64>(pendingSRVs_[i].texture));
-                if (!t) continue;
-                infos[count] = vk::DescriptorImageInfo{
-                    .imageView   = vk::ImageView(t->view),
-                    .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
-                };
-                writes[count] = vk::WriteDescriptorSet{
-                    .dstSet          = vk::DescriptorSet(set),
-                    .dstBinding      = i,
-                    .descriptorCount = 1,
-                    .descriptorType  = vk::DescriptorType::eSampledImage,
-                    .pImageInfo      = &infos[count],
-                };
-                ++count;
+        // ---- Set 2: Samplers ----
+        {
+            std::array<vk::DescriptorImageInfo, kSamplerBindingCount> infos{};
+            std::array<vk::WriteDescriptorSet,  kSamplerBindingCount> writes{};
+            u32 count = 0;
+            VkDescriptorSet set = allocSet(*s.samplerSetLayout);
+            if (set != VK_NULL_HANDLE) {
+                for (u32 i = 0; i < pendingSamplers_.size() && i < kSamplerBindingCount; ++i) {
+                    auto* sm = s.samplers.Get(static_cast<u64>(pendingSamplers_[i].sampler));
+                    if (!sm) continue;
+                    infos[count] = vk::DescriptorImageInfo{
+                        .sampler = *sm->sampler,
+                    };
+                    writes[count] = vk::WriteDescriptorSet{
+                        .dstSet          = vk::DescriptorSet(set),
+                        .dstBinding      = i,
+                        .descriptorCount = 1,
+                        .descriptorType  = vk::DescriptorType::eSampler,
+                        .pImageInfo      = &infos[count],
+                    };
+                    ++count;
+                }
+                if (count > 0) {
+                    s.device.updateDescriptorSets(
+                        vk::ArrayProxy<const vk::WriteDescriptorSet>{ count, writes.data() },
+                        nullptr);
+                }
+                setsToBind[1] = set;
             }
-            if (count > 0) {
-                s.device.updateDescriptorSets(
-                    vk::ArrayProxy<const vk::WriteDescriptorSet>{ count, writes.data() },
-                    nullptr);
-            }
-            setsToBind[0] = set;
         }
-    }
 
-    // ---- Set 2: Samplers ----
-    {
-        std::array<vk::DescriptorImageInfo, kSamplerBindingCount> infos{};
-        std::array<vk::WriteDescriptorSet,  kSamplerBindingCount> writes{};
-        u32 count = 0;
-        VkDescriptorSet set = allocSet(*s.samplerSetLayout);
-        if (set != VK_NULL_HANDLE) {
-            for (u32 i = 0; i < pendingSamplers_.size() && i < kSamplerBindingCount; ++i) {
-                pendingSamplers_[i].dirty = false;
-                auto* sm = s.samplers.Get(static_cast<u64>(pendingSamplers_[i].sampler));
-                if (!sm) continue;
-                infos[count] = vk::DescriptorImageInfo{
-                    .sampler = *sm->sampler,
-                };
-                writes[count] = vk::WriteDescriptorSet{
-                    .dstSet          = vk::DescriptorSet(set),
-                    .dstBinding      = i,
-                    .descriptorCount = 1,
-                    .descriptorType  = vk::DescriptorType::eSampler,
-                    .pImageInfo      = &infos[count],
-                };
-                ++count;
-            }
-            if (count > 0) {
-                s.device.updateDescriptorSets(
-                    vk::ArrayProxy<const vk::WriteDescriptorSet>{ count, writes.data() },
-                    nullptr);
-            }
-            setsToBind[1] = set;
+        // bindDescriptorSets binds [firstSet, firstSet+N) so we issue the
+        // SRV + sampler pair starting at set 1. The CB set (0) was already
+        // recorded via pushDescriptorSetKHR above. Sets allocated above
+        // default to fully-valid even when no writes were issued
+        // (descriptors are uninitialised but unused by the bound stages).
+        if (setsToBind[0] || setsToBind[1]) {
+            frame.commandBuffer.bindDescriptorSets(
+                vk::PipelineBindPoint::eGraphics,
+                *s.pipelineLayout,
+                /*firstSet*/ kSrvSetIndex,
+                vk::ArrayProxy<const vk::DescriptorSet>{
+                    static_cast<u32>(setsToBind.size()),
+                    reinterpret_cast<const vk::DescriptorSet*>(setsToBind.data()) },
+                /*dynamicOffsets*/ nullptr);
         }
-    }
 
-    // bindDescriptorSets binds [firstSet, firstSet+N) so we issue the
-    // SRV + sampler pair starting at set 1. The CB set (0) was already
-    // recorded via pushDescriptorSetKHR above. Sets allocated above
-    // default to fully-valid even when no writes were issued
-    // (descriptors are uninitialised but unused by the bound stages).
-    if (setsToBind[0] || setsToBind[1]) {
-        frame.commandBuffer.bindDescriptorSets(
-            vk::PipelineBindPoint::eGraphics,
-            *s.pipelineLayout,
-            /*firstSet*/ kSrvSetIndex,
-            vk::ArrayProxy<const vk::DescriptorSet>{
-                static_cast<u32>(setsToBind.size()),
-                reinterpret_cast<const vk::DescriptorSet*>(setsToBind.data()) },
-            /*dynamicOffsets*/ nullptr);
+        srvSetDirty_     = false;
+        samplerSetDirty_ = false;
     }
-
-    anyDescriptorDirty_ = false;
 }
 
 void VulkanCommandList::ClearDepth(TextureHandle depth, f32 clearDepth, u8 clearStencil) {
@@ -547,7 +611,14 @@ void VulkanCommandList::CopyBuffer(BufferHandle dst, BufferHandle src) {
     auto* d = s.buffers.Get(static_cast<u64>(dst));
     auto* sr = s.buffers.Get(static_cast<u64>(src));
     if (!d || !sr) return;
-    vk::BufferCopy region{ .size = std::min(d->desc.size, sr->desc.size) };
+    // baseOffset is non-zero for shared CB-ring sub-allocs (otherwise 0),
+    // so this works uniformly for both own-allocation and shared
+    // buffers.
+    vk::BufferCopy region{
+        .srcOffset = sr->baseOffset,
+        .dstOffset = d->baseOffset,
+        .size      = std::min(d->desc.size, sr->desc.size),
+    };
     frame.commandBuffer.copyBuffer(vk::Buffer(sr->buffer), vk::Buffer(d->buffer), region);
 }
 

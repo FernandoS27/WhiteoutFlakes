@@ -49,15 +49,19 @@ inline constexpr u32 kFramesInFlight = 2;
 // when the renderer maps the same logical buffer multiple times per
 // frame. Non-CpuWritable buffers use a single slot at offset 0.
 struct BufferEntry {
-    VkBuffer        buffer     = VK_NULL_HANDLE;   // VMA-owned
-    VmaAllocation   allocation = VK_NULL_HANDLE;
+    VkBuffer        buffer     = VK_NULL_HANDLE;   // own VMA buffer OR alias of sharedCb
+    VmaAllocation   allocation = VK_NULL_HANDLE;   // null for shared-ring sub-allocs
     void*           mapped     = nullptr;          // persistent map for CpuWritable
     BufferDesc      desc{};                        // .size is the LOGICAL slot size
 
     u64             slotStride = 0;                // bytes between ring slots (aligned)
     u32             slotCount  = 1;                // 1 for non-ring buffers
     u32             currentSlot = 0;               // last MapBuffer wrote into this slot
-    u64             currentOffset() const { return slotStride * currentSlot; }
+    // Base offset within `buffer`. Zero for stand-alone (own-allocation)
+    // entries; non-zero for CpuWritable rings that sub-allocated into
+    // the shared CB pool (see VulkanDeviceState::sharedCbBuffer).
+    u64             baseOffset = 0;
+    u64             currentOffset() const { return baseOffset + slotStride * currentSlot; }
 };
 
 struct TextureEntry {
@@ -215,6 +219,44 @@ struct VulkanDeviceState {
     vk::raii::Queue                  queue          = nullptr;
     VmaAllocator                     allocator      = VK_NULL_HANDLE;
 
+    // Async-transfer queue. On discrete NVIDIA (Maxwell 2+) / AMD
+    // (GCN+) we pick the dedicated DMA family (queueFlags ==
+    // TRANSFER, no graphics bit), so staged buffer/texture uploads
+    // drain on a queue that runs in parallel with the renderer. On
+    // Intel integrated, mobile (Mali / Adreno / PowerVR), and
+    // MoltenVK the same family handles everything; in that fallback
+    // `hasAsyncTransfer == false`, `transferQueueFamily == queueFamily`,
+    // and `transferQueue` aliases `queue`. The upload helpers route
+    // through `transferQueue` either way.
+    //
+    // Sync model: every upload submit signals `transferTimelineSem`
+    // at `++transferNextValue` and stores the value in
+    // `transferLastSignaled`. The next graphics-queue submit (Present
+    // path) waits on `transferLastSignaled` so any draw it carries
+    // sees the uploaded data. Staging buffers + one-shot command
+    // buffers go onto `pendingTransferDeletes`, which `EnsureRecording`
+    // drains by polling the transfer-timeline counter — no waitIdle
+    // anywhere on the upload path.
+    u32                              transferQueueFamily = 0;
+    vk::raii::Queue                  transferQueue       = nullptr;
+    bool                             hasAsyncTransfer    = false;
+    vk::raii::Semaphore              transferTimelineSem = nullptr;
+    u64                              transferNextValue    = 0;
+    u64                              transferLastSignaled = 0;
+
+    // Transient command pool on the transfer queue family. The upload
+    // helpers (CreateBuffer staged path, UploadTexturePixels) allocate
+    // one-shot command buffers from here. Buffers are moved into
+    // `pendingTransferDeletes` so their raii destruction happens
+    // after the transfer timeline reaches their signal value.
+    vk::raii::CommandPool            transferCommandPool = nullptr;
+
+    // Deferred-delete queue keyed on the *transfer* timeline. Mirrors
+    // `pendingDeletes` (which is keyed on the graphics timeline) but
+    // exists so staging buffers + transfer-side command buffers can
+    // be cleaned up promptly without needing to ride a graphics submit.
+    std::vector<PendingDelete>       pendingTransferDeletes;
+
     // Cached at Init() time from VkPhysicalDeviceProperties. Drives the
     // slot-stride alignment used by the per-CB ring buffer in
     // CreateBuffer / MapBuffer (CpuWritable path).
@@ -225,6 +267,25 @@ struct VulkanDeviceState {
     // last frame's GPU reads, so we need at least
     // (max_updates_per_frame * kFramesInFlight) slots. 256 is generous.
     static constexpr u32             kCbRingSlots         = 256;
+
+    // Shared backing buffer for every CpuWritable CreateBuffer. The
+    // renderer makes ~15-20 small dynamic CBs (per-frame uniforms,
+    // BLS material CBs, tonemap, etc.); coalescing them into one
+    // persistently-mapped VkBuffer saves ~15 VMA allocations + 15
+    // mapped regions and means every descriptor write for a dynamic
+    // CB references the same VkBuffer with just a different offset
+    // (drivers cache the VkBuffer→VkDeviceMemory binding lookup, so
+    // this still helps for the SRV path that doesn't use push
+    // descriptors). The bump cursor never reclaims sub-allocs; CB
+    // creation is a load-time / one-shot operation so a simple
+    // monotonic allocator is plenty. If the cursor overflows
+    // `sharedCbCapacity`, CreateBuffer falls back to a per-CB VMA
+    // allocation so we never hard-fail.
+    static constexpr u64             kSharedCbCapacity    = 16ull * 1024 * 1024;
+    VkBuffer                         sharedCbBuffer       = VK_NULL_HANDLE;
+    VmaAllocation                    sharedCbAllocation   = VK_NULL_HANDLE;
+    void*                            sharedCbMapped       = nullptr;
+    u64                              sharedCbCursor       = 0;
 
     // Three push-descriptor set layouts, one per resource type, matching
     // the [[vk::binding(N, S)]] convention applied to the Slang sources:
@@ -285,6 +346,10 @@ struct VulkanDeviceState {
 // reached. Called once per frame just before the host starts recording
 // the next command buffer.
 void DrainPendingDeletes(VulkanDeviceState& s);
+// Same shape as DrainPendingDeletes but polls the transfer timeline.
+// Called at frame start; safe to call when hasAsyncTransfer is false
+// (the unified-queue path keeps the list empty by never signaling).
+void DrainPendingTransferDeletes(VulkanDeviceState& s);
 
 // Per-set binding counts. Each set covers bindings 0..N-1, split into a
 // per-stage range. The slang sources annotate each VS resource at its

@@ -159,6 +159,34 @@ i32 PickGraphicsQueueFamily(const vk::raii::PhysicalDevice& pd) {
     return -1;
 }
 
+// Look for a queue family that supports transfer but NOT graphics —
+// that's the dedicated DMA / SDMA queue on discrete NVIDIA (Maxwell 2+)
+// / AMD (GCN+) GPUs, and on most AMD APUs. Intel integrated, mobile,
+// and MoltenVK typically expose only one universal family with all
+// bits set; in that case the caller falls back to `graphicsFamily`
+// and submits transfers on the graphics queue. Either way the upload
+// code path stays the same; only the queue + sync changes.
+//
+// Preference order:
+//   1. TRANSFER && !GRAPHICS && !COMPUTE  — purest DMA queue
+//   2. TRANSFER && !GRAPHICS              — transfer-only (may also
+//                                            do compute)
+// Returns -1 if no transfer-only family exists.
+i32 PickDedicatedTransferQueueFamily(const vk::raii::PhysicalDevice& pd) {
+    const auto fams = pd.getQueueFamilyProperties();
+    i32 fallback = -1;
+    for (u32 i = 0; i < fams.size(); ++i) {
+        const auto flags = fams[i].queueFlags;
+        const bool hasTransfer = bool(flags & vk::QueueFlagBits::eTransfer);
+        const bool hasGraphics = bool(flags & vk::QueueFlagBits::eGraphics);
+        const bool hasCompute  = bool(flags & vk::QueueFlagBits::eCompute);
+        if (!hasTransfer || hasGraphics) continue;
+        if (!hasCompute) return static_cast<i32>(i);  // ideal: DMA-only
+        if (fallback < 0) fallback = static_cast<i32>(i);
+    }
+    return fallback;
+}
+
 VkBufferUsageFlags ToVkBufferUsage(BufferUsage u) {
     VkBufferUsageFlags out = 0;
     if (hasFlag(u, BufferUsage::Vertex))          out |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
@@ -193,10 +221,18 @@ VulkanDevice::~VulkanDevice() {
     // we want unconditional teardown here.
     for (auto& pd : s.pendingDeletes) pd.deleter->Run(s);
     s.pendingDeletes.clear();
+    // Same unconditional drain for transfer-side deletes — waitIdle
+    // above guarantees the transfer queue is idle too.
+    for (auto& pd : s.pendingTransferDeletes) pd.deleter->Run(s);
+    s.pendingTransferDeletes.clear();
 
     // Tear down whatever's still live in the slot maps (resources the
     // renderer never explicitly destroyed). Slot-map entries hold raw
     // VkXxx + VmaAllocation; raii fields auto-destroy on Clear().
+    // Shared CB ring sub-allocs have allocation==VK_NULL_HANDLE — the
+    // guard below skips them; the ring itself is freed once after the
+    // ForEach completes (after the buffers slot-map is no longer
+    // holding aliases of sharedCbBuffer).
     s.buffers.ForEach([&](BufferEntry& e) {
         if (e.buffer && e.allocation)
             vmaDestroyBuffer(s.allocator, e.buffer, e.allocation);
@@ -211,6 +247,13 @@ VulkanDevice::~VulkanDevice() {
     });
     s.buffers.Clear();
     s.textures.Clear();
+
+    if (s.sharedCbBuffer && s.sharedCbAllocation) {
+        vmaDestroyBuffer(s.allocator, s.sharedCbBuffer, s.sharedCbAllocation);
+        s.sharedCbBuffer     = VK_NULL_HANDLE;
+        s.sharedCbAllocation = VK_NULL_HANDLE;
+        s.sharedCbMapped     = nullptr;
+    }
 
     if (s.allocator) {
         vmaDestroyAllocator(s.allocator);
@@ -335,13 +378,32 @@ bool VulkanDevice::Init(bool enableValidation) {
     // AMD/Intel; Vulkan spec guarantees ≤ 256). Cached here once.
     s.minUniformBufferAlign = props.limits.minUniformBufferOffsetAlignment;
 
+    // Async transfer queue probe. -1 from PickDedicatedTransferQueueFamily
+    // means "no transfer-only family found" — Intel iGPUs, mobile GPUs,
+    // MoltenVK all hit this and we fall through to the graphics family
+    // (uploads still happen, just on the same queue as the renderer).
+    const i32 tf = PickDedicatedTransferQueueFamily(s.physicalDevice);
+    s.hasAsyncTransfer    = (tf >= 0 && static_cast<u32>(tf) != s.queueFamily);
+    s.transferQueueFamily = s.hasAsyncTransfer ? static_cast<u32>(tf)
+                                                : s.queueFamily;
+
     // ---- 3. Logical device + dynamic-rendering / sync2 features -----------
     const f32 queuePriority = 1.0f;
-    vk::DeviceQueueCreateInfo qci{
+    std::array<vk::DeviceQueueCreateInfo, 2> qcis{};
+    qcis[0] = vk::DeviceQueueCreateInfo{
         .queueFamilyIndex = s.queueFamily,
         .queueCount       = 1,
         .pQueuePriorities = &queuePriority,
     };
+    u32 qciCount = 1;
+    if (s.hasAsyncTransfer) {
+        qcis[1] = vk::DeviceQueueCreateInfo{
+            .queueFamilyIndex = s.transferQueueFamily,
+            .queueCount       = 1,
+            .pQueuePriorities = &queuePriority,
+        };
+        qciCount = 2;
+    }
 
     // Vulkan 1.1 feature struct — `shaderDrawParameters` satisfies the
     // SPIR-V DrawParameters capability that slangc emits for any shader
@@ -372,8 +434,8 @@ bool VulkanDevice::Init(bool enableValidation) {
 
     vk::DeviceCreateInfo dci{
         .pNext                   = &vk13,
-        .queueCreateInfoCount    = 1,
-        .pQueueCreateInfos       = &qci,
+        .queueCreateInfoCount    = qciCount,
+        .pQueueCreateInfos       = qcis.data(),
         .enabledExtensionCount   = static_cast<u32>(deviceExts.size()),
         .ppEnabledExtensionNames = deviceExts.data(),
         .pEnabledFeatures        = &coreFeatures,
@@ -387,6 +449,9 @@ bool VulkanDevice::Init(bool enableValidation) {
     }
     s.device = std::move(deviceResult.value);
     s.queue  = s.device.getQueue(s.queueFamily, 0);
+    s.transferQueue = s.hasAsyncTransfer
+        ? s.device.getQueue(s.transferQueueFamily, 0)
+        : s.device.getQueue(s.queueFamily, 0);  // alias the graphics queue
 
     // ---- 4. VMA -----------------------------------------------------------
     VmaAllocatorCreateInfo aci{};
@@ -397,6 +462,39 @@ bool VulkanDevice::Init(bool enableValidation) {
     if (vmaCreateAllocator(&aci, &s.allocator) != VK_SUCCESS) {
         std::fprintf(stderr, "[vk] vmaCreateAllocator failed\n");
         return false;
+    }
+
+    // ---- 4b. Shared CpuWritable CB ring ---------------------------------
+    // One persistently-mapped host-visible VkBuffer backs every
+    // CpuWritable CreateBuffer (per-CB ring slots are sub-allocs into
+    // this). Usage flags are a superset of anything ToVkBufferUsage
+    // can produce so any CpuWritable shape — UBO, VB, IB, SSBO — can
+    // sub-allocate from here. Failing the create is non-fatal —
+    // CreateBuffer falls back to per-CB VMA allocations.
+    {
+        VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+        bci.size  = VulkanDeviceState::kSharedCbCapacity;
+        bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
+                  | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                  | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+                  | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+                  | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+                  | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VmaAllocationCreateInfo cbaci{};
+        cbaci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+        cbaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                    | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        VmaAllocationInfo info{};
+        if (vmaCreateBuffer(s.allocator, &bci, &cbaci,
+                            &s.sharedCbBuffer, &s.sharedCbAllocation, &info)
+                == VK_SUCCESS) {
+            s.sharedCbMapped = info.pMappedData;
+            s.sharedCbCursor = 0;
+        } else {
+            std::fprintf(stderr, "[vk] shared CB ring allocation failed; "
+                                 "falling back to per-CB buffers\n");
+        }
     }
 
     // ---- 5. Shared pipeline layout + per-type descriptor set layouts -----
@@ -505,6 +603,43 @@ bool VulkanDevice::Init(bool enableValidation) {
         }
         s.timelineSem = std::move(r.value);
         s.nextSubmitValue = 1;
+    }
+
+    // ---- 6b. Transfer command pool + timeline semaphore -----------------
+    // Pool lives on `transferQueueFamily`, the dedicated transfer family
+    // on discrete NVIDIA/AMD or `queueFamily` itself on Intel iGPU /
+    // mobile / MoltenVK. The timeline semaphore is what makes uploads
+    // truly async: each upload submit signals it at an incrementing
+    // value, the render submit waits on the latest signaled value, and
+    // pendingTransferDeletes (staging buffers + one-shot CBs) drains by
+    // polling the timeline counter at frame start.
+    {
+        auto poolR = s.device.createCommandPool({
+            .flags = vk::CommandPoolCreateFlagBits::eTransient,
+            .queueFamilyIndex = s.transferQueueFamily,
+        });
+        if (poolR.result != vk::Result::eSuccess) {
+            std::fprintf(stderr,
+                "[vk] createCommandPool (transfer) failed (%s)\n",
+                vk::to_string(poolR.result).c_str());
+            return false;
+        }
+        s.transferCommandPool = std::move(poolR.value);
+
+        vk::SemaphoreTypeCreateInfo typeInfo{
+            .semaphoreType = vk::SemaphoreType::eTimeline,
+            .initialValue  = 0,
+        };
+        auto semR = s.device.createSemaphore({ .pNext = &typeInfo });
+        if (semR.result != vk::Result::eSuccess) {
+            std::fprintf(stderr,
+                "[vk] createSemaphore (transfer timeline) failed (%s)\n",
+                vk::to_string(semR.result).c_str());
+            return false;
+        }
+        s.transferTimelineSem  = std::move(semR.value);
+        s.transferNextValue    = 0;
+        s.transferLastSignaled = 0;
     }
 
     // ---- 7. Per-frame command pool + sync ---------------------------------
@@ -618,6 +753,37 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc, const void* init
     }
     const u64 totalSize = e.slotStride * e.slotCount;
 
+    // CpuWritable buffers try to sub-allocate from the shared CB ring
+    // first — one VkBuffer + one VMA allocation backs every dynamic CB
+    // in the program. Falls through to the per-CB allocation below
+    // when the ring is exhausted or wasn't created.
+    if (ring && s.sharedCbBuffer != VK_NULL_HANDLE) {
+        // Each sub-alloc starts on minUniformBufferAlign so descriptor
+        // offsets remain valid (we add baseOffset + slot*slotStride).
+        const u64 align = std::max<u64>(1, s.minUniformBufferAlign);
+        const u64 base  = (s.sharedCbCursor + align - 1) / align * align;
+        if (base + totalSize <= VulkanDeviceState::kSharedCbCapacity) {
+            e.buffer     = s.sharedCbBuffer;
+            e.allocation = VK_NULL_HANDLE;  // shared — Destroy skips vmaDestroyBuffer
+            // `mapped` is the base of the underlying VkBuffer (the shared
+            // ring's persistent map). `currentOffset()` already adds
+            // baseOffset + slot*slotStride on top, so callers that compute
+            // `mapped + currentOffset()` land at the right slot byte
+            // without double-counting.
+            e.mapped     = s.sharedCbMapped;
+            e.baseOffset = base;
+            s.sharedCbCursor = base + totalSize;
+            if (initial && desc.size > 0) {
+                std::memcpy(static_cast<u8*>(e.mapped) + base, initial, desc.size);
+                vmaFlushAllocation(s.allocator, s.sharedCbAllocation,
+                                   base, desc.size);
+            }
+            return static_cast<BufferHandle>(s.buffers.Insert(std::move(e)));
+        }
+        // Fell through: ring exhausted. Proceed with a per-CB
+        // allocation so the CreateBuffer call still succeeds.
+    }
+
     VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
     bci.size  = totalSize;
     bci.usage = ToVkBufferUsage(desc.usage);
@@ -660,9 +826,14 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc, const void* init
             std::memcpy(si.pMappedData, initial, desc.size);
             vmaFlushAllocation(s.allocator, stagingAlloc, 0, desc.size);
 
-            auto& frame = s.frames[s.frameIndex];
+            // Submit on the transfer queue, signaling the transfer
+            // timeline. No waitIdle: the graphics queue's next submit
+            // waits on `transferLastSignaled` so any draw it carries
+            // sees the upload. Staging buffer + one-shot CB are
+            // queued via pendingTransferDeletes so they free once the
+            // timeline counter passes the signal value.
             auto cbsR = s.device.allocateCommandBuffers({
-                .commandPool        = *frame.commandPool,
+                .commandPool        = *s.transferCommandPool,
                 .level              = vk::CommandBufferLevel::ePrimary,
                 .commandBufferCount = 1,
             });
@@ -673,15 +844,35 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc, const void* init
                 xfer.copyBuffer(vk::Buffer(stagingBuf), vk::Buffer(e.buffer), region);
                 (void)xfer.end();
 
+                const u64 signalValue = ++s.transferNextValue;
                 vk::CommandBufferSubmitInfo cbInfo{ .commandBuffer = *xfer };
-                vk::SubmitInfo2 submit{
-                    .commandBufferInfoCount = 1,
-                    .pCommandBufferInfos    = &cbInfo,
+                vk::SemaphoreSubmitInfo signalInfo{
+                    .semaphore = *s.transferTimelineSem,
+                    .value     = signalValue,
+                    .stageMask = vk::PipelineStageFlagBits2::eAllCommands,
                 };
-                (void)s.queue.submit2(submit);
-                (void)s.queue.waitIdle();
+                vk::SubmitInfo2 submit{
+                    .commandBufferInfoCount   = 1,
+                    .pCommandBufferInfos      = &cbInfo,
+                    .signalSemaphoreInfoCount = 1,
+                    .pSignalSemaphoreInfos    = &signalInfo,
+                };
+                (void)s.transferQueue.submit2(submit);
+                s.transferLastSignaled = signalValue;
+
+                s.pendingTransferDeletes.push_back(MakePendingDelete(
+                    signalValue,
+                    [stagingBuf, stagingAlloc, cb = std::move(xfer)]
+                    (VulkanDeviceState& st) mutable {
+                        vmaDestroyBuffer(st.allocator, stagingBuf, stagingAlloc);
+                        // `cb` raii destructs at lambda destruction (after
+                        // the deleter runs), freeing the command buffer
+                        // back to transferCommandPool.
+                        (void)cb;
+                    }));
+            } else {
+                vmaDestroyBuffer(s.allocator, stagingBuf, stagingAlloc);
             }
-            vmaDestroyBuffer(s.allocator, stagingBuf, stagingAlloc);
         }
     }
 
@@ -782,18 +973,14 @@ bool UploadTexturePixels(VulkanDeviceState& s,
     // memcpy is visible to the GPU before submit2 below.
     vmaFlushAllocation(s.allocator, stagingAlloc, 0, totalBytes);
 
-    // ---- One-shot command buffer ----
-    auto poolR = s.device.createCommandPool({
-        .flags = vk::CommandPoolCreateFlagBits::eTransient,
-        .queueFamilyIndex = s.queueFamily,
-    });
-    if (poolR.result != vk::Result::eSuccess) {
-        vmaDestroyBuffer(s.allocator, stagingBuf, stagingAlloc);
-        return false;
-    }
-    vk::raii::CommandPool pool = std::move(poolR.value);
+    // ---- One-shot command buffer on the transfer queue ----
+    // Allocated from the shared `transferCommandPool` (transient). The
+    // raii CB is moved into the pendingTransferDeletes lambda below so
+    // it lives until the timeline reaches its signal value — by then
+    // the GPU is done with it and the raii destructor returns it to
+    // the pool.
     auto cbsR = s.device.allocateCommandBuffers({
-        .commandPool        = *pool,
+        .commandPool        = *s.transferCommandPool,
         .level              = vk::CommandBufferLevel::ePrimary,
         .commandBufferCount = 1,
     });
@@ -837,14 +1024,22 @@ bool UploadTexturePixels(VulkanDeviceState& s,
                           vk::ImageLayout::eTransferDstOptimal,
                           regions);
 
-    // Transition: TransferDstOptimal → ShaderReadOnlyOptimal so the
-    // renderer can sample immediately. Skips the per-frame pending
-    // SRV transition for this texture.
+    // Final transition to eShaderReadOnlyOptimal on the same command
+    // buffer. Safe across queue families because sampled images are
+    // created VK_SHARING_MODE_CONCURRENT when `hasAsyncTransfer` is
+    // true (see CreateTexture). The shader-side visibility is
+    // provided by the timeline-semaphore wait on the graphics submit
+    // (see vulkan_swap_chain.cpp Present) — NOT by this barrier's
+    // dstStage/dstAccess, which is illegal here because the transfer
+    // queue doesn't support shader stages. We just need the layout
+    // transition itself to complete; eBottomOfPipe + no access is the
+    // canonical "release ownership / end of work" mask on a transfer
+    // queue.
     vk::ImageMemoryBarrier2 toRead{
         .srcStageMask  = vk::PipelineStageFlagBits2::eCopy,
         .srcAccessMask = vk::AccessFlagBits2::eTransferWrite,
-        .dstStageMask  = vk::PipelineStageFlagBits2::eAllCommands,
-        .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
+        .dstStageMask  = vk::PipelineStageFlagBits2::eBottomOfPipe,
+        .dstAccessMask = {},
         .oldLayout     = vk::ImageLayout::eTransferDstOptimal,
         .newLayout     = vk::ImageLayout::eShaderReadOnlyOptimal,
         .image         = vk::Image(image),
@@ -853,18 +1048,35 @@ bool UploadTexturePixels(VulkanDeviceState& s,
     cb.pipelineBarrier2({ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &toRead });
     (void)cb.end();
 
-    // Submit + wait for completion. waitIdle on the queue is the
-    // simplest synchronization that lets us free the staging buffer
-    // immediately after.
+    // Submit on the transfer queue, signal the transfer timeline. No
+    // waitIdle — the graphics queue's next submit waits on
+    // `transferLastSignaled` so the first draw that samples this
+    // image sees both the copy and the final layout transition.
+    // Staging buffer + one-shot CB ride pendingTransferDeletes and
+    // free once the timeline counter passes the signal value.
+    const u64 signalValue = ++s.transferNextValue;
     vk::CommandBufferSubmitInfo cbInfo{ .commandBuffer = *cb };
-    vk::SubmitInfo2 si{
-        .commandBufferInfoCount = 1,
-        .pCommandBufferInfos    = &cbInfo,
+    vk::SemaphoreSubmitInfo signalInfo{
+        .semaphore = *s.transferTimelineSem,
+        .value     = signalValue,
+        .stageMask = vk::PipelineStageFlagBits2::eAllCommands,
     };
-    (void)s.queue.submit2(si);
-    s.queue.waitIdle();
+    vk::SubmitInfo2 si{
+        .commandBufferInfoCount   = 1,
+        .pCommandBufferInfos      = &cbInfo,
+        .signalSemaphoreInfoCount = 1,
+        .pSignalSemaphoreInfos    = &signalInfo,
+    };
+    (void)s.transferQueue.submit2(si);
+    s.transferLastSignaled = signalValue;
 
-    vmaDestroyBuffer(s.allocator, stagingBuf, stagingAlloc);
+    s.pendingTransferDeletes.push_back(MakePendingDelete(
+        signalValue,
+        [stagingBuf, stagingAlloc, ownedCb = std::move(cb)]
+        (VulkanDeviceState& st) mutable {
+            vmaDestroyBuffer(st.allocator, stagingBuf, stagingAlloc);
+            (void)ownedCb;
+        }));
     return true;
 }
 
@@ -893,7 +1105,25 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc,
         ici.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     if (hasFlag(desc.usage, TextureUsage::DepthStencil))
         ici.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    // When the transfer queue is a separate family from the graphics
+    // queue, a sampled image whose contents we upload on the transfer
+    // queue must either round-trip through queue-family ownership
+    // transfer barriers (write a release barrier on the transfer
+    // queue then a matching acquire on the graphics queue) or be
+    // created with VK_SHARING_MODE_CONCURRENT listing both families.
+    // We take the concurrent path — the QFOT bookkeeping would buy
+    // back the perf modern drivers no longer get from EXCLUSIVE.
+    // Render-target / depth images stay EXCLUSIVE because they never
+    // cross queue families.
+    const bool sampledImg = hasFlag(desc.usage, TextureUsage::ShaderResource);
+    const u32 sharedFamilies[2] = { s.queueFamily, s.transferQueueFamily };
+    if (sampledImg && s.hasAsyncTransfer) {
+        ici.sharingMode           = VK_SHARING_MODE_CONCURRENT;
+        ici.queueFamilyIndexCount = 2;
+        ici.pQueueFamilyIndices   = sharedFamilies;
+    } else {
+        ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    }
     if (desc.isCube) ici.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
 
     VmaAllocationCreateInfo aci{};
@@ -960,14 +1190,21 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc,
             vmaDestroyImage(s.allocator, t.image, t.allocation);
             return TextureHandle::Invalid;
         }
+        // UploadTexturePixels does the full Undefined → TransferDst
+        // → ShaderReadOnly chain on the transfer queue and waits for
+        // it. Image is sample-ready by the time we return — no
+        // deferred transition needed. Cross-queue layout visibility
+        // is provided by the CONCURRENT-sharing image (see above)
+        // plus the transferQueue.waitIdle() inside UploadTexturePixels.
         t.currentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
     }
 
     const u64 slot = s.textures.Insert(std::move(t));
-    // Queue sampled textures with NO initial data for a layout
-    // transition at the next frame's start — UploadTexturePixels
-    // already left initialised textures in eShaderReadOnlyOptimal so
-    // they don't need the deferred transition.
+    // Sampled textures with NO initial data were freshly created in
+    // eUndefined; the graphics queue transitions them to
+    // eShaderReadOnlyOptimal at the next frame's EnsureRecording
+    // before any draw samples them. Textures created with initial
+    // data already landed in eShaderReadOnlyOptimal above.
     if (sampled && !hasInitData) {
         s.pendingSrvTransitions.push_back(slot);
     }
@@ -1364,6 +1601,23 @@ void DrainPendingDeletes(VulkanDeviceState& s) {
     }
 }
 
+void DrainPendingTransferDeletes(VulkanDeviceState& s) {
+    if (s.pendingTransferDeletes.empty()) return;
+    if (!*s.transferTimelineSem) return;
+    auto vR = s.transferTimelineSem.getCounterValue();
+    if (vR.result != vk::Result::eSuccess) return;
+    const u64 completed = vR.value;
+    auto it = s.pendingTransferDeletes.begin();
+    while (it != s.pendingTransferDeletes.end()) {
+        if (it->timelineValue <= completed) {
+            it->deleter->Run(s);
+            it = s.pendingTransferDeletes.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
 // Each Destroy(handle) moves the resource state out of the slot map
 // (so the renderer's handle is invalidated immediately) and queues a
 // deleter tagged with the next-submit timeline value. Once the GPU
@@ -1455,7 +1709,12 @@ void VulkanDevice::UpdateBuffer(BufferHandle h, const void* data, usize size) {
         }
         const u64 off = b->currentOffset();
         std::memcpy(static_cast<u8*>(b->mapped) + off, data, size);
-        vmaFlushAllocation(s.allocator, b->allocation, off, size);
+        // Shared-ring sub-allocs flush against the shared VMA allocation;
+        // own-allocation buffers flush against their own.
+        VmaAllocation alloc = b->allocation
+                                  ? b->allocation
+                                  : s.sharedCbAllocation;
+        vmaFlushAllocation(s.allocator, alloc, off, size);
     } else {
         // Slow path: map for the duration of the copy. Used only by
         // non-mappable buffers — the renderer's hot path uses CpuWritable
@@ -1494,7 +1753,11 @@ void VulkanDevice::UnmapBuffer(BufferHandle h) {
     if (b->mapped) {
         // Persistently mapped — flush just the current ring slot (or
         // the whole buffer for slotCount == 1) and leave mapped.
-        vmaFlushAllocation(s.allocator, b->allocation,
+        // Shared-ring sub-allocs flush against sharedCbAllocation.
+        VmaAllocation alloc = b->allocation
+                                  ? b->allocation
+                                  : s.sharedCbAllocation;
+        vmaFlushAllocation(s.allocator, alloc,
                            b->currentOffset(), b->desc.size);
     } else {
         vmaUnmapMemory(s.allocator, b->allocation);
