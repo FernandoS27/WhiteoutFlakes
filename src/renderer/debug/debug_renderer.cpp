@@ -200,6 +200,7 @@ bool DebugRenderer::CreateViewCubeResources() {
     vcDesc.rasterizer.cull     = gfx::CullMode::None;
     vcDesc.rasterizer.frontCCW = true;
 
+    vcDesc.dsvFormat = rs_.Pipeline().DepthStencilFormat();
     vcDesc.rtvFormat = RenderPipeline::kHdrSceneFormat;
     viewCubePSOHdr_  = rs_.Pipeline().Gfx()->CreateGraphicsPipeline(vcDesc);
 

@@ -1324,4 +1324,24 @@ IGFXCommandList* D3D12Device::GetImmediateContext() {
     return immediateCtx_.get();
 }
 
+Format D3D12Device::PreferredDepthStencilFormat() const {
+    auto supported = [this](DXGI_FORMAT fmt) {
+        D3D12_FEATURE_DATA_FORMAT_SUPPORT data{ fmt, {}, {} };
+        if (FAILED(device_->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT,
+                                                 &data, sizeof(data)))) {
+            return false;
+        }
+        return (data.Support1 & D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL) != 0;
+    };
+    // Same preference order as the Vulkan path: D24 first (compact and
+    // native on NVIDIA/Intel), then D32_FLOAT_S8 as the AMD/portability
+    // fallback. D3D12 mandates at least D24_UNORM_S8_UINT support at
+    // feature level 11_0, but AMD drivers have historically had
+    // pathological cases where the renderer's specific usage triggers
+    // crashes on D24 — the runtime query keeps us honest.
+    if (supported(DXGI_FORMAT_D24_UNORM_S8_UINT)) return Format::D24_UNORM_S8_UINT;
+    if (supported(DXGI_FORMAT_D32_FLOAT_S8X24_UINT)) return Format::D32_FLOAT_S8_UINT;
+    return Format::D32_FLOAT_S8_UINT;  // last-resort guess
+}
+
 }

@@ -265,10 +265,15 @@ TextureHandle D3D11Device::CreateTexture(const TextureDesc& desc, const void* in
     td.MipLevels = mipCount;
     td.ArraySize = arraySize;
 
+    auto depthTypelessFormat = [](Format f) -> DXGI_FORMAT {
+        switch (f) {
+            case Format::D24_UNORM_S8_UINT: return DXGI_FORMAT_R24G8_TYPELESS;
+            case Format::D32_FLOAT_S8_UINT: return DXGI_FORMAT_R32G8X24_TYPELESS;
+            default:                        return DXGI_FORMAT_R32_TYPELESS;  // D32_FLOAT
+        }
+    };
     td.Format    = (isDepth && isSrv)
-                       ? (desc.format == Format::D24_UNORM_S8_UINT
-                              ? DXGI_FORMAT_R24G8_TYPELESS
-                              : DXGI_FORMAT_R32_TYPELESS)
+                       ? depthTypelessFormat(desc.format)
                        : ToDXGI(desc.format);
     td.SampleDesc.Count = 1;
     if (desc.isCube) td.MiscFlags |= D3D11_RESOURCE_MISC_TEXTURECUBE;
@@ -321,6 +326,8 @@ TextureHandle D3D11Device::CreateTexture(const TextureDesc& desc, const void* in
 
         if (desc.format == Format::D24_UNORM_S8_UINT)
             srvDesc.Format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+        else if (desc.format == Format::D32_FLOAT_S8_UINT)
+            srvDesc.Format = DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
         else if (desc.format == Format::D32_FLOAT)
             srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
 
@@ -391,6 +398,8 @@ TextureHandle D3D11Device::CreateDepthTarget(i32 w, i32 h, Format f) {
 
     if (f == Format::D24_UNORM_S8_UINT)
         td.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    else if (f == Format::D32_FLOAT_S8_UINT)
+        td.Format = DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
     else if (f == Format::D32_FLOAT)
         td.Format = DXGI_FORMAT_D32_FLOAT;
     else
@@ -696,6 +705,17 @@ TextureHandle D3D11Device::GetSwapChainBackBufferLinear(SwapChainHandle h) {
 
 IGFXCommandList* D3D11Device::GetImmediateContext() {
     return immediateCtx_.get();
+}
+
+Format D3D11Device::PreferredDepthStencilFormat() const {
+    auto supported = [this](DXGI_FORMAT fmt) {
+        UINT support = 0;
+        if (FAILED(device_->CheckFormatSupport(fmt, &support))) return false;
+        return (support & D3D11_FORMAT_SUPPORT_DEPTH_STENCIL) != 0;
+    };
+    if (supported(DXGI_FORMAT_D24_UNORM_S8_UINT)) return Format::D24_UNORM_S8_UINT;
+    if (supported(DXGI_FORMAT_D32_FLOAT_S8X24_UINT)) return Format::D32_FLOAT_S8_UINT;
+    return Format::D32_FLOAT_S8_UINT;  // last-resort guess
 }
 
 }

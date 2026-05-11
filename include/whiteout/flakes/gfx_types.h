@@ -48,6 +48,7 @@ enum class Format : u16 {
 
     D24_UNORM_S8_UINT,
     D32_FLOAT,
+    D32_FLOAT_S8_UINT,
 
     BC1_UNORM,
     BC1_UNORM_SRGB,

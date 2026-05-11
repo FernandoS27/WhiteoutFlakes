@@ -72,6 +72,10 @@ gfx::Format RenderPipeline::SceneTargetFormat() const {
         ? kHdrSceneFormat : kSdSceneFormat;
 }
 
+gfx::Format RenderPipeline::DepthStencilFormat() const {
+    return impl_->depthStencilFormat_;
+}
+
 RenderMode RenderPipeline::FrameRenderMode() const {
     return impl_->frameRenderMode_;
 }
@@ -195,6 +199,7 @@ bool RenderPipeline::RenderParticlesBls() {
                                        bls::VertexLayoutKind::ParticleSD,
                                        mp, perm);
         req.rtvFormat = SceneTargetFormat();
+        req.dsvFormat = impl_->depthStencilFormat_;
         auto pso = impl_->blsPsoBuilder_->GetOrBuild(req);
         if (pso == gfx::PipelineHandle::Invalid) continue;
         cmd->BindPipeline(pso);
@@ -313,6 +318,7 @@ bool RenderPipeline::RenderSplatsBls() {
                                        bls::VertexLayoutKind::ParticleSD,
                                        mp, perm);
         req.rtvFormat = SceneTargetFormat();
+        req.dsvFormat = impl_->depthStencilFormat_;
         auto pso = impl_->blsPsoBuilder_->GetOrBuild(req);
         if (pso == gfx::PipelineHandle::Invalid) continue;
         cmd->BindPipeline(pso);
@@ -355,6 +361,7 @@ void RenderPipeline::RenderCornEffects() {
     fi.viewportRect = { (f32)impl_->width_, (f32)impl_->height_, 0.0f, 0.0f };
     fi.effectTime   = rs_.Scene().GetAnimationTime() * 0.001f;
     fi.rtvFormat    = SceneTargetFormat();
+    fi.dsvFormat    = impl_->depthStencilFormat_;
     rs_.CornEffects().SetFrameInputs(fi);
     rs_.CornEffects().Simulate(rs_.CornEffects().PendingDt());
 }
@@ -453,6 +460,7 @@ void RenderPipeline::RenderRibbons() {
                                        bls::VertexLayoutKind::ParticleSD,
                                        mp, perm);
         req.rtvFormat = SceneTargetFormat();
+        req.dsvFormat = impl_->depthStencilFormat_;
         auto pso = impl_->blsPsoBuilder_->GetOrBuild(req);
         if (pso == gfx::PipelineHandle::Invalid) continue;
         cmd->BindPipeline(pso);
@@ -507,6 +515,13 @@ bool RenderPipeline::InitDevice(gfx::GfxApi api) {
 
     impl_->gfx_ = gfx::CreateDevice(api, rs_.Settings().GraphicsDebug());
     if (!impl_->gfx_) return false;
+
+    // Cache the device's preferred depth-stencil format once. Every
+    // subsequent CreateDepthTarget / PSO dsvFormat in this file (and
+    // in the BLS PSO builder, debug renderer, etc.) reads from here.
+    // On AMD this lands as D32_FLOAT_S8_UINT; on NVIDIA/Intel as
+    // D24_UNORM_S8_UINT.
+    impl_->depthStencilFormat_ = impl_->gfx_->PreferredDepthStencilFormat();
 
     rs_.CreateDeviceAssetManagers(*impl_->gfx_);
 
@@ -670,7 +685,7 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
         tm.rasterizer.cull     = gfx::CullMode::None;
         tm.rasterizer.frontCCW = true;
         tm.rtvFormat       = gfx::Format::R8G8B8A8_UNORM_SRGB;
-        tm.dsvFormat       = gfx::Format::D24_UNORM_S8_UINT;
+        tm.dsvFormat       = impl_->depthStencilFormat_;
         impl_->tonemapPSO_ = impl_->gfx_->CreateGraphicsPipeline(tm);
 
         impl_->tonemapPsCb_ = impl_->gfx_->CreateBuffer({
@@ -894,7 +909,7 @@ RenderTargetId RenderPipeline::CreateSwapChainTarget(void* nativeWindowHandle, i
     target.color       = impl_->gfx_->GetSwapChainBackBuffer(target.swap);
     target.colorLinear = impl_->gfx_->GetSwapChainBackBufferLinear(target.swap);
     target.hdrColor    = impl_->gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
-    target.depth       = impl_->gfx_->CreateDepthTarget(w, h, gfx::Format::D24_UNORM_S8_UINT);
+    target.depth       = impl_->gfx_->CreateDepthTarget(w, h, impl_->depthStencilFormat_);
     target.width       = w;
     target.height      = h;
 
@@ -922,7 +937,7 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
     }
 
     t.hdrColor = impl_->gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
-    t.depth    = impl_->gfx_->CreateDepthTarget(w, h, gfx::Format::D24_UNORM_S8_UINT);
+    t.depth    = impl_->gfx_->CreateDepthTarget(w, h, impl_->depthStencilFormat_);
     t.width    = w;
     t.height   = h;
 
@@ -1013,6 +1028,7 @@ bool RenderPipeline::CreatePipelines() {
     desc.rasterizer.cull     = CullMode::None;
     desc.rasterizer.frontCCW = true;
 
+    desc.dsvFormat = impl_->depthStencilFormat_;
     desc.rtvFormat = kHdrSceneFormat;
     impl_->linePSOHdr_    = impl_->gfx_->CreateGraphicsPipeline(desc);
 
@@ -1316,6 +1332,7 @@ public:
                                                        matParams, permLocal);
 
             reqLocal.rtvFormat = rs_.Pipeline().SceneTargetFormat();
+            reqLocal.dsvFormat = rs_.Pipeline().impl_->depthStencilFormat_;
             auto pso = rs_.Pipeline().impl_->blsPsoBuilder_->GetOrBuild(reqLocal);
             if (pso == gfx::PipelineHandle::Invalid) return;
             cmd->BindPipeline(pso);
@@ -1609,7 +1626,7 @@ public:
             }
             req.topology  = gfx::PrimitiveTopology::TriangleList;
             req.rtvFormat = RenderPipeline::kHdrSceneFormat;
-            req.dsvFormat = gfx::Format::D24_UNORM_S8_UINT;
+            req.dsvFormat = rs_.Pipeline().impl_->depthStencilFormat_;
             req.lhClipSpace = true;
             auto pso = rs_.Pipeline().impl_->blsPsoBuilder_->GetOrBuild(req);
             if (pso == gfx::PipelineHandle::Invalid) return;

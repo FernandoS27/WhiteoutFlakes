@@ -42,6 +42,7 @@ inline DXGI_FORMAT ToDXGI(Format f) {
 
         case Format::D24_UNORM_S8_UINT:  return DXGI_FORMAT_D24_UNORM_S8_UINT;
         case Format::D32_FLOAT:          return DXGI_FORMAT_D32_FLOAT;
+        case Format::D32_FLOAT_S8_UINT:  return DXGI_FORMAT_D32_FLOAT_S8X24_UINT;
 
         case Format::BC1_UNORM:          return DXGI_FORMAT_BC1_UNORM;
         case Format::BC1_UNORM_SRGB:     return DXGI_FORMAT_BC1_UNORM_SRGB;
@@ -180,6 +181,7 @@ inline DXGI_FORMAT DepthFormatToSrvFormat(Format f) {
     switch (f) {
         case Format::D24_UNORM_S8_UINT: return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
         case Format::D32_FLOAT:         return DXGI_FORMAT_R32_FLOAT;
+        case Format::D32_FLOAT_S8_UINT: return DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS;
         default:                        return ToDXGI(f);
     }
 }
@@ -188,6 +190,7 @@ inline DXGI_FORMAT DepthFormatToTypeless(Format f) {
     switch (f) {
         case Format::D24_UNORM_S8_UINT: return DXGI_FORMAT_R24G8_TYPELESS;
         case Format::D32_FLOAT:         return DXGI_FORMAT_R32_TYPELESS;
+        case Format::D32_FLOAT_S8_UINT: return DXGI_FORMAT_R32G8X24_TYPELESS;
         default:                        return ToDXGI(f);
     }
 }

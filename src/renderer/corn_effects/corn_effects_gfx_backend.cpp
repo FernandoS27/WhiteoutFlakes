@@ -447,6 +447,7 @@ void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::Rende
                                        bls::VertexLayoutKind::CornFx,
                                        mp, perm);
         req.rtvFormat = frame_.rtvFormat;
+        req.dsvFormat = frame_.dsvFormat;
         auto pso = psoBuilder_->GetOrBuild(req);
         if (pso == gfx::PipelineHandle::Invalid) continue;
         cmd->BindPipeline(pso);

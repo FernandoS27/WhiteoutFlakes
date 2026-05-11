@@ -27,6 +27,11 @@ struct RenderPipeline::Impl {
 
     RenderMode frameRenderMode_ = RenderMode::SD;
 
+    // Cached at InitDevice time via Gfx()->PreferredDepthStencilFormat().
+    // Renderer-wide source of truth for the depth-target format and
+    // every PSO's dsvFormat — see RenderPipeline::DepthStencilFormat().
+    gfx::Format depthStencilFormat_ = gfx::Format::D24_UNORM_S8_UINT;
+
     // ---- Line / debug pipelines ----
     gfx::ShaderHandle   lineVS_     = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle   linePS_     = gfx::ShaderHandle::Invalid;

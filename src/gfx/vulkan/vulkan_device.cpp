@@ -768,6 +768,25 @@ bool VulkanDevice::Init(bool enableValidation) {
 
 const char* VulkanDevice::GetDeviceName() const { return deviceName_.c_str(); }
 
+Format VulkanDevice::PreferredDepthStencilFormat() const {
+    auto& s = *state_;
+    auto supported = [&](vk::Format f) {
+        const auto p = s.physicalDevice.getFormatProperties(f);
+        return bool(p.optimalTilingFeatures
+                    & vk::FormatFeatureFlagBits::eDepthStencilAttachment);
+    };
+    // Preference order:
+    //   1. D24_UNORM_S8_UINT  — compact + native on NVIDIA/Intel
+    //   2. D32_SFLOAT_S8_UINT — AMD's only supported depth+stencil on
+    //      Vulkan (D24 is officially unsupported on AMD drivers; this
+    //      is the documented portability fallback).
+    // The Vulkan spec mandates at least one of these is supported.
+    if (supported(vk::Format::eD24UnormS8Uint))   return Format::D24_UNORM_S8_UINT;
+    if (supported(vk::Format::eD32SfloatS8Uint))  return Format::D32_FLOAT_S8_UINT;
+    // Should be unreachable per the spec, but keep the renderer alive.
+    return Format::D32_FLOAT_S8_UINT;
+}
+
 IGFXCommandList* VulkanDevice::GetImmediateContext() { return immediate_.get(); }
 
 // ---- Buffer / texture / shader / pipeline / sampler ----------------------
@@ -1181,8 +1200,10 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc,
     }
 
     const bool isDepth = hasFlag(desc.usage, TextureUsage::DepthStencil);
+    const bool hasStencilAspect = (fmt == vk::Format::eD24UnormS8Uint
+                                || fmt == vk::Format::eD32SfloatS8Uint);
     t.aspect = isDepth ? (vk::ImageAspectFlagBits::eDepth |
-                          (fmt == vk::Format::eD24UnormS8Uint
+                          (hasStencilAspect
                                ? vk::ImageAspectFlagBits::eStencil
                                : vk::ImageAspectFlags{}))
                        : vk::ImageAspectFlags(vk::ImageAspectFlagBits::eColor);
@@ -1338,7 +1359,8 @@ TextureHandle VulkanDevice::CreateDepthTarget(i32 w, i32 h, Format f) {
         return TextureHandle::Invalid;
     }
 
-    const bool hasStencil = (fmt == vk::Format::eD24UnormS8Uint);
+    const bool hasStencil = (fmt == vk::Format::eD24UnormS8Uint
+                          || fmt == vk::Format::eD32SfloatS8Uint);
     t.aspect = vk::ImageAspectFlagBits::eDepth
              | (hasStencil ? vk::ImageAspectFlags(vk::ImageAspectFlagBits::eStencil)
                            : vk::ImageAspectFlags{});

@@ -59,6 +59,15 @@ public:
     const gfx::IGFXDevice* Gfx() const;
     gfx::PipelineHandle    CurrentLinePSO() const;
     gfx::Format            SceneTargetFormat() const;
+    // Depth-stencil format picked at InitDevice time. AMD's Vulkan
+    // driver doesn't expose D24_UNORM_S8_UINT, so the gfx layer
+    // queries each device for the best supported format
+    // (D24_UNORM_S8_UINT preferred → D32_FLOAT_S8_UINT fallback) and
+    // we cache the answer here. Every CreateDepthTarget call and
+    // every PSO `dsvFormat` field in the renderer should plumb this
+    // value through; hard-coding D24_UNORM_S8_UINT will crash on AMD
+    // d3d12 and fail validation on AMD Vulkan.
+    gfx::Format            DepthStencilFormat() const;
     // Render mode snapshot for the in-flight frame. See the comment on
     // `Impl::frameRenderMode_`. Use this anywhere a per-frame decision
     // depends on HD vs SD; reading `Settings().GetRenderMode()` mid-

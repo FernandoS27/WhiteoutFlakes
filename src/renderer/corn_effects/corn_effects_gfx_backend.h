@@ -36,6 +36,7 @@ struct CornEffectsFrameInputs {
     f32                   effectTime   = 0.0f;
     f32                   cornEffectsScale = 100.0f;
     gfx::Format           rtvFormat    = gfx::Format::R11G11B10_FLOAT;
+    gfx::Format           dsvFormat    = gfx::Format::D24_UNORM_S8_UINT;
 };
 
 using TextureResolver = std::function<gfx::TextureHandle(std::string_view path)>;

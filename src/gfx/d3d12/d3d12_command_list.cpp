@@ -97,7 +97,8 @@ void D3D12CommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
 
         D3D12_CLEAR_FLAGS clearFlags = D3D12_CLEAR_FLAG_DEPTH;
         if (depthEntry &&
-            depthEntry->desc.format == Format::D24_UNORM_S8_UINT) {
+            (depthEntry->desc.format == Format::D24_UNORM_S8_UINT ||
+             depthEntry->desc.format == Format::D32_FLOAT_S8_UINT)) {
             clearFlags |= D3D12_CLEAR_FLAG_STENCIL;
         }
         cmd->ClearDepthStencilView(dsv, clearFlags,

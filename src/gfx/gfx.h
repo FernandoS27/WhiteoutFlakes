@@ -101,6 +101,8 @@ public:
 
     virtual GfxApi      GetApi() const = 0;
     virtual const char* GetDeviceName() const = 0;
+
+    virtual Format PreferredDepthStencilFormat() const = 0;
 };
 
 // `enableValidation` turns on the API's debug / validation machinery:

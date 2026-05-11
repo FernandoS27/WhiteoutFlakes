@@ -160,6 +160,7 @@ public:
 
     IGFXCommandList* GetImmediateContext() override;
 
+    Format      PreferredDepthStencilFormat() const override;
     GfxApi      GetApi() const override { return GfxApi::Vulkan; }
     const char* GetDeviceName() const override;
 

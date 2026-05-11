@@ -33,6 +33,7 @@ inline vk::Format ToVkFormat(Format f) {
         case Format::R32G32B32A32_FLOAT:  return vk::Format::eR32G32B32A32Sfloat;
         case Format::D24_UNORM_S8_UINT:   return vk::Format::eD24UnormS8Uint;
         case Format::D32_FLOAT:           return vk::Format::eD32Sfloat;
+        case Format::D32_FLOAT_S8_UINT:   return vk::Format::eD32SfloatS8Uint;
         case Format::BC1_UNORM:           return vk::Format::eBc1RgbaUnormBlock;
         case Format::BC1_UNORM_SRGB:      return vk::Format::eBc1RgbaSrgbBlock;
         case Format::BC2_UNORM:           return vk::Format::eBc2UnormBlock;

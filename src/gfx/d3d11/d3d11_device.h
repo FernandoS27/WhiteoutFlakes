@@ -53,6 +53,7 @@ public:
 
     IGFXCommandList* GetImmediateContext() override;
 
+    Format      PreferredDepthStencilFormat() const override;
     GfxApi      GetApi() const override { return GfxApi::D3D11; }
     const char* GetDeviceName() const override { return deviceName_.c_str(); }
 
