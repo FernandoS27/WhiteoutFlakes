@@ -111,4 +111,15 @@ public:
 std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api,
                                           bool enableValidation = false);
 
+// Set the on-disk path the Vulkan backend uses for its
+// VkPipelineCache blob. Must be called before CreateDevice (or
+// IGFXDevice::Init for backends that ever take that route). Empty
+// path = no persistence; the gfx layer still keeps an in-memory
+// cache so PSO builds within a single run dedupe. The d3d backends
+// ignore it — d3d12 and d3d11 manage their own pipeline state
+// caches at the driver level. Path resolution (exe dir, %APPDATA%,
+// XDG_CACHE_HOME, etc.) is a host concern; gfx never calls
+// GetModuleFileName / readlink / SHGetKnownFolderPath itself.
+void SetPipelineCachePath(const char* utf8Path);
+
 }

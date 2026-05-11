@@ -10,6 +10,7 @@
 #include "settings_ini.h"
 #include "whiteout/flakes/gfx_types.h"
 #include "whiteout/flakes/util/path_utf8.h"
+#include "gfx/gfx.h"
 
 #include <cctype>
 #include <chrono>
@@ -95,6 +96,26 @@ int wmain(int argc, wchar_t* argv[]) {
     // below picks up DefaultBackend when --backend wasn't on the CLI.
     whiteout::flakes::LoadStartupSettingsFromIni(renderer);
     if (!backendFromCli) backend = renderer.Settings().DefaultBackend();
+
+    // Tell the gfx layer where to persist the Vulkan pipeline cache.
+    // Path resolution is host-side so the gfx code stays portable — it
+    // never calls GetModuleFileName / readlink itself. Compute the exe
+    // dir (Win32 here; Linux/macOS hosts would use the equivalent) and
+    // hand it over before Open() spins the render thread.
+    {
+#if defined(_WIN32)
+        wchar_t exe[MAX_PATH] = {};
+        DWORD n = ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        if (n > 0 && n < MAX_PATH) {
+            std::filesystem::path p(exe);
+            p.replace_filename(L"vk_pipeline_cache.bin");
+            const std::string u8 = whiteout::flakes::io::PathToUtf8(p);
+            whiteout::flakes::gfx::SetPipelineCachePath(u8.c_str());
+        }
+#else
+        whiteout::flakes::gfx::SetPipelineCachePath("vk_pipeline_cache.bin");
+#endif
+    }
 
     const char* backendName =
         backend == whiteout::flakes::gfx::GfxApi::D3D11  ? "D3D11"  :

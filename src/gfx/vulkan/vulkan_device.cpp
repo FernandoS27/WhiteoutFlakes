@@ -12,11 +12,72 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <vector>
+
+// Forward-declared in the parent gfx namespace — defined in
+// gfx_factory.cpp. Lets the Vulkan device pick up the host-supplied
+// pipeline-cache path without anyone here calling platform APIs.
+namespace whiteout::flakes::gfx {
+const std::filesystem::path& GetPipelineCachePath();
+}
 
 namespace whiteout::flakes::gfx::vulkan {
 
 // VulkanDeviceState lives in vulkan_resources.h.
+
+void LoadPipelineCache(VulkanDeviceState& s) {
+    // The host hands us a filesystem path through `s.pipelineCachePath`
+    // (typically set by gfx::SetPipelineCachePath before CreateDevice).
+    // Empty path → create an empty in-memory cache; we just don't
+    // persist between runs. The gfx layer stays platform-agnostic and
+    // never touches GetModuleFileName / readlink / etc.
+    std::vector<u8> blob;
+    if (!s.pipelineCachePath.empty()) {
+        std::error_code ec;
+        if (std::filesystem::exists(s.pipelineCachePath, ec) && !ec) {
+            std::ifstream f(s.pipelineCachePath, std::ios::binary);
+            if (f) {
+                f.seekg(0, std::ios::end);
+                const auto sz = static_cast<std::streamsize>(f.tellg());
+                if (sz > 0) {
+                    blob.resize(static_cast<usize>(sz));
+                    f.seekg(0, std::ios::beg);
+                    f.read(reinterpret_cast<char*>(blob.data()), sz);
+                    if (!f) blob.clear();  // partial read — start empty
+                }
+            }
+        }
+    }
+
+    vk::PipelineCacheCreateInfo ci{
+        .initialDataSize = blob.size(),
+        .pInitialData    = blob.empty() ? nullptr : blob.data(),
+    };
+    auto r = s.device.createPipelineCache(ci);
+    if (r.result != vk::Result::eSuccess) {
+        // Driver rejected the rehydrated blob (UUID mismatch — e.g.
+        // driver update). Retry empty so we at least warm the cache
+        // during this run.
+        ci.initialDataSize = 0;
+        ci.pInitialData    = nullptr;
+        r = s.device.createPipelineCache(ci);
+    }
+    if (r.result == vk::Result::eSuccess) {
+        s.pipelineCache = std::move(r.value);
+    }
+}
+
+void SavePipelineCache(VulkanDeviceState& s) {
+    if (!*s.pipelineCache || s.pipelineCachePath.empty()) return;
+    auto [r, blob] = s.pipelineCache.getData();
+    if (r != vk::Result::eSuccess || blob.empty()) return;
+    std::ofstream f(s.pipelineCachePath, std::ios::binary | std::ios::trunc);
+    if (!f) return;
+    f.write(reinterpret_cast<const char*>(blob.data()),
+            static_cast<std::streamsize>(blob.size()));
+}
 
 namespace {
 
@@ -119,6 +180,10 @@ VulkanDevice::~VulkanDevice() {
     auto& s = *state_;
     if (*s.device) {
         s.device.waitIdle();
+        // Persist the warmed-up pipeline cache before we tear the
+        // device down. waitIdle above ensures no in-flight pipeline
+        // build is still touching the cache.
+        SavePipelineCache(s);
     }
 
     // Run every queued deleter — after waitIdle, all timeline values
@@ -235,6 +300,15 @@ bool VulkanDevice::Init(bool enableValidation) {
         // — pairs with VkImageFormatListCreateInfo so a single swap-
         // chain image can have both sRGB and linear views.
         VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME,
+        // Push descriptors: lets FlushDescriptors record bindings into
+        // the command buffer directly via vkCmdPushDescriptorSetKHR
+        // instead of allocating + updating + binding a fresh
+        // VkDescriptorSet from a per-frame pool on every draw. The
+        // extension shipped in 2016 and is in core 1.4; every driver
+        // we target (NVIDIA Maxwell+, AMD GCN+, Intel Skylake+, MoltenVK)
+        // exposes it, so we make it a hard requirement rather than a
+        // runtime opt-in.
+        VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
     };
 
     i32 bestScore = -1;
@@ -352,7 +426,22 @@ bool VulkanDevice::Init(bool enableValidation) {
                     .stageFlags      = bothStages,
                 });
             }
+            // PUSH_DESCRIPTOR_BIT_KHR makes the set eligible for
+            // vkCmdPushDescriptorSetKHR (no allocation, no
+            // vkUpdateDescriptorSets, just inline writes into the
+            // command buffer). Vulkan caps it to ONE push set per
+            // pipeline layout (VUID-VkPipelineLayoutCreateInfo-
+            // pSetLayouts-00293), and our CB set is the hot one — it
+            // gets rewritten on every Bind because of the per-frame
+            // ring-buffer offset, while SRVs and samplers only flip
+            // when the renderer actually changes the bound texture/
+            // sampler. So set 0 is push; sets 1/2 stay on the pool.
+            const auto flags = (&outLayout == &s.cbSetLayout)
+                ? vk::DescriptorSetLayoutCreateFlags(
+                      vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR)
+                : vk::DescriptorSetLayoutCreateFlags{};
             auto r = s.device.createDescriptorSetLayout({
+                .flags        = flags,
                 .bindingCount = static_cast<u32>(bindings.size()),
                 .pBindings    = bindings.data(),
             });
@@ -387,6 +476,16 @@ bool VulkanDevice::Init(bool enableValidation) {
         }
         s.pipelineLayout = std::move(plR.value);
     }
+
+    // ---- 5b. Pipeline cache (rehydrated from disk) -----------------------
+    // Persist the driver pipeline cache across runs. The blob carries a
+    // driver/device UUID prefix; if the user upgrades their driver or
+    // moves the .ini between machines the driver rejects the stale blob
+    // and we start with an empty cache, so we don't need any validation
+    // here. Path resolution is a host concern (see
+    // gfx::SetPipelineCachePath in gfx_factory.cpp).
+    s.pipelineCachePath = gfx::GetPipelineCachePath();
+    LoadPipelineCache(s);
 
     // ---- 6. Timeline semaphore (deferred-delete tracking) ----------------
     // Submit signals `timelineSem` at `nextSubmitValue` (a monotonic
@@ -443,22 +542,18 @@ bool VulkanDevice::Init(bool enableValidation) {
         }
         f.inFlightFence = std::move(fenceR.value);
 
-        // Transient descriptor pool — reset (not freed) at the top of
-        // each frame in EnsureRecording. Sized for the worst case the
-        // BLS catalog can throw at us: thousands of geosets per frame
-        // with one set allocation per (CB / SRV / Sampler) per draw.
-        // Pool exhaustion → vkAllocateDescriptorSets returns
-        // OutOfPoolMemory and the draw silently skips; the values here
-        // give comfortable headroom on a busy MDX scene.
-        constexpr u32 kMaxSetsPerFrame      = 4096;
-        constexpr u32 kMaxCbsPerFrame       = 4096 * kCbBindingCount;
-        constexpr u32 kMaxSrvsPerFrame      = 4096 * kSrvBindingCount;
-        constexpr u32 kMaxSamplersPerFrame  = 4096 * kSamplerBindingCount;
-        const std::array<vk::DescriptorPoolSize, 3> poolSizes = {
-            vk::DescriptorPoolSize{
-                .type = vk::DescriptorType::eUniformBuffer,
-                .descriptorCount = kMaxCbsPerFrame,
-            },
+        // Transient descriptor pool for the SRV + sampler sets (the CB
+        // set is on push descriptors, see the layout-flags logic in
+        // section 5). Sized for the worst case our BLS catalog throws
+        // at us — a busy frame with thousands of geosets, two sets per
+        // draw (SRV + Sampler). Pool reset at frame start frees every
+        // set in one shot.
+        constexpr u32 kSetsPerDraw          = 2;  // SRV + Sampler
+        constexpr u32 kMaxDrawsPerFrame     = 4096;
+        constexpr u32 kMaxSetsPerFrame      = kMaxDrawsPerFrame * kSetsPerDraw;
+        constexpr u32 kMaxSrvsPerFrame      = kMaxDrawsPerFrame * kSrvBindingCount;
+        constexpr u32 kMaxSamplersPerFrame  = kMaxDrawsPerFrame * kSamplerBindingCount;
+        const std::array<vk::DescriptorPoolSize, 2> poolSizes = {
             vk::DescriptorPoolSize{
                 .type = vk::DescriptorType::eSampledImage,
                 .descriptorCount = kMaxSrvsPerFrame,
@@ -469,7 +564,7 @@ bool VulkanDevice::Init(bool enableValidation) {
             },
         };
         auto poolR2 = s.device.createDescriptorPool({
-            .maxSets       = kMaxSetsPerFrame * 3,  // 3 sets per flush worst case
+            .maxSets       = kMaxSetsPerFrame,
             .poolSizeCount = static_cast<u32>(poolSizes.size()),
             .pPoolSizes    = poolSizes.data(),
         });
@@ -1207,7 +1302,12 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         .layout              = *s.pipelineLayout,
     };
 
-    auto pR = s.device.createGraphicsPipeline(nullptr, gpci);
+    // vk::raii API takes the raii pipeline cache via vk::Optional. The
+    // raii::PipelineCache implicitly converts when non-null; the
+    // condition guards the case where load+create both failed at Init.
+    auto pR = *s.pipelineCache
+        ? s.device.createGraphicsPipeline(s.pipelineCache, gpci)
+        : s.device.createGraphicsPipeline(nullptr,         gpci);
     if (pR.result != vk::Result::eSuccess) {
         std::fprintf(stderr, "[vk] createGraphicsPipeline failed (%s)\n",
                      vk::to_string(pR.result).c_str());

@@ -33,6 +33,7 @@
 #include <vk_mem_alloc.h>
 
 #include <array>
+#include <filesystem>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -115,11 +116,10 @@ struct FrameContext {
     vk::raii::CommandPool   commandPool      = nullptr;
     vk::raii::CommandBuffer commandBuffer    = nullptr;
     vk::raii::Fence         inFlightFence    = nullptr;
-    // Per-frame transient descriptor pool. Reset at frame start; refilled
-    // every flush by allocating one set per (CB / SRV / Sampler) layout.
-    // The renderer issues many draws per frame and our Bind* surface
-    // updates the full set on every transition, so we pre-size the pool
-    // for thousands of allocations and never recover individual sets.
+    // SRV + sampler descriptor sets are still pool-allocated per draw
+    // (only the CB set is on push descriptors — Vulkan only allows one
+    // push set per pipeline layout). Pool reset at frame start; sets
+    // are owned by the pool so we never call vkFreeDescriptorSets.
     vk::raii::DescriptorPool descriptorPool  = nullptr;
     // Set by AcquireSwapChainImageIfNeeded — point at the per-image
     // acquire / render-done semaphores inside the SwapChainEntry. Used
@@ -238,6 +238,19 @@ struct VulkanDeviceState {
     vk::raii::DescriptorSetLayout    srvSetLayout      = nullptr;
     vk::raii::DescriptorSetLayout    samplerSetLayout  = nullptr;
     vk::raii::PipelineLayout         pipelineLayout    = nullptr;
+
+    // Driver pipeline cache, serialized to disk on Shutdown and rehydrated
+    // on the next Init. Vulkan stores a driver/device UUID prefix in the
+    // blob — if it mismatches (driver update, different GPU), the driver
+    // rejects the load on its own and we start with an empty cache, so
+    // we don't have to validate.
+    vk::raii::PipelineCache          pipelineCache  = nullptr;
+    // Filesystem path for the pipeline-cache blob, supplied by the host
+    // via gfx::SetPipelineCachePath before CreateDevice. Empty (the
+    // default) means "no persistence" — we still build a runtime cache,
+    // we just don't load/save it. The gfx layer never resolves paths
+    // on its own; finding the right directory is a host concern.
+    std::filesystem::path            pipelineCachePath;
 
     // Timeline semaphore + deferred-delete queue. The submit signals
     // `timelineSem` at `nextSubmitValue` then increments it; Destroy()

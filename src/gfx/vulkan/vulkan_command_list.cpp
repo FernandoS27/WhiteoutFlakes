@@ -60,11 +60,10 @@ void EnsureRecording(VulkanDeviceState& s, FrameContext& frame) {
     // value the GPU has caught up to. Cheap: just queries one counter
     // and walks the list.
     DrainPendingDeletes(s);
-    // Reset the transient descriptor pool — every set allocated during
-    // the previous frame is freed in one shot. Sets are owned by the
-    // pool, so we don't need to track individual handles. NOTE: the
-    // raii DescriptorPool::reset(flags) call wraps vkResetDescriptorPool
-    // (it does NOT destroy the pool object — that's the destructor).
+    // Reset the SRV/sampler descriptor pool — the CB set is push-
+    // descriptor (no allocation, lives in the command buffer) so the
+    // pool only carries the two non-push sets. vkResetDescriptorPool
+    // frees every set allocated in the previous frame in one shot.
     frame.descriptorPool.reset(vk::DescriptorPoolResetFlags{});
     frame.commandBuffer.reset({});
     (void)frame.commandBuffer.begin({
@@ -379,17 +378,53 @@ void VulkanCommandList::FlushDescriptors() {
     auto& s     = device_.State();
     auto& frame = s.frames[s.frameIndex];
 
-    // Each resource class lives in its own descriptor set (set 0 = CBs,
-    // set 1 = SRVs, set 2 = samplers). Per draw we allocate one set
-    // from the per-frame transient pool, write its full binding range,
-    // then bind it. Pool resets in EnsureRecording free everything in
-    // one shot at frame start.
+    // Mixed-mode descriptors:
+    //   • set 0 (CBs)      — push descriptors. The CB set rewrites on
+    //                         every Bind because of the per-frame ring
+    //                         offset, so pushing inline beats alloc+
+    //                         update+bind from a pool.
+    //   • set 1 (SRVs)     — pool-allocated per Flush. Vulkan caps
+    //   • set 2 (Samplers) — pool-allocated per Flush. push sets to
+    //                         one per pipeline layout, so the lower-
+    //                         churn sets stay on the pool path.
+
+    // ---- Set 0: CBs (push descriptors, no allocation) ----
+    {
+        std::array<vk::DescriptorBufferInfo, kCbBindingCount> infos{};
+        std::array<vk::WriteDescriptorSet,   kCbBindingCount> writes{};
+        u32 count = 0;
+        for (u32 i = 0; i < pendingCBs_.size() && i < kCbBindingCount; ++i) {
+            pendingCBs_[i].dirty = false;
+            auto* b = s.buffers.Get(static_cast<u64>(pendingCBs_[i].buffer));
+            if (!b) continue;
+            infos[count] = vk::DescriptorBufferInfo{
+                .buffer = vk::Buffer(b->buffer),
+                .offset = pendingCBs_[i].offset,
+                .range  = b->slotCount > 1 ? b->desc.size : VK_WHOLE_SIZE,
+            };
+            writes[count] = vk::WriteDescriptorSet{
+                // dstSet is ignored by vkCmdPushDescriptorSetKHR.
+                .dstBinding      = i,
+                .descriptorCount = 1,
+                .descriptorType  = vk::DescriptorType::eUniformBuffer,
+                .pBufferInfo     = &infos[count],
+            };
+            ++count;
+        }
+        if (count > 0) {
+            frame.commandBuffer.pushDescriptorSetKHR(
+                vk::PipelineBindPoint::eGraphics,
+                *s.pipelineLayout,
+                kCbSetIndex,
+                vk::ArrayProxy<const vk::WriteDescriptorSet>{ count, writes.data() });
+        }
+    }
+
+    // ---- Sets 1 & 2: pool-allocated path ----------------------------
     // Bypass the raii allocateDescriptorSets() — its raii::DescriptorSet
     // destructor calls vkFreeDescriptorSets, which is illegal on pools
-    // created without VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
-    // (we rely on whole-pool reset at frame start instead). Going through
-    // the C API skips the destructor and returns a raw VkDescriptorSet
-    // whose lifetime is owned by the pool.
+    // created without FREE_DESCRIPTOR_SET_BIT (we whole-pool reset at
+    // frame start instead).
     auto allocSet = [&](VkDescriptorSetLayout layout) -> VkDescriptorSet {
         VkDescriptorSetAllocateInfo ai{
             .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -404,43 +439,7 @@ void VulkanCommandList::FlushDescriptors() {
         return set;
     };
 
-    std::array<VkDescriptorSet, 3> setsToBind{ VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
-    bool anyBound = false;
-
-    // ---- Set 0: CBs ----
-    {
-        std::array<vk::DescriptorBufferInfo, kCbBindingCount> infos{};
-        std::array<vk::WriteDescriptorSet,   kCbBindingCount> writes{};
-        u32 count = 0;
-        VkDescriptorSet set = allocSet(*s.cbSetLayout);
-        if (set != VK_NULL_HANDLE) {
-            for (u32 i = 0; i < pendingCBs_.size() && i < kCbBindingCount; ++i) {
-                pendingCBs_[i].dirty = false;
-                auto* b = s.buffers.Get(static_cast<u64>(pendingCBs_[i].buffer));
-                if (!b) continue;
-                infos[count] = vk::DescriptorBufferInfo{
-                    .buffer = vk::Buffer(b->buffer),
-                    .offset = pendingCBs_[i].offset,
-                    .range  = b->slotCount > 1 ? b->desc.size : VK_WHOLE_SIZE,
-                };
-                writes[count] = vk::WriteDescriptorSet{
-                    .dstSet          = vk::DescriptorSet(set),
-                    .dstBinding      = i,
-                    .descriptorCount = 1,
-                    .descriptorType  = vk::DescriptorType::eUniformBuffer,
-                    .pBufferInfo     = &infos[count],
-                };
-                ++count;
-            }
-            if (count > 0) {
-                s.device.updateDescriptorSets(
-                    vk::ArrayProxy<const vk::WriteDescriptorSet>{ count, writes.data() },
-                    nullptr);
-            }
-            setsToBind[kCbSetIndex] = set;
-            anyBound = true;
-        }
-    }
+    std::array<VkDescriptorSet, 2> setsToBind{ VK_NULL_HANDLE, VK_NULL_HANDLE };
 
     // ---- Set 1: SRVs ----
     {
@@ -471,8 +470,7 @@ void VulkanCommandList::FlushDescriptors() {
                     vk::ArrayProxy<const vk::WriteDescriptorSet>{ count, writes.data() },
                     nullptr);
             }
-            setsToBind[kSrvSetIndex] = set;
-            anyBound = true;
+            setsToBind[0] = set;
         }
     }
 
@@ -504,20 +502,20 @@ void VulkanCommandList::FlushDescriptors() {
                     vk::ArrayProxy<const vk::WriteDescriptorSet>{ count, writes.data() },
                     nullptr);
             }
-            setsToBind[kSamplerSetIndex] = set;
-            anyBound = true;
+            setsToBind[1] = set;
         }
     }
 
-    if (anyBound) {
-        // bindDescriptorSets requires every set in [firstSet, firstSet+N)
-        // be valid — sets allocated above default to fully-valid even
-        // when no writes were issued (descriptors are uninitialised but
-        // unused by the bound shader stages).
+    // bindDescriptorSets binds [firstSet, firstSet+N) so we issue the
+    // SRV + sampler pair starting at set 1. The CB set (0) was already
+    // recorded via pushDescriptorSetKHR above. Sets allocated above
+    // default to fully-valid even when no writes were issued
+    // (descriptors are uninitialised but unused by the bound stages).
+    if (setsToBind[0] || setsToBind[1]) {
         frame.commandBuffer.bindDescriptorSets(
             vk::PipelineBindPoint::eGraphics,
             *s.pipelineLayout,
-            /*firstSet*/ 0,
+            /*firstSet*/ kSrvSetIndex,
             vk::ArrayProxy<const vk::DescriptorSet>{
                 static_cast<u32>(setsToBind.size()),
                 reinterpret_cast<const vk::DescriptorSet*>(setsToBind.data()) },

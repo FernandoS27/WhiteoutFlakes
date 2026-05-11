@@ -6,9 +6,32 @@
 #include "gfx/vulkan/vulkan_device.h"
 #endif
 
+#include <filesystem>
 #include <stdexcept>
+#include <string>
 
 namespace whiteout::flakes::gfx {
+
+namespace {
+// Host-provided path the Vulkan backend uses for its VkPipelineCache.
+// Stored module-scope rather than passed through CreateDevice so the
+// d3d11 / d3d12 paths (which don't use it) stay unchanged. The Vulkan
+// device reads it in Init via GetPipelineCachePath().
+std::filesystem::path g_pipelineCachePath;
+}  // namespace
+
+void SetPipelineCachePath(const char* utf8Path) {
+    if (!utf8Path || !*utf8Path) {
+        g_pipelineCachePath.clear();
+        return;
+    }
+    g_pipelineCachePath =
+        std::filesystem::path(reinterpret_cast<const char8_t*>(utf8Path));
+}
+
+const std::filesystem::path& GetPipelineCachePath() {
+    return g_pipelineCachePath;
+}
 
 std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api, bool enableValidation) {
     switch (api) {
