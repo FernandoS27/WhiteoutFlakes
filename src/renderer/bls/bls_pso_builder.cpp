@@ -1,5 +1,7 @@
 #include "bls_pso_builder.h"
 
+#include "bls_pso_trace.h"
+
 #include <array>
 #include <cstddef>
 
@@ -219,6 +221,11 @@ gfx::PipelineHandle BlsPsoBuilder::GetOrBuild(const PsoRequest& request) {
     gfx::PipelineHandle pso = device_->CreateGraphicsPipeline(desc);
     if (pso != gfx::PipelineHandle::Invalid) {
         cache_.emplace(key, pso);
+        // Forward to the trace recorder (if attached) so the next run
+        // can pre-warm this same PSO before the first draw. Trace
+        // dedupes against keys it already loaded from disk, so we don't
+        // need to gate this beyond the cache miss above.
+        if (trace_) trace_->Record(request);
     }
     return pso;
 }

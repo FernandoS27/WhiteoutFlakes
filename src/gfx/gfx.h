@@ -3,6 +3,7 @@
 #include "whiteout/flakes/types.h"
 #include "whiteout/flakes/gfx_types.h"
 #include "gfx/gfx_pipeline_types.h"
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -125,6 +126,13 @@ std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api,
 // XDG_CACHE_HOME, etc.) is a host concern; gfx never calls
 // GetModuleFileName / readlink / SHGetKnownFolderPath itself.
 void SetPipelineCachePath(const char* utf8Path);
+
+// Read back the path previously set via SetPipelineCachePath. Used by
+// renderer-level callers that want to put their own per-run state
+// (e.g. the BLS PSO-trace file) next to the gfx pipeline cache so
+// everything device-related lives in one host-controlled directory.
+// Returns an empty path if SetPipelineCachePath was never called.
+const std::filesystem::path& GetPipelineCachePath();
 
 // Enumerate the physical devices a given backend can present to the
 // host. Used by Settings UIs to populate a "preferred device" picker.

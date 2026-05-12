@@ -8,6 +8,7 @@ namespace whiteout::flakes::renderer::bls {
     class BlsShaderCache;
     class BlsProgramCatalog;
     class BlsPsoBuilder;
+    class BlsPsoTrace;
     struct BlsProgram;
     struct BlsShader;
 }
@@ -50,6 +51,13 @@ struct RenderPipeline::Impl {
     std::unique_ptr<bls::BlsShaderCache>    blsShaderCache_;
     std::unique_ptr<bls::BlsProgramCatalog> blsPrograms_;
     std::unique_ptr<bls::BlsPsoBuilder>     blsPsoBuilder_;
+    // Pre-warm trace: records PsoRequest keys built this run, replays
+    // them on the next run before the first draw. Sits behind the
+    // builder; ctor of the trace loads any saved keys from disk, the
+    // renderer calls Replay() once all BLS programs are loaded, and
+    // the builder forwards every cache miss into Record(). See
+    // RenderPipeline::InitBlsShaders.
+    std::unique_ptr<bls::BlsPsoTrace>       blsPsoTrace_;
     const bls::BlsProgram*                  blsSdProgram_      = nullptr;
     const bls::BlsProgram*                  blsSdOnHdProgram_  = nullptr;
     const bls::BlsProgram*                  blsHdProgram_      = nullptr;

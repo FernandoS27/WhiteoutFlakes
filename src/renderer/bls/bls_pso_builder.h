@@ -49,6 +49,8 @@ struct PsoRequest {
     bool                   lhClipSpace = false;
 };
 
+class BlsPsoTrace;
+
 class BlsPsoBuilder {
 public:
     explicit BlsPsoBuilder(gfx::IGFXDevice* device);
@@ -58,9 +60,15 @@ public:
 
     void Clear();
 
+    // Attach a trace recorder. Every cache miss in GetOrBuild forwards
+    // its PsoRequest to the trace so the on-disk file can replay the
+    // same keys on the next run's pre-warm. Pass nullptr to detach.
+    void SetTrace(BlsPsoTrace* trace) { trace_ = trace; }
+
 private:
     gfx::IGFXDevice*                              device_ = nullptr;
     std::unordered_map<u64, gfx::PipelineHandle>  cache_;
+    BlsPsoTrace*                                  trace_ = nullptr;
 };
 
 }

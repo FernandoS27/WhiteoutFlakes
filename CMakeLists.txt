@@ -482,6 +482,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/bls/bls_permuter.cpp
     src/renderer/bls/bls_program.cpp
     src/renderer/bls/bls_pso_builder.cpp
+    src/renderer/bls/bls_pso_trace.cpp
     src/renderer/bls/bls_mat_params.cpp
     src/renderer/bls/bls_frame.cpp
     src/renderer/bls/bls_draw_helpers.cpp

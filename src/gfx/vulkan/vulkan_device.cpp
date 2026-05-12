@@ -61,11 +61,32 @@ std::vector<std::string> EnumerateAdapterNames() {
 // VulkanDeviceState lives in vulkan_resources.h.
 
 void LoadPipelineCache(VulkanDeviceState& s) {
-    // The host hands us a filesystem path through `s.pipelineCachePath`
+    // The host hands us a base filesystem path through `s.pipelineCachePath`
     // (typically set by gfx::SetPipelineCachePath before CreateDevice).
     // Empty path → create an empty in-memory cache; we just don't
     // persist between runs. The gfx layer stays platform-agnostic and
     // never touches GetModuleFileName / readlink / etc.
+    //
+    // The blob carries a driver/device UUID prefix that the loader
+    // validates on rehydrate. Sharing a single file across GPUs means
+    // every device switch invalidates the cache, so we derive a per-
+    // device filename from VkPhysicalDeviceProperties::pipelineCacheUUID:
+    //   <basePath without ext>.<uuid_hex>.<basePath ext>
+    // The derived path is written back into `pipelineCachePath` so
+    // SavePipelineCache writes to the same per-device file.
+    if (!s.pipelineCachePath.empty() && *s.physicalDevice) {
+        const auto props = s.physicalDevice.getProperties();
+        char uuidHex[33] = {};
+        for (int i = 0; i < VK_UUID_SIZE; ++i) {
+            std::snprintf(uuidHex + i * 2, 3, "%02x", props.pipelineCacheUUID[i]);
+        }
+        auto base = s.pipelineCachePath;
+        const auto stem = base.stem();
+        const auto ext  = base.extension();
+        s.pipelineCachePath = base.parent_path()
+            / (stem.string() + "." + uuidHex + ext.string());
+    }
+
     std::vector<u8> blob;
     if (!s.pipelineCachePath.empty()) {
         std::error_code ec;

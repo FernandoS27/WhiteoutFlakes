@@ -29,6 +29,7 @@
 #include "bls/bls_shader_cache.h"
 #include "bls/bls_program.h"
 #include "bls/bls_pso_builder.h"
+#include "bls/bls_pso_trace.h"
 #include "bls/bls_mat_params.h"
 #include "bls/bls_cb_layout.h"
 #include "bls/bls_frame.h"
@@ -562,6 +563,20 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     impl_->blsPrograms_    = std::make_unique<bls::BlsProgramCatalog>(impl_->blsShaderCache_.get());
     impl_->blsPsoBuilder_  = std::make_unique<bls::BlsPsoBuilder>(impl_->gfx_.get());
 
+    // PSO pre-warm trace: load keys saved by previous runs, attach the
+    // recorder so every cache-missed PSO during this run gets logged.
+    // Trace file lives next to the host-provided gfx pipeline cache
+    // (or empty/in-memory-only if the host didn't set one).
+    {
+        std::filesystem::path tracePath;
+        const auto& pipelineCachePath = gfx::GetPipelineCachePath();
+        if (!pipelineCachePath.empty()) {
+            tracePath = pipelineCachePath.parent_path() / "pso_trace.bin";
+        }
+        impl_->blsPsoTrace_ = std::make_unique<bls::BlsPsoTrace>(tracePath);
+        impl_->blsPsoBuilder_->SetTrace(impl_->blsPsoTrace_.get());
+    }
+
     impl_->blsSdProgram_ = impl_->blsPrograms_->Load({
         bls::GxShaderID::SD, "SD_HighSpec", "SD"
     });
@@ -751,6 +766,22 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
         && impl_->blsTonemapPs_     != nullptr
         && impl_->tonemapPSO_       != gfx::PipelineHandle::Invalid;
 
+    // Replay the saved PSO trace now that every BLS program is loaded
+    // and the shadow / tonemap PSOs are built. This pre-warms the
+    // pipeline cache with every key the previous run actually touched
+    // before any draw fires, so the first frame doesn't stutter on
+    // first-encounter PSO compiles. Entries whose program index or
+    // permute index don't resolve (e.g. shaders recompiled with a
+    // different perm count) silently no-op.
+    if (ok && impl_->blsPsoTrace_ && impl_->blsPsoBuilder_) {
+        const auto n = impl_->blsPsoTrace_->EntryCount();
+        if (n > 0) {
+            std::fprintf(stderr, "[bls] pso-trace: replaying %zu PSOs\n", n);
+            impl_->blsPsoTrace_->Replay(*impl_->blsPsoBuilder_,
+                                         *impl_->blsPrograms_);
+        }
+    }
+
     if (!ok) {
         std::fprintf(stderr,
             "[bls] InitBlsShaders incomplete: "
@@ -890,10 +921,16 @@ void RenderPipeline::ShutdownBlsShaders() {
         }
         impl_->iblDayNightLoaded_ = false;
     }
+    // Flush the PSO trace before tearing the builder down — Save()
+    // is a no-op if nothing changed this run. Detach first so the
+    // builder's Clear() can't append more keys mid-shutdown.
+    if (impl_->blsPsoBuilder_)  impl_->blsPsoBuilder_->SetTrace(nullptr);
+    if (impl_->blsPsoTrace_)    impl_->blsPsoTrace_->Save();
     if (impl_->blsPsoBuilder_)  impl_->blsPsoBuilder_->Clear();
     if (impl_->blsPrograms_)    impl_->blsPrograms_->Clear();
     if (impl_->blsShaderCache_) impl_->blsShaderCache_->ReleaseAll();
     impl_->blsPsoBuilder_.reset();
+    impl_->blsPsoTrace_.reset();
     impl_->blsPrograms_.reset();
     impl_->blsShaderCache_.reset();
 }
