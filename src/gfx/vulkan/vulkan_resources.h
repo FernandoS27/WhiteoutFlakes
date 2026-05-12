@@ -40,11 +40,20 @@
 #include <filesystem>
 #include <memory>
 #include <utility>
+#include <deque>
 #include <vector>
 
 namespace whiteout::flakes::gfx::vulkan {
 
-inline constexpr u32 kFramesInFlight = 2;
+// Number of frames the host can have queued on the GPU before
+// vkWaitForFences in EnsureRecording stalls. 3 trades one extra
+// frame of input latency (~6 ms at 165 Hz) for additional CPU/GPU
+// pipelining headroom — useful when a heavy frame's GPU work runs
+// long and the host wants to start recording the next frame anyway.
+// Don't go higher without thinking about per-actor bone-palette CB
+// memory: that ring uses ringSlotsHint=4 which already exceeds
+// kFramesInFlight=3.
+inline constexpr u32 kFramesInFlight = 3;
 
 // CpuWritable buffers (constant buffers, dynamic vertex buffers) back
 // onto a ring of `slotCount` slots, each `slotStride` bytes. MapBuffer
@@ -259,17 +268,25 @@ struct VulkanDeviceState {
     // `pendingDeletes` (which is keyed on the graphics timeline) but
     // exists so staging buffers + transfer-side command buffers can
     // be cleaned up promptly without needing to ride a graphics submit.
-    std::vector<PendingDelete>       pendingTransferDeletes;
+    std::deque<PendingDelete>        pendingTransferDeletes;
 
     // Cached at Init() time from VkPhysicalDeviceProperties. Drives the
     // slot-stride alignment used by the per-CB ring buffer in
     // CreateBuffer / MapBuffer (CpuWritable path).
     u64                              minUniformBufferAlign = 256;
-    // Number of ring slots per CpuWritable buffer. The renderer can
+    // Default ring slots per CpuWritable buffer when the caller
+    // doesn't pass a BufferDesc::ringSlotsHint. The renderer can
     // update a single CB up to this many times per frame before the
     // ring wraps; with 2 frames in flight, slots N/2..N-1 belong to
     // last frame's GPU reads, so we need at least
-    // (max_updates_per_frame * kFramesInFlight) slots. 256 is generous.
+    // (max_updates_per_frame * kFramesInFlight) slots.
+    //
+    // 256 is enough for cold CBs but the BLS frame-uniform CBs
+    // (HdVsCb/HdPsCb/...) get mapped once per draw and modern scenes
+    // exceed 1000 draws/frame; those callsites pass an explicit
+    // ringSlotsHint instead of relying on this default. 256 stays as
+    // a per-instance-friendly default so per-actor CBs (mapped once
+    // per actor per frame) don't blow per-instance memory.
     static constexpr u32             kCbRingSlots         = 256;
 
     // Shared backing buffer for every CpuWritable CreateBuffer. The
@@ -285,7 +302,7 @@ struct VulkanDeviceState {
     // monotonic allocator is plenty. If the cursor overflows
     // `sharedCbCapacity`, CreateBuffer falls back to a per-CB VMA
     // allocation so we never hard-fail.
-    static constexpr u64             kSharedCbCapacity    = 16ull * 1024 * 1024;
+    static constexpr u64             kSharedCbCapacity    = 64ull * 1024 * 1024;
     VkBuffer                         sharedCbBuffer       = VK_NULL_HANDLE;
     VmaAllocation                    sharedCbAllocation   = VK_NULL_HANDLE;
     void*                            sharedCbMapped       = nullptr;
@@ -323,7 +340,7 @@ struct VulkanDeviceState {
     // automatically once the GPU reaches that point.
     vk::raii::Semaphore        timelineSem    = nullptr;
     u64                        nextSubmitValue = 1;
-    std::vector<PendingDelete> pendingDeletes;
+    std::deque<PendingDelete>  pendingDeletes;
 
     SlotMap<BufferEntry>    buffers;
     SlotMap<TextureEntry>   textures;

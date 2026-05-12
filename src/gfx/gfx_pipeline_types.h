@@ -62,6 +62,17 @@ struct BufferDesc {
     u64    size          = 0;
     u32    elementStride = 0;
     BufferUsage usage         = BufferUsage::None;
+
+    // Hint: number of CB-ring slots the Vulkan backend should reserve
+    // for CpuWritable+Constant buffers. The ring wraps when a buffer
+    // gets mapped this many times in a row, so it must be at least
+    // (max_maps_per_frame * kFramesInFlight) for buffers mapped many
+    // times per frame (BLS HdVsCb / HdPsCb / etc — hundreds of draws).
+    // For buffers mapped once per frame per instance (per-actor bone
+    // palette, etc.), kFramesInFlight is enough; setting a small hint
+    // saves the per-instance memory blow-up. 0 = use backend default.
+    // Ignored by the d3d backends (they manage their own upload ring).
+    u32    ringSlotsHint = 0;
 };
 
 struct TextureDesc {

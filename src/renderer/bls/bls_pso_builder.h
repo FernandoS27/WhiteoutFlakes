@@ -51,6 +51,21 @@ struct PsoRequest {
 
 class BlsPsoTrace;
 
+// Cumulative counters per session. Useful for confirming the trace
+// replay actually pre-warmed every PSO the runtime needs:
+//   replayCacheBuilds : PSOs built during BlsPsoTrace::Replay (startup)
+//   runtimeCacheBuilds: PSOs built during a normal GetOrBuild call
+//                       (i.e. cache misses outside the replay path —
+//                       every one of these is a potential mid-frame
+//                       stutter from a synchronous driver pipeline
+//                       compile).
+//   cacheHits         : GetOrBuild calls that hit the in-memory cache.
+struct BlsPsoBuilderStats {
+    u64 replayCacheBuilds  = 0;
+    u64 runtimeCacheBuilds = 0;
+    u64 cacheHits          = 0;
+};
+
 class BlsPsoBuilder {
 public:
     explicit BlsPsoBuilder(gfx::IGFXDevice* device);
@@ -65,10 +80,20 @@ public:
     // same keys on the next run's pre-warm. Pass nullptr to detach.
     void SetTrace(BlsPsoTrace* trace) { trace_ = trace; }
 
+    // The trace's Replay() phase calls GetOrBuild from a "warmup"
+    // context. Toggle these around it so the counters attribute builds
+    // correctly. When `inReplay_` is true, cache misses are recorded
+    // under replayCacheBuilds; otherwise under runtimeCacheBuilds.
+    void SetReplayMode(bool on) { inReplay_ = on; }
+
+    const BlsPsoBuilderStats& Stats() const { return stats_; }
+
 private:
     gfx::IGFXDevice*                              device_ = nullptr;
     std::unordered_map<u64, gfx::PipelineHandle>  cache_;
     BlsPsoTrace*                                  trace_ = nullptr;
+    BlsPsoBuilderStats                            stats_{};
+    bool                                          inReplay_ = false;
 };
 
 }

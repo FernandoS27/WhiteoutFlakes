@@ -156,8 +156,9 @@ bool RenderPipeline::RenderParticlesBls() {
         impl_->gfx_->Destroy(impl_->particleServiceVB_);
         i32 newSize = (std::max)(vertCount, 4096);
         gfx::BufferDesc bd;
-        bd.size  = (u32)(sizeof(Vertex) * newSize);
-        bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
+        bd.size          = (u32)(sizeof(Vertex) * newSize);
+        bd.usage         = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
+        bd.ringSlotsHint = 4;  // mapped once per frame
         impl_->particleServiceVB_     = impl_->gfx_->CreateBuffer(bd);
         impl_->particleServiceVBSize_ = newSize;
     }
@@ -270,8 +271,9 @@ bool RenderPipeline::RenderSplatsBls() {
         impl_->gfx_->Destroy(impl_->splatServiceVB_);
         i32 newSize = (std::max)(vertCount, 4096);
         gfx::BufferDesc bd;
-        bd.size  = (u32)(sizeof(Vertex) * newSize);
-        bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
+        bd.size          = (u32)(sizeof(Vertex) * newSize);
+        bd.usage         = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
+        bd.ringSlotsHint = 4;  // mapped once per frame
         impl_->splatServiceVB_     = impl_->gfx_->CreateBuffer(bd);
         impl_->splatServiceVBSize_ = newSize;
     }
@@ -405,8 +407,9 @@ void RenderPipeline::RenderRibbons() {
         impl_->gfx_->Destroy(mi->render.ribbonVB);
         i32 newSize = (std::max)(vertCount, 512);
         gfx::BufferDesc bd;
-        bd.size  = (u32)(sizeof(Vertex) * newSize);
-        bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
+        bd.size          = (u32)(sizeof(Vertex) * newSize);
+        bd.usage         = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
+        bd.ringSlotsHint = 4;  // per-actor, mapped once per frame
         mi->render.ribbonVB = impl_->gfx_->CreateBuffer(bd);
         mi->render.ribbonVBSize = newSize;
     }
@@ -717,40 +720,56 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
         impl_->tonemapSampler_ = impl_->gfx_->CreateSampler(sd);
     }
 
+    // All BLS frame-uniform CBs get mapped once per draw call. With
+    // ~2000+ draws/frame on PE1-heavy scenes (BreeForge Birth) the
+    // default 256-slot ring wraps mid-frame and corrupts earlier
+    // descriptor writes (visible as light flicker / shading glitches
+    // on Vulkan). Request a large ring on every hot CB; the slot
+    // stride is small (each CB ~256-1KB), so total memory stays
+    // reasonable (~32 MB across all hot CBs at 4096 slots).
+    constexpr u32 kHotCbRingSlots = 4096;
     impl_->blsSdVsCb_ = impl_->gfx_->CreateBuffer({
         .size  = sizeof(bls::SdVsCbA),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        .ringSlotsHint = kHotCbRingSlots,
     });
 
     impl_->blsSdPsCb_ = impl_->gfx_->CreateBuffer({
         .size  = sizeof(bls::SdPsCbA),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        .ringSlotsHint = kHotCbRingSlots,
     });
     impl_->blsHdVsCb_ = impl_->gfx_->CreateBuffer({
         .size  = sizeof(bls::HdVsCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        .ringSlotsHint = kHotCbRingSlots,
     });
 
     impl_->blsHdShadowCb_ = impl_->gfx_->CreateBuffer({
         .size  = sizeof(bls::HdShadowCascadesCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        .ringSlotsHint = kHotCbRingSlots,
     });
 
     impl_->blsHdShadowCountCb_ = impl_->gfx_->CreateBuffer({
         .size  = sizeof(bls::SdOnHdShadowCascadeCountCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        .ringSlotsHint = kHotCbRingSlots,
     });
     impl_->blsHdPsCb_ = impl_->gfx_->CreateBuffer({
         .size  = sizeof(bls::HdPsCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        .ringSlotsHint = kHotCbRingSlots,
     });
     impl_->blsSdOnHdPsCb_ = impl_->gfx_->CreateBuffer({
         .size  = sizeof(bls::SdOnHdPsCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        .ringSlotsHint = kHotCbRingSlots,
     });
     impl_->blsHdDebugVisCb_ = impl_->gfx_->CreateBuffer({
         .size  = sizeof(bls::DebugVisCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        .ringSlotsHint = kHotCbRingSlots,
     });
 
     rs_.Textures().RegisterOwned(kIblSplitSumLutName, ibl::CreateSplitSumLutTexture(*impl_->gfx_));
@@ -778,8 +797,18 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
         const auto n = impl_->blsPsoTrace_->EntryCount();
         if (n > 0) {
             std::fprintf(stderr, "[bls] pso-trace: replaying %zu PSOs\n", n);
+            impl_->blsPsoBuilder_->SetReplayMode(true);
             impl_->blsPsoTrace_->Replay(*impl_->blsPsoBuilder_,
                                          *impl_->blsPrograms_);
+            impl_->blsPsoBuilder_->SetReplayMode(false);
+            const auto& s = impl_->blsPsoBuilder_->Stats();
+            std::fprintf(stderr,
+                "[bls] pso-trace: replay built %llu PSOs, %llu were already cached\n",
+                (unsigned long long)s.replayCacheBuilds,
+                (unsigned long long)s.cacheHits);
+        } else {
+            std::fprintf(stderr,
+                "[bls] pso-trace: no saved trace (this run will record one)\n");
         }
     }
 
@@ -1087,6 +1116,15 @@ bool RenderPipeline::CreateDefaultResources() {
 
 void RenderPipeline::RenderFrame(RenderTargetId targetId) {
     WDX_CPU_ZONE("RenderFrame");
+    // Stutter detector: at the start of each frame, snapshot the
+    // PSO builder's runtime cache-miss counter. If it changes during
+    // this frame, the driver synchronously compiled at least one PSO
+    // mid-frame — the canonical stutter source. Print the delta with
+    // the frame index so a transient hitch is greppable in stderr.
+    static thread_local u64 frameCounter      = 0;
+    const u64 builderBuildsAtFrameStart = impl_->blsPsoBuilder_
+        ? impl_->blsPsoBuilder_->Stats().runtimeCacheBuilds : 0;
+
     auto it = impl_->targets_.find(targetId);
     if (it == impl_->targets_.end()) return;
     auto& target = it->second;
@@ -1253,6 +1291,19 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
         WDX_CPU_ZONE("Tonemap");
         WDX_GPU_ZONE(cmd, "Tonemap");
         RunTonemapPass(target);
+    }
+
+    ++frameCounter;
+    if (impl_->blsPsoBuilder_) {
+        const u64 builderBuildsAtFrameEnd = impl_->blsPsoBuilder_->Stats().runtimeCacheBuilds;
+        const u64 delta = builderBuildsAtFrameEnd - builderBuildsAtFrameStart;
+        if (delta > 0) {
+            std::fprintf(stderr,
+                "[bls] frame %llu: %llu mid-frame PSO compile(s) "
+                "(every one is a synchronous driver stall — stutter source)\n",
+                (unsigned long long)frameCounter,
+                (unsigned long long)delta);
+        }
     }
 }
 

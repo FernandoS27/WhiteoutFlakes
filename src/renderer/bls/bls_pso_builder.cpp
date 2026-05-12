@@ -203,6 +203,7 @@ gfx::PipelineHandle BlsPsoBuilder::GetOrBuild(const PsoRequest& request) {
 
     const u64 key = HashRequest(request);
     if (auto it = cache_.find(key); it != cache_.end()) {
+        ++stats_.cacheHits;
         return it->second;
     }
 
@@ -226,6 +227,8 @@ gfx::PipelineHandle BlsPsoBuilder::GetOrBuild(const PsoRequest& request) {
         // dedupes against keys it already loaded from disk, so we don't
         // need to gate this beyond the cache miss above.
         if (trace_) trace_->Record(request);
+        if (inReplay_) ++stats_.replayCacheBuilds;
+        else           ++stats_.runtimeCacheBuilds;
     }
     return pso;
 }

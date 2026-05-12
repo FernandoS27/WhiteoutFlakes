@@ -35,6 +35,18 @@ using namespace ::whiteout::flakes::renderer::shadow;
 void FrameTicker::Tick(f32 dt) {
     WDX_CPU_ZONE("FrameTicker::Tick");
     { WDX_CPU_ZONE("Templates.Tick");        rs_.Scene().Templates().Tick(); }
+    // Pre-upload any templates that just finished loading on the
+    // worker thread. Without this the first PE1 child to reference
+    // a freshly-loaded template would pay the GPU resource creation
+    // cost on its first frame — visible as a multi-millisecond hitch
+    // when Birth events fire on heavy scenes.
+    {
+        WDX_CPU_ZONE("Templates.UploadNewly");
+        auto fresh = rs_.Scene().Templates().DrainNewlyLoadedTemplates();
+        for (auto& tmpl : fresh) {
+            if (tmpl) rs_.Loader().UploadTemplateGpu(*tmpl);
+        }
+    }
     { WDX_CPU_ZONE("RebakeDirtyActors");     rs_.Replaceables().RebakeDirtyActors(); }
     { WDX_CPU_ZONE("UpdateAttachments");     UpdateAttachments(); }
     { WDX_CPU_ZONE("EvaluateActorTree");     EvaluateActorTree(); }

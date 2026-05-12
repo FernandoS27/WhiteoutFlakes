@@ -100,6 +100,20 @@ private:
     // pass. Callers go through SpawnUnit / SpawnUnitFromSource / SpawnChild.
     void StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl);
 
+public:
+    // Upload a template's shared GPU resources (per-geoset vertex/index/
+    // tangent/bone buffers, shared textures). Called automatically on
+    // first-spawn from UploadStagedGeosets; the renderer can also call
+    // it eagerly via this entry point right after Templates().Tick()
+    // picks up a newly-loaded template — that way the first PE1 child
+    // referencing the template doesn't pay the upload cost mid-frame.
+    // Idempotent (no-op when tmpl.gpuUploaded is already true). Public
+    // because FrameTicker calls it from the per-frame template-handoff
+    // drain; the private uploadTemplateGpu does the actual work.
+    void UploadTemplateGpu(ModelTemplate& tmpl) { uploadTemplateGpu(tmpl); }
+
+private:
+
     void SetAttachmentConfigs(u32 handle, const std::vector<AttachmentConfig>& configs);
     void SetPE1Configs(u32 handle, const std::vector<PE1EmitterConfig>& configs);
     bool IsTextureCached(std::string_view key) const;
@@ -108,6 +122,18 @@ private:
     void UploadStagedTextures(Actor& mi);
     void UploadStagedGeosets(Actor& mi);
     void CreateNodePalette(Actor& mi);
+
+    // Queue async template loads for every unique MDX referenced by
+    // this actor's PE1 emitters and attachment slots. Walks the
+    // template's pe1Configs / attachmentConfigs at parent-load time so
+    // the worker thread has the children parsed (and ideally GPU-
+    // uploaded) before the first spawn fires. Without this, the first
+    // Birth animation pays the parse-+-upload cost mid-frame and the
+    // render thread stalls — visible as a one-off heavy stutter.
+    // No-op for paths already in the cache or already queued.
+    void PreloadChildTemplates(const ModelTemplate& tmpl);
+    void PreloadChildTemplates(const std::vector<PE1EmitterConfig>&  pe1Cfgs,
+                               const std::vector<AttachmentConfig>&  attachCfgs);
 
     RenderService& rs_;
 

@@ -27,7 +27,9 @@
 
 #include <algorithm>
 #include <cstring>
+#include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace whiteout::flakes::renderer::model {
 
@@ -142,6 +144,27 @@ void ModelLoader::SetPE1Configs(u32 handle, const std::vector<PE1EmitterConfig>&
     if (!mi) return;
     for (i32 i= 0; i < (i32)configs.size(); i++)
         mi->render.pe1.AddEmitter(i, configs[i]);
+}
+
+void ModelLoader::PreloadChildTemplates(const ModelTemplate& tmpl) {
+    PreloadChildTemplates(tmpl.pe1Configs, tmpl.attachmentConfigs);
+}
+
+void ModelLoader::PreloadChildTemplates(
+        const std::vector<PE1EmitterConfig>&  pe1Cfgs,
+        const std::vector<AttachmentConfig>&  attachCfgs) {
+    // Collect every unique non-empty child path once, then fire one
+    // async load per path. GetOrLoadAsync dedupes against the cache
+    // and the in-flight queue, so calling it multiple times for the
+    // same path during a single session is safe and cheap.
+    std::unordered_set<std::string> seen;
+    auto enqueue = [&](const std::string& path) {
+        if (path.empty()) return;
+        if (!seen.insert(path).second) return;
+        rs_.Scene().Templates().GetOrLoadAsync(path);
+    };
+    for (const auto& cfg : pe1Cfgs)    enqueue(cfg.modelPath);
+    for (const auto& cfg : attachCfgs) enqueue(cfg.modelPath);
 }
 
 
@@ -413,6 +436,13 @@ u32 ModelLoader::AddModelByPath(const std::string& mdxPath,
     if (!tmpl->attachmentConfigs.empty())
         SetAttachmentConfigs(handle, tmpl->attachmentConfigs);
 
+    // Kick off async loads for every child MDX this actor will ever
+    // need (PE1 emitter targets + attachment slots). The worker thread
+    // parses them in the background so when PE1 simulation actually
+    // fires a Birth event, the template is already in the cache and
+    // SpawnChild doesn't pay the parse cost on the render thread.
+    PreloadChildTemplates(*tmpl);
+
     return handle;
 }
 
@@ -445,6 +475,11 @@ Actor* ModelLoader::SpawnUnitFromSource(std::shared_ptr<IModelSource> source,
         SetAttachmentConfigs(h, data.attachmentConfigs);
     if (!data.pe1Configs.empty())
         SetPE1Configs(h, data.pe1Configs);
+
+    // Same as the template-based path: kick off async loads for every
+    // referenced child MDX up-front so first-spawn doesn't stall the
+    // render thread on parse.
+    PreloadChildTemplates(data.pe1Configs, data.attachmentConfigs);
 
     return actor;
 }
@@ -709,9 +744,17 @@ void ModelLoader::CreateNodePalette(Actor& mi) {
         // skinning is active.
         if (skinning.ActorPaletteCb() == gfx::BufferHandle::Invalid
             && skinning.ActorPaletteSize() > 0) {
+            // Per-actor CB: mapped exactly once per frame per actor in
+            // UpdateAnimation. The ring only needs enough slots to
+            // cover the in-flight frames (one slot per concurrent
+            // frame). Setting a small hint here is essential — every
+            // actor instantiates its own CB, so scaling slots with the
+            // global default would blow per-actor memory by hundreds of
+            // megabytes on PE1-heavy scenes.
             gfx::BufferHandle cb = rs_.Pipeline().Gfx()->CreateBuffer({
-                .size  = sizeof(bls::BonePaletteCb),
-                .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+                .size          = sizeof(bls::BonePaletteCb),
+                .usage         = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+                .ringSlotsHint = 4,
             });
             skinning.SetActorPaletteCb(cb);
         }
@@ -727,13 +770,16 @@ void ModelLoader::CreateNodePalette(Actor& mi) {
     // Path B (fallback): one CB per geoset, unchanged from the
     // pre-Path-A behavior. Used when the actor's palette size would
     // exceed kActorPaletteCap (rare — typically very large WoW rigs).
+    // Like the Path A per-actor CB, each per-geoset CB is mapped
+    // exactly once per frame, so we only need kFramesInFlight slots.
     for (auto& geo : mi.render.gpuGeosets) {
         if (geo.boneVb == gfx::BufferHandle::Invalid) continue;
         if (geo.bonePaletteCb != gfx::BufferHandle::Invalid) continue;
         if (skinning.GeosetPaletteSize(geo.geosetId) <= 0) continue;
         geo.bonePaletteCb = rs_.Pipeline().Gfx()->CreateBuffer({
-            .size  = sizeof(bls::BonePaletteCb),
-            .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+            .size          = sizeof(bls::BonePaletteCb),
+            .usage         = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+            .ringSlotsHint = 4,
         });
         geo.hasSkinning = true;
     }

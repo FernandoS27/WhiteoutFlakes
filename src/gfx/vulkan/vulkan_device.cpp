@@ -886,7 +886,19 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc, const void* init
         // so VkDescriptorBufferInfo::offset stays legal.
         const u64 align = std::max<u64>(1, s.minUniformBufferAlign);
         e.slotStride = (desc.size + align - 1) / align * align;
-        e.slotCount  = VulkanDeviceState::kCbRingSlots;
+        // Per-buffer slot count override. The default
+        // (kCbRingSlots = 256) suits CBs mapped < 128 times per frame
+        // (the ring needs slot_count >= max_maps_per_frame *
+        // kFramesInFlight). Hot CBs in the BLS pipeline get mapped
+        // thousands of times per frame and ask for a much larger
+        // ring via BufferDesc::ringSlotsHint; cold per-instance CBs
+        // (e.g. the per-actor bone palette, mapped once per frame
+        // per actor) ask for just kFramesInFlight to keep the per-
+        // instance memory cost down.
+        e.slotCount = (desc.ringSlotsHint > 0)
+                        ? desc.ringSlotsHint
+                        : VulkanDeviceState::kCbRingSlots;
+        if (e.slotCount < kFramesInFlight) e.slotCount = kFramesInFlight;
     }
     const u64 totalSize = e.slotStride * e.slotCount;
 
@@ -1724,20 +1736,17 @@ SamplerHandle VulkanDevice::CreateSampler(const SamplerDesc& desc) {
 
 // ---- Destruction --------------------------------------------------------
 
-// Drain queued deletes whose timeline value the GPU has reached.
+// Entries are appended in submit order, so the ready set is always a
+// contiguous prefix — pop_front until we hit an unfinished entry.
 void DrainPendingDeletes(VulkanDeviceState& s) {
     if (s.pendingDeletes.empty()) return;
     auto vR = s.timelineSem.getCounterValue();
     if (vR.result != vk::Result::eSuccess) return;
     const u64 completed = vR.value;
-    auto it = s.pendingDeletes.begin();
-    while (it != s.pendingDeletes.end()) {
-        if (it->timelineValue <= completed) {
-            it->deleter->Run(s);
-            it = s.pendingDeletes.erase(it);
-        } else {
-            ++it;
-        }
+    while (!s.pendingDeletes.empty()
+           && s.pendingDeletes.front().timelineValue <= completed) {
+        s.pendingDeletes.front().deleter->Run(s);
+        s.pendingDeletes.pop_front();
     }
 }
 
@@ -1747,14 +1756,10 @@ void DrainPendingTransferDeletes(VulkanDeviceState& s) {
     auto vR = s.transferTimelineSem.getCounterValue();
     if (vR.result != vk::Result::eSuccess) return;
     const u64 completed = vR.value;
-    auto it = s.pendingTransferDeletes.begin();
-    while (it != s.pendingTransferDeletes.end()) {
-        if (it->timelineValue <= completed) {
-            it->deleter->Run(s);
-            it = s.pendingTransferDeletes.erase(it);
-        } else {
-            ++it;
-        }
+    while (!s.pendingTransferDeletes.empty()
+           && s.pendingTransferDeletes.front().timelineValue <= completed) {
+        s.pendingTransferDeletes.front().deleter->Run(s);
+        s.pendingTransferDeletes.pop_front();
     }
 }
 
@@ -1767,13 +1772,17 @@ void VulkanDevice::Destroy(BufferHandle h) {
     auto& s = *state_;
     auto* b = s.buffers.Get(static_cast<u64>(h));
     if (!b) return;
+    // Shared-ring sub-allocs own no VkDeviceMemory — skip the deferred queue.
+    if (b->allocation == VK_NULL_HANDLE) {
+        s.buffers.Remove(static_cast<u64>(h));
+        return;
+    }
     BufferEntry moved = std::move(*b);
     s.buffers.Remove(static_cast<u64>(h));
     s.pendingDeletes.push_back(MakePendingDelete(
         s.nextSubmitValue,
         [m = std::move(moved)](VulkanDeviceState& st) mutable {
-            if (m.buffer && m.allocation)
-                vmaDestroyBuffer(st.allocator, m.buffer, m.allocation);
+            vmaDestroyBuffer(st.allocator, m.buffer, m.allocation);
         }));
 }
 

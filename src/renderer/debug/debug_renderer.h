@@ -19,8 +19,9 @@ void DrawWireLines(gfx::IGFXDevice*      gfx,
                    const std::vector<LV>& lines) {
     if (lines.empty() || !gfx) return;
     gfx::BufferDesc bd;
-    bd.size  = static_cast<u32>(sizeof(LV) * lines.size());
-    bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
+    bd.size          = static_cast<u32>(sizeof(LV) * lines.size());
+    bd.usage         = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
+    bd.ringSlotsHint = 4;  // one-shot per debug draw
     gfx::BufferHandle tempVB = gfx->CreateBuffer(bd);
     if (tempVB == gfx::BufferHandle::Invalid) return;
 

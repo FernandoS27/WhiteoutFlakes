@@ -105,6 +105,19 @@ void ModelTemplateManager::Tick() {
         std::lock_guard<std::mutex> lock(queueMutex_);
         for (auto& [path, _] : results) loadPending_.erase(path);
     }
+    // Stash the just-finished templates so the renderer can pre-upload
+    // their GPU resources before any actor spawns request them.
+    newlyLoaded_.reserve(newlyLoaded_.size() + results.size());
+    for (auto& [path, tmpl] : results) {
+        if (tmpl) newlyLoaded_.push_back(tmpl);
+    }
+}
+
+std::vector<std::shared_ptr<ModelTemplate>>
+ModelTemplateManager::DrainNewlyLoadedTemplates() {
+    std::vector<std::shared_ptr<ModelTemplate>> out;
+    out.swap(newlyLoaded_);
+    return out;
 }
 
 void ModelTemplateManager::ReleaseAllGPU(gfx::IGFXDevice& gfx) {
