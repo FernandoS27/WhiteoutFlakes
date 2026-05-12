@@ -1,6 +1,7 @@
 #include "bls_frame.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 
@@ -129,12 +130,31 @@ void PackBone(ShaderBone& out, const Matrix44f& m) {
 }
 
 void BuildBonePalette(BonePaletteCb& out, const Matrix44f* src, i32 numBones) {
-    PackBone(out.bones[0], Matrix44f::identity());
-    const i32 n = std::clamp(numBones, 0, kMaxBones);
-    for (i32 i = 0; i < n; ++i) PackBone(out.bones[i], src[i]);
-    for (i32 i = std::max(1, n); i < kMaxBones; ++i) {
-        PackBone(out.bones[i], Matrix44f::identity());
+    // Only write the n real bones. Skipping the (kMaxBones - n) padding
+    // saves ~12 KB of memory writes per call; on PE1-heavy scenes
+    // (1015+ calls / frame) that's the bulk of UpdateAnimation's cost.
+    //
+    // Invariant we rely on: every vertex's bone-index attribute is in
+    // [0, numBones). Valid WC3 MDX data satisfies this — bone indices
+    // out of range would already be broken regardless of what's in the
+    // unused palette slots. The CB ring rotates mapped slots, so stale
+    // data from a previous frame's actor could appear in those slots;
+    // a malformed vertex referencing them would read garbage and
+    // produce visible glitches. If you ever see swimming geometry on
+    // a specific model, that model is the canary — re-enable padding
+    // here (single std::memcpy from a precomputed kIdentityBlock) and
+    // open an issue against the offending asset.
+    //
+    // bones[0] stays the identity-fallback for vertices that opt out
+    // of skinning entirely (boneIdx==0, weight==1). When numBones==0
+    // we still want bones[0] populated so those vertices draw at
+    // local origin instead of NaN-land.
+    if (numBones <= 0) {
+        PackBone(out.bones[0], Matrix44f::identity());
+        return;
     }
+    const i32 n = std::min(numBones, kMaxBones);
+    for (i32 i = 0; i < n; ++i) PackBone(out.bones[i], src[i]);
 }
 
 ShaderTexMtx ComposeTexAnimMatrix(const Quaternion& q,

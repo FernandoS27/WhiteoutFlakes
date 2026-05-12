@@ -139,58 +139,96 @@ public:
         matricesDirty_ = false;
     }
 
+    // Build the bone-palette staging buffer for one geoset.
+    //
+    // The palette is laid out as two regions, back to back:
+    //   1. Subset bones        — one slot per direct node reference;
+    //                            the slot holds that node's offset
+    //                            matrix verbatim. Filled at slot index
+    //                            i = position in `subsetNodeIndices`.
+    //   2. Group-average bones — one slot per "pseudo bone" that
+    //                            averages several nodes' offset
+    //                            matrices into a single mean. Used by
+    //                            geosets where multiple bones share a
+    //                            single weight slot. Filled at slot
+    //                            index = the record's pseudoSlot,
+    //                            which is expected to land in
+    //                            [subsetBoneCount, subsetBoneCount +
+    //                            groupAverageCount).
+    //
+    // Returns the number of slots populated. The caller (BuildBonePalette)
+    // reads only [0, returned). Trailing slots are left untouched, so
+    // the shader must never index past the returned count.
     i32 ComputeGeosetPalette(i32 geosetId, Matrix44f* out, i32 capacity) const {
-        auto* layout = GetGeosetLayout(geosetId);
+        const auto* layout = GetGeosetLayout(geosetId);
         if (!layout || !out || capacity <= 0 || !data_) {
-            if (out && capacity > 0) {
-                for (i32 i = 0; i < capacity; ++i) out[i] = Matrix44f::identity();
-            }
+            FillPaletteWithIdentity(out, capacity);
             return 0;
         }
-        const i32 subsetN  = (i32)layout->subsetNodeIndices.size();
-        const i32 groupN   = (i32)layout->groupAverages.size();
-        const i32 total    = subsetN + groupN;
-        const i32 n        = total < capacity ? total : capacity;
-        const i32 nodeCnt  = data_->nodeCount;
 
-        for (i32 i = 0; i < subsetN && i < capacity; ++i) {
-            i32 g = layout->subsetNodeIndices[i];
-            if (g >= 0 && g < nodeCnt) out[i] = offsetMatrices_[g];
-            else                       out[i] = Matrix44f::identity();
-        }
+        const i32 subsetBoneCount   = static_cast<i32>(layout->subsetNodeIndices.size());
+        const i32 groupAverageCount = static_cast<i32>(layout->groupAverages.size());
+        const i32 populatedSlots    = std::min(subsetBoneCount + groupAverageCount, capacity);
 
-        for (i32 g = 0; g < groupN; ++g) {
-            const i32 slot = layout->groupAverages[g].pseudoSlot;
-            if (slot < 0 || slot >= capacity) continue;
-            const auto& rec = layout->groupAverages[g];
-            if (rec.nodeIndices.empty()) {
-                out[slot] = Matrix44f::identity();
-                continue;
-            }
-            Matrix44f sum = Matrix44f::zero();
-            i32 cnt = 0;
-            for (i32 nodeIdx : rec.nodeIndices) {
-                if (nodeIdx < 0 || nodeIdx >= nodeCnt) continue;
-                const Matrix44f& m = offsetMatrices_[nodeIdx];
-                for (i32 r = 0; r < 4; r++)
-                    for (i32 c = 0; c < 4; c++)
-                        sum.data[r][c] += m.data[r][c];
-                ++cnt;
-            }
-            if (cnt > 0) {
-                f32 inv = 1.0f / (f32)cnt;
-                for (i32 r = 0; r < 4; r++)
-                    for (i32 c = 0; c < 4; c++)
-                        sum.data[r][c] *= inv;
-                out[slot] = sum;
-            } else {
-                out[slot] = Matrix44f::identity();
-            }
-        }
-
-        for (i32 i = n; i < capacity; ++i) out[i] = Matrix44f::identity();
-        return n;
+        FillSubsetBoneSlots   (*layout, out, capacity);
+        FillGroupAverageSlots (*layout, out, capacity);
+        return populatedSlots;
     }
+
+private:
+    static void FillPaletteWithIdentity(Matrix44f* out, i32 capacity) {
+        if (!out || capacity <= 0) return;
+        for (i32 i = 0; i < capacity; ++i) out[i] = Matrix44f::identity();
+    }
+
+    // Each subset bone maps directly to one model node. An out-of-
+    // range node index falls back to identity rather than crashing —
+    // typically indicates a malformed MDX, but rendering an identity
+    // bone is the least-broken behavior we can produce on the fly.
+    void FillSubsetBoneSlots(const GeosetPaletteLayout& layout,
+                             Matrix44f* out, i32 capacity) const {
+        const i32 nodeCount       = data_->nodeCount;
+        const i32 subsetBoneCount = static_cast<i32>(layout.subsetNodeIndices.size());
+        const i32 lastSlot        = std::min(subsetBoneCount, capacity);
+        for (i32 slot = 0; slot < lastSlot; ++slot) {
+            const i32 nodeIndex = layout.subsetNodeIndices[slot];
+            out[slot] = IsValidNodeIndex(nodeIndex)
+                            ? offsetMatrices_[nodeIndex]
+                            : Matrix44f::identity();
+        }
+    }
+
+    void FillGroupAverageSlots(const GeosetPaletteLayout& layout,
+                               Matrix44f* out, i32 capacity) const {
+        for (const auto& group : layout.groupAverages) {
+            const i32 slot = group.pseudoSlot;
+            if (slot < 0 || slot >= capacity) continue;
+            out[slot] = AverageOffsetMatrices(group.nodeIndices);
+        }
+    }
+
+    // Arithmetic mean of N nodes' offset matrices — falls back to
+    // identity for empty inputs or when every node index is out of
+    // range (defensive; group records are authored upstream and
+    // should reference live nodes).
+    Matrix44f AverageOffsetMatrices(const std::vector<i32>& nodeIndices) const {
+        Matrix44f sum             = Matrix44f::zero();
+        i32       contributorCount = 0;
+        for (i32 nodeIndex : nodeIndices) {
+            if (!IsValidNodeIndex(nodeIndex)) continue;
+            sum += offsetMatrices_[nodeIndex];
+            ++contributorCount;
+        }
+        if (contributorCount == 0) return Matrix44f::identity();
+        sum *= 1.0f / static_cast<f32>(contributorCount);
+        return sum;
+    }
+
+    bool IsValidNodeIndex(i32 nodeIndex) const {
+        return nodeIndex >= 0 && nodeIndex < data_->nodeCount;
+    }
+
+public:
 
     bool SkinVertices(i32 geosetId,
                       const std::vector<Vertex>& baseVerts,

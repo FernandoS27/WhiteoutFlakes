@@ -42,6 +42,16 @@ public:
                                  u8 clearStencil) = 0;
     virtual void EndRenderPass() = 0;
 
+    // Tracy-backed GPU profiler zone. Bracket GPU work with a named
+    // scope; the Vulkan backend forwards to TracyVkZoneTransient so
+    // the zone shows up on Tracy.exe's GPU timeline. D3D11 / D3D12
+    // currently no-op (Tracy supports them too, but the backends
+    // aren't wired yet). `name` must outlive the current command
+    // recording — string literals or stable runtime buffers only.
+    // Nesting is supported (Tracy maintains its own depth stack).
+    virtual void BeginGpuZone(const char* name) = 0;
+    virtual void EndGpuZone() = 0;
+
     virtual void SetViewport(const Viewport&) = 0;
     virtual void SetScissor (const Scissor&) = 0;
 

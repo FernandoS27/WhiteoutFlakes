@@ -8,6 +8,10 @@
 #include "vulkan_resources.h"
 #include "vulkan_translate.h"
 
+#if defined(TRACY_ENABLE)
+#  include <tracy/TracyVulkan.hpp>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -267,6 +271,16 @@ VulkanDevice::~VulkanDevice() {
         // build is still touching the cache.
         SavePipelineCache(s);
     }
+
+#if defined(TRACY_ENABLE)
+    // Tracy holds its own VkQueryPool inside the context — release it
+    // before our raii-owned device/queue go away. waitIdle above is
+    // mandatory; TracyVkDestroy doesn't synchronize the queue itself.
+    if (s.tracyCtx) {
+        TracyVkDestroy(s.tracyCtx);
+        s.tracyCtx = nullptr;
+    }
+#endif
 
     // Run every queued deleter — after waitIdle, all timeline values
     // are safe and the GPU has stopped touching anything. Manually
@@ -784,6 +798,44 @@ bool VulkanDevice::Init(bool enableValidation) {
                 VK_API_VERSION_PATCH(props.apiVersion),
                 s.queueFamily,
                 wantValidation ? " (validation)" : "");
+
+#if defined(TRACY_ENABLE)
+    // Tracy needs a one-shot command buffer to write a calibration
+    // timestamp at context creation. Allocate from the first frame's
+    // command pool (already exists by this point), record begin, hand
+    // to TracyVkContext, end + submit + waitIdle. The macro expands
+    // into a series of vkQueue/vkCmd calls plus a query-pool create;
+    // it's a fire-and-forget setup that returns a context pointer we
+    // hold for the device's lifetime.
+    {
+        auto& frame0 = s.frames[0];
+        vk::CommandBufferAllocateInfo ai{
+            .commandPool        = *frame0.commandPool,
+            .level              = vk::CommandBufferLevel::ePrimary,
+            .commandBufferCount = 1,
+        };
+        auto cbR = s.device.allocateCommandBuffers(ai);
+        if (cbR.result == vk::Result::eSuccess && !cbR.value.empty()) {
+            auto& calibCb = cbR.value.front();
+            (void)calibCb.begin({ .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit });
+            s.tracyCtx = TracyVkContext(
+                static_cast<VkPhysicalDevice>(*s.physicalDevice),
+                static_cast<VkDevice>(*s.device),
+                static_cast<VkQueue>(*s.queue),
+                static_cast<VkCommandBuffer>(*calibCb));
+            (void)calibCb.end();
+            vk::CommandBufferSubmitInfo csi{ .commandBuffer = *calibCb };
+            vk::SubmitInfo2 si{
+                .commandBufferInfoCount = 1,
+                .pCommandBufferInfos    = &csi,
+            };
+            (void)s.queue.submit2(si);
+            s.queue.waitIdle();
+            // calibCb auto-frees with its raii wrapper here.
+        }
+    }
+#endif
+
     return true;
 }
 

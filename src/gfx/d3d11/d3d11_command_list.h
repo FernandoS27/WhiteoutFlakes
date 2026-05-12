@@ -16,6 +16,12 @@ public:
                          u8 clearStencil) override;
     void EndRenderPass() override;
 
+    // GPU profiler zones are Vulkan-only today. Stubs keep the
+    // interface uniform; can swap for TracyD3D12* macros if/when we
+    // want the d3d backends profiled too.
+    void BeginGpuZone(const char* /*name*/) override {}
+    void EndGpuZone() override {}
+
     void SetViewport(const Viewport&) override;
     void SetScissor (const Scissor&) override;
 

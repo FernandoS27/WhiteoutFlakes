@@ -22,6 +22,13 @@
 #include <string>
 #include <vector>
 
+#if defined(TRACY_ENABLE)
+// Forward-declare so vulkan_device.h doesn't pull TracyVulkan.hpp (which
+// transitively drags in vulkan.hpp) into anyone who only wanted the
+// public IGFXDevice / IGFXCommandList vtables.
+namespace tracy { class VkCtxScope; }
+#endif
+
 namespace whiteout::flakes::gfx::vulkan {
 
 // See gfx::EnumerateDevices — spins up a throw-away VkInstance and
@@ -45,6 +52,9 @@ public:
                          const f32 clearColor[4], f32 clearDepth,
                          u8 clearStencil) override;
     void EndRenderPass() override;
+
+    void BeginGpuZone(const char* name) override;
+    void EndGpuZone() override;
 
     void SetViewport(const Viewport&) override;
     void SetScissor (const Scissor&) override;
@@ -116,6 +126,15 @@ private:
     // name the C++ call site.
     u32           activeColorFormat_   = 0;  // VK_FORMAT_UNDEFINED
     PipelineHandle lastBoundPipeline_  = PipelineHandle::Invalid;
+
+#if defined(TRACY_ENABLE)
+    // Tracy doesn't expose a separate begin/end API for runtime-named
+    // GPU zones — the only ergonomic interface is VkCtxScope (RAII).
+    // To support Begin/EndGpuZone we heap-allocate a scope on Begin and
+    // delete it on End, letting the destructor emit the end-timestamp
+    // event. unique_ptr so Tracy's non-movable VkCtxScope still fits.
+    std::vector<std::unique_ptr<tracy::VkCtxScope>> gpuZoneStack_;
+#endif
 };
 
 class VulkanDevice final : public IGFXDevice {

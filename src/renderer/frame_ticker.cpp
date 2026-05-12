@@ -7,6 +7,7 @@
 // ============================================================================
 
 #include "frame_ticker.h"
+#include "perf_zone.h"
 
 #include "animation/actor_eval_context.h"
 #include "bls/scoped_cb.h"
@@ -32,14 +33,15 @@ using namespace ::whiteout::flakes::renderer::bls;
 using namespace ::whiteout::flakes::renderer::shadow;
 
 void FrameTicker::Tick(f32 dt) {
-    rs_.Scene().Templates().Tick();
-    rs_.Replaceables().RebakeDirtyActors();
-    UpdateAttachments();
-    EvaluateActorTree();
-    UpdateAnimation();
-    UpdateParticles(dt);
-    UpdatePE1(dt);
-    UpdateRibbons(dt);
+    WDX_CPU_ZONE("FrameTicker::Tick");
+    { WDX_CPU_ZONE("Templates.Tick");        rs_.Scene().Templates().Tick(); }
+    { WDX_CPU_ZONE("RebakeDirtyActors");     rs_.Replaceables().RebakeDirtyActors(); }
+    { WDX_CPU_ZONE("UpdateAttachments");     UpdateAttachments(); }
+    { WDX_CPU_ZONE("EvaluateActorTree");     EvaluateActorTree(); }
+    { WDX_CPU_ZONE("UpdateAnimation");       UpdateAnimation(); }
+    { WDX_CPU_ZONE("UpdateParticles");       UpdateParticles(dt); }
+    { WDX_CPU_ZONE("UpdatePE1");             UpdatePE1(dt); }
+    { WDX_CPU_ZONE("UpdateRibbons");         UpdateRibbons(dt); }
 }
 
 void FrameTicker::UpdateAttachments() {
@@ -162,25 +164,63 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
 }
 
 void FrameTicker::UpdateAnimation() {
+    // Plots: surface live actor + skinned-actor counts on Tracy's plot
+    // panel so the user can correlate spikes with population size.
+#if defined(TRACY_ENABLE)
+    const i64 totalActors = static_cast<i64>(rs_.Scene().Actors().All().size());
+    TracyPlot("Actors.total", totalActors);
+#endif
+    i64 skinnedActors = 0;
+    i64 paletteWrites = 0;
 
     for (auto& [h, miPtr] : rs_.Scene().Actors().All()) {
         auto* mi = miPtr.get();
         if (!mi->render.skinning.HasSkeleton() || !mi->render.skinning.IsReady()) continue;
         if (mi->parentVisibility <= 0.02f) continue;
+        ++skinnedActors;
 
-        mi->render.skinning.ComputeOffsetMatrices();
+        { WDX_CPU_ZONE("ComputeOffsetMatrices");
+          mi->render.skinning.ComputeOffsetMatrices(); }
 
         for (auto& geo : mi->render.gpuGeosets) {
             if (geo.bonePaletteCb == gfx::BufferHandle::Invalid) continue;
-            if (auto bp = bls::ScopedCb<bls::BonePaletteCb>(rs_.Pipeline().Gfx(), geo.bonePaletteCb)) {
-
+            WDX_CPU_ZONE("Geoset.BonePalette");
+            ++paletteWrites;
+            gfx::IGFXDevice* gfx = rs_.Pipeline().Gfx();
+            void* mapped = nullptr;
+            {
+                WDX_CPU_ZONE("MapBuffer");
+                mapped = gfx->MapBuffer(geo.bonePaletteCb);
+            }
+            if (mapped) {
+                auto* bp = static_cast<bls::BonePaletteCb*>(mapped);
                 constexpr i32 kSlots = bls::kMaxBones;
                 static thread_local Matrix44f staging[kSlots];
-                mi->render.skinning.ComputeGeosetPalette(geo.geosetId, staging, kSlots);
-                bls::BuildBonePalette(*bp, staging, kSlots);
+                i32 realBones = 0;
+                {
+                    WDX_CPU_ZONE("ComputeGeosetPalette");
+                    realBones = mi->render.skinning.ComputeGeosetPalette(
+                        geo.geosetId, staging, kSlots);
+                }
+                {
+                    WDX_CPU_ZONE("BuildBonePalette");
+                    // Pass the *actual* bone count, not kSlots. Otherwise
+                    // BuildBonePalette PackBones all 256 entries — the
+                    // unused-slot work was the original hot spot.
+                    bls::BuildBonePalette(*bp, staging, realBones);
+                }
+                {
+                    WDX_CPU_ZONE("UnmapBuffer");
+                    gfx->UnmapBuffer(geo.bonePaletteCb);
+                }
             }
         }
     }
+
+#if defined(TRACY_ENABLE)
+    TracyPlot("Actors.skinned",     skinnedActors);
+    TracyPlot("BonePalette.writes", paletteWrites);
+#endif
 }
 
 void FrameTicker::UpdateParticles(f32 dt) {

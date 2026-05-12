@@ -7,3 +7,6 @@
 [submodule "externals/Wc3Shaders"]
 	path = externals/Wc3Shaders
 	url = https://github.com/FernandoS27/Wc3Shaders
+[submodule "externals/tracy"]
+	path = externals/tracy
+	url = https://github.com/wolfpld/tracy.git

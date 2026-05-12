@@ -10,6 +10,7 @@
 
 #include "renderer/render_pipeline.h"
 #include "renderer/render_pipeline_impl.h"
+#include "renderer/perf_zone.h"
 #include "renderer/render_service.h"
 #include "renderer/render_service_impl.h"
 #include "render_detail.h"
@@ -1085,6 +1086,7 @@ bool RenderPipeline::CreateDefaultResources() {
 }
 
 void RenderPipeline::RenderFrame(RenderTargetId targetId) {
+    WDX_CPU_ZONE("RenderFrame");
     auto it = impl_->targets_.find(targetId);
     if (it == impl_->targets_.end()) return;
     auto& target = it->second;
@@ -1093,7 +1095,10 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
 
     // Commit any pending GPU uploads (textures + geometry the loader staged
     // since the last frame) before we start rendering this frame.
-    rs_.Loader().CommitPendingUploads();
+    {
+        WDX_CPU_ZONE("CommitUploads");
+        rs_.Loader().CommitPendingUploads();
+    }
 
     // Apply any pending settings changes before drawing.
     if (rs_.Settings().ConsumeIblModeDirty())
@@ -1154,6 +1159,8 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
     };
 
     if (rs_.GetShadowService() && rs_.GetShadowService()->IsEnabled()) {
+        WDX_CPU_ZONE("ShadowPass");
+        WDX_GPU_ZONE(cmd, "ShadowPass");
         Matrix44f csmCamView, csmCamProj;
         {
             const f32 aspect= (target.height > 0)
@@ -1187,6 +1194,7 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
 
     cmd->BeginRenderPass(sceneTarget, target.depth, clearColor, 1.0f, 0);
     cmd->SetViewport({0, 0, (f32)target.width, (f32)target.height, 0, 1});
+    WDX_GPU_ZONE(cmd, "ScenePass");
 
     Matrix44f view, proj;
     {
@@ -1205,20 +1213,47 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
         render_detail::WriteCbPerFrame(impl_->gfx_.get(), impl_->cbPerFrame_, d);
     }
 
-    if (rs_.Settings().ShowGrid()) rs_.Debug().RenderGrid();
+    if (rs_.Settings().ShowGrid()) {
+        WDX_GPU_ZONE(cmd, "Grid");
+        rs_.Debug().RenderGrid();
+    }
 
-    RenderGeosets(GeosetBucket::Opaque);
-    if (rs_.Settings().ShowEvents())    RenderSplatsBls();
-    RenderGeosets(GeosetBucket::Transparent);
-    if (rs_.Settings().ShowParticles()) RenderParticlesBls();
-    if (rs_.Settings().ShowParticles()) RenderCornEffects();
-    if (rs_.Settings().ShowRibbons())   RenderRibbons();
+    { WDX_CPU_ZONE("GeosetsOpaque");
+      WDX_GPU_ZONE(cmd, "GeosetsOpaque");
+      RenderGeosets(GeosetBucket::Opaque); }
+    if (rs_.Settings().ShowEvents()) {
+      WDX_CPU_ZONE("Splats");
+      WDX_GPU_ZONE(cmd, "Splats");
+      RenderSplatsBls();
+    }
+    { WDX_CPU_ZONE("GeosetsTransparent");
+      WDX_GPU_ZONE(cmd, "GeosetsTransparent");
+      RenderGeosets(GeosetBucket::Transparent); }
+    if (rs_.Settings().ShowParticles()) {
+      WDX_CPU_ZONE("Particles");
+      WDX_GPU_ZONE(cmd, "Particles");
+      RenderParticlesBls();
+    }
+    if (rs_.Settings().ShowParticles()) {
+      WDX_CPU_ZONE("CornEffects");
+      WDX_GPU_ZONE(cmd, "CornEffects");
+      RenderCornEffects();
+    }
+    if (rs_.Settings().ShowRibbons()) {
+      WDX_CPU_ZONE("Ribbons");
+      WDX_GPU_ZONE(cmd, "Ribbons");
+      RenderRibbons();
+    }
     if (rs_.Settings().ShowCollisions()) rs_.Debug().RenderCollisions();
     if (rs_.Settings().ShowLights())     rs_.Debug().RenderLightMarkers();
     rs_.Debug().RenderViewCube();
     cmd->EndRenderPass();
 
-    if (useHdr) RunTonemapPass(target);
+    if (useHdr) {
+        WDX_CPU_ZONE("Tonemap");
+        WDX_GPU_ZONE(cmd, "Tonemap");
+        RunTonemapPass(target);
+    }
 }
 
 void RenderPipeline::RunTonemapPass(const RenderTarget& target) {

@@ -32,6 +32,10 @@
 #include <vulkan/vulkan_raii.hpp>
 #include <vk_mem_alloc.h>
 
+#if defined(TRACY_ENABLE)
+#  include <tracy/TracyVulkan.hpp>
+#endif
+
 #include <array>
 #include <filesystem>
 #include <memory>
@@ -340,6 +344,17 @@ struct VulkanDeviceState {
 
     std::array<FrameContext, kFramesInFlight> frames{};
     u32                                       frameIndex = 0;
+
+#if defined(TRACY_ENABLE)
+    // Tracy GPU context — created at Init via TracyVkContext with a
+    // one-shot calibration command buffer, destroyed in Shutdown via
+    // TracyVkDestroy. The renderer's BeginGpuZone / EndGpuZone calls
+    // forward into this context, and one TracyVkCollect per frame
+    // (just before submit) drains the query pool to Tracy's profiler.
+    // The pointer is owned by Tracy internals; we just store the
+    // handle for the per-frame collect + the eventual destroy.
+    tracy::VkCtx* tracyCtx = nullptr;
+#endif
 };
 
 // Drains every pending-delete entry whose timeline value the GPU has

@@ -13,6 +13,27 @@ set(WHITEOUT_ENABLE_CASC ON CACHE BOOL "Enable CASC archive support" FORCE)
 set(WHITEOUT_ENABLE_MPQ  ON CACHE BOOL "Enable MPQ archive support"  FORCE)
 add_subdirectory(externals/WhiteoutLib)
 
+# Tracy — opt-in CPU + GPU profiler. When WDX_ENABLE_TRACY is ON, the
+# Tracy::TracyClient target is built and TRACY_ENABLE is defined for
+# everyone linking it; otherwise every TracyVk*/ZoneScoped macro expands
+# to nothing and there's zero runtime cost. TRACY_ON_DEMAND keeps the
+# client buffering minimal until Tracy.exe connects.
+option(WDX_ENABLE_TRACY "Enable Tracy profiler (CPU + Vulkan GPU)" ON)
+if(WDX_ENABLE_TRACY AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/externals/tracy/CMakeLists.txt")
+    set(TRACY_ENABLE    ON  CACHE BOOL "" FORCE)
+    set(TRACY_ON_DEMAND ON  CACHE BOOL "" FORCE)
+    set(TRACY_NO_FRAME_IMAGE ON CACHE BOOL "" FORCE)
+    add_subdirectory(externals/tracy)
+    set(WDX_TRACY_LIB Tracy::TracyClient)
+    message(STATUS "Tracy: enabled (TRACY_ENABLE + TRACY_ON_DEMAND)")
+else()
+    set(WDX_TRACY_LIB "")
+    if(WDX_ENABLE_TRACY)
+        message(WARNING "WDX_ENABLE_TRACY=ON but externals/tracy is missing. "
+                        "Run: git submodule update --init externals/tracy")
+    endif()
+endif()
+
 # cornflakes is folded directly into WhiteoutFlakesLib as a renderer module
 # the cornflakes determinism + warnings INTERFACE targets the upstream project
 # defines are replaced by inline compile flags on WhiteoutFlakesLib.
@@ -390,6 +411,13 @@ target_link_libraries(WhiteoutFlakesGfx
     PUBLIC  whiteout_lib
     PRIVATE d3d11.lib d3d12.lib dxgi.lib
 )
+
+# Tracy lives on WhiteoutFlakesGfx PUBLIC so consumers of the gfx
+# library (the renderer, tools) pick up TRACY_ENABLE transitively and
+# their ZoneScoped / TracyVkZone macros expand the same way as ours.
+if(WDX_TRACY_LIB)
+    target_link_libraries(WhiteoutFlakesGfx PUBLIC ${WDX_TRACY_LIB})
+endif()
 
 if(Vulkan_FOUND)
     message(STATUS "WhiteoutFlakesGfx: Vulkan = ${Vulkan_LIBRARIES} "

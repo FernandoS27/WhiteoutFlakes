@@ -18,6 +18,10 @@
 #include <cstring>
 #include <string>
 
+#if defined(TRACY_ENABLE)
+#  include <tracy/Tracy.hpp>
+#endif
+
 #pragma comment(lib, "comctl32.lib")
 
 #pragma comment(lib, "comdlg32.lib")
@@ -77,7 +81,12 @@ void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
     i32 lastParentTimeMs = service_.Scene().GetAnimationTime();
 
     while (running_) {
-        if (!PumpMessages()) { running_ = false; break; }
+        {
+#if defined(TRACY_ENABLE)
+            ZoneScopedN("PumpMessages");
+#endif
+            if (!PumpMessages()) { running_ = false; break; }
+        }
 
         QueryPerformanceCounter(&now);
         lastTime = now;
@@ -94,9 +103,24 @@ void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
 
         (void)service_.Settings().ConsumeRenderModeDirty();
 
-        service_.Ticker().Tick(parentDt);
-        service_.Pipeline().RenderFrame(targetId_);
-        service_.Pipeline().Present(targetId_);
+        {
+#if defined(TRACY_ENABLE)
+            ZoneScopedN("Ticker.Tick");
+#endif
+            service_.Ticker().Tick(parentDt);
+        }
+        {
+#if defined(TRACY_ENABLE)
+            ZoneScopedN("Pipeline.RenderFrame");
+#endif
+            service_.Pipeline().RenderFrame(targetId_);
+        }
+        {
+#if defined(TRACY_ENABLE)
+            ZoneScopedN("Pipeline.Present");
+#endif
+            service_.Pipeline().Present(targetId_);
+        }
         frameCount++;
 
         f64 fpsDt = (f64)(now.QuadPart - fpsTimer.QuadPart) / freq.QuadPart;

@@ -10,6 +10,11 @@
 #include <cstdio>
 #include <vector>
 
+#if defined(TRACY_ENABLE)
+#  include <tracy/Tracy.hpp>          // FrameMark
+#  include <tracy/TracyVulkan.hpp>    // TracyVkCollect
+#endif
+
 namespace whiteout::flakes::gfx::vulkan {
 
 namespace {
@@ -271,9 +276,19 @@ u32 AcquireSwapChainImageIfNeeded(VulkanDeviceState& s, SwapChainEntry& sc,
     //     becomes the new spare.
     // The frame's submit then waits on imageAcquireSems[idx], which is
     // guaranteed to be the freshly-signaled one.
+#if defined(TRACY_ENABLE)
+    vk::ResultValue<u32> r{vk::Result::eSuccess, 0u};
+    {
+        ZoneScopedN("vkAcquireNextImage");
+        r = sc.swapchain.acquireNextImage(UINT64_MAX,
+                                          *sc.spareAcquireSem,
+                                          VK_NULL_HANDLE);
+    }
+#else
     auto r = sc.swapchain.acquireNextImage(UINT64_MAX,
                                            *sc.spareAcquireSem,
                                            VK_NULL_HANDLE);
+#endif
     if (r.result != vk::Result::eSuccess && r.result != vk::Result::eSuboptimalKHR) {
         std::fprintf(stderr, "[vk] acquireNextImage failed (%s)\n",
                      vk::to_string(r.result).c_str());
@@ -324,6 +339,16 @@ void VulkanDevice::Present(SwapChainHandle handle) {
         };
         vk::DependencyInfo dep{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier };
         frame.commandBuffer.pipelineBarrier2(dep);
+#if defined(TRACY_ENABLE)
+        // Drain the Tracy query pool into the profiler. Must be inside
+        // an active (non-renderpass) command buffer — endRendering has
+        // already run, and we issue the barrier above without entering
+        // another render pass, so this lands at the right point.
+        if (s.tracyCtx) {
+            TracyVkCollect(s.tracyCtx,
+                           static_cast<VkCommandBuffer>(*frame.commandBuffer));
+        }
+#endif
         (void)frame.commandBuffer.end();
         frame.recording = false;
 
@@ -373,7 +398,12 @@ void VulkanDevice::Present(SwapChainHandle handle) {
             .signalSemaphoreInfoCount = static_cast<u32>(signalInfos.size()),
             .pSignalSemaphoreInfos    = signalInfos.data(),
         };
-        (void)s.queue.submit2(submit, *frame.inFlightFence);
+        {
+#if defined(TRACY_ENABLE)
+            ZoneScopedN("vkQueueSubmit2");
+#endif
+            (void)s.queue.submit2(submit, *frame.inFlightFence);
+        }
         s.nextSubmitValue++;
     }
 
@@ -387,10 +417,23 @@ void VulkanDevice::Present(SwapChainHandle handle) {
         .pSwapchains        = reinterpret_cast<const vk::SwapchainKHR*>(&swap),
         .pImageIndices      = &idx,
     };
-    (void)s.queue.presentKHR(pi);
+    {
+#if defined(TRACY_ENABLE)
+        ZoneScopedN("vkQueuePresent");
+#endif
+        (void)s.queue.presentKHR(pi);
+    }
 
     sc->acquiredThisFrame = false;
     s.frameIndex          = (s.frameIndex + 1) % kFramesInFlight;
+
+#if defined(TRACY_ENABLE)
+    // Mark the end of the frame for Tracy's CPU timeline. Place this
+    // after Present so the frame's duration on Tracy matches what the
+    // user actually perceives (wall-clock end of frame, not end of
+    // submit). FrameMark is a no-op when TRACY_ENABLE is off.
+    FrameMark;
+#endif
 }
 
 }  // namespace whiteout::flakes::gfx::vulkan

@@ -14,6 +14,11 @@
 #include <cstdio>
 #include <cstring>
 
+#if defined(TRACY_ENABLE)
+#  include <tracy/Tracy.hpp>
+#  include <tracy/TracyVulkan.hpp>
+#endif
+
 namespace whiteout::flakes::gfx::vulkan {
 
 namespace {
@@ -54,7 +59,12 @@ void TransitionImageLayout(vk::raii::CommandBuffer& cb, VkImage image,
 
 void EnsureRecording(VulkanDeviceState& s, FrameContext& frame) {
     if (frame.recording) return;
-    (void)s.device.waitForFences(*frame.inFlightFence, vk::True, UINT64_MAX);
+    {
+#if defined(TRACY_ENABLE)
+        ZoneScopedN("vkWaitForFences");
+#endif
+        (void)s.device.waitForFences(*frame.inFlightFence, vk::True, UINT64_MAX);
+    }
     s.device.resetFences(*frame.inFlightFence);
     // Frame fence reached → run any deferred destroys whose timeline
     // value the GPU has caught up to. Cheap: just queries one counter
@@ -289,6 +299,40 @@ void VulkanCommandList::EndRenderPass() {
     activeColorAttachment_ = TextureHandle::Invalid;
     activeColorFormat_     = static_cast<u32>(vk::Format::eUndefined);
     lastBoundPipeline_     = PipelineHandle::Invalid;
+}
+
+void VulkanCommandList::BeginGpuZone(const char* name) {
+#if defined(TRACY_ENABLE)
+    auto& s = device_.State();
+    if (!s.tracyCtx || !name) return;
+    auto& frame = s.frames[s.frameIndex];
+    EnsureRecording(s, frame);
+    // Tracy's only ergonomic API for runtime-named GPU zones is the
+    // RAII VkCtxScope. We heap-allocate the scope so the destructor
+    // can fire from EndGpuZone(); Tracy keeps the name pointer alive
+    // internally (TracyAllocSrcLoc copies the string into its arena),
+    // so the caller doesn't need to outlive the zone.
+    const size_t nameLen = std::strlen(name);
+    static const char kFile[] = __FILE__;
+    static const char kFunc[] = "GpuZone";
+    gpuZoneStack_.push_back(std::make_unique<tracy::VkCtxScope>(
+        s.tracyCtx,
+        static_cast<uint32_t>(__LINE__),
+        kFile, sizeof(kFile) - 1,
+        kFunc, sizeof(kFunc) - 1,
+        name, nameLen,
+        static_cast<VkCommandBuffer>(*frame.commandBuffer),
+        /*is_active=*/true));
+#else
+    (void)name;
+#endif
+}
+
+void VulkanCommandList::EndGpuZone() {
+#if defined(TRACY_ENABLE)
+    if (gpuZoneStack_.empty()) return;
+    gpuZoneStack_.pop_back();  // ~VkCtxScope emits the end timestamp
+#endif
 }
 
 void VulkanCommandList::SetViewport(const Viewport& v) {
