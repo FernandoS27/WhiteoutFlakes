@@ -206,9 +206,21 @@ ModelTemplateManager::ParseAndBuild(const std::string& mdxPath) {
     tmpl->globalSequences   = adapter->GetGlobalSequences();
     tmpl->cameraPresets     = adapter->GetCameraPresets();
 
+    // Decide per-actor palette path (Path A vs B). On Path A this
+    // rewrites every vertex's boneIdx in `tmpl->skinWeights` to a
+    // global slot index so the GPU vertex buffer (built downstream
+    // from the same data) is consistent with the per-actor palette
+    // the renderer will fill. Must run before the geosetWeights
+    // copy below so the rewritten values land in SkinningData.
+    auto paletteDecision = animation::DecidePaletteLayoutAndRewrite(
+        tmpl->skeleton.nodeCount, tmpl->skinWeights);
+
     auto skinningData = std::make_shared<SkinningData>();
-    skinningData->nodeCount           = tmpl->skeleton.nodeCount;
-    skinningData->inverseBindMatrices = tmpl->skeleton.inverseBindMatrices;
+    skinningData->nodeCount            = tmpl->skeleton.nodeCount;
+    skinningData->inverseBindMatrices  = tmpl->skeleton.inverseBindMatrices;
+    skinningData->actorPaletteSize     = paletteDecision.actorPaletteSize;
+    skinningData->usesPerActorPalette  = paletteDecision.usesPerActorPalette;
+    skinningData->globalGroupAverages  = std::move(paletteDecision.globalGroupAverages);
     for (auto& sw : tmpl->skinWeights) {
         const i32 vc = (i32)sw.influences.size();
         auto& info = skinningData->geosetWeights[sw.geosetId];

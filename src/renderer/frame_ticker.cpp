@@ -163,6 +163,39 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
     }
 }
 
+// Fill a single per-actor bone palette CB on Path A. Writes the
+// actor's direct-node offset matrices into slots [0..nodeCount), then
+// fills the SD-only group-average pseudo-slots in
+// [nodeCount..actorPaletteSize). Skips slots past actorPaletteSize —
+// the shader never indexes them because the load-time rewrite kept
+// every vertex's boneIdx inside the populated range.
+static void WriteActorBonePalette(bls::BonePaletteCb& out,
+                                  const animation::SkinningSystem& sk) {
+    const i32 nodeCount = sk.NodeCount();
+    const Matrix44f* offsets = sk.OffsetMatrices();
+    for (i32 i = 0; i < nodeCount; ++i) {
+        bls::PackBone(out.bones[i], offsets[i]);
+    }
+    for (const auto& group : sk.GlobalGroupAverages()) {
+        if (group.globalPseudoSlot < 0
+            || group.globalPseudoSlot >= bls::kMaxBones) continue;
+
+        // Arithmetic mean of the contributing nodes' offset matrices,
+        // identical to SkinningSystem::AverageOffsetMatrices but
+        // inlined here so we don't need a public accessor for it.
+        Matrix44f avg = Matrix44f::zero();
+        i32 contributors = 0;
+        for (i32 nodeIdx : group.nodeIndices) {
+            if (nodeIdx < 0 || nodeIdx >= nodeCount) continue;
+            avg += offsets[nodeIdx];
+            ++contributors;
+        }
+        if (contributors > 0) avg *= 1.0f / static_cast<f32>(contributors);
+        else                  avg  = Matrix44f::identity();
+        bls::PackBone(out.bones[group.globalPseudoSlot], avg);
+    }
+}
+
 void FrameTicker::UpdateAnimation() {
     // Plots: surface live actor + skinned-actor counts on Tracy's plot
     // panel so the user can correlate spikes with population size.
@@ -182,37 +215,47 @@ void FrameTicker::UpdateAnimation() {
         { WDX_CPU_ZONE("ComputeOffsetMatrices");
           mi->render.skinning.ComputeOffsetMatrices(); }
 
+        gfx::IGFXDevice* gfx = rs_.Pipeline().Gfx();
+
+        if (mi->render.skinning.UsesPerActorPalette()) {
+            // Path A: one CB write per actor.
+            const gfx::BufferHandle cb = mi->render.skinning.ActorPaletteCb();
+            if (cb == gfx::BufferHandle::Invalid) continue;
+            WDX_CPU_ZONE("Actor.BonePalette");
+            ++paletteWrites;
+            void* mapped = nullptr;
+            { WDX_CPU_ZONE("MapBuffer");
+              mapped = gfx->MapBuffer(cb); }
+            if (mapped) {
+                auto* bp = static_cast<bls::BonePaletteCb*>(mapped);
+                { WDX_CPU_ZONE("WriteActorBonePalette");
+                  WriteActorBonePalette(*bp, mi->render.skinning); }
+                { WDX_CPU_ZONE("UnmapBuffer");
+                  gfx->UnmapBuffer(cb); }
+            }
+            continue;
+        }
+
+        // Path B fallback: one CB per geoset, original code path.
         for (auto& geo : mi->render.gpuGeosets) {
             if (geo.bonePaletteCb == gfx::BufferHandle::Invalid) continue;
             WDX_CPU_ZONE("Geoset.BonePalette");
             ++paletteWrites;
-            gfx::IGFXDevice* gfx = rs_.Pipeline().Gfx();
             void* mapped = nullptr;
-            {
-                WDX_CPU_ZONE("MapBuffer");
-                mapped = gfx->MapBuffer(geo.bonePaletteCb);
-            }
+            { WDX_CPU_ZONE("MapBuffer");
+              mapped = gfx->MapBuffer(geo.bonePaletteCb); }
             if (mapped) {
                 auto* bp = static_cast<bls::BonePaletteCb*>(mapped);
                 constexpr i32 kSlots = bls::kMaxBones;
                 static thread_local Matrix44f staging[kSlots];
                 i32 realBones = 0;
-                {
-                    WDX_CPU_ZONE("ComputeGeosetPalette");
-                    realBones = mi->render.skinning.ComputeGeosetPalette(
-                        geo.geosetId, staging, kSlots);
-                }
-                {
-                    WDX_CPU_ZONE("BuildBonePalette");
-                    // Pass the *actual* bone count, not kSlots. Otherwise
-                    // BuildBonePalette PackBones all 256 entries — the
-                    // unused-slot work was the original hot spot.
-                    bls::BuildBonePalette(*bp, staging, realBones);
-                }
-                {
-                    WDX_CPU_ZONE("UnmapBuffer");
-                    gfx->UnmapBuffer(geo.bonePaletteCb);
-                }
+                { WDX_CPU_ZONE("ComputeGeosetPalette");
+                  realBones = mi->render.skinning.ComputeGeosetPalette(
+                      geo.geosetId, staging, kSlots); }
+                { WDX_CPU_ZONE("BuildBonePalette");
+                  bls::BuildBonePalette(*bp, staging, realBones); }
+                { WDX_CPU_ZONE("UnmapBuffer");
+                  gfx->UnmapBuffer(geo.bonePaletteCb); }
             }
         }
     }

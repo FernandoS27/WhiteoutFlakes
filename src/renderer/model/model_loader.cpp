@@ -321,7 +321,26 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
         mi->render.skinDirty = true;
     }
 
-    for (auto& sw : skinWeights) {
+    // Same Path A/B decision as the template manager — direct-load
+    // path (no shared template) needs the same load-time rewrite so
+    // its vertex buffer's boneIdx values are global slot indices when
+    // the actor lands on Path A. `skinWeights` is passed as const so
+    // we copy into a local that DecidePaletteLayoutAndRewrite can
+    // mutate in-place; the rewritten copy then feeds the per-geoset
+    // weight + vertex-buffer setup below.
+    std::vector<SkinWeightData> rewrittenSkinWeights = skinWeights;
+    auto paletteDecision = animation::DecidePaletteLayoutAndRewrite(
+        skeleton.nodeCount, rewrittenSkinWeights);
+    if (auto data = mi->render.skinning.SharedData()) {
+        // SharedData was set by SetSkeleton above (which calls
+        // ensureOwnedData internally) — apply the decision to the
+        // owned instance.
+        data->actorPaletteSize     = paletteDecision.actorPaletteSize;
+        data->usesPerActorPalette  = paletteDecision.usesPerActorPalette;
+        data->globalGroupAverages  = std::move(paletteDecision.globalGroupAverages);
+    }
+
+    for (auto& sw : rewrittenSkinWeights) {
         i32 vc = (i32)sw.influences.size();
         std::vector<i32>   boneIdx(vc * 4);
         std::vector<f32> weights(vc * 4);
@@ -678,11 +697,40 @@ void ModelLoader::UploadStagedGeosets(Actor& mi) {
 }
 
 void ModelLoader::CreateNodePalette(Actor& mi) {
+    auto& skinning = mi.render.skinning;
 
+    if (skinning.UsesPerActorPalette()) {
+        // Path A: a single CB per actor, shared across every geoset.
+        // The CB is sized to the full kMaxBones-slot shader struct so
+        // descriptor-binding range checks (Vulkan) don't trip on a
+        // smaller buffer — we just never write or read past the
+        // actor's actorPaletteSize. The per-geoset slots stay Invalid
+        // and `geo.hasSkinning` is still set so the draw path knows
+        // skinning is active.
+        if (skinning.ActorPaletteCb() == gfx::BufferHandle::Invalid
+            && skinning.ActorPaletteSize() > 0) {
+            gfx::BufferHandle cb = rs_.Pipeline().Gfx()->CreateBuffer({
+                .size  = sizeof(bls::BonePaletteCb),
+                .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+            });
+            skinning.SetActorPaletteCb(cb);
+        }
+        for (auto& geo : mi.render.gpuGeosets) {
+            if (geo.boneVb == gfx::BufferHandle::Invalid) continue;
+            geo.hasSkinning = true;
+            // geo.bonePaletteCb stays Invalid; draw path falls back to
+            // skinning.ActorPaletteCb() — see render_pipeline.cpp.
+        }
+        return;
+    }
+
+    // Path B (fallback): one CB per geoset, unchanged from the
+    // pre-Path-A behavior. Used when the actor's palette size would
+    // exceed kActorPaletteCap (rare — typically very large WoW rigs).
     for (auto& geo : mi.render.gpuGeosets) {
         if (geo.boneVb == gfx::BufferHandle::Invalid) continue;
         if (geo.bonePaletteCb != gfx::BufferHandle::Invalid) continue;
-        if (mi.render.skinning.GeosetPaletteSize(geo.geosetId) <= 0) continue;
+        if (skinning.GeosetPaletteSize(geo.geosetId) <= 0) continue;
         geo.bonePaletteCb = rs_.Pipeline().Gfx()->CreateBuffer({
             .size  = sizeof(bls::BonePaletteCb),
             .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,

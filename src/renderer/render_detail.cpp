@@ -71,16 +71,17 @@ gfx::BufferHandle PickSlot0Vb(const GPUGeoset& geo, i32 coordId) {
 
 bool BindSdMeshGeometry(gfx::IGFXCommandList* cmd,
                         const GPUGeoset&      geo,
+                        gfx::BufferHandle     paletteCb,
                         i32                   coordId) {
 
     cmd->BindVertexBuffer(0, PickSlot0Vb(geo, coordId), sizeof(Vertex));
     cmd->BindIndexBuffer(geo.ib, gfx::Format::R32_UINT);
 
     const bool hasBones = (geo.boneVb != gfx::BufferHandle::Invalid)
-                       && (geo.bonePaletteCb != gfx::BufferHandle::Invalid);
+                       && (paletteCb  != gfx::BufferHandle::Invalid);
     if (hasBones) {
         cmd->BindVertexBuffer(1, geo.boneVb, sizeof(BoneVertex));
-        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 3, geo.bonePaletteCb);
+        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 3, paletteCb);
     }
     return hasBones;
 }

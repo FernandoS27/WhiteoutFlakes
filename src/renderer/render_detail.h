@@ -66,8 +66,15 @@ CollectedRenderables CollectSortedRenderables(
     const std::unordered_map<u32, std::unique_ptr<model::Actor>>& models,
     i32 selectedLod);
 
+// `paletteCb` is the bone-palette CB to bind when this geoset has
+// skinning data. Pass `geo.bonePaletteCb` directly when the actor is
+// on Path B (per-geoset palette); pass `actor.skinning.ActorPaletteCb()`
+// when the actor is on Path A. The caller picks because BindSdMeshGeometry
+// itself has no view of the actor. Skinning is considered active iff
+// both `geo.boneVb` and `paletteCb` are valid.
 bool BindSdMeshGeometry(gfx::IGFXCommandList*    cmd,
                         const model::GPUGeoset&  geo,
+                        gfx::BufferHandle        paletteCb,
                         i32                      coordId = 0);
 
 gfx::BufferHandle PickSlot0Vb(const model::GPUGeoset& geo, i32 coordId);

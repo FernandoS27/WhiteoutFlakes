@@ -132,6 +132,13 @@ struct Actor {
         render.ribbonVB = gfx::BufferHandle::Invalid;
         render.ribbonVBSize = 0;
 
+        // Per-actor bone palette CB (Path A). Invalid for Path B
+        // actors so Destroy is a no-op there. Always owned by this
+        // actor instance even when SkinningData is shared via a
+        // template — the buffer is per-instance state.
+        gfx.Destroy(render.skinning.ActorPaletteCb());
+        render.skinning.SetActorPaletteCb(gfx::BufferHandle::Invalid);
+
         sourceTemplate.reset();
     }
 };

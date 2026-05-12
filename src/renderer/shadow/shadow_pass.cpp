@@ -91,9 +91,19 @@ bool ShadowPass::Run(ShadowService& service) {
                         geo.geosetAlpha * mi->parentVisibility;
                     if (geoAlpha <= 0.0f) continue;
 
+                    // Pick the bone palette CB the actor actually owns —
+                    // per-actor on Path A, per-geoset on Path B. Same
+                    // pattern as the scene draw paths (see DrawGeoset
+                    // in render_pipeline.cpp). Without this branch the
+                    // shadow pass uses the non-skinned PSO for every
+                    // Path A actor, drawing shadows at bind pose.
+                    gfx::BufferHandle paletteCb = geo.bonePaletteCb;
+                    if (mi->render.skinning.UsesPerActorPalette()) {
+                        paletteCb = mi->render.skinning.ActorPaletteCb();
+                    }
                     const bool hasBones =
-                        geo.boneVb        != gfx::BufferHandle::Invalid &&
-                        geo.bonePaletteCb != gfx::BufferHandle::Invalid;
+                        geo.boneVb != gfx::BufferHandle::Invalid &&
+                        paletteCb  != gfx::BufferHandle::Invalid;
                     const gfx::PipelineHandle pso =
                         hasBones ? psoSkinned : psoRigid;
                     if (pso == gfx::PipelineHandle::Invalid) continue;
@@ -113,7 +123,7 @@ bool ShadowPass::Run(ShadowService& service) {
 
                     if (hasBones) {
                         cmd->BindConstantBuffer(gfx::ShaderStage::Vertex,
-                                                3, geo.bonePaletteCb);
+                                                3, paletteCb);
                         cmd->BindVertexBuffer(1, geo.boneVb, sizeof(BoneVertex));
                     }
 

@@ -1349,7 +1349,18 @@ public:
         i32 numLayers = mat ? (i32)mat->cpu.layers.size() : 0;
         if (numLayers <= 0) numLayers = 1;
 
-        const bool hasBones = render_detail::BindSdMeshGeometry(cmd, geo);
+        // Pick the bone palette CB the actor actually owns: per-actor
+        // on Path A (allocated on the SkinningSystem), per-geoset on
+        // Path B (the original layout). Without this branch the SD
+        // path looked at `geo.bonePaletteCb` only — which is Invalid
+        // for Path A actors — and incorrectly fell back to the non-
+        // skinned VS permutation, rendering at bind pose. Caught on
+        // Oldblood_hero.mdx via RenderDoc.
+        gfx::BufferHandle paletteCb = geo.bonePaletteCb;
+        if (view_.skinning && view_.skinning->UsesPerActorPalette()) {
+            paletteCb = view_.skinning->ActorPaletteCb();
+        }
+        const bool hasBones = render_detail::BindSdMeshGeometry(cmd, geo, paletteCb);
 
         const auto layout = hasBones
             ? bls::VertexLayoutKind::ParticleSDSkinned
@@ -1579,13 +1590,22 @@ public:
         if (hasTangents)
             cmd->BindVertexBuffer(1, geo.tangentVb, sizeof(Vector4f));
 
+        // Bone palette CB: prefer the per-actor handle (Path A) when
+        // the actor's SkinningSystem owns it; otherwise fall back to
+        // the per-geoset CB (Path B). The vertex buffer's boneIdx
+        // values were rewritten at load time to match whichever path
+        // this actor sits on, so the shader code doesn't change.
+        gfx::BufferHandle paletteCb = geo.bonePaletteCb;
+        if (view_.skinning && view_.skinning->UsesPerActorPalette()) {
+            paletteCb = view_.skinning->ActorPaletteCb();
+        }
         const bool hasBones =
             (geo.boneVb != gfx::BufferHandle::Invalid) &&
-            (geo.bonePaletteCb != gfx::BufferHandle::Invalid);
+            (paletteCb  != gfx::BufferHandle::Invalid);
         if (hasBones) {
             const u32 boneSlot = hasTangents ? 2u : 1u;
             cmd->BindVertexBuffer(boneSlot, geo.boneVb, sizeof(BoneVertex));
-            cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 3, geo.bonePaletteCb);
+            cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 3, paletteCb);
         }
 
         struct LayerJob {

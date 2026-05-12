@@ -2,9 +2,11 @@
 
 #include "whiteout/flakes/types.h"
 #include "whiteout/flakes/model_types.h"
+#include "gfx/gfx.h"
 #include "types.h"
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 namespace whiteout::flakes::renderer::animation {
 
@@ -17,12 +19,139 @@ struct GeosetPaletteLayout {
     std::vector<model::GroupAverageRecord> groupAverages;
 };
 
+// Like GroupAverageRecord, but `globalPseudoSlot` is the slot *in the
+// per-actor palette* (i.e. the global address space that nodeIndex
+// 0..nodeCount-1 also lives in), not a per-geoset slot. Populated by the
+// MDX loader's post-processing pass when the actor qualifies for the
+// per-actor palette path (Path A); empty otherwise.
+struct GlobalGroupAverageRecord {
+    i32              globalPseudoSlot;
+    std::vector<i32> nodeIndices;
+};
+
+// Cap on bones per actor palette — matches bls::kMaxBones in
+// bls_cb_layout.h (the BonePaletteCb shader struct is fixed at 256
+// slots). Duplicated here as a literal so animation.h doesn't have to
+// pull in bls_cb_layout.h. If kMaxBones ever changes you'll get a
+// static_assert mismatch in the cpp that uses both.
+inline constexpr i32 kActorPaletteCap = 256;
+
 struct SkinningData {
     i32                                          nodeCount = 0;
     std::vector<Matrix44f>                       inverseBindMatrices;
     std::unordered_map<i32, GeosetSkinInfo>      geosetWeights;
     std::unordered_map<i32, GeosetPaletteLayout> geosetLayouts;
+
+    // Per-actor palette path (Path A). When `usesPerActorPalette` is
+    // true, the actor holds a single bonePaletteCb sized to
+    // `actorPaletteSize` (= nodeCount + globalGroupAverages.size()),
+    // and every vertex's `boneIdx[k]` has been rewritten at load time
+    // to reference a slot in that palette directly. The shader keeps
+    // its `bones[kMaxBones]` declaration; we just write fewer slots
+    // and the vertex stream points only at the filled range.
+    //
+    // When false, the actor stays on Path B: one bonePaletteCb per
+    // geoset, vertex `boneIdx` is a local slot in that geoset's
+    // GeosetPaletteLayout. Used for models whose actorPaletteSize
+    // would exceed kMaxBones (256).
+    //
+    // Populated by the MDX adapter's post-processing pass; never
+    // mutated at runtime.
+    std::vector<GlobalGroupAverageRecord>        globalGroupAverages;
+    i32                                          actorPaletteSize     = 0;
+    bool                                         usesPerActorPalette  = false;
 };
+
+// Result of the load-time palette layout decision. Path A populates
+// globalGroupAverages and mutates `skinWeights[].influences[].boneIdx[]`
+// to global slot indices. Path B leaves data as-is and the caller keeps
+// using the per-geoset bonePaletteCb layout.
+struct PaletteLayoutDecision {
+    i32  actorPaletteSize    = 0;
+    bool usesPerActorPalette = false;
+    std::vector<GlobalGroupAverageRecord> globalGroupAverages;
+};
+
+// Decide whether the actor qualifies for Path A (single per-actor bone
+// palette CB) and, if so, rewrite every vertex's boneIdx to a global
+// palette slot and emit a globalGroupAverages list. Layout of slots:
+//
+//   [0 .. nodeCount)
+//       Direct node slots. Slot i holds offsetMatrices_[i].
+//   [nodeCount .. nodeCount + totalGroupAverages)
+//       Pseudo slots for SD group-averaged bones. Each unique
+//       (geoset, localPseudoSlot) gets one global slot here.
+//
+// On Path A every original local `subset[]` index maps to its global
+// node index (subsetNodeIndices[idx]), and every original local
+// pseudo-slot maps to the assigned global slot. Vertices whose weight
+// is zero in a given lane keep whatever boneIdx the loader left there
+// (we still rewrite it; it just doesn't matter because the lane has
+// no contribution).
+//
+// Path B fires when actorPaletteSize > kActorPaletteCap. In that case
+// nothing in `skinWeights` is touched; the renderer keeps the per-
+// geoset palette path.
+inline PaletteLayoutDecision DecidePaletteLayoutAndRewrite(
+        i32 nodeCount, std::vector<model::SkinWeightData>& skinWeights) {
+    PaletteLayoutDecision result;
+
+    i32 totalGroupAverages = 0;
+    for (const auto& sw : skinWeights) {
+        totalGroupAverages += (i32)sw.groupAverages.size();
+    }
+    result.actorPaletteSize = nodeCount + totalGroupAverages;
+
+    if (result.actorPaletteSize > kActorPaletteCap) {
+        // Path B: leave skinWeights untouched.
+        return result;
+    }
+
+    result.usesPerActorPalette = true;
+    result.globalGroupAverages.reserve(totalGroupAverages);
+
+    i32 nextGlobalPseudoSlot = nodeCount;
+    for (auto& sw : skinWeights) {
+        const i32 subsetCount = (i32)sw.subsetNodeIndices.size();
+        const i32 groupCount  = (i32)sw.groupAverages.size();
+
+        // Map this geoset's local pseudo slot -> assigned global slot.
+        std::unordered_map<i32, i32> localPseudoToGlobal;
+        localPseudoToGlobal.reserve(groupCount);
+        for (auto& rec : sw.groupAverages) {
+            const i32 globalSlot = nextGlobalPseudoSlot++;
+            localPseudoToGlobal.emplace(rec.pseudoSlot, globalSlot);
+            GlobalGroupAverageRecord g;
+            g.globalPseudoSlot = globalSlot;
+            g.nodeIndices      = rec.nodeIndices;  // already global node indices
+            result.globalGroupAverages.push_back(std::move(g));
+        }
+
+        // Rewrite every vertex lane's boneIdx in place. Lanes with
+        // weight==0 still get rewritten — the value is unused but a
+        // consistent rewrite keeps the data trivially traceable.
+        for (auto& inf : sw.influences) {
+            for (i32 k = 0; k < 4; ++k) {
+                const i32 localIdx = inf.boneIdx[k];
+                if (localIdx >= 0 && localIdx < subsetCount) {
+                    inf.boneIdx[k] = sw.subsetNodeIndices[localIdx];
+                } else {
+                    auto it = localPseudoToGlobal.find(localIdx);
+                    if (it != localPseudoToGlobal.end()) {
+                        inf.boneIdx[k] = it->second;
+                    } else {
+                        // Out-of-range index (malformed MDX or weight
+                        // already zero with default-init lane). Point
+                        // it at node 0 so it lands on the root bone's
+                        // matrix; with weight 0 it contributes nothing.
+                        inf.boneIdx[k] = 0;
+                    }
+                }
+            }
+        }
+    }
+    return result;
+}
 
 class SkinningSystem {
 public:
@@ -99,6 +228,22 @@ public:
         return data_ && data_->geosetWeights.count(geosetId) > 0;
     }
     bool NeedsUpdate()              const { return matricesDirty_; }
+
+    // Path A (per-actor palette) accessors. UsesPerActorPalette()
+    // returns the load-time decision; the CB handle is set by the
+    // model loader once the actor's gfx resources are created.
+    bool UsesPerActorPalette() const {
+        return data_ && data_->usesPerActorPalette;
+    }
+    i32  ActorPaletteSize() const {
+        return data_ ? data_->actorPaletteSize : 0;
+    }
+    const std::vector<GlobalGroupAverageRecord>& GlobalGroupAverages() const {
+        static const std::vector<GlobalGroupAverageRecord> kEmpty;
+        return data_ ? data_->globalGroupAverages : kEmpty;
+    }
+    gfx::BufferHandle ActorPaletteCb()           const { return bonePaletteCb_; }
+    void              SetActorPaletteCb(gfx::BufferHandle cb) { bonePaletteCb_ = cb; }
 
     const GeosetSkinInfo* GetGeosetWeights(i32 geosetId) const {
         if (!data_) return nullptr;
@@ -297,6 +442,11 @@ private:
     std::vector<Matrix44f>        offsetMatrices_;
     bool                          matricesDirty_ = false;
     bool                          nodesReady_    = false;
+
+    // Per-actor bone palette CB (Path A only). Allocated by the model
+    // loader once per actor instance after SetSharedData; freed by the
+    // owner (Actor) on destruction. Invalid on Path B actors.
+    gfx::BufferHandle             bonePaletteCb_ = gfx::BufferHandle::Invalid;
 };
 
 }
