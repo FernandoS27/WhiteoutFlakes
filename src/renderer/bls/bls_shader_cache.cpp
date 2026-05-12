@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <cstdio>
+#include <optional>
 
 namespace whiteout::flakes::renderer::bls {
 
@@ -41,20 +42,40 @@ BlsShader* BlsShaderCache::Acquire(gfx::ShaderStage stage, const std::string& na
         return it->second.get();
     }
 
-    // D3D11 → DXBC under shaders/<stage>/.
-    // D3D12 → DXIL under shaders/d3d12/<stage>/.
-    // Vulkan → SPIR-V under shaders/vulkan/<stage>/.
-    const char* apiPrefix =
-        (api_ == gfx::GfxApi::D3D12)  ? "shaders/d3d12/"  :
-        (api_ == gfx::GfxApi::Vulkan) ? "shaders/vulkan/" :
-                                        "shaders/";
-    const std::string path = std::string(apiPrefix) + StagePrefix(stage) + "/" + key + ".bls";
-    auto bytes = contentProvider_->ReadFile(path);
-    if (!bytes || bytes->empty()) {
-        std::fprintf(stderr,
-                     "[bls] ERR: shader read FAIL '%s'\n",
-                     path.c_str());
-        return nullptr;
+    // Per-API lookup, with a d3d11-shaders fallback for d3d12. The
+    // D3D12 runtime accepts SM5 DXBC bytecode just fine, so when a
+    // d3d12-specific (DXIL SM6) bundle isn't packed we transparently
+    // pick up the D3D11 (or game-shipped) DXBC bundle at the unprefixed
+    // path. Vulkan can't fall back: SPIR-V and DXBC aren't
+    // interchangeable.
+    //   D3D11 → DXBC under shaders/<stage>/
+    //   D3D12 → DXIL under shaders/d3d12/<stage>/ → fallback shaders/<stage>/
+    //   Vulkan → SPIR-V under shaders/vulkan/<stage>/
+    std::string                 path;
+    std::optional<std::vector<u8>> bytes;
+    auto tryRead = [&](const char* prefix) {
+        path  = std::string(prefix) + StagePrefix(stage) + "/" + key + ".bls";
+        bytes = contentProvider_->ReadFile(path);
+        return bytes && !bytes->empty();
+    };
+
+    if (api_ == gfx::GfxApi::Vulkan) {
+        if (!tryRead("shaders/vulkan/")) {
+            std::fprintf(stderr, "[bls] ERR: shader read FAIL '%s'\n", path.c_str());
+            return nullptr;
+        }
+    } else if (api_ == gfx::GfxApi::D3D12) {
+        if (!tryRead("shaders/d3d12/") && !tryRead("shaders/")) {
+            std::fprintf(stderr,
+                         "[bls] ERR: shader read FAIL '%s' (no d3d12 nor d3d11 bundle)\n",
+                         key.c_str());
+            return nullptr;
+        }
+    } else {  // D3D11
+        if (!tryRead("shaders/")) {
+            std::fprintf(stderr, "[bls] ERR: shader read FAIL '%s'\n", path.c_str());
+            return nullptr;
+        }
     }
 
     auto entry = std::make_unique<BlsShader>();
