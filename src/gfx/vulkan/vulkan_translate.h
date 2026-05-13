@@ -1,9 +1,7 @@
 #pragma once
 
-// gfx::Format / gfx::BlendFactor / gfx::CullMode / gfx::CompareOp /
-// gfx::PrimitiveTopology → vulkan.hpp `vk::*` enum translators. Values
-// the public enums don't cover return the eUndefined / eNone variant
-// so the caller fails fast at PSO time.
+// gfx::* enum → vk::* enum translators. Unknown values fall back to
+// eUndefined / eNone so the caller fails fast at PSO build time.
 
 #include "gfx/gfx.h"
 
@@ -49,9 +47,7 @@ inline vk::Format ToVkFormat(Format f) {
     return vk::Format::eUndefined;
 }
 
-// sRGB ↔ linear partner. Used by the swap chain to expose two image
-// views on the same image so the renderer can pick the gamma-correct
-// one per pass.
+// sRGB → linear pair for the swap chain's dual-view setup.
 inline vk::Format LinearPartnerOf(vk::Format f) {
     switch (f) {
         case vk::Format::eR8G8B8A8Srgb:    return vk::Format::eR8G8B8A8Unorm;
@@ -121,6 +117,17 @@ inline vk::BlendOp ToVkBlendOp(BlendOp o) {
 
 inline vk::Filter ToVkFilter(Filter f) {
     return (f == Filter::Linear) ? vk::Filter::eLinear : vk::Filter::eNearest;
+}
+
+inline VkBufferUsageFlags ToVkBufferUsage(BufferUsage u) {
+    VkBufferUsageFlags out = 0;
+    if (hasFlag(u, BufferUsage::Vertex))          out |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    if (hasFlag(u, BufferUsage::Index))           out |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    if (hasFlag(u, BufferUsage::Constant))        out |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    if (hasFlag(u, BufferUsage::ShaderResource))  out |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    if (hasFlag(u, BufferUsage::UnorderedAccess)) out |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    out |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    return out;
 }
 
 inline vk::SamplerAddressMode ToVkAddressMode(AddressMode m) {

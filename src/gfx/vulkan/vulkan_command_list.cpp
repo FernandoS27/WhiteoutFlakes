@@ -1,14 +1,11 @@
-// Vulkan IGFXCommandList — dynamic-rendering pass plus the bind / draw
-// scaffolding. vulkan.hpp method-style API; the per-frame command
-// buffer is a vk::raii::CommandBuffer rotated by VulkanDeviceState.
-//
-// On the first BeginRenderPass each frame we wait on the previous
-// fence, reset the buffer, and call begin(); subsequent passes within
-// the same frame keep recording into the same buffer. Present (in
-// vulkan_swap_chain.cpp) ends the buffer and submits.
+// IGFXCommandList for Vulkan. First BeginRenderPass each frame waits
+// on the prev-frame fence and resets the command buffer; subsequent
+// passes keep recording into the same buffer until Present submits.
 
+#include "vulkan_command_list.h"
 #include "vulkan_device.h"
-#include "vulkan_resources.h"
+#include "vulkan_device_state.h"
+#include "vulkan_handles.h"
 #include "vulkan_translate.h"
 
 #include <cstdio>
@@ -39,11 +36,8 @@ void TransitionImageLayout(vk::raii::CommandBuffer& cb, VkImage image,
         .oldLayout     = oldLayout,
         .newLayout     = newLayout,
         .image         = vk::Image(image),
-        // VK_REMAINING_{MIP_LEVELS,ARRAY_LAYERS} cover every subresource
-        // — render-target attachments have only mip 0 / layer 0, but
-        // sampled textures may be mip-chained or cube arrays. Keeping
-        // the range whole keeps the texture's tracked currentLayout in
-        // sync regardless of which view the renderer binds.
+        // Whole-resource range keeps currentLayout valid for any view
+        // (mip chains, cube arrays) the renderer might bind later.
         .subresourceRange = {
             aspect,
             0, VK_REMAINING_MIP_LEVELS,
@@ -57,28 +51,17 @@ void TransitionImageLayout(vk::raii::CommandBuffer& cb, VkImage image,
     cb.pipelineBarrier2(dep);
 }
 
-void EnsureRecording(VulkanDeviceState& s, FrameContext& frame) {
+void EnsureRecording(VulkanDeviceState& state, FrameContext& frame) {
     if (frame.recording) return;
     {
 #if defined(TRACY_ENABLE)
         ZoneScopedN("vkWaitForFences");
 #endif
-        (void)s.device.waitForFences(*frame.inFlightFence, vk::True, UINT64_MAX);
+        (void)state.device.waitForFences(*frame.inFlightFence, vk::True, UINT64_MAX);
     }
-    s.device.resetFences(*frame.inFlightFence);
-    // Frame fence reached → run any deferred destroys whose timeline
-    // value the GPU has caught up to. Cheap: just queries one counter
-    // and walks the list.
-    DrainPendingDeletes(s);
-    // Same drain on the transfer-timeline list — staging buffers and
-    // one-shot transfer command buffers from completed uploads get
-    // reaped here. Cheap when empty; only polls the timeline counter
-    // when there's something to consider.
-    DrainPendingTransferDeletes(s);
-    // Reset the SRV/sampler descriptor pool — the CB set is push-
-    // descriptor (no allocation, lives in the command buffer) so the
-    // pool only carries the two non-push sets. vkResetDescriptorPool
-    // frees every set allocated in the previous frame in one shot.
+    state.device.resetFences(*frame.inFlightFence);
+    DrainPendingDeletes(state);
+    DrainPendingTransferDeletes(state);
     frame.descriptorPool.reset(vk::DescriptorPoolResetFlags{});
     frame.commandBuffer.reset({});
     (void)frame.commandBuffer.begin({
@@ -86,33 +69,31 @@ void EnsureRecording(VulkanDeviceState& s, FrameContext& frame) {
     });
     frame.recording = true;
 
-    // Drain SRV transitions queued by CreateTexture. Batch every
-    // pending texture into a single pipelineBarrier2 so a frame that
-    // creates many textures doesn't pay one barrier each. Must happen
-    // BEFORE the first BeginRenderPass — image-layout transitions
-    // aren't allowed inside a dynamic-rendering scope.
-    if (!s.pendingSrvTransitions.empty()) {
+    // Batch every CreateTexture-queued transition into one barrier.
+    // Must run before any BeginRenderPass — layout transitions are
+    // illegal inside dynamic rendering.
+    if (!state.pendingSrvTransitions.empty()) {
         std::vector<vk::ImageMemoryBarrier2> barriers;
-        barriers.reserve(s.pendingSrvTransitions.size());
-        for (u64 slot : s.pendingSrvTransitions) {
-            auto* t = s.textures.Get(slot);
-            if (!t || !t->image) continue;
-            if (t->currentLayout == vk::ImageLayout::eShaderReadOnlyOptimal) continue;
+        barriers.reserve(state.pendingSrvTransitions.size());
+        for (u64 slot : state.pendingSrvTransitions) {
+            auto* texture = state.textures.Get(slot);
+            if (!texture || !texture->image) continue;
+            if (texture->currentLayout == vk::ImageLayout::eShaderReadOnlyOptimal) continue;
             barriers.push_back(vk::ImageMemoryBarrier2{
                 .srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands,
                 .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
                 .dstStageMask  = vk::PipelineStageFlagBits2::eAllCommands,
                 .dstAccessMask = vk::AccessFlagBits2::eShaderRead,
-                .oldLayout     = t->currentLayout,
+                .oldLayout     = texture->currentLayout,
                 .newLayout     = vk::ImageLayout::eShaderReadOnlyOptimal,
-                .image         = vk::Image(t->image),
+                .image         = vk::Image(texture->image),
                 .subresourceRange = {
-                    t->aspect,
+                    texture->aspect,
                     0, VK_REMAINING_MIP_LEVELS,
                     0, VK_REMAINING_ARRAY_LAYERS,
                 },
             });
-            t->currentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+            texture->currentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
         }
         if (!barriers.empty()) {
             frame.commandBuffer.pipelineBarrier2(vk::DependencyInfo{
@@ -120,7 +101,7 @@ void EnsureRecording(VulkanDeviceState& s, FrameContext& frame) {
                 .pImageMemoryBarriers    = barriers.data(),
             });
         }
-        s.pendingSrvTransitions.clear();
+        state.pendingSrvTransitions.clear();
     }
 }
 
@@ -133,32 +114,27 @@ void VulkanCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
                                          const f32 clearColor[4],
                                          f32 clearDepth, u8 clearStencil)
 {
-    auto& s     = device_.State();
-    auto& frame = s.frames[s.frameIndex];
+    auto& state     = device_.State();
+    auto& frame = state.frames[state.frameIndex];
 
-    // Detect the frame-start transition: pool reset (Sets 1/2) + cmd-
-    // buffer reset (Set 0 push state) both happen inside EnsureRecording,
-    // which means whatever Bind* we did during the previous frame is
-    // gone from the GPU side. Force every set-dirty so the first
-    // FlushDescriptors this frame rebuilds them; after that the
-    // equality short-circuit in Bind* keeps unchanged sets cheap.
+    // EnsureRecording resets the command buffer and descriptor pool,
+    // so every set we bound last frame is gone from the GPU side.
+    // Force-dirty so the first FlushDescriptors this frame rebuilds.
     const bool startingNewFrame = !frame.recording;
-    EnsureRecording(s, frame);
+    EnsureRecording(state, frame);
     if (startingNewFrame) {
         cbSetDirty_      = true;
         srvSetDirty_     = true;
         samplerSetDirty_ = true;
     }
 
-    auto* colorTex = s.textures.Get(static_cast<u64>(color));
-    auto* depthTex = s.textures.Get(static_cast<u64>(depth));
+    auto* colorTex = state.textures.Get(static_cast<u64>(color));
+    auto* depthTex = state.textures.Get(static_cast<u64>(depth));
 
-    // Acquire-on-first-bind: if the color attachment is a swap-chain
-    // proxy, AcquireSwapChainImageIfNeeded fetches the next image and
-    // re-points the proxy's image / view to it.
+    // Acquire-on-first-bind for swap-chain proxies.
     if (colorTex && colorTex->swapChainProxy != SwapChainHandle::Invalid) {
-        if (auto* sc = s.swapchains.Get(static_cast<u64>(colorTex->swapChainProxy))) {
-            AcquireSwapChainImageIfNeeded(s, *sc, frame);
+        if (auto* sc = state.swapchains.Get(static_cast<u64>(colorTex->swapChainProxy))) {
+            AcquireSwapChainImageIfNeeded(state, *sc, frame);
         }
     }
 
@@ -167,12 +143,7 @@ void VulkanCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
         ? static_cast<u32>(colorTex->format)
         : static_cast<u32>(vk::Format::eUndefined);
 
-    // Batch the color + depth attachment transitions into a single
-    // pipelineBarrier2. The driver wants every {image, oldLayout,
-    // newLayout, stage masks} tuple it has — calling
-    // pipelineBarrier2 twice with one barrier each costs two API
-    // round-trips and two driver-side scheduling decisions for what
-    // is conceptually one frame-boundary handoff.
+    // Batch color + depth attachment transitions into one barrier2.
     std::array<vk::ImageMemoryBarrier2, 2> attachBarriers{};
     u32 barrierCount = 0;
 
@@ -256,10 +227,8 @@ void VulkanCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
     };
     frame.commandBuffer.beginRendering(info);
 
-    // Default viewport / scissor — flip Y to match D3D conventions
-    // (renderer hands us projection matrices that assume top-left
-    // origin going down). Vulkan 1.1+ permits negative viewport
-    // height, equivalent to a Y-flip without extra matrix work.
+    // Negative viewport height = Y-flip to match D3D conventions
+    // (renderer projection matrices assume top-left origin).
     vk::Viewport vp{ 0.0f, static_cast<f32>(height),
                      static_cast<f32>(width), -static_cast<f32>(height),
                      0.0f, 1.0f };
@@ -269,31 +238,26 @@ void VulkanCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
 }
 
 void VulkanCommandList::EndRenderPass() {
-    auto& s     = device_.State();
-    auto& frame = s.frames[s.frameIndex];
+    auto& state     = device_.State();
+    auto& frame = state.frames[state.frameIndex];
     if (!frame.recording) return;
     frame.commandBuffer.endRendering();
 
-    // Eagerly transition the color attachment to eShaderReadOnlyOptimal
-    // so the next pass can sample it (HDR → tonemap is the canonical
-    // case). The transition is illegal inside an active rendering scope
-    // — endRendering above closes it — and the renderer never exposes
-    // explicit barriers through the gfx API, so doing it here is the
-    // only place we know the attachment write is finished. Swap-chain
-    // proxies aren't sampled (they're consumed by Present), so we skip
-    // them; their layout is driven by the Present path instead.
+    // Eagerly transition the color attachment to ShaderReadOnly so a
+    // following pass can sample it (HDR → tonemap). Swap-chain proxies
+    // are consumed by Present, so we skip them.
     if (activeColorAttachment_ != TextureHandle::Invalid) {
-        auto* t = s.textures.Get(static_cast<u64>(activeColorAttachment_));
-        if (t && t->image && t->swapChainProxy == SwapChainHandle::Invalid &&
-            t->currentLayout != vk::ImageLayout::eShaderReadOnlyOptimal)
+        auto* texture = state.textures.Get(static_cast<u64>(activeColorAttachment_));
+        if (texture && texture->image && texture->swapChainProxy == SwapChainHandle::Invalid &&
+            texture->currentLayout != vk::ImageLayout::eShaderReadOnlyOptimal)
         {
-            TransitionImageLayout(frame.commandBuffer, t->image, t->aspect,
-                t->currentLayout, vk::ImageLayout::eShaderReadOnlyOptimal,
+            TransitionImageLayout(frame.commandBuffer, texture->image, texture->aspect,
+                texture->currentLayout, vk::ImageLayout::eShaderReadOnlyOptimal,
                 vk::PipelineStageFlagBits2::eColorAttachmentOutput,
                 vk::AccessFlagBits2::eColorAttachmentWrite,
                 vk::PipelineStageFlagBits2::eFragmentShader,
                 vk::AccessFlagBits2::eShaderRead);
-            t->currentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+            texture->currentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
         }
     }
     activeColorAttachment_ = TextureHandle::Invalid;
@@ -303,20 +267,15 @@ void VulkanCommandList::EndRenderPass() {
 
 void VulkanCommandList::BeginGpuZone(const char* name) {
 #if defined(TRACY_ENABLE)
-    auto& s = device_.State();
-    if (!s.tracyCtx || !name) return;
-    auto& frame = s.frames[s.frameIndex];
-    EnsureRecording(s, frame);
-    // Tracy's only ergonomic API for runtime-named GPU zones is the
-    // RAII VkCtxScope. We heap-allocate the scope so the destructor
-    // can fire from EndGpuZone(); Tracy keeps the name pointer alive
-    // internally (TracyAllocSrcLoc copies the string into its arena),
-    // so the caller doesn't need to outlive the zone.
+    auto& state = device_.State();
+    if (!state.tracyCtx || !name) return;
+    auto& frame = state.frames[state.frameIndex];
+    EnsureRecording(state, frame);
     const size_t nameLen = std::strlen(name);
     static const char kFile[] = __FILE__;
     static const char kFunc[] = "GpuZone";
     gpuZoneStack_.push_back(std::make_unique<tracy::VkCtxScope>(
-        s.tracyCtx,
+        state.tracyCtx,
         static_cast<uint32_t>(__LINE__),
         kFile, sizeof(kFile) - 1,
         kFunc, sizeof(kFunc) - 1,
@@ -336,8 +295,8 @@ void VulkanCommandList::EndGpuZone() {
 }
 
 void VulkanCommandList::SetViewport(const Viewport& v) {
-    auto& s     = device_.State();
-    auto& frame = s.frames[s.frameIndex];
+    auto& state     = device_.State();
+    auto& frame = state.frames[state.frameIndex];
     if (!frame.recording) return;
     // Flip Y: see comment in BeginRenderPass.
     vk::Viewport vp{ v.x, v.y + v.height, v.width, -v.height,
@@ -346,8 +305,8 @@ void VulkanCommandList::SetViewport(const Viewport& v) {
 }
 
 void VulkanCommandList::SetScissor(const Scissor& sc) {
-    auto& s     = device_.State();
-    auto& frame = s.frames[s.frameIndex];
+    auto& state     = device_.State();
+    auto& frame = state.frames[state.frameIndex];
     if (!frame.recording) return;
     vk::Rect2D r{ { sc.x, sc.y },
                   { static_cast<u32>(sc.width), static_cast<u32>(sc.height) } };
@@ -357,90 +316,78 @@ void VulkanCommandList::SetScissor(const Scissor& sc) {
 // ---- Pipeline + vertex/index/constant binding -----------------------------
 
 void VulkanCommandList::BindPipeline(PipelineHandle h) {
-    auto& s     = device_.State();
-    auto& frame = s.frames[s.frameIndex];
+    auto& state     = device_.State();
+    auto& frame = state.frames[state.frameIndex];
     if (!frame.recording) return;
-    auto* p = s.pipelines.Get(static_cast<u64>(h));
-    if (!p) return;
-    // Catch VUID-vkCmdDraw-dynamicRenderingUnusedAttachments-08910
-    // pre-Draw so we can attribute the mismatch to a C++ call site
-    // (BindPipeline) rather than digging through the validation layer's
-    // command-buffer dump. Skipped for compute pipelines + depth-only
-    // passes (pipeline.colorFormat == eUndefined).
+    auto* pipeline = state.pipelines.Get(static_cast<u64>(h));
+    if (!pipeline) return;
+    // Pre-Draw catch for VUID-vkCmdDraw-08910 so the format mismatch
+    // is attributed to BindPipeline, not a validation-layer cmd dump.
     const vk::Format activeFmt = static_cast<vk::Format>(activeColorFormat_);
-    if (!p->isCompute &&
-        p->colorFormat != vk::Format::eUndefined &&
+    if (!pipeline->isCompute &&
+        pipeline->colorFormat != vk::Format::eUndefined &&
         activeFmt != vk::Format::eUndefined &&
-        p->colorFormat != activeFmt)
+        pipeline->colorFormat != activeFmt)
     {
         std::fprintf(stderr,
             "[vk] BindPipeline format mismatch: pipeline=%s renderpass=%s "
             "(handle=%llu)\n",
-            vk::to_string(p->colorFormat).c_str(),
+            vk::to_string(pipeline->colorFormat).c_str(),
             vk::to_string(activeFmt).c_str(),
             static_cast<unsigned long long>(h));
     }
     lastBoundPipeline_ = h;
     frame.commandBuffer.bindPipeline(
-        p->isCompute ? vk::PipelineBindPoint::eCompute
+        pipeline->isCompute ? vk::PipelineBindPoint::eCompute
                      : vk::PipelineBindPoint::eGraphics,
-        *p->pipeline);
+        *pipeline->pipeline);
 }
 
 void VulkanCommandList::BindVertexBuffer(u32 slot, BufferHandle h,
                                           u32 /*stride*/, u32 offset)
 {
-    auto& s     = device_.State();
-    auto& frame = s.frames[s.frameIndex];
+    auto& state     = device_.State();
+    auto& frame = state.frames[state.frameIndex];
     if (!frame.recording) return;
-    auto* b = s.buffers.Get(static_cast<u64>(h));
-    if (!b) return;
-    const vk::Buffer     buf = vk::Buffer(b->buffer);
-    // CpuWritable vertex buffers (ribbons, particles) ride the same
-    // per-Map ring as CBs — add the buffer's current ring offset so
-    // the GPU reads the slot the CPU just wrote, not slot 0.
-    const vk::DeviceSize off = offset + b->currentOffset();
+    auto* buffer = state.buffers.Get(static_cast<u64>(h));
+    if (!buffer) return;
+    const vk::Buffer     buf = vk::Buffer(buffer->buffer);
+    // Ring offset matters for CpuWritable buffers (ribbons, particles).
+    const vk::DeviceSize off = offset + buffer->currentOffset();
     frame.commandBuffer.bindVertexBuffers(slot, buf, off);
 }
 
-void VulkanCommandList::BindIndexBuffer(BufferHandle h, Format f) {
-    auto& s     = device_.State();
-    auto& frame = s.frames[s.frameIndex];
+void VulkanCommandList::BindIndexBuffer(BufferHandle h, Format format) {
+    auto& state     = device_.State();
+    auto& frame = state.frames[state.frameIndex];
     if (!frame.recording) return;
-    auto* b = s.buffers.Get(static_cast<u64>(h));
-    if (!b) return;
-    const vk::IndexType type = (f == Format::R16_UINT)
+    auto* buffer = state.buffers.Get(static_cast<u64>(h));
+    if (!buffer) return;
+    const vk::IndexType type = (format == Format::R16_UINT)
                                     ? vk::IndexType::eUint16
                                     : vk::IndexType::eUint32;
-    // Same ring-offset rule for dynamic index buffers.
-    frame.commandBuffer.bindIndexBuffer(vk::Buffer(b->buffer),
-                                         b->currentOffset(), type);
+    frame.commandBuffer.bindIndexBuffer(vk::Buffer(buffer->buffer),
+                                         buffer->currentOffset(), type);
 }
 
-// Translate a renderer-facing (stage, slot) pair into a global
-// descriptor binding number. The slang sources annotate every PS-side
-// resource at `register_index + PsBindingOffset`, so we mirror the
-// same shift here. Future stages claim their own slice
-// (GsBindingOffset = 32, …) when added.
+// PS slots shift by kStageBindingShift to match the slang convention.
 static u32 BindingForStage(ShaderStage stage, u32 slot) {
     return slot + (stage == ShaderStage::Pixel ? kStageBindingShift : 0);
 }
 
 void VulkanCommandList::BindConstantBuffer(ShaderStage stage, u32 slot,
-                                            BufferHandle buffer)
+                                            BufferHandle handle)
 {
     const u32 binding = BindingForStage(stage, slot);
     if (binding >= pendingCBs_.size()) return;
-    // Capture the buffer's CURRENT ring offset so subsequent MapBuffer
-    // rotations don't move the data this draw is supposed to read.
-    // The range used in the descriptor write is computed from the
-    // buffer's slot stride at flush time.
-    auto& s = device_.State();
-    auto* b = s.buffers.Get(static_cast<u64>(buffer));
-    const u64 off = b ? b->currentOffset() : 0;
+    // Capture the ring offset now; later MapBuffer rotations would
+    // otherwise leave this draw reading the wrong slot.
+    auto& state = device_.State();
+    auto* entry = state.buffers.Get(static_cast<u64>(handle));
+    const u64 off = entry ? entry->currentOffset() : 0;
     auto& cur = pendingCBs_[binding];
-    if (cur.buffer == buffer && cur.offset == off) return;  // identical → no-op
-    cur = { buffer, off };
+    if (cur.buffer == handle && cur.offset == off) return;  // identical → no-op
+    cur = { handle, off };
     cbSetDirty_ = true;
 }
 
@@ -454,8 +401,7 @@ void VulkanCommandList::BindShaderResource(ShaderStage stage, u32 slot,
     srvSetDirty_ = true;
 }
 
-// Buffer-shaped SRVs and UAVs aren't wired in Phase 1; the BLS path
-// uses them but we don't compile BLS for Vulkan yet.
+// Buffer SRVs / UAVs not yet wired up.
 void VulkanCommandList::BindShaderResource(ShaderStage, u32, BufferHandle) {}
 void VulkanCommandList::BindUnorderedAccess(u32, BufferHandle)             {}
 
@@ -472,24 +418,12 @@ void VulkanCommandList::BindSampler(ShaderStage stage, u32 slot,
 void VulkanCommandList::FlushDescriptors() {
     if (!cbSetDirty_ && !srvSetDirty_ && !samplerSetDirty_) return;
 
-    auto& s     = device_.State();
-    auto& frame = s.frames[s.frameIndex];
+    auto& state     = device_.State();
+    auto& frame = state.frames[state.frameIndex];
 
-    // Mixed-mode descriptors:
-    //   • set 0 (CBs)      — push descriptors. The CB set rewrites on
-    //                         every Bind because of the per-frame ring
-    //                         offset, so pushing inline beats alloc+
-    //                         update+bind from a pool.
-    //   • set 1 (SRVs)     — pool-allocated per Flush. Vulkan caps
-    //   • set 2 (Samplers) — pool-allocated per Flush. push sets to
-    //                         one per pipeline layout, so the lower-
-    //                         churn sets stay on the pool path.
-    //
-    // Per-set dirty flags let unchanged sets skip work entirely.
-    // Within a frame, an already-bound SRV/sampler set stays bound on
-    // the pipeline-layout slot until something else replaces it, so
-    // skipping its re-alloc + re-bind is safe across consecutive
-    // draws that re-use it (common in the geoset loop).
+    // CBs use push descriptors (rewritten every Bind by ring rotation).
+    // SRVs + samplers are pool-allocated (Vulkan caps push sets to one
+    // per pipeline layout, so the lower-churn sets get the pool path).
 
     // ---- Set 0: CBs (push descriptors, no allocation) ----
     if (cbSetDirty_) {
@@ -497,12 +431,12 @@ void VulkanCommandList::FlushDescriptors() {
         std::array<vk::WriteDescriptorSet,   kCbBindingCount> writes{};
         u32 count = 0;
         for (u32 i = 0; i < pendingCBs_.size() && i < kCbBindingCount; ++i) {
-            auto* b = s.buffers.Get(static_cast<u64>(pendingCBs_[i].buffer));
-            if (!b) continue;
+            auto* buffer = state.buffers.Get(static_cast<u64>(pendingCBs_[i].buffer));
+            if (!buffer) continue;
             infos[count] = vk::DescriptorBufferInfo{
-                .buffer = vk::Buffer(b->buffer),
+                .buffer = vk::Buffer(buffer->buffer),
                 .offset = pendingCBs_[i].offset,
-                .range  = b->slotCount > 1 ? b->desc.size : VK_WHOLE_SIZE,
+                .range  = buffer->slotCount > 1 ? buffer->desc.size : VK_WHOLE_SIZE,
             };
             writes[count] = vk::WriteDescriptorSet{
                 // dstSet is ignored by vkCmdPushDescriptorSetKHR.
@@ -516,22 +450,16 @@ void VulkanCommandList::FlushDescriptors() {
         if (count > 0) {
             frame.commandBuffer.pushDescriptorSetKHR(
                 vk::PipelineBindPoint::eGraphics,
-                *s.pipelineLayout,
+                *state.pipelineLayout,
                 kCbSetIndex,
                 vk::ArrayProxy<const vk::WriteDescriptorSet>{ count, writes.data() });
         }
         cbSetDirty_ = false;
     }
 
-    // ---- Sets 1 & 2: pool-allocated path ----------------------------
-    // Treat SRV + sampler as a unit: if either is dirty we re-alloc
-    // and re-bind both, since bindDescriptorSets takes a contiguous
-    // range starting at firstSet. The cost is one extra pool alloc /
-    // descriptor write per unchanged set in the pair — small.
-    // Bypass the raii allocateDescriptorSets() — its raii::DescriptorSet
-    // destructor calls vkFreeDescriptorSets, which is illegal on pools
-    // created without FREE_DESCRIPTOR_SET_BIT (we whole-pool reset at
-    // frame start instead).
+    // SRV + sampler are bound as a contiguous pair. Raw
+    // vkAllocateDescriptorSets bypasses raii's free-on-destroy, which
+    // is illegal on our reset-only pool.
     if (srvSetDirty_ || samplerSetDirty_) {
         auto allocSet = [&](VkDescriptorSetLayout layout) -> VkDescriptorSet {
             VkDescriptorSetAllocateInfo ai{
@@ -541,7 +469,7 @@ void VulkanCommandList::FlushDescriptors() {
                 .pSetLayouts        = &layout,
             };
             VkDescriptorSet set = VK_NULL_HANDLE;
-            if (vkAllocateDescriptorSets(*s.device, &ai, &set) != VK_SUCCESS) {
+            if (vkAllocateDescriptorSets(*state.device, &ai, &set) != VK_SUCCESS) {
                 return VK_NULL_HANDLE;
             }
             return set;
@@ -554,13 +482,13 @@ void VulkanCommandList::FlushDescriptors() {
             std::array<vk::DescriptorImageInfo, kSrvBindingCount> infos{};
             std::array<vk::WriteDescriptorSet,  kSrvBindingCount> writes{};
             u32 count = 0;
-            VkDescriptorSet set = allocSet(*s.srvSetLayout);
+            VkDescriptorSet set = allocSet(*state.srvSetLayout);
             if (set != VK_NULL_HANDLE) {
                 for (u32 i = 0; i < pendingSRVs_.size() && i < kSrvBindingCount; ++i) {
-                    auto* t = s.textures.Get(static_cast<u64>(pendingSRVs_[i].texture));
-                    if (!t) continue;
+                    auto* texture = state.textures.Get(static_cast<u64>(pendingSRVs_[i].texture));
+                    if (!texture) continue;
                     infos[count] = vk::DescriptorImageInfo{
-                        .imageView   = vk::ImageView(t->view),
+                        .imageView   = vk::ImageView(texture->view),
                         .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
                     };
                     writes[count] = vk::WriteDescriptorSet{
@@ -573,7 +501,7 @@ void VulkanCommandList::FlushDescriptors() {
                     ++count;
                 }
                 if (count > 0) {
-                    s.device.updateDescriptorSets(
+                    state.device.updateDescriptorSets(
                         vk::ArrayProxy<const vk::WriteDescriptorSet>{ count, writes.data() },
                         nullptr);
                 }
@@ -586,10 +514,10 @@ void VulkanCommandList::FlushDescriptors() {
             std::array<vk::DescriptorImageInfo, kSamplerBindingCount> infos{};
             std::array<vk::WriteDescriptorSet,  kSamplerBindingCount> writes{};
             u32 count = 0;
-            VkDescriptorSet set = allocSet(*s.samplerSetLayout);
+            VkDescriptorSet set = allocSet(*state.samplerSetLayout);
             if (set != VK_NULL_HANDLE) {
                 for (u32 i = 0; i < pendingSamplers_.size() && i < kSamplerBindingCount; ++i) {
-                    auto* sm = s.samplers.Get(static_cast<u64>(pendingSamplers_[i].sampler));
+                    auto* sm = state.samplers.Get(static_cast<u64>(pendingSamplers_[i].sampler));
                     if (!sm) continue;
                     infos[count] = vk::DescriptorImageInfo{
                         .sampler = *sm->sampler,
@@ -604,7 +532,7 @@ void VulkanCommandList::FlushDescriptors() {
                     ++count;
                 }
                 if (count > 0) {
-                    s.device.updateDescriptorSets(
+                    state.device.updateDescriptorSets(
                         vk::ArrayProxy<const vk::WriteDescriptorSet>{ count, writes.data() },
                         nullptr);
                 }
@@ -612,15 +540,10 @@ void VulkanCommandList::FlushDescriptors() {
             }
         }
 
-        // bindDescriptorSets binds [firstSet, firstSet+N) so we issue the
-        // SRV + sampler pair starting at set 1. The CB set (0) was already
-        // recorded via pushDescriptorSetKHR above. Sets allocated above
-        // default to fully-valid even when no writes were issued
-        // (descriptors are uninitialised but unused by the bound stages).
         if (setsToBind[0] || setsToBind[1]) {
             frame.commandBuffer.bindDescriptorSets(
                 vk::PipelineBindPoint::eGraphics,
-                *s.pipelineLayout,
+                *state.pipelineLayout,
                 /*firstSet*/ kSrvSetIndex,
                 vk::ArrayProxy<const vk::DescriptorSet>{
                     static_cast<u32>(setsToBind.size()),
@@ -634,49 +557,46 @@ void VulkanCommandList::FlushDescriptors() {
 }
 
 void VulkanCommandList::ClearDepth(TextureHandle depth, f32 clearDepth, u8 clearStencil) {
-    auto& s     = device_.State();
-    auto& frame = s.frames[s.frameIndex];
-    auto* t = s.textures.Get(static_cast<u64>(depth));
-    if (!t || !frame.recording) return;
-    TransitionImageLayout(frame.commandBuffer, t->image, t->aspect,
-        t->currentLayout, vk::ImageLayout::eTransferDstOptimal,
+    auto& state     = device_.State();
+    auto& frame = state.frames[state.frameIndex];
+    auto* texture = state.textures.Get(static_cast<u64>(depth));
+    if (!texture || !frame.recording) return;
+    TransitionImageLayout(frame.commandBuffer, texture->image, texture->aspect,
+        texture->currentLayout, vk::ImageLayout::eTransferDstOptimal,
         vk::PipelineStageFlagBits2::eTopOfPipe, {},
         vk::PipelineStageFlagBits2::eClear, vk::AccessFlagBits2::eTransferWrite);
     vk::ClearDepthStencilValue v{ clearDepth, clearStencil };
-    vk::ImageSubresourceRange range{ t->aspect, 0, 1, 0, 1 };
+    vk::ImageSubresourceRange range{ texture->aspect, 0, 1, 0, 1 };
     frame.commandBuffer.clearDepthStencilImage(
-        vk::Image(t->image), vk::ImageLayout::eTransferDstOptimal, v, range);
-    t->currentLayout = vk::ImageLayout::eTransferDstOptimal;
+        vk::Image(texture->image), vk::ImageLayout::eTransferDstOptimal, v, range);
+    texture->currentLayout = vk::ImageLayout::eTransferDstOptimal;
 }
 void VulkanCommandList::CopyBuffer(BufferHandle dst, BufferHandle src) {
-    auto& s     = device_.State();
-    auto& frame = s.frames[s.frameIndex];
+    auto& state     = device_.State();
+    auto& frame = state.frames[state.frameIndex];
     if (!frame.recording) return;
-    auto* d = s.buffers.Get(static_cast<u64>(dst));
-    auto* sr = s.buffers.Get(static_cast<u64>(src));
-    if (!d || !sr) return;
-    // baseOffset is non-zero for shared CB-ring sub-allocs (otherwise 0),
-    // so this works uniformly for both own-allocation and shared
-    // buffers.
+    auto* dstBuffer = state.buffers.Get(static_cast<u64>(dst));
+    auto* srcBuffer = state.buffers.Get(static_cast<u64>(src));
+    if (!dstBuffer || !srcBuffer) return;
     vk::BufferCopy region{
-        .srcOffset = sr->baseOffset,
-        .dstOffset = d->baseOffset,
-        .size      = std::min(d->desc.size, sr->desc.size),
+        .srcOffset = srcBuffer->baseOffset,
+        .dstOffset = dstBuffer->baseOffset,
+        .size      = std::min(dstBuffer->desc.size, srcBuffer->desc.size),
     };
-    frame.commandBuffer.copyBuffer(vk::Buffer(sr->buffer), vk::Buffer(d->buffer), region);
+    frame.commandBuffer.copyBuffer(vk::Buffer(srcBuffer->buffer), vk::Buffer(dstBuffer->buffer), region);
 }
 
 void VulkanCommandList::Draw(u32 vertexCount, u32 firstVertex) {
-    auto& s     = device_.State();
-    auto& frame = s.frames[s.frameIndex];
+    auto& state     = device_.State();
+    auto& frame = state.frames[state.frameIndex];
     if (!frame.recording) return;
     FlushDescriptors();
     frame.commandBuffer.draw(vertexCount, /*instances*/ 1, firstVertex, /*firstInstance*/ 0);
 }
 
 void VulkanCommandList::DrawIndexed(u32 indexCount, u32 firstIndex, i32 baseVertex) {
-    auto& s     = device_.State();
-    auto& frame = s.frames[s.frameIndex];
+    auto& state     = device_.State();
+    auto& frame = state.frames[state.frameIndex];
     if (!frame.recording) return;
     FlushDescriptors();
     frame.commandBuffer.drawIndexed(indexCount, /*instances*/ 1,
@@ -684,8 +604,8 @@ void VulkanCommandList::DrawIndexed(u32 indexCount, u32 firstIndex, i32 baseVert
 }
 
 void VulkanCommandList::Dispatch(u32 gx, u32 gy, u32 gz) {
-    auto& s     = device_.State();
-    auto& frame = s.frames[s.frameIndex];
+    auto& state     = device_.State();
+    auto& frame = state.frames[state.frameIndex];
     if (!frame.recording) return;
     FlushDescriptors();
     frame.commandBuffer.dispatch(gx, gy, gz);

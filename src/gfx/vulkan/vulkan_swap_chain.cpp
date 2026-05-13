@@ -1,9 +1,8 @@
-// Vulkan swap chain — surface + VkSwapchainKHR + sRGB/linear view pair.
-// Uses vk::raii::* for everything we own; swap-chain images themselves
-// are owned by the swapchain (no destroy).
+// Surface + VkSwapchainKHR + paired sRGB/linear views.
 
 #include "vulkan_device.h"
-#include "vulkan_resources.h"
+#include "vulkan_device_state.h"
+#include "vulkan_handles.h"
 #include "vulkan_translate.h"
 
 #include <algorithm>
@@ -35,9 +34,9 @@ vk::raii::ImageView MakeBackbufferView(const vk::raii::Device& device,
     return std::move(r.value);
 }
 
-bool CreateSwapchainObjects(VulkanDeviceState& s, SwapChainEntry& sc,
+bool CreateSwapchainObjects(VulkanDeviceState& state, SwapChainEntry& sc,
                             i32 width, i32 height, Format colorFormat) {
-    auto capsR = s.physicalDevice.getSurfaceCapabilitiesKHR(*sc.surface);
+    auto capsR = state.physicalDevice.getSurfaceCapabilitiesKHR(*sc.surface);
     if (capsR.result != vk::Result::eSuccess) return false;
     const auto& caps = capsR.value;
 
@@ -51,7 +50,7 @@ bool CreateSwapchainObjects(VulkanDeviceState& s, SwapChainEntry& sc,
                                            caps.maxImageExtent.height);
     }
 
-    auto fmtsR = s.physicalDevice.getSurfaceFormatsKHR(*sc.surface);
+    auto fmtsR = state.physicalDevice.getSurfaceFormatsKHR(*sc.surface);
     if (fmtsR.result != vk::Result::eSuccess || fmtsR.value.empty()) return false;
     const vk::Format preferredSrgb = ToVkFormat(colorFormat);
     vk::SurfaceFormatKHR chosen = fmtsR.value[0];
@@ -65,8 +64,8 @@ bool CreateSwapchainObjects(VulkanDeviceState& s, SwapChainEntry& sc,
     sc.formatSrgb   = chosen.format;
     sc.formatLinear = LinearPartnerOf(chosen.format);
 
-    // MUTABLE_FORMAT_BIT + image-format-list lets us create both sRGB and
-    // linear views on the same VkImage.
+    // MUTABLE_FORMAT + format-list lets us create both sRGB and linear
+    // views on the same VkImage.
     const std::array<vk::Format, 2> formatList = { sc.formatSrgb, sc.formatLinear };
     vk::ImageFormatListCreateInfo formatListInfo{
         .viewFormatCount = static_cast<u32>(formatList.size()),
@@ -95,7 +94,7 @@ bool CreateSwapchainObjects(VulkanDeviceState& s, SwapChainEntry& sc,
         .clipped          = vk::True,
     };
 
-    auto scR = s.device.createSwapchainKHR(ci);
+    auto scR = state.device.createSwapchainKHR(ci);
     if (scR.result != vk::Result::eSuccess) {
         std::fprintf(stderr, "[vk] createSwapchainKHR failed (%s)\n",
                      vk::to_string(scR.result).c_str());
@@ -112,31 +111,27 @@ bool CreateSwapchainObjects(VulkanDeviceState& s, SwapChainEntry& sc,
     sc.viewsSrgb.reserve(sc.images.size());
     sc.viewsLinear.reserve(sc.images.size());
     for (const auto& image : sc.images) {
-        sc.viewsSrgb.push_back(MakeBackbufferView(s.device, image, sc.formatSrgb));
-        sc.viewsLinear.push_back(MakeBackbufferView(s.device, image, sc.formatLinear));
+        sc.viewsSrgb.push_back(MakeBackbufferView(state.device, image, sc.formatSrgb));
+        sc.viewsLinear.push_back(MakeBackbufferView(state.device, image, sc.formatLinear));
     }
 
-    // Allocate one acquire semaphore per image plus one spare. The
-    // acquire dance in AcquireSwapChainImageIfNeeded swaps the spare
-    // with the per-image slot on every call, so a semaphore is never
-    // re-used while the prior present using it is still in flight.
-    // The render-done semaphores follow the same per-image pinning —
-    // signaled by submit, waited on by present, freed implicitly by
-    // the next acquire of the same image.
+    // One acquire + render-done semaphore per image, plus one spare
+    // that the swap-with-spare dance in AcquireSwapChainImageIfNeeded
+    // uses to avoid re-using a semaphore mid-present.
     sc.imageAcquireSems.clear();
     sc.imageRenderDoneSems.clear();
     sc.imageAcquireSems.reserve(sc.images.size());
     sc.imageRenderDoneSems.reserve(sc.images.size());
     for (usize i = 0; i < sc.images.size(); ++i) {
-        auto r1 = s.device.createSemaphore({});
-        auto r2 = s.device.createSemaphore({});
+        auto r1 = state.device.createSemaphore({});
+        auto r2 = state.device.createSemaphore({});
         if (r1.result != vk::Result::eSuccess ||
             r2.result != vk::Result::eSuccess) return false;
         sc.imageAcquireSems.push_back(std::move(r1.value));
         sc.imageRenderDoneSems.push_back(std::move(r2.value));
     }
     {
-        auto r = s.device.createSemaphore({});
+        auto r = state.device.createSemaphore({});
         if (r.result != vk::Result::eSuccess) return false;
         sc.spareAcquireSem = std::move(r.value);
     }
@@ -150,10 +145,10 @@ bool CreateSwapchainObjects(VulkanDeviceState& s, SwapChainEntry& sc,
 SwapChainHandle VulkanDevice::CreateSwapChain(void* nativeWindowHandle,
                                               i32 width, i32 height,
                                               Format colorFormat) {
-    auto& s = *state_;
+    auto& state = *state_;
 
     SwapChainEntry sc{};
-    auto surfR = s.instance.createWin32SurfaceKHR({
+    auto surfR = state.instance.createWin32SurfaceKHR({
         .hinstance = GetModuleHandleW(nullptr),
         .hwnd      = reinterpret_cast<HWND>(nativeWindowHandle),
     });
@@ -164,21 +159,19 @@ SwapChainHandle VulkanDevice::CreateSwapChain(void* nativeWindowHandle,
     }
     sc.surface = std::move(surfR.value);
 
-    auto presentR = s.physicalDevice.getSurfaceSupportKHR(s.queueFamily, *sc.surface);
+    auto presentR = state.physicalDevice.getSurfaceSupportKHR(state.queueFamily, *sc.surface);
     if (presentR.result != vk::Result::eSuccess || !presentR.value) {
         std::fprintf(stderr,
                      "[vk] queue family %u doesn't support presenting on this surface\n",
-                     s.queueFamily);
+                     state.queueFamily);
         return SwapChainHandle::Invalid;
     }
 
-    if (!CreateSwapchainObjects(s, sc, width, height, colorFormat)) {
+    if (!CreateSwapchainObjects(state, sc, width, height, colorFormat)) {
         return SwapChainHandle::Invalid;
     }
 
-    // Allocate the two swap-chain proxy textures. Their image / view
-    // fields get repointed every frame in BeginRenderPass before the
-    // attachments are bound.
+    // Proxy textures — image/view get repointed every Acquire.
     TextureEntry srgbProxy{};
     srgbProxy.format        = sc.formatSrgb;
     srgbProxy.aspect        = vk::ImageAspectFlagBits::eColor;
@@ -199,58 +192,57 @@ SwapChainHandle VulkanDevice::CreateSwapChain(void* nativeWindowHandle,
     linearProxy.image         = sc.images[0];
     linearProxy.view          = *sc.viewsLinear[0];
 
-    const u64 proxySrgbRaw   = s.textures.Insert(std::move(srgbProxy));
-    const u64 proxyLinearRaw = s.textures.Insert(std::move(linearProxy));
+    const u64 proxySrgbRaw   = state.textures.Insert(std::move(srgbProxy));
+    const u64 proxyLinearRaw = state.textures.Insert(std::move(linearProxy));
     sc.proxySrgb   = static_cast<TextureHandle>(proxySrgbRaw);
     sc.proxyLinear = static_cast<TextureHandle>(proxyLinearRaw);
 
-    const u64 raw = s.swapchains.Insert(std::move(sc));
+    const u64 raw = state.swapchains.Insert(std::move(sc));
     const SwapChainHandle handle = static_cast<SwapChainHandle>(raw);
 
-    // Patch back-pointers on the proxies now that the SwapChainHandle
-    // is allocated.
-    if (auto* p = s.textures.Get(proxySrgbRaw))   p->swapChainProxy = handle;
-    if (auto* p = s.textures.Get(proxyLinearRaw)) p->swapChainProxy = handle;
+    // Back-pointers now that the SwapChainHandle is allocated.
+    if (auto* proxy = state.textures.Get(proxySrgbRaw))   proxy->swapChainProxy = handle;
+    if (auto* proxy = state.textures.Get(proxyLinearRaw)) proxy->swapChainProxy = handle;
     return handle;
 }
 
 void VulkanDevice::ResizeSwapChain(SwapChainHandle handle, i32 width, i32 height) {
-    auto& s = *state_;
-    auto* sc = s.swapchains.Get(static_cast<u64>(handle));
+    auto& state = *state_;
+    auto* sc = state.swapchains.Get(static_cast<u64>(handle));
     if (!sc) return;
-    s.device.waitIdle();
+    state.device.waitIdle();
     sc->viewsSrgb.clear();
     sc->viewsLinear.clear();
     sc->images.clear();
     sc->swapchain = nullptr;  // raii destroy
-    if (!CreateSwapchainObjects(s, *sc, width, height,
+    if (!CreateSwapchainObjects(state, *sc, width, height,
                                  sc->formatSrgb == vk::Format::eR8G8B8A8Srgb
                                      ? Format::R8G8B8A8_UNORM_SRGB
                                      : Format::B8G8R8A8_UNORM)) {
         return;
     }
-    if (auto* p = s.textures.Get(static_cast<u64>(sc->proxySrgb))) {
-        p->image  = sc->images[0];
-        p->view   = *sc->viewsSrgb[0];
-        p->width  = static_cast<i32>(sc->extent.width);
-        p->height = static_cast<i32>(sc->extent.height);
+    if (auto* proxy = state.textures.Get(static_cast<u64>(sc->proxySrgb))) {
+        proxy->image  = sc->images[0];
+        proxy->view   = *sc->viewsSrgb[0];
+        proxy->width  = static_cast<i32>(sc->extent.width);
+        proxy->height = static_cast<i32>(sc->extent.height);
     }
-    if (auto* p = s.textures.Get(static_cast<u64>(sc->proxyLinear))) {
-        p->image  = sc->images[0];
-        p->view   = *sc->viewsLinear[0];
-        p->width  = static_cast<i32>(sc->extent.width);
-        p->height = static_cast<i32>(sc->extent.height);
+    if (auto* proxy = state.textures.Get(static_cast<u64>(sc->proxyLinear))) {
+        proxy->image  = sc->images[0];
+        proxy->view   = *sc->viewsLinear[0];
+        proxy->width  = static_cast<i32>(sc->extent.width);
+        proxy->height = static_cast<i32>(sc->extent.height);
     }
 }
 
 void VulkanDevice::DestroySwapChain(SwapChainHandle handle) {
-    auto& s = *state_;
-    auto* sc = s.swapchains.Get(static_cast<u64>(handle));
+    auto& state = *state_;
+    auto* sc = state.swapchains.Get(static_cast<u64>(handle));
     if (!sc) return;
-    s.device.waitIdle();
-    s.textures.Remove(static_cast<u64>(sc->proxySrgb));
-    s.textures.Remove(static_cast<u64>(sc->proxyLinear));
-    s.swapchains.Remove(static_cast<u64>(handle));  // raii teardown
+    state.device.waitIdle();
+    state.textures.Remove(static_cast<u64>(sc->proxySrgb));
+    state.textures.Remove(static_cast<u64>(sc->proxyLinear));
+    state.swapchains.Remove(static_cast<u64>(handle));  // raii teardown
 }
 
 TextureHandle VulkanDevice::GetSwapChainBackBuffer(SwapChainHandle handle) {
@@ -263,19 +255,17 @@ TextureHandle VulkanDevice::GetSwapChainBackBufferLinear(SwapChainHandle handle)
     return sc ? sc->proxyLinear : TextureHandle::Invalid;
 }
 
-u32 AcquireSwapChainImageIfNeeded(VulkanDeviceState& s, SwapChainEntry& sc,
+u32 AcquireSwapChainImageIfNeeded(VulkanDeviceState& state, SwapChainEntry& sc,
                                    FrameContext& frame) {
     if (sc.acquiredThisFrame) return sc.imageIndex;
 
-    // Per-image acquire-semaphore swap dance:
-    //  1. Use the spare to acquire — it's known free (either freshly
-    //     created, or just finished its prior use one cycle ago).
-    //  2. After acquire, swap the spare with the per-image slot so the
-    //     newly-signaled semaphore is owned by that image. The slot's
+    // Swap-with-spare so an acquire never reuses a semaphore that the
+    // previous present is still waiting on:
+    //  1. Acquire with the spare (always free).
+    //  2. Swap it into the per-image slot; the old slot becomes the
+    //     new spare. Releases one acquire cycle later, when the same
     //     previous semaphore (released N acquires ago for that image)
-    //     becomes the new spare.
-    // The frame's submit then waits on imageAcquireSems[idx], which is
-    // guaranteed to be the freshly-signaled one.
+    //     image is next acquired.
 #if defined(TRACY_ENABLE)
     vk::ResultValue<u32> r{vk::Result::eSuccess, 0u};
     {
@@ -302,28 +292,28 @@ u32 AcquireSwapChainImageIfNeeded(VulkanDeviceState& s, SwapChainEntry& sc,
     frame.acquireWaitSem = *sc.imageAcquireSems[idx];
     frame.renderDoneSem  = *sc.imageRenderDoneSems[idx];
 
-    if (auto* p = s.textures.Get(static_cast<u64>(sc.proxySrgb))) {
-        p->image         = sc.images[idx];
-        p->view          = *sc.viewsSrgb[idx];
-        p->currentLayout = vk::ImageLayout::eUndefined;
+    if (auto* proxy = state.textures.Get(static_cast<u64>(sc.proxySrgb))) {
+        proxy->image         = sc.images[idx];
+        proxy->view          = *sc.viewsSrgb[idx];
+        proxy->currentLayout = vk::ImageLayout::eUndefined;
     }
-    if (auto* p = s.textures.Get(static_cast<u64>(sc.proxyLinear))) {
-        p->image         = sc.images[idx];
-        p->view          = *sc.viewsLinear[idx];
-        p->currentLayout = vk::ImageLayout::eUndefined;
+    if (auto* proxy = state.textures.Get(static_cast<u64>(sc.proxyLinear))) {
+        proxy->image         = sc.images[idx];
+        proxy->view          = *sc.viewsLinear[idx];
+        proxy->currentLayout = vk::ImageLayout::eUndefined;
     }
     return idx;
 }
 
 void VulkanDevice::Present(SwapChainHandle handle) {
-    auto& s = *state_;
-    auto* sc = s.swapchains.Get(static_cast<u64>(handle));
+    auto& state = *state_;
+    auto* sc = state.swapchains.Get(static_cast<u64>(handle));
     if (!sc || !sc->acquiredThisFrame) return;
 
-    auto& frame = s.frames[s.frameIndex];
+    auto& frame = state.frames[state.frameIndex];
 
     if (frame.recording) {
-        // Transition the just-rendered image to PRESENT_SRC.
+        // Transition the rendered image to PRESENT_SRC.
         vk::ImageMemoryBarrier2 barrier{
             .srcStageMask  = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
             .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
@@ -340,54 +330,41 @@ void VulkanDevice::Present(SwapChainHandle handle) {
         vk::DependencyInfo dep{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier };
         frame.commandBuffer.pipelineBarrier2(dep);
 #if defined(TRACY_ENABLE)
-        // Drain the Tracy query pool into the profiler. Must be inside
-        // an active (non-renderpass) command buffer — endRendering has
-        // already run, and we issue the barrier above without entering
-        // another render pass, so this lands at the right point.
-        if (s.tracyCtx) {
-            TracyVkCollect(s.tracyCtx,
+        // Must be in an open, non-render-pass CB — barrier above keeps us there.
+        if (state.tracyCtx) {
+            TracyVkCollect(state.tracyCtx,
                            static_cast<VkCommandBuffer>(*frame.commandBuffer));
         }
 #endif
         (void)frame.commandBuffer.end();
         frame.recording = false;
 
-        // Build the wait list. Always wait on the swap-chain acquire
-        // semaphore. When `hasAsyncTransfer` is true and at least one
-        // upload has happened, also wait on the transfer timeline at
-        // its latest signaled value so any draw in this submit sees
-        // the uploaded data. The wait is essentially free if the
-        // timeline has already reached that value (cheap timeline-wait
-        // semantics).
+        // Wait on the acquire semaphore + (when applicable) the latest
+        // transfer-timeline signal so draws see uploaded data.
         std::array<vk::SemaphoreSubmitInfo, 2> waitInfos{};
         waitInfos[0] = vk::SemaphoreSubmitInfo{
             .semaphore = vk::Semaphore(frame.acquireWaitSem),
             .stageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
         };
         u32 waitCount = 1;
-        if (s.hasAsyncTransfer && s.transferLastSignaled > 0) {
+        if (state.hasAsyncTransfer && state.transferLastSignaled > 0) {
             waitInfos[1] = vk::SemaphoreSubmitInfo{
-                .semaphore = *s.transferTimelineSem,
-                .value     = s.transferLastSignaled,
-                // Block any draw or copy that consumes uploaded data.
-                // Vertex/index/uniform fetches happen pre-rasterization;
-                // sampled images can be read at any shader stage.
+                .semaphore = *state.transferTimelineSem,
+                .value     = state.transferLastSignaled,
                 .stageMask = vk::PipelineStageFlagBits2::eVertexInput
                            | vk::PipelineStageFlagBits2::eAllGraphics,
             };
             waitCount = 2;
         }
-        // Two signals: the per-image binary render-done semaphore for
-        // present, and the timeline semaphore at this submit's value
-        // for deferred-delete tracking.
+        // renderDoneSem for present + timelineSem for deferred-delete.
         std::array<vk::SemaphoreSubmitInfo, 2> signalInfos{
             vk::SemaphoreSubmitInfo{
                 .semaphore = vk::Semaphore(frame.renderDoneSem),
                 .stageMask = vk::PipelineStageFlagBits2::eAllCommands,
             },
             vk::SemaphoreSubmitInfo{
-                .semaphore = *s.timelineSem,
-                .value     = s.nextSubmitValue,
+                .semaphore = *state.timelineSem,
+                .value     = state.nextSubmitValue,
                 .stageMask = vk::PipelineStageFlagBits2::eAllCommands,
             },
         };
@@ -402,9 +379,9 @@ void VulkanDevice::Present(SwapChainHandle handle) {
 #if defined(TRACY_ENABLE)
             ZoneScopedN("vkQueueSubmit2");
 #endif
-            (void)s.queue.submit2(submit, *frame.inFlightFence);
+            (void)state.queue.submit2(submit, *frame.inFlightFence);
         }
-        s.nextSubmitValue++;
+        state.nextSubmitValue++;
     }
 
     const VkSemaphore waitSem = frame.renderDoneSem;
@@ -421,11 +398,11 @@ void VulkanDevice::Present(SwapChainHandle handle) {
 #if defined(TRACY_ENABLE)
         ZoneScopedN("vkQueuePresent");
 #endif
-        (void)s.queue.presentKHR(pi);
+        (void)state.queue.presentKHR(pi);
     }
 
     sc->acquiredThisFrame = false;
-    s.frameIndex          = (s.frameIndex + 1) % kFramesInFlight;
+    state.frameIndex          = (state.frameIndex + 1) % kFramesInFlight;
 
 #if defined(TRACY_ENABLE)
     // Mark the end of the frame for Tracy's CPU timeline. Place this

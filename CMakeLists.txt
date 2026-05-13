@@ -388,9 +388,13 @@ set(WHITEOUTFLAKES_GFX_SOURCES
 if(Vulkan_FOUND)
     list(APPEND WHITEOUTFLAKES_GFX_SOURCES
         src/gfx/vulkan/vulkan_device.cpp
-        src/gfx/vulkan/vulkan_command_list.cpp
-        src/gfx/vulkan/vulkan_swap_chain.cpp
+        src/gfx/vulkan/vulkan_init.cpp
+        src/gfx/vulkan/vulkan_buffer.cpp
+        src/gfx/vulkan/vulkan_texture.cpp
         src/gfx/vulkan/vulkan_pipeline.cpp
+        src/gfx/vulkan/vulkan_command_list.cpp
+        src/gfx/vulkan/vulkan_delete_queue.cpp
+        src/gfx/vulkan/vulkan_swap_chain.cpp
         src/gfx/vulkan/vulkan_vma.cpp
     )
 endif()
