@@ -11,10 +11,10 @@
 // RenderFrame so GPU resource teardown happens on the render thread).
 // ============================================================================
 
-#include "whiteout/flakes/types.h"
-#include "whiteout/flakes/model_types.h"
+#include "types.h" // Matrix44f
 #include "whiteout/flakes/model_source.h"
-#include "types.h"  // Matrix44f
+#include "whiteout/flakes/model_types.h"
+#include "whiteout/flakes/types.h"
 
 #include <memory>
 #include <string>
@@ -22,10 +22,12 @@
 #include <vector>
 
 namespace whiteout::flakes::renderer {
-    class RenderService;
-    class FrameTicker;
+class RenderService;
+class FrameTicker;
+} // namespace whiteout::flakes::renderer
+namespace whiteout::flakes::renderer::effects {
+class SpnSpawner;
 }
-namespace whiteout::flakes::renderer::effects { class SpnSpawner; }
 
 namespace whiteout::flakes::renderer::model {
 
@@ -45,7 +47,7 @@ public:
     // playbackSpeed, and animation.SetActiveSequenceIndex on the returned
     // pointer to compose the scene.
     Actor* SpawnUnit(const std::string& mdxPath,
-                     const Matrix44f&   initialTm = Matrix44f::identity());
+                     const Matrix44f& initialTm = Matrix44f::identity());
 
     // Spawn one top-level actor from a live model source (e.g. Max plugin's
     // adapter). Same shape as SpawnUnit; the role defaults to Unit. The Max
@@ -58,22 +60,18 @@ public:
     // CommitPendingUploads() pass (which runs at the start of RenderFrame).
     // Asynchronous: hosts iterating Actors() between this call and the next
     // RenderFrame will still see the old actors.
-    void   RequestClearAll();
-    void   UpdateMaterials(u32 handle,
-                           const std::vector<MaterialData>& mats,
-                           const std::vector<TextureData>&  texs);
-    void   CommitPendingUploads();
+    void RequestClearAll();
+    void UpdateMaterials(u32 handle, const std::vector<MaterialData>& mats,
+                         const std::vector<TextureData>& texs);
+    void CommitPendingUploads();
 
     // Spawn a child of `parent` with the given role and template. Allocates
     // a fresh handle unless `forceHandle != 0` (PE1's sim pre-allocates
     // handles for its own particle tracking). The returned actor is staged,
     // inserted into the scene, and linked into `parent.children`. Caller
     // performs role-specific post-tweaks (sequence index, birth time).
-    Actor* SpawnChild(Actor& parent,
-                      ActorRole role,
-                      std::shared_ptr<ModelTemplate> tmpl,
-                      const Matrix44f& initialTm = Matrix44f::identity(),
-                      u32 forceHandle = 0);
+    Actor* SpawnChild(Actor& parent, ActorRole role, std::shared_ptr<ModelTemplate> tmpl,
+                      const Matrix44f& initialTm = Matrix44f::identity(), u32 forceHandle = 0);
 
     // Recursively destroy an actor: tears down its children first, releases
     // GPU resources, unregisters from replaceables, removes from the scene
@@ -83,16 +81,13 @@ public:
     void DestroyActor(u32 handle);
 
 private:
-    u32  AddModel(const std::vector<MeshData>& meshes,
-                  const std::vector<TextureData>& textures,
-                  const std::vector<MaterialData>& materials,
-                  const SkeletonData& skeleton,
-                  const std::vector<SkinWeightData>& skinWeights,
-                  const std::vector<ParticleEmitterConfig>& particleConfigs,
-                  const std::vector<effects::RibbonEmitterConfig>& ribbonConfigs,
-                  const std::vector<CollisionShapeData>& collisions);
-    u32  AddModelByPath(const std::string& mdxPath,
-                        const Matrix44f&   initialTm);
+    u32 AddModel(const std::vector<MeshData>& meshes, const std::vector<TextureData>& textures,
+                 const std::vector<MaterialData>& materials, const SkeletonData& skeleton,
+                 const std::vector<SkinWeightData>& skinWeights,
+                 const std::vector<ParticleEmitterConfig>& particleConfigs,
+                 const std::vector<effects::RibbonEmitterConfig>& ribbonConfigs,
+                 const std::vector<CollisionShapeData>& collisions);
+    u32 AddModelByPath(const std::string& mdxPath, const Matrix44f& initialTm);
 
     // Stage a freshly-allocated Actor against a parsed template — populates
     // staged textures/materials, particle/ribbon/PE1 emitters, and event
@@ -110,10 +105,11 @@ public:
     // Idempotent (no-op when tmpl.gpuUploaded is already true). Public
     // because FrameTicker calls it from the per-frame template-handoff
     // drain; the private uploadTemplateGpu does the actual work.
-    void UploadTemplateGpu(ModelTemplate& tmpl) { uploadTemplateGpu(tmpl); }
+    void UploadTemplateGpu(ModelTemplate& tmpl) {
+        uploadTemplateGpu(tmpl);
+    }
 
 private:
-
     void SetAttachmentConfigs(u32 handle, const std::vector<AttachmentConfig>& configs);
     void SetPE1Configs(u32 handle, const std::vector<PE1EmitterConfig>& configs);
     bool IsTextureCached(std::string_view key) const;
@@ -132,8 +128,8 @@ private:
     // render thread stalls — visible as a one-off heavy stutter.
     // No-op for paths already in the cache or already queued.
     void PreloadChildTemplates(const ModelTemplate& tmpl);
-    void PreloadChildTemplates(const std::vector<PE1EmitterConfig>&  pe1Cfgs,
-                               const std::vector<AttachmentConfig>&  attachCfgs);
+    void PreloadChildTemplates(const std::vector<PE1EmitterConfig>& pe1Cfgs,
+                               const std::vector<AttachmentConfig>& attachCfgs);
 
     RenderService& rs_;
 
@@ -142,4 +138,4 @@ private:
     friend class RenderService;
 };
 
-}
+} // namespace whiteout::flakes::renderer::model

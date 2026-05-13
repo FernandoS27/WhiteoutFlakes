@@ -1,8 +1,8 @@
 #pragma once
 
-#include "whiteout/flakes/types.h"
 #include "bls_permuter.h"
 #include "bls_shader_cache.h"
+#include "whiteout/flakes/types.h"
 
 #include <memory>
 #include <string>
@@ -11,15 +11,17 @@
 namespace whiteout::flakes::renderer::bls {
 
 struct BlsProgram {
-    GxShaderID   id;
-    BlsShader*   vs = nullptr;
-    BlsShader*   ps = nullptr;
+    GxShaderID id;
+    BlsShader* vs = nullptr;
+    BlsShader* ps = nullptr;
 
-    bool IsValid() const { return vs != nullptr && ps != nullptr; }
+    bool IsValid() const {
+        return vs != nullptr && ps != nullptr;
+    }
 };
 
 struct BlsProgramDef {
-    GxShaderID  id;
+    GxShaderID id;
     const char* vsName;
     const char* psName;
 };
@@ -32,11 +34,11 @@ public:
     const BlsProgram* Load(const BlsProgramDef& def);
 
     const BlsProgram* Get(GxShaderID id) const;
-    void              Clear();
+    void Clear();
 
 private:
-    BlsShaderCache*                                          cache_ = nullptr;
+    BlsShaderCache* cache_ = nullptr;
     std::unordered_map<u8, std::unique_ptr<BlsProgram>> programs_;
 };
 
-}
+} // namespace whiteout::flakes::renderer::bls

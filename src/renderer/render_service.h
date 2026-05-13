@@ -1,18 +1,18 @@
 #pragma once
 
-#include "whiteout/flakes/types.h"
-#include "types.h"
 #include "gfx/gfx.h"
+#include "types.h"
+#include "whiteout/flakes/types.h"
 #include "whiteout/flakes/util/replaceable_paths.h"
 
 #include "animation/actor_eval_context.h"
 #include "model/model_instance.h"
-#include "whiteout/flakes/model_types.h"
 #include "render_settings.h"
-#include "whiteout/flakes/sound_emitter.h"
 #include "render_target.h"
 #include "scene_manager.h"
 #include "whiteout/flakes/model_source.h"
+#include "whiteout/flakes/model_types.h"
+#include "whiteout/flakes/sound_emitter.h"
 
 // Tool code (and a few subsystem .cpps) historically reaches DncService /
 // ShadowService through this header. The renderer's own private state
@@ -36,22 +36,28 @@ class FrameTicker;
 class RenderPipeline;
 
 namespace assets {
-    class SamplerAssetManager;
-    class TextureAssetManager;
-    class ReplaceableTextureManager;
-}
+class SamplerAssetManager;
+class TextureAssetManager;
+class ReplaceableTextureManager;
+} // namespace assets
 namespace model {
-    class ModelTemplateManager;
-    struct ModelTemplate;
-    class ModelLoader;
+class ModelTemplateManager;
+struct ModelTemplate;
+class ModelLoader;
+} // namespace model
+namespace debug {
+class DebugRenderer;
 }
-namespace debug { class DebugRenderer; }
-namespace effects { class SpnSpawner; }
+namespace effects {
+class SpnSpawner;
+}
 namespace particle {
-    class ParticleService;
-    class SplatService;
+class ParticleService;
+class SplatService;
+} // namespace particle
+namespace corn_effects {
+class CornEffectsService;
 }
-namespace corn_effects { class CornEffectsService; }
 
 struct LineVertex {
     Vector3f position;
@@ -66,10 +72,14 @@ inline bool GeosetPassesLod(u32 geosetLod, i32 selectedLod) {
 
 inline i32 GeosetRenderOrder(i32 filterMode) {
     switch (filterMode) {
-        case model::FILTER_NONE:        return 1;
-        case model::FILTER_TRANSPARENT: return 2;
-        case model::FILTER_BLEND:       return 3;
-        default:                        return 4;
+    case model::FILTER_NONE:
+        return 1;
+    case model::FILTER_TRANSPARENT:
+        return 2;
+    case model::FILTER_BLEND:
+        return 3;
+    default:
+        return 4;
     }
 }
 
@@ -80,14 +90,14 @@ public:
 
     // ---- GPU pipeline (device lifecycle, render targets, frame loop, stats) ----
     // Tools call service.Pipeline().InitDevice / RenderFrame / Present / etc.
-    RenderPipeline&       Pipeline();
+    RenderPipeline& Pipeline();
     const RenderPipeline& Pipeline() const;
 
     // ---- Model loading & state ----
     // Loader() owns model creation, staging, and GPU upload. Hosts compose
     // multi-actor scenes via Loader().SpawnUnit / SpawnUnitFromSource /
     // SpawnChild / DestroyActor / Clear. See model_loader.h.
-    model::ModelLoader&       Loader();
+    model::ModelLoader& Loader();
     const model::ModelLoader& Loader() const;
 
     // Build the per-frame context an Actor needs to call EvaluateAndApply.
@@ -96,37 +106,37 @@ public:
     animation::ActorEvalContext MakeActorEvalContext();
 
     // ---- Scene & asset accessors ----
-    SceneManager&                       Scene();
-    const SceneManager&                 Scene() const;
-    assets::TextureAssetManager&        Textures();
-    assets::SamplerAssetManager&        Samplers();
-    assets::ReplaceableTextureManager&  Replaceables();
-    debug::DebugRenderer&               Debug();
-    dnc::DncService*                    GetDncService();
-    const dnc::DncService*              GetDncService() const;
-    shadow::ShadowService*              GetShadowService();
-    const shadow::ShadowService*        GetShadowService() const;
+    SceneManager& Scene();
+    const SceneManager& Scene() const;
+    assets::TextureAssetManager& Textures();
+    assets::SamplerAssetManager& Samplers();
+    assets::ReplaceableTextureManager& Replaceables();
+    debug::DebugRenderer& Debug();
+    dnc::DncService* GetDncService();
+    const dnc::DncService* GetDncService() const;
+    shadow::ShadowService* GetShadowService();
+    const shadow::ShadowService* GetShadowService() const;
 
     // ---- Per-actor effect services ----
-    particle::ParticleService&   Particles();
-    particle::SplatService&      Splats();
-    corn_effects::CornEffectsService&     CornEffects();
-    effects::SpnSpawner&         Spn();
+    particle::ParticleService& Particles();
+    particle::SplatService& Splats();
+    corn_effects::CornEffectsService& CornEffects();
+    effects::SpnSpawner& Spn();
 
     // ---- App-tunable knobs ----
-    RenderSettings&              Settings();
-    const RenderSettings&        Settings() const;
+    RenderSettings& Settings();
+    const RenderSettings& Settings() const;
 
     // ---- Per-frame scene update orchestrator ----
-    FrameTicker&                 Ticker();
+    FrameTicker& Ticker();
 
     // ---- Sound ----
     // Volume / mute lives on the emitter itself: callers use Sound().SetVolume(v).
     // SwapSoundEmitter installs a different backend (e.g., basic_viewer plugs in
     // WindowsSoundEmitter at startup) and carries over the previous volume.
-    ISoundEmitter&       Sound();
+    ISoundEmitter& Sound();
     const ISoundEmitter& Sound() const;
-    void                 SwapSoundEmitter(std::unique_ptr<ISoundEmitter> emitter);
+    void SwapSoundEmitter(std::unique_ptr<ISoundEmitter> emitter);
 
     // Null-tolerant texture cache probe. The template manager installs a
     // texture-cache lambda during RenderService construction — before
@@ -150,7 +160,7 @@ public:
     bool HasDeviceAssetManagers() const;
     void CreateDeviceAssetManagers(gfx::IGFXDevice& gfx);
     void ResetDeviceAssetManagers();
-    dnc::DncService&    EnsureDncService();
+    dnc::DncService& EnsureDncService();
     shadow::ShadowService& EnsureShadowService(gfx::IGFXDevice& gfx);
 
 private:
@@ -162,4 +172,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-}
+} // namespace whiteout::flakes::renderer

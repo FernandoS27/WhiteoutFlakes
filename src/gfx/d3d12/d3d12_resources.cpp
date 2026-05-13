@@ -9,29 +9,32 @@ bool UploadRing::Init(ID3D12Device* device, u64 sizeBytes) {
     hp.Type = D3D12_HEAP_TYPE_UPLOAD;
 
     D3D12_RESOURCE_DESC rd{};
-    rd.Dimension          = D3D12_RESOURCE_DIMENSION_BUFFER;
-    rd.Width              = capacity_;
-    rd.Height             = 1;
-    rd.DepthOrArraySize   = 1;
-    rd.MipLevels          = 1;
-    rd.Format             = DXGI_FORMAT_UNKNOWN;
-    rd.SampleDesc.Count   = 1;
-    rd.Layout             = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    rd.Flags              = D3D12_RESOURCE_FLAG_NONE;
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    rd.Width = capacity_;
+    rd.Height = 1;
+    rd.DepthOrArraySize = 1;
+    rd.MipLevels = 1;
+    rd.Format = DXGI_FORMAT_UNKNOWN;
+    rd.SampleDesc.Count = 1;
+    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    rd.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-    HRESULT hr = device->CreateCommittedResource(
-        &hp, D3D12_HEAP_FLAG_NONE, &rd,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-        IID_PPV_ARGS(&resource_));
-    if (FAILED(hr)) return false;
+    HRESULT hr = device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+                                                 D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                 IID_PPV_ARGS(&resource_));
+    if (FAILED(hr))
+        return false;
 
     D3D12_RANGE readRange{0, 0};
     hr = resource_->Map(0, &readRange, reinterpret_cast<void**>(&mapped_));
-    if (FAILED(hr)) { SafeRelease(resource_); return false; }
+    if (FAILED(hr)) {
+        SafeRelease(resource_);
+        return false;
+    }
 
     gpuBase_ = resource_->GetGPUVirtualAddress();
-    head_    = 0;
-    tail_    = 0;
+    head_ = 0;
+    tail_ = 0;
     return true;
 }
 
@@ -40,11 +43,11 @@ void UploadRing::Release() {
         resource_->Unmap(0, nullptr);
         SafeRelease(resource_);
     }
-    mapped_   = nullptr;
-    gpuBase_  = 0;
+    mapped_ = nullptr;
+    gpuBase_ = 0;
     capacity_ = 0;
-    head_     = 0;
-    tail_     = 0;
+    head_ = 0;
+    tail_ = 0;
     retiredQueue_.clear();
 }
 
@@ -58,8 +61,7 @@ void UploadRing::EndFrame(u64 signaledFenceValue) {
 
 void UploadRing::Retire(u64 completedFenceValue) {
 
-    while (!retiredQueue_.empty() &&
-           retiredQueue_.front().fenceValue <= completedFenceValue) {
+    while (!retiredQueue_.empty() && retiredQueue_.front().fenceValue <= completedFenceValue) {
         tail_ = retiredQueue_.front().head;
         retiredQueue_.erase(retiredQueue_.begin());
     }
@@ -67,52 +69,54 @@ void UploadRing::Retire(u64 completedFenceValue) {
 
 UploadRing::Allocation UploadRing::Allocate(u64 size, u64 alignment) {
     Allocation out{};
-    if (size == 0 || size > capacity_) return out;
+    if (size == 0 || size > capacity_)
+        return out;
 
-    u64 pos     = head_ % capacity_;
+    u64 pos = head_ % capacity_;
     u64 aligned = AlignUp(pos, alignment);
-    u64 pad     = aligned - pos;
+    u64 pad = aligned - pos;
 
     if (aligned + size > capacity_) {
-        pad    += (capacity_ - aligned);
+        pad += (capacity_ - aligned);
         aligned = 0;
     }
 
-    out.cpu      = mapped_ + aligned;
-    out.gpu      = gpuBase_ + aligned;
+    out.cpu = mapped_ + aligned;
+    out.gpu = gpuBase_ + aligned;
     out.resource = resource_;
-    out.offset   = aligned;
-    head_       += pad + size;
+    out.offset = aligned;
+    head_ += pad + size;
     return out;
 }
 
 bool DescriptorHeapRing::Init(ID3D12Device* device, D3D12_DESCRIPTOR_HEAP_TYPE type,
-                               u32 totalSize) {
+                              u32 totalSize) {
     D3D12_DESCRIPTOR_HEAP_DESC hd{};
-    hd.Type           = type;
+    hd.Type = type;
     hd.NumDescriptors = totalSize;
-    hd.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 
     HRESULT hr = device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&heap_));
-    if (FAILED(hr)) return false;
+    if (FAILED(hr))
+        return false;
 
-    stride_   = device->GetDescriptorHandleIncrementSize(type);
+    stride_ = device->GetDescriptorHandleIncrementSize(type);
     capacity_ = totalSize;
-    head_     = 0;
-    tail_     = 0;
-    cpuBase_  = heap_->GetCPUDescriptorHandleForHeapStart();
-    gpuBase_  = heap_->GetGPUDescriptorHandleForHeapStart();
+    head_ = 0;
+    tail_ = 0;
+    cpuBase_ = heap_->GetCPUDescriptorHandleForHeapStart();
+    gpuBase_ = heap_->GetGPUDescriptorHandleForHeapStart();
     return true;
 }
 
 void DescriptorHeapRing::Release() {
     SafeRelease(heap_);
-    stride_   = 0;
+    stride_ = 0;
     capacity_ = 0;
-    head_     = 0;
-    tail_     = 0;
-    cpuBase_  = {0};
-    gpuBase_  = {0};
+    head_ = 0;
+    tail_ = 0;
+    cpuBase_ = {0};
+    gpuBase_ = {0};
     retiredQueue_.clear();
 }
 
@@ -125,8 +129,7 @@ void DescriptorHeapRing::EndFrame(u64 signaledFenceValue) {
 }
 
 void DescriptorHeapRing::Retire(u64 completedFenceValue) {
-    while (!retiredQueue_.empty() &&
-           retiredQueue_.front().fenceValue <= completedFenceValue) {
+    while (!retiredQueue_.empty() && retiredQueue_.front().fenceValue <= completedFenceValue) {
         tail_ = retiredQueue_.front().head;
         retiredQueue_.erase(retiredQueue_.begin());
     }
@@ -134,7 +137,8 @@ void DescriptorHeapRing::Retire(u64 completedFenceValue) {
 
 DescriptorHeapRing::Slice DescriptorHeapRing::Allocate(u32 count) {
     Slice s{};
-    if (count == 0 || count > capacity_) return s;
+    if (count == 0 || count > capacity_)
+        return s;
 
     u32 pos = head_ % capacity_;
     u32 pad = 0;
@@ -145,33 +149,33 @@ DescriptorHeapRing::Slice DescriptorHeapRing::Allocate(u32 count) {
 
     s.cpu.ptr = cpuBase_.ptr + static_cast<SIZE_T>(pos) * stride_;
     s.gpu.ptr = gpuBase_.ptr + static_cast<UINT64>(pos) * stride_;
-    head_    += pad + count;
+    head_ += pad + count;
     return s;
 }
 
-bool CpuDescriptorPool::Init(ID3D12Device* device, D3D12_DESCRIPTOR_HEAP_TYPE type,
-                              u32 capacity) {
+bool CpuDescriptorPool::Init(ID3D12Device* device, D3D12_DESCRIPTOR_HEAP_TYPE type, u32 capacity) {
     D3D12_DESCRIPTOR_HEAP_DESC hd{};
-    hd.Type           = type;
+    hd.Type = type;
     hd.NumDescriptors = capacity;
-    hd.Flags          = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 
     HRESULT hr = device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&heap_));
-    if (FAILED(hr)) return false;
+    if (FAILED(hr))
+        return false;
 
-    stride_   = device->GetDescriptorHandleIncrementSize(type);
+    stride_ = device->GetDescriptorHandleIncrementSize(type);
     capacity_ = capacity;
-    head_     = 0;
-    cpuBase_  = heap_->GetCPUDescriptorHandleForHeapStart();
+    head_ = 0;
+    cpuBase_ = heap_->GetCPUDescriptorHandleForHeapStart();
     return true;
 }
 
 void CpuDescriptorPool::Release() {
     SafeRelease(heap_);
-    stride_   = 0;
+    stride_ = 0;
     capacity_ = 0;
-    head_     = 0;
-    cpuBase_  = {0};
+    head_ = 0;
+    cpuBase_ = {0};
     freeList_.clear();
 }
 
@@ -190,10 +194,12 @@ D3D12_CPU_DESCRIPTOR_HANDLE CpuDescriptorPool::Allocate() {
 }
 
 void CpuDescriptorPool::Free(D3D12_CPU_DESCRIPTOR_HANDLE h) {
-    if (!h.ptr || !cpuBase_.ptr) return;
+    if (!h.ptr || !cpuBase_.ptr)
+        return;
     SIZE_T delta = h.ptr - cpuBase_.ptr;
     u32 idx = static_cast<u32>(delta / stride_);
-    if (idx < head_) freeList_.push_back(idx);
+    if (idx < head_)
+        freeList_.push_back(idx);
 }
 
-}
+} // namespace whiteout::flakes::gfx::d3d12

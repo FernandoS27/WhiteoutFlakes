@@ -1,14 +1,14 @@
 #include "cbem_internal.hpp"
 
-#include <cornflakes/interface/binding/ir_to_cbem_lowerer.hpp>
 #include <cornflakes/core/determinism.hpp>
 #include <cornflakes/diagnostics/issue_codes.hpp>
+#include <cornflakes/interface/binding/ir_to_cbem_lowerer.hpp>
 #include <cornflakes/interface/schema/opcodes.hpp>
 #include <cornflakes/interface/vm/bytecode_exec_context.hpp>
 #include <cornflakes/interface/vm/bytecode_trace.hpp>
+#include <cornflakes/interface/vm/register_value.hpp>
 #include <cornflakes/vm/cbem_interpreter.hpp>
 #include <cornflakes/vm/math_functions.hpp>
-#include <cornflakes/interface/vm/register_value.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -1530,10 +1530,10 @@ bool dispatchSamplePosition(const CBEMInstruction& ins, BytecodeExecContext& ctx
 // some prefix-matched dispatchers want the full symbol string) and are
 // handled in `dispatchSpecial` before the table lookup.
 
-using FnDispatch = bool (*)(const CBEMInstruction&, BytecodeExecContext&,
-                            RegisterValue&, IssueBag&);
-using FnDispatchSym = bool (*)(const CBEMInstruction&, BytecodeExecContext&,
-                               RegisterValue&, IssueBag&, std::string_view);
+using FnDispatch = bool (*)(const CBEMInstruction&, BytecodeExecContext&, RegisterValue&,
+                            IssueBag&);
+using FnDispatchSym = bool (*)(const CBEMInstruction&, BytecodeExecContext&, RegisterValue&,
+                               IssueBag&, std::string_view);
 
 enum class FailMode : u8 { Fatal, Stub };
 
@@ -1555,30 +1555,30 @@ struct SymPrefixDispatch {
 // Exact-match table — O(1) hash lookup. Holds the bulk of resolved symbols.
 const std::unordered_map<std::string_view, ExactDispatch>& exactDispatchTable() {
     static const std::unordered_map<std::string_view, ExactDispatch> kTable = {
-        {"rand",                  {dispatchRand}},
-        {"vrand",                 {dispatchVrand}},
-        {"effect.age",            {dispatchEffectAge}},
-        {"effect.isRunning",      {dispatchEffectIsRunning}},
-        {"effect.position",       {dispatchEffectPosition}},
-        {"duration",              {dispatchDuration}},
-        {"self.kill",             {dispatchSelfKill}},
-        {"generate",              {dispatchGenerate}},
-        {"trigger",               {dispatchTrigger}},
-        {"initPayload",           {dispatchInitPayload}},
-        {"kick",                  {dispatchKick}},
-        {"hasPayloadElement",     {dispatchHasPayloadElement}},
-        {"sample",                {dispatchSample,         FailMode::Stub}},
-        {"samplePosition",        {dispatchSamplePosition, FailMode::Stub}},
-        {"xform_l2w_f_masked",    {dispatchXformL2WPoint}},
-        {"xform_l2w_d_masked",    {dispatchXformL2WDirection}},
-        {"xform_w2l_f_masked",    {dispatchXformW2LPoint}},
-        {"xform_w2l_d_masked",    {dispatchXformW2LDirection}},
-        {"allocatePayload",       {dispatchAllocatePayload}},
-        {"insert",                {dispatchSpatialInsert}},
-        {"neighborCount",         {dispatchSpatialNeighborCount}},
-        {"neighborCount2",        {dispatchSpatialNeighborCount}},
-        {"hsv2rgb",               {dispatchHsv2Rgb}},
-        {"rgb2hsv",               {dispatchRgb2Hsv}},
+        {"rand", {dispatchRand}},
+        {"vrand", {dispatchVrand}},
+        {"effect.age", {dispatchEffectAge}},
+        {"effect.isRunning", {dispatchEffectIsRunning}},
+        {"effect.position", {dispatchEffectPosition}},
+        {"duration", {dispatchDuration}},
+        {"self.kill", {dispatchSelfKill}},
+        {"generate", {dispatchGenerate}},
+        {"trigger", {dispatchTrigger}},
+        {"initPayload", {dispatchInitPayload}},
+        {"kick", {dispatchKick}},
+        {"hasPayloadElement", {dispatchHasPayloadElement}},
+        {"sample", {dispatchSample, FailMode::Stub}},
+        {"samplePosition", {dispatchSamplePosition, FailMode::Stub}},
+        {"xform_l2w_f_masked", {dispatchXformL2WPoint}},
+        {"xform_l2w_d_masked", {dispatchXformL2WDirection}},
+        {"xform_w2l_f_masked", {dispatchXformW2LPoint}},
+        {"xform_w2l_d_masked", {dispatchXformW2LDirection}},
+        {"allocatePayload", {dispatchAllocatePayload}},
+        {"insert", {dispatchSpatialInsert}},
+        {"neighborCount", {dispatchSpatialNeighborCount}},
+        {"neighborCount2", {dispatchSpatialNeighborCount}},
+        {"hsv2rgb", {dispatchHsv2Rgb}},
+        {"rgb2hsv", {dispatchRgb2Hsv}},
     };
     return kTable;
 }
@@ -1587,14 +1587,14 @@ const std::unordered_map<std::string_view, ExactDispatch>& exactDispatchTable() 
 // than hashing once `find()` overhead is paid.
 constexpr PrefixDispatch kPrefixDispatch[] = {
     {"buildPayloadElement", dispatchBuildPayloadElement},
-    {"appendPayload",       dispatchAppendPayload},
-    {"scene.intersect",     dispatchSceneIntersect},
+    {"appendPayload", dispatchAppendPayload},
+    {"scene.intersect", dispatchSceneIntersect},
 };
 
 constexpr SymPrefixDispatch kSymPrefixDispatch[] = {
     {"extractPayloadElement", dispatchExtractPayloadElement},
-    {"scene.orientation",     dispatchSceneOrientation},
-    {"closest",               dispatchSpatialClosest},
+    {"scene.orientation", dispatchSceneOrientation},
+    {"closest", dispatchSpatialClosest},
 };
 
 // Returns nullopt if no special-case rule applies; otherwise the dispatcher's
@@ -1656,8 +1656,8 @@ std::optional<bool> dispatchSymTable(std::string_view symbol, const CBEMInstruct
 
 // Stub path for symbols the VM hasn't implemented yet. Warns once per
 // distinct symbol and writes a typed zero to the return register.
-bool stubFunctionCall(std::string_view symbol, const CBEMInstruction& ins,
-                      BytecodeExecContext& ctx, IssueBag& issues) noexcept {
+bool stubFunctionCall(std::string_view symbol, const CBEMInstruction& ins, BytecodeExecContext& ctx,
+                      IssueBag& issues) noexcept {
     static std::set<std::string> stubMessages;
     std::string msg = "IR: FunctionCall stub: ";
     msg.append(symbol.empty() ? std::string_view{"(unresolved)"} : symbol);

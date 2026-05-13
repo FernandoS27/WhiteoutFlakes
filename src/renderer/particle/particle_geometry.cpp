@@ -11,10 +11,10 @@ namespace {
 constexpr f32 kEpsilon = 1e-6f;
 
 constexpr f32 vc[4][2] = {
-    { -1.0f,  1.0f },
-    { -1.0f, -1.0f },
-    {  1.0f,  1.0f },
-    {  1.0f, -1.0f },
+    {-1.0f, 1.0f},
+    {-1.0f, -1.0f},
+    {1.0f, 1.0f},
+    {1.0f, -1.0f},
 };
 
 struct CameraBasis {
@@ -26,37 +26,40 @@ struct CameraBasis {
 CameraBasis BasisFromView(const Matrix44f& viewMatrix) {
     CameraBasis b{};
 
-    b.right = { viewMatrix.data[0][0], viewMatrix.data[1][0], viewMatrix.data[2][0] };
-    b.up    = { viewMatrix.data[0][1], viewMatrix.data[1][1], viewMatrix.data[2][1] };
+    b.right = {viewMatrix.data[0][0], viewMatrix.data[1][0], viewMatrix.data[2][0]};
+    b.up = {viewMatrix.data[0][1], viewMatrix.data[1][1], viewMatrix.data[2][1]};
 
-    b.fwd   = { -viewMatrix.data[0][2], -viewMatrix.data[1][2], -viewMatrix.data[2][2] };
+    b.fwd = {-viewMatrix.data[0][2], -viewMatrix.data[1][2], -viewMatrix.data[2][2]};
     return b;
 }
 
 inline Vector3f Cross(const Vector3f& a, const Vector3f& b) {
-    return { a.y * b.z - a.z * b.y,
-             a.z * b.x - a.x * b.z,
-             a.x * b.y - a.y * b.x };
+    return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
 }
 
 inline f32 Dot(const Vector3f& a, const Vector3f& b) {
     return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-inline f32 LengthSq(const Vector3f& v) { return v.x*v.x + v.y*v.y + v.z*v.z; }
+inline f32 LengthSq(const Vector3f& v) {
+    return v.x * v.x + v.y * v.y + v.z * v.z;
+}
 
-inline Vector3f Normalize(const Vector3f& v, const Vector3f& fallback = {0,0,1}) {
+inline Vector3f Normalize(const Vector3f& v, const Vector3f& fallback = {0, 0, 1}) {
     f32 l2 = LengthSq(v);
-    if (l2 < kEpsilon) return fallback;
+    if (l2 < kEpsilon)
+        return fallback;
     f32 inv = 1.0f / std::sqrt(l2);
-    return { v.x * inv, v.y * inv, v.z * inv };
+    return {v.x * inv, v.y * inv, v.z * inv};
 }
 
 void CellToUV(const Emitter2& e, i32 cell, f32& u, f32& v) {
     u32 cols = e.TextureCols();
-    if (cols == 0) cols = 1;
+    if (cols == 0)
+        cols = 1;
     u32 rows = e.TextureRows();
-    if (rows == 0) rows = 1;
+    if (rows == 0)
+        rows = 1;
 
     u32 col, row;
     if ((cols & (cols - 1)) == 0) {
@@ -85,31 +88,32 @@ struct SortRecord {
     f32 viewZ;
 };
 
-}
+} // namespace
 
-i32 BuildEmitterGeometry(const Emitter2& emitter,
-                         const BuildGeometryInput& in,
-                         std::vector<Vertex>& out)
-{
-    if (!in.worldToView) return 0;
+i32 BuildEmitterGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
+                         std::vector<Vertex>& out) {
+    if (!in.worldToView)
+        return 0;
     const ParticlePool& pool = emitter.Pool();
-    if (pool.AliveCount() == 0) return 0;
+    if (pool.AliveCount() == 0)
+        return 0;
 
     const bool hasHead = emitter.HasHead();
     const bool hasTail = emitter.HasTail();
-    if (!hasHead && !hasTail) return 0;
+    if (!hasHead && !hasTail)
+        return 0;
 
     const bool modelSpace = emitter.UseModelSpace();
-    const bool xyQuads    = emitter.XYQuads();
-    const f32 angVel      = emitter.AngularVelocity();
-    const bool useAngVel  = std::abs(angVel) > kEpsilon;
-    const f32 tailLength  = emitter.TailLength();
+    const bool xyQuads = emitter.XYQuads();
+    const f32 angVel = emitter.AngularVelocity();
+    const bool useAngVel = std::abs(angVel) > kEpsilon;
+    const f32 tailLength = emitter.TailLength();
     const ParticleMaterialDesc& mat = emitter.Material();
 
     CameraBasis cam = BasisFromView(*in.worldToView);
 
-    const CoordSpace emSpace  = emitter.GetCoordSpace();
-    const bool needsConvert   = (emSpace != CoordinateSystem::Default());
+    const CoordSpace emSpace = emitter.GetCoordSpace();
+    const bool needsConvert = (emSpace != CoordinateSystem::Default());
 
     auto resolveWorld = [&](const Particle2& p, Vector3f& outPos, Vector3f& outVel) {
         Vector3f pos = p.position;
@@ -131,7 +135,7 @@ i32 BuildEmitterGeometry(const Emitter2& emitter,
     for (usize i = 0; i < pool.AliveCount(); ++i) {
         u32 idx = pool.AliveAt(i);
         const Particle2& p = pool[idx];
-        SortRecord rec{ static_cast<u32>(i), 0.0f };
+        SortRecord rec{static_cast<u32>(i), 0.0f};
         if (emitter.SortZ()) {
             Vector3f wp, wv;
             resolveWorld(p, wp, wv);
@@ -153,8 +157,10 @@ i32 BuildEmitterGeometry(const Emitter2& emitter,
         const Particle2& p = pool[idx];
 
         i32 kf = static_cast<i32>(p.keyFrame);
-        if (kf < 0) kf = 0;
-        if (kf > 1) kf = 1;
+        if (kf < 0)
+            kf = 0;
+        if (kf > 1)
+            kf = 1;
         f32 prevEnd = (kf == 0) ? 0.0f : emitter.Key(0).endTime;
         ImVector baseColor;
         i32 headCell = 0, tailCell = 0;
@@ -182,38 +188,38 @@ i32 BuildEmitterGeometry(const Emitter2& emitter,
             {
                 f32 cellU, cellV;
                 CellToUV(emitter, headCell, cellU, cellV);
-                u0 = cellU; vq0 = cellV;
+                u0 = cellU;
+                vq0 = cellV;
                 u1 = cellU + emitter.OoTextureWidth();
                 vq1 = cellV + emitter.OoTextureHeight();
             }
 
             Vector3f right = cam.right;
-            Vector3f up    = cam.up;
+            Vector3f up = cam.up;
 
             if (useAngVel) {
 
                 f32 theta = p.age * angVel;
                 f32 ct = std::cos(theta), st = std::sin(theta);
-                Vector3f r2 = { right.x * ct + up.x * st,
-                                right.y * ct + up.y * st,
-                                right.z * ct + up.z * st };
-                Vector3f u2 = { up.x * ct - right.x * st,
-                                up.y * ct - right.y * st,
-                                up.z * ct - right.z * st };
-                right = r2; up = u2;
+                Vector3f r2 = {right.x * ct + up.x * st, right.y * ct + up.y * st,
+                               right.z * ct + up.z * st};
+                Vector3f u2 = {up.x * ct - right.x * st, up.y * ct - right.y * st,
+                               up.z * ct - right.z * st};
+                right = r2;
+                up = u2;
             } else if (xyQuads) {
 
-                Vector3f localVelXY  = { p.velocity.x,  p.velocity.y, 0.0f };
-                Vector3f localPerpXY = { p.velocity.y, -p.velocity.x, 0.0f };
+                Vector3f localVelXY = {p.velocity.x, p.velocity.y, 0.0f};
+                Vector3f localPerpXY = {p.velocity.y, -p.velocity.x, 0.0f};
 
-                Vector3f worldPvel     = localVelXY;
+                Vector3f worldPvel = localVelXY;
                 Vector3f worldPvelPerp = localPerpXY;
                 if (modelSpace) {
-                    worldPvel     = whiteout::transform_normal(localVelXY,  emitter.ModelToWorld());
+                    worldPvel = whiteout::transform_normal(localVelXY, emitter.ModelToWorld());
                     worldPvelPerp = whiteout::transform_normal(localPerpXY, emitter.ModelToWorld());
                 }
                 if (needsConvert) {
-                    worldPvel     = CoordinateSystem::ToDefaultDir(emSpace, worldPvel);
+                    worldPvel = CoordinateSystem::ToDefaultDir(emSpace, worldPvel);
                     worldPvelPerp = CoordinateSystem::ToDefaultDir(emSpace, worldPvelPerp);
                 }
 
@@ -221,31 +227,26 @@ i32 BuildEmitterGeometry(const Emitter2& emitter,
                 if (mag2 > kEpsilon) {
 
                     right = Normalize(worldPvelPerp);
-                    up    = Normalize(worldPvel);
+                    up = Normalize(worldPvel);
                 }
-
             }
 
             Vector3f corners[4];
             for (i32 c = 0; c < 4; ++c) {
                 f32 sx = vc[c][0] * corner;
                 f32 sy = vc[c][1] * corner;
-                corners[c] = {
-                    worldPos.x + right.x * sx + up.x * sy,
-                    worldPos.y + right.y * sx + up.y * sy,
-                    worldPos.z + right.z * sx + up.z * sy
-                };
+                corners[c] = {worldPos.x + right.x * sx + up.x * sy,
+                              worldPos.y + right.y * sx + up.y * sy,
+                              worldPos.z + right.z * sx + up.z * sy};
             }
 
-            const Vector2f uv[4] = {
-                {u0, vq0}, {u0, vq1}, {u1, vq0}, {u1, vq1}
-            };
-            out.push_back({ corners[0], normal, vcol, uv[0] });
-            out.push_back({ corners[1], normal, vcol, uv[1] });
-            out.push_back({ corners[2], normal, vcol, uv[2] });
-            out.push_back({ corners[3], normal, vcol, uv[3] });
-            out.push_back({ corners[2], normal, vcol, uv[2] });
-            out.push_back({ corners[1], normal, vcol, uv[1] });
+            const Vector2f uv[4] = {{u0, vq0}, {u0, vq1}, {u1, vq0}, {u1, vq1}};
+            out.push_back({corners[0], normal, vcol, uv[0]});
+            out.push_back({corners[1], normal, vcol, uv[1]});
+            out.push_back({corners[2], normal, vcol, uv[2]});
+            out.push_back({corners[3], normal, vcol, uv[3]});
+            out.push_back({corners[2], normal, vcol, uv[2]});
+            out.push_back({corners[1], normal, vcol, uv[1]});
         }
 
         if (hasTail) {
@@ -253,51 +254,52 @@ i32 BuildEmitterGeometry(const Emitter2& emitter,
             {
                 f32 cellU, cellV;
                 CellToUV(emitter, tailCell, cellU, cellV);
-                u0 = cellU; vq0 = cellV;
+                u0 = cellU;
+                vq0 = cellV;
                 u1 = cellU + emitter.OoTextureWidth();
                 vq1 = cellV + emitter.OoTextureHeight();
             }
 
-            Vector3f negVel = { -worldVel.x * tailLength,
-                                -worldVel.y * tailLength,
-                                -worldVel.z * tailLength };
-            if (LengthSq(negVel) < kEpsilon) continue;
+            Vector3f negVel = {-worldVel.x * tailLength, -worldVel.y * tailLength,
+                               -worldVel.z * tailLength};
+            if (LengthSq(negVel) < kEpsilon)
+                continue;
 
-            Vector3f tailEnd = { worldPos.x + negVel.x,
-                                 worldPos.y + negVel.y,
-                                 worldPos.z + negVel.z };
+            Vector3f tailEnd = {worldPos.x + negVel.x, worldPos.y + negVel.y,
+                                worldPos.z + negVel.z};
 
             Vector3f tailDir = Normalize(negVel);
             Vector3f perp = Cross(tailDir, cam.fwd);
             if (LengthSq(perp) < kEpsilon) {
 
-                Vector3f altUp = (std::abs(tailDir.z) > 0.999f) ? Vector3f{0,1,0} : Vector3f{0,0,1};
+                Vector3f altUp =
+                    (std::abs(tailDir.z) > 0.999f) ? Vector3f{0, 1, 0} : Vector3f{0, 0, 1};
                 perp = Cross(tailDir, altUp);
             }
             perp = Normalize(perp);
 
-            Vector3f w = { perp.x * corner, perp.y * corner, perp.z * corner };
+            Vector3f w = {perp.x * corner, perp.y * corner, perp.z * corner};
 
-            Vector3f hl = { worldPos.x - w.x, worldPos.y - w.y, worldPos.z - w.z };
-            Vector3f hr = { worldPos.x + w.x, worldPos.y + w.y, worldPos.z + w.z };
-            Vector3f tl = { tailEnd.x - w.x,  tailEnd.y - w.y,  tailEnd.z - w.z  };
-            Vector3f tr = { tailEnd.x + w.x,  tailEnd.y + w.y,  tailEnd.z + w.z  };
+            Vector3f hl = {worldPos.x - w.x, worldPos.y - w.y, worldPos.z - w.z};
+            Vector3f hr = {worldPos.x + w.x, worldPos.y + w.y, worldPos.z + w.z};
+            Vector3f tl = {tailEnd.x - w.x, tailEnd.y - w.y, tailEnd.z - w.z};
+            Vector3f tr = {tailEnd.x + w.x, tailEnd.y + w.y, tailEnd.z + w.z};
 
             const Vector2f uvHL{u0, vq0};
             const Vector2f uvHR{u0, vq1};
             const Vector2f uvTL{u1, vq0};
             const Vector2f uvTR{u1, vq1};
 
-            out.push_back({ hl, normal, vcol, uvHL });
-            out.push_back({ hr, normal, vcol, uvHR });
-            out.push_back({ tl, normal, vcol, uvTL });
-            out.push_back({ tr, normal, vcol, uvTR });
-            out.push_back({ tl, normal, vcol, uvTL });
-            out.push_back({ hr, normal, vcol, uvHR });
+            out.push_back({hl, normal, vcol, uvHL});
+            out.push_back({hr, normal, vcol, uvHR});
+            out.push_back({tl, normal, vcol, uvTL});
+            out.push_back({tr, normal, vcol, uvTR});
+            out.push_back({tl, normal, vcol, uvTL});
+            out.push_back({hr, normal, vcol, uvHR});
         }
     }
 
     return static_cast<i32>(out.size() - startSize);
 }
 
-}
+} // namespace whiteout::flakes::renderer::particle

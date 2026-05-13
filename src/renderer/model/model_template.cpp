@@ -1,10 +1,10 @@
-#include "renderer/model/model_template.h"
-#include "renderer/animation/animation.h"
 #include "io/mdx_model_adapter.h"
+#include "renderer/animation/animation.h"
+#include "renderer/model/model_template.h"
 
 namespace whiteout::flakes::renderer::model {
 
-ModelTemplate::ModelTemplate()  = default;
+ModelTemplate::ModelTemplate() = default;
 ModelTemplate::~ModelTemplate() = default;
 
 void ModelTemplate::ReleaseGPU(gfx::IGFXDevice& gfx) {
@@ -21,4 +21,4 @@ void ModelTemplate::ReleaseGPU(gfx::IGFXDevice& gfx) {
     gpuUploaded = false;
 }
 
-}
+} // namespace whiteout::flakes::renderer::model

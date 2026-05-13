@@ -17,16 +17,18 @@ namespace whiteout::flakes::renderer::bls {
 namespace {
 
 void SetError(std::string* error, const char* msg) {
-    if (error) *error = msg;
+    if (error)
+        *error = msg;
 }
 
 bool ReadU32(std::span<const u8> data, usize off, u32& out) {
-    if (off + sizeof(u32) > data.size()) return false;
+    if (off + sizeof(u32) > data.size())
+        return false;
     std::memcpy(&out, data.data() + off, sizeof(u32));
     return true;
 }
 
-}  // namespace
+} // namespace
 
 bool BlsContainer::Load(std::span<const u8> fileBytes, std::string* error) {
     loaded_ = false;
@@ -51,8 +53,10 @@ bool BlsContainer::Load(std::span<const u8> fileBytes, std::string* error) {
     std::memcpy(&version, fileBytes.data() + 4, sizeof(u32));
     version_ = version;
 
-    if (version == kHsxgVersion_1_8)  return LoadV1_8 (fileBytes, error);
-    if (version == kHsxgVersion_1_14) return LoadV1_14(fileBytes, error);
+    if (version == kHsxgVersion_1_8)
+        return LoadV1_8(fileBytes, error);
+    if (version == kHsxgVersion_1_14)
+        return LoadV1_14(fileBytes, error);
 
     SetError(error, "Unsupported BLS version (expected 1.8 or 1.14)");
     return false;
@@ -89,8 +93,8 @@ bool BlsContainer::LoadV1_8(std::span<const u8> fileBytes, std::string* error) {
 
     bytes_.assign(fileBytes.begin(), fileBytes.end());
 
-    const auto* permTable     = reinterpret_cast<const u32*>(bytes_.data() + h.permutationOffset);
-    const u8*   permuteData   = bytes_.data() + h.dataOffset;
+    const auto* permTable = reinterpret_cast<const u32*>(bytes_.data() + h.permutationOffset);
+    const u8* permuteData = bytes_.data() + h.dataOffset;
     const usize permuteDataLen = bytes_.size() - h.dataOffset;
 
     permutes_.reserve(h.permutationCount);
@@ -107,7 +111,7 @@ bool BlsContainer::LoadV1_8(std::span<const u8> fileBytes, std::string* error) {
         std::memcpy(&ph, permuteData + off, sizeof(PermuteHeader));
 
         const u64 blobStart = static_cast<u64>(off) + sizeof(PermuteHeader);
-        const u64 blobEnd   = blobStart + ph.codeSize;
+        const u64 blobEnd = blobStart + ph.codeSize;
         if (blobEnd > permuteDataLen || ph.codeSize < sizeof(u32) * 2) {
             SetError(error, "v1.8: permute DXBC blob out of bounds");
             permutes_.clear();
@@ -125,7 +129,7 @@ bool BlsContainer::LoadV1_8(std::span<const u8> fileBytes, std::string* error) {
             return false;
         }
 
-        permutes_.push_back({ ph, std::span<const u8>(blob, ph.codeSize) });
+        permutes_.push_back({ph, std::span<const u8>(blob, ph.codeSize)});
     }
 
     loaded_ = true;
@@ -157,7 +161,7 @@ bool BlsContainer::LoadV1_14(std::span<const u8> fileBytes, std::string* error) 
 
     // We accept the two backends we actually emit + load: DX SM6 (DXIL) for
     // d3d12 and SPIR-V for Vulkan. Others (GLSL, WGSL) get rejected.
-    const bool isDx6   = (h.platformTag == kPlatformTag_DX6);
+    const bool isDx6 = (h.platformTag == kPlatformTag_DX6);
     const bool isSpirv = (h.platformTag == kPlatformTag_SPIRV);
     if (!isDx6 && !isSpirv) {
         SetError(error, "v1.14: unsupported platformTag (expected '06XD' or 'RIPS')");
@@ -191,25 +195,24 @@ bool BlsContainer::LoadV1_14(std::span<const u8> fileBytes, std::string* error) 
     // (size, cumulative offset) tuples. Null perms are size==0.
     std::vector<BlsV14PermEntry> perms(h.permCount);
     {
-        const u8* p = fileBytes.data() + h.permsOffset + 4;  // skip 4-byte padding prefix
+        const u8* p = fileBytes.data() + h.permsOffset + 4; // skip 4-byte padding prefix
         std::memcpy(perms.data(), p, h.permCount * sizeof(BlsV14PermEntry));
     }
 
     u32 totalDecompressed = 0;
-    for (const auto& e : perms) totalDecompressed += e.size;
+    for (const auto& e : perms)
+        totalDecompressed += e.size;
 
     // Decompress the single zlib blob into bytes_. The decompressed payload
     // is the concatenation of all live perm bytes in declaration order.
-    const std::span<const u8> compressed(
-        fileBytes.data() + h.dataOffset,
-        fileBytes.size() - h.dataOffset);
+    const std::span<const u8> compressed(fileBytes.data() + h.dataOffset,
+                                         fileBytes.size() - h.dataOffset);
 
     std::string decompErr;
     bytes_ = ::whiteout::zlib_decompress(compressed, &decompErr, totalDecompressed);
     if (bytes_.empty()) {
-        SetError(error, decompErr.empty()
-                            ? "v1.14: zlib_decompress returned empty payload"
-                            : decompErr.c_str());
+        SetError(error, decompErr.empty() ? "v1.14: zlib_decompress returned empty payload"
+                                          : decompErr.c_str());
         return false;
     }
     if (bytes_.size() < totalDecompressed) {
@@ -230,7 +233,7 @@ bool BlsContainer::LoadV1_14(std::span<const u8> fileBytes, std::string* error) 
             // (it iterates through PermuteCount and creates handles), so we
             // emit an empty span and let the device's CreateShader reject
             // zero-size bytecode if the caller actually tries to use it.
-            permutes_.push_back({ PermuteHeader{}, std::span<const u8>{} });
+            permutes_.push_back({PermuteHeader{}, std::span<const u8>{}});
             continue;
         }
         if (static_cast<u64>(cursor) + sz > bytes_.size()) {
@@ -243,7 +246,7 @@ bool BlsContainer::LoadV1_14(std::span<const u8> fileBytes, std::string* error) 
         const u8* permBytes = bytes_.data() + cursor;
 
         const u8* blobStart = nullptr;
-        u32       blobSize  = 0;
+        u32 blobSize = 0;
 
         if (isDx6) {
             // §3.2 inner: 40-byte header + 48-byte resource info + 8-byte
@@ -320,7 +323,7 @@ bool BlsContainer::LoadV1_14(std::span<const u8> fileBytes, std::string* error) 
         // The v1.14 inner header is shaped differently from the v1.8
         // PermuteHeader, but no consumer reads PermuteHeader fields today —
         // we leave it default-initialised as a placeholder.
-        permutes_.push_back({ PermuteHeader{}, std::span<const u8>(blobStart, blobSize) });
+        permutes_.push_back({PermuteHeader{}, std::span<const u8>(blobStart, blobSize)});
 
         cursor += sz;
     }
@@ -329,4 +332,4 @@ bool BlsContainer::LoadV1_14(std::span<const u8> fileBytes, std::string* error) 
     return true;
 }
 
-}  // namespace whiteout::flakes::renderer::bls
+} // namespace whiteout::flakes::renderer::bls

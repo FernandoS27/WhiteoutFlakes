@@ -1,12 +1,12 @@
-#include <cornflakes/interface/asset/asset_reader.hpp>
 #include <cornflakes/asset/war3_compatibility_validator.hpp>
+#include <cornflakes/core/determinism.hpp>
+#include <cornflakes/diagnostics/frame_trace.hpp>
+#include <cornflakes/diagnostics/issue_codes.hpp>
+#include <cornflakes/interface/asset/asset_reader.hpp>
 #include <cornflakes/interface/binding/effect_binder.hpp>
 #include <cornflakes/interface/binding/effect_execution_plan.hpp>
 #include <cornflakes/interface/core/arena.hpp>
-#include <cornflakes/core/determinism.hpp>
-#include <cornflakes/diagnostics/frame_trace.hpp>
 #include <cornflakes/interface/diagnostics/issue.hpp>
-#include <cornflakes/diagnostics/issue_codes.hpp>
 #include <cornflakes/render/render_extractor.hpp>
 #include <cornflakes/scheduler/serial_worker_pool.hpp>
 #include <cornflakes/service/cornflakes_service.hpp>

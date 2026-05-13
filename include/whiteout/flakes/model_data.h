@@ -8,7 +8,7 @@
 // in model_types.h.
 // ============================================================================
 
-#include "types.h"
-#include "enums.h"
 #include "display.h"
+#include "enums.h"
 #include "model_types.h"
+#include "types.h"

@@ -1,8 +1,8 @@
-#include <cornflakes/interface/asset/asset_reader.hpp>
-#include <cornflakes/interface/asset/pkb_reader.hpp>
 #include <cornflakes/asset/text_pkfx_reader.hpp>
 #include <cornflakes/core/determinism.hpp>
 #include <cornflakes/diagnostics/issue_codes.hpp>
+#include <cornflakes/interface/asset/asset_reader.hpp>
+#include <cornflakes/interface/asset/pkb_reader.hpp>
 
 #include <algorithm>
 #include <memory>

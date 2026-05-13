@@ -16,7 +16,7 @@ namespace whiteout {
 namespace mdx {
 Model convertMdlToModel(std::string_view source, std::vector<std::string>& issues);
 }
-}
+} // namespace whiteout
 
 namespace whiteout::flakes::renderer::dnc {
 
@@ -26,8 +26,7 @@ namespace {
 using whiteout::mdx::Model;
 }
 
-DncCache::DncCache(IContentProvider* contentProvider)
-    : contentProvider_(contentProvider) {}
+DncCache::DncCache(IContentProvider* contentProvider) : contentProvider_(contentProvider) {}
 
 DncCache::~DncCache() {
     ReleaseAll();
@@ -37,20 +36,23 @@ std::string DncCache::NormalizeKey(const std::string& path) {
     std::string out;
     out.reserve(path.size());
     for (char c : path) {
-        if (c == '\\') c = '/';
+        if (c == '\\')
+            c = '/';
         out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
     return out;
 }
 
 bool DncCache::IsTextPath(const std::string& key) {
-    if (key.size() < 4) return false;
+    if (key.size() < 4)
+        return false;
 
     return key.compare(key.size() - 4, 4, ".mdl") == 0;
 }
 
 DncAsset* DncCache::Acquire(const std::string& path) {
-    if (!contentProvider_) return nullptr;
+    if (!contentProvider_)
+        return nullptr;
 
     const std::string key = NormalizeKey(path);
 
@@ -68,10 +70,8 @@ DncAsset* DncCache::Acquire(const std::string& path) {
     auto entry = std::make_unique<DncAsset>();
     entry->key = key;
 
-    const bool isBinaryMdx =
-        bytes->size() >= 4 &&
-        (*bytes)[0] == 'M' && (*bytes)[1] == 'D' &&
-        (*bytes)[2] == 'L' && (*bytes)[3] == 'X';
+    const bool isBinaryMdx = bytes->size() >= 4 && (*bytes)[0] == 'M' && (*bytes)[1] == 'D' &&
+                             (*bytes)[2] == 'L' && (*bytes)[3] == 'X';
     try {
         if (!isBinaryMdx) {
             std::string_view src(reinterpret_cast<const char*>(bytes->data()), bytes->size());
@@ -83,8 +83,8 @@ DncAsset* DncCache::Acquire(const std::string& path) {
             }
         } else {
             whiteout::mdx::Parser parser;
-            std::span<const whiteout::u8> view(
-                reinterpret_cast<const whiteout::u8*>(bytes->data()), bytes->size());
+            std::span<const whiteout::u8> view(reinterpret_cast<const whiteout::u8*>(bytes->data()),
+                                               bytes->size());
             entry->model = parser.parse(view);
         }
     } catch (const std::exception& e) {
@@ -94,14 +94,15 @@ DncAsset* DncCache::Acquire(const std::string& path) {
 
     if (!entry->model.sequences.empty()) {
         entry->seqStartMs = static_cast<i32>(entry->model.sequences[0].intervalStart);
-        entry->seqEndMs   = static_cast<i32>(entry->model.sequences[0].intervalEnd);
+        entry->seqEndMs = static_cast<i32>(entry->model.sequences[0].intervalEnd);
     }
 
     entry->hierarchy.Build(entry->model);
 
     if (!entry->model.lights.empty()) {
         const auto& L = entry->model.lights[0];
-        entry->lightNodeIdx = entry->hierarchy.ObjectIdToNodeIndex(static_cast<i32>(L.node.objectId));
+        entry->lightNodeIdx =
+            entry->hierarchy.ObjectIdToNodeIndex(static_cast<i32>(L.node.objectId));
     }
 
     entry->refs = 1;
@@ -111,13 +112,17 @@ DncAsset* DncCache::Acquire(const std::string& path) {
 }
 
 void DncCache::Release(DncAsset* asset) {
-    if (!asset) return;
-    if (asset->refs == 0) return;
+    if (!asset)
+        return;
+    if (asset->refs == 0)
+        return;
     asset->refs -= 1;
-    if (asset->refs > 0) return;
+    if (asset->refs > 0)
+        return;
 
     auto it = entries_.find(asset->key);
-    if (it == entries_.end()) return;
+    if (it == entries_.end())
+        return;
     entries_.erase(it);
 }
 
@@ -125,4 +130,4 @@ void DncCache::ReleaseAll() {
     entries_.clear();
 }
 
-}
+} // namespace whiteout::flakes::renderer::dnc

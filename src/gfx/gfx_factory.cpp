@@ -1,6 +1,6 @@
-#include "gfx/gfx.h"
 #include "gfx/d3d11/d3d11_device.h"
 #include "gfx/d3d12/d3d12_device.h"
+#include "gfx/gfx.h"
 
 #if WDX_HAS_VULKAN
 #include "gfx/vulkan/vulkan_device.h"
@@ -23,15 +23,14 @@ std::filesystem::path g_pipelineCachePath;
 // strings returned by EnumerateDevices). Empty = "best by VRAM / type"
 // — the default each backend used before this knob existed.
 std::string g_preferredDevice;
-}  // namespace
+} // namespace
 
 void SetPipelineCachePath(const char* utf8Path) {
     if (!utf8Path || !*utf8Path) {
         g_pipelineCachePath.clear();
         return;
     }
-    g_pipelineCachePath =
-        std::filesystem::path(reinterpret_cast<const char8_t*>(utf8Path));
+    g_pipelineCachePath = std::filesystem::path(reinterpret_cast<const char8_t*>(utf8Path));
 }
 
 const std::filesystem::path& GetPipelineCachePath() {
@@ -48,45 +47,47 @@ const std::string& GetPreferredDevice() {
 
 std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api, bool enableValidation) {
     switch (api) {
-        case GfxApi::D3D11: {
-            auto device = std::make_unique<d3d11::D3D11Device>();
-            if (!device->Init(enableValidation))
-                return nullptr;
-            return device;
-        }
-        case GfxApi::D3D12: {
-            auto device = std::make_unique<d3d12::D3D12Device>();
-            if (!device->Init(enableValidation))
-                return nullptr;
-            return device;
-        }
-        case GfxApi::Vulkan: {
-#if WDX_HAS_VULKAN
-            auto device = std::make_unique<vulkan::VulkanDevice>();
-            if (!device->Init(enableValidation))
-                return nullptr;
-            return device;
-#else
-            (void)enableValidation;
+    case GfxApi::D3D11: {
+        auto device = std::make_unique<d3d11::D3D11Device>();
+        if (!device->Init(enableValidation))
             return nullptr;
+        return device;
+    }
+    case GfxApi::D3D12: {
+        auto device = std::make_unique<d3d12::D3D12Device>();
+        if (!device->Init(enableValidation))
+            return nullptr;
+        return device;
+    }
+    case GfxApi::Vulkan: {
+#if WDX_HAS_VULKAN
+        auto device = std::make_unique<vulkan::VulkanDevice>();
+        if (!device->Init(enableValidation))
+            return nullptr;
+        return device;
+#else
+        (void)enableValidation;
+        return nullptr;
 #endif
-        }
+    }
     }
     return nullptr;
 }
 
 std::vector<std::string> EnumerateDevices(GfxApi api) {
     switch (api) {
-        case GfxApi::D3D11:  return d3d11::EnumerateAdapterNames();
-        case GfxApi::D3D12:  return d3d12::EnumerateAdapterNames();
-        case GfxApi::Vulkan:
+    case GfxApi::D3D11:
+        return d3d11::EnumerateAdapterNames();
+    case GfxApi::D3D12:
+        return d3d12::EnumerateAdapterNames();
+    case GfxApi::Vulkan:
 #if WDX_HAS_VULKAN
-            return vulkan::EnumerateAdapterNames();
+        return vulkan::EnumerateAdapterNames();
 #else
-            return {};
+        return {};
 #endif
     }
     return {};
 }
 
-}
+} // namespace whiteout::flakes::gfx

@@ -1,16 +1,16 @@
 #pragma once
 
-#include "whiteout/flakes/types.h"
-#include "model/actor_manager.h"
-#include "whiteout/flakes/model_types.h"
-#include "whiteout/flakes/model_source.h"
-#include "render_target.h"
-#include "whiteout/flakes/gfx_types.h"
-#include <vector>
-#include <string>
-#include <thread>
 #include <atomic>
 #include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+#include "model/actor_manager.h"
+#include "render_target.h"
+#include "whiteout/flakes/gfx_types.h"
+#include "whiteout/flakes/model_source.h"
+#include "whiteout/flakes/model_types.h"
+#include "whiteout/flakes/types.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -20,7 +20,9 @@
 #endif
 #include <windows.h>
 
-namespace whiteout::flakes::renderer { class RenderService; }
+namespace whiteout::flakes::renderer {
+class RenderService;
+}
 
 namespace whiteout::flakes {
 
@@ -51,16 +53,23 @@ public:
     // the host main thread while the render thread is running — internally
     // they synchronize via hostMutex_ (focusActor_ uses a relaxed atomic).
     void SetCameraPresets(std::vector<CameraPreset> presets);
-    void SetSequences(std::vector<std::string> names,
-                      std::vector<SequenceInfo> ranges);
-    void SetFocusActor(ActorId h)            { focusActor_.store(h, std::memory_order_relaxed); }
-    ActorId FocusActor() const               { return focusActor_.load(std::memory_order_relaxed); }
-    std::vector<SequenceInfo> SequenceRanges() const;  // returns a snapshot copy
+    void SetSequences(std::vector<std::string> names, std::vector<SequenceInfo> ranges);
+    void SetFocusActor(ActorId h) {
+        focusActor_.store(h, std::memory_order_relaxed);
+    }
+    ActorId FocusActor() const {
+        return focusActor_.load(std::memory_order_relaxed);
+    }
+    std::vector<SequenceInfo> SequenceRanges() const; // returns a snapshot copy
 
     void SyncViewMenuFromService();
 
-    HWND GetParentHWND() const { return hwnd_; }
-    HWND GetRenderHWND() const { return hwndRender_; }
+    HWND GetParentHWND() const {
+        return hwnd_;
+    }
+    HWND GetRenderHWND() const {
+        return hwndRender_;
+    }
 
     void SetTitle(const wchar_t* title);
 
@@ -73,8 +82,12 @@ public:
     // last frame instead of restarting. Toggled by the settings checkbox;
     // applied to all actors on toggle, and to newly-loaded actors by the
     // application (test_main applies after Loader().SpawnUnit).
-    bool LoopNonLoopingPolicy() const   { return loopNonLoopingPolicy_; }
-    void SetLoopNonLoopingPolicy(bool on) { loopNonLoopingPolicy_ = on; }
+    bool LoopNonLoopingPolicy() const {
+        return loopNonLoopingPolicy_;
+    }
+    void SetLoopNonLoopingPolicy(bool on) {
+        loopNonLoopingPolicy_ = on;
+    }
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -99,32 +112,32 @@ private:
     HWND hwndRender_ = nullptr;
 
     HWND btnTeamColor_ = nullptr;
-    HWND cmbCamera_    = nullptr;
-    HWND lblSequence_  = nullptr;
-    HWND cmbSequence_  = nullptr;
-    HWND cmbLighting_  = nullptr;
-    HWND btnBgColor_   = nullptr;
-    HWND sldExposure_  = nullptr;
-    HWND lblExposure_  = nullptr;
+    HWND cmbCamera_ = nullptr;
+    HWND lblSequence_ = nullptr;
+    HWND cmbSequence_ = nullptr;
+    HWND cmbLighting_ = nullptr;
+    HWND btnBgColor_ = nullptr;
+    HWND sldExposure_ = nullptr;
+    HWND lblExposure_ = nullptr;
     HWND sldSndVolume_ = nullptr;
     HWND lblSndVolume_ = nullptr;
     HWND chkLoopNonLoop_ = nullptr;
-    HWND sldTimeOfDay_   = nullptr;
-    HWND lblTimeOfDay_   = nullptr;
-    HWND chkAnimateTod_  = nullptr;
-    HWND editDncPath_    = nullptr;
-    HWND btnDncReset_    = nullptr;
-    HWND cmbIblMode_     = nullptr;
-    HWND cmbShadows_     = nullptr;
+    HWND sldTimeOfDay_ = nullptr;
+    HWND lblTimeOfDay_ = nullptr;
+    HWND chkAnimateTod_ = nullptr;
+    HWND editDncPath_ = nullptr;
+    HWND btnDncReset_ = nullptr;
+    HWND cmbIblMode_ = nullptr;
+    HWND cmbShadows_ = nullptr;
     HWND cmbDefaultBackend_ = nullptr;
-    HWND chkGraphicsDebug_  = nullptr;
-    HWND cmbPreferredDev_   = nullptr;
-    HMENU hMenuBar_      = nullptr;
-    HMENU hMenuView_     = nullptr;
-    HMENU hMenuTileset_  = nullptr;
-    HMENU hMenuDebug_    = nullptr;
+    HWND chkGraphicsDebug_ = nullptr;
+    HWND cmbPreferredDev_ = nullptr;
+    HMENU hMenuBar_ = nullptr;
+    HMENU hMenuView_ = nullptr;
+    HMENU hMenuTileset_ = nullptr;
+    HMENU hMenuDebug_ = nullptr;
     HMENU hMenuDebugVis_ = nullptr;
-    HMENU hMenuLod_      = nullptr;
+    HMENU hMenuLod_ = nullptr;
 
     HWND hwndSettings_ = nullptr;
 
@@ -147,7 +160,7 @@ private:
         IDC_GRAPHICS_DEBUG,
         IDC_PREFERRED_DEVICE,
 
-        IDM_VIEW_GRID      = 1100,
+        IDM_VIEW_GRID = 1100,
         IDM_VIEW_PARTICLES,
         IDM_VIEW_RIBBONS,
         IDM_VIEW_EVENTS,
@@ -155,16 +168,16 @@ private:
         IDM_DBG_COLLISIONS = 1200,
         IDM_DBG_LIGHTS,
 
-        IDM_TILESET_BASE   = 1310,
-        IDM_TILESET_LAST   = IDM_TILESET_BASE + 15,
+        IDM_TILESET_BASE = 1310,
+        IDM_TILESET_LAST = IDM_TILESET_BASE + 15,
 
-        IDM_DBGVIS_BASE    = 1400,
-        IDM_DBGVIS_LAST    = IDM_DBGVIS_BASE + 7,
+        IDM_DBGVIS_BASE = 1400,
+        IDM_DBGVIS_LAST = IDM_DBGVIS_BASE + 7,
 
-        IDM_LOD_BASE       = 1500,
-        IDM_LOD_LAST       = IDM_LOD_BASE + 4,
+        IDM_LOD_BASE = 1500,
+        IDM_LOD_LAST = IDM_LOD_BASE + 4,
 
-        IDM_SETTINGS       = 1600,
+        IDM_SETTINGS = 1600,
     };
 
     bool lmbDown_ = false, rmbDown_ = false, mmbDown_ = false;
@@ -182,22 +195,22 @@ private:
     // A single mutex serializes; UI dropdown manipulation happens before the
     // lock is acquired since SendMessageW is already serialized by the
     // message pump.
-    mutable std::mutex         hostMutex_;
-    std::vector<CameraPreset>  cameraPresets_;
-    i32                        activeCameraPresetIdx_ = -1;
-    bool                       cameraLocked_          = false;
+    mutable std::mutex hostMutex_;
+    std::vector<CameraPreset> cameraPresets_;
+    i32 activeCameraPresetIdx_ = -1;
+    bool cameraLocked_ = false;
 
-    std::vector<std::string>   sequenceNames_;
-    std::vector<SequenceInfo>  sequenceRanges_;
+    std::vector<std::string> sequenceNames_;
+    std::vector<SequenceInfo> sequenceRanges_;
 
-    std::atomic<ActorId>       focusActor_{0};
+    std::atomic<ActorId> focusActor_{0};
 
-    std::thread           renderThread_;
-    std::atomic<bool>     running_{false};
-    std::atomic<bool>     initialized_{false};
-    RenderTargetId        targetId_ = 0;
+    std::thread renderThread_;
+    std::atomic<bool> running_{false};
+    std::atomic<bool> initialized_{false};
+    RenderTargetId targetId_ = 0;
 
     static constexpr i32 kToolbarH = 28;
 };
 
-}
+} // namespace whiteout::flakes

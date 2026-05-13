@@ -16,7 +16,7 @@ void CornEffectsService::SetContentProvider(io::IContentProvider* provider) {
 }
 
 void CornEffectsService::AddCornEmitter(ActorId model, i32 emitterId,
-                                      std::unique_ptr<CornEffectsEmitter> emitter) {
+                                        std::unique_ptr<CornEffectsEmitter> emitter) {
     std::lock_guard<std::mutex> lock(mutex_);
     emitter->gameToCornEffectsScale_ = gameToCornEffectsScale_;
     emitter->SetBackendInit(backendInit_);
@@ -45,9 +45,11 @@ void CornEffectsService::SetFrameInputs(const CornEffectsFrameInputs& fi) {
 
 void CornEffectsService::RemoveModel(ActorId model) {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto it = emitters_.begin(); it != emitters_.end(); ) {
-        if (it->first.model == model) it = emitters_.erase(it);
-        else ++it;
+    for (auto it = emitters_.begin(); it != emitters_.end();) {
+        if (it->first.model == model)
+            it = emitters_.erase(it);
+        else
+            ++it;
     }
 }
 
@@ -79,7 +81,8 @@ i32 CornEffectsService::TotalParticleCount() const {
 bool CornEffectsService::HasEmittersForModel(ActorId model) const {
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& [k, e] : emitters_) {
-        if (k.model == model) return true;
+        if (k.model == model)
+            return true;
     }
     return false;
 }
@@ -87,7 +90,8 @@ bool CornEffectsService::HasEmittersForModel(ActorId model) const {
 void CornEffectsService::SetOwningAgentVisibilityForModel(ActorId model, bool visible) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& [k, e] : emitters_) {
-        if (k.model == model) e->SetOwningAgentVisibility(visible);
+        if (k.model == model)
+            e->SetOwningAgentVisibility(visible);
     }
 }
 
@@ -100,4 +104,4 @@ void CornEffectsService::Simulate(f32 dt) {
     }
 }
 
-}
+} // namespace whiteout::flakes::renderer::corn_effects

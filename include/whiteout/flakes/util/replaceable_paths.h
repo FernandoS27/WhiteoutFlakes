@@ -34,8 +34,8 @@ enum class Tileset : u8 {
 
 const char* TilesetName(Tileset ts);
 
-void     SetCurrentTileset(Tileset ts);
-Tileset  GetCurrentTileset();
+void SetCurrentTileset(Tileset ts);
+Tileset GetCurrentTileset();
 
 const char* ReplaceableCanonicalPath(i32 replaceableId, Tileset ts);
 
@@ -43,13 +43,13 @@ const char* ReplaceableCanonicalPath(i32 replaceableId);
 
 void LoadGameDataFiles(IContentProvider* cp, bool force = false);
 
-}  // namespace whiteout::flakes::io
+} // namespace whiteout::flakes::io
 
 namespace whiteout::flakes {
+using ::whiteout::flakes::io::GetCurrentTileset;
+using ::whiteout::flakes::io::LoadGameDataFiles;
+using ::whiteout::flakes::io::ReplaceableCanonicalPath;
+using ::whiteout::flakes::io::SetCurrentTileset;
 using ::whiteout::flakes::io::Tileset;
 using ::whiteout::flakes::io::TilesetName;
-using ::whiteout::flakes::io::SetCurrentTileset;
-using ::whiteout::flakes::io::GetCurrentTileset;
-using ::whiteout::flakes::io::ReplaceableCanonicalPath;
-using ::whiteout::flakes::io::LoadGameDataFiles;
-}
+} // namespace whiteout::flakes

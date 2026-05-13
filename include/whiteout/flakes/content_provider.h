@@ -20,11 +20,11 @@ class IContentProvider {
 public:
     virtual ~IContentProvider() = default;
 
-    virtual std::optional<std::vector<u8>> ReadFile(
-        const std::string& path, std::string* actualExt = nullptr) const = 0;
+    virtual std::optional<std::vector<u8>> ReadFile(const std::string& path,
+                                                    std::string* actualExt = nullptr) const = 0;
 };
 
-}  // namespace whiteout::flakes::io
+} // namespace whiteout::flakes::io
 
 namespace whiteout::flakes {
 using ::whiteout::flakes::io::IContentProvider;

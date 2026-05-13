@@ -341,9 +341,9 @@ void EffectRuntime::drainPendingSpawns(std::size_t i, const EffectFrameInputs& i
         particle.setEffectIsRunning(inputs.effectIsRunning);
 
         if (ev.hasSpawnPosition) {
-            const std::array<f32, 4> spawnQuat =
-                ev.hasSpawnOrientation ? ev.spawnOrientation
-                                       : std::array<f32, 4>{0.0F, 0.0F, 0.0F, 1.0F};
+            const std::array<f32, 4> spawnQuat = ev.hasSpawnOrientation
+                                                     ? ev.spawnOrientation
+                                                     : std::array<f32, 4>{0.0F, 0.0F, 0.0F, 1.0F};
             particle.setSpawnTRS(ev.spawnPosition, spawnQuat, {1.0F, 1.0F, 1.0F});
         } else if (ev.hasSpawnOrientation) {
             particle.setSpawnTRS({0.0F, 0.0F, 0.0F}, ev.spawnOrientation, {1.0F, 1.0F, 1.0F});

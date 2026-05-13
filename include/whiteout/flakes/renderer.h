@@ -14,16 +14,16 @@
 // mutation, so callers should serialize access on a single thread.
 // ============================================================================
 
-#include "types.h"
-#include "enums.h"
+#include "actor_view.h"
+#include "content_provider.h"
 #include "display.h"
+#include "enums.h"
+#include "frame_state.h"
 #include "model_data.h"
 #include "model_source.h"
 #include "sound_emitter.h"
-#include "content_provider.h"
-#include "frame_state.h"
+#include "types.h"
 #include "views.h"
-#include "actor_view.h"
 
 #include <memory>
 #include <string_view>
@@ -40,37 +40,37 @@ public:
 
     // Sub-service handles. Each call creates a small value-typed view; the
     // underlying impl is shared.
-    PipelineView      Pipeline();
-    SceneView         Scene();
-    CameraView        Camera();
-    SettingsView      Settings();
-    LoaderView        Loader();
-    DebugView         Debug();
-    DncView           Dnc();
-    ShadowView        Shadow();
-    SplatView         Splats();
-    ReplaceablesView  Replaceables();
+    PipelineView Pipeline();
+    SceneView Scene();
+    CameraView Camera();
+    SettingsView Settings();
+    LoaderView Loader();
+    DebugView Debug();
+    DncView Dnc();
+    ShadowView Shadow();
+    SplatView Splats();
+    ReplaceablesView Replaceables();
 
     // Per-actor view. Returns an invalid view (IsValid()==false) for unknown
     // handles.
-    ActorView         Actor(ActorHandle h);
+    ActorView Actor(ActorHandle h);
 
     // Sound is consumer-pluggable: pass in any ISoundEmitter implementation
     // (NullSoundEmitter is the default).
-    void              SwapSoundEmitter(std::unique_ptr<ISoundEmitter>);
+    void SwapSoundEmitter(std::unique_ptr<ISoundEmitter>);
 
     // Per-frame entry point. Drives animation + attachment + particle / PE1
     // / ribbon simulation. Hosts that drive their own actor evaluation
     // (Max plugin) can skip Tick and call ActorView::EvaluateAndApply
     // manually.
-    void              Tick(f32 dt);
+    void Tick(f32 dt);
 
     // Texture cache probe (used by adapters that want to dedupe shared
     // textures by their cache key).
-    bool              IsTextureCached(std::string_view sharedKey) const;
+    bool IsTextureCached(std::string_view sharedKey) const;
 
 private:
     std::unique_ptr<detail::RendererImpl> impl_;
 };
 
-}  // namespace whiteout::flakes
+} // namespace whiteout::flakes

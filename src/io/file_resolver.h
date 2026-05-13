@@ -3,8 +3,8 @@
 #include "whiteout/flakes/types.h"
 
 #include <filesystem>
-#include <string>
 #include <span>
+#include <string>
 
 namespace whiteout::flakes::io {
 
@@ -12,14 +12,22 @@ class FileResolver {
 public:
     explicit FileResolver(const std::filesystem::path& basePath = {});
 
-    void SetBasePath(const std::filesystem::path& basePath) { basePath_ = basePath; }
-    const std::filesystem::path& BasePath() const { return basePath_; }
+    void SetBasePath(const std::filesystem::path& basePath) {
+        basePath_ = basePath;
+    }
+    const std::filesystem::path& BasePath() const {
+        return basePath_;
+    }
 
     // Secondary lookup path checked AFTER basePath_. Used by the host to
     // surface engine-shipped assets (shaders, etc.) that live next to the
     // executable rather than alongside the loaded model.
-    void SetSystemBasePath(const std::filesystem::path& p) { systemBasePath_ = p; }
-    const std::filesystem::path& SystemBasePath() const { return systemBasePath_; }
+    void SetSystemBasePath(const std::filesystem::path& p) {
+        systemBasePath_ = p;
+    }
+    const std::filesystem::path& SystemBasePath() const {
+        return systemBasePath_;
+    }
 
     std::filesystem::path Resolve(const std::string& relativePath,
                                   std::span<const char* const> extensions) const;
@@ -35,4 +43,4 @@ private:
     std::filesystem::path systemBasePath_;
 };
 
-}
+} // namespace whiteout::flakes::io

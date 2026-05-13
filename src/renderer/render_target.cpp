@@ -1,5 +1,3 @@
 ﻿#include "renderer/render_target.h"
 
-namespace whiteout::flakes::renderer {
-
-}
+namespace whiteout::flakes::renderer {}

@@ -29,8 +29,8 @@
 
 namespace whiteout::cornflakes {
 struct EffectAssetModel;
-class  IssueBag;
-}
+class IssueBag;
+} // namespace whiteout::cornflakes
 
 namespace whiteout::flakes::io {
 class IContentProvider;
@@ -51,25 +51,26 @@ public:
 
     void SetContentProvider(io::IContentProvider* provider);
 
-    const ::whiteout::cornflakes::EffectAssetModel*
-    Acquire(const std::string& pkbPath,
-            ::whiteout::cornflakes::IssueBag& issues);
+    const ::whiteout::cornflakes::EffectAssetModel* Acquire(
+        const std::string& pkbPath, ::whiteout::cornflakes::IssueBag& issues);
 
-    ::whiteout::cornflakes::IArena& Arena() { return arena_; }
+    ::whiteout::cornflakes::IArena& Arena() {
+        return arena_;
+    }
 
     void Clear();
 
 private:
     struct Entry {
-        std::vector<std::byte>                                          bytes;
-        std::unique_ptr<::whiteout::cornflakes::EffectAssetModel>       model;
+        std::vector<std::byte> bytes;
+        std::unique_ptr<::whiteout::cornflakes::EffectAssetModel> model;
     };
 
-    mutable std::mutex                                                  mutex_;
-    ::whiteout::cornflakes::ExpandingArena                              arena_;
-    ::whiteout::cornflakes::SerializerPriorityDispatcher                dispatcher_;
-    std::unordered_map<std::string, std::unique_ptr<Entry>>             cache_;
-    io::IContentProvider*                                               contentProvider_ = nullptr;
+    mutable std::mutex mutex_;
+    ::whiteout::cornflakes::ExpandingArena arena_;
+    ::whiteout::cornflakes::SerializerPriorityDispatcher dispatcher_;
+    std::unordered_map<std::string, std::unique_ptr<Entry>> cache_;
+    io::IContentProvider* contentProvider_ = nullptr;
 };
 
-}
+} // namespace whiteout::flakes::renderer::corn_effects

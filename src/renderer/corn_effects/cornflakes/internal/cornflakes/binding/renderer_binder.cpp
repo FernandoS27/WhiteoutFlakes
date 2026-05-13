@@ -66,28 +66,65 @@ using ToggleHandler = void (*)(RendererBuildState&, bool);
 // are silently ignored — the sub-property table picks them up.
 const std::unordered_map<std::string_view, ToggleHandler>& toggleHandlers() {
     static const std::unordered_map<std::string_view, ToggleHandler> kTable = {
-        {"Lit",                [](RendererBuildState& s, bool on) { if (on) { s.out.isLit = true; s.out.hasNT = true; } }},
-        {"LegacyLit",          [](RendererBuildState& s, bool on) { s.out.hasLegacyLit = on; }},
-        {"SoftParticles",      [](RendererBuildState& s, bool on) { if (on) { s.out.hasSoftParticles = true; } }},
-        {"AlphaRemap",         [](RendererBuildState& s, bool on) { if (on) { s.out.hasAlphaLut = true; s.out.hasRandom = true; } }},
-        {"Atlas",              [](RendererBuildState& s, bool on) { if (on) { s.out.isAtlas = true; } }},
-        {"Distortion",         [](RendererBuildState& s, bool on) { if (on) { s.out.isDistortion = true; } }},
-        {"GeometryBillboard",  [](RendererBuildState& s, bool on) { s.out.hasGeometryBillboard = on; }},
-        {"GeometryRibbon",     [](RendererBuildState& s, bool on) { s.out.hasGeometryRibbon = on; }},
-        {"Diffuse",            [](RendererBuildState& s, bool on) { s.out.hasDiffuse = on; }},
-        {"DiffuseRamp",        [](RendererBuildState& s, bool on) { s.out.hasDiffuseRamp = on; }},
-        {"Emissive",           [](RendererBuildState& s, bool on) { s.out.hasEmissive = on; }},
-        {"NormalBend",         [](RendererBuildState& s, bool on) { s.out.hasNormalBend = on; }},
-        {"NormalWrap",         [](RendererBuildState& s, bool on) { s.out.hasNormalWrap = on; }},
-        {"FlipUVs",            [](RendererBuildState& s, bool on) { s.out.hasFlipUVs = on; }},
-        {"TransformUVs",       [](RendererBuildState& s, bool on) { s.out.hasTransformUVs = on; }},
-        {"TextureUVs",         [](RendererBuildState& s, bool on) { s.out.hasTextureUVs = on; }},
-        {"TextureRepeat",      [](RendererBuildState& s, bool on) { s.out.hasTextureRepeat = on; }},
-        {"CustomTextureU",     [](RendererBuildState& s, bool on) { s.out.hasCustomTextureU = on; }},
-        {"CorrectDeformation", [](RendererBuildState& s, bool on) { s.out.hasCorrectDeformation = on; }},
-        {"EnableSize2D",       [](RendererBuildState& s, bool on) { s.out.hasEnableSize2D = on; }},
-        {"EnableRendering",    [](RendererBuildState& s, bool on) { s.out.isRenderingEnabled = on; s.sawEnableRendering = true; }},
-        {"Transparent",        [](RendererBuildState& s, bool on) { s.transparentEnabled = on; s.out.hasTransparent = on; }},
+        {"Lit",
+         [](RendererBuildState& s, bool on) {
+             if (on) {
+                 s.out.isLit = true;
+                 s.out.hasNT = true;
+             }
+         }},
+        {"LegacyLit", [](RendererBuildState& s, bool on) { s.out.hasLegacyLit = on; }},
+        {"SoftParticles",
+         [](RendererBuildState& s, bool on) {
+             if (on) {
+                 s.out.hasSoftParticles = true;
+             }
+         }},
+        {"AlphaRemap",
+         [](RendererBuildState& s, bool on) {
+             if (on) {
+                 s.out.hasAlphaLut = true;
+                 s.out.hasRandom = true;
+             }
+         }},
+        {"Atlas",
+         [](RendererBuildState& s, bool on) {
+             if (on) {
+                 s.out.isAtlas = true;
+             }
+         }},
+        {"Distortion",
+         [](RendererBuildState& s, bool on) {
+             if (on) {
+                 s.out.isDistortion = true;
+             }
+         }},
+        {"GeometryBillboard",
+         [](RendererBuildState& s, bool on) { s.out.hasGeometryBillboard = on; }},
+        {"GeometryRibbon", [](RendererBuildState& s, bool on) { s.out.hasGeometryRibbon = on; }},
+        {"Diffuse", [](RendererBuildState& s, bool on) { s.out.hasDiffuse = on; }},
+        {"DiffuseRamp", [](RendererBuildState& s, bool on) { s.out.hasDiffuseRamp = on; }},
+        {"Emissive", [](RendererBuildState& s, bool on) { s.out.hasEmissive = on; }},
+        {"NormalBend", [](RendererBuildState& s, bool on) { s.out.hasNormalBend = on; }},
+        {"NormalWrap", [](RendererBuildState& s, bool on) { s.out.hasNormalWrap = on; }},
+        {"FlipUVs", [](RendererBuildState& s, bool on) { s.out.hasFlipUVs = on; }},
+        {"TransformUVs", [](RendererBuildState& s, bool on) { s.out.hasTransformUVs = on; }},
+        {"TextureUVs", [](RendererBuildState& s, bool on) { s.out.hasTextureUVs = on; }},
+        {"TextureRepeat", [](RendererBuildState& s, bool on) { s.out.hasTextureRepeat = on; }},
+        {"CustomTextureU", [](RendererBuildState& s, bool on) { s.out.hasCustomTextureU = on; }},
+        {"CorrectDeformation",
+         [](RendererBuildState& s, bool on) { s.out.hasCorrectDeformation = on; }},
+        {"EnableSize2D", [](RendererBuildState& s, bool on) { s.out.hasEnableSize2D = on; }},
+        {"EnableRendering",
+         [](RendererBuildState& s, bool on) {
+             s.out.isRenderingEnabled = on;
+             s.sawEnableRendering = true;
+         }},
+        {"Transparent",
+         [](RendererBuildState& s, bool on) {
+             s.transparentEnabled = on;
+             s.out.hasTransparent = on;
+         }},
     };
     return kTable;
 }
@@ -108,12 +145,14 @@ using SubPropHandler = void (*)(RendererBuildState&, const AssetObject&, IArena&
 // blend-mode discriminators, etc.
 const std::unordered_map<std::string_view, SubPropHandler>& subPropHandlers() {
     static const std::unordered_map<std::string_view, SubPropHandler> kTable = {
-        {"Diffuse.DiffuseMap", [](RendererBuildState& s, const AssetObject& p, IArena& a) {
+        {"Diffuse.DiffuseMap",
+         [](RendererBuildState& s, const AssetObject& p, IArena& a) {
              if (auto path = fieldString(p, "PropertyValueStr"); !path.empty()) {
                  s.out.diffuseTexturePath = stableCopy(path, a);
              }
          }},
-        {"Atlas.SubDiv", [](RendererBuildState& s, const AssetObject& p, IArena&) {
+        {"Atlas.SubDiv",
+         [](RendererBuildState& s, const AssetObject& p, IArena&) {
              // PropertyValueNumeric is uint4 (16 bytes); first two u32s are the X/Y subdivisions.
              const auto bytes = fieldBytes(p, "PropertyValueNumeric");
              if (bytes.size() >= 2U * sizeof(u32)) {
@@ -125,29 +164,50 @@ const std::unordered_map<std::string_view, SubPropHandler>& subPropHandlers() {
                  s.out.atlasSubDivY = static_cast<u16>(subY);
              }
          }},
-        {"Atlas.Blending",            [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.atlasBlending = readPropU32(p); }},
-        {"Atlas.Definition",          [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.atlasDefinition = readPropU32(p); }},
-        {"Atlas.Source",              [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.atlasSource = readPropU32(p); }},
-        {"Atlas.DistortionStrength",  [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.atlasDistortionStrength = readPropF32(p); }},
-        {"Atlas.MotionVectorsMap", [](RendererBuildState& s, const AssetObject& p, IArena& a) {
+        {"Atlas.Blending", [](RendererBuildState& s, const AssetObject& p,
+                              IArena&) { s.out.atlasBlending = readPropU32(p); }},
+        {"Atlas.Definition", [](RendererBuildState& s, const AssetObject& p,
+                                IArena&) { s.out.atlasDefinition = readPropU32(p); }},
+        {"Atlas.Source", [](RendererBuildState& s, const AssetObject& p,
+                            IArena&) { s.out.atlasSource = readPropU32(p); }},
+        {"Atlas.DistortionStrength",
+         [](RendererBuildState& s, const AssetObject& p, IArena&) {
+             s.out.atlasDistortionStrength = readPropF32(p);
+         }},
+        {"Atlas.MotionVectorsMap",
+         [](RendererBuildState& s, const AssetObject& p, IArena& a) {
              if (auto path = fieldString(p, "PropertyValueStr"); !path.empty()) {
                  s.out.atlasMotionVectorsMapPath = stableCopy(path, a);
              }
          }},
-        {"AlphaRemap.AlphaMap", [](RendererBuildState& s, const AssetObject& p, IArena& a) {
+        {"AlphaRemap.AlphaMap",
+         [](RendererBuildState& s, const AssetObject& p, IArena& a) {
              if (auto path = fieldString(p, "PropertyValueStr"); !path.empty()) {
                  s.out.alphaRemapMapPath = stableCopy(path, a);
              }
          }},
-        {"SoftParticles.SoftnessDistance", [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.softParticlesDistance = readPropF32(p); }},
-        {"TextureUVs.FlipU",               [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.textureFlipU = readPropToggle(p); }},
-        {"TextureUVs.FlipV",               [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.textureFlipV = readPropToggle(p); }},
-        {"TextureUVs.RotateTexture",       [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.textureRotateTexture = readPropToggle(p); }},
-        {"BillboardingMode",               [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.billboardingMode = readPropU32(p); }},
-        {"Transparent.SortMode",           [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.transparentSortMode = readPropU32(p); }},
-        {"Transparent.Type",               [](RendererBuildState& s, const AssetObject& p, IArena&) { s.transparentType = readPropU32(p); }},
-        {"Opaque",                         [](RendererBuildState& s, const AssetObject& p, IArena&) { s.opaqueEnabled = readPropToggle(p); }},
-        {"Opaque.Type",                    [](RendererBuildState& s, const AssetObject& p, IArena&) { s.opaqueType = readPropU32(p); }},
+        {"SoftParticles.SoftnessDistance",
+         [](RendererBuildState& s, const AssetObject& p, IArena&) {
+             s.out.softParticlesDistance = readPropF32(p);
+         }},
+        {"TextureUVs.FlipU", [](RendererBuildState& s, const AssetObject& p,
+                                IArena&) { s.out.textureFlipU = readPropToggle(p); }},
+        {"TextureUVs.FlipV", [](RendererBuildState& s, const AssetObject& p,
+                                IArena&) { s.out.textureFlipV = readPropToggle(p); }},
+        {"TextureUVs.RotateTexture",
+         [](RendererBuildState& s, const AssetObject& p, IArena&) {
+             s.out.textureRotateTexture = readPropToggle(p);
+         }},
+        {"BillboardingMode", [](RendererBuildState& s, const AssetObject& p,
+                                IArena&) { s.out.billboardingMode = readPropU32(p); }},
+        {"Transparent.SortMode", [](RendererBuildState& s, const AssetObject& p,
+                                    IArena&) { s.out.transparentSortMode = readPropU32(p); }},
+        {"Transparent.Type", [](RendererBuildState& s, const AssetObject& p,
+                                IArena&) { s.transparentType = readPropU32(p); }},
+        {"Opaque", [](RendererBuildState& s, const AssetObject& p,
+                      IArena&) { s.opaqueEnabled = readPropToggle(p); }},
+        {"Opaque.Type", [](RendererBuildState& s, const AssetObject& p,
+                           IArena&) { s.opaqueType = readPropU32(p); }},
     };
     return kTable;
 }

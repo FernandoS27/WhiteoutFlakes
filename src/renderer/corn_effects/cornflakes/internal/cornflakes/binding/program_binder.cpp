@@ -1,7 +1,7 @@
 #include "binding_internal.hpp"
 
-#include <cornflakes/interface/binding/effect_binder.hpp>
 #include <cornflakes/core/determinism.hpp>
+#include <cornflakes/interface/binding/effect_binder.hpp>
 #include <cornflakes/vm/bytecode_decoder.hpp>
 
 #include <cstring>

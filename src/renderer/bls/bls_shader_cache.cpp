@@ -18,21 +18,26 @@ BlsShaderCache::~BlsShaderCache() {
 
 const char* BlsShaderCache::StagePrefix(gfx::ShaderStage stage) {
     switch (stage) {
-        case gfx::ShaderStage::Vertex:  return "vs";
-        case gfx::ShaderStage::Pixel:   return "ps";
-        case gfx::ShaderStage::Compute: return "cs";
+    case gfx::ShaderStage::Vertex:
+        return "vs";
+    case gfx::ShaderStage::Pixel:
+        return "ps";
+    case gfx::ShaderStage::Compute:
+        return "cs";
     }
     return "vs";
 }
 
 std::string BlsShaderCache::Lowercase(const std::string& in) {
     std::string out = in;
-    for (char& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    for (char& c : out)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return out;
 }
 
 BlsShader* BlsShaderCache::Acquire(gfx::ShaderStage stage, const std::string& name) {
-    if (!device_ || !contentProvider_) return nullptr;
+    if (!device_ || !contentProvider_)
+        return nullptr;
 
     auto& bucket = byStage_[static_cast<usize>(stage)];
     const std::string key = Lowercase(name);
@@ -51,10 +56,10 @@ BlsShader* BlsShaderCache::Acquire(gfx::ShaderStage stage, const std::string& na
     //   D3D11 → DXBC under shaders/<stage>/
     //   D3D12 → DXIL under shaders/d3d12/<stage>/ → fallback shaders/<stage>/
     //   Vulkan → SPIR-V under shaders/vulkan/<stage>/
-    std::string                 path;
+    std::string path;
     std::optional<std::vector<u8>> bytes;
     auto tryRead = [&](const char* prefix) {
-        path  = std::string(prefix) + StagePrefix(stage) + "/" + key + ".bls";
+        path = std::string(prefix) + StagePrefix(stage) + "/" + key + ".bls";
         bytes = contentProvider_->ReadFile(path);
         return bytes && !bytes->empty();
     };
@@ -66,12 +71,11 @@ BlsShader* BlsShaderCache::Acquire(gfx::ShaderStage stage, const std::string& na
         }
     } else if (api_ == gfx::GfxApi::D3D12) {
         if (!tryRead("shaders/d3d12/") && !tryRead("shaders/")) {
-            std::fprintf(stderr,
-                         "[bls] ERR: shader read FAIL '%s' (no d3d12 nor d3d11 bundle)\n",
+            std::fprintf(stderr, "[bls] ERR: shader read FAIL '%s' (no d3d12 nor d3d11 bundle)\n",
                          key.c_str());
             return nullptr;
         }
-    } else {  // D3D11
+    } else { // D3D11
         if (!tryRead("shaders/")) {
             std::fprintf(stderr, "[bls] ERR: shader read FAIL '%s'\n", path.c_str());
             return nullptr;
@@ -79,14 +83,12 @@ BlsShader* BlsShaderCache::Acquire(gfx::ShaderStage stage, const std::string& na
     }
 
     auto entry = std::make_unique<BlsShader>();
-    entry->name  = key;
+    entry->name = key;
     entry->stage = stage;
 
     std::string err;
     if (!entry->container.Load(*bytes, &err)) {
-        std::fprintf(stderr,
-                     "[bls] ERR: shader parse FAIL '%s': %s\n",
-                     path.c_str(), err.c_str());
+        std::fprintf(stderr, "[bls] ERR: shader parse FAIL '%s': %s\n", path.c_str(), err.c_str());
         return nullptr;
     }
 
@@ -108,14 +110,18 @@ BlsShader* BlsShaderCache::Acquire(gfx::ShaderStage stage, const std::string& na
 }
 
 void BlsShaderCache::Release(BlsShader* shader) {
-    if (!shader) return;
-    if (shader->refs == 0) return;
+    if (!shader)
+        return;
+    if (shader->refs == 0)
+        return;
     shader->refs -= 1;
-    if (shader->refs > 0) return;
+    if (shader->refs > 0)
+        return;
 
     auto& bucket = byStage_[static_cast<usize>(shader->stage)];
     auto it = bucket.find(shader->name);
-    if (it == bucket.end()) return;
+    if (it == bucket.end())
+        return;
 
     for (gfx::ShaderHandle h : it->second->permuteHandles) {
         device_->Destroy(h);
@@ -124,7 +130,11 @@ void BlsShaderCache::Release(BlsShader* shader) {
 }
 
 void BlsShaderCache::ReleaseAll() {
-    if (!device_) { for (auto& b : byStage_) b.clear(); return; }
+    if (!device_) {
+        for (auto& b : byStage_)
+            b.clear();
+        return;
+    }
     for (auto& bucket : byStage_) {
         for (auto& [name, entry] : bucket) {
             for (gfx::ShaderHandle h : entry->permuteHandles) {
@@ -135,4 +145,4 @@ void BlsShaderCache::ReleaseAll() {
     }
 }
 
-}
+} // namespace whiteout::flakes::renderer::bls

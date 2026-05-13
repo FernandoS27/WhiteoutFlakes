@@ -1,15 +1,13 @@
+#include <cassert>
 #include "d3d11_command_list.h"
 #include "d3d11_device.h"
-#include <cassert>
 
 namespace whiteout::flakes::gfx::d3d11 {
 
-D3D11CommandList::D3D11CommandList(D3D11Device& device)
-    : device_(device) {}
+D3D11CommandList::D3D11CommandList(D3D11Device& device) : device_(device) {}
 
 void D3D11CommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
-                                        const f32 clearColor[4], f32 clearDepth,
-                                        u8 clearStencil) {
+                                       const f32 clearColor[4], f32 clearDepth, u8 clearStencil) {
     assert(!inRenderPass_ && "Nested BeginRenderPass");
     inRenderPass_ = true;
 
@@ -26,22 +24,21 @@ void D3D11CommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
     if (rtv)
         ctx->ClearRenderTargetView(rtv, clearColor);
     if (dsv)
-        ctx->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
-                                   clearDepth, clearStencil);
+        ctx->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, clearDepth,
+                                   clearStencil);
 }
 
 void D3D11CommandList::EndRenderPass() {
     assert(inRenderPass_ && "EndRenderPass without Begin");
     inRenderPass_ = false;
-
 }
 
 void D3D11CommandList::SetViewport(const Viewport& vp) {
     D3D11_VIEWPORT d3dvp{};
     d3dvp.TopLeftX = vp.x;
     d3dvp.TopLeftY = vp.y;
-    d3dvp.Width    = vp.width;
-    d3dvp.Height   = vp.height;
+    d3dvp.Width = vp.width;
+    d3dvp.Height = vp.height;
     d3dvp.MinDepth = vp.minDepth;
     d3dvp.MaxDepth = vp.maxDepth;
     device_.GetD3DContext()->RSSetViewports(1, &d3dvp);
@@ -49,16 +46,17 @@ void D3D11CommandList::SetViewport(const Viewport& vp) {
 
 void D3D11CommandList::SetScissor(const Scissor& sc) {
     D3D11_RECT rect;
-    rect.left   = sc.x;
-    rect.top    = sc.y;
-    rect.right  = sc.x + sc.width;
+    rect.left = sc.x;
+    rect.top = sc.y;
+    rect.right = sc.x + sc.width;
     rect.bottom = sc.y + sc.height;
     device_.GetD3DContext()->RSSetScissorRects(1, &rect);
 }
 
 void D3D11CommandList::BindPipeline(PipelineHandle h) {
     auto* pso = device_.GetPipeline(h);
-    if (!pso) return;
+    if (!pso)
+        return;
 
     auto* ctx = device_.GetD3DContext();
 
@@ -77,8 +75,7 @@ void D3D11CommandList::BindPipeline(PipelineHandle h) {
     }
 }
 
-void D3D11CommandList::BindVertexBuffer(u32 slot, BufferHandle h,
-                                         u32 stride, u32 offset) {
+void D3D11CommandList::BindVertexBuffer(u32 slot, BufferHandle h, u32 stride, u32 offset) {
     auto* entry = device_.GetBuffer(h);
     ID3D11Buffer* buf = entry ? entry->buffer : nullptr;
     UINT s = stride, o = offset;
@@ -96,9 +93,15 @@ void D3D11CommandList::BindConstantBuffer(ShaderStage stage, u32 slot, BufferHan
     ID3D11Buffer* buf = entry ? entry->buffer : nullptr;
     auto* ctx = device_.GetD3DContext();
     switch (stage) {
-        case ShaderStage::Vertex:  ctx->VSSetConstantBuffers(slot, 1, &buf); break;
-        case ShaderStage::Pixel:   ctx->PSSetConstantBuffers(slot, 1, &buf); break;
-        case ShaderStage::Compute: ctx->CSSetConstantBuffers(slot, 1, &buf); break;
+    case ShaderStage::Vertex:
+        ctx->VSSetConstantBuffers(slot, 1, &buf);
+        break;
+    case ShaderStage::Pixel:
+        ctx->PSSetConstantBuffers(slot, 1, &buf);
+        break;
+    case ShaderStage::Compute:
+        ctx->CSSetConstantBuffers(slot, 1, &buf);
+        break;
     }
 }
 
@@ -107,9 +110,15 @@ void D3D11CommandList::BindShaderResource(ShaderStage stage, u32 slot, TextureHa
     ID3D11ShaderResourceView* srv = entry ? entry->srv : nullptr;
     auto* ctx = device_.GetD3DContext();
     switch (stage) {
-        case ShaderStage::Vertex:  ctx->VSSetShaderResources(slot, 1, &srv); break;
-        case ShaderStage::Pixel:   ctx->PSSetShaderResources(slot, 1, &srv); break;
-        case ShaderStage::Compute: ctx->CSSetShaderResources(slot, 1, &srv); break;
+    case ShaderStage::Vertex:
+        ctx->VSSetShaderResources(slot, 1, &srv);
+        break;
+    case ShaderStage::Pixel:
+        ctx->PSSetShaderResources(slot, 1, &srv);
+        break;
+    case ShaderStage::Compute:
+        ctx->CSSetShaderResources(slot, 1, &srv);
+        break;
     }
 }
 
@@ -118,9 +127,15 @@ void D3D11CommandList::BindShaderResource(ShaderStage stage, u32 slot, BufferHan
     ID3D11ShaderResourceView* srv = entry ? entry->srv : nullptr;
     auto* ctx = device_.GetD3DContext();
     switch (stage) {
-        case ShaderStage::Vertex:  ctx->VSSetShaderResources(slot, 1, &srv); break;
-        case ShaderStage::Pixel:   ctx->PSSetShaderResources(slot, 1, &srv); break;
-        case ShaderStage::Compute: ctx->CSSetShaderResources(slot, 1, &srv); break;
+    case ShaderStage::Vertex:
+        ctx->VSSetShaderResources(slot, 1, &srv);
+        break;
+    case ShaderStage::Pixel:
+        ctx->PSSetShaderResources(slot, 1, &srv);
+        break;
+    case ShaderStage::Compute:
+        ctx->CSSetShaderResources(slot, 1, &srv);
+        break;
     }
 }
 
@@ -136,9 +151,15 @@ void D3D11CommandList::BindSampler(ShaderStage stage, u32 slot, SamplerHandle h)
     ID3D11SamplerState* sampler = entry ? entry->sampler : nullptr;
     auto* ctx = device_.GetD3DContext();
     switch (stage) {
-        case ShaderStage::Vertex:  ctx->VSSetSamplers(slot, 1, &sampler); break;
-        case ShaderStage::Pixel:   ctx->PSSetSamplers(slot, 1, &sampler); break;
-        case ShaderStage::Compute: ctx->CSSetSamplers(slot, 1, &sampler); break;
+    case ShaderStage::Vertex:
+        ctx->VSSetSamplers(slot, 1, &sampler);
+        break;
+    case ShaderStage::Pixel:
+        ctx->PSSetSamplers(slot, 1, &sampler);
+        break;
+    case ShaderStage::Compute:
+        ctx->CSSetSamplers(slot, 1, &sampler);
+        break;
     }
 }
 
@@ -146,8 +167,7 @@ void D3D11CommandList::ClearDepth(TextureHandle depth, f32 clearDepth, u8 clearS
     auto* depthEntry = device_.GetTexture(depth);
     if (depthEntry && depthEntry->dsv)
         device_.GetD3DContext()->ClearDepthStencilView(
-            depthEntry->dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL,
-            clearDepth, clearStencil);
+            depthEntry->dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, clearDepth, clearStencil);
 }
 
 void D3D11CommandList::CopyBuffer(BufferHandle dst, BufferHandle src) {
@@ -169,4 +189,4 @@ void D3D11CommandList::Dispatch(u32 gx, u32 gy, u32 gz) {
     device_.GetD3DContext()->Dispatch(gx, gy, gz);
 }
 
-}
+} // namespace whiteout::flakes::gfx::d3d11

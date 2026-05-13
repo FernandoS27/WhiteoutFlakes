@@ -1,6 +1,6 @@
+#include "file_resolver.h"
 #include "io/file_content_provider.h"
 #include "whiteout/flakes/types.h"
-#include "file_resolver.h"
 #include "whiteout/flakes/util/path_utf8.h"
 
 #include <whiteout/utils/blizzard_game_finder.h>
@@ -13,16 +13,16 @@
 #include <whiteout/storages/mpq/storage.h>
 #endif
 
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <cstdio>
 
 #ifdef _WIN32
-    #define WIN32_LEAN_AND_MEAN
-    #ifndef NOMINMAX
-        #define NOMINMAX
-    #endif
-    #include <windows.h>
+#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 
 namespace whiteout::flakes::io {
@@ -42,7 +42,8 @@ static fs::path DiscoverExecutableDirectory() {
 #ifdef _WIN32
     wchar_t buf[MAX_PATH * 4] = {};
     DWORD len = ::GetModuleFileNameW(nullptr, buf, static_cast<DWORD>(std::size(buf)));
-    if (len == 0 || len >= std::size(buf)) return {};
+    if (len == 0 || len >= std::size(buf))
+        return {};
     return fs::path(std::wstring(buf, buf + len)).parent_path();
 #else
     // POSIX impl can read /proc/self/exe etc. — not needed for the standalone
@@ -115,22 +116,19 @@ struct FileContentProvider::Impl {
                 continue;
 
             std::string error;
-            auto storage = whiteout::storages::mpq::Storage::open(
-                PathToUtf8(mpqPath), &error);
+            auto storage = whiteout::storages::mpq::Storage::open(PathToUtf8(mpqPath), &error);
             if (storage) {
                 std::printf("[FileContentProvider] Opened MPQ: %s\n", name);
                 mpqStorages.push_back(std::move(*storage));
             } else {
-                std::printf("[FileContentProvider] Failed to open %s: %s\n",
-                            name, error.c_str());
+                std::printf("[FileContentProvider] Failed to open %s: %s\n", name, error.c_str());
             }
         }
 #endif
     }
 };
 
-FileContentProvider::FileContentProvider()
-    : impl_(std::make_unique<Impl>()) {
+FileContentProvider::FileContentProvider() : impl_(std::make_unique<Impl>()) {
     impl_->Discover();
 
     // Surface the directory containing the host executable as a secondary
@@ -141,8 +139,7 @@ FileContentProvider::FileContentProvider()
     const fs::path exeDir = DiscoverExecutableDirectory();
     if (!exeDir.empty()) {
         impl_->resolver.SetSystemBasePath(exeDir);
-        std::printf("[FileContentProvider] Executable dir: %s\n",
-                    PathToUtf8(exeDir).c_str());
+        std::printf("[FileContentProvider] Executable dir: %s\n", PathToUtf8(exeDir).c_str());
     }
 }
 
@@ -160,12 +157,14 @@ static constexpr const char* kTextureExts[] = {
 };
 
 static constexpr const char* kModelExts[] = {
-    ".mdx", ".mdl",
+    ".mdx",
+    ".mdl",
 };
 
 static bool HasExtension(const std::string& ext, const char* const* list, usize count) {
     for (usize i = 0; i < count; ++i)
-        if (ext == list[i]) return true;
+        if (ext == list[i])
+            return true;
     return false;
 }
 
@@ -184,14 +183,15 @@ static std::optional<std::vector<u8>> ReadDiskFile(const fs::path& resolved) {
     return buf;
 }
 
-std::optional<std::vector<u8>> FileContentProvider::ReadFile(
-    const std::string& path, std::string* actualExt) const {
+std::optional<std::vector<u8>> FileContentProvider::ReadFile(const std::string& path,
+                                                             std::string* actualExt) const {
 
     {
         std::string norm = FileResolver::NormalizeSeparators(path);
         std::string ext = fs::path(norm).extension().string();
 
-        for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        for (auto& c : ext)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
         fs::path resolved;
         if (HasExtension(ext, kTextureExts, std::size(kTextureExts)))
@@ -205,7 +205,8 @@ std::optional<std::vector<u8>> FileContentProvider::ReadFile(
         if (data) {
             if (actualExt) {
                 std::string e = resolved.extension().string();
-                for (auto& c : e) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                for (auto& c : e)
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
                 *actualExt = e;
             }
             return data;
@@ -238,13 +239,14 @@ static constexpr const char* kCascPrefixes[] = {
 };
 
 static constexpr const char* kArchiveTextureExts[] = {".blp", ".dds", ".tga", ".png"};
-static constexpr const char* kArchiveModelExts[]   = {".mdx", ".mdl"};
+static constexpr const char* kArchiveModelExts[] = {".mdx", ".mdl"};
 
 static std::string NormalizeCascPath(const std::string& relPath) {
     std::string out;
     out.reserve(relPath.size());
     for (char c : relPath) {
-        if (c == '/') c = '\\';
+        if (c == '/')
+            c = '\\';
         out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
 
@@ -263,7 +265,8 @@ static std::string StripExtension(const std::string& path) {
 
 static std::string GetLowerExtension(const std::string& relPath) {
     std::string ext = fs::path(relPath).extension().string();
-    for (auto& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    for (auto& c : ext)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return ext;
 }
 
@@ -275,15 +278,15 @@ static std::pair<const char* const*, usize> AltExtensionsFor(const std::string& 
     return {nullptr, 0};
 }
 
-std::optional<std::vector<u8>> FileContentProvider::ReadFromCasc(
-    const std::string& path, std::string* actualExt) const {
+std::optional<std::vector<u8>> FileContentProvider::ReadFromCasc(const std::string& path,
+                                                                 std::string* actualExt) const {
 #if WHITEOUT_HAS_CASC
     if (!impl_->cascStorage)
         return std::nullopt;
 
     std::string norm = NormalizeCascPath(path);
     std::string stem = StripExtension(norm);
-    std::string ext  = GetLowerExtension(norm);
+    std::string ext = GetLowerExtension(norm);
 
     auto [altExts, altCount] = AltExtensionsFor(ext);
 
@@ -293,17 +296,20 @@ std::optional<std::vector<u8>> FileContentProvider::ReadFromCasc(
             std::string cascPath = std::string(prefix) + stem + ext;
             auto data = impl_->cascStorage->readFile(cascPath);
             if (data && !data->empty()) {
-                if (actualExt) *actualExt = ext;
+                if (actualExt)
+                    *actualExt = ext;
                 return data;
             }
         }
 
         for (usize i = 0; i < altCount; ++i) {
-            if (altExts[i] == ext) continue;
+            if (altExts[i] == ext)
+                continue;
             std::string cascPath = std::string(prefix) + stem + altExts[i];
             auto data = impl_->cascStorage->readFile(cascPath);
             if (data && !data->empty()) {
-                if (actualExt) *actualExt = altExts[i];
+                if (actualExt)
+                    *actualExt = altExts[i];
                 return data;
             }
         }
@@ -312,14 +318,14 @@ std::optional<std::vector<u8>> FileContentProvider::ReadFromCasc(
     return std::nullopt;
 }
 
-std::optional<std::vector<u8>> FileContentProvider::ReadFromMpq(
-    const std::string& path, std::string* actualExt) const {
+std::optional<std::vector<u8>> FileContentProvider::ReadFromMpq(const std::string& path,
+                                                                std::string* actualExt) const {
 #if WHITEOUT_HAS_MPQ
     if (impl_->mpqStorages.empty())
         return std::nullopt;
 
     const std::string& raw = path;
-    std::string ext  = GetLowerExtension(raw);
+    std::string ext = GetLowerExtension(raw);
     std::string stem = StripExtension(raw);
 
     auto [altExts, altCount] = AltExtensionsFor(ext);
@@ -329,16 +335,19 @@ std::optional<std::vector<u8>> FileContentProvider::ReadFromMpq(
         if (!ext.empty()) {
             auto data = mpq.readFile(raw);
             if (data && !data->empty()) {
-                if (actualExt) *actualExt = ext;
+                if (actualExt)
+                    *actualExt = ext;
                 return data;
             }
         }
 
         for (usize i = 0; i < altCount; ++i) {
-            if (altExts[i] == ext) continue;
+            if (altExts[i] == ext)
+                continue;
             auto data = mpq.readFile(stem + altExts[i]);
             if (data && !data->empty()) {
-                if (actualExt) *actualExt = altExts[i];
+                if (actualExt)
+                    *actualExt = altExts[i];
                 return data;
             }
         }
@@ -367,4 +376,4 @@ const std::string& FileContentProvider::Wc3Path() const {
     return impl_->wc3Path;
 }
 
-}
+} // namespace whiteout::flakes::io

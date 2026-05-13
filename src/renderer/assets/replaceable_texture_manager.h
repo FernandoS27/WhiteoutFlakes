@@ -1,24 +1,26 @@
 #pragma once
 
 #include "../gfx/gfx.h"
-#include "whiteout/flakes/util/replaceable_paths.h"
-#include "whiteout/flakes/types.h"
 #include "model/model_instance.h"
+#include "whiteout/flakes/types.h"
+#include "whiteout/flakes/util/replaceable_paths.h"
 
 #include <atomic>
 #include <unordered_map>
 #include <vector>
 
-namespace whiteout::flakes::io { class IContentProvider; }
+namespace whiteout::flakes::io {
+class IContentProvider;
+}
 
 namespace whiteout::flakes::renderer::assets {
 
 class TextureAssetManager;
 
 enum class ReplaceableKind : u8 {
-    None      = 0,
+    None = 0,
     TeamColor = 1,
-    TeamGlow  = 2,
+    TeamGlow = 2,
 };
 
 class ReplaceableTextureManager {
@@ -26,7 +28,7 @@ public:
     ReplaceableTextureManager(gfx::IGFXDevice& gfx, TextureAssetManager& textures);
     ~ReplaceableTextureManager();
 
-    ReplaceableTextureManager(const ReplaceableTextureManager&)            = delete;
+    ReplaceableTextureManager(const ReplaceableTextureManager&) = delete;
     ReplaceableTextureManager& operator=(const ReplaceableTextureManager&) = delete;
 
     void SetContentProvider(io::IContentProvider* p);
@@ -42,7 +44,9 @@ public:
 
     void SetTileset(io::Tileset ts);
 
-    bool ConsumeDirty() { return dirty_.exchange(false); }
+    bool ConsumeDirty() {
+        return dirty_.exchange(false);
+    }
 
     void RegisterModelSlot(model::Actor& mi, i32 textureId, i32 replaceableId);
 
@@ -57,16 +61,20 @@ public:
 
     void Shutdown();
 
-    struct DebugCounts { usize models = 0; usize slots = 0; };
+    struct DebugCounts {
+        usize models = 0;
+        usize slots = 0;
+    };
     DebugCounts DebugSnapshot() const noexcept {
         DebugCounts c;
         c.models = slots_.size();
-        for (auto& [mi, v] : slots_) c.slots += v.size();
+        for (auto& [mi, v] : slots_)
+            c.slots += v.size();
         return c;
     }
 
 private:
-    gfx::IGFXDevice&     gfx_;
+    gfx::IGFXDevice& gfx_;
     TextureAssetManager& textures_;
 
     std::atomic<bool> dirty_{false};
@@ -76,7 +84,10 @@ private:
     std::unordered_map<u32, gfx::TextureHandle> sdTeamColorByColor_;
     std::unordered_map<u32, gfx::TextureHandle> sdTeamGlowByColor_;
 
-    struct Slot { i32 textureId; u8 replaceableId; };
+    struct Slot {
+        i32 textureId;
+        u8 replaceableId;
+    };
     std::unordered_map<model::Actor*, std::vector<Slot>> slots_;
 
     io::IContentProvider* contentProvider_ = nullptr;
@@ -84,4 +95,4 @@ private:
     void BakeSlot(model::Actor& mi, i32 textureId, i32 replaceableId);
 };
 
-}
+} // namespace whiteout::flakes::renderer::assets

@@ -6,7 +6,7 @@
 #include "vulkan_handles.h"
 
 #if defined(TRACY_ENABLE)
-#  include <tracy/TracyVulkan.hpp>
+#include <tracy/TracyVulkan.hpp>
 #endif
 
 #include <algorithm>
@@ -21,8 +21,8 @@
 // Defined in gfx_factory.cpp.
 namespace whiteout::flakes::gfx {
 const std::filesystem::path& GetPipelineCachePath();
-const std::string&            GetPreferredDevice();
-}
+const std::string& GetPreferredDevice();
+} // namespace whiteout::flakes::gfx
 
 namespace whiteout::flakes::gfx::vulkan {
 
@@ -31,20 +31,23 @@ std::vector<std::string> EnumerateAdapterNames() {
     vk::raii::Context ctx;
     vk::ApplicationInfo appInfo{
         .pApplicationName = "WhiteoutFlakes",
-        .apiVersion       = VK_API_VERSION_1_3,
+        .apiVersion = VK_API_VERSION_1_3,
     };
-    vk::InstanceCreateInfo ici{ .pApplicationInfo = &appInfo };
+    vk::InstanceCreateInfo ici{.pApplicationInfo = &appInfo};
     auto instResult = ctx.createInstance(ici);
-    if (instResult.result != vk::Result::eSuccess) return names;
+    if (instResult.result != vk::Result::eSuccess)
+        return names;
     vk::raii::Instance instance = std::move(instResult.value);
     auto [r, pds] = instance.enumeratePhysicalDevices();
-    if (r != vk::Result::eSuccess) return names;
+    if (r != vk::Result::eSuccess)
+        return names;
     for (const auto& pending : pds) {
         // Match what CreateDevice can actually open (1.3+).
         const auto props = pending.getProperties();
         if (VK_API_VERSION_MAJOR(props.apiVersion) < 1 ||
             (VK_API_VERSION_MAJOR(props.apiVersion) == 1 &&
-             VK_API_VERSION_MINOR(props.apiVersion) < 3)) continue;
+             VK_API_VERSION_MINOR(props.apiVersion) < 3))
+            continue;
         names.emplace_back(props.deviceName.data());
     }
     return names;
@@ -58,13 +61,12 @@ void LoadPipelineCache(VulkanDeviceState& state) {
             const auto bytes = static_cast<usize>(f.tellg());
             f.seekg(0);
             blob.resize(bytes);
-            f.read(reinterpret_cast<char*>(blob.data()),
-                   static_cast<std::streamsize>(bytes));
+            f.read(reinterpret_cast<char*>(blob.data()), static_cast<std::streamsize>(bytes));
         }
     }
     vk::PipelineCacheCreateInfo ci{
         .initialDataSize = blob.size(),
-        .pInitialData    = blob.empty() ? nullptr : blob.data(),
+        .pInitialData = blob.empty() ? nullptr : blob.data(),
     };
     auto r = state.device.createPipelineCache(ci);
     if (r.result == vk::Result::eSuccess) {
@@ -73,23 +75,22 @@ void LoadPipelineCache(VulkanDeviceState& state) {
 }
 
 void SavePipelineCache(VulkanDeviceState& state) {
-    if (!*state.pipelineCache || state.pipelineCachePath.empty()) return;
+    if (!*state.pipelineCache || state.pipelineCachePath.empty())
+        return;
     auto [r, blob] = state.pipelineCache.getData();
-    if (r != vk::Result::eSuccess || blob.empty()) return;
+    if (r != vk::Result::eSuccess || blob.empty())
+        return;
     std::ofstream f(state.pipelineCachePath, std::ios::binary | std::ios::trunc);
-    if (!f) return;
-    f.write(reinterpret_cast<const char*>(blob.data()),
-            static_cast<std::streamsize>(blob.size()));
+    if (!f)
+        return;
+    f.write(reinterpret_cast<const char*>(blob.data()), static_cast<std::streamsize>(blob.size()));
 }
 
 namespace {
 
 VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(
-    VkDebugUtilsMessageSeverityFlagBitsEXT       severity,
-    VkDebugUtilsMessageTypeFlagsEXT              /*types*/,
-    const VkDebugUtilsMessengerCallbackDataEXT*  callbackData,
-    void*                                        /*userData*/)
-{
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT /*types*/,
+    const VkDebugUtilsMessengerCallbackDataEXT* callbackData, void* /*userData*/) {
     if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
         std::fprintf(stderr, "[vk] ERR: %s\n", callbackData->pMessage);
     } else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
@@ -100,18 +101,22 @@ VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(
 
 bool HasInstanceLayer(const vk::raii::Context& ctx, const char* name) {
     auto [r, layers] = ctx.enumerateInstanceLayerProperties();
-    if (r != vk::Result::eSuccess) return false;
+    if (r != vk::Result::eSuccess)
+        return false;
     for (const auto& l : layers) {
-        if (std::strcmp(l.layerName, name) == 0) return true;
+        if (std::strcmp(l.layerName, name) == 0)
+            return true;
     }
     return false;
 }
 
 bool HasInstanceExtension(const vk::raii::Context& ctx, const char* name) {
     auto [r, exts] = ctx.enumerateInstanceExtensionProperties();
-    if (r != vk::Result::eSuccess) return false;
+    if (r != vk::Result::eSuccess)
+        return false;
     for (const auto& e : exts) {
-        if (std::strcmp(e.extensionName, name) == 0) return true;
+        if (std::strcmp(e.extensionName, name) == 0)
+            return true;
     }
     return false;
 }
@@ -131,23 +136,25 @@ i32 ScoreDevice(const vk::raii::PhysicalDevice& pd) {
         }
     }
     const i32 vramScore = static_cast<i32>(vram / (256ull * 1024 * 1024));
-    const i32 typeBonus = (props.deviceType == vk::PhysicalDeviceType::eDiscreteGpu)
-                              ? 1000 : 0;
+    const i32 typeBonus = (props.deviceType == vk::PhysicalDeviceType::eDiscreteGpu) ? 1000 : 0;
     return typeBonus + vramScore;
 }
 
 bool DeviceSupportsExtensions(const vk::raii::PhysicalDevice& pd,
                               const std::vector<const char*>& required) {
     auto [r, avail] = pd.enumerateDeviceExtensionProperties();
-    if (r != vk::Result::eSuccess) return false;
+    if (r != vk::Result::eSuccess)
+        return false;
     auto has = [&](const char* name) {
         for (const auto& e : avail) {
-            if (std::strcmp(e.extensionName, name) == 0) return true;
+            if (std::strcmp(e.extensionName, name) == 0)
+                return true;
         }
         return false;
     };
     for (const char* ext : required) {
-        if (!has(ext)) return false;
+        if (!has(ext))
+            return false;
     }
     return true;
 }
@@ -171,24 +178,27 @@ i32 PickDedicatedTransferQueueFamily(const vk::raii::PhysicalDevice& pd) {
         const auto flags = fams[i].queueFlags;
         const bool hasTransfer = bool(flags & vk::QueueFlagBits::eTransfer);
         const bool hasGraphics = bool(flags & vk::QueueFlagBits::eGraphics);
-        const bool hasCompute  = bool(flags & vk::QueueFlagBits::eCompute);
-        if (!hasTransfer || hasGraphics) continue;
-        if (!hasCompute) return static_cast<i32>(i);
-        if (fallback < 0) fallback = static_cast<i32>(i);
+        const bool hasCompute = bool(flags & vk::QueueFlagBits::eCompute);
+        if (!hasTransfer || hasGraphics)
+            continue;
+        if (!hasCompute)
+            return static_cast<i32>(i);
+        if (fallback < 0)
+            fallback = static_cast<i32>(i);
     }
     return fallback;
 }
 
-bool CreateTimelineSemaphore(const vk::raii::Device& device,
-                             vk::raii::Semaphore& out, const char* what) {
+bool CreateTimelineSemaphore(const vk::raii::Device& device, vk::raii::Semaphore& out,
+                             const char* what) {
     vk::SemaphoreTypeCreateInfo typeInfo{
         .semaphoreType = vk::SemaphoreType::eTimeline,
-        .initialValue  = 0,
+        .initialValue = 0,
     };
-    auto r = device.createSemaphore({ .pNext = &typeInfo });
+    auto r = device.createSemaphore({.pNext = &typeInfo});
     if (r.result != vk::Result::eSuccess) {
-        std::fprintf(stderr, "[vk] createSemaphore (%s) failed (%s)\n",
-                     what, vk::to_string(r.result).c_str());
+        std::fprintf(stderr, "[vk] createSemaphore (%s) failed (%s)\n", what,
+                     vk::to_string(r.result).c_str());
         return false;
     }
     out = std::move(r.value);
@@ -199,11 +209,11 @@ bool CreateTimelineSemaphore(const vk::raii::Device& device,
 
 bool CreateInstance(VulkanDeviceState& state, bool enableValidation) {
     vk::ApplicationInfo appInfo{
-        .pApplicationName   = "WhiteoutFlakes",
+        .pApplicationName = "WhiteoutFlakes",
         .applicationVersion = VK_MAKE_VERSION(0, 1, 0),
-        .pEngineName        = "WhiteoutFlakes",
-        .engineVersion      = VK_MAKE_VERSION(0, 1, 0),
-        .apiVersion         = VK_API_VERSION_1_3,
+        .pEngineName = "WhiteoutFlakes",
+        .engineVersion = VK_MAKE_VERSION(0, 1, 0),
+        .apiVersion = VK_API_VERSION_1_3,
     };
 
     std::vector<const char*> instExts = {
@@ -215,36 +225,35 @@ bool CreateInstance(VulkanDeviceState& state, bool enableValidation) {
     // Validation needs both the Khronos layer (Vulkan SDK) and the
     // debug-utils ext; silently no-op if either is missing.
     const bool wantValidation = enableValidation &&
-        HasInstanceLayer(state.ctx, "VK_LAYER_KHRONOS_validation") &&
-        HasInstanceExtension(state.ctx, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+                                HasInstanceLayer(state.ctx, "VK_LAYER_KHRONOS_validation") &&
+                                HasInstanceExtension(state.ctx, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     if (wantValidation) {
         instLayers.push_back("VK_LAYER_KHRONOS_validation");
         instExts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
 
     auto r = state.ctx.createInstance({
-        .pApplicationInfo        = &appInfo,
-        .enabledLayerCount       = static_cast<u32>(instLayers.size()),
-        .ppEnabledLayerNames     = instLayers.data(),
-        .enabledExtensionCount   = static_cast<u32>(instExts.size()),
+        .pApplicationInfo = &appInfo,
+        .enabledLayerCount = static_cast<u32>(instLayers.size()),
+        .ppEnabledLayerNames = instLayers.data(),
+        .enabledExtensionCount = static_cast<u32>(instExts.size()),
         .ppEnabledExtensionNames = instExts.data(),
     });
     if (r.result != vk::Result::eSuccess) {
-        std::fprintf(stderr, "[vk] createInstance failed (%s)\n",
-                     vk::to_string(r.result).c_str());
+        std::fprintf(stderr, "[vk] createInstance failed (%s)\n", vk::to_string(r.result).c_str());
         return false;
     }
     state.instance = std::move(r.value);
 
     if (wantValidation) {
         auto dbgR = state.instance.createDebugUtilsMessengerEXT({
-            .messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning
-                             | vk::DebugUtilsMessageSeverityFlagBitsEXT::eError,
-            .messageType     = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral
-                             | vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation
-                             | vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance,
-            .pfnUserCallback = reinterpret_cast<vk::PFN_DebugUtilsMessengerCallbackEXT>(
-                                    DebugCallback),
+            .messageSeverity = vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
+                               vk::DebugUtilsMessageSeverityFlagBitsEXT::eError,
+            .messageType = vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
+                           vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
+                           vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance,
+            .pfnUserCallback =
+                reinterpret_cast<vk::PFN_DebugUtilsMessengerCallbackEXT>(DebugCallback),
         });
         if (dbgR.result == vk::Result::eSuccess) {
             state.debugMessenger = std::move(dbgR.value);
@@ -270,11 +279,12 @@ bool PickPhysicalDevice(VulkanDeviceState& state, std::string& deviceNameOut) {
     const std::string& preferred = gfx::GetPreferredDevice();
     i32 bestScore = -1;
     for (auto& pending : pds) {
-        if (!DeviceSupportsExtensions(pending, requiredExts)) continue;
-        if (PickGraphicsQueueFamily(pending) < 0) continue;
+        if (!DeviceSupportsExtensions(pending, requiredExts))
+            continue;
+        if (PickGraphicsQueueFamily(pending) < 0)
+            continue;
         if (!preferred.empty() &&
-            preferred == std::string(pending.getProperties().deviceName.data()))
-        {
+            preferred == std::string(pending.getProperties().deviceName.data())) {
             state.physicalDevice = std::move(pending);
             bestScore = std::numeric_limits<i32>::max();
             break;
@@ -286,9 +296,8 @@ bool PickPhysicalDevice(VulkanDeviceState& state, std::string& deviceNameOut) {
         }
     }
     if (!*state.physicalDevice) {
-        std::fprintf(stderr,
-            "[vk] no physical device meets requirements "
-            "(Vulkan 1.3 + swapchain + swapchain_mutable_format)\n");
+        std::fprintf(stderr, "[vk] no physical device meets requirements "
+                             "(Vulkan 1.3 + swapchain + swapchain_mutable_format)\n");
         return false;
     }
 
@@ -298,9 +307,8 @@ bool PickPhysicalDevice(VulkanDeviceState& state, std::string& deviceNameOut) {
     state.minUniformBufferAlign = props.limits.minUniformBufferOffsetAlignment;
 
     const i32 tf = PickDedicatedTransferQueueFamily(state.physicalDevice);
-    state.hasAsyncTransfer    = (tf >= 0 && static_cast<u32>(tf) != state.queueFamily);
-    state.transferQueueFamily = state.hasAsyncTransfer ? static_cast<u32>(tf)
-                                                       : state.queueFamily;
+    state.hasAsyncTransfer = (tf >= 0 && static_cast<u32>(tf) != state.queueFamily);
+    state.transferQueueFamily = state.hasAsyncTransfer ? static_cast<u32>(tf) : state.queueFamily;
     return true;
 }
 
@@ -309,14 +317,14 @@ bool CreateLogicalDevice(VulkanDeviceState& state) {
     std::array<vk::DeviceQueueCreateInfo, 2> qcis{};
     qcis[0] = vk::DeviceQueueCreateInfo{
         .queueFamilyIndex = state.queueFamily,
-        .queueCount       = 1,
+        .queueCount = 1,
         .pQueuePriorities = &queuePriority,
     };
     u32 qciCount = 1;
     if (state.hasAsyncTransfer) {
         qcis[1] = vk::DeviceQueueCreateInfo{
             .queueFamilyIndex = state.transferQueueFamily,
-            .queueCount       = 1,
+            .queueCount = 1,
             .pQueuePriorities = &queuePriority,
         };
         qciCount = 2;
@@ -324,15 +332,15 @@ bool CreateLogicalDevice(VulkanDeviceState& state) {
 
     // shaderDrawParameters: capability slangc emits for SV_*ID.
     // timelineSemaphore: powers the deferred-delete queue.
-    vk::PhysicalDeviceVulkan11Features vk11{ .shaderDrawParameters = vk::True };
-    vk::PhysicalDeviceVulkan12Features vk12{ .pNext = &vk11, .timelineSemaphore = vk::True };
+    vk::PhysicalDeviceVulkan11Features vk11{.shaderDrawParameters = vk::True};
+    vk::PhysicalDeviceVulkan12Features vk12{.pNext = &vk11, .timelineSemaphore = vk::True};
     vk::PhysicalDeviceVulkan13Features vk13{
-        .pNext            = &vk12,
+        .pNext = &vk12,
         .synchronization2 = vk::True,
         .dynamicRendering = vk::True,
     };
     vk::PhysicalDeviceFeatures coreFeatures{
-        .imageCubeArray = vk::True,  // for IBL probes
+        .imageCubeArray = vk::True, // for IBL probes
     };
 
     const std::array<const char*, 3> deviceExts = {
@@ -342,31 +350,30 @@ bool CreateLogicalDevice(VulkanDeviceState& state) {
     };
 
     auto r = state.physicalDevice.createDevice({
-        .pNext                   = &vk13,
-        .queueCreateInfoCount    = qciCount,
-        .pQueueCreateInfos       = qcis.data(),
-        .enabledExtensionCount   = static_cast<u32>(deviceExts.size()),
+        .pNext = &vk13,
+        .queueCreateInfoCount = qciCount,
+        .pQueueCreateInfos = qcis.data(),
+        .enabledExtensionCount = static_cast<u32>(deviceExts.size()),
         .ppEnabledExtensionNames = deviceExts.data(),
-        .pEnabledFeatures        = &coreFeatures,
+        .pEnabledFeatures = &coreFeatures,
     });
     if (r.result != vk::Result::eSuccess) {
-        std::fprintf(stderr, "[vk] createDevice failed (%s)\n",
-                     vk::to_string(r.result).c_str());
+        std::fprintf(stderr, "[vk] createDevice failed (%s)\n", vk::to_string(r.result).c_str());
         return false;
     }
     state.device = std::move(r.value);
-    state.queue  = state.device.getQueue(state.queueFamily, 0);
+    state.queue = state.device.getQueue(state.queueFamily, 0);
     state.transferQueue = state.hasAsyncTransfer
-        ? state.device.getQueue(state.transferQueueFamily, 0)
-        : state.device.getQueue(state.queueFamily, 0);
+                              ? state.device.getQueue(state.transferQueueFamily, 0)
+                              : state.device.getQueue(state.queueFamily, 0);
     return true;
 }
 
 bool CreateAllocator(VulkanDeviceState& state) {
     VmaAllocatorCreateInfo aci{};
-    aci.physicalDevice   = *state.physicalDevice;
-    aci.device           = *state.device;
-    aci.instance         = *state.instance;
+    aci.physicalDevice = *state.physicalDevice;
+    aci.device = *state.device;
+    aci.instance = *state.instance;
     aci.vulkanApiVersion = VK_API_VERSION_1_3;
     if (vmaCreateAllocator(&aci, &state.allocator) != VK_SUCCESS) {
         std::fprintf(stderr, "[vk] vmaCreateAllocator failed\n");
@@ -377,23 +384,19 @@ bool CreateAllocator(VulkanDeviceState& state) {
 
 // Non-fatal: CreateBuffer falls back to per-CB VMA allocations.
 void CreateSharedCbRing(VulkanDeviceState& state) {
-    VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-    bci.size  = VulkanDeviceState::kSharedCbCapacity;
-    bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
-              | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-              | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
-              | VK_BUFFER_USAGE_INDEX_BUFFER_BIT
-              | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
-              | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bci.size = VulkanDeviceState::kSharedCbCapacity;
+    bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     VmaAllocationCreateInfo cbaci{};
     cbaci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-    cbaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
-                | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    cbaci.flags =
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
     VmaAllocationInfo info{};
-    if (vmaCreateBuffer(state.allocator, &bci, &cbaci,
-                        &state.sharedCbBuffer, &state.sharedCbAllocation, &info)
-            == VK_SUCCESS) {
+    if (vmaCreateBuffer(state.allocator, &bci, &cbaci, &state.sharedCbBuffer,
+                        &state.sharedCbAllocation, &info) == VK_SUCCESS) {
         state.sharedCbMapped = info.pMappedData;
         state.sharedCbCursor = 0;
     } else {
@@ -403,36 +406,32 @@ void CreateSharedCbRing(VulkanDeviceState& state) {
 }
 
 bool CreatePipelineLayout(VulkanDeviceState& state) {
-    const auto bothStages = vk::ShaderStageFlagBits::eVertex
-                          | vk::ShaderStageFlagBits::eFragment;
+    const auto bothStages = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
 
-    auto buildSet = [&](vk::DescriptorType type, u32 count,
-                        bool pushDescriptor,
-                        vk::raii::DescriptorSetLayout& out,
-                        const char* what) -> bool {
+    auto buildSet = [&](vk::DescriptorType type, u32 count, bool pushDescriptor,
+                        vk::raii::DescriptorSetLayout& out, const char* what) -> bool {
         std::vector<vk::DescriptorSetLayoutBinding> bindings;
         bindings.reserve(count);
         for (u32 i = 0; i < count; ++i) {
             bindings.push_back({
-                .binding         = i,
-                .descriptorType  = type,
+                .binding = i,
+                .descriptorType = type,
                 .descriptorCount = 1,
-                .stageFlags      = bothStages,
+                .stageFlags = bothStages,
             });
         }
         const auto flags = pushDescriptor
-            ? vk::DescriptorSetLayoutCreateFlags(
-                  vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR)
-            : vk::DescriptorSetLayoutCreateFlags{};
+                               ? vk::DescriptorSetLayoutCreateFlags(
+                                     vk::DescriptorSetLayoutCreateFlagBits::ePushDescriptorKHR)
+                               : vk::DescriptorSetLayoutCreateFlags{};
         auto r = state.device.createDescriptorSetLayout({
-            .flags        = flags,
+            .flags = flags,
             .bindingCount = static_cast<u32>(bindings.size()),
-            .pBindings    = bindings.data(),
+            .pBindings = bindings.data(),
         });
         if (r.result != vk::Result::eSuccess) {
-            std::fprintf(stderr,
-                         "[vk] createDescriptorSetLayout (%s) failed (%s)\n",
-                         what, vk::to_string(r.result).c_str());
+            std::fprintf(stderr, "[vk] createDescriptorSetLayout (%s) failed (%s)\n", what,
+                         vk::to_string(r.result).c_str());
             return false;
         }
         out = std::move(r.value);
@@ -440,18 +439,23 @@ bool CreatePipelineLayout(VulkanDeviceState& state) {
     };
 
     if (!buildSet(vk::DescriptorType::eUniformBuffer, kCbBindingCount,
-                  /*pushDescriptor=*/true, state.cbSetLayout, "CB")) return false;
-    if (!buildSet(vk::DescriptorType::eSampledImage, kSrvBindingCount,
-                  false, state.srvSetLayout, "SRV")) return false;
-    if (!buildSet(vk::DescriptorType::eSampler, kSamplerBindingCount,
-                  false, state.samplerSetLayout, "Sampler")) return false;
+                  /*pushDescriptor=*/true, state.cbSetLayout, "CB"))
+        return false;
+    if (!buildSet(vk::DescriptorType::eSampledImage, kSrvBindingCount, false, state.srvSetLayout,
+                  "SRV"))
+        return false;
+    if (!buildSet(vk::DescriptorType::eSampler, kSamplerBindingCount, false, state.samplerSetLayout,
+                  "Sampler"))
+        return false;
 
     const std::array<VkDescriptorSetLayout, 3> rawSets = {
-        *state.cbSetLayout, *state.srvSetLayout, *state.samplerSetLayout,
+        *state.cbSetLayout,
+        *state.srvSetLayout,
+        *state.samplerSetLayout,
     };
     auto plR = state.device.createPipelineLayout({
         .setLayoutCount = static_cast<u32>(rawSets.size()),
-        .pSetLayouts    = reinterpret_cast<const vk::DescriptorSetLayout*>(rawSets.data()),
+        .pSetLayouts = reinterpret_cast<const vk::DescriptorSetLayout*>(rawSets.data()),
     });
     if (plR.result != vk::Result::eSuccess) {
         std::fprintf(stderr, "[vk] createPipelineLayout failed (%s)\n",
@@ -473,28 +477,27 @@ bool CreateTransferQueueObjects(VulkanDeviceState& state) {
         return false;
     }
     state.transferCommandPool = std::move(poolR.value);
-    return CreateTimelineSemaphore(state.device, state.transferTimelineSem,
-                                   "transfer timeline");
+    return CreateTimelineSemaphore(state.device, state.transferTimelineSem, "transfer timeline");
 }
 
 bool CreatePerFrameContexts(VulkanDeviceState& state) {
     // SRV + sampler pool sized for worst-case BLS frames; reset per frame.
-    constexpr u32 kSetsPerDraw         = 2;
-    constexpr u32 kMaxDrawsPerFrame    = 4096;
-    constexpr u32 kMaxSetsPerFrame     = kMaxDrawsPerFrame * kSetsPerDraw;
-    constexpr u32 kMaxSrvsPerFrame     = kMaxDrawsPerFrame * kSrvBindingCount;
+    constexpr u32 kSetsPerDraw = 2;
+    constexpr u32 kMaxDrawsPerFrame = 4096;
+    constexpr u32 kMaxSetsPerFrame = kMaxDrawsPerFrame * kSetsPerDraw;
+    constexpr u32 kMaxSrvsPerFrame = kMaxDrawsPerFrame * kSrvBindingCount;
     constexpr u32 kMaxSamplersPerFrame = kMaxDrawsPerFrame * kSamplerBindingCount;
     const std::array<vk::DescriptorPoolSize, 2> poolSizes = {
-        vk::DescriptorPoolSize{ vk::DescriptorType::eSampledImage, kMaxSrvsPerFrame },
-        vk::DescriptorPoolSize{ vk::DescriptorType::eSampler,      kMaxSamplersPerFrame },
+        vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage, kMaxSrvsPerFrame},
+        vk::DescriptorPoolSize{vk::DescriptorType::eSampler, kMaxSamplersPerFrame},
     };
 
     for (u32 i = 0; i < kFramesInFlight; ++i) {
         auto& frame = state.frames[i];
 
         auto poolR = state.device.createCommandPool({
-            .flags = vk::CommandPoolCreateFlagBits::eTransient
-                   | vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+            .flags = vk::CommandPoolCreateFlagBits::eTransient |
+                     vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
             .queueFamilyIndex = state.queueFamily,
         });
         if (poolR.result != vk::Result::eSuccess) {
@@ -504,8 +507,8 @@ bool CreatePerFrameContexts(VulkanDeviceState& state) {
         frame.commandPool = std::move(poolR.value);
 
         auto cbsR = state.device.allocateCommandBuffers({
-            .commandPool        = *frame.commandPool,
-            .level              = vk::CommandBufferLevel::ePrimary,
+            .commandPool = *frame.commandPool,
+            .level = vk::CommandBufferLevel::ePrimary,
             .commandBufferCount = 1,
         });
         if (cbsR.result != vk::Result::eSuccess) {
@@ -514,7 +517,7 @@ bool CreatePerFrameContexts(VulkanDeviceState& state) {
         }
         frame.commandBuffer = std::move(cbsR.value[0]);
 
-        auto fenceR = state.device.createFence({ .flags = vk::FenceCreateFlagBits::eSignaled });
+        auto fenceR = state.device.createFence({.flags = vk::FenceCreateFlagBits::eSignaled});
         if (fenceR.result != vk::Result::eSuccess) {
             std::fprintf(stderr, "[vk] createFence failed (frame %u)\n", i);
             return false;
@@ -522,13 +525,13 @@ bool CreatePerFrameContexts(VulkanDeviceState& state) {
         frame.inFlightFence = std::move(fenceR.value);
 
         auto poolR2 = state.device.createDescriptorPool({
-            .maxSets       = kMaxSetsPerFrame,
+            .maxSets = kMaxSetsPerFrame,
             .poolSizeCount = static_cast<u32>(poolSizes.size()),
-            .pPoolSizes    = poolSizes.data(),
+            .pPoolSizes = poolSizes.data(),
         });
         if (poolR2.result != vk::Result::eSuccess) {
-            std::fprintf(stderr, "[vk] createDescriptorPool failed (frame %u): %s\n",
-                         i, vk::to_string(poolR2.result).c_str());
+            std::fprintf(stderr, "[vk] createDescriptorPool failed (frame %u): %s\n", i,
+                         vk::to_string(poolR2.result).c_str());
             return false;
         }
         frame.descriptorPool = std::move(poolR2.value);
@@ -540,54 +543,58 @@ bool CreatePerFrameContexts(VulkanDeviceState& state) {
 void InitTracyContext(VulkanDeviceState& state) {
     auto& frame0 = state.frames[0];
     auto cbR = state.device.allocateCommandBuffers({
-        .commandPool        = *frame0.commandPool,
-        .level              = vk::CommandBufferLevel::ePrimary,
+        .commandPool = *frame0.commandPool,
+        .level = vk::CommandBufferLevel::ePrimary,
         .commandBufferCount = 1,
     });
-    if (cbR.result != vk::Result::eSuccess || cbR.value.empty()) return;
+    if (cbR.result != vk::Result::eSuccess || cbR.value.empty())
+        return;
     auto& calibCb = cbR.value.front();
-    (void)calibCb.begin({ .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit });
+    (void)calibCb.begin({.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
     state.tracyCtx = TracyVkContext(
-        static_cast<VkPhysicalDevice>(*state.physicalDevice),
-        static_cast<VkDevice>(*state.device),
-        static_cast<VkQueue>(*state.queue),
-        static_cast<VkCommandBuffer>(*calibCb));
+        static_cast<VkPhysicalDevice>(*state.physicalDevice), static_cast<VkDevice>(*state.device),
+        static_cast<VkQueue>(*state.queue), static_cast<VkCommandBuffer>(*calibCb));
     (void)calibCb.end();
-    vk::CommandBufferSubmitInfo csi{ .commandBuffer = *calibCb };
-    vk::SubmitInfo2 si{ .commandBufferInfoCount = 1, .pCommandBufferInfos = &csi };
+    vk::CommandBufferSubmitInfo csi{.commandBuffer = *calibCb};
+    vk::SubmitInfo2 si{.commandBufferInfoCount = 1, .pCommandBufferInfos = &csi};
     (void)state.queue.submit2(si);
     state.queue.waitIdle();
 }
 #endif
 
-}  // namespace
+} // namespace
 
 bool VulkanDevice::Init(bool enableValidation) {
     auto& state = *state_;
 
-    if (!CreateInstance(state, enableValidation))   return false;
-    if (!PickPhysicalDevice(state, deviceName_))    return false;
-    if (!CreateLogicalDevice(state))                return false;
-    if (!CreateAllocator(state))                    return false;
-    CreateSharedCbRing(state);  // non-fatal
-    if (!CreatePipelineLayout(state))               return false;
+    if (!CreateInstance(state, enableValidation))
+        return false;
+    if (!PickPhysicalDevice(state, deviceName_))
+        return false;
+    if (!CreateLogicalDevice(state))
+        return false;
+    if (!CreateAllocator(state))
+        return false;
+    CreateSharedCbRing(state); // non-fatal
+    if (!CreatePipelineLayout(state))
+        return false;
 
     state.pipelineCachePath = gfx::GetPipelineCachePath();
     LoadPipelineCache(state);
 
-    if (!CreateTimelineSemaphore(state.device, state.timelineSem, "timeline")) return false;
+    if (!CreateTimelineSemaphore(state.device, state.timelineSem, "timeline"))
+        return false;
     state.nextSubmitValue = 1;
 
-    if (!CreateTransferQueueObjects(state))         return false;
-    if (!CreatePerFrameContexts(state))             return false;
+    if (!CreateTransferQueueObjects(state))
+        return false;
+    if (!CreatePerFrameContexts(state))
+        return false;
 
     const auto props = state.physicalDevice.getProperties();
-    std::printf("[vk] device='%s' api=%u.%u.%u queueFamily=%u\n",
-                deviceName_.c_str(),
-                VK_API_VERSION_MAJOR(props.apiVersion),
-                VK_API_VERSION_MINOR(props.apiVersion),
-                VK_API_VERSION_PATCH(props.apiVersion),
-                state.queueFamily);
+    std::printf("[vk] device='%s' api=%u.%u.%u queueFamily=%u\n", deviceName_.c_str(),
+                VK_API_VERSION_MAJOR(props.apiVersion), VK_API_VERSION_MINOR(props.apiVersion),
+                VK_API_VERSION_PATCH(props.apiVersion), state.queueFamily);
 
 #if defined(TRACY_ENABLE)
     InitTracyContext(state);
@@ -599,13 +606,14 @@ Format VulkanDevice::PreferredDepthStencilFormat() const {
     auto& state = *state_;
     auto supported = [&](vk::Format f) {
         const auto p = state.physicalDevice.getFormatProperties(f);
-        return bool(p.optimalTilingFeatures
-                    & vk::FormatFeatureFlagBits::eDepthStencilAttachment);
+        return bool(p.optimalTilingFeatures & vk::FormatFeatureFlagBits::eDepthStencilAttachment);
     };
     // D24_S8 is unsupported on AMD; D32_S8 is the portable fallback.
-    if (supported(vk::Format::eD24UnormS8Uint))   return Format::D24_UNORM_S8_UINT;
-    if (supported(vk::Format::eD32SfloatS8Uint))  return Format::D32_FLOAT_S8_UINT;
+    if (supported(vk::Format::eD24UnormS8Uint))
+        return Format::D24_UNORM_S8_UINT;
+    if (supported(vk::Format::eD32SfloatS8Uint))
+        return Format::D32_FLOAT_S8_UINT;
     return Format::D32_FLOAT_S8_UINT;
 }
 
-}  // namespace whiteout::flakes::gfx::vulkan
+} // namespace whiteout::flakes::gfx::vulkan

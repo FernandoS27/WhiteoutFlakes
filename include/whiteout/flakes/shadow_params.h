@@ -14,24 +14,24 @@ namespace whiteout::flakes {
 
 struct ShadowParams {
 
-    i32   cascadeCount       = 1;
+    i32 cascadeCount = 1;
 
-    i32   cascadeResolution  = 1024;
+    i32 cascadeResolution = 1024;
 
-    f32   casterHeight       = 200.0f;
+    f32 casterHeight = 200.0f;
 
-    f32   lambdaSplit        = 0.5f;
+    f32 lambdaSplit = 0.5f;
 
-    i32   depthBias          = 0;
-    f32   slopeScaledBias    = 0.0f;
-    f32   depthBiasClamp     = 0.0f;
+    i32 depthBias = 0;
+    f32 slopeScaledBias = 0.0f;
+    f32 depthBiasClamp = 0.0f;
 
-    bool  texelSnap          = true;
+    bool texelSnap = true;
 
-    bool  enabled            = false;
+    bool enabled = false;
 };
 
-}  // namespace whiteout::flakes
+} // namespace whiteout::flakes
 
 namespace whiteout::flakes::renderer::shadow {
 using ::whiteout::flakes::ShadowParams;

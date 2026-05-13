@@ -1,8 +1,8 @@
 #pragma once
 
-#include "whiteout/flakes/types.h"
-#include "constants.h"
 #include <algorithm>
+#include "constants.h"
+#include "whiteout/flakes/types.h"
 
 namespace whiteout::flakes::renderer {
 
@@ -14,4 +14,4 @@ inline bool IsEmitterVisible(f32 visibility) {
     return visibility > kMinVisibilityThreshold;
 }
 
-}
+} // namespace whiteout::flakes::renderer

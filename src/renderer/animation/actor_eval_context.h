@@ -10,32 +10,36 @@
 // instead of holding a back-pointer to the renderer.
 // ============================================================================
 
+#include "types.h" // Vector3f
 #include "whiteout/flakes/types.h"
-#include "types.h"  // Vector3f
 
 namespace whiteout::flakes::renderer {
-    class SceneManager;
-    class ISoundEmitter;
+class SceneManager;
+class ISoundEmitter;
+} // namespace whiteout::flakes::renderer
+namespace whiteout::flakes::renderer::effects {
+class SpnSpawner;
 }
-namespace whiteout::flakes::renderer::effects { class SpnSpawner; }
 namespace whiteout::flakes::renderer::particle {
-    class ParticleService;
-    class SplatService;
+class ParticleService;
+class SplatService;
+} // namespace whiteout::flakes::renderer::particle
+namespace whiteout::flakes::renderer::corn_effects {
+class CornEffectsService;
 }
-namespace whiteout::flakes::renderer::corn_effects { class CornEffectsService; }
 
 namespace whiteout::flakes::renderer::animation {
 
 struct ActorEvalContext {
-    Vector3f                   camPos              = {0, 0, 0};
-    i32                        sceneAnimationTimeMs = 0;
-    bool                       fireEvents          = false;
-    SceneManager*              scene               = nullptr;
-    particle::ParticleService* particles           = nullptr;
-    particle::SplatService*    splats              = nullptr;
-    corn_effects::CornEffectsService*   cornEffects             = nullptr;
-    effects::SpnSpawner*       spnSpawner          = nullptr;
-    ISoundEmitter*             sound               = nullptr;
+    Vector3f camPos = {0, 0, 0};
+    i32 sceneAnimationTimeMs = 0;
+    bool fireEvents = false;
+    SceneManager* scene = nullptr;
+    particle::ParticleService* particles = nullptr;
+    particle::SplatService* splats = nullptr;
+    corn_effects::CornEffectsService* cornEffects = nullptr;
+    effects::SpnSpawner* spnSpawner = nullptr;
+    ISoundEmitter* sound = nullptr;
 };
 
-}
+} // namespace whiteout::flakes::renderer::animation

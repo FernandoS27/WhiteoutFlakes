@@ -1,7 +1,7 @@
+#include <algorithm>
+#include <cmath>
 #include "renderer/effects/pe1_system.h"
 #include "sim_util.h"
-#include <cmath>
-#include <algorithm>
 
 namespace whiteout::flakes::renderer::effects {
 
@@ -23,11 +23,14 @@ void PE1System::UpdateEmitterState(i32 id, const PE1EmitterState& st) {
         it->second.state = st;
 }
 
-bool PE1System::HasEmitters() const { return !emitters_.empty(); }
+bool PE1System::HasEmitters() const {
+    return !emitters_.empty();
+}
 
 i32 PE1System::GetTotalParticleCount() const {
     i32 total = 0;
-    for (auto& [id, em] : emitters_) total += (i32)em.particles.size();
+    for (auto& [id, em] : emitters_)
+        total += (i32)em.particles.size();
     return total;
 }
 
@@ -42,7 +45,7 @@ PE1SimResult PE1System::Simulate(f32 dt, const HandleAllocator& allocHandle) {
 
     for (auto& [id, em] : emitters_) {
 
-        for (auto it = em.particles.begin(); it != em.particles.end(); ) {
+        for (auto it = em.particles.begin(); it != em.particles.end();) {
             if (it->lifeSpan <= 0) {
                 result.died.push_back(it->childModelHandle);
                 it = em.particles.erase(it);
@@ -67,7 +70,8 @@ PE1SimResult PE1System::Simulate(f32 dt, const HandleAllocator& allocHandle) {
             p.velocity.z += az * dt;
             p.lifeSpan -= dt;
 
-            Matrix44f scale = Matrix44f::scaling({em.config.scale, em.config.scale, em.config.scale});
+            Matrix44f scale =
+                Matrix44f::scaling({em.config.scale, em.config.scale, em.config.scale});
             Matrix44f trans = Matrix44f::translation({p.position.x, p.position.y, p.position.z});
             result.transforms.push_back({p.childModelHandle, scale * trans});
         }
@@ -76,9 +80,8 @@ PE1SimResult PE1System::Simulate(f32 dt, const HandleAllocator& allocHandle) {
     return result;
 }
 
-void PE1System::SpawnParticle(PE1Emitter& em, f32 dt,
-                               const HandleAllocator& allocHandle,
-                               PE1SimResult& result) {
+void PE1System::SpawnParticle(PE1Emitter& em, f32 dt, const HandleAllocator& allocHandle,
+                              PE1SimResult& result) {
     PE1Particle p;
     auto& cfg = em.config;
     auto& st = em.state;
@@ -86,8 +89,8 @@ void PE1System::SpawnParticle(PE1Emitter& em, f32 dt,
     Vector3f wPos = whiteout::transform_point(Vector3f{0, 0, 0}, st.transform);
     p.position = wPos;
 
-    f32 theta = (2.0f * st.latitude  * RandF(0.0f, 1.0f)) - st.latitude;
-    f32 phi   = (2.0f * st.longitude * RandF(0.0f, 1.0f)) - st.longitude;
+    f32 theta = (2.0f * st.latitude * RandF(0.0f, 1.0f)) - st.latitude;
+    f32 phi = (2.0f * st.longitude * RandF(0.0f, 1.0f)) - st.longitude;
 
     f32 speed = st.speed;
     Vector3f vel = {0, 0, speed};
@@ -118,7 +121,10 @@ void PE1System::SpawnParticle(PE1Emitter& em, f32 dt,
     }
 
     for (auto& [eid, e] : emitters_) {
-        if (&e == &em) { p.emitterId = eid; break; }
+        if (&e == &em) {
+            p.emitterId = eid;
+            break;
+        }
     }
 
     Matrix44f scale = Matrix44f::scaling({cfg.scale, cfg.scale, cfg.scale});
@@ -137,4 +143,4 @@ f32 PE1System::RandF(f32 lo, f32 hi) {
     return dist(rng_);
 }
 
-}
+} // namespace whiteout::flakes::renderer::effects

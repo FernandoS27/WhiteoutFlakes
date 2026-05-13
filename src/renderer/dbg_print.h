@@ -14,7 +14,8 @@ extern "C" __declspec(dllimport) void __stdcall OutputDebugStringA(const char* s
 namespace whiteout::flakes::renderer {
 
 inline void DbgPrint(const char* msg) {
-    if (!msg) return;
+    if (!msg)
+        return;
 #if defined(_WIN32)
     OutputDebugStringA(msg);
 #else
@@ -22,4 +23,4 @@ inline void DbgPrint(const char* msg) {
 #endif
 }
 
-}
+} // namespace whiteout::flakes::renderer

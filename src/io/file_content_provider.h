@@ -1,7 +1,7 @@
 #pragma once
 
-#include "whiteout/flakes/types.h"
 #include "whiteout/flakes/content_provider.h"
+#include "whiteout/flakes/types.h"
 
 #include <filesystem>
 #include <memory>
@@ -43,4 +43,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-}
+} // namespace whiteout::flakes::io

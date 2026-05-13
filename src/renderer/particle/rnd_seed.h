@@ -1,7 +1,7 @@
 #pragma once
 
-#include "whiteout/flakes/types.h"
 #include "types.h"
+#include "whiteout/flakes/types.h"
 
 namespace whiteout::flakes::renderer::particle {
 
@@ -9,7 +9,9 @@ struct RndSeed {
     u32 state;
 
     RndSeed() : state(0) {}
-    explicit RndSeed(u32 seed) { SetSeed(seed); }
+    explicit RndSeed(u32 seed) {
+        SetSeed(seed);
+    }
 
     void SetSeed(u32 seed) {
 
@@ -42,19 +44,20 @@ inline Vector3f C3Vector_(RndSeed& s) {
     do {
         u1 = reals_(s);
         u2 = reals_(s);
-        d2 = u1*u1 + u2*u2;
+        d2 = u1 * u1 + u2 * u2;
     } while (d2 >= 1.0f || d2 == 0.0f);
     f32 factor = 2.0f * std::sqrt(1.0f - d2);
     return {u1 * factor, u2 * factor, 1.0f - 2.0f * d2};
 }
 
 inline u32 dice_(u32 n, RndSeed& s) {
-    if (n == 0) return 0;
+    if (n == 0)
+        return 0;
 
     return next_u32(s) % n;
 }
 
-}
+} // namespace CRandom
 
 extern RndSeed g_globalRnd;
 
@@ -63,8 +66,8 @@ inline u32 MakeSeedFromTime(u32 counter) {
     u32 x = counter + 0x9E3779B9u;
     x = (x ^ (x >> 16)) * 0x7FEB352Du;
     x = (x ^ (x >> 15)) * 0x846CA68Bu;
-    x =  x ^ (x >> 16);
+    x = x ^ (x >> 16);
     return x;
 }
 
-}
+} // namespace whiteout::flakes::renderer::particle

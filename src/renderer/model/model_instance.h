@@ -1,18 +1,20 @@
 #pragma once
 
 #include "../gfx/gfx.h"
-#include "whiteout/flakes/types.h"
 #include "animation/animation_driver.h"
 #include "effects/event_emitter_pool.h"
-#include "whiteout/flakes/model_source.h"
 #include "model/model_template.h"
 #include "model/render_model.h"
-#include "render_target.h"  // RenderMode
+#include "render_target.h" // RenderMode
+#include "whiteout/flakes/model_source.h"
+#include "whiteout/flakes/types.h"
 
 #include <memory>
 #include <vector>
 
-namespace whiteout::flakes::renderer::animation { struct ActorEvalContext; }
+namespace whiteout::flakes::renderer::animation {
+struct ActorEvalContext;
+}
 
 namespace whiteout::flakes::renderer::model {
 
@@ -23,15 +25,15 @@ namespace whiteout::flakes::renderer::model {
 // scrubs Max's timeline). Children are spawned by their parent's effects
 // and live in `parent->children`.
 enum class ActorRole : u8 {
-    Unit,        // top-level, app-spawned, normal scene-clock evaluation
-    External,    // top-level, host evaluates manually (Max plugin)
-    Attachment,  // parent owns slot config; transform pushed from parent FrameState
-    PE1,         // parent's PE1 sim drives transform + lifetime
-    SPN,         // event-spawned, frozen transform, sequence-duration lifetime
+    Unit,       // top-level, app-spawned, normal scene-clock evaluation
+    External,   // top-level, host evaluates manually (Max plugin)
+    Attachment, // parent owns slot config; transform pushed from parent FrameState
+    PE1,        // parent's PE1 sim drives transform + lifetime
+    SPN,        // event-spawned, frozen transform, sequence-duration lifetime
 };
 
 struct Actor {
-    u32       handle  = 0;
+    u32 handle = 0;
 
     Matrix44f worldTransform = Matrix44f::identity();
 
@@ -48,9 +50,9 @@ struct Actor {
     // touch these fields; AncestorActorTimeMs() is the read API.
     f32 playbackSpeed = 1.0f;
     struct Cursor {
-        i32 actorTimeMs         = 0;
+        i32 actorTimeMs = 0;
         i32 sequenceStartTimeMs = 0;
-        i32 prevActiveSequence  = -1;
+        i32 prevActiveSequence = -1;
     };
     Cursor cursor;
 
@@ -68,25 +70,27 @@ struct Actor {
     // to mutate at runtime — it sets teamColorDirty so the
     // ReplaceableTextureManager re-bakes this actor's slots on the next
     // frame. Direct writes to the field are allowed but bypass the rebake.
-    u32  teamColor      = 0x000000FFu;
+    u32 teamColor = 0x000000FFu;
     bool teamColorDirty = false;
 
     void SetTeamColor(u8 r, u8 g, u8 b) {
-        teamColor      = (u32)r | ((u32)g << 8) | ((u32)b << 16);
+        teamColor = (u32)r | ((u32)g << 8) | ((u32)b << 16);
         teamColorDirty = true;
     }
 
     // ---- Tree position ----
-    ActorRole role      = ActorRole::Unit;
-    u32       parent    = 0;       // 0 for top-level (Unit/External)
-    i32       treeDepth = 0;       // top-level = 0; children = parent.treeDepth + 1
-    std::vector<u32> children;     // canonical owner list of child handles
+    ActorRole role = ActorRole::Unit;
+    u32 parent = 0;            // 0 for top-level (Unit/External)
+    i32 treeDepth = 0;         // top-level = 0; children = parent.treeDepth + 1
+    std::vector<u32> children; // canonical owner list of child handles
 
-    bool IsChild() const { return role != ActorRole::Unit && role != ActorRole::External; }
+    bool IsChild() const {
+        return role != ActorRole::Unit && role != ActorRole::External;
+    }
 
     struct AttachmentSlot {
         AttachmentConfig config;
-        u32 childModelHandle = 0;   // also present in `children`; this is the slot's own ref
+        u32 childModelHandle = 0; // also present in `children`; this is the slot's own ref
         bool loaded = false;
         bool wasVisible = false;
     };
@@ -100,8 +104,12 @@ struct Actor {
 
     effects::EventEmitterPool events;
 
-    RenderModel&       Render()       { return render; }
-    const RenderModel& Render() const { return render; }
+    RenderModel& Render() {
+        return render;
+    }
+    const RenderModel& Render() const {
+        return render;
+    }
 
     // True if this actor's template prefers the HD pipeline. The application
     // is responsible for calling Settings().SetRenderMode() based on this —
@@ -124,9 +132,11 @@ struct Actor {
 
     void ReleaseGPU(gfx::IGFXDevice& gfx) {
         const bool freeShared = !sourceTemplate;
-        for (auto& g : render.gpuGeosets) g.Release(gfx, freeShared);
+        for (auto& g : render.gpuGeosets)
+            g.Release(gfx, freeShared);
         render.gpuGeosets.clear();
-        if (render.textures) render.textures->Clear();
+        if (render.textures)
+            render.textures->Clear();
         render.gpuMaterials.clear();
         gfx.Destroy(render.ribbonVB);
         render.ribbonVB = gfx::BufferHandle::Invalid;
@@ -143,4 +153,4 @@ struct Actor {
     }
 };
 
-}
+} // namespace whiteout::flakes::renderer::model

@@ -4,20 +4,20 @@
 
 #include <whiteout/vector_types.h>
 
-#include <cmath>
-#include <vector>
-#include <string>
-#include <mutex>
-#include <thread>
-#include <atomic>
 #include <algorithm>
+#include <atomic>
+#include <cmath>
 #include <cstring>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
+using whiteout::Matrix44f;
+using whiteout::Quaternion;
 using whiteout::Vector2f;
 using whiteout::Vector3f;
 using whiteout::Vector4f;
-using whiteout::Matrix44f;
-using whiteout::Quaternion;
 
 namespace whiteout::flakes::renderer {
 
@@ -55,4 +55,4 @@ struct alignas(16) CBPerFrame {
     Vector4f materialFlags;
 };
 
-}
+} // namespace whiteout::flakes::renderer

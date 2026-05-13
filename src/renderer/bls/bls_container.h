@@ -8,10 +8,10 @@
 
 namespace whiteout::flakes::renderer::bls {
 
-inline constexpr u32 kHsxgMagic        = 0x47585348u;
-inline constexpr u32 kHsxgVersion_1_8  = 0x00010008u;  // shipped DX (DXBC sm5)
-inline constexpr u32 kHsxgVersion_1_14 = 0x0001000eu;  // shipped DX (DXIL sm6)
-inline constexpr u32 kDxbcMagic        = 0x43425844u;  // also the DXIL outer magic
+inline constexpr u32 kHsxgMagic = 0x47585348u;
+inline constexpr u32 kHsxgVersion_1_8 = 0x00010008u;  // shipped DX (DXBC sm5)
+inline constexpr u32 kHsxgVersion_1_14 = 0x0001000eu; // shipped DX (DXIL sm6)
+inline constexpr u32 kDxbcMagic = 0x43425844u;        // also the DXIL outer magic
 
 // v1.14 platform tags — FourCC at BlsHeaderV14::platformTag.
 //   'DXBC' (0x43425844) — DX SM5 (we don't emit; reserved for v1.8 outer)
@@ -19,8 +19,8 @@ inline constexpr u32 kDxbcMagic        = 0x43425844u;  // also the DXIL outer ma
 //   'RIPS' (0x53504952) — Vulkan SPIR-V (§3.6 opaque-blob inner layout)
 //   'LSLG' (0x474C534C) — OpenGL GLSL (§3.6 opaque-blob)
 //   'LSGW' (0x5753474C) — WebGPU WGSL (§3.6 opaque-blob)
-inline constexpr u32 kPlatformTag_DX6   = 0x44583630u;  // '06XD'
-inline constexpr u32 kPlatformTag_SPIRV = 0x53504952u;  // 'RIPS'
+inline constexpr u32 kPlatformTag_DX6 = 0x44583630u;   // '06XD'
+inline constexpr u32 kPlatformTag_SPIRV = 0x53504952u; // 'RIPS'
 
 // v1.8 wire format ------------------------------------------------------------
 #pragma pack(push, 1)
@@ -47,10 +47,10 @@ static_assert(sizeof(PermuteHeader) == 80);
 
 // v1.14 wire format -----------------------------------------------------------
 struct BlsHeaderV14 {
-    u32 magic;          // 'HSXG'
-    u32 version;        // 0x0001000e (minor=14, major=1)
-    u32 platformTag;    // FourCC, e.g. '06XD' for D3D12 SM6
-    u32 permsOffset;    // = 0x28
+    u32 magic;       // 'HSXG'
+    u32 version;     // 0x0001000e (minor=14, major=1)
+    u32 platformTag; // FourCC, e.g. '06XD' for D3D12 SM6
+    u32 permsOffset; // = 0x28
     u32 permCount;
     u32 blobsOffset;
     u32 blobCount;
@@ -64,7 +64,7 @@ static_assert(sizeof(BlsHeaderV14) == 40);
 // offset into the decompressed payload.
 struct BlsV14PermEntry {
     u32 size;
-    u8  md5[16];
+    u8 md5[16];
     u32 cumOffset;
 };
 static_assert(sizeof(BlsV14PermEntry) == 24);
@@ -75,14 +75,14 @@ static_assert(sizeof(BlsV14PermEntry) == 24);
 struct BlsV14DxInnerHeader {
     u32 stage;
     u32 payloadSize;
-    u32 headerSize;     // = 0x28
-    u32 padding[7];     // 0x0C..0x28
+    u32 headerSize; // = 0x28
+    u32 padding[7]; // 0x0C..0x28
 };
 static_assert(sizeof(BlsV14DxInnerHeader) == 40);
 #pragma pack(pop)
 
 struct PermuteView {
-    PermuteHeader      header;
+    PermuteHeader header;
     // Raw bytecode span. Format depends on Version() + PlatformTag():
     //   v1.8                          → DXBC (sm5)
     //   v1.14 + kPlatformTag_DX6      → DXIL-in-DXBC (sm6)
@@ -92,27 +92,36 @@ struct PermuteView {
 
 class BlsContainer {
 public:
-
     bool Load(std::span<const u8> fileBytes, std::string* error = nullptr);
 
-    bool           IsLoaded()        const { return loaded_; }
-    u32            Version()         const { return version_; }
-    u32            PlatformTag()     const { return platformTag_; }  // 0 for v1.8
-    usize          PermuteCount()    const { return permutes_.size(); }
-    PermuteView    Permute(usize i) const { return permutes_[i]; }
+    bool IsLoaded() const {
+        return loaded_;
+    }
+    u32 Version() const {
+        return version_;
+    }
+    u32 PlatformTag() const {
+        return platformTag_;
+    } // 0 for v1.8
+    usize PermuteCount() const {
+        return permutes_.size();
+    }
+    PermuteView Permute(usize i) const {
+        return permutes_[i];
+    }
 
 private:
-    bool LoadV1_8 (std::span<const u8> fileBytes, std::string* error);
+    bool LoadV1_8(std::span<const u8> fileBytes, std::string* error);
     bool LoadV1_14(std::span<const u8> fileBytes, std::string* error);
 
-    bool                     loaded_  = false;
-    u32                      version_ = 0;
-    u32                      platformTag_ = 0;
+    bool loaded_ = false;
+    u32 version_ = 0;
+    u32 platformTag_ = 0;
     // v1.8: stores the original file. v1.14: stores the decompressed inner
     // payload so the per-perm spans we hand out remain valid for the
     // container's lifetime.
-    std::vector<u8>          bytes_;
+    std::vector<u8> bytes_;
     std::vector<PermuteView> permutes_;
 };
 
-}
+} // namespace whiteout::flakes::renderer::bls

@@ -1,7 +1,7 @@
 #include "binding_internal.hpp"
 
-#include <cornflakes/interface/binding/effect_binder.hpp>
 #include <cornflakes/core/determinism.hpp>
+#include <cornflakes/interface/binding/effect_binder.hpp>
 
 #include <cstring>
 #include <optional>
@@ -194,7 +194,7 @@ EventSlotTable loadEventSlots(const EffectAssetModel& model, std::span<const u32
 
 // Maps each layer slot index to the global event slot ids it owns.
 std::vector<std::span<const u32>> loadLayerOwnedEventSlots(const EffectAssetModel& model,
-                                                            std::span<const u32> layerSlotUids) {
+                                                           std::span<const u32> layerSlotUids) {
     std::vector<std::span<const u32>> out;
     out.reserve(layerSlotUids.size());
     for (const u32 slotUid : layerSlotUids) {
@@ -210,7 +210,7 @@ std::vector<std::span<const u32>> loadLayerOwnedEventSlots(const EffectAssetMode
 // Resolves a single LayerSlot UID into a fully-bound LayerProgram. Returns
 // nullopt when the slot or its LayerCache reference is malformed.
 std::optional<LayerProgram> buildLayerFromSlot(const EffectAssetModel& model, u32 slotUid,
-                                                u32 layerId, IArena& arena) {
+                                               u32 layerId, IArena& arena) {
     const AssetObject* slot = findObjectByUid(model, slotUid);
     if (slot == nullptr) {
         return std::nullopt;

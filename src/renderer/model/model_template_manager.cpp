@@ -1,11 +1,11 @@
 #include "renderer/model/model_template_manager.h"
 
-#include "gfx/gfx.h"
-#include "whiteout/flakes/content_provider.h"
-#include "io/mdx_model_adapter.h"
-#include "whiteout/flakes/util/path_utf8.h"
-#include "renderer/animation/animation.h"
 #include <whiteout/models/mdx/parser.h>
+#include "gfx/gfx.h"
+#include "io/mdx_model_adapter.h"
+#include "renderer/animation/animation.h"
+#include "whiteout/flakes/content_provider.h"
+#include "whiteout/flakes/util/path_utf8.h"
 
 #include <chrono>
 #include <cstdio>
@@ -37,23 +37,23 @@ void ModelTemplateManager::SetTextureCacheQuery(TextureCacheQuery q) {
     textureCacheQuery_ = std::move(q);
 }
 
-std::shared_ptr<ModelTemplate>
-ModelTemplateManager::Lookup(const std::string& mdxPath) {
+std::shared_ptr<ModelTemplate> ModelTemplateManager::Lookup(const std::string& mdxPath) {
     std::lock_guard<std::mutex> lock(cacheMutex_);
     auto it = cache_.find(mdxPath);
     return (it != cache_.end()) ? it->second : nullptr;
 }
 
-std::shared_ptr<ModelTemplate>
-ModelTemplateManager::GetOrLoadAsync(const std::string& mdxPath) {
+std::shared_ptr<ModelTemplate> ModelTemplateManager::GetOrLoadAsync(const std::string& mdxPath) {
     {
         std::lock_guard<std::mutex> lock(cacheMutex_);
         auto it = cache_.find(mdxPath);
-        if (it != cache_.end()) return it->second;
+        if (it != cache_.end())
+            return it->second;
     }
     {
         std::lock_guard<std::mutex> lock(queueMutex_);
-        if (loadPending_.count(mdxPath)) return nullptr;
+        if (loadPending_.count(mdxPath))
+            return nullptr;
         loadPending_.insert(mdxPath);
         loadQueue_.push_back(mdxPath);
     }
@@ -61,13 +61,13 @@ ModelTemplateManager::GetOrLoadAsync(const std::string& mdxPath) {
     return nullptr;
 }
 
-std::shared_ptr<ModelTemplate>
-ModelTemplateManager::GetOrLoadSync(const std::string& mdxPath) {
+std::shared_ptr<ModelTemplate> ModelTemplateManager::GetOrLoadSync(const std::string& mdxPath) {
 
     {
         std::lock_guard<std::mutex> lock(cacheMutex_);
         auto it = cache_.find(mdxPath);
-        if (it != cache_.end()) return it->second;
+        if (it != cache_.end())
+            return it->second;
     }
 
     auto tmpl = ParseAndBuild(mdxPath);
@@ -82,9 +82,8 @@ ModelTemplateManager::GetOrLoadSync(const std::string& mdxPath) {
     return tmpl;
 }
 
-std::shared_ptr<ModelTemplate>
-ModelTemplateManager::Adopt(const std::string& key,
-                            std::shared_ptr<ModelTemplate> tmpl) {
+std::shared_ptr<ModelTemplate> ModelTemplateManager::Adopt(const std::string& key,
+                                                           std::shared_ptr<ModelTemplate> tmpl) {
     std::lock_guard<std::mutex> lock(cacheMutex_);
     cache_[key] = tmpl;
     return tmpl;
@@ -96,25 +95,28 @@ void ModelTemplateManager::Tick() {
         std::lock_guard<std::mutex> lock(resultMutex_);
         results.swap(loadResults_);
     }
-    if (results.empty()) return;
+    if (results.empty())
+        return;
     {
         std::lock_guard<std::mutex> lock(cacheMutex_);
-        for (auto& [path, tmpl] : results) cache_[path] = tmpl;
+        for (auto& [path, tmpl] : results)
+            cache_[path] = tmpl;
     }
     {
         std::lock_guard<std::mutex> lock(queueMutex_);
-        for (auto& [path, _] : results) loadPending_.erase(path);
+        for (auto& [path, _] : results)
+            loadPending_.erase(path);
     }
     // Stash the just-finished templates so the renderer can pre-upload
     // their GPU resources before any actor spawns request them.
     newlyLoaded_.reserve(newlyLoaded_.size() + results.size());
     for (auto& [path, tmpl] : results) {
-        if (tmpl) newlyLoaded_.push_back(tmpl);
+        if (tmpl)
+            newlyLoaded_.push_back(tmpl);
     }
 }
 
-std::vector<std::shared_ptr<ModelTemplate>>
-ModelTemplateManager::DrainNewlyLoadedTemplates() {
+std::vector<std::shared_ptr<ModelTemplate>> ModelTemplateManager::DrainNewlyLoadedTemplates() {
     std::vector<std::shared_ptr<ModelTemplate>> out;
     out.swap(newlyLoaded_);
     return out;
@@ -123,7 +125,8 @@ ModelTemplateManager::DrainNewlyLoadedTemplates() {
 void ModelTemplateManager::ReleaseAllGPU(gfx::IGFXDevice& gfx) {
     std::lock_guard<std::mutex> lock(cacheMutex_);
     for (auto& [path, tmpl] : cache_) {
-        if (tmpl) tmpl->ReleaseGPU(gfx);
+        if (tmpl)
+            tmpl->ReleaseGPU(gfx);
     }
 }
 
@@ -134,13 +137,14 @@ void ModelTemplateManager::Clear() {
 
 void ModelTemplateManager::StartLoader() {
     loaderRunning_ = true;
-    loaderThread_  = std::thread(&ModelTemplateManager::LoaderFunc, this);
+    loaderThread_ = std::thread(&ModelTemplateManager::LoaderFunc, this);
 }
 
 void ModelTemplateManager::StopLoader() {
     loaderRunning_ = false;
     queueCV_.notify_one();
-    if (loaderThread_.joinable()) loaderThread_.join();
+    if (loaderThread_.joinable())
+        loaderThread_.join();
 }
 
 void ModelTemplateManager::LoaderFunc() {
@@ -149,9 +153,11 @@ void ModelTemplateManager::LoaderFunc() {
         {
             std::unique_lock<std::mutex> lock(queueMutex_);
             queueCV_.wait_for(lock, std::chrono::milliseconds(50),
-                [this] { return !loadQueue_.empty() || !loaderRunning_; });
-            if (!loaderRunning_) break;
-            if (loadQueue_.empty()) continue;
+                              [this] { return !loadQueue_.empty() || !loaderRunning_; });
+            if (!loaderRunning_)
+                break;
+            if (loadQueue_.empty())
+                continue;
             path = std::move(loadQueue_.front());
             loadQueue_.pop_front();
         }
@@ -165,59 +171,53 @@ void ModelTemplateManager::LoaderFunc() {
     }
 }
 
-std::shared_ptr<ModelTemplate>
-ModelTemplateManager::ParseAndBuild(const std::string& mdxPath) {
-    if (!contentProvider_) return nullptr;
+std::shared_ptr<ModelTemplate> ModelTemplateManager::ParseAndBuild(const std::string& mdxPath) {
+    if (!contentProvider_)
+        return nullptr;
     auto fileData = contentProvider_->ReadFile(mdxPath);
     if (!fileData || fileData->empty()) {
-        std::fprintf(stderr,
-                     "[model] ERR: MDX read FAIL '%s'\n",
-                     mdxPath.c_str());
+        std::fprintf(stderr, "[model] ERR: MDX read FAIL '%s'\n", mdxPath.c_str());
         return nullptr;
     }
 
     whiteout::mdx::Parser mdxParser;
     whiteout::mdx::Model model;
     try {
-        model = mdxParser.parse(
-            std::span<const whiteout::u8>(fileData->data(), fileData->size()));
+        model = mdxParser.parse(std::span<const whiteout::u8>(fileData->data(), fileData->size()));
     } catch (const std::exception& e) {
-        std::fprintf(stderr,
-                     "[model] ERR: MDX parse FAIL '%s': %s\n",
-                     mdxPath.c_str(), e.what());
+        std::fprintf(stderr, "[model] ERR: MDX parse FAIL '%s': %s\n", mdxPath.c_str(), e.what());
         return nullptr;
     } catch (...) {
-        std::fprintf(stderr,
-                     "[model] ERR: MDX parse threw unknown exception '%s'\n",
+        std::fprintf(stderr, "[model] ERR: MDX parse threw unknown exception '%s'\n",
                      mdxPath.c_str());
         return nullptr;
     }
 
     namespace fs = std::filesystem;
 
-    fs::path texBasePath =
-        basePath_.empty() ? FsPathFromUtf8(mdxPath).parent_path() : basePath_;
+    fs::path texBasePath = basePath_.empty() ? FsPathFromUtf8(mdxPath).parent_path() : basePath_;
 
-    auto tmpl    = std::make_shared<ModelTemplate>();
-    auto adapter = std::make_shared<MdxModelAdapter>(
-        std::move(model), texBasePath, contentProvider_);
-    if (textureCacheQuery_) adapter->SetTextureCacheQuery(textureCacheQuery_);
+    auto tmpl = std::make_shared<ModelTemplate>();
+    auto adapter =
+        std::make_shared<MdxModelAdapter>(std::move(model), texBasePath, contentProvider_);
+    if (textureCacheQuery_)
+        adapter->SetTextureCacheQuery(textureCacheQuery_);
 
-    tmpl->adapter           = adapter;
-    tmpl->meshes            = adapter->GetMeshes();
-    tmpl->textures          = adapter->GetTextures();
-    tmpl->materials         = adapter->GetMaterials();
-    tmpl->skeleton          = adapter->GetSkeleton();
-    tmpl->skinWeights       = adapter->GetSkinWeights();
-    tmpl->pe2Configs        = adapter->GetParticleConfigs();
-    tmpl->ribbonConfigs     = adapter->GetRibbonConfigs();
-    tmpl->collisionConfigs  = adapter->GetCollisionShapes();
-    tmpl->pe1Configs        = adapter->GetPE1Configs();
-    tmpl->cornEmitterInits  = adapter->GetCornEmitterInits();
+    tmpl->adapter = adapter;
+    tmpl->meshes = adapter->GetMeshes();
+    tmpl->textures = adapter->GetTextures();
+    tmpl->materials = adapter->GetMaterials();
+    tmpl->skeleton = adapter->GetSkeleton();
+    tmpl->skinWeights = adapter->GetSkinWeights();
+    tmpl->pe2Configs = adapter->GetParticleConfigs();
+    tmpl->ribbonConfigs = adapter->GetRibbonConfigs();
+    tmpl->collisionConfigs = adapter->GetCollisionShapes();
+    tmpl->pe1Configs = adapter->GetPE1Configs();
+    tmpl->cornEmitterInits = adapter->GetCornEmitterInits();
     tmpl->attachmentConfigs = adapter->GetAttachmentConfigs();
-    tmpl->eventObjects      = adapter->GetEventObjects();
-    tmpl->globalSequences   = adapter->GetGlobalSequences();
-    tmpl->cameraPresets     = adapter->GetCameraPresets();
+    tmpl->eventObjects = adapter->GetEventObjects();
+    tmpl->globalSequences = adapter->GetGlobalSequences();
+    tmpl->cameraPresets = adapter->GetCameraPresets();
 
     // Decide per-actor palette path (Path A vs B). On Path A this
     // rewrites every vertex's boneIdx in `tmpl->skinWeights` to a
@@ -225,15 +225,15 @@ ModelTemplateManager::ParseAndBuild(const std::string& mdxPath) {
     // from the same data) is consistent with the per-actor palette
     // the renderer will fill. Must run before the geosetWeights
     // copy below so the rewritten values land in SkinningData.
-    auto paletteDecision = animation::DecidePaletteLayoutAndRewrite(
-        tmpl->skeleton.nodeCount, tmpl->skinWeights);
+    auto paletteDecision =
+        animation::DecidePaletteLayoutAndRewrite(tmpl->skeleton.nodeCount, tmpl->skinWeights);
 
     auto skinningData = std::make_shared<SkinningData>();
-    skinningData->nodeCount            = tmpl->skeleton.nodeCount;
-    skinningData->inverseBindMatrices  = tmpl->skeleton.inverseBindMatrices;
-    skinningData->actorPaletteSize     = paletteDecision.actorPaletteSize;
-    skinningData->usesPerActorPalette  = paletteDecision.usesPerActorPalette;
-    skinningData->globalGroupAverages  = std::move(paletteDecision.globalGroupAverages);
+    skinningData->nodeCount = tmpl->skeleton.nodeCount;
+    skinningData->inverseBindMatrices = tmpl->skeleton.inverseBindMatrices;
+    skinningData->actorPaletteSize = paletteDecision.actorPaletteSize;
+    skinningData->usesPerActorPalette = paletteDecision.usesPerActorPalette;
+    skinningData->globalGroupAverages = std::move(paletteDecision.globalGroupAverages);
     for (auto& sw : tmpl->skinWeights) {
         const i32 vc = (i32)sw.influences.size();
         auto& info = skinningData->geosetWeights[sw.geosetId];
@@ -241,12 +241,12 @@ ModelTemplateManager::ParseAndBuild(const std::string& mdxPath) {
         for (i32 v = 0; v < vc; v++) {
             for (i32 j = 0; j < 4; j++) {
                 info.vertices[v].boneIdx[j] = sw.influences[v].boneIdx[j];
-                info.vertices[v].weight[j]  = sw.influences[v].weight[j];
+                info.vertices[v].weight[j] = sw.influences[v].weight[j];
             }
         }
         GeosetPaletteLayout layout;
         layout.subsetNodeIndices = sw.subsetNodeIndices;
-        layout.groupAverages     = sw.groupAverages;
+        layout.groupAverages = sw.groupAverages;
         skinningData->geosetLayouts[sw.geosetId] = std::move(layout);
     }
     tmpl->skinningData = std::move(skinningData);
@@ -254,4 +254,4 @@ ModelTemplateManager::ParseAndBuild(const std::string& mdxPath) {
     return tmpl;
 }
 
-}
+} // namespace whiteout::flakes::renderer::model

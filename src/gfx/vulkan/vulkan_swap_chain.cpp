@@ -10,66 +10,67 @@
 #include <vector>
 
 #if defined(TRACY_ENABLE)
-#  include <tracy/Tracy.hpp>          // FrameMark
-#  include <tracy/TracyVulkan.hpp>    // TracyVkCollect
+#include <tracy/Tracy.hpp>       // FrameMark
+#include <tracy/TracyVulkan.hpp> // TracyVkCollect
 #endif
 
 namespace whiteout::flakes::gfx::vulkan {
 
 namespace {
 
-vk::raii::ImageView MakeBackbufferView(const vk::raii::Device& device,
-                                        VkImage image, vk::Format fmt) {
+vk::raii::ImageView MakeBackbufferView(const vk::raii::Device& device, VkImage image,
+                                       vk::Format fmt) {
     auto r = device.createImageView({
-        .image    = vk::Image(image),
+        .image = vk::Image(image),
         .viewType = vk::ImageViewType::e2D,
-        .format   = fmt,
-        .subresourceRange = {
-            .aspectMask = vk::ImageAspectFlagBits::eColor,
-            .levelCount = 1,
-            .layerCount = 1,
-        },
+        .format = fmt,
+        .subresourceRange =
+            {
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .levelCount = 1,
+                .layerCount = 1,
+            },
     });
-    if (r.result != vk::Result::eSuccess) return nullptr;
+    if (r.result != vk::Result::eSuccess)
+        return nullptr;
     return std::move(r.value);
 }
 
-bool CreateSwapchainObjects(VulkanDeviceState& state, SwapChainEntry& sc,
-                            i32 width, i32 height, Format colorFormat) {
+bool CreateSwapchainObjects(VulkanDeviceState& state, SwapChainEntry& sc, i32 width, i32 height,
+                            Format colorFormat) {
     auto capsR = state.physicalDevice.getSurfaceCapabilitiesKHR(*sc.surface);
-    if (capsR.result != vk::Result::eSuccess) return false;
+    if (capsR.result != vk::Result::eSuccess)
+        return false;
     const auto& caps = capsR.value;
 
     sc.extent = caps.currentExtent;
     if (sc.extent.width == 0xFFFFFFFFu) {
-        sc.extent.width  = std::clamp<u32>(static_cast<u32>(width),
-                                           caps.minImageExtent.width,
-                                           caps.maxImageExtent.width);
-        sc.extent.height = std::clamp<u32>(static_cast<u32>(height),
-                                           caps.minImageExtent.height,
+        sc.extent.width = std::clamp<u32>(static_cast<u32>(width), caps.minImageExtent.width,
+                                          caps.maxImageExtent.width);
+        sc.extent.height = std::clamp<u32>(static_cast<u32>(height), caps.minImageExtent.height,
                                            caps.maxImageExtent.height);
     }
 
     auto fmtsR = state.physicalDevice.getSurfaceFormatsKHR(*sc.surface);
-    if (fmtsR.result != vk::Result::eSuccess || fmtsR.value.empty()) return false;
+    if (fmtsR.result != vk::Result::eSuccess || fmtsR.value.empty())
+        return false;
     const vk::Format preferredSrgb = ToVkFormat(colorFormat);
     vk::SurfaceFormatKHR chosen = fmtsR.value[0];
     for (const auto& f : fmtsR.value) {
-        if (f.format == preferredSrgb &&
-            f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
+        if (f.format == preferredSrgb && f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
             chosen = f;
             break;
         }
     }
-    sc.formatSrgb   = chosen.format;
+    sc.formatSrgb = chosen.format;
     sc.formatLinear = LinearPartnerOf(chosen.format);
 
     // MUTABLE_FORMAT + format-list lets us create both sRGB and linear
     // views on the same VkImage.
-    const std::array<vk::Format, 2> formatList = { sc.formatSrgb, sc.formatLinear };
+    const std::array<vk::Format, 2> formatList = {sc.formatSrgb, sc.formatLinear};
     vk::ImageFormatListCreateInfo formatListInfo{
         .viewFormatCount = static_cast<u32>(formatList.size()),
-        .pViewFormats    = formatList.data(),
+        .pViewFormats = formatList.data(),
     };
 
     u32 minImageCount = std::max<u32>(caps.minImageCount, kFramesInFlight);
@@ -77,21 +78,21 @@ bool CreateSwapchainObjects(VulkanDeviceState& state, SwapChainEntry& sc,
         minImageCount = std::min(minImageCount, caps.maxImageCount);
 
     vk::SwapchainCreateInfoKHR ci{
-        .pNext            = &formatListInfo,
-        .flags            = vk::SwapchainCreateFlagBitsKHR::eMutableFormat,
-        .surface          = *sc.surface,
-        .minImageCount    = minImageCount,
-        .imageFormat      = sc.formatSrgb,
-        .imageColorSpace  = chosen.colorSpace,
-        .imageExtent      = sc.extent,
+        .pNext = &formatListInfo,
+        .flags = vk::SwapchainCreateFlagBitsKHR::eMutableFormat,
+        .surface = *sc.surface,
+        .minImageCount = minImageCount,
+        .imageFormat = sc.formatSrgb,
+        .imageColorSpace = chosen.colorSpace,
+        .imageExtent = sc.extent,
         .imageArrayLayers = 1,
-        .imageUsage       = vk::ImageUsageFlagBits::eColorAttachment
-                          | vk::ImageUsageFlagBits::eTransferDst,
+        .imageUsage =
+            vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst,
         .imageSharingMode = vk::SharingMode::eExclusive,
-        .preTransform     = caps.currentTransform,
-        .compositeAlpha   = vk::CompositeAlphaFlagBitsKHR::eOpaque,
-        .presentMode      = vk::PresentModeKHR::eFifo,
-        .clipped          = vk::True,
+        .preTransform = caps.currentTransform,
+        .compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
+        .presentMode = vk::PresentModeKHR::eFifo,
+        .clipped = vk::True,
     };
 
     auto scR = state.device.createSwapchainKHR(ci);
@@ -103,7 +104,8 @@ bool CreateSwapchainObjects(VulkanDeviceState& state, SwapChainEntry& sc,
     sc.swapchain = std::move(scR.value);
 
     auto imagesR = sc.swapchain.getImages();
-    if (imagesR.result != vk::Result::eSuccess) return false;
+    if (imagesR.result != vk::Result::eSuccess)
+        return false;
     sc.images = std::move(imagesR.value);
 
     sc.viewsSrgb.clear();
@@ -125,32 +127,32 @@ bool CreateSwapchainObjects(VulkanDeviceState& state, SwapChainEntry& sc,
     for (usize i = 0; i < sc.images.size(); ++i) {
         auto r1 = state.device.createSemaphore({});
         auto r2 = state.device.createSemaphore({});
-        if (r1.result != vk::Result::eSuccess ||
-            r2.result != vk::Result::eSuccess) return false;
+        if (r1.result != vk::Result::eSuccess || r2.result != vk::Result::eSuccess)
+            return false;
         sc.imageAcquireSems.push_back(std::move(r1.value));
         sc.imageRenderDoneSems.push_back(std::move(r2.value));
     }
     {
         auto r = state.device.createSemaphore({});
-        if (r.result != vk::Result::eSuccess) return false;
+        if (r.result != vk::Result::eSuccess)
+            return false;
         sc.spareAcquireSem = std::move(r.value);
     }
     return true;
 }
 
-}  // namespace
+} // namespace
 
 // ---- IGFXDevice swap-chain methods --------------------------------------
 
-SwapChainHandle VulkanDevice::CreateSwapChain(void* nativeWindowHandle,
-                                              i32 width, i32 height,
+SwapChainHandle VulkanDevice::CreateSwapChain(void* nativeWindowHandle, i32 width, i32 height,
                                               Format colorFormat) {
     auto& state = *state_;
 
     SwapChainEntry sc{};
     auto surfR = state.instance.createWin32SurfaceKHR({
         .hinstance = GetModuleHandleW(nullptr),
-        .hwnd      = reinterpret_cast<HWND>(nativeWindowHandle),
+        .hwnd = reinterpret_cast<HWND>(nativeWindowHandle),
     });
     if (surfR.result != vk::Result::eSuccess) {
         std::fprintf(stderr, "[vk] createWin32SurfaceKHR failed (%s)\n",
@@ -161,8 +163,7 @@ SwapChainHandle VulkanDevice::CreateSwapChain(void* nativeWindowHandle,
 
     auto presentR = state.physicalDevice.getSurfaceSupportKHR(state.queueFamily, *sc.surface);
     if (presentR.result != vk::Result::eSuccess || !presentR.value) {
-        std::fprintf(stderr,
-                     "[vk] queue family %u doesn't support presenting on this surface\n",
+        std::fprintf(stderr, "[vk] queue family %u doesn't support presenting on this surface\n",
                      state.queueFamily);
         return SwapChainHandle::Invalid;
     }
@@ -173,64 +174,67 @@ SwapChainHandle VulkanDevice::CreateSwapChain(void* nativeWindowHandle,
 
     // Proxy textures — image/view get repointed every Acquire.
     TextureEntry srgbProxy{};
-    srgbProxy.format        = sc.formatSrgb;
-    srgbProxy.aspect        = vk::ImageAspectFlagBits::eColor;
-    srgbProxy.width         = static_cast<i32>(sc.extent.width);
-    srgbProxy.height        = static_cast<i32>(sc.extent.height);
-    srgbProxy.ownsImage     = false;
-    srgbProxy.isLinearView  = false;
-    srgbProxy.image         = sc.images[0];
-    srgbProxy.view          = *sc.viewsSrgb[0];
+    srgbProxy.format = sc.formatSrgb;
+    srgbProxy.aspect = vk::ImageAspectFlagBits::eColor;
+    srgbProxy.width = static_cast<i32>(sc.extent.width);
+    srgbProxy.height = static_cast<i32>(sc.extent.height);
+    srgbProxy.ownsImage = false;
+    srgbProxy.isLinearView = false;
+    srgbProxy.image = sc.images[0];
+    srgbProxy.view = *sc.viewsSrgb[0];
 
     TextureEntry linearProxy{};
-    linearProxy.format        = sc.formatLinear;
-    linearProxy.aspect        = vk::ImageAspectFlagBits::eColor;
-    linearProxy.width         = srgbProxy.width;
-    linearProxy.height        = srgbProxy.height;
-    linearProxy.ownsImage     = false;
-    linearProxy.isLinearView  = true;
-    linearProxy.image         = sc.images[0];
-    linearProxy.view          = *sc.viewsLinear[0];
+    linearProxy.format = sc.formatLinear;
+    linearProxy.aspect = vk::ImageAspectFlagBits::eColor;
+    linearProxy.width = srgbProxy.width;
+    linearProxy.height = srgbProxy.height;
+    linearProxy.ownsImage = false;
+    linearProxy.isLinearView = true;
+    linearProxy.image = sc.images[0];
+    linearProxy.view = *sc.viewsLinear[0];
 
-    const u64 proxySrgbRaw   = state.textures.Insert(std::move(srgbProxy));
+    const u64 proxySrgbRaw = state.textures.Insert(std::move(srgbProxy));
     const u64 proxyLinearRaw = state.textures.Insert(std::move(linearProxy));
-    sc.proxySrgb   = static_cast<TextureHandle>(proxySrgbRaw);
+    sc.proxySrgb = static_cast<TextureHandle>(proxySrgbRaw);
     sc.proxyLinear = static_cast<TextureHandle>(proxyLinearRaw);
 
     const u64 raw = state.swapchains.Insert(std::move(sc));
     const SwapChainHandle handle = static_cast<SwapChainHandle>(raw);
 
     // Back-pointers now that the SwapChainHandle is allocated.
-    if (auto* proxy = state.textures.Get(proxySrgbRaw))   proxy->swapChainProxy = handle;
-    if (auto* proxy = state.textures.Get(proxyLinearRaw)) proxy->swapChainProxy = handle;
+    if (auto* proxy = state.textures.Get(proxySrgbRaw))
+        proxy->swapChainProxy = handle;
+    if (auto* proxy = state.textures.Get(proxyLinearRaw))
+        proxy->swapChainProxy = handle;
     return handle;
 }
 
 void VulkanDevice::ResizeSwapChain(SwapChainHandle handle, i32 width, i32 height) {
     auto& state = *state_;
     auto* sc = state.swapchains.Get(static_cast<u64>(handle));
-    if (!sc) return;
+    if (!sc)
+        return;
     state.device.waitIdle();
     sc->viewsSrgb.clear();
     sc->viewsLinear.clear();
     sc->images.clear();
-    sc->swapchain = nullptr;  // raii destroy
+    sc->swapchain = nullptr; // raii destroy
     if (!CreateSwapchainObjects(state, *sc, width, height,
-                                 sc->formatSrgb == vk::Format::eR8G8B8A8Srgb
-                                     ? Format::R8G8B8A8_UNORM_SRGB
-                                     : Format::B8G8R8A8_UNORM)) {
+                                sc->formatSrgb == vk::Format::eR8G8B8A8Srgb
+                                    ? Format::R8G8B8A8_UNORM_SRGB
+                                    : Format::B8G8R8A8_UNORM)) {
         return;
     }
     if (auto* proxy = state.textures.Get(static_cast<u64>(sc->proxySrgb))) {
-        proxy->image  = sc->images[0];
-        proxy->view   = *sc->viewsSrgb[0];
-        proxy->width  = static_cast<i32>(sc->extent.width);
+        proxy->image = sc->images[0];
+        proxy->view = *sc->viewsSrgb[0];
+        proxy->width = static_cast<i32>(sc->extent.width);
         proxy->height = static_cast<i32>(sc->extent.height);
     }
     if (auto* proxy = state.textures.Get(static_cast<u64>(sc->proxyLinear))) {
-        proxy->image  = sc->images[0];
-        proxy->view   = *sc->viewsLinear[0];
-        proxy->width  = static_cast<i32>(sc->extent.width);
+        proxy->image = sc->images[0];
+        proxy->view = *sc->viewsLinear[0];
+        proxy->width = static_cast<i32>(sc->extent.width);
         proxy->height = static_cast<i32>(sc->extent.height);
     }
 }
@@ -238,11 +242,12 @@ void VulkanDevice::ResizeSwapChain(SwapChainHandle handle, i32 width, i32 height
 void VulkanDevice::DestroySwapChain(SwapChainHandle handle) {
     auto& state = *state_;
     auto* sc = state.swapchains.Get(static_cast<u64>(handle));
-    if (!sc) return;
+    if (!sc)
+        return;
     state.device.waitIdle();
     state.textures.Remove(static_cast<u64>(sc->proxySrgb));
     state.textures.Remove(static_cast<u64>(sc->proxyLinear));
-    state.swapchains.Remove(static_cast<u64>(handle));  // raii teardown
+    state.swapchains.Remove(static_cast<u64>(handle)); // raii teardown
 }
 
 TextureHandle VulkanDevice::GetSwapChainBackBuffer(SwapChainHandle handle) {
@@ -256,8 +261,9 @@ TextureHandle VulkanDevice::GetSwapChainBackBufferLinear(SwapChainHandle handle)
 }
 
 u32 AcquireSwapChainImageIfNeeded(VulkanDeviceState& state, SwapChainEntry& sc,
-                                   FrameContext& frame) {
-    if (sc.acquiredThisFrame) return sc.imageIndex;
+                                  FrameContext& frame) {
+    if (sc.acquiredThisFrame)
+        return sc.imageIndex;
 
     // Swap-with-spare so an acquire never reuses a semaphore that the
     // previous present is still waiting on:
@@ -270,14 +276,10 @@ u32 AcquireSwapChainImageIfNeeded(VulkanDeviceState& state, SwapChainEntry& sc,
     vk::ResultValue<u32> r{vk::Result::eSuccess, 0u};
     {
         ZoneScopedN("vkAcquireNextImage");
-        r = sc.swapchain.acquireNextImage(UINT64_MAX,
-                                          *sc.spareAcquireSem,
-                                          VK_NULL_HANDLE);
+        r = sc.swapchain.acquireNextImage(UINT64_MAX, *sc.spareAcquireSem, VK_NULL_HANDLE);
     }
 #else
-    auto r = sc.swapchain.acquireNextImage(UINT64_MAX,
-                                           *sc.spareAcquireSem,
-                                           VK_NULL_HANDLE);
+    auto r = sc.swapchain.acquireNextImage(UINT64_MAX, *sc.spareAcquireSem, VK_NULL_HANDLE);
 #endif
     if (r.result != vk::Result::eSuccess && r.result != vk::Result::eSuboptimalKHR) {
         std::fprintf(stderr, "[vk] acquireNextImage failed (%s)\n",
@@ -287,19 +289,19 @@ u32 AcquireSwapChainImageIfNeeded(VulkanDeviceState& state, SwapChainEntry& sc,
     const u32 idx = r.value;
     std::swap(sc.spareAcquireSem, sc.imageAcquireSems[idx]);
 
-    sc.imageIndex        = idx;
+    sc.imageIndex = idx;
     sc.acquiredThisFrame = true;
     frame.acquireWaitSem = *sc.imageAcquireSems[idx];
-    frame.renderDoneSem  = *sc.imageRenderDoneSems[idx];
+    frame.renderDoneSem = *sc.imageRenderDoneSems[idx];
 
     if (auto* proxy = state.textures.Get(static_cast<u64>(sc.proxySrgb))) {
-        proxy->image         = sc.images[idx];
-        proxy->view          = *sc.viewsSrgb[idx];
+        proxy->image = sc.images[idx];
+        proxy->view = *sc.viewsSrgb[idx];
         proxy->currentLayout = vk::ImageLayout::eUndefined;
     }
     if (auto* proxy = state.textures.Get(static_cast<u64>(sc.proxyLinear))) {
-        proxy->image         = sc.images[idx];
-        proxy->view          = *sc.viewsLinear[idx];
+        proxy->image = sc.images[idx];
+        proxy->view = *sc.viewsLinear[idx];
         proxy->currentLayout = vk::ImageLayout::eUndefined;
     }
     return idx;
@@ -308,32 +310,34 @@ u32 AcquireSwapChainImageIfNeeded(VulkanDeviceState& state, SwapChainEntry& sc,
 void VulkanDevice::Present(SwapChainHandle handle) {
     auto& state = *state_;
     auto* sc = state.swapchains.Get(static_cast<u64>(handle));
-    if (!sc || !sc->acquiredThisFrame) return;
+    if (!sc || !sc->acquiredThisFrame)
+        return;
 
     auto& frame = state.frames[state.frameIndex];
 
     if (frame.recording) {
         // Transition the rendered image to PRESENT_SRC.
         vk::ImageMemoryBarrier2 barrier{
-            .srcStageMask  = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
             .srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
-            .dstStageMask  = vk::PipelineStageFlagBits2::eBottomOfPipe,
+            .dstStageMask = vk::PipelineStageFlagBits2::eBottomOfPipe,
             .dstAccessMask = {},
-            .oldLayout     = vk::ImageLayout::eColorAttachmentOptimal,
-            .newLayout     = vk::ImageLayout::ePresentSrcKHR,
-            .image         = sc->images[sc->imageIndex],
-            .subresourceRange = {
-                .aspectMask = vk::ImageAspectFlagBits::eColor,
-                .levelCount = 1, .layerCount = 1,
-            },
+            .oldLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .newLayout = vk::ImageLayout::ePresentSrcKHR,
+            .image = sc->images[sc->imageIndex],
+            .subresourceRange =
+                {
+                    .aspectMask = vk::ImageAspectFlagBits::eColor,
+                    .levelCount = 1,
+                    .layerCount = 1,
+                },
         };
-        vk::DependencyInfo dep{ .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier };
+        vk::DependencyInfo dep{.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier};
         frame.commandBuffer.pipelineBarrier2(dep);
 #if defined(TRACY_ENABLE)
         // Must be in an open, non-render-pass CB — barrier above keeps us there.
         if (state.tracyCtx) {
-            TracyVkCollect(state.tracyCtx,
-                           static_cast<VkCommandBuffer>(*frame.commandBuffer));
+            TracyVkCollect(state.tracyCtx, static_cast<VkCommandBuffer>(*frame.commandBuffer));
         }
 #endif
         (void)frame.commandBuffer.end();
@@ -350,9 +354,9 @@ void VulkanDevice::Present(SwapChainHandle handle) {
         if (state.hasAsyncTransfer && state.transferLastSignaled > 0) {
             waitInfos[1] = vk::SemaphoreSubmitInfo{
                 .semaphore = *state.transferTimelineSem,
-                .value     = state.transferLastSignaled,
-                .stageMask = vk::PipelineStageFlagBits2::eVertexInput
-                           | vk::PipelineStageFlagBits2::eAllGraphics,
+                .value = state.transferLastSignaled,
+                .stageMask = vk::PipelineStageFlagBits2::eVertexInput |
+                             vk::PipelineStageFlagBits2::eAllGraphics,
             };
             waitCount = 2;
         }
@@ -364,16 +368,18 @@ void VulkanDevice::Present(SwapChainHandle handle) {
             },
             vk::SemaphoreSubmitInfo{
                 .semaphore = *state.timelineSem,
-                .value     = state.nextSubmitValue,
+                .value = state.nextSubmitValue,
                 .stageMask = vk::PipelineStageFlagBits2::eAllCommands,
             },
         };
-        vk::CommandBufferSubmitInfo cbInfo{ .commandBuffer = *frame.commandBuffer };
+        vk::CommandBufferSubmitInfo cbInfo{.commandBuffer = *frame.commandBuffer};
         vk::SubmitInfo2 submit{
-            .waitSemaphoreInfoCount   = waitCount, .pWaitSemaphoreInfos      = waitInfos.data(),
-            .commandBufferInfoCount   = 1,         .pCommandBufferInfos      = &cbInfo,
+            .waitSemaphoreInfoCount = waitCount,
+            .pWaitSemaphoreInfos = waitInfos.data(),
+            .commandBufferInfoCount = 1,
+            .pCommandBufferInfos = &cbInfo,
             .signalSemaphoreInfoCount = static_cast<u32>(signalInfos.size()),
-            .pSignalSemaphoreInfos    = signalInfos.data(),
+            .pSignalSemaphoreInfos = signalInfos.data(),
         };
         {
 #if defined(TRACY_ENABLE)
@@ -389,10 +395,10 @@ void VulkanDevice::Present(SwapChainHandle handle) {
     const u32 idx = sc->imageIndex;
     vk::PresentInfoKHR pi{
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores    = reinterpret_cast<const vk::Semaphore*>(&waitSem),
-        .swapchainCount     = 1,
-        .pSwapchains        = reinterpret_cast<const vk::SwapchainKHR*>(&swap),
-        .pImageIndices      = &idx,
+        .pWaitSemaphores = reinterpret_cast<const vk::Semaphore*>(&waitSem),
+        .swapchainCount = 1,
+        .pSwapchains = reinterpret_cast<const vk::SwapchainKHR*>(&swap),
+        .pImageIndices = &idx,
     };
     {
 #if defined(TRACY_ENABLE)
@@ -402,7 +408,7 @@ void VulkanDevice::Present(SwapChainHandle handle) {
     }
 
     sc->acquiredThisFrame = false;
-    state.frameIndex          = (state.frameIndex + 1) % kFramesInFlight;
+    state.frameIndex = (state.frameIndex + 1) % kFramesInFlight;
 
 #if defined(TRACY_ENABLE)
     // Mark the end of the frame for Tracy's CPU timeline. Place this
@@ -413,4 +419,4 @@ void VulkanDevice::Present(SwapChainHandle handle) {
 #endif
 }
 
-}  // namespace whiteout::flakes::gfx::vulkan
+} // namespace whiteout::flakes::gfx::vulkan

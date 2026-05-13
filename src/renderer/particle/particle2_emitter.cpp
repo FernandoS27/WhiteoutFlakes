@@ -13,10 +13,14 @@ constexpr f32 kMaxDt = 0.5f;
 
 f32 g_globalScaler = 1.0f;
 
-}
+} // namespace
 
-void SetGlobalEmissionScaler(f32 s) { g_globalScaler = s; }
-f32 GetGlobalEmissionScaler() { return g_globalScaler; }
+void SetGlobalEmissionScaler(f32 s) {
+    g_globalScaler = s;
+}
+f32 GetGlobalEmissionScaler() {
+    return g_globalScaler;
+}
 
 Emitter2::Emitter2() {
 
@@ -35,13 +39,16 @@ void Emitter2::SetTextureDimensions(u32 rows, u32 cols) {
     textureRows_ = (rows > 0) ? rows : 1;
     textureCols_ = (cols > 0) ? cols : 1;
 
-    ooTextureWidth_  = 1.0f / static_cast<f32>(textureCols_);
+    ooTextureWidth_ = 1.0f / static_cast<f32>(textureCols_);
     ooTextureHeight_ = 1.0f / static_cast<f32>(textureRows_);
 
     textureLog_ = 0;
     u32 c = textureCols_;
 
-    while (c > 1) { c >>= 1; ++textureLog_; }
+    while (c > 1) {
+        c >>= 1;
+        ++textureLog_;
+    }
 }
 
 void Emitter2::SetKey(i32 index, const ParticleKey& k) {
@@ -76,13 +83,15 @@ void Emitter2::MoveParticle(Particle2& p, f32 elapsed) const {
 
 void Emitter2::InternalUpdate(f32 elapsed) {
 
-    if (elapsed < 0.0f) elapsed = 0.0f;
-    if (elapsed > kMaxDt) elapsed = kMaxDt;
+    if (elapsed < 0.0f)
+        elapsed = 0.0f;
+    if (elapsed > kMaxDt)
+        elapsed = kMaxDt;
 
     const bool squirtPending = (flags_ & kFlagNeedSquirt) != 0;
-    const bool paused        = (flags_ & kFlagPaused) != 0;
-    const bool dead          = (flags_ & kFlagSystemDead) != 0;
-    const bool enabled       = Enabled();
+    const bool paused = (flags_ & kFlagPaused) != 0;
+    const bool dead = (flags_ & kFlagSystemDead) != 0;
+    const bool enabled = Enabled();
 
     if (enabled || squirtPending) {
         Sync();
@@ -113,7 +122,7 @@ void Emitter2::InternalUpdate(f32 elapsed) {
         numNew_ -= static_cast<f32>(emitted);
     }
 
-    for (usize i = 0; i < pool_.AliveCount(); ) {
+    for (usize i = 0; i < pool_.AliveCount();) {
         u32 idx = pool_.AliveAt(i);
         Particle2& p = pool_[idx];
 
@@ -161,8 +170,7 @@ void Emitter2::Update(f32 elapsed, const Matrix44f& worldMatrix) {
 
     if ((flags_ & kFlagUpdatedByAnim) == 0) {
         flags_ |= kFlagUpdatedByAnim;
-
     }
 }
 
-}
+} // namespace whiteout::flakes::renderer::particle

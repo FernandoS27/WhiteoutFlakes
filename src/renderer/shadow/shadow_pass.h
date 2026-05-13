@@ -1,9 +1,11 @@
 #pragma once
 
-#include "renderer/shadow/shadow_service.h"
 #include "gfx/gfx.h"
+#include "renderer/shadow/shadow_service.h"
 
-namespace whiteout::flakes::renderer { class RenderService; }
+namespace whiteout::flakes::renderer {
+class RenderService;
+}
 
 namespace whiteout::flakes::renderer::shadow {
 
@@ -17,4 +19,4 @@ private:
     RenderService& rs_;
 };
 
-}
+} // namespace whiteout::flakes::renderer::shadow

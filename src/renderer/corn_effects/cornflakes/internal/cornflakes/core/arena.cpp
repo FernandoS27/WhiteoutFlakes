@@ -1,5 +1,5 @@
-#include <cornflakes/interface/core/arena.hpp>
 #include <cornflakes/core/determinism.hpp>
+#include <cornflakes/interface/core/arena.hpp>
 
 #include <cstdint>
 

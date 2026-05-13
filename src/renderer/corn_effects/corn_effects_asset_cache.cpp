@@ -18,9 +18,11 @@ namespace {
 
 bool ReadFileFromDisk(const std::string& path, std::vector<std::byte>& out) {
     std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f) return false;
+    if (!f)
+        return false;
     const auto size = f.tellg();
-    if (size < 0) return false;
+    if (size < 0)
+        return false;
     f.seekg(0, std::ios::beg);
     out.resize(static_cast<size_t>(size));
     f.read(reinterpret_cast<char*>(out.data()), size);
@@ -37,19 +39,18 @@ std::string SwapExtension(const std::string& path, const char* newExt) {
 }
 
 bool ReadViaProvider(io::IContentProvider* cp, const std::string& path,
-                      std::vector<std::byte>& out) {
+                     std::vector<std::byte>& out) {
     auto bytesU8 = cp->ReadFile(path);
-    if (!bytesU8.has_value()) return false;
+    if (!bytesU8.has_value())
+        return false;
     out.resize(bytesU8->size());
     std::memcpy(out.data(), bytesU8->data(), bytesU8->size());
     return true;
 }
 
-}
+} // namespace
 
-CornEffectsAssetCache::CornEffectsAssetCache()
-    : arena_{1U << 20}
-{
+CornEffectsAssetCache::CornEffectsAssetCache() : arena_{1U << 20} {
     dispatcher_.addReader(std::make_unique<::whiteout::cornflakes::PkbReader>());
 }
 
@@ -60,10 +61,10 @@ void CornEffectsAssetCache::SetContentProvider(io::IContentProvider* provider) {
     contentProvider_ = provider;
 }
 
-const ::whiteout::cornflakes::EffectAssetModel*
-CornEffectsAssetCache::Acquire(const std::string& pkbPath,
-                            ::whiteout::cornflakes::IssueBag& issues) {
-    if (pkbPath.empty()) return nullptr;
+const ::whiteout::cornflakes::EffectAssetModel* CornEffectsAssetCache::Acquire(
+    const std::string& pkbPath, ::whiteout::cornflakes::IssueBag& issues) {
+    if (pkbPath.empty())
+        return nullptr;
 
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -100,14 +101,13 @@ CornEffectsAssetCache::Acquire(const std::string& pkbPath,
         }
     }
     if (!gotBytes) {
-        std::fprintf(stderr,
-                     "[corn_fx] WARN: AssetCache unable to resolve '%s' (.pkb / .pkfx)\n",
+        std::fprintf(stderr, "[corn_fx] WARN: AssetCache unable to resolve '%s' (.pkb / .pkfx)\n",
                      pkbPath.c_str());
         return nullptr;
     }
 
     ::whiteout::cornflakes::BakedSource src;
-    src.path  = resolvedPath;
+    src.path = resolvedPath;
     src.bytes = std::span<const std::byte>{entry->bytes.data(), entry->bytes.size()};
 
     auto model = dispatcher_.read(src, arena_, issues);
@@ -116,7 +116,7 @@ CornEffectsAssetCache::Acquire(const std::string& pkbPath,
     }
 
     entry->model = std::make_unique<::whiteout::cornflakes::EffectAssetModel>(*model);
-    auto* raw    = entry->model.get();
+    auto* raw = entry->model.get();
     cache_.emplace(pkbPath, std::move(entry));
     return raw;
 }
@@ -126,4 +126,4 @@ void CornEffectsAssetCache::Clear() {
     cache_.clear();
 }
 
-}
+} // namespace whiteout::flakes::renderer::corn_effects

@@ -7,9 +7,9 @@
 // pipeline / settings / camera / animation surface.
 // ============================================================================
 
-#include "types.h"
 #include "enums.h"
 #include "shadow_params.h"
+#include "types.h"
 
 #include <functional>
 #include <string>
@@ -20,12 +20,12 @@ using RenderTargetId = u32;
 // ShadowParams comes from shadow_params.h (already in this namespace).
 
 struct DisplayFlags {
-    bool showGrid       = true;
-    bool showParticles  = true;
-    bool showRibbons    = true;
+    bool showGrid = true;
+    bool showParticles = true;
+    bool showRibbons = true;
     bool showCollisions = false;
-    bool showLights     = false;
-    bool showEvents     = true;
+    bool showLights = false;
+    bool showEvents = true;
     RenderMode renderMode = RenderMode::SD;
 };
 
@@ -35,11 +35,11 @@ struct DisplayFlags {
 // Aggregates the five frame stats the pipeline exposes. Names mirror the
 // internal RenderPipeline::GetFrameStats out parameters.
 struct FrameStats {
-    i32 geosets   = 0;
-    i32 textures  = 0;
-    i32 nodes     = 0;
+    i32 geosets = 0;
+    i32 textures = 0;
+    i32 nodes = 0;
     i32 particles = 0;
-    i32 segments  = 0;
+    i32 segments = 0;
 };
 
 // Camera preset — scripted camera the host may pick from the model. Mirrors
@@ -49,28 +49,28 @@ struct CameraPreset {
     std::wstring name;
     bool isLive = false;
 
-    Vector3f position { 0.f, 0.f, 0.f };
-    Vector3f target   { 0.f, 0.f, 0.f };
-    f32      fovDiagonal = 0.95f;
-    f32      zNear       = 1.0f;
-    f32      zFar        = 10000.0f;
-    f32      staticRoll  = 0.0f;
+    Vector3f position{0.f, 0.f, 0.f};
+    Vector3f target{0.f, 0.f, 0.f};
+    f32 fovDiagonal = 0.95f;
+    f32 zNear = 1.0f;
+    f32 zFar = 10000.0f;
+    f32 staticRoll = 0.0f;
 
-    f32 pitch    = 0.0f;
-    f32 yaw      = 0.0f;
+    f32 pitch = 0.0f;
+    f32 yaw = 0.0f;
     f32 distance = 100.0f;
 
-    std::function<void(Vector3f& pos, Vector3f& target,
-                       f32& roll, i32 timeMs,
-                       i32 seqStart, i32 seqEnd)> animator;
+    std::function<void(Vector3f& pos, Vector3f& target, f32& roll, i32 timeMs, i32 seqStart,
+                       i32 seqEnd)>
+        animator;
 };
 
 struct SequenceInfo {
     std::string name;
-    i32         startMs    = 0;
-    i32         endMs      = 0;
-    f32         moveSpeed  = 0.0f;
-    bool        nonLooping = false;
+    i32 startMs = 0;
+    i32 endMs = 0;
+    f32 moveSpeed = 0.0f;
+    bool nonLooping = false;
 };
 
-}  // namespace whiteout::flakes
+} // namespace whiteout::flakes

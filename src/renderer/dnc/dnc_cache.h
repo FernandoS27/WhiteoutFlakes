@@ -1,8 +1,8 @@
 #pragma once
 
-#include "whiteout/flakes/types.h"
 #include "dnc_asset.h"
 #include "whiteout/flakes/content_provider.h"
+#include "whiteout/flakes/types.h"
 
 #include <memory>
 #include <string>
@@ -19,15 +19,15 @@ public:
     DncCache& operator=(const DncCache&) = delete;
 
     DncAsset* Acquire(const std::string& path);
-    void      Release(DncAsset* asset);
-    void      ReleaseAll();
+    void Release(DncAsset* asset);
+    void ReleaseAll();
 
 private:
     static std::string NormalizeKey(const std::string& path);
-    static bool        IsTextPath(const std::string& key);
+    static bool IsTextPath(const std::string& key);
 
     io::IContentProvider* contentProvider_ = nullptr;
     std::unordered_map<std::string, std::unique_ptr<DncAsset>> entries_;
 };
 
-}
+} // namespace whiteout::flakes::renderer::dnc

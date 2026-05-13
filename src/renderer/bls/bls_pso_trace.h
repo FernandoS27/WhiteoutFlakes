@@ -20,11 +20,11 @@
 //   count * PsoTraceEntry  (16 bytes each)
 // =============================================================================
 
+#include "bls_mat_params.h"  // GxMatAlpha
+#include "bls_permuter.h"    // GxShaderID
+#include "bls_pso_builder.h" // PsoRequest, VertexLayoutKind
+#include "gfx/gfx.h"         // Format, PrimitiveTopology
 #include "whiteout/flakes/types.h"
-#include "bls_permuter.h"      // GxShaderID
-#include "bls_pso_builder.h"   // PsoRequest, VertexLayoutKind
-#include "bls_mat_params.h"    // GxMatAlpha
-#include "gfx/gfx.h"           // Format, PrimitiveTopology
 
 #include <filesystem>
 #include <unordered_set>
@@ -36,19 +36,19 @@ class BlsProgramCatalog;
 
 #pragma pack(push, 1)
 struct PsoTraceEntry {
-    u8  programId;   // GxShaderID
-    u8  alpha;       // GxMatAlpha
-    u8  layout;      // VertexLayoutKind
-    u8  topology;    // gfx::PrimitiveTopology
+    u8 programId; // GxShaderID
+    u8 alpha;     // GxMatAlpha
+    u8 layout;    // VertexLayoutKind
+    u8 topology;  // gfx::PrimitiveTopology
 
-    u8  rtvFormat;   // gfx::Format (8-bit cast — only common scene formats fit)
-    u8  dsvFormat;
-    u8  flags;       // bit0=wireframe, bit1=lhClipSpace
-    u8  reserved;
+    u8 rtvFormat; // gfx::Format (8-bit cast — only common scene formats fit)
+    u8 dsvFormat;
+    u8 flags; // bit0=wireframe, bit1=lhClipSpace
+    u8 reserved;
 
     u16 vsIndex;
     u16 psIndex;
-    u32 disables;    // MatParams::disables — full bitfield, state-affecting bits only
+    u32 disables; // MatParams::disables — full bitfield, state-affecting bits only
 };
 #pragma pack(pop)
 static_assert(sizeof(PsoTraceEntry) == 16, "PsoTraceEntry must be 16 bytes for on-disk format");
@@ -61,7 +61,7 @@ public:
     explicit BlsPsoTrace(std::filesystem::path path);
     ~BlsPsoTrace();
 
-    BlsPsoTrace(const BlsPsoTrace&)            = delete;
+    BlsPsoTrace(const BlsPsoTrace&) = delete;
     BlsPsoTrace& operator=(const BlsPsoTrace&) = delete;
 
     // Called by BlsPsoBuilder::GetOrBuild on every cache miss. Dedupes
@@ -86,15 +86,17 @@ public:
     // too late.
     void Save();
 
-    usize EntryCount() const { return entries_.size(); }
+    usize EntryCount() const {
+        return entries_.size();
+    }
 
 private:
     void Load();
 
-    std::filesystem::path        path_;
-    std::vector<PsoTraceEntry>   entries_;
-    std::unordered_set<u64>      keys_;     // hashes of entries already in entries_
-    bool                         dirty_ = false;
+    std::filesystem::path path_;
+    std::vector<PsoTraceEntry> entries_;
+    std::unordered_set<u64> keys_; // hashes of entries already in entries_
+    bool dirty_ = false;
 };
 
-}
+} // namespace whiteout::flakes::renderer::bls

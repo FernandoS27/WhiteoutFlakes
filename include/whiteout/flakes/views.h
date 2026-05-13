@@ -12,13 +12,13 @@
 // They are created exclusively by Renderer accessors.
 // ============================================================================
 
-#include "types.h"
-#include "enums.h"
+#include "content_provider.h"
 #include "display.h"
+#include "enums.h"
 #include "model_data.h"
 #include "model_source.h"
-#include "content_provider.h"
-#include "util/replaceable_paths.h"   // Tileset
+#include "types.h"
+#include "util/replaceable_paths.h" // Tileset
 
 #include <filesystem>
 #include <memory>
@@ -30,19 +30,22 @@ namespace whiteout::flakes {
 // Opaque handle for a renderer-owned actor. 0 = invalid.
 using ActorHandle = u32;
 
-namespace detail { class RendererImpl; }
+namespace detail {
+class RendererImpl;
+}
 
 class PipelineView {
 public:
-    void           InitDevice(GfxApi);
-    bool           IsDeviceReady() const;
+    void InitDevice(GfxApi);
+    bool IsDeviceReady() const;
     RenderTargetId CreateSwapChainTarget(void* hwnd, i32 width, i32 height);
-    void           SetPrimaryTarget(RenderTargetId);
-    void           ResizePrimaryTarget(i32 width, i32 height);
-    void           RenderFrame(RenderTargetId);
-    void           Present(RenderTargetId);
-    void           Shutdown();
-    FrameStats     GetFrameStats() const;
+    void SetPrimaryTarget(RenderTargetId);
+    void ResizePrimaryTarget(i32 width, i32 height);
+    void RenderFrame(RenderTargetId);
+    void Present(RenderTargetId);
+    void Shutdown();
+    FrameStats GetFrameStats() const;
+
 private:
     explicit PipelineView(detail::RendererImpl* impl) : impl_(impl) {}
     detail::RendererImpl* impl_;
@@ -51,11 +54,12 @@ private:
 
 class SceneView {
 public:
-    i32   AnimationTimeMs() const;
-    void  SetAnimationTimeMs(i32);
-    void  Update(f32 dt);
-    void  SetPE1BasePath(const std::filesystem::path&);
+    i32 AnimationTimeMs() const;
+    void SetAnimationTimeMs(i32);
+    void Update(f32 dt);
+    void SetPE1BasePath(const std::filesystem::path&);
     IContentProvider* ActiveContentProvider();
+
 private:
     explicit SceneView(detail::RendererImpl* impl) : impl_(impl) {}
     detail::RendererImpl* impl_;
@@ -79,9 +83,9 @@ public:
     void SetFovDiagonal(f32);
     void SetClip(f32 nz, f32 fz);
     void SetDirectPose(Vector3f pos, Vector3f target, f32 roll);
-    Mode      GetMode() const;
-    Vector3f  GetTarget() const;
-    f32       GetDistance() const;
+    Mode GetMode() const;
+    Vector3f GetTarget() const;
+    f32 GetDistance() const;
 
     static const f32 kFactorRelDist;
     static const f32 kDefaultFovDiagonal;
@@ -97,28 +101,28 @@ private:
 class SettingsView {
 public:
     DisplayFlags GetDisplayFlags() const;
-    void         SetDisplayFlags(const DisplayFlags&);
-    bool         ConsumeRenderModeDirty();
+    void SetDisplayFlags(const DisplayFlags&);
+    bool ConsumeRenderModeDirty();
 
     LightingMode GetLightingMode() const;
-    void         SetLightingMode(LightingMode);
+    void SetLightingMode(LightingMode);
 
-    u32          BackgroundColorRaw() const;
-    void         SetBackgroundColor(u8 r, u8 g, u8 b);
+    u32 BackgroundColorRaw() const;
+    void SetBackgroundColor(u8 r, u8 g, u8 b);
 
-    f32          GetTonemapExposure() const;
-    void         SetTonemapExposure(f32);
+    f32 GetTonemapExposure() const;
+    void SetTonemapExposure(f32);
 
-    IblMode      GetIblMode() const;
-    void         SetIblMode(IblMode);
+    IblMode GetIblMode() const;
+    void SetIblMode(IblMode);
 
-    i32          HdDebugMode() const;
-    void         SetHdDebugMode(i32);
+    i32 HdDebugMode() const;
+    void SetHdDebugMode(i32);
 
-    i32          LodOverride() const;
-    void         SetLodOverride(i32);
+    i32 LodOverride() const;
+    void SetLodOverride(i32);
 
-    void         SetRenderMode(RenderMode);
+    void SetRenderMode(RenderMode);
 
 private:
     explicit SettingsView(detail::RendererImpl* impl) : impl_(impl) {}
@@ -131,10 +135,9 @@ public:
     ActorHandle SpawnUnit(const std::string& path);
     ActorHandle SpawnUnitFromSource(std::shared_ptr<IModelSource> source,
                                     const Matrix44f& initialTransform = Matrix44f::identity());
-    void        UpdateMaterials(ActorHandle handle,
-                                const std::vector<MaterialData>& materials,
-                                const std::vector<TextureData>&  textures);
-    void        RequestClearAll();
+    void UpdateMaterials(ActorHandle handle, const std::vector<MaterialData>& materials,
+                         const std::vector<TextureData>& textures);
+    void RequestClearAll();
 
 private:
     explicit LoaderView(detail::RendererImpl* impl) : impl_(impl) {}
@@ -144,9 +147,10 @@ private:
 
 class DebugView {
 public:
-    i32  HitTestViewCube(i32 mouseX, i32 mouseY);
+    i32 HitTestViewCube(i32 mouseX, i32 mouseY);
     Rect GetViewCubeRect() const;
     void SetViewCubeHovered(bool);
+
 private:
     explicit DebugView(detail::RendererImpl* impl) : impl_(impl) {}
     detail::RendererImpl* impl_;
@@ -156,14 +160,15 @@ private:
 class DncView {
 public:
     bool IsValid() const;
-    f32  GetTimeOfDay() const;
+    f32 GetTimeOfDay() const;
     void SetTimeOfDay(f32);
-    f32  GetTodScale() const;
+    f32 GetTodScale() const;
     void SetTodScale(f32);
-    f32  GetHoursPerDay() const;
+    f32 GetHoursPerDay() const;
     const std::string& UnitMdlPath() const;
     void SetUnitMdl(const std::string&);
     void Advance(f32);
+
 private:
     explicit DncView(detail::RendererImpl* impl) : impl_(impl) {}
     detail::RendererImpl* impl_;
@@ -172,10 +177,11 @@ private:
 
 class ShadowView {
 public:
-    bool         IsValid() const;
-    bool         IsEnabled() const;
+    bool IsValid() const;
+    bool IsEnabled() const;
     ShadowParams Params() const;
-    void         SetParams(const ShadowParams&);
+    void SetParams(const ShadowParams&);
+
 private:
     explicit ShadowView(detail::RendererImpl* impl) : impl_(impl) {}
     detail::RendererImpl* impl_;
@@ -185,6 +191,7 @@ private:
 class SplatView {
 public:
     void Clear();
+
 private:
     explicit SplatView(detail::RendererImpl* impl) : impl_(impl) {}
     detail::RendererImpl* impl_;
@@ -195,10 +202,11 @@ class ReplaceablesView {
 public:
     bool ConsumeDirty();
     void SetTileset(Tileset);
+
 private:
     explicit ReplaceablesView(detail::RendererImpl* impl) : impl_(impl) {}
     detail::RendererImpl* impl_;
     friend class Renderer;
 };
 
-}  // namespace whiteout::flakes
+} // namespace whiteout::flakes

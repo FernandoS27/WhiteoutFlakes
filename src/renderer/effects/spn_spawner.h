@@ -1,11 +1,13 @@
 #pragma once
 
-#include "whiteout/flakes/types.h"
-#include "types.h"
 #include <string>
 #include <vector>
+#include "types.h"
+#include "whiteout/flakes/types.h"
 
-namespace whiteout::flakes::renderer { class RenderService; }
+namespace whiteout::flakes::renderer {
+class RenderService;
+}
 
 namespace whiteout::flakes::renderer::effects {
 
@@ -13,10 +15,8 @@ class SpnSpawner {
 public:
     explicit SpnSpawner(RenderService& rs) : rs_(rs) {}
 
-    void Spawn(u32                parentActor,
-               const std::string& mdxPath,
-               const Matrix44f&   parentNodeWorld,
-               i32                nowMs);
+    void Spawn(u32 parentActor, const std::string& mdxPath, const Matrix44f& parentNodeWorld,
+               i32 nowMs);
 
     void Tick(i32 nowMs);
 
@@ -26,10 +26,10 @@ public:
 
 private:
     struct Pending {
-        u32         parentActor;
+        u32 parentActor;
         std::string mdxPath;
-        Matrix44f   parentWorld;
-        i32         birthMs;
+        Matrix44f parentWorld;
+        i32 birthMs;
     };
     struct Active {
         u32 parentActor;
@@ -37,9 +37,9 @@ private:
         i32 expiryMs;
     };
 
-    RenderService&       rs_;
+    RenderService& rs_;
     std::vector<Pending> pending_;
-    std::vector<Active>  active_;
+    std::vector<Active> active_;
 };
 
-}
+} // namespace whiteout::flakes::renderer::effects

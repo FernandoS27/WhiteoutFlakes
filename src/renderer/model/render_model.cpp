@@ -27,16 +27,19 @@ void RenderModel::ApplyLayerStates(const FrameState& state) {
 
     i32 maxTexAnimId = -1;
     for (auto& tam : state.texAnimMatrices) {
-        if (tam.textureAnimId > maxTexAnimId) maxTexAnimId = tam.textureAnimId;
+        if (tam.textureAnimId > maxTexAnimId)
+            maxTexAnimId = tam.textureAnimId;
     }
     texAnimPalette.assign(std::max(0, maxTexAnimId + 1),
-                          TexAnimPaletteEntry{
-                              {1.0f, 0.0f, 0.0f, 0.0f},
-                              {0.0f, 1.0f, 0.0f, 0.0f}});
+                          TexAnimPaletteEntry{{1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f, 0.0f}});
     for (auto& tam : state.texAnimMatrices) {
-        if (tam.textureAnimId < 0 || tam.textureAnimId > maxTexAnimId) continue;
+        if (tam.textureAnimId < 0 || tam.textureAnimId > maxTexAnimId)
+            continue;
         auto& e = texAnimPalette[tam.textureAnimId];
-        for (i32 k = 0; k < 4; ++k) { e.row0[k] = tam.row0[k]; e.row1[k] = tam.row1[k]; }
+        for (i32 k = 0; k < 4; ++k) {
+            e.row0[k] = tam.row0[k];
+            e.row1[k] = tam.row1[k];
+        }
     }
 
     for (auto& la : state.layerAlphas) {
@@ -48,20 +51,30 @@ void RenderModel::ApplyLayerStates(const FrameState& state) {
     }
 
     for (auto& lt : state.layerTextureIds) {
-        if (lt.materialId < 0 || lt.materialId >= (i32)gpuMaterials.size()) continue;
+        if (lt.materialId < 0 || lt.materialId >= (i32)gpuMaterials.size())
+            continue;
         auto& layers = gpuMaterials[lt.materialId].cpu.layers;
-        if (lt.layerIndex < 0 || lt.layerIndex >= (i32)layers.size()) continue;
+        if (lt.layerIndex < 0 || lt.layerIndex >= (i32)layers.size())
+            continue;
         auto& L = layers[lt.layerIndex];
         switch (lt.slot) {
-            case FrameState::LayerTexSlot::Diffuse:   L.textureId       = lt.textureId; break;
-            case FrameState::LayerTexSlot::Normal:    L.normalMapId     = lt.textureId; break;
-            case FrameState::LayerTexSlot::ORM:       L.ormMapId        = lt.textureId; break;
-            case FrameState::LayerTexSlot::Emissive:  L.emissiveMapId   = lt.textureId; break;
-            case FrameState::LayerTexSlot::TeamColor:
+        case FrameState::LayerTexSlot::Diffuse:
+            L.textureId = lt.textureId;
+            break;
+        case FrameState::LayerTexSlot::Normal:
+            L.normalMapId = lt.textureId;
+            break;
+        case FrameState::LayerTexSlot::ORM:
+            L.ormMapId = lt.textureId;
+            break;
+        case FrameState::LayerTexSlot::Emissive:
+            L.emissiveMapId = lt.textureId;
+            break;
+        case FrameState::LayerTexSlot::TeamColor:
 
-                if (L.teamColorMapId != kHdTeamColorActive)
-                    L.teamColorMapId = lt.textureId;
-                break;
+            if (L.teamColorMapId != kHdTeamColorActive)
+                L.teamColorMapId = lt.textureId;
+            break;
         }
     }
 
@@ -70,10 +83,10 @@ void RenderModel::ApplyLayerStates(const FrameState& state) {
             auto& layers = gpuMaterials[lf.materialId].cpu.layers;
             if (lf.layerIndex >= 0 && lf.layerIndex < (i32)layers.size()) {
                 auto& L = layers[lf.layerIndex];
-                L.fresnelColor     = lf.fresnelColor;
-                L.fresnelOpacity   = lf.fresnelOpacity;
+                L.fresnelColor = lf.fresnelColor;
+                L.fresnelOpacity = lf.fresnelOpacity;
                 L.fresnelTeamColor = lf.fresnelTeamColor;
-                L.emissiveGain     = lf.emissiveGain;
+                L.emissiveGain = lf.emissiveGain;
             }
         }
     }
@@ -84,13 +97,13 @@ void RenderModel::ApplyLayerStates(const FrameState& state) {
 void RenderModel::ApplyRibbonFrameStates(const FrameState& state) {
     for (auto& rs : state.ribbonStates) {
         RibbonEmitterState st;
-        st.transform   = rs.transform;
-        st.above       = rs.above;
-        st.below       = rs.below;
-        st.alpha       = rs.alpha;
-        st.color       = rs.color;
-        st.visibility  = rs.visibility;
-        st.slot        = rs.slot;
+        st.transform = rs.transform;
+        st.above = rs.above;
+        st.below = rs.below;
+        st.alpha = rs.alpha;
+        st.color = rs.color;
+        st.visibility = rs.visibility;
+        st.slot = rs.slot;
         ribbons.UpdateEmitterState(rs.emitterId, st);
     }
 }
@@ -98,15 +111,15 @@ void RenderModel::ApplyRibbonFrameStates(const FrameState& state) {
 void RenderModel::ApplyPE1FrameStates(const FrameState& state) {
     for (auto& ps : state.pe1States) {
         PE1EmitterState st;
-        st.transform    = ps.transform;
+        st.transform = ps.transform;
         st.emissionRate = ps.emissionRate;
-        st.speed        = ps.speed;
-        st.latitude     = ps.latitude;
-        st.longitude    = ps.longitude;
-        st.gravity      = ps.gravity;
-        st.visibility   = ps.visibility;
+        st.speed = ps.speed;
+        st.latitude = ps.latitude;
+        st.longitude = ps.longitude;
+        st.gravity = ps.gravity;
+        st.visibility = ps.visibility;
         pe1.UpdateEmitterState(ps.emitterId, st);
     }
 }
 
-}
+} // namespace whiteout::flakes::renderer::model

@@ -14,25 +14,25 @@
 // ============================================================================
 
 #include "max_scene_adapter.h"
-#include "whiteout/flakes/types.h"
-#include "renderer/model/model_instance.h"   // Actor
+#include "render_window.h"
+#include "renderer/assets/replaceable_texture_manager.h"
+#include "renderer/model/model_instance.h" // Actor
 #include "renderer/model/model_loader.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
-#include "renderer/assets/replaceable_texture_manager.h"
+#include "whiteout/flakes/types.h"
 #include "windows_sound_emitter.h"
-#include "render_window.h"
 
 #include <chrono>
 #include <filesystem>
 #include <memory>
 
 #include <max.h>
-#include <maxversion.h>
-#include <maxscript/maxscript.h>
-#include <maxscript/util/listener.h>
 #include <maxscript/foundation/numbers.h>
 #include <maxscript/macros/define_instantiation_functions.h>
+#include <maxscript/maxscript.h>
+#include <maxscript/util/listener.h>
+#include <maxversion.h>
 
 using namespace whiteout::flakes;
 
@@ -40,13 +40,13 @@ using namespace whiteout::flakes;
 // Global state
 // ============================================================================
 static std::shared_ptr<whiteout::flakes::MaxSceneAdapter> g_adapter;
-static whiteout::flakes::renderer::model::Actor*    g_actor        = nullptr;   // borrowed; owned by g_scene
-static whiteout::flakes::renderer::SceneManager*    g_scene        = nullptr;
-static whiteout::flakes::renderer::RenderService*   g_renderer     = nullptr;
-static whiteout::flakes::RenderWindow*              g_renderWindow = nullptr;
-static bool                          g_running      = false;
-static HINSTANCE                     g_hInstance    = nullptr;
-static DWORD                         g_lastTimeChangedTick = 0;
+static whiteout::flakes::renderer::model::Actor* g_actor = nullptr; // borrowed; owned by g_scene
+static whiteout::flakes::renderer::SceneManager* g_scene = nullptr;
+static whiteout::flakes::renderer::RenderService* g_renderer = nullptr;
+static whiteout::flakes::RenderWindow* g_renderWindow = nullptr;
+static bool g_running = false;
+static HINSTANCE g_hInstance = nullptr;
+static DWORD g_lastTimeChangedTick = 0;
 
 // Convert Max time (TimeValue ticks) to milliseconds. Returns 0 if Max
 // reports a missing tick rate (rare; tested ndxStart paths).
@@ -61,7 +61,8 @@ static i32 MaxTimeToMs(TimeValue t) {
 // only thread-safe to touch from Max's UI thread — the render-thread Tick
 // can't do this for us.
 static void EvalFromMax(i32 timeMs) {
-    if (!g_actor || !g_renderer || !g_scene) return;
+    if (!g_actor || !g_renderer || !g_scene)
+        return;
     g_actor->animation.SetTimeMs(timeMs);
     g_scene->SetAnimationTime(timeMs);
     g_actor->EvaluateAndApply(g_renderer->MakeActorEvalContext());
@@ -73,8 +74,10 @@ static void EvalFromMax(i32 timeMs) {
 class NdxTimeCallback : public TimeChangeCallback {
 public:
     void TimeChanged(TimeValue t) override {
-        if (!g_running || !g_renderer || !g_actor) return;
-        if (!g_renderWindow || !g_renderWindow->IsOpen()) return;
+        if (!g_running || !g_renderer || !g_actor)
+            return;
+        if (!g_renderWindow || !g_renderWindow->IsOpen())
+            return;
         g_lastTimeChangedTick = GetTickCount();
         EvalFromMax(MaxTimeToMs(t));
     }
@@ -88,8 +91,10 @@ static NdxTimeCallback* g_timeCallback = nullptr;
 static UINT_PTR g_materialTimerId = 0;
 
 static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
-    if (!g_running || !g_renderer || !g_adapter || !g_actor) return;
-    if (!g_renderWindow || !g_renderWindow->IsOpen()) return;
+    if (!g_running || !g_renderer || !g_adapter || !g_actor)
+        return;
+    if (!g_renderWindow || !g_renderWindow->IsOpen())
+        return;
 
     // Hot-reload check.
     auto result = g_adapter->RefreshMaterials();
@@ -104,7 +109,8 @@ static void CALLBACK MaterialPollTimer(HWND, UINT, UINT_PTR, DWORD) {
     DWORD now = GetTickCount();
     if (now - g_lastTimeChangedTick > 1000) {
         Interface* ip = GetCOREInterface();
-        if (ip) EvalFromMax(MaxTimeToMs(ip->GetTime()));
+        if (ip)
+            EvalFromMax(MaxTimeToMs(ip->GetTime()));
     }
 }
 
@@ -118,8 +124,10 @@ static void NdxCleanup() {
     }
     if (g_timeCallback) {
         Interface* ip = GetCOREInterface();
-        if (ip) ip->UnRegisterTimeChangeCallback(g_timeCallback);
-        delete g_timeCallback; g_timeCallback = nullptr;
+        if (ip)
+            ip->UnRegisterTimeChangeCallback(g_timeCallback);
+        delete g_timeCallback;
+        g_timeCallback = nullptr;
     }
     g_running = false;
     if (g_renderer) {
@@ -127,16 +135,23 @@ static void NdxCleanup() {
     }
     if (g_renderWindow) {
         g_renderWindow->Close();
-        delete g_renderWindow; g_renderWindow = nullptr;
+        delete g_renderWindow;
+        g_renderWindow = nullptr;
     }
     // Order: actors die with the renderer's scene-clear/release; release the
     // renderer next so its non-owning scene pointer goes inert; drop the
     // adapter shared_ptr (the actor's AnimationDriver was the last other
     // holder, so this destroys the adapter); finally tear down scene.
     g_actor = nullptr;
-    if (g_renderer) { delete g_renderer; g_renderer = nullptr; }
+    if (g_renderer) {
+        delete g_renderer;
+        g_renderer = nullptr;
+    }
     g_adapter.reset();
-    if (g_scene)    { delete g_scene;    g_scene    = nullptr; }
+    if (g_scene) {
+        delete g_scene;
+        g_scene = nullptr;
+    }
     mprintf(_M("WhiteoutDex: === STOPPED ===\n"));
 }
 
@@ -156,26 +171,52 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID) {
 // ============================================================================
 class WhiteoutDexExtractorClassDesc : public ClassDesc2 {
 public:
-    i32            IsPublic() override     { return FALSE; }
-    void*          Create(BOOL) override   { return nullptr; }
-    const MCHAR*   ClassName() override    { return _M("WhiteoutDexExtractor"); }
+    i32 IsPublic() override {
+        return FALSE;
+    }
+    void* Create(BOOL) override {
+        return nullptr;
+    }
+    const MCHAR* ClassName() override {
+        return _M("WhiteoutDexExtractor");
+    }
 #if MAX_PRODUCT_YEAR_NUMBER >= 2022
-    const MCHAR*   NonLocalizedClassName() override { return _M("WhiteoutDexExtractor"); }
+    const MCHAR* NonLocalizedClassName() override {
+        return _M("WhiteoutDexExtractor");
+    }
 #endif
-    SClass_ID      SuperClassID() override { return GUP_CLASS_ID; }
-    Class_ID       ClassID() override      { return Class_ID(0x4e444558, 0x45585452); }
-    const MCHAR*   Category() override     { return _M("WhiteoutDex"); }
-    const MCHAR*   InternalName() override { return _M("WhiteoutDexExtractor"); }
-    HINSTANCE      HInstance() override    { return g_hInstance; }
+    SClass_ID SuperClassID() override {
+        return GUP_CLASS_ID;
+    }
+    Class_ID ClassID() override {
+        return Class_ID(0x4e444558, 0x45585452);
+    }
+    const MCHAR* Category() override {
+        return _M("WhiteoutDex");
+    }
+    const MCHAR* InternalName() override {
+        return _M("WhiteoutDexExtractor");
+    }
+    HINSTANCE HInstance() override {
+        return g_hInstance;
+    }
 };
 
 static WhiteoutDexExtractorClassDesc g_classDesc;
 
 extern "C" {
-    __declspec(dllexport) const MCHAR* LibDescription()    { return _M("WhiteoutDex All-in-One Preview"); }
-    __declspec(dllexport) i32          LibNumberClasses()  { return 1; }
-    __declspec(dllexport) ClassDesc*   LibClassDesc(i32 i) { return (i == 0) ? &g_classDesc : nullptr; }
-    __declspec(dllexport) ULONG        LibVersion()        { return VERSION_3DSMAX; }
+__declspec(dllexport) const MCHAR* LibDescription() {
+    return _M("WhiteoutDex All-in-One Preview");
+}
+__declspec(dllexport) i32 LibNumberClasses() {
+    return 1;
+}
+__declspec(dllexport) ClassDesc* LibClassDesc(i32 i) {
+    return (i == 0) ? &g_classDesc : nullptr;
+}
+__declspec(dllexport) ULONG LibVersion() {
+    return VERSION_3DSMAX;
+}
 }
 
 // ============================================================================
@@ -184,22 +225,25 @@ extern "C" {
 // ============================================================================
 
 def_visible_primitive(ndxStart, "ndxStart");
-Value* ndxStart_cf(Value** /*arg_list*/, i32 count)
-{
+Value* ndxStart_cf(Value** /*arg_list*/, i32 count) {
     check_arg_count(ndxStart, 0, count);
     auto start = std::chrono::high_resolution_clock::now();
 
-    if (g_running) NdxCleanup();
+    if (g_running)
+        NdxCleanup();
 
     // Host owns SceneManager + RenderService + RenderWindow.
-    g_scene        = new whiteout::flakes::renderer::SceneManager();
-    g_renderer     = new whiteout::flakes::renderer::RenderService(*g_scene);
+    g_scene = new whiteout::flakes::renderer::SceneManager();
+    g_renderer = new whiteout::flakes::renderer::RenderService(*g_scene);
     g_renderWindow = new whiteout::flakes::RenderWindow(*g_renderer);
     if (!g_renderWindow->Open(800, 600)) {
         mprintf(_M("WhiteoutDex: ERROR - Could not open renderer window\n"));
-        delete g_renderWindow; g_renderWindow = nullptr;
-        delete g_renderer;     g_renderer     = nullptr;
-        delete g_scene;        g_scene        = nullptr;
+        delete g_renderWindow;
+        g_renderWindow = nullptr;
+        delete g_renderer;
+        g_renderer = nullptr;
+        delete g_scene;
+        g_scene = nullptr;
         return Integer::intern(-1);
     }
 
@@ -219,7 +263,8 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count)
     if (const MCHAR* maxFile = ip->GetCurFilePath().data(); maxFile && maxFile[0]) {
         std::wstring wp(maxFile);
         auto pos = wp.find_last_of(L'\\');
-        if (pos != std::wstring::npos) wp = wp.substr(0, pos + 1);
+        if (pos != std::wstring::npos)
+            wp = wp.substr(0, pos + 1);
         g_scene->SetPE1BasePath(std::filesystem::path(wp));
     }
 
@@ -227,8 +272,8 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count)
     // Borrows the scene's content provider for CASC/MPQ lookup so SND
     // EventObjects play through the host OS during preview. Without
     // this, the renderer's default null emitter drops every fire.
-    g_renderer->SwapSoundEmitter(std::make_unique<whiteout::flakes::WindowsSoundEmitter>(
-        g_scene->ActiveContentProvider()));
+    g_renderer->SwapSoundEmitter(
+        std::make_unique<whiteout::flakes::WindowsSoundEmitter>(g_scene->ActiveContentProvider()));
 
     // ---- Build the live adapter ----
     g_adapter = std::make_shared<whiteout::flakes::MaxSceneAdapter>();
@@ -273,7 +318,7 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count)
     // Hook Max's timeline + start the polling timer for hot-reload.
     g_timeCallback = new NdxTimeCallback();
     ip->RegisterTimeChangeCallback(g_timeCallback);
-    g_running        = true;
+    g_running = true;
     g_materialTimerId = SetTimer(nullptr, 0, 500, MaterialPollTimer);
 
     auto end = std::chrono::high_resolution_clock::now();
@@ -281,11 +326,9 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count)
 
     // Diagnostic readout from the actor's render-side counts.
     mprintf(_M("\nWhiteoutDex: === STARTED in %d ms ===\n"), ms);
-    mprintf(_M("  %d geosets, %d materials\n"),
-            (i32)g_actor->render.gpuGeosets.size(),
+    mprintf(_M("  %d geosets, %d materials\n"), (i32)g_actor->render.gpuGeosets.size(),
             (i32)g_actor->render.gpuMaterials.size());
-    mprintf(_M("  %d collisions\n"),
-            (i32)g_actor->render.collisionShapes.size());
+    mprintf(_M("  %d collisions\n"), (i32)g_actor->render.collisionShapes.size());
 
     return Integer::intern(ms);
 }
@@ -295,8 +338,7 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count)
 // ============================================================================
 
 def_visible_primitive(ndxStop, "ndxStop");
-Value* ndxStop_cf(Value** /*arg_list*/, i32 count)
-{
+Value* ndxStop_cf(Value** /*arg_list*/, i32 count) {
     check_arg_count(ndxStop, 0, count);
     NdxCleanup();
     return &ok;
@@ -308,8 +350,7 @@ Value* ndxStop_cf(Value** /*arg_list*/, i32 count)
 // ============================================================================
 
 def_visible_primitive(ndxRefreshMaterials, "ndxRefreshMaterials");
-Value* ndxRefreshMaterials_cf(Value** /*arg_list*/, i32 count)
-{
+Value* ndxRefreshMaterials_cf(Value** /*arg_list*/, i32 count) {
     check_arg_count(ndxRefreshMaterials, 0, count);
     if (!g_running || !g_renderer || !g_adapter || !g_actor)
         return &false_value;

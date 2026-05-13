@@ -9,17 +9,17 @@
 #include "frame_ticker.h"
 #include "perf_zone.h"
 
+#include "../io/mdx_model_adapter.h"
 #include "animation/actor_eval_context.h"
-#include "bls/scoped_cb.h"
+#include "assets/replaceable_texture_manager.h"
 #include "bls/bls_cb_layout.h"
 #include "bls/bls_draw_helpers.h"
+#include "bls/scoped_cb.h"
 #include "model/model_instance.h"
 #include "model/model_template.h"
 #include "particle/plane_emitter.h"
 #include "render_service.h"
 #include "render_service_impl.h"
-#include "assets/replaceable_texture_manager.h"
-#include "../io/mdx_model_adapter.h"
 
 #include <vector>
 
@@ -34,7 +34,10 @@ using namespace ::whiteout::flakes::renderer::shadow;
 
 void FrameTicker::Tick(f32 dt) {
     WDX_CPU_ZONE("FrameTicker::Tick");
-    { WDX_CPU_ZONE("Templates.Tick");        rs_.Scene().Templates().Tick(); }
+    {
+        WDX_CPU_ZONE("Templates.Tick");
+        rs_.Scene().Templates().Tick();
+    }
     // Pre-upload any templates that just finished loading on the
     // worker thread. Without this the first PE1 child to reference
     // a freshly-loaded template would pay the GPU resource creation
@@ -44,39 +47,66 @@ void FrameTicker::Tick(f32 dt) {
         WDX_CPU_ZONE("Templates.UploadNewly");
         auto fresh = rs_.Scene().Templates().DrainNewlyLoadedTemplates();
         for (auto& tmpl : fresh) {
-            if (tmpl) rs_.Loader().UploadTemplateGpu(*tmpl);
+            if (tmpl)
+                rs_.Loader().UploadTemplateGpu(*tmpl);
         }
     }
-    { WDX_CPU_ZONE("RebakeDirtyActors");     rs_.Replaceables().RebakeDirtyActors(); }
-    { WDX_CPU_ZONE("UpdateAttachments");     UpdateAttachments(); }
-    { WDX_CPU_ZONE("EvaluateActorTree");     EvaluateActorTree(); }
-    { WDX_CPU_ZONE("UpdateAnimation");       UpdateAnimation(); }
-    { WDX_CPU_ZONE("UpdateParticles");       UpdateParticles(dt); }
-    { WDX_CPU_ZONE("UpdatePE1");             UpdatePE1(dt); }
-    { WDX_CPU_ZONE("UpdateRibbons");         UpdateRibbons(dt); }
+    {
+        WDX_CPU_ZONE("RebakeDirtyActors");
+        rs_.Replaceables().RebakeDirtyActors();
+    }
+    {
+        WDX_CPU_ZONE("UpdateAttachments");
+        UpdateAttachments();
+    }
+    {
+        WDX_CPU_ZONE("EvaluateActorTree");
+        EvaluateActorTree();
+    }
+    {
+        WDX_CPU_ZONE("UpdateAnimation");
+        UpdateAnimation();
+    }
+    {
+        WDX_CPU_ZONE("UpdateParticles");
+        UpdateParticles(dt);
+    }
+    {
+        WDX_CPU_ZONE("UpdatePE1");
+        UpdatePE1(dt);
+    }
+    {
+        WDX_CPU_ZONE("UpdateRibbons");
+        UpdateRibbons(dt);
+    }
 }
 
 void FrameTicker::UpdateAttachments() {
     std::vector<u32> handles;
-    for (auto& [h, mi] : rs_.Scene().Actors().All()) handles.push_back(h);
+    for (auto& [h, mi] : rs_.Scene().Actors().All())
+        handles.push_back(h);
 
     for (u32 h : handles) {
         auto* mi = rs_.Scene().Actors().Find(h);
-        if (!mi) continue;
+        if (!mi)
+            continue;
 
         for (auto& slot : mi->attachmentSlots) {
-            if (slot.loaded || slot.config.modelPath.empty()) continue;
+            if (slot.loaded || slot.config.modelPath.empty())
+                continue;
 
             auto tmpl = rs_.Scene().Templates().GetOrLoadAsync(slot.config.modelPath);
-            if (!tmpl) continue;
+            if (!tmpl)
+                continue;
 
             auto* child = rs_.Loader().SpawnChild(*mi, ActorRole::Attachment, tmpl);
-            if (!child) continue;
+            if (!child)
+                continue;
             auto seqs = tmpl->adapter->GetSequences();
             if (!seqs.empty())
                 child->animation.SetActiveSequenceIndex(rand() % (i32)seqs.size());
 
-            slot.loaded           = true;
+            slot.loaded = true;
             slot.childModelHandle = child->handle;
         }
     }
@@ -94,7 +124,8 @@ void FrameTicker::EvaluateActorTree() {
     std::vector<u32> tops;
     tops.reserve(rs_.Scene().Actors().All().size());
     for (auto& [h, mi] : rs_.Scene().Actors().All()) {
-        if (!mi->IsChild()) tops.push_back(h);
+        if (!mi->IsChild())
+            tops.push_back(h);
     }
     for (u32 h : tops) {
         if (auto* a = rs_.Scene().Actors().Find(h))
@@ -128,7 +159,7 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
 
         if (actor.role == ActorRole::Unit) {
             // Top-level: trust the actor's own clock (set by Actor::Advance).
-            localTimeMs  = actor.animation.TimeMs();
+            localTimeMs = actor.animation.TimeMs();
             globalTimeMs = ctx.sceneAnimationTimeMs - actor.animation.BirthTimeMs();
         } else {
             // Child: derive local time from a clock chosen by role.
@@ -138,11 +169,11 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
             //     wall-clock expiry that the spawner manages, and decoupling
             //     the cursor from that expiry would let visuals run past the
             //     scheduled despawn time.
-            const i32 clock = (actor.role == ActorRole::SPN)
-                                  ? ctx.sceneAnimationTimeMs
-                                  : ancestorClock;
+            const i32 clock =
+                (actor.role == ActorRole::SPN) ? ctx.sceneAnimationTimeMs : ancestorClock;
             i32 localTime = clock - actor.animation.BirthTimeMs();
-            if (localTime < 0) localTime = 0;
+            if (localTime < 0)
+                localTime = 0;
             const auto seqs = actor.animation.Sequences();
             if (!seqs.empty()) {
                 const i32 boundedSeq = seqIdx % (i32)seqs.size();
@@ -155,12 +186,12 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
                         localTime = seq.startMs + (localTime % dur);
                 }
             }
-            localTimeMs  = localTime;
+            localTimeMs = localTime;
             globalTimeMs = localTime;
         }
 
-        FrameState fs = actor.animation.Source()->Evaluate(
-            seqIdx, localTimeMs, globalTimeMs, actor.worldTransform, ctx.camPos);
+        FrameState fs = actor.animation.Source()->Evaluate(seqIdx, localTimeMs, globalTimeMs,
+                                                           actor.worldTransform, ctx.camPos);
         actor.ApplyFrameState(fs, localTimeMs, ctx);
     }
 
@@ -181,16 +212,15 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
 // [nodeCount..actorPaletteSize). Skips slots past actorPaletteSize —
 // the shader never indexes them because the load-time rewrite kept
 // every vertex's boneIdx inside the populated range.
-static void WriteActorBonePalette(bls::BonePaletteCb& out,
-                                  const animation::SkinningSystem& sk) {
+static void WriteActorBonePalette(bls::BonePaletteCb& out, const animation::SkinningSystem& sk) {
     const i32 nodeCount = sk.NodeCount();
     const Matrix44f* offsets = sk.OffsetMatrices();
     for (i32 i = 0; i < nodeCount; ++i) {
         bls::PackBone(out.bones[i], offsets[i]);
     }
     for (const auto& group : sk.GlobalGroupAverages()) {
-        if (group.globalPseudoSlot < 0
-            || group.globalPseudoSlot >= bls::kMaxBones) continue;
+        if (group.globalPseudoSlot < 0 || group.globalPseudoSlot >= bls::kMaxBones)
+            continue;
 
         // Arithmetic mean of the contributing nodes' offset matrices,
         // identical to SkinningSystem::AverageOffsetMatrices but
@@ -198,12 +228,15 @@ static void WriteActorBonePalette(bls::BonePaletteCb& out,
         Matrix44f avg = Matrix44f::zero();
         i32 contributors = 0;
         for (i32 nodeIdx : group.nodeIndices) {
-            if (nodeIdx < 0 || nodeIdx >= nodeCount) continue;
+            if (nodeIdx < 0 || nodeIdx >= nodeCount)
+                continue;
             avg += offsets[nodeIdx];
             ++contributors;
         }
-        if (contributors > 0) avg *= 1.0f / static_cast<f32>(contributors);
-        else                  avg  = Matrix44f::identity();
+        if (contributors > 0)
+            avg *= 1.0f / static_cast<f32>(contributors);
+        else
+            avg = Matrix44f::identity();
         bls::PackBone(out.bones[group.globalPseudoSlot], avg);
     }
 }
@@ -220,60 +253,80 @@ void FrameTicker::UpdateAnimation() {
 
     for (auto& [h, miPtr] : rs_.Scene().Actors().All()) {
         auto* mi = miPtr.get();
-        if (!mi->render.skinning.HasSkeleton() || !mi->render.skinning.IsReady()) continue;
-        if (mi->parentVisibility <= 0.02f) continue;
+        if (!mi->render.skinning.HasSkeleton() || !mi->render.skinning.IsReady())
+            continue;
+        if (mi->parentVisibility <= 0.02f)
+            continue;
         ++skinnedActors;
 
-        { WDX_CPU_ZONE("ComputeOffsetMatrices");
-          mi->render.skinning.ComputeOffsetMatrices(); }
+        {
+            WDX_CPU_ZONE("ComputeOffsetMatrices");
+            mi->render.skinning.ComputeOffsetMatrices();
+        }
 
         gfx::IGFXDevice* gfx = rs_.Pipeline().Gfx();
 
         if (mi->render.skinning.UsesPerActorPalette()) {
             // Path A: one CB write per actor.
             const gfx::BufferHandle cb = mi->render.skinning.ActorPaletteCb();
-            if (cb == gfx::BufferHandle::Invalid) continue;
+            if (cb == gfx::BufferHandle::Invalid)
+                continue;
             WDX_CPU_ZONE("Actor.BonePalette");
             ++paletteWrites;
             void* mapped = nullptr;
-            { WDX_CPU_ZONE("MapBuffer");
-              mapped = gfx->MapBuffer(cb); }
+            {
+                WDX_CPU_ZONE("MapBuffer");
+                mapped = gfx->MapBuffer(cb);
+            }
             if (mapped) {
                 auto* bp = static_cast<bls::BonePaletteCb*>(mapped);
-                { WDX_CPU_ZONE("WriteActorBonePalette");
-                  WriteActorBonePalette(*bp, mi->render.skinning); }
-                { WDX_CPU_ZONE("UnmapBuffer");
-                  gfx->UnmapBuffer(cb); }
+                {
+                    WDX_CPU_ZONE("WriteActorBonePalette");
+                    WriteActorBonePalette(*bp, mi->render.skinning);
+                }
+                {
+                    WDX_CPU_ZONE("UnmapBuffer");
+                    gfx->UnmapBuffer(cb);
+                }
             }
             continue;
         }
 
         // Path B fallback: one CB per geoset, original code path.
         for (auto& geo : mi->render.gpuGeosets) {
-            if (geo.bonePaletteCb == gfx::BufferHandle::Invalid) continue;
+            if (geo.bonePaletteCb == gfx::BufferHandle::Invalid)
+                continue;
             WDX_CPU_ZONE("Geoset.BonePalette");
             ++paletteWrites;
             void* mapped = nullptr;
-            { WDX_CPU_ZONE("MapBuffer");
-              mapped = gfx->MapBuffer(geo.bonePaletteCb); }
+            {
+                WDX_CPU_ZONE("MapBuffer");
+                mapped = gfx->MapBuffer(geo.bonePaletteCb);
+            }
             if (mapped) {
                 auto* bp = static_cast<bls::BonePaletteCb*>(mapped);
                 constexpr i32 kSlots = bls::kMaxBones;
                 static thread_local Matrix44f staging[kSlots];
                 i32 realBones = 0;
-                { WDX_CPU_ZONE("ComputeGeosetPalette");
-                  realBones = mi->render.skinning.ComputeGeosetPalette(
-                      geo.geosetId, staging, kSlots); }
-                { WDX_CPU_ZONE("BuildBonePalette");
-                  bls::BuildBonePalette(*bp, staging, realBones); }
-                { WDX_CPU_ZONE("UnmapBuffer");
-                  gfx->UnmapBuffer(geo.bonePaletteCb); }
+                {
+                    WDX_CPU_ZONE("ComputeGeosetPalette");
+                    realBones =
+                        mi->render.skinning.ComputeGeosetPalette(geo.geosetId, staging, kSlots);
+                }
+                {
+                    WDX_CPU_ZONE("BuildBonePalette");
+                    bls::BuildBonePalette(*bp, staging, realBones);
+                }
+                {
+                    WDX_CPU_ZONE("UnmapBuffer");
+                    gfx->UnmapBuffer(geo.bonePaletteCb);
+                }
             }
         }
     }
 
 #if defined(TRACY_ENABLE)
-    TracyPlot("Actors.skinned",     skinnedActors);
+    TracyPlot("Actors.skinned", skinnedActors);
     TracyPlot("BonePalette.writes", paletteWrites);
 #endif
 }
@@ -293,47 +346,59 @@ void FrameTicker::UpdatePE1(f32 dt) {
     std::vector<u32> toRemove;
 
     std::vector<u32> handles;
-    for (auto& [h, mi] : rs_.Scene().Actors().All()) handles.push_back(h);
+    for (auto& [h, mi] : rs_.Scene().Actors().All())
+        handles.push_back(h);
 
     for (u32 h : handles) {
         auto* mi = rs_.Scene().Actors().Find(h);
-        if (!mi) continue;
-        if (mi->treeDepth >= effects::kMaxPE1Depth) continue;
-        if (!mi->render.pe1.HasEmitters()) continue;
-        if (mi->parentVisibility <= 0.02f) continue;
+        if (!mi)
+            continue;
+        if (mi->treeDepth >= effects::kMaxPE1Depth)
+            continue;
+        if (!mi->render.pe1.HasEmitters())
+            continue;
+        if (mi->parentVisibility <= 0.02f)
+            continue;
 
-        auto result = mi->render.pe1.Simulate(dt,
-            [&] { return rs_.Scene().AllocActorId(); });
+        auto result = mi->render.pe1.Simulate(dt, [&] { return rs_.Scene().AllocActorId(); });
 
         for (auto& birth : result.born) {
-            if (rs_.Scene().PE1InstanceCount() >= effects::kMaxPE1Instances) continue;
+            if (rs_.Scene().PE1InstanceCount() >= effects::kMaxPE1Instances)
+                continue;
             auto* cfg = mi->render.pe1.GetConfig(birth.emitterId);
-            if (!cfg) continue;
+            if (!cfg)
+                continue;
             auto tmpl = rs_.Scene().Templates().GetOrLoadAsync(cfg->modelPath);
-            if (!tmpl) continue;
+            if (!tmpl)
+                continue;
 
-            auto* child = rs_.Loader().SpawnChild(*mi, ActorRole::PE1, tmpl,
-                                                  birth.worldTransform, birth.handle);
-            if (!child) continue;
+            auto* child = rs_.Loader().SpawnChild(*mi, ActorRole::PE1, tmpl, birth.worldTransform,
+                                                  birth.handle);
+            if (!child)
+                continue;
         }
 
-        for (u32 childH : result.died) toRemove.push_back(childH);
+        for (u32 childH : result.died)
+            toRemove.push_back(childH);
 
         for (auto& [childH, tm] : result.transforms) {
-            if (auto* c = rs_.Scene().Actors().Find(childH)) c->worldTransform = tm;
+            if (auto* c = rs_.Scene().Actors().Find(childH))
+                c->worldTransform = tm;
         }
     }
 
-    for (u32 rh : toRemove) rs_.Loader().DestroyActor(rh);
+    for (u32 rh : toRemove)
+        rs_.Loader().DestroyActor(rh);
 
     rs_.Spn().Tick(rs_.Scene().GetAnimationTime());
 }
 
 void FrameTicker::UpdateRibbons(f32 dt) {
     for (auto& [h, mi] : rs_.Scene().Actors().All()) {
-        if (mi->parentVisibility <= 0.02f) continue;
+        if (mi->parentVisibility <= 0.02f)
+            continue;
         mi->render.ribbons.Simulate(dt);
     }
 }
 
-}
+} // namespace whiteout::flakes::renderer

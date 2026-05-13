@@ -1,14 +1,14 @@
 #include "cbem_internal.hpp"
 
-#include <cornflakes/interface/binding/ir_to_cbem_lowerer.hpp>
 #include <cornflakes/core/determinism.hpp>
 #include <cornflakes/diagnostics/issue_codes.hpp>
+#include <cornflakes/interface/binding/ir_to_cbem_lowerer.hpp>
 #include <cornflakes/interface/schema/opcodes.hpp>
 #include <cornflakes/interface/vm/bytecode_exec_context.hpp>
 #include <cornflakes/interface/vm/bytecode_trace.hpp>
+#include <cornflakes/interface/vm/register_value.hpp>
 #include <cornflakes/vm/cbem_interpreter.hpp>
 #include <cornflakes/vm/math_functions.hpp>
-#include <cornflakes/interface/vm/register_value.hpp>
 
 #include <algorithm>
 #include <cmath>

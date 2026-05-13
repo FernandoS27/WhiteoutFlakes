@@ -16,13 +16,17 @@
 
 #include "whiteout/flakes/types.h"
 
-namespace whiteout::flakes::renderer::animation { struct ActorEvalContext; }
+namespace whiteout::flakes::renderer::animation {
+struct ActorEvalContext;
+}
 
 namespace whiteout::flakes::renderer {
 
 class RenderService;
 
-namespace model { struct Actor; }
+namespace model {
+struct Actor;
+}
 
 class FrameTicker {
 public:
@@ -37,8 +41,7 @@ public:
 private:
     void UpdateAttachments();
     void EvaluateActorTree();
-    void EvaluateActorTreeRec(model::Actor& actor,
-                              const animation::ActorEvalContext& ctx,
+    void EvaluateActorTreeRec(model::Actor& actor, const animation::ActorEvalContext& ctx,
                               i32 ancestorClock);
     void SilenceCornEmittersRec(model::Actor& actor);
     void UpdateAnimation();
@@ -49,4 +52,4 @@ private:
     RenderService& rs_;
 };
 
-}
+} // namespace whiteout::flakes::renderer

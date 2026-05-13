@@ -28,33 +28,43 @@ std::atomic<u64> g_nextEffectId{1};
 }
 
 bool CaseInsensitiveContains(const std::string& haystack, const std::string& needle) {
-    if (needle.empty()) return true;
-    if (haystack.size() < needle.size()) return false;
+    if (needle.empty())
+        return true;
+    if (haystack.size() < needle.size())
+        return false;
     for (size_t i = 0; i + needle.size() <= haystack.size(); ++i) {
         bool match = true;
         for (size_t j = 0; j < needle.size(); ++j) {
-            const char a = static_cast<char>(std::tolower(static_cast<unsigned char>(haystack[i + j])));
+            const char a =
+                static_cast<char>(std::tolower(static_cast<unsigned char>(haystack[i + j])));
             const char b = static_cast<char>(std::tolower(static_cast<unsigned char>(needle[j])));
-            if (a != b) { match = false; break; }
+            if (a != b) {
+                match = false;
+                break;
+            }
         }
-        if (match) return true;
+        if (match)
+            return true;
     }
     return false;
 }
 
 bool CaseInsensitiveEqual(const std::string& a, const std::string& b) {
-    if (a.size() != b.size()) return false;
+    if (a.size() != b.size())
+        return false;
     for (size_t i = 0; i < a.size(); ++i) {
         const char x = static_cast<char>(std::tolower(static_cast<unsigned char>(a[i])));
         const char y = static_cast<char>(std::tolower(static_cast<unsigned char>(b[i])));
-        if (x != y) return false;
+        if (x != y)
+            return false;
     }
     return true;
 }
 
 std::string_view FindExternalBySuffix(const ::whiteout::cornflakes::LayerProgram& lp,
-                                       std::string_view suffix) {
-    auto scan = [&](std::span<const ::whiteout::cornflakes::ExternalBinding> bs) -> std::string_view {
+                                      std::string_view suffix) {
+    auto scan =
+        [&](std::span<const ::whiteout::cornflakes::ExternalBinding> bs) -> std::string_view {
         for (const auto& ext : bs) {
             if (ext.name.size() >= suffix.size() &&
                 ext.name.substr(ext.name.size() - suffix.size()) == suffix) {
@@ -63,67 +73,76 @@ std::string_view FindExternalBySuffix(const ::whiteout::cornflakes::LayerProgram
         }
         return {};
     };
-    if (auto n = scan(lp.initProgram.externals);        !n.empty()) return n;
-    if (auto n = scan(lp.physicsProgram.externals);     !n.empty()) return n;
-    if (auto n = scan(lp.timeFixedProgram.externals);   !n.empty()) return n;
-    if (auto n = scan(lp.timeVaryingProgram.externals); !n.empty()) return n;
+    if (auto n = scan(lp.initProgram.externals); !n.empty())
+        return n;
+    if (auto n = scan(lp.physicsProgram.externals); !n.empty())
+        return n;
+    if (auto n = scan(lp.timeFixedProgram.externals); !n.empty())
+        return n;
+    if (auto n = scan(lp.timeVaryingProgram.externals); !n.empty())
+        return n;
     return {};
 }
 
 std::string_view FindExternalByPrefix(const ::whiteout::cornflakes::LayerProgram& lp,
-                                       std::string_view prefix) {
-    auto scan = [&](std::span<const ::whiteout::cornflakes::ExternalBinding> bs) -> std::string_view {
+                                      std::string_view prefix) {
+    auto scan =
+        [&](std::span<const ::whiteout::cornflakes::ExternalBinding> bs) -> std::string_view {
         for (const auto& ext : bs) {
-            if (ext.name.size() >= prefix.size() &&
-                ext.name.substr(0, prefix.size()) == prefix) {
+            if (ext.name.size() >= prefix.size() && ext.name.substr(0, prefix.size()) == prefix) {
                 return ext.name;
             }
         }
         return {};
     };
-    if (auto n = scan(lp.initProgram.externals);        !n.empty()) return n;
-    if (auto n = scan(lp.physicsProgram.externals);     !n.empty()) return n;
-    if (auto n = scan(lp.timeFixedProgram.externals);   !n.empty()) return n;
-    if (auto n = scan(lp.timeVaryingProgram.externals); !n.empty()) return n;
+    if (auto n = scan(lp.initProgram.externals); !n.empty())
+        return n;
+    if (auto n = scan(lp.physicsProgram.externals); !n.empty())
+        return n;
+    if (auto n = scan(lp.timeFixedProgram.externals); !n.empty())
+        return n;
+    if (auto n = scan(lp.timeVaryingProgram.externals); !n.empty())
+        return n;
     return {};
 }
 
 std::string_view FindRenderInput(const ::whiteout::cornflakes::LayerProgram& lp,
-                                  std::string_view suffix,
-                                  std::string_view prefix) {
-    if (auto n = FindExternalBySuffix(lp, suffix); !n.empty()) return n;
+                                 std::string_view suffix, std::string_view prefix) {
+    if (auto n = FindExternalBySuffix(lp, suffix); !n.empty())
+        return n;
     return FindExternalByPrefix(lp, prefix);
 }
 
-::whiteout::cornflakes::LayerRenderInputMap
-InferLayerRenderInputMap(const ::whiteout::cornflakes::LayerProgram& lp) {
+::whiteout::cornflakes::LayerRenderInputMap InferLayerRenderInputMap(
+    const ::whiteout::cornflakes::LayerProgram& lp) {
     using ::whiteout::cornflakes::RenderSlot;
     ::whiteout::cornflakes::LayerRenderInputMap m;
-    m.names[static_cast<size_t>(RenderSlot::Position)]    = FindRenderInput(lp, "__Position",    "Position_");
-    m.names[static_cast<size_t>(RenderSlot::Size)]        = FindRenderInput(lp, "__Size",        "Size_");
-    m.names[static_cast<size_t>(RenderSlot::Enabled)]     = FindRenderInput(lp, "__Enabled",     "Enabled_");
-    m.names[static_cast<size_t>(RenderSlot::Orientation)] = FindRenderInput(lp, "__Orientation", "Orientation_");
-    m.names[static_cast<size_t>(RenderSlot::Axis0)]       = FindRenderInput(lp, "__Axis",        "Axis_");
-    m.names[static_cast<size_t>(RenderSlot::Axis1)]       = FindRenderInput(lp, "__NormalAxis",  "NormalAxis_");
-    m.names[static_cast<size_t>(RenderSlot::Rotation)]    = FindRenderInput(lp, "__Rotation",    "Rotation_");
-    m.names[static_cast<size_t>(RenderSlot::Color)]       = FindRenderInput(lp, "__Color",       "Color_");
-    m.names[static_cast<size_t>(RenderSlot::TextureID)]   = FindRenderInput(lp, "__TextureID",   "TextureID_");
+    m.names[static_cast<size_t>(RenderSlot::Position)] =
+        FindRenderInput(lp, "__Position", "Position_");
+    m.names[static_cast<size_t>(RenderSlot::Size)] = FindRenderInput(lp, "__Size", "Size_");
+    m.names[static_cast<size_t>(RenderSlot::Enabled)] =
+        FindRenderInput(lp, "__Enabled", "Enabled_");
+    m.names[static_cast<size_t>(RenderSlot::Orientation)] =
+        FindRenderInput(lp, "__Orientation", "Orientation_");
+    m.names[static_cast<size_t>(RenderSlot::Axis0)] = FindRenderInput(lp, "__Axis", "Axis_");
+    m.names[static_cast<size_t>(RenderSlot::Axis1)] =
+        FindRenderInput(lp, "__NormalAxis", "NormalAxis_");
+    m.names[static_cast<size_t>(RenderSlot::Rotation)] =
+        FindRenderInput(lp, "__Rotation", "Rotation_");
+    m.names[static_cast<size_t>(RenderSlot::Color)] = FindRenderInput(lp, "__Color", "Color_");
+    m.names[static_cast<size_t>(RenderSlot::TextureID)] =
+        FindRenderInput(lp, "__TextureID", "TextureID_");
     return m;
 }
 
-}
+} // namespace
 
-CornEffectsEmitter::CornEffectsEmitter(CornEffectsAssetCache& cache,
-                                 std::string pkbPath,
-                                 std::string animVisibilityGuide,
-                                 i32 replaceableId,
-                                 bool cornEffectsScaling)
-    : cache_(cache)
-    , pkbPath_(std::move(pkbPath))
-    , animVisibilityGuide_(std::move(animVisibilityGuide))
-    , cornEffectsScaling_(cornEffectsScaling)
-    , replaceableId_(replaceableId)
-{
+CornEffectsEmitter::CornEffectsEmitter(CornEffectsAssetCache& cache, std::string pkbPath,
+                                       std::string animVisibilityGuide, i32 replaceableId,
+                                       bool cornEffectsScaling)
+    : cache_(cache), pkbPath_(std::move(pkbPath)),
+      animVisibilityGuide_(std::move(animVisibilityGuide)), cornEffectsScaling_(cornEffectsScaling),
+      replaceableId_(replaceableId) {
     ParseAnimVisibilityGuide();
     if (!defaultAnimEnabled_) {
         simFlags_ |= SimFlag_SystemDead;
@@ -144,19 +163,16 @@ CornEffectsEmitter::CornEffectsEmitter(CornEffectsAssetCache& cache,
     }
     std::fprintf(stderr,
                  "[corn_fx] INFO: loaded '%s' (replaceableId=%d, scaling=%s, guide=\"%s\")\n",
-                 pkbPath_.c_str(),
-                 (int)replaceableId_,
-                 cornEffectsScaling_ ? "yes" : "no",
+                 pkbPath_.c_str(), (int)replaceableId_, cornEffectsScaling_ ? "yes" : "no",
                  animVisibilityGuide_.c_str());
 }
 
 CornEffectsEmitter::~CornEffectsEmitter() = default;
 
-void CornEffectsEmitter::SetWeatherParams(const Vector3f& position,
-                                        const Vector2f& size,
-                                        f32 emissionRate) {
-    weatherPosition_     = position;
-    weatherSize_         = size;
+void CornEffectsEmitter::SetWeatherParams(const Vector3f& position, const Vector2f& size,
+                                          f32 emissionRate) {
+    weatherPosition_ = position;
+    weatherSize_ = size;
     weatherEmissionRate_ = emissionRate;
 }
 
@@ -165,8 +181,10 @@ void CornEffectsEmitter::SetOwningAgentVisibility(bool visible) {
     if (visible && !wasVisible) {
         simFlags_ |= SimFlag_OwningAgentBecameVisible;
     }
-    if (visible) simFlags_ |= SimFlag_OwningAgentIsVisible;
-    else         simFlags_ &= ~SimFlag_OwningAgentIsVisible;
+    if (visible)
+        simFlags_ |= SimFlag_OwningAgentIsVisible;
+    else
+        simFlags_ &= ~SimFlag_OwningAgentIsVisible;
 }
 
 void CornEffectsEmitter::ParseAnimVisibilityGuide() {
@@ -180,21 +198,27 @@ void CornEffectsEmitter::ParseAnimVisibilityGuide() {
     bool sawEnable = false;
     while (std::getline(ss, token, ',')) {
         size_t lo = 0;
-        while (lo < token.size() && std::isspace(static_cast<unsigned char>(token[lo]))) ++lo;
+        while (lo < token.size() && std::isspace(static_cast<unsigned char>(token[lo])))
+            ++lo;
         token.erase(0, lo);
-        while (!token.empty() && std::isspace(static_cast<unsigned char>(token.back()))) token.pop_back();
-        if (token.empty()) continue;
+        while (!token.empty() && std::isspace(static_cast<unsigned char>(token.back())))
+            token.pop_back();
+        if (token.empty())
+            continue;
 
         bool enabled = true;
         const auto eq = token.find('=');
         if (eq != std::string::npos) {
             std::string val = token.substr(eq + 1);
             token = token.substr(0, eq);
-            while (!token.empty() && std::isspace(static_cast<unsigned char>(token.back()))) token.pop_back();
+            while (!token.empty() && std::isspace(static_cast<unsigned char>(token.back())))
+                token.pop_back();
             size_t vlo = 0;
-            while (vlo < val.size() && std::isspace(static_cast<unsigned char>(val[vlo]))) ++vlo;
+            while (vlo < val.size() && std::isspace(static_cast<unsigned char>(val[vlo])))
+                ++vlo;
             val.erase(0, vlo);
-            while (!val.empty() && std::isspace(static_cast<unsigned char>(val.back()))) val.pop_back();
+            while (!val.empty() && std::isspace(static_cast<unsigned char>(val.back())))
+                val.pop_back();
             enabled = CaseInsensitiveEqual(val, "on");
         }
         if (CaseInsensitiveEqual(token, "always")) {
@@ -219,7 +243,8 @@ void CornEffectsEmitter::ParseAnimVisibilityGuide() {
 
 void CornEffectsEmitter::SetCurrentAnimationName(const char* name) {
     const std::string newName = name ? std::string(name) : std::string();
-    if (newName == currentAnimName_) return;
+    if (newName == currentAnimName_)
+        return;
     currentAnimName_ = newName;
 
     bool enabled = defaultAnimEnabled_;
@@ -233,8 +258,8 @@ void CornEffectsEmitter::SetCurrentAnimationName(const char* name) {
     if (enabled) {
         simFlags_ &= ~SimFlag_SystemDead;
     } else {
-        simFlags_ = (simFlags_ & ~(SimFlag_SystemDead | SimFlag_KilledByEffect))
-                  | SimFlag_SystemDead;
+        simFlags_ =
+            (simFlags_ & ~(SimFlag_SystemDead | SimFlag_KilledByEffect)) | SimFlag_SystemDead;
     }
 }
 
@@ -250,19 +275,21 @@ void CornEffectsEmitter::SetCurrentAnimationName(const char* name) {
 }
 
 bool CornEffectsEmitter::TrySpawn() {
-    if (!assetModel_) return false;
-    if (live_.runtime) return true;
-    if (!frameArena_) return false;
+    if (!assetModel_)
+        return false;
+    if (live_.runtime)
+        return true;
+    if (!frameArena_)
+        return false;
 
-    auto bindArena = std::make_unique<::whiteout::cornflakes::ExpandingArena>(
-        std::size_t{1U} << 16);
+    auto bindArena =
+        std::make_unique<::whiteout::cornflakes::ExpandingArena>(std::size_t{1U} << 16);
 
     ::whiteout::cornflakes::IssueBag issues;
     auto rt = std::make_unique<::whiteout::cornflakes::EffectRuntime>(
         *assetModel_, NextEffectId(), *bindArena, *frameArena_, issues);
     if (!rt->isValid()) {
-        std::fprintf(stderr,
-                     "[corn_fx] ERR: TrySpawn '%s' produced invalid runtime:\n",
+        std::fprintf(stderr, "[corn_fx] ERR: TrySpawn '%s' produced invalid runtime:\n",
                      pkbPath_.c_str());
         for (const auto& iss : issues.view()) {
             std::fprintf(stderr, "[corn_fx]   bind issue cat=%u code=%u sev=%u: %.*s\n",
@@ -275,7 +302,8 @@ bool CornEffectsEmitter::TrySpawn() {
     if (const auto* plan = rt->plan()) {
         for (size_t i = 0; i < plan->layers.size(); ++i) {
             const auto& lp = plan->layers[i];
-            if (lp.renderers.empty()) continue;
+            if (lp.renderers.empty())
+                continue;
             rt->setPoolSize(i, kDefaultRenderPoolSize);
             rt->setRenderInputMap(i, InferLayerRenderInputMap(lp));
         }
@@ -286,8 +314,7 @@ bool CornEffectsEmitter::TrySpawn() {
         backend = std::make_unique<CornEffectsGfxBackend>(*backendInit_);
         const bool prep = rt->setBackend(backend.get(), issues);
         if (!prep) {
-            std::fprintf(stderr,
-                         "[corn_fx] WARN: TrySpawn '%s' backend prepare failed:\n",
+            std::fprintf(stderr, "[corn_fx] WARN: TrySpawn '%s' backend prepare failed:\n",
                          pkbPath_.c_str());
             for (const auto& iss : issues.view()) {
                 std::fprintf(stderr, "[corn_fx]   prepare issue cat=%u code=%u sev=%u: %.*s\n",
@@ -298,36 +325,35 @@ bool CornEffectsEmitter::TrySpawn() {
     }
 
     live_.bindArena = std::move(bindArena);
-    live_.runtime   = std::move(rt);
-    live_.backend   = std::move(backend);
+    live_.runtime = std::move(rt);
+    live_.backend = std::move(backend);
     return true;
 }
 
 void CornEffectsEmitter::PushAttributes(::whiteout::cornflakes::EffectRuntime& rt) {
     using ArrF4 = std::array<f32, 4>;
 
-    rt.setAttribute("__a_Game.LifespanMultiplier",     ArrF4{lifeSpanMultiplier_,    0, 0, 0});
+    rt.setAttribute("__a_Game.LifespanMultiplier", ArrF4{lifeSpanMultiplier_, 0, 0, 0});
     rt.setAttribute("__a_Game.EmissionRateMultiplier", ArrF4{emissionRateMultiplier_, 0, 0, 0});
-    rt.setAttribute("__a_Game.SpeedMultiplier",        ArrF4{speedMultiplier_,       0, 0, 0});
-    rt.setAttribute("__a_Game.ColorMultiplier",        ArrF4{color_.x, color_.y, color_.z, color_.w});
+    rt.setAttribute("__a_Game.SpeedMultiplier", ArrF4{speedMultiplier_, 0, 0, 0});
+    rt.setAttribute("__a_Game.ColorMultiplier", ArrF4{color_.x, color_.y, color_.z, color_.w});
 
-    rt.setAttribute("__a_Game.TeamColor",
-        ArrF4{replaceableColor_.x, replaceableColor_.y,
-              replaceableColor_.z, replaceableColor_.w});
+    rt.setAttribute("__a_Game.TeamColor", ArrF4{replaceableColor_.x, replaceableColor_.y,
+                                                replaceableColor_.z, replaceableColor_.w});
 
     const f32 s = gameToCornEffectsScale_;
     rt.setAttribute("__a_Game.TargetPosition",
-        ArrF4{s * position_.x, s * position_.y, s * position_.z, 0});
+                    ArrF4{s * position_.x, s * position_.y, s * position_.z, 0});
     rt.setAttribute("__a_Game.Scale", ArrF4{GetCornFxScale(), 0, 0, 0});
-    rt.setAttribute("__a_Weather.TileCenter",
-        ArrF4{s * weatherPosition_.x, s * weatherPosition_.y, s * weatherPosition_.z, 0});
-    rt.setAttribute("__a_Weather.Size",
-        ArrF4{s * weatherSize_.x, s * weatherSize_.y, 0, 0});
+    rt.setAttribute("__a_Weather.TileCenter", ArrF4{s * weatherPosition_.x, s * weatherPosition_.y,
+                                                    s * weatherPosition_.z, 0});
+    rt.setAttribute("__a_Weather.Size", ArrF4{s * weatherSize_.x, s * weatherSize_.y, 0, 0});
     rt.setAttribute("__a_Weather.EmissionRate", ArrF4{weatherEmissionRate_, 0, 0, 0});
 }
 
 void CornEffectsEmitter::ResetRuntime() {
-    if (!live_.runtime) return;
+    if (!live_.runtime)
+        return;
     live_.runtime->reset();
     effectAge_ = 0.0f;
 }
@@ -335,8 +361,10 @@ void CornEffectsEmitter::ResetRuntime() {
 void CornEffectsEmitter::Update(f32 dt, bool paused) {
     const bool hadPrevPos = (simFlags_ & SimFlag_UpdatedByAnim) != 0;
 
-    if (paused) simFlags_ |= SimFlag_Paused;
-    else        simFlags_ &= ~SimFlag_Paused;
+    if (paused)
+        simFlags_ |= SimFlag_Paused;
+    else
+        simFlags_ &= ~SimFlag_Paused;
 
     const Vector3f newPos = {
         modelToWorld_.data[3][0],
@@ -361,7 +389,7 @@ void CornEffectsEmitter::Update(f32 dt, bool paused) {
 
     const bool agentVis = (simFlags_ & SimFlag_OwningAgentIsVisible) != 0;
     const bool notKilled = (simFlags_ & SimFlag_KilledByEffect) == 0;
-    const bool active   = agentVis && ShouldBeSpawning() && notKilled;
+    const bool active = agentVis && ShouldBeSpawning() && notKilled;
 
     if (wasActive_ && !active) {
         ResetRuntime();
@@ -377,14 +405,13 @@ void CornEffectsEmitter::Update(f32 dt, bool paused) {
     }
 
     ::whiteout::cornflakes::EffectFrameInputs inputs;
-    inputs.dt          = dt;
-    inputs.effectAge   = effectAge_;
-    inputs.emitterL2W  = ToCornflakesL2W(modelToWorld_);
+    inputs.dt = dt;
+    inputs.effectAge = effectAge_;
+    inputs.emitterL2W = ToCornflakesL2W(modelToWorld_);
     inputs.emitterL2W.m[0][3] = modelToWorld_.data[3][0] * gameToCornEffectsScale_;
     inputs.emitterL2W.m[1][3] = modelToWorld_.data[3][1] * gameToCornEffectsScale_;
     inputs.emitterL2W.m[2][3] = modelToWorld_.data[3][2] * gameToCornEffectsScale_;
-    inputs.baseRngSeed = static_cast<u32>(reinterpret_cast<uintptr_t>(this) >> 4)
-                       ^ 0xC0FFEE00u;
+    inputs.baseRngSeed = static_cast<u32>(reinterpret_cast<uintptr_t>(this) >> 4) ^ 0xC0FFEE00u;
     inputs.effectIsRunning = active;
     if (active) {
         effectAge_ += dt;
@@ -396,8 +423,8 @@ void CornEffectsEmitter::Update(f32 dt, bool paused) {
         live_.backend->SetFrameInputs(fi);
     }
 
-    inputs.view.viewport = { frameInputs_.viewportRect.x, frameInputs_.viewportRect.y,
-                              frameInputs_.viewportRect.z, frameInputs_.viewportRect.w };
+    inputs.view.viewport = {frameInputs_.viewportRect.x, frameInputs_.viewportRect.y,
+                            frameInputs_.viewportRect.z, frameInputs_.viewportRect.w};
     inputs.view.effectTime = frameInputs_.effectTime;
 
     ::whiteout::cornflakes::IssueBag issues;
@@ -409,15 +436,18 @@ void CornEffectsEmitter::Update(f32 dt, bool paused) {
 }
 
 bool CornEffectsEmitter::Alive() const {
-    if (!live_.runtime) return false;
+    if (!live_.runtime)
+        return false;
     for (const auto& pkt : live_.runtime->lastPackets()) {
-        if (pkt.particleCount > 0) return true;
+        if (pkt.particleCount > 0)
+            return true;
     }
     return false;
 }
 
 i32 CornEffectsEmitter::TotalAlive() const {
-    if (!live_.runtime) return 0;
+    if (!live_.runtime)
+        return 0;
     i32 n = 0;
     for (const auto& pkt : live_.runtime->lastPackets()) {
         n += static_cast<i32>(pkt.particleCount);
@@ -425,4 +455,4 @@ i32 CornEffectsEmitter::TotalAlive() const {
     return n;
 }
 
-}
+} // namespace whiteout::flakes::renderer::corn_effects

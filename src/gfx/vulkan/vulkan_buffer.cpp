@@ -16,19 +16,19 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc, const void* init
     auto& state = *state_;
 
     BufferEntry entry{};
-    entry.desc       = desc;
+    entry.desc = desc;
     entry.slotStride = desc.size;
-    entry.slotCount  = 1;
+    entry.slotCount = 1;
     entry.currentSlot = 0;
 
     const bool ring = hasFlag(desc.usage, BufferUsage::CpuWritable) && desc.size > 0;
     if (ring) {
         const u64 align = std::max<u64>(1, state.minUniformBufferAlign);
         entry.slotStride = (desc.size + align - 1) / align * align;
-        entry.slotCount = (desc.ringSlotsHint > 0)
-                        ? desc.ringSlotsHint
-                        : VulkanDeviceState::kCbRingSlots;
-        if (entry.slotCount < kFramesInFlight) entry.slotCount = kFramesInFlight;
+        entry.slotCount =
+            (desc.ringSlotsHint > 0) ? desc.ringSlotsHint : VulkanDeviceState::kCbRingSlots;
+        if (entry.slotCount < kFramesInFlight)
+            entry.slotCount = kFramesInFlight;
     }
     const u64 totalSize = entry.slotStride * entry.slotCount;
 
@@ -36,39 +36,38 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc, const void* init
     // dedicated VMA buffer when it's exhausted.
     if (ring && state.sharedCbBuffer != VK_NULL_HANDLE) {
         const u64 align = std::max<u64>(1, state.minUniformBufferAlign);
-        const u64 base  = (state.sharedCbCursor + align - 1) / align * align;
+        const u64 base = (state.sharedCbCursor + align - 1) / align * align;
         if (base + totalSize <= VulkanDeviceState::kSharedCbCapacity) {
-            entry.buffer     = state.sharedCbBuffer;
-            entry.allocation = VK_NULL_HANDLE;  // shared sub-alloc
-            entry.mapped     = state.sharedCbMapped;
+            entry.buffer = state.sharedCbBuffer;
+            entry.allocation = VK_NULL_HANDLE; // shared sub-alloc
+            entry.mapped = state.sharedCbMapped;
             entry.baseOffset = base;
             state.sharedCbCursor = base + totalSize;
             if (initial && desc.size > 0) {
                 std::memcpy(static_cast<u8*>(entry.mapped) + base, initial, desc.size);
-                vmaFlushAllocation(state.allocator, state.sharedCbAllocation,
-                                   base, desc.size);
+                vmaFlushAllocation(state.allocator, state.sharedCbAllocation, base, desc.size);
             }
             return static_cast<BufferHandle>(state.buffers.Insert(std::move(entry)));
         }
     }
 
-    VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-    bci.size  = totalSize;
+    VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    bci.size = totalSize;
     bci.usage = ToVkBufferUsage(desc.usage);
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VmaAllocationCreateInfo aci{};
     if (hasFlag(desc.usage, BufferUsage::CpuWritable)) {
         aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-        aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
-                  | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                    VMA_ALLOCATION_CREATE_MAPPED_BIT;
     } else {
         aci.usage = VMA_MEMORY_USAGE_AUTO;
     }
 
     VmaAllocationInfo info{};
-    if (vmaCreateBuffer(state.allocator, &bci, &aci, &entry.buffer, &entry.allocation, &info)
-            != VK_SUCCESS) {
+    if (vmaCreateBuffer(state.allocator, &bci, &aci, &entry.buffer, &entry.allocation, &info) !=
+        VK_SUCCESS) {
         return BufferHandle::Invalid;
     }
     entry.mapped = info.pMappedData;
@@ -80,15 +79,15 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc, const void* init
         } else {
             // Non-mappable: stage through the transfer queue. The
             // graphics submit waits on transferLastSignaled.
-            VkBufferCreateInfo sbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-            sbci.size  = desc.size;
+            VkBufferCreateInfo sbci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+            sbci.size = desc.size;
             sbci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
             sbci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
             VmaAllocationCreateInfo saci{};
             saci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-            saci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
-                       | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-            VkBuffer      stagingBuf{};
+            saci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VkBuffer stagingBuf{};
             VmaAllocation stagingAlloc{};
             VmaAllocationInfo si{};
             vmaCreateBuffer(state.allocator, &sbci, &saci, &stagingBuf, &stagingAlloc, &si);
@@ -96,10 +95,11 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc, const void* init
             vmaFlushAllocation(state.allocator, stagingAlloc, 0, desc.size);
 
             const VkBuffer dstBuf = entry.buffer;
-            const u64      copySize = desc.size;
-            SubmitTransferAndDeferStaging(state, stagingBuf, stagingAlloc,
+            const u64 copySize = desc.size;
+            SubmitTransferAndDeferStaging(
+                state, stagingBuf, stagingAlloc,
                 [dstBuf, stagingBuf, copySize](vk::raii::CommandBuffer& cb) {
-                    vk::BufferCopy region{ .size = copySize };
+                    vk::BufferCopy region{.size = copySize};
                     cb.copyBuffer(vk::Buffer(stagingBuf), vk::Buffer(dstBuf), region);
                 });
         }
@@ -114,7 +114,8 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc, const void* init
 void VulkanDevice::Destroy(BufferHandle h) {
     auto& state = *state_;
     auto* buffer = state.buffers.Get(static_cast<u64>(h));
-    if (!buffer) return;
+    if (!buffer)
+        return;
     // Shared-ring sub-allocs own no VkDeviceMemory — skip the queue.
     if (buffer->allocation == VK_NULL_HANDLE) {
         state.buffers.Remove(static_cast<u64>(h));
@@ -123,8 +124,7 @@ void VulkanDevice::Destroy(BufferHandle h) {
     BufferEntry moved = std::move(*buffer);
     state.buffers.Remove(static_cast<u64>(h));
     state.pendingDeletes.push_back(MakePendingDelete(
-        state.nextSubmitValue,
-        [owned = std::move(moved)](VulkanDeviceState& st) mutable {
+        state.nextSubmitValue, [owned = std::move(moved)](VulkanDeviceState& st) mutable {
             vmaDestroyBuffer(st.allocator, owned.buffer, owned.allocation);
         }));
 }
@@ -132,7 +132,8 @@ void VulkanDevice::Destroy(BufferHandle h) {
 void VulkanDevice::UpdateBuffer(BufferHandle h, const void* data, usize size) {
     auto& state = *state_;
     auto* buffer = state.buffers.Get(static_cast<u64>(h));
-    if (!buffer) return;
+    if (!buffer)
+        return;
     if (buffer->mapped) {
         // Rotate to a fresh ring slot so the next Bind* captures this write.
         if (buffer->slotCount > 1) {
@@ -140,9 +141,7 @@ void VulkanDevice::UpdateBuffer(BufferHandle h, const void* data, usize size) {
         }
         const u64 off = buffer->currentOffset();
         std::memcpy(static_cast<u8*>(buffer->mapped) + off, data, size);
-        VmaAllocation alloc = buffer->allocation
-                                  ? buffer->allocation
-                                  : state.sharedCbAllocation;
+        VmaAllocation alloc = buffer->allocation ? buffer->allocation : state.sharedCbAllocation;
         vmaFlushAllocation(state.allocator, alloc, off, size);
     } else {
         void* dst = nullptr;
@@ -157,7 +156,8 @@ void VulkanDevice::UpdateBuffer(BufferHandle h, const void* data, usize size) {
 void* VulkanDevice::MapBuffer(BufferHandle h) {
     auto& state = *state_;
     auto* buffer = state.buffers.Get(static_cast<u64>(h));
-    if (!buffer) return nullptr;
+    if (!buffer)
+        return nullptr;
     if (buffer->mapped) {
         if (buffer->slotCount > 1) {
             buffer->currentSlot = (buffer->currentSlot + 1) % buffer->slotCount;
@@ -172,16 +172,14 @@ void* VulkanDevice::MapBuffer(BufferHandle h) {
 void VulkanDevice::UnmapBuffer(BufferHandle h) {
     auto& state = *state_;
     auto* buffer = state.buffers.Get(static_cast<u64>(h));
-    if (!buffer) return;
+    if (!buffer)
+        return;
     if (buffer->mapped) {
-        VmaAllocation alloc = buffer->allocation
-                                  ? buffer->allocation
-                                  : state.sharedCbAllocation;
-        vmaFlushAllocation(state.allocator, alloc,
-                           buffer->currentOffset(), buffer->desc.size);
+        VmaAllocation alloc = buffer->allocation ? buffer->allocation : state.sharedCbAllocation;
+        vmaFlushAllocation(state.allocator, alloc, buffer->currentOffset(), buffer->desc.size);
     } else {
         vmaUnmapMemory(state.allocator, buffer->allocation);
     }
 }
 
-}  // namespace whiteout::flakes::gfx::vulkan
+} // namespace whiteout::flakes::gfx::vulkan

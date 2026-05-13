@@ -1,18 +1,18 @@
 #pragma once
 
+#include <cassert>
+#include <vector>
 #include "d3d11_translate.h"
 #include "gfx/common/slot_map.h"
 #include "gfx/gfx.h"
-#include <vector>
-#include <cassert>
 
 namespace whiteout::flakes::gfx::d3d11 {
 
 struct BufferEntry {
-    ID3D11Buffer*              buffer = nullptr;
-    ID3D11ShaderResourceView*  srv    = nullptr;
-    ID3D11UnorderedAccessView* uav    = nullptr;
-    BufferDesc                 desc{};
+    ID3D11Buffer* buffer = nullptr;
+    ID3D11ShaderResourceView* srv = nullptr;
+    ID3D11UnorderedAccessView* uav = nullptr;
+    BufferDesc desc{};
 
     void Release() {
         SafeRelease(uav);
@@ -22,11 +22,11 @@ struct BufferEntry {
 };
 
 struct TextureEntry {
-    ID3D11Texture2D*           tex = nullptr;
-    ID3D11ShaderResourceView*  srv = nullptr;
-    ID3D11RenderTargetView*    rtv = nullptr;
-    ID3D11DepthStencilView*    dsv = nullptr;
-    TextureDesc                desc{};
+    ID3D11Texture2D* tex = nullptr;
+    ID3D11ShaderResourceView* srv = nullptr;
+    ID3D11RenderTargetView* rtv = nullptr;
+    ID3D11DepthStencilView* dsv = nullptr;
+    TextureDesc desc{};
 
     void Release() {
         SafeRelease(dsv);
@@ -37,10 +37,10 @@ struct TextureEntry {
 };
 
 struct ShaderEntry {
-    ID3D11VertexShader*  vs = nullptr;
-    ID3D11PixelShader*   ps = nullptr;
+    ID3D11VertexShader* vs = nullptr;
+    ID3D11PixelShader* ps = nullptr;
     ID3D11ComputeShader* cs = nullptr;
-    ShaderStage          stage{};
+    ShaderStage stage{};
 
     std::vector<u8> bytecode;
 
@@ -54,15 +54,15 @@ struct ShaderEntry {
 
 struct PipelineEntry {
 
-    ID3D11BlendState*        blendState      = nullptr;
-    ID3D11DepthStencilState* depthState      = nullptr;
-    ID3D11RasterizerState*   rasterState     = nullptr;
-    ID3D11InputLayout*       inputLayout     = nullptr;
-    D3D11_PRIMITIVE_TOPOLOGY topology        = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-    bool                     alphaToCoverage = false;
+    ID3D11BlendState* blendState = nullptr;
+    ID3D11DepthStencilState* depthState = nullptr;
+    ID3D11RasterizerState* rasterState = nullptr;
+    ID3D11InputLayout* inputLayout = nullptr;
+    D3D11_PRIMITIVE_TOPOLOGY topology = D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+    bool alphaToCoverage = false;
 
-    ID3D11VertexShader*  vs = nullptr;
-    ID3D11PixelShader*   ps = nullptr;
+    ID3D11VertexShader* vs = nullptr;
+    ID3D11PixelShader* ps = nullptr;
     ID3D11ComputeShader* cs = nullptr;
 
     bool isCompute = false;
@@ -72,26 +72,27 @@ struct PipelineEntry {
         SafeRelease(rasterState);
         SafeRelease(depthState);
         SafeRelease(blendState);
-
     }
 };
 
 struct SamplerEntry {
     ID3D11SamplerState* sampler = nullptr;
 
-    void Release() { SafeRelease(sampler); }
+    void Release() {
+        SafeRelease(sampler);
+    }
 };
 
 struct SwapChainEntry {
-    IDXGISwapChain*    swapChain = nullptr;
-    ID3D11Texture2D*   backBuffer = nullptr;
+    IDXGISwapChain* swapChain = nullptr;
+    ID3D11Texture2D* backBuffer = nullptr;
 
-    DXGI_FORMAT        rtvDxgiFormat       = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    DXGI_FORMAT rtvDxgiFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 
-    DXGI_FORMAT        rtvDxgiFormatLinear = DXGI_FORMAT_R8G8B8A8_UNORM;
+    DXGI_FORMAT rtvDxgiFormatLinear = DXGI_FORMAT_R8G8B8A8_UNORM;
 
-    u64           backBufferTexHandle       = 0;
-    u64           backBufferTexHandleLinear = 0;
+    u64 backBufferTexHandle = 0;
+    u64 backBufferTexHandleLinear = 0;
 
     void ReleaseBackBuffer() {
         SafeRelease(backBuffer);
@@ -102,4 +103,4 @@ struct SwapChainEntry {
     }
 };
 
-}
+} // namespace whiteout::flakes::gfx::d3d11

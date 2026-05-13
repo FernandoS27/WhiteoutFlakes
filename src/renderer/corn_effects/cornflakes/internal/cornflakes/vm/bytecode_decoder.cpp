@@ -44,7 +44,9 @@ public:
     Cursor(const u8* base, std::size_t off, std::size_t end, IssueBag& issues) noexcept
         : base_(base), off_(off), end_(end), issues_(&issues) {}
 
-    std::size_t offset() const noexcept { return off_; }
+    std::size_t offset() const noexcept {
+        return off_;
+    }
 
     bool ensure(std::size_t need, std::string_view what) noexcept {
         if (off_ + need > end_) {
@@ -70,8 +72,7 @@ public:
         return v;
     }
     u32 readU24() noexcept {
-        const u32 v = static_cast<u32>(base_[off_]) |
-                      (static_cast<u32>(base_[off_ + 1U]) << 8U) |
+        const u32 v = static_cast<u32>(base_[off_]) | (static_cast<u32>(base_[off_ + 1U]) << 8U) |
                       (static_cast<u32>(base_[off_ + 2U]) << 16U);
         off_ += kVecSwizzleMaskBytes;
         return v;

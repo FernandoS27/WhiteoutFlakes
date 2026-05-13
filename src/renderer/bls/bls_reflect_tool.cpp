@@ -1,5 +1,5 @@
-#include "whiteout/flakes/types.h"
 #include "bls_container.h"
+#include "whiteout/flakes/types.h"
 
 #include <cstdio>
 #include <cstring>
@@ -19,7 +19,8 @@ namespace fs = std::filesystem;
 
 static bool ReadFile(const fs::path& p, std::vector<u8>& out) {
     std::ifstream f(p, std::ios::binary);
-    if (!f) return false;
+    if (!f)
+        return false;
     f.seekg(0, std::ios::end);
     out.resize(static_cast<usize>(f.tellg()));
     f.seekg(0);
@@ -33,7 +34,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     fs::path input = argv[1];
-    i32 which      = std::atoi(argv[2]);
+    i32 which = std::atoi(argv[2]);
 
     std::vector<u8> bytes;
     if (!ReadFile(input, bytes)) {
@@ -52,8 +53,8 @@ int main(int argc, char** argv) {
     }
 
     auto view = bls.Permute(which);
-    std::printf("# file=%s perm=%d size=%u\n",
-                input.filename().string().c_str(), which, (u32)view.dxbc.size());
+    std::printf("# file=%s perm=%d size=%u\n", input.filename().string().c_str(), which,
+                (u32)view.dxbc.size());
 
     ComPtr<ID3DBlob> dasm;
     HRESULT hr = D3DDisassemble(view.dxbc.data(), view.dxbc.size(),

@@ -19,34 +19,37 @@
 #include "gfx/gfx.h"
 
 #if defined(TRACY_ENABLE)
-#  include <tracy/Tracy.hpp>
-#  define WDX_CPU_ZONE(name) ZoneScopedN(name)
+#include <tracy/Tracy.hpp>
+#define WDX_CPU_ZONE(name) ZoneScopedN(name)
 #else
-#  define WDX_CPU_ZONE(name) ((void)0)
+#define WDX_CPU_ZONE(name) ((void)0)
 #endif
 
 namespace whiteout::flakes::renderer::perf {
 
 class GpuZoneScope {
 public:
-    GpuZoneScope(gfx::IGFXCommandList* cmd, const char* name) noexcept
-        : cmd_(cmd) {
-        if (cmd_) cmd_->BeginGpuZone(name);
+    GpuZoneScope(gfx::IGFXCommandList* cmd, const char* name) noexcept : cmd_(cmd) {
+        if (cmd_)
+            cmd_->BeginGpuZone(name);
     }
     ~GpuZoneScope() {
-        if (cmd_) cmd_->EndGpuZone();
+        if (cmd_)
+            cmd_->EndGpuZone();
     }
-    GpuZoneScope(const GpuZoneScope&)            = delete;
+    GpuZoneScope(const GpuZoneScope&) = delete;
     GpuZoneScope& operator=(const GpuZoneScope&) = delete;
 
 private:
     gfx::IGFXCommandList* cmd_ = nullptr;
 };
 
-}
+} // namespace whiteout::flakes::renderer::perf
 
 #define WDX_GPU_ZONE_CONCAT_INNER(a, b) a##b
-#define WDX_GPU_ZONE_CONCAT(a, b)       WDX_GPU_ZONE_CONCAT_INNER(a, b)
-#define WDX_GPU_ZONE(cmd, name) \
-    ::whiteout::flakes::renderer::perf::GpuZoneScope \
-        WDX_GPU_ZONE_CONCAT(wdx_gpu_zone_, __LINE__){cmd, name}
+#define WDX_GPU_ZONE_CONCAT(a, b) WDX_GPU_ZONE_CONCAT_INNER(a, b)
+#define WDX_GPU_ZONE(cmd, name)                                                                    \
+    ::whiteout::flakes::renderer::perf::GpuZoneScope WDX_GPU_ZONE_CONCAT(wdx_gpu_zone_,            \
+                                                                         __LINE__) {               \
+        cmd, name                                                                                  \
+    }

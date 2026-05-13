@@ -5,24 +5,31 @@ namespace whiteout::flakes::renderer::particle {
 namespace {
 
 u32 CeilPow2(u32 x) {
-    if (x == 0) return 1;
-    if ((x & (x - 1)) == 0) return x;
+    if (x == 0)
+        return 1;
+    if ((x & (x - 1)) == 0)
+        return x;
     u32 v = x - 1;
-    v |= v >> 1;  v |= v >> 2;
-    v |= v >> 4;  v |= v >> 8;
+    v |= v >> 1;
+    v |= v >> 2;
+    v |= v >> 4;
+    v |= v >> 8;
     v |= v >> 16;
     return v + 1;
 }
 
-}
+} // namespace
 
 void ParticlePool::Sync(f32 emissionRate, f32 lifeSpan) {
-    if (emissionRate <= 0.0f || lifeSpan <= 0.0f) return;
+    if (emissionRate <= 0.0f || lifeSpan <= 0.0f)
+        return;
 
     u32 arraySize = static_cast<u32>(1.15f * emissionRate * lifeSpan);
-    if (arraySize == 0) return;
+    if (arraySize == 0)
+        return;
     u32 oldSize = static_cast<u32>(particles_.size());
-    if (oldSize >= arraySize) return;
+    if (oldSize >= arraySize)
+        return;
 
     u32 reserve = CeilPow2(arraySize);
     particles_.reserve(reserve);
@@ -73,4 +80,4 @@ void ParticlePool::PushDead(u32 idx) {
     dead_.push_back(idx);
 }
 
-}
+} // namespace whiteout::flakes::renderer::particle

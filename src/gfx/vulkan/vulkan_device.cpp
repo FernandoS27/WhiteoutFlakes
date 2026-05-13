@@ -1,20 +1,20 @@
 // VulkanDevice ctor / dtor / accessors. Heavy work lives in the
 // other vulkan_*.cpp files.
 
-#include "vulkan_device.h"
 #include "vulkan_command_list.h"
+#include "vulkan_device.h"
 #include "vulkan_device_state.h"
 #include "vulkan_handles.h"
 
 #if defined(TRACY_ENABLE)
-#  include <tracy/TracyVulkan.hpp>
+#include <tracy/TracyVulkan.hpp>
 #endif
 
 namespace whiteout::flakes::gfx::vulkan {
 
 VulkanDevice::VulkanDevice()
-    : state_(std::make_unique<VulkanDeviceState>())
-    , immediate_(std::make_unique<VulkanCommandList>(*this)) {}
+    : state_(std::make_unique<VulkanDeviceState>()),
+      immediate_(std::make_unique<VulkanCommandList>(*this)) {}
 
 VulkanDevice::~VulkanDevice() {
     auto& state = *state_;
@@ -31,9 +31,11 @@ VulkanDevice::~VulkanDevice() {
 #endif
 
     // waitIdle above made everything safe — bypass the timeline gate.
-    for (auto& pending : state.pendingDeletes) pending.deleter->Run(state);
+    for (auto& pending : state.pendingDeletes)
+        pending.deleter->Run(state);
     state.pendingDeletes.clear();
-    for (auto& pending : state.pendingTransferDeletes) pending.deleter->Run(state);
+    for (auto& pending : state.pendingTransferDeletes)
+        pending.deleter->Run(state);
     state.pendingTransferDeletes.clear();
 
     // Reap anything the renderer never explicitly destroyed. Shared-
@@ -56,9 +58,9 @@ VulkanDevice::~VulkanDevice() {
 
     if (state.sharedCbBuffer && state.sharedCbAllocation) {
         vmaDestroyBuffer(state.allocator, state.sharedCbBuffer, state.sharedCbAllocation);
-        state.sharedCbBuffer     = VK_NULL_HANDLE;
+        state.sharedCbBuffer = VK_NULL_HANDLE;
         state.sharedCbAllocation = VK_NULL_HANDLE;
-        state.sharedCbMapped     = nullptr;
+        state.sharedCbMapped = nullptr;
     }
 
     if (state.allocator) {
@@ -67,10 +69,18 @@ VulkanDevice::~VulkanDevice() {
     }
 }
 
-VulkanDeviceState&       VulkanDevice::State()       { return *state_; }
-const VulkanDeviceState& VulkanDevice::State() const { return *state_; }
+VulkanDeviceState& VulkanDevice::State() {
+    return *state_;
+}
+const VulkanDeviceState& VulkanDevice::State() const {
+    return *state_;
+}
 
-const char*      VulkanDevice::GetDeviceName() const { return deviceName_.c_str(); }
-IGFXCommandList* VulkanDevice::GetImmediateContext() { return immediate_.get(); }
+const char* VulkanDevice::GetDeviceName() const {
+    return deviceName_.c_str();
+}
+IGFXCommandList* VulkanDevice::GetImmediateContext() {
+    return immediate_.get();
+}
 
-}  // namespace whiteout::flakes::gfx::vulkan
+} // namespace whiteout::flakes::gfx::vulkan

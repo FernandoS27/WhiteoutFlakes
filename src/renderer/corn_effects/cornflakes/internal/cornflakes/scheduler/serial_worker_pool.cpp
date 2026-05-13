@@ -1,6 +1,6 @@
 #include <cornflakes/core/determinism.hpp>
-#include <cornflakes/interface/diagnostics/issue.hpp>
 #include <cornflakes/diagnostics/issue_codes.hpp>
+#include <cornflakes/interface/diagnostics/issue.hpp>
 #include <cornflakes/scheduler/serial_worker_pool.hpp>
 
 #include <memory>

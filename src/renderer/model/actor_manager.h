@@ -1,7 +1,7 @@
 #pragma once
 
-#include "whiteout/flakes/types.h"
 #include "model/model_instance.h"
+#include "whiteout/flakes/types.h"
 
 #include <memory>
 #include <unordered_map>
@@ -24,7 +24,8 @@ public:
     }
 
     Actor* Adopt(std::unique_ptr<Actor> actor) {
-        if (!actor) return nullptr;
+        if (!actor)
+            return nullptr;
         const ActorId id = actor->handle;
         Actor* raw = actor.get();
         actors_[id] = std::move(actor);
@@ -33,7 +34,8 @@ public:
 
     std::unique_ptr<Actor> Despawn(ActorId id) {
         auto it = actors_.find(id);
-        if (it == actors_.end()) return nullptr;
+        if (it == actors_.end())
+            return nullptr;
         auto out = std::move(it->second);
         actors_.erase(it);
         return out;
@@ -44,12 +46,22 @@ public:
         return (it != actors_.end()) ? it->second.get() : nullptr;
     }
 
-    bool   Empty() const { return actors_.empty(); }
-    usize  Size()  const { return actors_.size(); }
-    void   Clear()       { actors_.clear(); }
+    bool Empty() const {
+        return actors_.empty();
+    }
+    usize Size() const {
+        return actors_.size();
+    }
+    void Clear() {
+        actors_.clear();
+    }
 
-    Map&       All()       { return actors_; }
-    const Map& All() const { return actors_; }
+    Map& All() {
+        return actors_;
+    }
+    const Map& All() const {
+        return actors_;
+    }
 
     ActorId FirstId() const {
         return actors_.empty() ? 0 : actors_.begin()->first;
@@ -67,10 +79,11 @@ inline i32 AncestorActorTimeMs(const Actor& start, const ActorManager& actors) {
     const Actor* a = &start;
     while (a->IsChild()) {
         const Actor* p = actors.Find(a->parent);
-        if (!p) break;
+        if (!p)
+            break;
         a = p;
     }
     return a->cursor.actorTimeMs;
 }
 
-}
+} // namespace whiteout::flakes::renderer::model

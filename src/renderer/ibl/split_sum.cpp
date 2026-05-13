@@ -2,8 +2,8 @@
 
 #include "whiteout/flakes/types.h"
 
-#include <cmath>
 #include <algorithm>
+#include <cmath>
 #include <numbers>
 
 namespace whiteout::flakes::renderer::ibl {
@@ -24,11 +24,10 @@ inline void Hammersley(f32& x, f32& y, u32 i, u32 count) {
     y = RadicalInverseVdC(i);
 }
 
-inline void ImportanceSampleGGX(f32 Xi_x, f32 Xi_y, f32 roughness,
-                                f32 N_x, f32 N_y, f32 N_z,
+inline void ImportanceSampleGGX(f32 Xi_x, f32 Xi_y, f32 roughness, f32 N_x, f32 N_y, f32 N_z,
                                 f32& H_x, f32& H_y, f32& H_z) {
-    const f32 a     = roughness * roughness;
-    const f32 phi   = 2.0f * std::numbers::pi_v<f32> * Xi_x;
+    const f32 a = roughness * roughness;
+    const f32 phi = 2.0f * std::numbers::pi_v<f32> * Xi_x;
     const f32 cosTh = std::sqrt((1.0f - Xi_y) / (1.0f + (a * a - 1.0f) * Xi_y));
     const f32 sinTh = std::sqrt(std::max(0.0f, 1.0f - cosTh * cosTh));
 
@@ -44,7 +43,11 @@ inline void ImportanceSampleGGX(f32 Xi_x, f32 Xi_y, f32 roughness,
     f32 T_y = up_z * N_x - up_x * N_z;
     f32 T_z = up_x * N_y - up_y * N_x;
     const f32 Tlen = std::sqrt(T_x * T_x + T_y * T_y + T_z * T_z);
-    if (Tlen > 1e-6f) { T_x /= Tlen; T_y /= Tlen; T_z /= Tlen; }
+    if (Tlen > 1e-6f) {
+        T_x /= Tlen;
+        T_y /= Tlen;
+        T_z /= Tlen;
+    }
 
     const f32 B_x = N_y * T_z - N_z * T_y;
     const f32 B_y = N_z * T_x - N_x * T_z;
@@ -55,8 +58,14 @@ inline void ImportanceSampleGGX(f32 Xi_x, f32 Xi_y, f32 roughness,
     f32 S_z = Ht_x * T_z + Ht_y * B_z + Ht_z * N_z;
 
     const f32 Slen = std::sqrt(S_x * S_x + S_y * S_y + S_z * S_z);
-    if (Slen > 1e-6f) { S_x /= Slen; S_y /= Slen; S_z /= Slen; }
-    H_x = S_x; H_y = S_y; H_z = S_z;
+    if (Slen > 1e-6f) {
+        S_x /= Slen;
+        S_y /= Slen;
+        S_z /= Slen;
+    }
+    H_x = S_x;
+    H_y = S_y;
+    H_z = S_z;
 }
 
 inline f32 GSmithGGX(f32 NoV, f32 NoL, f32 roughness) {
@@ -70,10 +79,9 @@ inline f32 ClampRoughness(f32 r) {
     return (r * 255.0f + 1.0f) / 256.0f;
 }
 
-}
+} // namespace
 
-void GenerateSplitSumLut(i32 size, i32 sampleCount,
-                         std::vector<u8>& outPixels) {
+void GenerateSplitSumLut(i32 size, i32 sampleCount, std::vector<u8>& outPixels) {
     outPixels.assign(static_cast<usize>(size) * size * 4, 0);
 
     const f32 N_x = 0.0f, N_y = 0.0f, N_z = 1.0f;
@@ -97,24 +105,26 @@ void GenerateSplitSumLut(i32 size, i32 sampleCount,
                 Hammersley(Xi_x, Xi_y, i, static_cast<u32>(sampleCount));
 
                 f32 H_x, H_y, H_z;
-                ImportanceSampleGGX(Xi_x, Xi_y, roughness,
-                                    N_x, N_y, N_z,
-                                    H_x, H_y, H_z);
+                ImportanceSampleGGX(Xi_x, Xi_y, roughness, N_x, N_y, N_z, H_x, H_y, H_z);
 
                 const f32 VoH = V_x * H_x + V_y * H_y + V_z * H_z;
 
                 f32 L_x = 2.0f * VoH * H_x - V_x;
                 f32 L_y = 2.0f * VoH * H_y - V_y;
                 f32 L_z = 2.0f * VoH * H_z - V_z;
-                const f32 Llen = std::sqrt(L_x*L_x + L_y*L_y + L_z*L_z);
-                if (Llen > 1e-6f) { L_x /= Llen; L_y /= Llen; L_z /= Llen; }
+                const f32 Llen = std::sqrt(L_x * L_x + L_y * L_y + L_z * L_z);
+                if (Llen > 1e-6f) {
+                    L_x /= Llen;
+                    L_y /= Llen;
+                    L_z /= Llen;
+                }
 
-                const f32 NoL  = std::max(0.0f, L_z);
-                const f32 NoH  = std::max(0.0f, H_z);
+                const f32 NoL = std::max(0.0f, L_z);
+                const f32 NoH = std::max(0.0f, H_z);
                 const f32 VoHc = std::max(0.0f, VoH);
 
                 if (NoL > 0.0f) {
-                    const f32 G  = GSmithGGX(NoV, NoL, roughness);
+                    const f32 G = GSmithGGX(NoV, NoL, roughness);
 
                     f32 G_Vis = (G * VoHc) / (NoH * NoV);
                     G_Vis = std::clamp(G_Vis, 0.0f, 1.0f);
@@ -147,12 +157,12 @@ gfx::TextureHandle CreateSplitSumLutTexture(gfx::IGFXDevice& gfx) {
     GenerateSplitSumLut(kSplitSumSize, kSplitSumSamples, pixels);
 
     gfx::TextureDesc desc;
-    desc.width  = kSplitSumSize;
+    desc.width = kSplitSumSize;
     desc.height = kSplitSumSize;
 
     desc.format = gfx::Format::B8G8R8A8_UNORM;
-    desc.usage  = gfx::TextureUsage::ShaderResource;
+    desc.usage = gfx::TextureUsage::ShaderResource;
     return gfx.CreateTexture(desc, pixels.data());
 }
 
-}
+} // namespace whiteout::flakes::renderer::ibl

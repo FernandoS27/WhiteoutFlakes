@@ -4,23 +4,30 @@ namespace whiteout::flakes::renderer::bls {
 
 BlsProgramCatalog::BlsProgramCatalog(BlsShaderCache* cache) : cache_(cache) {}
 
-BlsProgramCatalog::~BlsProgramCatalog() { Clear(); }
+BlsProgramCatalog::~BlsProgramCatalog() {
+    Clear();
+}
 
 const BlsProgram* BlsProgramCatalog::Load(const BlsProgramDef& def) {
-    if (!cache_) return nullptr;
+    if (!cache_)
+        return nullptr;
 
     if (auto it = programs_.find(static_cast<u8>(def.id)); it != programs_.end()) {
         return it->second.get();
     }
 
     BlsShader* vs = (def.vsName && def.vsName[0])
-        ? cache_->Acquire(gfx::ShaderStage::Vertex, def.vsName) : nullptr;
+                        ? cache_->Acquire(gfx::ShaderStage::Vertex, def.vsName)
+                        : nullptr;
     BlsShader* ps = (def.psName && def.psName[0])
-        ? cache_->Acquire(gfx::ShaderStage::Pixel,  def.psName) : nullptr;
+                        ? cache_->Acquire(gfx::ShaderStage::Pixel, def.psName)
+                        : nullptr;
 
     if (!vs || !ps) {
-        if (vs) cache_->Release(vs);
-        if (ps) cache_->Release(ps);
+        if (vs)
+            cache_->Release(vs);
+        if (ps)
+            cache_->Release(ps);
         return nullptr;
     }
 
@@ -40,12 +47,17 @@ const BlsProgram* BlsProgramCatalog::Get(GxShaderID id) const {
 }
 
 void BlsProgramCatalog::Clear() {
-    if (!cache_) { programs_.clear(); return; }
+    if (!cache_) {
+        programs_.clear();
+        return;
+    }
     for (auto& [id, program] : programs_) {
-        if (program->vs) cache_->Release(program->vs);
-        if (program->ps) cache_->Release(program->ps);
+        if (program->vs)
+            cache_->Release(program->vs);
+        if (program->ps)
+            cache_->Release(program->ps);
     }
     programs_.clear();
 }
 
-}
+} // namespace whiteout::flakes::renderer::bls

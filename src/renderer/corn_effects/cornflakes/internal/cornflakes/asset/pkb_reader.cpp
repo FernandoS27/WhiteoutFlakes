@@ -1,7 +1,7 @@
 #include <cornflakes/asset/field_defs.hpp>
-#include <cornflakes/interface/asset/pkb_reader.hpp>
 #include <cornflakes/core/determinism.hpp>
 #include <cornflakes/diagnostics/issue_codes.hpp>
+#include <cornflakes/interface/asset/pkb_reader.hpp>
 
 #include <cstring>
 #include <vector>

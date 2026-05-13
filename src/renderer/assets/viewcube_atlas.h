@@ -1,6 +1,6 @@
 #pragma once
-#include "whiteout/flakes/types.h"
 #include <vector>
+#include "whiteout/flakes/types.h"
 
 namespace whiteout::flakes::renderer::assets {
 

@@ -1,15 +1,15 @@
 #pragma once
 
-#include "whiteout/flakes/types.h"
-#include "renderer/render_service.h"
+#include "render_detail.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_pipeline_impl.h"
-#include "render_detail.h"
+#include "renderer/render_service.h"
+#include "whiteout/flakes/types.h"
 
 #include <cstdio>
-#include "renderer/assets/sampler_asset_manager.h"
 #include "bls/bls_draw_helpers.h"
 #include "bls/bls_frame.h"
+#include "renderer/assets/sampler_asset_manager.h"
 
 namespace whiteout::flakes::renderer {
 
@@ -22,25 +22,29 @@ public:
         : rs_(rs), bucket_(bucket) {}
 
     bool Run() {
-        Derived&  d  = self();
-        if (!d.IsAvailable()) return false;
-        if (rs_.Scene().Actors().All().empty()) return true;
+        Derived& d = self();
+        if (!d.IsAvailable())
+            return false;
+        if (rs_.Scene().Actors().All().empty())
+            return true;
 
         auto* cmd = rs_.Pipeline().Gfx()->GetImmediateContext();
 
         auto collected = render_detail::CollectSortedRenderables(
             rs_.Scene().Actors().All(), rs_.Pipeline().ComputeSelectedLod());
-        if (collected.refs.empty()) return true;
+        if (collected.refs.empty())
+            return true;
 
         Matrix44f view, proj;
         d.ComputeViewProj(view, proj);
 
         bls::FrameInputs frame;
-        frame.view         = view;
-        frame.projection   = proj;
-        frame.effectTime   = rs_.Scene().GetAnimationTime() * 0.001f;
-        frame.numLights    = 0;
-        frame.viewportRect = { (f32)rs_.Pipeline().Width(), (f32)rs_.Pipeline().Height(), 0.0f, 0.0f };
+        frame.view = view;
+        frame.projection = proj;
+        frame.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
+        frame.numLights = 0;
+        frame.viewportRect = {(f32)rs_.Pipeline().Width(), (f32)rs_.Pipeline().Height(), 0.0f,
+                              0.0f};
 
         cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.Samplers().LinearWrap());
         d.BindPassResources(cmd, frame);
@@ -49,18 +53,19 @@ public:
 
         for (auto& ref : collected.refs) {
 
-            if (bucket_ == GeosetBucket::Opaque       && ref.renderOrder >  1) continue;
-            if (bucket_ == GeosetBucket::Transparent  && ref.renderOrder <= 1) continue;
+            if (bucket_ == GeosetBucket::Opaque && ref.renderOrder > 1)
+                continue;
+            if (bucket_ == GeosetBucket::Transparent && ref.renderOrder <= 1)
+                continue;
 
-            const auto& view_  = *ref.view;
-            const auto& geo    = (*view_.geosets)[ref.idx];
+            const auto& view_ = *ref.view;
+            const auto& geo = (*view_.geosets)[ref.idx];
             if (geo.unskinnedVb == gfx::BufferHandle::Invalid ||
-                geo.ib == gfx::BufferHandle::Invalid ||
-                geo.indexCount == 0) continue;
+                geo.ib == gfx::BufferHandle::Invalid || geo.indexCount == 0)
+                continue;
 
             const i32 lightCount = bls::BuildLightPalette(
-                frame, *view_.activeLights, view, baseline,
-                rs_.Settings().GetLightingMode());
+                frame, *view_.activeLights, view, baseline, rs_.Settings().GetLightingMode());
 
             d.DrawGeoset(ref, frame, view, cmd, lightCount);
         }
@@ -69,9 +74,13 @@ public:
 
 protected:
     RenderService& rs_;
-    GeosetBucket   bucket_;
-    Derived&       self()       { return *static_cast<Derived*>(this); }
-    const Derived& self() const { return *static_cast<const Derived*>(this); }
+    GeosetBucket bucket_;
+    Derived& self() {
+        return *static_cast<Derived*>(this);
+    }
+    const Derived& self() const {
+        return *static_cast<const Derived*>(this);
+    }
 };
 
-}
+} // namespace whiteout::flakes::renderer
