@@ -126,13 +126,23 @@ bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
         return false;
     }
 
-    targetId_ = service_.Pipeline().CreateSwapChainTarget(static_cast<void*>(hwnd), width, height);
+    i32 fbW = width;
+    i32 fbH = height;
+    glfwGetFramebufferSize(window_, &fbW, &fbH);
+    if (fbW <= 0)
+        fbW = width;
+    if (fbH <= 0)
+        fbH = height;
+
+    targetId_ = service_.Pipeline().CreateSwapChainTarget(static_cast<void*>(hwnd), fbW, fbH);
     if (targetId_ == 0) {
         std::fprintf(stderr, "CreateSwapChainTarget FAILED\n");
         Close();
         return false;
     }
     service_.Pipeline().SetPrimaryTarget(targetId_);
+    lastFbW_ = fbW;
+    lastFbH_ = fbH;
 
     return true;
 }
@@ -214,8 +224,13 @@ void ViewerApp::ScrollCallback(GLFWwindow* w, double /*xoff*/, double yoff) {
 void ViewerApp::OnFramebufferResize(i32 w, i32 h) {
     if (w <= 0 || h <= 0)
         return;
-    if (service_.Pipeline().IsDeviceReady())
-        service_.Pipeline().ResizePrimaryTarget(w, h);
+    if (!service_.Pipeline().IsDeviceReady())
+        return;
+    if (w == lastFbW_ && h == lastFbH_)
+        return;
+    service_.Pipeline().ResizePrimaryTarget(w, h);
+    lastFbW_ = w;
+    lastFbH_ = h;
 }
 
 void ViewerApp::OnMouseButton(i32 button, i32 action) {
@@ -423,6 +438,25 @@ void ViewerApp::Tick(f32 dt) {
     glfwPollEvents();
     if (!window_ || glfwWindowShouldClose(window_))
         return;
+
+    // Per-frame size sync. The framebuffer-size callback alone isn't
+    // reliable — GLFW on Windows can swallow callbacks during the maximize
+    // transition's modal sizing loop, and HiDPI display changes also slip
+    // through. Comparing against the last sized value is cheap and catches
+    // every missed event. Skip the rest of the frame when minimised
+    // (width or height 0) — swap chains hate zero extents.
+    {
+        i32 fbW = 0;
+        i32 fbH = 0;
+        glfwGetFramebufferSize(window_, &fbW, &fbH);
+        if (fbW <= 0 || fbH <= 0)
+            return;
+        if ((fbW != lastFbW_ || fbH != lastFbH_) && service_.Pipeline().IsDeviceReady()) {
+            service_.Pipeline().ResizePrimaryTarget(fbW, fbH);
+            lastFbW_ = fbW;
+            lastFbH_ = fbH;
+        }
+    }
 
     // ---- Walk-drift along the camera's X axis (orbital mode only) ----
     constexpr f32 kDefaultWalkSpeed = 100.0f;

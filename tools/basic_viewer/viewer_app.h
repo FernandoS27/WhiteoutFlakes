@@ -139,6 +139,9 @@ private:
     RenderTargetId targetId_ = 0;
     bool imguiInitialised_ = false;
 
+    i32 lastFbW_ = 0;
+    i32 lastFbH_ = 0;
+
     std::unique_ptr<ViewerUI> ui_;
 
     // ---- Host state ----
