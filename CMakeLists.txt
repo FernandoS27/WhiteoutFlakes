@@ -204,6 +204,32 @@ add_custom_command(
 add_custom_target(WhiteoutFlakesShaders DEPENDS "${COMPILED_SHADERS_H}")
 
 # ============================================================================
+# Embedded resources (build-time: binary file → C++ header with byte array)
+# ============================================================================
+
+set(EMBED_OUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/embedded")
+file(MAKE_DIRECTORY "${EMBED_OUT_DIR}")
+
+set(TEAM_GLOW_TGA "${CMAKE_CURRENT_SOURCE_DIR}/resources/teamglow.tga")
+set(TEAM_GLOW_H   "${EMBED_OUT_DIR}/team_glow_embedded.h")
+
+add_custom_command(
+    OUTPUT  "${TEAM_GLOW_H}"
+    COMMAND "${CMAKE_COMMAND}"
+            "-DINPUT=${TEAM_GLOW_TGA}"
+            "-DOUTPUT=${TEAM_GLOW_H}"
+            "-DVAR_NAME=kTeamGlowTGA"
+            "-DNAMESPACE=whiteout::flakes::io"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/resources/embed_binary.cmake"
+    DEPENDS "${TEAM_GLOW_TGA}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/embed_binary.cmake"
+    COMMENT "Embedding teamglow.tga into team_glow_embedded.h"
+    VERBATIM
+)
+
+add_custom_target(WhiteoutFlakesEmbedded DEPENDS "${TEAM_GLOW_H}")
+
+# ============================================================================
 # Wc3Shaders — opt-in build of the externals/Wc3Shaders Slang reconstruction.
 #
 # When WDX_BUILD_WC3_SHADERS=ON, drives the submodule's two-step Python
@@ -532,7 +558,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/public_api/renderer_api.cpp
 )
 
-add_dependencies(WhiteoutFlakesLib WhiteoutFlakesShaders)
+add_dependencies(WhiteoutFlakesLib WhiteoutFlakesShaders WhiteoutFlakesEmbedded)
 
 set_target_properties(WhiteoutFlakesLib PROPERTIES
     CXX_STANDARD          20
@@ -545,6 +571,7 @@ target_include_directories(WhiteoutFlakesLib PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/io"
     "${SHADER_OUT_DIR}"
+    "${EMBED_OUT_DIR}"
 )
 # cornflakes module include layout:
 #   src/renderer/corn_effects          → so <cornflakes/interface/...> resolves
