@@ -14,13 +14,12 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
-#include <limits>
 #include <utility>
 #include <vector>
 
-// Defined in gfx_factory.cpp.
+// GetPipelineCachePath is declared in gfx.h; GetPreferredDevice is
+// gfx-factory-internal but the backends need it.
 namespace whiteout::flakes::gfx {
-const std::filesystem::path& GetPipelineCachePath();
 const std::string& GetPreferredDevice();
 } // namespace whiteout::flakes::gfx
 
@@ -286,7 +285,6 @@ bool PickPhysicalDevice(VulkanDeviceState& state, std::string& deviceNameOut) {
         if (!preferred.empty() &&
             preferred == std::string(pending.getProperties().deviceName.data())) {
             state.physicalDevice = std::move(pending);
-            bestScore = std::numeric_limits<i32>::max();
             break;
         }
         const i32 score = ScoreDevice(pending);

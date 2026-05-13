@@ -180,7 +180,6 @@ bool D3D12Device::CreateDeviceAndQueue() {
                     if (bestAdapter)
                         bestAdapter->Release();
                     bestAdapter = adapter;
-                    bestVRAM = desc.DedicatedVideoMemory;
                     break; // exact name match wins regardless of VRAM
                 }
                 if (desc.DedicatedVideoMemory > bestVRAM) {
@@ -230,9 +229,9 @@ bool D3D12Device::CreateDeviceAndQueue() {
 }
 
 bool D3D12Device::CreateCommandInfra() {
-    for (u32 i = 0; i < kFramesInFlight; ++i) {
+    for (auto*& allocator : allocators_) {
         HRESULT hr = device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-                                                     IID_PPV_ARGS(&allocators_[i]));
+                                                     IID_PPV_ARGS(&allocator));
         if (FAILED(hr))
             return false;
     }

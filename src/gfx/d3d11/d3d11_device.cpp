@@ -123,7 +123,6 @@ bool D3D11Device::Init(bool enableValidation) {
                 if (bestAdapter)
                     bestAdapter->Release();
                 bestAdapter = adapter;
-                bestVRAM = desc.DedicatedVideoMemory;
                 break; // exact name match wins regardless of VRAM
             }
             if (desc.DedicatedVideoMemory > bestVRAM) {
@@ -511,7 +510,7 @@ PipelineHandle D3D11Device::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
     if (!desc.inputLayout.empty() && !vsEntry->bytecode.empty()) {
         std::vector<D3D11_INPUT_ELEMENT_DESC> elems;
         elems.reserve(desc.inputLayout.size());
-        for (auto& ie : desc.inputLayout) {
+        for (const auto& ie : desc.inputLayout) {
             D3D11_INPUT_ELEMENT_DESC d{};
             d.SemanticName = ie.semantic;
             d.SemanticIndex = ie.semanticIndex;
