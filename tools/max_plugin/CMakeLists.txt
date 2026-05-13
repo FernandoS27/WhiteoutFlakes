@@ -57,9 +57,10 @@ add_library(WhiteoutFlakesMaxPlugin SHARED
     WhiteoutDexExtractor.def
     resource.rc
 
-    # Shared windowing / sound utilities — same sources the basic_viewer
-    # standalone uses. Compiled into the plugin DLL so it stays self-contained.
-    "${BASIC_VIEWER_DIR}/render_window.cpp"
+    # Win32 host window — Max-only after the basic_viewer moved to GLFW + ImGui.
+    render_window.cpp
+
+    # Sound emitter + INI loader are still shared with the standalone viewer.
     "${BASIC_VIEWER_DIR}/settings_ini.cpp"
     "${BASIC_VIEWER_DIR}/windows_sound_emitter.cpp"
 )

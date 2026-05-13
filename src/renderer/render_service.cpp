@@ -2,7 +2,9 @@
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/assets/sampler_asset_manager.h"
 #include "renderer/assets/texture_asset_manager.h"
+#include "renderer/bls/bls_shader_cache.h"
 #include "renderer/dnc/dnc_service.h"
+#include "renderer/imgui/imgui_renderer.h"
 #include "renderer/model/model_source_utils.h"
 #include "renderer/model/model_template_manager.h"
 #include "renderer/render_pipeline.h"
@@ -225,6 +227,43 @@ shadow::ShadowService& RenderService::EnsureShadowService(gfx::IGFXDevice& gfx) 
     if (!impl_->shadowService_)
         impl_->shadowService_ = std::make_unique<shadow::ShadowService>(&gfx);
     return *impl_->shadowService_;
+}
+
+dear_imgui::ImGuiRenderer* RenderService::ImGui() {
+#if WDX_ENABLE_IMGUI
+    return impl_->imgui_.get();
+#else
+    return nullptr;
+#endif
+}
+
+const dear_imgui::ImGuiRenderer* RenderService::ImGui() const {
+#if WDX_ENABLE_IMGUI
+    return impl_->imgui_.get();
+#else
+    return nullptr;
+#endif
+}
+
+void RenderService::EnsureImGui(gfx::IGFXDevice& gfx, bls::BlsShaderCache& shaderCache,
+                                gfx::Format rtvFormat, gfx::Format dsvFormat) {
+#if WDX_ENABLE_IMGUI
+    if (!impl_->imgui_) {
+        impl_->imgui_ =
+            std::make_unique<dear_imgui::ImGuiRenderer>(gfx, shaderCache, rtvFormat, dsvFormat);
+    }
+#else
+    (void)gfx;
+    (void)shaderCache;
+    (void)rtvFormat;
+    (void)dsvFormat;
+#endif
+}
+
+void RenderService::ShutdownImGui() {
+#if WDX_ENABLE_IMGUI
+    impl_->imgui_.reset();
+#endif
 }
 
 void RenderService::SwapSoundEmitter(std::unique_ptr<ISoundEmitter> emitter) {

@@ -10,6 +10,7 @@
 #include "effects/spn_spawner.h"
 #include "file_content_provider.h"
 #include "frame_ticker.h"
+#include "imgui/imgui_renderer.h"
 #include "model/actor_manager.h"
 #include "model/model_instance.h"
 #include "model/model_loader.h"
@@ -63,6 +64,13 @@ struct RenderService::Impl {
     std::unique_ptr<assets::TextureAssetManager> textures_;
     std::unique_ptr<assets::ReplaceableTextureManager> replaceables_;
     std::unique_ptr<debug::DebugRenderer> debug_;
+
+#if WDX_ENABLE_IMGUI
+    // ImGui adapter is built lazily once the gfx device + BLS shader cache
+    // are alive (RenderPipeline::InitBlsShaders calls EnsureImGui). The
+    // host owns the ImGui context — the adapter only manages the GPU side.
+    std::unique_ptr<dear_imgui::ImGuiRenderer> imgui_;
+#endif
 };
 
 } // namespace whiteout::flakes::renderer

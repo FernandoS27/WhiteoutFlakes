@@ -21,6 +21,7 @@
 // pointers to these services) is usable without each tool adding its own
 // transitive include.
 #include "dnc/dnc_service.h"
+#include "imgui/imgui_renderer.h"
 #include "shadow/shadow_service.h"
 
 #include <memory>
@@ -48,6 +49,9 @@ class ModelLoader;
 namespace debug {
 class DebugRenderer;
 }
+namespace bls {
+class BlsShaderCache;
+} // namespace bls
 namespace effects {
 class SpnSpawner;
 }
@@ -116,6 +120,20 @@ public:
     const dnc::DncService* GetDncService() const;
     shadow::ShadowService* GetShadowService();
     const shadow::ShadowService* GetShadowService() const;
+
+    // Engine-side Dear ImGui adapter. Returns nullptr when WDX_ENABLE_IMGUI
+    // is off at compile time, or before InitBlsShaders has had a chance to
+    // call EnsureImGui (e.g. during early service construction). The host
+    // is responsible for ImGui::CreateContext / ImGui::NewFrame /
+    // ImGui::Render — the engine only consumes the resulting ImDrawData
+    // inside RenderFrame.
+    dear_imgui::ImGuiRenderer* ImGui();
+    const dear_imgui::ImGuiRenderer* ImGui() const;
+    // Lazily build the adapter once a device is available. Idempotent.
+    void EnsureImGui(gfx::IGFXDevice& gfx, bls::BlsShaderCache& shaderCache,
+                     gfx::Format rtvFormat, gfx::Format dsvFormat);
+    // Tear down before the gfx device goes away.
+    void ShutdownImGui();
 
     // ---- Per-actor effect services ----
     particle::ParticleService& Particles();

@@ -821,6 +821,15 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     ApplyIblMode(rs_.Settings().GetIblMode());
     rs_.Settings().ConsumeIblModeDirty();
 
+    // Build the engine-side ImGui adapter now that the BLS cache has been
+    // pointed at the device + content provider. The adapter loads imgui.bls
+    // (one VS, two PS perms) through the same cache. RTV format is the
+    // swapchain backbuffer format; in HD mode ImGui draws live inside the
+    // tonemap pass (target.color), in SD mode inside the main scene pass
+    // (also target.color) — both write through the same sRGB RTV.
+    rs_.EnsureImGui(*impl_->gfx_, *impl_->blsShaderCache_,
+                    gfx::Format::R8G8B8A8_UNORM_SRGB, impl_->depthStencilFormat_);
+
     const bool ok = impl_->blsSdProgram_ != nullptr && impl_->blsSdOnHdProgram_ != nullptr &&
                     impl_->blsHdProgram_ != nullptr && impl_->blsSpriteVs_ != nullptr &&
                     impl_->blsTonemapPs_ != nullptr &&
@@ -1066,6 +1075,10 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
 }
 
 void RenderPipeline::CleanupGFX() {
+
+    // ImGui adapter releases its GPU resources through the device, so it
+    // must go down before the device is dropped at the end of this routine.
+    rs_.ShutdownImGui();
 
     ShutdownBlsShaders();
 
@@ -1348,6 +1361,17 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
     if (rs_.Settings().ShowLights())
         rs_.Debug().RenderLightMarkers();
     rs_.Debug().RenderViewCube();
+
+    // SD path lands the scene directly on the swap chain backbuffer, so
+    // ImGui draws stay inside this render pass. In HD mode the equivalent
+    // call lives at the tail of RunTonemapPass — same RTV, just reached
+    // via the tonemap composite.
+    if (!useHdr) {
+        if (auto* im = rs_.ImGui()) {
+            WDX_GPU_ZONE(cmd, "ImGui");
+            im->Render(*cmd, target.width, target.height);
+        }
+    }
     cmd->EndRenderPass();
 
     if (useHdr) {
@@ -1392,6 +1416,16 @@ void RenderPipeline::RunTonemapPass(const RenderTarget& target) {
     cmd->BindSampler(gfx::ShaderStage::Pixel, 0, impl_->tonemapSampler_);
     cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1, impl_->tonemapPsCb_);
     cmd->Draw(3, 0);
+
+    // Submit ImGui inside the same render pass so we don't have to open a
+    // second pass with loadOp=Load. The RTV is the swap chain backbuffer
+    // (sRGB), which the imgui PSO was built against. No-op if the host
+    // hasn't created an ImGui context or there are no draw lists this
+    // frame.
+    if (auto* im = rs_.ImGui()) {
+        WDX_GPU_ZONE(cmd, "ImGui");
+        im->Render(*cmd, target.width, target.height);
+    }
     cmd->EndRenderPass();
 }
 

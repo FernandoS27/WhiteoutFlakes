@@ -397,6 +397,56 @@ if(WDX_BUILD_WC3_SHADERS)
     add_custom_target(Wc3Shaders ALL DEPENDS "${WC3_STAGE_STAMP}")
 endif()
 
+# ============================================================================
+# Dear ImGui — optional debug UI integration.
+#
+# When WDX_ENABLE_IMGUI=ON, builds the ImGui core sources as a static lib and
+# adds the engine-side BLS-backed renderer adapter (src/renderer/imgui/...) to
+# WhiteoutFlakesLib. The renderer uses the engine's imgui.bls shader pair
+# (from externals/Wc3Shaders/wc3_shaders/imgui_{vs,ps}.slang) — we do NOT use
+# ImGui's own d3d11 / d3d12 / vulkan backends, only its platform backend
+# (imgui_impl_glfw) for input.
+#
+# Hosts that don't call ImGui::CreateContext() pay only the link-time cost of
+# the static lib; the engine's per-frame draw hook is a no-op when there is no
+# ImGui context. The Max plugin falls in this bucket.
+# ============================================================================
+
+option(WDX_ENABLE_IMGUI "Build with Dear ImGui debug UI integration" ON)
+
+if(WDX_ENABLE_IMGUI)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/externals/imgui/imgui.cpp")
+        message(FATAL_ERROR
+            "WDX_ENABLE_IMGUI=ON but externals/imgui/ is empty. "
+            "Initialize the submodule with: git submodule update --init externals/imgui")
+    endif()
+
+    add_library(imgui STATIC
+        externals/imgui/imgui.cpp
+        externals/imgui/imgui_draw.cpp
+        externals/imgui/imgui_tables.cpp
+        externals/imgui/imgui_widgets.cpp
+        externals/imgui/imgui_demo.cpp
+    )
+    target_include_directories(imgui PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/externals/imgui"
+        "${CMAKE_CURRENT_SOURCE_DIR}/externals/imgui/backends"
+    )
+    set_target_properties(imgui PROPERTIES
+        CXX_STANDARD          17
+        CXX_STANDARD_REQUIRED ON
+    )
+    if(MSVC)
+        # ImGui targets warning-clean upstream but the engine compiles at /W3
+        # with /wd4244 etc. Keep the same suppressions for visual parity.
+        target_compile_options(imgui PRIVATE /W3 /EHsc /wd4244 /wd4267)
+    endif()
+
+    # ImGui's GLFW platform backend is a separate translation unit so the
+    # engine library (which links imgui core) doesn't drag in GLFW. Only
+    # the basic_viewer compiles it via add_library below.
+endif()
+
 # ---- Static library: GFX Service (backend-agnostic abstraction) ----
 # The Vulkan backend compiles in whenever the Vulkan SDK is installed
 # (find_package(Vulkan) succeeds). It targets Vulkan 1.3 + dynamic
@@ -558,6 +608,12 @@ add_library(WhiteoutFlakesLib STATIC
     src/public_api/renderer_api.cpp
 )
 
+if(WDX_ENABLE_IMGUI)
+    target_sources(WhiteoutFlakesLib PRIVATE
+        src/renderer/imgui/imgui_renderer.cpp
+    )
+endif()
+
 add_dependencies(WhiteoutFlakesLib WhiteoutFlakesShaders WhiteoutFlakesEmbedded)
 
 set_target_properties(WhiteoutFlakesLib PROPERTIES
@@ -609,6 +665,13 @@ target_compile_definitions(WhiteoutFlakesLib PUBLIC
     WDX_DEFAULT_COORD_SPACE=${WDX_DEFAULT_COORD_SPACE}
 )
 
+if(WDX_ENABLE_IMGUI)
+    target_link_libraries(WhiteoutFlakesLib PUBLIC imgui)
+    target_compile_definitions(WhiteoutFlakesLib PUBLIC WDX_ENABLE_IMGUI=1)
+else()
+    target_compile_definitions(WhiteoutFlakesLib PUBLIC WDX_ENABLE_IMGUI=0)
+endif()
+
 if(TARGET whiteout_casc)
     target_link_libraries(WhiteoutFlakesLib PUBLIC whiteout_casc)
 endif()
@@ -646,12 +709,45 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/bls/bls_reflect_tool.cpp")
 endif()
 
 # ---- Standalone executable: basic MDX viewer ----
+#
+# The viewer drives the engine through GLFW (window + input) and Dear ImGui
+# (every toolbar / menu / settings widget that used to be a Win32 control).
+# Both must be enabled — WDX_ENABLE_IMGUI=OFF would leave the viewer with no
+# UI surface at all.
+if(NOT WDX_ENABLE_IMGUI)
+    message(FATAL_ERROR
+        "WhiteoutFlakesStandalone requires WDX_ENABLE_IMGUI=ON; the viewer's UI "
+        "is entirely Dear ImGui. Disable the viewer (don't add it to the build) "
+        "if you want WDX_ENABLE_IMGUI=OFF.")
+endif()
+
+# GLFW — windowing + input. Bundled docs / tests / examples are off so the
+# library compiles in a few seconds and doesn't drop binaries into the
+# build tree.
+set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(GLFW_INSTALL        OFF CACHE BOOL "" FORCE)
+add_subdirectory(externals/glfw EXCLUDE_FROM_ALL)
+
+# NFD — native file open / save dialogs. Linux builds want GTK/portal; on
+# Windows it's IFileOpenDialog and has no extra deps.
+add_subdirectory(externals/nativefiledialog-extended EXCLUDE_FROM_ALL)
+
 add_executable(WhiteoutFlakesStandalone
     tools/basic_viewer/test_main.cpp
-    tools/basic_viewer/render_window.cpp
+    tools/basic_viewer/viewer_app.cpp
+    tools/basic_viewer/viewer_ui.cpp
     tools/basic_viewer/settings_ini.cpp
     tools/basic_viewer/windows_sound_emitter.cpp
+    # Win32 .rc — the only thing left of the old resource pipeline.
+    # Embeds resources/flakes_icon.ico as IDI_WHITEOUT_ICON so ViewerApp
+    # can hand it to the GLFW HWND via WM_SETICON.
     tools/basic_viewer/resource.rc
+    # ImGui's GLFW platform backend lives with the viewer rather than the
+    # imgui core lib because it pulls in <GLFW/glfw3.h> — the engine library
+    # itself only links the renderer-agnostic ImGui core.
+    externals/imgui/backends/imgui_impl_glfw.cpp
 )
 
 set_target_properties(WhiteoutFlakesStandalone PROPERTIES
@@ -670,7 +766,9 @@ target_include_directories(WhiteoutFlakesStandalone PRIVATE
 
 target_link_libraries(WhiteoutFlakesStandalone PRIVATE
     WhiteoutFlakesLib
-    comdlg32
+    glfw
+    nfd
+    imgui
 )
 
 if(MSVC)
