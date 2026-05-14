@@ -298,6 +298,14 @@ constexpr f32 kRefDist = 300.0f;
 // level; the Settings sound-volume slider still scales on top.
 constexpr f32 kBaseGain = 0.35f;
 
+// The Settings sound-volume slider stores a raw 0..1 value (persisted to the
+// INI, shown on the slider), but the master gain applied in the mix is
+// slider^kVolumeCurveExp. The exponent is tuned so the comfortable level
+// sits at mid-travel: solving 0.5^k = 0.04 (the effective gain that felt
+// right when the slider sat near 0.25 under the previous, gentler curve)
+// gives k = ln(0.04)/ln(0.5) ≈ 4.6438. 1.0 still maps to full volume.
+constexpr f32 kVolumeCurveExp = 4.6438f;
+
 void ComputeVoiceGains(const CubebSoundEmitter::Voice& v, const Vector3f& lpos,
                        const Vector3f& lright, bool haveListener, f32& outL, f32& outR) {
     if (!haveListener) {
@@ -463,7 +471,10 @@ void CubebSoundEmitter::MixVoices(f32* out, i64 frames) {
                       voices_.end());
     }
 
-    const f32 gain = volume_.load(std::memory_order_relaxed);
+    // Master gain: the stored slider value run through the perceptual curve
+    // (see kVolumeCurveExp) so the slider's sweet spot sits mid-travel.
+    const f32 sliderVol = volume_.load(std::memory_order_relaxed);
+    const f32 gain = std::pow(sliderVol, kVolumeCurveExp);
     if (gain != 1.0f) {
         for (i64 i = 0; i < frames * 2; ++i)
             out[i] *= gain;

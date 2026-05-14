@@ -89,15 +89,20 @@ int wmain(int argc, wchar_t* argv[]) {
         return 1;
     }
 
+    // Install the real sound emitter *before* LoadSettingsIni — the latter
+    // applies the persisted SoundVolume via service.Sound().SetVolume(), and
+    // the default NullSoundEmitter swallows it (its SetVolume is a no-op and
+    // GetVolume always reports 1.0, so SwapSoundEmitter couldn't carry it
+    // over either).
+    renderer.SwapSoundEmitter(std::make_unique<whiteout::flakes::CubebSoundEmitter>(
+        scene.ActiveContentProvider()));
+
     // Persistent settings (display flags, exposure, tileset, etc.) are
     // applied after the device + asset managers are up so they can validate
     // dependent state (e.g. ShadowService cascade count).
     bool loopPolicy = app.LoopNonLoopingPolicy();
     whiteout::flakes::LoadSettingsIni(renderer, loopPolicy);
     app.SetLoopNonLoopingPolicy(loopPolicy);
-
-    renderer.SwapSoundEmitter(std::make_unique<whiteout::flakes::CubebSoundEmitter>(
-        scene.ActiveContentProvider()));
 
     // If a path came in on the CLI, load it; otherwise pop the NFD picker
     // once at startup (matches the old Win32 viewer's GetOpenFileNameW

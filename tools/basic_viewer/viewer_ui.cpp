@@ -208,6 +208,7 @@ void ViewerUI::BuildMenuBar() {
                 for (i32 i = 0; i < static_cast<i32>(kDebugVisLabels.size()); ++i) {
                     if (ImGui::MenuItem(kDebugVisLabels[i], nullptr, i == cur)) {
                         svc.Settings().SetHdDebugMode(i);
+                        SaveIni(app_);
                     }
                 }
                 ImGui::EndMenu();
@@ -219,6 +220,7 @@ void ViewerUI::BuildMenuBar() {
                 for (i32 i = 0; i < static_cast<i32>(kLodLabels.size()); ++i) {
                     if (ImGui::MenuItem(kLodLabels[i], nullptr, i == curIdx)) {
                         svc.Settings().SetLodOverride(i == 0 ? -1 : (i - 1));
+                        SaveIni(app_);
                     }
                 }
                 ImGui::EndMenu();
@@ -345,6 +347,7 @@ void ViewerUI::BuildToolbar() {
         if (ImGui::Combo("Lighting", &sel, kLightingLabels.data(),
                          static_cast<i32>(kLightingLabels.size()))) {
             svc.Settings().SetLightingMode(static_cast<LightingMode>(sel));
+            SaveIni(app_);
         }
     }
 

@@ -39,7 +39,10 @@ RenderService::RenderService(SceneManager& scene) : impl_(std::make_unique<Impl>
     // is installed, since the lambda dispatches into impl_->loader_.
     impl_->loader_ = std::make_unique<ModelLoader>(*this);
     impl_->soundEmitter_ = MakeNullSoundEmitter();
-    impl_->soundEmitter_->SetVolume(0.2f);
+    // Default sound volume for a fresh run (no INI yet). SwapSoundEmitter
+    // carries this onto the real backend, and LoadSettingsIni overrides it
+    // when a persisted SoundVolume exists.
+    impl_->soundEmitter_->SetVolume(0.5f);
     impl_->scene_->Templates().SetTextureCacheQuery(
         [this](std::string_view k) { return impl_->loader_->IsTextureCached(k); });
 }

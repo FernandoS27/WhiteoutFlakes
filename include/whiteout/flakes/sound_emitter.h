@@ -39,6 +39,20 @@ public:
 class NullSoundEmitter final : public ISoundEmitter {
 public:
     void Play(const io::SndEntry&, const Vector3f&) override {}
+
+    // Silent, but still remembers the volume — RenderService seeds a default
+    // here at construction and SwapSoundEmitter carries GetVolume() over to
+    // the real backend when one is installed. Without storing it the seeded
+    // default would be lost (the inherited no-op SetVolume drops it).
+    void SetVolume(f32 v) override {
+        volume_ = v;
+    }
+    f32 GetVolume() const override {
+        return volume_;
+    }
+
+private:
+    f32 volume_ = 1.0f;
 };
 
 inline std::unique_ptr<ISoundEmitter> MakeNullSoundEmitter() {

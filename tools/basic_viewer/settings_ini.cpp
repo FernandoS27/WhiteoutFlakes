@@ -150,8 +150,32 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy) {
         loadFlag(L"ShowParticles", df.showParticles);
         loadFlag(L"ShowRibbons", df.showRibbons);
         loadFlag(L"ShowEvents", df.showEvents);
+        loadFlag(L"ShowCollisions", df.showCollisions);
+        loadFlag(L"ShowLights", df.showLights);
         if (dirty)
             service.Settings().SetDisplayFlags(df);
+    }
+
+    {
+        // Toolbar lighting combo: 0 InGame, 1 Glue, 2 Dynamic.
+        const i32 v = ::GetPrivateProfileIntW(kSection, L"LightingMode", -1, iniPath.c_str());
+        if (v >= 0 && v <= 2)
+            service.Settings().SetLightingMode(static_cast<LightingMode>(v));
+    }
+
+    {
+        // Debug > Debug View: 0..7 (Off / Albedo / Normal / ...).
+        const i32 v = ::GetPrivateProfileIntW(kSection, L"HdDebugMode", -1, iniPath.c_str());
+        if (v >= 0 && v <= 7)
+            service.Settings().SetHdDebugMode(v);
+    }
+
+    {
+        // Debug > LOD: -1 auto, 0..3 forced LOD. -1 is a valid value, so the
+        // "missing key" sentinel has to sit outside the [-1, 3] range.
+        const i32 v = ::GetPrivateProfileIntW(kSection, L"LodOverride", -999, iniPath.c_str());
+        if (v >= -1 && v <= 3)
+            service.Settings().SetLodOverride(v);
     }
 
     {
@@ -170,8 +194,19 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy) {
     }
 
     {
+        // Settings > Shadows: 0 off, 1..3 cascade count. The shadow service
+        // is created during Pipeline().InitDevice (InitBlsShaders), which has
+        // already run by the time LoadSettingsIni is called, so the pointer
+        // is valid here. Mirrors the apply path in ViewerUI's Shadows combo.
         const i32 v = ::GetPrivateProfileIntW(kSection, L"ShadowCascades", -1, iniPath.c_str());
-        (void)v;
+        if (v >= 0 && v <= 3) {
+            if (auto* shadow = service.GetShadowService()) {
+                shadow::ShadowParams p = shadow->Params();
+                p.enabled = (v > 0);
+                p.cascadeCount = (v > 0) ? v : 1;
+                shadow->SetParams(p);
+            }
+        }
     }
 
     if (auto* dnc = service.GetDncService()) {
@@ -269,6 +304,23 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy) {
         saveFlag(L"ShowParticles", df.showParticles);
         saveFlag(L"ShowRibbons", df.showRibbons);
         saveFlag(L"ShowEvents", df.showEvents);
+        saveFlag(L"ShowCollisions", df.showCollisions);
+        saveFlag(L"ShowLights", df.showLights);
+    }
+    {
+        wchar_t buf[8] = {};
+        ::swprintf_s(buf, L"%u", static_cast<u32>(service.Settings().GetLightingMode()));
+        ::WritePrivateProfileStringW(kSection, L"LightingMode", buf, iniPath.c_str());
+    }
+    {
+        wchar_t buf[8] = {};
+        ::swprintf_s(buf, L"%d", service.Settings().HdDebugMode());
+        ::WritePrivateProfileStringW(kSection, L"HdDebugMode", buf, iniPath.c_str());
+    }
+    {
+        wchar_t buf[8] = {};
+        ::swprintf_s(buf, L"%d", service.Settings().LodOverride());
+        ::WritePrivateProfileStringW(kSection, L"LodOverride", buf, iniPath.c_str());
     }
     {
         wchar_t buf[8] = {};
