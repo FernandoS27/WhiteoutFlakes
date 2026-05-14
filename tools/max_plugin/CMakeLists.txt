@@ -50,6 +50,7 @@ target_compile_definitions(MaxSDK INTERFACE
 # ---- Plugin DLL ------------------------------------------------------------
 
 set(BASIC_VIEWER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../basic_viewer")
+set(TOOLS_COMMON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../common")
 
 add_library(WhiteoutFlakesMaxPlugin SHARED
     dllmain.cpp
@@ -60,9 +61,10 @@ add_library(WhiteoutFlakesMaxPlugin SHARED
     # Win32 host window — Max-only after the basic_viewer moved to GLFW + ImGui.
     render_window.cpp
 
-    # Sound emitter + INI loader are still shared with the standalone viewer.
+    # INI loader is still shared with the standalone viewer; the cubeb sound
+    # emitter is a shared host utility under tools/common.
     "${BASIC_VIEWER_DIR}/settings_ini.cpp"
-    "${BASIC_VIEWER_DIR}/windows_sound_emitter.cpp"
+    "${TOOLS_COMMON_DIR}/cubeb_sound_emitter.cpp"
 )
 
 set_target_properties(WhiteoutFlakesMaxPlugin PROPERTIES
@@ -78,6 +80,7 @@ set_target_properties(WhiteoutFlakesMaxPlugin PROPERTIES
 target_include_directories(WhiteoutFlakesMaxPlugin PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${BASIC_VIEWER_DIR}"
+    "${TOOLS_COMMON_DIR}"
     "${CMAKE_SOURCE_DIR}/externals/dr_libs"
 )
 
@@ -88,6 +91,7 @@ target_compile_definitions(WhiteoutFlakesMaxPlugin PRIVATE
 target_link_libraries(WhiteoutFlakesMaxPlugin PRIVATE
     WhiteoutFlakesLib
     MaxSDK
+    cubeb
     core.lib
     maxutil.lib
     geom.lib

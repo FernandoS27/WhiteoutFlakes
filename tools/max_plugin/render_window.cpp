@@ -137,6 +137,15 @@ void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
 
         (void)service_.Settings().ConsumeRenderModeDirty();
 
+        // Feed the camera pose to the sound emitter so SND event objects
+        // spatialise against the current view before the tick fires them.
+        {
+            const auto& cam = service_.Scene().Camera();
+            const Vector3f eye = cam.GetSource();
+            const Vector3f fwd = cam.GetTarget() - eye;
+            service_.Sound().SetListener(eye, fwd, cam.GetUp());
+        }
+
         {
 #if defined(TRACY_ENABLE)
             ZoneScopedN("Ticker.Tick");

@@ -20,8 +20,8 @@
 #include "renderer/model/model_loader.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
+#include "cubeb_sound_emitter.h"
 #include "whiteout/flakes/types.h"
-#include "windows_sound_emitter.h"
 
 #include <chrono>
 #include <filesystem>
@@ -268,12 +268,12 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count) {
         g_scene->SetPE1BasePath(std::filesystem::path(wp));
     }
 
-    // Audio: same Windows-native ISoundEmitter the standalone exe uses.
+    // Audio: the same cubeb-backed ISoundEmitter the standalone exe uses.
     // Borrows the scene's content provider for CASC/MPQ lookup so SND
-    // EventObjects play through the host OS during preview. Without
-    // this, the renderer's default null emitter drops every fire.
+    // EventObjects play during preview. Without this, the renderer's
+    // default null emitter drops every fire.
     g_renderer->SwapSoundEmitter(
-        std::make_unique<whiteout::flakes::WindowsSoundEmitter>(g_scene->ActiveContentProvider()));
+        std::make_unique<whiteout::flakes::CubebSoundEmitter>(g_scene->ActiveContentProvider()));
 
     // ---- Build the live adapter ----
     g_adapter = std::make_shared<whiteout::flakes::MaxSceneAdapter>();

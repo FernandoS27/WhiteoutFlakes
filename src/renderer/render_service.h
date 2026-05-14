@@ -150,8 +150,9 @@ public:
 
     // ---- Sound ----
     // Volume / mute lives on the emitter itself: callers use Sound().SetVolume(v).
-    // SwapSoundEmitter installs a different backend (e.g., basic_viewer plugs in
-    // WindowsSoundEmitter at startup) and carries over the previous volume.
+    // SwapSoundEmitter installs a different backend (e.g., the viewer + Max
+    // plugin plug in CubebSoundEmitter at startup) and carries over the
+    // previous volume.
     ISoundEmitter& Sound();
     const ISoundEmitter& Sound() const;
     void SwapSoundEmitter(std::unique_ptr<ISoundEmitter> emitter);

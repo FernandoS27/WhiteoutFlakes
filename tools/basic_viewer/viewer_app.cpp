@@ -499,6 +499,16 @@ void ViewerApp::Tick(f32 dt) {
     (void)service_.Replaceables().ConsumeDirty();
     (void)service_.Settings().ConsumeRenderModeDirty();
 
+    // Push the camera pose to the sound emitter before the tick fires SND
+    // events, so 3D-positioned event objects pan / attenuate against where
+    // the camera is this frame.
+    {
+        const auto& cam = service_.Scene().Camera();
+        const Vector3f eye = cam.GetSource();
+        const Vector3f fwd = cam.GetTarget() - eye;
+        service_.Sound().SetListener(eye, fwd, cam.GetUp());
+    }
+
     service_.Ticker().Tick(parentDt);
     service_.Pipeline().RenderFrame(targetId_);
     service_.Pipeline().Present(targetId_);

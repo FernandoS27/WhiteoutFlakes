@@ -25,6 +25,15 @@ public:
     virtual f32 GetVolume() const {
         return 1.0f;
     }
+
+    // Update the listener pose used for 3D spatialisation. Hosts that want
+    // positional audio call this once per frame from their camera before
+    // the per-frame tick fires SND events. `forward` / `up` need not be
+    // normalised. Default no-op — only spatialising emitters (e.g.
+    // CubebSoundEmitter) override it; NullSoundEmitter and 2D backends
+    // ignore it.
+    virtual void SetListener(const Vector3f& /*pos*/, const Vector3f& /*forward*/,
+                             const Vector3f& /*up*/) {}
 };
 
 class NullSoundEmitter final : public ISoundEmitter {

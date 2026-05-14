@@ -734,12 +734,26 @@ add_subdirectory(externals/glfw EXCLUDE_FROM_ALL)
 # Windows it's IFileOpenDialog and has no extra deps.
 add_subdirectory(externals/nativefiledialog-extended EXCLUDE_FROM_ALL)
 
+# cubeb — cross-platform audio output (WASAPI / PulseAudio / AudioUnit).
+# Drives CubebSoundEmitter, shared by the viewer and the Max plugin. The
+# bundled tests / tools / sanitizer wiring are forced off so it builds as
+# a lean static lib; the Rust backends stay off (the C++ WASAPI backend
+# covers Windows). The `cubeb` target's bundled speex resampler is linked
+# PRIVATE inside cubeb itself — CubebSoundEmitter does its own (linear)
+# resampling so it doesn't reach into cubeb internals.
+set(BUILD_TESTS     OFF CACHE BOOL "" FORCE)
+set(BUILD_TOOLS     OFF CACHE BOOL "" FORCE)
+set(BUILD_RUST_LIBS OFF CACHE BOOL "" FORCE)
+set(USE_SANITIZERS  OFF CACHE BOOL "" FORCE)
+add_subdirectory(externals/cubeb EXCLUDE_FROM_ALL)
+
 add_executable(WhiteoutFlakesStandalone
     tools/basic_viewer/test_main.cpp
     tools/basic_viewer/viewer_app.cpp
     tools/basic_viewer/viewer_ui.cpp
     tools/basic_viewer/settings_ini.cpp
-    tools/basic_viewer/windows_sound_emitter.cpp
+    # Shared host utilities live in tools/common (used by the Max plugin too).
+    tools/common/cubeb_sound_emitter.cpp
     # Win32 .rc — the only thing left of the old resource pipeline.
     # Embeds resources/flakes_icon.ico as IDI_WHITEOUT_ICON so ViewerApp
     # can hand it to the GLFW HWND via WM_SETICON.
@@ -761,6 +775,7 @@ set_target_properties(WhiteoutFlakesStandalone PROPERTIES
 
 target_include_directories(WhiteoutFlakesStandalone PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/basic_viewer"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/common"
     "${CMAKE_CURRENT_SOURCE_DIR}/externals/dr_libs"
 )
 
@@ -769,6 +784,7 @@ target_link_libraries(WhiteoutFlakesStandalone PRIVATE
     glfw
     nfd
     imgui
+    cubeb
 )
 
 if(MSVC)

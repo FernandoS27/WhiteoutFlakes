@@ -6,7 +6,7 @@
 #include "whiteout/flakes/gfx_types.h"
 #include "whiteout/flakes/types.h"
 #include "whiteout/flakes/util/path_utf8.h"
-#include "windows_sound_emitter.h"
+#include "cubeb_sound_emitter.h"
 
 #include <nfd.hpp>
 
@@ -96,7 +96,7 @@ int wmain(int argc, wchar_t* argv[]) {
     whiteout::flakes::LoadSettingsIni(renderer, loopPolicy);
     app.SetLoopNonLoopingPolicy(loopPolicy);
 
-    renderer.SwapSoundEmitter(std::make_unique<whiteout::flakes::WindowsSoundEmitter>(
+    renderer.SwapSoundEmitter(std::make_unique<whiteout::flakes::CubebSoundEmitter>(
         scene.ActiveContentProvider()));
 
     // If a path came in on the CLI, load it; otherwise pop the NFD picker

@@ -499,9 +499,9 @@ void ViewerUI::BuildSettingsWindow() {
             lastBackendIdx = curBackendIdx;
         }
         const std::string& cur = svc.Settings().PreferredDevice();
-        const char* preview = cur.empty() ? "(Auto — highest VRAM)" : cur.c_str();
+        const char* preview = cur.empty() ? "(Auto - highest VRAM)" : cur.c_str();
         if (ImGui::BeginCombo("Device", preview)) {
-            if (ImGui::Selectable("(Auto — highest VRAM)", cur.empty())) {
+            if (ImGui::Selectable("(Auto - highest VRAM)", cur.empty())) {
                 svc.Settings().SetPreferredDevice("");
                 SaveIni(app_);
             }
