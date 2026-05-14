@@ -29,6 +29,7 @@ private:
     void BuildMenuBar();
     void BuildToolbar();
     void BuildSettingsWindow();
+    void BuildViewCubeWidget();
 
     void OpenFileDialog();
 

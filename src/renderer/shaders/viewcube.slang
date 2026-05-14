@@ -13,10 +13,20 @@
 
 import common;
 
-ConstantBuffer<PerFrameData> cb;
-
-Texture2D    texDiffuse;
-SamplerState samLinear;
+// Explicit binding decorations so the SPIR-V the Vulkan backend consumes
+// lands in the engine's fixed descriptor model:
+//   set 0 = uniform buffers, set 1 = sampled images, set 2 = samplers,
+//   with PS-stage slot N shifted to binding N + 16 (kStageBindingShift).
+// `cb` is read by BOTH vsViewCube and psViewCube; set-0 binding-0 works
+// for both because every binding in the engine's layout is VERTEX |
+// FRAGMENT visible and DebugRenderer::RenderViewCube populates it via
+// BindConstantBuffer(Vertex, 0, ...). texDiffuse / samLinear are PS-only
+// at slot 0 → binding 16. The register() specifiers keep the DXBC build
+// (which ignores vk::binding) pinned to the same b0/t0/s0 the engine's
+// d3d backends expect.
+[[vk::binding(0, 0)]]  ConstantBuffer<PerFrameData> cb         : register(b0);
+[[vk::binding(16, 1)]] Texture2D                    texDiffuse : register(t0);
+[[vk::binding(16, 2)]] SamplerState                 samLinear  : register(s0);
 
 struct VSInput
 {

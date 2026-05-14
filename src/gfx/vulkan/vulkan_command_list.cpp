@@ -244,6 +244,12 @@ void VulkanCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
     frame.commandBuffer.setViewport(0, vp);
     vk::Rect2D scissor{{0, 0}, {static_cast<u32>(width), static_cast<u32>(height)}};
     frame.commandBuffer.setScissor(0, scissor);
+
+    activeDepthAttachment_ = depthTex ? depth : TextureHandle::Invalid;
+    currentVpX_ = 0.0f;
+    currentVpY_ = 0.0f;
+    currentVpW_ = static_cast<f32>(width);
+    currentVpH_ = static_cast<f32>(height);
 }
 
 void VulkanCommandList::EndRenderPass() {
@@ -270,6 +276,7 @@ void VulkanCommandList::EndRenderPass() {
         }
     }
     activeColorAttachment_ = TextureHandle::Invalid;
+    activeDepthAttachment_ = TextureHandle::Invalid;
     activeColorFormat_ = static_cast<u32>(vk::Format::eUndefined);
     lastBoundPipeline_ = PipelineHandle::Invalid;
 }
@@ -309,6 +316,10 @@ void VulkanCommandList::SetViewport(const Viewport& v) {
     // Flip Y: see comment in BeginRenderPass.
     vk::Viewport vp{v.x, v.y + v.height, v.width, -v.height, v.minDepth, v.maxDepth};
     frame.commandBuffer.setViewport(0, vp);
+    currentVpX_ = v.x;
+    currentVpY_ = v.y;
+    currentVpW_ = v.width;
+    currentVpH_ = v.height;
 }
 
 void VulkanCommandList::SetScissor(const Scissor& sc) {
@@ -569,6 +580,39 @@ void VulkanCommandList::ClearDepth(TextureHandle depth, f32 clearDepth, u8 clear
     auto* texture = state.textures.Get(static_cast<u64>(depth));
     if (!texture || !frame.recording)
         return;
+
+    // Inside a render pass, vkCmdClearDepthStencilImage is illegal AND
+    // would force the depth image into eTransferDstOptimal — wrong for
+    // the subsequent attachment writes. Use vkCmdClearAttachments with
+    // the current viewport as the clear rect (matches the d3d11/d3d12
+    // ClearDepthStencilView semantics RenderViewCube relies on, which
+    // scope the clear to the viewport-restricted region).
+    const bool insideRenderPass = (activeDepthAttachment_ == depth);
+    if (insideRenderPass) {
+        // BeginRenderPass binds only pDepthAttachment (no pStencilAttachment),
+        // so the clear aspect must be eDepth alone — passing eStencil when
+        // there's no stencil attachment bound is a validation error and the
+        // driver rejects the whole clear.
+        vk::ClearAttachment attach{
+            .aspectMask = vk::ImageAspectFlagBits::eDepth,
+            .clearValue = vk::ClearValue{.depthStencil = {clearDepth, clearStencil}},
+        };
+        const i32 rx = static_cast<i32>(currentVpX_);
+        const i32 ry = static_cast<i32>(currentVpY_);
+        const u32 rw = static_cast<u32>(std::max(0.0f, currentVpW_));
+        const u32 rh = static_cast<u32>(std::max(0.0f, currentVpH_));
+        vk::ClearRect rect{
+            .rect = {{rx, ry}, {rw, rh}},
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        };
+        frame.commandBuffer.clearAttachments(attach, rect);
+        return;
+    }
+
+    // Outside a render pass — fall back to the image clear. Currently
+    // unused, kept so a future caller that wants a global pre-pass clear
+    // still has a working path.
     TransitionImageLayout(frame.commandBuffer, texture->image, texture->aspect,
                           texture->currentLayout, vk::ImageLayout::eTransferDstOptimal,
                           vk::PipelineStageFlagBits2::eTopOfPipe, {},

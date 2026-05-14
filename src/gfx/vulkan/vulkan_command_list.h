@@ -80,9 +80,18 @@ private:
     bool samplerSetDirty_ = false;
 
     TextureHandle activeColorAttachment_ = TextureHandle::Invalid;
+    TextureHandle activeDepthAttachment_ = TextureHandle::Invalid;
     // Raw VkFormat held as u32 so this header stays free of vulkan.h.
     u32 activeColorFormat_ = 0;
     PipelineHandle lastBoundPipeline_ = PipelineHandle::Invalid;
+
+    // Tracks the most recent SetViewport so ClearDepth can compute a
+    // `vkCmdClearAttachments` rect that matches the active viewport.
+    // Updated in BeginRenderPass (full surface) and SetViewport.
+    f32 currentVpX_ = 0.0f;
+    f32 currentVpY_ = 0.0f;
+    f32 currentVpW_ = 0.0f;
+    f32 currentVpH_ = 0.0f;
 
 #if defined(TRACY_ENABLE)
     // Tracy's only runtime-named GPU-zone API is the RAII VkCtxScope;

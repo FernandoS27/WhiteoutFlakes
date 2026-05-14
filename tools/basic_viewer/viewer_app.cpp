@@ -250,18 +250,12 @@ void ViewerApp::OnMouseButton(i32 button, i32 action) {
     glfwGetCursorPos(window_, &mx, &my);
     const bool pressed = (action == GLFW_PRESS);
 
+    // ViewCube clicks no longer get a dedicated branch here — the host
+    // overlays an invisible ImGui button on the cube region (see
+    // ViewerUI::BuildViewCubeWidget). When that button is hovered ImGui's
+    // WantCaptureMouse short-circuits the camera handler above, and the
+    // widget itself performs the hit-test + camera snap.
     if (button == GLFW_MOUSE_BUTTON_LEFT) {
-        if (pressed) {
-            const i32 vcHit =
-                service_.Debug().HitTestViewCube(static_cast<i32>(mx), static_cast<i32>(my));
-            if (vcHit >= 0) {
-                if (vcHit == 6)
-                    service_.Scene().Camera().Reset();
-                else
-                    service_.Scene().Camera().SnapToViewCubeFace(vcHit);
-                return;
-            }
-        }
         lmbDown_ = pressed;
     } else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
         rmbDown_ = pressed;
@@ -277,10 +271,6 @@ void ViewerApp::OnCursorPos(f64 x, f64 y) {
     const f64 dy = y - lastMouseY_;
     lastMouseX_ = x;
     lastMouseY_ = y;
-
-    auto vcr = service_.Debug().GetViewCubeRect();
-    service_.Debug().SetViewCubeHovered(x >= vcr.left && x <= vcr.right && y >= vcr.top &&
-                                        y <= vcr.bottom);
 
     if (cameraLocked_)
         return;

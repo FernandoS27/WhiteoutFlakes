@@ -1,6 +1,8 @@
 #include "viewer_ui.h"
 
 #include "renderer/assets/replaceable_texture_manager.h"
+#include "renderer/camera.h"
+#include "renderer/debug/debug_renderer.h"
 #include "renderer/dnc/dnc_service.h"
 #include "renderer/model/model_instance.h"
 #include "renderer/particle/splat_service.h"
@@ -94,10 +96,56 @@ ViewerUI::ViewerUI(ViewerApp& app) : app_(app) {
 void ViewerUI::BuildFrame() {
     BuildMenuBar();
     BuildToolbar();
+    BuildViewCubeWidget();
     if (settingsOpen_)
         BuildSettingsWindow();
     if (showDemo_)
         ImGui::ShowDemoWindow(&showDemo_);
+}
+
+void ViewerUI::BuildViewCubeWidget() {
+    // The engine draws the cube via DebugRenderer::RenderViewCube and
+    // exposes its screen rect via GetViewCubeRect. We overlay an invisible
+    // ImGui window at that rect with an InvisibleButton covering the whole
+    // area, then forward hover + click into the existing engine queries.
+    auto& dbg = app_.Service().Debug();
+    const auto r = dbg.GetViewCubeRect();
+    const f32 x = static_cast<f32>(r.left);
+    const f32 y = static_cast<f32>(r.top);
+    const f32 w = static_cast<f32>(r.right - r.left);
+    const f32 h = static_cast<f32>(r.bottom - r.top);
+    if (w <= 0.0f || h <= 0.0f)
+        return;
+
+    ImGui::SetNextWindowPos(ImVec2(x, y));
+    ImGui::SetNextWindowSize(ImVec2(w, h));
+    constexpr ImGuiWindowFlags kFlags =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    if (ImGui::Begin("##viewcube", nullptr, kFlags)) {
+        ImGui::InvisibleButton("##viewcube_hit", ImVec2(w, h));
+        const bool hovered = ImGui::IsItemHovered();
+        // Engine reads this each frame to decide whether to draw the
+        // "home" affordance in the strip above the cube; setting it on
+        // every frame (true OR false) keeps the state in sync after
+        // pointer leaves without an explicit OnCursorPos call.
+        dbg.SetViewCubeHovered(hovered);
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+            const ImVec2 mp = ImGui::GetIO().MousePos;
+            const i32 hit =
+                dbg.HitTestViewCube(static_cast<i32>(mp.x), static_cast<i32>(mp.y));
+            if (hit == 6)
+                app_.Service().Scene().Camera().Reset();
+            else if (hit >= 0)
+                app_.Service().Scene().Camera().SnapToViewCubeFace(hit);
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(2);
 }
 
 void ViewerUI::OpenFileDialog() {

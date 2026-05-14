@@ -67,6 +67,13 @@ bool RenderPipeline::IsDeviceReady() const {
 }
 void RenderPipeline::SetPrimaryTarget(RenderTargetId id) {
     impl_->primaryTargetId_ = id;
+    // Snap pipeline-wide width_/height_ to whatever the newly-primary
+    // target reports. Without this, a host that creates several targets
+    // before picking one primary would keep stale dimensions.
+    if (auto it = impl_->targets_.find(id); it != impl_->targets_.end()) {
+        impl_->width_ = it->second.width;
+        impl_->height_ = it->second.height;
+    }
 }
 
 gfx::IGFXDevice* RenderPipeline::Gfx() {
@@ -1043,6 +1050,17 @@ RenderTargetId RenderPipeline::CreateSwapChainTarget(void* nativeWindowHandle, i
 
     RenderTargetId id = target.id;
     impl_->targets_[id] = target;
+
+    // Mirror the new target's size into the pipeline-wide width_/height_
+    // so DebugRenderer / cameras / aspect-ratio queries pick up the real
+    // surface dimensions immediately. Previously only ResizePrimaryTarget
+    // updated these, which meant the very first frame (before any
+    // framebuffer-size event reached us) computed everything against the
+    // 800x600 default and put the ViewCube etc. in the wrong place.
+    if (impl_->primaryTargetId_ == 0 || impl_->primaryTargetId_ == id) {
+        impl_->width_ = w;
+        impl_->height_ = h;
+    }
     return id;
 }
 

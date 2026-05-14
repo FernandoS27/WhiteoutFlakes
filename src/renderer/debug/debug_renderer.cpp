@@ -24,13 +24,12 @@ using namespace ::whiteout::flakes::renderer::assets;
 bool DebugRenderer::CreateResources() {
     if (!CreateGridResources())
         return false;
-    // Phase 1 Vulkan: skip the viewcube. It needs an SRV texture in
-    // eShaderReadOnlyOptimal layout, which currently relies on the
-    // d3d-side state-tracker to transition lazily on bind. The Vulkan
-    // backend doesn't have that bind-time barrier path yet.
-    if (rs_.Pipeline().Gfx()->GetApi() == gfx::GfxApi::Vulkan) {
-        return true;
-    }
+    // The viewcube used to be skipped on Vulkan because its face SRV
+    // texture needed a layout transition the backend couldn't do at bind
+    // time. That's no longer true — the Vulkan backend queues every
+    // CreateTexture into pendingSrvTransitions and drains it to
+    // eShaderReadOnlyOptimal before the first render pass each frame, the
+    // same path every main-scene texture already takes.
     if (!CreateViewCubeResources())
         return false;
     return true;
