@@ -624,8 +624,12 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
         });
     }
 
+    // Graphics-debug runs load the -g2 -O0 bundles from debug_shaders/
+    // (staged by the WDX_BUILD_WC3_DEBUG_SHADERS pipeline) so the bytecode
+    // maps back to slang source in RenderDoc / PIX / the validation layers.
     impl_->blsShaderCache_ = std::make_unique<bls::BlsShaderCache>(
-        impl_->gfx_.get(), rs_.Scene().ActiveContentProvider(), api);
+        impl_->gfx_.get(), rs_.Scene().ActiveContentProvider(), api,
+        rs_.Settings().GraphicsDebug());
     impl_->blsPrograms_ = std::make_unique<bls::BlsProgramCatalog>(impl_->blsShaderCache_.get());
     impl_->blsPsoBuilder_ = std::make_unique<bls::BlsPsoBuilder>(impl_->gfx_.get());
 

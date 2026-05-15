@@ -9,8 +9,16 @@ namespace whiteout::flakes::renderer::bls {
 using namespace ::whiteout::flakes::io;
 
 BlsShaderCache::BlsShaderCache(gfx::IGFXDevice* device, IContentProvider* contentProvider,
-                               gfx::GfxApi api)
-    : device_(device), contentProvider_(contentProvider), api_(api) {}
+                               gfx::GfxApi api, bool useDebugShaders)
+    : device_(device), contentProvider_(contentProvider), api_(api) {
+    // Debug builds prefer the -g2 -O0 bundles but fall back to the optimised
+    // tree so a missing debug_shaders/ (WDX_BUILD_WC3_DEBUG_SHADERS=OFF)
+    // doesn't break the run.
+    if (useDebugShaders)
+        roots_ = {"debug_shaders", "shaders"};
+    else
+        roots_ = {"shaders"};
+}
 
 BlsShaderCache::~BlsShaderCache() {
     ReleaseAll();
@@ -53,33 +61,37 @@ BlsShader* BlsShaderCache::Acquire(gfx::ShaderStage stage, const std::string& na
     // pick up the D3D11 (or game-shipped) DXBC bundle at the unprefixed
     // path. Vulkan can't fall back: SPIR-V and DXBC aren't
     // interchangeable.
-    //   D3D11 → DXBC under shaders/<stage>/
-    //   D3D12 → DXIL under shaders/d3d12/<stage>/ → fallback shaders/<stage>/
-    //   Vulkan → SPIR-V under shaders/vulkan/<stage>/
+    //   D3D11 → DXBC under <root>/<stage>/
+    //   D3D12 → DXIL under <root>/d3d12/<stage>/ → fallback <root>/<stage>/
+    //   Vulkan → SPIR-V under <root>/vulkan/<stage>/
+    // <root> is each entry of roots_ in order: debug_shaders/ before
+    // shaders/ in graphics-debug builds, shaders/ alone otherwise.
     std::string path;
     std::optional<std::vector<u8>> bytes;
-    auto tryRead = [&](const char* prefix) {
-        path = std::string(prefix) + StagePrefix(stage) + "/" + key + ".bls";
+    auto tryRead = [&](const std::string& root, const char* apiSubdir) {
+        path = root + "/" + apiSubdir + StagePrefix(stage) + "/" + key + ".bls";
         bytes = contentProvider_->ReadFile(path);
         return bytes && !bytes->empty();
     };
+    auto tryRoot = [&](const std::string& root) {
+        if (api_ == gfx::GfxApi::Vulkan)
+            return tryRead(root, "vulkan/");
+        if (api_ == gfx::GfxApi::D3D12)
+            return tryRead(root, "d3d12/") || tryRead(root, "");
+        return tryRead(root, ""); // D3D11
+    };
 
-    if (api_ == gfx::GfxApi::Vulkan) {
-        if (!tryRead("shaders/vulkan/")) {
-            std::fprintf(stderr, "[bls] ERR: shader read FAIL '%s'\n", path.c_str());
-            return nullptr;
+    bool found = false;
+    for (const std::string& root : roots_) {
+        if (tryRoot(root)) {
+            found = true;
+            break;
         }
-    } else if (api_ == gfx::GfxApi::D3D12) {
-        if (!tryRead("shaders/d3d12/") && !tryRead("shaders/")) {
-            std::fprintf(stderr, "[bls] ERR: shader read FAIL '%s' (no d3d12 nor d3d11 bundle)\n",
-                         key.c_str());
-            return nullptr;
-        }
-    } else { // D3D11
-        if (!tryRead("shaders/")) {
-            std::fprintf(stderr, "[bls] ERR: shader read FAIL '%s'\n", path.c_str());
-            return nullptr;
-        }
+    }
+    if (!found) {
+        std::fprintf(stderr, "[bls] ERR: shader read FAIL '%s' (stage %s, last tried '%s')\n",
+                     key.c_str(), StagePrefix(stage), path.c_str());
+        return nullptr;
     }
 
     auto entry = std::make_unique<BlsShader>();

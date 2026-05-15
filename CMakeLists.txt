@@ -246,6 +246,16 @@ option(WDX_BUILD_WC3_SHADERS
     "Compile the externals/Wc3Shaders Slang sources and pack BLS bundles"
     OFF)
 
+# When ON (and WDX_BUILD_WC3_SHADERS is too), a second pass builds a
+# parallel set of BLS bundles with full debug symbols (slangc -g2 -O0,
+# +emit-spirv-directly) and stages them into standalone/debug_shaders/.
+# The renderer loads those instead of standalone/shaders/ when graphics
+# debug is on. Roughly doubles the Wc3Shaders compile time — turn off
+# while iterating if that hurts.
+option(WDX_BUILD_WC3_DEBUG_SHADERS
+    "Also build debug-symbol BLS bundles into debug_shaders/"
+    ON)
+
 if(WDX_BUILD_WC3_SHADERS)
     set(WC3_SHADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/externals/Wc3Shaders")
 
@@ -289,9 +299,6 @@ if(WDX_BUILD_WC3_SHADERS)
         "${WC3_SHADERS_DIR}/wc3_shaders.json"
         "${WC3_SHADERS_DIR}/custom_shaders.json")
 
-    set(WC3_SLANG_OUT  "${WC3_SHADERS_DIR}/slang_out")
-    set(WC3_BLS_OUT    "${WC3_SHADERS_DIR}/bls_out")
-
     # Optional cache var: semicolon-separated list of shader families to
     # compile. Defaults to empty → compile every family. The compile
     # script's --family flag accepts the same names; only the listed
@@ -306,95 +313,133 @@ if(WDX_BUILD_WC3_SHADERS)
         message(STATUS "Wc3Shaders: limiting compile to families: ${WDX_WC3_FAMILIES}")
     endif()
 
-    set(WC3_DXBC_STAMP   "${CMAKE_CURRENT_BINARY_DIR}/wc3_shaders_dxbc.stamp")
-    set(WC3_DXIL_STAMP   "${CMAKE_CURRENT_BINARY_DIR}/wc3_shaders_dxil.stamp")
-    set(WC3_SPIRV_STAMP  "${CMAKE_CURRENT_BINARY_DIR}/wc3_shaders_spirv.stamp")
-    set(WC3_BLS_STAMP    "${CMAKE_CURRENT_BINARY_DIR}/wc3_shaders_bls.stamp")
+    # Build one variant of the Wc3Shaders pipeline end to end:
+    #   compile Slang -> {DXBC, DXIL, SPIR-V}  (compile_all_slang.py)
+    #   pack .bls bundles                      (build_bls.py)
+    #   stage into the standalone exe's <stage_subdir>/ tree
+    #
+    # The release variant compiles optimised bytecode into slang_out/ and
+    # packs it (with --strip) into shaders/. The debug variant passes
+    # --debug to compile_all_slang.py (slangc -g2 -O0, +emit-spirv-directly;
+    # output diverted to slang_out_debug/), then packs *without* --strip —
+    # stripping would trim the input-signature/debug data we want kept —
+    # into debug_shaders/. Both reuse the same .slang sources, the same
+    # WC3_FAMILY_ARGS filter, and the same v1.8/v1.14 → flat layout
+    # flattening so the renderer's BLS cache only knows two roots:
+    # shaders/ and debug_shaders/.
+    #
+    # Sets ${out_stamp_var} in the caller's scope to the final stage stamp.
+    function(wc3_shader_pipeline variant is_debug stage_subdir out_stamp_var)
+        if(is_debug)
+            set(_compile_extra --debug)
+            set(_slang_out "${WC3_SHADERS_DIR}/slang_out_debug")
+            set(_bls_out   "${WC3_SHADERS_DIR}/bls_out_debug")
+            set(_bls_slang_out_arg --slang-out "${_slang_out}")
+            set(_bls_strip_arg)            # debug: keep signatures/debug info
+        else()
+            set(_compile_extra)            # release: no extra flag
+            set(_slang_out "${WC3_SHADERS_DIR}/slang_out")
+            set(_bls_out   "${WC3_SHADERS_DIR}/bls_out")
+            set(_bls_slang_out_arg)        # build_bls.py defaults to slang_out
+            set(_bls_strip_arg --strip)
+        endif()
 
-    add_custom_command(
-        OUTPUT  "${WC3_DXBC_STAMP}"
-        COMMAND "${Python3_EXECUTABLE}" "${WC3_SHADERS_DIR}/compile_all_slang.py"
-                --target d3d11 --slangc "${SLANGC}" ${WC3_FAMILY_ARGS}
-        COMMAND "${CMAKE_COMMAND}" -E touch "${WC3_DXBC_STAMP}"
-        WORKING_DIRECTORY "${WC3_SHADERS_DIR}"
-        DEPENDS ${WC3_SLANG_SOURCES} ${WC3_BUILD_SCRIPTS}
-        COMMENT "Wc3Shaders: compiling Slang -> DXBC (d3d11)"
-        VERBATIM)
+        set(_dxbc  "${CMAKE_CURRENT_BINARY_DIR}/wc3_${variant}_dxbc.stamp")
+        set(_dxil  "${CMAKE_CURRENT_BINARY_DIR}/wc3_${variant}_dxil.stamp")
+        set(_spirv "${CMAKE_CURRENT_BINARY_DIR}/wc3_${variant}_spirv.stamp")
+        set(_bls   "${CMAKE_CURRENT_BINARY_DIR}/wc3_${variant}_bls.stamp")
+        set(_stage "${CMAKE_CURRENT_BINARY_DIR}/wc3_${variant}_stage.stamp")
 
-    add_custom_command(
-        OUTPUT  "${WC3_DXIL_STAMP}"
-        COMMAND "${Python3_EXECUTABLE}" "${WC3_SHADERS_DIR}/compile_all_slang.py"
-                --target d3d12 --slangc "${SLANGC}" ${WC3_FAMILY_ARGS}
-        COMMAND "${CMAKE_COMMAND}" -E touch "${WC3_DXIL_STAMP}"
-        WORKING_DIRECTORY "${WC3_SHADERS_DIR}"
-        DEPENDS ${WC3_SLANG_SOURCES} ${WC3_BUILD_SCRIPTS}
-        COMMENT "Wc3Shaders: compiling Slang -> DXIL (d3d12)"
-        VERBATIM)
+        add_custom_command(
+            OUTPUT  "${_dxbc}"
+            COMMAND "${Python3_EXECUTABLE}" "${WC3_SHADERS_DIR}/compile_all_slang.py"
+                    --target d3d11 --slangc "${SLANGC}" ${_compile_extra} ${WC3_FAMILY_ARGS}
+            COMMAND "${CMAKE_COMMAND}" -E touch "${_dxbc}"
+            WORKING_DIRECTORY "${WC3_SHADERS_DIR}"
+            DEPENDS ${WC3_SLANG_SOURCES} ${WC3_BUILD_SCRIPTS}
+            COMMENT "Wc3Shaders[${variant}]: compiling Slang -> DXBC (d3d11)"
+            VERBATIM)
 
-    add_custom_command(
-        OUTPUT  "${WC3_SPIRV_STAMP}"
-        COMMAND "${Python3_EXECUTABLE}" "${WC3_SHADERS_DIR}/compile_all_slang.py"
-                --target vulkan --slangc "${SLANGC_VULKAN}" ${WC3_FAMILY_ARGS}
-        COMMAND "${CMAKE_COMMAND}" -E touch "${WC3_SPIRV_STAMP}"
-        WORKING_DIRECTORY "${WC3_SHADERS_DIR}"
-        DEPENDS ${WC3_SLANG_SOURCES} ${WC3_BUILD_SCRIPTS}
-        COMMENT "Wc3Shaders: compiling Slang -> SPIR-V (vulkan)"
-        VERBATIM)
+        add_custom_command(
+            OUTPUT  "${_dxil}"
+            COMMAND "${Python3_EXECUTABLE}" "${WC3_SHADERS_DIR}/compile_all_slang.py"
+                    --target d3d12 --slangc "${SLANGC}" ${_compile_extra} ${WC3_FAMILY_ARGS}
+            COMMAND "${CMAKE_COMMAND}" -E touch "${_dxil}"
+            WORKING_DIRECTORY "${WC3_SHADERS_DIR}"
+            DEPENDS ${WC3_SLANG_SOURCES} ${WC3_BUILD_SCRIPTS}
+            COMMENT "Wc3Shaders[${variant}]: compiling Slang -> DXIL (d3d12)"
+            VERBATIM)
 
-    # Upstream build_bls.py writes two trees:
-    #   <output>_1_8/{ps,vs,mtlfs,mtlvs}/*.bls                 (template-faithful Wc3 v1.8)
-    #   <output>_1_14/shaders/{pixel,vertex}/<api>/*.bls       (v1.14, WoW-style layout)
-    # where <api> ∈ {dx_5_0, dx_6_0, mtl_1_1, spv_1_3, …}. The SPIR-V
-    # subdir name encodes the slangc-emitted SPIR-V version (1.3 for the
-    # `glsl_450` profile targeting Vulkan 1.3). The `--build_extra` flag
-    # was retired upstream — every backend with slangc output is packed
-    # unconditionally.
-    set(WC3_BLS_OUT_18 "${WC3_BLS_OUT}_1_8")
-    set(WC3_BLS_OUT_14 "${WC3_BLS_OUT}_1_14")
-    add_custom_command(
-        OUTPUT  "${WC3_BLS_STAMP}"
-        COMMAND "${Python3_EXECUTABLE}" "${WC3_SHADERS_DIR}/build_bls.py"
-                --templates "${WDX_SHADER_TEMPLATES}"
-                --output    "${WC3_BLS_OUT}"
-                --strip
-        COMMAND "${CMAKE_COMMAND}" -E touch "${WC3_BLS_STAMP}"
-        WORKING_DIRECTORY "${WC3_SHADERS_DIR}"
-        DEPENDS "${WC3_DXBC_STAMP}" "${WC3_DXIL_STAMP}" "${WC3_SPIRV_STAMP}"
-                ${WC3_BUILD_SCRIPTS}
-        COMMENT "Wc3Shaders: packing .bls (v1.8 DX + v1.14 DX/SPIR-V)"
-        VERBATIM)
+        add_custom_command(
+            OUTPUT  "${_spirv}"
+            COMMAND "${Python3_EXECUTABLE}" "${WC3_SHADERS_DIR}/compile_all_slang.py"
+                    --target vulkan --slangc "${SLANGC_VULKAN}" ${_compile_extra} ${WC3_FAMILY_ARGS}
+            COMMAND "${CMAKE_COMMAND}" -E touch "${_spirv}"
+            WORKING_DIRECTORY "${WC3_SHADERS_DIR}"
+            DEPENDS ${WC3_SLANG_SOURCES} ${WC3_BUILD_SCRIPTS}
+            COMMENT "Wc3Shaders[${variant}]: compiling Slang -> SPIR-V (vulkan)"
+            VERBATIM)
 
-    # Stage the freshly packed bundles into the standalone exe's output
-    # directory the moment Wc3Shaders rebuilds — independently of whether
-    # the exe itself relinks. POST_BUILD on the exe target wouldn't fire
-    # on a BLS-only change. The standalone exe lands at
-    # ${CMAKE_BINARY_DIR}/standalone (set via RUNTIME_OUTPUT_DIRECTORY
-    # below), so we know the path up-front. We flatten the upstream
-    # layout into the renderer's existing path scheme
-    # (shaders/{ps,vs,d3d12/ps,d3d12/vs,vulkan/ps,vulkan/vs}/) so the
-    # BLS shader cache doesn't need to learn the new tree.
-    set(WC3_STAGE_DIR   "${CMAKE_BINARY_DIR}/standalone/shaders")
-    set(WC3_STAGE_STAMP "${CMAKE_CURRENT_BINARY_DIR}/wc3_shaders_stage.stamp")
-    add_custom_command(
-        OUTPUT  "${WC3_STAGE_STAMP}"
-        COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                "${WC3_BLS_OUT_18}/ps"                          "${WC3_STAGE_DIR}/ps"
-        COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                "${WC3_BLS_OUT_18}/vs"                          "${WC3_STAGE_DIR}/vs"
-        COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                "${WC3_BLS_OUT_14}/shaders/pixel/dx_6_0"        "${WC3_STAGE_DIR}/d3d12/ps"
-        COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                "${WC3_BLS_OUT_14}/shaders/vertex/dx_6_0"       "${WC3_STAGE_DIR}/d3d12/vs"
-        COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                "${WC3_BLS_OUT_14}/shaders/pixel/spv_1_3"       "${WC3_STAGE_DIR}/vulkan/ps"
-        COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                "${WC3_BLS_OUT_14}/shaders/vertex/spv_1_3"      "${WC3_STAGE_DIR}/vulkan/vs"
-        COMMAND "${CMAKE_COMMAND}" -E touch "${WC3_STAGE_STAMP}"
-        DEPENDS "${WC3_BLS_STAMP}"
-        COMMENT "Wc3Shaders: staging BLS bundles into ${WC3_STAGE_DIR}"
-        VERBATIM)
+        # Upstream build_bls.py writes two trees:
+        #   <output>_1_8/{ps,vs,mtlfs,mtlvs}/*.bls            (Wc3 v1.8 layout)
+        #   <output>_1_14/shaders/{pixel,vertex}/<api>/*.bls  (v1.14, WoW-style)
+        # where <api> ∈ {dx_5_0, dx_6_0, spv_1_3, …}. The SPIR-V subdir name
+        # encodes the slangc-emitted SPIR-V version (1.3 for glsl_450 →
+        # Vulkan 1.3).
+        set(_bls_out_18 "${_bls_out}_1_8")
+        set(_bls_out_14 "${_bls_out}_1_14")
+        add_custom_command(
+            OUTPUT  "${_bls}"
+            COMMAND "${Python3_EXECUTABLE}" "${WC3_SHADERS_DIR}/build_bls.py"
+                    --templates "${WDX_SHADER_TEMPLATES}"
+                    --output    "${_bls_out}"
+                    ${_bls_slang_out_arg}
+                    ${_bls_strip_arg}
+            COMMAND "${CMAKE_COMMAND}" -E touch "${_bls}"
+            WORKING_DIRECTORY "${WC3_SHADERS_DIR}"
+            DEPENDS "${_dxbc}" "${_dxil}" "${_spirv}" ${WC3_BUILD_SCRIPTS}
+            COMMENT "Wc3Shaders[${variant}]: packing .bls (v1.8 DX + v1.14 DX/SPIR-V)"
+            VERBATIM)
 
-    add_custom_target(Wc3Shaders ALL DEPENDS "${WC3_STAGE_STAMP}")
+        # Stage the freshly packed bundles into the standalone exe's output
+        # directory the moment Wc3Shaders rebuilds — independently of
+        # whether the exe relinks (POST_BUILD on the exe wouldn't fire on a
+        # BLS-only change). The standalone exe lands at
+        # ${CMAKE_BINARY_DIR}/standalone, so the path is known up front. We
+        # flatten the upstream layout into the renderer's path scheme
+        # (<root>/{ps,vs,d3d12/ps,d3d12/vs,vulkan/ps,vulkan/vs}/) so the BLS
+        # cache only needs to know the two roots shaders/ and debug_shaders/.
+        set(_stage_dir "${CMAKE_BINARY_DIR}/standalone/${stage_subdir}")
+        add_custom_command(
+            OUTPUT  "${_stage}"
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                    "${_bls_out_18}/ps"                       "${_stage_dir}/ps"
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                    "${_bls_out_18}/vs"                       "${_stage_dir}/vs"
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                    "${_bls_out_14}/shaders/pixel/dx_6_0"     "${_stage_dir}/d3d12/ps"
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                    "${_bls_out_14}/shaders/vertex/dx_6_0"    "${_stage_dir}/d3d12/vs"
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                    "${_bls_out_14}/shaders/pixel/spv_1_3"    "${_stage_dir}/vulkan/ps"
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                    "${_bls_out_14}/shaders/vertex/spv_1_3"   "${_stage_dir}/vulkan/vs"
+            COMMAND "${CMAKE_COMMAND}" -E touch "${_stage}"
+            DEPENDS "${_bls}"
+            COMMENT "Wc3Shaders[${variant}]: staging BLS bundles into ${_stage_dir}"
+            VERBATIM)
+
+        set(${out_stamp_var} "${_stage}" PARENT_SCOPE)
+    endfunction()
+
+    wc3_shader_pipeline(release FALSE "shaders" WC3_RELEASE_STAGE_STAMP)
+    set(WC3_ALL_STAGE_STAMPS "${WC3_RELEASE_STAGE_STAMP}")
+    if(WDX_BUILD_WC3_DEBUG_SHADERS)
+        wc3_shader_pipeline(debug TRUE "debug_shaders" WC3_DEBUG_STAGE_STAMP)
+        list(APPEND WC3_ALL_STAGE_STAMPS "${WC3_DEBUG_STAGE_STAMP}")
+    endif()
+
+    add_custom_target(Wc3Shaders ALL DEPENDS ${WC3_ALL_STAGE_STAMPS})
 endif()
 
 # ============================================================================
