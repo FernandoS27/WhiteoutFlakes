@@ -8,7 +8,7 @@ on:
 
 jobs:
   appimage:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
@@ -31,7 +31,10 @@ jobs:
             libgl1-mesa-dev mesa-vulkan-drivers \
             libasound2-dev libpulse-dev \
             libgtk-3-dev \
-            wget fuse libfuse2 file
+            wget file
+          # FUSE for running linuxdeploy AppImage. Ubuntu 24.04 renamed
+          # libfuse2 → libfuse2t64 (time_t64 ABI transition). Try both.
+          sudo apt-get install -y libfuse2t64 || sudo apt-get install -y libfuse2
 
       # ---- Vulkan SDK (headers + VMA + Vulkan-Hpp + loader) ------------
       # libvulkan-dev from Ubuntu carries the C headers + loader but NOT
@@ -42,8 +45,8 @@ jobs:
         run: |
           wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
             | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list \
-            https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list \
+            https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
           sudo apt-get update
           sudo apt-get install -y vulkan-sdk
 
