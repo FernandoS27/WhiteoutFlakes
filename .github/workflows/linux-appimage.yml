@@ -6,6 +6,9 @@ name: Linux AppImage
 on:
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   appimage:
     runs-on: ubuntu-24.04
