@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en-US</string>
+
+    <key>CFBundleExecutable</key>
+    <string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
+
+    <key>CFBundleIconFile</key>
+    <string>${MACOSX_BUNDLE_ICON_FILE}</string>
+
+    <key>CFBundleIdentifier</key>
+    <string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
+
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+
+    <key>CFBundleName</key>
+    <string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+
+    <key>CFBundleDisplayName</key>
+    <string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
+
+    <key>CFBundleVersion</key>
+    <string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+
+    <key>LSMinimumSystemVersion</key>
+    <string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string>
+
+    <!-- Document type: open .mdx files via the Finder. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Warcraft III MDX Model</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Default</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.data</string>
+            </array>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>mdx</string>
+            </array>
+        </dict>
+    </array>
+
+    <!-- High-DPI / Retina rendering. -->
+    <key>NSHighResolutionCapable</key>
+    <true/>
+
+    <!-- Don't break under the App Sandbox metadata UI: we're not sandboxed. -->
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+</dict>
+</plist>

@@ -1,0 +1,222 @@
+name: macOS .dmg
+
+# Manual-only — same rationale as the Linux job. Trigger from the Actions
+# tab → "Run workflow", or `gh workflow run macos-dmg.yml`.
+on:
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  dmg:
+    # macos-14 is the Apple Silicon (arm64) runner. macos-13 is Intel.
+    # We target Apple Silicon only — ad-hoc signed .app drops to ~70 MB,
+    # universal builds would double dep work for marginal audience gain.
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      # ---- System deps -------------------------------------------------
+      # cmake / ninja from Homebrew (preinstalled on macOS runners but
+      # `brew install` is a no-op when already present, so this stays
+      # safe across runner image refreshes). create-dmg is a small tool
+      # that wraps hdiutil with sane defaults for nice-looking installer
+      # backgrounds + drag-to-Applications layout.
+      - name: Install build deps
+        run: |
+          brew update
+          # wget for the SDK download (macos-14 ships only curl by default).
+          brew install ninja create-dmg wget
+          cmake --version
+          ninja --version
+
+      # ---- Vulkan SDK (full installer from sdk.lunarg.com) -------------
+      # The macOS SDK ships as a .zip containing InstallVulkan.app, which
+      # supports a non-interactive `install` subcommand. Same VERSION pin
+      # as the Linux job — keeps vulkan-hpp shape consistent across all
+      # platforms (newer vulkan-hpp flattened RAII allocateCommandBuffers
+      # and breaks our call sites).
+      #
+      # Layout after install:
+      #   ~/VulkanSDK/<ver>/macOS/         ← VULKAN_SDK root
+      #     include/vulkan/, include/vma/
+      #     lib/libvulkan.1.dylib
+      #     lib/libMoltenVK.dylib
+      #     share/vulkan/icd.d/MoltenVK_icd.json
+      #     bin/slangc
+      - name: Install Vulkan SDK
+        env:
+          VULKAN_SDK_VERSION: "1.4.341.0"
+        run: |
+          set -e
+          mkdir -p $HOME/vulkan-sdk-dl
+          cd $HOME/vulkan-sdk-dl
+          wget -q "https://sdk.lunarg.com/sdk/download/${VULKAN_SDK_VERSION}/mac/vulkansdk-macos-${VULKAN_SDK_VERSION}.zip"
+          unzip -q "vulkansdk-macos-${VULKAN_SDK_VERSION}.zip"
+          ls -la
+          # LunarG SDK zips ship the installer with the version baked in. The
+          # exact name has varied across releases (InstallVulkan.app, then
+          # InstallVulkan-<ver>.app, currently vulkansdk-macOS-<ver>.app),
+          # so glob broadly: any top-level .app dir is the installer.
+          INSTALLER="$(ls -d *.app 2>/dev/null | head -1)"
+          test -n "$INSTALLER" || { echo "::error::No *.app installer in SDK zip"; ls -la; exit 1; }
+          echo "Using installer: $INSTALLER"
+          # Inner Mach-O binary name mirrors the .app name. Pick the single
+          # executable in Contents/MacOS/.
+          INSTALLER_BIN="$(ls "$INSTALLER/Contents/MacOS/" | head -1)"
+          INSTALLER_BIN="$INSTALLER/Contents/MacOS/$INSTALLER_BIN"
+          test -x "$INSTALLER_BIN" || { echo "::error::No installer binary in $INSTALLER/Contents/MacOS"; ls -la "$INSTALLER/Contents/MacOS/"; exit 1; }
+
+          INSTALL_DIR="$HOME/VulkanSDK/${VULKAN_SDK_VERSION}"
+          mkdir -p "$INSTALL_DIR"
+          # Headless Qt-installer flow per LunarG's macOS getting-started
+          # guide. `copy_only=1` skips the /usr/local copy step so we don't
+          # need sudo on the runner and the SDK stays self-contained under
+          # --root. Argument order matters: Qt installer parses as
+          # `[options] command <args> <key=value>`, so `install` must
+          # precede `copy_only=1`.
+          #
+          # Default install only picks com.lunarg.vulkan.core (headers +
+          # loader + MoltenVK + slangc). VMA (vk_mem_alloc.h) is a separate
+          # optional component — list it explicitly.
+          "$INSTALLER_BIN" \
+            --root "$INSTALL_DIR" \
+            --accept-licenses --default-answer --confirm-command \
+            install com.lunarg.vulkan.core com.lunarg.vulkan.vma copy_only=1
+
+          SDK_ROOT="${INSTALL_DIR}/macOS"
+          test -d "${SDK_ROOT}" || { echo "::error::Vulkan SDK install missing macOS/ subdir"; exit 1; }
+
+          echo "VULKAN_SDK=${SDK_ROOT}"                          >> $GITHUB_ENV
+          echo "PATH=${SDK_ROOT}/bin:${PATH}"                    >> $GITHUB_ENV
+          echo "DYLD_LIBRARY_PATH=${SDK_ROOT}/lib:${DYLD_LIBRARY_PATH:-}" >> $GITHUB_ENV
+          echo "VK_ICD_FILENAMES=${SDK_ROOT}/share/vulkan/icd.d/MoltenVK_icd.json" >> $GITHUB_ENV
+
+          # Sanity-check the bits we rely on.
+          test -f "${SDK_ROOT}/include/vulkan/vulkan.hpp"             || { echo "::error::missing vulkan.hpp"; exit 1; }
+          test -f "${SDK_ROOT}/include/vma/vk_mem_alloc.h"            || { echo "::error::missing vk_mem_alloc.h"; exit 1; }
+          test -f "${SDK_ROOT}/lib/libvulkan.1.dylib"                 || { echo "::error::missing libvulkan loader"; exit 1; }
+          test -f "${SDK_ROOT}/lib/libMoltenVK.dylib"                 || { echo "::error::missing libMoltenVK"; exit 1; }
+          test -f "${SDK_ROOT}/share/vulkan/icd.d/MoltenVK_icd.json"  || { echo "::error::missing MoltenVK ICD JSON"; exit 1; }
+          test -x "${SDK_ROOT}/bin/slangc"                            || { echo "::error::missing slangc"; exit 1; }
+          echo "Vulkan SDK ${VULKAN_SDK_VERSION} OK (Mac)"
+
+      # ---- Configure + build -------------------------------------------
+      # CMAKE_OSX_DEPLOYMENT_TARGET=13.3 → matches LSMinimumSystemVersion
+      # in Info.plist.in. We need 13.3 (not 13.0) because libc++'s
+      # std::from_chars/std::to_chars float overloads are marked
+      # __attribute__((unavailable)) for targets older than 13.3.
+      # settings_ini.cpp uses both for locale-independent float I/O.
+      # CMAKE_OSX_ARCHITECTURES=arm64 forces a single-arch build
+      # (universal would need every dep lipo'd).
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3 \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DWDX_BUILD_WC3_SHADERS=OFF \
+            -DWDX_USE_PREBUILT_SHADERS=ON \
+            -DWDX_BUILD_WC3_DEBUG_SHADERS=OFF \
+            -DWDX_ENABLE_TRACY=OFF \
+            -DWDX_BUILD_MAX_PLUGIN=OFF \
+            -DCMAKE_INSTALL_PREFIX=stage
+
+      - name: Build viewer
+        run: cmake --build build --target WhiteoutFlakesStandalone --parallel
+
+      # ---- Stage the .app bundle ---------------------------------------
+      # cmake --install populates stage/WhiteoutFlakes.app with:
+      #   Contents/MacOS/WhiteoutFlakes
+      #   Contents/MacOS/shaders/...
+      #   Contents/MacOS/pso_trace.bin
+      #   Contents/Resources/WhiteoutFlakes.icns
+      #   Contents/Info.plist
+      # We then layer in MoltenVK + the ICD JSON + the Vulkan loader,
+      # rewrite the ICD JSON's library_path to a bundle-relative path,
+      # and ad-hoc sign the result.
+      - name: Install + bundle MoltenVK
+        run: |
+          set -e
+          cmake --install build
+          APP="stage/WhiteoutFlakes.app"
+          test -d "$APP" || { echo "::error::cmake --install didn't produce ${APP}"; exit 1; }
+
+          mkdir -p "$APP/Contents/Frameworks"
+          mkdir -p "$APP/Contents/Resources/vulkan/icd.d"
+
+          # Vulkan loader + MoltenVK driver. The loader is what the binary
+          # links against; MoltenVK is found via the ICD JSON at runtime.
+          cp "${VULKAN_SDK}/lib/libvulkan.1.dylib"  "$APP/Contents/Frameworks/"
+          cp "${VULKAN_SDK}/lib/libMoltenVK.dylib"  "$APP/Contents/Frameworks/"
+          # Force install_name to @rpath form so the executable's
+          # @executable_path/../Frameworks rpath resolves them. LunarG SDK
+          # 1.4.x already ships with @rpath install_names but older builds
+          # used absolute paths; this normalisation is cheap insurance.
+          install_name_tool -id "@rpath/libvulkan.1.dylib" \
+              "$APP/Contents/Frameworks/libvulkan.1.dylib"
+          install_name_tool -id "@rpath/libMoltenVK.dylib" \
+              "$APP/Contents/Frameworks/libMoltenVK.dylib"
+          # Print install_names + the executable's load commands so any
+          # mismatch shows up clearly in the CI log.
+          echo "--- libvulkan dependencies ---"
+          otool -L "$APP/Contents/Frameworks/libvulkan.1.dylib"
+          echo "--- WhiteoutFlakes dependencies ---"
+          otool -L "$APP/Contents/MacOS/WhiteoutFlakes"
+
+          # Rewrite the ICD JSON's library_path to a bundle-relative path.
+          # Script lives in packaging/macos/ rather than inline so YAML
+          # block indentation doesn't break Python's whitespace rules.
+          python3 packaging/macos/rewrite_icd.py \
+              "${VULKAN_SDK}/share/vulkan/icd.d/MoltenVK_icd.json" \
+              "$APP/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"
+
+          # Ad-hoc codesign — no Apple Developer cert needed (`-s -` is the
+          # ad-hoc identity). Apple deprecated `--deep` for new submissions
+          # in favour of explicit per-file signing, so we walk the bundle
+          # ourselves: every nested dylib first, then the executable, then
+          # the bundle as a whole. Order matters — once you sign a wrapper
+          # its hash freezes, so signing nested binaries afterwards
+          # invalidates the wrapper signature.
+          find "$APP/Contents/Frameworks" -type f \( -name "*.dylib" -o -name "*.so" \) \
+              -exec codesign --force --options runtime --sign - {} \;
+          codesign --force --options runtime --sign - "$APP/Contents/MacOS/WhiteoutFlakes"
+          codesign --force --options runtime --sign - "$APP"
+          codesign --verify --verbose=2 "$APP" || true
+
+      # ---- Pack the .dmg ----------------------------------------------
+      # create-dmg wraps hdiutil + applies a nice icon arrangement
+      # (drag-to-Applications). Single-arch + 256x256 icon + ad-hoc sign
+      # → ~70 MB final.
+      - name: Pack .dmg
+        run: |
+          # create-dmg treats <source> as the directory whose contents
+          # become the DMG root. Pass `stage/` so the DMG root contains
+          # exactly one entry: WhiteoutFlakes.app. Passing the .app
+          # itself would explode its Contents/ into the DMG root.
+          create-dmg \
+            --volname "WhiteoutFlakes" \
+            --window-size 540 380 \
+            --icon-size 96 \
+            --icon "WhiteoutFlakes.app" 130 190 \
+            --app-drop-link 410 190 \
+            --no-internet-enable \
+            "WhiteoutFlakes-macos-arm64.dmg" \
+            "stage/" || true
+          # create-dmg returns non-zero on hdiutil quirks even when the
+          # .dmg was produced; check explicitly.
+          test -f "WhiteoutFlakes-macos-arm64.dmg" \
+            || { echo "::error::create-dmg failed to produce a .dmg"; exit 1; }
+          ls -la *.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WhiteoutFlakes-macos-arm64
+          path: WhiteoutFlakes-macos-arm64.dmg
+          if-no-files-found: error
+          retention-days: 14

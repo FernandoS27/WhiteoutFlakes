@@ -23,6 +23,9 @@
 #elif defined(__linux__)
 #include <unistd.h>
 #include <climits>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <climits>
 #endif
 
 using whiteout::flakes::f32;
@@ -45,6 +48,16 @@ static std::filesystem::path GetExecutablePath() {
     if (n <= 0)
         return {};
     return std::filesystem::path(std::string(buf, static_cast<size_t>(n)));
+#elif defined(__APPLE__)
+    char buf[PATH_MAX] = {};
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) != 0)
+        return {};
+    std::error_code ec;
+    auto resolved = std::filesystem::canonical(std::filesystem::path(buf), ec);
+    if (ec)
+        resolved = std::filesystem::path(buf);
+    return resolved;
 #else
     return {};
 #endif
@@ -106,6 +119,34 @@ int main(int argc, char* argv[]) {
         }
     }
 
+#if defined(__APPLE__)
+    // .app-bundled MoltenVK: the Vulkan loader's ICD discovery doesn't
+    // walk into Contents/Resources by default. Point it at our bundled
+    // ICD JSON before any Vulkan call. Layout produced by the macOS CI:
+    //   WhiteoutFlakes.app/Contents/MacOS/WhiteoutFlakes
+    //   WhiteoutFlakes.app/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json
+    //   WhiteoutFlakes.app/Contents/Frameworks/libMoltenVK.dylib
+    // The JSON's library_path is "../../../Frameworks/libMoltenVK.dylib"
+    // (relative to the JSON's parent dir), so the loader resolves the
+    // dylib from inside the bundle without depending on system MoltenVK.
+    {
+        std::filesystem::path exe = GetExecutablePath();
+        if (!exe.empty()) {
+            std::filesystem::path icd =
+                exe.parent_path().parent_path() /
+                "Resources" / "vulkan" / "icd.d" / "MoltenVK_icd.json";
+            if (std::filesystem::exists(icd))
+                ::setenv("VK_ICD_FILENAMES", icd.c_str(), 1);
+        }
+    }
+    // MoltenVK perf: opt into Metal argument buffers (descriptor indirection
+    // table). Default-off in MoltenVK because old Metal drivers had bugs;
+    // safe and substantially faster on Apple Silicon (M1+) which is our
+    // only macOS target. Setting it before any Vulkan call ensures
+    // MoltenVK reads it during ICD initialization.
+    ::setenv("MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", "1", 1);
+#endif
+
     whiteout::flakes::renderer::SceneManager scene;
     whiteout::flakes::renderer::RenderService renderer(scene);
 
@@ -130,8 +171,11 @@ int main(int argc, char* argv[]) {
         renderer.Settings().SetDefaultBackend(whiteout::flakes::gfx::GfxApi::Vulkan);
 #endif
 
-    // Vulkan pipeline cache: alongside the exe on Windows; under
-    // $XDG_CACHE_HOME/WhiteoutFlakes/ on Linux (AppImage mount is read-only).
+    // Vulkan pipeline cache: alongside the exe on Windows; per-user cache
+    // dir on Linux/macOS (the AppImage mount and the .app bundle are both
+    // read-only, so we can't drop the cache next to the binary there).
+    //   • Linux: $XDG_CACHE_HOME/WhiteoutFlakes/ (or ~/.cache/...)
+    //   • macOS: ~/Library/Caches/WhiteoutFlakes/
     {
         std::filesystem::path cachePath;
 #if defined(_WIN32)
@@ -142,6 +186,15 @@ int main(int argc, char* argv[]) {
         } else {
             cachePath = "vk_pipeline_cache.bin";
         }
+#elif defined(__APPLE__)
+        std::filesystem::path base;
+        if (const char* home = std::getenv("HOME"); home && *home)
+            base = std::filesystem::path(home) / "Library" / "Caches";
+        else
+            base = ".";
+        std::error_code ec;
+        std::filesystem::create_directories(base / "WhiteoutFlakes", ec);
+        cachePath = base / "WhiteoutFlakes" / "vk_pipeline_cache.bin";
 #else
         std::filesystem::path base;
         if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg)
@@ -160,14 +213,25 @@ int main(int argc, char* argv[]) {
         // a pre-warmed trace inside the AppImage / installer cuts the
         // cold-launch PSO build hitch on Vulkan. Subsequent runs append their
         // own additions via BlsPsoTrace::Save() in the user-cache copy.
+        //
+        // On macOS, the .app bundle stores ship-with-the-binary data under
+        // Contents/Resources/ (not Contents/MacOS/) so codesign accepts
+        // the non-Mach-O .bls files; translate the seed source accordingly.
         {
             std::filesystem::path tracePath = cachePath;
             tracePath.replace_filename("pso_trace.bin");
             std::error_code ec;
             if (!std::filesystem::exists(tracePath, ec)) {
-                std::filesystem::path shipped = GetExecutablePath();
-                if (!shipped.empty()) {
-                    shipped.replace_filename("pso_trace.bin");
+                std::filesystem::path exe = GetExecutablePath();
+                if (!exe.empty()) {
+                    std::filesystem::path shippedDir = exe.parent_path();
+#if defined(__APPLE__)
+                    if (shippedDir.filename() == "MacOS" &&
+                        shippedDir.parent_path().filename() == "Contents") {
+                        shippedDir = shippedDir.parent_path() / "Resources";
+                    }
+#endif
+                    std::filesystem::path shipped = shippedDir / "pso_trace.bin";
                     if (std::filesystem::exists(shipped, ec)) {
                         std::filesystem::copy_file(shipped, tracePath,
                                                    std::filesystem::copy_options::skip_existing,

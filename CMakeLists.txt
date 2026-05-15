@@ -1038,3 +1038,78 @@ if(UNIX AND NOT APPLE)
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux/WhiteoutFlakes.desktop"
             DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 endif()
+
+# ============================================================================
+# macOS .app bundle staging
+#
+# `cmake --install build --prefix <stagedir>` produces
+# <stagedir>/WhiteoutFlakes.app/ with the standard layout:
+#   Contents/MacOS/WhiteoutFlakes        ← executable
+#   Contents/Resources/WhiteoutFlakes.icns
+#   Contents/Resources/shaders/...        ← prebuilt BLS bundle
+#   Contents/Resources/pso_trace.bin
+#   Contents/Frameworks/                  ← MoltenVK + libvulkan + ICD
+#   Contents/Info.plist
+# Dylib + ICD bundling lives in the GitHub Actions YAML (dylibbundler /
+# install_name_tool / hand-copy from the LunarG SDK) since it depends on
+# the runner's SDK install path. The CMake side just builds the skeleton.
+# ============================================================================
+if(APPLE)
+    # Mark the executable as a macOS bundle. CMake then arranges the build
+    # output as `WhiteoutFlakes.app/Contents/MacOS/WhiteoutFlakes` directly
+    # (no manual mkdir / mv needed).
+    set_target_properties(WhiteoutFlakesStandalone PROPERTIES
+        MACOSX_BUNDLE                          TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME              "WhiteoutFlakes"
+        MACOSX_BUNDLE_GUI_IDENTIFIER           "com.whiteoutflakes.viewer"
+        MACOSX_BUNDLE_BUNDLE_VERSION           "0.1.0"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING     "0.1.0"
+        MACOSX_BUNDLE_ICON_FILE                "WhiteoutFlakes.icns"
+        MACOSX_BUNDLE_INFO_PLIST
+            "${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/Info.plist.in"
+        # Bundled dylibs live next to the executable in
+        # Contents/Frameworks; @executable_path is the bundle's MacOS dir
+        # at runtime, so ../Frameworks resolves correctly.
+        INSTALL_RPATH                          "@executable_path/../Frameworks"
+        BUILD_WITH_INSTALL_RPATH               TRUE
+    )
+
+    # Generate WhiteoutFlakes.icns from the iconset committed under
+    # resources/FlakesMacOS.iconset/. Apple's iconutil only exists on
+    # macOS hosts; we use it as a build-time codegen step.
+    set(_iconset_src "${CMAKE_CURRENT_SOURCE_DIR}/resources/FlakesMacOS.iconset")
+    set(_icns_out    "${CMAKE_CURRENT_BINARY_DIR}/WhiteoutFlakes.icns")
+    add_custom_command(
+        OUTPUT  "${_icns_out}"
+        COMMAND iconutil -c icns -o "${_icns_out}" "${_iconset_src}"
+        DEPENDS "${_iconset_src}"
+        COMMENT "macOS: iconutil ${_iconset_src} -> WhiteoutFlakes.icns"
+        VERBATIM)
+    add_custom_target(WhiteoutFlakesIcns ALL DEPENDS "${_icns_out}")
+    add_dependencies(WhiteoutFlakesStandalone WhiteoutFlakesIcns)
+
+    # ---- Install rules -------------------------------------------------
+    # Bundle goes at the install root (`WhiteoutFlakes.app/`). Everything
+    # except the executable itself lives under Contents/Resources/ —
+    # macOS treats anything in Contents/MacOS/ as code and `codesign
+    # --force` fails on non-Mach-O files (`.bls` etc.) shipped there.
+    # The engine's DiscoverExecutableDirectory() has a .app-aware path:
+    # when the exe sits at Contents/MacOS/X, the search root resolves
+    # to Contents/Resources/ instead.
+    install(TARGETS WhiteoutFlakesStandalone
+            BUNDLE  DESTINATION .)
+
+    install(FILES "${_icns_out}"
+            DESTINATION WhiteoutFlakes.app/Contents/Resources)
+
+    if(WDX_BUILD_WC3_SHADERS OR WDX_USE_PREBUILT_SHADERS)
+        install(DIRECTORY "${CMAKE_BINARY_DIR}/standalone/shaders/"
+                DESTINATION WhiteoutFlakes.app/Contents/Resources/shaders
+                OPTIONAL)
+    endif()
+
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/pso_trace.bin")
+        install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/pso_trace.bin"
+                DESTINATION WhiteoutFlakes.app/Contents/Resources)
+    endif()
+endif()

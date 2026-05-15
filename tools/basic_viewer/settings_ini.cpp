@@ -33,10 +33,11 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// On Windows the .ini lives next to the exe (preserves prior behaviour).
-// On Linux the AppImage mount is read-only, so settings go in the standard
-// XDG location: $XDG_CONFIG_HOME/WhiteoutFlakes/settings.ini, falling back
-// to $HOME/.config/WhiteoutFlakes/settings.ini.
+// Per-OS config location:
+//   • Windows: alongside the exe (preserves prior behaviour).
+//   • Linux:   $XDG_CONFIG_HOME/WhiteoutFlakes/ (or ~/.config/...).
+//   • macOS:   ~/Library/Application Support/WhiteoutFlakes/ (Apple convention,
+//              and the .app bundle is read-only anyway).
 fs::path SettingsIniPath() {
 #ifdef _WIN32
     wchar_t exePath[MAX_PATH] = {};
@@ -46,6 +47,16 @@ fs::path SettingsIniPath() {
     fs::path p(exePath);
     p.replace_filename(L"WhiteoutFlakes.ini");
     return p;
+#elif defined(__APPLE__)
+    fs::path base;
+    if (const char* home = std::getenv("HOME"); home && *home)
+        base = fs::path(home) / "Library" / "Application Support";
+    else
+        base = ".";
+    fs::path dir = base / "WhiteoutFlakes";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    return dir / "settings.ini";
 #else
     fs::path base;
     if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) {
@@ -176,17 +187,42 @@ bool ParseInt(const std::string& s, i32& out) {
     out = static_cast<i32>(v);
     return true;
 }
+// Minimal locale-independent float parser. We sidestep std::from_chars
+// here because Apple's libc++ marks the float overload unavailable on
+// every macOS deployment target as of Xcode 15 (despite from_chars
+// being standardised in C++17). Our settings file only ever stores
+// simple decimal values (`1.5`, `-0.123`, `12.34`) — no scientific
+// notation, no hex floats, no NaN — so a hand-rolled parser is both
+// adequate and the same locale-neutral guarantee.
 bool ParseFloat(const std::string& s, f32& out) {
     if (s.empty())
         return false;
-    const char* first = s.data();
-    const char* last = s.data() + s.size();
-    double v = 0;
-    if (auto [ptr, ec] = std::from_chars(first, last, v); ec == std::errc{} && ptr != first) {
-        out = static_cast<f32>(v);
-        return true;
+    const char* p = s.c_str();
+    bool neg = false;
+    if (*p == '-') { neg = true; ++p; }
+    else if (*p == '+') { ++p; }
+
+    double v = 0.0;
+    bool gotDigit = false;
+    while (*p >= '0' && *p <= '9') {
+        v = v * 10.0 + static_cast<double>(*p - '0');
+        ++p;
+        gotDigit = true;
     }
-    return false;
+    if (*p == '.') {
+        ++p;
+        double scale = 0.1;
+        while (*p >= '0' && *p <= '9') {
+            v += static_cast<double>(*p - '0') * scale;
+            scale *= 0.1;
+            ++p;
+            gotDigit = true;
+        }
+    }
+    if (!gotDigit)
+        return false;
+    out = static_cast<f32>(neg ? -v : v);
+    return true;
 }
 bool ParseBool(const std::string& s, bool& out) {
     if (s == "1" || s == "true" || s == "TRUE") {

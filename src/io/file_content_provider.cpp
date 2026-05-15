@@ -26,6 +26,9 @@
 #elif defined(__linux__)
 #include <unistd.h>
 #include <climits>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <climits>
 #endif
 
 namespace whiteout::flakes::io {
@@ -54,6 +57,27 @@ static fs::path DiscoverExecutableDirectory() {
     if (n <= 0)
         return {};
     return fs::path(std::string(buf, static_cast<usize>(n))).parent_path();
+#elif defined(__APPLE__)
+    // _NSGetExecutablePath writes the path used to launch the process;
+    // canonicalise via std::filesystem to resolve symlinks. When the
+    // executable lives inside a .app bundle (`.../X.app/Contents/MacOS/X`)
+    // the asset search root is Contents/Resources/ — that's where macOS
+    // wants read-only ship-with-the-binary data (and where codesign won't
+    // choke on our non-Mach-O `.bls` files). Detect that case by checking
+    // for the `Contents/MacOS` suffix on the exe's parent.
+    char buf[PATH_MAX] = {};
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) != 0)
+        return {};
+    std::error_code ec;
+    fs::path resolved = fs::canonical(fs::path(buf), ec);
+    if (ec)
+        resolved = fs::path(buf);
+    fs::path dir = resolved.parent_path();
+    if (dir.filename() == "MacOS" && dir.parent_path().filename() == "Contents") {
+        return dir.parent_path() / "Resources";
+    }
+    return dir;
 #else
     return {};
 #endif

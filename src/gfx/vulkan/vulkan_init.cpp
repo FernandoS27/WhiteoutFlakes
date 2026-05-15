@@ -253,6 +253,20 @@ bool CreateInstance(VulkanDeviceState& state, bool enableValidation) {
         instExts.push_back("VK_KHR_xlib_surface");
     if (HasInstanceExtension(state.ctx, "VK_KHR_wayland_surface"))
         instExts.push_back("VK_KHR_wayland_surface");
+#elif defined(__APPLE__)
+    // macOS Vulkan = MoltenVK (Metal-backed Vulkan loader). Surfaces use
+    // VK_EXT_metal_surface (preferred) with VK_MVK_macos_surface as fallback.
+    // VK_KHR_portability_enumeration + the matching instance flag are
+    // required to enable enumeration of MoltenVK as a "portability subset"
+    // implementation under Vulkan 1.3 loader semantics.
+    if (HasInstanceExtension(state.ctx, "VK_EXT_metal_surface"))
+        instExts.push_back("VK_EXT_metal_surface");
+    if (HasInstanceExtension(state.ctx, "VK_MVK_macos_surface"))
+        instExts.push_back("VK_MVK_macos_surface");
+    if (HasInstanceExtension(state.ctx, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME))
+        instExts.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+    if (HasInstanceExtension(state.ctx, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME))
+        instExts.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
 #endif
     std::vector<const char*> instLayers;
 
@@ -266,7 +280,16 @@ bool CreateInstance(VulkanDeviceState& state, bool enableValidation) {
         instExts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     }
 
+    vk::InstanceCreateFlags instanceFlags{};
+#if defined(__APPLE__)
+    // Required when VK_KHR_portability_enumeration is enabled — tells the
+    // loader to surface non-conformant (MoltenVK) implementations alongside
+    // any conformant ones.
+    instanceFlags |= vk::InstanceCreateFlagBits::eEnumeratePortabilityKHR;
+#endif
+
     auto r = state.ctx.createInstance({
+        .flags = instanceFlags,
         .pApplicationInfo = &appInfo,
         .enabledLayerCount = static_cast<u32>(instLayers.size()),
         .ppEnabledLayerNames = instLayers.data(),
@@ -376,11 +399,25 @@ bool CreateLogicalDevice(VulkanDeviceState& state) {
         .imageCubeArray = vk::True, // for IBL probes
     };
 
-    const std::array<const char*, 3> deviceExts = {
+    std::vector<const char*> deviceExts = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
         VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME,
         VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
     };
+    // Vulkan spec: VK_KHR_portability_subset MUST be enabled when supported
+    // by the physical device. MoltenVK reports it; native Vulkan drivers
+    // don't, so the probe handles both.
+    {
+        auto [extR, exts] = state.physicalDevice.enumerateDeviceExtensionProperties();
+        if (extR == vk::Result::eSuccess) {
+            for (const auto& e : exts) {
+                if (std::strcmp(e.extensionName, "VK_KHR_portability_subset") == 0) {
+                    deviceExts.push_back("VK_KHR_portability_subset");
+                    break;
+                }
+            }
+        }
+    }
 
     auto r = state.physicalDevice.createDevice({
         .pNext = &vk13,
