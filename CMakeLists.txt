@@ -1018,8 +1018,12 @@ if(UNIX AND NOT APPLE)
         endif()
     endif()
 
-    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/WhiteoutFlakes.png"
-            DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps)
+    # AppImage / XDG installs need the icon basename to match the .desktop's
+    # `Icon=WhiteoutFlakes` directive, so we rename the source file
+    # (flakes_icon_linux.png is the right size for this slot) at install time.
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/flakes_icon_linux.png"
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps
+            RENAME WhiteoutFlakes.png)
 
     # Pre-baked PSO replay trace: seeds the Vulkan pipeline cache on first
     # launch so the user doesn't pay the cold-build hitch. Lives next to the

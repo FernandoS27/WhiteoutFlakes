@@ -118,7 +118,7 @@ jobs:
           cmake --install build
           # Standard AppImage placement: top-level desktop + icon symlinks.
           cp packaging/linux/WhiteoutFlakes.desktop AppDir/
-          cp resources/WhiteoutFlakes.png AppDir/
+          cp resources/flakes_icon_linux.png AppDir/WhiteoutFlakes.png
           # AppImage requires a .DirIcon symlink too.
           ln -sf WhiteoutFlakes.png AppDir/.DirIcon
 
