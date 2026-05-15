@@ -840,6 +840,14 @@ if(MSVC)
     )
 endif()
 
+# MinGW's default startup expects `main` (or `WinMain` for GUI subsystems);
+# our entry is `wmain`. -municode swaps in the wide-char startup that
+# resolves wmain and pulls in the wide CRT init.
+if(MINGW)
+    target_compile_options(WhiteoutFlakesStandalone PRIVATE -municode)
+    target_link_options(WhiteoutFlakesStandalone PRIVATE -municode)
+endif()
+
 if(WDX_BUILD_WC3_SHADERS)
     add_dependencies(WhiteoutFlakesStandalone Wc3Shaders)
 endif()

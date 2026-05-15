@@ -135,7 +135,7 @@ private:
 
     // RenderService installs a texture-cache lambda on the template manager
     // that dispatches to IsTextureCached.
-    friend class RenderService;
+    friend class ::whiteout::flakes::renderer::RenderService;
 };
 
 } // namespace whiteout::flakes::renderer::model
