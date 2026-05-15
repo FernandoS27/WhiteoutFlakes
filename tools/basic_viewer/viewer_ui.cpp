@@ -479,6 +479,10 @@ void ViewerUI::BuildSettingsWindow() {
     ImGui::TextDisabled("Startup settings (take effect on next launch)");
 
     // ---- Default backend ----
+    // On Linux only Vulkan is built (D3D11/D3D12 are gated to WIN32 in
+    // CMake + gfx_factory), so the combo collapses to a disabled
+    // single-entry indicator instead of offering picks that would error.
+#if defined(_WIN32)
     {
         i32 sel = BackendToIdx(svc.Settings().DefaultBackend());
         if (ImGui::Combo("Backend", &sel, kBackendLabels.data(),
@@ -487,6 +491,15 @@ void ViewerUI::BuildSettingsWindow() {
             SaveIni(app_);
         }
     }
+#else
+    {
+        ImGui::BeginDisabled();
+        i32 sel = 0;
+        const char* vkOnly[] = {"Vulkan"};
+        ImGui::Combo("Backend", &sel, vkOnly, 1);
+        ImGui::EndDisabled();
+    }
+#endif
 
     // ---- Preferred device ----
     {

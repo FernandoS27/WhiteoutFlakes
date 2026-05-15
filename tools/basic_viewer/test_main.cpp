@@ -68,37 +68,43 @@ int main(int argc, char* argv[]) {
     bool backendFromCli = false;
     std::filesystem::path mdxPath;
 
+#if defined(_WIN32)
+    constexpr const char* kBackendsHelp = "d3d11, d3d12, vulkan";
+#else
+    constexpr const char* kBackendsHelp = "vulkan";
+#endif
+
     for (i32 i = 1; i < argc; ++i) {
         const char* a = argv[i];
         if ((std::strcmp(a, "--backend") == 0 || std::strcmp(a, "-b") == 0) && i + 1 < argc) {
             const char* v = argv[++i];
-            if (CompareCi(v, "d3d11") == 0 || CompareCi(v, "dx11") == 0)
-                backend = whiteout::flakes::gfx::GfxApi::D3D11;
-            else if (CompareCi(v, "d3d12") == 0 || CompareCi(v, "dx12") == 0)
-                backend = whiteout::flakes::gfx::GfxApi::D3D12;
-            else if (CompareCi(v, "vulkan") == 0 || CompareCi(v, "vk") == 0)
+            if (CompareCi(v, "vulkan") == 0 || CompareCi(v, "vk") == 0) {
                 backend = whiteout::flakes::gfx::GfxApi::Vulkan;
+            }
+#if defined(_WIN32)
+            else if (CompareCi(v, "d3d11") == 0 || CompareCi(v, "dx11") == 0) {
+                backend = whiteout::flakes::gfx::GfxApi::D3D11;
+            } else if (CompareCi(v, "d3d12") == 0 || CompareCi(v, "dx12") == 0) {
+                backend = whiteout::flakes::gfx::GfxApi::D3D12;
+            }
+#endif
             else {
-                std::cerr << "Unknown backend: " << v << " (valid: d3d11, d3d12, vulkan)\n";
+                // On Linux, d3d11/d3d12 are not built — surface the request
+                // as an error rather than a silent override so the user knows
+                // their CLI flag did nothing useful.
+                std::cerr << "Unknown / unsupported backend: " << v
+                          << " (valid on this platform: " << kBackendsHelp << ")\n";
                 return 1;
             }
             backendFromCli = true;
         } else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
-            std::cout << "Usage: WhiteoutFlakes [--backend d3d11|d3d12|vulkan] [<mdx-path>]\n";
+            std::cout << "Usage: WhiteoutFlakes [--backend " << kBackendsHelp
+                      << "] [<mdx-path>]\n";
             return 0;
         } else if (mdxPath.empty()) {
             mdxPath = whiteout::flakes::io::FsPathFromUtf8(a);
         }
     }
-
-#if !defined(_WIN32)
-    // Linux only ships the Vulkan backend; refuse a stale CLI/INI override
-    // that would otherwise hit a missing-API code path.
-    if (backend != whiteout::flakes::gfx::GfxApi::Vulkan) {
-        std::cerr << "[viewer] Forcing Vulkan backend on non-Windows platform\n";
-        backend = whiteout::flakes::gfx::GfxApi::Vulkan;
-    }
-#endif
 
     whiteout::flakes::renderer::SceneManager scene;
     whiteout::flakes::renderer::RenderService renderer(scene);
@@ -108,9 +114,20 @@ int main(int argc, char* argv[]) {
     whiteout::flakes::LoadStartupSettingsFromIni(renderer);
     if (!backendFromCli)
         backend = renderer.Settings().DefaultBackend();
+
 #if !defined(_WIN32)
-    if (backend != whiteout::flakes::gfx::GfxApi::Vulkan)
+    // Defence-in-depth: if a stale INI carries DefaultBackend=d3d11 from a
+    // shared-config user, normalise the in-memory Settings value too so
+    // SaveSettingsIni doesn't propagate the bad choice forward and so the
+    // ImGui Settings combo (which reads Settings().DefaultBackend()) shows
+    // Vulkan correctly. The Linux-only ImGui Backend combo is restricted
+    // to Vulkan anyway, see viewer_ui.cpp.
+    if (backend != whiteout::flakes::gfx::GfxApi::Vulkan) {
+        std::cerr << "[viewer] Forcing Vulkan backend (only one available on this platform)\n";
         backend = whiteout::flakes::gfx::GfxApi::Vulkan;
+    }
+    if (renderer.Settings().DefaultBackend() != whiteout::flakes::gfx::GfxApi::Vulkan)
+        renderer.Settings().SetDefaultBackend(whiteout::flakes::gfx::GfxApi::Vulkan);
 #endif
 
     // Vulkan pipeline cache: alongside the exe on Windows; under

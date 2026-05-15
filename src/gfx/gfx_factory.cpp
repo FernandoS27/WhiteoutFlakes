@@ -1,6 +1,9 @@
+#include "gfx/gfx.h"
+
+#if defined(_WIN32)
 #include "gfx/d3d11/d3d11_device.h"
 #include "gfx/d3d12/d3d12_device.h"
-#include "gfx/gfx.h"
+#endif
 
 #if WDX_HAS_VULKAN
 #include "gfx/vulkan/vulkan_device.h"
@@ -48,16 +51,26 @@ const std::string& GetPreferredDevice() {
 std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api, bool enableValidation) {
     switch (api) {
     case GfxApi::D3D11: {
+#if defined(_WIN32)
         auto device = std::make_unique<d3d11::D3D11Device>();
         if (!device->Init(enableValidation))
             return nullptr;
         return device;
+#else
+        (void)enableValidation;
+        return nullptr;
+#endif
     }
     case GfxApi::D3D12: {
+#if defined(_WIN32)
         auto device = std::make_unique<d3d12::D3D12Device>();
         if (!device->Init(enableValidation))
             return nullptr;
         return device;
+#else
+        (void)enableValidation;
+        return nullptr;
+#endif
     }
     case GfxApi::Vulkan: {
 #if WDX_HAS_VULKAN
@@ -77,9 +90,17 @@ std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api, bool enableValidation) {
 std::vector<std::string> EnumerateDevices(GfxApi api) {
     switch (api) {
     case GfxApi::D3D11:
+#if defined(_WIN32)
         return d3d11::EnumerateAdapterNames();
+#else
+        return {};
+#endif
     case GfxApi::D3D12:
+#if defined(_WIN32)
         return d3d12::EnumerateAdapterNames();
+#else
+        return {};
+#endif
     case GfxApi::Vulkan:
 #if WDX_HAS_VULKAN
         return vulkan::EnumerateAdapterNames();
