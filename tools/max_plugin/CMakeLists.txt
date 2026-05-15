@@ -58,13 +58,22 @@ add_library(WhiteoutFlakesMaxPlugin SHARED
     WhiteoutDexExtractor.def
     resource.rc
 
-    # Win32 host window — Max-only after the basic_viewer moved to GLFW + ImGui.
+    # Win32 host window — Max-only. The toolbar / menus / settings are Dear
+    # ImGui widgets drawn by the engine; the Win32 layer just owns the HWND
+    # and pumps messages.
     render_window.cpp
+    max_plugin_ui.cpp
+
+    # ImGui's Win32 platform backend (input forwarding via WndProc). Lives
+    # with the host rather than the engine imgui static lib so the engine
+    # library doesn't drag in <windows.h> for non-Win32 callers.
+    "${CMAKE_SOURCE_DIR}/externals/imgui/backends/imgui_impl_win32.cpp"
 
     # INI loader is still shared with the standalone viewer; the cubeb sound
-    # emitter is a shared host utility under tools/common.
+    # emitter and the ImGui theme are shared host utilities under tools/common.
     "${BASIC_VIEWER_DIR}/settings_ini.cpp"
     "${TOOLS_COMMON_DIR}/cubeb_sound_emitter.cpp"
+    "${TOOLS_COMMON_DIR}/imgui_theme.cpp"
 )
 
 set_target_properties(WhiteoutFlakesMaxPlugin PROPERTIES

@@ -36,7 +36,6 @@ private:
     ViewerApp& app_;
 
     bool settingsOpen_ = false;
-    bool showDemo_ = false; // toggle from menu for ImGui demo
 
     // DNC path edit buffer (ImGui InputText needs a writable buffer the UI
     // owns; we sync from DncService.UnitMdlPath() on each frame so external

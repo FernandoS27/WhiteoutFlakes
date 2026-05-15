@@ -12,6 +12,7 @@
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #include "resource.h"
+#include "imgui_theme.h"
 #include "viewer_ui.h"
 #include "whiteout/flakes/util/path_utf8.h"
 
@@ -174,7 +175,7 @@ void ViewerApp::InitImGui() {
     // imgui.ini lives alongside the exe (next to settings ini) — letting
     // ImGui pick up its own default `imgui.ini` in CWD is fine for now.
 
-    ImGui::StyleColorsDark();
+    ApplyImGuiTheme();
 
     // GLFW backend handles input only; the engine adapter draws.
     ImGui_ImplGlfw_InitForOther(window_, true);

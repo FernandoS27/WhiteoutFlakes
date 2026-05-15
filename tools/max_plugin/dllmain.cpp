@@ -305,6 +305,19 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count) {
     // its own evaluation pass and let EvalFromMax push the cursor instead.
     g_actor->role = whiteout::flakes::renderer::model::ActorRole::External;
     g_renderer->Settings().SetRenderMode(g_actor->PreferredRenderMode());
+    g_renderWindow->SetFocusActor(g_actor->handle);
+
+    // Push the actor's discovered sequences into the preview window so the
+    // ImGui Animation dropdown can pick which sub-range Max's timeline
+    // scrubs through.
+    {
+        auto seqs = g_actor->animation.Sequences();
+        std::vector<std::string> names;
+        names.reserve(seqs.size());
+        for (auto& s : seqs)
+            names.push_back(s.name);
+        g_renderWindow->SetSequences(std::move(names), std::move(seqs));
+    }
 
     // Camera presets are no longer plumbed into the renderer — Max owns its
     // own viewport so MaxSceneAdapter::GetCameraPresets() is currently unused

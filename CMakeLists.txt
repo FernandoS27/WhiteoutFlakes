@@ -799,6 +799,7 @@ add_executable(WhiteoutFlakesStandalone
     tools/basic_viewer/settings_ini.cpp
     # Shared host utilities live in tools/common (used by the Max plugin too).
     tools/common/cubeb_sound_emitter.cpp
+    tools/common/imgui_theme.cpp
     # Win32 .rc — the only thing left of the old resource pipeline.
     # Embeds resources/flakes_icon.ico as IDI_WHITEOUT_ICON so ViewerApp
     # can hand it to the GLFW HWND via WM_SETICON.

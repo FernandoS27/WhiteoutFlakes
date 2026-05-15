@@ -1,5 +1,6 @@
-#include "viewer_ui.h"
+#include "max_plugin_ui.h"
 
+#include "render_window.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/camera.h"
 #include "renderer/debug/debug_renderer.h"
@@ -10,7 +11,6 @@
 #include "renderer/scene_manager.h"
 #include "renderer/shadow/shadow_service.h"
 #include "settings_ini.h"
-#include "viewer_app.h"
 #include "whiteout/flakes/display.h"
 #include "whiteout/flakes/enums.h"
 #include "whiteout/flakes/sound_emitter.h"
@@ -18,10 +18,6 @@
 #include "whiteout/flakes/util/replaceable_paths.h"
 
 #include <imgui.h>
-#include <nfd.hpp>
-
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
 
 #include <algorithm>
 #include <array>
@@ -34,11 +30,12 @@ namespace whiteout::flakes {
 
 namespace {
 
-// Persists current host state to WhiteoutFlakes.ini. Called after every UI
-// change that should survive a restart — same call shape as the old
-// HandleSettingsMessage paths used.
-void SaveIni(const ViewerApp& app) {
-    SaveSettingsIni(app.Service(), app.LoopNonLoopingPolicy());
+// Persists settings to WhiteoutFlakes.ini after every UI change. The Max
+// plugin doesn't track the loop-non-looping policy (Max drives the
+// timeline), so we always pass `true` — settings_ini's writer just stores
+// whatever it's given.
+void SaveIni(RenderWindow& win) {
+    SaveSettingsIni(win.Service(), true);
 }
 
 constexpr std::array<const char*, 8> kDebugVisLabels = {
@@ -85,15 +82,23 @@ gfx::GfxApi IdxToBackend(i32 idx) {
     }
 }
 
-} // namespace
-
-ViewerUI::ViewerUI(ViewerApp& app) : app_(app) {
-    // NFD's init / quit can be reference-counted; doing it once at first UI
-    // construction matches its single-process expectations.
-    NFD::Init();
+std::string Utf8FromWide(const std::wstring& w) {
+    if (w.empty())
+        return {};
+    const int n = ::WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr,
+                                        0, nullptr, nullptr);
+    std::string s(n > 0 ? n : 0, '\0');
+    if (n > 0)
+        ::WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n,
+                              nullptr, nullptr);
+    return s;
 }
 
-void ViewerUI::BuildFrame() {
+} // namespace
+
+MaxPluginUI::MaxPluginUI(RenderWindow& win) : win_(win) {}
+
+void MaxPluginUI::BuildFrame() {
     BuildMenuBar();
     BuildToolbar();
     BuildViewCubeWidget();
@@ -101,12 +106,8 @@ void ViewerUI::BuildFrame() {
         BuildSettingsWindow();
 }
 
-void ViewerUI::BuildViewCubeWidget() {
-    // The engine draws the cube via DebugRenderer::RenderViewCube and
-    // exposes its screen rect via GetViewCubeRect. We overlay an invisible
-    // ImGui window at that rect with an InvisibleButton covering the whole
-    // area, then forward hover + click into the existing engine queries.
-    auto& dbg = app_.Service().Debug();
+void MaxPluginUI::BuildViewCubeWidget() {
+    auto& dbg = win_.Service().Debug();
     const auto r = dbg.GetViewCubeRect();
     const f32 x = static_cast<f32>(r.left);
     const f32 y = static_cast<f32>(r.top);
@@ -127,52 +128,27 @@ void ViewerUI::BuildViewCubeWidget() {
     if (ImGui::Begin("##viewcube", nullptr, kFlags)) {
         ImGui::InvisibleButton("##viewcube_hit", ImVec2(w, h));
         const bool hovered = ImGui::IsItemHovered();
-        // Engine reads this each frame to decide whether to draw the
-        // "home" affordance in the strip above the cube; setting it on
-        // every frame (true OR false) keeps the state in sync after
-        // pointer leaves without an explicit OnCursorPos call.
         dbg.SetViewCubeHovered(hovered);
         if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
             const ImVec2 mp = ImGui::GetIO().MousePos;
             const i32 hit =
                 dbg.HitTestViewCube(static_cast<i32>(mp.x), static_cast<i32>(mp.y));
             if (hit == 6)
-                app_.Service().Scene().Camera().Reset();
+                win_.Service().Scene().Camera().Reset();
             else if (hit >= 0)
-                app_.Service().Scene().Camera().SnapToViewCubeFace(hit);
+                win_.Service().Scene().Camera().SnapToViewCubeFace(hit);
         }
     }
     ImGui::End();
     ImGui::PopStyleVar(2);
 }
 
-void ViewerUI::OpenFileDialog() {
-    // Use the UTF-8 NFD entry points so the filter strings stay as plain
-    // `char` literals on every platform — the native variant takes wchar_t
-    // on Windows, which would break these inline string constants.
-    NFD::UniquePathU8 outPath;
-    nfdu8filteritem_t filter[1] = {{"MDX Model", "mdx"}};
-    if (NFD::OpenDialog(outPath, filter, 1) == NFD_OKAY) {
-        std::filesystem::path p = io::FsPathFromUtf8(outPath.get());
-        app_.LoadModel(p);
-    }
-}
-
-void ViewerUI::BuildMenuBar() {
-    RenderService& svc = app_.Service();
+void MaxPluginUI::BuildMenuBar() {
+    RenderService& svc = win_.Service();
     DisplayFlags df = svc.Settings().GetDisplayFlags();
     bool dfChanged = false;
 
     if (ImGui::BeginMainMenuBar()) {
-        if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Open MDX...", "Ctrl+O"))
-                OpenFileDialog();
-            ImGui::Separator();
-            if (ImGui::MenuItem("Exit"))
-                glfwSetWindowShouldClose(app_.Window(), GLFW_TRUE);
-            ImGui::EndMenu();
-        }
-
         if (ImGui::BeginMenu("View")) {
             dfChanged |= ImGui::MenuItem("Grid", nullptr, &df.showGrid);
             dfChanged |= ImGui::MenuItem("Particles", nullptr, &df.showParticles);
@@ -188,7 +164,7 @@ void ViewerUI::BuildMenuBar() {
                     if (ImGui::MenuItem(io::TilesetName(static_cast<io::Tileset>(i)), nullptr,
                                         sel)) {
                         svc.Replaceables().SetTileset(static_cast<io::Tileset>(i));
-                        SaveIni(app_);
+                        SaveIni(win_);
                     }
                 }
                 ImGui::EndMenu();
@@ -206,7 +182,7 @@ void ViewerUI::BuildMenuBar() {
                 for (i32 i = 0; i < static_cast<i32>(kDebugVisLabels.size()); ++i) {
                     if (ImGui::MenuItem(kDebugVisLabels[i], nullptr, i == cur)) {
                         svc.Settings().SetHdDebugMode(i);
-                        SaveIni(app_);
+                        SaveIni(win_);
                     }
                 }
                 ImGui::EndMenu();
@@ -218,7 +194,7 @@ void ViewerUI::BuildMenuBar() {
                 for (i32 i = 0; i < static_cast<i32>(kLodLabels.size()); ++i) {
                     if (ImGui::MenuItem(kLodLabels[i], nullptr, i == curIdx)) {
                         svc.Settings().SetLodOverride(i == 0 ? -1 : (i - 1));
-                        SaveIni(app_);
+                        SaveIni(win_);
                     }
                 }
                 ImGui::EndMenu();
@@ -235,13 +211,11 @@ void ViewerUI::BuildMenuBar() {
 
     if (dfChanged) {
         svc.Settings().SetDisplayFlags(df);
-        SaveIni(app_);
+        SaveIni(win_);
     }
 }
 
-void ViewerUI::BuildToolbar() {
-    // Anchor the toolbar just below the main menu bar; sized to the
-    // viewport width, fixed-height. No close / collapse decorations.
+void MaxPluginUI::BuildToolbar() {
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const f32 menuH = ImGui::GetFrameHeight();
     ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, vp->WorkPos.y));
@@ -258,15 +232,17 @@ void ViewerUI::BuildToolbar() {
         return;
     }
 
-    RenderService& svc = app_.Service();
+    RenderService& svc = win_.Service();
+    model::Actor* focus = svc.Scene().Actors().Find(win_.FocusActor());
 
-    // ---- Animation sequence ----
-    const auto& seqs = app_.SequenceNames();
+    // ---- Animation sequence (driven by Max's timeline; the dropdown only
+    //      picks which range we're previewing) ----
+    const auto seqs = win_.SequenceNamesSnapshot();
     if (!seqs.empty()) {
-        model::Actor* focus = app_.FocusActorPtr();
         i32 sel = focus ? focus->animation.ActiveSequenceIndex() : 0;
+        sel = std::clamp(sel, 0, (i32)seqs.size() - 1);
         ImGui::SetNextItemWidth(220);
-        if (ImGui::BeginCombo("Animation", seqs[std::clamp(sel, 0, (i32)seqs.size() - 1)].c_str())) {
+        if (ImGui::BeginCombo("Animation", seqs[sel].c_str())) {
             for (i32 i = 0; i < static_cast<i32>(seqs.size()); ++i) {
                 const bool isSel = (i == sel);
                 if (ImGui::Selectable(seqs[i].c_str(), isSel)) {
@@ -292,20 +268,26 @@ void ViewerUI::BuildToolbar() {
     }
 
     // ---- Camera preset ----
-    {
-        const auto& presetNames = app_.CameraPresetNamesUtf8();
-        const i32 active = app_.ActiveCameraPresetIdx();
-        const char* preview = (active < 0 || active >= static_cast<i32>(presetNames.size()))
+    const auto presets = win_.CameraPresetsSnapshot();
+    if (!presets.empty()) {
+        const i32 active = win_.ActiveCameraPresetIdx();
+        const char* preview = (active < 0 || active >= (i32)presets.size())
                                   ? "Free Camera"
-                                  : presetNames[active].c_str();
+                                  : nullptr;
+        std::string activeName;
+        if (!preview) {
+            activeName = Utf8FromWide(presets[active].name);
+            preview = activeName.c_str();
+        }
         ImGui::SetNextItemWidth(140);
         if (ImGui::BeginCombo("Camera", preview)) {
             if (ImGui::Selectable("Free Camera", active < 0))
-                app_.ActivateCameraPreset(-1);
-            for (i32 i = 0; i < static_cast<i32>(presetNames.size()); ++i) {
+                win_.ActivateCameraPreset(-1);
+            for (i32 i = 0; i < (i32)presets.size(); ++i) {
+                const std::string n = Utf8FromWide(presets[i].name);
                 const bool isSel = (i == active);
-                if (ImGui::Selectable(presetNames[i].c_str(), isSel))
-                    app_.ActivateCameraPreset(i);
+                if (ImGui::Selectable(n.c_str(), isSel))
+                    win_.ActivateCameraPreset(i);
                 if (isSel)
                     ImGui::SetItemDefaultFocus();
             }
@@ -316,7 +298,6 @@ void ViewerUI::BuildToolbar() {
 
     // ---- Team colour ----
     {
-        model::Actor* focus = app_.FocusActorPtr();
         u32 tcRaw = focus ? (focus->teamColor & 0x00FFFFFFu) : 0x000000FFu;
         f32 col[3] = {
             static_cast<f32>(tcRaw & 0xFFu) / 255.0f,
@@ -326,12 +307,10 @@ void ViewerUI::BuildToolbar() {
         ImGuiColorEditFlags flags = ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel;
         ImGui::TextUnformatted("Team:");
         ImGui::SameLine();
-        if (ImGui::ColorEdit3("##team", col, flags)) {
-            if (focus) {
-                focus->SetTeamColor(static_cast<u8>(col[0] * 255.0f),
-                                    static_cast<u8>(col[1] * 255.0f),
-                                    static_cast<u8>(col[2] * 255.0f));
-            }
+        if (ImGui::ColorEdit3("##team", col, flags) && focus) {
+            focus->SetTeamColor(static_cast<u8>(col[0] * 255.0f),
+                                static_cast<u8>(col[1] * 255.0f),
+                                static_cast<u8>(col[2] * 255.0f));
         }
         ImGui::SameLine();
     }
@@ -343,7 +322,7 @@ void ViewerUI::BuildToolbar() {
         if (ImGui::Combo("Lighting", &sel, kLightingLabels.data(),
                          static_cast<i32>(kLightingLabels.size()))) {
             svc.Settings().SetLightingMode(static_cast<LightingMode>(sel));
-            SaveIni(app_);
+            SaveIni(win_);
         }
     }
 
@@ -351,8 +330,8 @@ void ViewerUI::BuildToolbar() {
     ImGui::PopStyleVar(2);
 }
 
-void ViewerUI::BuildSettingsWindow() {
-    RenderService& svc = app_.Service();
+void MaxPluginUI::BuildSettingsWindow() {
+    RenderService& svc = win_.Service();
     ImGui::SetNextWindowSize(ImVec2(440, 540), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Settings", &settingsOpen_)) {
         ImGui::End();
@@ -371,7 +350,7 @@ void ViewerUI::BuildSettingsWindow() {
             svc.Settings().SetBackgroundColor(static_cast<u8>(col[0] * 255.0f),
                                               static_cast<u8>(col[1] * 255.0f),
                                               static_cast<u8>(col[2] * 255.0f));
-            SaveIni(app_);
+            SaveIni(win_);
         }
     }
 
@@ -380,7 +359,7 @@ void ViewerUI::BuildSettingsWindow() {
         f32 exposure = svc.Settings().GetTonemapExposure();
         if (ImGui::SliderFloat("Exposure", &exposure, 0.0f, 3.0f, "%.2f")) {
             svc.Settings().SetTonemapExposure(exposure);
-            SaveIni(app_);
+            SaveIni(win_);
         }
     }
 
@@ -389,16 +368,7 @@ void ViewerUI::BuildSettingsWindow() {
         f32 vol = svc.Sound().GetVolume();
         if (ImGui::SliderFloat("SND Volume", &vol, 0.0f, 1.0f, "%.2f")) {
             svc.Sound().SetVolume(vol);
-            SaveIni(app_);
-        }
-    }
-
-    // ---- Loop non-looping ----
-    {
-        bool on = app_.LoopNonLoopingPolicy();
-        if (ImGui::Checkbox("Loop NonLooping animations", &on)) {
-            app_.SetLoopNonLoopingPolicy(on);
-            SaveIni(app_);
+            SaveIni(win_);
         }
     }
 
@@ -410,12 +380,12 @@ void ViewerUI::BuildSettingsWindow() {
         f32 tod = dnc->GetTimeOfDay();
         if (ImGui::SliderFloat("Time of Day", &tod, 0.0f, hpd, "%.2f h")) {
             dnc->SetTimeOfDay(tod);
-            SaveIni(app_);
+            SaveIni(win_);
         }
         bool animating = dnc->GetTodScale() > 0.0f;
         if (ImGui::Checkbox("Animate TOD", &animating)) {
             dnc->SetTodScale(animating ? 1.0f : 0.0f);
-            SaveIni(app_);
+            SaveIni(win_);
         }
     }
 
@@ -427,7 +397,7 @@ void ViewerUI::BuildSettingsWindow() {
         if (ImGui::Combo("IBL", &sel, kIblLabels.data(),
                          static_cast<i32>(kIblLabels.size()))) {
             svc.Settings().SetIblMode(static_cast<IblMode>(sel));
-            SaveIni(app_);
+            SaveIni(win_);
         }
     }
 
@@ -444,7 +414,7 @@ void ViewerUI::BuildSettingsWindow() {
                 p.enabled = (sel > 0);
                 p.cascadeCount = (sel > 0) ? sel : 1;
                 shadow->SetParams(p);
-                SaveIni(app_);
+                SaveIni(win_);
             }
         }
     }
@@ -452,11 +422,6 @@ void ViewerUI::BuildSettingsWindow() {
     ImGui::Separator();
 
     // ---- DNC model path ----
-    // ImGui InputText needs a writable buffer the UI owns across frames. We
-    // mirror DncService.UnitMdlPath() into dncPathBuf_ whenever the user
-    // isn't actively typing (matches the old EN_KILLFOCUS commit-on-blur
-    // flow); when they deactivate the field after an edit we push the new
-    // value back into the service.
     if (auto* dnc = svc.GetDncService()) {
         char buf[512];
         std::snprintf(buf, sizeof(buf), "%s",
@@ -465,13 +430,13 @@ void ViewerUI::BuildSettingsWindow() {
             dncPathBuf_ = buf;
         if (ImGui::IsItemDeactivatedAfterEdit()) {
             dnc->SetUnitMdl(dncPathBuf_);
-            SaveIni(app_);
+            SaveIni(win_);
         }
         ImGui::SameLine();
         if (ImGui::Button("Reset##dnc")) {
             dncPathBuf_ = dnc::DncService::kDefaultUnitMdl;
             dnc->SetUnitMdl(dncPathBuf_);
-            SaveIni(app_);
+            SaveIni(win_);
         }
     }
 
@@ -484,7 +449,7 @@ void ViewerUI::BuildSettingsWindow() {
         if (ImGui::Combo("Backend", &sel, kBackendLabels.data(),
                          static_cast<i32>(kBackendLabels.size()))) {
             svc.Settings().SetDefaultBackend(IdxToBackend(sel));
-            SaveIni(app_);
+            SaveIni(win_);
         }
     }
 
@@ -502,13 +467,13 @@ void ViewerUI::BuildSettingsWindow() {
         if (ImGui::BeginCombo("Device", preview)) {
             if (ImGui::Selectable("(Auto - highest VRAM)", cur.empty())) {
                 svc.Settings().SetPreferredDevice("");
-                SaveIni(app_);
+                SaveIni(win_);
             }
             for (const auto& n : devices) {
                 const bool isSel = (n == cur);
                 if (ImGui::Selectable(n.c_str(), isSel)) {
                     svc.Settings().SetPreferredDevice(n);
-                    SaveIni(app_);
+                    SaveIni(win_);
                 }
                 if (isSel)
                     ImGui::SetItemDefaultFocus();
@@ -522,7 +487,7 @@ void ViewerUI::BuildSettingsWindow() {
         bool on = svc.Settings().GraphicsDebug();
         if (ImGui::Checkbox("Graphics Debug (validation)", &on)) {
             svc.Settings().SetGraphicsDebug(on);
-            SaveIni(app_);
+            SaveIni(win_);
         }
     }
 
