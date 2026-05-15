@@ -52,6 +52,27 @@ std::vector<std::string> EnumerateAdapterNames() {
     return names;
 }
 
+// Vulkan pipeline caches are tied to a specific (vendor, device, driver,
+// driver-version) tuple — load with mismatched bytes and the loader silently
+// rejects the cache, *then* the next save overwrites it with bytes for the
+// new GPU. Result: alternating GPUs (e.g. iGPU vs dGPU on a laptop, or a
+// driver bump) repeatedly invalidates the cache. Suffix the filename with
+// the device's pipelineCacheUUID so each (GPU, driver) combo gets its own
+// file and switching back is instant.
+std::filesystem::path GpuSpecificCachePath(const std::filesystem::path& base,
+                                            const std::array<uint8_t, VK_UUID_SIZE>& uuid) {
+    if (base.empty())
+        return {};
+    char hex[VK_UUID_SIZE * 2 + 1] = {};
+    for (int i = 0; i < VK_UUID_SIZE; ++i)
+        std::snprintf(hex + i * 2, sizeof(hex) - i * 2, "%02x", uuid[i]);
+    std::filesystem::path out = base;
+    const std::string stem = out.stem().string();
+    const std::string ext = out.extension().string();
+    out.replace_filename(stem + "." + hex + ext);
+    return out;
+}
+
 void LoadPipelineCache(VulkanDeviceState& state) {
     std::vector<u8> blob;
     if (!state.pipelineCachePath.empty()) {
@@ -591,7 +612,11 @@ bool VulkanDevice::Init(bool enableValidation) {
     if (!CreatePipelineLayout(state))
         return false;
 
-    state.pipelineCachePath = gfx::GetPipelineCachePath();
+    {
+        const auto props = state.physicalDevice.getProperties();
+        state.pipelineCachePath =
+            GpuSpecificCachePath(gfx::GetPipelineCachePath(), props.pipelineCacheUUID);
+    }
     LoadPipelineCache(state);
 
     if (!CreateTimelineSemaphore(state.device, state.timelineSem, "timeline"))
