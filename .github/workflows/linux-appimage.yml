@@ -37,31 +37,58 @@ jobs:
           # libfuse2 → libfuse2t64 (time_t64 ABI transition). Try both.
           sudo apt-get install -y libfuse2t64 || sudo apt-get install -y libfuse2
 
+      # Configure step pins CC=gcc-15 / CXX=g++-15 directly so we don't
+      # depend on update-alternatives actually displacing the runner's
+      # default `gcc` symlink (which may be a plain link rather than an
+      # alternative on stock images).
       - name: Install GCC 15
         run: |
           sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
           sudo apt-get update
           sudo apt-get install -y gcc-15 g++-15
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-15 100
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-15 100
-          sudo update-alternatives --install /usr/bin/cc  cc  /usr/bin/gcc-15 100
-          sudo update-alternatives --install /usr/bin/c++ c++ /usr/bin/g++-15 100
-          gcc --version
-          g++ --version
+          gcc-15 --version
+          g++-15 --version
 
-      # ---- Vulkan SDK (headers + VMA + Vulkan-Hpp + loader) ------------
-      # libvulkan-dev from Ubuntu carries the C headers + loader but NOT
-      # vk_mem_alloc.h or always-recent Vulkan-Hpp; the LunarG SDK ships
-      # both. We do NOT use slangc on CI — shaders ship as prebuilt .bls
-      # bundles under prebuilt/shaders (see WDX_USE_PREBUILT_SHADERS).
+      # ---- Vulkan SDK (full tarball from sdk.lunarg.com) ---------------
+      # The LunarG noble apt repo only ships individual packages (loader,
+      # glslang, dxc, gfxreconstruct), no `vulkan-sdk` meta-package and no
+      # vk_mem_alloc.h or vulkan-hpp. We need the full SDK for VMA + a
+      # specific Vulkan-Hpp version that matches the Windows-side install
+      # (newer vulkan-hpp flattened the RAII allocateCommandBuffers return
+      # type, breaking call sites). Download the tarball directly so we
+      # control the exact version.
+      #
+      # Bump VULKAN_SDK_VERSION in lockstep with your local Windows SDK.
+      # slangc is bundled but unused on CI — shaders ship prebuilt under
+      # prebuilt/shaders (see WDX_USE_PREBUILT_SHADERS).
       - name: Install Vulkan SDK
+        env:
+          VULKAN_SDK_VERSION: "1.4.341.0"
         run: |
-          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
-            | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list \
-            https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
-          sudo apt-get update
-          sudo apt-get install -y vulkan-sdk
+          mkdir -p $HOME/vulkan-sdk
+          cd $HOME/vulkan-sdk
+          wget -q "https://sdk.lunarg.com/sdk/download/${VULKAN_SDK_VERSION}/linux/vulkansdk-linux-x86_64-${VULKAN_SDK_VERSION}.tar.xz"
+          tar xJf "vulkansdk-linux-x86_64-${VULKAN_SDK_VERSION}.tar.xz"
+          rm "vulkansdk-linux-x86_64-${VULKAN_SDK_VERSION}.tar.xz"
+          # Persist the SDK env vars for subsequent steps (configure +
+          # build need VULKAN_SDK on PATH so cmake's find_package(Vulkan)
+          # resolves to this install rather than any system one).
+          SDK_ROOT="$HOME/vulkan-sdk/${VULKAN_SDK_VERSION}/x86_64"
+          echo "VULKAN_SDK=${SDK_ROOT}"                                 >> $GITHUB_ENV
+          echo "PATH=${SDK_ROOT}/bin:${PATH}"                           >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=${SDK_ROOT}/lib:${LD_LIBRARY_PATH:-}"   >> $GITHUB_ENV
+          echo "VK_LAYER_PATH=${SDK_ROOT}/etc/vulkan/explicit_layer.d"  >> $GITHUB_ENV
+          # Sanity-check the bits we actually rely on. Failing here gives
+          # a clearer error than a confusing compile/configure failure
+          # 100 steps later.
+          test -f "${SDK_ROOT}/include/vulkan/vulkan.hpp"        || { echo "::error::missing vulkan.hpp in SDK"; exit 1; }
+          test -f "${SDK_ROOT}/include/vma/vk_mem_alloc.h"       || { echo "::error::missing vk_mem_alloc.h in SDK"; exit 1; }
+          # slangc isn't invoked on CI (we ship prebuilt shaders) but
+          # confirm it's present so a future shader-build job picks the
+          # same SDK. The full SDK has bundled it since 1.3.290.
+          test -x "${SDK_ROOT}/bin/slangc"                       || { echo "::error::missing slangc in SDK"; exit 1; }
+          "${SDK_ROOT}/bin/slangc" -v 2>&1 | head -3 || true
+          echo "Vulkan SDK ${VULKAN_SDK_VERSION} OK (vulkan.hpp + VMA + slangc present)"
 
       # ---- Configure + build -------------------------------------------
       # WDX_USE_PREBUILT_SHADERS auto-enables when prebuilt/shaders/ exists,

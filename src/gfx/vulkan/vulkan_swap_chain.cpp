@@ -175,11 +175,11 @@ SwapChainHandle VulkanDevice::CreateSwapChain(void* nativeWindowHandle, i32 widt
     // VkSurfaceKHR is a 64-bit non-dispatchable handle on x86_64; void* and
     // uintptr_t are the same width, so the round-trip through uintptr_t is
     // bit-preserving.
-    VkSurfaceKHR raw = VK_NULL_HANDLE;
+    VkSurfaceKHR rawSurface = VK_NULL_HANDLE;
     static_assert(sizeof(VkSurfaceKHR) == sizeof(uintptr_t),
                   "VkSurfaceKHR must be the same width as a pointer");
-    std::memcpy(&raw, &nativeWindowHandle, sizeof(VkSurfaceKHR));
-    sc.surface = vk::raii::SurfaceKHR(state.instance, raw);
+    std::memcpy(&rawSurface, &nativeWindowHandle, sizeof(VkSurfaceKHR));
+    sc.surface = vk::raii::SurfaceKHR(state.instance, rawSurface);
 #endif
 
     auto presentR = state.physicalDevice.getSurfaceSupportKHR(state.queueFamily, *sc.surface);

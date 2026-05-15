@@ -814,10 +814,11 @@ endif()
 target_link_libraries(WhiteoutFlakesLib PUBLIC
     whiteout_lib
     WhiteoutFlakesGfx
-    user32.lib
-    gdi32.lib
-    comdlg32.lib
 )
+
+if(WIN32)
+    target_link_libraries(WhiteoutFlakesLib PUBLIC user32.lib gdi32.lib comdlg32.lib)
+endif()
 
 target_compile_definitions(WhiteoutFlakesLib PUBLIC
     WDX_DEFAULT_COORD_SPACE=${WDX_DEFAULT_COORD_SPACE}
