@@ -46,7 +46,9 @@ struct FrameStats {
 // the internal CameraPreset 1:1 and is re-exported into the model namespace
 // via a using alias so existing code keeps compiling.
 struct CameraPreset {
-    std::wstring name;
+    // UTF-8 (was std::wstring; switched so the same string flows from the MDX
+    // adapter through the host UI without per-platform wide-char roundtrips).
+    std::string name;
     bool isLive = false;
 
     Vector3f position{0.f, 0.f, 0.f};

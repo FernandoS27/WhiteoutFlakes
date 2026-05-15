@@ -215,10 +215,24 @@ bool CreateInstance(VulkanDeviceState& state, bool enableValidation) {
         .apiVersion = VK_API_VERSION_1_3,
     };
 
-    std::vector<const char*> instExts = {
-        VK_KHR_SURFACE_EXTENSION_NAME,
-        VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
-    };
+    // VK_KHR_surface is the cross-platform base. Platform-specific surface
+    // extensions are added per-OS so the host can call vkCreate*SurfaceKHR
+    // directly (Windows path) or hand us a pre-created VkSurfaceKHR built
+    // by GLFW (cross-platform path used on Linux).
+    std::vector<const char*> instExts = {VK_KHR_SURFACE_EXTENSION_NAME};
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+    instExts.push_back(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
+#elif defined(__linux__)
+    // GLFW links against either xcb / xlib / wayland and chooses at runtime
+    // which surface extension to enable. Probe instance extension support
+    // and request whichever is present so glfwCreateWindowSurface can pick.
+    if (HasInstanceExtension(state.ctx, "VK_KHR_xcb_surface"))
+        instExts.push_back("VK_KHR_xcb_surface");
+    if (HasInstanceExtension(state.ctx, "VK_KHR_xlib_surface"))
+        instExts.push_back("VK_KHR_xlib_surface");
+    if (HasInstanceExtension(state.ctx, "VK_KHR_wayland_surface"))
+        instExts.push_back("VK_KHR_wayland_surface");
+#endif
     std::vector<const char*> instLayers;
 
     // Validation needs both the Khronos layer (Vulkan SDK) and the

@@ -23,6 +23,9 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__linux__)
+#include <unistd.h>
+#include <climits>
 #endif
 
 namespace whiteout::flakes::io {
@@ -45,9 +48,13 @@ static fs::path DiscoverExecutableDirectory() {
     if (len == 0 || len >= std::size(buf))
         return {};
     return fs::path(std::wstring(buf, buf + len)).parent_path();
+#elif defined(__linux__)
+    char buf[PATH_MAX] = {};
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0)
+        return {};
+    return fs::path(std::string(buf, static_cast<usize>(n))).parent_path();
 #else
-    // POSIX impl can read /proc/self/exe etc. — not needed for the standalone
-    // tool today.
     return {};
 #endif
 }

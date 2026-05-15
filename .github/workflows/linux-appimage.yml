@@ -1,0 +1,106 @@
+name: Linux AppImage
+
+# Manual-only: CI minutes cost real money and the Linux AppImage doesn't
+# need to rebuild on every commit. Trigger from the Actions tab → "Run
+# workflow", or `gh workflow run linux-appimage.yml` from the CLI.
+on:
+  workflow_dispatch:
+
+jobs:
+  appimage:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      # ---- System deps -------------------------------------------------
+      # GLFW under Wayland/X11 pulls in the X dev headers (libxkbcommon,
+      # libwayland-dev, libxrandr-dev, libxinerama-dev, libxcursor-dev,
+      # libxi-dev); cubeb wants ALSA + PulseAudio headers; gtk3 is for
+      # nativefiledialog-extended's GTK backend.
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config \
+            libxkbcommon-dev libwayland-dev wayland-protocols \
+            libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
+            libgl1-mesa-dev mesa-vulkan-drivers \
+            libasound2-dev libpulse-dev \
+            libgtk-3-dev \
+            wget fuse libfuse2 file
+
+      # ---- Vulkan SDK (headers + VMA + Vulkan-Hpp + loader) ------------
+      # libvulkan-dev from Ubuntu carries the C headers + loader but NOT
+      # vk_mem_alloc.h or always-recent Vulkan-Hpp; the LunarG SDK ships
+      # both. We do NOT use slangc on CI — shaders ship as prebuilt .bls
+      # bundles under prebuilt/shaders (see WDX_USE_PREBUILT_SHADERS).
+      - name: Install Vulkan SDK
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc \
+            | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list \
+            https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          sudo apt-get update
+          sudo apt-get install -y vulkan-sdk
+
+      # ---- Configure + build -------------------------------------------
+      # WDX_USE_PREBUILT_SHADERS auto-enables when prebuilt/shaders/ exists,
+      # but pin it explicitly so a missing/stale prebuilt fails loud instead
+      # of silently falling through to slangc (which would explode CI time).
+      # Tracy is off in CI builds — the AppImage ships to end users, not
+      # profilers. Debug shader variants are off for the same reason.
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DWDX_BUILD_WC3_SHADERS=OFF \
+            -DWDX_USE_PREBUILT_SHADERS=ON \
+            -DWDX_BUILD_WC3_DEBUG_SHADERS=OFF \
+            -DWDX_ENABLE_TRACY=OFF \
+            -DWDX_BUILD_MAX_PLUGIN=OFF \
+            -DCMAKE_INSTALL_PREFIX=AppDir/usr
+
+      - name: Build viewer
+        run: cmake --build build --target WhiteoutFlakesStandalone --parallel
+
+      - name: Install into AppDir
+        run: |
+          cmake --install build
+          # Standard AppImage placement: top-level desktop + icon symlinks.
+          cp packaging/linux/WhiteoutFlakes.desktop AppDir/
+          cp resources/WhiteoutFlakes.png AppDir/
+          # AppImage requires a .DirIcon symlink too.
+          ln -sf WhiteoutFlakes.png AppDir/.DirIcon
+
+      # ---- linuxdeploy: collect deps + produce the .AppImage -----------
+      - name: Fetch linuxdeploy
+        run: |
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
+
+      - name: Build AppImage
+        env:
+          VERSION: ${{ github.sha }}
+        run: |
+          ./linuxdeploy-x86_64.AppImage \
+            --appdir AppDir \
+            --executable AppDir/usr/bin/WhiteoutFlakes \
+            --desktop-file AppDir/usr/share/applications/WhiteoutFlakes.desktop \
+            --icon-file AppDir/usr/share/icons/hicolor/256x256/apps/WhiteoutFlakes.png \
+            --output appimage
+
+      - name: Rename artifact
+        run: |
+          mv WhiteoutFlakes-*.AppImage WhiteoutFlakes-linux-x86_64.AppImage || true
+          ls -la *.AppImage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WhiteoutFlakes-linux-x86_64
+          path: WhiteoutFlakes-linux-x86_64.AppImage
+          if-no-files-found: error
+          retention-days: 14

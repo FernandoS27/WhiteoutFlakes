@@ -153,19 +153,27 @@ foreach(entry IN LISTS SHADER_ENTRIES)
     set(dxbc_path "${SHADER_OUT_DIR}/${var_name}.dxbc")
     set(spv_path  "${SHADER_OUT_DIR}/${var_name}.spv")
 
-    add_custom_command(
-        OUTPUT  "${dxbc_path}"
-        COMMAND "${SLANGC}" "${SHADER_SRC_DIR}/${src_file}"
-                ${SLANG_COMMON_FLAGS}
-                -entry ${entry_name} -stage ${stage}
-                -target dxbc -profile sm_5_0
-                -o "${dxbc_path}"
-        DEPENDS "${SHADER_SRC_DIR}/${src_file}"
-                "${SHADER_SRC_DIR}/common.slang"
-        COMMENT "Slang: ${src_file} [${entry_name}] → ${var_name}.dxbc"
-        VERBATIM
-    )
-    list(APPEND SHADER_DXBC_FILES "${dxbc_path}")
+    # DXBC is Windows-only: slangc's DXBC backend invokes fxc internally,
+    # and fxc.exe ships with the Windows SDK / d3dcompiler — there's no
+    # Linux/macOS equivalent. On non-Windows hosts we skip the DXBC step
+    # entirely and let embed_shaders.cmake stub the DXBC C++ symbols so
+    # the consumer call sites still compile (they're never reached at
+    # runtime on platforms without D3D).
+    if(WIN32)
+        add_custom_command(
+            OUTPUT  "${dxbc_path}"
+            COMMAND "${SLANGC}" "${SHADER_SRC_DIR}/${src_file}"
+                    ${SLANG_COMMON_FLAGS}
+                    -entry ${entry_name} -stage ${stage}
+                    -target dxbc -profile sm_5_0
+                    -o "${dxbc_path}"
+            DEPENDS "${SHADER_SRC_DIR}/${src_file}"
+                    "${SHADER_SRC_DIR}/common.slang"
+            COMMENT "Slang: ${src_file} [${entry_name}] → ${var_name}.dxbc"
+            VERBATIM
+        )
+        list(APPEND SHADER_DXBC_FILES "${dxbc_path}")
+    endif()
 
     # SPIR-V variant for the Vulkan backend. The embed script picks these
     # up alongside the .dxbc blobs and emits a parallel `<var>Spv[]` array
@@ -255,6 +263,74 @@ option(WDX_BUILD_WC3_SHADERS
 option(WDX_BUILD_WC3_DEBUG_SHADERS
     "Also build debug-symbol BLS bundles into debug_shaders/"
     ON)
+
+# Use the pre-baked .bls bundles committed under prebuilt/shaders/ instead of
+# re-running slangc. Mutually exclusive with WDX_BUILD_WC3_SHADERS — the
+# auto-detect at the bottom of this option block flips it on by default
+# whenever the prebuilt dir exists *and* shader compilation is off, which
+# covers both the GitHub CI case (slangc isn't installed) and a fresh clone
+# without the Vulkan SDK.
+option(WDX_USE_PREBUILT_SHADERS
+    "Stage the prebuilt/shaders pack instead of running the Slang toolchain"
+    OFF)
+if(NOT WDX_USE_PREBUILT_SHADERS AND NOT WDX_BUILD_WC3_SHADERS
+        AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/shaders")
+    set(WDX_USE_PREBUILT_SHADERS ON CACHE BOOL
+        "Stage the prebuilt/shaders pack instead of running the Slang toolchain"
+        FORCE)
+    message(STATUS "Wc3Shaders: WDX_USE_PREBUILT_SHADERS auto-enabled (prebuilt/shaders found)")
+endif()
+if(WDX_BUILD_WC3_SHADERS AND WDX_USE_PREBUILT_SHADERS)
+    message(FATAL_ERROR
+        "WDX_BUILD_WC3_SHADERS and WDX_USE_PREBUILT_SHADERS are mutually exclusive — "
+        "one runs slangc, the other copies pre-baked bundles. Pick one.")
+endif()
+
+if(WDX_USE_PREBUILT_SHADERS)
+    set(WDX_PREBUILT_SHADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/shaders"
+        CACHE PATH "Pre-baked .bls staging tree (mirrors standalone/shaders/ layout)")
+    if(NOT EXISTS "${WDX_PREBUILT_SHADERS_DIR}")
+        message(FATAL_ERROR
+            "WDX_USE_PREBUILT_SHADERS=ON but ${WDX_PREBUILT_SHADERS_DIR} is missing. "
+            "Run cmake --build build --target update-prebuilt-shaders against a "
+            "tree where WDX_BUILD_WC3_SHADERS=ON to populate it.")
+    endif()
+    # Stage prebuilt → standalone/shaders so the runtime exe-dir lookup
+    # finds them with no extra path config (matches the WDX_BUILD_WC3_SHADERS
+    # codegen layout exactly).
+    set(_prebuilt_stage "${CMAKE_BINARY_DIR}/standalone/shaders")
+    set(_prebuilt_stamp "${CMAKE_CURRENT_BINARY_DIR}/wc3_prebuilt.stamp")
+    add_custom_command(
+        OUTPUT  "${_prebuilt_stamp}"
+        COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_prebuilt_stage}"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                "${WDX_PREBUILT_SHADERS_DIR}" "${_prebuilt_stage}"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${_prebuilt_stamp}"
+        # Re-stage when any prebuilt file changes (developer pulled new
+        # prebuilt/ from git).
+        DEPENDS "${WDX_PREBUILT_SHADERS_DIR}"
+        COMMENT "Wc3Shaders[prebuilt]: staging ${WDX_PREBUILT_SHADERS_DIR} -> ${_prebuilt_stage}"
+        VERBATIM)
+    add_custom_target(Wc3Shaders ALL DEPENDS "${_prebuilt_stamp}")
+
+    # Optional: stage debug shaders the same way if they exist.
+    if(WDX_BUILD_WC3_DEBUG_SHADERS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/debug_shaders")
+        set(_prebuilt_debug_stage "${CMAKE_BINARY_DIR}/standalone/debug_shaders")
+        set(_prebuilt_debug_stamp "${CMAKE_CURRENT_BINARY_DIR}/wc3_prebuilt_debug.stamp")
+        add_custom_command(
+            OUTPUT  "${_prebuilt_debug_stamp}"
+            COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_prebuilt_debug_stage}"
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/debug_shaders"
+                    "${_prebuilt_debug_stage}"
+            COMMAND "${CMAKE_COMMAND}" -E touch "${_prebuilt_debug_stamp}"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/debug_shaders"
+            COMMENT "Wc3Shaders[prebuilt-debug]: staging debug_shaders/"
+            VERBATIM)
+        add_custom_target(Wc3ShadersDebug ALL DEPENDS "${_prebuilt_debug_stamp}")
+        add_dependencies(Wc3Shaders Wc3ShadersDebug)
+    endif()
+endif()
 
 if(WDX_BUILD_WC3_SHADERS)
     set(WC3_SHADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/externals/Wc3Shaders")
@@ -440,6 +516,29 @@ if(WDX_BUILD_WC3_SHADERS)
     endif()
 
     add_custom_target(Wc3Shaders ALL DEPENDS ${WC3_ALL_STAGE_STAMPS})
+
+    # `cmake --build build --target update-prebuilt-shaders` re-emits the
+    # prebuilt/shaders pack (and prebuilt/debug_shaders if WDX_BUILD_WC3_DEBUG_SHADERS
+    # is on) from the freshly-built BLS bundles. Run after touching .slang
+    # sources, then `git add prebuilt/` and commit so CI / fresh clones can
+    # use WDX_USE_PREBUILT_SHADERS=ON without invoking slangc themselves.
+    set(_prebuilt_dir "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt")
+    add_custom_target(update-prebuilt-shaders
+        COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_prebuilt_dir}/shaders"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                "${CMAKE_BINARY_DIR}/standalone/shaders" "${_prebuilt_dir}/shaders"
+        COMMENT "Updating ${_prebuilt_dir}/shaders from latest Wc3Shaders build"
+        DEPENDS Wc3Shaders
+        VERBATIM)
+    if(WDX_BUILD_WC3_DEBUG_SHADERS)
+        add_custom_command(TARGET update-prebuilt-shaders POST_BUILD
+            COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_prebuilt_dir}/debug_shaders"
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                    "${CMAKE_BINARY_DIR}/standalone/debug_shaders"
+                    "${_prebuilt_dir}/debug_shaders"
+            COMMENT "Updating ${_prebuilt_dir}/debug_shaders from latest debug build"
+            VERBATIM)
+    endif()
 endif()
 
 # ============================================================================
@@ -500,12 +599,17 @@ find_package(Vulkan QUIET)
 
 set(WHITEOUTFLAKES_GFX_SOURCES
     src/gfx/gfx_factory.cpp
-    src/gfx/d3d11/d3d11_device.cpp
-    src/gfx/d3d11/d3d11_command_list.cpp
-    src/gfx/d3d12/d3d12_device.cpp
-    src/gfx/d3d12/d3d12_command_list.cpp
-    src/gfx/d3d12/d3d12_resources.cpp
 )
+# D3D11/D3D12 are Windows-only.
+if(WIN32)
+    list(APPEND WHITEOUTFLAKES_GFX_SOURCES
+        src/gfx/d3d11/d3d11_device.cpp
+        src/gfx/d3d11/d3d11_command_list.cpp
+        src/gfx/d3d12/d3d12_device.cpp
+        src/gfx/d3d12/d3d12_command_list.cpp
+        src/gfx/d3d12/d3d12_resources.cpp
+    )
+endif()
 if(Vulkan_FOUND)
     list(APPEND WHITEOUTFLAKES_GFX_SOURCES
         src/gfx/vulkan/vulkan_device.cpp
@@ -532,10 +636,11 @@ target_include_directories(WhiteoutFlakesGfx PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
-target_link_libraries(WhiteoutFlakesGfx
-    PUBLIC  whiteout_lib
-    PRIVATE d3d11.lib d3d12.lib dxgi.lib
-)
+target_link_libraries(WhiteoutFlakesGfx PUBLIC whiteout_lib)
+# D3D libs are Windows-only.
+if(WIN32)
+    target_link_libraries(WhiteoutFlakesGfx PRIVATE d3d11.lib d3d12.lib dxgi.lib)
+endif()
 
 # Tracy lives on WhiteoutFlakesGfx PUBLIC so consumers of the gfx
 # library (the renderer, tools) pick up TRACY_ENABLE transitively and
@@ -550,9 +655,6 @@ if(Vulkan_FOUND)
     target_link_libraries(WhiteoutFlakesGfx PRIVATE Vulkan::Vulkan)
     target_compile_definitions(WhiteoutFlakesGfx PRIVATE
         WDX_HAS_VULKAN=1
-        VK_USE_PLATFORM_WIN32_KHR=1
-        NOMINMAX
-        WIN32_LEAN_AND_MEAN
         # vulkan.hpp config: no exceptions, default-dispatch (the dynamic
         # dispatcher would let us use the loader without linking
         # vulkan-1.lib, but we already link it). Result-based error
@@ -565,6 +667,16 @@ if(Vulkan_FOUND)
         # initialised correctly via the in-class initializer.
         VULKAN_HPP_NO_CONSTRUCTORS
     )
+    # Platform-specific surface extensions: Win32 surface on Windows; on Linux
+    # we drive the surface from GLFW (glfwCreateWindowSurface) which auto-
+    # picks XCB/Xlib/Wayland — no platform define needed in the engine itself.
+    if(WIN32)
+        target_compile_definitions(WhiteoutFlakesGfx PRIVATE
+            VK_USE_PLATFORM_WIN32_KHR=1
+            NOMINMAX
+            WIN32_LEAN_AND_MEAN
+        )
+    endif()
     # VMA ships under <Vulkan SDK>/Include/vma/vk_mem_alloc.h. The single
     # vulkan_vma.cpp TU defines VMA_IMPLEMENTATION before including it;
     # everywhere else we include without the implementation macro.
@@ -646,6 +758,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/io/team_glow_data.cpp
     src/io/file_resolver.cpp
     src/io/file_content_provider.cpp
+    src/io/path_utf8.cpp
     src/io/replaceable_paths.cpp
     src/io/event_data.cpp
     src/io/slk.cpp
@@ -792,7 +905,7 @@ set(BUILD_RUST_LIBS OFF CACHE BOOL "" FORCE)
 set(USE_SANITIZERS  OFF CACHE BOOL "" FORCE)
 add_subdirectory(externals/cubeb EXCLUDE_FROM_ALL)
 
-add_executable(WhiteoutFlakesStandalone
+set(WHITEOUTFLAKES_VIEWER_SOURCES
     tools/basic_viewer/test_main.cpp
     tools/basic_viewer/viewer_app.cpp
     tools/basic_viewer/viewer_ui.cpp
@@ -800,15 +913,18 @@ add_executable(WhiteoutFlakesStandalone
     # Shared host utilities live in tools/common (used by the Max plugin too).
     tools/common/cubeb_sound_emitter.cpp
     tools/common/imgui_theme.cpp
-    # Win32 .rc — the only thing left of the old resource pipeline.
-    # Embeds resources/flakes_icon.ico as IDI_WHITEOUT_ICON so ViewerApp
-    # can hand it to the GLFW HWND via WM_SETICON.
-    tools/basic_viewer/resource.rc
     # ImGui's GLFW platform backend lives with the viewer rather than the
     # imgui core lib because it pulls in <GLFW/glfw3.h> — the engine library
     # itself only links the renderer-agnostic ImGui core.
     externals/imgui/backends/imgui_impl_glfw.cpp
 )
+# Win32 .rc — embeds resources/flakes_icon.ico as IDI_WHITEOUT_ICON so the
+# viewer can hand it to the GLFW HWND via WM_SETICON. On Linux we instead
+# load the same icon via glfwSetWindowIcon at runtime (see ViewerApp::Open).
+if(WIN32)
+    list(APPEND WHITEOUTFLAKES_VIEWER_SOURCES tools/basic_viewer/resource.rc)
+endif()
+add_executable(WhiteoutFlakesStandalone ${WHITEOUTFLAKES_VIEWER_SOURCES})
 
 set_target_properties(WhiteoutFlakesStandalone PROPERTIES
     CXX_STANDARD          20
@@ -833,6 +949,19 @@ target_link_libraries(WhiteoutFlakesStandalone PRIVATE
     cubeb
 )
 
+# Viewer includes <vulkan/vulkan.h> unconditionally (for the Linux surface
+# path via glfwCreateWindowSurface). On Windows the include compiles but
+# the Vulkan-using code is gated behind `#if !defined(_WIN32)`; we still
+# need the headers + import lib on PATH so the TU compiles.
+if(Vulkan_FOUND)
+    target_link_libraries(WhiteoutFlakesStandalone PRIVATE Vulkan::Vulkan)
+elseif(UNIX AND NOT APPLE)
+    message(FATAL_ERROR
+        "WhiteoutFlakesStandalone requires the Vulkan SDK on Linux (it's the "
+        "only swap-chain backend on this platform). Install vulkan-sdk or "
+        "libvulkan-dev + headers and re-run CMake.")
+endif()
+
 if(MSVC)
     target_compile_options(WhiteoutFlakesStandalone PRIVATE
         /W3 /EHsc
@@ -840,15 +969,7 @@ if(MSVC)
     )
 endif()
 
-# MinGW's default startup expects `main` (or `WinMain` for GUI subsystems);
-# our entry is `wmain`. -municode swaps in the wide-char startup that
-# resolves wmain and pulls in the wide CRT init.
-if(MINGW)
-    target_compile_options(WhiteoutFlakesStandalone PRIVATE -municode)
-    target_link_options(WhiteoutFlakesStandalone PRIVATE -municode)
-endif()
-
-if(WDX_BUILD_WC3_SHADERS)
+if(WDX_BUILD_WC3_SHADERS OR WDX_USE_PREBUILT_SHADERS)
     add_dependencies(WhiteoutFlakesStandalone Wc3Shaders)
 endif()
 
@@ -858,5 +979,57 @@ option(WDX_BUILD_MAX_PLUGIN
     OFF)
 
 if(WDX_BUILD_MAX_PLUGIN)
+    if(NOT WIN32)
+        message(FATAL_ERROR "WDX_BUILD_MAX_PLUGIN=ON requires Windows (3ds Max SDK is Windows-only).")
+    endif()
     add_subdirectory(tools/max_plugin)
+endif()
+
+# ============================================================================
+# Linux AppImage staging
+#
+# `cmake --install build --prefix AppDir/usr` populates the AppDir layout
+# linuxdeploy expects. The AppImage runs the binary from AppDir/usr/bin and
+# the engine's exe-dir search root picks up the staged BLS files next to it
+# (no special XDG lookup needed). The .desktop file + icon get installed to
+# AppDir/usr/share/{applications,icons/hicolor/256x256/apps}.
+# ============================================================================
+if(UNIX AND NOT APPLE)
+    include(GNUInstallDirs)
+
+    install(TARGETS WhiteoutFlakesStandalone
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+    # BLS shader bundles staged by the Wc3Shaders custom target sit at
+    # ${CMAKE_BINARY_DIR}/standalone/shaders (and optionally debug_shaders).
+    # Install them next to the binary so FileContentProvider's exe-dir
+    # search root resolves them with no path config. Both WDX_BUILD_WC3_SHADERS
+    # and WDX_USE_PREBUILT_SHADERS produce the same staging layout, so this
+    # install fires for either source.
+    if(WDX_BUILD_WC3_SHADERS OR WDX_USE_PREBUILT_SHADERS)
+        install(DIRECTORY "${CMAKE_BINARY_DIR}/standalone/shaders/"
+                DESTINATION ${CMAKE_INSTALL_BINDIR}/shaders
+                OPTIONAL)
+        if(WDX_BUILD_WC3_DEBUG_SHADERS)
+            install(DIRECTORY "${CMAKE_BINARY_DIR}/standalone/debug_shaders/"
+                    DESTINATION ${CMAKE_INSTALL_BINDIR}/debug_shaders
+                    OPTIONAL)
+        endif()
+    endif()
+
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/WhiteoutFlakes.png"
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps)
+
+    # Pre-baked PSO replay trace: seeds the Vulkan pipeline cache on first
+    # launch so the user doesn't pay the cold-build hitch. Lives next to the
+    # binary inside the AppImage; test_main copies it into $XDG_CACHE_HOME/
+    # WhiteoutFlakes/ if no per-user trace exists yet (subsequent runs save
+    # their own additions there).
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/pso_trace.bin")
+        install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/pso_trace.bin"
+                DESTINATION ${CMAKE_INSTALL_BINDIR})
+    endif()
+
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux/WhiteoutFlakes.desktop"
+            DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 endif()

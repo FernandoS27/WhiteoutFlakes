@@ -10,6 +10,7 @@
 
 #include <nfd.hpp>
 
+#include <cstdlib>
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -19,38 +20,85 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#elif defined(__linux__)
+#include <unistd.h>
+#include <climits>
 #endif
 
 using whiteout::flakes::f32;
 using whiteout::flakes::i32;
 
-int wmain(int argc, wchar_t* argv[]) {
-    whiteout::flakes::gfx::GfxApi backend = whiteout::flakes::gfx::GfxApi::D3D12;
+// Returns the absolute path of the running executable, or {} on failure.
+// The standalone uses this both for the Vulkan pipeline-cache file and as
+// the parent dir for engine-shipped assets (e.g. the .bls bundle staged
+// next to the binary by the build).
+static std::filesystem::path GetExecutablePath() {
+#if defined(_WIN32)
+    wchar_t exe[MAX_PATH] = {};
+    DWORD n = ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    if (n > 0 && n < MAX_PATH)
+        return std::filesystem::path(exe);
+    return {};
+#elif defined(__linux__)
+    char buf[PATH_MAX] = {};
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0)
+        return {};
+    return std::filesystem::path(std::string(buf, static_cast<size_t>(n)));
+#else
+    return {};
+#endif
+}
+
+static int CompareCi(const char* a, const char* b) {
+#if defined(_WIN32)
+    return _stricmp(a, b);
+#else
+    return strcasecmp(a, b);
+#endif
+}
+
+int main(int argc, char* argv[]) {
+    whiteout::flakes::gfx::GfxApi backend = whiteout::flakes::gfx::GfxApi::Vulkan;
+#if defined(_WIN32)
+    // Windows historically defaults to D3D12; Linux only has Vulkan so the
+    // default is fixed above.
+    backend = whiteout::flakes::gfx::GfxApi::D3D12;
+#endif
     bool backendFromCli = false;
     std::filesystem::path mdxPath;
 
     for (i32 i = 1; i < argc; ++i) {
-        const wchar_t* a = argv[i];
-        if ((std::wcscmp(a, L"--backend") == 0 || std::wcscmp(a, L"-b") == 0) && i + 1 < argc) {
-            const wchar_t* v = argv[++i];
-            if (_wcsicmp(v, L"d3d11") == 0 || _wcsicmp(v, L"dx11") == 0)
+        const char* a = argv[i];
+        if ((std::strcmp(a, "--backend") == 0 || std::strcmp(a, "-b") == 0) && i + 1 < argc) {
+            const char* v = argv[++i];
+            if (CompareCi(v, "d3d11") == 0 || CompareCi(v, "dx11") == 0)
                 backend = whiteout::flakes::gfx::GfxApi::D3D11;
-            else if (_wcsicmp(v, L"d3d12") == 0 || _wcsicmp(v, L"dx12") == 0)
+            else if (CompareCi(v, "d3d12") == 0 || CompareCi(v, "dx12") == 0)
                 backend = whiteout::flakes::gfx::GfxApi::D3D12;
-            else if (_wcsicmp(v, L"vulkan") == 0 || _wcsicmp(v, L"vk") == 0)
+            else if (CompareCi(v, "vulkan") == 0 || CompareCi(v, "vk") == 0)
                 backend = whiteout::flakes::gfx::GfxApi::Vulkan;
             else {
-                std::wcerr << L"Unknown backend: " << v << L" (valid: d3d11, d3d12, vulkan)\n";
+                std::cerr << "Unknown backend: " << v << " (valid: d3d11, d3d12, vulkan)\n";
                 return 1;
             }
             backendFromCli = true;
-        } else if (std::wcscmp(a, L"--help") == 0 || std::wcscmp(a, L"-h") == 0) {
-            std::cout << "Usage: WhiteoutFlakes.exe [--backend d3d11|d3d12|vulkan] [<mdx-path>]\n";
+        } else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
+            std::cout << "Usage: WhiteoutFlakes [--backend d3d11|d3d12|vulkan] [<mdx-path>]\n";
             return 0;
         } else if (mdxPath.empty()) {
-            mdxPath = a;
+            mdxPath = whiteout::flakes::io::FsPathFromUtf8(a);
         }
     }
+
+#if !defined(_WIN32)
+    // Linux only ships the Vulkan backend; refuse a stale CLI/INI override
+    // that would otherwise hit a missing-API code path.
+    if (backend != whiteout::flakes::gfx::GfxApi::Vulkan) {
+        std::cerr << "[viewer] Forcing Vulkan backend on non-Windows platform\n";
+        backend = whiteout::flakes::gfx::GfxApi::Vulkan;
+    }
+#endif
 
     whiteout::flakes::renderer::SceneManager scene;
     whiteout::flakes::renderer::RenderService renderer(scene);
@@ -60,22 +108,61 @@ int wmain(int argc, wchar_t* argv[]) {
     whiteout::flakes::LoadStartupSettingsFromIni(renderer);
     if (!backendFromCli)
         backend = renderer.Settings().DefaultBackend();
-
-    // Tell the gfx layer where to persist the Vulkan pipeline cache.
-#if defined(_WIN32)
-    {
-        wchar_t exe[MAX_PATH] = {};
-        DWORD n = ::GetModuleFileNameW(nullptr, exe, MAX_PATH);
-        if (n > 0 && n < MAX_PATH) {
-            std::filesystem::path p(exe);
-            p.replace_filename(L"vk_pipeline_cache.bin");
-            const std::string u8 = whiteout::flakes::io::PathToUtf8(p);
-            whiteout::flakes::gfx::SetPipelineCachePath(u8.c_str());
-        }
-    }
-#else
-    whiteout::flakes::gfx::SetPipelineCachePath("vk_pipeline_cache.bin");
+#if !defined(_WIN32)
+    if (backend != whiteout::flakes::gfx::GfxApi::Vulkan)
+        backend = whiteout::flakes::gfx::GfxApi::Vulkan;
 #endif
+
+    // Vulkan pipeline cache: alongside the exe on Windows; under
+    // $XDG_CACHE_HOME/WhiteoutFlakes/ on Linux (AppImage mount is read-only).
+    {
+        std::filesystem::path cachePath;
+#if defined(_WIN32)
+        std::filesystem::path exe = GetExecutablePath();
+        if (!exe.empty()) {
+            exe.replace_filename("vk_pipeline_cache.bin");
+            cachePath = std::move(exe);
+        } else {
+            cachePath = "vk_pipeline_cache.bin";
+        }
+#else
+        std::filesystem::path base;
+        if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg)
+            base = xdg;
+        else if (const char* home = std::getenv("HOME"); home && *home)
+            base = std::filesystem::path(home) / ".cache";
+        else
+            base = ".";
+        std::error_code ec;
+        std::filesystem::create_directories(base / "WhiteoutFlakes", ec);
+        cachePath = base / "WhiteoutFlakes" / "vk_pipeline_cache.bin";
+#endif
+        // Seed pso_trace.bin from the shipped one in the exe dir if the
+        // user-cache copy doesn't exist yet. The engine reads the trace from
+        // <cache_dir>/pso_trace.bin (sibling of the pipeline cache); shipping
+        // a pre-warmed trace inside the AppImage / installer cuts the
+        // cold-launch PSO build hitch on Vulkan. Subsequent runs append their
+        // own additions via BlsPsoTrace::Save() in the user-cache copy.
+        {
+            std::filesystem::path tracePath = cachePath;
+            tracePath.replace_filename("pso_trace.bin");
+            std::error_code ec;
+            if (!std::filesystem::exists(tracePath, ec)) {
+                std::filesystem::path shipped = GetExecutablePath();
+                if (!shipped.empty()) {
+                    shipped.replace_filename("pso_trace.bin");
+                    if (std::filesystem::exists(shipped, ec)) {
+                        std::filesystem::copy_file(shipped, tracePath,
+                                                   std::filesystem::copy_options::skip_existing,
+                                                   ec);
+                    }
+                }
+            }
+        }
+
+        const std::string u8 = whiteout::flakes::io::PathToUtf8(cachePath);
+        whiteout::flakes::gfx::SetPipelineCachePath(u8.c_str());
+    }
 
     const char* backendName = backend == whiteout::flakes::gfx::GfxApi::D3D11    ? "D3D11"
                               : backend == whiteout::flakes::gfx::GfxApi::D3D12  ? "D3D12"
@@ -97,16 +184,14 @@ int wmain(int argc, wchar_t* argv[]) {
     renderer.SwapSoundEmitter(std::make_unique<whiteout::flakes::CubebSoundEmitter>(
         scene.ActiveContentProvider()));
 
-    // Persistent settings (display flags, exposure, tileset, etc.) are
-    // applied after the device + asset managers are up so they can validate
+    // Persistent settings (display flags, exposure, tileset, etc.) applied
+    // after the device + asset managers are up so they can validate
     // dependent state (e.g. ShadowService cascade count).
     bool loopPolicy = app.LoopNonLoopingPolicy();
     whiteout::flakes::LoadSettingsIni(renderer, loopPolicy);
     app.SetLoopNonLoopingPolicy(loopPolicy);
 
-    // If a path came in on the CLI, load it; otherwise pop the NFD picker
-    // once at startup (matches the old Win32 viewer's GetOpenFileNameW
-    // behaviour). The user can also reopen the picker any time via
+    // CLI path wins; otherwise pop NFD once at startup. Re-openable via
     // File > Open in the menu bar.
     if (mdxPath.empty()) {
         NFD::Init();

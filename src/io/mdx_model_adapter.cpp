@@ -1427,7 +1427,7 @@ std::vector<CameraPreset> MdxModelAdapter::GetCameraPresets() const {
         f32 yaw = std::atan2(dy * invD, dx * invD);
 
         CameraPreset cp;
-        cp.name = std::wstring(cam.name.begin(), cam.name.end());
+        cp.name = cam.name;
         cp.position = pos;
         cp.target = tgt;
         cp.fovDiagonal = cam.fieldOfView;

@@ -79,6 +79,13 @@ const VulkanDeviceState& VulkanDevice::State() const {
 const char* VulkanDevice::GetDeviceName() const {
     return deviceName_.c_str();
 }
+void* VulkanDevice::GetNativeInstance() const {
+    // VkInstance is a dispatchable handle (a pointer on every supported
+    // platform); the cross-platform path on Linux needs it so the host can
+    // call glfwCreateWindowSurface(instance, window, ...) and feed the
+    // resulting VkSurfaceKHR back into CreateSwapChain.
+    return static_cast<void*>(static_cast<VkInstance>(*state_->instance));
+}
 IGFXCommandList* VulkanDevice::GetImmediateContext() {
     return immediate_.get();
 }

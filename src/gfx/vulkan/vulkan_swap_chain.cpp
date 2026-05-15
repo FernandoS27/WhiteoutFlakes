@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 #if defined(TRACY_ENABLE)
@@ -150,6 +151,9 @@ SwapChainHandle VulkanDevice::CreateSwapChain(void* nativeWindowHandle, i32 widt
     auto& state = *state_;
 
     SwapChainEntry sc{};
+#if defined(VK_USE_PLATFORM_WIN32_KHR)
+    // Windows path: nativeWindowHandle is an HWND; we create the Win32
+    // surface internally so the host doesn't have to link against vulkan.
     auto surfR = state.instance.createWin32SurfaceKHR({
         .hinstance = GetModuleHandleW(nullptr),
         .hwnd = reinterpret_cast<HWND>(nativeWindowHandle),
@@ -160,6 +164,23 @@ SwapChainHandle VulkanDevice::CreateSwapChain(void* nativeWindowHandle, i32 widt
         return SwapChainHandle::Invalid;
     }
     sc.surface = std::move(surfR.value);
+#else
+    // Cross-platform path: the host pre-built a VkSurfaceKHR (typically via
+    // glfwCreateWindowSurface) and handed it to us as the void*. Wrap in
+    // vk::raii::SurfaceKHR so it's destroyed alongside the swap chain.
+    if (!nativeWindowHandle) {
+        std::fprintf(stderr, "[vk] CreateSwapChain: null surface handle\n");
+        return SwapChainHandle::Invalid;
+    }
+    // VkSurfaceKHR is a 64-bit non-dispatchable handle on x86_64; void* and
+    // uintptr_t are the same width, so the round-trip through uintptr_t is
+    // bit-preserving.
+    VkSurfaceKHR raw = VK_NULL_HANDLE;
+    static_assert(sizeof(VkSurfaceKHR) == sizeof(uintptr_t),
+                  "VkSurfaceKHR must be the same width as a pointer");
+    std::memcpy(&raw, &nativeWindowHandle, sizeof(VkSurfaceKHR));
+    sc.surface = vk::raii::SurfaceKHR(state.instance, raw);
+#endif
 
     auto presentR = state.physicalDevice.getSurfaceSupportKHR(state.queueFamily, *sc.surface);
     if (presentR.result != vk::Result::eSuccess || !presentR.value) {

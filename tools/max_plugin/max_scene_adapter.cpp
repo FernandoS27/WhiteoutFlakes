@@ -2010,7 +2010,15 @@ std::vector<CameraPreset> MaxSceneAdapter::GetCameraPresets() {
         dir = {dir.x / dist, dir.y / dist, dir.z / dist};
 
         CameraPreset cp;
-        cp.name = std::wstring(node->GetName());
+        // Max gives us a wide string; convert to UTF-8 once for the host UI.
+        {
+            const wchar_t* w = node->GetName();
+            const int n = ::WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+            if (n > 1) {
+                cp.name.assign(static_cast<usize>(n - 1), '\0');
+                ::WideCharToMultiByte(CP_UTF8, 0, w, -1, cp.name.data(), n, nullptr, nullptr);
+            }
+        }
         cp.pitch = asinf(std::clamp(dir.z, -1.0f, 1.0f));
         cp.yaw = atan2f(dir.y, dir.x);
         cp.distance = dist;

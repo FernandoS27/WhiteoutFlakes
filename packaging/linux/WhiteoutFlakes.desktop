@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=WhiteoutFlakes
+GenericName=Warcraft III model viewer
+Comment=View and inspect Warcraft III MDX models with the WhiteoutFlakes renderer
+Exec=WhiteoutFlakes %f
+Icon=WhiteoutFlakes
+Terminal=false
+Categories=Graphics;3DGraphics;Viewer;
+MimeType=application/x-warcraft3-mdx;
+StartupWMClass=WhiteoutFlakes

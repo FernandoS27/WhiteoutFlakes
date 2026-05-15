@@ -5,16 +5,24 @@
 #include "whiteout/flakes/types.h"
 
 #include <algorithm>
+#include <charconv>
+#include <cstdio>
 #include <cstdlib>
-#include <cwchar>
 #include <filesystem>
+#include <fstream>
 #include <string>
+#include <unordered_map>
 
+#ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(__linux__)
+#include <unistd.h>
+#include <climits>
+#endif
 
 namespace whiteout::flakes {
 
@@ -23,183 +31,282 @@ using namespace whiteout::flakes::renderer::assets;
 
 namespace {
 
-std::wstring SettingsIniPath() {
+namespace fs = std::filesystem;
+
+// On Windows the .ini lives next to the exe (preserves prior behaviour).
+// On Linux the AppImage mount is read-only, so settings go in the standard
+// XDG location: $XDG_CONFIG_HOME/WhiteoutFlakes/settings.ini, falling back
+// to $HOME/.config/WhiteoutFlakes/settings.ini.
+fs::path SettingsIniPath() {
+#ifdef _WIN32
     wchar_t exePath[MAX_PATH] = {};
     DWORD n = ::GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     if (n == 0 || n >= MAX_PATH)
-        return L"WhiteoutFlakes.ini";
-    std::filesystem::path p(exePath);
+        return fs::path("WhiteoutFlakes.ini");
+    fs::path p(exePath);
     p.replace_filename(L"WhiteoutFlakes.ini");
-    return p.wstring();
+    return p;
+#else
+    fs::path base;
+    if (const char* xdg = std::getenv("XDG_CONFIG_HOME"); xdg && *xdg) {
+        base = xdg;
+    } else if (const char* home = std::getenv("HOME"); home && *home) {
+        base = fs::path(home) / ".config";
+    } else {
+        base = ".";
+    }
+    fs::path dir = base / "WhiteoutFlakes";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    return dir / "settings.ini";
+#endif
 }
 
-constexpr const wchar_t* kSection = L"Display";
+// Tiny `[Section]\nkey=value` reader/writer. The viewer fully owns the file
+// (no third-party keys to preserve) so we just round-trip everything as a
+// single Display section.
+struct IniMap {
+    std::unordered_map<std::string, std::string> values;
+
+    static std::string Trim(std::string_view s) {
+        const auto isWs = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
+        usize a = 0, b = s.size();
+        while (a < b && isWs(s[a]))
+            ++a;
+        while (b > a && isWs(s[b - 1]))
+            --b;
+        return std::string(s.substr(a, b - a));
+    }
+
+    void Load(const fs::path& path) {
+        std::ifstream f(path);
+        if (!f)
+            return;
+        std::string line;
+        std::string section;
+        while (std::getline(f, line)) {
+            std::string t = Trim(line);
+            if (t.empty() || t[0] == ';' || t[0] == '#')
+                continue;
+            if (t.front() == '[' && t.back() == ']') {
+                section = t.substr(1, t.size() - 2);
+                continue;
+            }
+            const auto eq = t.find('=');
+            if (eq == std::string::npos)
+                continue;
+            std::string key = Trim(std::string_view(t).substr(0, eq));
+            std::string val = Trim(std::string_view(t).substr(eq + 1));
+            if (section.empty())
+                values[key] = std::move(val);
+            else
+                values[section + "." + key] = std::move(val);
+        }
+    }
+
+    void Save(const fs::path& path, const char* section) const {
+        std::ofstream f(path, std::ios::trunc);
+        if (!f)
+            return;
+        f << "[" << section << "]\n";
+        const std::string prefix = std::string(section) + ".";
+        for (const auto& [k, v] : values) {
+            if (k.size() > prefix.size() && k.compare(0, prefix.size(), prefix) == 0) {
+                f << k.substr(prefix.size()) << "=" << v << "\n";
+            }
+        }
+    }
+
+    const std::string* Get(const std::string& key) const {
+        auto it = values.find(key);
+        return it == values.end() ? nullptr : &it->second;
+    }
+    void Set(const std::string& key, std::string val) {
+        values[key] = std::move(val);
+    }
+};
+
+constexpr const char* kSection = "Display";
+
+std::string KeyOf(const char* k) {
+    return std::string(kSection) + "." + k;
+}
+
+// Locale-independent integer → string. Avoids ostringstream / std::to_string
+// thousands-separator surprises if the global C++ locale gets imbued.
+template <typename T> std::string ToString(T v) {
+    char buf[32];
+    auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), v);
+    if (ec != std::errc{})
+        return {};
+    return std::string(buf, ptr);
+}
+
+// Same idea for floats — std::to_chars(double) writes shortest round-trip.
+// We can't pass `%.3f` style precision with the default overload, so use the
+// explicit precision overload (C++17 for ints, C++20 for floats; libstdc++
+// has it from GCC 11, libc++ from 14).
+inline std::string FloatToString(double v, int precision = 3) {
+    char buf[64];
+    auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), v,
+                                   std::chars_format::fixed, precision);
+    if (ec != std::errc{})
+        return {};
+    return std::string(buf, ptr);
+}
+
+// Parse helpers use std::from_chars (locale-independent) so a user with a
+// non-C LC_NUMERIC (e.g. fr_FR with comma decimal) round-trips correctly.
+// from_chars's int overload accepts an optional 0x prefix only via base=16,
+// so we sniff that ourselves to keep the BackgroundColor "0xRRGGBB" syntax.
+bool ParseInt(const std::string& s, i32& out) {
+    if (s.empty())
+        return false;
+    const char* first = s.data();
+    const char* last = s.data() + s.size();
+    int base = 10;
+    if (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        first += 2;
+        base = 16;
+    }
+    long v = 0;
+    auto [ptr, ec] = std::from_chars(first, last, v, base);
+    if (ec != std::errc{} || ptr == first)
+        return false;
+    out = static_cast<i32>(v);
+    return true;
+}
+bool ParseFloat(const std::string& s, f32& out) {
+    if (s.empty())
+        return false;
+    const char* first = s.data();
+    const char* last = s.data() + s.size();
+    double v = 0;
+    if (auto [ptr, ec] = std::from_chars(first, last, v); ec == std::errc{} && ptr != first) {
+        out = static_cast<f32>(v);
+        return true;
+    }
+    return false;
+}
+bool ParseBool(const std::string& s, bool& out) {
+    if (s == "1" || s == "true" || s == "TRUE") {
+        out = true;
+        return true;
+    }
+    if (s == "0" || s == "false" || s == "FALSE") {
+        out = false;
+        return true;
+    }
+    return false;
+}
 
 } // namespace
 
 void LoadStartupSettingsFromIni(RenderService& service) {
-    const std::wstring iniPath = SettingsIniPath();
-    {
-        const i32 v = ::GetPrivateProfileIntW(kSection, L"GraphicsDebug", -1, iniPath.c_str());
-        if (v == 0 || v == 1)
-            service.Settings().SetGraphicsDebug(v != 0);
+    IniMap ini;
+    ini.Load(SettingsIniPath());
+
+    if (auto* s = ini.Get(KeyOf("GraphicsDebug"))) {
+        bool v = false;
+        if (ParseBool(*s, v))
+            service.Settings().SetGraphicsDebug(v);
     }
-    {
-        wchar_t buf[16] = {};
-        ::GetPrivateProfileStringW(kSection, L"DefaultBackend", L"", buf, 16, iniPath.c_str());
-        if (buf[0]) {
-            using gfx::GfxApi;
-            if (_wcsicmp(buf, L"d3d11") == 0)
-                service.Settings().SetDefaultBackend(GfxApi::D3D11);
-            else if (_wcsicmp(buf, L"d3d12") == 0)
-                service.Settings().SetDefaultBackend(GfxApi::D3D12);
-            else if (_wcsicmp(buf, L"vulkan") == 0)
-                service.Settings().SetDefaultBackend(GfxApi::Vulkan);
-        }
+    if (auto* s = ini.Get(KeyOf("DefaultBackend"))) {
+        using gfx::GfxApi;
+        if (*s == "d3d11" || *s == "D3D11")
+            service.Settings().SetDefaultBackend(GfxApi::D3D11);
+        else if (*s == "d3d12" || *s == "D3D12")
+            service.Settings().SetDefaultBackend(GfxApi::D3D12);
+        else if (*s == "vulkan" || *s == "Vulkan" || *s == "VULKAN")
+            service.Settings().SetDefaultBackend(GfxApi::Vulkan);
     }
-    {
-        // PreferredDevice is a verbatim adapter name (UTF-8 once
-        // converted from the INI's UTF-16 storage). Empty = "let the
-        // backend pick" — the same behaviour as before this knob
-        // existed.
-        wchar_t buf[256] = {};
-        ::GetPrivateProfileStringW(kSection, L"PreferredDevice", L"", buf, 256, iniPath.c_str());
-        if (buf[0]) {
-            const i32 len =
-                ::WideCharToMultiByte(CP_UTF8, 0, buf, -1, nullptr, 0, nullptr, nullptr);
-            if (len > 1) {
-                std::string utf8(len - 1, '\0');
-                ::WideCharToMultiByte(CP_UTF8, 0, buf, -1, utf8.data(), len, nullptr, nullptr);
-                service.Settings().SetPreferredDevice(std::move(utf8));
-            }
-        }
+    if (auto* s = ini.Get(KeyOf("PreferredDevice")); s && !s->empty()) {
+        service.Settings().SetPreferredDevice(*s);
     }
 }
 
 void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy) {
-    const std::wstring iniPath = SettingsIniPath();
+    IniMap ini;
+    ini.Load(SettingsIniPath());
 
-    {
-        wchar_t buf[32] = {};
-        ::GetPrivateProfileStringW(kSection, L"BackgroundColor", L"", buf, 32, iniPath.c_str());
-        if (buf[0]) {
-            wchar_t* endptr = nullptr;
-            const unsigned long val = std::wcstoul(buf, &endptr, 16);
-            if (endptr != buf) {
-                const u32 v = static_cast<u32>(val);
-
-                service.Settings().SetBackgroundColor(static_cast<u8>(v & 0xFF),
-                                                      static_cast<u8>((v >> 8) & 0xFF),
-                                                      static_cast<u8>((v >> 16) & 0xFF));
-            }
+    if (auto* s = ini.Get(KeyOf("BackgroundColor"))) {
+        i32 v = 0;
+        if (ParseInt(*s, v)) {
+            const u32 c = static_cast<u32>(v);
+            service.Settings().SetBackgroundColor(static_cast<u8>(c & 0xFF),
+                                                  static_cast<u8>((c >> 8) & 0xFF),
+                                                  static_cast<u8>((c >> 16) & 0xFF));
         }
     }
-
-    {
-        wchar_t buf[32] = {};
-        ::GetPrivateProfileStringW(kSection, L"Exposure", L"", buf, 32, iniPath.c_str());
-        if (buf[0]) {
-            wchar_t* endptr = nullptr;
-            const f64 val = std::wcstod(buf, &endptr);
-            if (endptr != buf) {
-
-                f32 clamped = static_cast<f32>(val);
-                if (clamped < 0.0f)
-                    clamped = 0.0f;
-                if (clamped > 3.0f)
-                    clamped = 3.0f;
-                service.Settings().SetTonemapExposure(clamped);
-            }
-        }
+    if (auto* s = ini.Get(KeyOf("Exposure"))) {
+        f32 v = 0;
+        if (ParseFloat(*s, v))
+            service.Settings().SetTonemapExposure(std::clamp(v, 0.0f, 3.0f));
     }
-
-    {
-        wchar_t buf[32] = {};
-        ::GetPrivateProfileStringW(kSection, L"SoundVolume", L"", buf, 32, iniPath.c_str());
-        if (buf[0]) {
-            wchar_t* endptr = nullptr;
-            const f64 val = std::wcstod(buf, &endptr);
-            if (endptr != buf) {
-                f32 clamped = static_cast<f32>(val);
-                if (clamped < 0.0f)
-                    clamped = 0.0f;
-                if (clamped > 1.0f)
-                    clamped = 1.0f;
-                service.Sound().SetVolume(clamped);
-            }
-        }
+    if (auto* s = ini.Get(KeyOf("SoundVolume"))) {
+        f32 v = 0;
+        if (ParseFloat(*s, v))
+            service.Sound().SetVolume(std::clamp(v, 0.0f, 1.0f));
     }
-
-    {
-        const i32 v = ::GetPrivateProfileIntW(kSection, L"LoopNonLooping", -1, iniPath.c_str());
-        if (v == 0 || v == 1)
-            loopNonLoopingPolicy = (v != 0);
+    if (auto* s = ini.Get(KeyOf("LoopNonLooping"))) {
+        bool v = false;
+        if (ParseBool(*s, v))
+            loopNonLoopingPolicy = v;
     }
 
     {
         DisplayFlags df = service.Settings().GetDisplayFlags();
         bool dirty = false;
-        auto loadFlag = [&](const wchar_t* key, bool& field) {
-            const i32 v = ::GetPrivateProfileIntW(kSection, key, -1, iniPath.c_str());
-            if (v == 0 || v == 1) {
-                field = (v != 0);
-                dirty = true;
+        auto loadFlag = [&](const char* key, bool& field) {
+            if (auto* s = ini.Get(KeyOf(key))) {
+                bool v = false;
+                if (ParseBool(*s, v)) {
+                    field = v;
+                    dirty = true;
+                }
             }
         };
-        loadFlag(L"ShowGrid", df.showGrid);
-        loadFlag(L"ShowParticles", df.showParticles);
-        loadFlag(L"ShowRibbons", df.showRibbons);
-        loadFlag(L"ShowEvents", df.showEvents);
-        loadFlag(L"ShowCollisions", df.showCollisions);
-        loadFlag(L"ShowLights", df.showLights);
+        loadFlag("ShowGrid", df.showGrid);
+        loadFlag("ShowParticles", df.showParticles);
+        loadFlag("ShowRibbons", df.showRibbons);
+        loadFlag("ShowEvents", df.showEvents);
+        loadFlag("ShowCollisions", df.showCollisions);
+        loadFlag("ShowLights", df.showLights);
         if (dirty)
             service.Settings().SetDisplayFlags(df);
     }
 
-    {
-        // Toolbar lighting combo: 0 InGame, 1 Glue, 2 Dynamic.
-        const i32 v = ::GetPrivateProfileIntW(kSection, L"LightingMode", -1, iniPath.c_str());
-        if (v >= 0 && v <= 2)
+    if (auto* s = ini.Get(KeyOf("LightingMode"))) {
+        i32 v = 0;
+        if (ParseInt(*s, v) && v >= 0 && v <= 2)
             service.Settings().SetLightingMode(static_cast<LightingMode>(v));
     }
-
-    {
-        // Debug > Debug View: 0..7 (Off / Albedo / Normal / ...).
-        const i32 v = ::GetPrivateProfileIntW(kSection, L"HdDebugMode", -1, iniPath.c_str());
-        if (v >= 0 && v <= 7)
+    if (auto* s = ini.Get(KeyOf("HdDebugMode"))) {
+        i32 v = 0;
+        if (ParseInt(*s, v) && v >= 0 && v <= 7)
             service.Settings().SetHdDebugMode(v);
     }
-
-    {
-        // Debug > LOD: -1 auto, 0..3 forced LOD. -1 is a valid value, so the
-        // "missing key" sentinel has to sit outside the [-1, 3] range.
-        const i32 v = ::GetPrivateProfileIntW(kSection, L"LodOverride", -999, iniPath.c_str());
-        if (v >= -1 && v <= 3)
+    if (auto* s = ini.Get(KeyOf("LodOverride"))) {
+        i32 v = 0;
+        if (ParseInt(*s, v) && v >= -1 && v <= 3)
             service.Settings().SetLodOverride(v);
     }
-
-    {
-        const i32 v = ::GetPrivateProfileIntW(kSection, L"Tileset", -1, iniPath.c_str());
+    if (auto* s = ini.Get(KeyOf("Tileset"))) {
+        i32 v = 0;
         const i32 n = static_cast<i32>(io::Tileset::Count);
-        if (v >= 0 && v < n)
+        if (ParseInt(*s, v) && v >= 0 && v < n)
             service.Replaceables().SetTileset(static_cast<io::Tileset>(v));
     }
-
-    {
-        const i32 v = ::GetPrivateProfileIntW(kSection, L"IblMode", -1, iniPath.c_str());
-        if (v >= 0 && v <= static_cast<i32>(IblMode::Sunset) &&
+    if (auto* s = ini.Get(KeyOf("IblMode"))) {
+        i32 v = 0;
+        if (ParseInt(*s, v) && v >= 0 && v <= static_cast<i32>(IblMode::Sunset) &&
             static_cast<IblMode>(v) != service.Settings().GetIblMode()) {
             service.Settings().SetIblMode(static_cast<IblMode>(v));
         }
     }
-
-    {
-        // Settings > Shadows: 0 off, 1..3 cascade count. The shadow service
-        // is created during Pipeline().InitDevice (InitBlsShaders), which has
-        // already run by the time LoadSettingsIni is called, so the pointer
-        // is valid here. Mirrors the apply path in ViewerUI's Shadows combo.
-        const i32 v = ::GetPrivateProfileIntW(kSection, L"ShadowCascades", -1, iniPath.c_str());
-        if (v >= 0 && v <= 3) {
+    if (auto* s = ini.Get(KeyOf("ShadowCascades"))) {
+        i32 v = 0;
+        if (ParseInt(*s, v) && v >= 0 && v <= 3) {
             if (auto* shadow = service.GetShadowService()) {
                 shadow::ShadowParams p = shadow->Params();
                 p.enabled = (v > 0);
@@ -208,152 +315,88 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy) {
             }
         }
     }
-
     if (auto* dnc = service.GetDncService()) {
-        wchar_t buf[32] = {};
-        ::GetPrivateProfileStringW(kSection, L"TimeOfDay", L"", buf, 32, iniPath.c_str());
-        if (buf[0]) {
-            wchar_t* endptr = nullptr;
-            const f64 v = std::wcstod(buf, &endptr);
-            if (endptr != buf)
-                dnc->SetTimeOfDay(static_cast<f32>(v));
+        if (auto* s = ini.Get(KeyOf("TimeOfDay"))) {
+            f32 v = 0;
+            if (ParseFloat(*s, v))
+                dnc->SetTimeOfDay(v);
         }
-        const i32 animate = ::GetPrivateProfileIntW(kSection, L"AnimateTod", -1, iniPath.c_str());
-        if (animate == 0 || animate == 1) {
-            dnc->SetTodScale(animate ? 1.0f : 0.0f);
+        if (auto* s = ini.Get(KeyOf("AnimateTod"))) {
+            bool v = false;
+            if (ParseBool(*s, v))
+                dnc->SetTodScale(v ? 1.0f : 0.0f);
         }
-
-        wchar_t pathBuf[512] = {};
-        ::GetPrivateProfileStringW(kSection, L"DncModel", L"", pathBuf, 512, iniPath.c_str());
-        if (pathBuf[0]) {
-            const i32 u8len =
-                ::WideCharToMultiByte(CP_UTF8, 0, pathBuf, -1, nullptr, 0, nullptr, nullptr);
-            if (u8len > 1) {
-                std::string utf8(u8len - 1, '\0');
-                ::WideCharToMultiByte(CP_UTF8, 0, pathBuf, -1, utf8.data(), u8len, nullptr,
-                                      nullptr);
-                if (utf8 != dnc->UnitMdlPath())
-                    dnc->SetUnitMdl(utf8);
-            }
+        if (auto* s = ini.Get(KeyOf("DncModel")); s && !s->empty() && *s != dnc->UnitMdlPath()) {
+            dnc->SetUnitMdl(*s);
         }
     }
 }
 
 void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy) {
-    const std::wstring iniPath = SettingsIniPath();
+    const fs::path path = SettingsIniPath();
+    // Round-trip: load existing values first so unrelated keys (older
+    // settings, future additions) don't get nuked when a single setting
+    // changes.
+    IniMap ini;
+    ini.Load(path);
 
     {
-        wchar_t buf[32] = {};
-        ::swprintf_s(buf, L"0x%08X", static_cast<u32>(service.Settings().BackgroundColorRaw()));
-        ::WritePrivateProfileStringW(kSection, L"BackgroundColor", buf, iniPath.c_str());
+        // BackgroundColor stays in `0xRRGGBB` hex via snprintf — printf's
+        // %x is locale-neutral (no decimals involved).
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "0x%08X",
+                      static_cast<u32>(service.Settings().BackgroundColorRaw()));
+        ini.Set(KeyOf("BackgroundColor"), buf);
     }
+    ini.Set(KeyOf("Exposure"), FloatToString(service.Settings().GetTonemapExposure()));
+    ini.Set(KeyOf("SoundVolume"), FloatToString(service.Sound().GetVolume()));
+    ini.Set(KeyOf("LoopNonLooping"), loopNonLoopingPolicy ? "1" : "0");
+    ini.Set(KeyOf("GraphicsDebug"), service.Settings().GraphicsDebug() ? "1" : "0");
+
     {
-        wchar_t buf[32] = {};
-        ::swprintf_s(buf, L"%.3f", static_cast<f64>(service.Settings().GetTonemapExposure()));
-        ::WritePrivateProfileStringW(kSection, L"Exposure", buf, iniPath.c_str());
-    }
-    {
-        wchar_t buf[32] = {};
-        ::swprintf_s(buf, L"%.3f", static_cast<f64>(service.Sound().GetVolume()));
-        ::WritePrivateProfileStringW(kSection, L"SoundVolume", buf, iniPath.c_str());
-    }
-    {
-        ::WritePrivateProfileStringW(kSection, L"LoopNonLooping",
-                                     loopNonLoopingPolicy ? L"1" : L"0", iniPath.c_str());
-    }
-    {
-        ::WritePrivateProfileStringW(kSection, L"GraphicsDebug",
-                                     service.Settings().GraphicsDebug() ? L"1" : L"0",
-                                     iniPath.c_str());
-    }
-    {
-        const wchar_t* name = L"d3d12";
+        const char* name = "d3d12";
         switch (service.Settings().DefaultBackend()) {
         case gfx::GfxApi::D3D11:
-            name = L"d3d11";
+            name = "d3d11";
             break;
         case gfx::GfxApi::D3D12:
-            name = L"d3d12";
+            name = "d3d12";
             break;
         case gfx::GfxApi::Vulkan:
-            name = L"vulkan";
+            name = "vulkan";
             break;
         }
-        ::WritePrivateProfileStringW(kSection, L"DefaultBackend", name, iniPath.c_str());
+        ini.Set(KeyOf("DefaultBackend"), name);
     }
-    {
-        const std::string& pref = service.Settings().PreferredDevice();
-        if (pref.empty()) {
-            ::WritePrivateProfileStringW(kSection, L"PreferredDevice", L"", iniPath.c_str());
-        } else {
-            const i32 wlen = ::MultiByteToWideChar(CP_UTF8, 0, pref.c_str(), -1, nullptr, 0);
-            if (wlen > 0) {
-                std::wstring wname(wlen, L'\0');
-                ::MultiByteToWideChar(CP_UTF8, 0, pref.c_str(), -1, wname.data(), wlen);
-                ::WritePrivateProfileStringW(kSection, L"PreferredDevice", wname.c_str(),
-                                             iniPath.c_str());
-            }
-        }
-    }
+    ini.Set(KeyOf("PreferredDevice"), service.Settings().PreferredDevice());
+
     {
         const DisplayFlags df = service.Settings().GetDisplayFlags();
-        auto saveFlag = [&](const wchar_t* key, bool v) {
-            ::WritePrivateProfileStringW(kSection, key, v ? L"1" : L"0", iniPath.c_str());
-        };
-        saveFlag(L"ShowGrid", df.showGrid);
-        saveFlag(L"ShowParticles", df.showParticles);
-        saveFlag(L"ShowRibbons", df.showRibbons);
-        saveFlag(L"ShowEvents", df.showEvents);
-        saveFlag(L"ShowCollisions", df.showCollisions);
-        saveFlag(L"ShowLights", df.showLights);
+        auto saveFlag = [&](const char* key, bool v) { ini.Set(KeyOf(key), v ? "1" : "0"); };
+        saveFlag("ShowGrid", df.showGrid);
+        saveFlag("ShowParticles", df.showParticles);
+        saveFlag("ShowRibbons", df.showRibbons);
+        saveFlag("ShowEvents", df.showEvents);
+        saveFlag("ShowCollisions", df.showCollisions);
+        saveFlag("ShowLights", df.showLights);
     }
-    {
-        wchar_t buf[8] = {};
-        ::swprintf_s(buf, L"%u", static_cast<u32>(service.Settings().GetLightingMode()));
-        ::WritePrivateProfileStringW(kSection, L"LightingMode", buf, iniPath.c_str());
-    }
-    {
-        wchar_t buf[8] = {};
-        ::swprintf_s(buf, L"%d", service.Settings().HdDebugMode());
-        ::WritePrivateProfileStringW(kSection, L"HdDebugMode", buf, iniPath.c_str());
-    }
-    {
-        wchar_t buf[8] = {};
-        ::swprintf_s(buf, L"%d", service.Settings().LodOverride());
-        ::WritePrivateProfileStringW(kSection, L"LodOverride", buf, iniPath.c_str());
-    }
-    {
-        wchar_t buf[8] = {};
-        ::swprintf_s(buf, L"%u", static_cast<u32>(io::GetCurrentTileset()));
-        ::WritePrivateProfileStringW(kSection, L"Tileset", buf, iniPath.c_str());
-    }
-    {
-        wchar_t buf[8] = {};
-        ::swprintf_s(buf, L"%u", static_cast<u32>(service.Settings().GetIblMode()));
-        ::WritePrivateProfileStringW(kSection, L"IblMode", buf, iniPath.c_str());
-    }
+    ini.Set(KeyOf("LightingMode"), ToString(static_cast<u32>(service.Settings().GetLightingMode())));
+    ini.Set(KeyOf("HdDebugMode"), ToString(service.Settings().HdDebugMode()));
+    ini.Set(KeyOf("LodOverride"), ToString(service.Settings().LodOverride()));
+    ini.Set(KeyOf("Tileset"), ToString(static_cast<u32>(io::GetCurrentTileset())));
+    ini.Set(KeyOf("IblMode"), ToString(static_cast<u32>(service.Settings().GetIblMode())));
     if (const auto* shadow = service.GetShadowService()) {
         const i32 cascades =
             shadow->IsEnabled() ? std::clamp(shadow->Params().cascadeCount, 1, 3) : 0;
-        wchar_t buf[8] = {};
-        ::swprintf_s(buf, L"%d", cascades);
-        ::WritePrivateProfileStringW(kSection, L"ShadowCascades", buf, iniPath.c_str());
+        ini.Set(KeyOf("ShadowCascades"), ToString(cascades));
     }
     if (const auto* dnc = service.GetDncService()) {
-        wchar_t buf[32] = {};
-        ::swprintf_s(buf, L"%.3f", static_cast<f64>(dnc->GetTimeOfDay()));
-        ::WritePrivateProfileStringW(kSection, L"TimeOfDay", buf, iniPath.c_str());
-        ::WritePrivateProfileStringW(kSection, L"AnimateTod",
-                                     dnc->GetTodScale() > 0.0f ? L"1" : L"0", iniPath.c_str());
-
-        const std::string& path = dnc->UnitMdlPath();
-        const i32 wlen = ::MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, nullptr, 0);
-        if (wlen > 0) {
-            std::wstring wpath(wlen, L'\0');
-            ::MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, wpath.data(), wlen);
-            ::WritePrivateProfileStringW(kSection, L"DncModel", wpath.c_str(), iniPath.c_str());
-        }
+        ini.Set(KeyOf("TimeOfDay"), FloatToString(dnc->GetTimeOfDay()));
+        ini.Set(KeyOf("AnimateTod"), dnc->GetTodScale() > 0.0f ? "1" : "0");
+        ini.Set(KeyOf("DncModel"), dnc->UnitMdlPath());
     }
+
+    ini.Save(path, kSection);
 }
 
 } // namespace whiteout::flakes

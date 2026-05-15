@@ -11,20 +11,30 @@
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
-#include "resource.h"
+#if defined(_WIN32)
+#include "resource.h" // IDI_WHITEOUT_ICON
+#endif
 #include "imgui_theme.h"
 #include "viewer_ui.h"
 #include "whiteout/flakes/util/path_utf8.h"
 
+#include "gfx/gfx.h"
+
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 
-// Engine library already pulls in <windows.h> with the right defines; we
-// just need the GLFW native-window helper to hand off the HWND.
+// We use glfwCreateWindowSurface (cross-platform) for the Vulkan backend.
+// On Windows, the D3D backends still want a raw HWND, so we pull in
+// glfw3native there. Including <vulkan/vulkan.h> *before* <GLFW/glfw3.h>
+// makes glfwCreateWindowSurface visible without GLFW pulling in its own
+// vulkan header copy.
+#include <vulkan/vulkan.h>
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+#if defined(_WIN32)
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
+#endif
 
 #include <algorithm>
 #include <cctype>
@@ -94,10 +104,11 @@ bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
     glfwSetCursorPosCallback(window_, &ViewerApp::CursorPosCallback);
     glfwSetScrollCallback(window_, &ViewerApp::ScrollCallback);
 
+#if defined(_WIN32)
     // GLFW's cross-platform glfwSetWindowIcon takes RGBA pixels — we'd need
-    // a decoder to feed it the .ico. Win32 is happy with the embedded
-    // resource directly, and the viewer is Windows-only today, so we go
-    // straight through WM_SETICON.
+    // a decoder to feed it an .ico. On Windows the embedded Win32 resource
+    // is already in the right format for WM_SETICON, so we use it directly.
+    // On Linux the window manager picks a default icon for now.
     {
         HWND hwnd = glfwGetWin32Window(window_);
         HMODULE hMod = nullptr;
@@ -111,16 +122,13 @@ bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
             ::SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hIcon));
         }
     }
+#endif
 
     // ImGui context must exist *before* Pipeline.InitDevice() because
     // InitBlsShaders calls RenderService::EnsureImGui, which constructs
     // ImGuiRenderer and (on the first Render() call) queries io.Fonts.
-    // Constructing the GPU state without a context is fine — the atlas is
-    // built lazily inside Render() — but for the viewer we want the
-    // context up before the device touches it anyway.
     InitImGui();
 
-    HWND hwnd = glfwGetWin32Window(window_);
     if (!service_.Pipeline().InitDevice(api)) {
         std::fprintf(stderr, "Pipeline().InitDevice FAILED\n");
         Close();
@@ -135,7 +143,36 @@ bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
     if (fbH <= 0)
         fbH = height;
 
-    targetId_ = service_.Pipeline().CreateSwapChainTarget(static_cast<void*>(hwnd), fbW, fbH);
+    // Build the swap-chain handle the gfx layer expects per backend.
+    //   • d3d11/d3d12: HWND
+    //   • vulkan on Windows: HWND (gfx creates the Win32 surface internally)
+    //   • vulkan on Linux: a pre-built VkSurfaceKHR from glfwCreateWindowSurface
+    //     (so gfx doesn't have to branch on xcb / xlib / wayland itself)
+    void* swapHandle = nullptr;
+#if !defined(_WIN32)
+    if (api == gfx::GfxApi::Vulkan) {
+        gfx::IGFXDevice* dev = service_.Pipeline().Gfx();
+        VkInstance instance = dev ? static_cast<VkInstance>(dev->GetNativeInstance()) : nullptr;
+        VkSurfaceKHR surface = VK_NULL_HANDLE;
+        if (!instance ||
+            glfwCreateWindowSurface(instance, window_, nullptr, &surface) != VK_SUCCESS) {
+            std::fprintf(stderr, "glfwCreateWindowSurface FAILED\n");
+            Close();
+            return false;
+        }
+        // VkSurfaceKHR is a 64-bit non-dispatchable handle on x86_64; pack it
+        // into the void* the gfx interface expects.
+        std::memcpy(&swapHandle, &surface, sizeof(swapHandle));
+    } else {
+        std::fprintf(stderr, "Backend not supported on this platform\n");
+        Close();
+        return false;
+    }
+#else
+    swapHandle = static_cast<void*>(glfwGetWin32Window(window_));
+#endif
+
+    targetId_ = service_.Pipeline().CreateSwapChainTarget(swapHandle, fbW, fbH);
     if (targetId_ == 0) {
         std::fprintf(stderr, "CreateSwapChainTarget FAILED\n");
         Close();
@@ -335,21 +372,8 @@ bool ViewerApp::LoadModel(const std::filesystem::path& path) {
         cameraPresets_ = hero->sourceTemplate->cameraPresets;
     cameraPresetNamesUtf8_.clear();
     cameraPresetNamesUtf8_.reserve(cameraPresets_.size());
-    for (const auto& p : cameraPresets_) {
-        if (p.name.empty()) {
-            cameraPresetNamesUtf8_.emplace_back();
-            continue;
-        }
-        const int n = ::WideCharToMultiByte(CP_UTF8, 0, p.name.data(),
-                                            static_cast<int>(p.name.size()), nullptr, 0, nullptr,
-                                            nullptr);
-        std::string s(n > 0 ? n : 0, '\0');
-        if (n > 0) {
-            ::WideCharToMultiByte(CP_UTF8, 0, p.name.data(), static_cast<int>(p.name.size()),
-                                  s.data(), n, nullptr, nullptr);
-        }
-        cameraPresetNamesUtf8_.push_back(std::move(s));
-    }
+    for (const auto& p : cameraPresets_)
+        cameraPresetNamesUtf8_.push_back(p.name); // CameraPreset::name is already UTF-8.
     activeCameraPresetIdx_ = -1;
     cameraLocked_ = false;
     walkDriftPrevSeqIdx_ = -1;

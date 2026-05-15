@@ -82,18 +82,6 @@ gfx::GfxApi IdxToBackend(i32 idx) {
     }
 }
 
-std::string Utf8FromWide(const std::wstring& w) {
-    if (w.empty())
-        return {};
-    const int n = ::WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), nullptr,
-                                        0, nullptr, nullptr);
-    std::string s(n > 0 ? n : 0, '\0');
-    if (n > 0)
-        ::WideCharToMultiByte(CP_UTF8, 0, w.data(), static_cast<int>(w.size()), s.data(), n,
-                              nullptr, nullptr);
-    return s;
-}
-
 } // namespace
 
 MaxPluginUI::MaxPluginUI(RenderWindow& win) : win_(win) {}
@@ -273,20 +261,14 @@ void MaxPluginUI::BuildToolbar() {
         const i32 active = win_.ActiveCameraPresetIdx();
         const char* preview = (active < 0 || active >= (i32)presets.size())
                                   ? "Free Camera"
-                                  : nullptr;
-        std::string activeName;
-        if (!preview) {
-            activeName = Utf8FromWide(presets[active].name);
-            preview = activeName.c_str();
-        }
+                                  : presets[active].name.c_str();
         ImGui::SetNextItemWidth(140);
         if (ImGui::BeginCombo("Camera", preview)) {
             if (ImGui::Selectable("Free Camera", active < 0))
                 win_.ActivateCameraPreset(-1);
             for (i32 i = 0; i < (i32)presets.size(); ++i) {
-                const std::string n = Utf8FromWide(presets[i].name);
                 const bool isSel = (i == active);
-                if (ImGui::Selectable(n.c_str(), isSel))
+                if (ImGui::Selectable(presets[i].name.c_str(), isSel))
                     win_.ActivateCameraPreset(i);
                 if (isSel)
                     ImGui::SetItemDefaultFocus();

@@ -95,8 +95,23 @@ public:
     virtual void* MapBuffer(BufferHandle) = 0;
     virtual void UnmapBuffer(BufferHandle) = 0;
 
+    // `nativeWindowHandle` is interpreted by each backend:
+    //   • d3d11 / d3d12: cast to HWND.
+    //   • vulkan on Windows: cast to HWND (the backend creates the Win32
+    //     VkSurfaceKHR internally).
+    //   • vulkan on Linux: cast (via uintptr_t) to a host-supplied
+    //     VkSurfaceKHR. The host gets the matching VkInstance from
+    //     GetNativeInstance() and creates the surface itself (typically via
+    //     glfwCreateWindowSurface), avoiding XCB/Xlib/Wayland branches in gfx.
     virtual SwapChainHandle CreateSwapChain(void* nativeWindowHandle, i32 width, i32 height,
                                             Format colorFormat = Format::R8G8B8A8_UNORM_SRGB) = 0;
+
+    // Vulkan backend returns its VkInstance (cast to void*); other backends
+    // return nullptr. Used by the host on Linux to build a VkSurfaceKHR via
+    // glfwCreateWindowSurface before calling CreateSwapChain.
+    virtual void* GetNativeInstance() const {
+        return nullptr;
+    }
     virtual void ResizeSwapChain(SwapChainHandle, i32 width, i32 height) = 0;
     virtual void DestroySwapChain(SwapChainHandle) = 0;
     virtual void Present(SwapChainHandle) = 0;

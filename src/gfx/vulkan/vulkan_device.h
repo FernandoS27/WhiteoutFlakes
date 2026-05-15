@@ -60,6 +60,7 @@ public:
         return GfxApi::Vulkan;
     }
     const char* GetDeviceName() const override;
+    void* GetNativeInstance() const override;
 
     VulkanDeviceState& State();
     const VulkanDeviceState& State() const;
