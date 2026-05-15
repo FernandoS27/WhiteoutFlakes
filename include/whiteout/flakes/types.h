@@ -1,14 +1,13 @@
 #pragma once
 
-// ============================================================================
-// WhiteoutFlakes — public math / scalar types.
-//
-// This header is the canonical public surface for the value types every
-// consumer of WhiteoutFlakesLib needs: scalar aliases, vectors, matrices, and
-// a small Rect. The definitions live in WhiteoutLib (whiteout/common_types.h
-// and whiteout/vector_types.h) and in src/renderer/render_target.h; this
-// header re-exports them under the public `whiteout::flakes` namespace.
-// ============================================================================
+/// @file types.h
+/// @brief Public scalar / vector / matrix aliases used across the
+///        WhiteoutFlakes public API.
+///
+/// The definitions live in WhiteoutLib (`whiteout/common_types.h` and
+/// `whiteout/vector_types.h`); this header re-exports them under the public
+/// `whiteout::flakes` namespace so consumers don't need to reach into the
+/// nested library namespace.
 
 #include <whiteout/common_types.h>
 #include <whiteout/vector_types.h>
@@ -54,6 +53,10 @@ using whiteout::Vector2f;
 using whiteout::Vector3f;
 using whiteout::Vector4f;
 
+/// @brief Integer-coordinate screen-space rectangle (top-down, pixel units).
+///
+/// Used by the debug renderer for ViewCube hit-testing and by the host
+/// frontends for laying out UI overlays.
 struct Rect {
     i32 left;
     i32 top;

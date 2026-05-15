@@ -1,12 +1,12 @@
 #pragma once
 
-// ============================================================================
-// WhiteoutFlakes — public model-data POD types.
-//
-// This header is a convenience aggregator that pulls in the full set of
-// renderer model-data POD definitions. The actual struct definitions live
-// in model_types.h.
-// ============================================================================
+/// @file model_data.h
+/// @brief Convenience aggregator for the public model-data POD set.
+///
+/// Pulls in `model_types.h` (the actual struct definitions),
+/// `display.h` (camera presets / display flags), `enums.h` (filter
+/// modes, shading flags), and `types.h` (scalar/vector aliases). Host
+/// code building model snapshots can include just this one header.
 
 #include "display.h"
 #include "enums.h"

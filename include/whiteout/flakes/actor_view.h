@@ -1,12 +1,7 @@
 #pragma once
 
-// ============================================================================
-// WhiteoutFlakes — per-actor view handle.
-//
-// Lightweight, value-typed handle the host uses to mutate one actor in the
-// scene without needing access to the internal Actor type. Returned by
-// Renderer::Actor(handle).
-// ============================================================================
+/// @file actor_view.h
+/// @brief Lightweight per-actor handle returned by `Renderer::Actor()`.
 
 #include "display.h"
 #include "enums.h"
@@ -21,54 +16,81 @@ namespace detail {
 class RendererImpl;
 }
 
+/// @brief Opaque handle identifying one actor in the scene.
 using ActorHandle = u32;
 
+/// @brief Value-typed view onto one actor.
+///
+/// Constructed by `Renderer::Actor(handle)`. Cheap to copy; under the
+/// hood it's just `{ RendererImpl*, ActorHandle }`. Lifetime mirrors
+/// the renderer's — copies become invalid when the actor is removed.
 class ActorView {
 public:
+    /// @brief `true` if the underlying actor still exists in the scene.
     bool IsValid() const;
+    /// @brief The handle this view was constructed with.
     ActorHandle Handle() const {
         return handle_;
     }
+    /// @brief Role assigned at spawn time (see @ref ActorRole).
     ActorRole Role() const;
 
-    // Transform / playback / team color.
+    /// @name Transform / playback / team-color
+    /// @{
     Matrix44f Transform() const;
     void SetTransform(const Matrix44f&);
 
+    /// @brief Animation playback rate (`1.0` = nominal).
     f32 PlaybackSpeed() const;
     void SetPlaybackSpeed(f32);
 
+    /// @brief If `true`, non-looping sequences hold their last frame instead
+    ///        of restarting from the beginning.
     bool IgnoreNonLooping() const;
     void SetIgnoreNonLooping(bool);
 
+    /// @brief Packed 0x00BBGGRR team colour (low 24 bits used).
     u32 TeamColor() const;
+    /// @brief Set the team colour from sRGB byte components.
     void SetTeamColor(u8 r, u8 g, u8 b);
 
-    // For host-driven actors (Max plugin) so the renderer's auto-evaluation
-    // pass skips them.
+    /// @brief Mark this actor as host-driven so `Renderer::Tick` skips
+    ///        evaluating it. Used by the Max plugin, which receives time
+    ///        scrubs from Max's timeline and evaluates manually via
+    ///        @ref EvaluateAndApply.
     void SetRoleExternal();
+    /// @}
 
-    // Animation cursor.
+    /// @name Animation cursor
+    /// @{
     std::vector<SequenceInfo> Sequences() const;
     i32 ActiveSequenceIndex() const;
     void SetActiveSequence(i32);
     i32 AnimationTimeMs() const;
     void SetAnimationTimeMs(i32);
+    /// @brief `true` once the actor has an `IAnimationSource` bound (i.e.
+    ///        spawn-from-source completed successfully).
     bool HasAnimationSource() const;
+    /// @}
 
-    // Per-actor evaluate-and-apply (max_plugin timeline scrub). Reads the
-    // cursor state already on the actor; call SetAnimationTimeMs first if
-    // you want to evaluate at a specific time.
+    /// @brief Evaluate the animation at the actor's current cursor and
+    ///        push the result into the renderer state.
+    ///
+    /// Used by host-driven actors (Max-plugin timeline scrub). Call
+    /// `SetAnimationTimeMs(t)` first if you want a specific time.
     void EvaluateAndApply();
 
-    // Convenience: SetAnimationTimeMs(t) + EvaluateAndApply().
+    /// @brief Convenience: `SetAnimationTimeMs(t)` + `EvaluateAndApply()`.
     void EvaluateAt(i32 timeMs);
 
-    // Read-only counts for status displays.
+    /// @name Read-only counts for status displays.
+    /// @{
     i32 GeosetCount() const;
     i32 MaterialCount() const;
     i32 CollisionShapeCount() const;
+    /// @}
 
+    /// @brief Camera presets attached to this actor's source model.
     std::vector<CameraPreset> CameraPresets() const;
 
 private:

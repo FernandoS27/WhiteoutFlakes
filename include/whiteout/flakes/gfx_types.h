@@ -1,26 +1,30 @@
 #pragma once
 
-// ============================================================================
-// WhiteoutFlakes — public gfx-layer types.
-//
-// The narrow set of GPU-related enums and helpers exposed to consumers:
-//   - GfxApi: choice of backend at device init time.
-//   - Format: pixel format used by TextureData.
-//   - IsBlockCompressed / FormatBytesPerBlock: helpers adapter authors need
-//     when uploading or sizing texture data.
-//
-// Pipeline descriptors (BufferDesc, TextureDesc, BlendDesc,
-// GraphicsPipelineDesc, etc.) live in src/gfx/gfx_pipeline_types.h — they're
-// internal implementation detail of the gfx abstraction layer and not part
-// of the public surface.
-// ============================================================================
+/// @file gfx_types.h
+/// @brief Public gfx-layer enums + the two helpers texture-adapter authors
+///        need (block-compressed test + per-block byte count).
+///
+/// Pipeline descriptors (`BufferDesc`, `TextureDesc`, `BlendDesc`,
+/// `GraphicsPipelineDesc`, …) live in `src/gfx/gfx_pipeline_types.h` —
+/// they're implementation detail of the gfx abstraction and not part of
+/// the public surface.
 
 #include "types.h"
 
 namespace whiteout::flakes::gfx {
 
+/// @brief Selects the GPU backend at device-init time.
+///
+/// The viewer picks via CLI flag, INI setting, or the per-platform
+/// default. D3D11 / D3D12 are Windows-only; Vulkan is cross-platform
+/// (MoltenVK on macOS).
 enum class GfxApi { D3D11, D3D12, Vulkan };
 
+/// @brief Pixel format used by `TextureData` and swap-chain surfaces.
+///
+/// Mirrors the D3D / VK / MoltenVK common subset; the gfx backends map
+/// each value to their native enum. `Unknown` is the default-constructed
+/// sentinel and is rejected by every backend.
 enum class Format : u16 {
     Unknown,
 
@@ -63,6 +67,10 @@ enum class Format : u16 {
     BC7_UNORM_SRGB,
 };
 
+/// @brief `true` if @p f is one of the BCn block-compressed families.
+///
+/// Callers uploading texture data use this to decide whether to pass
+/// `width * bpp` or `(width / 4) * blockBytes` as the row pitch.
 inline bool IsBlockCompressed(Format f) {
     switch (f) {
     case Format::BC1_UNORM:
@@ -82,6 +90,11 @@ inline bool IsBlockCompressed(Format f) {
     }
 }
 
+/// @brief Bytes per addressable block.
+///
+/// For block-compressed formats this is the bytes per 4x4 texel block
+/// (8 for BC1/BC4, 16 for BC2/BC3/BC5/BC6H/BC7). For uncompressed
+/// formats it's the bytes per single pixel. Returns 0 for `Unknown`.
 inline u32 FormatBytesPerBlock(Format f) {
     switch (f) {
     case Format::R8_UNORM:
