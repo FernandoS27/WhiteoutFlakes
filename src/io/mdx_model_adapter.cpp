@@ -72,6 +72,14 @@ inline void swizTangent(Vector4f& t) {
     t = {t.y, -t.x, t.z, t.w};
 }
 
+// Some authoring tools leave the static EmissiveGain f32 as 0x7FC00000
+// (canonical NaN) on layers the artist never touched. Clamp on load so HdPsCb.emissiveGain stays finite.
+inline f32 SanitizeEmissiveGain(f32 v, i32 materialId, i32 layerIndex) {
+    if (std::isfinite(v))
+        return v;
+    return 0.0f;
+}
+
 template <typename T, typename Fn>
 void transformTrack(Track<T>& track, Fn fn) {
     if (!track.isUsed || track.keys_data.empty())
@@ -427,7 +435,7 @@ std::vector<MaterialData> MdxModelAdapter::GetMaterials() {
 
             ld.shaderId = static_cast<i32>(static_cast<whiteout::u32>(layer.shader));
 
-            ld.emissiveGain = layer.emissiveGain;
+            ld.emissiveGain = SanitizeEmissiveGain(layer.emissiveGain, i, li);
             ld.fresnelOpacity = layer.fresnelOpacity;
             ld.fresnelTeamColor = layer.fresnelTeamColor;
             ld.fresnelColor = {layer.fresnelColor.x, layer.fresnelColor.y, layer.fresnelColor.z};
@@ -990,7 +998,9 @@ FrameState MdxModelAdapter::Evaluate(i32 sequenceIdx, i32 timeMs, i32 globalTime
             lfs.fresnelColor = evalVec3(layer.fresnelColorTracks, layer.fresnelColor);
             lfs.fresnelOpacity = evalF32(layer.fresnelAlphaTracks, layer.fresnelOpacity);
             lfs.fresnelTeamColor = evalF32(layer.fresnelTeamColorTracks, layer.fresnelTeamColor);
-            lfs.emissiveGain = evalF32(layer.emissiveGainTracks, layer.emissiveGain);
+
+            lfs.emissiveGain = SanitizeEmissiveGain(
+                evalF32(layer.emissiveGainTracks, layer.emissiveGain), mi, li);
             fs.layerFresnels.push_back(lfs);
         }
     }
