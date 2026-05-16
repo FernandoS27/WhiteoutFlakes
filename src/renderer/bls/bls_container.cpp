@@ -159,12 +159,13 @@ bool BlsContainer::LoadV1_14(std::span<const u8> fileBytes, std::string* error) 
     std::memcpy(&h, fileBytes.data(), sizeof(BlsHeaderV14));
     platformTag_ = h.platformTag;
 
-    // We accept the two backends we actually emit + load: DX SM6 (DXIL) for
-    // d3d12 and SPIR-V for Vulkan. Others (GLSL, WGSL) get rejected.
+    // We accept the three backends we actually emit + load: DX SM6 (DXIL)
+    // for d3d12, SPIR-V for Vulkan, and WGSL for WebGPU. GLSL is rejected.
     const bool isDx6 = (h.platformTag == kPlatformTag_DX6);
     const bool isSpirv = (h.platformTag == kPlatformTag_SPIRV);
-    if (!isDx6 && !isSpirv) {
-        SetError(error, "v1.14: unsupported platformTag (expected '06XD' or 'RIPS')");
+    const bool isWgsl = (h.platformTag == kPlatformTag_WGSL);
+    if (!isDx6 && !isSpirv && !isWgsl) {
+        SetError(error, "v1.14: unsupported platformTag (expected '06XD', 'RIPS' or 'LSGW')");
         return false;
     }
 

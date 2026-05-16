@@ -59,11 +59,12 @@ BlsShader* BlsShaderCache::Acquire(gfx::ShaderStage stage, const std::string& na
     // D3D12 runtime accepts SM5 DXBC bytecode just fine, so when a
     // d3d12-specific (DXIL SM6) bundle isn't packed we transparently
     // pick up the D3D11 (or game-shipped) DXBC bundle at the unprefixed
-    // path. Vulkan can't fall back: SPIR-V and DXBC aren't
-    // interchangeable.
+    // path. Vulkan and WebGPU can't fall back: SPIR-V/WGSL and DXBC
+    // aren't interchangeable.
     //   D3D11 → DXBC under <root>/<stage>/
     //   D3D12 → DXIL under <root>/d3d12/<stage>/ → fallback <root>/<stage>/
     //   Vulkan → SPIR-V under <root>/vulkan/<stage>/
+    //   WebGPU → WGSL under <root>/webgpu/<stage>/
     // <root> is each entry of roots_ in order: debug_shaders/ before
     // shaders/ in graphics-debug builds, shaders/ alone otherwise.
     std::string path;
@@ -76,6 +77,8 @@ BlsShader* BlsShaderCache::Acquire(gfx::ShaderStage stage, const std::string& na
     auto tryRoot = [&](const std::string& root) {
         if (api_ == gfx::GfxApi::Vulkan)
             return tryRead(root, "vulkan/");
+        if (api_ == gfx::GfxApi::WebGPU)
+            return tryRead(root, "webgpu/");
         if (api_ == gfx::GfxApi::D3D12)
             return tryRead(root, "d3d12/") || tryRead(root, "");
         return tryRead(root, ""); // D3D11

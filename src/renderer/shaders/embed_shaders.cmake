@@ -10,11 +10,14 @@ cmake_minimum_required(VERSION 3.16)
 
 file(GLOB dxbc_files "${SHADER_DIR}/*.dxbc")
 file(GLOB spv_files  "${SHADER_DIR}/*.spv")
+file(GLOB wgsl_files "${SHADER_DIR}/*.wgsl")
 list(SORT dxbc_files)
 list(SORT spv_files)
+list(SORT wgsl_files)
 
 list(LENGTH dxbc_files dxbc_count)
 list(LENGTH spv_files  spv_count)
+list(LENGTH wgsl_files wgsl_count)
 # DXBC compilation is Windows-only (slangc -target dxbc needs fxc.exe). On
 # Linux/macOS the dxbc list is empty; the consumer code's `vk ? *Spv : *`
 # expressions still need the DXBC symbols to exist, so we emit 1-byte stubs
@@ -78,7 +81,67 @@ foreach(binpath IN LISTS spv_files)
     endif()
 endforeach()
 
+# WGSL blobs (consumed by the WebGPU backend): emitted as `<varname>Wgsl`.
+# WGSL is UTF-8 text — we emit it as a byte array (matching the SPV / DXBC
+# pattern) with a NUL terminator so the WebGPU backend can treat the buffer
+# as a C string when populating ShaderModuleWGSLDescriptor::code. The
+# consumer chooses `*Wgsl` for WebGPU and stubs for every other backend so
+# existing call sites stay valid even when WGSL emission is off.
+#
+# Slangc emits the entry function under its source name (vsLine, psLine,
+# vsViewCube, …). The WebGPU backend always asks for "main", so we
+# rewrite each .wgsl in place to rename the @vertex / @fragment / @compute
+# function to `main`. The regex is idempotent (already-renamed files are
+# no-ops on re-embed), and applies only to the function immediately
+# following an entry-stage attribute, so helper functions emitted by
+# slangc are left alone.
+set(real_wgsl_names "")
+foreach(srcpath IN LISTS wgsl_files)
+    get_filename_component(varname "${srcpath}" NAME_WE)
+    list(APPEND real_wgsl_names "${varname}")
+
+    file(READ "${srcpath}" wgsl_text)
+    string(REGEX REPLACE
+        "(@(vertex|fragment|compute)[ \t\r\n]+fn[ \t]+)[A-Za-z_][A-Za-z0-9_]*"
+        "\\1main"
+        wgsl_text "${wgsl_text}")
+    file(WRITE "${srcpath}" "${wgsl_text}")
+
+    file(READ "${srcpath}" hex HEX)
+    file(SIZE "${srcpath}" bytesize)
+
+    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1, " hex "${hex}")
+    # Trailing NUL so the WGSL string is null-terminated when CreateShader
+    # treats `bytecode` as a UTF-8 source pointer.
+    string(APPEND hex "0x00")
+    math(EXPR bytesize_plus1 "${bytesize} + 1")
+
+    string(APPEND header "// ${varname}Wgsl — ${bytesize_plus1} bytes (WGSL UTF-8 + NUL)\n")
+    string(APPEND header "inline constexpr uint8_t ${varname}Wgsl[] = {\n    ${hex}\n};\n\n")
+endforeach()
+
+# Stub any WGSL symbol that wasn't produced, so the per-backend selector
+# `case WebGPU: bytes = kFooWgsl` still type-checks on platforms where
+# WGSL emission is skipped.
+set(stub_names "")
+foreach(name IN LISTS real_dxbc_names)
+    list(APPEND stub_names "${name}")
+endforeach()
+foreach(srcpath IN LISTS spv_files)
+    get_filename_component(varname "${srcpath}" NAME_WE)
+    list(APPEND stub_names "${varname}")
+endforeach()
+list(REMOVE_DUPLICATES stub_names)
+foreach(name IN LISTS stub_names)
+    list(FIND real_wgsl_names "${name}" found_idx)
+    if(found_idx EQUAL -1)
+        string(APPEND header
+            "// ${name}Wgsl — stub (no WebGPU path on this build)\n"
+            "inline constexpr uint8_t ${name}Wgsl[] = { 0x00 };\n\n")
+    endif()
+endforeach()
+
 string(APPEND header "} // namespace whiteout::flakes::Shaders\n")
 
 file(WRITE "${OUTPUT}" "${header}")
-message(STATUS "Generated compiled_shaders.h (${dxbc_count} dxbc + ${spv_count} spv)")
+message(STATUS "Generated compiled_shaders.h (${dxbc_count} dxbc + ${spv_count} spv + ${wgsl_count} wgsl)")

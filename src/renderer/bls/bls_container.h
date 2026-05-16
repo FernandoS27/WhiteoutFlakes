@@ -21,6 +21,7 @@ inline constexpr u32 kDxbcMagic = 0x43425844u;        // also the DXIL outer mag
 //   'LSGW' (0x5753474C) — WebGPU WGSL (§3.6 opaque-blob)
 inline constexpr u32 kPlatformTag_DX6 = 0x44583630u;   // '06XD'
 inline constexpr u32 kPlatformTag_SPIRV = 0x53504952u; // 'RIPS'
+inline constexpr u32 kPlatformTag_WGSL = 0x5753474Cu;  // 'LSGW' — WebGPU WGSL source
 
 // v1.8 wire format ------------------------------------------------------------
 #pragma pack(push, 1)
@@ -87,6 +88,7 @@ struct PermuteView {
     //   v1.8                          → DXBC (sm5)
     //   v1.14 + kPlatformTag_DX6      → DXIL-in-DXBC (sm6)
     //   v1.14 + kPlatformTag_SPIRV    → SPIR-V (vulkan)
+    //   v1.14 + kPlatformTag_WGSL     → WGSL UTF-8 source (webgpu)
     std::span<const u8> dxbc;
 };
 

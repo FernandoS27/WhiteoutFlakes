@@ -1151,13 +1151,21 @@ void RenderPipeline::CleanupGFX() {
 bool RenderPipeline::CreateShaders() {
     using namespace whiteout::flakes::Shaders;
 
-    // Vulkan consumes the SPIR-V variant emitted alongside DXBC; D3D11
-    // and D3D12 keep using the DXBC blob (sm_5_0 is accepted by both).
-    const bool vk = impl_->gfx_->GetApi() == gfx::GfxApi::Vulkan;
-    const u8* vsBytes = vk ? kLineVSSpv : kLineVS;
-    usize vsSize = vk ? sizeof(kLineVSSpv) : sizeof(kLineVS);
-    const u8* psBytes = vk ? kLinePSSpv : kLinePS;
-    usize psSize = vk ? sizeof(kLinePSSpv) : sizeof(kLinePS);
+    // Per-backend bytecode selection:
+    //   Vulkan  → SPIR-V
+    //   WebGPU  → WGSL (UTF-8 source — CreateShader treats the buffer as
+    //                   null-terminated text)
+    //   D3D11/12 → DXBC sm_5_0
+    const gfx::GfxApi api = impl_->gfx_->GetApi();
+    const u8* vsBytes = kLineVS;  usize vsSize = sizeof(kLineVS);
+    const u8* psBytes = kLinePS;  usize psSize = sizeof(kLinePS);
+    if (api == gfx::GfxApi::Vulkan) {
+        vsBytes = kLineVSSpv;  vsSize = sizeof(kLineVSSpv);
+        psBytes = kLinePSSpv;  psSize = sizeof(kLinePSSpv);
+    } else if (api == gfx::GfxApi::WebGPU) {
+        vsBytes = kLineVSWgsl; vsSize = sizeof(kLineVSWgsl);
+        psBytes = kLinePSWgsl; psSize = sizeof(kLinePSWgsl);
+    }
 
     impl_->lineVS_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Vertex, vsBytes, vsSize);
     impl_->linePS_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Pixel, psBytes, psSize);

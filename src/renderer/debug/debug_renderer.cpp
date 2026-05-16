@@ -211,11 +211,16 @@ bool DebugRenderer::CreateViewCubeResources() {
         edges.data());
 
     using namespace whiteout::flakes::Shaders;
-    const bool vk = rs_.Pipeline().Gfx()->GetApi() == gfx::GfxApi::Vulkan;
-    const u8* vcVsBytes = vk ? kViewCubeVSSpv : kViewCubeVS;
-    usize vcVsSize = vk ? sizeof(kViewCubeVSSpv) : sizeof(kViewCubeVS);
-    const u8* vcPsBytes = vk ? kViewCubePSSpv : kViewCubePS;
-    usize vcPsSize = vk ? sizeof(kViewCubePSSpv) : sizeof(kViewCubePS);
+    const gfx::GfxApi api = rs_.Pipeline().Gfx()->GetApi();
+    const u8* vcVsBytes = kViewCubeVS;  usize vcVsSize = sizeof(kViewCubeVS);
+    const u8* vcPsBytes = kViewCubePS;  usize vcPsSize = sizeof(kViewCubePS);
+    if (api == gfx::GfxApi::Vulkan) {
+        vcVsBytes = kViewCubeVSSpv;  vcVsSize = sizeof(kViewCubeVSSpv);
+        vcPsBytes = kViewCubePSSpv;  vcPsSize = sizeof(kViewCubePSSpv);
+    } else if (api == gfx::GfxApi::WebGPU) {
+        vcVsBytes = kViewCubeVSWgsl; vcVsSize = sizeof(kViewCubeVSWgsl);
+        vcPsBytes = kViewCubePSWgsl; vcPsSize = sizeof(kViewCubePSWgsl);
+    }
     viewCubeVS_ = rs_.Pipeline().Gfx()->CreateShader(gfx::ShaderStage::Vertex, vcVsBytes, vcVsSize);
     viewCubePS_ = rs_.Pipeline().Gfx()->CreateShader(gfx::ShaderStage::Pixel, vcPsBytes, vcPsSize);
     if (viewCubeVS_ == gfx::ShaderHandle::Invalid || viewCubePS_ == gfx::ShaderHandle::Invalid) {

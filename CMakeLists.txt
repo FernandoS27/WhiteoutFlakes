@@ -142,6 +142,7 @@ set(SHADER_ENTRIES
 
 set(SHADER_DXBC_FILES "")
 set(SHADER_SPV_FILES  "")
+set(SHADER_WGSL_FILES "")
 
 foreach(entry IN LISTS SHADER_ENTRIES)
     string(REPLACE "|" ";" parts "${entry}")
@@ -192,6 +193,26 @@ foreach(entry IN LISTS SHADER_ENTRIES)
         VERBATIM
     )
     list(APPEND SHADER_SPV_FILES "${spv_path}")
+
+    # WGSL variant for the WebGPU backend. Only emitted when WDX_ENABLE_WEBGPU
+    # is on — otherwise the embed script's stub keeps the consumer code
+    # type-checking without dragging the slangc invocation into every build.
+    if(WDX_ENABLE_WEBGPU)
+        set(wgsl_path "${SHADER_OUT_DIR}/${var_name}.wgsl")
+        add_custom_command(
+            OUTPUT  "${wgsl_path}"
+            COMMAND "${SLANGC}" "${SHADER_SRC_DIR}/${src_file}"
+                    ${SLANG_COMMON_FLAGS}
+                    -entry ${entry_name} -stage ${stage}
+                    -target wgsl
+                    -o "${wgsl_path}"
+            DEPENDS "${SHADER_SRC_DIR}/${src_file}"
+                    "${SHADER_SRC_DIR}/common.slang"
+            COMMENT "Slang: ${src_file} [${entry_name}] → ${var_name}.wgsl"
+            VERBATIM
+        )
+        list(APPEND SHADER_WGSL_FILES "${wgsl_path}")
+    endif()
 endforeach()
 
 # Embed all DXBC blobs into a single C++ header
@@ -203,7 +224,7 @@ add_custom_command(
             "-DSHADER_DIR=${SHADER_OUT_DIR}"
             "-DOUTPUT=${COMPILED_SHADERS_H}"
             -P "${SHADER_SRC_DIR}/embed_shaders.cmake"
-    DEPENDS ${SHADER_DXBC_FILES} ${SHADER_SPV_FILES}
+    DEPENDS ${SHADER_DXBC_FILES} ${SHADER_SPV_FILES} ${SHADER_WGSL_FILES}
             "${SHADER_SRC_DIR}/embed_shaders.cmake"
     COMMENT "Embedding compiled shaders into compiled_shaders.h"
     VERBATIM
@@ -597,6 +618,11 @@ endif()
 # rendering and pulls VMA from the SDK's bundled vk_mem_alloc.h.
 find_package(Vulkan QUIET)
 
+# WebGPU/Dawn backend — opt-in (Dawn is a multi-minute first build).
+# See WebGPU.md for the design. When ON, fetch a pinned Dawn revision via
+# FetchContent and compile in src/gfx/webgpu/*.cpp.
+option(WDX_ENABLE_WEBGPU "Enable WebGPU/Dawn backend (fetches Dawn via FetchContent)" OFF)
+
 set(WHITEOUTFLAKES_GFX_SOURCES
     src/gfx/gfx_factory.cpp
 )
@@ -621,6 +647,18 @@ if(Vulkan_FOUND)
         src/gfx/vulkan/vulkan_delete_queue.cpp
         src/gfx/vulkan/vulkan_swap_chain.cpp
         src/gfx/vulkan/vulkan_vma.cpp
+    )
+endif()
+if(WDX_ENABLE_WEBGPU)
+    list(APPEND WHITEOUTFLAKES_GFX_SOURCES
+        src/gfx/webgpu/webgpu_device.cpp
+        src/gfx/webgpu/webgpu_init.cpp
+        src/gfx/webgpu/webgpu_buffer.cpp
+        src/gfx/webgpu/webgpu_texture.cpp
+        src/gfx/webgpu/webgpu_pipeline.cpp
+        src/gfx/webgpu/webgpu_command_list.cpp
+        src/gfx/webgpu/webgpu_delete_queue.cpp
+        src/gfx/webgpu/webgpu_swap_chain.cpp
     )
 endif()
 
@@ -686,6 +724,58 @@ if(Vulkan_FOUND)
 else()
     message(STATUS "WhiteoutFlakesGfx: Vulkan SDK not found — Vulkan backend disabled")
     target_compile_definitions(WhiteoutFlakesGfx PRIVATE WDX_HAS_VULKAN=0)
+endif()
+
+# ---- WebGPU / Dawn backend ----
+#
+# Dawn is fetched through eliemichel/WebGPU-distribution rather than
+# upstream dawn.googlesource.com. Upstream Dawn runs
+# `tools/fetch_dawn_dependencies.py` at configure time, which reads
+# Dawn's DEPS file and tries to clone everything — including Chromium
+# tooling on chrome-internal.googlesource.com (Google-only). That repo
+# triggers a Git Credential Manager prompt and ultimately fails for
+# non-Googlers. WebGPU-distribution sidesteps the whole mess by
+# downloading prebuilt Dawn binaries (DLLs + headers).
+#
+# Headers exposed (the prebuilt zip includes all of Dawn's public
+# headers + eliemichel's wrapper):
+#   <webgpu/webgpu.h>     — Dawn-flavored C API (full surface incl. extensions)
+#   <webgpu/webgpu_cpp.h> — Dawn's PascalCase C++ wrapper (the one we use)
+#   <webgpu/webgpu.hpp>   — eliemichel's camelCase wrapper (unused)
+# We pick webgpu_cpp.h to keep parity with upstream Dawn samples and the
+# original FetchContent-from-source attempt — see webgpu_init.cpp for
+# the async RequestAdapter / RequestDevice pattern we use instead of
+# Dawn's private (and unshipped) dawn::native sync helpers.
+if(WDX_ENABLE_WEBGPU)
+    include(FetchContent)
+    # Pin to a specific commit — README warns against tracking branch tip.
+    # Bump deliberately; see WebGPU.md §13.
+    set(WDX_WEBGPU_DIST_TAG "main" CACHE STRING
+        "WebGPU-distribution revision (commit or tag)")
+    FetchContent_Declare(webgpu
+        GIT_REPOSITORY https://github.com/eliemichel/WebGPU-distribution
+        GIT_TAG        ${WDX_WEBGPU_DIST_TAG}
+        GIT_SHALLOW    TRUE
+    )
+    # DAWN backend, prebuilt — no fetch script, no compile.
+    set(WEBGPU_BACKEND          DAWN CACHE STRING "" FORCE)
+    set(WEBGPU_BUILD_FROM_SOURCE OFF  CACHE BOOL   "" FORCE)
+    FetchContent_MakeAvailable(webgpu)
+
+    message(STATUS "WhiteoutFlakesGfx: WebGPU enabled "
+                   "(eliemichel/WebGPU-distribution ${WDX_WEBGPU_DIST_TAG}, prebuilt Dawn)")
+    target_link_libraries(WhiteoutFlakesGfx PRIVATE
+        webgpu
+    )
+    target_compile_definitions(WhiteoutFlakesGfx PRIVATE WDX_HAS_WEBGPU=1)
+    if(WIN32)
+        target_compile_definitions(WhiteoutFlakesGfx PRIVATE
+            NOMINMAX
+            WIN32_LEAN_AND_MEAN
+        )
+    endif()
+else()
+    target_compile_definitions(WhiteoutFlakesGfx PRIVATE WDX_HAS_WEBGPU=0)
 endif()
 
 if(MSVC)
@@ -961,6 +1051,13 @@ elseif(UNIX AND NOT APPLE)
         "WhiteoutFlakesStandalone requires the Vulkan SDK on Linux (it's the "
         "only swap-chain backend on this platform). Install vulkan-sdk or "
         "libvulkan-dev + headers and re-run CMake.")
+endif()
+
+# WebGPU-distribution ships prebuilt Dawn as a DLL — copy it next to the
+# exe so the loader finds it at runtime. The helper is a no-op when the
+# backend is built statically; see WebGPU.md §10.
+if(WDX_ENABLE_WEBGPU)
+    target_copy_webgpu_binaries(WhiteoutFlakesStandalone)
 endif()
 
 if(MSVC)

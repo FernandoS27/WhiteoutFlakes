@@ -9,6 +9,11 @@
 #include "gfx/vulkan/vulkan_device.h"
 #endif
 
+#if WDX_HAS_WEBGPU
+#include "gfx/webgpu/webgpu_device.h"
+#endif
+
+#include <cstdio>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -83,6 +88,22 @@ std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api, bool enableValidation) {
         return nullptr;
 #endif
     }
+    case GfxApi::WebGPU: {
+#if WDX_HAS_WEBGPU
+        std::fprintf(stderr, "[gfx] CreateDevice(WebGPU): backend compiled in, calling Init\n");
+        auto device = std::make_unique<webgpu::WebGPUDevice>();
+        if (!device->Init(enableValidation)) {
+            std::fprintf(stderr, "[gfx] CreateDevice(WebGPU): Init returned false\n");
+            return nullptr;
+        }
+        return device;
+#else
+        (void)enableValidation;
+        std::fprintf(stderr, "[gfx] CreateDevice(WebGPU): backend NOT compiled in "
+                             "(rebuild with -DWDX_ENABLE_WEBGPU=ON)\n");
+        return nullptr;
+#endif
+    }
     }
     return nullptr;
 }
@@ -104,6 +125,12 @@ std::vector<std::string> EnumerateDevices(GfxApi api) {
     case GfxApi::Vulkan:
 #if WDX_HAS_VULKAN
         return vulkan::EnumerateAdapterNames();
+#else
+        return {};
+#endif
+    case GfxApi::WebGPU:
+#if WDX_HAS_WEBGPU
+        return webgpu::EnumerateAdapterNames();
 #else
         return {};
 #endif

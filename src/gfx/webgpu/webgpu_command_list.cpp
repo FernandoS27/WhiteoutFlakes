@@ -1,0 +1,376 @@
+// IGFXCommandList for WebGPU. First BeginRenderPass each frame opens a
+// fresh CommandEncoder; subsequent passes keep recording into it until
+// Present submits.
+//
+// FlushBindings translates the per-stage pending arrays into three
+// BindGroups (CB with dynamic offsets / SRV / sampler) at every draw —
+// the WebGPU equivalent of vulkan_command_list.cpp's FlushDescriptors.
+
+#include "webgpu_command_list.h"
+#include "webgpu_device.h"
+#include "webgpu_device_state.h"
+#include "webgpu_handles.h"
+#include "webgpu_translate.h"
+
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <cstring>
+#include <vector>
+
+namespace whiteout::flakes::gfx::webgpu {
+
+namespace {
+
+void EnsureEncoderOpen(WebGPUDeviceState& state) {
+    auto& frame = state.frames[state.frameIndex];
+    if (frame.recording)
+        return;
+    // Drain completed deleters at the start of every frame — mirrors the
+    // DrainPendingDeletes call inside vulkan_command_list.cpp's
+    // EnsureRecording.
+    DrainPendingDeletes(state);
+    wgpu::CommandEncoderDescriptor cd{};
+    cd.label = "wf.frameEncoder";
+    frame.encoder = state.device.CreateCommandEncoder(&cd);
+    frame.recording = true;
+    frame.epoch = state.pendingEpoch + 1;
+}
+
+u32 SlotIndex(ShaderStage stage, u32 slot) {
+    return (stage == ShaderStage::Pixel) ? (slot + kStageBindingShift) : slot;
+}
+
+} // namespace
+
+WebGPUCommandList::WebGPUCommandList(WebGPUDevice& device) : device_(device) {}
+WebGPUCommandList::~WebGPUCommandList() = default;
+
+void WebGPUCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
+                                        const f32 clearColor[4], f32 clearDepth, u8 clearStencil) {
+    auto& state = device_.State();
+    EnsureEncoderOpen(state);
+    auto& frame = state.frames[state.frameIndex];
+
+    auto* colorTex = state.textures.Get(static_cast<u64>(color));
+    auto* depthTex = state.textures.Get(static_cast<u64>(depth));
+
+    // Acquire-on-first-bind for swap-chain proxies — symmetric with the
+    // Vulkan backend (vulkan_command_list.cpp:138).
+    if (colorTex && colorTex->swapChainProxy != SwapChainHandle::Invalid) {
+        if (auto* sc = state.swapchains.Get(static_cast<u64>(colorTex->swapChainProxy))) {
+            AcquireSwapChainImageIfNeeded(state, *sc);
+        }
+    }
+
+    activeColorAttachment_ = colorTex ? color : TextureHandle::Invalid;
+    activeDepthAttachment_ = depthTex ? depth : TextureHandle::Invalid;
+    activeColorFormat_ =
+        colorTex ? colorTex->format : wgpu::TextureFormat::Undefined;
+
+    wgpu::RenderPassColorAttachment colorAttach{};
+    if (colorTex && colorTex->view) {
+        colorAttach.view = colorTex->view;
+        colorAttach.loadOp = wgpu::LoadOp::Clear;
+        colorAttach.storeOp = wgpu::StoreOp::Store;
+        colorAttach.clearValue = {clearColor[0], clearColor[1], clearColor[2], clearColor[3]};
+        colorAttach.depthSlice = wgpu::kDepthSliceUndefined;
+    }
+    wgpu::RenderPassDepthStencilAttachment depthAttach{};
+    if (depthTex && depthTex->view) {
+        depthAttach.view = depthTex->view;
+        depthAttach.depthLoadOp = wgpu::LoadOp::Clear;
+        depthAttach.depthStoreOp = wgpu::StoreOp::Store;
+        depthAttach.depthClearValue = clearDepth;
+        depthAttach.stencilLoadOp = wgpu::LoadOp::Clear;
+        depthAttach.stencilStoreOp = wgpu::StoreOp::Store;
+        depthAttach.stencilClearValue = clearStencil;
+    }
+
+    wgpu::RenderPassDescriptor rpd{};
+    rpd.label = "wf.renderPass";
+    rpd.colorAttachmentCount = colorTex ? 1 : 0;
+    rpd.colorAttachments = colorTex ? &colorAttach : nullptr;
+    rpd.depthStencilAttachment = depthTex ? &depthAttach : nullptr;
+    pass_ = frame.encoder.BeginRenderPass(&rpd);
+
+    // Fresh pass: bind groups must be re-emitted; previous draw's state
+    // doesn't carry across.
+    cbSetDirty_ = true;
+    srvSetDirty_ = true;
+    samplerSetDirty_ = true;
+    lastBoundPipeline_ = PipelineHandle::Invalid;
+}
+
+void WebGPUCommandList::EndRenderPass() {
+    if (pass_) {
+        pass_.End();
+        pass_ = nullptr;
+    }
+    activeColorAttachment_ = TextureHandle::Invalid;
+    activeDepthAttachment_ = TextureHandle::Invalid;
+}
+
+void WebGPUCommandList::SetViewport(const Viewport& vp) {
+    if (pass_)
+        pass_.SetViewport(vp.x, vp.y, vp.width, vp.height, vp.minDepth, vp.maxDepth);
+}
+
+void WebGPUCommandList::SetScissor(const Scissor& sc) {
+    if (pass_)
+        pass_.SetScissorRect(static_cast<u32>(std::max(0, sc.x)),
+                             static_cast<u32>(std::max(0, sc.y)),
+                             static_cast<u32>(std::max(0, sc.width)),
+                             static_cast<u32>(std::max(0, sc.height)));
+}
+
+void WebGPUCommandList::BindPipeline(PipelineHandle h) {
+    auto& state = device_.State();
+    auto* pipe = state.pipelines.Get(static_cast<u64>(h));
+    if (!pipe || !pipe->graphics)
+        return;
+    if (!pass_)
+        return;
+    pass_.SetPipeline(pipe->graphics);
+    lastBoundPipeline_ = h;
+}
+
+void WebGPUCommandList::BindVertexBuffer(u32 slot, BufferHandle h, u32 /*stride*/, u32 offset) {
+    auto& state = device_.State();
+    auto* buf = state.buffers.Get(static_cast<u64>(h));
+    if (!buf || !pass_)
+        return;
+    // WebGPU bakes stride into the PSO's VertexBufferLayout. Trust the
+    // caller's slot wiring; the offset gets added on top of the buffer's
+    // ring sub-alloc base.
+    const u64 off = buf->baseOffset + offset;
+    pass_.SetVertexBuffer(slot, buf->buffer, off, wgpu::kWholeSize);
+}
+
+void WebGPUCommandList::BindIndexBuffer(BufferHandle h, Format fmt) {
+    auto& state = device_.State();
+    auto* buf = state.buffers.Get(static_cast<u64>(h));
+    if (!buf || !pass_)
+        return;
+    const wgpu::IndexFormat indexFmt =
+        (fmt == Format::R32_UINT) ? wgpu::IndexFormat::Uint32 : wgpu::IndexFormat::Uint16;
+    pass_.SetIndexBuffer(buf->buffer, indexFmt, buf->baseOffset, wgpu::kWholeSize);
+}
+
+void WebGPUCommandList::BindConstantBuffer(ShaderStage /*stage*/, u32 slot, BufferHandle h) {
+    auto& state = device_.State();
+    auto* buf = state.buffers.Get(static_cast<u64>(h));
+    if (!buf || slot >= kCbBindingCount)
+        return;
+    // CBs share one binding namespace across stages — see kCbBindingCount
+    // doc in webgpu_handles.h.
+    pendingCBs_[slot] = {h, buf->currentOffset(), buf->desc.size};
+    cbSetDirty_ = true;
+}
+
+void WebGPUCommandList::BindShaderResource(ShaderStage stage, u32 slot, TextureHandle h) {
+    const u32 idx = SlotIndex(stage, slot);
+    pendingSRVs_[idx] = {h, BufferHandle::Invalid, false};
+    srvSetDirty_ = true;
+}
+
+void WebGPUCommandList::BindShaderResource(ShaderStage stage, u32 slot, BufferHandle h) {
+    // Storage-buffer SRV binding. WebGPU's layout encodes binding type at
+    // the BindGroupLayout level, so a mixed "SRV is either texture or
+    // storage buffer" group needs split layouts — for now record it as a
+    // texture-hole entry and emit a warning. Phase-follow-up.
+    (void)stage;
+    (void)slot;
+    (void)h;
+    std::fprintf(stderr, "[wgpu] BindShaderResource(buffer) not yet implemented "
+                         "(slot %u, stage %d)\n",
+                 slot, static_cast<int>(stage));
+}
+
+void WebGPUCommandList::BindUnorderedAccess(u32 slot, BufferHandle h) {
+    (void)slot;
+    (void)h;
+    std::fprintf(stderr, "[wgpu] BindUnorderedAccess not yet implemented (slot %u)\n", slot);
+}
+
+void WebGPUCommandList::BindSampler(ShaderStage stage, u32 slot, SamplerHandle h) {
+    const u32 idx = SlotIndex(stage, slot);
+    pendingSamplers_[idx] = {h};
+    samplerSetDirty_ = true;
+}
+
+void WebGPUCommandList::ClearDepth(TextureHandle depth, f32 clearDepth, u8 clearStencil) {
+    // WebGPU has no mid-pass clear — open a one-attachment pass with
+    // LoadOp::Clear and end it. Caller must be outside an active pass.
+    if (pass_) {
+        std::fprintf(stderr, "[wgpu] ClearDepth called inside a render pass — ignored\n");
+        return;
+    }
+    auto& state = device_.State();
+    auto* tex = state.textures.Get(static_cast<u64>(depth));
+    if (!tex || !tex->view)
+        return;
+    EnsureEncoderOpen(state);
+    auto& frame = state.frames[state.frameIndex];
+
+    wgpu::RenderPassDepthStencilAttachment ds{};
+    ds.view = tex->view;
+    ds.depthLoadOp = wgpu::LoadOp::Clear;
+    ds.depthStoreOp = wgpu::StoreOp::Store;
+    ds.depthClearValue = clearDepth;
+    ds.stencilLoadOp = wgpu::LoadOp::Clear;
+    ds.stencilStoreOp = wgpu::StoreOp::Store;
+    ds.stencilClearValue = clearStencil;
+    wgpu::RenderPassDescriptor rpd{};
+    rpd.label = "wf.clearDepth";
+    rpd.colorAttachmentCount = 0;
+    rpd.depthStencilAttachment = &ds;
+    wgpu::RenderPassEncoder rp = frame.encoder.BeginRenderPass(&rpd);
+    rp.End();
+}
+
+void WebGPUCommandList::CopyBuffer(BufferHandle dst, BufferHandle src) {
+    auto& state = device_.State();
+    auto* dstBuf = state.buffers.Get(static_cast<u64>(dst));
+    auto* srcBuf = state.buffers.Get(static_cast<u64>(src));
+    if (!dstBuf || !srcBuf)
+        return;
+    if (pass_) {
+        std::fprintf(stderr, "[wgpu] CopyBuffer called inside a render pass — ignored\n");
+        return;
+    }
+    EnsureEncoderOpen(state);
+    auto& frame = state.frames[state.frameIndex];
+    const u64 copySize = std::min(dstBuf->desc.size, srcBuf->desc.size);
+    frame.encoder.CopyBufferToBuffer(srcBuf->buffer, srcBuf->baseOffset, dstBuf->buffer,
+                                     dstBuf->baseOffset, copySize);
+}
+
+void WebGPUCommandList::FlushBindings() {
+    if (!pass_)
+        return;
+    auto& state = device_.State();
+
+    // ---- Group 0: constant buffers (per-draw rebuild, embedded offset)
+    // We can't use dynamic offsets — the WebGPU spec caps
+    // maxDynamicUniformBuffersPerPipelineLayout at ~8-11 across the whole
+    // layout, well below our 32 CB slots. Instead we bake the captured
+    // ring-slot offset into BindGroupEntry::offset and rebuild a fresh
+    // BindGroup whenever any CB binding changes.
+    if (cbSetDirty_) {
+        std::vector<wgpu::BindGroupEntry> entries;
+        entries.reserve(kCbBindingCount);
+        for (u32 i = 0; i < kCbBindingCount; ++i) {
+            wgpu::BindGroupEntry e{};
+            e.binding = i;
+            const auto& pending = pendingCBs_[i];
+            if (pending.buffer != BufferHandle{}) {
+                auto* buf = state.buffers.Get(static_cast<u64>(pending.buffer));
+                if (buf) {
+                    e.buffer = buf->buffer;
+                    e.offset = pending.offset; // full offset captured at Bind time
+                    e.size = std::max<u64>(buf->desc.size, 16);
+                } else {
+                    e.buffer = state.sharedCbBuffer;
+                    e.offset = 0;
+                    e.size = 16;
+                }
+            } else {
+                // Hole — point at the shared ring base. WebGPU requires
+                // every binding slot to be populated.
+                e.buffer = state.sharedCbBuffer;
+                e.offset = 0;
+                e.size = std::max<u64>(state.minUniformBufferAlign, 16);
+            }
+            entries.push_back(e);
+        }
+        wgpu::BindGroupDescriptor bgd{};
+        bgd.label = "wf.cb";
+        bgd.layout = state.cbBgLayout;
+        bgd.entryCount = static_cast<u32>(entries.size());
+        bgd.entries = entries.data();
+        wgpu::BindGroup bg = state.device.CreateBindGroup(&bgd);
+        pass_.SetBindGroup(0, bg, 0, nullptr);
+        cbSetDirty_ = false;
+    }
+
+    // ---- Group 1: SRVs (textures) -------------------------------------
+    if (srvSetDirty_) {
+        std::vector<wgpu::BindGroupEntry> entries;
+        entries.reserve(kSrvBindingCount);
+        for (u32 i = 0; i < kSrvBindingCount; ++i) {
+            wgpu::BindGroupEntry e{};
+            e.binding = i;
+            const auto& pending = pendingSRVs_[i];
+            wgpu::TextureView view = state.defaultTextureView;
+            if (!pending.isBuffer && pending.texture != TextureHandle{}) {
+                if (auto* tex = state.textures.Get(static_cast<u64>(pending.texture)))
+                    if (tex->view)
+                        view = tex->view;
+            }
+            e.textureView = view;
+            entries.push_back(e);
+        }
+        wgpu::BindGroupDescriptor bgd{};
+        bgd.label = "wf.srv";
+        bgd.layout = state.srvBgLayout;
+        bgd.entryCount = static_cast<u32>(entries.size());
+        bgd.entries = entries.data();
+        wgpu::BindGroup bg = state.device.CreateBindGroup(&bgd);
+        pass_.SetBindGroup(1, bg, 0, nullptr);
+        srvSetDirty_ = false;
+    }
+
+    // ---- Group 2: samplers --------------------------------------------
+    if (samplerSetDirty_) {
+        std::vector<wgpu::BindGroupEntry> entries;
+        entries.reserve(kSamplerBindingCount);
+        for (u32 i = 0; i < kSamplerBindingCount; ++i) {
+            wgpu::BindGroupEntry e{};
+            e.binding = i;
+            const auto& pending = pendingSamplers_[i];
+            wgpu::Sampler smp = state.defaultSampler;
+            if (pending.sampler != SamplerHandle{}) {
+                if (auto* s = state.samplers.Get(static_cast<u64>(pending.sampler)))
+                    if (s->sampler)
+                        smp = s->sampler;
+            }
+            e.sampler = smp;
+            entries.push_back(e);
+        }
+        wgpu::BindGroupDescriptor bgd{};
+        bgd.label = "wf.sampler";
+        bgd.layout = state.samplerBgLayout;
+        bgd.entryCount = static_cast<u32>(entries.size());
+        bgd.entries = entries.data();
+        wgpu::BindGroup bg = state.device.CreateBindGroup(&bgd);
+        pass_.SetBindGroup(2, bg, 0, nullptr);
+        samplerSetDirty_ = false;
+    }
+}
+
+void WebGPUCommandList::Draw(u32 vertexCount, u32 firstVertex) {
+    if (!pass_)
+        return;
+    FlushBindings();
+    pass_.Draw(vertexCount, 1, firstVertex, 0);
+}
+
+void WebGPUCommandList::DrawIndexed(u32 indexCount, u32 firstIndex, i32 baseVertex) {
+    if (!pass_)
+        return;
+    FlushBindings();
+    pass_.DrawIndexed(indexCount, 1, firstIndex, baseVertex, 0);
+}
+
+void WebGPUCommandList::Dispatch(u32 gx, u32 gy, u32 gz) {
+    // Compute path: opens its own ComputePassEncoder, dispatches once,
+    // ends. Bind-group flush for compute is unimplemented in this pass
+    // — none of the renderer's current passes touch Dispatch().
+    (void)gx;
+    (void)gy;
+    (void)gz;
+    std::fprintf(stderr, "[wgpu] Dispatch not yet implemented\n");
+}
+
+} // namespace whiteout::flakes::gfx::webgpu

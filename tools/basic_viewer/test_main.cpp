@@ -93,6 +93,8 @@ int main(int argc, char* argv[]) {
             const char* v = argv[++i];
             if (CompareCi(v, "vulkan") == 0 || CompareCi(v, "vk") == 0) {
                 backend = whiteout::flakes::gfx::GfxApi::Vulkan;
+            } else if (CompareCi(v, "webgpu") == 0 || CompareCi(v, "wgpu") == 0) {
+                backend = whiteout::flakes::gfx::GfxApi::WebGPU;
             }
 #if defined(_WIN32)
             else if (CompareCi(v, "d3d11") == 0 || CompareCi(v, "dx11") == 0) {
@@ -248,6 +250,7 @@ int main(int argc, char* argv[]) {
     const char* backendName = backend == whiteout::flakes::gfx::GfxApi::D3D11    ? "D3D11"
                               : backend == whiteout::flakes::gfx::GfxApi::D3D12  ? "D3D12"
                               : backend == whiteout::flakes::gfx::GfxApi::Vulkan ? "Vulkan"
+                              : backend == whiteout::flakes::gfx::GfxApi::WebGPU ? "WebGPU"
                                                                                  : "?";
     std::cout << "Backend: " << backendName << "\n";
 

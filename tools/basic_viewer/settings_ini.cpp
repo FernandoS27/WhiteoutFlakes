@@ -255,6 +255,8 @@ void LoadStartupSettingsFromIni(RenderService& service) {
             service.Settings().SetDefaultBackend(GfxApi::D3D12);
         else if (*s == "vulkan" || *s == "Vulkan" || *s == "VULKAN")
             service.Settings().SetDefaultBackend(GfxApi::Vulkan);
+        else if (*s == "webgpu" || *s == "WebGPU" || *s == "WEBGPU")
+            service.Settings().SetDefaultBackend(GfxApi::WebGPU);
     }
     if (auto* s = ini.Get(KeyOf("PreferredDevice")); s && !s->empty()) {
         service.Settings().SetPreferredDevice(*s);
@@ -400,6 +402,9 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy) {
             break;
         case gfx::GfxApi::Vulkan:
             name = "vulkan";
+            break;
+        case gfx::GfxApi::WebGPU:
+            name = "webgpu";
             break;
         }
         ini.Set(KeyOf("DefaultBackend"), name);
