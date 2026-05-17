@@ -444,6 +444,7 @@ if(WDX_BUILD_WC3_SHADERS)
         set(_dxbc  "${CMAKE_CURRENT_BINARY_DIR}/wc3_${variant}_dxbc.stamp")
         set(_dxil  "${CMAKE_CURRENT_BINARY_DIR}/wc3_${variant}_dxil.stamp")
         set(_spirv "${CMAKE_CURRENT_BINARY_DIR}/wc3_${variant}_spirv.stamp")
+        set(_wgsl  "${CMAKE_CURRENT_BINARY_DIR}/wc3_${variant}_wgsl.stamp")
         set(_bls   "${CMAKE_CURRENT_BINARY_DIR}/wc3_${variant}_bls.stamp")
         set(_stage "${CMAKE_CURRENT_BINARY_DIR}/wc3_${variant}_stage.stamp")
 
@@ -477,6 +478,21 @@ if(WDX_BUILD_WC3_SHADERS)
             COMMENT "Wc3Shaders[${variant}]: compiling Slang -> SPIR-V (vulkan)"
             VERBATIM)
 
+        # WGSL for the WebGPU backend — only emitted when WDX_ENABLE_WEBGPU
+        # is on (the consumer side). compile_all_slang.py writes
+        # slang_out/webgpu/<family>/*.wgsl; build_bls.py picks them up
+        # automatically and packs them into bls_out_1_14/shaders/{pixel,
+        # vertex}/wgsl_1_0/.
+        add_custom_command(
+            OUTPUT  "${_wgsl}"
+            COMMAND "${Python3_EXECUTABLE}" "${WC3_SHADERS_DIR}/compile_all_slang.py"
+                    --target webgpu --slangc "${SLANGC_VULKAN}" ${_compile_extra} ${WC3_FAMILY_ARGS}
+            COMMAND "${CMAKE_COMMAND}" -E touch "${_wgsl}"
+            WORKING_DIRECTORY "${WC3_SHADERS_DIR}"
+            DEPENDS ${WC3_SLANG_SOURCES} ${WC3_BUILD_SCRIPTS}
+            COMMENT "Wc3Shaders[${variant}]: compiling Slang -> WGSL (webgpu)"
+            VERBATIM)
+
         # Upstream build_bls.py writes two trees:
         #   <output>_1_8/{ps,vs,mtlfs,mtlvs}/*.bls            (Wc3 v1.8 layout)
         #   <output>_1_14/shaders/{pixel,vertex}/<api>/*.bls  (v1.14, WoW-style)
@@ -494,8 +510,8 @@ if(WDX_BUILD_WC3_SHADERS)
                     ${_bls_strip_arg}
             COMMAND "${CMAKE_COMMAND}" -E touch "${_bls}"
             WORKING_DIRECTORY "${WC3_SHADERS_DIR}"
-            DEPENDS "${_dxbc}" "${_dxil}" "${_spirv}" ${WC3_BUILD_SCRIPTS}
-            COMMENT "Wc3Shaders[${variant}]: packing .bls (v1.8 DX + v1.14 DX/SPIR-V)"
+            DEPENDS "${_dxbc}" "${_dxil}" "${_spirv}" "${_wgsl}" ${WC3_BUILD_SCRIPTS}
+            COMMENT "Wc3Shaders[${variant}]: packing .bls (v1.8 DX + v1.14 DX/SPIR-V/WGSL)"
             VERBATIM)
 
         # Stage the freshly packed bundles into the standalone exe's output
@@ -521,6 +537,10 @@ if(WDX_BUILD_WC3_SHADERS)
                     "${_bls_out_14}/shaders/pixel/spv_1_3"    "${_stage_dir}/vulkan/ps"
             COMMAND "${CMAKE_COMMAND}" -E copy_directory
                     "${_bls_out_14}/shaders/vertex/spv_1_3"   "${_stage_dir}/vulkan/vs"
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                    "${_bls_out_14}/shaders/pixel/wgsl_1_0"   "${_stage_dir}/webgpu/ps"
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                    "${_bls_out_14}/shaders/vertex/wgsl_1_0"  "${_stage_dir}/webgpu/vs"
             COMMAND "${CMAKE_COMMAND}" -E touch "${_stage}"
             DEPENDS "${_bls}"
             COMMENT "Wc3Shaders[${variant}]: staging BLS bundles into ${_stage_dir}"

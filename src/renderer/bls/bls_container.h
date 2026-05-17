@@ -18,10 +18,10 @@ inline constexpr u32 kDxbcMagic = 0x43425844u;        // also the DXIL outer mag
 //   '06XD' (0x44583630) — DX SM6 (DXIL inside DXBC; §3.2 inner layout)
 //   'RIPS' (0x53504952) — Vulkan SPIR-V (§3.6 opaque-blob inner layout)
 //   'LSLG' (0x474C534C) — OpenGL GLSL (§3.6 opaque-blob)
-//   'LSGW' (0x5753474C) — WebGPU WGSL (§3.6 opaque-blob)
+//   'LSGW' (0x5747534C) — WebGPU WGSL (§3.6 opaque-blob)
 inline constexpr u32 kPlatformTag_DX6 = 0x44583630u;   // '06XD'
 inline constexpr u32 kPlatformTag_SPIRV = 0x53504952u; // 'RIPS'
-inline constexpr u32 kPlatformTag_WGSL = 0x5753474Cu;  // 'LSGW' — WebGPU WGSL source
+inline constexpr u32 kPlatformTag_WGSL = 0x5747534Cu;  // 'LSGW' — WebGPU WGSL source
 
 // v1.8 wire format ------------------------------------------------------------
 #pragma pack(push, 1)
