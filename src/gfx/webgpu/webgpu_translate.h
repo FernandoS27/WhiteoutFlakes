@@ -25,6 +25,8 @@ inline wgpu::TextureFormat ToWgpuFormat(Format f) {
         return wgpu::TextureFormat::RGBA8Uint;
     case Format::B8G8R8A8_UNORM:
         return wgpu::TextureFormat::BGRA8Unorm;
+    case Format::B8G8R8A8_UNORM_SRGB:
+        return wgpu::TextureFormat::BGRA8UnormSrgb;
     case Format::R16_UNORM:
         // WebGPU core spec doesn't expose R16Unorm; closest portable is
         // R16Float. Adapters that expose the `unorm16-texture-formats`

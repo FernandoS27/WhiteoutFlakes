@@ -119,6 +119,14 @@ public:
 
     virtual TextureHandle GetSwapChainBackBufferLinear(SwapChainHandle) = 0;
 
+    // Format the back-buffer was actually configured with — may differ
+    // from the `colorFormat` requested at CreateSwapChain time (e.g. Dawn
+    // on Windows D3D12 only exposes BGRA8 surface formats, so a request
+    // for R8G8B8A8_UNORM_SRGB resolves to B8G8R8A8_UNORM_SRGB). Used by
+    // the renderer to build PSOs whose rtvFormat matches the
+    // back-buffer when rendering directly to the swap chain.
+    virtual Format GetSwapChainFormat(SwapChainHandle) const = 0;
+
     virtual TextureHandle CreateColorTarget(i32 w, i32 h, Format f) = 0;
     virtual TextureHandle CreateDepthTarget(i32 w, i32 h, Format f) = 0;
 

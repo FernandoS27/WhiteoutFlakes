@@ -48,34 +48,50 @@ void ConfigureSurface(WebGPUDeviceState& state, SwapChainEntry& sc, u32 width, u
     sc.width = width;
     sc.height = height;
 
-    // Pick sRGB / linear pair. We list both in `viewFormats` so each
-    // proxy texture can derive its own view at acquire time — same
-    // MUTABLE_FORMAT trick as the Vulkan backend.
-    sc.formatSrgb = ToWgpuFormat(colorFormat);
-    if (sc.formatSrgb == wgpu::TextureFormat::Undefined)
-        sc.formatSrgb = wgpu::TextureFormat::BGRA8UnormSrgb;
-    sc.formatLinear = LinearPartnerOf(sc.formatSrgb);
+    // Pick sRGB / linear pair. The renderer-facing format is whatever it
+    // requested (e.g. R8G8B8A8_UNORM_SRGB); the *surface* format may be
+    // something else (Dawn on Windows D3D12 only ever exposes BGRA8
+    // surface formats — RGBA8 isn't a valid surface format there). We
+    // configure with whatever the surface allows, then use the
+    // viewFormats mechanism to expose an sRGB view on top.
+    const wgpu::TextureFormat requestedSrgb = ToWgpuFormat(colorFormat);
 
     wgpu::SurfaceCapabilities caps{};
     sc.surface.GetCapabilities(state.adapter, &caps);
 
-    // Prefer the requested format; fall back to the first capability if
-    // the adapter doesn't expose it.
-    bool found = false;
+    // Find the surface format. Prefer the requested format exactly if
+    // available; otherwise prefer the *same-family* alternative; finally
+    // fall back to the first cap. Mapping: requested RGBA8 → BGRA8
+    // family if RGBA isn't exposed.
+    wgpu::TextureFormat surfaceFmt = caps.formatCount > 0 ? caps.formats[0]
+                                                          : wgpu::TextureFormat::BGRA8Unorm;
     for (usize i = 0; i < caps.formatCount; ++i) {
-        if (caps.formats[i] == sc.formatSrgb) {
-            found = true;
+        if (caps.formats[i] == requestedSrgb ||
+            caps.formats[i] == LinearPartnerOf(requestedSrgb)) {
+            surfaceFmt = caps.formats[i];
             break;
         }
     }
-    if (!found && caps.formatCount > 0) {
-        sc.formatSrgb = caps.formats[0];
-        sc.formatLinear = LinearPartnerOf(sc.formatSrgb);
+
+    // sRGB / linear pair on the surface texture, both exposed via
+    // viewFormats so the renderer can pick the encoding it needs.
+    // Surface formats are always linear (sRGB-decoded on present) — the
+    // sRGB view does the encoding.
+    sc.formatSrgb = surfaceFmt;
+    sc.formatLinear = surfaceFmt;
+    if (surfaceFmt == wgpu::TextureFormat::BGRA8Unorm) {
+        sc.formatSrgb = wgpu::TextureFormat::BGRA8UnormSrgb;
+    } else if (surfaceFmt == wgpu::TextureFormat::RGBA8Unorm) {
+        sc.formatSrgb = wgpu::TextureFormat::RGBA8UnormSrgb;
+    } else if (surfaceFmt == wgpu::TextureFormat::BGRA8UnormSrgb) {
+        sc.formatLinear = wgpu::TextureFormat::BGRA8Unorm;
+    } else if (surfaceFmt == wgpu::TextureFormat::RGBA8UnormSrgb) {
+        sc.formatLinear = wgpu::TextureFormat::RGBA8Unorm;
     }
 
     wgpu::SurfaceConfiguration cfg{};
     cfg.device = state.device;
-    cfg.format = sc.formatSrgb;
+    cfg.format = surfaceFmt;
     cfg.usage = wgpu::TextureUsage::RenderAttachment;
     cfg.width = width;
     cfg.height = height;
@@ -85,6 +101,19 @@ void ConfigureSurface(WebGPUDeviceState& state, SwapChainEntry& sc, u32 width, u
     cfg.viewFormatCount = (sc.formatSrgb == sc.formatLinear) ? 1 : 2;
     cfg.viewFormats = viewFormats;
     sc.surface.Configure(&cfg);
+}
+
+// Public-API → gfx::Format mapper for GetSwapChainFormat. We need the
+// inverse of ToWgpuFormat for the small subset of formats a surface can
+// actually be configured with on this backend.
+Format WgpuSurfaceFormatToGfx(wgpu::TextureFormat f) {
+    switch (f) {
+    case wgpu::TextureFormat::BGRA8Unorm:      return Format::B8G8R8A8_UNORM;
+    case wgpu::TextureFormat::BGRA8UnormSrgb:  return Format::B8G8R8A8_UNORM_SRGB;
+    case wgpu::TextureFormat::RGBA8Unorm:      return Format::R8G8B8A8_UNORM;
+    case wgpu::TextureFormat::RGBA8UnormSrgb:  return Format::R8G8B8A8_UNORM_SRGB;
+    default:                                   return Format::Unknown;
+    }
 }
 
 TextureHandle InsertSwapChainProxy(WebGPUDeviceState& state, SwapChainHandle scHandle,
@@ -239,6 +268,14 @@ TextureHandle WebGPUDevice::GetSwapChainBackBufferLinear(SwapChainHandle h) {
     if (!sc)
         return TextureHandle::Invalid;
     return sc->proxyLinear != TextureHandle::Invalid ? sc->proxyLinear : sc->proxySrgb;
+}
+
+Format WebGPUDevice::GetSwapChainFormat(SwapChainHandle h) const {
+    auto& state = *state_;
+    auto* sc = state.swapchains.Get(static_cast<u64>(h));
+    if (!sc)
+        return Format::Unknown;
+    return WgpuSurfaceFormatToGfx(sc->formatSrgb);
 }
 
 } // namespace whiteout::flakes::gfx::webgpu

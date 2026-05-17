@@ -49,6 +49,7 @@ public:
     void Present(SwapChainHandle) override;
     TextureHandle GetSwapChainBackBuffer(SwapChainHandle) override;
     TextureHandle GetSwapChainBackBufferLinear(SwapChainHandle) override;
+    Format GetSwapChainFormat(SwapChainHandle) const override;
 
     TextureHandle CreateColorTarget(i32 w, i32 h, Format f) override;
     TextureHandle CreateDepthTarget(i32 w, i32 h, Format f) override;

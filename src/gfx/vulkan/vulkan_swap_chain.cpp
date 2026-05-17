@@ -281,6 +281,19 @@ TextureHandle VulkanDevice::GetSwapChainBackBufferLinear(SwapChainHandle handle)
     return sc ? sc->proxyLinear : TextureHandle::Invalid;
 }
 
+Format VulkanDevice::GetSwapChainFormat(SwapChainHandle handle) const {
+    auto* sc = state_->swapchains.Get(static_cast<u64>(handle));
+    if (!sc)
+        return Format::Unknown;
+    switch (sc->formatSrgb) {
+    case vk::Format::eR8G8B8A8Unorm: return Format::R8G8B8A8_UNORM;
+    case vk::Format::eR8G8B8A8Srgb:  return Format::R8G8B8A8_UNORM_SRGB;
+    case vk::Format::eB8G8R8A8Unorm: return Format::B8G8R8A8_UNORM;
+    case vk::Format::eB8G8R8A8Srgb:  return Format::B8G8R8A8_UNORM_SRGB;
+    default:                         return Format::Unknown;
+    }
+}
+
 u32 AcquireSwapChainImageIfNeeded(VulkanDeviceState& state, SwapChainEntry& sc,
                                   FrameContext& frame) {
     if (sc.acquiredThisFrame)

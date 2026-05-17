@@ -27,8 +27,15 @@ BufferHandle WebGPUDevice::CreateBuffer(const BufferDesc& desc, const void* init
     if (ring) {
         const u64 align = std::max<u64>(1, state.minUniformBufferAlign);
         entry.slotStride = (desc.size + align - 1) / align * align;
+        // Constant buffers rotate per-draw and need a deep ring (kCbRingSlots).
+        // Vertex / Index buffers get one write per frame, so kFramesInFlight
+        // is enough — and at multi-MB sizes (ImGui's VB) the default 256-slot
+        // ring overflows the shared CB and forces a dedicated alloc that
+        // MapBuffer can't write to.
+        const bool isConstant = hasFlag(desc.usage, BufferUsage::Constant);
+        const u32 defaultSlots = isConstant ? kCbRingSlots : kFramesInFlight;
         entry.slotCount =
-            (desc.ringSlotsHint > 0) ? desc.ringSlotsHint : kCbRingSlots;
+            (desc.ringSlotsHint > 0) ? desc.ringSlotsHint : defaultSlots;
         if (entry.slotCount < kFramesInFlight)
             entry.slotCount = kFramesInFlight;
     }
@@ -37,17 +44,18 @@ BufferHandle WebGPUDevice::CreateBuffer(const BufferDesc& desc, const void* init
     // Sub-alloc from the shared CB ring when we can — that's the path
     // dynamic-offset bindings take. Falls back to a dedicated buffer when
     // the ring is exhausted (cursor pinned at capacity).
-    if (ring && state.sharedCbMapped != nullptr) {
+    if (ring && state.sharedCbBuffer) {
         const u64 align = std::max<u64>(1, state.minUniformBufferAlign);
         const u64 base = (state.sharedCbCursor + align - 1) / align * align;
         if (base + totalSize <= kSharedCbCapacity) {
             entry.buffer = state.sharedCbBuffer;
             entry.isSharedRingAlias = true;
-            entry.mapped = state.sharedCbMapped;
+            entry.mapped = state.sharedCbShadow.data();
             entry.baseOffset = base;
             state.sharedCbCursor = base + totalSize;
             if (initial && desc.size > 0) {
                 std::memcpy(entry.mapped + base, initial, desc.size);
+                state.queue.WriteBuffer(state.sharedCbBuffer, base, initial, desc.size);
             }
             return static_cast<BufferHandle>(state.buffers.Insert(std::move(entry)));
         }
@@ -108,18 +116,19 @@ void WebGPUDevice::UpdateBuffer(BufferHandle h, const void* data, usize size) {
     auto* buffer = state.buffers.Get(static_cast<u64>(h));
     if (!buffer)
         return;
-    if (buffer->mapped) {
+    if (buffer->isSharedRingAlias) {
         // Rotate to the next ring slot so the upcoming Bind* captures
-        // this write (matches VulkanDevice::UpdateBuffer).
+        // this write. The shadow copy mirrors what the GPU buffer holds;
+        // Queue::WriteBuffer pushes the actual bytes to the shared CB
+        // (which is *not* mapped — incompatible with Uniform usage).
         if (buffer->slotCount > 1) {
             buffer->currentSlot = (buffer->currentSlot + 1) % buffer->slotCount;
         }
         const u64 off = buffer->currentOffset();
         std::memcpy(buffer->mapped + off, data, size);
-        // Persistently-mapped Dawn buffers don't need an explicit flush;
-        // Dawn handles cache coherency via the heap type it picked.
+        state.queue.WriteBuffer(state.sharedCbBuffer, off, data, size);
     } else {
-        // Dedicated buffer with no host pointer: route through queue.
+        // Dedicated buffer: same path, no shadow needed.
         state.queue.WriteBuffer(buffer->buffer, 0, data, size);
     }
 }
@@ -129,24 +138,35 @@ void* WebGPUDevice::MapBuffer(BufferHandle h) {
     auto* buffer = state.buffers.Get(static_cast<u64>(h));
     if (!buffer)
         return nullptr;
-    if (buffer->mapped) {
+    if (buffer->isSharedRingAlias) {
+        // Rotate slot and hand back the CPU shadow pointer. The caller
+        // writes through the returned pointer; UnmapBuffer pushes the
+        // slot's bytes to the GPU.
         if (buffer->slotCount > 1) {
             buffer->currentSlot = (buffer->currentSlot + 1) % buffer->slotCount;
         }
         return buffer->mapped + buffer->currentOffset();
     }
-    // Non-mapped buffers don't support map-on-demand in WebGPU's sync API
-    // — the renderer's CpuWritable buffers always come back through the
-    // shared CB ring above. Return null to signal "use UpdateBuffer".
+    // Non-shared CpuWritable buffers don't support map-on-demand in
+    // WebGPU's sync API (MapWrite is incompatible with Uniform). The
+    // renderer's CpuWritable buffers always come back through the shared
+    // CB ring above. Return null to signal "use UpdateBuffer".
     return nullptr;
 }
 
 void WebGPUDevice::UnmapBuffer(BufferHandle h) {
-    // Nothing to do — shared-ring writes are visible without an explicit
-    // unmap (Dawn uses a coherent host-visible heap for mappedAtCreation
-    // buffers on every backend). Symmetric with VulkanDevice::UnmapBuffer
-    // where the flush is implicit for the shared ring.
-    (void)h;
+    auto& state = *state_;
+    auto* buffer = state.buffers.Get(static_cast<u64>(h));
+    if (!buffer || !buffer->isSharedRingAlias)
+        return;
+    // Flush the slot just written by Map → caller-write. We push the
+    // full slot size (desc.size) from the shadow to the GPU buffer; the
+    // bytes past desc.size in the slot (padding to slotStride) are
+    // never read so we don't bother flushing them.
+    const u64 off = buffer->currentOffset();
+    const u64 size = buffer->desc.size;
+    if (size > 0)
+        state.queue.WriteBuffer(state.sharedCbBuffer, off, buffer->mapped + off, size);
 }
 
 } // namespace whiteout::flakes::gfx::webgpu

@@ -76,22 +76,72 @@ void WebGPUCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
         colorAttach.clearValue = {clearColor[0], clearColor[1], clearColor[2], clearColor[3]};
         colorAttach.depthSlice = wgpu::kDepthSliceUndefined;
     }
+    auto hasStencilAspect = [](wgpu::TextureFormat f) {
+        // WebGPU's depth-stencil formats: only the *Stencil8 variants carry
+        // a stencil aspect. Setting stencilLoadOp on a depth-only target
+        // fails validation, so gate the stencil ops by format.
+        return f == wgpu::TextureFormat::Depth24PlusStencil8 ||
+               f == wgpu::TextureFormat::Depth32FloatStencil8 ||
+               f == wgpu::TextureFormat::Stencil8;
+    };
+
     wgpu::RenderPassDepthStencilAttachment depthAttach{};
     if (depthTex && depthTex->view) {
         depthAttach.view = depthTex->view;
         depthAttach.depthLoadOp = wgpu::LoadOp::Clear;
         depthAttach.depthStoreOp = wgpu::StoreOp::Store;
         depthAttach.depthClearValue = clearDepth;
-        depthAttach.stencilLoadOp = wgpu::LoadOp::Clear;
-        depthAttach.stencilStoreOp = wgpu::StoreOp::Store;
-        depthAttach.stencilClearValue = clearStencil;
+        if (hasStencilAspect(depthTex->format)) {
+            depthAttach.stencilLoadOp = wgpu::LoadOp::Clear;
+            depthAttach.stencilStoreOp = wgpu::StoreOp::Store;
+            depthAttach.stencilClearValue = clearStencil;
+        }
+    } else if (colorTex && colorTex->width > 0 && colorTex->height > 0) {
+        // Auto-attach transient depth: the renderer didn't ask for one
+        // but every PSO in this codebase keeps dsvFormat set to the
+        // device's preferred depth-stencil format. WebGPU's strict
+        // attachment-state match would reject SetPipeline otherwise.
+        // We allocate / resize once per swap-chain size and discard
+        // contents on store. Format must match WebGPUDevice::
+        // PreferredDepthStencilFormat() — currently Depth24PlusStencil8.
+        const u32 w = static_cast<u32>(colorTex->width);
+        const u32 h = static_cast<u32>(colorTex->height);
+        if (!state.transientDepthView || state.transientDepthW != w ||
+            state.transientDepthH != h) {
+            wgpu::TextureDescriptor td{};
+            td.label = "wf.transientDepth";
+            td.size = {w, h, 1};
+            td.mipLevelCount = 1;
+            td.sampleCount = 1;
+            td.format = wgpu::TextureFormat::Depth24PlusStencil8;
+            td.dimension = wgpu::TextureDimension::e2D;
+            td.usage = wgpu::TextureUsage::RenderAttachment;
+            state.transientDepthTexture = state.device.CreateTexture(&td);
+            if (state.transientDepthTexture) {
+                wgpu::TextureViewDescriptor vd{};
+                state.transientDepthView = state.transientDepthTexture.CreateView(&vd);
+                state.transientDepthW = w;
+                state.transientDepthH = h;
+            }
+        }
+        if (state.transientDepthView) {
+            depthAttach.view = state.transientDepthView;
+            depthAttach.depthLoadOp = wgpu::LoadOp::Clear;
+            depthAttach.depthStoreOp = wgpu::StoreOp::Discard;
+            depthAttach.depthClearValue = 1.0f;
+            depthAttach.stencilLoadOp = wgpu::LoadOp::Clear;
+            depthAttach.stencilStoreOp = wgpu::StoreOp::Discard;
+            depthAttach.stencilClearValue = 0;
+        }
     }
+    const bool hasDepthAttach = (depthTex && depthTex->view) ||
+                                (depthAttach.view != nullptr);
 
     wgpu::RenderPassDescriptor rpd{};
     rpd.label = "wf.renderPass";
     rpd.colorAttachmentCount = colorTex ? 1 : 0;
     rpd.colorAttachments = colorTex ? &colorAttach : nullptr;
-    rpd.depthStencilAttachment = depthTex ? &depthAttach : nullptr;
+    rpd.depthStencilAttachment = hasDepthAttach ? &depthAttach : nullptr;
     pass_ = frame.encoder.BeginRenderPass(&rpd);
 
     // Fresh pass: bind groups must be re-emitted; previous draw's state
@@ -109,6 +159,22 @@ void WebGPUCommandList::EndRenderPass() {
     }
     activeColorAttachment_ = TextureHandle::Invalid;
     activeDepthAttachment_ = TextureHandle::Invalid;
+    // Drop every pending SRV / sampler so the next pass starts with a
+    // clean slate. FlushBindings materializes ALL 28 layout slots into
+    // the bind group on every draw; leftover handles from this pass
+    // would otherwise leak into the next one and trigger usage-scope
+    // conflicts when the renderer re-targets a sampled texture as a
+    // render attachment (the shadow-cascade pass is the typical
+    // offender — its dst was just sampled by the HD pass before it).
+    for (auto& s : pendingSRVs_)
+        s = {};
+    for (auto& s : pendingSamplers_)
+        s = {};
+    for (auto& c : pendingCBs_)
+        c = {};
+    cbSetDirty_ = true;
+    srvSetDirty_ = true;
+    samplerSetDirty_ = true;
 }
 
 void WebGPUCommandList::SetViewport(const Viewport& vp) {
@@ -132,6 +198,14 @@ void WebGPUCommandList::BindPipeline(PipelineHandle h) {
     if (!pass_)
         return;
     pass_.SetPipeline(pipe->graphics);
+    // Feed the zero buffer into every phantom vertex slot the pipeline
+    // synthesized (see CreateGraphicsPipeline). The renderer never
+    // touches these slots via BindVertexBuffer, so Dawn would otherwise
+    // reject the draw for missing vertex-buffer state.
+    if (state.zeroVertexBuffer) {
+        for (u32 slot : pipe->phantomVertexSlots)
+            pass_.SetVertexBuffer(slot, state.zeroVertexBuffer, 0, wgpu::kWholeSize);
+    }
     lastBoundPipeline_ = h;
 }
 
@@ -140,10 +214,12 @@ void WebGPUCommandList::BindVertexBuffer(u32 slot, BufferHandle h, u32 /*stride*
     auto* buf = state.buffers.Get(static_cast<u64>(h));
     if (!buf || !pass_)
         return;
-    // WebGPU bakes stride into the PSO's VertexBufferLayout. Trust the
-    // caller's slot wiring; the offset gets added on top of the buffer's
-    // ring sub-alloc base.
-    const u64 off = buf->baseOffset + offset;
+    // currentOffset() = baseOffset + slotStride*currentSlot. For ring
+    // sub-allocs the active slot rotates on every Map/UpdateBuffer; we
+    // must reference the same slot the data was just written into,
+    // not the ring base. Dedicated (non-ring) buffers have slotCount=1
+    // so currentOffset() == baseOffset == 0.
+    const u64 off = buf->currentOffset() + offset;
     pass_.SetVertexBuffer(slot, buf->buffer, off, wgpu::kWholeSize);
 }
 
@@ -154,17 +230,18 @@ void WebGPUCommandList::BindIndexBuffer(BufferHandle h, Format fmt) {
         return;
     const wgpu::IndexFormat indexFmt =
         (fmt == Format::R32_UINT) ? wgpu::IndexFormat::Uint32 : wgpu::IndexFormat::Uint16;
-    pass_.SetIndexBuffer(buf->buffer, indexFmt, buf->baseOffset, wgpu::kWholeSize);
+    pass_.SetIndexBuffer(buf->buffer, indexFmt, buf->currentOffset(), wgpu::kWholeSize);
 }
 
-void WebGPUCommandList::BindConstantBuffer(ShaderStage /*stage*/, u32 slot, BufferHandle h) {
+void WebGPUCommandList::BindConstantBuffer(ShaderStage stage, u32 slot, BufferHandle h) {
     auto& state = device_.State();
     auto* buf = state.buffers.Get(static_cast<u64>(h));
-    if (!buf || slot >= kCbBindingCount)
+    if (!buf)
         return;
-    // CBs share one binding namespace across stages — see kCbBindingCount
-    // doc in webgpu_handles.h.
-    pendingCBs_[slot] = {h, buf->currentOffset(), buf->desc.size};
+    const u32 idx = (stage == ShaderStage::Pixel) ? (slot + kPsCbBindingOffsetWgsl) : slot;
+    if (idx >= kCbBindingCount)
+        return;
+    pendingCBs_[idx] = {h, buf->currentOffset(), buf->desc.size};
     cbSetDirty_ = true;
 }
 
@@ -213,14 +290,21 @@ void WebGPUCommandList::ClearDepth(TextureHandle depth, f32 clearDepth, u8 clear
     EnsureEncoderOpen(state);
     auto& frame = state.frames[state.frameIndex];
 
+    auto hasStencilAspect = [](wgpu::TextureFormat f) {
+        return f == wgpu::TextureFormat::Depth24PlusStencil8 ||
+               f == wgpu::TextureFormat::Depth32FloatStencil8 ||
+               f == wgpu::TextureFormat::Stencil8;
+    };
     wgpu::RenderPassDepthStencilAttachment ds{};
     ds.view = tex->view;
     ds.depthLoadOp = wgpu::LoadOp::Clear;
     ds.depthStoreOp = wgpu::StoreOp::Store;
     ds.depthClearValue = clearDepth;
-    ds.stencilLoadOp = wgpu::LoadOp::Clear;
-    ds.stencilStoreOp = wgpu::StoreOp::Store;
-    ds.stencilClearValue = clearStencil;
+    if (hasStencilAspect(tex->format)) {
+        ds.stencilLoadOp = wgpu::LoadOp::Clear;
+        ds.stencilStoreOp = wgpu::StoreOp::Store;
+        ds.stencilClearValue = clearStencil;
+    }
     wgpu::RenderPassDescriptor rpd{};
     rpd.label = "wf.clearDepth";
     rpd.colorAttachmentCount = 0;
@@ -269,7 +353,16 @@ void WebGPUCommandList::FlushBindings() {
                 if (buf) {
                     e.buffer = buf->buffer;
                     e.offset = pending.offset; // full offset captured at Bind time
-                    e.size = std::max<u64>(buf->desc.size, 16);
+                    // Use slotStride (= desc.size rounded up to
+                    // minUniformBufferAlign, ≥ 256 bytes) instead of
+                    // desc.size. Slang emits WGSL ConstantBuffers under
+                    // std140 rules which inflate the struct past what
+                    // the engine actually uploads (e.g. SDClassicPSPerDraw
+                    // is 48 bytes on the wire but ends up 64 bytes in
+                    // WGSL). Dawn rejects the draw when the bound size
+                    // is < shader-expected size; the extra padding bytes
+                    // belong to this sub-alloc's slot so it's safe.
+                    e.size = std::max<u64>(buf->slotStride, 16);
                 } else {
                     e.buffer = state.sharedCbBuffer;
                     e.offset = 0;
@@ -294,6 +387,24 @@ void WebGPUCommandList::FlushBindings() {
         cbSetDirty_ = false;
     }
 
+    // Slot-specific defaults: shadow PS slots need the Depth32Float
+    // texture + comparison sampler; IBL probe slots need the
+    // cube-array view; everything else falls back to the 2D Float
+    // default. Picking the wrong default trips Dawn's sampleType /
+    // viewDimension layout match.
+    auto defaultTexFor = [&](u32 i) -> wgpu::TextureView {
+        if (i >= kPsShadowStartBinding && i < kPsShadowEndBinding)
+            return state.defaultDepthTextureView;
+        if (i == kPsIblCubeFromBinding || i == kPsIblCubeToBinding)
+            return state.defaultCubeArrayTextureView;
+        return state.defaultTextureView;
+    };
+    auto defaultSmpFor = [&](u32 i) -> wgpu::Sampler {
+        if (i >= kPsShadowStartBinding && i < kPsShadowEndBinding)
+            return state.defaultComparisonSampler;
+        return state.defaultSampler;
+    };
+
     // ---- Group 1: SRVs (textures) -------------------------------------
     if (srvSetDirty_) {
         std::vector<wgpu::BindGroupEntry> entries;
@@ -302,7 +413,7 @@ void WebGPUCommandList::FlushBindings() {
             wgpu::BindGroupEntry e{};
             e.binding = i;
             const auto& pending = pendingSRVs_[i];
-            wgpu::TextureView view = state.defaultTextureView;
+            wgpu::TextureView view = defaultTexFor(i);
             if (!pending.isBuffer && pending.texture != TextureHandle{}) {
                 if (auto* tex = state.textures.Get(static_cast<u64>(pending.texture)))
                     if (tex->view)
@@ -329,7 +440,7 @@ void WebGPUCommandList::FlushBindings() {
             wgpu::BindGroupEntry e{};
             e.binding = i;
             const auto& pending = pendingSamplers_[i];
-            wgpu::Sampler smp = state.defaultSampler;
+            wgpu::Sampler smp = defaultSmpFor(i);
             if (pending.sampler != SamplerHandle{}) {
                 if (auto* s = state.samplers.Get(static_cast<u64>(pending.sampler)))
                     if (s->sampler)

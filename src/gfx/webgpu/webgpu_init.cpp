@@ -12,6 +12,7 @@
 #include <webgpu/webgpu_cpp.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -267,56 +268,98 @@ bool CreateSharedBindLayouts(WebGPUDeviceState& state) {
     // for PS), so the per-binding-index visibility split still applies.
     const auto bothStages = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
 
-    auto buildLayout = [&](u32 count, wgpu::BufferBindingType bufType, bool isTexture,
-                           bool isSampler, wgpu::BindGroupLayout& out, const char* label) -> bool {
+    // ---- CB layout (uniform buffers, both-stages-visible) ----
+    {
         std::vector<wgpu::BindGroupLayoutEntry> entries;
-        entries.reserve(count);
-        for (u32 i = 0; i < count; ++i) {
+        entries.reserve(kCbBindingCount);
+        for (u32 i = 0; i < kCbBindingCount; ++i) {
             wgpu::BindGroupLayoutEntry e{};
             e.binding = i;
-            const bool isBuffer = !isTexture && !isSampler;
-            e.visibility = isBuffer ? bothStages
-                                    : (i < kStageBindingShift ? wgpu::ShaderStage::Vertex
-                                                              : wgpu::ShaderStage::Fragment);
-            if (isTexture) {
+            e.visibility = bothStages;
+            e.buffer.type = wgpu::BufferBindingType::Uniform;
+            e.buffer.hasDynamicOffset = false;
+            e.buffer.minBindingSize = 0;
+            entries.push_back(e);
+        }
+        wgpu::BindGroupLayoutDescriptor d{};
+        d.label = "wf.cb";
+        d.entryCount = static_cast<u32>(entries.size());
+        d.entries = entries.data();
+        state.cbBgLayout = state.device.CreateBindGroupLayout(&d);
+        if (!state.cbBgLayout) {
+            std::fprintf(stderr, "[wgpu] CB BindGroupLayout creation failed\n");
+            return false;
+        }
+    }
+
+    // ---- SRV layout (sampled textures, per-binding type) ----
+    // Slot map mirrors slang's binding hardcoded for the WGSL target:
+    //   [0..12)   VS texture slots (Float / e2D, Filtering sampler)
+    //   [12..22)  PS color textures (Float / e2D, Filtering sampler)
+    //   [22..25)  PS shadow maps   (Depth / e2D, Comparison sampler)
+    //   [25..27)  PS IBL cubemaps  (Float / CubeArray, Filtering sampler)
+    //   [27]      PS BRDF LUT      (Float / e2D, Filtering sampler)
+    // Slang's `Texture2D<float>` shadow declarations + the WGSL
+    // depth-texture post-processor (compile_all_slang.py) emit
+    // `texture_depth_2d`, which Dawn requires sampleType=Depth in the
+    // layout for. The IBL cubemaps are declared as `TextureCubeArray<float4>`
+    // → WGSL `texture_cube_array<f32>`, viewDimension=CubeArray.
+    {
+        std::vector<wgpu::BindGroupLayoutEntry> entries;
+        entries.reserve(kSrvBindingCount);
+        for (u32 i = 0; i < kSrvBindingCount; ++i) {
+            wgpu::BindGroupLayoutEntry e{};
+            e.binding = i;
+            e.visibility = (i < kStageBindingShift) ? wgpu::ShaderStage::Vertex
+                                                    : wgpu::ShaderStage::Fragment;
+            e.texture.multisampled = false;
+            if (i >= kPsShadowStartBinding && i < kPsShadowEndBinding) {
+                e.texture.sampleType = wgpu::TextureSampleType::Depth;
+                e.texture.viewDimension = wgpu::TextureViewDimension::e2D;
+            } else if (i == kPsIblCubeFromBinding || i == kPsIblCubeToBinding) {
+                e.texture.sampleType = wgpu::TextureSampleType::Float;
+                e.texture.viewDimension = wgpu::TextureViewDimension::CubeArray;
+            } else {
                 e.texture.sampleType = wgpu::TextureSampleType::Float;
                 e.texture.viewDimension = wgpu::TextureViewDimension::e2D;
-                e.texture.multisampled = false;
-            } else if (isSampler) {
-                e.sampler.type = wgpu::SamplerBindingType::Filtering;
-            } else {
-                e.buffer.type = bufType;
-                // Spec-capped to ~8 across the whole pipeline layout, far
-                // below our 32 CB slots. We embed each draw's ring-slot
-                // offset directly into BindGroupEntry::offset in
-                // FlushBindings instead — same dispatch cost, no cap.
-                e.buffer.hasDynamicOffset = false;
-                e.buffer.minBindingSize = 0;
             }
             entries.push_back(e);
         }
         wgpu::BindGroupLayoutDescriptor d{};
-        d.label = label;
+        d.label = "wf.srv";
         d.entryCount = static_cast<u32>(entries.size());
         d.entries = entries.data();
-        out = state.device.CreateBindGroupLayout(&d);
-        return static_cast<bool>(out);
-    };
+        state.srvBgLayout = state.device.CreateBindGroupLayout(&d);
+        if (!state.srvBgLayout) {
+            std::fprintf(stderr, "[wgpu] SRV BindGroupLayout creation failed\n");
+            return false;
+        }
+    }
 
-    if (!buildLayout(kCbBindingCount, wgpu::BufferBindingType::Uniform, false, false,
-                     state.cbBgLayout, "wf.cb")) {
-        std::fprintf(stderr, "[wgpu] CB BindGroupLayout creation failed\n");
-        return false;
-    }
-    if (!buildLayout(kSrvBindingCount, wgpu::BufferBindingType::Undefined, true, false,
-                     state.srvBgLayout, "wf.srv")) {
-        std::fprintf(stderr, "[wgpu] SRV BindGroupLayout creation failed\n");
-        return false;
-    }
-    if (!buildLayout(kSamplerBindingCount, wgpu::BufferBindingType::Undefined, false, true,
-                     state.samplerBgLayout, "wf.sampler")) {
-        std::fprintf(stderr, "[wgpu] Sampler BindGroupLayout creation failed\n");
-        return false;
+    // ---- Sampler layout (per-binding type — Comparison for shadow PCF) ----
+    {
+        std::vector<wgpu::BindGroupLayoutEntry> entries;
+        entries.reserve(kSamplerBindingCount);
+        for (u32 i = 0; i < kSamplerBindingCount; ++i) {
+            wgpu::BindGroupLayoutEntry e{};
+            e.binding = i;
+            e.visibility = (i < kStageBindingShift) ? wgpu::ShaderStage::Vertex
+                                                    : wgpu::ShaderStage::Fragment;
+            if (i >= kPsShadowStartBinding && i < kPsShadowEndBinding)
+                e.sampler.type = wgpu::SamplerBindingType::Comparison;
+            else
+                e.sampler.type = wgpu::SamplerBindingType::Filtering;
+            entries.push_back(e);
+        }
+        wgpu::BindGroupLayoutDescriptor d{};
+        d.label = "wf.sampler";
+        d.entryCount = static_cast<u32>(entries.size());
+        d.entries = entries.data();
+        state.samplerBgLayout = state.device.CreateBindGroupLayout(&d);
+        if (!state.samplerBgLayout) {
+            std::fprintf(stderr, "[wgpu] Sampler BindGroupLayout creation failed\n");
+            return false;
+        }
     }
 
     const wgpu::BindGroupLayout layouts[] = {state.cbBgLayout, state.srvBgLayout,
@@ -333,50 +376,135 @@ bool CreateSharedBindLayouts(WebGPUDeviceState& state) {
     return true;
 }
 
-// 1x1 default texture + sampler. WebGPU rejects bind groups with holes,
-// so anything the renderer didn't bind for a given draw gets a stable
-// placeholder.
+// Default textures + samplers used as fallback fills for bind-group
+// slots the renderer didn't populate. WebGPU rejects bind groups with
+// holes, AND each layout slot has an exact sampleType / viewDimension
+// the bound resource must match — so a 2D-color default can't fill a
+// depth slot or a cube-array slot. We allocate one of each here.
 bool CreateDefaultResources(WebGPUDeviceState& state) {
-    wgpu::SamplerDescriptor sd{};
-    sd.label = "wf.defaultSampler";
-    sd.addressModeU = wgpu::AddressMode::Repeat;
-    sd.addressModeV = wgpu::AddressMode::Repeat;
-    sd.addressModeW = wgpu::AddressMode::Repeat;
-    sd.magFilter = wgpu::FilterMode::Linear;
-    sd.minFilter = wgpu::FilterMode::Linear;
-    sd.mipmapFilter = wgpu::MipmapFilterMode::Linear;
-    state.defaultSampler = state.device.CreateSampler(&sd);
+    auto makeSampler = [&](const char* label, wgpu::CompareFunction cmp,
+                           wgpu::Sampler& out) {
+        wgpu::SamplerDescriptor sd{};
+        sd.label = label;
+        sd.addressModeU = wgpu::AddressMode::Repeat;
+        sd.addressModeV = wgpu::AddressMode::Repeat;
+        sd.addressModeW = wgpu::AddressMode::Repeat;
+        sd.magFilter = wgpu::FilterMode::Linear;
+        sd.minFilter = wgpu::FilterMode::Linear;
+        sd.mipmapFilter = wgpu::MipmapFilterMode::Linear;
+        if (cmp != wgpu::CompareFunction::Undefined)
+            sd.compare = cmp;
+        out = state.device.CreateSampler(&sd);
+    };
+    makeSampler("wf.defaultSampler", wgpu::CompareFunction::Undefined,
+                state.defaultSampler);
+    // Always-pass comparison so the shadow-PCF path returns "fully lit"
+    // when the renderer hasn't bound a real shadow map yet.
+    makeSampler("wf.defaultCmpSampler", wgpu::CompareFunction::Always,
+                state.defaultComparisonSampler);
 
-    wgpu::TextureDescriptor td{};
-    td.label = "wf.defaultTexture";
-    td.size = {1, 1, 1};
-    td.mipLevelCount = 1;
-    td.sampleCount = 1;
-    td.format = wgpu::TextureFormat::RGBA8Unorm;
-    td.dimension = wgpu::TextureDimension::e2D;
-    td.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
-    state.defaultTexture = state.device.CreateTexture(&td);
+    // 1x1 RGBA8 default color texture.
+    {
+        wgpu::TextureDescriptor td{};
+        td.label = "wf.defaultTexture";
+        td.size = {1, 1, 1};
+        td.mipLevelCount = 1;
+        td.sampleCount = 1;
+        td.format = wgpu::TextureFormat::RGBA8Unorm;
+        td.dimension = wgpu::TextureDimension::e2D;
+        td.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+        state.defaultTexture = state.device.CreateTexture(&td);
 
-    const u8 pixel[4] = {0, 0, 0, 255};
-    wgpu::TexelCopyTextureInfo dst{};
-    dst.texture = state.defaultTexture;
-    wgpu::TexelCopyBufferLayout layout{};
-    layout.bytesPerRow = 4;
-    layout.rowsPerImage = 1;
-    wgpu::Extent3D ext{1, 1, 1};
-    state.queue.WriteTexture(&dst, pixel, sizeof(pixel), &layout, &ext);
+        const u8 pixel[4] = {0, 0, 0, 255};
+        wgpu::TexelCopyTextureInfo dst{};
+        dst.texture = state.defaultTexture;
+        wgpu::TexelCopyBufferLayout layout{};
+        layout.bytesPerRow = 4;
+        layout.rowsPerImage = 1;
+        wgpu::Extent3D ext{1, 1, 1};
+        state.queue.WriteTexture(&dst, pixel, sizeof(pixel), &layout, &ext);
 
-    wgpu::TextureViewDescriptor vd{};
-    state.defaultTextureView = state.defaultTexture.CreateView(&vd);
-    if (!state.defaultSampler) {
+        wgpu::TextureViewDescriptor vd{};
+        state.defaultTextureView = state.defaultTexture.CreateView(&vd);
+    }
+
+    // 1x1 Depth32Float default for shadow-map fallback. RenderAttachment
+    // usage is required to legally create depth textures; we never
+    // render to it but Dawn enforces the usage check.
+    {
+        wgpu::TextureDescriptor td{};
+        td.label = "wf.defaultDepth";
+        td.size = {1, 1, 1};
+        td.mipLevelCount = 1;
+        td.sampleCount = 1;
+        td.format = wgpu::TextureFormat::Depth32Float;
+        td.dimension = wgpu::TextureDimension::e2D;
+        td.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::RenderAttachment;
+        state.defaultDepthTexture = state.device.CreateTexture(&td);
+
+        wgpu::TextureViewDescriptor vd{};
+        vd.aspect = wgpu::TextureAspect::DepthOnly;
+        state.defaultDepthTextureView = state.defaultDepthTexture.CreateView(&vd);
+    }
+
+    // 1x1 cube-array (6 layers, depthOrArrayLayers=6 cube) for IBL
+    // probe fallback. depthOrArrayLayers must be a multiple of 6 for
+    // CubeArray, so 6 = one cube.
+    {
+        wgpu::TextureDescriptor td{};
+        td.label = "wf.defaultCubeArr";
+        td.size = {1, 1, 6};
+        td.mipLevelCount = 1;
+        td.sampleCount = 1;
+        td.format = wgpu::TextureFormat::RGBA8Unorm;
+        td.dimension = wgpu::TextureDimension::e2D;
+        td.usage = wgpu::TextureUsage::TextureBinding | wgpu::TextureUsage::CopyDst;
+        state.defaultCubeArrayTexture = state.device.CreateTexture(&td);
+
+        const u8 pixel[4] = {0, 0, 0, 255};
+        wgpu::TexelCopyTextureInfo dst{};
+        dst.texture = state.defaultCubeArrayTexture;
+        wgpu::TexelCopyBufferLayout layout{};
+        layout.bytesPerRow = 4;
+        layout.rowsPerImage = 1;
+        // Single face — the other five stay zero-initialised, which is
+        // fine since the cube is just a "no-binding-yet" placeholder.
+        wgpu::Extent3D ext{1, 1, 1};
+        state.queue.WriteTexture(&dst, pixel, sizeof(pixel), &layout, &ext);
+
+        wgpu::TextureViewDescriptor vd{};
+        vd.dimension = wgpu::TextureViewDimension::CubeArray;
+        vd.arrayLayerCount = 6;
+        state.defaultCubeArrayTextureView = state.defaultCubeArrayTexture.CreateView(&vd);
+    }
+
+    if (!state.defaultSampler || !state.defaultComparisonSampler) {
         std::fprintf(stderr, "[wgpu] default sampler creation failed\n");
         return false;
     }
-    if (!state.defaultTextureView) {
+    if (!state.defaultTextureView || !state.defaultDepthTextureView ||
+        !state.defaultCubeArrayTextureView) {
         std::fprintf(stderr, "[wgpu] default texture/view creation failed\n");
         return false;
     }
     return true;
+}
+
+// Tiny all-zero buffer bound to phantom vertex slots — see
+// PipelineEntry::phantomVertexSlots in webgpu_handles.h. 256 bytes is
+// enough for any realistic per-vertex attribute size (largest WGSL
+// scalar/vector format is 16 bytes); shaders read zero through it.
+void CreateZeroVertexBuffer(WebGPUDeviceState& state) {
+    wgpu::BufferDescriptor bd{};
+    bd.label = "wf.zeroVtx";
+    bd.size = 256;
+    bd.usage = wgpu::BufferUsage::Vertex | wgpu::BufferUsage::CopyDst;
+    bd.mappedAtCreation = false;
+    state.zeroVertexBuffer = state.device.CreateBuffer(&bd);
+    if (state.zeroVertexBuffer) {
+        std::array<u8, 256> zeros{};
+        state.queue.WriteBuffer(state.zeroVertexBuffer, 0, zeros.data(), zeros.size());
+    }
 }
 
 // Non-fatal: CreateBuffer falls back to per-CB dedicated buffers when
@@ -385,22 +513,20 @@ void CreateSharedCbRing(WebGPUDeviceState& state) {
     wgpu::BufferDescriptor bd{};
     bd.label = "wf.sharedCb";
     bd.size = kSharedCbCapacity;
+    // No MapWrite — incompatible with Uniform | Storage | Vertex | Index
+    // per WebGPU spec. CPU writes go through `sharedCbShadow` and get
+    // pushed to the GPU buffer via Queue::WriteBuffer from MapBuffer /
+    // UpdateBuffer / UnmapBuffer (see webgpu_buffer.cpp).
     bd.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::Storage |
                wgpu::BufferUsage::Vertex | wgpu::BufferUsage::Index |
                wgpu::BufferUsage::CopySrc | wgpu::BufferUsage::CopyDst;
-    bd.mappedAtCreation = true;
+    bd.mappedAtCreation = false;
     state.sharedCbBuffer = state.device.CreateBuffer(&bd);
     if (!state.sharedCbBuffer) {
         std::fprintf(stderr, "[wgpu] shared CB ring allocation failed; falling back\n");
         return;
     }
-    state.sharedCbMapped =
-        static_cast<u8*>(state.sharedCbBuffer.GetMappedRange(0, kSharedCbCapacity));
-    if (!state.sharedCbMapped) {
-        std::fprintf(stderr, "[wgpu] shared CB ring GetMappedRange returned null\n");
-        state.sharedCbBuffer = nullptr;
-        return;
-    }
+    state.sharedCbShadow.assign(kSharedCbCapacity, 0);
     state.sharedCbCursor = 0;
 }
 
@@ -451,6 +577,7 @@ bool WebGPUDevice::Init(bool enableValidation) {
         return false;
     }
     CreateSharedCbRing(state); // non-fatal
+    CreateZeroVertexBuffer(state); // non-fatal — pipelines just skip phantom-fill if missing
 
     wgpu::AdapterInfo info{};
     state.adapter.GetInfo(&info);

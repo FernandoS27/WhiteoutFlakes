@@ -23,6 +23,268 @@ bool IsAttrSemantic(const char* s) {
     return s && s[0] == 'A' && s[1] == 'T' && s[2] == 'T' && s[3] == 'R' && s[4] == '\0';
 }
 
+// Skip ASCII whitespace + WGSL line/block comments.
+const char* SkipWsAndComments(const char* p, const char* end) {
+    while (p < end) {
+        if (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+            ++p;
+            continue;
+        }
+        if (end - p >= 2 && p[0] == '/' && p[1] == '/') {
+            while (p < end && *p != '\n')
+                ++p;
+            continue;
+        }
+        if (end - p >= 2 && p[0] == '/' && p[1] == '*') {
+            p += 2;
+            while (p + 1 < end && !(p[0] == '*' && p[1] == '/'))
+                ++p;
+            if (p + 1 < end)
+                p += 2;
+            continue;
+        }
+        break;
+    }
+    return p;
+}
+
+bool IsIdent(char c) {
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+           c == '_';
+}
+
+// Pick a vertex format that matches the WGSL field type the entry
+// declares — Dawn validates that VertexBufferLayout::format is type-
+// compatible with the shader's @location declaration (f32 vs u32 vs
+// i32, and the component count). Zero buffer reads as all zeros for
+// every supported format so the exact representation doesn't matter.
+wgpu::VertexFormat PickPhantomFormat(const std::string& typeName) {
+    auto isI = typeName == "i32";
+    auto isU = typeName == "u32";
+    auto vec = [&](char which, int n) -> wgpu::VertexFormat {
+        switch (n) {
+        case 1:
+            return which == 'u'   ? wgpu::VertexFormat::Uint32
+                   : which == 'i' ? wgpu::VertexFormat::Sint32
+                                  : wgpu::VertexFormat::Float32;
+        case 2:
+            return which == 'u'   ? wgpu::VertexFormat::Uint32x2
+                   : which == 'i' ? wgpu::VertexFormat::Sint32x2
+                                  : wgpu::VertexFormat::Float32x2;
+        case 3:
+            // WebGPU has no x3 integer formats — pick x4 since the
+            // buffer is all-zeros anyway and Dawn rounds up.
+            return which == 'u'   ? wgpu::VertexFormat::Uint32x4
+                   : which == 'i' ? wgpu::VertexFormat::Sint32x4
+                                  : wgpu::VertexFormat::Float32x3;
+        default:
+            return which == 'u'   ? wgpu::VertexFormat::Uint32x4
+                   : which == 'i' ? wgpu::VertexFormat::Sint32x4
+                                  : wgpu::VertexFormat::Float32x4;
+        }
+    };
+    if (isU)
+        return vec('u', 1);
+    if (isI)
+        return vec('i', 1);
+    if (typeName == "f32")
+        return vec('f', 1);
+    // vecN<T> form.
+    if (typeName.size() >= 8 && typeName[0] == 'v' && typeName[1] == 'e' &&
+        typeName[2] == 'c') {
+        const int n = typeName[3] - '0';
+        // Find <T> between '<' and '>'.
+        const auto lt = typeName.find('<');
+        const auto gt = typeName.find('>');
+        if (n >= 1 && n <= 4 && lt != std::string::npos && gt != std::string::npos &&
+            gt > lt) {
+            const std::string t = typeName.substr(lt + 1, gt - lt - 1);
+            if (t == "u32")
+                return vec('u', n);
+            if (t == "i32")
+                return vec('i', n);
+            return vec('f', n);
+        }
+    }
+    // Fallback — generous Float32x4 is the WebGPU default attribute width.
+    return wgpu::VertexFormat::Float32x4;
+}
+
+// Pull `<word>` immediately after a `:` (the field's type identifier).
+// Stops at the first non-type character so vec types with `<...>` are
+// captured whole.
+std::string ParseTypeAfterColon(const char* p, const char* end) {
+    p = SkipWsAndComments(p, end);
+    std::string out;
+    while (p < end) {
+        const char c = *p;
+        const bool ok = IsIdent(c) || c == '<' || c == '>' || c == ',' || c == ' ';
+        if (!ok)
+            break;
+        if (c == ',' || (c == ' ' && !out.empty() && out.back() != '<' &&
+                         out.back() != ',' && out.find('<') == std::string::npos))
+            break;
+        if (c != ' ')
+            out.push_back(c);
+        ++p;
+    }
+    return out;
+}
+
+// Parse every `@location(N) name : type` annotation between [p, end)
+// into `out`, deduped by location. Used for both inline-arg annotations
+// on the entry signature and member annotations inside an input struct.
+void CollectLocationFieldsIn(const char* p, const char* end,
+                             std::vector<VertexInputLocation>& out) {
+    while (p < end) {
+        const char* hit = static_cast<const char*>(std::memchr(p, '@', end - p));
+        if (!hit)
+            break;
+        p = hit + 1;
+        const char* kw = "location";
+        const usize kwLen = 8;
+        if (end - p < static_cast<ptrdiff_t>(kwLen + 1))
+            break;
+        if (std::memcmp(p, kw, kwLen) != 0)
+            continue;
+        p += kwLen;
+        p = SkipWsAndComments(p, end);
+        if (p >= end || *p != '(')
+            continue;
+        ++p;
+        p = SkipWsAndComments(p, end);
+        u32 v = 0;
+        bool any = false;
+        while (p < end && *p >= '0' && *p <= '9') {
+            v = v * 10 + static_cast<u32>(*p - '0');
+            ++p;
+            any = true;
+        }
+        if (!any)
+            continue;
+        // Walk to the next `:` (the field's type follows) and grab it.
+        const char* colon = static_cast<const char*>(std::memchr(p, ':', end - p));
+        std::string typeName;
+        if (colon)
+            typeName = ParseTypeAfterColon(colon + 1, end);
+        bool dup = false;
+        for (auto& f : out)
+            if (f.location == v) {
+                dup = true;
+                break;
+            }
+        if (!dup) {
+            VertexInputLocation field;
+            field.location = v;
+            field.typeName = std::move(typeName);
+            out.push_back(std::move(field));
+        }
+    }
+}
+
+// Scan WGSL VS source for the @location set the entry function consumes
+// — i.e. the input struct's members, plus any inline `@location` on the
+// entry's argument list. The post-processor in compile_all_slang.py
+// rewrites slang's `@vertex fn vs_main` down to `fn main`, so we look
+// for the first `fn main(` and walk its parameter list.
+//
+// This is a lexical scan, not a real WGSL parser: enough because slangc
+// emits each binding annotation as the literal token `@location(<int>)`
+// with no preprocessor mangling. We deliberately ignore @location on
+// VS *outputs* (after `->`) and on `VSOutput_0`-style structs whose
+// names aren't named as the entry's argument type.
+std::vector<VertexInputLocation> ScanVertexLocations(const char* src, usize len) {
+    std::vector<VertexInputLocation> out;
+    if (!src || len == 0)
+        return out;
+    const char* end = src + len;
+
+    // Find `fn main(`.
+    const char* fnMain = nullptr;
+    for (const char* p = src; p + 8 < end; ++p) {
+        if (std::memcmp(p, "fn main", 7) != 0)
+            continue;
+        if (p > src && IsIdent(p[-1]))
+            continue;
+        const char* q = SkipWsAndComments(p + 7, end);
+        if (q < end && *q == '(') {
+            fnMain = q;
+            break;
+        }
+    }
+    if (!fnMain)
+        return out;
+
+    // Walk to the matching `)`.
+    const char* parenEnd = fnMain;
+    int depth = 0;
+    for (const char* p = fnMain; p < end; ++p) {
+        if (*p == '(')
+            ++depth;
+        else if (*p == ')') {
+            --depth;
+            if (depth == 0) {
+                parenEnd = p;
+                break;
+            }
+        }
+    }
+    if (parenEnd == fnMain)
+        return out;
+
+    // Inline annotations on the entry's arg list.
+    CollectLocationFieldsIn(fnMain + 1, parenEnd, out);
+
+    // Collect parameter type names — every `: <Identifier>` inside the
+    // param list — and pull @location members out of each one's struct
+    // body. Lets us handle both the inline-arg form and the
+    // `fn main(in : VsInput)` form.
+    for (const char* p = fnMain + 1; p < parenEnd; ++p) {
+        if (*p != ':')
+            continue;
+        const char* q = SkipWsAndComments(p + 1, parenEnd);
+        const char* nameStart = q;
+        while (q < parenEnd && IsIdent(*q))
+            ++q;
+        if (q == nameStart)
+            continue;
+        std::string typeName(nameStart, q - nameStart);
+        // Find `struct <typeName>` somewhere in the source.
+        const std::string needle = "struct " + typeName;
+        const char* structPos = nullptr;
+        for (const char* r = src; r + needle.size() < end; ++r) {
+            if (std::memcmp(r, needle.data(), needle.size()) != 0)
+                continue;
+            const char* after = r + needle.size();
+            if (after < end && IsIdent(*after))
+                continue;
+            structPos = r;
+            break;
+        }
+        if (!structPos)
+            continue;
+        const char* brace = static_cast<const char*>(
+            std::memchr(structPos, '{', end - structPos));
+        if (!brace)
+            continue;
+        int sd = 0;
+        const char* braceEnd = brace;
+        for (const char* r = brace; r < end; ++r) {
+            if (*r == '{')
+                ++sd;
+            else if (*r == '}') {
+                --sd;
+                if (sd == 0) {
+                    braceEnd = r;
+                    break;
+                }
+            }
+        }
+        CollectLocationFieldsIn(brace, braceEnd, out);
+    }
+    return out;
+}
+
 } // namespace
 
 ShaderHandle WebGPUDevice::CreateShader(ShaderStage stage, const void* bytecode, usize size) {
@@ -55,6 +317,8 @@ ShaderHandle WebGPUDevice::CreateShader(ShaderStage stage, const void* bytecode,
     entry.module = std::move(mod);
     entry.stage = stage;
     entry.entryPoint = "main";
+    if (stage == ShaderStage::Vertex)
+        entry.vertexLocations = ScanVertexLocations(asText, textLen);
     return static_cast<ShaderHandle>(state.shaders.Insert(std::move(entry)));
 }
 
@@ -67,9 +331,12 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         return PipelineHandle::Invalid;
 
     // ---- Vertex layout: one VertexBufferLayout per used input slot ----
-    std::array<u32, 8> slotStride{};
-    std::array<bool, 8> slotUsed{};
-    std::array<std::vector<wgpu::VertexAttribute>, 8> slotAttrs{};
+    constexpr u32 kMaxRealSlots = 8;
+    std::array<u32, kMaxRealSlots> slotStride{};
+    std::array<bool, kMaxRealSlots> slotUsed{};
+    std::array<std::vector<wgpu::VertexAttribute>, kMaxRealSlots> slotAttrs{};
+    std::vector<u32> declaredLocations;
+    declaredLocations.reserve(desc.inputLayout.size());
     for (u32 i = 0; i < desc.inputLayout.size(); ++i) {
         const auto& el = desc.inputLayout[i];
         if (el.inputSlot >= slotUsed.size())
@@ -83,7 +350,26 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         const u32 elemSize = FormatBytesPerBlock(el.format);
         slotStride[el.inputSlot] =
             std::max<u32>(slotStride[el.inputSlot], el.offset + elemSize);
+        declaredLocations.push_back(a.shaderLocation);
     }
+
+    // Phantom-attribute synthesis: every VS @location() the renderer's
+    // InputLayout didn't supply gets its own one-attribute layout fed by
+    // the device's shared zero buffer at draw time. Without this, Dawn
+    // rejects the pipeline as soon as the shader entry references an
+    // unbound @location. Format is picked to match the shader's declared
+    // type so Dawn's type-compat check passes. Skipped silently when
+    // zeroVertexBuffer didn't create (init.cpp logs separately).
+    std::vector<VertexInputLocation> phantomFields;
+    std::vector<u32> phantomSlots;
+    if (state.zeroVertexBuffer) {
+        for (const auto& vl : vs->vertexLocations) {
+            if (std::find(declaredLocations.begin(), declaredLocations.end(),
+                          vl.location) == declaredLocations.end())
+                phantomFields.push_back(vl);
+        }
+    }
+
     std::vector<wgpu::VertexBufferLayout> buffers;
     for (u32 i = 0; i < slotUsed.size(); ++i) {
         if (!slotUsed[i])
@@ -93,6 +379,24 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         vbl.stepMode = wgpu::VertexStepMode::Vertex;
         vbl.attributeCount = static_cast<u32>(slotAttrs[i].size());
         vbl.attributes = slotAttrs[i].data();
+        buffers.push_back(vbl);
+    }
+    // Phantom layouts: one VertexBufferLayout each, format derived from
+    // the VS field's declared WGSL type. The zero buffer reads as zero
+    // for every supported format, so accuracy beyond type-compat
+    // doesn't matter — Dawn just needs format & shader type to agree.
+    std::vector<wgpu::VertexAttribute> phantomAttrs(phantomFields.size());
+    for (usize i = 0; i < phantomFields.size(); ++i) {
+        const u32 slot = static_cast<u32>(buffers.size());
+        phantomSlots.push_back(slot);
+        phantomAttrs[i].shaderLocation = phantomFields[i].location;
+        phantomAttrs[i].offset = 0;
+        phantomAttrs[i].format = PickPhantomFormat(phantomFields[i].typeName);
+        wgpu::VertexBufferLayout vbl{};
+        vbl.arrayStride = 16;
+        vbl.stepMode = wgpu::VertexStepMode::Instance;
+        vbl.attributeCount = 1;
+        vbl.attributes = &phantomAttrs[i];
         buffers.push_back(vbl);
     }
 
@@ -155,6 +459,7 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
     entry.graphics = std::move(pso);
     entry.isCompute = false;
     entry.colorFormat = colorTarget.format;
+    entry.phantomVertexSlots = std::move(phantomSlots);
     return static_cast<PipelineHandle>(state.pipelines.Insert(std::move(entry)));
 }
 

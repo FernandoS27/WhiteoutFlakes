@@ -35,6 +35,7 @@ enum class Format : u16 {
     R8G8B8A8_UNORM_SRGB,
     R8G8B8A8_UINT,
     B8G8R8A8_UNORM,
+    B8G8R8A8_UNORM_SRGB,
 
     R16_UNORM,
     R16G16_UNORM,
@@ -108,6 +109,7 @@ inline u32 FormatBytesPerBlock(Format f) {
     case Format::R8G8B8A8_UNORM_SRGB:
     case Format::R8G8B8A8_UINT:
     case Format::B8G8R8A8_UNORM:
+    case Format::B8G8R8A8_UNORM_SRGB:
     case Format::R16G16_UNORM:
     case Format::R32_UINT:
     case Format::R32_FLOAT:

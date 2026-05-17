@@ -84,7 +84,23 @@ const gfx::IGFXDevice* RenderPipeline::Gfx() const {
 }
 
 gfx::Format RenderPipeline::SceneTargetFormat() const {
-    return impl_->frameRenderMode_ == RenderMode::HD ? kHdrSceneFormat : kSdSceneFormat;
+    if (impl_->frameRenderMode_ == RenderMode::HD)
+        return kHdrSceneFormat;
+    // SD mode renders directly to the swap-chain back buffer — PSO
+    // rtvFormat must match its actual format. On most backends that's
+    // R8G8B8A8_UNORM_SRGB (kSdSceneFormat); on WebGPU under Windows
+    // Dawn-D3D12 the surface only exposes BGRA8 family, so the back
+    // buffer is B8G8R8A8_UNORM_SRGB and PSOs need to be built for that.
+    if (impl_->gfx_ && impl_->primaryTargetId_ != 0) {
+        auto it = impl_->targets_.find(impl_->primaryTargetId_);
+        if (it != impl_->targets_.end() &&
+            it->second.swap != gfx::SwapChainHandle::Invalid) {
+            const gfx::Format swapFmt = impl_->gfx_->GetSwapChainFormat(it->second.swap);
+            if (swapFmt != gfx::Format::Unknown)
+                return swapFmt;
+        }
+    }
+    return kSdSceneFormat;
 }
 
 gfx::Format RenderPipeline::DepthStencilFormat() const {

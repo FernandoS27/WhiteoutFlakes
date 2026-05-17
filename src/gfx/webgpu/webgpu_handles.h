@@ -33,16 +33,29 @@ inline constexpr u64 kSharedCbCapacity = 64ull * 1024 * 1024;
 // kStageBindingShift==12 it'd use @binding(12+). We honor that split
 // with per-binding visibility flags in the layout (see CreateSharedBindLayouts).
 //
-// CBs: slangc unifies uniform-buffer bindings across stages — both VS
-// and PS reference the SAME @binding(N) for shared globals (the
-// viewcube debug shader does this for its per-frame CB). So CBs use
-// ONE binding namespace, sized to the per-stage uniform cap WebGPU
-// enforces (12 — a spec ceiling). BindConstantBuffer ignores `stage`
-// and writes to pendingCBs_[slot] directly.
+// CBs: VS CBs live at @binding(0..3); PS CBs live at @binding(4..11).
+// The slang side mirrors this split via PsCbBindingOffset (= 4 for
+// WGSL_TARGET, 16 otherwise) in cb_structs.slang — BindConstantBuffer
+// applies the same offset for the Pixel stage so the runtime and the
+// shader agree on which BindGroup entry feeds each cbuffer. The total
+// (12) matches the spec floor for maxUniformBuffersPerShaderStage so
+// the layout fits on mobile (Mali / Adreno) WebGPU.
 inline constexpr u32 kStageBindingShift = 12;
 inline constexpr u32 kCbBindingCount = 12;
-inline constexpr u32 kSrvBindingCount = 24;
-inline constexpr u32 kSamplerBindingCount = 24;
+inline constexpr u32 kPsCbBindingOffsetWgsl = 4;
+// 12 VS + 16 PS = 28. PS half maxes the spec-floor cap
+// (maxSampledTexturesPerShaderStage = maxSamplersPerShaderStage = 16),
+// which is enough to land slang's register(t15) (binding kStageBindingShift+15 = 27).
+inline constexpr u32 kSrvBindingCount = 28;
+inline constexpr u32 kSamplerBindingCount = 28;
+
+// PS slots within the WGSL bind groups (group 1/2 indices = kStageBindingShift + register).
+// Shadow maps and IBL cubemap arrays need distinct layout metadata, so
+// the layout builder hardcodes their slots here.
+inline constexpr u32 kPsShadowStartBinding = kStageBindingShift + 10; // register t10..t12 → 22..24
+inline constexpr u32 kPsShadowEndBinding = kStageBindingShift + 13;   // exclusive
+inline constexpr u32 kPsIblCubeFromBinding = kStageBindingShift + 13; // register t13 → 25
+inline constexpr u32 kPsIblCubeToBinding = kStageBindingShift + 14;   // register t14 → 26
 
 // WebGPU has no notion of timeline semaphores. Every Present submits the
 // frame's encoder and increments `pendingEpoch`; OnSubmittedWorkDone bumps
@@ -91,10 +104,22 @@ struct TextureEntry {
     bool isLinearView = false;
 };
 
+struct VertexInputLocation {
+    u32 location = 0;
+    std::string typeName; // raw WGSL type token, e.g. "vec4<u32>" / "vec3<f32>"
+};
+
 struct ShaderEntry {
     wgpu::ShaderModule module;
     ShaderStage stage = ShaderStage::Vertex;
     std::string entryPoint; // "main" by default; overridable for WGSL multi-entry modules
+
+    // VS only: every @location(N) declared on the VS entry input struct,
+    // with its WGSL type token. Populated at CreateShader time so
+    // CreateGraphicsPipeline can spot gaps the InputLayout doesn't
+    // cover and pad them with phantom attributes whose format matches
+    // the shader's declared type (see PipelineEntry::phantomVertexSlots).
+    std::vector<VertexInputLocation> vertexLocations;
 };
 
 struct PipelineEntry {
@@ -104,6 +129,12 @@ struct PipelineEntry {
     // Cross-checked against the active render pass's color format inside
     // WebGPUCommandList::BindPipeline.
     wgpu::TextureFormat colorFormat = wgpu::TextureFormat::Undefined;
+
+    // Vertex slot indices we added to satisfy VS @location() declarations
+    // the renderer's InputLayout didn't cover. BindPipeline binds the
+    // shared zero vertex buffer to each of these slots so missing
+    // attributes don't crash the GPU (they just read zeros).
+    std::vector<u32> phantomVertexSlots;
 };
 
 struct SamplerEntry {

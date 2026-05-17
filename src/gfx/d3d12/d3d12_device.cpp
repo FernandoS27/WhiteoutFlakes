@@ -1387,6 +1387,19 @@ TextureHandle D3D12Device::GetSwapChainBackBufferLinear(SwapChainHandle h) {
     return static_cast<TextureHandle>(sc->proxyTexHandleLinear);
 }
 
+Format D3D12Device::GetSwapChainFormat(SwapChainHandle h) const {
+    auto* sc = swapChains_.Get(static_cast<u64>(h));
+    if (!sc)
+        return Format::Unknown;
+    switch (sc->rtvDxgiFormat) {
+    case DXGI_FORMAT_R8G8B8A8_UNORM:      return Format::R8G8B8A8_UNORM;
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return Format::R8G8B8A8_UNORM_SRGB;
+    case DXGI_FORMAT_B8G8R8A8_UNORM:      return Format::B8G8R8A8_UNORM;
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return Format::B8G8R8A8_UNORM_SRGB;
+    default:                              return Format::Unknown;
+    }
+}
+
 IGFXCommandList* D3D12Device::GetImmediateContext() {
     return immediateCtx_.get();
 }

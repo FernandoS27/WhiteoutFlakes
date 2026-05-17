@@ -28,12 +28,24 @@ struct WebGPUDeviceState {
     wgpu::Queue queue;
 
     // Single shared CB upload buffer — sub-allocated by CreateBuffer for
-    // CpuWritable+Constant buffers. Persistently mapped via MapAtCreation
-    // and queue.WriteBuffer; we hand out (buffer, offset) pairs to
-    // SetBindGroup's dynamic-offset machinery.
+    // CpuWritable+Constant buffers. CPU writes hit `sharedCbShadow`;
+    // every Map/Unmap/UpdateBuffer for a sub-alloc enqueues a matching
+    // Queue::WriteBuffer to push the bytes to `sharedCbBuffer`. We don't
+    // use mappedAtCreation persistent mapping because WebGPU forbids
+    // MapWrite buffers from carrying Uniform / Vertex / Index usages
+    // (only CopySrc + MapWrite are compatible), and a buffer that's
+    // mapped at submit time fails validation.
     wgpu::Buffer sharedCbBuffer;
-    u8* sharedCbMapped = nullptr;
+    std::vector<u8> sharedCbShadow;
     u64 sharedCbCursor = 0;
+
+    // 256 zero bytes used as the source for phantom vertex slots — when
+    // a VS declares an @location(N) the renderer doesn't actually fill,
+    // CreateGraphicsPipeline adds a one-attribute VertexBufferLayout and
+    // BindPipeline binds this buffer to that slot. Reads as all-zeros on
+    // every channel / format, which is what most shaders expect for an
+    // optional vertex attribute.
+    wgpu::Buffer zeroVertexBuffer;
 
     // Uniform-buffer minimum offset alignment, queried from the adapter.
     // WebGPU spec floor is 256 bytes (matches D3D12 / Vulkan AMD).
@@ -50,10 +62,32 @@ struct WebGPUDeviceState {
 
     // Default sampler / SRV used to fill any bind slot the renderer
     // didn't populate — WebGPU rejects bind groups with holes, so we
-    // back-fill at FlushBindings time.
+    // back-fill at FlushBindings time. The shadow / cube-array slots
+    // need typed defaults that match their layout metadata (depth-
+    // format texture for shadow, cube-array view for IBL probes,
+    // comparison sampler for shadow PCF) — Dawn validates the bound
+    // resource against the layout's exact sampleType/viewDimension.
     wgpu::Sampler defaultSampler;
+    wgpu::Sampler defaultComparisonSampler;
     wgpu::Texture defaultTexture;
     wgpu::TextureView defaultTextureView;
+    wgpu::Texture defaultDepthTexture;
+    wgpu::TextureView defaultDepthTextureView;
+    wgpu::Texture defaultCubeArrayTexture;
+    wgpu::TextureView defaultCubeArrayTextureView;
+
+    // Per-frame transient depth target — auto-attached at
+    // BeginRenderPass time whenever the renderer passes depth=Invalid
+    // but the bound pipelines declare a dsvFormat (tonemap / ImGui
+    // passes are the typical case; they keep dsvFormat set for
+    // cross-backend consistency and rely on D3D/Vulkan's permissive
+    // attachment-state matching). WebGPU rejects the SetPipeline
+    // unless the pass attaches a depth target of the exact same
+    // format. We discard contents on store — the data isn't read.
+    wgpu::Texture transientDepthTexture;
+    wgpu::TextureView transientDepthView;
+    u32 transientDepthW = 0;
+    u32 transientDepthH = 0;
 
     SlotMap<BufferEntry> buffers;
     SlotMap<TextureEntry> textures;

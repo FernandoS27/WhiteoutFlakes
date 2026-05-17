@@ -178,13 +178,18 @@ u64 HashRequest(const PsoRequest& r) {
     u64 k = reinterpret_cast<uintptr_t>(r.program);
     k ^= u64(r.vsIndex) * 0x9E3779B185EBCA87ull;
     k ^= u64(r.psIndex) * 0xC2B2AE3D27D4EB4Full;
+    // `layout` needs 4 bits — VertexLayoutKind has 9 values, the old
+    // 2-bit field collided (e.g. ParticleSD=3 vs MeshHDSkinnedNoTangent=7),
+    // making the cache return a wrong-layout PSO whose VertexBufferLayout
+    // declared slot 1 the renderer never bound.
     u32 bits = (u32(r.material.alpha) & 0x07u) | ((r.material.disables & 0x1Fu) << 3) |
-               ((u32(r.layout) & 0x03u) << 8) | ((u32(r.topology) & 0x03u) << 10) |
-               ((u32(r.rtvFormat) & 0xFFu) << 12) | ((u32(r.dsvFormat) & 0xFFu) << 20) |
-               ((r.wireframe ? 1u : 0u) << 28) | ((r.lhClipSpace ? 1u : 0u) << 29) |
-
-               ((r.material.ColorWriteEnabled() ? 0u : 1u) << 30);
+               ((u32(r.layout) & 0x0Fu) << 8) | ((u32(r.topology) & 0x03u) << 12) |
+               ((u32(r.rtvFormat) & 0xFFu) << 14) | ((u32(r.dsvFormat) & 0xFFu) << 22) |
+               ((r.wireframe ? 1u : 0u) << 30) | ((r.lhClipSpace ? 1u : 0u) << 31);
     k ^= u64(bits) * 0xFF51AFD7ED558CCDull;
+    // ColorWriteEnabled didn't fit in the 32-bit field after widening
+    // the layout slot — mix it in separately.
+    k ^= u64(r.material.ColorWriteEnabled() ? 0u : 1u) * 0x94D049BB133111EBull;
     return k;
 }
 
