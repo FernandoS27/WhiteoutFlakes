@@ -279,11 +279,12 @@ option(WDX_BUILD_WC3_SHADERS
 # parallel set of BLS bundles with full debug symbols (slangc -g2 -O0,
 # +emit-spirv-directly) and stages them into standalone/debug_shaders/.
 # The renderer loads those instead of standalone/shaders/ when graphics
-# debug is on. Roughly doubles the Wc3Shaders compile time — turn off
-# while iterating if that hurts.
+# debug is on. Roughly doubles the Wc3Shaders compile time and the
+# emitted bundles weigh ~865 MB — opt in only when actively debugging
+# shaders. Not committed under prebuilt/ for the same size reason.
 option(WDX_BUILD_WC3_DEBUG_SHADERS
     "Also build debug-symbol BLS bundles into debug_shaders/"
-    ON)
+    OFF)
 
 # Use the pre-baked .bls bundles committed under prebuilt/shaders/ instead of
 # re-running slangc. Mutually exclusive with WDX_BUILD_WC3_SHADERS — the
@@ -334,23 +335,10 @@ if(WDX_USE_PREBUILT_SHADERS)
         VERBATIM)
     add_custom_target(Wc3Shaders ALL DEPENDS "${_prebuilt_stamp}")
 
-    # Optional: stage debug shaders the same way if they exist.
-    if(WDX_BUILD_WC3_DEBUG_SHADERS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/debug_shaders")
-        set(_prebuilt_debug_stage "${CMAKE_BINARY_DIR}/standalone/debug_shaders")
-        set(_prebuilt_debug_stamp "${CMAKE_CURRENT_BINARY_DIR}/wc3_prebuilt_debug.stamp")
-        add_custom_command(
-            OUTPUT  "${_prebuilt_debug_stamp}"
-            COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_prebuilt_debug_stage}"
-            COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                    "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/debug_shaders"
-                    "${_prebuilt_debug_stage}"
-            COMMAND "${CMAKE_COMMAND}" -E touch "${_prebuilt_debug_stamp}"
-            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/debug_shaders"
-            COMMENT "Wc3Shaders[prebuilt-debug]: staging debug_shaders/"
-            VERBATIM)
-        add_custom_target(Wc3ShadersDebug ALL DEPENDS "${_prebuilt_debug_stamp}")
-        add_dependencies(Wc3Shaders Wc3ShadersDebug)
-    endif()
+    # debug_shaders/ is intentionally not prebuilt — the .bls bundles
+    # weigh ~865 MB and bloat the repo. Developers who need them flip
+    # WDX_BUILD_WC3_SHADERS=ON locally (which also honors
+    # WDX_BUILD_WC3_DEBUG_SHADERS=ON to produce standalone/debug_shaders/).
 endif()
 
 if(WDX_BUILD_WC3_SHADERS)
@@ -559,10 +547,11 @@ if(WDX_BUILD_WC3_SHADERS)
     add_custom_target(Wc3Shaders ALL DEPENDS ${WC3_ALL_STAGE_STAMPS})
 
     # `cmake --build build --target update-prebuilt-shaders` re-emits the
-    # prebuilt/shaders pack (and prebuilt/debug_shaders if WDX_BUILD_WC3_DEBUG_SHADERS
-    # is on) from the freshly-built BLS bundles. Run after touching .slang
-    # sources, then `git add prebuilt/` and commit so CI / fresh clones can
-    # use WDX_USE_PREBUILT_SHADERS=ON without invoking slangc themselves.
+    # prebuilt/shaders pack from the freshly-built BLS bundles. Run
+    # after touching .slang sources, then `git add prebuilt/` and commit
+    # so CI / fresh clones can use WDX_USE_PREBUILT_SHADERS=ON without
+    # invoking slangc themselves. debug_shaders/ is not mirrored — they
+    # weigh ~865 MB and are local-only.
     set(_prebuilt_dir "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt")
     add_custom_target(update-prebuilt-shaders
         COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_prebuilt_dir}/shaders"
@@ -571,15 +560,6 @@ if(WDX_BUILD_WC3_SHADERS)
         COMMENT "Updating ${_prebuilt_dir}/shaders from latest Wc3Shaders build"
         DEPENDS Wc3Shaders
         VERBATIM)
-    if(WDX_BUILD_WC3_DEBUG_SHADERS)
-        add_custom_command(TARGET update-prebuilt-shaders POST_BUILD
-            COMMAND "${CMAKE_COMMAND}" -E rm -rf "${_prebuilt_dir}/debug_shaders"
-            COMMAND "${CMAKE_COMMAND}" -E copy_directory
-                    "${CMAKE_BINARY_DIR}/standalone/debug_shaders"
-                    "${_prebuilt_dir}/debug_shaders"
-            COMMENT "Updating ${_prebuilt_dir}/debug_shaders from latest debug build"
-            VERBATIM)
-    endif()
 endif()
 
 # ============================================================================
