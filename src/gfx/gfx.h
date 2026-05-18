@@ -181,4 +181,11 @@ std::vector<std::string> EnumerateDevices(GfxApi api);
 // state on the gfx layer that the next CreateDevice consumes.
 void SetPreferredDevice(const char* utf8Name);
 
+// WebGPU-only: force Dawn's adapter backend (d3d11 / d3d12 / vulkan /
+// gl / metal). Empty (default) lets Dawn pick. Useful for triaging
+// device-hung issues that only repro on one backend. Ignored by other
+// gfx APIs. Must be called before CreateDevice(GfxApi::WebGPU).
+void SetWebGPUBackend(const char* utf8Name);
+const std::string& GetWebGPUBackend();
+
 } // namespace whiteout::flakes::gfx

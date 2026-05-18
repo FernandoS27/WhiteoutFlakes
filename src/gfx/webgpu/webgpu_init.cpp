@@ -13,20 +13,28 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
 
-// The gfx-factory module exposes GetPreferredDevice() to backends.
+// The gfx-factory module exposes preferred-device / WebGPU-backend
+// selection to backends.
 namespace whiteout::flakes::gfx {
 const std::string& GetPreferredDevice();
+const std::string& GetWebGPUBackend();
 } // namespace whiteout::flakes::gfx
 
 namespace whiteout::flakes::gfx::webgpu {
 
 namespace {
+
+// Pointer to the active device state, set at Init() time, so the free-
+// function DeviceLostCallback can flip the deviceLost flag. Dawn's
+// DeviceLost callback signature doesn't pass userdata in this header.
+WebGPUDeviceState* g_activeState = nullptr;
 
 void DeviceLostCallback(const wgpu::Device&, wgpu::DeviceLostReason reason,
                         wgpu::StringView message) {
@@ -34,6 +42,8 @@ void DeviceLostCallback(const wgpu::Device&, wgpu::DeviceLostReason reason,
         return; // expected at shutdown
     std::fprintf(stderr, "[wgpu] device lost: %.*s\n", static_cast<int>(message.length),
                  message.data);
+    if (g_activeState)
+        g_activeState->deviceLost.store(true, std::memory_order_release);
 }
 
 void UncapturedErrorCallback(const wgpu::Device&, wgpu::ErrorType type, wgpu::StringView message) {
@@ -90,12 +100,34 @@ i32 ScoreAdapter(const wgpu::Adapter& adapter) {
     return score;
 }
 
+// Resolve the optional --wgpu-backend CLI selection (gfx::GetWebGPUBackend)
+// to a Dawn BackendType. Lets us force the adapter onto D3D11 / Vulkan /
+// OpenGLES on Windows when triaging device-hung issues that only repro on
+// the default D3D12 backend. Empty = "let Dawn pick".
+wgpu::BackendType ResolveBackendHint() {
+    const std::string& hint = gfx::GetWebGPUBackend();
+    if (hint.empty())
+        return wgpu::BackendType::Undefined;
+    std::string s = hint;
+    for (auto& c : s)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (s == "d3d11")  return wgpu::BackendType::D3D11;
+    if (s == "d3d12")  return wgpu::BackendType::D3D12;
+    if (s == "vulkan" || s == "vk") return wgpu::BackendType::Vulkan;
+    if (s == "gl" || s == "opengl" || s == "gles" || s == "opengles")
+        return wgpu::BackendType::OpenGLES;
+    if (s == "metal")  return wgpu::BackendType::Metal;
+    std::fprintf(stderr, "[wgpu] unknown --wgpu-backend='%s' (ignored)\n", hint.c_str());
+    return wgpu::BackendType::Undefined;
+}
+
 // Sync wrapper around wgpu::Instance::RequestAdapter. Returns null on
 // failure. Pass `powerPreference = Undefined` for "no preference".
 wgpu::Adapter RequestAdapterSync(wgpu::Instance instance,
                                  wgpu::PowerPreference powerPreference) {
     wgpu::RequestAdapterOptions opts{};
     opts.powerPreference = powerPreference;
+    opts.backendType = ResolveBackendHint();
 
     wgpu::Adapter result;
     wgpu::Future future = instance.RequestAdapter(
@@ -213,6 +245,11 @@ bool RequestDeviceSync(WebGPUDeviceState& state) {
     // marks this format sampleable by default but only renderable when
     // the RG11B10UfloatRenderable feature is enabled.
     maybeEnable(wgpu::FeatureName::RG11B10UfloatRenderable, "RG11B10UfloatRenderable");
+
+    // Publish the active state for DeviceLostCallback. Single-device
+    // application — if that ever changes we'll need a userdata-carrying
+    // overload.
+    g_activeState = &state;
 
     wgpu::DeviceDescriptor dd{};
     dd.label = "WhiteoutFlakes";

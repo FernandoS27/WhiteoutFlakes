@@ -59,6 +59,16 @@ public:
                 continue;
 
             const auto& view_ = *ref.view;
+            // Skip skinned actors whose bone palette CB hasn't been
+            // written yet — frame_ticker's UpdateAnimation gates the
+            // upload on SkinningSystem::IsReady(), so without this
+            // check the draw would bind a zero-initialised bone palette
+            // and emit degenerate geometry. D3D11/12/Vulkan tolerate
+            // that silently; Dawn's translation TDRs once a subsequent
+            // frame uploads real matrices through the same CB.
+            if (view_.skinning && view_.skinning->HasSkeleton() &&
+                !view_.skinning->IsReady())
+                continue;
             const auto& geo = (*view_.geosets)[ref.idx];
             if (geo.unskinnedVb == gfx::BufferHandle::Invalid ||
                 geo.ib == gfx::BufferHandle::Invalid || geo.indexCount == 0)

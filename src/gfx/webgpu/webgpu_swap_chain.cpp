@@ -16,6 +16,7 @@
 #include "webgpu_translate.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <utility>
 
@@ -59,17 +60,27 @@ void ConfigureSurface(WebGPUDeviceState& state, SwapChainEntry& sc, u32 width, u
     wgpu::SurfaceCapabilities caps{};
     sc.surface.GetCapabilities(state.adapter, &caps);
 
-    // Find the surface format. Prefer the requested format exactly if
-    // available; otherwise prefer the *same-family* alternative; finally
-    // fall back to the first cap. Mapping: requested RGBA8 → BGRA8
-    // family if RGBA isn't exposed.
+    // Find the surface format. Prefer the requested sRGB format
+    // exactly — that lets the sRGB proxy view fall through with no
+    // viewFormats entry, which is the path Dawn's Vulkan backend
+    // actually honors. Fall back to the linear partner only when no
+    // sRGB form is exposed by the surface (Windows D3D12 surfaces
+    // typically only advertise linear formats).
     wgpu::TextureFormat surfaceFmt = caps.formatCount > 0 ? caps.formats[0]
                                                           : wgpu::TextureFormat::BGRA8Unorm;
-    for (usize i = 0; i < caps.formatCount; ++i) {
-        if (caps.formats[i] == requestedSrgb ||
-            caps.formats[i] == LinearPartnerOf(requestedSrgb)) {
+    bool found = false;
+    for (usize i = 0; i < caps.formatCount && !found; ++i) {
+        if (caps.formats[i] == requestedSrgb) {
             surfaceFmt = caps.formats[i];
-            break;
+            found = true;
+        }
+    }
+    if (!found) {
+        for (usize i = 0; i < caps.formatCount && !found; ++i) {
+            if (caps.formats[i] == LinearPartnerOf(requestedSrgb)) {
+                surfaceFmt = caps.formats[i];
+                found = true;
+            }
         }
     }
 
@@ -89,6 +100,14 @@ void ConfigureSurface(WebGPUDeviceState& state, SwapChainEntry& sc, u32 width, u
         sc.formatLinear = wgpu::TextureFormat::RGBA8Unorm;
     }
 
+    // List both the sRGB and linear formats — Dawn's Vulkan surface
+    // implementation passes viewFormats[] into VkImageFormatListCreateInfo,
+    // and the Vulkan validator wants the full set of compatible view
+    // formats (including the base surfaceFmt) explicitly enumerated.
+    // D3D12 tolerates either form.
+    std::array<wgpu::TextureFormat, 2> viewFormats{sc.formatSrgb, sc.formatLinear};
+    const u32 viewFormatCount = (sc.formatSrgb == sc.formatLinear) ? 1 : 2;
+
     wgpu::SurfaceConfiguration cfg{};
     cfg.device = state.device;
     cfg.format = surfaceFmt;
@@ -97,9 +116,8 @@ void ConfigureSurface(WebGPUDeviceState& state, SwapChainEntry& sc, u32 width, u
     cfg.height = height;
     cfg.presentMode = wgpu::PresentMode::Fifo;
     cfg.alphaMode = wgpu::CompositeAlphaMode::Opaque;
-    const wgpu::TextureFormat viewFormats[] = {sc.formatSrgb, sc.formatLinear};
-    cfg.viewFormatCount = (sc.formatSrgb == sc.formatLinear) ? 1 : 2;
-    cfg.viewFormats = viewFormats;
+    cfg.viewFormatCount = viewFormatCount;
+    cfg.viewFormats = viewFormats.data();
     sc.surface.Configure(&cfg);
 }
 
@@ -166,6 +184,12 @@ void AcquireSwapChainImageIfNeeded(WebGPUDeviceState& state, SwapChainEntry& sc)
     if (!sc.currentTexture)
         return;
 
+    // Dawn's Vulkan path sometimes advertises an sRGB cap (e.g. RGBA8UnormSrgb)
+    // but configures the actual VkSurface with a different channel order
+    // (BGRA8) underneath. The compatible-viewFormats list comes from
+    // surface config, so a RepointProxy with the *requested* format would
+    // fail CreateView validation. Reconcile by querying the actual surface
+    // texture's format and adjusting our cached sRGB / linear pair.
     RepointProxy(state, sc.proxySrgb, sc.currentTexture, sc.formatSrgb);
     if (sc.proxyLinear != TextureHandle::Invalid && sc.formatLinear != sc.formatSrgb)
         RepointProxy(state, sc.proxyLinear, sc.currentTexture, sc.formatLinear);

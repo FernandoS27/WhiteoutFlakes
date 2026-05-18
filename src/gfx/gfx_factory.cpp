@@ -53,6 +53,18 @@ const std::string& GetPreferredDevice() {
     return g_preferredDevice;
 }
 
+namespace {
+std::string g_webgpuBackend;
+} // namespace
+
+void SetWebGPUBackend(const char* utf8Name) {
+    g_webgpuBackend = (utf8Name && *utf8Name) ? utf8Name : std::string{};
+}
+
+const std::string& GetWebGPUBackend() {
+    return g_webgpuBackend;
+}
+
 std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api, bool enableValidation) {
     switch (api) {
     case GfxApi::D3D11: {

@@ -115,6 +115,12 @@ struct WebGPUDeviceState {
     std::mutex deleteMutex; // pendingDeletes is touched from Destroy() (main) only
 
     bool enableValidation = false;
+
+    // Set by DeviceLostCallback. Read by Draw/DrawIndexed and friends to
+    // suppress further work (and per-draw diagnostics) once the GPU has
+    // gone away — keeps the device-lost message visible at the bottom
+    // of stderr instead of buried under a flood of post-death draws.
+    std::atomic<bool> deviceLost{false};
 };
 
 // Drain entries whose epoch the GPU has already acked. Called at the top

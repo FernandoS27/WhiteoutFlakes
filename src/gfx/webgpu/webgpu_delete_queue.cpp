@@ -49,7 +49,6 @@ void SubmitFrameAndBumpEpoch(WebGPUDeviceState& state) {
                    !state.completedEpoch.compare_exchange_weak(prev, epoch,
                                                                std::memory_order_release,
                                                                std::memory_order_relaxed)) {
-                // retry
             }
         });
 

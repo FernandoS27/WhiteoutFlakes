@@ -15,16 +15,21 @@ namespace whiteout::flakes::gfx::webgpu {
 
 inline constexpr u32 kFramesInFlight = 3;
 
-// Mirrors VulkanDeviceState::kCbRingSlots — Map* on a CpuWritable+Constant
-// buffer rotates through this many slots so per-frame writes don't stall.
-// WebGPU exposes the dynamic-offset model directly; we sub-alloc out of a
-// single shared buffer and hand a fresh offset to SetBindGroup.
-inline constexpr u32 kCbRingSlots = 256;
+// Map* on a CpuWritable+Constant buffer rotates through this many slots
+// so per-draw writes don't stall the GPU. Sized for the worst-case
+// in-flight draw count: kFramesInFlight × (per-frame draw count) — HD
+// scenes with many actors + per-draw CB rebinds + many particle
+// emitters can issue >256 maps to the same CB in one command buffer.
+// If the ring wraps inside the same command buffer, the new write
+// stomps a slot the GPU is still reading from in an earlier draw —
+// produces NaN transforms / bone matrices and TDRs the device.
+inline constexpr u32 kCbRingSlots = 4096;
 
-// Single shared CB upload buffer — sized to match the Vulkan backend.
-// CpuWritable buffers sub-alloc here; they fall back to dedicated
-// CreateBuffer when the cursor overflows.
-inline constexpr u64 kSharedCbCapacity = 64ull * 1024 * 1024;
+// Single shared CB upload buffer. CpuWritable buffers sub-alloc here;
+// fall back to dedicated CreateBuffer (with per-buffer CPU shadow) when
+// the cursor overflows. Sized to comfortably hold one frame's worth of
+// transient CBs at kCbRingSlots depth.
+inline constexpr u64 kSharedCbCapacity = 256ull * 1024 * 1024;
 
 // Binding slot counts.
 //
@@ -77,8 +82,15 @@ struct BufferEntry {
     bool isSharedRingAlias = false;
 
     // Mapped pointer when host-visible; null otherwise. For sub-allocs
-    // this aliases WebGPUDeviceState::sharedCbMapped.
+    // this aliases WebGPUDeviceState::sharedCbMapped. For dedicated
+    // CpuWritable buffers (shared-CB ring overflow) this points at
+    // dedicatedShadow.data().
     u8* mapped = nullptr;
+
+    // CPU shadow for the dedicated-buffer fallback path. WebGPU's sync
+    // API has no MapWrite for Uniform/Vertex/Index, so dedicated
+    // CpuWritable buffers go shadow → Queue::WriteBuffer on Unmap.
+    std::vector<u8> dedicatedShadow;
 
     u64 currentOffset() const {
         return baseOffset + slotStride * currentSlot;

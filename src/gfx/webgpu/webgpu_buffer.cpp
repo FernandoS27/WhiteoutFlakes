@@ -82,6 +82,16 @@ BufferHandle WebGPUDevice::CreateBuffer(const BufferDesc& desc, const void* init
             state.queue.WriteBuffer(entry.buffer, 0, initial, desc.size);
         }
     }
+    // Dedicated CpuWritable buffers (shared-CB ring overflow) need a CPU
+    // shadow so MapBuffer/UnmapBuffer behave like the shared-ring path —
+    // WebGPU's sync API has no MapWrite for Uniform/Vertex/Index, so
+    // without a shadow the renderer's Map call returns null and the
+    // upload silently drops on the floor (corrupt CBs → bad transforms →
+    // GPU device hung).
+    if (ring) {
+        entry.dedicatedShadow.assign(static_cast<usize>(totalSize), 0);
+        entry.mapped = entry.dedicatedShadow.data();
+    }
     return static_cast<BufferHandle>(state.buffers.Insert(std::move(entry)));
 }
 
@@ -127,8 +137,17 @@ void WebGPUDevice::UpdateBuffer(BufferHandle h, const void* data, usize size) {
         const u64 off = buffer->currentOffset();
         std::memcpy(buffer->mapped + off, data, size);
         state.queue.WriteBuffer(state.sharedCbBuffer, off, data, size);
+    } else if (!buffer->dedicatedShadow.empty()) {
+        // Dedicated CpuWritable with CPU shadow: rotate slot, write
+        // shadow, then push to its own wgpu::Buffer.
+        if (buffer->slotCount > 1) {
+            buffer->currentSlot = (buffer->currentSlot + 1) % buffer->slotCount;
+        }
+        const u64 off = buffer->currentOffset();
+        std::memcpy(buffer->mapped + off, data, size);
+        state.queue.WriteBuffer(buffer->buffer, off, data, size);
     } else {
-        // Dedicated buffer: same path, no shadow needed.
+        // Static dedicated buffer (no CpuWritable): single-slot write.
         state.queue.WriteBuffer(buffer->buffer, 0, data, size);
     }
 }
@@ -136,37 +155,31 @@ void WebGPUDevice::UpdateBuffer(BufferHandle h, const void* data, usize size) {
 void* WebGPUDevice::MapBuffer(BufferHandle h) {
     auto& state = *state_;
     auto* buffer = state.buffers.Get(static_cast<u64>(h));
-    if (!buffer)
+    if (!buffer || !buffer->mapped)
         return nullptr;
-    if (buffer->isSharedRingAlias) {
-        // Rotate slot and hand back the CPU shadow pointer. The caller
-        // writes through the returned pointer; UnmapBuffer pushes the
-        // slot's bytes to the GPU.
-        if (buffer->slotCount > 1) {
-            buffer->currentSlot = (buffer->currentSlot + 1) % buffer->slotCount;
-        }
-        return buffer->mapped + buffer->currentOffset();
+    if (buffer->slotCount > 1) {
+        buffer->currentSlot = (buffer->currentSlot + 1) % buffer->slotCount;
     }
-    // Non-shared CpuWritable buffers don't support map-on-demand in
-    // WebGPU's sync API (MapWrite is incompatible with Uniform). The
-    // renderer's CpuWritable buffers always come back through the shared
-    // CB ring above. Return null to signal "use UpdateBuffer".
-    return nullptr;
+    return buffer->mapped + buffer->currentOffset();
 }
 
 void WebGPUDevice::UnmapBuffer(BufferHandle h) {
     auto& state = *state_;
     auto* buffer = state.buffers.Get(static_cast<u64>(h));
-    if (!buffer || !buffer->isSharedRingAlias)
+    if (!buffer || !buffer->mapped)
         return;
-    // Flush the slot just written by Map → caller-write. We push the
-    // full slot size (desc.size) from the shadow to the GPU buffer; the
-    // bytes past desc.size in the slot (padding to slotStride) are
-    // never read so we don't bother flushing them.
+    // Flush the slot just written by Map. The shared-ring path writes
+    // to the device-wide shared CB; the dedicated-shadow path writes to
+    // the buffer's own wgpu::Buffer. Only desc.size bytes get pushed
+    // (the slot-stride padding past desc.size is never read by shaders).
     const u64 off = buffer->currentOffset();
     const u64 size = buffer->desc.size;
-    if (size > 0)
+    if (size == 0)
+        return;
+    if (buffer->isSharedRingAlias)
         state.queue.WriteBuffer(state.sharedCbBuffer, off, buffer->mapped + off, size);
+    else
+        state.queue.WriteBuffer(buffer->buffer, off, buffer->mapped + off, size);
 }
 
 } // namespace whiteout::flakes::gfx::webgpu

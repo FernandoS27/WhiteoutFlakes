@@ -112,9 +112,13 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             backendFromCli = true;
+        } else if (std::strcmp(a, "--wgpu-backend") == 0 && i + 1 < argc) {
+            // Force Dawn's underlying adapter backend (d3d11/d3d12/vulkan/gl/metal).
+            // Only meaningful when --backend webgpu is selected.
+            whiteout::flakes::gfx::SetWebGPUBackend(argv[++i]);
         } else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
             std::cout << "Usage: WhiteoutFlakes [--backend " << kBackendsHelp
-                      << "] [<mdx-path>]\n";
+                      << "] [--wgpu-backend d3d11|d3d12|vulkan|gl] [<mdx-path>]\n";
             return 0;
         } else if (mdxPath.empty()) {
             mdxPath = whiteout::flakes::io::FsPathFromUtf8(a);
