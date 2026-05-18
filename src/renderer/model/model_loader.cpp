@@ -787,11 +787,22 @@ void ModelLoader::CreateNodePalette(Actor& mi) {
             // actor instantiates its own CB, so scaling slots with the
             // global default would blow per-actor memory by hundreds of
             // megabytes on PE1-heavy scenes.
-            gfx::BufferHandle cb = rs_.Pipeline().Gfx()->CreateBuffer({
-                .size = sizeof(bls::BonePaletteCb),
-                .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
-                .ringSlotsHint = 4,
-            });
+            //
+            // Initial data is an identity palette so the very first
+            // frame's draw — which happens before UpdateAnimation has
+            // populated real matrices — reads bind-pose transforms
+            // instead of zero matrices (which collapse every skinned
+            // vertex to the origin).
+            bls::BonePaletteCb identity{};
+            for (i32 i = 0; i < bls::kMaxBones; ++i)
+                bls::PackBone(identity.bones[i], Matrix44f::identity());
+            gfx::BufferHandle cb = rs_.Pipeline().Gfx()->CreateBuffer(
+                {
+                    .size = sizeof(bls::BonePaletteCb),
+                    .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+                    .ringSlotsHint = 4,
+                },
+                &identity);
             skinning.SetActorPaletteCb(cb);
         }
         for (auto& geo : mi.render.gpuGeosets) {
@@ -809,6 +820,9 @@ void ModelLoader::CreateNodePalette(Actor& mi) {
     // exceed kActorPaletteCap (rare — typically very large WoW rigs).
     // Like the Path A per-actor CB, each per-geoset CB is mapped
     // exactly once per frame, so we only need kFramesInFlight slots.
+    bls::BonePaletteCb identity{};
+    for (i32 i = 0; i < bls::kMaxBones; ++i)
+        bls::PackBone(identity.bones[i], Matrix44f::identity());
     for (auto& geo : mi.render.gpuGeosets) {
         if (geo.boneVb == gfx::BufferHandle::Invalid)
             continue;
@@ -816,11 +830,13 @@ void ModelLoader::CreateNodePalette(Actor& mi) {
             continue;
         if (skinning.GeosetPaletteSize(geo.geosetId) <= 0)
             continue;
-        geo.bonePaletteCb = rs_.Pipeline().Gfx()->CreateBuffer({
-            .size = sizeof(bls::BonePaletteCb),
-            .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
-            .ringSlotsHint = 4,
-        });
+        geo.bonePaletteCb = rs_.Pipeline().Gfx()->CreateBuffer(
+            {
+                .size = sizeof(bls::BonePaletteCb),
+                .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+                .ringSlotsHint = 4,
+            },
+            &identity);
         geo.hasSkinning = true;
     }
 }

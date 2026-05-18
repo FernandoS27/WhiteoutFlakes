@@ -114,8 +114,8 @@ wgpu::BackendType ResolveBackendHint() {
     if (s == "d3d11")  return wgpu::BackendType::D3D11;
     if (s == "d3d12")  return wgpu::BackendType::D3D12;
     if (s == "vulkan" || s == "vk") return wgpu::BackendType::Vulkan;
-    if (s == "gl" || s == "opengl" || s == "gles" || s == "opengles")
-        return wgpu::BackendType::OpenGLES;
+    if (s == "gl" || s == "opengl") return wgpu::BackendType::OpenGL;
+    if (s == "gles" || s == "opengles") return wgpu::BackendType::OpenGLES;
     if (s == "metal")  return wgpu::BackendType::Metal;
     std::fprintf(stderr, "[wgpu] unknown --wgpu-backend='%s' (ignored)\n", hint.c_str());
     return wgpu::BackendType::Undefined;
