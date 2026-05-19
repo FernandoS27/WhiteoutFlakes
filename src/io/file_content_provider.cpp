@@ -35,7 +35,10 @@ namespace whiteout::flakes::io {
 
 namespace fs = std::filesystem;
 
-static constexpr const char* kMpqNames[] = {
+// Stock load order for Warcraft III's MPQs — patch first so its overrides
+// win, then the expansion, then the base game. Surfaced via DefaultMpqList()
+// so the UI can offer "reset" without re-deriving the list itself.
+static const char* const kDefaultMpqNames[] = {
     "War3Patch.mpq",
     "War3x.mpq",
     "war3.mpq",
@@ -84,7 +87,11 @@ static fs::path DiscoverExecutableDirectory() {
 }
 
 struct FileContentProvider::Impl {
-    std::string wc3Path;
+    std::string wc3Path;      // auto-detected install root from Discover().
+    std::string installPath;  // currently-active install root (defaults to wc3Path).
+    bool ignoreCasc = false;
+    bool ignoreMpq = false;
+    std::vector<std::string> mpqList = FileContentProvider::DefaultMpqList();
     FileResolver resolver;
 
 #if WHITEOUT_HAS_CASC
@@ -114,6 +121,8 @@ struct FileContentProvider::Impl {
         if (wc3Path.empty())
             wc3Path = std::move(fallbackPath);
 
+        installPath = wc3Path;
+
         if (wc3Path.empty()) {
             std::printf("[FileContentProvider] Warcraft III installation not found.\n");
             return;
@@ -127,12 +136,16 @@ struct FileContentProvider::Impl {
 
     void TryOpenCasc() {
 #if WHITEOUT_HAS_CASC
+        cascStorage.reset();
+        if (ignoreCasc || installPath.empty())
+            return;
         std::string error;
-        cascStorage = whiteout::storages::casc::Storage::open(wc3Path, &error);
+        cascStorage = whiteout::storages::casc::Storage::open(installPath, &error);
         if (cascStorage) {
-            std::printf("[FileContentProvider] CASC storage opened.\n");
+            std::printf("[FileContentProvider] CASC storage opened: %s\n", installPath.c_str());
         } else {
-            std::printf("[FileContentProvider] CASC not available: %s\n", error.c_str());
+            std::printf("[FileContentProvider] CASC not available at '%s': %s\n",
+                        installPath.c_str(), error.c_str());
             cascStorage.reset();
         }
 #endif
@@ -140,19 +153,28 @@ struct FileContentProvider::Impl {
 
     void TryOpenMpq() {
 #if WHITEOUT_HAS_MPQ
-        for (const char* name : kMpqNames) {
-
-            fs::path mpqPath = FsPathFromUtf8(wc3Path) / name;
-            if (!fs::exists(mpqPath))
+        mpqStorages.clear();
+        if (ignoreMpq || installPath.empty())
+            return;
+        for (const std::string& name : mpqList) {
+            if (name.empty())
                 continue;
 
+            fs::path mpqFsPath = FsPathFromUtf8(installPath) / name;
+            if (!fs::exists(mpqFsPath)) {
+                std::printf("[FileContentProvider] MPQ not found, skipping: %s\n",
+                            PathToUtf8(mpqFsPath).c_str());
+                continue;
+            }
+
             std::string error;
-            auto storage = whiteout::storages::mpq::Storage::open(PathToUtf8(mpqPath), &error);
+            auto storage = whiteout::storages::mpq::Storage::open(PathToUtf8(mpqFsPath), &error);
             if (storage) {
-                std::printf("[FileContentProvider] Opened MPQ: %s\n", name);
+                std::printf("[FileContentProvider] Opened MPQ: %s\n", PathToUtf8(mpqFsPath).c_str());
                 mpqStorages.push_back(std::move(*storage));
             } else {
-                std::printf("[FileContentProvider] Failed to open %s: %s\n", name, error.c_str());
+                std::printf("[FileContentProvider] Failed to open %s: %s\n",
+                            PathToUtf8(mpqFsPath).c_str(), error.c_str());
             }
         }
 #endif
@@ -405,6 +427,55 @@ bool FileContentProvider::HasMpq() const {
 
 const std::string& FileContentProvider::Wc3Path() const {
     return impl_->wc3Path;
+}
+
+const std::string& FileContentProvider::InstallPath() const {
+    return impl_->installPath;
+}
+
+void FileContentProvider::SetInstallPath(const std::string& path) {
+    impl_->installPath = path.empty() ? impl_->wc3Path : path;
+    impl_->TryOpenCasc();
+    impl_->TryOpenMpq();
+}
+
+bool FileContentProvider::IgnoreCasc() const {
+    return impl_->ignoreCasc;
+}
+
+bool FileContentProvider::IgnoreMpq() const {
+    return impl_->ignoreMpq;
+}
+
+void FileContentProvider::SetIgnoreCasc(bool ignore) {
+    if (impl_->ignoreCasc == ignore)
+        return;
+    impl_->ignoreCasc = ignore;
+    impl_->TryOpenCasc();
+}
+
+void FileContentProvider::SetIgnoreMpq(bool ignore) {
+    if (impl_->ignoreMpq == ignore)
+        return;
+    impl_->ignoreMpq = ignore;
+    impl_->TryOpenMpq();
+}
+
+const std::vector<std::string>& FileContentProvider::MpqList() const {
+    return impl_->mpqList;
+}
+
+void FileContentProvider::SetMpqList(std::vector<std::string> list) {
+    impl_->mpqList = std::move(list);
+    impl_->TryOpenMpq();
+}
+
+std::vector<std::string> FileContentProvider::DefaultMpqList() {
+    std::vector<std::string> out;
+    out.reserve(std::size(kDefaultMpqNames));
+    for (const char* n : kDefaultMpqNames)
+        out.emplace_back(n);
+    return out;
 }
 
 } // namespace whiteout::flakes::io

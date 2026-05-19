@@ -41,6 +41,15 @@ private:
     // owns; we sync from DncService.UnitMdlPath() on each frame so external
     // updates take effect).
     std::string dncPathBuf_;
+
+    // IO tab edit buffers, mirroring the live FileContentProvider state.
+    // Seeded from the provider on first display of Settings (and after a
+    // Reset). installPathBuf_ commits to the provider + ini on
+    // IsItemDeactivatedAfterEdit; the MPQ-list scratch is committed inline
+    // by the add/remove/reorder buttons.
+    std::string installPathBuf_;
+    std::string newMpqEntryBuf_;
+    bool ioBufsInitialised_ = false;
 };
 
 } // namespace whiteout::flakes

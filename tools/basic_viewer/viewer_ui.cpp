@@ -363,6 +363,12 @@ void ViewerUI::BuildSettingsWindow() {
         return;
     }
 
+    if (!ImGui::BeginTabBar("##SettingsTabs")) {
+        ImGui::End();
+        return;
+    }
+
+    if (ImGui::BeginTabItem("General")) {
     // ---- Background colour ----
     {
         const u32 bg = svc.Settings().BackgroundColorRaw();
@@ -543,6 +549,172 @@ void ViewerUI::BuildSettingsWindow() {
         }
     }
 
+        ImGui::EndTabItem();
+    }
+
+    // ---- IO tab ----
+    // Install path + ignore-flags + an editable MPQ load order. All three
+    // commit to ini through SaveIoPathOverrides so the changes survive across
+    // launches; the provider itself is mutated in place so the effect is live
+    // (next ReadFile sees the new state).
+    if (ImGui::BeginTabItem("IO")) {
+        auto& provider = svc.Scene().GetContentProvider();
+        if (!ioBufsInitialised_) {
+            installPathBuf_ = provider.InstallPath();
+            ioBufsInitialised_ = true;
+        }
+
+        const std::string& autoDetected = provider.Wc3Path();
+        if (autoDetected.empty())
+            ImGui::TextDisabled("Warcraft III install not auto-detected.");
+        else
+            ImGui::TextDisabled("Auto-detected: %s", autoDetected.c_str());
+        ImGui::Spacing();
+
+        // Commit the entire IO state (install path + flags + list) to ini.
+        auto saveIo = [&] {
+            IoPathOverrides o;
+            // Treat "install path == auto-detected" as "no override" so the
+            // ini stays clean and a future auto-detect (e.g. user installs WC3
+            // in a different place) is picked up.
+            o.installPath =
+                (installPathBuf_ == provider.Wc3Path()) ? std::string{} : installPathBuf_;
+            o.ignoreCasc = provider.IgnoreCasc();
+            o.ignoreMpq = provider.IgnoreMpq();
+            o.mpqListSet = true;
+            o.mpqList = provider.MpqList();
+            SaveIoPathOverrides(o);
+        };
+
+        // ---- Install path row ----
+        {
+            char tmp[1024];
+            std::snprintf(tmp, sizeof(tmp), "%s", installPathBuf_.c_str());
+            ImGui::SetNextItemWidth(-180.0f);
+            if (ImGui::InputText("##install", tmp, sizeof(tmp)))
+                installPathBuf_ = tmp;
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                provider.SetInstallPath(installPathBuf_);
+                saveIo();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Browse...##install")) {
+                NFD::UniquePathU8 outPath;
+                if (NFD::PickFolder(outPath) == NFD_OKAY) {
+                    installPathBuf_ = outPath.get();
+                    provider.SetInstallPath(installPathBuf_);
+                    saveIo();
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset##install")) {
+                provider.SetInstallPath("");
+                installPathBuf_ = provider.InstallPath();
+                saveIo();
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted("Install Path");
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+
+        // ---- Ignore flags ----
+        {
+            bool ignoreCasc = provider.IgnoreCasc();
+            if (ImGui::Checkbox("Ignore CASC", &ignoreCasc)) {
+                provider.SetIgnoreCasc(ignoreCasc);
+                saveIo();
+            }
+            bool ignoreMpq = provider.IgnoreMpq();
+            if (ImGui::Checkbox("Ignore MPQ", &ignoreMpq)) {
+                provider.SetIgnoreMpq(ignoreMpq);
+                saveIo();
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+
+        // ---- MPQ load list ----
+        // Earlier entries win. Buttons mutate the provider's vector in place
+        // (via SetMpqList(...)) which reopens the storages each time — fine
+        // for a settings dialog (low-frequency edits).
+        ImGui::TextUnformatted("MPQs (load order, first wins)");
+        ImGui::BeginDisabled(provider.IgnoreMpq());
+
+        std::vector<std::string> mpqs = provider.MpqList();
+        bool mpqsDirty = false;
+        i32 swapWith = -1; // [i, i+1] to swap when set
+        i32 removeAt = -1;
+        for (usize i = 0; i < mpqs.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i));
+            const bool isFirst = (i == 0);
+            const bool isLast = (i + 1 == mpqs.size());
+            ImGui::BeginDisabled(isFirst);
+            if (ImGui::ArrowButton("up", ImGuiDir_Up))
+                swapWith = static_cast<i32>(i) - 1;
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(isLast);
+            if (ImGui::ArrowButton("down", ImGuiDir_Down))
+                swapWith = static_cast<i32>(i);
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::Button("X"))
+                removeAt = static_cast<i32>(i);
+            ImGui::SameLine();
+            ImGui::TextUnformatted(mpqs[i].c_str());
+            ImGui::PopID();
+        }
+        if (swapWith >= 0 && swapWith + 1 < static_cast<i32>(mpqs.size())) {
+            std::swap(mpqs[swapWith], mpqs[swapWith + 1]);
+            mpqsDirty = true;
+        }
+        if (removeAt >= 0 && removeAt < static_cast<i32>(mpqs.size())) {
+            mpqs.erase(mpqs.begin() + removeAt);
+            mpqsDirty = true;
+        }
+
+        // Add-new row.
+        {
+            char tmp[256];
+            std::snprintf(tmp, sizeof(tmp), "%s", newMpqEntryBuf_.c_str());
+            ImGui::SetNextItemWidth(-140.0f);
+            if (ImGui::InputText("##newmpq", tmp, sizeof(tmp)))
+                newMpqEntryBuf_ = tmp;
+            ImGui::SameLine();
+            const bool canAdd = !newMpqEntryBuf_.empty();
+            ImGui::BeginDisabled(!canAdd);
+            if (ImGui::Button("Add MPQ")) {
+                mpqs.push_back(newMpqEntryBuf_);
+                newMpqEntryBuf_.clear();
+                mpqsDirty = true;
+            }
+            ImGui::EndDisabled();
+        }
+
+        if (ImGui::SmallButton("Reset to defaults")) {
+            mpqs = io::FileContentProvider::DefaultMpqList();
+            mpqsDirty = true;
+        }
+
+        ImGui::EndDisabled(); // IgnoreMpq guard around the list controls
+
+        if (mpqsDirty) {
+            provider.SetMpqList(std::move(mpqs));
+            saveIo();
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextDisabled("CASC: %s", provider.HasCasc() ? "open" : "not loaded");
+        ImGui::TextDisabled("MPQ:  %s open", provider.HasMpq() ? "yes" : "no");
+
+        ImGui::EndTabItem();
+    }
+
+    ImGui::EndTabBar();
     ImGui::End();
 }
 

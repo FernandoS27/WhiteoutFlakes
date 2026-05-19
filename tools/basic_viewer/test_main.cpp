@@ -279,10 +279,27 @@ int main(int argc, char* argv[]) {
     whiteout::flakes::LoadSettingsIni(renderer, loopPolicy);
     app.SetLoopNonLoopingPolicy(loopPolicy);
 
+    // IO overrides — Settings > IO can repoint the install path, toggle CASC
+    // or MPQ off entirely, and reorder the MPQ load list.
+    {
+        auto overrides = whiteout::flakes::LoadIoPathOverrides();
+        auto& provider = renderer.Scene().GetContentProvider();
+        if (!overrides.installPath.empty())
+            provider.SetInstallPath(overrides.installPath);
+        provider.SetIgnoreCasc(overrides.ignoreCasc);
+        provider.SetIgnoreMpq(overrides.ignoreMpq);
+        if (overrides.mpqListSet)
+            provider.SetMpqList(std::move(overrides.mpqList));
+    }
+
+    // NFD is also used by Settings > IO (folder picker) and File > Open
+    // (re-opened from the menu bar), so initialise it unconditionally rather
+    // than only when we pop the startup model picker.
+    NFD::Init();
+
     // CLI path wins; otherwise pop NFD once at startup. Re-openable via
     // File > Open in the menu bar.
     if (mdxPath.empty()) {
-        NFD::Init();
         NFD::UniquePathU8 outPath;
         nfdu8filteritem_t filter[1] = {{"MDX Model", "mdx"}};
         if (NFD::OpenDialog(outPath, filter, 1) == NFD_OKAY)

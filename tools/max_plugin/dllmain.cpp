@@ -21,6 +21,7 @@
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #include "cubeb_sound_emitter.h"
+#include "settings_ini.h"
 #include "whiteout/flakes/types.h"
 
 #include <chrono>
@@ -268,6 +269,21 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count) {
         g_scene->SetPE1BasePath(std::filesystem::path(wp));
     }
 
+    // Apply persisted Settings > IO overrides to the SceneManager's provider
+    // BEFORE the audio emitter latches onto ActiveContentProvider — the
+    // emitter would keep working through path changes (it holds a pointer)
+    // but doing this first keeps the "single source of truth" obvious.
+    auto applyIoOverrides = [](whiteout::flakes::io::FileContentProvider& provider) {
+        auto overrides = whiteout::flakes::LoadIoPathOverrides();
+        if (!overrides.installPath.empty())
+            provider.SetInstallPath(overrides.installPath);
+        provider.SetIgnoreCasc(overrides.ignoreCasc);
+        provider.SetIgnoreMpq(overrides.ignoreMpq);
+        if (overrides.mpqListSet)
+            provider.SetMpqList(std::move(overrides.mpqList));
+    };
+    applyIoOverrides(g_scene->GetContentProvider());
+
     // Audio: the same cubeb-backed ISoundEmitter the standalone exe uses.
     // Borrows the scene's content provider for CASC/MPQ lookup so SND
     // EventObjects play during preview. Without this, the renderer's
@@ -277,6 +293,10 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count) {
 
     // ---- Build the live adapter ----
     g_adapter = std::make_shared<whiteout::flakes::MaxSceneAdapter>();
+
+    // Same IO overrides apply to the adapter's own provider — it's used
+    // during CollectScene below for CASC/MPQ texture reads.
+    applyIoOverrides(g_adapter->GetContentProvider());
     // Cross-model dedup: skip BLP/CASC decode for textures that other models
     // already uploaded. SpawnActorFromLiveSource sets this too, but we set
     // it now so CollectScene's incidental texture reads also benefit.

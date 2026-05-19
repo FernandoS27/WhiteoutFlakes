@@ -10,8 +10,11 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -115,16 +118,31 @@ struct IniMap {
         }
     }
 
-    void Save(const fs::path& path, const char* section) const {
+    // Writes every key as `[section]\nkey=value\n`, grouping by the prefix
+    // before the first '.'. Keys without a '.' are skipped (they'd be
+    // section-less and we don't emit those today).
+    void Save(const fs::path& path) const {
         std::ofstream f(path, std::ios::trunc);
         if (!f)
             return;
-        f << "[" << section << "]\n";
-        const std::string prefix = std::string(section) + ".";
+        // Ordered so the file diff stays stable across saves regardless of
+        // unordered_map's iteration order.
+        std::map<std::string, std::vector<std::pair<std::string, std::string>>> bySection;
         for (const auto& [k, v] : values) {
-            if (k.size() > prefix.size() && k.compare(0, prefix.size(), prefix) == 0) {
-                f << k.substr(prefix.size()) << "=" << v << "\n";
-            }
+            const auto dot = k.find('.');
+            if (dot == std::string::npos)
+                continue;
+            bySection[k.substr(0, dot)].emplace_back(k.substr(dot + 1), v);
+        }
+        bool first = true;
+        for (auto& [section, entries] : bySection) {
+            if (!first)
+                f << "\n";
+            first = false;
+            f << "[" << section << "]\n";
+            std::sort(entries.begin(), entries.end());
+            for (auto& [k, v] : entries)
+                f << k << "=" << v << "\n";
         }
     }
 
@@ -138,9 +156,14 @@ struct IniMap {
 };
 
 constexpr const char* kSection = "Display";
+constexpr const char* kIoSection = "IO";
 
 std::string KeyOf(const char* k) {
     return std::string(kSection) + "." + k;
+}
+
+std::string IoKeyOf(const char* k) {
+    return std::string(kIoSection) + "." + k;
 }
 
 // Locale-independent integer → string. Avoids ostringstream / std::to_string
@@ -437,7 +460,76 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy) {
         ini.Set(KeyOf("DncModel"), dnc->UnitMdlPath());
     }
 
-    ini.Save(path, kSection);
+    ini.Save(path);
+}
+
+// The MPQ list serialises as pipe-separated filenames inside one ini value;
+// '|' is illegal in NTFS filenames and ASCII-printable so it never collides
+// with a real entry and stays human-readable in the .ini.
+static std::string JoinMpqList(const std::vector<std::string>& list) {
+    std::string out;
+    for (usize i = 0; i < list.size(); ++i) {
+        if (i)
+            out += '|';
+        out += list[i];
+    }
+    return out;
+}
+
+static std::vector<std::string> SplitMpqList(const std::string& s) {
+    std::vector<std::string> out;
+    if (s.empty())
+        return out;
+    usize start = 0;
+    while (start <= s.size()) {
+        const usize bar = s.find('|', start);
+        const usize end = (bar == std::string::npos) ? s.size() : bar;
+        if (end > start)
+            out.emplace_back(s.substr(start, end - start));
+        if (bar == std::string::npos)
+            break;
+        start = bar + 1;
+    }
+    return out;
+}
+
+IoPathOverrides LoadIoPathOverrides() {
+    IniMap ini;
+    ini.Load(SettingsIniPath());
+    IoPathOverrides o;
+    if (auto* s = ini.Get(IoKeyOf("InstallPath")))
+        o.installPath = *s;
+    if (auto* s = ini.Get(IoKeyOf("IgnoreCasc"))) {
+        bool v = false;
+        if (ParseBool(*s, v))
+            o.ignoreCasc = v;
+    }
+    if (auto* s = ini.Get(IoKeyOf("IgnoreMpq"))) {
+        bool v = false;
+        if (ParseBool(*s, v))
+            o.ignoreMpq = v;
+    }
+    if (auto* s = ini.Get(IoKeyOf("MpqList"))) {
+        o.mpqListSet = true;
+        o.mpqList = SplitMpqList(*s);
+    }
+    return o;
+}
+
+void SaveIoPathOverrides(const IoPathOverrides& overrides) {
+    const fs::path path = SettingsIniPath();
+    // Round-trip existing keys so writing the IO section doesn't drop Display.
+    IniMap ini;
+    ini.Load(path);
+    ini.Set(IoKeyOf("InstallPath"), overrides.installPath);
+    ini.Set(IoKeyOf("IgnoreCasc"), overrides.ignoreCasc ? "1" : "0");
+    ini.Set(IoKeyOf("IgnoreMpq"), overrides.ignoreMpq ? "1" : "0");
+    // Only persist MpqList when the user has explicitly customised it —
+    // omitting the key on first save means future provider versions that
+    // change DefaultMpqList() are picked up automatically for these users.
+    if (overrides.mpqListSet)
+        ini.Set(IoKeyOf("MpqList"), JoinMpqList(overrides.mpqList));
+    ini.Save(path);
 }
 
 } // namespace whiteout::flakes

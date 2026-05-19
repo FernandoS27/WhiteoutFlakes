@@ -180,6 +180,15 @@ public:
     // Camera presets from scene (Max cameras + "Active Viewport")
     std::vector<whiteout::flakes::renderer::model::CameraPreset> GetCameraPresets();
 
+    // Adapter-local FileContentProvider, used during CollectScene for texture
+    // reads off CASC/MPQ. Exposed so the orchestration layer can apply the
+    // user's Settings > IO overrides at plugin start (the SceneManager owns a
+    // separate provider used by the runtime renderer; both need the same
+    // overrides).
+    io::FileContentProvider& GetContentProvider() {
+        return contentProvider_;
+    }
+
 private:
     // Collection phases
     void CollectGeometry();

@@ -37,6 +37,13 @@ private:
     // Mirror of DncService.UnitMdlPath() — InputText needs a writable
     // buffer the UI owns across frames.
     std::string dncPathBuf_;
+
+    // IO tab edit buffers (Settings > IO). Seeded from the provider on first
+    // display; installPathBuf_ commits on IsItemDeactivatedAfterEdit, the
+    // MPQ-list scratch is mutated inline by the add/remove/reorder buttons.
+    std::string installPathBuf_;
+    std::string newMpqEntryBuf_;
+    bool ioBufsInitialised_ = false;
 };
 
 } // namespace whiteout::flakes

@@ -19,6 +19,14 @@
 
 #include <imgui.h>
 
+// Win32 folder-picker dependencies for Settings > IO. NFD isn't built into
+// the Max plugin (the standalone uses it, but pulling it in here would add a
+// new link dep), so we use IFileDialog directly.
+#include <objbase.h>
+#include <shobjidl.h>
+#pragma comment(lib, "ole32")
+#pragma comment(lib, "uuid")
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -36,6 +44,38 @@ namespace {
 // whatever it's given.
 void SaveIni(RenderWindow& win) {
     SaveSettingsIni(win.Service(), true);
+}
+
+// IFileDialog folder picker. Returns an empty string if the user cancels or
+// the dialog fails. CoInitializeEx is idempotent (returns S_FALSE / safe to
+// pair-skip CoUninitialize) so we don't need to mirror it elsewhere.
+std::string PickFolderWin32(HWND parent) {
+    std::string result;
+    ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    IFileDialog* dlg = nullptr;
+    if (FAILED(::CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_PPV_ARGS(&dlg))))
+        return result;
+    DWORD opts = 0;
+    dlg->GetOptions(&opts);
+    dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+    if (SUCCEEDED(dlg->Show(parent))) {
+        IShellItem* item = nullptr;
+        if (SUCCEEDED(dlg->GetResult(&item))) {
+            PWSTR wpath = nullptr;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &wpath)) && wpath) {
+                int n = ::WideCharToMultiByte(CP_UTF8, 0, wpath, -1, nullptr, 0, nullptr, nullptr);
+                if (n > 1) {
+                    result.resize(static_cast<usize>(n - 1));
+                    ::WideCharToMultiByte(CP_UTF8, 0, wpath, -1, result.data(), n, nullptr, nullptr);
+                }
+                ::CoTaskMemFree(wpath);
+            }
+            item->Release();
+        }
+    }
+    dlg->Release();
+    return result;
 }
 
 constexpr std::array<const char*, 8> kDebugVisLabels = {
@@ -324,6 +364,12 @@ void MaxPluginUI::BuildSettingsWindow() {
         return;
     }
 
+    if (!ImGui::BeginTabBar("##SettingsTabs")) {
+        ImGui::End();
+        return;
+    }
+
+    if (ImGui::BeginTabItem("General")) {
     // ---- Background colour ----
     {
         const u32 bg = svc.Settings().BackgroundColorRaw();
@@ -477,6 +523,165 @@ void MaxPluginUI::BuildSettingsWindow() {
         }
     }
 
+        ImGui::EndTabItem();
+    }
+
+    // ---- IO tab ----
+    // Mirrors basic_viewer's IO tab. Only diverges in the folder picker
+    // (IFileDialog here vs NFD in the standalone) and in that live edits
+    // only touch SceneManager's provider — MaxSceneAdapter's local provider
+    // is seeded at NdxStart from the same ini keys and picks new state up on
+    // the next plugin run.
+    if (ImGui::BeginTabItem("IO")) {
+        auto& provider = svc.Scene().GetContentProvider();
+        if (!ioBufsInitialised_) {
+            installPathBuf_ = provider.InstallPath();
+            ioBufsInitialised_ = true;
+        }
+
+        const std::string& autoDetected = provider.Wc3Path();
+        if (autoDetected.empty())
+            ImGui::TextDisabled("Warcraft III install not auto-detected.");
+        else
+            ImGui::TextDisabled("Auto-detected: %s", autoDetected.c_str());
+        ImGui::Spacing();
+
+        auto saveIo = [&] {
+            IoPathOverrides o;
+            o.installPath =
+                (installPathBuf_ == provider.Wc3Path()) ? std::string{} : installPathBuf_;
+            o.ignoreCasc = provider.IgnoreCasc();
+            o.ignoreMpq = provider.IgnoreMpq();
+            o.mpqListSet = true;
+            o.mpqList = provider.MpqList();
+            SaveIoPathOverrides(o);
+        };
+
+        // ---- Install path row ----
+        {
+            char tmp[1024];
+            std::snprintf(tmp, sizeof(tmp), "%s", installPathBuf_.c_str());
+            ImGui::SetNextItemWidth(-180.0f);
+            if (ImGui::InputText("##install", tmp, sizeof(tmp)))
+                installPathBuf_ = tmp;
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                provider.SetInstallPath(installPathBuf_);
+                saveIo();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Browse...##install")) {
+                std::string picked = PickFolderWin32(win_.GetRenderHWND());
+                if (!picked.empty()) {
+                    installPathBuf_ = picked;
+                    provider.SetInstallPath(installPathBuf_);
+                    saveIo();
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset##install")) {
+                provider.SetInstallPath("");
+                installPathBuf_ = provider.InstallPath();
+                saveIo();
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted("Install Path");
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+
+        // ---- Ignore flags ----
+        {
+            bool ignoreCasc = provider.IgnoreCasc();
+            if (ImGui::Checkbox("Ignore CASC", &ignoreCasc)) {
+                provider.SetIgnoreCasc(ignoreCasc);
+                saveIo();
+            }
+            bool ignoreMpq = provider.IgnoreMpq();
+            if (ImGui::Checkbox("Ignore MPQ", &ignoreMpq)) {
+                provider.SetIgnoreMpq(ignoreMpq);
+                saveIo();
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+
+        // ---- MPQ load list ----
+        ImGui::TextUnformatted("MPQs (load order, first wins)");
+        ImGui::BeginDisabled(provider.IgnoreMpq());
+
+        std::vector<std::string> mpqs = provider.MpqList();
+        bool mpqsDirty = false;
+        i32 swapWith = -1;
+        i32 removeAt = -1;
+        for (usize i = 0; i < mpqs.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i));
+            const bool isFirst = (i == 0);
+            const bool isLast = (i + 1 == mpqs.size());
+            ImGui::BeginDisabled(isFirst);
+            if (ImGui::ArrowButton("up", ImGuiDir_Up))
+                swapWith = static_cast<i32>(i) - 1;
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(isLast);
+            if (ImGui::ArrowButton("down", ImGuiDir_Down))
+                swapWith = static_cast<i32>(i);
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            if (ImGui::Button("X"))
+                removeAt = static_cast<i32>(i);
+            ImGui::SameLine();
+            ImGui::TextUnformatted(mpqs[i].c_str());
+            ImGui::PopID();
+        }
+        if (swapWith >= 0 && swapWith + 1 < static_cast<i32>(mpqs.size())) {
+            std::swap(mpqs[swapWith], mpqs[swapWith + 1]);
+            mpqsDirty = true;
+        }
+        if (removeAt >= 0 && removeAt < static_cast<i32>(mpqs.size())) {
+            mpqs.erase(mpqs.begin() + removeAt);
+            mpqsDirty = true;
+        }
+
+        {
+            char tmp[256];
+            std::snprintf(tmp, sizeof(tmp), "%s", newMpqEntryBuf_.c_str());
+            ImGui::SetNextItemWidth(-140.0f);
+            if (ImGui::InputText("##newmpq", tmp, sizeof(tmp)))
+                newMpqEntryBuf_ = tmp;
+            ImGui::SameLine();
+            const bool canAdd = !newMpqEntryBuf_.empty();
+            ImGui::BeginDisabled(!canAdd);
+            if (ImGui::Button("Add MPQ")) {
+                mpqs.push_back(newMpqEntryBuf_);
+                newMpqEntryBuf_.clear();
+                mpqsDirty = true;
+            }
+            ImGui::EndDisabled();
+        }
+
+        if (ImGui::SmallButton("Reset to defaults")) {
+            mpqs = io::FileContentProvider::DefaultMpqList();
+            mpqsDirty = true;
+        }
+
+        ImGui::EndDisabled();
+
+        if (mpqsDirty) {
+            provider.SetMpqList(std::move(mpqs));
+            saveIo();
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextDisabled("CASC: %s", provider.HasCasc() ? "open" : "not loaded");
+        ImGui::TextDisabled("MPQ:  %s open", provider.HasMpq() ? "yes" : "no");
+
+        ImGui::EndTabItem();
+    }
+
+    ImGui::EndTabBar();
     ImGui::End();
 }
 
