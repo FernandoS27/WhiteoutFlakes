@@ -103,6 +103,12 @@ public:
     //     VkSurfaceKHR. The host gets the matching VkInstance from
     //     GetNativeInstance() and creates the surface itself (typically via
     //     glfwCreateWindowSurface), avoiding XCB/Xlib/Wayland branches in gfx.
+    //   • webgpu on Windows: cast to HWND.
+    //   • webgpu on Linux / macOS: cast to `GLFWwindow*`. The WebGPU backend
+    //     pulls the platform-specific handle pair internally via
+    //     glfw3native.h (Display+Window on X11, wl_display+wl_surface on
+    //     Wayland, NSWindow on Cocoa) — more than one pointer's worth of
+    //     state, which is why a single VkSurfaceKHR-style cast isn't enough.
     virtual SwapChainHandle CreateSwapChain(void* nativeWindowHandle, i32 width, i32 height,
                                             Format colorFormat = Format::R8G8B8A8_UNORM_SRGB) = 0;
 

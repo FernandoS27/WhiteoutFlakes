@@ -5,10 +5,14 @@
 // re-point it at the surface's current texture in
 // AcquireSwapChainImageIfNeeded (called from BeginRenderPass).
 //
-// Platform note: Windows-only for first pass. Linux (xlib / wayland) and
-// macOS (CAMetalLayer) follow in Phase 7 — both go through the same
-// SurfaceDescriptor + platform `next` chain, just with a different
-// concrete SurfaceSource* type.
+// Platform note: `nativeWindowHandle` is an HWND on Windows (matches
+// the D3D11/D3D12 backends so the gfx interface stays uniform there)
+// and a `GLFWwindow*` on every other platform. On non-Windows we use
+// GLFW's native APIs to pull the platform-specific handle pair (Display
+// + Window on X11, wl_display + wl_surface on Wayland, NSWindow on
+// macOS) — which is more than fits in a single void*. The X11-vs-
+// Wayland split on Linux is resolved at runtime via `glfwGetPlatform()`
+// so a single binary works on both session types.
 
 #include "webgpu_device.h"
 #include "webgpu_device_state.h"
@@ -22,25 +26,71 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#define GLFW_EXPOSE_NATIVE_WIN32
+#elif defined(__APPLE__)
+#define GLFW_EXPOSE_NATIVE_COCOA
+#else
+#define GLFW_EXPOSE_NATIVE_X11
+#define GLFW_EXPOSE_NATIVE_WAYLAND
 #endif
 
+#include <GLFW/glfw3.h>
+#include <GLFW/glfw3native.h>
+
 namespace whiteout::flakes::gfx::webgpu {
+
+#if defined(__APPLE__)
+// Defined in webgpu_surface_macos.mm. Returns a CAMetalLayer* (as void*)
+// attached to the NSWindow's contentView. The layer's lifetime is tied
+// to the view, which is owned by GLFW for the window's lifetime.
+void* CreateMetalLayerForCocoaWindow(void* nsWindow);
+#endif
 
 namespace {
 
 wgpu::Surface CreateSurfaceForWindow(WebGPUDeviceState& state, void* nativeWindowHandle) {
+    wgpu::SurfaceDescriptor sd{};
 #if defined(_WIN32)
+    // Windows: nativeWindowHandle is the HWND directly (matches d3d11/d3d12).
     wgpu::SurfaceSourceWindowsHWND fromHwnd{};
     fromHwnd.hwnd = nativeWindowHandle;
     fromHwnd.hinstance = ::GetModuleHandleW(nullptr);
-    wgpu::SurfaceDescriptor sd{};
     sd.nextInChain = &fromHwnd;
     return state.instance.CreateSurface(&sd);
+#elif defined(__APPLE__)
+    // macOS: GLFW gives us NSWindow*; the ObjC++ shim wraps its
+    // contentView with a CAMetalLayer and hands the layer back as void*.
+    auto* window = static_cast<GLFWwindow*>(nativeWindowHandle);
+    void* nsWindow = glfwGetCocoaWindow(window);
+    void* metalLayer = CreateMetalLayerForCocoaWindow(nsWindow);
+    if (!metalLayer)
+        return nullptr;
+    wgpu::SurfaceSourceMetalLayer fromMetal{};
+    fromMetal.layer = metalLayer;
+    sd.nextInChain = &fromMetal;
+    return state.instance.CreateSurface(&sd);
 #else
-    // Phase 7: route through GLFW-derived xlib / wayland / metal descriptors.
-    (void)state;
-    (void)nativeWindowHandle;
-    return nullptr;
+    // Linux: pick X11 or Wayland from the GLFW runtime platform. GLFW
+    // must have been compiled with both backends; the choice is decided
+    // by the session at glfwInit() time and reflected in glfwGetPlatform().
+    auto* window = static_cast<GLFWwindow*>(nativeWindowHandle);
+    const int platform = glfwGetPlatform();
+    if (platform == GLFW_PLATFORM_WAYLAND) {
+        wgpu::SurfaceSourceWaylandSurface fromWayland{};
+        fromWayland.display = glfwGetWaylandDisplay();
+        fromWayland.surface = glfwGetWaylandWindow(window);
+        sd.nextInChain = &fromWayland;
+        return state.instance.CreateSurface(&sd);
+    }
+    // X11 is the default fallback (and what GLFW returns for
+    // GLFW_PLATFORM_X11). glfwGetX11Window returns an `unsigned long`
+    // (XID); SurfaceSourceXlibWindow.window takes a uint64_t which is
+    // wider on all targets so the widening conversion is safe.
+    wgpu::SurfaceSourceXlibWindow fromXlib{};
+    fromXlib.display = glfwGetX11Display();
+    fromXlib.window = static_cast<uint64_t>(glfwGetX11Window(window));
+    sd.nextInChain = &fromXlib;
+    return state.instance.CreateSurface(&sd);
 #endif
 }
 

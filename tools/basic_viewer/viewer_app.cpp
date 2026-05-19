@@ -148,6 +148,10 @@ bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
     //   • vulkan on Windows: HWND (gfx creates the Win32 surface internally)
     //   • vulkan on Linux: a pre-built VkSurfaceKHR from glfwCreateWindowSurface
     //     (so gfx doesn't have to branch on xcb / xlib / wayland itself)
+    //   • webgpu on non-Windows: the GLFWwindow* itself — the WebGPU
+    //     backend pulls the platform-specific handles (Display+Window /
+    //     wl_display+wl_surface / NSWindow) via glfw3native.h, so the
+    //     viewer doesn't have to duplicate the X11/Wayland/Cocoa branches.
     void* swapHandle = nullptr;
 #if !defined(_WIN32)
     if (api == gfx::GfxApi::Vulkan) {
@@ -163,6 +167,8 @@ bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
         // VkSurfaceKHR is a 64-bit non-dispatchable handle on x86_64; pack it
         // into the void* the gfx interface expects.
         std::memcpy(&swapHandle, &surface, sizeof(swapHandle));
+    } else if (api == gfx::GfxApi::WebGPU) {
+        swapHandle = static_cast<void*>(window_);
     } else {
         std::fprintf(stderr, "Backend not supported on this platform\n");
         Close();

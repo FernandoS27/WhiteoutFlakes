@@ -660,6 +660,15 @@ if(WDX_ENABLE_WEBGPU)
         src/gfx/webgpu/webgpu_delete_queue.cpp
         src/gfx/webgpu/webgpu_swap_chain.cpp
     )
+    if(APPLE)
+        # ObjC++ shim that hands Dawn a CAMetalLayer attached to GLFW's
+        # NSWindow contentView (Dawn's SurfaceSourceMetalLayer can't be
+        # populated from pure C++). Cocoa + QuartzCore are linked further
+        # down where the WebGPU target wires up.
+        list(APPEND WHITEOUTFLAKES_GFX_SOURCES
+            src/gfx/webgpu/webgpu_surface_macos.mm
+        )
+    endif()
 endif()
 
 add_library(WhiteoutFlakesGfx STATIC ${WHITEOUTFLAKES_GFX_SOURCES})
@@ -766,12 +775,26 @@ if(WDX_ENABLE_WEBGPU)
                    "(eliemichel/WebGPU-distribution ${WDX_WEBGPU_DIST_TAG}, prebuilt Dawn)")
     target_link_libraries(WhiteoutFlakesGfx PRIVATE
         webgpu
+        # GLFW: the WebGPU swap-chain pulls native handles (Display/Window
+        # pair on X11, wl_display/wl_surface on Wayland, NSWindow on
+        # macOS) via glfw3native.h. The target is added later via
+        # add_subdirectory; CMake defers symbol resolution to generate
+        # time so the forward reference resolves cleanly.
+        glfw
     )
     target_compile_definitions(WhiteoutFlakesGfx PRIVATE WDX_HAS_WEBGPU=1)
     if(WIN32)
         target_compile_definitions(WhiteoutFlakesGfx PRIVATE
             NOMINMAX
             WIN32_LEAN_AND_MEAN
+        )
+    elseif(APPLE)
+        # SurfaceSourceMetalLayer needs the CAMetalLayer that the .mm
+        # shim attaches to the NSWindow contentView — pull in Cocoa for
+        # NSWindow/NSView and QuartzCore for CAMetalLayer.
+        target_link_libraries(WhiteoutFlakesGfx PRIVATE
+            "-framework Cocoa"
+            "-framework QuartzCore"
         )
     endif()
 else()
