@@ -10,4 +10,11 @@ namespace whiteout::flakes {
 // ImGui::CreateContext() and before NewFrame.
 void ApplyImGuiTheme();
 
+// Applies the host's monitor DPI scale (1.0 = 96 DPI, 1.5 = 144 DPI, …) to the
+// current ImGui style: glyphs rasterise at the scaled pixel size via
+// style.FontScaleDpi, and absolute padding/spacing/rounding values are
+// multiplied by `scale`. Call once after ApplyImGuiTheme() — ScaleAllSizes is
+// not idempotent.
+void ApplyImGuiDpiScale(float scale);
+
 } // namespace whiteout::flakes

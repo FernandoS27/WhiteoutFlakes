@@ -34,6 +34,23 @@
 #if defined(_WIN32)
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
+// Newer DWM attributes — define locally so we don't depend on the SDK version.
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+#ifndef DWMWA_BORDER_COLOR
+#define DWMWA_BORDER_COLOR 34
+#endif
+#ifndef DWMWA_CAPTION_COLOR
+#define DWMWA_CAPTION_COLOR 35
+#endif
+// Per-monitor V2 DPI context — declared in Win10 1607+ SDKs. Older SDKs need
+// the cast-from-int fallback (same trick the SDK header itself uses).
+#ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
+#endif
 #endif
 
 #include <algorithm>
@@ -82,6 +99,23 @@ ViewerApp::~ViewerApp() {
 bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
     backend_ = api;
 
+#if defined(_WIN32)
+    // Opt into per-monitor V2 awareness before any HWND is created. Without
+    // this, Windows bitmap-stretches the whole window on non-100% displays
+    // (4K / scaled laptop panels), which is what makes ImGui glyphs look
+    // soft and wavy. SetProcessDpiAwarenessContext exists on Windows 10
+    // 1703+; pre-Win10 falls back through the older SetProcessDpiAware.
+    {
+        using SetCtxFn = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
+        HMODULE u32 = ::GetModuleHandleW(L"user32.dll");
+        auto setCtx =
+            u32 ? reinterpret_cast<SetCtxFn>(::GetProcAddress(u32, "SetProcessDpiAwarenessContext"))
+                : nullptr;
+        if (!setCtx || !setCtx(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
+            ::SetProcessDPIAware();
+    }
+#endif
+
     if (!glfwInit()) {
         std::fprintf(stderr, "glfwInit FAILED\n");
         return false;
@@ -92,7 +126,21 @@ bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-    window_ = glfwCreateWindow(width, height, kWindowTitle, nullptr, nullptr);
+    // The caller's width/height are logical (96-DPI) pixels — pre-scale them
+    // for the primary monitor so a 1280x720 viewer doesn't shrink to a quarter
+    // of the screen on a 4K 200% display now that we're DPI-aware.
+    float initialDpiScale = 1.0f;
+    if (GLFWmonitor* primary = glfwGetPrimaryMonitor()) {
+        float xs = 1.0f;
+        float ys = 1.0f;
+        glfwGetMonitorContentScale(primary, &xs, &ys);
+        if (xs > 0.0f)
+            initialDpiScale = xs;
+    }
+    const i32 scaledW = static_cast<i32>(static_cast<f32>(width) * initialDpiScale);
+    const i32 scaledH = static_cast<i32>(static_cast<f32>(height) * initialDpiScale);
+
+    window_ = glfwCreateWindow(scaledW, scaledH, kWindowTitle, nullptr, nullptr);
     if (!window_) {
         std::fprintf(stderr, "glfwCreateWindow FAILED\n");
         glfwTerminate();
@@ -121,6 +169,14 @@ bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
             ::SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hIcon));
             ::SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hIcon));
         }
+        // Match the title bar + thin window border to the ImGui MenuBarBg so
+        // the OS chrome blends with the menu strip below it. Silently ignored
+        // on older Windows.
+        const BOOL useDark = TRUE;
+        const COLORREF chrome = RGB(38, 45, 56);
+        ::DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDark, sizeof(useDark));
+        ::DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &chrome, sizeof(chrome));
+        ::DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &chrome, sizeof(chrome));
     }
 #endif
 
@@ -219,6 +275,15 @@ void ViewerApp::InitImGui() {
     // ImGui pick up its own default `imgui.ini` in CWD is fine for now.
 
     ApplyImGuiTheme();
+
+    // Scale fonts + style sizes to the current monitor's content scale.
+    // Glyphs rasterise at scaled pixel size (via style.FontScaleDpi) instead
+    // of being bilinear-upsampled, which is what fixes "weird" text on 4K
+    // and 1080p-scaled displays.
+    float xs = 1.0f;
+    float ys = 1.0f;
+    glfwGetWindowContentScale(window_, &xs, &ys);
+    ApplyImGuiDpiScale(xs);
 
     // GLFW backend handles input only; the engine adapter draws.
     ImGui_ImplGlfw_InitForOther(window_, true);

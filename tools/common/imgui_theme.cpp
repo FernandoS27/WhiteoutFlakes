@@ -94,4 +94,25 @@ void ApplyImGuiTheme() {
     c[ImGuiCol_ModalWindowDimBg] = ImVec4(0.8f, 0.8f, 0.8f, 0.35f);
 }
 
+void ApplyImGuiDpiScale(float scale) {
+    if (scale <= 0.0f)
+        scale = 1.0f;
+    ImGuiIO& io = ImGui::GetIO();
+    ImGuiStyle& style = ImGui::GetStyle();
+    // Bake the default font *at* the monitor's pixel density. style.FontScaleDpi
+    // would be tempting (1.92+ exposes it), but it's a draw-time multiplier
+    // that assumes the dynamic-atlas pipeline. Our engine ImGui renderer uses
+    // the legacy GetTexDataAsRGBA32 path — atlas baked once at SizePixels —
+    // so anything > 1.0 there just bilinear-upscales 13px glyphs at draw time
+    // (readable but soft). Rebaking at the scaled SizePixels keeps glyphs
+    // hinted and crisp.
+    io.Fonts->Clear();
+    ImFontConfig cfg;
+    cfg.SizePixels = 13.0f * scale;
+    io.Fonts->AddFontDefault(&cfg);
+    // ScaleAllSizes multiplies the absolute pixel values set in
+    // ApplyImGuiTheme (padding, spacing, rounding, scrollbar/grab sizes …).
+    style.ScaleAllSizes(scale);
+}
+
 } // namespace whiteout::flakes

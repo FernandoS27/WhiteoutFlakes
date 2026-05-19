@@ -6,7 +6,19 @@
 // clang-format off
 #include <windows.h>
 #include <windowsx.h>
+#include <dwmapi.h>
 // clang-format on
+#pragma comment(lib, "dwmapi.lib")
+// Newer DWM attributes — define locally so we don't depend on the SDK version.
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+#ifndef DWMWA_BORDER_COLOR
+#define DWMWA_BORDER_COLOR 34
+#endif
+#ifndef DWMWA_CAPTION_COLOR
+#define DWMWA_CAPTION_COLOR 35
+#endif
 
 #include "imgui_theme.h"
 #include "max_plugin_ui.h"
@@ -237,6 +249,16 @@ bool RenderWindow::Create(i32 w, i32 h) {
     hwnd_ = CreateWindowExW(0, WINDOW_CLASS, WINDOW_TITLE, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
                             CW_USEDEFAULT, adj.right - adj.left, adj.bottom - adj.top, nullptr,
                             nullptr, hInst, this);
+    if (hwnd_) {
+        // Match the title bar + thin window border to the ImGui MenuBarBg so
+        // the OS chrome blends with the menu strip below it. Silently ignored
+        // on older Windows.
+        const BOOL useDark = TRUE;
+        const COLORREF chrome = RGB(38, 45, 56);
+        DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDark, sizeof(useDark));
+        DwmSetWindowAttribute(hwnd_, DWMWA_CAPTION_COLOR, &chrome, sizeof(chrome));
+        DwmSetWindowAttribute(hwnd_, DWMWA_BORDER_COLOR, &chrome, sizeof(chrome));
+    }
     return hwnd_ != nullptr;
 }
 
@@ -265,6 +287,19 @@ void RenderWindow::InitImGui() {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     ApplyImGuiTheme();
+
+    // 3ds Max marks the process per-monitor DPI-aware, so the HWND already
+    // sits at native pixel density — we just need to scale fonts + style to
+    // match. GetDpiForWindow requires Win10 1607+, which any modern Max ships
+    // on; the fallback covers older SDKs / Max versions.
+    UINT dpi = 96;
+    using GetDpiFn = UINT(WINAPI*)(HWND);
+    HMODULE u32 = GetModuleHandleW(L"user32.dll");
+    auto getDpi =
+        u32 ? reinterpret_cast<GetDpiFn>(GetProcAddress(u32, "GetDpiForWindow")) : nullptr;
+    if (getDpi)
+        dpi = getDpi(hwnd_);
+    ApplyImGuiDpiScale(static_cast<float>(dpi) / 96.0f);
 
     ImGui_ImplWin32_Init(hwnd_);
     ui_ = std::make_unique<MaxPluginUI>(*this);
