@@ -890,6 +890,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/io/team_glow_data.cpp
     src/io/file_resolver.cpp
     src/io/file_content_provider.cpp
+    src/io/content_provider.cpp
     src/io/path_utf8.cpp
     src/io/replaceable_paths.cpp
     src/io/event_data.cpp

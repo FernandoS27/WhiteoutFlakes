@@ -2,6 +2,7 @@
 
 #include "../gfx/gfx.h"
 #include "model/model_instance.h"
+#include "whiteout/flakes/content_provider.h" // RequestId for Slot::pendingLoad
 #include "whiteout/flakes/types.h"
 #include "whiteout/flakes/util/replaceable_paths.h"
 
@@ -87,12 +88,22 @@ private:
     struct Slot {
         i32 textureId;
         u8 replaceableId;
+        // Outstanding async load for the canonical asset (replaceable IDs
+        // 11–37). kInvalidRequestId when no load is in flight. Cancelled
+        // on re-bake (team color / tileset change) and on UnregisterModel
+        // so the callback never writes into a destroyed actor's pixels.
+        io::RequestId pendingLoad = io::kInvalidRequestId;
     };
     std::unordered_map<model::Actor*, std::vector<Slot>> slots_;
 
     io::IContentProvider* contentProvider_ = nullptr;
 
     void BakeSlot(model::Actor& mi, i32 textureId, i32 replaceableId);
+
+    // Async completion for canonical-asset reads kicked off in BakeSlot.
+    // Runs on the render thread via IContentProvider::Pump().
+    void OnCanonicalAssetLoaded(model::Actor* mi, i32 textureId, i32 replaceableId,
+                                io::RequestResult&& r);
 };
 
 } // namespace whiteout::flakes::renderer::assets

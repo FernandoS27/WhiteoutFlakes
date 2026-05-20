@@ -174,8 +174,21 @@ void ModelTemplateManager::LoaderFunc() {
 std::shared_ptr<ModelTemplate> ModelTemplateManager::ParseAndBuild(const std::string& mdxPath) {
     if (!contentProvider_)
         return nullptr;
-    auto fileData = contentProvider_->ReadFile(mdxPath);
-    if (!fileData || fileData->empty()) {
+
+    // Main-actor MDX bytes are needed in-hand to build the template, so this
+    // is an explicit Request + Wait. Compared to ReadFile, the explicit form
+    // documents the wait point and lets us write straight into a local rather
+    // than allocating a heap-owned shared_ptr<RequestResult>. The callback
+    // fires on the host's Pump thread; doneCv wakes us once it returns.
+    io::RequestResult fileResult;
+    const io::RequestId reqId = contentProvider_->Request(
+        mdxPath, [&fileResult](io::RequestResult&& r) { fileResult = std::move(r); });
+    if (reqId == io::kInvalidRequestId) {
+        std::fprintf(stderr, "[model] ERR: MDX request rejected '%s'\n", mdxPath.c_str());
+        return nullptr;
+    }
+    contentProvider_->Wait(reqId);
+    if (!fileResult.ok || fileResult.data.empty()) {
         std::fprintf(stderr, "[model] ERR: MDX read FAIL '%s'\n", mdxPath.c_str());
         return nullptr;
     }
@@ -183,7 +196,8 @@ std::shared_ptr<ModelTemplate> ModelTemplateManager::ParseAndBuild(const std::st
     whiteout::mdx::Parser mdxParser;
     whiteout::mdx::Model model;
     try {
-        model = mdxParser.parse(std::span<const whiteout::u8>(fileData->data(), fileData->size()));
+        model = mdxParser.parse(
+            std::span<const whiteout::u8>(fileResult.data.data(), fileResult.data.size()));
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[model] ERR: MDX parse FAIL '%s': %s\n", mdxPath.c_str(), e.what());
         return nullptr;

@@ -525,6 +525,13 @@ void ViewerApp::Tick(f32 dt) {
     if (!window_ || glfwWindowShouldClose(window_))
         return;
 
+    // Drive the async content provider's completion queue from the host
+    // thread — texture stubs swap to their real pixels here, MDX-load
+    // Wait()s wake up here, etc. Done before any per-frame asset access so
+    // callbacks land before the rest of the tick reads what they produced.
+    if (auto* cp = service_.Scene().ActiveContentProvider())
+        cp->Pump();
+
     // Per-frame size sync. The framebuffer-size callback alone isn't
     // reliable — GLFW on Windows can swallow callbacks during the maximize
     // transition's modal sizing loop, and HiDPI display changes also slip

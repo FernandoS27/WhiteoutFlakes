@@ -36,7 +36,7 @@ using namespace whiteout::flakes::renderer;
 
 class CubebSoundEmitter : public ISoundEmitter {
 public:
-    explicit CubebSoundEmitter(const IContentProvider* content);
+    explicit CubebSoundEmitter(IContentProvider* content);
     ~CubebSoundEmitter() override;
 
     CubebSoundEmitter(const CubebSoundEmitter&) = delete;
@@ -85,7 +85,7 @@ private:
     // the cap keeps the mix loop bounded if SND events fire in a tight burst.
     static constexpr usize kMaxVoices = 24;
 
-    const IContentProvider* content_ = nullptr;
+    IContentProvider* content_ = nullptr;
 
     cubeb* ctx_ = nullptr;
     cubeb_stream* stream_ = nullptr;

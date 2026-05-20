@@ -36,7 +36,7 @@ namespace {
 // candidate scheme the old Win32 backend used. Returns the raw file bytes of
 // the first hit; decoding happens separately so every format goes through one
 // path.
-std::optional<std::vector<u8>> ResolveSoundBytes(const IContentProvider& cp,
+std::optional<std::vector<u8>> ResolveSoundBytes(IContentProvider& cp,
                                                  const io::SndEntry& entry,
                                                  std::string* attemptedOut) {
     if (entry.filePaths.empty())
@@ -352,7 +352,7 @@ void StateCb(cubeb_stream* /*stream*/, void* /*user*/, cubeb_state /*state*/) {
 
 } // namespace
 
-CubebSoundEmitter::CubebSoundEmitter(const IContentProvider* content) : content_(content) {
+CubebSoundEmitter::CubebSoundEmitter(IContentProvider* content) : content_(content) {
     if (cubeb_init(&ctx_, "WhiteoutFlakes", nullptr) != CUBEB_OK || !ctx_) {
         std::fprintf(stderr, "[cubeb] cubeb_init failed — audio disabled\n");
         ctx_ = nullptr;

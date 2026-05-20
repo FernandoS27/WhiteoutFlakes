@@ -54,7 +54,7 @@ public:
     ~SplatService();
 
     void Configure(gfx::IGFXDevice* gfx, assets::TextureAssetManager* textures,
-                   const io::IContentProvider* contentProvider);
+                   io::IContentProvider* contentProvider);
 
     void Tick();
 
@@ -86,7 +86,7 @@ private:
 
     gfx::IGFXDevice* gfx_ = nullptr;
     assets::TextureAssetManager* textures_ = nullptr;
-    const io::IContentProvider* content_ = nullptr;
+    io::IContentProvider* content_ = nullptr;
 
     std::unordered_map<std::string, gfx::TextureHandle> textureCache_;
 

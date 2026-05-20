@@ -162,6 +162,12 @@ void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
         lastParentTimeMs = curParentMs;
         f32 parentDt = (f32)parentDtMs / 1000.0f;
 
+        // Drain content-provider completions (texture stubs → real pixels,
+        // MDX Wait() wake-ups, etc.) on the render thread before per-frame
+        // asset access reads the results.
+        if (auto* cp = service_.Scene().ActiveContentProvider())
+            cp->Pump();
+
         UpdateCameraPresetAnimator();
         (void)service_.Replaceables().ConsumeDirty();
         (void)service_.Settings().ConsumeRenderModeDirty();

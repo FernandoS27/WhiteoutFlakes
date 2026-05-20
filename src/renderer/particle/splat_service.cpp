@@ -22,7 +22,7 @@ SplatService::SplatService() = default;
 SplatService::~SplatService() = default;
 
 void SplatService::Configure(gfx::IGFXDevice* gfx, TextureAssetManager* textures,
-                             const IContentProvider* contentProvider) {
+                             IContentProvider* contentProvider) {
     std::lock_guard<std::mutex> lk(mutex_);
     gfx_ = gfx;
     textures_ = textures;

@@ -7,15 +7,29 @@
 
 #if WHITEOUT_HAS_CASC
 #include <whiteout/storages/casc/storage.h>
+#include <whiteout/utils/simple_thread_pool.h>
 #endif
 
 #if WHITEOUT_HAS_MPQ
 #include <whiteout/storages/mpq/storage.h>
 #endif
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
+#include <deque>
 #include <filesystem>
 #include <fstream>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <shared_mutex>
+#include <thread>
+#include <unordered_set>
+#include <utility>
+#include <vector>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -86,132 +100,16 @@ static fs::path DiscoverExecutableDirectory() {
 #endif
 }
 
-struct FileContentProvider::Impl {
-    std::string wc3Path;      // auto-detected install root from Discover().
-    std::string installPath;  // currently-active install root (defaults to wc3Path).
-    bool ignoreCasc = false;
-    bool ignoreMpq = false;
-    std::vector<std::string> mpqList = FileContentProvider::DefaultMpqList();
-    FileResolver resolver;
+// ---- File-extension classification helpers ----------------------------------
 
-#if WHITEOUT_HAS_CASC
-    std::optional<whiteout::storages::casc::Storage> cascStorage;
-#endif
-
-#if WHITEOUT_HAS_MPQ
-    std::vector<whiteout::storages::mpq::Storage> mpqStorages;
-#endif
-
-    void Discover() {
-        auto games = whiteout::utils::findBlizzardGames();
-
-        std::string fallbackPath;
-        for (auto& info : games) {
-            if (info.game != whiteout::utils::BlizzardGame::WarcraftIII &&
-                info.game != whiteout::utils::BlizzardGame::WarcraftIIIReforged)
-                continue;
-
-            if (fs::exists(FsPathFromUtf8(info.path) / "Data")) {
-                wc3Path = info.path;
-                break;
-            }
-            if (fallbackPath.empty())
-                fallbackPath = info.path;
-        }
-        if (wc3Path.empty())
-            wc3Path = std::move(fallbackPath);
-
-        installPath = wc3Path;
-
-        if (wc3Path.empty()) {
-            std::printf("[FileContentProvider] Warcraft III installation not found.\n");
-            return;
-        }
-
-        std::printf("[FileContentProvider] Found Warcraft III at: %s\n", wc3Path.c_str());
-
-        TryOpenCasc();
-        TryOpenMpq();
-    }
-
-    void TryOpenCasc() {
-#if WHITEOUT_HAS_CASC
-        cascStorage.reset();
-        if (ignoreCasc || installPath.empty())
-            return;
-        std::string error;
-        cascStorage = whiteout::storages::casc::Storage::open(installPath, &error);
-        if (cascStorage) {
-            std::printf("[FileContentProvider] CASC storage opened: %s\n", installPath.c_str());
-        } else {
-            std::printf("[FileContentProvider] CASC not available at '%s': %s\n",
-                        installPath.c_str(), error.c_str());
-            cascStorage.reset();
-        }
-#endif
-    }
-
-    void TryOpenMpq() {
-#if WHITEOUT_HAS_MPQ
-        mpqStorages.clear();
-        if (ignoreMpq || installPath.empty())
-            return;
-        for (const std::string& name : mpqList) {
-            if (name.empty())
-                continue;
-
-            fs::path mpqFsPath = FsPathFromUtf8(installPath) / name;
-            if (!fs::exists(mpqFsPath)) {
-                std::printf("[FileContentProvider] MPQ not found, skipping: %s\n",
-                            PathToUtf8(mpqFsPath).c_str());
-                continue;
-            }
-
-            std::string error;
-            auto storage = whiteout::storages::mpq::Storage::open(PathToUtf8(mpqFsPath), &error);
-            if (storage) {
-                std::printf("[FileContentProvider] Opened MPQ: %s\n", PathToUtf8(mpqFsPath).c_str());
-                mpqStorages.push_back(std::move(*storage));
-            } else {
-                std::printf("[FileContentProvider] Failed to open %s: %s\n",
-                            PathToUtf8(mpqFsPath).c_str(), error.c_str());
-            }
-        }
-#endif
-    }
-};
-
-FileContentProvider::FileContentProvider() : impl_(std::make_unique<Impl>()) {
-    impl_->Discover();
-
-    // Surface the directory containing the host executable as a secondary
-    // lookup root. The model-specific basePath is set later via
-    // SetBasePath(); engine-shipped assets like the v1.8 / v1.14 BLS
-    // bundles staged next to the exe by the build are reached through
-    // this fallback.
-    const fs::path exeDir = DiscoverExecutableDirectory();
-    if (!exeDir.empty()) {
-        impl_->resolver.SetSystemBasePath(exeDir);
-        std::printf("[FileContentProvider] Executable dir: %s\n", PathToUtf8(exeDir).c_str());
-    }
-}
-
-FileContentProvider::~FileContentProvider() = default;
-
-FileContentProvider::FileContentProvider(FileContentProvider&&) noexcept = default;
-FileContentProvider& FileContentProvider::operator=(FileContentProvider&&) noexcept = default;
-
-void FileContentProvider::SetBasePath(const std::filesystem::path& basePath) {
-    impl_->resolver.SetBasePath(basePath);
-}
-
-static constexpr const char* kTextureExts[] = {
-    ".blp", ".dds", ".tga", ".png", ".tif",
-};
-
-static constexpr const char* kModelExts[] = {
-    ".mdx",
-    ".mdl",
+static constexpr const char* kTextureExts[] = {".blp", ".dds", ".tga", ".png", ".tif"};
+static constexpr const char* kModelExts[] = {".mdx", ".mdl"};
+static constexpr const char* kArchiveTextureExts[] = {".blp", ".dds", ".tga", ".png"};
+static constexpr const char* kArchiveModelExts[] = {".mdx", ".mdl"};
+static constexpr const char* kCascPrefixes[] = {
+    "war3.w3mod:",
+    "war3.w3mod:_hd.w3mod:",
+    "war3.w3mod:_deprecated.w3mod:",
 };
 
 static bool HasExtension(const std::string& ext, const char* const* list, usize count) {
@@ -221,79 +119,6 @@ static bool HasExtension(const std::string& ext, const char* const* list, usize 
     return false;
 }
 
-static std::optional<std::vector<u8>> ReadDiskFile(const fs::path& resolved) {
-    if (resolved.empty())
-        return std::nullopt;
-    std::ifstream file(resolved, std::ios::binary | std::ios::ate);
-    if (!file)
-        return std::nullopt;
-    auto size = file.tellg();
-    if (size <= 0)
-        return std::nullopt;
-    std::vector<u8> buf(static_cast<usize>(size));
-    file.seekg(0);
-    file.read(reinterpret_cast<char*>(buf.data()), size);
-    return buf;
-}
-
-std::optional<std::vector<u8>> FileContentProvider::ReadFile(const std::string& path,
-                                                             std::string* actualExt) const {
-
-    {
-        std::string norm = FileResolver::NormalizeSeparators(path);
-        std::string ext = fs::path(norm).extension().string();
-
-        for (auto& c : ext)
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-
-        fs::path resolved;
-        if (HasExtension(ext, kTextureExts, std::size(kTextureExts)))
-            resolved = impl_->resolver.ResolveTexture(norm);
-        else if (HasExtension(ext, kModelExts, std::size(kModelExts)))
-            resolved = impl_->resolver.ResolveModel(norm);
-        else
-            resolved = impl_->resolver.Resolve(norm, {});
-
-        auto data = ReadDiskFile(resolved);
-        if (data) {
-            if (actualExt) {
-                std::string e = resolved.extension().string();
-                for (auto& c : e)
-                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                *actualExt = e;
-            }
-            return data;
-        }
-    }
-
-#if WHITEOUT_HAS_CASC
-    if (impl_->cascStorage) {
-        auto data = ReadFromCasc(path, actualExt);
-        if (data)
-            return data;
-    }
-#endif
-
-#if WHITEOUT_HAS_MPQ
-    if (!impl_->mpqStorages.empty()) {
-        auto data = ReadFromMpq(path, actualExt);
-        if (data)
-            return data;
-    }
-#endif
-
-    return std::nullopt;
-}
-
-static constexpr const char* kCascPrefixes[] = {
-    "war3.w3mod:",
-    "war3.w3mod:_hd.w3mod:",
-    "war3.w3mod:_deprecated.w3mod:",
-};
-
-static constexpr const char* kArchiveTextureExts[] = {".blp", ".dds", ".tga", ".png"};
-static constexpr const char* kArchiveModelExts[] = {".mdx", ".mdl"};
-
 static std::string NormalizeCascPath(const std::string& relPath) {
     std::string out;
     out.reserve(relPath.size());
@@ -302,7 +127,6 @@ static std::string NormalizeCascPath(const std::string& relPath) {
             c = '\\';
         out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
-
     usize start = 0;
     while (start < out.size() && (out[start] == '\\' || out[start] == '/'))
         ++start;
@@ -331,86 +155,469 @@ static std::pair<const char* const*, usize> AltExtensionsFor(const std::string& 
     return {nullptr, 0};
 }
 
-std::optional<std::vector<u8>> FileContentProvider::ReadFromCasc(const std::string& path,
-                                                                 std::string* actualExt) const {
+static bool ReadDiskFile(const fs::path& resolved, std::vector<u8>& outBytes) {
+    if (resolved.empty())
+        return false;
+    std::ifstream file(resolved, std::ios::binary | std::ios::ate);
+    if (!file)
+        return false;
+    auto size = file.tellg();
+    if (size <= 0)
+        return false;
+    outBytes.resize(static_cast<usize>(size));
+    file.seekg(0);
+    file.read(reinterpret_cast<char*>(outBytes.data()), size);
+    return true;
+}
+
+// ---- Async machinery --------------------------------------------------------
+
+struct PendingRequest {
+    RequestId id = kInvalidRequestId;
+    std::string path;
+    CompletionCallback cb;
+};
+
+struct CompletedRequest {
+    RequestId id = kInvalidRequestId;
+    CompletionCallback cb;
+    RequestResult result;
+};
+
+struct FileContentProvider::Impl {
+    // ---- Storage state (guarded by storageMu) ----
+    // Worker threads hold a *shared* lock while reading — CASC and MPQ
+    // readFile() are themselves thread-safe (shared-lock internally), so N
+    // workers can decode in parallel. Reconfiguration paths (SetInstallPath /
+    // SetIgnoreCasc / SetMpqList) take the *exclusive* lock so a storage
+    // handle is never swapped out from under an in-flight read. The mutex is
+    // mutable because HasCasc() / HasMpq() are logically-const observers that
+    // still need to synchronise with worker reads.
+    mutable std::shared_mutex storageMu;
+    std::string wc3Path;       // auto-detected; immutable after Discover()
+    std::string installPath;   // currently-active install root
+    bool ignoreCasc = false;
+    bool ignoreMpq = false;
+    std::vector<std::string> mpqList = FileContentProvider::DefaultMpqList();
+    FileResolver resolver;
+
 #if WHITEOUT_HAS_CASC
-    if (!impl_->cascStorage)
-        return std::nullopt;
-
-    std::string norm = NormalizeCascPath(path);
-    std::string stem = StripExtension(norm);
-    std::string ext = GetLowerExtension(norm);
-
-    auto [altExts, altCount] = AltExtensionsFor(ext);
-
-    for (const char* prefix : kCascPrefixes) {
-
-        if (!ext.empty()) {
-            std::string cascPath = std::string(prefix) + stem + ext;
-            auto data = impl_->cascStorage->readFile(cascPath);
-            if (data && !data->empty()) {
-                if (actualExt)
-                    *actualExt = ext;
-                return data;
-            }
-        }
-
-        for (usize i = 0; i < altCount; ++i) {
-            if (altExts[i] == ext)
-                continue;
-            std::string cascPath = std::string(prefix) + stem + altExts[i];
-            auto data = impl_->cascStorage->readFile(cascPath);
-            if (data && !data->empty()) {
-                if (actualExt)
-                    *actualExt = altExts[i];
-                return data;
-            }
-        }
-    }
+    // Worker pool handed to casc::Storage::open(). CASC parallelises the slow
+    // part of opening a Reforged install (index + encoding-table parsing) and
+    // also fans out BLTE block decompression of large files across it. The
+    // storage keeps a *non-owning* pointer, so the pool must outlive it —
+    // hence declared before cascStorage (members destruct in reverse order).
+    // Created lazily on first CASC open so MPQ-only installs spawn no idle
+    // threads.
+    std::unique_ptr<whiteout::utils::SimpleThreadPool> cascPool;
+    std::optional<whiteout::storages::casc::Storage> cascStorage;
 #endif
-    return std::nullopt;
-}
 
-std::optional<std::vector<u8>> FileContentProvider::ReadFromMpq(const std::string& path,
-                                                                std::string* actualExt) const {
 #if WHITEOUT_HAS_MPQ
-    if (impl_->mpqStorages.empty())
-        return std::nullopt;
+    std::vector<whiteout::storages::mpq::Storage> mpqStorages;
+#endif
 
-    const std::string& raw = path;
-    std::string ext = GetLowerExtension(raw);
-    std::string stem = StripExtension(raw);
+    // ---- Request queue (guarded by reqMu) ----
+    // `pending` is the worker's input. `alive` tracks every id that has been
+    // submitted but neither delivered (via Pump) nor cancelled — Wait spins
+    // on its absence. `cancelled` records ids the worker should skip.
+    std::mutex reqMu;
+    std::condition_variable reqCv;
+    std::condition_variable doneCv; // signalled when an id leaves `alive`
+    std::deque<std::shared_ptr<PendingRequest>> pending;
+    std::unordered_set<RequestId> alive;
+    std::unordered_set<RequestId> cancelled;
+    std::atomic<RequestId> nextId{1};
+    std::atomic<bool> stopping{false};
 
-    auto [altExts, altCount] = AltExtensionsFor(ext);
+    // The first thread to call Pump() (or Wait()) is treated as the host's
+    // Pump thread — callbacks fire here, and a Wait() on this thread runs
+    // Pump in a loop so a single-threaded host doesn't deadlock during init
+    // (sync ReadFile before the per-frame Pump loop has started). Other
+    // threads that call Wait block on doneCv instead, letting the Pump
+    // thread deliver callbacks for them.
+    std::atomic<std::thread::id> pumpThread{};
 
-    for (const auto& mpq : impl_->mpqStorages) {
+    // ---- Completion queue (guarded by compMu) ----
+    // Worker pushes; Pump (on the host thread) drains.
+    std::mutex compMu;
+    std::deque<CompletedRequest> completed;
 
-        if (!ext.empty()) {
-            auto data = mpq.readFile(raw);
-            if (data && !data->empty()) {
-                if (actualExt)
-                    *actualExt = ext;
-                return data;
+    std::vector<std::thread> workers;
+
+    // ----------------------------------------------------------------
+
+    void Discover() {
+        auto games = whiteout::utils::findBlizzardGames();
+
+        std::string fallbackPath;
+        for (auto& info : games) {
+            if (info.game != whiteout::utils::BlizzardGame::WarcraftIII &&
+                info.game != whiteout::utils::BlizzardGame::WarcraftIIIReforged)
+                continue;
+            if (fs::exists(FsPathFromUtf8(info.path) / "Data")) {
+                wc3Path = info.path;
+                break;
             }
+            if (fallbackPath.empty())
+                fallbackPath = info.path;
+        }
+        if (wc3Path.empty())
+            wc3Path = std::move(fallbackPath);
+
+        installPath = wc3Path;
+
+        if (wc3Path.empty()) {
+            std::printf("[FileContentProvider] Warcraft III installation not found.\n");
+            return;
         }
 
-        for (usize i = 0; i < altCount; ++i) {
-            if (altExts[i] == ext)
+        std::printf("[FileContentProvider] Found Warcraft III at: %s\n", wc3Path.c_str());
+
+        TryOpenCascLocked();
+        TryOpenMpqLocked();
+    }
+
+    void TryOpenCascLocked() {
+#if WHITEOUT_HAS_CASC
+        cascStorage.reset();
+        if (ignoreCasc || installPath.empty())
+            return;
+        if (!cascPool) {
+            // 2–4 threads: enough to overlap index parsing and large-file
+            // BLTE decompression without oversubscribing the request pool.
+            const unsigned hw = std::thread::hardware_concurrency();
+            cascPool = std::make_unique<whiteout::utils::SimpleThreadPool>(
+                std::clamp<unsigned>(hw ? hw : 4u, 2u, 4u));
+        }
+        std::string error;
+        cascStorage =
+            whiteout::storages::casc::Storage::open(installPath, &error, cascPool.get());
+        if (cascStorage)
+            std::printf("[FileContentProvider] CASC storage opened: %s\n", installPath.c_str());
+        else {
+            std::printf("[FileContentProvider] CASC not available at '%s': %s\n",
+                        installPath.c_str(), error.c_str());
+            cascStorage.reset();
+        }
+#endif
+    }
+
+    void TryOpenMpqLocked() {
+#if WHITEOUT_HAS_MPQ
+        mpqStorages.clear();
+        if (ignoreMpq || installPath.empty())
+            return;
+        for (const std::string& name : mpqList) {
+            if (name.empty())
                 continue;
-            auto data = mpq.readFile(stem + altExts[i]);
-            if (data && !data->empty()) {
-                if (actualExt)
-                    *actualExt = altExts[i];
-                return data;
+            fs::path mpqFsPath = FsPathFromUtf8(installPath) / name;
+            if (!fs::exists(mpqFsPath)) {
+                std::printf("[FileContentProvider] MPQ not found, skipping: %s\n",
+                            PathToUtf8(mpqFsPath).c_str());
+                continue;
             }
+            std::string error;
+            auto storage = whiteout::storages::mpq::Storage::open(PathToUtf8(mpqFsPath), &error);
+            if (storage) {
+                std::printf("[FileContentProvider] Opened MPQ: %s\n",
+                            PathToUtf8(mpqFsPath).c_str());
+                mpqStorages.push_back(std::move(*storage));
+            } else {
+                std::printf("[FileContentProvider] Failed to open %s: %s\n",
+                            PathToUtf8(mpqFsPath).c_str(), error.c_str());
+            }
+        }
+#endif
+    }
+
+    // Disk-then-CASC-then-MPQ read, run on the worker thread with storageMu
+    // already held. Mirrors the legacy synchronous ReadFile fallback chain.
+    void DoRead(const std::string& path, RequestResult& out) {
+        // ---- Disk ----
+        std::string norm = FileResolver::NormalizeSeparators(path);
+        std::string ext = GetLowerExtension(norm);
+        fs::path resolved;
+        if (HasExtension(ext, kTextureExts, std::size(kTextureExts)))
+            resolved = resolver.ResolveTexture(norm);
+        else if (HasExtension(ext, kModelExts, std::size(kModelExts)))
+            resolved = resolver.ResolveModel(norm);
+        else
+            resolved = resolver.Resolve(norm, {});
+
+        std::vector<u8> bytes;
+        if (ReadDiskFile(resolved, bytes)) {
+            std::string e = resolved.extension().string();
+            for (auto& c : e)
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            out.actualExt = std::move(e);
+            out.data = std::move(bytes);
+            out.ok = true;
+            return;
+        }
+
+        // ---- CASC ----
+#if WHITEOUT_HAS_CASC
+        if (cascStorage) {
+            std::string normCasc = NormalizeCascPath(path);
+            std::string stem = StripExtension(normCasc);
+            std::string cascExt = GetLowerExtension(normCasc);
+            auto [altExts, altCount] = AltExtensionsFor(cascExt);
+            for (const char* prefix : kCascPrefixes) {
+                if (!cascExt.empty()) {
+                    std::string cascPath = std::string(prefix) + stem + cascExt;
+                    auto data = cascStorage->readFile(cascPath);
+                    if (data && !data->empty()) {
+                        out.actualExt = cascExt;
+                        out.data = std::move(*data);
+                        out.ok = true;
+                        return;
+                    }
+                }
+                for (usize i = 0; i < altCount; ++i) {
+                    if (altExts[i] == cascExt)
+                        continue;
+                    std::string cascPath = std::string(prefix) + stem + altExts[i];
+                    auto data = cascStorage->readFile(cascPath);
+                    if (data && !data->empty()) {
+                        out.actualExt = altExts[i];
+                        out.data = std::move(*data);
+                        out.ok = true;
+                        return;
+                    }
+                }
+            }
+        }
+#endif
+
+        // ---- MPQ ----
+#if WHITEOUT_HAS_MPQ
+        if (!mpqStorages.empty()) {
+            std::string mpqExt = GetLowerExtension(path);
+            std::string stem = StripExtension(path);
+            auto [altExts, altCount] = AltExtensionsFor(mpqExt);
+            for (const auto& mpq : mpqStorages) {
+                if (!mpqExt.empty()) {
+                    auto data = mpq.readFile(path);
+                    if (data && !data->empty()) {
+                        out.actualExt = mpqExt;
+                        out.data = std::move(*data);
+                        out.ok = true;
+                        return;
+                    }
+                }
+                for (usize i = 0; i < altCount; ++i) {
+                    if (altExts[i] == mpqExt)
+                        continue;
+                    auto data = mpq.readFile(stem + altExts[i]);
+                    if (data && !data->empty()) {
+                        out.actualExt = altExts[i];
+                        out.data = std::move(*data);
+                        out.ok = true;
+                        return;
+                    }
+                }
+            }
+        }
+#endif
+        // Miss — ok stays false; data + actualExt stay empty.
+    }
+
+    void WorkerLoop() {
+        while (true) {
+            std::shared_ptr<PendingRequest> req;
+            {
+                std::unique_lock lk(reqMu);
+                reqCv.wait(lk, [&] { return stopping.load() || !pending.empty(); });
+                if (stopping.load() && pending.empty())
+                    return;
+                req = std::move(pending.front());
+                pending.pop_front();
+                // Skip if cancelled before we got to it.
+                if (cancelled.erase(req->id)) {
+                    alive.erase(req->id);
+                    doneCv.notify_all(); // unblock any Wait() pinned on this id
+                    continue;
+                }
+            }
+
+            RequestResult result;
+            {
+                // Shared lock: any number of workers may read concurrently;
+                // only reconfiguration takes the exclusive lock.
+                std::shared_lock sg(storageMu);
+                DoRead(req->path, result);
+            }
+
+            // Re-check cancellation between IO and delivery so a Cancel that
+            // races the read still suppresses the callback.
+            {
+                std::lock_guard lk(reqMu);
+                if (cancelled.erase(req->id)) {
+                    alive.erase(req->id);
+                    doneCv.notify_all();
+                    continue;
+                }
+            }
+
+            {
+                std::lock_guard lk(compMu);
+                CompletedRequest c;
+                c.id = req->id;
+                c.cb = std::move(req->cb);
+                c.result = std::move(result);
+                completed.push_back(std::move(c));
+            }
+            // Wake any Wait() that's blocking — Pump on the host thread will
+            // erase from alive_ and re-notify, but the wake here also lets a
+            // Wait that's actively pumping notice the new completion sooner.
+            doneCv.notify_all();
         }
     }
-#endif
-    return std::nullopt;
+};
+
+FileContentProvider::FileContentProvider() : impl_(std::make_unique<Impl>()) {
+    // Discover runs storage IO directly; safe to call before the workers
+    // exist because no requests can be in flight yet.
+    impl_->Discover();
+
+    const fs::path exeDir = DiscoverExecutableDirectory();
+    if (!exeDir.empty()) {
+        impl_->resolver.SetSystemBasePath(exeDir);
+        std::printf("[FileContentProvider] Executable dir: %s\n", PathToUtf8(exeDir).c_str());
+    }
+
+    // IO worker pool. Reads mix disk latency with CASC block decompression
+    // (CPU-bound), so scaling with cores genuinely helps bulk texture loads;
+    // capped at 8 to avoid pointless oversubscription on big machines.
+    unsigned hw = std::thread::hardware_concurrency();
+    const unsigned workerCount = std::clamp<unsigned>(hw ? hw : 4u, 2u, 8u);
+    impl_->workers.reserve(workerCount);
+    for (unsigned i = 0; i < workerCount; ++i)
+        impl_->workers.emplace_back([this] { impl_->WorkerLoop(); });
 }
+
+FileContentProvider::~FileContentProvider() {
+    if (!impl_)
+        return;
+    {
+        std::lock_guard lk(impl_->reqMu);
+        impl_->stopping.store(true);
+    }
+    impl_->reqCv.notify_all();
+    for (auto& w : impl_->workers) {
+        if (w.joinable())
+            w.join();
+    }
+}
+
+FileContentProvider::FileContentProvider(FileContentProvider&&) noexcept = default;
+FileContentProvider& FileContentProvider::operator=(FileContentProvider&&) noexcept = default;
+
+void FileContentProvider::SetBasePath(const std::filesystem::path& basePath) {
+    std::unique_lock sg(impl_->storageMu);
+    impl_->resolver.SetBasePath(basePath);
+}
+
+// ---- Async surface ----------------------------------------------------------
+
+RequestId FileContentProvider::Request(const std::string& path, CompletionCallback cb) {
+    if (path.empty() || !cb)
+        return kInvalidRequestId;
+    auto req = std::make_shared<PendingRequest>();
+    req->id = impl_->nextId.fetch_add(1, std::memory_order_relaxed);
+    req->path = path;
+    req->cb = std::move(cb);
+    {
+        std::lock_guard lk(impl_->reqMu);
+        impl_->pending.push_back(req);
+        impl_->alive.insert(req->id);
+    }
+    impl_->reqCv.notify_one();
+    return req->id;
+}
+
+void FileContentProvider::Cancel(RequestId id) {
+    if (id == kInvalidRequestId)
+        return;
+    {
+        std::lock_guard lk(impl_->reqMu);
+        if (impl_->alive.erase(id))
+            impl_->cancelled.insert(id);
+    }
+    impl_->doneCv.notify_all();
+}
+
+void FileContentProvider::Pump() {
+    // First Pump() caller becomes the registered Pump thread — see Wait()
+    // for why this matters. compare_exchange leaves a previously-set value
+    // alone.
+    std::thread::id expected{};
+    impl_->pumpThread.compare_exchange_strong(expected, std::this_thread::get_id());
+
+    std::deque<CompletedRequest> batch;
+    {
+        std::lock_guard lk(impl_->compMu);
+        batch.swap(impl_->completed);
+    }
+    for (auto& c : batch) {
+        // Late-cancel race: if Cancel was called between the worker queueing
+        // this completion and us draining the batch, suppress the callback.
+        // cancelled.erase() also tidies the set so it doesn't leak entries.
+        bool fire = true;
+        {
+            std::lock_guard lk(impl_->reqMu);
+            if (impl_->cancelled.erase(c.id))
+                fire = false;
+            impl_->alive.erase(c.id);
+        }
+        if (fire && c.cb)
+            c.cb(std::move(c.result));
+    }
+    impl_->doneCv.notify_all();
+}
+
+void FileContentProvider::Wait(RequestId id) {
+    if (id == kInvalidRequestId)
+        return;
+
+    // Treat the calling thread as the Pump thread when none has registered
+    // yet — covers init-time sync ReadFile() before the host's per-frame
+    // Pump loop has started.
+    std::thread::id expected{};
+    impl_->pumpThread.compare_exchange_strong(expected, std::this_thread::get_id());
+
+    const auto myThread = std::this_thread::get_id();
+    if (impl_->pumpThread.load() == myThread) {
+        // We're the Pump thread — drain completions ourselves while the
+        // request is in flight. Callbacks fire on this thread (which is the
+        // host's main thread by construction).
+        while (true) {
+            Pump();
+            std::unique_lock lk(impl_->reqMu);
+            if (impl_->alive.count(id) == 0)
+                return;
+            // 10ms cap is a defensive backstop in case a notify is lost —
+            // under normal operation the worker wakes us exactly on
+            // completion (it signals doneCv after pushing).
+            impl_->doneCv.wait_for(lk, std::chrono::milliseconds(10));
+        }
+    }
+
+    // Some other thread (background loader, etc.) is the Pump thread. Just
+    // block on doneCv — Pump on that thread will erase from `alive` and
+    // signal. This is the path that lets ModelTemplateManager::LoaderFunc
+    // sync-read off the worker without firing main-thread callbacks
+    // (texture stubs, etc.) on the wrong thread.
+    std::unique_lock lk(impl_->reqMu);
+    impl_->doneCv.wait(lk, [&] { return impl_->alive.count(id) == 0; });
+}
+
+// ---- Storage observers / configuration --------------------------------------
 
 bool FileContentProvider::HasCasc() const {
 #if WHITEOUT_HAS_CASC
+    std::shared_lock sg(impl_->storageMu);
     return impl_->cascStorage.has_value();
 #else
     return false;
@@ -419,6 +626,7 @@ bool FileContentProvider::HasCasc() const {
 
 bool FileContentProvider::HasMpq() const {
 #if WHITEOUT_HAS_MPQ
+    std::shared_lock sg(impl_->storageMu);
     return !impl_->mpqStorages.empty();
 #else
     return false;
@@ -426,48 +634,58 @@ bool FileContentProvider::HasMpq() const {
 }
 
 const std::string& FileContentProvider::Wc3Path() const {
+    // Set once in Discover() and never written again; safe to return by ref
+    // without taking storageMu.
     return impl_->wc3Path;
 }
 
-const std::string& FileContentProvider::InstallPath() const {
+std::string FileContentProvider::InstallPath() const {
+    std::shared_lock sg(impl_->storageMu);
     return impl_->installPath;
 }
 
 void FileContentProvider::SetInstallPath(const std::string& path) {
+    std::unique_lock sg(impl_->storageMu);
     impl_->installPath = path.empty() ? impl_->wc3Path : path;
-    impl_->TryOpenCasc();
-    impl_->TryOpenMpq();
+    impl_->TryOpenCascLocked();
+    impl_->TryOpenMpqLocked();
 }
 
 bool FileContentProvider::IgnoreCasc() const {
+    std::shared_lock sg(impl_->storageMu);
     return impl_->ignoreCasc;
 }
 
 bool FileContentProvider::IgnoreMpq() const {
+    std::shared_lock sg(impl_->storageMu);
     return impl_->ignoreMpq;
 }
 
 void FileContentProvider::SetIgnoreCasc(bool ignore) {
+    std::unique_lock sg(impl_->storageMu);
     if (impl_->ignoreCasc == ignore)
         return;
     impl_->ignoreCasc = ignore;
-    impl_->TryOpenCasc();
+    impl_->TryOpenCascLocked();
 }
 
 void FileContentProvider::SetIgnoreMpq(bool ignore) {
+    std::unique_lock sg(impl_->storageMu);
     if (impl_->ignoreMpq == ignore)
         return;
     impl_->ignoreMpq = ignore;
-    impl_->TryOpenMpq();
+    impl_->TryOpenMpqLocked();
 }
 
-const std::vector<std::string>& FileContentProvider::MpqList() const {
+std::vector<std::string> FileContentProvider::MpqList() const {
+    std::shared_lock sg(impl_->storageMu);
     return impl_->mpqList;
 }
 
 void FileContentProvider::SetMpqList(std::vector<std::string> list) {
+    std::unique_lock sg(impl_->storageMu);
     impl_->mpqList = std::move(list);
-    impl_->TryOpenMpq();
+    impl_->TryOpenMpqLocked();
 }
 
 std::vector<std::string> FileContentProvider::DefaultMpqList() {

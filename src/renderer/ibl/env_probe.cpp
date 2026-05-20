@@ -95,7 +95,7 @@ LoadedEnvProbe LoadEnvProbeFromBytes(gfx::IGFXDevice& gfx, std::span<const u8> b
                                      const char* sourceLabel, bool applyBlizzardFaceRemap);
 }
 
-LoadedEnvProbe LoadEnvProbe(gfx::IGFXDevice& gfx, const IContentProvider& content,
+LoadedEnvProbe LoadEnvProbe(gfx::IGFXDevice& gfx, IContentProvider& content,
                             const std::string& relPath) {
     LoadedEnvProbe failed{};
 

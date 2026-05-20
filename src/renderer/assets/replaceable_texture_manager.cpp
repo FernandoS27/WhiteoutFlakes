@@ -2,6 +2,7 @@
 #include "model/model_source_utils.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/assets/texture_asset_manager.h"
+#include "renderer/assets/texture_stub.h"
 #include "whiteout/flakes/content_provider.h"
 #include "whiteout/flakes/event_data.h"
 #include "whiteout/flakes/util/replaceable_paths.h"
@@ -9,6 +10,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <utility>
 
 namespace whiteout::flakes::renderer::assets {
 
@@ -111,47 +113,22 @@ void ReplaceableTextureManager::RegisterModelSlot(Actor& mi, i32 textureId, i32 
 }
 
 void ReplaceableTextureManager::UnregisterModel(Actor& mi) {
-    slots_.erase(&mi);
+    auto it = slots_.find(&mi);
+    if (it == slots_.end())
+        return;
+    // Cancel any in-flight canonical-asset loads so the completion callback
+    // doesn't write through a dangling Actor* once the slots are gone.
+    // FileContentProvider::Pump() suppresses already-queued completions for
+    // cancelled IDs, so even a callback that's mid-flight in the worker is
+    // safe.
+    if (contentProvider_) {
+        for (auto& s : it->second) {
+            if (s.pendingLoad != io::kInvalidRequestId)
+                contentProvider_->Cancel(s.pendingLoad);
+        }
+    }
+    slots_.erase(it);
 }
-
-namespace {
-
-bool DecodeCanonicalAsset(IContentProvider& cp, const std::string& path, std::vector<u8>& outPixels,
-                          i32& outW, i32& outH) {
-    std::string foundExt;
-    auto data = cp.ReadFile(path, &foundExt);
-    if (!data) {
-        std::fprintf(stderr, "[textures] ERR: ReplaceableTexture read FAIL '%s'\n", path.c_str());
-        return false;
-    }
-    if (foundExt.empty())
-        foundExt = ExtensionLower(std::filesystem::path(path));
-
-    auto result =
-        DispatchTextureParser(foundExt, [&](auto& parser) { return parser.parse(*data); });
-    if (!result) {
-        std::fprintf(stderr,
-                     "[textures] ERR: ReplaceableTexture decode FAIL '%s' "
-                     "ext='%s' bytes=%zu\n",
-                     path.c_str(), foundExt.c_str(), data->size());
-        return false;
-    }
-
-    result->format(whiteout::textures::PixelFormat::RGBA8);
-    outW = (i32)result->width();
-    outH = (i32)result->height();
-    if (outW <= 0 || outH <= 0) {
-        std::fprintf(stderr,
-                     "[textures] ERR: ReplaceableTexture invalid size '%s' "
-                     "%dx%d\n",
-                     path.c_str(), outW, outH);
-        return false;
-    }
-    auto mip0 = result->mipData(0);
-    outPixels.assign(mip0.begin(), mip0.end());
-    return true;
-}
-} // namespace
 
 void ReplaceableTextureManager::BakeSlot(Actor& mi, i32 textureId, i32 replaceableId) {
     const u8 r = Red(mi.teamColor);
@@ -165,10 +142,13 @@ void ReplaceableTextureManager::BakeSlot(Actor& mi, i32 textureId, i32 replaceab
     st.mipLevels = 1;
 
     if (replaceableId == 2) {
-
+        // Team glow is a synthesized texture (no archive read needed).
         st.pixels = DecodeTeamGlow(r, g, b, st.width, st.height);
-    } else if (replaceableId == 1) {
-
+        mi.render.stagedDirty = true;
+        return;
+    }
+    if (replaceableId == 1) {
+        // Team color swatch — same idea, no IO.
         st.width = 4;
         st.height = 4;
         st.pixels.resize(64);
@@ -178,26 +158,110 @@ void ReplaceableTextureManager::BakeSlot(Actor& mi, i32 textureId, i32 replaceab
             st.pixels[j * 4 + 2] = b;
             st.pixels[j * 4 + 3] = 255;
         }
-    } else {
+        mi.render.stagedDirty = true;
+        return;
+    }
 
-        const char* canon = io::ReplaceableCanonicalPath(replaceableId);
-        bool loaded = false;
-        if (canon && contentProvider_) {
-            loaded = DecodeCanonicalAsset(*contentProvider_, canon, st.pixels, st.width, st.height);
-        }
-        if (!loaded) {
-            st.width = 4;
-            st.height = 4;
-            st.pixels.assign(64, 0);
-            for (i32 j = 0; j < 16; ++j) {
-                st.pixels[j * 4 + 0] = 255;
-                st.pixels[j * 4 + 1] = 0;
-                st.pixels[j * 4 + 2] = 255;
-                st.pixels[j * 4 + 3] = 255;
-            }
+    // ---- Canonical asset (replaceable IDs 11–37): stub now, real bytes
+    // ---- later via the async content provider.
+    //
+    // The diffuse stub keeps the model visible at neutral-white the first
+    // frame the actor is drawn; the worker thread reads the archive in the
+    // background and OnCanonicalAssetLoaded swaps real pixels in. Re-baking
+    // the same slot (team color / tileset change) cancels the prior load
+    // first so a slow earlier read can never overwrite a faster later one.
+    {
+        const auto stubPx = StubPixelRGBA(TextureChannelKind::Diffuse);
+        st.width = 1;
+        st.height = 1;
+        st.pixels.assign(stubPx.begin(), stubPx.end());
+        mi.render.stagedDirty = true;
+    }
+
+    const char* canon = io::ReplaceableCanonicalPath(replaceableId);
+    if (!canon || !contentProvider_)
+        return;
+
+    // Locate the matching Slot to attach the new request id. RegisterModelSlot
+    // pushes the entry before calling BakeSlot, so it must exist.
+    auto it = slots_.find(&mi);
+    if (it == slots_.end())
+        return;
+    Slot* slot = nullptr;
+    for (auto& s : it->second) {
+        if (s.textureId == textureId && (i32)s.replaceableId == replaceableId) {
+            slot = &s;
+            break;
         }
     }
-    mi.render.stagedDirty = true;
+    if (!slot)
+        return;
+    if (slot->pendingLoad != io::kInvalidRequestId)
+        contentProvider_->Cancel(slot->pendingLoad);
+
+    Actor* miPtr = &mi;
+    slot->pendingLoad = contentProvider_->Request(
+        canon, [this, miPtr, textureId, replaceableId](io::RequestResult&& r) {
+            OnCanonicalAssetLoaded(miPtr, textureId, replaceableId, std::move(r));
+        });
+}
+
+void ReplaceableTextureManager::OnCanonicalAssetLoaded(Actor* miPtr, i32 textureId,
+                                                       i32 replaceableId,
+                                                       io::RequestResult&& r) {
+    // The actor may have been unregistered (and possibly destroyed) between
+    // request submission and this callback. UnregisterModel cancels pending
+    // loads, but a late-completion path through Pump still suppresses cancelled
+    // ids — defensively, also re-check the slots_ map so we never write through
+    // a stale Actor*.
+    auto it = slots_.find(miPtr);
+    if (it == slots_.end())
+        return;
+    Slot* slot = nullptr;
+    for (auto& s : it->second) {
+        if (s.textureId == textureId && (i32)s.replaceableId == replaceableId) {
+            slot = &s;
+            break;
+        }
+    }
+    if (!slot)
+        return;
+    slot->pendingLoad = io::kInvalidRequestId;
+
+    if (!r.ok || r.data.empty()) {
+        // Keep the white stub; the real asset just didn't exist or read failed.
+        std::fprintf(stderr, "[textures] ReplaceableTexture async read miss for id %d\n",
+                     replaceableId);
+        return;
+    }
+
+    std::string foundExt = r.actualExt;
+    if (foundExt.empty()) {
+        if (const char* canon = io::ReplaceableCanonicalPath(replaceableId))
+            foundExt = ExtensionLower(std::filesystem::path(canon));
+    }
+
+    auto result =
+        DispatchTextureParser(foundExt, [&](auto& parser) { return parser.parse(r.data); });
+    if (!result) {
+        std::fprintf(stderr,
+                     "[textures] ReplaceableTexture decode FAIL ext='%s' bytes=%zu (id %d)\n",
+                     foundExt.c_str(), r.data.size(), replaceableId);
+        return;
+    }
+    result->format(whiteout::textures::PixelFormat::RGBA8);
+    const i32 w = (i32)result->width();
+    const i32 h = (i32)result->height();
+    if (w <= 0 || h <= 0)
+        return;
+    auto mip0 = result->mipData(0);
+
+    StagedTexture& st = miPtr->render.stagedTextures[textureId];
+    st.width = w;
+    st.height = h;
+    st.pixels.assign(mip0.begin(), mip0.end());
+    miPtr->render.stagedDirty = true;
+    dirty_.store(true);
 }
 
 gfx::TextureHandle ReplaceableTextureManager::GetHdSwatchTextureFor(u32 rgba) {

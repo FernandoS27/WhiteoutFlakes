@@ -26,7 +26,7 @@ struct LoadedEnvProbe {
     i32 mipCount = 0;
 };
 
-LoadedEnvProbe LoadEnvProbe(gfx::IGFXDevice& gfx, const io::IContentProvider& content,
+LoadedEnvProbe LoadEnvProbe(gfx::IGFXDevice& gfx, io::IContentProvider& content,
                             const std::string& relPath);
 
 LoadedEnvProbe LoadEnvProbeFromFile(gfx::IGFXDevice& gfx, const std::string& absPath,

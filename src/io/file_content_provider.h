@@ -24,8 +24,11 @@ public:
 
     void SetBasePath(const std::filesystem::path& basePath);
 
-    std::optional<std::vector<u8>> ReadFile(const std::string& path,
-                                            std::string* actualExt = nullptr) const override;
+    // ---- IContentProvider async surface ----
+    RequestId Request(const std::string& path, CompletionCallback cb) override;
+    void Wait(RequestId id) override;
+    void Cancel(RequestId id) override;
+    void Pump() override;
 
     bool HasCasc() const;
 
@@ -37,7 +40,9 @@ public:
 
     // Currently-active install root. Both CASC and the MPQ list search from
     // this directory. Defaults to Wc3Path(); pass an empty string to revert.
-    const std::string& InstallPath() const;
+    // Returned by value because reconfiguration from another thread could
+    // invalidate the underlying string between getter call and use.
+    std::string InstallPath() const;
     void SetInstallPath(const std::string& path);
 
     // Per-storage enable switches. When set true, the corresponding storage
@@ -49,8 +54,9 @@ public:
 
     // MPQ load order. Each entry is a filename looked up under InstallPath().
     // Earlier entries are searched first when ReadFile() walks the chain.
-    // Empty list = no MPQs loaded.
-    const std::vector<std::string>& MpqList() const;
+    // Empty list = no MPQs loaded. Returned by value for the same reason as
+    // InstallPath().
+    std::vector<std::string> MpqList() const;
     void SetMpqList(std::vector<std::string> list);
 
     // Built-in MPQ load order used when no user override is set. Exposed so
@@ -58,11 +64,6 @@ public:
     static std::vector<std::string> DefaultMpqList();
 
 private:
-    std::optional<std::vector<u8>> ReadFromCasc(const std::string& path,
-                                                std::string* actualExt) const;
-    std::optional<std::vector<u8>> ReadFromMpq(const std::string& path,
-                                               std::string* actualExt) const;
-
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
