@@ -16,10 +16,12 @@
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#include <shellapi.h> // CommandLineToArgvW
 #elif defined(__linux__)
 #include <unistd.h>
 #include <climits>
@@ -77,6 +79,26 @@ int main(int argc, char* argv[]) {
     // Windows historically defaults to D3D12; Linux only has Vulkan so the
     // default is fixed above.
     backend = whiteout::flakes::gfx::GfxApi::D3D12;
+
+    // main()'s argv arrives in the system ANSI codepage, so a path with
+    // non-Latin characters — e.g. an .mdx with Chinese characters launched
+    // via a file association — is already mangled by the time it reaches
+    // us. Re-derive the args from the wide command line and transcode to
+    // UTF-8 (which FsPathFromUtf8 below expects). The storage vectors are
+    // function-scoped so the rebound argv stays valid for all of main().
+    std::vector<std::string> utf8Args;
+    std::vector<char*> utf8Argv;
+    if (int wArgc = 0; LPWSTR* wArgv = ::CommandLineToArgvW(::GetCommandLineW(), &wArgc)) {
+        utf8Args.reserve(static_cast<size_t>(wArgc));
+        for (int i = 0; i < wArgc; ++i)
+            utf8Args.push_back(whiteout::flakes::io::PathToUtf8(std::filesystem::path(wArgv[i])));
+        ::LocalFree(wArgv);
+        utf8Argv.reserve(utf8Args.size());
+        for (auto& s : utf8Args)
+            utf8Argv.push_back(s.data());
+        argc = wArgc;
+        argv = utf8Argv.data();
+    }
 #endif
     bool backendFromCli = false;
     std::filesystem::path mdxPath;
