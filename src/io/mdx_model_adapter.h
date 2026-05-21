@@ -48,6 +48,12 @@ public:
 
     std::vector<::whiteout::flakes::renderer::model::CameraPreset> GetCameraPresets() const;
 
+    // The parsed source model, kept intact for animation Evaluate(). Exposed
+    // so hosts can re-serialise it (Save As) without re-reading the file.
+    const whiteout::mdx::Model& SourceModel() const {
+        return model_;
+    }
+
 private:
     whiteout::mdx::Model model_;
     std::filesystem::path basePath_;

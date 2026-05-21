@@ -409,6 +409,10 @@ bool ViewerApp::LoadModel(const std::filesystem::path& path) {
         return false;
     }
 
+    // Record the loaded path so CurrentModelPath() is accurate regardless of
+    // entry point (CLI, startup picker, or File > Open). Save As reads it back.
+    currentModelPath_ = path;
+
     service_.Scene().SetPE1BasePath(path.parent_path());
 
     service_.Loader().RequestClearAll();

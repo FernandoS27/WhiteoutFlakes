@@ -7,9 +7,11 @@
 #include "whiteout/flakes/content_provider.h"
 #include "whiteout/flakes/util/path_utf8.h"
 
+#include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <span>
+#include <string>
 #include <utility>
 
 namespace whiteout::flakes::renderer::model {
@@ -193,16 +195,33 @@ std::shared_ptr<ModelTemplate> ModelTemplateManager::ParseAndBuild(const std::st
         return nullptr;
     }
 
+    // The MDX parser also reads the text MDL format from a buffer when told
+    // which it is. Pick the format from the resolved extension — actualExt is
+    // the file the provider actually returned (it may swap .mdx<->.mdl), with
+    // the request path as a fallback when the provider left it blank.
+    const std::string& extSrc = !fileResult.actualExt.empty() ? fileResult.actualExt : mdxPath;
+    auto endsWithMdl = [](const std::string& s) {
+        if (s.size() < 4)
+            return false;
+        std::string tail = s.substr(s.size() - 4);
+        for (auto& c : tail)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return tail == ".mdl";
+    };
+    const whiteout::mdx::MDLXFormat fmt = endsWithMdl(extSrc)
+                                              ? whiteout::mdx::MDLXFormat::MDL
+                                              : whiteout::mdx::MDLXFormat::MDX;
+
     whiteout::mdx::Parser mdxParser;
     whiteout::mdx::Model model;
     try {
         model = mdxParser.parse(
-            std::span<const whiteout::u8>(fileResult.data.data(), fileResult.data.size()));
+            std::span<const whiteout::u8>(fileResult.data.data(), fileResult.data.size()), fmt);
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "[model] ERR: MDX parse FAIL '%s': %s\n", mdxPath.c_str(), e.what());
+        std::fprintf(stderr, "[model] ERR: model parse FAIL '%s': %s\n", mdxPath.c_str(), e.what());
         return nullptr;
     } catch (...) {
-        std::fprintf(stderr, "[model] ERR: MDX parse threw unknown exception '%s'\n",
+        std::fprintf(stderr, "[model] ERR: model parse threw unknown exception '%s'\n",
                      mdxPath.c_str());
         return nullptr;
     }

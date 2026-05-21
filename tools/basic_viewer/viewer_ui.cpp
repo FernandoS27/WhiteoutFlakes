@@ -3,14 +3,18 @@
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/camera.h"
 #include "renderer/debug/debug_renderer.h"
+#include "io/mdx_model_adapter.h"
 #include "renderer/dnc/dnc_service.h"
 #include "renderer/model/model_instance.h"
+#include "renderer/model/model_template.h"
 #include "renderer/particle/splat_service.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #include "renderer/shadow/shadow_service.h"
 #include "settings_ini.h"
 #include "viewer_app.h"
+
+#include <whiteout/models/mdx/writer.h>
 #include "whiteout/flakes/display.h"
 #include "whiteout/flakes/enums.h"
 #include "whiteout/flakes/sound_emitter.h"
@@ -103,6 +107,7 @@ void ViewerUI::BuildFrame() {
     BuildViewCubeWidget();
     if (settingsOpen_)
         BuildSettingsWindow();
+    BuildSaveAsPopup();
 }
 
 void ViewerUI::BuildViewCubeWidget() {
@@ -155,11 +160,99 @@ void ViewerUI::OpenFileDialog() {
     // `char` literals on every platform — the native variant takes wchar_t
     // on Windows, which would break these inline string constants.
     NFD::UniquePathU8 outPath;
-    nfdu8filteritem_t filter[1] = {{"MDX Model", "mdx"}};
+    nfdu8filteritem_t filter[1] = {{"Warcraft III Model", "mdx,mdl"}};
     if (NFD::OpenDialog(outPath, filter, 1) == NFD_OKAY) {
         std::filesystem::path p = io::FsPathFromUtf8(outPath.get());
         app_.LoadModel(p);
     }
+}
+
+namespace {
+
+// Re-serialises the currently-loaded model to `outPath`. The Writer picks
+// MDX-binary vs MDL-text from the file extension; `dialect` only matters for
+// .mdl output. Returns false (and logs) when no model is loaded or the write
+// throws.
+bool WriteCurrentModel(ViewerApp& app, const std::string& outPath,
+                       whiteout::mdx::MdlFormat dialect) {
+    auto tmpl = app.Service().Scene().Templates().Lookup(
+        io::PathToUtf8(app.CurrentModelPath()));
+    if (!tmpl || !tmpl->adapter) {
+        std::fprintf(stderr, "[viewer] Save As: no source model to write\n");
+        return false;
+    }
+    try {
+        whiteout::mdx::Writer writer;
+        writer.write(outPath, tmpl->adapter->SourceModel(), dialect);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[viewer] Save As FAILED '%s': %s\n", outPath.c_str(), e.what());
+        return false;
+    }
+    std::printf("[viewer] Saved model: %s\n", outPath.c_str());
+    return true;
+}
+
+} // namespace
+
+void ViewerUI::SaveAsDialog() {
+    NFD::UniquePathU8 outPath;
+    // Two separate filter entries (not "mdx,mdl") so NFD appends the right
+    // extension for whichever the user selects — that extension is then how
+    // we decide binary vs text.
+    nfdu8filteritem_t filter[2] = {{"MDX model (binary)", "mdx"},
+                                   {"MDL model (text)", "mdl"}};
+    if (NFD::SaveDialog(outPath, filter, 2) != NFD_OKAY)
+        return;
+
+    std::string path = outPath.get();
+    std::string ext = std::filesystem::path(path).extension().string();
+    for (auto& c : ext)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+    if (ext == ".mdl") {
+        // MDL needs a dialect — stash the path and pop the modal next frame.
+        pendingSaveMdlPath_ = std::move(path);
+        openDialectPopup_ = true;
+    } else {
+        // MDX (binary) — dialect is irrelevant to the writer here.
+        WriteCurrentModel(app_, path, whiteout::mdx::MdlFormat::WarcraftIII);
+    }
+}
+
+void ViewerUI::BuildSaveAsPopup() {
+    if (openDialectPopup_) {
+        ImGui::OpenPopup("Save As MDL");
+        openDialectPopup_ = false;
+    }
+
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("Save As MDL", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    ImGui::TextUnformatted("Which MDL dialect should be written?");
+    ImGui::Spacing();
+    ImGui::TextDisabled("Warcraft III  - engine-faithful, loads in-game.");
+    ImGui::TextDisabled("Hiveworkshop  - community tools (Retera, Magos, MdlVis).");
+    ImGui::Separator();
+
+    if (ImGui::Button("Warcraft III", ImVec2(130, 0))) {
+        WriteCurrentModel(app_, pendingSaveMdlPath_, whiteout::mdx::MdlFormat::WarcraftIII);
+        pendingSaveMdlPath_.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Hiveworkshop", ImVec2(130, 0))) {
+        WriteCurrentModel(app_, pendingSaveMdlPath_, whiteout::mdx::MdlFormat::Hiveworkshop);
+        pendingSaveMdlPath_.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+        pendingSaveMdlPath_.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
 void ViewerUI::BuildMenuBar() {
@@ -169,8 +262,11 @@ void ViewerUI::BuildMenuBar() {
 
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Open MDX...", "Ctrl+O"))
+            if (ImGui::MenuItem("Open Model...", "Ctrl+O"))
                 OpenFileDialog();
+            const bool hasModel = !app_.CurrentModelPath().empty();
+            if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S", false, hasModel))
+                SaveAsDialog();
             ImGui::Separator();
             if (ImGui::MenuItem("Exit"))
                 glfwSetWindowShouldClose(app_.Window(), GLFW_TRUE);

@@ -30,12 +30,23 @@ private:
     void BuildToolbar();
     void BuildSettingsWindow();
     void BuildViewCubeWidget();
+    // Renders the deferred "pick MDL dialect" modal when an MDL Save As is
+    // pending. No-op otherwise.
+    void BuildSaveAsPopup();
 
     void OpenFileDialog();
+    // Save As entry point — pops the native save dialog, then either writes
+    // immediately (MDX) or defers to the dialect modal (MDL).
+    void SaveAsDialog();
 
     ViewerApp& app_;
 
     bool settingsOpen_ = false;
+
+    // Save As state. `pendingSaveMdlPath_` is non-empty only between the user
+    // choosing an .mdl target and picking a dialect in the modal.
+    std::string pendingSaveMdlPath_;
+    bool openDialectPopup_ = false;
 
     // DNC path edit buffer (ImGui InputText needs a writable buffer the UI
     // owns; we sync from DncService.UnitMdlPath() on each frame so external

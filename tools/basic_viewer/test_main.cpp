@@ -323,7 +323,7 @@ int main(int argc, char* argv[]) {
     // File > Open in the menu bar.
     if (mdxPath.empty()) {
         NFD::UniquePathU8 outPath;
-        nfdu8filteritem_t filter[1] = {{"MDX Model", "mdx"}};
+        nfdu8filteritem_t filter[1] = {{"Warcraft III Model", "mdx,mdl"}};
         if (NFD::OpenDialog(outPath, filter, 1) == NFD_OKAY)
             mdxPath = whiteout::flakes::io::FsPathFromUtf8(outPath.get());
     }
@@ -331,7 +331,7 @@ int main(int argc, char* argv[]) {
         if (!std::filesystem::exists(mdxPath)) {
             std::cerr << "File not found: " << whiteout::flakes::io::PathToUtf8(mdxPath) << "\n";
         } else if (!app.LoadModel(mdxPath)) {
-            std::cerr << "Failed to load MDX.\n";
+            std::cerr << "Failed to load model.\n";
         }
     }
 
