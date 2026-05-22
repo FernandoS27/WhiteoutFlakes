@@ -19,24 +19,28 @@ plugin, and any host that links against `WhiteoutFlakesLib`.
 
 ## Screenshots
 
+<p align="center">
+  <img src="resources/screenshots/animated_01.webp" alt="WhiteoutFlakes preview" width="560">
+</p>
+
+<details>
+<summary><b>More screenshots</b></summary>
+
 <table>
   <tr>
-    <td><img src="resources/screenshots/screenshot_1.png" alt="Screenshot 1"></td>
-    <td><img src="resources/screenshots/screenshot_2.png" alt="Screenshot 2"></td>
+    <td><img src="resources/screenshots/animated_02.webp" alt="Screenshot 2" width="380"></td>
+    <td><img src="resources/screenshots/animated_03.webp" alt="Screenshot 3" width="380"></td>
   </tr>
   <tr>
-    <td><img src="resources/screenshots/screenshot_3.png" alt="Screenshot 3"></td>
-    <td><img src="resources/screenshots/screenshot_4.png" alt="Screenshot 4"></td>
+    <td><img src="resources/screenshots/animated_04.webp" alt="Screenshot 4" width="380"></td>
+    <td><img src="resources/screenshots/animated_05.webp" alt="Screenshot 5" width="380"></td>
   </tr>
   <tr>
-    <td><img src="resources/screenshots/screenshot_5.png" alt="Screenshot 5"></td>
-    <td><img src="resources/screenshots/screenshot_6.png" alt="Screenshot 6"></td>
-  </tr>
-  <tr>
-    <td><img src="resources/screenshots/screenshot_7.png" alt="Screenshot 7"></td>
-    <td><img src="resources/screenshots/screenshot_8.png" alt="Screenshot 8"></td>
+    <td><img src="resources/screenshots/animated_06.webp" alt="Screenshot 6" width="380"></td>
   </tr>
 </table>
+
+</details>
 
 ## What it renders
 
