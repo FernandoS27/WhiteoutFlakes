@@ -31,6 +31,12 @@ void D3D11CommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
 void D3D11CommandList::EndRenderPass() {
     assert(inRenderPass_ && "EndRenderPass without Begin");
     inRenderPass_ = false;
+    // Unbind the render targets. Otherwise a resource just used as an RTV
+    // stays bound to the output-merger, and binding it as an SRV/UAV in a
+    // following pass (e.g. the frame-capture compute reading the composite)
+    // trips D3D11's read/write hazard detection, which silently nulls that
+    // binding — the shader then reads zeroes.
+    device_.GetD3DContext()->OMSetRenderTargets(0, nullptr, nullptr);
 }
 
 void D3D11CommandList::SetViewport(const Viewport& vp) {
