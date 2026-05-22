@@ -181,6 +181,9 @@ private:
     void OnCursorPos(f64 x, f64 y);
     void OnScroll(f64 yoffset);
     void UpdateCameraPresetAnimator();
+    // Frames the orbital camera on a freshly-loaded model — targets the centre
+    // of its bounding box, three-quarter angle, distance to fit.
+    void FrameCameraToModel(model::Actor* hero);
 
     static void FramebufferSizeCallback(GLFWwindow* w, int width, int height);
     static void MouseButtonCallback(GLFWwindow* w, int button, int action, int mods);

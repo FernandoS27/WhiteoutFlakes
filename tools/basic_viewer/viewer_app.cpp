@@ -7,6 +7,7 @@
 #include "renderer/model/model_instance.h"
 #include "renderer/model/model_loader.h"
 #include "renderer/model/model_template.h"
+#include "io/mdx_model_adapter.h"
 #include "renderer/particle/splat_service.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
@@ -20,6 +21,7 @@
 
 #include "gfx/gfx.h"
 
+#include <whiteout/models/mdx/mdx.h>
 #include <whiteout/textures/gif/writer.h>
 #include <whiteout/textures/png/writer.h>
 #include <whiteout/textures/texture.h>
@@ -443,6 +445,68 @@ void ViewerApp::OnScroll(f64 yoffset) {
     service_.Scene().Camera().Zoom(static_cast<i32>(yoffset * 30.0));
 }
 
+void ViewerApp::FrameCameraToModel(model::Actor* hero) {
+    auto& cam = service_.Scene().Camera();
+    cam.SetOrbitalMode();
+
+    // Model AABB from the union of the per-sequence extents — these bound the
+    // model as it actually animates. Death / dissipate / birth sequences are
+    // skipped: they fling, collapse or scale the model and would bloat the
+    // box. Geoset bind-pose / modelExtent are fallbacks for models whose
+    // sequence extents are all degenerate (many MDX files leave them zeroed).
+    Vector3f lo{1e30f, 1e30f, 1e30f}, hi{-1e30f, -1e30f, -1e30f};
+    bool have = false;
+    auto consume = [&](const whiteout::mdx::Extent& e) {
+        if (e.maximum.x <= e.minimum.x && e.maximum.y <= e.minimum.y &&
+            e.maximum.z <= e.minimum.z)
+            return; // degenerate / unset
+        // Parenthesised to dodge the windows.h min/max macros.
+        lo.x = (std::min)(lo.x, e.minimum.x);
+        lo.y = (std::min)(lo.y, e.minimum.y);
+        lo.z = (std::min)(lo.z, e.minimum.z);
+        hi.x = (std::max)(hi.x, e.maximum.x);
+        hi.y = (std::max)(hi.y, e.maximum.y);
+        hi.z = (std::max)(hi.z, e.maximum.z);
+        have = true;
+    };
+    // True for sequences whose pose shouldn't influence the framing.
+    auto excluded = [](std::string name) {
+        for (char& c : name)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return name.find("death") != std::string::npos ||
+               name.find("dissipate") != std::string::npos ||
+               name.find("birth") != std::string::npos;
+    };
+    if (hero && hero->sourceTemplate && hero->sourceTemplate->adapter) {
+        const whiteout::mdx::Model& m = hero->sourceTemplate->adapter->SourceModel();
+        for (const auto& s : m.sequences)
+            if (!excluded(s.name))
+                consume(s.extent);
+        if (!have)
+            for (const auto& gs : m.geosets)
+                consume(gs.extent);
+        if (!have)
+            consume(m.modelExtent);
+    }
+
+    // Target the centre of the extents; size drives the pull-back distance.
+    Vector3f center{0.0f, 0.0f, 50.0f};
+    f32 maxAxis = 260.0f; // fallback when the model carries no usable extents
+    if (have) {
+        center = {(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f};
+        maxAxis = (std::max)({hi.x - lo.x, hi.y - lo.y, hi.z - lo.z});
+    }
+    maxAxis = (std::max)(maxAxis, 1.0f);
+
+    // Three-quarter pose — the front-view yaw turned 45° toward the model's
+    // left and pitched up, so the camera sits between the Left, Front and Top
+    // view-cube faces.
+    cam.SetTarget(center);
+    cam.SetYaw(Camera::kDefaultYaw - 0.785398f); // −45° toward the left
+    cam.SetPitch(0.6f);                          // ~34° up
+    cam.SetDistance(maxAxis * 1.0f);
+}
+
 bool ViewerApp::LoadModel(const std::filesystem::path& path) {
     if (!std::filesystem::exists(path)) {
         std::fprintf(stderr, "[viewer] file not found: %s\n", io::PathToUtf8(path).c_str());
@@ -477,10 +541,7 @@ bool ViewerApp::LoadModel(const std::filesystem::path& path) {
     if (!sequences.empty())
         hero->animation.SetActiveSequenceIndex(0);
 
-    service_.Scene().Camera().SetPitch(30.0f);
-    service_.Scene().Camera().SetYaw(45.0f);
-    service_.Scene().Camera().SetDistance(300.0f);
-    service_.Scene().Camera().SetTarget(0, 0, 50.0f);
+    FrameCameraToModel(hero);
 
     cameraPresets_.clear();
     if (hero->sourceTemplate)
