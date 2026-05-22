@@ -155,10 +155,12 @@ inline void DrawViewCube(renderer::Camera& camera) {
     const ImVec2 center(boxPos.x + kPad + kCube * 0.5f, boxPos.y + kPad + kHome + kCube * 0.5f);
     const f32 scale = kCube * 0.5f / 0.92f; // fit the projected unit cube
 
-    // Eye direction in renderer-native space — same yaw/pitch basis the scene
-    // camera uses (see Camera / the old RenderViewCube).
+    // Eye direction in renderer-native space. The scene camera's yaw is both
+    // mirrored and 180°-offset from this cube's axis convention, so the cube's
+    // effective yaw is (π − cameraYaw): cos negated, sin kept. Without it the
+    // cube spins the wrong way and the Front/Back + Left/Right faces swap.
     const f32 cp = std::cos(camera.GetPitch()), sp = std::sin(camera.GetPitch());
-    const f32 cy = std::cos(camera.GetYaw()), sy = std::sin(camera.GetYaw());
+    const f32 cy = -std::cos(camera.GetYaw()), sy = std::sin(camera.GetYaw());
     const Vector3f eye{cp * cy, cp * sy, sp};
     const Vector3f fwd{-eye.x, -eye.y, -eye.z}; // into the screen
 
