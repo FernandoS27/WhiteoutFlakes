@@ -1,3 +1,4 @@
+#include "cubeb_sound_emitter.h"
 #include "gfx/gfx.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
@@ -6,12 +7,11 @@
 #include "whiteout/flakes/gfx_types.h"
 #include "whiteout/flakes/types.h"
 #include "whiteout/flakes/util/path_utf8.h"
-#include "cubeb_sound_emitter.h"
 
 #include <nfd.hpp>
 
-#include <cstdlib>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
@@ -20,14 +20,16 @@
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <shellapi.h> // CommandLineToArgvW
+// clang-format off
+#include <windows.h>      // must precede shellapi.h — it defines the types it uses
+#include <shellapi.h>     // CommandLineToArgvW
+// clang-format on
 #elif defined(__linux__)
+#include <climits>
 #include <unistd.h>
-#include <climits>
 #elif defined(__APPLE__)
-#include <mach-o/dyld.h>
 #include <climits>
+#include <mach-o/dyld.h>
 #endif
 
 using whiteout::flakes::f32;
@@ -104,14 +106,16 @@ int main(int argc, char* argv[]) {
     std::filesystem::path mdxPath;
 
     // Headless animation-frame export: --export-anim <seqIdx> <fps> <folder>
-    // [--gif] [--apng] [--webp] [--transparent] [--res <w> <h>] [--camera <idx>].
-    // Loads the model, exports, and exits — verifies the capture pipeline
-    // without UI. --camera selects a model camera preset (0-based).
+    // [--gif] [--apng] [--webp] [--transparent] [--ui] [--res <w> <h>]
+    // [--camera <idx>]. Loads the model, exports, and exits — verifies the
+    // capture pipeline without UI. --camera selects a model camera preset
+    // (0-based); --ui composites the viewer UI overlay into each frame.
     bool doExport = false;
     i32 exportSeq = 0;
     i32 exportFps = 30;
     whiteout::flakes::ExportFormat exportFmt = whiteout::flakes::ExportFormat::PngFrames;
     bool exportTransparent = false;
+    bool exportCaptureUi = false;
     i32 exportResW = 0;
     i32 exportResH = 0;
     i32 exportCamera = -1; // -1 = free camera; >= 0 = model camera preset index
@@ -161,6 +165,8 @@ int main(int argc, char* argv[]) {
             exportFmt = whiteout::flakes::ExportFormat::Webp;
         } else if (std::strcmp(a, "--transparent") == 0) {
             exportTransparent = true;
+        } else if (std::strcmp(a, "--ui") == 0) {
+            exportCaptureUi = true;
         } else if (std::strcmp(a, "--res") == 0 && i + 2 < argc) {
             exportResW = std::atoi(argv[++i]);
             exportResH = std::atoi(argv[++i]);
@@ -192,9 +198,8 @@ int main(int argc, char* argv[]) {
     {
         std::filesystem::path exe = GetExecutablePath();
         if (!exe.empty()) {
-            std::filesystem::path icd =
-                exe.parent_path().parent_path() /
-                "Resources" / "vulkan" / "icd.d" / "MoltenVK_icd.json";
+            std::filesystem::path icd = exe.parent_path().parent_path() / "Resources" / "vulkan" /
+                                        "icd.d" / "MoltenVK_icd.json";
             if (std::filesystem::exists(icd))
                 ::setenv("VK_ICD_FILENAMES", icd.c_str(), 1);
         }
@@ -293,9 +298,8 @@ int main(int argc, char* argv[]) {
 #endif
                     std::filesystem::path shipped = shippedDir / "pso_trace.bin";
                     if (std::filesystem::exists(shipped, ec)) {
-                        std::filesystem::copy_file(shipped, tracePath,
-                                                   std::filesystem::copy_options::skip_existing,
-                                                   ec);
+                        std::filesystem::copy_file(
+                            shipped, tracePath, std::filesystem::copy_options::skip_existing, ec);
                     }
                 }
             }
@@ -323,8 +327,8 @@ int main(int argc, char* argv[]) {
     // the default NullSoundEmitter swallows it (its SetVolume is a no-op and
     // GetVolume always reports 1.0, so SwapSoundEmitter couldn't carry it
     // over either).
-    renderer.SwapSoundEmitter(std::make_unique<whiteout::flakes::CubebSoundEmitter>(
-        scene.ActiveContentProvider()));
+    renderer.SwapSoundEmitter(
+        std::make_unique<whiteout::flakes::CubebSoundEmitter>(scene.ActiveContentProvider()));
 
     // Persistent settings (display flags, exposure, tileset, etc.) applied
     // after the device + asset managers are up so they can validate
@@ -387,6 +391,7 @@ int main(int argc, char* argv[]) {
         params.fps = exportFps;
         params.format = exportFmt;
         params.transparentBackground = exportTransparent;
+        params.captureUi = exportCaptureUi;
         params.width = exportResW;
         params.height = exportResH;
         params.outputFolder = exportFolder;

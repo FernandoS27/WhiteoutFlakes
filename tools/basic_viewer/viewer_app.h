@@ -73,6 +73,8 @@ struct AnimationExportParams {
     // backdrop) and keyed, recovering a real alpha channel. PNG and APNG
     // carry it directly; GIF falls back to 1-bit transparency.
     bool transparentBackground = false;
+    // Capture the viewer's ImGui UI overlay into each exported frame.
+    bool captureUi = false;
     // Render resolution; 0×0 means "use the current view size".
     i32 width = 0;
     i32 height = 0;

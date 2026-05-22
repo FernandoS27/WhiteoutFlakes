@@ -59,7 +59,7 @@
 // Per-monitor V2 DPI context — declared in Win10 1607+ SDKs. Older SDKs need
 // the cast-from-int fallback (same trick the SDK header itself uses).
 #ifndef DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT) - 4)
 #endif
 #endif
 
@@ -202,8 +202,7 @@ bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
         HWND hwnd = glfwGetWin32Window(window_);
         HMODULE hMod = nullptr;
         ::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                             reinterpret_cast<LPCWSTR>(&ViewerApp::FramebufferSizeCallback),
-                             &hMod);
+                             reinterpret_cast<LPCWSTR>(&ViewerApp::FramebufferSizeCallback), &hMod);
         HINSTANCE hInst = hMod ? reinterpret_cast<HINSTANCE>(hMod) : ::GetModuleHandle(nullptr);
         HICON hIcon = ::LoadIconW(hInst, MAKEINTRESOURCEW(IDI_WHITEOUT_ICON));
         if (hIcon) {
@@ -529,7 +528,8 @@ void ViewerApp::ActivateCameraPreset(i32 idx) {
         }
         if (seqStart == 0 && seqEnd == 0)
             seqEnd = 1 << 30;
-        const i32 sampleMs = focus ? focus->animation.TimeMs() : service_.Scene().GetAnimationTime();
+        const i32 sampleMs =
+            focus ? focus->animation.TimeMs() : service_.Scene().GetAnimationTime();
         preset.animator(pos, tgt, roll, sampleMs, seqStart, seqEnd);
     }
     cam.SetDirectPose(pos, tgt, roll);
@@ -575,30 +575,38 @@ namespace {
 // Receives one captured frame: (zero-based frame index, RGBA8 pixels).
 using FrameSink = std::function<void(i32, whiteout::textures::Texture&&)>;
 
+// Per-frame hooks the export capture loop runs before each render.
+struct CaptureHooks {
+    std::function<void()> applyCamera; // re-pose an animated camera preset
+    std::function<void()> buildFrame;  // build the ImGui frame (UI overlay or empty)
+    // True when buildFrame emits a non-empty UI. The ImGui renderer uploads
+    // through one shared vertex buffer, so a UI frame must be fully drained
+    // before the next overwrites it — this forces a per-frame drain.
+    bool captureUi = false;
+};
+
 // Drives the renderer through `frameCount` frames at `fps`, redirecting each
 // composite through frame capture and handing the decoded pixels to `sink`.
-// The caller configures the focus actor's sequence beforehand. `applyCamera`
-// (may be null) runs each frame after the animation step, so an animated
-// camera preset tracks the exported sequence.
+// The caller configures the focus actor's sequence beforehand. Each frame the
+// loop runs `hooks.applyCamera` (animated camera preset) then `hooks.buildFrame`
+// (the ImGui overlay) before rendering.
 //
 // A captured frame's GPU work isn't done when RenderFrame returns; rather than
 // stalling per frame, up to one capture-ring's worth run, then a single
-// WaitIdle drains the whole batch.
+// WaitIdle drains the whole batch. Capturing the UI disables that pipelining
+// (see CaptureHooks::captureUi).
 void CaptureSequenceFrames(RenderService& svc, RenderTargetId targetId, i32 frameCount, i32 fps,
-                           const std::function<void()>& applyCamera, const FrameSink& sink) {
+                           const CaptureHooks& hooks, const FrameSink& sink) {
     auto& pipeline = svc.Pipeline();
     pipeline.EnableFrameCapture(true);
 
-    // One empty ImGui frame so the captures carry no UI overlay — RenderFrame
-    // reuses this draw data for every export frame.
-    ImGui_ImplGlfw_NewFrame();
-    ImGui::NewFrame();
-    ImGui::Render();
     if (auto* cp = svc.Scene().ActiveContentProvider())
         cp->Pump();
 
     const f32 dtSec = 1.0f / static_cast<f32>(fps);
-    const i32 ringSize = pipeline.FrameCaptureRingSize();
+    // A UI frame can't be pipelined — drain it before the next overwrites the
+    // shared ImGui vertex buffer.
+    const i32 ringSize = hooks.captureUi ? 1 : pipeline.FrameCaptureRingSize();
 
     struct Pending {
         i32 frameIndex;
@@ -617,9 +625,9 @@ void CaptureSequenceFrames(RenderService& svc, RenderTargetId targetId, i32 fram
             i32 w = 0, h = 0;
             if (!pipeline.DownloadCaptureSlot(p.ringSlot, rgba, w, h) || w <= 0 || h <= 0)
                 continue;
-            auto tex = whiteout::textures::Texture::create2D(
-                whiteout::textures::PixelFormat::RGBA8, static_cast<u32>(w),
-                static_cast<u32>(h), 1);
+            auto tex =
+                whiteout::textures::Texture::create2D(whiteout::textures::PixelFormat::RGBA8,
+                                                      static_cast<u32>(w), static_cast<u32>(h), 1);
             auto dst = tex.mipData(0);
             if (dst.size() < rgba.size())
                 continue;
@@ -638,8 +646,10 @@ void CaptureSequenceFrames(RenderService& svc, RenderTargetId targetId, i32 fram
         const f32 stepDt = (i == 0) ? 0.0f : dtSec;
         svc.Scene().Update(stepDt);
         svc.Ticker().Tick(stepDt);
-        if (applyCamera)
-            applyCamera();
+        if (hooks.applyCamera)
+            hooks.applyCamera();
+        if (hooks.buildFrame)
+            hooks.buildFrame();
         pipeline.RenderFrame(targetId);
         pipeline.Present(targetId);
 
@@ -671,10 +681,10 @@ whiteout::textures::Texture KeyOutBackground(const std::vector<u8>& black,
     for (usize p = 0; p < px; ++p) {
         const u8* cb = &black[p * 4];
         const u8* cw = &white[p * 4];
-        const f32 uncovered = ((static_cast<f32>(cw[0]) - cb[0]) +
-                               (static_cast<f32>(cw[1]) - cb[1]) +
-                               (static_cast<f32>(cw[2]) - cb[2])) /
-                              (3.0f * 255.0f);
+        const f32 uncovered =
+            ((static_cast<f32>(cw[0]) - cb[0]) + (static_cast<f32>(cw[1]) - cb[1]) +
+             (static_cast<f32>(cw[2]) - cb[2])) /
+            (3.0f * 255.0f);
         const f32 a = std::clamp(1.0f - uncovered, 0.0f, 1.0f);
         u8* o = &dst[p * 4];
         for (i32 c = 0; c < 3; ++c) {
@@ -692,13 +702,10 @@ whiteout::textures::Texture KeyOutBackground(const std::vector<u8>& black,
 // Unlike CaptureSequenceFrames this WaitIdles per render rather than pipelining
 // the ring — simpler, and the cost is dwarfed by the double render + encode.
 void CaptureKeyedFrames(RenderService& svc, RenderTargetId targetId, i32 frameCount, i32 fps,
-                        const std::function<void()>& applyCamera, const FrameSink& sink) {
+                        const CaptureHooks& hooks, const FrameSink& sink) {
     auto& pipeline = svc.Pipeline();
     pipeline.EnableFrameCapture(true);
 
-    ImGui_ImplGlfw_NewFrame();
-    ImGui::NewFrame();
-    ImGui::Render();
     if (auto* cp = svc.Scene().ActiveContentProvider())
         cp->Pump();
 
@@ -721,8 +728,10 @@ void CaptureKeyedFrames(RenderService& svc, RenderTargetId targetId, i32 frameCo
         const f32 stepDt = (i == 0) ? 0.0f : dtSec;
         svc.Scene().Update(stepDt);
         svc.Ticker().Tick(stepDt);
-        if (applyCamera)
-            applyCamera();
+        if (hooks.applyCamera)
+            hooks.applyCamera();
+        if (hooks.buildFrame)
+            hooks.buildFrame();
 
         std::vector<u8> black, white;
         i32 bw = 0, bh = 0, ww = 0, wh = 0;
@@ -753,15 +762,14 @@ i32 FrameDelayMs(i32 fps) {
 void WriteAnimatedGif(const std::vector<whiteout::textures::Texture>& frames,
                       const std::filesystem::path& file, i32 fps, const std::string& animName,
                       bool transparent) {
-    std::fprintf(stderr, "[viewer] encoding %zu-frame GIF (palette quantise)...\n",
-                 frames.size());
+    std::fprintf(stderr, "[viewer] encoding %zu-frame GIF (palette quantise)...\n", frames.size());
     const unsigned hw = std::thread::hardware_concurrency();
     whiteout::utils::SimpleThreadPool pool(hw > 1 ? hw : 2);
     whiteout::textures::gif::Writer writer(whiteout::textures::gif::Writer::WriteMode::Lenient,
                                            &pool);
     whiteout::textures::gif::SaveOptions opts;
-    opts.delayCs = static_cast<u16>(
-        std::clamp<i32>(static_cast<i32>(std::llround(100.0 / fps)), 1, 65535));
+    opts.delayCs =
+        static_cast<u16>(std::clamp<i32>(static_cast<i32>(std::llround(100.0 / fps)), 1, 65535));
     opts.loopCount = 0; // loop forever
     opts.transparent = transparent;
     writer.write(io::PathToUtf8(file), frames, opts);
@@ -868,8 +876,8 @@ void WriteAnimatedWebp(const std::vector<whiteout::textures::Texture>& frames,
         out.write(reinterpret_cast<const char*>(webpData.bytes),
                   static_cast<std::streamsize>(webpData.size));
         if (out)
-            std::fprintf(stderr, "[viewer] Exported %zu-frame WebP of '%s' to %s\n",
-                         frames.size(), animName.c_str(), io::PathToUtf8(file).c_str());
+            std::fprintf(stderr, "[viewer] Exported %zu-frame WebP of '%s' to %s\n", frames.size(),
+                         animName.c_str(), io::PathToUtf8(file).c_str());
         else
             std::fprintf(stderr, "[viewer] Export: WebP write failed for %s\n",
                          io::PathToUtf8(file).c_str());
@@ -892,10 +900,17 @@ void WriteAnimated(ExportFormat format, const std::vector<whiteout::textures::Te
                    const std::filesystem::path& file, i32 fps, const std::string& animName,
                    bool transparent) {
     switch (format) {
-    case ExportFormat::Gif:  WriteAnimatedGif(frames, file, fps, animName, transparent); break;
-    case ExportFormat::Apng: WriteAnimatedApng(frames, file, fps, animName); break;
-    case ExportFormat::Webp: WriteAnimatedWebp(frames, file, fps, animName); break;
-    case ExportFormat::PngFrames: break; // not a single-file format
+    case ExportFormat::Gif:
+        WriteAnimatedGif(frames, file, fps, animName, transparent);
+        break;
+    case ExportFormat::Apng:
+        WriteAnimatedApng(frames, file, fps, animName);
+        break;
+    case ExportFormat::Webp:
+        WriteAnimatedWebp(frames, file, fps, animName);
+        break;
+    case ExportFormat::PngFrames:
+        break; // not a single-file format
     }
 }
 
@@ -904,10 +919,10 @@ void WriteAnimated(ExportFormat format, const std::vector<whiteout::textures::Te
 const ExportFormatInfo& GetExportFormatInfo(ExportFormat format) {
     // Indexed by ExportFormat — order must match the enum.
     static constexpr ExportFormatInfo kInfo[kExportFormatCount] = {
-        {"PNG frames",          ""},      // PngFrames
-        {"Animated GIF",        ".gif"},  // Gif
+        {"PNG frames", ""},               // PngFrames
+        {"Animated GIF", ".gif"},         // Gif
         {"Animated PNG (APNG)", ".apng"}, // Apng
-        {"Animated WebP",       ".webp"}, // Webp
+        {"Animated WebP", ".webp"},       // Webp
     };
     return kInfo[static_cast<i32>(format)];
 }
@@ -928,8 +943,8 @@ void ViewerApp::RunAnimationExport(const AnimationExportParams& p) {
     i32 durationMs = seq.endMs - seq.startMs;
     if (durationMs <= 0)
         durationMs = static_cast<i32>(std::llround(1000.0 / fps)); // static pose -> 1 frame
-    const i32 frameCount =
-        std::max<i32>(1, static_cast<i32>(std::llround(static_cast<f64>(durationMs) * fps / 1000.0)));
+    const i32 frameCount = std::max<i32>(
+        1, static_cast<i32>(std::llround(static_cast<f64>(durationMs) * fps / 1000.0)));
 
     const std::string modelName = SanitizeName(currentModelPath_.stem().string());
     const std::string animName = SanitizeName(sequenceNames_[p.sequenceIndex]);
@@ -944,8 +959,7 @@ void ViewerApp::RunAnimationExport(const AnimationExportParams& p) {
     // then restore. 0×0 means "keep the current view size".
     const i32 origW = service_.Pipeline().Width();
     const i32 origH = service_.Pipeline().Height();
-    const bool customRes =
-        (p.width > 0 && p.height > 0 && (p.width != origW || p.height != origH));
+    const bool customRes = (p.width > 0 && p.height > 0 && (p.width != origW || p.height != origH));
     if (customRes)
         service_.Pipeline().ResizePrimaryTarget(p.width, p.height);
 
@@ -960,9 +974,8 @@ void ViewerApp::RunAnimationExport(const AnimationExportParams& p) {
     hero->cursor = {}; // prevActiveSequence=-1 forces a clean re-sync to frame 0
 
     std::fprintf(stderr, "[viewer] Exporting '%s' as %s%s: %d frame(s) at %d FPS -> %s\n",
-                 animName.c_str(), formatInfo.label,
-                 transparent ? " (transparent)" : "", frameCount, fps,
-                 io::PathToUtf8(p.outputFolder).c_str());
+                 animName.c_str(), formatInfo.label, transparent ? " (transparent)" : "",
+                 frameCount, fps, io::PathToUtf8(p.outputFolder).c_str());
 
     // The capture sink differs by format: the animated formats collect every
     // frame for a single-file encode; PNG streams each frame straight to disk.
@@ -987,20 +1000,37 @@ void ViewerApp::RunAnimationExport(const AnimationExportParams& p) {
             pngWriter.write(io::PathToUtf8(file), tex);
             if (pngWriter.hasIssues())
                 std::fprintf(stderr, "[viewer] Export: PNG write failed for %s: %s\n",
-                             io::PathToUtf8(file).c_str(),
-                             pngWriter.getIssues().front().c_str());
+                             io::PathToUtf8(file).c_str(), pngWriter.getIssues().front().c_str());
             else
                 ++written;
         };
     }
 
+    CaptureHooks hooks;
     // Keep an animated camera preset (if one is active) tracking the sequence
     // for every captured frame, exactly as normal playback does in Tick().
-    const std::function<void()> applyCamera = [this] { UpdateCameraPresetAnimator(); };
-    if (transparent)
-        CaptureKeyedFrames(service_, targetId_, frameCount, fps, applyCamera, sink);
+    hooks.applyCamera = [this] { UpdateCameraPresetAnimator(); };
+    hooks.captureUi = p.captureUi;
+    // buildFrame emits the ImGui draw data RenderFrame composites: the live UI
+    // overlay when requested, otherwise an empty frame (no overlay).
+    if (p.captureUi)
+        hooks.buildFrame = [this] {
+            ImGui_ImplGlfw_NewFrame();
+            ImGui::NewFrame();
+            ui_->BuildFrame();
+            ImGui::Render();
+        };
     else
-        CaptureSequenceFrames(service_, targetId_, frameCount, fps, applyCamera, sink);
+        hooks.buildFrame = [] {
+            ImGui_ImplGlfw_NewFrame();
+            ImGui::NewFrame();
+            ImGui::Render();
+        };
+
+    if (transparent)
+        CaptureKeyedFrames(service_, targetId_, frameCount, fps, hooks, sink);
+    else
+        CaptureSequenceFrames(service_, targetId_, frameCount, fps, hooks, sink);
 
     // Restore the focus actor + resolution before the (potentially slow) encode.
     hero->playbackSpeed = savedSpeed;
@@ -1011,9 +1041,8 @@ void ViewerApp::RunAnimationExport(const AnimationExportParams& p) {
         service_.Pipeline().ResizePrimaryTarget(origW, origH);
 
     if (written == 0) {
-        std::fprintf(stderr,
-                     "[viewer] Export produced nothing — frame capture failed "
-                     "(see any [capture] message above for the cause)\n");
+        std::fprintf(stderr, "[viewer] Export produced nothing — frame capture failed "
+                             "(see any [capture] message above for the cause)\n");
         return;
     }
 
