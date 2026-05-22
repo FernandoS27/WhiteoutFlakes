@@ -61,6 +61,11 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc, const void* init
         aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
         aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                     VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    } else if (hasFlag(desc.usage, BufferUsage::CpuReadable)) {
+        // GPU→CPU readback staging — host-cached for fast random reads.
+        aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+        aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+                    VMA_ALLOCATION_CREATE_MAPPED_BIT;
     } else {
         aci.usage = VMA_MEMORY_USAGE_AUTO;
     }
@@ -159,6 +164,12 @@ void* VulkanDevice::MapBuffer(BufferHandle h) {
     if (!buffer)
         return nullptr;
     if (buffer->mapped) {
+        // Readback buffer: invalidate the host-cached range so the CPU sees
+        // the GPU's copy, and hand back the base pointer (no ring rotation).
+        if (hasFlag(buffer->desc.usage, BufferUsage::CpuReadable)) {
+            vmaInvalidateAllocation(state.allocator, buffer->allocation, 0, buffer->desc.size);
+            return buffer->mapped;
+        }
         if (buffer->slotCount > 1) {
             buffer->currentSlot = (buffer->currentSlot + 1) % buffer->slotCount;
         }
@@ -175,6 +186,9 @@ void VulkanDevice::UnmapBuffer(BufferHandle h) {
     if (!buffer)
         return;
     if (buffer->mapped) {
+        // Readback buffers are read-only on the CPU — nothing to flush.
+        if (hasFlag(buffer->desc.usage, BufferUsage::CpuReadable))
+            return;
         VmaAllocation alloc = buffer->allocation ? buffer->allocation : state.sharedCbAllocation;
         vmaFlushAllocation(state.allocator, alloc, buffer->currentOffset(), buffer->desc.size);
     } else {

@@ -533,6 +533,40 @@ bool CreatePipelineLayout(VulkanDeviceState& state) {
         return false;
     }
     state.pipelineLayout = std::move(plR.value);
+
+    // Compute descriptor layout: one set, three bindings (uniform buffer,
+    // sampled image, storage buffer), all visible to the compute stage.
+    {
+        const std::array<vk::DescriptorSetLayoutBinding, 3> cbinds = {
+            vk::DescriptorSetLayoutBinding{0, vk::DescriptorType::eUniformBuffer, 1,
+                                           vk::ShaderStageFlagBits::eCompute},
+            vk::DescriptorSetLayoutBinding{1, vk::DescriptorType::eSampledImage, 1,
+                                           vk::ShaderStageFlagBits::eCompute},
+            vk::DescriptorSetLayoutBinding{2, vk::DescriptorType::eStorageBuffer, 1,
+                                           vk::ShaderStageFlagBits::eCompute},
+        };
+        auto cslR = state.device.createDescriptorSetLayout({
+            .bindingCount = static_cast<u32>(cbinds.size()),
+            .pBindings = cbinds.data(),
+        });
+        if (cslR.result != vk::Result::eSuccess) {
+            std::fprintf(stderr, "[vk] createDescriptorSetLayout (compute) failed (%s)\n",
+                         vk::to_string(cslR.result).c_str());
+            return false;
+        }
+        state.computeSetLayout = std::move(cslR.value);
+        VkDescriptorSetLayout rawCompute = *state.computeSetLayout;
+        auto cplR = state.device.createPipelineLayout({
+            .setLayoutCount = 1,
+            .pSetLayouts = reinterpret_cast<const vk::DescriptorSetLayout*>(&rawCompute),
+        });
+        if (cplR.result != vk::Result::eSuccess) {
+            std::fprintf(stderr, "[vk] createPipelineLayout (compute) failed (%s)\n",
+                         vk::to_string(cplR.result).c_str());
+            return false;
+        }
+        state.computeLayout = std::move(cplR.value);
+    }
     return true;
 }
 
@@ -557,9 +591,15 @@ bool CreatePerFrameContexts(VulkanDeviceState& state) {
     constexpr u32 kMaxSetsPerFrame = kMaxDrawsPerFrame * kSetsPerDraw;
     constexpr u32 kMaxSrvsPerFrame = kMaxDrawsPerFrame * kSrvBindingCount;
     constexpr u32 kMaxSamplersPerFrame = kMaxDrawsPerFrame * kSamplerBindingCount;
-    const std::array<vk::DescriptorPoolSize, 2> poolSizes = {
-        vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage, kMaxSrvsPerFrame},
+    // Uniform + storage descriptors back the compute path (frame-capture
+    // copy shader); a small pool is plenty — a handful of dispatches/frame.
+    constexpr u32 kComputeDescriptorsPerFrame = 256;
+    const std::array<vk::DescriptorPoolSize, 4> poolSizes = {
+        vk::DescriptorPoolSize{vk::DescriptorType::eSampledImage,
+                               kMaxSrvsPerFrame + kComputeDescriptorsPerFrame},
         vk::DescriptorPoolSize{vk::DescriptorType::eSampler, kMaxSamplersPerFrame},
+        vk::DescriptorPoolSize{vk::DescriptorType::eUniformBuffer, kComputeDescriptorsPerFrame},
+        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, kComputeDescriptorsPerFrame},
     };
 
     for (u32 i = 0; i < kFramesInFlight; ++i) {

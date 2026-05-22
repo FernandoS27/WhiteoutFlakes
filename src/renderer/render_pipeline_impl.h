@@ -1,5 +1,6 @@
 #pragma once
 
+#include "frame_capture.h"
 #include "render_pipeline.h"
 
 #include <unordered_map>
@@ -90,6 +91,10 @@ struct RenderPipeline::Impl {
     gfx::BufferHandle tonemapVB_ = gfx::BufferHandle::Invalid;
     gfx::BufferHandle tonemapPsCb_ = gfx::BufferHandle::Invalid;
     gfx::SamplerHandle tonemapSampler_ = gfx::SamplerHandle::Invalid;
+
+    // ---- Optional frame capture (PNG / GIF export) ----
+    // Self-contained; off and zero-cost unless enabled. See frame_capture.h.
+    FrameCapture capture_;
 };
 
 } // namespace whiteout::flakes::renderer

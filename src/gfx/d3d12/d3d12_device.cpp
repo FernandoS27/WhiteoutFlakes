@@ -562,9 +562,12 @@ BufferHandle D3D12Device::CreateBuffer(const BufferDesc& desc, const void* initi
     entry.desc = desc;
 
     const bool cpuWritable = hasFlag(desc.usage, BufferUsage::CpuWritable);
+    const bool cpuReadable = hasFlag(desc.usage, BufferUsage::CpuReadable);
 
     D3D12_HEAP_PROPERTIES hp{};
-    hp.Type = cpuWritable ? D3D12_HEAP_TYPE_UPLOAD : D3D12_HEAP_TYPE_DEFAULT;
+    hp.Type = cpuWritable   ? D3D12_HEAP_TYPE_UPLOAD
+              : cpuReadable ? D3D12_HEAP_TYPE_READBACK
+                            : D3D12_HEAP_TYPE_DEFAULT;
 
     D3D12_RESOURCE_DESC rd{};
     rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -581,7 +584,9 @@ BufferHandle D3D12Device::CreateBuffer(const BufferDesc& desc, const void* initi
         rd.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
     D3D12_RESOURCE_STATES initialState =
-        cpuWritable ? D3D12_RESOURCE_STATE_GENERIC_READ : D3D12_RESOURCE_STATE_COMMON;
+        cpuWritable   ? D3D12_RESOURCE_STATE_GENERIC_READ
+        : cpuReadable ? D3D12_RESOURCE_STATE_COPY_DEST
+                      : D3D12_RESOURCE_STATE_COMMON;
 
     HRESULT hr = device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, initialState,
                                                   nullptr, IID_PPV_ARGS(&entry.resource));
@@ -589,7 +594,7 @@ BufferHandle D3D12Device::CreateBuffer(const BufferDesc& desc, const void* initi
         return BufferHandle::Invalid;
     entry.currentState = initialState;
 
-    if (initial && !cpuWritable && desc.size > 0) {
+    if (initial && !cpuWritable && !cpuReadable && desc.size > 0) {
 
         auto alloc = uploadRing_.Allocate(desc.size);
         std::memcpy(alloc.cpu, initial, desc.size);
@@ -723,6 +728,18 @@ void* D3D12Device::MapBuffer(BufferHandle h) {
     auto* e = buffers_.Get(static_cast<u64>(h));
     if (!e)
         return nullptr;
+
+    // READBACK-heap buffers: hand back the persistent CPU pointer. Callers
+    // map these after the GPU copy into them has retired (frame-capture
+    // download).
+    if (hasFlag(e->desc.usage, BufferUsage::CpuReadable)) {
+        if (!e->resource)
+            return nullptr;
+        void* p = nullptr;
+        D3D12_RANGE readRange{0, static_cast<SIZE_T>(e->desc.size)};
+        return SUCCEEDED(e->resource->Map(0, &readRange, &p)) ? p : nullptr;
+    }
+
     if (!hasFlag(e->desc.usage, BufferUsage::CpuWritable))
         return nullptr;
 
@@ -746,7 +763,11 @@ void* D3D12Device::MapBuffer(BufferHandle h) {
     return alloc.cpu;
 }
 
-void D3D12Device::UnmapBuffer(BufferHandle) {}
+void D3D12Device::UnmapBuffer(BufferHandle h) {
+    auto* e = buffers_.Get(static_cast<u64>(h));
+    if (e && e->resource && hasFlag(e->desc.usage, BufferUsage::CpuReadable))
+        e->resource->Unmap(0, nullptr);
+}
 
 TextureHandle D3D12Device::CreateTexture(const TextureDesc& desc, const void* initialPixels) {
     TextureEntry entry{};
@@ -1369,6 +1390,18 @@ void D3D12Device::Present(SwapChainHandle h) {
     sc->currentBackBufferIndex = sc->swapChain->GetCurrentBackBufferIndex();
     RefreshProxyTexture(*sc);
 
+    if (immediateCtx_)
+        immediateCtx_->OnFrameBegin();
+}
+
+void D3D12Device::WaitIdle() {
+    // FlushGpu closes + submits + fence-waits, leaving the command list
+    // closed; reopen a fresh one so subsequent recording is valid.
+    FlushGpu();
+    FlushPendingDeletes(fence_->GetCompletedValue());
+    allocators_[frameIndex_]->Reset();
+    cmdList_->Reset(allocators_[frameIndex_], nullptr);
+    cmdListOpen_ = true;
     if (immediateCtx_)
         immediateCtx_->OnFrameBegin();
 }

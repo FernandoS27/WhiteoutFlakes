@@ -58,6 +58,16 @@ IGFXCommandList* WebGPUDevice::GetImmediateContext() {
     return immediate_.get();
 }
 
+void WebGPUDevice::WaitIdle() {
+    auto& state = *state_;
+    if (!state.device || !state.queue)
+        return;
+    wgpu::Future done = state.queue.OnSubmittedWorkDone(
+        wgpu::CallbackMode::WaitAnyOnly, [](wgpu::QueueWorkDoneStatus) {});
+    wgpu::FutureWaitInfo wait{done};
+    state.instance.WaitAny(1, &wait, UINT64_MAX);
+}
+
 Format WebGPUDevice::PreferredDepthStencilFormat() const {
     // Depth24PlusStencil8 is universally supported; Depth32FloatStencil8
     // requires the matching feature. We pick at Init() and cache in state_;

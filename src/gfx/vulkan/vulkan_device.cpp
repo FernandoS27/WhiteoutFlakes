@@ -90,4 +90,9 @@ IGFXCommandList* VulkanDevice::GetImmediateContext() {
     return immediate_.get();
 }
 
+void VulkanDevice::WaitIdle() {
+    if (*state_->device)
+        state_->device.waitIdle();
+}
+
 } // namespace whiteout::flakes::gfx::vulkan

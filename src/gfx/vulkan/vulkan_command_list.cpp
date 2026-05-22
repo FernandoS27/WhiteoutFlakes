@@ -417,9 +417,14 @@ void VulkanCommandList::BindShaderResource(ShaderStage stage, u32 slot, TextureH
     srvSetDirty_ = true;
 }
 
-// Buffer SRVs / UAVs not yet wired up.
+// Buffer SRVs not yet wired up.
 void VulkanCommandList::BindShaderResource(ShaderStage, u32, BufferHandle) {}
-void VulkanCommandList::BindUnorderedAccess(u32, BufferHandle) {}
+
+// UAV slot 0 feeds the compute Dispatch's storage-buffer binding.
+void VulkanCommandList::BindUnorderedAccess(u32 slot, BufferHandle h) {
+    if (slot == 0)
+        pendingComputeUav_ = h;
+}
 
 void VulkanCommandList::BindSampler(ShaderStage stage, u32 slot, SamplerHandle sampler) {
     const u32 binding = BindingForStage(stage, slot);
@@ -665,8 +670,95 @@ void VulkanCommandList::Dispatch(u32 gx, u32 gy, u32 gz) {
     auto& frame = state.frames[state.frameIndex];
     if (!frame.recording)
         return;
-    FlushDescriptors();
+
+    // Compute uses a dedicated single-set layout (uniform buffer / sampled
+    // image / storage buffer) — see CreatePipelineLayout. Bindings come from
+    // pendingCBs_[0], pendingSRVs_[0] and pendingComputeUav_.
+    auto* cbBuf = state.buffers.Get(static_cast<u64>(pendingCBs_[0].buffer));
+    auto* srvTex = state.textures.Get(static_cast<u64>(pendingSRVs_[0].texture));
+    auto* uavBuf = state.buffers.Get(static_cast<u64>(pendingComputeUav_));
+    if (!cbBuf || !srvTex || !uavBuf || !srvTex->image) {
+        std::fprintf(stderr, "[vk] Dispatch: compute bindings incomplete — skipped\n");
+        return;
+    }
+
+    // The sampled source must be in shader-read layout for the compute read.
+    if (srvTex->currentLayout != vk::ImageLayout::eShaderReadOnlyOptimal) {
+        TransitionImageLayout(frame.commandBuffer, srvTex->image, srvTex->aspect,
+                              srvTex->currentLayout, vk::ImageLayout::eShaderReadOnlyOptimal,
+                              vk::PipelineStageFlagBits2::eAllCommands,
+                              vk::AccessFlagBits2::eMemoryWrite,
+                              vk::PipelineStageFlagBits2::eComputeShader,
+                              vk::AccessFlagBits2::eShaderRead);
+        srvTex->currentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+    }
+
+    VkDescriptorSetLayout rawLayout = *state.computeSetLayout;
+    VkDescriptorSetAllocateInfo ai{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = *frame.descriptorPool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &rawLayout,
+    };
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (vkAllocateDescriptorSets(*state.device, &ai, &set) != VK_SUCCESS) {
+        std::fprintf(stderr, "[vk] Dispatch: compute descriptor alloc failed\n");
+        return;
+    }
+
+    vk::DescriptorBufferInfo cbInfo{
+        .buffer = vk::Buffer(cbBuf->buffer),
+        .offset = pendingCBs_[0].offset,
+        .range = cbBuf->slotCount > 1 ? cbBuf->desc.size : VK_WHOLE_SIZE,
+    };
+    vk::DescriptorImageInfo srvInfo{
+        .imageView = vk::ImageView(srvTex->view),
+        .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
+    };
+    vk::DescriptorBufferInfo uavInfo{
+        .buffer = vk::Buffer(uavBuf->buffer),
+        .offset = uavBuf->currentOffset(),
+        .range = uavBuf->desc.size,
+    };
+    const std::array<vk::WriteDescriptorSet, 3> writes = {
+        vk::WriteDescriptorSet{.dstSet = vk::DescriptorSet(set),
+                               .dstBinding = 0,
+                               .descriptorCount = 1,
+                               .descriptorType = vk::DescriptorType::eUniformBuffer,
+                               .pBufferInfo = &cbInfo},
+        vk::WriteDescriptorSet{.dstSet = vk::DescriptorSet(set),
+                               .dstBinding = 1,
+                               .descriptorCount = 1,
+                               .descriptorType = vk::DescriptorType::eSampledImage,
+                               .pImageInfo = &srvInfo},
+        vk::WriteDescriptorSet{.dstSet = vk::DescriptorSet(set),
+                               .dstBinding = 2,
+                               .descriptorCount = 1,
+                               .descriptorType = vk::DescriptorType::eStorageBuffer,
+                               .pBufferInfo = &uavInfo},
+    };
+    state.device.updateDescriptorSets(writes, nullptr);
+
+    frame.commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *state.computeLayout,
+                                           /*firstSet*/ 0, vk::DescriptorSet(set),
+                                           /*dynamicOffsets*/ nullptr);
     frame.commandBuffer.dispatch(gx, gy, gz);
+
+    // Make the storage-buffer writes visible to the CopyBuffer that follows.
+    vk::MemoryBarrier2 barrier{
+        .srcStageMask = vk::PipelineStageFlagBits2::eComputeShader,
+        .srcAccessMask = vk::AccessFlagBits2::eShaderStorageWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eTransfer,
+        .dstAccessMask = vk::AccessFlagBits2::eTransferRead,
+    };
+    frame.commandBuffer.pipelineBarrier2(vk::DependencyInfo{
+        .memoryBarrierCount = 1,
+        .pMemoryBarriers = &barrier,
+    });
+
+    // The graphics descriptor sets were not touched; force a rebuild before
+    // the next draw so it doesn't read a compute-era set.
+    cbSetDirty_ = srvSetDirty_ = samplerSetDirty_ = true;
 }
 
 } // namespace whiteout::flakes::gfx::vulkan

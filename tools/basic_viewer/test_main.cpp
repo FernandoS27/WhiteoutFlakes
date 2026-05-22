@@ -103,6 +103,15 @@ int main(int argc, char* argv[]) {
     bool backendFromCli = false;
     std::filesystem::path mdxPath;
 
+    // Headless animation-frame export: --export-anim <seqIdx> <fps> <folder>
+    // [--gif]. Loads the model, exports, and exits — used to verify the
+    // capture pipeline without UI interaction.
+    bool doExport = false;
+    i32 exportSeq = 0;
+    i32 exportFps = 30;
+    whiteout::flakes::ExportFormat exportFmt = whiteout::flakes::ExportFormat::PngFrames;
+    std::filesystem::path exportFolder;
+
 #if defined(_WIN32)
     constexpr const char* kBackendsHelp = "d3d11, d3d12, vulkan";
 #else
@@ -134,6 +143,13 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             backendFromCli = true;
+        } else if (std::strcmp(a, "--export-anim") == 0 && i + 3 < argc) {
+            doExport = true;
+            exportSeq = std::atoi(argv[++i]);
+            exportFps = std::atoi(argv[++i]);
+            exportFolder = whiteout::flakes::io::FsPathFromUtf8(argv[++i]);
+        } else if (std::strcmp(a, "--gif") == 0) {
+            exportFmt = whiteout::flakes::ExportFormat::Gif;
         } else if (std::strcmp(a, "--wgpu-backend") == 0 && i + 1 < argc) {
             // Force Dawn's underlying adapter backend (d3d11/d3d12/vulkan/gl/metal).
             // Only meaningful when --backend webgpu is selected.
@@ -333,6 +349,21 @@ int main(int argc, char* argv[]) {
         } else if (!app.LoadModel(mdxPath)) {
             std::cerr << "Failed to load model.\n";
         }
+    }
+
+    // Headless export path: queue the request, run a couple of ticks to let
+    // RenderService warm up (BLS shaders / textures finish loading), run the
+    // export, then exit.
+    if (doExport) {
+        for (i32 i = 0; i < 8 && !app.ShouldClose(); ++i) {
+            scene.Update(0.016f);
+            app.Tick(0.016f);
+        }
+        app.RequestAnimationExport(exportSeq, exportFps, exportFmt, exportFolder);
+        scene.Update(0.016f);
+        app.Tick(0.016f); // runs the export synchronously
+        app.Close();
+        return 0;
     }
 
     auto last = std::chrono::steady_clock::now();

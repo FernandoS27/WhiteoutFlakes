@@ -177,7 +177,15 @@ BufferHandle D3D11Device::CreateBuffer(const BufferDesc& desc, const void* initi
     if (hasFlag(desc.usage, BufferUsage::UnorderedAccess))
         bd.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
 
-    if (hasFlag(desc.usage, BufferUsage::CpuWritable)) {
+    const bool cpuReadable = hasFlag(desc.usage, BufferUsage::CpuReadable);
+
+    if (cpuReadable) {
+        // GPU→CPU readback staging: no bind flags, host-readable, a valid
+        // CopyResource destination.
+        bd.Usage = D3D11_USAGE_STAGING;
+        bd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        bd.BindFlags = 0;
+    } else if (hasFlag(desc.usage, BufferUsage::CpuWritable)) {
         bd.Usage = D3D11_USAGE_DYNAMIC;
         bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
     } else if (hasFlag(desc.usage, BufferUsage::GpuWritable)) {
@@ -186,7 +194,7 @@ BufferHandle D3D11Device::CreateBuffer(const BufferDesc& desc, const void* initi
         bd.Usage = initial ? D3D11_USAGE_IMMUTABLE : D3D11_USAGE_DEFAULT;
     }
 
-    if (desc.elementStride > 0) {
+    if (desc.elementStride > 0 && !cpuReadable) {
         bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
         bd.StructureByteStride = desc.elementStride;
     }
@@ -244,8 +252,11 @@ void* D3D11Device::MapBuffer(BufferHandle h) {
     auto* e = buffers_.Get(static_cast<u64>(h));
     if (!e || !e->buffer)
         return nullptr;
+    const D3D11_MAP mode = hasFlag(e->desc.usage, BufferUsage::CpuReadable)
+                               ? D3D11_MAP_READ
+                               : D3D11_MAP_WRITE_DISCARD;
     D3D11_MAPPED_SUBRESOURCE mapped{};
-    HRESULT hr = context_->Map(e->buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    HRESULT hr = context_->Map(e->buffer, 0, mode, 0, &mapped);
     if (FAILED(hr))
         return nullptr;
     return mapped.pData;
@@ -720,6 +731,23 @@ void D3D11Device::Present(SwapChainHandle h) {
     auto* sc = swapChains_.Get(static_cast<u64>(h));
     if (sc && sc->swapChain)
         sc->swapChain->Present(1, 0);
+}
+
+void D3D11Device::WaitIdle() {
+    // D3D11 has no fences on this path; flush the immediate context, then
+    // spin on an event query until the GPU has drained it.
+    context_->Flush();
+    D3D11_QUERY_DESC qd{};
+    qd.Query = D3D11_QUERY_EVENT;
+    ID3D11Query* query = nullptr;
+    if (FAILED(device_->CreateQuery(&qd, &query)) || !query)
+        return;
+    context_->End(query);
+    BOOL done = FALSE;
+    while (context_->GetData(query, &done, sizeof(done), 0) != S_OK) {
+        // Offline path (frame-capture export) — a busy spin is acceptable.
+    }
+    query->Release();
 }
 
 TextureHandle D3D11Device::GetSwapChainBackBuffer(SwapChainHandle h) {

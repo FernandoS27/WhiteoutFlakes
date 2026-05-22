@@ -23,6 +23,20 @@ BufferHandle WebGPUDevice::CreateBuffer(const BufferDesc& desc, const void* init
     entry.slotCount = 1;
     entry.currentSlot = 0;
 
+    // GPU→CPU readback buffer. WebGPU's MapRead usage is only combinable
+    // with CopyDst, so it gets a dedicated buffer and the async map path
+    // below — no ring, no CPU shadow.
+    if (hasFlag(desc.usage, BufferUsage::CpuReadable) && desc.size > 0) {
+        wgpu::BufferDescriptor bd{};
+        bd.size = desc.size;
+        bd.usage = wgpu::BufferUsage::MapRead | wgpu::BufferUsage::CopyDst;
+        bd.mappedAtCreation = false;
+        entry.buffer = state.device.CreateBuffer(&bd);
+        if (!entry.buffer)
+            return BufferHandle::Invalid;
+        return static_cast<BufferHandle>(state.buffers.Insert(std::move(entry)));
+    }
+
     const bool ring = hasFlag(desc.usage, BufferUsage::CpuWritable) && desc.size > 0;
     if (ring) {
         const u64 align = std::max<u64>(1, state.minUniformBufferAlign);
@@ -155,7 +169,24 @@ void WebGPUDevice::UpdateBuffer(BufferHandle h, const void* data, usize size) {
 void* WebGPUDevice::MapBuffer(BufferHandle h) {
     auto& state = *state_;
     auto* buffer = state.buffers.Get(static_cast<u64>(h));
-    if (!buffer || !buffer->mapped)
+    if (!buffer)
+        return nullptr;
+
+    // Readback buffer: synchronously map for reading. The caller invokes
+    // this after the GPU copy into the buffer has retired (frame-capture
+    // download), so the WaitAny below returns promptly.
+    if (hasFlag(buffer->desc.usage, BufferUsage::CpuReadable)) {
+        if (!buffer->buffer)
+            return nullptr;
+        wgpu::Future f = buffer->buffer.MapAsync(
+            wgpu::MapMode::Read, 0, buffer->desc.size, wgpu::CallbackMode::WaitAnyOnly,
+            [](wgpu::MapAsyncStatus, wgpu::StringView) {});
+        wgpu::FutureWaitInfo wait{f};
+        state.instance.WaitAny(1, &wait, UINT64_MAX);
+        return const_cast<void*>(buffer->buffer.GetConstMappedRange(0, buffer->desc.size));
+    }
+
+    if (!buffer->mapped)
         return nullptr;
     if (buffer->slotCount > 1) {
         buffer->currentSlot = (buffer->currentSlot + 1) % buffer->slotCount;
@@ -166,7 +197,18 @@ void* WebGPUDevice::MapBuffer(BufferHandle h) {
 void WebGPUDevice::UnmapBuffer(BufferHandle h) {
     auto& state = *state_;
     auto* buffer = state.buffers.Get(static_cast<u64>(h));
-    if (!buffer || !buffer->mapped)
+    if (!buffer)
+        return;
+
+    // Readback buffer: release the host mapping so the next CopyBuffer
+    // into it is legal again.
+    if (hasFlag(buffer->desc.usage, BufferUsage::CpuReadable)) {
+        if (buffer->buffer)
+            buffer->buffer.Unmap();
+        return;
+    }
+
+    if (!buffer->mapped)
         return;
     // Flush the slot just written by Map. The shared-ring path writes
     // to the device-wide shared CB; the dedicated-shadow path writes to

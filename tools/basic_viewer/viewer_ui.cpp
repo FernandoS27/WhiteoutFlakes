@@ -108,6 +108,7 @@ void ViewerUI::BuildFrame() {
     if (settingsOpen_)
         BuildSettingsWindow();
     BuildSaveAsPopup();
+    BuildExportPopup();
 }
 
 void ViewerUI::BuildViewCubeWidget() {
@@ -255,6 +256,102 @@ void ViewerUI::BuildSaveAsPopup() {
     ImGui::EndPopup();
 }
 
+void ViewerUI::BuildExportPopup() {
+    if (openExportPopup_) {
+        ImGui::OpenPopup("Export Animation Frames");
+        openExportPopup_ = false;
+    }
+
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal("Export Animation Frames", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    const auto& seqs = app_.SequenceNames();
+    if (seqs.empty()) {
+        ImGui::TextUnformatted("The loaded model has no animations.");
+        if (ImGui::Button("Close", ImVec2(80, 0)))
+            ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+        return;
+    }
+
+    exportSeqIdx_ = std::clamp(exportSeqIdx_, 0, static_cast<i32>(seqs.size()) - 1);
+
+    // ---- Animation ----
+    ImGui::SetNextItemWidth(280);
+    if (ImGui::BeginCombo("Animation", seqs[exportSeqIdx_].c_str())) {
+        for (i32 i = 0; i < static_cast<i32>(seqs.size()); ++i) {
+            const bool sel = (i == exportSeqIdx_);
+            if (ImGui::Selectable(seqs[i].c_str(), sel))
+                exportSeqIdx_ = i;
+            if (sel)
+                ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+
+    // ---- FPS ----
+    ImGui::SetNextItemWidth(120);
+    ImGui::InputInt("FPS", &exportFps_);
+    exportFps_ = std::clamp(exportFps_, 1, 240);
+
+    // ---- Format ----
+    {
+        const char* formats[] = {"PNG frames", "Animated GIF"};
+        ImGui::SetNextItemWidth(200);
+        ImGui::Combo("Format", &exportFormat_, formats, 2);
+    }
+
+    // ---- Output folder ----
+    {
+        char tmp[1024];
+        std::snprintf(tmp, sizeof(tmp), "%s", exportFolder_.c_str());
+        ImGui::SetNextItemWidth(360);
+        if (ImGui::InputText("##exportfolder", tmp, sizeof(tmp)))
+            exportFolder_ = tmp;
+        ImGui::SameLine();
+        if (ImGui::Button("Browse...##export")) {
+            NFD::UniquePathU8 outPath;
+            if (NFD::PickFolder(outPath) == NFD_OKAY)
+                exportFolder_ = outPath.get();
+        }
+        ImGui::SameLine();
+        ImGui::TextUnformatted("Output Folder");
+    }
+
+    // ---- Duration / frame-count preview ----
+    const bool gif = (exportFormat_ == 1);
+    const auto& ranges = app_.SequenceRanges();
+    if (exportSeqIdx_ < static_cast<i32>(ranges.size())) {
+        const SequenceInfo& s = ranges[exportSeqIdx_];
+        const i32 durMs = std::max(0, s.endMs - s.startMs);
+        const i32 frames = std::max(
+            1, static_cast<i32>(std::llround(static_cast<f64>(durMs) * exportFps_ / 1000.0)));
+        ImGui::TextDisabled("%d ms - %d frame(s) at %d FPS", durMs, frames, exportFps_);
+    }
+    ImGui::TextDisabled(gif ? "Output: <model>_<animation>.gif"
+                            : "Output: <model>_<animation>_<id>.png");
+
+    ImGui::Separator();
+
+    const bool canExport = !exportFolder_.empty();
+    ImGui::BeginDisabled(!canExport);
+    if (ImGui::Button("Export", ImVec2(120, 0))) {
+        app_.RequestAnimationExport(
+            exportSeqIdx_, exportFps_,
+            gif ? ExportFormat::Gif : ExportFormat::PngFrames,
+            io::FsPathFromUtf8(exportFolder_));
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(80, 0)))
+        ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
 void ViewerUI::BuildMenuBar() {
     RenderService& svc = app_.Service();
     DisplayFlags df = svc.Settings().GetDisplayFlags();
@@ -267,6 +364,12 @@ void ViewerUI::BuildMenuBar() {
             const bool hasModel = !app_.CurrentModelPath().empty();
             if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S", false, hasModel))
                 SaveAsDialog();
+            const bool hasAnims = hasModel && !app_.SequenceNames().empty();
+            if (ImGui::MenuItem("Export Animation Frames...", nullptr, false, hasAnims)) {
+                model::Actor* focus = app_.FocusActorPtr();
+                exportSeqIdx_ = focus ? focus->animation.ActiveSequenceIndex() : 0;
+                openExportPopup_ = true;
+            }
             ImGui::Separator();
             if (ImGui::MenuItem("Exit"))
                 glfwSetWindowShouldClose(app_.Window(), GLFW_TRUE);

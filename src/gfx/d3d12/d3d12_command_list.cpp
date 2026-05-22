@@ -53,6 +53,10 @@ void D3D12CommandList::TransitionBuffer(BufferEntry& e, D3D12_RESOURCE_STATES ne
 
     if (hasFlag(e.desc.usage, BufferUsage::CpuWritable))
         return;
+    // READBACK-heap buffers are fixed in COPY_DEST and must never be
+    // transitioned.
+    if (hasFlag(e.desc.usage, BufferUsage::CpuReadable))
+        return;
     if (e.currentState == newState)
         return;
     D3D12_RESOURCE_BARRIER b{};

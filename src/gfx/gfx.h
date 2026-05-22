@@ -121,6 +121,12 @@ public:
     virtual void ResizeSwapChain(SwapChainHandle, i32 width, i32 height) = 0;
     virtual void DestroySwapChain(SwapChainHandle) = 0;
     virtual void Present(SwapChainHandle) = 0;
+
+    // Block until every GPU command submitted so far has fully completed.
+    // A heavy stall — not for the hot path. Used by offline operations
+    // (e.g. frame-capture export) that must read back GPU results
+    // deterministically.
+    virtual void WaitIdle() = 0;
     virtual TextureHandle GetSwapChainBackBuffer(SwapChainHandle) = 0;
 
     virtual TextureHandle GetSwapChainBackBufferLinear(SwapChainHandle) = 0;

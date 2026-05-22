@@ -23,6 +23,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace whiteout::flakes::renderer {
 
@@ -49,6 +50,27 @@ public:
     // ---- Frame loop ----
     void RenderFrame(RenderTargetId targetId);
     void Present(RenderTargetId targetId);
+
+    // ---- Optional frame capture (for PNG / GIF export) ----
+    // Off by default and zero-cost on the normal render path. When enabled,
+    // each frame's final composited image is redirected to an off-screen
+    // target, mirrored to the back buffer for display, and copied into a
+    // ring of CPU-readable buffers by a compute shader. Enabling allocates a
+    // capture target + the readback ring sized to the primary surface;
+    // disabling frees them. Keep it off except while actually exporting.
+    void EnableFrameCapture(bool enable);
+    bool IsFrameCaptureEnabled() const;
+    // Capture-ring depth — the exporter submits this many frames, calls
+    // Gfx()->WaitIdle() once, then drains every slot.
+    i32 FrameCaptureRingSize() const;
+    // Ring slot the most recent RenderFrame wrote its capture into, or -1 if
+    // capture is off or that frame produced no capture.
+    i32 LastCapturedSlot() const;
+    // Copy a capture ring slot out as tightly-packed RGBA8 (row pitch =
+    // width*4). The slot's GPU work must have completed first — call
+    // Gfx()->WaitIdle() before draining a batch. Returns false on an
+    // out-of-range slot or when capture is disabled.
+    bool DownloadCaptureSlot(i32 slot, std::vector<u8>& outRgba, i32& width, i32& height);
 
     // ---- Stats ----
     void GetFrameStats(i32& geosets, i32& textures, i32& nodes, i32& particles,
@@ -111,7 +133,7 @@ private:
     bool CreatePipelines();
     bool CreateDefaultResources();
     void ReleaseModelGPU();
-    void RunTonemapPass(const RenderTarget& target);
+    void RunTonemapPass(const RenderTarget& target, gfx::TextureHandle dstColor);
     bool InitBlsShaders(gfx::GfxApi api);
     void ShutdownBlsShaders();
     bool RenderParticlesBls();

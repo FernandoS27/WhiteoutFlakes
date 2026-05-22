@@ -79,6 +79,10 @@ private:
     bool srvSetDirty_ = false;
     bool samplerSetDirty_ = false;
 
+    // UAV storage buffer bound for the next compute Dispatch (slot 0). The
+    // capture compute shader is the only compute user; one slot suffices.
+    BufferHandle pendingComputeUav_ = BufferHandle::Invalid;
+
     TextureHandle activeColorAttachment_ = TextureHandle::Invalid;
     TextureHandle activeDepthAttachment_ = TextureHandle::Invalid;
     // Raw VkFormat held as u32 so this header stays free of vulkan.h.

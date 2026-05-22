@@ -225,8 +225,34 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
     return static_cast<PipelineHandle>(state.pipelines.Insert(std::move(entry)));
 }
 
-PipelineHandle VulkanDevice::CreateComputePipeline(const ComputePipelineDesc&) {
-    return PipelineHandle::Invalid; // Phase 2
+PipelineHandle VulkanDevice::CreateComputePipeline(const ComputePipelineDesc& desc) {
+    auto& state = *state_;
+    auto* cs = state.shaders.Get(static_cast<u64>(desc.cs));
+    if (!cs) {
+        std::fprintf(stderr, "[vk] CreateComputePipeline: invalid compute shader\n");
+        return PipelineHandle::Invalid;
+    }
+    vk::ComputePipelineCreateInfo cpci{
+        .stage =
+            vk::PipelineShaderStageCreateInfo{
+                .stage = vk::ShaderStageFlagBits::eCompute,
+                .module = *cs->module,
+                .pName = "main",
+            },
+        .layout = *state.computeLayout,
+    };
+    auto pR = *state.pipelineCache
+                  ? state.device.createComputePipeline(state.pipelineCache, cpci)
+                  : state.device.createComputePipeline(nullptr, cpci);
+    if (pR.result != vk::Result::eSuccess) {
+        std::fprintf(stderr, "[vk] createComputePipeline failed (%s)\n",
+                     vk::to_string(pR.result).c_str());
+        return PipelineHandle::Invalid;
+    }
+    PipelineEntry entry{};
+    entry.pipeline = std::move(pR.value);
+    entry.isCompute = true;
+    return static_cast<PipelineHandle>(state.pipelines.Insert(std::move(entry)));
 }
 
 SamplerHandle VulkanDevice::CreateSampler(const SamplerDesc& desc) {

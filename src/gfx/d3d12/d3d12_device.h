@@ -43,6 +43,7 @@ public:
     void ResizeSwapChain(SwapChainHandle, i32 width, i32 height) override;
     void DestroySwapChain(SwapChainHandle) override;
     void Present(SwapChainHandle) override;
+    void WaitIdle() override;
     TextureHandle GetSwapChainBackBuffer(SwapChainHandle) override;
     TextureHandle GetSwapChainBackBufferLinear(SwapChainHandle) override;
     Format GetSwapChainFormat(SwapChainHandle) const override;

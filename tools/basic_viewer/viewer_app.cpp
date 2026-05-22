@@ -20,6 +20,11 @@
 
 #include "gfx/gfx.h"
 
+#include <whiteout/textures/gif/writer.h>
+#include <whiteout/textures/png/writer.h>
+#include <whiteout/textures/texture.h>
+#include <whiteout/utils/simple_thread_pool.h>
+
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 
@@ -56,8 +61,14 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
+#include <string>
+#include <system_error>
+#include <thread>
+#include <vector>
 
 namespace whiteout::flakes {
 
@@ -84,6 +95,30 @@ bool ContainsCi(const std::string& hay, const char* needle) {
             return true;
     }
     return false;
+}
+
+// Lower-cases and collapses anything non-alphanumeric to a single '_' so a
+// sequence / model name is safe in a filename ("Stand Ready" -> "stand_ready").
+std::string SanitizeName(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    bool lastUnderscore = false;
+    for (unsigned char c : in) {
+        if (std::isalnum(c)) {
+            out.push_back(static_cast<char>(std::tolower(c)));
+            lastUnderscore = false;
+        } else if (!lastUnderscore) {
+            out.push_back('_');
+            lastUnderscore = true;
+        }
+    }
+    while (!out.empty() && out.back() == '_')
+        out.pop_back();
+    usize start = 0;
+    while (start < out.size() && out[start] == '_')
+        ++start;
+    out = out.substr(start);
+    return out.empty() ? std::string("unnamed") : out;
 }
 
 } // namespace
@@ -524,10 +559,231 @@ void ViewerApp::UpdateCameraPresetAnimator() {
     service_.Scene().Camera().SetDirectPose(pos, tgt, roll);
 }
 
+void ViewerApp::RequestAnimationExport(i32 sequenceIndex, i32 fps, ExportFormat format,
+                                       std::filesystem::path outputFolder) {
+    pendingExport_.active = true;
+    pendingExport_.sequenceIndex = sequenceIndex;
+    pendingExport_.fps = fps;
+    pendingExport_.format = format;
+    pendingExport_.outputFolder = std::move(outputFolder);
+}
+
+namespace {
+
+// Receives one captured frame: (zero-based frame index, RGBA8 pixels).
+using FrameSink = std::function<void(i32, whiteout::textures::Texture&&)>;
+
+// Drives the renderer through `frameCount` frames at `fps`, redirecting each
+// composite through frame capture and handing the decoded pixels to `sink`.
+// The caller configures the focus actor's sequence beforehand.
+//
+// A captured frame's GPU work isn't done when RenderFrame returns; rather than
+// stalling per frame, up to one capture-ring's worth run, then a single
+// WaitIdle drains the whole batch.
+void CaptureSequenceFrames(RenderService& svc, RenderTargetId targetId, i32 frameCount, i32 fps,
+                           const FrameSink& sink) {
+    auto& pipeline = svc.Pipeline();
+    pipeline.EnableFrameCapture(true);
+
+    // One empty ImGui frame so the captures carry no UI overlay — RenderFrame
+    // reuses this draw data for every export frame.
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+    ImGui::Render();
+    if (auto* cp = svc.Scene().ActiveContentProvider())
+        cp->Pump();
+
+    const f32 dtSec = 1.0f / static_cast<f32>(fps);
+    const i32 ringSize = pipeline.FrameCaptureRingSize();
+
+    struct Pending {
+        i32 frameIndex;
+        i32 ringSlot;
+    };
+    std::vector<Pending> pending;
+    pending.reserve(static_cast<usize>(ringSize));
+
+    auto drain = [&]() {
+        if (pending.empty())
+            return;
+        if (auto* dev = pipeline.Gfx())
+            dev->WaitIdle(); // the batch's GPU work has now retired
+        for (const Pending& p : pending) {
+            std::vector<u8> rgba;
+            i32 w = 0, h = 0;
+            if (!pipeline.DownloadCaptureSlot(p.ringSlot, rgba, w, h) || w <= 0 || h <= 0)
+                continue;
+            auto tex = whiteout::textures::Texture::create2D(
+                whiteout::textures::PixelFormat::RGBA8, static_cast<u32>(w),
+                static_cast<u32>(h), 1);
+            auto dst = tex.mipData(0);
+            if (dst.size() < rgba.size())
+                continue;
+            std::memcpy(dst.data(), rgba.data(), rgba.size());
+            sink(p.frameIndex, std::move(tex));
+        }
+        pending.clear();
+    };
+
+    for (i32 i = 0; i < frameCount; ++i) {
+        glfwPollEvents(); // keep the window responsive during a long export
+
+        // SceneManager::Update advances each actor's playback clock;
+        // FrameTicker::Tick then evaluates poses at that clock. Both are
+        // needed — Tick alone would re-render frame 0 every iteration.
+        const f32 stepDt = (i == 0) ? 0.0f : dtSec;
+        svc.Scene().Update(stepDt);
+        svc.Ticker().Tick(stepDt);
+        pipeline.RenderFrame(targetId);
+        pipeline.Present(targetId);
+
+        const i32 slot = pipeline.LastCapturedSlot();
+        if (slot >= 0)
+            pending.push_back({i, slot});
+        // Drain once the ring is full — never more than `ringSize` captures
+        // in flight, so a slot is only reused once its frame is safely out.
+        if (static_cast<i32>(pending.size()) >= ringSize)
+            drain();
+    }
+    drain();
+    pipeline.EnableFrameCapture(false);
+}
+
+// Encodes captured frames into one looping GIF. Wu palette quantisation is
+// CPU-heavy, so the writer gets a worker pool; the frame delay is integer
+// centiseconds, so the effective rate is quantised.
+void WriteAnimatedGif(const std::vector<whiteout::textures::Texture>& frames,
+                      const std::filesystem::path& file, i32 fps, const std::string& animName) {
+    std::fprintf(stderr, "[viewer] encoding %zu-frame GIF (palette quantise)...\n",
+                 frames.size());
+    const unsigned hw = std::thread::hardware_concurrency();
+    whiteout::utils::SimpleThreadPool pool(hw > 1 ? hw : 2);
+    whiteout::textures::gif::Writer writer(whiteout::textures::gif::Writer::WriteMode::Lenient,
+                                           &pool);
+    whiteout::textures::gif::SaveOptions opts;
+    opts.delayCs = static_cast<u16>(
+        std::clamp<i32>(static_cast<i32>(std::llround(100.0 / fps)), 1, 65535));
+    opts.loopCount = 0; // loop forever
+    writer.write(io::PathToUtf8(file), frames, opts);
+    if (writer.hasIssues())
+        std::fprintf(stderr, "[viewer] Export: GIF write failed: %s\n",
+                     writer.getIssues().front().c_str());
+    else
+        std::fprintf(stderr, "[viewer] Exported %zu-frame GIF of '%s' to %s\n", frames.size(),
+                     animName.c_str(), io::PathToUtf8(file).c_str());
+}
+
+} // namespace
+
+void ViewerApp::RunAnimationExport(const AnimationExportRequest& req) {
+    model::Actor* hero = FocusActorPtr();
+    if (!hero || !hero->animation.HasSource()) {
+        std::fprintf(stderr, "[viewer] Export: no animated model loaded\n");
+        return;
+    }
+    if (req.sequenceIndex < 0 ||
+        req.sequenceIndex >= static_cast<i32>(sequenceRanges_.size())) {
+        std::fprintf(stderr, "[viewer] Export: invalid animation index %d\n", req.sequenceIndex);
+        return;
+    }
+
+    const i32 fps = std::clamp(req.fps, 1, 240);
+    const SequenceInfo& seq = sequenceRanges_[req.sequenceIndex];
+    i32 durationMs = seq.endMs - seq.startMs;
+    if (durationMs <= 0)
+        durationMs = static_cast<i32>(std::llround(1000.0 / fps)); // static pose -> 1 frame
+    const i32 frameCount =
+        std::max<i32>(1, static_cast<i32>(std::llround(static_cast<f64>(durationMs) * fps / 1000.0)));
+
+    const std::string modelName = SanitizeName(currentModelPath_.stem().string());
+    const std::string animName = SanitizeName(sequenceNames_[req.sequenceIndex]);
+    const bool gif = (req.format == ExportFormat::Gif);
+
+    std::error_code ec;
+    std::filesystem::create_directories(req.outputFolder, ec);
+
+    // Configure the focus actor for the target sequence, snapshotting its
+    // playback state so the viewer returns to where it was afterwards.
+    const i32 savedSeq = hero->animation.ActiveSequenceIndex();
+    const i32 savedTime = hero->animation.TimeMs();
+    const model::Actor::Cursor savedCursor = hero->cursor;
+    const f32 savedSpeed = hero->playbackSpeed;
+    hero->playbackSpeed = 1.0f;
+    hero->animation.SetActiveSequenceIndex(req.sequenceIndex);
+    hero->cursor = {}; // prevActiveSequence=-1 forces a clean re-sync to frame 0
+
+    std::fprintf(stderr, "[viewer] Exporting '%s' as %s: %d frame(s) at %d FPS -> %s\n",
+                 animName.c_str(), gif ? "animated GIF" : "PNG frames", frameCount, fps,
+                 io::PathToUtf8(req.outputFolder).c_str());
+
+    // The capture sink differs by format: GIF collects every frame (it needs
+    // a shared palette); PNG streams each frame straight to disk.
+    std::vector<whiteout::textures::Texture> gifFrames;
+    whiteout::textures::png::Writer pngWriter;
+    // Zero-pad the PNG frame id wide enough for the whole run (min 2, e.g. _01).
+    const i32 pad = std::max<i32>(2, static_cast<i32>(std::to_string(frameCount - 1).size()));
+    i32 written = 0;
+
+    FrameSink sink;
+    if (gif) {
+        gifFrames.reserve(static_cast<usize>(frameCount));
+        sink = [&](i32, whiteout::textures::Texture&& tex) {
+            gifFrames.push_back(std::move(tex));
+            ++written;
+        };
+    } else {
+        sink = [&](i32 frameIndex, whiteout::textures::Texture&& tex) {
+            char idBuf[24];
+            std::snprintf(idBuf, sizeof(idBuf), "%0*d", pad, frameIndex);
+            std::filesystem::path file =
+                req.outputFolder / (modelName + "_" + animName + "_" + idBuf + ".png");
+            pngWriter.write(io::PathToUtf8(file), tex);
+            if (pngWriter.hasIssues())
+                std::fprintf(stderr, "[viewer] Export: PNG write failed for %s: %s\n",
+                             io::PathToUtf8(file).c_str(),
+                             pngWriter.getIssues().front().c_str());
+            else
+                ++written;
+        };
+    }
+
+    CaptureSequenceFrames(service_, targetId_, frameCount, fps, sink);
+
+    // Restore the focus actor before the (potentially slow) GIF encode.
+    hero->playbackSpeed = savedSpeed;
+    hero->animation.SetActiveSequenceIndex(savedSeq);
+    hero->animation.SetTimeMs(savedTime);
+    hero->cursor = savedCursor;
+
+    if (written == 0) {
+        std::fprintf(stderr,
+                     "[viewer] Export produced nothing — frame capture failed "
+                     "(see any [capture] message above for the cause)\n");
+        return;
+    }
+
+    if (gif) {
+        WriteAnimatedGif(gifFrames, req.outputFolder / (modelName + "_" + animName + ".gif"),
+                         fps, animName);
+    } else {
+        std::fprintf(stderr, "[viewer] Exported %d/%d frame(s) of '%s' to %s\n", written,
+                     frameCount, animName.c_str(), io::PathToUtf8(req.outputFolder).c_str());
+    }
+}
+
 void ViewerApp::Tick(f32 dt) {
     glfwPollEvents();
     if (!window_ || glfwWindowShouldClose(window_))
         return;
+
+    // Run a queued animation export before anything else — it owns the frame
+    // (its own ImGui frame + render loop) and skips the normal tick.
+    if (pendingExport_.active) {
+        AnimationExportRequest req = pendingExport_;
+        pendingExport_.active = false;
+        RunAnimationExport(req);
+        return;
+    }
 
     // Drive the async content provider's completion queue from the host
     // thread — texture stubs swap to their real pixels here, MDX-load

@@ -138,6 +138,9 @@ set(SHADER_ENTRIES
     "line.slang|psLine|fragment|kLinePS"
     "viewcube.slang|vsViewCube|vertex|kViewCubeVS"
     "viewcube.slang|psViewCube|fragment|kViewCubePS"
+    "blit.slang|vsBlit|vertex|kBlitVS"
+    "blit.slang|psBlit|fragment|kBlitPS"
+    "framebuffer_capture.slang|csCapture|compute|kCaptureCS"
 )
 
 set(SHADER_DXBC_FILES "")
@@ -842,6 +845,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/model/model_template_manager.cpp
     src/renderer/model/render_model.cpp
     src/renderer/render_pipeline.cpp
+    src/renderer/frame_capture.cpp
     src/renderer/render_service.cpp
     src/renderer/render_detail.cpp
     src/renderer/render_target.cpp

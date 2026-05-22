@@ -24,6 +24,7 @@ enum class BufferUsage : u32 {
     UnorderedAccess = 1 << 4,
     CpuWritable = 1 << 5,
     GpuWritable = 1 << 6,
+    CpuReadable = 1 << 7,
 };
 
 inline BufferUsage operator|(BufferUsage a, BufferUsage b) {

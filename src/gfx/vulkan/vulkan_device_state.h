@@ -62,6 +62,13 @@ struct VulkanDeviceState {
     vk::raii::DescriptorSetLayout samplerSetLayout = nullptr;
     vk::raii::PipelineLayout pipelineLayout = nullptr;
 
+    // Fixed compute descriptor layout (set 0): binding 0 = uniform buffer,
+    // 1 = sampled image, 2 = storage buffer. Every compute pipeline the
+    // engine builds (currently just the frame-capture copy shader) uses
+    // this shape — see framebuffer_capture.slang's [[vk::binding]] hints.
+    vk::raii::DescriptorSetLayout computeSetLayout = nullptr;
+    vk::raii::PipelineLayout computeLayout = nullptr;
+
     // Pipeline cache persisted to pipelineCachePath; empty path = none.
     // The driver embeds a UUID prefix, so a stale blob is rejected
     // safely on driver/device change.

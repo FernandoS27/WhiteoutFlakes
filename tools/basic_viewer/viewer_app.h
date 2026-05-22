@@ -38,6 +38,12 @@ using namespace whiteout::flakes::renderer::model;
 
 class ViewerUI;
 
+// Output format for an animation export.
+enum class ExportFormat {
+    PngFrames, ///< One <model>_<anim>_<id>.png per frame.
+    Gif,       ///< A single animated <model>_<anim>.gif.
+};
+
 class ViewerApp {
 public:
     explicit ViewerApp(RenderService& service);
@@ -55,6 +61,15 @@ public:
     // Load an MDX from disk and make it the focus actor. Clears any
     // previously-loaded scene. Safe to call repeatedly (used by File > Open).
     bool LoadModel(const std::filesystem::path& path);
+
+    // ---- Animation frame export ----
+    // Queue an export of every frame of `sequenceIndex` (a focus-actor
+    // sequence) into `outputFolder`, sampled at `fps`. `format` chooses PNG
+    // frames (<model>_<anim>_<id>.png) or a single animated <model>_<anim>.gif.
+    // Deferred: the UI calls this from inside the ImGui frame, and Tick() runs
+    // the actual render loop on the next tick (outside ImGui frame building).
+    void RequestAnimationExport(i32 sequenceIndex, i32 fps, ExportFormat format,
+                                std::filesystem::path outputFolder);
 
     // ---- Host policy (toggled by the UI, read by the per-frame tick) ----
     bool LoopNonLoopingPolicy() const {
@@ -122,6 +137,18 @@ private:
     void InitImGui();
     void ShutdownImGui();
 
+    // Runs a queued animation export synchronously: drives the focus actor
+    // through the sequence one frame at a time, captures each composited
+    // frame, and writes it as a PNG.
+    struct AnimationExportRequest {
+        bool active = false;
+        i32 sequenceIndex = 0;
+        i32 fps = 30;
+        ExportFormat format = ExportFormat::PngFrames;
+        std::filesystem::path outputFolder;
+    };
+    void RunAnimationExport(const AnimationExportRequest& req);
+
     void OnFramebufferResize(i32 w, i32 h);
     void OnMouseButton(i32 button, i32 action);
     void OnCursorPos(f64 x, f64 y);
@@ -174,6 +201,10 @@ private:
     // Last animation-time sample, for computing parentDt without a
     // duplicate animation-clock tick.
     i32 lastParentTimeMs_ = 0;
+
+    // Pending animation export — filled by RequestAnimationExport, consumed
+    // by the next Tick().
+    AnimationExportRequest pendingExport_;
 
     friend class ViewerUI;
 };

@@ -609,6 +609,11 @@ bool RenderPipeline::InitDevice(gfx::GfxApi api) {
         CleanupGFX();
         return false;
     }
+
+    // Optional frame capture — builds its own shaders + compute PSO. Failure
+    // here isn't fatal: capture just stays unavailable (it self-diagnoses).
+    impl_->capture_.Init(*impl_->gfx_, api, impl_->depthStencilFormat_);
+
     if (!CreateDefaultResources()) {
         CleanupGFX();
         return false;
@@ -1135,6 +1140,8 @@ void RenderPipeline::CleanupGFX() {
         impl_->tonemapPsCb_ = gfx::BufferHandle::Invalid;
         impl_->tonemapSampler_ = gfx::SamplerHandle::Invalid;
 
+        impl_->capture_.Shutdown();
+
         impl_->gfx_->Destroy(impl_->cbPerFrame_);
 
         rs_.Debug().DestroyResources();
@@ -1268,7 +1275,13 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
     // hands out the HDR-rtv line PSO. See `Impl::frameRenderMode_`.
     impl_->frameRenderMode_ = rs_.Settings().GetRenderMode();
     const bool useHdr = (impl_->frameRenderMode_ == RenderMode::HD);
-    const gfx::TextureHandle sceneTarget = useHdr ? target.hdrColor : target.color;
+
+    // Frame capture (off unless exporting): BeginFrame redirects the final
+    // composite to an off-screen target and EndFrame (below) copies it out +
+    // mirrors it onto the swap chain. Disabled is the zero-cost default —
+    // BeginFrame just hands back the back buffer and EndFrame no-ops.
+    const gfx::TextureHandle finalColor = impl_->capture_.BeginFrame(target);
+    const gfx::TextureHandle sceneTarget = useHdr ? target.hdrColor : finalColor;
 
     auto srgbByteToLinear = [](u8 b) {
         const f32 f = b / 255.0f;
@@ -1423,7 +1436,14 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
     if (useHdr) {
         WDX_CPU_ZONE("Tonemap");
         WDX_GPU_ZONE(cmd, "Tonemap");
-        RunTonemapPass(target);
+        RunTonemapPass(target, finalColor);
+    }
+
+    // Copy the off-screen composite into the readback ring and mirror it
+    // onto the swap chain. No-op unless capture redirected this frame.
+    {
+        WDX_CPU_ZONE("FrameCapture");
+        impl_->capture_.EndFrame(target);
     }
 
     ++frameCounter;
@@ -1439,13 +1459,13 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
     }
 }
 
-void RenderPipeline::RunTonemapPass(const RenderTarget& target) {
+void RenderPipeline::RunTonemapPass(const RenderTarget& target, gfx::TextureHandle dstColor) {
     if (impl_->tonemapPSO_ == gfx::PipelineHandle::Invalid)
         return;
     auto* cmd = impl_->gfx_->GetImmediateContext();
 
     const f32 clearLdr[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-    cmd->BeginRenderPass(target.color, gfx::TextureHandle::Invalid, clearLdr, 1.0f, 0);
+    cmd->BeginRenderPass(dstColor, gfx::TextureHandle::Invalid, clearLdr, 1.0f, 0);
     cmd->SetViewport({0, 0, (f32)target.width, (f32)target.height, 0, 1});
 
     if (impl_->tonemapPsCb_ != gfx::BufferHandle::Invalid) {
@@ -1479,6 +1499,30 @@ void RenderPipeline::Present(RenderTargetId targetId) {
     auto it = impl_->targets_.find(targetId);
     if (it != impl_->targets_.end() && it->second.swap != gfx::SwapChainHandle::Invalid)
         impl_->gfx_->Present(it->second.swap);
+}
+
+// ---- Frame capture ---------------------------------------------------------
+// Thin forwarders — the implementation lives in FrameCapture (frame_capture.h).
+
+void RenderPipeline::EnableFrameCapture(bool enable) {
+    impl_->capture_.SetEnabled(enable);
+}
+
+bool RenderPipeline::IsFrameCaptureEnabled() const {
+    return impl_->capture_.IsEnabled();
+}
+
+i32 RenderPipeline::FrameCaptureRingSize() const {
+    return impl_->capture_.RingSize();
+}
+
+i32 RenderPipeline::LastCapturedSlot() const {
+    return impl_->capture_.LastSlot();
+}
+
+bool RenderPipeline::DownloadCaptureSlot(i32 slot, std::vector<u8>& outRgba, i32& width,
+                                         i32& height) {
+    return impl_->capture_.DownloadSlot(slot, outRgba, width, height);
 }
 
 class GeosetPassBls : public BlsGeosetPass<GeosetPassBls> {

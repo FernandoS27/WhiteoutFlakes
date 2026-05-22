@@ -33,6 +33,8 @@ private:
     // Renders the deferred "pick MDL dialect" modal when an MDL Save As is
     // pending. No-op otherwise.
     void BuildSaveAsPopup();
+    // Renders the "Export Animation Frames" modal (animation + FPS + folder).
+    void BuildExportPopup();
 
     void OpenFileDialog();
     // Save As entry point — pops the native save dialog, then either writes
@@ -61,6 +63,13 @@ private:
     std::string installPathBuf_;
     std::string newMpqEntryBuf_;
     bool ioBufsInitialised_ = false;
+
+    // Export Animation Frames modal state.
+    bool openExportPopup_ = false;
+    i32 exportSeqIdx_ = 0;
+    i32 exportFps_ = 30;
+    i32 exportFormat_ = 0; // 0 = PNG frames, 1 = animated GIF
+    std::string exportFolder_;
 };
 
 } // namespace whiteout::flakes
