@@ -44,6 +44,7 @@ private:
     ViewerApp& app_;
 
     bool settingsOpen_ = false;
+    bool showViewCube_ = true; // View > View Cube toggle
 
     // Save As state. `pendingSaveMdlPath_` is non-empty only between the user
     // choosing an .mdl target and picking a dialect in the modal.

@@ -199,24 +199,6 @@ private:
     friend class Renderer;
 };
 
-/// @brief Debug-renderer access (ViewCube hit-testing, overlay rects).
-class DebugView {
-public:
-    /// @brief Hit-test against the debug ViewCube widget.
-    /// @return `-1` if no hit, `0..5` face index, `6` for "home" reset.
-    i32 HitTestViewCube(i32 mouseX, i32 mouseY);
-    /// @brief Screen-space rect occupied by the ViewCube (host UI uses
-    ///        this for overlay clipping).
-    Rect GetViewCubeRect() const;
-    /// @brief Set hover state — drives the cube's hover-highlight.
-    void SetViewCubeHovered(bool);
-
-private:
-    explicit DebugView(detail::RendererImpl* impl) : impl_(impl) {}
-    detail::RendererImpl* impl_;
-    friend class Renderer;
-};
-
 /// @brief Day-night-cycle service.
 class DncView {
 public:

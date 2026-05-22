@@ -70,9 +70,6 @@ SettingsView Renderer::Settings() {
 LoaderView Renderer::Loader() {
     return LoaderView(impl_.get());
 }
-DebugView Renderer::Debug() {
-    return DebugView(impl_.get());
-}
 DncView Renderer::Dnc() {
     return DncView(impl_.get());
 }
@@ -321,20 +318,6 @@ void LoaderView::UpdateMaterials(ActorHandle handle, const std::vector<MaterialD
 
 void LoaderView::RequestClearAll() {
     Svc(impl_).Loader().RequestClearAll();
-}
-
-// ============================================================================
-// DebugView
-// ============================================================================
-
-i32 DebugView::HitTestViewCube(i32 x, i32 y) {
-    return Svc(impl_).Debug().HitTestViewCube(x, y);
-}
-Rect DebugView::GetViewCubeRect() const {
-    return Svc(impl_).Debug().GetViewCubeRect();
-}
-void DebugView::SetViewCubeHovered(bool h) {
-    Svc(impl_).Debug().SetViewCubeHovered(h);
 }
 
 // ============================================================================

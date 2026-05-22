@@ -55,8 +55,7 @@ using whiteout::Vector4f;
 
 /// @brief Integer-coordinate screen-space rectangle (top-down, pixel units).
 ///
-/// Used by the debug renderer for ViewCube hit-testing and by the host
-/// frontends for laying out UI overlays.
+/// Used by host frontends for laying out UI overlays.
 struct Rect {
     i32 left;
     i32 top;

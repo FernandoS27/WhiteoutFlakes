@@ -589,9 +589,9 @@ void VulkanCommandList::ClearDepth(TextureHandle depth, f32 clearDepth, u8 clear
     // Inside a render pass, vkCmdClearDepthStencilImage is illegal AND
     // would force the depth image into eTransferDstOptimal — wrong for
     // the subsequent attachment writes. Use vkCmdClearAttachments with
-    // the current viewport as the clear rect (matches the d3d11/d3d12
-    // ClearDepthStencilView semantics RenderViewCube relies on, which
-    // scope the clear to the viewport-restricted region).
+    // the current viewport as the clear rect (matching d3d11/d3d12
+    // ClearDepthStencilView semantics — the clear is scoped to the
+    // viewport-restricted region).
     const bool insideRenderPass = (activeDepthAttachment_ == depth);
     if (insideRenderPass) {
         // BeginRenderPass binds only pDepthAttachment (no pStencilAttachment),

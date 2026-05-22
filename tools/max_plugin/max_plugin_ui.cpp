@@ -1,5 +1,6 @@
 #include "max_plugin_ui.h"
 
+#include "imgui_viewcube.h"
 #include "render_window.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/camera.h"
@@ -139,40 +140,9 @@ void MaxPluginUI::BuildFrame() {
 }
 
 void MaxPluginUI::BuildViewCubeWidget() {
-    auto& dbg = win_.Service().Debug();
-    const auto r = dbg.GetViewCubeRect();
-    const f32 x = static_cast<f32>(r.left);
-    const f32 y = static_cast<f32>(r.top);
-    const f32 w = static_cast<f32>(r.right - r.left);
-    const f32 h = static_cast<f32>(r.bottom - r.top);
-    if (w <= 0.0f || h <= 0.0f)
-        return;
-
-    ImGui::SetNextWindowPos(ImVec2(x, y));
-    ImGui::SetNextWindowSize(ImVec2(w, h));
-    constexpr ImGuiWindowFlags kFlags =
-        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar |
-        ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings |
-        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing;
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    if (ImGui::Begin("##viewcube", nullptr, kFlags)) {
-        ImGui::InvisibleButton("##viewcube_hit", ImVec2(w, h));
-        const bool hovered = ImGui::IsItemHovered();
-        dbg.SetViewCubeHovered(hovered);
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
-            const ImVec2 mp = ImGui::GetIO().MousePos;
-            const i32 hit =
-                dbg.HitTestViewCube(static_cast<i32>(mp.x), static_cast<i32>(mp.y));
-            if (hit == 6)
-                win_.Service().Scene().Camera().Reset();
-            else if (hit >= 0)
-                win_.Service().Scene().Camera().SnapToViewCubeFace(hit);
-        }
-    }
-    ImGui::End();
-    ImGui::PopStyleVar(2);
+    // Pure host-side ImGui widget — the renderer has no notion of it.
+    // See tools/common/imgui_viewcube.h.
+    tools::DrawViewCube(win_.Service().Scene().Camera());
 }
 
 void MaxPluginUI::BuildMenuBar() {

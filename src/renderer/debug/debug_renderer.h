@@ -48,43 +48,14 @@ public:
     void RenderGrid();
     void RenderCollisions();
     void RenderLightMarkers();
-    void RenderViewCube();
-
-    Rect GetViewCubeRect() const;
-    i32 HitTestViewCube(i32 mx, i32 my) const;
-    void SetViewCubeHovered(bool h) noexcept {
-        vcHovered_ = h;
-    }
-    bool IsViewCubeHovered() const noexcept {
-        return vcHovered_;
-    }
-
-    static constexpr i32 kViewCubeSize = 120;
 
 private:
     bool CreateGridResources();
-
-    bool CreateViewCubeResources();
 
     RenderService& rs_;
 
     gfx::BufferHandle gridVB_ = gfx::BufferHandle::Invalid;
     i32 gridVertCount_ = 0;
-
-    static constexpr const char* kViewCubeFaceTexName = "debug.viewCubeFace";
-
-    gfx::BufferHandle vcCubeVB_ = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle vcCubeIB_ = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle vcOutlineVB_ = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle vcHomeVB_ = gfx::BufferHandle::Invalid;
-    gfx::TextureHandle vcFaceTex_ = gfx::TextureHandle::Invalid;
-
-    gfx::ShaderHandle viewCubeVS_ = gfx::ShaderHandle::Invalid;
-    gfx::ShaderHandle viewCubePS_ = gfx::ShaderHandle::Invalid;
-
-    gfx::PipelineHandle viewCubePSOHdr_ = gfx::PipelineHandle::Invalid;
-    gfx::PipelineHandle viewCubePSOSd_ = gfx::PipelineHandle::Invalid;
-    bool vcHovered_ = false;
 };
 
 } // namespace whiteout::flakes::renderer::debug

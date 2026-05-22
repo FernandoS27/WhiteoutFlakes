@@ -1081,7 +1081,7 @@ RenderTargetId RenderPipeline::CreateSwapChainTarget(void* nativeWindowHandle, i
     // surface dimensions immediately. Previously only ResizePrimaryTarget
     // updated these, which meant the very first frame (before any
     // framebuffer-size event reached us) computed everything against the
-    // 800x600 default and put the ViewCube etc. in the wrong place.
+    // 800x600 default.
     if (impl_->primaryTargetId_ == 0 || impl_->primaryTargetId_ == id) {
         impl_->width_ = w;
         impl_->height_ = h;
@@ -1419,7 +1419,6 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
         rs_.Debug().RenderCollisions();
     if (rs_.Settings().ShowLights())
         rs_.Debug().RenderLightMarkers();
-    rs_.Debug().RenderViewCube();
 
     // SD path lands the scene directly on the swap chain backbuffer, so
     // ImGui draws stay inside this render pass. In HD mode the equivalent

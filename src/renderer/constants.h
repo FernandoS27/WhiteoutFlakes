@@ -29,9 +29,6 @@ constexpr Vector4f kParticleAmbientBase = {0.35f, 0.35f, 0.40f, 0.0f};
 constexpr Vector4f kCollisionLightColor = {1.0f, 1.0f, 1.0f, 1.0f};
 constexpr Vector4f kCollisionAmbientColor = {1.0f, 1.0f, 1.0f, 0.0f};
 
-constexpr Vector4f kViewCubeLightColor = {1.0f, 1.0f, 1.0f, 1.0f};
-constexpr Vector4f kViewCubeAmbientColor = {0.5f, 0.5f, 0.5f, 1.0f};
-
 namespace detail {
 inline Vector4f LiftLightDir(Vector3f maxDir) {
     Vector3f d =
@@ -40,8 +37,5 @@ inline Vector4f LiftLightDir(Vector3f maxDir) {
 }
 } // namespace detail
 inline const Vector4f kDefaultLightDir = detail::LiftLightDir({0.0f, -0.3f, -0.8f});
-inline const Vector4f kViewCubeLightDir = detail::LiftLightDir({0.5f, 0.3f, -0.8f});
-
-constexpr f32 kViewCubeHomeOffset = 0.35f;
 
 } // namespace whiteout::flakes::renderer

@@ -51,7 +51,6 @@ public:
     CameraView Camera();
     SettingsView Settings();
     LoaderView Loader();
-    DebugView Debug();
     DncView Dnc();
     ShadowView Shadow();
     SplatView Splats();
