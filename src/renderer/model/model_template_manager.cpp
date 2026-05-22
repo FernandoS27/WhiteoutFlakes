@@ -208,9 +208,8 @@ std::shared_ptr<ModelTemplate> ModelTemplateManager::ParseAndBuild(const std::st
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         return tail == ".mdl";
     };
-    const whiteout::mdx::MDLXFormat fmt = endsWithMdl(extSrc)
-                                              ? whiteout::mdx::MDLXFormat::MDL
-                                              : whiteout::mdx::MDLXFormat::MDX;
+    const whiteout::mdx::MDLXFormat fmt =
+        endsWithMdl(extSrc) ? whiteout::mdx::MDLXFormat::MDL : whiteout::mdx::MDLXFormat::MDX;
 
     whiteout::mdx::Parser mdxParser;
     whiteout::mdx::Model model;

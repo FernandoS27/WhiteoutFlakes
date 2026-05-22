@@ -29,12 +29,13 @@ namespace {
 // reference so the engine and the game render through bit-identical
 // bytecode.
 struct EngineImGuiVert {
-    f32 position[3]; // ATTR0
-    f32 _unused[3];  // ATTR1
+    f32 position[3];  // ATTR0
+    f32 _unused[3];   // ATTR1
     f32 vertColor[4]; // ATTR2
-    f32 uv[2];       // ATTR3
+    f32 uv[2];        // ATTR3
 };
-static_assert(sizeof(EngineImGuiVert) == 48, "Vertex layout must match BLS imgui VS input signature");
+static_assert(sizeof(EngineImGuiVert) == 48,
+              "Vertex layout must match BLS imgui VS input signature");
 
 // ImGuiVSPerDraw at register(b2): 8 float4 of padding then 4 float4
 // projection columns. The shader only reads cb2[8] / cb2[9] / cb2[11];
@@ -392,8 +393,8 @@ void ImGuiRenderer::Render(gfx::IGFXCommandList& cmd, i32 viewportW, i32 viewpor
 
     cmd.BindPipeline(im.pso);
     cmd.BindVertexBuffer(0, im.vb, sizeof(EngineImGuiVert));
-    cmd.BindIndexBuffer(im.ib, sizeof(ImDrawIdx) == 2 ? gfx::Format::R16_UINT
-                                                      : gfx::Format::R32_UINT);
+    cmd.BindIndexBuffer(im.ib,
+                        sizeof(ImDrawIdx) == 2 ? gfx::Format::R16_UINT : gfx::Format::R32_UINT);
     cmd.BindConstantBuffer(gfx::ShaderStage::Vertex, 2, im.vsCb);
     cmd.BindSampler(gfx::ShaderStage::Pixel, 0, im.sampler);
 
@@ -437,8 +438,7 @@ void ImGuiRenderer::Render(gfx::IGFXCommandList& cmd, i32 viewportW, i32 viewpor
                 continue;
             cmd.SetScissor(sc);
 
-            const auto tex =
-                static_cast<gfx::TextureHandle>(static_cast<u64>(dc.GetTexID()));
+            const auto tex = static_cast<gfx::TextureHandle>(static_cast<u64>(dc.GetTexID()));
             const gfx::TextureHandle bind =
                 (tex != gfx::TextureHandle::Invalid) ? tex : im.fontAtlas;
             if (bind != lastTex) {

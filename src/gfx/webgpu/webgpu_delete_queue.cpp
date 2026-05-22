@@ -42,13 +42,11 @@ void SubmitFrameAndBumpEpoch(WebGPUDeviceState& state) {
     // retires this submit. The atomic store gives the renderer thread a
     // monotonic high-water mark to drain against.
     state.queue.OnSubmittedWorkDone(
-        wgpu::CallbackMode::AllowSpontaneous,
-        [&state, epoch](wgpu::QueueWorkDoneStatus) {
+        wgpu::CallbackMode::AllowSpontaneous, [&state, epoch](wgpu::QueueWorkDoneStatus) {
             DeleteEpoch prev = state.completedEpoch.load(std::memory_order_relaxed);
             while (epoch > prev &&
-                   !state.completedEpoch.compare_exchange_weak(prev, epoch,
-                                                               std::memory_order_release,
-                                                               std::memory_order_relaxed)) {
+                   !state.completedEpoch.compare_exchange_weak(
+                       prev, epoch, std::memory_order_release, std::memory_order_relaxed)) {
             }
         });
 

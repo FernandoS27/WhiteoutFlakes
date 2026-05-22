@@ -65,8 +65,7 @@ void WebGPUCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
 
     activeColorAttachment_ = colorTex ? color : TextureHandle::Invalid;
     activeDepthAttachment_ = depthTex ? depth : TextureHandle::Invalid;
-    activeColorFormat_ =
-        colorTex ? colorTex->format : wgpu::TextureFormat::Undefined;
+    activeColorFormat_ = colorTex ? colorTex->format : wgpu::TextureFormat::Undefined;
 
     wgpu::RenderPassColorAttachment colorAttach{};
     if (colorTex && colorTex->view) {
@@ -81,8 +80,7 @@ void WebGPUCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
         // a stencil aspect. Setting stencilLoadOp on a depth-only target
         // fails validation, so gate the stencil ops by format.
         return f == wgpu::TextureFormat::Depth24PlusStencil8 ||
-               f == wgpu::TextureFormat::Depth32FloatStencil8 ||
-               f == wgpu::TextureFormat::Stencil8;
+               f == wgpu::TextureFormat::Depth32FloatStencil8 || f == wgpu::TextureFormat::Stencil8;
     };
 
     wgpu::RenderPassDepthStencilAttachment depthAttach{};
@@ -106,8 +104,7 @@ void WebGPUCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
         // PreferredDepthStencilFormat() — currently Depth24PlusStencil8.
         const u32 w = static_cast<u32>(colorTex->width);
         const u32 h = static_cast<u32>(colorTex->height);
-        if (!state.transientDepthView || state.transientDepthW != w ||
-            state.transientDepthH != h) {
+        if (!state.transientDepthView || state.transientDepthW != w || state.transientDepthH != h) {
             wgpu::TextureDescriptor td{};
             td.label = "wf.transientDepth";
             td.size = {w, h, 1};
@@ -134,8 +131,7 @@ void WebGPUCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
             depthAttach.stencilClearValue = 0;
         }
     }
-    const bool hasDepthAttach = (depthTex && depthTex->view) ||
-                                (depthAttach.view != nullptr);
+    const bool hasDepthAttach = (depthTex && depthTex->view) || (depthAttach.view != nullptr);
 
     wgpu::RenderPassDescriptor rpd{};
     rpd.label = "wf.renderPass";
@@ -184,10 +180,9 @@ void WebGPUCommandList::SetViewport(const Viewport& vp) {
 
 void WebGPUCommandList::SetScissor(const Scissor& sc) {
     if (pass_)
-        pass_.SetScissorRect(static_cast<u32>(std::max(0, sc.x)),
-                             static_cast<u32>(std::max(0, sc.y)),
-                             static_cast<u32>(std::max(0, sc.width)),
-                             static_cast<u32>(std::max(0, sc.height)));
+        pass_.SetScissorRect(
+            static_cast<u32>(std::max(0, sc.x)), static_cast<u32>(std::max(0, sc.y)),
+            static_cast<u32>(std::max(0, sc.width)), static_cast<u32>(std::max(0, sc.height)));
 }
 
 void WebGPUCommandList::BindPipeline(PipelineHandle h) {
@@ -259,8 +254,9 @@ void WebGPUCommandList::BindShaderResource(ShaderStage stage, u32 slot, BufferHa
     (void)stage;
     (void)slot;
     (void)h;
-    std::fprintf(stderr, "[wgpu] BindShaderResource(buffer) not yet implemented "
-                         "(slot %u, stage %d)\n",
+    std::fprintf(stderr,
+                 "[wgpu] BindShaderResource(buffer) not yet implemented "
+                 "(slot %u, stage %d)\n",
                  slot, static_cast<int>(stage));
 }
 
@@ -292,8 +288,7 @@ void WebGPUCommandList::ClearDepth(TextureHandle depth, f32 clearDepth, u8 clear
 
     auto hasStencilAspect = [](wgpu::TextureFormat f) {
         return f == wgpu::TextureFormat::Depth24PlusStencil8 ||
-               f == wgpu::TextureFormat::Depth32FloatStencil8 ||
-               f == wgpu::TextureFormat::Stencil8;
+               f == wgpu::TextureFormat::Depth32FloatStencil8 || f == wgpu::TextureFormat::Stencil8;
     };
     wgpu::RenderPassDepthStencilAttachment ds{};
     ds.view = tex->view;

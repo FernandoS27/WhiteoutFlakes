@@ -22,12 +22,12 @@ using RenderTargetId = u32;
 /// Persisted by the host as a single block; defaults shown match the
 /// out-of-the-box viewer experience.
 struct DisplayFlags {
-    bool showGrid = true;        ///< Reference grid on the ground plane.
-    bool showParticles = true;   ///< MDX particle emitters.
-    bool showRibbons = true;     ///< MDX ribbon emitters.
-    bool showCollisions = false; ///< Debug overlay for collision shapes.
-    bool showLights = false;     ///< Debug overlay for light positions.
-    bool showEvents = true;      ///< MDX event objects (SPN / SPL / SND).
+    bool showGrid = true;                   ///< Reference grid on the ground plane.
+    bool showParticles = true;              ///< MDX particle emitters.
+    bool showRibbons = true;                ///< MDX ribbon emitters.
+    bool showCollisions = false;            ///< Debug overlay for collision shapes.
+    bool showLights = false;                ///< Debug overlay for light positions.
+    bool showEvents = true;                 ///< MDX event objects (SPN / SPL / SND).
     RenderMode renderMode = RenderMode::SD; ///< Material path (SD vs HD).
 };
 

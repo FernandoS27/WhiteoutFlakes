@@ -68,7 +68,8 @@ std::string PickFolderWin32(HWND parent) {
                 int n = ::WideCharToMultiByte(CP_UTF8, 0, wpath, -1, nullptr, 0, nullptr, nullptr);
                 if (n > 1) {
                     result.resize(static_cast<usize>(n - 1));
-                    ::WideCharToMultiByte(CP_UTF8, 0, wpath, -1, result.data(), n, nullptr, nullptr);
+                    ::WideCharToMultiByte(CP_UTF8, 0, wpath, -1, result.data(), n, nullptr,
+                                          nullptr);
                 }
                 ::CoTaskMemFree(wpath);
             }
@@ -91,14 +92,14 @@ constexpr std::array<const char*, 8> kDebugVisLabels = {
 };
 
 constexpr std::array<const char*, 5> kLodLabels = {
-    "Auto (screen size)",  "Force LOD 0 (base)", "Force LOD 1",
-    "Force LOD 2",         "Force LOD 3 (lowest)",
+    "Auto (screen size)", "Force LOD 0 (base)",   "Force LOD 1",
+    "Force LOD 2",        "Force LOD 3 (lowest)",
 };
 
 constexpr std::array<const char*, 4> kIblLabels = {"Portrait", "Day/Night", "Dungeon", "Sunset"};
 constexpr std::array<const char*, 3> kLightingLabels = {"InGame", "Glue", "Dynamic"};
 constexpr std::array<const char*, 4> kShadowLabels = {"Off", "1 cascade", "2 cascades",
-                                                     "3 cascades"};
+                                                      "3 cascades"};
 constexpr std::array<const char*, 4> kBackendLabels = {"D3D11", "D3D12", "Vulkan", "WebGPU"};
 
 i32 BackendToIdx(gfx::GfxApi b) {
@@ -253,9 +254,8 @@ void MaxPluginUI::BuildToolbar() {
                         focus->animation.SetActiveSequenceIndex(i);
                         if (i != prev) {
                             const std::string& name = seqs[i];
-                            const bool keep =
-                                (name.find("decay") != std::string::npos) ||
-                                (name.find("dissipate") != std::string::npos);
+                            const bool keep = (name.find("decay") != std::string::npos) ||
+                                              (name.find("dissipate") != std::string::npos);
                             if (!keep)
                                 svc.Splats().Clear();
                         }
@@ -304,8 +304,7 @@ void MaxPluginUI::BuildToolbar() {
         ImGui::TextUnformatted("Team:");
         ImGui::SameLine();
         if (ImGui::ColorEdit3("##team", col, flags) && focus) {
-            focus->SetTeamColor(static_cast<u8>(col[0] * 255.0f),
-                                static_cast<u8>(col[1] * 255.0f),
+            focus->SetTeamColor(static_cast<u8>(col[0] * 255.0f), static_cast<u8>(col[1] * 255.0f),
                                 static_cast<u8>(col[2] * 255.0f));
         }
         ImGui::SameLine();
@@ -340,158 +339,157 @@ void MaxPluginUI::BuildSettingsWindow() {
     }
 
     if (ImGui::BeginTabItem("General")) {
-    // ---- Background colour ----
-    {
-        const u32 bg = svc.Settings().BackgroundColorRaw();
-        f32 col[3] = {
-            static_cast<f32>(bg & 0xFFu) / 255.0f,
-            static_cast<f32>((bg >> 8) & 0xFFu) / 255.0f,
-            static_cast<f32>((bg >> 16) & 0xFFu) / 255.0f,
-        };
-        if (ImGui::ColorEdit3("Background", col)) {
-            svc.Settings().SetBackgroundColor(static_cast<u8>(col[0] * 255.0f),
-                                              static_cast<u8>(col[1] * 255.0f),
-                                              static_cast<u8>(col[2] * 255.0f));
-            SaveIni(win_);
+        // ---- Background colour ----
+        {
+            const u32 bg = svc.Settings().BackgroundColorRaw();
+            f32 col[3] = {
+                static_cast<f32>(bg & 0xFFu) / 255.0f,
+                static_cast<f32>((bg >> 8) & 0xFFu) / 255.0f,
+                static_cast<f32>((bg >> 16) & 0xFFu) / 255.0f,
+            };
+            if (ImGui::ColorEdit3("Background", col)) {
+                svc.Settings().SetBackgroundColor(static_cast<u8>(col[0] * 255.0f),
+                                                  static_cast<u8>(col[1] * 255.0f),
+                                                  static_cast<u8>(col[2] * 255.0f));
+                SaveIni(win_);
+            }
         }
-    }
 
-    // ---- Exposure ----
-    {
-        f32 exposure = svc.Settings().GetTonemapExposure();
-        if (ImGui::SliderFloat("Exposure", &exposure, 0.0f, 3.0f, "%.2f")) {
-            svc.Settings().SetTonemapExposure(exposure);
-            SaveIni(win_);
+        // ---- Exposure ----
+        {
+            f32 exposure = svc.Settings().GetTonemapExposure();
+            if (ImGui::SliderFloat("Exposure", &exposure, 0.0f, 3.0f, "%.2f")) {
+                svc.Settings().SetTonemapExposure(exposure);
+                SaveIni(win_);
+            }
         }
-    }
 
-    // ---- Sound volume ----
-    {
-        f32 vol = svc.Sound().GetVolume();
-        if (ImGui::SliderFloat("SND Volume", &vol, 0.0f, 1.0f, "%.2f")) {
-            svc.Sound().SetVolume(vol);
-            SaveIni(win_);
+        // ---- Sound volume ----
+        {
+            f32 vol = svc.Sound().GetVolume();
+            if (ImGui::SliderFloat("SND Volume", &vol, 0.0f, 1.0f, "%.2f")) {
+                svc.Sound().SetVolume(vol);
+                SaveIni(win_);
+            }
         }
-    }
 
-    ImGui::Separator();
+        ImGui::Separator();
 
-    // ---- Time of day ----
-    if (auto* dnc = svc.GetDncService()) {
-        const f32 hpd = dnc->GetHoursPerDay();
-        f32 tod = dnc->GetTimeOfDay();
-        if (ImGui::SliderFloat("Time of Day", &tod, 0.0f, hpd, "%.2f h")) {
-            dnc->SetTimeOfDay(tod);
-            SaveIni(win_);
+        // ---- Time of day ----
+        if (auto* dnc = svc.GetDncService()) {
+            const f32 hpd = dnc->GetHoursPerDay();
+            f32 tod = dnc->GetTimeOfDay();
+            if (ImGui::SliderFloat("Time of Day", &tod, 0.0f, hpd, "%.2f h")) {
+                dnc->SetTimeOfDay(tod);
+                SaveIni(win_);
+            }
+            bool animating = dnc->GetTodScale() > 0.0f;
+            if (ImGui::Checkbox("Animate TOD", &animating)) {
+                dnc->SetTodScale(animating ? 1.0f : 0.0f);
+                SaveIni(win_);
+            }
         }
-        bool animating = dnc->GetTodScale() > 0.0f;
-        if (ImGui::Checkbox("Animate TOD", &animating)) {
-            dnc->SetTodScale(animating ? 1.0f : 0.0f);
-            SaveIni(win_);
-        }
-    }
 
-    ImGui::Separator();
+        ImGui::Separator();
 
-    // ---- IBL mode ----
-    {
-        i32 sel = static_cast<i32>(svc.Settings().GetIblMode());
-        if (ImGui::Combo("IBL", &sel, kIblLabels.data(),
-                         static_cast<i32>(kIblLabels.size()))) {
-            svc.Settings().SetIblMode(static_cast<IblMode>(sel));
-            SaveIni(win_);
+        // ---- IBL mode ----
+        {
+            i32 sel = static_cast<i32>(svc.Settings().GetIblMode());
+            if (ImGui::Combo("IBL", &sel, kIblLabels.data(), static_cast<i32>(kIblLabels.size()))) {
+                svc.Settings().SetIblMode(static_cast<IblMode>(sel));
+                SaveIni(win_);
+            }
         }
-    }
 
-    // ---- Shadows ----
-    {
-        i32 sel = 0;
-        if (auto* shadow = svc.GetShadowService()) {
-            sel = shadow->IsEnabled() ? std::clamp(shadow->Params().cascadeCount, 0, 3) : 0;
-        }
-        if (ImGui::Combo("Shadows", &sel, kShadowLabels.data(),
-                         static_cast<i32>(kShadowLabels.size()))) {
+        // ---- Shadows ----
+        {
+            i32 sel = 0;
             if (auto* shadow = svc.GetShadowService()) {
-                shadow::ShadowParams p = shadow->Params();
-                p.enabled = (sel > 0);
-                p.cascadeCount = (sel > 0) ? sel : 1;
-                shadow->SetParams(p);
-                SaveIni(win_);
+                sel = shadow->IsEnabled() ? std::clamp(shadow->Params().cascadeCount, 0, 3) : 0;
             }
-        }
-    }
-
-    ImGui::Separator();
-
-    // ---- DNC model path ----
-    if (auto* dnc = svc.GetDncService()) {
-        char buf[512];
-        std::snprintf(buf, sizeof(buf), "%s",
-                      dncPathBuf_.empty() ? dnc->UnitMdlPath().c_str() : dncPathBuf_.c_str());
-        if (ImGui::InputText("DNC Model", buf, sizeof(buf)))
-            dncPathBuf_ = buf;
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            dnc->SetUnitMdl(dncPathBuf_);
-            SaveIni(win_);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Reset##dnc")) {
-            dncPathBuf_ = dnc::DncService::kDefaultUnitMdl;
-            dnc->SetUnitMdl(dncPathBuf_);
-            SaveIni(win_);
-        }
-    }
-
-    ImGui::Separator();
-    ImGui::TextDisabled("Startup settings (take effect on next launch)");
-
-    // ---- Default backend ----
-    {
-        i32 sel = BackendToIdx(svc.Settings().DefaultBackend());
-        if (ImGui::Combo("Backend", &sel, kBackendLabels.data(),
-                         static_cast<i32>(kBackendLabels.size()))) {
-            svc.Settings().SetDefaultBackend(IdxToBackend(sel));
-            SaveIni(win_);
-        }
-    }
-
-    // ---- Preferred device ----
-    {
-        static std::vector<std::string> devices;
-        static i32 lastBackendIdx = -1;
-        const i32 curBackendIdx = BackendToIdx(svc.Settings().DefaultBackend());
-        if (curBackendIdx != lastBackendIdx) {
-            devices = gfx::EnumerateDevices(svc.Settings().DefaultBackend());
-            lastBackendIdx = curBackendIdx;
-        }
-        const std::string& cur = svc.Settings().PreferredDevice();
-        const char* preview = cur.empty() ? "(Auto - highest VRAM)" : cur.c_str();
-        if (ImGui::BeginCombo("Device", preview)) {
-            if (ImGui::Selectable("(Auto - highest VRAM)", cur.empty())) {
-                svc.Settings().SetPreferredDevice("");
-                SaveIni(win_);
-            }
-            for (const auto& n : devices) {
-                const bool isSel = (n == cur);
-                if (ImGui::Selectable(n.c_str(), isSel)) {
-                    svc.Settings().SetPreferredDevice(n);
+            if (ImGui::Combo("Shadows", &sel, kShadowLabels.data(),
+                             static_cast<i32>(kShadowLabels.size()))) {
+                if (auto* shadow = svc.GetShadowService()) {
+                    shadow::ShadowParams p = shadow->Params();
+                    p.enabled = (sel > 0);
+                    p.cascadeCount = (sel > 0) ? sel : 1;
+                    shadow->SetParams(p);
                     SaveIni(win_);
                 }
-                if (isSel)
-                    ImGui::SetItemDefaultFocus();
             }
-            ImGui::EndCombo();
         }
-    }
 
-    // ---- Graphics debug ----
-    {
-        bool on = svc.Settings().GraphicsDebug();
-        if (ImGui::Checkbox("Graphics Debug (validation)", &on)) {
-            svc.Settings().SetGraphicsDebug(on);
-            SaveIni(win_);
+        ImGui::Separator();
+
+        // ---- DNC model path ----
+        if (auto* dnc = svc.GetDncService()) {
+            char buf[512];
+            std::snprintf(buf, sizeof(buf), "%s",
+                          dncPathBuf_.empty() ? dnc->UnitMdlPath().c_str() : dncPathBuf_.c_str());
+            if (ImGui::InputText("DNC Model", buf, sizeof(buf)))
+                dncPathBuf_ = buf;
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                dnc->SetUnitMdl(dncPathBuf_);
+                SaveIni(win_);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset##dnc")) {
+                dncPathBuf_ = dnc::DncService::kDefaultUnitMdl;
+                dnc->SetUnitMdl(dncPathBuf_);
+                SaveIni(win_);
+            }
         }
-    }
+
+        ImGui::Separator();
+        ImGui::TextDisabled("Startup settings (take effect on next launch)");
+
+        // ---- Default backend ----
+        {
+            i32 sel = BackendToIdx(svc.Settings().DefaultBackend());
+            if (ImGui::Combo("Backend", &sel, kBackendLabels.data(),
+                             static_cast<i32>(kBackendLabels.size()))) {
+                svc.Settings().SetDefaultBackend(IdxToBackend(sel));
+                SaveIni(win_);
+            }
+        }
+
+        // ---- Preferred device ----
+        {
+            static std::vector<std::string> devices;
+            static i32 lastBackendIdx = -1;
+            const i32 curBackendIdx = BackendToIdx(svc.Settings().DefaultBackend());
+            if (curBackendIdx != lastBackendIdx) {
+                devices = gfx::EnumerateDevices(svc.Settings().DefaultBackend());
+                lastBackendIdx = curBackendIdx;
+            }
+            const std::string& cur = svc.Settings().PreferredDevice();
+            const char* preview = cur.empty() ? "(Auto - highest VRAM)" : cur.c_str();
+            if (ImGui::BeginCombo("Device", preview)) {
+                if (ImGui::Selectable("(Auto - highest VRAM)", cur.empty())) {
+                    svc.Settings().SetPreferredDevice("");
+                    SaveIni(win_);
+                }
+                for (const auto& n : devices) {
+                    const bool isSel = (n == cur);
+                    if (ImGui::Selectable(n.c_str(), isSel)) {
+                        svc.Settings().SetPreferredDevice(n);
+                        SaveIni(win_);
+                    }
+                    if (isSel)
+                        ImGui::SetItemDefaultFocus();
+                }
+                ImGui::EndCombo();
+            }
+        }
+
+        // ---- Graphics debug ----
+        {
+            bool on = svc.Settings().GraphicsDebug();
+            if (ImGui::Checkbox("Graphics Debug (validation)", &on)) {
+                svc.Settings().SetGraphicsDebug(on);
+                SaveIni(win_);
+            }
+        }
 
         ImGui::EndTabItem();
     }

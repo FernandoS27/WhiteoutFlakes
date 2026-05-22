@@ -38,11 +38,11 @@
 #endif
 #include <windows.h>
 #elif defined(__linux__)
+#include <climits>
 #include <unistd.h>
-#include <climits>
 #elif defined(__APPLE__)
-#include <mach-o/dyld.h>
 #include <climits>
+#include <mach-o/dyld.h>
 #endif
 
 namespace whiteout::flakes::io {
@@ -194,8 +194,8 @@ struct FileContentProvider::Impl {
     // mutable because HasCasc() / HasMpq() are logically-const observers that
     // still need to synchronise with worker reads.
     mutable std::shared_mutex storageMu;
-    std::string wc3Path;       // auto-detected; immutable after Discover()
-    std::string installPath;   // currently-active install root
+    std::string wc3Path;     // auto-detected; immutable after Discover()
+    std::string installPath; // currently-active install root
     bool ignoreCasc = false;
     bool ignoreMpq = false;
     std::vector<std::string> mpqList = FileContentProvider::DefaultMpqList();
@@ -291,8 +291,7 @@ struct FileContentProvider::Impl {
                 std::clamp<unsigned>(hw ? hw : 4u, 2u, 4u));
         }
         std::string error;
-        cascStorage =
-            whiteout::storages::casc::Storage::open(installPath, &error, cascPool.get());
+        cascStorage = whiteout::storages::casc::Storage::open(installPath, &error, cascPool.get());
         if (cascStorage)
             std::printf("[FileContentProvider] CASC storage opened: %s\n", installPath.c_str());
         else {

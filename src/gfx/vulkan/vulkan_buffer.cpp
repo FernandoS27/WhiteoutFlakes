@@ -64,8 +64,7 @@ BufferHandle VulkanDevice::CreateBuffer(const BufferDesc& desc, const void* init
     } else if (hasFlag(desc.usage, BufferUsage::CpuReadable)) {
         // GPU→CPU readback staging — host-cached for fast random reads.
         aci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-        aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
-                    VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
     } else {
         aci.usage = VMA_MEMORY_USAGE_AUTO;
     }

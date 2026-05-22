@@ -103,9 +103,8 @@ TextureHandle WebGPUDevice::CreateTexture(const TextureDesc& desc, const void* i
     // layers; CubeArray needs a multiple of 6. Plain 2D / 2D-array
     // otherwise. The IBL pipeline ships 2-cube arrays (12 layers).
     if (desc.isCube) {
-        vd.dimension = (td.size.depthOrArrayLayers > 6)
-                           ? wgpu::TextureViewDimension::CubeArray
-                           : wgpu::TextureViewDimension::Cube;
+        vd.dimension = (td.size.depthOrArrayLayers > 6) ? wgpu::TextureViewDimension::CubeArray
+                                                        : wgpu::TextureViewDimension::Cube;
     } else if (td.size.depthOrArrayLayers > 1) {
         vd.dimension = wgpu::TextureViewDimension::e2DArray;
     } else {

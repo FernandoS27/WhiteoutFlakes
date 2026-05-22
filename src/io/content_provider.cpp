@@ -12,8 +12,7 @@ namespace whiteout::flakes::io {
 std::optional<std::vector<u8>> IContentProvider::ReadFile(const std::string& path,
                                                           std::string* actualExt) {
     auto p = std::make_shared<RequestResult>();
-    const RequestId id =
-        Request(path, [p](RequestResult&& r) { *p = std::move(r); });
+    const RequestId id = Request(path, [p](RequestResult&& r) { *p = std::move(r); });
     if (id == kInvalidRequestId)
         return std::nullopt;
     Wait(id);

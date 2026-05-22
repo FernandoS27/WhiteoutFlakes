@@ -286,11 +286,16 @@ Format VulkanDevice::GetSwapChainFormat(SwapChainHandle handle) const {
     if (!sc)
         return Format::Unknown;
     switch (sc->formatSrgb) {
-    case vk::Format::eR8G8B8A8Unorm: return Format::R8G8B8A8_UNORM;
-    case vk::Format::eR8G8B8A8Srgb:  return Format::R8G8B8A8_UNORM_SRGB;
-    case vk::Format::eB8G8R8A8Unorm: return Format::B8G8R8A8_UNORM;
-    case vk::Format::eB8G8R8A8Srgb:  return Format::B8G8R8A8_UNORM_SRGB;
-    default:                         return Format::Unknown;
+    case vk::Format::eR8G8B8A8Unorm:
+        return Format::R8G8B8A8_UNORM;
+    case vk::Format::eR8G8B8A8Srgb:
+        return Format::R8G8B8A8_UNORM_SRGB;
+    case vk::Format::eB8G8R8A8Unorm:
+        return Format::B8G8R8A8_UNORM;
+    case vk::Format::eB8G8R8A8Srgb:
+        return Format::B8G8R8A8_UNORM_SRGB;
+    default:
+        return Format::Unknown;
     }
 }
 

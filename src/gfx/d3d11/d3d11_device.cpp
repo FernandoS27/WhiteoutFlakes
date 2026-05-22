@@ -252,9 +252,8 @@ void* D3D11Device::MapBuffer(BufferHandle h) {
     auto* e = buffers_.Get(static_cast<u64>(h));
     if (!e || !e->buffer)
         return nullptr;
-    const D3D11_MAP mode = hasFlag(e->desc.usage, BufferUsage::CpuReadable)
-                               ? D3D11_MAP_READ
-                               : D3D11_MAP_WRITE_DISCARD;
+    const D3D11_MAP mode =
+        hasFlag(e->desc.usage, BufferUsage::CpuReadable) ? D3D11_MAP_READ : D3D11_MAP_WRITE_DISCARD;
     D3D11_MAPPED_SUBRESOURCE mapped{};
     HRESULT hr = context_->Map(e->buffer, 0, mode, 0, &mapped);
     if (FAILED(hr))
@@ -769,11 +768,16 @@ Format D3D11Device::GetSwapChainFormat(SwapChainHandle h) const {
     if (!sc)
         return Format::Unknown;
     switch (sc->rtvDxgiFormat) {
-    case DXGI_FORMAT_R8G8B8A8_UNORM:      return Format::R8G8B8A8_UNORM;
-    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return Format::R8G8B8A8_UNORM_SRGB;
-    case DXGI_FORMAT_B8G8R8A8_UNORM:      return Format::B8G8R8A8_UNORM;
-    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return Format::B8G8R8A8_UNORM_SRGB;
-    default:                              return Format::Unknown;
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+        return Format::R8G8B8A8_UNORM;
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        return Format::R8G8B8A8_UNORM_SRGB;
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+        return Format::B8G8R8A8_UNORM;
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        return Format::B8G8R8A8_UNORM_SRGB;
+    default:
+        return Format::Unknown;
     }
 }
 

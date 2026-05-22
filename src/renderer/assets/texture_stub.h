@@ -12,10 +12,10 @@
 namespace whiteout::flakes::renderer::assets {
 
 enum class TextureChannelKind : u8 {
-    Diffuse,    // (255, 255, 255, 255) — neutral white albedo
-    Orm,        // (255, 255,   0,   0) — occlusion=1, roughness=1, metal=0
-    Normal,     // (127, 127, 255,   0) — flat tangent-space normal
-    Emissive,   // (  0,   0,   0,   0) — no emission
+    Diffuse,  // (255, 255, 255, 255) — neutral white albedo
+    Orm,      // (255, 255,   0,   0) — occlusion=1, roughness=1, metal=0
+    Normal,   // (127, 127, 255,   0) — flat tangent-space normal
+    Emissive, // (  0,   0,   0,   0) — no emission
 };
 
 inline std::array<u8, 4> StubPixelRGBA(TextureChannelKind kind) {

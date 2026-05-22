@@ -684,12 +684,11 @@ void VulkanCommandList::Dispatch(u32 gx, u32 gy, u32 gz) {
 
     // The sampled source must be in shader-read layout for the compute read.
     if (srvTex->currentLayout != vk::ImageLayout::eShaderReadOnlyOptimal) {
-        TransitionImageLayout(frame.commandBuffer, srvTex->image, srvTex->aspect,
-                              srvTex->currentLayout, vk::ImageLayout::eShaderReadOnlyOptimal,
-                              vk::PipelineStageFlagBits2::eAllCommands,
-                              vk::AccessFlagBits2::eMemoryWrite,
-                              vk::PipelineStageFlagBits2::eComputeShader,
-                              vk::AccessFlagBits2::eShaderRead);
+        TransitionImageLayout(
+            frame.commandBuffer, srvTex->image, srvTex->aspect, srvTex->currentLayout,
+            vk::ImageLayout::eShaderReadOnlyOptimal, vk::PipelineStageFlagBits2::eAllCommands,
+            vk::AccessFlagBits2::eMemoryWrite, vk::PipelineStageFlagBits2::eComputeShader,
+            vk::AccessFlagBits2::eShaderRead);
         srvTex->currentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
     }
 

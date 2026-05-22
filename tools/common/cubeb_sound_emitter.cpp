@@ -36,8 +36,7 @@ namespace {
 // candidate scheme the old Win32 backend used. Returns the raw file bytes of
 // the first hit; decoding happens separately so every format goes through one
 // path.
-std::optional<std::vector<u8>> ResolveSoundBytes(IContentProvider& cp,
-                                                 const io::SndEntry& entry,
+std::optional<std::vector<u8>> ResolveSoundBytes(IContentProvider& cp, const io::SndEntry& entry,
                                                  std::string* attemptedOut) {
     if (entry.filePaths.empty())
         return std::nullopt;
@@ -464,11 +463,10 @@ void CubebSoundEmitter::MixVoices(f32* out, i64 frames) {
             v.curGainR = tgtR;
             v.cursor += n;
         }
-        voices_.erase(std::remove_if(voices_.begin(), voices_.end(),
-                                     [](const Voice& v) {
-                                         return v.cursor * 2 >= v.samples.size();
-                                     }),
-                      voices_.end());
+        voices_.erase(
+            std::remove_if(voices_.begin(), voices_.end(),
+                           [](const Voice& v) { return v.cursor * 2 >= v.samples.size(); }),
+            voices_.end());
     }
 
     // Master gain: the stored slider value run through the perceptual curve

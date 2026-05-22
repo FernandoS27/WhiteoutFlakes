@@ -19,9 +19,8 @@ WebGPUDevice::~WebGPUDevice() {
         // wgpu::Device::Tick + wait-on-OnSubmittedWorkDone is the
         // portable "device-wait-idle" — Dawn additionally exposes a
         // private API but we stick to the public surface.
-        wgpu::Future done = state.queue.OnSubmittedWorkDone(
-            wgpu::CallbackMode::WaitAnyOnly,
-            [](wgpu::QueueWorkDoneStatus) {});
+        wgpu::Future done = state.queue.OnSubmittedWorkDone(wgpu::CallbackMode::WaitAnyOnly,
+                                                            [](wgpu::QueueWorkDoneStatus) {});
         wgpu::FutureWaitInfo wait{done};
         state.instance.WaitAny(1, &wait, UINT64_MAX);
 
@@ -62,8 +61,8 @@ void WebGPUDevice::WaitIdle() {
     auto& state = *state_;
     if (!state.device || !state.queue)
         return;
-    wgpu::Future done = state.queue.OnSubmittedWorkDone(
-        wgpu::CallbackMode::WaitAnyOnly, [](wgpu::QueueWorkDoneStatus) {});
+    wgpu::Future done = state.queue.OnSubmittedWorkDone(wgpu::CallbackMode::WaitAnyOnly,
+                                                        [](wgpu::QueueWorkDoneStatus) {});
     wgpu::FutureWaitInfo wait{done};
     state.instance.WaitAny(1, &wait, UINT64_MAX);
 }

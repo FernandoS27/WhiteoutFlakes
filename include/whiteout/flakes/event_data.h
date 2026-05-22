@@ -30,7 +30,7 @@ struct SpnEntry {
 
 /// @brief SPL — short-lived projected billboard splat.
 struct SplEntry {
-    std::string file;             ///< Texture (BLP / DDS / TGA).
+    std::string file; ///< Texture (BLP / DDS / TGA).
     f32 scale = 1.0f;
     f32 startC[4] = {1, 1, 1, 1}; ///< RGBA tint at spawn.
     f32 midC[4] = {1, 1, 1, 1};   ///< RGBA tint mid-life.
@@ -64,9 +64,9 @@ struct UbrEntry {
 struct SndEntry {
     std::vector<std::string> filePaths; ///< One is picked at random per fire.
     f32 volume = 1.0f;
-    f32 minDistance = 0.0f;             ///< Inside this radius volume = 1.
-    f32 maxDistance = 0.0f;             ///< Outside this radius volume = 0.
-    f32 distanceCutoff = 0.0f;          ///< Beyond this radius the sound isn't played at all.
+    f32 minDistance = 0.0f;    ///< Inside this radius volume = 1.
+    f32 maxDistance = 0.0f;    ///< Outside this radius volume = 0.
+    f32 distanceCutoff = 0.0f; ///< Beyond this radius the sound isn't played at all.
 };
 
 /// @brief One-shot load of the event-data SLKs (UnitData, SplatData, etc.).

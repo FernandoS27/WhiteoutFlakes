@@ -49,8 +49,7 @@ const char* SkipWsAndComments(const char* p, const char* end) {
 }
 
 bool IsIdent(char c) {
-    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
-           c == '_';
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
 }
 
 // Pick a vertex format that matches the WGSL field type the entry
@@ -90,14 +89,12 @@ wgpu::VertexFormat PickPhantomFormat(const std::string& typeName) {
     if (typeName == "f32")
         return vec('f', 1);
     // vecN<T> form.
-    if (typeName.size() >= 8 && typeName[0] == 'v' && typeName[1] == 'e' &&
-        typeName[2] == 'c') {
+    if (typeName.size() >= 8 && typeName[0] == 'v' && typeName[1] == 'e' && typeName[2] == 'c') {
         const int n = typeName[3] - '0';
         // Find <T> between '<' and '>'.
         const auto lt = typeName.find('<');
         const auto gt = typeName.find('>');
-        if (n >= 1 && n <= 4 && lt != std::string::npos && gt != std::string::npos &&
-            gt > lt) {
+        if (n >= 1 && n <= 4 && lt != std::string::npos && gt != std::string::npos && gt > lt) {
             const std::string t = typeName.substr(lt + 1, gt - lt - 1);
             if (t == "u32")
                 return vec('u', n);
@@ -121,8 +118,8 @@ std::string ParseTypeAfterColon(const char* p, const char* end) {
         const bool ok = IsIdent(c) || c == '<' || c == '>' || c == ',' || c == ' ';
         if (!ok)
             break;
-        if (c == ',' || (c == ' ' && !out.empty() && out.back() != '<' &&
-                         out.back() != ',' && out.find('<') == std::string::npos))
+        if (c == ',' || (c == ' ' && !out.empty() && out.back() != '<' && out.back() != ',' &&
+                         out.find('<') == std::string::npos))
             break;
         if (c != ' ')
             out.push_back(c);
@@ -263,8 +260,7 @@ std::vector<VertexInputLocation> ScanVertexLocations(const char* src, usize len)
         }
         if (!structPos)
             continue;
-        const char* brace = static_cast<const char*>(
-            std::memchr(structPos, '{', end - structPos));
+        const char* brace = static_cast<const char*>(std::memchr(structPos, '{', end - structPos));
         if (!brace)
             continue;
         int sd = 0;
@@ -348,8 +344,7 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         a.format = ToWgpuVertexFormat(el.format);
         slotAttrs[el.inputSlot].push_back(a);
         const u32 elemSize = FormatBytesPerBlock(el.format);
-        slotStride[el.inputSlot] =
-            std::max<u32>(slotStride[el.inputSlot], el.offset + elemSize);
+        slotStride[el.inputSlot] = std::max<u32>(slotStride[el.inputSlot], el.offset + elemSize);
         declaredLocations.push_back(a.shaderLocation);
     }
 
@@ -364,8 +359,8 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
     std::vector<u32> phantomSlots;
     if (state.zeroVertexBuffer) {
         for (const auto& vl : vs->vertexLocations) {
-            if (std::find(declaredLocations.begin(), declaredLocations.end(),
-                          vl.location) == declaredLocations.end())
+            if (std::find(declaredLocations.begin(), declaredLocations.end(), vl.location) ==
+                declaredLocations.end())
                 phantomFields.push_back(vl);
         }
     }
@@ -412,8 +407,8 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
     blend.alpha.operation = ToWgpuBlendOp(desc.blend.opAlpha);
     if (desc.blend.enable)
         colorTarget.blend = &blend;
-    colorTarget.writeMask = desc.blend.colorWrite ? wgpu::ColorWriteMask::All
-                                                   : wgpu::ColorWriteMask::None;
+    colorTarget.writeMask =
+        desc.blend.colorWrite ? wgpu::ColorWriteMask::All : wgpu::ColorWriteMask::None;
 
     wgpu::FragmentState frag{};
     frag.module = ps ? ps->module : wgpu::ShaderModule{};
@@ -426,8 +421,8 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
     bool hasDepth = (desc.dsvFormat != Format::Unknown);
     if (hasDepth) {
         depth.format = ToWgpuFormat(desc.dsvFormat);
-        depth.depthWriteEnabled = desc.depthStencil.depthWrite ? wgpu::OptionalBool::True
-                                                               : wgpu::OptionalBool::False;
+        depth.depthWriteEnabled =
+            desc.depthStencil.depthWrite ? wgpu::OptionalBool::True : wgpu::OptionalBool::False;
         depth.depthCompare = desc.depthStencil.depthTest
                                  ? ToWgpuCompare(desc.depthStencil.depthCompare)
                                  : wgpu::CompareFunction::Always;
@@ -445,8 +440,7 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
     rpd.vertex.buffers = buffers.data();
     rpd.primitive.topology = ToWgpuTopology(desc.topology);
     rpd.primitive.cullMode = ToWgpuCull(desc.rasterizer.cull);
-    rpd.primitive.frontFace =
-        desc.rasterizer.frontCCW ? wgpu::FrontFace::CCW : wgpu::FrontFace::CW;
+    rpd.primitive.frontFace = desc.rasterizer.frontCCW ? wgpu::FrontFace::CCW : wgpu::FrontFace::CW;
     rpd.depthStencil = hasDepth ? &depth : nullptr;
     rpd.multisample.count = 1;
     rpd.fragment = ps ? &frag : nullptr;

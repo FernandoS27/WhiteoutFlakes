@@ -23,8 +23,8 @@
 #endif
 #include <windows.h>
 #elif defined(__linux__)
-#include <unistd.h>
 #include <climits>
+#include <unistd.h>
 #endif
 
 namespace whiteout::flakes {
@@ -168,7 +168,8 @@ std::string IoKeyOf(const char* k) {
 
 // Locale-independent integer → string. Avoids ostringstream / std::to_string
 // thousands-separator surprises if the global C++ locale gets imbued.
-template <typename T> std::string ToString(T v) {
+template <typename T>
+std::string ToString(T v) {
     char buf[32];
     auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), v);
     if (ec != std::errc{})
@@ -182,8 +183,7 @@ template <typename T> std::string ToString(T v) {
 // has it from GCC 11, libc++ from 14).
 inline std::string FloatToString(double v, int precision = 3) {
     char buf[64];
-    auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), v,
-                                   std::chars_format::fixed, precision);
+    auto [ptr, ec] = std::to_chars(buf, buf + sizeof(buf), v, std::chars_format::fixed, precision);
     if (ec != std::errc{})
         return {};
     return std::string(buf, ptr);
@@ -222,8 +222,12 @@ bool ParseFloat(const std::string& s, f32& out) {
         return false;
     const char* p = s.c_str();
     bool neg = false;
-    if (*p == '-') { neg = true; ++p; }
-    else if (*p == '+') { ++p; }
+    if (*p == '-') {
+        neg = true;
+        ++p;
+    } else if (*p == '+') {
+        ++p;
+    }
 
     double v = 0.0;
     bool gotDigit = false;
@@ -444,7 +448,8 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy) {
         saveFlag("ShowCollisions", df.showCollisions);
         saveFlag("ShowLights", df.showLights);
     }
-    ini.Set(KeyOf("LightingMode"), ToString(static_cast<u32>(service.Settings().GetLightingMode())));
+    ini.Set(KeyOf("LightingMode"),
+            ToString(static_cast<u32>(service.Settings().GetLightingMode())));
     ini.Set(KeyOf("HdDebugMode"), ToString(service.Settings().HdDebugMode()));
     ini.Set(KeyOf("LodOverride"), ToString(service.Settings().LodOverride()));
     ini.Set(KeyOf("Tileset"), ToString(static_cast<u32>(io::GetCurrentTileset())));

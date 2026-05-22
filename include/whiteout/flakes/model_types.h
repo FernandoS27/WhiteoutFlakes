@@ -38,8 +38,8 @@ namespace whiteout::flakes::renderer {
 /// `FrameState::particleStates`.
 struct ParticleEmitterConfig {
     i32 textureId = -1;
-    i32 filterMode = 0;          ///< @ref FilterMode.
-    i32 rows = 1, cols = 1;      ///< Sprite-sheet grid.
+    i32 filterMode = 0;     ///< @ref FilterMode.
+    i32 rows = 1, cols = 1; ///< Sprite-sheet grid.
     bool unshaded = false;
 
     f32 lifeSpan = 1.0f;
@@ -80,12 +80,12 @@ namespace whiteout::flakes::renderer::effects {
 ///        `FrameState::ribbonStates`.
 struct RibbonEmitterConfig {
     i32 textureId = -1;
-    i32 filterMode = 0;      ///< @ref FilterMode.
-    i32 rows = 1, cols = 1;  ///< Sprite-sheet grid.
+    i32 filterMode = 0;     ///< @ref FilterMode.
+    i32 rows = 1, cols = 1; ///< Sprite-sheet grid.
     bool unshaded = false;
     bool twoSided = true;
-    f32 emission = 10.0f;    ///< Segments-per-second emission rate.
-    f32 life = 1.0f;         ///< Segment lifetime in seconds.
+    f32 emission = 10.0f; ///< Segments-per-second emission rate.
+    f32 life = 1.0f;      ///< Segment lifetime in seconds.
     f32 gravity = 0.0f;
 
     i32 priorityPlane = 0;
@@ -142,7 +142,7 @@ struct EventObjectConfig {
 
     std::string name;
     Kind kind = Kind::Unknown;
-    std::string id;                  ///< Event id (e.g. "SPLBhfoo"); looked up via @ref FindSpn etc.
+    std::string id; ///< Event id (e.g. "SPLBhfoo"); looked up via @ref FindSpn etc.
     i32 nodeIndex = -1;
 
     Vector3f pivot = {0, 0, 0};
@@ -182,12 +182,12 @@ struct MeshData {
     i32 geosetId;
     i32 materialId;
 
-    u32 lod = 0;                       ///< LOD index (0 = highest detail).
+    u32 lod = 0; ///< LOD index (0 = highest detail).
     std::vector<Vector3f> positions;
     std::vector<Vector3f> normals;
     std::vector<Vector2f> uvs;
-    std::vector<Vector2f> uvs1;        ///< Optional second UV channel (HD models).
-    std::vector<Vector4f> tangents;    ///< xyz = tangent, w = bitangent sign.
+    std::vector<Vector2f> uvs1;     ///< Optional second UV channel (HD models).
+    std::vector<Vector4f> tangents; ///< xyz = tangent, w = bitangent sign.
     std::vector<u32> indices;
 };
 
@@ -209,7 +209,7 @@ struct TextureData {
     gfx::Format format = gfx::Format::R8G8B8A8_UNORM;
     i32 width, height;
     i32 mipLevels = 1;
-    u32 wrapFlags = 0x3;                ///< Bit0 = repeat-U, Bit1 = repeat-V.
+    u32 wrapFlags = 0x3; ///< Bit0 = repeat-U, Bit1 = repeat-V.
 
     std::string sharedKey;
 };
@@ -220,21 +220,21 @@ struct TextureData {
 /// add the PBR slots (`normalMapId`, `ormMapId`, `emissiveMapId`,
 /// `teamColorMapId`) plus fresnel coefficients and per-layer emissive gain.
 struct MaterialLayerData {
-    i32 filterMode;                      ///< @ref FilterMode.
+    i32 filterMode; ///< @ref FilterMode.
     i32 textureId;
     f32 alpha;
-    i32 flags;                           ///< @ref MaterialFlags.
-    i32 textureAnimationId = -1;         ///< `-1` if none.
+    i32 flags;                   ///< @ref MaterialFlags.
+    i32 textureAnimationId = -1; ///< `-1` if none.
 
-    i32 coordId = 0;                     ///< Which UV channel to sample (0 or 1).
-    i32 shaderId = 0;                    ///< HD shader-permutation selector.
+    i32 coordId = 0;  ///< Which UV channel to sample (0 or 1).
+    i32 shaderId = 0; ///< HD shader-permutation selector.
 
     i32 normalMapId = -1;
     i32 ormMapId = -1;
     i32 emissiveMapId = -1;
-    i32 teamColorMapId = -1;             ///< Or @ref kHdTeamColorActive for synth.
+    i32 teamColorMapId = -1; ///< Or @ref kHdTeamColorActive for synth.
 
-    f32 emissiveGain = 0.0f;             ///< Multiplier on the emissive contribution.
+    f32 emissiveGain = 0.0f; ///< Multiplier on the emissive contribution.
     f32 fresnelOpacity = 0.0f;
     f32 fresnelTeamColor = 0.0f;
     Vector3f fresnelColor = {0.0f, 0.0f, 0.0f};

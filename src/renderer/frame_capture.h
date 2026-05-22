@@ -63,7 +63,7 @@ private:
     gfx::Format depthFormat_ = gfx::Format::D24_UNORM_S8_UINT;
 
     bool enabled_ = false;
-    bool frameCapturing_ = false; // BeginFrame redirected this frame
+    bool frameCapturing_ = false;  // BeginFrame redirected this frame
     bool resourcesLogged_ = false; // one-shot gate for the failure diagnostic
     i32 width_ = 0;
     i32 height_ = 0;

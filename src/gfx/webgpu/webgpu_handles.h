@@ -69,7 +69,7 @@ inline constexpr u32 kPsIblCubeToBinding = kStageBindingShift + 14;   // registe
 using DeleteEpoch = u64;
 
 struct BufferEntry {
-    wgpu::Buffer buffer;       // own buffer OR alias of shared CB
+    wgpu::Buffer buffer; // own buffer OR alias of shared CB
     BufferDesc desc{};
 
     // Ring-buffer slots (mirrors VulkanDevice's BufferEntry). Map* rotates

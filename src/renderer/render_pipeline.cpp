@@ -93,8 +93,7 @@ gfx::Format RenderPipeline::SceneTargetFormat() const {
     // buffer is B8G8R8A8_UNORM_SRGB and PSOs need to be built for that.
     if (impl_->gfx_ && impl_->primaryTargetId_ != 0) {
         auto it = impl_->targets_.find(impl_->primaryTargetId_);
-        if (it != impl_->targets_.end() &&
-            it->second.swap != gfx::SwapChainHandle::Invalid) {
+        if (it != impl_->targets_.end() && it->second.swap != gfx::SwapChainHandle::Invalid) {
             const gfx::Format swapFmt = impl_->gfx_->GetSwapChainFormat(it->second.swap);
             if (swapFmt != gfx::Format::Unknown)
                 return swapFmt;
@@ -859,8 +858,8 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     // swapchain backbuffer format; in HD mode ImGui draws live inside the
     // tonemap pass (target.color), in SD mode inside the main scene pass
     // (also target.color) — both write through the same sRGB RTV.
-    rs_.EnsureImGui(*impl_->gfx_, *impl_->blsShaderCache_,
-                    gfx::Format::R8G8B8A8_UNORM_SRGB, impl_->depthStencilFormat_);
+    rs_.EnsureImGui(*impl_->gfx_, *impl_->blsShaderCache_, gfx::Format::R8G8B8A8_UNORM_SRGB,
+                    impl_->depthStencilFormat_);
 
     const bool ok = impl_->blsSdProgram_ != nullptr && impl_->blsSdOnHdProgram_ != nullptr &&
                     impl_->blsHdProgram_ != nullptr && impl_->blsSpriteVs_ != nullptr &&
@@ -1180,14 +1179,20 @@ bool RenderPipeline::CreateShaders() {
     //                   null-terminated text)
     //   D3D11/12 → DXBC sm_5_0
     const gfx::GfxApi api = impl_->gfx_->GetApi();
-    const u8* vsBytes = kLineVS;  usize vsSize = sizeof(kLineVS);
-    const u8* psBytes = kLinePS;  usize psSize = sizeof(kLinePS);
+    const u8* vsBytes = kLineVS;
+    usize vsSize = sizeof(kLineVS);
+    const u8* psBytes = kLinePS;
+    usize psSize = sizeof(kLinePS);
     if (api == gfx::GfxApi::Vulkan) {
-        vsBytes = kLineVSSpv;  vsSize = sizeof(kLineVSSpv);
-        psBytes = kLinePSSpv;  psSize = sizeof(kLinePSSpv);
+        vsBytes = kLineVSSpv;
+        vsSize = sizeof(kLineVSSpv);
+        psBytes = kLinePSSpv;
+        psSize = sizeof(kLinePSSpv);
     } else if (api == gfx::GfxApi::WebGPU) {
-        vsBytes = kLineVSWgsl; vsSize = sizeof(kLineVSWgsl);
-        psBytes = kLinePSWgsl; psSize = sizeof(kLinePSWgsl);
+        vsBytes = kLineVSWgsl;
+        vsSize = sizeof(kLineVSWgsl);
+        psBytes = kLinePSWgsl;
+        psSize = sizeof(kLinePSWgsl);
     }
 
     impl_->lineVS_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Vertex, vsBytes, vsSize);

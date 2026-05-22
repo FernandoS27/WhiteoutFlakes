@@ -23,8 +23,8 @@ enum class RenderMode : u8 {
 
 /// @brief Light-rig preset selectable from the host UI.
 enum class LightingMode : u8 {
-    InGame = 0, ///< Engine-runtime rig (game look).
-    Glue = 1,   ///< Loading-screen / portrait rig (stronger key light).
+    InGame = 0,  ///< Engine-runtime rig (game look).
+    Glue = 1,    ///< Loading-screen / portrait rig (stronger key light).
     Dynamic = 2, ///< Animated DNC-driven rig.
 };
 

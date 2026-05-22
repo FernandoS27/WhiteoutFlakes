@@ -60,7 +60,7 @@ std::vector<std::string> EnumerateAdapterNames() {
 // the device's pipelineCacheUUID so each (GPU, driver) combo gets its own
 // file and switching back is instant.
 std::filesystem::path GpuSpecificCachePath(const std::filesystem::path& base,
-                                            const std::array<uint8_t, VK_UUID_SIZE>& uuid) {
+                                           const std::array<uint8_t, VK_UUID_SIZE>& uuid) {
     if (base.empty())
         return {};
     char hex[VK_UUID_SIZE * 2 + 1] = {};

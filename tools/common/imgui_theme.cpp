@@ -119,8 +119,8 @@ void ApplyImGuiDpiScale(float scale) {
     cfg.FontDataOwnedByAtlas = false;
     const float basePx = 15.0f;
     io.Fonts->AddFontFromMemoryTTF(const_cast<uint8_t*>(ui::kRobotoMediumTTF),
-                                   static_cast<int>(sizeof(ui::kRobotoMediumTTF)),
-                                   basePx * scale, &cfg);
+                                   static_cast<int>(sizeof(ui::kRobotoMediumTTF)), basePx * scale,
+                                   &cfg);
     // ScaleAllSizes multiplies the absolute pixel values set in
     // ApplyImGuiTheme (padding, spacing, rounding, scrollbar/grab sizes …).
     style.ScaleAllSizes(scale);

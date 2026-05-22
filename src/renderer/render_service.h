@@ -130,8 +130,8 @@ public:
     dear_imgui::ImGuiRenderer* ImGui();
     const dear_imgui::ImGuiRenderer* ImGui() const;
     // Lazily build the adapter once a device is available. Idempotent.
-    void EnsureImGui(gfx::IGFXDevice& gfx, bls::BlsShaderCache& shaderCache,
-                     gfx::Format rtvFormat, gfx::Format dsvFormat);
+    void EnsureImGui(gfx::IGFXDevice& gfx, bls::BlsShaderCache& shaderCache, gfx::Format rtvFormat,
+                     gfx::Format dsvFormat);
     // Tear down before the gfx device goes away.
     void ShutdownImGui();
 

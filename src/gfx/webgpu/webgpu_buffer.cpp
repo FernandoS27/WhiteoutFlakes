@@ -48,8 +48,7 @@ BufferHandle WebGPUDevice::CreateBuffer(const BufferDesc& desc, const void* init
         // MapBuffer can't write to.
         const bool isConstant = hasFlag(desc.usage, BufferUsage::Constant);
         const u32 defaultSlots = isConstant ? kCbRingSlots : kFramesInFlight;
-        entry.slotCount =
-            (desc.ringSlotsHint > 0) ? desc.ringSlotsHint : defaultSlots;
+        entry.slotCount = (desc.ringSlotsHint > 0) ? desc.ringSlotsHint : defaultSlots;
         if (entry.slotCount < kFramesInFlight)
             entry.slotCount = kFramesInFlight;
     }
@@ -178,9 +177,9 @@ void* WebGPUDevice::MapBuffer(BufferHandle h) {
     if (hasFlag(buffer->desc.usage, BufferUsage::CpuReadable)) {
         if (!buffer->buffer)
             return nullptr;
-        wgpu::Future f = buffer->buffer.MapAsync(
-            wgpu::MapMode::Read, 0, buffer->desc.size, wgpu::CallbackMode::WaitAnyOnly,
-            [](wgpu::MapAsyncStatus, wgpu::StringView) {});
+        wgpu::Future f = buffer->buffer.MapAsync(wgpu::MapMode::Read, 0, buffer->desc.size,
+                                                 wgpu::CallbackMode::WaitAnyOnly,
+                                                 [](wgpu::MapAsyncStatus, wgpu::StringView) {});
         wgpu::FutureWaitInfo wait{f};
         state.instance.WaitAny(1, &wait, UINT64_MAX);
         return const_cast<void*>(buffer->buffer.GetConstMappedRange(0, buffer->desc.size));

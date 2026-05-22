@@ -35,8 +35,7 @@ inline ImU32 Brighten(ImU32 c, f32 t) {
         const i32 v = static_cast<i32>((c >> shift) & 0xFF);
         return static_cast<ImU32>(v + static_cast<i32>((255 - v) * t));
     };
-    return (ch(IM_COL32_R_SHIFT) << IM_COL32_R_SHIFT) |
-           (ch(IM_COL32_G_SHIFT) << IM_COL32_G_SHIFT) |
+    return (ch(IM_COL32_R_SHIFT) << IM_COL32_R_SHIFT) | (ch(IM_COL32_G_SHIFT) << IM_COL32_G_SHIFT) |
            (ch(IM_COL32_B_SHIFT) << IM_COL32_B_SHIFT) |
            (((c >> IM_COL32_A_SHIFT) & 0xFF) << IM_COL32_A_SHIFT);
 }
@@ -80,8 +79,8 @@ inline void DrawViewCube(renderer::Camera& camera) {
     static const std::array<Vector3f, 6> kFaceN = [] {
         std::array<Vector3f, 6> a{};
         for (i32 i = 0; i < 6; ++i)
-            a[i] = CoordinateSystem::ConvertDirection(CoordSpace::Max,
-                                                     CoordinateSystem::Default(), kNormalsMax[i]);
+            a[i] = CoordinateSystem::ConvertDirection(CoordSpace::Max, CoordinateSystem::Default(),
+                                                      kNormalsMax[i]);
         return a;
     }();
 
@@ -128,16 +127,15 @@ inline void DrawViewCube(renderer::Camera& camera) {
     {
         const char* txt = "Home";
         const ImVec2 ts = ImGui::CalcTextSize(txt);
-        dl->AddText(ImVec2((homeMin.x + homeMax.x - ts.x) * 0.5f,
-                           (homeMin.y + homeMax.y - ts.y) * 0.5f),
-                    IM_COL32(235, 235, 235, 255), txt);
+        dl->AddText(
+            ImVec2((homeMin.x + homeMax.x - ts.x) * 0.5f, (homeMin.y + homeMax.y - ts.y) * 0.5f),
+            IM_COL32(235, 235, 235, 255), txt);
     }
     if (homeHover && clicked)
         camera.Reset();
 
     // ---- Cube ----
-    const ImVec2 center(boxPos.x + kPad + kCube * 0.5f,
-                        boxPos.y + kPad + kHome + kCube * 0.5f);
+    const ImVec2 center(boxPos.x + kPad + kCube * 0.5f, boxPos.y + kPad + kHome + kCube * 0.5f);
     const f32 scale = kCube * 0.5f / 0.92f; // fit the projected unit cube
 
     // Eye direction in renderer-native space — same yaw/pitch basis the scene

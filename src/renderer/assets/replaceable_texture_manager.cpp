@@ -207,8 +207,7 @@ void ReplaceableTextureManager::BakeSlot(Actor& mi, i32 textureId, i32 replaceab
 }
 
 void ReplaceableTextureManager::OnCanonicalAssetLoaded(Actor* miPtr, i32 textureId,
-                                                       i32 replaceableId,
-                                                       io::RequestResult&& r) {
+                                                       i32 replaceableId, io::RequestResult&& r) {
     // The actor may have been unregistered (and possibly destroyed) between
     // request submission and this callback. UnregisterModel cancels pending
     // loads, but a late-completion path through Pump still suppresses cancelled

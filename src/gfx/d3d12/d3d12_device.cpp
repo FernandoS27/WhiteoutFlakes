@@ -583,10 +583,9 @@ BufferHandle D3D12Device::CreateBuffer(const BufferDesc& desc, const void* initi
     if (hasFlag(desc.usage, BufferUsage::UnorderedAccess))
         rd.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
-    D3D12_RESOURCE_STATES initialState =
-        cpuWritable   ? D3D12_RESOURCE_STATE_GENERIC_READ
-        : cpuReadable ? D3D12_RESOURCE_STATE_COPY_DEST
-                      : D3D12_RESOURCE_STATE_COMMON;
+    D3D12_RESOURCE_STATES initialState = cpuWritable   ? D3D12_RESOURCE_STATE_GENERIC_READ
+                                         : cpuReadable ? D3D12_RESOURCE_STATE_COPY_DEST
+                                                       : D3D12_RESOURCE_STATE_COMMON;
 
     HRESULT hr = device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, initialState,
                                                   nullptr, IID_PPV_ARGS(&entry.resource));
@@ -1425,11 +1424,16 @@ Format D3D12Device::GetSwapChainFormat(SwapChainHandle h) const {
     if (!sc)
         return Format::Unknown;
     switch (sc->rtvDxgiFormat) {
-    case DXGI_FORMAT_R8G8B8A8_UNORM:      return Format::R8G8B8A8_UNORM;
-    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB: return Format::R8G8B8A8_UNORM_SRGB;
-    case DXGI_FORMAT_B8G8R8A8_UNORM:      return Format::B8G8R8A8_UNORM;
-    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB: return Format::B8G8R8A8_UNORM_SRGB;
-    default:                              return Format::Unknown;
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+        return Format::R8G8B8A8_UNORM;
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        return Format::R8G8B8A8_UNORM_SRGB;
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+        return Format::B8G8R8A8_UNORM;
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        return Format::B8G8R8A8_UNORM_SRGB;
+    default:
+        return Format::Unknown;
     }
 }
 

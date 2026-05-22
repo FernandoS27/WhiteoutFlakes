@@ -241,9 +241,8 @@ PipelineHandle VulkanDevice::CreateComputePipeline(const ComputePipelineDesc& de
             },
         .layout = *state.computeLayout,
     };
-    auto pR = *state.pipelineCache
-                  ? state.device.createComputePipeline(state.pipelineCache, cpci)
-                  : state.device.createComputePipeline(nullptr, cpci);
+    auto pR = *state.pipelineCache ? state.device.createComputePipeline(state.pipelineCache, cpci)
+                                   : state.device.createComputePipeline(nullptr, cpci);
     if (pR.result != vk::Result::eSuccess) {
         std::fprintf(stderr, "[vk] createComputePipeline failed (%s)\n",
                      vk::to_string(pR.result).c_str());

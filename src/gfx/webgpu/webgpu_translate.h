@@ -221,8 +221,7 @@ inline wgpu::FilterMode ToWgpuFilter(Filter f) {
 }
 
 inline wgpu::MipmapFilterMode ToWgpuMipFilter(Filter f) {
-    return (f == Filter::Linear) ? wgpu::MipmapFilterMode::Linear
-                                 : wgpu::MipmapFilterMode::Nearest;
+    return (f == Filter::Linear) ? wgpu::MipmapFilterMode::Linear : wgpu::MipmapFilterMode::Nearest;
 }
 
 inline wgpu::AddressMode ToWgpuAddress(AddressMode m) {

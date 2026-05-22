@@ -41,8 +41,8 @@ public:
     // R8G8B8A8). The DSV format is forwarded so the PSO key matches the
     // pipeline that the render-pass started with, even though depth test
     // is disabled for ImGui draws.
-    ImGuiRenderer(gfx::IGFXDevice& device, bls::BlsShaderCache& shaderCache,
-                  gfx::Format rtvFormat, gfx::Format dsvFormat);
+    ImGuiRenderer(gfx::IGFXDevice& device, bls::BlsShaderCache& shaderCache, gfx::Format rtvFormat,
+                  gfx::Format dsvFormat);
     ~ImGuiRenderer();
 
     ImGuiRenderer(const ImGuiRenderer&) = delete;

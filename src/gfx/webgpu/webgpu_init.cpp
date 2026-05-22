@@ -111,20 +111,25 @@ wgpu::BackendType ResolveBackendHint() {
     std::string s = hint;
     for (auto& c : s)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (s == "d3d11")  return wgpu::BackendType::D3D11;
-    if (s == "d3d12")  return wgpu::BackendType::D3D12;
-    if (s == "vulkan" || s == "vk") return wgpu::BackendType::Vulkan;
-    if (s == "gl" || s == "opengl") return wgpu::BackendType::OpenGL;
-    if (s == "gles" || s == "opengles") return wgpu::BackendType::OpenGLES;
-    if (s == "metal")  return wgpu::BackendType::Metal;
+    if (s == "d3d11")
+        return wgpu::BackendType::D3D11;
+    if (s == "d3d12")
+        return wgpu::BackendType::D3D12;
+    if (s == "vulkan" || s == "vk")
+        return wgpu::BackendType::Vulkan;
+    if (s == "gl" || s == "opengl")
+        return wgpu::BackendType::OpenGL;
+    if (s == "gles" || s == "opengles")
+        return wgpu::BackendType::OpenGLES;
+    if (s == "metal")
+        return wgpu::BackendType::Metal;
     std::fprintf(stderr, "[wgpu] unknown --wgpu-backend='%s' (ignored)\n", hint.c_str());
     return wgpu::BackendType::Undefined;
 }
 
 // Sync wrapper around wgpu::Instance::RequestAdapter. Returns null on
 // failure. Pass `powerPreference = Undefined` for "no preference".
-wgpu::Adapter RequestAdapterSync(wgpu::Instance instance,
-                                 wgpu::PowerPreference powerPreference) {
+wgpu::Adapter RequestAdapterSync(wgpu::Instance instance, wgpu::PowerPreference powerPreference) {
     wgpu::RequestAdapterOptions opts{};
     opts.powerPreference = powerPreference;
     opts.backendType = ResolveBackendHint();
@@ -213,9 +218,7 @@ bool RequestDeviceSync(WebGPUDeviceState& state) {
     // hasDynamicOffset — see CreateSharedBindLayouts. Each per-draw
     // FlushBindings embeds the ring-slot offset into the BindGroupEntry
     // directly.
-    auto cap = [](u32 desired, u32 adapterMax) -> u32 {
-        return std::min(desired, adapterMax);
-    };
+    auto cap = [](u32 desired, u32 adapterMax) -> u32 { return std::min(desired, adapterMax); };
     wgpu::Limits required{};
     required.maxSampledTexturesPerShaderStage =
         cap(kStageBindingShift, supported.maxSampledTexturesPerShaderStage);
@@ -223,8 +226,7 @@ bool RequestDeviceSync(WebGPUDeviceState& state) {
         cap(kStageBindingShift, supported.maxSamplersPerShaderStage);
     required.maxUniformBuffersPerShaderStage =
         cap(kStageBindingShift, supported.maxUniformBuffersPerShaderStage);
-    required.maxBindingsPerBindGroup =
-        cap(kCbBindingCount, supported.maxBindingsPerBindGroup);
+    required.maxBindingsPerBindGroup = cap(kCbBindingCount, supported.maxBindingsPerBindGroup);
     required.maxBindGroups = cap(4, supported.maxBindGroups);
 
     // Features: enable BC texture compression when the adapter exposes
@@ -279,8 +281,7 @@ bool RequestDeviceSync(WebGPUDeviceState& state) {
 
     wgpu::Limits limits{};
     if (state.device.GetLimits(&limits) == wgpu::Status::Success) {
-        state.minUniformBufferAlign =
-            std::max<u64>(limits.minUniformBufferOffsetAlignment, 256ull);
+        state.minUniformBufferAlign = std::max<u64>(limits.minUniformBufferOffsetAlignment, 256ull);
     }
     return true;
 }
@@ -347,8 +348,8 @@ bool CreateSharedBindLayouts(WebGPUDeviceState& state) {
         for (u32 i = 0; i < kSrvBindingCount; ++i) {
             wgpu::BindGroupLayoutEntry e{};
             e.binding = i;
-            e.visibility = (i < kStageBindingShift) ? wgpu::ShaderStage::Vertex
-                                                    : wgpu::ShaderStage::Fragment;
+            e.visibility =
+                (i < kStageBindingShift) ? wgpu::ShaderStage::Vertex : wgpu::ShaderStage::Fragment;
             e.texture.multisampled = false;
             if (i >= kPsShadowStartBinding && i < kPsShadowEndBinding) {
                 e.texture.sampleType = wgpu::TextureSampleType::Depth;
@@ -380,8 +381,8 @@ bool CreateSharedBindLayouts(WebGPUDeviceState& state) {
         for (u32 i = 0; i < kSamplerBindingCount; ++i) {
             wgpu::BindGroupLayoutEntry e{};
             e.binding = i;
-            e.visibility = (i < kStageBindingShift) ? wgpu::ShaderStage::Vertex
-                                                    : wgpu::ShaderStage::Fragment;
+            e.visibility =
+                (i < kStageBindingShift) ? wgpu::ShaderStage::Vertex : wgpu::ShaderStage::Fragment;
             if (i >= kPsShadowStartBinding && i < kPsShadowEndBinding)
                 e.sampler.type = wgpu::SamplerBindingType::Comparison;
             else
@@ -419,8 +420,7 @@ bool CreateSharedBindLayouts(WebGPUDeviceState& state) {
 // the bound resource must match — so a 2D-color default can't fill a
 // depth slot or a cube-array slot. We allocate one of each here.
 bool CreateDefaultResources(WebGPUDeviceState& state) {
-    auto makeSampler = [&](const char* label, wgpu::CompareFunction cmp,
-                           wgpu::Sampler& out) {
+    auto makeSampler = [&](const char* label, wgpu::CompareFunction cmp, wgpu::Sampler& out) {
         wgpu::SamplerDescriptor sd{};
         sd.label = label;
         sd.addressModeU = wgpu::AddressMode::Repeat;
@@ -433,8 +433,7 @@ bool CreateDefaultResources(WebGPUDeviceState& state) {
             sd.compare = cmp;
         out = state.device.CreateSampler(&sd);
     };
-    makeSampler("wf.defaultSampler", wgpu::CompareFunction::Undefined,
-                state.defaultSampler);
+    makeSampler("wf.defaultSampler", wgpu::CompareFunction::Undefined, state.defaultSampler);
     // Always-pass comparison so the shadow-PCF path returns "fully lit"
     // when the renderer hasn't bound a real shadow map yet.
     makeSampler("wf.defaultCmpSampler", wgpu::CompareFunction::Always,
@@ -554,9 +553,8 @@ void CreateSharedCbRing(WebGPUDeviceState& state) {
     // per WebGPU spec. CPU writes go through `sharedCbShadow` and get
     // pushed to the GPU buffer via Queue::WriteBuffer from MapBuffer /
     // UpdateBuffer / UnmapBuffer (see webgpu_buffer.cpp).
-    bd.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::Storage |
-               wgpu::BufferUsage::Vertex | wgpu::BufferUsage::Index |
-               wgpu::BufferUsage::CopySrc | wgpu::BufferUsage::CopyDst;
+    bd.usage = wgpu::BufferUsage::Uniform | wgpu::BufferUsage::Storage | wgpu::BufferUsage::Vertex |
+               wgpu::BufferUsage::Index | wgpu::BufferUsage::CopySrc | wgpu::BufferUsage::CopyDst;
     bd.mappedAtCreation = false;
     state.sharedCbBuffer = state.device.CreateBuffer(&bd);
     if (!state.sharedCbBuffer) {
@@ -575,7 +573,7 @@ std::vector<std::string> EnumerateAdapterNames() {
     if (!instance)
         return names;
     wgpu::PowerPreference probes[] = {wgpu::PowerPreference::HighPerformance,
-                                       wgpu::PowerPreference::LowPower};
+                                      wgpu::PowerPreference::LowPower};
     for (auto pp : probes) {
         wgpu::Adapter adapter = RequestAdapterSync(instance, pp);
         if (!adapter)
@@ -613,7 +611,7 @@ bool WebGPUDevice::Init(bool enableValidation) {
         std::fprintf(stderr, "[wgpu] Init: default resources failed\n");
         return false;
     }
-    CreateSharedCbRing(state); // non-fatal
+    CreateSharedCbRing(state);     // non-fatal
     CreateZeroVertexBuffer(state); // non-fatal — pipelines just skip phantom-fill if missing
 
     wgpu::AdapterInfo info{};

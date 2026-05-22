@@ -212,10 +212,9 @@ void RenderWindow::ThreadFunc(i32 w, i32 h, gfx::GfxApi api) {
             i32 nGeo = 0, nTex = 0, nNodes = 0, nParts = 0, nSegs = 0;
             service_.Pipeline().GetFrameStats(nGeo, nTex, nNodes, nParts, nSegs);
             wchar_t title[300];
-            swprintf_s(
-                title,
-                L"WhiteoutFlakes — %d FPS | %d geo, %d tex, %d nodes, %d parts, %d segs",
-                frameCount, nGeo, nTex, nNodes, nParts, nSegs);
+            swprintf_s(title,
+                       L"WhiteoutFlakes — %d FPS | %d geo, %d tex, %d nodes, %d parts, %d segs",
+                       frameCount, nGeo, nTex, nNodes, nParts, nSegs);
             SetTitle(title);
             frameCount = 0;
             fpsTimer = now;

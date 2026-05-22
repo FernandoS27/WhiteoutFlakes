@@ -13,6 +13,7 @@
 //   ndxRefreshMaterials()  → Re-read material properties (hot reload)
 // ============================================================================
 
+#include "cubeb_sound_emitter.h"
 #include "max_scene_adapter.h"
 #include "render_window.h"
 #include "renderer/assets/replaceable_texture_manager.h"
@@ -20,7 +21,6 @@
 #include "renderer/model/model_loader.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
-#include "cubeb_sound_emitter.h"
 #include "settings_ini.h"
 #include "whiteout/flakes/types.h"
 

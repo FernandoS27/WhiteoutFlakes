@@ -64,8 +64,7 @@ public:
             // upload on SkinningSystem::IsReady). Drawing here would
             // bind a zero-initialised bone palette and emit degenerate
             // skinned geometry.
-            if (view_.skinning && view_.skinning->HasSkeleton() &&
-                !view_.skinning->IsReady())
+            if (view_.skinning && view_.skinning->HasSkeleton() && !view_.skinning->IsReady())
                 continue;
             const auto& geo = (*view_.geosets)[ref.idx];
             if (geo.unskinnedVb == gfx::BufferHandle::Invalid ||

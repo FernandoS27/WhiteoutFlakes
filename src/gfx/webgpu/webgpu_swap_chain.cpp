@@ -116,8 +116,8 @@ void ConfigureSurface(WebGPUDeviceState& state, SwapChainEntry& sc, u32 width, u
     // actually honors. Fall back to the linear partner only when no
     // sRGB form is exposed by the surface (Windows D3D12 surfaces
     // typically only advertise linear formats).
-    wgpu::TextureFormat surfaceFmt = caps.formatCount > 0 ? caps.formats[0]
-                                                          : wgpu::TextureFormat::BGRA8Unorm;
+    wgpu::TextureFormat surfaceFmt =
+        caps.formatCount > 0 ? caps.formats[0] : wgpu::TextureFormat::BGRA8Unorm;
     bool found = false;
     for (usize i = 0; i < caps.formatCount && !found; ++i) {
         if (caps.formats[i] == requestedSrgb) {
@@ -176,11 +176,16 @@ void ConfigureSurface(WebGPUDeviceState& state, SwapChainEntry& sc, u32 width, u
 // actually be configured with on this backend.
 Format WgpuSurfaceFormatToGfx(wgpu::TextureFormat f) {
     switch (f) {
-    case wgpu::TextureFormat::BGRA8Unorm:      return Format::B8G8R8A8_UNORM;
-    case wgpu::TextureFormat::BGRA8UnormSrgb:  return Format::B8G8R8A8_UNORM_SRGB;
-    case wgpu::TextureFormat::RGBA8Unorm:      return Format::R8G8B8A8_UNORM;
-    case wgpu::TextureFormat::RGBA8UnormSrgb:  return Format::R8G8B8A8_UNORM_SRGB;
-    default:                                   return Format::Unknown;
+    case wgpu::TextureFormat::BGRA8Unorm:
+        return Format::B8G8R8A8_UNORM;
+    case wgpu::TextureFormat::BGRA8UnormSrgb:
+        return Format::B8G8R8A8_UNORM_SRGB;
+    case wgpu::TextureFormat::RGBA8Unorm:
+        return Format::R8G8B8A8_UNORM;
+    case wgpu::TextureFormat::RGBA8UnormSrgb:
+        return Format::R8G8B8A8_UNORM_SRGB;
+    default:
+        return Format::Unknown;
     }
 }
 

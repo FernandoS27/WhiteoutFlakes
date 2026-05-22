@@ -18,17 +18,26 @@ void FrameCapture::Init(gfx::IGFXDevice& gfx, gfx::GfxApi api, gfx::Format depth
     // Per-backend bytecode selection (mirrors RenderPipeline::CreateShaders):
     // Vulkan → SPIR-V, WebGPU → WGSL, D3D11/12 → DXBC.
     using namespace whiteout::flakes::Shaders;
-    const u8* blitVs = kBlitVS;     usize blitVsN = sizeof(kBlitVS);
-    const u8* blitPs = kBlitPS;     usize blitPsN = sizeof(kBlitPS);
-    const u8* capCs = kCaptureCS;   usize capCsN = sizeof(kCaptureCS);
+    const u8* blitVs = kBlitVS;
+    usize blitVsN = sizeof(kBlitVS);
+    const u8* blitPs = kBlitPS;
+    usize blitPsN = sizeof(kBlitPS);
+    const u8* capCs = kCaptureCS;
+    usize capCsN = sizeof(kCaptureCS);
     if (api == gfx::GfxApi::Vulkan) {
-        blitVs = kBlitVSSpv;   blitVsN = sizeof(kBlitVSSpv);
-        blitPs = kBlitPSSpv;   blitPsN = sizeof(kBlitPSSpv);
-        capCs = kCaptureCSSpv; capCsN = sizeof(kCaptureCSSpv);
+        blitVs = kBlitVSSpv;
+        blitVsN = sizeof(kBlitVSSpv);
+        blitPs = kBlitPSSpv;
+        blitPsN = sizeof(kBlitPSSpv);
+        capCs = kCaptureCSSpv;
+        capCsN = sizeof(kCaptureCSSpv);
     } else if (api == gfx::GfxApi::WebGPU) {
-        blitVs = kBlitVSWgsl;   blitVsN = sizeof(kBlitVSWgsl);
-        blitPs = kBlitPSWgsl;   blitPsN = sizeof(kBlitPSWgsl);
-        capCs = kCaptureCSWgsl; capCsN = sizeof(kCaptureCSWgsl);
+        blitVs = kBlitVSWgsl;
+        blitVsN = sizeof(kBlitVSWgsl);
+        blitPs = kBlitPSWgsl;
+        blitPsN = sizeof(kBlitPSWgsl);
+        capCs = kCaptureCSWgsl;
+        capCsN = sizeof(kCaptureCSWgsl);
     }
     blitVS_ = gfx_->CreateShader(gfx::ShaderStage::Vertex, blitVs, blitVsN);
     blitPS_ = gfx_->CreateShader(gfx::ShaderStage::Pixel, blitPs, blitPsN);
@@ -141,8 +150,7 @@ bool FrameCapture::EnsureResources(const RenderTarget& target) {
     if (blitPSO_ == gfx::PipelineHandle::Invalid)
         return fail("blit pipeline failed to build");
 
-    if (color_ != gfx::TextureHandle::Invalid && width_ == target.width &&
-        height_ == target.height)
+    if (color_ != gfx::TextureHandle::Invalid && width_ == target.width && height_ == target.height)
         return true;
 
     // First use or surface resize — rebuild the capture target + ring.

@@ -73,7 +73,8 @@ inline void swizTangent(Vector4f& t) {
 }
 
 // Some authoring tools leave the static EmissiveGain f32 as 0x7FC00000
-// (canonical NaN) on layers the artist never touched. Clamp on load so HdPsCb.emissiveGain stays finite.
+// (canonical NaN) on layers the artist never touched. Clamp on load so HdPsCb.emissiveGain stays
+// finite.
 inline f32 SanitizeEmissiveGain(f32 v, i32 materialId, i32 layerIndex) {
     if (std::isfinite(v))
         return v;
@@ -999,8 +1000,8 @@ FrameState MdxModelAdapter::Evaluate(i32 sequenceIdx, i32 timeMs, i32 globalTime
             lfs.fresnelOpacity = evalF32(layer.fresnelAlphaTracks, layer.fresnelOpacity);
             lfs.fresnelTeamColor = evalF32(layer.fresnelTeamColorTracks, layer.fresnelTeamColor);
 
-            lfs.emissiveGain = SanitizeEmissiveGain(
-                evalF32(layer.emissiveGainTracks, layer.emissiveGain), mi, li);
+            lfs.emissiveGain =
+                SanitizeEmissiveGain(evalF32(layer.emissiveGainTracks, layer.emissiveGain), mi, li);
             fs.layerFresnels.push_back(lfs);
         }
     }
