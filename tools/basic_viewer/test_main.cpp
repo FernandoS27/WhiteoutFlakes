@@ -104,12 +104,17 @@ int main(int argc, char* argv[]) {
     std::filesystem::path mdxPath;
 
     // Headless animation-frame export: --export-anim <seqIdx> <fps> <folder>
-    // [--gif]. Loads the model, exports, and exits — used to verify the
-    // capture pipeline without UI interaction.
+    // [--gif] [--apng] [--webp] [--transparent] [--res <w> <h>] [--camera <idx>].
+    // Loads the model, exports, and exits — verifies the capture pipeline
+    // without UI. --camera selects a model camera preset (0-based).
     bool doExport = false;
     i32 exportSeq = 0;
     i32 exportFps = 30;
     whiteout::flakes::ExportFormat exportFmt = whiteout::flakes::ExportFormat::PngFrames;
+    bool exportTransparent = false;
+    i32 exportResW = 0;
+    i32 exportResH = 0;
+    i32 exportCamera = -1; // -1 = free camera; >= 0 = model camera preset index
     std::filesystem::path exportFolder;
 
 #if defined(_WIN32)
@@ -150,6 +155,17 @@ int main(int argc, char* argv[]) {
             exportFolder = whiteout::flakes::io::FsPathFromUtf8(argv[++i]);
         } else if (std::strcmp(a, "--gif") == 0) {
             exportFmt = whiteout::flakes::ExportFormat::Gif;
+        } else if (std::strcmp(a, "--apng") == 0) {
+            exportFmt = whiteout::flakes::ExportFormat::Apng;
+        } else if (std::strcmp(a, "--webp") == 0) {
+            exportFmt = whiteout::flakes::ExportFormat::Webp;
+        } else if (std::strcmp(a, "--transparent") == 0) {
+            exportTransparent = true;
+        } else if (std::strcmp(a, "--res") == 0 && i + 2 < argc) {
+            exportResW = std::atoi(argv[++i]);
+            exportResH = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--camera") == 0 && i + 1 < argc) {
+            exportCamera = std::atoi(argv[++i]);
         } else if (std::strcmp(a, "--wgpu-backend") == 0 && i + 1 < argc) {
             // Force Dawn's underlying adapter backend (d3d11/d3d12/vulkan/gl/metal).
             // Only meaningful when --backend webgpu is selected.
@@ -359,7 +375,22 @@ int main(int argc, char* argv[]) {
             scene.Update(0.016f);
             app.Tick(0.016f);
         }
-        app.RequestAnimationExport(exportSeq, exportFps, exportFmt, exportFolder);
+        // Camera presets exist only once the model template has loaded, so
+        // select one after the warm-up ticks.
+        if (exportCamera >= 0) {
+            std::printf("[viewer] model has %zu camera preset(s); activating #%d\n",
+                        app.CameraPresets().size(), exportCamera);
+            app.ActivateCameraPreset(exportCamera);
+        }
+        whiteout::flakes::AnimationExportParams params;
+        params.sequenceIndex = exportSeq;
+        params.fps = exportFps;
+        params.format = exportFmt;
+        params.transparentBackground = exportTransparent;
+        params.width = exportResW;
+        params.height = exportResH;
+        params.outputFolder = exportFolder;
+        app.RequestAnimationExport(std::move(params));
         scene.Update(0.016f);
         app.Tick(0.016f); // runs the export synchronously
         app.Close();

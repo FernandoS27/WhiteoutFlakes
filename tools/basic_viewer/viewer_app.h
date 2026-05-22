@@ -38,10 +38,45 @@ using namespace whiteout::flakes::renderer::model;
 
 class ViewerUI;
 
-// Output format for an animation export.
+// Output format for an animation export. The enum order is the canonical
+// order used by the UI format dropdown and by GetExportFormatInfo().
 enum class ExportFormat {
     PngFrames, ///< One <model>_<anim>_<id>.png per frame.
     Gif,       ///< A single animated <model>_<anim>.gif.
+    Apng,      ///< A single animated <model>_<anim>.apng (APNG).
+    Webp,      ///< A single animated <model>_<anim>.webp.
+};
+constexpr i32 kExportFormatCount = 4;
+
+// Static description of an ExportFormat — its human label and, for the
+// single-file animated formats, the output file extension. PngFrames has an
+// empty extension since it writes a numbered PNG per frame instead.
+struct ExportFormatInfo {
+    const char* label;     ///< e.g. "Animated WebP".
+    const char* extension; ///< Single-file extension incl. dot; "" = per-frame PNGs.
+};
+
+// Look up the description of a format. Indexed by ExportFormat.
+const ExportFormatInfo& GetExportFormatInfo(ExportFormat format);
+
+// True for the animated single-file formats (GIF/APNG/WebP); false for PngFrames.
+inline bool IsSingleFileFormat(ExportFormat format) {
+    return GetExportFormatInfo(format).extension[0] != '\0';
+}
+
+// Parameters for an animation-frame export.
+struct AnimationExportParams {
+    i32 sequenceIndex = 0;
+    i32 fps = 30;
+    ExportFormat format = ExportFormat::PngFrames;
+    // Transparent background: each frame is rendered twice (black + white
+    // backdrop) and keyed, recovering a real alpha channel. PNG and APNG
+    // carry it directly; GIF falls back to 1-bit transparency.
+    bool transparentBackground = false;
+    // Render resolution; 0×0 means "use the current view size".
+    i32 width = 0;
+    i32 height = 0;
+    std::filesystem::path outputFolder;
 };
 
 class ViewerApp {
@@ -63,13 +98,10 @@ public:
     bool LoadModel(const std::filesystem::path& path);
 
     // ---- Animation frame export ----
-    // Queue an export of every frame of `sequenceIndex` (a focus-actor
-    // sequence) into `outputFolder`, sampled at `fps`. `format` chooses PNG
-    // frames (<model>_<anim>_<id>.png) or a single animated <model>_<anim>.gif.
-    // Deferred: the UI calls this from inside the ImGui frame, and Tick() runs
-    // the actual render loop on the next tick (outside ImGui frame building).
-    void RequestAnimationExport(i32 sequenceIndex, i32 fps, ExportFormat format,
-                                std::filesystem::path outputFolder);
+    // Queue an animation export (see AnimationExportParams). Deferred: the UI
+    // calls this from inside the ImGui frame, and Tick() runs the actual
+    // render loop on the next tick (outside ImGui frame building).
+    void RequestAnimationExport(AnimationExportParams params);
 
     // ---- Host policy (toggled by the UI, read by the per-frame tick) ----
     bool LoopNonLoopingPolicy() const {
@@ -139,15 +171,8 @@ private:
 
     // Runs a queued animation export synchronously: drives the focus actor
     // through the sequence one frame at a time, captures each composited
-    // frame, and writes it as a PNG.
-    struct AnimationExportRequest {
-        bool active = false;
-        i32 sequenceIndex = 0;
-        i32 fps = 30;
-        ExportFormat format = ExportFormat::PngFrames;
-        std::filesystem::path outputFolder;
-    };
-    void RunAnimationExport(const AnimationExportRequest& req);
+    // frame, and writes it as PNG frames or a GIF.
+    void RunAnimationExport(const AnimationExportParams& params);
 
     void OnFramebufferResize(i32 w, i32 h);
     void OnMouseButton(i32 button, i32 action);
@@ -204,7 +229,8 @@ private:
 
     // Pending animation export — filled by RequestAnimationExport, consumed
     // by the next Tick().
-    AnimationExportRequest pendingExport_;
+    bool exportPending_ = false;
+    AnimationExportParams pendingExport_;
 
     friend class ViewerUI;
 };

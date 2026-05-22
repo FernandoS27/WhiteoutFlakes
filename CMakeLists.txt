@@ -8,6 +8,16 @@ project(WhiteoutFlakes LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Disable vcpkg's user-wide MSBuild integration (`vcpkg integrate install`)
+# for every generated .vcxproj. WhiteoutFlakes pulls all its dependencies via
+# FetchContent / add_subdirectory and uses no vcpkg toolchain or manifest, but
+# a machine-wide vcpkg integration would otherwise auto-link every installed
+# vcpkg package into our binaries — e.g. silently importing vcpkg's shared
+# libwebp.dll alongside our own statically-built libwebp. Emitted into the
+# Globals PropertyGroup, which vcpkg.user.targets honours. (VS generator only;
+# harmless elsewhere, where the integration does not apply anyway.)
+set(CMAKE_VS_GLOBALS "VcpkgEnabled=false")
+
 # Pull in WhiteoutLib (provides whiteout_lib; optionally whiteout_casc, whiteout_mpq).
 set(WHITEOUT_ENABLE_CASC ON CACHE BOOL "Enable CASC archive support" FORCE)
 set(WHITEOUT_ENABLE_MPQ  ON CACHE BOOL "Enable MPQ archive support"  FORCE)
@@ -130,14 +140,12 @@ set(SLANG_COMMON_FLAGS -matrix-layout-column-major -I "${SHADER_SRC_DIR}"
     -default-downstream-compiler hlsl dxc)
 
 # Shader entry points: <slang_file>  <entry>  <stage>  <output_name>
-# Only line.slang (debug wires) and viewcube.slang (debug orientation
-# cube) remain as Slang sources; every MDX-material draw goes through
-# BLS, and the tonemap pass uses the engine's sprite.bls VS directly.
+# Only line.slang (debug wires), blit.slang and framebuffer_capture.slang
+# remain as Slang sources; every MDX-material draw goes through BLS, and the
+# tonemap pass uses the engine's sprite.bls VS directly.
 set(SHADER_ENTRIES
     "line.slang|vsLine|vertex|kLineVS"
     "line.slang|psLine|fragment|kLinePS"
-    "viewcube.slang|vsViewCube|vertex|kViewCubeVS"
-    "viewcube.slang|psViewCube|fragment|kViewCubePS"
     "blit.slang|vsBlit|vertex|kBlitVS"
     "blit.slang|psBlit|fragment|kBlitPS"
     "framebuffer_capture.slang|csCapture|compute|kCaptureCS"
@@ -854,7 +862,6 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/assets/sampler_asset_manager.cpp
     src/renderer/assets/texture_asset_manager.cpp
     src/renderer/assets/replaceable_texture_manager.cpp
-    src/renderer/assets/viewcube_atlas.cpp
     src/renderer/debug/debug_renderer.cpp
     src/renderer/effects/event_emitter_pool.cpp
     src/renderer/effects/pe1_system.cpp
@@ -1086,6 +1093,56 @@ target_link_libraries(WhiteoutFlakesStandalone PRIVATE
     imgui
     cubeb
 )
+
+# ---- Animated WebP export (viewer only) ----
+# libwebp is fetched and built at configure time, and linked into the viewer
+# alone — no other WhiteoutFlakes target (engine, gfx, lib) depends on it. Only
+# libwebp's encoder + mux libraries are built; its command-line tools are
+# disabled, so it needs no libpng/libjpeg/libtiff. The viewer's WebP code is
+# gated on WDX_HAVE_WEBP and falls back to a clear error when this is OFF.
+option(WDX_ENABLE_WEBP
+    "Enable animated WebP export in the viewer (fetches libwebp)" ON)
+if(WDX_ENABLE_WEBP)
+    include(FetchContent)
+    set(WEBP_BUILD_ANIM_UTILS OFF CACHE BOOL "" FORCE)
+    set(WEBP_BUILD_CWEBP      OFF CACHE BOOL "" FORCE)
+    set(WEBP_BUILD_DWEBP      OFF CACHE BOOL "" FORCE)
+    set(WEBP_BUILD_GIF2WEBP   OFF CACHE BOOL "" FORCE)
+    set(WEBP_BUILD_IMG2WEBP   OFF CACHE BOOL "" FORCE)
+    set(WEBP_BUILD_VWEBP      OFF CACHE BOOL "" FORCE)
+    set(WEBP_BUILD_WEBPINFO   OFF CACHE BOOL "" FORCE)
+    set(WEBP_BUILD_WEBPMUX    OFF CACHE BOOL "" FORCE)
+    set(WEBP_BUILD_EXTRAS     OFF CACHE BOOL "" FORCE)
+    set(WEBP_BUILD_FUZZTEST   OFF CACHE BOOL "" FORCE)
+    set(WEBP_BUILD_LIBWEBPMUX ON  CACHE BOOL "" FORCE) # WebPAnimEncoder lives here
+    FetchContent_Declare(libwebp
+        GIT_REPOSITORY https://github.com/webmproject/libwebp.git
+        GIT_TAG        v1.5.0
+        GIT_SHALLOW    TRUE
+    )
+    # Build libwebp as STATIC libraries regardless of the project-wide
+    # BUILD_SHARED_LIBS, so the viewer embeds the encoder/mux directly and
+    # ships no libwebp.dll. BUILD_SHARED_LIBS is shadowed as a normal variable
+    # for libwebp's add_subdirectory scope, then restored.
+    set(_wdx_prev_bsl_set FALSE)
+    if(DEFINED BUILD_SHARED_LIBS)
+        set(_wdx_prev_bsl_set TRUE)
+        set(_wdx_prev_bsl "${BUILD_SHARED_LIBS}")
+    endif()
+    set(BUILD_SHARED_LIBS OFF)
+    FetchContent_MakeAvailable(libwebp)
+    if(_wdx_prev_bsl_set)
+        set(BUILD_SHARED_LIBS "${_wdx_prev_bsl}")
+    else()
+        unset(BUILD_SHARED_LIBS)
+    endif()
+    target_link_libraries(WhiteoutFlakesStandalone PRIVATE webp libwebpmux)
+    target_include_directories(WhiteoutFlakesStandalone SYSTEM PRIVATE
+        "${libwebp_SOURCE_DIR}/src")
+    target_compile_definitions(WhiteoutFlakesStandalone PRIVATE WDX_HAVE_WEBP=1)
+    message(STATUS
+        "WhiteoutFlakesStandalone: animated WebP export enabled (libwebp v1.5.0)")
+endif()
 
 # Viewer includes <vulkan/vulkan.h> unconditionally (for the Linux surface
 # path via glfwCreateWindowSurface). On Windows the include compiles but

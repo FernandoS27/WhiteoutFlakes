@@ -262,10 +262,32 @@ void ViewerUI::BuildExportPopup() {
 
     // ---- Format ----
     {
-        const char* formats[] = {"PNG frames", "Animated GIF"};
+        const char* formats[kExportFormatCount];
+        for (i32 i = 0; i < kExportFormatCount; ++i)
+            formats[i] = GetExportFormatInfo(static_cast<ExportFormat>(i)).label;
         ImGui::SetNextItemWidth(200);
-        ImGui::Combo("Format", &exportFormat_, formats, 2);
+        ImGui::Combo("Format", &exportFormat_, formats, kExportFormatCount);
     }
+    const ExportFormat exportFmt = static_cast<ExportFormat>(exportFormat_);
+
+    // ---- Resolution ----
+    {
+        const char* modes[] = {"Current view", "Custom"};
+        ImGui::SetNextItemWidth(200);
+        ImGui::Combo("Resolution", &exportResMode_, modes, 2);
+        if (exportResMode_ == 1) {
+            ImGui::SetNextItemWidth(96);
+            ImGui::InputInt("W", &exportWidth_, 0);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(96);
+            ImGui::InputInt("H", &exportHeight_, 0);
+            exportWidth_ = std::clamp(exportWidth_, 16, 8192);
+            exportHeight_ = std::clamp(exportHeight_, 16, 8192);
+        }
+    }
+
+    // ---- Transparent background ----
+    ImGui::Checkbox("Transparent background", &exportTransparent_);
 
     // ---- Output folder ----
     {
@@ -285,7 +307,6 @@ void ViewerUI::BuildExportPopup() {
     }
 
     // ---- Duration / frame-count preview ----
-    const bool gif = (exportFormat_ == 1);
     const auto& ranges = app_.SequenceRanges();
     if (exportSeqIdx_ < static_cast<i32>(ranges.size())) {
         const SequenceInfo& s = ranges[exportSeqIdx_];
@@ -294,18 +315,28 @@ void ViewerUI::BuildExportPopup() {
             1, static_cast<i32>(std::llround(static_cast<f64>(durMs) * exportFps_ / 1000.0)));
         ImGui::TextDisabled("%d ms - %d frame(s) at %d FPS", durMs, frames, exportFps_);
     }
-    ImGui::TextDisabled(gif ? "Output: <model>_<animation>.gif"
-                            : "Output: <model>_<animation>_<id>.png");
+    if (IsSingleFileFormat(exportFmt))
+        ImGui::TextDisabled("Output: <model>_<animation>%s",
+                            GetExportFormatInfo(exportFmt).extension);
+    else
+        ImGui::TextDisabled("Output: <model>_<animation>_<id>.png");
 
     ImGui::Separator();
 
     const bool canExport = !exportFolder_.empty();
     ImGui::BeginDisabled(!canExport);
     if (ImGui::Button("Export", ImVec2(120, 0))) {
-        app_.RequestAnimationExport(
-            exportSeqIdx_, exportFps_,
-            gif ? ExportFormat::Gif : ExportFormat::PngFrames,
-            io::FsPathFromUtf8(exportFolder_));
+        AnimationExportParams params;
+        params.sequenceIndex = exportSeqIdx_;
+        params.fps = exportFps_;
+        params.format = exportFmt;
+        params.transparentBackground = exportTransparent_;
+        if (exportResMode_ == 1) {
+            params.width = exportWidth_;
+            params.height = exportHeight_;
+        }
+        params.outputFolder = io::FsPathFromUtf8(exportFolder_);
+        app_.RequestAnimationExport(std::move(params));
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndDisabled();

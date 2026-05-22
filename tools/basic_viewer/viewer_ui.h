@@ -69,7 +69,11 @@ private:
     bool openExportPopup_ = false;
     i32 exportSeqIdx_ = 0;
     i32 exportFps_ = 30;
-    i32 exportFormat_ = 0; // 0 = PNG frames, 1 = animated GIF
+    i32 exportFormat_ = 0;      // 0 = PNG frames, 1 = GIF, 2 = APNG, 3 = WebP
+    bool exportTransparent_ = false;
+    i32 exportResMode_ = 0;     // 0 = current view, 1 = custom
+    i32 exportWidth_ = 1280;
+    i32 exportHeight_ = 960;
     std::string exportFolder_;
 };
 
