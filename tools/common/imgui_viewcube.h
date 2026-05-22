@@ -84,6 +84,23 @@ inline void DrawViewCube(renderer::Camera& camera) {
         return a;
     }();
 
+    // Per-face label text, and the in-plane "up" each word reads against
+    // (Max space): the four side faces use world up; Top / Bottom pick a
+    // horizontal axis so the word isn't upside-down when that face is viewed.
+    static constexpr const char* kFaceLabel[6] = {
+        "Front", "Back", "Left", "Right", "Top", "Bottom",
+    };
+    static constexpr Vector3f kLabelUpMax[6] = {
+        {0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, -1, 0}, {0, 1, 0},
+    };
+    static const std::array<Vector3f, 6> kLabelUp = [] {
+        std::array<Vector3f, 6> a{};
+        for (i32 i = 0; i < 6; ++i)
+            a[i] = CoordinateSystem::ConvertDirection(CoordSpace::Max, CoordinateSystem::Default(),
+                                                      kLabelUpMax[i]);
+        return a;
+    }();
+
     // ---- Layout ----
     constexpr f32 kCube = 86.0f; // cube draw area (square)
     constexpr f32 kHome = 22.0f; // home-button strip height
@@ -171,6 +188,63 @@ inline void DrawViewCube(renderer::Camera& camera) {
     std::sort(vis.begin(), vis.begin() + nVis,
               [](const Vis& a, const Vis& b) { return a.depth < b.depth; });
 
+    // Draws a face's label baked onto its plane: every glyph quad is taken
+    // from the font atlas and mapped through `project`, so the text skews and
+    // rotates with the cube instead of floating flat on top of it.
+    auto drawFaceLabel = [&](i32 face) {
+        const char* text = kFaceLabel[face];
+        ImFontBaked* baked = ImGui::GetFontBaked();
+        if (!baked || !text)
+            return;
+        const Vector3f n = kFaceN[face];
+        const Vector3f up = kLabelUp[face];
+        const Vector3f rt = cross(n, up).normalized(); // in-plane, non-mirrored
+        const ImTextureRef tex = ImGui::GetIO().Fonts->TexRef;
+
+        // Measure the run: total advance + vertical glyph extent.
+        f32 w = 0.0f, minY = 1e9f, maxY = -1e9f;
+        for (const char* s = text; *s; ++s) {
+            const ImFontGlyph* g =
+                baked->FindGlyph(static_cast<ImWchar>(static_cast<unsigned char>(*s)));
+            if (!g)
+                continue;
+            w += g->AdvanceX;
+            minY = std::min(minY, g->Y0);
+            maxY = std::max(maxY, g->Y1);
+        }
+        if (w <= 0.0f)
+            return;
+        // Fit the word inside the face: cap width at 74% and height at 42% of
+        // the unit face, whichever bites first — long words shrink to fit.
+        const f32 pxToUnit = std::min(0.74f / w, 0.42f / (maxY - minY));
+        const f32 midY = (minY + maxY) * 0.5f;
+        const Vector3f faceC = n * 0.5f;
+
+        // Emit the glyph run once; called twice for a drop shadow + the label.
+        auto emit = [&](f32 du, f32 dv, ImU32 col) {
+            f32 penX = -w * 0.5f;
+            for (const char* s = text; *s; ++s) {
+                const ImFontGlyph* g =
+                    baked->FindGlyph(static_cast<ImWchar>(static_cast<unsigned char>(*s)));
+                if (!g)
+                    continue;
+                auto corner = [&](f32 px, f32 py) -> ImVec2 {
+                    const f32 u = (penX + px) * pxToUnit + du;
+                    const f32 vv = (midY - py) * pxToUnit + dv; // pen Y is down
+                    return project(faceC + rt * u + up * vv);
+                };
+                dl->AddImageQuad(tex, corner(g->X0, g->Y0), corner(g->X1, g->Y0),
+                                 corner(g->X1, g->Y1), corner(g->X0, g->Y1),
+                                 ImVec2(g->U0, g->V0), ImVec2(g->U1, g->V0),
+                                 ImVec2(g->U1, g->V1), ImVec2(g->U0, g->V1), col);
+                penX += g->AdvanceX;
+            }
+        };
+        const f32 sh = pxToUnit * 1.4f; // ~1.4 px drop-shadow offset
+        emit(sh, -sh, IM_COL32(18, 22, 28, 170));
+        emit(0.0f, 0.0f, IM_COL32(250, 250, 252, 250));
+    };
+
     i32 hoverFace = -1;
     for (i32 v = 0; v < nVis; ++v) {
         const i32 i = vis[v].face;
@@ -194,6 +268,7 @@ inline void DrawViewCube(renderer::Camera& camera) {
         const ImU32 fill = hover ? detail::Brighten(kFaceColor[i], 0.38f) : kFaceColor[i];
         dl->AddConvexPolyFilled(quad, 4, fill);
         dl->AddPolyline(quad, 4, IM_COL32(28, 32, 40, 255), ImDrawFlags_Closed, 1.5f);
+        drawFaceLabel(i);
     }
 
     if (hoverFace >= 0 && clicked)
