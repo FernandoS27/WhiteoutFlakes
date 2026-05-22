@@ -1130,7 +1130,25 @@ if(WDX_ENABLE_WEBP)
         set(_wdx_prev_bsl "${BUILD_SHARED_LIBS}")
     endif()
     set(BUILD_SHARED_LIBS OFF)
+
+    # libwebp registers install() rules for every one of its targets with no
+    # opt-out. FetchContent leaves the ones we don't link (webpdecoder,
+    # webpdemux) out of the build, so `cmake --install` would then fail trying
+    # to stage artefacts that were never built. We link libwebp statically
+    # into the viewer alone and never want it in WhiteoutFlakes' install tree,
+    # so neutralise install() for the duration of libwebp's add_subdirectory.
+    # Single override → _install is reliably the builtin; a flag re-enables it
+    # afterwards so WhiteoutFlakes' own install rules still run.
+    set(_wdx_suppress_install TRUE)
+    function(install)
+        if(NOT _wdx_suppress_install)
+            _install(${ARGV})
+        endif()
+    endfunction()
+
     FetchContent_MakeAvailable(libwebp)
+
+    set(_wdx_suppress_install FALSE)
     if(_wdx_prev_bsl_set)
         set(BUILD_SHARED_LIBS "${_wdx_prev_bsl}")
     else()
