@@ -619,8 +619,19 @@ bool RenderPipeline::InitDevice(gfx::GfxApi api) {
     }
 
     if (!InitBlsShaders(api)) {
+#if defined(__EMSCRIPTEN__)
+        // Web build's content provider is the FetchContentProvider; it's
+        // only populated with bytes JS has explicitly Put. Until Phase 2
+        // wires in a manifest + asset prefetch, the BLS bundles aren't
+        // available at InitDevice time. Soldier on so the gfx device is
+        // still live for the swap-chain + clear-color path; any BLS-
+        // dependent draw later will fail loudly.
+        std::fprintf(stderr,
+                     "[bls] WARN: shaders unavailable; continuing for clear-color only\n");
+#else
         CleanupGFX();
         return false;
+#endif
     }
 
     return true;
@@ -1428,13 +1439,16 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
     // SD path lands the scene directly on the swap chain backbuffer, so
     // ImGui draws stay inside this render pass. In HD mode the equivalent
     // call lives at the tail of RunTonemapPass — same RTV, just reached
-    // via the tonemap composite.
+    // via the tonemap composite. Compiled out when WDX_ENABLE_IMGUI=0 (web
+    // build) — the forward-declared ImGuiRenderer has no complete type then.
+#if WDX_ENABLE_IMGUI
     if (!useHdr) {
         if (auto* im = rs_.ImGui()) {
             WDX_GPU_ZONE(cmd, "ImGui");
             im->Render(*cmd, target.width, target.height);
         }
     }
+#endif
     cmd->EndRenderPass();
 
     if (useHdr) {
@@ -1491,11 +1505,13 @@ void RenderPipeline::RunTonemapPass(const RenderTarget& target, gfx::TextureHand
     // second pass with loadOp=Load. The RTV is the swap chain backbuffer
     // (sRGB), which the imgui PSO was built against. No-op if the host
     // hasn't created an ImGui context or there are no draw lists this
-    // frame.
+    // frame. Compiled out when WDX_ENABLE_IMGUI=0.
+#if WDX_ENABLE_IMGUI
     if (auto* im = rs_.ImGui()) {
         WDX_GPU_ZONE(cmd, "ImGui");
         im->Render(*cmd, target.width, target.height);
     }
+#endif
     cmd->EndRenderPass();
 }
 

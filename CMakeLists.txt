@@ -8,6 +8,49 @@ project(WhiteoutFlakes LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# ---- Emscripten / WebAssembly target ----
+# Configured via `emcmake cmake ...`. The web build is a lean subset:
+# WebGPU only, no desktop windowing/audio/UI, no native game archives.
+# Every gating decision below keys off EMSCRIPTEN; the desktop build is
+# unaffected.
+if(EMSCRIPTEN)
+    set(WDX_ENABLE_TRACY  OFF CACHE BOOL "" FORCE)  # no web transport
+    set(WDX_ENABLE_IMGUI  OFF CACHE BOOL "" FORCE)  # JS owns all UI chrome
+    set(WDX_ENABLE_WEBGPU ON  CACHE BOOL "" FORCE)  # only web backend
+    set(WDX_ENABLE_WEBP   OFF CACHE BOOL "" FORCE)  # viewer-only export
+    # Exceptions: -fno-exceptions everywhere. The renderer doesn't throw
+    # and WhiteoutLib has been adjusted to compile without `throw` under
+    # Emscripten — so there's no reason to ship EH machinery. This is
+    # what avoids the Chrome wasm-compile freeze we hit with both
+    # -fexceptions (JS-trampolined invoke_*) and -fwasm-exceptions
+    # (native try_table) — both emit code Chrome's wasm compiler stalls
+    # on for >60 s, while the equivalent EH-free wasm compiles in ms.
+    add_compile_options(-fno-exceptions)
+    add_link_options(-fno-exceptions)
+    # -Oz globally — size-optimised, *less inlining* than -O2. With -O2,
+    # LLVM was inlining 50,000+ wasm-instruction destructors into single
+    # giant functions (`func $5` had 57,965 disassembled lines), which
+    # tips V8 into synchronous TurboFan compilation and freezes the page.
+    # -Oz keeps the per-function instruction count down where V8's async
+    # tiering can actually parallelise the work.
+    # Why these specific flags:
+    #   -Oz                : optimise for size (smaller wasm)
+    #   -fno-lto           : no cross-TU inlining at link time
+    #   -fno-inline-functions: no intra-TU inlining either
+    #   -mllvm -inline-threshold=0: drop LLVM's inline budget to nothing
+    # The combination keeps every emitted wasm function close to the
+    # source function size. Without this, LLVM produces single functions
+    # with 40k+ instructions (e.g. PIMPL ctors inlining their whole
+    # subsystem graph), and current Chrome/Edge V8 (14.x+) drops those
+    # into synchronous TurboFan and freezes the page. Node V8 13.6
+    # compiles the same wasm in <5 ms, so the regression is browser-V8
+    # specific; the safe path is to keep individual functions small.
+    add_compile_options(-Oz -fno-lto -fno-inline-functions)
+    add_link_options(-Oz -fno-lto)
+    message(STATUS "WhiteoutFlakes: Emscripten/WebAssembly build "
+                   "(no exceptions, -Oz -fno-lto -fno-inline-functions)")
+endif()
+
 # Disable vcpkg's user-wide MSBuild integration (`vcpkg integrate install`)
 # for every generated .vcxproj. WhiteoutFlakes pulls all its dependencies via
 # FetchContent / add_subdirectory and uses no vcpkg toolchain or manifest, but
@@ -19,8 +62,23 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_VS_GLOBALS "VcpkgEnabled=false")
 
 # Pull in WhiteoutLib (provides whiteout_lib; optionally whiteout_casc, whiteout_mpq).
-set(WHITEOUT_ENABLE_CASC ON CACHE BOOL "Enable CASC archive support" FORCE)
-set(WHITEOUT_ENABLE_MPQ  ON CACHE BOOL "Enable MPQ archive support"  FORCE)
+# CASC/MPQ are native file-I/O + threading — disabled under Emscripten; the web
+# build receives bytes from JS via FetchContentProvider instead.
+if(EMSCRIPTEN)
+    set(WHITEOUT_ENABLE_CASC OFF CACHE BOOL "Enable CASC archive support" FORCE)
+    set(WHITEOUT_ENABLE_MPQ  OFF CACHE BOOL "Enable MPQ archive support"  FORCE)
+    # WhiteoutLib auto-enables embind bindings under EMSCRIPTEN. Those
+    # bindings register every public C++ class/method into JS via a
+    # massive static-init constructor — easily 40k+ wasm instructions in
+    # a single function, which trips V8's synchronous-compile fallback
+    # and freezes the page. We have our own `wf_*` C facade and never
+    # call into JS-bound WhiteoutLib symbols, so the bindings are pure
+    # dead weight here.
+    set(WHITEOUT_BUILD_WASM_BINDINGS OFF CACHE BOOL "" FORCE)
+else()
+    set(WHITEOUT_ENABLE_CASC ON CACHE BOOL "Enable CASC archive support" FORCE)
+    set(WHITEOUT_ENABLE_MPQ  ON CACHE BOOL "Enable MPQ archive support"  FORCE)
+endif()
 add_subdirectory(externals/WhiteoutLib)
 
 # Tracy — opt-in CPU + GPU profiler. When WDX_ENABLE_TRACY is ON, the
@@ -786,46 +844,59 @@ endif()
 # the async RequestAdapter / RequestDevice pattern we use instead of
 # Dawn's private (and unshipped) dawn::native sync helpers.
 if(WDX_ENABLE_WEBGPU)
-    include(FetchContent)
-    # Pin to a specific commit — README warns against tracking branch tip.
-    # Bump deliberately; see WebGPU.md §13.
-    set(WDX_WEBGPU_DIST_TAG "main" CACHE STRING
-        "WebGPU-distribution revision (commit or tag)")
-    FetchContent_Declare(webgpu
-        GIT_REPOSITORY https://github.com/eliemichel/WebGPU-distribution
-        GIT_TAG        ${WDX_WEBGPU_DIST_TAG}
-        GIT_SHALLOW    TRUE
-    )
-    # DAWN backend, prebuilt — no fetch script, no compile.
-    set(WEBGPU_BACKEND          DAWN CACHE STRING "" FORCE)
-    set(WEBGPU_BUILD_FROM_SOURCE OFF  CACHE BOOL   "" FORCE)
-    FetchContent_MakeAvailable(webgpu)
+    if(EMSCRIPTEN)
+        # Emscripten ships emdawnwebgpu — Dawn-flavoured WebGPU bindings
+        # for the browser. Same <webgpu/webgpu_cpp.h> surface our backend
+        # already targets, so the gfx sources compile unchanged modulo the
+        # surface-creation and device-acquisition #ifdefs in webgpu_init.cpp
+        # and webgpu_swap_chain.cpp. No GLFW link here — JS owns the canvas.
+        target_compile_options(WhiteoutFlakesGfx PUBLIC "--use-port=emdawnwebgpu")
+        target_link_options(WhiteoutFlakesGfx PUBLIC "--use-port=emdawnwebgpu")
+        target_compile_definitions(WhiteoutFlakesGfx PRIVATE WDX_HAS_WEBGPU=1)
+        message(STATUS "WhiteoutFlakesGfx: WebGPU enabled "
+                       "(Emscripten emdawnwebgpu port)")
+    else()
+        include(FetchContent)
+        # Pin to a specific commit — README warns against tracking branch tip.
+        # Bump deliberately; see WebGPU.md §13.
+        set(WDX_WEBGPU_DIST_TAG "main" CACHE STRING
+            "WebGPU-distribution revision (commit or tag)")
+        FetchContent_Declare(webgpu
+            GIT_REPOSITORY https://github.com/eliemichel/WebGPU-distribution
+            GIT_TAG        ${WDX_WEBGPU_DIST_TAG}
+            GIT_SHALLOW    TRUE
+        )
+        # DAWN backend, prebuilt — no fetch script, no compile.
+        set(WEBGPU_BACKEND          DAWN CACHE STRING "" FORCE)
+        set(WEBGPU_BUILD_FROM_SOURCE OFF  CACHE BOOL   "" FORCE)
+        FetchContent_MakeAvailable(webgpu)
 
-    message(STATUS "WhiteoutFlakesGfx: WebGPU enabled "
-                   "(eliemichel/WebGPU-distribution ${WDX_WEBGPU_DIST_TAG}, prebuilt Dawn)")
-    target_link_libraries(WhiteoutFlakesGfx PRIVATE
-        webgpu
-        # GLFW: the WebGPU swap-chain pulls native handles (Display/Window
-        # pair on X11, wl_display/wl_surface on Wayland, NSWindow on
-        # macOS) via glfw3native.h. The target is added later via
-        # add_subdirectory; CMake defers symbol resolution to generate
-        # time so the forward reference resolves cleanly.
-        glfw
-    )
-    target_compile_definitions(WhiteoutFlakesGfx PRIVATE WDX_HAS_WEBGPU=1)
-    if(WIN32)
-        target_compile_definitions(WhiteoutFlakesGfx PRIVATE
-            NOMINMAX
-            WIN32_LEAN_AND_MEAN
-        )
-    elseif(APPLE)
-        # SurfaceSourceMetalLayer needs the CAMetalLayer that the .mm
-        # shim attaches to the NSWindow contentView — pull in Cocoa for
-        # NSWindow/NSView and QuartzCore for CAMetalLayer.
+        message(STATUS "WhiteoutFlakesGfx: WebGPU enabled "
+                       "(eliemichel/WebGPU-distribution ${WDX_WEBGPU_DIST_TAG}, prebuilt Dawn)")
         target_link_libraries(WhiteoutFlakesGfx PRIVATE
-            "-framework Cocoa"
-            "-framework QuartzCore"
+            webgpu
+            # GLFW: the WebGPU swap-chain pulls native handles (Display/Window
+            # pair on X11, wl_display/wl_surface on Wayland, NSWindow on
+            # macOS) via glfw3native.h. The target is added later via
+            # add_subdirectory; CMake defers symbol resolution to generate
+            # time so the forward reference resolves cleanly.
+            glfw
         )
+        target_compile_definitions(WhiteoutFlakesGfx PRIVATE WDX_HAS_WEBGPU=1)
+        if(WIN32)
+            target_compile_definitions(WhiteoutFlakesGfx PRIVATE
+                NOMINMAX
+                WIN32_LEAN_AND_MEAN
+            )
+        elseif(APPLE)
+            # SurfaceSourceMetalLayer needs the CAMetalLayer that the .mm
+            # shim attaches to the NSWindow contentView — pull in Cocoa for
+            # NSWindow/NSView and QuartzCore for CAMetalLayer.
+            target_link_libraries(WhiteoutFlakesGfx PRIVATE
+                "-framework Cocoa"
+                "-framework QuartzCore"
+            )
+        endif()
     endif()
 else()
     target_compile_definitions(WhiteoutFlakesGfx PRIVATE WDX_HAS_WEBGPU=0)
@@ -991,7 +1062,9 @@ if(MSVC)
 endif()
 
 # ---- Throwaway: dump a BLS permute's disassembly ----
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/bls/bls_reflect_tool.cpp")
+# Skipped under Emscripten — links d3d11.lib + d3dcompiler.lib which only
+# exist on Windows native.
+if(NOT EMSCRIPTEN AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/bls/bls_reflect_tool.cpp")
   add_executable(BlsReflect
       src/renderer/bls/bls_reflect_tool.cpp
       src/renderer/bls/bls_container.cpp
@@ -1016,7 +1089,11 @@ endif()
 # The viewer drives the engine through GLFW (window + input) and Dear ImGui
 # (every toolbar / menu / settings widget that used to be a Win32 control).
 # Both must be enabled — WDX_ENABLE_IMGUI=OFF would leave the viewer with no
-# UI surface at all.
+# UI surface at all. The entire block is gated on `NOT EMSCRIPTEN` (no
+# native windowing/audio/UI in the web build); the closing `endif()` sits
+# just before the Linux AppImage section.
+if(NOT EMSCRIPTEN)
+
 if(NOT WDX_ENABLE_IMGUI)
     message(FATAL_ERROR
         "WhiteoutFlakesStandalone requires WDX_ENABLE_IMGUI=ON; the viewer's UI "
@@ -1209,6 +1286,13 @@ if(WDX_BUILD_MAX_PLUGIN)
     add_subdirectory(tools/max_plugin)
 endif()
 
+endif()  # NOT EMSCRIPTEN — standalone viewer block
+
+# ---- Web viewer: WASM module + JS facade (Emscripten only) ----
+if(EMSCRIPTEN)
+    add_subdirectory(tools/web_viewer)
+endif()
+
 # ============================================================================
 # Linux AppImage staging
 #
@@ -1218,7 +1302,7 @@ endif()
 # (no special XDG lookup needed). The .desktop file + icon get installed to
 # AppDir/usr/share/{applications,icons/hicolor/256x256/apps}.
 # ============================================================================
-if(UNIX AND NOT APPLE)
+if(UNIX AND NOT APPLE AND NOT EMSCRIPTEN)
     include(GNUInstallDirs)
 
     install(TARGETS WhiteoutFlakesStandalone

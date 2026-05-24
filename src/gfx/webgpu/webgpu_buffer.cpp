@@ -173,16 +173,25 @@ void* WebGPUDevice::MapBuffer(BufferHandle h) {
 
     // Readback buffer: synchronously map for reading. The caller invokes
     // this after the GPU copy into the buffer has retired (frame-capture
-    // download), so the WaitAny below returns promptly.
+    // download), so the WaitAny below returns promptly. On the web the
+    // main thread can't block on WaitAny — readback paths (frame capture)
+    // aren't reachable yet, so this branch is a hard error there.
     if (hasFlag(buffer->desc.usage, BufferUsage::CpuReadable)) {
         if (!buffer->buffer)
             return nullptr;
+#if defined(__EMSCRIPTEN__)
+        std::fprintf(stderr,
+                     "[wgpu] CpuReadable MapBuffer is unsupported under Emscripten "
+                     "(would deadlock the main thread)\n");
+        return nullptr;
+#else
         wgpu::Future f = buffer->buffer.MapAsync(wgpu::MapMode::Read, 0, buffer->desc.size,
                                                  wgpu::CallbackMode::WaitAnyOnly,
                                                  [](wgpu::MapAsyncStatus, wgpu::StringView) {});
         wgpu::FutureWaitInfo wait{f};
         state.instance.WaitAny(1, &wait, UINT64_MAX);
         return const_cast<void*>(buffer->buffer.GetConstMappedRange(0, buffer->desc.size));
+#endif
     }
 
     if (!buffer->mapped)

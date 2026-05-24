@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WhiteoutFlakes — Phase 1 clear-color test</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#0a0a0a; color:#eee;
+               font:14px/1.4 system-ui,-apple-system,Segoe UI,sans-serif; }
+  body { display:flex; flex-direction:column; padding:16px; gap:8px; }
+  h1 { margin:0; font-size:16px; font-weight:500; color:#888; }
+  #wf-canvas { flex:1; display:block; min-height:0; background:#000;
+               border:1px solid #222; }
+  #log { font-family:Consolas,Menlo,monospace; font-size:12px;
+         color:#aaa; white-space:pre-wrap; max-height:8em; overflow:auto; }
+  #log .err { color:#f88; }
+</style>
+</head>
+<body>
+  <h1>WhiteoutFlakes — Phase 1 clear-color milestone</h1>
+  <canvas id="wf-canvas"></canvas>
+  <div id="log"></div>
+<script>
+  // Web Crypto enforces a 65,536-byte cap on getRandomValues per call,
+  // but Emscripten's libc init asks for ~294 KB in one shot. Wrap before
+  // any module loads. Plain <script> (not module) runs synchronously
+  // before the <script type="module"> below.
+  (function () {
+    const MAX = 65536;
+    const native = crypto.getRandomValues.bind(crypto);
+    crypto.getRandomValues = function (buf) {
+      if (!buf || buf.byteLength <= MAX) return native(buf);
+      const u8 = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      for (let off = 0; off < u8.length; off += MAX) {
+        native(u8.subarray(off, Math.min(off + MAX, u8.length)));
+      }
+      return buf;
+    };
+  })();
+</script>
+<script type="module">
+  const logEl = document.getElementById('log');
+  const log = (s, cls) => {
+    const line = document.createElement('div');
+    if (cls) line.className = cls;
+    line.textContent = s;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+  // Many WebGPU/Emscripten errors are bare strings or DOMException
+  // objects whose .message is empty — stringify the whole thing so the
+  // diagnostic doesn't collapse to "[object Object]".
+  const describe = (e) => {
+    if (!e) return String(e);
+    if (typeof e === 'string') return e;
+    const parts = [];
+    if (e.name) parts.push(e.name);
+    if (e.message) parts.push(e.message);
+    // Our build uses DISABLE_EXCEPTION_CATCHING=1 — C++ throws abort
+    // instead of propagating, so excPtr-decoding helpers aren't shipped.
+    // Surface what we can directly if a thrown object reaches JS.
+    if (e.excPtr !== undefined) {
+      parts.push('C++ exception (excPtr=' + e.excPtr +
+                 '; catching disabled — see wf_last_error)');
+    }
+    if (parts.length === 0) {
+      try { parts.push(JSON.stringify(e)); } catch { parts.push(Object.prototype.toString.call(e)); }
+    }
+    if (e.stack) parts.push('\n' + e.stack);
+    return parts.join(': ');
+  };
+  window.addEventListener('error', (e) => log('ERROR ' + describe(e.error || e), 'err'));
+  window.addEventListener('unhandledrejection',
+      (e) => log('REJECT ' + describe(e.reason), 'err'));
+
+  try {
+    const { WhiteoutViewer } = await import('./wf-viewer.js');
+    log('Module loaded.');
+    log('navigator.gpu = ' + (navigator.gpu ? 'present' : 'MISSING'));
+    const v = new WhiteoutViewer(document.getElementById('wf-canvas'));
+    await v.init();
+    log('Renderer initialised. rAF loop running. Canvas should be a moody blue.');
+    window.__wf = v; // for ad-hoc poking from devtools
+  } catch (e) {
+    log('FATAL: ' + describe(e), 'err');
+    console.error(e);
+  }
+</script>
+</body>
+</html>

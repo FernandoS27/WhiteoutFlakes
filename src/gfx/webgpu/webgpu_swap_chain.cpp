@@ -24,7 +24,11 @@
 #include <cstdio>
 #include <utility>
 
-#if defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+// Web target: no GLFW, no native window handles. The surface comes from a
+// CSS canvas selector handed in by JS via wf_init(canvasSelector,...).
+#include <emscripten/html5.h>
+#elif defined(_WIN32)
 #include <windows.h>
 #define GLFW_EXPOSE_NATIVE_WIN32
 #elif defined(__APPLE__)
@@ -34,8 +38,10 @@
 #define GLFW_EXPOSE_NATIVE_WAYLAND
 #endif
 
+#if !defined(__EMSCRIPTEN__)
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
+#endif
 
 namespace whiteout::flakes::gfx::webgpu {
 
@@ -50,7 +56,14 @@ namespace {
 
 wgpu::Surface CreateSurfaceForWindow(WebGPUDeviceState& state, void* nativeWindowHandle) {
     wgpu::SurfaceDescriptor sd{};
-#if defined(_WIN32)
+#if defined(__EMSCRIPTEN__)
+    // Web: nativeWindowHandle is a NUL-terminated CSS canvas selector
+    // ("#wf-canvas") owned by JS for the lifetime of the surface.
+    wgpu::EmscriptenSurfaceSourceCanvasHTMLSelector fromCanvas{};
+    fromCanvas.selector = static_cast<const char*>(nativeWindowHandle);
+    sd.nextInChain = &fromCanvas;
+    return state.instance.CreateSurface(&sd);
+#elif defined(_WIN32)
     // Windows: nativeWindowHandle is the HWND directly (matches d3d11/d3d12).
     wgpu::SurfaceSourceWindowsHWND fromHwnd{};
     fromHwnd.hwnd = nativeWindowHandle;

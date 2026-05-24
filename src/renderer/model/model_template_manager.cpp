@@ -20,11 +20,18 @@ using namespace ::whiteout::flakes::renderer::animation;
 using namespace ::whiteout::flakes::io;
 
 ModelTemplateManager::ModelTemplateManager() {
+#if !defined(__EMSCRIPTEN__)
+    // Single-threaded WASM has no std::thread; ctor would throw "Not
+    // supported". GetOrLoadSync runs ParseAndBuild on the calling thread
+    // already, so spawning skips cleanly.
     StartLoader();
+#endif
 }
 
 ModelTemplateManager::~ModelTemplateManager() {
+#if !defined(__EMSCRIPTEN__)
     StopLoader();
+#endif
 }
 
 void ModelTemplateManager::SetContentProvider(IContentProvider* provider) {
@@ -213,17 +220,11 @@ std::shared_ptr<ModelTemplate> ModelTemplateManager::ParseAndBuild(const std::st
 
     whiteout::mdx::Parser mdxParser;
     whiteout::mdx::Model model;
-    try {
-        model = mdxParser.parse(
-            std::span<const whiteout::u8>(fileResult.data.data(), fileResult.data.size()), fmt);
-    } catch (const std::exception& e) {
-        std::fprintf(stderr, "[model] ERR: model parse FAIL '%s': %s\n", mdxPath.c_str(), e.what());
-        return nullptr;
-    } catch (...) {
-        std::fprintf(stderr, "[model] ERR: model parse threw unknown exception '%s'\n",
-                     mdxPath.c_str());
-        return nullptr;
-    }
+    // WhiteoutLib's MDX parser is now no-throw; parse errors surface via
+    // its issues vector (checked downstream). The previous try/catch
+    // would also be rejected under the web build's -fno-exceptions.
+    model = mdxParser.parse(
+        std::span<const whiteout::u8>(fileResult.data.data(), fileResult.data.size()), fmt);
 
     namespace fs = std::filesystem;
 

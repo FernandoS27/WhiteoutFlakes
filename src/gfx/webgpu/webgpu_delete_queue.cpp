@@ -41,8 +41,12 @@ void SubmitFrameAndBumpEpoch(WebGPUDeviceState& state) {
     // OnSubmittedWorkDone fires on Dawn's worker thread once the GPU
     // retires this submit. The atomic store gives the renderer thread a
     // monotonic high-water mark to drain against.
+    // Callback signature evolved across Dawn versions: native Dawn accepts
+    // (status), emdawnwebgpu (web) requires (status, message). Both accept
+    // the wider signature, so we use it unconditionally.
     state.queue.OnSubmittedWorkDone(
-        wgpu::CallbackMode::AllowSpontaneous, [&state, epoch](wgpu::QueueWorkDoneStatus) {
+        wgpu::CallbackMode::AllowSpontaneous,
+        [&state, epoch](wgpu::QueueWorkDoneStatus, wgpu::StringView) {
             DeleteEpoch prev = state.completedEpoch.load(std::memory_order_relaxed);
             while (epoch > prev &&
                    !state.completedEpoch.compare_exchange_weak(

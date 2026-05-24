@@ -139,7 +139,7 @@ namespace {
 LoadedEnvProbe LoadEnvProbeFromBytes(gfx::IGFXDevice& gfx, std::span<const u8> bytes,
                                      const char* sourceLabel, bool applyBlizzardFaceRemap) {
     LoadedEnvProbe failed{};
-    whiteout::textures::dds::Parser parser(whiteout::textures::dds::Parser::ParseMode::Lenient);
+    whiteout::textures::dds::Parser parser;
     auto parsedOpt = parser.parse(bytes);
     if (!parsedOpt) {
         DbgLogf("[WDEX IBL] DDS parse FAILED\n");
@@ -507,13 +507,9 @@ bool WriteDebugFacesDds(const std::string& outPath) {
         }
     }
 
-    whiteout::textures::dds::Writer writer(whiteout::textures::dds::Writer::WriteMode::Lenient);
-    try {
-        writer.write(outPath, tex);
-    } catch (...) {
-        DbgLogf("[WDEX IBL] WriteDebugFacesDds FAILED to write %s\n", outPath.c_str());
-        return false;
-    }
+    // Writer is now no-throw too; errors surface via hasIssues().
+    whiteout::textures::dds::Writer writer;
+    writer.write(outPath, tex);
     if (writer.hasIssues()) {
         DbgLogf("[WDEX IBL] WriteDebugFacesDds wrote with issues:\n");
         for (const auto& issue : writer.getIssues()) {

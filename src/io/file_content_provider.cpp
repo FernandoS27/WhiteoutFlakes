@@ -248,6 +248,14 @@ struct FileContentProvider::Impl {
     // ----------------------------------------------------------------
 
     void Discover() {
+#if defined(__EMSCRIPTEN__)
+        // Web build: no native install discovery — the host swaps in a
+        // FetchContentProvider before any request runs. This member exists
+        // only so SceneManager's `FileContentProvider contentProvider_`
+        // member constructs; its Request() path is never reached.
+        wc3Path.clear();
+        installPath.clear();
+#else
         auto games = whiteout::utils::findBlizzardGames();
 
         std::string fallbackPath;
@@ -276,6 +284,7 @@ struct FileContentProvider::Impl {
 
         TryOpenCascLocked();
         TryOpenMpqLocked();
+#endif
     }
 
     void TryOpenCascLocked() {
@@ -486,14 +495,19 @@ FileContentProvider::FileContentProvider() : impl_(std::make_unique<Impl>()) {
         std::printf("[FileContentProvider] Executable dir: %s\n", PathToUtf8(exeDir).c_str());
     }
 
+#if !defined(__EMSCRIPTEN__)
     // IO worker pool. Reads mix disk latency with CASC block decompression
     // (CPU-bound), so scaling with cores genuinely helps bulk texture loads;
     // capped at 8 to avoid pointless oversubscription on big machines.
+    // Skipped on the web — the SceneManager-owned FileContentProvider
+    // member is never used (FetchContentProvider takes its place), so
+    // spawning threads under single-threaded WASM would trap for nothing.
     unsigned hw = std::thread::hardware_concurrency();
     const unsigned workerCount = std::clamp<unsigned>(hw ? hw : 4u, 2u, 8u);
     impl_->workers.reserve(workerCount);
     for (unsigned i = 0; i < workerCount; ++i)
         impl_->workers.emplace_back([this] { impl_->WorkerLoop(); });
+#endif
 }
 
 FileContentProvider::~FileContentProvider() {
@@ -523,6 +537,26 @@ void FileContentProvider::SetBasePath(const std::filesystem::path& basePath) {
 RequestId FileContentProvider::Request(const std::string& path, CompletionCallback cb) {
     if (path.empty() || !cb)
         return kInvalidRequestId;
+#if defined(__EMSCRIPTEN__)
+    // Web build: no worker pool exists (see ctor). Pushing onto `pending`
+    // would queue a request no one consumes, and a subsequent Wait()
+    // would deadlock on doneCv. Synthesise an immediate "not found"
+    // completion so Wait/Pump retire the request cleanly. The web host
+    // installs a FetchContentProvider via SceneView::SetContentProvider
+    // for real data; this stub only fires for code paths reached before
+    // that swap-in (e.g. RenderPipeline::InitBlsShaders during startup).
+    const RequestId id = impl_->nextId.fetch_add(1, std::memory_order_relaxed);
+    {
+        std::lock_guard lk(impl_->reqMu);
+        impl_->alive.insert(id);
+    }
+    {
+        std::lock_guard lk(impl_->compMu);
+        impl_->completed.push_back(CompletedRequest{id, std::move(cb), RequestResult{}});
+    }
+    impl_->doneCv.notify_all();
+    return id;
+#else
     auto req = std::make_shared<PendingRequest>();
     req->id = impl_->nextId.fetch_add(1, std::memory_order_relaxed);
     req->path = path;
@@ -534,6 +568,7 @@ RequestId FileContentProvider::Request(const std::string& path, CompletionCallba
     }
     impl_->reqCv.notify_one();
     return req->id;
+#endif
 }
 
 void FileContentProvider::Cancel(RequestId id) {

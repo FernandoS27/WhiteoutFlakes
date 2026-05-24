@@ -72,24 +72,19 @@ DncAsset* DncCache::Acquire(const std::string& path) {
 
     const bool isBinaryMdx = bytes->size() >= 4 && (*bytes)[0] == 'M' && (*bytes)[1] == 'D' &&
                              (*bytes)[2] == 'L' && (*bytes)[3] == 'X';
-    try {
-        if (!isBinaryMdx) {
-            std::string_view src(reinterpret_cast<const char*>(bytes->data()), bytes->size());
-            std::vector<std::string> issues;
-            entry->model = whiteout::mdx::convertMdlToModel(src, issues);
-            if (!issues.empty()) {
-                std::fprintf(stderr, "[dnc] '%s' parsed with %zu issue(s); first: %s\n",
-                             path.c_str(), issues.size(), issues.front().c_str());
-            }
-        } else {
-            whiteout::mdx::Parser parser;
-            std::span<const whiteout::u8> view(reinterpret_cast<const whiteout::u8*>(bytes->data()),
-                                               bytes->size());
-            entry->model = parser.parse(view);
+    if (!isBinaryMdx) {
+        std::string_view src(reinterpret_cast<const char*>(bytes->data()), bytes->size());
+        std::vector<std::string> issues;
+        entry->model = whiteout::mdx::convertMdlToModel(src, issues);
+        if (!issues.empty()) {
+            std::fprintf(stderr, "[dnc] '%s' parsed with %zu issue(s); first: %s\n", path.c_str(),
+                         issues.size(), issues.front().c_str());
         }
-    } catch (const std::exception& e) {
-        std::fprintf(stderr, "[dnc] '%s' parse threw: %s\n", path.c_str(), e.what());
-        return nullptr;
+    } else {
+        whiteout::mdx::Parser parser;
+        std::span<const whiteout::u8> view(reinterpret_cast<const whiteout::u8*>(bytes->data()),
+                                           bytes->size());
+        entry->model = parser.parse(view);
     }
 
     if (!entry->model.sequences.empty()) {

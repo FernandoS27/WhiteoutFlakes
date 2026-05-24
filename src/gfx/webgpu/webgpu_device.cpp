@@ -15,14 +15,20 @@ WebGPUDevice::WebGPUDevice()
 WebGPUDevice::~WebGPUDevice() {
     auto& state = *state_;
     if (state.device) {
+#if !defined(__EMSCRIPTEN__)
         // Make sure every in-flight submit retires before resources go.
         // wgpu::Device::Tick + wait-on-OnSubmittedWorkDone is the
         // portable "device-wait-idle" — Dawn additionally exposes a
-        // private API but we stick to the public surface.
-        wgpu::Future done = state.queue.OnSubmittedWorkDone(wgpu::CallbackMode::WaitAnyOnly,
-                                                            [](wgpu::QueueWorkDoneStatus) {});
+        // private API but we stick to the public surface. Under
+        // emdawnwebgpu Instance::WaitAny is unavailable (single-threaded
+        // browser main loop); we rely on the JS GC + emdawnwebgpu's
+        // refcounting to keep WGPU objects alive until callbacks retire.
+        wgpu::Future done =
+            state.queue.OnSubmittedWorkDone(wgpu::CallbackMode::WaitAnyOnly,
+                                            [](wgpu::QueueWorkDoneStatus, wgpu::StringView) {});
         wgpu::FutureWaitInfo wait{done};
         state.instance.WaitAny(1, &wait, UINT64_MAX);
+#endif
 
         // Run every still-queued deleter — completedEpoch may not have
         // caught up yet on the worker thread, but we just waited above.
@@ -57,14 +63,25 @@ IGFXCommandList* WebGPUDevice::GetImmediateContext() {
     return immediate_.get();
 }
 
+void WaitIdle_Impl(WebGPUDeviceState& state) {
+    (void)state;
+#if !defined(__EMSCRIPTEN__)
+    wgpu::Future done =
+        state.queue.OnSubmittedWorkDone(wgpu::CallbackMode::WaitAnyOnly,
+                                        [](wgpu::QueueWorkDoneStatus, wgpu::StringView) {});
+    wgpu::FutureWaitInfo wait{done};
+    state.instance.WaitAny(1, &wait, UINT64_MAX);
+#endif
+    // Browser path: no blocking wait available; the JS event loop drives
+    // completion callbacks. Callers that need a barrier should round-trip
+    // through requestAnimationFrame instead.
+}
+
 void WebGPUDevice::WaitIdle() {
     auto& state = *state_;
     if (!state.device || !state.queue)
         return;
-    wgpu::Future done = state.queue.OnSubmittedWorkDone(wgpu::CallbackMode::WaitAnyOnly,
-                                                        [](wgpu::QueueWorkDoneStatus) {});
-    wgpu::FutureWaitInfo wait{done};
-    state.instance.WaitAny(1, &wait, UINT64_MAX);
+    WaitIdle_Impl(state);
 }
 
 Format WebGPUDevice::PreferredDepthStencilFormat() const {

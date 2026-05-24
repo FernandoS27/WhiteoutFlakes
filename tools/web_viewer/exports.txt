@@ -1,0 +1,10 @@
+_malloc
+_free
+_wf_create
+_wf_destroy
+_wf_init
+_wf_resize
+_wf_tick
+_wf_render
+_wf_set_background
+_wf_last_error

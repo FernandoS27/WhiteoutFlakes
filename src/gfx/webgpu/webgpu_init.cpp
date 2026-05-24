@@ -10,6 +10,9 @@
 #include "webgpu_handles.h"
 
 #include <webgpu/webgpu_cpp.h>
+// On Emscripten/emdawnwebgpu, `emscripten_webgpu_get_device()` is declared
+// inside <webgpu/webgpu.h> which webgpu_cpp.h includes transitively — no
+// extra emscripten/html5_webgpu.h dependency.
 
 #include <algorithm>
 #include <array>
@@ -151,11 +154,19 @@ wgpu::Adapter RequestAdapterSync(wgpu::Instance instance, wgpu::PowerPreference 
 }
 
 wgpu::Instance CreateInstanceWithTimedWait() {
+#if defined(__EMSCRIPTEN__)
+    // emdawnwebgpu's InstanceDescriptor has no `capabilities` field — and
+    // the browser can't block on WaitAny from the main thread regardless.
+    // The instance is purely a surface factory on the web; device + queue
+    // are taken from JS via emscripten_webgpu_get_device().
+    return wgpu::CreateInstance(nullptr);
+#else
     // Dawn's InstanceDescriptor nests the timedWaitAny knob inside an
     // `InstanceCapabilities` substruct (`capabilities` field).
     wgpu::InstanceDescriptor desc{};
     desc.capabilities.timedWaitAnyEnable = true;
     return wgpu::CreateInstance(&desc);
+#endif
 }
 
 bool CreateInstanceAndAdapter(WebGPUDeviceState& state, std::string& deviceNameOut) {
@@ -587,10 +598,48 @@ std::vector<std::string> EnumerateAdapterNames() {
     return names;
 }
 
+#if defined(__EMSCRIPTEN__)
+// Browser path: JS pre-creates the device via navigator.gpu and registers it
+// on `Module.preinitializedWebGPUDevice` before the WASM module is
+// instantiated. emscripten_webgpu_get_device() then hands us back the same
+// device. The adapter handle is not exposed under emdawnwebgpu — every code
+// path that previously consulted `state.adapter` (GetLimits, GetInfo,
+// HasFeature) is guarded under !__EMSCRIPTEN__ with WebGPU spec-default
+// fallbacks.
+static bool AcquireDeviceFromJS(WebGPUDeviceState& state, std::string& deviceNameOut) {
+    state.instance = CreateInstanceWithTimedWait();
+    if (!state.instance) {
+        std::fprintf(stderr, "[wgpu] CreateInstance failed under Emscripten\n");
+        return false;
+    }
+    WGPUDevice raw = emscripten_webgpu_get_device();
+    if (!raw) {
+        std::fprintf(stderr,
+                     "[wgpu] emscripten_webgpu_get_device returned null — JS must set "
+                     "Module.preinitializedWebGPUDevice before instantiating the module\n");
+        return false;
+    }
+    state.device = wgpu::Device::Acquire(raw);
+    state.queue = state.device.GetQueue();
+    deviceNameOut = "WebGPU (browser)";
+    // No adapter handle on the web — hardcode the WebGPU spec-default
+    // minUniformBufferOffsetAlignment (256 bytes; also our internal floor).
+    state.minUniformBufferAlign = 256ull;
+    return true;
+}
+#endif
+
 bool WebGPUDevice::Init(bool enableValidation) {
     auto& state = *state_;
     state.enableValidation = enableValidation;
 
+#if defined(__EMSCRIPTEN__)
+    std::fprintf(stderr, "[wgpu] Init: acquiring device from JS\n");
+    if (!AcquireDeviceFromJS(state, deviceName_)) {
+        std::fprintf(stderr, "[wgpu] Init: JS device handoff failed\n");
+        return false;
+    }
+#else
     std::fprintf(stderr, "[wgpu] Init: creating instance + adapter\n");
     if (!CreateInstanceAndAdapter(state, deviceName_)) {
         std::fprintf(stderr, "[wgpu] Init: instance/adapter step failed\n");
@@ -601,6 +650,7 @@ bool WebGPUDevice::Init(bool enableValidation) {
         std::fprintf(stderr, "[wgpu] Init: RequestDevice step failed\n");
         return false;
     }
+#endif
     std::fprintf(stderr, "[wgpu] Init: building shared bind layouts\n");
     if (!CreateSharedBindLayouts(state)) {
         std::fprintf(stderr, "[wgpu] Init: shared bind layouts failed\n");
@@ -614,11 +664,16 @@ bool WebGPUDevice::Init(bool enableValidation) {
     CreateSharedCbRing(state);     // non-fatal
     CreateZeroVertexBuffer(state); // non-fatal — pipelines just skip phantom-fill if missing
 
+#if !defined(__EMSCRIPTEN__)
     wgpu::AdapterInfo info{};
     state.adapter.GetInfo(&info);
     std::printf("[wgpu] device='%s' vendor='%.*s' minUboAlign=%llu\n", deviceName_.c_str(),
                 static_cast<int>(info.vendor.length), info.vendor.data,
                 static_cast<unsigned long long>(state.minUniformBufferAlign));
+#else
+    std::printf("[wgpu] device='%s' minUboAlign=%llu\n", deviceName_.c_str(),
+                static_cast<unsigned long long>(state.minUniformBufferAlign));
+#endif
     return true;
 }
 
