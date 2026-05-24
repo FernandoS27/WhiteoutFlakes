@@ -8,3 +8,9 @@ _wf_tick
 _wf_render
 _wf_set_background
 _wf_last_error
+_wf_provider_put
+_wf_provider_count
+_wf_camera_rotate
+_wf_camera_pan
+_wf_camera_zoom
+_wf_camera_reset

@@ -80,6 +80,14 @@ public:
     ///        extra files referenced by the model.
     IContentProvider* ActiveContentProvider();
 
+    /// @brief Install a host-owned content provider, replacing the
+    ///        default disk-backed one. The web build calls this with a
+    ///        FetchContentProvider before InitDevice runs so BLS / DNC
+    ///        / IBL loads find their bytes via JS-pushed buffers.
+    ///        Ownership is shared — the renderer keeps the provider
+    ///        alive while it's active.
+    void SetContentProvider(std::shared_ptr<IContentProvider> provider);
+
 private:
     explicit SceneView(detail::RendererImpl* impl) : impl_(impl) {}
     detail::RendererImpl* impl_;

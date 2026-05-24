@@ -230,6 +230,16 @@ export class WhiteoutViewer {
         }
         trace('wf_create handle=0x' + this._handle.toString(16));
 
+        // Phase 2: prefetch the WGSL BLS shader bundles and push them
+        // into the FetchContentProvider before wf_init runs. The
+        // renderer's BLS cache queries the provider during
+        // InitBlsShaders; these bundles MUST be in-memory by that point
+        // or InitDevice will report incomplete BLS state and bail.
+        trace('prefetching BLS shader bundles…');
+        await this._prefetchShaders();
+        trace('shaders prefetched (' +
+              this._module._wf_provider_count(this._handle) + ' files in provider)');
+
         // Pass the selector by allocating a NUL-terminated UTF-8 buffer
         // in the module heap. wf_init copies it into the WfRenderer.
         const selBytes = this._module.lengthBytesUTF8(selector) + 1;
@@ -249,6 +259,10 @@ export class WhiteoutViewer {
         // tell WASM to reconfigure the surface.
         this._resizeObserver = new ResizeObserver(() => this._onResize());
         this._resizeObserver.observe(this.canvas);
+
+        // Pointer + wheel input → CameraView. Left-drag rotates,
+        // middle/right-drag pans, wheel zooms, double-click resets.
+        this._installCameraControls();
 
         this._lastTime = performance.now();
         this._loop = (now) => {
@@ -278,6 +292,102 @@ export class WhiteoutViewer {
 
     setBackground(r, g, b) {
         if (this._handle) this._module._wf_set_background(this._handle, r | 0, g | 0, b | 0);
+    }
+
+    _installCameraControls() {
+        const c = this.canvas;
+        // Make the canvas focusable so it can capture wheel events without
+        // scrolling the page, and stop the browser's default touch-pan.
+        c.style.touchAction = 'none';
+        c.tabIndex = 0;
+        let dragging = 0; // 0=none, 1=rotate, 2=pan
+        let lastX = 0, lastY = 0;
+
+        c.addEventListener('pointerdown', (e) => {
+            c.setPointerCapture(e.pointerId);
+            // Left button = rotate, middle/right = pan.
+            dragging = (e.button === 0) ? 1 : 2;
+            lastX = e.clientX; lastY = e.clientY;
+            e.preventDefault();
+        });
+        c.addEventListener('pointermove', (e) => {
+            if (!dragging || !this._handle) return;
+            const dx = e.clientX - lastX;
+            const dy = e.clientY - lastY;
+            lastX = e.clientX; lastY = e.clientY;
+            if (dragging === 1) this._module._wf_camera_rotate(this._handle, dx, dy);
+            // Pan: negate so dragging the canvas moves the scene WITH
+            // the cursor (grab-and-slide), matching every other 3D viewer.
+            else                this._module._wf_camera_pan(this._handle, -dx, -dy);
+        });
+        const endDrag = (e) => {
+            if (dragging) {
+                try { c.releasePointerCapture(e.pointerId); } catch (_) {}
+                dragging = 0;
+            }
+        };
+        c.addEventListener('pointerup',     endDrag);
+        c.addEventListener('pointercancel', endDrag);
+        c.addEventListener('pointerleave',  endDrag);
+
+        // Wheel zoom — preventDefault stops page scroll. CameraView's
+        // Zoom takes an integer wheel-delta in detents; we use 3 detents
+        // per notch by default so a single scroll click moves a useful
+        // distance, and negate the sign so scroll-up zooms in to match
+        // every other 3D viewer.
+        const ZOOM_STEPS_PER_NOTCH = 16;
+        c.addEventListener('wheel', (e) => {
+            if (!this._handle) return;
+            e.preventDefault();
+            const notches = Math.max(1, Math.round(Math.abs(e.deltaY) / 100));
+            const steps = -Math.sign(e.deltaY) * notches * ZOOM_STEPS_PER_NOTCH;
+            this._module._wf_camera_zoom(this._handle, steps);
+        }, { passive: false });
+
+        // Double-click resets to the default orbit pose.
+        c.addEventListener('dblclick', () => {
+            if (this._handle) this._module._wf_camera_reset(this._handle);
+        });
+
+        // Right-click context menu would interrupt right-drag pan.
+        c.addEventListener('contextmenu', (e) => e.preventDefault());
+    }
+
+    // ------------------------------------------------------------------
+    // Asset prefetch — Phase 2 plumbing.
+    //
+    // Fetches every WGSL BLS bundle the renderer asks for during
+    // InitBlsShaders, plus the optional probes/SLKs the warning trail
+    // showed during Phase 1 bring-up. Pushes each file's bytes into the
+    // FetchContentProvider via _wf_provider_put. All fetches in parallel.
+    // ------------------------------------------------------------------
+    async _prefetchShaders() {
+        const VS = ['foliage','gritty_hd','hd','imgui','popcornfx','sd_highspec',
+                    'sd_on_hd','sprite','terrain','toon_hd'];
+        const PS = ['crystal','distortion','foliage','gritty_hd','hd','imgui',
+                    'popcornfx','sd','sd_on_hd','sprite','terrain','tonemap','toon_hd'];
+        // The renderer's BLS cache resolves the api-subdir at lookup time, so
+        // we push under the SAME path it queries: `shaders/webgpu/<stage>/<name>.bls`.
+        const paths = [
+            ...VS.map(n => `shaders/webgpu/vs/${n}.bls`),
+            ...PS.map(n => `shaders/webgpu/ps/${n}.bls`),
+        ];
+        await Promise.all(paths.map(p => this._fetchAndPut(p)));
+    }
+
+    async _fetchAndPut(path) {
+        const r = await fetch('./' + path, { cache: 'no-store' });
+        if (!r.ok) { console.warn('[wf] prefetch FAIL ' + path + ' status=' + r.status); return; }
+        const buf = new Uint8Array(await r.arrayBuffer());
+        // Allocate in WASM heap and copy in.
+        const pathBytes = this._module.lengthBytesUTF8(path) + 1;
+        const pathPtr = this._module._malloc(pathBytes);
+        this._module.stringToUTF8(path, pathPtr, pathBytes);
+        const dataPtr = this._module._malloc(buf.byteLength);
+        this._module.HEAPU8.set(buf, dataPtr);
+        this._module._wf_provider_put(this._handle, pathPtr, dataPtr, buf.byteLength);
+        this._module._free(pathPtr);
+        this._module._free(dataPtr);
     }
 
     // Pull the C-side captured exception what() string. Used by error

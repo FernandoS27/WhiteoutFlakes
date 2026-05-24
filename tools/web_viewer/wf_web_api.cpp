@@ -18,6 +18,7 @@
 // the renderer clears to SettingsView::BackgroundColorRaw() and presents.
 // ============================================================================
 
+#include "io/fetch_content_provider.h"
 #include "whiteout/flakes/enums.h"
 #include "whiteout/flakes/gfx_types.h"
 #include "whiteout/flakes/renderer.h"
@@ -25,12 +26,15 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <new>
 #include <string>
+#include <vector>
 
 using whiteout::flakes::Renderer;
 using whiteout::flakes::RenderTargetId;
 using whiteout::flakes::gfx::GfxApi;
+using whiteout::flakes::io::FetchContentProvider;
 
 namespace {
 
@@ -41,6 +45,10 @@ struct WfRenderer {
     // `const char*` we hand it through CreateSurface. Keep a copy alive
     // for the surface's lifetime (== the WfRenderer's lifetime here).
     std::string canvasSelector;
+    // Web content provider — JS pushes bytes into it via wf_provider_put
+    // before wf_init runs. The renderer takes a shared_ptr at SetContentProvider
+    // time, and we keep our own ref so wf_provider_put can call Put().
+    std::shared_ptr<FetchContentProvider> provider;
     bool inited = false;
 };
 
@@ -69,8 +77,27 @@ extern "C" {
 
 WfRenderer* wf_create() {
     return Guard("wf_create", []() -> WfRenderer* {
-        return new WfRenderer{};
+        auto* h = new WfRenderer{};
+        // Install the FetchContentProvider before InitDevice runs.
+        // SceneManager's default FileContentProvider becomes inactive;
+        // any IContentProvider::Request from the renderer (BLS shader
+        // cache, IBL probe loader, DNC service, ...) hits our in-memory
+        // cache that JS populated via wf_provider_put.
+        h->provider = std::make_shared<FetchContentProvider>();
+        h->renderer.Scene().SetContentProvider(h->provider);
+        return h;
     });
+}
+
+void wf_provider_put(WfRenderer* h, const char* path, const uint8_t* data, int len) {
+    if (!h || !h->provider || !path || !data || len < 0) return;
+    h->provider->Put(std::string(path),
+                     std::vector<uint8_t>(data, data + static_cast<std::size_t>(len)));
+}
+
+int wf_provider_count(WfRenderer* h) {
+    if (!h || !h->provider) return 0;
+    return static_cast<int>(h->provider->CachedFileCount());
 }
 
 // JS reads this when a wf_* entry returns 0/null. Empty string == no
@@ -163,6 +190,31 @@ void wf_set_background(WfRenderer* h, int r, int g, int b) {
         return static_cast<uint8_t>(v);
     };
     h->renderer.Settings().SetBackgroundColor(clamp8(r), clamp8(g), clamp8(b));
+}
+
+// ----------------------------------------------------------------------------
+// Camera — orbital controls forwarded from JS pointer/wheel events.
+// CameraView already implements orbit math; we just hand it deltas.
+// ----------------------------------------------------------------------------
+
+void wf_camera_rotate(WfRenderer* h, int dx, int dy) {
+    if (!h) return;
+    h->renderer.Camera().Rotate(dx, dy);
+}
+
+void wf_camera_pan(WfRenderer* h, int dx, int dy) {
+    if (!h) return;
+    h->renderer.Camera().Pan(dx, dy);
+}
+
+void wf_camera_zoom(WfRenderer* h, int wheelDelta) {
+    if (!h) return;
+    h->renderer.Camera().Zoom(wheelDelta);
+}
+
+void wf_camera_reset(WfRenderer* h) {
+    if (!h) return;
+    h->renderer.Camera().Reset();
 }
 
 } // extern "C"

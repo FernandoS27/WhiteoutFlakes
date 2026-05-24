@@ -337,8 +337,14 @@ void WebGPUDevice::Present(SwapChainHandle h) {
     // pending-epoch and arms the OnSubmittedWorkDone bookkeeping.
     SubmitFrameAndBumpEpoch(state);
 
-    if (sc->currentTexture)
+    if (sc->currentTexture) {
+#if defined(__EMSCRIPTEN__)
+        // Browser presents automatically when the rAF callback returns;
+        // wgpuSurfacePresent traps under emdawnwebgpu. No-op here.
+#else
         sc->surface.Present();
+#endif
+    }
 
     sc->currentTexture = nullptr;
     sc->acquiredThisFrame = false;

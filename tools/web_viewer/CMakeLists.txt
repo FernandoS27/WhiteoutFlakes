@@ -86,3 +86,17 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/index.html"
                "${CMAKE_BINARY_DIR}/web/index.html"   COPYONLY)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/minimal.html"
                "${CMAKE_BINARY_DIR}/web/minimal.html" COPYONLY)
+
+# Stage the WGSL .bls shader bundles next to the served wasm so the JS
+# facade can fetch them from `./shaders/webgpu/...` before wf_init runs.
+# The renderer's BLS cache asks for paths shaped `shaders/webgpu/{vs,ps}/<name>.bls`.
+if(EXISTS "${CMAKE_SOURCE_DIR}/prebuilt/shaders/webgpu")
+    add_custom_command(TARGET wf_web POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_SOURCE_DIR}/prebuilt/shaders"
+            "${CMAKE_BINARY_DIR}/web/shaders"
+        COMMENT "Staging prebuilt BLS bundles into web/shaders"
+    )
+else()
+    message(WARNING "prebuilt/shaders/webgpu missing — web build will have no shader bundles to serve")
+endif()

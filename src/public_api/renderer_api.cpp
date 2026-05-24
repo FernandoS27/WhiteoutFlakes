@@ -174,6 +174,9 @@ void SceneView::SetPE1BasePath(const std::filesystem::path& p) {
 IContentProvider* SceneView::ActiveContentProvider() {
     return Scn(impl_).ActiveContentProvider();
 }
+void SceneView::SetContentProvider(std::shared_ptr<IContentProvider> provider) {
+    Scn(impl_).SetContentProvider(std::move(provider));
+}
 
 // ============================================================================
 // CameraView
