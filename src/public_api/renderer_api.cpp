@@ -322,6 +322,9 @@ void LoaderView::UpdateMaterials(ActorHandle handle, const std::vector<MaterialD
 void LoaderView::RequestClearAll() {
     Svc(impl_).Loader().RequestClearAll();
 }
+void LoaderView::ClearTemplateCache() {
+    Scn(impl_).Templates().Clear();
+}
 
 // ============================================================================
 // DncView

@@ -27,11 +27,30 @@ std::size_t FetchContentProvider::CachedFileCount() const {
     return cache_.size();
 }
 
+std::vector<std::string> FetchContentProvider::TakeMissing() {
+    std::lock_guard lk(mu_);
+    std::vector<std::string> out;
+    out.swap(missing_);
+    return out;
+}
+
 RequestId FetchContentProvider::Request(const std::string& path, CompletionCallback cb) {
     if (path.empty() || !cb) return kInvalidRequestId;
 
     const RequestId id = nextId_.fetch_add(1, std::memory_order_relaxed);
     const std::string key = Normalize(path);
+
+    // Walk the same alt-extension chains FileResolver uses for textures
+    // and models, so a Request for `foo.tif` finds a cached `foo.dds`
+    // automatically (the renderer asks via the path the MDX named, but
+    // the loose file we got from the server may be a synonym format).
+    static constexpr const char* kTextureExts[] = {".blp", ".dds", ".tga", ".png", ".tif"};
+    static constexpr const char* kModelExts[]   = {".mdx", ".mdl"};
+    auto extIn = [](const std::string& e, const char* const* arr, std::size_t n) {
+        for (std::size_t i = 0; i < n; ++i)
+            if (e == arr[i]) return true;
+        return false;
+    };
 
     RequestResult result;
     {
@@ -40,10 +59,52 @@ RequestId FetchContentProvider::Request(const std::string& path, CompletionCallb
         if (it != cache_.end()) {
             result.ok = true;
             result.data = it->second; // copy — keeps the cache intact for repeats
+            auto dot = key.rfind('.');
+            if (dot != std::string::npos) result.actualExt = key.substr(dot);
+        } else {
+            // Miss on the exact key — try alt-ext synonyms before giving up.
+            // Match FileResolver::Resolve, which tries `basePath / relPath`
+            // AND `basePath / filename` before walking extensions. Here
+            // that's: walk alt-exts on the full path stem, then on the
+            // filename-only stem (everything after the last '/').
+            const auto dot = key.rfind('.');
+            bool foundAlt = false;
+            if (dot != std::string::npos) {
+                const std::string stemFull = key.substr(0, dot);
+                const std::string reqExt   = key.substr(dot);
+                const auto slash = stemFull.rfind('/');
+                const std::string stemBase =
+                    (slash != std::string::npos) ? stemFull.substr(slash + 1) : stemFull;
+
+                const char* const* alts = nullptr;
+                std::size_t altsN = 0;
+                if (extIn(reqExt, kTextureExts, std::size(kTextureExts))) {
+                    alts = kTextureExts; altsN = std::size(kTextureExts);
+                } else if (extIn(reqExt, kModelExts, std::size(kModelExts))) {
+                    alts = kModelExts; altsN = std::size(kModelExts);
+                }
+                const std::string stems[2] = { stemFull, stemBase };
+                const std::size_t nStems = (stemFull == stemBase) ? 1 : 2;
+                for (std::size_t s = 0; alts && s < nStems && !foundAlt; ++s) {
+                    for (std::size_t i = 0; i < altsN; ++i) {
+                        auto it2 = cache_.find(stems[s] + alts[i]);
+                        if (it2 != cache_.end()) {
+                            result.ok = true;
+                            result.data = it2->second;
+                            result.actualExt = alts[i];
+                            foundAlt = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!foundAlt) {
+                // Record the miss so JS can fetch + Put the missing file
+                // and call the loader again.
+                missing_.push_back(path);
+                if (dot != std::string::npos) result.actualExt = key.substr(dot);
+            }
         }
-        // Extension is the suffix after the last '.' in the normalised key.
-        auto dot = key.rfind('.');
-        if (dot != std::string::npos) result.actualExt = key.substr(dot);
 
         completed_.push_back(Pending{id, std::move(cb), std::move(result)});
     }

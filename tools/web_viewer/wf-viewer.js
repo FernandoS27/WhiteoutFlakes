@@ -237,7 +237,11 @@ export class WhiteoutViewer {
         // or InitDevice will report incomplete BLS state and bail.
         trace('prefetching BLS shader bundles…');
         await this._prefetchShaders();
-        trace('shaders prefetched (' +
+        // Also prefetch the assets wf_init's DNC service + IBL probe
+        // loader will read. Those run inside InitDevice, BEFORE any
+        // loadModel call, so they have to be in the cache by now.
+        await this._prefetchEngineAssets();
+        trace('assets prefetched (' +
               this._module._wf_provider_count(this._handle) + ' files in provider)');
 
         // Pass the selector by allocating a NUL-terminated UTF-8 buffer
@@ -254,6 +258,10 @@ export class WhiteoutViewer {
         // A vivid color so the smoke test is obviously WASM-driven, not
         // a default-cleared canvas.
         this._module._wf_set_background(this._handle, 24, 56, 96); // moody blue
+        // Default to the HD (Reforged PBR) material path — most loose-
+        // file model dumps the viewer is pointed at are HD assets.
+        // Callers can flip back to SD via the same call with mode=0.
+        this._module._wf_set_render_mode(this._handle, 1);
 
         // Resize tracking. Canvas resize → recompute drawing buffer →
         // tell WASM to reconfigure the surface.
@@ -361,6 +369,197 @@ export class WhiteoutViewer {
     // showed during Phase 1 bring-up. Pushes each file's bytes into the
     // FetchContentProvider via _wf_provider_put. All fetches in parallel.
     // ------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    // Load and spawn a model. The renderer's MDX adapter loads the model
+    // bytes + every texture it references through IContentProvider, so we
+    // run SpawnUnit, drain the FetchContentProvider's "missing" list,
+    // fetch those URLs in parallel, push them into the provider, and
+    // retry. A small iteration cap stops infinite loops if the server is
+    // missing a file outright; each successful iteration converges.
+    //
+    // `mdxUrl` is fetched verbatim; subsequent dependency paths are
+    // resolved relative to the URL's directory.
+    // ------------------------------------------------------------------
+    async loadModel(mdxUrl) {
+        if (!this._handle) throw new Error('viewer not initialised');
+        const M = this._module;
+        // Dual-channel logger so the iteration trace shows up on the
+        // on-page log AND in devtools console. We need it visible
+        // wherever the user is looking.
+        const log = (s) => {
+            console.log('[wf]', s);
+            const el = document.getElementById('log');
+            if (el) {
+                const ln = document.createElement('div');
+                ln.style.color = '#9cf';
+                ln.textContent = '[wf] ' + s;
+                el.appendChild(ln);
+                el.scrollTop = el.scrollHeight;
+            }
+        };
+
+        // Pull mdxUrl bytes and stash under a renderer-style relative path.
+        // The C side calls SpawnUnit with a path string we choose; the
+        // renderer's content provider keys on that same string when it
+        // turns around to load this MDX again, so we both `Put` it and
+        // pass the same key to SpawnUnit.
+        const mdxResp = await fetch(mdxUrl, { cache: 'no-store' });
+        if (!mdxResp.ok) throw new Error('fetch MDX failed: ' + mdxResp.status);
+        const mdxBytes = new Uint8Array(await mdxResp.arrayBuffer());
+        const mdxKey = mdxUrl.split('/').pop();      // bare filename as the key
+        const baseDir = mdxUrl.substring(0, mdxUrl.lastIndexOf('/') + 1); // for deps
+        this._putBytes(mdxKey, mdxBytes);
+
+        // PE1 emitter child-MDX paths resolve against this base, same
+        // convention as the desktop viewer (parent of the loaded model).
+        this._setPe1Base(baseDir.replace(/^\.?\/?/, ''));   // strip leading ./
+
+        // Clear any prior actor before spawning.
+        M._wf_clear_all(this._handle);
+
+        // Iteratively spawn and satisfy missing deps. Max 6 iterations —
+        // typical WC3 model has texture deps in one shot, plus occasional
+        // child-MDX + sound which surface on the next.
+        for (let iter = 1; iter <= 6; ++iter) {
+            log('iter ' + iter + ': calling wf_spawn_unit("' + mdxKey + '")');
+            const handle = M._wf_spawn_unit(this._handle, this._cstr(mdxKey));
+            const missing = this._drainMissing();
+            log('iter ' + iter + ': handle=' + handle + ' missing=' + missing.length +
+                (missing.length ? ' first=' + missing[0] : ''));
+            if (handle && missing.length === 0) {
+                log('spawn OK after ' + iter + ' iter(s)');
+                return handle;
+            }
+            if (missing.length === 0) {
+                throw new Error('SpawnUnit returned 0 with no missing-deps; check logs');
+            }
+            log('fetching ' + missing.length + ' dep(s)…');
+            const results = await Promise.all(missing.map(async p => {
+                const ok = await this._fetchDep(baseDir, p);
+                return { p, ok };
+            }));
+            const hits = results.filter(r => r.ok).length;
+            log('  fetched ' + hits + '/' + results.length + ' OK');
+            M._wf_clear_all(this._handle);            // destroy actors
+            M._wf_clear_template_cache(this._handle); // evict cached MDX with stale TextureData
+        }
+        throw new Error('loadModel: still resolving deps after 6 iterations');
+    }
+
+    // Drain the C-side missing list into a JS array of strings.
+    _drainMissing() {
+        const M = this._module;
+        const n = M._wf_provider_missing_count(this._handle);
+        if (!n) return [];
+        const CAP = 512;
+        const buf = M._malloc(CAP);
+        const out = [];
+        for (let i = 0; i < n; ++i) {
+            M._wf_provider_missing_get(this._handle, i, buf, CAP);
+            out.push(M.UTF8ToString(buf));
+        }
+        M._free(buf);
+        return out;
+    }
+
+    // Fetch one dependency (path is whatever the renderer asked for —
+    // forward slashes, mixed case, may include leading directories) and
+    // push the bytes back into the provider UNDER THE ACTUAL EXTENSION
+    // THAT WAS FOUND. The provider walks the WC3 texture/model alt-ext
+    // synonym chains on lookup, so storing as `foo.dds` is enough for a
+    // `Request("foo.tif")` to resolve correctly with the right
+    // actualExt reported back to the texture decoder.
+    async _fetchDep(baseDir, relPath) {
+        const fwd = relPath.replaceAll('\\', '/');
+        const slash = fwd.lastIndexOf('/');
+        const filename = slash >= 0 ? fwd.slice(slash + 1) : fwd;
+        const dot = fwd.lastIndexOf('.');
+        const stemFull = dot > 0 ? fwd.slice(0, dot) : fwd;
+        const stemBase = (slash >= 0 ? stemFull.slice(slash + 1) : stemFull);
+        const origExt = dot > 0 ? fwd.slice(dot).toLowerCase() : '';
+
+        // Two path-shapes — mirrors FileResolver's `basePath / relPath` +
+        // `basePath / filename`. The renderer's MDX often references a
+        // texture with a `units/.../foo.tif` prefix, but loose-file dumps
+        // tend to put `foo.dds` directly in the model directory.
+        // Try as-given first, then filename-only. Also try with the
+        // SERVED ROOT as the base (no model-dir prefix) — that's where
+        // shared assets like Environment/EnvironmentMap/... and DNC live.
+        const pathStems = [stemFull, stemBase].filter((s, i, a) => a.indexOf(s) === i);
+        const baseDirs = [baseDir, './'];
+
+        // Extension synonym chain mirrors FileResolver::kTextureExts /
+        // kModelExts. Requested ext first to keep the happy path single-fetch.
+        const TEX = ['.blp', '.dds', '.tga', '.png', '.tif'];
+        const MDL = ['.mdx', '.mdl'];
+        let exts;
+        if (TEX.includes(origExt))      exts = [origExt, ...TEX.filter(e => e !== origExt)];
+        else if (MDL.includes(origExt)) exts = [origExt, ...MDL.filter(e => e !== origExt)];
+        else                            exts = [origExt];
+
+        for (const dir of baseDirs) {
+            for (const stem of pathStems) {
+                for (const ext of exts) {
+                    const candPath = stem + ext;
+                    const url = dir + candPath;
+                    try {
+                        const r = await fetch(url, { cache: 'no-store' });
+                        if (!r.ok) continue;
+                        const bytes = new Uint8Array(await r.arrayBuffer());
+                        // Store ONLY under the actual-extension key. The
+                        // provider walks the WC3 alt-ext synonym chain on
+                        // miss and reports back actualExt = the extension
+                        // it actually found, which the texture decoder
+                        // branches on. Storing under the requested `.tif`
+                        // key would make the provider hit that exact key
+                        // first and report `.tif` for DDS bytes — wrong
+                        // decoder path.
+                        this._putBytes(candPath, bytes);
+                        return true;
+                    } catch (_) {/* try next */}
+                }
+            }
+        }
+        console.warn('[wf] dep MISS (all candidates failed): ' + relPath);
+        return false;
+    }
+
+    // Helpers to keep loadModel readable.
+    _cstr(s) {
+        const M = this._module;
+        const bytes = M.lengthBytesUTF8(s) + 1;
+        const p = M._malloc(bytes);
+        M.stringToUTF8(s, p, bytes);
+        // Caller responsibility to free — but for short-lived ABI calls
+        // we leak intentionally on the WASM heap (a few hundred bytes per
+        // SpawnUnit attempt is fine for a viewer session).
+        return p;
+    }
+    _putBytes(path, u8) {
+        const M = this._module;
+        const pathPtr = this._cstr(path);
+        const dataPtr = M._malloc(u8.byteLength);
+        M.HEAPU8.set(u8, dataPtr);
+        M._wf_provider_put(this._handle, pathPtr, dataPtr, u8.byteLength);
+        M._free(dataPtr);
+        // pathPtr deliberately not freed (cstr cleanup story above).
+    }
+    _setPe1Base(p) {
+        this._module._wf_set_pe1_base(this._handle, this._cstr(p));
+    }
+
+    // Prefetch the engine-wide assets wf_init reads before any model
+    // is loaded: the default IBL probe and the DNC unit MDX. Paths
+    // mirror what the renderer's DncService + IblProbe loaders ask for.
+    async _prefetchEngineAssets() {
+        const ENGINE = [
+            'Environment/EnvironmentMap/Portraits/PortraitDefault_IBL.dds',
+            'Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdx',
+            'Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdl',
+        ];
+        await Promise.all(ENGINE.map(p => this._fetchDep('./', p)));
+    }
+
     async _prefetchShaders() {
         const VS = ['foliage','gritty_hd','hd','imgui','popcornfx','sd_highspec',
                     'sd_on_hd','sprite','terrain','toon_hd'];

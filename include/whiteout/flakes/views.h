@@ -201,6 +201,14 @@ public:
     /// @brief Defer-destroy every actor currently in the scene.
     void RequestClearAll();
 
+    /// @brief Evict every cached model template. Use this when the
+    ///        host has changed the content provider's view of an MDX
+    ///        file (e.g. the web build's loader fetches more bytes
+    ///        between SpawnUnit attempts) and needs a subsequent
+    ///        SpawnUnit to re-parse instead of returning the stale
+    ///        cached template with failed-load placeholders.
+    void ClearTemplateCache();
+
 private:
     explicit LoaderView(detail::RendererImpl* impl) : impl_(impl) {}
     detail::RendererImpl* impl_;

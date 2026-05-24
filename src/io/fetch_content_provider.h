@@ -36,6 +36,12 @@ public:
     /// @brief Number of files in the cache (for diagnostics from JS).
     std::size_t CachedFileCount() const;
 
+    /// @brief Snapshot of every path Request() was called for that was
+    ///        NOT in the cache, in the order requested. Lets JS fetch
+    ///        the missing assets and `Put` them, then re-run the same
+    ///        loader to retry. Cleared by `ClearMissing()`.
+    std::vector<std::string> TakeMissing();
+
     // IContentProvider ------------------------------------------------------
     RequestId Request(const std::string& path, CompletionCallback cb) override;
     void Wait(RequestId id) override;
@@ -54,6 +60,7 @@ private:
     mutable std::mutex mu_;
     std::unordered_map<std::string, std::vector<u8>> cache_;
     std::deque<Pending> completed_;
+    std::vector<std::string> missing_;
     std::atomic<u64> nextId_{1};
 };
 

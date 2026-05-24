@@ -23,9 +23,11 @@
 #include "whiteout/flakes/gfx_types.h"
 #include "whiteout/flakes/renderer.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <new>
 #include <string>
@@ -49,6 +51,10 @@ struct WfRenderer {
     // before wf_init runs. The renderer takes a shared_ptr at SetContentProvider
     // time, and we keep our own ref so wf_provider_put can call Put().
     std::shared_ptr<FetchContentProvider> provider;
+    // Snapshot of provider misses produced by the most recent
+    // wf_provider_missing_count() call. JS reads it back path-by-path
+    // via wf_provider_missing_get(idx, buf, cap).
+    std::vector<std::string> lastMissing;
     bool inited = false;
 };
 
@@ -162,9 +168,11 @@ void wf_resize(WfRenderer* h, int width, int height) {
 
 void wf_tick(WfRenderer* h, float dtSeconds) {
     if (!h || !h->inited) return;
-    // Phase 3 will also call ActiveContentProvider()->Pump() here once
-    // the FetchContentProvider is wired in. For Phase 1 (clear-color)
-    // there's nothing to pump — the scene is empty.
+    // Drive completion callbacks for any pending IContentProvider::Request
+    // submitted by the renderer. Our FetchContentProvider resolves reads
+    // synchronously inside Request(), so Pump() just runs the callbacks
+    // here on the render thread (where bls cache state, etc. mutate).
+    if (auto* cp = h->renderer.Scene().ActiveContentProvider()) cp->Pump();
     h->renderer.Scene().Update(dtSeconds);
     h->renderer.Tick(dtSeconds);
 }
@@ -181,6 +189,16 @@ void wf_render(WfRenderer* h) {
 // can verify the WASM end-to-end path (and not just a black canvas the
 // browser would show anyway).
 // ----------------------------------------------------------------------------
+
+// Material path: 0 = SD (classic WC3 materials), 1 = HD (Reforged PBR
+// with IBL). Default in DisplayFlags is SD; the web viewer flips to HD
+// after wf_init for HD models. Bad values are clamped to SD.
+void wf_set_render_mode(WfRenderer* h, int mode) {
+    if (!h) return;
+    h->renderer.Settings().SetRenderMode(
+        mode == 1 ? whiteout::flakes::RenderMode::HD
+                  : whiteout::flakes::RenderMode::SD);
+}
 
 void wf_set_background(WfRenderer* h, int r, int g, int b) {
     if (!h) return;
@@ -215,6 +233,65 @@ void wf_camera_zoom(WfRenderer* h, int wheelDelta) {
 void wf_camera_reset(WfRenderer* h) {
     if (!h) return;
     h->renderer.Camera().Reset();
+}
+
+// ----------------------------------------------------------------------------
+// Model loading — exposes LoaderView so JS can spawn / clear actors and
+// iterate over the provider's missing-paths to satisfy texture / child-MDX
+// dependencies discovered during SpawnUnit.
+// ----------------------------------------------------------------------------
+
+void wf_set_pe1_base(WfRenderer* h, const char* basePath) {
+    if (!h || !basePath) return;
+    h->renderer.Scene().SetPE1BasePath(std::filesystem::path(basePath));
+}
+
+uint32_t wf_spawn_unit(WfRenderer* h, const char* mdxPath) {
+    if (!h || !mdxPath) return 0;
+    return h->renderer.Loader().SpawnUnit(std::string(mdxPath));
+}
+
+void wf_clear_all(WfRenderer* h) {
+    if (!h) return;
+    h->renderer.Loader().RequestClearAll();
+}
+
+// Evict the cached model templates so a subsequent SpawnUnit re-parses
+// the MDX. Web loader calls this between iterations so newly-fetched
+// texture bytes get picked up; without it the second SpawnUnit reuses
+// the iter1 template with its failed-load TextureData placeholders.
+void wf_clear_template_cache(WfRenderer* h) {
+    if (!h) return;
+    h->renderer.Loader().ClearTemplateCache();
+}
+
+// ---- Missing-paths retrieval ------------------------------------------------
+// JS calls wf_provider_missing_count() after SpawnUnit fails / partially
+// resolves to learn how many files the renderer requested that weren't in
+// the cache. wf_provider_missing_get(i, buf, cap) copies the i'th path
+// into JS's heap buffer (null-terminated). wf_provider_missing_clear()
+// drains the list so the next SpawnUnit attempt records a fresh set.
+
+int wf_provider_missing_count(WfRenderer* h) {
+    if (!h || !h->provider) return 0;
+    // Peek without taking; JS may want to inspect first, then drain via
+    // explicit get-by-index calls. We snapshot via TakeMissing and immediately
+    // put it back so the count is stable across the subsequent get calls.
+    auto snap = h->provider->TakeMissing();
+    const int n = static_cast<int>(snap.size());
+    // Stash for subsequent get-by-index calls in a per-renderer cache.
+    h->lastMissing = std::move(snap);
+    return n;
+}
+
+int wf_provider_missing_get(WfRenderer* h, int index, char* outBuf, int bufCap) {
+    if (!h || !outBuf || bufCap <= 0) return 0;
+    if (index < 0 || index >= static_cast<int>(h->lastMissing.size())) return 0;
+    const std::string& s = h->lastMissing[index];
+    const int n = static_cast<int>(std::min<std::size_t>(s.size(), static_cast<std::size_t>(bufCap - 1)));
+    std::memcpy(outBuf, s.data(), n);
+    outBuf[n] = '\0';
+    return n;
 }
 
 } // extern "C"
