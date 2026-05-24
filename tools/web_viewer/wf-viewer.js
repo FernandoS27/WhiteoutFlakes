@@ -45,6 +45,283 @@ const REQUESTED_FEATURES = [
     'rg11b10ufloat-renderable',   // R11G11B10F scene target
 ];
 
+// ----------------------------------------------------------------------------
+// Math helpers — minimum needed for setLocation/setRotation/setScale.
+// Compose to a column-vector 4x4 (renderer uses Matrix44f, same memory
+// layout we ship from JS as 16 floats).
+// ----------------------------------------------------------------------------
+
+const _mat = new Float32Array(16);
+function _identityMat(out) {
+    out[0] = 1;  out[1] = 0;  out[2] = 0;  out[3] = 0;
+    out[4] = 0;  out[5] = 1;  out[6] = 0;  out[7] = 0;
+    out[8] = 0;  out[9] = 0;  out[10] = 1; out[11] = 0;
+    out[12] = 0; out[13] = 0; out[14] = 0; out[15] = 1;
+    return out;
+}
+// Compose a transform matrix from translation, quaternion rotation, and
+// non-uniform scale. JS quat = [x, y, z, w].
+function _composeTRS(out, t, q, s) {
+    const x = q[0], y = q[1], z = q[2], w = q[3];
+    const xx = x * x, yy = y * y, zz = z * z;
+    const xy = x * y, xz = x * z, yz = y * z;
+    const wx = w * x, wy = w * y, wz = w * z;
+    const sx = s[0], sy = s[1], sz = s[2];
+    out[0]  = (1 - 2 * (yy + zz)) * sx;
+    out[1]  = (2 * (xy + wz)) * sx;
+    out[2]  = (2 * (xz - wy)) * sx;
+    out[3]  = 0;
+    out[4]  = (2 * (xy - wz)) * sy;
+    out[5]  = (1 - 2 * (xx + zz)) * sy;
+    out[6]  = (2 * (yz + wx)) * sy;
+    out[7]  = 0;
+    out[8]  = (2 * (xz + wy)) * sz;
+    out[9]  = (2 * (yz - wx)) * sz;
+    out[10] = (1 - 2 * (xx + yy)) * sz;
+    out[11] = 0;
+    out[12] = t[0];
+    out[13] = t[1];
+    out[14] = t[2];
+    out[15] = 1;
+    return out;
+}
+
+// Standard Warcraft 3 player team-color palette (0-23). Each entry is
+// the sRGB 8-bit team color the ReplaceableTextureManager bakes onto
+// the model's TeamColor slot.
+export const TEAM_COLORS = [
+    [255,   3,   3], [  0,  66, 255], [ 28, 230, 185], [ 84,   0, 129],
+    [255, 252,   1], [254, 138,  14], [ 32, 192,   0], [229,  91, 176],
+    [149, 150, 151], [126, 191, 241], [ 16,  98,  70], [ 78,  42,   4],
+    [155,   0,   0], [  0,   0, 196], [  0, 234, 255], [190, 0,   254],
+    [235, 205, 135], [248, 164, 139], [191, 255, 128], [220, 185, 235],
+    [ 40,  40,  40], [235, 240, 255], [  0, 120,   0], [164, 110,  60],
+];
+
+// ----------------------------------------------------------------------------
+// Instance — mdx-m3-viewer's per-actor handle. Wraps one ActorHandle and
+// owns its TRS state; pushes a composed Matrix44f to the renderer on every
+// mutation. All setters return `this` to mirror mdx-m3-viewer's chaining.
+// ----------------------------------------------------------------------------
+export class Instance {
+    constructor(viewer, model, actorHandle) {
+        this._viewer = viewer;
+        this._model = model;
+        this._handle = actorHandle;
+        this._M = viewer._module;
+        this._vh = viewer._handle;
+        this._location = new Float32Array(3);
+        this._rotation = new Float32Array([0, 0, 0, 1]);
+        this._scale = new Float32Array([1, 1, 1]);
+        this._visible = true;
+        this._timeScale = 1;
+        this._teamColor = 0;
+    }
+
+    // Push current TRS as a 4x4 to the renderer. When hidden, push a
+    // zero-scale matrix so the actor stays alive (detach() destroys it)
+    // but contributes nothing to the frame.
+    _pushTransform() {
+        if (!this._handle) return;
+        if (this._visible) {
+            _composeTRS(_mat, this._location, this._rotation, this._scale);
+        } else {
+            _identityMat(_mat);
+            _mat[0] = _mat[5] = _mat[10] = 0;
+        }
+        const M = this._M;
+        const ptr = M._malloc(64);
+        M.HEAPF32.set(_mat, ptr >> 2);
+        M._wf_actor_set_transform(this._vh, this._handle, ptr);
+        M._free(ptr);
+    }
+
+    setLocation(loc) {
+        this._location[0] = loc[0]; this._location[1] = loc[1]; this._location[2] = loc[2];
+        this._pushTransform();
+        return this;
+    }
+    move(d) {
+        this._location[0] += d[0]; this._location[1] += d[1]; this._location[2] += d[2];
+        this._pushTransform();
+        return this;
+    }
+    setRotation(q) {
+        this._rotation[0] = q[0]; this._rotation[1] = q[1];
+        this._rotation[2] = q[2]; this._rotation[3] = q[3];
+        this._pushTransform();
+        return this;
+    }
+    setScale(s) {
+        if (typeof s === 'number') {
+            this._scale[0] = this._scale[1] = this._scale[2] = s;
+        } else {
+            this._scale[0] = s[0]; this._scale[1] = s[1]; this._scale[2] = s[2];
+        }
+        this._pushTransform();
+        return this;
+    }
+    setUniformScale(s) {
+        this._scale[0] = this._scale[1] = this._scale[2] = +s;
+        this._pushTransform();
+        return this;
+    }
+    setTransformation(loc, rot, scale) {
+        if (loc) { this._location[0] = loc[0]; this._location[1] = loc[1]; this._location[2] = loc[2]; }
+        if (rot) { this._rotation[0] = rot[0]; this._rotation[1] = rot[1];
+                   this._rotation[2] = rot[2]; this._rotation[3] = rot[3]; }
+        if (scale) {
+            if (typeof scale === 'number') {
+                this._scale[0] = this._scale[1] = this._scale[2] = scale;
+            } else {
+                this._scale[0] = scale[0]; this._scale[1] = scale[1]; this._scale[2] = scale[2];
+            }
+        }
+        this._pushTransform();
+        return this;
+    }
+    resetTransformation() {
+        this._location[0] = this._location[1] = this._location[2] = 0;
+        this._rotation[0] = this._rotation[1] = this._rotation[2] = 0;
+        this._rotation[3] = 1;
+        this._scale[0] = this._scale[1] = this._scale[2] = 1;
+        this._pushTransform();
+        return this;
+    }
+
+    // mdx-m3-viewer accepts either a sequence index or a name. We resolve
+    // names through the actor's Sequences() list.
+    setSequence(idOrName) {
+        if (!this._handle) return this;
+        let idx = idOrName;
+        if (typeof idOrName === 'string') {
+            idx = this.getSequences().indexOf(idOrName);
+            if (idx < 0) return this;
+        }
+        this._M._wf_actor_set_sequence(this._vh, this._handle, idx | 0);
+        return this;
+    }
+    setSequenceLoopMode(mode) {
+        if (this._handle) this._M._wf_actor_set_loop_mode(this._vh, this._handle, mode | 0);
+        return this;
+    }
+    setTeamColor(id) {
+        this._teamColor = id | 0;
+        const c = TEAM_COLORS[this._teamColor] || TEAM_COLORS[0];
+        if (this._handle) this._M._wf_actor_set_team_color(this._vh, this._handle, c[0], c[1], c[2]);
+        return this;
+    }
+    setAnimationTimeMs(ms) {
+        if (this._handle) this._M._wf_actor_set_anim_time(this._vh, this._handle, ms | 0);
+        return this;
+    }
+
+    set timeScale(s) {
+        this._timeScale = +s;
+        if (this._handle) this._M._wf_actor_set_playback_speed(this._vh, this._handle, +s);
+    }
+    get timeScale() { return this._timeScale; }
+
+    show() { this._visible = true;  this._pushTransform(); return this; }
+    hide() { this._visible = false; this._pushTransform(); return this; }
+    shown()  { return this._visible; }
+    hidden() { return !this._visible; }
+
+    detach() {
+        if (!this._handle) return;
+        this._M._wf_actor_destroy(this._vh, this._handle);
+        this._handle = 0;
+        const arr = this._model._instances;
+        const i = arr.indexOf(this);
+        if (i >= 0) arr.splice(i, 1);
+    }
+
+    getSequences() {
+        if (!this._handle) return [];
+        const M = this._M;
+        const n = M._wf_actor_get_sequence_count(this._vh, this._handle);
+        if (!n) return [];
+        const CAP = 128;
+        const buf = M._malloc(CAP);
+        const out = [];
+        for (let i = 0; i < n; ++i) {
+            M._wf_actor_get_sequence_name(this._vh, this._handle, i, buf, CAP);
+            out.push(M.UTF8ToString(buf));
+        }
+        M._free(buf);
+        return out;
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Model — the loaded MDX asset. Owns the resolved-and-cached state (the
+// renderer caches the template internally once load() has run a successful
+// SpawnUnit). `addInstance()` cheaply re-spawns from that template.
+// ----------------------------------------------------------------------------
+export class Model {
+    constructor(viewer, src) {
+        this._viewer = viewer;
+        this._src = src;
+        this._mdxKey = String(src).split(/[\\/]/).pop();
+        this._instances = [];
+        this.loaded = false;
+        this.error = null;
+        this._loadPromise = null;
+    }
+
+    addInstance() {
+        if (!this.loaded) throw new Error('Model.addInstance() before load resolved');
+        const M = this._viewer._module;
+        const handle = M._wf_spawn_unit(this._viewer._handle, this._viewer._cstr(this._mdxKey));
+        if (!handle) {
+            const missing = this._viewer._drainMissing();
+            throw new Error('addInstance: wf_spawn_unit returned 0' +
+                (missing.length ? ' (missing: ' + missing.slice(0, 3).join(', ') + ')' : ''));
+        }
+        const inst = new Instance(this._viewer, this, handle);
+        this._instances.push(inst);
+        return inst;
+    }
+
+    whenLoaded() { return this._loadPromise; }
+}
+
+// ----------------------------------------------------------------------------
+// Scene — mdx-m3-viewer has many; we have one renderer-side scene. The
+// class is a thin housekeeping bucket so the host-side API shape matches.
+// ----------------------------------------------------------------------------
+export class Scene {
+    constructor(viewer) {
+        this._viewer = viewer;
+        this._instances = [];
+    }
+
+    // Accepts either a Model (creates a fresh Instance via addInstance)
+    // or an existing Instance (just tracks it).
+    addInstance(modelOrInstance) {
+        const inst = modelOrInstance instanceof Model
+            ? modelOrInstance.addInstance() : modelOrInstance;
+        if (inst && this._instances.indexOf(inst) < 0) this._instances.push(inst);
+        return inst;
+    }
+
+    removeInstance(inst) {
+        const i = this._instances.indexOf(inst);
+        if (i >= 0) this._instances.splice(i, 1);
+        if (inst) inst.detach();
+    }
+
+    clear() {
+        // Destroy each tracked actor; cheaper than wf_clear_all when the
+        // scene only owns a subset of the renderer's actors.
+        for (const inst of this._instances) {
+            if (inst._handle) this._viewer._module._wf_actor_destroy(this._viewer._handle, inst._handle);
+            inst._handle = 0;
+        }
+        this._instances.length = 0;
+    }
+}
+
 export class WhiteoutViewer {
     constructor(canvas) {
         if (!canvas) throw new Error('WhiteoutViewer: canvas required');
@@ -258,10 +535,12 @@ export class WhiteoutViewer {
         // A vivid color so the smoke test is obviously WASM-driven, not
         // a default-cleared canvas.
         this._module._wf_set_background(this._handle, 24, 56, 96); // moody blue
-        // Default to the HD (Reforged PBR) material path — most loose-
-        // file model dumps the viewer is pointed at are HD assets.
-        // Callers can flip back to SD via the same call with mode=0.
-        this._module._wf_set_render_mode(this._handle, 1);
+        // Start in SD mode. Each successful load() probes the actor's
+        // PreferredRenderMode (HD if any layer carries a non-zero BLS
+        // shaderId) and flips the global setting accordingly. Driving the
+        // HD pipeline against SD materials silently mis-blends multi-layer
+        // SD textures (the reddish wash on classic Arthas, etc.).
+        this._module._wf_set_render_mode(this._handle, 0);
 
         // Resize tracking. Canvas resize → recompute drawing buffer →
         // tell WASM to reconfigure the surface.
@@ -273,6 +552,7 @@ export class WhiteoutViewer {
         this._installCameraControls();
 
         this._lastTime = performance.now();
+        this._lazyTick = 0;
         this._loop = (now) => {
             if (!this._handle) return;
             const dt = Math.min(0.1, Math.max(0.0, (now - this._lastTime) / 1000));
@@ -280,9 +560,72 @@ export class WhiteoutViewer {
             this._module._wf_tick(this._handle, dt);
             this._module._wf_render(this._handle);
             this._raf = requestAnimationFrame(this._loop);
+            // Drain any deps the renderer just lazily discovered — corn_fx
+            // textures, per-emitter particle sounds, etc. — that didn't
+            // surface during the initial load()'s missing-list pass. The
+            // C++ resolver in render_pipeline.cpp:712 fires per-emitter
+            // during particle spawn, which happens *during render* well
+            // after load() returned. Throttled to every ~10 frames so the
+            // ABI traffic doesn't dominate the per-frame budget.
+            if ((++this._lazyTick % 10) === 0) this._drainLazyMissing();
         };
         this._raf = requestAnimationFrame(this._loop);
         return this;
+    }
+
+    // Install a path solver to use whenever the renderer surfaces a
+    // missing dep mid-render. Called by the host app (e.g. HiveApp) after
+    // the user picks a directory; reused for every subsequent frame's
+    // lazy texture / particle resolves until replaced. Resets the
+    // attempted-set so a fresh directory pick can re-try paths that
+    // failed against the previous one.
+    setPathSolver(solver) {
+        this._lazySolver = solver;
+        if (this._attemptedDeps) this._attemptedDeps.clear();
+    }
+
+    _drainLazyMissing() {
+        if (!this._lazySolver || !this._handle) return;
+        // Single in-flight slot. The corn_fx resolver retries every frame
+        // in submit() for any layer whose diffuse is still Invalid; each
+        // retry pushes 1-2 paths onto the C-side missing list. Letting
+        // them all dispatch in parallel = hundreds of duplicate fetches
+        // per second, browser per-host connection cap saturated, real
+        // work starved (this is the lag the user was hitting). Serialise
+        // to one fetch at a time: pick the first un-attempted path, hold
+        // off on the rest until it settles. `_attemptedDeps` makes sure
+        // we don't refetch a path that's already been tried once across
+        // the lifetime of this viewer.
+        if (this._lazyInFlight) return;
+        const missing = this._drainMissing();
+        if (missing.length === 0) return;
+        if (!this._attemptedDeps) this._attemptedDeps = new Set();
+
+        let pick = null;
+        for (const p of missing) {
+            if (!this._attemptedDeps.has(p)) { pick = p; break; }
+        }
+        if (!pick) return;
+        this._attemptedDeps.add(pick);
+
+        const tagLog = (s, cls) => {
+            console.log('[wf]', s);
+            const el = document.getElementById('log');
+            if (el) {
+                const ln = document.createElement('div');
+                if (cls) ln.style.color = cls;
+                ln.textContent = '[wf] ' + s;
+                el.appendChild(ln);
+                el.scrollTop = el.scrollHeight;
+            }
+        };
+        tagLog('lazy fetch ' + pick, '#7df');
+        this._lazyInFlight = true;
+        this._fetchDep(this._lazySolver, pick)
+            .then(ok => tagLog(ok ? 'lazy OK   ' + pick : 'lazy MISS ' + pick,
+                               ok ? '#9f9' : '#f88'))
+            .catch(e => tagLog('lazy ERR  ' + pick + ' ' + (e && e.message || e), '#f88'))
+            .finally(() => { this._lazyInFlight = false; });
     }
 
     _onResize() {
@@ -370,18 +713,110 @@ export class WhiteoutViewer {
     // FetchContentProvider via _wf_provider_put. All fetches in parallel.
     // ------------------------------------------------------------------
     // ------------------------------------------------------------------
-    // Load and spawn a model. The renderer's MDX adapter loads the model
-    // bytes + every texture it references through IContentProvider, so we
-    // run SpawnUnit, drain the FetchContentProvider's "missing" list,
-    // fetch those URLs in parallel, push them into the provider, and
-    // retry. A small iteration cap stops infinite loops if the server is
-    // missing a file outright; each successful iteration converges.
+    // Hive-compatible load entry point — mirrors mdx-m3-viewer's API.
     //
-    // `mdxUrl` is fetched verbatim; subsequent dependency paths are
-    // resolved relative to the URL's directory.
+    //   load(src, pathSolver) -> Promise<Model>
+    //
+    // `src` is opaque (typically a logical asset name) and is handed
+    // straight to `pathSolver` to obtain the MDX URL. Every dependency
+    // the renderer subsequently requests (textures, child-MDX, sounds)
+    // is also routed through `pathSolver`. The host page therefore owns
+    // all URL resolution; this viewer never assumes a particular CDN
+    // layout. If `pathSolver` is omitted, `src` is treated as a URL and
+    // dependencies are resolved relative to its directory — the same
+    // ergonomic shortcut mdx-m3-viewer provides.
+    //
+    // The returned Promise resolves once the renderer has spawned the
+    // actor with all its dependencies satisfied; rejects with a
+    // descriptive error if any iteration can't find a required asset.
     // ------------------------------------------------------------------
-    async loadModel(mdxUrl) {
+    async load(src, pathSolver = null) {
         if (!this._handle) throw new Error('viewer not initialised');
+
+        // Default solver: src/name is a URL or relative path the page
+        // server can resolve. Dependencies are resolved against the
+        // src's directory.
+        if (!pathSolver) {
+            const baseDir = String(src).substring(0, String(src).lastIndexOf('/') + 1);
+            pathSolver = (name) => {
+                // Bare filenames (no slash) → assume same directory as src.
+                if (typeof name !== 'string') return null;
+                if (name === src) return src;
+                if (name.indexOf('/') < 0 && name.indexOf('\\') < 0) return baseDir + name;
+                return baseDir + name;
+            };
+        }
+
+        // mdx-m3-viewer's contract: load() returns the Model synchronously
+        // and the Model resolves its load asynchronously. To stay
+        // promise-friendly while still exposing model.whenLoaded(), we
+        // build the Model up front, stash the in-flight Promise on it, and
+        // await the whole thing here so callers can `await viewer.load()`.
+        const model = new Model(this, src);
+        if (!this._models) this._models = [];
+        this._models.push(model);
+        model._loadPromise = this._loadInternal(src, pathSolver, model);
+        await model._loadPromise;
+        return model;
+    }
+
+    // Convenience wrapper — load + auto-create the first Instance. Mirrors
+    // mdx-m3-viewer's `instance = model.addInstance()` shorthand for the
+    // very common single-instance use case (and our older smoke harness).
+    async loadModel(mdxUrl) {
+        const model = await this.load(mdxUrl);
+        return model.addInstance();
+    }
+
+    // Resolve a list of in-flight Model loads to completion. Mirrors
+    // mdx-m3-viewer's `viewer.whenAllLoaded(models, cb)` — supports both
+    // the callback form (legacy) and a Promise return for `await`.
+    whenAllLoaded(models, cb) {
+        const p = Promise.all(models.map(m => m._loadPromise || Promise.resolve(m)));
+        if (typeof cb === 'function') p.then(() => cb(models));
+        return p;
+    }
+
+    // mdx-m3-viewer's snapshot API. Defers a rAF so the latest in-flight
+    // frame has flushed before reading pixels.
+    toBlob(cb, type, quality) {
+        requestAnimationFrame(() => this.canvas.toBlob(cb, type, quality));
+    }
+
+    // Public wrappers around the camera C facade for UI button handlers
+    // (Cameras → Reset). The pointer/wheel installer in init() drives the
+    // same C entries; these just give app code a named hook.
+    resetCamera() {
+        if (this._handle) this._module._wf_camera_reset(this._handle);
+    }
+
+    // Probe the freshly-spawned actor for its preferred render mode and
+    // flip the global SettingsView::RenderMode accordingly. Mirrors the
+    // desktop viewer's `Settings().SetRenderMode(hero->PreferredRenderMode())`
+    // call after spawn (tools/basic_viewer/viewer_app.cpp). The wf side
+    // returns 1 for HD (any layer with a non-zero BLS shaderId), 0 for SD.
+    _applyPreferredRenderMode(actorHandle) {
+        if (!this._handle || !actorHandle) return;
+        const M = this._module;
+        if (!M._wf_actor_preferred_render_mode) return; // older wasm build
+        const mode = M._wf_actor_preferred_render_mode(this._handle, actorHandle);
+        M._wf_set_render_mode(this._handle, mode);
+    }
+
+    // No-op compat with mdx-m3-viewer's handler-registration API. Our
+    // build statically knows how to parse MDX/BLP/MDL.
+    addHandler() { /* intentionally empty */ }
+
+    // Single scene by design; addScene() returns the singleton so host
+    // code that calls `viewer.addScene()` keeps working.
+    addScene() { return this.scene; }
+
+    get scene() {
+        if (!this._scene) this._scene = new Scene(this);
+        return this._scene;
+    }
+
+    async _loadInternal(src, pathSolver, model) {
         const M = this._module;
         // Dual-channel logger so the iteration trace shows up on the
         // on-page log AND in devtools console. We need it visible
@@ -398,28 +833,68 @@ export class WhiteoutViewer {
             }
         };
 
-        // Pull mdxUrl bytes and stash under a renderer-style relative path.
-        // The C side calls SpawnUnit with a path string we choose; the
-        // renderer's content provider keys on that same string when it
-        // turns around to load this MDX again, so we both `Put` it and
-        // pass the same key to SpawnUnit.
+        // Pause the render loop for the duration of the load. The renderer
+        // tracks textures by handle and Scene().Update() processes deferred
+        // actor destructions, both of which can collide with an in-flight
+        // SpawnUnit when a frame interleaves with our destroy + re-parse
+        // between iterations. The console "eviction race" warnings and the
+        // wasm Aborted() on iter 2 trace back to this race. Pausing rAF
+        // here means the canvas stops updating during a load (acceptable —
+        // there's nothing useful to draw yet) but the page itself stays
+        // fully interactive (sidebar buttons, scroll, etc).
+        const renderWasRunning = this._raf !== 0;
+        if (renderWasRunning) {
+            cancelAnimationFrame(this._raf);
+            this._raf = 0;
+        }
+        // Step the engine once so any cleanup deferred from before the
+        // load (e.g. a previous model's actors flagged via detach()) gets
+        // applied before we start spawning a new actor.
+        const flushTick = () => M._wf_tick(this._handle, 0);
+        flushTick();
+
+        try {
+            return await this._loadInternalImpl(src, pathSolver, model, log, flushTick);
+        } finally {
+            if (renderWasRunning && this._handle) {
+                this._lastTime = performance.now();
+                this._raf = requestAnimationFrame(this._loop);
+            }
+        }
+    }
+
+    async _loadInternalImpl(src, pathSolver, model, log, flushTick) {
+        const M = this._module;
+
+        // Resolve the MDX URL through pathSolver, fetch it, push bytes
+        // under a stable in-provider key. The C side calls SpawnUnit
+        // with that same key, so the renderer's provider lookups for
+        // the MDX itself always hit.
+        const mdxUrl = await Promise.resolve(pathSolver(src));
+        if (!mdxUrl) throw new Error('pathSolver returned no URL for src: ' + src);
+        log('load: fetching MDX ' + mdxUrl);
         const mdxResp = await fetch(mdxUrl, { cache: 'no-store' });
         if (!mdxResp.ok) throw new Error('fetch MDX failed: ' + mdxResp.status);
         const mdxBytes = new Uint8Array(await mdxResp.arrayBuffer());
-        const mdxKey = mdxUrl.split('/').pop();      // bare filename as the key
-        const baseDir = mdxUrl.substring(0, mdxUrl.lastIndexOf('/') + 1); // for deps
+        const mdxKey = String(src).split(/[\\/]/).pop();   // basename as the key
         this._putBytes(mdxKey, mdxBytes);
 
         // PE1 emitter child-MDX paths resolve against this base, same
-        // convention as the desktop viewer (parent of the loaded model).
-        this._setPe1Base(baseDir.replace(/^\.?\/?/, ''));   // strip leading ./
-
-        // Clear any prior actor before spawning.
-        M._wf_clear_all(this._handle);
+        // convention as the desktop viewer (parent of the loaded
+        // model). For Hive-style pathSolvers we don't actually know a
+        // filesystem-shape base; the renderer just hands the bare
+        // PE1-referenced names to pathSolver during iteration, so the
+        // base path is informational only here.
+        const srcDir = String(src).substring(0, String(src).lastIndexOf('/') + 1);
+        if (srcDir) this._setPe1Base(srcDir.replace(/^\.?\/?/, ''));
 
         // Iteratively spawn and satisfy missing deps. Max 6 iterations —
         // typical WC3 model has texture deps in one shot, plus occasional
-        // child-MDX + sound which surface on the next.
+        // child-MDX + sound which surface on the next. The final
+        // successful SpawnUnit's actor becomes the Model's first
+        // Instance (mdx-m3-viewer parity: the host calls model.addInstance()
+        // for additional copies). We destroy ONLY the in-flight retry
+        // actor between iterations — other models' instances live on.
         for (let iter = 1; iter <= 6; ++iter) {
             log('iter ' + iter + ': calling wf_spawn_unit("' + mdxKey + '")');
             const handle = M._wf_spawn_unit(this._handle, this._cstr(mdxKey));
@@ -428,22 +903,53 @@ export class WhiteoutViewer {
                 (missing.length ? ' first=' + missing[0] : ''));
             if (handle && missing.length === 0) {
                 log('spawn OK after ' + iter + ' iter(s)');
-                return handle;
+                this._applyPreferredRenderMode(handle);
+                model.loaded = true;
+                const inst = new Instance(this, model, handle);
+                model._instances.push(inst);
+                return model;
             }
             if (missing.length === 0) {
-                throw new Error('SpawnUnit returned 0 with no missing-deps; check logs');
+                model.error = new Error('SpawnUnit returned 0 with no missing-deps');
+                throw model.error;
             }
+            // Fetch the missing deps in parallel; bail the retry loop
+            // early if NOTHING was satisfied — re-parsing wouldn't make
+            // progress and the next SpawnUnit would just abort on the
+            // same exotic refs (third-party .pkfx, deleted units, etc.).
             log('fetching ' + missing.length + ' dep(s)…');
             const results = await Promise.all(missing.map(async p => {
-                const ok = await this._fetchDep(baseDir, p);
+                const ok = await this._fetchDep(pathSolver, p);
                 return { p, ok };
             }));
             const hits = results.filter(r => r.ok).length;
             log('  fetched ' + hits + '/' + results.length + ' OK');
-            M._wf_clear_all(this._handle);            // destroy actors
-            M._wf_clear_template_cache(this._handle); // evict cached MDX with stale TextureData
+            if (hits === 0 && handle) {
+                // No new bytes available — accept the partial actor with
+                // placeholder textures rather than risk another iteration
+                // re-parsing into the same hole. Renders w/ missing
+                // assets stubbed but doesn't abort the page.
+                log('  no new deps satisfied — keeping iter ' + iter + ' actor');
+                this._applyPreferredRenderMode(handle);
+                model.loaded = true;
+                const inst = new Instance(this, model, handle);
+                model._instances.push(inst);
+                return model;
+            }
+
+            // Tear the actor down and wipe the template, then explicitly
+            // tick (rAF is paused) so the deferred destroy + texture
+            // eviction process BEFORE the next SpawnUnit. Without this
+            // flush the resource manager hits an eviction race against
+            // the freshly-rebuilt template and the wasm aborts.
+            if (handle) M._wf_actor_destroy(this._handle, handle);
+            M._wf_clear_template_cache(this._handle);
+            flushTick();
+            // Yield to the browser so any pending microtasks / GC settle.
+            await new Promise(r => setTimeout(r, 0));
         }
-        throw new Error('loadModel: still resolving deps after 6 iterations');
+        model.error = new Error('load: still resolving deps after 6 iterations');
+        throw model.error;
     }
 
     // Drain the C-side missing list into a JS array of strings.
@@ -462,31 +968,22 @@ export class WhiteoutViewer {
         return out;
     }
 
-    // Fetch one dependency (path is whatever the renderer asked for —
-    // forward slashes, mixed case, may include leading directories) and
-    // push the bytes back into the provider UNDER THE ACTUAL EXTENSION
-    // THAT WAS FOUND. The provider walks the WC3 texture/model alt-ext
-    // synonym chains on lookup, so storing as `foo.dds` is enough for a
-    // `Request("foo.tif")` to resolve correctly with the right
-    // actualExt reported back to the texture decoder.
-    async _fetchDep(baseDir, relPath) {
+    // Fetch one dependency. `pathSolver(name)` returns the URL (or
+    // Promise<URL>) for an asset name. We feed each candidate
+    // (extension synonyms + filename-only stem) through the same
+    // pathSolver so a host page can map them however it likes — Hive's
+    // existing CDN convention, a directory-relative server, or in-memory
+    // bytes (pathSolver may return a `data:` URL). The provider stores
+    // the bytes under the actual-extension key so the WC3 alt-ext
+    // synonym walk in fetch_content_provider.cpp resolves the
+    // renderer's request and reports the correct `actualExt`.
+    async _fetchDep(pathSolver, relPath) {
         const fwd = relPath.replaceAll('\\', '/');
         const slash = fwd.lastIndexOf('/');
-        const filename = slash >= 0 ? fwd.slice(slash + 1) : fwd;
         const dot = fwd.lastIndexOf('.');
         const stemFull = dot > 0 ? fwd.slice(0, dot) : fwd;
-        const stemBase = (slash >= 0 ? stemFull.slice(slash + 1) : stemFull);
-        const origExt = dot > 0 ? fwd.slice(dot).toLowerCase() : '';
-
-        // Two path-shapes — mirrors FileResolver's `basePath / relPath` +
-        // `basePath / filename`. The renderer's MDX often references a
-        // texture with a `units/.../foo.tif` prefix, but loose-file dumps
-        // tend to put `foo.dds` directly in the model directory.
-        // Try as-given first, then filename-only. Also try with the
-        // SERVED ROOT as the base (no model-dir prefix) — that's where
-        // shared assets like Environment/EnvironmentMap/... and DNC live.
-        const pathStems = [stemFull, stemBase].filter((s, i, a) => a.indexOf(s) === i);
-        const baseDirs = [baseDir, './'];
+        const stemBase = slash >= 0 ? stemFull.slice(slash + 1) : stemFull;
+        const origExt  = dot > 0 ? fwd.slice(dot).toLowerCase() : '';
 
         // Extension synonym chain mirrors FileResolver::kTextureExts /
         // kModelExts. Requested ext first to keep the happy path single-fetch.
@@ -497,27 +994,25 @@ export class WhiteoutViewer {
         else if (MDL.includes(origExt)) exts = [origExt, ...MDL.filter(e => e !== origExt)];
         else                            exts = [origExt];
 
-        for (const dir of baseDirs) {
-            for (const stem of pathStems) {
-                for (const ext of exts) {
-                    const candPath = stem + ext;
-                    const url = dir + candPath;
-                    try {
-                        const r = await fetch(url, { cache: 'no-store' });
-                        if (!r.ok) continue;
-                        const bytes = new Uint8Array(await r.arrayBuffer());
-                        // Store ONLY under the actual-extension key. The
-                        // provider walks the WC3 alt-ext synonym chain on
-                        // miss and reports back actualExt = the extension
-                        // it actually found, which the texture decoder
-                        // branches on. Storing under the requested `.tif`
-                        // key would make the provider hit that exact key
-                        // first and report `.tif` for DDS bytes — wrong
-                        // decoder path.
-                        this._putBytes(candPath, bytes);
-                        return true;
-                    } catch (_) {/* try next */}
-                }
+        // Two path shapes — FileResolver tries `relPath` AND `filename
+        // only`. Loose-file dumps often put `foo.dds` directly in the
+        // model directory while the MDX references `units/.../foo.tif`.
+        const stems = [stemFull, stemBase].filter((s, i, a) => a.indexOf(s) === i);
+
+        for (const stem of stems) {
+            for (const ext of exts) {
+                const candName = stem + ext;
+                let url;
+                try { url = await Promise.resolve(pathSolver(candName)); }
+                catch (_) { continue; }
+                if (!url) continue;
+                try {
+                    const r = await fetch(url, { cache: 'no-store' });
+                    if (!r.ok) continue;
+                    const bytes = new Uint8Array(await r.arrayBuffer());
+                    this._putBytes(candName, bytes);
+                    return true;
+                } catch (_) {/* try next */}
             }
         }
         console.warn('[wf] dep MISS (all candidates failed): ' + relPath);
@@ -549,15 +1044,29 @@ export class WhiteoutViewer {
     }
 
     // Prefetch the engine-wide assets wf_init reads before any model
-    // is loaded: the default IBL probe and the DNC unit MDX. Paths
-    // mirror what the renderer's DncService + IblProbe loaders ask for.
+    // is loaded: the default IBL probe and the DNC unit MDX. These are
+    // OUR engine's prerequisites, not the host page's content.
+    //
+    // Tries two locations in order, falling through on miss:
+    //   1. `engineAssetRoot` (default `./`) — useful for dev / committed
+    //      assets sitting next to the viewer page.
+    //   2. `/casc/<path>` — the wf_casc_server route, which streams from a
+    //      live WC3 install. Same shape Hiveworkshop's CASC delivery uses.
+    // Override `engineAssetRoot` (string, with trailing slash) before
+    // calling init() — e.g. for a CDN that pins these to a versioned path.
     async _prefetchEngineAssets() {
+        const root = this.engineAssetRoot || './';
         const ENGINE = [
             'Environment/EnvironmentMap/Portraits/PortraitDefault_IBL.dds',
             'Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdx',
             'Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdl',
         ];
-        await Promise.all(ENGINE.map(p => this._fetchDep('./', p)));
+        const localSolver = (name) => root + name;
+        const cascSolver  = (name) => '/casc/' + name;
+        await Promise.all(ENGINE.map(async (p) => {
+            const ok = await this._fetchDep(localSolver, p);
+            if (!ok) await this._fetchDep(cascSolver, p);
+        }));
     }
 
     async _prefetchShaders() {

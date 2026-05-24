@@ -93,6 +93,14 @@ public:
     /// @brief Camera presets attached to this actor's source model.
     std::vector<CameraPreset> CameraPresets() const;
 
+    /// @brief Render mode the actor's template expects (`HD` if any
+    ///        material layer uses a non-zero BLS shaderId, else `SD`).
+    ///        Hosts call this after `SpawnUnit` and forward to
+    ///        `SettingsView::SetRenderMode` so SD models don't render
+    ///        through the HD pipeline (which mis-blends multi-layer SD
+    ///        materials) and vice-versa.
+    RenderMode PreferredRenderMode() const;
+
 private:
     ActorView(detail::RendererImpl* impl, ActorHandle h) : impl_(impl), handle_(h) {}
     detail::RendererImpl* impl_;

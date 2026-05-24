@@ -201,6 +201,11 @@ public:
     /// @brief Defer-destroy every actor currently in the scene.
     void RequestClearAll();
 
+    /// @brief Destroy a single actor by handle. Used by JS wrappers
+    ///        that expose mdx-m3-viewer-style `instance.detach()` /
+    ///        `instance.hide()` semantics.
+    void Destroy(ActorHandle handle);
+
     /// @brief Evict every cached model template. Use this when the
     ///        host has changed the content provider's view of an MDX
     ///        file (e.g. the web build's loader fetches more bytes

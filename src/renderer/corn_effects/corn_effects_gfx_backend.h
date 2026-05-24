@@ -72,6 +72,13 @@ public:
 private:
     struct LayerState {
         gfx::TextureHandle diffuse = gfx::TextureHandle::Invalid;
+        // Source path kept around so submit() can retry the resolver when
+        // diffuse stayed Invalid through prepare(). Web build relevance:
+        // textures often arrive in the content provider AFTER prepare()
+        // (cold-fetched on the JS side when the first miss surfaces),
+        // so without this retry the layer renders against a white fallback
+        // forever even once bytes are in the cache.
+        std::string diffusePath;
         bool isDistortion = false;
         bool renderable = false;
         u16 atlasX = 0;

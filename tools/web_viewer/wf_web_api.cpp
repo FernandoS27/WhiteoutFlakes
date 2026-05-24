@@ -265,6 +265,107 @@ void wf_clear_template_cache(WfRenderer* h) {
     h->renderer.Loader().ClearTemplateCache();
 }
 
+// ----------------------------------------------------------------------------
+// Actor controls — wraps ActorView so the JS Instance class can mirror
+// mdx-m3-viewer's per-instance API (setSequence, setTransform, setTeamColor,
+// timeScale, detach, etc.).
+// ----------------------------------------------------------------------------
+
+void wf_actor_destroy(WfRenderer* h, uint32_t actor) {
+    if (!h) return;
+    h->renderer.Loader().Destroy(actor);
+}
+
+// Push a row-major 4x4 transform straight from JS HEAPF32. The renderer
+// expects Matrix44f (column-vector convention) but the bytes are
+// identical to a row-major matrix when both sides agree on storage
+// order; JS callers compose location/rotation/scale and write 16 floats.
+void wf_actor_set_transform(WfRenderer* h, uint32_t actor, const float* m) {
+    if (!h || !m) return;
+    auto av = h->renderer.Actor(actor);
+    if (!av.IsValid()) return;
+    whiteout::flakes::Matrix44f mat;
+    std::memcpy(&mat, m, sizeof(float) * 16);
+    av.SetTransform(mat);
+}
+
+void wf_actor_set_sequence(WfRenderer* h, uint32_t actor, int seqIdx) {
+    if (!h) return;
+    auto av = h->renderer.Actor(actor);
+    if (av.IsValid()) av.SetActiveSequence(seqIdx);
+}
+
+// Returns the render mode the actor's template prefers (0 = SD,
+// 1 = HD). JS calls this after wf_spawn_unit and forwards the result to
+// wf_set_render_mode so SD-shader models don't render through the HD
+// pipeline (which incorrectly blends multi-layer SD materials).
+int wf_actor_preferred_render_mode(WfRenderer* h, uint32_t actor) {
+    if (!h) return 0;
+    auto av = h->renderer.Actor(actor);
+    if (!av.IsValid()) return 0;
+    return av.PreferredRenderMode() == whiteout::flakes::RenderMode::HD ? 1 : 0;
+}
+
+// Maps mdx-m3-viewer's loop modes (0=never, 1=per-model, 2=always) onto
+// our renderer's `ignoreNonLooping` flag. When ignoreNonLooping=true the
+// renderer holds the last frame of non-looping sequences (mode 0).
+// Modes 1 and 2 both let sequences loop per their MDX flag — we don't
+// distinguish them on the renderer side.
+void wf_actor_set_loop_mode(WfRenderer* h, uint32_t actor, int mode) {
+    if (!h) return;
+    auto av = h->renderer.Actor(actor);
+    if (av.IsValid()) av.SetIgnoreNonLooping(mode == 0);
+}
+
+void wf_actor_set_team_color(WfRenderer* h, uint32_t actor, int r, int g, int b) {
+    if (!h) return;
+    auto av = h->renderer.Actor(actor);
+    if (!av.IsValid()) return;
+    auto clamp8 = [](int v) -> uint8_t {
+        if (v < 0) return 0;
+        if (v > 255) return 255;
+        return static_cast<uint8_t>(v);
+    };
+    av.SetTeamColor(clamp8(r), clamp8(g), clamp8(b));
+}
+
+void wf_actor_set_playback_speed(WfRenderer* h, uint32_t actor, float speed) {
+    if (!h) return;
+    auto av = h->renderer.Actor(actor);
+    if (av.IsValid()) av.SetPlaybackSpeed(speed);
+}
+
+void wf_actor_set_anim_time(WfRenderer* h, uint32_t actor, int ms) {
+    if (!h) return;
+    auto av = h->renderer.Actor(actor);
+    if (av.IsValid()) av.SetAnimationTimeMs(ms);
+}
+
+int wf_actor_get_sequence_count(WfRenderer* h, uint32_t actor) {
+    if (!h) return 0;
+    auto av = h->renderer.Actor(actor);
+    if (!av.IsValid()) return 0;
+    return static_cast<int>(av.Sequences().size());
+}
+
+// Copy the i'th sequence name (null-terminated) into the JS-supplied
+// buffer. Returns the number of bytes written (excluding the trailing
+// NUL) or 0 on error.
+int wf_actor_get_sequence_name(WfRenderer* h, uint32_t actor, int idx,
+                               char* outBuf, int bufCap) {
+    if (!h || !outBuf || bufCap <= 0) return 0;
+    auto av = h->renderer.Actor(actor);
+    if (!av.IsValid()) return 0;
+    const auto seqs = av.Sequences();
+    if (idx < 0 || idx >= static_cast<int>(seqs.size())) return 0;
+    const std::string& s = seqs[idx].name;
+    const int n = static_cast<int>(std::min<std::size_t>(
+        s.size(), static_cast<std::size_t>(bufCap - 1)));
+    std::memcpy(outBuf, s.data(), n);
+    outBuf[n] = '\0';
+    return n;
+}
+
 // ---- Missing-paths retrieval ------------------------------------------------
 // JS calls wf_provider_missing_count() after SpawnUnit fails / partially
 // resolves to learn how many files the renderer requested that weren't in

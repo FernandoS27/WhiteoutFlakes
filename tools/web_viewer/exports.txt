@@ -19,5 +19,15 @@ _wf_set_pe1_base
 _wf_spawn_unit
 _wf_clear_all
 _wf_clear_template_cache
+_wf_actor_destroy
+_wf_actor_set_transform
+_wf_actor_set_sequence
+_wf_actor_set_loop_mode
+_wf_actor_set_team_color
+_wf_actor_set_playback_speed
+_wf_actor_set_anim_time
+_wf_actor_get_sequence_count
+_wf_actor_get_sequence_name
+_wf_actor_preferred_render_mode
 _wf_provider_missing_count
 _wf_provider_missing_get

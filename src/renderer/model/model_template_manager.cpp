@@ -56,9 +56,34 @@ std::shared_ptr<ModelTemplate> ModelTemplateManager::GetOrLoadAsync(const std::s
     {
         std::lock_guard<std::mutex> lock(cacheMutex_);
         auto it = cache_.find(mdxPath);
+        // Under EMSCRIPTEN the loader-thread Tick never runs, so a cached
+        // null would pin a failed-once template forever — re-try on the
+        // calling thread instead. The JS lazy drain ferries the missing
+        // bytes into the content provider as cold paths surface, so the
+        // next frame's attempt parses cleanly. On desktop the worker thread
+        // owns retries, so we honour the cached null there.
+#if defined(__EMSCRIPTEN__)
+        if (it != cache_.end() && it->second)
+            return it->second;
+#else
         if (it != cache_.end())
             return it->second;
+#endif
     }
+#if defined(__EMSCRIPTEN__)
+    // Web build has no loader thread (see ctor). ParseAndBuild is safe to
+    // call from the render thread because the FetchContentProvider's
+    // Request resolves synchronously against its in-memory cache — Wait()
+    // never blocks. A null return here just means "bytes not yet Put"; the
+    // caller (frame_ticker) skips the child this frame, JS drains the
+    // miss, and the next frame the template builds.
+    auto tmpl = ParseAndBuild(mdxPath);
+    if (tmpl) {
+        std::lock_guard<std::mutex> lock(cacheMutex_);
+        cache_[mdxPath] = tmpl;
+    }
+    return tmpl;
+#else
     {
         std::lock_guard<std::mutex> lock(queueMutex_);
         if (loadPending_.count(mdxPath))
@@ -68,6 +93,7 @@ std::shared_ptr<ModelTemplate> ModelTemplateManager::GetOrLoadAsync(const std::s
     }
     queueCV_.notify_one();
     return nullptr;
+#endif
 }
 
 std::shared_ptr<ModelTemplate> ModelTemplateManager::GetOrLoadSync(const std::string& mdxPath) {

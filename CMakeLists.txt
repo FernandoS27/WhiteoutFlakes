@@ -1287,6 +1287,24 @@ if(WDX_BUILD_MAX_PLUGIN)
     add_subdirectory(tools/max_plugin)
 endif()
 
+# ---- CASC dev server -----------------------------------------------------
+# Opt-in Crow HTTP server that fronts WhiteoutLib's CASC reader, used to
+# feed real WC3 assets to the WASM viewer over a local origin (imitates
+# Hiveworkshop's CASC-backed asset delivery). The Crow dep is fetched
+# inside the subdirectory so it's scoped to this target only.
+option(WDX_BUILD_CASC_SERVER
+    "Build the wf_casc_server tool (Crow HTTP server + WhiteoutLib CASC)"
+    OFF)
+if(WDX_BUILD_CASC_SERVER)
+    if(NOT WHITEOUT_ENABLE_CASC)
+        message(FATAL_ERROR
+            "WDX_BUILD_CASC_SERVER=ON requires WHITEOUT_ENABLE_CASC=ON.")
+    endif()
+    # Lives under tools/web_viewer/ since it exists to feed the web viewer
+    # — CASC-backed loose-file delivery imitating Hiveworkshop's service.
+    add_subdirectory(tools/web_viewer/casc_server)
+endif()
+
 endif()  # NOT EMSCRIPTEN — standalone viewer block
 
 # ---- Web viewer: WASM module + JS facade (Emscripten only) ----

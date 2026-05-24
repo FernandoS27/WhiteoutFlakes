@@ -2,88 +2,203 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>WhiteoutFlakes — Phase 1 clear-color test</title>
+<title>WhiteoutFlakes — Viewer</title>
 <style>
-  html, body { margin:0; padding:0; height:100%; background:#0a0a0a; color:#eee;
-               font:14px/1.4 system-ui,-apple-system,Segoe UI,sans-serif; }
-  body { display:flex; flex-direction:column; padding:16px; gap:8px; }
-  h1 { margin:0; font-size:16px; font-weight:500; color:#888; }
-  #wf-canvas { flex:1; display:block; min-height:0; background:#000;
-               border:1px solid #222; }
-  #log { font-family:Consolas,Menlo,monospace; font-size:12px;
-         color:#aaa; white-space:pre-wrap; max-height:8em; overflow:auto; }
-  #log .err { color:#f88; }
+  :root {
+    --bg:             #0a0a0a;
+    --bg-canvas:      #000;
+    --panel:          #0e0e0e;
+    --accent:         #f0c33c;
+    --accent-bright:  #ffe48a;
+    --selected:       #5a1c0c;
+    --selected-text:  #ffe9a0;
+    --divider:        #1f1f1f;
+    --btn-border:     #7a5a18;
+    --topbar-border:  #3a2a08;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--accent);
+    font: 13px/1.4 "Trebuchet MS", "Segoe UI", Arial, sans-serif;
+  }
+  body { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; user-select: none; }
+
+  /* ---- Top bar (Hive's "View in 3D" header + close X) ---- */
+  #topbar {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 14px; background: var(--bg);
+    border-bottom: 1px solid var(--topbar-border);
+  }
+  #topbar .title  { font-size: 18px; color: var(--accent); font-weight: 600; letter-spacing: 0.2px; }
+  #topbar .close  { font-size: 22px; line-height: 1; color: var(--accent);
+                    cursor: pointer; padding: 0 8px; }
+  #topbar .close:hover { color: var(--accent-bright); }
+
+  /* ---- Main area: canvas + sidebar ---- */
+  #main {
+    display: grid; grid-template-columns: 1fr 280px;
+    min-height: 0; min-width: 0;
+  }
+  #canvas-wrap { background: var(--bg-canvas); position: relative;
+                 min-width: 0; min-height: 0; overflow: hidden; }
+  #wf-canvas   { width: 100%; height: 100%; display: block; }
+
+  #sidebar {
+    background: var(--panel);
+    padding: 6px 12px 14px;
+    overflow-y: auto;
+    border-left: 1px solid var(--divider);
+  }
+  #sidebar h2 {
+    font-size: 15px;
+    margin: 14px 0 4px 0;
+    color: var(--accent);
+    font-weight: 600;
+    border-bottom: 1px solid var(--divider);
+    padding-bottom: 2px;
+  }
+  #sidebar h2:first-of-type { margin-top: 6px; }
+  #sidebar ul { list-style: none; margin: 0; padding: 0; }
+  #sidebar ul li {
+    padding: 3px 8px; cursor: pointer; color: var(--accent);
+    border-radius: 1px;
+  }
+  #sidebar ul li:hover    { color: var(--accent-bright); }
+  #sidebar ul li.selected {
+    background: var(--selected); color: var(--selected-text);
+    font-weight: 600;
+  }
+  #sidebar ul li.empty    { color: #5a5a5a; cursor: default; }
+  #sidebar ul li.empty:hover { color: #5a5a5a; }
+
+  #open-dir {
+    background: transparent; color: var(--accent);
+    border: 1px solid var(--btn-border);
+    padding: 4px 8px; cursor: pointer; font: inherit;
+    margin: 2px 0 6px 0; width: 100%;
+  }
+  #open-dir:hover  { background: #1a1408; color: var(--accent-bright); }
+  #open-dir:active { background: #281e10; }
+
+  /* ---- Swatch grids (Team colors / Background) ---- */
+  .swatch-grid {
+    display: grid; gap: 2px;
+    padding: 2px 0;
+  }
+  #team-swatches { grid-template-columns: repeat(6, 1fr); }
+  #bg-swatches   { grid-template-columns: repeat(7, 1fr); }
+  .swatch {
+    width: 100%; aspect-ratio: 1;
+    cursor: pointer;
+    border: 1px solid #000;
+  }
+  .swatch:hover { outline: 1px solid var(--accent-bright); outline-offset: -1px; }
+
+  /* ---- Bottom log strip ---- */
+  #log {
+    max-height: 84px;
+    overflow-y: auto;
+    background: #050505; color: #888;
+    font: 11px/1.35 Consolas, "Courier New", monospace;
+    padding: 4px 10px;
+    border-top: 1px solid var(--divider);
+    white-space: pre-wrap;
+  }
+  #log .err { color: #f88; }
 </style>
 </head>
 <body>
-  <h1>WhiteoutFlakes — Phase 1 clear-color milestone</h1>
-  <canvas id="wf-canvas"></canvas>
+  <div id="topbar">
+    <span class="title">View in 3D</span>
+    <span id="close-btn" class="close" title="Close">×</span>
+  </div>
+  <div id="main">
+    <div id="canvas-wrap"><canvas id="wf-canvas"></canvas></div>
+    <aside id="sidebar">
+      <h2>Models</h2>
+      <button id="open-dir">Open directory…</button>
+      <input id="dir-input" type="file" webkitdirectory multiple style="display:none">
+      <ul id="model-list">
+        <li class="empty">(pick a directory to populate)</li>
+      </ul>
+
+      <h2>Team colors</h2>
+      <div id="team-swatches" class="swatch-grid"></div>
+
+      <h2>Background</h2>
+      <div id="bg-swatches" class="swatch-grid"></div>
+
+      <h2>Animations</h2>
+      <ul id="anim-list">
+        <li class="empty">(no model loaded)</li>
+      </ul>
+
+      <h2>Cameras</h2>
+      <ul>
+        <li id="cam-reset">Reset</li>
+      </ul>
+    </aside>
+  </div>
   <div id="log"></div>
-<script>
-  // Web Crypto enforces a 65,536-byte cap on getRandomValues per call,
-  // but Emscripten's libc init asks for ~294 KB in one shot. Wrap before
-  // any module loads. Plain <script> (not module) runs synchronously
-  // before the <script type="module"> below.
-  (function () {
-    const MAX = 65536;
-    const native = crypto.getRandomValues.bind(crypto);
-    crypto.getRandomValues = function (buf) {
-      if (!buf || buf.byteLength <= MAX) return native(buf);
-      const u8 = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-      for (let off = 0; off < u8.length; off += MAX) {
-        native(u8.subarray(off, Math.min(off + MAX, u8.length)));
-      }
-      return buf;
+
+  <script>
+    // Web Crypto enforces a 65,536-byte cap on getRandomValues per call,
+    // but Emscripten's libc init asks for ~294 KB in one shot. Wrap before
+    // any module loads. Plain <script> (not module) runs synchronously
+    // before the <script type="module"> below.
+    (function () {
+      const MAX = 65536;
+      const native = crypto.getRandomValues.bind(crypto);
+      crypto.getRandomValues = function (buf) {
+        if (!buf || buf.byteLength <= MAX) return native(buf);
+        const u8 = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+        for (let off = 0; off < u8.length; off += MAX) {
+          native(u8.subarray(off, Math.min(off + MAX, u8.length)));
+        }
+        return buf;
+      };
+    })();
+  </script>
+  <script type="module">
+    const logEl = document.getElementById('log');
+    const log = (s, cls) => {
+      const ln = document.createElement('div');
+      if (cls) ln.className = cls;
+      ln.textContent = s;
+      logEl.appendChild(ln);
+      logEl.scrollTop = logEl.scrollHeight;
     };
-  })();
-</script>
-<script type="module">
-  const logEl = document.getElementById('log');
-  const log = (s, cls) => {
-    const line = document.createElement('div');
-    if (cls) line.className = cls;
-    line.textContent = s;
-    logEl.appendChild(line);
-    logEl.scrollTop = logEl.scrollHeight;
-  };
-  // Many WebGPU/Emscripten errors are bare strings or DOMException
-  // objects whose .message is empty — stringify the whole thing so the
-  // diagnostic doesn't collapse to "[object Object]".
-  const describe = (e) => {
-    if (!e) return String(e);
-    if (typeof e === 'string') return e;
-    const parts = [];
-    if (e.name) parts.push(e.name);
-    if (e.message) parts.push(e.message);
-    // Our build uses DISABLE_EXCEPTION_CATCHING=1 — C++ throws abort
-    // instead of propagating, so excPtr-decoding helpers aren't shipped.
-    // Surface what we can directly if a thrown object reaches JS.
-    if (e.excPtr !== undefined) {
-      parts.push('C++ exception (excPtr=' + e.excPtr +
-                 '; catching disabled — see wf_last_error)');
-    }
-    if (parts.length === 0) {
-      try { parts.push(JSON.stringify(e)); } catch { parts.push(Object.prototype.toString.call(e)); }
-    }
-    if (e.stack) parts.push('\n' + e.stack);
-    return parts.join(': ');
-  };
-  window.addEventListener('error', (e) => log('ERROR ' + describe(e.error || e), 'err'));
-  window.addEventListener('unhandledrejection',
+    const describe = (e) => {
+      if (!e) return String(e);
+      if (typeof e === 'string') return e;
+      const parts = [];
+      if (e.name)    parts.push(e.name);
+      if (e.message) parts.push(e.message);
+      if (parts.length === 0) {
+        try { parts.push(JSON.stringify(e)); }
+        catch { parts.push(Object.prototype.toString.call(e)); }
+      }
+      if (e.stack) parts.push('\n' + e.stack);
+      return parts.join(': ');
+    };
+    window.addEventListener('error',
+      (e) => log('ERROR ' + describe(e.error || e), 'err'));
+    window.addEventListener('unhandledrejection',
       (e) => log('REJECT ' + describe(e.reason), 'err'));
 
-  try {
-    const { WhiteoutViewer } = await import('./wf-viewer.js');
-    log('Module loaded.');
-    log('navigator.gpu = ' + (navigator.gpu ? 'present' : 'MISSING'));
-    const v = new WhiteoutViewer(document.getElementById('wf-canvas'));
-    await v.init();
-    log('Renderer initialised. rAF loop running. Canvas should be a moody blue.');
-    window.__wf = v; // for ad-hoc poking from devtools
-  } catch (e) {
-    log('FATAL: ' + describe(e), 'err');
-    console.error(e);
-  }
-</script>
+    try {
+      const { HiveApp } = await import('./hive_app.js?t=' + Date.now());
+      const app = new HiveApp();
+      await app.start();
+      window.__hive = app;
+      if (!window.showDirectoryPicker) {
+        log('Note: File System Access API unavailable — using webkitdirectory fallback.');
+      }
+    } catch (e) {
+      log('FATAL: ' + describe(e), 'err');
+      console.error(e);
+    }
+  </script>
 </body>
 </html>

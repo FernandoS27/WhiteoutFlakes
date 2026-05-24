@@ -325,6 +325,9 @@ void LoaderView::RequestClearAll() {
 void LoaderView::ClearTemplateCache() {
     Scn(impl_).Templates().Clear();
 }
+void LoaderView::Destroy(ActorHandle handle) {
+    Svc(impl_).Loader().DestroyActor(handle);
+}
 
 // ============================================================================
 // DncView
@@ -511,6 +514,11 @@ std::vector<CameraPreset> ActorView::CameraPresets() const {
     if (!a || !a->sourceTemplate)
         return {};
     return a->sourceTemplate->cameraPresets;
+}
+
+RenderMode ActorView::PreferredRenderMode() const {
+    auto* a = FindActor(impl_, handle_);
+    return a ? a->PreferredRenderMode() : RenderMode::SD;
 }
 
 } // namespace whiteout::flakes

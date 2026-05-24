@@ -82,6 +82,8 @@ target_compile_options(wf_web_minimal PRIVATE -fno-exceptions -O2)
 # local web server can serve them with no extra plumbing.
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/wf-viewer.js"
                "${CMAKE_BINARY_DIR}/web/wf-viewer.js" COPYONLY)
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/hive_app.js"
+               "${CMAKE_BINARY_DIR}/web/hive_app.js"  COPYONLY)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/index.html"
                "${CMAKE_BINARY_DIR}/web/index.html"   COPYONLY)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/minimal.html"

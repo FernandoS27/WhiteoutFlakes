@@ -87,6 +87,7 @@ bool CornEffectsGfxBackend::prepare(std::span<const ::whiteout::cornflakes::Laye
         }
 
         if (resolver_ && !rr.diffuseTexturePath.empty()) {
+            st.diffusePath.assign(rr.diffuseTexturePath);
             st.diffuse = resolver_(rr.diffuseTexturePath);
         }
         st.atlasX = rr.atlasSubDivX;
@@ -484,7 +485,19 @@ void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::Rende
         cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, vsCb_);
         cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2, psCb_);
 
-        gfx::TextureHandle tex = layerStates_[d.layerIdx].diffuse;
+        auto& ls = layerStates_[d.layerIdx];
+        gfx::TextureHandle tex = ls.diffuse;
+        // Retry the resolver each frame when the layer's diffuse is still
+        // Invalid: the renderer's content provider may have received bytes
+        // for this path after prepare() ran (async fetch from JS in the
+        // web build, or a hot-reload elsewhere). Once the resolver
+        // succeeds we cache the handle on the layer so subsequent frames
+        // are cheap. No-op when the path was never set (procedural layer).
+        if (tex == gfx::TextureHandle::Invalid && resolver_ && !ls.diffusePath.empty()) {
+            tex = resolver_(ls.diffusePath);
+            if (tex != gfx::TextureHandle::Invalid)
+                ls.diffuse = tex;
+        }
         if (tex == gfx::TextureHandle::Invalid && textures_) {
             tex = textures_->GetDefaults().White;
         }
