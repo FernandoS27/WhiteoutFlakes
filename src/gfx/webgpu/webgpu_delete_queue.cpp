@@ -44,6 +44,17 @@ void SubmitFrameAndBumpEpoch(WebGPUDeviceState& state) {
     // Callback signature evolved across Dawn versions: native Dawn accepts
     // (status), emdawnwebgpu (web) requires (status, message). Both accept
     // the wider signature, so we use it unconditionally.
+    // Callback signature diverges across Dawn revs: native Dawn 7187+
+    // wants (QueueWorkDoneStatus), emdawnwebgpu wants (status, StringView).
+    auto onDone = [&state, epoch](DeleteEpoch) {
+        DeleteEpoch prev = state.completedEpoch.load(std::memory_order_relaxed);
+        while (epoch > prev &&
+               !state.completedEpoch.compare_exchange_weak(
+                   prev, epoch, std::memory_order_release, std::memory_order_relaxed)) {
+        }
+    };
+    (void)onDone; // silence unused if both branches inline a lambda below
+#if defined(__EMSCRIPTEN__)
     state.queue.OnSubmittedWorkDone(
         wgpu::CallbackMode::AllowSpontaneous,
         [&state, epoch](wgpu::QueueWorkDoneStatus, wgpu::StringView) {
@@ -53,6 +64,17 @@ void SubmitFrameAndBumpEpoch(WebGPUDeviceState& state) {
                        prev, epoch, std::memory_order_release, std::memory_order_relaxed)) {
             }
         });
+#else
+    state.queue.OnSubmittedWorkDone(
+        wgpu::CallbackMode::AllowSpontaneous,
+        [&state, epoch](wgpu::QueueWorkDoneStatus) {
+            DeleteEpoch prev = state.completedEpoch.load(std::memory_order_relaxed);
+            while (epoch > prev &&
+                   !state.completedEpoch.compare_exchange_weak(
+                       prev, epoch, std::memory_order_release, std::memory_order_relaxed)) {
+            }
+        });
+#endif
 
     // Rotate frame slot. We don't gate on inflight (Dawn caps in-flight
     // submits internally); the frame slot is purely so the renderer

@@ -82,6 +82,21 @@ const UbrEntry* FindUbr(std::string_view id);
 const SndEntry* FindSnd(std::string_view id);
 /// @}
 
+/// @name "Has the cache for this entry-kind been populated yet?"
+///
+/// Used by the event-emitter pool to decide whether a `Find* == nullptr`
+/// is a *permanent* miss (cache fully loaded but no row for this id) or
+/// a *transient* miss (cache still loading — web build SLKs arrive async
+/// via the JS lazy drain). The pool latches `resolutionFailed = true` on
+/// permanent misses to avoid log spam; transient misses let the event
+/// re-attempt on subsequent fires.
+/// @{
+bool IsSpnCachePopulated();
+bool IsSplCachePopulated();
+bool IsUbrCachePopulated();
+bool IsSndCachePopulated();
+/// @}
+
 } // namespace whiteout::flakes::io
 
 namespace whiteout::flakes {

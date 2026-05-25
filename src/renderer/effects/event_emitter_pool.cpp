@@ -139,16 +139,25 @@ void EventEmitterPool::Tick(const Actor& actor, const std::vector<Matrix44f>& bo
             windowHi = seqEndMs;
         }
 
+        // Seed `lastFrame` lazily — we need windowLo, which isn't known
+        // at seq-change time. Setting it to windowLo - 1 means the very
+        // first tick's KeysInHalfOpen scans (windowLo-1, frame] and
+        // therefore includes any track key sitting exactly at windowLo
+        // (e.g., DPAL's key=40000 in Arthas's Death window [40000,
+        // 41500] — the key is the FIRST entry of the animation and was
+        // being silently swallowed by the previous "skip-first-tick"
+        // shape of this code).
+        if (e.lastFrame < 0)
+            e.lastFrame = windowLo - 1;
+
         i32 fireCount = 0;
-        if (e.lastFrame >= 0) {
-            if (frame >= e.lastFrame) {
-                fireCount =
-                    KeysInHalfOpen(cfg.eventTrackTimes, e.lastFrame, frame, windowLo, windowHi);
-            } else {
-                fireCount =
-                    KeysInHalfOpen(cfg.eventTrackTimes, e.lastFrame, windowHi, windowLo, windowHi) +
-                    KeysInHalfOpen(cfg.eventTrackTimes, windowLo - 1, frame, windowLo, windowHi);
-            }
+        if (frame >= e.lastFrame) {
+            fireCount =
+                KeysInHalfOpen(cfg.eventTrackTimes, e.lastFrame, frame, windowLo, windowHi);
+        } else {
+            fireCount =
+                KeysInHalfOpen(cfg.eventTrackTimes, e.lastFrame, windowHi, windowLo, windowHi) +
+                KeysInHalfOpen(cfg.eventTrackTimes, windowLo - 1, frame, windowLo, windowHi);
         }
         e.lastFrame = frame;
 
@@ -171,10 +180,15 @@ void EventEmitterPool::Tick(const Actor& actor, const std::vector<Matrix44f>& bo
                     break;
                 const io::SpnEntry* row = io::FindSpn(cfg.id);
                 if (!row) {
-
-                    std::fprintf(stderr, "[WDEX events] SPN id '%s' not in SpawnData.slk\n",
-                                 cfg.id.c_str());
-                    e.resolutionFailed = true;
+                    // Only latch when the cache is actually populated —
+                    // otherwise a SPN event firing before the JS drain
+                    // delivers SpawnData.slk would permanently disable
+                    // it for this animation.
+                    if (io::IsSpnCachePopulated()) {
+                        std::fprintf(stderr, "[WDEX events] SPN id '%s' not in SpawnData.slk\n",
+                                     cfg.id.c_str());
+                        e.resolutionFailed = true;
+                    }
                     break;
                 }
                 spn->Spawn(actor.handle, row->modelPath, nodeWorld, globalTimeMs);
@@ -186,9 +200,11 @@ void EventEmitterPool::Tick(const Actor& actor, const std::vector<Matrix44f>& bo
                     break;
                 const io::SplEntry* row = io::FindSpl(cfg.id);
                 if (!row) {
-                    std::fprintf(stderr, "[WDEX events] SPL/FPT id '%s' not in SplatData.slk\n",
-                                 cfg.id.c_str());
-                    e.resolutionFailed = true;
+                    if (io::IsSplCachePopulated()) {
+                        std::fprintf(stderr, "[WDEX events] SPL/FPT id '%s' not in SplatData.slk\n",
+                                     cfg.id.c_str());
+                        e.resolutionFailed = true;
+                    }
                     break;
                 }
                 Vector3f origin, right, forward;
@@ -202,9 +218,11 @@ void EventEmitterPool::Tick(const Actor& actor, const std::vector<Matrix44f>& bo
                     break;
                 const io::UbrEntry* row = io::FindUbr(cfg.id);
                 if (!row) {
-                    std::fprintf(stderr, "[WDEX events] UBR id '%s' not in UberSplatData.slk\n",
-                                 cfg.id.c_str());
-                    e.resolutionFailed = true;
+                    if (io::IsUbrCachePopulated()) {
+                        std::fprintf(stderr, "[WDEX events] UBR id '%s' not in UberSplatData.slk\n",
+                                     cfg.id.c_str());
+                        e.resolutionFailed = true;
+                    }
                     break;
                 }
                 Vector3f origin, right, forward;
@@ -218,10 +236,12 @@ void EventEmitterPool::Tick(const Actor& actor, const std::vector<Matrix44f>& bo
                     break;
                 const io::SndEntry* row = io::FindSnd(cfg.id);
                 if (!row) {
-                    std::fprintf(stderr,
-                                 "[WDEX events] SND id '%s' not in any UI/SoundInfo/*Sounds*.slk\n",
-                                 cfg.id.c_str());
-                    e.resolutionFailed = true;
+                    if (io::IsSndCachePopulated()) {
+                        std::fprintf(stderr,
+                                     "[WDEX events] SND id '%s' not in any UI/SoundInfo/*Sounds*.slk\n",
+                                     cfg.id.c_str());
+                        e.resolutionFailed = true;
+                    }
                     break;
                 }
                 sounds->Play(*row, ExtractWorldPos(nodeWorld));

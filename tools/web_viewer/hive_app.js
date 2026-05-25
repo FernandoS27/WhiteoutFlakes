@@ -16,6 +16,8 @@
 // in-page cache that survives identical URLs across this same document.
 const { WhiteoutViewer, TEAM_COLORS } =
     await import('./wf-viewer.js?t=' + Date.now());
+const { WebAudioBridge } =
+    await import('./web_audio.js?t=' + Date.now());
 
 // Background-swatch palette (matches Hive's tile set). Each entry is the
 // sRGB tuple fed straight to wf_set_background.
@@ -67,6 +69,14 @@ export class HiveApp {
         // when an emitter first fires, often well after load() returned).
         // Same chain as the load-time solver: local dir first, CASC fallback.
         this.viewer.setPathSolver((name) => this._resolve(name));
+
+        // Web Audio bridge — listens for the C++ WebAudioSoundEmitter's
+        // EM_JS calls (`wfWebAudioPlayJS` etc.) and routes them to the
+        // browser's AudioContext. Uses the same pathSolver chain for
+        // sound asset fetch. Autoplay-policy gated: AudioContext is
+        // created on first pointerdown/keydown.
+        this.audio = new WebAudioBridge((name) => this._resolve(name));
+        this.audio.install();
 
         this._buildTeamSwatches();
         this._buildBgSwatches();

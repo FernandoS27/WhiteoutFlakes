@@ -113,7 +113,11 @@ void LoadSpawnData(IContentProvider& cp, DataCache& cache) {
         SpnEntry e;
         e.modelPath.assign(model);
         RewriteMdlToMdx(e.modelPath);
-        cache.spn.emplace(ToLower(id), std::move(e));
+        // insert_or_assign so re-runs of LoadEventDataFiles refresh
+        // entries whose dependencies (assetMap, etc.) populated after
+        // the first pass. emplace would no-op on existing keys and lock
+        // in the stale entry forever.
+        cache.spn.insert_or_assign(ToLower(id), std::move(e));
     }
 }
 
@@ -191,7 +195,7 @@ void LoadSplatData(IContentProvider& cp, DataCache& cache) {
         e.uvDecayEnd = (cUvDe >= 0) ? ParseInt(t.Cell(r, cUvDe)) : 0;
         e.decayRepeat = (cDR >= 0) ? std::max(1, ParseInt(t.Cell(r, cDR))) : 1;
         e.blendMode = (cBl >= 0) ? ParseInt(t.Cell(r, cBl)) : 0;
-        cache.spl.emplace(ToLower(id), std::move(e));
+        cache.spl.insert_or_assign(ToLower(id), std::move(e));
     }
 }
 
@@ -257,7 +261,7 @@ void LoadUberSplatData(IContentProvider& cp, DataCache& cache) {
         e.pauseTime = (cPause >= 0) ? ParseFloat(t.Cell(r, cPause)) : 0.0f;
         e.decay = (cDecay >= 0) ? ParseFloat(t.Cell(r, cDecay)) : 0.0f;
         e.blendMode = (cBl >= 0) ? ParseInt(t.Cell(r, cBl)) : 0;
-        cache.ubr.emplace(ToLower(id), std::move(e));
+        cache.ubr.insert_or_assign(ToLower(id), std::move(e));
     }
 }
 
@@ -278,7 +282,7 @@ void LoadAssetSlk(IContentProvider& cp, DataCache& cache, const char* path) {
         if (label.empty() || fp.empty() || fp == "_")
             continue;
 
-        cache.assetMap.emplace(ToLower(label), std::string(fp));
+        cache.assetMap.insert_or_assign(ToLower(label), std::string(fp));
     }
 }
 
@@ -316,7 +320,7 @@ void LoadSoundSlk(IContentProvider& cp, DataCache& cache, const char* path) {
         e.maxDistance = (sMax >= 0) ? ParseFloat(st.Cell(r, sMax)) : 0.0f;
         e.distanceCutoff = (sCut >= 0) ? ParseFloat(st.Cell(r, sCut)) : 0.0f;
 
-        cache.snd.emplace(ToLower(code), std::move(e));
+        cache.snd.insert_or_assign(ToLower(code), std::move(e));
     }
 }
 
@@ -327,9 +331,6 @@ void LoadAllSoundSlks(IContentProvider& cp, DataCache& cache) {
         "UI\\SoundInfo\\DialogueNightElfBase.slk", "UI\\SoundInfo\\DialogueOrcBase.slk",
         "UI\\SoundInfo\\DialogueUndeadBase.slk",   "UI\\SoundInfo\\SoundAssetCombat.slk",
     };
-    for (const char* p : kAssetSlks)
-        LoadAssetSlk(cp, cache, p);
-
     static constexpr const char* kSoundSlks[] = {
         "UI\\SoundInfo\\UnitAckSounds.slk", "UI\\SoundInfo\\UnitCombatSounds.slk",
         "UI\\SoundInfo\\UISounds.slk",      "UI\\SoundInfo\\AmbienceSounds.slk",
@@ -337,6 +338,9 @@ void LoadAllSoundSlks(IContentProvider& cp, DataCache& cache) {
         "UI\\SoundInfo\\DialogSounds.slk",  "UI\\SoundInfo\\AmbientMusic.slk",
         "UI\\SoundInfo\\Music.slk",
     };
+
+    for (const char* p : kAssetSlks)
+        LoadAssetSlk(cp, cache, p);
     for (const char* p : kSoundSlks)
         LoadSoundSlk(cp, cache, p);
 }
@@ -357,18 +361,31 @@ void LoadEventDataFiles(IContentProvider* cp, bool force) {
         return;
     auto& c = Cache();
     std::lock_guard<std::mutex> lk(c.mu);
-    if (c.loaded && !force)
-        return;
-    c.spn.clear();
-    c.spl.clear();
-    c.ubr.clear();
-    c.snd.clear();
-    c.assetMap.clear();
+    if (force) {
+        c.spn.clear();
+        c.spl.clear();
+        c.ubr.clear();
+        c.snd.clear();
+        c.assetMap.clear();
+    }
+    // Web build: tables arrive piecemeal via the JS lazy drain. Always
+    // re-run every loader — each uses `emplace` and is idempotent, so
+    // re-entry only does new work for SLKs that have *just* landed in
+    // the provider cache. Gating on `c.snd.empty()` (the previous
+    // approach) broke as soon as ONE of the 9 sound SLKs loaded — the
+    // gate then stayed shut, and the remaining 8 never parsed, so SND
+    // events for any of those tables stayed un-resolvable for the rest
+    // of the session.
     LoadSpawnData(*cp, c);
     LoadSplatData(*cp, c);
     LoadUberSplatData(*cp, c);
     LoadAllSoundSlks(*cp, c);
-    c.loaded = true;
+    // `loaded` semantics retained for callers that check it (none do
+    // critical decisions on it under the web build, but desktop hosts
+    // may). True when every splat-relevant table is populated. Sounds are
+    // exempt — LoadAllSoundSlks walks many UI/SoundInfo files and some
+    // may legitimately be absent in a given install.
+    c.loaded = !c.spn.empty() && !c.spl.empty() && !c.ubr.empty();
 }
 
 const SpnEntry* FindSpn(std::string_view id) {
@@ -390,6 +407,27 @@ const SndEntry* FindSnd(std::string_view id) {
     auto& c = Cache();
     std::lock_guard<std::mutex> lk(c.mu);
     return FindIn(c.snd, id);
+}
+
+bool IsSpnCachePopulated() {
+    auto& c = Cache();
+    std::lock_guard<std::mutex> lk(c.mu);
+    return !c.spn.empty();
+}
+bool IsSplCachePopulated() {
+    auto& c = Cache();
+    std::lock_guard<std::mutex> lk(c.mu);
+    return !c.spl.empty();
+}
+bool IsUbrCachePopulated() {
+    auto& c = Cache();
+    std::lock_guard<std::mutex> lk(c.mu);
+    return !c.ubr.empty();
+}
+bool IsSndCachePopulated() {
+    auto& c = Cache();
+    std::lock_guard<std::mutex> lk(c.mu);
+    return !c.snd.empty();
 }
 
 } // namespace whiteout::flakes::io

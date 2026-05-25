@@ -12,6 +12,7 @@
 
 add_executable(wf_web
     wf_web_api.cpp
+    web_audio_emitter.cpp
 )
 
 set_target_properties(wf_web PROPERTIES
@@ -82,6 +83,8 @@ target_compile_options(wf_web_minimal PRIVATE -fno-exceptions -O2)
 # local web server can serve them with no extra plumbing.
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/wf-viewer.js"
                "${CMAKE_BINARY_DIR}/web/wf-viewer.js" COPYONLY)
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/web_audio.js"
+               "${CMAKE_BINARY_DIR}/web/web_audio.js" COPYONLY)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/hive_app.js"
                "${CMAKE_BINARY_DIR}/web/hive_app.js"  COPYONLY)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/index.html"

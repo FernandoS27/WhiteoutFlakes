@@ -586,46 +586,22 @@ export class WhiteoutViewer {
 
     _drainLazyMissing() {
         if (!this._lazySolver || !this._handle) return;
-        // Single in-flight slot. The corn_fx resolver retries every frame
-        // in submit() for any layer whose diffuse is still Invalid; each
-        // retry pushes 1-2 paths onto the C-side missing list. Letting
-        // them all dispatch in parallel = hundreds of duplicate fetches
-        // per second, browser per-host connection cap saturated, real
-        // work starved (this is the lag the user was hitting). Serialise
-        // to one fetch at a time: pick the first un-attempted path, hold
-        // off on the rest until it settles. `_attemptedDeps` makes sure
-        // we don't refetch a path that's already been tried once across
-        // the lifetime of this viewer.
-        if (this._lazyInFlight) return;
+        // Dedupe-first parallel drain. The `_attemptedDeps` Set is what
+        // really tames the C++ retry storm — each path is fetched AT
+        // MOST ONCE across the viewer's lifetime, so the corn_fx
+        // resolver re-firing every frame for an unresolved texture (or
+        // LoadEventDataFiles re-trying 17 sound SLKs every tick) doesn't
+        // re-queue work. Within a single drain we can issue all fresh
+        // paths concurrently; the browser's per-host connection cap
+        // does the rate-limiting at the network layer.
         const missing = this._drainMissing();
         if (missing.length === 0) return;
         if (!this._attemptedDeps) this._attemptedDeps = new Set();
-
-        let pick = null;
         for (const p of missing) {
-            if (!this._attemptedDeps.has(p)) { pick = p; break; }
+            if (this._attemptedDeps.has(p)) continue;
+            this._attemptedDeps.add(p);
+            this._fetchDep(this._lazySolver, p).catch(() => {});
         }
-        if (!pick) return;
-        this._attemptedDeps.add(pick);
-
-        const tagLog = (s, cls) => {
-            console.log('[wf]', s);
-            const el = document.getElementById('log');
-            if (el) {
-                const ln = document.createElement('div');
-                if (cls) ln.style.color = cls;
-                ln.textContent = '[wf] ' + s;
-                el.appendChild(ln);
-                el.scrollTop = el.scrollHeight;
-            }
-        };
-        tagLog('lazy fetch ' + pick, '#7df');
-        this._lazyInFlight = true;
-        this._fetchDep(this._lazySolver, pick)
-            .then(ok => tagLog(ok ? 'lazy OK   ' + pick : 'lazy MISS ' + pick,
-                               ok ? '#9f9' : '#f88'))
-            .catch(e => tagLog('lazy ERR  ' + pick + ' ' + (e && e.message || e), '#f88'))
-            .finally(() => { this._lazyInFlight = false; });
     }
 
     _onResize() {

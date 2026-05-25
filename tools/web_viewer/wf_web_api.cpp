@@ -19,7 +19,9 @@
 // ============================================================================
 
 #include "io/fetch_content_provider.h"
+#include "web_audio_emitter.h"
 #include "whiteout/flakes/enums.h"
+#include "whiteout/flakes/event_data.h"
 #include "whiteout/flakes/gfx_types.h"
 #include "whiteout/flakes/renderer.h"
 
@@ -56,6 +58,10 @@ struct WfRenderer {
     // via wf_provider_missing_get(idx, buf, cap).
     std::vector<std::string> lastMissing;
     bool inited = false;
+    // Frame counter for the LoadEventDataFiles retry throttle. See
+    // wf_tick — without this, the page log gets blown out by SLK-miss
+    // WARN lines while the JS drain ferries the bytes in.
+    uint32_t eventDataRetryTick = 0;
 };
 
 // Last facade-level error message — populated by the C++ side when
@@ -91,6 +97,12 @@ WfRenderer* wf_create() {
         // cache that JS populated via wf_provider_put.
         h->provider = std::make_shared<FetchContentProvider>();
         h->renderer.Scene().SetContentProvider(h->provider);
+        // Swap in the Web Audio-backed sound emitter so MDX SND events
+        // get marshaled to JS instead of dropping into the null sink.
+        // The JS side (web_audio.js / HiveApp) installs the actual
+        // AudioContext + PannerNode graph on first user gesture.
+        h->renderer.SwapSoundEmitter(
+            std::make_unique<whiteout::flakes::web::WebAudioSoundEmitter>());
         return h;
     });
 }
@@ -172,7 +184,18 @@ void wf_tick(WfRenderer* h, float dtSeconds) {
     // submitted by the renderer. Our FetchContentProvider resolves reads
     // synchronously inside Request(), so Pump() just runs the callbacks
     // here on the render thread (where bls cache state, etc. mutate).
-    if (auto* cp = h->renderer.Scene().ActiveContentProvider()) cp->Pump();
+    auto* cp = h->renderer.Scene().ActiveContentProvider();
+    if (cp) cp->Pump();
+    // Engine SLK tables (Splats / Sounds / spawn-data) load lazily as
+    // the JS drain delivers bytes. Throttle the retry to every ~30 frames
+    // (~half-second at 60fps) — running it every frame floods the page
+    // log with 20+ "[events] WARN: X.slk: not found" lines per tick
+    // while the drain catches up, with no upside since the JS drain
+    // itself only fires every 10 frames.
+    if (cp) {
+        if ((++h->eventDataRetryTick % 30) == 0)
+            whiteout::flakes::io::LoadEventDataFiles(cp);
+    }
     h->renderer.Scene().Update(dtSeconds);
     h->renderer.Tick(dtSeconds);
 }

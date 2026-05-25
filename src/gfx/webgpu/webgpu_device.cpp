@@ -23,9 +23,12 @@ WebGPUDevice::~WebGPUDevice() {
         // emdawnwebgpu Instance::WaitAny is unavailable (single-threaded
         // browser main loop); we rely on the JS GC + emdawnwebgpu's
         // refcounting to keep WGPU objects alive until callbacks retire.
+        // Dawn 7187's QueueWorkDoneCallback is 1-arg (status only); the
+        // older 2-arg (status, StringView) shape compiles only under
+        // emdawnwebgpu.
         wgpu::Future done =
             state.queue.OnSubmittedWorkDone(wgpu::CallbackMode::WaitAnyOnly,
-                                            [](wgpu::QueueWorkDoneStatus, wgpu::StringView) {});
+                                            [](wgpu::QueueWorkDoneStatus) {});
         wgpu::FutureWaitInfo wait{done};
         state.instance.WaitAny(1, &wait, UINT64_MAX);
 #endif
@@ -68,7 +71,7 @@ void WaitIdle_Impl(WebGPUDeviceState& state) {
 #if !defined(__EMSCRIPTEN__)
     wgpu::Future done =
         state.queue.OnSubmittedWorkDone(wgpu::CallbackMode::WaitAnyOnly,
-                                        [](wgpu::QueueWorkDoneStatus, wgpu::StringView) {});
+                                        [](wgpu::QueueWorkDoneStatus) {});
     wgpu::FutureWaitInfo wait{done};
     state.instance.WaitAny(1, &wait, UINT64_MAX);
 #endif

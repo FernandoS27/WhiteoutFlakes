@@ -826,8 +826,7 @@ void WriteAnimatedGif(const std::vector<whiteout::textures::Texture>& frames,
     std::fprintf(stderr, "[viewer] encoding %zu-frame GIF (palette quantise)...\n", frames.size());
     const unsigned hw = std::thread::hardware_concurrency();
     whiteout::utils::SimpleThreadPool pool(hw > 1 ? hw : 2);
-    whiteout::textures::gif::Writer writer(whiteout::textures::gif::Writer::WriteMode::Lenient,
-                                           &pool);
+    whiteout::textures::gif::Writer writer(&pool);
     whiteout::textures::gif::SaveOptions opts;
     opts.delayCs =
         static_cast<u16>(std::clamp<i32>(static_cast<i32>(std::llround(100.0 / fps)), 1, 65535));

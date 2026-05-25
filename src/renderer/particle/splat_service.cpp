@@ -270,8 +270,10 @@ gfx::TextureHandle SplatService::GetOrLoadTexture(const std::string& path) {
     std::string foundExt;
     auto data = content_->ReadFile(path, &foundExt);
     if (!data) {
-
-        textureCache_.emplace(path, gfx::TextureHandle::Invalid);
+        // Don't pin the failure in the cache: under the web build, the
+        // texture bytes arrive asynchronously via the JS lazy drain, so a
+        // later SpawnSpl call for the same path should be allowed to
+        // re-attempt the read once the bytes have actually landed.
         std::fprintf(stderr, "[splat] ERR: tex read FAIL '%s'\n", path.c_str());
         return gfx::TextureHandle::Invalid;
     }
@@ -281,7 +283,8 @@ gfx::TextureHandle SplatService::GetOrLoadTexture(const std::string& path) {
     std::vector<u8> rgba;
     i32 w = 0, h = 0;
     if (!DecodeToRGBA8(*data, foundExt, rgba, w, h) || w <= 0 || h <= 0) {
-        textureCache_.emplace(path, gfx::TextureHandle::Invalid);
+        // Decode failures are typically permanent, but be consistent with
+        // the read-fail path — re-attempt rather than pinning Invalid.
         std::fprintf(stderr, "[splat] ERR: tex decode FAIL '%s' ext='%s' bytes=%zu\n", path.c_str(),
                      foundExt.c_str(), data->size());
         return gfx::TextureHandle::Invalid;
