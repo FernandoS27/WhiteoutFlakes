@@ -19,7 +19,6 @@ _wf_set_pe1_base
 _wf_spawn_unit
 _wf_clear_all
 _wf_clear_splats
-_wf_clear_template_cache
 _wf_actor_destroy
 _wf_actor_set_transform
 _wf_actor_set_sequence
@@ -33,5 +32,8 @@ _wf_actor_camera_preset_count
 _wf_actor_camera_preset_name
 _wf_camera_activate_preset
 _wf_actor_preferred_render_mode
-_wf_provider_missing_count
-_wf_provider_missing_get
+_wf_assets_needs_count
+_wf_assets_needs_get_kind
+_wf_assets_needs_get_path
+_wf_assets_apply
+_wf_assets_stat

@@ -27,13 +27,6 @@ std::size_t FetchContentProvider::CachedFileCount() const {
     return cache_.size();
 }
 
-std::vector<std::string> FetchContentProvider::TakeMissing() {
-    std::lock_guard lk(mu_);
-    std::vector<std::string> out;
-    out.swap(missing_);
-    return out;
-}
-
 RequestId FetchContentProvider::Request(const std::string& path, CompletionCallback cb) {
     if (path.empty() || !cb) return kInvalidRequestId;
 
@@ -99,9 +92,11 @@ RequestId FetchContentProvider::Request(const std::string& path, CompletionCallb
                 }
             }
             if (!foundAlt) {
-                // Record the miss so JS can fetch + Put the missing file
-                // and call the loader again.
-                missing_.push_back(path);
+                // Miss — the caller will see ok=false and handle the
+                // fallback itself. AssetManager paths are pushed via
+                // ApplyPrepared, not through ReadFile, so these misses
+                // are init-time / SLK / sound paths that the host has
+                // already pre-staged via _putBytes if they exist.
                 if (dot != std::string::npos) result.actualExt = key.substr(dot);
             }
         }

@@ -933,12 +933,12 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/assets/sampler_asset_manager.cpp
     src/renderer/assets/texture_asset_manager.cpp
     src/renderer/assets/replaceable_texture_manager.cpp
+    src/renderer/assets/asset_manager.cpp
     src/renderer/debug/debug_renderer.cpp
     src/renderer/effects/event_emitter_pool.cpp
     src/renderer/effects/pe1_system.cpp
     src/renderer/effects/ribbon.cpp
     src/renderer/effects/spn_spawner.cpp
-    src/renderer/corn_effects/corn_effects_asset_cache.cpp
     src/renderer/corn_effects/corn_effects_emitter.cpp
     src/renderer/corn_effects/corn_effects_gfx_backend.cpp
     src/renderer/corn_effects/corn_effects_service.cpp

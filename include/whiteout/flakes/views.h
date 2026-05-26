@@ -18,9 +18,13 @@
 #include "types.h"
 #include "util/replaceable_paths.h" // Tileset
 
+#include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace whiteout::flakes {
@@ -206,16 +210,60 @@ public:
     ///        `instance.hide()` semantics.
     void Destroy(ActorHandle handle);
 
-    /// @brief Evict every cached model template. Use this when the
-    ///        host has changed the content provider's view of an MDX
-    ///        file (e.g. the web build's loader fetches more bytes
-    ///        between SpawnUnit attempts) and needs a subsequent
-    ///        SpawnUnit to re-parse instead of returning the stale
-    ///        cached template with failed-load placeholders.
-    void ClearTemplateCache();
-
 private:
     explicit LoaderView(detail::RendererImpl* impl) : impl_(impl) {}
+    detail::RendererImpl* impl_;
+    friend class Renderer;
+};
+
+/// @brief Push-based asset registry view.
+///
+/// Renderer subsystems call into `AssetManager` directly to Acquire
+/// slots; the host uses this view to:
+///   * pump the needs queue (paths the renderer wants the host to fetch),
+///   * push fetched bytes back in via `ApplyAsset`.
+///
+/// Stays valid for the renderer's lifetime; cheap to copy.
+class AssetsView {
+public:
+    /// @brief Asset categories the manager tracks. Keep in sync with
+    ///        `renderer::assets::AssetKind`.
+    enum class Kind : u8 {
+        Texture    = 0,
+        Particle   = 1,
+        ChildModel = 2,
+    };
+
+    /// @brief Fired once per unique path the renderer Acquired since
+    ///        the last drain. Use this to schedule fetches host-side.
+    using NeededFn = std::function<void(Kind, std::string_view path)>;
+
+    /// @brief Drain the buffered needs queue. Safe to call any time;
+    ///        typically once per tick / animation frame.
+    void DrainNeeds(const NeededFn& cb);
+
+    /// @brief Push the bytes fetched for @p path. The manager decodes /
+    ///        parses according to @p kind and queues the result for
+    ///        the next `Commit` (which the FrameTicker pumps on the
+    ///        render thread).
+    /// @return `true` if a slot existed for @p path AND decode succeeded.
+    bool ApplyAsset(Kind kind, std::string_view path,
+                    std::span<const u8> bytes, std::string_view foundExt = {});
+
+    /// @brief Snapshot diagnostic counters.
+    struct Stats {
+        std::size_t liveSlots        = 0;
+        std::size_t loadedSlots      = 0;
+        std::size_t pendingNeeds     = 0;
+        std::size_t totalAcquires    = 0;
+        std::size_t totalReleases    = 0;
+        std::size_t totalApplies     = 0;
+        std::size_t totalApplyMisses = 0;
+    };
+    Stats GetStats() const;
+
+private:
+    explicit AssetsView(detail::RendererImpl* impl) : impl_(impl) {}
     detail::RendererImpl* impl_;
     friend class Renderer;
 };

@@ -1,5 +1,7 @@
 #include "renderer/assets/texture_asset_manager.h"
 
+#include "renderer/assets/asset_manager.h"
+
 namespace whiteout::flakes::renderer::assets {
 
 namespace {
@@ -28,12 +30,6 @@ TextureAssetManager::TextureAssetManager(gfx::IGFXDevice& gfx) : gfx_(gfx) {
 }
 
 TextureAssetManager::~TextureAssetManager() {
-
-    for (auto& [k, e] : shared_) {
-        if (e.handle != gfx::TextureHandle::Invalid)
-            gfx_.Destroy(e.handle);
-    }
-    shared_.clear();
     for (auto& [name, h] : owned_) {
         if (h != gfx::TextureHandle::Invalid)
             gfx_.Destroy(h);
@@ -85,95 +81,10 @@ std::vector<TextureAssetManager::DebugEntry> TextureAssetManager::DebugSnapshotO
     return out;
 }
 
-gfx::TextureHandle TextureAssetManager::AcquireShared(std::string_view key,
-                                                      const gfx::TextureDesc& desc,
-                                                      const void* pixels) {
 
-    {
-        std::lock_guard<std::mutex> lock(sharedMutex_);
-        sharedTotalAcquires_++;
-        if (auto it = shared_.find(key); it != shared_.end()) {
-            it->second.refCount++;
-            sharedCacheHits_++;
-            return it->second.handle;
-        }
-    }
-
-    gfx::TextureHandle h = gfx_.CreateTexture(desc, pixels);
-    {
-        std::lock_guard<std::mutex> lock(sharedMutex_);
-        SharedEntry e;
-        e.handle = h;
-        e.refCount = 1;
-        auto [it, inserted] = shared_.emplace(std::string(key), e);
-        if (!inserted) {
-
-            gfx_.Destroy(h);
-            it->second.refCount++;
-            sharedCacheHits_++;
-        }
-        return it->second.handle;
-    }
-}
-
-void TextureAssetManager::ReleaseShared(std::string_view key) {
-    gfx::TextureHandle toDestroy = gfx::TextureHandle::Invalid;
-    {
-        std::lock_guard<std::mutex> lock(sharedMutex_);
-        auto it = shared_.find(key);
-        if (it == shared_.end())
-            return;
-        if (it->second.refCount > 0)
-            it->second.refCount--;
-        if (it->second.refCount == 0) {
-            toDestroy = it->second.handle;
-            shared_.erase(it);
-        }
-    }
-    if (toDestroy != gfx::TextureHandle::Invalid)
-        gfx_.Destroy(toDestroy);
-}
-
-bool TextureAssetManager::IsCachedShared(std::string_view key) const {
-    std::lock_guard<std::mutex> lock(sharedMutex_);
-    return shared_.find(key) != shared_.end();
-}
-
-gfx::TextureHandle TextureAssetManager::TryAcquireShared(std::string_view key) {
-    std::lock_guard<std::mutex> lock(sharedMutex_);
-    sharedTotalAcquires_++;
-    auto it = shared_.find(key);
-    if (it == shared_.end())
-        return gfx::TextureHandle::Invalid;
-    it->second.refCount++;
-    sharedCacheHits_++;
-    return it->second.handle;
-}
-
-gfx::TextureHandle TextureAssetManager::LookupShared(std::string_view key) const {
-    std::lock_guard<std::mutex> lock(sharedMutex_);
-    auto it = shared_.find(key);
-    return (it != shared_.end()) ? it->second.handle : gfx::TextureHandle::Invalid;
-}
-
-TextureAssetManager::SharedStats TextureAssetManager::GetSharedStats() const {
-    std::lock_guard<std::mutex> lock(sharedMutex_);
-    SharedStats s;
-    s.uniqueEntries = shared_.size();
-    s.totalAcquires = sharedTotalAcquires_;
-    s.cacheHits = sharedCacheHits_;
-    return s;
-}
-
-void TextureAssetManager::ResetSharedStats() {
-    std::lock_guard<std::mutex> lock(sharedMutex_);
-    sharedTotalAcquires_ = 0;
-    sharedCacheHits_ = 0;
-}
-
-std::unique_ptr<TextureAssetManager::ModelScope> TextureAssetManager::CreateModelScope() {
-
-    return std::unique_ptr<ModelScope>(new ModelScope(gfx_, *this));
+std::unique_ptr<TextureAssetManager::ModelScope> TextureAssetManager::CreateModelScope(
+    AssetManager* assets) {
+    return std::unique_ptr<ModelScope>(new ModelScope(gfx_, *this, assets));
 }
 
 TextureAssetManager::ModelScope::~ModelScope() {
@@ -182,12 +93,11 @@ TextureAssetManager::ModelScope::~ModelScope() {
 
 void TextureAssetManager::ModelScope::Clear() {
     for (auto& [id, e] : entries_) {
-        if (e.tex == gfx::TextureHandle::Invalid)
-            continue;
-        if (e.sharedKey.empty())
+        if (e.slot != 0 && assets_) {
+            assets_->Release(e.slot);
+        } else if (e.tex != gfx::TextureHandle::Invalid) {
             gfx_.Destroy(e.tex);
-        else
-            mgr_.ReleaseShared(e.sharedKey);
+        }
     }
     entries_.clear();
 }
@@ -196,11 +106,10 @@ void TextureAssetManager::ModelScope::DropEntry(i32 textureId) {
     auto it = entries_.find(textureId);
     if (it == entries_.end())
         return;
-    if (it->second.tex != gfx::TextureHandle::Invalid) {
-        if (it->second.sharedKey.empty())
-            gfx_.Destroy(it->second.tex);
-        else
-            mgr_.ReleaseShared(it->second.sharedKey);
+    if (it->second.slot != 0 && assets_) {
+        assets_->Release(it->second.slot);
+    } else if (it->second.tex != gfx::TextureHandle::Invalid) {
+        gfx_.Destroy(it->second.tex);
     }
     entries_.erase(it);
 }
@@ -211,46 +120,37 @@ gfx::TextureHandle TextureAssetManager::ModelScope::Upload(i32 textureId,
 
     DropEntry(textureId);
     auto& e = entries_[textureId];
-    e.tex = gfx_.CreateTexture(desc, pixels);
-    e.wrapFlags = wrapFlags;
-    e.sharedKey.clear();
-    return e.tex;
-}
-
-gfx::TextureHandle TextureAssetManager::ModelScope::UploadShared(i32 textureId,
-                                                                 std::string_view sharedKey,
-                                                                 const gfx::TextureDesc& desc,
-                                                                 const void* pixels,
-                                                                 u32 wrapFlags) {
-
-    DropEntry(textureId);
-    auto& e = entries_[textureId];
-    e.sharedKey.assign(sharedKey);
-    e.tex = mgr_.AcquireShared(e.sharedKey, desc, pixels);
+    e.tex       = gfx_.CreateTexture(desc, pixels);
+    e.slot      = 0;
     e.wrapFlags = wrapFlags;
     return e.tex;
 }
 
-gfx::TextureHandle TextureAssetManager::ModelScope::BindShared(i32 textureId,
-                                                               std::string_view sharedKey,
-                                                               u32 wrapFlags) {
-
-    DropEntry(textureId);
-    gfx::TextureHandle h = mgr_.TryAcquireShared(sharedKey);
-    if (h == gfx::TextureHandle::Invalid) {
-
-        return gfx::TextureHandle::Invalid;
+void TextureAssetManager::ModelScope::BindSlot(i32 textureId,
+                                               std::uint32_t slot,
+                                               u32 wrapFlags) {
+    auto it = entries_.find(textureId);
+    if (it != entries_.end() && it->second.slot == slot && slot != 0) {
+        it->second.wrapFlags = wrapFlags;
+        return;
     }
-    auto& e = entries_[textureId];
-    e.sharedKey.assign(sharedKey);
-    e.tex = h;
+    DropEntry(textureId);
+    auto& e     = entries_[textureId];
+    e.tex       = gfx::TextureHandle::Invalid;
+    e.slot      = slot;
     e.wrapFlags = wrapFlags;
-    return h;
+    // Caller obtained `slot` via AssetManager::Acquire, so its refcount
+    // is already >= 1. ModelScope adopts that reference; DropEntry
+    // issues the matching Release.
 }
 
 gfx::TextureHandle TextureAssetManager::ModelScope::Get(i32 textureId) const noexcept {
     auto it = entries_.find(textureId);
-    return (it != entries_.end()) ? it->second.tex : gfx::TextureHandle::Invalid;
+    if (it == entries_.end()) return gfx::TextureHandle::Invalid;
+    const auto& e = it->second;
+    if (e.slot != 0 && assets_)
+        return assets_->TextureOf(e.slot);
+    return e.tex;
 }
 
 u32 TextureAssetManager::ModelScope::WrapFlags(i32 textureId) const noexcept {

@@ -24,6 +24,7 @@
 #include "ibl/split_sum.h"
 #include "render_detail.h"
 #include "render_pass.h"
+#include "renderer/assets/asset_manager.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/assets/sampler_asset_manager.h"
 #include "renderer/assets/texture_asset_manager.h"
@@ -694,9 +695,12 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
         impl_->blsPrograms_->Load({bls::GxShaderID::CornFx, "PopcornFX", "PopcornFX"});
 
     // Hand the corn fx service the renderer's gfx + BLS resources so its
-    // per-emitter CornEffectsGfxBackend can issue draws. The texture resolver
-    // uses TextureAssetManager's path-based lookup; corn fx diffuse paths
-    // come from the .pkb's renderer property block.
+    // per-emitter CornEffectsGfxBackend can issue draws. Diffuse-texture
+    // paths come from the .pkb's renderer property block and route
+    // through AssetManager slots: each layer Acquires a slot at
+    // prepare() time and reads its current handle via TextureOf() at
+    // submit() time — the host's needs-pump drives the actual fetch +
+    // decode and the slot's payload swaps in transparently.
     if (impl_->blsCornFxProgram_) {
         corn_effects::CornEffectsGfxBackend::Init pInit;
         pInit.device = impl_->gfx_.get();
@@ -704,14 +708,9 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
         pInit.psoBuilder = impl_->blsPsoBuilder_.get();
         pInit.textures = &rs_.Textures();
         pInit.samplers = &rs_.Samplers();
-        // Resolve diffuse paths to gfx::TextureHandle by loading them on
-        // demand through the active content provider. CornEffects .pkb assets
-        // reference textures (DDS/TGA/BLP) that live outside the MDX's
-        // own texture list, so a pure shared-cache lookup misses — the
-        // service-level loader caches the result under the normalised
-        // path key so subsequent spawns hit instead of re-decoding.
-        pInit.resolver = [&rs = rs_](std::string_view path) -> gfx::TextureHandle {
-            return rs.LoadCornEffectsTexture(path);
+        pInit.assets   = &rs_.Assets();
+        pInit.slotAcquire = [&rs = rs_](std::string_view path) -> std::uint32_t {
+            return rs.Assets().Acquire(assets::AssetKind::Texture, path);
         };
         rs_.CornEffects().SetBackendInit(pInit);
     }
@@ -1275,6 +1274,12 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
     {
         WDX_CPU_ZONE("CommitUploads");
         rs_.Loader().CommitPendingUploads();
+        // CommitPendingUploads Acquires the actor's textures into
+        // AssetManager slots. On desktop, pump those needs through the
+        // content provider right now so the new actor's first frame
+        // sees real textures instead of placeholders. No-op on
+        // Emscripten — the JS host owns the drain.
+        rs_.PumpAssetsViaProvider();
     }
 
     // Apply any pending settings changes before drawing.

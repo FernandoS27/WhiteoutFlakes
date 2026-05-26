@@ -32,7 +32,9 @@
 #include <filesystem>
 #include <memory>
 #include <new>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using whiteout::flakes::Renderer;
@@ -53,10 +55,11 @@ struct WfRenderer {
     // before wf_init runs. The renderer takes a shared_ptr at SetContentProvider
     // time, and we keep our own ref so wf_provider_put can call Put().
     std::shared_ptr<FetchContentProvider> provider;
-    // Snapshot of provider misses produced by the most recent
-    // wf_provider_missing_count() call. JS reads it back path-by-path
-    // via wf_provider_missing_get(idx, buf, cap).
-    std::vector<std::string> lastMissing;
+    // Snapshot of AssetManager needs produced by the most recent
+    // wf_assets_needs_count() call. JS reads each entry's (kind, path)
+    // via wf_assets_needs_get_kind/_get_path.
+    struct AssetNeed { int kind; std::string path; };
+    std::vector<AssetNeed> lastNeeds;
     bool inited = false;
     // Frame counter for the LoadEventDataFiles retry throttle. See
     // wf_tick — without this, the page log gets blown out by SLK-miss
@@ -357,15 +360,6 @@ void wf_clear_splats(WfRenderer* h) {
     h->renderer.Splats().Clear();
 }
 
-// Evict the cached model templates so a subsequent SpawnUnit re-parses
-// the MDX. Web loader calls this between iterations so newly-fetched
-// texture bytes get picked up; without it the second SpawnUnit reuses
-// the iter1 template with its failed-load TextureData placeholders.
-void wf_clear_template_cache(WfRenderer* h) {
-    if (!h) return;
-    h->renderer.Loader().ClearTemplateCache();
-}
-
 // ----------------------------------------------------------------------------
 // Actor controls — wraps ActorView so the JS Instance class can mirror
 // mdx-m3-viewer's per-instance API (setSequence, setTransform, setTeamColor,
@@ -532,33 +526,70 @@ int wf_actor_get_sequence_name(WfRenderer* h, uint32_t actor, int idx,
     return n;
 }
 
-// ---- Missing-paths retrieval ------------------------------------------------
-// JS calls wf_provider_missing_count() after SpawnUnit fails / partially
-// resolves to learn how many files the renderer requested that weren't in
-// the cache. wf_provider_missing_get(i, buf, cap) copies the i'th path
-// into JS's heap buffer (null-terminated). wf_provider_missing_clear()
-// drains the list so the next SpawnUnit attempt records a fresh set.
+// ---- AssetManager bridge ----------------------------------------------------
+// JS pumps the needs queue with wf_assets_needs_count() + _get(i, buf, cap),
+// then fetches each path and pushes bytes back via wf_assets_apply(kind,
+// path, ptr, len, ext). The needs list is buffered C++-side until JS asks
+// for it — DrainNeeds clears the buffer, so a follow-up _get(i) call uses
+// the snapshot stashed on WfRenderer (mirrors the existing missing-list
+// pattern so the JS shape stays familiar).
+//
+// Kind values mirror AssetsView::Kind: 0 = Texture, 1 = Particle, 2 = ChildModel.
 
-int wf_provider_missing_count(WfRenderer* h) {
-    if (!h || !h->provider) return 0;
-    // Peek without taking; JS may want to inspect first, then drain via
-    // explicit get-by-index calls. We snapshot via TakeMissing and immediately
-    // put it back so the count is stable across the subsequent get calls.
-    auto snap = h->provider->TakeMissing();
-    const int n = static_cast<int>(snap.size());
-    // Stash for subsequent get-by-index calls in a per-renderer cache.
-    h->lastMissing = std::move(snap);
-    return n;
+int wf_assets_needs_count(WfRenderer* h) {
+    if (!h) return 0;
+    // Snapshot from the AssetManager into our per-renderer cache.
+    h->lastNeeds.clear();
+    h->renderer.Assets().DrainNeeds(
+        [&](whiteout::flakes::AssetsView::Kind k, std::string_view path) {
+            h->lastNeeds.push_back({static_cast<int>(k), std::string(path)});
+        });
+    return static_cast<int>(h->lastNeeds.size());
 }
 
-int wf_provider_missing_get(WfRenderer* h, int index, char* outBuf, int bufCap) {
+int wf_assets_needs_get_kind(WfRenderer* h, int index) {
+    if (!h) return -1;
+    if (index < 0 || index >= static_cast<int>(h->lastNeeds.size())) return -1;
+    return h->lastNeeds[index].kind;
+}
+
+int wf_assets_needs_get_path(WfRenderer* h, int index, char* outBuf, int bufCap) {
     if (!h || !outBuf || bufCap <= 0) return 0;
-    if (index < 0 || index >= static_cast<int>(h->lastMissing.size())) return 0;
-    const std::string& s = h->lastMissing[index];
-    const int n = static_cast<int>(std::min<std::size_t>(s.size(), static_cast<std::size_t>(bufCap - 1)));
+    if (index < 0 || index >= static_cast<int>(h->lastNeeds.size())) return 0;
+    const std::string& s = h->lastNeeds[index].path;
+    const int n = static_cast<int>(std::min<std::size_t>(
+        s.size(), static_cast<std::size_t>(bufCap - 1)));
     std::memcpy(outBuf, s.data(), n);
     outBuf[n] = '\0';
     return n;
+}
+
+int wf_assets_apply(WfRenderer* h, int kind, const char* path,
+                    const void* bytes, int len, const char* foundExt) {
+    if (!h || !path || !bytes || len <= 0) return 0;
+    if (kind < 0 || kind > 2) return 0;
+    const auto k = static_cast<whiteout::flakes::AssetsView::Kind>(kind);
+    std::span<const std::uint8_t> span(
+        static_cast<const std::uint8_t*>(bytes), static_cast<std::size_t>(len));
+    return h->renderer.Assets().ApplyAsset(
+        k, std::string_view(path), span,
+        foundExt ? std::string_view(foundExt) : std::string_view{}) ? 1 : 0;
+}
+
+// Diagnostics — JS pulls these into the page overlay during dev.
+int wf_assets_stat(WfRenderer* h, int which) {
+    if (!h) return 0;
+    auto s = h->renderer.Assets().GetStats();
+    switch (which) {
+        case 0: return static_cast<int>(s.liveSlots);
+        case 1: return static_cast<int>(s.loadedSlots);
+        case 2: return static_cast<int>(s.pendingNeeds);
+        case 3: return static_cast<int>(s.totalAcquires);
+        case 4: return static_cast<int>(s.totalReleases);
+        case 5: return static_cast<int>(s.totalApplies);
+        case 6: return static_cast<int>(s.totalApplyMisses);
+        default: return 0;
+    }
 }
 
 } // extern "C"

@@ -59,7 +59,14 @@ struct ModelTemplate {
     bool gpuUploaded = false;
     std::vector<SharedGeoset> sharedGeosets;
 
-    std::unique_ptr<assets::TextureAssetManager::ModelScope> templateTextures;
+    // Device pointer remembered from uploadTemplateGpu so ~ModelTemplate
+    // can auto-release the shared GPU buffers when the last actor's
+    // sourceTemplate strong-ref drops. Without this, weak-cache eviction
+    // leaks BufferHandle slot indices — the gfx layer eventually reuses
+    // them, the queue submits work against stale resources, and
+    // WebGPU reports "A valid external Instance reference no longer
+    // exists" on the next frame's OnSubmittedWorkDone.
+    gfx::IGFXDevice* gpuDevice = nullptr;
 
     ModelTemplate();
     ~ModelTemplate();

@@ -1,6 +1,5 @@
 #pragma once
 
-#include "renderer/corn_effects/corn_effects_asset_cache.h"
 #include "renderer/corn_effects/corn_effects_emitter.h"
 #include "renderer/corn_effects/corn_effects_gfx_backend.h"
 #include "renderer/types.h"
@@ -13,10 +12,6 @@
 #include <mutex>
 #include <optional>
 #include <unordered_map>
-
-namespace whiteout::flakes::io {
-class IContentProvider;
-}
 
 namespace whiteout::flakes::renderer::corn_effects {
 
@@ -43,8 +38,6 @@ public:
 
     CornEffectsService(const CornEffectsService&) = delete;
     CornEffectsService& operator=(const CornEffectsService&) = delete;
-
-    void SetContentProvider(io::IContentProvider* provider);
 
     void SetGameToCornEffectsScale(f32 s) {
         gameToCornEffectsScale_ = s;
@@ -78,13 +71,8 @@ public:
 
     void Simulate(f32 dt);
 
-    CornEffectsAssetCache& Cache() {
-        return cache_;
-    }
-
 private:
     mutable std::mutex mutex_;
-    CornEffectsAssetCache cache_;
     ::whiteout::cornflakes::ExpandingArena frameArena_{1U << 20};
     std::unordered_map<EmitterKey, std::unique_ptr<CornEffectsEmitter>, EmitterKeyHash> emitters_;
     f32 gameToCornEffectsScale_ = 0.01f;

@@ -1,6 +1,7 @@
 #include "renderer/effects/spn_spawner.h"
 
 #include "io/mdx_model_adapter.h"
+#include "renderer/assets/asset_manager.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/model/actor_manager.h"
 #include "renderer/model/model_instance.h"
@@ -40,7 +41,18 @@ void SpnSpawner::Tick(i32 nowMs) {
             if (pit == rs_.Scene().Actors().All().end())
                 continue;
 
-            auto tmpl = rs_.Scene().Templates().GetOrLoadAsync(p.mdxPath);
+            // Acquire a slot for the SPN child MDX. The slot exists
+            // immediately (placeholder template until bytes arrive);
+            // the host pump fetches + parses on its own cadence. We
+            // hold the ref only for the duration of this check —
+            // Release before continuing so the slot can be reaped if
+            // every SPN consumer goes away. Refcount math is symmetric
+            // because Acquire+Release here is balanced; the slot
+            // survives across calls via pathToSlot_'s cache.
+            const auto slot = rs_.Assets().Acquire(
+                ::whiteout::flakes::renderer::assets::AssetKind::ChildModel, p.mdxPath);
+            auto tmpl = rs_.Assets().ChildModelOf(slot);
+            rs_.Assets().Release(slot);
             if (!tmpl) {
                 stillPending.push_back(std::move(p));
                 continue;

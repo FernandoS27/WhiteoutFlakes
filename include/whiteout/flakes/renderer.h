@@ -55,6 +55,7 @@ public:
     ShadowView Shadow();
     SplatView Splats();
     ReplaceablesView Replaceables();
+    AssetsView Assets();
     /// @}
 
     /// @brief Per-actor view. Returns an invalid view
@@ -78,13 +79,6 @@ public:
     /// `Tick` and call @ref ActorView::EvaluateAndApply manually.
     /// @param dt Elapsed time since the last tick, in seconds.
     void Tick(f32 dt);
-
-    /// @brief Texture-cache probe.
-    ///
-    /// Used by adapters that want to dedupe shared textures by their
-    /// content-addressed cache key (model imports often reference the
-    /// same BLP multiple times).
-    bool IsTextureCached(std::string_view sharedKey) const;
 
 private:
     std::unique_ptr<detail::RendererImpl> impl_;

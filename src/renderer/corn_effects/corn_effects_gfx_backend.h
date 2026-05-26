@@ -16,6 +16,7 @@
 #include <vector>
 
 namespace whiteout::flakes::renderer::assets {
+class AssetManager;
 class TextureAssetManager;
 class SamplerAssetManager;
 } // namespace whiteout::flakes::renderer::assets
@@ -39,7 +40,10 @@ struct CornEffectsFrameInputs {
     gfx::Format dsvFormat = gfx::Format::D24_UNORM_S8_UINT;
 };
 
-using TextureResolver = std::function<gfx::TextureHandle(std::string_view path)>;
+// Slot acquirer hook — corn_fx invokes it once per layer during
+// prepare() to get a stable AssetManager slot for that layer's
+// diffuse texture. Returning 0 means "no slot, render white fallback".
+using TextureSlotAcquirer = std::function<std::uint32_t(std::string_view path)>;
 
 class CornEffectsGfxBackend final : public ::whiteout::cornflakes::IRenderBackend {
 public:
@@ -49,7 +53,8 @@ public:
         bls::BlsPsoBuilder* psoBuilder = nullptr;
         assets::TextureAssetManager* textures = nullptr;
         assets::SamplerAssetManager* samplers = nullptr;
-        TextureResolver resolver;
+        assets::AssetManager* assets = nullptr;
+        TextureSlotAcquirer slotAcquire;
     };
 
     explicit CornEffectsGfxBackend(const Init& init);
@@ -71,14 +76,12 @@ public:
 
 private:
     struct LayerState {
-        gfx::TextureHandle diffuse = gfx::TextureHandle::Invalid;
-        // Source path kept around so submit() can retry the resolver when
-        // diffuse stayed Invalid through prepare(). Web build relevance:
-        // textures often arrive in the content provider AFTER prepare()
-        // (cold-fetched on the JS side when the first miss surfaces),
-        // so without this retry the layer renders against a white fallback
-        // forever even once bytes are in the cache.
-        std::string diffusePath;
+        // AssetManager slot for the diffuse. Acquired once during
+        // prepare() (per layer); resolved live at submit() time via
+        // TextureOf(). When the slot's payload hasn't arrived yet the
+        // resolution returns the shared white placeholder — no
+        // per-frame retry needed, no missing-list spam.
+        std::uint32_t diffuseSlot = 0;
         bool isDistortion = false;
         bool renderable = false;
         u16 atlasX = 0;
@@ -100,7 +103,8 @@ private:
     bls::BlsPsoBuilder* psoBuilder_ = nullptr;
     assets::TextureAssetManager* textures_ = nullptr;
     assets::SamplerAssetManager* samplers_ = nullptr;
-    TextureResolver resolver_;
+    assets::AssetManager* assets_ = nullptr;
+    TextureSlotAcquirer slotAcquire_;
 
     std::vector<LayerState> layerStates_;
 

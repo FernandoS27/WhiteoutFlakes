@@ -32,6 +32,7 @@
 #include <unordered_map>
 
 namespace whiteout::flakes::renderer::assets {
+class AssetManager;
 class SamplerAssetManager;
 class TextureAssetManager;
 class ReplaceableTextureManager;
@@ -63,6 +64,10 @@ struct RenderService::Impl {
     std::unique_ptr<assets::SamplerAssetManager> samplers_;
     std::unique_ptr<assets::TextureAssetManager> textures_;
     std::unique_ptr<assets::ReplaceableTextureManager> replaceables_;
+    // AssetManager lives alongside the per-kind managers above. Phase-1
+    // wires the skeleton; later phases gradually take ownership of the
+    // texture/.pkb/child-MDX caches from those managers.
+    std::unique_ptr<assets::AssetManager> assets_;
     std::unique_ptr<debug::DebugRenderer> debug_;
 
 #if WDX_ENABLE_IMGUI

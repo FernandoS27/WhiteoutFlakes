@@ -12,6 +12,8 @@
 #include "whiteout/flakes/renderer.h"
 #include "whiteout/flakes/views.h"
 
+#include "io/mdx_model_adapter.h"
+#include "renderer/assets/asset_manager.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/camera.h"
 #include "renderer/debug/debug_renderer.h"
@@ -82,6 +84,9 @@ SplatView Renderer::Splats() {
 ReplaceablesView Renderer::Replaceables() {
     return ReplaceablesView(impl_.get());
 }
+AssetsView Renderer::Assets() {
+    return AssetsView(impl_.get());
+}
 
 ActorView Renderer::Actor(ActorHandle h) {
     return ActorView(impl_.get(), h);
@@ -93,10 +98,6 @@ void Renderer::SwapSoundEmitter(std::unique_ptr<ISoundEmitter> e) {
 
 void Renderer::Tick(f32 dt) {
     impl_->service_.Ticker().Tick(dt);
-}
-
-bool Renderer::IsTextureCached(std::string_view sharedKey) const {
-    return impl_->service_.HasCachedTexture(sharedKey);
 }
 
 // ============================================================================
@@ -322,9 +323,6 @@ void LoaderView::UpdateMaterials(ActorHandle handle, const std::vector<MaterialD
 void LoaderView::RequestClearAll() {
     Svc(impl_).Loader().RequestClearAll();
 }
-void LoaderView::ClearTemplateCache() {
-    Scn(impl_).Templates().Clear();
-}
 void LoaderView::Destroy(ActorHandle handle) {
     Svc(impl_).Loader().DestroyActor(handle);
 }
@@ -403,6 +401,50 @@ bool ReplaceablesView::ConsumeDirty() {
 }
 void ReplaceablesView::SetTileset(Tileset t) {
     Svc(impl_).Replaceables().SetTileset(t);
+}
+
+// ============================================================================
+// AssetsView — surface for AssetManager (Phase-1 skeleton).
+// ============================================================================
+
+namespace {
+// Public/internal AssetKind enums are intentionally kept in sync — one
+// belongs to the public header (no internal includes), one to the
+// renderer impl. Convert at the view boundary.
+inline renderer::assets::AssetKind ToInternal(AssetsView::Kind k) {
+    return static_cast<renderer::assets::AssetKind>(static_cast<u8>(k));
+}
+inline AssetsView::Kind ToPublic(renderer::assets::AssetKind k) {
+    return static_cast<AssetsView::Kind>(static_cast<u8>(k));
+}
+} // namespace
+
+void AssetsView::DrainNeeds(const AssetsView::NeededFn& cb) {
+    if (!impl_) return;
+    Svc(impl_).Assets().DrainNeeds(
+        [&cb](renderer::assets::AssetKind k, std::string_view p) {
+            if (cb) cb(ToPublic(k), p);
+        });
+}
+
+bool AssetsView::ApplyAsset(AssetsView::Kind kind, std::string_view path,
+                            std::span<const u8> bytes, std::string_view foundExt) {
+    if (!impl_) return false;
+    return Svc(impl_).Assets().ApplyPrepared(ToInternal(kind), path, bytes, foundExt);
+}
+
+AssetsView::Stats AssetsView::GetStats() const {
+    AssetsView::Stats out;
+    if (!impl_) return out;
+    auto s = Svc(impl_).Assets().GetStats();
+    out.liveSlots        = s.liveSlots;
+    out.loadedSlots      = s.loadedSlots;
+    out.pendingNeeds     = Svc(impl_).Assets().PendingNeedsCount();
+    out.totalAcquires    = s.totalAcquires;
+    out.totalReleases    = s.totalReleases;
+    out.totalApplies     = s.totalApplies;
+    out.totalApplyMisses = s.totalApplyMisses;
+    return out;
 }
 
 // ============================================================================

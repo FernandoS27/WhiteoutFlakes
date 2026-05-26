@@ -14,45 +14,6 @@ using namespace ::whiteout::flakes::renderer::model;
 using namespace ::whiteout::flakes::renderer::effects;
 namespace particle = ::whiteout::flakes::renderer::particle;
 
-inline gfx::Format WhiteoutFormatToGfx(whiteout::textures::PixelFormat pf, bool srgb) {
-    using PF = whiteout::textures::PixelFormat;
-    switch (pf) {
-    case PF::R8:
-        return gfx::Format::R8_UNORM;
-    case PF::R16:
-        return gfx::Format::R16_UNORM;
-    case PF::R32F:
-        return gfx::Format::R32_FLOAT;
-    case PF::RG8:
-        return gfx::Format::R8G8_UNORM;
-    case PF::RG16:
-        return gfx::Format::R16G16_UNORM;
-    case PF::RG32F:
-        return gfx::Format::R32G32_FLOAT;
-    case PF::RGBA8:
-        return srgb ? gfx::Format::R8G8B8A8_UNORM_SRGB : gfx::Format::R8G8B8A8_UNORM;
-    case PF::RGBA16:
-        return gfx::Format::R16G16B16A16_UNORM;
-    case PF::RGBA32F:
-        return gfx::Format::R32G32B32A32_FLOAT;
-    case PF::BC1:
-        return srgb ? gfx::Format::BC1_UNORM_SRGB : gfx::Format::BC1_UNORM;
-    case PF::BC2:
-        return srgb ? gfx::Format::BC2_UNORM_SRGB : gfx::Format::BC2_UNORM;
-    case PF::BC3:
-        return srgb ? gfx::Format::BC3_UNORM_SRGB : gfx::Format::BC3_UNORM;
-    case PF::BC4:
-        return gfx::Format::BC4_UNORM;
-    case PF::BC5:
-        return gfx::Format::BC5_UNORM;
-    case PF::BC6H:
-        return gfx::Format::BC6H_UF16;
-    case PF::BC7:
-        return srgb ? gfx::Format::BC7_UNORM_SRGB : gfx::Format::BC7_UNORM;
-    }
-    return gfx::Format::Unknown;
-}
-
 using namespace whiteout;
 using namespace whiteout::mdx;
 namespace fs = std::filesystem;
@@ -272,85 +233,6 @@ std::vector<MeshData> MdxModelAdapter::GetMeshes() {
     return result;
 }
 
-TextureData MdxModelAdapter::LoadTextureFile(const std::string& path, i32 textureId,
-                                             i32 replaceableId) const {
-    TextureData td;
-    td.textureId = textureId;
-    td.replaceableId = replaceableId;
-    td.width = td.height = 0;
-
-    td.sharedKey = NormalizeTextureKey(path);
-
-    auto applyResult = [&](whiteout::textures::Texture& tex) {
-        gfx::Format gfxFmt = WhiteoutFormatToGfx(tex.format(), tex.isSrgb());
-        if (gfxFmt == gfx::Format::Unknown) {
-            tex.format(whiteout::textures::PixelFormat::RGBA8);
-            gfxFmt = tex.isSrgb() ? gfx::Format::R8G8B8A8_UNORM_SRGB : gfx::Format::R8G8B8A8_UNORM;
-        }
-
-        gfxFmt = ApplyTextureSrgbPolicy(gfxFmt, path);
-        td.width = (i32)tex.width();
-        td.height = (i32)tex.height();
-        td.format = gfxFmt;
-        td.mipLevels = (i32)tex.mipCount();
-
-        usize total = 0;
-        for (u32 m = 0; m < tex.mipCount(); ++m)
-            total += tex.mipData(m).size();
-        td.pixels.resize(total);
-        u8* cursor = td.pixels.data();
-        for (u32 m = 0; m < tex.mipCount(); ++m) {
-            auto src = tex.mipData(m);
-            std::memcpy(cursor, src.data(), src.size());
-            cursor += src.size();
-        }
-    };
-
-    auto tryParsePath = [&](const fs::path& p) -> bool {
-        auto u8 = p.u8string();
-        std::string pathStr(reinterpret_cast<const char*>(u8.data()), u8.size());
-        auto result = DispatchTextureParser(ExtensionLower(p),
-                                            [&](auto& parser) { return parser.parse(pathStr); });
-        if (result) {
-            applyResult(*result);
-            return true;
-        }
-        return false;
-    };
-
-    auto tryParseBuffer = [&](std::span<const u8> buf, const std::string& ext) -> bool {
-        auto result = DispatchTextureParser(ext, [&](auto& parser) { return parser.parse(buf); });
-        if (result) {
-            applyResult(*result);
-            return true;
-        }
-        return false;
-    };
-
-    fs::path resolved = resolver_.ResolveTexture(path);
-    if (!resolved.empty() && tryParsePath(resolved)) {
-        return td;
-    }
-
-    if (contentProvider_) {
-        std::string foundExt;
-        auto data = contentProvider_->ReadFile(path, &foundExt);
-        if (data) {
-            if (foundExt.empty())
-                foundExt = ExtensionLower(fs::path(path));
-            if (tryParseBuffer(*data, foundExt)) {
-                return td;
-            }
-        }
-    }
-
-    auto u8base = resolver_.BasePath().u8string();
-    std::fprintf(stderr, "[textures] ERR: MDX texture[%d] NOT FOUND: '%s' (base: %s)\n", textureId,
-                 path.c_str(), reinterpret_cast<const char*>(u8base.data()));
-
-    return td;
-}
-
 std::vector<TextureData> MdxModelAdapter::GetTextures() {
     std::vector<TextureData> result;
     result.reserve(model_.textures.size());
@@ -358,26 +240,25 @@ std::vector<TextureData> MdxModelAdapter::GetTextures() {
     for (i32 i = 0; i < (i32)model_.textures.size(); i++) {
         const auto& tex = model_.textures[i];
         TextureData td;
+        td.textureId = i;
+        td.replaceableId = static_cast<i32>(tex.replaceableId);
+        td.width = td.height = 0;
+
         if (tex.replaceableId != 0) {
-
-            td.textureId = i;
-            td.replaceableId = (i32)tex.replaceableId;
-            td.width = td.height = 0;
+            // Replaceable textures (team color, team glow, tileset, …)
+            // are served by ReplaceableTextureManager at render time.
+            // Nothing more to do here.
         } else if (!tex.fileName.empty()) {
-
-            std::string sharedKey = NormalizeTextureKey(tex.fileName);
-            if (IsTextureCached(sharedKey)) {
-                td.textureId = i;
-                td.replaceableId = (i32)tex.replaceableId;
-                td.width = td.height = 0;
-                td.sharedKey = std::move(sharedKey);
-            } else {
-                td = LoadTextureFile(tex.fileName, i, (i32)tex.replaceableId);
-            }
+            // File-backed: route through AssetManager. The adapter only
+            // emits the normalised path; ModelLoader Acquires the slot
+            // when staging the actor, and the host's needs-pump drives
+            // the actual fetch+decode. No synchronous decode here, no
+            // dependency on a pre-existing texture cache.
+            td.sharedKey = NormalizeTextureKey(tex.fileName);
         } else {
-
-            td.textureId = i;
-            td.replaceableId = (i32)tex.replaceableId;
+            // Synthetic — the MDX has neither a file path nor a
+            // replaceableId, just a magenta-ish 4x4 placeholder so the
+            // material has something to bind. (Rare in WC3 content.)
             td.width = td.height = 4;
             td.pixels.assign(4 * 4 * 4, 255);
         }

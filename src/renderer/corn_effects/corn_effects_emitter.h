@@ -18,9 +18,12 @@ class IArena;
 struct Mat4x3;
 } // namespace whiteout::cornflakes
 
+namespace whiteout::flakes::renderer::assets {
+class AssetManager;
+} // namespace whiteout::flakes::renderer::assets
+
 namespace whiteout::flakes::renderer::corn_effects {
 
-class CornEffectsAssetCache;
 class CornEffectsService;
 
 enum SimFlag : u32 {
@@ -37,7 +40,7 @@ inline constexpr std::size_t kDefaultRenderPoolSize = 256;
 
 class CornEffectsEmitter {
 public:
-    CornEffectsEmitter(CornEffectsAssetCache& cache, std::string pkbPath,
+    CornEffectsEmitter(assets::AssetManager& assets, std::string pkbPath,
                        std::string animVisibilityGuide, i32 replaceableId, bool cornEffectsScaling);
     ~CornEffectsEmitter();
 
@@ -118,7 +121,9 @@ private:
 
     static ::whiteout::cornflakes::Mat4x3 ToCornflakesL2W(const Matrix44f& m);
 
-    CornEffectsAssetCache& cache_;
+    assets::AssetManager& assets_;
+    std::uint32_t assetSlot_ = 0; // AssetManager::kInvalidSlot
+    u32 lastAssetGen_ = 0;        // observed slot generation; bump triggers re-spawn
     std::string pkbPath_;
     std::string animVisibilityGuide_;
     bool cornEffectsScaling_ = false;

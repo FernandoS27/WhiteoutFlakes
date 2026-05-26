@@ -17,6 +17,7 @@
 //   --wc3-dir <path>   required; WC3 install dir (containing .build.info)
 //   --port <n>         default 8080
 //   --web-root <dir>   default ./web (relative to cwd)
+//   --simulate-delays  throttle CASC responses to ~1s per MiB (latency sim)
 // ============================================================================
 
 #include <crow.h>
@@ -26,6 +27,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -35,6 +37,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -143,19 +146,23 @@ void AddCommonHeaders(crow::response& res, std::string_view contentType) {
 
 struct Args {
     std::string wc3Dir;
-    std::string webRoot = "web";
-    int         port    = 8080;
+    std::string webRoot        = "web";
+    int         port           = 8080;
+    bool        simulateDelays = false;
 };
 
 [[noreturn]] void Usage(const char* prog) {
     std::fprintf(stderr,
         "usage: %s [--wc3-dir <wc3-install>] [--port N] [--web-root DIR]\n"
-        "  --wc3-dir   WC3 install path (auto-discovered via the Blizzard\n"
-        "              game finder when omitted: registry / Battle.net /\n"
-        "              Steam on Win, /Applications on macOS, Wine + Proton\n"
-        "              compatdata on Linux)\n"
-        "  --port      HTTP port (default 8080)\n"
-        "  --web-root  Static file root (default ./web)\n",
+        "          [--simulate-delays]\n"
+        "  --wc3-dir         WC3 install path (auto-discovered via the Blizzard\n"
+        "                    game finder when omitted: registry / Battle.net /\n"
+        "                    Steam on Win, /Applications on macOS, Wine + Proton\n"
+        "                    compatdata on Linux)\n"
+        "  --port            HTTP port (default 8080)\n"
+        "  --web-root        Static file root (default ./web)\n"
+        "  --simulate-delays Delay each CASC response proportional to its size\n"
+        "                    (~1s per MiB) to mimic real-world network latency\n",
         prog);
     std::exit(2);
 }
@@ -171,9 +178,10 @@ Args ParseArgs(int argc, char** argv) {
     };
     for (int i = 1; i < argc; ++i) {
         std::string_view k = argv[i];
-        if      (k == "--wc3-dir")  a.wc3Dir  = next(i);
-        else if (k == "--port")     a.port    = std::atoi(next(i).c_str());
-        else if (k == "--web-root") a.webRoot = next(i);
+        if      (k == "--wc3-dir")         a.wc3Dir         = next(i);
+        else if (k == "--port")            a.port           = std::atoi(next(i).c_str());
+        else if (k == "--web-root")        a.webRoot        = next(i);
+        else if (k == "--simulate-delays") a.simulateDelays = true;
         else if (k == "-h" || k == "--help") Usage(argv[0]);
         else {
             std::fprintf(stderr, "unknown flag: %s\n", argv[i]);
@@ -247,8 +255,13 @@ int main(int argc, char** argv) {
     // uses — so an MDX reference like `units/human/footman/footman.mdx`
     // resolves through `war3.w3mod:` and an HD-only asset finds its bytes
     // under `war3.w3mod:_hd.w3mod:`.
+    const bool simulateDelays = args.simulateDelays;
+    if (simulateDelays) {
+        std::printf("[wf_casc_server] --simulate-delays ON: CASC responses "
+                    "throttled to ~1s per MiB\n");
+    }
     CROW_ROUTE(app, "/casc/<path>")
-    ([storage](std::string cascPath) {
+    ([storage, simulateDelays](std::string cascPath) {
         const std::string norm = NormalizeCascPath(cascPath);
         const PrefixSpan prefixes = ChoosePrefixes(norm);
         std::optional<std::vector<uint8_t>> bytes;
@@ -262,6 +275,14 @@ int main(int argc, char** argv) {
             AddCommonHeaders(res, "text/plain; charset=utf-8");
             res.body = "Not found in CASC: " + cascPath;
             return res;
+        }
+        if (simulateDelays) {
+            // ~1s per MiB. Sleeps on the Crow worker thread; the pool is
+            // multithreaded so other requests keep flowing in parallel.
+            const auto delayMs = static_cast<std::int64_t>(
+                (bytes->size() * 250ULL) / (1024ULL * 1024ULL));
+            if (delayMs > 0)
+                std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
         }
         res.code = 200;
         AddCommonHeaders(res, MimeFor(cascPath));

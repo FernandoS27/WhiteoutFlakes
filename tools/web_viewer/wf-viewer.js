@@ -314,11 +314,7 @@ export class Model {
         if (!this.loaded) throw new Error('Model.addInstance() before load resolved');
         const M = this._viewer._module;
         const handle = M._wf_spawn_unit(this._viewer._handle, this._viewer._cstr(this._mdxKey));
-        if (!handle) {
-            const missing = this._viewer._drainMissing();
-            throw new Error('addInstance: wf_spawn_unit returned 0' +
-                (missing.length ? ' (missing: ' + missing.slice(0, 3).join(', ') + ')' : ''));
-        }
+        if (!handle) throw new Error('addInstance: wf_spawn_unit returned 0');
         const inst = new Instance(this._viewer, this, handle);
         this._instances.push(inst);
         return inst;
@@ -601,47 +597,138 @@ export class WhiteoutViewer {
             this._module._wf_tick(this._handle, dt);
             this._module._wf_render(this._handle);
             this._raf = requestAnimationFrame(this._loop);
-            // Drain any deps the renderer just lazily discovered — corn_fx
-            // textures, per-emitter particle sounds, etc. — that didn't
-            // surface during the initial load()'s missing-list pass. The
-            // C++ resolver in render_pipeline.cpp:712 fires per-emitter
-            // during particle spawn, which happens *during render* well
-            // after load() returned. Throttled to every ~10 frames so the
-            // ABI traffic doesn't dominate the per-frame budget.
-            if ((++this._lazyTick % 10) === 0) this._drainLazyMissing();
+            // Pump the AssetManager needs queue. SpawnUnit + frame_ticker
+            // both surface paths the renderer wants; we drain once per
+            // frame and fire fetches in parallel. Covers Texture,
+            // Particle (.pkb), and ChildModel kinds end-to-end.
+            this._pumpAssetNeeds();
         };
         this._raf = requestAnimationFrame(this._loop);
         return this;
     }
 
-    // Install a path solver to use whenever the renderer surfaces a
-    // missing dep mid-render. Called by the host app (e.g. HiveApp) after
-    // the user picks a directory; reused for every subsequent frame's
-    // lazy texture / particle resolves until replaced. Resets the
-    // attempted-set so a fresh directory pick can re-try paths that
-    // failed against the previous one.
+    // Install a path solver the renderer uses to fetch assets the
+    // AssetManager surfaces on its needs queue (Texture / Particle /
+    // ChildModel slots). Called by the host app (e.g. HiveApp) after
+    // the user picks a directory.
     setPathSolver(solver) {
         this._lazySolver = solver;
-        if (this._attemptedDeps) this._attemptedDeps.clear();
     }
 
-    _drainLazyMissing() {
-        if (!this._lazySolver || !this._handle) return;
-        // Dedupe-first parallel drain. The `_attemptedDeps` Set is what
-        // really tames the C++ retry storm — each path is fetched AT
-        // MOST ONCE across the viewer's lifetime, so the corn_fx
-        // resolver re-firing every frame for an unresolved texture (or
-        // LoadEventDataFiles re-trying 17 sound SLKs every tick) doesn't
-        // re-queue work. Within a single drain we can issue all fresh
-        // paths concurrently; the browser's per-host connection cap
-        // does the rate-limiting at the network layer.
-        const missing = this._drainMissing();
-        if (missing.length === 0) return;
-        if (!this._attemptedDeps) this._attemptedDeps = new Set();
-        for (const p of missing) {
-            if (this._attemptedDeps.has(p)) continue;
-            this._attemptedDeps.add(p);
-            this._fetchDep(this._lazySolver, p).catch(() => {});
+    // Drain the AssetManager's needs queue and fetch each path. Each
+    // need is attempted at most once per solver (deduped via
+    // `_attemptedAssets`) — the renderer surfaces a need the first
+    // time it Acquires a path, never again, so this is naturally
+    // small (one entry per unique texture path the model uses).
+    _pumpAssetNeeds() {
+        if (!this._handle) return;
+        const M = this._module;
+        if (!M._wf_assets_needs_count) return; // older wasm without bridge
+        const n = M._wf_assets_needs_count(this._handle);
+        if (!n) return;
+        if (!this._inflightAssets) this._inflightAssets = new Map();
+        const CAP = 512;
+        const buf = M._malloc(CAP);
+        try {
+            for (let i = 0; i < n; ++i) {
+                const kind = M._wf_assets_needs_get_kind(this._handle, i);
+                M._wf_assets_needs_get_path(this._handle, i, buf, CAP);
+                const path = M.UTF8ToString(buf);
+                const dedupKey = kind + ':' + path;
+                // Dedupe ONLY in-flight fetches, not lifetime ones. When
+                // a slot gets released (e.g. model switch destroys the
+                // previous actor) and the next model re-Acquires the
+                // same path, the path lands on the needs queue again —
+                // we MUST re-fetch because the slot's GPU resources
+                // were torn down with the old slot. A lifetime-dedup
+                // (the old `_attemptedAssets` Set) caused every shared
+                // texture between two sequentially-loaded models to
+                // stay on the placeholder forever.
+                if (this._inflightAssets.has(dedupKey)) continue;
+                if (!this._lazySolver) continue;
+                const p = this._fetchAndApplyAsset(this._lazySolver, kind, path)
+                    .catch(() => {})
+                    .finally(() => { this._inflightAssets.delete(dedupKey); });
+                this._inflightAssets.set(dedupKey, p);
+            }
+        } finally {
+            M._free(buf);
+        }
+    }
+
+    // Fetch the bytes for a needed asset and push them into the
+    // AssetManager via _wf_assets_apply. Mirrors _fetchDep's
+    // extension-synonym walk (.tif ↔ .dds ↔ .blp, etc.) so the
+    // server can serve whichever shape it has on disk.
+    async _fetchAndApplyAsset(pathSolver, kind, relPath) {
+        if (this._onFetchStart) this._onFetchStart(relPath);
+        try {
+            return await this._fetchAndApplyAssetImpl(pathSolver, kind, relPath);
+        } finally {
+            if (this._onFetchEnd) this._onFetchEnd(relPath);
+        }
+    }
+
+    async _fetchAndApplyAssetImpl(pathSolver, kind, relPath) {
+        const fwd = relPath.replaceAll('\\', '/');
+        const slash = fwd.lastIndexOf('/');
+        const dot = fwd.lastIndexOf('.');
+        const stemFull = dot > 0 ? fwd.slice(0, dot) : fwd;
+        const stemBase = slash >= 0 ? stemFull.slice(slash + 1) : stemFull;
+        const origExt  = dot > 0 ? fwd.slice(dot).toLowerCase() : '';
+
+        // Extension synonyms by kind. Texture slots route freely between
+        // .blp / .dds / .tga / .png / .tif (the renderer's adapter doesn't
+        // care which format the server serves). Particle (.pkb) often
+        // ships as .pkfx in newer Reforged builds — try both. Model
+        // synonyms cover .mdx ↔ .mdl.
+        const TEX = ['.blp', '.dds', '.tga', '.png', '.tif'];
+        const MDL = ['.mdx', '.mdl'];
+        const PRT = ['.pkb', '.pkfx'];
+        let exts;
+        if (TEX.includes(origExt))      exts = [origExt, ...TEX.filter(e => e !== origExt)];
+        else if (MDL.includes(origExt)) exts = [origExt, ...MDL.filter(e => e !== origExt)];
+        else if (PRT.includes(origExt)) exts = [origExt, ...PRT.filter(e => e !== origExt)];
+        else                            exts = [origExt];
+
+        const stems = [stemFull, stemBase].filter((s, i, a) => a.indexOf(s) === i);
+
+        for (const stem of stems) {
+            for (const ext of exts) {
+                const candName = stem + ext;
+                let url;
+                try { url = await Promise.resolve(pathSolver(candName)); }
+                catch (_) { continue; }
+                if (!url) continue;
+                try {
+                    const r = await fetch(url, { cache: 'no-store' });
+                    if (!r.ok) continue;
+                    const bytes = new Uint8Array(await r.arrayBuffer());
+                    const applied = this._applyAsset(kind, relPath, bytes, ext);
+                    if (applied) return true;
+                    // Apply rejected — decode failed. Try next candidate
+                    // rather than declaring success on bad bytes.
+                } catch (_) { /* try next */ }
+            }
+        }
+        // Log kind so it's easier to triage Texture vs Particle vs
+        // ChildModel misses against the on-disk content layout.
+        const kindName = ['Texture', 'Particle', 'ChildModel'][kind] || ('k=' + kind);
+        console.warn('[wf] asset MISS (' + kindName + ', all candidates failed): ' + relPath);
+        return false;
+    }
+
+    _applyAsset(kind, path, u8, foundExt) {
+        const M = this._module;
+        const pathPtr = this._cstr(path);
+        const extPtr  = this._cstr(foundExt || '');
+        const dataPtr = M._malloc(u8.byteLength);
+        M.HEAPU8.set(u8, dataPtr);
+        try {
+            return !!M._wf_assets_apply(
+                this._handle, kind, pathPtr, dataPtr, u8.byteLength, extPtr);
+        } finally {
+            M._free(dataPtr);
         }
     }
 
@@ -789,7 +876,16 @@ export class WhiteoutViewer {
     // mdx-m3-viewer's `viewer.whenAllLoaded(models, cb)` — supports both
     // the callback form (legacy) and a Promise return for `await`.
     whenAllLoaded(models, cb) {
-        const p = Promise.all(models.map(m => m._loadPromise || Promise.resolve(m)));
+        // Wait for spawn AND any background texture stream. The texture
+        // stream runs after `_loadPromise` resolves (so the caller's
+        // `await viewer.load()` returns once the model is visible) —
+        // whenAllLoaded chains both so callers that need a fully
+        // textured model can await it explicitly.
+        const p = Promise.all(models.map(async m => {
+            await (m._loadPromise || Promise.resolve());
+            if (m._texStream) await m._texStream;
+            return m;
+        }));
         if (typeof cb === 'function') p.then(() => cb(models));
         return p;
     }
@@ -856,37 +952,18 @@ export class WhiteoutViewer {
             }
         };
 
-        // Pause the render loop for the duration of the load. The renderer
-        // tracks textures by handle and Scene().Update() processes deferred
-        // actor destructions, both of which can collide with an in-flight
-        // SpawnUnit when a frame interleaves with our destroy + re-parse
-        // between iterations. The console "eviction race" warnings and the
-        // wasm Aborted() on iter 2 trace back to this race. Pausing rAF
-        // here means the canvas stops updating during a load (acceptable —
-        // there's nothing useful to draw yet) but the page itself stays
-        // fully interactive (sidebar buttons, scroll, etc).
-        const renderWasRunning = this._raf !== 0;
-        if (renderWasRunning) {
-            cancelAnimationFrame(this._raf);
-            this._raf = 0;
-        }
         // Step the engine once so any cleanup deferred from before the
-        // load (e.g. a previous model's actors flagged via detach()) gets
-        // applied before we start spawning a new actor.
-        const flushTick = () => M._wf_tick(this._handle, 0);
-        flushTick();
-
-        try {
-            return await this._loadInternalImpl(src, pathSolver, model, log, flushTick);
-        } finally {
-            if (renderWasRunning && this._handle) {
-                this._lastTime = performance.now();
-                this._raf = requestAnimationFrame(this._loop);
-            }
-        }
+        // load (e.g. a previous model's actors flagged via detach()) is
+        // applied before we spawn the new actor. The render loop keeps
+        // running through the load — we no longer destroy+respawn
+        // between iterations (refresh_template uses UpdateMaterials to
+        // stream textures onto the live actor instead), so the eviction
+        // race that motivated the old rAF pause is gone.
+        M._wf_tick(this._handle, 0);
+        return this._loadInternalImpl(src, pathSolver, model, log);
     }
 
-    async _loadInternalImpl(src, pathSolver, model, log, flushTick) {
+    async _loadInternalImpl(src, pathSolver, model, log) {
         const M = this._module;
 
         // Resolve the MDX URL through pathSolver, fetch it, push bytes
@@ -911,135 +988,41 @@ export class WhiteoutViewer {
         const srcDir = String(src).substring(0, String(src).lastIndexOf('/') + 1);
         if (srcDir) this._setPe1Base(srcDir.replace(/^\.?\/?/, ''));
 
-        // Iteratively spawn and satisfy missing deps. Max 6 iterations —
-        // typical WC3 model has texture deps in one shot, plus occasional
-        // child-MDX + sound which surface on the next. The final
-        // successful SpawnUnit's actor becomes the Model's first
-        // Instance (mdx-m3-viewer parity: the host calls model.addInstance()
-        // for additional copies). We destroy ONLY the in-flight retry
-        // actor between iterations — other models' instances live on.
-        for (let iter = 1; iter <= 6; ++iter) {
-            log('iter ' + iter + ': calling wf_spawn_unit("' + mdxKey + '")');
-            const handle = M._wf_spawn_unit(this._handle, this._cstr(mdxKey));
-            const missing = this._drainMissing();
-            log('iter ' + iter + ': handle=' + handle + ' missing=' + missing.length +
-                (missing.length ? ' first=' + missing[0] : ''));
-            if (handle && missing.length === 0) {
-                log('spawn OK after ' + iter + ' iter(s)');
-                this._applyPreferredRenderMode(handle);
-                model.loaded = true;
-                const inst = new Instance(this, model, handle);
-                model._instances.push(inst);
-                return model;
-            }
-            if (missing.length === 0) {
-                model.error = new Error('SpawnUnit returned 0 with no missing-deps');
-                throw model.error;
-            }
-            // Fetch the missing deps in parallel; bail the retry loop
-            // early if NOTHING was satisfied — re-parsing wouldn't make
-            // progress and the next SpawnUnit would just abort on the
-            // same exotic refs (third-party .pkfx, deleted units, etc.).
-            log('fetching ' + missing.length + ' dep(s)…');
-            const results = await Promise.all(missing.map(async p => {
-                const ok = await this._fetchDep(pathSolver, p);
-                return { p, ok };
-            }));
-            const hits = results.filter(r => r.ok).length;
-            log('  fetched ' + hits + '/' + results.length + ' OK');
-            if (hits === 0 && handle) {
-                // No new bytes available — accept the partial actor with
-                // placeholder textures rather than risk another iteration
-                // re-parsing into the same hole. Renders w/ missing
-                // assets stubbed but doesn't abort the page.
-                log('  no new deps satisfied — keeping iter ' + iter + ' actor');
-                this._applyPreferredRenderMode(handle);
-                model.loaded = true;
-                const inst = new Instance(this, model, handle);
-                model._instances.push(inst);
-                return model;
-            }
-
-            // Tear the actor down and wipe the template, then explicitly
-            // tick (rAF is paused) so the deferred destroy + texture
-            // eviction process BEFORE the next SpawnUnit. Without this
-            // flush the resource manager hits an eviction race against
-            // the freshly-rebuilt template and the wasm aborts.
-            if (handle) M._wf_actor_destroy(this._handle, handle);
-            M._wf_clear_template_cache(this._handle);
-            flushTick();
-            // Yield to the browser so any pending microtasks / GC settle.
-            await new Promise(r => setTimeout(r, 0));
+        // One-shot spawn. The renderer Acquires AssetManager slots for
+        // every file-backed texture during the MDX parse; each slot
+        // starts on the shared white placeholder and the path goes
+        // onto the needs queue. The per-frame pump in this._loop
+        // drains the queue, fetches each path, and pushes bytes via
+        // wf_assets_apply — the slot's texHandle swaps in
+        // transparently the next frame. No refresh-tick dance, no
+        // re-parse, no handle churn.
+        log('spawn: ' + mdxKey);
+        const handle = M._wf_spawn_unit(this._handle, this._cstr(mdxKey));
+        if (!handle) {
+            model.error = new Error('SpawnUnit returned 0');
+            throw model.error;
         }
-        model.error = new Error('load: still resolving deps after 6 iterations');
-        throw model.error;
+        this._applyPreferredRenderMode(handle);
+        model.loaded = true;
+        const inst = new Instance(this, model, handle);
+        model._instances.push(inst);
+
+        // Kick the needs-pump immediately so the first fetches start
+        // overlapping with the page resuming the rAF loop. The
+        // per-frame pump in _loop covers subsequent ticks (corn-fx
+        // and other runtime-discovered assets).
+        this._pumpAssetNeeds();
+        return model;
     }
 
-    // Drain the C-side missing list into a JS array of strings.
-    _drainMissing() {
-        const M = this._module;
-        const n = M._wf_provider_missing_count(this._handle);
-        if (!n) return [];
-        const CAP = 512;
-        const buf = M._malloc(CAP);
-        const out = [];
-        for (let i = 0; i < n; ++i) {
-            M._wf_provider_missing_get(this._handle, i, buf, CAP);
-            out.push(M.UTF8ToString(buf));
-        }
-        M._free(buf);
-        return out;
-    }
-
-    // Fetch one dependency. `pathSolver(name)` returns the URL (or
-    // Promise<URL>) for an asset name. We feed each candidate
-    // (extension synonyms + filename-only stem) through the same
-    // pathSolver so a host page can map them however it likes — Hive's
-    // existing CDN convention, a directory-relative server, or in-memory
-    // bytes (pathSolver may return a `data:` URL). The provider stores
-    // the bytes under the actual-extension key so the WC3 alt-ext
-    // synonym walk in fetch_content_provider.cpp resolves the
-    // renderer's request and reports the correct `actualExt`.
-    async _fetchDep(pathSolver, relPath) {
-        const fwd = relPath.replaceAll('\\', '/');
-        const slash = fwd.lastIndexOf('/');
-        const dot = fwd.lastIndexOf('.');
-        const stemFull = dot > 0 ? fwd.slice(0, dot) : fwd;
-        const stemBase = slash >= 0 ? stemFull.slice(slash + 1) : stemFull;
-        const origExt  = dot > 0 ? fwd.slice(dot).toLowerCase() : '';
-
-        // Extension synonym chain mirrors FileResolver::kTextureExts /
-        // kModelExts. Requested ext first to keep the happy path single-fetch.
-        const TEX = ['.blp', '.dds', '.tga', '.png', '.tif'];
-        const MDL = ['.mdx', '.mdl'];
-        let exts;
-        if (TEX.includes(origExt))      exts = [origExt, ...TEX.filter(e => e !== origExt)];
-        else if (MDL.includes(origExt)) exts = [origExt, ...MDL.filter(e => e !== origExt)];
-        else                            exts = [origExt];
-
-        // Two path shapes — FileResolver tries `relPath` AND `filename
-        // only`. Loose-file dumps often put `foo.dds` directly in the
-        // model directory while the MDX references `units/.../foo.tif`.
-        const stems = [stemFull, stemBase].filter((s, i, a) => a.indexOf(s) === i);
-
-        for (const stem of stems) {
-            for (const ext of exts) {
-                const candName = stem + ext;
-                let url;
-                try { url = await Promise.resolve(pathSolver(candName)); }
-                catch (_) { continue; }
-                if (!url) continue;
-                try {
-                    const r = await fetch(url, { cache: 'no-store' });
-                    if (!r.ok) continue;
-                    const bytes = new Uint8Array(await r.arrayBuffer());
-                    this._putBytes(candName, bytes);
-                    return true;
-                } catch (_) {/* try next */}
-            }
-        }
-        console.warn('[wf] dep MISS (all candidates failed): ' + relPath);
-        return false;
+    // Install host-side hooks that fire once per logical dep — start
+    // when the dep is queued, end when it resolves (success OR failure).
+    // The host uses these to drive a determinate progress bar from
+    // (completed / total) where total grows as new deps surface from
+    // background fetchers and the AssetManager pump.
+    setFetchHooks({ start, end } = {}) {
+        this._onFetchStart = typeof start === 'function' ? start : null;
+        this._onFetchEnd   = typeof end   === 'function' ? end   : null;
     }
 
     // Helpers to keep loadModel readable.
@@ -1084,11 +1067,22 @@ export class WhiteoutViewer {
             'Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdx',
             'Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdl',
         ];
-        const localSolver = (name) => root + name;
-        const cascSolver  = (name) => '/casc/' + name;
+        // These assets ride the legacy FetchContentProvider (read by the
+        // renderer's init-time code via ContentProvider::ReadFile rather
+        // than the slot-based AssetManager). We fetch them eagerly and
+        // push the bytes through _putBytes so the synchronous ReadFile
+        // inside the renderer's init path always hits.
+        const tryFetch = async (url) => {
+            try {
+                const r = await fetch(url, { cache: 'no-store' });
+                if (!r.ok) return null;
+                return new Uint8Array(await r.arrayBuffer());
+            } catch (_) { return null; }
+        };
         await Promise.all(ENGINE.map(async (p) => {
-            const ok = await this._fetchDep(localSolver, p);
-            if (!ok) await this._fetchDep(cascSolver, p);
+            let bytes = await tryFetch(root + p);
+            if (!bytes) bytes = await tryFetch('/casc/' + p);
+            if (bytes) this._putBytes(p, bytes);
         }));
     }
 

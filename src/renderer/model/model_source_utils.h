@@ -120,4 +120,33 @@ inline bool DecodeToRGBA8(std::span<const u8> buf, const std::string& ext, std::
     return true;
 }
 
+// WhiteoutLib PixelFormat → gfx::Format. The MDX texture parser
+// preserves the source's native format (BLP1/BC1/BC3 etc.) and the
+// renderer's BLS pipeline can sample any of them directly — we only
+// fall through to RGBA8 when the source is in a format the gfx
+// backend doesn't speak. Used by AssetManager's texture-apply path
+// to keep BC compression + the full mip chain when possible.
+inline gfx::Format WhiteoutFormatToGfx(whiteout::textures::PixelFormat pf, bool srgb) {
+    using PF = whiteout::textures::PixelFormat;
+    switch (pf) {
+    case PF::R8:      return gfx::Format::R8_UNORM;
+    case PF::R16:     return gfx::Format::R16_UNORM;
+    case PF::R32F:    return gfx::Format::R32_FLOAT;
+    case PF::RG8:     return gfx::Format::R8G8_UNORM;
+    case PF::RG16:    return gfx::Format::R16G16_UNORM;
+    case PF::RG32F:   return gfx::Format::R32G32_FLOAT;
+    case PF::RGBA8:   return srgb ? gfx::Format::R8G8B8A8_UNORM_SRGB : gfx::Format::R8G8B8A8_UNORM;
+    case PF::RGBA16:  return gfx::Format::R16G16B16A16_UNORM;
+    case PF::RGBA32F: return gfx::Format::R32G32B32A32_FLOAT;
+    case PF::BC1:     return srgb ? gfx::Format::BC1_UNORM_SRGB : gfx::Format::BC1_UNORM;
+    case PF::BC2:     return srgb ? gfx::Format::BC2_UNORM_SRGB : gfx::Format::BC2_UNORM;
+    case PF::BC3:     return srgb ? gfx::Format::BC3_UNORM_SRGB : gfx::Format::BC3_UNORM;
+    case PF::BC4:     return gfx::Format::BC4_UNORM;
+    case PF::BC5:     return gfx::Format::BC5_UNORM;
+    case PF::BC6H:    return gfx::Format::BC6H_UF16;
+    case PF::BC7:     return srgb ? gfx::Format::BC7_UNORM_SRGB : gfx::Format::BC7_UNORM;
+    }
+    return gfx::Format::Unknown;
+}
+
 } // namespace whiteout::flakes::renderer::model

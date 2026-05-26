@@ -209,6 +209,14 @@
     transform: translateX(-100%);
     animation: progress-slide 1.6s ease-in-out infinite;
   }
+  /* Determinate mode — host JS sets `--pct` on the wrapper and the
+     inner bar slides from -100% (empty) to 0% (full). The CSS
+     animation is suppressed so we don't fight the inline transform. */
+  .progress.determinate > div {
+    animation: none;
+    transform: translateX(calc(-100% + var(--pct, 0%)));
+    transition: transform 120ms linear;
+  }
   @keyframes progress-slide {
     0%   { transform: translateX(-100%); }
     50%  { transform: translateX(30%); }

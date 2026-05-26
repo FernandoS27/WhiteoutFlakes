@@ -90,11 +90,24 @@ struct Actor {
 
     struct AttachmentSlot {
         AttachmentConfig config;
+        // AssetManager slot for the child MDX. Acquired on first poll
+        // and held for the actor's lifetime; the slot's payload swaps
+        // from null → parsed ModelTemplate when the host pump finishes
+        // the fetch.
+        std::uint32_t assetSlot = 0;
         u32 childModelHandle = 0; // also present in `children`; this is the slot's own ref
         bool loaded = false;
         bool wasVisible = false;
     };
     std::vector<AttachmentSlot> attachmentSlots;
+
+    // AssetManager slots this actor holds for the duration of its
+    // lifetime — typically the PE1 child-MDX paths from the template's
+    // pe1Configs, prefetched once at StageActor time. DestroyActor
+    // releases them; without this hold the slots' refcounts could
+    // either churn (allocate-destroy on every prefetch attempt) or
+    // accumulate unbounded if any code path Acquires without Releasing.
+    std::vector<std::uint32_t> assetSlots;
 
     f32 parentVisibility = 1.0f;
 

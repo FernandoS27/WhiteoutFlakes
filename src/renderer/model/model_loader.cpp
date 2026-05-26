@@ -9,6 +9,7 @@
 #include "model/model_loader.h"
 
 #include "../io/mdx_model_adapter.h"
+#include "assets/asset_manager.h"
 #include "assets/replaceable_texture_manager.h"
 #include "assets/sampler_asset_manager.h"
 #include "assets/texture_asset_manager.h"
@@ -108,6 +109,23 @@ void ModelLoader::DestroyActor(u32 handle) {
     if (a.role == ActorRole::PE1)
         rs_.Scene().DecrementPE1Instances();
 
+    // Release any AssetManager slots the actor holds — both the
+    // per-attachment slots populated by UpdateAttachments and the
+    // template-prefetched ones in `assetSlots`. Without these
+    // releases each model load leaks one ChildModel slot per child
+    // path, and (because ChildModel slots own a parsed ModelTemplate
+    // with GPU geosets + texture refs) memory grows without bound
+    // across model switches.
+    for (auto& aslot : a.attachmentSlots) {
+        if (aslot.assetSlot != 0) {
+            rs_.Assets().Release(aslot.assetSlot);
+            aslot.assetSlot = 0;
+        }
+    }
+    for (auto slot : a.assetSlots) {
+        if (slot != 0) rs_.Assets().Release(slot);
+    }
+    a.assetSlots.clear();
     rs_.Replaceables().UnregisterModel(a);
     if (rs_.Pipeline().Gfx())
         a.ReleaseGPU(*rs_.Pipeline().Gfx());
@@ -149,28 +167,32 @@ void ModelLoader::SetPE1Configs(u32 handle, const std::vector<PE1EmitterConfig>&
         mi->render.pe1.AddEmitter(i, configs[i]);
 }
 
-void ModelLoader::PreloadChildTemplates(const ModelTemplate& tmpl) {
-    PreloadChildTemplates(tmpl.pe1Configs, tmpl.attachmentConfigs);
+void ModelLoader::PreloadChildTemplates(Actor& a, const ModelTemplate& tmpl) {
+    PreloadChildTemplates(a, tmpl.pe1Configs, tmpl.attachmentConfigs);
 }
 
-void ModelLoader::PreloadChildTemplates(const std::vector<PE1EmitterConfig>& pe1Cfgs,
+void ModelLoader::PreloadChildTemplates(Actor& a,
+                                        const std::vector<PE1EmitterConfig>& pe1Cfgs,
                                         const std::vector<AttachmentConfig>& attachCfgs) {
-    // Collect every unique non-empty child path once, then fire one
-    // async load per path. GetOrLoadAsync dedupes against the cache
-    // and the in-flight queue, so calling it multiple times for the
-    // same path during a single session is safe and cheap.
+    // Acquire one ChildModel slot per unique path the actor's template
+    // references. The SlotId stays on `a.assetSlots` for the actor's
+    // lifetime so the host pump's fetch + parse work is amortized
+    // across every birth / attachment-load. DestroyActor releases the
+    // refs. Attachment paths share with the per-slot
+    // attachmentSlots[i].assetSlot (set later in UpdateAttachments) —
+    // both refs point at the same slot via pathToSlot_ dedup, so the
+    // refcount math is correct.
     std::unordered_set<std::string> seen;
-    auto enqueue = [&](const std::string& path) {
-        if (path.empty())
-            return;
-        if (!seen.insert(path).second)
-            return;
-        rs_.Scene().Templates().GetOrLoadAsync(path);
+    auto hold = [&](const std::string& path) {
+        if (path.empty()) return;
+        if (!seen.insert(path).second) return;
+        a.assetSlots.push_back(
+            rs_.Assets().Acquire(assets::AssetKind::ChildModel, path));
     };
     for (const auto& cfg : pe1Cfgs)
-        enqueue(cfg.modelPath);
+        hold(cfg.modelPath);
     for (const auto& cfg : attachCfgs)
-        enqueue(cfg.modelPath);
+        hold(cfg.modelPath);
 }
 
 void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
@@ -191,8 +213,10 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
         st.wrapFlags = tex.wrapFlags;
         st.format = tex.format;
         st.sharedKey = tex.sharedKey;
-        const bool alreadyCached = !tex.sharedKey.empty() && IsTextureCached(tex.sharedKey);
-        if (!alreadyCached)
+        // Pixels only flow through staging for synthetic textures (no
+        // path). File-backed textures route through AssetManager slots
+        // via UploadStagedTextures, so their pixels are never staged.
+        if (tex.sharedKey.empty())
             st.pixels = tex.pixels;
         if (tex.replaceableId != 0)
             rs_.Replaceables().RegisterModelSlot(*mi, tex.textureId, tex.replaceableId);
@@ -226,8 +250,8 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
         mi->render.pe1.AddEmitter(i, tmpl->pe1Configs[i]);
 
     // CornFx (CornEmitter) — register one emitter per init in the
-    // service's per-(actor, emitterId) map. The emitter loads its .pkb
-    // asset through CornEffectsAssetCache (deduped by path); per-frame state
+    // service's per-(actor, emitterId) map. The emitter Acquires a
+    // Particle slot on AssetManager for its .pkb; per-frame state
     // flows through FrameState::cornStates → ApplyCornFrameStates.
     const Vector4f teamRGBA = {
         ((mi->teamColor) & 0xFF) / 255.0f,
@@ -239,7 +263,7 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
         if (cinit.pkbPath.empty())
             continue;
         auto em = std::make_unique<corn_effects::CornEffectsEmitter>(
-            rs_.CornEffects().Cache(), cinit.pkbPath, cinit.animVisibilityGuide,
+            rs_.Assets(), cinit.pkbPath, cinit.animVisibilityGuide,
             cinit.replaceableId, cinit.cornEffectsScaling);
         em->SetEmissionRateMultiplier(cinit.defaultEmissionRate);
         em->SetLifeSpanMultiplier(cinit.defaultLifeSpan);
@@ -443,12 +467,12 @@ u32 ModelLoader::AddModelByPath(const std::string& mdxPath, const Matrix44f& ini
     if (!tmpl->attachmentConfigs.empty())
         SetAttachmentConfigs(handle, tmpl->attachmentConfigs);
 
-    // Kick off async loads for every child MDX this actor will ever
-    // need (PE1 emitter targets + attachment slots). The worker thread
-    // parses them in the background so when PE1 simulation actually
-    // fires a Birth event, the template is already in the cache and
-    // SpawnChild doesn't pay the parse cost on the render thread.
-    PreloadChildTemplates(*tmpl);
+    // Acquire (and hold for the actor's lifetime) one ChildModel slot
+    // per unique PE1 / attachment child MDX. The host pump fetches +
+    // parses each in the background so Birth events / attachment loads
+    // land with a ready template; refs are released in DestroyActor.
+    if (auto* a = rs_.Scene().Actors().Find(handle))
+        PreloadChildTemplates(*a, *tmpl);
 
     return handle;
 }
@@ -464,8 +488,6 @@ Actor* ModelLoader::SpawnUnitFromSource(std::shared_ptr<IModelSource> source,
                                         const Matrix44f& initialTm) {
     if (!source)
         return nullptr;
-
-    source->SetTextureCacheQuery([this](std::string_view k) { return IsTextureCached(k); });
 
     ModelData data = source->Build();
     const u32 h =
@@ -483,37 +505,31 @@ Actor* ModelLoader::SpawnUnitFromSource(std::shared_ptr<IModelSource> source,
     if (!data.pe1Configs.empty())
         SetPE1Configs(h, data.pe1Configs);
 
-    // Same as the template-based path: kick off async loads for every
-    // referenced child MDX up-front so first-spawn doesn't stall the
-    // render thread on parse.
-    PreloadChildTemplates(data.pe1Configs, data.attachmentConfigs);
+    // Same as the template-based path: Acquire+hold slots so the host
+    // pump fetches + parses each child MDX up front and refs are
+    // released when the actor dies.
+    PreloadChildTemplates(*actor, data.pe1Configs, data.attachmentConfigs);
 
     return actor;
 }
 
-bool ModelLoader::IsTextureCached(std::string_view key) const {
-    return rs_.HasCachedTexture(key);
-}
-
 void ModelLoader::UploadStagedTextures(Actor& mi) {
     if (!mi.render.textures)
-        mi.render.textures = rs_.Textures().CreateModelScope();
+        mi.render.textures = rs_.Textures().CreateModelScope(&rs_.Assets());
     for (auto& [id, st] : mi.render.stagedTextures) {
-
-        if (!st.sharedKey.empty() && st.pixels.empty()) {
-
-            if (mi.render.textures->BindShared(id, st.sharedKey, st.wrapFlags) ==
-                gfx::TextureHandle::Invalid) {
-                std::string msg = "[WDEX texture] eviction race for '";
-                msg += st.sharedKey;
-                msg += "' — using fallback\n";
-                DbgPrint(msg.c_str());
-            }
+        // File-backed textures: bind through an AssetManager slot. The
+        // slot exists from the moment we Acquire — placeholder white
+        // until the host fetches and Apply pushes the real bytes; the
+        // ModelScope picks up the swap automatically via Get().
+        if (!st.sharedKey.empty()) {
+            const auto slot = rs_.Assets().Acquire(AssetKind::Texture, st.sharedKey);
+            mi.render.textures->BindSlot(id, slot, st.wrapFlags);
             continue;
         }
+        // Synthetic (no path, just CPU-side pixels — e.g. the 4x4 white
+        // the MDX adapter generates for textures with no file name).
         if (st.width <= 0 || st.height <= 0)
             continue;
-
         const gfx::Format texFormat =
             (st.format == gfx::Format::Unknown) ? gfx::Format::R8G8B8A8_UNORM : st.format;
         const gfx::TextureDesc desc{
@@ -523,12 +539,7 @@ void ModelLoader::UploadStagedTextures(Actor& mi) {
             .format = texFormat,
             .usage = gfx::TextureUsage::ShaderResource,
         };
-        if (st.sharedKey.empty()) {
-            mi.render.textures->Upload(id, desc, st.pixels.data(), st.wrapFlags);
-        } else {
-            mi.render.textures->UploadShared(id, st.sharedKey, desc, st.pixels.data(),
-                                             st.wrapFlags);
-        }
+        mi.render.textures->Upload(id, desc, st.pixels.data(), st.wrapFlags);
     }
     mi.render.stagedTextures.clear();
 }
@@ -536,6 +547,11 @@ void ModelLoader::UploadStagedTextures(Actor& mi) {
 void ModelLoader::uploadTemplateGpu(ModelTemplate& tmpl) {
     if (tmpl.gpuUploaded)
         return;
+    // Stash the device so ~ModelTemplate can auto-release the shared
+    // GPU buffers when the last actor's sourceTemplate strong-ref
+    // drops (templates live in the manager's weak cache now, so
+    // there's no other strong owner to call ReleaseGPU explicitly).
+    tmpl.gpuDevice = rs_.Pipeline().Gfx();
     tmpl.sharedGeosets.clear();
     tmpl.sharedGeosets.reserve(tmpl.meshes.size());
 
@@ -636,30 +652,11 @@ void ModelLoader::uploadTemplateGpu(ModelTemplate& tmpl) {
         tmpl.sharedGeosets.push_back(sg);
     }
 
-    if (!tmpl.templateTextures)
-        tmpl.templateTextures = rs_.Textures().CreateModelScope();
-    for (auto& tex : tmpl.textures) {
-        if (tex.sharedKey.empty())
-            continue;
-        if (tex.replaceableId != 0)
-            continue;
-        if (!tex.pixels.empty() && tex.width > 0 && tex.height > 0) {
-            const gfx::Format texFormat =
-                (tex.format == gfx::Format::Unknown) ? gfx::Format::R8G8B8A8_UNORM : tex.format;
-            const gfx::TextureDesc desc{
-                .width = tex.width,
-                .height = tex.height,
-                .mipLevels = (std::max)(1, tex.mipLevels),
-                .format = texFormat,
-                .usage = gfx::TextureUsage::ShaderResource,
-            };
-            tmpl.templateTextures->UploadShared(tex.textureId, tex.sharedKey, desc,
-                                                tex.pixels.data(), tex.wrapFlags);
-        } else {
-
-            tmpl.templateTextures->BindShared(tex.textureId, tex.sharedKey, tex.wrapFlags);
-        }
-    }
+    // Template-side textures used to be pre-bound here against the
+    // legacy shared cache. With AssetManager, texture lifetimes are
+    // entirely actor-owned (Actor.render.textures takes the slot ref).
+    // Pre-binding on the template would just double-refcount the slot
+    // for no benefit, so the loop is gone.
     tmpl.gpuUploaded = true;
 }
 

@@ -37,6 +37,7 @@ class FrameTicker;
 class RenderPipeline;
 
 namespace assets {
+class AssetManager;
 class SamplerAssetManager;
 class TextureAssetManager;
 class ReplaceableTextureManager;
@@ -115,6 +116,12 @@ public:
     assets::TextureAssetManager& Textures();
     assets::SamplerAssetManager& Samplers();
     assets::ReplaceableTextureManager& Replaceables();
+    /// @brief Unified push-based asset registry (slots + needs queue +
+    ///        Apply pipeline). Phase-1 skeleton; later phases route
+    ///        texture / .pkb / child-MDX through this in place of the
+    ///        per-kind caches.
+    assets::AssetManager& Assets();
+    const assets::AssetManager& Assets() const;
     debug::DebugRenderer& Debug();
     dnc::DncService* GetDncService();
     const dnc::DncService* GetDncService() const;
@@ -157,21 +164,15 @@ public:
     const ISoundEmitter& Sound() const;
     void SwapSoundEmitter(std::unique_ptr<ISoundEmitter> emitter);
 
-    // Null-tolerant texture cache probe. The template manager installs a
-    // texture-cache lambda during RenderService construction — before
-    // InitDevice has created the texture manager — so the loader's probe
-    // path needs a safe accessor that handles the pre-init window.
-    bool HasCachedTexture(std::string_view key) const;
-
-    // Load (or fetch from cache) a corn-fx-referenced diffuse texture.
-    // The .pkb's renderer property block carries paths that aren't part
-    // of the model's MDX texture list, so the corn fx backend's resolver
-    // can't just hit the existing shared cache — this helper reads the
-    // file via the active content provider, decodes it (BLP/DDS/TGA),
-    // and inserts under the normalised path key. Subsequent lookups via
-    // TextureAssetManager::LookupShared then hit. Returns Invalid on
-    // miss (no provider, file not found, or decode failure).
-    gfx::TextureHandle LoadCornEffectsTexture(std::string_view path);
+    /// @brief Drain the AssetManager needs queue and feed each entry
+    ///        through the active content provider, then commit the
+    ///        decoded results. On the desktop this is the synchronous
+    ///        equivalent of the web build's JS-driven pump: ReadFile
+    ///        returns bytes immediately for assets that live in CASC /
+    ///        MPQ / disk, so the textures are ready by the time the
+    ///        next render frame runs. No-op on Emscripten — the JS
+    ///        host owns the drain there.
+    void PumpAssetsViaProvider();
 
     // ---- Pipeline-coordination hooks ----
     // RenderService owns the asset managers; RenderPipeline drives their

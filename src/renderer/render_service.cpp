@@ -1,4 +1,5 @@
 #include "debug/debug_renderer.h"
+#include "renderer/assets/asset_manager.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/assets/sampler_asset_manager.h"
 #include "renderer/assets/texture_asset_manager.h"
@@ -43,8 +44,6 @@ RenderService::RenderService(SceneManager& scene) : impl_(std::make_unique<Impl>
     // carries this onto the real backend, and LoadSettingsIni overrides it
     // when a persisted SoundVolume exists.
     impl_->soundEmitter_->SetVolume(0.5f);
-    impl_->scene_->Templates().SetTextureCacheQuery(
-        [this](std::string_view k) { return impl_->loader_->IsTextureCached(k); });
 }
 
 RenderService::~RenderService() = default;
@@ -64,6 +63,12 @@ SamplerAssetManager& RenderService::Samplers() {
 }
 ReplaceableTextureManager& RenderService::Replaceables() {
     return *impl_->replaceables_;
+}
+AssetManager& RenderService::Assets() {
+    return *impl_->assets_;
+}
+const AssetManager& RenderService::Assets() const {
+    return *impl_->assets_;
 }
 DebugRenderer& RenderService::Debug() {
     return *impl_->debug_;
@@ -141,61 +146,6 @@ ActorEvalContext RenderService::MakeActorEvalContext() {
     return ctx;
 }
 
-bool RenderService::HasCachedTexture(std::string_view key) const {
-    return impl_->textures_ && impl_->textures_->IsCachedShared(key);
-}
-
-gfx::TextureHandle RenderService::LoadCornEffectsTexture(std::string_view path) {
-    if (path.empty() || !impl_->textures_)
-        return gfx::TextureHandle::Invalid;
-    const std::string key = NormalizeTextureKey(path);
-    if (auto cached = impl_->textures_->TryAcquireShared(key);
-        cached != gfx::TextureHandle::Invalid) {
-        return cached;
-    }
-    auto* content = impl_->scene_ ? impl_->scene_->ActiveContentProvider() : nullptr;
-    if (!content)
-        return gfx::TextureHandle::Invalid;
-
-    const std::string pathStr(path);
-    std::string foundExt;
-    auto bytes = content->ReadFile(pathStr, &foundExt);
-    if (!bytes) {
-        // Reforged HD texture paths are sometimes referenced through
-        // CASC virtual roots like `_HD.w3mod/Textures/...`. Try once
-        // without the leading prefix.
-        constexpr std::string_view kHdPrefix = "_HD.w3mod/";
-        if (pathStr.size() > kHdPrefix.size() &&
-            std::string_view(pathStr).substr(0, kHdPrefix.size()) == kHdPrefix) {
-            const std::string stripped = pathStr.substr(kHdPrefix.size());
-            bytes = content->ReadFile(stripped, &foundExt);
-        }
-    }
-    if (!bytes) {
-        std::fprintf(stderr, "[corn_fx] tex read FAIL '%.*s'\n", (int)path.size(), path.data());
-        return gfx::TextureHandle::Invalid;
-    }
-    if (foundExt.empty())
-        foundExt = ExtensionLower(std::filesystem::path(pathStr));
-
-    std::vector<u8> rgba;
-    i32 w = 0, h = 0;
-    if (!DecodeToRGBA8(std::span<const u8>{bytes->data(), bytes->size()}, foundExt, rgba, w, h) ||
-        w <= 0 || h <= 0) {
-        std::fprintf(stderr, "[corn_fx] tex decode FAIL '%.*s' ext='%s' bytes=%zu\n",
-                     (int)path.size(), path.data(), foundExt.c_str(), bytes->size());
-        return gfx::TextureHandle::Invalid;
-    }
-
-    gfx::TextureDesc desc;
-    desc.width = w;
-    desc.height = h;
-    desc.mipLevels = 1;
-    desc.format = io::ApplyTextureSrgbPolicy(gfx::Format::R8G8B8A8_UNORM, path);
-    desc.usage = gfx::TextureUsage::ShaderResource;
-    return impl_->textures_->AcquireShared(key, desc, rgba.data());
-}
-
 bool RenderService::HasDeviceAssetManagers() const {
     return impl_->samplers_ && impl_->textures_ && impl_->replaceables_;
 }
@@ -204,17 +154,32 @@ void RenderService::CreateDeviceAssetManagers(gfx::IGFXDevice& gfx) {
     impl_->samplers_ = std::make_unique<SamplerAssetManager>(gfx);
     impl_->textures_ = std::make_unique<TextureAssetManager>(gfx);
     impl_->replaceables_ = std::make_unique<ReplaceableTextureManager>(gfx, *impl_->textures_);
-    // Forward the scene's content provider to the corn fx asset cache —
-    // corn fx .pkb assets resolve through the same CASC/MPQ stack as the
-    // rest of the renderer's textures. Hosts that swap the provider at
-    // runtime should re-call CornEffects().SetContentProvider().
-    impl_->cornEffectsService_.SetContentProvider(impl_->scene_->ActiveContentProvider());
+    // AssetManager rides on top of TextureAssetManager — it borrows the
+    // shared "white" handle as the placeholder texture for every Texture
+    // slot until real bytes arrive. The .pkb / .pkfx parser also lives
+    // on AssetManager, so corn-fx no longer needs its own content-
+    // provider wire-up.
+    impl_->assets_ = std::make_unique<AssetManager>(*impl_->textures_);
+    impl_->assets_->SetGfxDevice(&gfx);
+    // ChildModel parsing lives on ModelTemplateManager (so we don't drag
+    // the MDX parser into AssetManager's translation unit). Install a
+    // builder that wraps BuildFromBytes — AssetManager.ApplyPrepared
+    // (ChildModel) calls it with the pre-fetched bytes.
+    impl_->assets_->SetChildModelBuilder(
+        [this](std::string_view path, std::span<const u8> bytes,
+               std::string_view foundExt) -> std::shared_ptr<model::ModelTemplate> {
+            return impl_->scene_->Templates().BuildFromBytes(
+                std::string(path), bytes, foundExt);
+        });
 }
 
 void RenderService::ResetDeviceAssetManagers() {
     if (impl_->replaceables_)
         impl_->replaceables_->Shutdown();
     impl_->replaceables_.reset();
+    if (impl_->assets_)
+        impl_->assets_->SetGfxDevice(nullptr);
+    impl_->assets_.reset();
     impl_->samplers_.reset();
     impl_->textures_.reset();
 }
@@ -273,6 +238,102 @@ void RenderService::SwapSoundEmitter(std::unique_ptr<ISoundEmitter> emitter) {
     const f32 carry = impl_->soundEmitter_ ? impl_->soundEmitter_->GetVolume() : 1.0f;
     impl_->soundEmitter_ = emitter ? std::move(emitter) : MakeNullSoundEmitter();
     impl_->soundEmitter_->SetVolume(carry);
+}
+
+void RenderService::PumpAssetsViaProvider() {
+#ifndef __EMSCRIPTEN__
+    if (!impl_->assets_ || !impl_->scene_) return;
+    auto* provider = impl_->scene_->ActiveContentProvider();
+    if (!provider) return;
+
+    // ReadFile via the provider, with a fallback for corn-fx-style
+    // paths that bake a mod-name prefix into the path (e.g.
+    // "_hd.w3mod/Textures/FX/Flare/HeroGlow_BW.tif"). The desktop
+    // CASC path resolver doesn't flip those into TVFS-chain form, so
+    // we strip the prefix and retry — same logic LoadCornEffectsTexture
+    // used to carry. AssetManager normalises to lowercase + forward
+    // slashes before storing, so we only need to check the lowercase
+    // forms here.
+    auto readWithModPrefixFallback =
+        [provider](std::string_view path,
+                   std::vector<u8>& outBytes,
+                   std::string& outExt) -> bool {
+        std::string p(path);
+        std::string ext;
+        if (auto bytes = provider->ReadFile(p, &ext); bytes && !bytes->empty()) {
+            outBytes = std::move(*bytes);
+            outExt   = std::move(ext);
+            return true;
+        }
+        // Try stripping a known mod-name prefix. Order matches the
+        // CASC TVFS stack (_hd overrides win first, then _deprecated).
+        static constexpr std::string_view kModPrefixes[] = {
+            "_hd.w3mod/",
+            "_deprecated.w3mod/",
+        };
+        for (auto prefix : kModPrefixes) {
+            if (p.size() > prefix.size() &&
+                std::string_view(p).substr(0, prefix.size()) == prefix) {
+                std::string stripped = p.substr(prefix.size());
+                ext.clear();
+                if (auto bytes = provider->ReadFile(stripped, &ext);
+                    bytes && !bytes->empty()) {
+                    outBytes = std::move(*bytes);
+                    outExt   = std::move(ext);
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    // Particle assets often reference .pkb but ship as .pkfx (or vice
+    // versa) — try both extensions before giving up. Mirrors the old
+    // CornEffectsAssetCache's two-step Acquire.
+    auto readParticleWithAltExt =
+        [&](std::string_view origPath, std::vector<u8>& outBytes,
+            std::string& outExt) -> bool {
+        if (readWithModPrefixFallback(origPath, outBytes, outExt))
+            return true;
+        // Swap to the other extension (if any) and retry.
+        std::string p(origPath);
+        auto dot = p.find_last_of('.');
+        if (dot == std::string::npos)
+            return false;
+        std::string altExt = (p.substr(dot) == ".pkb") ? ".pkfx" : ".pkb";
+        std::string alt = p.substr(0, dot) + altExt;
+        if (readWithModPrefixFallback(alt, outBytes, outExt)) {
+            if (outExt.empty()) outExt = altExt;
+            return true;
+        }
+        return false;
+    };
+
+    impl_->assets_->DrainNeeds([&](assets::AssetKind kind, std::string_view path) {
+        std::vector<u8> bytes;
+        std::string ext;
+        if (kind == assets::AssetKind::Texture) {
+            if (!readWithModPrefixFallback(path, bytes, ext))
+                return;
+        } else if (kind == assets::AssetKind::Particle) {
+            if (!readParticleWithAltExt(path, bytes, ext))
+                return;
+        } else if (kind == assets::AssetKind::ChildModel) {
+            // MDX child reads ride the same content-provider path the
+            // top-level SpawnUnit uses — alt-extension synonyms (.mdx
+            // ↔ .mdl) are already handled inside FileContentProvider.
+            if (!readWithModPrefixFallback(path, bytes, ext))
+                return;
+        } else {
+            return;
+        }
+        impl_->assets_->ApplyPrepared(
+            kind, path,
+            std::span<const u8>(bytes.data(), bytes.size()),
+            ext);
+    });
+    impl_->assets_->CommitPrepared();
+#endif
 }
 
 } // namespace whiteout::flakes::renderer

@@ -60,6 +60,15 @@ export class HiveApp {
     async start() {
         this.viewer = new WhiteoutViewer(this.canvas);
         await this.viewer.init();
+        // Drive the progress bar from real fetch counts. Every logical
+        // dep _fetchDep handles bumps the counter once on start and
+        // once on finish, so the bar fills as completed/total — same
+        // accounting whether the dep came from the initial spawn, the
+        // background texture stream, or the runtime miss-watcher.
+        this.viewer.setFetchHooks({
+            start: () => this._bump(+1),
+            end:   () => this._bump(-1),
+        });
         // Default background matches the first chip in Background (dark
         // gray #3e3e3e on Hive). Keeps the canvas tone consistent with
         // the sidebar before the user picks a swatch.
@@ -118,15 +127,53 @@ export class HiveApp {
     }
 
     // ------------------------------------------------------------------
-    // Loading progress bar — toggled around async work that takes long
-    // enough to need a visual hint (model fetch + dep resolution).
+    // Loading progress bar — determinate fill driven by per-fetch hooks.
+    // _bump(+1) is called once per logical dep when it starts, _bump(-1)
+    // once when it finishes (success OR failure). We track cumulative
+    // started/completed counts so the bar advances at completed/started.
+    // When in-flight returns to zero the bar fades out and the counters
+    // reset, so the next load starts at 0%. The bar gracefully handles
+    // "new work surfaces mid-load" (corn-fx textures, miss-watcher
+    // discoveries): the denominator grows, the percentage backs off
+    // slightly, then catches back up as the new deps complete.
     // ------------------------------------------------------------------
-    _showProgress() {
-        if (this.progress) this.progress.classList.add('active');
+    _bump(delta) {
+        if (delta > 0) {
+            this._started   = (this._started   || 0) + delta;
+            this._inflight  = (this._inflight  || 0) + delta;
+        } else {
+            const sub = -delta;
+            this._completed = (this._completed || 0) + sub;
+            this._inflight  = Math.max(0, (this._inflight || 0) - sub);
+        }
+        this._updateProgress();
     }
-    _hideProgress() {
-        if (this.progress) this.progress.classList.remove('active');
+    _updateProgress() {
+        if (!this.progress) return;
+        if (this._inflight > 0) {
+            this.progress.classList.add('active');
+            this.progress.classList.add('determinate');
+            const total = this._started || 1;
+            const pct = Math.max(0, Math.min(100, (this._completed / total) * 100));
+            this.progress.style.setProperty('--pct', pct.toFixed(2) + '%');
+        } else {
+            this.progress.classList.remove('active');
+            // Defer reset until after the fade-out finishes so the bar
+            // doesn't visibly snap back to 0 before disappearing.
+            setTimeout(() => {
+                if (this._inflight === 0) {
+                    this.progress.classList.remove('determinate');
+                    this.progress.style.removeProperty('--pct');
+                    this._started = 0;
+                    this._completed = 0;
+                }
+            }, 220);
+        }
     }
+    // Back-compat shorthand for the few call sites in _selectModel that
+    // bracket non-fetch work (the MDX/spawn phase) with progress.
+    _addInflight(n = 1) { this._bump(+n); }
+    _subInflight(n = 1) { this._bump(-n); }
 
     // ------------------------------------------------------------------
     // Active-chip / active-row helper. Hive's CSS keys the highlighted
@@ -256,7 +303,7 @@ export class HiveApp {
         this._clearAnimations();
         this._clearCameras();
 
-        this._showProgress();
+        this._addInflight();
         const solver = (name) => this._resolve(name);
         try {
             const model = await this.viewer.load(m.path, solver);
@@ -272,10 +319,17 @@ export class HiveApp {
             this.currentInstance.setSequenceLoopMode(0);
             this._populateSequences();
             this._populateCameras();
+            // Keep the progress bar up until the background texture
+            // stream completes too. If it's already settled this
+            // resolves immediately.
+            if (model._texStream) {
+                this._addInflight();
+                model._texStream.finally(() => this._subInflight());
+            }
         } catch (e) {
             console.error('[hive] load failed:', e);
         } finally {
-            this._hideProgress();
+            this._subInflight();
         }
     }
 

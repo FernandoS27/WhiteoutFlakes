@@ -1,6 +1,6 @@
 #include "renderer/corn_effects/corn_effects_emitter.h"
 
-#include "renderer/corn_effects/corn_effects_asset_cache.h"
+#include "renderer/assets/asset_manager.h"
 
 #include <cornflakes/interface/asset/effect_asset_model.hpp>
 #include <cornflakes/interface/binding/effect_execution_plan.hpp>
@@ -137,37 +137,28 @@ std::string_view FindRenderInput(const ::whiteout::cornflakes::LayerProgram& lp,
 
 } // namespace
 
-CornEffectsEmitter::CornEffectsEmitter(CornEffectsAssetCache& cache, std::string pkbPath,
+CornEffectsEmitter::CornEffectsEmitter(assets::AssetManager& assets, std::string pkbPath,
                                        std::string animVisibilityGuide, i32 replaceableId,
                                        bool cornEffectsScaling)
-    : cache_(cache), pkbPath_(std::move(pkbPath)),
+    : assets_(assets), pkbPath_(std::move(pkbPath)),
       animVisibilityGuide_(std::move(animVisibilityGuide)), cornEffectsScaling_(cornEffectsScaling),
       replaceableId_(replaceableId) {
     ParseAnimVisibilityGuide();
     if (!defaultAnimEnabled_) {
         simFlags_ |= SimFlag_SystemDead;
     }
-
-    ::whiteout::cornflakes::IssueBag issues;
-    assetModel_ = cache_.Acquire(pkbPath_, issues);
-    if (issues.hasFatal()) {
-        std::fprintf(stderr,
-                     "[corn_fx] ERR: CornEffectsEmitter '%s' acquire produced fatal issue(s):\n",
-                     pkbPath_.c_str());
-        for (const auto& iss : issues.view()) {
-            std::fprintf(stderr, "[corn_fx]   issue cat=%u code=%u sev=%u: %.*s\n",
-                         (unsigned)iss.category, iss.code, (unsigned)iss.severity,
-                         (int)iss.message.size(), iss.message.data());
-        }
-        return;
-    }
-    std::fprintf(stderr,
-                 "[corn_fx] INFO: loaded '%s' (replaceableId=%d, scaling=%s, guide=\"%s\")\n",
-                 pkbPath_.c_str(), (int)replaceableId_, cornEffectsScaling_ ? "yes" : "no",
-                 animVisibilityGuide_.c_str());
+    // Acquire a Particle slot for this .pkb path. The slot starts
+    // empty; the host's pump fetches + parses the bytes and the
+    // model pointer swaps in via CommitPrepared. TrySpawn polls
+    // ParticleAssetOf each tick until it's non-null.
+    if (!pkbPath_.empty())
+        assetSlot_ = assets_.Acquire(assets::AssetKind::Particle, pkbPath_);
 }
 
-CornEffectsEmitter::~CornEffectsEmitter() = default;
+CornEffectsEmitter::~CornEffectsEmitter() {
+    if (assetSlot_ != 0)
+        assets_.Release(assetSlot_);
+}
 
 void CornEffectsEmitter::SetWeatherParams(const Vector3f& position, const Vector2f& size,
                                           f32 emissionRate) {
@@ -275,6 +266,18 @@ void CornEffectsEmitter::SetCurrentAnimationName(const char* name) {
 }
 
 bool CornEffectsEmitter::TrySpawn() {
+    // Pull the latest parsed model from the slot. Returns null until
+    // the host's pump fetches + parses + commits the .pkb bytes, at
+    // which point the slot's generation bumps and we see the model.
+    // No retry storm — Acquire was a one-time op in the constructor;
+    // here we just observe the slot.
+    if (assetSlot_ != 0) {
+        const u32 g = assets_.GenerationOf(assetSlot_);
+        if (g != lastAssetGen_) {
+            assetModel_ = assets_.ParticleAssetOf(assetSlot_);
+            lastAssetGen_ = g;
+        }
+    }
     if (!assetModel_)
         return false;
     if (live_.runtime)
@@ -396,7 +399,11 @@ void CornEffectsEmitter::Update(f32 dt, bool paused) {
     }
     wasActive_ = active;
 
-    if (assetModel_ && !live_.runtime && active) {
+    // Drop the `assetModel_ &&` gate so the web build's lazy retry
+    // inside TrySpawn can run when the .pkb arrives after the emitter
+    // was constructed. TrySpawn returns false cleanly when assetModel_
+    // is still null, so this is safe on desktop too.
+    if (!live_.runtime && active) {
         TrySpawn();
     }
     if (!live_.runtime) {

@@ -11,10 +11,6 @@ CornEffectsService::~CornEffectsService() {
     emitters_.clear();
 }
 
-void CornEffectsService::SetContentProvider(io::IContentProvider* provider) {
-    cache_.SetContentProvider(provider);
-}
-
 void CornEffectsService::AddCornEmitter(ActorId model, i32 emitterId,
                                         std::unique_ptr<CornEffectsEmitter> emitter) {
     std::lock_guard<std::mutex> lock(mutex_);

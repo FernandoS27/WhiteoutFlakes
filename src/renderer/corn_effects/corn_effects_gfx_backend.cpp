@@ -1,6 +1,7 @@
 #include "renderer/corn_effects/corn_effects_gfx_backend.h"
 
 #include "../gfx/gfx.h"
+#include "renderer/assets/asset_manager.h"
 #include "renderer/assets/sampler_asset_manager.h"
 #include "renderer/assets/texture_asset_manager.h"
 #include "renderer/bls/bls_draw_helpers.h"
@@ -55,9 +56,20 @@ bls::GxMatAlpha CornEffectsGfxBackend::BlendModeToGxAlpha(u8 blendMode) {
 
 CornEffectsGfxBackend::CornEffectsGfxBackend(const Init& init)
     : device_(init.device), program_(init.program), psoBuilder_(init.psoBuilder),
-      textures_(init.textures), samplers_(init.samplers), resolver_(init.resolver) {}
+      textures_(init.textures), samplers_(init.samplers), assets_(init.assets),
+      slotAcquire_(init.slotAcquire) {}
 
 CornEffectsGfxBackend::~CornEffectsGfxBackend() {
+    // Release any AssetManager slots prepare() acquired for diffuse
+    // textures. Without this each emitter teardown leaks one slot ref
+    // per layer, which would keep texture handles alive past the
+    // model's lifetime.
+    if (assets_) {
+        for (auto& ls : layerStates_) {
+            if (ls.diffuseSlot != 0)
+                assets_->Release(ls.diffuseSlot);
+        }
+    }
     if (!device_)
         return;
     device_->Destroy(vb_);
@@ -68,6 +80,15 @@ CornEffectsGfxBackend::~CornEffectsGfxBackend() {
 
 bool CornEffectsGfxBackend::prepare(std::span<const ::whiteout::cornflakes::LayerProgram> layers,
                                     ::whiteout::cornflakes::IssueBag& /*issues*/) {
+    // Release any slots a previous prepare() owned — emitters get
+    // re-prepared when their .pkb is re-acquired, and we don't want to
+    // leak slot refs across re-prepares.
+    if (assets_) {
+        for (auto& old : layerStates_) {
+            if (old.diffuseSlot != 0)
+                assets_->Release(old.diffuseSlot);
+        }
+    }
     layerStates_.clear();
     layerStates_.resize(layers.size());
 
@@ -86,9 +107,12 @@ bool CornEffectsGfxBackend::prepare(std::span<const ::whiteout::cornflakes::Laye
             st.renderable = false;
         }
 
-        if (resolver_ && !rr.diffuseTexturePath.empty()) {
-            st.diffusePath.assign(rr.diffuseTexturePath);
-            st.diffuse = resolver_(rr.diffuseTexturePath);
+        // Acquire a slot for this layer's diffuse. The slot starts
+        // bound to the shared white placeholder; once the host fetches
+        // the texture bytes and Apply runs, TextureOf returns the real
+        // handle automatically. No per-frame retry needed.
+        if (slotAcquire_ && !rr.diffuseTexturePath.empty()) {
+            st.diffuseSlot = slotAcquire_(rr.diffuseTexturePath);
         }
         st.atlasX = rr.atlasSubDivX;
         st.atlasY = rr.atlasSubDivY;
@@ -486,22 +510,13 @@ void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::Rende
         cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2, psCb_);
 
         auto& ls = layerStates_[d.layerIdx];
-        gfx::TextureHandle tex = ls.diffuse;
-#if defined(__EMSCRIPTEN__)
-        // Web build only — re-attempt the resolver each frame when the
-        // layer's diffuse is still Invalid. Textures arrive via the JS
-        // lazy drain *after* prepare() ran, so we need to keep poking
-        // until the content provider has the bytes. On DESKTOP this
-        // would issue a CASC/MPQ disk read for every still-missing layer
-        // every frame and tank framerate (~60 fps cap from blocking
-        // I/O); desktop loads are synchronous at spawn so an Invalid
-        // handle there means permanent failure — no point retrying.
-        if (tex == gfx::TextureHandle::Invalid && resolver_ && !ls.diffusePath.empty()) {
-            tex = resolver_(ls.diffusePath);
-            if (tex != gfx::TextureHandle::Invalid)
-                ls.diffuse = tex;
-        }
-#endif
+        // Resolve the slot to its current GPU handle. Returns the
+        // shared placeholder while bytes are still in flight; swaps
+        // to the real texture the frame after CommitPrepared runs.
+        // No per-frame retry, no missing-list spam.
+        gfx::TextureHandle tex = (ls.diffuseSlot != 0 && assets_)
+                                     ? assets_->TextureOf(ls.diffuseSlot)
+                                     : gfx::TextureHandle::Invalid;
         if (tex == gfx::TextureHandle::Invalid && textures_) {
             tex = textures_->GetDefaults().White;
         }

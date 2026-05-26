@@ -112,7 +112,6 @@ public:
 private:
     void SetAttachmentConfigs(u32 handle, const std::vector<AttachmentConfig>& configs);
     void SetPE1Configs(u32 handle, const std::vector<PE1EmitterConfig>& configs);
-    bool IsTextureCached(std::string_view key) const;
 
     void uploadTemplateGpu(ModelTemplate& tmpl);
     void UploadStagedTextures(Actor& mi);
@@ -127,15 +126,16 @@ private:
     // Birth animation pays the parse-+-upload cost mid-frame and the
     // render thread stalls — visible as a one-off heavy stutter.
     // No-op for paths already in the cache or already queued.
-    void PreloadChildTemplates(const ModelTemplate& tmpl);
-    void PreloadChildTemplates(const std::vector<PE1EmitterConfig>& pe1Cfgs,
+    // Acquire AssetManager slots for every PE1 child MDX referenced
+    // by the actor's template and stash the SlotIds on the actor so
+    // they outlive frame-to-frame churn. DestroyActor releases them.
+    // No-op for empty paths or duplicate paths within the actor.
+    void PreloadChildTemplates(Actor& a, const ModelTemplate& tmpl);
+    void PreloadChildTemplates(Actor& a,
+                               const std::vector<PE1EmitterConfig>& pe1Cfgs,
                                const std::vector<AttachmentConfig>& attachCfgs);
 
     RenderService& rs_;
-
-    // RenderService installs a texture-cache lambda on the template manager
-    // that dispatches to IsTextureCached.
-    friend class ::whiteout::flakes::renderer::RenderService;
 };
 
 } // namespace whiteout::flakes::renderer::model

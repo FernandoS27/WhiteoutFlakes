@@ -11,6 +11,7 @@
 
 #include "../io/mdx_model_adapter.h"
 #include "animation/actor_eval_context.h"
+#include "assets/asset_manager.h"
 #include "assets/replaceable_texture_manager.h"
 #include "bls/bls_cb_layout.h"
 #include "bls/bls_draw_helpers.h"
@@ -35,21 +36,13 @@ using namespace ::whiteout::flakes::renderer::shadow;
 void FrameTicker::Tick(f32 dt) {
     WDX_CPU_ZONE("FrameTicker::Tick");
     {
-        WDX_CPU_ZONE("Templates.Tick");
-        rs_.Scene().Templates().Tick();
-    }
-    // Pre-upload any templates that just finished loading on the
-    // worker thread. Without this the first PE1 child to reference
-    // a freshly-loaded template would pay the GPU resource creation
-    // cost on its first frame — visible as a multi-millisecond hitch
-    // when Birth events fire on heavy scenes.
-    {
-        WDX_CPU_ZONE("Templates.UploadNewly");
-        auto fresh = rs_.Scene().Templates().DrainNewlyLoadedTemplates();
-        for (auto& tmpl : fresh) {
-            if (tmpl)
-                rs_.Loader().UploadTemplateGpu(*tmpl);
-        }
+        // Pump the AssetManager's render-thread half (Phase 1: no-op
+        // until Phase 2 starts pushing texture uploads through the
+        // prepared queue). Keep this at the top of Tick so freshly-
+        // applied textures land before the per-frame replaceables /
+        // attachment / PE1 work reads from them.
+        WDX_CPU_ZONE("Assets.Commit");
+        rs_.Assets().CommitPrepared();
     }
     {
         WDX_CPU_ZONE("RebakeDirtyActors");
@@ -95,7 +88,15 @@ void FrameTicker::UpdateAttachments() {
             if (slot.loaded || slot.config.modelPath.empty())
                 continue;
 
-            auto tmpl = rs_.Scene().Templates().GetOrLoadAsync(slot.config.modelPath);
+            // Acquire the AssetManager slot on first visit (later
+            // frames reuse the cached SlotId). The slot's payload is
+            // null until the host pump finishes the fetch + parse;
+            // skip this frame in that case.
+            if (slot.assetSlot == 0) {
+                slot.assetSlot = rs_.Assets().Acquire(
+                    assets::AssetKind::ChildModel, slot.config.modelPath);
+            }
+            auto tmpl = rs_.Assets().ChildModelOf(slot.assetSlot);
             if (!tmpl)
                 continue;
 
@@ -356,21 +357,11 @@ void FrameTicker::UpdatePE1(f32 dt) {
         if (mi->treeDepth >= effects::kMaxPE1Depth)
             continue;
 
-        // Eagerly prefetch every PE1 child template, the same way
-        // UpdateAttachments warms attachment templates above. On the web
-        // build, GetOrLoadAsync hits ParseAndBuild, which walks the
-        // child MDX's textures into the FetchContentProvider's missing
-        // list — the JS lazy drain then ferries the bytes in *before*
-        // the emitter actually fires, so the child spawn lands with a
-        // primed cache instead of a placeholder pass. Idempotent on
-        // already-cached templates (synchronous map hit).
-        if (mi->sourceTemplate) {
-            for (const auto& cfg : mi->sourceTemplate->pe1Configs) {
-                if (!cfg.modelPath.empty())
-                    rs_.Scene().Templates().GetOrLoadAsync(cfg.modelPath);
-            }
-        }
-
+        // No per-frame prefetch needed — ModelLoader::PreloadChild
+        // Templates already Acquired and stored slot refs on the
+        // actor at StageActor time. Those refs stay alive for the
+        // actor's lifetime; UpdatePE1 just resolves them via
+        // ChildModelOf when a Birth fires.
         if (!mi->render.pe1.HasEmitters())
             continue;
         if (mi->parentVisibility <= 0.02f)
@@ -384,7 +375,16 @@ void FrameTicker::UpdatePE1(f32 dt) {
             auto* cfg = mi->render.pe1.GetConfig(birth.emitterId);
             if (!cfg)
                 continue;
-            auto tmpl = rs_.Scene().Templates().GetOrLoadAsync(cfg->modelPath);
+            // Birth fired — by now the prefetch above has had at least
+            // one frame to load the template. Resolve via slot; skip
+            // the birth if the child isn't ready yet (will retry on
+            // next emit).
+            const auto slot = rs_.Assets().Acquire(
+                assets::AssetKind::ChildModel, cfg->modelPath);
+            auto tmpl = rs_.Assets().ChildModelOf(slot);
+            // We held a temp ref via Acquire above; release it once
+            // we've extracted the shared_ptr (or skipped the birth).
+            rs_.Assets().Release(slot);
             if (!tmpl)
                 continue;
 

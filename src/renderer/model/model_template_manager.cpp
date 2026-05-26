@@ -19,20 +19,8 @@ namespace whiteout::flakes::renderer::model {
 using namespace ::whiteout::flakes::renderer::animation;
 using namespace ::whiteout::flakes::io;
 
-ModelTemplateManager::ModelTemplateManager() {
-#if !defined(__EMSCRIPTEN__)
-    // Single-threaded WASM has no std::thread; ctor would throw "Not
-    // supported". GetOrLoadSync runs ParseAndBuild on the calling thread
-    // already, so spawning skips cleanly.
-    StartLoader();
-#endif
-}
-
-ModelTemplateManager::~ModelTemplateManager() {
-#if !defined(__EMSCRIPTEN__)
-    StopLoader();
-#endif
-}
+ModelTemplateManager::ModelTemplateManager()  = default;
+ModelTemplateManager::~ModelTemplateManager() = default;
 
 void ModelTemplateManager::SetContentProvider(IContentProvider* provider) {
     contentProvider_ = provider;
@@ -42,90 +30,30 @@ void ModelTemplateManager::SetBasePath(std::filesystem::path basePath) {
     basePath_ = std::move(basePath);
 }
 
-void ModelTemplateManager::SetTextureCacheQuery(TextureCacheQuery q) {
-    textureCacheQuery_ = std::move(q);
-}
-
 std::shared_ptr<ModelTemplate> ModelTemplateManager::Lookup(const std::string& mdxPath) {
     std::lock_guard<std::mutex> lock(cacheMutex_);
     auto it = cache_.find(mdxPath);
-    return (it != cache_.end()) ? it->second : nullptr;
-}
-
-std::shared_ptr<ModelTemplate> ModelTemplateManager::GetOrLoadAsync(const std::string& mdxPath) {
-    {
-        std::lock_guard<std::mutex> lock(cacheMutex_);
-        auto it = cache_.find(mdxPath);
-        // Under EMSCRIPTEN the loader-thread Tick never runs, so a cached
-        // null would pin a failed-once template forever — re-try on the
-        // calling thread instead. The JS lazy drain ferries the missing
-        // bytes into the content provider as cold paths surface, so the
-        // next frame's attempt parses cleanly. On desktop the worker thread
-        // owns retries, so we honour the cached null there.
-#if defined(__EMSCRIPTEN__)
-        if (it != cache_.end() && it->second)
-            return it->second;
-#else
-        if (it != cache_.end())
-            return it->second;
-#endif
-    }
-#if defined(__EMSCRIPTEN__)
-    // Web build has no loader thread (see ctor). ParseAndBuild is safe to
-    // call from the render thread because the FetchContentProvider's
-    // Request resolves synchronously against its in-memory cache — Wait()
-    // never blocks. A null return here just means "bytes not yet Put"; the
-    // caller (frame_ticker) skips the child this frame, JS drains the
-    // miss, and the next frame the template builds.
-    auto tmpl = ParseAndBuild(mdxPath);
-    if (tmpl) {
-        // Skip caching the template if any of its texture deps failed
-        // to load (width == 0 == LoadTextureFile's "couldn't find /
-        // decode" marker). Once the JS lazy drain ferries the missing
-        // bytes in, the next GetOrLoadAsync re-parses cleanly and the
-        // complete template gets cached. Without this re-try a child
-        // model whose textures arrived after its first parse would
-        // render against placeholders forever.
-        bool incomplete = false;
-        for (const auto& t : tmpl->textures) {
-            if (t.width <= 0 || t.height <= 0) { incomplete = true; break; }
-        }
-        if (!incomplete) {
-            std::lock_guard<std::mutex> lock(cacheMutex_);
-            cache_[mdxPath] = tmpl;
-        }
-    }
-    return tmpl;
-#else
-    {
-        std::lock_guard<std::mutex> lock(queueMutex_);
-        if (loadPending_.count(mdxPath))
-            return nullptr;
-        loadPending_.insert(mdxPath);
-        loadQueue_.push_back(mdxPath);
-    }
-    queueCV_.notify_one();
-    return nullptr;
-#endif
+    if (it == cache_.end()) return nullptr;
+    return it->second.lock();
 }
 
 std::shared_ptr<ModelTemplate> ModelTemplateManager::GetOrLoadSync(const std::string& mdxPath) {
-
     {
         std::lock_guard<std::mutex> lock(cacheMutex_);
         auto it = cache_.find(mdxPath);
-        if (it != cache_.end())
-            return it->second;
+        if (it != cache_.end()) {
+            if (auto live = it->second.lock())
+                return live;
+            // Weak ref expired (every actor that held it has been
+            // destroyed). Drop the dead entry and fall through to a
+            // fresh parse.
+            cache_.erase(it);
+        }
     }
-
     auto tmpl = ParseAndBuild(mdxPath);
-    {
+    if (tmpl) {
         std::lock_guard<std::mutex> lock(cacheMutex_);
         cache_[mdxPath] = tmpl;
-    }
-    {
-        std::lock_guard<std::mutex> lock(queueMutex_);
-        loadPending_.erase(mdxPath);
     }
     return tmpl;
 }
@@ -137,43 +65,10 @@ std::shared_ptr<ModelTemplate> ModelTemplateManager::Adopt(const std::string& ke
     return tmpl;
 }
 
-void ModelTemplateManager::Tick() {
-    std::vector<std::pair<std::string, std::shared_ptr<ModelTemplate>>> results;
-    {
-        std::lock_guard<std::mutex> lock(resultMutex_);
-        results.swap(loadResults_);
-    }
-    if (results.empty())
-        return;
-    {
-        std::lock_guard<std::mutex> lock(cacheMutex_);
-        for (auto& [path, tmpl] : results)
-            cache_[path] = tmpl;
-    }
-    {
-        std::lock_guard<std::mutex> lock(queueMutex_);
-        for (auto& [path, _] : results)
-            loadPending_.erase(path);
-    }
-    // Stash the just-finished templates so the renderer can pre-upload
-    // their GPU resources before any actor spawns request them.
-    newlyLoaded_.reserve(newlyLoaded_.size() + results.size());
-    for (auto& [path, tmpl] : results) {
-        if (tmpl)
-            newlyLoaded_.push_back(tmpl);
-    }
-}
-
-std::vector<std::shared_ptr<ModelTemplate>> ModelTemplateManager::DrainNewlyLoadedTemplates() {
-    std::vector<std::shared_ptr<ModelTemplate>> out;
-    out.swap(newlyLoaded_);
-    return out;
-}
-
 void ModelTemplateManager::ReleaseAllGPU(gfx::IGFXDevice& gfx) {
     std::lock_guard<std::mutex> lock(cacheMutex_);
-    for (auto& [path, tmpl] : cache_) {
-        if (tmpl)
+    for (auto& [path, weak] : cache_) {
+        if (auto tmpl = weak.lock())
             tmpl->ReleaseGPU(gfx);
     }
 }
@@ -183,51 +78,15 @@ void ModelTemplateManager::Clear() {
     cache_.clear();
 }
 
-void ModelTemplateManager::StartLoader() {
-    loaderRunning_ = true;
-    loaderThread_ = std::thread(&ModelTemplateManager::LoaderFunc, this);
-}
-
-void ModelTemplateManager::StopLoader() {
-    loaderRunning_ = false;
-    queueCV_.notify_one();
-    if (loaderThread_.joinable())
-        loaderThread_.join();
-}
-
-void ModelTemplateManager::LoaderFunc() {
-    while (loaderRunning_) {
-        std::string path;
-        {
-            std::unique_lock<std::mutex> lock(queueMutex_);
-            queueCV_.wait_for(lock, std::chrono::milliseconds(50),
-                              [this] { return !loadQueue_.empty() || !loaderRunning_; });
-            if (!loaderRunning_)
-                break;
-            if (loadQueue_.empty())
-                continue;
-            path = std::move(loadQueue_.front());
-            loadQueue_.pop_front();
-        }
-
-        auto tmpl = ParseAndBuild(path);
-
-        {
-            std::lock_guard<std::mutex> lock(resultMutex_);
-            loadResults_.emplace_back(std::move(path), std::move(tmpl));
-        }
-    }
-}
-
 std::shared_ptr<ModelTemplate> ModelTemplateManager::ParseAndBuild(const std::string& mdxPath) {
     if (!contentProvider_)
         return nullptr;
 
     // Main-actor MDX bytes are needed in-hand to build the template, so this
     // is an explicit Request + Wait. Compared to ReadFile, the explicit form
-    // documents the wait point and lets us write straight into a local rather
-    // than allocating a heap-owned shared_ptr<RequestResult>. The callback
-    // fires on the host's Pump thread; doneCv wakes us once it returns.
+    // documents the wait point and lets us write straight into a local
+    // rather than allocate a heap-owned shared_ptr<RequestResult>. The
+    // callback fires on the host's Pump thread; Wait() returns once it has.
     io::RequestResult fileResult;
     const io::RequestId reqId = contentProvider_->Request(
         mdxPath, [&fileResult](io::RequestResult&& r) { fileResult = std::move(r); });
@@ -240,40 +99,42 @@ std::shared_ptr<ModelTemplate> ModelTemplateManager::ParseAndBuild(const std::st
         std::fprintf(stderr, "[model] ERR: MDX read FAIL '%s'\n", mdxPath.c_str());
         return nullptr;
     }
+    return BuildFromBytes(
+        mdxPath,
+        std::span<const u8>(fileResult.data.data(), fileResult.data.size()),
+        fileResult.actualExt);
+}
+
+std::shared_ptr<ModelTemplate> ModelTemplateManager::BuildFromBytes(
+    const std::string& mdxPath, std::span<const u8> bytes, std::string_view foundExt) {
+    if (bytes.empty())
+        return nullptr;
 
     // The MDX parser also reads the text MDL format from a buffer when told
-    // which it is. Pick the format from the resolved extension — actualExt is
-    // the file the provider actually returned (it may swap .mdx<->.mdl), with
-    // the request path as a fallback when the provider left it blank.
-    const std::string& extSrc = !fileResult.actualExt.empty() ? fileResult.actualExt : mdxPath;
-    auto endsWithMdl = [](const std::string& s) {
-        if (s.size() < 4)
-            return false;
-        std::string tail = s.substr(s.size() - 4);
+    // which it is. Pick the format from the resolved extension — `foundExt`
+    // is the extension the provider actually delivered (it may swap
+    // .mdx<->.mdl), with the request path as a fallback.
+    auto endsWithMdl = [](std::string_view s) {
+        if (s.size() < 4) return false;
+        std::string tail(s.substr(s.size() - 4));
         for (auto& c : tail)
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         return tail == ".mdl";
     };
+    const bool isMdl = !foundExt.empty() ? endsWithMdl(foundExt) : endsWithMdl(mdxPath);
     const whiteout::mdx::MDLXFormat fmt =
-        endsWithMdl(extSrc) ? whiteout::mdx::MDLXFormat::MDL : whiteout::mdx::MDLXFormat::MDX;
+        isMdl ? whiteout::mdx::MDLXFormat::MDL : whiteout::mdx::MDLXFormat::MDX;
 
     whiteout::mdx::Parser mdxParser;
-    whiteout::mdx::Model model;
-    // WhiteoutLib's MDX parser is now no-throw; parse errors surface via
-    // its issues vector (checked downstream). The previous try/catch
-    // would also be rejected under the web build's -fno-exceptions.
-    model = mdxParser.parse(
-        std::span<const whiteout::u8>(fileResult.data.data(), fileResult.data.size()), fmt);
+    whiteout::mdx::Model model = mdxParser.parse(
+        std::span<const whiteout::u8>(bytes.data(), bytes.size()), fmt);
 
     namespace fs = std::filesystem;
-
     fs::path texBasePath = basePath_.empty() ? FsPathFromUtf8(mdxPath).parent_path() : basePath_;
 
     auto tmpl = std::make_shared<ModelTemplate>();
     auto adapter =
         std::make_shared<MdxModelAdapter>(std::move(model), texBasePath, contentProvider_);
-    if (textureCacheQuery_)
-        adapter->SetTextureCacheQuery(textureCacheQuery_);
 
     tmpl->adapter = adapter;
     tmpl->meshes = adapter->GetMeshes();

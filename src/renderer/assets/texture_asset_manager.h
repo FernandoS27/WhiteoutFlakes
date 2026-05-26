@@ -4,6 +4,7 @@
 #include "assets/sampler_asset_manager.h"
 #include "whiteout/flakes/types.h"
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -14,6 +15,8 @@
 
 namespace whiteout::flakes::renderer::assets {
 
+class AssetManager;
+
 class TextureAssetManager {
 public:
     explicit TextureAssetManager(gfx::IGFXDevice& gfx);
@@ -22,38 +25,21 @@ public:
     TextureAssetManager(const TextureAssetManager&) = delete;
     TextureAssetManager& operator=(const TextureAssetManager&) = delete;
 
-    gfx::TextureHandle AcquireShared(std::string_view key, const gfx::TextureDesc& desc,
-                                     const void* pixels);
-    void ReleaseShared(std::string_view key);
-
-    bool IsCachedShared(std::string_view key) const;
-
-    gfx::TextureHandle TryAcquireShared(std::string_view key);
-
-    // Read-only path→handle lookup. Unlike TryAcquireShared(), does NOT
-    // increment refcount — meant for per-frame resolvers (e.g. corn fx
-    // backend's diffuse resolver) that want to peek at the cache without
-    // owning a reference. Returns Invalid if not cached.
-    gfx::TextureHandle LookupShared(std::string_view key) const;
-
-    struct SharedStats {
-        usize uniqueEntries = 0;
-        usize totalAcquires = 0;
-        usize cacheHits = 0;
-    };
-    SharedStats GetSharedStats() const;
-    void ResetSharedStats();
-
     class ModelScope {
     public:
+        /// @brief Upload a one-shot, scope-owned texture (no AssetManager
+        ///        slot). Used for the rare MDX texture entries that have
+        ///        no file path — e.g. the 4x4 white synthetic that the
+        ///        adapter generates for fully-procedural texture slots.
         gfx::TextureHandle Upload(i32 textureId, const gfx::TextureDesc& desc, const void* pixels,
                                   u32 wrapFlags);
 
-        gfx::TextureHandle UploadShared(i32 textureId, std::string_view sharedKey,
-                                        const gfx::TextureDesc& desc, const void* pixels,
-                                        u32 wrapFlags);
-
-        gfx::TextureHandle BindShared(i32 textureId, std::string_view sharedKey, u32 wrapFlags);
+        /// @brief Bind this texture id to an AssetManager slot. The
+        ///        slot's refcount is incremented; ModelScope releases it
+        ///        on DropEntry / Clear. `Get()` resolves through the
+        ///        manager so the actor sees the current handle whenever
+        ///        the slot's payload is swapped (placeholder → real).
+        void BindSlot(i32 textureId, std::uint32_t slot, u32 wrapFlags);
 
         gfx::TextureHandle Get(i32 textureId) const noexcept;
 
@@ -71,22 +57,26 @@ public:
 
     private:
         friend class TextureAssetManager;
-        ModelScope(gfx::IGFXDevice& gfx, TextureAssetManager& mgr) : gfx_(gfx), mgr_(mgr) {}
+        ModelScope(gfx::IGFXDevice& gfx, TextureAssetManager& mgr, AssetManager* assets)
+            : gfx_(gfx), mgr_(mgr), assets_(assets) {}
 
         void DropEntry(i32 textureId);
 
         gfx::IGFXDevice& gfx_;
         TextureAssetManager& mgr_;
+        AssetManager* assets_ = nullptr; // null = legacy scope, no slot routing
         struct Entry {
+            // Either holds an owned GPU handle (Upload path) or a slot
+            // ref into AssetManager. Exactly one of `tex` / `slot` is
+            // populated; Get() picks the right one.
             gfx::TextureHandle tex = gfx::TextureHandle::Invalid;
-            u32 wrapFlags = kSamplerWrapBitsMask;
-
-            std::string sharedKey;
+            std::uint32_t slot     = 0; // AssetManager::kInvalidSlot
+            u32 wrapFlags          = kSamplerWrapBitsMask;
         };
         std::unordered_map<i32, Entry> entries_;
     };
 
-    std::unique_ptr<ModelScope> CreateModelScope();
+    std::unique_ptr<ModelScope> CreateModelScope(AssetManager* assets = nullptr);
 
     void RegisterOwned(std::string name, gfx::TextureHandle handle);
     void ReleaseOwned(std::string_view name);
@@ -128,16 +118,6 @@ private:
     std::unordered_map<std::string, gfx::TextureHandle, TransparentStringHash, std::equal_to<>>
         owned_;
 
-    struct SharedEntry {
-        gfx::TextureHandle handle = gfx::TextureHandle::Invalid;
-        usize refCount = 0;
-    };
-    std::unordered_map<std::string, SharedEntry, TransparentStringHash, std::equal_to<>> shared_;
-
-    mutable std::mutex sharedMutex_;
-
-    usize sharedTotalAcquires_ = 0;
-    usize sharedCacheHits_ = 0;
 };
 
 } // namespace whiteout::flakes::renderer::assets

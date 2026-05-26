@@ -65,10 +65,6 @@ private:
 
     i32 MapPE2FilterMode(whiteout::u32 mdxMode) const;
     i32 MapShadingFlags(whiteout::mdx::Layer::ShadingFlag sf) const;
-
-    ::whiteout::flakes::renderer::model::TextureData LoadTextureFile(const std::string& path,
-                                                                     i32 textureId,
-                                                                     i32 replaceableId) const;
 };
 
 } // namespace whiteout::flakes::io
