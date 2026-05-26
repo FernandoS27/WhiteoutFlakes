@@ -101,6 +101,15 @@ public:
     ///        materials) and vice-versa.
     RenderMode PreferredRenderMode() const;
 
+    /// @brief Every child-model path this actor's template will
+    ///        eventually need: attachment slots (`AttachmentConfig`) and
+    ///        legacy PE1 particle emitters (`PE1EmitterConfig`). Hosts
+    ///        running an async loader (web build) use this to eagerly
+    ///        prefetch the child MDX bytes so the first attachment
+    ///        spawn / first PE1 fire lands in a primed cache rather
+    ///        than triggering a miss.
+    std::vector<std::string> ChildModelPaths() const;
+
 private:
     ActorView(detail::RendererImpl* impl, ActorHandle h) : impl_(impl), handle_(h) {}
     detail::RendererImpl* impl_;

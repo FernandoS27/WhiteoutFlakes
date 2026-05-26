@@ -355,6 +355,22 @@ void FrameTicker::UpdatePE1(f32 dt) {
             continue;
         if (mi->treeDepth >= effects::kMaxPE1Depth)
             continue;
+
+        // Eagerly prefetch every PE1 child template, the same way
+        // UpdateAttachments warms attachment templates above. On the web
+        // build, GetOrLoadAsync hits ParseAndBuild, which walks the
+        // child MDX's textures into the FetchContentProvider's missing
+        // list — the JS lazy drain then ferries the bytes in *before*
+        // the emitter actually fires, so the child spawn lands with a
+        // primed cache instead of a placeholder pass. Idempotent on
+        // already-cached templates (synchronous map hit).
+        if (mi->sourceTemplate) {
+            for (const auto& cfg : mi->sourceTemplate->pe1Configs) {
+                if (!cfg.modelPath.empty())
+                    rs_.Scene().Templates().GetOrLoadAsync(cfg.modelPath);
+            }
+        }
+
         if (!mi->render.pe1.HasEmitters())
             continue;
         if (mi->parentVisibility <= 0.02f)

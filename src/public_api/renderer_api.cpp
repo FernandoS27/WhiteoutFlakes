@@ -521,4 +521,18 @@ RenderMode ActorView::PreferredRenderMode() const {
     return a ? a->PreferredRenderMode() : RenderMode::SD;
 }
 
+std::vector<std::string> ActorView::ChildModelPaths() const {
+    std::vector<std::string> out;
+    auto* a = FindActor(impl_, handle_);
+    if (!a || !a->sourceTemplate)
+        return out;
+    const auto& t = *a->sourceTemplate;
+    out.reserve(t.attachmentConfigs.size() + t.pe1Configs.size());
+    for (const auto& ac : t.attachmentConfigs)
+        if (!ac.modelPath.empty()) out.push_back(ac.modelPath);
+    for (const auto& pc : t.pe1Configs)
+        if (!pc.modelPath.empty()) out.push_back(pc.modelPath);
+    return out;
+}
+
 } // namespace whiteout::flakes

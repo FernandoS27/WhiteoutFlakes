@@ -487,17 +487,21 @@ void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::Rende
 
         auto& ls = layerStates_[d.layerIdx];
         gfx::TextureHandle tex = ls.diffuse;
-        // Retry the resolver each frame when the layer's diffuse is still
-        // Invalid: the renderer's content provider may have received bytes
-        // for this path after prepare() ran (async fetch from JS in the
-        // web build, or a hot-reload elsewhere). Once the resolver
-        // succeeds we cache the handle on the layer so subsequent frames
-        // are cheap. No-op when the path was never set (procedural layer).
+#if defined(__EMSCRIPTEN__)
+        // Web build only — re-attempt the resolver each frame when the
+        // layer's diffuse is still Invalid. Textures arrive via the JS
+        // lazy drain *after* prepare() ran, so we need to keep poking
+        // until the content provider has the bytes. On DESKTOP this
+        // would issue a CASC/MPQ disk read for every still-missing layer
+        // every frame and tank framerate (~60 fps cap from blocking
+        // I/O); desktop loads are synchronous at spawn so an Invalid
+        // handle there means permanent failure — no point retrying.
         if (tex == gfx::TextureHandle::Invalid && resolver_ && !ls.diffusePath.empty()) {
             tex = resolver_(ls.diffusePath);
             if (tex != gfx::TextureHandle::Invalid)
                 ls.diffuse = tex;
         }
+#endif
         if (tex == gfx::TextureHandle::Invalid && textures_) {
             tex = textures_->GetDefaults().White;
         }

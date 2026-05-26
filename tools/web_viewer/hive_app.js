@@ -8,6 +8,13 @@
 //   const app = new HiveApp();
 //   await app.start();   // boots WhiteoutViewer + wires UI
 // Subsequent UI interactions are event-driven.
+//
+// DOM contract — see tools/web_viewer/index.html. Mirrors Hive's
+// `ratory_wc3model_preview` template (block / block-container /
+// block-header / block-body + `color-chip` swatches). Team-color and
+// background chips are PRE-RENDERED in the HTML with their `title`
+// tooltips and `data-player-number` / `data-bg` attributes so the
+// markup is greppable; this file just wires click handlers on top.
 
 // Top-level dynamic import with a per-load cache-buster — defeats the
 // browser's ES module map (keyed by URL) so wf-viewer.js edits actually
@@ -19,29 +26,22 @@ const { WhiteoutViewer, TEAM_COLORS } =
 const { WebAudioBridge } =
     await import('./web_audio.js?t=' + Date.now());
 
-// Background-swatch palette (matches Hive's tile set). Each entry is the
-// sRGB tuple fed straight to wf_set_background.
-const BG_COLORS = [
-    [128, 128, 128], // gray
-    [  0,   0,   0], // black
-    [255, 255, 255], // white
-    [ 64, 160, 200], // teal
-    [ 40, 160,  60], // green
-    [180,  40, 140], // magenta
-    [ 80,  80,  80], // dark gray
-];
-
 export class HiveApp {
     constructor() {
         this.canvas       = document.getElementById('wf-canvas');
         this.modelList    = document.getElementById('model-list');
         this.animList     = document.getElementById('anim-list');
+        this.cameraList   = document.getElementById('camera-list');
         this.teamSwatches = document.getElementById('team-swatches');
         this.bgSwatches   = document.getElementById('bg-swatches');
+        this.bgPicker     = document.getElementById('bg-picker');
         this.openDirBtn   = document.getElementById('open-dir');
         this.dirInput     = document.getElementById('dir-input');
         this.camReset     = document.getElementById('cam-reset');
         this.closeBtn     = document.getElementById('close-btn');
+        this.progress     = document.getElementById('progress');
+        this.volSlider    = document.getElementById('vol-slider');
+        this.emptyModels  = this.modelList.querySelector('.empty');
 
         this.viewer = null;
         // Map<normalized-path, {kind:'fsa'|'legacy', handle?, file?, path}>.
@@ -60,9 +60,11 @@ export class HiveApp {
     async start() {
         this.viewer = new WhiteoutViewer(this.canvas);
         await this.viewer.init();
-        // Default to a near-black "Hive" background so the canvas matches
-        // the dark UI before the user picks a swatch.
-        this.viewer.setBackground(10, 10, 10);
+        // Default background matches the first chip in Background (dark
+        // gray #3e3e3e on Hive). Keeps the canvas tone consistent with
+        // the sidebar before the user picks a swatch.
+        this.viewer.setBackground(0x3e, 0x3e, 0x3e);
+        this._setActiveChip(this.bgSwatches, this.bgSwatches.firstElementChild);
 
         // Install a persistent path solver so the viewer's rAF loop can
         // fulfil lazily-discovered deps (corn_fx particle textures spawn
@@ -78,8 +80,8 @@ export class HiveApp {
         this.audio = new WebAudioBridge((name) => this._resolve(name));
         this.audio.install();
 
-        this._buildTeamSwatches();
-        this._buildBgSwatches();
+        this._wireTeamSwatches();
+        this._wireBgSwatches();
         this._wireUi();
     }
 
@@ -87,12 +89,56 @@ export class HiveApp {
         this.openDirBtn.addEventListener('click', () => this._pickDirectory());
         this.dirInput.addEventListener('change',
             (e) => this._adoptFileList(e.target.files));
-        this.camReset.addEventListener('click', () => this.viewer.resetCamera());
+        this.camReset.addEventListener('click', (e) => {
+            e.preventDefault();
+            // Reset row = "drop back to orbital free-camera with default
+            // FoV / clip" (same as desktop's ActivateCameraPreset(-1)).
+            // If we have a current instance, route through it so the
+            // facade knows which actor's preset slot to clear.
+            if (this.currentInstance) this.currentInstance.activateCameraPreset(-1);
+            else this.viewer.resetCamera();
+            this._setActiveChip(this.cameraList, this.camReset);
+        });
         if (this.closeBtn) {
             // Symbolic — there's no parent modal to close in the standalone
             // page. Kept for visual parity with Hive's panel.
             this.closeBtn.addEventListener('click', () => {});
         }
+        // Volume slider — maps 0..100 → 0..1 and pushes to the Web Audio
+        // master gain via the bridge. Default value 50 ≈ comfortable preview
+        // level; updates live as the user drags.
+        if (this.volSlider) {
+            const apply = () => {
+                const v = (Number(this.volSlider.value) || 0) / 100;
+                if (this.audio) this.audio.setVolume(v);
+            };
+            this.volSlider.addEventListener('input', apply);
+            apply(); // seed master with the slider's default value
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Loading progress bar — toggled around async work that takes long
+    // enough to need a visual hint (model fetch + dep resolution).
+    // ------------------------------------------------------------------
+    _showProgress() {
+        if (this.progress) this.progress.classList.add('active');
+    }
+    _hideProgress() {
+        if (this.progress) this.progress.classList.remove('active');
+    }
+
+    // ------------------------------------------------------------------
+    // Active-chip / active-row helper. Hive's CSS keys the highlighted
+    // state off the `.active` class on the chip / list item (not
+    // `.selected`); we follow the same convention so the stylesheet can
+    // share rules.
+    // ------------------------------------------------------------------
+    _setActiveChip(container, target) {
+        if (!container) return;
+        for (const el of container.querySelectorAll('.active'))
+            el.classList.remove('active');
+        if (target) target.classList.add('active');
     }
 
     // ------------------------------------------------------------------
@@ -171,29 +217,34 @@ export class HiveApp {
         list.sort((a, b) => a.name.localeCompare(b.name));
         this.models = list;
 
-        this.modelList.innerHTML = '';
+        // Wipe previously-rendered model rows (everything except the
+        // pinned button / hidden input / empty placeholder, all of which
+        // we recreate or hide below).
+        for (const a of [...this.modelList.querySelectorAll('a')]) a.remove();
+        if (this.emptyModels) this.emptyModels.remove();
+
         if (list.length === 0) {
-            const li = document.createElement('li');
-            li.className = 'empty';
-            li.textContent = '(no .mdx/.mdl files in directory)';
-            this.modelList.appendChild(li);
+            const span = document.createElement('span');
+            span.className = 'empty';
+            span.textContent = '(no .mdx/.mdl files in directory)';
+            this.modelList.appendChild(span);
+            this.emptyModels = span;
             return;
         }
         for (const m of list) {
-            const li = document.createElement('li');
-            li.textContent = m.name;
-            li.addEventListener('click', () => this._selectModel(m, li));
-            this.modelList.appendChild(li);
+            const a = document.createElement('a');
+            a.textContent = m.name;
+            a.dataset.path = m.path;
+            a.addEventListener('click', () => this._selectModel(m, a));
+            this.modelList.appendChild(a);
         }
     }
 
     // ------------------------------------------------------------------
     // Model selection / loading.
     // ------------------------------------------------------------------
-    async _selectModel(m, li) {
-        for (const x of this.modelList.querySelectorAll('.selected'))
-            x.classList.remove('selected');
-        li.classList.add('selected');
+    async _selectModel(m, row) {
+        this._setActiveChip(this.modelList, row);
 
         // Tear down any previous instance/model before loading the next.
         if (this.currentInstance) {
@@ -202,17 +253,29 @@ export class HiveApp {
         }
         this.currentModel = null;
         this._revokeObjectUrls();
-        this.animList.innerHTML = '';
+        this._clearAnimations();
+        this._clearCameras();
 
+        this._showProgress();
         const solver = (name) => this._resolve(name);
         try {
             const model = await this.viewer.load(m.path, solver);
             this.currentModel = model;
             this.currentInstance = model._instances[0];
             this.currentInstance.setTeamColor(this.currentTeamColor);
+            // Force every animation (including ones the MDX marked
+            // non-looping) to loop on the main actor — matches mdx-m3-
+            // viewer's default "always loop" behaviour for previews.
+            // mode 0 → `SetIgnoreNonLooping(true)` in wf_actor_set_loop_mode,
+            // which tells the renderer to wrap-around instead of clamping
+            // at the last frame for sequences with the nonLooping flag.
+            this.currentInstance.setSequenceLoopMode(0);
             this._populateSequences();
+            this._populateCameras();
         } catch (e) {
             console.error('[hive] load failed:', e);
+        } finally {
+            this._hideProgress();
         }
     }
 
@@ -246,66 +309,146 @@ export class HiveApp {
     }
 
     // ------------------------------------------------------------------
-    // Sequences (Animations panel).
+    // Sequences (Animations panel) — rebuilt on every model load.
     // ------------------------------------------------------------------
-    _populateSequences() {
+    _clearAnimations() {
+        if (!this.animList) return;
         this.animList.innerHTML = '';
+    }
+    _populateSequences() {
+        this._clearAnimations();
         if (!this.currentInstance) return;
         const seqs = this.currentInstance.getSequences();
         if (seqs.length === 0) {
-            const li = document.createElement('li');
-            li.className = 'empty';
-            li.textContent = '(no sequences)';
-            this.animList.appendChild(li);
+            const span = document.createElement('span');
+            span.className = 'empty';
+            span.textContent = '(no sequences)';
+            this.animList.appendChild(span);
             return;
         }
+        let firstRow = null;
         seqs.forEach((name, idx) => {
-            const li = document.createElement('li');
-            li.textContent = name;
-            li.addEventListener('click', () => this._selectSequence(idx, li));
-            this.animList.appendChild(li);
+            const a = document.createElement('a');
+            a.textContent = name;
+            a.dataset.seq = String(idx);
+            a.addEventListener('click', () => this._selectSequence(idx, a));
+            this.animList.appendChild(a);
+            if (idx === 0) firstRow = a;
         });
         // Auto-play the first sequence so models don't render in T-pose.
-        this._selectSequence(0, this.animList.firstChild);
+        this._selectSequence(0, firstRow);
     }
 
-    _selectSequence(idx, li) {
-        for (const x of this.animList.querySelectorAll('.selected'))
-            x.classList.remove('selected');
-        if (li) li.classList.add('selected');
-        if (this.currentInstance) this.currentInstance.setSequence(idx);
+    _selectSequence(idx, row) {
+        this._setActiveChip(this.animList, row);
+        if (!this.currentInstance) return;
+        // Clear lingering splats before switching, the same way the
+        // desktop viewer does (tools/basic_viewer/viewer_ui.cpp:482) —
+        // skip the wipe for fade-out sequences ("decay" / "dissipate")
+        // so death-trail blood pools persist through their decay cycle.
+        const seqs = this.currentInstance.getSequences();
+        const name = (seqs[idx] || '').toLowerCase();
+        const keep = name.includes('decay') || name.includes('dissipate');
+        if (!keep) this.viewer.clearSplats();
+        this.currentInstance.setSequence(idx);
     }
 
     // ------------------------------------------------------------------
-    // Static swatches.
+    // Cameras panel. The Reset row is static (rendered in index.html);
+    // any per-model camera presets the renderer exposes get appended.
     // ------------------------------------------------------------------
-    _buildTeamSwatches() {
-        this.teamSwatches.innerHTML = '';
-        for (let i = 0; i < TEAM_COLORS.length; ++i) {
-            const [r, g, b] = TEAM_COLORS[i];
-            const sw = document.createElement('div');
-            sw.className = 'swatch';
-            sw.style.background = `rgb(${r},${g},${b})`;
-            sw.title = `Team ${i}`;
-            sw.addEventListener('click', () => {
-                this.currentTeamColor = i;
-                // Apply to every live instance of the current model.
-                if (this.currentModel) {
-                    for (const inst of this.currentModel._instances) inst.setTeamColor(i);
-                }
+    _clearCameras() {
+        if (!this.cameraList) return;
+        // Keep the static Reset row, drop everything after it.
+        for (const a of [...this.cameraList.querySelectorAll('a')]) {
+            if (a !== this.camReset) a.remove();
+        }
+    }
+    _populateCameras() {
+        if (!this.currentInstance) return;
+        const presets = this.currentInstance.getCameraPresets();
+        // Default-active highlight goes on the Reset row when a fresh
+        // model loads (matches Hive's first-state of the panel).
+        this._setActiveChip(this.cameraList, this.camReset);
+        presets.forEach((name, idx) => {
+            const a = document.createElement('a');
+            a.textContent = name;
+            a.dataset.camera = String(idx);
+            a.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.currentInstance.activateCameraPreset(idx);
+                this._setActiveChip(this.cameraList, a);
             });
-            this.teamSwatches.appendChild(sw);
+            this.cameraList.appendChild(a);
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // Team-color chips. Pre-rendered in index.html with
+    // `data-player-number` — we just attach click handlers that update
+    // the active outline + push the colour to every live instance.
+    // ------------------------------------------------------------------
+    _wireTeamSwatches() {
+        if (!this.teamSwatches) return;
+        for (const chip of this.teamSwatches.querySelectorAll('.color-chip')) {
+            const player = Number(chip.dataset.playerNumber);
+            if (Number.isNaN(player)) continue;
+            chip.addEventListener('click', (e) => {
+                e.preventDefault();
+                this.currentTeamColor = player;
+                if (this.currentModel) {
+                    for (const inst of this.currentModel._instances)
+                        inst.setTeamColor(player);
+                }
+                this._setActiveChip(this.teamSwatches, chip);
+            });
+        }
+        // Reflect the default team color (Red, index 0) as the initial
+        // active chip — matches Hive's first-chip-highlighted state.
+        const first = this.teamSwatches.querySelector('.color-chip[data-player-number="0"]');
+        if (first) this._setActiveChip(this.teamSwatches, first);
+    }
+
+    // ------------------------------------------------------------------
+    // Background chips. Same pre-rendered pattern as team colors, plus
+    // the `<input type="color">` custom-color picker (Hive's
+    // `color-chip--picker`). Picker uses the `change`/`input` event;
+    // chips use click.
+    // ------------------------------------------------------------------
+    _wireBgSwatches() {
+        if (!this.bgSwatches) return;
+        for (const chip of this.bgSwatches.querySelectorAll('.color-chip')) {
+            // The custom-color picker is wired separately below — skip it
+            // here so we don't attach a click handler that would intercept
+            // the colour-picker pop-up.
+            if (chip.tagName === 'INPUT') continue;
+            chip.addEventListener('click', (e) => {
+                e.preventDefault();
+                const hex = chip.dataset.bg;
+                if (!hex) return;
+                this._applyHexBg(hex);
+                this._setActiveChip(this.bgSwatches, chip);
+            });
+        }
+        if (this.bgPicker) {
+            const apply = () => {
+                this._applyHexBg(this.bgPicker.value);
+                this._setActiveChip(this.bgSwatches, this.bgPicker);
+            };
+            this.bgPicker.addEventListener('input', apply);
+            this.bgPicker.addEventListener('change', apply);
         }
     }
 
-    _buildBgSwatches() {
-        this.bgSwatches.innerHTML = '';
-        for (const [r, g, b] of BG_COLORS) {
-            const sw = document.createElement('div');
-            sw.className = 'swatch';
-            sw.style.background = `rgb(${r},${g},${b})`;
-            sw.addEventListener('click', () => this.viewer.setBackground(r, g, b));
-            this.bgSwatches.appendChild(sw);
-        }
+    _applyHexBg(hex) {
+        // hex is "#rrggbb" or "#rgb" — normalise to 8-bit components.
+        let h = String(hex).trim();
+        if (h.startsWith('#')) h = h.slice(1);
+        if (h.length === 3) h = h.split('').map(c => c + c).join('');
+        if (h.length !== 6) return;
+        const r = parseInt(h.slice(0, 2), 16);
+        const g = parseInt(h.slice(2, 4), 16);
+        const b = parseInt(h.slice(4, 6), 16);
+        this.viewer.setBackground(r, g, b);
     }
 }

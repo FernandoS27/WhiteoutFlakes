@@ -4,17 +4,24 @@
 <meta charset="utf-8">
 <title>WhiteoutFlakes — Viewer</title>
 <style>
+  /* Hive's preview pane is built around XF's `block` / `block-container`
+     / `block-header` / `block-body` shell with `color-chip` swatch grids.
+     We mirror the same DOM shape (and class names) so reading either
+     viewer's source feels familiar. The colour palette is darker /
+     warmer than XF default so the canvas isn't fighting the sidebar. */
   :root {
-    --bg:             #0a0a0a;
-    --bg-canvas:      #000;
-    --panel:          #0e0e0e;
-    --accent:         #f0c33c;
-    --accent-bright:  #ffe48a;
-    --selected:       #5a1c0c;
-    --selected-text:  #ffe9a0;
-    --divider:        #1f1f1f;
-    --btn-border:     #7a5a18;
-    --topbar-border:  #3a2a08;
+    --bg:               #0a0a0a;
+    --bg-canvas:        #000;
+    --panel:            #141414;
+    --panel-header:     #1a1a1a;
+    --accent:           #f0c33c;
+    --accent-bright:    #ffe48a;
+    --selected:         #5a1c0c;
+    --selected-text:    #ffe9a0;
+    --divider:          #262626;
+    --btn-border:       #7a5a18;
+    --topbar-border:    #3a2a08;
+    --progress:         #f0c33c;
   }
   * { box-sizing: border-box; }
   html, body {
@@ -24,78 +31,192 @@
   }
   body { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; user-select: none; }
 
-  /* ---- Top bar (Hive's "View in 3D" header + close X) ---- */
+  /* ---- Top bar: "View in 3D" header + close X. Hive embeds the viewer
+         inside the regular XF page chrome; this standalone keeps the
+         same title so the screenshot reads identical. ---- */
   #topbar {
     display: flex; justify-content: space-between; align-items: center;
     padding: 6px 14px; background: var(--bg);
     border-bottom: 1px solid var(--topbar-border);
+    gap: 12px;
   }
   #topbar .title  { font-size: 18px; color: var(--accent); font-weight: 600; letter-spacing: 0.2px; }
+  #topbar .spacer { flex: 1; }
   #topbar .close  { font-size: 22px; line-height: 1; color: var(--accent);
                     cursor: pointer; padding: 0 8px; }
   #topbar .close:hover { color: var(--accent-bright); }
 
-  /* ---- Main area: canvas + sidebar ---- */
-  #main {
-    display: grid; grid-template-columns: 1fr 280px;
-    min-height: 0; min-width: 0;
+  /* ---- Volume slider (top-right). Plain <input type="range"> with the
+         WebKit / Firefox native-control nubs styled to match the gold
+         accent. Value mapped to 0..1 and pushed through HiveApp.audio. */
+  #vol-wrap {
+    display: flex; align-items: center; gap: 6px;
+    color: var(--accent); font-size: 12px;
   }
-  #canvas-wrap { background: var(--bg-canvas); position: relative;
-                 min-width: 0; min-height: 0; overflow: hidden; }
-  #wf-canvas   { width: 100%; height: 100%; display: block; }
+  #vol-wrap label { user-select: none; opacity: 0.85; }
+  #vol-slider {
+    -webkit-appearance: none; appearance: none;
+    width: 140px; height: 4px;
+    background: #2a2009;
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+  #vol-slider::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--accent);
+    border: 1px solid #000;
+    cursor: pointer;
+  }
+  #vol-slider::-moz-range-thumb {
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--accent);
+    border: 1px solid #000;
+    cursor: pointer;
+  }
 
-  #sidebar {
+  /* ---- Hive's `.ratory.model-viewer` root: canvas + sidebar + progress.
+         Replicates the same grid (canvas grows, sidebar fixed-width) so the
+         layout matches a Hive embed pixel-for-pixel. ---- */
+  .ratory.model-viewer {
+    display: grid;
+    grid-template-columns: 1fr 280px;
+    min-height: 0; min-width: 0;
+    position: relative;
+  }
+  .ratory.model-viewer > canvas {
+    background: var(--bg-canvas);
+    width: 100%; height: 100%;
+    display: block;
+    min-width: 0; min-height: 0;
+  }
+  .ratory.model-viewer .sidebar {
     background: var(--panel);
-    padding: 6px 12px 14px;
     overflow-y: auto;
     border-left: 1px solid var(--divider);
+    padding: 6px 0 14px;
   }
-  #sidebar h2 {
-    font-size: 15px;
-    margin: 14px 0 4px 0;
-    color: var(--accent);
-    font-weight: 600;
-    border-bottom: 1px solid var(--divider);
-    padding-bottom: 2px;
-  }
-  #sidebar h2:first-of-type { margin-top: 6px; }
-  #sidebar ul { list-style: none; margin: 0; padding: 0; }
-  #sidebar ul li {
-    padding: 3px 8px; cursor: pointer; color: var(--accent);
-    border-radius: 1px;
-  }
-  #sidebar ul li:hover    { color: var(--accent-bright); }
-  #sidebar ul li.selected {
-    background: var(--selected); color: var(--selected-text);
-    font-weight: 600;
-  }
-  #sidebar ul li.empty    { color: #5a5a5a; cursor: default; }
-  #sidebar ul li.empty:hover { color: #5a5a5a; }
 
+  /* ---- XF-style block stack ---- */
+  .block { margin: 0 0 6px 0; }
+  .block-container { background: var(--panel); }
+  .block-header {
+    padding: 6px 12px;
+    font-size: 15px; font-weight: 600;
+    color: var(--accent);
+    background: var(--panel-header);
+    border-top: 1px solid var(--divider);
+    border-bottom: 1px solid var(--divider);
+  }
+  .block-body { padding: 6px 12px; }
+
+  /* ---- Models / Animations / Cameras lists (Hive populates these JS-side
+         with bare child elements; we match that shape with <a> rows that
+         carry per-item data-* attributes for the click handlers). ---- */
+  .block-body.models,
+  .block-body.animations,
+  .block-body.cameras {
+    padding: 4px 0;
+  }
+  .block-body.models > a,
+  .block-body.animations > a,
+  .block-body.cameras > a {
+    display: block;
+    padding: 3px 14px;
+    cursor: pointer;
+    color: var(--accent);
+    text-decoration: none;
+  }
+  .block-body.models > a:hover,
+  .block-body.animations > a:hover,
+  .block-body.cameras > a:hover { color: var(--accent-bright); }
+  .block-body.models > a.active,
+  .block-body.animations > a.active,
+  .block-body.cameras > a.active {
+    background: var(--selected);
+    color: var(--selected-text);
+    font-weight: 600;
+  }
+  .block-body > .empty {
+    display: block;
+    padding: 3px 14px;
+    color: #5a5a5a;
+    font-style: italic;
+  }
+
+  /* ---- Open directory button — our addition (Hive's viewer pre-loads
+         models server-side via `data-models`; we let the user pick a
+         local folder instead). Sits inside the Models block so it's part
+         of that visual group. ---- */
   #open-dir {
+    display: block;
+    margin: 0 12px 6px;
     background: transparent; color: var(--accent);
     border: 1px solid var(--btn-border);
     padding: 4px 8px; cursor: pointer; font: inherit;
-    margin: 2px 0 6px 0; width: 100%;
+    width: calc(100% - 24px);
   }
   #open-dir:hover  { background: #1a1408; color: var(--accent-bright); }
   #open-dir:active { background: #281e10; }
 
-  /* ---- Swatch grids (Team colors / Background) ---- */
-  .swatch-grid {
-    display: grid; gap: 2px;
-    padding: 2px 0;
+  /* ---- color-chips (Hive class). Square swatches in a tight grid:
+         Team colors → 6 wide × 4 rows = 24 chips.
+         Background  → 6 chips + 1 native `input[type=color]` picker. ---- */
+  .block-body.color-chips {
+    display: grid; gap: 3px;
+    padding: 6px 12px;
   }
-  #team-swatches { grid-template-columns: repeat(6, 1fr); }
-  #bg-swatches   { grid-template-columns: repeat(7, 1fr); }
-  .swatch {
-    width: 100%; aspect-ratio: 1;
+  .block-body.team-colors      { grid-template-columns: repeat(6, 1fr); }
+  .block-body.background-colors{ grid-template-columns: repeat(7, 1fr); }
+  .color-chip {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1;
     cursor: pointer;
     border: 1px solid #000;
+    box-sizing: border-box;
+    -webkit-appearance: none; appearance: none;
+    padding: 0;
   }
-  .swatch:hover { outline: 1px solid var(--accent-bright); outline-offset: -1px; }
+  .color-chip:hover  { outline: 1px solid var(--accent-bright); outline-offset: -1px; }
+  .color-chip.active { outline: 2px solid var(--accent-bright); outline-offset: -2px; }
+  /* Strip the native swatch border / inner well that `<input type=color>`
+     ships with so it sits flush in the grid like Hive's. */
+  input.color-chip { background: transparent; }
+  input.color-chip::-webkit-color-swatch-wrapper { padding: 0; }
+  input.color-chip::-webkit-color-swatch        { border: none; }
+  input.color-chip::-moz-color-swatch           { border: none; }
 
-  /* ---- Bottom log strip ---- */
+  /* ---- Loading / progress bar (Hive renders this absolute-positioned
+         at the bottom of the .model-viewer container; same here so we
+         can flash it during async asset drain). Inner <div> animates
+         to indicate progress. ---- */
+  .progress {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 2px;
+    background: rgba(255,255,255,0.06);
+    overflow: hidden;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 200ms ease-out;
+  }
+  .progress.active { opacity: 1; }
+  .progress > div {
+    height: 100%;
+    background: var(--progress);
+    transform: translateX(-100%);
+    animation: progress-slide 1.6s ease-in-out infinite;
+  }
+  @keyframes progress-slide {
+    0%   { transform: translateX(-100%); }
+    50%  { transform: translateX(30%); }
+    100% { transform: translateX(140%); }
+  }
+
+  /* ---- Bottom log strip (kept from before — useful while bringing up
+         the renderer; Hive doesn't have one). ---- */
   #log {
     max-height: 84px;
     overflow-y: auto;
@@ -111,35 +232,105 @@
 <body>
   <div id="topbar">
     <span class="title">View in 3D</span>
+    <span class="spacer"></span>
+    <div id="vol-wrap" title="Sound volume">
+      <label for="vol-slider">Volume</label>
+      <input id="vol-slider" type="range" min="0" max="100" step="1" value="50">
+    </div>
     <span id="close-btn" class="close" title="Close">×</span>
   </div>
-  <div id="main">
-    <div id="canvas-wrap"><canvas id="wf-canvas"></canvas></div>
-    <aside id="sidebar">
-      <h2>Models</h2>
-      <button id="open-dir">Open directory…</button>
-      <input id="dir-input" type="file" webkitdirectory multiple style="display:none">
-      <ul id="model-list">
-        <li class="empty">(pick a directory to populate)</li>
-      </ul>
 
-      <h2>Team colors</h2>
-      <div id="team-swatches" class="swatch-grid"></div>
+  <!--
+    `.ratory.model-viewer` root mirrors Hive's `ratory_wc3model_preview`
+    template (see hive.html line ~1870). Same DOM shape & class names
+    so the sidebar block stack reads identical to a Hive embed; only
+    addition is the "Open directory…" button inside the Models block.
+  -->
+  <div class="ratory model-viewer" id="viewer-root">
+    <canvas id="wf-canvas"></canvas>
+    <div class="sidebar">
 
-      <h2>Background</h2>
-      <div id="bg-swatches" class="swatch-grid"></div>
+      <div class="block models-container">
+        <div class="block-container">
+          <div class="block-header">Models</div>
+          <div class="block-body models" id="model-list">
+            <button id="open-dir" type="button">Open directory…</button>
+            <input id="dir-input" type="file" webkitdirectory multiple style="display:none">
+            <span class="empty">(pick a directory to populate)</span>
+          </div>
+        </div>
+      </div>
 
-      <h2>Animations</h2>
-      <ul id="anim-list">
-        <li class="empty">(no model loaded)</li>
-      </ul>
+      <div class="block">
+        <div class="block-container">
+          <div class="block-header">Team colors</div>
+          <div class="block-body color-chips team-colors" id="team-swatches">
+            <a class="color-chip" data-player-number="0"  title="Red"        style="background-color:#ff0402"></a>
+            <a class="color-chip" data-player-number="1"  title="Blue"       style="background-color:#0042ff"></a>
+            <a class="color-chip" data-player-number="2"  title="Teal"       style="background-color:#1be6ba"></a>
+            <a class="color-chip" data-player-number="3"  title="Purple"     style="background-color:#540081"></a>
+            <a class="color-chip" data-player-number="4"  title="Yellow"     style="background-color:#fffc00"></a>
+            <a class="color-chip" data-player-number="5"  title="Orange"     style="background-color:#ff8a0d"></a>
+            <a class="color-chip" data-player-number="6"  title="Green"      style="background-color:#20c000"></a>
+            <a class="color-chip" data-player-number="7"  title="Pink"       style="background-color:#e45bb0"></a>
+            <a class="color-chip" data-player-number="8"  title="Gray"       style="background-color:#949697"></a>
+            <a class="color-chip" data-player-number="9"  title="Light blue" style="background-color:#7ebff1"></a>
+            <a class="color-chip" data-player-number="10" title="Dark green" style="background-color:#106247"></a>
+            <a class="color-chip" data-player-number="11" title="Brown"      style="background-color:#4f2a05"></a>
+            <a class="color-chip" data-player-number="12" title="Maroon"     style="background-color:#9c0000"></a>
+            <a class="color-chip" data-player-number="13" title="Navy"       style="background-color:#0000c3"></a>
+            <a class="color-chip" data-player-number="14" title="Turquoise"  style="background-color:#00ebff"></a>
+            <a class="color-chip" data-player-number="15" title="Violet"     style="background-color:#bd00ff"></a>
+            <a class="color-chip" data-player-number="16" title="Wheat"      style="background-color:#eccd86"></a>
+            <a class="color-chip" data-player-number="17" title="Peach"      style="background-color:#f7a48b"></a>
+            <a class="color-chip" data-player-number="18" title="Mint"       style="background-color:#c0ff80"></a>
+            <a class="color-chip" data-player-number="19" title="Lavender"   style="background-color:#dcb9ec"></a>
+            <a class="color-chip" data-player-number="20" title="Coal"       style="background-color:#4f4f55"></a>
+            <a class="color-chip" data-player-number="21" title="Snow"       style="background-color:#ecf0ff"></a>
+            <a class="color-chip" data-player-number="22" title="Emerald"    style="background-color:#00781e"></a>
+            <a class="color-chip" data-player-number="23" title="Peanut"     style="background-color:#a46f33"></a>
+          </div>
+        </div>
+      </div>
 
-      <h2>Cameras</h2>
-      <ul>
-        <li id="cam-reset">Reset</li>
-      </ul>
-    </aside>
+      <div class="block">
+        <div class="block-container">
+          <div class="block-header">Background</div>
+          <div class="block-body color-chips background-colors" id="bg-swatches">
+            <a class="color-chip" data-bg="#3e3e3e" title="Dark gray"      style="background-color:#3e3e3e"></a>
+            <a class="color-chip" data-bg="#000000" title="Black"          style="background-color:#000000"></a>
+            <a class="color-chip" data-bg="#ffffff" title="White"          style="background-color:#ffffff"></a>
+            <a class="color-chip" data-bg="#87CEEB" title="Sky"            style="background-color:#87CEEB"></a>
+            <a class="color-chip" data-bg="#00b140" title="Chroma green"   style="background-color:#00b140"></a>
+            <a class="color-chip" data-bg="#b500b5" title="Chroma magenta" style="background-color:#b500b5"></a>
+            <input id="bg-picker" type="color" class="color-chip color-chip--picker"
+                   value="#3e3e3e" title="Custom color">
+          </div>
+        </div>
+      </div>
+
+      <div class="block">
+        <div class="block-container">
+          <div class="block-header">Animations</div>
+          <div class="block-body animations" id="anim-list">
+            <span class="empty">(no model loaded)</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="block">
+        <div class="block-container">
+          <div class="block-header">Cameras</div>
+          <div class="block-body cameras" id="camera-list">
+            <a id="cam-reset" data-camera="reset">Reset</a>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <div class="progress" id="progress"><div></div></div>
   </div>
+
   <div id="log"></div>
 
   <script>

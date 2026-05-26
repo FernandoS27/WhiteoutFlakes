@@ -82,6 +82,16 @@ const UbrEntry* FindUbr(std::string_view id);
 const SndEntry* FindSnd(std::string_view id);
 /// @}
 
+/// @brief Walk every cached SPL / UBR texture path and every SPN child-
+///        model path, issuing a `Request` for each through @p cp. Each
+///        miss is recorded in the provider's missing list — the web
+///        build's JS drain then ferries the bytes in BEFORE the
+///        corresponding event fires, so the splat/spawn shows up
+///        textured rather than as a placeholder on first appearance.
+///        Idempotent — re-requesting a path the provider already has is
+///        a no-op cache hit.
+void PrefetchEventAssetPaths(IContentProvider* cp);
+
 /// @name "Has the cache for this entry-kind been populated yet?"
 ///
 /// Used by the event-emitter pool to decide whether a `Find* == nullptr`

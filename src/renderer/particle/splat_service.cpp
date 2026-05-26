@@ -270,11 +270,18 @@ gfx::TextureHandle SplatService::GetOrLoadTexture(const std::string& path) {
     std::string foundExt;
     auto data = content_->ReadFile(path, &foundExt);
     if (!data) {
-        // Don't pin the failure in the cache: under the web build, the
-        // texture bytes arrive asynchronously via the JS lazy drain, so a
-        // later SpawnSpl call for the same path should be allowed to
-        // re-attempt the read once the bytes have actually landed.
         std::fprintf(stderr, "[splat] ERR: tex read FAIL '%s'\n", path.c_str());
+#if defined(__EMSCRIPTEN__)
+        // Web build: bytes arrive async via the JS lazy drain, so a later
+        // SpawnSpl call for the same path should be allowed to re-attempt
+        // the read once the bytes have actually landed. Don't pin Invalid.
+#else
+        // Desktop: ReadFile is a synchronous CASC/MPQ/disk read. A miss
+        // here is permanent — pin the Invalid so subsequent SpawnSpl
+        // calls don't re-issue I/O per spawn (that's a ~60 FPS regression
+        // on models with missing splat textures).
+        textureCache_.emplace(path, gfx::TextureHandle::Invalid);
+#endif
         return gfx::TextureHandle::Invalid;
     }
     if (foundExt.empty())
@@ -283,10 +290,13 @@ gfx::TextureHandle SplatService::GetOrLoadTexture(const std::string& path) {
     std::vector<u8> rgba;
     i32 w = 0, h = 0;
     if (!DecodeToRGBA8(*data, foundExt, rgba, w, h) || w <= 0 || h <= 0) {
-        // Decode failures are typically permanent, but be consistent with
-        // the read-fail path — re-attempt rather than pinning Invalid.
         std::fprintf(stderr, "[splat] ERR: tex decode FAIL '%s' ext='%s' bytes=%zu\n", path.c_str(),
                      foundExt.c_str(), data->size());
+#if !defined(__EMSCRIPTEN__)
+        // Decode failures are deterministic (the bytes won't suddenly
+        // become valid). Pin so we don't redecode every spawn.
+        textureCache_.emplace(path, gfx::TextureHandle::Invalid);
+#endif
         return gfx::TextureHandle::Invalid;
     }
 

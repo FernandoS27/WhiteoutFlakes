@@ -361,6 +361,16 @@ void LoadEventDataFiles(IContentProvider* cp, bool force) {
         return;
     auto& c = Cache();
     std::lock_guard<std::mutex> lk(c.mu);
+    // Restore the original "load once and skip future calls" semantics
+    // for desktop — `c.loaded` flips true after one successful pass
+    // (synchronous CASC/MPQ I/O loads everything), so subsequent calls
+    // early-return at near-zero cost. The web build's wf_tick passes
+    // force=true periodically until the JS drain has delivered every SLK
+    // (see ChooseForceForRetry below); insert_or_assign on the row
+    // emplaces refreshes any stale entries (e.g. sound SLKs that parsed
+    // before the assetMap was available).
+    if (c.loaded && !force)
+        return;
     if (force) {
         c.spn.clear();
         c.spl.clear();
@@ -368,23 +378,10 @@ void LoadEventDataFiles(IContentProvider* cp, bool force) {
         c.snd.clear();
         c.assetMap.clear();
     }
-    // Web build: tables arrive piecemeal via the JS lazy drain. Always
-    // re-run every loader — each uses `emplace` and is idempotent, so
-    // re-entry only does new work for SLKs that have *just* landed in
-    // the provider cache. Gating on `c.snd.empty()` (the previous
-    // approach) broke as soon as ONE of the 9 sound SLKs loaded — the
-    // gate then stayed shut, and the remaining 8 never parsed, so SND
-    // events for any of those tables stayed un-resolvable for the rest
-    // of the session.
     LoadSpawnData(*cp, c);
     LoadSplatData(*cp, c);
     LoadUberSplatData(*cp, c);
     LoadAllSoundSlks(*cp, c);
-    // `loaded` semantics retained for callers that check it (none do
-    // critical decisions on it under the web build, but desktop hosts
-    // may). True when every splat-relevant table is populated. Sounds are
-    // exempt — LoadAllSoundSlks walks many UI/SoundInfo files and some
-    // may legitimately be absent in a given install.
     c.loaded = !c.spn.empty() && !c.spl.empty() && !c.ubr.empty();
 }
 
@@ -407,6 +404,36 @@ const SndEntry* FindSnd(std::string_view id) {
     auto& c = Cache();
     std::lock_guard<std::mutex> lk(c.mu);
     return FindIn(c.snd, id);
+}
+
+void PrefetchEventAssetPaths(IContentProvider* cp) {
+    if (!cp) return;
+    auto& c = Cache();
+    // Snapshot the path lists under the lock, then issue the Requests
+    // outside it — the callbacks fire synchronously on
+    // FetchContentProvider which would otherwise re-enter c.mu.
+    std::vector<std::string> textures;
+    std::vector<std::string> models;
+    {
+        std::lock_guard<std::mutex> lk(c.mu);
+        textures.reserve(c.spl.size() + c.ubr.size());
+        models.reserve(c.spn.size());
+        for (const auto& [_, e] : c.spl)
+            if (!e.file.empty()) textures.push_back(e.file);
+        for (const auto& [_, e] : c.ubr)
+            if (!e.file.empty()) textures.push_back(e.file);
+        for (const auto& [_, e] : c.spn)
+            if (!e.modelPath.empty()) models.push_back(e.modelPath);
+    }
+    auto poke = [cp](const std::string& path) {
+        // Use the synchronous ReadFile convenience — its only side-effect
+        // we care about here is the Request → missing-list push on miss.
+        // The returned bytes are discarded; if the provider already has
+        // the file this is a fast cache hit.
+        (void)cp->ReadFile(path, nullptr);
+    };
+    for (const auto& p : textures) poke(p);
+    for (const auto& p : models)   poke(p);
 }
 
 bool IsSpnCachePopulated() {

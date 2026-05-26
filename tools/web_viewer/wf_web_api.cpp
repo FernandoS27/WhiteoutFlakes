@@ -62,7 +62,47 @@ struct WfRenderer {
     // wf_tick — without this, the page log gets blown out by SLK-miss
     // WARN lines while the JS drain ferries the bytes in.
     uint32_t eventDataRetryTick = 0;
+    // Tracked active camera preset (matches the desktop viewer's
+    // `activeCameraPresetIdx_` + `UpdateCameraPresetAnimator` pair).
+    // Set by wf_camera_activate_preset; re-evaluated each wf_tick so
+    // animated cameras (cinematic flythroughs, portrait sweeps, …)
+    // update with the animation cursor.
+    uint32_t cameraPresetActor = 0;
+    int      cameraPresetIdx   = -1;
 };
+
+namespace {
+// Re-pose an animated camera preset using the actor's current animation
+// time + active-sequence range. Mirrors viewer_app.cpp::
+// UpdateCameraPresetAnimator — runs every tick so cameras whose pose is
+// driven by a track (MDX cinematic cameras) stay synced with the model.
+inline void UpdateAnimatedCameraPreset(WfRenderer* h) {
+    if (!h || h->cameraPresetIdx < 0) return;
+    auto av = h->renderer.Actor(h->cameraPresetActor);
+    if (!av.IsValid()) {
+        h->cameraPresetIdx = -1;
+        return;
+    }
+    const auto presets = av.CameraPresets();
+    if (h->cameraPresetIdx >= static_cast<int>(presets.size())) return;
+    const auto& p = presets[h->cameraPresetIdx];
+    if (!p.animator) return;
+
+    const auto seqs   = av.Sequences();
+    const int  seqIdx = av.ActiveSequenceIndex();
+    whiteout::flakes::i32 seqStart = 0;
+    whiteout::flakes::i32 seqEnd   = 1 << 30;
+    if (seqIdx >= 0 && seqIdx < static_cast<int>(seqs.size())) {
+        seqStart = seqs[seqIdx].startMs;
+        seqEnd   = seqs[seqIdx].endMs;
+    }
+    whiteout::flakes::Vector3f pos = p.position;
+    whiteout::flakes::Vector3f tgt = p.target;
+    whiteout::flakes::f32      roll = p.staticRoll;
+    p.animator(pos, tgt, roll, av.AnimationTimeMs(), seqStart, seqEnd);
+    h->renderer.Camera().SetDirectPose(pos, tgt, roll);
+}
+} // namespace
 
 // Last facade-level error message — populated by the C++ side when
 // something it knows about goes wrong (e.g. Pipeline().InitDevice
@@ -193,11 +233,34 @@ void wf_tick(WfRenderer* h, float dtSeconds) {
     // while the drain catches up, with no upside since the JS drain
     // itself only fires every 10 frames.
     if (cp) {
-        if ((++h->eventDataRetryTick % 30) == 0)
-            whiteout::flakes::io::LoadEventDataFiles(cp);
+        // Force-reload until every critical SLK has populated. Sound SLKs
+        // depend on the assetMap (DialogueXxxBase.slk) loading first; if
+        // they parsed in a tick where the assetMap was still empty the
+        // SndEntry filePaths hold raw labels instead of full paths.
+        // force=true re-clears + re-parses so the cache always reflects
+        // the latest provider state. Stops automatically once the
+        // splat tables are populated (`c.loaded` early-returns the
+        // LoadEventDataFiles body).
+        if ((++h->eventDataRetryTick % 30) == 0) {
+            const bool wasLoaded = whiteout::flakes::io::IsSplCachePopulated();
+            whiteout::flakes::io::LoadEventDataFiles(cp, /*force=*/true);
+            // Eagerly poke every SPL / UBR texture and every SPN child-
+            // model path the moment the splat tables first appear.
+            // Single-shot is enough on desktop (sync I/O) — but on web
+            // it queues every reference into the provider's missing list
+            // so the JS drain can ferry bytes in BEFORE the first event
+            // fire, eliminating the placeholder-frame for splats and
+            // letting child models build cleanly on their first spawn.
+            if (!wasLoaded && whiteout::flakes::io::IsSplCachePopulated())
+                whiteout::flakes::io::PrefetchEventAssetPaths(cp);
+        }
     }
     h->renderer.Scene().Update(dtSeconds);
     h->renderer.Tick(dtSeconds);
+    // Re-pose any active animated camera preset using the now-advanced
+    // animation cursor. Mirrors the desktop viewer's per-tick
+    // UpdateCameraPresetAnimator call in viewer_app.cpp::Tick.
+    UpdateAnimatedCameraPreset(h);
 }
 
 void wf_render(WfRenderer* h) {
@@ -271,12 +334,27 @@ void wf_set_pe1_base(WfRenderer* h, const char* basePath) {
 
 uint32_t wf_spawn_unit(WfRenderer* h, const char* mdxPath) {
     if (!h || !mdxPath) return 0;
+    // Child-model templates (attachment slots + PE1 emitter children)
+    // load through `FrameTicker::UpdateAttachments` / `UpdatePE1`'s
+    // per-frame `Templates().GetOrLoadAsync` loop — which under WASM
+    // calls ParseAndBuild and walks the child's texture refs onto the
+    // FetchContentProvider's missing list. The JS lazy drain ferries
+    // those bytes in and subsequent frames' GetOrLoadAsync re-parses
+    // cleanly. No separate prefetch needed here.
     return h->renderer.Loader().SpawnUnit(std::string(mdxPath));
 }
 
 void wf_clear_all(WfRenderer* h) {
     if (!h) return;
     h->renderer.Loader().RequestClearAll();
+}
+
+// Drop every live splat decal. Hosts call this on sequence change to
+// avoid carrying lingering footstep / blood splats across cuts (the
+// desktop viewer does the same — viewer_ui.cpp:482).
+void wf_clear_splats(WfRenderer* h) {
+    if (!h) return;
+    h->renderer.Splats().Clear();
 }
 
 // Evict the cached model templates so a subsequent SpawnUnit re-parses
@@ -369,6 +447,71 @@ int wf_actor_get_sequence_count(WfRenderer* h, uint32_t actor) {
     auto av = h->renderer.Actor(actor);
     if (!av.IsValid()) return 0;
     return static_cast<int>(av.Sequences().size());
+}
+
+// ---- Camera presets ---------------------------------------------------------
+// Each MDX may embed N named camera setups ("Portrait_Camera",
+// "Cinematic_Camera", …). The renderer exposes them per-actor via
+// ActorView::CameraPresets(); the desktop viewer's Cameras dropdown is
+// populated the same way (see tools/basic_viewer/viewer_app.cpp:546-548).
+int wf_actor_camera_preset_count(WfRenderer* h, uint32_t actor) {
+    if (!h) return 0;
+    auto av = h->renderer.Actor(actor);
+    if (!av.IsValid()) return 0;
+    return static_cast<int>(av.CameraPresets().size());
+}
+
+int wf_actor_camera_preset_name(WfRenderer* h, uint32_t actor, int idx,
+                                char* outBuf, int bufCap) {
+    if (!h || !outBuf || bufCap <= 0) return 0;
+    auto av = h->renderer.Actor(actor);
+    if (!av.IsValid()) return 0;
+    const auto presets = av.CameraPresets();
+    if (idx < 0 || idx >= static_cast<int>(presets.size())) return 0;
+    const std::string& s = presets[idx].name;
+    const int n = static_cast<int>(std::min<std::size_t>(
+        s.size(), static_cast<std::size_t>(bufCap - 1)));
+    std::memcpy(outBuf, s.data(), n);
+    outBuf[n] = '\0';
+    return n;
+}
+
+// Activate the actor's preset @ `idx`. `idx < 0` means "Reset" → flip to
+// orbital mode + restore the engine's default FoV / clip planes.
+// Mirrors tools/basic_viewer/viewer_app.cpp::ActivateCameraPreset: the
+// preset's animator (if any) is evaluated once with the actor's current
+// animation cursor for the initial pose, and the {actor, idx} is stashed
+// on the WfRenderer so wf_tick can re-evaluate the animator each frame
+// (`UpdateAnimatedCameraPreset`) as the cursor advances.
+void wf_camera_activate_preset(WfRenderer* h, uint32_t actor, int idx) {
+    if (!h) return;
+    auto cam = h->renderer.Camera();
+    if (idx < 0) {
+        h->cameraPresetActor = 0;
+        h->cameraPresetIdx   = -1;
+        cam.SetOrbitalMode();
+        cam.SetFovDiagonal(whiteout::flakes::CameraView::kDefaultFovDiagonal);
+        cam.SetClip(whiteout::flakes::CameraView::kDefaultNearZ,
+                    whiteout::flakes::CameraView::kDefaultFarZ);
+        cam.Reset();
+        return;
+    }
+    auto av = h->renderer.Actor(actor);
+    if (!av.IsValid()) return;
+    const auto presets = av.CameraPresets();
+    if (idx >= static_cast<int>(presets.size())) return;
+    const auto& p = presets[idx];
+    cam.SetFovDiagonal(p.fovDiagonal > 1e-3f
+                       ? p.fovDiagonal
+                       : whiteout::flakes::CameraView::kDefaultFovDiagonal);
+    cam.SetClip(p.zNear, p.zFar);
+    cam.SetDirectPose(p.position, p.target, p.staticRoll);
+
+    // Record the active preset BEFORE evaluating the animator so the
+    // per-tick path picks up the same state on the next wf_tick.
+    h->cameraPresetActor = actor;
+    h->cameraPresetIdx   = idx;
+    UpdateAnimatedCameraPreset(h);
 }
 
 // Copy the i'th sequence name (null-terminated) into the JS-supplied

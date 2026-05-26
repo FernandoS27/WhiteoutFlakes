@@ -79,8 +79,21 @@ std::shared_ptr<ModelTemplate> ModelTemplateManager::GetOrLoadAsync(const std::s
     // miss, and the next frame the template builds.
     auto tmpl = ParseAndBuild(mdxPath);
     if (tmpl) {
-        std::lock_guard<std::mutex> lock(cacheMutex_);
-        cache_[mdxPath] = tmpl;
+        // Skip caching the template if any of its texture deps failed
+        // to load (width == 0 == LoadTextureFile's "couldn't find /
+        // decode" marker). Once the JS lazy drain ferries the missing
+        // bytes in, the next GetOrLoadAsync re-parses cleanly and the
+        // complete template gets cached. Without this re-try a child
+        // model whose textures arrived after its first parse would
+        // render against placeholders forever.
+        bool incomplete = false;
+        for (const auto& t : tmpl->textures) {
+            if (t.width <= 0 || t.height <= 0) { incomplete = true; break; }
+        }
+        if (!incomplete) {
+            std::lock_guard<std::mutex> lock(cacheMutex_);
+            cache_[mdxPath] = tmpl;
+        }
     }
     return tmpl;
 #else

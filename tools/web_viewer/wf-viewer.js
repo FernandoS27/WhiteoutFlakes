@@ -89,13 +89,27 @@ function _composeTRS(out, t, q, s) {
 // Standard Warcraft 3 player team-color palette (0-23). Each entry is
 // the sRGB 8-bit team color the ReplaceableTextureManager bakes onto
 // the model's TeamColor slot.
+// Warcraft III player team-color palette. Hex values lifted verbatim from
+// Hive's `ratory_wc3model_preview` markup so the swatch grid sits 1:1 with
+// the colours users see on the Hiveworkshop viewer. Indices 0-23 match
+// WC3's player slots (Red, Blue, Teal, … Peanut).
 export const TEAM_COLORS = [
-    [255,   3,   3], [  0,  66, 255], [ 28, 230, 185], [ 84,   0, 129],
-    [255, 252,   1], [254, 138,  14], [ 32, 192,   0], [229,  91, 176],
-    [149, 150, 151], [126, 191, 241], [ 16,  98,  70], [ 78,  42,   4],
-    [155,   0,   0], [  0,   0, 196], [  0, 234, 255], [190, 0,   254],
-    [235, 205, 135], [248, 164, 139], [191, 255, 128], [220, 185, 235],
-    [ 40,  40,  40], [235, 240, 255], [  0, 120,   0], [164, 110,  60],
+    [0xff, 0x04, 0x02], [0x00, 0x42, 0xff], [0x1b, 0xe6, 0xba], [0x54, 0x00, 0x81],
+    [0xff, 0xfc, 0x00], [0xff, 0x8a, 0x0d], [0x20, 0xc0, 0x00], [0xe4, 0x5b, 0xb0],
+    [0x94, 0x96, 0x97], [0x7e, 0xbf, 0xf1], [0x10, 0x62, 0x47], [0x4f, 0x2a, 0x05],
+    [0x9c, 0x00, 0x00], [0x00, 0x00, 0xc3], [0x00, 0xeb, 0xff], [0xbd, 0x00, 0xff],
+    [0xec, 0xcd, 0x86], [0xf7, 0xa4, 0x8b], [0xc0, 0xff, 0x80], [0xdc, 0xb9, 0xec],
+    [0x4f, 0x4f, 0x55], [0xec, 0xf0, 0xff], [0x00, 0x78, 0x1e], [0xa4, 0x6f, 0x33],
+];
+
+// Human-readable labels matching Hive's `title=...` chip tooltips.
+export const TEAM_COLOR_NAMES = [
+    'Red',     'Blue',       'Teal',      'Purple',
+    'Yellow',  'Orange',     'Green',     'Pink',
+    'Gray',    'Light blue', 'Dark green','Brown',
+    'Maroon',  'Navy',       'Turquoise', 'Violet',
+    'Wheat',   'Peach',      'Mint',      'Lavender',
+    'Coal',    'Snow',       'Emerald',   'Peanut',
 ];
 
 // ----------------------------------------------------------------------------
@@ -250,6 +264,33 @@ export class Instance {
         }
         M._free(buf);
         return out;
+    }
+
+    // Names of every camera preset baked into the source MDX. Hive's
+    // Cameras dropdown is populated from this list (plus a "Reset" row
+    // for free-orbit). Static FOV / position / target / clip per preset
+    // live on the C++ side; `activateCameraPreset(idx)` applies them.
+    getCameraPresets() {
+        if (!this._handle) return [];
+        const M = this._M;
+        const n = M._wf_actor_camera_preset_count(this._vh, this._handle);
+        if (!n) return [];
+        const CAP = 128;
+        const buf = M._malloc(CAP);
+        const out = [];
+        for (let i = 0; i < n; ++i) {
+            M._wf_actor_camera_preset_name(this._vh, this._handle, i, buf, CAP);
+            out.push(M.UTF8ToString(buf));
+        }
+        M._free(buf);
+        return out;
+    }
+
+    // Activate this actor's preset `idx`, or pass -1 to drop back to
+    // the orbital free-camera with the engine's default FoV / clip.
+    activateCameraPreset(idx) {
+        if (this._handle) this._M._wf_camera_activate_preset(this._vh, this._handle, idx | 0);
+        return this;
     }
 }
 
@@ -764,6 +805,12 @@ export class WhiteoutViewer {
     // same C entries; these just give app code a named hook.
     resetCamera() {
         if (this._handle) this._module._wf_camera_reset(this._handle);
+    }
+
+    // Drop every live splat (footstep / blood / etc). Use on sequence
+    // change so a previous animation's decals don't carry over.
+    clearSplats() {
+        if (this._handle) this._module._wf_clear_splats(this._handle);
     }
 
     // Probe the freshly-spawned actor for its preferred render mode and
