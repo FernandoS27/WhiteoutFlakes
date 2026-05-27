@@ -126,13 +126,15 @@ export class WebAudioBridge {
                         return buf;
                     } catch (_) { /* try next candidate */ }
                 }
-                // Every candidate failed — pin the null so the next SND
-                // event for this path doesn't re-walk all the URLs.
-                this.bufferCache.set(path, null);
+                // Don't pin null on fetch failure — the previous model
+                // switch may have revoked blob URLs out from under an
+                // in-flight fetch, leaving us with a transient miss
+                // for a sound that will resolve fine next attempt. SND
+                // events are infrequent enough that re-walking the
+                // candidate list per play is cheap.
                 return null;
             } catch (e) {
                 console.warn('[wf-audio] decode/fetch failed:', path, e);
-                this.bufferCache.set(path, null);
                 return null;
             } finally {
                 this.inFlight.delete(path);

@@ -1,21 +1,19 @@
 // ============================================================================
 // wf_web_api.cpp — C facade for the WhiteoutFlakes browser host.
 //
-// JS instantiates wf-core.{js,wasm}, then drives this facade via `cwrap`/
-// `ccall`. The set kept here is the *minimum* needed for the Phase 1
-// milestone (clear-color on the canvas); later phases extend it with model
-// loading (Phase 3), camera+sequences (Phase 4), and audio (Phase 5).
+// JS instantiates wf-core.{js,wasm}, then drives this facade via
+// `cwrap` / `ccall`. Exports cover the full host surface: device +
+// canvas init, model spawn / actor controls, settings, camera, sound,
+// and the AssetManager push pipeline (needs queue + apply).
 //
 // Conventions:
-//   * Every exported symbol is `extern "C"` with integer/pointer args only.
-//   * The WfRenderer struct owns: the Renderer (and its View graph) plus
-//     the swap-chain target id and a stable copy of the canvas-selector
-//     string (EmscriptenSurfaceSourceCanvasHTMLSelector.selector is read
-//     lazily by WebGPU; the string must outlive every Configure call).
+//   * Every exported symbol is `extern "C"` with integer/pointer args.
+//   * The WfRenderer struct owns: the Renderer (and its View graph)
+//     plus the swap-chain target id and a stable copy of the canvas-
+//     selector string (EmscriptenSurfaceSourceCanvasHTMLSelector reads
+//     the selector lazily; the string must outlive every Configure
+//     call).
 //   * No globals — every entry takes the WfRenderer* handle.
-//
-// Phase 1's "clear color" is produced by RenderFrame on an empty scene:
-// the renderer clears to SettingsView::BackgroundColorRaw() and presents.
 // ============================================================================
 
 #include "io/fetch_content_provider.h"
@@ -159,6 +157,15 @@ void wf_provider_put(WfRenderer* h, const char* path, const uint8_t* data, int l
 int wf_provider_count(WfRenderer* h) {
     if (!h || !h->provider) return 0;
     return static_cast<int>(h->provider->CachedFileCount());
+}
+
+// Drop the bytes for @p path from the provider's in-memory cache.
+// JS calls this after a spawn so the MDX bytes (only needed during
+// the synchronous ParseAndBuild request that fires inside SpawnUnit)
+// don't pile up across many model loads.
+int wf_provider_evict(WfRenderer* h, const char* path) {
+    if (!h || !h->provider || !path) return 0;
+    return h->provider->Evict(std::string(path)) ? 1 : 0;
 }
 
 // JS reads this when a wf_* entry returns 0/null. Empty string == no
@@ -529,10 +536,9 @@ int wf_actor_get_sequence_name(WfRenderer* h, uint32_t actor, int idx,
 // ---- AssetManager bridge ----------------------------------------------------
 // JS pumps the needs queue with wf_assets_needs_count() + _get(i, buf, cap),
 // then fetches each path and pushes bytes back via wf_assets_apply(kind,
-// path, ptr, len, ext). The needs list is buffered C++-side until JS asks
-// for it — DrainNeeds clears the buffer, so a follow-up _get(i) call uses
-// the snapshot stashed on WfRenderer (mirrors the existing missing-list
-// pattern so the JS shape stays familiar).
+// path, ptr, len, ext). The needs list is buffered C++-side until JS
+// asks for it — DrainNeeds clears the buffer, so a follow-up _get(i)
+// call reads from the snapshot stashed on WfRenderer.
 //
 // Kind values mirror AssetsView::Kind: 0 = Texture, 1 = Particle, 2 = ChildModel.
 

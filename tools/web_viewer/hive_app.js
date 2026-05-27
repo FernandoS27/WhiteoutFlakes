@@ -60,11 +60,11 @@ export class HiveApp {
     async start() {
         this.viewer = new WhiteoutViewer(this.canvas);
         await this.viewer.init();
-        // Drive the progress bar from real fetch counts. Every logical
-        // dep _fetchDep handles bumps the counter once on start and
-        // once on finish, so the bar fills as completed/total — same
-        // accounting whether the dep came from the initial spawn, the
-        // background texture stream, or the runtime miss-watcher.
+        // Drive the progress bar from real fetch counts. The viewer
+        // fires `start` once per logical dep when it's queued and
+        // `end` when it resolves (success or failure), so the bar
+        // tracks completed/total across the initial spawn AND any
+        // runtime-discovered assets (corn-fx textures, etc.).
         this.viewer.setFetchHooks({
             start: () => this._bump(+1),
             end:   () => this._bump(-1),
@@ -128,14 +128,12 @@ export class HiveApp {
 
     // ------------------------------------------------------------------
     // Loading progress bar — determinate fill driven by per-fetch hooks.
-    // _bump(+1) is called once per logical dep when it starts, _bump(-1)
-    // once when it finishes (success OR failure). We track cumulative
-    // started/completed counts so the bar advances at completed/started.
-    // When in-flight returns to zero the bar fades out and the counters
-    // reset, so the next load starts at 0%. The bar gracefully handles
-    // "new work surfaces mid-load" (corn-fx textures, miss-watcher
-    // discoveries): the denominator grows, the percentage backs off
-    // slightly, then catches back up as the new deps complete.
+    // _bump(+1) when a dep starts, _bump(-1) when it finishes (success
+    // OR failure). The bar advances at completed/started; when in-flight
+    // returns to zero the bar fades out and counters reset for the next
+    // load. New deps discovered mid-load (e.g. corn-fx textures the
+    // backend surfaces on first emitter prepare) just grow the
+    // denominator, then catch back up as they complete.
     // ------------------------------------------------------------------
     _bump(delta) {
         if (delta > 0) {
@@ -302,6 +300,7 @@ export class HiveApp {
         this._revokeObjectUrls();
         this._clearAnimations();
         this._clearCameras();
+        if (this.viewer) this.viewer.clearSplats();
 
         this._addInflight();
         const solver = (name) => this._resolve(name);
@@ -319,13 +318,6 @@ export class HiveApp {
             this.currentInstance.setSequenceLoopMode(0);
             this._populateSequences();
             this._populateCameras();
-            // Keep the progress bar up until the background texture
-            // stream completes too. If it's already settled this
-            // resolves immediately.
-            if (model._texStream) {
-                this._addInflight();
-                model._texStream.finally(() => this._subInflight());
-            }
         } catch (e) {
             console.error('[hive] load failed:', e);
         } finally {

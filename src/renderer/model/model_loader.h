@@ -118,18 +118,13 @@ private:
     void UploadStagedGeosets(Actor& mi);
     void CreateNodePalette(Actor& mi);
 
-    // Queue async template loads for every unique MDX referenced by
-    // this actor's PE1 emitters and attachment slots. Walks the
-    // template's pe1Configs / attachmentConfigs at parent-load time so
-    // the worker thread has the children parsed (and ideally GPU-
-    // uploaded) before the first spawn fires. Without this, the first
-    // Birth animation pays the parse-+-upload cost mid-frame and the
-    // render thread stalls — visible as a one-off heavy stutter.
-    // No-op for paths already in the cache or already queued.
-    // Acquire AssetManager slots for every PE1 child MDX referenced
-    // by the actor's template and stash the SlotIds on the actor so
-    // they outlive frame-to-frame churn. DestroyActor releases them.
-    // No-op for empty paths or duplicate paths within the actor.
+    // Acquire AssetManager slots for every unique PE1 + attachment
+    // child MDX the actor's template references, and stash the
+    // SlotIds on Actor::assetSlots. The slots outlive frame-to-frame
+    // churn; DestroyActor releases them. The slot's first Acquire
+    // also surfaces the path on the AssetManager needs queue so the
+    // host pump can start fetching ahead of the first Birth /
+    // attachment-load that actually needs the template.
     void PreloadChildTemplates(Actor& a, const ModelTemplate& tmpl);
     void PreloadChildTemplates(Actor& a,
                                const std::vector<PE1EmitterConfig>& pe1Cfgs,

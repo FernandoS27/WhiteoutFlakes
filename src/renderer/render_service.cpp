@@ -288,8 +288,7 @@ void RenderService::PumpAssetsViaProvider() {
     };
 
     // Particle assets often reference .pkb but ship as .pkfx (or vice
-    // versa) — try both extensions before giving up. Mirrors the old
-    // CornEffectsAssetCache's two-step Acquire.
+    // versa) — try both extensions before giving up.
     auto readParticleWithAltExt =
         [&](std::string_view origPath, std::vector<u8>& outBytes,
             std::string& outExt) -> bool {

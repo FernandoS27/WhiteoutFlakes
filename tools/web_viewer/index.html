@@ -4,84 +4,85 @@
 <meta charset="utf-8">
 <title>WhiteoutFlakes — Viewer</title>
 <style>
-  /* Hive's preview pane is built around XF's `block` / `block-container`
-     / `block-header` / `block-body` shell with `color-chip` swatch grids.
-     We mirror the same DOM shape (and class names) so reading either
-     viewer's source feels familiar. The colour palette is darker /
-     warmer than XF default so the canvas isn't fighting the sidebar. */
+  /* Mirrors hiveworkshop.com's `ratory_wc3model_preview` shell — XF
+     `block / block-container / block-header / block-body` stack on a
+     dark background, `color-chip` swatch grids, and Hive's specific
+     warm-gold list / cream-header palette. Progress bar is a green
+     strip at the top of the viewer container, matching Hive. */
   :root {
     --bg:               #0a0a0a;
     --bg-canvas:        #000;
-    --panel:            #141414;
-    --panel-header:     #1a1a1a;
-    --accent:           #f0c33c;
-    --accent-bright:    #ffe48a;
-    --selected:         #5a1c0c;
-    --selected-text:    #ffe9a0;
-    --divider:          #262626;
-    --btn-border:       #7a5a18;
-    --topbar-border:    #3a2a08;
-    --progress:         #f0c33c;
+    --panel:            #161616;
+    --panel-header:     #1c1c1c;
+    --divider:          #2a2a2a;
+    --header-text:      #dddddd;   /* "Models", "Team colors" — neutral cream */
+    --text:             #c9a14a;   /* list item dim gold */
+    --text-bright:      #ffce40;   /* hover / selected gold */
+    --title-text:       #e8e8e8;   /* "View in 3D" */
+    --muted:            #888888;
+    --hover-bg:         #1d1d1d;
+    --selected-bg:      rgba(255, 206, 64, 0.08);
+    --btn-border:       #8a6a20;
+    --topbar-border:    #2a2a2a;
+    --progress:         #20c000;
   }
   * { box-sizing: border-box; }
   html, body {
     margin: 0; padding: 0; height: 100%; overflow: hidden;
-    background: var(--bg); color: var(--accent);
-    font: 13px/1.4 "Trebuchet MS", "Segoe UI", Arial, sans-serif;
+    background: var(--bg); color: var(--text);
+    font: 13px/1.4 "Trebuchet MS", "Segoe UI", Tahoma, Arial, sans-serif;
   }
-  body { display: grid; grid-template-rows: auto 1fr auto; height: 100vh; user-select: none; }
+  body { display: grid; grid-template-rows: auto 1fr; height: 100vh; user-select: none; }
 
-  /* ---- Top bar: "View in 3D" header + close X. Hive embeds the viewer
-         inside the regular XF page chrome; this standalone keeps the
-         same title so the screenshot reads identical. ---- */
+  /* ---- Top bar: "View in 3D" title + volume + close. Hive embeds the
+         viewer inside the regular XF page chrome; this standalone keeps
+         the title so the embed shape reads the same. ---- */
   #topbar {
     display: flex; justify-content: space-between; align-items: center;
-    padding: 6px 14px; background: var(--bg);
+    padding: 8px 16px; background: var(--bg);
     border-bottom: 1px solid var(--topbar-border);
     gap: 12px;
   }
-  #topbar .title  { font-size: 18px; color: var(--accent); font-weight: 600; letter-spacing: 0.2px; }
+  #topbar .title  { font-size: 22px; color: var(--title-text); font-weight: 600; letter-spacing: 0.2px; }
   #topbar .spacer { flex: 1; }
-  #topbar .close  { font-size: 22px; line-height: 1; color: var(--accent);
+  #topbar .close  { font-size: 22px; line-height: 1; color: var(--muted);
                     cursor: pointer; padding: 0 8px; }
-  #topbar .close:hover { color: var(--accent-bright); }
+  #topbar .close:hover { color: var(--title-text); }
 
-  /* ---- Volume slider (top-right). Plain <input type="range"> with the
-         WebKit / Firefox native-control nubs styled to match the gold
-         accent. Value mapped to 0..1 and pushed through HiveApp.audio. */
+  /* Volume slider (top-right). Native range with thumb restyled to a
+     small neutral disc — keeps the chrome unobtrusive. */
   #vol-wrap {
-    display: flex; align-items: center; gap: 6px;
-    color: var(--accent); font-size: 12px;
+    display: flex; align-items: center; gap: 8px;
+    color: var(--muted); font-size: 12px;
   }
-  #vol-wrap label { user-select: none; opacity: 0.85; }
+  #vol-wrap label { user-select: none; }
   #vol-slider {
     -webkit-appearance: none; appearance: none;
-    width: 140px; height: 4px;
-    background: #2a2009;
+    width: 140px; height: 3px;
+    background: #2a2a2a;
     border-radius: 2px;
     outline: none;
     cursor: pointer;
   }
   #vol-slider::-webkit-slider-thumb {
     -webkit-appearance: none; appearance: none;
-    width: 14px; height: 14px; border-radius: 50%;
-    background: var(--accent);
+    width: 12px; height: 12px; border-radius: 50%;
+    background: #c8c8c8;
     border: 1px solid #000;
     cursor: pointer;
   }
   #vol-slider::-moz-range-thumb {
-    width: 14px; height: 14px; border-radius: 50%;
-    background: var(--accent);
+    width: 12px; height: 12px; border-radius: 50%;
+    background: #c8c8c8;
     border: 1px solid #000;
     cursor: pointer;
   }
 
   /* ---- Hive's `.ratory.model-viewer` root: canvas + sidebar + progress.
-         Replicates the same grid (canvas grows, sidebar fixed-width) so the
-         layout matches a Hive embed pixel-for-pixel. ---- */
+         Sidebar fixed-width on the right, canvas grows to fill. ---- */
   .ratory.model-viewer {
     display: grid;
-    grid-template-columns: 1fr 280px;
+    grid-template-columns: 1fr 260px;
     min-height: 0; min-width: 0;
     position: relative;
   }
@@ -95,25 +96,26 @@
     background: var(--panel);
     overflow-y: auto;
     border-left: 1px solid var(--divider);
-    padding: 6px 0 14px;
+    padding: 0 0 14px;
   }
 
-  /* ---- XF-style block stack ---- */
-  .block { margin: 0 0 6px 0; }
+  /* ---- XF-style block stack. Header is a cream/neutral title in a
+         slightly lighter strip above the body. ---- */
+  .block { margin: 0 0 10px 0; }
+  .block:first-child { margin-top: 0; }
   .block-container { background: var(--panel); }
   .block-header {
-    padding: 6px 12px;
-    font-size: 15px; font-weight: 600;
-    color: var(--accent);
+    padding: 8px 14px;
+    font-size: 15px; font-weight: 700;
+    color: var(--header-text);
     background: var(--panel-header);
-    border-top: 1px solid var(--divider);
     border-bottom: 1px solid var(--divider);
+    letter-spacing: 0.1px;
   }
   .block-body { padding: 6px 12px; }
 
   /* ---- Models / Animations / Cameras lists (Hive populates these JS-side
-         with bare child elements; we match that shape with <a> rows that
-         carry per-item data-* attributes for the click handlers). ---- */
+         with bare children; we match that shape with <a> rows). ---- */
   .block-body.models,
   .block-body.animations,
   .block-body.cameras {
@@ -125,49 +127,50 @@
     display: block;
     padding: 3px 14px;
     cursor: pointer;
-    color: var(--accent);
+    color: var(--text);
     text-decoration: none;
+    font-size: 13px;
   }
   .block-body.models > a:hover,
   .block-body.animations > a:hover,
-  .block-body.cameras > a:hover { color: var(--accent-bright); }
+  .block-body.cameras > a:hover {
+    color: var(--text-bright);
+  }
   .block-body.models > a.active,
   .block-body.animations > a.active,
   .block-body.cameras > a.active {
-    background: var(--selected);
-    color: var(--selected-text);
-    font-weight: 600;
+    background: var(--selected-bg);
+    color: var(--text-bright);
+    font-weight: 700;
   }
   .block-body > .empty {
     display: block;
     padding: 3px 14px;
-    color: #5a5a5a;
+    color: var(--muted);
     font-style: italic;
   }
 
   /* ---- Open directory button — our addition (Hive's viewer pre-loads
-         models server-side via `data-models`; we let the user pick a
-         local folder instead). Sits inside the Models block so it's part
-         of that visual group. ---- */
+         models server-side; we let the user pick a local folder). ---- */
   #open-dir {
     display: block;
-    margin: 0 12px 6px;
-    background: transparent; color: var(--accent);
+    margin: 6px 12px;
+    background: transparent; color: var(--text);
     border: 1px solid var(--btn-border);
-    padding: 4px 8px; cursor: pointer; font: inherit;
+    padding: 5px 10px; cursor: pointer; font: inherit;
     width: calc(100% - 24px);
+    border-radius: 2px;
   }
-  #open-dir:hover  { background: #1a1408; color: var(--accent-bright); }
-  #open-dir:active { background: #281e10; }
+  #open-dir:hover  { background: var(--hover-bg); color: var(--text-bright); }
+  #open-dir:active { background: rgba(255, 206, 64, 0.12); }
 
-  /* ---- color-chips (Hive class). Square swatches in a tight grid:
-         Team colors → 6 wide × 4 rows = 24 chips.
-         Background  → 6 chips + 1 native `input[type=color]` picker. ---- */
+  /* ---- color-chips. Square swatches in a tight grid — Hive uses 6×4 for
+         team colors, 6 + 1 picker for backgrounds. ---- */
   .block-body.color-chips {
     display: grid; gap: 3px;
-    padding: 6px 12px;
+    padding: 8px 12px;
   }
-  .block-body.team-colors      { grid-template-columns: repeat(6, 1fr); }
+  .block-body.team-colors      { grid-template-columns: repeat(8, 1fr); }
   .block-body.background-colors{ grid-template-columns: repeat(7, 1fr); }
   .color-chip {
     display: block;
@@ -179,28 +182,28 @@
     -webkit-appearance: none; appearance: none;
     padding: 0;
   }
-  .color-chip:hover  { outline: 1px solid var(--accent-bright); outline-offset: -1px; }
-  .color-chip.active { outline: 2px solid var(--accent-bright); outline-offset: -2px; }
-  /* Strip the native swatch border / inner well that `<input type=color>`
-     ships with so it sits flush in the grid like Hive's. */
+  .color-chip:hover  { outline: 1px solid var(--text-bright); outline-offset: -1px; }
+  .color-chip.active { outline: 2px solid var(--text-bright); outline-offset: -2px; }
   input.color-chip { background: transparent; }
   input.color-chip::-webkit-color-swatch-wrapper { padding: 0; }
   input.color-chip::-webkit-color-swatch        { border: none; }
   input.color-chip::-moz-color-swatch           { border: none; }
 
-  /* ---- Loading / progress bar (Hive renders this absolute-positioned
-         at the bottom of the .model-viewer container; same here so we
-         can flash it during async asset drain). Inner <div> animates
-         to indicate progress. ---- */
+  /* ---- Loading / progress bar. Hive shows the load progress as a thin
+         green bar at the top of the viewer container; we mirror that
+         placement. The wrapper is normally hidden (opacity 0); host JS
+         toggles `.active` to show it and writes `--pct` in determinate
+         mode (set together with `.determinate`). ---- */
   .progress {
     position: absolute;
-    left: 0; right: 0; bottom: 0;
-    height: 2px;
-    background: rgba(255,255,255,0.06);
+    left: 0; right: 0; top: 0;
+    height: 3px;
+    background: rgba(255, 255, 255, 0.06);
     overflow: hidden;
     pointer-events: none;
     opacity: 0;
     transition: opacity 200ms ease-out;
+    z-index: 10;
   }
   .progress.active { opacity: 1; }
   .progress > div {
@@ -209,9 +212,6 @@
     transform: translateX(-100%);
     animation: progress-slide 1.6s ease-in-out infinite;
   }
-  /* Determinate mode — host JS sets `--pct` on the wrapper and the
-     inner bar slides from -100% (empty) to 0% (full). The CSS
-     animation is suppressed so we don't fight the inline transform. */
   .progress.determinate > div {
     animation: none;
     transform: translateX(calc(-100% + var(--pct, 0%)));
@@ -223,18 +223,6 @@
     100% { transform: translateX(140%); }
   }
 
-  /* ---- Bottom log strip (kept from before — useful while bringing up
-         the renderer; Hive doesn't have one). ---- */
-  #log {
-    max-height: 84px;
-    overflow-y: auto;
-    background: #050505; color: #888;
-    font: 11px/1.35 Consolas, "Courier New", monospace;
-    padding: 4px 10px;
-    border-top: 1px solid var(--divider);
-    white-space: pre-wrap;
-  }
-  #log .err { color: #f88; }
 </style>
 </head>
 <body>
@@ -256,6 +244,7 @@
   -->
   <div class="ratory model-viewer" id="viewer-root">
     <canvas id="wf-canvas"></canvas>
+    <div class="progress" id="progress"><div></div></div>
     <div class="sidebar">
 
       <div class="block models-container">
@@ -336,16 +325,12 @@
       </div>
 
     </div>
-    <div class="progress" id="progress"><div></div></div>
   </div>
-
-  <div id="log"></div>
 
   <script>
     // Web Crypto enforces a 65,536-byte cap on getRandomValues per call,
     // but Emscripten's libc init asks for ~294 KB in one shot. Wrap before
-    // any module loads. Plain <script> (not module) runs synchronously
-    // before the <script type="module"> below.
+    // any module loads.
     (function () {
       const MAX = 65536;
       const native = crypto.getRandomValues.bind(crypto);
@@ -360,43 +345,13 @@
     })();
   </script>
   <script type="module">
-    const logEl = document.getElementById('log');
-    const log = (s, cls) => {
-      const ln = document.createElement('div');
-      if (cls) ln.className = cls;
-      ln.textContent = s;
-      logEl.appendChild(ln);
-      logEl.scrollTop = logEl.scrollHeight;
-    };
-    const describe = (e) => {
-      if (!e) return String(e);
-      if (typeof e === 'string') return e;
-      const parts = [];
-      if (e.name)    parts.push(e.name);
-      if (e.message) parts.push(e.message);
-      if (parts.length === 0) {
-        try { parts.push(JSON.stringify(e)); }
-        catch { parts.push(Object.prototype.toString.call(e)); }
-      }
-      if (e.stack) parts.push('\n' + e.stack);
-      return parts.join(': ');
-    };
-    window.addEventListener('error',
-      (e) => log('ERROR ' + describe(e.error || e), 'err'));
-    window.addEventListener('unhandledrejection',
-      (e) => log('REJECT ' + describe(e.reason), 'err'));
-
     try {
       const { HiveApp } = await import('./hive_app.js?t=' + Date.now());
       const app = new HiveApp();
       await app.start();
       window.__hive = app;
-      if (!window.showDirectoryPicker) {
-        log('Note: File System Access API unavailable — using webkitdirectory fallback.');
-      }
     } catch (e) {
-      log('FATAL: ' + describe(e), 'err');
-      console.error(e);
+      console.error('[wf] FATAL', e);
     }
   </script>
 </body>

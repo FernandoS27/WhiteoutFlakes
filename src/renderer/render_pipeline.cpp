@@ -621,12 +621,11 @@ bool RenderPipeline::InitDevice(gfx::GfxApi api) {
 
     if (!InitBlsShaders(api)) {
 #if defined(__EMSCRIPTEN__)
-        // Web build's content provider is the FetchContentProvider; it's
-        // only populated with bytes JS has explicitly Put. Until Phase 2
-        // wires in a manifest + asset prefetch, the BLS bundles aren't
-        // available at InitDevice time. Soldier on so the gfx device is
-        // still live for the swap-chain + clear-color path; any BLS-
-        // dependent draw later will fail loudly.
+        // Web build: JS pre-fetches the BLS shader bundles into the
+        // FetchContentProvider before wf_init runs. If they're still
+        // missing here something upstream went wrong — keep the gfx
+        // device live so the canvas can still clear-color, but any
+        // BLS-dependent draw will fail loudly.
         std::fprintf(stderr,
                      "[bls] WARN: shaders unavailable; continuing for clear-color only\n");
 #else

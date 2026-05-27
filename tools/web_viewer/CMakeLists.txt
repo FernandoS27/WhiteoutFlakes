@@ -55,32 +55,8 @@ target_link_options(wf_web PRIVATE
 )
 target_compile_options(wf_web PRIVATE -fno-exceptions -Oz -g1)
 
-# ----------------------------------------------------------------------------
-# wf_web_minimal — isolation harness. Same Emscripten flags and same
-# wf_* export shape as wf_web, but NO WhiteoutFlakes libraries linked in.
-# Used to test whether V8 freezes on the Emscripten + emdawnwebgpu glue
-# alone, or only when our renderer code is included.
-# ----------------------------------------------------------------------------
-add_executable(wf_web_minimal wf_web_minimal.cpp)
-set_target_properties(wf_web_minimal PROPERTIES
-    CXX_STANDARD          20
-    CXX_STANDARD_REQUIRED ON
-    OUTPUT_NAME           "wf-core-min"
-    SUFFIX                ".js"
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/web"
-)
-target_link_options(wf_web_minimal PRIVATE
-    --use-port=emdawnwebgpu
-    -sWASM=1 -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web
-    -sALLOW_MEMORY_GROWTH=1
-    -sEXPORTED_RUNTIME_METHODS=['cwrap','ccall','HEAPU8','HEAPF32','stringToUTF8','UTF8ToString','lengthBytesUTF8']
-    "-sEXPORTED_FUNCTIONS=@${CMAKE_CURRENT_SOURCE_DIR}/exports.txt"
-    -fno-exceptions -O2
-)
-target_compile_options(wf_web_minimal PRIVATE -fno-exceptions -O2)
-
-# Stage the JS facade + a smoke-test HTML next to wf-core.{js,wasm} so a
-# local web server can serve them with no extra plumbing.
+# Stage the JS facade + HTML shell next to wf-core.{js,wasm} so a local
+# web server can serve them with no extra plumbing.
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/wf-viewer.js"
                "${CMAKE_BINARY_DIR}/web/wf-viewer.js" COPYONLY)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/web_audio.js"
@@ -89,8 +65,6 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/hive_app.js"
                "${CMAKE_BINARY_DIR}/web/hive_app.js"  COPYONLY)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/index.html"
                "${CMAKE_BINARY_DIR}/web/index.html"   COPYONLY)
-configure_file("${CMAKE_CURRENT_SOURCE_DIR}/minimal.html"
-               "${CMAKE_BINARY_DIR}/web/minimal.html" COPYONLY)
 
 # Stage the WGSL .bls shader bundles next to the served wasm so the JS
 # facade can fetch them from `./shaders/webgpu/...` before wf_init runs.

@@ -27,6 +27,11 @@ std::size_t FetchContentProvider::CachedFileCount() const {
     return cache_.size();
 }
 
+bool FetchContentProvider::Evict(const std::string& path) {
+    std::lock_guard lk(mu_);
+    return cache_.erase(Normalize(path)) > 0;
+}
+
 RequestId FetchContentProvider::Request(const std::string& path, CompletionCallback cb) {
     if (path.empty() || !cb) return kInvalidRequestId;
 

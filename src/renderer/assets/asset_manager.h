@@ -14,9 +14,6 @@
 // land on the main thread so contention is zero. On desktop, Acquire and
 // the CPU half of Apply (ApplyPrepared) can come from background loader
 // threads; the GPU half (CommitPrepared) must run on the render thread.
-//
-// Phase 1 of the migration: skeleton only — texture decoding, particle
-// parsing, and child-model parsing land in later phases.
 // ============================================================================
 
 #include "gfx/gfx.h"
@@ -115,12 +112,14 @@ public:
     /// @brief Number of paths currently queued in the needs list.
     std::size_t PendingNeedsCount() const;
 
-    /// @brief CPU half of Apply: decode/parse @p bytes, stash the result
-    ///        in the prepared queue. Safe from any thread. Returns true
-    ///        iff a slot exists for @p path AND the decode succeeded.
-    ///
-    /// Phase-1 stub: no decoders wired yet. Returns false unless we get
-    /// to the point of pushing real bytes.
+    /// @brief CPU half of Apply: decode/parse @p bytes for the slot
+    ///        currently bound to @p path and stash the result in the
+    ///        prepared queue. Texture bytes are decoded to gfx pixel
+    ///        data + mip chain; Particle bytes are parsed into an
+    ///        EffectAssetModel inside a per-slot arena; ChildModel
+    ///        bytes are handed to the host-provided builder for MDX
+    ///        parse. Returns true iff a slot exists for @p path AND
+    ///        the decode succeeded.
     bool ApplyPrepared(AssetKind kind, std::string_view path,
                        std::span<const u8> bytes, std::string_view foundExt = {});
 

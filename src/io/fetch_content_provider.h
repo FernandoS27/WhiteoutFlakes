@@ -36,6 +36,13 @@ public:
     /// @brief Number of files in the cache (for diagnostics from JS).
     std::size_t CachedFileCount() const;
 
+    /// @brief Drop the cached bytes for @p path. Used by JS after the
+    ///        renderer has finished parsing the MDX it just pushed —
+    ///        the provider doesn't need to keep the bytes around past
+    ///        the one synchronous Request that ParseAndBuild issues.
+    ///        Returns true if an entry was actually removed.
+    bool Evict(const std::string& path);
+
     // IContentProvider ------------------------------------------------------
     RequestId Request(const std::string& path, CompletionCallback cb) override;
     void Wait(RequestId id) override;

@@ -1,13 +1,12 @@
 // wf-viewer.js — WhiteoutFlakes browser facade (ES module).
 //
-// Phase 1: WebGPU device handoff + canvas surface + clear-color rAF loop.
-// JS owns: navigator.gpu, the canvas, every input event. WASM owns: the
-// renderer, the swap chain, every GPU command. Bytes flow via
-// `_wf_*` exports (ccall-shape — see exports.txt for the symbol list).
-//
-// Phase 3 will add loadModel(url); Phase 4 the pointer-event camera
-// forwarding; Phase 5 the Web Audio sound emitter. Each adds methods on
-// `WhiteoutViewer` without changing this shape.
+// JS owns: navigator.gpu, the canvas, every input event, the asset
+// fetch pump. WASM owns: the renderer, the swap chain, every GPU
+// command, the AssetManager slot table. Bytes flow across via the
+// `_wf_*` exports (ccall-shape — see exports.txt for the symbol list)
+// and the AssetManager push API (`wf_assets_needs_count` /
+// `wf_assets_apply`). `WhiteoutViewer` mirrors mdx-m3-viewer's shape so
+// host pages built against that surface can swap rendering backends.
 
 // Dynamic import with a cache-buster query so each page load picks up
 // the latest wf-core.js. Static `import` is cached by URL across reloads
@@ -313,7 +312,13 @@ export class Model {
     addInstance() {
         if (!this.loaded) throw new Error('Model.addInstance() before load resolved');
         const M = this._viewer._module;
-        const handle = M._wf_spawn_unit(this._viewer._handle, this._viewer._cstr(this._mdxKey));
+        const keyPtr = this._viewer._cstr(this._mdxKey);
+        let handle = 0;
+        try {
+            handle = M._wf_spawn_unit(this._viewer._handle, keyPtr);
+        } finally {
+            M._free(keyPtr);
+        }
         if (!handle) throw new Error('addInstance: wf_spawn_unit returned 0');
         const inst = new Instance(this._viewer, this, handle);
         this._instances.push(inst);
@@ -369,61 +374,11 @@ export class WhiteoutViewer {
         this._lastTime = 0;
     }
 
-    // ------------------------------------------------------------------
-    // Bring-up. Awaits adapter+device, then instantiates the WASM module
-    // with `preinitializedWebGPUDevice` set so the C++ side's
+    // Bring-up: await adapter+device, then instantiate the WASM module with
+    // `preinitializedWebGPUDevice` set so the C++ side's
     // emscripten_webgpu_get_device() returns this same device.
-    // ------------------------------------------------------------------
-    // Quick sanity check: can Chrome compile ANY wasm? An 8-byte module
-    // (magic + version, no sections) is the smallest valid wasm. If this
-    // hangs, the browser's wasm compiler itself is wedged and our 1.7 MB
-    // module isn't the cause.
-    static async smokeTestWasm() {
-        const t = performance.now();
-        const ms = () => (performance.now() - t).toFixed(0) + ' ms';
-        const minimal = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
-        const compileP = WebAssembly.compile(minimal);
-        const timeoutP = new Promise((_, rj) =>
-            setTimeout(() => rj(new Error('minimal wasm compile timed out at 5 s')), 5000));
-        const mod = await Promise.race([compileP, timeoutP]);
-        return 'minimal wasm OK @' + ms() + ' (module=' + (mod ? 'present' : 'null') + ')';
-    }
-
     async init() {
-        // Run the browser-level smoke test first so we can distinguish a
-        // Chrome-WebAssembly bug from a bug in our module's bytecode.
-        const trace0 = (s) => {
-            console.log('[wf]', s);
-            const el = document.getElementById('log');
-            if (el) {
-                const ln = document.createElement('div');
-                ln.style.color = '#aaa';
-                ln.textContent = '[wf] ' + s;
-                el.appendChild(ln); el.scrollTop = el.scrollHeight;
-            }
-        };
-        try {
-            trace0('smoke-testing WebAssembly.compile…');
-            trace0(await WhiteoutViewer.smokeTestWasm());
-        } catch (e) {
-            trace0('SMOKE FAIL: ' + (e && e.message || e));
-            throw e;
-        }
-        // Dual log: console.log for stack traces / object inspection,
-        // plus a DOM hook so the on-page #log shows progress even when
-        // devtools can't attach (e.g. when WASM is hung on a blocking
-        // wait that's also frozen the JS main loop between awaits).
-        const trace = (s) => {
-            console.log('[wf]', s);
-            const el = document.getElementById('log');
-            if (el) {
-                const ln = document.createElement('div');
-                ln.style.color = '#888';
-                ln.textContent = '[wf] ' + s;
-                el.appendChild(ln);
-                el.scrollTop = el.scrollHeight;
-            }
-        };
+        const trace = (s) => console.log('[wf]', s);
         if (!navigator.gpu) {
             throw new Error('WebGPU not available on this browser/profile.');
         }
@@ -465,19 +420,9 @@ export class WhiteoutViewer {
         if (!this.canvas.id) this.canvas.id = 'wf-canvas-' + Math.random().toString(36).slice(2, 10);
         const selector = '#' + this.canvas.id;
 
-        // Route WASM stderr to BOTH devtools and the on-page log so the
-        // C++ `[wgpu] Init: …` printfs show without needing devtools.
-        const wasmLog = (s, color) => {
-            console.log('[wasm]', s);
-            const el = document.getElementById('log');
-            if (el) {
-                const ln = document.createElement('div');
-                ln.style.color = color;
-                ln.textContent = '[wasm] ' + s;
-                el.appendChild(ln);
-                el.scrollTop = el.scrollHeight;
-            }
-        };
+        // Route WASM stdout/stderr to devtools — C++ printf lands in
+        // the browser console with a `[wasm]` prefix.
+        const wasmLog = (s) => console.log('[wasm]', s);
         // Note: we deliberately do NOT pass `canvas:` to createModule. Doing
         // so makes Emscripten try to wire up its legacy GL/SDL canvas
         // helpers which can conflict with the WebGPU surface flow; the
@@ -498,8 +443,8 @@ export class WhiteoutViewer {
         try {
             this._module = await createModule({
                 preinitializedWebGPUDevice: device,
-                print:    (s) => wasmLog(s, '#9c9'),
-                printErr: (s) => wasmLog(s, '#fc8'),
+                print:    wasmLog,
+                printErr: wasmLog,
                 locateFile: (path) => { trace('locateFile(' + path + ') @' + elapsed()); lastHook = 'locateFile'; return path; },
                 // Override the fetch + compile + instantiate so each
                 // sub-step is observable. This also bypasses any
@@ -589,7 +534,6 @@ export class WhiteoutViewer {
         this._installCameraControls();
 
         this._lastTime = performance.now();
-        this._lazyTick = 0;
         this._loop = (now) => {
             if (!this._handle) return;
             const dt = Math.min(0.1, Math.max(0.0, (now - this._lastTime) / 1000));
@@ -615,11 +559,13 @@ export class WhiteoutViewer {
         this._lazySolver = solver;
     }
 
-    // Drain the AssetManager's needs queue and fetch each path. Each
-    // need is attempted at most once per solver (deduped via
-    // `_attemptedAssets`) — the renderer surfaces a need the first
-    // time it Acquires a path, never again, so this is naturally
-    // small (one entry per unique texture path the model uses).
+    // Drain the AssetManager's needs queue and fetch each path. The
+    // renderer surfaces a need on the first Acquire of each path; we
+    // dedupe in-flight requests via `_inflightAssets` so the same path
+    // doesn't get fetched twice while a previous fetch is still
+    // pending. Settled fetches are removed so a later slot re-
+    // acquisition (e.g. model switch destroys + re-creates a shared
+    // texture's slot) re-fetches cleanly.
     _pumpAssetNeeds() {
         if (!this._handle) return;
         const M = this._module;
@@ -635,15 +581,10 @@ export class WhiteoutViewer {
                 M._wf_assets_needs_get_path(this._handle, i, buf, CAP);
                 const path = M.UTF8ToString(buf);
                 const dedupKey = kind + ':' + path;
-                // Dedupe ONLY in-flight fetches, not lifetime ones. When
-                // a slot gets released (e.g. model switch destroys the
-                // previous actor) and the next model re-Acquires the
-                // same path, the path lands on the needs queue again —
-                // we MUST re-fetch because the slot's GPU resources
-                // were torn down with the old slot. A lifetime-dedup
-                // (the old `_attemptedAssets` Set) caused every shared
-                // texture between two sequentially-loaded models to
-                // stay on the placeholder forever.
+                // Skip while a previous fetch for this (kind, path) is
+                // still pending — lifetime-dedup would be wrong here
+                // because slot teardown + re-Acquire after a model
+                // switch needs to re-fetch from scratch.
                 if (this._inflightAssets.has(dedupKey)) continue;
                 if (!this._lazySolver) continue;
                 const p = this._fetchAndApplyAsset(this._lazySolver, kind, path)
@@ -729,6 +670,8 @@ export class WhiteoutViewer {
                 this._handle, kind, pathPtr, dataPtr, u8.byteLength, extPtr);
         } finally {
             M._free(dataPtr);
+            M._free(pathPtr);
+            M._free(extPtr);
         }
     }
 
@@ -876,16 +819,12 @@ export class WhiteoutViewer {
     // mdx-m3-viewer's `viewer.whenAllLoaded(models, cb)` — supports both
     // the callback form (legacy) and a Promise return for `await`.
     whenAllLoaded(models, cb) {
-        // Wait for spawn AND any background texture stream. The texture
-        // stream runs after `_loadPromise` resolves (so the caller's
-        // `await viewer.load()` returns once the model is visible) —
-        // whenAllLoaded chains both so callers that need a fully
-        // textured model can await it explicitly.
-        const p = Promise.all(models.map(async m => {
-            await (m._loadPromise || Promise.resolve());
-            if (m._texStream) await m._texStream;
-            return m;
-        }));
+        // Mirrors mdx-m3-viewer's `viewer.whenAllLoaded(models, cb)`:
+        // resolves once every model's `load()` promise has settled. The
+        // texture stream itself is incremental and decoupled from this
+        // promise — textures pop in as they fetch from the AssetManager
+        // pump, regardless of whether anyone is awaiting load completion.
+        const p = Promise.all(models.map(m => m._loadPromise || Promise.resolve(m)));
         if (typeof cb === 'function') p.then(() => cb(models));
         return p;
     }
@@ -937,28 +876,10 @@ export class WhiteoutViewer {
 
     async _loadInternal(src, pathSolver, model) {
         const M = this._module;
-        // Dual-channel logger so the iteration trace shows up on the
-        // on-page log AND in devtools console. We need it visible
-        // wherever the user is looking.
-        const log = (s) => {
-            console.log('[wf]', s);
-            const el = document.getElementById('log');
-            if (el) {
-                const ln = document.createElement('div');
-                ln.style.color = '#9cf';
-                ln.textContent = '[wf] ' + s;
-                el.appendChild(ln);
-                el.scrollTop = el.scrollHeight;
-            }
-        };
-
+        const log = (s) => console.log('[wf]', s);
         // Step the engine once so any cleanup deferred from before the
         // load (e.g. a previous model's actors flagged via detach()) is
-        // applied before we spawn the new actor. The render loop keeps
-        // running through the load — we no longer destroy+respawn
-        // between iterations (refresh_template uses UpdateMaterials to
-        // stream textures onto the live actor instead), so the eviction
-        // race that motivated the old rAF pause is gone.
+        // applied before we spawn the new actor.
         M._wf_tick(this._handle, 0);
         return this._loadInternalImpl(src, pathSolver, model, log);
     }
@@ -997,7 +918,18 @@ export class WhiteoutViewer {
         // transparently the next frame. No refresh-tick dance, no
         // re-parse, no handle churn.
         log('spawn: ' + mdxKey);
-        const handle = M._wf_spawn_unit(this._handle, this._cstr(mdxKey));
+        const keyPtr = this._cstr(mdxKey);
+        let handle = 0;
+        try {
+            handle = M._wf_spawn_unit(this._handle, keyPtr);
+            // The MDX bytes were only needed for the synchronous
+            // template parse inside SpawnUnit — drop them from the
+            // FetchContentProvider's cache so they don't pile up
+            // across many sequential model loads.
+            M._wf_provider_evict(this._handle, keyPtr);
+        } finally {
+            M._free(keyPtr);
+        }
         if (!handle) {
             model.error = new Error('SpawnUnit returned 0');
             throw model.error;
@@ -1031,9 +963,11 @@ export class WhiteoutViewer {
         const bytes = M.lengthBytesUTF8(s) + 1;
         const p = M._malloc(bytes);
         M.stringToUTF8(s, p, bytes);
-        // Caller responsibility to free — but for short-lived ABI calls
-        // we leak intentionally on the WASM heap (a few hundred bytes per
-        // SpawnUnit attempt is fine for a viewer session).
+        // Caller is responsible for M._free(p) once the ABI call has
+        // returned. Skipping that fragments the WASM heap — under the
+        // AssetManager pump every dep fetch goes through _cstr (path +
+        // foundExt), so over many model loads the leaked allocations
+        // pile up to thousands and malloc gets progressively slower.
         return p;
     }
     _putBytes(path, u8) {
@@ -1041,12 +975,21 @@ export class WhiteoutViewer {
         const pathPtr = this._cstr(path);
         const dataPtr = M._malloc(u8.byteLength);
         M.HEAPU8.set(u8, dataPtr);
-        M._wf_provider_put(this._handle, pathPtr, dataPtr, u8.byteLength);
-        M._free(dataPtr);
-        // pathPtr deliberately not freed (cstr cleanup story above).
+        try {
+            M._wf_provider_put(this._handle, pathPtr, dataPtr, u8.byteLength);
+        } finally {
+            M._free(dataPtr);
+            M._free(pathPtr);
+        }
     }
     _setPe1Base(p) {
-        this._module._wf_set_pe1_base(this._handle, this._cstr(p));
+        const M = this._module;
+        const pathPtr = this._cstr(p);
+        try {
+            M._wf_set_pe1_base(this._handle, pathPtr);
+        } finally {
+            M._free(pathPtr);
+        }
     }
 
     // Prefetch the engine-wide assets wf_init reads before any model
@@ -1063,9 +1006,35 @@ export class WhiteoutViewer {
     async _prefetchEngineAssets() {
         const root = this.engineAssetRoot || './';
         const ENGINE = [
+            // Default IBL probe + DNC unit MDX (init-time renderer reads).
             'Environment/EnvironmentMap/Portraits/PortraitDefault_IBL.dds',
             'Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdx',
             'Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdl',
+            // Event-data SLKs (LoadEventDataFiles in src/io/event_data.cpp).
+            // SpawnData / SplatData / UberSplatData drive SPN, SPL, UBR
+            // event resolution; the SoundInfo SLKs feed SndEntry path
+            // lookups — without these the renderer can't resolve any
+            // SND animation event to a playable .wav / .flac.
+            'Splats/SpawnData.slk',
+            'Splats/SplatData.slk',
+            'Splats/UberSplatData.slk',
+            'UI/SoundInfo/DialogueCreepsBase.slk',
+            'UI/SoundInfo/DialogueDemonBase.slk',
+            'UI/SoundInfo/DialogueHumanBase.slk',
+            'UI/SoundInfo/DialogueNagaBase.slk',
+            'UI/SoundInfo/DialogueNightElfBase.slk',
+            'UI/SoundInfo/DialogueOrcBase.slk',
+            'UI/SoundInfo/DialogueUndeadBase.slk',
+            'UI/SoundInfo/SoundAssetCombat.slk',
+            'UI/SoundInfo/UnitAckSounds.slk',
+            'UI/SoundInfo/UnitCombatSounds.slk',
+            'UI/SoundInfo/UISounds.slk',
+            'UI/SoundInfo/AmbienceSounds.slk',
+            'UI/SoundInfo/AnimSounds.slk',
+            'UI/SoundInfo/AbilitySounds.slk',
+            'UI/SoundInfo/DialogSounds.slk',
+            'UI/SoundInfo/AmbientMusic.slk',
+            'UI/SoundInfo/Music.slk',
         ];
         // These assets ride the legacy FetchContentProvider (read by the
         // renderer's init-time code via ContentProvider::ReadFile rather

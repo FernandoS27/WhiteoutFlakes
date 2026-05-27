@@ -36,11 +36,11 @@ using namespace ::whiteout::flakes::renderer::shadow;
 void FrameTicker::Tick(f32 dt) {
     WDX_CPU_ZONE("FrameTicker::Tick");
     {
-        // Pump the AssetManager's render-thread half (Phase 1: no-op
-        // until Phase 2 starts pushing texture uploads through the
-        // prepared queue). Keep this at the top of Tick so freshly-
-        // applied textures land before the per-frame replaceables /
-        // attachment / PE1 work reads from them.
+        // Pump the AssetManager's render-thread half: drains the
+        // prepared queue (CPU-decoded texture / particle / child-MDX
+        // bytes), creates GPU textures, and swaps slot payloads. Runs
+        // at the top of Tick so freshly-applied assets land before the
+        // per-frame replaceables / attachment / PE1 work reads them.
         WDX_CPU_ZONE("Assets.Commit");
         rs_.Assets().CommitPrepared();
     }

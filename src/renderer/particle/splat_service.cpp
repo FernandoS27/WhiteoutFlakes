@@ -271,11 +271,7 @@ gfx::TextureHandle SplatService::GetOrLoadTexture(const std::string& path) {
     auto data = content_->ReadFile(path, &foundExt);
     if (!data) {
         std::fprintf(stderr, "[splat] ERR: tex read FAIL '%s'\n", path.c_str());
-#if defined(__EMSCRIPTEN__)
-        // Web build: bytes arrive async via the JS lazy drain, so a later
-        // SpawnSpl call for the same path should be allowed to re-attempt
-        // the read once the bytes have actually landed. Don't pin Invalid.
-#else
+#if !defined(__EMSCRIPTEN__)
         // Desktop: ReadFile is a synchronous CASC/MPQ/disk read. A miss
         // here is permanent — pin the Invalid so subsequent SpawnSpl
         // calls don't re-issue I/O per spawn (that's a ~60 FPS regression

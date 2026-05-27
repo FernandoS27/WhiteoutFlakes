@@ -11,6 +11,7 @@ _wf_set_render_mode
 _wf_last_error
 _wf_provider_put
 _wf_provider_count
+_wf_provider_evict
 _wf_camera_rotate
 _wf_camera_pan
 _wf_camera_zoom
