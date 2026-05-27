@@ -271,11 +271,14 @@ void ApplyCornFrameStates(Actor& mi, const FrameState& state, const ActorEvalCon
     // `Sequences()` returns by VALUE — keep the std::string alive across
     // the loop or the .c_str() pointers go invalid.
     std::string curAnimName;
+    bool forcedLoopNonLooping = false;
     {
         const i32 sidx = mi.animation.ActiveSequenceIndex();
         const auto seqs = mi.animation.Sequences();
-        if (sidx >= 0 && sidx < (i32)seqs.size())
+        if (sidx >= 0 && sidx < (i32)seqs.size()) {
             curAnimName = seqs[sidx].name;
+            forcedLoopNonLooping = mi.ignoreNonLooping && seqs[sidx].nonLooping;
+        }
     }
 
     // Per-actor team color — Actor::teamColor is packed 0x00BBGGRR with
@@ -316,6 +319,8 @@ void ApplyCornFrameStates(Actor& mi, const FrameState& state, const ActorEvalCon
         if (!em)
             continue;
         em->SetCurrentAnimationName(curAnimName.c_str());
+        if (forcedLoopNonLooping && em->IsNonLoopingEffect())
+            em->SyncSequenceCycle(mi.cursor.sequenceCycle);
         em->SetReplaceableColor(teamRGBA);
         em->SetModelToWorld(cs.transform);
         em->SetScale(cs.scale);
@@ -411,6 +416,7 @@ void Actor::Advance(f32 dtSec) {
     if (rawIdx != cursor.prevActiveSequence) {
         cursor.sequenceStartTimeMs = now;
         cursor.prevActiveSequence = rawIdx;
+        ++cursor.sequenceCycle;
     }
 
     const auto& seq = seqs[boundedIdx];
@@ -425,7 +431,17 @@ void Actor::Advance(f32 dtSec) {
     } else if (seq.nonLooping && !ignoreNonLooping) {
         frameMs = seq.startMs + (std::min)(elapsed, duration);
     } else {
-        frameMs = seq.startMs + (elapsed % duration);
+        // Roll sequenceStartTimeMs forward by whole durations so elapsed
+        // stays in [0, duration). Each roll is a fresh cycle — consumers
+        // (corn-fx single-shot effects under ignoreNonLooping) key off
+        // sequenceCycle to re-fire per loop.
+        if (elapsed >= duration) {
+            const i32 cycles = elapsed / duration;
+            cursor.sequenceStartTimeMs += cycles * duration;
+            cursor.sequenceCycle += cycles;
+            elapsed -= cycles * duration;
+        }
+        frameMs = seq.startMs + elapsed;
     }
     animation.SetTimeMs(frameMs);
 }

@@ -230,6 +230,33 @@ void CornEffectsEmitter::ParseAnimVisibilityGuide() {
     if (!sawAlways && sawEnable) {
         defaultAnimEnabled_ = false;
     }
+
+    // Classify "single-shot per animation" effects: Always=Off (or implicit
+    // off via bare =on tokens) plus an Attack/Death enable name. The host
+    // can force an Attack/Death sequence to loop via Actor::ignoreNonLooping
+    // — in that case OnSequenceCycleStart resets the runtime each loop so
+    // the effect plays once per iteration instead of running continuously.
+    isNonLoopingEffect_ = false;
+    if (!defaultAnimEnabled_) {
+        for (const auto& s : enabledAnimNames_) {
+            if (CaseInsensitiveContains(s, "attack") || CaseInsensitiveContains(s, "death")) {
+                isNonLoopingEffect_ = true;
+                break;
+            }
+        }
+    }
+}
+
+void CornEffectsEmitter::SyncSequenceCycle(i32 cycle) {
+    if (lastSeenCycle_ < 0) {
+        lastSeenCycle_ = cycle;
+        return;
+    }
+    if (cycle != lastSeenCycle_) {
+        lastSeenCycle_ = cycle;
+        if (isNonLoopingEffect_)
+            ResetRuntime();
+    }
 }
 
 void CornEffectsEmitter::SetCurrentAnimationName(const char* name) {

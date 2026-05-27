@@ -53,6 +53,10 @@ struct Actor {
         i32 actorTimeMs = 0;
         i32 sequenceStartTimeMs = 0;
         i32 prevActiveSequence = -1;
+        // Increments each time the active sequence wraps (looped or
+        // ignoreNonLooping-forced-loop). Consumers (corn-fx emitters
+        // flagged IsNonLoopingEffect) read this to re-fire per loop.
+        i32 sequenceCycle = 0;
     };
     Cursor cursor;
 

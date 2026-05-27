@@ -77,6 +77,17 @@ public:
     void SetOwningAgentVisibility(bool visible);
     void SetCurrentAnimationName(const char* name);
 
+    // True when the emitter's visibility guide is the "single-shot per
+    // cycle" shape — Always=Off with an Attack/Death (or variation)
+    // enable token. Hosts that force a non-looping sequence to loop
+    // (Actor::ignoreNonLooping) push the actor's monotonic sequence-cycle
+    // counter via SyncSequenceCycle(); on an increase the emitter resets
+    // its runtime so the effect re-fires once per loop iteration.
+    bool IsNonLoopingEffect() const {
+        return isNonLoopingEffect_;
+    }
+    void SyncSequenceCycle(i32 cycle);
+
     void Update(f32 dt, bool paused);
 
     void MarkRenderAttempted() {
@@ -131,6 +142,9 @@ private:
     const ::whiteout::cornflakes::EffectAssetModel* assetModel_ = nullptr;
 
     bool defaultAnimEnabled_ = true;
+    bool isNonLoopingEffect_ = false;
+    // -1 = unsynced (first sync just records the count without resetting).
+    i32 lastSeenCycle_ = -1;
     std::vector<std::string> enabledAnimNames_;
     std::vector<std::string> disabledAnimNames_;
     std::string currentAnimName_;
