@@ -692,6 +692,16 @@ export class WhiteoutViewer {
         if (this._handle) this._module._wf_set_background(this._handle, r | 0, g | 0, b | 0);
     }
 
+    // Light-rig preset: 0 = in-game (engine runtime), 1 = glue (loading
+    // screen / portrait), 2 = dynamic. See LightingMode in enums.h.
+    setLightingMode(mode) {
+        if (this._handle) this._module._wf_set_lighting_mode(this._handle, mode | 0);
+    }
+
+    setShowGrid(on) {
+        if (this._handle) this._module._wf_set_show_grid(this._handle, on ? 1 : 0);
+    }
+
     _installCameraControls() {
         const c = this.canvas;
         // Make the canvas focusable so it can capture wheel events without
@@ -714,9 +724,10 @@ export class WhiteoutViewer {
             const dy = e.clientY - lastY;
             lastX = e.clientX; lastY = e.clientY;
             if (dragging === 1) this._module._wf_camera_rotate(this._handle, dx, dy);
-            // Pan: negate so dragging the canvas moves the scene WITH
-            // the cursor (grab-and-slide), matching every other 3D viewer.
-            else                this._module._wf_camera_pan(this._handle, -dx, -dy);
+            // Pan: negate X so dragging right moves the scene right
+            // (grab-and-slide). Y stays positive — CameraView::Pan already
+            // treats +dy as down-on-screen, matching the desktop viewers.
+            else                this._module._wf_camera_pan(this._handle, -dx, dy);
         });
         const endDrag = (e) => {
             if (dragging) {

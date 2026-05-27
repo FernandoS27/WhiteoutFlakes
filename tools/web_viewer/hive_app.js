@@ -41,6 +41,8 @@ export class HiveApp {
         this.closeBtn     = document.getElementById('close-btn');
         this.progress     = document.getElementById('progress');
         this.volSlider    = document.getElementById('vol-slider');
+        this.lightingSel  = document.getElementById('lighting-select');
+        this.gridToggle   = document.getElementById('grid-toggle');
         this.emptyModels  = this.modelList.querySelector('.empty');
 
         this.viewer = null;
@@ -123,6 +125,17 @@ export class HiveApp {
             };
             this.volSlider.addEventListener('input', apply);
             apply(); // seed master with the slider's default value
+        }
+        if (this.lightingSel) {
+            const apply = () =>
+                this.viewer.setLightingMode(Number(this.lightingSel.value) | 0);
+            this.lightingSel.addEventListener('change', apply);
+            apply(); // seed engine with the dropdown's default (In-game)
+        }
+        if (this.gridToggle) {
+            const apply = () => this.viewer.setShowGrid(this.gridToggle.checked);
+            this.gridToggle.addEventListener('change', apply);
+            apply(); // seed engine with the checkbox's default state
         }
     }
 

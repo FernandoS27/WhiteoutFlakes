@@ -305,6 +305,23 @@ void wf_set_background(WfRenderer* h, int r, int g, int b) {
     h->renderer.Settings().SetBackgroundColor(clamp8(r), clamp8(g), clamp8(b));
 }
 
+// Light-rig preset: 0 = InGame (engine-runtime), 1 = Glue (loading-screen /
+// portrait), 2 = Dynamic (DNC). Bad values clamp to InGame.
+void wf_set_lighting_mode(WfRenderer* h, int mode) {
+    if (!h) return;
+    using LM = whiteout::flakes::LightingMode;
+    LM lm = (mode == 1) ? LM::Glue : (mode == 2) ? LM::Dynamic : LM::InGame;
+    h->renderer.Settings().SetLightingMode(lm);
+}
+
+// Ground reference grid.
+void wf_set_show_grid(WfRenderer* h, int on) {
+    if (!h) return;
+    auto df = h->renderer.Settings().GetDisplayFlags();
+    df.showGrid = (on != 0);
+    h->renderer.Settings().SetDisplayFlags(df);
+}
+
 // ----------------------------------------------------------------------------
 // Camera — orbital controls forwarded from JS pointer/wheel events.
 // CameraView already implements orbit math; we just hand it deltas.

@@ -49,8 +49,31 @@
                     cursor: pointer; padding: 0 8px; }
   #topbar .close:hover { color: var(--title-text); }
 
-  /* Volume slider (top-right). Native range with thumb restyled to a
-     small neutral disc — keeps the chrome unobtrusive. */
+  /* Top-bar inline controls (lighting select, grid toggle, volume).
+     All share the same compact, muted styling so they sit unobtrusively
+     to the left of the close button. */
+  #topbar .ctrl {
+    display: flex; align-items: center; gap: 6px;
+    color: var(--muted); font-size: 12px;
+  }
+  #topbar .ctrl label { user-select: none; }
+  #topbar select {
+    background: #1a1a1a;
+    color: var(--text);
+    border: 1px solid #3a3a3a;
+    padding: 2px 6px;
+    font: inherit;
+    border-radius: 2px;
+    cursor: pointer;
+  }
+  #topbar select:hover { border-color: #555; color: var(--text-bright); }
+  #topbar input[type="checkbox"] {
+    accent-color: #20c000;
+    cursor: pointer;
+  }
+
+  /* Volume slider — native range with thumb restyled to a small neutral
+     disc, kept unobtrusive. */
   #vol-wrap {
     display: flex; align-items: center; gap: 8px;
     color: var(--muted); font-size: 12px;
@@ -229,6 +252,17 @@
   <div id="topbar">
     <span class="title">View in 3D</span>
     <span class="spacer"></span>
+    <div class="ctrl" title="Light-rig preset">
+      <label for="lighting-select">Lighting</label>
+      <select id="lighting-select">
+        <option value="0">In-game</option>
+        <option value="1">Glue</option>
+      </select>
+    </div>
+    <div class="ctrl" title="Show reference grid">
+      <input id="grid-toggle" type="checkbox" checked>
+      <label for="grid-toggle">Grid</label>
+    </div>
     <div id="vol-wrap" title="Sound volume">
       <label for="vol-slider">Volume</label>
       <input id="vol-slider" type="range" min="0" max="100" step="1" value="50">

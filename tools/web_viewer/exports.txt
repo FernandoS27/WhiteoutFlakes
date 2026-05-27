@@ -8,6 +8,8 @@ _wf_tick
 _wf_render
 _wf_set_background
 _wf_set_render_mode
+_wf_set_lighting_mode
+_wf_set_show_grid
 _wf_last_error
 _wf_provider_put
 _wf_provider_count
