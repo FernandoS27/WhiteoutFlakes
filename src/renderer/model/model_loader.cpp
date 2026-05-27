@@ -169,6 +169,18 @@ void ModelLoader::SetPE1Configs(u32 handle, const std::vector<PE1EmitterConfig>&
 
 void ModelLoader::PreloadChildTemplates(Actor& a, const ModelTemplate& tmpl) {
     PreloadChildTemplates(a, tmpl.pe1Configs, tmpl.attachmentConfigs);
+    // Corn-fx .pkb / .pkfx — Acquire one Particle slot per unique pkb
+    // path the template references. The AssetManager OnApplied hook
+    // walks the parsed EffectAssetModel and Acquires the diffuse
+    // textures it references, tied to this Particle slot via
+    // AddDependency. Everything releases together with the actor.
+    std::unordered_set<std::string> seenPkb;
+    for (const auto& ce : tmpl.cornEmitterInits) {
+        if (ce.pkbPath.empty()) continue;
+        if (!seenPkb.insert(ce.pkbPath).second) continue;
+        a.assetSlots.push_back(
+            rs_.Assets().Acquire(assets::AssetKind::Particle, ce.pkbPath));
+    }
 }
 
 void ModelLoader::PreloadChildTemplates(Actor& a,

@@ -11,7 +11,13 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <unordered_map>
+#include <vector>
+
+namespace whiteout::cornflakes {
+struct EffectAssetModel;
+}
 
 namespace whiteout::flakes::renderer::corn_effects {
 
@@ -70,6 +76,15 @@ public:
     void SetOwningAgentVisibilityForModel(ActorId model, bool visible);
 
     void Simulate(f32 dt);
+
+    /// @brief Trial-bind a parsed @p model just long enough to walk its
+    ///        layer programs and return the diffuse texture paths. Used
+    ///        by the AssetManager OnApplied hook to discover the
+    ///        textures a freshly-loaded .pkb references, so they can
+    ///        be Acquired eagerly. The bind arena is ephemeral — the
+    ///        emitter does its own real bind later.
+    static std::vector<std::string> ExtractDiffuseTexturePaths(
+        const ::whiteout::cornflakes::EffectAssetModel& model);
 
 private:
     mutable std::mutex mutex_;

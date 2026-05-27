@@ -4,6 +4,7 @@
 #include "renderer/assets/sampler_asset_manager.h"
 #include "renderer/assets/texture_asset_manager.h"
 #include "renderer/bls/bls_shader_cache.h"
+#include "renderer/corn_effects/corn_effects_service.h"
 #include "renderer/dnc/dnc_service.h"
 #include "renderer/imgui/imgui_renderer.h"
 #include "renderer/model/model_source_utils.h"
@@ -171,6 +172,23 @@ void RenderService::CreateDeviceAssetManagers(gfx::IGFXDevice& gfx) {
             return impl_->scene_->Templates().BuildFromBytes(
                 std::string(path), bytes, foundExt);
         });
+    // When a .pkb arrives, walk its layer programs once and Acquire the
+    // diffuse texture for each. The texture slots are tied to the parent
+    // Particle slot via AddDependency, so they release together when the
+    // emitter stops referencing the .pkb. Result: corn-fx textures load
+    // eagerly the moment the .pkb commits, instead of waiting until the
+    // emitter's first spawn.
+    impl_->assets_->SetOnApplied([this](AssetManager::SlotId slot, AssetKind kind) {
+        if (kind != AssetKind::Particle)
+            return;
+        const auto* model = impl_->assets_->ParticleAssetOf(slot);
+        if (!model) return;
+        auto paths = corn_effects::CornEffectsService::ExtractDiffuseTexturePaths(*model);
+        for (const auto& p : paths) {
+            const auto dep = impl_->assets_->Acquire(AssetKind::Texture, p);
+            impl_->assets_->AddDependency(slot, dep);
+        }
+    });
 }
 
 void RenderService::ResetDeviceAssetManagers() {

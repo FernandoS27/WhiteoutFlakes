@@ -1,3 +1,4 @@
+#include "renderer/assets/asset_manager.h"
 #include "slk.h"
 #include "whiteout/flakes/content_provider.h"
 #include "whiteout/flakes/event_data.h"
@@ -9,6 +10,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace whiteout::flakes::io {
 
@@ -73,6 +75,11 @@ struct DataCache {
     std::unordered_map<std::string, SndEntry> snd;
 
     std::unordered_map<std::string, std::string> assetMap;
+
+    // AssetManager slots held by the eager event-data prefetch. Stays
+    // refcounted for the lifetime of the cache so splat textures and
+    // SPN child models survive across animation switches once loaded.
+    std::vector<u32> prefetchSlots;
 };
 DataCache& Cache() {
     static DataCache c;
@@ -406,16 +413,17 @@ const SndEntry* FindSnd(std::string_view id) {
     return FindIn(c.snd, id);
 }
 
-void PrefetchEventAssetPaths(IContentProvider* cp) {
-    if (!cp) return;
+void PrefetchEventAssetSlots(renderer::assets::AssetManager& assets) {
+    using AssetKind = renderer::assets::AssetKind;
     auto& c = Cache();
-    // Snapshot the path lists under the lock, then issue the Requests
-    // outside it — the callbacks fire synchronously on
-    // FetchContentProvider which would otherwise re-enter c.mu.
+    // Snapshot the path lists under the cache lock, then Acquire outside
+    // it — AssetManager has its own mutex and we'd otherwise hold both.
     std::vector<std::string> textures;
     std::vector<std::string> models;
+    std::vector<u32> oldSlots;
     {
         std::lock_guard<std::mutex> lk(c.mu);
+        oldSlots.swap(c.prefetchSlots);
         textures.reserve(c.spl.size() + c.ubr.size());
         models.reserve(c.spn.size());
         for (const auto& [_, e] : c.spl)
@@ -425,15 +433,25 @@ void PrefetchEventAssetPaths(IContentProvider* cp) {
         for (const auto& [_, e] : c.spn)
             if (!e.modelPath.empty()) models.push_back(e.modelPath);
     }
-    auto poke = [cp](const std::string& path) {
-        // Use the synchronous ReadFile convenience — its only side-effect
-        // we care about here is the Request → missing-list push on miss.
-        // The returned bytes are discarded; if the provider already has
-        // the file this is a fast cache hit.
-        (void)cp->ReadFile(path, nullptr);
-    };
-    for (const auto& p : textures) poke(p);
-    for (const auto& p : models)   poke(p);
+    for (u32 s : oldSlots) assets.Release(s);
+
+    std::vector<u32> fresh;
+    fresh.reserve(textures.size() + models.size());
+    for (const auto& p : textures) fresh.push_back(assets.Acquire(AssetKind::Texture, p));
+    for (const auto& p : models)   fresh.push_back(assets.Acquire(AssetKind::ChildModel, p));
+
+    std::lock_guard<std::mutex> lk(c.mu);
+    c.prefetchSlots = std::move(fresh);
+}
+
+void ReleaseEventAssetSlots(renderer::assets::AssetManager& assets) {
+    auto& c = Cache();
+    std::vector<u32> slots;
+    {
+        std::lock_guard<std::mutex> lk(c.mu);
+        slots.swap(c.prefetchSlots);
+    }
+    for (u32 s : slots) assets.Release(s);
 }
 
 bool IsSpnCachePopulated() {

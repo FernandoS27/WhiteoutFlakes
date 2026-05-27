@@ -254,15 +254,14 @@ void wf_tick(WfRenderer* h, float dtSeconds) {
         if ((++h->eventDataRetryTick % 30) == 0) {
             const bool wasLoaded = whiteout::flakes::io::IsSplCachePopulated();
             whiteout::flakes::io::LoadEventDataFiles(cp, /*force=*/true);
-            // Eagerly poke every SPL / UBR texture and every SPN child-
-            // model path the moment the splat tables first appear.
-            // Single-shot is enough on desktop (sync I/O) — but on web
-            // it queues every reference into the provider's missing list
-            // so the JS drain can ferry bytes in BEFORE the first event
-            // fire, eliminating the placeholder-frame for splats and
-            // letting child models build cleanly on their first spawn.
+            // Acquire AssetManager slots for every SPL/UBR texture and SPN
+            // child-model the moment the splat tables first appear. The
+            // slots stay refcounted on the event-data cache for the rest
+            // of the session, so the host pump fetches them eagerly and
+            // the textures survive across animation changes — first-fire
+            // is already loaded, no placeholder, no per-anim reload.
             if (!wasLoaded && whiteout::flakes::io::IsSplCachePopulated())
-                whiteout::flakes::io::PrefetchEventAssetPaths(cp);
+                h->renderer.Assets().PrefetchEventAssets();
         }
     }
     h->renderer.Scene().Update(dtSeconds);

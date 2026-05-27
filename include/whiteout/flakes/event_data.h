@@ -21,6 +21,10 @@ namespace whiteout::flakes::io {
 class IContentProvider;
 }
 
+namespace whiteout::flakes::renderer::assets {
+class AssetManager;
+}
+
 namespace whiteout::flakes::io {
 
 /// @brief SPN — spawn another model as a child of the firing actor.
@@ -83,14 +87,19 @@ const SndEntry* FindSnd(std::string_view id);
 /// @}
 
 /// @brief Walk every cached SPL / UBR texture path and every SPN child-
-///        model path, issuing a `Request` for each through @p cp. Each
-///        miss is recorded in the provider's missing list — the web
-///        build's JS drain then ferries the bytes in BEFORE the
-///        corresponding event fires, so the splat/spawn shows up
-///        textured rather than as a placeholder on first appearance.
-///        Idempotent — re-requesting a path the provider already has is
-///        a no-op cache hit.
-void PrefetchEventAssetPaths(IContentProvider* cp);
+///        model path, acquiring an AssetManager slot for each. The slots
+///        are held by the event-data cache for the lifetime of the
+///        renderer, so the host pump fetches them eagerly the moment
+///        SLK parse completes — no placeholder frame when the splat /
+///        ubersplat / SPN event first fires, and the texture survives
+///        across animation switches. Idempotent: releases any prior
+///        set first so a `force=true` re-parse can re-bind cleanly.
+void PrefetchEventAssetSlots(renderer::assets::AssetManager& assets);
+
+/// @brief Release every slot held by PrefetchEventAssetSlots. Called by
+///        LoadEventDataFiles ahead of a force re-parse, and exposed to
+///        hosts that want to drop event-data assets on teardown.
+void ReleaseEventAssetSlots(renderer::assets::AssetManager& assets);
 
 /// @name "Has the cache for this entry-kind been populated yet?"
 ///

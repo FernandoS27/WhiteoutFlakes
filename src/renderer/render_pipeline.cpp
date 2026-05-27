@@ -28,6 +28,7 @@
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/assets/sampler_asset_manager.h"
 #include "renderer/assets/texture_asset_manager.h"
+#include "whiteout/flakes/event_data.h"
 #include "renderer/corn_effects/corn_effects_gfx_backend.h"
 #include "renderer/corn_effects/corn_effects_service.h"
 #include "renderer/model/model_template.h"
@@ -643,7 +644,17 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
 
     rs_.Replaceables().SetContentProvider(rs_.Scene().ActiveContentProvider());
 
-    rs_.Splats().Configure(impl_->gfx_.get(), &rs_.Textures(), rs_.Scene().ActiveContentProvider());
+    rs_.Splats().Configure(&rs_.Assets());
+
+    // Eagerly Acquire every SPL/UBR texture + SPN child-model slot the
+    // event-data SLKs reference, so the splat textures persist across
+    // splat births / deaths and survive animation changes. On desktop
+    // the sync provider loads them immediately during the next pump;
+    // on web the JS drain fetches them ahead of the first event fire.
+    // No-op until LoadEventDataFiles has populated the splat tables —
+    // wf_tick re-runs it once they arrive on web.
+    if (io::IsSplCachePopulated())
+        io::PrefetchEventAssetSlots(rs_.Assets());
 
     rs_.EnsureDncService();
     rs_.EnsureShadowService(*impl_->gfx_);

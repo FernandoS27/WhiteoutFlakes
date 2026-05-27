@@ -148,6 +148,23 @@ public:
             std::string_view path, std::span<const u8> bytes, std::string_view foundExt)>;
     void SetChildModelBuilder(ChildModelBuilder builder);
 
+    /// @brief Fires after a slot's payload is swapped in by CommitPrepared,
+    ///        outside the manager mutex so the callback can Acquire other
+    ///        slots safely. Hosts use this to scan a freshly-applied asset
+    ///        for secondary references (e.g. corn-fx layer textures) and
+    ///        eagerly Acquire them — see AddDependency for the lifetime
+    ///        tie-in.
+    using OnAppliedFn = std::function<void(SlotId, AssetKind)>;
+    void SetOnApplied(OnAppliedFn cb);
+
+    /// @brief Register @p child as a dependency of @p parent. When the
+    ///        parent's refcount reaches zero, every dependency is
+    ///        released automatically. Use this from an OnApplied hook
+    ///        to tie a parent slot's lifetime to slots it transitively
+    ///        references. No-op if either id is invalid or @p parent
+    ///        no longer exists.
+    void AddDependency(SlotId parent, SlotId child);
+
     // ── Diagnostics ──────────────────────────────────────────────────────
     struct Stats {
         std::size_t liveSlots          = 0;
@@ -183,6 +200,10 @@ private:
         std::shared_ptr<std::vector<std::byte>> particleBytes;
         std::unique_ptr<cornflakes::ExpandingArena> particleArena;
         std::shared_ptr<model::ModelTemplate> childTemplate;
+        // Slots that should be released when this slot's refcount drops
+        // to zero — used by the OnApplied hook to tie texture slots to
+        // the parent particle/child-model slot.
+        std::vector<SlotId> dependencies;
     };
 
     struct Prepared {
@@ -225,6 +246,7 @@ private:
     // calls — only the arena and source bytes vary.
     cornflakes::SerializerPriorityDispatcher particleDispatch_;
     ChildModelBuilder childModelBuilder_;
+    OnAppliedFn onApplied_;
 
     // Stats (under mu_).
     std::size_t statAcquires_      = 0;

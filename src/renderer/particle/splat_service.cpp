@@ -1,32 +1,24 @@
 #include "renderer/particle/splat_service.h"
 
-#include "assets/texture_asset_manager.h"
-#include "gfx/gfx.h"
-#include "model/model_source_utils.h"
-#include "whiteout/flakes/content_provider.h"
+#include "renderer/assets/asset_manager.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
-#include <filesystem>
 
 namespace whiteout::flakes::renderer::particle {
 
 using namespace ::whiteout::flakes::renderer::assets;
-using namespace ::whiteout::flakes::renderer::model;
-using namespace ::whiteout::flakes::io;
 
 SplatService::SplatService() = default;
-SplatService::~SplatService() = default;
+SplatService::~SplatService() {
+    Clear();
+}
 
-void SplatService::Configure(gfx::IGFXDevice* gfx, TextureAssetManager* textures,
-                             IContentProvider* contentProvider) {
+void SplatService::Configure(AssetManager* assets) {
     std::lock_guard<std::mutex> lk(mutex_);
-    gfx_ = gfx;
-    textures_ = textures;
-    content_ = contentProvider;
+    assets_ = assets;
 }
 
 void SplatService::Tick() {
@@ -51,6 +43,7 @@ void SplatService::Tick() {
     while (it != splats_.end()) {
         it->age += dt;
         if (it->age >= it->total) {
+            ReleaseSplat(*it);
             it = splats_.erase(it);
         } else {
             ++it;
@@ -60,15 +53,9 @@ void SplatService::Tick() {
 
 void SplatService::Clear() {
     std::lock_guard<std::mutex> lk(mutex_);
+    for (auto& s : splats_)
+        ReleaseSplat(s);
     splats_.clear();
-
-    if (gfx_) {
-        for (auto& [path, tex] : textureCache_) {
-            if (tex != gfx::TextureHandle::Invalid)
-                gfx_->Destroy(tex);
-        }
-    }
-    textureCache_.clear();
     lastTickNs_ = -1;
 }
 
@@ -94,7 +81,7 @@ void SplatService::SpawnSpl(const io::SplEntry& entry, const Vector3f& worldOrig
                             const Vector3f& worldRight, const Vector3f& worldForward) {
     Splat s;
     BuildCorners(s.corners, worldOrigin, worldRight, worldForward);
-    s.texture = GetOrLoadTexture(entry.file);
+    s.textureSlot = AcquireTexture(entry.file);
     s.blendMode = entry.blendMode;
     s.isUbr = false;
     s.t0 = entry.lifespan;
@@ -102,8 +89,11 @@ void SplatService::SpawnSpl(const io::SplEntry& entry, const Vector3f& worldOrig
     s.t2 = 0.f;
     s.total = s.t0 + s.t1;
 
-    if (s.total <= 0.f)
+    if (s.total <= 0.f) {
+        if (s.textureSlot != AssetManager::kInvalidSlot && assets_)
+            assets_->Release(s.textureSlot);
         return;
+    }
     std::memcpy(s.c[0], entry.startC, sizeof(f32) * 4);
     std::memcpy(s.c[1], entry.midC, sizeof(f32) * 4);
     std::memcpy(s.c[2], entry.endC, sizeof(f32) * 4);
@@ -125,7 +115,7 @@ void SplatService::SpawnUbr(const io::UbrEntry& entry, const Vector3f& worldOrig
                             const Vector3f& worldRight, const Vector3f& worldForward) {
     Splat s;
     BuildCorners(s.corners, worldOrigin, worldRight, worldForward);
-    s.texture = GetOrLoadTexture(entry.file);
+    s.textureSlot = AcquireTexture(entry.file);
     s.blendMode = entry.blendMode;
     s.isUbr = true;
     s.t0 = entry.birthTime;
@@ -133,8 +123,11 @@ void SplatService::SpawnUbr(const io::UbrEntry& entry, const Vector3f& worldOrig
     s.t2 = entry.decay;
     s.total = s.t0 + s.t1 + s.t2;
 
-    if (s.total <= 0.f)
+    if (s.total <= 0.f) {
+        if (s.textureSlot != AssetManager::kInvalidSlot && assets_)
+            assets_->Release(s.textureSlot);
         return;
+    }
     std::memcpy(s.c[0], entry.c[0], sizeof(f32) * 4);
     std::memcpy(s.c[1], entry.c[1], sizeof(f32) * 4);
     std::memcpy(s.c[2], entry.c[2], sizeof(f32) * 4);
@@ -251,60 +244,25 @@ void SplatService::BuildGeometry(std::vector<Vertex>& outVertices,
         SplatDrawList dl;
         dl.vertexOffset = base;
         dl.vertexCount = 6;
-        dl.texture = s.texture;
+        // Resolves to the shared placeholder until AssetManager finishes
+        // loading; flips to the real texture once CommitPrepared runs.
+        dl.texture = assets_ ? assets_->TextureOf(s.textureSlot) : gfx::TextureHandle::Invalid;
         dl.blendMode = s.blendMode;
         outDrawLists.push_back(dl);
     }
 }
 
-gfx::TextureHandle SplatService::GetOrLoadTexture(const std::string& path) {
-    if (path.empty() || !gfx_ || !content_)
-        return gfx::TextureHandle::Invalid;
+u32 SplatService::AcquireTexture(const std::string& path) {
+    if (path.empty() || !assets_)
+        return AssetManager::kInvalidSlot;
+    return assets_->Acquire(AssetKind::Texture, path);
+}
 
-    {
-        auto it = textureCache_.find(path);
-        if (it != textureCache_.end())
-            return it->second;
+void SplatService::ReleaseSplat(Splat& s) {
+    if (s.textureSlot != AssetManager::kInvalidSlot && assets_) {
+        assets_->Release(s.textureSlot);
+        s.textureSlot = AssetManager::kInvalidSlot;
     }
-
-    std::string foundExt;
-    auto data = content_->ReadFile(path, &foundExt);
-    if (!data) {
-        std::fprintf(stderr, "[splat] ERR: tex read FAIL '%s'\n", path.c_str());
-#if !defined(__EMSCRIPTEN__)
-        // Desktop: ReadFile is a synchronous CASC/MPQ/disk read. A miss
-        // here is permanent — pin the Invalid so subsequent SpawnSpl
-        // calls don't re-issue I/O per spawn (that's a ~60 FPS regression
-        // on models with missing splat textures).
-        textureCache_.emplace(path, gfx::TextureHandle::Invalid);
-#endif
-        return gfx::TextureHandle::Invalid;
-    }
-    if (foundExt.empty())
-        foundExt = ExtensionLower(std::filesystem::path(path));
-
-    std::vector<u8> rgba;
-    i32 w = 0, h = 0;
-    if (!DecodeToRGBA8(*data, foundExt, rgba, w, h) || w <= 0 || h <= 0) {
-        std::fprintf(stderr, "[splat] ERR: tex decode FAIL '%s' ext='%s' bytes=%zu\n", path.c_str(),
-                     foundExt.c_str(), data->size());
-#if !defined(__EMSCRIPTEN__)
-        // Decode failures are deterministic (the bytes won't suddenly
-        // become valid). Pin so we don't redecode every spawn.
-        textureCache_.emplace(path, gfx::TextureHandle::Invalid);
-#endif
-        return gfx::TextureHandle::Invalid;
-    }
-
-    gfx::TextureDesc td;
-    td.width = w;
-    td.height = h;
-    td.mipLevels = 1;
-    td.format = gfx::Format::R8G8B8A8_UNORM;
-    td.usage = gfx::TextureUsage::ShaderResource;
-    auto tex = gfx_->CreateTexture(td, rgba.data());
-    textureCache_.emplace(path, tex);
-    return tex;
 }
 
 } // namespace whiteout::flakes::renderer::particle

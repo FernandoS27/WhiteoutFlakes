@@ -9,6 +9,7 @@
 // ============================================================================
 
 #include "whiteout/flakes/actor_view.h"
+#include "whiteout/flakes/event_data.h"
 #include "whiteout/flakes/renderer.h"
 #include "whiteout/flakes/views.h"
 
@@ -445,6 +446,11 @@ AssetsView::Stats AssetsView::GetStats() const {
     out.totalApplies     = s.totalApplies;
     out.totalApplyMisses = s.totalApplyMisses;
     return out;
+}
+
+void AssetsView::PrefetchEventAssets() {
+    if (!impl_) return;
+    io::PrefetchEventAssetSlots(Svc(impl_).Assets());
 }
 
 // ============================================================================

@@ -6,16 +6,13 @@
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
 
+#include <cstdint>
 #include <mutex>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
-namespace whiteout::flakes::io {
-class IContentProvider;
-}
 namespace whiteout::flakes::renderer::assets {
-class TextureAssetManager;
+class AssetManager;
 }
 
 namespace whiteout::flakes::renderer::particle {
@@ -24,7 +21,12 @@ struct Splat {
 
     Vector3f corners[4];
 
-    gfx::TextureHandle texture = gfx::TextureHandle::Invalid;
+    // Texture slot acquired from AssetManager — the GPU handle is resolved
+    // at BuildGeometry time via TextureOf(slot). Slot starts as the shared
+    // placeholder until the host's pump fetches the bytes and CommitPrepared
+    // swaps in the real texture; the splat then renders correctly with no
+    // further coordination.
+    u32 textureSlot = 0; // AssetManager::kInvalidSlot
     i32 blendMode = 0;
     bool isUbr = false;
 
@@ -53,8 +55,7 @@ public:
     SplatService();
     ~SplatService();
 
-    void Configure(gfx::IGFXDevice* gfx, assets::TextureAssetManager* textures,
-                   io::IContentProvider* contentProvider);
+    void Configure(assets::AssetManager* assets);
 
     void Tick();
 
@@ -72,7 +73,8 @@ public:
     i32 Count() const;
 
 private:
-    gfx::TextureHandle GetOrLoadTexture(const std::string& path);
+    u32 AcquireTexture(const std::string& path);
+    void ReleaseSplat(Splat& s);
 
     static void BuildCorners(Vector3f corners[4], const Vector3f& origin, const Vector3f& right,
                              const Vector3f& forward);
@@ -84,11 +86,7 @@ private:
     mutable std::mutex mutex_;
     std::vector<Splat> splats_;
 
-    gfx::IGFXDevice* gfx_ = nullptr;
-    assets::TextureAssetManager* textures_ = nullptr;
-    io::IContentProvider* content_ = nullptr;
-
-    std::unordered_map<std::string, gfx::TextureHandle> textureCache_;
+    assets::AssetManager* assets_ = nullptr;
 
     // -1 means "no prior sample" — first Tick() seeds the timer.
     i64 lastTickNs_ = -1;

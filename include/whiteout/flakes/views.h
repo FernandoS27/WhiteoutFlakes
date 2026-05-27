@@ -262,6 +262,14 @@ public:
     };
     Stats GetStats() const;
 
+    /// @brief Acquire slots for every SPL/UBR texture and SPN child-model
+    ///        referenced by the loaded event-data SLKs. The slots are
+    ///        held by the event-data cache for the rest of the session,
+    ///        so the host pump fetches them eagerly and they survive
+    ///        animation changes. Call after `LoadEventDataFiles` finishes
+    ///        populating the splat tables.
+    void PrefetchEventAssets();
+
 private:
     explicit AssetsView(detail::RendererImpl* impl) : impl_(impl) {}
     detail::RendererImpl* impl_;

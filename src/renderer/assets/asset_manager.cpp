@@ -35,6 +35,19 @@ void AssetManager::SetChildModelBuilder(ChildModelBuilder builder) {
     childModelBuilder_ = std::move(builder);
 }
 
+void AssetManager::SetOnApplied(OnAppliedFn cb) {
+    std::lock_guard<std::mutex> lk(mu_);
+    onApplied_ = std::move(cb);
+}
+
+void AssetManager::AddDependency(SlotId parent, SlotId child) {
+    if (parent == kInvalidSlot || child == kInvalidSlot) return;
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = slots_.find(parent);
+    if (it == slots_.end()) return;
+    it->second.dependencies.push_back(child);
+}
+
 std::string AssetManager::Normalize(std::string_view in) {
     std::string out;
     out.reserve(in.size());
@@ -81,6 +94,7 @@ AssetManager::SlotId AssetManager::Acquire(AssetKind kind, std::string_view path
 void AssetManager::Release(SlotId slot) {
     if (slot == kInvalidSlot) return;
     gfx::TextureHandle toDestroy = gfx::TextureHandle::Invalid;
+    std::vector<SlotId> dependencies;
     {
         std::lock_guard<std::mutex> lk(mu_);
         ++statReleases_;
@@ -100,11 +114,16 @@ void AssetManager::Release(SlotId slot) {
             toDestroy = it->second.texHandle;
         }
 
+        dependencies = std::move(it->second.dependencies);
         pathToSlot_.erase(it->second.path);
         slots_.erase(it);
     }
     if (toDestroy != gfx::TextureHandle::Invalid && gfx_)
         gfx_->Destroy(toDestroy);
+    // Outside the lock — dependent releases recurse into Release(), which
+    // takes mu_ itself.
+    for (SlotId d : dependencies)
+        Release(d);
 }
 
 bool AssetManager::Loaded(SlotId slot) const {
@@ -338,6 +357,12 @@ void AssetManager::CommitPrepared() {
 
     const gfx::TextureHandle placeholder = textures_.GetDefaults().White;
 
+    // Slots that completed this Commit. Their OnApplied callback fires
+    // OUTSIDE the manager mutex below — the callback typically Acquires
+    // dependent slots which would otherwise deadlock against mu_.
+    std::vector<std::pair<SlotId, AssetKind>> applied;
+    applied.reserve(batch.size());
+
     for (auto& p : batch) {
         if (p.kind == AssetKind::Texture) {
             // Build the GPU texture outside the lock — CreateTexture
@@ -355,6 +380,7 @@ void AssetManager::CommitPrepared() {
             const gfx::TextureHandle freshHandle = gfx_->CreateTexture(desc, p.pixels.data());
 
             gfx::TextureHandle toDestroy = gfx::TextureHandle::Invalid;
+            bool slotApplied = false;
             {
                 std::lock_guard<std::mutex> lk(mu_);
                 auto it = slots_.find(p.slot);
@@ -371,10 +397,12 @@ void AssetManager::CommitPrepared() {
                     s.texHandle = freshHandle;
                     s.loaded    = true;
                     s.generation++;
+                    slotApplied = true;
                 }
             }
             if (toDestroy != gfx::TextureHandle::Invalid)
                 gfx_->Destroy(toDestroy);
+            if (slotApplied) applied.emplace_back(p.slot, p.kind);
         } else if (p.kind == AssetKind::Particle) {
             // Particle slot — swap in the parsed model and adopt the
             // per-slot arena + source bytes that back its spans. The
@@ -383,28 +411,53 @@ void AssetManager::CommitPrepared() {
             // every chunk it allocated. No GPU work; consumers
             // (CornEffectsEmitter::TrySpawn) notice via generation
             // bump on their next tick.
-            std::lock_guard<std::mutex> lk(mu_);
-            auto it = slots_.find(p.slot);
-            if (it == slots_.end()) continue;
-            Slot& s = it->second;
-            s.particleAsset = std::move(p.particleAsset);
-            s.particleBytes = std::move(p.particleBytes);
-            s.particleArena = std::move(p.particleArena);
-            s.loaded        = true;
-            s.generation++;
+            bool slotApplied = false;
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                auto it = slots_.find(p.slot);
+                if (it != slots_.end()) {
+                    Slot& s = it->second;
+                    s.particleAsset = std::move(p.particleAsset);
+                    s.particleBytes = std::move(p.particleBytes);
+                    s.particleArena = std::move(p.particleArena);
+                    s.loaded        = true;
+                    s.generation++;
+                    slotApplied = true;
+                }
+            }
+            if (slotApplied) applied.emplace_back(p.slot, p.kind);
         } else if (p.kind == AssetKind::ChildModel) {
             // ChildModel slot — assign the parsed template. The
             // template's GPU geosets get uploaded lazily by
             // ModelLoader::uploadTemplateGpu when the first actor
             // referencing it hits its UploadStagedGeosets pass.
-            std::lock_guard<std::mutex> lk(mu_);
-            auto it = slots_.find(p.slot);
-            if (it == slots_.end()) continue;
-            Slot& s = it->second;
-            s.childTemplate = std::move(p.childTemplate);
-            s.loaded        = true;
-            s.generation++;
+            bool slotApplied = false;
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                auto it = slots_.find(p.slot);
+                if (it != slots_.end()) {
+                    Slot& s = it->second;
+                    s.childTemplate = std::move(p.childTemplate);
+                    s.loaded        = true;
+                    s.generation++;
+                    slotApplied = true;
+                }
+            }
+            if (slotApplied) applied.emplace_back(p.slot, p.kind);
         }
+    }
+
+    // Fire the OnApplied hook outside the manager mutex so callbacks can
+    // Acquire dependent slots (e.g. corn-fx textures referenced by a
+    // freshly-parsed .pkb) without deadlocking.
+    OnAppliedFn cb;
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        cb = onApplied_;
+    }
+    if (cb) {
+        for (const auto& [id, kind] : applied)
+            cb(id, kind);
     }
 }
 

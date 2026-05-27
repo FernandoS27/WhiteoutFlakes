@@ -1,6 +1,15 @@
 #include "renderer/corn_effects/corn_effects_service.h"
 
+#include <cornflakes/interface/asset/effect_asset_model.hpp>
+#include <cornflakes/interface/binding/effect_binder.hpp>
+#include <cornflakes/interface/binding/effect_execution_plan.hpp>
+#include <cornflakes/interface/binding/layer_program.hpp>
+#include <cornflakes/interface/core/arena.hpp>
+#include <cornflakes/interface/diagnostics/issue.hpp>
+#include <cornflakes/interface/schema/handles.hpp>
+
 #include <cstdio>
+#include <unordered_set>
 
 namespace whiteout::flakes::renderer::corn_effects {
 
@@ -98,6 +107,26 @@ void CornEffectsService::Simulate(f32 dt) {
         e->gameToCornEffectsScale_ = gameToCornEffectsScale_;
         e->Update(dt, false);
     }
+}
+
+std::vector<std::string> CornEffectsService::ExtractDiffuseTexturePaths(
+    const ::whiteout::cornflakes::EffectAssetModel& model) {
+    std::vector<std::string> out;
+    ::whiteout::cornflakes::ExpandingArena bindArena(std::size_t{1U} << 16);
+    ::whiteout::cornflakes::IssueBag issues;
+    ::whiteout::cornflakes::EffectBinder binder;
+    auto plan = binder.bind(model, ::whiteout::cornflakes::EffectId{0}, bindArena, issues);
+    if (!plan.has_value() || issues.hasFatal())
+        return out;
+    std::unordered_set<std::string> seen;
+    for (const auto& lp : plan->layers) {
+        for (const auto& rr : lp.renderers) {
+            if (rr.diffuseTexturePath.empty()) continue;
+            std::string s(rr.diffuseTexturePath);
+            if (seen.insert(s).second) out.push_back(std::move(s));
+        }
+    }
+    return out;
 }
 
 } // namespace whiteout::flakes::renderer::corn_effects
