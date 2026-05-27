@@ -275,6 +275,11 @@ public:
     ///        populating the splat tables.
     void PrefetchEventAssets();
 
+    /// @brief True iff a Texture slot for @p path is already loaded.
+    ///        Used by hosts that want to dedup texture decode work
+    ///        across models (e.g. the Max plugin's live adapter).
+    bool IsTextureCached(std::string_view path) const;
+
 private:
     explicit AssetsView(detail::RendererImpl* impl) : impl_(impl) {}
     detail::RendererImpl* impl_;

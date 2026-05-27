@@ -458,6 +458,11 @@ void AssetsView::PrefetchEventAssets() {
     io::PrefetchEventAssetSlots(Svc(impl_).Assets());
 }
 
+bool AssetsView::IsTextureCached(std::string_view path) const {
+    if (!impl_) return false;
+    return Svc(impl_).Assets().IsTextureCached(path);
+}
+
 // ============================================================================
 // ActorView
 // ============================================================================

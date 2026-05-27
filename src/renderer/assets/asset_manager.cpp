@@ -132,6 +132,17 @@ bool AssetManager::Loaded(SlotId slot) const {
     return it != slots_.end() && it->second.loaded;
 }
 
+bool AssetManager::IsTextureCached(std::string_view path) const {
+    if (path.empty()) return false;
+    const std::string norm = Normalize(path);
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = pathToSlot_.find(norm);
+    if (it == pathToSlot_.end()) return false;
+    auto slotIt = slots_.find(it->second);
+    if (slotIt == slots_.end()) return false;
+    return slotIt->second.kind == AssetKind::Texture && slotIt->second.loaded;
+}
+
 u32 AssetManager::GenerationOf(SlotId slot) const {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = slots_.find(slot);

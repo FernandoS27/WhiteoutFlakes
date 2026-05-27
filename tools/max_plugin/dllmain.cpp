@@ -16,6 +16,7 @@
 #include "cubeb_sound_emitter.h"
 #include "max_scene_adapter.h"
 #include "render_window.h"
+#include "renderer/assets/asset_manager.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/model/model_instance.h" // Actor
 #include "renderer/model/model_loader.h"
@@ -300,8 +301,10 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count) {
     // Cross-model dedup: skip BLP/CASC decode for textures that other models
     // already uploaded. SpawnActorFromLiveSource sets this too, but we set
     // it now so CollectScene's incidental texture reads also benefit.
+    // The cache now lives on AssetManager (post-asset-manager refactor)
+    // and Assets().IsTextureCached() returns true once Apply has run.
     g_adapter->SetTextureCacheQuery(
-        [](std::string_view k) { return g_renderer->Textures().IsCachedShared(k); });
+        [](std::string_view k) { return g_renderer->Assets().IsTextureCached(k); });
 
     // Walk the Max scene at t=0 for stable bind-pose extraction.
     TimeValue savedTime = ip->GetTime();

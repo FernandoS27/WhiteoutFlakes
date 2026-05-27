@@ -84,6 +84,13 @@ public:
     /// @brief True once a successful Apply has populated the payload.
     bool Loaded(SlotId slot) const;
 
+    /// @brief Path-keyed predicate: true iff a Texture slot for @p path
+    ///        exists AND its payload has arrived (Apply has run). Used
+    ///        by the Max plugin's live adapter for cross-model dedup —
+    ///        skip BLP/CASC decode when another model already uploaded
+    ///        the same texture.
+    bool IsTextureCached(std::string_view path) const;
+
     /// @brief Monotonic counter bumped each time a slot's payload swaps.
     ///        Consumers cache the last-seen generation to detect changes
     ///        without comparing handles.

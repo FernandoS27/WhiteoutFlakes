@@ -91,6 +91,10 @@ target_include_directories(WhiteoutFlakesMaxPlugin PRIVATE
     "${BASIC_VIEWER_DIR}"
     "${TOOLS_COMMON_DIR}"
     "${CMAKE_SOURCE_DIR}/externals/dr_libs"
+    # asset_manager.h transitively pulls cornflakes interface headers
+    # (Effect/PkbReader / IArena etc.); needed once the plugin queries
+    # AssetManager directly for the cross-model texture-dedup hook.
+    "${CMAKE_SOURCE_DIR}/src/renderer/corn_effects"
 )
 
 target_compile_definitions(WhiteoutFlakesMaxPlugin PRIVATE
