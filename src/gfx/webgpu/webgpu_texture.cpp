@@ -30,6 +30,27 @@ wgpu::TextureUsage ToWgpuTextureUsage(TextureUsage u, bool wantUpload) {
     return out;
 }
 
+u64 TextureBytes(const TextureDesc& desc) {
+    const u32 mipLevels = std::max(1u, static_cast<u32>(desc.mipLevels));
+    const u32 layers = std::max(1u, static_cast<u32>(desc.arraySize)) *
+                       (desc.isCube ? 1u : 1u); // arraySize already counts cube faces
+    const u32 bpp = FormatBytesPerBlock(desc.format);
+    const bool block = IsBlockCompressed(desc.format);
+    u64 total = 0;
+    for (u32 layer = 0; layer < layers; ++layer) {
+        u32 w = static_cast<u32>(desc.width);
+        u32 h = static_cast<u32>(desc.height);
+        for (u32 mip = 0; mip < mipLevels; ++mip) {
+            const u32 blocksW = block ? std::max(1u, (w + 3) / 4) : w;
+            const u32 blocksH = block ? std::max(1u, (h + 3) / 4) : h;
+            total += static_cast<u64>(blocksW) * blocksH * bpp;
+            w = std::max(1u, w / 2);
+            h = std::max(1u, h / 2);
+        }
+    }
+    return total;
+}
+
 void UploadInitialPixels(WebGPUDeviceState& state, const wgpu::Texture& tex,
                          const TextureDesc& desc, const void* pixels) {
     if (!pixels)
@@ -129,6 +150,8 @@ TextureHandle WebGPUDevice::CreateTexture(const TextureDesc& desc, const void* i
     entry.mipLevels = desc.mipLevels;
     entry.arraySize = desc.arraySize;
     entry.ownsTexture = true;
+    entry.byteSize = TextureBytes(desc);
+    state.gpuBytesAlloc.fetch_add(entry.byteSize, std::memory_order_relaxed);
     return static_cast<TextureHandle>(state.textures.Insert(std::move(entry)));
 }
 
@@ -190,14 +213,20 @@ void WebGPUDevice::Destroy(TextureHandle h) {
     // Swap-chain proxies don't own their texture; the SwapChainEntry does.
     if (!texture->ownsTexture) {
         state.textures.Remove(static_cast<u64>(h));
+        InvalidateBindGroupCaches(state);
         return;
     }
     TextureEntry moved = std::move(*texture);
     state.textures.Remove(static_cast<u64>(h));
+    InvalidateBindGroupCaches(state);
+    const u64 bytes = moved.byteSize;
     std::lock_guard<std::mutex> lock(state.deleteMutex);
     state.pendingDeletes.push_back(PendingDelete{
         state.pendingEpoch + 1,
-        [owned = std::move(moved)]() mutable { (void)owned; },
+        [owned = std::move(moved), &state, bytes]() mutable {
+            (void)owned;
+            state.gpuBytesFreed.fetch_add(bytes, std::memory_order_relaxed);
+        },
     });
 }
 
@@ -207,6 +236,7 @@ void WebGPUDevice::Destroy(SamplerHandle h) {
     if (!sampler)
         return;
     SamplerEntry moved = std::move(*sampler);
+    InvalidateBindGroupCaches(state);
     state.samplers.Remove(static_cast<u64>(h));
     std::lock_guard<std::mutex> lock(state.deleteMutex);
     state.pendingDeletes.push_back(PendingDelete{

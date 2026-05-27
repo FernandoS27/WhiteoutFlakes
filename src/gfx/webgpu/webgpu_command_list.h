@@ -85,6 +85,40 @@ private:
     TextureHandle activeDepthAttachment_ = TextureHandle::Invalid;
     wgpu::TextureFormat activeColorFormat_ = wgpu::TextureFormat::Undefined;
     PipelineHandle lastBoundPipeline_ = PipelineHandle::Invalid;
+
+    // Per-slot vertex-buffer bind state, for redundant-bind suppression.
+    // Reset at BeginRenderPass — wgpu::RenderPassEncoder loses its state
+    // when the pass ends.
+    struct LastVB {
+        BufferHandle buffer{};
+        u64 offset = 0;
+    };
+    std::array<LastVB, 16> lastVBs_{};
+    BufferHandle lastIndexBuffer_{};
+    u64 lastIndexOffset_ = 0;
+    Format lastIndexFormat_ = Format::R16_UINT;
+
+    // Scratch BindGroupEntry arrays owned by the command list — reused
+    // across every FlushBindings call so we don't allocate a fresh
+    // std::vector per draw. At 200+ draws/frame × 3 groups, that was
+    // 600+ heap allocs/frame. Sized to the layout binding counts (see
+    // kCbBindingCount / kSrvBindingCount / kSamplerBindingCount in
+    // webgpu_init.cpp — all 32 here).
+    std::array<wgpu::BindGroupEntry, 32> scratchCbEntries_{};
+    std::array<wgpu::BindGroupEntry, 32> scratchSrvEntries_{};
+    std::array<wgpu::BindGroupEntry, 32> scratchSamplerEntries_{};
+
+    // Last-applied bind-group cache key per group, reset at
+    // BeginRenderPass. When a dirty flush ends up resolving the same
+    // key as the previous flush (e.g. a redundant Bind* flip-flopped),
+    // we skip pass_.SetBindGroup entirely — the binding is already
+    // active on the encoder. Saves a per-draw API call on Firefox.
+    u64 lastCbKey_ = 0;
+    u64 lastSrvKey_ = 0;
+    u64 lastSamplerKey_ = 0;
+    bool lastCbKeySet_ = false;
+    bool lastSrvKeySet_ = false;
+    bool lastSamplerKeySet_ = false;
 };
 
 } // namespace whiteout::flakes::gfx::webgpu

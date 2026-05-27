@@ -243,23 +243,26 @@ void wf_tick(WfRenderer* h, float dtSeconds) {
     // while the drain catches up, with no upside since the JS drain
     // itself only fires every 10 frames.
     if (cp) {
-        // Force-reload until every critical SLK has populated. Sound SLKs
-        // depend on the assetMap (DialogueXxxBase.slk) loading first; if
-        // they parsed in a tick where the assetMap was still empty the
-        // SndEntry filePaths hold raw labels instead of full paths.
-        // force=true re-clears + re-parses so the cache always reflects
-        // the latest provider state. Stops automatically once the
-        // splat tables are populated (`c.loaded` early-returns the
-        // LoadEventDataFiles body).
-        if ((++h->eventDataRetryTick % 30) == 0) {
+        // Force-reload only while at least one critical SLK table is
+        // still empty. Once SPN / SPL / UBR / SND have all populated,
+        // STOP — otherwise force=true bypasses the `c.loaded`
+        // early-return inside LoadEventDataFiles and re-clears +
+        // re-parses every SLK every 30 frames forever, churning
+        // hundreds of map entries + strings each pass and bleeding
+        // heap ~10KB/frame at idle.
+        const bool allLoaded =
+            whiteout::flakes::io::IsSpnCachePopulated() &&
+            whiteout::flakes::io::IsSplCachePopulated() &&
+            whiteout::flakes::io::IsUbrCachePopulated() &&
+            whiteout::flakes::io::IsSndCachePopulated();
+        if (!allLoaded && (++h->eventDataRetryTick % 30) == 0) {
             const bool wasLoaded = whiteout::flakes::io::IsSplCachePopulated();
             whiteout::flakes::io::LoadEventDataFiles(cp, /*force=*/true);
-            // Acquire AssetManager slots for every SPL/UBR texture and SPN
-            // child-model the moment the splat tables first appear. The
-            // slots stay refcounted on the event-data cache for the rest
-            // of the session, so the host pump fetches them eagerly and
-            // the textures survive across animation changes — first-fire
-            // is already loaded, no placeholder, no per-anim reload.
+            // First time the splat tables appear: Acquire AssetManager
+            // slots for every SPL/UBR texture and SPN child-model.
+            // Slots stay refcounted for the rest of the session so the
+            // host pump fetches them eagerly and they survive animation
+            // changes.
             if (!wasLoaded && whiteout::flakes::io::IsSplCachePopulated())
                 h->renderer.Assets().PrefetchEventAssets();
         }
@@ -596,6 +599,18 @@ int wf_assets_apply(WfRenderer* h, int kind, const char* path,
     return h->renderer.Assets().ApplyAsset(
         k, std::string_view(path), span,
         foundExt ? std::string_view(foundExt) : std::string_view{}) ? 1 : 0;
+}
+
+// Live GPU bytes currently allocated by the WebGPU backend (sum of every
+// outstanding CreateTexture + CreateBuffer that hasn't been drained from
+// the deferred-delete queue). Diagnostic — JS pulls into the overlay /
+// console to spot leaks across model loads.
+double wf_gpu_bytes(WfRenderer* h) {
+    if (!h) return 0.0;
+    // Return as double — JS uses 64-bit floats and emscripten's i64
+    // marshaling is awkward; double exactly represents integers up to 2^53
+    // which covers any plausible VRAM total.
+    return static_cast<double>(h->renderer.Pipeline().LiveGpuBytes());
 }
 
 // Diagnostics — JS pulls these into the page overlay during dev.

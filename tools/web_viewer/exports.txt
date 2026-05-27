@@ -40,3 +40,4 @@ _wf_assets_needs_get_kind
 _wf_assets_needs_get_path
 _wf_assets_apply
 _wf_assets_stat
+_wf_gpu_bytes

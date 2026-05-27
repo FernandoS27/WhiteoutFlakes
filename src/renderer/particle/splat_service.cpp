@@ -219,10 +219,40 @@ void SplatService::CellToUV(i32 cellIdx, i32 columns, i32 rows, f32& u0, f32& v0
 void SplatService::BuildGeometry(std::vector<Vertex>& outVertices,
                                  std::vector<SplatDrawList>& outDrawLists) const {
     std::lock_guard<std::mutex> lk(mutex_);
-    outVertices.reserve(outVertices.size() + splats_.size() * 6);
-    outDrawLists.reserve(outDrawLists.size() + splats_.size());
+    if (splats_.empty()) return;
 
-    for (const auto& s : splats_) {
+    // Sort splat indices by (textureSlot, blendMode) so runs of the same
+    // material end up contiguous in the output VB. The actual splat vector
+    // stays in spawn order — we just emit verts in sorted order. Doing it
+    // this way means N same-texture footstep splats collapse into ONE
+    // draw call instead of N (each splat used to be its own SplatDrawList
+    // entry, which Firefox's WebGPU pays ~5µs/draw of IPC overhead for).
+    std::vector<u32> order(splats_.size());
+    for (u32 i = 0; i < splats_.size(); ++i) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](u32 a, u32 b) {
+        const auto& sa = splats_[a];
+        const auto& sb = splats_[b];
+        if (sa.textureSlot != sb.textureSlot) return sa.textureSlot < sb.textureSlot;
+        return sa.blendMode < sb.blendMode;
+    });
+
+    outVertices.reserve(outVertices.size() + splats_.size() * 6);
+
+    SplatDrawList run{};
+    bool runOpen = false;
+    u32 runTexSlot = 0;
+    i32 runBlendMode = 0;
+
+    auto flushRun = [&]() {
+        if (runOpen) {
+            outDrawLists.push_back(run);
+            runOpen = false;
+        }
+    };
+
+    for (u32 idx : order) {
+        const auto& s = splats_[idx];
+
         f32 color[4];
         i32 cellIdx = -1;
         EvaluateAt(s, color, cellIdx);
@@ -241,15 +271,20 @@ void SplatService::BuildGeometry(std::vector<Vertex>& outVertices,
         outVertices.push_back({s.corners[2], n, c, {u1, v1}});
         outVertices.push_back({s.corners[3], n, c, {u1, v0}});
 
-        SplatDrawList dl;
-        dl.vertexOffset = base;
-        dl.vertexCount = 6;
-        // Resolves to the shared placeholder until AssetManager finishes
-        // loading; flips to the real texture once CommitPrepared runs.
-        dl.texture = assets_ ? assets_->TextureOf(s.textureSlot) : gfx::TextureHandle::Invalid;
-        dl.blendMode = s.blendMode;
-        outDrawLists.push_back(dl);
+        if (runOpen && s.textureSlot == runTexSlot && s.blendMode == runBlendMode) {
+            run.vertexCount += 6;
+        } else {
+            flushRun();
+            run.vertexOffset = base;
+            run.vertexCount = 6;
+            run.texture = assets_ ? assets_->TextureOf(s.textureSlot) : gfx::TextureHandle::Invalid;
+            run.blendMode = s.blendMode;
+            runTexSlot = s.textureSlot;
+            runBlendMode = s.blendMode;
+            runOpen = true;
+        }
     }
+    flushRun();
 }
 
 u32 SplatService::AcquireTexture(const std::string& path) {

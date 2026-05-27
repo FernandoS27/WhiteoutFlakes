@@ -61,6 +61,11 @@ public:
     /// @brief Last-frame stats (geoset / texture / node / particle /
     ///        segment counts).
     FrameStats GetFrameStats() const;
+    /// @brief Live GPU bytes currently allocated. WebGPU backend tracks
+    ///        every CreateTexture / CreateBuffer and subtracts on
+    ///        deferred-delete drain — diagnostic for memory growth.
+    ///        Returns 0 on backends without tracking.
+    u64 LiveGpuBytes() const;
 
 private:
     explicit PipelineView(detail::RendererImpl* impl) : impl_(impl) {}

@@ -17,19 +17,23 @@ inline constexpr u32 kFramesInFlight = 3;
 
 // Map* on a CpuWritable+Constant buffer rotates through this many slots
 // so per-draw writes don't stall the GPU. Sized for the worst-case
-// in-flight draw count: kFramesInFlight × (per-frame draw count) — HD
-// scenes with many actors + per-draw CB rebinds + many particle
-// emitters can issue >256 maps to the same CB in one command buffer.
-// If the ring wraps inside the same command buffer, the new write
-// stomps a slot the GPU is still reading from in an earlier draw —
-// produces NaN transforms / bone matrices and TDRs the device.
-inline constexpr u32 kCbRingSlots = 4096;
+// in-flight draw count: kFramesInFlight × (per-frame draw count). With
+// the corn-fx batching + splat coalescing landed in the perf pass, the
+// realistic per-frame CB map count per buffer is in the low hundreds —
+// 1024 leaves comfortable headroom without bloating the ring. Was 4096
+// previously, which made each per-CB allocation a 1 MiB sub-alloc and
+// blew up VRAM on Firefox.
+inline constexpr u32 kCbRingSlots = 1024;
 
 // Single shared CB upload buffer. CpuWritable buffers sub-alloc here;
 // fall back to dedicated CreateBuffer (with per-buffer CPU shadow) when
-// the cursor overflows. Sized to comfortably hold one frame's worth of
-// transient CBs at kCbRingSlots depth.
-inline constexpr u64 kSharedCbCapacity = 256ull * 1024 * 1024;
+// the cursor overflows. Was 256 MiB (right at the WebGPU spec default
+// maxBufferSize), which Firefox refuses or honors-and-OOMs on lower-VRAM
+// devices because the buffer is created with every usage bit set
+// (Uniform|Storage|Vertex|Index|CopySrc|CopyDst) — drivers tend to
+// allocate that out of the most restrictive heap. 64 MiB matches the
+// Vulkan backend's `kSharedCbCapacity` and is plenty for our workload.
+inline constexpr u64 kSharedCbCapacity = 64ull * 1024 * 1024;
 
 // Binding slot counts.
 //
@@ -71,6 +75,7 @@ using DeleteEpoch = u64;
 struct BufferEntry {
     wgpu::Buffer buffer; // own buffer OR alias of shared CB
     BufferDesc desc{};
+    u64 byteSize = 0; // ownership-bytes for GPU accounting (0 for ring aliases).
 
     // Ring-buffer slots (mirrors VulkanDevice's BufferEntry). Map* rotates
     // through `slotCount` slots of `slotStride` bytes; the active draw's
@@ -114,6 +119,10 @@ struct TextureEntry {
 
     SwapChainHandle swapChainProxy = SwapChainHandle::Invalid;
     bool isLinearView = false;
+
+    // Live GPU byte accounting (TextureBytes(desc) at create time).
+    // Carried so the deferred-delete lambda can subtract on actual drop.
+    u64 byteSize = 0;
 };
 
 struct VertexInputLocation {

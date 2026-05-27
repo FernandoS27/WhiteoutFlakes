@@ -335,11 +335,11 @@ void FrameTicker::UpdateAnimation() {
 void FrameTicker::UpdateParticles(f32 dt) {
     rs_.Particles().Simulate(dt);
     rs_.Splats().Tick();
-    // CornFx deliberately is NOT ticked here — its cornflakes runtime
-    // emits GPU draws inline during runtime->tick() via the backend's
-    // submit(), so the tick must run inside a render pass. RenderPipeline
-    // calls CornEffects().Simulate(dt) from its corn fx pass; we just stash
-    // dt for the pipeline to pick up.
+    // CornFx deliberately is NOT ticked here — the corn-fx service ticks
+    // every emitter (CPU sim) and emits one consolidated batch of GPU
+    // draws from inside its SimulateAndRender pass, which must run
+    // inside an active render pass. RenderPipeline calls
+    // CornEffects().SimulateAndRender(dt); we just stash dt for it.
     rs_.CornEffects().SetPendingDt(dt);
 }
 

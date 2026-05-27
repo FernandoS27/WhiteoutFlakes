@@ -46,14 +46,17 @@ target_link_options(wf_web PRIVATE
     "-sEXPORTED_FUNCTIONS=@${CMAKE_CURRENT_SOURCE_DIR}/exports.txt"
     # Exceptions: see top-level CMakeLists.txt EMSCRIPTEN block.
     -fno-exceptions
-    # -Oz: see top-level CMakeLists.txt rationale (avoids V8 sync-compile
-    # by keeping functions small enough that TurboFan can stay async).
+    # Link-time -Oz keeps wasm-opt aggressive on binary size; compile-time
+    # in the WhiteoutFlakesLib TUs is -O2 (see top-level CMakeLists.txt).
     -Oz
     # -g1 keeps the wasm name section (function + global names) without
     # the DWARF blowup of -g2 — useful while we're still bisecting size.
     -g1
 )
-target_compile_options(wf_web PRIVATE -fno-exceptions -Oz -g1)
+# Compile-time -O2 for the wf_web facade TU itself — same rationale as
+# top-level (faster code in Firefox without re-introducing giant inlined
+# functions, since the no-inline / no-LTO guards stay).
+target_compile_options(wf_web PRIVATE -fno-exceptions -O2 -g1)
 
 # Stage the JS facade + HTML shell next to wf-core.{js,wasm} so a local
 # web server can serve them with no extra plumbing.

@@ -383,7 +383,17 @@ export class WhiteoutViewer {
             throw new Error('WebGPU not available on this browser/profile.');
         }
         trace('requestAdapter…');
-        const adapter = await navigator.gpu.requestAdapter();
+        // Ask for the discrete / high-performance GPU on hybrid systems.
+        // Without this hint, both Firefox and Chrome default to the
+        // integrated GPU — the AMD APU / Intel UHD that's vastly slower
+        // for the HD PBR shader. Browser may still ignore on battery
+        // power; users can also override via OS-level graphics
+        // settings (Windows: Settings → System → Display → Graphics
+        // settings → Firefox → High performance) or the NVIDIA Control
+        // Panel program settings.
+        const adapter = await navigator.gpu.requestAdapter({
+            powerPreference: 'high-performance',
+        });
         if (!adapter) throw new Error('navigator.gpu.requestAdapter returned null.');
         trace('adapter ok; features=' + Array.from(adapter.features).join(','));
 
@@ -408,11 +418,9 @@ export class WhiteoutViewer {
 
         // Ensure the canvas's drawing buffer matches its CSS box. Without
         // this WebGPU surfaces at 1×1 by default on some browsers.
-        const dpr = window.devicePixelRatio || 1;
-        const cssW = this.canvas.clientWidth || this.canvas.width || 800;
-        const cssH = this.canvas.clientHeight || this.canvas.height || 600;
-        this.canvas.width = Math.max(1, Math.floor(cssW * dpr));
-        this.canvas.height = Math.max(1, Math.floor(cssH * dpr));
+        const init = this._computeBackingSize();
+        this.canvas.width = init.w;
+        this.canvas.height = init.h;
 
         // Give the canvas an id so we can hand a CSS selector to the
         // surface descriptor. JS owns the string; we also keep a copy in
@@ -534,10 +542,36 @@ export class WhiteoutViewer {
         this._installCameraControls();
 
         this._lastTime = performance.now();
+        // FPS tracking — exponentially-weighted moving average on dt so the
+        // displayed number is stable across short hitches but still tracks
+        // sustained changes. Polled by the host UI via `getFps()`.
+        this._emaDt = 1 / 60;
+        // 120 fps cap. The browser fires rAF at the monitor's refresh
+        // rate (often 144+ Hz on gaming displays); for a model viewer
+        // there's no benefit to rendering faster than 120. Capping
+        // saves GPU work on high-refresh displays + extends battery
+        // life. We still rAF every tick (cheaper than setTimeout
+        // latency) but skip the tick + render call when less than
+        // ~8.3 ms has elapsed since the last rendered frame.
+        const TARGET_FRAME_MS = 1000 / 120;
+        // 1 ms slack — fires just before the deadline so a frame that
+        // takes 16ms still counts.
+        const FRAME_SKIP_SLACK_MS = 1.0;
         this._loop = (now) => {
             if (!this._handle) return;
-            const dt = Math.min(0.1, Math.max(0.0, (now - this._lastTime) / 1000));
+            const elapsed = now - this._lastTime;
+            if (elapsed < TARGET_FRAME_MS - FRAME_SKIP_SLACK_MS) {
+                // Not yet at the next 60-fps deadline; re-arm rAF and
+                // do nothing else. No tick, no render, no pump.
+                this._raf = requestAnimationFrame(this._loop);
+                return;
+            }
+            const dt = Math.min(0.1, Math.max(0.0, elapsed / 1000));
             this._lastTime = now;
+            if (dt > 0) {
+                const k = 0.1; // ~10-frame smoothing
+                this._emaDt = this._emaDt * (1 - k) + dt * k;
+            }
             this._module._wf_tick(this._handle, dt);
             this._module._wf_render(this._handle);
             this._raf = requestAnimationFrame(this._loop);
@@ -549,6 +583,13 @@ export class WhiteoutViewer {
         };
         this._raf = requestAnimationFrame(this._loop);
         return this;
+    }
+
+    // Smoothed FPS computed from the rAF loop's dt EMA. Returns 0 until
+    // the loop has run at least one frame.
+    getFps() {
+        if (!this._emaDt || this._emaDt <= 0) return 0;
+        return 1 / this._emaDt;
     }
 
     // Install a path solver the renderer uses to fetch assets the
@@ -677,15 +718,22 @@ export class WhiteoutViewer {
 
     _onResize() {
         if (!this._handle) return;
-        const dpr = window.devicePixelRatio || 1;
-        const cssW = this.canvas.clientWidth || 1;
-        const cssH = this.canvas.clientHeight || 1;
-        const w = Math.max(1, Math.floor(cssW * dpr));
-        const h = Math.max(1, Math.floor(cssH * dpr));
+        const { w, h } = this._computeBackingSize();
         if (w === this.canvas.width && h === this.canvas.height) return;
         this.canvas.width = w;
         this.canvas.height = h;
         this._module._wf_resize(this._handle, w, h);
+    }
+
+    // Compute the canvas's backing-buffer size: CSS box × devicePixelRatio.
+    _computeBackingSize() {
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = this.canvas.clientWidth || this.canvas.width || 800;
+        const cssH = this.canvas.clientHeight || this.canvas.height || 600;
+        return {
+            w: Math.max(1, Math.floor(cssW * dpr)),
+            h: Math.max(1, Math.floor(cssH * dpr)),
+        };
     }
 
     setBackground(r, g, b) {
@@ -700,6 +748,21 @@ export class WhiteoutViewer {
 
     setShowGrid(on) {
         if (this._handle) this._module._wf_set_show_grid(this._handle, on ? 1 : 0);
+    }
+
+    // Live GPU bytes currently allocated by the WebGPU backend (sum of
+    // outstanding CreateTexture + CreateBuffer that haven't drained from
+    // the deferred-delete queue). Returned as a Number (double — exact
+    // up to 2^53). Call from devtools as `__hive.viewer.gpuBytes()` to
+    // diagnose growth across model loads.
+    gpuBytes() {
+        if (!this._handle) return 0;
+        return this._module._wf_gpu_bytes(this._handle);
+    }
+    logGpuBytes(tag = '') {
+        const b = this.gpuBytes();
+        const mb = (b / (1024 * 1024)).toFixed(1);
+        console.log(`[wf-gpu] ${tag} live=${mb} MiB (${b} bytes)`);
     }
 
     _installCameraControls() {

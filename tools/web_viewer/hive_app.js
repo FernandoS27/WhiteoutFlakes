@@ -43,6 +43,7 @@ export class HiveApp {
         this.volSlider    = document.getElementById('vol-slider');
         this.lightingSel  = document.getElementById('lighting-select');
         this.gridToggle   = document.getElementById('grid-toggle');
+        this.fpsReadout   = document.getElementById('fps-readout');
         this.emptyModels  = this.modelList.querySelector('.empty');
 
         this.viewer = null;
@@ -136,6 +137,16 @@ export class HiveApp {
             const apply = () => this.viewer.setShowGrid(this.gridToggle.checked);
             this.gridToggle.addEventListener('change', apply);
             apply(); // seed engine with the checkbox's default state
+        }
+        if (this.fpsReadout) {
+            // Refresh twice a second — the viewer maintains a smoothed dt
+            // EMA so the number is already stable; we just don't need to
+            // burn DOM updates at 60Hz.
+            setInterval(() => {
+                if (!this.viewer) return;
+                const fps = this.viewer.getFps();
+                this.fpsReadout.textContent = fps > 0 ? fps.toFixed(0) : '—';
+            }, 500);
         }
     }
 

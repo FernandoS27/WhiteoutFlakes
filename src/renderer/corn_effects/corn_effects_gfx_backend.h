@@ -3,6 +3,7 @@
 #include "../gfx/gfx.h"
 #include "renderer/bls/bls_cb_layout.h"
 #include "renderer/bls/bls_mat_params.h"
+#include "renderer/corn_effects/corn_effects_vertex.h"
 #include "renderer/types.h"
 #include "whiteout/flakes/types.h"
 
@@ -69,10 +70,54 @@ public:
 
     bool prepare(std::span<const ::whiteout::cornflakes::LayerProgram> layers,
                  ::whiteout::cornflakes::IssueBag& issues) override;
+
+    // IRenderBackend::submit. Called by EffectRuntime::tick() — does the
+    // CPU per-particle work (depth sort, quad expansion, atlas UVs) and
+    // stashes the result in `pending_`. No GPU calls — the owning
+    // CornEffectsService merges every emitter's pending_ into one shared
+    // VB/IB per frame and issues draws in one consolidated pass.
     void submit(std::span<const ::whiteout::cornflakes::RenderPacket> packets,
                 const ::whiteout::cornflakes::ViewParams& view,
                 ::whiteout::cornflakes::IssueBag& issues) override;
     void shutdown(::whiteout::cornflakes::IssueBag& issues) override;
+
+    // CPU vert/index/draw bundle produced by `submit`. Lives on the
+    // backend so it survives EffectRuntime::tick re-entry; cleared by
+    // the service at the start of each frame's batch.
+    struct PendingBatch {
+        struct Draw {
+            u32 indexFirst = 0; // local — service offsets via baseIndex
+            u32 indexCount = 0;
+            u32 layerIdx = 0;
+            u8  blendMode = 0;
+        };
+        std::vector<CornEffectsVertex> verts;
+        std::vector<u16> indices; // local 0..verts.size(); service offsets via baseVertex
+        std::vector<Draw> draws;
+        bool Empty() const {
+            return draws.empty();
+        }
+        void Clear() {
+            verts.clear();
+            indices.clear();
+            draws.clear();
+        }
+    };
+    PendingBatch& Pending() {
+        return pending_;
+    }
+    const PendingBatch& Pending() const {
+        return pending_;
+    }
+
+    // Service hooks. Texture slot of the layer for a given draw; the
+    // service binds the texture before DrawIndexed because it changes
+    // per draw within a batch.
+    std::uint32_t LayerDiffuseSlot(u32 layerIdx) const;
+
+    // Map a packet's blend-mode byte to the matching BLS alpha mode.
+    // Called by the service when building MatParams for each draw.
+    static bls::GxMatAlpha BlendModeToGxAlpha(u8 blendMode);
 
 private:
     struct LayerState {
@@ -92,12 +137,6 @@ private:
         bool size2D = false;
     };
 
-    bool EnsureVertexBuffer(u32 vertexCount);
-    bool EnsureIndexBuffer(u32 indexCount);
-    void EnsureCbs();
-
-    static bls::GxMatAlpha BlendModeToGxAlpha(u8 blendMode);
-
     gfx::IGFXDevice* device_ = nullptr;
     const bls::BlsProgram* program_ = nullptr;
     bls::BlsPsoBuilder* psoBuilder_ = nullptr;
@@ -107,14 +146,7 @@ private:
     TextureSlotAcquirer slotAcquire_;
 
     std::vector<LayerState> layerStates_;
-
-    gfx::BufferHandle vb_ = gfx::BufferHandle::Invalid;
-    u32 vbCap_ = 0;
-    gfx::BufferHandle ib_ = gfx::BufferHandle::Invalid;
-    u32 ibCap_ = 0;
-
-    gfx::BufferHandle vsCb_ = gfx::BufferHandle::Invalid;
-    gfx::BufferHandle psCb_ = gfx::BufferHandle::Invalid;
+    PendingBatch pending_;
 
     CornEffectsFrameInputs frame_;
 };

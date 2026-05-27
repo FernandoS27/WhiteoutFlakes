@@ -70,12 +70,8 @@ CornEffectsGfxBackend::~CornEffectsGfxBackend() {
                 assets_->Release(ls.diffuseSlot);
         }
     }
-    if (!device_)
-        return;
-    device_->Destroy(vb_);
-    device_->Destroy(ib_);
-    device_->Destroy(vsCb_);
-    device_->Destroy(psCb_);
+    // GPU buffers used to live here; now the owning CornEffectsService
+    // shares one VB/IB/CB set across every emitter — nothing to free.
 }
 
 bool CornEffectsGfxBackend::prepare(std::span<const ::whiteout::cornflakes::LayerProgram> layers,
@@ -124,49 +120,23 @@ bool CornEffectsGfxBackend::prepare(std::span<const ::whiteout::cornflakes::Laye
     return true;
 }
 
-void CornEffectsGfxBackend::EnsureCbs() {
-    if (vsCb_ == gfx::BufferHandle::Invalid) {
-        gfx::BufferDesc bd;
-        bd.size = sizeof(bls::HdVsCb);
-        bd.usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable;
-        vsCb_ = device_->CreateBuffer(bd);
-    }
-    if (psCb_ == gfx::BufferHandle::Invalid) {
-        gfx::BufferDesc bd;
-        bd.size = sizeof(bls::HdPsCb);
-        bd.usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable;
-        psCb_ = device_->CreateBuffer(bd);
-    }
-}
-
-bool CornEffectsGfxBackend::EnsureVertexBuffer(u32 vertexCount) {
-    if (vertexCount <= vbCap_ && vb_ != gfx::BufferHandle::Invalid)
-        return true;
-    device_->Destroy(vb_);
-    vbCap_ = std::max(vertexCount, std::max<u32>(vbCap_ * 2u, 256u));
-    gfx::BufferDesc bd;
-    bd.size = sizeof(CornEffectsVertex) * vbCap_;
-    bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
-    vb_ = device_->CreateBuffer(bd);
-    return vb_ != gfx::BufferHandle::Invalid;
-}
-
-bool CornEffectsGfxBackend::EnsureIndexBuffer(u32 indexCount) {
-    if (indexCount <= ibCap_ && ib_ != gfx::BufferHandle::Invalid)
-        return true;
-    device_->Destroy(ib_);
-    ibCap_ = std::max(indexCount, std::max<u32>(ibCap_ * 2u, 384u));
-    gfx::BufferDesc bd;
-    bd.size = sizeof(u16) * ibCap_;
-    bd.usage = gfx::BufferUsage::Index | gfx::BufferUsage::CpuWritable;
-    ib_ = device_->CreateBuffer(bd);
-    return ib_ != gfx::BufferHandle::Invalid;
+std::uint32_t CornEffectsGfxBackend::LayerDiffuseSlot(u32 layerIdx) const {
+    if (layerIdx >= layerStates_.size())
+        return 0;
+    return layerStates_[layerIdx].diffuseSlot;
 }
 
 void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::RenderPacket> packets,
                                    const ::whiteout::cornflakes::ViewParams& /*view*/,
                                    ::whiteout::cornflakes::IssueBag& /*issues*/) {
-    if (!device_ || !program_ || !psoBuilder_ || !frame_.cmd) {
+    // CPU-only: produces pending_.verts/indices/draws. The owning
+    // CornEffectsService aggregates every emitter's batch into one
+    // shared VB/IB/CB pair and issues consolidated draws in
+    // FlushBatchedDraws — single MapBuffer cycle, single CB write,
+    // and one DrawIndexed per draw (with baseVertex/firstIndex into
+    // the shared buffers).
+    pending_.Clear();
+    if (!device_ || !program_ || !psoBuilder_) {
         return;
     }
 
@@ -265,18 +235,11 @@ void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::Rende
     std::sort(order.begin(), order.end(), [&](u32 a, u32 b) { return depthOf[a] < depthOf[b]; });
 
     const size_t totalLive = order.size();
-    std::vector<CornEffectsVertex> verts;
-    std::vector<u16> indices;
+    auto& verts   = pending_.verts;
+    auto& indices = pending_.indices;
+    auto& draws   = pending_.draws;
     verts.reserve(totalLive * 4);
     indices.reserve(totalLive * 6);
-
-    struct DrawRange {
-        u32 indexFirst;
-        u32 indexCount;
-        u32 layerIdx;
-        u8 blendMode;
-    };
-    std::vector<DrawRange> draws;
     draws.reserve(packets.size());
 
     u32 runFirst = 0;
@@ -436,113 +399,13 @@ void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::Rende
         indices.push_back(static_cast<u16>(b + 3));
     }
     flushRun(static_cast<u32>(indices.size()));
-    if (draws.empty())
-        return;
-
-    EnsureCbs();
-    if (!EnsureVertexBuffer(static_cast<u32>(verts.size())))
-        return;
-    if (!EnsureIndexBuffer(static_cast<u32>(indices.size())))
-        return;
-
-    if (void* p = device_->MapBuffer(vb_)) {
-        std::memcpy(p, verts.data(), sizeof(CornEffectsVertex) * verts.size());
-        device_->UnmapBuffer(vb_);
-    }
-    if (void* p = device_->MapBuffer(ib_)) {
-        std::memcpy(p, indices.data(), sizeof(u16) * indices.size());
-        device_->UnmapBuffer(ib_);
-    }
-
-    auto* cmd = frame_.cmd;
-    cmd->BindVertexBuffer(0, vb_, sizeof(CornEffectsVertex));
-    cmd->BindIndexBuffer(ib_, gfx::Format::R16_UINT);
-
-    const Matrix44f worldView = frame_.view;
-    const Matrix44f worldViewProj = frame_.view * frame_.projection;
-
-    if (auto vs = bls::ScopedCb<bls::HdVsCb>(device_, vsCb_)) {
-        bls::HdVsCb& cb = *vs;
-        cb.world = Matrix44f::identity();
-        cb.worldView = worldView;
-        cb.worldViewProj = worldViewProj;
-        cb.misc = {frame_.effectTime, frame_.cornEffectsScale, 0.0f, 0.0f};
-        cb.diffuseColor = {1, 1, 1, 1};
-        cb.texMtx0 = {};
-        cb.texMtx1 = {};
-    }
-    if (auto ps = bls::ScopedCb<bls::HdPsCb>(device_, psCb_)) {
-        bls::HdPsCb& cb = *ps;
-        std::memset(&cb, 0, sizeof(cb));
-        cb.alphaRef = 0.0f;
-        cb.fogParams = {0, 0, 0, 0};
-        cb.fogColor = {0, 0, 0, 1};
-        cb.worldView = worldView;
-        cb.view = frame_.view;
-        cb.projection = frame_.projection;
-        cb.viewportRect = frame_.viewportRect;
-        cb.pixelParams1 = {1.0f, 0.0f, 0.0f, 0.0f};
-        cb.effectTime = frame_.effectTime;
-        cb.lightCount = 0.0f;
-    }
-
-    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, vsCb_);
-    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2, psCb_);
-
-    for (const auto& d : draws) {
-        bls::MatParams mp;
-        mp.shaderId = bls::GxShaderID::CornFx;
-        mp.alpha = BlendModeToGxAlpha(d.blendMode);
-        mp.disables = bls::kDisableLighting | bls::kDisableDepthWrite | bls::kDisableCull;
-        mp.diffuseColor = {1, 1, 1, 1};
-
-        bls::PermuteIndices perm{kVsPermBasicUVWithVC, kPsPermBasicUVWithVC};
-
-        auto req = bls::MakePsoRequest(program_, bls::VertexLayoutKind::CornFx, mp, perm);
-        req.rtvFormat = frame_.rtvFormat;
-        req.dsvFormat = frame_.dsvFormat;
-        auto pso = psoBuilder_->GetOrBuild(req);
-        if (pso == gfx::PipelineHandle::Invalid)
-            continue;
-        cmd->BindPipeline(pso);
-
-        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, vsCb_);
-        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2, psCb_);
-
-        auto& ls = layerStates_[d.layerIdx];
-        // Resolve the slot to its current GPU handle. Returns the
-        // shared placeholder while bytes are still in flight; swaps
-        // to the real texture the frame after CommitPrepared runs.
-        // No per-frame retry, no missing-list spam.
-        gfx::TextureHandle tex = (ls.diffuseSlot != 0 && assets_)
-                                     ? assets_->TextureOf(ls.diffuseSlot)
-                                     : gfx::TextureHandle::Invalid;
-        if (tex == gfx::TextureHandle::Invalid && textures_) {
-            tex = textures_->GetDefaults().White;
-        }
-        if (tex != gfx::TextureHandle::Invalid) {
-            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, tex);
-        }
-        if (samplers_) {
-            cmd->BindSampler(gfx::ShaderStage::Pixel, 0,
-                             samplers_->WrapVariant(assets::kSamplerWrapBitsMask));
-        }
-
-        cmd->DrawIndexed(d.indexCount, d.indexFirst, 0);
-    }
+    // GPU emission is deferred to CornEffectsService — it walks every
+    // emitter's pending_ batch, packs them into one shared VB/IB pair,
+    // writes the shared CBs once, then issues all DrawIndexeds with
+    // (baseVertex, firstIndex) into the shared buffers.
 }
 
 void CornEffectsGfxBackend::shutdown(::whiteout::cornflakes::IssueBag& /*issues*/) {
-    if (!device_)
-        return;
-    device_->Destroy(vb_);
-    vb_ = gfx::BufferHandle::Invalid;
-    device_->Destroy(ib_);
-    ib_ = gfx::BufferHandle::Invalid;
-    device_->Destroy(vsCb_);
-    vsCb_ = gfx::BufferHandle::Invalid;
-    device_->Destroy(psCb_);
-    psCb_ = gfx::BufferHandle::Invalid;
     layerStates_.clear();
 }
 

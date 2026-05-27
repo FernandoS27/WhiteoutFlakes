@@ -105,6 +105,11 @@ BufferHandle WebGPUDevice::CreateBuffer(const BufferDesc& desc, const void* init
         entry.dedicatedShadow.assign(static_cast<usize>(totalSize), 0);
         entry.mapped = entry.dedicatedShadow.data();
     }
+    // Live GPU-bytes accounting: only count buffers that actually own
+    // GPU memory (not shared-ring aliases, which sub-allocate from
+    // state.sharedCbBuffer and contribute 0 incremental bytes).
+    entry.byteSize = totalSize;
+    state.gpuBytesAlloc.fetch_add(entry.byteSize, std::memory_order_relaxed);
     return static_cast<BufferHandle>(state.buffers.Insert(std::move(entry)));
 }
 
@@ -124,12 +129,18 @@ void WebGPUDevice::Destroy(BufferHandle h) {
     }
     BufferEntry moved = std::move(*buffer);
     state.buffers.Remove(static_cast<u64>(h));
+    // Drop every cached bind group — any of them might be holding a ref
+    // to the wgpu::Buffer we're about to destroy. Without this the cache
+    // keeps zombie GPU resources alive past their handle.
+    InvalidateBindGroupCaches(state);
+    const u64 bytes = moved.byteSize;
     std::lock_guard<std::mutex> lock(state.deleteMutex);
     state.pendingDeletes.push_back(PendingDelete{
         state.pendingEpoch + 1,
-        [owned = std::move(moved)]() mutable {
+        [owned = std::move(moved), &state, bytes]() mutable {
             // ~BufferEntry drops the wgpu::Buffer ref.
             (void)owned;
+            state.gpuBytesFreed.fetch_add(bytes, std::memory_order_relaxed);
         },
     });
 }

@@ -80,6 +80,15 @@ bool ShadowPass::Run(ShadowService& service) {
 
                 const i32 modelLod = mi->render.hasLods ? selectedLod : 0;
 
+                // Hoist the vsCb write + bind out of the geoset loop —
+                // worldViewProj is constant across all geosets of this
+                // actor in this cascade. Was: write+bind per geoset
+                // (~30 × 3 cascades × N actors = 90+ queue.WriteBuffer
+                // calls per frame on Firefox = >5 ms of IPC). Now:
+                // write+bind once per actor per cascade. Done lazily on
+                // first valid geoset so empty actors don't pay the cost.
+                bool actorCbBound = false;
+
                 for (auto& geo : mi->render.gpuGeosets) {
                     if (geo.unskinnedVb == gfx::BufferHandle::Invalid)
                         continue;
@@ -116,10 +125,13 @@ bool ShadowPass::Run(ShadowService& service) {
                         currentPso = pso;
                     }
 
-                    if (auto vs = bls::ScopedCb<bls::HdVsCb>(gfx, vsCb)) {
-                        BuildShadowVsCb(*vs, mi->worldTransform, cascadeVP);
+                    if (!actorCbBound) {
+                        if (auto vs = bls::ScopedCb<bls::HdVsCb>(gfx, vsCb)) {
+                            BuildShadowVsCb(*vs, mi->worldTransform, cascadeVP);
+                        }
+                        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, vsCb);
+                        actorCbBound = true;
                     }
-                    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, vsCb);
 
                     cmd->BindIndexBuffer(geo.ib, gfx::Format::R32_UINT);
                     cmd->BindVertexBuffer(0, geo.unskinnedVb, sizeof(Vertex));

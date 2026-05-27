@@ -41,6 +41,16 @@ u32 SlotIndex(ShaderStage stage, u32 slot) {
     return (stage == ShaderStage::Pixel) ? (slot + kStageBindingShift) : slot;
 }
 
+// FNV-1a 64-bit. Used to compute a cache key over the materialized
+// bind-group entry tuple. Collision risk at our scale (<1k live bind
+// groups) is negligible.
+inline u64 HashMix(u64 h, u64 v) {
+    h ^= v;
+    h *= 0x100000001b3ull;
+    return h;
+}
+constexpr u64 kFnv1aOffsetBasis = 0xcbf29ce484222325ull;
+
 } // namespace
 
 WebGPUCommandList::WebGPUCommandList(WebGPUDevice& device) : device_(device) {}
@@ -146,6 +156,12 @@ void WebGPUCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
     srvSetDirty_ = true;
     samplerSetDirty_ = true;
     lastBoundPipeline_ = PipelineHandle::Invalid;
+    for (auto& v : lastVBs_) v = {};
+    lastIndexBuffer_ = BufferHandle{};
+    lastIndexOffset_ = 0;
+    lastCbKeySet_ = false;
+    lastSrvKeySet_ = false;
+    lastSamplerKeySet_ = false;
 }
 
 void WebGPUCommandList::EndRenderPass() {
@@ -187,6 +203,8 @@ void WebGPUCommandList::SetScissor(const Scissor& sc) {
 
 void WebGPUCommandList::BindPipeline(PipelineHandle h) {
     auto& state = device_.State();
+    if (h == lastBoundPipeline_)
+        return; // already set on the active pass — skip the API call.
     auto* pipe = state.pipelines.Get(static_cast<u64>(h));
     if (!pipe || !pipe->graphics)
         return;
@@ -215,6 +233,12 @@ void WebGPUCommandList::BindVertexBuffer(u32 slot, BufferHandle h, u32 /*stride*
     // not the ring base. Dedicated (non-ring) buffers have slotCount=1
     // so currentOffset() == baseOffset == 0.
     const u64 off = buf->currentOffset() + offset;
+    if (slot < lastVBs_.size()) {
+        auto& last = lastVBs_[slot];
+        if (last.buffer == h && last.offset == off) return;
+        last.buffer = h;
+        last.offset = off;
+    }
     pass_.SetVertexBuffer(slot, buf->buffer, off, wgpu::kWholeSize);
 }
 
@@ -223,9 +247,15 @@ void WebGPUCommandList::BindIndexBuffer(BufferHandle h, Format fmt) {
     auto* buf = state.buffers.Get(static_cast<u64>(h));
     if (!buf || !pass_)
         return;
+    const u64 off = buf->currentOffset();
+    if (lastIndexBuffer_ == h && lastIndexOffset_ == off && lastIndexFormat_ == fmt)
+        return;
+    lastIndexBuffer_ = h;
+    lastIndexOffset_ = off;
+    lastIndexFormat_ = fmt;
     const wgpu::IndexFormat indexFmt =
         (fmt == Format::R32_UINT) ? wgpu::IndexFormat::Uint32 : wgpu::IndexFormat::Uint16;
-    pass_.SetIndexBuffer(buf->buffer, indexFmt, buf->currentOffset(), wgpu::kWholeSize);
+    pass_.SetIndexBuffer(buf->buffer, indexFmt, off, wgpu::kWholeSize);
 }
 
 void WebGPUCommandList::BindConstantBuffer(ShaderStage stage, u32 slot, BufferHandle h) {
@@ -236,13 +266,21 @@ void WebGPUCommandList::BindConstantBuffer(ShaderStage stage, u32 slot, BufferHa
     const u32 idx = (stage == ShaderStage::Pixel) ? (slot + kPsCbBindingOffsetWgsl) : slot;
     if (idx >= kCbBindingCount)
         return;
-    pendingCBs_[idx] = {h, buf->currentOffset(), buf->desc.size};
+    const u64 off = buf->currentOffset();
+    const u64 sz  = buf->desc.size;
+    // Skip the dirty flip when the binding is identical to the current
+    // captured value — saves a rebuild + cache lookup in FlushBindings.
+    auto& cur = pendingCBs_[idx];
+    if (cur.buffer == h && cur.offset == off && cur.size == sz) return;
+    cur = {h, off, sz};
     cbSetDirty_ = true;
 }
 
 void WebGPUCommandList::BindShaderResource(ShaderStage stage, u32 slot, TextureHandle h) {
     const u32 idx = SlotIndex(stage, slot);
-    pendingSRVs_[idx] = {h, BufferHandle::Invalid, false};
+    auto& cur = pendingSRVs_[idx];
+    if (!cur.isBuffer && cur.texture == h) return;
+    cur = {h, BufferHandle::Invalid, false};
     srvSetDirty_ = true;
 }
 
@@ -268,7 +306,9 @@ void WebGPUCommandList::BindUnorderedAccess(u32 slot, BufferHandle h) {
 
 void WebGPUCommandList::BindSampler(ShaderStage stage, u32 slot, SamplerHandle h) {
     const u32 idx = SlotIndex(stage, slot);
-    pendingSamplers_[idx] = {h};
+    auto& cur = pendingSamplers_[idx];
+    if (cur.sampler == h) return;
+    cur = {h};
     samplerSetDirty_ = true;
 }
 
@@ -337,12 +377,12 @@ void WebGPUCommandList::FlushBindings() {
     // ring-slot offset into BindGroupEntry::offset and rebuild a fresh
     // BindGroup whenever any CB binding changes.
     if (cbSetDirty_) {
-        std::vector<wgpu::BindGroupEntry> entries;
-        entries.reserve(kCbBindingCount);
+        u64 key = kFnv1aOffsetBasis;
         for (u32 i = 0; i < kCbBindingCount; ++i) {
-            wgpu::BindGroupEntry e{};
+            wgpu::BindGroupEntry& e = scratchCbEntries_[i];
             e.binding = i;
             const auto& pending = pendingCBs_[i];
+            u64 bufKey = 0; // 0 == "use shared ring at offset 0, size minAlign"
             if (pending.buffer != BufferHandle{}) {
                 auto* buf = state.buffers.Get(static_cast<u64>(pending.buffer));
                 if (buf) {
@@ -358,6 +398,7 @@ void WebGPUCommandList::FlushBindings() {
                     // is < shader-expected size; the extra padding bytes
                     // belong to this sub-alloc's slot so it's safe.
                     e.size = std::max<u64>(buf->slotStride, 16);
+                    bufKey = static_cast<u64>(pending.buffer);
                 } else {
                     e.buffer = state.sharedCbBuffer;
                     e.offset = 0;
@@ -370,15 +411,35 @@ void WebGPUCommandList::FlushBindings() {
                 e.offset = 0;
                 e.size = std::max<u64>(state.minUniformBufferAlign, 16);
             }
-            entries.push_back(e);
+            // Clear unused fields so leftover data from a previous flush
+            // (e.g. a textureView when this slot was last an SRV-style
+            // binding — can't happen with the current layout but defensive)
+            // doesn't pollute the descriptor.
+            e.textureView = nullptr;
+            e.sampler = nullptr;
+            key = HashMix(key, bufKey);
+            key = HashMix(key, e.offset);
+            key = HashMix(key, e.size);
         }
-        wgpu::BindGroupDescriptor bgd{};
-        bgd.label = "wf.cb";
-        bgd.layout = state.cbBgLayout;
-        bgd.entryCount = static_cast<u32>(entries.size());
-        bgd.entries = entries.data();
-        wgpu::BindGroup bg = state.device.CreateBindGroup(&bgd);
-        pass_.SetBindGroup(0, bg, 0, nullptr);
+        // If the key matches what's already bound on this pass, skip
+        // both the cache lookup-or-create AND the SetBindGroup call.
+        // Otherwise resolve the bind group (cache hit or fresh create)
+        // and set it on the pass.
+        if (!(lastCbKeySet_ && key == lastCbKey_)) {
+            wgpu::BindGroup bg = state.bgCacheCb.Get(key);
+            if (!bg) {
+                wgpu::BindGroupDescriptor bgd{};
+                bgd.label = "wf.cb";
+                bgd.layout = state.cbBgLayout;
+                bgd.entryCount = kCbBindingCount;
+                bgd.entries = scratchCbEntries_.data();
+                bg = state.device.CreateBindGroup(&bgd);
+                state.bgCacheCb.Put(key, bg);
+            }
+            pass_.SetBindGroup(0, bg, 0, nullptr);
+            lastCbKey_ = key;
+            lastCbKeySet_ = true;
+        }
         cbSetDirty_ = false;
     }
 
@@ -402,55 +463,79 @@ void WebGPUCommandList::FlushBindings() {
 
     // ---- Group 1: SRVs (textures) -------------------------------------
     if (srvSetDirty_) {
-        std::vector<wgpu::BindGroupEntry> entries;
-        entries.reserve(kSrvBindingCount);
+        u64 key = kFnv1aOffsetBasis;
         for (u32 i = 0; i < kSrvBindingCount; ++i) {
-            wgpu::BindGroupEntry e{};
+            wgpu::BindGroupEntry& e = scratchSrvEntries_[i];
             e.binding = i;
             const auto& pending = pendingSRVs_[i];
             wgpu::TextureView view = defaultTexFor(i);
+            u64 texKey = 0; // 0 == default-for-this-slot
             if (!pending.isBuffer && pending.texture != TextureHandle{}) {
                 if (auto* tex = state.textures.Get(static_cast<u64>(pending.texture)))
-                    if (tex->view)
+                    if (tex->view) {
                         view = tex->view;
+                        texKey = static_cast<u64>(pending.texture);
+                    }
             }
             e.textureView = view;
-            entries.push_back(e);
+            e.buffer = nullptr;
+            e.sampler = nullptr;
+            key = HashMix(key, texKey);
         }
-        wgpu::BindGroupDescriptor bgd{};
-        bgd.label = "wf.srv";
-        bgd.layout = state.srvBgLayout;
-        bgd.entryCount = static_cast<u32>(entries.size());
-        bgd.entries = entries.data();
-        wgpu::BindGroup bg = state.device.CreateBindGroup(&bgd);
-        pass_.SetBindGroup(1, bg, 0, nullptr);
+        if (!(lastSrvKeySet_ && key == lastSrvKey_)) {
+            wgpu::BindGroup bg = state.bgCacheSrv.Get(key);
+            if (!bg) {
+                wgpu::BindGroupDescriptor bgd{};
+                bgd.label = "wf.srv";
+                bgd.layout = state.srvBgLayout;
+                bgd.entryCount = kSrvBindingCount;
+                bgd.entries = scratchSrvEntries_.data();
+                bg = state.device.CreateBindGroup(&bgd);
+                state.bgCacheSrv.Put(key, bg);
+            }
+            pass_.SetBindGroup(1, bg, 0, nullptr);
+            lastSrvKey_ = key;
+            lastSrvKeySet_ = true;
+        }
         srvSetDirty_ = false;
     }
 
     // ---- Group 2: samplers --------------------------------------------
     if (samplerSetDirty_) {
-        std::vector<wgpu::BindGroupEntry> entries;
-        entries.reserve(kSamplerBindingCount);
+        u64 key = kFnv1aOffsetBasis;
         for (u32 i = 0; i < kSamplerBindingCount; ++i) {
-            wgpu::BindGroupEntry e{};
+            wgpu::BindGroupEntry& e = scratchSamplerEntries_[i];
             e.binding = i;
             const auto& pending = pendingSamplers_[i];
             wgpu::Sampler smp = defaultSmpFor(i);
+            u64 smpKey = 0;
             if (pending.sampler != SamplerHandle{}) {
                 if (auto* s = state.samplers.Get(static_cast<u64>(pending.sampler)))
-                    if (s->sampler)
+                    if (s->sampler) {
                         smp = s->sampler;
+                        smpKey = static_cast<u64>(pending.sampler);
+                    }
             }
             e.sampler = smp;
-            entries.push_back(e);
+            e.buffer = nullptr;
+            e.textureView = nullptr;
+            key = HashMix(key, smpKey);
         }
-        wgpu::BindGroupDescriptor bgd{};
-        bgd.label = "wf.sampler";
-        bgd.layout = state.samplerBgLayout;
-        bgd.entryCount = static_cast<u32>(entries.size());
-        bgd.entries = entries.data();
-        wgpu::BindGroup bg = state.device.CreateBindGroup(&bgd);
-        pass_.SetBindGroup(2, bg, 0, nullptr);
+        if (!(lastSamplerKeySet_ && key == lastSamplerKey_)) {
+            wgpu::BindGroup bg = state.bgCacheSampler.Get(key);
+            if (!bg) {
+                wgpu::BindGroupDescriptor bgd{};
+                bgd.label = "wf.sampler";
+                bgd.layout = state.samplerBgLayout;
+                bgd.entryCount = kSamplerBindingCount;
+                bgd.entries = scratchSamplerEntries_.data();
+                bg = state.device.CreateBindGroup(&bgd);
+                state.bgCacheSampler.Put(key, bg);
+            }
+            pass_.SetBindGroup(2, bg, 0, nullptr);
+            lastSamplerKey_ = key;
+            lastSamplerKeySet_ = true;
+        }
         samplerSetDirty_ = false;
     }
 }

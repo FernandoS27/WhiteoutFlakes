@@ -193,7 +193,16 @@ bool RenderPipeline::RenderParticlesBls() {
     if (impl_->particleServiceVB_ == gfx::BufferHandle::Invalid ||
         vertCount > impl_->particleServiceVBSize_) {
         impl_->gfx_->Destroy(impl_->particleServiceVB_);
-        i32 newSize = (std::max)(vertCount, 4096);
+        // Double-and-cap growth. Particle counts oscillate every frame as
+        // they spawn/die — allocating exactly `vertCount` meant we churned
+        // a fresh buffer almost every frame, piling old buffers into the
+        // deferred-delete queue and burning VRAM faster than the GPU could
+        // drain. Doubling makes growth amortized; the cap prevents a
+        // one-frame spike from permanently pinning huge VRAM.
+        constexpr i32 kFloor   = 4096;
+        constexpr i32 kCeiling = 512 * 1024;
+        const i32 doubled = (std::max)(impl_->particleServiceVBSize_ * 2, kFloor);
+        const i32 newSize = (std::max)(vertCount, (std::min)(doubled, kCeiling));
         gfx::BufferDesc bd;
         bd.size = (u32)(sizeof(Vertex) * newSize);
         bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
@@ -319,7 +328,11 @@ bool RenderPipeline::RenderSplatsBls() {
     if (impl_->splatServiceVB_ == gfx::BufferHandle::Invalid ||
         vertCount > impl_->splatServiceVBSize_) {
         impl_->gfx_->Destroy(impl_->splatServiceVB_);
-        i32 newSize = (std::max)(vertCount, 4096);
+        // Doubled-and-capped growth — see particleServiceVB_ above.
+        constexpr i32 kFloor   = 4096;
+        constexpr i32 kCeiling = 256 * 1024;
+        const i32 doubled = (std::max)(impl_->splatServiceVBSize_ * 2, kFloor);
+        const i32 newSize = (std::max)(vertCount, (std::min)(doubled, kCeiling));
         gfx::BufferDesc bd;
         bd.size = (u32)(sizeof(Vertex) * newSize);
         bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
@@ -419,7 +432,7 @@ void RenderPipeline::RenderCornEffects() {
     fi.rtvFormat = SceneTargetFormat();
     fi.dsvFormat = impl_->depthStencilFormat_;
     rs_.CornEffects().SetFrameInputs(fi);
-    rs_.CornEffects().Simulate(rs_.CornEffects().PendingDt());
+    rs_.CornEffects().SimulateAndRender(rs_.CornEffects().PendingDt());
 }
 
 void RenderPipeline::RenderRibbons() {
@@ -462,7 +475,14 @@ void RenderPipeline::RenderRibbons() {
         if (mi->render.ribbonVB == gfx::BufferHandle::Invalid ||
             vertCount > mi->render.ribbonVBSize) {
             impl_->gfx_->Destroy(mi->render.ribbonVB);
-            i32 newSize = (std::max)(vertCount, 512);
+            // Doubled-and-capped growth. Ribbons stream continuously as
+            // the actor animates; with exact-size growth we churned a
+            // fresh VB on almost every frame as the segment count drifted,
+            // piling old buffers into the deferred-delete queue.
+            constexpr i32 kFloor   = 512;
+            constexpr i32 kCeiling = 64 * 1024;
+            const i32 doubled = (std::max)(mi->render.ribbonVBSize * 2, kFloor);
+            const i32 newSize = (std::max)(vertCount, (std::min)(doubled, kCeiling));
             gfx::BufferDesc bd;
             bd.size = (u32)(sizeof(Vertex) * newSize);
             bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
@@ -1167,6 +1187,10 @@ void RenderPipeline::CleanupGFX() {
 
         rs_.ResetDeviceAssetManagers();
 
+        // CornEffects owns shared VB/IB/CBs — release before the device
+        // dies. Service still receives backendInit on next InitDevice.
+        rs_.CornEffects().ReleaseGpuResources();
+
         impl_->gfx_->Destroy(impl_->particleServiceVB_);
         impl_->particleServiceVB_ = gfx::BufferHandle::Invalid;
         impl_->particleServiceVBSize_ = 0;
@@ -1819,6 +1843,63 @@ public:
                 }
             }
         }
+
+        // Hoist pass-constant CBs out of the per-draw lambda. The HD draw
+        // path used to write + bind HdShadowCascadesCb, HdDebugVisCb, and
+        // SdOnHdShadowCascadeCountCb on EVERY draw, even though their
+        // contents are constant across the entire pass (cascade VPs,
+        // global debug mode, cascade count). On Firefox each ScopedCb
+        // costs ~50µs IPC; with 60 draws/frame this was ~9 ms wasted.
+        // Now: write+bind once per pass, the inner loop only writes the
+        // genuinely per-draw HdVsCb and HdPsCb.
+        if (rs_.GetShadowService() &&
+            rs_.Pipeline().impl_->blsHdShadowCb_ != gfx::BufferHandle::Invalid) {
+            if (auto sc = bls::ScopedCb<bls::HdShadowCascadesCb>(
+                    rs_.Pipeline().Gfx(), rs_.Pipeline().impl_->blsHdShadowCb_)) {
+                rs_.GetShadowService()->FillVsCb(*sc);
+            }
+            cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 1,
+                                    rs_.Pipeline().impl_->blsHdShadowCb_);
+        }
+        if (rs_.Pipeline().impl_->blsHdShadowCountCb_ != gfx::BufferHandle::Invalid) {
+            if (auto cnt = bls::ScopedCb<bls::SdOnHdShadowCascadeCountCb>(
+                    rs_.Pipeline().Gfx(), rs_.Pipeline().impl_->blsHdShadowCountCb_)) {
+                const i32 n = (rs_.GetShadowService() && rs_.GetShadowService()->IsEnabled())
+                                  ? rs_.GetShadowService()->cascadeCount()
+                                  : 0;
+                const u32 bits = static_cast<u32>(n);
+                std::memcpy(&cnt->numCascades, &bits, sizeof(f32));
+                cnt->_pad[0] = cnt->_pad[1] = cnt->_pad[2] = 0.0f;
+            }
+            cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1,
+                                    rs_.Pipeline().impl_->blsHdShadowCountCb_);
+        }
+        if (rs_.Pipeline().impl_->blsHdDebugVisCb_ != gfx::BufferHandle::Invalid) {
+            if (auto dbg = bls::ScopedCb<bls::DebugVisCb>(
+                    rs_.Pipeline().Gfx(), rs_.Pipeline().impl_->blsHdDebugVisCb_)) {
+                const i32 dbgMode = rs_.Settings().HdDebugMode();
+                u32 enabled = 0;
+                i32 psMode = dbgMode;
+                Vector3f overrideA = {0, 0, 0};
+                if (dbgMode >= 5 && dbgMode <= 7) {
+                    enabled = 1;
+                    psMode = 0;
+                    overrideA = (dbgMode == 5)   ? Vector3f{1, 1, 1}
+                                : (dbgMode == 6) ? Vector3f{0.5f, 0.5f, 0.5f}
+                                                 : Vector3f{0, 0, 0};
+                }
+                dbg->enabledShaders = enabled;
+                const u32 modeBits = static_cast<u32>(psMode);
+                std::memcpy(&dbg->debugMode, &modeBits, sizeof(f32));
+                dbg->_p0[0] = dbg->_p0[1] = 0.0f;
+                dbg->overrideAlbedo = overrideA;
+                dbg->_p1 = 0.0f;
+                dbg->overrideOrm = {0, 0, 0};
+                dbg->_p2 = 0.0f;
+            }
+            cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3,
+                                    rs_.Pipeline().impl_->blsHdDebugVisCb_);
+        }
     }
 
     bls::BaselineLights Baseline(const Matrix44f& view) const {
@@ -2009,15 +2090,10 @@ public:
                 cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2,
                                         rs_.Pipeline().impl_->blsHdVsCb_);
 
-                if (rs_.GetShadowService() &&
-                    rs_.Pipeline().impl_->blsHdShadowCb_ != gfx::BufferHandle::Invalid) {
-                    if (auto sc = bls::ScopedCb<bls::HdShadowCascadesCb>(
-                            rs_.Pipeline().Gfx(), rs_.Pipeline().impl_->blsHdShadowCb_)) {
-                        rs_.GetShadowService()->FillVsCb(*sc);
-                    }
-                    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 1,
-                                            rs_.Pipeline().impl_->blsHdShadowCb_);
-                }
+                // Pass-constant CBs (HdShadowCascadesCb @ VS slot 1,
+                // SdOnHdShadowCascadeCountCb @ PS slot 1, DebugVisCb @
+                // PS slot 3) are bound once in BindPassResources — they
+                // don't vary per draw.
 
                 if (program == rs_.Pipeline().impl_->blsHdProgram_ ||
                     program == rs_.Pipeline().impl_->blsCrystalProgram_) {
@@ -2027,32 +2103,6 @@ public:
                     }
                     cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2,
                                             rs_.Pipeline().impl_->blsHdPsCb_);
-
-                    if (auto dbg = bls::ScopedCb<bls::DebugVisCb>(
-                            rs_.Pipeline().Gfx(), rs_.Pipeline().impl_->blsHdDebugVisCb_)) {
-
-                        u32 enabled = 0;
-                        i32 psMode = dbgMode;
-                        Vector3f overrideA = {0, 0, 0};
-                        if (dbgMode >= 5 && dbgMode <= 7) {
-                            enabled = 1;
-                            psMode = 0;
-                            overrideA = (dbgMode == 5)   ? Vector3f{1, 1, 1}
-                                        : (dbgMode == 6) ? Vector3f{0.5f, 0.5f, 0.5f}
-                                                         : Vector3f{0, 0, 0};
-                        }
-                        dbg->enabledShaders = enabled;
-
-                        const u32 modeBits = static_cast<u32>(psMode);
-                        std::memcpy(&dbg->debugMode, &modeBits, sizeof(f32));
-                        dbg->_p0[0] = dbg->_p0[1] = 0.0f;
-                        dbg->overrideAlbedo = overrideA;
-                        dbg->_p1 = 0.0f;
-                        dbg->overrideOrm = {0, 0, 0};
-                        dbg->_p2 = 0.0f;
-                    }
-                    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3,
-                                            rs_.Pipeline().impl_->blsHdDebugVisCb_);
                 } else {
                     if (auto ps = bls::ScopedCb<bls::SdOnHdPsCb>(
                             rs_.Pipeline().Gfx(), rs_.Pipeline().impl_->blsSdOnHdPsCb_)) {
@@ -2060,21 +2110,6 @@ public:
                     }
                     cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2,
                                             rs_.Pipeline().impl_->blsSdOnHdPsCb_);
-                }
-
-                if (rs_.Pipeline().impl_->blsHdShadowCountCb_ != gfx::BufferHandle::Invalid) {
-                    if (auto cnt = bls::ScopedCb<bls::SdOnHdShadowCascadeCountCb>(
-                            rs_.Pipeline().Gfx(), rs_.Pipeline().impl_->blsHdShadowCountCb_)) {
-                        const i32 n =
-                            (rs_.GetShadowService() && rs_.GetShadowService()->IsEnabled())
-                                ? rs_.GetShadowService()->cascadeCount()
-                                : 0;
-                        const u32 bits = static_cast<u32>(n);
-                        std::memcpy(&cnt->numCascades, &bits, sizeof(f32));
-                        cnt->_pad[0] = cnt->_pad[1] = cnt->_pad[2] = 0.0f;
-                    }
-                    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1,
-                                            rs_.Pipeline().impl_->blsHdShadowCountCb_);
                 }
 
                 auto bindMaterialTex = [&](u32 slot, i32 texId, gfx::TextureHandle fallback,

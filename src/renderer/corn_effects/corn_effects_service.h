@@ -75,7 +75,15 @@ public:
 
     void SetOwningAgentVisibilityForModel(ActorId model, bool visible);
 
-    void Simulate(f32 dt);
+    /// @brief Run sim ticks for every emitter, then issue the
+    ///        consolidated GPU draws — single VB/IB/CB write per
+    ///        frame regardless of emitter count. Replaces the
+    ///        previous per-emitter Simulate-+-draw pattern.
+    void SimulateAndRender(f32 dt);
+
+    /// @brief Free the shared GPU resources. Called when the device
+    ///        is being torn down so we don't leak handles past it.
+    void ReleaseGpuResources();
 
     /// @brief Trial-bind a parsed @p model just long enough to walk its
     ///        layer programs and return the diffuse texture paths. Used
@@ -87,6 +95,9 @@ public:
         const ::whiteout::cornflakes::EffectAssetModel& model);
 
 private:
+    bool EnsureSharedBuffers(u32 totalVerts, u32 totalIndices);
+    void FlushBatchedDraws();
+
     mutable std::mutex mutex_;
     ::whiteout::cornflakes::ExpandingArena frameArena_{1U << 20};
     std::unordered_map<EmitterKey, std::unique_ptr<CornEffectsEmitter>, EmitterKeyHash> emitters_;
@@ -94,6 +105,16 @@ private:
     std::optional<CornEffectsGfxBackend::Init> backendInit_;
     CornEffectsFrameInputs frameInputs_;
     f32 pendingDt_ = 0.0f;
+
+    // Shared GPU resources used by every corn-fx emitter — one VB/IB/CB
+    // set instead of N. Owned by the service, lifetime tied to the gfx
+    // device passed via backendInit_.
+    gfx::BufferHandle sharedVb_ = gfx::BufferHandle::Invalid;
+    u32 sharedVbCap_ = 0;
+    gfx::BufferHandle sharedIb_ = gfx::BufferHandle::Invalid;
+    u32 sharedIbCap_ = 0;
+    gfx::BufferHandle sharedVsCb_ = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle sharedPsCb_ = gfx::BufferHandle::Invalid;
 };
 
 } // namespace whiteout::flakes::renderer::corn_effects

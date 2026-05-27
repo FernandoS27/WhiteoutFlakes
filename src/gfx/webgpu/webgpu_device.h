@@ -64,6 +64,7 @@ public:
         return GfxApi::WebGPU;
     }
     const char* GetDeviceName() const override;
+    u64 LiveGpuBytes() const override;
 
     WebGPUDeviceState& State();
     const WebGPUDeviceState& State() const;

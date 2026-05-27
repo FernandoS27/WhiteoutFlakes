@@ -62,6 +62,12 @@ const char* WebGPUDevice::GetDeviceName() const {
     return deviceName_.c_str();
 }
 
+u64 WebGPUDevice::LiveGpuBytes() const {
+    const u64 a = state_->gpuBytesAlloc.load(std::memory_order_relaxed);
+    const u64 f = state_->gpuBytesFreed.load(std::memory_order_relaxed);
+    return (a > f) ? (a - f) : 0;
+}
+
 IGFXCommandList* WebGPUDevice::GetImmediateContext() {
     return immediate_.get();
 }

@@ -157,6 +157,11 @@ FrameStats PipelineView::GetFrameStats() const {
     return s;
 }
 
+u64 PipelineView::LiveGpuBytes() const {
+    auto* gfx = Svc(impl_).Pipeline().Gfx();
+    return gfx ? gfx->LiveGpuBytes() : 0;
+}
+
 // ============================================================================
 // SceneView
 // ============================================================================

@@ -27,28 +27,29 @@ if(EMSCRIPTEN)
     # on for >60 s, while the equivalent EH-free wasm compiles in ms.
     add_compile_options(-fno-exceptions)
     add_link_options(-fno-exceptions)
-    # -Oz globally — size-optimised, *less inlining* than -O2. With -O2,
-    # LLVM was inlining 50,000+ wasm-instruction destructors into single
-    # giant functions (`func $5` had 57,965 disassembled lines), which
-    # tips V8 into synchronous TurboFan compilation and freezes the page.
-    # -Oz keeps the per-function instruction count down where V8's async
-    # tiering can actually parallelise the work.
-    # Why these specific flags:
-    #   -Oz                : optimise for size (smaller wasm)
+    # Compile-time: -O2 for better per-function codegen quality (register
+    # allocation, CSE, loop opts, constant propagation). Link-time: -Oz
+    # to keep the wasm binary small via wasm-opt. The Chrome V8 freeze we
+    # used to hit was caused by *huge inlined functions* (50k+ wasm
+    # instructions per func, e.g. PIMPL ctors absorbing their whole
+    # subsystem graph) tipping V8 into synchronous TurboFan — that's
+    # already blocked by `-fno-inline-functions` + `-fno-lto`, which we
+    # keep. With those guards in place, -O2 produces faster code without
+    # creating the giant functions V8 chokes on.
+    #
+    # Was -Oz globally; the Firefox profile showed 73% of frame time in
+    # our WASM (Firefox WGPU/SpiderMonkey is more sensitive to AOT code
+    # quality than Chrome/V8, which JIT-optimizes hot paths at run time).
+    # Lifting compile -O to O2 closes a meaningful chunk of the gap.
+    #
+    # Flags retained:
     #   -fno-lto           : no cross-TU inlining at link time
-    #   -fno-inline-functions: no intra-TU inlining either
-    #   -mllvm -inline-threshold=0: drop LLVM's inline budget to nothing
-    # The combination keeps every emitted wasm function close to the
-    # source function size. Without this, LLVM produces single functions
-    # with 40k+ instructions (e.g. PIMPL ctors inlining their whole
-    # subsystem graph), and current Chrome/Edge V8 (14.x+) drops those
-    # into synchronous TurboFan and freezes the page. Node V8 13.6
-    # compiles the same wasm in <5 ms, so the regression is browser-V8
-    # specific; the safe path is to keep individual functions small.
-    add_compile_options(-Oz -fno-lto -fno-inline-functions)
+    #   -fno-inline-functions: no intra-TU inlining of large funcs
+    # Combined with `-O2`, individual function sizes stay manageable.
+    add_compile_options(-O2 -fno-lto -fno-inline-functions)
     add_link_options(-Oz -fno-lto)
     message(STATUS "WhiteoutFlakes: Emscripten/WebAssembly build "
-                   "(no exceptions, -Oz -fno-lto -fno-inline-functions)")
+                   "(no exceptions, compile -O2 / link -Oz, no inlining/LTO)")
 endif()
 
 # Disable vcpkg's user-wide MSBuild integration (`vcpkg integrate install`)

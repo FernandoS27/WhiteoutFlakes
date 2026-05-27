@@ -12,12 +12,54 @@
 
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <deque>
+#include <list>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 namespace whiteout::flakes::gfx::webgpu {
+
+// LRU-bounded cache mapping a hash of the materialized bind-group entry
+// tuple to its wgpu::BindGroup. WebGPU bind groups are expensive to create
+// (JS↔WASM marshaling, validation) and each holds strong refs to its
+// resources — without caching, every dirty-flag flip allocated a fresh
+// bind group every draw, hundreds per frame, pinning live GPU memory
+// until Dawn GCed them. With caching the steady-state of a frame reuses
+// the same handful of groups across draws.
+//
+// Cap is per-group (CB / SRV / sampler). On Destroy of any backing
+// resource the entire cache is cleared (see WebGPUDevice::Destroy) so
+// the cache can't keep zombie GPU resources alive past their handle.
+struct BindGroupCache {
+    static constexpr std::size_t kCap = 256;
+    struct Entry {
+        wgpu::BindGroup bg;
+        std::list<u64>::iterator lruIt;
+    };
+    std::unordered_map<u64, Entry> map;
+    std::list<u64> lru;
+    wgpu::BindGroup Get(u64 key) {
+        auto it = map.find(key);
+        if (it == map.end()) return nullptr;
+        lru.splice(lru.end(), lru, it->second.lruIt);
+        return it->second.bg;
+    }
+    void Put(u64 key, wgpu::BindGroup bg) {
+        while (map.size() >= kCap && !lru.empty()) {
+            map.erase(lru.front());
+            lru.pop_front();
+        }
+        lru.push_back(key);
+        map.emplace(key, Entry{std::move(bg), std::prev(lru.end())});
+    }
+    void Clear() {
+        map.clear();
+        lru.clear();
+    }
+};
 
 struct WebGPUDeviceState {
     // Public WebGPU handles only — no Dawn-private types. The prebuilt
@@ -114,6 +156,17 @@ struct WebGPUDeviceState {
     std::deque<PendingDelete> pendingDeletes;
     std::mutex deleteMutex; // pendingDeletes is touched from Destroy() (main) only
 
+    BindGroupCache bgCacheCb;
+    BindGroupCache bgCacheSrv;
+    BindGroupCache bgCacheSampler;
+
+    // Live GPU byte accounting. CreateTexture / CreateBuffer bump
+    // `gpuBytesAlloc`; the deferred-delete lambda bumps `gpuBytesFreed`
+    // when the actual wgpu handle drops. Difference is live bytes —
+    // diagnostic only (JS pulls via wf_gpu_bytes).
+    std::atomic<u64> gpuBytesAlloc{0};
+    std::atomic<u64> gpuBytesFreed{0};
+
     bool enableValidation = false;
 
     // Set by DeviceLostCallback. Read by Draw/DrawIndexed and friends to
@@ -136,5 +189,14 @@ void AcquireSwapChainImageIfNeeded(WebGPUDeviceState& state, SwapChainEntry& sc)
 // by both Present() (with `present=true`) and the implicit end-of-frame
 // flush when the renderer never touches the swap chain.
 void SubmitFrameAndBumpEpoch(WebGPUDeviceState& state);
+
+// Drop every cached bind group. Called from Destroy(BufferHandle /
+// TextureHandle / SamplerHandle) so destroyed resources can't be kept
+// alive by stale cache entries referencing them.
+inline void InvalidateBindGroupCaches(WebGPUDeviceState& state) {
+    state.bgCacheCb.Clear();
+    state.bgCacheSrv.Clear();
+    state.bgCacheSampler.Clear();
+}
 
 } // namespace whiteout::flakes::gfx::webgpu

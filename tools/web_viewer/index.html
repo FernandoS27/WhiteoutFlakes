@@ -71,6 +71,12 @@
     accent-color: #20c000;
     cursor: pointer;
   }
+  #fps-readout {
+    font-variant-numeric: tabular-nums; /* keeps width stable as digits flip */
+    color: var(--text);
+    min-width: 3ch;
+    text-align: right;
+  }
 
   /* Volume slider — native range with thumb restyled to a small neutral
      disc, kept unobtrusive. */
@@ -252,6 +258,10 @@
   <div id="topbar">
     <span class="title">View in 3D</span>
     <span class="spacer"></span>
+    <div class="ctrl" id="fps-wrap" title="Frames per second (smoothed)">
+      <label>FPS</label>
+      <span id="fps-readout">—</span>
+    </div>
     <div class="ctrl" title="Light-rig preset">
       <label for="lighting-select">Lighting</label>
       <select id="lighting-select">

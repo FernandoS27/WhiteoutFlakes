@@ -148,6 +148,14 @@ public:
     virtual const char* GetDeviceName() const = 0;
 
     virtual Format PreferredDepthStencilFormat() const = 0;
+
+    /// @brief Live GPU bytes currently allocated by this device, summed over
+    ///        every CreateTexture / CreateBuffer that hasn't yet been
+    ///        retired. Diagnostic only; backends that don't track this
+    ///        return 0.
+    virtual u64 LiveGpuBytes() const {
+        return 0;
+    }
 };
 
 // `enableValidation` turns on the API's debug / validation machinery:
