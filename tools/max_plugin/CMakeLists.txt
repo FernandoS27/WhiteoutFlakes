@@ -67,7 +67,7 @@ add_library(WhiteoutFlakesMaxPlugin SHARED
     # ImGui's Win32 platform backend (input forwarding via WndProc). Lives
     # with the host rather than the engine imgui static lib so the engine
     # library doesn't drag in <windows.h> for non-Win32 callers.
-    "${CMAKE_SOURCE_DIR}/externals/imgui/backends/imgui_impl_win32.cpp"
+    "${PROJECT_SOURCE_DIR}/externals/imgui/backends/imgui_impl_win32.cpp"
 
     # INI loader is still shared with the standalone viewer; the cubeb sound
     # emitter and the ImGui theme are shared host utilities under tools/common.
@@ -90,11 +90,11 @@ target_include_directories(WhiteoutFlakesMaxPlugin PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${BASIC_VIEWER_DIR}"
     "${TOOLS_COMMON_DIR}"
-    "${CMAKE_SOURCE_DIR}/externals/dr_libs"
+    "${PROJECT_SOURCE_DIR}/externals/dr_libs"
     # asset_manager.h transitively pulls cornflakes interface headers
     # (Effect/PkbReader / IArena etc.); needed once the plugin queries
     # AssetManager directly for the cross-model texture-dedup hook.
-    "${CMAKE_SOURCE_DIR}/src/renderer/corn_effects"
+    "${PROJECT_SOURCE_DIR}/src/renderer/corn_effects"
 )
 
 target_compile_definitions(WhiteoutFlakesMaxPlugin PRIVATE
