@@ -80,7 +80,14 @@ else()
     set(WHITEOUT_ENABLE_CASC ON CACHE BOOL "Enable CASC archive support" FORCE)
     set(WHITEOUT_ENABLE_MPQ  ON CACHE BOOL "Enable MPQ archive support"  FORCE)
 endif()
-add_subdirectory(externals/WhiteoutLib)
+# Skip adding the bundled WhiteoutLib if the parent project has already
+# provided the `whiteout_lib` target (e.g. the WhiteoutDex monorepo pins
+# its own WhiteoutLib submodule and pulls it in before this subdir, so
+# every plugin shares one copy). When standalone, pull in the bundled
+# nested submodule as usual.
+if(NOT TARGET whiteout_lib)
+    add_subdirectory(externals/WhiteoutLib)
+endif()
 
 # Tracy — opt-in CPU + GPU profiler. When WDX_ENABLE_TRACY is ON, the
 # Tracy::TracyClient target is built and TRACY_ENABLE is defined for
