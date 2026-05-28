@@ -177,15 +177,24 @@ jobs:
       # → ~70 MB final.
       - name: Pack .dmg
         run: |
+          # Drop the first-launch note into the DMG root so users see it
+          # next to the app icon when they open the .dmg. Renamed to
+          # "How to open WhiteoutFlakes.txt" so the purpose is obvious at
+          # a glance — the app is ad-hoc signed but not notarised, which
+          # means macOS Gatekeeper shows a "could not verify… for malware"
+          # dialog on first launch (the note has three ways to bypass).
+          cp packaging/macos/HOW_TO_OPEN.txt "stage/How to open WhiteoutFlakes.txt"
+
           # create-dmg treats <source> as the directory whose contents
           # become the DMG root. Pass `stage/` so the DMG root contains
-          # exactly one entry: WhiteoutFlakes.app. Passing the .app
-          # itself would explode its Contents/ into the DMG root.
+          # WhiteoutFlakes.app + the howto note. Passing the .app itself
+          # would explode its Contents/ into the DMG root.
           create-dmg \
             --volname "WhiteoutFlakes" \
             --window-size 540 380 \
             --icon-size 96 \
             --icon "WhiteoutFlakes.app" 130 190 \
+            --icon "How to open WhiteoutFlakes.txt" 270 190 \
             --app-drop-link 410 190 \
             --no-internet-enable \
             "WhiteoutFlakes-macos-arm64.dmg" \

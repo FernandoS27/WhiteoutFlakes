@@ -1,0 +1,47 @@
+First-launch note for WhiteoutFlakes on macOS
+==============================================
+
+If you double-click WhiteoutFlakes and macOS says
+
+    "Apple could not verify [WhiteoutFlakes] is free of malware
+     that may harm your Mac or compromise your privacy."
+
+…with only "Done" and "Move to Bin" buttons, that's expected. macOS 15+
+(Sequoia) removed the older "right-click → Open" bypass from this dialog.
+The app is signed with an ad-hoc identity but isn't notarized through
+Apple's notary service (which would require an Apple Developer Program
+membership). The signature itself is valid; macOS just won't trust a
+notarization-less download until you explicitly approve it.
+
+Two ways to open it. Pick whichever you like.
+
+──────────────────────────────────────────────────────────────────────
+Option 1 (recommended): System Settings → Privacy & Security
+──────────────────────────────────────────────────────────────────────
+  1. Drag WhiteoutFlakes.app to /Applications.
+  2. Double-click it. The "could not verify" dialog appears.
+     Click "Done" (NOT "Move to Bin").
+  3. Open System Settings → Privacy & Security.
+  4. Scroll down to the "Security" section. Within a minute or so of
+     your blocked launch attempt, a line appears reading
+     "WhiteoutFlakes was blocked to protect your Mac." next to an
+     "Open Anyway" button. Click "Open Anyway".
+  5. macOS asks for your password / Touch ID. Approve.
+  6. A new dialog appears, this time with an "Open Anyway" button —
+     click it. macOS remembers the choice; future double-clicks just
+     work.
+
+──────────────────────────────────────────────────────────────────────
+Option 2: clear the quarantine attribute from the Terminal
+──────────────────────────────────────────────────────────────────────
+After dragging the app to /Applications, open Terminal.app and run:
+
+    xattr -dr com.apple.quarantine /Applications/WhiteoutFlakes.app
+
+The next double-click opens cleanly with no dialog. Equivalent to what
+Option 1 ends up doing, just faster if you're comfortable in a terminal.
+
+──────────────────────────────────────────────────────────────────────
+
+For source, build instructions, and issue reporting, see the project's
+GitHub repository.
