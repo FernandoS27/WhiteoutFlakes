@@ -221,19 +221,38 @@ int main(int argc, char* argv[]) {
     if (!backendFromCli)
         backend = renderer.Settings().DefaultBackend();
 
-#if !defined(_WIN32)
-    // Defence-in-depth: if a stale INI carries DefaultBackend=d3d11 from a
-    // shared-config user, normalise the in-memory Settings value too so
-    // SaveSettingsIni doesn't propagate the bad choice forward and so the
-    // ImGui Settings combo (which reads Settings().DefaultBackend()) shows
-    // Vulkan correctly. The Linux-only ImGui Backend combo is restricted
-    // to Vulkan anyway, see viewer_ui.cpp.
+#if defined(__linux__)
+    // Linux only ships the Vulkan backend; D3D11/D3D12 are WIN32-gated and
+    // WebGPU/Dawn isn't built into Linux Whiteout binaries. Coerce any
+    // stale INI / CLI choice back to Vulkan so SaveSettingsIni doesn't
+    // propagate a bad value forward and the ImGui combo (see viewer_ui.cpp)
+    // stays consistent.
     if (backend != whiteout::flakes::gfx::GfxApi::Vulkan) {
         std::cerr << "[viewer] Forcing Vulkan backend (only one available on this platform)\n";
         backend = whiteout::flakes::gfx::GfxApi::Vulkan;
     }
     if (renderer.Settings().DefaultBackend() != whiteout::flakes::gfx::GfxApi::Vulkan)
         renderer.Settings().SetDefaultBackend(whiteout::flakes::gfx::GfxApi::Vulkan);
+#elif defined(__APPLE__)
+    // macOS supports Vulkan (via MoltenVK) and, when WDX_ENABLE_WEBGPU=ON,
+    // WebGPU (via Dawn → Metal). Reject D3D11/D3D12 — they only build on
+    // Windows. WDX_HAS_WEBGPU lets the viewer accept WebGPU even when the
+    // build excluded it (in which case it falls back to Vulkan with a
+    // notice).
+    using Api = whiteout::flakes::gfx::GfxApi;
+    auto isMacOk = [](Api a) {
+#if WDX_HAS_WEBGPU
+        return a == Api::Vulkan || a == Api::WebGPU;
+#else
+        return a == Api::Vulkan;
+#endif
+    };
+    if (!isMacOk(backend)) {
+        std::cerr << "[viewer] Backend not supported on macOS; falling back to Vulkan\n";
+        backend = Api::Vulkan;
+    }
+    if (!isMacOk(renderer.Settings().DefaultBackend()))
+        renderer.Settings().SetDefaultBackend(Api::Vulkan);
 #endif
 
     // Vulkan pipeline cache: alongside the exe on Windows; per-user cache

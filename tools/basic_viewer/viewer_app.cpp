@@ -43,6 +43,19 @@
 #include <vulkan/vulkan.h>
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+#if defined(__APPLE__)
+// MoltenVK 1.4 + GLFW 3.4: glfwCreateWindowSurface sets the contentView's
+// layer before flipping wantsLayer=YES, which leaves the CAMetalLayer
+// un-installed on macOS 13+ and trips vkCreateMetalSurfaceEXT into
+// VK_ERROR_INITIALIZATION_FAILED. Bypass it with our own shim — pulls in
+// glfw3native here so we can hand the NSWindow* over to the .mm file.
+#define GLFW_EXPOSE_NATIVE_COCOA
+#include <GLFW/glfw3native.h>
+namespace whiteout::flakes {
+VkResult CreateVulkanSurfaceMacOS(VkInstance instance, void* nsWindow,
+                                  VkSurfaceKHR* outSurface);
+}
+#endif
 #if defined(_WIN32)
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
@@ -256,9 +269,18 @@ bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
         gfx::IGFXDevice* dev = service_.Pipeline().Gfx();
         VkInstance instance = dev ? static_cast<VkInstance>(dev->GetNativeInstance()) : nullptr;
         VkSurfaceKHR surface = VK_NULL_HANDLE;
-        if (!instance ||
-            glfwCreateWindowSurface(instance, window_, nullptr, &surface) != VK_SUCCESS) {
-            std::fprintf(stderr, "glfwCreateWindowSurface FAILED\n");
+#if defined(__APPLE__)
+        VkResult sr = instance ? CreateVulkanSurfaceMacOS(instance,
+                                                         glfwGetCocoaWindow(window_),
+                                                         &surface)
+                               : VK_ERROR_INITIALIZATION_FAILED;
+#else
+        VkResult sr = instance ? glfwCreateWindowSurface(instance, window_, nullptr, &surface)
+                               : VK_ERROR_INITIALIZATION_FAILED;
+#endif
+        if (!instance || sr != VK_SUCCESS) {
+            std::fprintf(stderr, "Vulkan surface creation FAILED (instance=%p, VkResult=%d)\n",
+                         (void*)instance, (int)sr);
             Close();
             return false;
         }

@@ -684,9 +684,12 @@ void ViewerUI::BuildSettingsWindow() {
         ImGui::TextDisabled("Startup settings (take effect on next launch)");
 
         // ---- Default backend ----
-        // On Linux only Vulkan is built (D3D11/D3D12 are gated to WIN32 in
-        // CMake + gfx_factory), so the combo collapses to a disabled
-        // single-entry indicator instead of offering picks that would error.
+        // Platform availability:
+        //   Windows: D3D11, D3D12, Vulkan, WebGPU (when WDX_HAS_WEBGPU)
+        //   macOS:   Vulkan, WebGPU (when WDX_HAS_WEBGPU) — D3D11/D3D12 are
+        //            WIN32-only via CMake + gfx_factory
+        //   Linux:   Vulkan only — D3D11/D3D12 WIN32-only, WebGPU/Dawn isn't
+        //            wired into Linux builds.
 #if defined(_WIN32)
         {
             i32 sel = BackendToIdx(svc.Settings().DefaultBackend());
@@ -695,6 +698,25 @@ void ViewerUI::BuildSettingsWindow() {
                 svc.Settings().SetDefaultBackend(IdxToBackend(sel));
                 SaveIni(app_);
             }
+        }
+#elif defined(__APPLE__)
+        {
+#if WDX_HAS_WEBGPU
+            const char* macLabels[] = {"Vulkan", "WebGPU"};
+            const gfx::GfxApi macApis[] = {gfx::GfxApi::Vulkan, gfx::GfxApi::WebGPU};
+            i32 sel = (svc.Settings().DefaultBackend() == gfx::GfxApi::WebGPU) ? 1 : 0;
+            if (ImGui::Combo("Backend", &sel, macLabels,
+                             static_cast<i32>(std::size(macLabels)))) {
+                svc.Settings().SetDefaultBackend(macApis[sel]);
+                SaveIni(app_);
+            }
+#else
+            ImGui::BeginDisabled();
+            i32 sel = 0;
+            const char* vkOnly[] = {"Vulkan"};
+            ImGui::Combo("Backend", &sel, vkOnly, 1);
+            ImGui::EndDisabled();
+#endif
         }
 #else
         {

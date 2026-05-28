@@ -258,6 +258,11 @@ bool RequestDeviceSync(WebGPUDeviceState& state) {
     // marks this format sampleable by default but only renderable when
     // the RG11B10UfloatRenderable feature is enabled.
     maybeEnable(wgpu::FeatureName::RG11B10UfloatRenderable, "RG11B10UfloatRenderable");
+    // The PSO builder picks Depth32FloatStencil8 as the engine-wide
+    // depth/stencil format (matching the D3D12 / Vulkan paths). In WebGPU
+    // this format is gated behind an explicit feature — without it every
+    // CreateRenderPipeline with a stencil-bearing dsv fails validation.
+    maybeEnable(wgpu::FeatureName::Depth32FloatStencil8, "Depth32FloatStencil8");
 
     // Publish the active state for DeviceLostCallback. Single-device
     // application — if that ever changes we'll need a userdata-carrying

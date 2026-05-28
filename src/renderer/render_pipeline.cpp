@@ -803,23 +803,12 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
             },
             kTonemapVerts);
 
-        const gfx::InputElement spriteInput[] = {
-            {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0},
-            {"ATTR", 3, gfx::Format::R32G32_FLOAT, 12},
-        };
-        gfx::GraphicsPipelineDesc tm;
-        tm.vs = impl_->blsSpriteVs_->permuteHandles[0];
-        tm.ps = impl_->blsTonemapPs_->permuteHandles[0];
-        tm.inputLayout = spriteInput;
-        tm.topology = gfx::PrimitiveTopology::TriangleList;
-        tm.blend.enable = false;
-        tm.depthStencil.depthTest = false;
-        tm.depthStencil.depthWrite = false;
-        tm.rasterizer.cull = gfx::CullMode::None;
-        tm.rasterizer.frontCCW = true;
-        tm.rtvFormat = gfx::Format::R8G8B8A8_UNORM_SRGB;
-        tm.dsvFormat = impl_->depthStencilFormat_;
-        impl_->tonemapPSO_ = impl_->gfx_->CreateGraphicsPipeline(tm);
+        // Tonemap PSO creation is deferred to RunTonemapPass (see
+        // EnsureTonemapPso) — we don't know the swap-chain RTV format yet,
+        // and on macOS / Metal the surface only exposes BGRA8 family, not
+        // RGBA8. Building the PSO now with a hardcoded R8G8B8A8_UNORM_SRGB
+        // would mismatch the BGRA8 swap-chain renderpass at BindPipeline
+        // time and silently drop every present.
 
         impl_->tonemapPsCb_ = impl_->gfx_->CreateBuffer({
             .size = 16,
@@ -901,10 +890,12 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     rs_.EnsureImGui(*impl_->gfx_, *impl_->blsShaderCache_, gfx::Format::R8G8B8A8_UNORM_SRGB,
                     impl_->depthStencilFormat_);
 
+    // tonemapPSO_ is intentionally not part of the readiness check — it's
+    // built lazily on first RunTonemapPass, against the actual swap-chain
+    // RTV format (see comment in CreateShaders).
     const bool ok = impl_->blsSdProgram_ != nullptr && impl_->blsSdOnHdProgram_ != nullptr &&
                     impl_->blsHdProgram_ != nullptr && impl_->blsSpriteVs_ != nullptr &&
-                    impl_->blsTonemapPs_ != nullptr &&
-                    impl_->tonemapPSO_ != gfx::PipelineHandle::Invalid;
+                    impl_->blsTonemapPs_ != nullptr;
 
     // Replay the saved PSO trace now that every BLS program is loaded
     // and the shadow / tonemap PSOs are built. This pre-warms the
@@ -1517,8 +1508,43 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
 }
 
 void RenderPipeline::RunTonemapPass(const RenderTarget& target, gfx::TextureHandle dstColor) {
-    if (impl_->tonemapPSO_ == gfx::PipelineHandle::Invalid)
+    if (!impl_->blsSpriteVs_ || !impl_->blsTonemapPs_ ||
+        impl_->blsSpriteVs_->permuteHandles.empty() ||
+        impl_->blsTonemapPs_->permuteHandles.empty())
         return;
+
+    // Lazy-build the tonemap PSO against the actual swap-chain format. Some
+    // backends only expose BGRA8 (Metal via MoltenVK, WebGPU/Dawn-D3D12),
+    // others give RGBA8 — a single hardcoded rtvFormat at CreateShaders
+    // time misses on the BGRA8 platforms and silently drops every present.
+    const gfx::Format dstFormat = (target.swap != gfx::SwapChainHandle::Invalid)
+                                      ? impl_->gfx_->GetSwapChainFormat(target.swap)
+                                      : kSdSceneFormat;
+    if (impl_->tonemapPSO_ == gfx::PipelineHandle::Invalid ||
+        impl_->tonemapPsoFormat_ != dstFormat) {
+        if (impl_->tonemapPSO_ != gfx::PipelineHandle::Invalid)
+            impl_->gfx_->Destroy(impl_->tonemapPSO_);
+        const gfx::InputElement spriteInput[] = {
+            {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0},
+            {"ATTR", 3, gfx::Format::R32G32_FLOAT, 12},
+        };
+        gfx::GraphicsPipelineDesc tm;
+        tm.vs = impl_->blsSpriteVs_->permuteHandles[0];
+        tm.ps = impl_->blsTonemapPs_->permuteHandles[0];
+        tm.inputLayout = spriteInput;
+        tm.topology = gfx::PrimitiveTopology::TriangleList;
+        tm.blend.enable = false;
+        tm.depthStencil.depthTest = false;
+        tm.depthStencil.depthWrite = false;
+        tm.rasterizer.cull = gfx::CullMode::None;
+        tm.rasterizer.frontCCW = true;
+        tm.rtvFormat = dstFormat;
+        tm.dsvFormat = impl_->depthStencilFormat_;
+        impl_->tonemapPSO_ = impl_->gfx_->CreateGraphicsPipeline(tm);
+        impl_->tonemapPsoFormat_ = dstFormat;
+        if (impl_->tonemapPSO_ == gfx::PipelineHandle::Invalid)
+            return;
+    }
     auto* cmd = impl_->gfx_->GetImmediateContext();
 
     const f32 clearLdr[4] = {0.0f, 0.0f, 0.0f, 1.0f};

@@ -40,6 +40,11 @@ struct RenderPipeline::Impl {
     gfx::PipelineHandle linePSOHdr_ = gfx::PipelineHandle::Invalid;
     gfx::PipelineHandle linePSOSd_ = gfx::PipelineHandle::Invalid;
     gfx::PipelineHandle tonemapPSO_ = gfx::PipelineHandle::Invalid;
+    // RTV format the tonemapPSO_ was built against. Cached so RunTonemapPass
+    // can rebuild the PSO whenever the swap-chain format changes (e.g. on
+    // macOS the surface only offers BGRA8, while every other backend tends
+    // to advertise RGBA8). Format::Unknown = PSO not built yet.
+    gfx::Format tonemapPsoFormat_ = gfx::Format::Unknown;
     gfx::BufferHandle cbPerFrame_ = gfx::BufferHandle::Invalid;
 
     // ---- Particle / splat VBs ----
