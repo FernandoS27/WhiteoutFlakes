@@ -1504,11 +1504,18 @@ if(APPLE)
             endif()
         endforeach()
         if(_wdx_mvk_lib AND _wdx_mvk_icd)
-            # Copy the loader (forcing the libvulkan.1.dylib filename so the
-            # @rpath/libvulkan.1.dylib load command resolves) and MoltenVK
-            # driver into Contents/Frameworks, then patch their install_names
-            # to @rpath form and re-sign.
+            # Order matters: every file the .app should ship must land
+            # *before* the bundle-wrapper codesign at the end of this block.
+            # If we sign the wrapper and then drop a file inside (e.g. the
+            # ICD JSON), the sealed CodeResources manifest no longer matches
+            # the on-disk contents and `codesign --verify` reports
+            # "a sealed resource is missing or invalid".
             install(CODE "
+                # ---- Stage Vulkan loader + MoltenVK ----
+                # Force the loader filename to libvulkan.1.dylib so the
+                # @rpath/libvulkan.1.dylib load command resolves regardless
+                # of whether the source path was a versioned symlink or the
+                # canonical Cellar realpath.
                 file(INSTALL \"${_wdx_vk_loader_real}\"
                      DESTINATION \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/Frameworks\"
                      RENAME \"libvulkan.1.dylib\")
@@ -1518,13 +1525,14 @@ if(APPLE)
                     \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/Frameworks/libvulkan.1.dylib\")
                 execute_process(COMMAND install_name_tool -id @rpath/libMoltenVK.dylib
                     \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/Frameworks/libMoltenVK.dylib\")
-                # Rewrite the exe's libvulkan load command. The linker bakes
-                # in the dylib's LC_ID_DYLIB install_name as the load path,
-                # which may be neither Vulkan_LIBRARY nor its realpath — brew's
-                # libvulkan ships with install_name = /opt/homebrew/opt/
-                # vulkan-loader/lib/libvulkan.1.dylib. Read the actual load
-                # command from the exe with otool and target whatever path
-                # appears there.
+
+                # ---- Rewrite the exe's libvulkan load command ----
+                # The linker bakes the dylib's LC_ID_DYLIB install_name into
+                # the load command, which may be neither Vulkan_LIBRARY nor
+                # its realpath — brew's libvulkan ships with install_name =
+                # /opt/homebrew/opt/vulkan-loader/lib/libvulkan.1.dylib, the
+                # LunarG SDK ships @rpath/... already. Read the actual load
+                # command with otool and rewrite whatever's there to @rpath.
                 execute_process(
                     COMMAND otool -L
                         \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/MacOS/WhiteoutFlakes\"
@@ -1537,18 +1545,10 @@ if(APPLE)
                         \"\${_wdx_exe_libvk}\" @rpath/libvulkan.1.dylib
                         \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/MacOS/WhiteoutFlakes\")
                 endif()
-                # macOS 14+ rejects code-signed dylibs whose load commands have
-                # been edited post-sign. Re-sign with ad-hoc identity.
-                execute_process(COMMAND codesign --force --sign -
-                    \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/Frameworks/libvulkan.1.dylib\")
-                execute_process(COMMAND codesign --force --sign -
-                    \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/Frameworks/libMoltenVK.dylib\")
-                execute_process(COMMAND codesign --force --sign -
-                    \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/MacOS/WhiteoutFlakes\")
-                execute_process(COMMAND codesign --force --sign -
-                    \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app\")
-            ")
-            install(CODE "
+
+                # ---- Rewrite the MoltenVK ICD JSON's library_path ----
+                # MUST happen before the wrapper codesign so the JSON is
+                # part of the sealed bundle manifest.
                 file(MAKE_DIRECTORY
                     \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/Resources/vulkan/icd.d\")
                 execute_process(COMMAND \"${Python3_EXECUTABLE}\"
@@ -1559,6 +1559,20 @@ if(APPLE)
                 if(NOT _icd_rc EQUAL 0)
                     message(FATAL_ERROR \"rewrite_icd.py failed (rc=\${_icd_rc})\")
                 endif()
+
+                # ---- Ad-hoc codesign ----
+                # Nested binaries first (signature freezes), then the exe,
+                # then the bundle wrapper. macOS 14+ rejects code-signed
+                # dylibs whose load commands have been edited post-sign, so
+                # the install_name_tool steps above must precede this.
+                execute_process(COMMAND codesign --force --sign -
+                    \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/Frameworks/libvulkan.1.dylib\")
+                execute_process(COMMAND codesign --force --sign -
+                    \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/Frameworks/libMoltenVK.dylib\")
+                execute_process(COMMAND codesign --force --sign -
+                    \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/MacOS/WhiteoutFlakes\")
+                execute_process(COMMAND codesign --force --sign -
+                    \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app\")
             ")
             message(STATUS "macOS bundle: bundling MoltenVK from ${_wdx_mvk_lib}")
         else()

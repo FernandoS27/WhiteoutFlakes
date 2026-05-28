@@ -131,63 +131,45 @@ jobs:
         run: cmake --build build --target WhiteoutFlakesStandalone --parallel
 
       # ---- Stage the .app bundle ---------------------------------------
-      # cmake --install populates stage/WhiteoutFlakes.app with:
+      # `cmake --install` builds the full bundle layout:
       #   Contents/MacOS/WhiteoutFlakes
-      #   Contents/MacOS/shaders/...
-      #   Contents/MacOS/pso_trace.bin
+      #   Contents/Frameworks/libvulkan.1.dylib
+      #   Contents/Frameworks/libMoltenVK.dylib
       #   Contents/Resources/WhiteoutFlakes.icns
+      #   Contents/Resources/shaders/...
+      #   Contents/Resources/pso_trace.bin
+      #   Contents/Resources/vulkan/icd.d/MoltenVK_icd.json   (bundle-relative library_path)
       #   Contents/Info.plist
-      # We then layer in MoltenVK + the ICD JSON + the Vulkan loader,
-      # rewrite the ICD JSON's library_path to a bundle-relative path,
-      # and ad-hoc sign the result.
-      - name: Install + bundle MoltenVK
+      #
+      # The dylib copy + install_name normalisation, ICD JSON rewrite, and
+      # per-file ad-hoc codesign are all handled by an `install(CODE …)`
+      # block in the root CMakeLists.txt. The block walks Homebrew /
+      # $VULKAN_SDK / Vulkan loader sibling layouts so the same install
+      # path works on this CI runner (LunarG SDK at $VULKAN_SDK) and on a
+      # local dev machine (Homebrew). Hardened runtime (`--options
+      # runtime`) is deliberately left off — ad-hoc + hardened-runtime
+      # tripped a "different Team IDs" dyld check on Apple Silicon macOS
+      # 26 during local testing, and notarised distribution would re-sign
+      # with a Developer ID anyway.
+      - name: Install + bundle (CMake-driven)
         run: |
           set -e
           cmake --install build
           APP="stage/WhiteoutFlakes.app"
           test -d "$APP" || { echo "::error::cmake --install didn't produce ${APP}"; exit 1; }
 
-          mkdir -p "$APP/Contents/Frameworks"
-          mkdir -p "$APP/Contents/Resources/vulkan/icd.d"
-
-          # Vulkan loader + MoltenVK driver. The loader is what the binary
-          # links against; MoltenVK is found via the ICD JSON at runtime.
-          cp "${VULKAN_SDK}/lib/libvulkan.1.dylib"  "$APP/Contents/Frameworks/"
-          cp "${VULKAN_SDK}/lib/libMoltenVK.dylib"  "$APP/Contents/Frameworks/"
-          # Force install_name to @rpath form so the executable's
-          # @executable_path/../Frameworks rpath resolves them. LunarG SDK
-          # 1.4.x already ships with @rpath install_names but older builds
-          # used absolute paths; this normalisation is cheap insurance.
-          install_name_tool -id "@rpath/libvulkan.1.dylib" \
-              "$APP/Contents/Frameworks/libvulkan.1.dylib"
-          install_name_tool -id "@rpath/libMoltenVK.dylib" \
-              "$APP/Contents/Frameworks/libMoltenVK.dylib"
-          # Print install_names + the executable's load commands so any
-          # mismatch shows up clearly in the CI log.
+          # Diagnostic dump — surfaces any unexpected absolute / non-@rpath
+          # load command before the .dmg is sealed.
           echo "--- libvulkan dependencies ---"
           otool -L "$APP/Contents/Frameworks/libvulkan.1.dylib"
+          echo "--- libMoltenVK dependencies ---"
+          otool -L "$APP/Contents/Frameworks/libMoltenVK.dylib"
           echo "--- WhiteoutFlakes dependencies ---"
           otool -L "$APP/Contents/MacOS/WhiteoutFlakes"
+          echo "--- bundled ICD JSON ---"
+          cat "$APP/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"
 
-          # Rewrite the ICD JSON's library_path to a bundle-relative path.
-          # Script lives in packaging/macos/ rather than inline so YAML
-          # block indentation doesn't break Python's whitespace rules.
-          python3 packaging/macos/rewrite_icd.py \
-              "${VULKAN_SDK}/share/vulkan/icd.d/MoltenVK_icd.json" \
-              "$APP/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"
-
-          # Ad-hoc codesign — no Apple Developer cert needed (`-s -` is the
-          # ad-hoc identity). Apple deprecated `--deep` for new submissions
-          # in favour of explicit per-file signing, so we walk the bundle
-          # ourselves: every nested dylib first, then the executable, then
-          # the bundle as a whole. Order matters — once you sign a wrapper
-          # its hash freezes, so signing nested binaries afterwards
-          # invalidates the wrapper signature.
-          find "$APP/Contents/Frameworks" -type f \( -name "*.dylib" -o -name "*.so" \) \
-              -exec codesign --force --options runtime --sign - {} \;
-          codesign --force --options runtime --sign - "$APP/Contents/MacOS/WhiteoutFlakes"
-          codesign --force --options runtime --sign - "$APP"
-          codesign --verify --verbose=2 "$APP" || true
+          codesign --verify --verbose=2 "$APP"
 
       # ---- Pack the .dmg ----------------------------------------------
       # create-dmg wraps hdiutil + applies a nice icon arrangement
