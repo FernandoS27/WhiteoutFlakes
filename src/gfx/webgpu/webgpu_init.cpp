@@ -222,9 +222,9 @@ bool RequestDeviceSync(WebGPUDeviceState& state) {
     state.adapter.GetLimits(&supported);
 
     // After the VS/PS visibility split, each stage sees kStageBindingShift
-    // (=16) bindings of each kind. We bump uniform-buffer-per-stage to 16
-    // (default is 12) and sampled-textures / samplers to 16 (default is
-    // 16 already, but explicit is clearer). The dynamic-uniform cap is
+    // (=12) bindings of each kind. We bump uniform-buffer-per-stage to 12
+    // (default is 12) and sampled-textures / samplers to 16 (the Apple
+    // Metal hard cap, also the WebGPU default). The dynamic-uniform cap is
     // spec-bounded to ~8-11 on every implementation, so we DON'T use
     // hasDynamicOffset — see CreateSharedBindLayouts. Each per-draw
     // FlushBindings embeds the ring-slot offset into the BindGroupEntry
@@ -320,6 +320,13 @@ bool CreateSharedBindLayouts(WebGPUDeviceState& state) {
     // For SRV / Sampler the slangc-produced WGSL DOES split by stage
     // (textures show up at @binding(0..) for VS, @binding(kStageBindingShift..)
     // for PS), so the per-binding-index visibility split still applies.
+    //
+    // Compute is intentionally *not* in this mask: Apple Metal caps
+    // maxSampledTexturesPerShaderStage at 16, and we have 28 SRV
+    // bindings. Marking them all compute-visible would push compute past
+    // the cap and fail BindGroupLayout validation. frame_capture (the
+    // engine's only compute pipeline today) is off by default; when it's
+    // wired up properly it'll need its own narrower compute layout.
     const auto bothStages = wgpu::ShaderStage::Vertex | wgpu::ShaderStage::Fragment;
 
     // ---- CB layout (uniform buffers, both-stages-visible) ----

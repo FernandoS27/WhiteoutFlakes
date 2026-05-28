@@ -1474,6 +1474,11 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
 #if WDX_ENABLE_IMGUI
     if (!useHdr) {
         if (auto* im = rs_.ImGui()) {
+            // Sync ImGui's PSO with the scene RTV format (which is the
+            // swapchain backbuffer in SD mode). See the matching call in
+            // RunTonemapPass for why this can't be locked in once at
+            // EnsureImGui time.
+            im->SetRtvFormat(SceneTargetFormat());
             WDX_GPU_ZONE(cmd, "ImGui");
             im->Render(*cmd, target.width, target.height);
         }
@@ -1573,6 +1578,11 @@ void RenderPipeline::RunTonemapPass(const RenderTarget& target, gfx::TextureHand
     // frame. Compiled out when WDX_ENABLE_IMGUI=0.
 #if WDX_ENABLE_IMGUI
     if (auto* im = rs_.ImGui()) {
+        // Sync ImGui's PSO format with whatever the swapchain landed on.
+        // No-op when the format hasn't changed; rebuilds the PSO when it
+        // has (Metal-backed swapchains return BGRA8 even when the rest of
+        // the engine targets RGBA8).
+        im->SetRtvFormat(dstFormat);
         WDX_GPU_ZONE(cmd, "ImGui");
         im->Render(*cmd, target.width, target.height);
     }

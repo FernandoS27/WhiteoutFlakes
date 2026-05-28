@@ -180,6 +180,85 @@ void CollectLocationFieldsIn(const char* p, const char* end,
 }
 
 // Scan WGSL VS source for the @location set the entry function consumes
+// Find the entry-point function name for the given stage by scanning for
+// the appropriate `@vertex` / `@fragment` / `@compute` attribute followed
+// by `fn <name>(`. Compile_all_slang.py post-processes slang's WGSL output
+// to rename the entry to `main`, but its regex requires `@stage` to be
+// *immediately* followed by `fn` — slangc emits `@compute @workgroup_size(...) fn name`
+// for every compute shader, so the rename silently no-ops on those and the
+// original `<entry>_main`-style name survives. Scanning the WGSL at load
+// time picks up whatever name is actually present, regardless of which
+// slangc + post-processor combo produced the bundle.
+std::string FindEntryPointName(const char* src, usize len, ShaderStage stage) {
+    if (!src || len == 0)
+        return "main";
+    const char* end = src + len;
+    const char* attr = nullptr;
+    usize attrLen = 0;
+    switch (stage) {
+    case ShaderStage::Vertex:
+        attr = "@vertex";
+        attrLen = 7;
+        break;
+    case ShaderStage::Pixel:
+        attr = "@fragment";
+        attrLen = 9;
+        break;
+    case ShaderStage::Compute:
+        attr = "@compute";
+        attrLen = 8;
+        break;
+    default:
+        return "main";
+    }
+    for (const char* p = src; p + attrLen + 4 < end; ++p) {
+        if (std::memcmp(p, attr, attrLen) != 0)
+            continue;
+        // Walk forward, skipping whitespace, comments, and other `@…(…)`
+        // attributes (e.g. `@workgroup_size(8, 8, 1)`), until we hit `fn`.
+        const char* q = p + attrLen;
+        while (q < end) {
+            q = SkipWsAndComments(q, end);
+            if (q >= end)
+                break;
+            if (*q == '@') {
+                ++q;
+                while (q < end && IsIdent(*q))
+                    ++q;
+                if (q < end && *q == '(') {
+                    int d = 0;
+                    for (; q < end; ++q) {
+                        if (*q == '(')
+                            ++d;
+                        else if (*q == ')') {
+                            --d;
+                            if (d == 0) {
+                                ++q;
+                                break;
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+            if (end - q >= 2 && q[0] == 'f' && q[1] == 'n' && (q + 2 >= end || !IsIdent(q[2])))
+                break;
+            // Anything else — give up, this isn't a stage-attribute we know.
+            q = end;
+        }
+        if (q >= end)
+            continue;
+        // q points at `fn`; advance past it and any whitespace, read ident.
+        q = SkipWsAndComments(q + 2, end);
+        const char* nameStart = q;
+        while (q < end && IsIdent(*q))
+            ++q;
+        if (q > nameStart)
+            return std::string(nameStart, q - nameStart);
+    }
+    return "main";
+}
+
 // — i.e. the input struct's members, plus any inline `@location` on the
 // entry's argument list. The post-processor in compile_all_slang.py
 // rewrites slang's `@vertex fn vs_main` down to `fn main`, so we look
@@ -190,20 +269,26 @@ void CollectLocationFieldsIn(const char* p, const char* end,
 // with no preprocessor mangling. We deliberately ignore @location on
 // VS *outputs* (after `->`) and on `VSOutput_0`-style structs whose
 // names aren't named as the entry's argument type.
-std::vector<VertexInputLocation> ScanVertexLocations(const char* src, usize len) {
+std::vector<VertexInputLocation> ScanVertexLocations(const char* src, usize len,
+                                                     const std::string& entryName) {
     std::vector<VertexInputLocation> out;
-    if (!src || len == 0)
+    if (!src || len == 0 || entryName.empty())
         return out;
     const char* end = src + len;
 
-    // Find `fn main(`.
+    // Find `fn <entryName>(` — the entry-point name varies across slangc
+    // versions and post-processors (see FindEntryPointName).
+    const std::string needle = "fn " + entryName;
     const char* fnMain = nullptr;
-    for (const char* p = src; p + 8 < end; ++p) {
-        if (std::memcmp(p, "fn main", 7) != 0)
+    for (const char* p = src; p + static_cast<isize>(needle.size()) + 1 < end; ++p) {
+        if (std::memcmp(p, needle.data(), needle.size()) != 0)
             continue;
         if (p > src && IsIdent(p[-1]))
             continue;
-        const char* q = SkipWsAndComments(p + 7, end);
+        const char* after = p + needle.size();
+        if (after < end && IsIdent(*after))
+            continue;
+        const char* q = SkipWsAndComments(after, end);
         if (q < end && *q == '(') {
             fnMain = q;
             break;
@@ -312,9 +397,9 @@ ShaderHandle WebGPUDevice::CreateShader(ShaderStage stage, const void* bytecode,
     ShaderEntry entry{};
     entry.module = std::move(mod);
     entry.stage = stage;
-    entry.entryPoint = "main";
+    entry.entryPoint = FindEntryPointName(asText, textLen, stage);
     if (stage == ShaderStage::Vertex)
-        entry.vertexLocations = ScanVertexLocations(asText, textLen);
+        entry.vertexLocations = ScanVertexLocations(asText, textLen, entry.entryPoint);
     return static_cast<ShaderHandle>(state.shaders.Insert(std::move(entry)));
 }
 

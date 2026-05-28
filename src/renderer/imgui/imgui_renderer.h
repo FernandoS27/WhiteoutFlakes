@@ -37,13 +37,20 @@ namespace whiteout::flakes::renderer::dear_imgui {
 class ImGuiRenderer {
 public:
     // The RTV format must match what RenderFrame draws into when ImGui's
-    // turn arrives — currently always the swapchain backbuffer (sRGB
-    // R8G8B8A8). The DSV format is forwarded so the PSO key matches the
-    // pipeline that the render-pass started with, even though depth test
-    // is disabled for ImGui draws.
+    // turn arrives — currently always the swapchain backbuffer. On macOS /
+    // WebGPU under Metal the swap chain only exposes BGRA8 while the rest
+    // of the engine targets RGBA8, so RenderPipeline updates this every
+    // frame via SetRtvFormat. The DSV format is forwarded so the PSO key
+    // matches the pipeline that the render-pass started with, even though
+    // depth test is disabled for ImGui draws.
     ImGuiRenderer(gfx::IGFXDevice& device, bls::BlsShaderCache& shaderCache, gfx::Format rtvFormat,
                   gfx::Format dsvFormat);
     ~ImGuiRenderer();
+
+    // Swap to a different swapchain backbuffer format. Lazily rebuilds the
+    // PSO; safe to call every frame — only rebuilds when the format
+    // actually changed. Initial call from the ctor seeds the value.
+    void SetRtvFormat(gfx::Format rtvFormat);
 
     ImGuiRenderer(const ImGuiRenderer&) = delete;
     ImGuiRenderer& operator=(const ImGuiRenderer&) = delete;
