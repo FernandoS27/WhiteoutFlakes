@@ -54,7 +54,8 @@
 namespace whiteout::flakes {
 VkResult CreateVulkanSurfaceMacOS(VkInstance instance, void* nsWindow,
                                   VkSurfaceKHR* outSurface);
-}
+void SetCocoaWindowChrome(void* nsWindow, float r, float g, float b);
+} // namespace whiteout::flakes
 #endif
 #if defined(_WIN32)
 #define GLFW_EXPOSE_NATIVE_WIN32
@@ -233,6 +234,13 @@ bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
         ::DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &chrome, sizeof(chrome));
         ::DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &chrome, sizeof(chrome));
     }
+#elif defined(__APPLE__)
+    // Tint the NSWindow's title bar to the same ImGui MenuBarBg chrome the
+    // Windows DWM path uses (RGB(38,45,56) = ImVec4(38,45,56)/255 — see
+    // tools/common/imgui_theme.cpp). Implementation lives in
+    // cocoa_window_macos.mm; we hand it the GLFW NSWindow via glfw3native.
+    SetCocoaWindowChrome(glfwGetCocoaWindow(window_), 38.0f / 255.0f, 45.0f / 255.0f,
+                         56.0f / 255.0f);
 #endif
 
     // ImGui context must exist *before* Pipeline.InitDevice() because

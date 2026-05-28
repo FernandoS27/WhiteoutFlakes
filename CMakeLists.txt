@@ -1151,9 +1151,14 @@ endif()
 # macOS: ObjC++ shim that creates the CAMetalLayer + Vulkan surface in
 # the order MoltenVK expects (wantsLayer=YES before setLayer:). Replaces
 # glfwCreateWindowSurface, which trips VK_ERROR_INITIALIZATION_FAILED on
-# macOS 13+ / MoltenVK 1.4.
+# macOS 13+ / MoltenVK 1.4. cocoa_window_macos.mm tints the NSWindow's
+# title bar to match the ImGui MenuBarBg — Cocoa parity for the Windows
+# DwmSetWindowAttribute path in viewer_app.cpp.
 if(APPLE)
-    list(APPEND WHITEOUTFLAKES_VIEWER_SOURCES tools/basic_viewer/vulkan_surface_macos.mm)
+    list(APPEND WHITEOUTFLAKES_VIEWER_SOURCES
+        tools/basic_viewer/vulkan_surface_macos.mm
+        tools/basic_viewer/cocoa_window_macos.mm
+    )
 endif()
 add_executable(WhiteoutFlakesStandalone ${WHITEOUTFLAKES_VIEWER_SOURCES})
 
