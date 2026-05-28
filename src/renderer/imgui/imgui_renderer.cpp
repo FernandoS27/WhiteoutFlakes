@@ -59,6 +59,11 @@ struct ImGuiRenderer::Impl {
     bls::BlsShader* ps = nullptr;
 
     gfx::PipelineHandle pso = gfx::PipelineHandle::Invalid;
+    // Cached attachment formats — used to rebuild the PSO when SetRtvFormat
+    // sees a new colour-target format (macOS / WebGPU swapchains can land
+    // on BGRA8 while the rest of the engine targets RGBA8).
+    gfx::Format rtvFormat = gfx::Format::Unknown;
+    gfx::Format dsvFormat = gfx::Format::Unknown;
     gfx::BufferHandle vsCb = gfx::BufferHandle::Invalid;
     gfx::TextureHandle fontAtlas = gfx::TextureHandle::Invalid;
     gfx::SamplerHandle sampler = gfx::SamplerHandle::Invalid;
@@ -161,46 +166,14 @@ ImGuiRenderer::ImGuiRenderer(gfx::IGFXDevice& device, bls::BlsShaderCache& shade
         return;
     }
 
-    // PS permute 0 = HAS_SRGB_DECODE on. The backbuffer view is sRGB so the
-    // hardware re-encodes on store; running the blend in linear space (and
-    // therefore linearising ImGui's sRGB-authored vertex colours first)
-    // matches what users see in every other engine that follows the same
-    // ImGui-on-sRGB-RTV recipe.
-    constexpr u32 kPsPermSrgbDecodeOn = 0;
-
-    static const gfx::InputElement kImGuiInput[] = {
-        {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0},
-        {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12},
-        {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24},
-        {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40},
-    };
-
-    gfx::GraphicsPipelineDesc pd;
-    pd.vs = impl_->vs->permuteHandles[0];
-    pd.ps = impl_->ps->permuteHandles[kPsPermSrgbDecodeOn];
-    pd.inputLayout = kImGuiInput;
-    pd.topology = gfx::PrimitiveTopology::TriangleList;
-    pd.blend.enable = true;
-    pd.blend.srcColor = gfx::BlendFactor::SrcAlpha;
-    pd.blend.dstColor = gfx::BlendFactor::InvSrcAlpha;
-    pd.blend.opColor = gfx::BlendOp::Add;
-    pd.blend.srcAlpha = gfx::BlendFactor::One;
-    pd.blend.dstAlpha = gfx::BlendFactor::InvSrcAlpha;
-    pd.blend.opAlpha = gfx::BlendOp::Add;
-    pd.depthStencil.depthTest = false;
-    pd.depthStencil.depthWrite = false;
-    pd.rasterizer.cull = gfx::CullMode::None;
-    pd.rasterizer.frontCCW = true;
-    // ImGui drives clip rects via per-command scissors. Without this the
-    // d3d12 / vulkan backends ignore SetScissor entirely.
-    pd.rasterizer.scissorEnable = true;
-    pd.rtvFormat = rtvFormat;
-    pd.dsvFormat = dsvFormat;
-    impl_->pso = device.CreateGraphicsPipeline(pd);
-    if (impl_->pso == gfx::PipelineHandle::Invalid) {
-        std::fprintf(stderr, "[imgui] PSO creation FAILED\n");
-        return;
-    }
+    impl_->dsvFormat = dsvFormat;
+    // PSO is built lazily by SetRtvFormat below. Doing it eagerly here
+    // would lock in whatever rtvFormat the caller guessed at ctor time —
+    // but the actual swapchain backbuffer format isn't known until the
+    // first swap chain is created, which happens after EnsureImGui. On
+    // macOS / WebGPU / Dawn-D3D12 the swapchain ends up BGRA8 instead of
+    // RGBA8 and the eager PSO mismatches the renderpass, silently dropping
+    // every UI draw (and the present blit alongside it).
 
     gfx::BufferDesc cbd;
     cbd.size = sizeof(ImGuiVsCb);
@@ -218,6 +191,11 @@ ImGuiRenderer::ImGuiRenderer(gfx::IGFXDevice& device, bls::BlsShaderCache& shade
     impl_->sampler = device.CreateSampler(sd);
 
     impl_->gpuReady = true;
+
+    // Seed the PSO with the format the caller predicted; SetRtvFormat
+    // will rebuild it if RenderPipeline updates us with the actual
+    // swapchain format before the first draw.
+    SetRtvFormat(rtvFormat);
 
     // ImGui 1.92+ asserts inside ImGui::NewFrame() if the atlas hasn't
     // been built and the backend hasn't opted into
@@ -259,7 +237,65 @@ ImGuiRenderer::~ImGuiRenderer() {
 }
 
 bool ImGuiRenderer::IsReady() const {
-    return impl_ && impl_->gpuReady;
+    return impl_ && impl_->gpuReady && impl_->pso != gfx::PipelineHandle::Invalid;
+}
+
+void ImGuiRenderer::SetRtvFormat(gfx::Format rtvFormat) {
+    if (!impl_ || !impl_->device)
+        return;
+    if (rtvFormat == gfx::Format::Unknown)
+        return;
+    if (impl_->pso != gfx::PipelineHandle::Invalid && impl_->rtvFormat == rtvFormat)
+        return;
+    if (!impl_->vs || impl_->vs->permuteHandles.empty() || !impl_->ps ||
+        impl_->ps->permuteHandles.empty())
+        return;
+
+    if (impl_->pso != gfx::PipelineHandle::Invalid)
+        impl_->device->Destroy(impl_->pso);
+
+    // PS permute 0 = HAS_SRGB_DECODE on. The backbuffer view is sRGB so the
+    // hardware re-encodes on store; running the blend in linear space (and
+    // therefore linearising ImGui's sRGB-authored vertex colours first)
+    // matches what users see in every other engine that follows the same
+    // ImGui-on-sRGB-RTV recipe.
+    constexpr u32 kPsPermSrgbDecodeOn = 0;
+
+    static const gfx::InputElement kImGuiInput[] = {
+        {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0},
+        {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12},
+        {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24},
+        {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40},
+    };
+
+    gfx::GraphicsPipelineDesc pd;
+    pd.vs = impl_->vs->permuteHandles[0];
+    pd.ps = impl_->ps->permuteHandles[kPsPermSrgbDecodeOn];
+    pd.inputLayout = kImGuiInput;
+    pd.topology = gfx::PrimitiveTopology::TriangleList;
+    pd.blend.enable = true;
+    pd.blend.srcColor = gfx::BlendFactor::SrcAlpha;
+    pd.blend.dstColor = gfx::BlendFactor::InvSrcAlpha;
+    pd.blend.opColor = gfx::BlendOp::Add;
+    pd.blend.srcAlpha = gfx::BlendFactor::One;
+    pd.blend.dstAlpha = gfx::BlendFactor::InvSrcAlpha;
+    pd.blend.opAlpha = gfx::BlendOp::Add;
+    pd.depthStencil.depthTest = false;
+    pd.depthStencil.depthWrite = false;
+    pd.rasterizer.cull = gfx::CullMode::None;
+    pd.rasterizer.frontCCW = true;
+    // ImGui drives clip rects via per-command scissors. Without this the
+    // d3d12 / vulkan backends ignore SetScissor entirely.
+    pd.rasterizer.scissorEnable = true;
+    pd.rtvFormat = rtvFormat;
+    pd.dsvFormat = impl_->dsvFormat;
+    impl_->pso = impl_->device->CreateGraphicsPipeline(pd);
+    if (impl_->pso == gfx::PipelineHandle::Invalid) {
+        std::fprintf(stderr, "[imgui] PSO creation FAILED (rtvFormat=%d)\n",
+                     static_cast<int>(rtvFormat));
+        return;
+    }
+    impl_->rtvFormat = rtvFormat;
 }
 
 void ImGuiRenderer::Render(gfx::IGFXCommandList& cmd, i32 viewportW, i32 viewportH) {
