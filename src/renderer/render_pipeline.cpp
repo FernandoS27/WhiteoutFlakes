@@ -1259,15 +1259,51 @@ bool RenderPipeline::CreatePipelines() {
     desc.rtvFormat = kHdrSceneFormat;
     impl_->linePSOHdr_ = impl_->gfx_->CreateGraphicsPipeline(desc);
 
-    desc.rtvFormat = kSdSceneFormat;
-    impl_->linePSOSd_ = impl_->gfx_->CreateGraphicsPipeline(desc);
+    // SD line PSO is built lazily by CurrentLinePSO against the actual
+    // swap-chain RTV format (Metal-backed swap chains report BGRA8 even
+    // when the rest of the engine targets RGBA8). Building it now with
+    // kSdSceneFormat would mismatch BGRA8 renderpasses, fail SetPipeline,
+    // and invalidate the whole command buffer.
+    impl_->linePSOSd_ = PipelineHandle::Invalid;
+    impl_->linePsoSdFormat_ = Format::Unknown;
 
-    return impl_->linePSOHdr_ != PipelineHandle::Invalid &&
-           impl_->linePSOSd_ != PipelineHandle::Invalid;
+    return impl_->linePSOHdr_ != PipelineHandle::Invalid;
 }
 
 gfx::PipelineHandle RenderPipeline::CurrentLinePSO() const {
-    return impl_->frameRenderMode_ == RenderMode::HD ? impl_->linePSOHdr_ : impl_->linePSOSd_;
+    if (impl_->frameRenderMode_ == RenderMode::HD)
+        return impl_->linePSOHdr_;
+
+    const gfx::Format wantFmt = SceneTargetFormat();
+    if (impl_->linePSOSd_ != gfx::PipelineHandle::Invalid &&
+        impl_->linePsoSdFormat_ == wantFmt)
+        return impl_->linePSOSd_;
+
+    if (!impl_->gfx_ || impl_->lineVS_ == gfx::ShaderHandle::Invalid ||
+        impl_->linePS_ == gfx::ShaderHandle::Invalid)
+        return gfx::PipelineHandle::Invalid;
+
+    if (impl_->linePSOSd_ != gfx::PipelineHandle::Invalid)
+        impl_->gfx_->Destroy(impl_->linePSOSd_);
+
+    static const gfx::InputElement lineInput[] = {
+        {"POSITION", 0, gfx::Format::R32G32B32_FLOAT, 0},
+        {"COLOR", 0, gfx::Format::R32G32B32A32_FLOAT, 12},
+    };
+    gfx::GraphicsPipelineDesc desc{};
+    desc.vs = impl_->lineVS_;
+    desc.ps = impl_->linePS_;
+    desc.inputLayout = lineInput;
+    desc.topology = gfx::PrimitiveTopology::LineList;
+    desc.blend.enable = false;
+    desc.depthStencil = {};
+    desc.rasterizer.cull = gfx::CullMode::None;
+    desc.rasterizer.frontCCW = true;
+    desc.dsvFormat = impl_->depthStencilFormat_;
+    desc.rtvFormat = wantFmt;
+    impl_->linePSOSd_ = impl_->gfx_->CreateGraphicsPipeline(desc);
+    impl_->linePsoSdFormat_ = wantFmt;
+    return impl_->linePSOSd_;
 }
 
 bool RenderPipeline::CreateDefaultResources() {

@@ -55,14 +55,34 @@ bool CreateSwapchainObjects(VulkanDeviceState& state, SwapChainEntry& sc, i32 wi
     auto fmtsR = state.physicalDevice.getSurfaceFormatsKHR(*sc.surface);
     if (fmtsR.result != vk::Result::eSuccess || fmtsR.value.empty())
         return false;
+    // Prefer the requested sRGB format. If the surface doesn't expose it
+    // (Metal-backed Vulkan on macOS only advertises BGRA8 / RGB10A2 family),
+    // fall back to *any* sRGB-nonlinear variant before accepting whatever
+    // the driver hands back at index 0. Picking the linear BGRA8 that
+    // MoltenVK lists first would skip the hardware sRGB encode on store,
+    // and the SD pipeline (which writes linear-light values directly to
+    // the swap chain backbuffer) would then display ~2.2x too dark — the
+    // tonemap-using HD path is less visibly affected because its output
+    // is already in display-encoded space.
     const vk::Format preferredSrgb = ToVkFormat(colorFormat);
-    vk::SurfaceFormatKHR chosen = fmtsR.value[0];
-    for (const auto& f : fmtsR.value) {
-        if (f.format == preferredSrgb && f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
-            chosen = f;
-            break;
+    vk::SurfaceFormatKHR chosen{};
+    bool found = false;
+    auto pick = [&](vk::Format want) {
+        if (found)
+            return;
+        for (const auto& f : fmtsR.value) {
+            if (f.format == want && f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
+                chosen = f;
+                found = true;
+                return;
+            }
         }
-    }
+    };
+    pick(preferredSrgb);
+    pick(vk::Format::eB8G8R8A8Srgb);
+    pick(vk::Format::eR8G8B8A8Srgb);
+    if (!found)
+        chosen = fmtsR.value[0];
     sc.formatSrgb = chosen.format;
     sc.formatLinear = LinearPartnerOf(chosen.format);
 
