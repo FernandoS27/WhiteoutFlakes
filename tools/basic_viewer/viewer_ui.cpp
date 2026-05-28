@@ -66,7 +66,8 @@ constexpr std::array<const char*, 4> kIblLabels = {"Portrait", "Day/Night", "Dun
 constexpr std::array<const char*, 3> kLightingLabels = {"InGame", "Glue", "Dynamic"};
 constexpr std::array<const char*, 4> kShadowLabels = {"Off", "1 cascade", "2 cascades",
                                                       "3 cascades"};
-constexpr std::array<const char*, 4> kBackendLabels = {"D3D11", "D3D12", "Vulkan", "WebGPU"};
+constexpr std::array<const char*, 5> kBackendLabels = {"D3D11", "D3D12", "Vulkan", "WebGPU",
+                                                       "Metal"};
 
 i32 BackendToIdx(gfx::GfxApi b) {
     switch (b) {
@@ -78,6 +79,8 @@ i32 BackendToIdx(gfx::GfxApi b) {
         return 2;
     case gfx::GfxApi::WebGPU:
         return 3;
+    case gfx::GfxApi::Metal:
+        return 4;
     }
     return 1;
 }
@@ -89,6 +92,8 @@ gfx::GfxApi IdxToBackend(i32 idx) {
         return gfx::GfxApi::Vulkan;
     case 3:
         return gfx::GfxApi::WebGPU;
+    case 4:
+        return gfx::GfxApi::Metal;
     default:
         return gfx::GfxApi::D3D12;
     }

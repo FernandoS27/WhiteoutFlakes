@@ -123,6 +123,8 @@ int main(int argc, char* argv[]) {
 
 #if defined(_WIN32)
     constexpr const char* kBackendsHelp = "d3d11, d3d12, vulkan";
+#elif defined(__APPLE__)
+    constexpr const char* kBackendsHelp = "vulkan, metal";
 #else
     constexpr const char* kBackendsHelp = "vulkan";
 #endif
@@ -135,6 +137,8 @@ int main(int argc, char* argv[]) {
                 backend = whiteout::flakes::gfx::GfxApi::Vulkan;
             } else if (CompareCi(v, "webgpu") == 0 || CompareCi(v, "wgpu") == 0) {
                 backend = whiteout::flakes::gfx::GfxApi::WebGPU;
+            } else if (CompareCi(v, "metal") == 0 || CompareCi(v, "mtl") == 0) {
+                backend = whiteout::flakes::gfx::GfxApi::Metal;
             }
 #if defined(_WIN32)
             else if (CompareCi(v, "d3d11") == 0 || CompareCi(v, "dx11") == 0) {
@@ -234,18 +238,20 @@ int main(int argc, char* argv[]) {
     if (renderer.Settings().DefaultBackend() != whiteout::flakes::gfx::GfxApi::Vulkan)
         renderer.Settings().SetDefaultBackend(whiteout::flakes::gfx::GfxApi::Vulkan);
 #elif defined(__APPLE__)
-    // macOS supports Vulkan (via MoltenVK) and, when WDX_ENABLE_WEBGPU=ON,
-    // WebGPU (via Dawn → Metal). Reject D3D11/D3D12 — they only build on
-    // Windows. WDX_HAS_WEBGPU lets the viewer accept WebGPU even when the
-    // build excluded it (in which case it falls back to Vulkan with a
-    // notice).
+    // macOS supports Vulkan (via MoltenVK) and, when WDX_HAS_METAL is on,
+    // the native Metal backend. WebGPU (via Dawn → Metal) is also accepted
+    // when WDX_HAS_WEBGPU is on. Reject D3D11/D3D12 — they only build on
+    // Windows.
     using Api = whiteout::flakes::gfx::GfxApi;
     auto isMacOk = [](Api a) {
+        if (a == Api::Vulkan) return true;
 #if WDX_HAS_WEBGPU
-        return a == Api::Vulkan || a == Api::WebGPU;
-#else
-        return a == Api::Vulkan;
+        if (a == Api::WebGPU) return true;
 #endif
+#if WDX_HAS_METAL
+        if (a == Api::Metal) return true;
+#endif
+        return false;
     };
     if (!isMacOk(backend)) {
         std::cerr << "[viewer] Backend not supported on macOS; falling back to Vulkan\n";
@@ -332,6 +338,7 @@ int main(int argc, char* argv[]) {
                               : backend == whiteout::flakes::gfx::GfxApi::D3D12  ? "D3D12"
                               : backend == whiteout::flakes::gfx::GfxApi::Vulkan ? "Vulkan"
                               : backend == whiteout::flakes::gfx::GfxApi::WebGPU ? "WebGPU"
+                              : backend == whiteout::flakes::gfx::GfxApi::Metal  ? "Metal"
                                                                                  : "?";
     std::cout << "Backend: " << backendName << "\n";
 

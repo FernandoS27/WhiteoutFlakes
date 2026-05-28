@@ -19,7 +19,9 @@ namespace whiteout::flakes::gfx {
 /// default. D3D11 / D3D12 are Windows-only; Vulkan is cross-platform
 /// (MoltenVK on macOS). WebGPU is opt-in (CMake -DWDX_ENABLE_WEBGPU=ON)
 /// and uses Dawn's native runtime — see `WebGPU.md` for the design.
-enum class GfxApi { D3D11, D3D12, Vulkan, WebGPU };
+/// Metal is macOS-only and opt-in (-DWDX_ENABLE_METAL=ON, default ON
+/// on Apple platforms). It is the preferred native backend on macOS.
+enum class GfxApi { D3D11, D3D12, Vulkan, WebGPU, Metal };
 
 /// @brief Pixel format used by `TextureData` and swap-chain surfaces.
 ///

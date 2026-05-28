@@ -13,6 +13,10 @@
 #include "gfx/webgpu/webgpu_device.h"
 #endif
 
+#if WDX_HAS_METAL
+#include "gfx/metal/metal_device.h"
+#endif
+
 #include <cstdio>
 #include <filesystem>
 #include <stdexcept>
@@ -116,6 +120,21 @@ std::unique_ptr<IGFXDevice> CreateDevice(GfxApi api, bool enableValidation) {
         return nullptr;
 #endif
     }
+    case GfxApi::Metal: {
+#if WDX_HAS_METAL
+        auto device = std::make_unique<metal::MetalDevice>();
+        if (!device->Init(enableValidation)) {
+            std::fprintf(stderr, "[gfx] CreateDevice(Metal): Init returned false\n");
+            return nullptr;
+        }
+        return device;
+#else
+        (void)enableValidation;
+        std::fprintf(stderr, "[gfx] CreateDevice(Metal): backend NOT compiled in "
+                             "(rebuild with -DWDX_ENABLE_METAL=ON on macOS)\n");
+        return nullptr;
+#endif
+    }
     }
     return nullptr;
 }
@@ -143,6 +162,12 @@ std::vector<std::string> EnumerateDevices(GfxApi api) {
     case GfxApi::WebGPU:
 #if WDX_HAS_WEBGPU
         return webgpu::EnumerateAdapterNames();
+#else
+        return {};
+#endif
+    case GfxApi::Metal:
+#if WDX_HAS_METAL
+        return metal::EnumerateAdapterNames();
 #else
         return {};
 #endif

@@ -712,6 +712,15 @@ find_package(Vulkan QUIET)
 # FetchContent and compile in src/gfx/webgpu/*.cpp.
 option(WDX_ENABLE_WEBGPU "Enable WebGPU/Dawn backend (fetches Dawn via FetchContent)" OFF)
 
+# Native Metal backend — macOS only. Default ON on Apple platforms so a
+# stock checkout on macOS gets a native gfx path without manual flags.
+# Forced OFF elsewhere because Metal.framework only ships with Xcode.
+if(APPLE)
+    option(WDX_ENABLE_METAL "Enable native Metal backend (macOS only)" ON)
+else()
+    set(WDX_ENABLE_METAL OFF CACHE BOOL "Enable native Metal backend (macOS only)" FORCE)
+endif()
+
 set(WHITEOUTFLAKES_GFX_SOURCES
     src/gfx/gfx_factory.cpp
 )
@@ -758,6 +767,21 @@ if(WDX_ENABLE_WEBGPU)
             src/gfx/webgpu/webgpu_surface_macos.mm
         )
     endif()
+endif()
+
+# Metal backend (Apple only). All Obj-C++ — pure C++ TUs see only the
+# PIMPL'd MetalDevice. Framework linkage happens just below where the
+# WhiteoutFlakesGfx target is finalized.
+set(WHITEOUTFLAKES_GFX_METAL_MM_SOURCES)
+if(WDX_ENABLE_METAL AND APPLE)
+    set(WHITEOUTFLAKES_GFX_METAL_MM_SOURCES
+        src/gfx/metal/metal_device.mm
+        src/gfx/metal/metal_init.mm
+        src/gfx/metal/metal_command_list.mm
+    )
+    list(APPEND WHITEOUTFLAKES_GFX_SOURCES
+        ${WHITEOUTFLAKES_GFX_METAL_MM_SOURCES}
+    )
 endif()
 
 add_library(WhiteoutFlakesGfx STATIC ${WHITEOUTFLAKES_GFX_SOURCES})
@@ -901,6 +925,31 @@ if(WDX_ENABLE_WEBGPU)
     endif()
 else()
     target_compile_definitions(WhiteoutFlakesGfx PUBLIC WDX_HAS_WEBGPU=0)
+endif()
+
+# ---- Metal backend wiring ----
+# Frameworks: Metal (id<MTLDevice> + all rendering APIs), QuartzCore
+# (CAMetalLayer for the swap chain), Foundation/Cocoa (NSWindow handle
+# from GLFW), MetalKit reserved for future MTKTextureLoader use.
+# `-fobjc-arc` is scoped to the .mm files only via set_source_files_properties
+# so the pure-C++ TUs (factory, etc.) don't see the flag.
+if(WDX_ENABLE_METAL AND APPLE)
+    target_link_libraries(WhiteoutFlakesGfx PRIVATE
+        "-framework Metal"
+        "-framework MetalKit"
+        "-framework QuartzCore"
+        "-framework Foundation"
+        "-framework Cocoa"
+    )
+    target_compile_definitions(WhiteoutFlakesGfx PUBLIC WDX_HAS_METAL=1)
+    if(WHITEOUTFLAKES_GFX_METAL_MM_SOURCES)
+        set_source_files_properties(${WHITEOUTFLAKES_GFX_METAL_MM_SOURCES}
+            PROPERTIES COMPILE_FLAGS "-fobjc-arc"
+        )
+    endif()
+    message(STATUS "WhiteoutFlakesGfx: Metal backend enabled")
+else()
+    target_compile_definitions(WhiteoutFlakesGfx PUBLIC WDX_HAS_METAL=0)
 endif()
 
 if(MSVC)
@@ -1064,9 +1113,10 @@ if(MSVC)
 endif()
 
 # ---- Throwaway: dump a BLS permute's disassembly ----
-# Skipped under Emscripten — links d3d11.lib + d3dcompiler.lib which only
-# exist on Windows native.
-if(NOT EMSCRIPTEN AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/bls/bls_reflect_tool.cpp")
+# Windows-only: links d3d11.lib + d3dcompiler.lib + includes <d3d11.h>,
+# none of which exist outside the Win32 SDK. Skipped under Emscripten and
+# on non-Windows hosts so the macOS/Linux gfx build succeeds.
+if(WIN32 AND NOT EMSCRIPTEN AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/bls/bls_reflect_tool.cpp")
   add_executable(BlsReflect
       src/renderer/bls/bls_reflect_tool.cpp
       src/renderer/bls/bls_container.cpp
