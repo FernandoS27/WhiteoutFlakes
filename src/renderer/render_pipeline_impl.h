@@ -39,6 +39,14 @@ struct RenderPipeline::Impl {
     gfx::ShaderHandle linePS_ = gfx::ShaderHandle::Invalid;
     gfx::PipelineHandle linePSOHdr_ = gfx::PipelineHandle::Invalid;
     gfx::PipelineHandle linePSOSd_ = gfx::PipelineHandle::Invalid;
+    // RTV format the SD line PSO was built against. Tracked so CurrentLinePSO
+    // can rebuild it when the swap-chain format isn't the hardcoded RGBA8_SRGB
+    // (macOS Metal / WebGPU-Dawn surfaces only expose BGRA8 — without the
+    // rebuild, SetPipeline mismatches the renderpass on every debug draw and
+    // invalidates the whole CommandBuffer, leaving the user with a magenta
+    // screen). linePSOHdr_ doesn't need this because the HDR scene target is
+    // a fixed R11G11B10_FLOAT offscreen.
+    gfx::Format linePsoSdFormat_ = gfx::Format::Unknown;
     gfx::PipelineHandle tonemapPSO_ = gfx::PipelineHandle::Invalid;
     // RTV format the tonemapPSO_ was built against. Cached so RunTonemapPass
     // can rebuild the PSO whenever the swap-chain format changes (e.g. on
