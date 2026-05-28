@@ -133,22 +133,7 @@ void* MetalDevice::MapBuffer(BufferHandle) {
 }
 void MetalDevice::UnmapBuffer(BufferHandle) {}
 
-SwapChainHandle MetalDevice::CreateSwapChain(void*, i32, i32, Format) {
-    return SwapChainHandle::Invalid;
-}
-void MetalDevice::ResizeSwapChain(SwapChainHandle, i32, i32) {}
-void MetalDevice::DestroySwapChain(SwapChainHandle) {}
-void MetalDevice::Present(SwapChainHandle) {}
-
-TextureHandle MetalDevice::GetSwapChainBackBuffer(SwapChainHandle) {
-    return TextureHandle::Invalid;
-}
-TextureHandle MetalDevice::GetSwapChainBackBufferLinear(SwapChainHandle) {
-    return TextureHandle::Invalid;
-}
-Format MetalDevice::GetSwapChainFormat(SwapChainHandle) const {
-    return Format::Unknown;
-}
+// Swap-chain methods live in metal_swap_chain.mm.
 
 TextureHandle MetalDevice::CreateColorTarget(i32, i32, Format) {
     return TextureHandle::Invalid;

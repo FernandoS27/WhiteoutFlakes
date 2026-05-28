@@ -778,6 +778,8 @@ if(WDX_ENABLE_METAL AND APPLE)
         src/gfx/metal/metal_device.mm
         src/gfx/metal/metal_init.mm
         src/gfx/metal/metal_command_list.mm
+        src/gfx/metal/metal_swap_chain.mm
+        src/gfx/metal/metal_surface_macos.mm
     )
     list(APPEND WHITEOUTFLAKES_GFX_SOURCES
         ${WHITEOUTFLAKES_GFX_METAL_MM_SOURCES}
@@ -1301,6 +1303,23 @@ if(WDX_ENABLE_WEBP)
     target_compile_definitions(WhiteoutFlakesStandalone PRIVATE WDX_HAVE_WEBP=1)
     message(STATUS
         "WhiteoutFlakesStandalone: animated WebP export enabled (libwebp v1.5.0)")
+endif()
+
+# ---- metal_smoke ----
+# Tiny diagnostic tool that opens a GLFW window, asks gfx for a Metal
+# device + swap chain, and runs a magenta clear loop. Bypasses the
+# renderer entirely so it can run before the BLS / pipeline / asset
+# wiring is finished. Used to verify the Metal backend's swap-chain +
+# render-pass + Present path during bring-up.
+if(WDX_ENABLE_METAL AND APPLE)
+    add_executable(metal_smoke tools/metal_smoke/metal_smoke.cpp)
+    set_target_properties(metal_smoke PROPERTIES
+        CXX_STANDARD          20
+        CXX_STANDARD_REQUIRED ON
+        RUNTIME_OUTPUT_DIRECTORY         "${CMAKE_BINARY_DIR}/standalone"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/standalone"
+    )
+    target_link_libraries(metal_smoke PRIVATE WhiteoutFlakesGfx glfw)
 endif()
 
 # Viewer includes <vulkan/vulkan.h> unconditionally (for the Linux surface
