@@ -853,7 +853,7 @@ if(WDX_ENABLE_WEBGPU)
         # and webgpu_swap_chain.cpp. No GLFW link here — JS owns the canvas.
         target_compile_options(WhiteoutFlakesGfx PUBLIC "--use-port=emdawnwebgpu")
         target_link_options(WhiteoutFlakesGfx PUBLIC "--use-port=emdawnwebgpu")
-        target_compile_definitions(WhiteoutFlakesGfx PRIVATE WDX_HAS_WEBGPU=1)
+        target_compile_definitions(WhiteoutFlakesGfx PUBLIC WDX_HAS_WEBGPU=1)
         message(STATUS "WhiteoutFlakesGfx: WebGPU enabled "
                        "(Emscripten emdawnwebgpu port)")
     else()
@@ -883,7 +883,7 @@ if(WDX_ENABLE_WEBGPU)
             # time so the forward reference resolves cleanly.
             glfw
         )
-        target_compile_definitions(WhiteoutFlakesGfx PRIVATE WDX_HAS_WEBGPU=1)
+        target_compile_definitions(WhiteoutFlakesGfx PUBLIC WDX_HAS_WEBGPU=1)
         if(WIN32)
             target_compile_definitions(WhiteoutFlakesGfx PRIVATE
                 NOMINMAX
@@ -900,7 +900,7 @@ if(WDX_ENABLE_WEBGPU)
         endif()
     endif()
 else()
-    target_compile_definitions(WhiteoutFlakesGfx PRIVATE WDX_HAS_WEBGPU=0)
+    target_compile_definitions(WhiteoutFlakesGfx PUBLIC WDX_HAS_WEBGPU=0)
 endif()
 
 if(MSVC)
@@ -1147,6 +1147,13 @@ set(WHITEOUTFLAKES_VIEWER_SOURCES
 # load the same icon via glfwSetWindowIcon at runtime (see ViewerApp::Open).
 if(WIN32)
     list(APPEND WHITEOUTFLAKES_VIEWER_SOURCES tools/basic_viewer/resource.rc)
+endif()
+# macOS: ObjC++ shim that creates the CAMetalLayer + Vulkan surface in
+# the order MoltenVK expects (wantsLayer=YES before setLayer:). Replaces
+# glfwCreateWindowSurface, which trips VK_ERROR_INITIALIZATION_FAILED on
+# macOS 13+ / MoltenVK 1.4.
+if(APPLE)
+    list(APPEND WHITEOUTFLAKES_VIEWER_SOURCES tools/basic_viewer/vulkan_surface_macos.mm)
 endif()
 add_executable(WhiteoutFlakesStandalone ${WHITEOUTFLAKES_VIEWER_SOURCES})
 
@@ -1396,8 +1403,11 @@ if(APPLE)
             "${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/Info.plist.in"
         # Bundled dylibs live next to the executable in
         # Contents/Frameworks; @executable_path is the bundle's MacOS dir
-        # at runtime, so ../Frameworks resolves correctly.
-        INSTALL_RPATH                          "@executable_path/../Frameworks"
+        # at runtime, so ../Frameworks resolves correctly. The plain
+        # @executable_path entry covers libwebgpu_dawn.dylib, which Dawn's
+        # WebGPU-distribution helper drops as a sibling of the exe via
+        # target_copy_webgpu_binaries rather than moving it to Frameworks/.
+        INSTALL_RPATH                          "@executable_path;@executable_path/../Frameworks"
         BUILD_WITH_INSTALL_RPATH               TRUE
     )
 
@@ -1438,5 +1448,119 @@ if(APPLE)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/pso_trace.bin")
         install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/pso_trace.bin"
                 DESTINATION WhiteoutFlakes.app/Contents/Resources)
+    endif()
+
+    # Self-contained bundle: stage the Vulkan loader + MoltenVK driver and
+    # rewrite the ICD JSON's library_path to bundle-relative. test_main.cpp
+    # sets VK_ICD_FILENAMES to <bundle>/Contents/Resources/vulkan/icd.d/
+    # MoltenVK_icd.json at startup, so the loader finds MoltenVK without
+    # any system Vulkan SDK on the user's machine — the .app is launchable
+    # via Finder/double-click with no env-var prep.
+    #
+    # Python is needed by packaging/macos/rewrite_icd.py — find it lazily
+    # here since WDX_BUILD_WC3_SHADERS already pulled it in earlier if on,
+    # but we want this path to work in the common WDX_USE_PREBUILT_SHADERS
+    # case too.
+    if(NOT Python3_EXECUTABLE)
+        find_package(Python3 QUIET COMPONENTS Interpreter)
+    endif()
+    #
+    # Source paths: Vulkan_LIBRARY points at libvulkan.dylib (a symlink to
+    # libvulkan.1.dylib on every modern SDK). libMoltenVK + its ICD JSON
+    # live next to the loader, but the exact layout differs between LunarG
+    # SDK (Frameworks/lib + share/) and Homebrew (split across opt/
+    # vulkan-loader and opt/molten-vk). Glob both layouts so a local dev
+    # build with brew, and the CI runner with the LunarG SDK installer,
+    # both produce the same staged bundle.
+    if(Vulkan_FOUND)
+        # libvulkan: resolve symlinks so we install the real dylib, not
+        # the version-suffixed symlink Homebrew ships at lib/libvulkan.dylib.
+        get_filename_component(_wdx_vk_loader_real "${Vulkan_LIBRARY}" REALPATH)
+        # libMoltenVK + ICD JSON: walk candidate layouts.
+        set(_wdx_mvk_lib "")
+        set(_wdx_mvk_icd "")
+        foreach(_root
+                "/opt/homebrew/opt/molten-vk"                       # brew arm64
+                "/usr/local/opt/molten-vk"                          # brew x86_64
+                "$ENV{VULKAN_SDK}"                                  # LunarG SDK
+                "${Vulkan_INCLUDE_DIR}/.."                          # SDK-style
+                "/opt/homebrew/opt/vulkan-loader/.."                # brew sibling
+            )
+            if(_root AND EXISTS "${_root}")
+                if(NOT _wdx_mvk_lib AND EXISTS "${_root}/lib/libMoltenVK.dylib")
+                    set(_wdx_mvk_lib "${_root}/lib/libMoltenVK.dylib")
+                endif()
+                if(NOT _wdx_mvk_icd AND EXISTS "${_root}/share/vulkan/icd.d/MoltenVK_icd.json")
+                    set(_wdx_mvk_icd "${_root}/share/vulkan/icd.d/MoltenVK_icd.json")
+                endif()
+                if(NOT _wdx_mvk_icd AND EXISTS "${_root}/etc/vulkan/icd.d/MoltenVK_icd.json")
+                    set(_wdx_mvk_icd "${_root}/etc/vulkan/icd.d/MoltenVK_icd.json")
+                endif()
+            endif()
+        endforeach()
+        if(_wdx_mvk_lib AND _wdx_mvk_icd)
+            # Copy the loader (forcing the libvulkan.1.dylib filename so the
+            # @rpath/libvulkan.1.dylib load command resolves) and MoltenVK
+            # driver into Contents/Frameworks, then patch their install_names
+            # to @rpath form and re-sign.
+            install(CODE "
+                file(INSTALL \"${_wdx_vk_loader_real}\"
+                     DESTINATION \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/Frameworks\"
+                     RENAME \"libvulkan.1.dylib\")
+                file(INSTALL \"${_wdx_mvk_lib}\"
+                     DESTINATION \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/Frameworks\")
+                execute_process(COMMAND install_name_tool -id @rpath/libvulkan.1.dylib
+                    \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/Frameworks/libvulkan.1.dylib\")
+                execute_process(COMMAND install_name_tool -id @rpath/libMoltenVK.dylib
+                    \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/Frameworks/libMoltenVK.dylib\")
+                # Rewrite the exe's libvulkan load command. The linker bakes
+                # in the dylib's LC_ID_DYLIB install_name as the load path,
+                # which may be neither Vulkan_LIBRARY nor its realpath — brew's
+                # libvulkan ships with install_name = /opt/homebrew/opt/
+                # vulkan-loader/lib/libvulkan.1.dylib. Read the actual load
+                # command from the exe with otool and target whatever path
+                # appears there.
+                execute_process(
+                    COMMAND otool -L
+                        \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/MacOS/WhiteoutFlakes\"
+                    OUTPUT_VARIABLE _wdx_otool_out OUTPUT_STRIP_TRAILING_WHITESPACE)
+                string(REGEX MATCH \"[^ \\t\\r\\n]+libvulkan\\\\.1\\\\.dylib\"
+                    _wdx_exe_libvk \"\${_wdx_otool_out}\")
+                message(STATUS \"macOS bundle: exe libvulkan load path = '\${_wdx_exe_libvk}'\")
+                if(_wdx_exe_libvk AND NOT _wdx_exe_libvk MATCHES \"^@rpath\")
+                    execute_process(COMMAND install_name_tool -change
+                        \"\${_wdx_exe_libvk}\" @rpath/libvulkan.1.dylib
+                        \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/MacOS/WhiteoutFlakes\")
+                endif()
+                # macOS 14+ rejects code-signed dylibs whose load commands have
+                # been edited post-sign. Re-sign with ad-hoc identity.
+                execute_process(COMMAND codesign --force --sign -
+                    \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/Frameworks/libvulkan.1.dylib\")
+                execute_process(COMMAND codesign --force --sign -
+                    \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/Frameworks/libMoltenVK.dylib\")
+                execute_process(COMMAND codesign --force --sign -
+                    \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/MacOS/WhiteoutFlakes\")
+                execute_process(COMMAND codesign --force --sign -
+                    \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app\")
+            ")
+            install(CODE "
+                file(MAKE_DIRECTORY
+                    \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/Resources/vulkan/icd.d\")
+                execute_process(COMMAND \"${Python3_EXECUTABLE}\"
+                    \"${CMAKE_CURRENT_SOURCE_DIR}/packaging/macos/rewrite_icd.py\"
+                    \"${_wdx_mvk_icd}\"
+                    \"\${CMAKE_INSTALL_PREFIX}/WhiteoutFlakes.app/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json\"
+                    RESULT_VARIABLE _icd_rc)
+                if(NOT _icd_rc EQUAL 0)
+                    message(FATAL_ERROR \"rewrite_icd.py failed (rc=\${_icd_rc})\")
+                endif()
+            ")
+            message(STATUS "macOS bundle: bundling MoltenVK from ${_wdx_mvk_lib}")
+        else()
+            message(STATUS
+                "macOS bundle: MoltenVK not found in standard layouts; "
+                "user will need a system Vulkan install at runtime "
+                "(checked: brew molten-vk, VULKAN_SDK, brew vulkan-loader sibling)")
+        endif()
     endif()
 endif()
