@@ -41,10 +41,21 @@ struct MetalDeviceState {
     std::atomic<DeleteEpoch> completedEpoch{0};
 
     // ---- Shared upload ring ----
+    // 64 MiB shared MTLBuffer (MTLStorageModeShared on Apple Silicon = no
+    // upload round-trip, host writes land in GPU-visible memory directly).
+    // CpuWritable buffers sub-alloc here; fallback to dedicated when the
+    // cursor overflows. See metal_buffer.mm.
     id<MTLBuffer> sharedCb = nil;
     uint8_t* sharedCbMapped = nullptr;
     u64 sharedCbCursor = 0;
     u64 sharedCbCapacity = 0;
+
+    // Slot-stride rounding floor. Metal accepts any alignment for
+    // setVertexBuffer:offset:atIndex: but slangc emits std140-aligned
+    // structs (16-byte padding everywhere) — 256 matches the
+    // d3d11 / d3d12 / vulkan / webgpu floor so the same renderer code
+    // produces aligned offsets across every backend.
+    u64 minUniformBufferAlign = 256;
 
     // ---- GPU-byte accounting (diagnostic; LiveGpuBytes reports this) ----
     std::atomic<u64> gpuBytesAlloc{0};

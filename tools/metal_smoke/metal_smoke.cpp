@@ -54,6 +54,89 @@ int main(int argc, char** argv) {
     }
     std::printf("Metal device: %s\n", device->GetDeviceName());
 
+    // ---- Phase C smoke: exercise buffer / texture / sampler creation ----
+    {
+        // CpuWritable constant buffer (ring-allocated from sharedCb).
+        gfx::BufferDesc bd{};
+        bd.size = 256;
+        bd.usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable;
+        auto cb = device->CreateBuffer(bd, nullptr);
+        if (cb == gfx::BufferHandle::Invalid) {
+            std::fprintf(stderr, "CreateBuffer(constant) returned Invalid\n");
+            return 1;
+        }
+        if (void* m = device->MapBuffer(cb)) {
+            std::memset(m, 0xAB, 256);
+            device->UnmapBuffer(cb);
+            std::printf("CB Map/Unmap ok\n");
+        }
+        device->Destroy(cb);
+
+        // Static dedicated buffer with initial data (private storage path).
+        std::uint32_t verts[] = {0u, 1u, 2u, 3u};
+        gfx::BufferDesc vbd{};
+        vbd.size = sizeof(verts);
+        vbd.usage = gfx::BufferUsage::Vertex;
+        auto vb = device->CreateBuffer(vbd, verts);
+        if (vb == gfx::BufferHandle::Invalid) {
+            std::fprintf(stderr, "CreateBuffer(vertex) returned Invalid\n");
+            return 1;
+        }
+        std::printf("Static VB ok\n");
+        device->Destroy(vb);
+
+        // Texture with initial pixel data (shared storage path).
+        std::uint8_t pix[4 * 4 * 4];
+        for (int i = 0; i < 4 * 4; ++i) {
+            pix[i * 4 + 0] = (std::uint8_t)(i * 16);
+            pix[i * 4 + 1] = 0;
+            pix[i * 4 + 2] = 255;
+            pix[i * 4 + 3] = 255;
+        }
+        gfx::TextureDesc td{};
+        td.width = 4;
+        td.height = 4;
+        td.mipLevels = 1;
+        td.arraySize = 1;
+        td.format = gfx::Format::R8G8B8A8_UNORM;
+        td.usage = gfx::TextureUsage::ShaderResource;
+        auto tex = device->CreateTexture(td, pix);
+        if (tex == gfx::TextureHandle::Invalid) {
+            std::fprintf(stderr, "CreateTexture returned Invalid\n");
+            return 1;
+        }
+        std::printf("Texture (with initial pixels) ok\n");
+        device->Destroy(tex);
+
+        // Render targets (private storage).
+        auto rt = device->CreateColorTarget(256, 256, gfx::Format::R16G16B16A16_FLOAT);
+        auto dt = device->CreateDepthTarget(256, 256, device->PreferredDepthStencilFormat());
+        if (rt == gfx::TextureHandle::Invalid || dt == gfx::TextureHandle::Invalid) {
+            std::fprintf(stderr, "CreateColorTarget/DepthTarget returned Invalid\n");
+            return 1;
+        }
+        std::printf("Color + depth targets ok\n");
+        device->Destroy(rt);
+        device->Destroy(dt);
+
+        // Sampler.
+        gfx::SamplerDesc sd{};
+        sd.minFilter = gfx::Filter::Linear;
+        sd.magFilter = gfx::Filter::Linear;
+        sd.addressU = gfx::AddressMode::Wrap;
+        sd.addressV = gfx::AddressMode::Wrap;
+        auto smp = device->CreateSampler(sd);
+        if (smp == gfx::SamplerHandle::Invalid) {
+            std::fprintf(stderr, "CreateSampler returned Invalid\n");
+            return 1;
+        }
+        std::printf("Sampler ok\n");
+        device->Destroy(smp);
+
+        std::printf("LiveGpuBytes after destroys: %llu\n",
+                    (unsigned long long)device->LiveGpuBytes());
+    }
+
     int fbW = 0, fbH = 0;
     glfwGetFramebufferSize(window, &fbW, &fbH);
     auto swap = device->CreateSwapChain(static_cast<void*>(window), fbW, fbH,

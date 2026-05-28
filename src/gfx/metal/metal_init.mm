@@ -97,6 +97,27 @@ bool MetalDevice::Init(bool enableValidation) {
         if (enableValidation)
             state.commandQueue.label = @"wf.queue";
 
+        // Shared CB ring. MTLStorageModeShared means the host pointer
+        // returned by [buffer contents] writes directly into GPU-visible
+        // memory on Apple Silicon — no Queue::WriteBuffer round-trip,
+        // unlike WebGPU/Vulkan. The fallback dedicated-buffer path
+        // (overflow) uses the same shared-storage mode.
+        state.sharedCb = [dev newBufferWithLength:kSharedCbCapacity
+                                          options:MTLResourceStorageModeShared];
+        if (!state.sharedCb) {
+            std::fprintf(stderr,
+                "[gfx/metal] sharedCb (%llu bytes) allocation failed\n",
+                (unsigned long long)kSharedCbCapacity);
+            state.commandQueue = nil;
+            state.device = nil;
+            return false;
+        }
+        if (enableValidation)
+            state.sharedCb.label = @"wf.sharedCb";
+        state.sharedCbMapped = static_cast<uint8_t*>([state.sharedCb contents]);
+        state.sharedCbCursor = 0;
+        state.sharedCbCapacity = kSharedCbCapacity;
+
         deviceName_ = [[dev name] UTF8String];
 
         std::fprintf(stderr, "[gfx/metal] device='%s' unified=%d low-power=%d\n",

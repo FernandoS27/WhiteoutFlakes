@@ -780,6 +780,10 @@ if(WDX_ENABLE_METAL AND APPLE)
         src/gfx/metal/metal_command_list.mm
         src/gfx/metal/metal_swap_chain.mm
         src/gfx/metal/metal_surface_macos.mm
+        src/gfx/metal/metal_buffer.mm
+        src/gfx/metal/metal_texture.mm
+        src/gfx/metal/metal_pipeline.mm
+        src/gfx/metal/metal_delete_queue.mm
     )
     list(APPEND WHITEOUTFLAKES_GFX_SOURCES
         ${WHITEOUTFLAKES_GFX_METAL_MM_SOURCES}

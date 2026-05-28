@@ -96,18 +96,10 @@ Format MetalDevice::PreferredDepthStencilFormat() const {
     return Format::D32_FLOAT_S8_UINT;
 }
 
-// ---- IGFXDevice stubs (Phase A skeleton) ----
-// Concrete implementations land in metal_buffer.mm / metal_texture.mm /
-// metal_pipeline.mm / metal_swap_chain.mm in phases (c)..(f). Returning
-// Invalid handles + ignoring writes lets the host code at least call
-// these without crashing while the rest of the backend is being built.
+// Resource creation / Destroy / Map / Update live in metal_buffer.mm,
+// metal_texture.mm, and metal_pipeline.mm. Swap-chain methods live in
+// metal_swap_chain.mm. Only Phase-D-pending stubs remain here.
 
-BufferHandle MetalDevice::CreateBuffer(const BufferDesc&, const void*) {
-    return BufferHandle::Invalid;
-}
-TextureHandle MetalDevice::CreateTexture(const TextureDesc&, const void*) {
-    return TextureHandle::Invalid;
-}
 ShaderHandle MetalDevice::CreateShader(ShaderStage, const void*, usize) {
     return ShaderHandle::Invalid;
 }
@@ -117,29 +109,8 @@ PipelineHandle MetalDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc&) 
 PipelineHandle MetalDevice::CreateComputePipeline(const ComputePipelineDesc&) {
     return PipelineHandle::Invalid;
 }
-SamplerHandle MetalDevice::CreateSampler(const SamplerDesc&) {
-    return SamplerHandle::Invalid;
-}
 
-void MetalDevice::Destroy(BufferHandle) {}
-void MetalDevice::Destroy(TextureHandle) {}
 void MetalDevice::Destroy(ShaderHandle) {}
 void MetalDevice::Destroy(PipelineHandle) {}
-void MetalDevice::Destroy(SamplerHandle) {}
-
-void MetalDevice::UpdateBuffer(BufferHandle, const void*, usize) {}
-void* MetalDevice::MapBuffer(BufferHandle) {
-    return nullptr;
-}
-void MetalDevice::UnmapBuffer(BufferHandle) {}
-
-// Swap-chain methods live in metal_swap_chain.mm.
-
-TextureHandle MetalDevice::CreateColorTarget(i32, i32, Format) {
-    return TextureHandle::Invalid;
-}
-TextureHandle MetalDevice::CreateDepthTarget(i32, i32, Format) {
-    return TextureHandle::Invalid;
-}
 
 } // namespace whiteout::flakes::gfx::metal

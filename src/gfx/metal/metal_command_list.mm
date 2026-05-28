@@ -21,6 +21,8 @@ namespace whiteout::flakes::gfx::metal {
 
 // Defined in metal_swap_chain.mm.
 void AcquireSwapChainImageIfNeeded(MetalDeviceState& state, SwapChainEntry& sc);
+// Defined in metal_delete_queue.mm.
+void DrainPendingDeletes(MetalDeviceState& state);
 
 namespace {
 
@@ -28,9 +30,15 @@ namespace {
 // CopyBuffer / Dispatch when those land). Mirrors webgpu_command_list.cpp's
 // EnsureEncoderOpen pattern: the engine model is "one command buffer per
 // frame, Present commits".
+//
+// Also a natural place to drain the deferred-delete queue: by frame
+// open, any resource destroyed before the last Present has had its
+// owning command buffer retired (the addCompletedHandler ran on the
+// Metal scheduler thread).
 FrameContext& EnsureFrameOpen(MetalDeviceState& state) {
     auto& frame = state.frames[state.currentFrame];
     if (!frame.commandBuffer) {
+        DrainPendingDeletes(state);
         frame.commandBuffer = [state.commandQueue commandBuffer];
         if (state.validationRequested && frame.commandBuffer)
             frame.commandBuffer.label = @"wf.frame";
