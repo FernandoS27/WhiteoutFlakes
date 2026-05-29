@@ -63,9 +63,19 @@ bool BlsContainer::Load(std::span<const u8> fileBytes, std::string* error) {
 }
 
 // ----------------------------------------------------------------------------
-// v1.8 — uncompressed; PermuteHeader (80 bytes) + DXBC blob, indexed via a
-// u32 offset table. Kept on the original file bytes so PermuteView spans
-// remain valid for the BlsContainer's lifetime.
+// v1.8 — uncompressed. Two inner-perm flavors share the outer container:
+//   • DXBC v1.8: 80-byte PermuteHeader + DXBC blob (codeSize at +0x4C,
+//     blob at +0x50, magic 'DXBC' at the blob's first 4 bytes).
+//   • Metal v1.8: 44-byte PermuteHeaderMetal + MTLB blob (metallibSize
+//     at +0x20, blob at +0x2C, magic 'MTLB' at the blob's first 4 bytes).
+// The outer header / perm-table layout is identical; we sniff the first
+// non-null perm to decide which inner shape to use and set platformTag_
+// to kPlatformTag_DXBC or kPlatformTag_MTL accordingly. Caller code reads
+// PermuteView::dxbc as opaque bytes, so picking the right blob span (just
+// the metallib / just the DXBC, not the inner header) keeps every
+// downstream consumer working unchanged. The Wc3-shipped mtlfs/mtlvs
+// bundles use the Metal flavor; the shipped ps/vs bundles + the
+// Wc3Shaders-rebuilt DXBC bundles use the DXBC flavor.
 // ----------------------------------------------------------------------------
 bool BlsContainer::LoadV1_8(std::span<const u8> fileBytes, std::string* error) {
     if (fileBytes.size() < sizeof(BlsHeader)) {
@@ -97,39 +107,143 @@ bool BlsContainer::LoadV1_8(std::span<const u8> fileBytes, std::string* error) {
     const u8* permuteData = bytes_.data() + h.dataOffset;
     const usize permuteDataLen = bytes_.size() - h.dataOffset;
 
+    // Per-perm size derives from the perm table: permTable[i] is the
+    // start offset of perm i (permTable[0] = 0 via the pad word that
+    // precedes the cum table); end = permTable[i+1] for i < N-1, or
+    // permuteDataLen for i = N-1. Null perms have size == 0.
+    auto permSize = [&](u32 i) -> u64 {
+        const u64 start = permTable[i];
+        const u64 end = (i + 1 < h.permutationCount) ? permTable[i + 1] : permuteDataLen;
+        return (end >= start) ? (end - start) : 0;
+    };
+
+    // Magic sniffer. Reads the u32 at perm_payload[probeOff], compares to
+    // wantMagic. Returns false if the perm is too small to probe.
+    auto matchMagic = [&](const u8* perm, u64 size, u64 probeOff, u32 wantMagic) -> bool {
+        if (size < probeOff + sizeof(u32))
+            return false;
+        u32 m = 0;
+        std::memcpy(&m, perm + probeOff, sizeof(u32));
+        return m == wantMagic;
+    };
+
+    // Detect inner flavor from the first non-null perm. The two probes
+    // sit at distinct offsets (MTLB at +0x2C vs DXBC at +0x50) so they
+    // can't both match by coincidence.
+    constexpr u64 kMetalProbeOffset = 0x2C; // start of metallib blob
+    constexpr u64 kDxbcProbeOffset = 0x50;  // start of DXBC blob
+    u32 detectedTag = 0;
+    for (u32 i = 0; i < h.permutationCount; ++i) {
+        const u64 size = permSize(i);
+        if (size == 0)
+            continue;
+        const u8* perm = permuteData + permTable[i];
+        if (matchMagic(perm, size, kMetalProbeOffset, kMtlbMagic)) {
+            detectedTag = kPlatformTag_MTL;
+        } else if (matchMagic(perm, size, kDxbcProbeOffset, kDxbcMagic)) {
+            detectedTag = kPlatformTag_DXBC;
+        }
+        break;
+    }
+    if (detectedTag == 0) {
+        // Either every perm was null (degenerate but legal — treat as
+        // DXBC for the empty container) or the first live perm had no
+        // recognisable inner magic. Default to DXBC to preserve the
+        // pre-Metal behaviour for empty bundles.
+        detectedTag = kPlatformTag_DXBC;
+    }
+    platformTag_ = detectedTag;
+
     permutes_.reserve(h.permutationCount);
     for (u32 i = 0; i < h.permutationCount; ++i) {
         const u32 off = permTable[i];
-        if (static_cast<u64>(off) + sizeof(PermuteHeader) > permuteDataLen) {
-            SetError(error, "v1.8: permute header out of bounds");
-            permutes_.clear();
-            bytes_.clear();
-            return false;
+        const u64 size = permSize(i);
+        if (size == 0) {
+            // Null perm — record an empty entry so the per-index lookup
+            // the renderer does stays meaningful. The shader cache
+            // forwards an empty span to CreateShader, which returns
+            // Invalid; the engine's PSO builder treats Invalid handles
+            // for never-bound perms as "unused".
+            permutes_.push_back({PermuteHeader{}, std::span<const u8>{}});
+            continue;
         }
 
-        PermuteHeader ph{};
-        std::memcpy(&ph, permuteData + off, sizeof(PermuteHeader));
+        const u8* perm = permuteData + off;
 
-        const u64 blobStart = static_cast<u64>(off) + sizeof(PermuteHeader);
-        const u64 blobEnd = blobStart + ph.codeSize;
-        if (blobEnd > permuteDataLen || ph.codeSize < sizeof(u32) * 2) {
-            SetError(error, "v1.8: permute DXBC blob out of bounds");
-            permutes_.clear();
-            bytes_.clear();
-            return false;
+        if (platformTag_ == kPlatformTag_MTL) {
+            if (size < sizeof(PermuteHeaderMetal)) {
+                SetError(error, "v1.8/Metal: perm too small for inner header");
+                permutes_.clear();
+                bytes_.clear();
+                platformTag_ = 0;
+                return false;
+            }
+            PermuteHeaderMetal ph{};
+            std::memcpy(&ph, perm, sizeof(PermuteHeaderMetal));
+
+            const u64 blobStart = sizeof(PermuteHeaderMetal);
+            const u64 blobEnd = blobStart + ph.metallibSize;
+            // Wc3's mtl perms include a single trailing 0x00 byte after
+            // the metallib (see Wc3Shaders/build_bls.py pack_blob_perm),
+            // so `size` is metallibSize + headerSize + 1. Validate at
+            // least the metallib fits.
+            if (blobEnd > size || ph.metallibSize < sizeof(u32) * 2) {
+                SetError(error, "v1.8/Metal: metallib blob out of bounds");
+                permutes_.clear();
+                bytes_.clear();
+                platformTag_ = 0;
+                return false;
+            }
+            u32 mtlbMagic = 0;
+            std::memcpy(&mtlbMagic, perm + blobStart, sizeof(u32));
+            if (mtlbMagic != kMtlbMagic) {
+                SetError(error, "v1.8/Metal: blob is not an MTLB container");
+                permutes_.clear();
+                bytes_.clear();
+                platformTag_ = 0;
+                return false;
+            }
+
+            // PermuteView::header carries the 80-byte DX struct shape;
+            // for Metal perms the renderer doesn't read it, so we leave
+            // it zero-initialised. Future Metal-side reflection (e.g.
+            // per-perm stage flag) can pivot on platformTag_ and reach
+            // for the Metal header separately.
+            permutes_.push_back(
+                {PermuteHeader{}, std::span<const u8>(perm + blobStart, ph.metallibSize)});
+        } else {
+            // DXBC v1.8 — the original path, unchanged.
+            if (size < sizeof(PermuteHeader)) {
+                SetError(error, "v1.8/DXBC: perm too small for header");
+                permutes_.clear();
+                bytes_.clear();
+                platformTag_ = 0;
+                return false;
+            }
+            PermuteHeader ph{};
+            std::memcpy(&ph, perm, sizeof(PermuteHeader));
+
+            const u64 blobStart = sizeof(PermuteHeader);
+            const u64 blobEnd = blobStart + ph.codeSize;
+            if (blobEnd > size || ph.codeSize < sizeof(u32) * 2) {
+                SetError(error, "v1.8/DXBC: DXBC blob out of bounds");
+                permutes_.clear();
+                bytes_.clear();
+                platformTag_ = 0;
+                return false;
+            }
+            u32 dxbcMagic = 0;
+            std::memcpy(&dxbcMagic, perm + blobStart, sizeof(u32));
+            if (dxbcMagic != kDxbcMagic) {
+                SetError(error, "v1.8/DXBC: blob is not a DXBC container");
+                permutes_.clear();
+                bytes_.clear();
+                platformTag_ = 0;
+                return false;
+            }
+
+            permutes_.push_back({ph, std::span<const u8>(perm + blobStart, ph.codeSize)});
         }
-
-        const u8* blob = permuteData + blobStart;
-        u32 dxbcMagic = 0;
-        std::memcpy(&dxbcMagic, blob, sizeof(u32));
-        if (dxbcMagic != kDxbcMagic) {
-            SetError(error, "v1.8: permute blob is not a DXBC container");
-            permutes_.clear();
-            bytes_.clear();
-            return false;
-        }
-
-        permutes_.push_back({ph, std::span<const u8>(blob, ph.codeSize)});
     }
 
     loaded_ = true;

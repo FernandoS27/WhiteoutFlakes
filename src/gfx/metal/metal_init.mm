@@ -13,6 +13,7 @@
 #import <Metal/Metal.h>
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -117,6 +118,17 @@ bool MetalDevice::Init(bool enableValidation) {
         state.sharedCbMapped = static_cast<uint8_t*>([state.sharedCb contents]);
         state.sharedCbCursor = 0;
         state.sharedCbCapacity = kSharedCbCapacity;
+
+        // Zero-filled buffer for phantom vertex attributes (see
+        // CreateGraphicsPipeline). newBufferWithLength zero-initialises
+        // when MTLResourceStorageModeShared is used on Apple Silicon.
+        state.zeroVertexBuffer = [dev newBufferWithLength:16
+                                                  options:MTLResourceStorageModeShared];
+        if (state.zeroVertexBuffer) {
+            std::memset([state.zeroVertexBuffer contents], 0, 16);
+            if (enableValidation)
+                state.zeroVertexBuffer.label = @"wf.zeroVB";
+        }
 
         deviceName_ = [[dev name] UTF8String];
 

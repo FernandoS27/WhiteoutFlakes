@@ -49,6 +49,19 @@ inline constexpr u32 kSamplerBindingCount = 16;
 inline constexpr u32 kVertexBufferIndexBase = kStageBindingShift;
 inline constexpr u32 kMaxVertexBufferSlots = 8;
 
+// Phantom vertex-attribute buffers — see ShaderEntry::declaredVertexAttrs
+// + CreateGraphicsPipeline. Slang declares every attribute on the
+// input struct even when specialization eliminates the readers; Metal
+// validates the [[stage_in]] declaration strictly, so the renderer's
+// PSO build path synthesizes a one-attribute MTLVertexBufferLayout per
+// missing attribute and binds them all to a device-wide zero buffer at
+// draw time. Phantoms occupy buffer indices above the real vertex-slot
+// range; Metal supports up to 31 vertex-stage buffer indices, leaving
+// (31 - kPhantomVertexBufferIndexBase) phantom slots.
+inline constexpr u32 kPhantomVertexBufferIndexBase =
+    kVertexBufferIndexBase + kMaxVertexBufferSlots;  // 16 + 8 = 24
+inline constexpr u32 kMaxPhantomVertexAttrs = 7;     // 24..30 inclusive
+
 // 64 MiB shared upload ring for CpuWritable+Constant buffers. Matches
 // the Vulkan / WebGPU backends' kSharedCbCapacity so per-CB sub-alloc
 // math is identical across backends. Apple Silicon has unified memory
@@ -115,6 +128,20 @@ struct ShaderEntry {
     id<MTLFunction> function = nil;
     ShaderStage stage = ShaderStage::Vertex;
     std::string entryPoint;
+
+    // Declared vertex attributes (index + Metal format), captured from
+    // [function vertexAttributes] at CreateShader time. Slang's Metal
+    // emit always declares every attribute in the input struct even
+    // when specialization eliminates the bodies that read them — Metal
+    // validates the [[stage_in]] declaration strictly against the
+    // MTLVertexDescriptor, so any declared attribute not in the
+    // engine's InputLayout has to be synthesized as a phantom layout
+    // (zero-buffer source). See CreateGraphicsPipeline.
+    struct VertexAttr {
+        u32 index = 0;
+        MTLVertexFormat format = MTLVertexFormatInvalid;
+    };
+    std::vector<VertexAttr> declaredVertexAttrs;
 };
 
 struct PipelineEntry {
@@ -130,6 +157,12 @@ struct PipelineEntry {
     // Used by FlushBindings to pick the right indexing convention when
     // (eventually) emitting argument-buffer binds. Not consumed yet.
     bool hasFragment = false;
+
+    // Phantom-attribute layout indices the PSO expects to be bound to
+    // the device zero buffer at draw time. Empty when every declared
+    // vertex attribute had a matching InputLayout entry. Indices are
+    // raw Metal buffer indices (kPhantomVertexBufferIndexBase + i).
+    std::vector<u32> phantomBufferIndices;
 };
 
 struct SamplerEntry {

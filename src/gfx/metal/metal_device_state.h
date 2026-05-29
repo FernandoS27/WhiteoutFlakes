@@ -57,6 +57,14 @@ struct MetalDeviceState {
     // produces aligned offsets across every backend.
     u64 minUniformBufferAlign = 256;
 
+    // Zero-filled vertex buffer used to back phantom attributes
+    // (see CreateGraphicsPipeline + ShaderEntry::declaredVertexAttrs).
+    // Stride = 16 — enough room for the widest single-attribute Metal
+    // vertex format (Float4 / UInt4 / Half4); stepFunction=Constant
+    // means every vertex reads from the same 16-byte window. 16 bytes
+    // total is enough for the device's lifetime.
+    id<MTLBuffer> zeroVertexBuffer = nil;
+
     // ---- GPU-byte accounting (diagnostic; LiveGpuBytes reports this) ----
     std::atomic<u64> gpuBytesAlloc{0};
     std::atomic<u64> gpuBytesFreed{0};

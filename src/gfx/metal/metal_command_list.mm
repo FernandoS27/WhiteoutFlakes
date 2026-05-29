@@ -205,6 +205,18 @@ void MetalCommandList::BindPipeline(PipelineHandle h) {
         [frame.renderEncoder setDepthStencilState:pso->depthStencil];
     [frame.renderEncoder setCullMode:pso->cull];
     [frame.renderEncoder setFrontFacingWinding:pso->winding];
+
+    // Bind the zero buffer to every phantom-attribute index this PSO
+    // declared. The phantom layouts use stepFunction=Constant, so the
+    // 16-byte zero window is reused for every vertex. See
+    // CreateGraphicsPipeline for the synthesis path.
+    if (state.zeroVertexBuffer) {
+        for (u32 idx : pso->phantomBufferIndices) {
+            [frame.renderEncoder setVertexBuffer:state.zeroVertexBuffer
+                                          offset:0
+                                         atIndex:idx];
+        }
+    }
 }
 
 void MetalCommandList::BindVertexBuffer(u32 slot, BufferHandle h, u32 /*stride*/,

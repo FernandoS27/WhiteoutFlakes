@@ -9,16 +9,22 @@
 namespace whiteout::flakes::renderer::bls {
 
 inline constexpr u32 kHsxgMagic = 0x47585348u;
-inline constexpr u32 kHsxgVersion_1_8 = 0x00010008u;  // shipped DX (DXBC sm5)
+inline constexpr u32 kHsxgVersion_1_8 = 0x00010008u;  // shipped DX (DXBC sm5) + Metal (MTLB)
 inline constexpr u32 kHsxgVersion_1_14 = 0x0001000eu; // shipped DX (DXIL sm6)
 inline constexpr u32 kDxbcMagic = 0x43425844u;        // also the DXIL outer magic
+inline constexpr u32 kMtlbMagic = 0x424C544Du;        // Apple Metal library binary
 
-// v1.14 platform tags — FourCC at BlsHeaderV14::platformTag.
-//   'DXBC' (0x43425844) — DX SM5 (we don't emit; reserved for v1.8 outer)
-//   '06XD' (0x44583630) — DX SM6 (DXIL inside DXBC; §3.2 inner layout)
-//   'RIPS' (0x53504952) — Vulkan SPIR-V (§3.6 opaque-blob inner layout)
-//   'LSLG' (0x474C534C) — OpenGL GLSL (§3.6 opaque-blob)
-//   'LSGW' (0x5747534C) — WebGPU WGSL (§3.6 opaque-blob)
+// Platform tags — FourCC. For v1.14 read from BlsHeaderV14::platformTag;
+// for v1.8 set internally by LoadV1_8 based on per-perm magic sniffing
+// (MTLB at +0x2C → Metal, DXBC at +0x50 → DX SM5).
+//   'DXBC' (0x43425844) — DX SM5 (v1.8 outer)
+//   'MTLB' (0x424C544D) — Apple Metal Library Binary (v1.8 outer)
+//   '06XD' (0x44583630) — DX SM6 (DXIL inside DXBC; v1.14 §3.2 inner)
+//   'RIPS' (0x53504952) — Vulkan SPIR-V (v1.14 §3.6 opaque-blob)
+//   'LSLG' (0x474C534C) — OpenGL GLSL (v1.14 §3.6 opaque-blob)
+//   'LSGW' (0x5747534C) — WebGPU WGSL (v1.14 §3.6 opaque-blob)
+inline constexpr u32 kPlatformTag_DXBC = kDxbcMagic;   // 'DXBC' — v1.8 DX SM5
+inline constexpr u32 kPlatformTag_MTL = kMtlbMagic;    // 'MTLB' — v1.8 Apple Metal
 inline constexpr u32 kPlatformTag_DX6 = 0x44583630u;   // '06XD'
 inline constexpr u32 kPlatformTag_SPIRV = 0x53504952u; // 'RIPS'
 inline constexpr u32 kPlatformTag_WGSL = 0x5747534Cu;  // 'LSGW' — WebGPU WGSL source
@@ -45,6 +51,28 @@ struct PermuteHeader {
     u32 stageFlag;
 };
 static_assert(sizeof(PermuteHeader) == 80);
+
+// v1.8 Metal per-perm header — see Wc3Shaders/build_bls.py
+// METAL_PERM_INNER_HEADER_SIZE (= 0x2C). Wire layout:
+//   +0x00..0x14: 20 zero bytes (pre_meta)
+//   +0x14:       payload_size (u32, = 0x14 + metallib_size)
+//   +0x18:       stage         (u32, always 1)
+//   +0x1C:       entry_count   (u32, always 1)
+//   +0x20:       metallib_size (u32)
+//   +0x24:       flag          (u32, always 8)
+//   +0x28:       flag          (u32, always 1)
+//   +0x2C..:     MTLB blob
+//   +(0x2C + metallib_size): trailing 0x00 byte
+struct PermuteHeaderMetal {
+    u32 preMeta[5];
+    u32 payloadSize;
+    u32 stage;
+    u32 entryCount;
+    u32 metallibSize;
+    u32 flagA;
+    u32 flagB;
+};
+static_assert(sizeof(PermuteHeaderMetal) == 44);
 
 // v1.14 wire format -----------------------------------------------------------
 struct BlsHeaderV14 {
@@ -85,7 +113,8 @@ static_assert(sizeof(BlsV14DxInnerHeader) == 40);
 struct PermuteView {
     PermuteHeader header;
     // Raw bytecode span. Format depends on Version() + PlatformTag():
-    //   v1.8                          → DXBC (sm5)
+    //   v1.8  + kPlatformTag_DXBC     → DXBC (sm5)
+    //   v1.8  + kPlatformTag_MTL      → Apple Metal Library Binary
     //   v1.14 + kPlatformTag_DX6      → DXIL-in-DXBC (sm6)
     //   v1.14 + kPlatformTag_SPIRV    → SPIR-V (vulkan)
     //   v1.14 + kPlatformTag_WGSL     → WGSL UTF-8 source (webgpu)

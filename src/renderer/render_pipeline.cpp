@@ -1209,9 +1209,10 @@ bool RenderPipeline::CreateShaders() {
     using namespace whiteout::flakes::Shaders;
 
     // Per-backend bytecode selection:
-    //   Vulkan  → SPIR-V
-    //   WebGPU  → WGSL (UTF-8 source — CreateShader treats the buffer as
-    //                   null-terminated text)
+    //   Vulkan   → SPIR-V
+    //   WebGPU   → WGSL (UTF-8 source — CreateShader treats the buffer as
+    //                    null-terminated text)
+    //   Metal    → metallib (binary Apple Metal Library)
     //   D3D11/12 → DXBC sm_5_0
     const gfx::GfxApi api = impl_->gfx_->GetApi();
     const u8* vsBytes = kLineVS;
@@ -1228,6 +1229,11 @@ bool RenderPipeline::CreateShaders() {
         vsSize = sizeof(kLineVSWgsl);
         psBytes = kLinePSWgsl;
         psSize = sizeof(kLinePSWgsl);
+    } else if (api == gfx::GfxApi::Metal) {
+        vsBytes = kLineVSMtl;
+        vsSize = sizeof(kLineVSMtl);
+        psBytes = kLinePSMtl;
+        psSize = sizeof(kLinePSMtl);
     }
 
     impl_->lineVS_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Vertex, vsBytes, vsSize);

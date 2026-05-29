@@ -197,6 +197,47 @@ id<MTLFunction> ResolveEntryFunction(id<MTLLibrary> lib, ShaderStage stage,
     return nil;
 }
 
+// Map MTLDataType (the type of a single [[attribute]] field as the
+// reflection API reports it) to a matching MTLVertexFormat. The
+// phantom-attribute path feeds zeros, so the only constraint is that
+// the format's element count + element type match what the shader
+// declared — Metal's PSO build rejects format/type mismatches.
+MTLVertexFormat PhantomFormatFor(MTLDataType dt) {
+    switch (dt) {
+    case MTLDataTypeFloat:    return MTLVertexFormatFloat;
+    case MTLDataTypeFloat2:   return MTLVertexFormatFloat2;
+    case MTLDataTypeFloat3:   return MTLVertexFormatFloat3;
+    case MTLDataTypeFloat4:   return MTLVertexFormatFloat4;
+    case MTLDataTypeInt:      return MTLVertexFormatInt;
+    case MTLDataTypeInt2:     return MTLVertexFormatInt2;
+    case MTLDataTypeInt3:     return MTLVertexFormatInt3;
+    case MTLDataTypeInt4:     return MTLVertexFormatInt4;
+    case MTLDataTypeUInt:     return MTLVertexFormatUInt;
+    case MTLDataTypeUInt2:    return MTLVertexFormatUInt2;
+    case MTLDataTypeUInt3:    return MTLVertexFormatUInt3;
+    case MTLDataTypeUInt4:    return MTLVertexFormatUInt4;
+    case MTLDataTypeShort:    return MTLVertexFormatShort;
+    case MTLDataTypeShort2:   return MTLVertexFormatShort2;
+    case MTLDataTypeShort4:   return MTLVertexFormatShort4;
+    case MTLDataTypeUShort:   return MTLVertexFormatUShort;
+    case MTLDataTypeUShort2:  return MTLVertexFormatUShort2;
+    case MTLDataTypeUShort4:  return MTLVertexFormatUShort4;
+    case MTLDataTypeChar:     return MTLVertexFormatChar;
+    case MTLDataTypeChar2:    return MTLVertexFormatChar2;
+    case MTLDataTypeChar4:    return MTLVertexFormatChar4;
+    case MTLDataTypeUChar:    return MTLVertexFormatUChar;
+    case MTLDataTypeUChar2:   return MTLVertexFormatUChar2;
+    case MTLDataTypeUChar4:   return MTLVertexFormatUChar4;
+    case MTLDataTypeHalf:     return MTLVertexFormatHalf;
+    case MTLDataTypeHalf2:    return MTLVertexFormatHalf2;
+    case MTLDataTypeHalf4:    return MTLVertexFormatHalf4;
+    default:
+        // Unknown: a 4-float read of zeros is valid for any vec3/vec4
+        // shader use the slang side might decay this to.
+        return MTLVertexFormatFloat4;
+    }
+}
+
 } // namespace
 
 // ============================================================
@@ -241,6 +282,21 @@ ShaderHandle MetalDevice::CreateShader(ShaderStage stage, const void* bytecode, 
         entry.function = fn;
         entry.stage = stage;
         entry.entryPoint = std::move(entryName);
+
+        // Capture declared vertex attributes so CreateGraphicsPipeline
+        // can synthesize phantom layouts for any not in InputLayout.
+        // [function vertexAttributes] is nil for non-vertex stages.
+        if (stage == ShaderStage::Vertex) {
+            NSArray<MTLVertexAttribute*>* attrs = [fn vertexAttributes];
+            entry.declaredVertexAttrs.reserve([attrs count]);
+            for (MTLVertexAttribute* a in attrs) {
+                ShaderEntry::VertexAttr va;
+                va.index = static_cast<u32>([a attributeIndex]);
+                va.format = PhantomFormatFor([a attributeType]);
+                entry.declaredVertexAttrs.push_back(va);
+            }
+        }
+
         return static_cast<ShaderHandle>(state.shaders.Insert(std::move(entry)));
     }
 }
@@ -295,13 +351,32 @@ PipelineHandle MetalDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
         // at index (kVertexBufferIndexBase + slot); per-attribute
         // MTLVertexAttributeDescriptor with bufferIndex pointing back at
         // the slot. Stride is computed as max(attr.offset + format-bytes).
-        if (!desc.inputLayout.empty()) {
+        //
+        // Phantom-attribute synthesis: slangc's Metal emit always declares
+        // every [[attribute(N)]] in the input struct even when
+        // specialization eliminates the body that reads it. Metal
+        // validates the [[stage_in]] declaration strictly — any
+        // declared attribute not in InputLayout fails PSO creation
+        // (`Vertex attribute X is missing from the vertex descriptor`).
+        // We mirror the WebGPU backend's fix: every declared attribute
+        // with no InputLayout entry gets its own one-attribute
+        // VertexBufferLayout at a high buffer index, fed by the
+        // device-wide zero buffer at draw time.
+        std::vector<u32> phantomBufferIndices;
+        const bool needVertexDescriptor =
+            !desc.inputLayout.empty() || (vs && !vs->declaredVertexAttrs.empty());
+        if (needVertexDescriptor) {
             MTLVertexDescriptor* vd = [[MTLVertexDescriptor alloc] init];
 
             // Per-slot byte stride. Computed as the high-water mark of
             // (offset + size) across every attribute on that slot.
             u32 slotStride[kMaxVertexBufferSlots] = {0};
             bool slotUsed[kMaxVertexBufferSlots] = {false};
+
+            // Track which attribute indices the InputLayout supplies so
+            // the phantom pass can identify the misses.
+            std::vector<u32> suppliedAttrIndices;
+            suppliedAttrIndices.reserve(desc.inputLayout.size());
 
             for (u32 i = 0; i < desc.inputLayout.size(); ++i) {
                 const auto& el = desc.inputLayout[i];
@@ -316,6 +391,7 @@ PipelineHandle MetalDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
                 a.format = ToMtlVertexFormat(el.format);
                 a.offset = el.offset;
                 a.bufferIndex = kVertexBufferIndexBase + el.inputSlot;
+                suppliedAttrIndices.push_back(i);
             }
             for (u32 s = 0; s < kMaxVertexBufferSlots; ++s) {
                 if (!slotUsed[s])
@@ -325,6 +401,52 @@ PipelineHandle MetalDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
                 layout.stride = slotStride[s];
                 layout.stepFunction = MTLVertexStepFunctionPerVertex;
                 layout.stepRate = 1;
+            }
+
+            // Synthesize phantom layouts for every declared attribute
+            // missing from the InputLayout. Each phantom gets its own
+            // buffer index in [kPhantomVertexBufferIndexBase,
+            // kPhantomVertexBufferIndexBase + kMaxPhantomVertexAttrs);
+            // FlushBindings binds state.zeroVertexBuffer to every
+            // active phantom index before each Draw.
+            u32 nextPhantomIdx = kPhantomVertexBufferIndexBase;
+            if (vs) {
+                for (const auto& va : vs->declaredVertexAttrs) {
+                    bool supplied = false;
+                    for (u32 idx : suppliedAttrIndices) {
+                        if (idx == va.index) {
+                            supplied = true;
+                            break;
+                        }
+                    }
+                    if (supplied)
+                        continue;
+                    if (nextPhantomIdx >= kPhantomVertexBufferIndexBase +
+                                              kMaxPhantomVertexAttrs) {
+                        std::fprintf(stderr,
+                            "[gfx/metal] phantom-attribute budget exhausted "
+                            "(attr=%u). Bump kMaxPhantomVertexAttrs.\n",
+                            va.index);
+                        break;
+                    }
+                    MTLVertexAttributeDescriptor* a = vd.attributes[va.index];
+                    a.format = va.format;
+                    a.offset = 0;
+                    a.bufferIndex = nextPhantomIdx;
+
+                    MTLVertexBufferLayoutDescriptor* layout =
+                        vd.layouts[nextPhantomIdx];
+                    layout.stride = 16;
+                    // Constant step = same 16 bytes read for every
+                    // vertex. With a zero-filled source buffer this
+                    // gives zeros for every attribute read. Metal
+                    // requires stepRate=0 when stepFunction=Constant
+                    // (the validation error message is explicit).
+                    layout.stepFunction = MTLVertexStepFunctionConstant;
+                    layout.stepRate = 0;
+                    phantomBufferIndices.push_back(nextPhantomIdx);
+                    ++nextPhantomIdx;
+                }
             }
             rpd.vertexDescriptor = vd;
         }
@@ -395,6 +517,7 @@ PipelineHandle MetalDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
         entry.winding =
             desc.rasterizer.frontCCW ? MTLWindingCounterClockwise : MTLWindingClockwise;
         entry.hasFragment = ps && ps->function;
+        entry.phantomBufferIndices = std::move(phantomBufferIndices);
 
         return static_cast<PipelineHandle>(state.pipelines.Insert(std::move(entry)));
     }
