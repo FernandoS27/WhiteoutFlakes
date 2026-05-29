@@ -20,7 +20,40 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <thread>
+#include <vector>
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+
+static std::vector<std::uint8_t> ReadFile(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    if (!in)
+        return {};
+    auto sz = in.tellg();
+    in.seekg(0);
+    std::vector<std::uint8_t> data(static_cast<std::size_t>(sz));
+    in.read(reinterpret_cast<char*>(data.data()), sz);
+    return data;
+}
+
+// Locate triangle.metallib next to the executable. CMake's
+// add_custom_command drops it in ${CMAKE_BINARY_DIR}/standalone/ and
+// the smoke binary lives in the same dir.
+static std::filesystem::path TriangleMetallibPath() {
+    std::filesystem::path exe;
+#if defined(__APPLE__)
+    std::uint32_t bufsize = 0;
+    _NSGetExecutablePath(nullptr, &bufsize);
+    std::vector<char> buf(bufsize);
+    if (_NSGetExecutablePath(buf.data(), &bufsize) == 0)
+        exe = std::filesystem::canonical(buf.data());
+#endif
+    return exe.parent_path() / "triangle.metallib";
+}
 
 namespace gfx = whiteout::flakes::gfx;
 
@@ -150,6 +183,48 @@ int main(int argc, char** argv) {
     std::printf("Swap chain created: format=%d %dx%d\n",
                 (int)device->GetSwapChainFormat(swap), fbW, fbH);
 
+    // ---- Phase D smoke: load triangle.metallib, build pipeline, draw ----
+    // Lives after CreateSwapChain so the PSO can pick up the swap-chain's
+    // resolved color format for its rtvFormat.
+    gfx::ShaderHandle vs = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle ps = gfx::ShaderHandle::Invalid;
+    gfx::PipelineHandle triPso = gfx::PipelineHandle::Invalid;
+    {
+        auto path = TriangleMetallibPath();
+        auto bytes = ReadFile(path);
+        if (bytes.empty()) {
+            std::fprintf(stderr,
+                "triangle.metallib not found at %s\n", path.string().c_str());
+            return 1;
+        }
+        vs = device->CreateShader(gfx::ShaderStage::Vertex,
+                                  bytes.data(), bytes.size());
+        ps = device->CreateShader(gfx::ShaderStage::Pixel,
+                                  bytes.data(), bytes.size());
+        if (vs == gfx::ShaderHandle::Invalid || ps == gfx::ShaderHandle::Invalid) {
+            std::fprintf(stderr, "CreateShader returned Invalid\n");
+            return 1;
+        }
+        std::printf("CreateShader(vs+ps) ok\n");
+
+        gfx::GraphicsPipelineDesc pd{};
+        pd.vs = vs;
+        pd.ps = ps;
+        pd.topology = gfx::PrimitiveTopology::TriangleList;
+        pd.blend.enable = false;
+        pd.depthStencil.depthTest = false;
+        pd.depthStencil.depthWrite = false;
+        pd.rasterizer.cull = gfx::CullMode::None;
+        pd.rtvFormat = device->GetSwapChainFormat(swap);
+        pd.dsvFormat = gfx::Format::Unknown;
+        triPso = device->CreateGraphicsPipeline(pd);
+        if (triPso == gfx::PipelineHandle::Invalid) {
+            std::fprintf(stderr, "CreateGraphicsPipeline returned Invalid\n");
+            return 1;
+        }
+        std::printf("CreateGraphicsPipeline ok\n");
+    }
+
     auto* cmd = device->GetImmediateContext();
     auto t0 = std::chrono::steady_clock::now();
     int lastW = fbW, lastH = fbH;
@@ -166,11 +241,20 @@ int main(int argc, char** argv) {
             std::printf("ResizeSwapChain -> %dx%d\n", w, h);
         }
 
-        // Magenta in linear space (sRGB swap chain will gamma-encode at
-        // present); easy to spot in a screenshot.
-        const float clear[4] = {1.0f, 0.0f, 1.0f, 1.0f};
+        // Dark grey background, RGB-gradient triangle on top.
+        const float clear[4] = {0.1f, 0.1f, 0.15f, 1.0f};
         auto bb = device->GetSwapChainBackBuffer(swap);
         cmd->BeginRenderPass(bb, gfx::TextureHandle::Invalid, clear, 1.0f, 0);
+        gfx::Viewport vp{};
+        vp.x = 0.0f;
+        vp.y = 0.0f;
+        vp.width = static_cast<float>(w);
+        vp.height = static_cast<float>(h);
+        vp.minDepth = 0.0f;
+        vp.maxDepth = 1.0f;
+        cmd->SetViewport(vp);
+        cmd->BindPipeline(triPso);
+        cmd->Draw(3, 0);
         cmd->EndRenderPass();
         device->Present(swap);
 
@@ -184,6 +268,10 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
 
+    device->WaitIdle();
+    device->Destroy(triPso);
+    device->Destroy(vs);
+    device->Destroy(ps);
     device->DestroySwapChain(swap);
     device.reset();
 

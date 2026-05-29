@@ -13,6 +13,8 @@
 #include "gfx/gfx.h"
 #include "metal_handles.h"
 
+#import <Metal/Metal.h>
+
 #include <array>
 
 namespace whiteout::flakes::gfx::metal {
@@ -78,6 +80,16 @@ private:
     std::array<PendingCb, 2 * kStageBindingShift> pendingCBs_{};
     std::array<PendingSrv, 2 * kStageBindingShift> pendingSRVs_{};
     std::array<PendingSmp, 2 * kStageBindingShift> pendingSamplers_{};
+
+    // BindIndexBuffer stash. DrawIndexed reads it. Metal doesn't have a
+    // SetIndexBuffer encoder call — the buffer is passed directly into
+    // drawIndexedPrimitives at draw time.
+    struct PendingIndex {
+        id<MTLBuffer> buffer = nil;
+        u64 offset = 0;
+        MTLIndexType format = MTLIndexTypeUInt16;
+    };
+    PendingIndex pendingIndex_{};
 
     PipelineHandle lastBoundPipeline_ = PipelineHandle::Invalid;
 };

@@ -40,6 +40,15 @@ inline constexpr u32 kCbBindingCount = 16;
 inline constexpr u32 kSrvBindingCount = 16;
 inline constexpr u32 kSamplerBindingCount = 16;
 
+// Vertex-buffer slot N is bound at Metal vertex-stage buffer index
+// (kVertexBufferIndexBase + N). The base sits just above the CB range so
+// it can't collide with slangc's [[buffer(0..15)]] CB indices on the
+// vertex function. The matching MTLVertexDescriptor.layouts[idx] picks
+// up the same index. Tunable in Phase F if slangc emits CBs past
+// [[buffer(15)]] for any Wc3 family.
+inline constexpr u32 kVertexBufferIndexBase = kStageBindingShift;
+inline constexpr u32 kMaxVertexBufferSlots = 8;
+
 // 64 MiB shared upload ring for CpuWritable+Constant buffers. Matches
 // the Vulkan / WebGPU backends' kSharedCbCapacity so per-CB sub-alloc
 // math is identical across backends. Apple Silicon has unified memory
@@ -114,9 +123,13 @@ struct PipelineEntry {
     id<MTLDepthStencilState> depthStencil = nil;
     bool isCompute = false;
     MTLPixelFormat colorFormat = MTLPixelFormatInvalid;
+    MTLPixelFormat depthFormat = MTLPixelFormatInvalid;
     MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
     MTLCullMode cull = MTLCullModeBack;
     MTLWinding winding = MTLWindingClockwise;
+    // Used by FlushBindings to pick the right indexing convention when
+    // (eventually) emitting argument-buffer binds. Not consumed yet.
+    bool hasFragment = false;
 };
 
 struct SamplerEntry {

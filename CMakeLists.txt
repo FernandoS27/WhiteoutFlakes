@@ -1316,7 +1316,29 @@ endif()
 # wiring is finished. Used to verify the Metal backend's swap-chain +
 # render-pass + Present path during bring-up.
 if(WDX_ENABLE_METAL AND APPLE)
+    # Compile the bundled triangle shader to a .metallib next to the
+    # smoke binary at build time. xcrun metal needs `-mmacosx-version-min`
+    # — we pin it to the same 11.0 the Wc3Shaders pipeline uses (metallib
+    # 1.2.5, see externals/Wc3Shaders/compile_all_slang.py).
+    set(_metal_smoke_metal "${CMAKE_CURRENT_SOURCE_DIR}/tools/metal_smoke/triangle.metal")
+    set(_metal_smoke_air   "${CMAKE_BINARY_DIR}/standalone/triangle.air")
+    set(_metal_smoke_lib   "${CMAKE_BINARY_DIR}/standalone/triangle.metallib")
+    add_custom_command(
+        OUTPUT  "${_metal_smoke_lib}"
+        DEPENDS "${_metal_smoke_metal}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/standalone"
+        COMMAND xcrun metal -c "-mmacosx-version-min=11.0"
+                            "${_metal_smoke_metal}"
+                            -o "${_metal_smoke_air}"
+        COMMAND xcrun metallib "${_metal_smoke_air}" -o "${_metal_smoke_lib}"
+        COMMAND ${CMAKE_COMMAND} -E remove "${_metal_smoke_air}"
+        VERBATIM
+        COMMENT "metal_smoke: compiling triangle.metal -> triangle.metallib"
+    )
+    add_custom_target(metal_smoke_shader DEPENDS "${_metal_smoke_lib}")
+
     add_executable(metal_smoke tools/metal_smoke/metal_smoke.cpp)
+    add_dependencies(metal_smoke metal_smoke_shader)
     set_target_properties(metal_smoke PROPERTIES
         CXX_STANDARD          20
         CXX_STANDARD_REQUIRED ON

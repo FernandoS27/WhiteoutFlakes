@@ -98,19 +98,6 @@ Format MetalDevice::PreferredDepthStencilFormat() const {
 
 // Resource creation / Destroy / Map / Update live in metal_buffer.mm,
 // metal_texture.mm, and metal_pipeline.mm. Swap-chain methods live in
-// metal_swap_chain.mm. Only Phase-D-pending stubs remain here.
-
-ShaderHandle MetalDevice::CreateShader(ShaderStage, const void*, usize) {
-    return ShaderHandle::Invalid;
-}
-PipelineHandle MetalDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc&) {
-    return PipelineHandle::Invalid;
-}
-PipelineHandle MetalDevice::CreateComputePipeline(const ComputePipelineDesc&) {
-    return PipelineHandle::Invalid;
-}
-
-void MetalDevice::Destroy(ShaderHandle) {}
-void MetalDevice::Destroy(PipelineHandle) {}
+// metal_swap_chain.mm. Compute pipeline + Dispatch land in Phase G.
 
 } // namespace whiteout::flakes::gfx::metal
