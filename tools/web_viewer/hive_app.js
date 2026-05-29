@@ -351,8 +351,10 @@ export class HiveApp {
 
     // PathSolver — fed to viewer.load. Returns a URL for the asset:
     //   1. Local picked-directory index (full path then basename).
-    //   2. CASC server (`/casc/<path>`) — set up by tools/web_viewer/
-    //      casc_server/wf_casc_server.exe.
+    //   2. `viewer.cascUrl(path)` — Hiveworkshop's CASC mirror by default
+    //      (CORS-enabled, server-side ext synonyms + alias expansion);
+    //      can be retargeted to a local wf_casc_server by overriding
+    //      `viewer.cascUrl` before init().
     // The C++ FetchContentProvider walks extension synonyms (.tif↔.dds↔.blp)
     // and calls this solver once per candidate, so we don't need to do
     // synonym chasing here — only one path at a time.
@@ -368,7 +370,7 @@ export class HiveApp {
             this._objectUrls.push(url);
             return url;
         }
-        return '/casc/' + norm;
+        return this.viewer.cascUrl(norm);
     }
 
     _revokeObjectUrls() {

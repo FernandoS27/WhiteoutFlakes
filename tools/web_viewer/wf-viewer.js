@@ -372,6 +372,13 @@ export class WhiteoutViewer {
         this._handle = 0;
         this._raf = 0;
         this._lastTime = 0;
+        // Hiveworkshop's CASC mirror. Sends Access-Control-Allow-Origin: *,
+        // 302-redirects to the resolved asset, expands extension synonyms
+        // server-side. Override before init() to point at a local proxy
+        // (e.g. wf_casc_server: `(p) => '/casc/' + p`).
+        this.cascUrl = (path) =>
+            'https://www.hiveworkshop.com/casc-contents/?path=' +
+            encodeURIComponent(path);
     }
 
     // Bring-up: await adapter+device, then instantiate the WASM module with
@@ -546,26 +553,9 @@ export class WhiteoutViewer {
         // displayed number is stable across short hitches but still tracks
         // sustained changes. Polled by the host UI via `getFps()`.
         this._emaDt = 1 / 60;
-        // 120 fps cap. The browser fires rAF at the monitor's refresh
-        // rate (often 144+ Hz on gaming displays); for a model viewer
-        // there's no benefit to rendering faster than 120. Capping
-        // saves GPU work on high-refresh displays + extends battery
-        // life. We still rAF every tick (cheaper than setTimeout
-        // latency) but skip the tick + render call when less than
-        // ~8.3 ms has elapsed since the last rendered frame.
-        const TARGET_FRAME_MS = 1000 / 120;
-        // 1 ms slack — fires just before the deadline so a frame that
-        // takes 16ms still counts.
-        const FRAME_SKIP_SLACK_MS = 1.0;
         this._loop = (now) => {
             if (!this._handle) return;
             const elapsed = now - this._lastTime;
-            if (elapsed < TARGET_FRAME_MS - FRAME_SKIP_SLACK_MS) {
-                // Not yet at the next 60-fps deadline; re-arm rAF and
-                // do nothing else. No tick, no render, no pump.
-                this._raf = requestAnimationFrame(this._loop);
-                return;
-            }
             const dt = Math.min(0.1, Math.max(0.0, elapsed / 1000));
             this._lastTime = now;
             if (dt > 0) {
@@ -1073,8 +1063,9 @@ export class WhiteoutViewer {
     // Tries two locations in order, falling through on miss:
     //   1. `engineAssetRoot` (default `./`) — useful for dev / committed
     //      assets sitting next to the viewer page.
-    //   2. `/casc/<path>` — the wf_casc_server route, which streams from a
-    //      live WC3 install. Same shape Hiveworkshop's CASC delivery uses.
+    //   2. `this.cascUrl(path)` — Hiveworkshop's CASC mirror by default;
+    //      can be retargeted to a local wf_casc_server proxy by overriding
+    //      `cascUrl` on the viewer instance.
     // Override `engineAssetRoot` (string, with trailing slash) before
     // calling init() — e.g. for a CDN that pins these to a versioned path.
     async _prefetchEngineAssets() {
@@ -1124,7 +1115,7 @@ export class WhiteoutViewer {
         };
         await Promise.all(ENGINE.map(async (p) => {
             let bytes = await tryFetch(root + p);
-            if (!bytes) bytes = await tryFetch('/casc/' + p);
+            if (!bytes) bytes = await tryFetch(this.cascUrl(p));
             if (bytes) this._putBytes(p, bytes);
         }));
     }
