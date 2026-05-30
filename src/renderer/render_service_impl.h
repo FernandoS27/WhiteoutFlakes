@@ -44,31 +44,58 @@ class DebugRenderer;
 namespace whiteout::flakes::renderer {
 
 struct RenderService::Impl {
-    // ---- Scene + subsystems ----
+    // ---- Destruction-order contract (members destroy in REVERSE
+    //      declaration order, so LATER-declared = destroyed EARLIER) ----
+    //
+    //   1. CornEffectsEmitter dtors run when cornEffectsService_ dies.
+    //      Each emitter's RuntimeBundle holds a CornEffectsGfxBackend
+    //      that calls into the gfx device + AssetManager during
+    //      destruction. ⇒ cornEffectsService_ must die BEFORE
+    //      pipeline_ (gfx) and BEFORE assets_.
+    //   2. Other subsystems (debug renderer, ImGui adapter) also need
+    //      the gfx device alive on teardown. ⇒ pipeline_ must die
+    //      AFTER imgui_/debug_/sound but BEFORE the asset managers.
+    //   3. The asset managers must outlive every consumer (cornflakes,
+    //      model instances, ImGui). ⇒ asset managers declared earliest
+    //      among the "lives during gfx" members, so they're destroyed
+    //      last among them.
+    //
+    // Symptom when violated: ~CornEffectsEmitter → assets_.Release on
+    // a destroyed AssetManager hits a dead std::mutex (EINVAL →
+    // std::system_error → std::terminate → abort).
+
+    // ---- Scene ----
     SceneManager* scene_ = nullptr;
+
+    // ---- Asset managers (destroyed LAST) ----
+    std::unique_ptr<assets::SamplerAssetManager> samplers_;
+    std::unique_ptr<assets::TextureAssetManager> textures_;
+    std::unique_ptr<assets::ReplaceableTextureManager> replaceables_;
+    std::unique_ptr<assets::AssetManager> assets_;
+
+    // ---- App-tunable knobs ----
+    RenderSettings settings_;
+
+    // ---- Background services that don't hold gfx state ----
     particle::ParticleService particleService_;
     particle::SplatService splatService_;
-    corn_effects::CornEffectsService cornEffectsService_;
+
+    // ---- Gfx device + subsystems that hold gfx handles ----
+    std::unique_ptr<RenderPipeline> pipeline_;
     std::unique_ptr<dnc::DncService> dncService_;
     std::unique_ptr<shadow::ShadowService> shadowService_;
     std::unique_ptr<effects::SpnSpawner> spnSpawner_;
     std::unique_ptr<FrameTicker> ticker_;
     std::unique_ptr<model::ModelLoader> loader_;
-    std::unique_ptr<RenderPipeline> pipeline_;
     std::unique_ptr<ISoundEmitter> soundEmitter_;
-
-    // ---- App-tunable knobs ----
-    RenderSettings settings_;
-
-    // ---- Asset managers ----
-    std::unique_ptr<assets::SamplerAssetManager> samplers_;
-    std::unique_ptr<assets::TextureAssetManager> textures_;
-    std::unique_ptr<assets::ReplaceableTextureManager> replaceables_;
-    // AssetManager lives alongside the per-kind managers above. Phase-1
-    // wires the skeleton; later phases gradually take ownership of the
-    // texture/.pkb/child-MDX caches from those managers.
-    std::unique_ptr<assets::AssetManager> assets_;
     std::unique_ptr<debug::DebugRenderer> debug_;
+
+    // ---- Subsystems that must die BEFORE the gfx device + assets ----
+    // CornEffectsService is declared LAST so it's destroyed FIRST in
+    // reverse order. Its emitters' RuntimeBundles hold gfx handles +
+    // AssetManager slot refs that they release on teardown — both
+    // must still be alive when ~CornEffectsService runs.
+    corn_effects::CornEffectsService cornEffectsService_;
 
 #if WDX_ENABLE_IMGUI
     // ImGui adapter is built lazily once the gfx device + BLS shader cache

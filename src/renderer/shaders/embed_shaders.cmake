@@ -11,13 +11,16 @@ cmake_minimum_required(VERSION 3.16)
 file(GLOB dxbc_files "${SHADER_DIR}/*.dxbc")
 file(GLOB spv_files  "${SHADER_DIR}/*.spv")
 file(GLOB wgsl_files "${SHADER_DIR}/*.wgsl")
+file(GLOB mtl_files  "${SHADER_DIR}/*.metallib")
 list(SORT dxbc_files)
 list(SORT spv_files)
 list(SORT wgsl_files)
+list(SORT mtl_files)
 
 list(LENGTH dxbc_files dxbc_count)
 list(LENGTH spv_files  spv_count)
 list(LENGTH wgsl_files wgsl_count)
+list(LENGTH mtl_files  mtl_count)
 # DXBC compilation is Windows-only (slangc -target dxbc needs fxc.exe). On
 # Linux/macOS the dxbc list is empty; the consumer code's `vk ? *Spv : *`
 # expressions still need the DXBC symbols to exist, so we emit 1-byte stubs
@@ -141,7 +144,41 @@ foreach(name IN LISTS stub_names)
     endif()
 endforeach()
 
+# Metal library blobs (consumed by the native Metal backend): emitted as
+# `<varname>Mtl`. The Metal CreateShader path wraps these bytes in a
+# dispatch_data + newLibraryWithData; the entry-point name is resolved
+# at runtime by querying [lib functionNames] for the matching stage, so
+# the embedded blob doesn't need any name rewriting. macOS-only.
+set(real_mtl_names "")
+foreach(binpath IN LISTS mtl_files)
+    get_filename_component(varname "${binpath}" NAME_WE)
+    list(APPEND real_mtl_names "${varname}")
+
+    file(READ "${binpath}" hex HEX)
+    file(SIZE "${binpath}" bytesize)
+
+    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1, " hex "${hex}")
+    string(REGEX REPLACE ", $" "" hex "${hex}")
+
+    string(APPEND header "// ${varname}Mtl — ${bytesize} bytes (Metal library binary)\n")
+    string(APPEND header "inline constexpr uint8_t ${varname}Mtl[] = {\n    ${hex}\n};\n\n")
+endforeach()
+
+# Stub any Mtl symbol that wasn't produced — same pattern as WGSL stubs
+# above so non-macOS builds still type-check the
+# `case Metal: bytes = kFooMtl` consumer arm.
+foreach(name IN LISTS stub_names)
+    list(FIND real_mtl_names "${name}" found_idx)
+    if(found_idx EQUAL -1)
+        string(APPEND header
+            "// ${name}Mtl — stub (no Metal path on this build)\n"
+            "inline constexpr uint8_t ${name}Mtl[] = { 0x00 };\n\n")
+    endif()
+endforeach()
+
 string(APPEND header "} // namespace whiteout::flakes::Shaders\n")
 
 file(WRITE "${OUTPUT}" "${header}")
-message(STATUS "Generated compiled_shaders.h (${dxbc_count} dxbc + ${spv_count} spv + ${wgsl_count} wgsl)")
+message(STATUS
+    "Generated compiled_shaders.h "
+    "(${dxbc_count} dxbc + ${spv_count} spv + ${wgsl_count} wgsl + ${mtl_count} metallib)")

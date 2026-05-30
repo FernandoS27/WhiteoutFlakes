@@ -297,6 +297,10 @@ bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
         std::memcpy(&swapHandle, &surface, sizeof(swapHandle));
     } else if (api == gfx::GfxApi::WebGPU) {
         swapHandle = static_cast<void*>(window_);
+    } else if (api == gfx::GfxApi::Metal) {
+        // Same convention as WebGPU on non-Windows: hand the gfx layer
+        // a GLFWwindow* and let it pull glfwGetCocoaWindow internally.
+        swapHandle = static_cast<void*>(window_);
     } else {
         std::fprintf(stderr, "Backend not supported on this platform\n");
         Close();

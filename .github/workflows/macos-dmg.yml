@@ -114,6 +114,19 @@ jobs:
       # settings_ini.cpp uses both for locale-independent float I/O.
       # CMAKE_OSX_ARCHITECTURES=arm64 forces a single-arch build
       # (universal would need every dep lipo'd).
+      #
+      # Backends shipped in the DMG:
+      #   • Metal  — native (Metal.framework ships with macOS); enabled
+      #              by default on Apple via WDX_ENABLE_METAL=ON. Made
+      #              explicit here for clarity in CI logs.
+      #   • Vulkan — via MoltenVK; staged from the LunarG SDK installed
+      #              above (libvulkan + libMoltenVK go into
+      #              Contents/Frameworks, ICD JSON rewritten to bundle-
+      #              relative by packaging/macos/rewrite_icd.py).
+      #   • WebGPU — via Dawn (prebuilt binaries fetched through
+      #              eliemichel/WebGPU-distribution at configure time);
+      #              libwebgpu_dawn.dylib drops next to the exe in
+      #              Contents/MacOS/ via target_copy_webgpu_binaries.
       - name: Configure
         run: |
           cmake -S . -B build -G Ninja \
@@ -125,6 +138,8 @@ jobs:
             -DWDX_BUILD_WC3_DEBUG_SHADERS=OFF \
             -DWDX_ENABLE_TRACY=OFF \
             -DWDX_BUILD_MAX_PLUGIN=OFF \
+            -DWDX_ENABLE_METAL=ON \
+            -DWDX_ENABLE_WEBGPU=ON \
             -DCMAKE_INSTALL_PREFIX=stage
 
       - name: Build viewer
@@ -158,6 +173,24 @@ jobs:
           APP="stage/WhiteoutFlakes.app"
           test -d "$APP" || { echo "::error::cmake --install didn't produce ${APP}"; exit 1; }
 
+          # ---- Re-sign WebGPU/Dawn dylib ----
+          # WDX_ENABLE_WEBGPU drops libwebgpu_dawn.dylib next to the exe
+          # in Contents/MacOS/ at build time (via target_copy_webgpu_binaries).
+          # cmake --install copies the .app tree verbatim, which preserves
+          # the file but not its signature — Dawn's prebuilt dylib ships
+          # ad-hoc signed for a different layout, so re-sign in place so the
+          # final bundle's CodeResources manifest matches every binary it
+          # contains. Sign BEFORE the bundle wrapper gets sealed below.
+          DAWN_DYLIB="$APP/Contents/MacOS/libwebgpu_dawn.dylib"
+          if [ -f "$DAWN_DYLIB" ]; then
+              echo "Re-signing Dawn dylib at $DAWN_DYLIB"
+              codesign --force --sign - "$DAWN_DYLIB"
+              codesign --force --sign - "$APP/Contents/MacOS/WhiteoutFlakes"
+              codesign --force --sign - "$APP"
+          else
+              echo "::warning::libwebgpu_dawn.dylib not present in bundle — WebGPU backend will be unavailable in the shipped DMG"
+          fi
+
           # Diagnostic dump — surfaces any unexpected absolute / non-@rpath
           # load command before the .dmg is sealed.
           echo "--- libvulkan dependencies ---"
@@ -166,6 +199,21 @@ jobs:
           otool -L "$APP/Contents/Frameworks/libMoltenVK.dylib"
           echo "--- WhiteoutFlakes dependencies ---"
           otool -L "$APP/Contents/MacOS/WhiteoutFlakes"
+          # Metal.framework lives in the system ABI and is dlopen'd by the
+          # linker — surface its presence by grepping the exe's load list
+          # rather than expecting a file in Contents/.
+          echo "--- Metal.framework link check ---"
+          otool -L "$APP/Contents/MacOS/WhiteoutFlakes" | grep -i Metal || \
+              { echo "::error::Metal.framework not linked into exe — WDX_ENABLE_METAL=ON didn't take"; exit 1; }
+          if [ -f "$APP/Contents/MacOS/libwebgpu_dawn.dylib" ]; then
+              echo "--- libwebgpu_dawn dependencies ---"
+              otool -L "$APP/Contents/MacOS/libwebgpu_dawn.dylib"
+          fi
+          # Surface the shipped metal BLS bundles so a regression in the
+          # prebuilt staging tree is visible in the workflow log.
+          echo "--- bundled metal/ps BLS files ---"
+          ls -la "$APP/Contents/Resources/shaders/metal/ps/" 2>/dev/null || \
+              echo "::warning::metal/ps shader directory missing — Metal backend won't load Wc3 model shaders"
           echo "--- bundled ICD JSON ---"
           cat "$APP/Contents/Resources/vulkan/icd.d/MoltenVK_icd.json"
 

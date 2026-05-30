@@ -1176,6 +1176,19 @@ void RenderPipeline::CleanupGFX() {
 
         rs_.Debug().DestroyResources();
 
+        // Tear down CornEffects FIRST — its emitters hold references
+        // into the AssetManager (assets_.Release(assetSlot_) in
+        // ~CornEffectsEmitter) and into the gfx device (via each
+        // emitter's CornEffectsGfxBackend). ResetDeviceAssetManagers
+        // below destroys the AssetManager; leaving the emitters alive
+        // past that point would leave their dtors calling into a
+        // destroyed AssetManager (mutex EINVAL → std::system_error →
+        // std::terminate). Tested under MTL_DEBUG_LAYER=1 — the prior
+        // order surfaced as a hard crash on shutdown on the Metal
+        // backend; Vulkan happened to alias the freed memory in a way
+        // that avoided the throw but the UAF was still there.
+        rs_.CornEffects().Clear();
+
         rs_.ResetDeviceAssetManagers();
 
         // CornEffects owns shared VB/IB/CBs — release before the device
@@ -1209,9 +1222,10 @@ bool RenderPipeline::CreateShaders() {
     using namespace whiteout::flakes::Shaders;
 
     // Per-backend bytecode selection:
-    //   Vulkan  → SPIR-V
-    //   WebGPU  → WGSL (UTF-8 source — CreateShader treats the buffer as
-    //                   null-terminated text)
+    //   Vulkan   → SPIR-V
+    //   WebGPU   → WGSL (UTF-8 source — CreateShader treats the buffer as
+    //                    null-terminated text)
+    //   Metal    → metallib (binary Apple Metal Library)
     //   D3D11/12 → DXBC sm_5_0
     const gfx::GfxApi api = impl_->gfx_->GetApi();
     const u8* vsBytes = kLineVS;
@@ -1228,6 +1242,11 @@ bool RenderPipeline::CreateShaders() {
         vsSize = sizeof(kLineVSWgsl);
         psBytes = kLinePSWgsl;
         psSize = sizeof(kLinePSWgsl);
+    } else if (api == gfx::GfxApi::Metal) {
+        vsBytes = kLineVSMtl;
+        vsSize = sizeof(kLineVSMtl);
+        psBytes = kLinePSMtl;
+        psSize = sizeof(kLinePSMtl);
     }
 
     impl_->lineVS_ = impl_->gfx_->CreateShader(gfx::ShaderStage::Vertex, vsBytes, vsSize);
@@ -2244,7 +2263,6 @@ bool RenderPipeline::RenderGeosetsHd(GeosetBucket bucket) {
 }
 
 void RenderPipeline::RenderGeosets(GeosetBucket bucket) {
-
     if (impl_->frameRenderMode_ == RenderMode::HD) {
         RenderGeosetsHd(bucket);
     } else {

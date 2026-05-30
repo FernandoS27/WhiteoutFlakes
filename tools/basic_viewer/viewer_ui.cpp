@@ -66,7 +66,8 @@ constexpr std::array<const char*, 4> kIblLabels = {"Portrait", "Day/Night", "Dun
 constexpr std::array<const char*, 3> kLightingLabels = {"InGame", "Glue", "Dynamic"};
 constexpr std::array<const char*, 4> kShadowLabels = {"Off", "1 cascade", "2 cascades",
                                                       "3 cascades"};
-constexpr std::array<const char*, 4> kBackendLabels = {"D3D11", "D3D12", "Vulkan", "WebGPU"};
+constexpr std::array<const char*, 5> kBackendLabels = {"D3D11", "D3D12", "Vulkan", "WebGPU",
+                                                       "Metal"};
 
 i32 BackendToIdx(gfx::GfxApi b) {
     switch (b) {
@@ -78,6 +79,8 @@ i32 BackendToIdx(gfx::GfxApi b) {
         return 2;
     case gfx::GfxApi::WebGPU:
         return 3;
+    case gfx::GfxApi::Metal:
+        return 4;
     }
     return 1;
 }
@@ -89,6 +92,8 @@ gfx::GfxApi IdxToBackend(i32 idx) {
         return gfx::GfxApi::Vulkan;
     case 3:
         return gfx::GfxApi::WebGPU;
+    case 4:
+        return gfx::GfxApi::Metal;
     default:
         return gfx::GfxApi::D3D12;
     }
@@ -702,21 +707,29 @@ void ViewerUI::BuildSettingsWindow() {
 #elif defined(__APPLE__)
         {
 #if WDX_HAS_WEBGPU
-            const char* macLabels[] = {"Vulkan", "WebGPU"};
-            const gfx::GfxApi macApis[] = {gfx::GfxApi::Vulkan, gfx::GfxApi::WebGPU};
-            i32 sel = (svc.Settings().DefaultBackend() == gfx::GfxApi::WebGPU) ? 1 : 0;
+            const char* macLabels[] = {"Metal", "Vulkan", "WebGPU"};
+            const gfx::GfxApi macApis[] = {gfx::GfxApi::Metal, gfx::GfxApi::Vulkan,
+                                           gfx::GfxApi::WebGPU};
+#else
+            const char* macLabels[] = {"Metal", "Vulkan"};
+            const gfx::GfxApi macApis[] = {gfx::GfxApi::Metal, gfx::GfxApi::Vulkan};
+#endif
+            // Find the index of the currently-selected backend; fall back to
+            // Metal (entry 0) if the saved value is something this build
+            // doesn't expose.
+            const auto cur = svc.Settings().DefaultBackend();
+            i32 sel = 0;
+            for (i32 i = 0; i < static_cast<i32>(std::size(macApis)); ++i) {
+                if (macApis[i] == cur) {
+                    sel = i;
+                    break;
+                }
+            }
             if (ImGui::Combo("Backend", &sel, macLabels,
                              static_cast<i32>(std::size(macLabels)))) {
                 svc.Settings().SetDefaultBackend(macApis[sel]);
                 SaveIni(app_);
             }
-#else
-            ImGui::BeginDisabled();
-            i32 sel = 0;
-            const char* vkOnly[] = {"Vulkan"};
-            ImGui::Combo("Backend", &sel, vkOnly, 1);
-            ImGui::EndDisabled();
-#endif
         }
 #else
         {

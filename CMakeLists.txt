@@ -213,6 +213,7 @@ set(SHADER_ENTRIES
 set(SHADER_DXBC_FILES "")
 set(SHADER_SPV_FILES  "")
 set(SHADER_WGSL_FILES "")
+set(SHADER_MTL_FILES  "")
 
 foreach(entry IN LISTS SHADER_ENTRIES)
     string(REPLACE "|" ";" parts "${entry}")
@@ -283,6 +284,31 @@ foreach(entry IN LISTS SHADER_ENTRIES)
         )
         list(APPEND SHADER_WGSL_FILES "${wgsl_path}")
     endif()
+
+    # Metal library bytecode for the Metal backend. macOS-only — needs
+    # Apple's metal compiler (Xcode's Metal Toolchain). slangc's metallib
+    # backend invokes xcrun metal internally and pins the container at
+    # version 1.2.7 (Metal 4.x); fine for the debug line / blit /
+    # framebuffer-capture shaders here — the renderer just loads them as
+    # opaque bytes. The Wc3Shaders pipeline targets metallib 1.2.5 by
+    # post-processing slangc's .metal emit, but that machinery isn't
+    # needed for this small set of shaders.
+    if(WDX_ENABLE_METAL AND APPLE)
+        set(mtl_path "${SHADER_OUT_DIR}/${var_name}.metallib")
+        add_custom_command(
+            OUTPUT  "${mtl_path}"
+            COMMAND "${SLANGC}" "${SHADER_SRC_DIR}/${src_file}"
+                    ${SLANG_COMMON_FLAGS}
+                    -entry ${entry_name} -stage ${stage}
+                    -target metallib -profile sm_6_0
+                    -o "${mtl_path}"
+            DEPENDS "${SHADER_SRC_DIR}/${src_file}"
+                    "${SHADER_SRC_DIR}/common.slang"
+            COMMENT "Slang: ${src_file} [${entry_name}] → ${var_name}.metallib"
+            VERBATIM
+        )
+        list(APPEND SHADER_MTL_FILES "${mtl_path}")
+    endif()
 endforeach()
 
 # Embed all DXBC blobs into a single C++ header
@@ -295,6 +321,7 @@ add_custom_command(
             "-DOUTPUT=${COMPILED_SHADERS_H}"
             -P "${SHADER_SRC_DIR}/embed_shaders.cmake"
     DEPENDS ${SHADER_DXBC_FILES} ${SHADER_SPV_FILES} ${SHADER_WGSL_FILES}
+            ${SHADER_MTL_FILES}
             "${SHADER_SRC_DIR}/embed_shaders.cmake"
     COMMENT "Embedding compiled shaders into compiled_shaders.h"
     VERBATIM
@@ -597,9 +624,25 @@ if(WDX_BUILD_WC3_SHADERS)
         # BLS-only change). The standalone exe lands at
         # ${CMAKE_BINARY_DIR}/standalone, so the path is known up front. We
         # flatten the upstream layout into the renderer's path scheme
-        # (<root>/{ps,vs,d3d12/ps,d3d12/vs,vulkan/ps,vulkan/vs}/) so the BLS
-        # cache only needs to know the two roots shaders/ and debug_shaders/.
+        # (<root>/{ps,vs,d3d12/ps,d3d12/vs,vulkan/ps,vulkan/vs,metal/ps,metal/vs}/)
+        # so the BLS cache only needs to know the two roots shaders/ and
+        # debug_shaders/.
         set(_stage_dir "${CMAKE_BINARY_DIR}/standalone/${stage_subdir}")
+        # Metal v1.8 bundles — only emitted on macOS where Apple's Metal
+        # toolchain is available. compile_all_slang.py auto-adds the
+        # metal target on darwin, so the dxbc command above also
+        # populates slang_out/metal and build_bls.py packs
+        # bls_out_1_8/{mtlfs,mtlvs} in the same run. bls_shader_cache
+        # routes GfxApi::Metal → metal/{ps,vs}/.
+        set(_extra_stage_cmds "")
+        if(APPLE)
+            list(APPEND _extra_stage_cmds
+                COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                        "${_bls_out_18}/mtlfs" "${_stage_dir}/metal/ps"
+                COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                        "${_bls_out_18}/mtlvs" "${_stage_dir}/metal/vs"
+            )
+        endif()
         add_custom_command(
             OUTPUT  "${_stage}"
             COMMAND "${CMAKE_COMMAND}" -E copy_directory
@@ -618,6 +661,7 @@ if(WDX_BUILD_WC3_SHADERS)
                     "${_bls_out_14}/shaders/pixel/wgsl_1_0"   "${_stage_dir}/webgpu/ps"
             COMMAND "${CMAKE_COMMAND}" -E copy_directory
                     "${_bls_out_14}/shaders/vertex/wgsl_1_0"  "${_stage_dir}/webgpu/vs"
+            ${_extra_stage_cmds}
             COMMAND "${CMAKE_COMMAND}" -E touch "${_stage}"
             DEPENDS "${_bls}"
             COMMENT "Wc3Shaders[${variant}]: staging BLS bundles into ${_stage_dir}"
@@ -712,6 +756,15 @@ find_package(Vulkan QUIET)
 # FetchContent and compile in src/gfx/webgpu/*.cpp.
 option(WDX_ENABLE_WEBGPU "Enable WebGPU/Dawn backend (fetches Dawn via FetchContent)" OFF)
 
+# Native Metal backend — macOS only. Default ON on Apple platforms so a
+# stock checkout on macOS gets a native gfx path without manual flags.
+# Forced OFF elsewhere because Metal.framework only ships with Xcode.
+if(APPLE)
+    option(WDX_ENABLE_METAL "Enable native Metal backend (macOS only)" ON)
+else()
+    set(WDX_ENABLE_METAL OFF CACHE BOOL "Enable native Metal backend (macOS only)" FORCE)
+endif()
+
 set(WHITEOUTFLAKES_GFX_SOURCES
     src/gfx/gfx_factory.cpp
 )
@@ -758,6 +811,27 @@ if(WDX_ENABLE_WEBGPU)
             src/gfx/webgpu/webgpu_surface_macos.mm
         )
     endif()
+endif()
+
+# Metal backend (Apple only). All Obj-C++ — pure C++ TUs see only the
+# PIMPL'd MetalDevice. Framework linkage happens just below where the
+# WhiteoutFlakesGfx target is finalized.
+set(WHITEOUTFLAKES_GFX_METAL_MM_SOURCES)
+if(WDX_ENABLE_METAL AND APPLE)
+    set(WHITEOUTFLAKES_GFX_METAL_MM_SOURCES
+        src/gfx/metal/metal_device.mm
+        src/gfx/metal/metal_init.mm
+        src/gfx/metal/metal_command_list.mm
+        src/gfx/metal/metal_swap_chain.mm
+        src/gfx/metal/metal_surface_macos.mm
+        src/gfx/metal/metal_buffer.mm
+        src/gfx/metal/metal_texture.mm
+        src/gfx/metal/metal_pipeline.mm
+        src/gfx/metal/metal_delete_queue.mm
+    )
+    list(APPEND WHITEOUTFLAKES_GFX_SOURCES
+        ${WHITEOUTFLAKES_GFX_METAL_MM_SOURCES}
+    )
 endif()
 
 add_library(WhiteoutFlakesGfx STATIC ${WHITEOUTFLAKES_GFX_SOURCES})
@@ -901,6 +975,31 @@ if(WDX_ENABLE_WEBGPU)
     endif()
 else()
     target_compile_definitions(WhiteoutFlakesGfx PUBLIC WDX_HAS_WEBGPU=0)
+endif()
+
+# ---- Metal backend wiring ----
+# Frameworks: Metal (id<MTLDevice> + all rendering APIs), QuartzCore
+# (CAMetalLayer for the swap chain), Foundation/Cocoa (NSWindow handle
+# from GLFW), MetalKit reserved for future MTKTextureLoader use.
+# `-fobjc-arc` is scoped to the .mm files only via set_source_files_properties
+# so the pure-C++ TUs (factory, etc.) don't see the flag.
+if(WDX_ENABLE_METAL AND APPLE)
+    target_link_libraries(WhiteoutFlakesGfx PRIVATE
+        "-framework Metal"
+        "-framework MetalKit"
+        "-framework QuartzCore"
+        "-framework Foundation"
+        "-framework Cocoa"
+    )
+    target_compile_definitions(WhiteoutFlakesGfx PUBLIC WDX_HAS_METAL=1)
+    if(WHITEOUTFLAKES_GFX_METAL_MM_SOURCES)
+        set_source_files_properties(${WHITEOUTFLAKES_GFX_METAL_MM_SOURCES}
+            PROPERTIES COMPILE_FLAGS "-fobjc-arc"
+        )
+    endif()
+    message(STATUS "WhiteoutFlakesGfx: Metal backend enabled")
+else()
+    target_compile_definitions(WhiteoutFlakesGfx PUBLIC WDX_HAS_METAL=0)
 endif()
 
 if(MSVC)
@@ -1064,9 +1163,10 @@ if(MSVC)
 endif()
 
 # ---- Throwaway: dump a BLS permute's disassembly ----
-# Skipped under Emscripten — links d3d11.lib + d3dcompiler.lib which only
-# exist on Windows native.
-if(NOT EMSCRIPTEN AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/bls/bls_reflect_tool.cpp")
+# Windows-only: links d3d11.lib + d3dcompiler.lib + includes <d3d11.h>,
+# none of which exist outside the Win32 SDK. Skipped under Emscripten and
+# on non-Windows hosts so the macOS/Linux gfx build succeeds.
+if(WIN32 AND NOT EMSCRIPTEN AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/bls/bls_reflect_tool.cpp")
   add_executable(BlsReflect
       src/renderer/bls/bls_reflect_tool.cpp
       src/renderer/bls/bls_container.cpp
@@ -1251,6 +1351,45 @@ if(WDX_ENABLE_WEBP)
     target_compile_definitions(WhiteoutFlakesStandalone PRIVATE WDX_HAVE_WEBP=1)
     message(STATUS
         "WhiteoutFlakesStandalone: animated WebP export enabled (libwebp v1.5.0)")
+endif()
+
+# ---- metal_smoke ----
+# Tiny diagnostic tool that opens a GLFW window, asks gfx for a Metal
+# device + swap chain, and runs a magenta clear loop. Bypasses the
+# renderer entirely so it can run before the BLS / pipeline / asset
+# wiring is finished. Used to verify the Metal backend's swap-chain +
+# render-pass + Present path during bring-up.
+if(WDX_ENABLE_METAL AND APPLE)
+    # Compile the bundled triangle shader to a .metallib next to the
+    # smoke binary at build time. xcrun metal needs `-mmacosx-version-min`
+    # — we pin it to the same 11.0 the Wc3Shaders pipeline uses (metallib
+    # 1.2.5, see externals/Wc3Shaders/compile_all_slang.py).
+    set(_metal_smoke_metal "${CMAKE_CURRENT_SOURCE_DIR}/tools/metal_smoke/triangle.metal")
+    set(_metal_smoke_air   "${CMAKE_BINARY_DIR}/standalone/triangle.air")
+    set(_metal_smoke_lib   "${CMAKE_BINARY_DIR}/standalone/triangle.metallib")
+    add_custom_command(
+        OUTPUT  "${_metal_smoke_lib}"
+        DEPENDS "${_metal_smoke_metal}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/standalone"
+        COMMAND xcrun metal -c "-mmacosx-version-min=11.0"
+                            "${_metal_smoke_metal}"
+                            -o "${_metal_smoke_air}"
+        COMMAND xcrun metallib "${_metal_smoke_air}" -o "${_metal_smoke_lib}"
+        COMMAND ${CMAKE_COMMAND} -E remove "${_metal_smoke_air}"
+        VERBATIM
+        COMMENT "metal_smoke: compiling triangle.metal -> triangle.metallib"
+    )
+    add_custom_target(metal_smoke_shader DEPENDS "${_metal_smoke_lib}")
+
+    add_executable(metal_smoke tools/metal_smoke/metal_smoke.cpp)
+    add_dependencies(metal_smoke metal_smoke_shader)
+    set_target_properties(metal_smoke PROPERTIES
+        CXX_STANDARD          20
+        CXX_STANDARD_REQUIRED ON
+        RUNTIME_OUTPUT_DIRECTORY         "${CMAKE_BINARY_DIR}/standalone"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/standalone"
+    )
+    target_link_libraries(metal_smoke PRIVATE WhiteoutFlakesGfx glfw)
 endif()
 
 # Viewer includes <vulkan/vulkan.h> unconditionally (for the Linux surface

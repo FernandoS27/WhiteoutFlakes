@@ -16,7 +16,7 @@ void FrameCapture::Init(gfx::IGFXDevice& gfx, gfx::GfxApi api, gfx::Format depth
     depthFormat_ = depthFormat;
 
     // Per-backend bytecode selection (mirrors RenderPipeline::CreateShaders):
-    // Vulkan → SPIR-V, WebGPU → WGSL, D3D11/12 → DXBC.
+    // Vulkan → SPIR-V, WebGPU → WGSL, Metal → metallib, D3D11/12 → DXBC.
     using namespace whiteout::flakes::Shaders;
     const u8* blitVs = kBlitVS;
     usize blitVsN = sizeof(kBlitVS);
@@ -38,6 +38,13 @@ void FrameCapture::Init(gfx::IGFXDevice& gfx, gfx::GfxApi api, gfx::Format depth
         blitPsN = sizeof(kBlitPSWgsl);
         capCs = kCaptureCSWgsl;
         capCsN = sizeof(kCaptureCSWgsl);
+    } else if (api == gfx::GfxApi::Metal) {
+        blitVs = kBlitVSMtl;
+        blitVsN = sizeof(kBlitVSMtl);
+        blitPs = kBlitPSMtl;
+        blitPsN = sizeof(kBlitPSMtl);
+        capCs = kCaptureCSMtl;
+        capCsN = sizeof(kCaptureCSMtl);
     }
     blitVS_ = gfx_->CreateShader(gfx::ShaderStage::Vertex, blitVs, blitVsN);
     blitPS_ = gfx_->CreateShader(gfx::ShaderStage::Pixel, blitPs, blitPsN);
