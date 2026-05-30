@@ -1,0 +1,271 @@
+# AppVeyor — four-platform build matrix for WhiteoutFlakes. Each row in
+# the matrix below picks one (image, JOB_TARGET) pair; the `for:` blocks
+# at the bottom plug in the platform-specific install + build steps.
+#
+# Targets:
+#   windows : MSVC + Vulkan SDK   → basic_viewer (WhiteoutFlakes.exe)
+#   linux   : GCC 15 + Vulkan SDK → basic_viewer
+#   macos   : AppleClang + Metal  → basic_viewer (.app bundle)
+#   wasm    : Emscripten 4.0.10+  → web_viewer  (wf-core.{js,wasm} + JS)
+#
+# Mirrors what the .github/workflows/*.yml jobs do, minus the AppImage /
+# DMG packaging — AppVeyor uploads the raw binaries as artifacts and the
+# packaging happens elsewhere.
+
+version: 1.0.{build}
+
+# Quiet noisy git defaults that interrupt clone scripts on detached HEADs.
+init:
+  - git config --global advice.detachedHead false
+
+# Branches we'd be wasting CI minutes on if we built them — adjust to taste.
+skip_branch_with_pr: true
+
+# Toolchain version pins — kept in sync with .github/workflows/*.yml.
+environment:
+  VULKAN_SDK_VERSION: 1.4.341.0
+  EMSCRIPTEN_VERSION: 4.0.10
+
+  matrix:
+    - APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2022
+      JOB_TARGET: windows
+    - APPVEYOR_BUILD_WORKER_IMAGE: Ubuntu2204
+      JOB_TARGET: linux
+    - APPVEYOR_BUILD_WORKER_IMAGE: macos-sonoma
+      JOB_TARGET: macos
+    - APPVEYOR_BUILD_WORKER_IMAGE: Ubuntu2204
+      JOB_TARGET: wasm
+
+# Per-target overrides. Each `for:` block matches one JOB_TARGET and
+# supplies install + build_script + artifacts. AppVeyor's per-job
+# `install:` REPLACES (not appends to) the top-level — so the submodule
+# init has to live inside each block, not above.
+#
+# Caching (off by default — AppVeyor free tier is 1 GB total and four
+# jobs × ~500 MB SDK each would blow past it). To enable, uncomment the
+# cache block below; each job gets its own cache keyed on appveyor.yml.
+#
+# cache:
+#   - C:\VulkanSDK         -> appveyor.yml   # windows
+#   - $HOME/vulkan-sdk     -> appveyor.yml   # linux
+#   - $HOME/VulkanSDK      -> appveyor.yml   # macos
+#   - $HOME/emsdk          -> appveyor.yml   # wasm
+
+for:
+
+  # ---------------------------------------------------------------- windows
+  -
+    matrix:
+      only:
+        - JOB_TARGET: windows
+    install:
+      - cmd: git submodule update --init --recursive
+      - ps: choco install ninja -y --no-progress
+      # LunarG SDK silent install. The Qt-installer entry point lives at
+      # the SDK root after extracting the .exe; we drive it headless the
+      # same way the macOS workflow does, picking only vulkan.core + VMA.
+      - ps: |
+          $url = "https://sdk.lunarg.com/sdk/download/$env:VULKAN_SDK_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_SDK_VERSION.exe"
+          Write-Host "Downloading $url"
+          Invoke-WebRequest -Uri $url -OutFile vksdk.exe -UseBasicParsing
+          Start-Process -FilePath .\vksdk.exe `
+            -ArgumentList '--root', "C:\VulkanSDK\$env:VULKAN_SDK_VERSION", `
+                          '--accept-licenses', '--default-answer', '--confirm-command', `
+                          'install', 'com.lunarg.vulkan.core', 'com.lunarg.vulkan.vma' `
+            -NoNewWindow -Wait
+          $sdk = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          if (-not (Test-Path "$sdk\Include\vulkan\vulkan.hpp")) {
+              Write-Error "Vulkan SDK install did not produce vulkan.hpp at $sdk"
+          }
+          # Persist for subsequent script blocks via AppVeyor's variable bus.
+          appveyor SetVariable -Name VULKAN_SDK -Value $sdk
+          appveyor SetVariable -Name PATH      -Value "$sdk\Bin;$env:PATH"
+    build_script:
+      - ps: |
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DWDX_BUILD_WC3_SHADERS=OFF `
+            -DWDX_USE_PREBUILT_SHADERS=ON `
+            -DWDX_BUILD_WC3_DEBUG_SHADERS=OFF `
+            -DWDX_ENABLE_TRACY=OFF `
+            -DWDX_BUILD_MAX_PLUGIN=OFF
+          if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
+          cmake --build build --config Release --target WhiteoutFlakesStandalone --parallel
+          if ($LASTEXITCODE -ne 0) { throw "cmake build failed" }
+      - ps: |
+          # The VS generator drops the exe under Release/ but the shader
+          # bundles get staged to build\standalone\shaders\ at the parent
+          # level (see CMakeLists.txt RUNTIME_OUTPUT_DIRECTORY_RELEASE +
+          # _prebuilt_stage). Flatten both into the zip root so extracting
+          # gives a working exe + shaders/ side-by-side layout — the
+          # runtime's exe-dir lookup expects that shape.
+          Compress-Archive `
+            -Path build\standalone\Release\*, build\standalone\shaders `
+            -DestinationPath WhiteoutFlakes-windows-x64.zip -Force
+    artifacts:
+      - path: WhiteoutFlakes-windows-x64.zip
+        name: WhiteoutFlakes-windows-x64
+
+  # ------------------------------------------------------------------ linux
+  -
+    matrix:
+      only:
+        - JOB_TARGET: linux
+    install:
+      - sh: git submodule update --init --recursive
+      # System deps mirror linux-appimage.yml: GLFW needs X11+Wayland
+      # dev headers, cubeb needs ALSA+PulseAudio, nativefiledialog needs GTK3.
+      - sh: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential cmake ninja-build pkg-config \
+              libxkbcommon-dev libwayland-dev wayland-protocols \
+              libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
+              libgl1-mesa-dev mesa-vulkan-drivers \
+              libasound2-dev libpulse-dev \
+              libgtk-3-dev \
+              software-properties-common wget file
+      # GCC 15 from the toolchain PPA (Ubuntu 22.04 ships 11). Pin via
+      # CC/CXX so we don't rely on update-alternatives.
+      - sh: |
+          set -e
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
+          sudo apt-get install -y gcc-15 g++-15
+          gcc-15 --version
+      # Vulkan SDK tarball install — same shape as linux-appimage.yml.
+      - sh: |
+          set -e
+          mkdir -p $HOME/vulkan-sdk && cd $HOME/vulkan-sdk
+          wget -q "https://sdk.lunarg.com/sdk/download/${VULKAN_SDK_VERSION}/linux/vulkansdk-linux-x86_64-${VULKAN_SDK_VERSION}.tar.xz"
+          tar xJf "vulkansdk-linux-x86_64-${VULKAN_SDK_VERSION}.tar.xz"
+          rm "vulkansdk-linux-x86_64-${VULKAN_SDK_VERSION}.tar.xz"
+          SDK_ROOT="$HOME/vulkan-sdk/${VULKAN_SDK_VERSION}/x86_64"
+          test -f "$SDK_ROOT/include/vulkan/vulkan.hpp"
+          test -f "$SDK_ROOT/include/vma/vk_mem_alloc.h"
+          echo "export VULKAN_SDK=$SDK_ROOT"                            >> $HOME/.envrc
+          echo "export PATH=$SDK_ROOT/bin:\$PATH"                       >> $HOME/.envrc
+          echo "export LD_LIBRARY_PATH=$SDK_ROOT/lib:\${LD_LIBRARY_PATH:-}" >> $HOME/.envrc
+    build_script:
+      - sh: |
+          set -e
+          source $HOME/.envrc
+          export CC=gcc-15 CXX=g++-15
+          cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DWDX_BUILD_WC3_SHADERS=OFF \
+              -DWDX_USE_PREBUILT_SHADERS=ON \
+              -DWDX_BUILD_WC3_DEBUG_SHADERS=OFF \
+              -DWDX_ENABLE_TRACY=OFF \
+              -DWDX_BUILD_MAX_PLUGIN=OFF
+          cmake --build build --target WhiteoutFlakesStandalone --parallel
+          # Pack the binary into a tarball so the artifact upload picks
+          # up a single file rather than a directory tree.
+          tar -C build/standalone -czf WhiteoutFlakes-linux-x86_64.tar.gz .
+    artifacts:
+      - path: WhiteoutFlakes-linux-x86_64.tar.gz
+        name: WhiteoutFlakes-linux-x86_64
+
+  # ------------------------------------------------------------------ macos
+  -
+    matrix:
+      only:
+        - JOB_TARGET: macos
+    install:
+      - sh: git submodule update --init --recursive
+      - sh: |
+          brew update
+          brew install ninja wget
+      # LunarG macOS SDK — same headless install flow as macos-dmg.yml.
+      - sh: |
+          set -e
+          mkdir -p $HOME/vulkan-sdk-dl && cd $HOME/vulkan-sdk-dl
+          wget -q "https://sdk.lunarg.com/sdk/download/${VULKAN_SDK_VERSION}/mac/vulkansdk-macos-${VULKAN_SDK_VERSION}.zip"
+          unzip -q "vulkansdk-macos-${VULKAN_SDK_VERSION}.zip"
+          INSTALLER="$(ls -d *.app 2>/dev/null | head -1)"
+          test -n "$INSTALLER"
+          INSTALLER_BIN="$INSTALLER/Contents/MacOS/$(ls "$INSTALLER/Contents/MacOS/" | head -1)"
+          INSTALL_DIR="$HOME/VulkanSDK/${VULKAN_SDK_VERSION}"
+          mkdir -p "$INSTALL_DIR"
+          "$INSTALLER_BIN" \
+              --root "$INSTALL_DIR" \
+              --accept-licenses --default-answer --confirm-command \
+              install com.lunarg.vulkan.core com.lunarg.vulkan.vma copy_only=1
+          SDK_ROOT="$INSTALL_DIR/macOS"
+          test -f "$SDK_ROOT/include/vulkan/vulkan.hpp"
+          test -f "$SDK_ROOT/lib/libMoltenVK.dylib"
+          echo "export VULKAN_SDK=$SDK_ROOT"                                  >> $HOME/.envrc
+          echo "export PATH=$SDK_ROOT/bin:\$PATH"                             >> $HOME/.envrc
+          echo "export DYLD_LIBRARY_PATH=$SDK_ROOT/lib:\${DYLD_LIBRARY_PATH:-}" >> $HOME/.envrc
+          echo "export VK_ICD_FILENAMES=$SDK_ROOT/share/vulkan/icd.d/MoltenVK_icd.json" >> $HOME/.envrc
+    build_script:
+      - sh: |
+          set -e
+          source $HOME/.envrc
+          cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3 \
+              -DCMAKE_OSX_ARCHITECTURES=arm64 \
+              -DWDX_BUILD_WC3_SHADERS=OFF \
+              -DWDX_USE_PREBUILT_SHADERS=ON \
+              -DWDX_BUILD_WC3_DEBUG_SHADERS=OFF \
+              -DWDX_ENABLE_TRACY=OFF \
+              -DWDX_BUILD_MAX_PLUGIN=OFF \
+              -DWDX_ENABLE_METAL=ON \
+              -DWDX_ENABLE_WEBGPU=ON \
+              -DCMAKE_INSTALL_PREFIX=stage
+          cmake --build build --target WhiteoutFlakesStandalone --parallel
+          # cmake --install runs the install(CODE …) block that copies
+          # the Vulkan loader + MoltenVK dylibs into Contents/Frameworks,
+          # rewrites the ICD JSON to bundle-relative paths, ad-hoc signs
+          # every Mach-O, and stages shaders into Contents/Resources/.
+          # Skipping this leaves the .app a hollow shell with no shaders
+          # and unrelocated dylib paths — won't run on a clean machine.
+          cmake --install build
+          tar -C stage -czf WhiteoutFlakes-macos-arm64.tar.gz WhiteoutFlakes.app
+    artifacts:
+      - path: WhiteoutFlakes-macos-arm64.tar.gz
+        name: WhiteoutFlakes-macos-arm64
+
+  # ------------------------------------------------------------------- wasm
+  -
+    matrix:
+      only:
+        - JOB_TARGET: wasm
+    install:
+      - sh: git submodule update --init --recursive
+      - sh: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential cmake ninja-build pkg-config python3
+      # emsdk install — pinned to the version we know works with
+      # `--use-port=emdawnwebgpu` (4.0.10+ per upstream).
+      - sh: |
+          set -e
+          cd $HOME
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git
+          cd emsdk
+          ./emsdk install "$EMSCRIPTEN_VERSION"
+          ./emsdk activate "$EMSCRIPTEN_VERSION"
+          # Persist the env so build_script picks it up.
+          echo "source $HOME/emsdk/emsdk_env.sh" >> $HOME/.envrc
+    build_script:
+      - sh: |
+          set -e
+          source $HOME/.envrc
+          emcmake cmake -S . -B build-web -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DWDX_BUILD_WC3_SHADERS=OFF \
+              -DWDX_USE_PREBUILT_SHADERS=ON \
+              -DWDX_BUILD_WC3_DEBUG_SHADERS=OFF \
+              -DWDX_ENABLE_TRACY=OFF \
+              -DWDX_BUILD_MAX_PLUGIN=OFF
+          cmake --build build-web --target wf_web --parallel
+          # build-web/web/ holds the served file set: wf-core.{js,wasm},
+          # wf-*.js modules, hive_app.js, sw.js, index.html, shaders/.
+          tar -C build-web -czf WhiteoutFlakes-wasm.tar.gz web
+    artifacts:
+      - path: WhiteoutFlakes-wasm.tar.gz
+        name: WhiteoutFlakes-wasm

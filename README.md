@@ -66,16 +66,18 @@ plugin, and any host that links against `WhiteoutFlakesLib`.
 
 | Backend | Platform | Notes |
 | --- | --- | --- |
-| D3D12  | Windows | Default on Windows. |
-| D3D11  | Windows | Fallback for older drivers. |
-| Vulkan | Windows / Linux / macOS | macOS goes through MoltenVK (Metal). |
+| D3D12   | Windows | Default on Windows. |
+| D3D11   | Windows | Fallback for older drivers. |
+| Vulkan  | Windows / Linux / macOS | macOS via MoltenVK; primary backend on Linux. |
+| Metal   | macOS   | Native backend — default on macOS. |
+| WebGPU  | Browser | Emscripten + emdawnwebgpu; powers the web viewer. |
 
 The renderer abstracts every backend behind a unified `gfx::IGFXDevice`
-interface; the engine itself never sees an `HWND` / `VkDevice` / `ID3D12*`.
-Shaders are compiled once from Slang sources into BLS bundles that target
-DXBC / DXIL / SPIR-V in parallel; the prebuilt pack ships under
-[`prebuilt/shaders/`](prebuilt/shaders) so a fresh clone can render without
-installing the Slang toolchain.
+interface; the engine itself never sees an `HWND` / `VkDevice` / `ID3D12*` /
+`MTLDevice` / `WGPUDevice`. Shaders are compiled once from Slang sources
+into BLS bundles that target DXBC / DXIL / SPIR-V / MSL / WGSL in parallel;
+the prebuilt pack ships under [`prebuilt/shaders/`](prebuilt/shaders) so a
+fresh clone can render without installing the Slang toolchain.
 
 ## Hosts
 
@@ -83,6 +85,13 @@ installing the Slang toolchain.
   `nativefiledialog-extended`, cubeb-backed audio with 3D sound. Cross-platform.
 - **[`tools/max_plugin/`](tools/max_plugin/) `WhiteoutFlakes.dlx` 3ds Max plugin** — Win32 host with the same Dear
   ImGui surface; lives next to the modeler, hot-reloads materials.
+- **[`tools/web_viewer/`](tools/web_viewer/) browser viewer** — Emscripten / WebGPU build (`wf-core.{js,wasm}`)
+  driven by a small ES module facade that mirrors mdx-m3-viewer's shape.
+  Assets stream from a local picked directory and/or Hiveworkshop's CASC
+  mirror; Web Audio handles SND events. The matching
+  [`tools/web_viewer/casc_server/`](tools/web_viewer/casc_server/) is a
+  Crow-based dev server that serves loose files out of a local WC3 install
+  for offline iteration.
 
 ## Building
 
@@ -95,6 +104,19 @@ cmake --build build --config Release --target WhiteoutFlakesStandalone
 
 The standalone viewer lands at `build/standalone/Release/WhiteoutFlakes.exe`.
 
+### Web viewer (Emscripten / WebGPU)
+
+```
+emcmake cmake -S . -B build-web -G Ninja
+cmake --build build-web --target wf_web
+python tools/web_viewer/serve_nocache.py 8080   # then open http://localhost:8080
+```
+
+`wf_web` outputs `build-web/web/wf-core.{js,wasm}` plus the staged JS facade
+and `index.html`. Asset delivery defaults to Hive's CASC mirror; for offline
+work, build `wf_casc_server` (`-DWDX_BUILD_CASC_SERVER=ON`) and point the
+viewer at it.
+
 ### Other toolchains
 
 | Toolchain | Tested |
@@ -103,7 +125,8 @@ The standalone viewer lands at `build/standalone/Release/WhiteoutFlakes.exe`.
 | Clang 21 (LLVM) + Ninja | ✓ |
 | MinGW UCRT64 + Ninja | ✓ |
 | GCC 15 (Linux) + Ninja | ✓ via CI |
-| AppleClang 15 (macOS 13.3+) | ✓ via CI |
+| AppleClang 15 (macOS 13.3+) | ✓ first-class — Metal backend, native arm64 build, signed `.dmg` |
+| Emscripten 4.0.10+ + emdawnwebgpu | ✓ web viewer build (`-DEMSCRIPTEN=ON`) |
 
 ### Useful CMake options
 
@@ -115,6 +138,7 @@ The standalone viewer lands at `build/standalone/Release/WhiteoutFlakes.exe`.
 | `WDX_ENABLE_TRACY`             | `ON`  | Link Tracy profiler client (`TRACY_ENABLE`, `TRACY_ON_DEMAND`). |
 | `WDX_ENABLE_IMGUI`             | `ON`  | Engine-side BLS-backed Dear ImGui adapter + GLFW/Win32 frontends. |
 | `WDX_BUILD_MAX_PLUGIN`         | `OFF` | Build the 3ds Max plugin (Windows only; needs `-DMAX_VERSION=<year>`). |
+| `WDX_BUILD_CASC_SERVER`        | `OFF` | Build `wf_casc_server` — local dev replacement for Hive's CASC delivery. |
 
 ## Packaging
 
@@ -122,16 +146,19 @@ Prebuilt artifacts are produced by [GitHub Actions](.github/workflows/):
 
 - **`linux-appimage.yml`** — Ubuntu 24.04 + GCC 15 + LunarG SDK 1.4.341.0;
   output: `WhiteoutFlakes-linux-x86_64.AppImage`.
-- **`macos-dmg.yml`** — macOS 14 (Apple Silicon) + AppleClang + LunarG SDK
-  1.4.341.0 (with MoltenVK); output: `WhiteoutFlakes-macos-arm64.dmg`,
-  drag-and-drop installer with the .app, ad-hoc signed.
+- **`macos-dmg.yml`** — macOS 14 (Apple Silicon) + AppleClang. Ships the
+  native Metal backend by default; Vulkan-via-MoltenVK is also linked in
+  via LunarG SDK 1.4.341.0 for backend-bring-up comparison. Output:
+  `WhiteoutFlakes-macos-arm64.dmg`, drag-and-drop installer with the .app,
+  ad-hoc signed.
 
 ## Project layout
 
 ```
 src/
-  gfx/          Backend-agnostic graphics interface; D3D11 / D3D12 / Vulkan implementations.
-  renderer/    Engine: pipeline, scene, BLS shader cache, particle system,
+  gfx/          Backend-agnostic graphics interface; D3D11 / D3D12 /
+                Vulkan / Metal / WebGPU implementations.
+  renderer/     Engine: pipeline, scene, BLS shader cache, particle system,
                 shadow + IBL services, cornflakes (Reforged effects runtime).
   io/           MDX parsing adapter, BLP/DDS/TGA loaders, CASC/MPQ provider.
   public_api/   Stable C++ ABI used by external hosts (ActorView, etc.).
@@ -139,6 +166,9 @@ src/
 tools/
   basic_viewer/ Standalone GLFW + ImGui viewer.
   max_plugin/   3ds Max .dlx plugin.
+  web_viewer/   Emscripten/WebGPU browser host + JS facade + service
+                worker; the casc_server/ subdir is a Crow-based local
+                stand-in for Hive's CASC delivery.
   common/       Shared host utilities (cubeb sound emitter, ImGui theme).
 
 externals/      Submodules: WhiteoutLib (MDX/CASC/MPQ), Wc3Shaders, GLFW,
