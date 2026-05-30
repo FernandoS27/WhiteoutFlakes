@@ -48,7 +48,15 @@ FrameContext& EnsureFrameOpen(MetalDeviceState& state) {
         // AcquireSwapChainImageIfNeeded, which blocks on the layer's
         // drawable queue (maximumDrawableCount = kFramesInFlight).
         DrainPendingDeletes(state);
-        frame.commandBuffer = [state.commandQueue commandBuffer];
+        // Use the descriptor variant so we can opt into the
+        // EncoderExecutionStatus error reporting — without this, a
+        // device-lost CB's `error.userInfo[MTLCommandBufferEncoderInfoErrorKey]`
+        // is nil and we lose all signpost / encoder-label context.
+        MTLCommandBufferDescriptor* cbd = [[MTLCommandBufferDescriptor alloc] init];
+        cbd.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
+        cbd.retainedReferences = YES;
+        frame.commandBuffer =
+            [state.commandQueue commandBufferWithDescriptor:cbd];
         if (state.validationRequested && frame.commandBuffer)
             frame.commandBuffer.label = @"wf.frame";
         frame.recording = true;
@@ -107,10 +115,8 @@ void MetalCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
 
         FrameContext& frame = EnsureFrameOpen(state);
 
-        // Metal forbids render + compute encoders living on the same
-        // command buffer at the same time. Close any prior compute /
-        // blit encoder so the new render encoder can open cleanly.
-        // This mirrors what Present does at frame-end.
+        // Metal forbids render + compute encoders on the same CB.
+        // Close prior compute/blit encoders cleanly.
         if (frame.computeEncoder) {
             [frame.computeEncoder endEncoding];
             frame.computeEncoder = nil;
@@ -119,6 +125,7 @@ void MetalCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
             [frame.blitEncoder endEncoding];
             frame.blitEncoder = nil;
         }
+
 
         MTLRenderPassDescriptor* rpd = [MTLRenderPassDescriptor renderPassDescriptor];
         MTLRenderPassColorAttachmentDescriptor* ca = rpd.colorAttachments[0];
@@ -146,8 +153,13 @@ void MetalCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
         }
 
         frame.renderEncoder = [frame.commandBuffer renderCommandEncoderWithDescriptor:rpd];
-        if (state.validationRequested && frame.renderEncoder)
-            frame.renderEncoder.label = @"wf.pass";
+        // Always label encoders — costs nothing and is the only way to
+        // identify them in a CB-error backtrace. The label includes the
+        // color attachment's texture address so multi-pass frames can
+        // distinguish HDR-scene / tonemap / swap-chain passes.
+        if (frame.renderEncoder)
+            frame.renderEncoder.label = [NSString stringWithFormat:@"wf.pass:%p",
+                                                                    colorTex->texture];
 
         // Reset per-pass state. Encoders don't carry over state across
         // their own end/begin pair, so any cached "last bound" must
@@ -481,9 +493,15 @@ void MetalCommandList::Draw(u32 vertexCount, u32 firstVertex) {
     FlushBindings();
     auto* pso = state.pipelines.Get(static_cast<u64>(lastBoundPipeline_));
     const MTLPrimitiveType prim = pso ? pso->primitive : MTLPrimitiveTypeTriangle;
+    static u64 g_drawCounter = 0;
+    NSString* tag = [NSString stringWithFormat:@"draw#%llu pso=%p v=%u f=%u",
+                                                ++g_drawCounter,
+                                                (void*)pso, vertexCount, firstVertex];
+    [frame.renderEncoder pushDebugGroup:tag];
     [frame.renderEncoder drawPrimitives:prim
                             vertexStart:firstVertex
                             vertexCount:vertexCount];
+    [frame.renderEncoder popDebugGroup];
 }
 
 void MetalCommandList::DrawIndexed(u32 indexCount, u32 firstIndex, i32 baseVertex) {

@@ -707,21 +707,29 @@ void ViewerUI::BuildSettingsWindow() {
 #elif defined(__APPLE__)
         {
 #if WDX_HAS_WEBGPU
-            const char* macLabels[] = {"Vulkan", "WebGPU"};
-            const gfx::GfxApi macApis[] = {gfx::GfxApi::Vulkan, gfx::GfxApi::WebGPU};
-            i32 sel = (svc.Settings().DefaultBackend() == gfx::GfxApi::WebGPU) ? 1 : 0;
+            const char* macLabels[] = {"Metal", "Vulkan", "WebGPU"};
+            const gfx::GfxApi macApis[] = {gfx::GfxApi::Metal, gfx::GfxApi::Vulkan,
+                                           gfx::GfxApi::WebGPU};
+#else
+            const char* macLabels[] = {"Metal", "Vulkan"};
+            const gfx::GfxApi macApis[] = {gfx::GfxApi::Metal, gfx::GfxApi::Vulkan};
+#endif
+            // Find the index of the currently-selected backend; fall back to
+            // Metal (entry 0) if the saved value is something this build
+            // doesn't expose.
+            const auto cur = svc.Settings().DefaultBackend();
+            i32 sel = 0;
+            for (i32 i = 0; i < static_cast<i32>(std::size(macApis)); ++i) {
+                if (macApis[i] == cur) {
+                    sel = i;
+                    break;
+                }
+            }
             if (ImGui::Combo("Backend", &sel, macLabels,
                              static_cast<i32>(std::size(macLabels)))) {
                 svc.Settings().SetDefaultBackend(macApis[sel]);
                 SaveIni(app_);
             }
-#else
-            ImGui::BeginDisabled();
-            i32 sel = 0;
-            const char* vkOnly[] = {"Vulkan"};
-            ImGui::Combo("Backend", &sel, vkOnly, 1);
-            ImGui::EndDisabled();
-#endif
         }
 #else
         {

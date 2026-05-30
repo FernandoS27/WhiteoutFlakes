@@ -124,7 +124,7 @@ int main(int argc, char* argv[]) {
 #if defined(_WIN32)
     constexpr const char* kBackendsHelp = "d3d11, d3d12, vulkan";
 #elif defined(__APPLE__)
-    constexpr const char* kBackendsHelp = "vulkan, metal";
+    constexpr const char* kBackendsHelp = "metal, vulkan";
 #else
     constexpr const char* kBackendsHelp = "vulkan";
 #endif

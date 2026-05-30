@@ -2263,7 +2263,6 @@ bool RenderPipeline::RenderGeosetsHd(GeosetBucket bucket) {
 }
 
 void RenderPipeline::RenderGeosets(GeosetBucket bucket) {
-
     if (impl_->frameRenderMode_ == RenderMode::HD) {
         RenderGeosetsHd(bucket);
     } else {

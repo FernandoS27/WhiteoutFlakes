@@ -213,8 +213,17 @@ private:
     bool graphicsDebug_ = false;
 
     // Host-only: default backend when --backend is not on the command
-    // line. D3D12 matches the long-standing test_main default.
+    // line. D3D12 matches the long-standing test_main default on
+    // Windows; macOS prefers Metal (D3D12 isn't available there);
+    // every other platform falls back to Vulkan (which is the only
+    // backend the gfx_factory builds elsewhere).
+#if defined(_WIN32)
     gfx::GfxApi defaultBackend_ = gfx::GfxApi::D3D12;
+#elif defined(__APPLE__)
+    gfx::GfxApi defaultBackend_ = gfx::GfxApi::Metal;
+#else
+    gfx::GfxApi defaultBackend_ = gfx::GfxApi::Vulkan;
+#endif
 
     // Host-only: preferred physical device name. Empty = default pick.
     std::string preferredDevice_;

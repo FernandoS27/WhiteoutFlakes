@@ -155,15 +155,14 @@ SwapChainHandle MetalDevice::CreateSwapChain(void* nativeWindowHandle, i32 width
         // to matter.
         layer.framebufferOnly = NO;
         layer.drawableSize = CGSizeMake(width, height);
-        // Vsync the drawable queue. Without this, [layer nextDrawable]
-        // returns immediately and the CPU runs unbounded (cornflakes
-        // simulation pegs a core while waiting for nothing). Apple's
-        // default is YES on a hosted-by-Cocoa CAMetalLayer but we set
-        // it explicitly so the contract is visible. maximumDrawableCount
-        // is what makes nextDrawable block once kFramesInFlight
-        // drawables are in flight — that's the actual frame pacing.
-        layer.displaySyncEnabled = YES;
-        layer.maximumDrawableCount = kFramesInFlight;
+        // CAMetalLayer defaults: displaySyncEnabled=YES and
+        // maximumDrawableCount=3, which is exactly what we want.
+        // Explicitly setting them sometimes triggers a regression
+        // on macOS 14+ where the layer's drawable queue stalls in
+        // a way that the GPU later reports as a CB hang. Leaving
+        // the defaults alone fixed an observed GPU-hang at
+        // submitted=1; revisit if a future macOS changes the
+        // defaults.
 
         SwapChainEntry sc;
         sc.layer = layer;
@@ -275,9 +274,12 @@ void MetalDevice::Present(SwapChainHandle h) {
         // Completion handler runs on a Metal-internal thread — keep the
         // captured set tiny and lock-free. Updating `completedEpoch`
         // signals the deferred-delete drain that the GPU has retired
-        // everything submitted up to `submittedEpoch`.
+        // everything submitted up to `submittedEpoch`. We also surface
+        // any command-buffer error (device lost, etc.) here — without
+        // this they go to dev/null and the visible symptom is just an
+        // all-black window with no log trace.
         MetalDeviceState* sp = &state;
-        [frame.commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> /*cb*/) {
+        [frame.commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
             // Relaxed is enough — readers (delete-queue drain in the
             // command-list path) re-read with the same ordering.
             DeleteEpoch prev =
@@ -285,6 +287,23 @@ void MetalDevice::Present(SwapChainHandle h) {
             while (prev < submittedEpoch &&
                    !sp->completedEpoch.compare_exchange_weak(
                        prev, submittedEpoch, std::memory_order_relaxed)) {
+            }
+            if (cb.status == MTLCommandBufferStatusError) {
+                NSError* e = cb.error;
+                std::fprintf(stderr,
+                    "[gfx/metal] CB ERROR submitted=%llu: %s\n",
+                    (unsigned long long)submittedEpoch,
+                    e ? [[e localizedDescription] UTF8String] : "(no error info)");
+                NSArray<id<MTLCommandBufferEncoderInfo>>* infos =
+                    e ? e.userInfo[MTLCommandBufferEncoderInfoErrorKey] : nil;
+                for (id<MTLCommandBufferEncoderInfo> info in infos) {
+                    std::fprintf(stderr,
+                        "[gfx/metal]   encoder '%s' state=%ld signpost='%s'\n",
+                        info.label ? [info.label UTF8String] : "(unnamed)",
+                        (long)info.errorState,
+                        [[[info.debugSignposts componentsJoinedByString:@" → "]
+                            description] UTF8String]);
+                }
             }
         }];
 
