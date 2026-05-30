@@ -1,9 +1,5 @@
-// WebAudioSoundEmitter — see web_audio_emitter.h.
-//
-// The EM_JS bridges are C-linkage globals; they emit a snippet of JS that
-// dispatches to a user-installed `wfWebAudio*JS` global. JS-side, the
-// HiveApp's WebAudioBridge binds those globals at startup so the
-// dispatch lands on its AudioContext / PannerNode graph.
+// See web_audio_emitter.h. EM_JS bridges call user-installed
+// `wfWebAudio*JS` globals bound by WebAudioBridge on startup.
 
 #include "web_audio_emitter.h"
 
@@ -37,9 +33,7 @@ EM_JS(void, wfWebAudioSetVolume, (float v), {
     }
 });
 #else
-// Native stubs — this emitter is wired in only under the Emscripten
-// build, but keeping no-op symbols here lets the file compile cleanly
-// for any host that wants to link it for tests / dry runs.
+// Native stubs — lets the file compile cleanly outside Emscripten.
 static void wfWebAudioPlay(const char*, float, float, float, float, float, float, float) {}
 static void wfWebAudioSetListener(float, float, float, float, float, float, float, float, float) {}
 static void wfWebAudioSetVolume(float) {}
@@ -49,8 +43,7 @@ namespace whiteout::flakes::web {
 
 void WebAudioSoundEmitter::Play(const io::SndEntry& entry, const Vector3f& worldPos) {
     if (entry.filePaths.empty()) return;
-    // Same per-fire random pick the desktop CubebSoundEmitter does;
-    // matches WC3's "What1/What2/What3" voice variant convention.
+    // Random variant pick (WC3's What1/What2/What3 convention).
     const auto& path = entry.filePaths[std::rand() % entry.filePaths.size()];
     wfWebAudioPlay(path.c_str(), entry.volume * volume_, worldPos.x, worldPos.y, worldPos.z,
                    entry.minDistance, entry.maxDistance, entry.distanceCutoff);

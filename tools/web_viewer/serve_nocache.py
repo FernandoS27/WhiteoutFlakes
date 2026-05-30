@@ -1,9 +1,6 @@
-"""Minimal HTTP server that sends Cache-Control: no-store on every response.
-
-Chromium aggressively caches ES modules across page reloads — even with
-Ctrl+Shift+R, even with `?t=...` query-string busters. The only reliable
-fix during bring-up is a server that explicitly tells the browser to never
-cache. Drop-in replacement for `python -m http.server 8080`.
+"""HTTP server that emits Cache-Control: no-store. Drop-in for
+`python -m http.server`, needed because Chromium caches ES modules
+across hard reloads.
 
 Usage:
     cd build-web/web

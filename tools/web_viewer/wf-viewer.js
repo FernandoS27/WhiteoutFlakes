@@ -1,25 +1,16 @@
-// wf-viewer.js — WhiteoutFlakes browser facade (ES module).
-//
-// JS owns: navigator.gpu, the canvas, every input event, the asset
-// fetch pump. WASM owns: the renderer, the swap chain, every GPU
-// command, the AssetManager slot table. Bytes flow across via the
-// `_wf_*` exports (ccall-shape — see exports.txt for the symbol list)
-// and the AssetManager push API (`wf_assets_needs_count` /
-// `wf_assets_apply`). `WhiteoutViewer` mirrors mdx-m3-viewer's shape so
-// host pages built against that surface can swap rendering backends.
+// Browser facade. JS owns navigator.gpu, the canvas, input events, and the
+// asset fetch pump; WASM owns the renderer and AssetManager. API mirrors
+// mdx-m3-viewer's shape so host pages can swap backends.
 
-// Dynamic import with a cache-buster query so each page load picks up
-// the latest wf-core.js. Static `import` is cached by URL across reloads
-// in Chromium even with hard-reload, which masks JS-level fixes (e.g.
-// the chunked-getRandomValues patch in wf-core.js or the pre.js
-// runtime patch). The static-import shape was confusing during bring-up.
+import { Instance, Model, Scene, TEAM_COLORS, TEAM_COLOR_NAMES } from './wf-instance.js';
+import { pumpAssetNeeds } from './wf-asset-pump.js';
+import { prefetchEngineAssets, prefetchShaders } from './wf-prefetch.js';
+
+// Cache-bust the module URL — the ES module map ignores HTTP no-store.
 const { default: createModule } = await import(`./wf-core.js?t=${Date.now()}`);
 
-// Web Crypto enforces a 65,536-byte cap on getRandomValues per call.
-// Emscripten's libc startup asks for ~294 KB in a single shot during
-// runtime init (likely a thread/stack guard seed buffer), which trips
-// QuotaExceededError. Wrap the native API once, on module load, with a
-// version that loops in 64 KB chunks. Idempotent — only patches once.
+// Web Crypto caps getRandomValues at 64 KiB/call; Emscripten asks for
+// ~294 KiB at startup. Chunk the native API once, on module load.
 {
     const MAX_BYTES = 65536;
     const native = crypto.getRandomValues.bind(crypto);
@@ -36,333 +27,15 @@ const { default: createModule } = await import(`./wf-core.js?t=${Date.now()}`);
     }
 }
 
-// Features we ask the GPUDevice for. The renderer probes each via
-// device.HasFeature on the C++ side and degrades gracefully when absent.
+// Renderer probes each on the C++ side and degrades gracefully when absent.
 const REQUESTED_FEATURES = [
     'texture-compression-bc',     // WC3 BLPs decode to BC1/BC3/BC7
     'float32-filterable',         // HDR sampling
     'rg11b10ufloat-renderable',   // R11G11B10F scene target
 ];
 
-// ----------------------------------------------------------------------------
-// Math helpers — minimum needed for setLocation/setRotation/setScale.
-// Compose to a column-vector 4x4 (renderer uses Matrix44f, same memory
-// layout we ship from JS as 16 floats).
-// ----------------------------------------------------------------------------
-
-const _mat = new Float32Array(16);
-function _identityMat(out) {
-    out[0] = 1;  out[1] = 0;  out[2] = 0;  out[3] = 0;
-    out[4] = 0;  out[5] = 1;  out[6] = 0;  out[7] = 0;
-    out[8] = 0;  out[9] = 0;  out[10] = 1; out[11] = 0;
-    out[12] = 0; out[13] = 0; out[14] = 0; out[15] = 1;
-    return out;
-}
-// Compose a transform matrix from translation, quaternion rotation, and
-// non-uniform scale. JS quat = [x, y, z, w].
-function _composeTRS(out, t, q, s) {
-    const x = q[0], y = q[1], z = q[2], w = q[3];
-    const xx = x * x, yy = y * y, zz = z * z;
-    const xy = x * y, xz = x * z, yz = y * z;
-    const wx = w * x, wy = w * y, wz = w * z;
-    const sx = s[0], sy = s[1], sz = s[2];
-    out[0]  = (1 - 2 * (yy + zz)) * sx;
-    out[1]  = (2 * (xy + wz)) * sx;
-    out[2]  = (2 * (xz - wy)) * sx;
-    out[3]  = 0;
-    out[4]  = (2 * (xy - wz)) * sy;
-    out[5]  = (1 - 2 * (xx + zz)) * sy;
-    out[6]  = (2 * (yz + wx)) * sy;
-    out[7]  = 0;
-    out[8]  = (2 * (xz + wy)) * sz;
-    out[9]  = (2 * (yz - wx)) * sz;
-    out[10] = (1 - 2 * (xx + yy)) * sz;
-    out[11] = 0;
-    out[12] = t[0];
-    out[13] = t[1];
-    out[14] = t[2];
-    out[15] = 1;
-    return out;
-}
-
-// Standard Warcraft 3 player team-color palette (0-23). Each entry is
-// the sRGB 8-bit team color the ReplaceableTextureManager bakes onto
-// the model's TeamColor slot.
-// Warcraft III player team-color palette. Hex values lifted verbatim from
-// Hive's `ratory_wc3model_preview` markup so the swatch grid sits 1:1 with
-// the colours users see on the Hiveworkshop viewer. Indices 0-23 match
-// WC3's player slots (Red, Blue, Teal, … Peanut).
-export const TEAM_COLORS = [
-    [0xff, 0x04, 0x02], [0x00, 0x42, 0xff], [0x1b, 0xe6, 0xba], [0x54, 0x00, 0x81],
-    [0xff, 0xfc, 0x00], [0xff, 0x8a, 0x0d], [0x20, 0xc0, 0x00], [0xe4, 0x5b, 0xb0],
-    [0x94, 0x96, 0x97], [0x7e, 0xbf, 0xf1], [0x10, 0x62, 0x47], [0x4f, 0x2a, 0x05],
-    [0x9c, 0x00, 0x00], [0x00, 0x00, 0xc3], [0x00, 0xeb, 0xff], [0xbd, 0x00, 0xff],
-    [0xec, 0xcd, 0x86], [0xf7, 0xa4, 0x8b], [0xc0, 0xff, 0x80], [0xdc, 0xb9, 0xec],
-    [0x4f, 0x4f, 0x55], [0xec, 0xf0, 0xff], [0x00, 0x78, 0x1e], [0xa4, 0x6f, 0x33],
-];
-
-// Human-readable labels matching Hive's `title=...` chip tooltips.
-export const TEAM_COLOR_NAMES = [
-    'Red',     'Blue',       'Teal',      'Purple',
-    'Yellow',  'Orange',     'Green',     'Pink',
-    'Gray',    'Light blue', 'Dark green','Brown',
-    'Maroon',  'Navy',       'Turquoise', 'Violet',
-    'Wheat',   'Peach',      'Mint',      'Lavender',
-    'Coal',    'Snow',       'Emerald',   'Peanut',
-];
-
-// ----------------------------------------------------------------------------
-// Instance — mdx-m3-viewer's per-actor handle. Wraps one ActorHandle and
-// owns its TRS state; pushes a composed Matrix44f to the renderer on every
-// mutation. All setters return `this` to mirror mdx-m3-viewer's chaining.
-// ----------------------------------------------------------------------------
-export class Instance {
-    constructor(viewer, model, actorHandle) {
-        this._viewer = viewer;
-        this._model = model;
-        this._handle = actorHandle;
-        this._M = viewer._module;
-        this._vh = viewer._handle;
-        this._location = new Float32Array(3);
-        this._rotation = new Float32Array([0, 0, 0, 1]);
-        this._scale = new Float32Array([1, 1, 1]);
-        this._visible = true;
-        this._timeScale = 1;
-        this._teamColor = 0;
-    }
-
-    // Push current TRS as a 4x4 to the renderer. When hidden, push a
-    // zero-scale matrix so the actor stays alive (detach() destroys it)
-    // but contributes nothing to the frame.
-    _pushTransform() {
-        if (!this._handle) return;
-        if (this._visible) {
-            _composeTRS(_mat, this._location, this._rotation, this._scale);
-        } else {
-            _identityMat(_mat);
-            _mat[0] = _mat[5] = _mat[10] = 0;
-        }
-        const M = this._M;
-        const ptr = M._malloc(64);
-        M.HEAPF32.set(_mat, ptr >> 2);
-        M._wf_actor_set_transform(this._vh, this._handle, ptr);
-        M._free(ptr);
-    }
-
-    setLocation(loc) {
-        this._location[0] = loc[0]; this._location[1] = loc[1]; this._location[2] = loc[2];
-        this._pushTransform();
-        return this;
-    }
-    move(d) {
-        this._location[0] += d[0]; this._location[1] += d[1]; this._location[2] += d[2];
-        this._pushTransform();
-        return this;
-    }
-    setRotation(q) {
-        this._rotation[0] = q[0]; this._rotation[1] = q[1];
-        this._rotation[2] = q[2]; this._rotation[3] = q[3];
-        this._pushTransform();
-        return this;
-    }
-    setScale(s) {
-        if (typeof s === 'number') {
-            this._scale[0] = this._scale[1] = this._scale[2] = s;
-        } else {
-            this._scale[0] = s[0]; this._scale[1] = s[1]; this._scale[2] = s[2];
-        }
-        this._pushTransform();
-        return this;
-    }
-    setUniformScale(s) {
-        this._scale[0] = this._scale[1] = this._scale[2] = +s;
-        this._pushTransform();
-        return this;
-    }
-    setTransformation(loc, rot, scale) {
-        if (loc) { this._location[0] = loc[0]; this._location[1] = loc[1]; this._location[2] = loc[2]; }
-        if (rot) { this._rotation[0] = rot[0]; this._rotation[1] = rot[1];
-                   this._rotation[2] = rot[2]; this._rotation[3] = rot[3]; }
-        if (scale) {
-            if (typeof scale === 'number') {
-                this._scale[0] = this._scale[1] = this._scale[2] = scale;
-            } else {
-                this._scale[0] = scale[0]; this._scale[1] = scale[1]; this._scale[2] = scale[2];
-            }
-        }
-        this._pushTransform();
-        return this;
-    }
-    resetTransformation() {
-        this._location[0] = this._location[1] = this._location[2] = 0;
-        this._rotation[0] = this._rotation[1] = this._rotation[2] = 0;
-        this._rotation[3] = 1;
-        this._scale[0] = this._scale[1] = this._scale[2] = 1;
-        this._pushTransform();
-        return this;
-    }
-
-    // mdx-m3-viewer accepts either a sequence index or a name. We resolve
-    // names through the actor's Sequences() list.
-    setSequence(idOrName) {
-        if (!this._handle) return this;
-        let idx = idOrName;
-        if (typeof idOrName === 'string') {
-            idx = this.getSequences().indexOf(idOrName);
-            if (idx < 0) return this;
-        }
-        this._M._wf_actor_set_sequence(this._vh, this._handle, idx | 0);
-        return this;
-    }
-    setSequenceLoopMode(mode) {
-        if (this._handle) this._M._wf_actor_set_loop_mode(this._vh, this._handle, mode | 0);
-        return this;
-    }
-    setTeamColor(id) {
-        this._teamColor = id | 0;
-        const c = TEAM_COLORS[this._teamColor] || TEAM_COLORS[0];
-        if (this._handle) this._M._wf_actor_set_team_color(this._vh, this._handle, c[0], c[1], c[2]);
-        return this;
-    }
-    setAnimationTimeMs(ms) {
-        if (this._handle) this._M._wf_actor_set_anim_time(this._vh, this._handle, ms | 0);
-        return this;
-    }
-
-    set timeScale(s) {
-        this._timeScale = +s;
-        if (this._handle) this._M._wf_actor_set_playback_speed(this._vh, this._handle, +s);
-    }
-    get timeScale() { return this._timeScale; }
-
-    show() { this._visible = true;  this._pushTransform(); return this; }
-    hide() { this._visible = false; this._pushTransform(); return this; }
-    shown()  { return this._visible; }
-    hidden() { return !this._visible; }
-
-    detach() {
-        if (!this._handle) return;
-        this._M._wf_actor_destroy(this._vh, this._handle);
-        this._handle = 0;
-        const arr = this._model._instances;
-        const i = arr.indexOf(this);
-        if (i >= 0) arr.splice(i, 1);
-    }
-
-    getSequences() {
-        if (!this._handle) return [];
-        const M = this._M;
-        const n = M._wf_actor_get_sequence_count(this._vh, this._handle);
-        if (!n) return [];
-        const CAP = 128;
-        const buf = M._malloc(CAP);
-        const out = [];
-        for (let i = 0; i < n; ++i) {
-            M._wf_actor_get_sequence_name(this._vh, this._handle, i, buf, CAP);
-            out.push(M.UTF8ToString(buf));
-        }
-        M._free(buf);
-        return out;
-    }
-
-    // Names of every camera preset baked into the source MDX. Hive's
-    // Cameras dropdown is populated from this list (plus a "Reset" row
-    // for free-orbit). Static FOV / position / target / clip per preset
-    // live on the C++ side; `activateCameraPreset(idx)` applies them.
-    getCameraPresets() {
-        if (!this._handle) return [];
-        const M = this._M;
-        const n = M._wf_actor_camera_preset_count(this._vh, this._handle);
-        if (!n) return [];
-        const CAP = 128;
-        const buf = M._malloc(CAP);
-        const out = [];
-        for (let i = 0; i < n; ++i) {
-            M._wf_actor_camera_preset_name(this._vh, this._handle, i, buf, CAP);
-            out.push(M.UTF8ToString(buf));
-        }
-        M._free(buf);
-        return out;
-    }
-
-    // Activate this actor's preset `idx`, or pass -1 to drop back to
-    // the orbital free-camera with the engine's default FoV / clip.
-    activateCameraPreset(idx) {
-        if (this._handle) this._M._wf_camera_activate_preset(this._vh, this._handle, idx | 0);
-        return this;
-    }
-}
-
-// ----------------------------------------------------------------------------
-// Model — the loaded MDX asset. Owns the resolved-and-cached state (the
-// renderer caches the template internally once load() has run a successful
-// SpawnUnit). `addInstance()` cheaply re-spawns from that template.
-// ----------------------------------------------------------------------------
-export class Model {
-    constructor(viewer, src) {
-        this._viewer = viewer;
-        this._src = src;
-        this._mdxKey = String(src).split(/[\\/]/).pop();
-        this._instances = [];
-        this.loaded = false;
-        this.error = null;
-        this._loadPromise = null;
-    }
-
-    addInstance() {
-        if (!this.loaded) throw new Error('Model.addInstance() before load resolved');
-        const M = this._viewer._module;
-        const keyPtr = this._viewer._cstr(this._mdxKey);
-        let handle = 0;
-        try {
-            handle = M._wf_spawn_unit(this._viewer._handle, keyPtr);
-        } finally {
-            M._free(keyPtr);
-        }
-        if (!handle) throw new Error('addInstance: wf_spawn_unit returned 0');
-        const inst = new Instance(this._viewer, this, handle);
-        this._instances.push(inst);
-        return inst;
-    }
-
-    whenLoaded() { return this._loadPromise; }
-}
-
-// ----------------------------------------------------------------------------
-// Scene — mdx-m3-viewer has many; we have one renderer-side scene. The
-// class is a thin housekeeping bucket so the host-side API shape matches.
-// ----------------------------------------------------------------------------
-export class Scene {
-    constructor(viewer) {
-        this._viewer = viewer;
-        this._instances = [];
-    }
-
-    // Accepts either a Model (creates a fresh Instance via addInstance)
-    // or an existing Instance (just tracks it).
-    addInstance(modelOrInstance) {
-        const inst = modelOrInstance instanceof Model
-            ? modelOrInstance.addInstance() : modelOrInstance;
-        if (inst && this._instances.indexOf(inst) < 0) this._instances.push(inst);
-        return inst;
-    }
-
-    removeInstance(inst) {
-        const i = this._instances.indexOf(inst);
-        if (i >= 0) this._instances.splice(i, 1);
-        if (inst) inst.detach();
-    }
-
-    clear() {
-        // Destroy each tracked actor; cheaper than wf_clear_all when the
-        // scene only owns a subset of the renderer's actors.
-        for (const inst of this._instances) {
-            if (inst._handle) this._viewer._module._wf_actor_destroy(this._viewer._handle, inst._handle);
-            inst._handle = 0;
-        }
-        this._instances.length = 0;
-    }
-}
+// Re-export so host pages keep `import { WhiteoutViewer, TEAM_COLORS }`.
+export { TEAM_COLORS, TEAM_COLOR_NAMES, Instance, Model, Scene };
 
 export class WhiteoutViewer {
     constructor(canvas) {
@@ -372,63 +45,62 @@ export class WhiteoutViewer {
         this._handle = 0;
         this._raf = 0;
         this._lastTime = 0;
-        // Hiveworkshop's CASC mirror. Sends Access-Control-Allow-Origin: *,
-        // 302-redirects to the resolved asset, expands extension synonyms
-        // server-side. Override before init() to point at a local proxy
-        // (e.g. wf_casc_server: `(p) => '/casc/' + p`).
+        // Hive's CASC mirror — CORS-enabled, 302 to resolved asset,
+        // server-side family expansion. Override for a local proxy.
         this.cascUrl = (path) =>
             'https://www.hiveworkshop.com/casc-contents/?path=' +
             encodeURIComponent(path);
-        // Direct-asset base for skipping Hive's /casc-contents/ 302
-        // redirect — saves a round-trip per asset for files that live
-        // under this prefix. Modern Reforged content is almost all HD,
-        // so default to the _hd.w3mod tree; SD-only files fall back to
-        // the `cascUrl` indirect lookup at +1 round-trip. Set to null
-        // on a local proxy that doesn't expose the direct asset layout.
+        // Direct-asset prefix skips the /casc-contents/ 302 (1 fewer
+        // round-trip per asset). HD tree by default since modern
+        // Reforged content lives there; SD/locale fall through to cascUrl.
         this.cascDirectAssetBase =
             'https://www.hiveworkshop.com/assets/wc3/war3.w3mod/_hd.w3mod/';
-        // Backing-buffer pixel ratio for the WebGPU surface. Defaults
-        // to the display's devicePixelRatio so rendering is sharp at
-        // native resolution. Firefox is the exception: its wgpu/naga
-        // pipeline produces noticeably slower per-fragment code than
-        // Chrome's Dawn/tint on the HD PBR shader, and full-DPR
-        // rendering pushes us into hard fragment-bound territory the
-        // moment a model fills the viewport (zoom-in drops to ~20 fps
-        // on hi-DPI displays). Cap at 1 there so we render at CSS
-        // resolution and the fragment count stays manageable.
-        // Override before init() to opt back in (`viewer.backingPixelRatio = devicePixelRatio`).
+        // Firefox wgpu/naga emits slow fragment code for HD PBR; full
+        // DPR tips into fragment-bound at zoom-in. Cap at 1 there; opt
+        // back in via `viewer.backingPixelRatio = devicePixelRatio`.
         this.backingPixelRatio =
             (navigator.userAgent.indexOf('Firefox/') >= 0) ? 1 : (window.devicePixelRatio || 1);
     }
 
-    // Bring-up: await adapter+device, then instantiate the WASM module with
-    // `preinitializedWebGPUDevice` set so the C++ side's
-    // emscripten_webgpu_get_device() returns this same device.
+    // Bring up the WebGPU device, then instantiate the WASM module with
+    // `preinitializedWebGPUDevice` so the C++ side shares it.
     async init() {
         const trace = (s) => console.log('[wf]', s);
         if (!navigator.gpu) {
             throw new Error('WebGPU not available on this browser/profile.');
         }
+        const device = await this._initDevice(trace);
+        await this._initModule(device, trace);
+        this._handle = this._module._wf_create();
+        if (!this._handle) throw new Error('wf_create returned 0: ' + this._lastErr());
+        trace('wf_create handle=0x' + this._handle.toString(16));
+
+        // BLS bundles + engine assets must be in the provider before
+        // wf_init reads them via ReadFile.
+        trace('prefetching BLS shader bundles…');
+        await prefetchShaders(this);
+        await prefetchEngineAssets(this);
+        trace('assets prefetched (' +
+              this._module._wf_provider_count(this._handle) + ' files in provider)');
+
+        this._initRenderer(trace);
+        this._installCameraControls();
+        this._startLoop();
+        return this;
+    }
+
+    // ---- init helpers --------------------------------------------------
+
+    async _initDevice(trace) {
         trace('requestAdapter…');
-        // Ask for the discrete / high-performance GPU on hybrid systems.
-        // Without this hint, both Firefox and Chrome default to the
-        // integrated GPU — the AMD APU / Intel UHD that's vastly slower
-        // for the HD PBR shader. Browser may still ignore on battery
-        // power; users can also override via OS-level graphics
-        // settings (Windows: Settings → System → Display → Graphics
-        // settings → Firefox → High performance) or the NVIDIA Control
-        // Panel program settings.
-        const adapter = await navigator.gpu.requestAdapter({
-            powerPreference: 'high-performance',
-        });
+        // Prefer discrete GPU on hybrid systems; browser may ignore on battery.
+        const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
         if (!adapter) throw new Error('navigator.gpu.requestAdapter returned null.');
         trace('adapter ok; features=' + Array.from(adapter.features).join(','));
 
-        const supported = adapter.features;
-        const requiredFeatures = REQUESTED_FEATURES.filter((f) => supported.has(f));
+        const requiredFeatures = REQUESTED_FEATURES.filter((f) => adapter.features.has(f));
         trace('requestDevice features=[' + requiredFeatures.join(',') + ']…');
-        // Race against a watchdog so a hung requestDevice surfaces as an
-        // error instead of an indefinite freeze (seen on Edge InPrivate).
+        // Watchdog vs. hung requestDevice (seen on Edge InPrivate).
         const devicePromise = adapter.requestDevice({ requiredFeatures });
         const deviceTimeout = new Promise((_, reject) =>
             setTimeout(() => reject(new Error('adapter.requestDevice timed out at 10 s')), 10000));
@@ -442,35 +114,21 @@ export class WhiteoutViewer {
         });
         this._device = device;
         trace('device ok');
+        return device;
+    }
 
-        // Ensure the canvas's drawing buffer matches its CSS box. Without
-        // this WebGPU surfaces at 1×1 by default on some browsers.
+    async _initModule(device, trace) {
+        // Surfaces at 1×1 on some browsers without an explicit size.
         const init = this._computeBackingSize();
         this.canvas.width = init.w;
         this.canvas.height = init.h;
-
-        // Give the canvas an id so we can hand a CSS selector to the
-        // surface descriptor. JS owns the string; we also keep a copy in
-        // WASM heap inside wf_init.
+        // Surface descriptor needs a CSS selector.
         if (!this.canvas.id) this.canvas.id = 'wf-canvas-' + Math.random().toString(36).slice(2, 10);
-        const selector = '#' + this.canvas.id;
 
-        // Route WASM stdout/stderr to devtools — C++ printf lands in
-        // the browser console with a `[wasm]` prefix.
         const wasmLog = (s) => console.log('[wasm]', s);
-        // Note: we deliberately do NOT pass `canvas:` to createModule. Doing
-        // so makes Emscripten try to wire up its legacy GL/SDL canvas
-        // helpers which can conflict with the WebGPU surface flow; the
-        // canvas selector is communicated via `wf_init` instead.
-        //
-        // Multi-stage trace so we can pin down which step of module
-        // startup is stalling: pre-fetch, post-instantiate, pre-main,
-        // or post-main. Each fires from a different Emscripten hook.
         trace('createModule (wasm fetch+instantiate)…');
         const t0 = performance.now();
         const elapsed = () => (performance.now() - t0).toFixed(0) + ' ms';
-        // Watchdog: surfaces a hint after 10s if we haven't progressed,
-        // so the page tells us "still pending" instead of looking dead.
         const watchdog = setInterval(() => {
             trace('… still inside createModule after ' + elapsed());
         }, 3000);
@@ -481,21 +139,12 @@ export class WhiteoutViewer {
                 print:    wasmLog,
                 printErr: wasmLog,
                 locateFile: (path) => { trace('locateFile(' + path + ') @' + elapsed()); lastHook = 'locateFile'; return path; },
-                // Override the fetch + compile + instantiate so each
-                // sub-step is observable. This also bypasses any
-                // compileStreaming MIME-type rejection — Python's
-                // http.server doesn't register application/wasm by default.
+                // Custom instantiate sidesteps MIME-type rejection (python
+                // http.server doesn't register application/wasm) and
+                // streams codegen for a smoother startup than compile(buf).
                 instantiateWasm: (imports, success) => {
                     (async () => {
                         trace('iw: streaming fetch+compile of ./wf-core.wasm @' + elapsed());
-                        // `instantiateStreaming` uses a different Chromium
-                        // code path than `compile(arrayBuffer)`: it can
-                        // start codegen before the body is fully downloaded
-                        // and dispatches more aggressively across worker
-                        // threads. On the engines where `compile(buf)`
-                        // blocks the main thread (V8 has had this on Edge
-                        // with mid-sized modules), streaming often runs
-                        // through without freezing.
                         const url = './wf-core.wasm?t=' + Date.now();
                         const { module, instance } = await WebAssembly.instantiateStreaming(
                             fetch(url, { cache: 'no-store' }), imports);
@@ -513,33 +162,13 @@ export class WhiteoutViewer {
             clearInterval(watchdog);
         }
         trace('createModule resolved in ' + elapsed() + ' (last hook: ' + lastHook + ')');
-        // Expose the Module instance so the on-page error decoder
-        // (index.html describe()) can call getExceptionMessage(excPtr).
+        // index.html's error decoder reads exception messages from here.
         window.__wfModule = this._module;
         trace('module instantiated');
+    }
 
-        this._handle = this._module._wf_create();
-        if (!this._handle) {
-            throw new Error('wf_create returned 0: ' + this._lastErr());
-        }
-        trace('wf_create handle=0x' + this._handle.toString(16));
-
-        // Phase 2: prefetch the WGSL BLS shader bundles and push them
-        // into the FetchContentProvider before wf_init runs. The
-        // renderer's BLS cache queries the provider during
-        // InitBlsShaders; these bundles MUST be in-memory by that point
-        // or InitDevice will report incomplete BLS state and bail.
-        trace('prefetching BLS shader bundles…');
-        await this._prefetchShaders();
-        // Also prefetch the assets wf_init's DNC service + IBL probe
-        // loader will read. Those run inside InitDevice, BEFORE any
-        // loadModel call, so they have to be in the cache by now.
-        await this._prefetchEngineAssets();
-        trace('assets prefetched (' +
-              this._module._wf_provider_count(this._handle) + ' files in provider)');
-
-        // Pass the selector by allocating a NUL-terminated UTF-8 buffer
-        // in the module heap. wf_init copies it into the WfRenderer.
+    _initRenderer(trace) {
+        const selector = '#' + this.canvas.id;
         const selBytes = this._module.lengthBytesUTF8(selector) + 1;
         const selPtr = this._module._malloc(selBytes);
         this._module.stringToUTF8(selector, selPtr, selBytes);
@@ -549,45 +178,24 @@ export class WhiteoutViewer {
         if (!ok) throw new Error('wf_init returned 0: ' + this._lastErr());
         trace('wf_init ok');
 
-        // A vivid color so the smoke test is obviously WASM-driven, not
-        // a default-cleared canvas.
         this._module._wf_set_background(this._handle, 24, 56, 96); // moody blue
-
-        // Firefox's wgpu/naga produces fragment code for the HD IBL
-        // shader that's slow enough to make the 3-cascade per-pixel
-        // shadow sample dominate frame time on hi-DPI displays — drops
-        // to ~20 fps at zoom-in. Skip shadows there by default; users
-        // can re-enable via `viewer.setShadowsEnabled(true)` in the
-        // console if they prefer the shadow look over the framerate.
+        // Firefox HD shadows make zoom-in fragment-bound — opt out by
+        // default; re-enable via setShadowsEnabled(true).
         if (navigator.userAgent.indexOf('Firefox/') >= 0) {
             this._module._wf_set_shadows_enabled(this._handle, 0);
         }
-        // Start in SD mode. Each successful load() probes the actor's
-        // PreferredRenderMode (HD if any layer carries a non-zero BLS
-        // shaderId) and flips the global setting accordingly. Driving the
-        // HD pipeline against SD materials silently mis-blends multi-layer
-        // SD textures (the reddish wash on classic Arthas, etc.).
+        // SD start; load() flips to HD per actor PreferredRenderMode.
         this._module._wf_set_render_mode(this._handle, 0);
 
-        // Resize tracking. Canvas resize → recompute drawing buffer →
-        // tell WASM to reconfigure the surface.
         this._resizeObserver = new ResizeObserver(() => this._onResize());
         this._resizeObserver.observe(this.canvas);
+    }
 
-        // Pointer + wheel input → CameraView. Left-drag rotates,
-        // middle/right-drag pans, wheel zooms, double-click resets.
-        this._installCameraControls();
-
+    _startLoop() {
         this._lastTime = performance.now();
-        // FPS tracking — exponentially-weighted moving average on dt so the
-        // displayed number is stable across short hitches but still tracks
-        // sustained changes. Polled by the host UI via `getFps()`.
         this._emaDt = 1 / 60;
-        // Per-phase frame timing — enable with `__hive.viewer.profileFrames = true`
-        // in the console. Logs `tick / render / rAF-gap` once per second
-        // so we can tell GPU-bound (record fast, rAF-gap big) from
-        // CPU-bound (record slow) at a glance. Off by default to avoid
-        // adding console noise to normal runs.
+        // Enable per-frame profiling via `viewer.profileFrames = true`.
+        // GPU-bound shows as small render + big rAF-gap.
         this.profileFrames = false;
         this._profAccum = { ticks: 0, ticksMs: 0, renderMs: 0, gapMs: 0, last: 0 };
         this._loop = (now) => {
@@ -606,235 +214,63 @@ export class WhiteoutViewer {
             this._module._wf_render(this._handle);
             const t2 = prof ? performance.now() : 0;
             this._raf = requestAnimationFrame(this._loop);
-            // Pump the AssetManager needs queue. SpawnUnit + frame_ticker
-            // both surface paths the renderer wants; we drain once per
-            // frame and fire fetches in parallel. Covers Texture,
-            // Particle (.pkb), and ChildModel kinds end-to-end.
-            this._pumpAssetNeeds();
-            if (prof) {
-                const p = this._profAccum;
-                p.ticks += 1;
-                p.ticksMs += (t1 - t0);
-                p.renderMs += (t2 - t1);
-                p.gapMs += elapsed;
-                if (now - p.last >= 1000) {
-                    const n = Math.max(1, p.ticks);
-                    console.log('[wf-prof] tick=' + (p.ticksMs / n).toFixed(2)
-                        + ' ms  render=' + (p.renderMs / n).toFixed(2)
-                        + ' ms  rAF-gap=' + (p.gapMs / n).toFixed(2)
-                        + ' ms  (' + n + ' frames)');
-                    p.ticks = 0; p.ticksMs = 0; p.renderMs = 0; p.gapMs = 0;
-                    p.last = now;
-                }
-            }
+            pumpAssetNeeds(this);
+            if (prof) this._tickProfile(now, t0, t1, t2, elapsed);
         };
         this._raf = requestAnimationFrame(this._loop);
-        return this;
     }
 
-    // Smoothed FPS computed from the rAF loop's dt EMA. Returns 0 until
-    // the loop has run at least one frame.
+    _tickProfile(now, t0, t1, t2, elapsed) {
+        const p = this._profAccum;
+        p.ticks += 1;
+        p.ticksMs += (t1 - t0);
+        p.renderMs += (t2 - t1);
+        p.gapMs += elapsed;
+        if (now - p.last < 1000) return;
+        const n = Math.max(1, p.ticks);
+        console.log('[wf-prof] tick=' + (p.ticksMs / n).toFixed(2)
+            + ' ms  render=' + (p.renderMs / n).toFixed(2)
+            + ' ms  rAF-gap=' + (p.gapMs / n).toFixed(2)
+            + ' ms  (' + n + ' frames)');
+        p.ticks = 0; p.ticksMs = 0; p.renderMs = 0; p.gapMs = 0;
+        p.last = now;
+    }
+
+    // ---- public API ----------------------------------------------------
+
+    // Returns 0 until the loop has run at least one frame.
     getFps() {
         if (!this._emaDt || this._emaDt <= 0) return 0;
         return 1 / this._emaDt;
     }
 
-    // Install a path solver the renderer uses to fetch assets the
-    // AssetManager surfaces on its needs queue (Texture / Particle /
-    // ChildModel slots). Called by the host app (e.g. HiveApp) after
-    // the user picks a directory.
-    setPathSolver(solver) {
-        this._lazySolver = solver;
-    }
+    // Solver fetches Texture/Particle/ChildModel deps the AssetManager
+    // surfaces after load(). Returns one URL or a fallback chain.
+    setPathSolver(solver) { this._lazySolver = solver; }
 
-    // Drain the AssetManager's needs queue and fetch each path. The
-    // renderer surfaces a need on the first Acquire of each path; we
-    // dedupe in-flight requests via `_inflightAssets` so the same path
-    // doesn't get fetched twice while a previous fetch is still
-    // pending. Settled fetches are removed so a later slot re-
-    // acquisition (e.g. model switch destroys + re-creates a shared
-    // texture's slot) re-fetches cleanly.
-    _pumpAssetNeeds() {
-        if (!this._handle) return;
-        const M = this._module;
-        if (!M._wf_assets_needs_count) return; // older wasm without bridge
-        const n = M._wf_assets_needs_count(this._handle);
-        if (!n) return;
-        if (!this._inflightAssets) this._inflightAssets = new Map();
-        const CAP = 512;
-        const buf = M._malloc(CAP);
-        try {
-            for (let i = 0; i < n; ++i) {
-                const kind = M._wf_assets_needs_get_kind(this._handle, i);
-                M._wf_assets_needs_get_path(this._handle, i, buf, CAP);
-                const path = M.UTF8ToString(buf);
-                const dedupKey = kind + ':' + path;
-                // Skip while a previous fetch for this (kind, path) is
-                // still pending — lifetime-dedup would be wrong here
-                // because slot teardown + re-Acquire after a model
-                // switch needs to re-fetch from scratch.
-                if (this._inflightAssets.has(dedupKey)) continue;
-                if (!this._lazySolver) continue;
-                const p = this._fetchAndApplyAsset(this._lazySolver, kind, path)
-                    .catch(() => {})
-                    .finally(() => { this._inflightAssets.delete(dedupKey); });
-                this._inflightAssets.set(dedupKey, p);
-            }
-        } finally {
-            M._free(buf);
-        }
-    }
-
-    // Fetch the bytes for a needed asset and push them into the
-    // AssetManager via _wf_assets_apply. Mirrors _fetchDep's
-    // extension-synonym walk (.tif ↔ .dds ↔ .blp, etc.) so the
-    // server can serve whichever shape it has on disk.
-    async _fetchAndApplyAsset(pathSolver, kind, relPath) {
-        if (this._onFetchStart) this._onFetchStart(relPath);
-        try {
-            return await this._fetchAndApplyAssetImpl(pathSolver, kind, relPath);
-        } finally {
-            if (this._onFetchEnd) this._onFetchEnd(relPath);
-        }
-    }
-
-    async _fetchAndApplyAssetImpl(pathSolver, kind, relPath) {
-        const fwd = relPath.replaceAll('\\', '/');
-        const dot = fwd.lastIndexOf('.');
-        const origExt = dot > 0 ? fwd.slice(dot).toLowerCase() : '';
-
-        // Same-family validation — accept response bytes only when the
-        // final URL's extension still belongs to the kind-family we
-        // asked for. Hive's CASC mirror groups pkfx/pkb/mdl/mdx as a
-        // single "model" family server-side, so a request for .mdx
-        // can 302 to a .pkb (or vice versa). Without this check the
-        // wrong-format bytes would get applied to a ChildModel slot.
-        const TEX = ['.blp', '.dds', '.tga', '.png', '.tif'];
-        const MDL = ['.mdx', '.mdl'];
-        const PRT = ['.pkb', '.pkfx'];
-        let family;
-        if (TEX.includes(origExt))      family = TEX;
-        else if (MDL.includes(origExt)) family = MDL;
-        else if (PRT.includes(origExt)) family = PRT;
-        else                            family = [origExt];
-
-        // Single-candidate request — we used to walk every alt extension
-        // in the family (.blp → .dds → .tga, .pkb → .pkfx, etc.) but
-        // Hive's CASC API does the same-family expansion server-side, so
-        // the second through Nth candidates were either redundant cache
-        // hits or wasted 404 round-trips. Ask for the canonical ext the
-        // renderer surfaced (after any host-side .pkfx → .pkb rewrite)
-        // exactly once.
-        //
-        // The pathSolver may return a single URL or an array of URLs
-        // forming a fallback chain (e.g. direct asset URL first, the
-        // /casc-contents/ indirect lookup as backup). We try each in
-        // order until one fetches + applies.
-        let urls;
-        try { urls = await Promise.resolve(pathSolver(relPath)); }
-        catch (_) { urls = null; }
-        if (urls) {
-            if (!Array.isArray(urls)) urls = [urls];
-            for (const url of urls) {
-                if (!url) continue;
-                try {
-                    const r = await fetch(url);
-                    if (!r.ok) continue;
-                    let servedExt = origExt;
-                    try {
-                        const finalPath = new URL(r.url).pathname.toLowerCase();
-                        const fdot = finalPath.lastIndexOf('.');
-                        if (fdot >= 0) servedExt = finalPath.slice(fdot);
-                    } catch (_) { /* opaque URL — fall back to requested ext */ }
-                    if (!family.includes(servedExt)) continue;
-                    const bytes = new Uint8Array(await r.arrayBuffer());
-                    const applied = this._applyAsset(kind, relPath, bytes, servedExt);
-                    if (applied) return true;
-                    // Apply rejected — decode failed. Log enough to tell
-                    // a stale-version PKB (magic 11 0B 00 + rejected
-                    // version byte) apart from un-decompressed zstd
-                    // (magic 28 B5 2F FD) apart from accidental
-                    // HTML/text. Then try the next fallback URL.
-                    const kindNameRej = ['Texture', 'Particle', 'ChildModel'][kind] || ('k=' + kind);
-                    const hex = Array.from(bytes.slice(0, 8))
-                        .map(b => b.toString(16).padStart(2, '0')).join(' ');
-                    console.warn('[wf] apply REJECTED (' + kindNameRej + ', ' + bytes.byteLength
-                        + ' bytes, served as ' + servedExt + ', head=' + hex + '): '
-                        + relPath + ' (from ' + r.url + ')');
-                } catch (_) { /* try next */ }
-            }
-        }
-        const kindName = ['Texture', 'Particle', 'ChildModel'][kind] || ('k=' + kind);
-        console.warn('[wf] asset MISS (' + kindName + ', all candidates failed): ' + relPath);
-        return false;
-    }
-
-    _applyAsset(kind, path, u8, foundExt) {
-        const M = this._module;
-        const pathPtr = this._cstr(path);
-        const extPtr  = this._cstr(foundExt || '');
-        const dataPtr = M._malloc(u8.byteLength);
-        M.HEAPU8.set(u8, dataPtr);
-        try {
-            return !!M._wf_assets_apply(
-                this._handle, kind, pathPtr, dataPtr, u8.byteLength, extPtr);
-        } finally {
-            M._free(dataPtr);
-            M._free(pathPtr);
-            M._free(extPtr);
-        }
-    }
-
-    _onResize() {
-        if (!this._handle) return;
-        const { w, h } = this._computeBackingSize();
-        if (w === this.canvas.width && h === this.canvas.height) return;
-        this.canvas.width = w;
-        this.canvas.height = h;
-        this._module._wf_resize(this._handle, w, h);
-    }
-
-    // Compute the canvas's backing-buffer size: CSS box × backingPixelRatio.
-    // backingPixelRatio defaults to devicePixelRatio (Chrome) or 1 (Firefox);
-    // see the constructor for the rationale.
-    _computeBackingSize() {
-        const dpr = this.backingPixelRatio || 1;
-        const cssW = this.canvas.clientWidth || this.canvas.width || 800;
-        const cssH = this.canvas.clientHeight || this.canvas.height || 600;
-        return {
-            w: Math.max(1, Math.floor(cssW * dpr)),
-            h: Math.max(1, Math.floor(cssH * dpr)),
-        };
+    // Per-dep progress hooks — start when queued, end when resolved.
+    setFetchHooks({ start, end } = {}) {
+        this._onFetchStart = typeof start === 'function' ? start : null;
+        this._onFetchEnd   = typeof end   === 'function' ? end   : null;
     }
 
     setBackground(r, g, b) {
         if (this._handle) this._module._wf_set_background(this._handle, r | 0, g | 0, b | 0);
     }
-
-    // Light-rig preset: 0 = in-game (engine runtime), 1 = glue (loading
-    // screen / portrait), 2 = dynamic. See LightingMode in enums.h.
+    // 0=in-game, 1=glue (portrait), 2=dynamic. See enums.h::LightingMode.
     setLightingMode(mode) {
         if (this._handle) this._module._wf_set_lighting_mode(this._handle, mode | 0);
     }
-
     setShowGrid(on) {
         if (this._handle) this._module._wf_set_show_grid(this._handle, on ? 1 : 0);
     }
-
-    // Cascade-shadow rendering on/off. Default-on; defaulted off on
-    // Firefox during init() because the 3-cascade per-pixel sample in
-    // the HD IBL fragment body costs disproportionately more under
-    // wgpu/naga than under Chrome's Dawn/tint and tips the renderer
-    // into GPU-bound territory at zoom-in on HD models.
+    // Default off on Firefox (3-cascade sample is expensive on wgpu/naga).
     setShadowsEnabled(on) {
         if (this._handle) this._module._wf_set_shadows_enabled(this._handle, on ? 1 : 0);
     }
 
-    // Live GPU bytes currently allocated by the WebGPU backend (sum of
-    // outstanding CreateTexture + CreateBuffer that haven't drained from
-    // the deferred-delete queue). Returned as a Number (double — exact
-    // up to 2^53). Call from devtools as `__hive.viewer.gpuBytes()` to
-    // diagnose growth across model loads.
+    // Live WebGPU CreateTexture+CreateBuffer bytes (deferred-delete
+    // excluded). `__hive.viewer.gpuBytes()` for leak-spotting.
     gpuBytes() {
         if (!this._handle) return 0;
         return this._module._wf_gpu_bytes(this._handle);
@@ -845,114 +281,23 @@ export class WhiteoutViewer {
         console.log(`[wf-gpu] ${tag} live=${mb} MiB (${b} bytes)`);
     }
 
-    _installCameraControls() {
-        const c = this.canvas;
-        // Make the canvas focusable so it can capture wheel events without
-        // scrolling the page, and stop the browser's default touch-pan.
-        c.style.touchAction = 'none';
-        c.tabIndex = 0;
-        let dragging = 0; // 0=none, 1=rotate, 2=pan
-        let lastX = 0, lastY = 0;
-
-        c.addEventListener('pointerdown', (e) => {
-            c.setPointerCapture(e.pointerId);
-            // Left button = rotate, middle/right = pan.
-            dragging = (e.button === 0) ? 1 : 2;
-            lastX = e.clientX; lastY = e.clientY;
-            e.preventDefault();
-        });
-        c.addEventListener('pointermove', (e) => {
-            if (!dragging || !this._handle) return;
-            const dx = e.clientX - lastX;
-            const dy = e.clientY - lastY;
-            lastX = e.clientX; lastY = e.clientY;
-            if (dragging === 1) this._module._wf_camera_rotate(this._handle, dx, dy);
-            // Pan: negate X so dragging right moves the scene right
-            // (grab-and-slide). Y stays positive — CameraView::Pan already
-            // treats +dy as down-on-screen, matching the desktop viewers.
-            else                this._module._wf_camera_pan(this._handle, -dx, dy);
-        });
-        const endDrag = (e) => {
-            if (dragging) {
-                try { c.releasePointerCapture(e.pointerId); } catch (_) {}
-                dragging = 0;
-            }
-        };
-        c.addEventListener('pointerup',     endDrag);
-        c.addEventListener('pointercancel', endDrag);
-        c.addEventListener('pointerleave',  endDrag);
-
-        // Wheel zoom — preventDefault stops page scroll. CameraView's
-        // Zoom takes an integer wheel-delta in detents; we use 3 detents
-        // per notch by default so a single scroll click moves a useful
-        // distance, and negate the sign so scroll-up zooms in to match
-        // every other 3D viewer.
-        const ZOOM_STEPS_PER_NOTCH = 16;
-        c.addEventListener('wheel', (e) => {
-            if (!this._handle) return;
-            e.preventDefault();
-            const notches = Math.max(1, Math.round(Math.abs(e.deltaY) / 100));
-            const steps = -Math.sign(e.deltaY) * notches * ZOOM_STEPS_PER_NOTCH;
-            this._module._wf_camera_zoom(this._handle, steps);
-        }, { passive: false });
-
-        // Double-click resets to the default orbit pose.
-        c.addEventListener('dblclick', () => {
-            if (this._handle) this._module._wf_camera_reset(this._handle);
-        });
-
-        // Right-click context menu would interrupt right-drag pan.
-        c.addEventListener('contextmenu', (e) => e.preventDefault());
-    }
-
-    // ------------------------------------------------------------------
-    // Asset prefetch — Phase 2 plumbing.
-    //
-    // Fetches every WGSL BLS bundle the renderer asks for during
-    // InitBlsShaders, plus the optional probes/SLKs the warning trail
-    // showed during Phase 1 bring-up. Pushes each file's bytes into the
-    // FetchContentProvider via _wf_provider_put. All fetches in parallel.
-    // ------------------------------------------------------------------
-    // ------------------------------------------------------------------
-    // Hive-compatible load entry point — mirrors mdx-m3-viewer's API.
-    //
-    //   load(src, pathSolver) -> Promise<Model>
-    //
-    // `src` is opaque (typically a logical asset name) and is handed
-    // straight to `pathSolver` to obtain the MDX URL. Every dependency
-    // the renderer subsequently requests (textures, child-MDX, sounds)
-    // is also routed through `pathSolver`. The host page therefore owns
-    // all URL resolution; this viewer never assumes a particular CDN
-    // layout. If `pathSolver` is omitted, `src` is treated as a URL and
-    // dependencies are resolved relative to its directory — the same
-    // ergonomic shortcut mdx-m3-viewer provides.
-    //
-    // The returned Promise resolves once the renderer has spawned the
-    // actor with all its dependencies satisfied; rejects with a
-    // descriptive error if any iteration can't find a required asset.
-    // ------------------------------------------------------------------
+    // mdx-m3-viewer-shape load. `src` is opaque; the solver returns its
+    // URL (and the URL of every dep). With no solver, deps resolve
+    // relative to `src`'s directory.
     async load(src, pathSolver = null) {
         if (!this._handle) throw new Error('viewer not initialised');
 
-        // Default solver: src/name is a URL or relative path the page
-        // server can resolve. Dependencies are resolved against the
-        // src's directory.
         if (!pathSolver) {
             const baseDir = String(src).substring(0, String(src).lastIndexOf('/') + 1);
             pathSolver = (name) => {
-                // Bare filenames (no slash) → assume same directory as src.
                 if (typeof name !== 'string') return null;
                 if (name === src) return src;
-                if (name.indexOf('/') < 0 && name.indexOf('\\') < 0) return baseDir + name;
                 return baseDir + name;
             };
         }
 
-        // mdx-m3-viewer's contract: load() returns the Model synchronously
-        // and the Model resolves its load asynchronously. To stay
-        // promise-friendly while still exposing model.whenLoaded(), we
-        // build the Model up front, stash the in-flight Promise on it, and
-        // await the whole thing here so callers can `await viewer.load()`.
+        // mdx-m3-viewer returns Model sync + resolves async; we await so
+        // callers can `await load()` while exposing model.whenLoaded().
         const model = new Model(this, src);
         if (!this._models) this._models = [];
         this._models.push(model);
@@ -961,125 +306,86 @@ export class WhiteoutViewer {
         return model;
     }
 
-    // Convenience wrapper — load + auto-create the first Instance. Mirrors
-    // mdx-m3-viewer's `instance = model.addInstance()` shorthand for the
-    // very common single-instance use case (and our older smoke harness).
     async loadModel(mdxUrl) {
         const model = await this.load(mdxUrl);
         return model.addInstance();
     }
 
-    // Resolve a list of in-flight Model loads to completion. Mirrors
-    // mdx-m3-viewer's `viewer.whenAllLoaded(models, cb)` — supports both
-    // the callback form (legacy) and a Promise return for `await`.
+    // mdx-m3-viewer parity — resolves when every model has loaded.
     whenAllLoaded(models, cb) {
-        // Mirrors mdx-m3-viewer's `viewer.whenAllLoaded(models, cb)`:
-        // resolves once every model's `load()` promise has settled. The
-        // texture stream itself is incremental and decoupled from this
-        // promise — textures pop in as they fetch from the AssetManager
-        // pump, regardless of whether anyone is awaiting load completion.
         const p = Promise.all(models.map(m => m._loadPromise || Promise.resolve(m)));
         if (typeof cb === 'function') p.then(() => cb(models));
         return p;
     }
 
-    // mdx-m3-viewer's snapshot API. Defers a rAF so the latest in-flight
-    // frame has flushed before reading pixels.
+    // Defer a frame so the latest paint flushes before readback.
     toBlob(cb, type, quality) {
         requestAnimationFrame(() => this.canvas.toBlob(cb, type, quality));
     }
 
-    // Public wrappers around the camera C facade for UI button handlers
-    // (Cameras → Reset). The pointer/wheel installer in init() drives the
-    // same C entries; these just give app code a named hook.
     resetCamera() {
         if (this._handle) this._module._wf_camera_reset(this._handle);
     }
-
-    // Drop every live splat (footstep / blood / etc). Use on sequence
-    // change so a previous animation's decals don't carry over.
+    // Wipe live splats — use on sequence change to avoid carryover.
     clearSplats() {
         if (this._handle) this._module._wf_clear_splats(this._handle);
     }
 
-    // Probe the freshly-spawned actor for its preferred render mode and
-    // flip the global SettingsView::RenderMode accordingly. Mirrors the
-    // desktop viewer's `Settings().SetRenderMode(hero->PreferredRenderMode())`
-    // call after spawn (tools/basic_viewer/viewer_app.cpp). The wf side
-    // returns 1 for HD (any layer with a non-zero BLS shaderId), 0 for SD.
-    _applyPreferredRenderMode(actorHandle) {
-        if (!this._handle || !actorHandle) return;
-        const M = this._module;
-        if (!M._wf_actor_preferred_render_mode) return; // older wasm build
-        const mode = M._wf_actor_preferred_render_mode(this._handle, actorHandle);
-        M._wf_set_render_mode(this._handle, mode);
-    }
-
-    // No-op compat with mdx-m3-viewer's handler-registration API. Our
-    // build statically knows how to parse MDX/BLP/MDL.
+    // mdx-m3-viewer parity — parsers are static here.
     addHandler() { /* intentionally empty */ }
-
-    // Single scene by design; addScene() returns the singleton so host
-    // code that calls `viewer.addScene()` keeps working.
     addScene() { return this.scene; }
-
     get scene() {
         if (!this._scene) this._scene = new Scene(this);
         return this._scene;
     }
 
+    dispose() {
+        if (this._raf) cancelAnimationFrame(this._raf);
+        this._raf = 0;
+        if (this._resizeObserver) {
+            this._resizeObserver.disconnect();
+            this._resizeObserver = null;
+        }
+        if (this._handle && this._module) {
+            this._module._wf_destroy(this._handle);
+            this._handle = 0;
+        }
+    }
+
+    // ---- model load internals -----------------------------------------
+
     async _loadInternal(src, pathSolver, model) {
-        const M = this._module;
         const log = (s) => console.log('[wf]', s);
-        // Step the engine once so any cleanup deferred from before the
-        // load (e.g. a previous model's actors flagged via detach()) is
-        // applied before we spawn the new actor.
-        M._wf_tick(this._handle, 0);
+        // Drain any deferred cleanup before spawning.
+        this._module._wf_tick(this._handle, 0);
         return this._loadInternalImpl(src, pathSolver, model, log);
     }
 
     async _loadInternalImpl(src, pathSolver, model, log) {
         const M = this._module;
 
-        // Resolve the MDX URL through pathSolver, fetch it, push bytes
-        // under a stable in-provider key. The C side calls SpawnUnit
-        // with that same key, so the renderer's provider lookups for
-        // the MDX itself always hit.
+        // Push MDX bytes under a stable key so SpawnUnit's provider lookup hits.
         const mdxUrl = await Promise.resolve(pathSolver(src));
         if (!mdxUrl) throw new Error('pathSolver returned no URL for src: ' + src);
         log('load: fetching MDX ' + mdxUrl);
         const mdxResp = await fetch(mdxUrl, { cache: 'no-store' });
         if (!mdxResp.ok) throw new Error('fetch MDX failed: ' + mdxResp.status);
         const mdxBytes = new Uint8Array(await mdxResp.arrayBuffer());
-        const mdxKey = String(src).split(/[\\/]/).pop();   // basename as the key
+        const mdxKey = String(src).split(/[\\/]/).pop();
         this._putBytes(mdxKey, mdxBytes);
 
-        // PE1 emitter child-MDX paths resolve against this base, same
-        // convention as the desktop viewer (parent of the loaded
-        // model). For Hive-style pathSolvers we don't actually know a
-        // filesystem-shape base; the renderer just hands the bare
-        // PE1-referenced names to pathSolver during iteration, so the
-        // base path is informational only here.
+        // PE1 emitter-child-MDX search base. Informational for Hive solvers.
         const srcDir = String(src).substring(0, String(src).lastIndexOf('/') + 1);
         if (srcDir) this._setPe1Base(srcDir.replace(/^\.?\/?/, ''));
 
-        // One-shot spawn. The renderer Acquires AssetManager slots for
-        // every file-backed texture during the MDX parse; each slot
-        // starts on the shared white placeholder and the path goes
-        // onto the needs queue. The per-frame pump in this._loop
-        // drains the queue, fetches each path, and pushes bytes via
-        // wf_assets_apply — the slot's texHandle swaps in
-        // transparently the next frame. No refresh-tick dance, no
-        // re-parse, no handle churn.
+        // Texture slots start on a white placeholder; bytes swap in via
+        // the per-frame asset-pump as they arrive.
         log('spawn: ' + mdxKey);
         const keyPtr = this._cstr(mdxKey);
         let handle = 0;
         try {
             handle = M._wf_spawn_unit(this._handle, keyPtr);
-            // The MDX bytes were only needed for the synchronous
-            // template parse inside SpawnUnit — drop them from the
-            // FetchContentProvider's cache so they don't pile up
-            // across many sequential model loads.
+            // Drop MDX bytes once SpawnUnit's template parse consumed them.
             M._wf_provider_evict(this._handle, keyPtr);
         } finally {
             M._free(keyPtr);
@@ -1093,35 +399,30 @@ export class WhiteoutViewer {
         const inst = new Instance(this, model, handle);
         model._instances.push(inst);
 
-        // Kick the needs-pump immediately so the first fetches start
-        // overlapping with the page resuming the rAF loop. The
-        // per-frame pump in _loop covers subsequent ticks (corn-fx
-        // and other runtime-discovered assets).
-        this._pumpAssetNeeds();
+        // Start fetches before the next rAF.
+        pumpAssetNeeds(this);
         return model;
     }
 
-    // Install host-side hooks that fire once per logical dep — start
-    // when the dep is queued, end when it resolves (success OR failure).
-    // The host uses these to drive a determinate progress bar from
-    // (completed / total) where total grows as new deps surface from
-    // background fetchers and the AssetManager pump.
-    setFetchHooks({ start, end } = {}) {
-        this._onFetchStart = typeof start === 'function' ? start : null;
-        this._onFetchEnd   = typeof end   === 'function' ? end   : null;
+    // Flip global RenderMode to match the actor's preferred path; HD
+    // pipeline on SD data mis-blends multi-layer textures.
+    _applyPreferredRenderMode(actorHandle) {
+        if (!this._handle || !actorHandle) return;
+        const M = this._module;
+        if (!M._wf_actor_preferred_render_mode) return; // older wasm build
+        const mode = M._wf_actor_preferred_render_mode(this._handle, actorHandle);
+        M._wf_set_render_mode(this._handle, mode);
     }
 
-    // Helpers to keep loadModel readable.
+    // ---- WASM helpers (used by sibling modules) -----------------------
+
+    // Allocates a NUL-terminated UTF-8 buffer. Caller MUST free or the
+    // WASM heap fragments fast under the asset pump.
     _cstr(s) {
         const M = this._module;
         const bytes = M.lengthBytesUTF8(s) + 1;
         const p = M._malloc(bytes);
         M.stringToUTF8(s, p, bytes);
-        // Caller is responsible for M._free(p) once the ABI call has
-        // returned. Skipping that fragments the WASM heap — under the
-        // AssetManager pump every dep fetch goes through _cstr (path +
-        // foundExt), so over many model loads the leaked allocations
-        // pile up to thousands and malloc gets progressively slower.
         return p;
     }
     _putBytes(path, u8) {
@@ -1145,119 +446,82 @@ export class WhiteoutViewer {
             M._free(pathPtr);
         }
     }
-
-    // Prefetch the engine-wide assets wf_init reads before any model
-    // is loaded: the default IBL probe and the DNC unit MDX. These are
-    // OUR engine's prerequisites, not the host page's content.
-    //
-    // Tries two locations in order, falling through on miss:
-    //   1. `engineAssetRoot` (default `./`) — useful for dev / committed
-    //      assets sitting next to the viewer page.
-    //   2. `this.cascUrl(path)` — Hiveworkshop's CASC mirror by default;
-    //      can be retargeted to a local wf_casc_server proxy by overriding
-    //      `cascUrl` on the viewer instance.
-    // Override `engineAssetRoot` (string, with trailing slash) before
-    // calling init() — e.g. for a CDN that pins these to a versioned path.
-    async _prefetchEngineAssets() {
-        const root = this.engineAssetRoot || './';
-        const ENGINE = [
-            // Default IBL probe + DNC unit MDX (init-time renderer reads).
-            'Environment/EnvironmentMap/Portraits/PortraitDefault_IBL.dds',
-            'Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdx',
-            'Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdl',
-            // Event-data SLKs (LoadEventDataFiles in src/io/event_data.cpp).
-            // SpawnData / SplatData / UberSplatData drive SPN, SPL, UBR
-            // event resolution; the SoundInfo SLKs feed SndEntry path
-            // lookups — without these the renderer can't resolve any
-            // SND animation event to a playable .wav / .flac.
-            'Splats/SpawnData.slk',
-            'Splats/SplatData.slk',
-            'Splats/UberSplatData.slk',
-            'UI/SoundInfo/DialogueCreepsBase.slk',
-            'UI/SoundInfo/DialogueDemonBase.slk',
-            'UI/SoundInfo/DialogueHumanBase.slk',
-            'UI/SoundInfo/DialogueNagaBase.slk',
-            'UI/SoundInfo/DialogueNightElfBase.slk',
-            'UI/SoundInfo/DialogueOrcBase.slk',
-            'UI/SoundInfo/DialogueUndeadBase.slk',
-            'UI/SoundInfo/SoundAssetCombat.slk',
-            'UI/SoundInfo/UnitAckSounds.slk',
-            'UI/SoundInfo/UnitCombatSounds.slk',
-            'UI/SoundInfo/UISounds.slk',
-            'UI/SoundInfo/AmbienceSounds.slk',
-            'UI/SoundInfo/AnimSounds.slk',
-            'UI/SoundInfo/AbilitySounds.slk',
-            'UI/SoundInfo/DialogSounds.slk',
-            'UI/SoundInfo/AmbientMusic.slk',
-            'UI/SoundInfo/Music.slk',
-        ];
-        // These assets ride the legacy FetchContentProvider (read by the
-        // renderer's init-time code via ContentProvider::ReadFile rather
-        // than the slot-based AssetManager). We fetch them eagerly and
-        // push the bytes through _putBytes so the synchronous ReadFile
-        // inside the renderer's init path always hits.
-        const tryFetch = async (url) => {
-            try {
-                const r = await fetch(url);
-                if (!r.ok) return null;
-                return new Uint8Array(await r.arrayBuffer());
-            } catch (_) { return null; }
-        };
-        await Promise.all(ENGINE.map(async (p) => {
-            let bytes = await tryFetch(root + p);
-            if (!bytes) bytes = await tryFetch(this.cascUrl(p));
-            if (bytes) this._putBytes(p, bytes);
-        }));
-    }
-
-    async _prefetchShaders() {
-        const VS = ['foliage','gritty_hd','hd','imgui','popcornfx','sd_highspec',
-                    'sd_on_hd','sprite','terrain','toon_hd'];
-        const PS = ['crystal','distortion','foliage','gritty_hd','hd','imgui',
-                    'popcornfx','sd','sd_on_hd','sprite','terrain','tonemap','toon_hd'];
-        // The renderer's BLS cache resolves the api-subdir at lookup time, so
-        // we push under the SAME path it queries: `shaders/webgpu/<stage>/<name>.bls`.
-        const paths = [
-            ...VS.map(n => `shaders/webgpu/vs/${n}.bls`),
-            ...PS.map(n => `shaders/webgpu/ps/${n}.bls`),
-        ];
-        await Promise.all(paths.map(p => this._fetchAndPut(p)));
-    }
-
-    async _fetchAndPut(path) {
-        const r = await fetch('./' + path);
-        if (!r.ok) { console.warn('[wf] prefetch FAIL ' + path + ' status=' + r.status); return; }
-        const buf = new Uint8Array(await r.arrayBuffer());
-        // Allocate in WASM heap and copy in.
-        const pathBytes = this._module.lengthBytesUTF8(path) + 1;
-        const pathPtr = this._module._malloc(pathBytes);
-        this._module.stringToUTF8(path, pathPtr, pathBytes);
-        const dataPtr = this._module._malloc(buf.byteLength);
-        this._module.HEAPU8.set(buf, dataPtr);
-        this._module._wf_provider_put(this._handle, pathPtr, dataPtr, buf.byteLength);
-        this._module._free(pathPtr);
-        this._module._free(dataPtr);
-    }
-
-    // Pull the C-side captured exception what() string. Used by error
-    // messages so the on-page log shows the real C++ failure instead of
-    // Emscripten's `{excPtr: ...}` placeholder.
+    // Surfaces the C++ what() string instead of Emscripten's `{excPtr:…}`.
     _lastErr() {
         if (!this._module || !this._module._wf_last_error) return '<no module>';
         const ptr = this._module._wf_last_error();
         return ptr ? this._module.UTF8ToString(ptr) : '<empty>';
     }
 
-    dispose() {
-        if (this._raf) cancelAnimationFrame(this._raf);
-        this._raf = 0;
-        if (this._resizeObserver) {
-            this._resizeObserver.disconnect();
-            this._resizeObserver = null;
-        }
-        if (this._handle && this._module) {
-            this._module._wf_destroy(this._handle);
-            this._handle = 0;
-        }
+    // ---- canvas / camera input ----------------------------------------
+
+    _onResize() {
+        if (!this._handle) return;
+        const { w, h } = this._computeBackingSize();
+        if (w === this.canvas.width && h === this.canvas.height) return;
+        this.canvas.width = w;
+        this.canvas.height = h;
+        this._module._wf_resize(this._handle, w, h);
+    }
+
+    // CSS box × backingPixelRatio.
+    _computeBackingSize() {
+        const dpr = this.backingPixelRatio || 1;
+        const cssW = this.canvas.clientWidth || this.canvas.width || 800;
+        const cssH = this.canvas.clientHeight || this.canvas.height || 600;
+        return {
+            w: Math.max(1, Math.floor(cssW * dpr)),
+            h: Math.max(1, Math.floor(cssH * dpr)),
+        };
+    }
+
+    _installCameraControls() {
+        const c = this.canvas;
+        // Focusable + no touch-pan so wheel captures don't scroll the page.
+        c.style.touchAction = 'none';
+        c.tabIndex = 0;
+        let dragging = 0; // 0=none, 1=rotate, 2=pan
+        let lastX = 0, lastY = 0;
+
+        c.addEventListener('pointerdown', (e) => {
+            c.setPointerCapture(e.pointerId);
+            dragging = (e.button === 0) ? 1 : 2;
+            lastX = e.clientX; lastY = e.clientY;
+            e.preventDefault();
+        });
+        c.addEventListener('pointermove', (e) => {
+            if (!dragging || !this._handle) return;
+            const dx = e.clientX - lastX;
+            const dy = e.clientY - lastY;
+            lastX = e.clientX; lastY = e.clientY;
+            if (dragging === 1) this._module._wf_camera_rotate(this._handle, dx, dy);
+            // Negate dx for grab-and-slide pan; +dy is already down-on-screen.
+            else                this._module._wf_camera_pan(this._handle, -dx, dy);
+        });
+        const endDrag = (e) => {
+            if (dragging) {
+                try { c.releasePointerCapture(e.pointerId); } catch (_) {}
+                dragging = 0;
+            }
+        };
+        c.addEventListener('pointerup',     endDrag);
+        c.addEventListener('pointercancel', endDrag);
+        c.addEventListener('pointerleave',  endDrag);
+
+        // Wheel zoom — 16 detents/notch, scroll-up zooms in.
+        const ZOOM_STEPS_PER_NOTCH = 16;
+        c.addEventListener('wheel', (e) => {
+            if (!this._handle) return;
+            e.preventDefault();
+            const notches = Math.max(1, Math.round(Math.abs(e.deltaY) / 100));
+            const steps = -Math.sign(e.deltaY) * notches * ZOOM_STEPS_PER_NOTCH;
+            this._module._wf_camera_zoom(this._handle, steps);
+        }, { passive: false });
+
+        c.addEventListener('dblclick', () => {
+            if (this._handle) this._module._wf_camera_reset(this._handle);
+        });
+        // Suppress context menu — interrupts right-drag pan.
+        c.addEventListener('contextmenu', (e) => e.preventDefault());
     }
 }

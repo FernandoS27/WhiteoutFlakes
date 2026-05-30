@@ -1,21 +1,8 @@
-// web_audio.js — JS side of the WebAudioSoundEmitter bridge.
-//
-// The C++ WebAudioSoundEmitter (tools/web_viewer/web_audio_emitter.cpp)
-// calls three globals via EM_JS:
-//
-//   wfWebAudioPlayJS(path, volume, x, y, z, minDist, maxDist, cutoff)
-//   wfWebAudioSetListenerJS(px, py, pz, fx, fy, fz, ux, uy, uz)
-//   wfWebAudioSetVolumeJS(volume)
-//
-// This module's `WebAudioBridge.install()` binds those globals to its
-// AudioContext + PannerNode graph. AudioContext can't auto-create on page
-// load — autoplay policy requires a user gesture — so we defer ctx
-// creation to the first click/keydown on the page.
-//
-// Asset fetch goes through the same pathSolver the host passes (HiveApp
-// reuses its `_resolve` so local picked-directory hits first, CASC server
-// falls back). Decoded AudioBuffers are cached per path; concurrent
-// fetches for the same path coalesce.
+// JS half of WebAudioSoundEmitter. Binds three EM_JS globals
+// (wfWebAudioPlayJS / wfWebAudioSetListenerJS / wfWebAudioSetVolumeJS)
+// to an AudioContext + PannerNode graph. AudioContext init is deferred
+// to the first user gesture (autoplay policy). Decoded AudioBuffers are
+// cached per path; concurrent fetches for the same path coalesce.
 
 export class WebAudioBridge {
     constructor(pathSolver) {
@@ -38,10 +25,7 @@ export class WebAudioBridge {
         globalThis.wfWebAudioSetListenerJS = (px, py, pz, fx, fy, fz, ux, uy, uz) =>
             this.setListener(px, py, pz, fx, fy, fz, ux, uy, uz);
 
-        // Autoplay policy: AudioContext must be created (or resumed) under
-        // a user gesture. Bind a resume hook to common interactions and
-        // self-detach once the ctx is running. Capture phase + non-passive
-        // so we definitely run before any handler that might preventDefault.
+        // Capture-phase so we beat preventDefault handlers.
         const resume = () => {
             this._ensureCtx();
             if (this.ctx && this.ctx.state === 'running') {
@@ -66,13 +50,9 @@ export class WebAudioBridge {
         return this.ctx;
     }
 
-    // Build the candidate list for a SND filePath the same way
-    // CubebSoundEmitter does on desktop (tools/common/cubeb_sound_emitter.cpp).
-    // The SLK rows give us inconsistent shapes — some have `Sound/...`,
-    // some don't; some end in `.flac`, some have no extension at all;
-    // some include a trailing digit ("FootmanReady1") that's actually a
-    // CASC label stem ("FootmanReady") with a numbered variant suffix.
-    // Try every reasonable combination so audio resolves regardless.
+    // Mirrors desktop CubebSoundEmitter's candidate walk — SLK shapes
+    // vary (Sound/ prefix optional, extension optional, trailing variant
+    // digit may or may not be CASC-real).
     _candidates(rawPath) {
         const path = rawPath.replaceAll('\\', '/');
         const slash = path.lastIndexOf('/');
@@ -126,12 +106,8 @@ export class WebAudioBridge {
                         return buf;
                     } catch (_) { /* try next candidate */ }
                 }
-                // Don't pin null on fetch failure — the previous model
-                // switch may have revoked blob URLs out from under an
-                // in-flight fetch, leaving us with a transient miss
-                // for a sound that will resolve fine next attempt. SND
-                // events are infrequent enough that re-walking the
-                // candidate list per play is cheap.
+                // Don't cache null — model-switch may revoke blob URLs
+                // mid-flight and the same sound will resolve next play.
                 return null;
             } catch (e) {
                 console.warn('[wf-audio] decode/fetch failed:', path, e);
@@ -147,19 +123,12 @@ export class WebAudioBridge {
     async _play(path, eventVolume, x, y, z, minDist, maxDist, cutoff) {
         const ctx = this._ensureCtx();
         if (!ctx || !this.masterGain) return;
-        // SLK Volume is a 0..127 MIDI-style scale (WC3 + StarCraft
-        // convention). Web Audio's GainNode.gain is linear amplitude, so
-        // a raw eventVolume of 63 becomes 63× amplification and clips
-        // every speaker on the planet. Normalise to 0..1 with a
-        // perceptual curve so the comfortable level sits mid-travel
-        // (matches CubebSoundEmitter::kVolumeCurveExp on desktop).
+        // SLK volume is 0..127; convert with the same perceptual curve
+        // CubebSoundEmitter uses, with headroom for the master gain.
         const normalized = Math.min(1, Math.max(0, eventVolume / 127));
         const perceptual = Math.pow(normalized, 1.5);
-        const finalGain  = perceptual * 0.5; // headroom — leaves master room to bring up
-        // Distance cutoff — engine semantics say "beyond this radius the
-        // sound isn't played at all". WebAudio's PannerNode doesn't have
-        // a hard cutoff, so we skip the spawn entirely if the listener is
-        // outside it. Default 0 means "no cutoff" (always play).
+        const finalGain  = perceptual * 0.5;
+        // Engine-side hard cutoff — PannerNode has no equivalent.
         if (cutoff > 0) {
             const L = ctx.listener;
             const lx = (L.positionX ? L.positionX.value : 0);

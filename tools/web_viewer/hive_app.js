@@ -1,26 +1,9 @@
-// hive_app.js — UI shell that imitates hiveworkshop.com's "View in 3D" panel
-// on top of WhiteoutViewer. The page owns: directory picking, model
-// enumeration, sidebar populating (Models / Team colors / Background /
-// Animations / Cameras), and the pathSolver chain (local picked-dir
-// index → CASC server fallback).
-//
-// JS API summary:
-//   const app = new HiveApp();
-//   await app.start();   // boots WhiteoutViewer + wires UI
-// Subsequent UI interactions are event-driven.
-//
-// DOM contract — see tools/web_viewer/index.html. Mirrors Hive's
-// `ratory_wc3model_preview` template (block / block-container /
-// block-header / block-body + `color-chip` swatches). Team-color and
-// background chips are PRE-RENDERED in the HTML with their `title`
-// tooltips and `data-player-number` / `data-bg` attributes so the
-// markup is greppable; this file just wires click handlers on top.
+// UI shell that imitates hiveworkshop.com's "View in 3D" panel on top of
+// WhiteoutViewer. Owns directory picking, sidebar population, and the
+// pathSolver chain (local index → Hive direct asset → /casc-contents/).
 
-// Top-level dynamic import with a per-load cache-buster — defeats the
-// browser's ES module map (keyed by URL) so wf-viewer.js edits actually
-// take effect on a soft reload. The HTTP-layer `Cache-Control: no-store`
-// stops the network layer from caching, but the module map is a separate
-// in-page cache that survives identical URLs across this same document.
+// Cache-buster defeats the browser's ES module map (separate from the
+// HTTP cache) so wf-viewer.js edits take effect on soft reload.
 const { WhiteoutViewer, TEAM_COLORS } =
     await import('./wf-viewer.js?t=' + Date.now());
 const { WebAudioBridge } =
@@ -47,28 +30,19 @@ export class HiveApp {
         this.emptyModels  = this.modelList.querySelector('.empty');
 
         this.viewer = null;
-        // Map<normalized-path, {kind:'fsa'|'legacy', handle?, file?, path}>.
-        // Keyed by full relative path AND by basename so dependency lookups
-        // can match either shape (FileResolver does the same on desktop).
+        // Keyed by both full relative path and basename — dependency
+        // lookups may use either shape.
         this.index = new Map();
-        this.models = []; // [{ name, path, entry }]
+        this.models = [];
         this.currentModel = null;
         this.currentInstance = null;
         this.currentTeamColor = 0;
-        // Track blob URLs minted by the pathSolver so we can revoke them
-        // when a fresh model is loaded (otherwise they leak until reload).
         this._objectUrls = [];
     }
 
     async start() {
-        // Register the persistent-cache SW BEFORE the viewer kicks off
-        // its prefetch — once it's active, every Hive request the page
-        // (and the SW-controlled web_audio bridge) makes can short-
-        // circuit to CacheStorage on repeat loads. We don't await the
-        // service worker becoming active because first-load assets
-        // still go to the network either way, and blocking on `claim()`
-        // would just delay the viewer's init. localhost works without
-        // HTTPS; production needs to be served over https.
+        // Register before init so first-load fetches go through the cache.
+        // Don't await: blocking on claim() would just delay viewer init.
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.register('./sw.js').catch((e) => {
                 console.warn('[hive] SW registration failed:', e);
@@ -76,32 +50,20 @@ export class HiveApp {
         }
         this.viewer = new WhiteoutViewer(this.canvas);
         await this.viewer.init();
-        // Drive the progress bar from real fetch counts. The viewer
-        // fires `start` once per logical dep when it's queued and
-        // `end` when it resolves (success or failure), so the bar
-        // tracks completed/total across the initial spawn AND any
-        // runtime-discovered assets (corn-fx textures, etc.).
         this.viewer.setFetchHooks({
             start: () => this._bump(+1),
             end:   () => this._bump(-1),
         });
-        // Default background matches the first chip in Background (dark
-        // gray #3e3e3e on Hive). Keeps the canvas tone consistent with
-        // the sidebar before the user picks a swatch.
+        // Matches the first chip in the Background list.
         this.viewer.setBackground(0x3e, 0x3e, 0x3e);
         this._setActiveChip(this.bgSwatches, this.bgSwatches.firstElementChild);
 
-        // Install a persistent path solver so the viewer's rAF loop can
-        // fulfil lazily-discovered deps (corn_fx particle textures spawn
-        // when an emitter first fires, often well after load() returned).
-        // Same chain as the load-time solver: local dir first, CASC fallback.
+        // Persistent solver — covers deps the renderer surfaces lazily
+        // (corn-fx textures, child models) after load() returned.
         this.viewer.setPathSolver((name) => this._resolve(name));
 
-        // Web Audio bridge — listens for the C++ WebAudioSoundEmitter's
-        // EM_JS calls (`wfWebAudioPlayJS` etc.) and routes them to the
-        // browser's AudioContext. Uses the same pathSolver chain for
-        // sound asset fetch. Autoplay-policy gated: AudioContext is
-        // created on first pointerdown/keydown.
+        // Routes wfWebAudioPlay* EM_JS calls to the browser's AudioContext.
+        // Gated on first user gesture by browser autoplay policy.
         this.audio = new WebAudioBridge((name) => this._resolve(name));
         this.audio.install();
 
@@ -116,45 +78,36 @@ export class HiveApp {
             (e) => this._adoptFileList(e.target.files));
         this.camReset.addEventListener('click', (e) => {
             e.preventDefault();
-            // Reset row = "drop back to orbital free-camera with default
-            // FoV / clip" (same as desktop's ActivateCameraPreset(-1)).
-            // If we have a current instance, route through it so the
-            // facade knows which actor's preset slot to clear.
+            // -1 = clear preset slot, fall back to orbital free-camera.
             if (this.currentInstance) this.currentInstance.activateCameraPreset(-1);
             else this.viewer.resetCamera();
             this._setActiveChip(this.cameraList, this.camReset);
         });
         if (this.closeBtn) {
-            // Symbolic — there's no parent modal to close in the standalone
-            // page. Kept for visual parity with Hive's panel.
+            // Symbolic — no parent modal in the standalone page.
             this.closeBtn.addEventListener('click', () => {});
         }
-        // Volume slider — maps 0..100 → 0..1 and pushes to the Web Audio
-        // master gain via the bridge. Default value 50 ≈ comfortable preview
-        // level; updates live as the user drags.
         if (this.volSlider) {
             const apply = () => {
                 const v = (Number(this.volSlider.value) || 0) / 100;
                 if (this.audio) this.audio.setVolume(v);
             };
             this.volSlider.addEventListener('input', apply);
-            apply(); // seed master with the slider's default value
+            apply();
         }
         if (this.lightingSel) {
             const apply = () =>
                 this.viewer.setLightingMode(Number(this.lightingSel.value) | 0);
             this.lightingSel.addEventListener('change', apply);
-            apply(); // seed engine with the dropdown's default (In-game)
+            apply();
         }
         if (this.gridToggle) {
             const apply = () => this.viewer.setShowGrid(this.gridToggle.checked);
             this.gridToggle.addEventListener('change', apply);
-            apply(); // seed engine with the checkbox's default state
+            apply();
         }
         if (this.fpsReadout) {
-            // Refresh twice a second — the viewer maintains a smoothed dt
-            // EMA so the number is already stable; we just don't need to
-            // burn DOM updates at 60Hz.
+            // 2 Hz — the dt EMA is already smooth.
             setInterval(() => {
                 if (!this.viewer) return;
                 const fps = this.viewer.getFps();
@@ -163,15 +116,8 @@ export class HiveApp {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Loading progress bar — determinate fill driven by per-fetch hooks.
-    // _bump(+1) when a dep starts, _bump(-1) when it finishes (success
-    // OR failure). The bar advances at completed/started; when in-flight
-    // returns to zero the bar fades out and counters reset for the next
-    // load. New deps discovered mid-load (e.g. corn-fx textures the
-    // backend surfaces on first emitter prepare) just grow the
-    // denominator, then catch back up as they complete.
-    // ------------------------------------------------------------------
+    // Progress bar — _bump(+1) on dep queued, _bump(-1) on resolved.
+    // New deps surfacing mid-load grow the denominator.
     _bump(delta) {
         if (delta > 0) {
             this._started   = (this._started   || 0) + delta;
@@ -193,8 +139,8 @@ export class HiveApp {
             this.progress.style.setProperty('--pct', pct.toFixed(2) + '%');
         } else {
             this.progress.classList.remove('active');
-            // Defer reset until after the fade-out finishes so the bar
-            // doesn't visibly snap back to 0 before disappearing.
+            // Defer reset until the fade-out finishes, otherwise the
+            // bar snaps to 0 before disappearing.
             setTimeout(() => {
                 if (this._inflight === 0) {
                     this.progress.classList.remove('determinate');
@@ -205,17 +151,10 @@ export class HiveApp {
             }, 220);
         }
     }
-    // Back-compat shorthand for the few call sites in _selectModel that
-    // bracket non-fetch work (the MDX/spawn phase) with progress.
     _addInflight(n = 1) { this._bump(+n); }
     _subInflight(n = 1) { this._bump(-n); }
 
-    // ------------------------------------------------------------------
-    // Active-chip / active-row helper. Hive's CSS keys the highlighted
-    // state off the `.active` class on the chip / list item (not
-    // `.selected`); we follow the same convention so the stylesheet can
-    // share rules.
-    // ------------------------------------------------------------------
+    // Hive's CSS uses `.active`, not `.selected`.
     _setActiveChip(container, target) {
         if (!container) return;
         for (const el of container.querySelectorAll('.active'))
@@ -223,9 +162,6 @@ export class HiveApp {
         if (target) target.classList.add('active');
     }
 
-    // ------------------------------------------------------------------
-    // Directory picking + indexing.
-    // ------------------------------------------------------------------
     async _pickDirectory() {
         if (typeof window.showDirectoryPicker === 'function') {
             try {
@@ -236,11 +172,9 @@ export class HiveApp {
                 return;
             }
         } else {
-            // Firefox/Safari fallback — synthesise a click on the hidden
-            // <input webkitdirectory>, which gives us a FileList where each
-            // File has .webkitRelativePath set.
+            // Firefox/Safari fallback — webkitdirectory FileList.
             this.dirInput.click();
-            return; // _adoptFileList runs on the change event
+            return;
         }
         this._populateModels();
     }
@@ -274,7 +208,7 @@ export class HiveApp {
         const out = new Map();
         for (const f of files) {
             const rel = (f.webkitRelativePath || f.name).replaceAll('\\', '/');
-            // Strip the root-folder prefix the input always adds.
+            // Strip the root-folder prefix the input adds.
             const stripped = rel.includes('/') ? rel.substring(rel.indexOf('/') + 1) : rel;
             const norm = stripped.toLowerCase();
             const base = stripped.split('/').pop().toLowerCase();
@@ -299,9 +233,6 @@ export class HiveApp {
         list.sort((a, b) => a.name.localeCompare(b.name));
         this.models = list;
 
-        // Wipe previously-rendered model rows (everything except the
-        // pinned button / hidden input / empty placeholder, all of which
-        // we recreate or hide below).
         for (const a of [...this.modelList.querySelectorAll('a')]) a.remove();
         if (this.emptyModels) this.emptyModels.remove();
 
@@ -322,13 +253,9 @@ export class HiveApp {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Model selection / loading.
-    // ------------------------------------------------------------------
     async _selectModel(m, row) {
         this._setActiveChip(this.modelList, row);
 
-        // Tear down any previous instance/model before loading the next.
         if (this.currentInstance) {
             this.currentInstance.detach();
             this.currentInstance = null;
@@ -346,12 +273,7 @@ export class HiveApp {
             this.currentModel = model;
             this.currentInstance = model._instances[0];
             this.currentInstance.setTeamColor(this.currentTeamColor);
-            // Force every animation (including ones the MDX marked
-            // non-looping) to loop on the main actor — matches mdx-m3-
-            // viewer's default "always loop" behaviour for previews.
-            // mode 0 → `SetIgnoreNonLooping(true)` in wf_actor_set_loop_mode,
-            // which tells the renderer to wrap-around instead of clamping
-            // at the last frame for sequences with the nonLooping flag.
+            // mode 0 = SetIgnoreNonLooping(true) — preview ergonomics.
             this.currentInstance.setSequenceLoopMode(0);
             this._populateSequences();
             this._populateCameras();
@@ -362,16 +284,10 @@ export class HiveApp {
         }
     }
 
-    // PathSolver — fed to viewer.load. Returns one URL or a fallback
-    // chain of URLs:
-    //   1. Local picked-directory index — single blob URL on hit.
-    //   2. Direct Hive asset URL (skips the /casc-contents/ 302 — saves
-    //      a round-trip per asset for files in the HD tree).
-    //   3. Hive's `/casc-contents/?path=…` indirect lookup as the
-    //      backstop, which handles SD / locale / deprecated paths and
-    //      runs Blizzard's filealiases.json redirection table.
-    // wf-viewer's _fetchAndApplyAssetImpl iterates the chain in order
-    // and accepts the first response whose bytes apply cleanly.
+    // Returns one URL or a fallback chain:
+    //   1. Local picked-dir blob URL on hit.
+    //   2. Direct Hive asset URL (skips the /casc-contents/ 302).
+    //   3. /casc-contents/?path= backstop (handles SD/locale/aliases).
     async _resolve(name) {
         const norm = String(name).toLowerCase().replaceAll('\\', '/');
         const base = norm.split('/').pop();
@@ -384,11 +300,8 @@ export class HiveApp {
             this._objectUrls.push(url);
             return url;
         }
-        // Hive's CASC mirror stores PopcornFX particles under .pkb; asking
-        // for the .pkfx variant (which Reforged MDX particle emitters
-        // reference) falls into the server's pkfx/pkb/mdl/mdx model-family
-        // expansion and tends to substitute an unrelated .mdl/.mdx. Force
-        // .pkb on the wire so we always hit the canonical file directly.
+        // Hive's model-family expansion can substitute .mdl/.mdx for a
+        // .pkfx request; ask for .pkb directly to avoid that.
         let cascPath = norm;
         if (cascPath.endsWith('.pkfx')) {
             cascPath = cascPath.slice(0, -5) + '.pkb';
@@ -410,9 +323,6 @@ export class HiveApp {
         this._objectUrls.length = 0;
     }
 
-    // ------------------------------------------------------------------
-    // Sequences (Animations panel) — rebuilt on every model load.
-    // ------------------------------------------------------------------
     _clearAnimations() {
         if (!this.animList) return;
         this.animList.innerHTML = '';
@@ -437,17 +347,14 @@ export class HiveApp {
             this.animList.appendChild(a);
             if (idx === 0) firstRow = a;
         });
-        // Auto-play the first sequence so models don't render in T-pose.
+        // Avoid T-pose on load.
         this._selectSequence(0, firstRow);
     }
 
     _selectSequence(idx, row) {
         this._setActiveChip(this.animList, row);
         if (!this.currentInstance) return;
-        // Clear lingering splats before switching, the same way the
-        // desktop viewer does (tools/basic_viewer/viewer_ui.cpp:482) —
-        // skip the wipe for fade-out sequences ("decay" / "dissipate")
-        // so death-trail blood pools persist through their decay cycle.
+        // Keep death-trail splats through decay/dissipate cycles.
         const seqs = this.currentInstance.getSequences();
         const name = (seqs[idx] || '').toLowerCase();
         const keep = name.includes('decay') || name.includes('dissipate');
@@ -455,13 +362,9 @@ export class HiveApp {
         this.currentInstance.setSequence(idx);
     }
 
-    // ------------------------------------------------------------------
-    // Cameras panel. The Reset row is static (rendered in index.html);
-    // any per-model camera presets the renderer exposes get appended.
-    // ------------------------------------------------------------------
     _clearCameras() {
         if (!this.cameraList) return;
-        // Keep the static Reset row, drop everything after it.
+        // Keep the static Reset row.
         for (const a of [...this.cameraList.querySelectorAll('a')]) {
             if (a !== this.camReset) a.remove();
         }
@@ -469,8 +372,6 @@ export class HiveApp {
     _populateCameras() {
         if (!this.currentInstance) return;
         const presets = this.currentInstance.getCameraPresets();
-        // Default-active highlight goes on the Reset row when a fresh
-        // model loads (matches Hive's first-state of the panel).
         this._setActiveChip(this.cameraList, this.camReset);
         presets.forEach((name, idx) => {
             const a = document.createElement('a');
@@ -485,11 +386,6 @@ export class HiveApp {
         });
     }
 
-    // ------------------------------------------------------------------
-    // Team-color chips. Pre-rendered in index.html with
-    // `data-player-number` — we just attach click handlers that update
-    // the active outline + push the colour to every live instance.
-    // ------------------------------------------------------------------
     _wireTeamSwatches() {
         if (!this.teamSwatches) return;
         for (const chip of this.teamSwatches.querySelectorAll('.color-chip')) {
@@ -505,24 +401,14 @@ export class HiveApp {
                 this._setActiveChip(this.teamSwatches, chip);
             });
         }
-        // Reflect the default team color (Red, index 0) as the initial
-        // active chip — matches Hive's first-chip-highlighted state.
         const first = this.teamSwatches.querySelector('.color-chip[data-player-number="0"]');
         if (first) this._setActiveChip(this.teamSwatches, first);
     }
 
-    // ------------------------------------------------------------------
-    // Background chips. Same pre-rendered pattern as team colors, plus
-    // the `<input type="color">` custom-color picker (Hive's
-    // `color-chip--picker`). Picker uses the `change`/`input` event;
-    // chips use click.
-    // ------------------------------------------------------------------
     _wireBgSwatches() {
         if (!this.bgSwatches) return;
         for (const chip of this.bgSwatches.querySelectorAll('.color-chip')) {
-            // The custom-color picker is wired separately below — skip it
-            // here so we don't attach a click handler that would intercept
-            // the colour-picker pop-up.
+            // The <input type=color> picker is wired separately.
             if (chip.tagName === 'INPUT') continue;
             chip.addEventListener('click', (e) => {
                 e.preventDefault();
@@ -543,7 +429,6 @@ export class HiveApp {
     }
 
     _applyHexBg(hex) {
-        // hex is "#rrggbb" or "#rgb" — normalise to 8-bit components.
         let h = String(hex).trim();
         if (h.startsWith('#')) h = h.slice(1);
         if (h.length === 3) h = h.split('').map(c => c + c).join('');

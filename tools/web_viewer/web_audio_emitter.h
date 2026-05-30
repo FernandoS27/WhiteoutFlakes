@@ -1,10 +1,7 @@
 #pragma once
 
-// WebAudioSoundEmitter — ISoundEmitter that marshals every SND event to a
-// JS layer via EM_JS bridges. The JS layer (`web_audio.js`) owns the
-// AudioContext, PannerNode graph, asset fetch/decode, and autoplay-
-// gesture gating. The C++ side stays trivial: pick the random file from
-// the SndEntry, hand it off through `wfWebAudioPlay`, return.
+// ISoundEmitter that marshals SND events to web_audio.js via EM_JS.
+// JS side owns the AudioContext, fetch/decode, and gesture gating.
 
 #include "whiteout/flakes/sound_emitter.h"
 #include "whiteout/flakes/types.h"

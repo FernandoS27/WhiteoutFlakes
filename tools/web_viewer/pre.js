@@ -1,12 +1,6 @@
-// pre.js — prepended into the generated wf-core.js by Emscripten (--pre-js).
-//
-// Web Crypto's `crypto.getRandomValues` caps requests at 65,536 bytes per
-// spec, but Emscripten's libc startup asks for ~294 KB in a single call
-// during runtime init (a thread/stack guard seed buffer). Without this
-// patch the module throws QuotaExceededError from `initRandomFill`
-// before any user code runs. Chunk the call here, once, at module-script
-// evaluation time — before any of Emscripten's own JS can capture the
-// original `crypto.getRandomValues` into a hot path.
+// --pre-js into wf-core.js. Web Crypto caps getRandomValues at 64 KiB
+// but Emscripten libc init asks for ~294 KiB; chunk before any hot path
+// captures the original reference.
 (function () {
   if (typeof crypto === 'undefined' || crypto.__wfChunked) return;
   const MAX = 65536;

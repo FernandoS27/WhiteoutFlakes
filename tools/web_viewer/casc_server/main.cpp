@@ -1,24 +1,9 @@
-// ============================================================================
-// wf_casc_server — Crow-based dev server that imitates Hiveworkshop's
-// CASC-backed loose-file delivery for the WhiteoutFlakes web viewer.
+// Local stand-in for Hive's CASC delivery — serves /casc/<path> from a
+// local WC3 install plus /<static> from web-root. Single origin keeps
+// CORS out of the picture.
 //
-// Opens a local Warcraft III install via WhiteoutLib's casc::Storage and
-// serves bytes by path. The same server also fronts the static web/
-// directory so the viewer page, wf-core.{js,wasm}, prebuilt .bls shaders,
-// and CASC assets all come from one origin (no CORS preflight, no second
-// http.server).
-//
-// Routes:
-//   GET /casc/<path>   CASC readFile bytes (404 on miss)
-//   GET /              web-root/index.html
-//   GET /<file...>     web-root/<file...> (any depth)
-//
-// CLI:
-//   --wc3-dir <path>   required; WC3 install dir (containing .build.info)
-//   --port <n>         default 8080
-//   --web-root <dir>   default ./web (relative to cwd)
-//   --simulate-delays  throttle CASC responses to ~1s per MiB (latency sim)
-// ============================================================================
+// Routes: GET /casc/<path>, GET /, GET /<file...>
+// CLI: --wc3-dir <required> --port <8080> --web-root <./web> --simulate-delays
 
 #include <crow.h>
 
@@ -63,8 +48,7 @@ const char* MimeFor(std::string_view path) {
     if (IEndsWith(path, ".mp3"))                             return "audio/mpeg";
     if (IEndsWith(path, ".wav"))                             return "audio/wav";
     if (IEndsWith(path, ".ogg"))                             return "audio/ogg";
-    // MDX, BLP, DDS, TGA, TIF, BLS, MDL, SLK, TXT-ish — viewer treats them
-    // as ArrayBuffer regardless of Content-Type.
+    // Viewer reads everything else as ArrayBuffer.
     return "application/octet-stream";
 }
 
@@ -77,30 +61,23 @@ std::optional<std::vector<char>> ReadDiskFile(const fs::path& p) {
                              std::istreambuf_iterator<char>());
 }
 
-// WC3 Reforged uses TVFS root with three logical mods stacked. The same
-// table the desktop FileContentProvider uses (src/io/file_content_provider.cpp).
-// Order matters: _hd.w3mod overrides war3.w3mod for HD assets.
+// TVFS chain — _hd overrides war3.w3mod. Same stack as desktop's
+// FileContentProvider (src/io/file_content_provider.cpp).
 constexpr const char* kCascPrefixes[] = {
     "war3.w3mod:",
     "war3.w3mod:_hd.w3mod:",
     "war3.w3mod:_deprecated.w3mod:",
 };
 
-// Mod-name prefixes some renderer adapters (notably corn_fx) bake into
-// their relative paths, e.g. `_HD.w3mod/Textures/FX/...`. In TVFS chain
-// syntax the segment that names the mod is separated by `:`, not `\`, so
-// we need to flip it before joining with the base prefix.
+// corn_fx bakes mod-name prefixes into paths (`_HD.w3mod/...`).
+// Flip the trailing `\` to `:` so it slots into the TVFS chain.
 constexpr const char* kEmbeddedModPrefixes[] = {
     "_hd.w3mod\\",
     "_deprecated.w3mod\\",
 };
 
-// Mirror file_content_provider.cpp's NormalizeCascPath: forward → back-
-// slashes, lowercase, strip leading separators. Required because WC3's
-// CASC root manifest is keyed by Blizzard's native (backslash, lowercase)
-// shape. Additionally, if the path opens with a mod-name segment (corn_fx
-// produces these), convert the trailing `\` to `:` so it slots into the
-// TVFS chain instead of being read as a single leaf-path component.
+// Mirrors file_content_provider.cpp's NormalizeCascPath. WC3's CASC
+// keys are backslash + lowercase.
 std::string NormalizeCascPath(std::string_view in) {
     std::string out;
     out.reserve(in.size());
@@ -135,10 +112,7 @@ PrefixSpan ChoosePrefixes(std::string_view normPath) {
 }
 
 void AddCommonHeaders(crow::response& res, std::string_view contentType) {
-    // Open CORS for cross-origin embeds (the combined server's own origin
-    // wouldn't need it, but a host page that fetches casc/* from elsewhere
-    // would). no-store keeps dev iterations honest — we tear into wf-viewer.js
-    // a lot.
+    // CORS open + no-store for dev iteration.
     res.add_header("Access-Control-Allow-Origin", "*");
     res.add_header("Cache-Control", "no-store");
     res.add_header("Content-Type", std::string(contentType));
@@ -191,13 +165,8 @@ Args ParseArgs(int argc, char** argv) {
     return a;
 }
 
-// Locate a Warcraft III install via WhiteoutLib's cross-platform discovery
-// (Windows registry + Battle.net DB + Steam libraries, macOS /Applications,
-// Linux Wine prefixes + Proton compatdata). Prefers an install whose
-// `Data/` subdir exists — that's the one with a usable CASC archive —
-// falling back to any matching entry so the user gets a clearer Storage
-// error than "(empty path)". Mirrors the desktop FileContentProvider's
-// pick in src/io/file_content_provider.cpp.
+// Cross-platform WC3 install discovery. Prefer one with a Data/ dir
+// (matches src/io/file_content_provider.cpp).
 std::string AutoDiscoverWc3() {
     using whiteout::utils::BlizzardGame;
     auto games = whiteout::utils::findBlizzardGames();
@@ -230,8 +199,7 @@ int main(int argc, char** argv) {
                     args.wc3Dir.c_str());
     }
 
-    // Open one Storage at startup; the docs guarantee readFile is thread-safe
-    // (shared lock), so Crow's worker pool can hit it concurrently.
+    // Storage::readFile is thread-safe under Crow's worker pool.
     std::string err;
     auto storageOpt = Storage::open(args.wc3Dir, &err);
     if (!storageOpt) {
@@ -249,12 +217,7 @@ int main(int argc, char** argv) {
     crow::SimpleApp app;
     app.loglevel(crow::LogLevel::Warning);
 
-    // CASC bytes. Crow's `<path>` matcher captures everything after the
-    // prefix (including slashes), giving us the WC3-relative path verbatim.
-    // We walk the kCascPrefixes table — same shape the desktop provider
-    // uses — so an MDX reference like `units/human/footman/footman.mdx`
-    // resolves through `war3.w3mod:` and an HD-only asset finds its bytes
-    // under `war3.w3mod:_hd.w3mod:`.
+    // CASC route — walks kCascPrefixes the way the desktop provider does.
     const bool simulateDelays = args.simulateDelays;
     if (simulateDelays) {
         std::printf("[wf_casc_server] --simulate-delays ON: CASC responses "
@@ -277,8 +240,7 @@ int main(int argc, char** argv) {
             return res;
         }
         if (simulateDelays) {
-            // ~1s per MiB. Sleeps on the Crow worker thread; the pool is
-            // multithreaded so other requests keep flowing in parallel.
+            // ~1s/MiB; per-worker sleep, pool stays concurrent.
             const auto delayMs = static_cast<std::int64_t>(
                 (bytes->size() * 250ULL) / (1024ULL * 1024ULL));
             if (delayMs > 0)
@@ -307,8 +269,7 @@ int main(int argc, char** argv) {
         return res;
     });
 
-    // Static catch-all for everything else (wf-core.js/wasm, wf-viewer.js,
-    // shaders/, models/, ...). Path-traversal-rejected.
+    // Static catch-all with path-traversal rejection.
     CROW_ROUTE(app, "/<path>")
     ([webRoot](std::string relPath) {
         crow::response res;

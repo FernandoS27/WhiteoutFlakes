@@ -3,17 +3,11 @@
 <head>
 <meta charset="utf-8">
 <title>WhiteoutFlakes — Viewer</title>
-<!-- Warm up the TLS + HTTP/2 connection to Hive's CASC mirror before
-     wf-viewer.js starts firing asset fetches. Saves the handshake
-     round-trip on the first fetch (and lets every subsequent fetch
-     reuse the same multiplexed H2 connection). -->
+<!-- Warm the TLS+H2 connection before the first asset fetch. -->
 <link rel="preconnect" href="https://www.hiveworkshop.com" crossorigin>
 <style>
-  /* Mirrors hiveworkshop.com's `ratory_wc3model_preview` shell — XF
-     `block / block-container / block-header / block-body` stack on a
-     dark background, `color-chip` swatch grids, and Hive's specific
-     warm-gold list / cream-header palette. Progress bar is a green
-     strip at the top of the viewer container, matching Hive. */
+  /* Mirrors Hive's `ratory_wc3model_preview` shell — XF block stack,
+     color-chip swatches, warm-gold palette. */
   :root {
     --bg:               #0a0a0a;
     --bg-canvas:        #000;
@@ -39,9 +33,7 @@
   }
   body { display: grid; grid-template-rows: auto 1fr; height: 100vh; user-select: none; }
 
-  /* ---- Top bar: "View in 3D" title + volume + close. Hive embeds the
-         viewer inside the regular XF page chrome; this standalone keeps
-         the title so the embed shape reads the same. ---- */
+  /* Top bar — title + inline controls + close. */
   #topbar {
     display: flex; justify-content: space-between; align-items: center;
     padding: 8px 16px; background: var(--bg);
@@ -54,9 +46,7 @@
                     cursor: pointer; padding: 0 8px; }
   #topbar .close:hover { color: var(--title-text); }
 
-  /* Top-bar inline controls (lighting select, grid toggle, volume).
-     All share the same compact, muted styling so they sit unobtrusively
-     to the left of the close button. */
+  /* Compact muted styling for lighting/grid/volume controls. */
   #topbar .ctrl {
     display: flex; align-items: center; gap: 6px;
     color: var(--muted); font-size: 12px;
@@ -83,8 +73,7 @@
     text-align: right;
   }
 
-  /* Volume slider — native range with thumb restyled to a small neutral
-     disc, kept unobtrusive. */
+  /* Volume slider — restyled native range. */
   #vol-wrap {
     display: flex; align-items: center; gap: 8px;
     color: var(--muted); font-size: 12px;
@@ -112,8 +101,7 @@
     cursor: pointer;
   }
 
-  /* ---- Hive's `.ratory.model-viewer` root: canvas + sidebar + progress.
-         Sidebar fixed-width on the right, canvas grows to fill. ---- */
+  /* `.ratory.model-viewer` root — canvas grows, sidebar fixed-width. */
   .ratory.model-viewer {
     display: grid;
     grid-template-columns: 1fr 260px;
@@ -133,8 +121,7 @@
     padding: 0 0 14px;
   }
 
-  /* ---- XF-style block stack. Header is a cream/neutral title in a
-         slightly lighter strip above the body. ---- */
+  /* XF-style block stack. */
   .block { margin: 0 0 10px 0; }
   .block:first-child { margin-top: 0; }
   .block-container { background: var(--panel); }
@@ -148,8 +135,7 @@
   }
   .block-body { padding: 6px 12px; }
 
-  /* ---- Models / Animations / Cameras lists (Hive populates these JS-side
-         with bare children; we match that shape with <a> rows). ---- */
+  /* Models / Animations / Cameras lists — populated as <a> rows. */
   .block-body.models,
   .block-body.animations,
   .block-body.cameras {
@@ -184,8 +170,7 @@
     font-style: italic;
   }
 
-  /* ---- Open directory button — our addition (Hive's viewer pre-loads
-         models server-side; we let the user pick a local folder). ---- */
+  /* Open-directory button — picks a local folder. */
   #open-dir {
     display: block;
     margin: 6px 12px;
@@ -198,8 +183,7 @@
   #open-dir:hover  { background: var(--hover-bg); color: var(--text-bright); }
   #open-dir:active { background: rgba(255, 206, 64, 0.12); }
 
-  /* ---- color-chips. Square swatches in a tight grid — Hive uses 6×4 for
-         team colors, 6 + 1 picker for backgrounds. ---- */
+  /* color-chips — 6×4 team colors, 6+picker for backgrounds. */
   .block-body.color-chips {
     display: grid; gap: 3px;
     padding: 8px 12px;
@@ -223,11 +207,7 @@
   input.color-chip::-webkit-color-swatch        { border: none; }
   input.color-chip::-moz-color-swatch           { border: none; }
 
-  /* ---- Loading / progress bar. Hive shows the load progress as a thin
-         green bar at the top of the viewer container; we mirror that
-         placement. The wrapper is normally hidden (opacity 0); host JS
-         toggles `.active` to show it and writes `--pct` in determinate
-         mode (set together with `.determinate`). ---- */
+  /* Loading bar — hidden by default; .active shows it, --pct in determinate mode. */
   .progress {
     position: absolute;
     left: 0; right: 0; top: 0;
@@ -285,12 +265,7 @@
     <span id="close-btn" class="close" title="Close">×</span>
   </div>
 
-  <!--
-    `.ratory.model-viewer` root mirrors Hive's `ratory_wc3model_preview`
-    template (see hive.html line ~1870). Same DOM shape & class names
-    so the sidebar block stack reads identical to a Hive embed; only
-    addition is the "Open directory…" button inside the Models block.
-  -->
+  <!-- DOM mirrors Hive's ratory_wc3model_preview; extra Open-directory button. -->
   <div class="ratory model-viewer" id="viewer-root">
     <canvas id="wf-canvas"></canvas>
     <div class="progress" id="progress"><div></div></div>
@@ -377,9 +352,7 @@
   </div>
 
   <script>
-    // Web Crypto enforces a 65,536-byte cap on getRandomValues per call,
-    // but Emscripten's libc init asks for ~294 KB in one shot. Wrap before
-    // any module loads.
+    // Web Crypto's 64 KiB getRandomValues cap vs Emscripten's 294 KiB seed.
     (function () {
       const MAX = 65536;
       const native = crypto.getRandomValues.bind(crypto);
