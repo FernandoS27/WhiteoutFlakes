@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 
@@ -313,6 +314,14 @@ bool AssetManager::ApplyPrepared(AssetKind kind, std::string_view path,
             parsed = particleDispatch_.read(src, *arena, issues);
         }
         if (!parsed.has_value() || issues.hasFatal()) {
+            std::string detail;
+            for (const auto& iss : issues.view()) {
+                if (!detail.empty()) detail += " | ";
+                detail.append(iss.message.data(), iss.message.size());
+            }
+            std::fprintf(stderr, "[pkb] parse REJECTED %s: %s\n",
+                         norm.c_str(),
+                         detail.empty() ? "<no issues recorded>" : detail.c_str());
             std::lock_guard<std::mutex> lk(mu_);
             ++statApplyMisses_;
             return false;

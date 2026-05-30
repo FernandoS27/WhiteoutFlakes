@@ -382,6 +382,10 @@ bool ShadowView::IsValid() const {
 bool ShadowView::IsEnabled() const {
     return IsValid() && Svc(impl_).GetShadowService()->IsEnabled();
 }
+void ShadowView::SetEnabled(bool on) {
+    if (auto* s = Svc(impl_).GetShadowService())
+        s->SetEnabled(on);
+}
 ShadowParams ShadowView::Params() const {
     return IsValid() ? Svc(impl_).GetShadowService()->Params() : ShadowParams{};
 }

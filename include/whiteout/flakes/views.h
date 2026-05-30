@@ -318,6 +318,7 @@ class ShadowView {
 public:
     bool IsValid() const;
     bool IsEnabled() const;
+    void SetEnabled(bool on);
     ShadowParams Params() const;
     void SetParams(const ShadowParams&);
 

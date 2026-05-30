@@ -379,6 +379,26 @@ export class WhiteoutViewer {
         this.cascUrl = (path) =>
             'https://www.hiveworkshop.com/casc-contents/?path=' +
             encodeURIComponent(path);
+        // Direct-asset base for skipping Hive's /casc-contents/ 302
+        // redirect — saves a round-trip per asset for files that live
+        // under this prefix. Modern Reforged content is almost all HD,
+        // so default to the _hd.w3mod tree; SD-only files fall back to
+        // the `cascUrl` indirect lookup at +1 round-trip. Set to null
+        // on a local proxy that doesn't expose the direct asset layout.
+        this.cascDirectAssetBase =
+            'https://www.hiveworkshop.com/assets/wc3/war3.w3mod/_hd.w3mod/';
+        // Backing-buffer pixel ratio for the WebGPU surface. Defaults
+        // to the display's devicePixelRatio so rendering is sharp at
+        // native resolution. Firefox is the exception: its wgpu/naga
+        // pipeline produces noticeably slower per-fragment code than
+        // Chrome's Dawn/tint on the HD PBR shader, and full-DPR
+        // rendering pushes us into hard fragment-bound territory the
+        // moment a model fills the viewport (zoom-in drops to ~20 fps
+        // on hi-DPI displays). Cap at 1 there so we render at CSS
+        // resolution and the fragment count stays manageable.
+        // Override before init() to opt back in (`viewer.backingPixelRatio = devicePixelRatio`).
+        this.backingPixelRatio =
+            (navigator.userAgent.indexOf('Firefox/') >= 0) ? 1 : (window.devicePixelRatio || 1);
     }
 
     // Bring-up: await adapter+device, then instantiate the WASM module with
@@ -532,6 +552,16 @@ export class WhiteoutViewer {
         // A vivid color so the smoke test is obviously WASM-driven, not
         // a default-cleared canvas.
         this._module._wf_set_background(this._handle, 24, 56, 96); // moody blue
+
+        // Firefox's wgpu/naga produces fragment code for the HD IBL
+        // shader that's slow enough to make the 3-cascade per-pixel
+        // shadow sample dominate frame time on hi-DPI displays — drops
+        // to ~20 fps at zoom-in. Skip shadows there by default; users
+        // can re-enable via `viewer.setShadowsEnabled(true)` in the
+        // console if they prefer the shadow look over the framerate.
+        if (navigator.userAgent.indexOf('Firefox/') >= 0) {
+            this._module._wf_set_shadows_enabled(this._handle, 0);
+        }
         // Start in SD mode. Each successful load() probes the actor's
         // PreferredRenderMode (HD if any layer carries a non-zero BLS
         // shaderId) and flips the global setting accordingly. Driving the
@@ -553,6 +583,13 @@ export class WhiteoutViewer {
         // displayed number is stable across short hitches but still tracks
         // sustained changes. Polled by the host UI via `getFps()`.
         this._emaDt = 1 / 60;
+        // Per-phase frame timing — enable with `__hive.viewer.profileFrames = true`
+        // in the console. Logs `tick / render / rAF-gap` once per second
+        // so we can tell GPU-bound (record fast, rAF-gap big) from
+        // CPU-bound (record slow) at a glance. Off by default to avoid
+        // adding console noise to normal runs.
+        this.profileFrames = false;
+        this._profAccum = { ticks: 0, ticksMs: 0, renderMs: 0, gapMs: 0, last: 0 };
         this._loop = (now) => {
             if (!this._handle) return;
             const elapsed = now - this._lastTime;
@@ -562,14 +599,34 @@ export class WhiteoutViewer {
                 const k = 0.1; // ~10-frame smoothing
                 this._emaDt = this._emaDt * (1 - k) + dt * k;
             }
+            const prof = this.profileFrames;
+            const t0 = prof ? performance.now() : 0;
             this._module._wf_tick(this._handle, dt);
+            const t1 = prof ? performance.now() : 0;
             this._module._wf_render(this._handle);
+            const t2 = prof ? performance.now() : 0;
             this._raf = requestAnimationFrame(this._loop);
             // Pump the AssetManager needs queue. SpawnUnit + frame_ticker
             // both surface paths the renderer wants; we drain once per
             // frame and fire fetches in parallel. Covers Texture,
             // Particle (.pkb), and ChildModel kinds end-to-end.
             this._pumpAssetNeeds();
+            if (prof) {
+                const p = this._profAccum;
+                p.ticks += 1;
+                p.ticksMs += (t1 - t0);
+                p.renderMs += (t2 - t1);
+                p.gapMs += elapsed;
+                if (now - p.last >= 1000) {
+                    const n = Math.max(1, p.ticks);
+                    console.log('[wf-prof] tick=' + (p.ticksMs / n).toFixed(2)
+                        + ' ms  render=' + (p.renderMs / n).toFixed(2)
+                        + ' ms  rAF-gap=' + (p.gapMs / n).toFixed(2)
+                        + ' ms  (' + n + ' frames)');
+                    p.ticks = 0; p.ticksMs = 0; p.renderMs = 0; p.gapMs = 0;
+                    p.last = now;
+                }
+            }
         };
         this._raf = requestAnimationFrame(this._loop);
         return this;
@@ -643,51 +700,47 @@ export class WhiteoutViewer {
 
     async _fetchAndApplyAssetImpl(pathSolver, kind, relPath) {
         const fwd = relPath.replaceAll('\\', '/');
-        const slash = fwd.lastIndexOf('/');
         const dot = fwd.lastIndexOf('.');
-        const stemFull = dot > 0 ? fwd.slice(0, dot) : fwd;
-        const stemBase = slash >= 0 ? stemFull.slice(slash + 1) : stemFull;
-        const origExt  = dot > 0 ? fwd.slice(dot).toLowerCase() : '';
+        const origExt = dot > 0 ? fwd.slice(dot).toLowerCase() : '';
 
-        // Extension synonyms by kind. Texture slots route freely between
-        // .blp / .dds / .tga / .png / .tif (the renderer's adapter doesn't
-        // care which format the server serves). Particle (.pkb) often
-        // ships as .pkfx in newer Reforged builds — try both. Model
-        // synonyms cover .mdx ↔ .mdl.
+        // Same-family validation — accept response bytes only when the
+        // final URL's extension still belongs to the kind-family we
+        // asked for. Hive's CASC mirror groups pkfx/pkb/mdl/mdx as a
+        // single "model" family server-side, so a request for .mdx
+        // can 302 to a .pkb (or vice versa). Without this check the
+        // wrong-format bytes would get applied to a ChildModel slot.
         const TEX = ['.blp', '.dds', '.tga', '.png', '.tif'];
         const MDL = ['.mdx', '.mdl'];
-        // PKB before PKFX regardless of which one was asked for: Hive's
-        // CASC API lumps pkfx/pkb/mdl/mdx into one "model" family, so a
-        // request for foo.pkfx whose file isn't on disk may be silently
-        // substituted with foo.mdl. By asking for the .pkb first we hit
-        // the format Hive's mirror actually stores.
         const PRT = ['.pkb', '.pkfx'];
-        let exts, family;
-        if (TEX.includes(origExt))      { exts = [origExt, ...TEX.filter(e => e !== origExt)]; family = TEX; }
-        else if (MDL.includes(origExt)) { exts = [origExt, ...MDL.filter(e => e !== origExt)]; family = MDL; }
-        else if (PRT.includes(origExt)) { exts = PRT.slice();                                  family = PRT; }
-        else                            { exts = [origExt];                                    family = [origExt]; }
+        let family;
+        if (TEX.includes(origExt))      family = TEX;
+        else if (MDL.includes(origExt)) family = MDL;
+        else if (PRT.includes(origExt)) family = PRT;
+        else                            family = [origExt];
 
-        const stems = [stemFull, stemBase].filter((s, i, a) => a.indexOf(s) === i);
-
-        for (const stem of stems) {
-            for (const ext of exts) {
-                const candName = stem + ext;
-                let url;
-                try { url = await Promise.resolve(pathSolver(candName)); }
-                catch (_) { continue; }
+        // Single-candidate request — we used to walk every alt extension
+        // in the family (.blp → .dds → .tga, .pkb → .pkfx, etc.) but
+        // Hive's CASC API does the same-family expansion server-side, so
+        // the second through Nth candidates were either redundant cache
+        // hits or wasted 404 round-trips. Ask for the canonical ext the
+        // renderer surfaced (after any host-side .pkfx → .pkb rewrite)
+        // exactly once.
+        //
+        // The pathSolver may return a single URL or an array of URLs
+        // forming a fallback chain (e.g. direct asset URL first, the
+        // /casc-contents/ indirect lookup as backup). We try each in
+        // order until one fetches + applies.
+        let urls;
+        try { urls = await Promise.resolve(pathSolver(relPath)); }
+        catch (_) { urls = null; }
+        if (urls) {
+            if (!Array.isArray(urls)) urls = [urls];
+            for (const url of urls) {
                 if (!url) continue;
                 try {
                     const r = await fetch(url);
                     if (!r.ok) continue;
-                    // Hive's CASC mirror groups pkfx/pkb/mdl/mdx as one
-                    // "model" family server-side, so a request for .mdx
-                    // can 302 to a .pkb (or vice versa). The bytes would
-                    // then be applied to the wrong slot kind. Detect the
-                    // crossover by looking at the final URL's extension
-                    // after redirects, and reject if Hive jumped outside
-                    // OUR family (which keeps PRT and MDL separate).
-                    let servedExt = ext;
+                    let servedExt = origExt;
                     try {
                         const finalPath = new URL(r.url).pathname.toLowerCase();
                         const fdot = finalPath.lastIndexOf('.');
@@ -697,13 +750,20 @@ export class WhiteoutViewer {
                     const bytes = new Uint8Array(await r.arrayBuffer());
                     const applied = this._applyAsset(kind, relPath, bytes, servedExt);
                     if (applied) return true;
-                    // Apply rejected — decode failed. Try next candidate
-                    // rather than declaring success on bad bytes.
+                    // Apply rejected — decode failed. Log enough to tell
+                    // a stale-version PKB (magic 11 0B 00 + rejected
+                    // version byte) apart from un-decompressed zstd
+                    // (magic 28 B5 2F FD) apart from accidental
+                    // HTML/text. Then try the next fallback URL.
+                    const kindNameRej = ['Texture', 'Particle', 'ChildModel'][kind] || ('k=' + kind);
+                    const hex = Array.from(bytes.slice(0, 8))
+                        .map(b => b.toString(16).padStart(2, '0')).join(' ');
+                    console.warn('[wf] apply REJECTED (' + kindNameRej + ', ' + bytes.byteLength
+                        + ' bytes, served as ' + servedExt + ', head=' + hex + '): '
+                        + relPath + ' (from ' + r.url + ')');
                 } catch (_) { /* try next */ }
             }
         }
-        // Log kind so it's easier to triage Texture vs Particle vs
-        // ChildModel misses against the on-disk content layout.
         const kindName = ['Texture', 'Particle', 'ChildModel'][kind] || ('k=' + kind);
         console.warn('[wf] asset MISS (' + kindName + ', all candidates failed): ' + relPath);
         return false;
@@ -734,9 +794,11 @@ export class WhiteoutViewer {
         this._module._wf_resize(this._handle, w, h);
     }
 
-    // Compute the canvas's backing-buffer size: CSS box × devicePixelRatio.
+    // Compute the canvas's backing-buffer size: CSS box × backingPixelRatio.
+    // backingPixelRatio defaults to devicePixelRatio (Chrome) or 1 (Firefox);
+    // see the constructor for the rationale.
     _computeBackingSize() {
-        const dpr = window.devicePixelRatio || 1;
+        const dpr = this.backingPixelRatio || 1;
         const cssW = this.canvas.clientWidth || this.canvas.width || 800;
         const cssH = this.canvas.clientHeight || this.canvas.height || 600;
         return {
@@ -757,6 +819,15 @@ export class WhiteoutViewer {
 
     setShowGrid(on) {
         if (this._handle) this._module._wf_set_show_grid(this._handle, on ? 1 : 0);
+    }
+
+    // Cascade-shadow rendering on/off. Default-on; defaulted off on
+    // Firefox during init() because the 3-cascade per-pixel sample in
+    // the HD IBL fragment body costs disproportionately more under
+    // wgpu/naga than under Chrome's Dawn/tint and tips the renderer
+    // into GPU-bound territory at zoom-in on HD models.
+    setShadowsEnabled(on) {
+        if (this._handle) this._module._wf_set_shadows_enabled(this._handle, on ? 1 : 0);
     }
 
     // Live GPU bytes currently allocated by the WebGPU backend (sum of

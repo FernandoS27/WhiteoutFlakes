@@ -61,6 +61,19 @@ export class HiveApp {
     }
 
     async start() {
+        // Register the persistent-cache SW BEFORE the viewer kicks off
+        // its prefetch — once it's active, every Hive request the page
+        // (and the SW-controlled web_audio bridge) makes can short-
+        // circuit to CacheStorage on repeat loads. We don't await the
+        // service worker becoming active because first-load assets
+        // still go to the network either way, and blocking on `claim()`
+        // would just delay the viewer's init. localhost works without
+        // HTTPS; production needs to be served over https.
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('./sw.js').catch((e) => {
+                console.warn('[hive] SW registration failed:', e);
+            });
+        }
         this.viewer = new WhiteoutViewer(this.canvas);
         await this.viewer.init();
         // Drive the progress bar from real fetch counts. The viewer
@@ -349,15 +362,16 @@ export class HiveApp {
         }
     }
 
-    // PathSolver — fed to viewer.load. Returns a URL for the asset:
-    //   1. Local picked-directory index (full path then basename).
-    //   2. `viewer.cascUrl(path)` — Hiveworkshop's CASC mirror by default
-    //      (CORS-enabled, server-side ext synonyms + alias expansion);
-    //      can be retargeted to a local wf_casc_server by overriding
-    //      `viewer.cascUrl` before init().
-    // The C++ FetchContentProvider walks extension synonyms (.tif↔.dds↔.blp)
-    // and calls this solver once per candidate, so we don't need to do
-    // synonym chasing here — only one path at a time.
+    // PathSolver — fed to viewer.load. Returns one URL or a fallback
+    // chain of URLs:
+    //   1. Local picked-directory index — single blob URL on hit.
+    //   2. Direct Hive asset URL (skips the /casc-contents/ 302 — saves
+    //      a round-trip per asset for files in the HD tree).
+    //   3. Hive's `/casc-contents/?path=…` indirect lookup as the
+    //      backstop, which handles SD / locale / deprecated paths and
+    //      runs Blizzard's filealiases.json redirection table.
+    // wf-viewer's _fetchAndApplyAssetImpl iterates the chain in order
+    // and accepts the first response whose bytes apply cleanly.
     async _resolve(name) {
         const norm = String(name).toLowerCase().replaceAll('\\', '/');
         const base = norm.split('/').pop();
@@ -379,7 +393,14 @@ export class HiveApp {
         if (cascPath.endsWith('.pkfx')) {
             cascPath = cascPath.slice(0, -5) + '.pkb';
         }
-        return this.viewer.cascUrl(cascPath);
+        const chain = [];
+        if (this.viewer.cascDirectAssetBase) {
+            // Preserve directory slashes; encodeURIComponent eats them.
+            const encoded = cascPath.split('/').map(encodeURIComponent).join('/');
+            chain.push(this.viewer.cascDirectAssetBase + encoded);
+        }
+        chain.push(this.viewer.cascUrl(cascPath));
+        return chain;
     }
 
     _revokeObjectUrls() {

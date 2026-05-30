@@ -325,6 +325,17 @@ void wf_set_show_grid(WfRenderer* h, int on) {
     h->renderer.Settings().SetDisplayFlags(df);
 }
 
+// Cascade shadow rendering on/off. Surfacing this so the web host can
+// disable shadows on backends where the per-pixel shadow-cascade
+// sampling is disproportionately expensive (Firefox's wgpu/naga emits
+// notably slower fragment code than Chrome's Dawn/tint on the HD PBR
+// shader, and the 3-cascade sample inside the IBL body is one of the
+// hottest pieces per fragment).
+void wf_set_shadows_enabled(WfRenderer* h, int on) {
+    if (!h) return;
+    h->renderer.Shadow().SetEnabled(on != 0);
+}
+
 // ----------------------------------------------------------------------------
 // Camera — orbital controls forwarded from JS pointer/wheel events.
 // CameraView already implements orbit math; we just hand it deltas.

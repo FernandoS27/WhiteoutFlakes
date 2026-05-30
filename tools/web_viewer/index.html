@@ -3,6 +3,11 @@
 <head>
 <meta charset="utf-8">
 <title>WhiteoutFlakes — Viewer</title>
+<!-- Warm up the TLS + HTTP/2 connection to Hive's CASC mirror before
+     wf-viewer.js starts firing asset fetches. Saves the handshake
+     round-trip on the first fetch (and lets every subsequent fetch
+     reuse the same multiplexed H2 connection). -->
+<link rel="preconnect" href="https://www.hiveworkshop.com" crossorigin>
 <style>
   /* Mirrors hiveworkshop.com's `ratory_wc3model_preview` shell — XF
      `block / block-container / block-header / block-body` stack on a

@@ -68,6 +68,8 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/hive_app.js"
                "${CMAKE_BINARY_DIR}/web/hive_app.js"  COPYONLY)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/index.html"
                "${CMAKE_BINARY_DIR}/web/index.html"   COPYONLY)
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/sw.js"
+               "${CMAKE_BINARY_DIR}/web/sw.js"        COPYONLY)
 
 # Stage the WGSL .bls shader bundles next to the served wasm so the JS
 # facade can fetch them from `./shaders/webgpu/...` before wf_init runs.
