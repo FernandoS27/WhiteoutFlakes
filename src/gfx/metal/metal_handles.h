@@ -144,8 +144,36 @@ struct ShaderEntry {
     std::vector<VertexAttr> declaredVertexAttrs;
 };
 
+// Default threadgroup size for compute pipelines until ComputePipelineDesc
+// gains an explicit field for it (Phase H or whenever a second compute
+// shader lands). The only compute consumer today is the framebuffer
+// capture kernel — its slang source declares `[numthreads(8, 8, 1)]`,
+// which slang's Metal emit drops on the floor (the metallib doesn't
+// carry the size as something the runtime can query). Picking (8, 8, 1)
+// here matches the implicit divisor the renderer uses in
+// frame_capture.cpp: `Dispatch((w + 7) / 8, (h + 7) / 8, 1)`.
+inline constexpr u32 kDefaultComputeThreadsX = 8;
+inline constexpr u32 kDefaultComputeThreadsY = 8;
+inline constexpr u32 kDefaultComputeThreadsZ = 1;
+
 struct PipelineEntry {
+    // Metal validates a PSO's attachment formats strictly against the
+    // active render pass: a PSO whose depthAttachmentPixelFormat is set
+    // can ONLY be bound inside a pass that has a depth attachment, and
+    // vice versa. The renderer doesn't track per-pass attachment shape
+    // for the BindPipeline path — it just sets a single dsvFormat on
+    // every PSO it builds and binds it everywhere. We bridge that by
+    // building two PSO variants on every PSO that wants depth: one
+    // depth-aware, one color-only. At BindPipeline time the command
+    // list picks the matching variant based on whether the active
+    // render encoder has a depth attachment.
+    //
+    // `graphics` is the depth-having variant (or the only variant for
+    // color-only PSOs). `graphicsColorOnly` is the variant with depth
+    // attachment format forced to MTLPixelFormatInvalid; nil when the
+    // PSO has no depth format to begin with.
     id<MTLRenderPipelineState> graphics = nil;
+    id<MTLRenderPipelineState> graphicsColorOnly = nil;
     id<MTLComputePipelineState> compute = nil;
     id<MTLDepthStencilState> depthStencil = nil;
     bool isCompute = false;
@@ -163,6 +191,16 @@ struct PipelineEntry {
     // vertex attribute had a matching InputLayout entry. Indices are
     // raw Metal buffer indices (kPhantomVertexBufferIndexBase + i).
     std::vector<u32> phantomBufferIndices;
+
+    // Threads per threadgroup for compute PSOs. Defaults to
+    // (kDefaultComputeThreadsX, …Y, …Z) — see the constants above for
+    // the "where did 8x8x1 come from" rationale. Renderer-side
+    // Dispatch(gx, gy, gz) passes threadgroup counts; we multiply by
+    // this to get per-axis thread counts for Metal's
+    // dispatchThreadgroups:threadsPerThreadgroup:.
+    u32 computeThreadsX = kDefaultComputeThreadsX;
+    u32 computeThreadsY = kDefaultComputeThreadsY;
+    u32 computeThreadsZ = kDefaultComputeThreadsZ;
 };
 
 struct SamplerEntry {
@@ -189,6 +227,10 @@ struct FrameContext {
     id<MTLBlitCommandEncoder> blitEncoder = nil;
     DeleteEpoch epoch = 0;
     bool recording = false;
+    // Whether the active render pass has a depth/stencil attachment. Set
+    // by BeginRenderPass; read by BindPipeline to pick the depth-aware
+    // vs color-only PSO variant. See PipelineEntry::graphicsColorOnly.
+    bool passHasDepth = false;
 };
 
 struct PendingDelete {

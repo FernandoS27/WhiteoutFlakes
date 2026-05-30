@@ -130,6 +130,15 @@ bool MetalDevice::Init(bool enableValidation) {
                 state.zeroVertexBuffer.label = @"wf.zeroVB";
         }
 
+        // Frame pacing comes from [CAMetalLayer nextDrawable] in
+        // AcquireSwapChainImageIfNeeded (the layer's drawable queue
+        // is capped at kFramesInFlight by CreateSwapChain). An earlier
+        // dispatch_semaphore-based wait in EnsureFrameOpen deadlocked
+        // because EnsureFrameOpen is also called by CopyBuffer /
+        // ClearDepth on paths that don't always pair with a Present —
+        // over-acquired and never got the matching signal.
+        state.frameBoundarySem = nil;
+
         deviceName_ = [[dev name] UTF8String];
 
         std::fprintf(stderr, "[gfx/metal] device='%s' unified=%d low-power=%d\n",

@@ -1176,6 +1176,19 @@ void RenderPipeline::CleanupGFX() {
 
         rs_.Debug().DestroyResources();
 
+        // Tear down CornEffects FIRST — its emitters hold references
+        // into the AssetManager (assets_.Release(assetSlot_) in
+        // ~CornEffectsEmitter) and into the gfx device (via each
+        // emitter's CornEffectsGfxBackend). ResetDeviceAssetManagers
+        // below destroys the AssetManager; leaving the emitters alive
+        // past that point would leave their dtors calling into a
+        // destroyed AssetManager (mutex EINVAL → std::system_error →
+        // std::terminate). Tested under MTL_DEBUG_LAYER=1 — the prior
+        // order surfaced as a hard crash on shutdown on the Metal
+        // backend; Vulkan happened to alias the freed memory in a way
+        // that avoided the throw but the UAF was still there.
+        rs_.CornEffects().Clear();
+
         rs_.ResetDeviceAssetManagers();
 
         // CornEffects owns shared VB/IB/CBs — release before the device

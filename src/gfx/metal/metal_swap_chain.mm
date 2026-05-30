@@ -155,6 +155,15 @@ SwapChainHandle MetalDevice::CreateSwapChain(void* nativeWindowHandle, i32 width
         // to matter.
         layer.framebufferOnly = NO;
         layer.drawableSize = CGSizeMake(width, height);
+        // Vsync the drawable queue. Without this, [layer nextDrawable]
+        // returns immediately and the CPU runs unbounded (cornflakes
+        // simulation pegs a core while waiting for nothing). Apple's
+        // default is YES on a hosted-by-Cocoa CAMetalLayer but we set
+        // it explicitly so the contract is visible. maximumDrawableCount
+        // is what makes nextDrawable block once kFramesInFlight
+        // drawables are in flight — that's the actual frame pacing.
+        layer.displaySyncEnabled = YES;
+        layer.maximumDrawableCount = kFramesInFlight;
 
         SwapChainEntry sc;
         sc.layer = layer;

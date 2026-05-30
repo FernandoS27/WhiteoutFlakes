@@ -378,6 +378,22 @@ PipelineHandle MetalDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
             std::vector<u32> suppliedAttrIndices;
             suppliedAttrIndices.reserve(desc.inputLayout.size());
 
+            // Slang's Metal emit assigns [[attribute(N)]] to each VS
+            // input struct field where N is the HLSL semantic index
+            // (e.g. ATTR3 → [[attribute(3)]]). The MTLVertexDescriptor
+            // attribute slot index MUST match that, NOT the InputLayout
+            // array order — otherwise the engine's "ATTR7 → tangent at
+            // inputSlot 1" lands on vd.attributes[<some other index>]
+            // and the shader's [[attribute(7)]] reads from a phantom
+            // zero buffer instead. Mirrors webgpu_pipeline.cpp's
+            // shaderLocation = el.semanticIndex pattern.
+            auto attrIndexFor = [](const InputElement& el, u32 fallback) -> u32 {
+                const char* s = el.semantic;
+                const bool isAttr = s && s[0] == 'A' && s[1] == 'T' &&
+                                    s[2] == 'T' && s[3] == 'R' && s[4] == '\0';
+                return isAttr ? el.semanticIndex : fallback;
+            };
+
             for (u32 i = 0; i < desc.inputLayout.size(); ++i) {
                 const auto& el = desc.inputLayout[i];
                 if (el.inputSlot >= kMaxVertexBufferSlots)
@@ -387,11 +403,12 @@ PipelineHandle MetalDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
                 slotStride[el.inputSlot] =
                     std::max<u32>(slotStride[el.inputSlot], el.offset + elemSize);
 
-                MTLVertexAttributeDescriptor* a = vd.attributes[i];
+                const u32 attrIdx = attrIndexFor(el, i);
+                MTLVertexAttributeDescriptor* a = vd.attributes[attrIdx];
                 a.format = ToMtlVertexFormat(el.format);
                 a.offset = el.offset;
                 a.bufferIndex = kVertexBufferIndexBase + el.inputSlot;
-                suppliedAttrIndices.push_back(i);
+                suppliedAttrIndices.push_back(attrIdx);
             }
             for (u32 s = 0; s < kMaxVertexBufferSlots; ++s) {
                 if (!slotUsed[s])
@@ -491,6 +508,35 @@ PipelineHandle MetalDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
             return PipelineHandle::Invalid;
         }
 
+        // Color-only variant: same descriptor with depth/stencil
+        // attachment formats cleared. Built lazily — only when the
+        // primary variant declares a depth format (otherwise the
+        // primary variant IS the color-only variant and no second
+        // build is needed). Metal's strict format match between PSO
+        // and render pass means a pass with no depth attachment can
+        // only consume a PSO whose depth attachment format is
+        // Invalid; the renderer happily binds the same PSO into both
+        // pass types, so we keep two ready.
+        id<MTLRenderPipelineState> psoColorOnly = nil;
+        if (depthFmt != MTLPixelFormatInvalid) {
+            rpd.depthAttachmentPixelFormat = MTLPixelFormatInvalid;
+            rpd.stencilAttachmentPixelFormat = MTLPixelFormatInvalid;
+            if (state.validationRequested)
+                rpd.label = @"wf.pso.color-only";
+            NSError* err2 = nil;
+            psoColorOnly =
+                [state.device newRenderPipelineStateWithDescriptor:rpd error:&err2];
+            if (!psoColorOnly) {
+                std::fprintf(stderr,
+                    "[gfx/metal] color-only PSO variant build failed: %s\n",
+                    err2 ? [[err2 localizedDescription] UTF8String] : "(no error)");
+                // Non-fatal — the depth-aware PSO is still usable for depth
+                // passes. Binding it inside a color-only pass will hit the
+                // same validation error we were trying to avoid, but the
+                // depth-pass path is unaffected.
+            }
+        }
+
         // ---- Depth-stencil state (separate Metal object) ----
         id<MTLDepthStencilState> dss = nil;
         if (depthFmt != MTLPixelFormatInvalid) {
@@ -505,6 +551,7 @@ PipelineHandle MetalDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
 
         PipelineEntry entry;
         entry.graphics = pso;
+        entry.graphicsColorOnly = psoColorOnly;
         entry.depthStencil = dss;
         entry.isCompute = false;
         entry.colorFormat = colorFmt;
@@ -523,9 +570,41 @@ PipelineHandle MetalDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
     }
 }
 
-PipelineHandle MetalDevice::CreateComputePipeline(const ComputePipelineDesc&) {
-    // Compute lands in Phase G.
-    return PipelineHandle::Invalid;
+PipelineHandle MetalDevice::CreateComputePipeline(const ComputePipelineDesc& desc) {
+    @autoreleasepool {
+        auto& state = *state_;
+
+        auto* cs = state.shaders.Get(static_cast<u64>(desc.cs));
+        if (!cs || !cs->function) {
+            std::fprintf(stderr, "[gfx/metal] CreateComputePipeline: missing CS\n");
+            return PipelineHandle::Invalid;
+        }
+
+        // Compute PSO is essentially just the kernel MTLFunction wrapped
+        // by Metal — no descriptors / attachments / vertex shape, unlike
+        // the graphics path. The threadgroup size travels separately
+        // (PipelineEntry::computeThreads{X,Y,Z}); see the constants in
+        // metal_handles.h for why the default is (8,8,1).
+        NSError* err = nil;
+        id<MTLComputePipelineState> pso =
+            [state.device newComputePipelineStateWithFunction:cs->function error:&err];
+        if (!pso) {
+            std::fprintf(stderr,
+                "[gfx/metal] newComputePipelineState failed: %s\n",
+                err ? [[err localizedDescription] UTF8String] : "(no error info)");
+            return PipelineHandle::Invalid;
+        }
+
+        PipelineEntry entry;
+        entry.compute = pso;
+        entry.isCompute = true;
+        // Defaults (8,8,1) — see kDefaultComputeThreads* docstring.
+        entry.computeThreadsX = kDefaultComputeThreadsX;
+        entry.computeThreadsY = kDefaultComputeThreadsY;
+        entry.computeThreadsZ = kDefaultComputeThreadsZ;
+
+        return static_cast<PipelineHandle>(state.pipelines.Insert(std::move(entry)));
+    }
 }
 
 void MetalDevice::Destroy(PipelineHandle h) {
@@ -538,14 +617,16 @@ void MetalDevice::Destroy(PipelineHandle h) {
 
     const u64 retireAfter = state.pendingEpoch + 1;
     id<MTLRenderPipelineState> gfx = moved.graphics;
+    id<MTLRenderPipelineState> gfxColorOnly = moved.graphicsColorOnly;
     id<MTLComputePipelineState> comp = moved.compute;
     id<MTLDepthStencilState> dss = moved.depthStencil;
     {
         std::lock_guard<std::mutex> lock(state.pendingDeletesMutex);
         state.pendingDeletes.push_back(PendingDelete{
             retireAfter,
-            [gfx, comp, dss]() {
+            [gfx, gfxColorOnly, comp, dss]() {
                 (void)gfx;
+                (void)gfxColorOnly;
                 (void)comp;
                 (void)dss;
             },

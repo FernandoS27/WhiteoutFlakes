@@ -39,6 +39,14 @@ namespace {
 FrameContext& EnsureFrameOpen(MetalDeviceState& state) {
     auto& frame = state.frames[state.currentFrame];
     if (!frame.commandBuffer) {
+        // No frame-pacing wait here. EnsureFrameOpen is called from
+        // BeginRenderPass *and* from CopyBuffer / ClearDepth, the
+        // latter possibly before any Present has run that frame. A
+        // dispatch_semaphore wait here would over-acquire (wait twice
+        // in a single logical frame) and deadlock once nobody signals
+        // in time. Pacing comes from [CAMetalLayer nextDrawable] in
+        // AcquireSwapChainImageIfNeeded, which blocks on the layer's
+        // drawable queue (maximumDrawableCount = kFramesInFlight).
         DrainPendingDeletes(state);
         frame.commandBuffer = [state.commandQueue commandBuffer];
         if (state.validationRequested && frame.commandBuffer)
@@ -99,6 +107,19 @@ void MetalCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
 
         FrameContext& frame = EnsureFrameOpen(state);
 
+        // Metal forbids render + compute encoders living on the same
+        // command buffer at the same time. Close any prior compute /
+        // blit encoder so the new render encoder can open cleanly.
+        // This mirrors what Present does at frame-end.
+        if (frame.computeEncoder) {
+            [frame.computeEncoder endEncoding];
+            frame.computeEncoder = nil;
+        }
+        if (frame.blitEncoder) {
+            [frame.blitEncoder endEncoding];
+            frame.blitEncoder = nil;
+        }
+
         MTLRenderPassDescriptor* rpd = [MTLRenderPassDescriptor renderPassDescriptor];
         MTLRenderPassColorAttachmentDescriptor* ca = rpd.colorAttachments[0];
         ca.texture = colorTex->texture;
@@ -107,6 +128,7 @@ void MetalCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
         ca.clearColor =
             MTLClearColorMake(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
 
+        frame.passHasDepth = false;
         if (auto* depthTex = state.textures.Get(static_cast<u64>(depth))) {
             if (depthTex->texture) {
                 rpd.depthAttachment.texture = depthTex->texture;
@@ -119,6 +141,7 @@ void MetalCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
                     rpd.stencilAttachment.storeAction = MTLStoreActionStore;
                     rpd.stencilAttachment.clearStencil = clearStencil;
                 }
+                frame.passHasDepth = true;
             }
         }
 
@@ -188,20 +211,60 @@ void MetalCommandList::SetScissor(const Scissor& sc) {
 
 void MetalCommandList::BindPipeline(PipelineHandle h) {
     lastBoundPipeline_ = h;
-    // Apply immediately (cheap on Metal — it's one ObjC call). Draw
-    // doesn't need to re-issue. The encoder still requires a fresh
-    // setRenderPipelineState every pass because pass state doesn't
-    // carry across encoders; FlushBindings re-applies on first Draw of
-    // a pass via the same lastBoundPipeline_ check.
     auto& state = device_.State();
     FrameContext& frame = state.frames[state.currentFrame];
+    auto* pso = state.pipelines.Get(static_cast<u64>(h));
+    if (!pso)
+        return;
+
+    // Compute PSO: the renderer binds it without a prior BeginRenderPass.
+    // Apply via the compute encoder (created lazily here if no render
+    // pass is active). Draw/Dispatch don't auto-issue setComputePipelineState,
+    // so we set it here. Bind* and FlushBindings still record state into
+    // pendingCBs_/pendingSRVs_ which Dispatch flushes through
+    // setBuffer:offset:atIndex / setTexture:atIndex / setSamplerState:atIndex
+    // on the compute encoder.
+    if (pso->isCompute) {
+        if (frame.renderEncoder) {
+            [frame.renderEncoder endEncoding];
+            frame.renderEncoder = nil;
+        }
+        EnsureFrameOpen(state);
+        if (!frame.computeEncoder) {
+            frame.computeEncoder = [frame.commandBuffer computeCommandEncoder];
+            if (state.validationRequested && frame.computeEncoder)
+                frame.computeEncoder.label = @"wf.cs";
+        }
+        if (pso->compute && frame.computeEncoder)
+            [frame.computeEncoder setComputePipelineState:pso->compute];
+        return;
+    }
+
+    // Graphics PSO. Apply immediately (cheap on Metal — it's one ObjC
+    // call). Draw doesn't need to re-issue. The encoder still requires
+    // a fresh setRenderPipelineState every pass because pass state
+    // doesn't carry across encoders; FlushBindings re-applies on first
+    // Draw of a pass via the same lastBoundPipeline_ check.
     if (!frame.renderEncoder)
         return;
-    auto* pso = state.pipelines.Get(static_cast<u64>(h));
-    if (!pso || !pso->graphics)
+    if (!pso->graphics)
         return;
-    [frame.renderEncoder setRenderPipelineState:pso->graphics];
-    if (pso->depthStencil)
+
+    // Pick the PSO variant matching the active pass's depth state.
+    // graphicsColorOnly is only built when the primary variant has a
+    // depth attachment format set (see CreateGraphicsPipeline). Both
+    // variants share the same VS/PS/blend/vertex-descriptor — the
+    // depth-stencil state we set below covers the depth-test side.
+    const bool useColorOnly =
+        !frame.passHasDepth && pso->graphicsColorOnly != nil;
+    [frame.renderEncoder setRenderPipelineState:(useColorOnly
+                                                     ? pso->graphicsColorOnly
+                                                     : pso->graphics)];
+    // Depth-stencil state is meaningless when there's no depth
+    // attachment, but it's also harmless: Metal silently ignores it.
+    // We still set it on depth-passes so PSOs with depthTest=false /
+    // depthWrite=false retain those semantics.
+    if (frame.passHasDepth && pso->depthStencil)
         [frame.renderEncoder setDepthStencilState:pso->depthStencil];
     [frame.renderEncoder setCullMode:pso->cull];
     [frame.renderEncoder setFrontFacingWinding:pso->winding];
@@ -280,15 +343,34 @@ void MetalCommandList::BindShaderResource(ShaderStage stage, u32 slot, BufferHan
     if (slot >= kSrvBindingCount)
         return;
     const u32 idx = EncodeIdx(stage, slot);
+    auto& state = device_.State();
+    auto* buf = state.buffers.Get(static_cast<u64>(h));
     pendingSRVs_[idx].texture = TextureHandle::Invalid;
     pendingSRVs_[idx].storage = h;
+    // Capture ring offset at Bind time — see the CB Bind/Flush pattern.
+    pendingSRVs_[idx].storageOffset = buf ? buf->currentOffset() : 0;
     pendingSRVs_[idx].isBuffer = true;
 }
 
-void MetalCommandList::BindUnorderedAccess(u32 /*slot*/, BufferHandle /*h*/) {
-    // UAVs land in Phase G alongside compute. Wc3's graphics pipeline
-    // doesn't use them; this stub keeps the IGFXCommandList surface
-    // complete.
+void MetalCommandList::BindUnorderedAccess(u32 slot, BufferHandle h) {
+    // Compute-only path (Wc3 graphics never binds a UAV). Stored in
+    // pendingComputeUav_ and flushed by Dispatch onto the compute
+    // encoder's buffer table. Slang's Metal emit puts the
+    // RWStructuredBuffer at [[buffer(N)]] where N is the
+    // (set, binding) collapsed index — for the frame-capture kernel
+    // that's [[buffer(1)]] (set 0, binding 2 collapses to local
+    // index 1 in slangc's compute emit because the constant buffer
+    // takes index 0 and the texture takes its own [[texture(0)]]
+    // namespace, leaving the UAV at buffer(1)). The renderer hard-
+    // codes that knowledge by calling BindUnorderedAccess(0, h).
+    if (slot >= kCbBindingCount)
+        return;
+    auto& state = device_.State();
+    auto* buf = state.buffers.Get(static_cast<u64>(h));
+    pendingComputeUav_.handle = h;
+    pendingComputeUav_.slot = slot;
+    // Bind-time offset capture, same rationale as the CB path.
+    pendingComputeUav_.offset = buf ? buf->currentOffset() : 0;
 }
 
 void MetalCommandList::BindSampler(ShaderStage stage, u32 slot, SamplerHandle h) {
@@ -309,10 +391,15 @@ void MetalCommandList::FlushBindings() {
         return;
 
     // CBs. Iterate both halves of the encoded index space; route to
-    // setVertexBuffer / setFragmentBuffer based on the half. Note: we
-    // could dedupe-suppress identical re-binds here for perf, but Wc3
-    // updates the bound buffer offset every draw (ring-allocated CBs)
-    // so the per-draw cost is unavoidable.
+    // setVertexBuffer / setFragmentBuffer based on the half. Use the
+    // offset CAPTURED AT BIND TIME (pc.offset) — re-reading
+    // buf->currentOffset() here would read the slot after any
+    // intervening Map (rotates the slot cursor), making this draw
+    // sample the WRONG slot's data. Mirrors vulkan_command_list.cpp's
+    // BindConstantBuffer-captures-offset pattern. Symptom of the bug:
+    // all draws read stale / zeroed matrices → geometry collapses to
+    // origin → screen renders all-black (Wc3 model invisible, but the
+    // color clear + ImGui rendering on top still shows).
     for (u32 i = 0; i < pendingCBs_.size(); ++i) {
         const auto& pc = pendingCBs_[i];
         if (pc.buffer == BufferHandle::Invalid)
@@ -321,18 +408,13 @@ void MetalCommandList::FlushBindings() {
         if (!buf || !buf->buffer)
             continue;
         const u32 stageIdx = StageLocalIdx(i);
-        // Re-read currentOffset() in case the buffer rotated between
-        // Bind and FlushBindings (the renderer typically Maps then
-        // Binds, so the slot is settled — but UpdateBuffer paths can
-        // rotate after Bind).
-        const u64 off = buf->currentOffset();
         if (IsPixelIdx(i))
             [frame.renderEncoder setFragmentBuffer:buf->buffer
-                                            offset:off
+                                            offset:pc.offset
                                            atIndex:stageIdx];
         else
             [frame.renderEncoder setVertexBuffer:buf->buffer
-                                          offset:off
+                                          offset:pc.offset
                                          atIndex:stageIdx];
     }
 
@@ -359,14 +441,14 @@ void MetalCommandList::FlushBindings() {
             // kCbBindingCount + N (a fixed offset, applied symmetrically
             // both stages). Keeps the CB index range clean.
             const u32 sbIdx = kCbBindingCount + stageIdx;
-            const u64 off = buf->currentOffset();
+            // Bind-time offset capture; see the CB flush comment.
             if (IsPixelIdx(i))
                 [frame.renderEncoder setFragmentBuffer:buf->buffer
-                                                offset:off
+                                                offset:ps.storageOffset
                                                atIndex:sbIdx];
             else
                 [frame.renderEncoder setVertexBuffer:buf->buffer
-                                              offset:off
+                                              offset:ps.storageOffset
                                              atIndex:sbIdx];
         }
     }
@@ -425,8 +507,85 @@ void MetalCommandList::DrawIndexed(u32 indexCount, u32 firstIndex, i32 baseVerte
                                   baseInstance:0];
 }
 
-void MetalCommandList::Dispatch(u32, u32, u32) {
-    // Phase G.
+void MetalCommandList::Dispatch(u32 gx, u32 gy, u32 gz) {
+    @autoreleasepool {
+        auto& state = device_.State();
+        FrameContext& frame = state.frames[state.currentFrame];
+
+        // Compute requires a compute encoder. BindPipeline(computePSO)
+        // should have created one already; if the caller skipped
+        // BindPipeline this is a programmer error and we'd dispatch
+        // against a render encoder (Metal would reject).
+        if (!frame.computeEncoder)
+            return;
+        if (gx == 0 || gy == 0 || gz == 0)
+            return;
+
+        auto* pso = state.pipelines.Get(static_cast<u64>(lastBoundPipeline_));
+        if (!pso || !pso->isCompute || !pso->compute)
+            return;
+
+        // Flush bindings onto the compute encoder. Compute reuses the
+        // same per-stage namespaces as VS (slang's Metal emit for a
+        // compute kernel uses [[buffer(N)]] / [[texture(N)]] /
+        // [[sampler(N)]] on the kernel function itself), so we walk the
+        // VS half of pendingCBs_ / pendingSRVs_ / pendingSamplers_ —
+        // the renderer's BindConstantBuffer(Vertex, ...) /
+        // BindShaderResource(Vertex, ...) for the compute pass lands
+        // there. (BindShaderResource(Pixel, ...) is also valid for
+        // textures sampled inside the kernel; we walk PS half too.)
+        for (u32 i = 0; i < pendingCBs_.size(); ++i) {
+            const auto& pc = pendingCBs_[i];
+            if (pc.buffer == BufferHandle::Invalid)
+                continue;
+            auto* buf = state.buffers.Get(static_cast<u64>(pc.buffer));
+            if (!buf || !buf->buffer)
+                continue;
+            const u32 stageIdx = StageLocalIdx(i);
+            [frame.computeEncoder setBuffer:buf->buffer
+                                     offset:pc.offset
+                                    atIndex:stageIdx];
+        }
+        for (u32 i = 0; i < pendingSRVs_.size(); ++i) {
+            const auto& ps = pendingSRVs_[i];
+            const u32 stageIdx = StageLocalIdx(i);
+            if (!ps.isBuffer && ps.texture != TextureHandle::Invalid) {
+                auto* tex = state.textures.Get(static_cast<u64>(ps.texture));
+                if (tex && tex->texture)
+                    [frame.computeEncoder setTexture:tex->texture atIndex:stageIdx];
+            }
+        }
+        for (u32 i = 0; i < pendingSamplers_.size(); ++i) {
+            const auto& smp = pendingSamplers_[i];
+            if (smp.sampler == SamplerHandle::Invalid)
+                continue;
+            auto* s = state.samplers.Get(static_cast<u64>(smp.sampler));
+            const u32 stageIdx = StageLocalIdx(i);
+            if (s && s->sampler)
+                [frame.computeEncoder setSamplerState:s->sampler atIndex:stageIdx];
+        }
+        // UAV (storage buffer) — slot is the slangc-collapsed
+        // [[buffer(N)]] index. The renderer passes the kernel's
+        // RWStructuredBuffer slot directly.
+        if (pendingComputeUav_.handle != BufferHandle::Invalid) {
+            auto* buf = state.buffers.Get(
+                static_cast<u64>(pendingComputeUav_.handle));
+            if (buf && buf->buffer)
+                [frame.computeEncoder setBuffer:buf->buffer
+                                         offset:pendingComputeUav_.offset
+                                        atIndex:pendingComputeUav_.slot];
+        }
+
+        // Dispatch. The renderer passes gx/gy/gz as threadgroup counts
+        // (e.g. ((w+7)/8, (h+7)/8, 1) for an 8×8×1 kernel);
+        // threadsPerThreadgroup lives on the PSO (computeThreads{X,Y,Z}).
+        MTLSize grid = MTLSizeMake(gx, gy, gz);
+        MTLSize tg = MTLSizeMake(pso->computeThreadsX,
+                                  pso->computeThreadsY,
+                                  pso->computeThreadsZ);
+        [frame.computeEncoder dispatchThreadgroups:grid
+                              threadsPerThreadgroup:tg];
+    }
 }
 
 // ============================================================

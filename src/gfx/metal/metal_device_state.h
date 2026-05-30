@@ -65,6 +65,17 @@ struct MetalDeviceState {
     // total is enough for the device's lifetime.
     id<MTLBuffer> zeroVertexBuffer = nil;
 
+    // Frame-in-flight throttle. The renderer's per-frame loop is
+    // unbounded — without this, the CPU races far ahead of the GPU
+    // and burns 100% in cornflakes simulation between presents while
+    // the GPU sits with 1–2 frames queued. We initialise this to
+    // kFramesInFlight; EnsureFrameOpen waits before starting a fresh
+    // command buffer, and Present's addCompletedHandler signals when
+    // the matching frame retires. Mirrors Apple's standard sample
+    // pattern and the implicit pthread_cond_wait you can see Vulkan
+    // sitting in on the same workload.
+    dispatch_semaphore_t frameBoundarySem = nil;
+
     // ---- GPU-byte accounting (diagnostic; LiveGpuBytes reports this) ----
     std::atomic<u64> gpuBytesAlloc{0};
     std::atomic<u64> gpuBytesFreed{0};

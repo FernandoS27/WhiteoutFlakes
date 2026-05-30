@@ -71,6 +71,7 @@ private:
     struct PendingSrv {
         TextureHandle texture{};
         BufferHandle storage{};
+        u64 storageOffset = 0; // captured at Bind for the ring-rotation-safe path
         bool isBuffer = false;
     };
     struct PendingSmp {
@@ -90,6 +91,16 @@ private:
         MTLIndexType format = MTLIndexTypeUInt16;
     };
     PendingIndex pendingIndex_{};
+
+    // BindUnorderedAccess stash. Dispatch flushes it on the compute
+    // encoder; not consumed by Draw (Wc3 graphics doesn't use UAVs).
+    // See the slot-vs-Metal-buffer-index commentary on BindUnorderedAccess.
+    struct PendingUav {
+        BufferHandle handle{};
+        u64 offset = 0;
+        u32 slot = 0;
+    };
+    PendingUav pendingComputeUav_{};
 
     PipelineHandle lastBoundPipeline_ = PipelineHandle::Invalid;
 };
