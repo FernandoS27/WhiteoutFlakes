@@ -656,12 +656,17 @@ export class WhiteoutViewer {
         // synonyms cover .mdx ↔ .mdl.
         const TEX = ['.blp', '.dds', '.tga', '.png', '.tif'];
         const MDL = ['.mdx', '.mdl'];
+        // PKB before PKFX regardless of which one was asked for: Hive's
+        // CASC API lumps pkfx/pkb/mdl/mdx into one "model" family, so a
+        // request for foo.pkfx whose file isn't on disk may be silently
+        // substituted with foo.mdl. By asking for the .pkb first we hit
+        // the format Hive's mirror actually stores.
         const PRT = ['.pkb', '.pkfx'];
-        let exts;
-        if (TEX.includes(origExt))      exts = [origExt, ...TEX.filter(e => e !== origExt)];
-        else if (MDL.includes(origExt)) exts = [origExt, ...MDL.filter(e => e !== origExt)];
-        else if (PRT.includes(origExt)) exts = [origExt, ...PRT.filter(e => e !== origExt)];
-        else                            exts = [origExt];
+        let exts, family;
+        if (TEX.includes(origExt))      { exts = [origExt, ...TEX.filter(e => e !== origExt)]; family = TEX; }
+        else if (MDL.includes(origExt)) { exts = [origExt, ...MDL.filter(e => e !== origExt)]; family = MDL; }
+        else if (PRT.includes(origExt)) { exts = PRT.slice();                                  family = PRT; }
+        else                            { exts = [origExt];                                    family = [origExt]; }
 
         const stems = [stemFull, stemBase].filter((s, i, a) => a.indexOf(s) === i);
 
@@ -673,10 +678,24 @@ export class WhiteoutViewer {
                 catch (_) { continue; }
                 if (!url) continue;
                 try {
-                    const r = await fetch(url, { cache: 'no-store' });
+                    const r = await fetch(url);
                     if (!r.ok) continue;
+                    // Hive's CASC mirror groups pkfx/pkb/mdl/mdx as one
+                    // "model" family server-side, so a request for .mdx
+                    // can 302 to a .pkb (or vice versa). The bytes would
+                    // then be applied to the wrong slot kind. Detect the
+                    // crossover by looking at the final URL's extension
+                    // after redirects, and reject if Hive jumped outside
+                    // OUR family (which keeps PRT and MDL separate).
+                    let servedExt = ext;
+                    try {
+                        const finalPath = new URL(r.url).pathname.toLowerCase();
+                        const fdot = finalPath.lastIndexOf('.');
+                        if (fdot >= 0) servedExt = finalPath.slice(fdot);
+                    } catch (_) { /* opaque URL — fall back to requested ext */ }
+                    if (!family.includes(servedExt)) continue;
                     const bytes = new Uint8Array(await r.arrayBuffer());
-                    const applied = this._applyAsset(kind, relPath, bytes, ext);
+                    const applied = this._applyAsset(kind, relPath, bytes, servedExt);
                     if (applied) return true;
                     // Apply rejected — decode failed. Try next candidate
                     // rather than declaring success on bad bytes.
@@ -1108,7 +1127,7 @@ export class WhiteoutViewer {
         // inside the renderer's init path always hits.
         const tryFetch = async (url) => {
             try {
-                const r = await fetch(url, { cache: 'no-store' });
+                const r = await fetch(url);
                 if (!r.ok) return null;
                 return new Uint8Array(await r.arrayBuffer());
             } catch (_) { return null; }
@@ -1135,7 +1154,7 @@ export class WhiteoutViewer {
     }
 
     async _fetchAndPut(path) {
-        const r = await fetch('./' + path, { cache: 'no-store' });
+        const r = await fetch('./' + path);
         if (!r.ok) { console.warn('[wf] prefetch FAIL ' + path + ' status=' + r.status); return; }
         const buf = new Uint8Array(await r.arrayBuffer());
         // Allocate in WASM heap and copy in.

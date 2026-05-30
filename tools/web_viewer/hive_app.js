@@ -370,7 +370,16 @@ export class HiveApp {
             this._objectUrls.push(url);
             return url;
         }
-        return this.viewer.cascUrl(norm);
+        // Hive's CASC mirror stores PopcornFX particles under .pkb; asking
+        // for the .pkfx variant (which Reforged MDX particle emitters
+        // reference) falls into the server's pkfx/pkb/mdl/mdx model-family
+        // expansion and tends to substitute an unrelated .mdl/.mdx. Force
+        // .pkb on the wire so we always hit the canonical file directly.
+        let cascPath = norm;
+        if (cascPath.endsWith('.pkfx')) {
+            cascPath = cascPath.slice(0, -5) + '.pkb';
+        }
+        return this.viewer.cascUrl(cascPath);
     }
 
     _revokeObjectUrls() {
