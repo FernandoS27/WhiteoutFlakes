@@ -18,23 +18,40 @@ version: 1.0.{build}
 init:
   - git config --global advice.detachedHead false
 
+# Shallow-clone the main repo. The macOS runner intermittently hits
+# "Recv failure: Connection reset by peer" on the full clone (~10s of MB
+# of history) before our install scripts even run; a depth=1 clone is
+# small enough to ride out the flake. Safe because no build step uses
+# git history (no `git describe`, no version embedding from git).
+#
+# NOTE: use `clone_depth: 1`, NOT `shallow_clone: true` — the latter
+# fetches a tarball with no .git directory, breaking `git submodule
+# update --init --recursive` in every install step.
+clone_depth: 1
+
 # Branches we'd be wasting CI minutes on if we built them — adjust to taste.
 skip_branch_with_pr: true
 
 # Toolchain version pins — kept in sync with .github/workflows/*.yml.
 environment:
   VULKAN_SDK_VERSION: 1.4.341.0
-  EMSCRIPTEN_VERSION: 4.0.10
+  # Matches the local emsdk install — emdawnwebgpu's OnSubmittedWorkDone
+  # callback signature changed between the 4.0.10 (v20250531) port and
+  # the 5.0.7 (v20251002) port, breaking the source code on the older.
+  EMSCRIPTEN_VERSION: 5.0.7
+  # slangc is only needed standalone on the wasm job — windows/linux/macos
+  # get it bundled with the Vulkan SDK ($VULKAN_SDK/bin/slangc).
+  SLANG_VERSION: 2026.10
 
   matrix:
+    - APPVEYOR_BUILD_WORKER_IMAGE: Ubuntu2204
+      JOB_TARGET: wasm
     - APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2022
       JOB_TARGET: windows
     - APPVEYOR_BUILD_WORKER_IMAGE: Ubuntu2204
       JOB_TARGET: linux
     - APPVEYOR_BUILD_WORKER_IMAGE: macos-sonoma
       JOB_TARGET: macos
-    - APPVEYOR_BUILD_WORKER_IMAGE: Ubuntu2204
-      JOB_TARGET: wasm
 
 # Per-target overrides. Each `for:` block matches one JOB_TARGET and
 # supplies install + build_script + artifacts. AppVeyor's per-job
@@ -52,6 +69,66 @@ environment:
 #   - $HOME/emsdk          -> appveyor.yml   # wasm
 
 for:
+
+  # ------------------------------------------------------------------- wasm
+  -
+    matrix:
+      only:
+        - JOB_TARGET: wasm
+    install:
+      - sh: git submodule update --init --recursive
+      - sh: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              build-essential cmake ninja-build pkg-config python3
+      # emsdk install — pinned to the version we know works with
+      # `--use-port=emdawnwebgpu` (4.0.10+ per upstream).
+      - sh: |
+          set -e
+          cd $HOME
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git
+          cd emsdk
+          ./emsdk install "$EMSCRIPTEN_VERSION"
+          ./emsdk activate "$EMSCRIPTEN_VERSION"
+          # Persist the env so build_script picks it up.
+          echo "source $HOME/emsdk/emsdk_env.sh" >> $HOME/.envrc
+      # slangc — the renderer's blit/line/framebuffer_capture shaders are
+      # compiled to SPV + WGSL at configure time (CMakeLists.txt:173).
+      # Other jobs get slangc bundled with the Vulkan SDK; wasm doesn't
+      # install the SDK, so grab the standalone Slang release here.
+      - sh: |
+          set -e
+          mkdir -p $HOME/slang && cd $HOME/slang
+          # glibc-2.28 variant: Ubuntu 22.04 ships glibc 2.35 so it's
+          # forward-compatible; the unsuffixed tarball's glibc floor is
+          # not documented.
+          wget -q "https://github.com/shader-slang/slang/releases/download/v${SLANG_VERSION}/slang-${SLANG_VERSION}-linux-x86_64-glibc-2.28.tar.gz"
+          tar xzf "slang-${SLANG_VERSION}-linux-x86_64-glibc-2.28.tar.gz"
+          rm "slang-${SLANG_VERSION}-linux-x86_64-glibc-2.28.tar.gz"
+          test -x "$HOME/slang/bin/slangc"
+          echo "export PATH=$HOME/slang/bin:\$PATH" >> $HOME/.envrc
+    build_script:
+      - sh: |
+          set -e
+          # AppVeyor's Linux runner preserves cwd between script blocks, and
+          # the install step left us in $HOME/emsdk. Pin cwd explicitly.
+          source $HOME/.envrc
+          cd "$APPVEYOR_BUILD_FOLDER"
+          emcmake cmake -S . -B build-web -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DWDX_BUILD_WC3_SHADERS=OFF \
+              -DWDX_USE_PREBUILT_SHADERS=ON \
+              -DWDX_BUILD_WC3_DEBUG_SHADERS=OFF \
+              -DWDX_ENABLE_TRACY=OFF \
+              -DWDX_BUILD_MAX_PLUGIN=OFF
+          cmake --build build-web --target wf_web --parallel
+          # build-web/web/ holds the served file set: wf-core.{js,wasm},
+          # wf-*.js modules, hive_app.js, sw.js, index.html, shaders/.
+          tar -C build-web -czf WhiteoutFlakes-wasm.tar.gz web
+    artifacts:
+      - path: WhiteoutFlakes-wasm.tar.gz
+        name: WhiteoutFlakes-wasm
 
   # ---------------------------------------------------------------- windows
   -
@@ -93,14 +170,13 @@ for:
           cmake --build build --config Release --target WhiteoutFlakesStandalone --parallel
           if ($LASTEXITCODE -ne 0) { throw "cmake build failed" }
       - ps: |
-          # The VS generator drops the exe under Release/ but the shader
-          # bundles get staged to build\standalone\shaders\ at the parent
-          # level (see CMakeLists.txt RUNTIME_OUTPUT_DIRECTORY_RELEASE +
-          # _prebuilt_stage). Flatten both into the zip root so extracting
-          # gives a working exe + shaders/ side-by-side layout — the
-          # runtime's exe-dir lookup expects that shape.
+          # CMakeLists pins RUNTIME_OUTPUT_DIRECTORY_RELEASE to build/standalone
+          # directly (no Release/ subdir) and _prebuilt_stage drops shaders at
+          # build/standalone/shaders/ — so exe + shaders/ already sit
+          # side-by-side. Zip the whole staging dir so extracting gives the
+          # exe-dir layout the runtime expects.
           Compress-Archive `
-            -Path build\standalone\Release\*, build\standalone\shaders `
+            -Path build\standalone\* `
             -DestinationPath WhiteoutFlakes-windows-x64.zip -Force
     artifacts:
       - path: WhiteoutFlakes-windows-x64.zip
@@ -150,7 +226,10 @@ for:
     build_script:
       - sh: |
           set -e
+          # AppVeyor's Linux runner preserves cwd between script blocks, and
+          # the install step left us in $HOME/vulkan-sdk. Pin cwd explicitly.
           source $HOME/.envrc
+          cd "$APPVEYOR_BUILD_FOLDER"
           export CC=gcc-15 CXX=g++-15
           cmake -S . -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
@@ -173,7 +252,15 @@ for:
       only:
         - JOB_TARGET: macos
     install:
-      - sh: git submodule update --init --recursive
+      # Retry submodule clone — same flake that motivated `shallow_clone`
+      # at the top of this file can hit submodule fetches too.
+      - sh: |
+          set -e
+          for i in 1 2 3; do
+            git submodule update --init --recursive && break
+            echo "submodule update failed (attempt $i/3), retrying..." >&2
+            sleep 5
+          done
       - sh: |
           brew update
           brew install ninja wget
@@ -227,45 +314,3 @@ for:
     artifacts:
       - path: WhiteoutFlakes-macos-arm64.tar.gz
         name: WhiteoutFlakes-macos-arm64
-
-  # ------------------------------------------------------------------- wasm
-  -
-    matrix:
-      only:
-        - JOB_TARGET: wasm
-    install:
-      - sh: git submodule update --init --recursive
-      - sh: |
-          set -e
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-              build-essential cmake ninja-build pkg-config python3
-      # emsdk install — pinned to the version we know works with
-      # `--use-port=emdawnwebgpu` (4.0.10+ per upstream).
-      - sh: |
-          set -e
-          cd $HOME
-          git clone --depth 1 https://github.com/emscripten-core/emsdk.git
-          cd emsdk
-          ./emsdk install "$EMSCRIPTEN_VERSION"
-          ./emsdk activate "$EMSCRIPTEN_VERSION"
-          # Persist the env so build_script picks it up.
-          echo "source $HOME/emsdk/emsdk_env.sh" >> $HOME/.envrc
-    build_script:
-      - sh: |
-          set -e
-          source $HOME/.envrc
-          emcmake cmake -S . -B build-web -G Ninja \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DWDX_BUILD_WC3_SHADERS=OFF \
-              -DWDX_USE_PREBUILT_SHADERS=ON \
-              -DWDX_BUILD_WC3_DEBUG_SHADERS=OFF \
-              -DWDX_ENABLE_TRACY=OFF \
-              -DWDX_BUILD_MAX_PLUGIN=OFF
-          cmake --build build-web --target wf_web --parallel
-          # build-web/web/ holds the served file set: wf-core.{js,wasm},
-          # wf-*.js modules, hive_app.js, sw.js, index.html, shaders/.
-          tar -C build-web -czf WhiteoutFlakes-wasm.tar.gz web
-    artifacts:
-      - path: WhiteoutFlakes-wasm.tar.gz
-        name: WhiteoutFlakes-wasm
