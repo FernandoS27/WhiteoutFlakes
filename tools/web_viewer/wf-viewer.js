@@ -37,6 +37,19 @@ const REQUESTED_FEATURES = [
 // Re-export so host pages keep `import { WhiteoutViewer, TEAM_COLORS }`.
 export { TEAM_COLORS, TEAM_COLOR_NAMES, Instance, Model, Scene };
 
+// HD debug-vis modes — keep ordering in sync with basic_viewer's
+// kDebugVisLabels (tools/basic_viewer/viewer_ui.cpp).
+export const HD_DEBUG_MODES = [
+    { value: 0, label: 'Shaded' },
+    { value: 1, label: 'Albedo' },
+    { value: 2, label: 'World Normal' },
+    { value: 3, label: 'LOD Heatmap' },
+    { value: 4, label: 'Light Count' },
+    { value: 5, label: 'Shading (white)' },
+    { value: 6, label: 'Shading (grey)' },
+    { value: 7, label: 'Specular Only' },
+];
+
 export class WhiteoutViewer {
     constructor(canvas) {
         if (!canvas) throw new Error('WhiteoutViewer: canvas required');
@@ -270,6 +283,11 @@ export class WhiteoutViewer {
     // Default off on Firefox (3-cascade sample is expensive on wgpu/naga).
     setShadowsEnabled(on) {
         if (this._handle) this._module._wf_set_shadows_enabled(this._handle, on ? 1 : 0);
+    }
+
+    // HD debug-vis mode (see HD_DEBUG_MODES below).
+    setHdDebugMode(mode) {
+        if (this._handle) this._module._wf_set_hd_debug_mode(this._handle, mode | 0);
     }
 
     // Live WebGPU CreateTexture+CreateBuffer bytes (deferred-delete

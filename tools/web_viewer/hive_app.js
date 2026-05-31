@@ -4,7 +4,7 @@
 
 // Cache-buster defeats the browser's ES module map (separate from the
 // HTTP cache) so wf-viewer.js edits take effect on soft reload.
-const { WhiteoutViewer, TEAM_COLORS } =
+const { WhiteoutViewer, TEAM_COLORS, HD_DEBUG_MODES } =
     await import('./wf-viewer.js?t=' + Date.now());
 const { WebAudioBridge } =
     await import('./web_audio.js?t=' + Date.now());
@@ -25,6 +25,7 @@ export class HiveApp {
         this.progress     = document.getElementById('progress');
         this.volSlider    = document.getElementById('vol-slider');
         this.lightingSel  = document.getElementById('lighting-select');
+        this.debugVisSel  = document.getElementById('debug-vis-select');
         this.gridToggle   = document.getElementById('grid-toggle');
         this.fpsReadout   = document.getElementById('fps-readout');
         this.emptyModels  = this.modelList.querySelector('.empty');
@@ -99,6 +100,21 @@ export class HiveApp {
             const apply = () =>
                 this.viewer.setLightingMode(Number(this.lightingSel.value) | 0);
             this.lightingSel.addEventListener('change', apply);
+            apply();
+        }
+        if (this.debugVisSel) {
+            // Populate from the HD_DEBUG_MODES list so the labels stay
+            // in sync with basic_viewer without hard-coding here.
+            this.debugVisSel.innerHTML = '';
+            for (const m of HD_DEBUG_MODES) {
+                const opt = document.createElement('option');
+                opt.value = String(m.value);
+                opt.textContent = m.label;
+                this.debugVisSel.appendChild(opt);
+            }
+            const apply = () =>
+                this.viewer.setHdDebugMode(Number(this.debugVisSel.value) | 0);
+            this.debugVisSel.addEventListener('change', apply);
             apply();
         }
         if (this.gridToggle) {
