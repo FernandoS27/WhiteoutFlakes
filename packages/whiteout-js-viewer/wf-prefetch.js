@@ -99,13 +99,16 @@ export async function prefetchEngineAssets(viewer) {
 }
 
 export async function prefetchShaders(viewer) {
-    // Push under the path shape the BLS cache queries.
+    // `path` doubles as the key the BLS cache queries through the wasm
+    // provider, while the URL is module-relative so the package keeps
+    // working when mounted under any subpath (e.g. /whiteout-js-viewer/).
     const paths = [
         ...VS_SHADERS.map(n => `shaders/webgpu/vs/${n}.bls`),
         ...PS_SHADERS.map(n => `shaders/webgpu/ps/${n}.bls`),
     ];
     await Promise.all(paths.map(async (path) => {
-        const res = await fetchResult('./' + path);
+        const url = new URL('./' + path, import.meta.url).href;
+        const res = await fetchResult(url);
         if (!res) { console.warn('[wf] prefetch FAIL ' + path); return; }
         putBytes(viewer, path, res.bytes);
     }));

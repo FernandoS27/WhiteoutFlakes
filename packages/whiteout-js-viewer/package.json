@@ -1,0 +1,32 @@
+{
+  "name": "whiteout-js-viewer",
+  "version": "0.1.0",
+  "description": "WhiteoutFlakes WebGPU model viewer — JS API plus a Hive-style UI shell, wired to the wf-core Emscripten/wasm runtime.",
+  "type": "module",
+  "main": "./index.js",
+  "module": "./index.js",
+  "exports": {
+    ".":             "./index.js",
+    "./hive-app":    "./hive-app.js",
+    "./wf-viewer":   "./wf-viewer.js",
+    "./wf-instance": "./wf-instance.js",
+    "./wf-math":     "./wf-math.js",
+    "./web-audio":   "./web-audio.js",
+    "./load-table":  "./load-table.js"
+  },
+  "files": [
+    "*.js",
+    "wf-core.js",
+    "wf-core.wasm",
+    "shaders/webgpu/**/*.bls",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FernandoS27/WhiteoutFlakes.git",
+    "directory": "packages/whiteout-js-viewer"
+  },
+  "license": "BSD-3-Clause",
+  "keywords": ["warcraft", "mdx", "webgpu", "wasm", "viewer", "whiteoutflakes"]
+}

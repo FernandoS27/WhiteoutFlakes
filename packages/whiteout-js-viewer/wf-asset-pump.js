@@ -28,8 +28,14 @@ function kindName(kind) {
 function extractServedExt(responseUrl, fallback) {
     try {
         const finalPath = new URL(responseUrl).pathname.toLowerCase();
-        const dot = finalPath.lastIndexOf('.');
-        if (dot >= 0) return finalPath.slice(dot);
+        // Only the basename's dot counts. Paths like
+        // /hive-proxy/repository-files/<hash.with.dots>/stream contain
+        // dots that belong to directory segments, not the filename;
+        // taking pathname.lastIndexOf('.') would yank one of those.
+        const slash = finalPath.lastIndexOf('/');
+        const basename = slash >= 0 ? finalPath.slice(slash + 1) : finalPath;
+        const dot = basename.lastIndexOf('.');
+        if (dot >= 0) return basename.slice(dot);
     } catch (_) { /* opaque URL */ }
     return fallback;
 }

@@ -50,7 +50,12 @@ environment:
       JOB_TARGET: windows
     - APPVEYOR_BUILD_WORKER_IMAGE: Ubuntu2204
       JOB_TARGET: linux
-    - APPVEYOR_BUILD_WORKER_IMAGE: macos-sonoma
+    # macos-sonoma silently fails to provision a worker on our account
+    # (job starts but never prints anything before terminating). Falling
+    # back to macos-ventura — older but reliably available. The github
+    # actions workflow at .github/workflows/macos-dmg.yml still uses
+    # Sonoma (macos-14) for the canonical .dmg artifact.
+    - APPVEYOR_BUILD_WORKER_IMAGE: macos-ventura
       JOB_TARGET: macos
 
 # Per-target overrides. Each `for:` block matches one JOB_TARGET and

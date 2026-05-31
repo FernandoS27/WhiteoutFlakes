@@ -170,8 +170,8 @@
     font-style: italic;
   }
 
-  /* Open-directory button — picks a local folder. */
-  #open-dir {
+  /* Model-source buttons — local directory + JSON load-table. */
+  #open-dir, #load-json {
     display: block;
     margin: 6px 12px;
     background: transparent; color: var(--text);
@@ -180,8 +180,8 @@
     width: calc(100% - 24px);
     border-radius: 2px;
   }
-  #open-dir:hover  { background: var(--hover-bg); color: var(--text-bright); }
-  #open-dir:active { background: rgba(255, 206, 64, 0.12); }
+  #open-dir:hover, #load-json:hover  { background: var(--hover-bg); color: var(--text-bright); }
+  #open-dir:active, #load-json:active { background: rgba(255, 206, 64, 0.12); }
 
   /* color-chips — 6×4 team colors, 6+picker for backgrounds. */
   .block-body.color-chips {
@@ -281,7 +281,9 @@
           <div class="block-body models" id="model-list">
             <button id="open-dir" type="button">Open directory…</button>
             <input id="dir-input" type="file" webkitdirectory multiple style="display:none">
-            <span class="empty">(pick a directory to populate)</span>
+            <button id="load-json" type="button">Load JSON…</button>
+            <input id="json-input" type="file" accept=".json,application/json" style="display:none">
+            <span class="empty">(pick a directory or JSON to populate)</span>
           </div>
         </div>
       </div>
@@ -372,8 +374,41 @@
   </script>
   <script type="module">
     try {
-      const { HiveApp } = await import('./hive_app.js?t=' + Date.now());
-      const app = new HiveApp();
+      // Pull HiveApp from the staged npm package — same surface a
+      // downstream consumer would see after `npm install whiteout-js-viewer`.
+      const { HiveApp } = await import('./whiteout-js-viewer/index.js?t=' + Date.now());
+      const app = new HiveApp({
+        canvas:       document.getElementById('wf-canvas'),
+        modelList:    document.getElementById('model-list'),
+        animList:     document.getElementById('anim-list'),
+        cameraList:   document.getElementById('camera-list'),
+        teamSwatches: document.getElementById('team-swatches'),
+        bgSwatches:   document.getElementById('bg-swatches'),
+        bgPicker:     document.getElementById('bg-picker'),
+        openDirBtn:   document.getElementById('open-dir'),
+        dirInput:     document.getElementById('dir-input'),
+        loadJsonBtn:  document.getElementById('load-json'),
+        jsonInput:    document.getElementById('json-input'),
+        camReset:     document.getElementById('cam-reset'),
+        closeBtn:     document.getElementById('close-btn'),
+        progress:     document.getElementById('progress'),
+        volSlider:    document.getElementById('vol-slider'),
+        lightingSel:  document.getElementById('lighting-select'),
+        debugVisSel:  document.getElementById('debug-vis-select'),
+        gridToggle:   document.getElementById('grid-toggle'),
+        fpsReadout:   document.getElementById('fps-readout'),
+      }, {
+        // Demo's sw.js lives next to index.html, not inside the package.
+        serviceWorkerUrl: './sw.js',
+        // beta2.hiveworkshop.com requires Basic auth and emits no CORS
+        // headers — route those requests through the dev server's
+        // /hive-proxy/ endpoint (serve_nocache.py injects the auth).
+        urlRewriter: (url) => {
+          const BETA = 'https://beta2.hiveworkshop.com/';
+          if (url && url.startsWith(BETA)) return '/hive-proxy/' + url.slice(BETA.length);
+          return url;
+        },
+      });
       await app.start();
       window.__hive = app;
     } catch (e) {

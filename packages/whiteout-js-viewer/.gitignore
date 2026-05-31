@@ -1,0 +1,10 @@
+# wf-core.{js,wasm} are produced by the Emscripten build (target wf_web)
+# and staged into this directory before `npm publish`. They are not part
+# of the committed source — building them requires emsdk + emdawnwebgpu.
+wf-core.js
+wf-core.wasm
+wf-core.js.map
+# Prebuilt WGSL .bls bundles are sourced from /prebuilt/shaders/webgpu/
+# at build time. Committed there, not here.
+shaders/
+node_modules/

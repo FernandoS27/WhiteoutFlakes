@@ -1460,7 +1460,10 @@ endif()
 endif()  # NOT EMSCRIPTEN — standalone viewer block
 
 # ---- Web viewer: WASM module + JS facade (Emscripten only) ----
+# The package defines wf_web (wf-core.{js,wasm} + JS staging); the demo
+# layers index.html + sw.js on top, so the order matters.
 if(EMSCRIPTEN)
+    add_subdirectory(packages/whiteout-js-viewer)
     add_subdirectory(tools/web_viewer)
 endif()
 

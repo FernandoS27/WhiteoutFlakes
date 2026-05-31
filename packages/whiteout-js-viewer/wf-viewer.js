@@ -160,8 +160,14 @@ export class WhiteoutViewer {
                 // streams codegen for a smoother startup than compile(buf).
                 instantiateWasm: (imports, success) => {
                     (async () => {
-                        trace('iw: streaming fetch+compile of ./wf-core.wasm @' + elapsed());
-                        const url = './wf-core.wasm?t=' + Date.now();
+                        // Resolve against this module's URL, not the document
+                        // base — when the package is mounted under a subdir
+                        // (e.g. /whiteout-js-viewer/), a document-relative
+                        // './wf-core.wasm' would mis-resolve to the host root.
+                        const url = new URL(
+                            './wf-core.wasm?t=' + Date.now(),
+                            import.meta.url).href;
+                        trace('iw: streaming fetch+compile of ' + url + ' @' + elapsed());
                         const { module, instance } = await WebAssembly.instantiateStreaming(
                             fetch(url, { cache: 'no-store' }), imports);
                         trace('iw: streaming compile+instantiate done @' + elapsed());

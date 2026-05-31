@@ -2,38 +2,63 @@
 // WhiteoutViewer. Owns directory picking, sidebar population, and the
 // pathSolver chain (local index → Hive direct asset → /casc-contents/).
 
-// Cache-buster defeats the browser's ES module map (separate from the
-// HTTP cache) so wf-viewer.js edits take effect on soft reload.
-const { WhiteoutViewer, TEAM_COLORS, HD_DEBUG_MODES } =
-    await import('./wf-viewer.js?t=' + Date.now());
-const { WebAudioBridge } =
-    await import('./web_audio.js?t=' + Date.now());
+import { WhiteoutViewer, TEAM_COLORS, HD_DEBUG_MODES } from './wf-viewer.js';
+import { WebAudioBridge } from './web-audio.js';
+import { buildOverrideMap, tableModels, isAbsoluteUrl } from './load-table.js';
 
+// `els` carries the DOM nodes HiveApp drives. `canvas` is required;
+// every other slot is optional — if a host omits it, the corresponding
+// UI feature is simply disabled (no model list, no FPS readout, etc.).
+// `options` carries non-DOM behaviour toggles.
 export class HiveApp {
-    constructor() {
-        this.canvas       = document.getElementById('wf-canvas');
-        this.modelList    = document.getElementById('model-list');
-        this.animList     = document.getElementById('anim-list');
-        this.cameraList   = document.getElementById('camera-list');
-        this.teamSwatches = document.getElementById('team-swatches');
-        this.bgSwatches   = document.getElementById('bg-swatches');
-        this.bgPicker     = document.getElementById('bg-picker');
-        this.openDirBtn   = document.getElementById('open-dir');
-        this.dirInput     = document.getElementById('dir-input');
-        this.camReset     = document.getElementById('cam-reset');
-        this.closeBtn     = document.getElementById('close-btn');
-        this.progress     = document.getElementById('progress');
-        this.volSlider    = document.getElementById('vol-slider');
-        this.lightingSel  = document.getElementById('lighting-select');
-        this.debugVisSel  = document.getElementById('debug-vis-select');
-        this.gridToggle   = document.getElementById('grid-toggle');
-        this.fpsReadout   = document.getElementById('fps-readout');
-        this.emptyModels  = this.modelList.querySelector('.empty');
+    constructor(els = {}, options = {}) {
+        if (!els.canvas) throw new Error('HiveApp: els.canvas is required');
+        this.canvas       = els.canvas;
+        this.modelList    = els.modelList    || null;
+        this.animList     = els.animList     || null;
+        this.cameraList   = els.cameraList   || null;
+        this.teamSwatches = els.teamSwatches || null;
+        this.bgSwatches   = els.bgSwatches   || null;
+        this.bgPicker     = els.bgPicker     || null;
+        this.openDirBtn   = els.openDirBtn   || null;
+        this.dirInput     = els.dirInput     || null;
+        // Optional `Load JSON…` affordance — triggers loadFromTable() on a
+        // user-picked file matching the load-table schema (see load-table.js).
+        this.loadJsonBtn  = els.loadJsonBtn  || null;
+        this.jsonInput    = els.jsonInput    || null;
+        this.camReset     = els.camReset     || null;
+        this.closeBtn     = els.closeBtn     || null;
+        this.progress     = els.progress     || null;
+        this.volSlider    = els.volSlider    || null;
+        this.lightingSel  = els.lightingSel  || null;
+        this.debugVisSel  = els.debugVisSel  || null;
+        this.gridToggle   = els.gridToggle   || null;
+        this.fpsReadout   = els.fpsReadout   || null;
+        this.emptyModels  = this.modelList ? this.modelList.querySelector('.empty') : null;
+
+        // `null` disables service-worker registration entirely (e.g. for
+        // hosts embedding HiveApp inside an existing SW-managed page).
+        this.serviceWorkerUrl = options.serviceWorkerUrl !== undefined
+            ? options.serviceWorkerUrl
+            : './sw.js';
+
+        // Last-mile URL rewriter applied to every URL that flows out of
+        // _resolve and to the src passed to viewer.load. Hosts use it to
+        // bounce cross-origin/auth-gated URLs through a same-origin
+        // proxy (e.g. mapping beta2.hiveworkshop.com -> /hive-proxy/).
+        // Returning a falsy value leaves the URL untouched.
+        this.urlRewriter = typeof options.urlRewriter === 'function'
+            ? options.urlRewriter
+            : null;
 
         this.viewer = null;
         // Keyed by both full relative path and basename — dependency
         // lookups may use either shape.
         this.index = new Map();
+        // Override map sourced from a load-table JSON; null when none is
+        // active. Consulted before this.index in _resolve so an active
+        // table beats a stale local directory pick.
+        this._overrides = null;
         this.models = [];
         this.currentModel = null;
         this.currentInstance = null;
@@ -44,10 +69,16 @@ export class HiveApp {
     async start() {
         // Register before init so first-load fetches go through the cache.
         // Don't await: blocking on claim() would just delay viewer init.
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('./sw.js').catch((e) => {
-                console.warn('[hive] SW registration failed:', e);
-            });
+        if (this.serviceWorkerUrl && 'serviceWorker' in navigator) {
+            // updateViaCache:'none' makes the browser bypass the HTTP cache
+            // when fetching sw.js — without it a stale-but-still-valid
+            // entry can keep an old worker installed across reloads.
+            navigator.serviceWorker
+                .register(this.serviceWorkerUrl, { updateViaCache: 'none' })
+                .then(reg => reg.update().catch(() => {}))
+                .catch((e) => {
+                    console.warn('[hive] SW registration failed:', e);
+                });
         }
         this.viewer = new WhiteoutViewer(this.canvas);
         await this.viewer.init();
@@ -74,16 +105,35 @@ export class HiveApp {
     }
 
     _wireUi() {
-        this.openDirBtn.addEventListener('click', () => this._pickDirectory());
-        this.dirInput.addEventListener('change',
-            (e) => this._adoptFileList(e.target.files));
-        this.camReset.addEventListener('click', (e) => {
-            e.preventDefault();
-            // -1 = clear preset slot, fall back to orbital free-camera.
-            if (this.currentInstance) this.currentInstance.activateCameraPreset(-1);
-            else this.viewer.resetCamera();
-            this._setActiveChip(this.cameraList, this.camReset);
-        });
+        if (this.openDirBtn) {
+            this.openDirBtn.addEventListener('click', () => this._pickDirectory());
+        }
+        if (this.dirInput) {
+            this.dirInput.addEventListener('change',
+                (e) => this._adoptFileList(e.target.files));
+        }
+        if (this.loadJsonBtn) {
+            this.loadJsonBtn.addEventListener('click', () => {
+                if (this.jsonInput) this.jsonInput.click();
+            });
+        }
+        if (this.jsonInput) {
+            this.jsonInput.addEventListener('change', (e) => {
+                const f = e.target.files && e.target.files[0];
+                if (f) this._adoptJsonFile(f);
+                // Reset so re-picking the same file fires `change` again.
+                e.target.value = '';
+            });
+        }
+        if (this.camReset) {
+            this.camReset.addEventListener('click', (e) => {
+                e.preventDefault();
+                // -1 = clear preset slot, fall back to orbital free-camera.
+                if (this.currentInstance) this.currentInstance.activateCameraPreset(-1);
+                else this.viewer.resetCamera();
+                this._setActiveChip(this.cameraList, this.camReset);
+            });
+        }
         if (this.closeBtn) {
             // Symbolic — no parent modal in the standalone page.
             this.closeBtn.addEventListener('click', () => {});
@@ -189,7 +239,7 @@ export class HiveApp {
             }
         } else {
             // Firefox/Safari fallback — webkitdirectory FileList.
-            this.dirInput.click();
+            if (this.dirInput) this.dirInput.click();
             return;
         }
         this._populateModels();
@@ -199,6 +249,57 @@ export class HiveApp {
         if (!files || files.length === 0) return;
         this.index = this._indexFromFileList(files);
         this._populateModels();
+    }
+
+    async _adoptJsonFile(file) {
+        let table;
+        try {
+            const text = await file.text();
+            table = JSON.parse(text);
+        } catch (e) {
+            console.error('[hive] load-table parse failed:', e);
+            return;
+        }
+        await this.loadFromTable(table);
+    }
+
+    // Programmatic entry point: install a load-table JSON and repopulate
+    // the model list. Overrides take precedence over the local index.
+    async loadFromTable(table) {
+        if (!table || typeof table !== 'object') {
+            console.warn('[hive] loadFromTable: not an object');
+            return;
+        }
+        this._overrides = buildOverrideMap(table);
+        this.models = tableModels(table).map(m => ({
+            name: m.name, url: m.url
+        }));
+        this._renderModelList(this.models, '(load-table has no models)');
+    }
+
+    // Shared between _populateModels (local directory) and loadFromTable
+    // (JSON). Each entry must have `name`; either `path` (local) or `url`
+    // (load-table) — _selectModel picks the right field.
+    _renderModelList(list, emptyMsg) {
+        if (!this.modelList) return;
+        for (const a of [...this.modelList.querySelectorAll('a')]) a.remove();
+        if (this.emptyModels) { this.emptyModels.remove(); this.emptyModels = null; }
+        if (list.length === 0) {
+            const span = document.createElement('span');
+            span.className = 'empty';
+            span.textContent = emptyMsg;
+            this.modelList.appendChild(span);
+            this.emptyModels = span;
+            return;
+        }
+        for (const m of list) {
+            const a = document.createElement('a');
+            a.textContent = m.name;
+            if (m.path) a.dataset.path = m.path;
+            if (m.url)  a.dataset.url  = m.url;
+            a.addEventListener('click', () => this._selectModel(m, a));
+            this.modelList.appendChild(a);
+        }
     }
 
     async _indexFromDirHandle(dirHandle) {
@@ -248,25 +349,9 @@ export class HiveApp {
         }
         list.sort((a, b) => a.name.localeCompare(b.name));
         this.models = list;
-
-        for (const a of [...this.modelList.querySelectorAll('a')]) a.remove();
-        if (this.emptyModels) this.emptyModels.remove();
-
-        if (list.length === 0) {
-            const span = document.createElement('span');
-            span.className = 'empty';
-            span.textContent = '(no .mdx/.mdl files in directory)';
-            this.modelList.appendChild(span);
-            this.emptyModels = span;
-            return;
-        }
-        for (const m of list) {
-            const a = document.createElement('a');
-            a.textContent = m.name;
-            a.dataset.path = m.path;
-            a.addEventListener('click', () => this._selectModel(m, a));
-            this.modelList.appendChild(a);
-        }
+        // A new local-directory pick supersedes any active load-table.
+        this._overrides = null;
+        this._renderModelList(list, '(no .mdx/.mdl files in directory)');
     }
 
     async _selectModel(m, row) {
@@ -285,7 +370,11 @@ export class HiveApp {
         this._addInflight();
         const solver = (name) => this._resolve(name);
         try {
-            const model = await this.viewer.load(m.path, solver);
+            // Load-table rows carry a `url`; local-directory rows carry a
+            // relative `path` the solver translates. URLs flow through the
+            // host's rewriter (e.g. beta2 -> /hive-proxy/) before the load.
+            const src = this._rewrite(m.url || m.path);
+            const model = await this.viewer.load(src, solver);
             this.currentModel = model;
             this.currentInstance = model._instances[0];
             this.currentInstance.setTeamColor(this.currentTeamColor);
@@ -300,13 +389,37 @@ export class HiveApp {
         }
     }
 
-    // Returns one URL or a fallback chain:
-    //   1. Local picked-dir blob URL on hit.
-    //   2. Direct Hive asset URL (skips the /casc-contents/ 302).
-    //   3. /casc-contents/?path= backstop (handles SD/locale/aliases).
+    // Returns one URL or a fallback chain consumed by the asset pump in
+    // order (first 2xx response wins). Priority:
+    //   0. Absolute-URL pass-through (e.g. viewer.load(url) re-entered).
+    //   1. Load-table override (full path or basename hit) — if it 404s
+    //      or errors we fall through to the rest of the chain rather
+    //      than failing the asset outright.
+    //   2. Local picked-dir blob URL on hit.
+    //   3. Direct Hive asset URL (skips the /casc-contents/ 302).
+    //   4. /casc-contents/?path= backstop (handles SD/locale/aliases).
+    _rewrite(url) {
+        if (!this.urlRewriter || typeof url !== 'string') return url;
+        const out = this.urlRewriter(url);
+        return (typeof out === 'string' && out) ? out : url;
+    }
+
     async _resolve(name) {
+        // Pass-through: full URLs, and root-relative URLs (which a host
+        // rewriter may have produced, e.g. /hive-proxy/...). Both are
+        // resolvable by fetch() without help from the CASC chain.
+        if (isAbsoluteUrl(name)) return this._rewrite(name);
+        if (typeof name === 'string' && name.startsWith('/')) {
+            return this._rewrite(name);
+        }
         const norm = String(name).toLowerCase().replaceAll('\\', '/');
         const base = norm.split('/').pop();
+
+        const chain = [];
+        if (this._overrides) {
+            const hit = this._overrides.get(norm) || this._overrides.get(base);
+            if (hit) chain.push(hit);
+        }
         const entry = this.index.get(norm) || this.index.get(base);
         if (entry) {
             const file = entry.kind === 'fsa'
@@ -314,7 +427,7 @@ export class HiveApp {
                 : entry.file;
             const url = URL.createObjectURL(file);
             this._objectUrls.push(url);
-            return url;
+            chain.push(url);
         }
         // Hive's model-family expansion can substitute .mdl/.mdx for a
         // .pkfx request; ask for .pkb directly to avoid that.
@@ -328,14 +441,16 @@ export class HiveApp {
         const lastSlash = cascPath.lastIndexOf('/');
         const baseName = lastSlash >= 0 ? cascPath.slice(lastSlash + 1) : cascPath;
         if (!baseName.includes('.')) cascPath += '.pkb';
-        const chain = [];
         if (this.viewer.cascDirectAssetBase) {
             // Preserve directory slashes; encodeURIComponent eats them.
             const encoded = cascPath.split('/').map(encodeURIComponent).join('/');
             chain.push(this.viewer.cascDirectAssetBase + encoded);
         }
         chain.push(this.viewer.cascUrl(cascPath));
-        return chain;
+        // Object URLs (createObjectURL output) don't need rewriting and
+        // would be left alone by the host's rewriter anyway, but cycling
+        // every entry keeps the contract uniform.
+        return chain.map(u => this._rewrite(u));
     }
 
     _revokeObjectUrls() {
@@ -353,6 +468,14 @@ export class HiveApp {
         this._clearAnimations();
         if (!this.currentInstance) return;
         const seqs = this.currentInstance.getSequences();
+        // Even without an animList we still want to auto-pick the default
+        // sequence so the model animates; we just skip the DOM population.
+        if (!this.animList) {
+            const rarities = this.currentInstance.getSequenceRarities();
+            const preferredIdx = this._pickDefaultSequence(seqs, rarities);
+            if (seqs.length > 0) this._selectSequence(preferredIdx, null);
+            return;
+        }
         if (seqs.length === 0) {
             const span = document.createElement('span');
             span.className = 'empty';
@@ -413,7 +536,7 @@ export class HiveApp {
         }
     }
     _populateCameras() {
-        if (!this.currentInstance) return;
+        if (!this.currentInstance || !this.cameraList) return;
         const presets = this.currentInstance.getCameraPresets();
         this._setActiveChip(this.cameraList, this.camReset);
         presets.forEach((name, idx) => {

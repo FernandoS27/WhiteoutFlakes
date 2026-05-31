@@ -58,7 +58,7 @@ WfRenderer* wf_create() {
         // hits go through the JS-pushed cache.
         h->provider = std::make_shared<FetchContentProvider>();
         h->renderer.Scene().SetContentProvider(h->provider);
-        // Route MDX SND events to web_audio.js (gated on user gesture).
+        // Route MDX SND events to web-audio.js (gated on user gesture).
         h->renderer.SwapSoundEmitter(
             std::make_unique<whiteout::flakes::web::WebAudioSoundEmitter>());
         return h;

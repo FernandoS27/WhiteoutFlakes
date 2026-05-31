@@ -1,6 +1,6 @@
 #pragma once
 
-// ISoundEmitter that marshals SND events to web_audio.js via EM_JS.
+// ISoundEmitter that marshals SND events to web-audio.js via EM_JS.
 // JS side owns the AudioContext, fetch/decode, and gesture gating.
 
 #include "whiteout/flakes/sound_emitter.h"
