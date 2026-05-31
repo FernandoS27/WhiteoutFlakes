@@ -32,6 +32,7 @@ _wf_actor_set_playback_speed
 _wf_actor_set_anim_time
 _wf_actor_get_sequence_count
 _wf_actor_get_sequence_name
+_wf_actor_get_sequence_rarity
 _wf_actor_camera_preset_count
 _wf_actor_camera_preset_name
 _wf_camera_activate_preset

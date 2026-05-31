@@ -667,14 +667,19 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     rs_.Splats().Configure(&rs_.Assets());
 
     // Eagerly Acquire every SPL/UBR texture + SPN child-model slot the
-    // event-data SLKs reference, so the splat textures persist across
-    // splat births / deaths and survive animation changes. On desktop
-    // the sync provider loads them immediately during the next pump;
-    // on web the JS drain fetches them ahead of the first event fire.
-    // No-op until LoadEventDataFiles has populated the splat tables —
-    // wf_tick re-runs it once they arrive on web.
+    // event-data SLKs reference. Desktop only: the sync provider loads
+    // them immediately during the next pump, so the textures persist
+    // across splat births / deaths and survive animation changes.
+    //
+    // Skipped on web — every Acquire there is a Hive fetch the user
+    // pays for, and most SLK entries are never touched by the loaded
+    // model. wf_spawn_unit calls PrefetchEventAssetsForActor instead,
+    // which Acquires only the SPL/UBR/SPN/FPT slots the spawned model's
+    // event objects reference.
+#ifndef __EMSCRIPTEN__
     if (io::IsSplCachePopulated())
         io::PrefetchEventAssetSlots(rs_.Assets());
+#endif
 
     rs_.EnsureDncService();
     rs_.EnsureShadowService(*impl_->gfx_);

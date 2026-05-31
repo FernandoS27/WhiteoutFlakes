@@ -462,6 +462,14 @@ void AssetsView::PrefetchEventAssets() {
     io::PrefetchEventAssetSlots(Svc(impl_).Assets());
 }
 
+void AssetsView::PrefetchEventAssetsForActor(ActorHandle handle) {
+    if (!impl_) return;
+    auto* a = FindActor(impl_, handle);
+    if (!a || !a->sourceTemplate) return;
+    io::PrefetchEventAssetSlotsForEvents(
+        Svc(impl_).Assets(), a->sourceTemplate->eventObjects);
+}
+
 bool AssetsView::IsTextureCached(std::string_view path) const {
     if (!impl_) return false;
     return Svc(impl_).Assets().IsTextureCached(path);

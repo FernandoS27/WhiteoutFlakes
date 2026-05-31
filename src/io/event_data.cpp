@@ -2,14 +2,17 @@
 #include "slk.h"
 #include "whiteout/flakes/content_provider.h"
 #include "whiteout/flakes/event_data.h"
+#include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace whiteout::flakes::io {
@@ -442,6 +445,60 @@ void PrefetchEventAssetSlots(renderer::assets::AssetManager& assets) {
 
     std::lock_guard<std::mutex> lk(c.mu);
     c.prefetchSlots = std::move(fresh);
+}
+
+void PrefetchEventAssetSlotsForEvents(
+    renderer::assets::AssetManager& assets,
+    const std::vector<renderer::model::EventObjectConfig>& events)
+{
+    using AssetKind = renderer::assets::AssetKind;
+    using K = renderer::model::EventObjectConfig::Kind;
+
+    auto& c = Cache();
+    // Walk events once; dedupe paths so the same id appearing on
+    // multiple nodes only Acquires once. Hold the cache lock while
+    // we read the entry tables, drop it before talking to AssetManager.
+    std::unordered_set<std::string> textures;
+    std::unordered_set<std::string> models;
+    {
+        std::lock_guard<std::mutex> lk(c.mu);
+        for (const auto& e : events) {
+            if (e.id.empty()) continue;
+            const std::string id = ToLower(e.id);
+            switch (e.kind) {
+                case K::SPL:
+                case K::FPT: {
+                    auto it = c.spl.find(id);
+                    if (it != c.spl.end() && !it->second.file.empty())
+                        textures.insert(it->second.file);
+                    break;
+                }
+                case K::UBR: {
+                    auto it = c.ubr.find(id);
+                    if (it != c.ubr.end() && !it->second.file.empty())
+                        textures.insert(it->second.file);
+                    break;
+                }
+                case K::SPN: {
+                    auto it = c.spn.find(id);
+                    if (it != c.spn.end() && !it->second.modelPath.empty())
+                        models.insert(it->second.modelPath);
+                    break;
+                }
+                default: break;
+            }
+        }
+    }
+
+    std::vector<u32> fresh;
+    fresh.reserve(textures.size() + models.size());
+    for (const auto& p : textures) fresh.push_back(assets.Acquire(AssetKind::Texture, p));
+    for (const auto& p : models)   fresh.push_back(assets.Acquire(AssetKind::ChildModel, p));
+
+    // Append to the session-level slot list so ReleaseEventAssetSlots
+    // (called on teardown / re-parse) frees them along with the rest.
+    std::lock_guard<std::mutex> lk(c.mu);
+    c.prefetchSlots.insert(c.prefetchSlots.end(), fresh.begin(), fresh.end());
 }
 
 void ReleaseEventAssetSlots(renderer::assets::AssetManager& assets) {

@@ -275,6 +275,15 @@ public:
     ///        populating the splat tables.
     void PrefetchEventAssets();
 
+    /// @brief Per-actor variant — only Acquire slots for the
+    ///        SPL/UBR/SPN/FPT events the actor's template actually
+    ///        references. Use this instead of `PrefetchEventAssets()`
+    ///        on backends where every Acquire costs a network fetch
+    ///        (web viewer hitting Hive's CASC mirror); the global
+    ///        variant would pull in every entry in the SLK tables
+    ///        regardless of whether the loaded model fires them.
+    void PrefetchEventAssetsForActor(ActorHandle actor);
+
     /// @brief True iff a Texture slot for @p path is already loaded.
     ///        Used by hosts that want to dedup texture decode work
     ///        across models (e.g. the Max plugin's live adapter).

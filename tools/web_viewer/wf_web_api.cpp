@@ -124,11 +124,10 @@ void wf_tick(WfRenderer* h, float dtSeconds) {
             whiteout::flakes::io::IsUbrCachePopulated() &&
             whiteout::flakes::io::IsSndCachePopulated();
         if (!allLoaded && (++h->eventDataRetryTick % 30) == 0) {
-            const bool wasLoaded = whiteout::flakes::io::IsSplCachePopulated();
             whiteout::flakes::io::LoadEventDataFiles(cp, /*force=*/true);
-            // Refcounted SPL/UBR/SPN slots — survive animation changes.
-            if (!wasLoaded && whiteout::flakes::io::IsSplCachePopulated())
-                h->renderer.Assets().PrefetchEventAssets();
+            // No global PrefetchEventAssets here — wf_spawn_unit does
+            // per-actor prefetch so we only Acquire slots for the
+            // SPL/UBR/SPN/FPT events the loaded model actually fires.
         }
     }
     h->renderer.Scene().Update(dtSeconds);

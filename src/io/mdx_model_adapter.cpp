@@ -1289,7 +1289,8 @@ std::vector<SequenceInfo> MdxModelAdapter::GetSequences() const {
         const bool nonLoop = (seq.flags & whiteout::mdx::Sequence::Flag::NonLooping) !=
                              whiteout::mdx::Sequence::Flag::None;
         result.push_back(
-            {seq.name, (i32)seq.intervalStart, (i32)seq.intervalEnd, seq.moveSpeed, nonLoop});
+            {seq.name, (i32)seq.intervalStart, (i32)seq.intervalEnd,
+             seq.moveSpeed, seq.rarity, nonLoop});
     }
     return result;
 }

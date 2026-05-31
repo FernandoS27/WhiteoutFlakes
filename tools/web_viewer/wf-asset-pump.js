@@ -15,6 +15,9 @@ function familyFor(origExt) {
     if (TEX.includes(origExt)) return TEX;
     if (MDL.includes(origExt)) return MDL;
     if (PRT.includes(origExt)) return PRT;
+    // Cornflakes can surface bare-basename particle paths; treat as PRT
+    // so the `.pkb` solver-side rewrite passes the family check.
+    if (origExt === '') return PRT;
     return [origExt];
 }
 
@@ -101,31 +104,77 @@ export async function fetchAndApplyAsset(viewer, pathSolver, kind, relPath) {
     }
 }
 
+// Retry tuning for transient fetch/apply failures. AssetManager's
+// DrainNeeds is consumptive — once C++ surfaces a need and JS fails to
+// resolve it, the slot stays stuck on placeholder until something
+// releases + re-acquires. The retry queue below covers transient
+// failures (Hive 503s, network blips, partial responses) without
+// requiring renderer-side support.
+const MAX_RETRY_ATTEMPTS = 3;
+const RETRY_BACKOFF_MS    = 2000; // 2 s, then doubled per attempt
+
+function fireFetch(viewer, kind, path, dedupKey) {
+    const p = fetchAndApplyAsset(viewer, viewer._lazySolver, kind, path)
+        .then(success => {
+            if (success) {
+                viewer._failedAssets.delete(dedupKey);
+                return;
+            }
+            recordFailure(viewer, dedupKey, kind, path);
+        })
+        .catch(() => recordFailure(viewer, dedupKey, kind, path))
+        .finally(() => { viewer._inflightAssets.delete(dedupKey); });
+    viewer._inflightAssets.set(dedupKey, p);
+}
+
+function recordFailure(viewer, dedupKey, kind, path) {
+    const info = viewer._failedAssets.get(dedupKey) || { kind, path, attempts: 0 };
+    info.attempts += 1;
+    info.lastTryMs = performance.now();
+    viewer._failedAssets.set(dedupKey, info);
+}
+
 // Drain the needs queue. Dedup by (kind, path) for in-flight only —
 // slot teardown + re-Acquire (model switch) needs a fresh fetch.
 export function pumpAssetNeeds(viewer) {
     if (!viewer._handle) return;
     const M = viewer._module;
     if (!M._wf_assets_needs_count) return;
-    const n = M._wf_assets_needs_count(viewer._handle);
-    if (!n) return;
     if (!viewer._inflightAssets) viewer._inflightAssets = new Map();
-    const CAP = 512;
-    const buf = M._malloc(CAP);
-    try {
-        for (let i = 0; i < n; ++i) {
-            const kind = M._wf_assets_needs_get_kind(viewer._handle, i);
-            M._wf_assets_needs_get_path(viewer._handle, i, buf, CAP);
-            const path = M.UTF8ToString(buf);
-            const dedupKey = kind + ':' + path;
-            if (viewer._inflightAssets.has(dedupKey)) continue;
-            if (!viewer._lazySolver) continue;
-            const p = fetchAndApplyAsset(viewer, viewer._lazySolver, kind, path)
-                .catch(() => {})
-                .finally(() => { viewer._inflightAssets.delete(dedupKey); });
-            viewer._inflightAssets.set(dedupKey, p);
+    if (!viewer._failedAssets)   viewer._failedAssets   = new Map();
+
+    // Fresh needs surfaced by C++ since last pump.
+    const n = M._wf_assets_needs_count(viewer._handle);
+    if (n) {
+        const CAP = 512;
+        const buf = M._malloc(CAP);
+        try {
+            for (let i = 0; i < n; ++i) {
+                const kind = M._wf_assets_needs_get_kind(viewer._handle, i);
+                M._wf_assets_needs_get_path(viewer._handle, i, buf, CAP);
+                const path = M.UTF8ToString(buf);
+                const dedupKey = kind + ':' + path;
+                if (viewer._inflightAssets.has(dedupKey)) continue;
+                if (!viewer._lazySolver) continue;
+                // Re-surfacing a need cancels any prior failure record;
+                // the renderer asked again, so it's wanted again.
+                viewer._failedAssets.delete(dedupKey);
+                fireFetch(viewer, kind, path, dedupKey);
+            }
+        } finally {
+            M._free(buf);
         }
-    } finally {
-        M._free(buf);
+    }
+
+    // Retry slots that failed earlier, with exponential backoff.
+    if (viewer._failedAssets.size > 0 && viewer._lazySolver) {
+        const now = performance.now();
+        for (const [dedupKey, info] of viewer._failedAssets) {
+            if (viewer._inflightAssets.has(dedupKey)) continue;
+            if (info.attempts >= MAX_RETRY_ATTEMPTS) continue;
+            const dueAt = info.lastTryMs + RETRY_BACKOFF_MS * (1 << (info.attempts - 1));
+            if (now < dueAt) continue;
+            fireFetch(viewer, info.kind, info.path, dedupKey);
+        }
     }
 }

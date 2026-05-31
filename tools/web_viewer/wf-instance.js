@@ -172,6 +172,19 @@ export class Instance {
         return out;
     }
 
+    // MDX SEQS rarity weights, parallel to getSequences().
+    // Lower = more common; hosts use this to pick the default idle.
+    getSequenceRarities() {
+        if (!this._handle) return [];
+        const M = this._M;
+        const n = M._wf_actor_get_sequence_count(this._vh, this._handle);
+        const out = new Array(n);
+        for (let i = 0; i < n; ++i) {
+            out[i] = M._wf_actor_get_sequence_rarity(this._vh, this._handle, i);
+        }
+        return out;
+    }
+
     getCameraPresets() {
         if (!this._handle) return [];
         const M = this._M;

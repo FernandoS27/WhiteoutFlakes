@@ -93,6 +93,7 @@ struct SequenceInfo {
     i32 startMs = 0;
     i32 endMs = 0;
     f32 moveSpeed = 0.0f;
+    f32 rarity = 0.0f;
     bool nonLooping = false;
 };
 

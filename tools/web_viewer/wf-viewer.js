@@ -47,9 +47,12 @@ export class WhiteoutViewer {
         this._lastTime = 0;
         // Hive's CASC mirror — CORS-enabled, 302 to resolved asset,
         // server-side family expansion. Override for a local proxy.
+        // Encode per-segment so `/` stays literal in the query; Hive's
+        // path normalizer doesn't always decode %2F back to a separator
+        // (observed on sound/ paths).
         this.cascUrl = (path) =>
             'https://www.hiveworkshop.com/casc-contents/?path=' +
-            encodeURIComponent(path);
+            path.split('/').map(encodeURIComponent).join('/');
         // Direct-asset prefix skips the /casc-contents/ 302 (1 fewer
         // round-trip per asset). HD tree by default since modern
         // Reforged content lives there; SD/locale fall through to cascUrl.

@@ -12,6 +12,19 @@ const ENGINE_ASSETS = [
     'Environment/EnvironmentMap/Portraits/PortraitDefault_IBL.dds',
     'Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdx',
     'Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdl',
+    // Replaceable tree textures (IDs 31-36). The renderer's
+    // ReplaceableTextureManager resolves these via ContentProvider::Request
+    // (synchronous, not the AssetManager needs pump that JS drains), so
+    // they have to be pre-pushed or every tree-textured weapon / club
+    // shows up with the white stub. Canonical paths from
+    // src/io/replaceable_paths.cpp::ReplaceableCanonicalPath. Small files
+    // (~50 KB each) — cheap to fetch all six upfront.
+    'ReplaceableTextures/LordaeronTree/LordaeronSummerTree.blp',
+    'ReplaceableTextures/AshenvaleTree/AshenTree.blp',
+    'ReplaceableTextures/BarrensTree/BarrensTree.blp',
+    'ReplaceableTextures/NorthrendTree/NorthTree.blp',
+    'ReplaceableTextures/Mushroom/MushroomTree.blp',
+    'ReplaceableTextures/RuinsTree/RuinsTree.blp',
     // Event-data SLKs — SPN/SPL/UBR resolution + SndEntry lookups.
     'Splats/SpawnData.slk',
     'Splats/SplatData.slk',
@@ -48,21 +61,40 @@ function putBytes(viewer, path, u8) {
     }
 }
 
-async function fetchBytes(url) {
+async function fetchResult(url) {
     try {
         const r = await fetch(url);
         if (!r.ok) return null;
-        return new Uint8Array(await r.arrayBuffer());
+        return { bytes: new Uint8Array(await r.arrayBuffer()), finalUrl: r.url };
     } catch (_) { return null; }
+}
+
+function extOf(s) {
+    const dot = s.lastIndexOf('.');
+    return dot >= 0 ? s.slice(dot).toLowerCase() : '';
+}
+
+// If Hive served e.g. foo.dds for our foo.blp request, store under
+// the served ext so FetchContentProvider's alt-ext walk hits and the
+// renderer parses with the right decoder.
+function pathWithServedExt(originalPath, finalUrl) {
+    let servedExt = extOf(originalPath);
+    try {
+        const finalPath = new URL(finalUrl).pathname.toLowerCase();
+        const ext = extOf(finalPath);
+        if (ext) servedExt = ext;
+    } catch (_) { /* opaque URL — keep original */ }
+    const dot = originalPath.lastIndexOf('.');
+    return (dot >= 0 ? originalPath.slice(0, dot) : originalPath) + servedExt;
 }
 
 // Tries `engineAssetRoot` (./ by default), falls back to viewer.cascUrl.
 export async function prefetchEngineAssets(viewer) {
     const root = viewer.engineAssetRoot || './';
     await Promise.all(ENGINE_ASSETS.map(async (p) => {
-        let bytes = await fetchBytes(root + p);
-        if (!bytes) bytes = await fetchBytes(viewer.cascUrl(p));
-        if (bytes) putBytes(viewer, p, bytes);
+        let res = await fetchResult(root + p);
+        if (!res) res = await fetchResult(viewer.cascUrl(p));
+        if (res) putBytes(viewer, pathWithServedExt(p, res.finalUrl), res.bytes);
     }));
 }
 
@@ -73,8 +105,8 @@ export async function prefetchShaders(viewer) {
         ...PS_SHADERS.map(n => `shaders/webgpu/ps/${n}.bls`),
     ];
     await Promise.all(paths.map(async (path) => {
-        const bytes = await fetchBytes('./' + path);
-        if (!bytes) { console.warn('[wf] prefetch FAIL ' + path); return; }
-        putBytes(viewer, path, bytes);
+        const res = await fetchResult('./' + path);
+        if (!res) { console.warn('[wf] prefetch FAIL ' + path); return; }
+        putBytes(viewer, path, res.bytes);
     }));
 }

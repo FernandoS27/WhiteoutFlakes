@@ -306,6 +306,12 @@ export class HiveApp {
         if (cascPath.endsWith('.pkfx')) {
             cascPath = cascPath.slice(0, -5) + '.pkb';
         }
+        // Cornflakes occasionally references particles by bare name with
+        // no extension; Hive's CASC won't resolve that without a literal
+        // path, so default to .pkb (the canonical particle format).
+        const lastSlash = cascPath.lastIndexOf('/');
+        const baseName = lastSlash >= 0 ? cascPath.slice(lastSlash + 1) : cascPath;
+        if (!baseName.includes('.')) cascPath += '.pkb';
         const chain = [];
         if (this.viewer.cascDirectAssetBase) {
             // Preserve directory slashes; encodeURIComponent eats them.
@@ -338,17 +344,38 @@ export class HiveApp {
             this.animList.appendChild(span);
             return;
         }
-        let firstRow = null;
+        const rarities = this.currentInstance.getSequenceRarities();
+        const preferredIdx = this._pickDefaultSequence(seqs, rarities);
+        let preferredRow = null;
         seqs.forEach((name, idx) => {
             const a = document.createElement('a');
             a.textContent = name;
             a.dataset.seq = String(idx);
             a.addEventListener('click', () => this._selectSequence(idx, a));
             this.animList.appendChild(a);
-            if (idx === 0) firstRow = a;
+            if (idx === preferredIdx) preferredRow = a;
         });
-        // Avoid T-pose on load.
-        this._selectSequence(0, firstRow);
+        this._selectSequence(preferredIdx, preferredRow);
+    }
+
+    // Pick the default idle: any Stand-family sequence with the lowest
+    // rarity (MDX SEQS weight; lower = more common). Falls back to the
+    // first sequence if the model has no Stand. Matches the in-game pick.
+    _pickDefaultSequence(seqs, rarities) {
+        let bestIdx = -1;
+        let bestRarity = Infinity;
+        for (let i = 0; i < seqs.length; ++i) {
+            const lower = seqs[i].toLowerCase().trim();
+            // "stand", "stand 1", "stand ready 1", "stand work" — anything
+            // whose first token is "stand" qualifies as an idle variant.
+            if (lower !== 'stand' && !lower.startsWith('stand ')) continue;
+            const r = rarities[i] ?? 0;
+            if (r < bestRarity) {
+                bestRarity = r;
+                bestIdx = i;
+            }
+        }
+        return bestIdx >= 0 ? bestIdx : 0;
     }
 
     _selectSequence(idx, row) {

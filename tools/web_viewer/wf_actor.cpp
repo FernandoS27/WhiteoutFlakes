@@ -37,7 +37,14 @@ uint32_t wf_spawn_unit(WfRenderer* h, const char* mdxPath) {
     if (!h || !mdxPath) return 0;
     // Child-model + PE1 templates load via FrameTicker's per-frame
     // GetOrLoadAsync; no separate prefetch needed here.
-    return h->renderer.Loader().SpawnUnit(std::string(mdxPath));
+    const uint32_t actor = h->renderer.Loader().SpawnUnit(std::string(mdxPath));
+    if (actor) {
+        // Per-model event-asset prefetch — only the SPL/UBR/SPN/FPT
+        // entries this model actually references. Replaces the global
+        // PrefetchEventAssets which would acquire every SLK entry.
+        h->renderer.Assets().PrefetchEventAssetsForActor(actor);
+    }
+    return actor;
 }
 
 void wf_clear_all(WfRenderer* h) {
@@ -122,6 +129,17 @@ int wf_actor_get_sequence_name(WfRenderer* h, uint32_t actor, int idx,
     const auto seqs = av.Sequences();
     if (idx < 0 || idx >= static_cast<int>(seqs.size())) return 0;
     return CopyToOutBuf(seqs[idx].name, outBuf, bufCap);
+}
+
+// MDX SEQS rarity weight; lower = more common. Hosts use this to pick
+// the "default" idle when multiple Stand/Walk variants exist.
+float wf_actor_get_sequence_rarity(WfRenderer* h, uint32_t actor, int idx) {
+    if (!h) return 0.0f;
+    auto av = h->renderer.Actor(actor);
+    if (!av.IsValid()) return 0.0f;
+    const auto seqs = av.Sequences();
+    if (idx < 0 || idx >= static_cast<int>(seqs.size())) return 0.0f;
+    return seqs[idx].rarity;
 }
 
 // Per-actor camera presets (Portrait_Camera, Cinematic_Camera, …).

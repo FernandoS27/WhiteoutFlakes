@@ -24,6 +24,9 @@ class IContentProvider;
 namespace whiteout::flakes::renderer::assets {
 class AssetManager;
 }
+namespace whiteout::flakes::renderer::model {
+struct EventObjectConfig;
+}
 
 namespace whiteout::flakes::io {
 
@@ -95,6 +98,16 @@ const SndEntry* FindSnd(std::string_view id);
 ///        across animation switches. Idempotent: releases any prior
 ///        set first so a `force=true` re-parse can re-bind cleanly.
 void PrefetchEventAssetSlots(renderer::assets::AssetManager& assets);
+
+/// @brief Per-actor variant: only Acquire slots for the entries actually
+///        referenced by the given event-object configs (SPL/UBR for
+///        splat+footprint textures, SPN for child-model spawns). Use
+///        this from a spawn path to avoid the global PrefetchEventAssetSlots
+///        round-trip cost — relevant on web, where every Acquire that
+///        hasn't fired yet is a Hive fetch the user pays for.
+void PrefetchEventAssetSlotsForEvents(
+    renderer::assets::AssetManager& assets,
+    const std::vector<renderer::model::EventObjectConfig>& events);
 
 /// @brief Release every slot held by PrefetchEventAssetSlots. Called by
 ///        LoadEventDataFiles ahead of a force re-parse, and exposed to
