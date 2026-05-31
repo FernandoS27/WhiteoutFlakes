@@ -95,16 +95,27 @@ export class WebAudioBridge {
             try {
                 if (!this.pathSolver) return null;
                 for (const cand of this._candidates(path)) {
-                    const url = await Promise.resolve(this.pathSolver(cand));
-                    if (!url) continue;
-                    try {
-                        const r = await fetch(url, { cache: 'no-store' });
-                        if (!r.ok) continue;
-                        const arr = await r.arrayBuffer();
-                        const buf = await ctx.decodeAudioData(arr);
+                    // HiveApp._resolve returns either a single URL or a
+                    // fallback chain (direct asset URL → /casc-contents/).
+                    // Normalise to an array so we try every URL in order.
+                    let urls = await Promise.resolve(this.pathSolver(cand));
+                    if (!urls) continue;
+                    if (!Array.isArray(urls)) urls = [urls];
+                    let buf = null;
+                    for (const url of urls) {
+                        if (!url) continue;
+                        try {
+                            const r = await fetch(url, { cache: 'no-store' });
+                            if (!r.ok) continue;
+                            const arr = await r.arrayBuffer();
+                            buf = await ctx.decodeAudioData(arr);
+                            break;
+                        } catch (_) { /* try next URL in chain */ }
+                    }
+                    if (buf) {
                         this.bufferCache.set(path, buf);
                         return buf;
-                    } catch (_) { /* try next candidate */ }
+                    }
                 }
                 // Don't cache null — model-switch may revoke blob URLs
                 // mid-flight and the same sound will resolve next play.
