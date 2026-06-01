@@ -68,6 +68,10 @@ u64 WebGPUDevice::LiveGpuBytes() const {
     return (a > f) ? (a - f) : 0;
 }
 
+bool WebGPUDevice::SupportsBlockCompression() const {
+    return state_->hasBlockCompression;
+}
+
 IGFXCommandList* WebGPUDevice::GetImmediateContext() {
     return immediate_.get();
 }

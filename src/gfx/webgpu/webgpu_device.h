@@ -65,6 +65,7 @@ public:
     }
     const char* GetDeviceName() const override;
     u64 LiveGpuBytes() const override;
+    bool SupportsBlockCompression() const override;
 
     WebGPUDeviceState& State();
     const WebGPUDeviceState& State() const;

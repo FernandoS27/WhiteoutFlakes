@@ -99,6 +99,13 @@ public:
         return defaults_;
     }
 
+    /// @brief Forwards IGFXDevice::SupportsBlockCompression(). The asset
+    ///        decode path checks this to decide whether BCn textures can
+    ///        be uploaded as-is or must be decompressed to RGBA8 first.
+    bool SupportsBlockCompression() const noexcept {
+        return gfx_.SupportsBlockCompression();
+    }
+
 private:
     gfx::IGFXDevice& gfx_;
     Defaults defaults_;

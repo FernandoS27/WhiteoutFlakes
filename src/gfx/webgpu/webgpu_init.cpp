@@ -253,6 +253,8 @@ bool RequestDeviceSync(WebGPUDeviceState& state) {
         }
     };
     maybeEnable(wgpu::FeatureName::TextureCompressionBC, "TextureCompressionBC");
+    state.hasBlockCompression =
+        state.adapter.HasFeature(wgpu::FeatureName::TextureCompressionBC);
     maybeEnable(wgpu::FeatureName::Float32Filterable, "Float32Filterable");
     // The HDR scene target uses R11G11B10_FLOAT (RG11B10Ufloat). WebGPU
     // marks this format sampleable by default but only renderable when

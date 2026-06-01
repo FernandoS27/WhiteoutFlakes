@@ -156,6 +156,17 @@ public:
     virtual u64 LiveGpuBytes() const {
         return 0;
     }
+
+    /// @brief Whether the device can sample BCn-compressed textures
+    ///        directly. Desktop backends (D3D11/12, Vulkan, Metal) report
+    ///        true — BC support is part of the feature-level floor we
+    ///        target. WebGPU reports the negotiated `texture-compression-bc`
+    ///        feature; adapters that lack it (older mobile, some software
+    ///        fallbacks, browsers with the feature off) force the asset
+    ///        path to decompress BCn → RGBA8 before upload.
+    virtual bool SupportsBlockCompression() const {
+        return true;
+    }
 };
 
 // `enableValidation` turns on the API's debug / validation machinery:

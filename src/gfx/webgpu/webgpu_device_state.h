@@ -93,6 +93,11 @@ struct WebGPUDeviceState {
     // WebGPU spec floor is 256 bytes (matches D3D12 / Vulkan AMD).
     u64 minUniformBufferAlign = 256;
 
+    // Set at Init time from `adapter.HasFeature(TextureCompressionBC)`.
+    // Read by SupportsBlockCompression() and by the asset path to gate
+    // BCn → RGBA8 decompression on adapters that can't sample BC directly.
+    bool hasBlockCompression = false;
+
     // Shared pipeline layout — every renderer PSO uses the same three
     // bind-group layouts (CB / SRV / sampler), one slot per binding.
     // Mirrors the descriptor-set-layout split in

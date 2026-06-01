@@ -201,7 +201,7 @@ namespace {
 // count; the gfx layer slices the buffer using rowPitch/levelSize
 // math derived from format + (w, h).
 bool DecodeTexture(std::span<const u8> bytes, const std::string& ext,
-                   const std::string& pathForSrgb,
+                   const std::string& pathForSrgb, bool supportsBlockCompression,
                    std::vector<u8>& outBytes, i32& outW, i32& outH,
                    i32& outMipLevels, gfx::Format& outFormat) {
     auto result = model::DispatchTextureParser(
@@ -215,6 +215,15 @@ bool DecodeTexture(std::span<const u8> bytes, const std::string& ext,
     // the decoded data to RGBA8 — drops compression but salvages
     // the texture.
     gfx::Format fmt = model::WhiteoutFormatToGfx(result->format(), result->isSrgb());
+    // Backends that can't sample BCn (some WebGPU adapters) decompress
+    // here. Texture::format(RGBA8) routes BC1/2/3/7 through their native
+    // decoder and preserves the mip chain — the upload path downstream
+    // is identical to a source-uncompressed texture.
+    if (!supportsBlockCompression && fmt != gfx::Format::Unknown && gfx::IsBlockCompressed(fmt)) {
+        result->format(whiteout::textures::PixelFormat::RGBA8);
+        fmt = result->isSrgb() ? gfx::Format::R8G8B8A8_UNORM_SRGB
+                                : gfx::Format::R8G8B8A8_UNORM;
+    }
     if (fmt == gfx::Format::Unknown) {
         result->format(whiteout::textures::PixelFormat::RGBA8);
         fmt = result->isSrgb() ? gfx::Format::R8G8B8A8_UNORM_SRGB
@@ -284,8 +293,9 @@ bool AssetManager::ApplyPrepared(AssetKind kind, std::string_view path,
             // usable without the host having to thread foundExt through.
             ext = model::ExtensionLower(std::filesystem::path(norm));
         }
-        if (!DecodeTexture(bytes, ext, norm, prep.pixels, prep.width, prep.height,
-                           prep.mipLevels, prep.format)) {
+        if (!DecodeTexture(bytes, ext, norm, textures_.SupportsBlockCompression(),
+                           prep.pixels, prep.width, prep.height, prep.mipLevels,
+                           prep.format)) {
             std::lock_guard<std::mutex> lk(mu_);
             ++statApplyMisses_;
             return false;
