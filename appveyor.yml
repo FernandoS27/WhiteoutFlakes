@@ -32,6 +32,16 @@ clone_depth: 1
 # Branches we'd be wasting CI minutes on if we built them — adjust to taste.
 skip_branch_with_pr: true
 
+# AppVeyor's macos-pro cloud group runs out of capacity frequently
+# ("Cannot assign job to clouds/groups 'macos-pro'. All clouds within the
+# group are either failing, offline, busy or reached build minutes quota.").
+# .github/workflows/macos-dmg.yml is the canonical macOS pipeline; the
+# AppVeyor slot is a nice-to-have, so flag it as allowed-to-fail so a
+# scheduling hiccup doesn't take down the whole build matrix.
+matrix:
+  allow_failures:
+    - JOB_TARGET: macos
+
 # Toolchain version pins — kept in sync with .github/workflows/*.yml.
 environment:
   VULKAN_SDK_VERSION: 1.4.341.0
