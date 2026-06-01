@@ -80,7 +80,7 @@ std::string PickFolderWin32(HWND parent) {
     return result;
 }
 
-constexpr std::array<const char*, 8> kDebugVisLabels = {
+constexpr std::array<const char*, 9> kDebugVisLabels = {
     "Off",
     "Albedo",
     "World Normal",
@@ -89,6 +89,7 @@ constexpr std::array<const char*, 8> kDebugVisLabels = {
     "Shading Only (white albedo)",
     "Shading Only (grey albedo)",
     "Specular Only (black albedo)",
+    "No ORM",
 };
 
 constexpr std::array<const char*, 5> kLodLabels = {

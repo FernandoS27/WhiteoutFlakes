@@ -5,6 +5,10 @@
 // (e.g. direct asset URL → /casc-contents/).
 
 const TEX = ['.blp', '.dds', '.tga', '.png', '.tif'];
+// Subset of TEX with a C++ parser. Kept as a fast-fail gate for formats
+// the renderer cannot decode; if a load-table override returns bytes of
+// an unsupported texture format we skip without burning CASC fallbacks.
+const TEX_DECODABLE = new Set(['.blp', '.dds', '.tga', '.png', '.tif']);
 const MDL = ['.mdx', '.mdl'];
 const PRT = ['.pkb', '.pkfx'];
 const KIND_NAMES = ['Texture', 'Particle', 'ChildModel'];
@@ -43,6 +47,27 @@ function extractServedExt(responseUrl, fallback) {
 function hexHead(bytes) {
     return Array.from(bytes.slice(0, 8))
         .map(b => b.toString(16).padStart(2, '0')).join(' ');
+}
+
+// Detect the texture format from its file-header magic. Useful when the
+// URL gives us no hint (e.g. Hive's /repository-files/<hash>/stream) or
+// when the upload's actual format differs from the request key's
+// extension (a .tif key pointing at a DDS stream, etc). Returning the
+// real ext lets the C++ decoder pick the right parser instead of
+// silently failing as the wrong family.
+function sniffTextureExt(bytes) {
+    if (!bytes || bytes.length < 4) return '';
+    const b0 = bytes[0], b1 = bytes[1], b2 = bytes[2], b3 = bytes[3];
+    // 'DDS '
+    if (b0 === 0x44 && b1 === 0x44 && b2 === 0x53 && b3 === 0x20) return '.dds';
+    // 'BLP1' / 'BLP2'
+    if (b0 === 0x42 && b1 === 0x4C && b2 === 0x50 && (b3 === 0x31 || b3 === 0x32)) return '.blp';
+    // PNG: 89 50 4E 47
+    if (b0 === 0x89 && b1 === 0x50 && b2 === 0x4E && b3 === 0x47) return '.png';
+    // TIFF: 'II*\0' (little-endian) or 'MM\0*' (big-endian)
+    if (b0 === 0x49 && b1 === 0x49 && b2 === 0x2A && b3 === 0x00) return '.tif';
+    if (b0 === 0x4D && b1 === 0x4D && b2 === 0x00 && b3 === 0x2A) return '.tif';
+    return '';
 }
 
 // Push bytes into WASM and dispatch to wf_assets_apply.
@@ -86,7 +111,22 @@ async function fetchAndApplyImpl(viewer, pathSolver, kind, relPath) {
                 // (pkfx/pkb ↔ mdl/mdx substitution).
                 if (!family.includes(servedExt)) continue;
                 const bytes = new Uint8Array(await r.arrayBuffer());
-                if (applyAsset(viewer, kind, relPath, bytes, servedExt)) return true;
+                // For textures, trust the bytes over the URL hint —
+                // proxy URLs and the .tif-key/.dds-bytes mix in
+                // load-tables can otherwise route bytes to the wrong
+                // decoder and silently miss.
+                let appliedExt = servedExt;
+                if (family === TEX) {
+                    const sniffed = sniffTextureExt(bytes);
+                    if (sniffed) appliedExt = sniffed;
+                    if (!TEX_DECODABLE.has(appliedExt)) {
+                        console.warn('[wf] texture format ' + appliedExt
+                            + ' has no decoder in this build; ' + relPath
+                            + ' will be skipped.');
+                        return false;
+                    }
+                }
+                if (applyAsset(viewer, kind, relPath, bytes, appliedExt)) return true;
                 // Bytes came back but C++ refused them. Log the head so
                 // stale-PKB / zstd / HTML look distinguishable.
                 console.warn('[wf] apply REJECTED (' + kindName(kind) + ', '

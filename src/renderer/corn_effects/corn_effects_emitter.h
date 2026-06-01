@@ -129,6 +129,9 @@ private:
     f32 GetCornFxScale() const {
         return cornEffectsScaling_ ? hostScale_ : 1.0f;
     }
+    f32 GetModelScale() const {
+        return cornEffectsScaling_ ? 1.0f : hostScale_;
+    }
 
     static ::whiteout::cornflakes::Mat4x3 ToCornflakesL2W(const Matrix44f& m);
 

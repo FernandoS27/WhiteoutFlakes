@@ -442,6 +442,12 @@ void CornEffectsEmitter::Update(f32 dt, bool paused) {
     inputs.dt = dt;
     inputs.effectAge = effectAge_;
     inputs.emitterL2W = ToCornflakesL2W(modelToWorld_);
+    const f32 modelScale = GetModelScale();
+    for (i32 r = 0; r < 3; ++r) {
+        inputs.emitterL2W.m[r][0] *= modelScale;
+        inputs.emitterL2W.m[r][1] *= modelScale;
+        inputs.emitterL2W.m[r][2] *= modelScale;
+    }
     inputs.emitterL2W.m[0][3] = modelToWorld_.data[3][0] * gameToCornEffectsScale_;
     inputs.emitterL2W.m[1][3] = modelToWorld_.data[3][1] * gameToCornEffectsScale_;
     inputs.emitterL2W.m[2][3] = modelToWorld_.data[3][2] * gameToCornEffectsScale_;

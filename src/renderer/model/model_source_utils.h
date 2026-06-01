@@ -8,6 +8,7 @@
 #include <whiteout/textures/png/parser.h>
 #include <whiteout/textures/texture.h>
 #include <whiteout/textures/tga/parser.h>
+#include <whiteout/textures/tiff/parser.h>
 
 #include <algorithm>
 #include <cctype>
@@ -102,6 +103,10 @@ inline std::optional<whiteout::textures::Texture> DispatchTextureParser(const st
     }
     if (ext == ".png") {
         whiteout::textures::png::Parser p;
+        return parse(p);
+    }
+    if (ext == ".tif" || ext == ".tiff") {
+        whiteout::textures::tiff::Parser p;
         return parse(p);
     }
     return std::nullopt;

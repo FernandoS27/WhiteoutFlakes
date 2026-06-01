@@ -5,7 +5,7 @@
 namespace whiteout::flakes::io {
 namespace fs = std::filesystem;
 
-static constexpr const char* kTextureExts[] = {".blp", ".dds", ".tga", ".png"};
+static constexpr const char* kTextureExts[] = {".blp", ".dds", ".tga", ".png", ".tif"};
 static constexpr const char* kModelExts[] = {".mdx", ".mdl"};
 
 FileResolver::FileResolver(const fs::path& basePath) : basePath_(basePath) {}

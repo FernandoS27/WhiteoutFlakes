@@ -1977,12 +1977,20 @@ public:
                 u32 enabled = 0;
                 i32 psMode = dbgMode;
                 Vector3f overrideA = {0, 0, 0};
+                Vector3f overrideO = {0, 0, 0};
                 if (dbgMode >= 5 && dbgMode <= 7) {
                     enabled = 1;
                     psMode = 0;
                     overrideA = (dbgMode == 5)   ? Vector3f{1, 1, 1}
                                 : (dbgMode == 6) ? Vector3f{0.5f, 0.5f, 0.5f}
                                                  : Vector3f{0, 0, 0};
+                } else if (dbgMode == 8) {
+                    // ORM stub from texture_asset_manager (NeutralOrm 0x0000FFFFu):
+                    // AO=1, Roughness=1, Metallic=0. Shader reads .yz for
+                    // (roughness, metalness); .x feeds crystal refractMask.
+                    enabled = 2;
+                    psMode = 0;
+                    overrideO = {1.0f, 1.0f, 0.0f};
                 }
                 dbg->enabledShaders = enabled;
                 const u32 modeBits = static_cast<u32>(psMode);
@@ -1990,7 +1998,7 @@ public:
                 dbg->_p0[0] = dbg->_p0[1] = 0.0f;
                 dbg->overrideAlbedo = overrideA;
                 dbg->_p1 = 0.0f;
-                dbg->overrideOrm = {0, 0, 0};
+                dbg->overrideOrm = overrideO;
                 dbg->_p2 = 0.0f;
             }
             cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 3,

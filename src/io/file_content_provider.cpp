@@ -104,7 +104,7 @@ static fs::path DiscoverExecutableDirectory() {
 
 static constexpr const char* kTextureExts[] = {".blp", ".dds", ".tga", ".png", ".tif"};
 static constexpr const char* kModelExts[] = {".mdx", ".mdl"};
-static constexpr const char* kArchiveTextureExts[] = {".blp", ".dds", ".tga", ".png"};
+static constexpr const char* kArchiveTextureExts[] = {".blp", ".dds", ".tga", ".png", ".tif"};
 static constexpr const char* kArchiveModelExts[] = {".mdx", ".mdl"};
 static constexpr const char* kCascPrefixes[] = {
     "war3.w3mod:",

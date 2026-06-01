@@ -54,7 +54,7 @@ void wf_set_shadows_enabled(WfRenderer* h, int on) {
 
 // HD debug visualisation mode. 0=Off, 1=Albedo, 2=WorldNormal,
 // 3=LodHeatmap, 4=LightCount, 5=ShadingWhite, 6=ShadingGrey,
-// 7=SpecularOnly. Matches basic_viewer's kDebugVisLabels.
+// 7=SpecularOnly, 8=NoOrm. Matches basic_viewer's kDebugVisLabels.
 void wf_set_hd_debug_mode(WfRenderer* h, int mode) {
     if (!h) return;
     h->renderer.Settings().SetHdDebugMode(mode);

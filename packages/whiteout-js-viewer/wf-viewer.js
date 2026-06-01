@@ -48,6 +48,7 @@ export const HD_DEBUG_MODES = [
     { value: 5, label: 'Shading (white)' },
     { value: 6, label: 'Shading (grey)' },
     { value: 7, label: 'Specular Only' },
+    { value: 8, label: 'No ORM' },
 ];
 
 export class WhiteoutViewer {
