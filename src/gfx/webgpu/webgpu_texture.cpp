@@ -105,9 +105,19 @@ TextureHandle WebGPUDevice::CreateTexture(const TextureDesc& desc, const void* i
     if (fmt == wgpu::TextureFormat::Undefined)
         return TextureHandle::Invalid;
 
+    // WebGPU requires BC-compressed texture extents to be multiples of the
+    // 4×4 block. D3D/Vulkan silently round; WebGPU rejects. Some Reforged
+    // DDS assets ship odd logical sizes (e.g. 1017×1018), so round the
+    // descriptor up here. The entry keeps the logical width/height so UV
+    // math in callers is unaffected — the padded texels remain undefined.
+    const bool blockFormat = IsBlockCompressed(desc.format);
+    const u32 descW = static_cast<u32>(desc.width);
+    const u32 descH = static_cast<u32>(desc.height);
+    const u32 alignedW = blockFormat ? ((descW + 3u) & ~3u) : descW;
+    const u32 alignedH = blockFormat ? ((descH + 3u) & ~3u) : descH;
+
     wgpu::TextureDescriptor td{};
-    td.size = {static_cast<u32>(desc.width), static_cast<u32>(desc.height),
-               static_cast<u32>(std::max(1, desc.arraySize))};
+    td.size = {alignedW, alignedH, static_cast<u32>(std::max(1, desc.arraySize))};
     td.mipLevelCount = static_cast<u32>(std::max(1, desc.mipLevels));
     td.sampleCount = 1;
     td.format = fmt;

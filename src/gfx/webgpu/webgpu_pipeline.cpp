@@ -543,24 +543,16 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
 }
 
 PipelineHandle WebGPUDevice::CreateComputePipeline(const ComputePipelineDesc& desc) {
-    auto& state = *state_;
-    auto* cs = state.shaders.Get(static_cast<u64>(desc.cs));
-    if (!cs)
-        return PipelineHandle::Invalid;
-
-    wgpu::ComputePipelineDescriptor cpd{};
-    cpd.label = "wf.computePipeline";
-    cpd.layout = state.pipelineLayout;
-    cpd.compute.module = cs->module;
-    cpd.compute.entryPoint = cs->entryPoint.c_str();
-    wgpu::ComputePipeline pso = state.device.CreateComputePipeline(&cpd);
-    if (!pso)
-        return PipelineHandle::Invalid;
-
-    PipelineEntry entry{};
-    entry.compute = std::move(pso);
-    entry.isCompute = true;
-    return static_cast<PipelineHandle>(state.pipelines.Insert(std::move(entry)));
+    // The shared graphics pipelineLayout has Vertex|Fragment visibility on
+    // every binding and the wrong slot *types* for compute (uniform vs.
+    // storage). Building a compute PSO against it would fail Dawn
+    // validation noisily on every WebGPU launch. Dispatch() is also still
+    // a stub (see webgpu_command_list.cpp), so compute work is
+    // unreachable today. Return Invalid; FrameCapture::EnsureResources
+    // fail-soft handles this. Wire up a dedicated compute layout (and
+    // Dispatch) when a real compute path lands.
+    (void)desc;
+    return PipelineHandle::Invalid;
 }
 
 SamplerHandle WebGPUDevice::CreateSampler(const SamplerDesc& desc) {
