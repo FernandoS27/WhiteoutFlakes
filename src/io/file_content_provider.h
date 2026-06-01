@@ -63,6 +63,13 @@ public:
     // the host UI can wire a "reset to defaults" button.
     static std::vector<std::string> DefaultMpqList();
 
+    // ---- HD mod overlay ----
+    // Reorders CASC mod-prefix iteration so `_hd.w3mod` is tried
+    // before the SD base when enabled. Off by default; the host
+    // calls this whenever the user picks HD vs SD render mode.
+    void SetHdMode(bool enabled) override;
+    bool HdMode() const override;
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

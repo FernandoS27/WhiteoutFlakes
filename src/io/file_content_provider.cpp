@@ -15,6 +15,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -106,11 +107,20 @@ static constexpr const char* kTextureExts[] = {".blp", ".dds", ".tga", ".png", "
 static constexpr const char* kModelExts[] = {".mdx", ".mdl"};
 static constexpr const char* kArchiveTextureExts[] = {".blp", ".dds", ".tga", ".png", ".tif"};
 static constexpr const char* kArchiveModelExts[] = {".mdx", ".mdl"};
-static constexpr const char* kCascPrefixes[] = {
-    "war3.w3mod:",
-    "war3.w3mod:_hd.w3mod:",
-    "war3.w3mod:_deprecated.w3mod:",
-};
+// Base CASC mod prefixes; iteration order is picked at read time
+// based on the global HD-mode flag (see PickCascPrefixes). HD on
+// flips `_hd.w3mod:` above `war3.w3mod:` so HD-overridden SLKs and
+// textures win — same dance as Reforged's W3Data::OpenMod. The host
+// is responsible for setting the flag in sync with its render mode.
+static constexpr const char* kCascPrefixSd = "war3.w3mod:";
+static constexpr const char* kCascPrefixHd = "war3.w3mod:_hd.w3mod:";
+static constexpr const char* kCascPrefixDeprecated = "war3.w3mod:_deprecated.w3mod:";
+
+static std::array<const char*, 3> PickCascPrefixes(bool hdMode) {
+    if (hdMode)
+        return {kCascPrefixHd, kCascPrefixSd, kCascPrefixDeprecated};
+    return {kCascPrefixSd, kCascPrefixHd, kCascPrefixDeprecated};
+}
 
 static bool HasExtension(const std::string& ext, const char* const* list, usize count) {
     for (usize i = 0; i < count; ++i)
@@ -198,6 +208,11 @@ struct FileContentProvider::Impl {
     std::string installPath; // currently-active install root
     bool ignoreCasc = false;
     bool ignoreMpq = false;
+
+    // HD mod-overlay precedence flag. Read by DoRead via
+    // PickCascPrefixes. Atomic so render-thread setters don't race
+    // the storage workers.
+    std::atomic<bool> hdMode{false};
     std::vector<std::string> mpqList = FileContentProvider::DefaultMpqList();
     FileResolver resolver;
 
@@ -371,7 +386,7 @@ struct FileContentProvider::Impl {
             std::string stem = StripExtension(normCasc);
             std::string cascExt = GetLowerExtension(normCasc);
             auto [altExts, altCount] = AltExtensionsFor(cascExt);
-            for (const char* prefix : kCascPrefixes) {
+            for (const char* prefix : PickCascPrefixes(hdMode.load(std::memory_order_relaxed))) {
                 if (!cascExt.empty()) {
                     std::string cascPath = std::string(prefix) + stem + cascExt;
                     auto data = cascStorage->readFile(cascPath);
@@ -693,6 +708,14 @@ bool FileContentProvider::IgnoreCasc() const {
 bool FileContentProvider::IgnoreMpq() const {
     std::shared_lock sg(impl_->storageMu);
     return impl_->ignoreMpq;
+}
+
+void FileContentProvider::SetHdMode(bool enabled) {
+    impl_->hdMode.store(enabled, std::memory_order_relaxed);
+}
+
+bool FileContentProvider::HdMode() const {
+    return impl_->hdMode.load(std::memory_order_relaxed);
 }
 
 void FileContentProvider::SetIgnoreCasc(bool ignore) {

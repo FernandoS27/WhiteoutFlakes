@@ -84,6 +84,22 @@ public:
     ///        called from the Pump thread.
     std::optional<std::vector<u8>> ReadFile(const std::string& path,
                                             std::string* actualExt = nullptr);
+
+    /// @brief Toggle HD mod-overlay precedence for subsequent reads.
+    ///        When `enabled` is true, providers that layer CASC/MPQ
+    ///        archives prefer the `_hd.w3mod` overlay before the base
+    ///        SD mod, matching Reforged's `W3Data::OpenMod` behaviour.
+    ///        Off by default. The host (viewer / plugin) is responsible
+    ///        for flipping this whenever the user switches render mode,
+    ///        plus any necessary asset-cache invalidation. Default
+    ///        implementation is a no-op for providers that don't layer
+    ///        archives.
+    virtual void SetHdMode(bool enabled) {
+        (void)enabled;
+    }
+    virtual bool HdMode() const {
+        return false;
+    }
 };
 
 } // namespace whiteout::flakes::io

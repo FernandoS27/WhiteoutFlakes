@@ -17,6 +17,8 @@
 #endif
 #include "imgui_theme.h"
 #include "viewer_ui.h"
+#include "whiteout/flakes/content_provider.h"
+#include "whiteout/flakes/event_data.h"
 #include "whiteout/flakes/util/path_utf8.h"
 
 #include "gfx/gfx.h"
@@ -553,6 +555,67 @@ bool ViewerApp::LoadModel(const std::filesystem::path& path) {
 
     service_.Scene().SetPE1BasePath(path.parent_path());
 
+    // Decide the render mode BEFORE SpawnUnit. service_.Loader().SpawnUnit
+    // synchronously triggers SLK loads, splat-texture prefetches, and the
+    // BLS shader path selection — each of which consults the current
+    // RenderMode and caches its result. If we waited until after SpawnUnit
+    // to flip the mode, those caches would already be primed for the wrong
+    // mode (e.g. SD splat textures pinned for an HD model). To avoid
+    // pulling in the full ModelTemplate machinery just to inspect material
+    // shader IDs, parse the MDX directly through WhiteoutLib and walk
+    // material layers — any non-`SD` ShaderType means a Reforged HD layer
+    // (Reforged shipping models tag their classic-on-HD path as `SDOnHD`,
+    // which also counts as HD here per the user-set render mode).
+    {
+        bool anyHdLayer = false;
+        try {
+            whiteout::mdx::Parser parser;
+            whiteout::mdx::Model probe = parser.parse(io::PathToUtf8(path));
+            for (const auto& mat : probe.materials) {
+                for (const auto& layer : mat.layers) {
+                    if (layer.shader != whiteout::mdx::Layer::ShaderType::SD) {
+                        anyHdLayer = true;
+                        break;
+                    }
+                }
+                if (anyHdLayer)
+                    break;
+            }
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[viewer] HD-probe parse FAILED for %s: %s (continuing in SD)\n",
+                         io::PathToUtf8(path).c_str(), e.what());
+        }
+        const RenderMode wanted = anyHdLayer ? RenderMode::HD : RenderMode::SD;
+        const bool modeFlipped = (service_.Settings().GetRenderMode() != wanted);
+        service_.Settings().SetRenderMode(wanted);
+
+        // RenderSettings is data-only; the side effects of a mode flip
+        // (CASC-overlay precedence, splat / SLK caches keyed under the
+        // old mode) have to be applied here, before SpawnUnit pulls in
+        // the model's textures + event data under the new mode.
+        if (modeFlipped) {
+            if (auto* p = service_.Scene().ActiveContentProvider()) {
+                p->SetHdMode(wanted == RenderMode::HD);
+                // Force-reload SplatData / UberSplatData / SpawnData so
+                // entries cached under the previous prefix order are
+                // replaced — texture paths stored in the entries are
+                // re-resolved through the new CASC overlay on first
+                // fetch below.
+                io::LoadEventDataFiles(p, /*force=*/true);
+            }
+            // Kill any splats currently alive — each one holds a
+            // refcount on an AssetManager slot keyed by the old-mode
+            // texture; without releasing them the re-prefetch below
+            // only bumps the same stale handle. The next event spawns
+            // a fresh splat under the new mode.
+            service_.Splats().Clear();
+            // Re-acquire the global splat texture set so the
+            // AssetManager slots used by SpawnSpl/SpawnUbr at runtime
+            // resolve under the new HD/SD precedence.
+            io::PrefetchEventAssetSlots(service_.Assets());
+        }
+    }
+
     service_.Loader().RequestClearAll();
     model::Actor* hero = service_.Loader().SpawnUnit(io::PathToUtf8(path));
     if (!hero) {
@@ -561,7 +624,6 @@ bool ViewerApp::LoadModel(const std::filesystem::path& path) {
     }
     focusActor_ = hero->handle;
     hero->ignoreNonLooping = loopNonLoopingPolicy_;
-    service_.Settings().SetRenderMode(hero->PreferredRenderMode());
 
     auto sequences = hero->animation.Sequences();
     sequenceNames_.clear();
