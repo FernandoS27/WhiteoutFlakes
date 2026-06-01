@@ -51,6 +51,24 @@ export class HiveApp {
             ? options.urlRewriter
             : null;
 
+        // HD initialisation:
+        //   1. Host option `forceHd: true` wins (programmatic embeds).
+        //   2. Otherwise read the page URL's `?forceHD=1` query (or `=true`).
+        //      Case-insensitive so a typo-tolerant `forcehd=1` also works.
+        // The flag flows into WhiteoutViewer's `hdMode` at construction,
+        // which makes `cascUrl` append `&hd=1` on every Hive-CASC fetch
+        // and primes the WASM renderer in HD before the first spawn.
+        this.forceHd = false;
+        if (options.forceHd === true) {
+            this.forceHd = true;
+        } else if (typeof window !== 'undefined' && window.location && window.location.search) {
+            const params = new URLSearchParams(window.location.search);
+            const raw = params.get('forceHD') ?? params.get('forcehd');
+            if (raw === '1' || (raw && raw.toLowerCase() === 'true')) {
+                this.forceHd = true;
+            }
+        }
+
         this.viewer = null;
         // Keyed by both full relative path and basename — dependency
         // lookups may use either shape.
@@ -80,7 +98,7 @@ export class HiveApp {
                     console.warn('[hive] SW registration failed:', e);
                 });
         }
-        this.viewer = new WhiteoutViewer(this.canvas);
+        this.viewer = new WhiteoutViewer(this.canvas, { hdMode: this.forceHd });
         await this.viewer.init();
         this.viewer.setFetchHooks({
             start: () => this._bump(+1),

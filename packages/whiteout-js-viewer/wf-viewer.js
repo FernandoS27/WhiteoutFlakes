@@ -52,26 +52,42 @@ export const HD_DEBUG_MODES = [
 ];
 
 export class WhiteoutViewer {
-    constructor(canvas) {
+    constructor(canvas, options = {}) {
         if (!canvas) throw new Error('WhiteoutViewer: canvas required');
         this.canvas = canvas;
         this._module = null;
         this._handle = 0;
         this._raf = 0;
         this._lastTime = 0;
+        // HD mode selector. Off by default — matches the engine, which
+        // starts in SD and only flips to HD when the loaded model
+        // declares it. Pass `{ hdMode: true }` to the constructor to
+        // come up in HD, or call `setHdMode(true)` later. When set,
+        // `cascUrl` appends `&hd=1` so Hive's CASC mirror returns the
+        // `_hd.w3mod` overlay first (same priority flip the engine's
+        // W3Data::OpenMod does). Direct-asset fetch + the WASM-side
+        // RenderMode flip are toggled together.
+        this.hdMode = options.hdMode === true;
         // Hive's CASC mirror — CORS-enabled, 302 to resolved asset,
         // server-side family expansion. Override for a local proxy.
         // Encode per-segment so `/` stays literal in the query; Hive's
         // path normalizer doesn't always decode %2F back to a separator
-        // (observed on sound/ paths).
-        this.cascUrl = (path) =>
-            'https://www.hiveworkshop.com/casc-contents/?path=' +
-            path.split('/').map(encodeURIComponent).join('/');
+        // (observed on sound/ paths). `&hd=1` follows the path query
+        // when `this.hdMode` is true so the backend's overlay search
+        // hits `_hd.w3mod` first.
+        this.cascUrl = (path) => {
+            const url = 'https://www.hiveworkshop.com/casc-contents/?path=' +
+                path.split('/').map(encodeURIComponent).join('/');
+            return this.hdMode ? (url + '&hd=1') : url;
+        };
         // Direct-asset prefix skips the /casc-contents/ 302 (1 fewer
-        // round-trip per asset). HD tree by default since modern
-        // Reforged content lives there; SD/locale fall through to cascUrl.
-        this.cascDirectAssetBase =
-            'https://www.hiveworkshop.com/assets/wc3/war3.w3mod/_hd.w3mod/';
+        // round-trip per asset). Only used in HD mode — the direct
+        // tree only mirrors `_hd.w3mod/` content. SD viewers fall
+        // through to cascUrl (which the backend resolves against the
+        // SD mod stack when `hd=1` is absent).
+        this.cascDirectAssetBase = this.hdMode
+            ? 'https://www.hiveworkshop.com/assets/wc3/war3.w3mod/_hd.w3mod/'
+            : null;
         // Firefox wgpu/naga emits slow fragment code for HD PBR; full
         // DPR tips into fragment-bound at zoom-in. Cap at 1 there; opt
         // back in via `viewer.backingPixelRatio = devicePixelRatio`.
@@ -207,8 +223,9 @@ export class WhiteoutViewer {
         if (navigator.userAgent.indexOf('Firefox/') >= 0) {
             this._module._wf_set_shadows_enabled(this._handle, 0);
         }
-        // SD start; load() flips to HD per actor PreferredRenderMode.
-        this._module._wf_set_render_mode(this._handle, 0);
+        // Initial render mode honours the constructor's `hdMode` option;
+        // load() can still flip it per actor PreferredRenderMode.
+        this._module._wf_set_render_mode(this._handle, this.hdMode ? 1 : 0);
 
         this._resizeObserver = new ResizeObserver(() => this._onResize());
         this._resizeObserver.observe(this.canvas);
@@ -295,6 +312,23 @@ export class WhiteoutViewer {
     // HD debug-vis mode (see HD_DEBUG_MODES below).
     setHdDebugMode(mode) {
         if (this._handle) this._module._wf_set_hd_debug_mode(this._handle, mode | 0);
+    }
+
+    // Flip HD asset preference at runtime. Updates the flag the
+    // `cascUrl` / `cascDirectAssetBase` getters read (so subsequent
+    // network fetches route through Hive's `_hd.w3mod` overlay) and
+    // mirrors it to the WASM-side RenderMode so the renderer picks
+    // the HD pipeline. Does NOT invalidate already-cached assets —
+    // call this before any spawn / asset prefetch, or evict the
+    // affected paths from the provider yourself.
+    setHdMode(on) {
+        this.hdMode = !!on;
+        this.cascDirectAssetBase = this.hdMode
+            ? 'https://www.hiveworkshop.com/assets/wc3/war3.w3mod/_hd.w3mod/'
+            : null;
+        if (this._handle) {
+            this._module._wf_set_render_mode(this._handle, this.hdMode ? 1 : 0);
+        }
     }
 
     // Live WebGPU CreateTexture+CreateBuffer bytes (deferred-delete
