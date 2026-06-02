@@ -23,6 +23,7 @@
 #include "dnc/dnc_service.h"
 #include "imgui/imgui_renderer.h"
 #include "shadow/shadow_service.h"
+#include "gtao/gtao_service.h"
 
 #include <memory>
 #include <optional>
@@ -127,6 +128,8 @@ public:
     const dnc::DncService* GetDncService() const;
     shadow::ShadowService* GetShadowService();
     const shadow::ShadowService* GetShadowService() const;
+    gtao::GtaoService* GetGtaoService();
+    const gtao::GtaoService* GetGtaoService() const;
 
     // Engine-side Dear ImGui adapter. Returns nullptr when WDX_ENABLE_IMGUI
     // is off at compile time, or before InitBlsShaders has had a chance to
@@ -182,6 +185,7 @@ public:
     void ResetDeviceAssetManagers();
     dnc::DncService& EnsureDncService();
     shadow::ShadowService& EnsureShadowService(gfx::IGFXDevice& gfx);
+    gtao::GtaoService& EnsureGtaoService(gfx::IGFXDevice& gfx, gfx::GfxApi api);
 
 private:
     // ---- Pimpl: all instance state lives here. ----

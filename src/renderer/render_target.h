@@ -39,6 +39,16 @@ struct RenderTarget {
     gfx::TextureHandle linearDepth = gfx::TextureHandle::Invalid;
     gfx::TextureHandle normalBuffer = gfx::TextureHandle::Invalid;
 
+    // GTAO ambient-occlusion buffers. Both R8_UNORM, full-res, HD-only.
+    //   aoBufferRaw — noisy GTAO output from the main pass (4×4 horizon
+    //                 trace; visible noise without denoise).
+    //   aoBuffer    — denoised final factor read by the apply pass that
+    //                 modulates hdrColor in place via Zero/SrcColor blend.
+    // The spatial denoise pass reads `aoBufferRaw` + `linearDepth` and
+    // writes `aoBuffer`. SD mode leaves both Invalid.
+    gfx::TextureHandle aoBufferRaw = gfx::TextureHandle::Invalid;
+    gfx::TextureHandle aoBuffer = gfx::TextureHandle::Invalid;
+
     i32 width = 0;
     i32 height = 0;
 };

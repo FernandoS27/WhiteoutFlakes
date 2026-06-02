@@ -245,7 +245,7 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
     PipelineEntry entry{};
     entry.pipeline = std::move(pR.value);
     entry.isCompute = false;
-    entry.colorFormat = rtvFmt;
+    entry.colorFormat = colorAttachmentCount ? colorFormats[0] : vk::Format::eUndefined;
     return static_cast<PipelineHandle>(state.pipelines.Insert(std::move(entry)));
 }
 

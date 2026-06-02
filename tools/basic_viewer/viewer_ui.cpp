@@ -46,7 +46,7 @@ void SaveIni(const ViewerApp& app) {
     SaveSettingsIni(app.Service(), app.LoopNonLoopingPolicy());
 }
 
-constexpr std::array<const char*, 9> kDebugVisLabels = {
+constexpr std::array<const char*, 10> kDebugVisLabels = {
     "Off",
     "Albedo",
     "World Normal",
@@ -56,6 +56,7 @@ constexpr std::array<const char*, 9> kDebugVisLabels = {
     "Shading Only (grey albedo)",
     "Specular Only (black albedo)",
     "No ORM",
+    "AO Only",
 };
 
 constexpr std::array<const char*, 5> kLodLabels = {
@@ -657,6 +658,27 @@ void ViewerUI::BuildSettingsWindow() {
                     shadow->SetParams(p);
                     SaveIni(app_);
                 }
+            }
+        }
+
+        // ---- Ambient occlusion (GTAO) ----
+        {
+            bool ao = svc.Settings().AoEnabled();
+            if (ImGui::Checkbox("Ambient occlusion", &ao)) {
+                svc.Settings().SetAoEnabled(ao);
+                SaveIni(app_);
+            }
+
+            static constexpr std::array<const char*, 3> kAoQualityLabels = {"Low", "Medium",
+                                                                            "High"};
+            i32 q = static_cast<i32>(svc.Settings().AoQuality());
+            if (q < 0 || q >= static_cast<i32>(kAoQualityLabels.size()))
+                q = 1;
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::Combo("AO Quality", &q, kAoQualityLabels.data(),
+                             static_cast<i32>(kAoQualityLabels.size()))) {
+                svc.Settings().SetAoQuality(static_cast<u32>(q));
+                SaveIni(app_);
             }
         }
 

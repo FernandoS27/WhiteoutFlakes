@@ -123,6 +123,10 @@ public:
     // a full-precision float and an 8-bit packed world-space normal.
     static constexpr gfx::Format kLinearDepthFormat = gfx::Format::R32_FLOAT;
     static constexpr gfx::Format kNormalBufferFormat = gfx::Format::R8G8B8A8_UNORM;
+    // GTAO output buffer: scalar visibility in [0, 1]. R8_UNORM is plenty
+    // for the post-tonemap modulation budget — the noise floor of GTAO at
+    // 4×4 sampling is already several LSBs above 8-bit precision.
+    static constexpr gfx::Format kAoBufferFormat = gfx::Format::R8_UNORM;
 
 private:
     // ---- Friends ----

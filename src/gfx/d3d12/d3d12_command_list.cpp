@@ -147,6 +147,47 @@ void D3D12CommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCou
     }
 }
 
+void D3D12CommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle depth,
+                                           f32 clearDepth, u8 clearStencil) {
+    // Same setup as BeginRenderPass, minus the ClearRenderTargetView.
+    // The RTV stays in render-target state across BeginRenderPass calls
+    // when the application explicitly chains a load-op pass, so the
+    // existing contents survive.
+    assert(!inRenderPass_ && "Nested BeginRenderPass");
+    inRenderPass_ = true;
+    currentColorRt_ = color;
+    currentDepthRt_ = depth;
+
+    auto* cmd = device_.GetCmdList();
+    auto* colorEntry = device_.GetTexture(color);
+    auto* depthEntry = device_.GetTexture(depth);
+
+    if (colorEntry)
+        TransitionTexture(*colorEntry, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    if (depthEntry)
+        TransitionTexture(*depthEntry, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv =
+        colorEntry && colorEntry->hasRtv ? colorEntry->rtvCpu : D3D12_CPU_DESCRIPTOR_HANDLE{0};
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv =
+        depthEntry && depthEntry->hasDsv ? depthEntry->dsvCpu : D3D12_CPU_DESCRIPTOR_HANDLE{0};
+
+    cmd->OMSetRenderTargets(rtv.ptr ? 1 : 0, rtv.ptr ? &rtv : nullptr, FALSE,
+                            dsv.ptr ? &dsv : nullptr);
+
+    // No ClearRenderTargetView — load-op preserves contents. Depth clear
+    // still fires; callers that need a depth-load pass can pass
+    // TextureHandle::Invalid for depth.
+    if (dsv.ptr) {
+        D3D12_CLEAR_FLAGS clearFlags = D3D12_CLEAR_FLAG_DEPTH;
+        if (depthEntry && (depthEntry->desc.format == Format::D24_UNORM_S8_UINT ||
+                           depthEntry->desc.format == Format::D32_FLOAT_S8_UINT)) {
+            clearFlags |= D3D12_CLEAR_FLAG_STENCIL;
+        }
+        cmd->ClearDepthStencilView(dsv, clearFlags, clearDepth, clearStencil, 0, nullptr);
+    }
+}
+
 void D3D12CommandList::EndRenderPass() {
     assert(inRenderPass_ && "EndRenderPass without Begin");
     inRenderPass_ = false;

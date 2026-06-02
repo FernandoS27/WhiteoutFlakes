@@ -559,7 +559,7 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
     PipelineEntry entry{};
     entry.graphics = std::move(pso);
     entry.isCompute = false;
-    entry.colorFormat = colorTarget.format;
+    entry.colorFormat = colorTargetCount ? colorTargets[0].format : wgpu::TextureFormat::Undefined;
     entry.phantomVertexSlots = std::move(phantomSlots);
     return static_cast<PipelineHandle>(state.pipelines.Insert(std::move(entry)));
 }

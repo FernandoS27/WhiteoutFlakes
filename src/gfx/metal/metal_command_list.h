@@ -30,6 +30,8 @@ public:
                          f32 clearDepth, u8 clearStencil) override;
     void BeginRenderPass(const TextureHandle* colors, u32 colorCount, TextureHandle depth,
                          const f32 (*clearColors)[4], f32 clearDepth, u8 clearStencil) override;
+    void BeginRenderPassLoad(TextureHandle color, TextureHandle depth, f32 clearDepth,
+                             u8 clearStencil) override;
     void EndRenderPass() override;
 
     // Tracy has a Metal backend but wiring it up is a polish task.

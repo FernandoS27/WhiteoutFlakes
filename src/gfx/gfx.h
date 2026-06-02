@@ -58,6 +58,19 @@ public:
         BeginRenderPass(slot0, depth, clear0, clearDepth, clearStencil);
     }
 
+    // Load-op variant: when `loadColor` is true the color attachment is
+    // bound with loadOp=Load (existing contents preserved) and the
+    // `clearColor` argument is ignored. Default impl falls back to the
+    // single-RT clearing variant for backends that haven't implemented
+    // load-op yet — slot 0 still works correctly there because the
+    // first frame's clear happens elsewhere; subsequent passes that
+    // need preservation must run on a load-op-aware backend.
+    virtual void BeginRenderPassLoad(TextureHandle color, TextureHandle depth,
+                                     f32 clearDepth, u8 clearStencil) {
+        constexpr f32 kZero[4] = {0, 0, 0, 0};
+        BeginRenderPass(color, depth, kZero, clearDepth, clearStencil);
+    }
+
     virtual void EndRenderPass() = 0;
 
     // Tracy-backed GPU profiler zone. Bracket GPU work with a named

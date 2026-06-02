@@ -202,6 +202,68 @@ void MetalCommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCou
     }
 }
 
+void MetalCommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle depth,
+                                           f32 clearDepth, u8 clearStencil) {
+    @autoreleasepool {
+        auto& state = device_.State();
+        if (auto* sc = SwapChainOwnerOfTexture(state, color))
+            AcquireSwapChainImageIfNeeded(state, *sc);
+
+        auto* colorTex = state.textures.Get(static_cast<u64>(color));
+        if (!colorTex || !colorTex->texture) {
+            std::fprintf(stderr, "[gfx/metal] BeginRenderPassLoad: color attachment unavailable\n");
+            return;
+        }
+
+        FrameContext& frame = EnsureFrameOpen(state);
+        if (frame.computeEncoder) {
+            [frame.computeEncoder endEncoding];
+            frame.computeEncoder = nil;
+        }
+        if (frame.blitEncoder) {
+            [frame.blitEncoder endEncoding];
+            frame.blitEncoder = nil;
+        }
+
+        MTLRenderPassDescriptor* rpd = [MTLRenderPassDescriptor renderPassDescriptor];
+        MTLRenderPassColorAttachmentDescriptor* ca = rpd.colorAttachments[0];
+        ca.texture = colorTex->texture;
+        // Load-op preserves the prior contents.
+        ca.loadAction = MTLLoadActionLoad;
+        ca.storeAction = MTLStoreActionStore;
+
+        frame.passHasDepth = false;
+        if (auto* depthTex = state.textures.Get(static_cast<u64>(depth))) {
+            if (depthTex->texture) {
+                rpd.depthAttachment.texture = depthTex->texture;
+                rpd.depthAttachment.loadAction = MTLLoadActionClear;
+                rpd.depthAttachment.storeAction = MTLStoreActionStore;
+                rpd.depthAttachment.clearDepth = clearDepth;
+                if (HasStencilAspect(depthTex->format)) {
+                    rpd.stencilAttachment.texture = depthTex->texture;
+                    rpd.stencilAttachment.loadAction = MTLLoadActionClear;
+                    rpd.stencilAttachment.storeAction = MTLStoreActionStore;
+                    rpd.stencilAttachment.clearStencil = clearStencil;
+                }
+                frame.passHasDepth = true;
+            }
+        }
+
+        frame.renderEncoder = [frame.commandBuffer renderCommandEncoderWithDescriptor:rpd];
+        if (frame.renderEncoder)
+            frame.renderEncoder.label = [NSString stringWithFormat:@"wf.pass.load:%p",
+                                                                    colorTex->texture];
+
+        for (auto& cb : pendingCBs_)
+            cb = {};
+        for (auto& sr : pendingSRVs_)
+            sr = {};
+        for (auto& sm : pendingSamplers_)
+            sm = {};
+        lastBoundPipeline_ = PipelineHandle::Invalid;
+    }
+}
+
 void MetalCommandList::EndRenderPass() {
     @autoreleasepool {
         auto& state = device_.State();

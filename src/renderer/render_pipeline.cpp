@@ -683,6 +683,7 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
 
     rs_.EnsureDncService();
     rs_.EnsureShadowService(*impl_->gfx_);
+    rs_.EnsureGtaoService(*impl_->gfx_, impl_->gfx_->GetApi());
 
     if (impl_->shadowVsCb_ == gfx::BufferHandle::Invalid) {
         impl_->shadowVsCb_ = impl_->gfx_->CreateBuffer({
@@ -1110,6 +1111,11 @@ RenderTargetId RenderPipeline::CreateSwapChainTarget(void* nativeWindowHandle, i
     // simply doesn't bind them.
     target.linearDepth = impl_->gfx_->CreateColorTarget(w, h, kLinearDepthFormat);
     target.normalBuffer = impl_->gfx_->CreateColorTarget(w, h, kNormalBufferFormat);
+    // GTAO outputs. Both R8_UNORM, full-res. Raw = noisy main-pass
+    // output; aoBuffer = denoised final consumed by apply. SD never
+    // samples either; allocate unconditionally to keep resize linear.
+    target.aoBufferRaw = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
+    target.aoBuffer = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
     target.width = w;
     target.height = h;
 
@@ -1139,6 +1145,8 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
     impl_->gfx_->Destroy(t.hdrColor);
     impl_->gfx_->Destroy(t.linearDepth);
     impl_->gfx_->Destroy(t.normalBuffer);
+    impl_->gfx_->Destroy(t.aoBufferRaw);
+    impl_->gfx_->Destroy(t.aoBuffer);
 
     if (t.swap != gfx::SwapChainHandle::Invalid) {
         impl_->gfx_->ResizeSwapChain(t.swap, w, h);
@@ -1154,6 +1162,8 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
     t.depth = impl_->gfx_->CreateDepthTarget(w, h, impl_->depthStencilFormat_);
     t.linearDepth = impl_->gfx_->CreateColorTarget(w, h, kLinearDepthFormat);
     t.normalBuffer = impl_->gfx_->CreateColorTarget(w, h, kNormalBufferFormat);
+    t.aoBufferRaw = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
+    t.aoBuffer = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
     t.width = w;
     t.height = h;
 
@@ -1226,6 +1236,8 @@ void RenderPipeline::CleanupGFX() {
             impl_->gfx_->Destroy(t.depth);
             impl_->gfx_->Destroy(t.linearDepth);
             impl_->gfx_->Destroy(t.normalBuffer);
+            impl_->gfx_->Destroy(t.aoBufferRaw);
+            impl_->gfx_->Destroy(t.aoBuffer);
         }
     }
     impl_->targets_.clear();
@@ -1488,13 +1500,15 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
         const gfx::TextureHandle colors[3] = {sceneTarget, target.linearDepth,
                                               target.normalBuffer};
         // Slot 0: hdr clear (already in `clearColor`).
-        // Slot 1: linear depth — clear to far (1.0). Engine uses
-        //         {1.0, 65536.0, 0, 0} in s_worldFBHD; we use a single
-        //         channel R32F so only the .x value matters.
+        // Slot 1: linear depth — clear to a far-distance sentinel. The
+        //         buffer carries real view-space Z (HD opaque PS writes
+        //         input.worldPos.z, which is view-space despite the
+        //         field name — see vs_body.slang). GTAO treats anything
+        //         past 1e4 as "no opaque draw landed here".
         // Slot 2: normal — clear to {0.5, 0.5, 1.0, 0} (encoded +Z up).
         f32 clearColors[3][4] = {
             {clearColor[0], clearColor[1], clearColor[2], clearColor[3]},
-            {1.0f, 0.0f, 0.0f, 0.0f},
+            {1.0e5f, 0.0f, 0.0f, 0.0f},
             {0.5f, 0.5f, 1.0f, 0.0f},
         };
         cmd->BeginRenderPass(colors, 3, target.depth, clearColors, 1.0f, 0);
@@ -1581,6 +1595,34 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
     }
 #endif
     cmd->EndRenderPass();
+
+    // GTAO ambient-occlusion. HD-only — needs the G-buffer slots populated
+    // by the HD opaque MRT pass that just closed. Internally:
+    //   1. reads target.linearDepth + target.normalBuffer as SRVs and
+    //      writes scalar AO to target.aoBuffer.
+    //   2. opens target.hdrColor with loadOp=Load and multiplies the AO
+    //      into the existing colour via Zero-src + SrcColor-dst blend.
+    if (useHdr) {
+        if (auto* g = rs_.GetGtaoService()) {
+            // Forward the user-facing toggle into the service each frame
+            // — cheap atomic load + cheap setter, and keeps the service
+            // state from drifting if the host flips the bool from
+            // another thread (settings UI / .ini reload).
+            const bool aoOnly = (rs_.Settings().HdDebugMode() == 9);
+            g->SetEnabled(rs_.Settings().AoEnabled() || aoOnly);
+            g->SetDebugAoOnly(aoOnly);
+            {
+                const u32 q = rs_.Settings().AoQuality();
+                const u32 qMax = static_cast<u32>(gtao::Quality::Count) - 1;
+                g->SetQuality(static_cast<gtao::Quality>(q > qMax ? qMax : q));
+            }
+            if (g->IsEnabled()) {
+                WDX_CPU_ZONE("GTAO");
+                WDX_GPU_ZONE(cmd, "GTAO");
+                g->Run(cmd, target, view, proj, static_cast<u32>(frameCounter));
+            }
+        }
+    }
 
     if (useHdr) {
         WDX_CPU_ZONE("Tonemap");
@@ -2037,6 +2079,11 @@ public:
                     enabled = 2;
                     psMode = 0;
                     overrideO = {1.0f, 1.0f, 0.0f};
+                } else if (dbgMode == 9) {
+                    // "AO Only" — BLS state stays at default; the GTAO
+                    // apply pass overwrites hdrColor with the AO factor
+                    // (see GtaoService::SetDebugAoOnly below).
+                    psMode = 0;
                 }
                 dbg->enabledShaders = enabled;
                 const u32 modeBits = static_cast<u32>(psMode);

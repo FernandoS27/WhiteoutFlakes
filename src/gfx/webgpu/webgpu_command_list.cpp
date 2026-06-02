@@ -190,6 +190,72 @@ void WebGPUCommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCo
     lastSamplerKeySet_ = false;
 }
 
+void WebGPUCommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle depth,
+                                            f32 clearDepth, u8 clearStencil) {
+    auto& state = device_.State();
+    EnsureEncoderOpen(state);
+    auto& frame = state.frames[state.frameIndex];
+
+    auto* colorTex = state.textures.Get(static_cast<u64>(color));
+    auto* depthTex = state.textures.Get(static_cast<u64>(depth));
+
+    if (colorTex && colorTex->swapChainProxy != SwapChainHandle::Invalid) {
+        if (auto* sc = state.swapchains.Get(static_cast<u64>(colorTex->swapChainProxy))) {
+            AcquireSwapChainImageIfNeeded(state, *sc);
+        }
+    }
+
+    activeColorAttachment_ = colorTex ? color : TextureHandle::Invalid;
+    activeDepthAttachment_ = depthTex ? depth : TextureHandle::Invalid;
+    activeColorFormat_ = colorTex ? colorTex->format : wgpu::TextureFormat::Undefined;
+
+    // Color attachment with loadOp=Load — preserves prior contents.
+    wgpu::RenderPassColorAttachment colorAttach{};
+    if (colorTex && colorTex->view) {
+        colorAttach.view = colorTex->view;
+        colorAttach.loadOp = wgpu::LoadOp::Load;
+        colorAttach.storeOp = wgpu::StoreOp::Store;
+        colorAttach.depthSlice = wgpu::kDepthSliceUndefined;
+    }
+
+    auto hasStencilAspect = [](wgpu::TextureFormat f) {
+        return f == wgpu::TextureFormat::Depth24PlusStencil8 ||
+               f == wgpu::TextureFormat::Depth32FloatStencil8 || f == wgpu::TextureFormat::Stencil8;
+    };
+
+    wgpu::RenderPassDepthStencilAttachment depthAttach{};
+    if (depthTex && depthTex->view) {
+        depthAttach.view = depthTex->view;
+        depthAttach.depthLoadOp = wgpu::LoadOp::Clear;
+        depthAttach.depthStoreOp = wgpu::StoreOp::Store;
+        depthAttach.depthClearValue = clearDepth;
+        if (hasStencilAspect(depthTex->format)) {
+            depthAttach.stencilLoadOp = wgpu::LoadOp::Clear;
+            depthAttach.stencilStoreOp = wgpu::StoreOp::Store;
+            depthAttach.stencilClearValue = clearStencil;
+        }
+    }
+    const bool hasDepthAttach = (depthTex && depthTex->view);
+
+    wgpu::RenderPassDescriptor rpd{};
+    rpd.label = "wf.renderPassLoad";
+    rpd.colorAttachmentCount = colorTex ? 1u : 0u;
+    rpd.colorAttachments = colorTex ? &colorAttach : nullptr;
+    rpd.depthStencilAttachment = hasDepthAttach ? &depthAttach : nullptr;
+    pass_ = frame.encoder.BeginRenderPass(&rpd);
+
+    cbSetDirty_ = true;
+    srvSetDirty_ = true;
+    samplerSetDirty_ = true;
+    lastBoundPipeline_ = PipelineHandle::Invalid;
+    for (auto& v : lastVBs_) v = {};
+    lastIndexBuffer_ = BufferHandle{};
+    lastIndexOffset_ = 0;
+    lastCbKeySet_ = false;
+    lastSrvKeySet_ = false;
+    lastSamplerKeySet_ = false;
+}
+
 void WebGPUCommandList::EndRenderPass() {
     if (pass_) {
         pass_.End();

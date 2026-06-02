@@ -97,6 +97,28 @@ public:
         lodOverride_.store(l);
     }
 
+    // ---- Ambient occlusion (GTAO) ----
+    // Gates the HD-mode GTAO pass between the G-buffer close and the
+    // tonemap. Off skips both the main and apply draws — the AO buffer
+    // is allocated either way (cheap, 1 byte per pixel) so the flip is
+    // free of resize work. SD mode ignores this flag.
+    bool AoEnabled() const {
+        return aoEnabled_.load();
+    }
+    void SetAoEnabled(bool on) {
+        aoEnabled_.store(on);
+    }
+
+    // GTAO quality preset — index into gtao::Quality (Low=0, Medium=1,
+    // High=2). The pipeline forwards this into the service each frame
+    // so the user can A/B presets without a restart.
+    u32 AoQuality() const {
+        return aoQuality_.load();
+    }
+    void SetAoQuality(u32 q) {
+        aoQuality_.store(q);
+    }
+
     // ---- Lighting / clear color ----
     LightingMode GetLightingMode() const {
         return static_cast<LightingMode>(lightingMode_.load());
@@ -196,6 +218,14 @@ private:
     // Debug + LOD.
     std::atomic<i32> hdDebugMode_{0};
     std::atomic<i32> lodOverride_{0};
+
+    // Ambient occlusion (HD-mode GTAO). On by default — the user can
+    // disable from the settings menu if they don't want the pass.
+    std::atomic<bool> aoEnabled_{true};
+
+    // Quality preset (Low=0, Medium=1, High=2). Medium matches the V1
+    // 4×4 horizon trace.
+    std::atomic<u32> aoQuality_{1};
 
     // Lighting + clear color.
     std::atomic<u8> lightingMode_{static_cast<u8>(LightingMode::InGame)};

@@ -382,6 +382,16 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy) {
             }
         }
     }
+    if (auto* s = ini.Get(KeyOf("AoEnabled"))) {
+        bool v = true;
+        if (ParseBool(*s, v))
+            service.Settings().SetAoEnabled(v);
+    }
+    if (auto* s = ini.Get(KeyOf("AoQuality"))) {
+        const i32 v = std::atoi(s->c_str());
+        if (v >= 0 && v <= 2)
+            service.Settings().SetAoQuality(static_cast<u32>(v));
+    }
     if (auto* dnc = service.GetDncService()) {
         if (auto* s = ini.Get(KeyOf("TimeOfDay"))) {
             f32 v = 0;
@@ -464,6 +474,8 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy) {
             shadow->IsEnabled() ? std::clamp(shadow->Params().cascadeCount, 1, 3) : 0;
         ini.Set(KeyOf("ShadowCascades"), ToString(cascades));
     }
+    ini.Set(KeyOf("AoEnabled"), service.Settings().AoEnabled() ? "1" : "0");
+    ini.Set(KeyOf("AoQuality"), ToString(static_cast<i32>(service.Settings().AoQuality())));
     if (const auto* dnc = service.GetDncService()) {
         ini.Set(KeyOf("TimeOfDay"), FloatToString(dnc->GetTimeOfDay()));
         ini.Set(KeyOf("AnimateTod"), dnc->GetTodScale() > 0.0f ? "1" : "0");

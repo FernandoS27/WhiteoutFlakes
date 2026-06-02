@@ -284,6 +284,148 @@ void VulkanCommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCo
     currentVpH_ = static_cast<f32>(height);
 }
 
+void VulkanCommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle depth,
+                                            f32 clearDepth, u8 clearStencil) {
+    // Same shape as the MRT BeginRenderPass with one color attachment,
+    // but the color attachment's loadOp is vk::AttachmentLoadOp::eLoad
+    // so its prior contents survive. Caller must have left the texture
+    // in eColorAttachmentOptimal (or eShaderReadOnlyOptimal, which we
+    // re-transition here).
+    auto& state = device_.State();
+    auto& frame = state.frames[state.frameIndex];
+
+    const bool startingNewFrame = !frame.recording;
+    EnsureRecording(state, frame);
+    if (startingNewFrame) {
+        cbSetDirty_ = true;
+        srvSetDirty_ = true;
+        samplerSetDirty_ = true;
+    }
+
+    auto* colorTex = state.textures.Get(static_cast<u64>(color));
+    auto* depthTex = state.textures.Get(static_cast<u64>(depth));
+
+    if (colorTex && colorTex->swapChainProxy != SwapChainHandle::Invalid) {
+        if (auto* sc = state.swapchains.Get(static_cast<u64>(colorTex->swapChainProxy))) {
+            AcquireSwapChainImageIfNeeded(state, *sc, frame);
+        }
+    }
+
+    activeColorAttachment_ = colorTex ? color : TextureHandle::Invalid;
+    activeColorAttachmentCount_ = 0;
+    activeColorFormat_ = colorTex ? static_cast<u32>(colorTex->format)
+                                  : static_cast<u32>(vk::Format::eUndefined);
+
+    std::array<vk::ImageMemoryBarrier2, 2> attachBarriers{};
+    u32 barrierCount = 0;
+
+    vk::RenderingAttachmentInfo colorAttach{};
+    if (colorTex) {
+        // Transition from whatever layout the texture is in (typically
+        // eShaderReadOnlyOptimal after the previous pass's EndRenderPass
+        // sweep) back to eColorAttachmentOptimal. The load-op variant
+        // is used right after a sampling pass — we have to re-acquire
+        // write access here.
+        attachBarriers[barrierCount++] = vk::ImageMemoryBarrier2{
+            .srcStageMask = vk::PipelineStageFlagBits2::eFragmentShader,
+            .srcAccessMask = vk::AccessFlagBits2::eShaderRead,
+            .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentRead |
+                             vk::AccessFlagBits2::eColorAttachmentWrite,
+            .oldLayout = colorTex->currentLayout,
+            .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .image = vk::Image(colorTex->image),
+            .subresourceRange =
+                {
+                    vk::ImageAspectFlagBits::eColor,
+                    0,
+                    VK_REMAINING_MIP_LEVELS,
+                    0,
+                    VK_REMAINING_ARRAY_LAYERS,
+                },
+        };
+        colorTex->currentLayout = vk::ImageLayout::eColorAttachmentOptimal;
+
+        colorAttach = vk::RenderingAttachmentInfo{
+            .imageView = vk::ImageView(colorTex->view),
+            .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .loadOp = vk::AttachmentLoadOp::eLoad,
+            .storeOp = vk::AttachmentStoreOp::eStore,
+        };
+
+        if (activeColorAttachmentCount_ < kMaxMrtColorAttachments) {
+            activeColorAttachments_[activeColorAttachmentCount_++] = color;
+        }
+    }
+
+    vk::RenderingAttachmentInfo depthAttach{};
+    if (depthTex) {
+        attachBarriers[barrierCount++] = vk::ImageMemoryBarrier2{
+            .srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe,
+            .srcAccessMask = {},
+            .dstStageMask = vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+                            vk::PipelineStageFlagBits2::eLateFragmentTests,
+            .dstAccessMask = vk::AccessFlagBits2::eDepthStencilAttachmentRead |
+                             vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+            .oldLayout = depthTex->currentLayout,
+            .newLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
+            .image = vk::Image(depthTex->image),
+            .subresourceRange =
+                {
+                    depthTex->aspect,
+                    0,
+                    VK_REMAINING_MIP_LEVELS,
+                    0,
+                    VK_REMAINING_ARRAY_LAYERS,
+                },
+        };
+        depthTex->currentLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+
+        depthAttach = vk::RenderingAttachmentInfo{
+            .imageView = vk::ImageView(depthTex->view),
+            .imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
+            .loadOp = vk::AttachmentLoadOp::eClear,
+            .storeOp = vk::AttachmentStoreOp::eStore,
+            .clearValue =
+                vk::ClearValue{
+                    .depthStencil = {clearDepth, clearStencil},
+                },
+        };
+    }
+
+    if (barrierCount > 0) {
+        frame.commandBuffer.pipelineBarrier2({
+            .imageMemoryBarrierCount = barrierCount,
+            .pImageMemoryBarriers = attachBarriers.data(),
+        });
+    }
+
+    const i32 width = colorTex ? colorTex->width : (depthTex ? depthTex->width : 0);
+    const i32 height = colorTex ? colorTex->height : (depthTex ? depthTex->height : 0);
+
+    vk::RenderingInfo info{
+        .renderArea = {{0, 0}, {static_cast<u32>(width), static_cast<u32>(height)}},
+        .layerCount = 1,
+        .colorAttachmentCount = colorTex ? 1u : 0u,
+        .pColorAttachments = colorTex ? &colorAttach : nullptr,
+        .pDepthAttachment = depthTex ? &depthAttach : nullptr,
+    };
+    frame.commandBuffer.beginRendering(info);
+
+    vk::Viewport vp{
+        0.0f, static_cast<f32>(height), static_cast<f32>(width), -static_cast<f32>(height), 0.0f,
+        1.0f};
+    frame.commandBuffer.setViewport(0, vp);
+    vk::Rect2D scissor{{0, 0}, {static_cast<u32>(width), static_cast<u32>(height)}};
+    frame.commandBuffer.setScissor(0, scissor);
+
+    activeDepthAttachment_ = depthTex ? depth : TextureHandle::Invalid;
+    currentVpX_ = 0.0f;
+    currentVpY_ = 0.0f;
+    currentVpW_ = static_cast<f32>(width);
+    currentVpH_ = static_cast<f32>(height);
+}
+
 void VulkanCommandList::EndRenderPass() {
     auto& state = device_.State();
     auto& frame = state.frames[state.frameIndex];

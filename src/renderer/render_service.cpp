@@ -100,6 +100,12 @@ shadow::ShadowService* RenderService::GetShadowService() {
 const shadow::ShadowService* RenderService::GetShadowService() const {
     return impl_->shadowService_.get();
 }
+gtao::GtaoService* RenderService::GetGtaoService() {
+    return impl_->gtaoService_.get();
+}
+const gtao::GtaoService* RenderService::GetGtaoService() const {
+    return impl_->gtaoService_.get();
+}
 
 RenderSettings& RenderService::Settings() {
     return impl_->settings_;
@@ -213,6 +219,14 @@ shadow::ShadowService& RenderService::EnsureShadowService(gfx::IGFXDevice& gfx) 
     if (!impl_->shadowService_)
         impl_->shadowService_ = std::make_unique<shadow::ShadowService>(&gfx);
     return *impl_->shadowService_;
+}
+
+gtao::GtaoService& RenderService::EnsureGtaoService(gfx::IGFXDevice& gfx, gfx::GfxApi api) {
+    if (!impl_->gtaoService_) {
+        impl_->gtaoService_ = std::make_unique<gtao::GtaoService>();
+        impl_->gtaoService_->Init(gfx, api);
+    }
+    return *impl_->gtaoService_;
 }
 
 dear_imgui::ImGuiRenderer* RenderService::ImGui() {
