@@ -250,6 +250,15 @@ bool RenderPipeline::RenderParticlesBls() {
         auto req =
             bls::MakePsoRequest(impl_->blsSdProgram_, bls::VertexLayoutKind::ParticleSD, mp, perm);
         req.rtvFormat = SceneTargetFormat();
+        // Particles are drawn inside the main scene pass. In HD mode
+        // that pass is MRT (slot 1 = linearDepth, slot 2 = normal); the
+        // SD particle PSO has to match the attachment count or
+        // Vulkan/WebGPU validation rejects the bind.
+        if (impl_->frameRenderMode_ == RenderMode::HD) {
+            req.extraRtvFormats[0] = kLinearDepthFormat;
+            req.extraRtvFormats[1] = kNormalBufferFormat;
+            req.extraRtvCount = 2;
+        }
         req.dsvFormat = impl_->depthStencilFormat_;
         auto pso = impl_->blsPsoBuilder_->GetOrBuild(req);
         if (pso == gfx::PipelineHandle::Invalid)
@@ -385,6 +394,15 @@ bool RenderPipeline::RenderSplatsBls() {
         auto req =
             bls::MakePsoRequest(impl_->blsSdProgram_, bls::VertexLayoutKind::ParticleSD, mp, perm);
         req.rtvFormat = SceneTargetFormat();
+        // Particles are drawn inside the main scene pass. In HD mode
+        // that pass is MRT (slot 1 = linearDepth, slot 2 = normal); the
+        // SD particle PSO has to match the attachment count or
+        // Vulkan/WebGPU validation rejects the bind.
+        if (impl_->frameRenderMode_ == RenderMode::HD) {
+            req.extraRtvFormats[0] = kLinearDepthFormat;
+            req.extraRtvFormats[1] = kNormalBufferFormat;
+            req.extraRtvCount = 2;
+        }
         req.dsvFormat = impl_->depthStencilFormat_;
         auto pso = impl_->blsPsoBuilder_->GetOrBuild(req);
         if (pso == gfx::PipelineHandle::Invalid)
@@ -431,6 +449,15 @@ void RenderPipeline::RenderCornEffects() {
     fi.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
     fi.rtvFormat = SceneTargetFormat();
     fi.dsvFormat = impl_->depthStencilFormat_;
+    // Popcorn effects draw inside the main scene pass. HD = MRT, so the
+    // popcorn PSO has to match the attachment count or Vulkan/WebGPU
+    // reject the bind. The popcorn shader doesn't write SV_Target1/2;
+    // the gfx layer's no-write-on-extras handles that.
+    if (impl_->frameRenderMode_ == RenderMode::HD) {
+        fi.extraRtvFormats[0] = kLinearDepthFormat;
+        fi.extraRtvFormats[1] = kNormalBufferFormat;
+        fi.extraRtvCount = 2;
+    }
     rs_.CornEffects().SetFrameInputs(fi);
     rs_.CornEffects().SimulateAndRender(rs_.CornEffects().PendingDt());
 }
@@ -546,6 +573,13 @@ void RenderPipeline::RenderRibbons() {
             auto req = bls::MakePsoRequest(impl_->blsSdProgram_, bls::VertexLayoutKind::ParticleSD,
                                            mp, perm);
             req.rtvFormat = SceneTargetFormat();
+            // Drawn inside the main scene pass. HD mode is MRT → match
+            // the attachment count or Vulkan/WebGPU reject the bind.
+            if (impl_->frameRenderMode_ == RenderMode::HD) {
+                req.extraRtvFormats[0] = kLinearDepthFormat;
+                req.extraRtvFormats[1] = kNormalBufferFormat;
+                req.extraRtvCount = 2;
+            }
             req.dsvFormat = impl_->depthStencilFormat_;
             auto pso = impl_->blsPsoBuilder_->GetOrBuild(req);
             if (pso == gfx::PipelineHandle::Invalid)
@@ -1111,11 +1145,18 @@ RenderTargetId RenderPipeline::CreateSwapChainTarget(void* nativeWindowHandle, i
     // simply doesn't bind them.
     target.linearDepth = impl_->gfx_->CreateColorTarget(w, h, kLinearDepthFormat);
     target.normalBuffer = impl_->gfx_->CreateColorTarget(w, h, kNormalBufferFormat);
-    // GTAO outputs. Both R8_UNORM, full-res. Raw = noisy main-pass
-    // output; aoBuffer = denoised final consumed by apply. SD never
-    // samples either; allocate unconditionally to keep resize linear.
+    // GTAO outputs. Four R8 AO slots + one RGBA8 bent normal, full-res.
+    //   Raw       — main-pass output.
+    //   Denoised  — spatial-denoised, pre-temporal.
+    //   aoBuffer  — current-frame final (temporal output, apply input).
+    //   History   — previous-frame final; GtaoService swaps roles per
+    //               frame so we never copy.
+    //   BentNormal— MRT slot 1 of the main pass (RGBA8 view-space).
     target.aoBufferRaw = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
+    target.aoBufferDenoised = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
     target.aoBuffer = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
+    target.aoBufferHistory = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
+    target.bentNormalBuffer = impl_->gfx_->CreateColorTarget(w, h, kBentNormalBufferFormat);
     target.width = w;
     target.height = h;
 
@@ -1146,7 +1187,10 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
     impl_->gfx_->Destroy(t.linearDepth);
     impl_->gfx_->Destroy(t.normalBuffer);
     impl_->gfx_->Destroy(t.aoBufferRaw);
+    impl_->gfx_->Destroy(t.aoBufferDenoised);
     impl_->gfx_->Destroy(t.aoBuffer);
+    impl_->gfx_->Destroy(t.aoBufferHistory);
+    impl_->gfx_->Destroy(t.bentNormalBuffer);
 
     if (t.swap != gfx::SwapChainHandle::Invalid) {
         impl_->gfx_->ResizeSwapChain(t.swap, w, h);
@@ -1163,12 +1207,22 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
     t.linearDepth = impl_->gfx_->CreateColorTarget(w, h, kLinearDepthFormat);
     t.normalBuffer = impl_->gfx_->CreateColorTarget(w, h, kNormalBufferFormat);
     t.aoBufferRaw = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
+    t.aoBufferDenoised = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
     t.aoBuffer = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
+    t.aoBufferHistory = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
+    t.bentNormalBuffer = impl_->gfx_->CreateColorTarget(w, h, kBentNormalBufferFormat);
     t.width = w;
     t.height = h;
 
     impl_->width_ = w;
     impl_->height_ = h;
+
+    // History buffers were destroyed and recreated above; the GPU side
+    // contains uninitialised memory. Force the temporal pass to
+    // pass-through current AO on the next frame instead of EMA-blending
+    // against undefined values.
+    if (auto* g = rs_.GetGtaoService())
+        g->ResetHistory();
 }
 
 void RenderPipeline::CleanupGFX() {
@@ -1237,7 +1291,10 @@ void RenderPipeline::CleanupGFX() {
             impl_->gfx_->Destroy(t.linearDepth);
             impl_->gfx_->Destroy(t.normalBuffer);
             impl_->gfx_->Destroy(t.aoBufferRaw);
+            impl_->gfx_->Destroy(t.aoBufferDenoised);
             impl_->gfx_->Destroy(t.aoBuffer);
+            impl_->gfx_->Destroy(t.aoBufferHistory);
+            impl_->gfx_->Destroy(t.bentNormalBuffer);
         }
     }
     impl_->targets_.clear();
@@ -1304,6 +1361,15 @@ bool RenderPipeline::CreatePipelines() {
 
     desc.dsvFormat = impl_->depthStencilFormat_;
     desc.rtvFormat = kHdrSceneFormat;
+    // Lines drawn inside the HD scene pass land in the same MRT setup
+    // as the BLS opaque draws (slot 1 = linearDepth, slot 2 = normal).
+    // PSO must match the attachment count or Vulkan/WebGPU reject the
+    // bind. The line shader doesn't output to SV_Target1/2; the gfx
+    // backend's no-blend extra-slot handling masks writes to those
+    // slots so the cleared G-buffer values survive intact.
+    desc.extraRtvFormats[0] = kLinearDepthFormat;
+    desc.extraRtvFormats[1] = kNormalBufferFormat;
+    desc.extraRtvCount = 2;
     impl_->linePSOHdr_ = impl_->gfx_->CreateGraphicsPipeline(desc);
 
     // SD line PSO is built lazily by CurrentLinePSO against the actual
@@ -1402,7 +1468,16 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
     // per-frame decision below must agree on the value — otherwise
     // the scene pass attaches the SRGB swap chain while CurrentLinePSO
     // hands out the HDR-rtv line PSO. See `Impl::frameRenderMode_`.
+    const RenderMode prevMode = impl_->frameRenderMode_;
     impl_->frameRenderMode_ = rs_.Settings().GetRenderMode();
+    if (prevMode != impl_->frameRenderMode_) {
+        // Render-mode flip invalidates GTAO's history (G-buffer wasn't
+        // populated during SD frames, and the previous-camera matrices
+        // map onto the now-different opaque scene). Skip the EMA blend
+        // on the next HD frame.
+        if (auto* g = rs_.GetGtaoService())
+            g->ResetHistory();
+    }
     const bool useHdr = (impl_->frameRenderMode_ == RenderMode::HD);
 
     // Frame capture (off unless exporting): BeginFrame redirects the final
@@ -2270,10 +2345,22 @@ public:
                 req.rtvFormat = RenderPipeline::kHdrSceneFormat;
                 // Match the HD G-buffer render pass: slot 1 = linear
                 // depth, slot 2 = encoded normal. Picked up by the
-                // backend's multi-RTV PSO build path.
+                // backend's multi-RTV PSO build path. The HD opaque
+                // shader's WC3_IS_MRT permutation writes SV_Target1/2,
+                // so enable extra-slot writes (transparent / SD / line
+                // PSOs leave the flag at the default `false`).
                 req.extraRtvFormats[0] = RenderPipeline::kLinearDepthFormat;
                 req.extraRtvFormats[1] = RenderPipeline::kNormalBufferFormat;
                 req.extraRtvCount = 2;
+                // Only the colour-writing, depth-writing materials
+                // (= the WC3_IS_MRT permutation) actually emit
+                // SV_Target1/2. Depth-prepass materials have
+                // DepthWriteEnabled=true but ColorWriteEnabled=false —
+                // their shader outputs nothing at all and WebGPU
+                // rejects a PSO whose extras have writeMask != 0 with
+                // no matching fragment output.
+                req.extraColorWrite =
+                    matParams.DepthWriteEnabled() && matParams.ColorWriteEnabled();
                 req.dsvFormat = rs_.Pipeline().impl_->depthStencilFormat_;
                 req.lhClipSpace = true;
                 auto pso = rs_.Pipeline().impl_->blsPsoBuilder_->GetOrBuild(req);

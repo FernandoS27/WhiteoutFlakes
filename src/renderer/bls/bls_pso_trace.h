@@ -46,7 +46,7 @@ struct PsoTraceEntry {
 
     u8 rtvFormat; // gfx::Format (8-bit cast — only common scene formats fit)
     u8 dsvFormat;
-    u8 flags; // bit0=wireframe, bit1=lhClipSpace
+    u8 flags;      // bit0=wireframe, bit1=lhClipSpace, bit2=extraColorWrite
     u8 reserved;
 
     u16 vsIndex;

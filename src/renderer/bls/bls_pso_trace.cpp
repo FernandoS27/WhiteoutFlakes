@@ -12,7 +12,13 @@ namespace whiteout::flakes::renderer::bls {
 namespace {
 
 constexpr u32 kMagic = 0x544F5350u; // 'PSOT' LE
-constexpr u32 kVersion = 2u;
+// v3 bump: v2 traces captured before the HD G-buffer MRT landed have
+// `extraRtvCount=0` for opaque BLS draws that now need to bind 3-RTV
+// pipelines, and v2 traces captured before slang shader permute
+// reshuffles (e.g. WGSL_TARGET binding shift) reference VS/PS indices
+// that no longer exist. Force a clean recapture so the cached PSOs
+// match the current pipeline state.
+constexpr u32 kVersion = 3u;
 constexpr usize kV1EntrySize = 16; // pre-MRT layout
 
 u64 EntryKey(const PsoTraceEntry& e) {
@@ -34,7 +40,8 @@ PsoTraceEntry MakeEntry(const PsoRequest& r) {
     e.topology = static_cast<u8>(r.topology);
     e.rtvFormat = static_cast<u8>(static_cast<u32>(r.rtvFormat));
     e.dsvFormat = static_cast<u8>(static_cast<u32>(r.dsvFormat));
-    e.flags = (r.wireframe ? 0x1u : 0u) | (r.lhClipSpace ? 0x2u : 0u);
+    e.flags = (r.wireframe ? 0x1u : 0u) | (r.lhClipSpace ? 0x2u : 0u) |
+              (r.extraColorWrite ? 0x4u : 0u);
     e.vsIndex = static_cast<u16>(r.vsIndex);
     e.psIndex = static_cast<u16>(r.psIndex);
     e.disables = r.material.disables;
@@ -76,7 +83,10 @@ void BlsPsoTrace::Load() {
     f.read(reinterpret_cast<char*>(&count), sizeof(count));
     if (!f || magic != kMagic)
         return;
-    if (version != 1u && version != kVersion)
+    // Accept the current version + any legacy version we know how to
+    // handle (currently: discard). Anything else (unknown future format,
+    // corrupted header) → bail without touching the trace.
+    if (version != 1u && version != 2u && version != kVersion)
         return;
 
     // Sanity cap so a corrupt header doesn't drive a multi-GB allocation.
@@ -88,17 +98,16 @@ void BlsPsoTrace::Load() {
         f.read(reinterpret_cast<char*>(entries_.data()),
                static_cast<std::streamsize>(count) * sizeof(PsoTraceEntry));
     } else {
-        // v1 upgrade: read the first 16 bytes of each row and zero the
-        // four trailing MRT bytes (PsoTraceEntry's zero-init via resize
-        // already handles that, so we only need to read the legacy
-        // prefix into the same slot).
-        for (u32 i = 0; i < count; ++i) {
-            f.read(reinterpret_cast<char*>(&entries_[i]), kV1EntrySize);
-            if (!f)
-                break;
-        }
-        // Mark dirty so the next Save() rewrites in v2 layout.
+        // v1 / v2 → current: the legacy entries either lack the MRT
+        // fields outright (v1) or carry zeroed `extraRtvCount` for what
+        // are now MRT-bound BLS opaque draws (v2, captured before the
+        // G-buffer landed). Either way replaying them produces 1-RTV
+        // PSOs that fail Vulkan/WebGPU attachment-state validation when
+        // bound inside the 3-RTV HD opaque pass. Discard the trace and
+        // let the next session recapture from scratch.
+        entries_.clear();
         dirty_ = true;
+        return;
     }
     if (!f) {
         entries_.clear();
@@ -168,6 +177,7 @@ void BlsPsoTrace::Replay(BlsPsoBuilder& builder, const BlsProgramCatalog& catalo
         req.dsvFormat = static_cast<gfx::Format>(e.dsvFormat);
         req.wireframe = (e.flags & 0x1u) != 0;
         req.lhClipSpace = (e.flags & 0x2u) != 0;
+        req.extraColorWrite = (e.flags & 0x4u) != 0;
 
         builder.GetOrBuild(req); // builds + caches, or no-ops if invalid indices
     }

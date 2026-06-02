@@ -470,11 +470,16 @@ PipelineHandle MetalDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
 
         // ---- Color attachments + blend ----
         // Walk the virtual format list: slot 0 = desc.rtvFormat, slots
-        // 1..N-1 = desc.extraRtvFormats. Blend state mirrors slot 0
-        // across every MRT slot (matches the WebGPU + Vulkan pattern;
-        // per-slot blend can be added later).
-        auto applyBlend = [&](MTLRenderPipelineColorAttachmentDescriptor* ca,
-                              MTLPixelFormat fmt) {
+        // 1..N-1 = desc.extraRtvFormats. Slot 0 inherits the blend
+        // state; extras never blend (the G-buffer depth/normal slots
+        // are non-blendable formats) and only receive writes when the
+        // host explicitly opts in via `extraColorWrite`. Without the
+        // opt-in, transparent / debug / particle PSOs would either
+        // trample the cleared G-buffer with the shader's undefined
+        // slot-1/2 outputs or hit a non-blendable-format validation
+        // error on backends that police it.
+        auto applySlotZero = [&](MTLRenderPipelineColorAttachmentDescriptor* ca,
+                                 MTLPixelFormat fmt) {
             ca.pixelFormat = fmt;
             ca.writeMask = desc.blend.colorWrite ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;
             ca.blendingEnabled = desc.blend.enable;
@@ -487,14 +492,20 @@ PipelineHandle MetalDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
                 ca.alphaBlendOperation = ToMtlBlendOp(desc.blend.opAlpha);
             }
         };
+        auto applyExtra = [&](MTLRenderPipelineColorAttachmentDescriptor* ca,
+                              MTLPixelFormat fmt) {
+            ca.pixelFormat = fmt;
+            ca.writeMask = desc.extraColorWrite ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;
+            ca.blendingEnabled = NO;
+        };
         const MTLPixelFormat colorFmt = ToMtlPixelFormat(desc.rtvFormat);
         if (desc.rtvFormat != Format::Unknown) {
-            applyBlend(rpd.colorAttachments[0], colorFmt);
+            applySlotZero(rpd.colorAttachments[0], colorFmt);
             for (u32 i = 0; i < desc.extraRtvCount && (1u + i) < kMaxColorAttachments; ++i) {
                 const Format f = desc.extraRtvFormats[i];
                 if (f == Format::Unknown)
                     break;
-                applyBlend(rpd.colorAttachments[1 + i], ToMtlPixelFormat(f));
+                applyExtra(rpd.colorAttachments[1 + i], ToMtlPixelFormat(f));
             }
         }
         rpd.alphaToCoverageEnabled = desc.blend.alphaToCoverage;

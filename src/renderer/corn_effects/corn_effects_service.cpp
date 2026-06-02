@@ -318,6 +318,12 @@ void CornEffectsService::FlushBatchedDraws() {
 
             auto req = bls::MakePsoRequest(backendInit_->program, bls::VertexLayoutKind::CornFx, mp, perm);
             req.rtvFormat = frameInputs_.rtvFormat;
+            req.extraRtvCount = frameInputs_.extraRtvCount;
+            for (u32 i = 0; i < frameInputs_.extraRtvCount &&
+                            i < gfx::GraphicsPipelineDesc::kMaxExtraColorAttachments;
+                 ++i) {
+                req.extraRtvFormats[i] = frameInputs_.extraRtvFormats[i];
+            }
             req.dsvFormat = frameInputs_.dsvFormat;
             auto pso = backendInit_->psoBuilder->GetOrBuild(req);
             if (pso == gfx::PipelineHandle::Invalid)

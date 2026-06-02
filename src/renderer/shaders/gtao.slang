@@ -34,13 +34,26 @@ struct GtaoCB
     float4x4 proj;
     float4x4 invProj;
 
+    // Inverse view matrix for the current frame — used to reconstruct
+    // world-space positions from view-space Z during temporal reprojection.
+    // Host computes this analytically (cheaper than asking the shader to
+    // transpose-and-flip-translation).
+    float4x4 invView;
+
+    // Previous-frame world→clip transform. On frame 0 the host sets this
+    // equal to the current view*proj so history reprojection is a no-op
+    // and the blend collapses to "current only" via params.w == 1.
+    float4x4 prevViewProj;
+
     // .xy = viewport size in pixels, .zw = 1/size.
     float4 viewport;
 
     // .x = world-space sample radius (units of the scene).
     // .y = AO power / intensity (post-exponent).
     // .z = falloff distance multiplier (samples past this drop out).
-    // .w = unused; reserved for future temporal blend amount.
+    // .w = temporal blend weight for *current* frame (0..1). 1.0 disables
+    //      history; ~0.1 = strong smoothing. Set by GtaoService each
+    //      frame: 1.0 on the very first frame, ~0.1 thereafter.
     float4 params;
 
     // .x frame index (low bits used for jitter rotation).
@@ -51,24 +64,41 @@ struct GtaoCB
     uint4 misc;
 }
 
-[[vk::binding(0, 0)]] ConstantBuffer<GtaoCB> g_cb;
+// PS binding offsets. Slang's WGSL emit preserves the literal
+// `vk::binding(N)` value, so the offsets have to match each runtime
+// backend's host-slot → @binding mapping. Same trick the BLS shaders
+// use in cb_structs.slang. METAL_TARGET follows WebGPU because both
+// runtimes share the lower offsets.
+//
+//   CBs:  host PS CB slot N → @binding(WF_PS_CB_OFFSET + N)
+//   SRVs: host PS SRV slot N → @binding(WF_PS_BIND_OFFSET + N)
+//
+// Vulkan:  CB shift = SRV shift = 16 (kStageBindingShift).
+// WebGPU:  CB shift = 4 (kPsCbBindingOffsetWgsl), SRV shift = 12
+//          (kStageBindingShift). Tighter to fit the per-stage cap.
+#if defined(WGSL_TARGET) || defined(METAL_TARGET)
+static const int WF_PS_CB_OFFSET = 4;
+static const int WF_PS_BIND_OFFSET = 12;
+#else
+static const int WF_PS_CB_OFFSET = 16;
+static const int WF_PS_BIND_OFFSET = 16;
+#endif
 
-// Pixel-stage SRVs. The HD-side bindings live at slot offsets 16..27
-// (see webgpu_init.cpp's kStageBindingShift) — using 16/17/18 here
-// keeps the descriptor set aligned with the existing post-process
-// passes. Each pass samples a disjoint subset:
-//   main_ps    — g_linearDepth, g_normal
-//   denoise_ps — g_linearDepth, g_aoNoisy
-//   apply_ps   — g_aoBuffer
-// For D3D, Slang's per-entry HLSL emit packs only the used textures
-// into t-registers in declaration order. The host (GtaoService::Run)
-// pins each pass's bindings to the slot D3D assigns; Vulkan + WGSL
-// use the explicit binding hints.
-[[vk::binding(16, 1)]] Texture2D<float>  g_linearDepth;
-[[vk::binding(17, 1)]] Texture2D<float4> g_normal;
-[[vk::binding(18, 1)]] Texture2D<float>  g_aoNoisy;
-[[vk::binding(19, 1)]] Texture2D<float>  g_aoBuffer;
-[[vk::binding(16, 2)]] SamplerState      g_sampler;
+[[vk::binding(WF_PS_CB_OFFSET + 0, 0)]] ConstantBuffer<GtaoCB> g_cb : register(b0);
+
+// Pixel-stage SRVs. Each pass samples a disjoint subset:
+//   main_ps     — g_linearDepth, g_normal
+//   denoise_ps  — g_linearDepth, g_aoNoisy
+//   temporal_ps — g_linearDepth, g_aoNoisy (current denoised), g_aoHistory
+//   apply_ps    — g_aoBuffer
+// `register(tN)` pins the HLSL slot so per-entry emit can't reshuffle
+// when textures are added or reordered.
+[[vk::binding(WF_PS_BIND_OFFSET + 0, 1)]] Texture2D<float>  g_linearDepth : register(t0);
+[[vk::binding(WF_PS_BIND_OFFSET + 1, 1)]] Texture2D<float4> g_normal      : register(t1);
+[[vk::binding(WF_PS_BIND_OFFSET + 2, 1)]] Texture2D<float>  g_aoNoisy     : register(t2);
+[[vk::binding(WF_PS_BIND_OFFSET + 3, 1)]] Texture2D<float>  g_aoBuffer    : register(t3);
+[[vk::binding(WF_PS_BIND_OFFSET + 4, 1)]] Texture2D<float>  g_aoHistory   : register(t4);
+[[vk::binding(WF_PS_BIND_OFFSET + 0, 2)]] SamplerState      g_sampler     : register(s0);
 
 struct VsOut
 {
@@ -92,10 +122,18 @@ VsOut vsGtao(uint vid : SV_VertexID)
 
 static const float PI = 3.14159265358979323846;
 
-// Decode the G-buffer normal. Our HD opaque pass writes the world-space
-// normal mapped to [0,1] in RGB (the .xyz = n * 0.5 + 0.5 packing used by
-// the BLS shaders, mirroring the engine's GBuffer slot-2 convention).
-float3 decodeNormalWS(float2 uv)
+// Sentinel written into linearDepth at sky / no-opaque pixels by the
+// HD opaque pass's clear. Every GTAO entry early-outs (or zero-weights)
+// samples whose linearDepth is >= this value. Shared across main_ps,
+// denoise_ps, and temporal_ps so the value can't drift.
+static const float SKY_SENTINEL = 1.0e4;
+
+// Decode the G-buffer normal. Despite the engine field being called
+// `normalWS`, hd_vs.slang transforms with `worldView` — the value the
+// HD PS writes to the normal MRT is **view-space**, packed as
+// n * 0.5 + 0.5 into RGBA8. Same naming trap as `worldPos`, which the
+// HD VS comment calls out explicitly.
+float3 decodeNormalVS(float2 uv)
 {
     float3 n = g_normal.SampleLevel(g_sampler, uv, 0).xyz;
     n = n * 2.0 - 1.0;
@@ -109,10 +147,17 @@ float3 decodeNormalWS(float2 uv)
 // / aspect.
 float3 viewPosFromUV(float2 uv, float viewZ)
 {
-    // NDC at the same depth: depth value doesn't matter for the .xy back-
-    // projection — we'll rescale by viewZ at the end. Pick z=0.5 so the
-    // perspective divide is well-conditioned.
-    float4 ndc = float4(uv * 2.0 - 1.0, 0.5, 1.0);
+    // UV.y=0 at the top of the screen, but NDC.y=+1 at the top — flip Y
+    // when going UV → NDC. (vsGtao does the same flip on the way out;
+    // here we undo it on the way in.) main_ps survives an unflipped
+    // version because it only takes deltas of viewPos values, but the
+    // temporal pass needs absolute view-space positions to reproject
+    // through the previous frame's view * proj.
+    //
+    // Depth value doesn't matter for the .xy back-projection — we'll
+    // rescale by viewZ at the end. Pick z=0.5 so the perspective divide
+    // is well-conditioned.
+    float4 ndc = float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.5, 1.0);
     float4 v   = mul(g_cb.invProj, ndc);
     v.xyz /= v.w;
     // v.z is the reconstructed view Z at depth=0.5; scale the whole vector
@@ -131,31 +176,54 @@ float jitter(float2 pixelCoord, uint frameIdx)
 }
 
 // ----------------------------------------------------------------------------
-// Main GTAO pass — writes scalar visibility to the AO buffer. The trace
-// body is parameterised over slice/step counts via Slang `let` generics
-// so each quality preset compiles to fully-unrolled bytecode. Cost is
-// roughly 2 × SLICES × STEPS texture taps + horizon math per pixel.
+// Main GTAO pass — writes scalar visibility + view-space bent normal via
+// MRT. The trace body is parameterised over slice/step counts via Slang
+// `let` generics so each quality preset compiles to fully-unrolled
+// bytecode. Cost is roughly 2 × SLICES × STEPS texture taps + horizon
+// math per pixel.
+//
+// Bent normal: per slice we average the unoccluded arc midpoint in the
+// (normal, sliceTangent) plane, weighted by the slice's visibility, then
+// normalise across slices. View-space output; encoded as RGB = n*0.5+0.5
+// with the AO factor mirrored to alpha so consumers can sample one
+// texture for both terms.
 // ----------------------------------------------------------------------------
-float gtaoTrace<let SLICES : int, let STEPS : int>(VsOut input)
+struct GtaoMainOut {
+    float  ao         : SV_Target0;
+    float4 bentNormal : SV_Target1;
+};
+
+GtaoMainOut gtaoTrace<let SLICES : int, let STEPS : int>(VsOut input)
 {
+    GtaoMainOut o;
     float2 uv     = input.uv;
     float  viewZ  = g_linearDepth.SampleLevel(g_sampler, uv, 0).x;
 
     // linearDepth holds real view-space Z (scene units), not normalised
     // [0,1] depth. Sky pixels were cleared to 1e5; treat anything past
-    // 1e4 as "no opaque draw landed here" and return fully unoccluded.
-    const float SKY_SENTINEL = 1.0e4;
+    // SKY_SENTINEL as "no opaque draw landed here" and return fully
+    // unoccluded. Bent normal defaults to view-space camera-forward
+    // (+Z encoded).
     if (viewZ <= 0.001 || viewZ >= SKY_SENTINEL)
-        return 1.0;
+    {
+        o.ao         = 1.0;
+        o.bentNormal = float4(0.5, 0.5, 1.0, 1.0);
+        return o;
+    }
 
-    float3 normalWS = decodeNormalWS(uv);
-    float3 normalVS = normalize(mul((float3x3)g_cb.view, normalWS));
-
-    // Force the normal to face the camera (view-space +Z points away).
-    if (normalVS.z > 0.0)
-        normalVS = -normalVS;
+    // Normal MRT already holds view-space — no further rotation needed.
+    // The engine's HD opaque PS runs `orientNormal()` before the MRT
+    // write, so the stored normal already faces the camera in LH view
+    // (normalVS.z <= 0 for any rendered fragment). A defensive runtime
+    // flip on z > 0 sounds safe but causes silhouette artefacts: at
+    // grazing angles the encoded z hovers near zero and 8-bit RGBA8
+    // quantisation lets adjacent pixels straddle the flip threshold,
+    // alternating normal orientation and producing camera-dependent
+    // bright streaks in cavities. Trust the MRT contents.
+    float3 normalVS = decodeNormalVS(uv);
 
     float3 viewPos = viewPosFromUV(uv, viewZ);
+    float3 bentN   = float3(0.0, 0.0, 0.0);
 
     // Sampling parameters. The screen-space radius shrinks with depth so
     // far-away geometry doesn't trace huge taps across the buffer.
@@ -229,6 +297,41 @@ float gtaoTrace<let SLICES : int, let STEPS : int>(VsOut input)
         // is close enough at the slice/step counts we ship.
         float vis = 1.0 - 0.5 * (max(0.0, h1) + max(0.0, h2));
         visibility += vis;
+
+        // Bent-normal contribution — closed-form integral of the
+        // unoccluded-direction vector across this slice's visible arc.
+        //
+        // In the (normal, sliceTangent) plane, parametrise direction by
+        // angle φ from normal toward +sliceTangent. The unoccluded arc
+        // spans φ ∈ [-acos(h2), +acos(h1)] (an occluder at horizon
+        // cosine h blocks angles closer to the normal than acos(h);
+        // angles past acos(h) toward tangent stay unoccluded). Clamp h
+        // to [0, 1] so "no occluder found" (h<0) caps the integral at
+        // the tangent plane rather than wrapping past it.
+        //
+        //   ∫ sin(φ) dφ  = h2c − h1c
+        //   ∫ cos(φ) dφ  = √(1 − h1c²) + √(1 − h2c²)
+        //
+        // The unnormalised result automatically encodes per-slice
+        // visibility magnitude (fully-blocked slice → zero contribution;
+        // fully-open slice → full normal+tangent integral), so no
+        // separate vis weight is needed.
+        float3 sliceTanVS = float3(
+             c * 2.0 / max(g_cb.proj[0][0], 1e-4),
+            -si * 2.0 / max(g_cb.proj[1][1], 1e-4),
+             0.0);
+        sliceTanVS -= dot(sliceTanVS, normalVS) * normalVS;
+        float tLen = length(sliceTanVS);
+        if (tLen > 1e-4)
+        {
+            sliceTanVS /= tLen;
+            float h1c        = saturate(h1);
+            float h2c        = saturate(h2);
+            float tangentAmt = h2c - h1c;
+            float normalAmt  = sqrt(max(0.0, 1.0 - h1c * h1c))
+                             + sqrt(max(0.0, 1.0 - h2c * h2c));
+            bentN += tangentAmt * sliceTanVS + normalAmt * normalVS;
+        }
     }
 
     visibility /= float(SLICES);
@@ -236,7 +339,15 @@ float gtaoTrace<let SLICES : int, let STEPS : int>(VsOut input)
 
     // Power curve. params.y = 1.0 leaves the linear result; > 1 darkens
     // the occlusion (stronger AO), < 1 lightens it.
-    return pow(visibility, max(g_cb.params.y, 0.01));
+    o.ao = pow(visibility, max(g_cb.params.y, 0.01));
+
+    // Bent normal: normalise the accumulator, fall back to the surface
+    // normal if it collapsed. Encode view-space xyz into 0..1 and stash
+    // the AO factor in alpha so IBL can sample one texture.
+    float bLen = length(bentN);
+    float3 bDirVS = (bLen > 1e-4) ? (bentN / bLen) : normalVS;
+    o.bentNormal = float4(bDirVS * 0.5 + 0.5, o.ao);
+    return o;
 }
 
 // Quality entries. Each instantiation locks (SLICES, STEPS) at compile
@@ -245,13 +356,13 @@ float gtaoTrace<let SLICES : int, let STEPS : int>(VsOut input)
 //   Medium — 4×4 taps  (16 pairs). Default; matches the V1 main pass.
 //   High   — 8×8 taps  (64 pairs). ~4× more expensive than medium.
 [shader("fragment")]
-float gtao_main_low_ps(VsOut input) : SV_Target { return gtaoTrace<2, 2>(input); }
+GtaoMainOut gtao_main_low_ps(VsOut input) { return gtaoTrace<2, 2>(input); }
 
 [shader("fragment")]
-float gtao_main_ps(VsOut input) : SV_Target { return gtaoTrace<4, 4>(input); }
+GtaoMainOut gtao_main_ps(VsOut input) { return gtaoTrace<4, 4>(input); }
 
 [shader("fragment")]
-float gtao_main_high_ps(VsOut input) : SV_Target { return gtaoTrace<8, 8>(input); }
+GtaoMainOut gtao_main_high_ps(VsOut input) { return gtaoTrace<8, 8>(input); }
 
 // ----------------------------------------------------------------------------
 // Spatial denoise — 5×5 cross-bilateral filter weighted by view-space
@@ -269,7 +380,6 @@ float gtao_denoise_ps(VsOut input) : SV_Target
 
     // Sky pixels — same sentinel as the main pass — pass through with no
     // smoothing so the boundary against opaque geometry stays sharp.
-    const float SKY_SENTINEL = 1.0e4;
     if (zCenter >= SKY_SENTINEL)
         return g_aoNoisy.SampleLevel(g_sampler, uv, 0).x;
 
@@ -308,6 +418,45 @@ float gtao_denoise_ps(VsOut input) : SV_Target
 
     return (sumW > 1e-5) ? (sumAo / sumW)
                          : g_aoNoisy.SampleLevel(g_sampler, uv, 0).x;
+}
+
+// ----------------------------------------------------------------------------
+// Temporal denoise — camera-only reprojection. Reconstructs world-space
+// position from view-space Z via invView, then projects through the
+// previous frame's view*proj to find prev-frame UV. Samples history at
+// that UV and blends with current via an exponential moving average.
+// Rejects on out-of-frame UV; for AO's low-frequency content that's
+// enough — disocclusion ghosts wash out within ~1/alpha frames anyway.
+//
+// Animated meshes smear slightly because we have no motion vectors —
+// V2 trade-off; the smear stays well below the magnitude of the noise
+// it replaces. Add motion vectors in V3 if needed.
+// ----------------------------------------------------------------------------
+[shader("fragment")]
+float gtao_temporal_ps(VsOut input) : SV_Target
+{
+    float2 uv      = input.uv;
+    float  viewZ   = g_linearDepth.SampleLevel(g_sampler, uv, 0).x;
+    float  current = g_aoNoisy.SampleLevel(g_sampler, uv, 0).x;
+    float  alpha   = saturate(g_cb.params.w);
+
+    // Sky / no-geometry pixels and "history-disabled" frames pass the
+    // current sample through untouched.
+    if (viewZ <= 0.001 || viewZ >= SKY_SENTINEL || alpha >= 0.999)
+        return current;
+
+    // view-space → world-space → prev clip → prev UV.
+    float3 vp       = viewPosFromUV(uv, viewZ);
+    float3 wp       = mul(g_cb.invView, float4(vp, 1.0)).xyz;
+    float4 prevClip = mul(g_cb.prevViewProj, float4(wp, 1.0));
+    if (prevClip.w <= 0.0)
+        return current;
+    float2 prevUv = prevClip.xy / prevClip.w * float2(0.5, -0.5) + float2(0.5, 0.5);
+    if (any(prevUv < 0.0) || any(prevUv > 1.0))
+        return current;
+
+    float history = g_aoHistory.SampleLevel(g_sampler, prevUv, 0).x;
+    return lerp(history, current, alpha);
 }
 
 // ----------------------------------------------------------------------------

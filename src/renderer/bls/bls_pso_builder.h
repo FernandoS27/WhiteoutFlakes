@@ -48,6 +48,10 @@ struct PsoRequest {
     // with count = 2; flows straight to GraphicsPipelineDesc.
     gfx::Format extraRtvFormats[gfx::GraphicsPipelineDesc::kMaxExtraColorAttachments] = {};
     u32 extraRtvCount = 0;
+    // True only for the BLS HD opaque MRT permutation that writes
+    // SV_Target1 / SV_Target2. Transparent / SD-on-HD / particle PSOs
+    // leave this false so the cleared depth + normal slots survive.
+    bool extraColorWrite = false;
     gfx::Format dsvFormat = gfx::Format::D24_UNORM_S8_UINT;
     bool wireframe = false;
 

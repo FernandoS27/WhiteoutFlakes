@@ -39,6 +39,12 @@ struct CornEffectsFrameInputs {
     f32 cornEffectsScale = 100.0f;
     gfx::Format rtvFormat = gfx::Format::R11G11B10_FLOAT;
     gfx::Format dsvFormat = gfx::Format::D24_UNORM_S8_UINT;
+    // Extra MRT slots — populated by the host when drawing inside the
+    // HD G-buffer pass (slot 1 = linearDepth, slot 2 = normal). The
+    // popcorn shader doesn't emit SV_Target1/2; the gfx layer masks
+    // writes on the extras since extraColorWrite stays false here.
+    gfx::Format extraRtvFormats[gfx::GraphicsPipelineDesc::kMaxExtraColorAttachments] = {};
+    u32 extraRtvCount = 0;
 };
 
 // Slot acquirer hook — corn_fx invokes it once per layer during

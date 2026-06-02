@@ -191,10 +191,14 @@ u64 HashRequest(const PsoRequest& r) {
     // the layout slot — mix it in separately.
     k ^= u64(r.material.ColorWriteEnabled() ? 0u : 1u) * 0x94D049BB133111EBull;
     // MRT state: count + slot-1/2/3 formats packed into another u64.
+    // extraColorWrite goes into the top bit so write-enabled and
+    // write-disabled MRT permutations don't collide in the cache.
     u64 mrtBits = u64(r.extraRtvCount) & 0x3u;
     for (u32 i = 0; i < gfx::GraphicsPipelineDesc::kMaxExtraColorAttachments; ++i) {
         mrtBits |= (u64(r.extraRtvFormats[i]) & 0xFFu) << (2 + i * 8);
     }
+    if (r.extraColorWrite)
+        mrtBits |= (1ull << 63);
     k ^= mrtBits * 0xCBF29CE484222325ull;
     return k;
 }
@@ -238,6 +242,7 @@ gfx::PipelineHandle BlsPsoBuilder::GetOrBuild(const PsoRequest& request) {
          ++i) {
         desc.extraRtvFormats[i] = request.extraRtvFormats[i];
     }
+    desc.extraColorWrite = request.extraColorWrite;
     desc.dsvFormat = request.dsvFormat;
 
     gfx::PipelineHandle pso = device_->CreateGraphicsPipeline(desc);

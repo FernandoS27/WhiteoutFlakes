@@ -178,6 +178,22 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
                               : vk::ColorComponentFlags{},
     };
 
+    // Extras never blend — the G-buffer depth/normal slots are non-
+    // blendable formats, and the opaque MRT permutation that writes
+    // them doesn't want colour mixing anyway. Writes are gated on the
+    // explicit `extraColorWrite` opt-in: transparent / debug / particle
+    // PSOs keep the slot in the layout (to match the host pass's
+    // attachment count) but mask all writes.
+    const vk::PipelineColorBlendAttachmentState extraNoWriteAttach{
+        .blendEnable = vk::False,
+        .colorWriteMask = vk::ColorComponentFlags{},
+    };
+    const vk::PipelineColorBlendAttachmentState extraWriteAttach{
+        .blendEnable = vk::False,
+        .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+                          vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
+    };
+
     // Walk the virtual format list: slot 0 = rtvFormat, slots 1..N-1 =
     // extraRtvFormats. Stops at the first Unknown slot.
     vk::Format colorFormats[kMaxColorAttachments] = {};
@@ -193,7 +209,8 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
             if (f == Format::Unknown)
                 break;
             colorFormats[colorAttachmentCount] = ToVkFormat(f);
-            blendAttachments[colorAttachmentCount] = blendAttach;
+            blendAttachments[colorAttachmentCount] =
+                desc.extraColorWrite ? extraWriteAttach : extraNoWriteAttach;
             ++colorAttachmentCount;
         }
     }

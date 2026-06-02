@@ -105,6 +105,16 @@ public:
     void Run(gfx::IGFXCommandList* cmd, const RenderTarget& target, const Matrix44f& view,
              const Matrix44f& proj, u32 frameIndex);
 
+    // Invalidate the temporal history. Call when the previous frame's
+    // AO is no longer a valid prior — viewport resize, render-mode flip,
+    // model reload, camera teleport. The next Run() forces alpha=1
+    // (current-only) instead of EMA-blending against stale data, which
+    // would otherwise smear an unrelated frame's AO across the new
+    // scene for ~10 frames before EMA converges.
+    void ResetHistory() {
+        prevValid_ = false;
+    }
+
 private:
     void EnsurePsos(gfx::Format aoFmt, gfx::Format hdrFmt);
 
@@ -115,12 +125,14 @@ private:
     gfx::ShaderHandle mainPs_[static_cast<u32>(Quality::Count)] = {
         gfx::ShaderHandle::Invalid, gfx::ShaderHandle::Invalid, gfx::ShaderHandle::Invalid};
     gfx::ShaderHandle denoisePs_ = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle temporalPs_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle applyPs_ = gfx::ShaderHandle::Invalid;
 
     gfx::PipelineHandle mainPso_[static_cast<u32>(Quality::Count)] = {
         gfx::PipelineHandle::Invalid, gfx::PipelineHandle::Invalid,
         gfx::PipelineHandle::Invalid};
     gfx::PipelineHandle denoisePso_ = gfx::PipelineHandle::Invalid;
+    gfx::PipelineHandle temporalPso_ = gfx::PipelineHandle::Invalid;
     gfx::PipelineHandle applyPso_ = gfx::PipelineHandle::Invalid;
     gfx::PipelineHandle applyPsoDebug_ = gfx::PipelineHandle::Invalid;
     gfx::Format psoAoFmt_ = gfx::Format::Unknown;
@@ -128,6 +140,13 @@ private:
 
     Quality quality_ = Quality::Medium;
     bool debugAoOnly_ = false;
+
+    // Temporal state. `prevValid_` is false on frame 0 + on every camera
+    // teleport (resize, render-mode flip — anything that invalidates the
+    // history). When false, the temporal pass is a pure pass-through.
+    Matrix44f prevViewProj_{};
+    bool prevValid_ = false;
+    u32 frameCounter_ = 0;
 
     gfx::BufferHandle cb_ = gfx::BufferHandle::Invalid;
     gfx::SamplerHandle pointSampler_ = gfx::SamplerHandle::Invalid;

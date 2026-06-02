@@ -510,10 +510,16 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
                 break;
             auto& et = colorTargets[colorTargetCount++];
             et.format = ToWgpuFormat(f);
-            if (desc.blend.enable)
-                et.blend = &blend;
-            et.writeMask =
-                desc.blend.colorWrite ? wgpu::ColorWriteMask::All : wgpu::ColorWriteMask::None;
+            // Extras never blend — the G-buffer depth/normal slots are
+            // non-blendable formats, and the opaque MRT permutation that
+            // writes them doesn't want alpha/colour mixing anyway.
+            // Writes are gated on the explicit `extraColorWrite` opt-in:
+            // transparent / debug / particle PSOs keep the slot in the
+            // layout (to match the host pass's attachment count) but
+            // mask all writes so the cleared G-buffer survives.
+            et.blend = nullptr;
+            et.writeMask = desc.extraColorWrite ? wgpu::ColorWriteMask::All
+                                                : wgpu::ColorWriteMask::None;
         }
     }
 

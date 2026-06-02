@@ -39,15 +39,23 @@ struct RenderTarget {
     gfx::TextureHandle linearDepth = gfx::TextureHandle::Invalid;
     gfx::TextureHandle normalBuffer = gfx::TextureHandle::Invalid;
 
-    // GTAO ambient-occlusion buffers. Both R8_UNORM, full-res, HD-only.
-    //   aoBufferRaw — noisy GTAO output from the main pass (4×4 horizon
-    //                 trace; visible noise without denoise).
-    //   aoBuffer    — denoised final factor read by the apply pass that
-    //                 modulates hdrColor in place via Zero/SrcColor blend.
-    // The spatial denoise pass reads `aoBufferRaw` + `linearDepth` and
-    // writes `aoBuffer`. SD mode leaves both Invalid.
+    // GTAO ambient-occlusion buffers. Four R8_UNORM scalars + an RGBA8
+    // bent normal, all full-res, HD-only.
+    //   aoBufferRaw      — noisy GTAO output from the main pass.
+    //   aoBufferDenoised — spatial-denoised, pre-temporal.
+    //   aoBuffer         — final factor read by the apply pass that
+    //                      modulates hdrColor via Zero/SrcColor blend.
+    //   aoBufferHistory  — previous frame's final factor; GtaoService
+    //                      ping-pongs (`aoBuffer`, `aoBufferHistory`)
+    //                      role each frame to avoid a copy.
+    //   bentNormalBuffer — view-space bent normal (xyz = n*0.5+0.5,
+    //                      w = visibility). MRT slot 1 of the main pass.
+    // SD mode leaves all five Invalid.
     gfx::TextureHandle aoBufferRaw = gfx::TextureHandle::Invalid;
+    gfx::TextureHandle aoBufferDenoised = gfx::TextureHandle::Invalid;
     gfx::TextureHandle aoBuffer = gfx::TextureHandle::Invalid;
+    gfx::TextureHandle aoBufferHistory = gfx::TextureHandle::Invalid;
+    gfx::TextureHandle bentNormalBuffer = gfx::TextureHandle::Invalid;
 
     i32 width = 0;
     i32 height = 0;

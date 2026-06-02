@@ -195,6 +195,15 @@ struct GraphicsPipelineDesc {
     Format extraRtvFormats[kMaxExtraColorAttachments] = {};
     u32 extraRtvCount = 0;
 
+    // Extra-slot write enable. Off by default: callers that bump
+    // `extraRtvCount` only to satisfy the host render pass's attachment
+    // count (transparent / line / debug draws inside the HD G-buffer
+    // pass) get writeMask=None on slots 1..N-1, so the cleared
+    // G-buffer data survives. The BLS HD opaque MRT permutation, which
+    // does emit SV_Target1/SV_Target2, sets this true so the depth +
+    // normal buffers actually get populated.
+    bool extraColorWrite = false;
+
     Format dsvFormat = Format::D24_UNORM_S8_UINT;
 };
 

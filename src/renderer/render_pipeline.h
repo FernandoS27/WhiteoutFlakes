@@ -127,6 +127,10 @@ public:
     // for the post-tonemap modulation budget — the noise floor of GTAO at
     // 4×4 sampling is already several LSBs above 8-bit precision.
     static constexpr gfx::Format kAoBufferFormat = gfx::Format::R8_UNORM;
+    // Bent-normal G-buffer slot. xyz packs the view-space bent normal as
+    // n*0.5+0.5; w carries the visibility factor so consumers don't need
+    // to sample aoBuffer separately to weight the indirect term.
+    static constexpr gfx::Format kBentNormalBufferFormat = gfx::Format::R8G8B8A8_UNORM;
 
 private:
     // ---- Friends ----

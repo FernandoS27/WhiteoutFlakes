@@ -208,6 +208,17 @@ set(SHADER_ENTRIES
     "blit.slang|vsBlit|vertex|kBlitVS"
     "blit.slang|psBlit|fragment|kBlitPS"
     "framebuffer_capture.slang|csCapture|compute|kCaptureCS"
+    # GTAO ambient-occlusion pass — read by GtaoService. The same
+    # vsGtao fullscreen-triangle VS feeds both the main pass (writes
+    # the AO buffer) and the apply pass (modulates the HDR scene
+    # colour in place via loadOp=Load + DST*SRC blend).
+    "gtao.slang|vsGtao|vertex|kGtaoVS"
+    "gtao.slang|gtao_main_low_ps|fragment|kGtaoMainLowPS"
+    "gtao.slang|gtao_main_ps|fragment|kGtaoMainPS"
+    "gtao.slang|gtao_main_high_ps|fragment|kGtaoMainHighPS"
+    "gtao.slang|gtao_denoise_ps|fragment|kGtaoDenoisePS"
+    "gtao.slang|gtao_temporal_ps|fragment|kGtaoTemporalPS"
+    "gtao.slang|gtao_apply_ps|fragment|kGtaoApplyPS"
 )
 
 set(SHADER_DXBC_FILES "")
@@ -1056,6 +1067,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/dnc/dnc_service.cpp
     src/renderer/shadow/shadow_service.cpp
     src/renderer/shadow/shadow_pass.cpp
+    src/renderer/gtao/gtao_service.cpp
     src/renderer/bls/bls_container.cpp
     src/renderer/bls/bls_shader_cache.cpp
     src/renderer/bls/bls_permuter.cpp
