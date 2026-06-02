@@ -480,9 +480,14 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         buffers.push_back(vbl);
     }
 
-    // ---- Color target + blend ----
-    wgpu::ColorTargetState colorTarget{};
-    colorTarget.format = ToWgpuFormat(desc.rtvFormat);
+    // ---- Color targets + blend ----
+    // Walk the virtual format list: slot 0 = desc.rtvFormat, slots 1..N-1 =
+    // desc.extraRtvFormats[0..extraRtvCount-1]. Blend state is shared
+    // across slots — the slot-0 BlendDesc applies to every MRT output
+    // (current callers either use identical blend on all G-buffer slots
+    // or run prepass-style writes with no blending). Per-slot blend can
+    // be added later by extending GraphicsPipelineDesc.
+    wgpu::ColorTargetState colorTargets[kMaxColorAttachments] = {};
     wgpu::BlendState blend{};
     blend.color.srcFactor = ToWgpuBlendFactor(desc.blend.srcColor);
     blend.color.dstFactor = ToWgpuBlendFactor(desc.blend.dstColor);
@@ -490,16 +495,33 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
     blend.alpha.srcFactor = ToWgpuBlendFactor(desc.blend.srcAlpha);
     blend.alpha.dstFactor = ToWgpuBlendFactor(desc.blend.dstAlpha);
     blend.alpha.operation = ToWgpuBlendOp(desc.blend.opAlpha);
-    if (desc.blend.enable)
-        colorTarget.blend = &blend;
-    colorTarget.writeMask =
-        desc.blend.colorWrite ? wgpu::ColorWriteMask::All : wgpu::ColorWriteMask::None;
+
+    u32 colorTargetCount = 0;
+    if (desc.rtvFormat != Format::Unknown) {
+        auto& t = colorTargets[colorTargetCount++];
+        t.format = ToWgpuFormat(desc.rtvFormat);
+        if (desc.blend.enable)
+            t.blend = &blend;
+        t.writeMask =
+            desc.blend.colorWrite ? wgpu::ColorWriteMask::All : wgpu::ColorWriteMask::None;
+        for (u32 i = 0; i < desc.extraRtvCount && colorTargetCount < kMaxColorAttachments; ++i) {
+            const Format f = desc.extraRtvFormats[i];
+            if (f == Format::Unknown)
+                break;
+            auto& et = colorTargets[colorTargetCount++];
+            et.format = ToWgpuFormat(f);
+            if (desc.blend.enable)
+                et.blend = &blend;
+            et.writeMask =
+                desc.blend.colorWrite ? wgpu::ColorWriteMask::All : wgpu::ColorWriteMask::None;
+        }
+    }
 
     wgpu::FragmentState frag{};
     frag.module = ps ? ps->module : wgpu::ShaderModule{};
     frag.entryPoint = ps ? ps->entryPoint.c_str() : "main";
-    frag.targetCount = ps ? 1 : 0;
-    frag.targets = ps ? &colorTarget : nullptr;
+    frag.targetCount = ps ? colorTargetCount : 0;
+    frag.targets = (ps && colorTargetCount) ? colorTargets : nullptr;
 
     // ---- Depth/stencil ----
     wgpu::DepthStencilState depth{};

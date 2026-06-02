@@ -15,9 +15,12 @@
 //
 // File layout (little-endian, no padding):
 //   u32 magic   = 'PSOT' (0x54_4F_53_50 LE)
-//   u32 version = 1
+//   u32 version = 2  (v1 = pre-MRT 16-byte entries; v2 = 20-byte entries)
 //   u32 count
-//   count * PsoTraceEntry  (16 bytes each)
+//   count * PsoTraceEntry  (20 bytes each on v2)
+//
+// v1 files are auto-upgraded on load: the legacy 16-byte rows are read
+// and the 4 new MRT bytes are zeroed (extraRtvCount=0 → single-RT PSO).
 // =============================================================================
 
 #include "bls_mat_params.h"  // GxMatAlpha
@@ -49,9 +52,17 @@ struct PsoTraceEntry {
     u16 vsIndex;
     u16 psIndex;
     u32 disables; // MatParams::disables — full bitfield, state-affecting bits only
+
+    // MRT extra color-attachment formats (gfx::Format cast to u8 each).
+    // extraRtvCount is the number of valid slots in extraRtvFormats[];
+    // slots beyond that should be 0. Three slots cover the maximum
+    // 4-RT MRT (slot 0 lives on the `rtvFormat` field above). v1 trace
+    // files load with all four bytes zeroed.
+    u8 extraRtvCount;
+    u8 extraRtvFormats[3];
 };
 #pragma pack(pop)
-static_assert(sizeof(PsoTraceEntry) == 16, "PsoTraceEntry must be 16 bytes for on-disk format");
+static_assert(sizeof(PsoTraceEntry) == 20, "PsoTraceEntry must be 20 bytes for on-disk format");
 
 class BlsPsoTrace {
 public:

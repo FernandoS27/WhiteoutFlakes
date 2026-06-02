@@ -43,6 +43,11 @@ struct PsoRequest {
     gfx::PrimitiveTopology topology = gfx::PrimitiveTopology::TriangleList;
 
     gfx::Format rtvFormat = gfx::Format::R11G11B10_FLOAT;
+    // Extra MRT slots. extraRtvCount = 0 → single-RT (existing behaviour).
+    // For the HD G-buffer opaque pass set { R32_FLOAT, R8G8B8A8_UNORM }
+    // with count = 2; flows straight to GraphicsPipelineDesc.
+    gfx::Format extraRtvFormats[gfx::GraphicsPipelineDesc::kMaxExtraColorAttachments] = {};
+    u32 extraRtvCount = 0;
     gfx::Format dsvFormat = gfx::Format::D24_UNORM_S8_UINT;
     bool wireframe = false;
 

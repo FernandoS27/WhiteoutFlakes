@@ -167,6 +167,12 @@ struct RasterizerDesc {
     f32 depthBiasClamp = 0.0f;
 };
 
+// Maximum number of color render-target slots a GraphicsPipelineDesc /
+// BeginRenderPass call can address. Matches the WebGPU minimum (4) and
+// the smallest desktop limit. Bumping it requires the same change in
+// every backend's PSO and render-pass setup.
+constexpr u32 kMaxColorAttachments = 4;
+
 struct GraphicsPipelineDesc {
     ShaderHandle vs = ShaderHandle{0};
     ShaderHandle ps = ShaderHandle{0};
@@ -175,7 +181,20 @@ struct GraphicsPipelineDesc {
     BlendDesc blend;
     DepthStencilDesc depthStencil;
     RasterizerDesc rasterizer;
+
+    // Color-attachment formats. Slot 0 lives on `rtvFormat` (kept as a
+    // first-class field so single-RT callers — every existing call site
+    // up to the G-buffer change — read like before). Slots 1..N-1 live in
+    // `extraRtvFormats` in order; the active total is `1 + extraRtvCount`.
+    // Backends iterate the formats virtually as the concatenated list
+    // `{rtvFormat, extraRtvFormats[0], …, extraRtvFormats[extraRtvCount-1]}`
+    // when building the PSO. SD / single-RT paths leave `extraRtvCount`
+    // at 0 and the layout is unchanged.
     Format rtvFormat = Format::R8G8B8A8_UNORM;
+    static constexpr u32 kMaxExtraColorAttachments = kMaxColorAttachments - 1;
+    Format extraRtvFormats[kMaxExtraColorAttachments] = {};
+    u32 extraRtvCount = 0;
+
     Format dsvFormat = Format::D24_UNORM_S8_UINT;
 };
 

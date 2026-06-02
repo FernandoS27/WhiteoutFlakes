@@ -28,6 +28,17 @@ struct RenderTarget {
 
     gfx::TextureHandle hdrColor = gfx::TextureHandle::Invalid;
     gfx::TextureHandle depth = gfx::TextureHandle::Invalid;
+
+    // G-buffer auxiliary color attachments. The HD opaque scene pass binds
+    // `hdrColor` (slot 0), `linearDepth` (slot 1, R32F view-space Z), and
+    // `normalBuffer` (slot 2, RGBA8 encoded world normal) as a single MRT
+    // render pass — mirrors W3 Reforged's `s_worldFBHD` layout (depth +
+    // 3 colors). Consumed by later post-process passes (SSAO, fog,
+    // distortion). SD mode leaves these `Invalid` — its single-RT pass
+    // never references them.
+    gfx::TextureHandle linearDepth = gfx::TextureHandle::Invalid;
+    gfx::TextureHandle normalBuffer = gfx::TextureHandle::Invalid;
+
     i32 width = 0;
     i32 height = 0;
 };

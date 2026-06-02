@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cstring>
 #include "d3d12_command_list.h"
 #include "d3d12_device.h"
 
@@ -86,33 +87,57 @@ void D3D12CommandList::TransitionTexture(TextureEntry& e, D3D12_RESOURCE_STATES 
 
 void D3D12CommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
                                        const f32 clearColor[4], f32 clearDepth, u8 clearStencil) {
+    f32 clears[1][4];
+    std::memcpy(clears[0], clearColor, sizeof(clears[0]));
+    const TextureHandle colors[1] = {color};
+    BeginRenderPass(colors, 1, depth, clears, clearDepth, clearStencil);
+}
+
+void D3D12CommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCount,
+                                       TextureHandle depth, const f32 (*clearColors)[4],
+                                       f32 clearDepth, u8 clearStencil) {
     assert(!inRenderPass_ && "Nested BeginRenderPass");
+    assert(colorCount <= kMaxColorAttachments && "BeginRenderPass MRT: too many color attachments");
     inRenderPass_ = true;
-    currentColorRt_ = color;
+    // Tracking single-slot for legacy queries — slot 0 carries the
+    // representative target for things like the imgui pass that read
+    // currentColorRt_. MRT consumers shouldn't rely on it for slot 1+.
+    currentColorRt_ = (colorCount > 0) ? colors[0] : TextureHandle{};
     currentDepthRt_ = depth;
 
     auto* cmd = device_.GetCmdList();
-
-    auto* colorEntry = device_.GetTexture(color);
     auto* depthEntry = device_.GetTexture(depth);
 
-    if (colorEntry)
-        TransitionTexture(*colorEntry, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvs[kMaxColorAttachments] = {};
+    u32 boundRtvCount = 0;
+    for (u32 i = 0; i < colorCount; ++i) {
+        auto* entry = device_.GetTexture(colors[i]);
+        if (!entry || !entry->hasRtv)
+            continue;
+        TransitionTexture(*entry, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        rtvs[boundRtvCount++] = entry->rtvCpu;
+    }
     if (depthEntry)
         TransitionTexture(*depthEntry, D3D12_RESOURCE_STATE_DEPTH_WRITE);
 
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv =
-        colorEntry && colorEntry->hasRtv ? colorEntry->rtvCpu : D3D12_CPU_DESCRIPTOR_HANDLE{0};
     D3D12_CPU_DESCRIPTOR_HANDLE dsv =
         depthEntry && depthEntry->hasDsv ? depthEntry->dsvCpu : D3D12_CPU_DESCRIPTOR_HANDLE{0};
 
-    cmd->OMSetRenderTargets(rtv.ptr ? 1 : 0, rtv.ptr ? &rtv : nullptr, FALSE,
+    cmd->OMSetRenderTargets(boundRtvCount, boundRtvCount ? rtvs : nullptr, FALSE,
                             dsv.ptr ? &dsv : nullptr);
 
-    if (rtv.ptr)
-        cmd->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
-    if (dsv.ptr) {
+    // Clear in original requested order — the per-slot clear color is
+    // indexed by the caller's `colors` order, not by `boundRtvCount`,
+    // since a missing RTV in the middle would otherwise mis-align.
+    u32 outIdx = 0;
+    for (u32 i = 0; i < colorCount; ++i) {
+        auto* entry = device_.GetTexture(colors[i]);
+        if (!entry || !entry->hasRtv)
+            continue;
+        cmd->ClearRenderTargetView(rtvs[outIdx++], clearColors[i], 0, nullptr);
+    }
 
+    if (dsv.ptr) {
         D3D12_CLEAR_FLAGS clearFlags = D3D12_CLEAR_FLAG_DEPTH;
         if (depthEntry && (depthEntry->desc.format == Format::D24_UNORM_S8_UINT ||
                            depthEntry->desc.format == Format::D32_FLOAT_S8_UINT)) {

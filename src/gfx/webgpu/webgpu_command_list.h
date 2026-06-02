@@ -22,6 +22,8 @@ public:
 
     void BeginRenderPass(TextureHandle color, TextureHandle depth, const f32 clearColor[4],
                          f32 clearDepth, u8 clearStencil) override;
+    void BeginRenderPass(const TextureHandle* colors, u32 colorCount, TextureHandle depth,
+                         const f32 (*clearColors)[4], f32 clearDepth, u8 clearStencil) override;
     void EndRenderPass() override;
 
     // Tracy doesn't have a WebGPU backend (yet). No-op for now; matches the

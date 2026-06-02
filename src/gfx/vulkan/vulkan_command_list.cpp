@@ -117,6 +117,17 @@ VulkanCommandList::~VulkanCommandList() = default;
 
 void VulkanCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
                                         const f32 clearColor[4], f32 clearDepth, u8 clearStencil) {
+    f32 clears[1][4];
+    std::memcpy(clears[0], clearColor, sizeof(clears[0]));
+    const TextureHandle colors[1] = {color};
+    BeginRenderPass(colors, 1, depth, clears, clearDepth, clearStencil);
+}
+
+void VulkanCommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCount,
+                                        TextureHandle depth, const f32 (*clearColors)[4],
+                                        f32 clearDepth, u8 clearStencil) {
+    assert(colorCount <= kMaxColorAttachments && "Vulkan BeginRenderPass: too many color attachments");
+
     auto& state = device_.State();
     auto& frame = state.frames[state.frameIndex];
 
@@ -131,34 +142,47 @@ void VulkanCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
         samplerSetDirty_ = true;
     }
 
-    auto* colorTex = state.textures.Get(static_cast<u64>(color));
     auto* depthTex = state.textures.Get(static_cast<u64>(depth));
 
-    // Acquire-on-first-bind for swap-chain proxies.
-    if (colorTex && colorTex->swapChainProxy != SwapChainHandle::Invalid) {
-        if (auto* sc = state.swapchains.Get(static_cast<u64>(colorTex->swapChainProxy))) {
-            AcquireSwapChainImageIfNeeded(state, *sc, frame);
+    // Acquire-on-first-bind for swap-chain proxies — sweep every color
+    // slot so an MRT pass that includes the back-buffer anywhere still
+    // works.
+    for (u32 i = 0; i < colorCount; ++i) {
+        auto* tex = state.textures.Get(static_cast<u64>(colors[i]));
+        if (tex && tex->swapChainProxy != SwapChainHandle::Invalid) {
+            if (auto* sc = state.swapchains.Get(static_cast<u64>(tex->swapChainProxy))) {
+                AcquireSwapChainImageIfNeeded(state, *sc, frame);
+            }
         }
     }
 
-    activeColorAttachment_ = colorTex ? color : TextureHandle::Invalid;
-    activeColorFormat_ =
-        colorTex ? static_cast<u32>(colorTex->format) : static_cast<u32>(vk::Format::eUndefined);
+    auto* slot0Tex = (colorCount > 0) ? state.textures.Get(static_cast<u64>(colors[0])) : nullptr;
+    activeColorAttachment_ = slot0Tex ? colors[0] : TextureHandle::Invalid;
+    activeColorFormat_ = slot0Tex ? static_cast<u32>(slot0Tex->format)
+                                  : static_cast<u32>(vk::Format::eUndefined);
+
+    // Track every bound color attachment for EndRenderPass's
+    // ShaderReadOnly transition sweep.
+    activeColorAttachmentCount_ = 0;
 
     // Batch color + depth attachment transitions into one barrier2.
-    std::array<vk::ImageMemoryBarrier2, 2> attachBarriers{};
+    std::array<vk::ImageMemoryBarrier2, kMaxColorAttachments + 1> attachBarriers{};
     u32 barrierCount = 0;
 
-    vk::RenderingAttachmentInfo colorAttach{};
-    if (colorTex) {
+    vk::RenderingAttachmentInfo colorAttaches[kMaxColorAttachments] = {};
+    u32 boundColorCount = 0;
+    for (u32 i = 0; i < colorCount; ++i) {
+        auto* tex = state.textures.Get(static_cast<u64>(colors[i]));
+        if (!tex)
+            continue;
         attachBarriers[barrierCount++] = vk::ImageMemoryBarrier2{
             .srcStageMask = vk::PipelineStageFlagBits2::eTopOfPipe,
             .srcAccessMask = {},
             .dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput,
             .dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite,
-            .oldLayout = colorTex->currentLayout,
+            .oldLayout = tex->currentLayout,
             .newLayout = vk::ImageLayout::eColorAttachmentOptimal,
-            .image = vk::Image(colorTex->image),
+            .image = vk::Image(tex->image),
             .subresourceRange =
                 {
                     vk::ImageAspectFlagBits::eColor,
@@ -168,19 +192,27 @@ void VulkanCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
                     VK_REMAINING_ARRAY_LAYERS,
                 },
         };
-        colorTex->currentLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        tex->currentLayout = vk::ImageLayout::eColorAttachmentOptimal;
 
         vk::ClearColorValue cc{};
-        std::memcpy(cc.float32.data(), clearColor, sizeof(f32) * 4);
+        std::memcpy(cc.float32.data(), clearColors[i], sizeof(f32) * 4);
 
-        colorAttach = vk::RenderingAttachmentInfo{
-            .imageView = vk::ImageView(colorTex->view),
+        colorAttaches[boundColorCount++] = vk::RenderingAttachmentInfo{
+            .imageView = vk::ImageView(tex->view),
             .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
             .loadOp = vk::AttachmentLoadOp::eClear,
             .storeOp = vk::AttachmentStoreOp::eStore,
             .clearValue = vk::ClearValue{.color = cc},
         };
+
+        if (activeColorAttachmentCount_ < kMaxMrtColorAttachments) {
+            activeColorAttachments_[activeColorAttachmentCount_++] = colors[i];
+        }
     }
+    // Compatibility alias for code further down that referenced the
+    // pre-MRT single-color variable name.
+    auto* colorTex = slot0Tex;
+    (void)colorTex;
 
     vk::RenderingAttachmentInfo depthAttach{};
     if (depthTex) {
@@ -230,8 +262,8 @@ void VulkanCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
     vk::RenderingInfo info{
         .renderArea = {{0, 0}, {static_cast<u32>(width), static_cast<u32>(height)}},
         .layerCount = 1,
-        .colorAttachmentCount = colorTex ? 1u : 0u,
-        .pColorAttachments = colorTex ? &colorAttach : nullptr,
+        .colorAttachmentCount = boundColorCount,
+        .pColorAttachments = boundColorCount ? colorAttaches : nullptr,
         .pDepthAttachment = depthTex ? &depthAttach : nullptr,
     };
     frame.commandBuffer.beginRendering(info);
@@ -259,23 +291,30 @@ void VulkanCommandList::EndRenderPass() {
         return;
     frame.commandBuffer.endRendering();
 
-    // Eagerly transition the color attachment to ShaderReadOnly so a
-    // following pass can sample it (HDR → tonemap). Swap-chain proxies
-    // are consumed by Present, so we skip them.
-    if (activeColorAttachment_ != TextureHandle::Invalid) {
-        auto* texture = state.textures.Get(static_cast<u64>(activeColorAttachment_));
-        if (texture && texture->image && texture->swapChainProxy == SwapChainHandle::Invalid &&
-            texture->currentLayout != vk::ImageLayout::eShaderReadOnlyOptimal) {
-            TransitionImageLayout(frame.commandBuffer, texture->image, texture->aspect,
-                                  texture->currentLayout, vk::ImageLayout::eShaderReadOnlyOptimal,
-                                  vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-                                  vk::AccessFlagBits2::eColorAttachmentWrite,
-                                  vk::PipelineStageFlagBits2::eFragmentShader,
-                                  vk::AccessFlagBits2::eShaderRead);
-            texture->currentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
-        }
+    // Eagerly transition every bound color attachment to ShaderReadOnly
+    // so a following pass can sample them (HDR → tonemap, linear depth
+    // → SSAO, etc.). Swap-chain proxies are consumed by Present, so we
+    // skip them. Sweeps the MRT slot list, not just slot 0.
+    for (u32 i = 0; i < activeColorAttachmentCount_; ++i) {
+        if (activeColorAttachments_[i] == TextureHandle::Invalid)
+            continue;
+        auto* texture = state.textures.Get(static_cast<u64>(activeColorAttachments_[i]));
+        if (!texture || !texture->image)
+            continue;
+        if (texture->swapChainProxy != SwapChainHandle::Invalid)
+            continue;
+        if (texture->currentLayout == vk::ImageLayout::eShaderReadOnlyOptimal)
+            continue;
+        TransitionImageLayout(frame.commandBuffer, texture->image, texture->aspect,
+                              texture->currentLayout, vk::ImageLayout::eShaderReadOnlyOptimal,
+                              vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+                              vk::AccessFlagBits2::eColorAttachmentWrite,
+                              vk::PipelineStageFlagBits2::eFragmentShader,
+                              vk::AccessFlagBits2::eShaderRead);
+        texture->currentLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
     }
     activeColorAttachment_ = TextureHandle::Invalid;
+    activeColorAttachmentCount_ = 0;
     activeDepthAttachment_ = TextureHandle::Invalid;
     activeColorFormat_ = static_cast<u32>(vk::Format::eUndefined);
     lastBoundPipeline_ = PipelineHandle::Invalid;

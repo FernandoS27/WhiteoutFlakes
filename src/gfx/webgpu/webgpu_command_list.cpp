@@ -58,33 +58,59 @@ WebGPUCommandList::~WebGPUCommandList() = default;
 
 void WebGPUCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
                                         const f32 clearColor[4], f32 clearDepth, u8 clearStencil) {
+    f32 clears[1][4];
+    std::memcpy(clears[0], clearColor, sizeof(clears[0]));
+    const TextureHandle colors[1] = {color};
+    BeginRenderPass(colors, 1, depth, clears, clearDepth, clearStencil);
+}
+
+void WebGPUCommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCount,
+                                        TextureHandle depth, const f32 (*clearColors)[4],
+                                        f32 clearDepth, u8 clearStencil) {
+    assert(colorCount <= kMaxColorAttachments && "WebGPU BeginRenderPass: too many color attachments");
     auto& state = device_.State();
     EnsureEncoderOpen(state);
     auto& frame = state.frames[state.frameIndex];
 
-    auto* colorTex = state.textures.Get(static_cast<u64>(color));
+    // Lookup every requested color attachment; track slot 0 in the legacy
+    // active* fields so existing single-target consumers (PSO format match
+    // and friends) keep working.
+    wgpu::RenderPassColorAttachment colorAttaches[kMaxColorAttachments] = {};
+    u32 boundColorCount = 0;
+    auto* slot0Tex = (colorCount > 0) ? state.textures.Get(static_cast<u64>(colors[0])) : nullptr;
     auto* depthTex = state.textures.Get(static_cast<u64>(depth));
 
     // Acquire-on-first-bind for swap-chain proxies — symmetric with the
-    // Vulkan backend (vulkan_command_list.cpp:138).
-    if (colorTex && colorTex->swapChainProxy != SwapChainHandle::Invalid) {
-        if (auto* sc = state.swapchains.Get(static_cast<u64>(colorTex->swapChainProxy))) {
-            AcquireSwapChainImageIfNeeded(state, *sc);
+    // Vulkan backend (vulkan_command_list.cpp:138). Walk every attachment
+    // so an MRT pass that includes the back-buffer in any slot still works.
+    for (u32 i = 0; i < colorCount; ++i) {
+        auto* tex = state.textures.Get(static_cast<u64>(colors[i]));
+        if (tex && tex->swapChainProxy != SwapChainHandle::Invalid) {
+            if (auto* sc = state.swapchains.Get(static_cast<u64>(tex->swapChainProxy))) {
+                AcquireSwapChainImageIfNeeded(state, *sc);
+            }
         }
     }
 
-    activeColorAttachment_ = colorTex ? color : TextureHandle::Invalid;
+    activeColorAttachment_ = slot0Tex ? colors[0] : TextureHandle::Invalid;
     activeDepthAttachment_ = depthTex ? depth : TextureHandle::Invalid;
-    activeColorFormat_ = colorTex ? colorTex->format : wgpu::TextureFormat::Undefined;
+    activeColorFormat_ = slot0Tex ? slot0Tex->format : wgpu::TextureFormat::Undefined;
 
-    wgpu::RenderPassColorAttachment colorAttach{};
-    if (colorTex && colorTex->view) {
-        colorAttach.view = colorTex->view;
-        colorAttach.loadOp = wgpu::LoadOp::Clear;
-        colorAttach.storeOp = wgpu::StoreOp::Store;
-        colorAttach.clearValue = {clearColor[0], clearColor[1], clearColor[2], clearColor[3]};
-        colorAttach.depthSlice = wgpu::kDepthSliceUndefined;
+    for (u32 i = 0; i < colorCount; ++i) {
+        auto* tex = state.textures.Get(static_cast<u64>(colors[i]));
+        if (!tex || !tex->view)
+            continue;
+        auto& a = colorAttaches[boundColorCount++];
+        a.view = tex->view;
+        a.loadOp = wgpu::LoadOp::Clear;
+        a.storeOp = wgpu::StoreOp::Store;
+        a.clearValue = {clearColors[i][0], clearColors[i][1], clearColors[i][2], clearColors[i][3]};
+        a.depthSlice = wgpu::kDepthSliceUndefined;
     }
+    // Compatibility alias for code further down that still references the
+    // pre-MRT single-color variable name.
+    auto* colorTex = slot0Tex;
+    (void)colorTex;
     auto hasStencilAspect = [](wgpu::TextureFormat f) {
         // WebGPU's depth-stencil formats: only the *Stencil8 variants carry
         // a stencil aspect. Setting stencilLoadOp on a depth-only target
@@ -145,8 +171,8 @@ void WebGPUCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth
 
     wgpu::RenderPassDescriptor rpd{};
     rpd.label = "wf.renderPass";
-    rpd.colorAttachmentCount = colorTex ? 1 : 0;
-    rpd.colorAttachments = colorTex ? &colorAttach : nullptr;
+    rpd.colorAttachmentCount = boundColorCount;
+    rpd.colorAttachments = boundColorCount ? colorAttaches : nullptr;
     rpd.depthStencilAttachment = hasDepthAttach ? &depthAttach : nullptr;
     pass_ = frame.encoder.BeginRenderPass(&rpd);
 

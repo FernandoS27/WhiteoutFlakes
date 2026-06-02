@@ -1053,11 +1053,21 @@ PipelineHandle D3D12Device::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
     pd.InputLayout.NumElements = static_cast<UINT>(elems.size());
     pd.PrimitiveTopologyType = ToD3D12TopologyType(desc.topology);
 
-    if (desc.rtvFormat == Format::Unknown) {
-        pd.NumRenderTargets = 0;
-    } else {
-        pd.NumRenderTargets = 1;
+    // Walk the virtual format list: slot 0 = desc.rtvFormat, slots 1..N-1 =
+    // desc.extraRtvFormats[0..extraRtvCount-1]. Stops at the first Unknown
+    // slot — every prior valid slot becomes an RTV. NumRenderTargets is
+    // the contiguous-from-zero count.
+    pd.NumRenderTargets = 0;
+    if (desc.rtvFormat != Format::Unknown) {
         pd.RTVFormats[0] = ToDXGI(desc.rtvFormat);
+        pd.NumRenderTargets = 1;
+        for (u32 i = 0; i < desc.extraRtvCount && (1u + i) <= kMaxColorAttachments; ++i) {
+            const Format f = desc.extraRtvFormats[i];
+            if (f == Format::Unknown)
+                break;
+            pd.RTVFormats[1 + i] = ToDXGI(f);
+            pd.NumRenderTargets = 2 + i;
+        }
     }
     pd.DSVFormat = ToDXGI(desc.dsvFormat);
     pd.SampleDesc.Count = 1;

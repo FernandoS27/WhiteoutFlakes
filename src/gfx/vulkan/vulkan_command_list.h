@@ -27,6 +27,8 @@ public:
 
     void BeginRenderPass(TextureHandle color, TextureHandle depth, const f32 clearColor[4],
                          f32 clearDepth, u8 clearStencil) override;
+    void BeginRenderPass(const TextureHandle* colors, u32 colorCount, TextureHandle depth,
+                         const f32 (*clearColors)[4], f32 clearDepth, u8 clearStencil) override;
     void EndRenderPass() override;
 
     void BeginGpuZone(const char* name) override;
@@ -83,7 +85,14 @@ private:
     // capture compute shader is the only compute user; one slot suffices.
     BufferHandle pendingComputeUav_ = BufferHandle::Invalid;
 
+    // Slot-0 attachment kept under the legacy name so existing call sites
+    // (PSO format match, transient depth allocator) read unchanged. MRT
+    // adds activeColorAttachments_/Count_ for the EndRenderPass transition
+    // sweep that has to touch every bound color RTV.
     TextureHandle activeColorAttachment_ = TextureHandle::Invalid;
+    static constexpr u32 kMaxMrtColorAttachments = 4;
+    TextureHandle activeColorAttachments_[kMaxMrtColorAttachments] = {};
+    u32 activeColorAttachmentCount_ = 0;
     TextureHandle activeDepthAttachment_ = TextureHandle::Invalid;
     // Raw VkFormat held as u32 so this header stays free of vulkan.h.
     u32 activeColorFormat_ = 0;

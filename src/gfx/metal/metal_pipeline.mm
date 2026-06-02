@@ -468,20 +468,34 @@ PipelineHandle MetalDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
             rpd.vertexDescriptor = vd;
         }
 
-        // ---- Color attachment + blend ----
-        MTLRenderPipelineColorAttachmentDescriptor* color = rpd.colorAttachments[0];
+        // ---- Color attachments + blend ----
+        // Walk the virtual format list: slot 0 = desc.rtvFormat, slots
+        // 1..N-1 = desc.extraRtvFormats. Blend state mirrors slot 0
+        // across every MRT slot (matches the WebGPU + Vulkan pattern;
+        // per-slot blend can be added later).
+        auto applyBlend = [&](MTLRenderPipelineColorAttachmentDescriptor* ca,
+                              MTLPixelFormat fmt) {
+            ca.pixelFormat = fmt;
+            ca.writeMask = desc.blend.colorWrite ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;
+            ca.blendingEnabled = desc.blend.enable;
+            if (desc.blend.enable) {
+                ca.sourceRGBBlendFactor = ToMtlBlendFactor(desc.blend.srcColor);
+                ca.destinationRGBBlendFactor = ToMtlBlendFactor(desc.blend.dstColor);
+                ca.rgbBlendOperation = ToMtlBlendOp(desc.blend.opColor);
+                ca.sourceAlphaBlendFactor = ToMtlBlendFactor(desc.blend.srcAlpha);
+                ca.destinationAlphaBlendFactor = ToMtlBlendFactor(desc.blend.dstAlpha);
+                ca.alphaBlendOperation = ToMtlBlendOp(desc.blend.opAlpha);
+            }
+        };
         const MTLPixelFormat colorFmt = ToMtlPixelFormat(desc.rtvFormat);
-        color.pixelFormat = colorFmt;
-        color.writeMask =
-            desc.blend.colorWrite ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;
-        color.blendingEnabled = desc.blend.enable;
-        if (desc.blend.enable) {
-            color.sourceRGBBlendFactor = ToMtlBlendFactor(desc.blend.srcColor);
-            color.destinationRGBBlendFactor = ToMtlBlendFactor(desc.blend.dstColor);
-            color.rgbBlendOperation = ToMtlBlendOp(desc.blend.opColor);
-            color.sourceAlphaBlendFactor = ToMtlBlendFactor(desc.blend.srcAlpha);
-            color.destinationAlphaBlendFactor = ToMtlBlendFactor(desc.blend.dstAlpha);
-            color.alphaBlendOperation = ToMtlBlendOp(desc.blend.opAlpha);
+        if (desc.rtvFormat != Format::Unknown) {
+            applyBlend(rpd.colorAttachments[0], colorFmt);
+            for (u32 i = 0; i < desc.extraRtvCount && (1u + i) < kMaxColorAttachments; ++i) {
+                const Format f = desc.extraRtvFormats[i];
+                if (f == Format::Unknown)
+                    break;
+                applyBlend(rpd.colorAttachments[1 + i], ToMtlPixelFormat(f));
+            }
         }
         rpd.alphaToCoverageEnabled = desc.blend.alphaToCoverage;
 

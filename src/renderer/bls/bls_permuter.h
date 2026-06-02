@@ -47,6 +47,15 @@ struct RenderState {
     u8 numLights = 0;
     u8 fogStyle = 0;
     bool fogEnabled = false;
+    // NOTE: `depthWrite` is the bit-0 axis of the HD/Crystal/SD_on_HD PS
+    // permutation, which compile_all_slang.py labels `WC3_IS_MRT`. So in
+    // practice every material whose DepthWriteEnabled() is true also
+    // gets the MRT-compiled PS that emits SV_Target1 (linear view-Z) +
+    // SV_Target2 (encoded world normal) alongside SV_Target0. Opaque
+    // materials therefore already pick the G-buffer-ready bytecode —
+    // the renderer just needs to bind the extra RTVs and request the
+    // matching multi-RTV PSO. Transparents (DepthWriteEnabled=false)
+    // stay on the non-MRT perm.
     bool depthWrite = false;
     bool shadows = false;
     bool prepass = false;

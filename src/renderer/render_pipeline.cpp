@@ -1105,6 +1105,11 @@ RenderTargetId RenderPipeline::CreateSwapChainTarget(void* nativeWindowHandle, i
     target.colorLinear = impl_->gfx_->GetSwapChainBackBufferLinear(target.swap);
     target.hdrColor = impl_->gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
     target.depth = impl_->gfx_->CreateDepthTarget(w, h, impl_->depthStencilFormat_);
+    // G-buffer slot 1 + slot 2 (HD MRT pass writes linear depth + world
+    // normal alongside the HDR scene colour). Always created — SD mode
+    // simply doesn't bind them.
+    target.linearDepth = impl_->gfx_->CreateColorTarget(w, h, kLinearDepthFormat);
+    target.normalBuffer = impl_->gfx_->CreateColorTarget(w, h, kNormalBufferFormat);
     target.width = w;
     target.height = h;
 
@@ -1132,6 +1137,8 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
     auto& t = *target;
     impl_->gfx_->Destroy(t.depth);
     impl_->gfx_->Destroy(t.hdrColor);
+    impl_->gfx_->Destroy(t.linearDepth);
+    impl_->gfx_->Destroy(t.normalBuffer);
 
     if (t.swap != gfx::SwapChainHandle::Invalid) {
         impl_->gfx_->ResizeSwapChain(t.swap, w, h);
@@ -1145,6 +1152,8 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
 
     t.hdrColor = impl_->gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
     t.depth = impl_->gfx_->CreateDepthTarget(w, h, impl_->depthStencilFormat_);
+    t.linearDepth = impl_->gfx_->CreateColorTarget(w, h, kLinearDepthFormat);
+    t.normalBuffer = impl_->gfx_->CreateColorTarget(w, h, kNormalBufferFormat);
     t.width = w;
     t.height = h;
 
@@ -1215,6 +1224,8 @@ void RenderPipeline::CleanupGFX() {
                 impl_->gfx_->Destroy(t.color);
             impl_->gfx_->Destroy(t.hdrColor);
             impl_->gfx_->Destroy(t.depth);
+            impl_->gfx_->Destroy(t.linearDepth);
+            impl_->gfx_->Destroy(t.normalBuffer);
         }
     }
     impl_->targets_.clear();
@@ -1464,7 +1475,32 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
         shadow::ShadowPass(rs_).Run(*rs_.GetShadowService());
     }
 
-    cmd->BeginRenderPass(sceneTarget, target.depth, clearColor, 1.0f, 0);
+    // G-buffer MRT bind. In HD mode the scene pass writes 3 colour
+    // attachments — scene HDR (slot 0), linear view-space depth (slot 1,
+    // R32F), encoded world-space normal (slot 2, RGBA8). Mirrors the
+    // engine's s_worldFBHD layout. In SD mode we have only slot 0 (the
+    // swap chain), and the linearDepth/normalBuffer textures are still
+    // created but unused. The MRT-capable BLS pixel shaders (the
+    // WC3_IS_MRT permutations) are already selected by the existing
+    // `depthWrite=true` opaque path — they emit SV_Target1/2 values that
+    // we now actually capture instead of silently discarding.
+    if (useHdr) {
+        const gfx::TextureHandle colors[3] = {sceneTarget, target.linearDepth,
+                                              target.normalBuffer};
+        // Slot 0: hdr clear (already in `clearColor`).
+        // Slot 1: linear depth — clear to far (1.0). Engine uses
+        //         {1.0, 65536.0, 0, 0} in s_worldFBHD; we use a single
+        //         channel R32F so only the .x value matters.
+        // Slot 2: normal — clear to {0.5, 0.5, 1.0, 0} (encoded +Z up).
+        f32 clearColors[3][4] = {
+            {clearColor[0], clearColor[1], clearColor[2], clearColor[3]},
+            {1.0f, 0.0f, 0.0f, 0.0f},
+            {0.5f, 0.5f, 1.0f, 0.0f},
+        };
+        cmd->BeginRenderPass(colors, 3, target.depth, clearColors, 1.0f, 0);
+    } else {
+        cmd->BeginRenderPass(sceneTarget, target.depth, clearColor, 1.0f, 0);
+    }
     cmd->SetViewport({0, 0, (f32)target.width, (f32)target.height, 0, 1});
     WDX_GPU_ZONE(cmd, "ScenePass");
 
@@ -1807,6 +1843,16 @@ public:
                                                 matParams, permLocal);
 
             reqLocal.rtvFormat = rs_.Pipeline().SceneTargetFormat();
+            // In HD mode the world pass binds a 3-RT G-buffer; this SD
+            // (SD-on-HD) PSO needs its color-attachment count to match
+            // even though the SD bytecode only writes SV_Target0. The
+            // extra slots stay at their cleared values. SD mode skips
+            // this — the SD scene pass binds a single swap-chain RT.
+            if (rs_.Pipeline().impl_->frameRenderMode_ == RenderMode::HD) {
+                reqLocal.extraRtvFormats[0] = RenderPipeline::kLinearDepthFormat;
+                reqLocal.extraRtvFormats[1] = RenderPipeline::kNormalBufferFormat;
+                reqLocal.extraRtvCount = 2;
+            }
             reqLocal.dsvFormat = rs_.Pipeline().impl_->depthStencilFormat_;
             auto pso = rs_.Pipeline().impl_->blsPsoBuilder_->GetOrBuild(reqLocal);
             if (pso == gfx::PipelineHandle::Invalid)
@@ -2175,6 +2221,12 @@ public:
                 }
                 req.topology = gfx::PrimitiveTopology::TriangleList;
                 req.rtvFormat = RenderPipeline::kHdrSceneFormat;
+                // Match the HD G-buffer render pass: slot 1 = linear
+                // depth, slot 2 = encoded normal. Picked up by the
+                // backend's multi-RTV PSO build path.
+                req.extraRtvFormats[0] = RenderPipeline::kLinearDepthFormat;
+                req.extraRtvFormats[1] = RenderPipeline::kNormalBufferFormat;
+                req.extraRtvCount = 2;
                 req.dsvFormat = rs_.Pipeline().impl_->depthStencilFormat_;
                 req.lhClipSpace = true;
                 auto pso = rs_.Pipeline().impl_->blsPsoBuilder_->GetOrBuild(req);

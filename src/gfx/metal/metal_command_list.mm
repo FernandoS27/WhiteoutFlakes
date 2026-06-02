@@ -20,7 +20,9 @@
 #import <Metal/Metal.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cstdio>
+#include <cstring>
 
 namespace whiteout::flakes::gfx::metal {
 
@@ -100,14 +102,30 @@ MetalCommandList::~MetalCommandList() = default;
 void MetalCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
                                        const f32 clearColor[4], f32 clearDepth,
                                        u8 clearStencil) {
+    f32 clears[1][4];
+    std::memcpy(clears[0], clearColor, sizeof(clears[0]));
+    const TextureHandle colors[1] = {color};
+    BeginRenderPass(colors, 1, depth, clears, clearDepth, clearStencil);
+}
+
+void MetalCommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCount,
+                                       TextureHandle depth, const f32 (*clearColors)[4],
+                                       f32 clearDepth, u8 clearStencil) {
+    assert(colorCount <= kMaxColorAttachments && "Metal BeginRenderPass: too many color attachments");
     @autoreleasepool {
         auto& state = device_.State();
 
-        if (auto* sc = SwapChainOwnerOfTexture(state, color))
-            AcquireSwapChainImageIfNeeded(state, *sc);
+        // Acquire-on-first-bind sweeps every color slot so a back-buffer
+        // anywhere in the MRT list still gets its drawable acquired.
+        for (u32 i = 0; i < colorCount; ++i) {
+            if (auto* sc = SwapChainOwnerOfTexture(state, colors[i]))
+                AcquireSwapChainImageIfNeeded(state, *sc);
+        }
 
-        auto* colorTex = state.textures.Get(static_cast<u64>(color));
-        if (!colorTex || !colorTex->texture) {
+        auto* slot0Tex = (colorCount > 0)
+                             ? state.textures.Get(static_cast<u64>(colors[0]))
+                             : nullptr;
+        if (!slot0Tex || !slot0Tex->texture) {
             std::fprintf(stderr,
                 "[gfx/metal] BeginRenderPass: color attachment unavailable\n");
             return;
@@ -128,12 +146,22 @@ void MetalCommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
 
 
         MTLRenderPassDescriptor* rpd = [MTLRenderPassDescriptor renderPassDescriptor];
-        MTLRenderPassColorAttachmentDescriptor* ca = rpd.colorAttachments[0];
-        ca.texture = colorTex->texture;
-        ca.loadAction = MTLLoadActionClear;
-        ca.storeAction = MTLStoreActionStore;
-        ca.clearColor =
-            MTLClearColorMake(clearColor[0], clearColor[1], clearColor[2], clearColor[3]);
+        // MRT: walk every requested color slot and attach in-order.
+        u32 boundSlot = 0;
+        for (u32 i = 0; i < colorCount; ++i) {
+            auto* tex = state.textures.Get(static_cast<u64>(colors[i]));
+            if (!tex || !tex->texture)
+                continue;
+            MTLRenderPassColorAttachmentDescriptor* ca = rpd.colorAttachments[boundSlot++];
+            ca.texture = tex->texture;
+            ca.loadAction = MTLLoadActionClear;
+            ca.storeAction = MTLStoreActionStore;
+            ca.clearColor = MTLClearColorMake(clearColors[i][0], clearColors[i][1],
+                                              clearColors[i][2], clearColors[i][3]);
+        }
+        // Legacy alias for code further down that referenced the
+        // pre-MRT single-color variable name.
+        auto* colorTex = slot0Tex;
 
         frame.passHasDepth = false;
         if (auto* depthTex = state.textures.Get(static_cast<u64>(depth))) {

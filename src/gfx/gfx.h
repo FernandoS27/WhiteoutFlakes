@@ -39,6 +39,25 @@ public:
 
     virtual void BeginRenderPass(TextureHandle color, TextureHandle depth, const f32 clearColor[4],
                                  f32 clearDepth, u8 clearStencil) = 0;
+
+    // Multi-render-target variant. `colors`/`clearColors` are slot-indexed
+    // up to `colorCount` (≤ `kMaxColorAttachments`). Backends bind every
+    // attachment as an RTV; the bound PSO's `extraRtvCount` + `rtvFormat`
+    // must agree with `colorCount` and the slot formats. Single-attachment
+    // callers can keep using the existing single-color overload; the
+    // default implementation here forwards to it so backends that haven't
+    // implemented MRT yet still render slot 0 and silently drop the
+    // extras (useful for incremental backend roll-out). MRT-aware
+    // backends (D3D12, WebGPU, …) override.
+    virtual void BeginRenderPass(const TextureHandle* colors, u32 colorCount,
+                                 TextureHandle depth, const f32 (*clearColors)[4],
+                                 f32 clearDepth, u8 clearStencil) {
+        constexpr f32 kZero[4] = {0, 0, 0, 0};
+        const TextureHandle slot0 = (colorCount > 0) ? colors[0] : TextureHandle::Invalid;
+        const f32* clear0 = (colorCount > 0 && clearColors) ? clearColors[0] : kZero;
+        BeginRenderPass(slot0, depth, clear0, clearDepth, clearStencil);
+    }
+
     virtual void EndRenderPass() = 0;
 
     // Tracy-backed GPU profiler zone. Bracket GPU work with a named

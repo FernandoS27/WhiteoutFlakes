@@ -160,6 +160,10 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         .depthCompareOp = ToVkCompareOp(desc.depthStencil.depthCompare),
     };
 
+    // Per-slot blend state is shared across MRT outputs (G-buffer slot
+    // 1/2 inherit slot 0's blend; in practice the HD opaque pass writes
+    // every slot without blending, and consumers that need per-slot
+    // blend can extend GraphicsPipelineDesc later).
     vk::PipelineColorBlendAttachmentState blendAttach{
         .blendEnable = desc.blend.enable ? vk::True : vk::False,
         .srcColorBlendFactor = ToVkBlendFactor(desc.blend.srcColor),
@@ -173,9 +177,30 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
                                  vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA)
                               : vk::ColorComponentFlags{},
     };
+
+    // Walk the virtual format list: slot 0 = rtvFormat, slots 1..N-1 =
+    // extraRtvFormats. Stops at the first Unknown slot.
+    vk::Format colorFormats[kMaxColorAttachments] = {};
+    vk::PipelineColorBlendAttachmentState blendAttachments[kMaxColorAttachments] = {};
+    u32 colorAttachmentCount = 0;
+    if (desc.rtvFormat != Format::Unknown) {
+        colorFormats[colorAttachmentCount] = ToVkFormat(desc.rtvFormat);
+        blendAttachments[colorAttachmentCount] = blendAttach;
+        ++colorAttachmentCount;
+        for (u32 i = 0; i < desc.extraRtvCount && colorAttachmentCount < kMaxColorAttachments;
+             ++i) {
+            const Format f = desc.extraRtvFormats[i];
+            if (f == Format::Unknown)
+                break;
+            colorFormats[colorAttachmentCount] = ToVkFormat(f);
+            blendAttachments[colorAttachmentCount] = blendAttach;
+            ++colorAttachmentCount;
+        }
+    }
+
     vk::PipelineColorBlendStateCreateInfo blendState{
-        .attachmentCount = (desc.rtvFormat == Format::Unknown) ? 0u : 1u,
-        .pAttachments = (desc.rtvFormat == Format::Unknown) ? nullptr : &blendAttach,
+        .attachmentCount = colorAttachmentCount,
+        .pAttachments = colorAttachmentCount ? blendAttachments : nullptr,
     };
 
     const std::array<vk::DynamicState, 2> dynStates{
@@ -187,11 +212,10 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         .pDynamicStates = dynStates.data(),
     };
 
-    const vk::Format rtvFmt = ToVkFormat(desc.rtvFormat);
     const vk::Format dsvFmt = ToVkFormat(desc.dsvFormat);
     vk::PipelineRenderingCreateInfo renderingInfo{
-        .colorAttachmentCount = (rtvFmt == vk::Format::eUndefined) ? 0u : 1u,
-        .pColorAttachmentFormats = (rtvFmt == vk::Format::eUndefined) ? nullptr : &rtvFmt,
+        .colorAttachmentCount = colorAttachmentCount,
+        .pColorAttachmentFormats = colorAttachmentCount ? colorFormats : nullptr,
         .depthAttachmentFormat = dsvFmt,
     };
 

@@ -118,6 +118,11 @@ public:
     //      and other consumers can build PSOs that match either path. ----
     static constexpr gfx::Format kHdrSceneFormat = gfx::Format::R11G11B10_FLOAT;
     static constexpr gfx::Format kSdSceneFormat = gfx::Format::R8G8B8A8_UNORM_SRGB;
+    // G-buffer slot-1 / slot-2 formats for the HD opaque MRT pass.
+    // Match the engine's `s_worldFBHD` layout: linear view-space depth in
+    // a full-precision float and an 8-bit packed world-space normal.
+    static constexpr gfx::Format kLinearDepthFormat = gfx::Format::R32_FLOAT;
+    static constexpr gfx::Format kNormalBufferFormat = gfx::Format::R8G8B8A8_UNORM;
 
 private:
     // ---- Friends ----

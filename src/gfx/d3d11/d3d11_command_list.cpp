@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cstring>
 #include "d3d11_command_list.h"
 #include "d3d11_device.h"
 
@@ -8,21 +9,40 @@ D3D11CommandList::D3D11CommandList(D3D11Device& device) : device_(device) {}
 
 void D3D11CommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
                                        const f32 clearColor[4], f32 clearDepth, u8 clearStencil) {
+    f32 clears[1][4];
+    std::memcpy(clears[0], clearColor, sizeof(clears[0]));
+    const TextureHandle colors[1] = {color};
+    BeginRenderPass(colors, 1, depth, clears, clearDepth, clearStencil);
+}
+
+void D3D11CommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCount,
+                                       TextureHandle depth, const f32 (*clearColors)[4],
+                                       f32 clearDepth, u8 clearStencil) {
     assert(!inRenderPass_ && "Nested BeginRenderPass");
+    assert(colorCount <= kMaxColorAttachments && "D3D11 BeginRenderPass: too many color attachments");
     inRenderPass_ = true;
 
     auto* ctx = device_.GetD3DContext();
 
-    auto* colorEntry = device_.GetTexture(color);
+    ID3D11RenderTargetView* rtvs[kMaxColorAttachments] = {};
+    UINT boundRtvCount = 0;
+    for (u32 i = 0; i < colorCount; ++i) {
+        auto* entry = device_.GetTexture(colors[i]);
+        if (entry && entry->rtv)
+            rtvs[boundRtvCount++] = entry->rtv;
+    }
     auto* depthEntry = device_.GetTexture(depth);
-
-    ID3D11RenderTargetView* rtv = colorEntry ? colorEntry->rtv : nullptr;
     ID3D11DepthStencilView* dsv = depthEntry ? depthEntry->dsv : nullptr;
 
-    ctx->OMSetRenderTargets(rtv ? 1 : 0, rtv ? &rtv : nullptr, dsv);
+    ctx->OMSetRenderTargets(boundRtvCount, boundRtvCount ? rtvs : nullptr, dsv);
 
-    if (rtv)
-        ctx->ClearRenderTargetView(rtv, clearColor);
+    UINT outIdx = 0;
+    for (u32 i = 0; i < colorCount; ++i) {
+        auto* entry = device_.GetTexture(colors[i]);
+        if (!entry || !entry->rtv)
+            continue;
+        ctx->ClearRenderTargetView(rtvs[outIdx++], clearColors[i]);
+    }
     if (dsv)
         ctx->ClearDepthStencilView(dsv, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, clearDepth,
                                    clearStencil);
