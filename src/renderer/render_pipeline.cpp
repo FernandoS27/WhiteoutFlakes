@@ -1157,6 +1157,7 @@ RenderTargetId RenderPipeline::CreateSwapChainTarget(void* nativeWindowHandle, i
     target.aoBuffer = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
     target.aoBufferHistory = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
     target.bentNormalBuffer = impl_->gfx_->CreateColorTarget(w, h, kBentNormalBufferFormat);
+    target.linearDepthHistory = impl_->gfx_->CreateColorTarget(w, h, kLinearDepthFormat);
     target.width = w;
     target.height = h;
 
@@ -1191,6 +1192,7 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
     impl_->gfx_->Destroy(t.aoBuffer);
     impl_->gfx_->Destroy(t.aoBufferHistory);
     impl_->gfx_->Destroy(t.bentNormalBuffer);
+    impl_->gfx_->Destroy(t.linearDepthHistory);
 
     if (t.swap != gfx::SwapChainHandle::Invalid) {
         impl_->gfx_->ResizeSwapChain(t.swap, w, h);
@@ -1211,6 +1213,7 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
     t.aoBuffer = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
     t.aoBufferHistory = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
     t.bentNormalBuffer = impl_->gfx_->CreateColorTarget(w, h, kBentNormalBufferFormat);
+    t.linearDepthHistory = impl_->gfx_->CreateColorTarget(w, h, kLinearDepthFormat);
     t.width = w;
     t.height = h;
 
@@ -1295,6 +1298,7 @@ void RenderPipeline::CleanupGFX() {
             impl_->gfx_->Destroy(t.aoBuffer);
             impl_->gfx_->Destroy(t.aoBufferHistory);
             impl_->gfx_->Destroy(t.bentNormalBuffer);
+            impl_->gfx_->Destroy(t.linearDepthHistory);
         }
     }
     impl_->targets_.clear();
@@ -1698,10 +1702,55 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
                 const u32 qMax = static_cast<u32>(gtao::Quality::Count) - 1;
                 g->SetQuality(static_cast<gtao::Quality>(q > qMax ? qMax : q));
             }
+            {
+                gtao::GtaoParams params = g->Params();
+                params.bentBoost = rs_.Settings().AoBentBoost();
+                g->SetParams(params);
+            }
             if (g->IsEnabled()) {
                 WDX_CPU_ZONE("GTAO");
                 WDX_GPU_ZONE(cmd, "GTAO");
                 g->Run(cmd, target, view, proj, static_cast<u32>(frameCounter));
+
+                // Post-process IBL bent-normal boost. Same probe-pair
+                // selection logic as the BLS HD lit pass (see
+                // GeosetPassHd::BindPassResources): day/night blend when
+                // DnC is active, otherwise the static from/to probes.
+                if (g->Params().bentBoost > 0.0f) {
+                    gtao::GtaoService::IblBoostInputs in;
+                    const bool useDayNight = impl_->iblDayNightLoaded_ &&
+                                             rs_.GetDncService() != nullptr &&
+                                             rs_.Settings().GetLightingMode() ==
+                                                 LightingMode::InGame;
+                    if (useDayNight) {
+                        const auto blend = rs_.GetDncService()->ComputeEnvMapBlend();
+                        const bool dayPrimary = blend.isDaytime;
+                        in.envFromMipEnd =
+                            dayPrimary ? impl_->iblDayMipEnd_ : impl_->iblNightMipEnd_;
+                        in.envToMipEnd =
+                            dayPrimary ? impl_->iblNightMipEnd_ : impl_->iblDayMipEnd_;
+                        in.envTransitionT = blend.transitionT;
+                        const auto day = rs_.Textures().GetOwned(kIblDayProbeName);
+                        const auto night = rs_.Textures().GetOwned(kIblNightProbeName);
+                        in.iblFrom = dayPrimary ? day : night;
+                        in.iblTo = dayPrimary ? night : day;
+                    } else {
+                        in.envFromMipEnd = impl_->iblProbeMipEnd_;
+                        in.envToMipEnd = impl_->iblProbeMipEnd_;
+                        in.envTransitionT = 0.75f;
+                        in.iblFrom = rs_.Textures().GetOwned(kIblFromProbeName);
+                        in.iblTo = rs_.Textures().GetOwned(kIblToProbeName);
+                        if (in.iblTo == gfx::TextureHandle::Invalid)
+                            in.iblTo = in.iblFrom;
+                    }
+                    in.iblSampler = rs_.Samplers().LinearWrap();
+                    if (in.iblFrom != gfx::TextureHandle::Invalid &&
+                        in.iblTo != gfx::TextureHandle::Invalid) {
+                        WDX_CPU_ZONE("GTAO IBL Boost");
+                        WDX_GPU_ZONE(cmd, "GTAO IBL Boost");
+                        g->RunIblBoost(cmd, target, in);
+                    }
+                }
             }
         }
     }

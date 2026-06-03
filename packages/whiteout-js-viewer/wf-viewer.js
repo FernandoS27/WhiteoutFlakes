@@ -49,6 +49,7 @@ export const HD_DEBUG_MODES = [
     { value: 6, label: 'Shading (grey)' },
     { value: 7, label: 'Specular Only' },
     { value: 8, label: 'No ORM' },
+    { value: 9, label: 'AO Only' },
 ];
 
 export class WhiteoutViewer {
@@ -218,10 +219,13 @@ export class WhiteoutViewer {
         trace('wf_init ok');
 
         this._module._wf_set_background(this._handle, 24, 56, 96); // moody blue
-        // Firefox HD shadows make zoom-in fragment-bound — opt out by
-        // default; re-enable via setShadowsEnabled(true).
+        // Shadows on by default everywhere except Firefox — wgpu/naga's
+        // HD shadow sample is expensive there and makes zoom-in
+        // fragment-bound. Both sides go through setShadowsEnabled.
         if (navigator.userAgent.indexOf('Firefox/') >= 0) {
             this._module._wf_set_shadows_enabled(this._handle, 0);
+        } else {
+            this._module._wf_set_shadows_enabled(this._handle, 1);
         }
         // Initial render mode honours the constructor's `hdMode` option;
         // load() can still flip it per actor PreferredRenderMode.

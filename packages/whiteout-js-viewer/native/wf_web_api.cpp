@@ -95,6 +95,23 @@ int wf_init(WfRenderer* h, const char* canvasSelector, int width, int height) {
         void* surfaceHandle = static_cast<void*>(const_cast<char*>(h->canvasSelector.c_str()));
         h->target = pipeline.CreateSwapChainTarget(surfaceHandle, width, height);
         pipeline.SetPrimaryTarget(h->target);
+
+        // Web-viewer overrides on top of the engine defaults — keep the
+        // fragment-bound budget low for wgpu/naga:
+        //   * AO Quality = Low (2×2 horizon = 8 depth taps vs Medium's 32)
+        //   * Shadow cascadeCount = 1 (3-cascade tips zoom-in into
+        //     fragment-bound on every browser we've measured)
+        //   * Shadow cascadeResolution = 512 (4× cheaper shadow-map
+        //     rasterisation; mild softening at zoom-in is acceptable
+        //     for the viewer use case)
+        // Native viewers get the higher defaults from RenderSettings /
+        // ShadowParams.
+        h->renderer.Settings().SetAoQuality(0);
+        auto sp = h->renderer.Shadow().Params();
+        sp.cascadeCount = 1;
+        sp.cascadeResolution = 512;
+        h->renderer.Shadow().SetParams(sp);
+
         std::fprintf(stderr, "[wf] wf_init: done\n");
 
         h->inited = true;

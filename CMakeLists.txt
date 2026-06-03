@@ -218,6 +218,8 @@ set(SHADER_ENTRIES
     "gtao.slang|gtao_main_high_ps|fragment|kGtaoMainHighPS"
     "gtao.slang|gtao_denoise_ps|fragment|kGtaoDenoisePS"
     "gtao.slang|gtao_temporal_ps|fragment|kGtaoTemporalPS"
+    "gtao.slang|gtao_depth_copy_ps|fragment|kGtaoDepthCopyPS"
+    "gtao.slang|gtao_ibl_boost_ps|fragment|kGtaoIblBoostPS"
     "gtao.slang|gtao_apply_ps|fragment|kGtaoApplyPS"
 )
 
@@ -285,6 +287,7 @@ foreach(entry IN LISTS SHADER_ENTRIES)
             OUTPUT  "${wgsl_path}"
             COMMAND "${SLANGC}" "${SHADER_SRC_DIR}/${src_file}"
                     ${SLANG_COMMON_FLAGS}
+                    -DWGSL_TARGET=1
                     -entry ${entry_name} -stage ${stage}
                     -target wgsl
                     -o "${wgsl_path}"
@@ -310,6 +313,7 @@ foreach(entry IN LISTS SHADER_ENTRIES)
             OUTPUT  "${mtl_path}"
             COMMAND "${SLANGC}" "${SHADER_SRC_DIR}/${src_file}"
                     ${SLANG_COMMON_FLAGS}
+                    -DMETAL_TARGET=1
                     -entry ${entry_name} -stage ${stage}
                     -target metallib -profile sm_6_0
                     -o "${mtl_path}"

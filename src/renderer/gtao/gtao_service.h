@@ -46,6 +46,10 @@ struct GtaoParams {
     //   1 — write vec3(ao) — replaces HDR colour with the AO factor
     //   2 — write vec3(1-ao) — shows occlusion as brightness
     u32 debugMode = 0;
+    // Bent-normal IBL boost strength (additive blend after Apply). 0 = pass
+    // disabled (no-op). Small values (~0.05) recover lost indirect light
+    // from skylight along the bent normal direction without overdriving.
+    f32 bentBoost = 0.0f;
 };
 
 class GtaoService {
@@ -105,6 +109,27 @@ public:
     void Run(gfx::IGFXCommandList* cmd, const RenderTarget& target, const Matrix44f& view,
              const Matrix44f& proj, u32 frameIndex);
 
+    // Inputs for the post-process IBL boost pass.
+    // The IBL probe pair + transition lerp mirror what the BLS lit pass
+    // would have used for diffuse irradiance; we approximate that sample
+    // along the bent normal direction and additively contribute it back
+    // into hdrColor.
+    struct IblBoostInputs {
+        gfx::TextureHandle iblFrom = gfx::TextureHandle::Invalid;
+        gfx::TextureHandle iblTo = gfx::TextureHandle::Invalid;
+        gfx::SamplerHandle iblSampler = gfx::SamplerHandle::Invalid;
+        f32 envFromMipEnd = 0.0f;
+        f32 envToMipEnd = 0.0f;
+        f32 envTransitionT = 0.0f;
+    };
+
+    // Post-process IBL boost: additively blends `iblDiffuse(bentN) *
+    // (1-ao) * strength` into hdrColor. Call after Run() and only when
+    // params_.bentBoost > 0. Requires bent-normal + AO buffers populated
+    // by Run() and a valid IBL probe pair from the caller.
+    void RunIblBoost(gfx::IGFXCommandList* cmd, const RenderTarget& target,
+                     const IblBoostInputs& in);
+
     // Invalidate the temporal history. Call when the previous frame's
     // AO is no longer a valid prior — viewport resize, render-mode flip,
     // model reload, camera teleport. The next Run() forces alpha=1
@@ -113,10 +138,11 @@ public:
     // scene for ~10 frames before EMA converges.
     void ResetHistory() {
         prevValid_ = false;
+        lastAoOutput_ = gfx::TextureHandle::Invalid;
     }
 
 private:
-    void EnsurePsos(gfx::Format aoFmt, gfx::Format hdrFmt);
+    void EnsurePsos(gfx::Format aoFmt, gfx::Format hdrFmt, gfx::Format linearDepthFmt);
 
     gfx::IGFXDevice* gfx_ = nullptr;
     gfx::GfxApi api_ = gfx::GfxApi::D3D12;
@@ -126,6 +152,8 @@ private:
         gfx::ShaderHandle::Invalid, gfx::ShaderHandle::Invalid, gfx::ShaderHandle::Invalid};
     gfx::ShaderHandle denoisePs_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle temporalPs_ = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle iblBoostPs_ = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle depthCopyPs_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle applyPs_ = gfx::ShaderHandle::Invalid;
 
     gfx::PipelineHandle mainPso_[static_cast<u32>(Quality::Count)] = {
@@ -133,10 +161,13 @@ private:
         gfx::PipelineHandle::Invalid};
     gfx::PipelineHandle denoisePso_ = gfx::PipelineHandle::Invalid;
     gfx::PipelineHandle temporalPso_ = gfx::PipelineHandle::Invalid;
+    gfx::PipelineHandle iblBoostPso_ = gfx::PipelineHandle::Invalid;
+    gfx::PipelineHandle depthCopyPso_ = gfx::PipelineHandle::Invalid;
     gfx::PipelineHandle applyPso_ = gfx::PipelineHandle::Invalid;
     gfx::PipelineHandle applyPsoDebug_ = gfx::PipelineHandle::Invalid;
     gfx::Format psoAoFmt_ = gfx::Format::Unknown;
     gfx::Format psoHdrFmt_ = gfx::Format::Unknown;
+    gfx::Format psoLinearDepthFmt_ = gfx::Format::Unknown;
 
     Quality quality_ = Quality::Medium;
     bool debugAoOnly_ = false;
@@ -147,6 +178,12 @@ private:
     Matrix44f prevViewProj_{};
     bool prevValid_ = false;
     u32 frameCounter_ = 0;
+
+    // Last AO texture written by the temporal pass. RunIblBoost samples
+    // this same texture so the boost lines up with what the apply pass
+    // modulated against; without this it would have to re-derive the
+    // ping-pong index from frameCounter_ after Run() has bumped it.
+    gfx::TextureHandle lastAoOutput_ = gfx::TextureHandle::Invalid;
 
     gfx::BufferHandle cb_ = gfx::BufferHandle::Invalid;
     gfx::SamplerHandle pointSampler_ = gfx::SamplerHandle::Invalid;

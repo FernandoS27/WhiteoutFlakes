@@ -21,9 +21,10 @@ struct GtaoCb {
     f32 viewportXY[2];
     f32 viewportInvXY[2];
     f32 params[4]; // radius, intensity, falloff, temporalAlpha (1 = no history)
+    f32 ibl[4];    // envFromMipEnd, envToMipEnd, envTransitionT, boostStrength
     u32 miscXY[4]; // frameIndex, debugMode, _pad, _pad
 };
-static_assert(sizeof(GtaoCb) == 64 * 5 + 16 + 16 + 16,
+static_assert(sizeof(GtaoCb) == 64 * 5 + 16 + 16 + 16 + 16,
               "GtaoCb size must match shader expectation");
 
 // Per-backend bytecode selection for the GTAO entry points.
@@ -37,6 +38,8 @@ struct ShaderBlobs {
     ShaderBlob mainPs[3]; // [Low, Medium, High] — indexed by Quality.
     ShaderBlob denoisePs;
     ShaderBlob temporalPs;
+    ShaderBlob iblBoostPs;
+    ShaderBlob depthCopyPs;
     ShaderBlob applyPs;
 };
 
@@ -50,6 +53,8 @@ ShaderBlobs PickBlobs(gfx::GfxApi api) {
     b.mainPs[2] = BLOB(kGtaoMainHighPS);
     b.denoisePs = BLOB(kGtaoDenoisePS);
     b.temporalPs = BLOB(kGtaoTemporalPS);
+    b.iblBoostPs = BLOB(kGtaoIblBoostPS);
+    b.depthCopyPs = BLOB(kGtaoDepthCopyPS);
     b.applyPs = BLOB(kGtaoApplyPS);
     if (api == gfx::GfxApi::Vulkan) {
         b.vs = BLOB(kGtaoVSSpv);
@@ -58,6 +63,8 @@ ShaderBlobs PickBlobs(gfx::GfxApi api) {
         b.mainPs[2] = BLOB(kGtaoMainHighPSSpv);
         b.denoisePs = BLOB(kGtaoDenoisePSSpv);
         b.temporalPs = BLOB(kGtaoTemporalPSSpv);
+        b.iblBoostPs = BLOB(kGtaoIblBoostPSSpv);
+        b.depthCopyPs = BLOB(kGtaoDepthCopyPSSpv);
         b.applyPs = BLOB(kGtaoApplyPSSpv);
     } else if (api == gfx::GfxApi::WebGPU) {
         b.vs = BLOB(kGtaoVSWgsl);
@@ -66,6 +73,8 @@ ShaderBlobs PickBlobs(gfx::GfxApi api) {
         b.mainPs[2] = BLOB(kGtaoMainHighPSWgsl);
         b.denoisePs = BLOB(kGtaoDenoisePSWgsl);
         b.temporalPs = BLOB(kGtaoTemporalPSWgsl);
+        b.iblBoostPs = BLOB(kGtaoIblBoostPSWgsl);
+        b.depthCopyPs = BLOB(kGtaoDepthCopyPSWgsl);
         b.applyPs = BLOB(kGtaoApplyPSWgsl);
     } else if (api == gfx::GfxApi::Metal) {
         b.vs = BLOB(kGtaoVSMtl);
@@ -74,6 +83,8 @@ ShaderBlobs PickBlobs(gfx::GfxApi api) {
         b.mainPs[2] = BLOB(kGtaoMainHighPSMtl);
         b.denoisePs = BLOB(kGtaoDenoisePSMtl);
         b.temporalPs = BLOB(kGtaoTemporalPSMtl);
+        b.iblBoostPs = BLOB(kGtaoIblBoostPSMtl);
+        b.depthCopyPs = BLOB(kGtaoDepthCopyPSMtl);
         b.applyPs = BLOB(kGtaoApplyPSMtl);
     }
     return b;
@@ -143,7 +154,7 @@ void GtaoService::Init(gfx::IGFXDevice& gfx, gfx::GfxApi api) {
     auto blobOk = [](const ShaderBlob& b) { return b.size > 1 && b.data != nullptr; };
     if (!blobOk(blobs.vs) || !blobOk(blobs.mainPs[0]) || !blobOk(blobs.mainPs[1]) ||
         !blobOk(blobs.mainPs[2]) || !blobOk(blobs.denoisePs) || !blobOk(blobs.temporalPs) ||
-        !blobOk(blobs.applyPs)) {
+        !blobOk(blobs.iblBoostPs) || !blobOk(blobs.depthCopyPs) || !blobOk(blobs.applyPs)) {
         // Embed pipeline stubs unsupported backends with a single byte.
         std::fprintf(stderr, "[gtao] no shader bytecode for backend %d, disabling GTAO\n",
                      static_cast<i32>(api));
@@ -160,6 +171,10 @@ void GtaoService::Init(gfx::IGFXDevice& gfx, gfx::GfxApi api) {
         gfx_->CreateShader(gfx::ShaderStage::Pixel, blobs.denoisePs.data, blobs.denoisePs.size);
     temporalPs_ = gfx_->CreateShader(gfx::ShaderStage::Pixel, blobs.temporalPs.data,
                                      blobs.temporalPs.size);
+    iblBoostPs_ = gfx_->CreateShader(gfx::ShaderStage::Pixel, blobs.iblBoostPs.data,
+                                     blobs.iblBoostPs.size);
+    depthCopyPs_ = gfx_->CreateShader(gfx::ShaderStage::Pixel, blobs.depthCopyPs.data,
+                                      blobs.depthCopyPs.size);
     applyPs_ =
         gfx_->CreateShader(gfx::ShaderStage::Pixel, blobs.applyPs.data, blobs.applyPs.size);
 
@@ -182,6 +197,8 @@ void GtaoService::Init(gfx::IGFXDevice& gfx, gfx::GfxApi api) {
     shadersReady_ = (vs_ != gfx::ShaderHandle::Invalid) && mainOk &&
                     (denoisePs_ != gfx::ShaderHandle::Invalid) &&
                     (temporalPs_ != gfx::ShaderHandle::Invalid) &&
+                    (iblBoostPs_ != gfx::ShaderHandle::Invalid) &&
+                    (depthCopyPs_ != gfx::ShaderHandle::Invalid) &&
                     (applyPs_ != gfx::ShaderHandle::Invalid);
 }
 
@@ -198,6 +215,10 @@ void GtaoService::Shutdown() {
         gfx_->Destroy(denoisePso_);
     if (temporalPso_ != gfx::PipelineHandle::Invalid)
         gfx_->Destroy(temporalPso_);
+    if (iblBoostPso_ != gfx::PipelineHandle::Invalid)
+        gfx_->Destroy(iblBoostPso_);
+    if (depthCopyPso_ != gfx::PipelineHandle::Invalid)
+        gfx_->Destroy(depthCopyPso_);
     if (applyPso_ != gfx::PipelineHandle::Invalid)
         gfx_->Destroy(applyPso_);
     if (applyPsoDebug_ != gfx::PipelineHandle::Invalid)
@@ -208,35 +229,46 @@ void GtaoService::Shutdown() {
         gfx_->Destroy(denoisePs_);
     if (temporalPs_ != gfx::ShaderHandle::Invalid)
         gfx_->Destroy(temporalPs_);
+    if (iblBoostPs_ != gfx::ShaderHandle::Invalid)
+        gfx_->Destroy(iblBoostPs_);
+    if (depthCopyPs_ != gfx::ShaderHandle::Invalid)
+        gfx_->Destroy(depthCopyPs_);
     if (applyPs_ != gfx::ShaderHandle::Invalid)
         gfx_->Destroy(applyPs_);
     if (cb_ != gfx::BufferHandle::Invalid)
         gfx_->Destroy(cb_);
     if (pointSampler_ != gfx::SamplerHandle::Invalid)
         gfx_->Destroy(pointSampler_);
-    vs_ = denoisePs_ = temporalPs_ = applyPs_ = gfx::ShaderHandle::Invalid;
+    vs_ = denoisePs_ = temporalPs_ = iblBoostPs_ = depthCopyPs_ = applyPs_ =
+        gfx::ShaderHandle::Invalid;
     for (u32 q = 0; q < static_cast<u32>(Quality::Count); ++q) {
         mainPs_[q] = gfx::ShaderHandle::Invalid;
         mainPso_[q] = gfx::PipelineHandle::Invalid;
     }
-    denoisePso_ = temporalPso_ = applyPso_ = applyPsoDebug_ = gfx::PipelineHandle::Invalid;
+    denoisePso_ = temporalPso_ = iblBoostPso_ = depthCopyPso_ = applyPso_ = applyPsoDebug_ =
+        gfx::PipelineHandle::Invalid;
     prevValid_ = false;
     frameCounter_ = 0;
+    lastAoOutput_ = gfx::TextureHandle::Invalid;
     cb_ = gfx::BufferHandle::Invalid;
     pointSampler_ = gfx::SamplerHandle::Invalid;
-    psoAoFmt_ = psoHdrFmt_ = gfx::Format::Unknown;
+    psoAoFmt_ = psoHdrFmt_ = psoLinearDepthFmt_ = gfx::Format::Unknown;
     shadersReady_ = false;
     gfx_ = nullptr;
 }
 
-void GtaoService::EnsurePsos(gfx::Format aoFmt, gfx::Format hdrFmt) {
+void GtaoService::EnsurePsos(gfx::Format aoFmt, gfx::Format hdrFmt,
+                             gfx::Format linearDepthFmt) {
     bool mainOk = true;
     for (u32 q = 0; q < static_cast<u32>(Quality::Count); ++q)
         mainOk = mainOk && (mainPso_[q] != gfx::PipelineHandle::Invalid);
     if (mainOk && psoAoFmt_ == aoFmt && denoisePso_ != gfx::PipelineHandle::Invalid &&
         temporalPso_ != gfx::PipelineHandle::Invalid &&
+        iblBoostPso_ != gfx::PipelineHandle::Invalid &&
+        depthCopyPso_ != gfx::PipelineHandle::Invalid &&
         applyPso_ != gfx::PipelineHandle::Invalid &&
-        applyPsoDebug_ != gfx::PipelineHandle::Invalid && psoHdrFmt_ == hdrFmt)
+        applyPsoDebug_ != gfx::PipelineHandle::Invalid && psoHdrFmt_ == hdrFmt &&
+        psoLinearDepthFmt_ == linearDepthFmt)
         return;
 
     for (u32 q = 0; q < static_cast<u32>(Quality::Count); ++q) {
@@ -247,6 +279,10 @@ void GtaoService::EnsurePsos(gfx::Format aoFmt, gfx::Format hdrFmt) {
         gfx_->Destroy(denoisePso_);
     if (temporalPso_ != gfx::PipelineHandle::Invalid)
         gfx_->Destroy(temporalPso_);
+    if (iblBoostPso_ != gfx::PipelineHandle::Invalid)
+        gfx_->Destroy(iblBoostPso_);
+    if (depthCopyPso_ != gfx::PipelineHandle::Invalid)
+        gfx_->Destroy(depthCopyPso_);
     if (applyPso_ != gfx::PipelineHandle::Invalid)
         gfx_->Destroy(applyPso_);
     if (applyPsoDebug_ != gfx::PipelineHandle::Invalid)
@@ -327,6 +363,57 @@ void GtaoService::EnsurePsos(gfx::Format aoFmt, gfx::Format hdrFmt) {
         temporalPso_ = gfx_->CreateGraphicsPipeline(d);
     }
 
+    // Depth-copy pass: a single-tap blit that writes the current frame's
+    // linearDepth into linearDepthHistory at the tail of the GTAO
+    // pipeline. Next frame's temporal pass reads it for disocclusion
+    // rejection. Rasterised at the full-res viewport; rtv format = the
+    // linearDepth texture format (R32F).
+    {
+        gfx::GraphicsPipelineDesc d{};
+        d.vs = vs_;
+        d.ps = depthCopyPs_;
+        d.topology = gfx::PrimitiveTopology::TriangleList;
+        d.blend.enable = false;
+        d.blend.colorWrite = true;
+        d.depthStencil.depthTest = false;
+        d.depthStencil.depthWrite = false;
+        d.rasterizer.cull = gfx::CullMode::None;
+        d.rasterizer.frontCCW = true;
+        d.rtvFormat = linearDepthFmt;
+        // Depth-copy uses BeginRenderPass (DOES auto-attach transient
+        // depth on WebGPU), so the dsvFormat matches the same default.
+        d.dsvFormat = gfx::Format::D24_UNORM_S8_UINT;
+        depthCopyPso_ = gfx_->CreateGraphicsPipeline(d);
+        psoLinearDepthFmt_ = linearDepthFmt;
+    }
+
+    // IBL bent-normal boost pass: full-screen triangle, additively
+    // blends `iblDiffuse(bentN) * (1-ao) * strength` into hdrColor.
+    //   dst.rgb = One*src + One*dst = src + dst
+    {
+        gfx::GraphicsPipelineDesc d{};
+        d.vs = vs_;
+        d.ps = iblBoostPs_;
+        d.topology = gfx::PrimitiveTopology::TriangleList;
+        d.blend.enable = true;
+        d.blend.srcColor = gfx::BlendFactor::One;
+        d.blend.dstColor = gfx::BlendFactor::One;
+        d.blend.opColor = gfx::BlendOp::Add;
+        d.blend.srcAlpha = gfx::BlendFactor::One;
+        d.blend.dstAlpha = gfx::BlendFactor::Zero;
+        d.blend.opAlpha = gfx::BlendOp::Add;
+        d.blend.colorWrite = true;
+        d.depthStencil.depthTest = false;
+        d.depthStencil.depthWrite = false;
+        d.rasterizer.cull = gfx::CullMode::None;
+        d.rasterizer.frontCCW = true;
+        d.rtvFormat = hdrFmt;
+        // Boost runs via BeginRenderPassLoad (no auto-attach depth on
+        // WebGPU); leave dsvFormat Unknown to match the load pass.
+        d.dsvFormat = gfx::Format::Unknown;
+        iblBoostPso_ = gfx_->CreateGraphicsPipeline(d);
+    }
+
     // Apply pass: full-screen triangle, writes hdrColor with multiplicative
     // blend: result = src * dst. src is the shader's AO factor; dst is the
     // existing HDR colour preserved by loadOp=Load. Equation reads
@@ -392,16 +479,19 @@ void GtaoService::Run(gfx::IGFXCommandList* cmd, const RenderTarget& target,
         target.aoBufferHistory == gfx::TextureHandle::Invalid ||
         target.bentNormalBuffer == gfx::TextureHandle::Invalid ||
         target.linearDepth == gfx::TextureHandle::Invalid ||
+        target.linearDepthHistory == gfx::TextureHandle::Invalid ||
         target.normalBuffer == gfx::TextureHandle::Invalid ||
         target.hdrColor == gfx::TextureHandle::Invalid)
         return;
 
-    EnsurePsos(/*aoFmt=*/gfx::Format::R8_UNORM, /*hdrFmt=*/gfx::Format::R11G11B10_FLOAT);
+    EnsurePsos(/*aoFmt=*/gfx::Format::R8_UNORM, /*hdrFmt=*/gfx::Format::R11G11B10_FLOAT,
+               /*linearDepthFmt=*/gfx::Format::R32_FLOAT);
     const u32 qIdx = static_cast<u32>(quality_);
     if (qIdx >= static_cast<u32>(Quality::Count) ||
         mainPso_[qIdx] == gfx::PipelineHandle::Invalid ||
         denoisePso_ == gfx::PipelineHandle::Invalid ||
         temporalPso_ == gfx::PipelineHandle::Invalid ||
+        depthCopyPso_ == gfx::PipelineHandle::Invalid ||
         applyPso_ == gfx::PipelineHandle::Invalid)
         return;
 
@@ -420,7 +510,6 @@ void GtaoService::Run(gfx::IGFXCommandList* cmd, const RenderTarget& target,
     const Matrix44f sampleViewProj = prevValid_ ? prevViewProj_ : curViewProj;
     const f32       temporalAlpha = prevValid_ ? 0.1f : 1.0f;
 
-    // Update the GTAO CB. CPU-writable; pack a fresh value every frame.
     if (void* mapped = gfx_->MapBuffer(cb_)) {
         GtaoCb cb{};
         cb.view = view;
@@ -436,6 +525,10 @@ void GtaoService::Run(gfx::IGFXCommandList* cmd, const RenderTarget& target,
         cb.params[1] = params_.intensity;
         cb.params[2] = params_.falloff;
         cb.params[3] = temporalAlpha;
+        cb.ibl[0] = 0.0f;
+        cb.ibl[1] = 0.0f;
+        cb.ibl[2] = 0.0f;
+        cb.ibl[3] = 0.0f;
         cb.miscXY[0] = frameIndex;
         cb.miscXY[1] = params_.debugMode;
         cb.miscXY[2] = 0;
@@ -451,13 +544,6 @@ void GtaoService::Run(gfx::IGFXCommandList* cmd, const RenderTarget& target,
             {1.0f, 0.0f, 0.0f, 0.0f}, // AO = 1 (fully unoccluded sentinel)
             {0.5f, 0.5f, 1.0f, 1.0f}, // bent normal = encoded +Z (camera-forward)
         };
-        // Attach the scene depth target even though the PSO has depth
-        // test/write off. Vulkan/Metal strictly require the PSO's
-        // depthAttachmentFormat to match the render pass's depth
-        // attachment; passing the real target keeps all three backends
-        // consistent with the PSOs' dsvFormat=D24. Depth gets cleared
-        // here (Vulkan/WebGPU default LoadOp), but nothing downstream
-        // of GTAO reads it again.
         cmd->BeginRenderPass(colors, 2, target.depth, clears, 1.0f, 0);
         cmd->SetViewport({0, 0, (f32)target.width, (f32)target.height, 0, 1});
         cmd->BindPipeline(mainPso_[qIdx]);
@@ -470,9 +556,6 @@ void GtaoService::Run(gfx::IGFXCommandList* cmd, const RenderTarget& target,
     }
 
     // --- Denoise pass: aoBufferRaw + linearDepth → aoBufferDenoised ---
-    // Slot layout matches gtao.slang's explicit register() annotations
-    // (t0=linearDepth, t2=aoNoisy). Same slots for all GTAO passes; no
-    // per-pass shuffling.
     {
         const f32 clearAo[4] = {1.0f, 0.0f, 0.0f, 0.0f};
         cmd->BeginRenderPass(target.aoBufferDenoised, target.depth, clearAo, 1.0f, 0);
@@ -486,8 +569,10 @@ void GtaoService::Run(gfx::IGFXCommandList* cmd, const RenderTarget& target,
         cmd->EndRenderPass();
     }
 
-    // --- Temporal pass: aoBufferDenoised + aoBufferHistory + linearDepth → curAo ---
-    // Slot layout: t0=linearDepth, t2=aoNoisy(=denoised), t4=aoHistory.
+    // --- Temporal pass: aoBufferDenoised + aoBufferHistory + linearDepth(+History) → curAo ---
+    // t8=linearDepthHistory is sampled at prevUv for disocclusion
+    // rejection — the temporal pass treats a depth mismatch as a hard
+    // history-reject, which suppresses AO ghosts at moving silhouettes.
     {
         const f32 clearAo[4] = {1.0f, 0.0f, 0.0f, 0.0f};
         cmd->BeginRenderPass(curAo, target.depth, clearAo, 1.0f, 0);
@@ -497,15 +582,13 @@ void GtaoService::Run(gfx::IGFXCommandList* cmd, const RenderTarget& target,
         cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, target.linearDepth);
         cmd->BindShaderResource(gfx::ShaderStage::Pixel, 2, target.aoBufferDenoised);
         cmd->BindShaderResource(gfx::ShaderStage::Pixel, 4, histAo);
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 8, target.linearDepthHistory);
         cmd->BindSampler(gfx::ShaderStage::Pixel, 0, pointSampler_);
         cmd->Draw(3, 0);
         cmd->EndRenderPass();
     }
 
     // --- Apply pass: hdrColor (load) ← hdrColor * curAo (via blend) ---
-    // Debug "AO Only" routes through the no-blend PSO so the AO factor
-    // overwrites the scene colour wholesale instead of modulating it.
-    // Slot layout: t3=aoBuffer (pinned by register() annotation).
     {
         cmd->BeginRenderPassLoad(target.hdrColor, gfx::TextureHandle::Invalid, 1.0f, 0);
         cmd->SetViewport({0, 0, (f32)target.width, (f32)target.height, 0, 1});
@@ -517,11 +600,69 @@ void GtaoService::Run(gfx::IGFXCommandList* cmd, const RenderTarget& target,
         cmd->EndRenderPass();
     }
 
+    // --- Depth copy: linearDepth → linearDepthHistory ---
+    // Last in the pipeline so next frame's temporal pass has prev
+    // linearDepth to compare against. RunIblBoost runs after this; it
+    // touches hdrColor, not linearDepthHistory, so the order is safe.
+    {
+        const f32 clearDepth[4] = {1.0e5f, 0.0f, 0.0f, 0.0f};
+        cmd->BeginRenderPass(target.linearDepthHistory, target.depth, clearDepth, 1.0f, 0);
+        cmd->SetViewport({0, 0, (f32)target.width, (f32)target.height, 0, 1});
+        cmd->BindPipeline(depthCopyPso_);
+        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 0, cb_);
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, target.linearDepth);
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 0, pointSampler_);
+        cmd->Draw(3, 0);
+        cmd->EndRenderPass();
+    }
+
     // Stash this frame's transform so next frame's temporal pass can
     // reproject. Flip the ping-pong index and arm the history bit.
     prevViewProj_ = curViewProj;
     prevValid_ = true;
+    lastAoOutput_ = curAo;
     ++frameCounter_;
+}
+
+void GtaoService::RunIblBoost(gfx::IGFXCommandList* cmd, const RenderTarget& target,
+                              const IblBoostInputs& in) {
+    if (!IsEnabled() || !cmd || params_.bentBoost <= 0.0f ||
+        lastAoOutput_ == gfx::TextureHandle::Invalid ||
+        target.bentNormalBuffer == gfx::TextureHandle::Invalid ||
+        target.linearDepth == gfx::TextureHandle::Invalid ||
+        target.hdrColor == gfx::TextureHandle::Invalid ||
+        in.iblFrom == gfx::TextureHandle::Invalid || in.iblTo == gfx::TextureHandle::Invalid ||
+        in.iblSampler == gfx::SamplerHandle::Invalid ||
+        iblBoostPso_ == gfx::PipelineHandle::Invalid)
+        return;
+
+    // Repack the CB with the IBL probe state for this call. The rest of
+    // the struct still holds whatever Run() left in it this frame —
+    // view/proj/viewport are still valid for the same scene.
+    if (void* mapped = gfx_->MapBuffer(cb_)) {
+        GtaoCb cb{};
+        std::memcpy(&cb, mapped, sizeof(cb));
+        cb.ibl[0] = in.envFromMipEnd;
+        cb.ibl[1] = in.envToMipEnd;
+        cb.ibl[2] = in.envTransitionT;
+        cb.ibl[3] = params_.bentBoost;
+        std::memcpy(mapped, &cb, sizeof(cb));
+        gfx_->UnmapBuffer(cb_);
+    }
+
+    cmd->BeginRenderPassLoad(target.hdrColor, gfx::TextureHandle::Invalid, 1.0f, 0);
+    cmd->SetViewport({0, 0, (f32)target.width, (f32)target.height, 0, 1});
+    cmd->BindPipeline(iblBoostPso_);
+    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 0, cb_);
+    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, target.linearDepth);
+    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 3, lastAoOutput_);
+    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 5, target.bentNormalBuffer);
+    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 6, in.iblFrom);
+    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 7, in.iblTo);
+    cmd->BindSampler(gfx::ShaderStage::Pixel, 0, pointSampler_);
+    cmd->BindSampler(gfx::ShaderStage::Pixel, 1, in.iblSampler);
+    cmd->Draw(3, 0);
+    cmd->EndRenderPass();
 }
 
 } // namespace whiteout::flakes::renderer::gtao

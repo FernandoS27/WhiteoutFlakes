@@ -680,6 +680,13 @@ void ViewerUI::BuildSettingsWindow() {
                 svc.Settings().SetAoQuality(static_cast<u32>(q));
                 SaveIni(app_);
             }
+
+            f32 boost = svc.Settings().AoBentBoost();
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::SliderFloat("AO Bent Boost", &boost, 0.0f, 0.5f, "%.3f")) {
+                svc.Settings().SetAoBentBoost(boost);
+                SaveIni(app_);
+            }
         }
 
         ImGui::Separator();

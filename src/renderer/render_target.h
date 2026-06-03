@@ -39,6 +39,14 @@ struct RenderTarget {
     gfx::TextureHandle linearDepth = gfx::TextureHandle::Invalid;
     gfx::TextureHandle normalBuffer = gfx::TextureHandle::Invalid;
 
+    // Previous frame's linearDepth. Written at the end of GTAO's temporal
+    // pass (copy of the current frame's linearDepth) and sampled at the
+    // top of next frame's temporal pass to detect disocclusion: a large
+    // delta between the depth here at prevUv and the depth a static
+    // reprojection predicts means the prev-frame surface is no longer
+    // visible, so the history sample is rejected.
+    gfx::TextureHandle linearDepthHistory = gfx::TextureHandle::Invalid;
+
     // GTAO ambient-occlusion buffers. Four R8_UNORM scalars + an RGBA8
     // bent normal, all full-res, HD-only.
     //   aoBufferRaw      — noisy GTAO output from the main pass.

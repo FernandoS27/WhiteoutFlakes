@@ -17,6 +17,7 @@
 #include "whiteout/flakes/types.h"
 
 #include <atomic>
+#include <cstring>
 #include <string>
 
 namespace whiteout::flakes::renderer {
@@ -117,6 +118,23 @@ public:
     }
     void SetAoQuality(u32 q) {
         aoQuality_.store(q);
+    }
+
+    // Bent-normal IBL boost strength. 0 = pass disabled (no-op). Tiny
+    // values (~0.05) recover some of the indirect-light energy lost when
+    // GTAO darkens cavities; bigger values overdrive the model. Stored
+    // as raw bits in an atomic<u32> because std::atomic<f32> isn't a
+    // standard specialisation pre-C++20 across all our toolchains.
+    f32 AoBentBoost() const {
+        const u32 bits = aoBentBoost_.load();
+        f32 v;
+        std::memcpy(&v, &bits, sizeof(v));
+        return v;
+    }
+    void SetAoBentBoost(f32 v) {
+        u32 bits;
+        std::memcpy(&bits, &v, sizeof(bits));
+        aoBentBoost_.store(bits);
     }
 
     // ---- Lighting / clear color ----
@@ -223,9 +241,14 @@ private:
     // disable from the settings menu if they don't want the pass.
     std::atomic<bool> aoEnabled_{true};
 
-    // Quality preset (Low=0, Medium=1, High=2). Medium matches the V1
-    // 4×4 horizon trace.
-    std::atomic<u32> aoQuality_{1};
+    // Quality preset (Low=0, Medium=1, High=2). High by default — the
+    // extra slice/step taps comfortably fit the budget on every backend
+    // we ship, and the lower presets exist mainly as a fallback.
+    std::atomic<u32> aoQuality_{2};
+
+    // Bent-normal IBL boost (float bits in u32 — atomic<f32> isn't
+    // portable). 0 disables the boost pass.
+    std::atomic<u32> aoBentBoost_{0};
 
     // Lighting + clear color.
     std::atomic<u8> lightingMode_{static_cast<u8>(LightingMode::InGame)};

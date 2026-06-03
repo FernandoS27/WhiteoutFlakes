@@ -56,6 +56,16 @@ struct GtaoCB
     //      frame: 1.0 on the very first frame, ~0.1 thereafter.
     float4 params;
 
+    // Bent-normal IBL boost pass constants.
+    //   .x = envFromMipEnd (unused by boost — diffuse uses mip 0)
+    //   .y = envToMipEnd   (ditto)
+    //   .z = envTransitionT (lerp between from / to probes)
+    //   .w = boost strength (0 = pass disabled; ~0.05 default once on,
+    //        scaled small because the probe diffuse is HDR and an
+    //        additive blend on top of the BLS-side IBL contribution
+    //        easily over-brightens).
+    float4 ibl;
+
     // .x frame index (low bits used for jitter rotation).
     // .y debug mode: 0 = normal apply, 1 = AO only (apply pass writes
     //               vec3(ao) regardless of scene colour), 2 = inverted
@@ -93,12 +103,17 @@ static const int WF_PS_BIND_OFFSET = 16;
 //   apply_ps    — g_aoBuffer
 // `register(tN)` pins the HLSL slot so per-entry emit can't reshuffle
 // when textures are added or reordered.
-[[vk::binding(WF_PS_BIND_OFFSET + 0, 1)]] Texture2D<float>  g_linearDepth : register(t0);
-[[vk::binding(WF_PS_BIND_OFFSET + 1, 1)]] Texture2D<float4> g_normal      : register(t1);
-[[vk::binding(WF_PS_BIND_OFFSET + 2, 1)]] Texture2D<float>  g_aoNoisy     : register(t2);
-[[vk::binding(WF_PS_BIND_OFFSET + 3, 1)]] Texture2D<float>  g_aoBuffer    : register(t3);
-[[vk::binding(WF_PS_BIND_OFFSET + 4, 1)]] Texture2D<float>  g_aoHistory   : register(t4);
-[[vk::binding(WF_PS_BIND_OFFSET + 0, 2)]] SamplerState      g_sampler     : register(s0);
+[[vk::binding(WF_PS_BIND_OFFSET + 0, 1)]] Texture2D<float>         g_linearDepth   : register(t0);
+[[vk::binding(WF_PS_BIND_OFFSET + 1, 1)]] Texture2D<float4>        g_normal        : register(t1);
+[[vk::binding(WF_PS_BIND_OFFSET + 2, 1)]] Texture2D<float>         g_aoNoisy       : register(t2);
+[[vk::binding(WF_PS_BIND_OFFSET + 3, 1)]] Texture2D<float>         g_aoBuffer      : register(t3);
+[[vk::binding(WF_PS_BIND_OFFSET + 4, 1)]] Texture2D<float>         g_aoHistory     : register(t4);
+[[vk::binding(WF_PS_BIND_OFFSET + 5, 1)]] Texture2D<float4>        g_bentNormalSrv : register(t5);
+[[vk::binding(WF_PS_BIND_OFFSET + 6, 1)]] TextureCubeArray<float4> g_iblFrom       : register(t6);
+[[vk::binding(WF_PS_BIND_OFFSET + 7, 1)]] TextureCubeArray<float4> g_iblTo         : register(t7);
+[[vk::binding(WF_PS_BIND_OFFSET + 8, 1)]] Texture2D<float>         g_linearDepthHistory : register(t8);
+[[vk::binding(WF_PS_BIND_OFFSET + 0, 2)]] SamplerState             g_sampler       : register(s0);
+[[vk::binding(WF_PS_BIND_OFFSET + 1, 2)]] SamplerState             g_iblSampler    : register(s1);
 
 struct VsOut
 {
@@ -425,12 +440,20 @@ float gtao_denoise_ps(VsOut input) : SV_Target
 // position from view-space Z via invView, then projects through the
 // previous frame's view*proj to find prev-frame UV. Samples history at
 // that UV and blends with current via an exponential moving average.
-// Rejects on out-of-frame UV; for AO's low-frequency content that's
-// enough — disocclusion ghosts wash out within ~1/alpha frames anyway.
 //
-// Animated meshes smear slightly because we have no motion vectors —
-// V2 trade-off; the smear stays well below the magnitude of the noise
-// it replaces. Add motion vectors in V3 if needed.
+// Disocclusion rejection: we sample the prev-frame linearDepth at prevUv
+// and compare it against the view-Z that this pixel's world position
+// would have had last frame (= reprojected clip-space distance to the
+// prev camera). When the deltas disagree by more than ~10 % of the
+// reprojected depth, the prev-frame surface at prevUv was a DIFFERENT
+// piece of geometry — camera motion newly exposed our pixel — so the
+// history sample is rejected. Without this, sharp edge motion produces
+// AO ghosts of the previous silhouette that take ~1/alpha frames to wash
+// out; with it, the new pixels start uncontaminated.
+//
+// Animated meshes still smear slightly because we have no motion vectors
+// — V3 trade-off. Add per-pixel motion vectors if the residual smear
+// proves visible.
 // ----------------------------------------------------------------------------
 [shader("fragment")]
 float gtao_temporal_ps(VsOut input) : SV_Target
@@ -455,8 +478,72 @@ float gtao_temporal_ps(VsOut input) : SV_Target
     if (any(prevUv < 0.0) || any(prevUv > 1.0))
         return current;
 
+    // Disocclusion test. `prevClip.w` is the LH view-space Z of this
+    // pixel's world point under last frame's camera — that's the depth
+    // we'd expect to find in the depth-history texture at prevUv if the
+    // same surface was visible. A large relative mismatch means the
+    // prev-frame pixel at prevUv saw different geometry (newly disoccluded
+    // surface, or an animated occluder moved); rejecting that history
+    // sample stops AO ghosts of the old silhouette from bleeding into
+    // the new frame.
+    float prevDepth     = g_linearDepthHistory.SampleLevel(g_sampler, prevUv, 0).x;
+    float expectedDepth = prevClip.w;
+    float relErr        = abs(prevDepth - expectedDepth) / max(expectedDepth, 0.1);
+    if (prevDepth <= 0.001 || prevDepth >= SKY_SENTINEL || relErr > 0.1)
+        return current;
+
     float history = g_aoHistory.SampleLevel(g_sampler, prevUv, 0).x;
     return lerp(history, current, alpha);
+}
+
+// ----------------------------------------------------------------------------
+// Depth copy — single-sample passthrough that writes the current frame's
+// linearDepth into linearDepthHistory at the end of the GTAO pipeline.
+// Next frame's temporal pass reads it for disocclusion rejection.
+// ----------------------------------------------------------------------------
+[shader("fragment")]
+float gtao_depth_copy_ps(VsOut input) : SV_Target
+{
+    return g_linearDepth.SampleLevel(g_sampler, input.uv, 0).x;
+}
+
+// ----------------------------------------------------------------------------
+// Bent-normal IBL boost — approximates inter-reflection by sampling the
+// IBL diffuse probe along the bent normal direction and additively
+// blending into hdrColor, weighted by (1 - AO) so the boost peaks in
+// occluded creases where direct light is suppressed.
+//
+// Probe-space mapping matches sampleIBL() in ps_ibl.slang: apply the
+// view rotation to the view-space bent normal (engine double-rotation),
+// swizzle .xzy (Z-up → Y-up cubemap), flip Z for handedness. The result
+// is the cubemap sample direction.
+//
+// Approximation caveat: we don't know per-pixel how much of hdrColor
+// was already IBL-contributed by the BLS path, so the boost over-
+// brightens metals / emissive surfaces. The strength constant taper is
+// the user's escape valve.
+// ----------------------------------------------------------------------------
+[shader("fragment")]
+float4 gtao_ibl_boost_ps(VsOut input) : SV_Target
+{
+    float2 uv    = input.uv;
+    float  viewZ = g_linearDepth.SampleLevel(g_sampler, uv, 0).x;
+    if (viewZ <= 0.001 || viewZ >= SKY_SENTINEL)
+        return float4(0, 0, 0, 0);
+
+    float4 bn     = g_bentNormalSrv.SampleLevel(g_sampler, uv, 0);
+    float3 bentVS = bn.xyz * 2.0 - 1.0;
+    float  aoVal  = bn.w;
+
+    float3 probeDir = normalize(mul((float3x3)g_cb.view, bentVS).xzy * float3(1, 1, -1));
+
+    float4 diffCoord = float4(probeDir, 0);
+    float3 diffFrom  = g_iblFrom.SampleLevel(g_iblSampler, diffCoord, 0).xyz;
+    float3 diffTo    = g_iblTo.SampleLevel(g_iblSampler, diffCoord, 0).xyz;
+    float3 diffuse   = lerp(diffFrom, diffTo, g_cb.ibl.z);
+
+    float boostWeight = saturate(1.0 - aoVal) * g_cb.ibl.w;
+    return float4(diffuse * boostWeight, 1.0);
 }
 
 // ----------------------------------------------------------------------------

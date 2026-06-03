@@ -296,6 +296,12 @@ i32 SettingsView::HdDebugMode() const {
 void SettingsView::SetHdDebugMode(i32 m) {
     Svc(impl_).Settings().SetHdDebugMode(m);
 }
+u32 SettingsView::AoQuality() const {
+    return Svc(impl_).Settings().AoQuality();
+}
+void SettingsView::SetAoQuality(u32 q) {
+    Svc(impl_).Settings().SetAoQuality(q);
+}
 i32 SettingsView::LodOverride() const {
     return Svc(impl_).Settings().LodOverride();
 }

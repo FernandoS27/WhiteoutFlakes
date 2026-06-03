@@ -16,7 +16,7 @@ namespace whiteout::flakes {
 /// distribution (0 = uniform, 1 = log).
 struct ShadowParams {
     /// Number of cascades; the renderer accepts 1..3.
-    i32 cascadeCount = 1;
+    i32 cascadeCount = 3;
     /// Per-cascade shadow-map side length in texels.
     i32 cascadeResolution = 1024;
     /// Extruded receiver-height padding for the cascade frustums; larger

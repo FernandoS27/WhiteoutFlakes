@@ -178,6 +178,10 @@ public:
     i32 HdDebugMode() const;
     void SetHdDebugMode(i32);
 
+    /// @brief GTAO quality preset (0 = Low, 1 = Medium, 2 = High).
+    u32 AoQuality() const;
+    void SetAoQuality(u32);
+
     /// @brief LOD override (`-1` = auto-pick by screen size, `0..3` = forced).
     i32 LodOverride() const;
     void SetLodOverride(i32);
