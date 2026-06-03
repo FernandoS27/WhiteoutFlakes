@@ -112,6 +112,11 @@ int wf_init(WfRenderer* h, const char* canvasSelector, int width, int height) {
         sp.cascadeResolution = 512;
         h->renderer.Shadow().SetParams(sp);
 
+        // Default TOD = 11:30 — pre-noon sun gives the model a clear
+        // front-lit framing on first load instead of the engine's
+        // 12:00 (sun nearly straight overhead, minimal shadow).
+        h->renderer.Dnc().SetTimeOfDay(11.5f);
+
         std::fprintf(stderr, "[wf] wf_init: done\n");
 
         h->inited = true;

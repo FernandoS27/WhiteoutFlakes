@@ -1543,11 +1543,44 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
             csmCamProj = rs_.Scene().Camera().ProjectionLH(aspect);
         }
 
+        // Shadow light direction is driven entirely by an analytic
+        // TOD path so the host's time-of-day slider visibly moves the
+        // shadow. The W3 DnC MDLs (DNCLordaeronUnit.mdl etc.) carry a
+        // single static rotation keyframe on the FDirectSun light
+        // node — the engine `SpriteGetLightDir` reads it back as a
+        // fixed vector and shadows never swing with TOD in-game.
+        // That's faithful to W3 but bad UX in a viewer, so we ignore
+        // the DnC asset for direction (we still consume it for light
+        // colour / intensity in the BLS lit pass).
+        //
+        // Sun arc runs along the Y axis with a constant forward
+        // bias so the front of the model stays lit at every TOD
+        // (Blizzard LH, Z up). Sunrise sits low-front (-Y dominant
+        // with the bias), noon overhead, sunset comes back through
+        // the front rather than swinging behind. Tiny +X tilt
+        // prevents noon shadows from collapsing straight down; the
+        // Z floor keeps shadows from inverting past sunset.
         Vector3f lightDirWS = {-0.3f, 0.5f, -0.7f};
-        if (auto* dnc = rs_.GetDncService(); dnc && dnc->HasAsset()) {
-            const auto sample = dnc->SampleNow();
-            if (sample.valid)
-                lightDirWS = sample.worldDir;
+        if (auto* dnc = rs_.GetDncService()) {
+            constexpr f32 kPi = 3.14159265f;
+            const f32 hpd = dnc->GetHoursPerDay();
+            const f32 tod = dnc->GetTimeOfDay();
+            const f32 theta = ((tod - hpd * 0.25f) / (hpd * 0.5f)) * kPi;
+            const f32 sinT = std::sin(theta);
+            const f32 cosT = std::cos(theta);
+            const f32 zDown = std::max(0.1f, sinT);
+            // +1.2 forward bias keeps dir.y positive across the full
+            // day (range 0.7 at sunrise → 1.7 at sunset), so the
+            // sun is always at -Y world (the model's front) and
+            // never swings behind. 0.5× cosT scaling preserves a
+            // visible Y arc on top of the bias.
+            Vector3f dir = {0.1f, 0.5f * cosT + 1.2f, -zDown};
+            const f32 len =
+                std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+            if (len > 1.0e-4f) {
+                const f32 inv = 1.0f / len;
+                lightDirWS = {dir.x * inv, dir.y * inv, dir.z * inv};
+            }
         }
 
         // Center the shadow cascade on the camera target (the host's "what
