@@ -109,9 +109,16 @@ static const int WF_PS_BIND_OFFSET = 16;
 [[vk::binding(WF_PS_BIND_OFFSET + 3, 1)]] Texture2D<float>         g_aoBuffer      : register(t3);
 [[vk::binding(WF_PS_BIND_OFFSET + 4, 1)]] Texture2D<float>         g_aoHistory     : register(t4);
 [[vk::binding(WF_PS_BIND_OFFSET + 5, 1)]] Texture2D<float4>        g_bentNormalSrv : register(t5);
-[[vk::binding(WF_PS_BIND_OFFSET + 6, 1)]] TextureCubeArray<float4> g_iblFrom       : register(t6);
-[[vk::binding(WF_PS_BIND_OFFSET + 7, 1)]] TextureCubeArray<float4> g_iblTo         : register(t7);
 [[vk::binding(WF_PS_BIND_OFFSET + 8, 1)]] Texture2D<float>         g_linearDepthHistory : register(t8);
+// IBL probe pair pinned to t13/t14 — the WebGPU shared SRV bind-group
+// layout (`wf.srv`, see webgpu_init.cpp + kPsIblCubeFrom/ToBinding in
+// webgpu_handles.h) reserves CubeArray view dimension at slots 13 and
+// 14 only. Earlier revisions used t6/t7, which the layout has as
+// plain `e2D`; PSO creation on Dawn then warned with a "shader
+// dimension (e2D) vs layout (CubeArray)" mismatch at startup and the
+// shader fell back to a default e2D view at draw time.
+[[vk::binding(WF_PS_BIND_OFFSET + 13, 1)]] TextureCubeArray<float4> g_iblFrom : register(t13);
+[[vk::binding(WF_PS_BIND_OFFSET + 14, 1)]] TextureCubeArray<float4> g_iblTo   : register(t14);
 [[vk::binding(WF_PS_BIND_OFFSET + 0, 2)]] SamplerState             g_sampler       : register(s0);
 [[vk::binding(WF_PS_BIND_OFFSET + 1, 2)]] SamplerState             g_iblSampler    : register(s1);
 

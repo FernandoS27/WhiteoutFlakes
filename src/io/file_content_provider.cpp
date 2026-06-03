@@ -115,11 +115,12 @@ static constexpr const char* kArchiveModelExts[] = {".mdx", ".mdl"};
 static constexpr const char* kCascPrefixSd = "war3.w3mod:";
 static constexpr const char* kCascPrefixHd = "war3.w3mod:_hd.w3mod:";
 static constexpr const char* kCascPrefixDeprecated = "war3.w3mod:_deprecated.w3mod:";
+static constexpr const char* kCascEmptyPrefix = "";
 
-static std::array<const char*, 3> PickCascPrefixes(bool hdMode) {
+static std::array<const char*, 4> PickCascPrefixes(bool hdMode) {
     if (hdMode)
-        return {kCascPrefixHd, kCascPrefixSd, kCascPrefixDeprecated};
-    return {kCascPrefixSd, kCascPrefixHd, kCascPrefixDeprecated};
+        return {kCascPrefixHd, kCascPrefixSd, kCascPrefixDeprecated, kCascEmptyPrefix};
+    return {kCascPrefixSd, kCascPrefixHd, kCascPrefixDeprecated, kCascEmptyPrefix};
 }
 
 static bool HasExtension(const std::string& ext, const char* const* list, usize count) {

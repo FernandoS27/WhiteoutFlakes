@@ -17,6 +17,7 @@
 #include "particle.h"
 #include "particle/particle_service.h"
 #include "particle/splat_service.h"
+#include "post_process/post_process_service.h"
 #include "render_pipeline.h"
 #include "render_settings.h"
 #include "render_target.h"
@@ -85,6 +86,7 @@ struct RenderService::Impl {
     std::unique_ptr<dnc::DncService> dncService_;
     std::unique_ptr<shadow::ShadowService> shadowService_;
     std::unique_ptr<gtao::GtaoService> gtaoService_;
+    std::unique_ptr<post_process::PostProcessService> postProcessService_;
     std::unique_ptr<effects::SpnSpawner> spnSpawner_;
     std::unique_ptr<FrameTicker> ticker_;
     std::unique_ptr<model::ModelLoader> loader_;

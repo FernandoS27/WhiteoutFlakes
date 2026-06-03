@@ -689,6 +689,33 @@ void ViewerUI::BuildSettingsWindow() {
             }
         }
 
+        // ---- Bloom (HD-only) ----
+        {
+            bool bloom = svc.Settings().BloomEnabled();
+            if (ImGui::Checkbox("Bloom", &bloom)) {
+                svc.Settings().SetBloomEnabled(bloom);
+                SaveIni(app_);
+            }
+            f32 threshold = svc.Settings().BloomThreshold();
+            f32 intensity = svc.Settings().BloomIntensity();
+            f32 saturation = svc.Settings().BloomSaturation();
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::SliderFloat("Bloom Threshold", &threshold, 0.0f, 4.0f, "%.2f")) {
+                svc.Settings().SetBloomThreshold(threshold);
+                SaveIni(app_);
+            }
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::SliderFloat("Bloom Intensity", &intensity, 0.0f, 4.0f, "%.2f")) {
+                svc.Settings().SetBloomIntensity(intensity);
+                SaveIni(app_);
+            }
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::SliderFloat("Bloom Saturation", &saturation, 0.0f, 4.0f, "%.2f")) {
+                svc.Settings().SetBloomSaturation(saturation);
+                SaveIni(app_);
+            }
+        }
+
         ImGui::Separator();
 
         // ---- DNC model path ----

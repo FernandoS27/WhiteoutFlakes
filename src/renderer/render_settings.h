@@ -137,6 +137,50 @@ public:
         aoBentBoost_.store(bits);
     }
 
+    // ---- Bloom (HD-only) ----
+    // Master enable. Off ⇒ PostProcessService::RunBloom is a no-op.
+    bool BloomEnabled() const {
+        return bloomEnabled_.load();
+    }
+    void SetBloomEnabled(bool on) {
+        bloomEnabled_.store(on);
+    }
+    // Threshold + intensity + saturation float bits stored in atomic<u32>
+    // — same trick as AoBentBoost (std::atomic<f32> isn't portable).
+    f32 BloomThreshold() const {
+        const u32 bits = bloomThreshold_.load();
+        f32 v;
+        std::memcpy(&v, &bits, sizeof(v));
+        return v;
+    }
+    void SetBloomThreshold(f32 v) {
+        u32 bits;
+        std::memcpy(&bits, &v, sizeof(bits));
+        bloomThreshold_.store(bits);
+    }
+    f32 BloomIntensity() const {
+        const u32 bits = bloomIntensity_.load();
+        f32 v;
+        std::memcpy(&v, &bits, sizeof(v));
+        return v;
+    }
+    void SetBloomIntensity(f32 v) {
+        u32 bits;
+        std::memcpy(&bits, &v, sizeof(bits));
+        bloomIntensity_.store(bits);
+    }
+    f32 BloomSaturation() const {
+        const u32 bits = bloomSaturation_.load();
+        f32 v;
+        std::memcpy(&v, &bits, sizeof(v));
+        return v;
+    }
+    void SetBloomSaturation(f32 v) {
+        u32 bits;
+        std::memcpy(&bits, &v, sizeof(bits));
+        bloomSaturation_.store(bits);
+    }
+
     // ---- Lighting / clear color ----
     LightingMode GetLightingMode() const {
         return static_cast<LightingMode>(lightingMode_.load());
@@ -249,6 +293,14 @@ private:
     // Bent-normal IBL boost (float bits in u32 — atomic<f32> isn't
     // portable). 0 disables the boost pass.
     std::atomic<u32> aoBentBoost_{0};
+
+    // Bloom — defaults match the engine's RegisterBloom (BL_BLOOM_D=0
+    // off, threshold=1.0, intensity=1.25, saturation=1.0). Floats stored
+    // as raw bits in an atomic<u32>; helper bit-casts are below.
+    std::atomic<bool> bloomEnabled_{false};
+    std::atomic<u32> bloomThreshold_{0x3F800000u}; // 1.0f
+    std::atomic<u32> bloomIntensity_{0x3FA00000u}; // 1.25f
+    std::atomic<u32> bloomSaturation_{0x3F800000u}; // 1.0f
 
     // Lighting + clear color.
     std::atomic<u8> lightingMode_{static_cast<u8>(LightingMode::InGame)};

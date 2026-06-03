@@ -22,15 +22,20 @@ BlitVSOut vsBlit(uint vid : SV_VertexID)
     return o;
 }
 
-// Explicit Vulkan descriptor bindings. The WhiteoutFlakes Vulkan backend's
-// graphics pipeline layout is set 0 = constant buffers, set 1 = sampled
-// images, set 2 = samplers, with pixel-stage slots offset by 16. A pixel
-// texture at slot 0 must therefore land at (set 1, binding 16) and its
-// sampler at (set 2, binding 16); without these hints slang would auto-
-// assign both into set 0 and collide with the CB set. Ignored by the
-// D3D / DXBC path, which keeps slang's t0 / s0 register assignment.
-[[vk::binding(16, 1)]] Texture2D<float4> gImage;
-[[vk::binding(16, 2)]] SamplerState gSampler;
+// Per-backend binding offsets mirror gtao.slang / gaussian_blur.slang.
+// Vulkan + D3D pixel SRV/sampler slots start at binding 16; WebGPU's
+// kStageBindingShift packs them at 12. The runtime always binds via
+// `BindShaderResource(Pixel, 0, …)` and translates slot 0 → binding
+// (12 or 16) per backend, so the shader has to declare its bindings
+// at the SAME per-backend offset or the WGSL pipeline misses the
+// runtime's slot-0 write and samples a default (black) view.
+#if defined(WGSL_TARGET) || defined(METAL_TARGET)
+static const int WF_PS_BIND_OFFSET = 12;
+#else
+static const int WF_PS_BIND_OFFSET = 16;
+#endif
+[[vk::binding(WF_PS_BIND_OFFSET + 0, 1)]] Texture2D<float4> gImage;
+[[vk::binding(WF_PS_BIND_OFFSET + 0, 2)]] SamplerState gSampler;
 
 [shader("fragment")]
 float4 psBlit(BlitVSOut input) : SV_Target

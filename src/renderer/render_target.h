@@ -65,6 +65,14 @@ struct RenderTarget {
     gfx::TextureHandle aoBufferHistory = gfx::TextureHandle::Invalid;
     gfx::TextureHandle bentNormalBuffer = gfx::TextureHandle::Invalid;
 
+    // Bloom scratch buffers. Full-res HDR scratch the bloom pass ping-pongs
+    // between for extract → blur-H → blur-V → combine. After the combine
+    // pass the composited HDR scene+bloom lives in `bloomScratchB`; the
+    // service blits it back over `hdrColor` so the tonemap downstream is
+    // unaware of bloom. Both formats match `hdrColor`'s HDR format.
+    gfx::TextureHandle bloomScratchA = gfx::TextureHandle::Invalid;
+    gfx::TextureHandle bloomScratchB = gfx::TextureHandle::Invalid;
+
     i32 width = 0;
     i32 height = 0;
 };

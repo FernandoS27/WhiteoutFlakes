@@ -221,6 +221,13 @@ set(SHADER_ENTRIES
     "gtao.slang|gtao_depth_copy_ps|fragment|kGtaoDepthCopyPS"
     "gtao.slang|gtao_ibl_boost_ps|fragment|kGtaoIblBoostPS"
     "gtao.slang|gtao_apply_ps|fragment|kGtaoApplyPS"
+    # Bloom Gaussian blur (post-process). PostProcessService runs this
+    # twice per frame (horizontal, then vertical) between BloomExtract
+    # and BloomCombine. Renderer-internal — Wc3Shaders doesn't author a
+    # blur source, so we ship our own embedded copy rather than relying
+    # on the engine's shipped gaussianblur.bls being staged.
+    "gaussian_blur.slang|vsBlur|vertex|kGaussianBlurVS"
+    "gaussian_blur.slang|psBlur|fragment|kGaussianBlurPS"
 )
 
 set(SHADER_DXBC_FILES "")
@@ -1072,6 +1079,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/shadow/shadow_service.cpp
     src/renderer/shadow/shadow_pass.cpp
     src/renderer/gtao/gtao_service.cpp
+    src/renderer/post_process/post_process_service.cpp
     src/renderer/bls/bls_container.cpp
     src/renderer/bls/bls_shader_cache.cpp
     src/renderer/bls/bls_permuter.cpp

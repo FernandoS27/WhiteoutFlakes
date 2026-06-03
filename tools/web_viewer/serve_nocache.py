@@ -3,21 +3,16 @@
 across hard reloads.
 
 Also exposes a `/hive-proxy/<path>` endpoint that forwards to
-`https://beta2.hiveworkshop.com/<path>` with Basic auth — the beta site
-gates repository-files behind login + does not send CORS headers, so
-the browser can't fetch it directly. The service worker (sw.js) rewrites
-beta2 URLs to this proxy transparently.
+`https://www.hiveworkshop.com/<path>` server-side. Hive's
+/repository-files/ (user-uploaded models + textures) are public but send
+no CORS headers, so a browser can't read them cross-origin — routing
+them through this same-origin proxy sidesteps that. /casc-contents/ and
+/assets/ do send CORS, so the app fetches those directly. No auth needed
+for production www; the optional HIVE_USER/HIVE_PASS are forwarded if set.
 
 Usage:
     cd build-web/web
-    HIVE_USER=<username> HIVE_PASS=<password> \\
-        python ../../tools/web_viewer/serve_nocache.py 8080
-
-    # or with CLI flags:
-    python ../../tools/web_viewer/serve_nocache.py 8080 \\
-        --hive-user <username> --hive-pass <password>
-
-Without credentials the proxy still runs but Hive will return 401.
+    python ../../tools/web_viewer/serve_nocache.py 8080
 """
 
 import argparse
@@ -28,7 +23,7 @@ import urllib.error
 import urllib.request
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
-HIVE_BETA_ORIGIN = "https://beta2.hiveworkshop.com"
+HIVE_PROD_ORIGIN = "https://www.hiveworkshop.com"
 HIVE_PROXY_PREFIX = "/hive-proxy/"
 
 # Populated from CLI flags / env vars in __main__.
@@ -73,7 +68,7 @@ class NoCacheHandler(SimpleHTTPRequestHandler):
     def _proxy_hive(self, rest: str) -> None:
         # Strip the optional cache-buster appended by the JS modules
         # (`?t=…`) so identical requests share a cache key upstream.
-        url = f"{HIVE_BETA_ORIGIN}/{rest}"
+        url = f"{HIVE_PROD_ORIGIN}/{rest}"
         req = urllib.request.Request(url)
         auth = _hive_auth_header()
         if auth:
@@ -121,10 +116,8 @@ if __name__ == "__main__":
     HIVE_PASS = args.hive_pass
     with ThreadingHTTPServer(("", args.port), NoCacheHandler) as httpd:
         print(f"no-cache HTTP server on http://localhost:{args.port}/")
-        if HIVE_USER:
-            print(f"  /hive-proxy/* -> {HIVE_BETA_ORIGIN}/* (auth as '{HIVE_USER}')")
-        else:
-            print(f"  /hive-proxy/* -> {HIVE_BETA_ORIGIN}/* (no auth -- expect 401)")
+        auth_note = f"auth as '{HIVE_USER}'" if HIVE_USER else "no auth"
+        print(f"  /hive-proxy/* -> {HIVE_PROD_ORIGIN}/* ({auth_note})")
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:

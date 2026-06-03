@@ -400,12 +400,15 @@
       }, {
         // Demo's sw.js lives next to index.html, not inside the package.
         serviceWorkerUrl: './sw.js',
-        // beta2.hiveworkshop.com requires Basic auth and emits no CORS
-        // headers — route those requests through the dev server's
-        // /hive-proxy/ endpoint (serve_nocache.py injects the auth).
+        // Hive serves /repository-files/ (uploaded models + textures)
+        // WITHOUT CORS headers, so the browser can't read them
+        // cross-origin — route just those through the dev server's
+        // same-origin /hive-proxy/ (serve_nocache.py forwards to www).
+        // /casc-contents/ and /assets/ DO send CORS, so they go direct.
         urlRewriter: (url) => {
-          const BETA = 'https://beta2.hiveworkshop.com/';
-          if (url && url.startsWith(BETA)) return '/hive-proxy/' + url.slice(BETA.length);
+          if (typeof url !== 'string') return url;
+          const PROD = 'https://www.hiveworkshop.com/';
+          if (url.startsWith(PROD + 'repository-files/')) return '/hive-proxy/' + url.slice(PROD.length);
           return url;
         },
       });

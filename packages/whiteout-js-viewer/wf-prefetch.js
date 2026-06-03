@@ -7,11 +7,23 @@ const VS_SHADERS = ['foliage', 'gritty_hd', 'hd', 'imgui', 'popcornfx',
 const PS_SHADERS = ['crystal', 'distortion', 'foliage', 'gritty_hd', 'hd', 'imgui',
                     'popcornfx', 'sd', 'sd_on_hd', 'sprite', 'terrain', 'tonemap', 'toon_hd'];
 
-const ENGINE_ASSETS = [
-    // IBL probe + DNC unit MDX.
+// Engine assets that must come from the CASC service rather than the
+// local `engineAssetRoot` mirror. The IBL probe drives HD environment
+// lighting and the DNC unit drives the directional sun + ambient — a
+// stale/local copy renders the scene dark, so these always resolve
+// through viewer.cascUrl (authoritative, always current). Everything
+// else in ENGINE_ASSETS keeps the local-first, CASC-fallback order.
+const CASC_ONLY = new Set([
     'Environment/EnvironmentMap/Portraits/PortraitDefault_IBL.dds',
-    'Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdx',
-    'Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdl',
+    'war3.w3mod:Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdx',
+    'war3.w3mod:Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdl',
+]);
+
+const ENGINE_ASSETS = [
+    // IBL probe + DNC unit MDX (CASC-only — see CASC_ONLY above).
+    'Environment/EnvironmentMap/Portraits/PortraitDefault_IBL.dds',
+    'war3.w3mod:Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdx',
+    'war3.w3mod:Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdl',
     // Replaceable tree textures (IDs 31-36). The renderer's
     // ReplaceableTextureManager resolves these via ContentProvider::Request
     // (synchronous, not the AssetManager needs pump that JS drains), so
@@ -88,12 +100,21 @@ function pathWithServedExt(originalPath, finalUrl) {
     return (dot >= 0 ? originalPath.slice(0, dot) : originalPath) + servedExt;
 }
 
-// Tries `engineAssetRoot` (./ by default), falls back to viewer.cascUrl.
+// CASC_ONLY paths fetch straight from viewer.cascUrl; the rest try
+// `engineAssetRoot` (./ by default) first, then fall back to CASC.
+// Only the CASC_ONLY assets (DNC + IBL) are mode-agnostic and fetch
+// with withContext=false; everything else (replaceables, splats /
+// footprints, SLKs) keeps the &context=hd/sd param like model deps.
 export async function prefetchEngineAssets(viewer) {
     const root = viewer.engineAssetRoot || './';
     await Promise.all(ENGINE_ASSETS.map(async (p) => {
-        let res = await fetchResult(root + p);
-        if (!res) res = await fetchResult(viewer.cascUrl(p));
+        let res;
+        if (CASC_ONLY.has(p)) {
+            res = await fetchResult(viewer.cascUrl(p, false));
+        } else {
+            res = await fetchResult(root + p);
+            if (!res) res = await fetchResult(viewer.cascUrl(p));
+        }
         if (res) putBytes(viewer, pathWithServedExt(p, res.finalUrl), res.bytes);
     }));
 }

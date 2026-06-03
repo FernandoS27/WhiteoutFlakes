@@ -106,6 +106,12 @@ gtao::GtaoService* RenderService::GetGtaoService() {
 const gtao::GtaoService* RenderService::GetGtaoService() const {
     return impl_->gtaoService_.get();
 }
+post_process::PostProcessService* RenderService::GetPostProcessService() {
+    return impl_->postProcessService_.get();
+}
+const post_process::PostProcessService* RenderService::GetPostProcessService() const {
+    return impl_->postProcessService_.get();
+}
 
 RenderSettings& RenderService::Settings() {
     return impl_->settings_;
@@ -227,6 +233,16 @@ gtao::GtaoService& RenderService::EnsureGtaoService(gfx::IGFXDevice& gfx, gfx::G
         impl_->gtaoService_->Init(gfx, api);
     }
     return *impl_->gtaoService_;
+}
+
+post_process::PostProcessService& RenderService::EnsurePostProcessService(
+    gfx::IGFXDevice& gfx, gfx::GfxApi api, bls::BlsShaderCache& cache,
+    gfx::BufferHandle spriteVb) {
+    if (!impl_->postProcessService_) {
+        impl_->postProcessService_ = std::make_unique<post_process::PostProcessService>();
+        impl_->postProcessService_->Init(gfx, api, cache, spriteVb);
+    }
+    return *impl_->postProcessService_;
 }
 
 dear_imgui::ImGuiRenderer* RenderService::ImGui() {

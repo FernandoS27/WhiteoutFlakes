@@ -657,8 +657,11 @@ void GtaoService::RunIblBoost(gfx::IGFXCommandList* cmd, const RenderTarget& tar
     cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, target.linearDepth);
     cmd->BindShaderResource(gfx::ShaderStage::Pixel, 3, lastAoOutput_);
     cmd->BindShaderResource(gfx::ShaderStage::Pixel, 5, target.bentNormalBuffer);
-    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 6, in.iblFrom);
-    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 7, in.iblTo);
+    // Cube-array probes pinned to PS slots 13/14 to match the
+    // WebGPU `wf.srv` layout's CubeArray entries (slots 6/7 are e2D
+    // in that layout).
+    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 13, in.iblFrom);
+    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 14, in.iblTo);
     cmd->BindSampler(gfx::ShaderStage::Pixel, 0, pointSampler_);
     cmd->BindSampler(gfx::ShaderStage::Pixel, 1, in.iblSampler);
     cmd->Draw(3, 0);

@@ -24,6 +24,7 @@
 #include "imgui/imgui_renderer.h"
 #include "shadow/shadow_service.h"
 #include "gtao/gtao_service.h"
+#include "post_process/post_process_service.h"
 
 #include <memory>
 #include <optional>
@@ -130,6 +131,8 @@ public:
     const shadow::ShadowService* GetShadowService() const;
     gtao::GtaoService* GetGtaoService();
     const gtao::GtaoService* GetGtaoService() const;
+    post_process::PostProcessService* GetPostProcessService();
+    const post_process::PostProcessService* GetPostProcessService() const;
 
     // Engine-side Dear ImGui adapter. Returns nullptr when WDX_ENABLE_IMGUI
     // is off at compile time, or before InitBlsShaders has had a chance to
@@ -186,6 +189,10 @@ public:
     dnc::DncService& EnsureDncService();
     shadow::ShadowService& EnsureShadowService(gfx::IGFXDevice& gfx);
     gtao::GtaoService& EnsureGtaoService(gfx::IGFXDevice& gfx, gfx::GfxApi api);
+    post_process::PostProcessService& EnsurePostProcessService(gfx::IGFXDevice& gfx,
+                                                               gfx::GfxApi api,
+                                                               bls::BlsShaderCache& cache,
+                                                               gfx::BufferHandle spriteVb);
 
 private:
     // ---- Pimpl: all instance state lives here. ----

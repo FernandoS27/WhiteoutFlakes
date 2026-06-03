@@ -60,32 +60,37 @@ export class WhiteoutViewer {
         this._handle = 0;
         this._raf = 0;
         this._lastTime = 0;
-        // HD mode selector. Off by default — matches the engine, which
-        // starts in SD and only flips to HD when the loaded model
-        // declares it. Pass `{ hdMode: true }` to the constructor to
-        // come up in HD, or call `setHdMode(true)` later. When set,
-        // `cascUrl` appends `&hd=1` so Hive's CASC mirror returns the
-        // `_hd.w3mod` overlay first (same priority flip the engine's
-        // W3Data::OpenMod does). Direct-asset fetch + the WASM-side
-        // RenderMode flip are toggled together.
-        this.hdMode = options.hdMode === true;
+        // HD/SD is auto-detected per model from its MDX material layers
+        // (see `_applyPreferredRenderMode`), mirroring basic_viewer's
+        // `ViewerApp::LoadModel`: any layer on a non-SD shader means HD.
+        // `options.hdMode` is ignored — we always bootstrap in SD and let
+        // the first load() flip to HD via setHdMode when the model needs
+        // it. The bootstrap mode only covers the engine/shader + DnC
+        // prefetch, which resolve fine in SD; per-model deps then fetch
+        // under the detected overlay (cascUrl `context=hd/sd`, `_hd.w3mod`
+        // direct prefix) once the model has been probed.
+        this.hdMode = false;
         // Hive's CASC mirror — CORS-enabled, 302 to resolved asset,
         // server-side family expansion. Override for a local proxy.
         // Encode per-segment so `/` stays literal in the query; Hive's
         // path normalizer doesn't always decode %2F back to a separator
-        // (observed on sound/ paths). `&hd=1` follows the path query
-        // when `this.hdMode` is true so the backend's overlay search
-        // hits `_hd.w3mod` first.
-        this.cascUrl = (path) => {
+        // (observed on sound/ paths). The `context` param tells the
+        // backend which mod stack to resolve against: `hd` searches the
+        // `_hd.w3mod` overlay, `sd` forces the base/SD stack. Model deps
+        // send it so an SD model doesn't get HD textures. Engine/startup
+        // assets (DNC, IBL — base content, mode-agnostic) pass
+        // `withContext=false` to fetch them with no context at all.
+        this.cascUrl = (path, withContext = true) => {
             const url = 'https://www.hiveworkshop.com/casc-contents/?path=' +
                 path.split('/').map(encodeURIComponent).join('/');
-            return this.hdMode ? (url + '&hd=1') : url;
+            if (!withContext) return url;
+            return url + (this.hdMode ? '&context=hd' : '&context=sd');
         };
         // Direct-asset prefix skips the /casc-contents/ 302 (1 fewer
         // round-trip per asset). Only used in HD mode — the direct
         // tree only mirrors `_hd.w3mod/` content. SD viewers fall
-        // through to cascUrl (which the backend resolves against the
-        // SD mod stack when `hd=1` is absent).
+        // through to cascUrl, which carries `context=sd` so the backend
+        // resolves against the base/SD mod stack.
         this.cascDirectAssetBase = this.hdMode
             ? 'https://www.hiveworkshop.com/assets/wc3/war3.w3mod/_hd.w3mod/'
             : null;
@@ -470,14 +475,25 @@ export class WhiteoutViewer {
         return model;
     }
 
-    // Flip global RenderMode to match the actor's preferred path; HD
-    // pipeline on SD data mis-blends multi-layer textures.
+    // Auto-detect the actor's HD/SD mode from its own MDX material layers
+    // and adopt it for this load — the JS analogue of basic_viewer's
+    // ViewerApp::LoadModel HD-probe. The WASM side reports HD when any
+    // material layer carries a non-zero BLS shaderId (== a non-SD shader,
+    // the same test viewer_app.cpp runs on Layer::ShaderType), so the
+    // constructor's hdMode is ignored as the mode authority. Routing
+    // through setHdMode moves the asset overlay (cascUrl `&hd=1` /
+    // `_hd.w3mod` direct prefix) in lockstep with the render pipeline —
+    // running an HD pipeline on SD data (or vice-versa) mis-blends
+    // multi-layer materials, and fetching deps from the wrong overlay
+    // pulls the wrong texture set. This fires before the load's texture
+    // pump (see _loadInternalImpl), so every dependent fetch resolves
+    // under the detected mode.
     _applyPreferredRenderMode(actorHandle) {
         if (!this._handle || !actorHandle) return;
         const M = this._module;
         if (!M._wf_actor_preferred_render_mode) return; // older wasm build
-        const mode = M._wf_actor_preferred_render_mode(this._handle, actorHandle);
-        M._wf_set_render_mode(this._handle, mode);
+        const hd = M._wf_actor_preferred_render_mode(this._handle, actorHandle) === 1;
+        this.setHdMode(hd);
     }
 
     // ---- WASM helpers (used by sibling modules) -----------------------

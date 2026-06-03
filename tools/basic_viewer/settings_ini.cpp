@@ -397,6 +397,26 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy) {
         if (ParseFloat(*s, v))
             service.Settings().SetAoBentBoost(v);
     }
+    if (auto* s = ini.Get(KeyOf("BloomEnabled"))) {
+        bool v = false;
+        if (ParseBool(*s, v))
+            service.Settings().SetBloomEnabled(v);
+    }
+    if (auto* s = ini.Get(KeyOf("BloomThreshold"))) {
+        f32 v = 1.0f;
+        if (ParseFloat(*s, v))
+            service.Settings().SetBloomThreshold(v);
+    }
+    if (auto* s = ini.Get(KeyOf("BloomIntensity"))) {
+        f32 v = 1.25f;
+        if (ParseFloat(*s, v))
+            service.Settings().SetBloomIntensity(v);
+    }
+    if (auto* s = ini.Get(KeyOf("BloomSaturation"))) {
+        f32 v = 1.0f;
+        if (ParseFloat(*s, v))
+            service.Settings().SetBloomSaturation(v);
+    }
     if (auto* dnc = service.GetDncService()) {
         if (auto* s = ini.Get(KeyOf("TimeOfDay"))) {
             f32 v = 0;
@@ -482,6 +502,10 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy) {
     ini.Set(KeyOf("AoEnabled"), service.Settings().AoEnabled() ? "1" : "0");
     ini.Set(KeyOf("AoQuality"), ToString(static_cast<i32>(service.Settings().AoQuality())));
     ini.Set(KeyOf("AoBentBoost"), FloatToString(service.Settings().AoBentBoost()));
+    ini.Set(KeyOf("BloomEnabled"), service.Settings().BloomEnabled() ? "1" : "0");
+    ini.Set(KeyOf("BloomThreshold"), FloatToString(service.Settings().BloomThreshold()));
+    ini.Set(KeyOf("BloomIntensity"), FloatToString(service.Settings().BloomIntensity()));
+    ini.Set(KeyOf("BloomSaturation"), FloatToString(service.Settings().BloomSaturation()));
     if (const auto* dnc = service.GetDncService()) {
         ini.Set(KeyOf("TimeOfDay"), FloatToString(dnc->GetTimeOfDay()));
         ini.Set(KeyOf("AnimateTod"), dnc->GetTodScale() > 0.0f ? "1" : "0");

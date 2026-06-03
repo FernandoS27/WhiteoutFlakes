@@ -863,6 +863,14 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
         impl_->tonemapSampler_ = impl_->gfx_->CreateSampler(sd);
     }
 
+    // Post-process service (HDR bloom today, CMAA later). Reuses the
+    // sprite VS + the tonemap pass's 3-vertex fullscreen-triangle VB,
+    // so its Init has to come after the tonemap setup above.
+    if (impl_->tonemapVB_ != gfx::BufferHandle::Invalid) {
+        rs_.EnsurePostProcessService(*impl_->gfx_, impl_->gfx_->GetApi(),
+                                     *impl_->blsShaderCache_, impl_->tonemapVB_);
+    }
+
     // All BLS frame-uniform CBs get mapped once per draw call. With
     // ~2000+ draws/frame on PE1-heavy scenes (BreeForge Birth) the
     // default 256-slot ring wraps mid-frame and corrupts earlier
@@ -1158,6 +1166,8 @@ RenderTargetId RenderPipeline::CreateSwapChainTarget(void* nativeWindowHandle, i
     target.aoBufferHistory = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
     target.bentNormalBuffer = impl_->gfx_->CreateColorTarget(w, h, kBentNormalBufferFormat);
     target.linearDepthHistory = impl_->gfx_->CreateColorTarget(w, h, kLinearDepthFormat);
+    target.bloomScratchA = impl_->gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
+    target.bloomScratchB = impl_->gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
     target.width = w;
     target.height = h;
 
@@ -1193,6 +1203,8 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
     impl_->gfx_->Destroy(t.aoBufferHistory);
     impl_->gfx_->Destroy(t.bentNormalBuffer);
     impl_->gfx_->Destroy(t.linearDepthHistory);
+    impl_->gfx_->Destroy(t.bloomScratchA);
+    impl_->gfx_->Destroy(t.bloomScratchB);
 
     if (t.swap != gfx::SwapChainHandle::Invalid) {
         impl_->gfx_->ResizeSwapChain(t.swap, w, h);
@@ -1214,6 +1226,8 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
     t.aoBufferHistory = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
     t.bentNormalBuffer = impl_->gfx_->CreateColorTarget(w, h, kBentNormalBufferFormat);
     t.linearDepthHistory = impl_->gfx_->CreateColorTarget(w, h, kLinearDepthFormat);
+    t.bloomScratchA = impl_->gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
+    t.bloomScratchB = impl_->gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
     t.width = w;
     t.height = h;
 
@@ -1299,6 +1313,8 @@ void RenderPipeline::CleanupGFX() {
             impl_->gfx_->Destroy(t.aoBufferHistory);
             impl_->gfx_->Destroy(t.bentNormalBuffer);
             impl_->gfx_->Destroy(t.linearDepthHistory);
+            impl_->gfx_->Destroy(t.bloomScratchA);
+            impl_->gfx_->Destroy(t.bloomScratchB);
         }
     }
     impl_->targets_.clear();
@@ -1784,6 +1800,26 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
                         g->RunIblBoost(cmd, target, in);
                     }
                 }
+            }
+        }
+    }
+
+    // HDR post-process — bloom runs on `hdrColor` between GTAO and
+    // tonemap, matching the engine ordering (GBuffer::ApplyBloom is the
+    // last thing before ApplyTonemap in OnPaint). Service forwards
+    // host-side `RenderSettings::Bloom*` knobs into its CB.
+    if (useHdr) {
+        if (auto* pp = rs_.GetPostProcessService()) {
+            post_process::BloomParams bp = pp->Params();
+            bp.enabled = rs_.Settings().BloomEnabled();
+            bp.threshold = rs_.Settings().BloomThreshold();
+            bp.intensity = rs_.Settings().BloomIntensity();
+            bp.saturation = rs_.Settings().BloomSaturation();
+            pp->SetParams(bp);
+            if (pp->IsBloomEnabled()) {
+                WDX_CPU_ZONE("Bloom");
+                WDX_GPU_ZONE(cmd, "Bloom");
+                pp->RunBloom(cmd, target);
             }
         }
     }
