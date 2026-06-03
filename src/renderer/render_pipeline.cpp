@@ -1595,10 +1595,17 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
 
     Matrix44f view, proj;
     {
-        view = rs_.Scene().Camera().GetViewMatrix();
+        // GTAO must match the HD opaque scene pass's view-space
+        // convention. That pass uses LH view+proj (see ComputeViewProj
+        // below) and writes the LH view-space Z into linearDepth.
+        // Passing RH here would have `viewPosFromUV` reconstruct
+        // sign-flipped Z and invert every horizon dot product — the
+        // user-visible symptom is AO appearing inverted (convex edges
+        // dark, concave creases bright) and shifting with camera angle.
+        view = rs_.Scene().Camera().ViewLH();
     }
     f32 aspect = (target.height > 0) ? (f32)target.width / (f32)target.height : 1.0f;
-    proj = rs_.Scene().Camera().ProjectionRH(aspect);
+    proj = rs_.Scene().Camera().ProjectionLH(aspect);
 
     {
         render_detail::CbPerFrameDesc d;
@@ -2095,11 +2102,21 @@ public:
             cmd->BindShaderResource(gfx::ShaderStage::Pixel, 15, lut);
 
         if (auto* shadowSvc = rs_.GetShadowService()) {
+            // The HD opaque PS samples each cascade with `SampleCmpLevelZero`
+            // which REQUIRES a hardware comparison sampler. Without binding
+            // one, WebGPU falls back to its default-Always comparison
+            // sampler (no shadows) and D3D12/Vulkan are undefined (the
+            // user-visible symptom is "everything darker when shadows are
+            // on"). Bind the LessEqual comparison sampler at the same slots
+            // as the depth targets.
+            const gfx::SamplerHandle cmpSmp = rs_.Samplers().ShadowComparison();
             for (i32 c = 0; c < 3; ++c) {
                 const gfx::TextureHandle sh = shadowSvc->depthTarget(c);
                 if (sh != gfx::TextureHandle::Invalid) {
                     cmd->BindShaderResource(gfx::ShaderStage::Pixel, 10 + static_cast<u32>(c), sh);
                 }
+                if (cmpSmp != gfx::SamplerHandle::Invalid)
+                    cmd->BindSampler(gfx::ShaderStage::Pixel, 10 + static_cast<u32>(c), cmpSmp);
             }
         }
 

@@ -396,7 +396,9 @@ bool CreateLogicalDevice(VulkanDeviceState& state) {
         .dynamicRendering = vk::True,
     };
     vk::PhysicalDeviceFeatures coreFeatures{
-        .imageCubeArray = vk::True, // for IBL probes
+        .imageCubeArray = vk::True,   // for IBL probes
+        .independentBlend = vk::True, // per-MRT-slot blend (G-buffer extras stay no-blend/no-write
+                                      // even when slot 0 has alpha blend on)
     };
 
     std::vector<const char*> deviceExts = {

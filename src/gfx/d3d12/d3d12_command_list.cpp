@@ -87,8 +87,13 @@ void D3D12CommandList::TransitionTexture(TextureEntry& e, D3D12_RESOURCE_STATES 
 
 void D3D12CommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
                                        const f32 clearColor[4], f32 clearDepth, u8 clearStencil) {
-    f32 clears[1][4];
-    std::memcpy(clears[0], clearColor, sizeof(clears[0]));
+    // The shadow pass calls with color=Invalid and clearColor=nullptr —
+    // memcpy from a null source would null-deref. Zero-init when null;
+    // the downstream MRT path skips the clear if the color handle is
+    // Invalid anyway.
+    f32 clears[1][4] = {};
+    if (clearColor)
+        std::memcpy(clears[0], clearColor, sizeof(clears[0]));
     const TextureHandle colors[1] = {color};
     BeginRenderPass(colors, 1, depth, clears, clearDepth, clearStencil);
 }

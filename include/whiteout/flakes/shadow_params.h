@@ -26,9 +26,16 @@ struct ShadowParams {
     f32 lambdaSplit = 0.5f;
 
     /// @name Depth-bias tuning (passed to the rasterizer state).
+    /// Defaults sized for a D32_FLOAT cascade with the LessEqual PCF
+    /// compare op. Zero biases let rasterizer floating-point noise swing
+    /// the depth comparison both ways on near-coplanar fragments; the
+    /// 3×3 PCF averages that salt-and-pepper into ~50% lit and the
+    /// scene looks uniformly darker than it should. A small constant
+    /// offset + slope-scaled term keeps lit fragments lit while still
+    /// catching actual occluders.
     /// @{
-    i32 depthBias = 0;
-    f32 slopeScaledBias = 0.0f;
+    i32 depthBias = 50;
+    f32 slopeScaledBias = 2.0f;
     f32 depthBiasClamp = 0.0f;
     /// @}
 

@@ -9,6 +9,10 @@ SamplerAssetManager::~SamplerAssetManager() {
         gfx_.Destroy(handle);
     }
     cache_.clear();
+    if (shadowComparison_ != gfx::SamplerHandle::Invalid) {
+        gfx_.Destroy(shadowComparison_);
+        shadowComparison_ = gfx::SamplerHandle::Invalid;
+    }
 }
 
 gfx::SamplerHandle SamplerAssetManager::Get(const gfx::SamplerDesc& desc) {
@@ -41,6 +45,23 @@ gfx::SamplerHandle SamplerAssetManager::LinearWrap() {
     sd.addressV = AM::Wrap;
     sd.addressW = AM::Wrap;
     return Get(sd);
+}
+
+gfx::SamplerHandle SamplerAssetManager::ShadowComparison() {
+    if (shadowComparison_ != gfx::SamplerHandle::Invalid)
+        return shadowComparison_;
+    gfx::SamplerDesc sd;
+    sd.minFilter = gfx::Filter::Linear;
+    sd.magFilter = gfx::Filter::Linear;
+    // Clamp prevents the cascade's edge texels from wrapping into the
+    // opposite side of the depth atlas at grazing fragments.
+    sd.addressU = gfx::AddressMode::Clamp;
+    sd.addressV = gfx::AddressMode::Clamp;
+    sd.addressW = gfx::AddressMode::Clamp;
+    sd.comparison = true;
+    sd.comparisonFunc = gfx::CompareOp::LessEqual;
+    shadowComparison_ = gfx_.CreateSampler(sd);
+    return shadowComparison_;
 }
 
 } // namespace whiteout::flakes::renderer::assets

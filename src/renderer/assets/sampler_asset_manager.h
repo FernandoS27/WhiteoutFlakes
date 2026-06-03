@@ -33,12 +33,21 @@ public:
 
     gfx::SamplerHandle LinearWrap();
 
+    // Hardware comparison sampler for shadow PCF. Linear filter +
+    // ClampToEdge + comparison=LessEqual. The HD opaque PS sampler
+    // `sd_s_shadow0..2` is declared `SamplerComparisonState` and uses
+    // `SampleCmpLevelZero`, which requires a real comparison sampler.
+    // Single shared handle since all three cascades use identical
+    // settings; lazily created on first call.
+    gfx::SamplerHandle ShadowComparison();
+
     usize DebugSamplerCount() const noexcept {
         return cache_.size();
     }
 
 private:
     gfx::IGFXDevice& gfx_;
+    gfx::SamplerHandle shadowComparison_ = gfx::SamplerHandle::Invalid;
 
     struct DescKey {
         gfx::Filter minF;
