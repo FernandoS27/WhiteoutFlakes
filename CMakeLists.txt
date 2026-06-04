@@ -966,7 +966,20 @@ if(WDX_ENABLE_WEBGPU)
         # DAWN backend, prebuilt — no fetch script, no compile.
         set(WEBGPU_BACKEND          DAWN CACHE STRING "" FORCE)
         set(WEBGPU_BUILD_FROM_SOURCE OFF  CACHE BOOL   "" FORCE)
+        # WebGPU-distribution selects its prebuilt Dawn slice from
+        # CMAKE_SYSTEM_PROCESSOR (its detect_system_architecture()), which
+        # ignores CMAKE_OSX_ARCHITECTURES. On a single-arch Apple cross-build
+        # — e.g. arm64 on an Intel CI host — that fetches the host's x86_64
+        # Dawn and the link fails against the arm64 objects ("found
+        # architecture 'x86_64', required architecture 'arm64'"). Point the
+        # processor at the requested arch for the fetch, then restore it.
+        # Universal (x86_64;arm64) is skipped — no single prebuilt covers it.
+        set(_wdx_saved_proc "${CMAKE_SYSTEM_PROCESSOR}")
+        if(APPLE AND CMAKE_OSX_ARCHITECTURES AND NOT CMAKE_OSX_ARCHITECTURES MATCHES ";")
+            set(CMAKE_SYSTEM_PROCESSOR "${CMAKE_OSX_ARCHITECTURES}")
+        endif()
         FetchContent_MakeAvailable(webgpu)
+        set(CMAKE_SYSTEM_PROCESSOR "${_wdx_saved_proc}")
 
         message(STATUS "WhiteoutFlakesGfx: WebGPU enabled "
                        "(eliemichel/WebGPU-distribution ${WDX_WEBGPU_DIST_TAG}, prebuilt Dawn)")

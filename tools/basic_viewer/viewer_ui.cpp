@@ -690,27 +690,38 @@ void ViewerUI::BuildSettingsWindow() {
         }
 
         // ---- Bloom (HD-only) ----
-        {
+        // CollapsingHeader keeps three sliders + a reset button from
+        // crowding the main settings list when bloom is off. Defaults
+        // mirror the engine's RegisterBloom (BL_BLOOM_D=off,
+        // threshold=1.0, intensity=1.25, saturation=1.0).
+        if (ImGui::CollapsingHeader("Bloom (HD)")) {
             bool bloom = svc.Settings().BloomEnabled();
-            if (ImGui::Checkbox("Bloom", &bloom)) {
+            if (ImGui::Checkbox("Enabled##bloom", &bloom)) {
                 svc.Settings().SetBloomEnabled(bloom);
+                SaveIni(app_);
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##bloom")) {
+                svc.Settings().SetBloomThreshold(1.0f);
+                svc.Settings().SetBloomIntensity(1.25f);
+                svc.Settings().SetBloomSaturation(1.0f);
                 SaveIni(app_);
             }
             f32 threshold = svc.Settings().BloomThreshold();
             f32 intensity = svc.Settings().BloomIntensity();
             f32 saturation = svc.Settings().BloomSaturation();
             ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat("Bloom Threshold", &threshold, 0.0f, 4.0f, "%.2f")) {
+            if (ImGui::SliderFloat("Threshold##bloom", &threshold, 0.0f, 4.0f, "%.2f")) {
                 svc.Settings().SetBloomThreshold(threshold);
                 SaveIni(app_);
             }
             ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat("Bloom Intensity", &intensity, 0.0f, 4.0f, "%.2f")) {
+            if (ImGui::SliderFloat("Intensity##bloom", &intensity, 0.0f, 4.0f, "%.2f")) {
                 svc.Settings().SetBloomIntensity(intensity);
                 SaveIni(app_);
             }
             ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat("Bloom Saturation", &saturation, 0.0f, 4.0f, "%.2f")) {
+            if (ImGui::SliderFloat("Saturation##bloom", &saturation, 0.0f, 4.0f, "%.2f")) {
                 svc.Settings().SetBloomSaturation(saturation);
                 SaveIni(app_);
             }

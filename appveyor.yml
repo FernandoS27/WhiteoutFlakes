@@ -54,19 +54,20 @@ environment:
   SLANG_VERSION: 2026.10
 
   matrix:
+    # macos-sonoma — newer image that still has Homebrew bottles. Ventura
+    # (macOS 13) is now Homebrew "Tier 3": no bottles, so `brew install`
+    # source-builds its deps (and migrates the worker's pre-installed
+    # powershell cask, dragging in cmake + dotnet) until the job times out.
+    # Sonoma matches the canonical .github/workflows/macos-dmg.yml, which
+    # builds the .dmg on Sonoma (macos-14). Listed first so it builds first.
+    - APPVEYOR_BUILD_WORKER_IMAGE: macos-sonoma
+      JOB_TARGET: macos
     - APPVEYOR_BUILD_WORKER_IMAGE: Ubuntu2204
       JOB_TARGET: wasm
     - APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2022
       JOB_TARGET: windows
     - APPVEYOR_BUILD_WORKER_IMAGE: Ubuntu2204
       JOB_TARGET: linux
-    # macos-sonoma silently fails to provision a worker on our account
-    # (job starts but never prints anything before terminating). Falling
-    # back to macos-ventura — older but reliably available. The github
-    # actions workflow at .github/workflows/macos-dmg.yml still uses
-    # Sonoma (macos-14) for the canonical .dmg artifact.
-    - APPVEYOR_BUILD_WORKER_IMAGE: macos-ventura
-      JOB_TARGET: macos
 
 # Per-target overrides. Each `for:` block matches one JOB_TARGET and
 # supplies install + build_script + artifacts. AppVeyor's per-job
@@ -305,6 +306,10 @@ for:
       - sh: |
           set -e
           source $HOME/.envrc
+          # AppVeyor preserves cwd between script blocks — the SDK install
+          # step left us in $HOME/vulkan-sdk-dl, so `cmake -S .` would point
+          # at the wrong tree. Pin cwd to the repo (as the wasm/linux jobs do).
+          cd "$APPVEYOR_BUILD_FOLDER"
           cmake -S . -B build -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3 \

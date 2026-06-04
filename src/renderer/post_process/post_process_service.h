@@ -43,7 +43,15 @@ struct BloomParams {
 class PostProcessService {
 public:
     PostProcessService() = default;
-    ~PostProcessService() = default;
+    // Destructor calls Shutdown so the unique_ptr in `RenderService::Impl`
+    // releases the service's GPU handles when it goes away. Pipeline (and
+    // therefore the gfx device) is declared earlier than this service in
+    // `RenderService::Impl`, so reverse-order member destruction keeps
+    // `gfx_` alive throughout this dtor. Idempotent: Shutdown checks
+    // `gfx_` and bails when already torn down.
+    ~PostProcessService() {
+        Shutdown();
+    }
 
     PostProcessService(const PostProcessService&) = delete;
     PostProcessService& operator=(const PostProcessService&) = delete;
