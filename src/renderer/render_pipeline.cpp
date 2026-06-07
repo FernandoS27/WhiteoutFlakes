@@ -93,10 +93,18 @@ gfx::Format RenderPipeline::SceneTargetFormat() const {
     // R8G8B8A8_UNORM_SRGB (kSdSceneFormat); on WebGPU under Windows
     // Dawn-D3D12 the surface only exposes BGRA8 family, so the back
     // buffer is B8G8R8A8_UNORM_SRGB and PSOs need to be built for that.
-    if (impl_->gfx_ && impl_->primaryTargetId_ != 0) {
-        auto it = impl_->targets_.find(impl_->primaryTargetId_);
-        if (it != impl_->targets_.end() && it->second.swap != gfx::SwapChainHandle::Invalid) {
-            const gfx::Format swapFmt = impl_->gfx_->GetSwapChainFormat(it->second.swap);
+    // Prefer the target currently being rendered (so per-viewport SD format
+    // is correct even when several swap-chains with different formats
+    // coexist), falling back to the primary outside a frame.
+    if (impl_->gfx_) {
+        const RenderTarget* t = impl_->activeTarget_;
+        if (!t && impl_->primaryTargetId_ != 0) {
+            auto it = impl_->targets_.find(impl_->primaryTargetId_);
+            if (it != impl_->targets_.end())
+                t = &it->second;
+        }
+        if (t && t->swap != gfx::SwapChainHandle::Invalid) {
+            const gfx::Format swapFmt = impl_->gfx_->GetSwapChainFormat(t->swap);
             if (swapFmt != gfx::Format::Unknown)
                 return swapFmt;
         }
@@ -118,10 +126,14 @@ RenderTarget* RenderPipeline::PrimaryTarget() {
 }
 
 i32 RenderPipeline::Width() const {
-    return impl_->width_;
+    return impl_->activeTarget_ ? impl_->activeTarget_->width : impl_->width_;
 }
 i32 RenderPipeline::Height() const {
-    return impl_->height_;
+    return impl_->activeTarget_ ? impl_->activeTarget_->height : impl_->height_;
+}
+
+const Camera& RenderPipeline::FrameCamera() const {
+    return impl_->activeCamera_ ? *impl_->activeCamera_ : rs_.Scene().Camera();
 }
 
 gfx::BufferHandle RenderPipeline::CbPerFrame() const {
@@ -173,7 +185,7 @@ bool RenderPipeline::RenderParticlesBls() {
     {
         if (rs_.Particles().EmitterCount() == 0)
             return true;
-        viewMat = rs_.Scene().Camera().GetViewMatrix();
+        viewMat = rs_.Pipeline().FrameCamera().GetViewMatrix();
         rs_.Particles().BuildGeometry(viewMat, verts, drawLists);
     }
     if (verts.empty())
@@ -220,11 +232,11 @@ bool RenderPipeline::RenderParticlesBls() {
     bls::FrameInputs frame;
     frame.world = Matrix44f::identity();
     frame.view = viewMat;
-    const f32 aspect = (impl_->height_ > 0) ? (f32)impl_->width_ / (f32)impl_->height_ : 1.0f;
-    frame.projection = rs_.Scene().Camera().ProjectionRH(aspect);
+    const f32 aspect = (Height() > 0) ? (f32)Width() / (f32)Height() : 1.0f;
+    frame.projection = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);
     frame.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
     frame.numLights = 0;
-    frame.viewportRect = {(f32)impl_->width_, (f32)impl_->height_, 0.0f, 0.0f};
+    frame.viewportRect = {(f32)Width(), (f32)Height(), 0.0f, 0.0f};
 
     for (const auto& dl : drawLists) {
         if (dl.vertexCount <= 0)
@@ -328,7 +340,7 @@ bool RenderPipeline::RenderSplatsBls() {
 
     std::vector<Vertex> verts;
     std::vector<particle::SplatDrawList> drawLists;
-    Matrix44f viewMat = rs_.Scene().Camera().GetViewMatrix();
+    Matrix44f viewMat = rs_.Pipeline().FrameCamera().GetViewMatrix();
     rs_.Splats().BuildGeometry(verts, drawLists);
     if (verts.empty())
         return true;
@@ -359,11 +371,11 @@ bool RenderPipeline::RenderSplatsBls() {
     bls::FrameInputs frame;
     frame.world = Matrix44f::identity();
     frame.view = viewMat;
-    const f32 aspect = (impl_->height_ > 0) ? (f32)impl_->width_ / (f32)impl_->height_ : 1.0f;
-    frame.projection = rs_.Scene().Camera().ProjectionRH(aspect);
+    const f32 aspect = (Height() > 0) ? (f32)Width() / (f32)Height() : 1.0f;
+    frame.projection = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);
     frame.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
     frame.numLights = 0;
-    frame.viewportRect = {(f32)impl_->width_, (f32)impl_->height_, 0.0f, 0.0f};
+    frame.viewportRect = {(f32)Width(), (f32)Height(), 0.0f, 0.0f};
 
     for (const auto& dl : drawLists) {
         if (dl.vertexCount <= 0)
@@ -439,13 +451,13 @@ void RenderPipeline::RenderCornEffects() {
     if (!impl_->blsCornFxProgram_ || !impl_->blsPsoBuilder_)
         return;
     auto* cmd = impl_->gfx_->GetImmediateContext();
-    const f32 aspect = (impl_->height_ > 0) ? (f32)impl_->width_ / (f32)impl_->height_ : 1.0f;
+    const f32 aspect = (Height() > 0) ? (f32)Width() / (f32)Height() : 1.0f;
 
     corn_effects::CornEffectsFrameInputs fi;
     fi.cmd = cmd;
-    fi.view = rs_.Scene().Camera().ViewLH();
-    fi.projection = rs_.Scene().Camera().ProjectionLH(aspect);
-    fi.viewportRect = {(f32)impl_->width_, (f32)impl_->height_, 0.0f, 0.0f};
+    fi.view = rs_.Pipeline().FrameCamera().ViewLH();
+    fi.projection = rs_.Pipeline().FrameCamera().ProjectionLH(aspect);
+    fi.viewportRect = {(f32)Width(), (f32)Height(), 0.0f, 0.0f};
     fi.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
     fi.rtvFormat = SceneTargetFormat();
     fi.dsvFormat = impl_->depthStencilFormat_;
@@ -469,9 +481,9 @@ void RenderPipeline::RenderRibbons() {
 
     bls::FrameInputs frame;
     frame.world = Matrix44f::identity();
-    const f32 aspect = (impl_->height_ > 0) ? (f32)impl_->width_ / (f32)impl_->height_ : 1.0f;
+    const f32 aspect = (Height() > 0) ? (f32)Width() / (f32)Height() : 1.0f;
     frame.numLights = 0;
-    frame.viewportRect = {(f32)impl_->width_, (f32)impl_->height_, 0.0f, 0.0f};
+    frame.viewportRect = {(f32)Width(), (f32)Height(), 0.0f, 0.0f};
     frame.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
 
     for (auto& [_mh, _mi] : rs_.Scene().Actors().All()) {
@@ -485,7 +497,7 @@ void RenderPipeline::RenderRibbons() {
                 continue;
             if (mi->parentVisibility <= 0.02f)
                 continue;
-            viewMat = rs_.Scene().Camera().GetViewMatrix();
+            viewMat = rs_.Pipeline().FrameCamera().GetViewMatrix();
             stripResult = mi->render.ribbons.BuildStrips();
             for (i32 eid : stripResult.emitterIds) {
                 auto* c = mi->render.ribbons.GetConfig(eid);
@@ -527,7 +539,7 @@ void RenderPipeline::RenderRibbons() {
         cmd->BindVertexBuffer(0, mi->render.ribbonVB, sizeof(Vertex));
 
         frame.view = viewMat;
-        frame.projection = rs_.Scene().Camera().ProjectionRH(aspect);
+        frame.projection = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);
 
         std::vector<i32> vertCounts;
         std::vector<i32> vertOffsets;
@@ -608,16 +620,16 @@ i32 RenderPipeline::ComputeSelectedLod() const {
     if (ov >= 0)
         return std::clamp(ov, 0, 3);
 
-    Vector3f camPos = rs_.Scene().Camera().GetSource();
+    Vector3f camPos = rs_.Pipeline().FrameCamera().GetSource();
     f32 viewDist = std::sqrt(camPos.x * camPos.x + camPos.y * camPos.y + camPos.z * camPos.z);
     if (viewDist < 1.0f)
         return 0;
 
-    const f32 aspect = (impl_->height_ > 0) ? (f32)impl_->width_ / (f32)impl_->height_ : 1.0f;
-    Matrix44f proj = rs_.Scene().Camera().ProjectionLH(aspect);
+    const f32 aspect = (Height() > 0) ? (f32)Width() / (f32)Height() : 1.0f;
+    Matrix44f proj = rs_.Pipeline().FrameCamera().ProjectionLH(aspect);
 
     f32 projM11 = proj.data[1][1];
-    f32 screenPixels = projM11 / viewDist * (f32)impl_->height_ * 0.5f;
+    f32 screenPixels = projM11 / viewDist * (f32)Height() * 0.5f;
     if (screenPixels <= 0.001f)
         return 3;
     f32 deviation = 5.0f / screenPixels;
@@ -651,9 +663,18 @@ bool RenderPipeline::InitDevice(gfx::GfxApi api) {
 
     rs_.CreateDeviceAssetManagers(*impl_->gfx_);
 
+    // cbPerFrame_ is ring-mapped (WriteCbPerFrame) several times per frame —
+    // once per pass that needs a distinct view/projection (particles, splats,
+    // corn, ribbons, scene). With multiple viewports rendered sequentially into
+    // one frame that count multiplies by the viewport count, and every slot
+    // must stay live until its draws retire (viewports × passes ×
+    // frames-in-flight). Size the ring generously so a busy multi-viewport
+    // host can't reuse a slot the GPU is still reading.
+    constexpr u32 kPerFrameCbRingSlots = 256;
     impl_->cbPerFrame_ = impl_->gfx_->CreateBuffer({
         .size = sizeof(CBPerFrame),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        .ringSlotsHint = kPerFrameCbRingSlots,
     });
 
     if (!CreateShaders()) {
@@ -1187,6 +1208,73 @@ RenderTargetId RenderPipeline::CreateSwapChainTarget(void* nativeWindowHandle, i
     return id;
 }
 
+RenderTargetId RenderPipeline::CreateOffscreenTarget(i32 w, i32 h, gfx::Format colorFormat) {
+    if (!impl_->gfx_)
+        return 0;
+
+    RenderTarget target;
+    target.id = impl_->nextTargetId_++;
+    target.swap = gfx::SwapChainHandle::Invalid; // headless — no presentable surface
+
+    // Composite destination. Offscreen has no sRGB-vs-linear back-buffer pair,
+    // so colorLinear mirrors color (matching ResizePrimaryTarget's no-swap path).
+    target.color = impl_->gfx_->CreateColorTarget(w, h, colorFormat);
+    target.colorLinear = target.color;
+    // Same auxiliary G-buffer / GTAO / bloom set every target carries (HD MRT
+    // and post-process bind these; SD simply doesn't).
+    target.hdrColor = impl_->gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
+    target.depth = impl_->gfx_->CreateDepthTarget(w, h, impl_->depthStencilFormat_);
+    target.linearDepth = impl_->gfx_->CreateColorTarget(w, h, kLinearDepthFormat);
+    target.normalBuffer = impl_->gfx_->CreateColorTarget(w, h, kNormalBufferFormat);
+    target.aoBufferRaw = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
+    target.aoBufferDenoised = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
+    target.aoBuffer = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
+    target.aoBufferHistory = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
+    target.bentNormalBuffer = impl_->gfx_->CreateColorTarget(w, h, kBentNormalBufferFormat);
+    target.linearDepthHistory = impl_->gfx_->CreateColorTarget(w, h, kLinearDepthFormat);
+    target.bloomScratchA = impl_->gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
+    target.bloomScratchB = impl_->gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
+    target.width = w;
+    target.height = h;
+
+    // Headless targets never become primary and don't touch pipeline-wide
+    // width_/height_ — those track the presentable surface.
+    RenderTargetId id = target.id;
+    impl_->targets_[id] = target;
+    return id;
+}
+
+void RenderPipeline::DestroyTarget(RenderTargetId id) {
+    auto it = impl_->targets_.find(id);
+    if (it == impl_->targets_.end() || !impl_->gfx_)
+        return;
+    auto& t = it->second;
+    impl_->gfx_->Destroy(t.depth);
+    impl_->gfx_->Destroy(t.hdrColor);
+    impl_->gfx_->Destroy(t.linearDepth);
+    impl_->gfx_->Destroy(t.normalBuffer);
+    impl_->gfx_->Destroy(t.aoBufferRaw);
+    impl_->gfx_->Destroy(t.aoBufferDenoised);
+    impl_->gfx_->Destroy(t.aoBuffer);
+    impl_->gfx_->Destroy(t.aoBufferHistory);
+    impl_->gfx_->Destroy(t.bentNormalBuffer);
+    impl_->gfx_->Destroy(t.linearDepthHistory);
+    impl_->gfx_->Destroy(t.bloomScratchA);
+    impl_->gfx_->Destroy(t.bloomScratchB);
+    if (t.swap != gfx::SwapChainHandle::Invalid) {
+        // color / colorLinear are owned by the swap-chain — released with it.
+        impl_->gfx_->DestroySwapChain(t.swap);
+    } else {
+        // Offscreen color is ours; colorLinear aliases it, so destroy once.
+        impl_->gfx_->Destroy(t.color);
+    }
+    if (impl_->activeTarget_ == &t)
+        impl_->activeTarget_ = nullptr;
+    if (impl_->primaryTargetId_ == id)
+        impl_->primaryTargetId_ = 0;
+    impl_->targets_.erase(it);
+}
+
 void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
     auto* target = PrimaryTarget();
     if (!target || !impl_->gfx_)
@@ -1444,6 +1532,15 @@ bool RenderPipeline::CreateDefaultResources() {
 }
 
 void RenderPipeline::RenderFrame(RenderTargetId targetId) {
+    // Legacy single-viewport shim: render the scene's single camera into
+    // targetId. Multi-viewport hosts call RenderViewport directly.
+    Viewport vp;
+    vp.target = targetId;
+    vp.camera = &rs_.Scene().Camera();
+    RenderViewport(vp);
+}
+
+void RenderPipeline::RenderViewport(const Viewport& vp) {
     WDX_CPU_ZONE("RenderFrame");
     // Stutter detector: at the start of each frame, snapshot the
     // PSO builder's runtime cache-miss counter. If it changes during
@@ -1454,6 +1551,7 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
     const u64 builderBuildsAtFrameStart =
         impl_->blsPsoBuilder_ ? impl_->blsPsoBuilder_->Stats().runtimeCacheBuilds : 0;
 
+    const RenderTargetId targetId = vp.target;
     auto it = impl_->targets_.find(targetId);
     if (it == impl_->targets_.end())
         return;
@@ -1462,6 +1560,22 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
         return;
     if (target.hdrColor == gfx::TextureHandle::Invalid)
         return;
+
+    // Publish the target + camera being rendered so Width()/Height()/
+    // SceneTargetFormat()/FrameCamera() and every pass below resolve against
+    // this viewport rather than the primary / scene camera. The guard clears
+    // them on every exit path so out-of-frame queries fall back to the
+    // primary dimensions and the scene camera.
+    impl_->activeTarget_ = &target;
+    impl_->activeCamera_ = vp.camera ? vp.camera : &rs_.Scene().Camera();
+    struct ActiveFrameGuard {
+        const RenderTarget** target;
+        const Camera** camera;
+        ~ActiveFrameGuard() {
+            *target = nullptr;
+            *camera = nullptr;
+        }
+    } activeFrameGuard{&impl_->activeTarget_, &impl_->activeCamera_};
 
     // Commit any pending GPU uploads (textures + geometry the loader staged
     // since the last frame) before we start rendering this frame.
@@ -1555,8 +1669,8 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
         Matrix44f csmCamView, csmCamProj;
         {
             const f32 aspect = (target.height > 0) ? (f32)target.width / (f32)target.height : 1.0f;
-            csmCamView = rs_.Scene().Camera().ViewLH();
-            csmCamProj = rs_.Scene().Camera().ProjectionLH(aspect);
+            csmCamView = rs_.Pipeline().FrameCamera().ViewLH();
+            csmCamProj = rs_.Pipeline().FrameCamera().ProjectionLH(aspect);
         }
 
         // Shadow light direction is driven entirely by an analytic
@@ -1603,14 +1717,14 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
         // they're looking at"). Multi-actor scenes can have no single hero,
         // so we don't probe a focus actor here — orbital target is the most
         // useful proxy and the host can move it explicitly if needed.
-        const Vector3f camTarget = rs_.Scene().Camera().GetTarget();
+        const Vector3f camTarget = rs_.Pipeline().FrameCamera().GetTarget();
         Vector3f sceneCenter = {camTarget.x, camTarget.y, camTarget.z};
         f32 sceneRadius = 150.0f;
-        if (rs_.Scene().Camera().GetMode() == Camera::Mode::Orbital) {
-            sceneRadius = std::max(50.0f, rs_.Scene().Camera().GetDistance() * 0.6f);
+        if (rs_.Pipeline().FrameCamera().GetMode() == Camera::Mode::Orbital) {
+            sceneRadius = std::max(50.0f, rs_.Pipeline().FrameCamera().GetDistance() * 0.6f);
         }
-        rs_.GetShadowService()->Update(csmCamView, csmCamProj, rs_.Scene().Camera().GetNearZ(),
-                                       rs_.Scene().Camera().GetFarZ(), lightDirWS, sceneCenter,
+        rs_.GetShadowService()->Update(csmCamView, csmCamProj, rs_.Pipeline().FrameCamera().GetNearZ(),
+                                       rs_.Pipeline().FrameCamera().GetFarZ(), lightDirWS, sceneCenter,
                                        sceneRadius);
         shadow::ShadowPass(rs_).Run(*rs_.GetShadowService());
     }
@@ -1655,10 +1769,10 @@ void RenderPipeline::RenderFrame(RenderTargetId targetId) {
         // sign-flipped Z and invert every horizon dot product — the
         // user-visible symptom is AO appearing inverted (convex edges
         // dark, concave creases bright) and shifting with camera angle.
-        view = rs_.Scene().Camera().ViewLH();
+        view = rs_.Pipeline().FrameCamera().ViewLH();
     }
     f32 aspect = (target.height > 0) ? (f32)target.width / (f32)target.height : 1.0f;
-    proj = rs_.Scene().Camera().ProjectionLH(aspect);
+    proj = rs_.Pipeline().FrameCamera().ProjectionLH(aspect);
 
     {
         render_detail::CbPerFrameDesc d;
@@ -1928,10 +2042,30 @@ void RenderPipeline::RunTonemapPass(const RenderTarget& target, gfx::TextureHand
     cmd->EndRenderPass();
 }
 
+bool RenderPipeline::ReadbackTarget(RenderTargetId id, std::vector<u8>& outRgba, i32& width,
+                                    i32& height) {
+    auto it = impl_->targets_.find(id);
+    if (it == impl_->targets_.end() || !impl_->gfx_)
+        return false;
+    auto& t = it->second;
+    width = t.width;
+    height = t.height;
+    return impl_->gfx_->ReadbackTexture(t.color, t.width, t.height, outRgba);
+}
+
 void RenderPipeline::Present(RenderTargetId targetId) {
     auto it = impl_->targets_.find(targetId);
-    if (it != impl_->targets_.end() && it->second.swap != gfx::SwapChainHandle::Invalid)
+    if (it == impl_->targets_.end() || !impl_->gfx_)
+        return;
+    if (it->second.swap != gfx::SwapChainHandle::Invalid) {
         impl_->gfx_->Present(it->second.swap);
+    } else {
+        // Headless target: no swap chain to present, but on deferred-submit
+        // backends the frame's recorded commands still need flushing to the
+        // queue (Present is what submits them). Without this an off-screen
+        // viewport's work never executes and a capture readback sees nothing.
+        impl_->gfx_->SubmitFrame();
+    }
 }
 
 // ---- Frame capture ---------------------------------------------------------
@@ -1967,12 +2101,12 @@ public:
     }
 
     void ComputeViewProj(Matrix44f& view, Matrix44f& proj) const {
-        view = rs_.Scene().Camera().GetViewMatrix();
+        view = rs_.Pipeline().FrameCamera().GetViewMatrix();
         const f32 aspect = (rs_.Pipeline().Height() > 0)
                                ? static_cast<f32>(rs_.Pipeline().Width()) /
                                      static_cast<f32>(rs_.Pipeline().Height())
                                : 1.0f;
-        proj = rs_.Scene().Camera().ProjectionRH(aspect);
+        proj = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);
     }
 
     void BindPassResources(gfx::IGFXCommandList*, bls::FrameInputs&) const {}
@@ -2159,8 +2293,8 @@ public:
                                ? static_cast<f32>(rs_.Pipeline().Width()) /
                                      static_cast<f32>(rs_.Pipeline().Height())
                                : 1.0f;
-        view = rs_.Scene().Camera().ViewLH();
-        proj = rs_.Scene().Camera().ProjectionLH(aspect);
+        view = rs_.Pipeline().FrameCamera().ViewLH();
+        proj = rs_.Pipeline().FrameCamera().ProjectionLH(aspect);
     }
 
     void BindPassResources(gfx::IGFXCommandList* cmd, bls::FrameInputs& frame) {

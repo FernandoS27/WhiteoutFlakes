@@ -19,6 +19,7 @@
 #include "gfx/gfx.h"
 #include "render_target.h"
 #include "types.h"
+#include "viewport.h"
 #include "whiteout/flakes/types.h"
 
 #include <memory>
@@ -30,6 +31,7 @@ namespace whiteout::flakes::renderer {
 class RenderService;
 class GeosetPassBls;
 class GeosetPassHd;
+class Camera;
 enum class GeosetBucket : u8;
 
 class RenderPipeline {
@@ -44,10 +46,25 @@ public:
 
     // ---- Render targets ----
     RenderTargetId CreateSwapChainTarget(void* nativeWindowHandle, i32 width, i32 height);
+    // Headless sibling of CreateSwapChainTarget: a render target with no
+    // swap-chain. RenderViewport draws into it like any other target; Present
+    // no-ops on it. The composited image lands in RenderTarget::color (in
+    // `colorFormat`); read it back via the frame-capture ring
+    // (EnableFrameCapture + RenderViewport + DownloadCaptureSlot), which
+    // works on headless targets because its swap-chain mirror blit no-ops.
+    RenderTargetId CreateOffscreenTarget(i32 width, i32 height,
+                                         gfx::Format colorFormat = kSdSceneFormat);
+    void DestroyTarget(RenderTargetId id);
     void SetPrimaryTarget(RenderTargetId id);
     void ResizePrimaryTarget(i32 width, i32 height);
 
     // ---- Frame loop ----
+    // RenderViewport is the real entry point: it renders the scene seen
+    // through vp.camera into vp.target. RenderFrame is the legacy shim — it
+    // renders the scene's single camera into targetId and is what current
+    // single-viewport hosts call. Multi-viewport hosts build a Viewport per
+    // surface and call RenderViewport for each, then Present the windowed ones.
+    void RenderViewport(const Viewport& vp);
     void RenderFrame(RenderTargetId targetId);
     void Present(RenderTargetId targetId);
 
@@ -71,6 +88,14 @@ public:
     // Gfx()->WaitIdle() before draining a batch. Returns false on an
     // out-of-range slot or when capture is disabled.
     bool DownloadCaptureSlot(i32 slot, std::vector<u8>& outRgba, i32& width, i32& height);
+
+    // Direct render-target readback as tightly-packed RGBA8 — a portable
+    // alternative to the frame-capture ring for off-screen / headless targets.
+    // Synchronous (submits + WaitIdle internally). Backed by
+    // IGFXDevice::ReadbackTexture; returns false on backends that don't
+    // implement it (use the capture ring there). Reads the target's composited
+    // color.
+    bool ReadbackTarget(RenderTargetId id, std::vector<u8>& outRgba, i32& width, i32& height);
 
     // ---- Stats ----
     void GetFrameStats(i32& geosets, i32& textures, i32& nodes, i32& particles,
@@ -100,6 +125,12 @@ public:
     //      (DebugRenderer, BLS pass templates, etc.) ----
     i32 Width() const;
     i32 Height() const;
+    // The camera the in-flight frame is rendering from. Valid only while a
+    // RenderFrame/RenderViewport call is on the stack; outside a frame it
+    // falls back to the scene's camera. Passes and DebugRenderer read this
+    // instead of Scene().Camera() so each viewport renders from its own
+    // camera (Phase 3) without every call site knowing about viewports.
+    const Camera& FrameCamera() const;
     gfx::BufferHandle CbPerFrame() const;
     RenderTarget* PrimaryTarget();
     i32 ComputeSelectedLod() const;

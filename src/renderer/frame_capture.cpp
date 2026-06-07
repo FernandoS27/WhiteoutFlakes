@@ -101,8 +101,12 @@ void FrameCapture::SetEnabled(bool enable) {
 void FrameCapture::ReleaseResources() {
     if (!gfx_)
         return;
-    gfx_->Destroy(color_);
+    // Only destroy the capture colour when it's ours (swap-chain redirect
+    // target). For headless it aliases the render target's colour, owned there.
+    if (colorOwned_)
+        gfx_->Destroy(color_);
     color_ = gfx::TextureHandle::Invalid;
+    colorOwned_ = false;
     for (auto& slot : ring_) {
         gfx_->Destroy(slot.uav);
         gfx_->Destroy(slot.readback);
@@ -130,43 +134,64 @@ bool FrameCapture::EnsureResources(const RenderTarget& target) {
         return false;
     if (capturePSO_ == gfx::PipelineHandle::Invalid)
         return fail("copy compute pipeline failed to build");
-    if (blitVS_ == gfx::ShaderHandle::Invalid || blitPS_ == gfx::ShaderHandle::Invalid)
-        return fail("blit shaders failed to load");
-    if (target.swap == gfx::SwapChainHandle::Invalid || target.width <= 0 || target.height <= 0)
-        return fail("primary target is not a sized swap chain");
+    if (target.width <= 0 || target.height <= 0)
+        return fail("target has no size");
 
-    // The blit PSO writes the swap-chain back buffer, so its rtvFormat must
-    // match — built (and rebuilt) lazily once that format is known.
-    const gfx::Format swapFmt = gfx_->GetSwapChainFormat(target.swap);
-    if (blitPSO_ == gfx::PipelineHandle::Invalid || blitPsoFormat_ != swapFmt) {
-        gfx_->Destroy(blitPSO_);
-        gfx::GraphicsPipelineDesc bd;
-        bd.vs = blitVS_;
-        bd.ps = blitPS_;
-        bd.topology = gfx::PrimitiveTopology::TriangleList;
-        bd.blend.enable = false;
-        bd.depthStencil.depthTest = false;
-        bd.depthStencil.depthWrite = false;
-        bd.rasterizer.cull = gfx::CullMode::None;
-        bd.rasterizer.frontCCW = true;
-        bd.rtvFormat = swapFmt;
-        bd.dsvFormat = depthFormat_;
-        blitPSO_ = gfx_->CreateGraphicsPipeline(bd);
-        blitPsoFormat_ = swapFmt;
+    // Headless targets (no swap-chain) are captured straight from their own
+    // colour: no redirect target and no display mirror, so the blit PSO isn't
+    // needed. Swap-chain targets redirect into a separate capture target and
+    // mirror it back, which needs the blit PSO built for the swap format.
+    const bool headless = (target.swap == gfx::SwapChainHandle::Invalid);
+    if (!headless) {
+        if (blitVS_ == gfx::ShaderHandle::Invalid || blitPS_ == gfx::ShaderHandle::Invalid)
+            return fail("blit shaders failed to load");
+        // The blit PSO writes the swap-chain back buffer, so its rtvFormat must
+        // match — built (and rebuilt) lazily once that format is known.
+        const gfx::Format swapFmt = gfx_->GetSwapChainFormat(target.swap);
+        if (blitPSO_ == gfx::PipelineHandle::Invalid || blitPsoFormat_ != swapFmt) {
+            gfx_->Destroy(blitPSO_);
+            gfx::GraphicsPipelineDesc bd;
+            bd.vs = blitVS_;
+            bd.ps = blitPS_;
+            bd.topology = gfx::PrimitiveTopology::TriangleList;
+            bd.blend.enable = false;
+            bd.depthStencil.depthTest = false;
+            bd.depthStencil.depthWrite = false;
+            bd.rasterizer.cull = gfx::CullMode::None;
+            bd.rasterizer.frontCCW = true;
+            bd.rtvFormat = swapFmt;
+            bd.dsvFormat = depthFormat_;
+            blitPSO_ = gfx_->CreateGraphicsPipeline(bd);
+            blitPsoFormat_ = swapFmt;
+        }
+        if (blitPSO_ == gfx::PipelineHandle::Invalid)
+            return fail("blit pipeline failed to build");
     }
-    if (blitPSO_ == gfx::PipelineHandle::Invalid)
-        return fail("blit pipeline failed to build");
 
-    if (color_ != gfx::TextureHandle::Invalid && width_ == target.width && height_ == target.height)
+    if (color_ != gfx::TextureHandle::Invalid && width_ == target.width &&
+        height_ == target.height) {
+        // Refresh the headless alias each frame (just a handle copy) in case
+        // the target's backing colour was reallocated (e.g. resize).
+        if (headless)
+            color_ = target.color;
         return true;
+    }
 
-    // First use or surface resize — rebuild the capture target + ring.
+    // First use or surface resize — rebuild the capture source + ring.
     ReleaseResources();
     const i32 w = target.width, h = target.height;
     const u64 bytes = static_cast<u64>(w) * static_cast<u64>(h) * 4u;
-    // The capture target matches the swap-chain format so the composite PSOs
-    // (built for that format) stay valid when redirected to it.
-    color_ = gfx_->CreateColorTarget(w, h, swapFmt);
+    if (headless) {
+        // The composite already renders into the target's own colour; capture
+        // copies it out directly. Not ours — don't destroy it.
+        color_ = target.color;
+        colorOwned_ = false;
+    } else {
+        // The redirect target matches the swap-chain format so the composite
+        // PSOs (built for that format) stay valid when redirected to it.
+        color_ = gfx_->CreateColorTarget(w, h, gfx_->GetSwapChainFormat(target.swap));
+        colorOwned_ = true;
+    }
     bool ok = (color_ != gfx::TextureHandle::Invalid);
     for (auto& slot : ring_) {
         slot.uav = gfx_->CreateBuffer({
@@ -194,7 +219,12 @@ bool FrameCapture::EnsureResources(const RenderTarget& target) {
 gfx::TextureHandle FrameCapture::BeginFrame(const RenderTarget& target) {
     frameCapturing_ = enabled_ && EnsureResources(target);
     lastSlot_ = -1; // EndFrame sets it if this frame captures
-    return frameCapturing_ ? color_ : target.color;
+    if (!frameCapturing_)
+        return target.color;
+    // Swap-chain capture redirects the composite into our separate target;
+    // headless capture renders straight into the target's own colour (color_
+    // aliases it), so either way the right destination is correct.
+    return (target.swap == gfx::SwapChainHandle::Invalid) ? target.color : color_;
 }
 
 void FrameCapture::EndFrame(const RenderTarget& target) {
@@ -227,6 +257,11 @@ void FrameCapture::EndFrame(const RenderTarget& target) {
 
     // Stage into this slot's CPU-readable buffer for DownloadSlot.
     cmd->CopyBuffer(ring.readback, ring.uav);
+
+    // Headless capture renders straight into the target's own colour, so
+    // there's nothing to mirror — the copy above is the whole job.
+    if (target.swap == gfx::SwapChainHandle::Invalid)
+        return;
 
     // Mirror the off-screen composite onto the swap chain so the frame still
     // displays while capture is redirecting it.

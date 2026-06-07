@@ -366,6 +366,64 @@ u32 AcquireSwapChainImageIfNeeded(VulkanDeviceState& state, SwapChainEntry& sc,
     return idx;
 }
 
+void VulkanDevice::SubmitFrame() {
+    // Headless flush: end + submit the in-flight command buffer without any
+    // swap-chain acquire/present semaphores, then advance the frame. Mirrors
+    // the submit half of Present() so off-screen viewports' work actually
+    // executes (and is waitable by WaitIdle before a capture readback).
+    auto& state = *state_;
+    auto& frame = state.frames[state.frameIndex];
+    if (!frame.recording)
+        return;
+
+#if defined(TRACY_ENABLE)
+    if (state.tracyCtx)
+        TracyVkCollect(state.tracyCtx, static_cast<VkCommandBuffer>(*frame.commandBuffer));
+#endif
+    (void)frame.commandBuffer.end();
+    frame.recording = false;
+
+    // No acquire semaphore to wait on (no swap chain). Still wait the
+    // async-transfer timeline so draws see uploaded data, and signal the
+    // render timeline (deferred-delete tracking) + the in-flight fence (so the
+    // next EnsureRecording on this frame slot waits for this submit).
+    std::array<vk::SemaphoreSubmitInfo, 1> waitInfos{};
+    u32 waitCount = 0;
+    if (state.hasAsyncTransfer && state.transferLastSignaled > 0) {
+        waitInfos[0] = vk::SemaphoreSubmitInfo{
+            .semaphore = *state.transferTimelineSem,
+            .value = state.transferLastSignaled,
+            .stageMask = vk::PipelineStageFlagBits2::eVertexInput |
+                         vk::PipelineStageFlagBits2::eAllGraphics,
+        };
+        waitCount = 1;
+    }
+    std::array<vk::SemaphoreSubmitInfo, 1> signalInfos{
+        vk::SemaphoreSubmitInfo{
+            .semaphore = *state.timelineSem,
+            .value = state.nextSubmitValue,
+            .stageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        },
+    };
+    vk::CommandBufferSubmitInfo cbInfo{.commandBuffer = *frame.commandBuffer};
+    vk::SubmitInfo2 submit{
+        .waitSemaphoreInfoCount = waitCount,
+        .pWaitSemaphoreInfos = waitInfos.data(),
+        .commandBufferInfoCount = 1,
+        .pCommandBufferInfos = &cbInfo,
+        .signalSemaphoreInfoCount = static_cast<u32>(signalInfos.size()),
+        .pSignalSemaphoreInfos = signalInfos.data(),
+    };
+    {
+#if defined(TRACY_ENABLE)
+        ZoneScopedN("vkQueueSubmit2(headless)");
+#endif
+        (void)state.queue.submit2(submit, *frame.inFlightFence);
+    }
+    state.nextSubmitValue++;
+    state.frameIndex = (state.frameIndex + 1) % kFramesInFlight;
+}
+
 void VulkanDevice::Present(SwapChainHandle handle) {
     auto& state = *state_;
     auto* sc = state.swapchains.Get(static_cast<u64>(handle));

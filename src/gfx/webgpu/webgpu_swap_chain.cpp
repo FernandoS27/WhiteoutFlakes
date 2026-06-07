@@ -327,6 +327,71 @@ void WebGPUDevice::DestroySwapChain(SwapChainHandle h) {
     state.swapchains.Remove(static_cast<u64>(h));
 }
 
+void WebGPUDevice::SubmitFrame() {
+    // Headless flush: submit the frame's encoder without presenting. WebGPU
+    // only submits inside Present, so an off-screen viewport's recorded work
+    // would never reach the queue otherwise.
+    auto& state = *state_;
+    SubmitFrameAndBumpEpoch(state);
+    state.instance.ProcessEvents();
+}
+
+bool WebGPUDevice::ReadbackTexture(TextureHandle h, i32 w, i32 hgt, std::vector<u8>& outRgba) {
+    auto& state = *state_;
+    auto* tex = state.textures.Get(static_cast<u64>(h));
+    if (!tex || !tex->texture || w <= 0 || hgt <= 0)
+        return false;
+
+    // WebGPU requires copyTextureToBuffer bytesPerRow to be a multiple of 256,
+    // so rows in the staging buffer are padded; we strip the padding on copy-out.
+    constexpr u32 kBpp = 4;
+    const u32 unpadded = static_cast<u32>(w) * kBpp;
+    constexpr u32 kAlign = 256;
+    const u32 padded = (unpadded + kAlign - 1) & ~(kAlign - 1);
+    const u64 bufSize = static_cast<u64>(padded) * static_cast<u64>(hgt);
+
+    BufferHandle rbH = CreateBuffer({.size = bufSize, .usage = BufferUsage::CpuReadable}, nullptr);
+    auto* rb = state.buffers.Get(static_cast<u64>(rbH));
+    if (!rb || !rb->buffer) {
+        if (rbH != BufferHandle::Invalid)
+            Destroy(rbH);
+        return false;
+    }
+
+    wgpu::CommandEncoderDescriptor cd{};
+    cd.label = "wf.readback";
+    wgpu::CommandEncoder enc = state.device.CreateCommandEncoder(&cd);
+    wgpu::TexelCopyTextureInfo src{};
+    src.texture = tex->texture;
+    src.mipLevel = 0;
+    src.origin = {0, 0, 0};
+    src.aspect = wgpu::TextureAspect::All;
+    wgpu::TexelCopyBufferInfo dst{};
+    dst.buffer = rb->buffer;
+    dst.layout.offset = 0;
+    dst.layout.bytesPerRow = padded;
+    dst.layout.rowsPerImage = static_cast<u32>(hgt);
+    wgpu::Extent3D extent{static_cast<u32>(w), static_cast<u32>(hgt), 1};
+    enc.CopyTextureToBuffer(&src, &dst, &extent);
+    wgpu::CommandBuffer cb = enc.Finish();
+    state.queue.Submit(1, &cb);
+
+    WaitIdle();
+
+    const u8* mapped = static_cast<const u8*>(MapBuffer(rbH));
+    if (!mapped) {
+        Destroy(rbH);
+        return false;
+    }
+    outRgba.resize(static_cast<size_t>(unpadded) * static_cast<size_t>(hgt));
+    for (i32 row = 0; row < hgt; ++row)
+        std::memcpy(outRgba.data() + static_cast<size_t>(row) * unpadded,
+                    mapped + static_cast<size_t>(row) * padded, unpadded);
+    UnmapBuffer(rbH);
+    Destroy(rbH);
+    return true;
+}
+
 void WebGPUDevice::Present(SwapChainHandle h) {
     auto& state = *state_;
     auto* sc = state.swapchains.Get(static_cast<u64>(h));

@@ -46,6 +46,7 @@ enum class TextureUsage : u32 {
     ShaderResource = 1 << 0,
     RenderTarget = 1 << 1,
     DepthStencil = 1 << 2,
+    CopySrc = 1 << 3, ///< can be the source of a texture→buffer copy (readback)
 };
 
 inline TextureUsage operator|(TextureUsage a, TextureUsage b) {

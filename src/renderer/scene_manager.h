@@ -29,6 +29,10 @@ public:
     SceneManager() : templates_(std::make_unique<model::ModelTemplateManager>()) {
         activeContentProvider_ = &contentProvider_;
         templates_->SetContentProvider(activeContentProvider_);
+        // Camera 0 always exists — it's the legacy single camera that Camera()
+        // (no-arg) and the RenderFrame shim use. Additional cameras (for extra
+        // viewports onto this scene) are appended via AddCamera().
+        cameras_.push_back(std::make_unique<::whiteout::flakes::renderer::Camera>());
     }
     ~SceneManager() = default;
     SceneManager(const SceneManager&) = delete;
@@ -45,10 +49,29 @@ public:
     }
 
     ::whiteout::flakes::renderer::Camera& Camera() {
-        return camera_;
+        return *cameras_[0];
     }
     const ::whiteout::flakes::renderer::Camera& Camera() const {
-        return camera_;
+        return *cameras_[0];
+    }
+
+    // Camera set. Index 0 is the default camera; higher indices are extra
+    // cameras for additional viewports onto this scene. Out-of-range indices
+    // clamp to the default so a stale handle can never dangle.
+    ::whiteout::flakes::renderer::Camera& Camera(i32 idx) {
+        return (idx >= 0 && idx < (i32)cameras_.size()) ? *cameras_[idx] : *cameras_[0];
+    }
+    const ::whiteout::flakes::renderer::Camera& Camera(i32 idx) const {
+        return (idx >= 0 && idx < (i32)cameras_.size()) ? *cameras_[idx] : *cameras_[0];
+    }
+    i32 CameraCount() const {
+        return (i32)cameras_.size();
+    }
+    // Append a new camera and return its index. unique_ptr storage keeps
+    // existing Camera& references stable across this growth.
+    i32 AddCamera() {
+        cameras_.push_back(std::make_unique<::whiteout::flakes::renderer::Camera>());
+        return (i32)cameras_.size() - 1;
     }
 
     void SetAnimationTime(i32 ms) {
@@ -112,7 +135,7 @@ private:
     model::ActorManager actors_;
     model::ActorId nextActorId_ = 1;
 
-    ::whiteout::flakes::renderer::Camera camera_;
+    std::vector<std::unique_ptr<::whiteout::flakes::renderer::Camera>> cameras_;
 
     std::atomic<i32> animationTimeMs_{0};
 

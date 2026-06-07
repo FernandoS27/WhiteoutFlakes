@@ -48,7 +48,16 @@ public:
     /// @{
     PipelineView Pipeline();
     SceneView Scene();
+    /// @brief View onto the scene's default camera (handle 0).
     CameraView Camera();
+    /// @brief Add a camera to the scene's set; returns its handle. Use for
+    ///        extra viewports onto the same scene (e.g. an editor's
+    ///        top/front/side/perspective layout). Pair with
+    ///        PipelineView::RenderViewport(target, handle).
+    CameraHandle CreateCamera();
+    /// @brief View onto a specific camera in the scene's set. An out-of-range
+    ///        handle drives the default camera.
+    CameraView CameraAt(CameraHandle);
     SettingsView Settings();
     LoaderView Loader();
     DncView Dnc();

@@ -79,7 +79,7 @@ void DebugRenderer::RenderCollisions() {
         }
         if (shapes.empty())
             return;
-        viewMat = rs_.Scene().Camera().GetViewMatrix();
+        viewMat = rs_.Pipeline().FrameCamera().GetViewMatrix();
     }
 
     auto* cmd = rs_.Pipeline().Gfx()->GetImmediateContext();
@@ -194,7 +194,7 @@ void DebugRenderer::RenderCollisions() {
                          : 1.0f;
         render_detail::CbPerFrameDesc d;
         d.view = viewMat;
-        d.projection = rs_.Scene().Camera().ProjectionRH(aspect);
+        d.projection = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);
         d.lightColor = kCollisionLightColor;
         d.ambientColor = kCollisionAmbientColor;
         render_detail::WriteCbPerFrame(rs_.Pipeline().Gfx(), rs_.Pipeline().CbPerFrame(), d);
@@ -226,7 +226,7 @@ void DebugRenderer::RenderLightMarkers() {
         }
         if (lights.empty())
             return;
-        viewMat = rs_.Scene().Camera().GetViewMatrix();
+        viewMat = rs_.Pipeline().FrameCamera().GetViewMatrix();
     }
 
     auto* cmd = rs_.Pipeline().Gfx()->GetImmediateContext();
@@ -294,7 +294,7 @@ void DebugRenderer::RenderLightMarkers() {
                          : 1.0f;
         render_detail::CbPerFrameDesc d;
         d.view = viewMat;
-        d.projection = rs_.Scene().Camera().ProjectionRH(aspect);
+        d.projection = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);
         render_detail::WriteCbPerFrame(rs_.Pipeline().Gfx(), rs_.Pipeline().CbPerFrame(), d);
     }
     DrawWireLines(rs_.Pipeline().Gfx(), cmd, rs_.Pipeline().CbPerFrame(), verts);

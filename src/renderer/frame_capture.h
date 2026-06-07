@@ -81,8 +81,14 @@ private:
     gfx::SamplerHandle sampler_ = gfx::SamplerHandle::Invalid;
     gfx::BufferHandle paramsCb_ = gfx::BufferHandle::Invalid;
 
-    // Per-surface: the off-screen target + the readback ring.
+    // Per-surface: the capture source + the readback ring.
+    // For a swap-chain target this is a separate off-screen target we own and
+    // redirect the composite into (so we can both copy it and mirror it back).
+    // For a headless target it aliases the target's own color (rendered into
+    // directly, copied straight out, no mirror) — colorOwned_ tracks which, so
+    // ReleaseResources only destroys the texture when it's ours.
     gfx::TextureHandle color_ = gfx::TextureHandle::Invalid;
+    bool colorOwned_ = false;
     struct Slot {
         gfx::BufferHandle uav = gfx::BufferHandle::Invalid;      // compute write target
         gfx::BufferHandle readback = gfx::BufferHandle::Invalid; // CPU-mappable copy

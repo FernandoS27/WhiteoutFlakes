@@ -154,6 +154,29 @@ public:
     virtual void DestroySwapChain(SwapChainHandle) = 0;
     virtual void Present(SwapChainHandle) = 0;
 
+    // Read a render target back to the CPU as tightly-packed RGBA8 (row pitch
+    // = width*4). Synchronous and slow (submits + WaitIdle internally) — for
+    // off-screen / headless capture, not the hot path. The texture must have
+    // been created with TextureUsage::CopySrc. Returns false if unsupported on
+    // this backend or the copy failed. Default: unsupported.
+    virtual bool ReadbackTexture(TextureHandle, i32 width, i32 height,
+                                 std::vector<u8>& outRgba) {
+        (void)width;
+        (void)height;
+        (void)outRgba;
+        return false;
+    }
+
+    // Submit the current frame's recorded commands WITHOUT presenting — the
+    // headless equivalent of Present. On backends with a deferred,
+    // present-driven submit (Vulkan, WebGPU) the command buffer is only flushed
+    // to the queue inside Present; a viewport that renders into an off-screen
+    // target never calls Present, so its work would never execute and a
+    // readback would see nothing. Hosts call this once per off-screen viewport
+    // per frame in place of Present. No-op on immediate-context backends
+    // (D3D11/D3D12) and on backends that submit per command.
+    virtual void SubmitFrame() {}
+
     // Block until every GPU command submitted so far has fully completed.
     // A heavy stall — not for the hot path. Used by offline operations
     // (e.g. frame-capture export) that must read back GPU results

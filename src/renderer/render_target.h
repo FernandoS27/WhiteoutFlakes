@@ -65,6 +65,23 @@ struct RenderTarget {
     gfx::TextureHandle aoBufferHistory = gfx::TextureHandle::Invalid;
     gfx::TextureHandle bentNormalBuffer = gfx::TextureHandle::Invalid;
 
+    // GTAO temporal bookkeeping, per-target. This used to live on GtaoService
+    // as single members, which silently broke once more than one viewport
+    // renders into its own target in a frame: viewport B's temporal pass would
+    // reproject against viewport A's camera (prevViewProj) and sample A's last
+    // AO texture, smearing one view's occlusion across the other. Keeping it
+    // here — beside the ping-pong textures it indexes — makes each target carry
+    // its own history. `historyGen` is matched against GtaoService's reset
+    // generation so a global ResetHistory() (render-mode flip, resize)
+    // invalidates every target's history without enumerating them.
+    struct GtaoTemporalState {
+        Matrix44f prevViewProj = Matrix44f::identity();
+        gfx::TextureHandle lastAoOutput = gfx::TextureHandle::Invalid;
+        u32 pingPong = 0; // even/odd selects aoBuffer vs aoBufferHistory as "current"
+        u32 historyGen = 0;
+        bool prevValid = false;
+    } gtao;
+
     // Bloom scratch buffers. Full-res HDR scratch the bloom pass ping-pongs
     // between for extract → blur-H → blur-V → combine. After the combine
     // pass the composited HDR scene+bloom lives in `bloomScratchB`; the

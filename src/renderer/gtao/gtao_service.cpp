@@ -247,9 +247,10 @@ void GtaoService::Shutdown() {
     }
     denoisePso_ = temporalPso_ = iblBoostPso_ = depthCopyPso_ = applyPso_ = applyPsoDebug_ =
         gfx::PipelineHandle::Invalid;
-    prevValid_ = false;
-    frameCounter_ = 0;
-    lastAoOutput_ = gfx::TextureHandle::Invalid;
+    // Per-target temporal state lives on RenderTarget::gtao now; bump the
+    // reset generation so any target that survives this shutdown treats its
+    // stored history as stale on the next Run().
+    ++historyGen_;
     cb_ = gfx::BufferHandle::Invalid;
     pointSampler_ = gfx::SamplerHandle::Invalid;
     psoAoFmt_ = psoHdrFmt_ = psoLinearDepthFmt_ = gfx::Format::Unknown;
@@ -471,7 +472,7 @@ void GtaoService::EnsurePsos(gfx::Format aoFmt, gfx::Format hdrFmt,
     }
 }
 
-void GtaoService::Run(gfx::IGFXCommandList* cmd, const RenderTarget& target,
+void GtaoService::Run(gfx::IGFXCommandList* cmd, RenderTarget& target,
                       const Matrix44f& view, const Matrix44f& proj, u32 frameIndex) {
     if (!IsEnabled() || !cmd || target.aoBuffer == gfx::TextureHandle::Invalid ||
         target.aoBufferRaw == gfx::TextureHandle::Invalid ||
@@ -497,8 +498,13 @@ void GtaoService::Run(gfx::IGFXCommandList* cmd, const RenderTarget& target,
 
     // Temporal ping-pong. Each frame we alternate which physical texture
     // is "current frame's output" vs. "history". The apply pass reads
-    // whichever was the write target this frame.
-    const bool       evenFrame    = (frameCounter_ & 1u) == 0u;
+    // whichever was the write target this frame. State is per-target so
+    // concurrent viewports don't share a parity or a history transform.
+    RenderTarget::GtaoTemporalState& ts = target.gtao;
+    // History is only a valid prior if it was written AND not invalidated by
+    // a global ResetHistory() since (generation match).
+    const bool histValid = ts.prevValid && ts.historyGen == historyGen_;
+    const bool       evenFrame    = (ts.pingPong & 1u) == 0u;
     const gfx::TextureHandle curAo   = evenFrame ? target.aoBuffer : target.aoBufferHistory;
     const gfx::TextureHandle histAo  = evenFrame ? target.aoBufferHistory : target.aoBuffer;
 
@@ -507,8 +513,8 @@ void GtaoService::Run(gfx::IGFXCommandList* cmd, const RenderTarget& target,
     // feeds the shader this frame.
     const Matrix44f curViewProj   = view * proj;
     const Matrix44f curInvView    = Matrix44f::inverse(view);
-    const Matrix44f sampleViewProj = prevValid_ ? prevViewProj_ : curViewProj;
-    const f32       temporalAlpha = prevValid_ ? 0.1f : 1.0f;
+    const Matrix44f sampleViewProj = histValid ? ts.prevViewProj : curViewProj;
+    const f32       temporalAlpha = histValid ? 0.1f : 1.0f;
 
     if (void* mapped = gfx_->MapBuffer(cb_)) {
         GtaoCb cb{};
@@ -617,17 +623,19 @@ void GtaoService::Run(gfx::IGFXCommandList* cmd, const RenderTarget& target,
     }
 
     // Stash this frame's transform so next frame's temporal pass can
-    // reproject. Flip the ping-pong index and arm the history bit.
-    prevViewProj_ = curViewProj;
-    prevValid_ = true;
-    lastAoOutput_ = curAo;
-    ++frameCounter_;
+    // reproject. Flip the ping-pong index and arm the history bit. Stamping
+    // historyGen_ marks this target's history current as of the latest reset.
+    ts.prevViewProj = curViewProj;
+    ts.prevValid = true;
+    ts.lastAoOutput = curAo;
+    ts.historyGen = historyGen_;
+    ++ts.pingPong;
 }
 
 void GtaoService::RunIblBoost(gfx::IGFXCommandList* cmd, const RenderTarget& target,
                               const IblBoostInputs& in) {
     if (!IsEnabled() || !cmd || params_.bentBoost <= 0.0f ||
-        lastAoOutput_ == gfx::TextureHandle::Invalid ||
+        target.gtao.lastAoOutput == gfx::TextureHandle::Invalid ||
         target.bentNormalBuffer == gfx::TextureHandle::Invalid ||
         target.linearDepth == gfx::TextureHandle::Invalid ||
         target.hdrColor == gfx::TextureHandle::Invalid ||
@@ -655,7 +663,7 @@ void GtaoService::RunIblBoost(gfx::IGFXCommandList* cmd, const RenderTarget& tar
     cmd->BindPipeline(iblBoostPso_);
     cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 0, cb_);
     cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, target.linearDepth);
-    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 3, lastAoOutput_);
+    cmd->BindShaderResource(gfx::ShaderStage::Pixel, 3, target.gtao.lastAoOutput);
     cmd->BindShaderResource(gfx::ShaderStage::Pixel, 5, target.bentNormalBuffer);
     // Cube-array probes pinned to PS slots 13/14 to match the
     // WebGPU `wf.srv` layout's CubeArray entries (slots 6/7 are e2D

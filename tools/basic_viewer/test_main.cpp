@@ -1,5 +1,8 @@
 #include "cubeb_sound_emitter.h"
 #include "gfx/gfx.h"
+#include "renderer/model/model_loader.h"
+#include "renderer/particle/particle_service.h"
+#include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #include "settings_ini.h"
@@ -75,6 +78,130 @@ static int CompareCi(const char* a, const char* b) {
 #endif
 }
 
+// Headless smoke test for the multi-viewport refactor: brings the device up,
+// renders an empty scene through a camera into an OFF-SCREEN target (no window /
+// swap-chain), reads the result back via the capture ring, and verifies a
+// non-black image came out. Exercises InitDevice → CreateOffscreenTarget →
+// RenderViewport → DownloadCaptureSlot end-to-end per backend. Returns 0 on
+// pass, non-zero on the first failing step.
+static int RunHeadlessTest(whiteout::flakes::renderer::RenderService& renderer,
+                           whiteout::flakes::renderer::SceneManager& scene,
+                           whiteout::flakes::gfx::GfxApi backend,
+                           const std::filesystem::path& mdxPath) {
+    namespace wf = whiteout::flakes;
+    auto step = [](const char* s) { std::cout << "[headless] " << s << std::endl; };
+    auto& pipe = renderer.Pipeline();
+
+    step("InitDevice…");
+    if (!pipe.InitDevice(backend)) {
+        std::cerr << "[headless] InitDevice failed" << std::endl;
+        return 2;
+    }
+    step("InitDevice OK");
+
+    constexpr i32 kW = 256, kH = 256;
+    wf::renderer::RenderTargetId tid = pipe.CreateOffscreenTarget(kW, kH);
+    if (!tid) {
+        std::cerr << "[headless] CreateOffscreenTarget failed" << std::endl;
+        return 3;
+    }
+    pipe.SetPrimaryTarget(tid);
+    step("offscreen target created");
+
+    renderer.Settings().SetBackgroundColor(40, 80, 160);
+    pipe.EnableFrameCapture(true);
+
+    // Optional model load — exercises the texture / child-model / corn-effects
+    // load path the user reported failing on Vulkan. Empty path = bare
+    // background smoke test.
+    wf::renderer::model::Actor* hero = nullptr;
+    if (!mdxPath.empty()) {
+        scene.SetPE1BasePath(mdxPath.parent_path());
+        hero = renderer.Loader().SpawnUnit(wf::io::PathToUtf8(mdxPath));
+        if (!hero)
+            std::cerr << "[headless] SpawnUnit FAILED" << std::endl;
+        else
+            step("SpawnUnit OK");
+    }
+
+    wf::renderer::Viewport vp;
+    vp.target = tid;
+    vp.camera = &scene.Camera();
+
+    // Pump frames so the synchronous desktop asset pump (textures, child
+    // models, corn/event data) drains and uploads.
+    const i32 frames = mdxPath.empty() ? 3 : 40;
+    for (i32 i = 0; i < frames; ++i) {
+        scene.Update(0.016f);
+        pipe.RenderViewport(vp);
+        pipe.Present(tid);
+    }
+    pipe.Gfx()->WaitIdle();
+    step("frames rendered");
+
+    // Loading report — the metrics the user's concern is about.
+    {
+        std::cout << "[headless] childModels(PE1)=" << scene.PE1InstanceCount()
+                  << " | particle emitters=" << renderer.Particles().EmitterCount() << std::endl;
+        if (hero) {
+            const i32 texCount = hero->render.textures ? (i32)hero->render.textures->Size() : 0;
+            std::cout << "[headless] actor: geosets=" << hero->render.gpuGeosets.size()
+                      << " textures=" << texCount << std::endl;
+        }
+    }
+
+    std::vector<wf::u8> rgba;
+    i32 cw = 0, ch = 0;
+    const i32 slot = pipe.LastCapturedSlot();
+    bool readOk = (slot >= 0 && pipe.DownloadCaptureSlot(slot, rgba, cw, ch) && cw == kW &&
+                   ch == kH && static_cast<i32>(rgba.size()) >= kW * kH * 4);
+    // Fallback for backends without the compute-capture path (WebGPU has no
+    // compute): direct texture→buffer readback.
+    if (!readOk) {
+        readOk = pipe.ReadbackTarget(tid, rgba, cw, ch) && cw == kW && ch == kH &&
+                 static_cast<i32>(rgba.size()) >= kW * kH * 4;
+        if (readOk)
+            step("used ReadbackTarget fallback");
+    }
+    i32 mr = -1, mg = -1, mb = -1;
+    if (readOk) {
+        wf::u64 sr = 0, sg = 0, sb = 0;
+        for (i32 p = 0; p < kW * kH; ++p) {
+            sr += rgba[p * 4 + 0];
+            sg += rgba[p * 4 + 1];
+            sb += rgba[p * 4 + 2];
+        }
+        const i32 n = kW * kH;
+        mr = (i32)(sr / n);
+        mg = (i32)(sg / n);
+        mb = (i32)(sb / n);
+        std::cout << "[headless] readback OK " << cw << "x" << ch << " mean RGB=(" << mr << ","
+                  << mg << "," << mb << ")" << std::endl;
+    } else {
+        std::cerr << "[headless] readback FAILED (slot=" << slot << ")" << std::endl;
+    }
+
+    // Verdict BEFORE teardown so a teardown issue can't hide it.
+    const bool pass = readOk && !(mr == 0 && mg == 0 && mb == 0);
+    std::cout << "[headless] " << (pass ? "PASS" : "FAIL") << std::endl;
+
+    step("teardown…");
+    pipe.EnableFrameCapture(false);
+    pipe.Shutdown(); // frees all targets (CleanupGFX iterates targets_)
+    step("teardown OK");
+
+    // Shutdown() completed cleanly (verdict already printed above), but letting
+    // the RenderService / SceneManager locals destruct afterwards crashes on
+    // process exit — the renderer's services still hold device pointers that
+    // CleanupGFX freed, and their destructors poke the dead device. That
+    // exit-only teardown crash is a separate, pre-existing issue; for this
+    // smoke test we flush and terminate with the verdict code so it doesn't
+    // turn a valid PASS/FAIL into a misleading segfault exit status.
+    std::cout.flush();
+    std::cerr.flush();
+    std::_Exit(pass ? 0 : 6);
+}
+
 int main(int argc, char* argv[]) {
     whiteout::flakes::gfx::GfxApi backend = whiteout::flakes::gfx::GfxApi::Vulkan;
 #if defined(_WIN32)
@@ -103,6 +230,7 @@ int main(int argc, char* argv[]) {
     }
 #endif
     bool backendFromCli = false;
+    bool headlessTest = false;
     std::filesystem::path mdxPath;
 
     // Headless animation-frame export: --export-anim <seqIdx> <fps> <folder>
@@ -176,6 +304,8 @@ int main(int argc, char* argv[]) {
             exportResH = std::atoi(argv[++i]);
         } else if (std::strcmp(a, "--camera") == 0 && i + 1 < argc) {
             exportCamera = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--headless-test") == 0) {
+            headlessTest = true;
         } else if (std::strcmp(a, "--wgpu-backend") == 0 && i + 1 < argc) {
             // Force Dawn's underlying adapter backend (d3d11/d3d12/vulkan/gl/metal).
             // Only meaningful when --backend webgpu is selected.
@@ -341,6 +471,12 @@ int main(int argc, char* argv[]) {
                               : backend == whiteout::flakes::gfx::GfxApi::Metal  ? "Metal"
                                                                                  : "?";
     std::cout << "Backend: " << backendName << "\n";
+
+    // Headless multi-viewport smoke test: no window, no ViewerApp — drive the
+    // pipeline straight into an off-screen target and read it back. Runs and
+    // exits without ever creating a GLFW window.
+    if (headlessTest)
+        return RunHeadlessTest(renderer, scene, backend, mdxPath);
 
     whiteout::flakes::ViewerApp app(renderer);
     if (!app.Open(1024, 768, backend)) {

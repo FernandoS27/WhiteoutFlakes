@@ -67,6 +67,12 @@ SceneView Renderer::Scene() {
 CameraView Renderer::Camera() {
     return CameraView(impl_.get());
 }
+CameraHandle Renderer::CreateCamera() {
+    return static_cast<CameraHandle>(impl_->scene_.AddCamera());
+}
+CameraView Renderer::CameraAt(CameraHandle h) {
+    return CameraView(impl_.get(), h);
+}
 SettingsView Renderer::Settings() {
     return SettingsView(impl_.get());
 }
@@ -135,6 +141,12 @@ bool PipelineView::IsDeviceReady() const {
 RenderTargetId PipelineView::CreateSwapChainTarget(void* hwnd, i32 w, i32 h) {
     return Svc(impl_).Pipeline().CreateSwapChainTarget(hwnd, w, h);
 }
+RenderTargetId PipelineView::CreateOffscreenTarget(i32 w, i32 h) {
+    return Svc(impl_).Pipeline().CreateOffscreenTarget(w, h);
+}
+void PipelineView::DestroyTarget(RenderTargetId id) {
+    Svc(impl_).Pipeline().DestroyTarget(id);
+}
 void PipelineView::SetPrimaryTarget(RenderTargetId id) {
     Svc(impl_).Pipeline().SetPrimaryTarget(id);
 }
@@ -143,6 +155,12 @@ void PipelineView::ResizePrimaryTarget(i32 w, i32 h) {
 }
 void PipelineView::RenderFrame(RenderTargetId id) {
     Svc(impl_).Pipeline().RenderFrame(id);
+}
+void PipelineView::RenderViewport(RenderTargetId id, CameraHandle camera) {
+    ::whiteout::flakes::renderer::Viewport vp;
+    vp.target = id;
+    vp.camera = &Scn(impl_).Camera(static_cast<i32>(camera));
+    Svc(impl_).Pipeline().RenderViewport(vp);
 }
 void PipelineView::Present(RenderTargetId id) {
     Svc(impl_).Pipeline().Present(id);
@@ -196,61 +214,61 @@ const f32 CameraView::kDefaultNearZ = ::whiteout::flakes::renderer::Camera::kDef
 const f32 CameraView::kDefaultFarZ = ::whiteout::flakes::renderer::Camera::kDefaultFarZ;
 
 namespace {
-inline Camera& Cam(detail::RendererImpl* p) {
-    return Scn(p).Camera();
+inline Camera& Cam(detail::RendererImpl* p, CameraHandle h) {
+    return Scn(p).Camera(static_cast<i32>(h));
 }
 } // namespace
 
 void CameraView::Reset() {
-    Cam(impl_).Reset();
+    Cam(impl_, cam_).Reset();
 }
 void CameraView::SetPitch(f32 p) {
-    Cam(impl_).SetPitch(p);
+    Cam(impl_, cam_).SetPitch(p);
 }
 void CameraView::SetYaw(f32 y) {
-    Cam(impl_).SetYaw(y);
+    Cam(impl_, cam_).SetYaw(y);
 }
 void CameraView::SetDistance(f32 d) {
-    Cam(impl_).SetDistance(d);
+    Cam(impl_, cam_).SetDistance(d);
 }
 void CameraView::SetTarget(f32 x, f32 y, f32 z) {
-    Cam(impl_).SetTarget(x, y, z);
+    Cam(impl_, cam_).SetTarget(x, y, z);
 }
 void CameraView::Rotate(i32 dx, i32 dy) {
-    Cam(impl_).Rotate(dx, dy);
+    Cam(impl_, cam_).Rotate(dx, dy);
 }
 void CameraView::Pan(i32 dx, i32 dy) {
-    Cam(impl_).Pan(dx, dy);
+    Cam(impl_, cam_).Pan(dx, dy);
 }
 void CameraView::Zoom(i32 wheel) {
-    Cam(impl_).Zoom(wheel);
+    Cam(impl_, cam_).Zoom(wheel);
 }
 void CameraView::ZoomSmooth(f32 amount) {
-    Cam(impl_).ZoomSmooth(amount);
+    Cam(impl_, cam_).ZoomSmooth(amount);
 }
 void CameraView::SetOrbitalMode() {
-    Cam(impl_).SetOrbitalMode();
+    Cam(impl_, cam_).SetOrbitalMode();
 }
 void CameraView::SetFovDiagonal(f32 r) {
-    Cam(impl_).SetFovDiagonal(r);
+    Cam(impl_, cam_).SetFovDiagonal(r);
 }
 void CameraView::SetClip(f32 nz, f32 fz) {
-    Cam(impl_).SetClip(nz, fz);
+    Cam(impl_, cam_).SetClip(nz, fz);
 }
 void CameraView::SetDirectPose(Vector3f p, Vector3f t, f32 roll) {
-    Cam(impl_).SetDirectPose(p, t, roll);
+    Cam(impl_, cam_).SetDirectPose(p, t, roll);
 }
 
 CameraView::Mode CameraView::GetMode() const {
-    return Cam(impl_).GetMode() == ::whiteout::flakes::renderer::Camera::Mode::Orbital
+    return Cam(impl_, cam_).GetMode() == ::whiteout::flakes::renderer::Camera::Mode::Orbital
                ? Mode::Orbital
                : Mode::Direct;
 }
 Vector3f CameraView::GetTarget() const {
-    return Cam(impl_).GetTarget();
+    return Cam(impl_, cam_).GetTarget();
 }
 f32 CameraView::GetDistance() const {
-    return Cam(impl_).GetDistance();
+    return Cam(impl_, cam_).GetDistance();
 }
 
 // ============================================================================

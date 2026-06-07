@@ -32,6 +32,11 @@ namespace whiteout::flakes {
 /// @brief Opaque handle for a renderer-owned actor. `0` = invalid.
 using ActorHandle = u32;
 
+/// @brief Handle for a camera in the scene's camera set. `0` is the default
+///        camera that always exists; additional cameras (for extra viewports
+///        onto the scene) are created with `Renderer::CreateCamera`.
+using CameraHandle = u32;
+
 namespace detail {
 class RendererImpl;
 }
@@ -48,13 +53,26 @@ public:
     /// @param hwnd Platform-specific: HWND on Windows, pre-created
     ///             VkSurfaceKHR (cast through `uintptr_t`) on Linux/macOS.
     RenderTargetId CreateSwapChainTarget(void* hwnd, i32 width, i32 height);
+    /// @brief Create a headless (off-screen) target with no swap-chain.
+    ///        RenderFrame / RenderViewport draw into it; Present no-ops on it.
+    ///        Read the result back via the frame-capture ring. Use for thumbnail
+    ///        / render-to-texture viewports that aren't shown in a window.
+    RenderTargetId CreateOffscreenTarget(i32 width, i32 height);
+    /// @brief Destroy a target (swap-chain or off-screen) and free its GPU
+    ///        memory. Safe to call on any target id; clears primary if it was.
+    void DestroyTarget(RenderTargetId);
     /// @brief Mark a target as the main one (frame stats track this one).
     void SetPrimaryTarget(RenderTargetId);
     /// @brief Resize the primary target's swap-chain.
     void ResizePrimaryTarget(i32 width, i32 height);
-    /// @brief Render the scene to @p t.
+    /// @brief Render the scene's default camera to @p t.
     void RenderFrame(RenderTargetId t);
-    /// @brief Present @p t to the window.
+    /// @brief Render the scene seen through @p camera into target @p t. The
+    ///        unit of multi-viewport rendering: call once per (camera, target)
+    ///        pair in a frame, then Present the windowed targets. Cameras come
+    ///        from the scene's camera set (`Renderer::CreateCamera`).
+    void RenderViewport(RenderTargetId t, CameraHandle camera);
+    /// @brief Present @p t to the window. No-op for headless targets.
     void Present(RenderTargetId t);
     /// @brief Tear down the gfx device. Idempotent.
     void Shutdown();
@@ -145,8 +163,10 @@ public:
     static const f32 kDefaultFarZ;
 
 private:
-    explicit CameraView(detail::RendererImpl* impl) : impl_(impl) {}
+    explicit CameraView(detail::RendererImpl* impl, CameraHandle cam = 0)
+        : impl_(impl), cam_(cam) {}
     detail::RendererImpl* impl_;
+    CameraHandle cam_; ///< which camera in the scene's set this view drives
     friend class Renderer;
 };
 

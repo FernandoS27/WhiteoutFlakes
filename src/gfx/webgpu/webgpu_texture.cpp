@@ -25,6 +25,8 @@ wgpu::TextureUsage ToWgpuTextureUsage(TextureUsage u, bool wantUpload) {
         out |= wgpu::TextureUsage::RenderAttachment;
     if (hasFlag(u, TextureUsage::DepthStencil))
         out |= wgpu::TextureUsage::RenderAttachment;
+    if (hasFlag(u, TextureUsage::CopySrc))
+        out |= wgpu::TextureUsage::CopySrc;
     if (wantUpload)
         out |= wgpu::TextureUsage::CopyDst;
     return out;
@@ -172,7 +174,10 @@ TextureHandle WebGPUDevice::CreateColorTarget(i32 w, i32 h, Format f) {
     d.mipLevels = 1;
     d.arraySize = 1;
     d.format = f;
-    d.usage = TextureUsage::ShaderResource | TextureUsage::RenderTarget;
+    // CopySrc so off-screen / headless targets can be read back via
+    // ReadbackTexture (copyTextureToBuffer) — WebGPU has no compute path for
+    // the capture shader. Harmless on swap-chain-backed rendering targets.
+    d.usage = TextureUsage::ShaderResource | TextureUsage::RenderTarget | TextureUsage::CopySrc;
     return CreateTexture(d, nullptr);
 }
 

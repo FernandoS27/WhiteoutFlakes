@@ -16,6 +16,8 @@ struct BlsShader;
 
 namespace whiteout::flakes::renderer {
 
+class Camera;
+
 struct RenderPipeline::Impl {
     // ---- GFX device + targets ----
     std::unique_ptr<gfx::IGFXDevice> gfx_;
@@ -24,8 +26,26 @@ struct RenderPipeline::Impl {
     RenderTargetId primaryTargetId_ = 0;
 
     // ---- Display surface size ----
+    // Fallback dimensions used outside a frame (host queries before the first
+    // RenderFrame, resize bookkeeping). During a frame, Width()/Height() resolve
+    // against activeTarget_ instead so every pass sizes to the target actually
+    // being rendered rather than the primary swap-chain.
     i32 width_ = 800;
     i32 height_ = 600;
+
+    // The render target currently being rendered by RenderFrame/RenderViewport,
+    // or nullptr outside a frame. Set at the top of RenderFrame, cleared at the
+    // end. Multi-viewport renders sequentially, so a single active pointer is
+    // sufficient: Width()/Height()/SceneTargetFormat() read it to stay
+    // per-viewport-correct without threading the target through every pass.
+    const RenderTarget* activeTarget_ = nullptr;
+
+    // The camera the in-flight frame renders from. Published alongside
+    // activeTarget_ at the top of RenderFrame and read by every pass through
+    // RenderPipeline::FrameCamera(). Today it always points at the scene's
+    // single camera; once viewports own a camera (Phase 3) RenderViewport sets
+    // it to the viewport's active camera so each viewport renders from its own.
+    const Camera* activeCamera_ = nullptr;
 
     RenderMode frameRenderMode_ = RenderMode::SD;
 

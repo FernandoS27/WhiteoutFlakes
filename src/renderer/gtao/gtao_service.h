@@ -106,7 +106,7 @@ public:
     // `view` / `proj` come from the same camera that built the HD opaque
     // pass — needed for view-space reconstruction. `frameIndex` rotates
     // the per-pixel jitter so the noise pattern decorrelates over time.
-    void Run(gfx::IGFXCommandList* cmd, const RenderTarget& target, const Matrix44f& view,
+    void Run(gfx::IGFXCommandList* cmd, RenderTarget& target, const Matrix44f& view,
              const Matrix44f& proj, u32 frameIndex);
 
     // Inputs for the post-process IBL boost pass.
@@ -130,15 +130,16 @@ public:
     void RunIblBoost(gfx::IGFXCommandList* cmd, const RenderTarget& target,
                      const IblBoostInputs& in);
 
-    // Invalidate the temporal history. Call when the previous frame's
-    // AO is no longer a valid prior — viewport resize, render-mode flip,
-    // model reload, camera teleport. The next Run() forces alpha=1
-    // (current-only) instead of EMA-blending against stale data, which
-    // would otherwise smear an unrelated frame's AO across the new
+    // Invalidate the temporal history for every target. Call when the
+    // previous frame's AO is no longer a valid prior — viewport resize,
+    // render-mode flip, model reload, camera teleport. The temporal state
+    // now lives per-target (RenderTarget::gtao); bumping this generation
+    // makes every target's stored history stale on its next Run(), which
+    // forces alpha=1 (current-only) instead of EMA-blending against data
+    // that would otherwise smear an unrelated frame's AO across the new
     // scene for ~10 frames before EMA converges.
     void ResetHistory() {
-        prevValid_ = false;
-        lastAoOutput_ = gfx::TextureHandle::Invalid;
+        ++historyGen_;
     }
 
 private:
@@ -172,18 +173,13 @@ private:
     Quality quality_ = Quality::Medium;
     bool debugAoOnly_ = false;
 
-    // Temporal state. `prevValid_` is false on frame 0 + on every camera
-    // teleport (resize, render-mode flip — anything that invalidates the
-    // history). When false, the temporal pass is a pure pass-through.
-    Matrix44f prevViewProj_{};
-    bool prevValid_ = false;
-    u32 frameCounter_ = 0;
-
-    // Last AO texture written by the temporal pass. RunIblBoost samples
-    // this same texture so the boost lines up with what the apply pass
-    // modulated against; without this it would have to re-derive the
-    // ping-pong index from frameCounter_ after Run() has bumped it.
-    gfx::TextureHandle lastAoOutput_ = gfx::TextureHandle::Invalid;
+    // Temporal history reset generation. Stamped into RenderTarget::gtao on
+    // each Run(); ResetHistory() bumps it so every target's stored history
+    // reads as stale (pass-through, alpha=1) on its next Run(). Per-target
+    // temporal data (prevViewProj, prevValid, ping-pong index, lastAoOutput)
+    // now lives on RenderTarget::gtao so concurrent viewports don't clobber
+    // each other's history.
+    u32 historyGen_ = 0;
 
     gfx::BufferHandle cb_ = gfx::BufferHandle::Invalid;
     gfx::SamplerHandle pointSampler_ = gfx::SamplerHandle::Invalid;
