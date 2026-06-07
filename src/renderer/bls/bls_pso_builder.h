@@ -32,7 +32,10 @@ enum class VertexLayoutKind : u8 {
     CornFx = 8,
 };
 
-std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k);
+// `api` selects the input layout: D3D12 binds the full ATTR0..7 set to match
+// the untrimmed DXIL geoset signatures; all other backends use the reduced
+// per-permutation layouts. See LayoutFor's definition for the rationale.
+std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k, gfx::GfxApi api);
 
 struct PsoRequest {
     const BlsProgram* program = nullptr;

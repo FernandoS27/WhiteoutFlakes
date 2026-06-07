@@ -265,9 +265,13 @@ int main(int argc, char* argv[]) {
                 backend = whiteout::flakes::gfx::GfxApi::Vulkan;
             } else if (CompareCi(v, "webgpu") == 0 || CompareCi(v, "wgpu") == 0) {
                 backend = whiteout::flakes::gfx::GfxApi::WebGPU;
-            } else if (CompareCi(v, "metal") == 0 || CompareCi(v, "mtl") == 0) {
+            }
+#if defined(__APPLE__)
+            // Metal is Apple-only — only accept it as a CLI backend there.
+            else if (CompareCi(v, "metal") == 0 || CompareCi(v, "mtl") == 0) {
                 backend = whiteout::flakes::gfx::GfxApi::Metal;
             }
+#endif
 #if defined(_WIN32)
             else if (CompareCi(v, "d3d11") == 0 || CompareCi(v, "dx11") == 0) {
                 backend = whiteout::flakes::gfx::GfxApi::D3D11;

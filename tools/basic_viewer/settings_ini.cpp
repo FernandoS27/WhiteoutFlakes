@@ -284,8 +284,13 @@ void LoadStartupSettingsFromIni(RenderService& service) {
             service.Settings().SetDefaultBackend(GfxApi::Vulkan);
         else if (*s == "webgpu" || *s == "WebGPU" || *s == "WEBGPU")
             service.Settings().SetDefaultBackend(GfxApi::WebGPU);
+#if defined(__APPLE__)
+        // Metal is Apple-only; ignore a stale / hand-edited "metal" value on
+        // other platforms so it can't select an unavailable backend (the UI
+        // doesn't offer it there either).
         else if (*s == "metal" || *s == "Metal" || *s == "METAL")
             service.Settings().SetDefaultBackend(GfxApi::Metal);
+#endif
     }
     if (auto* s = ini.Get(KeyOf("PreferredDevice")); s && !s->empty()) {
         service.Settings().SetPreferredDevice(*s);

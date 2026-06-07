@@ -83,26 +83,147 @@ constexpr gfx::InputElement kCornFx[] = {
     {"ATTR", 8, gfx::Format::R32G32B32A32_FLOAT, 48, 0}, // pivot (particle origin)
 };
 
+// ---- D3D12 (DXIL) full-signature layouts ----
+// The DXIL geoset shaders keep slangc's full, self-consistent ATTR0..7 input
+// signature: the bundle build no longer trims it (trimming a signed DXIL
+// container corrupted PSV0/HASH — see externals/Wc3Shaders/build_bls.py). D3D12
+// requires the input layout to provide every element the signature declares, so
+// the d3d12 path must declare all eight attributes. Attributes a given vertex
+// buffer doesn't actually carry are aliased onto slot 0 / offset 0; the shader
+// never reads them (vertex-format / skinning specialization gates them out), so
+// the fetched bytes are inert. Formats match the real skinned/HD layouts so the
+// component types line up with the HLSL declarations.
+//
+// Other backends keep the reduced layouts above: D3D11/DXBC is trimmed to the
+// shipped game signature (and a d3d12→dx_5_0 fallback must match the game too),
+// while Vulkan/Metal/WebGPU tolerate a shader declaring more inputs than the
+// layout binds.
+constexpr gfx::InputElement kMeshSDFull[] = {
+    {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
+    {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 24, 0},
+    {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
+    {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 0},       // aliased
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 0},     // aliased
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 0, 0},      // aliased
+    {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
+};
+
+constexpr gfx::InputElement kMeshSDTc2Full[] = {
+    {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
+    {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 24, 0},
+    {"ATTR", 4, gfx::Format::R32G32_FLOAT, 32, 0},
+    {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 0},     // aliased
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 0, 0},      // aliased
+    {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
+};
+
+constexpr gfx::InputElement kMeshSDSkinnedFull[] = {
+    {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
+    {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 24, 0},
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 1},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 4, 1},
+    {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
+    {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 0},       // aliased
+    {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
+};
+
+constexpr gfx::InputElement kMeshHDTangentFull[] = {
+    {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
+    {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
+    {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
+    {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 1},
+    {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 0},   // aliased
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 0}, // aliased
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 0, 0},  // aliased
+};
+
+constexpr gfx::InputElement kMeshHDSkinnedFull[] = {
+    {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
+    {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
+    {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
+    {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 1},
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 2},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 4, 2},
+    {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 0}, // aliased
+};
+
+constexpr gfx::InputElement kMeshHDSkinnedNoTangentFull[] = {
+    {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
+    {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
+    {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 1},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 4, 1},
+    {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 0},       // aliased
+    {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
+};
+
+// The shadow pass binds the full HD geoset VS (full ATTR0..7 signature) with
+// the ParticleSD layouts (rigid → kParticleSD, also reused for depth-only
+// passes), so those need full d3d12 variants too. A full layout is a safe
+// superset for the actual particle shaders (D3D12 ignores layout elements the
+// signature doesn't consume), so this doesn't disturb particle rendering.
+constexpr gfx::InputElement kParticleSDFull[] = {
+    {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
+    {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
+    {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
+    {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 0},       // aliased
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 0},     // aliased
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 0, 0},      // aliased
+    {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
+};
+
+constexpr gfx::InputElement kParticleSDSkinnedFull[] = {
+    {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},
+    {"ATTR", 1, gfx::Format::R32G32B32_FLOAT, 12, 0},
+    {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 24, 0},
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 40, 0},
+    {"ATTR", 5, gfx::Format::R8G8B8A8_UNORM, 0, 1},
+    {"ATTR", 6, gfx::Format::R8G8B8A8_UINT, 4, 1},
+    {"ATTR", 4, gfx::Format::R32G32_FLOAT, 0, 0},       // aliased
+    {"ATTR", 7, gfx::Format::R32G32B32A32_FLOAT, 0, 0}, // aliased
+};
+
 } // namespace
 
-std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k) {
+std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k, gfx::GfxApi api) {
+    // D3D12 binds the full ATTR0..7 layout for the geoset meshes to match the
+    // untrimmed DXIL input signature (see the kMesh*Full comment). Every other
+    // backend — and the particle / corn layouts, whose shaders don't
+    // over-declare — uses the reduced layouts.
+    const bool full = (api == gfx::GfxApi::D3D12);
     switch (k) {
     case VertexLayoutKind::MeshSD:
-        return {kMeshSD, std::size(kMeshSD)};
+        return full ? std::span{kMeshSDFull, std::size(kMeshSDFull)}
+                    : std::span{kMeshSD, std::size(kMeshSD)};
     case VertexLayoutKind::MeshSDTc2:
-        return {kMeshSDTc2, std::size(kMeshSDTc2)};
+        return full ? std::span{kMeshSDTc2Full, std::size(kMeshSDTc2Full)}
+                    : std::span{kMeshSDTc2, std::size(kMeshSDTc2)};
     case VertexLayoutKind::MeshSDSkinned:
-        return {kMeshSDSkinned, std::size(kMeshSDSkinned)};
+        return full ? std::span{kMeshSDSkinnedFull, std::size(kMeshSDSkinnedFull)}
+                    : std::span{kMeshSDSkinned, std::size(kMeshSDSkinned)};
     case VertexLayoutKind::ParticleSD:
-        return {kParticleSD, std::size(kParticleSD)};
+        return full ? std::span{kParticleSDFull, std::size(kParticleSDFull)}
+                    : std::span{kParticleSD, std::size(kParticleSD)};
     case VertexLayoutKind::ParticleSDSkinned:
-        return {kParticleSDSkinned, std::size(kParticleSDSkinned)};
+        return full ? std::span{kParticleSDSkinnedFull, std::size(kParticleSDSkinnedFull)}
+                    : std::span{kParticleSDSkinned, std::size(kParticleSDSkinned)};
     case VertexLayoutKind::MeshHDTangent:
-        return {kMeshHDTangent, std::size(kMeshHDTangent)};
+        return full ? std::span{kMeshHDTangentFull, std::size(kMeshHDTangentFull)}
+                    : std::span{kMeshHDTangent, std::size(kMeshHDTangent)};
     case VertexLayoutKind::MeshHDSkinned:
-        return {kMeshHDSkinned, std::size(kMeshHDSkinned)};
+        return full ? std::span{kMeshHDSkinnedFull, std::size(kMeshHDSkinnedFull)}
+                    : std::span{kMeshHDSkinned, std::size(kMeshHDSkinned)};
     case VertexLayoutKind::MeshHDSkinnedNoTangent:
-        return {kMeshHDSkinnedNoTangent, std::size(kMeshHDSkinnedNoTangent)};
+        return full ? std::span{kMeshHDSkinnedNoTangentFull, std::size(kMeshHDSkinnedNoTangentFull)}
+                    : std::span{kMeshHDSkinnedNoTangent, std::size(kMeshHDSkinnedNoTangent)};
     case VertexLayoutKind::CornFx:
         return {kCornFx, std::size(kCornFx)};
     }
@@ -229,7 +350,7 @@ gfx::PipelineHandle BlsPsoBuilder::GetOrBuild(const PsoRequest& request) {
     gfx::GraphicsPipelineDesc desc{};
     desc.vs = request.program->vs->permuteHandles[request.vsIndex];
     desc.ps = request.program->ps->permuteHandles[request.psIndex];
-    desc.inputLayout = LayoutFor(request.layout);
+    desc.inputLayout = LayoutFor(request.layout, device_->GetApi());
     desc.topology = request.topology;
     desc.blend = BlendFor(request.material.alpha);
     desc.blend.colorWrite = request.material.ColorWriteEnabled();

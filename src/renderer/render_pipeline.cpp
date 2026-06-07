@@ -818,7 +818,7 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
             gfx::GraphicsPipelineDesc gpd{};
             gpd.vs = impl_->blsHdProgram_->vs->permuteHandles[permIndex];
             gpd.ps = gfx::ShaderHandle{0};
-            gpd.inputLayout = bls::LayoutFor(layoutKind);
+            gpd.inputLayout = bls::LayoutFor(layoutKind, impl_->gfx_->GetApi());
             gpd.topology = gfx::PrimitiveTopology::TriangleList;
             gpd.depthStencil.depthTest = true;
             gpd.depthStencil.depthWrite = true;

@@ -765,9 +765,14 @@ void ViewerUI::BuildSettingsWindow() {
         //            wired into Linux builds.
 #if defined(_WIN32)
         {
+            // Metal is Apple-only, so it's excluded from the Windows list. It's
+            // the trailing entry in kBackendLabels (index 4), so the windowed
+            // set is just the first four: D3D11, D3D12, Vulkan, WebGPU.
+            constexpr i32 kWinBackendCount = static_cast<i32>(kBackendLabels.size()) - 1;
             i32 sel = BackendToIdx(svc.Settings().DefaultBackend());
-            if (ImGui::Combo("Backend", &sel, kBackendLabels.data(),
-                             static_cast<i32>(kBackendLabels.size()))) {
+            if (sel >= kWinBackendCount)
+                sel = BackendToIdx(gfx::GfxApi::D3D12); // clamp a stale Metal selection
+            if (ImGui::Combo("Backend", &sel, kBackendLabels.data(), kWinBackendCount)) {
                 svc.Settings().SetDefaultBackend(IdxToBackend(sel));
                 SaveIni(app_);
             }
