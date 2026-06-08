@@ -84,6 +84,10 @@ particle::SplatService& RenderService::Splats() {
 corn_effects::CornEffectsService& RenderService::CornEffects() {
     return impl_->cornEffectsService_;
 }
+bool RenderService::ComputeEffectWorldBounds(u32 actor, i32 emitterId, Vector3f& outMin,
+                                             Vector3f& outMax) {
+    return impl_->cornEffectsService_.ComputeWorldParticleBounds(actor, emitterId, outMin, outMax);
+}
 SpnSpawner& RenderService::Spn() {
     return *impl_->spnSpawner_;
 }

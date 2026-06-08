@@ -69,6 +69,13 @@ public:
 
     CornEffectsEmitter* GetEmitter(ActorId model, i32 emitterId);
 
+    // World-space (game-unit) AABB of an emitter's live particle cloud, padded
+    // by per-particle billboard size. Returns false when the emitter is missing
+    // or has no live particles. Render-packet positions are corn-space, so the
+    // bounds are converted by 1/gameToCornEffectsScale before returning.
+    bool ComputeWorldParticleBounds(ActorId model, i32 emitterId, Vector3f& outMin,
+                                    Vector3f& outMax) const;
+
     i32 EmitterCount() const;
     i32 TotalParticleCount() const;
     bool HasEmittersForModel(ActorId model) const;

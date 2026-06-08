@@ -8,6 +8,7 @@
 #include "renderer/model/model_loader.h"
 #include "renderer/model/model_template.h"
 #include "io/mdx_model_adapter.h"
+#include "pkb_effect_source.h"
 #include "renderer/particle/splat_service.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
@@ -543,7 +544,40 @@ void ViewerApp::FrameCameraToModel(model::Actor* hero) {
     cam.SetDistance(maxAxis * 1.0f);
 }
 
+bool ViewerApp::FrameCameraToEffect() {
+    // The renderer owns the particle data and the corn↔game scale, so it
+    // computes the live world-space AABB; the host just frames to it.
+    Vector3f lo{}, hi{};
+    if (!service_.ComputeEffectWorldBounds(focusActor_, /*emitterId*/ 0, lo, hi))
+        return false; // no live particles yet — Tick retries next frame
+
+    const Vector3f center{(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f};
+    f32 maxAxis = (std::max)({hi.x - lo.x, hi.y - lo.y, hi.z - lo.z});
+    maxAxis = (std::max)(maxAxis, 30.0f); // floor for tiny / point effects
+
+    auto& cam = service_.Scene().Camera();
+    cam.SetTarget(center);
+    cam.SetDistance(maxAxis * 1.3f); // a little margin around the cloud
+    return true;
+}
+
+namespace {
+// .pkb / .pkfx are standalone PopcornFX effects, not models.
+bool IsEffectPath(const std::filesystem::path& path) {
+    std::string ext = path.extension().string();
+    for (char& c : ext)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext == ".pkb" || ext == ".pkfx";
+}
+} // namespace
+
 bool ViewerApp::LoadModel(const std::filesystem::path& path) {
+    // A .pkb / .pkfx isn't a model — it's one particle effect with no
+    // animation list. Route it to the effect player so File > Open / CLI /
+    // the startup picker all transparently accept effects too.
+    if (IsEffectPath(path))
+        return LoadEffect(path);
+
     if (!std::filesystem::exists(path)) {
         std::fprintf(stderr, "[viewer] file not found: %s\n", io::PathToUtf8(path).c_str());
         return false;
@@ -652,6 +686,67 @@ bool ViewerApp::LoadModel(const std::filesystem::path& path) {
     walkDriftAccumulated_ = 0.0f;
 
     currentModelPath_ = path;
+    return true;
+}
+
+bool ViewerApp::LoadEffect(const std::filesystem::path& path) {
+    if (!std::filesystem::exists(path)) {
+        std::fprintf(stderr, "[viewer] file not found: %s\n", io::PathToUtf8(path).c_str());
+        return false;
+    }
+    currentModelPath_ = path;
+    // Textures the .pkb references resolve against its own directory.
+    service_.Scene().SetPE1BasePath(path.parent_path());
+
+    service_.Loader().RequestClearAll();
+    auto source = std::make_shared<model::PkbEffectSource>(io::PathToUtf8(path));
+    model::Actor* hero = service_.Loader().SpawnUnitFromSource(source);
+    if (!hero) {
+        std::fprintf(stderr, "[viewer] effect spawn FAILED for %s\n",
+                     io::PathToUtf8(path).c_str());
+        return false;
+    }
+    focusActor_ = hero->handle;
+    hero->ignoreNonLooping = loopNonLoopingPolicy_;
+
+    // The source exposes one placeholder "Effect" sequence — mirror it into the
+    // UI dropdowns like a model so the sequence picker stays consistent.
+    auto sequences = hero->animation.Sequences();
+    sequenceNames_.clear();
+    sequenceRanges_.clear();
+    sequenceNames_.reserve(sequences.size());
+    sequenceRanges_.reserve(sequences.size());
+    for (auto& s : sequences) {
+        sequenceNames_.push_back(s.name);
+        sequenceRanges_.push_back(s);
+    }
+    if (!sequences.empty())
+        hero->animation.SetActiveSequenceIndex(0);
+
+    // PKB effects have no mesh bounds, and the PopcornFX runtime extents
+    // aren't known until the sim has run a few frames. Seed a provisional
+    // pose now (origin, moderate distance) so the first frames aren't framed
+    // blind, then let Tick reframe to the real particle cloud via
+    // FrameCameraToEffect once it develops (effectFrameTicks_).
+    {
+        auto& cam = service_.Scene().Camera();
+        cam.SetOrbitalMode();
+        cam.SetTarget(Vector3f{0.0f, 0.0f, 0.0f});
+        cam.SetYaw(Camera::kDefaultYaw - 0.785398f); // 3/4 view, like FrameCameraToModel
+        cam.SetPitch(0.6f);
+        cam.SetDistance(100.0f);
+        cam.SetFovDiagonal(Camera::kDefaultFovDiagonal);
+        cam.SetClip(Camera::kDefaultNearZ, Camera::kDefaultFarZ);
+    }
+    effectFrameTicks_ = 0;
+
+    // Effects carry no camera presets.
+    cameraPresets_.clear();
+    cameraPresetNamesUtf8_.clear();
+    activeCameraPresetIdx_ = -1;
+    cameraLocked_ = false;
+    walkDriftPrevSeqIdx_ = -1;
+    walkDriftAccumulated_ = 0.0f;
     return true;
 }
 
@@ -1313,6 +1408,21 @@ void ViewerApp::Tick(f32 dt) {
     }
 
     service_.Ticker().Tick(parentDt);
+
+    // Reframe a freshly-loaded .pkb once its particle cloud has developed.
+    // Wait a short warm-up so the AABB reflects the steady-state spread, then
+    // keep retrying until particles exist (some effects spawn on a delay),
+    // giving up after a bounded window so we don't poll forever.
+    if (effectFrameTicks_ >= 0) {
+        constexpr i32 kEffectFrameWarmupTicks = 12;
+        constexpr i32 kEffectFrameMaxTicks = 90;
+        ++effectFrameTicks_;
+        if (effectFrameTicks_ >= kEffectFrameWarmupTicks) {
+            if (FrameCameraToEffect() || effectFrameTicks_ >= kEffectFrameMaxTicks)
+                effectFrameTicks_ = -1;
+        }
+    }
+
     service_.Pipeline().RenderFrame(targetId_);
     service_.Pipeline().Present(targetId_);
 

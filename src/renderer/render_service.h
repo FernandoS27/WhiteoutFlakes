@@ -154,6 +154,12 @@ public:
     corn_effects::CornEffectsService& CornEffects();
     effects::SpnSpawner& Spn();
 
+    // World-space AABB of a corn-fx emitter's live particle cloud (game units),
+    // or false if it has no live particles. Host-facing convenience so tools can
+    // frame a standalone .pkb effect without pulling the cornflakes interface
+    // headers (the corn↔game scale and packet layout stay inside the renderer).
+    bool ComputeEffectWorldBounds(u32 actor, i32 emitterId, Vector3f& outMin, Vector3f& outMax);
+
     // ---- App-tunable knobs ----
     RenderSettings& Settings();
     const RenderSettings& Settings() const;

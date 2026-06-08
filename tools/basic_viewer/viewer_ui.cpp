@@ -131,10 +131,12 @@ void ViewerUI::OpenFileDialog() {
     // `char` literals on every platform — the native variant takes wchar_t
     // on Windows, which would break these inline string constants.
     NFD::UniquePathU8 outPath;
-    nfdu8filteritem_t filter[1] = {{"Warcraft III Model", "mdx,mdl"}};
-    if (NFD::OpenDialog(outPath, filter, 1) == NFD_OKAY) {
+    nfdu8filteritem_t filter[3] = {{"All supported", "mdx,mdl,pkb,pkfx"},
+                                   {"Warcraft III Model", "mdx,mdl"},
+                                   {"PKB Effect", "pkb,pkfx"}};
+    if (NFD::OpenDialog(outPath, filter, 3) == NFD_OKAY) {
         std::filesystem::path p = io::FsPathFromUtf8(outPath.get());
-        app_.LoadModel(p);
+        app_.LoadModel(p); // dispatches .pkb / .pkfx to the effect loader
     }
 }
 

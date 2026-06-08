@@ -1,5 +1,7 @@
 #include "cubeb_sound_emitter.h"
 #include "gfx/gfx.h"
+#include "pkb_effect_source.h"
+#include "renderer/frame_ticker.h"
 #include "renderer/model/model_loader.h"
 #include "renderer/particle/particle_service.h"
 #include "renderer/render_pipeline.h"
@@ -117,11 +119,19 @@ static int RunHeadlessTest(whiteout::flakes::renderer::RenderService& renderer,
     wf::renderer::model::Actor* hero = nullptr;
     if (!mdxPath.empty()) {
         scene.SetPE1BasePath(mdxPath.parent_path());
-        hero = renderer.Loader().SpawnUnit(wf::io::PathToUtf8(mdxPath));
-        if (!hero)
-            std::cerr << "[headless] SpawnUnit FAILED" << std::endl;
-        else
-            step("SpawnUnit OK");
+        std::string ext = mdxPath.extension().string();
+        for (char& c : ext)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        if (ext == ".pkb" || ext == ".pkfx") {
+            // Standalone PopcornFX effect — same path the viewer's LoadEffect uses.
+            auto src = std::make_shared<wf::renderer::model::PkbEffectSource>(
+                wf::io::PathToUtf8(mdxPath));
+            hero = renderer.Loader().SpawnUnitFromSource(src);
+            step(hero ? "SpawnEffect OK" : "SpawnEffect FAILED");
+        } else {
+            hero = renderer.Loader().SpawnUnit(wf::io::PathToUtf8(mdxPath));
+            step(hero ? "SpawnUnit OK" : "SpawnUnit FAILED");
+        }
     }
 
     wf::renderer::Viewport vp;
@@ -133,6 +143,7 @@ static int RunHeadlessTest(whiteout::flakes::renderer::RenderService& renderer,
     const i32 frames = mdxPath.empty() ? 3 : 40;
     for (i32 i = 0; i < frames; ++i) {
         scene.Update(0.016f);
+        renderer.Ticker().Tick(0.016f); // evaluate actors + advance particle/corn sim
         pipe.RenderViewport(vp);
         pipe.Present(tid);
     }
@@ -525,8 +536,10 @@ int main(int argc, char* argv[]) {
     // File > Open in the menu bar.
     if (mdxPath.empty()) {
         NFD::UniquePathU8 outPath;
-        nfdu8filteritem_t filter[1] = {{"Warcraft III Model", "mdx,mdl"}};
-        if (NFD::OpenDialog(outPath, filter, 1) == NFD_OKAY)
+        nfdu8filteritem_t filter[3] = {{"All supported", "mdx,mdl,pkb,pkfx"},
+                                       {"Warcraft III Model", "mdx,mdl"},
+                                       {"PKB Effect", "pkb,pkfx"}};
+        if (NFD::OpenDialog(outPath, filter, 3) == NFD_OKAY)
             mdxPath = whiteout::flakes::io::FsPathFromUtf8(outPath.get());
     }
     if (!mdxPath.empty()) {
@@ -541,7 +554,10 @@ int main(int argc, char* argv[]) {
     // RenderService warm up (BLS shaders / textures finish loading), run the
     // export, then exit.
     if (doExport) {
-        for (i32 i = 0; i < 8 && !app.ShouldClose(); ++i) {
+        // Warm-up: drain the async asset pump and let a standalone .pkb's
+        // particle cloud develop so the viewer's deferred effect-framing
+        // (FrameCameraToEffect, ~12 ticks) reframes before the export.
+        for (i32 i = 0; i < 24 && !app.ShouldClose(); ++i) {
             scene.Update(0.016f);
             app.Tick(0.016f);
         }

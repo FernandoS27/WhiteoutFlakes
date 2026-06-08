@@ -517,6 +517,31 @@ Actor* ModelLoader::SpawnUnitFromSource(std::shared_ptr<IModelSource> source,
     if (!data.pe1Configs.empty())
         SetPE1Configs(h, data.pe1Configs);
 
+    // CornEffect (PopcornFX) emitters — mirror StageActor's template path so a
+    // live source (e.g. a directly-loaded .pkb) gets its effect too. Per-frame
+    // multipliers/visibility flow through FrameState::cornStates afterward.
+    {
+        const Vector4f teamRGBA = {
+            ((actor->teamColor) & 0xFF) / 255.0f,
+            ((actor->teamColor >> 8) & 0xFF) / 255.0f,
+            ((actor->teamColor >> 16) & 0xFF) / 255.0f,
+            1.0f,
+        };
+        for (const auto& cinit : data.cornEmitterInits) {
+            if (cinit.pkbPath.empty())
+                continue;
+            auto em = std::make_unique<corn_effects::CornEffectsEmitter>(
+                rs_.Assets(), cinit.pkbPath, cinit.animVisibilityGuide, cinit.replaceableId,
+                cinit.cornEffectsScaling);
+            em->SetEmissionRateMultiplier(cinit.defaultEmissionRate);
+            em->SetLifeSpanMultiplier(cinit.defaultLifeSpan);
+            em->SetSpeedMultiplier(cinit.defaultSpeed);
+            em->SetColor(cinit.defaultColor);
+            em->SetReplaceableColor(teamRGBA);
+            rs_.CornEffects().AddCornEmitter(actor->handle, cinit.emitterId, std::move(em));
+        }
+    }
+
     // Same as the template-based path: Acquire+hold slots so the host
     // pump fetches + parses each child MDX up front and refs are
     // released when the actor dies.

@@ -15,9 +15,13 @@
 #include <cornflakes/interface/binding/layer_program.hpp>
 #include <cornflakes/interface/core/arena.hpp>
 #include <cornflakes/interface/diagnostics/issue.hpp>
+#include <cornflakes/interface/render/render_packet.hpp>
 #include <cornflakes/interface/schema/handles.hpp>
+#include <cornflakes/interface/service/service_types.hpp>
+#include <cornflakes/interface/sim/effect_runtime.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <unordered_set>
@@ -88,6 +92,56 @@ CornEffectsEmitter* CornEffectsService::GetEmitter(ActorId model, i32 emitterId)
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = emitters_.find({model, emitterId});
     return (it != emitters_.end()) ? it->second.get() : nullptr;
+}
+
+bool CornEffectsService::ComputeWorldParticleBounds(ActorId model, i32 emitterId, Vector3f& outMin,
+                                                    Vector3f& outMax) const {
+    namespace cf = ::whiteout::cornflakes;
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = emitters_.find({model, emitterId});
+    if (it == emitters_.end())
+        return false;
+    const auto* rt = it->second->LiveRuntime();
+    if (!rt)
+        return false;
+
+    // Render-packet Position/Size are corn-space; the GPU multiplies by
+    // cornEffectsScale (= 1/gameToCornEffectsScale) to reach world units. Pad
+    // the AABB by each billboard's radius so its quad isn't clipped.
+    Vector3f lo{1e30f, 1e30f, 1e30f}, hi{-1e30f, -1e30f, -1e30f};
+    bool have = false;
+    for (const auto& pkt : rt->lastPackets()) {
+        if (pkt.particleCount == 0)
+            continue;
+        auto posBytes = pkt.slots[static_cast<std::size_t>(cf::RenderSlot::Position)];
+        const std::size_t n = std::min<std::size_t>(pkt.particleCount,
+                                                    posBytes.size() / sizeof(cf::Float3));
+        if (n == 0)
+            continue;
+        const auto* pos = reinterpret_cast<const cf::Float3*>(posBytes.data());
+        auto sizeBytes = pkt.slots[static_cast<std::size_t>(cf::RenderSlot::Size)];
+        const f32* sz = sizeBytes.size() >= n * sizeof(f32)
+                            ? reinterpret_cast<const f32*>(sizeBytes.data())
+                            : nullptr;
+        for (std::size_t p = 0; p < n; ++p) {
+            const f32 r = (sz && std::isfinite(sz[p])) ? std::max(0.0f, sz[p]) : 0.0f;
+            lo.x = std::min(lo.x, pos[p].x - r);
+            lo.y = std::min(lo.y, pos[p].y - r);
+            lo.z = std::min(lo.z, pos[p].z - r);
+            hi.x = std::max(hi.x, pos[p].x + r);
+            hi.y = std::max(hi.y, pos[p].y + r);
+            hi.z = std::max(hi.z, pos[p].z + r);
+            have = true;
+        }
+    }
+    if (!have)
+        return false;
+
+    const f32 cornToGame =
+        gameToCornEffectsScale_ > 0.0f ? (1.0f / gameToCornEffectsScale_) : 1.0f;
+    outMin = {lo.x * cornToGame, lo.y * cornToGame, lo.z * cornToGame};
+    outMax = {hi.x * cornToGame, hi.y * cornToGame, hi.z * cornToGame};
+    return true;
 }
 
 i32 CornEffectsService::EmitterCount() const {

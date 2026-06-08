@@ -97,7 +97,13 @@ public:
 
     // Load an MDX from disk and make it the focus actor. Clears any
     // previously-loaded scene. Safe to call repeatedly (used by File > Open).
+    // Dispatches .pkb / .pkfx paths to LoadEffect.
     bool LoadModel(const std::filesystem::path& path);
+
+    // Load a standalone PopcornFX effect (.pkb / .pkfx) and play it. Unlike a
+    // model, there's no animation list — the effect just runs. Clears any
+    // previously-loaded scene; becomes the focus actor.
+    bool LoadEffect(const std::filesystem::path& path);
 
     // ---- Animation frame export ----
     // Queue an animation export (see AnimationExportParams). Deferred: the UI
@@ -185,6 +191,13 @@ private:
     // of its bounding box, three-quarter angle, distance to fit.
     void FrameCameraToModel(model::Actor* hero);
 
+    // Frames the orbital camera on a standalone .pkb effect using its live
+    // particle cloud (a .pkb has no mesh bounds). Returns true once it found
+    // particles and reframed; false while the effect hasn't spawned any yet.
+    // Driven by the deferred warm-up in Tick — particle spread isn't known
+    // until the sim has run a few frames.
+    bool FrameCameraToEffect();
+
     static void FramebufferSizeCallback(GLFWwindow* w, int width, int height);
     static void MouseButtonCallback(GLFWwindow* w, int button, int action, int mods);
     static void CursorPosCallback(GLFWwindow* w, double x, double y);
@@ -204,6 +217,10 @@ private:
     // ---- Host state ----
     bool loopNonLoopingPolicy_ = true;
     ActorId focusActor_ = 0;
+    // Deferred camera-framing for a standalone .pkb: LoadEffect arms this, Tick
+    // counts sim frames and reframes once the particle cloud has developed.
+    // <0 means inactive.
+    i32 effectFrameTicks_ = -1;
     std::vector<CameraPreset> cameraPresets_;
     std::vector<std::string> cameraPresetNamesUtf8_;
     std::vector<std::string> sequenceNames_;
