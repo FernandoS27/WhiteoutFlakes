@@ -34,7 +34,18 @@ using namespace ::whiteout::flakes::renderer::bls;
 using namespace ::whiteout::flakes::renderer::shadow;
 
 void FrameTicker::Tick(f32 dt) {
+    Tick(rs_.DefaultScene(), dt);
+}
+
+void FrameTicker::Tick(SceneManager& scene, f32 dt) {
     WDX_CPU_ZONE("FrameTicker::Tick");
+    // Publish the scene being ticked so Scene()/Particles()/CornEffects()/Spn()
+    // and MakeActorEvalContext() resolve to it, then restore the default scene.
+    rs_.SetActiveScene(scene);
+    struct Restore {
+        RenderService* rs;
+        ~Restore() { rs->SetActiveScene(rs->DefaultSceneId()); }
+    } restore{&rs_};
     {
         // Pump the AssetManager's render-thread half: drains the
         // prepared queue (CPU-decoded texture / particle / child-MDX

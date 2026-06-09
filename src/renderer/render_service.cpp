@@ -17,6 +17,7 @@
 #include "whiteout/flakes/content_provider.h"
 #include "whiteout/flakes/util/texture_image_usage.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 
@@ -32,10 +33,16 @@ using namespace ::whiteout::flakes::renderer::shadow;
 using namespace ::whiteout::flakes::renderer::dnc;
 
 RenderService::RenderService(SceneManager& scene) : impl_(std::make_unique<Impl>()) {
-    impl_->scene_ = &scene;
+    // Register the passed scene as the default scene (id 0). The host owns it
+    // (borrowed); scenes created later via CreateScene() are owned by us.
+    impl_->scenes_[impl_->defaultSceneId_] = &scene;
+    impl_->sceneServices_[impl_->defaultSceneId_] = std::make_unique<SceneServices>(*this);
+    impl_->activeSceneId_ = impl_->defaultSceneId_;
+    impl_->activeScene_ = &scene;
+    impl_->activeServices_ = impl_->sceneServices_[impl_->defaultSceneId_].get();
+
     impl_->debug_ = std::make_unique<DebugRenderer>(*this);
     impl_->pipeline_ = std::make_unique<RenderPipeline>(*this);
-    impl_->spnSpawner_ = std::make_unique<SpnSpawner>(*this);
     impl_->ticker_ = std::make_unique<FrameTicker>(*this);
     // ModelLoader must be constructed BEFORE the texture-cache lambda below
     // is installed, since the lambda dispatches into impl_->loader_.
@@ -49,12 +56,146 @@ RenderService::RenderService(SceneManager& scene) : impl_(std::make_unique<Impl>
 
 RenderService::~RenderService() = default;
 
+// ---- Scene registry ----
+SceneId RenderService::CreateScene() {
+    const SceneId id = impl_->nextSceneId_++;
+    auto scene = std::make_unique<SceneManager>();
+    impl_->scenes_[id] = scene.get();
+    impl_->ownedScenes_.push_back(std::move(scene));
+    impl_->sceneServices_[id] = std::make_unique<SceneServices>(*this);
+    // Wire the new scene's corn-fx GPU backend if the pipeline is already up.
+    if (impl_->cornInitApplier_)
+        impl_->cornInitApplier_(impl_->sceneServices_[id]->corn);
+    return id;
+}
+
+void RenderService::DestroyScene(SceneId id) {
+    if (id == impl_->defaultSceneId_)
+        return; // the default scene lives for the RenderService's lifetime
+    auto sit = impl_->scenes_.find(id);
+    if (sit == impl_->scenes_.end())
+        return;
+    SceneManager* scene = sit->second;
+
+    // Release this scene's GPU state before its objects go away: corn-fx
+    // buffers/emitters and each actor's GPU resources. The device is still
+    // alive here (DestroyScene is a runtime call, not teardown).
+    if (auto svcIt = impl_->sceneServices_.find(id); svcIt != impl_->sceneServices_.end()) {
+        svcIt->second->corn.Clear();
+        svcIt->second->corn.ReleaseGpuResources();
+    }
+    if (scene) {
+        // Unregister every actor from the GLOBAL replaceable-texture manager
+        // (keyed by Actor*) before the scene's actors are freed — otherwise its
+        // dirty-actor list keeps dangling pointers and the next RebakeDirtyActors
+        // dereferences freed memory. Per-scene services (particle/corn/splat/spn)
+        // are destroyed with the scene, so they need no explicit unregister.
+        if (impl_->replaceables_) {
+            for (auto& [h, miPtr] : scene->Actors().All())
+                impl_->replaceables_->UnregisterModel(*miPtr);
+        }
+        if (impl_->pipeline_ && impl_->pipeline_->IsDeviceReady()) {
+            if (auto* gfx = impl_->pipeline_->Gfx()) {
+                for (auto& [h, miPtr] : scene->Actors().All())
+                    miPtr->ReleaseGPU(*gfx);
+                scene->Templates().ReleaseAllGPU(*gfx);
+            }
+            scene->Templates().Clear();
+        }
+    }
+
+    // If this was the active scene, fall back to the default before erasing.
+    if (impl_->activeSceneId_ == id)
+        SetActiveScene(impl_->defaultSceneId_);
+
+    impl_->sceneServices_.erase(id);
+    impl_->scenes_.erase(id);
+    impl_->ownedScenes_.erase(
+        std::remove_if(impl_->ownedScenes_.begin(), impl_->ownedScenes_.end(),
+                       [scene](const std::unique_ptr<SceneManager>& p) { return p.get() == scene; }),
+        impl_->ownedScenes_.end());
+}
+
+SceneManager& RenderService::SceneAt(SceneId id) {
+    auto it = impl_->scenes_.find(id);
+    if (it != impl_->scenes_.end())
+        return *it->second;
+    return *impl_->scenes_[impl_->defaultSceneId_];
+}
+
+SceneManager& RenderService::DefaultScene() {
+    return *impl_->scenes_[impl_->defaultSceneId_];
+}
+
+SceneId RenderService::DefaultSceneId() const {
+    return impl_->defaultSceneId_;
+}
+
+void RenderService::SetActiveScene(SceneId id) {
+    auto it = impl_->scenes_.find(id);
+    if (it == impl_->scenes_.end())
+        id = impl_->defaultSceneId_;
+    impl_->activeSceneId_ = id;
+    impl_->activeScene_ = impl_->scenes_[id];
+    impl_->activeServices_ = impl_->sceneServices_[id].get();
+}
+
+void RenderService::SetActiveScene(SceneManager& scene) {
+    for (auto& [id, s] : impl_->scenes_) {
+        if (s == &scene) {
+            SetActiveScene(id);
+            return;
+        }
+    }
+    SetActiveScene(impl_->defaultSceneId_);
+}
+
+SceneManager& RenderService::ActiveScene() {
+    return *impl_->activeScene_;
+}
+
+void RenderService::TickScenes(f32 dt) {
+    // Advance each scene's wall clock + actors, then run the per-scene frame
+    // update against it. Snapshot ids first so the loop is stable if a tick
+    // mutates the registry.
+    std::vector<SceneId> ids;
+    ids.reserve(impl_->scenes_.size());
+    for (auto& [id, s] : impl_->scenes_)
+        ids.push_back(id);
+    for (SceneId id : ids) {
+        auto it = impl_->scenes_.find(id);
+        if (it == impl_->scenes_.end())
+            continue;
+        it->second->Update(dt);
+        impl_->ticker_->Tick(*it->second, dt);
+    }
+}
+
+void RenderService::SetCornBackendInitApplier(
+    std::function<void(corn_effects::CornEffectsService&)> fn) {
+    impl_->cornInitApplier_ = std::move(fn);
+    if (impl_->cornInitApplier_)
+        for (auto& [id, svc] : impl_->sceneServices_)
+            impl_->cornInitApplier_(svc->corn);
+}
+
+void RenderService::ForEachCornService(
+    const std::function<void(corn_effects::CornEffectsService&)>& fn) {
+    for (auto& [id, svc] : impl_->sceneServices_)
+        fn(svc->corn);
+}
+
+void RenderService::ForEachScene(const std::function<void(SceneManager&)>& fn) {
+    for (auto& [id, scene] : impl_->scenes_)
+        fn(*scene);
+}
+
 // ---- Out-of-line accessors (bodies live here so Impl is complete) ----
 SceneManager& RenderService::Scene() {
-    return *impl_->scene_;
+    return *impl_->activeScene_;
 }
 const SceneManager& RenderService::Scene() const {
-    return *impl_->scene_;
+    return *impl_->activeScene_;
 }
 TextureAssetManager& RenderService::Textures() {
     return *impl_->textures_;
@@ -76,20 +217,21 @@ DebugRenderer& RenderService::Debug() {
 }
 
 particle::ParticleService& RenderService::Particles() {
-    return impl_->particleService_;
+    return impl_->activeServices_->particles;
 }
 particle::SplatService& RenderService::Splats() {
-    return impl_->splatService_;
+    return impl_->activeServices_->splats;
 }
 corn_effects::CornEffectsService& RenderService::CornEffects() {
-    return impl_->cornEffectsService_;
+    return impl_->activeServices_->corn;
 }
 bool RenderService::ComputeEffectWorldBounds(u32 actor, i32 emitterId, Vector3f& outMin,
                                              Vector3f& outMax) {
-    return impl_->cornEffectsService_.ComputeWorldParticleBounds(actor, emitterId, outMin, outMax);
+    return impl_->activeServices_->corn.ComputeWorldParticleBounds(actor, emitterId, outMin,
+                                                                   outMax);
 }
 SpnSpawner& RenderService::Spn() {
-    return *impl_->spnSpawner_;
+    return *impl_->activeServices_->spn;
 }
 
 dnc::DncService* RenderService::GetDncService() {
@@ -150,15 +292,20 @@ const ISoundEmitter& RenderService::Sound() const {
 }
 
 ActorEvalContext RenderService::MakeActorEvalContext() {
+    // Binds the ACTIVE scene + its effect services. The ticker publishes the
+    // scene it is ticking, so each scene's actors evaluate against their own
+    // services/camera.
+    SceneManager* scene = impl_->activeScene_;
+    SceneServices* svc = impl_->activeServices_;
     ActorEvalContext ctx;
-    ctx.camPos = impl_->scene_->Camera().GetSource();
-    ctx.sceneAnimationTimeMs = impl_->scene_->GetAnimationTime();
+    ctx.camPos = scene->Camera().GetSource();
+    ctx.sceneAnimationTimeMs = scene->GetAnimationTime();
     ctx.fireEvents = impl_->settings_.ShowEvents();
-    ctx.scene = impl_->scene_;
-    ctx.particles = &impl_->particleService_;
-    ctx.splats = &impl_->splatService_;
-    ctx.cornEffects = &impl_->cornEffectsService_;
-    ctx.spnSpawner = impl_->spnSpawner_.get();
+    ctx.scene = scene;
+    ctx.particles = &svc->particles;
+    ctx.splats = &svc->splats;
+    ctx.cornEffects = &svc->corn;
+    ctx.spnSpawner = svc->spn.get();
     ctx.sound = impl_->soundEmitter_.get();
     return ctx;
 }
@@ -185,8 +332,9 @@ void RenderService::CreateDeviceAssetManagers(gfx::IGFXDevice& gfx) {
     impl_->assets_->SetChildModelBuilder(
         [this](std::string_view path, std::span<const u8> bytes,
                std::string_view foundExt) -> std::shared_ptr<model::ModelTemplate> {
-            return impl_->scene_->Templates().BuildFromBytes(
-                std::string(path), bytes, foundExt);
+            // Child MDX templates build into the active scene's cache (the
+            // scene whose load triggered the asset apply).
+            return Scene().Templates().BuildFromBytes(std::string(path), bytes, foundExt);
         });
     // When a .pkb arrives, walk its layer programs once and Acquire the
     // diffuse texture for each. The texture slots are tied to the parent
@@ -221,7 +369,7 @@ void RenderService::ResetDeviceAssetManagers() {
 dnc::DncService& RenderService::EnsureDncService() {
     if (!impl_->dncService_)
         impl_->dncService_ =
-            std::make_unique<dnc::DncService>(impl_->scene_->ActiveContentProvider());
+            std::make_unique<dnc::DncService>(Scene().ActiveContentProvider());
     return *impl_->dncService_;
 }
 
@@ -294,8 +442,8 @@ void RenderService::SwapSoundEmitter(std::unique_ptr<ISoundEmitter> emitter) {
 
 void RenderService::PumpAssetsViaProvider() {
 #ifndef __EMSCRIPTEN__
-    if (!impl_->assets_ || !impl_->scene_) return;
-    auto* provider = impl_->scene_->ActiveContentProvider();
+    if (!impl_->assets_ || !impl_->activeScene_) return;
+    auto* provider = Scene().ActiveContentProvider();
     if (!provider) return;
 
     // ReadFile via the provider, with a fallback for corn-fx-style

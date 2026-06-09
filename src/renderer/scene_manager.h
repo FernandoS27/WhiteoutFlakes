@@ -27,8 +27,12 @@ namespace whiteout::flakes::renderer {
 class SceneManager {
 public:
     SceneManager() : templates_(std::make_unique<model::ModelTemplateManager>()) {
-        activeContentProvider_ = &contentProvider_;
-        templates_->SetContentProvider(activeContentProvider_);
+        // The internal FileContentProvider is created LAZILY (see
+        // EnsureInternalProvider): constructing it opens the WC3 CASC and spawns
+        // a worker-thread pool, which is wasteful for scenes that run on a host-
+        // supplied external provider (e.g. the model explorer's per-cell scenes,
+        // which all share one provider). Scenes that never touch their own
+        // provider never pay that cost.
         // Camera 0 always exists — it's the legacy single camera that Camera()
         // (no-arg) and the RenderFrame shim use. Additional cameras (for extra
         // viewports onto this scene) are appended via AddCamera().
@@ -88,25 +92,41 @@ public:
     void Update(f32 dtSec);
 
     io::FileContentProvider& GetContentProvider() {
-        return contentProvider_;
+        return EnsureInternalProvider();
     }
     const io::FileContentProvider& GetContentProvider() const {
-        return contentProvider_;
+        return const_cast<SceneManager*>(this)->EnsureInternalProvider();
     }
     void SetContentProvider(std::shared_ptr<io::IContentProvider> provider) {
         externalContentProvider_ = std::move(provider);
-        activeContentProvider_ = externalContentProvider_
-                                     ? externalContentProvider_.get()
-                                     : static_cast<io::IContentProvider*>(&contentProvider_);
-        templates_->SetContentProvider(activeContentProvider_);
+        // Point the active provider + template cache at the external one without
+        // forcing the (expensive) internal provider into existence.
+        activeContentProvider_ =
+            externalContentProvider_
+                ? externalContentProvider_.get()
+                : static_cast<io::IContentProvider*>(contentProvider_.get());
+        templates_->SetContentProvider(ActiveContentProvider());
     }
     io::IContentProvider* ActiveContentProvider() const {
-        return activeContentProvider_;
+        if (externalContentProvider_)
+            return externalContentProvider_.get();
+        // No external provider — fall back to the internal one, creating it on
+        // first use.
+        return &const_cast<SceneManager*>(this)->EnsureInternalProvider();
     }
 
     void SetPE1BasePath(const std::filesystem::path& basePath) {
         pe1BasePath_ = basePath;
-        contentProvider_.SetBasePath(basePath);
+        // A scene that loads through its OWN provider needs that provider (and
+        // its template-cache wiring) in place before SpawnUnit reads anything.
+        // SetPE1BasePath is the host's "about to load into this scene" signal,
+        // so realise the internal provider here when no external one is set.
+        // Scenes on a shared external provider (explorer cells) skip this and
+        // never construct an internal provider.
+        if (!externalContentProvider_)
+            EnsureInternalProvider();
+        if (contentProvider_)
+            contentProvider_->SetBasePath(basePath);
         templates_->SetBasePath(basePath);
     }
     const std::filesystem::path& PE1BasePath() const {
@@ -139,10 +159,25 @@ private:
 
     std::atomic<i32> animationTimeMs_{0};
 
-    io::FileContentProvider contentProvider_;
+    // Lazily created (see EnsureInternalProvider) so scenes that use a
+    // host-supplied external provider never open a CASC or spawn IO threads.
+    std::unique_ptr<io::FileContentProvider> contentProvider_;
     std::shared_ptr<io::IContentProvider> externalContentProvider_;
     io::IContentProvider* activeContentProvider_ = nullptr;
     std::filesystem::path pe1BasePath_;
+
+    io::FileContentProvider& EnsureInternalProvider() {
+        if (!contentProvider_) {
+            contentProvider_ = std::make_unique<io::FileContentProvider>();
+            if (!pe1BasePath_.empty())
+                contentProvider_->SetBasePath(pe1BasePath_);
+            if (!externalContentProvider_) {
+                activeContentProvider_ = contentProvider_.get();
+                templates_->SetContentProvider(activeContentProvider_);
+            }
+        }
+        return *contentProvider_;
+    }
 
     std::unique_ptr<model::ModelTemplateManager> templates_;
 

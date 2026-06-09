@@ -83,6 +83,20 @@ public:
         return renderModeDirty_.exchange(false);
     }
 
+    // Route the SD shading path through the HDR scene target + tonemap
+    // instead of straight onto the LDR swap chain. Keeps authentic SD
+    // shading (single RTV, no G-buffer/PBR) but lets additive / team-color
+    // geosets accumulate in float and roll off through the tonemap rather
+    // than clipping to opaque white. Off = classic direct-to-swap-chain SD
+    // (pixel-identical to before). HD mode always renders to HDR and ignores
+    // this flag.
+    bool SceneHdrInSd() const {
+        return sceneHdrInSd_.load();
+    }
+    void SetSceneHdrInSd(bool on) {
+        sceneHdrInSd_.store(on);
+    }
+
     // ---- Debug visualization ----
     i32 HdDebugMode() const {
         return hdDebugMode_.load();
@@ -276,6 +290,7 @@ private:
     // Render mode + dirty flag.
     RenderMode renderMode_ = RenderMode::SD;
     std::atomic<bool> renderModeDirty_{false};
+    std::atomic<bool> sceneHdrInSd_{false};
 
     // Debug + LOD.
     std::atomic<i32> hdDebugMode_{0};

@@ -29,8 +29,10 @@
 #include "whiteout/flakes/sound_emitter.h"
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <unordered_map>
+#include <vector>
 
 namespace whiteout::flakes::renderer::assets {
 class AssetManager;
@@ -43,6 +45,21 @@ class DebugRenderer;
 }
 
 namespace whiteout::flakes::renderer {
+
+// The per-scene effect services. One bundle per scene so two scenes can hold
+// independent live particle/corn/splat/SPN state at once (e.g. a grid of live
+// model/effect thumbnails). CornEffectsService is declared LAST so it destroys
+// FIRST — its emitters' RuntimeBundles hold gfx + AssetManager refs that must
+// still be alive on teardown (same contract the single global service had).
+struct SceneServices {
+    explicit SceneServices(RenderService& rs)
+        : spn(std::make_unique<effects::SpnSpawner>(rs)) {}
+
+    particle::ParticleService particles;
+    particle::SplatService splats;
+    std::unique_ptr<effects::SpnSpawner> spn;
+    corn_effects::CornEffectsService corn; // declared last → destroyed first
+};
 
 struct RenderService::Impl {
     // ---- Destruction-order contract (members destroy in REVERSE
@@ -65,8 +82,20 @@ struct RenderService::Impl {
     // a destroyed AssetManager hits a dead std::mutex (EINVAL →
     // std::system_error → std::terminate → abort).
 
-    // ---- Scene ----
-    SceneManager* scene_ = nullptr;
+    // ---- Scene registry (multi-scene) ----
+    // `scenes_` maps every SceneId (default + created) to its SceneManager
+    // (borrowed default, or owned in ownedScenes_). `activeScene_`/
+    // `activeServices_` are published by RenderViewport / FrameTicker and read
+    // by Scene()/Particles()/etc.; they default to the default scene.
+    std::unordered_map<SceneId, SceneManager*> scenes_;
+    std::vector<std::unique_ptr<SceneManager>> ownedScenes_;
+    SceneId nextSceneId_ = 1;
+    SceneId defaultSceneId_ = 0;
+    SceneId activeSceneId_ = 0;
+    SceneManager* activeScene_ = nullptr;
+    SceneServices* activeServices_ = nullptr;
+    // Applier the pipeline installs to wire each scene's corn-fx GPU backend.
+    std::function<void(corn_effects::CornEffectsService&)> cornInitApplier_;
 
     // ---- Asset managers (destroyed LAST) ----
     std::unique_ptr<assets::SamplerAssetManager> samplers_;
@@ -77,28 +106,25 @@ struct RenderService::Impl {
     // ---- App-tunable knobs ----
     RenderSettings settings_;
 
-    // ---- Background services that don't hold gfx state ----
-    particle::ParticleService particleService_;
-    particle::SplatService splatService_;
-
     // ---- Gfx device + subsystems that hold gfx handles ----
     std::unique_ptr<RenderPipeline> pipeline_;
     std::unique_ptr<dnc::DncService> dncService_;
     std::unique_ptr<shadow::ShadowService> shadowService_;
     std::unique_ptr<gtao::GtaoService> gtaoService_;
     std::unique_ptr<post_process::PostProcessService> postProcessService_;
-    std::unique_ptr<effects::SpnSpawner> spnSpawner_;
     std::unique_ptr<FrameTicker> ticker_;
     std::unique_ptr<model::ModelLoader> loader_;
     std::unique_ptr<ISoundEmitter> soundEmitter_;
     std::unique_ptr<debug::DebugRenderer> debug_;
 
-    // ---- Subsystems that must die BEFORE the gfx device + assets ----
-    // CornEffectsService is declared LAST so it's destroyed FIRST in
-    // reverse order. Its emitters' RuntimeBundles hold gfx handles +
-    // AssetManager slot refs that they release on teardown — both
-    // must still be alive when ~CornEffectsService runs.
-    corn_effects::CornEffectsService cornEffectsService_;
+    // ---- Per-scene effect services (must die BEFORE the gfx device + assets) ----
+    // Each scene's SceneServices holds a CornEffectsService whose emitters hold
+    // gfx handles + AssetManager slot refs released on teardown — both must
+    // still be alive when these run. Declared LAST so the whole map is destroyed
+    // FIRST in reverse member order. GPU teardown paths additionally Clear()/
+    // ReleaseGpuResources() every scene's corn service explicitly (via
+    // ForEachCornService) before the device/assets go away.
+    std::unordered_map<SceneId, std::unique_ptr<SceneServices>> sceneServices_;
 
 #if WDX_ENABLE_IMGUI
     // ImGui adapter is built lazily once the gfx device + BLS shader cache

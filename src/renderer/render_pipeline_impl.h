@@ -47,6 +47,12 @@ struct RenderPipeline::Impl {
     // it to the viewport's active camera so each viewport renders from its own.
     const Camera* activeCamera_ = nullptr;
 
+    // Whether the in-flight viewport composites the host ImGui draw data.
+    // Published from Viewport::drawImGui at the top of RenderViewport; the
+    // scene-pass / tonemap ImGui blocks gate on it so off-screen viewports
+    // (thumbnails) don't redraw the UI on top of their scene.
+    bool frameDrawImGui_ = true;
+
     RenderMode frameRenderMode_ = RenderMode::SD;
 
     // Cached at InitDevice time via Gfx()->PreferredDepthStencilFormat().

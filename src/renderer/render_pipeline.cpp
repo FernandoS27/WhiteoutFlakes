@@ -86,7 +86,11 @@ const gfx::IGFXDevice* RenderPipeline::Gfx() const {
 }
 
 gfx::Format RenderPipeline::SceneTargetFormat() const {
-    if (impl_->frameRenderMode_ == RenderMode::HD)
+    // HD always renders to the HDR scene target. SD does too when the
+    // host opts into SceneHdrInSd (so SD geometry/particle PSOs build for
+    // the HDR rtv and additive content rolls off through the tonemap
+    // instead of clipping on the LDR swap chain). See RenderViewport.
+    if (impl_->frameRenderMode_ == RenderMode::HD || rs_.Settings().SceneHdrInSd())
         return kHdrSceneFormat;
     // SD mode renders directly to the swap-chain back buffer — PSO
     // rtvFormat must match its actual format. On most backends that's
@@ -145,13 +149,16 @@ RenderPipeline::ShadowResources RenderPipeline::Shadow() const {
 }
 
 void RenderPipeline::Shutdown() {
-
-    rs_.Spn().Clear();
+    rs_.Spn().Clear();   // CPU state of the default scene (others freed on destroy)
     rs_.Splats().Clear();
+    // Per-scene: clear each scene's corn emitters and release its actors' +
+    // template caches' GPU resources while the device is still alive.
+    rs_.ForEachCornService([](corn_effects::CornEffectsService& corn) { corn.Clear(); });
     ReleaseModelGPU();
-
-    rs_.Scene().Templates().ReleaseAllGPU(*impl_->gfx_);
-    rs_.Scene().Templates().Clear();
+    rs_.ForEachScene([this](SceneManager& scene) {
+        scene.Templates().ReleaseAllGPU(*impl_->gfx_);
+        scene.Templates().Clear();
+    });
     CleanupGFX();
 }
 
@@ -168,8 +175,10 @@ void RenderPipeline::GetFrameStats(i32& geosets, i32& textures, i32& nodes, i32&
 }
 
 void RenderPipeline::ReleaseModelGPU() {
-    for (auto& [h, miPtr] : rs_.Scene().Actors().All())
-        miPtr->ReleaseGPU(*impl_->gfx_);
+    rs_.ForEachScene([this](SceneManager& scene) {
+        for (auto& [h, miPtr] : scene.Actors().All())
+            miPtr->ReleaseGPU(*impl_->gfx_);
+    });
 }
 
 bool RenderPipeline::RenderParticlesBls() {
@@ -803,7 +812,10 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
         pInit.slotAcquire = [&rs = rs_](std::string_view path) -> std::uint32_t {
             return rs.Assets().Acquire(assets::AssetKind::Texture, path);
         };
-        rs_.CornEffects().SetBackendInit(pInit);
+        // Apply to every scene's corn service (current + future). The applier
+        // runs immediately for existing scenes and at CreateScene() for new ones.
+        rs_.SetCornBackendInitApplier(
+            [pInit](corn_effects::CornEffectsService& corn) { corn.SetBackendInit(pInit); });
     }
 
     if (impl_->blsHdProgram_ && impl_->blsHdProgram_->vs &&
@@ -1369,14 +1381,16 @@ void RenderPipeline::CleanupGFX() {
         // std::terminate). Tested under MTL_DEBUG_LAYER=1 — the prior
         // order surfaced as a hard crash on shutdown on the Metal
         // backend; Vulkan happened to alias the freed memory in a way
-        // that avoided the throw but the UAF was still there.
-        rs_.CornEffects().Clear();
+        // that avoided the throw but the UAF was still there. Every scene's
+        // corn service must be torn down, not just the active one.
+        rs_.ForEachCornService([](corn_effects::CornEffectsService& corn) { corn.Clear(); });
 
         rs_.ResetDeviceAssetManagers();
 
         // CornEffects owns shared VB/IB/CBs — release before the device
         // dies. Service still receives backendInit on next InitDevice.
-        rs_.CornEffects().ReleaseGpuResources();
+        rs_.ForEachCornService(
+            [](corn_effects::CornEffectsService& corn) { corn.ReleaseGpuResources(); });
 
         impl_->gfx_->Destroy(impl_->particleServiceVB_);
         impl_->particleServiceVB_ = gfx::BufferHandle::Invalid;
@@ -1561,21 +1575,27 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     if (target.hdrColor == gfx::TextureHandle::Invalid)
         return;
 
-    // Publish the target + camera being rendered so Width()/Height()/
-    // SceneTargetFormat()/FrameCamera() and every pass below resolve against
-    // this viewport rather than the primary / scene camera. The guard clears
-    // them on every exit path so out-of-frame queries fall back to the
-    // primary dimensions and the scene camera.
+    // Publish the scene + target + camera being rendered so the pass pipeline,
+    // effect services (rs_.Particles()/CornEffects()/Spn()), Width()/Height()/
+    // SceneTargetFormat()/FrameCamera() resolve against THIS viewport's scene
+    // rather than the default scene / primary target / scene camera. Set the
+    // active scene first so the camera fallback below reads the right scene's
+    // camera. The guard restores the default scene + clears the others on every
+    // exit path so out-of-frame queries fall back sanely.
+    rs_.SetActiveScene(vp.scene);
     impl_->activeTarget_ = &target;
     impl_->activeCamera_ = vp.camera ? vp.camera : &rs_.Scene().Camera();
+    impl_->frameDrawImGui_ = vp.drawImGui;
     struct ActiveFrameGuard {
+        RenderService* rs;
         const RenderTarget** target;
         const Camera** camera;
         ~ActiveFrameGuard() {
             *target = nullptr;
             *camera = nullptr;
+            rs->SetActiveScene(rs->DefaultSceneId());
         }
-    } activeFrameGuard{&impl_->activeTarget_, &impl_->activeCamera_};
+    } activeFrameGuard{&rs_, &impl_->activeTarget_, &impl_->activeCamera_};
 
     // Commit any pending GPU uploads (textures + geometry the loader staged
     // since the last frame) before we start rendering this frame.
@@ -1612,14 +1632,22 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         if (auto* g = rs_.GetGtaoService())
             g->ResetHistory();
     }
+    // `useHdr` gates the HD-only deferred machinery: the 3-RTV G-buffer, GTAO
+    // and bloom (all need the linearDepth/normal slots the HD opaque pass
+    // populates). `sceneToHdr` is the looser question of "does the scene land
+    // in the HDR target and get tonemapped?" — true for HD, and also for SD
+    // when the host opts in (SceneHdrInSd). SD-HDR keeps the single-RTV forward
+    // SD shading but routes it through the tonemap so additive / team-color
+    // geosets roll off instead of clipping to white on the LDR swap chain.
     const bool useHdr = (impl_->frameRenderMode_ == RenderMode::HD);
+    const bool sceneToHdr = useHdr || rs_.Settings().SceneHdrInSd();
 
     // Frame capture (off unless exporting): BeginFrame redirects the final
     // composite to an off-screen target and EndFrame (below) copies it out +
     // mirrors it onto the swap chain. Disabled is the zero-cost default —
     // BeginFrame just hands back the back buffer and EndFrame no-ops.
     const gfx::TextureHandle finalColor = impl_->capture_.BeginFrame(target);
-    const gfx::TextureHandle sceneTarget = useHdr ? target.hdrColor : finalColor;
+    const gfx::TextureHandle sceneTarget = sceneToHdr ? target.hdrColor : finalColor;
 
     auto srgbByteToLinear = [](u8 b) {
         const f32 f = b / 255.0f;
@@ -1657,9 +1685,9 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
 
     auto sdClear = [&](u8 byte) { return srgbByteToLinear(byte); };
     f32 clearColor[4] = {
-        useHdr ? hdrClear(rB) : sdClear(rB),
-        useHdr ? hdrClear(gB) : sdClear(gB),
-        useHdr ? hdrClear(bB) : sdClear(bB),
+        sceneToHdr ? hdrClear(rB) : sdClear(rB),
+        sceneToHdr ? hdrClear(gB) : sdClear(gB),
+        sceneToHdr ? hdrClear(bB) : sdClear(bB),
         1.0f,
     };
 
@@ -1831,7 +1859,7 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     // via the tonemap composite. Compiled out when WDX_ENABLE_IMGUI=0 (web
     // build) — the forward-declared ImGuiRenderer has no complete type then.
 #if WDX_ENABLE_IMGUI
-    if (!useHdr) {
+    if (!sceneToHdr && impl_->frameDrawImGui_) {
         if (auto* im = rs_.ImGui()) {
             // Sync ImGui's PSO with the scene RTV format (which is the
             // swapchain backbuffer in SD mode). See the matching call in
@@ -1938,7 +1966,7 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         }
     }
 
-    if (useHdr) {
+    if (sceneToHdr) {
         WDX_CPU_ZONE("Tonemap");
         WDX_GPU_ZONE(cmd, "Tonemap");
         RunTonemapPass(target, finalColor);
@@ -2029,7 +2057,7 @@ void RenderPipeline::RunTonemapPass(const RenderTarget& target, gfx::TextureHand
     // hasn't created an ImGui context or there are no draw lists this
     // frame. Compiled out when WDX_ENABLE_IMGUI=0.
 #if WDX_ENABLE_IMGUI
-    if (auto* im = rs_.ImGui()) {
+    if (impl_->frameDrawImGui_) if (auto* im = rs_.ImGui()) {
         // Sync ImGui's PSO format with whatever the swapchain landed on.
         // No-op when the format hasn't changed; rebuilds the PSO when it
         // has (Metal-backed swapchains return BGRA8 even when the rest of
@@ -2051,6 +2079,11 @@ bool RenderPipeline::ReadbackTarget(RenderTargetId id, std::vector<u8>& outRgba,
     width = t.width;
     height = t.height;
     return impl_->gfx_->ReadbackTexture(t.color, t.width, t.height, outRgba);
+}
+
+gfx::TextureHandle RenderPipeline::GetTargetColorTexture(RenderTargetId id) const {
+    auto it = impl_->targets_.find(id);
+    return it != impl_->targets_.end() ? it->second.color : gfx::TextureHandle::Invalid;
 }
 
 void RenderPipeline::Present(RenderTargetId targetId) {

@@ -97,6 +97,15 @@ public:
     // color.
     bool ReadbackTarget(RenderTargetId id, std::vector<u8>& outRgba, i32& width, i32& height);
 
+    // The target's composited color texture (the same image RenderViewport
+    // produced). Hosts displaying an offscreen target in ImGui pass this as an
+    // ImTextureID: ImGui::Image((ImTextureID)(u64)GetTargetColorTexture(id), …).
+    // Returns Invalid for an unknown id. The gfx layer auto-transitions a
+    // render-target texture to a sampleable state when it's bound as a shader
+    // resource, so no explicit barrier is needed before the ImGui pass samples
+    // it. Valid only until the target is resized/destroyed.
+    gfx::TextureHandle GetTargetColorTexture(RenderTargetId id) const;
+
     // ---- Stats ----
     void GetFrameStats(i32& geosets, i32& textures, i32& nodes, i32& particles,
                        i32& segments) const;

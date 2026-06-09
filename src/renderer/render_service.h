@@ -27,6 +27,7 @@
 #include "post_process/post_process_service.h"
 
 #include <memory>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -37,6 +38,12 @@ namespace whiteout::flakes::renderer {
 class SceneManager;
 class FrameTicker;
 class RenderPipeline;
+
+// Identifies one scene within a RenderService. A RenderService always has a
+// default scene (DefaultSceneId); additional scenes are created via
+// CreateScene() and rendered into their own viewports/targets. 0 is reserved
+// "none/default".
+using SceneId = u32;
 
 namespace assets {
 class AssetManager;
@@ -112,7 +119,35 @@ public:
     // actors; multiple actors can be evaluated independently.
     animation::ActorEvalContext MakeActorEvalContext();
 
+    // ---- Scene registry (multi-scene) ----
+    // A RenderService hosts N independent scenes, each with its own actors,
+    // clock, camera set, and effect services (particles/splats/corn/SPN). The
+    // ctor registers the passed SceneManager as the default scene; additional
+    // scenes are created with CreateScene() (owned by the RenderService).
+    //
+    // The pass pipeline / ticker / loader read the *active* scene via Scene()
+    // and the effect-service accessors below — RenderViewport publishes the
+    // viewport's scene as active for the duration of the render, and the ticker
+    // publishes the scene it is ticking. Outside those scopes the active scene
+    // is the default scene.
+    SceneId CreateScene();
+    void DestroyScene(SceneId id);
+    SceneManager& SceneAt(SceneId id);   // unknown id ⇒ default scene
+    SceneManager& DefaultScene();
+    SceneId DefaultSceneId() const;
+    // Publish/clear the active scene (used by RenderViewport + FrameTicker).
+    // SetActiveScene(0) restores the default scene.
+    void SetActiveScene(SceneId id);
+    void SetActiveScene(SceneManager& scene); // by-reference overload
+    SceneManager& ActiveScene();
+
+    // Tick every scene's actors/clock/effect services once this frame (the
+    // multi-scene per-frame entry; single-scene hosts can keep calling
+    // Ticker().Tick(dt)).
+    void TickScenes(f32 dt);
+
     // ---- Scene & asset accessors ----
+    // Scene() returns the ACTIVE scene (default outside a render/tick scope).
     SceneManager& Scene();
     const SceneManager& Scene() const;
     assets::TextureAssetManager& Textures();
@@ -148,11 +183,24 @@ public:
     // Tear down before the gfx device goes away.
     void ShutdownImGui();
 
-    // ---- Per-actor effect services ----
+    // ---- Per-actor effect services (of the ACTIVE scene) ----
     particle::ParticleService& Particles();
     particle::SplatService& Splats();
     corn_effects::CornEffectsService& CornEffects();
     effects::SpnSpawner& Spn();
+
+    // The corn-fx GPU backend init (device + BLS program + asset hooks) is built
+    // by RenderPipeline once the device is up. It must reach EVERY scene's corn
+    // service — including scenes created later. The pipeline registers an applier
+    // here; RenderService runs it for all existing scenes immediately and for
+    // each new scene at CreateScene time.
+    void SetCornBackendInitApplier(std::function<void(corn_effects::CornEffectsService&)> fn);
+    // Run `fn` for each scene's corn service (used by GPU teardown paths that
+    // must Clear()/ReleaseGpuResources() every scene before the device dies).
+    void ForEachCornService(const std::function<void(corn_effects::CornEffectsService&)>& fn);
+    // Run `fn` for each scene (used by GPU teardown paths that must release
+    // every scene's actor GPU state + template caches before the device dies).
+    void ForEachScene(const std::function<void(SceneManager&)>& fn);
 
     // World-space AABB of a corn-fx emitter's live particle cloud (game units),
     // or false if it has no live particles. Host-facing convenience so tools can

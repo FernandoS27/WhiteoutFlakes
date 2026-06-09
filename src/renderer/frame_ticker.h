@@ -23,6 +23,7 @@ struct ActorEvalContext;
 namespace whiteout::flakes::renderer {
 
 class RenderService;
+class SceneManager;
 
 namespace model {
 struct Actor;
@@ -32,8 +33,14 @@ class FrameTicker {
 public:
     explicit FrameTicker(RenderService& rs) : rs_(rs) {}
 
-    // Called once per frame from the application loop.
+    // Called once per frame from the application loop. Ticks the default scene
+    // (the legacy single-scene path).
     void Tick(f32 dt);
+
+    // Ticks a SPECIFIC scene: publishes it as the active scene, then runs the
+    // per-frame update (actors, animation, particles, PE1, ribbons) against it.
+    // RenderService::TickScenes calls this for every scene each frame.
+    void Tick(SceneManager& scene, f32 dt);
 
     // Externally-driven actors (Max plugin) bypass Tick and use
     // Actor::EvaluateAndApply directly.
