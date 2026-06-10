@@ -1266,6 +1266,42 @@ set(BUILD_RUST_LIBS OFF CACHE BOOL "" FORCE)
 set(USE_SANITIZERS  OFF CACHE BOOL "" FORCE)
 add_subdirectory(externals/cubeb EXCLUDE_FROM_ALL)
 
+# ---- Embeddable storage/model explorer library ----
+# The model explorer factored into a reusable library: a CASC browser, a
+# multi-scene thumbnail pool, and the StorageExplorer panel that hosts drive.
+# It owns NO window / gfx device / ImGui context — a host (basic_viewer, the
+# standalone explorer shell, …) supplies all three and a shared RenderService.
+# See STORAGE_EXPLORER_DESIGN.md.
+add_library(WhiteoutFlakesExplorerLib STATIC
+    tools/model_explorer/casc_browser.cpp
+    tools/model_explorer/thumbnail_pool.cpp
+    tools/model_explorer/storage_explorer.cpp
+    # Camera framing for a loaded model / standalone effect — used by the
+    # thumbnail pool AND the basic_viewer, so it lives in this shared lib (each
+    # consumer links the lib instead of compiling its own copy).
+    tools/common/thumbnail_framing.cpp
+)
+set_target_properties(WhiteoutFlakesExplorerLib PROPERTIES
+    CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)
+# Public: the lib's own headers (storage_explorer.h / casc_browser.h /
+# thumbnail_pool.h) for any external consumer. Private: PkbEffectSource, used
+# only inside thumbnail_pool.cpp — it isn't part of the public surface.
+target_include_directories(WhiteoutFlakesExplorerLib PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/model_explorer"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/common"
+)
+target_include_directories(WhiteoutFlakesExplorerLib PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/basic_viewer" # PkbEffectSource (header-only)
+)
+target_link_libraries(WhiteoutFlakesExplorerLib PUBLIC WhiteoutFlakesLib imgui nfd)
+if(MSVC)
+    target_compile_options(WhiteoutFlakesExplorerLib PRIVATE
+        /W3 /EHsc /wd4100 /wd4127 /wd4244 /wd4267)
+endif()
+if(WDX_BUILD_WC3_SHADERS OR WDX_USE_PREBUILT_SHADERS)
+    add_dependencies(WhiteoutFlakesExplorerLib Wc3Shaders)
+endif()
+
 set(WHITEOUTFLAKES_VIEWER_SOURCES
     tools/basic_viewer/test_main.cpp
     tools/basic_viewer/viewer_app.cpp
@@ -1274,9 +1310,9 @@ set(WHITEOUTFLAKES_VIEWER_SOURCES
     # Shared host utilities live in tools/common (used by the Max plugin too).
     tools/common/cubeb_sound_emitter.cpp
     tools/common/imgui_theme.cpp
-    # Camera framing for a loaded model / standalone effect — shared with the
-    # model explorer (tools/model_explorer).
-    tools/common/thumbnail_framing.cpp
+    # thumbnail_framing now ships in WhiteoutFlakesExplorerLib (linked below),
+    # which the viewer also uses for its own camera framing + the embedded
+    # Storage Explorer panel.
     # ImGui's GLFW platform backend lives with the viewer rather than the
     # imgui core lib because it pulls in <GLFW/glfw3.h> — the engine library
     # itself only links the renderer-agnostic ImGui core.
@@ -1318,6 +1354,7 @@ target_include_directories(WhiteoutFlakesStandalone PRIVATE
 )
 
 target_link_libraries(WhiteoutFlakesStandalone PRIVATE
+    WhiteoutFlakesExplorerLib # embedded Storage Explorer + shared thumbnail_framing
     WhiteoutFlakesLib
     glfw
     nfd
@@ -1472,14 +1509,14 @@ add_dependencies(WhiteoutFlakesStandalone WhiteoutFlakesEmbedded)
 # its own scene+viewport (exercises the multi-scene renderer). Mirrors the
 # standalone viewer's window/device/ImGui boilerplate; shares tools/common and
 # the basic_viewer include dir (for the macOS surface shim + PkbEffectSource).
+# The browser / pool / panel / framing now live in WhiteoutFlakesExplorerLib;
+# this target keeps only the standalone shell (window + device + ImGui context)
+# and the entry point + headless self-tests.
 set(WHITEOUTFLAKES_EXPLORER_SOURCES
     tools/model_explorer/explorer_main.cpp
     tools/model_explorer/explorer_app.cpp
-    tools/model_explorer/casc_browser.cpp
-    tools/model_explorer/thumbnail_pool.cpp
     tools/common/cubeb_sound_emitter.cpp
     tools/common/imgui_theme.cpp
-    tools/common/thumbnail_framing.cpp
     externals/imgui/backends/imgui_impl_glfw.cpp
 )
 if(APPLE)
@@ -1504,6 +1541,7 @@ target_include_directories(WhiteoutFlakesExplorer PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/externals/dr_libs"
 )
 target_link_libraries(WhiteoutFlakesExplorer PRIVATE
+    WhiteoutFlakesExplorerLib
     WhiteoutFlakesLib
     glfw
     nfd

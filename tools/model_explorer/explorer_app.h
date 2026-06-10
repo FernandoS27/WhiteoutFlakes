@@ -1,26 +1,21 @@
 #pragma once
 
-// ExplorerApp — the model-explorer window. Owns the GLFW window, the Dear ImGui
-// context, the gfx device (via RenderService), the CASC browser, and the live
-// thumbnail pool. Per frame it builds the folder grid (each model/effect cell
-// shows a live, animating render of its file) and presents.
+// ExplorerApp — the standalone model-explorer SHELL. Owns the GLFW window, the
+// Dear ImGui context, and the gfx device (via RenderService), then hosts a
+// StorageExplorer panel (the reusable browser + live thumbnail grid). All the
+// browsing/rendering logic lives in the library's StorageExplorer; this class is
+// only the window/device/ImGui boilerplate + per-frame dispatch.
 
-#include "casc_browser.h"
-#include "thumbnail_pool.h"
+#include "storage_explorer.h"
 
 #include "renderer/render_service.h"
 #include "renderer/types.h"
 #include "whiteout/flakes/gfx_types.h"
 
-#include <cstdint>
 #include <memory>
 #include <string>
 
 struct GLFWwindow;
-
-namespace whiteout::flakes::io {
-class FileContentProvider;
-}
 
 namespace whiteout::flakes::tools {
 
@@ -34,7 +29,7 @@ public:
     bool ShouldClose() const;
     void Tick(float dt);
 
-    // Open a CASC archive root and point the shared content provider at it.
+    // Open a CASC archive root in the hosted explorer panel.
     bool OpenCasc(const std::string& root);
 
     GLFWwindow* Window() const {
@@ -44,8 +39,6 @@ public:
 private:
     void InitImGui();
     void ShutdownImGui();
-    void BuildUI();        // menu bar + breadcrumb + grid
-    void OpenCascDialog(); // native folder picker
 
     static void FramebufferSizeCallback(GLFWwindow* w, int width, int height);
 
@@ -57,20 +50,7 @@ private:
     int lastFbW_ = 0;
     int lastFbH_ = 0;
 
-    CascBrowser browser_;
-    std::shared_ptr<io::FileContentProvider> provider_;
-    std::unique_ptr<ThumbnailPool> pool_;
-
-    std::uint64_t frameCounter_ = 0;
-    std::string selectedPath_;
-    std::string lastError_;
-
-    // Navigation staged by the UI, applied at the start of the next frame (see
-    // ExplorerApp::Tick) so it can't invalidate the listing mid-iteration or
-    // destroy thumbnails the current frame still references.
-    bool navPending_ = false;
-    bool navAscend_ = false;
-    std::string navTarget_;
+    std::unique_ptr<StorageExplorer> explorer_;
 };
 
 } // namespace whiteout::flakes::tools

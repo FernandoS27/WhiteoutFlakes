@@ -80,6 +80,13 @@ struct RenderTarget {
         u32 pingPong = 0; // even/odd selects aoBuffer vs aoBufferHistory as "current"
         u32 historyGen = 0;
         bool prevValid = false;
+        // The render mode THIS target last rendered in. A render-mode flip
+        // invalidates GTAO history, but only for the target whose own mode
+        // changed — a different viewport (e.g. an embedded HD thumbnail while the
+        // main view is SD) must NOT reset ours. `modeKnown` is false until the
+        // first render so the first frame doesn't spuriously invalidate.
+        RenderMode lastMode = RenderMode::SD;
+        bool modeKnown = false;
     } gtao;
 
     // Bloom scratch buffers. Full-res HDR scratch the bloom pass ping-pongs

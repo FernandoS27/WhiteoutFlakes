@@ -1622,16 +1622,20 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     // per-frame decision below must agree on the value — otherwise
     // the scene pass attaches the SRGB swap chain while CurrentLinePSO
     // hands out the HDR-rtv line PSO. See `Impl::frameRenderMode_`.
-    const RenderMode prevMode = impl_->frameRenderMode_;
     impl_->frameRenderMode_ = rs_.Settings().GetRenderMode();
-    if (prevMode != impl_->frameRenderMode_) {
-        // Render-mode flip invalidates GTAO's history (G-buffer wasn't
-        // populated during SD frames, and the previous-camera matrices
-        // map onto the now-different opaque scene). Skip the EMA blend
-        // on the next HD frame.
-        if (auto* g = rs_.GetGtaoService())
-            g->ResetHistory();
-    }
+    // Render-mode flip invalidates GTAO's history (the G-buffer wasn't populated
+    // during SD frames, and the previous-camera matrices map onto the
+    // now-different opaque scene). Detect this PER TARGET, not globally: GTAO
+    // history is per-target, so only the target whose OWN mode changed should
+    // drop its history. A global reset here thrashes every target's history every
+    // frame in a mixed-mode multi-viewport host — e.g. an embedded HD thumbnail
+    // grid rendering while the main document is SD, which flips the global mode
+    // twice per frame and would otherwise never let the thumbnails' temporal
+    // denoise accumulate (HD-only shimmer).
+    if (target.gtao.modeKnown && target.gtao.lastMode != impl_->frameRenderMode_)
+        target.gtao.prevValid = false; // our mode changed; our last AO is stale
+    target.gtao.lastMode = impl_->frameRenderMode_;
+    target.gtao.modeKnown = true;
     // `useHdr` gates the HD-only deferred machinery: the 3-RTV G-buffer, GTAO
     // and bloom (all need the linearDepth/normal slots the HD opaque pass
     // populates). `sceneToHdr` is the looser question of "does the scene land

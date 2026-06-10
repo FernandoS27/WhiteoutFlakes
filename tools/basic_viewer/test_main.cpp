@@ -732,7 +732,13 @@ int main(int argc, char* argv[]) {
         scene.Update(0.016f);
         app.Tick(0.016f); // runs the export synchronously
         app.Close();
-        return 0;
+        // Close() did the orderly GPU shutdown; skip static/global teardown,
+        // where ~RenderService destructs the gfx services after the device is
+        // already gone (a pre-existing engine teardown-order issue the model
+        // explorer + headless tests also _Exit past).
+        std::fflush(stdout);
+        std::fflush(stderr);
+        std::_Exit(0);
     }
 
     auto last = std::chrono::steady_clock::now();
@@ -745,5 +751,9 @@ int main(int argc, char* argv[]) {
     }
 
     app.Close();
-    return 0;
+    // See the export path above: _Exit past the crash-prone static teardown now
+    // that Close() has done the orderly GPU shutdown.
+    std::fflush(stdout);
+    std::fflush(stderr);
+    std::_Exit(0);
 }

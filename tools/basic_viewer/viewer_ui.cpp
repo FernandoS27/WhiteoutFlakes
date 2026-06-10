@@ -119,6 +119,7 @@ void ViewerUI::BuildFrame() {
         BuildSettingsWindow();
     BuildSaveAsPopup();
     BuildExportPopup();
+    app_.BuildStorageExplorerWindow();
 }
 
 void ViewerUI::BuildViewCubeWidget() {
@@ -434,6 +435,13 @@ void ViewerUI::BuildMenuBar() {
                 ImGui::EndMenu();
             }
 
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Tools")) {
+            bool seOpen = app_.StorageExplorerOpen();
+            if (ImGui::MenuItem("Storage Explorer", nullptr, &seOpen))
+                app_.SetStorageExplorerOpen(seOpen);
             ImGui::EndMenu();
         }
 

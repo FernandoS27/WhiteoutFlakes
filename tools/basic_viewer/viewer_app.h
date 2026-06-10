@@ -22,6 +22,7 @@
 #include "whiteout/flakes/types.h"
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -36,6 +37,10 @@ namespace whiteout::flakes::renderer {
 class RenderService;
 using SceneId = u32;
 } // namespace whiteout::flakes::renderer
+
+namespace whiteout::flakes::tools {
+class StorageExplorer;
+} // namespace whiteout::flakes::tools
 
 namespace whiteout::flakes {
 
@@ -137,6 +142,16 @@ public:
     // empty.
     void CloseDocument(i32 idx);
 
+    // ---- Storage Explorer (Tools ▸ Storage Explorer) ----
+    // The embedded CASC browser panel. Created lazily on first open; defaults to
+    // the install path so it lands on the game storage without a folder pick.
+    bool StorageExplorerOpen() const {
+        return storageExplorerOpen_;
+    }
+    void SetStorageExplorerOpen(bool on);
+    // Build the panel window inside the host's ImGui frame (called by ViewerUI).
+    void BuildStorageExplorerWindow();
+
     // ---- Animation frame export ----
     // Queue an animation export (see AnimationExportParams). Deferred: the UI
     // calls this from inside the ImGui frame, and Tick() runs the actual
@@ -196,11 +211,8 @@ public:
         return backend_;
     }
 
-    // Set by test_main right after LoadModel so the parent path becomes the
-    // PE1 scan root (matches the old `scene.SetPE1BasePath(mdxPath.parent_path())`).
-    void SetCurrentModelPath(std::filesystem::path p) {
-        currentModelPath_ = std::move(p);
-    }
+    // Path of the active document's model (or empty when no tab is open). The
+    // load paths set this internally; Save As + the export naming read it back.
     const std::filesystem::path& CurrentModelPath() const {
         return currentModelPath_;
     }
@@ -279,10 +291,34 @@ private:
     // mode actually changes. Called at load and whenever a document with a
     // different mode becomes active, so each scene draws in its own HD/SD mode.
     void ApplyRenderMode(RenderMode wanted);
-    // Shared body of LoadModel/LoadEffect: creates a scene, loads `path` into
-    // it, and registers it as a new active document (tearing the scene back
-    // down on failure). `effect` selects the .pkb path.
+    // Create a new document scene bound to `provider`, run `loadBody` (which
+    // spawns into the now-active scene and fills the flat working state,
+    // returning false on failure), and register it as the active tab. On failure
+    // the scene is destroyed and the previously-active tab restored. The single
+    // place that owns document create / rollback / register.
+    bool OpenDocumentScene(std::shared_ptr<io::IContentProvider> provider, std::string title,
+                           const std::function<bool()>& loadBody);
+    // Restore the active document after a failed open: re-activate `prevDoc`
+    // (its saved state + scene), or clear to the empty/default state if none.
+    void RestoreActiveAfterFailedOpen(i32 prevDoc);
+
+    // Shared body of LoadModel/LoadEffect: opens `path` (from the shared game
+    // provider) as a new document. `effect` selects the .pkb path.
     bool OpenDocument(const std::filesystem::path& path, bool effect);
+
+    // Open a model/effect from an arbitrary content provider (e.g. the Storage
+    // Explorer's CASC provider) as a new document. Unlike OpenDocument, the doc
+    // scene uses `provider` instead of the shared game provider, and HD-ness is
+    // derived from the archive path (no filesystem MDX probe). `archivePath` is
+    // a provider-native path (CASC ':'/'\\' separators).
+    bool OpenStorageDocument(const std::string& archivePath, bool effect,
+                             std::shared_ptr<io::IContentProvider> provider);
+    // Common post-spawn flat-state fill (sequences, camera framing, presets)
+    // shared by the model load paths. `hero` may be null (caller handles).
+    void FillModelDocState(model::Actor* hero, const std::filesystem::path& path);
+    // Post-spawn flat-state fill for a standalone effect (placeholder sequence,
+    // provisional camera, deferred reframe). Caller sets currentModelPath_.
+    void FillEffectDocState(model::Actor* hero);
     // Body of OpenDocument after a fresh scene is active: spawns into the
     // active scene and fills the flat working state. Returns false on spawn
     // failure (caller tears the scene down).
@@ -310,6 +346,10 @@ private:
     // instance, lazily built by SharedProvider(), handed to every document
     // scene so they all resolve assets through the same configured provider.
     std::shared_ptr<io::IContentProvider> sharedProvider_;
+
+    // Embedded Storage Explorer panel (Tools ▸ Storage Explorer), created lazily.
+    std::unique_ptr<tools::StorageExplorer> storageExplorer_;
+    bool storageExplorerOpen_ = false;
 
     // ---- Host state (mirror of the ACTIVE document) ----
     bool loopNonLoopingPolicy_ = true;

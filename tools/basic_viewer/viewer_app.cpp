@@ -14,6 +14,7 @@
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #include "renderer/viewport.h"
+#include "storage_explorer.h"
 #if defined(_WIN32)
 #include "resource.h" // IDI_WHITEOUT_ICON
 #endif
@@ -329,6 +330,9 @@ bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
 }
 
 void ViewerApp::Close() {
+    // Destroy the Storage Explorer (its thumbnail scenes + offscreen targets)
+    // while the gfx device is still alive, before Pipeline().Shutdown().
+    storageExplorer_.reset();
     if (imguiInitialised_) {
         ShutdownImGui();
     }
@@ -524,48 +528,91 @@ bool ViewerApp::LoadEffect(const std::filesystem::path& path) {
     return OpenDocument(path, /*effect=*/true);
 }
 
-bool ViewerApp::OpenDocument(const std::filesystem::path& path, bool effect) {
-    // Preserve the outgoing tab's live state before the flat working members
-    // get reused for the new document.
+void ViewerApp::RestoreActiveAfterFailedOpen(i32 prevDoc) {
+    if (prevDoc >= 0) {
+        activeDoc_ = prevDoc;
+        LoadActiveDocState();
+        service_.SetActiveScene(documents_[prevDoc].scene);
+    } else {
+        ClearWorkingState();
+        service_.SetActiveScene(service_.DefaultSceneId());
+    }
+}
+
+bool ViewerApp::OpenDocumentScene(std::shared_ptr<io::IContentProvider> provider, std::string title,
+                                  const std::function<bool()>& loadBody) {
+    // Preserve the outgoing tab's live state before the flat working members get
+    // reused for the new document.
     const i32 prevDoc = activeDoc_;
     if (prevDoc >= 0)
         SaveActiveDocState();
 
-    // Every document owns its own scene; they all share one configured content
-    // provider so the CASC/MPQ/install set is identical across tabs.
+    // Every document owns its own scene, bound to the caller's provider.
     const SceneId sid = service_.CreateScene();
-    service_.SceneAt(sid).SetContentProvider(SharedProvider());
+    service_.SceneAt(sid).SetContentProvider(std::move(provider));
     service_.SetActiveScene(sid);
-    // SetPE1BasePath on a scene with an external provider only updates the
-    // template cache's base path, not the (shared) provider's — set the
-    // provider's local-file root directly so sibling textures resolve.
-    service_.DefaultScene().GetContentProvider().SetBasePath(path.parent_path());
 
     ClearWorkingState();
-    const bool ok =
-        effect ? LoadEffectIntoActiveScene(path) : LoadModelIntoActiveScene(path);
-    if (!ok) {
-        // Roll back: discard the empty scene and re-activate the previous tab.
-        service_.DestroyScene(sid);
-        if (prevDoc >= 0) {
-            activeDoc_ = prevDoc;
-            LoadActiveDocState();
-            service_.SetActiveScene(documents_[prevDoc].scene);
-        } else {
-            ClearWorkingState();
-            service_.SetActiveScene(service_.DefaultSceneId());
-        }
+    if (!loadBody()) {
+        service_.DestroyScene(sid); // discard the empty scene, re-activate prev tab
+        RestoreActiveAfterFailedOpen(prevDoc);
         return false;
     }
 
     Document doc;
     doc.scene = sid;
-    doc.title = path.stem().string();
+    doc.title = std::move(title);
     documents_.push_back(std::move(doc));
     activeDoc_ = static_cast<i32>(documents_.size()) - 1;
-    SaveActiveDocState(); // persist the freshly-loaded flat state into the slot
-    pendingTabSelect_ = activeDoc_; // the tab bar must select this new tab
+    SaveActiveDocState();            // persist the freshly-loaded flat state
+    pendingTabSelect_ = activeDoc_;  // the tab bar must select this new tab
     return true;
+}
+
+bool ViewerApp::OpenDocument(const std::filesystem::path& path, bool effect) {
+    // All documents share one configured game provider so the CASC/MPQ/install
+    // set is identical across tabs.
+    return OpenDocumentScene(SharedProvider(), path.stem().string(), [&] {
+        // SetPE1BasePath on a scene with an external provider only updates the
+        // template cache's base path, not the (shared) provider's — set the
+        // provider's local-file root directly so sibling textures resolve.
+        service_.DefaultScene().GetContentProvider().SetBasePath(path.parent_path());
+        return effect ? LoadEffectIntoActiveScene(path) : LoadModelIntoActiveScene(path);
+    });
+}
+
+bool ViewerApp::OpenStorageDocument(const std::string& archivePath, bool effect,
+                                    std::shared_ptr<io::IContentProvider> provider) {
+    const std::filesystem::path apath(archivePath);
+    // The doc scene reads through the EXPLORER's CASC provider, so the model
+    // resolves from the same storage the user is browsing.
+    return OpenDocumentScene(provider, apath.stem().string(), [&] {
+        service_.Scene().SetPE1BasePath(apath.parent_path());
+
+        // HD-ness from the archive location (there's no filesystem MDX to
+        // probe). Set the global render mode + the provider's HD overlay before
+        // spawn so textures resolve correctly.
+        const bool hd = archivePath.find("_hd.w3mod") != std::string::npos;
+        ApplyRenderMode(hd ? RenderMode::HD : RenderMode::SD);
+        if (provider)
+            provider->SetHdMode(hd);
+
+        service_.Loader().RequestClearAll();
+        currentModelPath_ = apath;
+        model::Actor* hero =
+            effect ? service_.Loader().SpawnUnitFromSource(
+                         std::make_shared<model::PkbEffectSource>(archivePath))
+                   : service_.Loader().SpawnUnit(archivePath);
+        if (!hero) {
+            std::fprintf(stderr, "[viewer] storage open FAILED for %s\n", archivePath.c_str());
+            return false;
+        }
+        if (effect)
+            FillEffectDocState(hero);
+        else
+            FillModelDocState(hero, apath);
+        return true;
+    });
 }
 
 bool ViewerApp::LoadModelIntoActiveScene(const std::filesystem::path& path) {
@@ -614,6 +661,13 @@ bool ViewerApp::LoadModelIntoActiveScene(const std::filesystem::path& path) {
         std::fprintf(stderr, "[viewer] SpawnUnit FAILED for %s\n", io::PathToUtf8(path).c_str());
         return false;
     }
+    FillModelDocState(hero, path);
+    return true;
+}
+
+void ViewerApp::FillModelDocState(model::Actor* hero, const std::filesystem::path& path) {
+    if (!hero)
+        return;
     focusActor_ = hero->handle;
     hero->ignoreNonLooping = loopNonLoopingPolicy_;
 
@@ -644,7 +698,6 @@ bool ViewerApp::LoadModelIntoActiveScene(const std::filesystem::path& path) {
     walkDriftAccumulated_ = 0.0f;
 
     currentModelPath_ = path;
-    return true;
 }
 
 bool ViewerApp::LoadEffectIntoActiveScene(const std::filesystem::path& path) {
@@ -660,6 +713,13 @@ bool ViewerApp::LoadEffectIntoActiveScene(const std::filesystem::path& path) {
                      io::PathToUtf8(path).c_str());
         return false;
     }
+    FillEffectDocState(hero);
+    return true;
+}
+
+void ViewerApp::FillEffectDocState(model::Actor* hero) {
+    if (!hero)
+        return;
     focusActor_ = hero->handle;
     hero->ignoreNonLooping = loopNonLoopingPolicy_;
 
@@ -701,7 +761,6 @@ bool ViewerApp::LoadEffectIntoActiveScene(const std::filesystem::path& path) {
     cameraLocked_ = false;
     walkDriftPrevSeqIdx_ = -1;
     walkDriftAccumulated_ = 0.0f;
-    return true;
 }
 
 void ViewerApp::ApplyRenderMode(RenderMode wanted) {
@@ -859,6 +918,32 @@ void ViewerApp::CloseDocument(i32 idx) {
     } else if (idx < activeDoc_) {
         --activeDoc_; // our slot shifted left
     }
+}
+
+void ViewerApp::SetStorageExplorerOpen(bool on) {
+    storageExplorerOpen_ = on;
+    if (!on)
+        return;
+    if (!storageExplorer_) {
+        storageExplorer_ = std::make_unique<tools::StorageExplorer>(service_);
+        // Double-clicking a model opens it as a new tab, loaded from the
+        // explorer's CASC provider (the viewer wants the path, not the bytes —
+        // it spawns through the same provider).
+        storageExplorer_->SetOnActivate([this](const tools::ActivatedFile& f) {
+            OpenStorageDocument(f.path, f.isEffect, f.provider);
+        });
+        // Default to the viewer's configured install path so the panel lands on
+        // the game storage without a folder pick; File ▸ Open CASC folder can
+        // still repoint it.
+        const std::string install = service_.DefaultScene().GetContentProvider().InstallPath();
+        if (!install.empty())
+            storageExplorer_->OpenCasc(install);
+    }
+}
+
+void ViewerApp::BuildStorageExplorerWindow() {
+    if (storageExplorerOpen_ && storageExplorer_)
+        storageExplorer_->BuildWindow(&storageExplorerOpen_);
 }
 
 void ViewerApp::ActivateCameraPreset(i32 idx) {
@@ -1514,6 +1599,12 @@ void ViewerApp::Tick(f32 dt) {
     if (auto* dnc = service_.GetDncService())
         dnc->Advance(dt);
 
+    // Storage Explorer: pump its (separate) CASC provider + apply staged folder
+    // navigation, and mark its thumbnail cells not-yet-visible. Must run before
+    // the panel's BuildWindow (in ui_->BuildFrame) acquires visible cells.
+    if (storageExplorerOpen_ && storageExplorer_)
+        storageExplorer_->NewFrame(dt);
+
     // ---- ImGui frame ----
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
@@ -1563,6 +1654,15 @@ void ViewerApp::Tick(f32 dt) {
         }
     }
 
+    // Storage Explorer: render every visible thumbnail cell into its offscreen
+    // target BEFORE the main pass composites the ImGui draw data that samples
+    // them. RenderThumbnails snapshots/restores the global RenderSettings (and
+    // juggles the active scene per cell), so re-publish the document scene after.
+    if (storageExplorerOpen_ && storageExplorer_) {
+        storageExplorer_->RenderThumbnails(dt);
+        PublishActiveScene();
+    }
+
     // Render the active document's scene into the window target. RenderViewport
     // (unlike the RenderFrame shim) lets us name the scene explicitly, so a
     // document on a non-default scene composites correctly.
@@ -1570,7 +1670,7 @@ void ViewerApp::Tick(f32 dt) {
         Viewport vp;
         vp.scene = ActiveSceneId();
         vp.target = targetId_;
-        vp.camera = &service_.Scene().Camera();
+        vp.camera = &service_.SceneAt(ActiveSceneId()).Camera();
         service_.Pipeline().RenderViewport(vp);
     }
     service_.Pipeline().Present(targetId_);
