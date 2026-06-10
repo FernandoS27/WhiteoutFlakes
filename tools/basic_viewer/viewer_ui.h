@@ -28,6 +28,9 @@ public:
 private:
     void BuildMenuBar();
     void BuildToolbar();
+    // Strip of one tab per open document (model/effect), each with a close (x)
+    // button. Selecting a tab activates that document; closing it unloads it.
+    void BuildTabBar();
     void BuildSettingsWindow();
     void BuildViewCubeWidget();
     // Renders the deferred "pick MDL dialect" modal when an MDL Save As is

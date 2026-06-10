@@ -15,6 +15,7 @@
 
 #include "model/actor_manager.h"
 #include "render_target.h"
+#include "whiteout/flakes/enums.h" // RenderMode
 #include "whiteout/flakes/gfx_types.h"
 #include "whiteout/flakes/model_source.h"
 #include "whiteout/flakes/model_types.h"
@@ -27,8 +28,13 @@
 
 struct GLFWwindow;
 
+namespace whiteout::flakes::io {
+class IContentProvider;
+} // namespace whiteout::flakes::io
+
 namespace whiteout::flakes::renderer {
 class RenderService;
+using SceneId = u32;
 } // namespace whiteout::flakes::renderer
 
 namespace whiteout::flakes {
@@ -95,15 +101,41 @@ public:
     bool ShouldClose() const;
     void Tick(f32 dt);
 
-    // Load an MDX from disk and make it the focus actor. Clears any
-    // previously-loaded scene. Safe to call repeatedly (used by File > Open).
-    // Dispatches .pkb / .pkfx paths to LoadEffect.
+    // Load an MDX from disk into a NEW document (tab) and make it active.
+    // Each open document owns its own scene, so previously-loaded models stay
+    // resident and switchable; nothing is cleared. Dispatches .pkb / .pkfx
+    // paths to LoadEffect. Returns false (and opens no tab) on failure.
     bool LoadModel(const std::filesystem::path& path);
 
-    // Load a standalone PopcornFX effect (.pkb / .pkfx) and play it. Unlike a
-    // model, there's no animation list — the effect just runs. Clears any
-    // previously-loaded scene; becomes the focus actor.
+    // Load a standalone PopcornFX effect (.pkb / .pkfx) into a NEW document and
+    // play it. Unlike a model, there's no animation list — the effect just
+    // runs. Becomes the active document; other open documents are untouched.
     bool LoadEffect(const std::filesystem::path& path);
+
+    // ---- Open documents (tabs) ----
+    // Each loaded file is one document, backed by its own RenderService scene.
+    // The viewer renders / ticks only the active document; the rest stay frozen
+    // but resident, so switching tabs is instant (no reload).
+    i32 DocumentCount() const {
+        return static_cast<i32>(documents_.size());
+    }
+    i32 ActiveDocumentIndex() const {
+        return activeDoc_;
+    }
+    // Tab label for document `idx` (the file's stem). Empty for out-of-range.
+    const std::string& DocumentTitle(i32 idx) const;
+    // When the active document changes from app code (a file opened on the CLI /
+    // via File > Open, or a neighbour taking over after a close), the ImGui tab
+    // bar must be told which tab to select — otherwise it defaults to the first
+    // tab and snaps the active document back. Returns that index once, then -1.
+    i32 ConsumePendingTabSelect();
+    // Make document `idx` active: publish its scene, restore its host state
+    // (sequences, camera presets, focus actor) and re-apply its render mode.
+    void SetActiveDocument(i32 idx);
+    // Close document `idx`, destroying its scene + actors. If it was active,
+    // a neighbouring tab becomes active; closing the last tab leaves the viewer
+    // empty.
+    void CloseDocument(i32 idx);
 
     // ---- Animation frame export ----
     // Queue an animation export (see AnimationExportParams). Deferred: the UI
@@ -203,6 +235,60 @@ private:
     static void CursorPosCallback(GLFWwindow* w, double x, double y);
     static void ScrollCallback(GLFWwindow* w, double xoff, double yoff);
 
+    // Per-document host state. The "flat" working members below mirror the
+    // ACTIVE document; SaveActiveDocState / LoadActiveDocState shuttle that
+    // mirror in and out of these slots on a tab switch. The scene itself
+    // (actors, camera, clock) lives in the RenderService under `scene`.
+    struct Document {
+        SceneId scene = 0;
+        std::string title;                      // tab label (file stem)
+        std::filesystem::path modelPath;
+        ActorId focusActor = 0;
+        std::vector<std::string> sequenceNames;
+        std::vector<SequenceInfo> sequenceRanges;
+        std::vector<CameraPreset> cameraPresets;
+        std::vector<std::string> cameraPresetNamesUtf8;
+        i32 activeCameraPresetIdx = -1;
+        bool cameraLocked = false;
+        i32 walkDriftPrevSeqIdx = -1;
+        f32 walkDriftAccumulated = 0.0f;
+        i32 effectFrameTicks = -1;
+        i32 lastParentTimeMs = 0;
+        // Render mode is per scene: each document keeps the HD/SD mode it was
+        // loaded under and re-applies it when it becomes active, since the
+        // pipeline reads the (shared) RenderSettings mode at draw time.
+        RenderMode renderMode = RenderMode::SD;
+    };
+
+    // Scene of the active document, or the default scene when none is open.
+    SceneId ActiveSceneId() const;
+    // Publish ActiveSceneId() as the RenderService's active scene so input
+    // callbacks + every Scene() read this frame target the active document.
+    void PublishActiveScene();
+    // Lazily build (and return) the shared content provider every document
+    // scene uses — the default scene's configured FileContentProvider, wrapped
+    // in a non-owning shared_ptr so all tabs see the same CASC/MPQ/install set.
+    std::shared_ptr<io::IContentProvider> SharedProvider();
+    // Copy the flat working members into / out of documents_[activeDoc_].
+    void SaveActiveDocState();
+    void LoadActiveDocState();
+    // Reset the flat working members to "no model loaded".
+    void ClearWorkingState();
+    // Point the shared RenderSettings (+ content-provider HD mode, splat /
+    // event-data caches) at `wanted`, running the side effects only when the
+    // mode actually changes. Called at load and whenever a document with a
+    // different mode becomes active, so each scene draws in its own HD/SD mode.
+    void ApplyRenderMode(RenderMode wanted);
+    // Shared body of LoadModel/LoadEffect: creates a scene, loads `path` into
+    // it, and registers it as a new active document (tearing the scene back
+    // down on failure). `effect` selects the .pkb path.
+    bool OpenDocument(const std::filesystem::path& path, bool effect);
+    // Body of OpenDocument after a fresh scene is active: spawns into the
+    // active scene and fills the flat working state. Returns false on spawn
+    // failure (caller tears the scene down).
+    bool LoadModelIntoActiveScene(const std::filesystem::path& path);
+    bool LoadEffectIntoActiveScene(const std::filesystem::path& path);
+
     RenderService& service_;
     GLFWwindow* window_ = nullptr;
     gfx::GfxApi backend_ = gfx::GfxApi::D3D12;
@@ -214,7 +300,18 @@ private:
 
     std::unique_ptr<ViewerUI> ui_;
 
-    // ---- Host state ----
+    // ---- Open documents (tabs) ----
+    std::vector<Document> documents_;
+    i32 activeDoc_ = -1; // index into documents_, or -1 when none are open
+    // Tab index the UI should force-select next frame after an app-driven active
+    // change, or -1 (see ConsumePendingTabSelect).
+    i32 pendingTabSelect_ = -1;
+    // Non-owning shared_ptr aliasing the default scene's content provider; one
+    // instance, lazily built by SharedProvider(), handed to every document
+    // scene so they all resolve assets through the same configured provider.
+    std::shared_ptr<io::IContentProvider> sharedProvider_;
+
+    // ---- Host state (mirror of the ACTIVE document) ----
     bool loopNonLoopingPolicy_ = true;
     ActorId focusActor_ = 0;
     // Deferred camera-framing for a standalone .pkb: LoadEffect arms this, Tick

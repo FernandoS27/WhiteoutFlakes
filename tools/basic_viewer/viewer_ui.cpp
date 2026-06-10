@@ -112,6 +112,7 @@ ViewerUI::ViewerUI(ViewerApp& app) : app_(app) {
 void ViewerUI::BuildFrame() {
     BuildMenuBar();
     BuildToolbar();
+    BuildTabBar();
     if (showViewCube_)
         BuildViewCubeWidget();
     if (settingsOpen_)
@@ -560,6 +561,69 @@ void ViewerUI::BuildToolbar() {
     ImGui::PopStyleVar(2);
 }
 
+void ViewerUI::BuildTabBar() {
+    const i32 count = app_.DocumentCount();
+    if (count <= 0)
+        return; // nothing open — no strip
+
+    // Anchor a thin strip directly beneath the toolbar (which is menuH + 8 tall
+    // and sits at WorkPos.y). The tab bar draws over the top of the 3D view.
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const f32 menuH = ImGui::GetFrameHeight();
+    const f32 toolbarH = menuH + 8.0f;
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x, vp->WorkPos.y + toolbarH));
+    ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, menuH + 8.0f));
+    ImGuiWindowFlags wf = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                          ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings |
+                          ImGuiWindowFlags_NoBringToFrontOnFocus;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    if (!ImGui::Begin("##tabbar", nullptr, wf)) {
+        ImGui::End();
+        ImGui::PopStyleVar(2);
+        return;
+    }
+
+    ImGuiTabBarFlags tbFlags = ImGuiTabBarFlags_AutoSelectNewTabs |
+                               ImGuiTabBarFlags_Reorderable |
+                               ImGuiTabBarFlags_FittingPolicyScroll;
+    if (ImGui::BeginTabBar("##documents", tbFlags)) {
+        // After an app-driven active change (CLI bulk-load, File > Open, a
+        // close handing focus to a neighbour) the tab bar would otherwise
+        // default to its first tab. Force-select the app's active tab for that
+        // one frame, and skip the "follow ImGui's selection" logic so a
+        // transient first-tab selection can't snap the active document back.
+        const i32 forceSelect = app_.ConsumePendingTabSelect();
+        i32 toClose = -1;
+        for (i32 i = 0; i < app_.DocumentCount(); ++i) {
+            bool open = true;
+            const ImGuiTabItemFlags flags =
+                (i == forceSelect) ? ImGuiTabItemFlags_SetSelected : 0;
+            // PushID disambiguates tabs whose labels (file stems) collide; the
+            // visible label is still the file name.
+            ImGui::PushID(i);
+            if (ImGui::BeginTabItem(app_.DocumentTitle(i).c_str(), &open, flags)) {
+                // BeginTabItem returns true for the selected tab — follow the
+                // user's click by activating that document (but not on a
+                // force-select frame, where ImGui's selection is still settling).
+                if (forceSelect < 0 && app_.ActiveDocumentIndex() != i)
+                    app_.SetActiveDocument(i);
+                ImGui::EndTabItem();
+            }
+            ImGui::PopID();
+            if (!open)
+                toClose = i; // the (x) was clicked
+        }
+        ImGui::EndTabBar();
+        if (toClose >= 0)
+            app_.CloseDocument(toClose);
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar(2);
+}
+
 void ViewerUI::BuildSettingsWindow() {
     RenderService& svc = app_.Service();
     ImGui::SetNextWindowSize(ImVec2(440, 540), ImGuiCond_FirstUseEver);
@@ -863,7 +927,10 @@ void ViewerUI::BuildSettingsWindow() {
     // launches; the provider itself is mutated in place so the effect is live
     // (next ReadFile sees the new state).
     if (ImGui::BeginTabItem("IO")) {
-        auto& provider = svc.Scene().GetContentProvider();
+        // Every document scene shares the DEFAULT scene's provider (see
+        // ViewerApp::SharedProvider). Target it directly rather than the active
+        // scene's, whose own internal provider is never configured.
+        auto& provider = svc.DefaultScene().GetContentProvider();
         if (!ioBufsInitialised_) {
             installPathBuf_ = provider.InstallPath();
             ioBufsInitialised_ = true;

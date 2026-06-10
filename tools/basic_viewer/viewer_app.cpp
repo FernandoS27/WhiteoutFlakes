@@ -13,6 +13,7 @@
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
+#include "renderer/viewport.h"
 #if defined(_WIN32)
 #include "resource.h" // IDI_WHITEOUT_ICON
 #endif
@@ -512,7 +513,62 @@ bool ViewerApp::LoadModel(const std::filesystem::path& path) {
         std::fprintf(stderr, "[viewer] file not found: %s\n", io::PathToUtf8(path).c_str());
         return false;
     }
+    return OpenDocument(path, /*effect=*/false);
+}
 
+bool ViewerApp::LoadEffect(const std::filesystem::path& path) {
+    if (!std::filesystem::exists(path)) {
+        std::fprintf(stderr, "[viewer] file not found: %s\n", io::PathToUtf8(path).c_str());
+        return false;
+    }
+    return OpenDocument(path, /*effect=*/true);
+}
+
+bool ViewerApp::OpenDocument(const std::filesystem::path& path, bool effect) {
+    // Preserve the outgoing tab's live state before the flat working members
+    // get reused for the new document.
+    const i32 prevDoc = activeDoc_;
+    if (prevDoc >= 0)
+        SaveActiveDocState();
+
+    // Every document owns its own scene; they all share one configured content
+    // provider so the CASC/MPQ/install set is identical across tabs.
+    const SceneId sid = service_.CreateScene();
+    service_.SceneAt(sid).SetContentProvider(SharedProvider());
+    service_.SetActiveScene(sid);
+    // SetPE1BasePath on a scene with an external provider only updates the
+    // template cache's base path, not the (shared) provider's — set the
+    // provider's local-file root directly so sibling textures resolve.
+    service_.DefaultScene().GetContentProvider().SetBasePath(path.parent_path());
+
+    ClearWorkingState();
+    const bool ok =
+        effect ? LoadEffectIntoActiveScene(path) : LoadModelIntoActiveScene(path);
+    if (!ok) {
+        // Roll back: discard the empty scene and re-activate the previous tab.
+        service_.DestroyScene(sid);
+        if (prevDoc >= 0) {
+            activeDoc_ = prevDoc;
+            LoadActiveDocState();
+            service_.SetActiveScene(documents_[prevDoc].scene);
+        } else {
+            ClearWorkingState();
+            service_.SetActiveScene(service_.DefaultSceneId());
+        }
+        return false;
+    }
+
+    Document doc;
+    doc.scene = sid;
+    doc.title = path.stem().string();
+    documents_.push_back(std::move(doc));
+    activeDoc_ = static_cast<i32>(documents_.size()) - 1;
+    SaveActiveDocState(); // persist the freshly-loaded flat state into the slot
+    pendingTabSelect_ = activeDoc_; // the tab bar must select this new tab
+    return true;
+}
+
+bool ViewerApp::LoadModelIntoActiveScene(const std::filesystem::path& path) {
     // Record the loaded path so CurrentModelPath() is accurate regardless of
     // entry point (CLI, startup picker, or File > Open). Save As reads it back.
     currentModelPath_ = path;
@@ -549,35 +605,7 @@ bool ViewerApp::LoadModel(const std::filesystem::path& path) {
             std::fprintf(stderr, "[viewer] HD-probe parse FAILED for %s: %s (continuing in SD)\n",
                          io::PathToUtf8(path).c_str(), e.what());
         }
-        const RenderMode wanted = anyHdLayer ? RenderMode::HD : RenderMode::SD;
-        const bool modeFlipped = (service_.Settings().GetRenderMode() != wanted);
-        service_.Settings().SetRenderMode(wanted);
-
-        // RenderSettings is data-only; the side effects of a mode flip
-        // (CASC-overlay precedence, splat / SLK caches keyed under the
-        // old mode) have to be applied here, before SpawnUnit pulls in
-        // the model's textures + event data under the new mode.
-        if (modeFlipped) {
-            if (auto* p = service_.Scene().ActiveContentProvider()) {
-                p->SetHdMode(wanted == RenderMode::HD);
-                // Force-reload SplatData / UberSplatData / SpawnData so
-                // entries cached under the previous prefix order are
-                // replaced — texture paths stored in the entries are
-                // re-resolved through the new CASC overlay on first
-                // fetch below.
-                io::LoadEventDataFiles(p, /*force=*/true);
-            }
-            // Kill any splats currently alive — each one holds a
-            // refcount on an AssetManager slot keyed by the old-mode
-            // texture; without releasing them the re-prefetch below
-            // only bumps the same stale handle. The next event spawns
-            // a fresh splat under the new mode.
-            service_.Splats().Clear();
-            // Re-acquire the global splat texture set so the
-            // AssetManager slots used by SpawnSpl/SpawnUbr at runtime
-            // resolve under the new HD/SD precedence.
-            io::PrefetchEventAssetSlots(service_.Assets());
-        }
+        ApplyRenderMode(anyHdLayer ? RenderMode::HD : RenderMode::SD);
     }
 
     service_.Loader().RequestClearAll();
@@ -619,11 +647,7 @@ bool ViewerApp::LoadModel(const std::filesystem::path& path) {
     return true;
 }
 
-bool ViewerApp::LoadEffect(const std::filesystem::path& path) {
-    if (!std::filesystem::exists(path)) {
-        std::fprintf(stderr, "[viewer] file not found: %s\n", io::PathToUtf8(path).c_str());
-        return false;
-    }
+bool ViewerApp::LoadEffectIntoActiveScene(const std::filesystem::path& path) {
     currentModelPath_ = path;
     // Textures the .pkb references resolve against its own directory.
     service_.Scene().SetPE1BasePath(path.parent_path());
@@ -678,6 +702,163 @@ bool ViewerApp::LoadEffect(const std::filesystem::path& path) {
     walkDriftPrevSeqIdx_ = -1;
     walkDriftAccumulated_ = 0.0f;
     return true;
+}
+
+void ViewerApp::ApplyRenderMode(RenderMode wanted) {
+    const bool modeFlipped = (service_.Settings().GetRenderMode() != wanted);
+    service_.Settings().SetRenderMode(wanted);
+    if (!modeFlipped)
+        return;
+
+    // RenderSettings is data-only; the side effects of a mode flip (CASC-overlay
+    // precedence, splat / SLK caches keyed under the old mode) have to be
+    // applied here, before any subsequent texture / event-data fetch resolves
+    // under the new mode.
+    if (auto* p = service_.Scene().ActiveContentProvider()) {
+        p->SetHdMode(wanted == RenderMode::HD);
+        // Force-reload SplatData / UberSplatData / SpawnData so entries cached
+        // under the previous prefix order are replaced — texture paths stored in
+        // the entries re-resolve through the new CASC overlay on first fetch.
+        io::LoadEventDataFiles(p, /*force=*/true);
+    }
+    // Kill any splats currently alive — each one holds a refcount on an
+    // AssetManager slot keyed by the old-mode texture; without releasing them
+    // the re-prefetch below only bumps the same stale handle.
+    service_.Splats().Clear();
+    // Re-acquire the global splat texture set so the AssetManager slots used by
+    // SpawnSpl/SpawnUbr at runtime resolve under the new HD/SD precedence.
+    io::PrefetchEventAssetSlots(service_.Assets());
+}
+
+std::shared_ptr<io::IContentProvider> ViewerApp::SharedProvider() {
+    if (!sharedProvider_) {
+        // Alias the default scene's configured FileContentProvider without
+        // owning it (no-op deleter) — every document scene shares this one
+        // provider, so they all see the same CASC/MPQ/install configuration.
+        io::IContentProvider* p = &service_.DefaultScene().GetContentProvider();
+        sharedProvider_ = std::shared_ptr<io::IContentProvider>(p, [](io::IContentProvider*) {});
+    }
+    return sharedProvider_;
+}
+
+SceneId ViewerApp::ActiveSceneId() const {
+    if (activeDoc_ >= 0 && activeDoc_ < static_cast<i32>(documents_.size()))
+        return documents_[activeDoc_].scene;
+    return service_.DefaultSceneId();
+}
+
+void ViewerApp::PublishActiveScene() {
+    service_.SetActiveScene(ActiveSceneId());
+}
+
+void ViewerApp::SaveActiveDocState() {
+    if (activeDoc_ < 0 || activeDoc_ >= static_cast<i32>(documents_.size()))
+        return;
+    Document& d = documents_[activeDoc_];
+    d.modelPath = currentModelPath_;
+    d.focusActor = focusActor_;
+    d.sequenceNames = sequenceNames_;
+    d.sequenceRanges = sequenceRanges_;
+    d.cameraPresets = cameraPresets_;
+    d.cameraPresetNamesUtf8 = cameraPresetNamesUtf8_;
+    d.activeCameraPresetIdx = activeCameraPresetIdx_;
+    d.cameraLocked = cameraLocked_;
+    d.walkDriftPrevSeqIdx = walkDriftPrevSeqIdx_;
+    d.walkDriftAccumulated = walkDriftAccumulated_;
+    d.effectFrameTicks = effectFrameTicks_;
+    d.lastParentTimeMs = lastParentTimeMs_;
+    d.renderMode = service_.Settings().GetRenderMode();
+}
+
+void ViewerApp::LoadActiveDocState() {
+    if (activeDoc_ < 0 || activeDoc_ >= static_cast<i32>(documents_.size()))
+        return;
+    const Document& d = documents_[activeDoc_];
+    currentModelPath_ = d.modelPath;
+    focusActor_ = d.focusActor;
+    sequenceNames_ = d.sequenceNames;
+    sequenceRanges_ = d.sequenceRanges;
+    cameraPresets_ = d.cameraPresets;
+    cameraPresetNamesUtf8_ = d.cameraPresetNamesUtf8;
+    activeCameraPresetIdx_ = d.activeCameraPresetIdx;
+    cameraLocked_ = d.cameraLocked;
+    walkDriftPrevSeqIdx_ = d.walkDriftPrevSeqIdx;
+    walkDriftAccumulated_ = d.walkDriftAccumulated;
+    effectFrameTicks_ = d.effectFrameTicks;
+    lastParentTimeMs_ = d.lastParentTimeMs;
+    // Render mode (d.renderMode) is re-applied by the caller via ApplyRenderMode
+    // so the splat / event-data side effects run only when it actually changes.
+}
+
+void ViewerApp::ClearWorkingState() {
+    focusActor_ = 0;
+    currentModelPath_.clear();
+    sequenceNames_.clear();
+    sequenceRanges_.clear();
+    cameraPresets_.clear();
+    cameraPresetNamesUtf8_.clear();
+    activeCameraPresetIdx_ = -1;
+    cameraLocked_ = false;
+    walkDriftPrevSeqIdx_ = -1;
+    walkDriftAccumulated_ = 0.0f;
+    effectFrameTicks_ = -1;
+    lastParentTimeMs_ = 0;
+}
+
+const std::string& ViewerApp::DocumentTitle(i32 idx) const {
+    static const std::string kEmpty;
+    if (idx < 0 || idx >= static_cast<i32>(documents_.size()))
+        return kEmpty;
+    return documents_[idx].title;
+}
+
+i32 ViewerApp::ConsumePendingTabSelect() {
+    const i32 v = pendingTabSelect_;
+    pendingTabSelect_ = -1;
+    return v;
+}
+
+void ViewerApp::SetActiveDocument(i32 idx) {
+    if (idx < 0 || idx >= static_cast<i32>(documents_.size()) || idx == activeDoc_)
+        return;
+    if (activeDoc_ >= 0)
+        SaveActiveDocState();
+    activeDoc_ = idx;
+    LoadActiveDocState();
+    service_.SetActiveScene(documents_[idx].scene);
+    // Re-apply this document's render mode — the pipeline reads the shared
+    // RenderSettings mode per frame, so it must match the active scene.
+    ApplyRenderMode(documents_[idx].renderMode);
+}
+
+void ViewerApp::CloseDocument(i32 idx) {
+    if (idx < 0 || idx >= static_cast<i32>(documents_.size()))
+        return;
+    const SceneId sid = documents_[idx].scene;
+    const bool closingActive = (idx == activeDoc_);
+
+    // Drop the scene (actors + GPU state). DestroyScene falls back to the
+    // default scene if this was the active one; we re-point below.
+    service_.DestroyScene(sid);
+    documents_.erase(documents_.begin() + idx);
+
+    if (documents_.empty()) {
+        activeDoc_ = -1;
+        ClearWorkingState();
+        service_.SetActiveScene(service_.DefaultSceneId());
+        return;
+    }
+    if (closingActive) {
+        // The flat members still mirror the now-closed doc; overwrite them with
+        // the neighbour that takes focus (no save — the closed state is gone).
+        activeDoc_ = std::min<i32>(idx, static_cast<i32>(documents_.size()) - 1);
+        LoadActiveDocState();
+        service_.SetActiveScene(documents_[activeDoc_].scene);
+        ApplyRenderMode(documents_[activeDoc_].renderMode);
+        pendingTabSelect_ = activeDoc_; // tell the tab bar which neighbour won
+    } else if (idx < activeDoc_) {
+        --activeDoc_; // our slot shifted left
+    }
 }
 
 void ViewerApp::ActivateCameraPreset(i32 idx) {
@@ -777,12 +958,13 @@ struct CaptureHooks {
 // stalling per frame, up to one capture-ring's worth run, then a single
 // WaitIdle drains the whole batch. Capturing the UI disables that pipelining
 // (see CaptureHooks::captureUi).
-void CaptureSequenceFrames(RenderService& svc, RenderTargetId targetId, i32 frameCount, i32 fps,
-                           const CaptureHooks& hooks, const FrameSink& sink) {
+void CaptureSequenceFrames(RenderService& svc, SceneId scene, RenderTargetId targetId,
+                           i32 frameCount, i32 fps, const CaptureHooks& hooks,
+                           const FrameSink& sink) {
     auto& pipeline = svc.Pipeline();
     pipeline.EnableFrameCapture(true);
 
-    if (auto* cp = svc.Scene().ActiveContentProvider())
+    if (auto* cp = svc.SceneAt(scene).ActiveContentProvider())
         cp->Pump();
 
     const f32 dtSec = 1.0f / static_cast<f32>(fps);
@@ -824,15 +1006,22 @@ void CaptureSequenceFrames(RenderService& svc, RenderTargetId targetId, i32 fram
 
         // SceneManager::Update advances each actor's playback clock;
         // FrameTicker::Tick then evaluates poses at that clock. Both are
-        // needed — Tick alone would re-render frame 0 every iteration.
+        // needed — Tick alone would re-render frame 0 every iteration. Tick
+        // publishes the scene then restores the default, so re-publish it for
+        // the camera hooks + RenderViewport below.
         const f32 stepDt = (i == 0) ? 0.0f : dtSec;
-        svc.Scene().Update(stepDt);
-        svc.Ticker().Tick(stepDt);
+        svc.SceneAt(scene).Update(stepDt);
+        svc.Ticker().Tick(svc.SceneAt(scene), stepDt);
+        svc.SetActiveScene(scene);
         if (hooks.applyCamera)
             hooks.applyCamera();
         if (hooks.buildFrame)
             hooks.buildFrame();
-        pipeline.RenderFrame(targetId);
+        Viewport vp;
+        vp.scene = scene;
+        vp.target = targetId;
+        vp.camera = &svc.SceneAt(scene).Camera();
+        pipeline.RenderViewport(vp);
         pipeline.Present(targetId);
 
         const i32 slot = pipeline.LastCapturedSlot();
@@ -883,12 +1072,12 @@ whiteout::textures::Texture KeyOutBackground(const std::vector<u8>& black,
 // white backdrop) at the same pose and keyed into a straight-alpha RGBA frame.
 // Unlike CaptureSequenceFrames this WaitIdles per render rather than pipelining
 // the ring — simpler, and the cost is dwarfed by the double render + encode.
-void CaptureKeyedFrames(RenderService& svc, RenderTargetId targetId, i32 frameCount, i32 fps,
-                        const CaptureHooks& hooks, const FrameSink& sink) {
+void CaptureKeyedFrames(RenderService& svc, SceneId scene, RenderTargetId targetId, i32 frameCount,
+                        i32 fps, const CaptureHooks& hooks, const FrameSink& sink) {
     auto& pipeline = svc.Pipeline();
     pipeline.EnableFrameCapture(true);
 
-    if (auto* cp = svc.Scene().ActiveContentProvider())
+    if (auto* cp = svc.SceneAt(scene).ActiveContentProvider())
         cp->Pump();
 
     const u32 savedBg = svc.Settings().BackgroundColorRaw();
@@ -897,7 +1086,11 @@ void CaptureKeyedFrames(RenderService& svc, RenderTargetId targetId, i32 frameCo
 
     auto renderPass = [&](u8 r, u8 g, u8 b, std::vector<u8>& out, i32& w, i32& h) -> bool {
         svc.Settings().SetBackgroundColor(r, g, b);
-        pipeline.RenderFrame(targetId);
+        Viewport vp;
+        vp.scene = scene;
+        vp.target = targetId;
+        vp.camera = &svc.SceneAt(scene).Camera();
+        pipeline.RenderViewport(vp);
         pipeline.Present(targetId);
         if (dev)
             dev->WaitIdle();
@@ -908,8 +1101,9 @@ void CaptureKeyedFrames(RenderService& svc, RenderTargetId targetId, i32 frameCo
     for (i32 i = 0; i < frameCount; ++i) {
         glfwPollEvents();
         const f32 stepDt = (i == 0) ? 0.0f : dtSec;
-        svc.Scene().Update(stepDt);
-        svc.Ticker().Tick(stepDt);
+        svc.SceneAt(scene).Update(stepDt);
+        svc.Ticker().Tick(svc.SceneAt(scene), stepDt);
+        svc.SetActiveScene(scene); // Tick restored the default scene; re-publish
         if (hooks.applyCamera)
             hooks.applyCamera();
         if (hooks.buildFrame)
@@ -1208,10 +1402,11 @@ void ViewerApp::RunAnimationExport(const AnimationExportParams& p) {
             ImGui::Render();
         };
 
+    const SceneId scene = ActiveSceneId();
     if (transparent)
-        CaptureKeyedFrames(service_, targetId_, frameCount, fps, hooks, sink);
+        CaptureKeyedFrames(service_, scene, targetId_, frameCount, fps, hooks, sink);
     else
-        CaptureSequenceFrames(service_, targetId_, frameCount, fps, hooks, sink);
+        CaptureSequenceFrames(service_, scene, targetId_, frameCount, fps, hooks, sink);
 
     // Restore the focus actor + resolution before the (potentially slow) encode.
     hero->playbackSpeed = savedSpeed;
@@ -1238,6 +1433,11 @@ void ViewerApp::RunAnimationExport(const AnimationExportParams& p) {
 }
 
 void ViewerApp::Tick(f32 dt) {
+    // Publish the active document's scene BEFORE polling: GLFW input callbacks
+    // fire inside glfwPollEvents and steer the active scene's camera, and every
+    // Scene() read below must resolve to the active document too.
+    PublishActiveScene();
+
     glfwPollEvents();
     if (!window_ || glfwWindowShouldClose(window_))
         return;
@@ -1275,6 +1475,13 @@ void ViewerApp::Tick(f32 dt) {
             lastFbH_ = fbH;
         }
     }
+
+    // Advance the active document's wall clock. test_main pumps the DEFAULT
+    // scene's clock for the legacy single-scene path; a document on its own
+    // scene needs its clock ticked here. Frozen (inactive) tabs keep their
+    // clock, so switching back resumes where they left off.
+    if (activeDoc_ >= 0)
+        service_.Scene().Update(dt);
 
     // ---- Walk-drift along the camera's X axis (orbital mode only) ----
     constexpr f32 kDefaultWalkSpeed = 100.0f;
@@ -1337,7 +1544,10 @@ void ViewerApp::Tick(f32 dt) {
         service_.Sound().SetListener(eye, fwd, cam.GetUp());
     }
 
-    service_.Ticker().Tick(parentDt);
+    // Tick the active document's scene (Tick publishes it then restores the
+    // default scene on exit, so re-publish for the effect-framing + render).
+    service_.Ticker().Tick(service_.SceneAt(ActiveSceneId()), parentDt);
+    PublishActiveScene();
 
     // Reframe a freshly-loaded .pkb once its particle cloud has developed.
     // Wait a short warm-up so the AABB reflects the steady-state spread, then
@@ -1353,7 +1563,16 @@ void ViewerApp::Tick(f32 dt) {
         }
     }
 
-    service_.Pipeline().RenderFrame(targetId_);
+    // Render the active document's scene into the window target. RenderViewport
+    // (unlike the RenderFrame shim) lets us name the scene explicitly, so a
+    // document on a non-default scene composites correctly.
+    {
+        Viewport vp;
+        vp.scene = ActiveSceneId();
+        vp.target = targetId_;
+        vp.camera = &service_.Scene().Camera();
+        service_.Pipeline().RenderViewport(vp);
+    }
     service_.Pipeline().Present(targetId_);
 
     // ---- FPS title-bar update ----

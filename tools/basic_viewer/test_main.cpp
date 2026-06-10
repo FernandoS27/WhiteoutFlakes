@@ -375,6 +375,9 @@ int main(int argc, char* argv[]) {
     bool headlessTest = false;
     bool multiSceneTest = false;
     std::filesystem::path mdxPath;
+    // Extra positional paths beyond the first open in their own tabs, so
+    // `WhiteoutFlakes a.mdx b.mdx c.mdx` launches with three documents.
+    std::vector<std::filesystem::path> extraPaths;
 
     // Headless animation-frame export: --export-anim <seqIdx> <fps> <folder>
     // [--gif] [--apng] [--webp] [--transparent] [--ui] [--res <w> <h>]
@@ -465,6 +468,8 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (mdxPath.empty()) {
             mdxPath = whiteout::flakes::io::FsPathFromUtf8(a);
+        } else {
+            extraPaths.push_back(whiteout::flakes::io::FsPathFromUtf8(a));
         }
     }
 
@@ -684,6 +689,15 @@ int main(int argc, char* argv[]) {
             std::cerr << "File not found: " << whiteout::flakes::io::PathToUtf8(mdxPath) << "\n";
         } else if (!app.LoadModel(mdxPath)) {
             std::cerr << "Failed to load model.\n";
+        }
+    }
+    // Open any additional positional paths in their own tabs. The last one
+    // loaded ends up active, matching File > Open opening into a new tab.
+    for (const auto& extra : extraPaths) {
+        if (!std::filesystem::exists(extra)) {
+            std::cerr << "File not found: " << whiteout::flakes::io::PathToUtf8(extra) << "\n";
+        } else if (!app.LoadModel(extra)) {
+            std::cerr << "Failed to load model: " << whiteout::flakes::io::PathToUtf8(extra) << "\n";
         }
     }
 
