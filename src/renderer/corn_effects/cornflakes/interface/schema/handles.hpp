@@ -33,7 +33,6 @@ struct EffectHandle {
     constexpr bool operator==(const EffectHandle&) const = default;
 };
 
-/// @brief CornFx-format register id (`0xC0EC` signature in the high half).
 struct CRegID {
     static constexpr u32 kSignatureMask = 0xC0EC0000U; ///< High 16 bits when valid.
     static constexpr u32 kTagBitIndex = 20U;           ///< Bit position of the type-tag flag.

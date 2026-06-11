@@ -16,7 +16,7 @@ Issue bindingFatal(u32 code, std::string_view message) noexcept {
     return issue;
 }
 
-} // namespace
+}
 
 std::optional<CBEMInstruction> IRToCBEMLowerer::lowerOne(const IRInstruction& ir,
                                                          IssueBag& issues) const {
@@ -48,4 +48,4 @@ CBEMInstruction CBEMEncoder::encodeMadd(u32 dst, u32 src0, u32 src1, u32 src2) n
     return out;
 }
 
-} // namespace whiteout::cornflakes
+}

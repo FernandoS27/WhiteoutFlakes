@@ -384,7 +384,7 @@ void CornEffectsService::FlushBatchedDraws() {
                 continue;
             cmd->BindPipeline(pso);
 
-            const auto diffuseSlot = s.backend->LayerDiffuseSlot(d.layerIdx);
+            const auto diffuseSlot = s.backend->LayerDiffuseSlot(d.layerIdx, d.rendererIdx);
             gfx::TextureHandle tex =
                 (diffuseSlot != 0 && assets) ? assets->TextureOf(diffuseSlot) : gfx::TextureHandle::Invalid;
             if (tex == gfx::TextureHandle::Invalid && tex_mgr) {

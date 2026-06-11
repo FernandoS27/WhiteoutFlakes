@@ -15,4 +15,4 @@ const SpatialLayerResource* findSpatialLayerByName(std::span<const SpatialLayerR
     return nullptr;
 }
 
-} // namespace whiteout::cornflakes
+}

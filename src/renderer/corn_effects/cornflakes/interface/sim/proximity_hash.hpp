@@ -14,9 +14,15 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief One inserted point — position plus the owning particle's selfId.
+/// @brief One inserted point — `position` is the proximity-query key (insert location);
+/// `payload` is the value returned by `closest*` (the `appendPayload`'d attribute, e.g. the
+/// real world position). Engine-faithful: `_FetchNeighborData` returns the entry's payload
+/// STREAM, not its hash position — the two differ in the associative-map usage (massteleportto
+/// inserts at a synthetic key and appends the real position). For the typical pattern (no
+/// `appendPayload`) the payload defaults to the insert position, so `closest` still returns it.
 struct ProximityEntry {
     std::array<f32, 3> position{0.0F, 0.0F, 0.0F};
+    std::array<f32, 3> payload{0.0F, 0.0F, 0.0F};
 
     u64 sourceSelfId = 0U;
 };
@@ -64,16 +70,21 @@ public:
         return entryCount_;
     }
 
-    /// @brief Insert `position`. Non-finite components are rejected.
+    /// @brief Insert `position` as the query key; the returned payload defaults to `position`.
+    /// Non-finite position components are rejected (mirrors engine `_FnSpatialLayer_Insert`).
     bool insert(const std::array<f32, 3>& position, u64 sourceSelfId) {
-        const f32 x = position[0];
-        const f32 y = position[1];
-        const f32 z = position[2];
-        if (!isFiniteF32(x) || !isFiniteF32(y) || !isFiniteF32(z)) {
+        return insert(position, position, sourceSelfId);
+    }
+
+    /// @brief Insert with an explicit `payload` (the value `closest*` returns). The hash is
+    /// keyed by `position`; `payload` is the `appendPayload`'d attribute (e.g. world position).
+    bool insert(const std::array<f32, 3>& position, const std::array<f32, 3>& payload,
+                u64 sourceSelfId) {
+        if (!isFiniteF32(position[0]) || !isFiniteF32(position[1]) || !isFiniteF32(position[2])) {
             return false;
         }
         const CellCoord c = cellOf(position);
-        cells_[c].push_back(ProximityEntry{position, sourceSelfId});
+        cells_[c].push_back(ProximityEntry{position, payload, sourceSelfId});
         ++entryCount_;
         return true;
     }

@@ -1,14 +1,14 @@
 #include "cbem_internal.hpp"
 
+#include <cornflakes/interface/binding/ir_to_cbem_lowerer.hpp>
 #include <cornflakes/core/determinism.hpp>
 #include <cornflakes/diagnostics/issue_codes.hpp>
-#include <cornflakes/interface/binding/ir_to_cbem_lowerer.hpp>
 #include <cornflakes/interface/schema/opcodes.hpp>
 #include <cornflakes/interface/vm/bytecode_exec_context.hpp>
 #include <cornflakes/interface/vm/bytecode_trace.hpp>
-#include <cornflakes/interface/vm/register_value.hpp>
 #include <cornflakes/vm/cbem_interpreter.hpp>
 #include <cornflakes/vm/math_functions.hpp>
+#include <cornflakes/interface/vm/register_value.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -25,19 +25,21 @@ namespace {
 enum class ScalarFamily : u8 { Float, Int, Bool, Other };
 
 constexpr ScalarFamily scalarFamilyForBank(u8 b) noexcept {
-    if (b == bank::kBool) {
+    if (b == bank::kBool || b == bank::kBool3) {
         return ScalarFamily::Bool;
     }
     if (b == bank::kInt || b == bank::kInt2 || b == bank::kInt2Alt || b == bank::kInt2Alt2 ||
-        b == bank::kInt3 || b == bank::kInt4 || b == bank::kIntAlt) {
+        b == bank::kInt3 || b == bank::kInt4) {
         return ScalarFamily::Int;
     }
-    if (b == bank::kFloat || b == bank::kFloat2 || b == bank::kFloat3 || b == bank::kFloat4) {
+
+    if (b == bank::kFloat || b == bank::kFloat2 || b == bank::kFloat3 || b == bank::kFloat4 ||
+        b == bank::kIntAlt) {
         return ScalarFamily::Float;
     }
     return ScalarFamily::Other;
 }
-} // namespace
+}
 
 bool execNop(const CBEMInstruction&, BytecodeExecContext&, IssueBag&) noexcept {
     return true;
@@ -668,8 +670,9 @@ bool execSelect(const CBEMInstruction& ins, BytecodeExecContext& ctx, IssueBag& 
     RegisterValue cond;
     RegisterValue tv;
     RegisterValue fv;
-    if (!readSrc(ctx, ins.operands[1], cond, issues) ||
-        !readSrc(ctx, ins.operands[2], tv, issues) || !readSrc(ctx, ins.operands[3], fv, issues)) {
+
+    if (!readSrc(ctx, ins.operands[3], cond, issues) ||
+        !readSrc(ctx, ins.operands[2], tv, issues) || !readSrc(ctx, ins.operands[1], fv, issues)) {
         return false;
     }
     const auto d = decodeRegId(dstReg);
@@ -683,4 +686,4 @@ bool execSelect(const CBEMInstruction& ins, BytecodeExecContext& ctx, IssueBag& 
     }
     return writeDst(ctx, dstReg, out, issues);
 }
-} // namespace whiteout::cornflakes
+}

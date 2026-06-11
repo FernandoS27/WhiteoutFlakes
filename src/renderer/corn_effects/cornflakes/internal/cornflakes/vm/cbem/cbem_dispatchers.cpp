@@ -1,14 +1,15 @@
 #include "cbem_internal.hpp"
 
+#include <cornflakes/interface/binding/ir_to_cbem_lowerer.hpp>
 #include <cornflakes/core/determinism.hpp>
 #include <cornflakes/diagnostics/issue_codes.hpp>
-#include <cornflakes/interface/binding/ir_to_cbem_lowerer.hpp>
 #include <cornflakes/interface/schema/opcodes.hpp>
 #include <cornflakes/interface/vm/bytecode_exec_context.hpp>
 #include <cornflakes/interface/vm/bytecode_trace.hpp>
-#include <cornflakes/interface/vm/register_value.hpp>
+#include <cornflakes/sampler/turbulence.hpp>
 #include <cornflakes/vm/cbem_interpreter.hpp>
 #include <cornflakes/vm/math_functions.hpp>
+#include <cornflakes/interface/vm/register_value.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -45,6 +46,24 @@ std::optional<u32> resolveKickEventIdFromObjSlot(const CBEMInstruction& ins,
         }
     }
     return std::nullopt;
+}
+
+std::string_view resolveEventChannelName(const CBEMInstruction& ins,
+                                         const BytecodeExecContext& ctx) noexcept {
+    const u32 extFunc = ins.operands[2];
+    if (extFunc >= ctx.functions.size()) {
+        return {};
+    }
+    const u32 symSlot = ctx.functions[extFunc].symbolSlot;
+    if (symSlot == kSymbolSlotUnbound) {
+        return {};
+    }
+    for (const auto& b : ctx.externalBindings) {
+        if (b.slot == static_cast<u16>(symSlot)) {
+            return b.name;
+        }
+    }
+    return {};
 }
 bool readFnArg(const CBEMInstruction& ins, std::size_t i, BytecodeExecContext& ctx,
                RegisterValue& out, IssueBag& issues) noexcept {
@@ -84,21 +103,22 @@ bool dispatchRand(const CBEMInstruction& ins, BytecodeExecContext& ctx, Register
     out = RegisterValue{};
     out.componentCount = outComponents;
     out.typeBank = floatBankForComponentCount(outComponents);
-    auto drawUnit = [&]() -> f32 {
-        if (ctx.rng == nullptr)
-            return 0.0F;
-        const u32 raw = ctx.rng->advance();
 
+    auto drawUnit12 = [&]() -> f32 {
+        if (ctx.rng == nullptr)
+            return 1.0F;
+        const u32 raw = ctx.rng->advance();
         const u32 bits = (raw >> fpbits::kRandMantissaShift) | fpbits::kOneF32;
         f32 v;
         std::memcpy(&v, &bits, sizeof(f32));
-        return v - 1.0F;
+        return v;
     };
     for (u8 i = 0; i < outComponents; ++i) {
-        const f32 t = drawUnit();
+        const f32 t12 = drawUnit12();
         const f32 a = lo.lanes[i];
         const f32 b = hi.lanes[i];
-        out.lanes[i] = a + (b - a) * t;
+        const f32 d = b - a;
+        out.lanes[i] = t12 * d + (a - d);
     }
     return true;
 }
@@ -464,6 +484,45 @@ bool dispatchTrigger(const CBEMInstruction& ins, BytecodeExecContext& ctx, Regis
     return true;
 }
 
+BytecodeExecContext::PendingPayloadElement* findOrCreatePendingPayload(BytecodeExecContext& ctx,
+                                                                       u32 eventId) noexcept {
+    for (auto& s : ctx.pendingPayloadElements) {
+        if (s.valid && s.eventId == eventId) {
+            return &s;
+        }
+    }
+    for (auto& s : ctx.pendingPayloadElements) {
+        if (!s.valid) {
+            s = BytecodeExecContext::PendingPayloadElement{};
+            s.eventId = eventId;
+            s.valid = true;
+            return &s;
+        }
+    }
+    return nullptr;
+}
+
+void stashBuiltPayloadFloat(BytecodeExecContext& ctx, u32 elementId, u8 width,
+                            const std::array<f32, 4>& value) noexcept {
+    for (auto& b : ctx.builtPayloadFloats) {
+        if (b.valid && b.elementId == elementId) {
+            b.width = width;
+            b.value = value;
+            return;
+        }
+    }
+    for (auto& b : ctx.builtPayloadFloats) {
+        if (!b.valid) {
+            b.valid = true;
+            b.elementId = elementId;
+            b.width = width;
+            b.value = value;
+            return;
+        }
+    }
+    ctx.builtPayloadFloats[0] = {true, elementId, width, value};
+}
+
 bool dispatchInitPayload(const CBEMInstruction& ins, BytecodeExecContext& ctx, RegisterValue& out,
                          IssueBag& issues) noexcept {
     if (ins.operands[3] < 2U) {
@@ -482,18 +541,17 @@ bool dispatchInitPayload(const CBEMInstruction& ins, BytecodeExecContext& ctx, R
         eventId = laneAsU32(eventReg, 0);
     }
 
-    RegisterValue payload;
-    const std::size_t payloadArgIdx = resolveKickEventIdFromObjSlot(ins, ctx).has_value() ? 0U : 1U;
-    if (!readFnArg(ins, payloadArgIdx, ctx, payload, issues)) {
-        return false;
-    }
-
     u32 count = 0;
-    if (ctx.lastGenerateValid) {
-        count = ctx.lastGenerateCount;
-        ctx.lastGenerateValid = false;
-    } else {
-        count = laneAsU32(payload, 0);
+    const u32 nargs = ins.operands[3];
+    RegisterValue eventKeyReg;
+    if (nargs >= 1U && readFnArg(ins, nargs - 1U, ctx, eventKeyReg, issues)) {
+        const u32 genKey = laneAsU32(eventKeyReg, 2);
+        for (const auto& e : ctx.eventCaches) {
+            if (e.valid && e.key == genKey) {
+                count = e.count;
+                break;
+            }
+        }
     }
     setPendingKickCount(ctx, eventId, count);
     out = RegisterValue::scalarI(0);
@@ -562,12 +620,21 @@ bool dispatchKick(const CBEMInstruction& ins, BytecodeExecContext& ctx, Register
                 ev.intPayload = pendingPayload.intPayload;
                 ev.intPayloadId = pendingPayload.intPayloadId;
             }
+
+            if (pendingPayload.hasSpawnIndexPayload) {
+                ev.hasIntPayload = true;
+                ev.intPayloadWidth = 1U;
+                ev.intPayloadId = pendingPayload.spawnIndexPayloadId;
+                ev.intPayload = {pendingPayload.spawnIndexBase + static_cast<i32>(i), 0, 0, 0};
+            }
             if (pendingPayload.hasBoolPayload) {
                 ev.hasBoolPayload = true;
                 ev.boolPayloadWidth = pendingPayload.boolPayloadWidth;
                 ev.boolPayload = pendingPayload.boolPayload;
                 ev.boolPayloadId = pendingPayload.boolPayloadId;
             }
+
+            ev.floatSlots = pendingPayload.floatSlots;
 
             if (i < BytecodeExecContext::kMaxPendingPositions) {
                 ev.subFrameFraction = ctx.lastGenerateTs[i];
@@ -582,33 +649,23 @@ bool dispatchKick(const CBEMInstruction& ins, BytecodeExecContext& ctx, Register
 
 bool dispatchBuildPayloadElement(const CBEMInstruction& ins, BytecodeExecContext& ctx,
                                  RegisterValue& out, IssueBag& issues) noexcept {
-
     const u32 payloadElementId = ctx.nextPayloadElementId++;
     out = RegisterValue::scalarI(static_cast<i32>(payloadElementId));
     const u32 argc = ins.operands[3];
     if (argc < 3U) {
-
         return true;
     }
-    auto resolved = resolveKickEventIdFromObjSlot(ins, ctx);
-    if (!resolved) {
-
-        return true;
-    }
-    const u32 eventId = *resolved;
 
     RegisterValue payloadA;
     RegisterValue payloadB;
     if (!readFnArg(ins, 1, ctx, payloadA, issues) || !readFnArg(ins, 2, ctx, payloadB, issues)) {
         return false;
     }
-
     bool hasDerivatives = false;
     RegisterValue payloadAd{};
     RegisterValue payloadBd{};
     u32 packedSemantic = 1U;
     if (argc >= 6U) {
-
         if (!readFnArg(ins, 3, ctx, payloadAd, issues) ||
             !readFnArg(ins, 4, ctx, payloadBd, issues)) {
             return false;
@@ -619,14 +676,12 @@ bool dispatchBuildPayloadElement(const CBEMInstruction& ins, BytecodeExecContext
             packedSemantic = laneAsU32(sem, 0);
         }
     } else if (argc == 5U) {
-
         if (readFnArg(ins, 3, ctx, payloadAd, issues) &&
             readFnArg(ins, 4, ctx, payloadBd, issues)) {
             hasDerivatives = true;
             packedSemantic = 2U;
         }
     } else if (argc == 4U) {
-
         RegisterValue sem;
         if (readFnArg(ins, 3, ctx, sem, issues)) {
             packedSemantic = laneAsU32(sem, 0);
@@ -634,43 +689,51 @@ bool dispatchBuildPayloadElement(const CBEMInstruction& ins, BytecodeExecContext
     }
     const u8 semByte = static_cast<u8>(packedSemantic & 0xFFU);
 
-    BytecodeExecContext::PendingPayloadElement* slot = nullptr;
-    for (auto& s : ctx.pendingPayloadElements) {
-        if (s.valid && s.eventId == eventId) {
-            slot = &s;
-            break;
+    const u8 bnk = payloadA.typeBank;
+
+    const bool isIntBank = (bnk == bank::kInt || bnk == bank::kInt2 || bnk == bank::kInt2Alt ||
+                            bnk == bank::kInt2Alt2 || bnk == bank::kInt3 || bnk == bank::kInt4 ||
+                            bnk == bank::kPtr);
+    const bool isScalarBool = (bnk == bank::kBool && payloadA.componentCount == 1U);
+    const bool isQuaternion = (bnk == bank::kIntAlt);
+    const u8 intWidth = std::min<u8>(payloadA.componentCount, 4U);
+    const u8 fWidth =
+        std::min<u8>(std::max<u8>(payloadA.componentCount, payloadB.componentCount), 4U);
+
+    if (!isIntBank && !isScalarBool) {
+        std::array<f32, 4> fval{};
+        for (u8 lane = 0; lane < 4; ++lane) {
+            fval[lane] = (semByte == 0U) ? payloadA.lanes[lane] : payloadB.lanes[lane];
         }
-    }
-    if (slot == nullptr) {
-        for (auto& s : ctx.pendingPayloadElements) {
-            if (!s.valid) {
-                slot = &s;
-                slot->eventId = eventId;
-                slot->valid = true;
-                slot->positionCount = 0;
-                slot->hasOrientation = false;
-                break;
-            }
+        stashBuiltPayloadFloat(ctx, payloadElementId, fWidth, fval);
+    } else if (isIntBank) {
+
+        RegisterValue keys;
+        i32 base = 0;
+        if (readFnArg(ins, 0, ctx, keys, issues)) {
+            base = laneAsI32(keys, 1);
         }
+        ctx.builtPayloadIndex = {true, payloadElementId, base};
     }
+
+    const auto resolved = resolveKickEventIdFromObjSlot(ins, ctx);
+    if (!resolved) {
+        return true;
+    }
+    BytecodeExecContext::PendingPayloadElement* slot = findOrCreatePendingPayload(ctx, *resolved);
     if (slot == nullptr) {
         return true;
     }
 
-    const u8 bnk = payloadA.typeBank;
-    const bool isIntBank = (bnk == bank::kInt || bnk == bank::kInt2 || bnk == bank::kInt2Alt ||
-                            bnk == bank::kInt2Alt2 || bnk == bank::kInt3 || bnk == bank::kInt4);
-    const bool isScalarBool = (bnk == bank::kBool && payloadA.componentCount == 1U);
-    const u8 intWidth = std::min<u8>(payloadA.componentCount, 4U);
     if (isScalarBool) {
-
         slot->hasBoolPayload = true;
         slot->boolPayloadWidth = 1U;
         slot->boolPayloadId = payloadElementId;
         const i32 src = (semByte == 0U) ? laneAsI32(payloadA, 0) : laneAsI32(payloadB, 0);
         slot->boolPayload[0] = (src != 0) ? 1 : 0;
-    } else if (isIntBank && intWidth >= 1U && intWidth <= 4U) {
-
+        return true;
+    }
+    if (isIntBank && intWidth >= 1U && intWidth <= 4U) {
         slot->hasIntPayload = true;
         slot->intPayloadWidth = intWidth;
         slot->intPayloadId = payloadElementId;
@@ -678,14 +741,17 @@ bool dispatchBuildPayloadElement(const CBEMInstruction& ins, BytecodeExecContext
             slot->intPayload[lane] =
                 (semByte == 0U) ? laneAsI32(payloadA, lane) : laneAsI32(payloadB, lane);
         }
-    } else if (payloadA.componentCount >= 4U || payloadB.componentCount >= 4U) {
-
+        return true;
+    }
+    if (isQuaternion) {
         slot->hasOrientation = true;
         slot->orientationPayloadId = payloadElementId;
         for (int i = 0; i < 4; ++i) {
             slot->orientation[i] = (semByte == 0U) ? payloadA.lanes[i] : payloadB.lanes[i];
         }
-    } else {
+        return true;
+    }
+    if (fWidth == 3U) {
 
         const u32 count =
             ctx.lastGenerateValid
@@ -701,10 +767,8 @@ bool dispatchBuildPayloadElement(const CBEMInstruction& ins, BytecodeExecContext
                 const f32 b = payloadB.lanes[lane];
                 f32 v;
                 if (semByte == 0U) {
-
                     v = a;
                 } else if (semByte == 2U && hasDerivatives) {
-
                     const f32 t2 = t * t;
                     const f32 t3 = t2 * t;
                     const f32 h10 = t3 - 2.0F * t2 + t;
@@ -713,7 +777,6 @@ bool dispatchBuildPayloadElement(const CBEMInstruction& ins, BytecodeExecContext
                     const f32 bd = payloadBd.lanes[lane];
                     v = a + (b - a) * t + h10 * ad + h11 * bd;
                 } else {
-
                     v = a + (b - a) * t;
                 }
                 slot->positions[i][lane] = v;
@@ -723,14 +786,121 @@ bool dispatchBuildPayloadElement(const CBEMInstruction& ins, BytecodeExecContext
     return true;
 }
 
+struct ResolvedSpatialLayer {
+    const SpatialLayerResource* resource = nullptr;
+    i32 hashIndex = -1;
+};
+ResolvedSpatialLayer resolveSpatialLayer(const CBEMInstruction& ins,
+                                         const BytecodeExecContext& ctx) noexcept;
+
 bool dispatchAppendPayload(const CBEMInstruction& ins, BytecodeExecContext& ctx, RegisterValue& out,
                            IssueBag& issues) noexcept {
+
     out = RegisterValue::scalarI(0);
-    if (ins.operands[3] >= 1U) {
+    const u32 argc = ins.operands[3];
+
+    if (resolveSpatialLayer(ins, ctx).resource != nullptr) {
+        RegisterValue keyReg;
+        RegisterValue valReg;
+        if (argc >= 1U && readFnArg(ins, 0, ctx, keyReg, issues)) {
+            out = keyReg;
+        }
+        if (argc >= 2U && readFnArg(ins, 1, ctx, valReg, issues)) {
+            const i32 key = laneAsI32(keyReg, 0);
+            for (auto& slot : ctx.spatialAppendStaged) {
+                if (!slot.valid || slot.key == key) {
+                    slot.valid = true;
+                    slot.key = key;
+                    slot.value = {valReg.lanes[0], valReg.lanes[1], valReg.lanes[2]};
+                    break;
+                }
+            }
+        }
+        return true;
+    }
+
+    if (argc >= 1U) {
         RegisterValue arg0;
         if (readFnArg(ins, 0, ctx, arg0, issues)) {
             out = arg0;
         }
+    }
+    if (argc < 3U) {
+        return true;
+    }
+    const auto resolved = resolveKickEventIdFromObjSlot(ins, ctx);
+    if (!resolved) {
+        return true;
+    }
+    RegisterValue slotReg;
+    RegisterValue elemReg;
+    if (!readFnArg(ins, 1, ctx, slotReg, issues) || !readFnArg(ins, 2, ctx, elemReg, issues)) {
+        return true;
+    }
+    const u32 payloadElementId = laneAsU32(slotReg, 0);
+    const u32 elementId = laneAsU32(elemReg, 0);
+
+    u32 nameId = 0U;
+    const std::string_view channel = resolveEventChannelName(ins, ctx);
+    for (const auto& decl : ctx.kickedEventDecls) {
+        if (decl.channel == channel && payloadElementId < decl.elements.size()) {
+            nameId = decl.elements[payloadElementId].nameId;
+            break;
+        }
+    }
+
+    if (ctx.builtPayloadIndex.valid && ctx.builtPayloadIndex.elementId == elementId) {
+        if (auto* slot = findOrCreatePendingPayload(ctx, *resolved)) {
+            slot->hasSpawnIndexPayload = true;
+            slot->spawnIndexPayloadId = (nameId != 0U) ? nameId : payloadElementId;
+            slot->spawnIndexBase = ctx.builtPayloadIndex.base;
+        }
+        return true;
+    }
+    for (const auto& b : ctx.builtPayloadFloats) {
+        if (!b.valid || b.elementId != elementId) {
+            continue;
+        }
+        BytecodeExecContext::PendingPayloadElement* slot = findOrCreatePendingPayload(ctx, *resolved);
+        if (slot == nullptr) {
+            break;
+        }
+
+        if (nameId != 0U) {
+            PayloadFloatSlot* dst = nullptr;
+            for (auto& fs : slot->floatSlots) {
+                if (fs.valid && fs.nameId == nameId) {
+                    dst = &fs;
+                    break;
+                }
+            }
+            if (dst == nullptr) {
+                for (auto& fs : slot->floatSlots) {
+                    if (!fs.valid) {
+                        dst = &fs;
+                        break;
+                    }
+                }
+            }
+            if (dst != nullptr) {
+                *dst = PayloadFloatSlot{nameId, true, b.width, b.value};
+            }
+        }
+
+        if (nameId == payloadNameId("Position") && b.width == 3U) {
+            slot->positionCount = static_cast<u32>(BytecodeExecContext::kMaxPendingPositions);
+            slot->positionPayloadId = nameId;
+            for (std::size_t i = 0; i < BytecodeExecContext::kMaxPendingPositions; ++i) {
+                slot->positions[i] = {b.value[0], b.value[1], b.value[2]};
+            }
+        }
+
+        if (nameId == payloadNameId("Orientation") && b.width == 4U) {
+            slot->hasOrientation = true;
+            slot->orientationPayloadId = nameId;
+            slot->orientation = {b.value[0], b.value[1], b.value[2], b.value[3]};
+        }
+        break;
     }
     return true;
 }
@@ -759,10 +929,36 @@ const SamplerResource* resolveTargetSampler(const CBEMInstruction& ins,
     return findSamplerByName(ctx.samplers, name);
 }
 
+bool sampleTurbulenceToReg(const SamplerResource& res, const CBEMInstruction& ins,
+                           BytecodeExecContext& ctx, RegisterValue& out,
+                           IssueBag& issues) noexcept {
+    Float3 queryPos{0.0F, 0.0F, 0.0F};
+    if (ins.operands[3] >= 1U) {
+        RegisterValue arg;
+        if (readFnArg(ins, 0, ctx, arg, issues)) {
+            queryPos = Float3{arg.lanes[0], arg.lanes[1], arg.lanes[2]};
+        }
+    }
+    const Float3 vel = sampleTurbulenceVelocity(res.turbulence, queryPos, ctx.effectAge);
+    out = RegisterValue{};
+    out.componentCount = 3;
+    out.typeBank = bank::kFloat3;
+    out.lanes[0] = vel.x;
+    out.lanes[1] = vel.y;
+    out.lanes[2] = vel.z;
+    return true;
+}
+
 bool dispatchSample(const CBEMInstruction& ins, BytecodeExecContext& ctx, RegisterValue& out,
                     IssueBag& issues) noexcept {
     const SamplerResource* res = resolveTargetSampler(ins, ctx);
-    if (res == nullptr || res->kind != SamplerKind::Curve) {
+    if (res == nullptr) {
+        return false;
+    }
+    if (res->kind == SamplerKind::Turbulence) {
+        return sampleTurbulenceToReg(*res, ins, ctx, out, issues);
+    }
+    if (res->kind != SamplerKind::Curve) {
         return false;
     }
     if (ins.operands[3] < 1U) {
@@ -838,9 +1034,19 @@ bool dispatchExtractPayloadElement(const CBEMInstruction& ins, BytecodeExecConte
     if (suffix == 'F') {
         out.componentCount = width;
         out.typeBank = floatBankForComponentCount(width);
-        if (matches(ctx.spawnPositionPayloadId)) {
-            for (u8 i = 0; i < width; ++i) {
-                out.lanes[i] = (i < 3U) ? ctx.spawnTranslate[i] : 0.0F;
+
+        u32 nameId = 0U;
+        if (payloadIndex < ctx.rootEventDecl.size()) {
+            nameId = ctx.rootEventDecl[payloadIndex].nameId;
+        }
+        if (nameId != 0U) {
+            for (const auto& fs : ctx.spawnFloatSlots) {
+                if (fs.valid && fs.nameId == nameId) {
+                    for (u8 i = 0; i < width; ++i) {
+                        out.lanes[i] = fs.value[i];
+                    }
+                    return true;
+                }
             }
         }
         return true;
@@ -874,10 +1080,6 @@ bool dispatchExtractPayloadElement(const CBEMInstruction& ins, BytecodeExecConte
     return true;
 }
 
-struct ResolvedSpatialLayer {
-    const SpatialLayerResource* resource = nullptr;
-    i32 hashIndex = -1;
-};
 ResolvedSpatialLayer resolveSpatialLayer(const CBEMInstruction& ins,
                                          const BytecodeExecContext& ctx) noexcept {
     const u32 extFunc = ins.operands[2];
@@ -943,7 +1145,17 @@ bool dispatchSpatialInsert(const CBEMInstruction& ins, BytecodeExecContext& ctx,
         return false;
     }
     const std::array<f32, 3> pos{posReg.lanes[0], posReg.lanes[1], posReg.lanes[2]};
-    hash->insert(pos, ctx.currentSelfId);
+
+    const i32 key = laneAsI32(keyReg, 0);
+    std::array<f32, 3> payload = pos;
+    for (auto& slot : ctx.spatialAppendStaged) {
+        if (slot.valid && slot.key == key) {
+            payload = slot.value;
+            slot.valid = false;
+            break;
+        }
+    }
+    hash->insert(pos, payload, ctx.currentSelfId);
     return true;
 }
 
@@ -1000,21 +1212,25 @@ bool dispatchSpatialClosest(const CBEMInstruction& ins, BytecodeExecContext& ctx
     const ProximityEntry* hit = hash->closestN(target, radius, nIndex);
     if (hit == nullptr) {
 
+        if (suffix == 'F') {
+            f32 infv = 0.0F;
+            const u32 bits = fpbits::kInfF32;
+            std::memcpy(&infv, &bits, sizeof(infv));
+            for (u8 i = 0; i < out.componentCount && i < 4U; ++i) {
+                out.lanes[i] = infv;
+            }
+        }
         return true;
     }
 
     if (suffix == 'F' && width == 3U) {
-        out.lanes[0] = hit->position[0];
-        out.lanes[1] = hit->position[1];
-        out.lanes[2] = hit->position[2];
+        out.lanes[0] = hit->payload[0];
+        out.lanes[1] = hit->payload[1];
+        out.lanes[2] = hit->payload[2];
         return true;
     }
     if (suffix == 'F' && width == 1U) {
-
-        const f32 dx = hit->position[0] - target[0];
-        const f32 dy = hit->position[1] - target[1];
-        const f32 dz = hit->position[2] - target[2];
-        out.lanes[0] = std::sqrt(dx * dx + dy * dy + dz * dz);
+        out.lanes[0] = hit->payload[0];
         return true;
     }
     return true;
@@ -1110,7 +1326,7 @@ constexpr u32 kSpacePayloadBit = 0x02U;
 
 constexpr u32 kSpaceEnterShift = 3U;
 constexpr u32 kSpaceLeaveShift = 5U;
-} // namespace xform_mask
+}
 
 static bool dispatchXformMaskedShared(const CBEMInstruction& ins, BytecodeExecContext& ctx,
                                       RegisterValue& out, IssueBag& issues, bool isPoint) noexcept {
@@ -1154,7 +1370,8 @@ static bool dispatchXformMaskedShared(const CBEMInstruction& ins, BytecodeExecCo
         const bool tryPayload = wantPayloadEnter && !wantPayloadLeave;
         const bool hasPositionPayload = (ctx.spawnPositionPayloadId != 0U);
         const bool hasOrientationPayload = (ctx.spawnOrientationPayloadId != 0U);
-        const bool usePayloadPath = tryPayload && hasPositionPayload;
+
+        const bool usePayloadPath = tryPayload && (hasPositionPayload || hasOrientationPayload);
 
         const bool wantQ = (filter & xform_mask::kFilterQ) != 0U;
         const bool wantT = isPoint && (filter & xform_mask::kFilterT) != 0U;
@@ -1403,9 +1620,17 @@ bool dispatchEffectPosition(const CBEMInstruction&, BytecodeExecContext& ctx, Re
 }
 
 bool dispatchSamplePosition(const CBEMInstruction& ins, BytecodeExecContext& ctx,
-                            RegisterValue& out, IssueBag&) noexcept {
+                            RegisterValue& out, IssueBag& issues) noexcept {
     const SamplerResource* res = resolveTargetSampler(ins, ctx);
-    if (res == nullptr || res->kind != SamplerKind::Shape || ctx.rng == nullptr) {
+    if (res == nullptr) {
+        return false;
+    }
+
+    if (res->kind == SamplerKind::Turbulence) {
+        return sampleTurbulenceToReg(*res, ins, ctx, out, issues);
+    }
+
+    if (res->kind != SamplerKind::Shape || ctx.rng == nullptr) {
         return false;
     }
     auto drawUnit = [&]() -> f32 {
@@ -1522,18 +1747,11 @@ bool dispatchSamplePosition(const CBEMInstruction& ins, BytecodeExecContext& ctx
         return false;
     }
 }
-// FunctionCall dispatch -------------------------------------------------------
-//
-// The bulk of resolved external symbols map 1:1 to a dispatcher with the
-// uniform signature `(ins, ctx, out, issues) -> bool`. A few have an
-// irregular shape (rotate splits on argc, orientation_axis* picks an axis,
-// some prefix-matched dispatchers want the full symbol string) and are
-// handled in `dispatchSpecial` before the table lookup.
 
-using FnDispatch = bool (*)(const CBEMInstruction&, BytecodeExecContext&, RegisterValue&,
-                            IssueBag&);
-using FnDispatchSym = bool (*)(const CBEMInstruction&, BytecodeExecContext&, RegisterValue&,
-                               IssueBag&, std::string_view);
+using FnDispatch = bool (*)(const CBEMInstruction&, BytecodeExecContext&,
+                            RegisterValue&, IssueBag&);
+using FnDispatchSym = bool (*)(const CBEMInstruction&, BytecodeExecContext&,
+                               RegisterValue&, IssueBag&, std::string_view);
 
 enum class FailMode : u8 { Fatal, Stub };
 
@@ -1552,53 +1770,48 @@ struct SymPrefixDispatch {
     FnDispatchSym fn;
 };
 
-// Exact-match table — O(1) hash lookup. Holds the bulk of resolved symbols.
 const std::unordered_map<std::string_view, ExactDispatch>& exactDispatchTable() {
     static const std::unordered_map<std::string_view, ExactDispatch> kTable = {
-        {"rand", {dispatchRand}},
-        {"vrand", {dispatchVrand}},
-        {"effect.age", {dispatchEffectAge}},
-        {"effect.isRunning", {dispatchEffectIsRunning}},
-        {"effect.position", {dispatchEffectPosition}},
-        {"duration", {dispatchDuration}},
-        {"self.kill", {dispatchSelfKill}},
-        {"generate", {dispatchGenerate}},
-        {"trigger", {dispatchTrigger}},
-        {"initPayload", {dispatchInitPayload}},
-        {"kick", {dispatchKick}},
-        {"hasPayloadElement", {dispatchHasPayloadElement}},
-        {"sample", {dispatchSample, FailMode::Stub}},
-        {"samplePosition", {dispatchSamplePosition, FailMode::Stub}},
-        {"xform_l2w_f_masked", {dispatchXformL2WPoint}},
-        {"xform_l2w_d_masked", {dispatchXformL2WDirection}},
-        {"xform_w2l_f_masked", {dispatchXformW2LPoint}},
-        {"xform_w2l_d_masked", {dispatchXformW2LDirection}},
-        {"allocatePayload", {dispatchAllocatePayload}},
-        {"insert", {dispatchSpatialInsert}},
-        {"neighborCount", {dispatchSpatialNeighborCount}},
-        {"neighborCount2", {dispatchSpatialNeighborCount}},
-        {"hsv2rgb", {dispatchHsv2Rgb}},
-        {"rgb2hsv", {dispatchRgb2Hsv}},
+        {"rand",                  {dispatchRand}},
+        {"vrand",                 {dispatchVrand}},
+        {"effect.age",            {dispatchEffectAge}},
+        {"effect.isRunning",      {dispatchEffectIsRunning}},
+        {"effect.position",       {dispatchEffectPosition}},
+        {"duration",              {dispatchDuration}},
+        {"self.kill",             {dispatchSelfKill}},
+        {"generate",              {dispatchGenerate}},
+        {"trigger",               {dispatchTrigger}},
+        {"initPayload",           {dispatchInitPayload}},
+        {"kick",                  {dispatchKick}},
+        {"hasPayloadElement",     {dispatchHasPayloadElement}},
+        {"sample",                {dispatchSample,         FailMode::Stub}},
+        {"samplePosition",        {dispatchSamplePosition, FailMode::Stub}},
+        {"xform_l2w_f_masked",    {dispatchXformL2WPoint}},
+        {"xform_l2w_d_masked",    {dispatchXformL2WDirection}},
+        {"xform_w2l_f_masked",    {dispatchXformW2LPoint}},
+        {"xform_w2l_d_masked",    {dispatchXformW2LDirection}},
+        {"allocatePayload",       {dispatchAllocatePayload}},
+        {"insert",                {dispatchSpatialInsert}},
+        {"neighborCount",         {dispatchSpatialNeighborCount}},
+        {"neighborCount2",        {dispatchSpatialNeighborCount}},
+        {"hsv2rgb",               {dispatchHsv2Rgb}},
+        {"rgb2hsv",               {dispatchRgb2Hsv}},
     };
     return kTable;
 }
 
-// Prefix-match tables — only a handful of entries each, linear scan is faster
-// than hashing once `find()` overhead is paid.
 constexpr PrefixDispatch kPrefixDispatch[] = {
     {"buildPayloadElement", dispatchBuildPayloadElement},
-    {"appendPayload", dispatchAppendPayload},
-    {"scene.intersect", dispatchSceneIntersect},
+    {"appendPayload",       dispatchAppendPayload},
+    {"scene.intersect",     dispatchSceneIntersect},
 };
 
 constexpr SymPrefixDispatch kSymPrefixDispatch[] = {
     {"extractPayloadElement", dispatchExtractPayloadElement},
-    {"scene.orientation", dispatchSceneOrientation},
-    {"closest", dispatchSpatialClosest},
+    {"scene.orientation",     dispatchSceneOrientation},
+    {"closest",               dispatchSpatialClosest},
 };
 
-// Returns nullopt if no special-case rule applies; otherwise the dispatcher's
-// success/fail bool (false propagates as a fatal abort).
 std::optional<bool> dispatchSpecial(std::string_view symbol, const CBEMInstruction& ins,
                                     BytecodeExecContext& ctx, RegisterValue& out,
                                     IssueBag& issues) noexcept {
@@ -1618,10 +1831,6 @@ std::optional<bool> dispatchSpecial(std::string_view symbol, const CBEMInstructi
     return std::nullopt;
 }
 
-// Looks up `symbol` first in the exact-match hash table (O(1)), then falls
-// back to the small prefix table (linear scan over ~3 entries). Returns
-// nullopt on miss. On Fatal failure returns false; on Stub failure returns
-// nullopt (caller falls through to the unresolved-symbol stub path).
 std::optional<bool> dispatchPlainTable(std::string_view symbol, const CBEMInstruction& ins,
                                        BytecodeExecContext& ctx, RegisterValue& out,
                                        IssueBag& issues) noexcept {
@@ -1642,7 +1851,6 @@ std::optional<bool> dispatchPlainTable(std::string_view symbol, const CBEMInstru
     return std::nullopt;
 }
 
-// Looks up `symbol` in the symbol-aware prefix-dispatch table.
 std::optional<bool> dispatchSymTable(std::string_view symbol, const CBEMInstruction& ins,
                                      BytecodeExecContext& ctx, RegisterValue& out,
                                      IssueBag& issues) noexcept {
@@ -1654,10 +1862,8 @@ std::optional<bool> dispatchSymTable(std::string_view symbol, const CBEMInstruct
     return std::nullopt;
 }
 
-// Stub path for symbols the VM hasn't implemented yet. Warns once per
-// distinct symbol and writes a typed zero to the return register.
-bool stubFunctionCall(std::string_view symbol, const CBEMInstruction& ins, BytecodeExecContext& ctx,
-                      IssueBag& issues) noexcept {
+bool stubFunctionCall(std::string_view symbol, const CBEMInstruction& ins,
+                      BytecodeExecContext& ctx, IssueBag& issues) noexcept {
     static std::set<std::string> stubMessages;
     std::string msg = "IR: FunctionCall stub: ";
     msg.append(symbol.empty() ? std::string_view{"(unresolved)"} : symbol);
@@ -1674,7 +1880,7 @@ bool stubFunctionCall(std::string_view symbol, const CBEMInstruction& ins, Bytec
     zero.typeBank = d.bank;
     return writeDst(ctx, retReg, zero, issues);
 }
-} // namespace
+}
 
 bool execFunctionCall(const CBEMInstruction& ins, BytecodeExecContext& ctx,
                       IssueBag& issues) noexcept {
@@ -1717,4 +1923,4 @@ bool execFunctionCall(const CBEMInstruction& ins, BytecodeExecContext& ctx,
     }
     return writeDst(ctx, retReg, out, issues);
 }
-} // namespace whiteout::cornflakes
+}

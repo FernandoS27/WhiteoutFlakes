@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Worker pool interface and `WorkerTask` carrier with timeline-semaphore wait/signal slots.
-
 #include <cornflakes/interface/core/types.hpp>
 #include <cornflakes/scheduler/timeline_semaphore.hpp>
 
@@ -12,7 +9,6 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief One unit of work plus its optional wait-before / signal-after timeline pair.
 struct WorkerTask {
     std::function<void()> fn;
     ITimelineSemaphore* waitSemaphore = nullptr;
@@ -21,7 +17,6 @@ struct WorkerTask {
     ITimelineSemaphore::Value signalValue = 0;
 };
 
-/// @brief Worker-pool interface; concrete impls are serial or threaded.
 class IWorkerPool {
 public:
     IWorkerPool() = default;
@@ -38,4 +33,4 @@ public:
     virtual std::unique_ptr<ITimelineSemaphore> createTimelineSemaphore() = 0;
 };
 
-} // namespace whiteout::cornflakes
+}

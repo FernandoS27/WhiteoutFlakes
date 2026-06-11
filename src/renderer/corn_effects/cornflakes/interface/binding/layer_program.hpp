@@ -3,6 +3,7 @@
 /// @file
 /// @brief Per-layer compiled artefacts: the four VM scopes plus renderer/sampler resources.
 
+#include <cornflakes/interface/binding/event_payload_decl.hpp>
 #include <cornflakes/interface/binding/external_binding.hpp>
 #include <cornflakes/interface/binding/ir_to_cbem_lowerer.hpp>
 #include <cornflakes/interface/binding/sampler_resource.hpp>
@@ -33,6 +34,21 @@ struct VMProgramDescriptor {
 
     std::array<u32, 5> registerCounts{}; ///< Register count per scope bucket (0..3 used; 4 reserved).
     u32 entryOffset = 0;
+};
+
+/// @brief One renderer input-pin binding (`CLayerCompileCacheRendererParticleInput`).
+///
+/// Maps a renderer slot to the layer field that feeds it. `semantic` is the engine
+/// `ERendererInput` enum (0=Position, 1=SizeScale, 2=Enabled, 3=SortKey, 4=Axis0,
+/// 5=Axis1, 6=Rotation, 7=SizeScale2, 100+=additional named by `additionalFieldName`).
+/// `indexInStorage` indexes the layer's ordered `Fields[]` (see `LayerProgram::renderFieldNames`),
+/// NOT the bytecode slot. This is how a multi-renderer layer routes each renderer to its OWN
+/// Position/Color/TextureID stream (e.g. massteleportto's 4 rune glyphs: one particle drawn by
+/// 4 renderers, each Position bound to a distinct `Position_<hash>` field).
+struct RendererParticleInput {
+    u32 semantic = 0;
+    u32 indexInStorage = 0;
+    std::string_view additionalFieldName; ///< Set for semantic >= 100 (e.g. "Color", "TextureID").
 };
 
 /// @brief One renderer entry on a layer: shader-perm flags, atlas/blend config, texture paths.
@@ -94,6 +110,11 @@ struct LayerRenderer {
     u16 atlasSubDivY = 0;
 
     u8 blendMode = static_cast<u8>(BlendMode::Opaque);
+
+    /// Asset-declared input-pin bindings (`CLayerCompileCacheRenderer.Streams`). When non-empty
+    /// these give the engine-exact per-renderer slot→field routing; consumers should prefer them
+    /// over name-prefix inference so multi-renderer layers route each renderer to its own streams.
+    std::span<const RendererParticleInput> particleInputs{};
 };
 
 /// @brief Asset-side scope tag values that map to the four `LayerProgram` scope programs.
@@ -130,6 +151,10 @@ struct LayerProgram {
     VMProgramDescriptor timeVaryingProgram;
     std::span<const LayerRenderer> renderers;
 
+    /// Ordered render-field names (`CLayerCompileCache.Fields[]`). `RendererParticleInput::
+    /// indexInStorage` indexes this array to name the field feeding a renderer slot.
+    std::span<const std::string_view> renderFieldNames{};
+
     std::span<const SamplerResource> samplers;
 
     std::span<const SpatialLayerResource> spatialLayers;
@@ -137,6 +162,13 @@ struct LayerProgram {
     std::span<const AttributeDefault> attributeDefaults;
 
     std::span<const EventExternalBinding> eventExternals;
+
+    /// Payload decls of events THIS layer emits — `appendPayload(slot)` resolves the kicked
+    /// channel here to name the element at that slot. (From `CLayerCompileCache.Events`.)
+    std::span<const KickedEventPayloadDecl> kickedEventDecls;
+    /// Payload decl of the event that SPAWNS this layer — `extractPayloadElement(index)`
+    /// names the element at that index. (From `CLayerCompileCache.RootEvent`.)
+    std::span<const EventPayloadElement> rootEventDecl;
 };
 
 /// @brief Order in which a name lookup walks the four scope programs of a layer.

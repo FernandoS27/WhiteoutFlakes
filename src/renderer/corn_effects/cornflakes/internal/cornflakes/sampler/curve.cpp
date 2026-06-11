@@ -24,4 +24,4 @@ f32 sampleCurveScalar(std::span<const CurveKnot> knots, f32 t) noexcept {
     return knots.back().value;
 }
 
-} // namespace whiteout::cornflakes
+}

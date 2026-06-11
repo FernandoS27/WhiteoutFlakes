@@ -35,18 +35,12 @@ u32 readU32Le(const u8* p) noexcept {
            (static_cast<u32>(p[2]) << 16U) | (static_cast<u32>(p[3]) << 24U);
 }
 
-// Sequential reader over the bytecode stream. Each opcode handler positions
-// it past the opcode byte, reserves the payload up-front via ensure(), then
-// walks operands in order. Replaces the manual `off + kFooOffset` arithmetic
-// the per-opcode case blocks used to carry.
 class Cursor {
 public:
     Cursor(const u8* base, std::size_t off, std::size_t end, IssueBag& issues) noexcept
         : base_(base), off_(off), end_(end), issues_(&issues) {}
 
-    std::size_t offset() const noexcept {
-        return off_;
-    }
+    std::size_t offset() const noexcept { return off_; }
 
     bool ensure(std::size_t need, std::string_view what) noexcept {
         if (off_ + need > end_) {
@@ -72,7 +66,8 @@ public:
         return v;
     }
     u32 readU24() noexcept {
-        const u32 v = static_cast<u32>(base_[off_]) | (static_cast<u32>(base_[off_ + 1U]) << 8U) |
+        const u32 v = static_cast<u32>(base_[off_]) |
+                      (static_cast<u32>(base_[off_ + 1U]) << 8U) |
                       (static_cast<u32>(base_[off_ + 2U]) << 16U);
         off_ += kVecSwizzleMaskBytes;
         return v;
@@ -97,13 +92,21 @@ std::span<const u32> emitExtra(const std::vector<u32>& src, IArena& arena) {
     return std::span<const u32>{dst.data(), dst.size()};
 }
 
-// ----- Generic operand-shape decoders -----------------------------------
-//
-// Most opcodes share one of two payloads:
-//   - decodeU32s<N>:        [u32]*N         (e.g. Select, Madd, Broadcast)
-//   - decodeTaggedU32s<N>:  [u8] [u32]*N    (e.g. MathOp, MathFunc1/2/3)
-// `operands[0]` carries the tag for the tagged form; the u32s land in
-// operands[tag ? 1 : 0..N-1].
+constexpr Opcode normalizeOpcode(u8 raw) noexcept {
+    switch (raw) {
+    case 0x69U: return Opcode::LoadExternal;
+    case 0x6AU: return Opcode::StoreToExternal;
+    case 0x6CU: return Opcode::TypeConverter;
+    case 0x6DU: return Opcode::VecCtor;
+    case 0x6EU: return Opcode::VecSwizzle;
+    case 0x77U: return Opcode::MathFunc1;
+    case 0x78U: return Opcode::MathFunc2;
+    case 0x79U: return Opcode::MathFunc3;
+    case 0x7AU: return Opcode::Select;
+    case 0x7BU: return Opcode::FunctionCall;
+    default:    return static_cast<Opcode>(raw);
+    }
+}
 
 template <std::size_t U32Count>
 bool decodeU32s(Cursor& c, CBEMInstruction& ins, std::string_view what) noexcept {
@@ -129,8 +132,6 @@ bool decodeTaggedU32s(Cursor& c, CBEMInstruction& ins, std::string_view what) no
     ins.operandCount = static_cast<u8>(U32Count + 1U);
     return true;
 }
-
-// ----- Bespoke decoders for the structurally unique opcodes -------------
 
 bool decodeLoadStoreExternal(Cursor& c, CBEMInstruction& ins) noexcept {
     if (!c.ensure(sizeof(u32) + sizeof(u16), "IR: LoadExternal/StoreToExternal truncated")) {
@@ -226,9 +227,6 @@ bool decodeFunctionProlog(Cursor& c, CBEMInstruction& ins) noexcept {
     return true;
 }
 
-// Dispatches `c` and `ins` to the per-opcode decoder. Returns false on
-// truncation (the issue is already pushed). No-payload opcodes (Nop,
-// FunctionEpilog) leave the cursor at the post-opcode position.
 bool decodeOne(Opcode opcode, Cursor& c, CBEMInstruction& ins, IArena& arena,
                IssueBag& issues) noexcept {
     switch (opcode) {
@@ -286,7 +284,7 @@ bool decodeOne(Opcode opcode, Cursor& c, CBEMInstruction& ins, IArena& arena,
     return false;
 }
 
-} // namespace
+}
 
 DecodedProgram decodeBytecodeStream(std::span<const u8> bytes, IArena& arena, IssueBag& issues) {
     std::vector<CBEMInstruction> out;
@@ -295,7 +293,7 @@ DecodedProgram decodeBytecodeStream(std::span<const u8> bytes, IArena& arena, Is
     std::size_t off = 0;
 
     while (off < end) {
-        const auto opcode = static_cast<Opcode>(base[off]);
+        const auto opcode = normalizeOpcode(base[off]);
 
         CBEMInstruction ins;
         ins.opcode = opcode;
@@ -319,4 +317,4 @@ DecodedProgram decodeBytecodeStream(std::span<const u8> bytes, IArena& arena, Is
     return DecodedProgram{std::span<const CBEMInstruction>{dst.data(), dst.size()}};
 }
 
-} // namespace whiteout::cornflakes
+}

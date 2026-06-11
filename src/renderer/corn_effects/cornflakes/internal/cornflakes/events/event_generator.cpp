@@ -24,4 +24,4 @@ std::span<std::byte> EventGenerator::emit(u32 generatorKey, u32 tickId, u32 part
     return blob;
 }
 
-} // namespace whiteout::cornflakes
+}

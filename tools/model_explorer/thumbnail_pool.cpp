@@ -67,6 +67,7 @@ ThumbnailPool::Cell* ThumbnailPool::AcquireSlot(const std::string& path, bool is
         slot = cells_.back().get();
         slot->scene = svc_.CreateScene();
         slot->target = svc_.Pipeline().CreateOffscreenTarget(res_, res_);
+        slot->res = res_;
         SetupScene(slot->scene);
     } else {
         std::uint64_t oldest = ~0ull;
@@ -171,11 +172,33 @@ void ThumbnailPool::DestroyCell(Cell& cell) {
     cell.scene = 0;
 }
 
+void ThumbnailPool::EnsureCellTargetSize(Cell& cell, int wantPx) {
+    // Match the on-screen cell size so the texture isn't up-/down-scaled by ImGui
+    // (an upscaled small thumbnail looks blurry; a static blur on an animating
+    // model reads as "scaling"). Round up to a 64px step so a drag-resize doesn't
+    // recreate the target every pixel, and clamp: never below the pool default,
+    // never above kMaxRes (HD cells carry a full G-buffer + GTAO + bloom set, so
+    // the cap bounds memory).
+    constexpr int kStep = 64;
+    constexpr int kMaxRes = 768;
+    const int want = std::clamp(((wantPx + kStep - 1) / kStep) * kStep, res_, kMaxRes);
+    if (cell.target != 0 && cell.res == want)
+        return;
+    // The old target may still be referenced by last frame's GPU work.
+    if (auto* gfx = svc_.Pipeline().Gfx())
+        gfx->WaitIdle();
+    if (cell.target)
+        svc_.Pipeline().DestroyTarget(cell.target);
+    cell.target = svc_.Pipeline().CreateOffscreenTarget(want, want);
+    cell.res = want;
+}
+
 gfx::TextureHandle ThumbnailPool::Acquire(const std::string& path, bool isEffect,
-                                          std::uint64_t frameId) {
+                                          std::uint64_t frameId, int pixelSize) {
     Cell* cell = AcquireSlot(path, isEffect, frameId);
     if (!cell)
         return gfx::TextureHandle::Invalid;
+    EnsureCellTargetSize(*cell, pixelSize > 0 ? pixelSize : res_);
     if (!cell->loaded)
         return gfx::TextureHandle::Invalid; // loaded + first render happen in RenderVisible
     return svc_.Pipeline().GetTargetColorTexture(cell->target);
@@ -184,7 +207,7 @@ gfx::TextureHandle ThumbnailPool::Acquire(const std::string& path, bool isEffect
 void ThumbnailPool::RenderVisible(float dt) {
     constexpr int kEffectWarmupTicks = 12;
     constexpr int kEffectMaxTicks = 90;
-    constexpr float kEffectResetSeconds = 5.0f;
+    constexpr float kEffectResetSeconds = 2.5f;
     for (auto& cptr : cells_) {
         Cell& cell = *cptr;
         if (!cell.visible)

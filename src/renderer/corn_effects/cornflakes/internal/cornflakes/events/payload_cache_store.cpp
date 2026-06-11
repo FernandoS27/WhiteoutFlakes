@@ -44,4 +44,4 @@ void PayloadCacheStore::clear() noexcept {
     m_entries.clear();
 }
 
-} // namespace whiteout::cornflakes
+}

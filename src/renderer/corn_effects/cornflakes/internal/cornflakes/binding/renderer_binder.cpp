@@ -9,11 +9,6 @@ namespace whiteout::cornflakes {
 
 namespace {
 
-// ---- Renderer-property readers ---------------------------------------------
-//
-// All renderer-property assets store payloads in either `PropertyValueNumeric`
-// (uint4 = 16 bytes) or `PropertyValueStr`. These helpers normalise that.
-
 u32 readPropU32(const AssetObject& p) noexcept {
     const auto bytes = fieldBytes(p, "PropertyValueNumeric");
     if (bytes.size() < sizeof(u32)) {
@@ -44,11 +39,6 @@ constexpr RendererClass validateRendererClass(i32 raw) noexcept {
                                                       : RendererClass::Billboard;
 }
 
-// ---- Renderer property scan ---------------------------------------------
-
-// Mutable accumulator for the renderer property scan. Encapsulates the
-// "did we see Transparent? Opaque? EnableRendering?" fold state so the
-// per-property branches stay flat.
 struct RendererBuildState {
     LayerRenderer& out;
     bool transparentEnabled = false;
@@ -58,73 +48,32 @@ struct RendererBuildState {
     bool sawEnableRendering = false;
 };
 
-// Toggle-style property handler. Non-capturing lambdas decay to function
-// pointers, so the dispatch table below stays POD.
 using ToggleHandler = void (*)(RendererBuildState&, bool);
 
-// Names that aren't in the table (e.g. dotted "Diffuse.DiffuseMap" sub-properties)
-// are silently ignored — the sub-property table picks them up.
 const std::unordered_map<std::string_view, ToggleHandler>& toggleHandlers() {
     static const std::unordered_map<std::string_view, ToggleHandler> kTable = {
-        {"Lit",
-         [](RendererBuildState& s, bool on) {
-             if (on) {
-                 s.out.isLit = true;
-                 s.out.hasNT = true;
-             }
-         }},
-        {"LegacyLit", [](RendererBuildState& s, bool on) { s.out.hasLegacyLit = on; }},
-        {"SoftParticles",
-         [](RendererBuildState& s, bool on) {
-             if (on) {
-                 s.out.hasSoftParticles = true;
-             }
-         }},
-        {"AlphaRemap",
-         [](RendererBuildState& s, bool on) {
-             if (on) {
-                 s.out.hasAlphaLut = true;
-                 s.out.hasRandom = true;
-             }
-         }},
-        {"Atlas",
-         [](RendererBuildState& s, bool on) {
-             if (on) {
-                 s.out.isAtlas = true;
-             }
-         }},
-        {"Distortion",
-         [](RendererBuildState& s, bool on) {
-             if (on) {
-                 s.out.isDistortion = true;
-             }
-         }},
-        {"GeometryBillboard",
-         [](RendererBuildState& s, bool on) { s.out.hasGeometryBillboard = on; }},
-        {"GeometryRibbon", [](RendererBuildState& s, bool on) { s.out.hasGeometryRibbon = on; }},
-        {"Diffuse", [](RendererBuildState& s, bool on) { s.out.hasDiffuse = on; }},
-        {"DiffuseRamp", [](RendererBuildState& s, bool on) { s.out.hasDiffuseRamp = on; }},
-        {"Emissive", [](RendererBuildState& s, bool on) { s.out.hasEmissive = on; }},
-        {"NormalBend", [](RendererBuildState& s, bool on) { s.out.hasNormalBend = on; }},
-        {"NormalWrap", [](RendererBuildState& s, bool on) { s.out.hasNormalWrap = on; }},
-        {"FlipUVs", [](RendererBuildState& s, bool on) { s.out.hasFlipUVs = on; }},
-        {"TransformUVs", [](RendererBuildState& s, bool on) { s.out.hasTransformUVs = on; }},
-        {"TextureUVs", [](RendererBuildState& s, bool on) { s.out.hasTextureUVs = on; }},
-        {"TextureRepeat", [](RendererBuildState& s, bool on) { s.out.hasTextureRepeat = on; }},
-        {"CustomTextureU", [](RendererBuildState& s, bool on) { s.out.hasCustomTextureU = on; }},
-        {"CorrectDeformation",
-         [](RendererBuildState& s, bool on) { s.out.hasCorrectDeformation = on; }},
-        {"EnableSize2D", [](RendererBuildState& s, bool on) { s.out.hasEnableSize2D = on; }},
-        {"EnableRendering",
-         [](RendererBuildState& s, bool on) {
-             s.out.isRenderingEnabled = on;
-             s.sawEnableRendering = true;
-         }},
-        {"Transparent",
-         [](RendererBuildState& s, bool on) {
-             s.transparentEnabled = on;
-             s.out.hasTransparent = on;
-         }},
+        {"Lit",                [](RendererBuildState& s, bool on) { if (on) { s.out.isLit = true; s.out.hasNT = true; } }},
+        {"LegacyLit",          [](RendererBuildState& s, bool on) { s.out.hasLegacyLit = on; }},
+        {"SoftParticles",      [](RendererBuildState& s, bool on) { if (on) { s.out.hasSoftParticles = true; } }},
+        {"AlphaRemap",         [](RendererBuildState& s, bool on) { if (on) { s.out.hasAlphaLut = true; s.out.hasRandom = true; } }},
+        {"Atlas",              [](RendererBuildState& s, bool on) { if (on) { s.out.isAtlas = true; } }},
+        {"Distortion",         [](RendererBuildState& s, bool on) { if (on) { s.out.isDistortion = true; } }},
+        {"GeometryBillboard",  [](RendererBuildState& s, bool on) { s.out.hasGeometryBillboard = on; }},
+        {"GeometryRibbon",     [](RendererBuildState& s, bool on) { s.out.hasGeometryRibbon = on; }},
+        {"Diffuse",            [](RendererBuildState& s, bool on) { s.out.hasDiffuse = on; }},
+        {"DiffuseRamp",        [](RendererBuildState& s, bool on) { s.out.hasDiffuseRamp = on; }},
+        {"Emissive",           [](RendererBuildState& s, bool on) { s.out.hasEmissive = on; }},
+        {"NormalBend",         [](RendererBuildState& s, bool on) { s.out.hasNormalBend = on; }},
+        {"NormalWrap",         [](RendererBuildState& s, bool on) { s.out.hasNormalWrap = on; }},
+        {"FlipUVs",            [](RendererBuildState& s, bool on) { s.out.hasFlipUVs = on; }},
+        {"TransformUVs",       [](RendererBuildState& s, bool on) { s.out.hasTransformUVs = on; }},
+        {"TextureUVs",         [](RendererBuildState& s, bool on) { s.out.hasTextureUVs = on; }},
+        {"TextureRepeat",      [](RendererBuildState& s, bool on) { s.out.hasTextureRepeat = on; }},
+        {"CustomTextureU",     [](RendererBuildState& s, bool on) { s.out.hasCustomTextureU = on; }},
+        {"CorrectDeformation", [](RendererBuildState& s, bool on) { s.out.hasCorrectDeformation = on; }},
+        {"EnableSize2D",       [](RendererBuildState& s, bool on) { s.out.hasEnableSize2D = on; }},
+        {"EnableRendering",    [](RendererBuildState& s, bool on) { s.out.isRenderingEnabled = on; s.sawEnableRendering = true; }},
+        {"Transparent",        [](RendererBuildState& s, bool on) { s.transparentEnabled = on; s.out.hasTransparent = on; }},
     };
     return kTable;
 }
@@ -136,24 +85,17 @@ void applyRendererToggle(RendererBuildState& s, std::string_view pname, bool tog
     }
 }
 
-// Sub-property handler. Property values come from `pObj` directly so the
-// readers can pick the right field name; `arena` is needed by string-valued
-// properties that copy the path into stable storage.
 using SubPropHandler = void (*)(RendererBuildState&, const AssetObject&, IArena&);
 
-// Sub-properties of the form "Parent.Child" — texture paths, atlas tuning,
-// blend-mode discriminators, etc.
 const std::unordered_map<std::string_view, SubPropHandler>& subPropHandlers() {
     static const std::unordered_map<std::string_view, SubPropHandler> kTable = {
-        {"Diffuse.DiffuseMap",
-         [](RendererBuildState& s, const AssetObject& p, IArena& a) {
+        {"Diffuse.DiffuseMap", [](RendererBuildState& s, const AssetObject& p, IArena& a) {
              if (auto path = fieldString(p, "PropertyValueStr"); !path.empty()) {
                  s.out.diffuseTexturePath = stableCopy(path, a);
              }
          }},
-        {"Atlas.SubDiv",
-         [](RendererBuildState& s, const AssetObject& p, IArena&) {
-             // PropertyValueNumeric is uint4 (16 bytes); first two u32s are the X/Y subdivisions.
+        {"Atlas.SubDiv", [](RendererBuildState& s, const AssetObject& p, IArena&) {
+
              const auto bytes = fieldBytes(p, "PropertyValueNumeric");
              if (bytes.size() >= 2U * sizeof(u32)) {
                  u32 subX = 0;
@@ -164,50 +106,29 @@ const std::unordered_map<std::string_view, SubPropHandler>& subPropHandlers() {
                  s.out.atlasSubDivY = static_cast<u16>(subY);
              }
          }},
-        {"Atlas.Blending", [](RendererBuildState& s, const AssetObject& p,
-                              IArena&) { s.out.atlasBlending = readPropU32(p); }},
-        {"Atlas.Definition", [](RendererBuildState& s, const AssetObject& p,
-                                IArena&) { s.out.atlasDefinition = readPropU32(p); }},
-        {"Atlas.Source", [](RendererBuildState& s, const AssetObject& p,
-                            IArena&) { s.out.atlasSource = readPropU32(p); }},
-        {"Atlas.DistortionStrength",
-         [](RendererBuildState& s, const AssetObject& p, IArena&) {
-             s.out.atlasDistortionStrength = readPropF32(p);
-         }},
-        {"Atlas.MotionVectorsMap",
-         [](RendererBuildState& s, const AssetObject& p, IArena& a) {
+        {"Atlas.Blending",            [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.atlasBlending = readPropU32(p); }},
+        {"Atlas.Definition",          [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.atlasDefinition = readPropU32(p); }},
+        {"Atlas.Source",              [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.atlasSource = readPropU32(p); }},
+        {"Atlas.DistortionStrength",  [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.atlasDistortionStrength = readPropF32(p); }},
+        {"Atlas.MotionVectorsMap", [](RendererBuildState& s, const AssetObject& p, IArena& a) {
              if (auto path = fieldString(p, "PropertyValueStr"); !path.empty()) {
                  s.out.atlasMotionVectorsMapPath = stableCopy(path, a);
              }
          }},
-        {"AlphaRemap.AlphaMap",
-         [](RendererBuildState& s, const AssetObject& p, IArena& a) {
+        {"AlphaRemap.AlphaMap", [](RendererBuildState& s, const AssetObject& p, IArena& a) {
              if (auto path = fieldString(p, "PropertyValueStr"); !path.empty()) {
                  s.out.alphaRemapMapPath = stableCopy(path, a);
              }
          }},
-        {"SoftParticles.SoftnessDistance",
-         [](RendererBuildState& s, const AssetObject& p, IArena&) {
-             s.out.softParticlesDistance = readPropF32(p);
-         }},
-        {"TextureUVs.FlipU", [](RendererBuildState& s, const AssetObject& p,
-                                IArena&) { s.out.textureFlipU = readPropToggle(p); }},
-        {"TextureUVs.FlipV", [](RendererBuildState& s, const AssetObject& p,
-                                IArena&) { s.out.textureFlipV = readPropToggle(p); }},
-        {"TextureUVs.RotateTexture",
-         [](RendererBuildState& s, const AssetObject& p, IArena&) {
-             s.out.textureRotateTexture = readPropToggle(p);
-         }},
-        {"BillboardingMode", [](RendererBuildState& s, const AssetObject& p,
-                                IArena&) { s.out.billboardingMode = readPropU32(p); }},
-        {"Transparent.SortMode", [](RendererBuildState& s, const AssetObject& p,
-                                    IArena&) { s.out.transparentSortMode = readPropU32(p); }},
-        {"Transparent.Type", [](RendererBuildState& s, const AssetObject& p,
-                                IArena&) { s.transparentType = readPropU32(p); }},
-        {"Opaque", [](RendererBuildState& s, const AssetObject& p,
-                      IArena&) { s.opaqueEnabled = readPropToggle(p); }},
-        {"Opaque.Type", [](RendererBuildState& s, const AssetObject& p,
-                           IArena&) { s.opaqueType = readPropU32(p); }},
+        {"SoftParticles.SoftnessDistance", [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.softParticlesDistance = readPropF32(p); }},
+        {"TextureUVs.FlipU",               [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.textureFlipU = readPropToggle(p); }},
+        {"TextureUVs.FlipV",               [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.textureFlipV = readPropToggle(p); }},
+        {"TextureUVs.RotateTexture",       [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.textureRotateTexture = readPropToggle(p); }},
+        {"BillboardingMode",               [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.billboardingMode = readPropU32(p); }},
+        {"Transparent.SortMode",           [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.transparentSortMode = readPropU32(p); }},
+        {"Transparent.Type",               [](RendererBuildState& s, const AssetObject& p, IArena&) { s.transparentType = readPropU32(p); }},
+        {"Opaque",                         [](RendererBuildState& s, const AssetObject& p, IArena&) { s.opaqueEnabled = readPropToggle(p); }},
+        {"Opaque.Type",                    [](RendererBuildState& s, const AssetObject& p, IArena&) { s.opaqueType = readPropU32(p); }},
     };
     return kTable;
 }
@@ -220,10 +141,6 @@ void applyRendererSubProperty(RendererBuildState& s, const AssetObject& pObj,
     }
 }
 
-// Engine's blend-mode resolution. Default = Opaque (no blend). Transparent
-// path wins over Opaque when both are enabled. Out-of-range Transparent.Type
-// values leave the default in place — the engine's explicit if/else chain has
-// no else clause.
 BlendMode resolveBlendMode(const RendererBuildState& s) noexcept {
     if (s.transparentEnabled) {
         if (s.transparentType <= static_cast<u32>(BlendMode::BlendAdd)) {
@@ -253,11 +170,28 @@ LayerRenderer buildRenderer(const EffectAssetModel& model, const AssetObject& rO
         const auto pname = fieldString(*pObj, "PropertyName");
         const bool toggleOn = readPropToggle(*pObj);
 
-        // Each property name matches at most one branch in each helper —
-        // the toggle helper handles top-level names ("Transparent"), the
-        // sub-property helper handles dotted names ("Transparent.Type").
         applyRendererToggle(s, pname, toggleOn);
         applyRendererSubProperty(s, *pObj, pname, arena);
+    }
+
+    const auto streamUids = fieldLinks(rObj, "Streams");
+    if (!streamUids.empty()) {
+        const auto inputs = arenaArray<RendererParticleInput>(arena, streamUids.size());
+        std::size_t n = 0;
+        for (const u32 sUid : streamUids) {
+            const AssetObject* sObj = findObjectByUid(model, sUid);
+            if (sObj == nullptr || sObj->type != "CLayerCompileCacheRendererParticleInput") {
+                continue;
+            }
+            RendererParticleInput in;
+            in.semantic = fieldUint(*sObj, "Semantic").value_or(0U);
+            in.indexInStorage = fieldUint(*sObj, "IndexInStorage").value_or(0U);
+            in.additionalFieldName = stableCopy(fieldString(*sObj, "AdditionalFieldName"), arena);
+            inputs[n++] = in;
+        }
+        if (n > 0) {
+            out.particleInputs = std::span<const RendererParticleInput>{inputs.data(), n};
+        }
     }
 
     if (!s.sawEnableRendering) {
@@ -273,10 +207,23 @@ LayerRenderer buildRenderer(const EffectAssetModel& model, const AssetObject& rO
     return out;
 }
 
-} // namespace
+}
 
 void loadRenderers(const EffectAssetModel& model, const AssetObject& layerCache, LayerProgram& lp,
                    IArena& arena) {
+
+    const auto fieldUids = fieldLinks(layerCache, "Fields");
+    if (!fieldUids.empty()) {
+        const auto names = arenaArray<std::string_view>(arena, fieldUids.size());
+        for (std::size_t i = 0; i < fieldUids.size(); ++i) {
+            const AssetObject* fObj = findObjectByUid(model, fieldUids[i]);
+            const std::string_view nm =
+                (fObj != nullptr) ? fieldString(*fObj, "FieldName") : std::string_view{};
+            names[i] = stableCopy(nm, arena);
+        }
+        lp.renderFieldNames = std::span<const std::string_view>{names.data(), fieldUids.size()};
+    }
+
     const auto rendererUids = fieldLinks(layerCache, "Renderers");
     if (rendererUids.empty()) {
         return;
@@ -295,4 +242,4 @@ void loadRenderers(const EffectAssetModel& model, const AssetObject& layerCache,
     }
 }
 
-} // namespace whiteout::cornflakes
+}

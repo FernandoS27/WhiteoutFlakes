@@ -35,4 +35,4 @@ void IssueBag::clear() noexcept {
     m_fatalCount = 0;
 }
 
-} // namespace whiteout::cornflakes
+}

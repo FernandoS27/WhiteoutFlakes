@@ -1,6 +1,6 @@
 #include <cornflakes/core/determinism.hpp>
-#include <cornflakes/diagnostics/issue_codes.hpp>
 #include <cornflakes/interface/diagnostics/issue.hpp>
+#include <cornflakes/diagnostics/issue_codes.hpp>
 #include <cornflakes/scheduler/serial_worker_pool.hpp>
 
 #include <memory>
@@ -58,7 +58,7 @@ private:
     Value m_nextValue = 0;
 };
 
-} // namespace
+}
 
 SerialWorkerPool::SerialWorkerPool(IssueBag& issues) noexcept : m_issues(&issues) {}
 
@@ -98,4 +98,4 @@ std::unique_ptr<ITimelineSemaphore> SerialWorkerPool::createTimelineSemaphore() 
     return std::make_unique<SerialTimelineSemaphore>(*m_issues);
 }
 
-} // namespace whiteout::cornflakes
+}

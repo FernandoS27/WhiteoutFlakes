@@ -89,7 +89,7 @@ u64 readU64(std::span<const std::byte> bytes, std::size_t i) noexcept {
     return v;
 }
 
-} // namespace
+}
 
 RibbonGeometryOutput buildRibbonGeometry(const RenderPacket& packet, const ViewParams& view,
                                          IArena& arena) {
@@ -179,4 +179,4 @@ RibbonGeometryOutput buildRibbonGeometry(const RenderPacket& packet, const ViewP
     };
 }
 
-} // namespace whiteout::cornflakes
+}

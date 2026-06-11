@@ -11,6 +11,23 @@
 
 namespace whiteout::cornflakes {
 
+/// @brief Max distinct float payload elements carried across a kick. WC3 event decls hold
+/// up to ~7 elements (Position/Velocity/Color/Size/…); 16 is headroom.
+inline constexpr std::size_t kMaxPayloadFloatSlots = 16;
+
+/// @brief One named float payload element (Color, Size, custom …) carried across a kick.
+///
+/// Matched by `nameId` (a hash of the element's `PayloadName`), mirroring the engine's
+/// name-GUID lookup (`SEvent::FindPayload` on `m_NameGUID`): the parent's append slot and the
+/// child's extract index do NOT align numerically, so they are bridged by name. The Position
+/// element additionally feeds `spawnPosition`/`spawnTranslate`.
+struct PayloadFloatSlot {
+    u32 nameId = 0;
+    bool valid = false;
+    u8 width = 0; ///< 1..4
+    std::array<f32, 4> value{};
+};
+
 /// @brief One queued cross-layer spawn — payload, parent identity, and optional pose.
 struct SpawnEvent {
     u32 eventId = 0;
@@ -35,6 +52,9 @@ struct SpawnEvent {
     u8 boolPayloadWidth = 0;
     std::array<i32, 4> boolPayload{};
     u32 boolPayloadId = 0;
+
+    /// Slot-indexed float payload elements (Color, Size, …); read by extractPayloadElementF*.
+    std::array<PayloadFloatSlot, kMaxPayloadFloatSlots> floatSlots{};
 
     f32 subFrameFraction = 1.0F;
     f32 lerpedTime = 0.0F;

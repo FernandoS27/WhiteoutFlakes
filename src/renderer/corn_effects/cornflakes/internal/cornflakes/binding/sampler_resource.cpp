@@ -28,14 +28,11 @@ bool curveHasHermiteTangents(const SamplerCurve& curve) noexcept {
     return !curve.tangents.empty() && curve.tangents.size() >= 2U * curve.values.size();
 }
 
-// Result of locating `t` within a curve's key array. `kind` selects which of
-// the three regions `t` fell into; `upperKey` / `u` are only meaningful for
-// `Inside`.
 enum class KeyRegion : u8 { BeforeFirst, AfterLast, Inside };
 struct KeyHit {
     KeyRegion kind;
-    std::size_t upperKey; ///< Index of the right key (i in `[i-1, i]`); for AfterLast == back.
-    f32 u;                ///< Local parameter in [0, 1]; degenerate spans set this to 0.
+    std::size_t upperKey;
+    f32 u;
 };
 
 KeyHit locateKey(std::span<const f32> times, f32 t) noexcept {
@@ -57,11 +54,11 @@ KeyHit locateKey(std::span<const f32> times, f32 t) noexcept {
             return {KeyRegion::Inside, i, u};
         }
     }
-    // Unreachable given the AfterLast guard above, but keep the fallback.
+
     return {KeyRegion::AfterLast, times.size() - 1U, 0.0F};
 }
 
-} // namespace
+}
 
 f32 evalSamplerCurveScalar(const SamplerCurve& curve, f32 t, f32 defaultValue) noexcept {
     if (curve.components != 1U || curve.times.empty() || curve.values.size() < curve.times.size()) {
@@ -158,4 +155,4 @@ const SamplerResource* findSamplerByName(std::span<const SamplerResource> sample
     return nullptr;
 }
 
-} // namespace whiteout::cornflakes
+}

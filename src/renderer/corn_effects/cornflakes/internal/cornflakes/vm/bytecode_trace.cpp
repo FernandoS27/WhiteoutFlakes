@@ -64,4 +64,4 @@ std::size_t formatTraceEvent(const TraceEvent& ev, char* out, std::size_t outCap
     return static_cast<std::size_t>(written);
 }
 
-} // namespace whiteout::cornflakes
+}

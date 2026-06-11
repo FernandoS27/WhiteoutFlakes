@@ -65,9 +65,11 @@ CornEffectsGfxBackend::~CornEffectsGfxBackend() {
     // per layer, which would keep texture handles alive past the
     // model's lifetime.
     if (assets_) {
-        for (auto& ls : layerStates_) {
-            if (ls.diffuseSlot != 0)
-                assets_->Release(ls.diffuseSlot);
+        for (auto& states : layerStates_) {
+            for (auto& ls : states) {
+                if (ls.diffuseSlot != 0)
+                    assets_->Release(ls.diffuseSlot);
+            }
         }
     }
     // GPU buffers used to live here; now the owning CornEffectsService
@@ -80,50 +82,56 @@ bool CornEffectsGfxBackend::prepare(std::span<const ::whiteout::cornflakes::Laye
     // re-prepared when their .pkb is re-acquired, and we don't want to
     // leak slot refs across re-prepares.
     if (assets_) {
-        for (auto& old : layerStates_) {
-            if (old.diffuseSlot != 0)
-                assets_->Release(old.diffuseSlot);
+        for (auto& states : layerStates_) {
+            for (auto& old : states) {
+                if (old.diffuseSlot != 0)
+                    assets_->Release(old.diffuseSlot);
+            }
         }
     }
     layerStates_.clear();
     layerStates_.resize(layers.size());
 
     for (std::size_t i = 0; i < layers.size(); ++i) {
-        auto& st = layerStates_[i];
         const auto& lp = layers[i];
-        if (lp.renderers.empty()) {
-            st.renderable = false;
-            continue;
-        }
-        const auto& rr = lp.renderers[0];
-        st.renderable = (rr.cls == ::whiteout::cornflakes::RendererClass::Billboard);
-        st.isDistortion = rr.isDistortion;
+        auto& states = layerStates_[i];
+        states.assign(lp.renderers.size(), RendererState{});
 
-        if (st.isDistortion) {
-            st.renderable = false;
-        }
+        for (std::size_t r = 0; r < lp.renderers.size(); ++r) {
+            auto& st = states[r];
+            const auto& rr = lp.renderers[r];
+            st.renderable = (rr.cls == ::whiteout::cornflakes::RendererClass::Billboard);
+            st.isDistortion = rr.isDistortion;
 
-        // Acquire a slot for this layer's diffuse. The slot starts
-        // bound to the shared white placeholder; once the host fetches
-        // the texture bytes and Apply runs, TextureOf returns the real
-        // handle automatically. No per-frame retry needed.
-        if (slotAcquire_ && !rr.diffuseTexturePath.empty()) {
-            st.diffuseSlot = slotAcquire_(rr.diffuseTexturePath);
+            if (st.isDistortion) {
+                st.renderable = false;
+            }
+
+            // Acquire a slot for this renderer's diffuse. The slot starts
+            // bound to the shared white placeholder; once the host fetches
+            // the texture bytes and Apply runs, TextureOf returns the real
+            // handle automatically. No per-frame retry needed.
+            if (slotAcquire_ && !rr.diffuseTexturePath.empty()) {
+                st.diffuseSlot = slotAcquire_(rr.diffuseTexturePath);
+            }
+            st.atlasX = rr.atlasSubDivX;
+            st.atlasY = rr.atlasSubDivY;
+            st.flipU = rr.hasFlipUVs || rr.textureFlipU;
+            st.flipV = rr.hasFlipUVs || rr.textureFlipV;
+            st.rotate = rr.textureRotateTexture;
+            st.size2D = rr.hasEnableSize2D;
         }
-        st.atlasX = rr.atlasSubDivX;
-        st.atlasY = rr.atlasSubDivY;
-        st.flipU = rr.hasFlipUVs || rr.textureFlipU;
-        st.flipV = rr.hasFlipUVs || rr.textureFlipV;
-        st.rotate = rr.textureRotateTexture;
-        st.size2D = rr.hasEnableSize2D;
     }
     return true;
 }
 
-std::uint32_t CornEffectsGfxBackend::LayerDiffuseSlot(u32 layerIdx) const {
+std::uint32_t CornEffectsGfxBackend::LayerDiffuseSlot(u32 layerIdx, u32 rendererIdx) const {
     if (layerIdx >= layerStates_.size())
         return 0;
-    return layerStates_[layerIdx].diffuseSlot;
+    const auto& states = layerStates_[layerIdx];
+    if (rendererIdx >= states.size())
+        return 0;
+    return states[rendererIdx].diffuseSlot;
 }
 
 void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::RenderPacket> packets,
@@ -144,6 +152,13 @@ void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::Rende
     const Vector3f camRight = {v.data[0][0], v.data[1][0], v.data[2][0]};
     const Vector3f camUp = {v.data[0][1], v.data[1][1], v.data[2][1]};
     const Vector3f camForward = {v.data[0][2], v.data[1][2], v.data[2][2]};
+    // Camera world position: the view maps eye -> origin, so eye·col_k = -V[3][k]
+    // and the basis columns are orthonormal. Used by the AxisAlignedSpheroid path.
+    const Vector3f eyePos = {
+        -(v.data[3][0] * camRight.x + v.data[3][1] * camUp.x + v.data[3][2] * camForward.x),
+        -(v.data[3][0] * camRight.y + v.data[3][1] * camUp.y + v.data[3][2] * camForward.y),
+        -(v.data[3][0] * camRight.z + v.data[3][1] * camUp.z + v.data[3][2] * camForward.z),
+    };
 
     ::whiteout::cornflakes::SemanticSlotReader reader;
 
@@ -160,6 +175,7 @@ void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::Rende
         size_t texIdCount = 0;
         u32 particleCount = 0;
         u32 layerValue = 0;
+        u32 rendererIndex = 0;
         u8 blendMode = 0;
         u8 billboardingMode = 0;
     };
@@ -174,7 +190,10 @@ void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::Rende
             continue;
         if (pkt.layer.value >= layerStates_.size())
             continue;
-        const auto& ls = layerStates_[pkt.layer.value];
+        const auto& layerRenderers = layerStates_[pkt.layer.value];
+        if (pkt.rendererIndex >= layerRenderers.size())
+            continue;
+        const auto& ls = layerRenderers[pkt.rendererIndex];
         if (!ls.renderable)
             continue;
         if (pkt.particleCount == 0)
@@ -202,6 +221,7 @@ void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::Rende
         pc.texIdCount = texIdBytes.size() / sizeof(f32);
         pc.particleCount = pkt.particleCount;
         pc.layerValue = pkt.layer.value;
+        pc.rendererIndex = pkt.rendererIndex;
         pc.blendMode = pkt.blendMode;
         pc.billboardingMode = pkt.billboardingMode;
 
@@ -250,7 +270,8 @@ void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::Rende
         if (endIndex == runFirst)
             return;
         const auto& pc = cache[runPacketI];
-        draws.push_back({runFirst, endIndex - runFirst, pc.layerValue, pc.blendMode});
+        draws.push_back({runFirst, endIndex - runFirst, pc.layerValue, pc.rendererIndex,
+                         pc.blendMode});
     };
 
     for (size_t k = 0; k < order.size(); ++k) {
@@ -258,7 +279,7 @@ void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::Rende
         const u32 packetIdx = packetOf[entry];
         const u32 p = partOf[entry];
         const PacketCache& pc = cache[packetIdx];
-        const auto& ls = layerStates_[pc.layerValue];
+        const auto& ls = layerStates_[pc.layerValue][pc.rendererIndex];
 
         if (packetIdx != runPacketI) {
             flushRun(static_cast<u32>(indices.size()));
@@ -301,14 +322,73 @@ void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::Rende
             (bbMode == 5) || (bbMode == 0 && !pc.axes0.empty() && !pc.axes1.empty());
 
         if (wantBothAxes && p < pc.axes0.size() && p < pc.axes1.size()) {
-            r0 = {pc.axes0[p].x, pc.axes0[p].z, pc.axes0[p].y};
-            u0 = {pc.axes1[p].x, pc.axes1[p].z, pc.axes1[p].y};
+            if (bbMode == 5) {
+                // PlaneAligned (engine CPlanarBillboarderQuad::Align): the quad's
+                // WIDTH axis is normalize(Axis0 × Axis1) at extent Size, and its
+                // HEIGHT axis is Axis0 at extent Size·|Axis1|. A blind Y<->Z swap
+                // would put the width on Axis0 itself (e.g. a vertical lightning
+                // bolt instead of horizontal). r0/u0 are used directly with NO
+                // Y<->Z swap, matching the engine-verified cornflakes_gl reference
+                // (validated component-for-component against the live billboarder's
+                // quad corners (±0.672, ±0.101, 0.259) for aos_lightning n25).
+                const f32 a0x = pc.axes0[p].x, a0y = pc.axes0[p].y, a0z = pc.axes0[p].z;
+                const f32 a1x = pc.axes1[p].x, a1y = pc.axes1[p].y, a1z = pc.axes1[p].z;
+                f32 wx = a0y * a1z - a0z * a1y;
+                f32 wy = a0z * a1x - a0x * a1z;
+                f32 wz = a0x * a1y - a0y * a1x;
+                const f32 wl2 = wx * wx + wy * wy + wz * wz;
+                if (wl2 > 1e-20f) {
+                    const f32 inv = 1.0f / std::sqrt(wl2);
+                    wx *= inv;
+                    wy *= inv;
+                    wz *= inv;
+                }
+                const f32 a0l2 = a0x * a0x + a0y * a0y + a0z * a0z;
+                const f32 a1l = std::sqrt(a1x * a1x + a1y * a1y + a1z * a1z);
+                const f32 hScale = (a0l2 > 1e-20f) ? (a1l / std::sqrt(a0l2)) : 0.0f;
+                r0 = {wx, wy, wz};
+                u0 = {a0x * hScale, a0y * hScale, a0z * hScale};
+            } else {
+                // ScreenAligned with explicit axes: keep the Y<->Z mapping.
+                r0 = {pc.axes0[p].x, pc.axes0[p].z, pc.axes0[p].y};
+                u0 = {pc.axes1[p].x, pc.axes1[p].z, pc.axes1[p].y};
+            }
+        } else if (bbMode == 3 && p < pc.axes0.size()) {
+            // AxisAlignedSpheroid: the quad faces the camera around Axis0. Width is
+            // perpendicular to both Axis0 and the eye->particle direction; height is
+            // Axis0·0.5 plus the in-view "up" so the spheroid leans toward the eye.
+            // Engine-faithful (matches the GL reference billboarder).
+            const Vector3f ax{pc.axes0[p].x, pc.axes0[p].y, pc.axes0[p].z};
+            Vector3f c2p{pos.x - eyePos.x, pos.y - eyePos.y, pos.z - eyePos.z};
+            const f32 cl2 = c2p.x * c2p.x + c2p.y * c2p.y + c2p.z * c2p.z;
+            if (cl2 > 1e-10f) {
+                const f32 inv = 1.0f / std::sqrt(cl2);
+                c2p = {c2p.x * inv, c2p.y * inv, c2p.z * inv};
+            } else {
+                c2p = {-camForward.x, -camForward.y, -camForward.z};
+            }
+            Vector3f side = ::whiteout::cross(ax, c2p);
+            const f32 sl2 = side.x * side.x + side.y * side.y + side.z * side.z;
+            if (sl2 > 1e-12f) {
+                const f32 inv = 1.0f / std::sqrt(sl2);
+                side = {side.x * inv, side.y * inv, side.z * inv};
+            } else {
+                side = camRight;
+            }
+            side = {side.x * sx, side.y * sx, side.z * sx};
+            const Vector3f up = ::whiteout::cross(c2p, side);
+            const Vector3f phd{ax.x * 0.5f + up.x, ax.y * 0.5f + up.y, ax.z * 0.5f + up.z};
+            const f32 invSz = (sx != 0.0f) ? (1.0f / sx) : 0.0f;
+            r0 = {side.x * invSz, side.y * invSz, side.z * invSz};
+            u0 = {phd.x * invSz, phd.y * invSz, phd.z * invSz};
         } else if (wantAxis0 && p < pc.axes0.size()) {
             const f32 ax = pc.axes0[p].x;
             const f32 ay = pc.axes0[p].y;
             const f32 az = pc.axes0[p].z;
             const f32 invSz = (sx != 0.0f) ? (1.0f / sx) : 0.0f;
-            u0 = {ax * invSz, ay * invSz, az * invSz};
+            // Axis0 is the full quad height (extent |Axis0|), so the half-extent
+            // carried in u0 is Axis0·0.5. Omitting the 0.5 doubled the height.
+            u0 = {ax * 0.5f * invSz, ay * 0.5f * invSz, az * 0.5f * invSz};
             const f32 alen2 = ax * ax + ay * ay + az * az;
             if (alen2 > 1e-12f) {
                 const f32 invLen = 1.0f / std::sqrt(alen2);

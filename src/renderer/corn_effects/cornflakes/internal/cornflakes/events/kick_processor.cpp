@@ -27,4 +27,4 @@ bool KickProcessor::submit(IWorkerPool& pool, ITimelineSemaphore& syncJob,
     return fatalBefore == issues.hasFatal();
 }
 
-} // namespace whiteout::cornflakes
+}

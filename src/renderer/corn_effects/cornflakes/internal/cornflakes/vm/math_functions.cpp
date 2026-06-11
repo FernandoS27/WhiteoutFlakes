@@ -17,7 +17,7 @@ Issue vmFatal(u32 code, std::string_view message) noexcept {
     return issue;
 }
 
-} // namespace
+}
 
 f32 mathLerp(f32 a, f32 b, f32 t) noexcept {
     return a + t * (b - a);
@@ -80,4 +80,4 @@ std::optional<f32> mathFunc1Eval(u8 id, f32 x, IssueBag& issues) {
     return std::nullopt;
 }
 
-} // namespace whiteout::cornflakes
+}

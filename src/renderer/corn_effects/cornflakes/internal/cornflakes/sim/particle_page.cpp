@@ -23,4 +23,4 @@ ParticlePage allocateParticlePage(IArena& pageArena, u32 capacity) {
     return page;
 }
 
-} // namespace whiteout::cornflakes
+}

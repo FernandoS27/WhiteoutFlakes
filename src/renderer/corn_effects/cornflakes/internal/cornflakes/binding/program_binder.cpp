@@ -1,7 +1,7 @@
 #include "binding_internal.hpp"
 
-#include <cornflakes/core/determinism.hpp>
 #include <cornflakes/interface/binding/effect_binder.hpp>
+#include <cornflakes/core/determinism.hpp>
 #include <cornflakes/vm/bytecode_decoder.hpp>
 
 #include <cstring>
@@ -10,15 +10,12 @@ namespace whiteout::cornflakes {
 
 namespace {
 
-// Builds a fully-resolved VMProgramDescriptor from one CCompilerBlobCache:
-// arena-copies the bytecode, runs the decoder for instruction-level use,
-// arena-copies the constants pool, and resolves Externals + ExternalCalls
-// links into typed binding spans.
 VMProgramDescriptor descriptorFromBlob(const EffectAssetModel& model, const AssetObject& blob,
                                        IArena& arena) {
     VMProgramDescriptor d;
 
-    const auto parsed = parseBlob(blob);
+    const auto schema = schemaForVersion(model.version.major, model.version.minor);
+    const auto parsed = parseBlob(blob, schema);
     if (!parsed || parsed->bytecode.empty()) {
         return d;
     }
@@ -39,6 +36,52 @@ VMProgramDescriptor descriptorFromBlob(const EffectAssetModel& model, const Asse
         d.constantsPool = std::span<const std::byte>{constCopy.data(), constCopy.size()};
     }
     d.registerCounts = parsed->registerCounts;
+
+    if (schema == HboSchemaVersion::V2_9) {
+
+        const auto names = fieldStringArray(blob, "RuntimeExternalNames");
+        const auto meta = fieldUintArray(blob, "RuntimeExternalsBlob");
+        constexpr std::size_t kWordsPerExternal = 5U;
+        if (!names.empty()) {
+            const auto bindingArr = arenaArray<ExternalBinding>(arena, names.size());
+            std::size_t written = 0;
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                if (names[i].empty()) {
+                    continue;
+                }
+                ExternalBinding& b = bindingArr[written++];
+                b.slot = static_cast<u16>(i);
+                b.canonicalSlot = static_cast<u16>(i);
+                b.name = stableCopy(names[i], arena);
+                b.typeName = {};
+                const std::size_t mo = i * kWordsPerExternal;
+                if (mo + kWordsPerExternal <= meta.size()) {
+                    b.nativeType = meta[mo + 1];
+                    b.storageSize = meta[mo + 2];
+                    b.accessMask = meta[mo + 4];
+                }
+            }
+            if (written > 0) {
+                d.externals = std::span<const ExternalBinding>{bindingArr.data(), written};
+            }
+        }
+        if (const auto calls = fieldStringArray(blob, "RuntimeExternalMangledCalls");
+            !calls.empty()) {
+            const auto fnArr = arenaArray<FunctionBinding>(arena, calls.size());
+            std::size_t written = 0;
+            for (std::size_t i = 0; i < calls.size(); ++i) {
+                FunctionBinding& f = fnArr[written++];
+                f.slot = static_cast<u16>(i);
+                f.symbolName = stableCopy(calls[i], arena);
+                f.symbolSlot = 0xFFFFFFFFU;
+                f.traits = 0U;
+            }
+            if (written > 0) {
+                d.functions = std::span<const FunctionBinding>{fnArr.data(), written};
+            }
+        }
+        return d;
+    }
 
     if (const auto extLinks = fieldLinks(blob, "Externals"); !extLinks.empty()) {
         const auto bindingArr = arenaArray<ExternalBinding>(arena, extLinks.size());
@@ -83,15 +126,15 @@ VMProgramDescriptor descriptorFromBlob(const EffectAssetModel& model, const Asse
     return d;
 }
 
-} // namespace
+}
 
 void loadScopePrograms(const EffectAssetModel& model, const AssetObject& layerCache,
                        LayerProgram& lp, IArena& arena) {
-    // BlobCache_IR_TimeFixed contains init / physics / timeFixed all tagged by `Identifier`.
-    for (const u32 blobUid : fieldLinks(layerCache, "BlobCache_IR_TimeFixed")) {
+
+    const auto applyBlob = [&](u32 blobUid) {
         const AssetObject* blob = findObjectByUid(model, blobUid);
         if (blob == nullptr || blob->type != "CCompilerBlobCache") {
-            continue;
+            return;
         }
         const u32 ident = fieldUint(*blob, "Identifier").value_or(0U);
         VMProgramDescriptor d = descriptorFromBlob(model, *blob, arena);
@@ -111,20 +154,34 @@ void loadScopePrograms(const EffectAssetModel& model, const AssetObject& layerCa
                 lp.timeFixedProgram = d;
             }
             break;
-        default:
+        case BlobScope::TimeVarying:
+            if (lp.timeVaryingProgram.cbemBytecode.empty()) {
+                lp.timeVaryingProgram = d;
+            }
             break;
         }
-    }
+    };
 
-    // BlobCache_IR_TimeVarying lives on its own field.
-    if (const auto tvUid = fieldLink(layerCache, "BlobCache_IR_TimeVarying")) {
-        if (const AssetObject* blob = findObjectByUid(model, *tvUid);
-            blob != nullptr && blob->type == "CCompilerBlobCache") {
-            lp.timeVaryingProgram = descriptorFromBlob(model, *blob, arena);
+    if (schemaForVersion(model.version.major, model.version.minor) == HboSchemaVersion::V2_9) {
+
+        for (const u32 blobUid : fieldLinks(layerCache, "BlobCache_Backends")) {
+            applyBlob(blobUid);
+        }
+    } else {
+
+        for (const u32 blobUid : fieldLinks(layerCache, "BlobCache_IR_TimeFixed")) {
+            applyBlob(blobUid);
+        }
+
+        if (const auto tvUid = fieldLink(layerCache, "BlobCache_IR_TimeVarying")) {
+            if (const AssetObject* blob = findObjectByUid(model, *tvUid);
+                blob != nullptr && blob->type == "CCompilerBlobCache") {
+                lp.timeVaryingProgram = descriptorFromBlob(model, *blob, arena);
+            }
         }
     }
 
     lp.program = lp.timeFixedProgram;
 }
 
-} // namespace whiteout::cornflakes
+}

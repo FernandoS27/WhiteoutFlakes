@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Public service-level facade — load effects, manage emitters, tick, collect packets.
-
 #include <cornflakes/interface/core/types.hpp>
 #include <cornflakes/diagnostics/diagnostics_facade.hpp>
 #include <cornflakes/interface/render/render_packet.hpp>
@@ -18,7 +15,6 @@ namespace whiteout::cornflakes {
 
 class IWorkerPool;
 
-/// @brief Construction parameters for `CornFlakesService::create`.
 struct ServiceConfig {
     IWorkerPool* workerPool = nullptr;
     RandomSeedMode seedMode = RandomSeedMode::HostProvided;
@@ -27,10 +23,9 @@ struct ServiceConfig {
     AssetFormats allowedFormats = AssetFormats::all();
 };
 
-/// @brief Public, ABI-stable service facade. All methods return `ServiceOutcome` with diagnostics.
 class CornFlakesService {
 public:
-    /// @brief Build a concrete service implementation. Returns null on misconfiguration.
+
     static std::unique_ptr<CornFlakesService> create(const ServiceConfig& cfg);
 
     CornFlakesService() = default;
@@ -53,12 +48,11 @@ public:
     virtual ServiceOutcome<void> pushEmitterEvent(EmitterId id, std::string_view name,
                                                   const EventPayload& payload) = 0;
 
-    /// @brief Advance simulation by `dt` seconds across every live emitter.
     virtual ServiceOutcome<void> tick(f32 dt) = 0;
-    /// @brief Collect render packets produced by the most recent tick.
+
     virtual ServiceOutcome<std::span<const RenderPacket>> collectRenderPackets(FrameId frame) = 0;
 
     virtual DiagnosticsFacade& diagnostics() noexcept = 0;
 };
 
-} // namespace whiteout::cornflakes
+}

@@ -62,4 +62,4 @@ bool execFunctionEpilog(const CBEMInstruction& ins, BytecodeExecContext& ctx,
 bool execFunctionCall(const CBEMInstruction& ins, BytecodeExecContext& ctx,
                       IssueBag& issues) noexcept;
 
-} // namespace whiteout::cornflakes
+}

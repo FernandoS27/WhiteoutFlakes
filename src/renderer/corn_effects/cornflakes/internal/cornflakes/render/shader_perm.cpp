@@ -8,7 +8,7 @@ namespace vs_inner {
 inline constexpr u32 kHasRandom = 0x01U;
 inline constexpr u32 kHasVC = 0x02U;
 inline constexpr u32 kHasNT = 0x04U;
-} // namespace vs_inner
+}
 
 namespace ps_inner {
 inline constexpr u32 kWriteGBuffer = 0x01U;
@@ -18,7 +18,7 @@ inline constexpr u32 kSoftParticles = 0x08U;
 inline constexpr u32 kAlphaLut = 0x10U;
 inline constexpr u32 kVertexColor = 0x20U;
 inline constexpr u32 kLit = 0x40U;
-} // namespace ps_inner
+}
 
 struct OuterParts {
     u32 modeIdx;
@@ -101,10 +101,10 @@ u32 computePsInner(const LayerRendererFlags& flags, FogMode fog, RenderPass pass
     return inner;
 }
 
-} // namespace
+}
 
 ShaderPermKey classifyCornFxPerm(const LayerRendererFlags& flags, FogMode fog,
-                                 RenderPass pass) noexcept {
+                                  RenderPass pass) noexcept {
     const auto outer = resolveOuter(flags, pass);
     const u32 outerKey = outer.modeIdx * 3U + outer.uvVariant;
 
@@ -118,4 +118,4 @@ ShaderPermKey classifyCornFxPerm(const LayerRendererFlags& flags, FogMode fog,
     return key;
 }
 
-} // namespace whiteout::cornflakes
+}

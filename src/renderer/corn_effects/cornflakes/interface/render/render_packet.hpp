@@ -21,7 +21,7 @@ enum class RendererClass : u32 {
     Count,
 };
 
-/// @brief CornFx `Transparent.Type` mapped 1:1 from the asset.
+/// @brief `Transparent.Type` mapped 1:1 from the asset.
 enum class BlendMode : u8 {
     Add = 0,
     NoAlphaAdd = 1,
@@ -70,6 +70,11 @@ inline constexpr std::size_t kRenderSlotCount = static_cast<std::size_t>(RenderS
 struct RenderPacket {
     EmitterId emitter;
     LayerId layer;
+    /// Index of the renderer within the layer that produced this packet. A layer may carry
+    /// several renderers (e.g. two billboard quads with distinct textures sharing the same
+    /// particle data); each emits its own packet. Backends key per-renderer resources
+    /// (texture, atlas, UV transform) by `(layer, rendererIndex)`, not by layer alone.
+    u32 rendererIndex = 0;
     RendererClass cls = RendererClass::Billboard;
     u32 particleCount = 0;
 

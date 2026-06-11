@@ -30,4 +30,4 @@ const FrameTrace& FrameTraceRecorder::lastFrame() const noexcept {
     return m_last;
 }
 
-} // namespace whiteout::cornflakes
+}

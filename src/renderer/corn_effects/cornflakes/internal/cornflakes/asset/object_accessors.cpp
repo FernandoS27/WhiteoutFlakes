@@ -19,7 +19,7 @@ std::optional<T> readScalar(std::span<const std::byte> bytes) noexcept {
     return out;
 }
 
-} // namespace
+}
 
 const FieldRaw* findField(const AssetObject& obj, std::string_view name) noexcept {
     for (const auto& f : obj.fields) {
@@ -117,7 +117,8 @@ std::span<const u32> fieldUintArray(const AssetObject& obj, std::string_view nam
     if (f == nullptr || f->bytes.size() < 4) {
         return {};
     }
-    if (f->type != "uint[]" && f->type != "int[]" && f->type != "u32[]" && f->type != "link[]") {
+    if (f->type != "uint[]" && f->type != "int[]" && f->type != "u32[]" &&
+        f->type != "link[]" && f->type != "unknown[]") {
         return {};
     }
     u32 count = 0;
@@ -144,6 +145,15 @@ std::string_view fieldString(const AssetObject& obj, std::string_view name) noex
     return f->stringValue;
 }
 
+std::span<const std::string_view> fieldStringArray(const AssetObject& obj,
+                                                   std::string_view name) noexcept {
+    const auto* f = findField(obj, name);
+    if (f == nullptr || (f->type != "string[]" && f->type != "string_unicode[]")) {
+        return {};
+    }
+    return f->stringValues;
+}
+
 std::span<const std::byte> fieldBytes(const AssetObject& obj, std::string_view name) noexcept {
     const auto* f = findField(obj, name);
     if (f == nullptr) {
@@ -164,24 +174,36 @@ const AssetObject* findObjectByUid(const EffectAssetModel& model, u32 uid) noexc
     return &model.objects[idx];
 }
 
-std::optional<BlobView> parseBlob(const AssetObject& blob) noexcept {
+std::optional<BlobView> parseBlob(const AssetObject& blob, HboSchemaVersion schema) noexcept {
 
     const auto body = blobBytecode(blob);
     if (body.size() < 36U) {
         return std::nullopt;
     }
+
     BlobView v;
     std::memcpy(&v.reserved0, body.data() + 0, sizeof(u32));
     std::memcpy(&v.reserved1, body.data() + 4, sizeof(u32));
-    std::memcpy(&v.constStorageBytes, body.data() + 8, sizeof(u32));
-    std::memcpy(&v.bytecodeBytes, body.data() + 12, sizeof(u32));
     for (std::size_t i = 0; i < 5; ++i) {
         std::memcpy(&v.registerCounts[i], body.data() + 16 + (i * sizeof(u32)), sizeof(u32));
     }
-    const std::size_t constStart = 36U;
-    const std::size_t bcStart = constStart + v.constStorageBytes;
+
+    std::size_t constStart = 0;
+    std::size_t bcStart = 0;
+    if (schema == HboSchemaVersion::V2_9) {
+        std::memcpy(&v.bytecodeBytes, body.data() + 4, sizeof(u32));
+        std::memcpy(&v.constStorageBytes, body.data() + 12, sizeof(u32));
+        bcStart = 36U;
+        constStart = bcStart + v.bytecodeBytes;
+    } else {
+        std::memcpy(&v.constStorageBytes, body.data() + 8, sizeof(u32));
+        std::memcpy(&v.bytecodeBytes, body.data() + 12, sizeof(u32));
+        constStart = 36U;
+        bcStart = constStart + v.constStorageBytes;
+    }
     const std::size_t bcEnd = bcStart + v.bytecodeBytes;
-    if (bcEnd > body.size()) {
+    const std::size_t constEnd = constStart + v.constStorageBytes;
+    if (bcEnd > body.size() || constEnd > body.size()) {
         return std::nullopt;
     }
     v.constants = body.subspan(constStart, v.constStorageBytes);
@@ -244,4 +266,4 @@ std::span<const std::byte> blobBytecode(const AssetObject& blob) noexcept {
     return raw.subspan(4U, bodyBytes);
 }
 
-} // namespace whiteout::cornflakes
+}

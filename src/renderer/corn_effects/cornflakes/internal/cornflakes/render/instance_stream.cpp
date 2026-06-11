@@ -37,10 +37,9 @@ void copyVec4(f32 dst[4], const f32* src, std::size_t laneStride, std::size_t pa
     dst[3] = src[base + 3];
 }
 
-} // namespace
+}
 
-std::span<const std::byte> packCornEffectsInstanceStream(const RenderPacket& packet,
-                                                         IArena& arena) {
+std::span<const std::byte> packCornEffectsInstanceStream(const RenderPacket& packet, IArena& arena) {
     const std::size_t particles = packet.particleCount;
     if (particles == 0U) {
         return {};
@@ -89,4 +88,4 @@ std::span<const std::byte> packCornEffectsInstanceStream(const RenderPacket& pac
                                       particles * sizeof(CornEffectsInstance)};
 }
 
-} // namespace whiteout::cornflakes
+}

@@ -24,4 +24,4 @@ bool SimulationRuntime::tickEmitter(IWorkerPool& pool, MediumState& medium,
     return !issues.hasFatal();
 }
 
-} // namespace whiteout::cornflakes
+}

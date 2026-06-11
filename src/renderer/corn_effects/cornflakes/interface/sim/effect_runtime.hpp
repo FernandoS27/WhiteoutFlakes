@@ -69,6 +69,20 @@ public:
 
     std::size_t layerCount() const noexcept;
 
+    /// @brief Debug/inspection: count of live (non-dead) particles in `layerIdx`'s pool.
+    /// Distinct from a render packet's `particleCount`, which reports pool capacity.
+    std::size_t aliveCount(std::size_t layerIdx) const noexcept;
+
+    /// @brief Debug/inspection: cumulative particles ever spawned into `layerIdx`. Divided by
+    /// elapsed frames gives the incoming rate; `aliveCount / rate` estimates particle lifetime.
+    u64 spawnedTotal(std::size_t layerIdx) const noexcept;
+
+    /// @brief Debug/inspection: axis-aligned bounding box of the layer's render `*__Position`
+    /// field over live particles. Returns the live count; `outMin`/`outMax` are left untouched
+    /// when no Position binding or no live particles. The XY extent is the objective
+    /// collapse/ring metric (≈0 ⇒ collapsed onto the central axis).
+    u32 positionSpread(std::size_t layerIdx, f32 outMin[3], f32 outMax[3]) const noexcept;
+
     /// @brief Resize the particle pool of `layerIdx`. Must be set before first tick.
     void setPoolSize(std::size_t layerIdx, std::size_t count);
 
@@ -118,6 +132,7 @@ private:
                             IssueBag& issues);
     void prepareParticlesForTick(std::size_t layerIdx, const EffectFrameInputs& inputs);
     void injectSceneDt(std::size_t layerIdx, f32 dt);
+    void injectSceneScalar(std::size_t layerIdx, const char* name, f32 value);
     void applyAttributeOverrides(std::size_t layerIdx);
     void routeEventsForLayer(std::size_t layerIdx);
 
@@ -143,6 +158,9 @@ private:
 
     std::vector<u32> spawnHeads_;
 
+    /// Cumulative spawns committed into each layer (debug bisection — see `spawnedTotal`).
+    std::vector<u64> spawnedTotals_;
+
     u64 nextSelfId_ = 1U;
 
     std::vector<std::pair<std::string, std::array<f32, 4>>> attributeOverrides_;
@@ -155,6 +173,10 @@ private:
     bool backendPrepared_ = false;
     bool initialized_ = false;
     bool spawnerEnabled_ = true;
+
+    /// Deterministic accumulating scene clock (Σ dt). This is `scene.time` — a real scene
+    /// simulation time, independent of (possibly wall-clock-based) per-frame effectAge.
+    f32 sceneTime_ = 0.0F;
 
     std::vector<RenderPacket> lastPackets_;
 };

@@ -143,6 +143,11 @@ private:
     bool navPending_ = false;
     bool navAscend_ = false;
     std::string navTarget_;
+
+    // Open-transition timer: reset to 0 when the listing changes (folder
+    // open/ascend, or OpenCasc) so the grid fades + slides in. Driven off
+    // ImGui's frame DeltaTime in BuildGrid; 1.0 = settled (no animation).
+    float navAnimT_ = 1.0f;
 };
 
 } // namespace whiteout::flakes::tools

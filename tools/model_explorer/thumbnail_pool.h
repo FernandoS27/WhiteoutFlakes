@@ -42,7 +42,12 @@ public:
     // Request the live thumbnail for `path` (an archive path). Marks the cell
     // visible this frame. Returns its color texture, or Invalid if the cell is
     // still loading / had to be deferred (the caller draws a placeholder).
-    gfx::TextureHandle Acquire(const std::string& path, bool isEffect, std::uint64_t frameId);
+    // `pixelSize` is the size (in framebuffer pixels) the caller will DISPLAY the
+    // thumbnail at; the cell's render target is sized to match (rounded/clamped)
+    // so a large grid cell stays crisp instead of upscaling a small texture.
+    // 0 keeps the pool's default resolution.
+    gfx::TextureHandle Acquire(const std::string& path, bool isEffect, std::uint64_t frameId,
+                               int pixelSize = 0);
 
     // Advance + render every cell marked visible this frame into its target.
     // Must run AFTER the UI built its draw list (so visibility is known) and
@@ -63,6 +68,7 @@ private:
         std::string path;
         renderer::SceneId scene = 0;
         renderer::RenderTargetId target = 0;
+        int res = 0;   // current target edge length in pixels
         u32 actor = 0; // actor handle in `scene`
         bool isEffect = false;
         bool isHd = false; // render this cell in HD vs SD
@@ -74,6 +80,10 @@ private:
     };
 
     Cell* AcquireSlot(const std::string& path, bool isEffect, std::uint64_t frameId);
+    // Size `cell`'s render target to `wantPx` (rounded to a step + clamped to
+    // [res_, kMaxRes]) so it matches the on-screen cell size. Recreates the
+    // target (with a GPU drain) only when the rounded size actually changes.
+    void EnsureCellTargetSize(Cell& cell, int wantPx);
     void SetupScene(renderer::SceneId scene);
     void LoadCell(Cell& cell);
     void ResetEffect(Cell& cell);

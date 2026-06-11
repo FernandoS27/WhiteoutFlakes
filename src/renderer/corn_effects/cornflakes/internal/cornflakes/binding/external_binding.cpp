@@ -22,4 +22,4 @@ const FunctionBinding* findFunctionByName(std::span<const FunctionBinding> bindi
     return nullptr;
 }
 
-} // namespace whiteout::cornflakes
+}

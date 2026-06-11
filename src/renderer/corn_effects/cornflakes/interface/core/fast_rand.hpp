@@ -1,13 +1,11 @@
 #pragma once
 
 /// @file
-/// @brief 32-bit LCG matching CornFx's `state * 0x000D0F95 + 0x00D19EC3` exactly.
 
 #include <cornflakes/interface/core/types.hpp>
 
 namespace whiteout::cornflakes {
 
-/// @brief Bit-exact replica of CornFx `TFastRandU32`. Engine-verified constants — do not change.
 class TFastRandU32 {
 public:
     static constexpr u32 kMultiplier = 0x000D0F95U; ///< LCG multiplier; engine-locked.

@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Lightweight per-frame counters (emitters/pages/packets) and the recorder that fills them.
-
 #include <cornflakes/interface/core/types.hpp>
 #include <cornflakes/interface/schema/handles.hpp>
 
@@ -10,7 +7,6 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief Aggregate counters for one finished frame.
 struct FrameTrace {
     FrameId frame{};
     f32 tickDt = 0.0F;
@@ -20,7 +16,6 @@ struct FrameTrace {
     u64 particlesTouched = 0;
 };
 
-/// @brief Accumulates a `FrameTrace` between `beginFrame` / `endFrame`.
 class FrameTraceRecorder {
 public:
     FrameTraceRecorder() = default;
@@ -40,4 +35,4 @@ private:
     FrameTrace m_last{};
 };
 
-} // namespace whiteout::cornflakes
+}

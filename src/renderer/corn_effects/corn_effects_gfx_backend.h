@@ -95,6 +95,7 @@ public:
             u32 indexFirst = 0; // local — service offsets via baseIndex
             u32 indexCount = 0;
             u32 layerIdx = 0;
+            u32 rendererIdx = 0; // renderer within the layer (multi-renderer layers)
             u8  blendMode = 0;
         };
         std::vector<CornEffectsVertex> verts;
@@ -116,22 +117,28 @@ public:
         return pending_;
     }
 
-    // Service hooks. Texture slot of the layer for a given draw; the
-    // service binds the texture before DrawIndexed because it changes
-    // per draw within a batch.
-    std::uint32_t LayerDiffuseSlot(u32 layerIdx) const;
+    // Service hooks. Texture slot of a layer's renderer for a given draw;
+    // the service binds the texture before DrawIndexed because it changes
+    // per draw within a batch. A layer may carry several renderers, each
+    // with its own diffuse, so the slot is keyed by (layer, renderer).
+    std::uint32_t LayerDiffuseSlot(u32 layerIdx, u32 rendererIdx) const;
 
     // Map a packet's blend-mode byte to the matching BLS alpha mode.
     // Called by the service when building MatParams for each draw.
     static bls::GxMatAlpha BlendModeToGxAlpha(u8 blendMode);
 
 private:
-    struct LayerState {
+    // Per-renderer draw state. A layer carries one or more renderers
+    // (e.g. several billboard quads with distinct textures over the same
+    // particle data); each emits its own RenderPacket keyed by
+    // rendererIndex. State is therefore keyed by (layer, renderer), not
+    // by layer alone.
+    struct RendererState {
         // AssetManager slot for the diffuse. Acquired once during
-        // prepare() (per layer); resolved live at submit() time via
-        // TextureOf(). When the slot's payload hasn't arrived yet the
-        // resolution returns the shared white placeholder — no
-        // per-frame retry needed, no missing-list spam.
+        // prepare(); resolved live at submit() time via TextureOf().
+        // When the slot's payload hasn't arrived yet the resolution
+        // returns the shared white placeholder — no per-frame retry
+        // needed, no missing-list spam.
         std::uint32_t diffuseSlot = 0;
         bool isDistortion = false;
         bool renderable = false;
@@ -151,7 +158,8 @@ private:
     assets::AssetManager* assets_ = nullptr;
     TextureSlotAcquirer slotAcquire_;
 
-    std::vector<LayerState> layerStates_;
+    // Indexed [layerIdx][rendererIdx].
+    std::vector<std::vector<RendererState>> layerStates_;
     PendingBatch pending_;
 
     CornEffectsFrameInputs frame_;

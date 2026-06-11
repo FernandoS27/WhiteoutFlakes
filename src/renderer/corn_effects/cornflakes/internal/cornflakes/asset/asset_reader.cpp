@@ -1,8 +1,8 @@
+#include <cornflakes/interface/asset/asset_reader.hpp>
+#include <cornflakes/interface/asset/pkb_reader.hpp>
 #include <cornflakes/asset/text_pkfx_reader.hpp>
 #include <cornflakes/core/determinism.hpp>
 #include <cornflakes/diagnostics/issue_codes.hpp>
-#include <cornflakes/interface/asset/asset_reader.hpp>
-#include <cornflakes/interface/asset/pkb_reader.hpp>
 
 #include <algorithm>
 #include <memory>
@@ -21,7 +21,7 @@ Issue assetFatal(u32 code, std::string_view message) noexcept {
     return issue;
 }
 
-} // namespace
+}
 
 SerializerPriorityDispatcher::SerializerPriorityDispatcher() {
     addReader(std::make_unique<PkbReader>());
@@ -51,4 +51,4 @@ std::optional<EffectAssetModel> SerializerPriorityDispatcher::read(const BakedSo
     return std::nullopt;
 }
 
-} // namespace whiteout::cornflakes
+}

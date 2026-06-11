@@ -24,4 +24,4 @@ bool EventRouter::hasRoute(const EventRoutingTable& table,
     return false;
 }
 
-} // namespace whiteout::cornflakes
+}

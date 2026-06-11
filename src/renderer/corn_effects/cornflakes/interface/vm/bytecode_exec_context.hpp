@@ -7,6 +7,7 @@
 /// executing one scope of one particle". `LayerTickHarness` builds one of these
 /// each tick by aliasing into its owned register/external buffers.
 
+#include <cornflakes/interface/binding/event_payload_decl.hpp>
 #include <cornflakes/interface/binding/external_binding.hpp>
 #include <cornflakes/interface/binding/sampler_resource.hpp>
 #include <cornflakes/interface/binding/spatial_layer_resource.hpp>
@@ -62,6 +63,12 @@ struct BytecodeExecContext {
     std::span<const SamplerResource> samplers;
     std::span<const SpatialLayerResource> spatialLayers;
 
+    /// Payload decls for name-matched payload elements. `kickedEventDecls` names the slots of
+    /// events this layer emits (appendPayload); `rootEventDecl` names the elements of the event
+    /// that spawned this layer (extractPayloadElement). See `event_payload_decl.hpp`.
+    std::span<const KickedEventPayloadDecl> kickedEventDecls;
+    std::span<const EventPayloadElement> rootEventDecl;
+
     std::span<ProximityHash* const> spatialHashes;
     TFastRandU32* rng = nullptr;
     f32 effectAge = 0.0F;
@@ -88,6 +95,45 @@ struct BytecodeExecContext {
 
     u32 spawnPositionPayloadId = 0;
     u32 spawnOrientationPayloadId = 0;
+
+    /// Slot-indexed float payload elements delivered to THIS spawned particle (Color,
+    /// Size, …); read by extractPayloadElementF*. Populated from `SpawnEvent::floatSlots`.
+    std::array<PayloadFloatSlot, kMaxPayloadFloatSlots> spawnFloatSlots{};
+
+    /// Transient build→append handoff: `buildPayloadElement` stashes the computed value
+    /// keyed by the elementId it returns; `appendPayload(slotId, elementId)` retrieves it
+    /// and places it into the pending event's `floatSlots[slotId]`.
+    struct BuiltPayloadFloat {
+        bool valid = false;
+        u32 elementId = 0;
+        u8 width = 0;
+        std::array<f32, 4> value{};
+    };
+    std::array<BuiltPayloadFloat, 8> builtPayloadFloats{};
+
+    /// The no-value `buildPayloadElement(generate())` form — the engine builds a per-child
+    /// sequential INDEX int payload (`generate.newTotal + localChildIndex`), read by
+    /// `extractPayloadElementI1` and gated on `index % N == 0` to spawn 1/N of children. Stashed
+    /// by elementId; `appendPayload(slotId, elementId)` marks the pending event so `dispatchKick`
+    /// stamps `base + childIndex` per spawned child.
+    struct BuiltPayloadIndex {
+        bool valid = false;
+        u32 elementId = 0;
+        i32 base = 0;
+    };
+    BuiltPayloadIndex builtPayloadIndex{};
+
+    /// Transient `__spatialLayer_N.appendPayload(key, value)` → `insert(key, location)` handoff,
+    /// analogous to `builtPayloadFloats` for events. Spatial appendPayload stashes the value keyed
+    /// by the allocatePayload key; insert retrieves it as the entry's payload (what `closest*`
+    /// returns — the appended world position, distinct from the synthetic hash key location).
+    struct SpatialAppendSlot {
+        bool valid = false;
+        i32 key = 0;
+        std::array<f32, 3> value{0.0F, 0.0F, 0.0F};
+    };
+    std::array<SpatialAppendSlot, 8> spatialAppendStaged{};
+
     BytecodeTrace* trace = nullptr;
     SpawnEventQueue* spawnQueue = nullptr;
     u32 functionDepth = 0;
@@ -117,9 +163,20 @@ struct BytecodeExecContext {
         bool hasIntPayload = false;
         u8 intPayloadWidth = 0;
         std::array<i32, 4> intPayload{};
+        // Per-spawn INDEX int payload from the no-value `buildPayloadElement(generate())` form:
+        // the engine writes a sequential index `generate.newTotal + localChildIndex` per spawned
+        // child (read back by `extractPayloadElementI1`; effects gate spawns on `index % N == 0`).
+        // Distinct from `intPayload` (a fixed value) because it varies per child.
+        bool hasSpawnIndexPayload = false;
+        u32 spawnIndexPayloadId = 0;
+        i32 spawnIndexBase = 0;
         bool hasBoolPayload = false;
         u8 boolPayloadWidth = 0;
         std::array<i32, 4> boolPayload{};
+
+        /// Slot-indexed float payload elements staged by appendPayload (Color, Size, …).
+        std::array<PayloadFloatSlot, kMaxPayloadFloatSlots> floatSlots{};
+
         bool valid = false;
     };
     std::array<PendingPayloadElement, 8> pendingPayloadElements{};

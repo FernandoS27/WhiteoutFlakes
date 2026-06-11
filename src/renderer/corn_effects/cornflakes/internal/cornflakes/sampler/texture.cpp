@@ -54,7 +54,7 @@ Float4 lerp4(const Float4& a, const Float4& b, f32 t) noexcept {
     };
 }
 
-} // namespace
+}
 
 Float4 sampleTexture2D(const TextureSampler& tex, f32 u, f32 v) noexcept {
     if (tex.width == 0U || tex.height == 0U) {
@@ -96,4 +96,4 @@ Float4 sampleTexture2D(const TextureSampler& tex, f32 u, f32 v) noexcept {
     return lerp4(cx0, cx1, ty);
 }
 
-} // namespace whiteout::cornflakes
+}

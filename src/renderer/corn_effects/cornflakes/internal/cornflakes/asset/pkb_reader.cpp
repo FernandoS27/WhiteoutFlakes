@@ -1,7 +1,7 @@
 #include <cornflakes/asset/field_defs.hpp>
+#include <cornflakes/interface/asset/pkb_reader.hpp>
 #include <cornflakes/core/determinism.hpp>
 #include <cornflakes/diagnostics/issue_codes.hpp>
-#include <cornflakes/interface/asset/pkb_reader.hpp>
 
 #include <cstring>
 #include <vector>
@@ -249,6 +249,17 @@ std::span<const FieldRaw> decodeObjectFields(const HandlerDef* handler, const st
         if (fd.type == "string" || fd.type == "string_unicode") {
             raw.stringValue =
                 resolveStringField(fd.type, body, valueStart, bodyEnd, strings, arena);
+        } else if (fd.type == "string[]" || fd.type == "string_unicode[]") {
+
+            const u32 count = readU32Le(body + valueStart);
+            const auto out = arenaArray<std::string_view>(arena, count);
+            for (u32 e = 0; e < count; ++e) {
+                const u32 idx = readU32Le(body + valueStart + 4U + static_cast<std::size_t>(e) * 4U);
+                out[e] = (idx != kStringIndexInvalid && idx < strings.size())
+                             ? internIntoArena(strings[idx], arena)
+                             : std::string_view{};
+            }
+            raw.stringValues = std::span<const std::string_view>{out.data(), out.size()};
         }
         decoded.push_back(raw);
 
@@ -262,7 +273,7 @@ std::span<const FieldRaw> decodeObjectFields(const HandlerDef* handler, const st
     return view;
 }
 
-} // namespace
+}
 
 bool PkbReader::canHandle(const BakedSource& src) const noexcept {
     if (src.bytes.size() < 4) {
@@ -426,7 +437,9 @@ std::optional<EffectAssetModel> PkbReader::read(const BakedSource& src, IArena& 
             }
             obj.uid = internIntoArena(std::string_view{uidBuf, sizeof(uidBuf) - 1}, arena);
 
-            const HandlerDef* handler = findHandlerDef(typeNames[hdr.handlerId]);
+            const HandlerDef* handler = findHandlerDef(
+                typeNames[hdr.handlerId],
+                schemaForVersion(model.version.major, model.version.minor));
             obj.fields = decodeObjectFields(handler, data, bodyOff, bodyEnd, hdr.fieldCount,
                                             stringSpan, arena, issues);
             if (issues.hasFatal()) {
@@ -463,4 +476,4 @@ std::optional<EffectAssetModel> PkbReader::read(const BakedSource& src, IArena& 
     return model;
 }
 
-} // namespace whiteout::cornflakes
+}

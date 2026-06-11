@@ -14,7 +14,7 @@ std::span<const T> reinterpretSlot(const RenderPacket& p, RenderSlot slot) noexc
     return std::span<const T>{reinterpret_cast<const T*>(bytes.data()), p.particleCount};
 }
 
-} // namespace
+}
 
 std::span<const Float3> SemanticSlotReader::readPosition(const RenderPacket& p) const noexcept {
     return reinterpretSlot<Float3>(p, RenderSlot::Position);
@@ -54,4 +54,4 @@ std::span<const f32> SemanticSlotReader::readRotation(const RenderPacket& p) con
     return reinterpretSlot<f32>(p, RenderSlot::Rotation);
 }
 
-} // namespace whiteout::cornflakes
+}

@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 
 namespace whiteout::cornflakes {
 
@@ -15,7 +17,7 @@ inline u32 layerSeedFor(u32 baseRngSeed, std::size_t layerIdx) noexcept {
     return baseRngSeed + static_cast<u32>(layerIdx) * kFibonacciHashStride;
 }
 
-} // namespace
+}
 
 EffectRuntime::EffectRuntime(const EffectAssetModel& model, EffectId effectId, IArena& bindArena,
                              IArena& frameArena, IssueBag& issues)
@@ -32,6 +34,7 @@ EffectRuntime::EffectRuntime(const EffectAssetModel& model, EffectId effectId, I
     perRendererInputMaps_.resize(layerCount);
     spawnQueues_.resize(layerCount);
     spawnHeads_.assign(layerCount, 0U);
+    spawnedTotals_.assign(layerCount, 0U);
     invLifeSlots_.assign(layerCount, kSlotUnbound);
     lifeRatioSlots_.assign(layerCount, kSlotUnbound);
     emitterScopeStates_.resize(layerCount);
@@ -115,15 +118,17 @@ void EffectRuntime::setupSpatialHashes(std::size_t layerIdx) {
     spatialHashesPerLayer_[layerIdx].reserve(lp.spatialLayers.size());
 
     for (const auto& sl : lp.spatialLayers) {
+
+        const std::string_view identity = sl.fullName.empty() ? sl.name : sl.fullName;
         ProximityHash* found = nullptr;
         for (std::size_t j = 0; j < spatialHashNames_.size(); ++j) {
-            if (spatialHashNames_[j] == sl.name) {
+            if (spatialHashNames_[j] == identity) {
                 found = spatialHashesOwned_[j].get();
                 break;
             }
         }
         if (found == nullptr) {
-            spatialHashNames_.emplace_back(sl.name);
+            spatialHashNames_.emplace_back(identity);
             spatialHashesOwned_.push_back(std::make_unique<ProximityHash>(sl.cellSize));
             found = spatialHashesOwned_.back().get();
         } else {
@@ -144,6 +149,78 @@ bool EffectRuntime::isKickTarget(LayerId id) const noexcept {
 
 std::size_t EffectRuntime::layerCount() const noexcept {
     return plan_ != nullptr ? plan_->layers.size() : 0U;
+}
+
+std::size_t EffectRuntime::aliveCount(std::size_t layerIdx) const noexcept {
+    if (layerIdx >= pools_.size()) {
+        return 0U;
+    }
+    const auto& pool = pools_[layerIdx];
+    std::size_t n = 0U;
+    for (std::size_t i = 0; i < pool.size(); ++i) {
+        if (!pool.particle(i).isDead()) {
+            ++n;
+        }
+    }
+    return n;
+}
+
+u64 EffectRuntime::spawnedTotal(std::size_t layerIdx) const noexcept {
+    return layerIdx < spawnedTotals_.size() ? spawnedTotals_[layerIdx] : 0U;
+}
+
+u32 EffectRuntime::positionSpread(std::size_t layerIdx, f32 outMin[3], f32 outMax[3]) const noexcept {
+    if (plan_ == nullptr || layerIdx >= plan_->layers.size() || layerIdx >= pools_.size()) {
+        return 0U;
+    }
+    const auto& layer = plan_->layers[layerIdx];
+
+    const ExternalBinding* pos = nullptr;
+    for (const auto* scope : {&layer.initProgram.externals, &layer.physicsProgram.externals,
+                              &layer.timeFixedProgram.externals, &layer.timeVaryingProgram.externals}) {
+        for (const auto& b : *scope) {
+            const bool suffix = b.name.size() >= 10U && b.name.substr(b.name.size() - 10U) == "__Position";
+            const bool prefix = b.name.size() >= 9U && b.name.substr(0U, 9U) == "Position_";
+            if (suffix || prefix) {
+                pos = &b;
+                break;
+            }
+        }
+        if (pos != nullptr) {
+            break;
+        }
+    }
+    if (pos == nullptr) {
+        return 0U;
+    }
+    const u16 slot = (pos->canonicalSlot == 0U && pos->slot != 0U) ? pos->slot : pos->canonicalSlot;
+    const auto& pool = pools_[layerIdx];
+    u32 count = 0U;
+    f32 lo[3] = {1e30F, 1e30F, 1e30F};
+    f32 hi[3] = {-1e30F, -1e30F, -1e30F};
+    for (std::size_t i = 0; i < pool.size(); ++i) {
+        const auto& particle = pool.particle(i);
+        if (particle.isDead()) {
+            continue;
+        }
+        const auto exts = particle.externals();
+        if (slot >= exts.size()) {
+            continue;
+        }
+        const f32* v = exts[slot].lanes;
+        for (int c = 0; c < 3; ++c) {
+            lo[c] = std::min(lo[c], v[c]);
+            hi[c] = std::max(hi[c], v[c]);
+        }
+        ++count;
+    }
+    if (count > 0U) {
+        for (int c = 0; c < 3; ++c) {
+            outMin[c] = lo[c];
+            outMax[c] = hi[c];
+        }
+    }
+    return count;
 }
 
 void EffectRuntime::setPoolSize(std::size_t layerIdx, std::size_t count) {
@@ -212,6 +289,7 @@ void EffectRuntime::reset() noexcept {
         std::fill(state.externals.begin(), state.externals.end(), RegisterValue{});
     }
     nextSelfId_ = 1U;
+    sceneTime_ = 0.0F;
     initialized_ = false;
 }
 
@@ -248,6 +326,7 @@ void EffectRuntime::buildPackets(IArena& arena, IssueBag& issues) {
                 (r < perRendererMaps.size()) ? perRendererMaps[r] : inputMaps_[i];
             auto packet = extractFromPool(pool, layer, EmitterId{static_cast<u32>(i)}, renderer.cls,
                                           mapping, arena, issues);
+            packet.rendererIndex = static_cast<u32>(r);
             packet.blendMode = renderer.blendMode;
             packet.billboardingMode = static_cast<u8>(renderer.billboardingMode);
             lastPackets_.push_back(std::move(packet));
@@ -276,6 +355,7 @@ void EffectRuntime::initializeOnFirstTick(const EffectFrameInputs& inputs, Issue
         for (std::size_t p = 0; p < pools_[i].size(); ++p) {
             pools_[i].particle(p).setSpatialHashes(std::span<ProximityHash* const>{
                 spatialHashesPerLayer_[i].data(), spatialHashesPerLayer_[i].size()});
+            pools_[i].particle(p).setInitSceneTime(sceneTime_);
         }
         pools_[i].initBatch(layer, seed, frameArena_, issues);
         for (std::size_t p = 0; p < pools_[i].size(); ++p) {
@@ -299,12 +379,17 @@ void EffectRuntime::drainPendingSpawns(std::size_t i, const EffectFrameInputs& i
         return;
     }
 
+    std::vector<SpawnEvent> incoming;
+    incoming.swap(q.events);
+
     const auto& layer = plan_->layers[i];
-    const u32 cap32 = static_cast<u32>(cap);
+    u32 cap32 = static_cast<u32>(cap);
     const u32 layerRSM = layerSeedFor(inputs.baseRngSeed, i);
 
-    for (const auto& ev : q.events) {
-        // Linear-probe for the next dead slot starting from spawnHeads_.
+    static constexpr std::size_t kMaxPoolPerLayer = 1U << 17U;
+
+    for (const auto& ev : incoming) {
+
         u32 slot = spawnHeads_[i] % cap32;
         u32 probed = 0U;
         while (probed < cap32 && !pools_[i].particle(slot).isDead()) {
@@ -312,8 +397,27 @@ void EffectRuntime::drainPendingSpawns(std::size_t i, const EffectFrameInputs& i
             ++probed;
         }
         if (probed >= cap32) {
-            ++q.dropped;
-            continue;
+
+            const std::size_t oldCap = pools_[i].size();
+            if (oldCap >= kMaxPoolPerLayer) {
+                static bool warnedCap = false;
+                if (!warnedCap) {
+                    warnedCap = true;
+                    std::fprintf(stderr,
+                                 "[cornflakes] layer %zu pool hit cap %zu; dropping further spawns\n",
+                                 i, kMaxPoolPerLayer);
+                }
+                ++q.dropped;
+                continue;
+            }
+            const std::size_t newCap = std::min(kMaxPoolPerLayer, std::max(oldCap * 2U, oldCap + 1U));
+            pools_[i].resize(newCap);
+            pools_[i].resizeForLayer(layer);
+            for (std::size_t np = oldCap; np < newCap; ++np) {
+                pools_[i].particle(np).markDead();
+            }
+            cap32 = static_cast<u32>(newCap);
+            slot = static_cast<u32>(oldCap);
         }
         spawnHeads_[i] = (slot + 1U) % cap32;
 
@@ -335,15 +439,16 @@ void EffectRuntime::drainPendingSpawns(std::size_t i, const EffectFrameInputs& i
         particle.setSpawnPositionPayloadId(ev.hasSpawnPosition ? ev.spawnPositionPayloadId : 0U);
         particle.setSpawnOrientationPayloadId(ev.hasSpawnOrientation ? ev.spawnOrientationPayloadId
                                                                      : 0U);
+        particle.setSpawnFloatSlots(ev.floatSlots);
         particle.setSceneL2W(inputs.emitterL2W);
         particle.setEffectAge(inputs.effectAge);
         particle.setTimeWindowEnd(ev.lerpedTime);
         particle.setEffectIsRunning(inputs.effectIsRunning);
 
         if (ev.hasSpawnPosition) {
-            const std::array<f32, 4> spawnQuat = ev.hasSpawnOrientation
-                                                     ? ev.spawnOrientation
-                                                     : std::array<f32, 4>{0.0F, 0.0F, 0.0F, 1.0F};
+            const std::array<f32, 4> spawnQuat =
+                ev.hasSpawnOrientation ? ev.spawnOrientation
+                                       : std::array<f32, 4>{0.0F, 0.0F, 0.0F, 1.0F};
             particle.setSpawnTRS(ev.spawnPosition, spawnQuat, {1.0F, 1.0F, 1.0F});
         } else if (ev.hasSpawnOrientation) {
             particle.setSpawnTRS({0.0F, 0.0F, 0.0F}, ev.spawnOrientation, {1.0F, 1.0F, 1.0F});
@@ -352,10 +457,15 @@ void EffectRuntime::drainPendingSpawns(std::size_t i, const EffectFrameInputs& i
         particle.setSpatialHashes(std::span<ProximityHash* const>{
             spatialHashesPerLayer_[i].data(), spatialHashesPerLayer_[i].size()});
 
+        particle.setSpawnQueue(&spawnQueues_[i]);
+
+        particle.setInitSceneTime(sceneTime_);
+
         const u32 seed = ev.parentRngState + layerRSM + kRandStateSpawnAddend;
         pools_[i].initRange(layer, seed, slot, 1U, frameArena_, issues);
+        ++spawnedTotals_[i];
     }
-    q.events.clear();
+
 }
 
 void EffectRuntime::prepareParticlesForTick(std::size_t i, const EffectFrameInputs& inputs) {
@@ -387,25 +497,29 @@ void EffectRuntime::prepareParticlesForTick(std::size_t i, const EffectFrameInpu
     }
 }
 
-void EffectRuntime::injectSceneDt(std::size_t i, f32 dt) {
+void EffectRuntime::injectSceneScalar(std::size_t i, const char* name, f32 value) {
     const auto& layer = plan_->layers[i];
-    const std::span<const ExternalBinding> sceneDtScopes[] = {
+    const std::span<const ExternalBinding> scopes[] = {
         layer.physicsProgram.externals,
         layer.timeFixedProgram.externals,
         layer.timeVaryingProgram.externals,
     };
-    for (const auto& scope : sceneDtScopes) {
-        const auto* hit = findBindingByName(scope, "scene.dt");
+    for (const auto& scope : scopes) {
+        const auto* hit = findBindingByName(scope, name);
         if (hit == nullptr) {
             continue;
         }
         for (std::size_t p = 0; p < pools_[i].size(); ++p) {
             auto exts = pools_[i].particle(p).externals();
             if (hit->canonicalSlot < exts.size()) {
-                exts[hit->canonicalSlot] = RegisterValue::scalar(dt);
+                exts[hit->canonicalSlot] = RegisterValue::scalar(value);
             }
         }
     }
+}
+
+void EffectRuntime::injectSceneDt(std::size_t i, f32 dt) {
+    injectSceneScalar(i, "scene.dt", dt);
 }
 
 void EffectRuntime::applyAttributeOverrides(std::size_t i) {
@@ -475,11 +589,23 @@ bool EffectRuntime::tick(const EffectFrameInputs& inputs, IssueBag& issues) {
         initialized_ = true;
     }
 
+    sceneTime_ += inputs.dt;
+
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#endif
+    static const bool kSpawnTrace = std::getenv("CF_SPAWN_TRACE") != nullptr;
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
     for (std::size_t i = 0; i < plan_->layers.size(); ++i) {
         const auto& layer = plan_->layers[i];
         const bool isSpawner = layer.renderers.empty();
 
-        if (isKickTarget(layer.id)) {
+        const bool kickTarget = isKickTarget(layer.id);
+        const std::size_t incoming = spawnQueues_[i].events.size();
+        if (kickTarget) {
             drainPendingSpawns(i, inputs, issues);
         } else {
             spawnQueues_[i].clear();
@@ -487,11 +613,25 @@ bool EffectRuntime::tick(const EffectFrameInputs& inputs, IssueBag& issues) {
 
         prepareParticlesForTick(i, inputs);
         injectSceneDt(i, inputs.dt);
+        injectSceneScalar(i, "scene.time", sceneTime_);
         applyAttributeOverrides(i);
 
         const bool skipTick = isSpawner && !spawnerEnabled_;
         if (!skipTick) {
             (void)pools_[i].tickBatch(layer, frameArena_, issues);
+        }
+
+        if (kSpawnTrace) {
+            std::size_t alive = 0;
+            for (std::size_t p = 0; p < pools_[i].size(); ++p) {
+                if (!pools_[i].particle(p).isDead()) {
+                    ++alive;
+                }
+            }
+            std::fprintf(stderr,
+                         "[spawn] L%zu id=%u pool=%zu alive=%zu kickTgt=%d incoming=%zu kicked=%zu\n",
+                         i, layer.id.value, pools_[i].size(), alive, kickTarget ? 1 : 0, incoming,
+                         spawnQueues_[i].events.size());
         }
 
         routeEventsForLayer(i);
@@ -508,4 +648,4 @@ bool EffectRuntime::tick(const EffectFrameInputs& inputs, IssueBag& issues) {
     return true;
 }
 
-} // namespace whiteout::cornflakes
+}

@@ -27,7 +27,7 @@ bool boundsOk(std::size_t blobSize, u32 offset, std::size_t bytes, IssueBag& iss
     return true;
 }
 
-} // namespace
+}
 
 std::span<std::byte> PayloadInitializer::initialize(IArena& arena, u32 elementCount) const {
     const std::size_t bytes = computePayloadCacheByteCount(elementCount);
@@ -93,4 +93,4 @@ std::optional<Float3> PayloadElementExtractor::readFloat3(std::span<const std::b
     return value;
 }
 
-} // namespace whiteout::cornflakes
+}

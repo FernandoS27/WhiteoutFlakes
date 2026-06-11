@@ -1,13 +1,9 @@
 #pragma once
 
-/// @file
-/// @brief Asset reader for the text `.pkfx` format (editor / decompiled source).
-
 #include <cornflakes/interface/asset/asset_reader.hpp>
 
 namespace whiteout::cornflakes {
 
-/// @brief Concrete `IAssetReader` for `.pkfx` (text) assets.
 class TextPkfxReader final : public IAssetReader {
 public:
     TextPkfxReader() = default;
@@ -21,4 +17,4 @@ public:
                                          IssueBag& issues) override;
 };
 
-} // namespace whiteout::cornflakes
+}

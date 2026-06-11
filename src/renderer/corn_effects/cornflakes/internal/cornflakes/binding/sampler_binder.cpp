@@ -1,5 +1,6 @@
 #include "binding_internal.hpp"
 
+#include <cornflakes/sampler/turbulence.hpp>
 #include <cornflakes/interface/binding/effect_binder.hpp>
 #include <cornflakes/interface/binding/sampler_resource.hpp>
 
@@ -23,8 +24,6 @@ void buildCurveSampler(SamplerResource& res, const AssetObject& data) {
     res.curve.values = fieldFloatArray(data, "FloatValues");
     res.curve.tangents = fieldFloatArray(data, "FloatTangents");
 
-    // ValueType is the channel count (1..4). When absent or invalid we derive
-    // it from values.size() / times.size().
     const u32 valueType = fieldUint(data, "ValueType").value_or(0U);
     u8 components = 0;
     if (valueType >= 1U && valueType <= 4U) {
@@ -43,7 +42,8 @@ void buildCurveSampler(SamplerResource& res, const AssetObject& data) {
 void buildShapeSampler(SamplerResource& res, const AssetObject& data) {
     res.kind = SamplerKind::Shape;
     res.shape.type = static_cast<ShapeType>(fieldInt(data, "ShapeType").value_or(0));
-    res.shape.radius = fieldFloat(data, "Radius").value_or(0.0F);
+
+    res.shape.radius = fieldFloat(data, "Radius").value_or(1.0F);
     res.shape.innerRadius = fieldFloat(data, "InnerRadius").value_or(0.0F);
     res.shape.height = fieldFloat(data, "Height").value_or(0.0F);
     res.shape.hemisphere = fieldBool(data, "Hemisphere").value_or(false);
@@ -55,15 +55,15 @@ void buildShapeSampler(SamplerResource& res, const AssetObject& data) {
     readField3F(data, "EulerOrientation", res.shape.eulerOrientation);
     readField3F(data, "NonUniformScale", res.shape.nonUniformScale);
 
-    // Engine stores Euler angles in degrees and ships position/scale in PFX
-    // space (Y-up); convert to radians and swap to WC3 (Z-up) here so the rest
-    // of the runtime can treat these as canonical.
     constexpr f32 kDegToRad = 0.01745329252F;
     res.shape.eulerOrientation[0] *= kDegToRad;
     res.shape.eulerOrientation[1] *= kDegToRad;
     res.shape.eulerOrientation[2] *= kDegToRad;
 
-    std::swap(res.shape.position[1], res.shape.position[2]);
+    const f32 posY = res.shape.position[1];
+    res.shape.position[1] = -res.shape.position[2];
+    res.shape.position[2] = posY;
+
     std::swap(res.shape.nonUniformScale[1], res.shape.nonUniformScale[2]);
 }
 
@@ -72,7 +72,27 @@ void buildEventStreamSampler(SamplerResource& res, const AssetObject& data) {
     res.eventStream.times = fieldFloatArray(data, "Times");
 }
 
-} // namespace
+void buildTurbulenceSampler(SamplerResource& res, const AssetObject& data, IArena& arena) {
+    res.kind = SamplerKind::Turbulence;
+    SamplerTurbulence& tb = res.turbulence;
+    tb.strength = fieldFloat(data, "Strength").value_or(1.0F);
+    tb.wavelength = fieldFloat(data, "Wavelength").value_or(1.0F);
+    tb.globalScale = fieldFloat(data, "GlobalScale").value_or(1.0F);
+    tb.lacunarity = fieldFloat(data, "Lacunarity").value_or(2.0F);
+    tb.gain = fieldFloat(data, "Gain").value_or(0.5F);
+    tb.gainMultiplier = fieldFloat(data, "GainMultiplier").value_or(1.0F);
+    tb.octaves = fieldUint(data, "Octaves").value_or(3U);
+    tb.interpolator = static_cast<u32>(fieldInt(data, "Interpolator").value_or(1));
+    tb.seed = fieldUint(data, "InitialSeed").value_or(0U);
+    tb.timeScale = fieldFloat(data, "TimeScale").value_or(0.0F);
+    tb.timeBase = fieldFloat(data, "TimeBase").value_or(0.0F);
+
+    const auto grads = arenaArray<f32>(arena, kTurbulenceGradientCount);
+    generateTurbulenceGradients(tb.seed, std::span<f32>{grads.data(), grads.size()});
+    tb.gradients = std::span<const f32>{grads.data(), grads.size()};
+}
+
+}
 
 void loadSamplers(const EffectAssetModel& model, const AssetObject& layerCache, LayerProgram& lp,
                   IArena& arena) {
@@ -105,6 +125,8 @@ void loadSamplers(const EffectAssetModel& model, const AssetObject& layerCache, 
             buildShapeSampler(res, *data);
         } else if (data->type == "CParticleNodeSamplerData_EventStream") {
             buildEventStreamSampler(res, *data);
+        } else if (data->type == "CParticleNodeSamplerData_Turbulence") {
+            buildTurbulenceSampler(res, *data, arena);
         }
     }
     if (written > 0) {
@@ -112,4 +134,4 @@ void loadSamplers(const EffectAssetModel& model, const AssetObject& layerCache, 
     }
 }
 
-} // namespace whiteout::cornflakes
+}

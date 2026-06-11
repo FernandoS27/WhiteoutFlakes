@@ -21,7 +21,7 @@ bool hasFullBuiltinStorage(const ParticlePage& page) noexcept {
            page.lifeRatios.size() == page.capacity && page.metaData.size() == page.capacity;
 }
 
-} // namespace
+}
 
 bool SpawnProcessor::setupStream(ParticlePage& page, MediumState& medium, const SpawnContext& ctx,
                                  IssueBag& issues) const {
@@ -60,4 +60,4 @@ bool SpawnProcessor::setupStream(ParticlePage& page, MediumState& medium, const 
     return true;
 }
 
-} // namespace whiteout::cornflakes
+}

@@ -27,7 +27,7 @@ void addUnique(std::vector<const void*>& v, const void* p) noexcept {
     }
 }
 
-} // namespace
+}
 
 void BatchResourceTracker::declareRead(const void* resource) noexcept {
     addUnique(m_reads, resource);
@@ -63,4 +63,4 @@ void BatchResourceTracker::reset() noexcept {
     m_writes.clear();
 }
 
-} // namespace whiteout::cornflakes
+}

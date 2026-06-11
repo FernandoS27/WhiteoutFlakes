@@ -18,26 +18,41 @@ inline constexpr u32 kRegVoid = 0xFFFFFFFFU;
 
 /// @brief Bank tag values for the high byte of a register ID and for `RegisterValue::typeBank`.
 namespace bank {
-inline constexpr u8 kHandle = 0x00U;
-inline constexpr u8 kBool = 0x02U;
-inline constexpr u8 kInt = 0x08U;
-inline constexpr u8 kInt2 = 0x09U;
-inline constexpr u8 kPtr = 0x1AU;
-inline constexpr u8 kInt2Alt = 0x1BU;
-inline constexpr u8 kInt3 = 0x1CU;
-inline constexpr u8 kInt4 = 0x1DU;
-inline constexpr u8 kFloat = 0x20U;
-inline constexpr u8 kFloat2 = 0x21U;
-inline constexpr u8 kFloat3 = 0x22U;
-inline constexpr u8 kFloat4 = 0x23U;
-inline constexpr u8 kIntAlt = 0x25U;
-inline constexpr u8 kInt2Alt2 = 0x26U;
+// Bank byte = base-type id. Names below carry the engine type (verified against
+// CBaseTypeTraits @ preview.exe 0x7ff60aa1b780, 32-byte stride, name string at
+// entry+24). Some legacy names are kept for source compatibility with a note on
+// the real type; corpus-used banks: 0x00,0x02,0x04,0x1A,0x1B,0x1C,0x20-0x23,0x25.
+inline constexpr u8 kHandle = 0x00U;  ///< engine "class"/handle.
+inline constexpr u8 kBool = 0x02U;    ///< engine "bool".
+inline constexpr u8 kBool3 = 0x04U;   ///< engine "bool3" (3 components).
+inline constexpr u8 kInt = 0x08U;     ///< NOTE: engine "ubyte3" — not used in WC3 corpus.
+inline constexpr u8 kInt2 = 0x09U;    ///< not used in WC3 corpus.
+inline constexpr u8 kPtr = 0x1AU;     ///< NOTE: engine "int" (scalar). Real WC3 int bank.
+inline constexpr u8 kInt2Alt = 0x1BU; ///< engine "int2".
+inline constexpr u8 kInt3 = 0x1CU;    ///< engine "int3".
+inline constexpr u8 kInt4 = 0x1DU;    ///< engine "int4".
+inline constexpr u8 kFloat = 0x20U;   ///< engine "float".
+inline constexpr u8 kFloat2 = 0x21U;  ///< engine "float2".
+inline constexpr u8 kFloat3 = 0x22U;  ///< engine "float3".
+inline constexpr u8 kFloat4 = 0x23U;  ///< engine "float4".
+inline constexpr u8 kIntAlt = 0x25U;  ///< NOTE: engine "quaternion" (4 components, float-family).
+inline constexpr u8 kInt2Alt2 = 0x26U; ///< not used in WC3 corpus (beyond traits array).
 } // namespace bank
 
-/// @brief Scope tag values (middle byte of a register ID).
+/// @brief Scope tag values for a register ID.
+///
+/// The engine's real scope is the 2-bit field `(raw >> 16) & 3` (CRegID::ToString
+/// @ preview.exe 0x7ff60a5ab720): 0=const(cr), 1=local(vr), 2=input(ir),
+/// 3=stream(sr). Bit 20 is an extra flag seen only on const-scope registers,
+/// giving the byte value 0x10. Corpus-verified: real register operands carry
+/// scope bytes {0x00, 0x01, 0x02, 0x03, 0x10} only. `decodeRegId` extracts the
+/// full middle byte, so these compare against the byte values below.
 namespace scope {
-inline constexpr u8 kConstPool = 0x00U; ///< Constant pool entry.
-inline constexpr u8 kInput = 0x10U;     ///< Input external (read-only at scope entry).
+inline constexpr u8 kConstPool    = 0x00U; ///< 2-bit scope 0: constant pool (cr).
+inline constexpr u8 kLocal        = 0x01U; ///< 2-bit scope 1: local/scratch register (vr).
+inline constexpr u8 kInput        = 0x02U; ///< 2-bit scope 2: input register (ir), read-only.
+inline constexpr u8 kStream       = 0x03U; ///< 2-bit scope 3: particle stream register (sr).
+inline constexpr u8 kConstFlagged = 0x10U; ///< const scope + bit-20 flag; also a const-pool entry.
 } // namespace scope
 
 /// @brief Per-lane source for a VectorSwizzler operation.
@@ -66,10 +81,10 @@ inline constexpr u32 kRandMantissaShift = 9U;  ///< Shift used by the [1.0,2.0)�
 
 /// @brief Result of decoding a 32-bit register ID into its tag fields.
 struct DecodedRegId {
-    u8 bank;       ///< High byte: type bank (see ::bank).
-    u8 scope;      ///< Middle byte: scope (see ::scope).
-    u32 idx;       ///< Low 24 bits: full register index.
-    u16 localIdx;  ///< Low 16 bits: index within the scope.
+    u8 bank;       ///< High byte (bits 24-31): type bank (see ::bank).
+    u8 scope;      ///< Middle byte (bits 16-23): scope; real scope is the low 2 bits (see ::scope).
+    u32 idx;       ///< Low 24 bits (legacy; prefer localIdx — the real index is the low 16).
+    u16 localIdx;  ///< Low 16 bits: register index (matches engine CRegID `(u16)raw`).
 };
 
 /// @brief Splits a packed register ID into bank/scope/idx/localIdx.
@@ -88,9 +103,11 @@ constexpr u8 componentCountForBank(u8 b) noexcept {
         return 2;
     case bank::kFloat3:
     case bank::kInt3:
+    case bank::kBool3: // engine "bool3"
         return 3;
     case bank::kFloat4:
     case bank::kInt4:
+    case bank::kIntAlt: // engine "quaternion" — 4 components
         return 4;
     default:
         return 1;
@@ -129,9 +146,10 @@ constexpr u8 intBankForComponentCount(u8 components) noexcept {
 /// @brief True if `bank` stores integer / bool / pointer lanes (i.e. operands
 /// should be reinterpreted via laneAsI32).
 constexpr bool bankIsIntegral(u8 b) noexcept {
+    // NOTE: kIntAlt (0x25) is the engine "quaternion" (float-family), so it is NOT
+    // integral. kPtr (0x1A) is the engine scalar "int" → integral.
     return b == bank::kBool || b == bank::kInt || b == bank::kInt2 || b == bank::kInt2Alt ||
-           b == bank::kInt2Alt2 || b == bank::kInt3 || b == bank::kInt4 || b == bank::kIntAlt ||
-           b == bank::kPtr;
+           b == bank::kInt2Alt2 || b == bank::kInt3 || b == bank::kInt4 || b == bank::kPtr;
 }
 
 /// @brief 4-lane typed register cell. Lanes are stored as f32 and reinterpreted

@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Submits one kick (cross-layer event delivery) to a worker pool with timeline sync.
-
 #include <cornflakes/interface/core/types.hpp>
 #include <cornflakes/interface/diagnostics/issue.hpp>
 #include <cornflakes/events/payload_cache_store.hpp>
@@ -16,7 +13,6 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief One queued kick: payload key + target layer + the function that runs the delivery.
 struct KickEventTask {
     PayloadKey source;
     LayerId target;
@@ -24,7 +20,6 @@ struct KickEventTask {
     std::function<void(const PayloadKey&, LayerId, PayloadCacheStore&, IssueBag&)> onRun;
 };
 
-/// @brief Submits a single kick task on a worker pool, wiring up its timeline-semaphore dependency.
 class KickProcessor {
 public:
     KickProcessor() = default;
@@ -33,4 +28,4 @@ public:
                 KickEventTask task, PayloadCacheStore& store, IssueBag& issues) const;
 };
 
-} // namespace whiteout::cornflakes
+}

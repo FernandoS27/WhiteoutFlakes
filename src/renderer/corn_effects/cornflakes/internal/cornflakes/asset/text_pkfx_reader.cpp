@@ -244,7 +244,7 @@ bool parseVersionToken(std::string_view token, AssetVersion& out) noexcept {
     return true;
 }
 
-} // namespace
+}
 
 bool TextPkfxReader::canHandle(const BakedSource& src) const noexcept {
 
@@ -414,4 +414,4 @@ std::optional<EffectAssetModel> TextPkfxReader::read(const BakedSource& src, IAr
     return model;
 }
 
-} // namespace whiteout::cornflakes
+}

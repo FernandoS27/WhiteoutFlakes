@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Per-frame keyed cache mapping `PayloadKey` to its in-arena byte blob.
-
 #include <cornflakes/interface/core/types.hpp>
 #include <cornflakes/events/payload_key.hpp>
 
@@ -12,7 +9,6 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief In-frame map from `PayloadKey` → blob span. Spans alias caller-owned arena memory.
 class PayloadCacheStore {
 public:
     PayloadCacheStore() = default;
@@ -35,4 +31,4 @@ private:
     std::vector<Entry> m_entries;
 };
 
-} // namespace whiteout::cornflakes
+}

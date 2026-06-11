@@ -20,7 +20,7 @@ std::span<const std::byte> arenaSlot(IArena& arena, u32 particleCount, const T* 
                                       sizeof(T) * particleCount};
 }
 
-} // namespace
+}
 
 RenderPacket RenderExtractor::extractPacket(const ParticlePage& page, EmitterId emitter,
                                             LayerId layer, RendererClass cls, IArena& frameArena,
@@ -93,4 +93,4 @@ std::vector<RenderPacket> RenderExtractor::extract(const MediumState& medium,
     return out;
 }
 
-} // namespace whiteout::cornflakes
+}

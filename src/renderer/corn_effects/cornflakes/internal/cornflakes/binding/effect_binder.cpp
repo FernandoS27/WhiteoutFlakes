@@ -1,7 +1,7 @@
 #include "binding_internal.hpp"
 
-#include <cornflakes/core/determinism.hpp>
 #include <cornflakes/interface/binding/effect_binder.hpp>
+#include <cornflakes/core/determinism.hpp>
 
 #include <cstring>
 #include <optional>
@@ -19,8 +19,6 @@ std::string_view stableCopy(std::string_view src, IArena& arena) {
 }
 
 namespace {
-
-// ---- Asset utility helpers -----------------------------------------------
 
 const AssetObject* findRootEffect(const EffectAssetModel& model) noexcept {
     for (const auto& obj : model.objects) {
@@ -40,8 +38,6 @@ std::size_t countNodeGraphs(const EffectAssetModel& model) noexcept {
     }
     return n;
 }
-
-// ---- Small per-section loaders (large ones live in *_binder.cpp) -------
 
 void loadSpatialLayers(const EffectAssetModel& model, const AssetObject& layerCache,
                        LayerProgram& lp, IArena& arena) {
@@ -116,7 +112,58 @@ void loadAttributeDefaults(const EffectAssetModel& model, const AssetObject& lay
     }
 }
 
-// Top-level driver — calls each `load*` step that the file split exposes.
+std::span<const EventPayloadElement> parseEventPayload(const EffectAssetModel& model,
+                                                       const AssetObject& eventObj, IArena& arena) {
+    const auto plUids = fieldLinks(eventObj, "EventPayload");
+    if (plUids.empty()) {
+        return {};
+    }
+    const auto arr = arenaArray<EventPayloadElement>(arena, plUids.size());
+    for (std::size_t k = 0; k < plUids.size(); ++k) {
+        EventPayloadElement& e = arr[k];
+        const AssetObject* pl = findObjectByUid(model, plUids[k]);
+        if (pl == nullptr || pl->type != "CLayerCompileCacheEventPayload") {
+            continue;
+        }
+        const u32 type = fieldUint(*pl, "PayloadType").value_or(0U);
+        if (type >= 31U && type <= 34U) {
+            e.width = static_cast<u8>(type - 30U);
+        } else if (type == 36U) {
+            e.width = 4U;
+        }
+        e.nameId = payloadNameId(fieldString(*pl, "PayloadName"));
+    }
+    return std::span<const EventPayloadElement>{arr.data(), plUids.size()};
+}
+
+void loadEventPayloadDecls(const EffectAssetModel& model, const AssetObject& layerCache,
+                           LayerProgram& lp, IArena& arena) {
+    const auto eventUids = fieldLinks(layerCache, "Events");
+    if (!eventUids.empty()) {
+        const auto declArr = arenaArray<KickedEventPayloadDecl>(arena, eventUids.size());
+        std::size_t written = 0;
+        for (const u32 uid : eventUids) {
+            const AssetObject* ev = findObjectByUid(model, uid);
+            if (ev == nullptr || ev->type != "CLayerCompileCacheEvent") {
+                continue;
+            }
+            KickedEventPayloadDecl& d = declArr[written++];
+            d.channel = stableCopy(fieldString(*ev, "EventName"), arena);
+            d.elements = parseEventPayload(model, *ev, arena);
+        }
+        if (written > 0) {
+            lp.kickedEventDecls =
+                std::span<const KickedEventPayloadDecl>{declArr.data(), written};
+        }
+    }
+    if (const auto rootUid = fieldLink(layerCache, "RootEvent")) {
+        const AssetObject* root = findObjectByUid(model, *rootUid);
+        if (root != nullptr && root->type == "CLayerCompileCacheEvent") {
+            lp.rootEventDecl = parseEventPayload(model, *root, arena);
+        }
+    }
+}
+
 void populateLayerPrograms(const EffectAssetModel& model, const AssetObject& layerCache,
                            LayerProgram& lp, IArena& arena) {
     loadScopePrograms(model, layerCache, lp, arena);
@@ -124,14 +171,9 @@ void populateLayerPrograms(const EffectAssetModel& model, const AssetObject& lay
     loadSamplers(model, layerCache, lp, arena);
     loadSpatialLayers(model, layerCache, lp, arena);
     loadAttributeDefaults(model, layerCache, lp, arena);
+    loadEventPayloadDecls(model, layerCache, lp, arena);
 }
 
-// ---- External canonicalisation -----------------------------------------
-
-// Walks every scope's externals and assigns each binding a canonical slot
-// index that's stable across scopes (same `name` → same canonical slot). This
-// is what lets the runtime store one external slot per effect-wide name even
-// though different scopes have different per-scope slot layouts.
 void canonicaliseLayerExternals(LayerProgram& lp) {
     std::vector<std::pair<std::string_view, u16>> nameToCanonical;
     auto canonicalIdxFor = [&](std::string_view name) -> u16 {
@@ -140,15 +182,14 @@ void canonicaliseLayerExternals(LayerProgram& lp) {
                 return idx;
             }
         }
-        const auto next = static_cast<u16>(nameToCanonical.size());
+
+        const auto next = static_cast<u16>(nameToCanonical.size() + 1U);
         nameToCanonical.emplace_back(name, next);
         return next;
     };
     auto canonicalisePass = [&](std::span<const ExternalBinding> exts) {
         for (auto& b : exts) {
-            // canonicalSlot is the only field this pass writes; the cast
-            // confines mutation to that slot. The arena owns the storage so
-            // the lifetime is fine.
+
             const_cast<ExternalBinding&>(b).canonicalSlot = canonicalIdxFor(b.name);
         }
     };
@@ -159,16 +200,12 @@ void canonicaliseLayerExternals(LayerProgram& lp) {
     canonicalisePass(lp.program.externals);
 }
 
-// ---- Baked layer graph binding -----------------------------------------
-
 struct EventSlotMetadata {
     std::string_view name;
     i32 parentLayerSlot = -1;
     std::span<const u32> layerTargets;
 };
 
-// Reads the EventSlots table from the LayerGraphCompileCache. Returns the
-// per-slot metadata plus the running total of (slot, target) route rows.
 struct EventSlotTable {
     std::vector<EventSlotMetadata> slots;
     std::size_t totalRouteRows = 0;
@@ -192,9 +229,8 @@ EventSlotTable loadEventSlots(const EffectAssetModel& model, std::span<const u32
     return t;
 }
 
-// Maps each layer slot index to the global event slot ids it owns.
 std::vector<std::span<const u32>> loadLayerOwnedEventSlots(const EffectAssetModel& model,
-                                                           std::span<const u32> layerSlotUids) {
+                                                            std::span<const u32> layerSlotUids) {
     std::vector<std::span<const u32>> out;
     out.reserve(layerSlotUids.size());
     for (const u32 slotUid : layerSlotUids) {
@@ -207,10 +243,8 @@ std::vector<std::span<const u32>> loadLayerOwnedEventSlots(const EffectAssetMode
     return out;
 }
 
-// Resolves a single LayerSlot UID into a fully-bound LayerProgram. Returns
-// nullopt when the slot or its LayerCache reference is malformed.
 std::optional<LayerProgram> buildLayerFromSlot(const EffectAssetModel& model, u32 slotUid,
-                                               u32 layerId, IArena& arena) {
+                                                u32 layerId, IArena& arena) {
     const AssetObject* slot = findObjectByUid(model, slotUid);
     if (slot == nullptr) {
         return std::nullopt;
@@ -231,7 +265,6 @@ std::optional<LayerProgram> buildLayerFromSlot(const EffectAssetModel& model, u3
     return lp;
 }
 
-// Attaches the event-external bindings owned by `layerSlotIdx` to `lp`.
 void attachLayerOwnedEvents(LayerProgram& lp, std::span<const u32> ownedIds,
                             std::span<const EventSlotMetadata> eventSlots, IArena& arena) {
     if (ownedIds.empty()) {
@@ -252,7 +285,6 @@ void attachLayerOwnedEvents(LayerProgram& lp, std::span<const u32> ownedIds,
     }
 }
 
-// Builds the EventRoutingTable from the per-slot LayerTargets fan-out.
 EventRoutingTable buildEventRoutes(std::span<const EventSlotMetadata> eventSlots,
                                    std::span<const LayerProgram> layers, std::size_t totalRouteRows,
                                    IArena& arena) {
@@ -285,11 +317,24 @@ std::span<LayerProgram> bindBakedLayers(const EffectAssetModel& model, const Ass
                                         IArena& arena, EventRoutingTable& outRouting) {
     outRouting = {};
 
-    const auto graphUid = fieldLink(effect, "LayerGraphCompileCache");
-    if (!graphUid) {
-        return {};
+    const AssetObject* graph = nullptr;
+    if (const auto graphUid = fieldLink(effect, "LayerGraphCompileCache")) {
+        graph = findObjectByUid(model, *graphUid);
+    } else {
+        for (const u32 uid : fieldLinks(effect, "LayerGraphCompileCaches")) {
+            const AssetObject* g = findObjectByUid(model, uid);
+            if (g == nullptr || g->type != "CLayerGraphCompileCache") {
+                continue;
+            }
+            if (graph == nullptr) {
+                graph = g;
+            }
+            if (fieldString(*g, "BuildVersionName") == "PC") {
+                graph = g;
+                break;
+            }
+        }
     }
-    const AssetObject* graph = findObjectByUid(model, *graphUid);
     if (graph == nullptr || graph->type != "CLayerGraphCompileCache") {
         return {};
     }
@@ -328,8 +373,6 @@ std::span<LayerProgram> bindBakedLayers(const EffectAssetModel& model, const Ass
     return out;
 }
 
-// ---- Fallback: bare CParticleNodeGraph layout (no LayerGraphCompileCache) ---
-
 std::span<LayerProgram> bindNodeGraphLayers(const EffectAssetModel& model, IArena& arena) {
     const std::size_t layerCount = countNodeGraphs(model);
     if (layerCount == 0) {
@@ -361,7 +404,7 @@ std::span<LayerProgram> bindNodeGraphLayers(const EffectAssetModel& model, IAren
     return layerSpan;
 }
 
-} // namespace
+}
 
 std::optional<EffectExecutionPlan> EffectBinder::bind(const EffectAssetModel& model, EffectId id,
                                                       IArena& planArena, IssueBag&) const {
@@ -383,12 +426,10 @@ std::optional<EffectExecutionPlan> EffectBinder::bind(const EffectAssetModel& mo
         }
     }
 
-    // Fallback path for assets that haven't been through the compile-cache
-    // pipeline — synthesise a minimal layer list from the raw NodeGraphs.
     if (auto fallback = bindNodeGraphLayers(model, planArena); !fallback.empty()) {
         plan.layers = fallback;
     }
     return plan;
 }
 
-} // namespace whiteout::cornflakes
+}

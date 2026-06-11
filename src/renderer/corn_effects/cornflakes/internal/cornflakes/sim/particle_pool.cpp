@@ -51,4 +51,4 @@ bool ParticlePool::tickBatch(const LayerProgram& layer, IArena& arena, IssueBag&
     return true;
 }
 
-} // namespace whiteout::cornflakes
+}

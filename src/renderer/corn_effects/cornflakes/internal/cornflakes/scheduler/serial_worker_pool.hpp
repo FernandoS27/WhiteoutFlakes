@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Single-threaded `IWorkerPool` impl — runs tasks inline on the submitting thread.
-
 #include <cornflakes/scheduler/timeline_semaphore.hpp>
 #include <cornflakes/scheduler/worker_pool.hpp>
 
@@ -13,7 +10,6 @@ namespace whiteout::cornflakes {
 
 class IssueBag;
 
-/// @brief Inline-execution `IWorkerPool` used in tests and host integrations without threading.
 class SerialWorkerPool final : public IWorkerPool {
 public:
     explicit SerialWorkerPool(IssueBag& issues) noexcept;
@@ -34,4 +30,4 @@ private:
     bool m_inTask = false;
 };
 
-} // namespace whiteout::cornflakes
+}

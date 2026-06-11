@@ -1,5 +1,5 @@
-#include <cornflakes/core/determinism.hpp>
 #include <cornflakes/interface/core/arena.hpp>
+#include <cornflakes/core/determinism.hpp>
 
 #include <cstdint>
 
@@ -17,7 +17,7 @@ std::size_t pickChunkCapacity(std::size_t requested, std::size_t previousCapacit
     return requested > grown ? requested : grown;
 }
 
-} // namespace
+}
 
 ExpandingArena::ExpandingArena(std::size_t firstChunkBytes) : m_firstChunkBytes(firstChunkBytes) {}
 
@@ -76,4 +76,4 @@ std::size_t ExpandingArena::capacity() const noexcept {
     return total;
 }
 
-} // namespace whiteout::cornflakes
+}

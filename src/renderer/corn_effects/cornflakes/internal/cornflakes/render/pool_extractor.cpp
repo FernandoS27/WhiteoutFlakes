@@ -97,7 +97,7 @@ std::span<const std::byte> packSelfIds(const ParticlePool& pool, IArena& arena, 
                                       pool.size() * sizeof(u64)};
 }
 
-} // namespace
+}
 
 RenderPacket extractFromPool(const ParticlePool& pool, const LayerProgram& layer, EmitterId emitter,
                              RendererClass cls, const RenderInputMap& mapping, IArena& arena,
@@ -125,4 +125,45 @@ RenderPacket extractFromPool(const ParticlePool& pool, const LayerProgram& layer
     return packet;
 }
 
-} // namespace whiteout::cornflakes
+RenderInputMap buildRenderInputMapFromAsset(const LayerRenderer& renderer,
+                                            const LayerProgram& layer) {
+    RenderInputMap map;
+    const auto fields = layer.renderFieldNames;
+    const auto setSlot = [&](RenderSlot slot, u32 idx) {
+        if (idx < fields.size() && !fields[idx].empty()) {
+            map.names[static_cast<std::size_t>(slot)] = fields[idx];
+        }
+    };
+    for (const auto& in : renderer.particleInputs) {
+
+        if (!in.additionalFieldName.empty()) {
+            const std::string_view n = in.additionalFieldName;
+            if (n == "Color") {
+                setSlot(RenderSlot::Color, in.indexInStorage);
+            } else if (n == "TextureID") {
+                setSlot(RenderSlot::TextureID, in.indexInStorage);
+            } else if (n == "Orientation") {
+                setSlot(RenderSlot::Orientation, in.indexInStorage);
+            } else if (n == "Axis0" || n == "Axis") {
+                setSlot(RenderSlot::Axis0, in.indexInStorage);
+            } else if (n == "NormalAxis" || n == "Axis1") {
+                setSlot(RenderSlot::Axis1, in.indexInStorage);
+            } else if (n == "Rotation") {
+                setSlot(RenderSlot::Rotation, in.indexInStorage);
+            }
+            continue;
+        }
+        switch (in.semantic) {
+        case 0: setSlot(RenderSlot::Position, in.indexInStorage); break;
+        case 1: setSlot(RenderSlot::Size, in.indexInStorage); break;
+        case 2: setSlot(RenderSlot::Enabled, in.indexInStorage); break;
+        case 4: setSlot(RenderSlot::Axis0, in.indexInStorage); break;
+        case 5: setSlot(RenderSlot::Axis1, in.indexInStorage); break;
+        case 6: setSlot(RenderSlot::Rotation, in.indexInStorage); break;
+        default: break;
+        }
+    }
+    return map;
+}
+
+}

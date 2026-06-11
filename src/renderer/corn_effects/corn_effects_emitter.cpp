@@ -8,6 +8,7 @@
 #include <cornflakes/interface/binding/layer_program.hpp>
 #include <cornflakes/interface/core/arena.hpp>
 #include <cornflakes/interface/diagnostics/issue.hpp>
+#include <cornflakes/interface/render/pool_extractor.hpp>
 #include <cornflakes/interface/render/render_packet.hpp>
 #include <cornflakes/interface/sim/effect_runtime.hpp>
 
@@ -335,7 +336,34 @@ bool CornEffectsEmitter::TrySpawn() {
             if (lp.renderers.empty())
                 continue;
             rt->setPoolSize(i, kDefaultRenderPoolSize);
-            rt->setRenderInputMap(i, InferLayerRenderInputMap(lp));
+            // Per-layer inferred map is the fallback for renderers without
+            // asset input-pin bindings (and the only map single-renderer
+            // layers need).
+            const auto inferred = InferLayerRenderInputMap(lp);
+            rt->setRenderInputMap(i, inferred);
+
+            // Multi-renderer layers route each renderer to its own
+            // Position/Color/TextureID field via asset input pins; name-prefix
+            // inference can't recover that (all renderers share the layer's
+            // fields). When any renderer carries asset bindings, set a map for
+            // every renderer so none falls back to an empty per-renderer slot.
+            bool anyAssetBindings = false;
+            for (const auto& renderer : lp.renderers) {
+                if (::whiteout::cornflakes::hasAssetInputBindings(renderer)) {
+                    anyAssetBindings = true;
+                    break;
+                }
+            }
+            if (anyAssetBindings) {
+                for (size_t r = 0; r < lp.renderers.size(); ++r) {
+                    const auto& renderer = lp.renderers[r];
+                    rt->setRenderInputMap(
+                        i, r,
+                        ::whiteout::cornflakes::hasAssetInputBindings(renderer)
+                            ? ::whiteout::cornflakes::buildRenderInputMapFromAsset(renderer, lp)
+                            : inferred);
+                }
+            }
         }
     }
 

@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Tracks declared read/write sets for a batch of work and flags undeclared accesses.
-
 #include <cornflakes/interface/core/types.hpp>
 #include <cornflakes/interface/diagnostics/issue.hpp>
 
@@ -12,7 +9,6 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief Resource-access auditor — caller declares what a batch will touch, accesses are checked.
 class BatchResourceTracker {
 public:
     BatchResourceTracker() = default;
@@ -46,4 +42,4 @@ private:
     std::vector<const void*> m_writes;
 };
 
-} // namespace whiteout::cornflakes
+}

@@ -65,6 +65,8 @@ bool LayerTickHarness::runScope(const VMProgramDescriptor& scope, const LayerPro
     ctx.externalBindings = scope.externals;
     ctx.samplers = layer.samplers;
     ctx.spatialLayers = layer.spatialLayers;
+    ctx.kickedEventDecls = layer.kickedEventDecls;
+    ctx.rootEventDecl = layer.rootEventDecl;
     ctx.spatialHashes =
         std::span<ProximityHash* const>{spatialHashes_.data(), spatialHashes_.size()};
     ctx.rng = &rng_;
@@ -90,6 +92,7 @@ bool LayerTickHarness::runScope(const VMProgramDescriptor& scope, const LayerPro
     ctx.spawnBoolPayloadId = spawnBoolPayloadId_;
     ctx.spawnPositionPayloadId = spawnPositionPayloadId_;
     ctx.spawnOrientationPayloadId = spawnOrientationPayloadId_;
+    ctx.spawnFloatSlots = spawnFloatSlots_;
 
     CBEMInterpreter vm;
     const auto executed = vm.run(instructions, ctx, issues);
@@ -137,6 +140,13 @@ bool LayerTickHarness::initParticle(const LayerProgram& layer, IArena& arena, Is
         externals_[slot] = RegisterValue::scalarI(static_cast<i32>(evt.globalEventSlotId));
     }
 
+    if (const auto* st = findBindingByName(layer.initProgram.externals, "scene.time")) {
+        const u16 slot = resolveExternalSlot(*st);
+        if (slot < externals_.size()) {
+            externals_[slot] = RegisterValue::scalar(initSceneTime_);
+        }
+    }
+
     lastExecuted_ = 0;
     lastInstructions_ = 0;
     lifeRatio_ = 0.0F;
@@ -159,4 +169,4 @@ bool LayerTickHarness::tick(const LayerProgram& layer, IArena& arena, IssueBag& 
     return runScope(layer.physicsProgram, layer, arena, issues);
 }
 
-} // namespace whiteout::cornflakes
+}

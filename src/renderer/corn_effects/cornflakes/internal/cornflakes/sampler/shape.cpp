@@ -103,7 +103,7 @@ ShapeSampleResult sampleBox(const ShapeBox& b, f32 u, f32 v) noexcept {
     return out;
 }
 
-} // namespace
+}
 
 ShapeSampleResult sampleShapeSurface(const ShapeSampler& s, f32 u, f32 v) noexcept {
     switch (s.kind) {
@@ -115,4 +115,4 @@ ShapeSampleResult sampleShapeSurface(const ShapeSampler& s, f32 u, f32 v) noexce
     return {};
 }
 
-} // namespace whiteout::cornflakes
+}

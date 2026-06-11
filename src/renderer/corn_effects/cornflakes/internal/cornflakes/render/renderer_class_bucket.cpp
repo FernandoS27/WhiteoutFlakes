@@ -19,4 +19,4 @@ RendererClassBuckets bucketByClass(std::span<const RenderPacket> packets) {
     return out;
 }
 
-} // namespace whiteout::cornflakes
+}

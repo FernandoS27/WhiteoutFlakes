@@ -76,6 +76,16 @@ public:
         effectAge_ = age;
     }
 
+    /// @brief scene.time at spawn — re-injected into the init scope AFTER externals are cleared,
+    /// so scripts that capture `internal = scene.time` get the real spawn time (not 0). The clear
+    /// in `initParticle` would otherwise wipe an externally-fed scene.time. Engine-faithful: the
+    /// init scope evaluates with the current frame's scene.time (verified in Preview.exe — beam
+    /// n34's `internal_1ba6bc49` holds the spawn scene.time; a 0 capture saturates its `t4` time
+    /// fade and leaves `__sampler_4` at (1,1,1,1), over-brightening the alpha ~2x).
+    void setInitSceneTime(f32 t) noexcept {
+        initSceneTime_ = t;
+    }
+
     void setEffectIsRunning(bool running) noexcept {
         effectIsRunning_ = running;
     }
@@ -150,6 +160,17 @@ public:
     }
     u32 spawnOrientationPayloadId() const noexcept {
         return spawnOrientationPayloadId_;
+    }
+
+    void setSpawnFloatSlots(
+        const std::array<PayloadFloatSlot, kMaxPayloadFloatSlots>& slots) noexcept {
+        spawnFloatSlots_ = slots;
+    }
+    void clearSpawnFloatSlots() noexcept {
+        spawnFloatSlots_ = {};
+    }
+    const std::array<PayloadFloatSlot, kMaxPayloadFloatSlots>& spawnFloatSlots() const noexcept {
+        return spawnFloatSlots_;
     }
 
     void setSpawnIntPayload(u8 width, const std::array<i32, 4>& value, u32 payloadId) noexcept {
@@ -239,6 +260,7 @@ private:
     std::vector<RegisterValue> externals_;
     TFastRandU32 rng_{};
     f32 effectAge_ = 0.0F;
+    f32 initSceneTime_ = 0.0F;
     bool effectIsRunning_ = true;
     f32 timeWindowEnd_ = 0.0F;
     f32 timeWindowStart_ = 0.0F;
@@ -256,6 +278,7 @@ private:
     u32 spawnBoolPayloadId_ = 0;
     u32 spawnPositionPayloadId_ = 0;
     u32 spawnOrientationPayloadId_ = 0;
+    std::array<PayloadFloatSlot, kMaxPayloadFloatSlots> spawnFloatSlots_{};
     BytecodeTrace* trace_ = nullptr;
     SpawnEventQueue* spawnQueue_ = nullptr;
     std::span<ProximityHash* const> spatialHashes_{};

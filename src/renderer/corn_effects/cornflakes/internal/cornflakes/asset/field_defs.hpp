@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Schema-side handler/field declarations used to validate assets against CornFx types.
-
 #include <cornflakes/interface/core/types.hpp>
 
 #include <cstddef>
@@ -11,21 +8,29 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief Schema description of one field of an asset handler.
 struct FieldDef {
     std::string_view name;
     std::string_view type;
 };
 
-/// @brief Schema description of one asset handler (a class + its declared fields).
 struct HandlerDef {
     std::string_view name;
     std::span<const FieldDef> fields;
 };
 
-/// @brief Look up a handler descriptor by name; returns null when unknown.
-const HandlerDef* findHandlerDef(std::string_view handlerName) noexcept;
+enum class HboSchemaVersion {
+    V2_5,
+    V2_9,
+};
 
-std::size_t handlerDefCount() noexcept;
+constexpr HboSchemaVersion schemaForVersion(u16 major, u16 minor) noexcept {
+    return (major > 2 || (major == 2 && minor >= 9)) ? HboSchemaVersion::V2_9
+                                                     : HboSchemaVersion::V2_5;
+}
 
-} // namespace whiteout::cornflakes
+const HandlerDef* findHandlerDef(std::string_view handlerName,
+                                 HboSchemaVersion schema = HboSchemaVersion::V2_5) noexcept;
+
+std::size_t handlerDefCount(HboSchemaVersion schema = HboSchemaVersion::V2_5) noexcept;
+
+}

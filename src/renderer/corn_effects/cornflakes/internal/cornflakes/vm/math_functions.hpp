@@ -1,11 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Math-opcode (MathOp / MathFunc1 / MathFunc2 / MathFunc3) ID enums and scalar evaluators.
-///
-/// IDs match the engine's `m_FunctionDetails` tables and are interchangeable
-/// with the raw u8 sub-id encoded in the bytecode operand.
-
 #include <cornflakes/interface/core/types.hpp>
 #include <cornflakes/interface/diagnostics/issue.hpp>
 
@@ -13,7 +7,6 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief Two-operand math opcode sub-id (Add/Sub/Mul/.../comparison ops).
 enum class MathOp : u8 {
     Add = 0,
     Sub = 1,
@@ -36,7 +29,6 @@ enum class MathOp : u8 {
     Count,
 };
 
-/// @brief Unary math function sub-id; "Fast*" entries are reduced-precision variants.
 enum class MathFunc1 : u8 {
     Sqrt = 0,
     FastSqrt = 31,
@@ -87,16 +79,12 @@ enum class MathFunc1 : u8 {
 
 f32 mathSign(f32 x) noexcept;
 
-/// @brief `x - floor(x)`, always in `[0,1)` regardless of sign.
 f32 mathFracUnsigned(f32 x) noexcept;
 
-/// @brief `x - trunc(x)`, sign-preserving (range `(-1,1)`).
 f32 mathFrac(f32 x) noexcept;
 
-/// @brief Evaluate a unary MathFunc1 by raw sub-id. Pushes a fatal issue on unknown ids.
 std::optional<f32> mathFunc1Eval(u8 id, f32 x, IssueBag& issues);
 
-/// @brief Two-operand math function sub-id (atan2, min, max, dot, cross, ...).
 enum class MathFunc2 : u8 {
     Atan2 = 12,
     FastAtan2 = 43,
@@ -108,7 +96,6 @@ enum class MathFunc2 : u8 {
     Cross = 30,
 };
 
-/// @brief Three-operand math function sub-id. IDs are engine-verified (lerp/clamp/within).
 enum class MathFunc3 : u8 {
     Lerp = 0,
     Clamp = 1,
@@ -120,10 +107,8 @@ f32 mathLerp(f32 a, f32 b, f32 t) noexcept;
 
 f32 mathClamp(f32 x, f32 lo, f32 hi) noexcept;
 
-/// @brief `(x >= lo) && (x <= hi)` boolean range check (NOT smoothstep).
 f32 mathWithin(f32 x, f32 lo, f32 hi) noexcept;
 
-/// @brief Evaluate a ternary MathFunc3 by raw sub-id. Pushes a fatal issue on unknown ids.
 std::optional<f32> mathFunc3Eval(u8 id, f32 a, f32 b, f32 c, IssueBag& issues);
 
-} // namespace whiteout::cornflakes
+}

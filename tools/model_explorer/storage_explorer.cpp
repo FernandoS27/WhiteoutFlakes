@@ -90,6 +90,7 @@ bool StorageExplorer::OpenCasc(const std::string& root) {
         pool_->Clear();
     selectedPath_.clear();
     lastError_.clear();
+    navAnimT_ = 0.0f; // fade the first listing in
     return true;
 }
 
@@ -121,6 +122,7 @@ void StorageExplorer::NewFrame(float /*dt*/) {
         if (pool_)
             pool_->Clear();
         selectedPath_.clear();
+        navAnimT_ = 0.0f; // play the open transition for the new listing
     }
 
     if (provider_)
@@ -212,8 +214,18 @@ void StorageExplorer::BuildGrid() {
     const float avail = ImGui::GetContentRegionAvail().x;
     const float cell = (std::max)(64.0f, (avail - style.ItemSpacing.x * (cols - 1)) / cols);
 
-    auto folderColor = ImGui::GetColorU32(ImVec4(0.85f, 0.72f, 0.35f, 1.0f));
-    auto placeholderColor = ImGui::GetColorU32(ImVec4(0.25f, 0.28f, 0.34f, 1.0f));
+    // Open transition: when the listing changes the grid fades + slides up
+    // (navAnimT_ reset to 0 in NewFrame / OpenCasc). dt comes from ImGui so the
+    // panel needs no external clock.
+    const float dt = ImGui::GetIO().DeltaTime;
+    constexpr float kOpenDur = 0.16f;
+    navAnimT_ = (std::min)(navAnimT_ + dt, kOpenDur);
+    const float ot = navAnimT_ / kOpenDur;
+    const float gridAlpha = ot * ot * (3.0f - 2.0f * ot); // smoothstep ease-in
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (1.0f - gridAlpha) * 12.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, style.Alpha * gridAlpha); // fades labels
+
+    const auto placeholderColor = ImGui::GetColorU32(ImVec4(0.25f, 0.28f, 0.34f, gridAlpha));
 
     const auto& listing = browser_.Current();
     int col = 0;
@@ -227,6 +239,32 @@ void StorageExplorer::BuildGrid() {
             col = 0;
     };
 
+    // Animated folder icon: grows + highlights on hover, dips on press, and
+    // fades with the open transition. `animId` keys the per-folder hover value in
+    // ImGui's state storage so each cell eases independently.
+    auto drawFolder = [&](ImVec2 p0, bool hovered, bool active, ImGuiID animId) {
+        float* h = ImGui::GetStateStorage()->GetFloatRef(animId, 0.0f);
+        *h += ((hovered ? 1.0f : 0.0f) - *h) * (std::min)(1.0f, dt * 14.0f);
+        const float scale = 1.0f + 0.07f * (*h) - (active ? 0.05f : 0.0f);
+        const ImVec2 ctr = ImVec2(p0.x + cell * 0.5f, p0.y + cell * 0.5f);
+        auto S = [&](float fx, float fy) { // folder-space → screen, scaled about centre
+            return ImVec2(ctr.x + (p0.x + cell * fx - ctr.x) * scale,
+                          ctr.y + (p0.y + cell * fy - ctr.y) * scale);
+        };
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (*h > 0.004f) { // selection highlight + border, eased in
+            dl->AddRectFilled(S(0.06f, 0.06f), S(0.94f, 0.94f),
+                              ImGui::GetColorU32(ImVec4(0.40f, 0.66f, 1.0f, 0.16f * *h * gridAlpha)),
+                              cell * 0.06f);
+            dl->AddRect(S(0.06f, 0.06f), S(0.94f, 0.94f),
+                        ImGui::GetColorU32(ImVec4(0.46f, 0.73f, 1.0f, 0.75f * *h * gridAlpha)),
+                        cell * 0.06f, 0, 1.5f);
+        }
+        const ImU32 fc = ImGui::GetColorU32(ImVec4(0.85f, 0.72f, 0.35f, gridAlpha));
+        dl->AddRectFilled(S(0.16f, 0.34f), S(0.84f, 0.72f), fc, cell * 0.05f); // body
+        dl->AddRectFilled(S(0.16f, 0.26f), S(0.46f, 0.36f), fc, cell * 0.04f); // tab
+    };
+
     // ".." up entry.
     if (!browser_.CurrentPath().empty()) {
         beginCell();
@@ -235,9 +273,7 @@ void StorageExplorer::BuildGrid() {
         ImGui::InvisibleButton("##up", ImVec2(cell, cell));
         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
             navAction = Nav::Ascend;
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        dl->AddRectFilled(ImVec2(p0.x + cell * 0.18f, p0.y + cell * 0.30f),
-                          ImVec2(p0.x + cell * 0.82f, p0.y + cell * 0.74f), folderColor, 6.0f);
+        drawFolder(p0, ImGui::IsItemHovered(), ImGui::IsItemActive(), ImGui::GetID("##upa"));
         ImGui::TextUnformatted("..");
         ImGui::EndGroup();
         endCell();
@@ -256,11 +292,7 @@ void StorageExplorer::BuildGrid() {
                 navTarget.push_back('\\');
             navTarget += folder;
         }
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        dl->AddRectFilled(ImVec2(p0.x + cell * 0.16f, p0.y + cell * 0.34f),
-                          ImVec2(p0.x + cell * 0.84f, p0.y + cell * 0.72f), folderColor, 6.0f);
-        dl->AddRectFilled(ImVec2(p0.x + cell * 0.16f, p0.y + cell * 0.26f),
-                          ImVec2(p0.x + cell * 0.46f, p0.y + cell * 0.36f), folderColor, 4.0f);
+        drawFolder(p0, ImGui::IsItemHovered(), ImGui::IsItemActive(), ImGui::GetID("##fa"));
         std::string label = folder;
         if (label.size() > 18)
             label = label.substr(0, 17) + "…";
@@ -285,8 +317,8 @@ void StorageExplorer::BuildGrid() {
 
         const bool onScreen = ImGui::IsRectVisible(p0, p1);
         gfx::TextureHandle tex = gfx::TextureHandle::Invalid;
-        if (onScreen)
-            tex = pool_->Acquire(archivePath, isEffect, frameCounter_);
+        if (onScreen) // render the cell at its on-screen size so it stays crisp
+            tex = pool_->Acquire(archivePath, isEffect, frameCounter_, static_cast<int>(cell));
 
         ImGui::InvisibleButton("##m", ImVec2(cell, cell));
         if (ImGui::IsItemClicked())
@@ -311,12 +343,15 @@ void StorageExplorer::BuildGrid() {
 
         ImDrawList* dl = ImGui::GetWindowDrawList();
         if (tex != gfx::TextureHandle::Invalid) {
-            dl->AddImage(static_cast<ImTextureID>(static_cast<std::uint64_t>(tex)), p0, p1);
+            dl->AddImage(static_cast<ImTextureID>(static_cast<std::uint64_t>(tex)), p0, p1,
+                         ImVec2(0, 0), ImVec2(1, 1),
+                         ImGui::GetColorU32(ImVec4(1, 1, 1, gridAlpha)));
         } else {
             dl->AddRectFilled(p0, p1, placeholderColor, 4.0f);
         }
         if (selectedPath_ == archivePath)
-            dl->AddRect(p0, p1, ImGui::GetColorU32(ImVec4(0.4f, 0.7f, 1.0f, 1.0f)), 4.0f, 0, 2.0f);
+            dl->AddRect(p0, p1, ImGui::GetColorU32(ImVec4(0.4f, 0.7f, 1.0f, gridAlpha)), 4.0f, 0,
+                        2.0f);
 
         std::string label = file;
         if (label.size() > 18)
@@ -327,6 +362,7 @@ void StorageExplorer::BuildGrid() {
         endCell();
     }
 
+    ImGui::PopStyleVar(); // grid alpha
     ImGui::EndChild();
 
     // Stage navigation for the start of the next frame (applied in NewFrame).

@@ -15,7 +15,7 @@ Issue assetFatal(u32 code, std::string_view message) noexcept {
     return issue;
 }
 
-} // namespace
+}
 
 bool War3CompatibilityValidator::validate(const EffectAssetModel& model, IssueBag& issues) const {
     bool ok = true;
@@ -52,4 +52,4 @@ bool War3CompatibilityValidator::validate(const EffectAssetModel& model, IssueBa
     return ok;
 }
 
-} // namespace whiteout::cornflakes
+}

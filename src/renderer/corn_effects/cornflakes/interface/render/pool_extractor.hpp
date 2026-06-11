@@ -24,4 +24,19 @@ RenderPacket extractFromPool(const ParticlePool& pool, const LayerProgram& layer
                              RendererClass cls, const RenderInputMap& mapping, IArena& arena,
                              IssueBag& issues);
 
+/// @brief Build a renderer's slot→field map from its asset input-pin bindings.
+///
+/// Translates each `RendererParticleInput` (semantic + indexInStorage) into a `RenderSlot`→field
+/// name, resolving the field via `layer.renderFieldNames[indexInStorage]`. This is the engine-exact
+/// routing: a multi-renderer layer points each renderer at its own Position/Color/TextureID field,
+/// which name-prefix inference cannot recover (all the renderers' Position_<hash> fields share the
+/// layer, so inference collapses them to one). Returns an all-empty map if the renderer carries no
+/// input bindings (callers fall back to inference).
+RenderInputMap buildRenderInputMapFromAsset(const LayerRenderer& renderer, const LayerProgram& layer);
+
+/// @brief True when the renderer carries asset input-pin bindings (prefer over inference).
+inline bool hasAssetInputBindings(const LayerRenderer& renderer) noexcept {
+    return !renderer.particleInputs.empty();
+}
+
 } // namespace whiteout::cornflakes

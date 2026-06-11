@@ -31,6 +31,9 @@ struct FieldRaw {
     std::string_view type;
     std::span<const std::byte> bytes;
     std::string_view stringValue;
+    /// Resolved entries for `string[]` / `string_unicode[]` fields (the raw
+    /// bytes hold string-table indices; these are the looked-up strings).
+    std::span<const std::string_view> stringValues;
 };
 
 /// @brief One handler instance from the asset (effect, layer, blob, sampler, ...).

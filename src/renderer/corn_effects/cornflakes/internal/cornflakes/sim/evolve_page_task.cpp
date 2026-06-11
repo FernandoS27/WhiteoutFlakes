@@ -15,7 +15,7 @@ Issue simFatal(u32 code, std::string_view message) noexcept {
     return issue;
 }
 
-} // namespace
+}
 
 bool EvolvePageTask::evolve(ParticlePage& page, const EvolveContext& ctx, IssueBag& issues) const {
     if (page.particleCount == 0U) {
@@ -35,4 +35,4 @@ bool EvolvePageTask::evolve(ParticlePage& page, const EvolveContext& ctx, IssueB
     return true;
 }
 
-} // namespace whiteout::cornflakes
+}

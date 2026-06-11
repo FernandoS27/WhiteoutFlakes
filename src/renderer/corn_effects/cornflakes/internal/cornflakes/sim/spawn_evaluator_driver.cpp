@@ -13,4 +13,4 @@ bool SpawnEvaluatorDriver::run(const VMProgramDescriptor& program, ParticlePage&
     return true;
 }
 
-} // namespace whiteout::cornflakes
+}
