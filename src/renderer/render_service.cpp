@@ -63,9 +63,9 @@ SceneId RenderService::CreateScene() {
     impl_->scenes_[id] = scene.get();
     impl_->ownedScenes_.push_back(std::move(scene));
     impl_->sceneServices_[id] = std::make_unique<SceneServices>(*this);
-    // Wire the new scene's corn-fx GPU backend if the pipeline is already up.
-    if (impl_->cornInitApplier_)
-        impl_->cornInitApplier_(impl_->sceneServices_[id]->corn);
+    // Apply whatever device-dependent wiring is already available (corn-fx
+    // backend, splat→AssetManager hook) to the new scene's bundle.
+    InitSceneServices(*impl_->sceneServices_[id]);
     return id;
 }
 
@@ -174,9 +174,21 @@ void RenderService::TickScenes(f32 dt) {
 void RenderService::SetCornBackendInitApplier(
     std::function<void(corn_effects::CornEffectsService&)> fn) {
     impl_->cornInitApplier_ = std::move(fn);
+    InitAllSceneServices();
+}
+
+void RenderService::InitSceneServices(SceneServices& svc) {
+    // Each step is idempotent and self-guards on its input being ready, so this
+    // can run any number of times as inputs (assets, corn backend) come online.
+    if (impl_->assets_)
+        svc.splats.Configure(impl_->assets_.get());
     if (impl_->cornInitApplier_)
-        for (auto& [id, svc] : impl_->sceneServices_)
-            impl_->cornInitApplier_(svc->corn);
+        impl_->cornInitApplier_(svc.corn);
+}
+
+void RenderService::InitAllSceneServices() {
+    for (auto& [id, svc] : impl_->sceneServices_)
+        InitSceneServices(*svc);
 }
 
 void RenderService::ForEachCornService(
@@ -251,6 +263,12 @@ gtao::GtaoService* RenderService::GetGtaoService() {
 }
 const gtao::GtaoService* RenderService::GetGtaoService() const {
     return impl_->gtaoService_.get();
+}
+dof::DofService* RenderService::GetDofService() {
+    return impl_->dofService_.get();
+}
+const dof::DofService* RenderService::GetDofService() const {
+    return impl_->dofService_.get();
 }
 post_process::PostProcessService* RenderService::GetPostProcessService() {
     return impl_->postProcessService_.get();
@@ -336,6 +354,10 @@ void RenderService::CreateDeviceAssetManagers(gfx::IGFXDevice& gfx) {
             // scene whose load triggered the asset apply).
             return Scene().Templates().BuildFromBytes(std::string(path), bytes, foundExt);
         });
+    // The AssetManager is now live — wire every existing scene's SplatService to
+    // it (new scenes pick it up at CreateScene). Without this, splats/ubersplats
+    // in any scene but the one active at device-init draw the white placeholder.
+    InitAllSceneServices();
     // When a .pkb arrives, walk its layer programs once and Acquire the
     // diffuse texture for each. The texture slots are tied to the parent
     // Particle slot via AddDependency, so they release together when the
@@ -385,6 +407,16 @@ gtao::GtaoService& RenderService::EnsureGtaoService(gfx::IGFXDevice& gfx, gfx::G
         impl_->gtaoService_->Init(gfx, api);
     }
     return *impl_->gtaoService_;
+}
+
+dof::DofService& RenderService::EnsureDofService(gfx::IGFXDevice& gfx, gfx::GfxApi api,
+                                                 bls::BlsShaderCache& cache,
+                                                 gfx::BufferHandle spriteVb) {
+    if (!impl_->dofService_) {
+        impl_->dofService_ = std::make_unique<dof::DofService>();
+        impl_->dofService_->Init(gfx, api, cache, spriteVb);
+    }
+    return *impl_->dofService_;
 }
 
 post_process::PostProcessService& RenderService::EnsurePostProcessService(

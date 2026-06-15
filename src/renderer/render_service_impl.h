@@ -111,6 +111,7 @@ struct RenderService::Impl {
     std::unique_ptr<dnc::DncService> dncService_;
     std::unique_ptr<shadow::ShadowService> shadowService_;
     std::unique_ptr<gtao::GtaoService> gtaoService_;
+    std::unique_ptr<dof::DofService> dofService_;
     std::unique_ptr<post_process::PostProcessService> postProcessService_;
     std::unique_ptr<FrameTicker> ticker_;
     std::unique_ptr<model::ModelLoader> loader_;

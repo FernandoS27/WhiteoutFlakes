@@ -422,6 +422,36 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy) {
         if (ParseFloat(*s, v))
             service.Settings().SetBloomSaturation(v);
     }
+    if (auto* s = ini.Get(KeyOf("DofEnabled"))) {
+        bool v = false;
+        if (ParseBool(*s, v))
+            service.Settings().SetDofEnabled(v);
+    }
+    if (auto* s = ini.Get(KeyOf("DofFocusDistance"))) {
+        f32 v = 0.0f;
+        if (ParseFloat(*s, v))
+            service.Settings().SetDofFocusDistance(v);
+    }
+    if (auto* s = ini.Get(KeyOf("DofFocusScale"))) {
+        f32 v = 1.0f;
+        if (ParseFloat(*s, v))
+            service.Settings().SetDofFocusScale(v);
+    }
+    if (auto* s = ini.Get(KeyOf("DofMaxBlurSize"))) {
+        f32 v = 10.0f;
+        if (ParseFloat(*s, v))
+            service.Settings().SetDofMaxBlurSize(v);
+    }
+    if (auto* s = ini.Get(KeyOf("DofRadiusScale"))) {
+        f32 v = 1.0f;
+        if (ParseFloat(*s, v))
+            service.Settings().SetDofRadiusScale(v);
+    }
+    if (auto* s = ini.Get(KeyOf("DofFarFieldOnly"))) {
+        bool v = false;
+        if (ParseBool(*s, v))
+            service.Settings().SetDofFarFieldOnly(v);
+    }
     if (auto* dnc = service.GetDncService()) {
         if (auto* s = ini.Get(KeyOf("TimeOfDay"))) {
             f32 v = 0;
@@ -511,6 +541,12 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy) {
     ini.Set(KeyOf("BloomThreshold"), FloatToString(service.Settings().BloomThreshold()));
     ini.Set(KeyOf("BloomIntensity"), FloatToString(service.Settings().BloomIntensity()));
     ini.Set(KeyOf("BloomSaturation"), FloatToString(service.Settings().BloomSaturation()));
+    ini.Set(KeyOf("DofEnabled"), service.Settings().DofEnabled() ? "1" : "0");
+    ini.Set(KeyOf("DofFocusDistance"), FloatToString(service.Settings().DofFocusDistance()));
+    ini.Set(KeyOf("DofFocusScale"), FloatToString(service.Settings().DofFocusScale()));
+    ini.Set(KeyOf("DofMaxBlurSize"), FloatToString(service.Settings().DofMaxBlurSize()));
+    ini.Set(KeyOf("DofRadiusScale"), FloatToString(service.Settings().DofRadiusScale()));
+    ini.Set(KeyOf("DofFarFieldOnly"), service.Settings().DofFarFieldOnly() ? "1" : "0");
     if (const auto* dnc = service.GetDncService()) {
         ini.Set(KeyOf("TimeOfDay"), FloatToString(dnc->GetTimeOfDay()));
         ini.Set(KeyOf("AnimateTod"), dnc->GetTodScale() > 0.0f ? "1" : "0");

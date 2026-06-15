@@ -195,6 +195,51 @@ public:
         bloomSaturation_.store(bits);
     }
 
+    // ---- Depth of field (HD-only) ----
+    // Master enable. Off (and a focal distance of 0) ⇒ DofService::Run is a
+    // no-op. Mirrors WC3's per-camera GetDepthOfFieldEnabled gate.
+    bool DofEnabled() const {
+        return dofEnabled_.load();
+    }
+    void SetDofEnabled(bool on) {
+        dofEnabled_.store(on);
+    }
+    // Float bits in atomic<u32>, same trick as the bloom knobs above.
+    //   FocusDistance — linear view-Z (scene units) kept in focus; 0 disables.
+    //   FocusScale    — circle-of-confusion ramp (WC3 CameraSetDepthOfFieldScale).
+    //   MaxBlurSize   — max gather radius in px (WC3 default 10).
+    //   RadiusScale   — spiral ring spacing / sample density (WC3 default 1).
+    f32 DofFocusDistance() const {
+        return loadF32(dofFocusDistance_);
+    }
+    void SetDofFocusDistance(f32 v) {
+        storeF32(dofFocusDistance_, v);
+    }
+    f32 DofFocusScale() const {
+        return loadF32(dofFocusScale_);
+    }
+    void SetDofFocusScale(f32 v) {
+        storeF32(dofFocusScale_, v);
+    }
+    f32 DofMaxBlurSize() const {
+        return loadF32(dofMaxBlurSize_);
+    }
+    void SetDofMaxBlurSize(f32 v) {
+        storeF32(dofMaxBlurSize_, v);
+    }
+    f32 DofRadiusScale() const {
+        return loadF32(dofRadiusScale_);
+    }
+    void SetDofRadiusScale(f32 v) {
+        storeF32(dofRadiusScale_, v);
+    }
+    bool DofFarFieldOnly() const {
+        return dofFarFieldOnly_.load();
+    }
+    void SetDofFarFieldOnly(bool on) {
+        dofFarFieldOnly_.store(on);
+    }
+
     // ---- Lighting / clear color ----
     LightingMode GetLightingMode() const {
         return static_cast<LightingMode>(lightingMode_.load());
@@ -279,6 +324,20 @@ public:
     }
 
 private:
+    // Bit-cast helpers for the float-in-atomic<u32> knobs (atomic<f32> isn't
+    // portable). Used by the depth-of-field accessors above.
+    static f32 loadF32(const std::atomic<u32>& a) {
+        const u32 bits = a.load();
+        f32 v;
+        std::memcpy(&v, &bits, sizeof(v));
+        return v;
+    }
+    static void storeF32(std::atomic<u32>& a, f32 v) {
+        u32 bits;
+        std::memcpy(&bits, &v, sizeof(bits));
+        a.store(bits);
+    }
+
     // Display flags — plain bools; readers tolerate single-byte tearing.
     bool showGrid_ = true;
     bool showParticles_ = true;
@@ -316,6 +375,15 @@ private:
     std::atomic<u32> bloomThreshold_{0x3F800000u}; // 1.0f
     std::atomic<u32> bloomIntensity_{0x3FA00000u}; // 1.25f
     std::atomic<u32> bloomSaturation_{0x3F800000u}; // 1.0f
+
+    // Depth of field — off by default (the host supplies a focal distance).
+    // Defaults mirror WC3: maxBlurSize=10, radiusScale=1, focusScale=1.
+    std::atomic<bool> dofEnabled_{false};
+    std::atomic<u32> dofFocusDistance_{0};            // 0.0f — disables the pass
+    std::atomic<u32> dofFocusScale_{0x3F800000u};     // 1.0f
+    std::atomic<u32> dofMaxBlurSize_{0x41200000u};    // 10.0f
+    std::atomic<u32> dofRadiusScale_{0x3F800000u};    // 1.0f
+    std::atomic<bool> dofFarFieldOnly_{false};
 
     // Lighting + clear color.
     std::atomic<u8> lightingMode_{static_cast<u8>(LightingMode::InGame)};

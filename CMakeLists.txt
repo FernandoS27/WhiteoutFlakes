@@ -228,6 +228,9 @@ set(SHADER_ENTRIES
     # on the engine's shipped gaussianblur.bls being staged.
     "gaussian_blur.slang|vsBlur|vertex|kGaussianBlurVS"
     "gaussian_blur.slang|psBlur|fragment|kGaussianBlurPS"
+    # NOTE: depth of field has no custom shader entry — DofService runs the
+    # shipped WC3 depthoffield.bls (GxShaderID DepthOfField) through the BLS
+    # shader cache, and reuses the embedded blit (kBlit*) for the round-trip.
 )
 
 set(SHADER_DXBC_FILES "")
@@ -1092,6 +1095,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/shadow/shadow_service.cpp
     src/renderer/shadow/shadow_pass.cpp
     src/renderer/gtao/gtao_service.cpp
+    src/renderer/dof/dof_service.cpp
     src/renderer/post_process/post_process_service.cpp
     src/renderer/bls/bls_container.cpp
     src/renderer/bls/bls_shader_cache.cpp

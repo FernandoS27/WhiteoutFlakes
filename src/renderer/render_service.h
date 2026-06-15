@@ -23,6 +23,7 @@
 #include "dnc/dnc_service.h"
 #include "imgui/imgui_renderer.h"
 #include "shadow/shadow_service.h"
+#include "dof/dof_service.h"
 #include "gtao/gtao_service.h"
 #include "post_process/post_process_service.h"
 
@@ -38,6 +39,7 @@ namespace whiteout::flakes::renderer {
 class SceneManager;
 class FrameTicker;
 class RenderPipeline;
+struct SceneServices;
 
 // Identifies one scene within a RenderService. A RenderService always has a
 // default scene (DefaultSceneId); additional scenes are created via
@@ -166,6 +168,8 @@ public:
     const shadow::ShadowService* GetShadowService() const;
     gtao::GtaoService* GetGtaoService();
     const gtao::GtaoService* GetGtaoService() const;
+    dof::DofService* GetDofService();
+    const dof::DofService* GetDofService() const;
     post_process::PostProcessService* GetPostProcessService();
     const post_process::PostProcessService* GetPostProcessService() const;
 
@@ -243,12 +247,27 @@ public:
     dnc::DncService& EnsureDncService();
     shadow::ShadowService& EnsureShadowService(gfx::IGFXDevice& gfx);
     gtao::GtaoService& EnsureGtaoService(gfx::IGFXDevice& gfx, gfx::GfxApi api);
+    dof::DofService& EnsureDofService(gfx::IGFXDevice& gfx, gfx::GfxApi api,
+                                      bls::BlsShaderCache& cache, gfx::BufferHandle spriteVb);
     post_process::PostProcessService& EnsurePostProcessService(gfx::IGFXDevice& gfx,
                                                                gfx::GfxApi api,
                                                                bls::BlsShaderCache& cache,
                                                                gfx::BufferHandle spriteVb);
 
 private:
+    // ---- Per-scene service initialization (current + future scenes) ----
+    // A scene's SceneServices bundle needs device-dependent wiring (corn-fx GPU
+    // backend, splat→AssetManager hook) that only becomes available once the
+    // device is up. The inputs arrive at different times (assets at
+    // CreateDeviceAssetManagers, corn backend at InitBlsShaders), and scenes can
+    // be created before OR after either — so a single one-off configure() would
+    // miss whichever side isn't ready yet, and every scene but the active one.
+    // InitSceneServices is the one place that applies all currently-available
+    // wiring to one bundle; InitAllSceneServices re-applies to every live scene
+    // whenever a new input becomes available. Both steps are idempotent.
+    void InitSceneServices(SceneServices& svc);
+    void InitAllSceneServices();
+
     // ---- Pimpl: all instance state lives here. ----
     // Subsystems reach RenderService state through the public accessors above
     // (Scene/Textures/Samplers/Replaceables/Particles/Splats/Spn/Settings/

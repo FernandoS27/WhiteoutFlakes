@@ -728,7 +728,9 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
 
     rs_.Replaceables().SetContentProvider(rs_.Scene().ActiveContentProvider());
 
-    rs_.Splats().Configure(&rs_.Assets());
+    // Splat→AssetManager wiring is now applied to every scene's SplatService by
+    // RenderService (CreateDeviceAssetManagers / CreateScene), not just the
+    // active one — see InitSceneServices.
 
     // Eagerly Acquire every SPL/UBR texture + SPN child-model slot the
     // event-data SLKs reference. Desktop only: the sync provider loads
@@ -748,6 +750,9 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     rs_.EnsureDncService();
     rs_.EnsureShadowService(*impl_->gfx_);
     rs_.EnsureGtaoService(*impl_->gfx_, impl_->gfx_->GetApi());
+    // DoF (EnsureDofService) is set up below alongside PostProcessService — both
+    // need the shipped BLS shaders + the shared fullscreen-triangle VB, which
+    // aren't created until the sprite/tonemap block further down.
 
     if (impl_->shadowVsCb_ == gfx::BufferHandle::Invalid) {
         impl_->shadowVsCb_ = impl_->gfx_->CreateBuffer({
@@ -902,6 +907,10 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     if (impl_->tonemapVB_ != gfx::BufferHandle::Invalid) {
         rs_.EnsurePostProcessService(*impl_->gfx_, impl_->gfx_->GetApi(),
                                      *impl_->blsShaderCache_, impl_->tonemapVB_);
+        // Depth of field runs the shipped depthoffield.bls through the same
+        // sprite VS + fullscreen-triangle VB as bloom/tonemap.
+        rs_.EnsureDofService(*impl_->gfx_, impl_->gfx_->GetApi(), *impl_->blsShaderCache_,
+                             impl_->tonemapVB_);
     }
 
     // All BLS frame-uniform CBs get mapped once per draw call. With
@@ -1946,6 +1955,28 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
                         g->RunIblBoost(cmd, target, in);
                     }
                 }
+            }
+        }
+    }
+
+    // Depth of field — bokeh blur on `hdrColor` after GTAO/SSAO and before
+    // bloom, exactly where WC3 runs GBuffer::ApplyDepthOfField (opaque → SSAO →
+    // DoF → bloom). Forwards host-side `RenderSettings::Dof*` knobs into the
+    // service; the pass self-disables unless a focal distance is set.
+    if (useHdr) {
+        if (auto* d = rs_.GetDofService()) {
+            dof::DofParams dp = d->Params();
+            dp.enabled = rs_.Settings().DofEnabled();
+            dp.focusDistance = rs_.Settings().DofFocusDistance();
+            dp.focusScale = rs_.Settings().DofFocusScale();
+            dp.maxBlurSize = rs_.Settings().DofMaxBlurSize();
+            dp.radiusScale = rs_.Settings().DofRadiusScale();
+            dp.farFieldOnly = rs_.Settings().DofFarFieldOnly();
+            d->SetParams(dp);
+            if (d->IsEnabled()) {
+                WDX_CPU_ZONE("DepthOfField");
+                WDX_GPU_ZONE(cmd, "DepthOfField");
+                d->Run(cmd, target);
             }
         }
     }

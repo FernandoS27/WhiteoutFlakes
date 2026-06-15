@@ -801,6 +801,58 @@ void ViewerUI::BuildSettingsWindow() {
             }
         }
 
+        // ---- Depth of Field (HD-only) ----
+        // Runs the shipped depthoffield.bls. The pass self-disables until a
+        // focal distance > 0 is set, so enabling with a zero distance seeds a
+        // sensible default — otherwise the checkbox would appear to do nothing.
+        if (ImGui::CollapsingHeader("Depth of Field (HD)")) {
+            bool dof = svc.Settings().DofEnabled();
+            if (ImGui::Checkbox("Enabled##dof", &dof)) {
+                svc.Settings().SetDofEnabled(dof);
+                if (dof && svc.Settings().DofFocusDistance() <= 0.0f)
+                    svc.Settings().SetDofFocusDistance(600.0f);
+                SaveIni(app_);
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset##dof")) {
+                svc.Settings().SetDofFocusDistance(600.0f);
+                svc.Settings().SetDofFocusScale(1.0f);
+                svc.Settings().SetDofMaxBlurSize(10.0f);
+                svc.Settings().SetDofRadiusScale(1.0f);
+                svc.Settings().SetDofFarFieldOnly(false);
+                SaveIni(app_);
+            }
+            f32 focusDist = svc.Settings().DofFocusDistance();
+            f32 focusScale = svc.Settings().DofFocusScale();
+            f32 maxBlur = svc.Settings().DofMaxBlurSize();
+            f32 radius = svc.Settings().DofRadiusScale();
+            bool farOnly = svc.Settings().DofFarFieldOnly();
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::SliderFloat("Focus dist##dof", &focusDist, 0.0f, 3000.0f, "%.0f")) {
+                svc.Settings().SetDofFocusDistance(focusDist);
+                SaveIni(app_);
+            }
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::SliderFloat("Focus scale##dof", &focusScale, 0.0f, 10.0f, "%.2f")) {
+                svc.Settings().SetDofFocusScale(focusScale);
+                SaveIni(app_);
+            }
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::SliderFloat("Max blur##dof", &maxBlur, 1.0f, 40.0f, "%.1f")) {
+                svc.Settings().SetDofMaxBlurSize(maxBlur);
+                SaveIni(app_);
+            }
+            ImGui::SetNextItemWidth(180.0f);
+            if (ImGui::SliderFloat("Sample density##dof", &radius, 0.25f, 4.0f, "%.2f")) {
+                svc.Settings().SetDofRadiusScale(radius);
+                SaveIni(app_);
+            }
+            if (ImGui::Checkbox("Far field only##dof", &farOnly)) {
+                svc.Settings().SetDofFarFieldOnly(farOnly);
+                SaveIni(app_);
+            }
+        }
+
         ImGui::Separator();
 
         // ---- DNC model path ----
