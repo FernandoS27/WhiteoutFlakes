@@ -182,142 +182,75 @@ void RenderPipeline::ReleaseModelGPU() {
     });
 }
 
-bool RenderPipeline::RenderParticlesBls() {
-
-    if (!impl_->blsSdProgram_ || !impl_->blsPsoBuilder_)
-        return false;
-
+// Draw one PE2 emitter's batch. Binds the shared particle VB itself so it can be
+// invoked interleaved with other producers in the unified transparent pass.
+void RenderPipeline::DrawParticleEmitter(const particle::EmitterDrawList& dl,
+                                         const bls::FrameInputs& frame) {
+    if (dl.vertexCount <= 0)
+        return;
     auto* cmd = impl_->gfx_->GetImmediateContext();
-
-    std::vector<Vertex> verts;
-    std::vector<particle::EmitterDrawList> drawLists;
-    Matrix44f viewMat;
-    {
-        if (rs_.Particles().EmitterCount() == 0)
-            return true;
-        viewMat = rs_.Pipeline().FrameCamera().GetViewMatrix();
-        rs_.Particles().BuildGeometry(viewMat, verts, drawLists);
-    }
-    if (verts.empty())
-        return true;
-
-    std::stable_sort(drawLists.begin(), drawLists.end(),
-                     [](const particle::EmitterDrawList& a, const particle::EmitterDrawList& b) {
-                         if (a.priorityPlane != b.priorityPlane)
-                             return a.priorityPlane < b.priorityPlane;
-                         if (a.model != b.model)
-                             return a.model < b.model;
-                         return a.emitterId < b.emitterId;
-                     });
-
-    const i32 vertCount = (i32)verts.size();
-
-    if (impl_->particleServiceVB_ == gfx::BufferHandle::Invalid ||
-        vertCount > impl_->particleServiceVBSize_) {
-        impl_->gfx_->Destroy(impl_->particleServiceVB_);
-        // Double-and-cap growth. Particle counts oscillate every frame as
-        // they spawn/die — allocating exactly `vertCount` meant we churned
-        // a fresh buffer almost every frame, piling old buffers into the
-        // deferred-delete queue and burning VRAM faster than the GPU could
-        // drain. Doubling makes growth amortized; the cap prevents a
-        // one-frame spike from permanently pinning huge VRAM.
-        constexpr i32 kFloor   = 4096;
-        constexpr i32 kCeiling = 512 * 1024;
-        const i32 doubled = (std::max)(impl_->particleServiceVBSize_ * 2, kFloor);
-        const i32 newSize = (std::max)(vertCount, (std::min)(doubled, kCeiling));
-        gfx::BufferDesc bd;
-        bd.size = (u32)(sizeof(Vertex) * newSize);
-        bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
-        bd.ringSlotsHint = 4; // mapped once per frame
-        impl_->particleServiceVB_ = impl_->gfx_->CreateBuffer(bd);
-        impl_->particleServiceVBSize_ = newSize;
-    }
-    if (void* mapped = impl_->gfx_->MapBuffer(impl_->particleServiceVB_)) {
-        memcpy(mapped, verts.data(), sizeof(Vertex) * vertCount);
-        impl_->gfx_->UnmapBuffer(impl_->particleServiceVB_);
-    }
-
     cmd->BindVertexBuffer(0, impl_->particleServiceVB_, sizeof(Vertex));
 
-    bls::FrameInputs frame;
-    frame.world = Matrix44f::identity();
-    frame.view = viewMat;
-    const f32 aspect = (Height() > 0) ? (f32)Width() / (f32)Height() : 1.0f;
-    frame.projection = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);
-    frame.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
-    frame.numLights = 0;
-    frame.viewportRect = {(f32)Width(), (f32)Height(), 0.0f, 0.0f};
+    bls::MatParams mp = bls::FromParticleDesc(dl.material, bls::GxShaderID::SD);
+    mp.disables |= bls::kDisableLighting;
+    mp.diffuseColor = {1, 1, 1, 1};
 
-    for (const auto& dl : drawLists) {
-        if (dl.vertexCount <= 0)
-            continue;
+    bls::RenderState rs;
+    rs.shaderId = bls::GxShaderID::SD;
+    rs.alphaMode = static_cast<u8>(mp.alpha);
+    rs.numColors = 1;
+    rs.numTexCoords = 1;
+    rs.numWeights = 0;
+    rs.numLights = 0;
+    rs.fogEnabled = false;
+    rs.depthWrite = mp.DepthWriteEnabled();
+    rs.lightingEnabled = false;
+    auto perm = bls::SelectPermutes(rs);
 
-        bls::MatParams mp = bls::FromParticleDesc(dl.material, bls::GxShaderID::SD);
-        mp.disables |= bls::kDisableLighting;
-
-        mp.diffuseColor = {1, 1, 1, 1};
-
-        bls::RenderState rs;
-        rs.shaderId = bls::GxShaderID::SD;
-        rs.alphaMode = static_cast<u8>(mp.alpha);
-        rs.numColors = 1;
-        rs.numTexCoords = 1;
-        rs.numWeights = 0;
-        rs.numLights = 0;
-        rs.fogEnabled = false;
-        rs.depthWrite = mp.DepthWriteEnabled();
-        rs.lightingEnabled = false;
-        auto perm = bls::SelectPermutes(rs);
-
-        auto req =
-            bls::MakePsoRequest(impl_->blsSdProgram_, bls::VertexLayoutKind::ParticleSD, mp, perm);
-        req.rtvFormat = SceneTargetFormat();
-        // Particles are drawn inside the main scene pass. In HD mode
-        // that pass is MRT (slot 1 = linearDepth, slot 2 = normal); the
-        // SD particle PSO has to match the attachment count or
-        // Vulkan/WebGPU validation rejects the bind.
-        if (impl_->frameRenderMode_ == RenderMode::HD) {
-            req.extraRtvFormats[0] = kLinearDepthFormat;
-            req.extraRtvFormats[1] = kNormalBufferFormat;
-            req.extraRtvCount = 2;
-        }
-        req.dsvFormat = impl_->depthStencilFormat_;
-        auto pso = impl_->blsPsoBuilder_->GetOrBuild(req);
-        if (pso == gfx::PipelineHandle::Invalid)
-            continue;
-        cmd->BindPipeline(pso);
-
-        if (auto vs = bls::ScopedCb<bls::SdVsCbA>(impl_->gfx_.get(), impl_->blsSdVsCb_)) {
-            bls::BuildSdVsCbA(*vs, frame, mp);
-        }
-        if (auto ps = bls::ScopedCb<bls::SdPsCbA>(impl_->gfx_.get(), impl_->blsSdPsCb_)) {
-            bls::BuildSdPsCbA(*ps, frame, mp);
-        }
-        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, impl_->blsSdVsCb_);
-        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 0, impl_->blsSdPsCb_);
-
-        const u32 wrapFlags = 0x3;
-
-        gfx::TextureHandle peTex = gfx::TextureHandle::Invalid;
-        Actor* owner = rs_.Scene().Actors().Find(dl.model);
-        const u32 ownerColor = owner ? (owner->teamColor | 0xFF000000u) : 0xFF0000FFu;
-        if (dl.material.replaceableId == 1) {
-            peTex = rs_.Replaceables().GetSdTeamColorTextureFor(ownerColor);
-        } else if (dl.material.replaceableId == 2) {
-            peTex = rs_.Replaceables().GetSdTeamGlowTextureFor(ownerColor);
-        } else {
-            if (owner && owner->render.textures && dl.material.textureId >= 0)
-                peTex = owner->render.textures->Get(dl.material.textureId);
-        }
-        if (peTex != gfx::TextureHandle::Invalid)
-            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, peTex);
-        else
-            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, rs_.Textures().GetDefaults().White);
-        cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.Samplers().WrapVariant(wrapFlags));
-
-        cmd->Draw(dl.vertexCount, dl.vertexOffset);
+    auto req =
+        bls::MakePsoRequest(impl_->blsSdProgram_, bls::VertexLayoutKind::ParticleSD, mp, perm);
+    req.rtvFormat = SceneTargetFormat();
+    // HD scene pass is MRT (slot 1 = linearDepth, slot 2 = normal); the SD
+    // particle PSO must match the attachment count or Vulkan/WebGPU reject it.
+    if (impl_->frameRenderMode_ == RenderMode::HD) {
+        req.extraRtvFormats[0] = kLinearDepthFormat;
+        req.extraRtvFormats[1] = kNormalBufferFormat;
+        req.extraRtvCount = 2;
     }
-    return true;
+    req.dsvFormat = impl_->depthStencilFormat_;
+    auto pso = impl_->blsPsoBuilder_->GetOrBuild(req);
+    if (pso == gfx::PipelineHandle::Invalid)
+        return;
+    cmd->BindPipeline(pso);
+
+    if (auto vs = bls::ScopedCb<bls::SdVsCbA>(impl_->gfx_.get(), impl_->blsSdVsCb_)) {
+        bls::BuildSdVsCbA(*vs, frame, mp);
+    }
+    if (auto ps = bls::ScopedCb<bls::SdPsCbA>(impl_->gfx_.get(), impl_->blsSdPsCb_)) {
+        bls::BuildSdPsCbA(*ps, frame, mp);
+    }
+    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, impl_->blsSdVsCb_);
+    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 0, impl_->blsSdPsCb_);
+
+    const u32 wrapFlags = 0x3;
+    gfx::TextureHandle peTex = gfx::TextureHandle::Invalid;
+    Actor* owner = rs_.Scene().Actors().Find(dl.model);
+    const u32 ownerColor = owner ? (owner->teamColor | 0xFF000000u) : 0xFF0000FFu;
+    if (dl.material.replaceableId == 1) {
+        peTex = rs_.Replaceables().GetSdTeamColorTextureFor(ownerColor);
+    } else if (dl.material.replaceableId == 2) {
+        peTex = rs_.Replaceables().GetSdTeamGlowTextureFor(ownerColor);
+    } else {
+        if (owner && owner->render.textures && dl.material.textureId >= 0)
+            peTex = owner->render.textures->Get(dl.material.textureId);
+    }
+    if (peTex != gfx::TextureHandle::Invalid)
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, peTex);
+    else
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, rs_.Textures().GetDefaults().White);
+    cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.Samplers().WrapVariant(wrapFlags));
+
+    cmd->Draw(dl.vertexCount, dl.vertexOffset);
 }
 
 namespace {
@@ -452,177 +385,111 @@ bool RenderPipeline::RenderSplatsBls() {
     return true;
 }
 
-void RenderPipeline::RenderCornEffects() {
-    // Cornflakes-driven CornFx emitters. The backend is per-emitter and
-    // built lazily on first spawn; this pass just sets the per-frame inputs
-    // (cmd / view / proj / viewport / effectTime) and runs Simulate which
-    // ticks every emitter — submit() emits GPU draws inline during the
-    // tick, so we MUST run inside the active render pass.
-    if (!impl_->blsCornFxProgram_ || !impl_->blsPsoBuilder_)
-        return;
-    auto* cmd = impl_->gfx_->GetImmediateContext();
-    const f32 aspect = (Height() > 0) ? (f32)Width() / (f32)Height() : 1.0f;
-
-    corn_effects::CornEffectsFrameInputs fi;
-    fi.cmd = cmd;
-    fi.view = rs_.Pipeline().FrameCamera().ViewLH();
-    fi.projection = rs_.Pipeline().FrameCamera().ProjectionLH(aspect);
-    fi.viewportRect = {(f32)Width(), (f32)Height(), 0.0f, 0.0f};
-    fi.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
-    fi.rtvFormat = SceneTargetFormat();
-    fi.dsvFormat = impl_->depthStencilFormat_;
-    // Popcorn effects draw inside the main scene pass. HD = MRT, so the
-    // popcorn PSO has to match the attachment count or Vulkan/WebGPU
-    // reject the bind. The popcorn shader doesn't write SV_Target1/2;
-    // the gfx layer's no-write-on-extras handles that.
-    if (impl_->frameRenderMode_ == RenderMode::HD) {
-        fi.extraRtvFormats[0] = kLinearDepthFormat;
-        fi.extraRtvFormats[1] = kNormalBufferFormat;
-        fi.extraRtvCount = 2;
-    }
-    rs_.CornEffects().SetFrameInputs(fi);
-    rs_.CornEffects().SimulateAndRender(rs_.CornEffects().PendingDt());
-}
-
-void RenderPipeline::RenderRibbons() {
+void RenderPipeline::PrepareRibbons(std::vector<RibbonDrawUnit>& out, bls::FrameInputs& outFrame) {
     if (!impl_->blsSdProgram_ || !impl_->blsPsoBuilder_)
         return;
-    auto* cmd = impl_->gfx_->GetImmediateContext();
 
-    bls::FrameInputs frame;
-    frame.world = Matrix44f::identity();
     const f32 aspect = (Height() > 0) ? (f32)Width() / (f32)Height() : 1.0f;
-    frame.numLights = 0;
-    frame.viewportRect = {(f32)Width(), (f32)Height(), 0.0f, 0.0f};
-    frame.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
+    outFrame.world = Matrix44f::identity();
+    outFrame.view = rs_.Pipeline().FrameCamera().GetViewMatrix();
+    outFrame.projection = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);
+    outFrame.numLights = 0;
+    outFrame.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
+    outFrame.viewportRect = {(f32)Width(), (f32)Height(), 0.0f, 0.0f};
 
     for (auto& [_mh, _mi] : rs_.Scene().Actors().All()) {
         auto* mi = _mi.get();
-        Matrix44f viewMat;
-        RibbonSystem::StripResult stripResult;
-        std::vector<RibbonEmitterConfig> configs;
-
-        {
-            if (!mi->render.ribbons.HasEmitters())
-                continue;
-            if (mi->parentVisibility <= 0.02f)
-                continue;
-            viewMat = rs_.Pipeline().FrameCamera().GetViewMatrix();
-            stripResult = mi->render.ribbons.BuildStrips();
-            for (i32 eid : stripResult.emitterIds) {
-                auto* c = mi->render.ribbons.GetConfig(eid);
-                configs.push_back(c ? *c : RibbonEmitterConfig{});
-            }
-        }
-
+        if (!mi->render.ribbons.HasEmitters() || mi->parentVisibility <= 0.02f)
+            continue;
+        RibbonSystem::StripResult stripResult = mi->render.ribbons.BuildStrips();
         auto& verts = stripResult.vertices;
         auto& emitterIds = stripResult.emitterIds;
-        if (verts.empty())
+        const i32 vertCount = (i32)verts.size();
+        if (vertCount <= 0)
             continue;
-        i32 vertCount = (i32)verts.size();
 
         if (mi->render.ribbonVB == gfx::BufferHandle::Invalid ||
             vertCount > mi->render.ribbonVBSize) {
             impl_->gfx_->Destroy(mi->render.ribbonVB);
-            // Doubled-and-capped growth. Ribbons stream continuously as
-            // the actor animates; with exact-size growth we churned a
-            // fresh VB on almost every frame as the segment count drifted,
-            // piling old buffers into the deferred-delete queue.
-            constexpr i32 kFloor   = 512;
+            // Doubled-and-capped growth — ribbons stream continuously as the
+            // actor animates; exact-size growth churned a fresh VB every frame.
+            constexpr i32 kFloor = 512;
             constexpr i32 kCeiling = 64 * 1024;
             const i32 doubled = (std::max)(mi->render.ribbonVBSize * 2, kFloor);
             const i32 newSize = (std::max)(vertCount, (std::min)(doubled, kCeiling));
             gfx::BufferDesc bd;
             bd.size = (u32)(sizeof(Vertex) * newSize);
             bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
-            bd.ringSlotsHint = 4; // per-actor, mapped once per frame
+            bd.ringSlotsHint = 4;
             mi->render.ribbonVB = impl_->gfx_->CreateBuffer(bd);
             mi->render.ribbonVBSize = newSize;
         }
-
-        void* mapped = impl_->gfx_->MapBuffer(mi->render.ribbonVB);
-        if (!mapped)
-            continue;
-        memcpy(mapped, verts.data(), sizeof(Vertex) * vertCount);
-        impl_->gfx_->UnmapBuffer(mi->render.ribbonVB);
-
-        cmd->BindVertexBuffer(0, mi->render.ribbonVB, sizeof(Vertex));
-
-        frame.view = viewMat;
-        frame.projection = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);
-
-        std::vector<i32> vertCounts;
-        std::vector<i32> vertOffsets;
-        {
-            i32 running = 0;
-            for (i32 eid : emitterIds) {
-                vertOffsets.push_back(running);
-                const i32 n = mi->render.ribbons.GetEmitterVertCount(eid);
-                vertCounts.push_back(n);
-                running += n;
-            }
+        if (void* mapped = impl_->gfx_->MapBuffer(mi->render.ribbonVB)) {
+            memcpy(mapped, verts.data(), sizeof(Vertex) * vertCount);
+            impl_->gfx_->UnmapBuffer(mi->render.ribbonVB);
         }
 
-        std::vector<i32> drawOrder(emitterIds.size());
-        for (i32 i = 0; i < (i32)drawOrder.size(); ++i)
-            drawOrder[i] = i;
-        std::stable_sort(drawOrder.begin(), drawOrder.end(), [&](i32 a, i32 b) {
-            const i32 pa = configs[a].priorityPlane;
-            const i32 pb = configs[b].priorityPlane;
-            if (pa != pb)
-                return pa < pb;
-            return emitterIds[a] < emitterIds[b];
-        });
-
-        for (i32 ei : drawOrder) {
-            auto& cfg = configs[ei];
-            const i32 count = vertCounts[ei];
-            const i32 offset = vertOffsets[ei];
-            if (count <= 0)
+        i32 running = 0;
+        for (i32 eid : emitterIds) {
+            const i32 offset = running;
+            const i32 n = mi->render.ribbons.GetEmitterVertCount(eid);
+            running += n;
+            if (n <= 0)
                 continue;
-
-            i32 matFlags = 0;
-            if (cfg.twoSided)
-                matFlags |= MAT_TWO_SIDED;
-            if (cfg.unshaded)
-                matFlags |= MAT_UNSHADED;
-            bls::MatParams mp = bls::FromMdxLayer(cfg.filterMode, matFlags, bls::GxShaderID::SD);
-            mp.disables |= bls::kDisableLighting;
-            mp.diffuseColor = {1, 1, 1, 1};
-
-            bls::RenderState rs = bls::MakeSdMeshRenderState(mp, 0, true, false);
-            auto perm = bls::SelectPermutes(rs);
-            auto req = bls::MakePsoRequest(impl_->blsSdProgram_, bls::VertexLayoutKind::ParticleSD,
-                                           mp, perm);
-            req.rtvFormat = SceneTargetFormat();
-            // Drawn inside the main scene pass. HD mode is MRT → match
-            // the attachment count or Vulkan/WebGPU reject the bind.
-            if (impl_->frameRenderMode_ == RenderMode::HD) {
-                req.extraRtvFormats[0] = kLinearDepthFormat;
-                req.extraRtvFormats[1] = kNormalBufferFormat;
-                req.extraRtvCount = 2;
-            }
-            req.dsvFormat = impl_->depthStencilFormat_;
-            auto pso = impl_->blsPsoBuilder_->GetOrBuild(req);
-            if (pso == gfx::PipelineHandle::Invalid)
-                continue;
-            cmd->BindPipeline(pso);
-
-            if (auto vs = bls::ScopedCb<bls::SdVsCbA>(impl_->gfx_.get(), impl_->blsSdVsCb_)) {
-                bls::BuildSdVsCbA(*vs, frame, mp);
-            }
-            if (auto ps = bls::ScopedCb<bls::SdPsCbA>(impl_->gfx_.get(), impl_->blsSdPsCb_)) {
-                bls::BuildSdPsCbA(*ps, frame, mp);
-            }
-            cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, impl_->blsSdVsCb_);
-            cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 0, impl_->blsSdPsCb_);
-
-            render_detail::BindLayerAlbedo(cmd, mi->render.textures.get(), cfg.textureId,
-                                           rs_.Textures().GetDefaults().White, rs_.Samplers());
-
-            cmd->Draw(count, offset);
+            const auto* c = mi->render.ribbons.GetConfig(eid);
+            const RibbonEmitterConfig cfg = c ? *c : RibbonEmitterConfig{};
+            RibbonDrawUnit u;
+            u.actor = mi;
+            u.filterMode = cfg.filterMode;
+            u.matFlags = (cfg.twoSided ? MAT_TWO_SIDED : 0) | (cfg.unshaded ? MAT_UNSHADED : 0);
+            u.textureId = cfg.textureId;
+            u.count = n;
+            u.offset = offset;
+            u.origin = verts[offset].position; // world-space strip head
+            u.priorityPlane = cfg.priorityPlane;
+            out.push_back(u);
         }
     }
+}
+
+void RenderPipeline::DrawRibbonStrip(const RibbonDrawUnit& u, const bls::FrameInputs& frame) {
+    if (u.count <= 0 || !u.actor)
+        return;
+    auto* cmd = impl_->gfx_->GetImmediateContext();
+    cmd->BindVertexBuffer(0, u.actor->render.ribbonVB, sizeof(Vertex));
+
+    bls::MatParams mp = bls::FromMdxLayer(u.filterMode, u.matFlags, bls::GxShaderID::SD);
+    mp.disables |= bls::kDisableLighting;
+    mp.diffuseColor = {1, 1, 1, 1};
+
+    bls::RenderState rs = bls::MakeSdMeshRenderState(mp, 0, true, false);
+    auto perm = bls::SelectPermutes(rs);
+    auto req =
+        bls::MakePsoRequest(impl_->blsSdProgram_, bls::VertexLayoutKind::ParticleSD, mp, perm);
+    req.rtvFormat = SceneTargetFormat();
+    if (impl_->frameRenderMode_ == RenderMode::HD) {
+        req.extraRtvFormats[0] = kLinearDepthFormat;
+        req.extraRtvFormats[1] = kNormalBufferFormat;
+        req.extraRtvCount = 2;
+    }
+    req.dsvFormat = impl_->depthStencilFormat_;
+    auto pso = impl_->blsPsoBuilder_->GetOrBuild(req);
+    if (pso == gfx::PipelineHandle::Invalid)
+        return;
+    cmd->BindPipeline(pso);
+
+    if (auto vs = bls::ScopedCb<bls::SdVsCbA>(impl_->gfx_.get(), impl_->blsSdVsCb_)) {
+        bls::BuildSdVsCbA(*vs, frame, mp);
+    }
+    if (auto ps = bls::ScopedCb<bls::SdPsCbA>(impl_->gfx_.get(), impl_->blsSdPsCb_)) {
+        bls::BuildSdPsCbA(*ps, frame, mp);
+    }
+    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, impl_->blsSdVsCb_);
+    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 0, impl_->blsSdPsCb_);
+
+    render_detail::BindLayerAlbedo(cmd, u.actor->render.textures.get(), u.textureId,
+                                   rs_.Textures().GetDefaults().White, rs_.Samplers());
+    cmd->Draw(u.count, u.offset);
 }
 
 i32 RenderPipeline::ComputeSelectedLod() const {
@@ -1843,24 +1710,13 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         RenderSplatsBls();
     }
     {
-        WDX_CPU_ZONE("GeosetsTransparent");
-        WDX_GPU_ZONE(cmd, "GeosetsTransparent");
-        RenderGeosets(GeosetBucket::Transparent);
-    }
-    if (rs_.Settings().ShowParticles()) {
-        WDX_CPU_ZONE("Particles");
-        WDX_GPU_ZONE(cmd, "Particles");
-        RenderParticlesBls();
-    }
-    if (rs_.Settings().ShowParticles()) {
-        WDX_CPU_ZONE("CornEffects");
-        WDX_GPU_ZONE(cmd, "CornEffects");
-        RenderCornEffects();
-    }
-    if (rs_.Settings().ShowRibbons()) {
-        WDX_CPU_ZONE("Ribbons");
-        WDX_GPU_ZONE(cmd, "Ribbons");
-        RenderRibbons();
+        // Unified back-to-front transparent pass: transparent geosets, PE2
+        // particles, ribbons and corn interleaved by depth (WC3's
+        // IModelRenderSceneTransparent). ShowParticles/ShowRibbons gate the
+        // respective producers inside.
+        WDX_CPU_ZONE("Transparent");
+        WDX_GPU_ZONE(cmd, "Transparent");
+        RenderTransparentScene();
     }
     if (rs_.Settings().ShowCollisions())
         rs_.Debug().RenderCollisions();
@@ -2796,6 +2652,148 @@ void RenderPipeline::RenderGeosets(GeosetBucket bucket) {
     } else {
         RenderGeosetsBls(bucket);
     }
+}
+
+// Unified transparent pass — WC3's IModelRenderSceneTransparent. Prepares each
+// transparent producer (geosets via the mode's GeosetPass, PE2 particles), then
+// interleaves their per-unit draws back-to-front by (priorityPlane, distance).
+// Ribbons + corn join here in a later step; for now they stay separate passes.
+template <class GeosetPass>
+void RenderPipeline::RenderTransparentSceneT() {
+    auto* cmd = impl_->gfx_->GetImmediateContext();
+    const Vector3f camPos = rs_.Pipeline().FrameCamera().GetSource();
+    auto sqDistTo = [&](const Vector3f& p) {
+        const Vector3f d = {p.x - camPos.x, p.y - camPos.y, p.z - camPos.z};
+        return d.x * d.x + d.y * d.y + d.z * d.z;
+    };
+
+    // --- Geosets: prepare the pass (also does the pass-global binds once) ---
+    GeosetPass pass(rs_, GeosetBucket::Transparent);
+    render_detail::CollectedDrawLists geo;
+    bls::FrameInputs geoFrame;
+    Matrix44f geoView;
+    bls::BaselineLights geoBaseline;
+    const bool haveGeo = pass.PrepareInterleaved(geo, geoFrame, geoView, geoBaseline);
+
+    // --- PE2 particles: build geometry into the shared VB ---
+    std::vector<particle::EmitterDrawList> partDraws;
+    bls::FrameInputs partFrame;
+    bool haveParticles = false;
+    if (rs_.Settings().ShowParticles() && rs_.Particles().EmitterCount() > 0) {
+        std::vector<Vertex> verts;
+        const Matrix44f viewMat = rs_.Pipeline().FrameCamera().GetViewMatrix();
+        rs_.Particles().BuildGeometry(viewMat, verts, partDraws);
+        const i32 vertCount = (i32)verts.size();
+        if (vertCount > 0) {
+            if (impl_->particleServiceVB_ == gfx::BufferHandle::Invalid ||
+                vertCount > impl_->particleServiceVBSize_) {
+                impl_->gfx_->Destroy(impl_->particleServiceVB_);
+                constexpr i32 kFloor = 4096;
+                constexpr i32 kCeiling = 512 * 1024;
+                const i32 doubled = (std::max)(impl_->particleServiceVBSize_ * 2, kFloor);
+                const i32 newSize = (std::max)(vertCount, (std::min)(doubled, kCeiling));
+                gfx::BufferDesc bd;
+                bd.size = (u32)(sizeof(Vertex) * newSize);
+                bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
+                bd.ringSlotsHint = 4;
+                impl_->particleServiceVB_ = impl_->gfx_->CreateBuffer(bd);
+                impl_->particleServiceVBSize_ = newSize;
+            }
+            if (void* mapped = impl_->gfx_->MapBuffer(impl_->particleServiceVB_)) {
+                memcpy(mapped, verts.data(), sizeof(Vertex) * vertCount);
+                impl_->gfx_->UnmapBuffer(impl_->particleServiceVB_);
+            }
+            partFrame.world = Matrix44f::identity();
+            partFrame.view = viewMat;
+            const f32 aspect = (Height() > 0) ? (f32)Width() / (f32)Height() : 1.0f;
+            partFrame.projection = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);
+            partFrame.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
+            partFrame.numLights = 0;
+            partFrame.viewportRect = {(f32)Width(), (f32)Height(), 0.0f, 0.0f};
+            haveParticles = true;
+        }
+    }
+
+    // --- Ribbons: build each actor's strips into its per-actor VB ---
+    std::vector<RibbonDrawUnit> ribbonUnits;
+    bls::FrameInputs ribbonFrame;
+    if (rs_.Settings().ShowRibbons())
+        PrepareRibbons(ribbonUnits, ribbonFrame);
+
+    // --- Corn (PopcornFX): tick + consolidate into the shared buffers ---
+    std::vector<corn_effects::CornDrawUnit> cornUnits;
+    if (rs_.Settings().ShowParticles()) {
+        const f32 aspect = (Height() > 0) ? (f32)Width() / (f32)Height() : 1.0f;
+        corn_effects::CornEffectsFrameInputs fi;
+        fi.cmd = cmd;
+        fi.view = rs_.Pipeline().FrameCamera().ViewLH();
+        fi.projection = rs_.Pipeline().FrameCamera().ProjectionLH(aspect);
+        fi.viewportRect = {(f32)Width(), (f32)Height(), 0.0f, 0.0f};
+        fi.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
+        fi.rtvFormat = SceneTargetFormat();
+        fi.dsvFormat = impl_->depthStencilFormat_;
+        if (impl_->frameRenderMode_ == RenderMode::HD) {
+            fi.extraRtvFormats[0] = kLinearDepthFormat;
+            fi.extraRtvFormats[1] = kNormalBufferFormat;
+            fi.extraRtvCount = 2;
+        }
+        rs_.CornEffects().SetFrameInputs(fi);
+        rs_.CornEffects().Simulate(rs_.CornEffects().PendingDt());
+        rs_.CornEffects().PrepareInterleavedDraws(cornUnits);
+    }
+
+    // --- Collect + sort entries (priorityPlane asc, distance back-to-front) ---
+    std::vector<render_detail::TransparentDraw> entries;
+    entries.reserve((haveGeo ? geo.lists.transparent.size() : 0) + partDraws.size() +
+                    ribbonUnits.size() + cornUnits.size());
+    if (haveGeo)
+        for (u32 i = 0; i < geo.lists.transparent.size(); ++i)
+            entries.push_back({geo.lists.transparent[i].sqDist,
+                               geo.lists.transparent[i].priorityPlane,
+                               render_detail::TransparentKind::Geoset, i});
+    if (haveParticles)
+        for (u32 i = 0; i < partDraws.size(); ++i)
+            entries.push_back({sqDistTo(partDraws[i].worldOrigin), partDraws[i].priorityPlane,
+                               render_detail::TransparentKind::Particle, i});
+    for (u32 i = 0; i < ribbonUnits.size(); ++i)
+        entries.push_back({sqDistTo(ribbonUnits[i].origin), ribbonUnits[i].priorityPlane,
+                           render_detail::TransparentKind::Ribbon, i});
+    for (u32 i = 0; i < cornUnits.size(); ++i) {
+        Vector3f origin = {0, 0, 0};
+        if (Actor* owner = rs_.Scene().Actors().Find(cornUnits[i].model))
+            origin = whiteout::transform_point({0, 0, 0}, owner->worldTransform);
+        entries.push_back(
+            {sqDistTo(origin), cornUnits[i].priorityPlane, render_detail::TransparentKind::Corn, i});
+    }
+    if (entries.empty())
+        return;
+    std::sort(entries.begin(), entries.end(), render_detail::TransparentDrawOrder);
+
+    // --- Dispatch in sorted order ---
+    for (const auto& e : entries) {
+        switch (e.kind) {
+        case render_detail::TransparentKind::Geoset:
+            pass.DrawTransparentItem(geo.lists.transparent[e.unit], geoFrame, geoView, cmd,
+                                     geoBaseline);
+            break;
+        case render_detail::TransparentKind::Particle:
+            DrawParticleEmitter(partDraws[e.unit], partFrame);
+            break;
+        case render_detail::TransparentKind::Ribbon:
+            DrawRibbonStrip(ribbonUnits[e.unit], ribbonFrame);
+            break;
+        case render_detail::TransparentKind::Corn:
+            rs_.CornEffects().DrawCornSlice(cornUnits[e.unit].slice);
+            break;
+        }
+    }
+}
+
+void RenderPipeline::RenderTransparentScene() {
+    if (impl_->frameRenderMode_ == RenderMode::HD)
+        RenderTransparentSceneT<GeosetPassHd>();
+    else
+        RenderTransparentSceneT<GeosetPassBls>();
 }
 
 } // namespace whiteout::flakes::renderer

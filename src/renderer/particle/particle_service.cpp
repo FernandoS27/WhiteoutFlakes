@@ -85,8 +85,9 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
         const i32 offset = (i32)outVertices.size();
         i32 vcount = BuildEmitterGeometry(*e, in, outVertices);
         if (vcount > 0) {
+            const Vector3f origin = whiteout::transform_point({0, 0, 0}, e->ModelToWorld());
             outDrawLists.push_back(
-                {k.model, k.id, offset, vcount, e->PriorityPlane(), e->Material()});
+                {k.model, k.id, offset, vcount, e->PriorityPlane(), e->Material(), origin});
         }
     }
 }

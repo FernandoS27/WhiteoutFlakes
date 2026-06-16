@@ -37,6 +37,9 @@ struct EmitterDrawList {
     i32 vertexCount;
     i32 priorityPlane;
     ParticleMaterialDesc material;
+    // Emitter origin in world space — sort key for the back-to-front
+    // transparent pass (interleaves with geosets/ribbons/corn).
+    Vector3f worldOrigin = {0, 0, 0};
 };
 
 class ParticleService {

@@ -1065,6 +1065,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/frame_capture.cpp
     src/renderer/render_service.cpp
     src/renderer/render_detail.cpp
+    src/renderer/geoset_classify.cpp
     src/renderer/render_target.cpp
     src/renderer/scene_manager.cpp
     src/renderer/coordinate_system.cpp
@@ -1104,6 +1105,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/bls/bls_pso_builder.cpp
     src/renderer/bls/bls_pso_trace.cpp
     src/renderer/bls/bls_mat_params.cpp
+    src/renderer/bls/layer_material.cpp
     src/renderer/bls/bls_frame.cpp
     src/renderer/bls/bls_draw_helpers.cpp
     src/renderer/ibl/split_sum.cpp

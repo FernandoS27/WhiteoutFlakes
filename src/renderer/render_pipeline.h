@@ -34,6 +34,30 @@ class GeosetPassHd;
 class Camera;
 enum class GeosetBucket : u8;
 
+namespace particle {
+struct EmitterDrawList;
+}
+namespace bls {
+struct FrameInputs;
+}
+namespace model {
+struct Actor;
+}
+
+// One ribbon emitter's strip, surfaced for the unified transparent queue. Holds
+// the owning actor (for its per-actor ribbon VB + textures) and the resolved
+// material bits so DrawRibbonStrip can run it interleaved with other producers.
+struct RibbonDrawUnit {
+    model::Actor* actor = nullptr;
+    i32 filterMode = 0;
+    i32 matFlags = 0;
+    i32 textureId = -1;
+    i32 count = 0;
+    i32 offset = 0;
+    Vector3f origin = {0, 0, 0};
+    i32 priorityPlane = 0;
+};
+
 class RenderPipeline {
 public:
     explicit RenderPipeline(RenderService& rs);
@@ -189,13 +213,23 @@ private:
     void RunTonemapPass(const RenderTarget& target, gfx::TextureHandle dstColor);
     bool InitBlsShaders(gfx::GfxApi api);
     void ShutdownBlsShaders();
-    bool RenderParticlesBls();
     bool RenderSplatsBls();
     bool RenderGeosetsBls(GeosetBucket bucket);
     bool RenderGeosetsHd(GeosetBucket bucket);
-    void RenderRibbons();
-    void RenderCornEffects();
     void RenderGeosets(GeosetBucket bucket);
+    // Unified back-to-front transparent pass: interleaves transparent geosets,
+    // PE2 particles, ribbons and corn by camera distance (WC3's
+    // IModelRenderSceneTransparent). RenderTransparentScene picks the geoset
+    // submission for the active render mode; the templated body does the work.
+    void RenderTransparentScene();
+    template <class GeosetPass>
+    void RenderTransparentSceneT();
+    void DrawParticleEmitter(const particle::EmitterDrawList& dl, const bls::FrameInputs& frame);
+    // Build every actor's ribbon strips into their per-actor VBs and surface one
+    // RibbonDrawUnit per emitter (with a world sort origin); `outFrame` is the
+    // shared effect frame. DrawRibbonStrip renders one unit interleaved.
+    void PrepareRibbons(std::vector<RibbonDrawUnit>& out, bls::FrameInputs& outFrame);
+    void DrawRibbonStrip(const RibbonDrawUnit& u, const bls::FrameInputs& frame);
     void ApplyIblMode(IblMode mode);
     void SetEnvProbe(const std::string& relPath);
     void SetDayNightProbes(const std::string& dayPath, const std::string& nightPath);

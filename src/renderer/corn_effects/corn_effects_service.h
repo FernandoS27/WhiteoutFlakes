@@ -37,6 +37,16 @@ struct EmitterKeyHash {
     }
 };
 
+// One corn emitter's consolidated draw slice, surfaced for the unified
+// transparent queue. The owning model id lets the caller compute a world sort
+// position (from the actor) without re-entering the service mutex.
+struct CornDrawUnit {
+    ActorId model;
+    i32 emitterId;
+    i32 priorityPlane;
+    u32 slice;
+};
+
 class CornEffectsService {
 public:
     CornEffectsService();
@@ -88,6 +98,17 @@ public:
     ///        previous per-emitter Simulate-+-draw pattern.
     void SimulateAndRender(f32 dt);
 
+    // ---- Split form for the unified transparent queue ----
+    // Tick every emitter (fills the per-emitter pending CPU batches), no GPU.
+    void Simulate(f32 dt);
+    // Consolidate all pending batches into the shared VB/IB + CBs and surface
+    // one CornDrawUnit per emitter (sliced into the shared buffers). The caller
+    // sorts these among the other transparent producers and calls DrawCornSlice.
+    void PrepareInterleavedDraws(std::vector<CornDrawUnit>& out);
+    // Bind the shared corn resources and draw one prepared slice. Safe to call
+    // interleaved with other producers (re-binds its own VB/IB/CBs each call).
+    void DrawCornSlice(u32 slice);
+
     /// @brief Free the shared GPU resources. Called when the device
     ///        is being torn down so we don't leak handles past it.
     void ReleaseGpuResources();
@@ -103,7 +124,25 @@ public:
 
 private:
     bool EnsureSharedBuffers(u32 totalVerts, u32 totalIndices);
-    void FlushBatchedDraws();
+    void SimulateInternal(f32 dt); // Phase 0+1, caller holds mutex_
+
+    // One emitter's slice into the shared VB/IB after consolidation. Kept across
+    // PrepareInterleavedDraws → DrawCornSlice so draws can run in sorted order.
+    struct PreparedSlice {
+        CornEffectsGfxBackend* backend;
+        u32 baseVertex;
+        u32 baseIndex;
+        EmitterKey key;
+    };
+    std::vector<PreparedSlice> preparedSlices_;
+
+    // Shared core of SimulateAndRender / PrepareInterleavedDraws: pack every
+    // pending batch into the shared buffers + CBs, filling preparedSlices_.
+    // Returns false if there is nothing to draw. Caller holds mutex_.
+    bool ConsolidatePending();
+    // Draw one prepared slice (binds the shared resources first). Caller holds
+    // mutex_.
+    void DrawPreparedSlice(const PreparedSlice& s);
 
     mutable std::mutex mutex_;
     ::whiteout::cornflakes::ExpandingArena frameArena_{1U << 20};

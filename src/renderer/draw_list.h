@@ -66,4 +66,27 @@ inline bool TransparentOrder(const TransparentItem& a, const TransparentItem& b)
     return static_cast<u8>(a.depthFill) > static_cast<u8>(b.depthFill);
 }
 
+// One entry in the unified back-to-front transparent queue (WC3's
+// IModelRenderSceneTransparent). `kind` selects which producer draws it and
+// `unit` indexes into that producer's per-unit list. Sorting is producer-
+// agnostic: priorityPlane ascending, then camera distance back-to-front.
+enum class TransparentKind : u8 { Geoset = 0, Particle = 1, Ribbon = 2, Corn = 3 };
+
+struct TransparentDraw {
+    f32 sqDist = 0.0f;
+    i32 priorityPlane = 0;
+    TransparentKind kind = TransparentKind::Geoset;
+    u32 unit = 0;
+};
+
+inline bool TransparentDrawOrder(const TransparentDraw& a, const TransparentDraw& b) {
+    if (a.priorityPlane != b.priorityPlane)
+        return a.priorityPlane < b.priorityPlane;
+    if (a.sqDist != b.sqDist)
+        return a.sqDist > b.sqDist; // farther first (back-to-front)
+    if (a.kind != b.kind)
+        return static_cast<u8>(a.kind) < static_cast<u8>(b.kind);
+    return a.unit < b.unit;
+}
+
 } // namespace whiteout::flakes::renderer::render_detail

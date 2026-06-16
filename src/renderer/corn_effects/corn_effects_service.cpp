@@ -175,8 +175,7 @@ void CornEffectsService::SetOwningAgentVisibilityForModel(ActorId model, bool vi
     }
 }
 
-void CornEffectsService::SimulateAndRender(f32 dt) {
-    std::lock_guard<std::mutex> lock(mutex_);
+void CornEffectsService::SimulateInternal(f32 dt) {
     frameArena_.reset();
     // Phase 0: clear every emitter's pending batch. Inactive emitters
     // (visibility lost, not spawning) short-circuit out of Update before
@@ -193,9 +192,34 @@ void CornEffectsService::SimulateAndRender(f32 dt) {
         e->gameToCornEffectsScale_ = gameToCornEffectsScale_;
         e->Update(dt, false);
     }
-    // Phase 2: consolidate all pending batches into the shared GPU
-    // resources and emit draws.
-    FlushBatchedDraws();
+}
+
+void CornEffectsService::Simulate(f32 dt) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    SimulateInternal(dt);
+}
+
+void CornEffectsService::SimulateAndRender(f32 dt) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    SimulateInternal(dt);
+    if (ConsolidatePending())
+        for (const auto& s : preparedSlices_)
+            DrawPreparedSlice(s);
+}
+
+void CornEffectsService::PrepareInterleavedDraws(std::vector<CornDrawUnit>& out) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!ConsolidatePending())
+        return;
+    out.reserve(out.size() + preparedSlices_.size());
+    for (u32 i = 0; i < preparedSlices_.size(); ++i)
+        out.push_back({preparedSlices_[i].key.model, preparedSlices_[i].key.id, 0, i});
+}
+
+void CornEffectsService::DrawCornSlice(u32 slice) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (slice < preparedSlices_.size())
+        DrawPreparedSlice(preparedSlices_[slice]);
 }
 
 bool CornEffectsService::EnsureSharedBuffers(u32 totalVerts, u32 totalIndices) {
@@ -246,10 +270,11 @@ bool CornEffectsService::EnsureSharedBuffers(u32 totalVerts, u32 totalIndices) {
            sharedVsCb_ != gfx::BufferHandle::Invalid && sharedPsCb_ != gfx::BufferHandle::Invalid;
 }
 
-void CornEffectsService::FlushBatchedDraws() {
+bool CornEffectsService::ConsolidatePending() {
+    preparedSlices_.clear();
     if (!backendInit_ || !backendInit_->device || !backendInit_->program ||
         !backendInit_->psoBuilder || !frameInputs_.cmd)
-        return;
+        return false;
 
     // Sum totals across every emitter's pending_ batch.
     u32 totalVerts = 0, totalIndices = 0, totalDraws = 0;
@@ -262,25 +287,14 @@ void CornEffectsService::FlushBatchedDraws() {
         totalIndices += static_cast<u32>(p.indices.size());
         totalDraws   += static_cast<u32>(p.draws.size());
     }
-    if (totalDraws == 0) return;
-
-    if (!EnsureSharedBuffers(totalVerts, totalIndices)) return;
+    if (totalDraws == 0) return false;
+    if (!EnsureSharedBuffers(totalVerts, totalIndices)) return false;
 
     auto* device = backendInit_->device;
-    auto* cmd    = frameInputs_.cmd;
 
-    // Pack every emitter's verts/indices contiguously into the shared
-    // buffers. Each emitter's slice gets a (baseVertex, baseIndex) into
-    // the shared buffer; DrawIndexed picks them up via the corresponding
-    // args.
-    struct EmitterSlice {
-        CornEffectsGfxBackend* backend;
-        u32 baseVertex;
-        u32 baseIndex;
-    };
-    std::vector<EmitterSlice> slices;
-    slices.reserve(emitters_.size());
-
+    // Pack every emitter's verts/indices contiguously into the shared buffers;
+    // each emitter's slice records its (baseVertex, baseIndex) + key so its
+    // draws can run later in sorted order via DrawCornSlice.
     if (void* vp = device->MapBuffer(sharedVb_)) {
         auto* dst = static_cast<CornEffectsVertex*>(vp);
         u32 voff = 0;
@@ -303,15 +317,14 @@ void CornEffectsService::FlushBatchedDraws() {
             const auto& p = be->Pending();
             if (p.Empty()) continue;
             std::memcpy(dst + ioff, p.indices.data(), sizeof(u16) * p.indices.size());
-            slices.push_back({be, voff, ioff});
+            preparedSlices_.push_back({be, voff, ioff, k});
             voff += static_cast<u32>(p.verts.size());
             ioff += static_cast<u32>(p.indices.size());
         }
         device->UnmapBuffer(sharedIb_);
     }
 
-    // Write the shared CBs once — frame inputs are identical for every
-    // emitter (camera view/proj/effectTime), so a single write is enough.
+    // Write the shared CBs once — frame inputs are identical for every emitter.
     const Matrix44f worldView     = frameInputs_.view;
     const Matrix44f worldViewProj = frameInputs_.view * frameInputs_.projection;
     if (auto vs = bls::ScopedCb<bls::HdVsCb>(device, sharedVsCb_)) {
@@ -338,11 +351,17 @@ void CornEffectsService::FlushBatchedDraws() {
         cb.effectTime    = frameInputs_.effectTime;
         cb.lightCount    = 0.0f;
     }
+    return true;
+}
 
-    // Bind shared resources ONCE for every emitter's draws — the
-    // command list's redundant-bind suppression de-dupes the per-draw
-    // calls, but we issue them here once upfront so the cache hits
-    // immediately.
+void CornEffectsService::DrawPreparedSlice(const PreparedSlice& s) {
+    auto* cmd = frameInputs_.cmd;
+    if (!cmd)
+        return;
+
+    // Re-bind the shared resources each call so this is safe interleaved with
+    // other transparent producers; redundant-bind suppression de-dupes runs of
+    // consecutive corn slices.
     cmd->BindVertexBuffer(0, sharedVb_, sizeof(CornEffectsVertex));
     cmd->BindIndexBuffer(sharedIb_, gfx::Format::R16_UINT);
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, sharedVsCb_);
@@ -352,51 +371,42 @@ void CornEffectsService::FlushBatchedDraws() {
                          backendInit_->samplers->WrapVariant(assets::kSamplerWrapBitsMask));
     }
 
-    // Issue every emitter's draws using its (baseVertex, baseIndex) into
-    // the shared buffer. Pipeline / texture binds use the command list's
-    // redundant-bind suppression — drawing N consecutive layers with the
-    // same blendMode = N PipelineHandles compare-equal = N-1 SetPipeline
-    // calls skipped.
     auto* assets = backendInit_->assets;
     auto* tex_mgr = backendInit_->textures;
-    for (const auto& s : slices) {
-        const auto& p = s.backend->Pending();
-        for (const auto& d : p.draws) {
-            bls::MatParams mp;
-            mp.shaderId    = bls::GxShaderID::CornFx;
-            mp.alpha       = CornEffectsGfxBackend::BlendModeToGxAlpha(d.blendMode);
-            mp.disables    = bls::kDisableLighting | bls::kDisableDepthWrite | bls::kDisableCull;
-            mp.diffuseColor = {1, 1, 1, 1};
+    const auto& p = s.backend->Pending();
+    for (const auto& d : p.draws) {
+        bls::MatParams mp;
+        mp.shaderId    = bls::GxShaderID::CornFx;
+        mp.alpha       = CornEffectsGfxBackend::BlendModeToGxAlpha(d.blendMode);
+        mp.disables    = bls::kDisableLighting | bls::kDisableDepthWrite | bls::kDisableCull;
+        mp.diffuseColor = {1, 1, 1, 1};
 
-            bls::PermuteIndices perm{kVsPermBasicUVWithVC, kPsPermBasicUVWithVC};
+        bls::PermuteIndices perm{kVsPermBasicUVWithVC, kPsPermBasicUVWithVC};
 
-            auto req = bls::MakePsoRequest(backendInit_->program, bls::VertexLayoutKind::CornFx, mp, perm);
-            req.rtvFormat = frameInputs_.rtvFormat;
-            req.extraRtvCount = frameInputs_.extraRtvCount;
-            for (u32 i = 0; i < frameInputs_.extraRtvCount &&
-                            i < gfx::GraphicsPipelineDesc::kMaxExtraColorAttachments;
-                 ++i) {
-                req.extraRtvFormats[i] = frameInputs_.extraRtvFormats[i];
-            }
-            req.dsvFormat = frameInputs_.dsvFormat;
-            auto pso = backendInit_->psoBuilder->GetOrBuild(req);
-            if (pso == gfx::PipelineHandle::Invalid)
-                continue;
-            cmd->BindPipeline(pso);
-
-            const auto diffuseSlot = s.backend->LayerDiffuseSlot(d.layerIdx, d.rendererIdx);
-            gfx::TextureHandle tex =
-                (diffuseSlot != 0 && assets) ? assets->TextureOf(diffuseSlot) : gfx::TextureHandle::Invalid;
-            if (tex == gfx::TextureHandle::Invalid && tex_mgr) {
-                tex = tex_mgr->GetDefaults().White;
-            }
-            if (tex != gfx::TextureHandle::Invalid) {
-                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, tex);
-            }
-
-            cmd->DrawIndexed(d.indexCount, s.baseIndex + d.indexFirst,
-                             static_cast<i32>(s.baseVertex));
+        auto req =
+            bls::MakePsoRequest(backendInit_->program, bls::VertexLayoutKind::CornFx, mp, perm);
+        req.rtvFormat = frameInputs_.rtvFormat;
+        req.extraRtvCount = frameInputs_.extraRtvCount;
+        for (u32 i = 0; i < frameInputs_.extraRtvCount &&
+                        i < gfx::GraphicsPipelineDesc::kMaxExtraColorAttachments;
+             ++i) {
+            req.extraRtvFormats[i] = frameInputs_.extraRtvFormats[i];
         }
+        req.dsvFormat = frameInputs_.dsvFormat;
+        auto pso = backendInit_->psoBuilder->GetOrBuild(req);
+        if (pso == gfx::PipelineHandle::Invalid)
+            continue;
+        cmd->BindPipeline(pso);
+
+        const auto diffuseSlot = s.backend->LayerDiffuseSlot(d.layerIdx, d.rendererIdx);
+        gfx::TextureHandle tex = (diffuseSlot != 0 && assets) ? assets->TextureOf(diffuseSlot)
+                                                              : gfx::TextureHandle::Invalid;
+        if (tex == gfx::TextureHandle::Invalid && tex_mgr)
+            tex = tex_mgr->GetDefaults().White;
+        if (tex != gfx::TextureHandle::Invalid)
+            cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, tex);
+
+        cmd->DrawIndexed(d.indexCount, s.baseIndex + d.indexFirst, static_cast<i32>(s.baseVertex));
     }
 }
 

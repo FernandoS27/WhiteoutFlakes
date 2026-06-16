@@ -139,10 +139,10 @@ void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::Rende
                                    ::whiteout::cornflakes::IssueBag& /*issues*/) {
     // CPU-only: produces pending_.verts/indices/draws. The owning
     // CornEffectsService aggregates every emitter's batch into one
-    // shared VB/IB/CB pair and issues consolidated draws in
-    // FlushBatchedDraws — single MapBuffer cycle, single CB write,
-    // and one DrawIndexed per draw (with baseVertex/firstIndex into
-    // the shared buffers).
+    // shared VB/IB/CB pair (ConsolidatePending) and issues consolidated
+    // draws — single MapBuffer cycle, single CB write, and one
+    // DrawIndexed per draw (with baseVertex/firstIndex into the shared
+    // buffers).
     pending_.Clear();
     if (!device_ || !program_ || !psoBuilder_) {
         return;

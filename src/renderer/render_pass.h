@@ -64,6 +64,38 @@ public:
         return true;
     }
 
+    // Set up the pass and hand back its state (collected lists, frame, view,
+    // baseline) for the unified transparent orchestrator, which interleaves
+    // DrawTransparentItem with other producers by depth. Pass-global binds
+    // (sampler, BindPassResources) happen here, once. Returns false if the pass
+    // isn't available or there are no actors.
+    bool PrepareInterleaved(render_detail::CollectedDrawLists& outCollected,
+                            bls::FrameInputs& outFrame, Matrix44f& outView,
+                            bls::BaselineLights& outBaseline) {
+        Derived& d = self();
+        if (!d.IsAvailable() || rs_.Scene().Actors().All().empty())
+            return false;
+
+        auto* cmd = rs_.Pipeline().Gfx()->GetImmediateContext();
+        const Vector3f camPos = rs_.Pipeline().FrameCamera().GetSource();
+        outCollected = render_detail::BuildDrawLists(
+            rs_.Scene().Actors().All(), rs_.Pipeline().ComputeSelectedLod(), camPos);
+
+        Matrix44f proj;
+        d.ComputeViewProj(outView, proj);
+        outFrame.view = outView;
+        outFrame.projection = proj;
+        outFrame.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
+        outFrame.numLights = 0;
+        outFrame.viewportRect = {(f32)rs_.Pipeline().Width(), (f32)rs_.Pipeline().Height(), 0.0f,
+                                 0.0f};
+
+        cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.Samplers().LinearWrap());
+        d.BindPassResources(cmd, outFrame);
+        outBaseline = d.Baseline(outView);
+        return true;
+    }
+
 protected:
     RenderService& rs_;
     GeosetBucket bucket_;
