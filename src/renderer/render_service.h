@@ -86,19 +86,6 @@ inline bool GeosetPassesLod(u32 geosetLod, i32 selectedLod) {
     return geosetLod == 0xFFFFFFFFu || (i32)geosetLod == selectedLod;
 }
 
-inline i32 GeosetRenderOrder(i32 filterMode) {
-    switch (filterMode) {
-    case model::FILTER_NONE:
-        return 1;
-    case model::FILTER_TRANSPARENT:
-        return 2;
-    case model::FILTER_BLEND:
-        return 3;
-    default:
-        return 4;
-    }
-}
-
 class RenderService {
 public:
     explicit RenderService(SceneManager& scene);

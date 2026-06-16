@@ -581,6 +581,28 @@ void ModelLoader::UploadStagedTextures(Actor& mi) {
     mi.render.stagedTextures.clear();
 }
 
+namespace {
+// Local-space bounds center of a geoset. Used as its sort position in the
+// back-to-front transparent pass (transformed by the actor world matrix at
+// collection time). `get(i)` returns vertex i's position.
+template <class Get>
+Vector3f GeosetBoundsCenter(i32 count, Get&& get) {
+    if (count <= 0)
+        return {0, 0, 0};
+    Vector3f lo = get(0), hi = lo;
+    for (i32 i = 1; i < count; ++i) {
+        const Vector3f p = get(i);
+        lo.x = std::min(lo.x, p.x);
+        lo.y = std::min(lo.y, p.y);
+        lo.z = std::min(lo.z, p.z);
+        hi.x = std::max(hi.x, p.x);
+        hi.y = std::max(hi.y, p.y);
+        hi.z = std::max(hi.z, p.z);
+    }
+    return {(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f};
+}
+} // namespace
+
 void ModelLoader::uploadTemplateGpu(ModelTemplate& tmpl) {
     if (tmpl.gpuUploaded)
         return;
@@ -604,6 +626,8 @@ void ModelLoader::uploadTemplateGpu(ModelTemplate& tmpl) {
         sg.lod = mesh.lod;
         sg.vertexCount = (i32)mesh.positions.size();
         sg.indexCount = (i32)mesh.indices.size();
+        sg.localCentroid =
+            GeosetBoundsCenter(sg.vertexCount, [&](i32 i) { return mesh.positions[i]; });
 
         std::vector<Vertex> vertices(sg.vertexCount);
         for (i32 i = 0; i < sg.vertexCount; i++) {
@@ -716,6 +740,7 @@ void ModelLoader::UploadStagedGeosets(Actor& mi) {
                 gg.boneVb = shared.boneVb;
                 gg.indexCount = shared.indexCount;
                 gg.vertexCount = shared.vertexCount;
+                gg.localCentroid = shared.localCentroid;
                 gg.hasSkinning = true;
                 if (shared.materialId >= 0 &&
                     shared.materialId < (i32)mi.render.gpuMaterials.size())
@@ -739,6 +764,8 @@ void ModelLoader::UploadStagedGeosets(Actor& mi) {
             gg.lod = sg.lod;
             gg.indexCount = (i32)sg.indices.size();
             gg.vertexCount = (i32)sg.vertices.size();
+            gg.localCentroid =
+                GeosetBoundsCenter(gg.vertexCount, [&](i32 i) { return sg.vertices[i].position; });
             gg.hasSkinning = true;
 
             if (sg.materialId >= 0 && sg.materialId < (i32)mi.render.gpuMaterials.size())

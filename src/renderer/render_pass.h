@@ -21,7 +21,11 @@ public:
     explicit BlsGeosetPass(RenderService& rs, GeosetBucket bucket = GeosetBucket::All) noexcept
         : rs_(rs), bucket_(bucket) {}
 
-    bool Run() {
+    // List-driven driver: classify + sort once (WC3 per-layer opaque / whole-
+    // geoset transparent), then submit the bucket's items via the Derived
+    // DrawOpaqueItem / DrawTransparentItem. Lighting is built per item by the
+    // submission. Replaces Run()'s per-geoset bucket filter.
+    bool RunLists() {
         Derived& d = self();
         if (!d.IsAvailable())
             return false;
@@ -29,10 +33,10 @@ public:
             return true;
 
         auto* cmd = rs_.Pipeline().Gfx()->GetImmediateContext();
-
-        auto collected = render_detail::CollectSortedRenderables(
-            rs_.Scene().Actors().All(), rs_.Pipeline().ComputeSelectedLod());
-        if (collected.refs.empty())
+        const Vector3f camPos = rs_.Pipeline().FrameCamera().GetSource();
+        auto collected = render_detail::BuildDrawLists(
+            rs_.Scene().Actors().All(), rs_.Pipeline().ComputeSelectedLod(), camPos);
+        if (collected.lists.opaque.empty() && collected.lists.transparent.empty())
             return true;
 
         Matrix44f view, proj;
@@ -51,31 +55,12 @@ public:
 
         const bls::BaselineLights baseline = d.Baseline(view);
 
-        for (auto& ref : collected.refs) {
-
-            if (bucket_ == GeosetBucket::Opaque && ref.renderOrder > 1)
-                continue;
-            if (bucket_ == GeosetBucket::Transparent && ref.renderOrder <= 1)
-                continue;
-
-            const auto& view_ = *ref.view;
-            // Skip skinned actors whose bone palette hasn't been
-            // populated yet (frame_ticker's UpdateAnimation gates its
-            // upload on SkinningSystem::IsReady). Drawing here would
-            // bind a zero-initialised bone palette and emit degenerate
-            // skinned geometry.
-            if (view_.skinning && view_.skinning->HasSkeleton() && !view_.skinning->IsReady())
-                continue;
-            const auto& geo = (*view_.geosets)[ref.idx];
-            if (geo.unskinnedVb == gfx::BufferHandle::Invalid ||
-                geo.ib == gfx::BufferHandle::Invalid || geo.indexCount == 0)
-                continue;
-
-            const i32 lightCount = bls::BuildLightPalette(
-                frame, *view_.activeLights, view, baseline, rs_.Settings().GetLightingMode());
-
-            d.DrawGeoset(ref, frame, view, cmd, lightCount);
-        }
+        if (bucket_ != GeosetBucket::Transparent)
+            for (const auto& item : collected.lists.opaque)
+                d.DrawOpaqueItem(item, frame, view, cmd, baseline);
+        if (bucket_ != GeosetBucket::Opaque)
+            for (const auto& item : collected.lists.transparent)
+                d.DrawTransparentItem(item, frame, view, cmd, baseline);
         return true;
     }
 

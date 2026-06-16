@@ -101,14 +101,28 @@ void ApplyBoneMatrices(Actor& mi, const FrameState& state, const Vector3f& camPo
                 bool haveRot = false;
 
                 if (bbFlags & BONE_BILLBOARD_FULL) {
+                    // Local X faces the camera, but the in-plane roll is taken
+                    // from the node's animated orientation (its world Y) rather
+                    // than a fixed world-up. A spinning billboard (e.g. the
+                    // swirls on Xalatath) keeps its spin instead of freezing,
+                    // because its rotation track sweeps that up reference; a
+                    // node with no animated rotation just holds its rest roll.
                     Vector3f xp = toCam;
-                    Vector3f yp = {-xp.y, xp.x, 0.0f};
-                    f32 yLen = yp.length();
-                    if (yLen < kBillboardDistThreshold)
-                        yp = {0, 1, 0};
+                    Vector3f upRef = rowToVec(boneM, 1);
+                    if (upRef.length() < kBillboardDistThreshold)
+                        upRef = worldUp;
                     else
-                        yp = yp.normalized();
-                    Vector3f zp = whiteout::cross(xp, yp);
+                        upRef = upRef.normalized();
+                    Vector3f zp = whiteout::cross(xp, upRef);
+                    if (zp.length() < kBillboardDistThreshold) {
+                        // up reference is parallel to the view axis — fall back
+                        // to world-up, then to a fixed axis if that also folds.
+                        zp = whiteout::cross(xp, worldUp);
+                        if (zp.length() < kBillboardDistThreshold)
+                            zp = {0, 0, 1};
+                    }
+                    zp = zp.normalized();
+                    Vector3f yp = whiteout::cross(zp, xp);
                     bbRot = {};
                     bbRot.data[0][0] = xp.x;
                     bbRot.data[0][1] = xp.y;

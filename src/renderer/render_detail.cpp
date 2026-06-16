@@ -1,5 +1,6 @@
 #include "bls/bls_frame.h"
 #include "constants.h"
+#include "geoset_classify.h"
 #include "render_detail.h"
 #include "renderer/assets/sampler_asset_manager.h"
 #include "renderer/render_service.h"
@@ -13,54 +14,81 @@ using namespace ::whiteout::flakes::renderer::model;
 using namespace ::whiteout::flakes::renderer::assets;
 using namespace ::whiteout::flakes::renderer::bls;
 
-CollectedRenderables CollectSortedRenderables(
-    const std::unordered_map<u32, std::unique_ptr<Actor>>& models, i32 selectedLod) {
-    CollectedRenderables out;
+namespace {
+// Bind a RenderableView to an actor's render state. Shared by both the legacy
+// per-geoset collector and BuildDrawLists so the wiring lives in one place.
+void FillRenderableView(RenderableView& view, model::Actor& mi) {
+    view.geosets = &mi.render.gpuGeosets;
+    view.materials = &mi.render.gpuMaterials;
+    view.textures = mi.render.textures.get();
+    view.skinning = &mi.render.skinning;
+    view.activeLights = &mi.render.activeLights;
+    view.texAnimPalette = &mi.render.texAnimPalette;
+    view.worldTransform = mi.worldTransform;
+    view.parentVisibility = mi.parentVisibility;
+    view.hasLods = mi.render.hasLods;
+    view.teamColor = mi.teamColor;
+}
 
+bool GeosetDrawable(const model::GPUGeoset& geo) {
+    return geo.unskinnedVb != gfx::BufferHandle::Invalid &&
+           geo.ib != gfx::BufferHandle::Invalid && geo.indexCount != 0;
+}
+} // namespace
+
+CollectedDrawLists BuildDrawLists(
+    const std::unordered_map<u32, std::unique_ptr<model::Actor>>& models, i32 selectedLod,
+    const Vector3f& cameraPos) {
+    CollectedDrawLists out;
     out.views.reserve(models.size());
-    out.refs.reserve(models.size() * 4);
+    out.lists.opaque.reserve(models.size() * 4);
+    out.lists.transparent.reserve(models.size() * 2);
 
     for (const auto& [h, miPtr] : models) {
         Actor* mi = miPtr.get();
         if (mi->parentVisibility <= 0.02f)
             continue;
-
+        // Skip skinned actors whose bone palette hasn't been uploaded yet —
+        // drawing here would bind a zero bone palette (matches the old pass).
+        if (mi->render.skinning.HasSkeleton() && !mi->render.skinning.IsReady())
+            continue;
+        // `views` is reserved to models.size() so these pointers stay valid.
         RenderableView& view = out.views.emplace_back();
-        view.geosets = &mi->render.gpuGeosets;
-        view.materials = &mi->render.gpuMaterials;
-        view.textures = mi->render.textures.get();
-        view.skinning = &mi->render.skinning;
-        view.activeLights = &mi->render.activeLights;
-        view.texAnimPalette = &mi->render.texAnimPalette;
-        view.worldTransform = mi->worldTransform;
-        view.parentVisibility = mi->parentVisibility;
-        view.hasLods = mi->render.hasLods;
-        view.teamColor = mi->teamColor;
+        FillRenderableView(view, *mi);
 
         const i32 modelLod = mi->render.hasLods ? selectedLod : 0;
         const i32 geosetCount = static_cast<i32>(mi->render.gpuGeosets.size());
         for (i32 i = 0; i < geosetCount; ++i) {
             const auto& geo = mi->render.gpuGeosets[i];
-            if (!GeosetPassesLod(geo.lod, modelLod))
+            if (!GeosetPassesLod(geo.lod, modelLod) || !GeosetDrawable(geo))
                 continue;
-            i32 ro = 1;
-            const i32 matId = geo.materialId;
-            if (matId >= 0 && matId < static_cast<i32>(mi->render.gpuMaterials.size()) &&
-                !mi->render.gpuMaterials[matId].cpu.layers.empty()) {
-                ro = GeosetRenderOrder(mi->render.gpuMaterials[matId].cpu.layers[0].filterMode);
+
+            const GeosetClass gc = ClassifyGeoset(view, geo);
+            if (!gc.visible)
+                continue;
+
+            if (gc.opaque) {
+                // Opaque geoset: one whole-geoset draw (layers in order; depth
+                // buffer sorts it against the rest of the opaque set).
+                out.lists.opaque.push_back({&view, i});
+            } else {
+                // Transparent geoset: one whole-geoset draw, sorted back-to-front
+                // by its world-space centroid distance.
+                TransparentItem t;
+                t.view = &view;
+                t.geoIdx = i;
+                t.depthFill = bls::DepthFill::None;
+                const Vector3f wc = whiteout::transform_point(geo.localCentroid, view.worldTransform);
+                const Vector3f d = {wc.x - cameraPos.x, wc.y - cameraPos.y, wc.z - cameraPos.z};
+                t.sqDist = d.x * d.x + d.y * d.y + d.z * d.z;
+                t.priorityPlane = geo.priorityPlane;
+                out.lists.transparent.push_back(t);
             }
-            out.refs.push_back({&view, i, ro, geo.priorityPlane, geo.geosetId});
         }
     }
 
-    std::sort(out.refs.begin(), out.refs.end(), [](const GeosetRef& a, const GeosetRef& b) {
-        if (a.renderOrder != b.renderOrder)
-            return a.renderOrder < b.renderOrder;
-        if (a.priorityPlane != b.priorityPlane)
-            return a.priorityPlane < b.priorityPlane;
-        return a.geosetId < b.geosetId;
-    });
-
+    std::sort(out.lists.opaque.begin(), out.lists.opaque.end(), OpaqueOrder);
+    std::sort(out.lists.transparent.begin(), out.lists.transparent.end(), TransparentOrder);
     return out;
 }
 

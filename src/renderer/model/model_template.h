@@ -35,6 +35,7 @@ struct ModelTemplate {
         i32 vertexCount = 0;
         i32 materialId = -1;
         u32 lod = 0;
+        Vector3f localCentroid = {0, 0, 0}; // local bounds center (transparent sort)
     };
 
     std::shared_ptr<io::MdxModelAdapter> adapter;

@@ -70,6 +70,11 @@ struct GPUGeoset {
     Matrix44f worldMatrix = Matrix44f::identity();
     i32 priorityPlane = 0;
 
+    // Local-space bounds center, computed once at upload. Transformed by the
+    // actor world matrix at collection time to give a per-geoset sort position
+    // for the back-to-front transparent pass (mirrors WC3's geoset centroid).
+    Vector3f localCentroid = {0, 0, 0};
+
     void Release(gfx::IGFXDevice& gfx, bool freeSharedBuffers = true) {
         if (freeSharedBuffers) {
             gfx.Destroy(ib);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "draw_list.h"
 #include "gfx/gfx.h"
 #include "renderer/model/model_instance.h"
 #include "renderer/types.h"
@@ -53,21 +54,18 @@ struct RenderableView {
     u32 teamColor = 0x000000FFu;
 };
 
-struct GeosetRef {
-    const RenderableView* view;
-    i32 idx;
-    i32 renderOrder;
-    i32 priorityPlane;
-    i32 geosetId;
-};
-
-struct CollectedRenderables {
+// Owns the per-actor views the draw items point into (kept stable for the
+// frame), plus the classified + sorted opaque/transparent lists. Replaces the
+// per-geoset bucket model with WC3's per-layer opaque / whole-geoset transparent
+// split (see ClassifyGeoset / draw_list.h).
+struct CollectedDrawLists {
     std::vector<RenderableView> views;
-    std::vector<GeosetRef> refs;
+    DrawLists lists;
 };
 
-CollectedRenderables CollectSortedRenderables(
-    const std::unordered_map<u32, std::unique_ptr<model::Actor>>& models, i32 selectedLod);
+CollectedDrawLists BuildDrawLists(
+    const std::unordered_map<u32, std::unique_ptr<model::Actor>>& models, i32 selectedLod,
+    const Vector3f& cameraPos);
 
 // `paletteCb` is the bone-palette CB to bind when this geoset has
 // skinning data. Pass `geo.bonePaletteCb` directly when the actor is

@@ -12,6 +12,7 @@
 #include "bls/bls_draw_helpers.h"
 #include "bls/bls_frame.h"
 #include "bls/bls_mat_params.h"
+#include "bls/layer_material.h"
 #include "bls/bls_program.h"
 #include "bls/bls_pso_builder.h"
 #include "bls/bls_pso_trace.h"
@@ -2199,18 +2200,38 @@ public:
         };
     }
 
-    void DrawGeoset(const render_detail::GeosetRef& ref, bls::FrameInputs& frame, const Matrix44f&,
-                    gfx::IGFXCommandList* cmd, i32 lightCountForGeoset) {
-        const auto& view_ = *ref.view;
-        const auto& geo = (*view_.geosets)[ref.idx];
+    // ---- List-driven submission (RunLists dispatches here) ----------------
+    // DrawOpaqueItem / DrawTransparentItem name *what* to draw; EmitLayers is
+    // the single cohesive submission path (one geoset, one depth-fill mode);
+    // DrawLayer issues the PSO + draw for one resolved layer.
 
+    void DrawOpaqueItem(const render_detail::OpaqueItem& item, bls::FrameInputs& frame,
+                        const Matrix44f& viewMat, gfx::IGFXCommandList* cmd,
+                        const bls::BaselineLights& baseline) {
+        const auto& view_ = *item.view;
+        EmitLayers(view_, (*view_.geosets)[item.geoIdx], bls::DepthFill::None, frame, viewMat, cmd,
+                   baseline);
+    }
+
+    void DrawTransparentItem(const render_detail::TransparentItem& item, bls::FrameInputs& frame,
+                             const Matrix44f& viewMat, gfx::IGFXCommandList* cmd,
+                             const bls::BaselineLights& baseline) {
+        const auto& view_ = *item.view;
+        EmitLayers(view_, (*view_.geosets)[item.geoIdx], item.depthFill, frame, viewMat, cmd,
+                   baseline);
+    }
+
+    // Draw a geoset's visible layers (in order) under `depthFill`. The per-layer
+    // fade promotion + depth-only prepass live entirely in ResolveLayerMaterial —
+    // there is no special-case prepass loop here.
+    void EmitLayers(const render_detail::RenderableView& view_, const GPUGeoset& geo,
+                    bls::DepthFill depthFill, bls::FrameInputs& frame, const Matrix44f& viewMat,
+                    gfx::IGFXCommandList* cmd, const bls::BaselineLights& baseline) {
         const GPUMaterial* mat = nullptr;
-        const i32 matId = geo.materialId;
-        if (matId >= 0 && matId < (i32)view_.materials->size())
-            mat = &(*view_.materials)[matId];
+        if (geo.materialId >= 0 && geo.materialId < (i32)view_.materials->size())
+            mat = &(*view_.materials)[geo.materialId];
 
         const f32 geoAlpha = geo.geosetAlpha * view_.parentVisibility;
-
         if (geoAlpha <= 0.0f)
             return;
 
@@ -2218,133 +2239,85 @@ public:
         if (numLayers <= 0)
             numLayers = 1;
 
-        // Pick the bone palette CB the actor actually owns: per-actor
-        // on Path A (allocated on the SkinningSystem), per-geoset on
-        // Path B (the original layout). Without this branch the SD
-        // path looked at `geo.bonePaletteCb` only — which is Invalid
-        // for Path A actors — and incorrectly fell back to the non-
-        // skinned VS permutation, rendering at bind pose. Caught on
-        // Oldblood_hero.mdx via RenderDoc.
+        // Pick the bone palette CB the actor owns: per-actor on Path A (on the
+        // SkinningSystem), per-geoset on Path B. Without this the SD path saw
+        // only `geo.bonePaletteCb` (Invalid for Path A) and rendered bind pose.
         gfx::BufferHandle paletteCb = geo.bonePaletteCb;
-        if (view_.skinning && view_.skinning->UsesPerActorPalette()) {
+        if (view_.skinning && view_.skinning->UsesPerActorPalette())
             paletteCb = view_.skinning->ActorPaletteCb();
-        }
         const bool hasBones = render_detail::BindSdMeshGeometry(cmd, geo, paletteCb);
-
         const auto layout =
             hasBones ? bls::VertexLayoutKind::ParticleSDSkinned : bls::VertexLayoutKind::ParticleSD;
 
-        struct LayerJob {
-            render_detail::UnpackedLayer layer;
-            bls::MatParams mp;
-            i32 activeN = 0;
-            bool unlit = false;
-            bool isOpaqueFading = false;
-            bool valid = false;
-        };
-        std::vector<LayerJob> jobs(numLayers);
+        const i32 lightCount = bls::BuildLightPalette(frame, *view_.activeLights, viewMat, baseline,
+                                                      rs_.Settings().GetLightingMode());
 
         for (i32 li = 0; li < numLayers; ++li) {
-            jobs[li].layer = render_detail::UnpackLayer(mat, li);
-            const auto& layer = jobs[li].layer;
+            const render_detail::UnpackedLayer layer = render_detail::UnpackLayer(mat, li);
             const f32 combinedAlpha = geoAlpha * layer.alpha;
             if (combinedAlpha < 0.004f)
                 continue;
 
+            const bls::MatParams base =
+                bls::FromMdxLayer(layer.filterMode, layer.flags, bls::GxShaderID::SD);
+            const Vector4f color = {geo.geosetColor.x, geo.geosetColor.y, geo.geosetColor.z,
+                                    combinedAlpha};
+            // isOpaqueFading only feeds the Color (HD) path; SD passes None.
             const bool isOpaqueFading =
-                combinedAlpha < 0.99f && layer.filterMode <= FILTER_TRANSPARENT;
-            i32 effectiveFilter = layer.filterMode;
-            if (isOpaqueFading)
-                effectiveFilter = FILTER_BLEND;
+                combinedAlpha < 0.99f && bls::FilterToGxAlpha(layer.filterMode) < bls::GxMatAlpha::Blend;
+            const bls::MatParams mp =
+                bls::ResolveLayerMaterial(depthFill, base, isOpaqueFading, color);
 
-            bls::MatParams mp =
-                bls::FromMdxLayer(effectiveFilter, layer.flags, bls::GxShaderID::SD);
-            if (mp.alpha == bls::GxMatAlpha::Modulate) {
-                mp.diffuseColor = {combinedAlpha, 1, 1, 1};
-            } else {
-                mp.diffuseColor = {geo.geosetColor.x, geo.geosetColor.y, geo.geosetColor.z,
-                                   combinedAlpha};
-            }
             const bool unlit = (mp.disables & bls::kDisableLighting) != 0;
-            const i32 activeN = unlit ? 0 : lightCountForGeoset;
-
-            jobs[li].mp = mp;
-            jobs[li].activeN = activeN;
-            jobs[li].unlit = unlit;
-            jobs[li].isOpaqueFading = isOpaqueFading;
-            jobs[li].valid = true;
+            const i32 activeN = unlit ? 0 : lightCount;
+            DrawLayer(view_, geo, layer, mp, activeN, unlit, hasBones, layout, frame, cmd);
         }
+    }
 
-        auto issueDraw = [&](const LayerJob& job, const bls::MatParams& matParams) {
-            frame.numLights = job.activeN;
-            render_detail::ApplyTexAnimPaletteToFrame(frame, view_.texAnimPalette,
-                                                      job.layer.textureAnimationId);
+    void DrawLayer(const render_detail::RenderableView& view_, const GPUGeoset& geo,
+                   const render_detail::UnpackedLayer& layer, const bls::MatParams& matParams,
+                   i32 activeN, bool unlit, bool hasBones, bls::VertexLayoutKind layout,
+                   bls::FrameInputs& frame, gfx::IGFXCommandList* cmd) {
+        auto* impl = rs_.Pipeline().impl_.get();
+        frame.numLights = activeN;
+        render_detail::ApplyTexAnimPaletteToFrame(frame, view_.texAnimPalette,
+                                                  layer.textureAnimationId);
 
-            const auto rsLocal =
-                bls::MakeSdMeshRenderState(matParams, job.activeN, job.unlit, hasBones);
-            const auto permLocal = bls::SelectPermutes(rsLocal);
-            auto reqLocal = bls::MakePsoRequest(rs_.Pipeline().impl_->blsSdProgram_, layout,
-                                                matParams, permLocal);
+        const auto rsLocal = bls::MakeSdMeshRenderState(matParams, activeN, unlit, hasBones);
+        const auto permLocal = bls::SelectPermutes(rsLocal);
+        auto reqLocal = bls::MakePsoRequest(impl->blsSdProgram_, layout, matParams, permLocal);
 
-            reqLocal.rtvFormat = rs_.Pipeline().SceneTargetFormat();
-            // In HD mode the world pass binds a 3-RT G-buffer; this SD
-            // (SD-on-HD) PSO needs its color-attachment count to match
-            // even though the SD bytecode only writes SV_Target0. The
-            // extra slots stay at their cleared values. SD mode skips
-            // this — the SD scene pass binds a single swap-chain RT.
-            if (rs_.Pipeline().impl_->frameRenderMode_ == RenderMode::HD) {
-                reqLocal.extraRtvFormats[0] = RenderPipeline::kLinearDepthFormat;
-                reqLocal.extraRtvFormats[1] = RenderPipeline::kNormalBufferFormat;
-                reqLocal.extraRtvCount = 2;
-            }
-            reqLocal.dsvFormat = rs_.Pipeline().impl_->depthStencilFormat_;
-            auto pso = rs_.Pipeline().impl_->blsPsoBuilder_->GetOrBuild(reqLocal);
-            if (pso == gfx::PipelineHandle::Invalid)
-                return;
-            cmd->BindPipeline(pso);
-
-            cmd->BindVertexBuffer(0, render_detail::PickSlot0Vb(geo, job.layer.coordId),
-                                  sizeof(Vertex));
-
-            frame.world = view_.worldTransform;
-
-            if (auto vs = bls::ScopedCb<bls::SdVsCbA>(rs_.Pipeline().Gfx(),
-                                                      rs_.Pipeline().impl_->blsSdVsCb_)) {
-                bls::BuildSdVsCbA(*vs, frame, matParams);
-            }
-            if (auto ps = bls::ScopedCb<bls::SdPsCbA>(rs_.Pipeline().Gfx(),
-                                                      rs_.Pipeline().impl_->blsSdPsCb_)) {
-                bls::BuildSdPsCbA(*ps, frame, matParams);
-            }
-            cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, rs_.Pipeline().impl_->blsSdVsCb_);
-            cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 0, rs_.Pipeline().impl_->blsSdPsCb_);
-
-            render_detail::BindLayerAlbedo(cmd, view_.textures, job.layer.textureId,
-                                           rs_.Textures().GetDefaults().White, rs_.Samplers());
-
-            cmd->DrawIndexed(geo.indexCount);
-        };
-
-        for (i32 li = 0; li < numLayers; ++li) {
-            if (!jobs[li].valid || !jobs[li].isOpaqueFading)
-                continue;
-            bls::MatParams prepass = jobs[li].mp;
-            prepass.diffuseColor = {1.0f, 1.0f, 1.0f, 1.0f};
-            prepass.disables &= ~bls::kDisableDepthWrite;
-            prepass.disables |= bls::kDisableBit8;
-            issueDraw(jobs[li], prepass);
+        reqLocal.rtvFormat = rs_.Pipeline().SceneTargetFormat();
+        // HD mode binds a 3-RT G-buffer; the SD-on-HD PSO must match the
+        // attachment count even though it only writes SV_Target0.
+        if (impl->frameRenderMode_ == RenderMode::HD) {
+            reqLocal.extraRtvFormats[0] = RenderPipeline::kLinearDepthFormat;
+            reqLocal.extraRtvFormats[1] = RenderPipeline::kNormalBufferFormat;
+            reqLocal.extraRtvCount = 2;
         }
+        reqLocal.dsvFormat = impl->depthStencilFormat_;
+        auto pso = impl->blsPsoBuilder_->GetOrBuild(reqLocal);
+        if (pso == gfx::PipelineHandle::Invalid)
+            return;
+        cmd->BindPipeline(pso);
+        cmd->BindVertexBuffer(0, render_detail::PickSlot0Vb(geo, layer.coordId), sizeof(Vertex));
 
-        for (i32 li = 0; li < numLayers; ++li) {
-            if (!jobs[li].valid)
-                continue;
-            issueDraw(jobs[li], jobs[li].mp);
-        }
+        frame.world = view_.worldTransform;
+        if (auto vs = bls::ScopedCb<bls::SdVsCbA>(rs_.Pipeline().Gfx(), impl->blsSdVsCb_))
+            bls::BuildSdVsCbA(*vs, frame, matParams);
+        if (auto ps = bls::ScopedCb<bls::SdPsCbA>(rs_.Pipeline().Gfx(), impl->blsSdPsCb_))
+            bls::BuildSdPsCbA(*ps, frame, matParams);
+        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, impl->blsSdVsCb_);
+        cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 0, impl->blsSdPsCb_);
+
+        render_detail::BindLayerAlbedo(cmd, view_.textures, layer.textureId,
+                                       rs_.Textures().GetDefaults().White, rs_.Samplers());
+        cmd->DrawIndexed(geo.indexCount);
     }
 };
 
 bool RenderPipeline::RenderGeosetsBls(GeosetBucket bucket) {
-    return GeosetPassBls{rs_, bucket}.Run();
+    return GeosetPassBls{rs_, bucket}.RunLists();
 }
 
 class GeosetPassHd : public BlsGeosetPass<GeosetPassHd> {
@@ -2530,10 +2503,29 @@ public:
         };
     }
 
-    void DrawGeoset(const render_detail::GeosetRef& ref, bls::FrameInputs& frame, const Matrix44f&,
-                    gfx::IGFXCommandList* cmd, i32 lightCountForGeoset) {
-        const auto& view_ = *ref.view;
-        const auto& geo = (*view_.geosets)[ref.idx];
+    void DrawOpaqueItem(const render_detail::OpaqueItem& item, bls::FrameInputs& frame,
+                        const Matrix44f& viewMat, gfx::IGFXCommandList* cmd,
+                        const bls::BaselineLights& baseline) {
+        const auto& view_ = *item.view;
+        EmitLayersHd(view_, (*view_.geosets)[item.geoIdx], frame, viewMat, cmd, baseline);
+    }
+
+    void DrawTransparentItem(const render_detail::TransparentItem& item, bls::FrameInputs& frame,
+                             const Matrix44f& viewMat, gfx::IGFXCommandList* cmd,
+                             const bls::BaselineLights& baseline) {
+        const auto& view_ = *item.view;
+        EmitLayersHd(view_, (*view_.geosets)[item.geoIdx], frame, viewMat, cmd, baseline);
+    }
+
+    // The HD submission, kept intact (HD/SD-on-HD/Crystal program selection,
+    // fresnel, normal/ORM/emissive + team-colour maps, shadows, MRT G-buffer,
+    // and the per-layer fading-opaque depth prepass) — now fed one geoset at a
+    // time by RunLists instead of the legacy bucket loop.
+    void EmitLayersHd(const render_detail::RenderableView& view_, const GPUGeoset& geo,
+                      bls::FrameInputs& frame, const Matrix44f& viewMat, gfx::IGFXCommandList* cmd,
+                      const bls::BaselineLights& baseline) {
+        const i32 lightCountForGeoset = bls::BuildLightPalette(
+            frame, *view_.activeLights, viewMat, baseline, rs_.Settings().GetLightingMode());
 
         const GPUMaterial* mat = nullptr;
         const i32 matId = geo.materialId;
@@ -2795,7 +2787,7 @@ public:
 };
 
 bool RenderPipeline::RenderGeosetsHd(GeosetBucket bucket) {
-    return GeosetPassHd{rs_, bucket}.Run();
+    return GeosetPassHd{rs_, bucket}.RunLists();
 }
 
 void RenderPipeline::RenderGeosets(GeosetBucket bucket) {
