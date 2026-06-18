@@ -343,6 +343,14 @@ void RenderService::CreateDeviceAssetManagers(gfx::IGFXDevice& gfx) {
     // provider wire-up.
     impl_->assets_ = std::make_unique<AssetManager>(*impl_->textures_);
     impl_->assets_->SetGfxDevice(&gfx);
+    // SD (classic) is a gamma-space pipeline: colour textures sample raw and
+    // multiply against gamma geoset/light colours into a UNORM target. Keep
+    // colour textures UNORM in SD mode (HD stays sRGB/linear).
+    impl_->assets_->SetGammaColorTexturesQuery([this]() {
+        // Pure SD only. SceneHdrInSd routes SD through the linear HDR target +
+        // tonemap, so there colour textures must stay sRGB (linearised) like HD.
+        return Settings().GetRenderMode() == RenderMode::SD && !Settings().SceneHdrInSd();
+    });
     // ChildModel parsing lives on ModelTemplateManager (so we don't drag
     // the MDX parser into AssetManager's translation unit). Install a
     // builder that wraps BuildFromBytes — AssetManager.ApplyPrepared

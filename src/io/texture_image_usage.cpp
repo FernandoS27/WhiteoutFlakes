@@ -60,8 +60,13 @@ ImageUsage DetermineImageUsage(std::string_view path) {
     return ImageUsage::Default;
 }
 
-gfx::Format ApplySrgbPolicy(gfx::Format raw, ImageUsage usage) {
-    const bool wantLinear = IsLinearImageUsage(usage);
+gfx::Format ApplySrgbPolicy(gfx::Format raw, ImageUsage usage, bool gammaColorPipeline) {
+    // The SD (classic WC3) render path is gamma-space end to end: textures are
+    // sampled raw, multiplied by gamma geoset/light colours and written to a
+    // UNORM target. So colour textures must stay UNORM there — promoting them to
+    // _SRGB (the HD/linear default) would linearise on sample and desaturate
+    // everything. Normal/ORM maps are linear in both modes.
+    const bool wantLinear = IsLinearImageUsage(usage) || gammaColorPipeline;
 
     auto stripSrgb = [](gfx::Format f) {
         switch (f) {

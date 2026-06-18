@@ -51,6 +51,20 @@ public:
     gfx::TextureHandle BeginFrame(const RenderTarget& target);
     void EndFrame(const RenderTarget& target);
 
+    // Format the (non-headless) redirect target is created with. SD writes
+    // gamma straight to a UNORM target, so it must match the SD scene format;
+    // HD composites post-tonemap to the sRGB swap format. Set each frame before
+    // BeginFrame. Unknown ⇒ fall back to the swap-chain format.
+    void SetRedirectColorFormat(gfx::Format f) {
+        redirectColorFormat_ = f;
+    }
+    // Whether the capture copy re-encodes to sRGB. True for the HD composite
+    // (its sampled values were delinearised on Load); false for the SD gamma
+    // pipeline (the source already holds gamma display bytes). Set per frame.
+    void SetSrgbEncode(bool b) {
+        srgbEncode_ = b;
+    }
+
     // Copy a ring slot out as tightly-packed RGBA8 (row pitch = width*4). The
     // slot's GPU work must already have completed (caller WaitIdle's first).
     bool DownloadSlot(i32 slot, std::vector<u8>& outRgba, i32& width, i32& height);
@@ -61,6 +75,9 @@ private:
 
     gfx::IGFXDevice* gfx_ = nullptr;
     gfx::Format depthFormat_ = gfx::Format::D24_UNORM_S8_UINT;
+    gfx::Format redirectColorFormat_ = gfx::Format::Unknown; // see SetRedirectColorFormat
+    gfx::Format colorFormat_ = gfx::Format::Unknown;         // format color_ was built with
+    bool srgbEncode_ = true;                                 // see SetSrgbEncode
 
     bool enabled_ = false;
     bool frameCapturing_ = false;  // BeginFrame redirected this frame

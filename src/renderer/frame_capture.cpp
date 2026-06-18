@@ -168,8 +168,14 @@ bool FrameCapture::EnsureResources(const RenderTarget& target) {
             return fail("blit pipeline failed to build");
     }
 
+    // Format the redirect target should use (non-headless): caller-specified
+    // (SD=UNORM / HD=sRGB) or the swap-chain format as a fallback.
+    const gfx::Format wantColorFmt = (redirectColorFormat_ != gfx::Format::Unknown)
+                                         ? redirectColorFormat_
+                                         : gfx_->GetSwapChainFormat(target.swap);
+
     if (color_ != gfx::TextureHandle::Invalid && width_ == target.width &&
-        height_ == target.height) {
+        height_ == target.height && (headless || colorFormat_ == wantColorFmt)) {
         // Refresh the headless alias each frame (just a handle copy) in case
         // the target's backing colour was reallocated (e.g. resize).
         if (headless)
@@ -186,11 +192,14 @@ bool FrameCapture::EnsureResources(const RenderTarget& target) {
         // copies it out directly. Not ours — don't destroy it.
         color_ = target.color;
         colorOwned_ = false;
+        colorFormat_ = gfx::Format::Unknown;
     } else {
-        // The redirect target matches the swap-chain format so the composite
-        // PSOs (built for that format) stay valid when redirected to it.
-        color_ = gfx_->CreateColorTarget(w, h, gfx_->GetSwapChainFormat(target.swap));
+        // The redirect target matches the composite PSO rtv format so the
+        // composite PSOs stay valid when redirected to it — SD is UNORM (gamma)
+        // and HD is the swap-chain sRGB format. See SetRedirectColorFormat.
+        color_ = gfx_->CreateColorTarget(w, h, wantColorFmt);
         colorOwned_ = true;
+        colorFormat_ = wantColorFmt;
     }
     bool ok = (color_ != gfx::TextureHandle::Invalid);
     for (auto& slot : ring_) {
@@ -244,7 +253,7 @@ void FrameCapture::EndFrame(const RenderTarget& target) {
     // Copy compute: capture target (SRV) → tightly-packed RGBA8 UAV buffer.
     if (paramsCb_ != gfx::BufferHandle::Invalid) {
         if (void* p = gfx_->MapBuffer(paramsCb_)) {
-            const u32 dims[4] = {w, h, 0, 0};
+            const u32 dims[4] = {w, h, srgbEncode_ ? 1u : 0u, 0};
             std::memcpy(p, dims, sizeof(dims));
             gfx_->UnmapBuffer(paramsCb_);
         }

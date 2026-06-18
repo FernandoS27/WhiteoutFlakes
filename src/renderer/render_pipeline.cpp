@@ -53,6 +53,23 @@ namespace whiteout::flakes::renderer {
 
 using namespace ::whiteout::flakes::renderer::model;
 using namespace ::whiteout::flakes::renderer::effects;
+
+namespace {
+// Drop the _SRGB qualifier from a colour format. The SD (classic WC3) path is
+// gamma-space: it samples textures raw and writes gamma values, so its RTV must
+// be a plain UNORM view (no linear→sRGB encode on write). Returns the format
+// unchanged when it has no _SRGB variant.
+gfx::Format StripSrgb(gfx::Format f) {
+    switch (f) {
+    case gfx::Format::R8G8B8A8_UNORM_SRGB:
+        return gfx::Format::R8G8B8A8_UNORM;
+    case gfx::Format::B8G8R8A8_UNORM_SRGB:
+        return gfx::Format::B8G8R8A8_UNORM;
+    default:
+        return f;
+    }
+}
+} // namespace
 using namespace ::whiteout::flakes::renderer::assets;
 using namespace ::whiteout::flakes::renderer::particle;
 using namespace ::whiteout::flakes::renderer::bls;
@@ -111,7 +128,7 @@ gfx::Format RenderPipeline::SceneTargetFormat() const {
         if (t && t->swap != gfx::SwapChainHandle::Invalid) {
             const gfx::Format swapFmt = impl_->gfx_->GetSwapChainFormat(t->swap);
             if (swapFmt != gfx::Format::Unknown)
-                return swapFmt;
+                return StripSrgb(swapFmt);
         }
     }
     return kSdSceneFormat;
@@ -1189,7 +1206,14 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
         t.colorLinear = impl_->gfx_->GetSwapChainBackBufferLinear(t.swap);
     } else {
         impl_->gfx_->Destroy(t.color);
-        t.color = impl_->gfx_->CreateColorTarget(w, h, gfx::Format::R8G8B8A8_UNORM_SRGB);
+        // Pure SD writes gamma to a UNORM target; HD (and SD-HDR) composite
+        // post-tonemap to an _SRGB target (the tonemap relies on the RTV's
+        // linear→sRGB encode).
+        const bool sdGamma = rs_.Settings().GetRenderMode() == RenderMode::SD &&
+                             !rs_.Settings().SceneHdrInSd();
+        const gfx::Format offFmt =
+            sdGamma ? gfx::Format::R8G8B8A8_UNORM : gfx::Format::R8G8B8A8_UNORM_SRGB;
+        t.color = impl_->gfx_->CreateColorTarget(w, h, offFmt);
         t.colorLinear = t.color;
     }
 
@@ -1527,8 +1551,31 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     // composite to an off-screen target and EndFrame (below) copies it out +
     // mirrors it onto the swap chain. Disabled is the zero-cost default —
     // BeginFrame just hands back the back buffer and EndFrame no-ops.
+    // SD writes gamma straight to a UNORM target; HD composites post-tonemap to
+    // the sRGB swap format. Tell the capture redirect which to build, and
+    // whether its copy must re-encode to sRGB (HD) or pass gamma bytes through
+    // (SD). Set before BeginFrame so EnsureResources builds the right target.
+    const bool sdGamma = !sceneToHdr; // SD direct-to-LDR path (gamma-space)
+    if (target.swap != gfx::SwapChainHandle::Invalid) {
+        const gfx::Format swapFmt = impl_->gfx_->GetSwapChainFormat(target.swap);
+        impl_->capture_.SetRedirectColorFormat(sdGamma ? StripSrgb(swapFmt) : swapFmt);
+    }
+    impl_->capture_.SetSrgbEncode(!sdGamma);
+
     const gfx::TextureHandle finalColor = impl_->capture_.BeginFrame(target);
-    const gfx::TextureHandle sceneTarget = sceneToHdr ? target.hdrColor : finalColor;
+    // SD is gamma-space: it writes gamma values that must NOT be re-encoded, so
+    // it renders through a plain UNORM view. The swap chain exposes that as
+    // `colorLinear`; the only non-capture swap-chain frame still points at the
+    // _SRGB view (`color`), so substitute the UNORM view there. Capture and
+    // offscreen targets are already UNORM (FrameCapture / kSdSceneFormat).
+    gfx::TextureHandle sceneTarget;
+    if (sceneToHdr) {
+        sceneTarget = target.hdrColor;
+    } else if (target.swap != gfx::SwapChainHandle::Invalid && finalColor == target.color) {
+        sceneTarget = target.colorLinear;
+    } else {
+        sceneTarget = finalColor;
+    }
 
     auto srgbByteToLinear = [](u8 b) {
         const f32 f = b / 255.0f;
@@ -1564,7 +1611,10 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         return acesInverse(linTarget) * invExp;
     };
 
-    auto sdClear = [&](u8 byte) { return srgbByteToLinear(byte); };
+    // SD writes gamma to a UNORM target (no sRGB encode on write or in the
+    // capture copy), so the background clear is the gamma byte value directly —
+    // it then reads back as the picked colour, matching the HD tonemap path.
+    auto sdClear = [&](u8 byte) { return byte / 255.0f; };
     f32 clearColor[4] = {
         sceneToHdr ? hdrClear(rB) : sdClear(rB),
         sceneToHdr ? hdrClear(gB) : sdClear(gB),

@@ -42,11 +42,15 @@ inline bool IsLinearImageUsage(ImageUsage u) {
 /// @param raw    Format as read from the file (typically UNORM).
 /// @param usage  Semantic role; sRGB usages return the `_SRGB` variant
 ///               when one exists, linear usages return @p raw unchanged.
-gfx::Format ApplySrgbPolicy(gfx::Format raw, ImageUsage usage);
+/// @param gammaColorPipeline  When true (the SD / classic WC3 path, gamma-space
+///               end to end), colour textures stay UNORM so they sample raw.
+///               Defaults to false (HD/linear).
+gfx::Format ApplySrgbPolicy(gfx::Format raw, ImageUsage usage, bool gammaColorPipeline = false);
 
 /// @brief Convenience: `ApplySrgbPolicy(raw, DetermineImageUsage(path))`.
-inline gfx::Format ApplyTextureSrgbPolicy(gfx::Format raw, std::string_view path) {
-    return ApplySrgbPolicy(raw, DetermineImageUsage(path));
+inline gfx::Format ApplyTextureSrgbPolicy(gfx::Format raw, std::string_view path,
+                                          bool gammaColorPipeline = false) {
+    return ApplySrgbPolicy(raw, DetermineImageUsage(path), gammaColorPipeline);
 }
 
 } // namespace whiteout::flakes::io

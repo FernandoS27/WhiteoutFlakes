@@ -180,17 +180,17 @@ LoadedEnvProbe LoadEnvProbeFromBytes(gfx::IGFXDevice& gfx, std::span<const u8> b
         case PF::RG32F:
             return gfx::Format::R32G32_FLOAT;
         case PF::RGBA8:
-            return srgb ? gfx::Format::R8G8B8A8_UNORM_SRGB : gfx::Format::R8G8B8A8_UNORM;
+            return gfx::Format::R8G8B8A8_UNORM;
         case PF::RGBA16:
             return gfx::Format::R16G16B16A16_UNORM;
         case PF::RGBA32F:
             return gfx::Format::R32G32B32A32_FLOAT;
         case PF::BC1:
-            return srgb ? gfx::Format::BC1_UNORM_SRGB : gfx::Format::BC1_UNORM;
+            return gfx::Format::BC1_UNORM;
         case PF::BC2:
-            return srgb ? gfx::Format::BC2_UNORM_SRGB : gfx::Format::BC2_UNORM;
+            return gfx::Format::BC2_UNORM;
         case PF::BC3:
-            return srgb ? gfx::Format::BC3_UNORM_SRGB : gfx::Format::BC3_UNORM;
+            return gfx::Format::BC3_UNORM;
         case PF::BC4:
             return gfx::Format::BC4_UNORM;
         case PF::BC5:
@@ -198,11 +198,11 @@ LoadedEnvProbe LoadEnvProbeFromBytes(gfx::IGFXDevice& gfx, std::span<const u8> b
         case PF::BC6H:
             return gfx::Format::BC6H_UF16;
         case PF::BC7:
-            return srgb ? gfx::Format::BC7_UNORM_SRGB : gfx::Format::BC7_UNORM;
+            return gfx::Format::BC7_UNORM;
         }
         return gfx::Format::Unknown;
     };
-    gfx::Format gpuFormat = mapFmt(tex.format(), tex.isSrgb());
+    gfx::Format gpuFormat = mapFmt(tex.format(), false);
     if (gpuFormat == gfx::Format::Unknown) {
 
         DbgLogf("[WDEX IBL] no direct gfx mapping for source fmt -- decoding to RGBA8\n");
@@ -211,7 +211,7 @@ LoadedEnvProbe LoadEnvProbeFromBytes(gfx::IGFXDevice& gfx, std::span<const u8> b
             DbgLogf("[WDEX IBL] fallback decode FAILED\n");
             return failed;
         }
-        gpuFormat = tex.isSrgb() ? gfx::Format::R8G8B8A8_UNORM_SRGB : gfx::Format::R8G8B8A8_UNORM;
+        gpuFormat = gfx::Format::R8G8B8A8_UNORM;
     }
 
     const u32 mipCount = tex.mipCount();

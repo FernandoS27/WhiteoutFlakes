@@ -66,6 +66,15 @@ public:
     explicit AssetManager(TextureAssetManager& textures);
     ~AssetManager();
 
+    /// @brief Predicate the texture decoder calls to learn whether the active
+    ///        render path is the gamma-space SD pipeline (true) or the linear
+    ///        HD/default one (false). When true, colour textures are kept UNORM
+    ///        (sampled raw), matching WC3's classic gamma pipeline.
+    ///        RenderService wires this to the current RenderMode.
+    void SetGammaColorTexturesQuery(std::function<bool()> query) {
+        gammaColorTexturesQuery_ = std::move(query);
+    }
+
     AssetManager(const AssetManager&)            = delete;
     AssetManager& operator=(const AssetManager&) = delete;
 
@@ -190,6 +199,12 @@ private:
         u32       refCount  = 0;
         u32       generation = 0;
         bool      loaded    = false;
+        // Render-mode colour-space captured when the slot was first Acquired
+        // (i.e. the acquiring model's mode). The texture is decoded under THIS,
+        // not the global mode live at decode time — decode is async and the
+        // active mode may have moved on (multi-document), which would otherwise
+        // give an HD model gamma textures. See ApplyPrepared / InvalidateTextures.
+        bool      acquireGamma = false;
 
         // Texture
         gfx::TextureHandle texHandle = gfx::TextureHandle::Invalid;
@@ -245,6 +260,10 @@ private:
 
     TextureAssetManager& textures_; // for the placeholder white handle
     gfx::IGFXDevice* gfx_ = nullptr;
+
+    // SD (gamma) vs HD (linear) colour-texture policy — see
+    // SetGammaColorTexturesQuery. Empty ⇒ default linear/HD behaviour.
+    std::function<bool()> gammaColorTexturesQuery_;
 
     // Particle parsing dispatcher (PkbReader for .pkb / .pkfx). The
     // arena that backs each parsed EffectAssetModel lives ON the slot

@@ -10,7 +10,11 @@ struct CaptureParams
 {
     uint width;
     uint height;
-    uint pad0;
+    // 1 = source is a linear/sRGB target whose sampled values were delinearised
+    //     on Load and must be re-encoded to sRGB bytes (HD composite path).
+    // 0 = source already holds gamma display bytes (the SD gamma pipeline writes
+    //     straight to a UNORM target); copy them through verbatim.
+    uint encodeSrgb;
     uint pad1;
 }
 
@@ -44,10 +48,14 @@ void csCapture(uint3 tid : SV_DispatchThreadID)
 
     float4 c = gSource.Load(int3(int(tid.x), int(tid.y), 0));
 
+    float3 rgb = c.rgb;
+    if (gParams.encodeSrgb != 0)
+        rgb = float3(linearToSrgb(rgb.r), linearToSrgb(rgb.g), linearToSrgb(rgb.b));
+
     // Packed little-endian RGBA8: R in the low byte — matches what stb_image
     // / common PNG writers expect for a 4-channel buffer.
-    uint packed = toByte(linearToSrgb(c.r)) | (toByte(linearToSrgb(c.g)) << 8) |
-                  (toByte(linearToSrgb(c.b)) << 16) | (toByte(c.a) << 24);
+    uint packed = toByte(rgb.r) | (toByte(rgb.g) << 8) |
+                  (toByte(rgb.b) << 16) | (toByte(c.a) << 24);
 
     gDest[tid.y * gParams.width + tid.x] = packed;
 }

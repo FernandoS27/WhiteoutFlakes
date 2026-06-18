@@ -81,6 +81,9 @@ AssetManager::SlotId AssetManager::Acquire(AssetKind kind, std::string_view path
     s.kind     = kind;
     s.path     = norm;
     s.refCount = 1;
+    // Capture the colour-space policy of the mode active at acquire time (the
+    // acquiring model's mode) so the async decode uses it, not the live mode.
+    s.acquireGamma = gammaColorTexturesQuery_ && gammaColorTexturesQuery_();
     // Texture: bind the manager's shared "white" default until real
     // bytes arrive. Particle/ChildModel: leave payload null — consumers
     // null-check the typed accessors.
@@ -202,7 +205,7 @@ namespace {
 // math derived from format + (w, h).
 bool DecodeTexture(std::span<const u8> bytes, const std::string& ext,
                    const std::string& pathForSrgb, bool supportsBlockCompression,
-                   std::vector<u8>& outBytes, i32& outW, i32& outH,
+                   bool gammaColorPipeline, std::vector<u8>& outBytes, i32& outW, i32& outH,
                    i32& outMipLevels, gfx::Format& outFormat) {
     auto result = model::DispatchTextureParser(
         ext, [&](auto& parser) { return parser.parse(bytes); });
@@ -229,7 +232,7 @@ bool DecodeTexture(std::span<const u8> bytes, const std::string& ext,
         fmt = result->isSrgb() ? gfx::Format::R8G8B8A8_UNORM_SRGB
                                 : gfx::Format::R8G8B8A8_UNORM;
     }
-    outFormat = ::whiteout::flakes::ApplyTextureSrgbPolicy(fmt, pathForSrgb);
+    outFormat = ::whiteout::flakes::ApplyTextureSrgbPolicy(fmt, pathForSrgb, gammaColorPipeline);
     outW = static_cast<i32>(result->width());
     outH = static_cast<i32>(result->height());
     outMipLevels = static_cast<i32>(result->mipCount());
@@ -266,6 +269,7 @@ bool AssetManager::ApplyPrepared(AssetKind kind, std::string_view path,
     // host's fetch resolved. Stats count it as a miss.
     SlotId target = kInvalidSlot;
     AssetKind expectedKind = kind;
+    bool acquireGamma = false;
     {
         std::lock_guard<std::mutex> lk(mu_);
         auto it = pathToSlot_.find(norm);
@@ -275,6 +279,7 @@ bool AssetManager::ApplyPrepared(AssetKind kind, std::string_view path,
         }
         target = it->second;
         expectedKind = slots_[target].kind;
+        acquireGamma = slots_[target].acquireGamma;
     }
     if (expectedKind != kind) {
         std::lock_guard<std::mutex> lk(mu_);
@@ -293,9 +298,11 @@ bool AssetManager::ApplyPrepared(AssetKind kind, std::string_view path,
             // usable without the host having to thread foundExt through.
             ext = model::ExtensionLower(std::filesystem::path(norm));
         }
+        // Decode under the mode captured at Acquire (the model's mode), not the
+        // live mode — the decode is async and the active mode may have moved on.
         if (!DecodeTexture(bytes, ext, norm, textures_.SupportsBlockCompression(),
-                           prep.pixels, prep.width, prep.height, prep.mipLevels,
-                           prep.format)) {
+                           acquireGamma, prep.pixels, prep.width, prep.height,
+                           prep.mipLevels, prep.format)) {
             std::lock_guard<std::mutex> lk(mu_);
             ++statApplyMisses_;
             return false;

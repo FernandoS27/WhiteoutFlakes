@@ -181,7 +181,11 @@ public:
     // ---- Scene-target formats (HD vs SD pipeline). Public so DebugRenderer
     //      and other consumers can build PSOs that match either path. ----
     static constexpr gfx::Format kHdrSceneFormat = gfx::Format::R11G11B10_FLOAT;
-    static constexpr gfx::Format kSdSceneFormat = gfx::Format::R8G8B8A8_UNORM_SRGB;
+    // SD (classic WC3) renders gamma-space straight to an LDR target: textures
+    // sample raw, geoset/light colours are gamma, and the result is written
+    // WITHOUT a linear→sRGB encode (a plain UNORM RTV). Matches WC3's gamma
+    // pipeline. (Was _SRGB, which linearised on write and desaturated tints.)
+    static constexpr gfx::Format kSdSceneFormat = gfx::Format::R8G8B8A8_UNORM;
     // G-buffer slot-1 / slot-2 formats for the HD opaque MRT pass.
     // Match the engine's `s_worldFBHD` layout: linear view-space depth in
     // a full-precision float and an 8-bit packed world-space normal.
