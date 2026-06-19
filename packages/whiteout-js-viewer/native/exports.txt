@@ -12,6 +12,8 @@ _wf_set_lighting_mode
 _wf_set_show_grid
 _wf_set_shadows_enabled
 _wf_set_hd_debug_mode
+_wf_set_time_of_day
+_wf_set_ibl_mode
 _wf_last_error
 _wf_provider_put
 _wf_provider_count

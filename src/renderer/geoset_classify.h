@@ -20,6 +20,7 @@ struct GeosetClass {
     bool visible = false;       // some layer is currently visible
     i32 firstVisibleLayer = -1; // index of that layer (-1 if none)
     bool opaque = true;         // first visible layer blends < Blend (Opaque/AlphaKey)
+    bool needsDepthFill = false; // HD opaque layer faded below full → Color path + depth twin
 };
 
 GeosetClass ClassifyGeoset(const RenderableView& view, const model::GPUGeoset& geo);

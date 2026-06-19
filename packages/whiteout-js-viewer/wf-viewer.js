@@ -99,6 +99,13 @@ export class WhiteoutViewer {
         // back in via `viewer.backingPixelRatio = devicePixelRatio`.
         this.backingPixelRatio =
             (navigator.userAgent.indexOf('Firefox/') >= 0) ? 1 : (window.devicePixelRatio || 1);
+
+        // Day-night cycle. `_todHours` mirrors the engine's DncService TOD
+        // (engine default 11.5). When `_dayNightAnimate` is on, the render
+        // loop advances it so a full 24 h cycle takes 60 s (0.4 h/s) and
+        // pushes the value to WASM each frame; otherwise the slider drives it.
+        this._todHours = 11.5;
+        this._dayNightAnimate = false;
     }
 
     // Bring up the WebGPU device, then instantiate the WASM module with
@@ -256,6 +263,11 @@ export class WhiteoutViewer {
                 const k = 0.1; // ~10-frame smoothing
                 this._emaDt = this._emaDt * (1 - k) + dt * k;
             }
+            // 60-second day-night cycle: 24 h / 60 s = 0.4 h per second.
+            if (this._dayNightAnimate) {
+                this._todHours = (this._todHours + 0.4 * dt) % 24;
+                this._module._wf_set_time_of_day(this._handle, this._todHours);
+            }
             const prof = this.profileFrames;
             const t0 = prof ? performance.now() : 0;
             this._module._wf_tick(this._handle, dt);
@@ -321,6 +333,28 @@ export class WhiteoutViewer {
     // HD debug-vis mode (see HD_DEBUG_MODES below).
     setHdDebugMode(mode) {
         if (this._handle) this._module._wf_set_hd_debug_mode(this._handle, mode | 0);
+    }
+
+    // ---- day-night cycle ----------------------------------------------
+
+    // Set the time of day in hours [0..24); wraps. Used by the slider for
+    // manual control and as the seed before animating.
+    setTimeOfDay(hours) {
+        let h = Number(hours);
+        if (!Number.isFinite(h)) return;
+        h = ((h % 24) + 24) % 24;
+        this._todHours = h;
+        if (this._handle) this._module._wf_set_time_of_day(this._handle, h);
+    }
+    // Current time of day in hours — the render loop advances this while
+    // animating, so the UI reads it back to keep the slider in sync.
+    getTimeOfDay() { return this._todHours; }
+    // Toggle the 60-second animated day-night cycle (0.4 h/s in _loop).
+    setDayNightAnimate(on) { this._dayNightAnimate = !!on; }
+    // IBL probe set: 0=Portrait, 1=DayNight, 2=Dungeon, 3=Sunset. The day/night
+    // toggle flips Portrait↔DayNight so HD env reflections cycle with the TOD.
+    setIblMode(mode) {
+        if (this._handle) this._module._wf_set_ibl_mode(this._handle, mode | 0);
     }
 
     // Flip HD asset preference at runtime. Updates the flag the
@@ -436,12 +470,28 @@ export class WhiteoutViewer {
         const M = this._module;
 
         // Push MDX bytes under a stable key so SpawnUnit's provider lookup hits.
-        const mdxUrl = await Promise.resolve(pathSolver(src));
-        if (!mdxUrl) throw new Error('pathSolver returned no URL for src: ' + src);
-        log('load: fetching MDX ' + mdxUrl);
-        const mdxResp = await fetch(mdxUrl, { cache: 'no-store' });
-        if (!mdxResp.ok) throw new Error('fetch MDX failed: ' + mdxResp.status);
-        const mdxBytes = new Uint8Array(await mdxResp.arrayBuffer());
+        // The solver may hand back a single URL or a fallback chain (local
+        // object URL → Hive direct → /casc-contents/), same as the asset pump.
+        // A directory pick resolves to a chain, so a bare fetch(chain) would
+        // stringify the array into a bogus URL and 404 — try each in order.
+        let mdxCands = await Promise.resolve(pathSolver(src));
+        if (!mdxCands) throw new Error('pathSolver returned no URL for src: ' + src);
+        if (!Array.isArray(mdxCands)) mdxCands = [mdxCands];
+        let mdxBytes = null;
+        let mdxFrom = '';
+        for (const url of mdxCands) {
+            if (!url) continue;
+            log('load: fetching MDX ' + url);
+            try {
+                const r = await fetch(url, { cache: 'no-store' });
+                if (!r.ok) continue;
+                mdxBytes = new Uint8Array(await r.arrayBuffer());
+                mdxFrom = r.url || url;
+                break;
+            } catch (_) { /* try next candidate */ }
+        }
+        if (!mdxBytes) throw new Error('fetch MDX failed for all candidates: ' + src);
+        log('load: fetched MDX ' + mdxFrom);
         const mdxKey = String(src).split(/[\\/]/).pop();
         this._putBytes(mdxKey, mdxBytes);
 

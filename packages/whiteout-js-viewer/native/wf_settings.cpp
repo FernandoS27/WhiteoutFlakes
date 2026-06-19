@@ -1,4 +1,4 @@
-// Render-mode / lighting / grid / background / shadow toggles.
+// Render-mode / lighting / grid / background / shadow / time-of-day toggles.
 
 #include "wf_web_internal.h"
 
@@ -58,6 +58,28 @@ void wf_set_shadows_enabled(WfRenderer* h, int on) {
 void wf_set_hd_debug_mode(WfRenderer* h, int mode) {
     if (!h) return;
     h->renderer.Settings().SetHdDebugMode(mode);
+}
+
+// Day-night-cycle time of day, in hours [0..24). DncService wraps out-of-range
+// values. The web UI drives the 60-second animated cycle by pushing a fresh
+// value each frame (see wf-viewer.js); the slider pushes a manual one.
+void wf_set_time_of_day(WfRenderer* h, float hours) {
+    if (!h) return;
+    h->renderer.Dnc().SetTimeOfDay(hours);
+}
+
+// IBL probe set. 0=Portrait, 1=DayNight, 2=Dungeon, 3=Sunset (enums.h::IblMode).
+// The web UI flips Portrait↔DayNight with the day/night toggle so HD env
+// lighting/reflections cycle with TOD; the pipeline reloads the probes lazily
+// on the next frame (ConsumeIblModeDirty), reading the prefetched DDS bytes.
+void wf_set_ibl_mode(WfRenderer* h, int mode) {
+    if (!h) return;
+    using whiteout::flakes::IblMode;
+    const IblMode m = (mode == 1)   ? IblMode::DayNight
+                      : (mode == 2) ? IblMode::Dungeon
+                      : (mode == 3) ? IblMode::Sunset
+                                    : IblMode::Portrait;
+    h->renderer.Settings().SetIblMode(m);
 }
 
 } // extern "C"

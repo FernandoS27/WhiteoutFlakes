@@ -79,7 +79,7 @@
     color: var(--muted); font-size: 12px;
   }
   #vol-wrap label { user-select: none; }
-  #vol-slider {
+  #vol-slider, #tod-slider {
     -webkit-appearance: none; appearance: none;
     width: 140px; height: 3px;
     background: #2a2a2a;
@@ -87,14 +87,15 @@
     outline: none;
     cursor: pointer;
   }
-  #vol-slider::-webkit-slider-thumb {
+  #tod-slider { width: 110px; }
+  #vol-slider::-webkit-slider-thumb, #tod-slider::-webkit-slider-thumb {
     -webkit-appearance: none; appearance: none;
     width: 12px; height: 12px; border-radius: 50%;
     background: #c8c8c8;
     border: 1px solid #000;
     cursor: pointer;
   }
-  #vol-slider::-moz-range-thumb {
+  #vol-slider::-moz-range-thumb, #tod-slider::-moz-range-thumb {
     width: 12px; height: 12px; border-radius: 50%;
     background: #c8c8c8;
     border: 1px solid #000;
@@ -262,6 +263,11 @@
       <input id="grid-toggle" type="checkbox" checked>
       <label for="grid-toggle">Grid</label>
     </div>
+    <div class="ctrl" title="Animate day-night cycle (60 s for a full day) / drag to set time of day">
+      <input id="daynight-toggle" type="checkbox">
+      <label for="daynight-toggle">Day/Night</label>
+      <input id="tod-slider" type="range" min="0" max="24" step="0.1" value="11.5">
+    </div>
     <div id="vol-wrap" title="Sound volume">
       <label for="vol-slider">Volume</label>
       <input id="vol-slider" type="range" min="0" max="100" step="1" value="50">
@@ -396,6 +402,8 @@
         lightingSel:  document.getElementById('lighting-select'),
         debugVisSel:  document.getElementById('debug-vis-select'),
         gridToggle:   document.getElementById('grid-toggle'),
+        dayNightToggle: document.getElementById('daynight-toggle'),
+        todSlider:    document.getElementById('tod-slider'),
         fpsReadout:   document.getElementById('fps-readout'),
       }, {
         // Demo's sw.js lives next to index.html, not inside the package.

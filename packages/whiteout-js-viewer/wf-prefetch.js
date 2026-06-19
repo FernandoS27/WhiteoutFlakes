@@ -15,13 +15,20 @@ const PS_SHADERS = ['crystal', 'distortion', 'foliage', 'gritty_hd', 'hd', 'imgu
 // else in ENGINE_ASSETS keeps the local-first, CASC-fallback order.
 const CASC_ONLY = new Set([
     'Environment/EnvironmentMap/Portraits/PortraitDefault_IBL.dds',
+    // Day/Night IBL probes — used by IblMode::DayNight (the day/night toggle).
+    'Environment/EnvironmentMap/LordaeronSummer/Day_IBL.dds',
+    'Environment/EnvironmentMap/LordaeronSummer/Night_IBL.dds',
     'war3.w3mod:Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdx',
     'war3.w3mod:Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdl',
 ]);
 
 const ENGINE_ASSETS = [
-    // IBL probe + DNC unit MDX (CASC-only — see CASC_ONLY above).
+    // IBL probes (portrait default + day/night) + DNC unit (CASC-only — see
+    // CASC_ONLY above). The day/night probes back IblMode::DayNight, which the
+    // viewer flips to with the day/night toggle.
     'Environment/EnvironmentMap/Portraits/PortraitDefault_IBL.dds',
+    'Environment/EnvironmentMap/LordaeronSummer/Day_IBL.dds',
+    'Environment/EnvironmentMap/LordaeronSummer/Night_IBL.dds',
     'war3.w3mod:Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdx',
     'war3.w3mod:Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdl',
     // Replaceable tree textures (IDs 31-36). The renderer's
@@ -86,6 +93,21 @@ function extOf(s) {
     return dot >= 0 ? s.slice(dot).toLowerCase() : '';
 }
 
+// Strip a CASC mount prefix like "war3.w3mod:" from a path. The prefix is
+// only needed to address the Hive CASC fetch (some engine assets — the DNC
+// unit — only resolve through the mount); the renderer requests them by bare
+// path (e.g. DncService asks for "Environment/DNC/.../DNCLordaeronUnit.mdl"),
+// so the provider must be keyed without it or the lookup misses and the asset
+// (and thus the whole day-night cycle) silently never loads.
+function stripMount(p) {
+    const colon = p.indexOf(':');
+    if (colon > 0) {
+        const slash = p.indexOf('/');
+        if (slash === -1 || slash > colon) return p.slice(colon + 1);
+    }
+    return p;
+}
+
 // If Hive served e.g. foo.dds for our foo.blp request, store under
 // the served ext so FetchContentProvider's alt-ext walk hits and the
 // renderer parses with the right decoder.
@@ -102,20 +124,24 @@ function pathWithServedExt(originalPath, finalUrl) {
 
 // CASC_ONLY paths fetch straight from viewer.cascUrl; the rest try
 // `engineAssetRoot` (./ by default) first, then fall back to CASC.
-// Only the CASC_ONLY assets (DNC + IBL) are mode-agnostic and fetch
-// with withContext=false; everything else (replaceables, splats /
-// footprints, SLKs) keeps the &context=hd/sd param like model deps.
+// The IBL probe is a single mode-agnostic file (no context). The DNC unit,
+// though, has SD/HD variants: with no context Hive serves the _hd.w3mod copy,
+// whose directional light is stripped down (HD leans on IBL) — the renderer
+// drives BOTH pipelines' sun from the DNC, so that copy renders the scene too
+// dark. Force &context=sd so we get the full-intensity light the desktop uses.
 export async function prefetchEngineAssets(viewer) {
     const root = viewer.engineAssetRoot || './';
     await Promise.all(ENGINE_ASSETS.map(async (p) => {
         let res;
         if (CASC_ONLY.has(p)) {
-            res = await fetchResult(viewer.cascUrl(p, false));
+            const url = p.includes('DNC') ? viewer.cascUrl(p, false) + '&context=sd'
+                                          : viewer.cascUrl(p, false);
+            res = await fetchResult(url);
         } else {
             res = await fetchResult(root + p);
             if (!res) res = await fetchResult(viewer.cascUrl(p));
         }
-        if (res) putBytes(viewer, pathWithServedExt(p, res.finalUrl), res.bytes);
+        if (res) putBytes(viewer, stripMount(pathWithServedExt(p, res.finalUrl)), res.bytes);
     }));
 }
 

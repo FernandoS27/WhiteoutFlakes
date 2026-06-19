@@ -288,6 +288,36 @@ particle::FilterMode SplatBlendModeToFilter(i32 blendMode) {
         return particle::FilterMode::Blend;
     }
 }
+
+// Front-biased day-night sun travel direction (world space, the way the light
+// travels toward the scene). The raw DNC light node points wherever the asset
+// authored it, which back-lights the viewer's default view; this anchors the
+// sun in front of and above the model so the frontal part stays lit, sweeping
+// elevation with TOD. The unit faces +X in renderer space (Max -Y — the same
+// facing the default camera and view-cube use), world up is +Z, so the sun is
+// toward {+X front, +Z up} with a slight +Y for three-quarter form. Shared by
+// the CSM shadow pass and the geoset shading baseline so the two agree.
+Vector3f ComputeSunDirWS(const dnc::DncService* dnc) {
+    f32 height = 1.2f; // sun elevation above the horizon; swept by TOD below
+    if (dnc) {
+        constexpr f32 kPi = 3.14159265f;
+        const f32 hpd = dnc->GetHoursPerDay();
+        const f32 tod = dnc->GetTimeOfDay();
+        const f32 theta = ((tod - hpd * 0.25f) / (hpd * 0.5f)) * kPi;
+        // Low near dawn/dusk, high at noon — but always above the horizon so
+        // the front never falls into shadow.
+        height = 0.4f + 0.9f * std::max(0.1f, std::sin(theta));
+    }
+    // Direction *to* the sun, then negate for the travel direction.
+    const Vector3f toSun = {1.0f, 0.35f, height};
+    Vector3f travel = {-toSun.x, -toSun.y, -toSun.z};
+    const f32 len = std::sqrt(travel.x * travel.x + travel.y * travel.y + travel.z * travel.z);
+    if (len > 1.0e-4f) {
+        const f32 inv = 1.0f / len;
+        travel = {travel.x * inv, travel.y * inv, travel.z * inv};
+    }
+    return travel;
+}
 } // namespace
 
 bool RenderPipeline::RenderSplatsBls() {
@@ -1649,28 +1679,9 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         // the front rather than swinging behind. Tiny +X tilt
         // prevents noon shadows from collapsing straight down; the
         // Z floor keeps shadows from inverting past sunset.
-        Vector3f lightDirWS = {-0.3f, 0.5f, -0.7f};
-        if (auto* dnc = rs_.GetDncService()) {
-            constexpr f32 kPi = 3.14159265f;
-            const f32 hpd = dnc->GetHoursPerDay();
-            const f32 tod = dnc->GetTimeOfDay();
-            const f32 theta = ((tod - hpd * 0.25f) / (hpd * 0.5f)) * kPi;
-            const f32 sinT = std::sin(theta);
-            const f32 cosT = std::cos(theta);
-            const f32 zDown = std::max(0.1f, sinT);
-            // +1.2 forward bias keeps dir.y positive across the full
-            // day (range 0.7 at sunrise → 1.7 at sunset), so the
-            // sun is always at -Y world (the model's front) and
-            // never swings behind. 0.5× cosT scaling preserves a
-            // visible Y arc on top of the bias.
-            Vector3f dir = {0.1f, 0.5f * cosT + 1.2f, -zDown};
-            const f32 len =
-                std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
-            if (len > 1.0e-4f) {
-                const f32 inv = 1.0f / len;
-                lightDirWS = {dir.x * inv, dir.y * inv, dir.z * inv};
-            }
-        }
+        // Same front-biased sun the geoset shading baseline uses (see
+        // ComputeSunDirWS) so the cast shadow and the lit side agree.
+        const Vector3f lightDirWS = ComputeSunDirWS(rs_.GetDncService());
 
         // Center the shadow cascade on the camera target (the host's "what
         // they're looking at"). Multi-actor scenes can have no single hero,
@@ -2092,9 +2103,13 @@ public:
             dnc && dnc->HasAsset() && rs_.Settings().GetLightingMode() == LightingMode::InGame) {
             const auto sample = dnc->SampleNow();
             if (sample.valid) {
-
+                // Light *from* the front-biased sun (toward-light = -travel),
+                // keeping the DNC's day/night ambient+diffuse colour. Uses the
+                // same sun as the shadow pass so the lit side and the cast
+                // shadow agree, and the model's front stays illuminated.
+                const Vector3f sunWS = ComputeSunDirWS(dnc);
                 const Vector3f dirVS = whiteout::transform_normal(
-                    Vector3f{-sample.worldDir.x, -sample.worldDir.y, -sample.worldDir.z}, view);
+                    Vector3f{-sunWS.x, -sunWS.y, -sunWS.z}, view);
                 return {sample.ambient, sample.diffuse, dirVS};
             }
         }
@@ -2396,8 +2411,11 @@ public:
             dnc && dnc->HasAsset() && rs_.Settings().GetLightingMode() == LightingMode::InGame) {
             const auto sample = dnc->SampleNow();
             if (sample.valid) {
+                // Front-biased sun (matches the shadow pass + SD baseline);
+                // keep the DNC day/night ambient+diffuse colour.
+                const Vector3f sunWS = ComputeSunDirWS(dnc);
                 const Vector3f dirVS = whiteout::transform_normal(
-                    Vector3f{-sample.worldDir.x, -sample.worldDir.y, -sample.worldDir.z}, view);
+                    Vector3f{-sunWS.x, -sunWS.y, -sunWS.z}, view);
                 return {sample.ambient, sample.diffuse, dirVS};
             }
         }

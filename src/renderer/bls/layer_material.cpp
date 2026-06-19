@@ -18,14 +18,16 @@ MatParams ResolveLayerMaterial(DepthFill depthFill, const MatParams& base, bool 
         return m;
 
     case DepthFill::Color:
-        // Fading opaque layer promoted to a blend so it fades against the
-        // depth laid down by its Depth twin.
-        if (isOpaqueFading && m.alpha < GxMatAlpha::Blend)
-            m.alpha = GxMatAlpha::Blend;
-        [[fallthrough]];
-
     case DepthFill::None:
     default:
+        // Fading opaque layer promoted to a blend so its sub‑1.0 alpha actually
+        // fades it. WC3's SelectModelMaterial promotes the blend mode whenever
+        // the layer alpha drops below full — for the HD Color twin (depth laid
+        // down by its Depth twin) AND the plain SD pass. The SD body of e.g.
+        // Kil'jaeden is filter Transparent at alpha 0.76 and must blend, not
+        // render solid.
+        if (isOpaqueFading && m.alpha < GxMatAlpha::Blend)
+            m.alpha = GxMatAlpha::Blend;
         // Modulate packs the alpha into R (the shader reads .r); everything else
         // takes {rgb, combinedAlpha} straight. Mirrors SelectModelMaterial's
         // shared colour‑set tail.

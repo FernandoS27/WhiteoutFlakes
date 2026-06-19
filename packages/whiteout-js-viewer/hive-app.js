@@ -33,6 +33,8 @@ export class HiveApp {
         this.lightingSel  = els.lightingSel  || null;
         this.debugVisSel  = els.debugVisSel  || null;
         this.gridToggle   = els.gridToggle   || null;
+        this.dayNightToggle = els.dayNightToggle || null;
+        this.todSlider    = els.todSlider    || null;
         this.fpsReadout   = els.fpsReadout   || null;
         this.emptyModels  = this.modelList ? this.modelList.querySelector('.empty') : null;
 
@@ -189,6 +191,33 @@ export class HiveApp {
             const apply = () => this.viewer.setShowGrid(this.gridToggle.checked);
             this.gridToggle.addEventListener('change', apply);
             apply();
+        }
+        // Day-night cycle: the checkbox runs the 60 s animation; the slider
+        // sets time-of-day manually (and seeds the animation's start point).
+        if (this.todSlider) {
+            this.todSlider.addEventListener('input', () => {
+                this.viewer.setTimeOfDay(Number(this.todSlider.value));
+            });
+            this.viewer.setTimeOfDay(Number(this.todSlider.value));
+        }
+        if (this.dayNightToggle) {
+            const apply = () => {
+                const on = this.dayNightToggle.checked;
+                this.viewer.setDayNightAnimate(on);
+                // Swap the HD IBL probe set to match: day/night sky while
+                // animating, portrait studio light otherwise (IblMode 1 vs 0).
+                this.viewer.setIblMode(on ? 1 : 0);
+            };
+            this.dayNightToggle.addEventListener('change', apply);
+            apply();
+            // While animating, mirror the engine's advancing TOD onto the
+            // slider so the handle tracks the cycle.
+            if (this.todSlider) {
+                setInterval(() => {
+                    if (this.dayNightToggle.checked && this.viewer)
+                        this.todSlider.value = String(this.viewer.getTimeOfDay());
+                }, 200);
+            }
         }
         if (this.fpsReadout) {
             // 2 Hz — the dt EMA is already smooth.

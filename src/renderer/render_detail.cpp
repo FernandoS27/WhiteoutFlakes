@@ -77,7 +77,9 @@ CollectedDrawLists BuildDrawLists(
                 TransparentItem t;
                 t.view = &view;
                 t.geoIdx = i;
-                t.depthFill = bls::DepthFill::None;
+                // HD opaque-fading geosets carry the Color depth-fill twin (WC3
+                // RenderGeoset's DEPTHFILL_COLOR); true blend geosets stay None.
+                t.depthFill = gc.needsDepthFill ? bls::DepthFill::Color : bls::DepthFill::None;
                 const Vector3f wc = whiteout::transform_point(geo.localCentroid, view.worldTransform);
                 const Vector3f d = {wc.x - cameraPos.x, wc.y - cameraPos.y, wc.z - cameraPos.z};
                 t.sqDist = d.x * d.x + d.y * d.y + d.z * d.z;
