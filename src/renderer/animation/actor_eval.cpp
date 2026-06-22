@@ -36,210 +36,20 @@ using namespace ::whiteout::flakes::renderer::effects;
 
 namespace {
 
-// Compute world-space bone matrices with billboard adjustments and push them
-// into the actor's skinning palette.
-void ApplyBoneMatrices(Actor& mi, const FrameState& state, const Vector3f& camPos) {
+// Upload the actor's world-space bone matrices into its skinning palette.
+// (Billboarding is applied in MdxHierarchy::Evaluate so it propagates to children.)
+void ApplyBoneMatrices(Actor& mi, const FrameState& state) {
     if (state.boneWorldMatrices.empty())
         return;
 
     const i32 bc = static_cast<i32>(state.boneWorldMatrices.size());
 
-    const std::vector<u32>& billboardFlags =
-        mi.sourceTemplate ? mi.sourceTemplate->skeleton.billboardFlags : mi.render.billboardFlags;
-    const std::vector<Vector3f>& nodePivots =
-        mi.sourceTemplate ? mi.sourceTemplate->skeleton.nodePivots : mi.render.nodePivots;
-    const std::vector<i32>& nodeParents =
-        mi.sourceTemplate ? mi.sourceTemplate->skeleton.nodeParents : mi.render.nodeParents;
-
+    // Billboarding (including inheritance through billboarded helpers) is now
+    // applied inside the hierarchy traversal (MdxHierarchy::Evaluate), so these
+    // bone matrices already face the camera where needed — just upload them.
     std::vector<f32> worldFlat(bc * 16);
-    for (i32 i = 0; i < bc; i++) {
-        Matrix44f boneM = state.boneWorldMatrices[i];
-
-        u32 bbFlags = (i < (i32)billboardFlags.size()) ? billboardFlags[i] : 0;
-        if (bbFlags != 0) {
-
-            Vector3f pivF = (i < (i32)nodePivots.size()) ? nodePivots[i] : Vector3f{0, 0, 0};
-
-            Vector3f pivWorld = whiteout::transform_point(pivF, boneM);
-
-            if (bbFlags & BONE_BILLBOARD_CAMERA_ANCHORED) {
-
-                i32 parentIdx = (i < (i32)nodeParents.size()) ? nodeParents[i] : -1;
-                Vector3f parentWorld = {0, 0, 0};
-                if (parentIdx >= 0 && parentIdx < (i32)state.boneWorldMatrices.size()) {
-                    Vector3f parentPivF = (parentIdx < (i32)nodePivots.size())
-                                              ? nodePivots[parentIdx]
-                                              : Vector3f{0, 0, 0};
-                    parentWorld =
-                        whiteout::transform_point(parentPivF, state.boneWorldMatrices[parentIdx]);
-                }
-                Vector3f toCamDir = camPos - parentWorld;
-                f32 camLen = toCamDir.length();
-                if (camLen > kBillboardDistThreshold) {
-                    toCamDir = toCamDir.normalized();
-                    f32 restDist = (pivWorld - parentWorld).length();
-                    pivWorld = parentWorld + Vector3f{toCamDir.x * restDist, toCamDir.y * restDist,
-                                                      toCamDir.z * restDist};
-                }
-            }
-
-            Vector3f toCamera = camPos - pivWorld;
-            f32 dist = toCamera.length();
-            if (dist > kBillboardDistThreshold) {
-                Vector3f toCam = toCamera.normalized();
-                Vector3f worldUp = {0, 0, 1};
-
-                auto rowToVec = [](const Matrix44f& m, i32 r) {
-                    return Vector3f{m.data[r][0], m.data[r][1], m.data[r][2]};
-                };
-
-                const f32 sX = rowToVec(boneM, 0).length();
-                const f32 sY = rowToVec(boneM, 1).length();
-                const f32 sZ = rowToVec(boneM, 2).length();
-
-                Matrix44f bbRot = Matrix44f::identity();
-                bool haveRot = false;
-
-                if (bbFlags & BONE_BILLBOARD_FULL) {
-                    // Local X faces the camera, but the in-plane roll is taken
-                    // from the node's animated orientation (its world Y) rather
-                    // than a fixed world-up. A spinning billboard (e.g. the
-                    // swirls on Xalatath) keeps its spin instead of freezing,
-                    // because its rotation track sweeps that up reference; a
-                    // node with no animated rotation just holds its rest roll.
-                    Vector3f xp = toCam;
-                    Vector3f upRef = rowToVec(boneM, 1);
-                    if (upRef.length() < kBillboardDistThreshold)
-                        upRef = worldUp;
-                    else
-                        upRef = upRef.normalized();
-                    Vector3f zp = whiteout::cross(xp, upRef);
-                    if (zp.length() < kBillboardDistThreshold) {
-                        // up reference is parallel to the view axis — fall back
-                        // to world-up, then to a fixed axis if that also folds.
-                        zp = whiteout::cross(xp, worldUp);
-                        if (zp.length() < kBillboardDistThreshold)
-                            zp = {0, 0, 1};
-                    }
-                    zp = zp.normalized();
-                    Vector3f yp = whiteout::cross(zp, xp);
-                    bbRot = {};
-                    bbRot.data[0][0] = xp.x;
-                    bbRot.data[0][1] = xp.y;
-                    bbRot.data[0][2] = xp.z;
-                    bbRot.data[1][0] = yp.x;
-                    bbRot.data[1][1] = yp.y;
-                    bbRot.data[1][2] = yp.z;
-                    bbRot.data[2][0] = zp.x;
-                    bbRot.data[2][1] = zp.y;
-                    bbRot.data[2][2] = zp.z;
-                    bbRot.data[3][3] = 1.0f;
-                    haveRot = true;
-                } else if (bbFlags & BONE_BILLBOARD_LOCK_X) {
-                    Vector3f xp = rowToVec(boneM, 0);
-                    f32 xLen = xp.length();
-                    if (xLen < kBillboardDistThreshold)
-                        xp = {1, 0, 0};
-                    else
-                        xp = xp.normalized();
-                    Vector3f zp = whiteout::cross(toCam, xp);
-                    f32 zLen = zp.length();
-                    if (zLen < kBillboardDistThreshold)
-                        zp = {0, 0, 1};
-                    else
-                        zp = zp.normalized();
-                    Vector3f yp = whiteout::cross(xp, zp);
-                    bbRot = {};
-                    bbRot.data[0][0] = xp.x;
-                    bbRot.data[0][1] = xp.y;
-                    bbRot.data[0][2] = xp.z;
-                    bbRot.data[1][0] = yp.x;
-                    bbRot.data[1][1] = yp.y;
-                    bbRot.data[1][2] = yp.z;
-                    bbRot.data[2][0] = zp.x;
-                    bbRot.data[2][1] = zp.y;
-                    bbRot.data[2][2] = zp.z;
-                    bbRot.data[3][3] = 1.0f;
-                    haveRot = true;
-                } else if (bbFlags & BONE_BILLBOARD_LOCK_Y) {
-                    Vector3f yp = rowToVec(boneM, 1);
-                    f32 yLen = yp.length();
-                    if (yLen < kBillboardDistThreshold)
-                        yp = {0, 1, 0};
-                    else
-                        yp = yp.normalized();
-                    Vector3f zp = whiteout::cross(toCam, yp);
-                    f32 zLen = zp.length();
-                    if (zLen < kBillboardDistThreshold)
-                        zp = {0, 0, 1};
-                    else
-                        zp = zp.normalized();
-                    Vector3f xp = whiteout::cross(yp, zp);
-                    bbRot = {};
-                    bbRot.data[0][0] = xp.x;
-                    bbRot.data[0][1] = xp.y;
-                    bbRot.data[0][2] = xp.z;
-                    bbRot.data[1][0] = yp.x;
-                    bbRot.data[1][1] = yp.y;
-                    bbRot.data[1][2] = yp.z;
-                    bbRot.data[2][0] = zp.x;
-                    bbRot.data[2][1] = zp.y;
-                    bbRot.data[2][2] = zp.z;
-                    bbRot.data[3][3] = 1.0f;
-                    haveRot = true;
-                } else if (bbFlags & BONE_BILLBOARD_LOCK_Z) {
-                    Vector3f zp = worldUp;
-                    Vector3f yp = whiteout::cross(zp, toCam);
-                    f32 yLen = yp.length();
-                    if (yLen < kBillboardDistThreshold)
-                        yp = {0, 1, 0};
-                    else
-                        yp = yp.normalized();
-                    Vector3f xp = whiteout::cross(yp, zp);
-                    bbRot = {};
-                    bbRot.data[0][0] = xp.x;
-                    bbRot.data[0][1] = xp.y;
-                    bbRot.data[0][2] = xp.z;
-                    bbRot.data[1][0] = yp.x;
-                    bbRot.data[1][1] = yp.y;
-                    bbRot.data[1][2] = yp.z;
-                    bbRot.data[2][0] = zp.x;
-                    bbRot.data[2][1] = zp.y;
-                    bbRot.data[2][2] = zp.z;
-                    bbRot.data[3][3] = 1.0f;
-                    haveRot = true;
-                }
-
-                if (haveRot) {
-                    bbRot.data[0][0] *= sX;
-                    bbRot.data[0][1] *= sX;
-                    bbRot.data[0][2] *= sX;
-                    bbRot.data[1][0] *= sY;
-                    bbRot.data[1][1] *= sY;
-                    bbRot.data[1][2] *= sY;
-                    bbRot.data[2][0] *= sZ;
-                    bbRot.data[2][1] *= sZ;
-                    bbRot.data[2][2] *= sZ;
-                    Matrix44f T_negRest = Matrix44f::translation({-pivF.x, -pivF.y, -pivF.z});
-                    Matrix44f T_world =
-                        Matrix44f::translation({pivWorld.x, pivWorld.y, pivWorld.z});
-                    boneM = T_negRest * bbRot * T_world;
-                } else if (bbFlags & BONE_BILLBOARD_CAMERA_ANCHORED) {
-                    Matrix44f S = {};
-                    S.data[0][0] = sX;
-                    S.data[1][1] = sY;
-                    S.data[2][2] = sZ;
-                    S.data[3][3] = 1.0f;
-                    Matrix44f T_negRest = Matrix44f::translation({-pivF.x, -pivF.y, -pivF.z});
-                    Matrix44f T_world =
-                        Matrix44f::translation({pivWorld.x, pivWorld.y, pivWorld.z});
-                    boneM = T_negRest * S * T_world;
-                }
-            }
-        }
-
-        std::memcpy(&worldFlat[i * 16], &boneM.data[0][0], 64);
-    }
+    for (i32 i = 0; i < bc; i++)
+        std::memcpy(&worldFlat[i * 16], &state.boneWorldMatrices[i].data[0][0], 64);
     mi.render.skinning.UpdateNodeMatrices(bc, worldFlat.data());
 }
 
@@ -381,7 +191,7 @@ void ApplyAttachmentStates(Actor& mi, const FrameState& state, const ActorEvalCo
 } // namespace
 
 void Actor::ApplyFrameState(const FrameState& state, i32 localTimeMs, const ActorEvalContext& ctx) {
-    ApplyBoneMatrices(*this, state, ctx.camPos);
+    ApplyBoneMatrices(*this, state);
     render.ApplyGeosetStates(state);
     render.ApplyLayerStates(state);
     if (ctx.particles)

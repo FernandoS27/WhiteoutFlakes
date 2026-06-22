@@ -20,14 +20,20 @@ MatParams ResolveLayerMaterial(DepthFill depthFill, const MatParams& base, bool 
     case DepthFill::Color:
     case DepthFill::None:
     default:
-        // Fading opaque layer promoted to a blend so its sub‑1.0 alpha actually
-        // fades it. WC3's SelectModelMaterial promotes the blend mode whenever
-        // the layer alpha drops below full — for the HD Color twin (depth laid
-        // down by its Depth twin) AND the plain SD pass. The SD body of e.g.
-        // Kil'jaeden is filter Transparent at alpha 0.76 and must blend, not
-        // render solid.
-        if (isOpaqueFading && m.alpha < GxMatAlpha::Blend)
+        // A fading opaque/alpha-key layer (combined alpha below full) is promoted
+        // to a blend so its sub-1.0 opacity actually fades it — for the plain SD
+        // pass and the HD Color twin alike. Crucially, an alpha-KEY layer keeps
+        // its cutoff after promotion: the clip ref stays at the alpha-key value
+        // so the layer still discards fragments below it. That makes a fully
+        // opaque alpha-key cutout stay a hard cutout (not promoted), while a
+        // faded one blends its survivors AND keeps the cutoff (e.g. Kil'jaeden's
+        // 0.76 body reads semi-transparent; the Matrix crosshatch dissolves as
+        // its animated opacity crosses the cutoff).
+        if (isOpaqueFading && m.alpha < GxMatAlpha::Blend) {
+            if (m.alpha == GxMatAlpha::AlphaKey)
+                m.alphaRef = kAlphaKeyRef;
             m.alpha = GxMatAlpha::Blend;
+        }
         // Modulate packs the alpha into R (the shader reads .r); everything else
         // takes {rgb, combinedAlpha} straight. Mirrors SelectModelMaterial's
         // shared colour‑set tail.

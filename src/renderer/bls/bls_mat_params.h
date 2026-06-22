@@ -17,6 +17,11 @@ enum class GxMatAlpha : u8 {
     Modulate2X = 5,
 };
 
+// WC3 alpha-test reference for the alpha-key (Transparent) cutoff. Fragments
+// with alpha below this are clipped. Kept when an alpha-key layer is promoted to
+// a blend (fading opacity) so the cutoff survives the promotion.
+inline constexpr f32 kAlphaKeyRef = 192.0f / 255.0f;
+
 inline constexpr u32 kDisableLighting = 0x01;
 inline constexpr u32 kDisableFog = 0x02;
 inline constexpr u32 kDisableDepthTest = 0x04;
@@ -28,6 +33,10 @@ inline constexpr u32 kDisableBit8 = 0x100;
 struct MatParams {
     GxShaderID shaderId = GxShaderID::SD;
     GxMatAlpha alpha = GxMatAlpha::Opaque;
+    // Alpha-test clip reference. <0 (default) ⇒ derive from `alpha` via
+    // AlphaRefFor. Set explicitly to retain the alpha-key cutoff when an
+    // alpha-key layer is promoted to Blend for fading opacity.
+    f32 alphaRef = -1.0f;
     u32 disables = 0;
     Vector4f diffuseColor = {1, 1, 1, 1};
     Vector4f vertexPad = {-3.4028235e38f, 1.0f, 0.0f, 0.0f};

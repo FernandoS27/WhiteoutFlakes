@@ -2183,7 +2183,8 @@ public:
                 bls::FromMdxLayer(layer.filterMode, layer.flags, bls::GxShaderID::SD);
             const Vector4f color = {geo.geosetColor.x, geo.geosetColor.y, geo.geosetColor.z,
                                     combinedAlpha};
-            // isOpaqueFading only feeds the Color (HD) path; SD passes None.
+            // Opaque/alpha-key layer with sub-full opacity → promoted to a blend
+            // (ResolveLayerMaterial); an alpha-key layer keeps its cutoff ref.
             const bool isOpaqueFading =
                 combinedAlpha < 0.99f && bls::FilterToGxAlpha(layer.filterMode) < bls::GxMatAlpha::Blend;
             const bls::MatParams mp =
@@ -2525,6 +2526,10 @@ public:
                                   : rs_.Pipeline().impl_->blsSdOnHdProgram_;
 
             bls::MatParams mp = bls::FromMdxLayer(effectiveFilter, layer.flags, programShaderId);
+            // Promoting an alpha-key layer to a blend keeps its cutoff: the clip
+            // ref stays at the alpha-key value (matches the SD ResolveLayerMaterial).
+            if (isOpaqueFading && layer.filterMode == FILTER_TRANSPARENT)
+                mp.alphaRef = bls::kAlphaKeyRef;
             if (mp.alpha == bls::GxMatAlpha::Modulate) {
                 mp.diffuseColor = {combinedAlpha, 1, 1, 1};
             } else {

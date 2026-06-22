@@ -12,7 +12,7 @@ namespace {
 inline f32 AlphaRefFor(GxMatAlpha a) {
     switch (a) {
     case GxMatAlpha::AlphaKey:
-        return 192.0f / 255.0f;
+        return kAlphaKeyRef;
     case GxMatAlpha::Blend:
     case GxMatAlpha::Add:
     case GxMatAlpha::Modulate:
@@ -22,6 +22,12 @@ inline f32 AlphaRefFor(GxMatAlpha a) {
     default:
         return 0.0f;
     }
+}
+
+// Explicit per-material override (set when promoting an alpha-key layer to a
+// blend) wins; otherwise derive from the blend mode.
+inline f32 ResolveAlphaRef(const MatParams& mat) {
+    return mat.alphaRef >= 0.0f ? mat.alphaRef : AlphaRefFor(mat.alpha);
 }
 
 } // namespace
@@ -46,7 +52,7 @@ void BuildSdVsCbA(SdVsCbA& out, const FrameInputs& in, const MatParams& mat) {
 
 void BuildSdPsCbA(SdPsCbA& out, const FrameInputs& in, const MatParams& mat) {
     std::memset(&out, 0, sizeof(out));
-    out.alphaRef = AlphaRefFor(mat.alpha);
+    out.alphaRef = ResolveAlphaRef(mat);
     out.fogParams = in.fogParams;
     out.fogColor = in.fogColor;
 }
@@ -68,7 +74,7 @@ void BuildHdVsCb(HdVsCb& out, const FrameInputs& in, const MatParams& mat) {
 
 void BuildHdPsCb(HdPsCb& out, const FrameInputs& in, const MatParams& mat) {
     std::memset(&out, 0, sizeof(out));
-    out.alphaRef = AlphaRefFor(mat.alpha);
+    out.alphaRef = ResolveAlphaRef(mat);
     out.fogParams = in.fogParams;
     out.fogColor = in.fogColor;
     out.worldView = in.world * in.view;
@@ -101,7 +107,7 @@ void BuildHdPsCb(HdPsCb& out, const FrameInputs& in, const MatParams& mat) {
 
 void BuildSdOnHdPsCb(SdOnHdPsCb& out, const FrameInputs& in, const MatParams& mat) {
     std::memset(&out, 0, sizeof(out));
-    out.alphaRef = AlphaRefFor(mat.alpha);
+    out.alphaRef = ResolveAlphaRef(mat);
     out.fogParams = in.fogParams;
     out.fogColor = in.fogColor;
 

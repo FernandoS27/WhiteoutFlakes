@@ -395,6 +395,145 @@ void MdxHierarchy::Build(const whiteout::mdx::Model& model) {
     }
 }
 
+namespace {
+
+constexpr f32 kBbThreshold = 0.001f;
+
+constexpr u32 kBillboardAny = (u32)Node::NodeFlag::Billboarded |
+                              (u32)Node::NodeFlag::BillboardedLockX |
+                              (u32)Node::NodeFlag::BillboardedLockY |
+                              (u32)Node::NodeFlag::BillboardedLockZ |
+                              (u32)Node::NodeFlag::CameraAnchored;
+
+// Apply MDX billboarding to a node's *stack* matrix (rows 0..2 = the node's
+// axes, row 3 = its pivot world position). Mirrors WC3: billboarding rotates
+// the node's frame to face the camera, and because we do it here — inside the
+// hierarchy traversal, writing the result back into stackM — every CHILD
+// inherits it (a billboarded helper rotates its whole subtree). `parentPivWorld`
+// is the (already-billboarded) parent's pivot, used by the camera-anchored mode.
+Matrix44f BillboardStack(const Matrix44f& M, u32 flags, const Vector3f& camPos,
+                         const Vector3f& parentPivWorld) {
+    using NF = Node::NodeFlag;
+    const bool full = (flags & (u32)NF::Billboarded) != 0;
+    const bool lockX = (flags & (u32)NF::BillboardedLockX) != 0;
+    const bool lockY = (flags & (u32)NF::BillboardedLockY) != 0;
+    const bool lockZ = (flags & (u32)NF::BillboardedLockZ) != 0;
+    const bool anchored = (flags & (u32)NF::CameraAnchored) != 0;
+
+    auto rowVec = [](const Matrix44f& m, i32 r) {
+        return Vector3f{m.data[r][0], m.data[r][1], m.data[r][2]};
+    };
+    const f32 sX = rowVec(M, 0).length();
+    const f32 sY = rowVec(M, 1).length();
+    const f32 sZ = rowVec(M, 2).length();
+
+    Vector3f pivWorld = {M.data[3][0], M.data[3][1], M.data[3][2]};
+    if (anchored) {
+        // Slide the pivot along the parent→camera ray, keeping its rest distance
+        // from the parent — the node tracks the camera but stays attached.
+        Vector3f toCamDir = camPos - parentPivWorld;
+        const f32 camLen = toCamDir.length();
+        if (camLen > kBbThreshold) {
+            toCamDir = toCamDir.normalized();
+            const f32 restDist = (pivWorld - parentPivWorld).length();
+            pivWorld = parentPivWorld +
+                       Vector3f{toCamDir.x * restDist, toCamDir.y * restDist, toCamDir.z * restDist};
+        }
+    }
+
+    const Vector3f toCamera = camPos - pivWorld;
+    const f32 dist = toCamera.length();
+    if (dist <= kBbThreshold) {
+        Matrix44f out = M;
+        out.data[3][0] = pivWorld.x;
+        out.data[3][1] = pivWorld.y;
+        out.data[3][2] = pivWorld.z;
+        return out;
+    }
+
+    const Vector3f toCam = toCamera.normalized();
+    const Vector3f worldUp = {0, 0, 1};
+
+    Matrix44f bb = {};
+    bb.data[3][3] = 1.0f;
+    bool haveRot = false;
+
+    if (full) {
+        // Local X faces the camera; in-plane roll from the node's animated Y so
+        // a spinning billboard keeps its spin instead of freezing.
+        Vector3f xp = toCam;
+        Vector3f upRef = rowVec(M, 1);
+        if (upRef.length() < kBbThreshold)
+            upRef = worldUp;
+        else
+            upRef = upRef.normalized();
+        Vector3f zp = whiteout::cross(xp, upRef);
+        if (zp.length() < kBbThreshold) {
+            zp = whiteout::cross(xp, worldUp);
+            if (zp.length() < kBbThreshold)
+                zp = {0, 0, 1};
+        }
+        zp = zp.normalized();
+        const Vector3f yp = whiteout::cross(zp, xp);
+        bb.data[0][0] = xp.x; bb.data[0][1] = xp.y; bb.data[0][2] = xp.z;
+        bb.data[1][0] = yp.x; bb.data[1][1] = yp.y; bb.data[1][2] = yp.z;
+        bb.data[2][0] = zp.x; bb.data[2][1] = zp.y; bb.data[2][2] = zp.z;
+        haveRot = true;
+    } else if (lockX) {
+        Vector3f xp = rowVec(M, 0);
+        xp = (xp.length() < kBbThreshold) ? Vector3f{1, 0, 0} : xp.normalized();
+        Vector3f zp = whiteout::cross(toCam, xp);
+        zp = (zp.length() < kBbThreshold) ? Vector3f{0, 0, 1} : zp.normalized();
+        const Vector3f yp = whiteout::cross(xp, zp);
+        bb.data[0][0] = xp.x; bb.data[0][1] = xp.y; bb.data[0][2] = xp.z;
+        bb.data[1][0] = yp.x; bb.data[1][1] = yp.y; bb.data[1][2] = yp.z;
+        bb.data[2][0] = zp.x; bb.data[2][1] = zp.y; bb.data[2][2] = zp.z;
+        haveRot = true;
+    } else if (lockY) {
+        Vector3f yp = rowVec(M, 1);
+        yp = (yp.length() < kBbThreshold) ? Vector3f{0, 1, 0} : yp.normalized();
+        Vector3f zp = whiteout::cross(toCam, yp);
+        zp = (zp.length() < kBbThreshold) ? Vector3f{0, 0, 1} : zp.normalized();
+        const Vector3f xp = whiteout::cross(yp, zp);
+        bb.data[0][0] = xp.x; bb.data[0][1] = xp.y; bb.data[0][2] = xp.z;
+        bb.data[1][0] = yp.x; bb.data[1][1] = yp.y; bb.data[1][2] = yp.z;
+        bb.data[2][0] = zp.x; bb.data[2][1] = zp.y; bb.data[2][2] = zp.z;
+        haveRot = true;
+    } else if (lockZ) {
+        const Vector3f zp = worldUp;
+        Vector3f yp = whiteout::cross(zp, toCam);
+        yp = (yp.length() < kBbThreshold) ? Vector3f{0, 1, 0} : yp.normalized();
+        const Vector3f xp = whiteout::cross(yp, zp);
+        bb.data[0][0] = xp.x; bb.data[0][1] = xp.y; bb.data[0][2] = xp.z;
+        bb.data[1][0] = yp.x; bb.data[1][1] = yp.y; bb.data[1][2] = yp.z;
+        bb.data[2][0] = zp.x; bb.data[2][1] = zp.y; bb.data[2][2] = zp.z;
+        haveRot = true;
+    }
+
+    Matrix44f out = M;
+    if (haveRot) {
+        out.data[0][0] = bb.data[0][0] * sX; out.data[0][1] = bb.data[0][1] * sX; out.data[0][2] = bb.data[0][2] * sX;
+        out.data[1][0] = bb.data[1][0] * sY; out.data[1][1] = bb.data[1][1] * sY; out.data[1][2] = bb.data[1][2] * sY;
+        out.data[2][0] = bb.data[2][0] * sZ; out.data[2][1] = bb.data[2][1] * sZ; out.data[2][2] = bb.data[2][2] * sZ;
+    } else if (anchored) {
+        // Camera-anchored with no billboard rotation: position-track only,
+        // rotation stripped to a plain scale.
+        out = {};
+        out.data[0][0] = sX;
+        out.data[1][1] = sY;
+        out.data[2][2] = sZ;
+    } else {
+        return M;
+    }
+    out.data[3][0] = pivWorld.x;
+    out.data[3][1] = pivWorld.y;
+    out.data[3][2] = pivWorld.z;
+    out.data[3][3] = 1.0f;
+    return out;
+}
+
+} // namespace
+
 void MdxHierarchy::Evaluate(i32 timeMs, i32 seqStart, i32 seqEnd,
                             const std::vector<u32>& globalSequences,
                             std::vector<Matrix44f>& boneWorldMatrices,
@@ -552,6 +691,19 @@ void MdxHierarchy::Evaluate(i32 timeMs, i32 seqStart, i32 seqEnd,
                 M.data[1][c] *= localS.y;
             for (i32 c = 0; c < 4; ++c)
                 M.data[2][c] *= localS.z;
+        }
+
+        // Billboard the node's frame here (not as a later per-bone pass) so the
+        // result lands in stackM and every descendant inherits it — billboarding
+        // is part of the world transform, and a billboarded helper must turn its
+        // whole subtree. M's translation already holds the node's pivot world.
+        if (cameraPos && (n.flags & kBillboardAny)) {
+            Vector3f parentPivWorld = {0, 0, 0};
+            if (n.parentIdx >= 0 && n.parentIdx < nc) {
+                const Matrix44f& pM = stackM[n.parentIdx];
+                parentPivWorld = {pM.data[3][0], pM.data[3][1], pM.data[3][2]};
+            }
+            M = BillboardStack(M, n.flags, *cameraPos, parentPivWorld);
         }
 
         stackM[i] = M;
