@@ -635,6 +635,14 @@ static bool AcquireDeviceFromJS(WebGPUDeviceState& state, std::string& deviceNam
     }
     state.device = wgpu::Device::Acquire(raw);
     state.queue = state.device.GetQueue();
+    // The adapter handle isn't exposed under emdawnwebgpu, but the device
+    // carries the features it was created with. Query BC support here — JS only
+    // requests texture-compression-bc when the adapter has it, so on GPUs that
+    // lack it (Mali / many mobile parts) this is false and the asset + IBL paths
+    // decompress BCn to RGBA8 instead of creating unsupported BC textures.
+    state.hasBlockCompression = state.device.HasFeature(wgpu::FeatureName::TextureCompressionBC);
+    std::fprintf(stderr, "[wgpu] block-compression (BC) support: %s\n",
+                 state.hasBlockCompression ? "yes" : "no");
     deviceNameOut = "WebGPU (browser)";
     // No adapter handle on the web — hardcode the WebGPU spec-default
     // minUniformBufferOffsetAlignment (256 bytes; also our internal floor).

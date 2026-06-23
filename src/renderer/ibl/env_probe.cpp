@@ -203,6 +203,16 @@ LoadedEnvProbe LoadEnvProbeFromBytes(gfx::IGFXDevice& gfx, std::span<const u8> b
         return gfx::Format::Unknown;
     };
     gfx::Format gpuFormat = mapFmt(tex.format(), false);
+    // Backends that can't sample BCn (some WebGPU adapters — Mali and other
+    // mobile GPUs) decompress here. Texture::format(RGBA8) runs the BC1/2/3/7
+    // decoder and keeps the full mip chain + cube faces, so the upload path
+    // below is unchanged. Mirrors AssetManager::DecodeTexture's BC fallback.
+    if (gpuFormat != gfx::Format::Unknown && gfx::IsBlockCompressed(gpuFormat) &&
+        !gfx.SupportsBlockCompression()) {
+        DbgLogf("[WDEX IBL] backend lacks BC -- decompressing probe to RGBA8\n");
+        tex.format(whiteout::textures::PixelFormat::RGBA8);
+        gpuFormat = gfx::Format::R8G8B8A8_UNORM;
+    }
     if (gpuFormat == gfx::Format::Unknown) {
 
         DbgLogf("[WDEX IBL] no direct gfx mapping for source fmt -- decoding to RGBA8\n");
