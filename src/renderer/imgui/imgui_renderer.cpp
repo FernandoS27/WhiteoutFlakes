@@ -254,12 +254,18 @@ void ImGuiRenderer::SetRtvFormat(gfx::Format rtvFormat) {
     if (impl_->pso != gfx::PipelineHandle::Invalid)
         impl_->device->Destroy(impl_->pso);
 
-    // PS permute 0 = HAS_SRGB_DECODE on. The backbuffer view is sRGB so the
-    // hardware re-encodes on store; running the blend in linear space (and
-    // therefore linearising ImGui's sRGB-authored vertex colours first)
-    // matches what users see in every other engine that follows the same
-    // ImGui-on-sRGB-RTV recipe.
-    constexpr u32 kPsPermSrgbDecodeOn = 0;
+    // PS permute 0 = HAS_SRGB_DECODE on, permute 1 = passthrough. Pick by the
+    // target view: an _SRGB RTV re-encodes linear→sRGB on store, so we decode
+    // ImGui's sRGB-authored vertex colours to linear first and let the hardware
+    // re-encode (HD: the post-tonemap sRGB swap chain). A plain UNORM RTV is
+    // gamma-space — the SD classic path writes gamma values straight out — so
+    // decoding there would darken the UI with no re-encode to compensate; pass
+    // the colours through unchanged instead.
+    const bool srgbTarget = (rtvFormat == gfx::Format::R8G8B8A8_UNORM_SRGB ||
+                             rtvFormat == gfx::Format::B8G8R8A8_UNORM_SRGB);
+    u32 psPerm = srgbTarget ? 0u : 1u;
+    if (psPerm >= impl_->ps->permuteHandles.size())
+        psPerm = 0u; // single-permute build — fall back to whatever shipped
 
     static const gfx::InputElement kImGuiInput[] = {
         {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0},
@@ -270,7 +276,7 @@ void ImGuiRenderer::SetRtvFormat(gfx::Format rtvFormat) {
 
     gfx::GraphicsPipelineDesc pd;
     pd.vs = impl_->vs->permuteHandles[0];
-    pd.ps = impl_->ps->permuteHandles[kPsPermSrgbDecodeOn];
+    pd.ps = impl_->ps->permuteHandles[psPerm];
     pd.inputLayout = kImGuiInput;
     pd.topology = gfx::PrimitiveTopology::TriangleList;
     pd.blend.enable = true;

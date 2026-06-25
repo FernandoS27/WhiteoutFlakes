@@ -303,6 +303,14 @@ std::vector<MaterialData> MdxModelAdapter::GetMaterials() {
             ld.filterMode = MapFilterMode((i32)layer.filterMode);
             ld.alpha = layer.alpha;
             ld.flags = MapShadingFlags(layer.shadingFlags);
+            // WC3 honours two-sided at the MATERIAL level (CMaterialShared::
+            // twoSided ← Material::Flag::TwoSided), applied to every layer in
+            // ModelRender.cpp's RenderGeosetLayers. The per-layer
+            // ShadingFlag::TwoSided (0x10) is a separate bit; a material that
+            // sets only the material-level flag (0x2) would otherwise cull its
+            // back faces. Promote it onto each layer to match WC3.
+            if (hasFlag((u32)mat.flags, whiteout::mdx::Material::Flag::TwoSided))
+                ld.flags |= MAT_TWO_SIDED;
             ld.textureAnimationId =
                 ((i32)layer.textureAnimationId < 0 ||
                  (i32)layer.textureAnimationId >= (i32)model_.textureAnimations.size())

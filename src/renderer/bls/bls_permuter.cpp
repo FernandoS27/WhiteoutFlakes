@@ -108,7 +108,14 @@ PermuteIndices SelectPermutes(const RenderState& s) {
                                               shadows,
                                           });
 
-        u32 alphaDim = (s.alphaMode == 2) ? 2u : alphaTest;
+        // The sd_on_hd PS folds (alphaTest, srgbOutput) into one 3-value
+        // field: 0 = neither, 1 = alpha-test, 2 = HAS_SRGB_OUTPUT. srgb means
+        // "encode linear→sRGB at the PS tail because the render target is a
+        // plain _UNORM view". SD-on-HD always draws into the linear HDR-float
+        // scene target (the tonemap pass does the display encode), so srgb must
+        // stay off — selecting it sRGB-encodes a linear value and blows out the
+        // image. Drive the field from the alpha-test policy only.
+        const u32 alphaDim = alphaTest;
         out.ps = Pack({2, 2, 2, 2, 4, 3, 2}, {
                                                  depthWrite,
                                                  prepass,
