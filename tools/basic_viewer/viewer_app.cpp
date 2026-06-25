@@ -652,7 +652,8 @@ bool ViewerApp::LoadModelIntoActiveScene(const std::filesystem::path& path) {
             std::fprintf(stderr, "[viewer] HD-probe parse FAILED for %s: %s (continuing in SD)\n",
                          io::PathToUtf8(path).c_str(), e.what());
         }
-        ApplyRenderMode(anyHdLayer ? RenderMode::HD : RenderMode::SD);
+        // "Reforged Graphics" forces HD regardless of the probe result.
+        ApplyRenderMode((forceHd_ || anyHdLayer) ? RenderMode::HD : RenderMode::SD);
     }
 
     service_.Loader().RequestClearAll();
@@ -702,6 +703,9 @@ void ViewerApp::FillModelDocState(model::Actor* hero, const std::filesystem::pat
 
 bool ViewerApp::LoadEffectIntoActiveScene(const std::filesystem::path& path) {
     currentModelPath_ = path;
+    // PopcornFX (.pkb/.pkfx) is Reforged-only content — always render it in HD,
+    // regardless of the prior document's mode or the Reforged-Graphics toggle.
+    ApplyRenderMode(RenderMode::HD);
     // Textures the .pkb references resolve against its own directory.
     service_.Scene().SetPE1BasePath(path.parent_path());
 
@@ -761,6 +765,25 @@ void ViewerApp::FillEffectDocState(model::Actor* hero) {
     cameraLocked_ = false;
     walkDriftPrevSeqIdx_ = -1;
     walkDriftAccumulated_ = 0.0f;
+}
+
+void ViewerApp::SetForceHd(bool on) {
+    if (forceHd_ == on)
+        return;
+    forceHd_ = on;
+    // Reload the active model so it re-probes (forced HD vs detected) and its
+    // deps re-resolve under the new CASC overlay. Empty path ⇒ nothing loaded;
+    // the next load picks it up. Effects (.pkb/.pkfx) are mode-agnostic and
+    // can't be re-probed as MDX, so leave them be.
+    const std::filesystem::path path = currentModelPath_;
+    if (path.empty())
+        return;
+    std::string ext = path.extension().string();
+    for (char& c : ext)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (ext == ".pkb" || ext == ".pkfx")
+        return;
+    LoadModelIntoActiveScene(path);
 }
 
 void ViewerApp::ApplyRenderMode(RenderMode wanted) {

@@ -653,8 +653,10 @@ int main(int argc, char* argv[]) {
     // after the device + asset managers are up so they can validate
     // dependent state (e.g. ShadowService cascade count).
     bool loopPolicy = app.LoopNonLoopingPolicy();
-    whiteout::flakes::LoadSettingsIni(renderer, loopPolicy);
+    bool forceHdPolicy = app.ForceHd();
+    whiteout::flakes::LoadSettingsIni(renderer, loopPolicy, forceHdPolicy);
     app.SetLoopNonLoopingPolicy(loopPolicy);
+    app.SetForceHd(forceHdPolicy);
 
     // IO overrides — Settings > IO can repoint the install path, toggle CASC
     // or MPQ off entirely, and reorder the MPQ load list.

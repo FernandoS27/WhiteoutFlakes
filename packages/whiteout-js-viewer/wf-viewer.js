@@ -69,7 +69,13 @@ export class WhiteoutViewer {
         // prefetch, which resolve fine in SD; per-model deps then fetch
         // under the detected overlay (cascUrl `context=hd/sd`, `_hd.w3mod`
         // direct prefix) once the model has been probed.
-        this.hdMode = false;
+        //
+        // `options.forceHd` ("Reforged Graphics"): pin every model to the HD
+        // pipeline + HD asset overlay regardless of its detected preference
+        // (see `setForceHd` / `_applyPreferredRenderMode`). Bootstrap in HD so
+        // the very first load fetches HD deps.
+        this._forceHd = options.forceHd === true;
+        this.hdMode = this._forceHd;
         // Hive's CASC mirror — CORS-enabled, 302 to resolved asset,
         // server-side family expansion. Override for a local proxy.
         // Encode per-segment so `/` stays literal in the query; Hive's
@@ -374,6 +380,15 @@ export class WhiteoutViewer {
         }
     }
 
+    // "Reforged Graphics" — force every model into the HD pipeline + HD asset
+    // overlay, overriding per-model SD/HD auto-detection. The host should
+    // reload the current model after toggling so its deps re-fetch under the
+    // new overlay; turning it off lets the next load auto-detect again.
+    setForceHd(on) {
+        this._forceHd = !!on;
+        if (this._forceHd) this.setHdMode(true);
+    }
+
     // Live WebGPU CreateTexture+CreateBuffer bytes (deferred-delete
     // excluded). `__hive.viewer.gpuBytes()` for leak-spotting.
     gpuBytes() {
@@ -540,6 +555,8 @@ export class WhiteoutViewer {
     // under the detected mode.
     _applyPreferredRenderMode(actorHandle) {
         if (!this._handle || !actorHandle) return;
+        // Reforged Graphics pins HD; skip the per-model probe entirely.
+        if (this._forceHd) { this.setHdMode(true); return; }
         const M = this._module;
         if (!M._wf_actor_preferred_render_mode) return; // older wasm build
         const hd = M._wf_actor_preferred_render_mode(this._handle, actorHandle) === 1;

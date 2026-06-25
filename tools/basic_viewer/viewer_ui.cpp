@@ -43,7 +43,7 @@ namespace {
 // change that should survive a restart — same call shape as the old
 // HandleSettingsMessage paths used.
 void SaveIni(const ViewerApp& app) {
-    SaveSettingsIni(app.Service(), app.LoopNonLoopingPolicy());
+    SaveSettingsIni(app.Service(), app.LoopNonLoopingPolicy(), app.ForceHd());
 }
 
 constexpr std::array<const char*, 10> kDebugVisLabels = {
@@ -389,6 +389,16 @@ void ViewerUI::BuildMenuBar() {
             dfChanged |= ImGui::MenuItem("Ribbons", nullptr, &df.showRibbons);
             dfChanged |= ImGui::MenuItem("Event Objects", nullptr, &df.showEvents);
             ImGui::MenuItem("View Cube", nullptr, &showViewCube_);
+
+            ImGui::Separator();
+            {
+                // "Reforged Graphics" — force the HD pipeline for every model.
+                bool reforged = app_.ForceHd();
+                if (ImGui::MenuItem("Reforged Graphics", nullptr, &reforged)) {
+                    app_.SetForceHd(reforged);
+                    SaveIni(app_);
+                }
+            }
 
             ImGui::Separator();
             if (ImGui::BeginMenu("Tileset")) {
@@ -806,18 +816,31 @@ void ViewerUI::BuildSettingsWindow() {
         // focal distance > 0 is set, so enabling with a zero distance seeds a
         // sensible default — otherwise the checkbox would appear to do nothing.
         if (ImGui::CollapsingHeader("Depth of Field (HD)")) {
+            // Focus on the subject: the camera→target distance is the model
+            // centre's view-space depth, which is what `linearDepth` carries.
+            // The CoC is hyperbolic — (1/focus − 1/depth)·focusScale — so at
+            // view-space depths (hundreds) focusScale needs to be ~tens-hundreds
+            // for visible blur, not the ~1 a normalised-depth pass would use.
+            const f32 camDist = svc.Scene().Camera().GetDistance();
+            const f32 autoFocus = camDist > 0.0f ? camDist : 600.0f;
             bool dof = svc.Settings().DofEnabled();
             if (ImGui::Checkbox("Enabled##dof", &dof)) {
                 svc.Settings().SetDofEnabled(dof);
-                if (dof && svc.Settings().DofFocusDistance() <= 0.0f)
-                    svc.Settings().SetDofFocusDistance(600.0f);
+                if (dof) {
+                    // Auto-focus on the model and seed a visible strength if the
+                    // current values would produce no perceptible blur.
+                    if (svc.Settings().DofFocusDistance() <= 0.0f)
+                        svc.Settings().SetDofFocusDistance(autoFocus);
+                    if (svc.Settings().DofFocusScale() < 5.0f)
+                        svc.Settings().SetDofFocusScale(50.0f);
+                }
                 SaveIni(app_);
             }
             ImGui::SameLine();
             if (ImGui::SmallButton("Reset##dof")) {
-                svc.Settings().SetDofFocusDistance(600.0f);
-                svc.Settings().SetDofFocusScale(1.0f);
-                svc.Settings().SetDofMaxBlurSize(10.0f);
+                svc.Settings().SetDofFocusDistance(autoFocus);
+                svc.Settings().SetDofFocusScale(50.0f);
+                svc.Settings().SetDofMaxBlurSize(20.0f);
                 svc.Settings().SetDofRadiusScale(1.0f);
                 svc.Settings().SetDofFarFieldOnly(false);
                 SaveIni(app_);
@@ -833,7 +856,7 @@ void ViewerUI::BuildSettingsWindow() {
                 SaveIni(app_);
             }
             ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat("Focus scale##dof", &focusScale, 0.0f, 10.0f, "%.2f")) {
+            if (ImGui::SliderFloat("Focus scale##dof", &focusScale, 0.0f, 200.0f, "%.1f")) {
                 svc.Settings().SetDofFocusScale(focusScale);
                 SaveIni(app_);
             }

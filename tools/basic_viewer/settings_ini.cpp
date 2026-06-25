@@ -297,7 +297,7 @@ void LoadStartupSettingsFromIni(RenderService& service) {
     }
 }
 
-void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy) {
+void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy, bool& forceHd) {
     IniMap ini;
     ini.Load(SettingsIniPath());
 
@@ -324,6 +324,11 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy) {
         bool v = false;
         if (ParseBool(*s, v))
             loopNonLoopingPolicy = v;
+    }
+    if (auto* s = ini.Get(KeyOf("ReforgedGraphics"))) {
+        bool v = false;
+        if (ParseBool(*s, v))
+            forceHd = v;
     }
 
     {
@@ -469,7 +474,7 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy) {
     }
 }
 
-void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy) {
+void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy, bool forceHd) {
     const fs::path path = SettingsIniPath();
     // Round-trip: load existing values first so unrelated keys (older
     // settings, future additions) don't get nuked when a single setting
@@ -488,6 +493,7 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy) {
     ini.Set(KeyOf("Exposure"), FloatToString(service.Settings().GetTonemapExposure()));
     ini.Set(KeyOf("SoundVolume"), FloatToString(service.Sound().GetVolume()));
     ini.Set(KeyOf("LoopNonLooping"), loopNonLoopingPolicy ? "1" : "0");
+    ini.Set(KeyOf("ReforgedGraphics"), forceHd ? "1" : "0");
     ini.Set(KeyOf("GraphicsDebug"), service.Settings().GraphicsDebug() ? "1" : "0");
 
     {

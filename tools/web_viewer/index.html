@@ -259,6 +259,10 @@
       <label for="debug-vis-select">Debug</label>
       <select id="debug-vis-select"></select>
     </div>
+    <div class="ctrl" title="Force Reforged (HD) graphics on every model, regardless of its SD/HD detection">
+      <input id="reforged-toggle" type="checkbox">
+      <label for="reforged-toggle">Reforged</label>
+    </div>
     <div class="ctrl" title="Show reference grid">
       <input id="grid-toggle" type="checkbox" checked>
       <label for="grid-toggle">Grid</label>
@@ -402,6 +406,7 @@
         lightingSel:  document.getElementById('lighting-select'),
         debugVisSel:  document.getElementById('debug-vis-select'),
         gridToggle:   document.getElementById('grid-toggle'),
+        reforgedToggle: document.getElementById('reforged-toggle'),
         dayNightToggle: document.getElementById('daynight-toggle'),
         todSlider:    document.getElementById('tod-slider'),
         fpsReadout:   document.getElementById('fps-readout'),

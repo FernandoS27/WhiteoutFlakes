@@ -117,6 +117,15 @@ public:
     // runs. Becomes the active document; other open documents are untouched.
     bool LoadEffect(const std::filesystem::path& path);
 
+    // "Reforged Graphics": force the HD render pipeline for every model,
+    // overriding the per-model SD/HD auto-detection (the LoadModel HD probe).
+    // Toggling reloads the active document so its assets re-resolve under the
+    // new (HD vs detected) CASC overlay.
+    bool ForceHd() const {
+        return forceHd_;
+    }
+    void SetForceHd(bool on);
+
     // ---- Open documents (tabs) ----
     // Each loaded file is one document, backed by its own RenderService scene.
     // The viewer renders / ticks only the active document; the rest stay frozen
@@ -335,6 +344,11 @@ private:
     i32 lastFbH_ = 0;
 
     std::unique_ptr<ViewerUI> ui_;
+
+    // "Reforged Graphics" — when set, every model loads/renders in HD
+    // regardless of its detected SD/HD preference (see LoadModelIntoActiveScene
+    // + SetForceHd).
+    bool forceHd_ = false;
 
     // ---- Open documents (tabs) ----
     std::vector<Document> documents_;

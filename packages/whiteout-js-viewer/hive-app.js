@@ -35,6 +35,7 @@ export class HiveApp {
         this.gridToggle   = els.gridToggle   || null;
         this.dayNightToggle = els.dayNightToggle || null;
         this.todSlider    = els.todSlider    || null;
+        this.reforgedToggle = els.reforgedToggle || null;
         this.fpsReadout   = els.fpsReadout   || null;
         this.emptyModels  = this.modelList ? this.modelList.querySelector('.empty') : null;
 
@@ -100,7 +101,7 @@ export class HiveApp {
                     console.warn('[hive] SW registration failed:', e);
                 });
         }
-        this.viewer = new WhiteoutViewer(this.canvas, { hdMode: this.forceHd });
+        this.viewer = new WhiteoutViewer(this.canvas, { forceHd: this.forceHd });
         await this.viewer.init();
         this.viewer.setFetchHooks({
             start: () => this._bump(+1),
@@ -191,6 +192,18 @@ export class HiveApp {
             const apply = () => this.viewer.setShowGrid(this.gridToggle.checked);
             this.gridToggle.addEventListener('change', apply);
             apply();
+        }
+        // "Reforged Graphics" — force the HD pipeline regardless of the model's
+        // detected SD/HD preference, then reload the current model so its deps
+        // re-fetch under the new (HD vs auto) asset overlay.
+        if (this.reforgedToggle) {
+            this.reforgedToggle.checked = this.forceHd;
+            this.reforgedToggle.addEventListener('change', () => {
+                this.forceHd = this.reforgedToggle.checked;
+                this.viewer.setForceHd(this.forceHd);
+                if (this._currentModelM)
+                    this._selectModel(this._currentModelM, this._currentModelRow);
+            });
         }
         // Day-night cycle: the checkbox runs the 60 s animation; the slider
         // sets time-of-day manually (and seeds the animation's start point).
@@ -402,6 +415,10 @@ export class HiveApp {
     }
 
     async _selectModel(m, row) {
+        // Remember the selection so the Reforged-Graphics toggle can reload it
+        // under the new render mode / asset overlay.
+        this._currentModelM = m;
+        this._currentModelRow = row;
         this._setActiveChip(this.modelList, row);
 
         if (this.currentInstance) {
