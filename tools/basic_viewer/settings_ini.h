@@ -10,9 +10,13 @@ class RenderService;
 
 namespace whiteout::flakes {
 
-// Directory holding the running executable (where the build copies the bundled
-// `lang/` and `fonts/` asset folders). Always the exe location, every OS.
+// Directory holding the running executable. Always the exe location, every OS.
 std::filesystem::path ExecutableDir();
+
+// Root for bundled read-only assets (`lang/`, `fonts/`). Same as ExecutableDir()
+// on Windows/Linux; inside a macOS .app bundle it resolves to Contents/Resources/
+// (where codesign accepts non-code data), mirroring the engine's asset lookup.
+std::filesystem::path AssetDir();
 
 // `loopNonLoopingPolicy` is a tool-side default: when true, freshly-loaded
 // actors should have actor->ignoreNonLooping = true (callers apply this on

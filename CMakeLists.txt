@@ -1512,16 +1512,20 @@ endif()
 add_dependencies(WhiteoutFlakesStandalone WhiteoutFlakesEmbedded)
 
 # Localization catalogs (lang/*.ini) and the bundled Noto CJK fonts (fonts/*.ttf)
-# are runtime assets loaded from next to the exe. Copy them post-build so the
-# viewer finds them in the build tree without an install step;
+# are runtime assets. Stage them into standalone/ (the RUNTIME_OUTPUT_DIRECTORY),
+# mirroring how the prebuilt shaders are staged — NOT into $<TARGET_FILE_DIR>,
+# which on macOS is the bundle's Contents/MacOS/ where codesign rejects non-code
+# files. On Windows/Linux standalone/ IS the exe dir, so the viewer finds them
+# next to itself; on macOS they sit beside the .app and the install() rules below
+# copy them into Contents/Resources/ (where AssetDir() resolves them at runtime).
 # copy_directory_if_different keeps it a no-op when nothing changed.
 add_custom_command(TARGET WhiteoutFlakesStandalone POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/lang"
-        "$<TARGET_FILE_DIR:WhiteoutFlakesStandalone>/lang"
+        "${CMAKE_BINARY_DIR}/standalone/lang"
     COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/fonts"
-        "$<TARGET_FILE_DIR:WhiteoutFlakesStandalone>/fonts"
+        "${CMAKE_BINARY_DIR}/standalone/fonts"
     VERBATIM)
 
 # ---- ModelExplorer ----
@@ -1674,6 +1678,13 @@ if(UNIX AND NOT APPLE AND NOT EMSCRIPTEN)
                 DESTINATION ${CMAKE_INSTALL_BINDIR})
     endif()
 
+    # Localization catalogs + bundled Noto fonts, next to the binary where
+    # AssetDir() (== the exe dir on Linux) resolves them inside the AppImage.
+    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/resources/lang/"
+            DESTINATION ${CMAKE_INSTALL_BINDIR}/lang)
+    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/resources/fonts/"
+            DESTINATION ${CMAKE_INSTALL_BINDIR}/fonts)
+
     install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/linux/WhiteoutFlakes.desktop"
             DESTINATION ${CMAKE_INSTALL_DATADIR}/applications)
 endif()
@@ -1754,6 +1765,14 @@ if(APPLE)
         install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/pso_trace.bin"
                 DESTINATION WhiteoutFlakes.app/Contents/Resources)
     endif()
+
+    # Localization catalogs + bundled Noto fonts — into Contents/Resources/
+    # (NOT Contents/MacOS/, where codesign rejects non-code files). AssetDir()
+    # resolves these from Contents/Resources/ on macOS.
+    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/resources/lang/"
+            DESTINATION WhiteoutFlakes.app/Contents/Resources/lang)
+    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/resources/fonts/"
+            DESTINATION WhiteoutFlakes.app/Contents/Resources/fonts)
 
     # Self-contained bundle: stage the Vulkan loader + MoltenVK driver and
     # rewrite the ICD JSON's library_path to bundle-relative. test_main.cpp

@@ -665,7 +665,7 @@ int main(int argc, char* argv[]) {
     {
         namespace i18n = whiteout::flakes::i18n;
         const std::string langDir =
-            whiteout::flakes::io::PathToUtf8(whiteout::flakes::ExecutableDir() / "lang");
+            whiteout::flakes::io::PathToUtf8(whiteout::flakes::AssetDir() / "lang");
         i18n::Localizer::instance().load(langDir, i18n::languageFromCode(languageCode));
     }
 

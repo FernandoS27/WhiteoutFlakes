@@ -17,6 +17,14 @@ jobs:
 
     env:
       BUILD_TYPE: Release
+      # The LunarG Vulkan SDK is a BUILD dependency: it provides slangc (which
+      # compiles the viewer's engine shaders to DXBC + SPIR-V) plus the Vulkan
+      # headers, loader import lib, and VMA (vk_mem_alloc.h) needed by the Vulkan
+      # gfx backend — which IS compiled on Windows (the viewer offers a Vulkan
+      # backend alongside D3D12/D3D11). vulkan-1.dll itself ships with the user's
+      # GPU driver at run time, so nothing Vulkan is bundled. Pin the same SDK
+      # version as the Linux/macOS jobs so slangc emits identical shader bytes.
+      VULKAN_SDK_VERSION: 1.4.341.0
 
     steps:
       - name: Checkout (with submodules)
@@ -25,16 +33,62 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      # No Vulkan SDK: the Vulkan backend is compiled out on Windows (the
-      # Vulkan-using code is gated behind `#if !defined(_WIN32)`), so the
-      # shipped viewer runs on D3D12 (default) / D3D11 — both native, no
-      # external runtime to bundle. Shaders ship prebuilt under prebuilt/shaders
-      # (WDX_USE_PREBUILT_SHADERS), so no Slang toolchain is needed either.
+      # The installer download + silent install is the slowest part of this job,
+      # so cache the SDK tree and skip the installer on a hit. The `-vma` key
+      # suffix distinguishes this VMA-inclusive install from an earlier cache
+      # that lacked it (the default install omits the VMA component).
+      - name: Cache Vulkan SDK
+        id: cache-vulkan
+        uses: actions/cache@v4
+        with:
+          path: C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}
+          key: vulkan-sdk-windows-${{ env.VULKAN_SDK_VERSION }}-vma
+
+      # The default silent install pulls only the core (headers, loader, tools
+      # incl. slangc). VMA (vk_mem_alloc.h) is a separate optional component the
+      # Vulkan gfx backend needs, so request it explicitly — mirrors the macOS
+      # job's `com.lunarg.vulkan.vma`. Core is force-installed alongside it.
+      - name: Install Vulkan SDK
+        if: steps.cache-vulkan.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ver = $env:VULKAN_SDK_VERSION
+          $url = "https://sdk.lunarg.com/sdk/download/$ver/windows/vulkansdk-windows-X64-$ver.exe"
+          $exe = Join-Path $env:RUNNER_TEMP 'VulkanSDK-Installer.exe'
+          Write-Host "Downloading Vulkan SDK $ver"
+          curl.exe -L --fail -o $exe $url
+          $p = Start-Process -FilePath $exe -Wait -PassThru -ArgumentList `
+            '--accept-licenses','--default-answer','--confirm-command', `
+            'install','com.lunarg.vulkan.vma'
+          if ($p.ExitCode -ne 0) { throw "Vulkan SDK installer exited $($p.ExitCode)" }
+
+      # Runs on both cache hit and miss. Sets VULKAN_SDK so find_package(Vulkan)
+      # resolves to this install, puts slangc on PATH for find_program(SLANGC),
+      # and asserts VMA is present (a missing vk_mem_alloc.h here fails loudly
+      # rather than deep in the WhiteoutFlakesGfx compile).
+      - name: Export Vulkan SDK environment
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sdk = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          if (-not (Test-Path "$sdk\Bin\slangc.exe")) {
+              throw "slangc.exe not found under $sdk\Bin (cache may be corrupt)"
+          }
+          if (-not (Test-Path "$sdk\Include\vma\vk_mem_alloc.h")) {
+              throw "vk_mem_alloc.h not found under $sdk\Include\vma (VMA component missing)"
+          }
+          "VULKAN_SDK=$sdk" | Out-File $env:GITHUB_ENV  -Append -Encoding utf8
+          "$sdk\Bin"        | Out-File $env:GITHUB_PATH -Append -Encoding utf8
+          & "$sdk\Bin\slangc.exe" -v 2>&1 | Select-Object -First 1
+
+      # WC3 model shaders ship prebuilt under prebuilt/shaders
+      # (WDX_USE_PREBUILT_SHADERS), so no BLS/Slang model-shader build runs.
       #
-      # WebGPU/Dawn is intentionally OFF here: D3D12 is the native, primary
-      # backend on Windows, and skipping the Dawn FetchContent keeps CI fast and
-      # dependency-free. The Package step still bundles webgpu_dawn.dll if a
-      # future build produces it.
+      # WebGPU/Dawn is intentionally OFF: D3D12 is the native, primary backend on
+      # Windows (D3D11 and Vulkan also available), so the shipped viewer needs no
+      # external runtime. Skipping the Dawn FetchContent keeps CI lean. The
+      # Package step still bundles webgpu_dawn.dll if a future build produces it.
       - name: Configure
         run: >
           cmake -S . -B build -A x64

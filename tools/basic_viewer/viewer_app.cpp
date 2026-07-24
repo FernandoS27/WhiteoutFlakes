@@ -371,7 +371,7 @@ void ViewerApp::InitImGui() {
     glfwGetWindowContentScale(window_, &xs, &ys);
     // Bundled Noto fonts live in `fonts/` next to the exe — hand the dir to the
     // font loader so the atlas covers every UI language (CJK included).
-    ApplyImGuiDpiScale(xs, io::PathToUtf8(ExecutableDir() / "fonts"));
+    ApplyImGuiDpiScale(xs, io::PathToUtf8(AssetDir() / "fonts"));
 
     // GLFW backend handles input only; the engine adapter draws.
     ImGui_ImplGlfw_InitForOther(window_, true);
