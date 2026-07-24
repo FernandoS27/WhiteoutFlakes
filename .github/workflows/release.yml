@@ -1,0 +1,84 @@
+name: Release
+
+# Builds all three OS targets and publishes them as a single GitHub Release.
+#
+# Triggered by pushing a version tag (e.g. `v1.2.3`), or manually via the
+# Actions tab (which produces a `nightly` prerelease by default).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create (e.g. v1.2.3)'
+        required: false
+        default: 'nightly'
+
+jobs:
+  # ---- Reusable per-OS builds ----------------------------------------------
+  # Each `uses:` runs that workflow within THIS run, so the artifacts it
+  # uploads (the .zip, .dmg and .AppImage) are downloadable by the `release`
+  # job below.
+  windows:
+    uses: ./.github/workflows/windows.yml
+  macos:
+    uses: ./.github/workflows/macos-dmg.yml
+  linux:
+    uses: ./.github/workflows/linux-appimage.yml
+
+  # ---- Aggregate + publish -------------------------------------------------
+  release:
+    name: Publish GitHub Release
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Resolve release tag
+        id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create / publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          TAG="${{ steps.meta.outputs.tag }}"
+          # This job has no checkout, so `gh` can't infer the repo from a local
+          # git remote — pass it explicitly so every call goes via the API.
+          REPO="${{ github.repository }}"
+
+          # download-artifact drops each artifact into its own subdirectory;
+          # collect every file (the .zip, .dmg and .AppImage) for upload.
+          files=$(find dist -type f | sort)
+          test -n "${files}"
+
+          # On manual (nightly) runs the tag/release may already exist from a
+          # previous run — replace it. Version-tag pushes always create fresh.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            gh release delete "${TAG}" --repo "${REPO}" --yes --cleanup-tag || true
+          fi
+
+          extra=""
+          if [ "${{ steps.meta.outputs.prerelease }}" = "true" ]; then
+            extra="--prerelease"
+          fi
+
+          gh release create "${TAG}" ${files} \
+            --repo "${REPO}" \
+            --title "${TAG}" \
+            --generate-notes \
+            ${extra}

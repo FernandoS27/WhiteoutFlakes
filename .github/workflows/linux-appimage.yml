@@ -1,10 +1,12 @@
 name: Linux AppImage
 
-# Manual-only: CI minutes cost real money and the Linux AppImage doesn't
-# need to rebuild on every commit. Trigger from the Actions tab → "Run
-# workflow", or `gh workflow run linux-appimage.yml` from the CLI.
+# Manual-only for standalone runs (CI minutes cost real money and the Linux
+# AppImage doesn't need to rebuild on every commit): trigger from the Actions
+# tab → "Run workflow", or `gh workflow run linux-appimage.yml`. Also callable
+# by release.yml as a reusable workflow so a release run gets the .AppImage.
 on:
   workflow_dispatch:
+  workflow_call:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"

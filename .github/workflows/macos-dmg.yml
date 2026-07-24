@@ -1,9 +1,12 @@
 name: macOS .dmg
 
-# Manual-only — same rationale as the Linux job. Trigger from the Actions
-# tab → "Run workflow", or `gh workflow run macos-dmg.yml`.
+# Manual-only for standalone runs — same rationale as the Linux job. Trigger
+# from the Actions tab → "Run workflow", or `gh workflow run macos-dmg.yml`.
+# Also callable by release.yml as a reusable workflow so a release run gets the
+# .dmg.
 on:
   workflow_dispatch:
+  workflow_call:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"

@@ -1,0 +1,96 @@
+name: Windows Build
+
+# Runnable manually (Actions tab → "Run workflow" / `gh workflow run windows.yml`)
+# and callable by release.yml as a reusable workflow so the release run gets the
+# .zip artifact.
+on:
+  workflow_dispatch:
+  workflow_call:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build:
+    name: Build .exe (Windows x64, MSVC)
+    runs-on: windows-latest
+
+    env:
+      BUILD_TYPE: Release
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      # No Vulkan SDK: the Vulkan backend is compiled out on Windows (the
+      # Vulkan-using code is gated behind `#if !defined(_WIN32)`), so the
+      # shipped viewer runs on D3D12 (default) / D3D11 — both native, no
+      # external runtime to bundle. Shaders ship prebuilt under prebuilt/shaders
+      # (WDX_USE_PREBUILT_SHADERS), so no Slang toolchain is needed either.
+      #
+      # WebGPU/Dawn is intentionally OFF here: D3D12 is the native, primary
+      # backend on Windows, and skipping the Dawn FetchContent keeps CI fast and
+      # dependency-free. The Package step still bundles webgpu_dawn.dll if a
+      # future build produces it.
+      - name: Configure
+        run: >
+          cmake -S . -B build -A x64
+          -DWDX_BUILD_WC3_SHADERS=OFF
+          -DWDX_USE_PREBUILT_SHADERS=ON
+          -DWDX_BUILD_WC3_DEBUG_SHADERS=OFF
+          -DWDX_ENABLE_TRACY=OFF
+          -DWDX_BUILD_MAX_PLUGIN=OFF
+          -DWDX_ENABLE_WEBGPU=OFF
+
+      - name: Build viewer
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --target WhiteoutFlakesStandalone --parallel
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = 'WhiteoutFlakes-windows-x64'
+          New-Item -ItemType Directory -Force $stage | Out-Null
+
+          # RUNTIME_OUTPUT_DIRECTORY_RELEASE pins the exe (and its POST_BUILD
+          # asset copies) to build/standalone, with no per-config subdir.
+          $rt = 'build/standalone'
+          Copy-Item "$rt/WhiteoutFlakes.exe" $stage/
+
+          # Prebuilt .bls shader bundles (d3d12/ps/vs used by the D3D backends),
+          # staged into standalone/shaders by WDX_USE_PREBUILT_SHADERS. The exe
+          # resolves ./shaders next to itself at runtime.
+          Copy-Item "$rt/shaders" "$stage/shaders" -Recurse
+
+          # Localization catalogs (lang/*.ini) + bundled Noto CJK fonts
+          # (fonts/*.ttf), copied next to the exe by the CMake POST_BUILD rule;
+          # the viewer resolves them from the exe dir.
+          Copy-Item "$rt/lang"  "$stage/lang"  -Recurse
+          Copy-Item "$rt/fonts" "$stage/fonts" -Recurse
+
+          # PSO-trace seed (committed): the viewer copies pso_trace.bin from the
+          # exe dir on first run to pre-warm the pipeline cache. Optional — the
+          # app rebuilds PSOs if it's absent.
+          if (Test-Path 'prebuilt/pso_trace.bin') { Copy-Item 'prebuilt/pso_trace.bin' $stage/ }
+
+          # WebGPU/Dawn runtime, if a build produced it (WDX_ENABLE_WEBGPU).
+          if (Test-Path "$rt/webgpu_dawn.dll") { Copy-Item "$rt/webgpu_dawn.dll" $stage/ }
+
+          # Bundled docs.
+          Copy-Item LICENSE,LICENSE-AI.md,README.md $stage/
+
+          $sha = $env:GITHUB_SHA.Substring(0, 8)
+          $zip = "WhiteoutFlakes-$sha-windows-x64.zip"
+          Compress-Archive -Path "$stage/*" -DestinationPath $zip -Force
+          "ARTIFACT=$zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Upload zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhiteoutFlakes-windows-x64
+          path: ${{ env.ARTIFACT }}
+          if-no-files-found: error
+          retention-days: 14
