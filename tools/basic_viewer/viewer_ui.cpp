@@ -12,10 +12,12 @@
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #include "renderer/shadow/shadow_service.h"
+#include "localization.h"
 #include "settings_ini.h"
 #include "viewer_app.h"
 
 #include <whiteout/models/mdx/writer.h>
+#include "whiteout/flakes/content_provider.h"
 #include "whiteout/flakes/display.h"
 #include "whiteout/flakes/enums.h"
 #include "whiteout/flakes/sound_emitter.h"
@@ -33,7 +35,11 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace whiteout::flakes {
 
@@ -43,7 +49,8 @@ namespace {
 // change that should survive a restart — same call shape as the old
 // HandleSettingsMessage paths used.
 void SaveIni(const ViewerApp& app) {
-    SaveSettingsIni(app.Service(), app.LoopNonLoopingPolicy(), app.ForceHd());
+    SaveSettingsIni(app.Service(), app.LoopNonLoopingPolicy(), app.ForceHd(),
+                    i18n::languageCode(i18n::Localizer::instance().current()));
 }
 
 constexpr std::array<const char*, 10> kDebugVisLabels = {
@@ -70,6 +77,24 @@ constexpr std::array<const char*, 4> kShadowLabels = {"Off", "1 cascade", "2 cas
                                                       "3 cascades"};
 constexpr std::array<const char*, 5> kBackendLabels = {"D3D11", "D3D12", "Vulkan", "WebGPU",
                                                        "Metal"};
+
+// Parallel i18n key arrays for the visible label arrays above. Backend names
+// are product/tech names and stay in English, so they get no key array.
+constexpr std::array<const char*, 10> kDebugVisKeys = {
+    "debugvis.off",           "debugvis.albedo",       "debugvis.world_normal",
+    "debugvis.lod_heatmap",   "debugvis.light_count",  "debugvis.shading_white",
+    "debugvis.shading_grey",  "debugvis.specular_only", "debugvis.no_orm",
+    "debugvis.ao_only",
+};
+constexpr std::array<const char*, 5> kLodKeys = {
+    "lod.auto", "lod.0", "lod.1", "lod.2", "lod.3",
+};
+constexpr std::array<const char*, 4> kIblKeys = {"ibl.portrait", "ibl.daynight", "ibl.dungeon",
+                                                 "ibl.sunset"};
+constexpr std::array<const char*, 3> kLightingKeys = {"lighting.ingame", "lighting.glue",
+                                                      "lighting.dynamic"};
+constexpr std::array<const char*, 4> kShadowKeys = {"shadow.off", "shadow.1", "shadow.2",
+                                                    "shadow.3"};
 
 i32 BackendToIdx(gfx::GfxApi b) {
     switch (b) {
@@ -166,13 +191,75 @@ bool WriteCurrentModel(ViewerApp& app, const std::string& outPath,
     return true;
 }
 
+// Save a standalone PopcornFX effect (.pkb / .pkfx). There's no editable model
+// behind an effect — the viewer just plays it — so "save" writes the source
+// bytes out verbatim.
+//
+// The source may not be a file on disk: documents opened from the Storage
+// Explorer set CurrentModelPath() to an archive-relative path (CASC / MPQ), so
+// only the on-disk case can be a plain copy. Everything else is read back
+// through the document's own content provider — the same one the effect was
+// loaded through — and written out.
+bool WriteCurrentPkb(ViewerApp& app, const std::string& outPath) {
+    const std::filesystem::path src = app.CurrentModelPath();
+
+    std::error_code ec;
+    if (std::filesystem::exists(src, ec) && !ec) {
+        std::filesystem::copy_file(src, outPath,
+                                   std::filesystem::copy_options::overwrite_existing, ec);
+        if (!ec) {
+            std::printf("[viewer] Saved effect: %s\n", outPath.c_str());
+            return true;
+        }
+    }
+
+    const std::string rel = io::PathToUtf8(src);
+    std::optional<std::vector<u8>> bytes;
+    if (io::IContentProvider* provider = app.Service().Scene().ActiveContentProvider())
+        bytes = provider->ReadFile(rel);
+    if (!bytes) {
+        std::fprintf(stderr, "[viewer] Save As FAILED: cannot read effect '%s'\n", rel.c_str());
+        return false;
+    }
+
+    std::ofstream out(std::filesystem::path(outPath), std::ios::binary);
+    if (out)
+        out.write(reinterpret_cast<const char*>(bytes->data()),
+                  static_cast<std::streamsize>(bytes->size()));
+    if (!out) {
+        std::fprintf(stderr, "[viewer] Save As FAILED: cannot write '%s'\n", outPath.c_str());
+        return false;
+    }
+    std::printf("[viewer] Saved effect: %s (%zu bytes)\n", outPath.c_str(), bytes->size());
+    return true;
+}
+
 } // namespace
 
 void ViewerUI::SaveAsDialog() {
+    // The output format is locked to the source's: a PopcornFX effect
+    // (.pkb/.pkfx) is copied verbatim and can only be re-saved as the same
+    // effect, while a model can only be written as MDX or MDL.
+    std::string srcExt = app_.CurrentModelPath().extension().string();
+    for (auto& c : srcExt)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
     NFD::UniquePathU8 outPath;
-    // Two separate filter entries (not "mdx,mdl") so NFD appends the right
-    // extension for whichever the user selects — that extension is then how
-    // we decide binary vs text.
+
+    if (srcExt == ".pkb" || srcExt == ".pkfx") {
+        // Effects are copied byte-for-byte, so the output keeps the source
+        // extension (the bytes are that format).
+        const char* effExt = (srcExt == ".pkfx") ? "pkfx" : "pkb";
+        nfdu8filteritem_t effFilter[1] = {{"PopcornFX effect", effExt}};
+        if (NFD::SaveDialog(outPath, effFilter, 1) != NFD_OKAY)
+            return;
+        WriteCurrentPkb(app_, outPath.get());
+        return;
+    }
+
+    // Model: two separate filter entries (not "mdx,mdl") so NFD appends the
+    // right extension for whichever the user selects — that extension is then
+    // how we decide binary vs text.
     nfdu8filteritem_t filter[2] = {{"MDX model (binary)", "mdx"}, {"MDL model (text)", "mdl"}};
     if (NFD::SaveDialog(outPath, filter, 2) != NFD_OKAY)
         return;
@@ -194,34 +281,35 @@ void ViewerUI::SaveAsDialog() {
 
 void ViewerUI::BuildSaveAsPopup() {
     if (openDialectPopup_) {
-        ImGui::OpenPopup("Save As MDL");
+        ImGui::OpenPopup(i18n::tr("dialog.saveas.title"));
         openDialectPopup_ = false;
     }
 
     const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    if (!ImGui::BeginPopupModal("Save As MDL", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    if (!ImGui::BeginPopupModal(i18n::tr("dialog.saveas.title"), nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
         return;
 
-    ImGui::TextUnformatted("Which MDL dialect should be written?");
+    ImGui::TextUnformatted(i18n::tr("dialog.saveas.prompt"));
     ImGui::Spacing();
-    ImGui::TextDisabled("Warcraft III  - engine-faithful, loads in-game.");
-    ImGui::TextDisabled("Hiveworkshop  - community tools (Retera, Magos, MdlVis).");
+    ImGui::TextDisabled(i18n::tr("dialog.saveas.wc3_desc"));
+    ImGui::TextDisabled(i18n::tr("dialog.saveas.hive_desc"));
     ImGui::Separator();
 
-    if (ImGui::Button("Warcraft III", ImVec2(130, 0))) {
+    if (ImGui::Button(i18n::tr("dialog.saveas.wc3"), ImVec2(130, 0))) {
         WriteCurrentModel(app_, pendingSaveMdlPath_, whiteout::mdx::MdlFormat::WarcraftIII);
         pendingSaveMdlPath_.clear();
         ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Hiveworkshop", ImVec2(130, 0))) {
+    if (ImGui::Button(i18n::tr("dialog.saveas.hive"), ImVec2(130, 0))) {
         WriteCurrentModel(app_, pendingSaveMdlPath_, whiteout::mdx::MdlFormat::Hiveworkshop);
         pendingSaveMdlPath_.clear();
         ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(80, 0))) {
+    if (ImGui::Button(i18n::tr("app.cancel"), ImVec2(80, 0))) {
         pendingSaveMdlPath_.clear();
         ImGui::CloseCurrentPopup();
     }
@@ -230,20 +318,20 @@ void ViewerUI::BuildSaveAsPopup() {
 
 void ViewerUI::BuildExportPopup() {
     if (openExportPopup_) {
-        ImGui::OpenPopup("Export Animation Frames");
+        ImGui::OpenPopup(i18n::tr("dialog.export.title"));
         openExportPopup_ = false;
     }
 
     const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    if (!ImGui::BeginPopupModal("Export Animation Frames", nullptr,
+    if (!ImGui::BeginPopupModal(i18n::tr("dialog.export.title"), nullptr,
                                 ImGuiWindowFlags_AlwaysAutoResize))
         return;
 
     const auto& seqs = app_.SequenceNames();
     if (seqs.empty()) {
-        ImGui::TextUnformatted("The loaded model has no animations.");
-        if (ImGui::Button("Close", ImVec2(80, 0)))
+        ImGui::TextUnformatted(i18n::tr("dialog.export.no_anims"));
+        if (ImGui::Button(i18n::tr("app.close"), ImVec2(80, 0)))
             ImGui::CloseCurrentPopup();
         ImGui::EndPopup();
         return;
@@ -253,7 +341,7 @@ void ViewerUI::BuildExportPopup() {
 
     // ---- Animation ----
     ImGui::SetNextItemWidth(280);
-    if (ImGui::BeginCombo("Animation", seqs[exportSeqIdx_].c_str())) {
+    if (ImGui::BeginCombo(i18n::tr("toolbar.animation"), seqs[exportSeqIdx_].c_str())) {
         for (i32 i = 0; i < static_cast<i32>(seqs.size()); ++i) {
             const bool sel = (i == exportSeqIdx_);
             if (ImGui::Selectable(seqs[i].c_str(), sel))
@@ -266,7 +354,7 @@ void ViewerUI::BuildExportPopup() {
 
     // ---- FPS ----
     ImGui::SetNextItemWidth(120);
-    ImGui::InputInt("FPS", &exportFps_);
+    ImGui::InputInt(i18n::tr("dialog.export.fps"), &exportFps_);
     exportFps_ = std::clamp(exportFps_, 1, 240);
 
     // ---- Format ----
@@ -275,31 +363,32 @@ void ViewerUI::BuildExportPopup() {
         for (i32 i = 0; i < kExportFormatCount; ++i)
             formats[i] = GetExportFormatInfo(static_cast<ExportFormat>(i)).label;
         ImGui::SetNextItemWidth(200);
-        ImGui::Combo("Format", &exportFormat_, formats, kExportFormatCount);
+        ImGui::Combo(i18n::tr("dialog.export.format"), &exportFormat_, formats, kExportFormatCount);
     }
     const ExportFormat exportFmt = static_cast<ExportFormat>(exportFormat_);
 
     // ---- Resolution ----
     {
-        const char* modes[] = {"Current view", "Custom"};
+        const char* modes[] = {i18n::tr("dialog.export.res_current"),
+                               i18n::tr("dialog.export.res_custom")};
         ImGui::SetNextItemWidth(200);
-        ImGui::Combo("Resolution", &exportResMode_, modes, 2);
+        ImGui::Combo(i18n::tr("dialog.export.resolution"), &exportResMode_, modes, 2);
         if (exportResMode_ == 1) {
             ImGui::SetNextItemWidth(96);
-            ImGui::InputInt("W", &exportWidth_, 0);
+            ImGui::InputInt(i18n::tr("dialog.export.w"), &exportWidth_, 0);
             ImGui::SameLine();
             ImGui::SetNextItemWidth(96);
-            ImGui::InputInt("H", &exportHeight_, 0);
+            ImGui::InputInt(i18n::tr("dialog.export.h"), &exportHeight_, 0);
             exportWidth_ = std::clamp(exportWidth_, 16, 8192);
             exportHeight_ = std::clamp(exportHeight_, 16, 8192);
         }
     }
 
     // ---- Transparent background ----
-    ImGui::Checkbox("Transparent background", &exportTransparent_);
+    ImGui::Checkbox(i18n::tr("dialog.export.transparent"), &exportTransparent_);
 
     // ---- Capture UI overlay ----
-    ImGui::Checkbox("Capture UI overlay", &exportCaptureUi_);
+    ImGui::Checkbox(i18n::tr("dialog.export.capture_ui"), &exportCaptureUi_);
 
     // ---- Output folder ----
     {
@@ -309,13 +398,13 @@ void ViewerUI::BuildExportPopup() {
         if (ImGui::InputText("##exportfolder", tmp, sizeof(tmp)))
             exportFolder_ = tmp;
         ImGui::SameLine();
-        if (ImGui::Button("Browse...##export")) {
+        if (ImGui::Button(i18n::tr("dialog.export.browse"))) {
             NFD::UniquePathU8 outPath;
             if (NFD::PickFolder(outPath) == NFD_OKAY)
                 exportFolder_ = outPath.get();
         }
         ImGui::SameLine();
-        ImGui::TextUnformatted("Output Folder");
+        ImGui::TextUnformatted(i18n::tr("dialog.export.output_folder"));
     }
 
     // ---- Duration / frame-count preview ----
@@ -325,19 +414,19 @@ void ViewerUI::BuildExportPopup() {
         const i32 durMs = std::max(0, s.endMs - s.startMs);
         const i32 frames = std::max(
             1, static_cast<i32>(std::llround(static_cast<f64>(durMs) * exportFps_ / 1000.0)));
-        ImGui::TextDisabled("%d ms - %d frame(s) at %d FPS", durMs, frames, exportFps_);
+        ImGui::TextDisabled(i18n::tr("dialog.export.duration"), durMs, frames, exportFps_);
     }
     if (IsSingleFileFormat(exportFmt))
-        ImGui::TextDisabled("Output: <model>_<animation>%s",
+        ImGui::TextDisabled(i18n::tr("dialog.export.output_single"),
                             GetExportFormatInfo(exportFmt).extension);
     else
-        ImGui::TextDisabled("Output: <model>_<animation>_<id>.png");
+        ImGui::TextDisabled(i18n::tr("dialog.export.output_frames"));
 
     ImGui::Separator();
 
     const bool canExport = !exportFolder_.empty();
     ImGui::BeginDisabled(!canExport);
-    if (ImGui::Button("Export", ImVec2(120, 0))) {
+    if (ImGui::Button(i18n::tr("dialog.export.export"), ImVec2(120, 0))) {
         AnimationExportParams params;
         params.sequenceIndex = exportSeqIdx_;
         params.fps = exportFps_;
@@ -354,7 +443,7 @@ void ViewerUI::BuildExportPopup() {
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(80, 0)))
+    if (ImGui::Button(i18n::tr("app.cancel"), ImVec2(80, 0)))
         ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
 }
@@ -365,43 +454,43 @@ void ViewerUI::BuildMenuBar() {
     bool dfChanged = false;
 
     if (ImGui::BeginMainMenuBar()) {
-        if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Open Model...", "Ctrl+O"))
+        if (ImGui::BeginMenu(i18n::tr("menu.file"))) {
+            if (ImGui::MenuItem(i18n::tr("menu.file.open"), "Ctrl+O"))
                 OpenFileDialog();
             const bool hasModel = !app_.CurrentModelPath().empty();
-            if (ImGui::MenuItem("Save As...", "Ctrl+Shift+S", false, hasModel))
+            if (ImGui::MenuItem(i18n::tr("menu.file.save_as"), "Ctrl+Shift+S", false, hasModel))
                 SaveAsDialog();
             const bool hasAnims = hasModel && !app_.SequenceNames().empty();
-            if (ImGui::MenuItem("Export Animation Frames...", nullptr, false, hasAnims)) {
+            if (ImGui::MenuItem(i18n::tr("menu.file.export_frames"), nullptr, false, hasAnims)) {
                 model::Actor* focus = app_.FocusActorPtr();
                 exportSeqIdx_ = focus ? focus->animation.ActiveSequenceIndex() : 0;
                 openExportPopup_ = true;
             }
             ImGui::Separator();
-            if (ImGui::MenuItem("Exit"))
+            if (ImGui::MenuItem(i18n::tr("menu.file.exit")))
                 glfwSetWindowShouldClose(app_.Window(), GLFW_TRUE);
             ImGui::EndMenu();
         }
 
-        if (ImGui::BeginMenu("View")) {
-            dfChanged |= ImGui::MenuItem("Grid", nullptr, &df.showGrid);
-            dfChanged |= ImGui::MenuItem("Particles", nullptr, &df.showParticles);
-            dfChanged |= ImGui::MenuItem("Ribbons", nullptr, &df.showRibbons);
-            dfChanged |= ImGui::MenuItem("Event Objects", nullptr, &df.showEvents);
-            ImGui::MenuItem("View Cube", nullptr, &showViewCube_);
+        if (ImGui::BeginMenu(i18n::tr("menu.view"))) {
+            dfChanged |= ImGui::MenuItem(i18n::tr("menu.view.grid"), nullptr, &df.showGrid);
+            dfChanged |= ImGui::MenuItem(i18n::tr("menu.view.particles"), nullptr, &df.showParticles);
+            dfChanged |= ImGui::MenuItem(i18n::tr("menu.view.ribbons"), nullptr, &df.showRibbons);
+            dfChanged |= ImGui::MenuItem(i18n::tr("menu.view.events"), nullptr, &df.showEvents);
+            ImGui::MenuItem(i18n::tr("menu.view.viewcube"), nullptr, &showViewCube_);
 
             ImGui::Separator();
             {
                 // "Reforged Graphics" — force the HD pipeline for every model.
                 bool reforged = app_.ForceHd();
-                if (ImGui::MenuItem("Reforged Graphics", nullptr, &reforged)) {
+                if (ImGui::MenuItem(i18n::tr("menu.view.reforged"), nullptr, &reforged)) {
                     app_.SetForceHd(reforged);
                     SaveIni(app_);
                 }
             }
 
             ImGui::Separator();
-            if (ImGui::BeginMenu("Tileset")) {
+            if (ImGui::BeginMenu(i18n::tr("menu.view.tileset"))) {
                 const i32 n = static_cast<i32>(io::Tileset::Count);
                 const i32 cur = static_cast<i32>(io::GetCurrentTileset());
                 for (i32 i = 0; i < n; ++i) {
@@ -417,15 +506,16 @@ void ViewerUI::BuildMenuBar() {
             ImGui::EndMenu();
         }
 
-        if (ImGui::BeginMenu("Debug")) {
-            dfChanged |= ImGui::MenuItem("Collision Markers", nullptr, &df.showCollisions);
-            dfChanged |= ImGui::MenuItem("Light Markers", nullptr, &df.showLights);
+        if (ImGui::BeginMenu(i18n::tr("menu.debug"))) {
+            dfChanged |= ImGui::MenuItem(i18n::tr("menu.debug.collisions"), nullptr,
+                                         &df.showCollisions);
+            dfChanged |= ImGui::MenuItem(i18n::tr("menu.debug.lights"), nullptr, &df.showLights);
             ImGui::Separator();
 
-            if (ImGui::BeginMenu("Debug View")) {
+            if (ImGui::BeginMenu(i18n::tr("menu.debug.debugview"))) {
                 const i32 cur = svc.Settings().HdDebugMode();
                 for (i32 i = 0; i < static_cast<i32>(kDebugVisLabels.size()); ++i) {
-                    if (ImGui::MenuItem(kDebugVisLabels[i], nullptr, i == cur)) {
+                    if (ImGui::MenuItem(i18n::tr(kDebugVisKeys[i]), nullptr, i == cur)) {
                         svc.Settings().SetHdDebugMode(i);
                         SaveIni(app_);
                     }
@@ -433,11 +523,11 @@ void ViewerUI::BuildMenuBar() {
                 ImGui::EndMenu();
             }
 
-            if (ImGui::BeginMenu("LOD")) {
+            if (ImGui::BeginMenu(i18n::tr("menu.debug.lod"))) {
                 const i32 cur = svc.Settings().LodOverride();
                 const i32 curIdx = (cur < 0) ? 0 : (1 + std::clamp(cur, 0, 3));
                 for (i32 i = 0; i < static_cast<i32>(kLodLabels.size()); ++i) {
-                    if (ImGui::MenuItem(kLodLabels[i], nullptr, i == curIdx)) {
+                    if (ImGui::MenuItem(i18n::tr(kLodKeys[i]), nullptr, i == curIdx)) {
                         svc.Settings().SetLodOverride(i == 0 ? -1 : (i - 1));
                         SaveIni(app_);
                     }
@@ -448,14 +538,28 @@ void ViewerUI::BuildMenuBar() {
             ImGui::EndMenu();
         }
 
-        if (ImGui::BeginMenu("Tools")) {
+        if (ImGui::BeginMenu(i18n::tr("menu.tools"))) {
             bool seOpen = app_.StorageExplorerOpen();
-            if (ImGui::MenuItem("Storage Explorer", nullptr, &seOpen))
+            if (ImGui::MenuItem(i18n::tr("menu.tools.storage_explorer"), nullptr, &seOpen))
                 app_.SetStorageExplorerOpen(seOpen);
             ImGui::EndMenu();
         }
 
-        if (ImGui::MenuItem("Settings"))
+        // Language picker — endonyms are shown in their own script (not
+        // translated); the bundled Noto fonts cover every entry. Switching only
+        // swaps the in-memory catalog, so the whole UI re-localizes next frame.
+        if (ImGui::BeginMenu(i18n::tr("menu.language"))) {
+            const i18n::Language cur = i18n::Localizer::instance().current();
+            for (const auto& e : i18n::languages()) {
+                if (ImGui::MenuItem(e.endonym, nullptr, e.lang == cur)) {
+                    i18n::Localizer::instance().setLanguage(e.lang);
+                    SaveIni(app_);
+                }
+            }
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::MenuItem(i18n::tr("menu.settings")))
             settingsOpen_ = true;
 
         ImGui::EndMainMenuBar();
@@ -494,7 +598,7 @@ void ViewerUI::BuildToolbar() {
         model::Actor* focus = app_.FocusActorPtr();
         i32 sel = focus ? focus->animation.ActiveSequenceIndex() : 0;
         ImGui::SetNextItemWidth(220);
-        if (ImGui::BeginCombo("Animation",
+        if (ImGui::BeginCombo(i18n::tr("toolbar.animation"),
                               seqs[std::clamp(sel, 0, (i32)seqs.size() - 1)].c_str())) {
             for (i32 i = 0; i < static_cast<i32>(seqs.size()); ++i) {
                 const bool isSel = (i == sel);
@@ -524,11 +628,11 @@ void ViewerUI::BuildToolbar() {
         const auto& presetNames = app_.CameraPresetNamesUtf8();
         const i32 active = app_.ActiveCameraPresetIdx();
         const char* preview = (active < 0 || active >= static_cast<i32>(presetNames.size()))
-                                  ? "Free Camera"
+                                  ? i18n::tr("toolbar.camera.free")
                                   : presetNames[active].c_str();
         ImGui::SetNextItemWidth(140);
-        if (ImGui::BeginCombo("Camera", preview)) {
-            if (ImGui::Selectable("Free Camera", active < 0))
+        if (ImGui::BeginCombo(i18n::tr("toolbar.camera"), preview)) {
+            if (ImGui::Selectable(i18n::tr("toolbar.camera.free"), active < 0))
                 app_.ActivateCameraPreset(-1);
             for (i32 i = 0; i < static_cast<i32>(presetNames.size()); ++i) {
                 const bool isSel = (i == active);
@@ -552,7 +656,7 @@ void ViewerUI::BuildToolbar() {
             static_cast<f32>((tcRaw >> 16) & 0xFFu) / 255.0f,
         };
         ImGuiColorEditFlags flags = ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel;
-        ImGui::TextUnformatted("Team:");
+        ImGui::TextUnformatted(i18n::tr("toolbar.team"));
         ImGui::SameLine();
         if (ImGui::ColorEdit3("##team", col, flags)) {
             if (focus) {
@@ -568,7 +672,10 @@ void ViewerUI::BuildToolbar() {
     {
         i32 sel = static_cast<i32>(svc.Settings().GetLightingMode());
         ImGui::SetNextItemWidth(120);
-        if (ImGui::Combo("Lighting", &sel, kLightingLabels.data(),
+        const char* lightingItems[3];
+        for (i32 i = 0; i < static_cast<i32>(kLightingKeys.size()); ++i)
+            lightingItems[i] = i18n::tr(kLightingKeys[i]);
+        if (ImGui::Combo(i18n::tr("toolbar.lighting"), &sel, lightingItems,
                          static_cast<i32>(kLightingLabels.size()))) {
             svc.Settings().SetLightingMode(static_cast<LightingMode>(sel));
             SaveIni(app_);
@@ -645,7 +752,7 @@ void ViewerUI::BuildTabBar() {
 void ViewerUI::BuildSettingsWindow() {
     RenderService& svc = app_.Service();
     ImGui::SetNextWindowSize(ImVec2(440, 540), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Settings", &settingsOpen_)) {
+    if (!ImGui::Begin(i18n::tr("settings.title"), &settingsOpen_)) {
         ImGui::End();
         return;
     }
@@ -655,7 +762,7 @@ void ViewerUI::BuildSettingsWindow() {
         return;
     }
 
-    if (ImGui::BeginTabItem("General")) {
+    if (ImGui::BeginTabItem(i18n::tr("settings.tab.general"))) {
         // ---- Background colour ----
         {
             const u32 bg = svc.Settings().BackgroundColorRaw();
@@ -664,7 +771,7 @@ void ViewerUI::BuildSettingsWindow() {
                 static_cast<f32>((bg >> 8) & 0xFFu) / 255.0f,
                 static_cast<f32>((bg >> 16) & 0xFFu) / 255.0f,
             };
-            if (ImGui::ColorEdit3("Background", col)) {
+            if (ImGui::ColorEdit3(i18n::tr("settings.general.background"), col)) {
                 svc.Settings().SetBackgroundColor(static_cast<u8>(col[0] * 255.0f),
                                                   static_cast<u8>(col[1] * 255.0f),
                                                   static_cast<u8>(col[2] * 255.0f));
@@ -675,7 +782,8 @@ void ViewerUI::BuildSettingsWindow() {
         // ---- Exposure ----
         {
             f32 exposure = svc.Settings().GetTonemapExposure();
-            if (ImGui::SliderFloat("Exposure", &exposure, 0.0f, 3.0f, "%.2f")) {
+            if (ImGui::SliderFloat(i18n::tr("settings.general.exposure"), &exposure, 0.0f, 3.0f,
+                                   "%.2f")) {
                 svc.Settings().SetTonemapExposure(exposure);
                 SaveIni(app_);
             }
@@ -684,7 +792,8 @@ void ViewerUI::BuildSettingsWindow() {
         // ---- Sound volume ----
         {
             f32 vol = svc.Sound().GetVolume();
-            if (ImGui::SliderFloat("SND Volume", &vol, 0.0f, 1.0f, "%.2f")) {
+            if (ImGui::SliderFloat(i18n::tr("settings.general.snd_volume"), &vol, 0.0f, 1.0f,
+                                   "%.2f")) {
                 svc.Sound().SetVolume(vol);
                 SaveIni(app_);
             }
@@ -693,7 +802,7 @@ void ViewerUI::BuildSettingsWindow() {
         // ---- Loop non-looping ----
         {
             bool on = app_.LoopNonLoopingPolicy();
-            if (ImGui::Checkbox("Loop NonLooping animations", &on)) {
+            if (ImGui::Checkbox(i18n::tr("settings.general.loop_nonlooping"), &on)) {
                 app_.SetLoopNonLoopingPolicy(on);
                 SaveIni(app_);
             }
@@ -705,12 +814,13 @@ void ViewerUI::BuildSettingsWindow() {
         if (auto* dnc = svc.GetDncService()) {
             const f32 hpd = dnc->GetHoursPerDay();
             f32 tod = dnc->GetTimeOfDay();
-            if (ImGui::SliderFloat("Time of Day", &tod, 0.0f, hpd, "%.2f h")) {
+            if (ImGui::SliderFloat(i18n::tr("settings.general.time_of_day"), &tod, 0.0f, hpd,
+                                   "%.2f h")) {
                 dnc->SetTimeOfDay(tod);
                 SaveIni(app_);
             }
             bool animating = dnc->GetTodScale() > 0.0f;
-            if (ImGui::Checkbox("Animate TOD", &animating)) {
+            if (ImGui::Checkbox(i18n::tr("settings.general.animate_tod"), &animating)) {
                 dnc->SetTodScale(animating ? 1.0f : 0.0f);
                 SaveIni(app_);
             }
@@ -721,7 +831,11 @@ void ViewerUI::BuildSettingsWindow() {
         // ---- IBL mode ----
         {
             i32 sel = static_cast<i32>(svc.Settings().GetIblMode());
-            if (ImGui::Combo("IBL", &sel, kIblLabels.data(), static_cast<i32>(kIblLabels.size()))) {
+            const char* iblItems[4];
+            for (i32 i = 0; i < static_cast<i32>(kIblKeys.size()); ++i)
+                iblItems[i] = i18n::tr(kIblKeys[i]);
+            if (ImGui::Combo(i18n::tr("settings.general.ibl"), &sel, iblItems,
+                             static_cast<i32>(kIblLabels.size()))) {
                 svc.Settings().SetIblMode(static_cast<IblMode>(sel));
                 SaveIni(app_);
             }
@@ -733,7 +847,10 @@ void ViewerUI::BuildSettingsWindow() {
             if (auto* shadow = svc.GetShadowService()) {
                 sel = shadow->IsEnabled() ? std::clamp(shadow->Params().cascadeCount, 0, 3) : 0;
             }
-            if (ImGui::Combo("Shadows", &sel, kShadowLabels.data(),
+            const char* shadowItems[4];
+            for (i32 i = 0; i < static_cast<i32>(kShadowKeys.size()); ++i)
+                shadowItems[i] = i18n::tr(kShadowKeys[i]);
+            if (ImGui::Combo(i18n::tr("settings.general.shadows"), &sel, shadowItems,
                              static_cast<i32>(kShadowLabels.size()))) {
                 if (auto* shadow = svc.GetShadowService()) {
                     shadow::ShadowParams p = shadow->Params();
@@ -748,18 +865,23 @@ void ViewerUI::BuildSettingsWindow() {
         // ---- Ambient occlusion (GTAO) ----
         {
             bool ao = svc.Settings().AoEnabled();
-            if (ImGui::Checkbox("Ambient occlusion", &ao)) {
+            if (ImGui::Checkbox(i18n::tr("settings.general.ao"), &ao)) {
                 svc.Settings().SetAoEnabled(ao);
                 SaveIni(app_);
             }
 
             static constexpr std::array<const char*, 3> kAoQualityLabels = {"Low", "Medium",
                                                                             "High"};
+            static constexpr std::array<const char*, 3> kAoQualityKeys = {
+                "aoquality.low", "aoquality.medium", "aoquality.high"};
             i32 q = static_cast<i32>(svc.Settings().AoQuality());
             if (q < 0 || q >= static_cast<i32>(kAoQualityLabels.size()))
                 q = 1;
             ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::Combo("AO Quality", &q, kAoQualityLabels.data(),
+            const char* aoItems[3];
+            for (i32 i = 0; i < static_cast<i32>(kAoQualityKeys.size()); ++i)
+                aoItems[i] = i18n::tr(kAoQualityKeys[i]);
+            if (ImGui::Combo(i18n::tr("settings.general.ao_quality"), &q, aoItems,
                              static_cast<i32>(kAoQualityLabels.size()))) {
                 svc.Settings().SetAoQuality(static_cast<u32>(q));
                 SaveIni(app_);
@@ -767,7 +889,8 @@ void ViewerUI::BuildSettingsWindow() {
 
             f32 boost = svc.Settings().AoBentBoost();
             ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat("AO Bent Boost", &boost, 0.0f, 0.5f, "%.3f")) {
+            if (ImGui::SliderFloat(i18n::tr("settings.general.ao_bent_boost"), &boost, 0.0f, 0.5f,
+                                   "%.3f")) {
                 svc.Settings().SetAoBentBoost(boost);
                 SaveIni(app_);
             }
@@ -778,14 +901,14 @@ void ViewerUI::BuildSettingsWindow() {
         // crowding the main settings list when bloom is off. Defaults
         // mirror the engine's RegisterBloom (BL_BLOOM_D=off,
         // threshold=1.0, intensity=1.25, saturation=1.0).
-        if (ImGui::CollapsingHeader("Bloom (HD)")) {
+        if (ImGui::CollapsingHeader(i18n::tr("settings.bloom.header"))) {
             bool bloom = svc.Settings().BloomEnabled();
-            if (ImGui::Checkbox("Enabled##bloom", &bloom)) {
+            if (ImGui::Checkbox(i18n::tr("settings.bloom.enabled"), &bloom)) {
                 svc.Settings().SetBloomEnabled(bloom);
                 SaveIni(app_);
             }
             ImGui::SameLine();
-            if (ImGui::SmallButton("Reset##bloom")) {
+            if (ImGui::SmallButton(i18n::tr("settings.bloom.reset"))) {
                 svc.Settings().SetBloomThreshold(1.0f);
                 svc.Settings().SetBloomIntensity(1.25f);
                 svc.Settings().SetBloomSaturation(1.0f);
@@ -795,17 +918,20 @@ void ViewerUI::BuildSettingsWindow() {
             f32 intensity = svc.Settings().BloomIntensity();
             f32 saturation = svc.Settings().BloomSaturation();
             ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat("Threshold##bloom", &threshold, 0.0f, 4.0f, "%.2f")) {
+            if (ImGui::SliderFloat(i18n::tr("settings.bloom.threshold"), &threshold, 0.0f, 4.0f,
+                                   "%.2f")) {
                 svc.Settings().SetBloomThreshold(threshold);
                 SaveIni(app_);
             }
             ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat("Intensity##bloom", &intensity, 0.0f, 4.0f, "%.2f")) {
+            if (ImGui::SliderFloat(i18n::tr("settings.bloom.intensity"), &intensity, 0.0f, 4.0f,
+                                   "%.2f")) {
                 svc.Settings().SetBloomIntensity(intensity);
                 SaveIni(app_);
             }
             ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat("Saturation##bloom", &saturation, 0.0f, 4.0f, "%.2f")) {
+            if (ImGui::SliderFloat(i18n::tr("settings.bloom.saturation"), &saturation, 0.0f, 4.0f,
+                                   "%.2f")) {
                 svc.Settings().SetBloomSaturation(saturation);
                 SaveIni(app_);
             }
@@ -815,7 +941,7 @@ void ViewerUI::BuildSettingsWindow() {
         // Runs the shipped depthoffield.bls. The pass self-disables until a
         // focal distance > 0 is set, so enabling with a zero distance seeds a
         // sensible default — otherwise the checkbox would appear to do nothing.
-        if (ImGui::CollapsingHeader("Depth of Field (HD)")) {
+        if (ImGui::CollapsingHeader(i18n::tr("settings.dof.header"))) {
             // Focus on the subject: the camera→target distance is the model
             // centre's view-space depth, which is what `linearDepth` carries.
             // The CoC is hyperbolic — (1/focus − 1/depth)·focusScale — so at
@@ -824,7 +950,7 @@ void ViewerUI::BuildSettingsWindow() {
             const f32 camDist = svc.Scene().Camera().GetDistance();
             const f32 autoFocus = camDist > 0.0f ? camDist : 600.0f;
             bool dof = svc.Settings().DofEnabled();
-            if (ImGui::Checkbox("Enabled##dof", &dof)) {
+            if (ImGui::Checkbox(i18n::tr("settings.dof.enabled"), &dof)) {
                 svc.Settings().SetDofEnabled(dof);
                 if (dof) {
                     // Auto-focus on the model and seed a visible strength if the
@@ -837,7 +963,7 @@ void ViewerUI::BuildSettingsWindow() {
                 SaveIni(app_);
             }
             ImGui::SameLine();
-            if (ImGui::SmallButton("Reset##dof")) {
+            if (ImGui::SmallButton(i18n::tr("settings.dof.reset"))) {
                 svc.Settings().SetDofFocusDistance(autoFocus);
                 svc.Settings().SetDofFocusScale(50.0f);
                 svc.Settings().SetDofMaxBlurSize(20.0f);
@@ -851,26 +977,30 @@ void ViewerUI::BuildSettingsWindow() {
             f32 radius = svc.Settings().DofRadiusScale();
             bool farOnly = svc.Settings().DofFarFieldOnly();
             ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat("Focus dist##dof", &focusDist, 0.0f, 3000.0f, "%.0f")) {
+            if (ImGui::SliderFloat(i18n::tr("settings.dof.focus_dist"), &focusDist, 0.0f, 3000.0f,
+                                   "%.0f")) {
                 svc.Settings().SetDofFocusDistance(focusDist);
                 SaveIni(app_);
             }
             ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat("Focus scale##dof", &focusScale, 0.0f, 200.0f, "%.1f")) {
+            if (ImGui::SliderFloat(i18n::tr("settings.dof.focus_scale"), &focusScale, 0.0f, 200.0f,
+                                   "%.1f")) {
                 svc.Settings().SetDofFocusScale(focusScale);
                 SaveIni(app_);
             }
             ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat("Max blur##dof", &maxBlur, 1.0f, 40.0f, "%.1f")) {
+            if (ImGui::SliderFloat(i18n::tr("settings.dof.max_blur"), &maxBlur, 1.0f, 40.0f,
+                                   "%.1f")) {
                 svc.Settings().SetDofMaxBlurSize(maxBlur);
                 SaveIni(app_);
             }
             ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat("Sample density##dof", &radius, 0.25f, 4.0f, "%.2f")) {
+            if (ImGui::SliderFloat(i18n::tr("settings.dof.sample_density"), &radius, 0.25f, 4.0f,
+                                   "%.2f")) {
                 svc.Settings().SetDofRadiusScale(radius);
                 SaveIni(app_);
             }
-            if (ImGui::Checkbox("Far field only##dof", &farOnly)) {
+            if (ImGui::Checkbox(i18n::tr("settings.dof.far_field_only"), &farOnly)) {
                 svc.Settings().SetDofFarFieldOnly(farOnly);
                 SaveIni(app_);
             }
@@ -888,14 +1018,14 @@ void ViewerUI::BuildSettingsWindow() {
             char buf[512];
             std::snprintf(buf, sizeof(buf), "%s",
                           dncPathBuf_.empty() ? dnc->UnitMdlPath().c_str() : dncPathBuf_.c_str());
-            if (ImGui::InputText("DNC Model", buf, sizeof(buf)))
+            if (ImGui::InputText(i18n::tr("settings.general.dnc_model"), buf, sizeof(buf)))
                 dncPathBuf_ = buf;
             if (ImGui::IsItemDeactivatedAfterEdit()) {
                 dnc->SetUnitMdl(dncPathBuf_);
                 SaveIni(app_);
             }
             ImGui::SameLine();
-            if (ImGui::Button("Reset##dnc")) {
+            if (ImGui::Button(i18n::tr("settings.general.dnc_reset"))) {
                 dncPathBuf_ = dnc::DncService::kDefaultUnitMdl;
                 dnc->SetUnitMdl(dncPathBuf_);
                 SaveIni(app_);
@@ -903,7 +1033,7 @@ void ViewerUI::BuildSettingsWindow() {
         }
 
         ImGui::Separator();
-        ImGui::TextDisabled("Startup settings (take effect on next launch)");
+        ImGui::TextDisabled(i18n::tr("settings.general.startup_note"));
 
         // ---- Default backend ----
         // Platform availability:
@@ -921,7 +1051,8 @@ void ViewerUI::BuildSettingsWindow() {
             i32 sel = BackendToIdx(svc.Settings().DefaultBackend());
             if (sel >= kWinBackendCount)
                 sel = BackendToIdx(gfx::GfxApi::D3D12); // clamp a stale Metal selection
-            if (ImGui::Combo("Backend", &sel, kBackendLabels.data(), kWinBackendCount)) {
+            if (ImGui::Combo(i18n::tr("settings.general.backend"), &sel, kBackendLabels.data(),
+                             kWinBackendCount)) {
                 svc.Settings().SetDefaultBackend(IdxToBackend(sel));
                 SaveIni(app_);
             }
@@ -947,7 +1078,7 @@ void ViewerUI::BuildSettingsWindow() {
                     break;
                 }
             }
-            if (ImGui::Combo("Backend", &sel, macLabels,
+            if (ImGui::Combo(i18n::tr("settings.general.backend"), &sel, macLabels,
                              static_cast<i32>(std::size(macLabels)))) {
                 svc.Settings().SetDefaultBackend(macApis[sel]);
                 SaveIni(app_);
@@ -958,7 +1089,7 @@ void ViewerUI::BuildSettingsWindow() {
             ImGui::BeginDisabled();
             i32 sel = 0;
             const char* vkOnly[] = {"Vulkan"};
-            ImGui::Combo("Backend", &sel, vkOnly, 1);
+            ImGui::Combo(i18n::tr("settings.general.backend"), &sel, vkOnly, 1);
             ImGui::EndDisabled();
         }
 #endif
@@ -973,9 +1104,9 @@ void ViewerUI::BuildSettingsWindow() {
                 lastBackendIdx = curBackendIdx;
             }
             const std::string& cur = svc.Settings().PreferredDevice();
-            const char* preview = cur.empty() ? "(Auto - highest VRAM)" : cur.c_str();
-            if (ImGui::BeginCombo("Device", preview)) {
-                if (ImGui::Selectable("(Auto - highest VRAM)", cur.empty())) {
+            const char* preview = cur.empty() ? i18n::tr("settings.general.device_auto") : cur.c_str();
+            if (ImGui::BeginCombo(i18n::tr("settings.general.device"), preview)) {
+                if (ImGui::Selectable(i18n::tr("settings.general.device_auto"), cur.empty())) {
                     svc.Settings().SetPreferredDevice("");
                     SaveIni(app_);
                 }
@@ -995,7 +1126,7 @@ void ViewerUI::BuildSettingsWindow() {
         // ---- Graphics debug ----
         {
             bool on = svc.Settings().GraphicsDebug();
-            if (ImGui::Checkbox("Graphics Debug (validation)", &on)) {
+            if (ImGui::Checkbox(i18n::tr("settings.general.graphics_debug"), &on)) {
                 svc.Settings().SetGraphicsDebug(on);
                 SaveIni(app_);
             }
@@ -1009,7 +1140,7 @@ void ViewerUI::BuildSettingsWindow() {
     // commit to ini through SaveIoPathOverrides so the changes survive across
     // launches; the provider itself is mutated in place so the effect is live
     // (next ReadFile sees the new state).
-    if (ImGui::BeginTabItem("IO")) {
+    if (ImGui::BeginTabItem(i18n::tr("settings.tab.io"))) {
         // Every document scene shares the DEFAULT scene's provider (see
         // ViewerApp::SharedProvider). Target it directly rather than the active
         // scene's, whose own internal provider is never configured.
@@ -1021,9 +1152,9 @@ void ViewerUI::BuildSettingsWindow() {
 
         const std::string& autoDetected = provider.Wc3Path();
         if (autoDetected.empty())
-            ImGui::TextDisabled("Warcraft III install not auto-detected.");
+            ImGui::TextDisabled(i18n::tr("settings.io.not_detected"));
         else
-            ImGui::TextDisabled("Auto-detected: %s", autoDetected.c_str());
+            ImGui::TextDisabled(i18n::tr("settings.io.auto_detected"), autoDetected.c_str());
         ImGui::Spacing();
 
         // Commit the entire IO state (install path + flags + list) to ini.
@@ -1053,7 +1184,7 @@ void ViewerUI::BuildSettingsWindow() {
                 saveIo();
             }
             ImGui::SameLine();
-            if (ImGui::Button("Browse...##install")) {
+            if (ImGui::Button(i18n::tr("settings.io.browse_install"))) {
                 NFD::UniquePathU8 outPath;
                 if (NFD::PickFolder(outPath) == NFD_OKAY) {
                     installPathBuf_ = outPath.get();
@@ -1062,13 +1193,13 @@ void ViewerUI::BuildSettingsWindow() {
                 }
             }
             ImGui::SameLine();
-            if (ImGui::Button("Reset##install")) {
+            if (ImGui::Button(i18n::tr("settings.io.reset_install"))) {
                 provider.SetInstallPath("");
                 installPathBuf_ = provider.InstallPath();
                 saveIo();
             }
             ImGui::SameLine();
-            ImGui::TextUnformatted("Install Path");
+            ImGui::TextUnformatted(i18n::tr("settings.io.install_path"));
         }
 
         ImGui::Spacing();
@@ -1077,12 +1208,12 @@ void ViewerUI::BuildSettingsWindow() {
         // ---- Ignore flags ----
         {
             bool ignoreCasc = provider.IgnoreCasc();
-            if (ImGui::Checkbox("Ignore CASC", &ignoreCasc)) {
+            if (ImGui::Checkbox(i18n::tr("settings.io.ignore_casc"), &ignoreCasc)) {
                 provider.SetIgnoreCasc(ignoreCasc);
                 saveIo();
             }
             bool ignoreMpq = provider.IgnoreMpq();
-            if (ImGui::Checkbox("Ignore MPQ", &ignoreMpq)) {
+            if (ImGui::Checkbox(i18n::tr("settings.io.ignore_mpq"), &ignoreMpq)) {
                 provider.SetIgnoreMpq(ignoreMpq);
                 saveIo();
             }
@@ -1095,7 +1226,7 @@ void ViewerUI::BuildSettingsWindow() {
         // Earlier entries win. Buttons mutate the provider's vector in place
         // (via SetMpqList(...)) which reopens the storages each time — fine
         // for a settings dialog (low-frequency edits).
-        ImGui::TextUnformatted("MPQs (load order, first wins)");
+        ImGui::TextUnformatted(i18n::tr("settings.io.mpq_header"));
         ImGui::BeginDisabled(provider.IgnoreMpq());
 
         std::vector<std::string> mpqs = provider.MpqList();
@@ -1141,7 +1272,7 @@ void ViewerUI::BuildSettingsWindow() {
             ImGui::SameLine();
             const bool canAdd = !newMpqEntryBuf_.empty();
             ImGui::BeginDisabled(!canAdd);
-            if (ImGui::Button("Add MPQ")) {
+            if (ImGui::Button(i18n::tr("settings.io.add_mpq"))) {
                 mpqs.push_back(newMpqEntryBuf_);
                 newMpqEntryBuf_.clear();
                 mpqsDirty = true;
@@ -1149,7 +1280,7 @@ void ViewerUI::BuildSettingsWindow() {
             ImGui::EndDisabled();
         }
 
-        if (ImGui::SmallButton("Reset to defaults")) {
+        if (ImGui::SmallButton(i18n::tr("settings.io.reset_defaults"))) {
             mpqs = io::FileContentProvider::DefaultMpqList();
             mpqsDirty = true;
         }
@@ -1163,8 +1294,11 @@ void ViewerUI::BuildSettingsWindow() {
 
         ImGui::Spacing();
         ImGui::Separator();
-        ImGui::TextDisabled("CASC: %s", provider.HasCasc() ? "open" : "not loaded");
-        ImGui::TextDisabled("MPQ:  %s open", provider.HasMpq() ? "yes" : "no");
+        ImGui::TextDisabled(i18n::tr("settings.io.casc_status"),
+                            provider.HasCasc() ? i18n::tr("settings.io.open")
+                                               : i18n::tr("settings.io.not_loaded"));
+        ImGui::TextDisabled(i18n::tr("settings.io.mpq_status"),
+                            provider.HasMpq() ? i18n::tr("app.yes") : i18n::tr("app.no"));
 
         ImGui::EndTabItem();
     }

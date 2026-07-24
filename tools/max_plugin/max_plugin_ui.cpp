@@ -40,11 +40,11 @@ namespace whiteout::flakes {
 namespace {
 
 // Persists settings to WhiteoutFlakes.ini after every UI change. The Max
-// plugin doesn't track the loop-non-looping policy (Max drives the
-// timeline), so we always pass `true` — settings_ini's writer just stores
-// whatever it's given.
+// plugin doesn't track the loop-non-looping policy (Max drives the timeline),
+// the Reforged-Graphics toggle, or the UI language — those are viewer-only — so
+// it passes neutral defaults; settings_ini's writer just stores what it's given.
 void SaveIni(RenderWindow& win) {
-    SaveSettingsIni(win.Service(), true);
+    SaveSettingsIni(win.Service(), true, false, "en");
 }
 
 // IFileDialog folder picker. Returns an empty string if the user cancels or

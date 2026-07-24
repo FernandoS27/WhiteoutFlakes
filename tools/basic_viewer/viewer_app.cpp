@@ -19,6 +19,7 @@
 #include "resource.h" // IDI_WHITEOUT_ICON
 #endif
 #include "imgui_theme.h"
+#include "settings_ini.h"
 #include "thumbnail_framing.h"
 #include "viewer_ui.h"
 #include "whiteout/flakes/content_provider.h"
@@ -368,7 +369,9 @@ void ViewerApp::InitImGui() {
     float xs = 1.0f;
     float ys = 1.0f;
     glfwGetWindowContentScale(window_, &xs, &ys);
-    ApplyImGuiDpiScale(xs);
+    // Bundled Noto fonts live in `fonts/` next to the exe — hand the dir to the
+    // font loader so the atlas covers every UI language (CJK included).
+    ApplyImGuiDpiScale(xs, io::PathToUtf8(ExecutableDir() / "fonts"));
 
     // GLFW backend handles input only; the engine adapter draws.
     ImGui_ImplGlfw_InitForOther(window_, true);

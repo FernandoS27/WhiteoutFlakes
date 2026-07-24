@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -9,16 +10,22 @@ class RenderService;
 
 namespace whiteout::flakes {
 
+// Directory holding the running executable (where the build copies the bundled
+// `lang/` and `fonts/` asset folders). Always the exe location, every OS.
+std::filesystem::path ExecutableDir();
+
 // `loopNonLoopingPolicy` is a tool-side default: when true, freshly-loaded
 // actors should have actor->ignoreNonLooping = true (callers apply this on
 // load). `forceHd` is the "Reforged Graphics" tool toggle (force HD for every
-// model). Both are viewer-side bools the caller applies after load; the rest of
-// the settings live on RenderService. LoadSettingsIni populates them from disk;
+// model). `languageCode` is the persisted UI-language code ("en", "es", …).
+// These are viewer-side prefs the caller applies after load; the rest of the
+// settings live on RenderService. LoadSettingsIni populates them from disk;
 // SaveSettingsIni reads them.
-void LoadSettingsIni(renderer::RenderService& service, bool& loopNonLoopingPolicy, bool& forceHd);
+void LoadSettingsIni(renderer::RenderService& service, bool& loopNonLoopingPolicy, bool& forceHd,
+                     std::string& languageCode);
 
-void SaveSettingsIni(const renderer::RenderService& service, bool loopNonLoopingPolicy,
-                     bool forceHd);
+void SaveSettingsIni(const renderer::RenderService& service, bool loopNonLoopingPolicy, bool forceHd,
+                     const std::string& languageCode);
 
 // Reads only the keys that must land on RenderSettings *before* the
 // render thread spins up — currently `GraphicsDebug` (the validation

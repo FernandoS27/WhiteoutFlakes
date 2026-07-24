@@ -25,6 +25,9 @@
 #elif defined(__linux__)
 #include <climits>
 #include <unistd.h>
+#elif defined(__APPLE__)
+#include <climits>
+#include <mach-o/dyld.h>
 #endif
 
 namespace whiteout::flakes {
@@ -265,6 +268,37 @@ bool ParseBool(const std::string& s, bool& out) {
 
 } // namespace
 
+// Directory holding the running executable — where the bundled `lang/` and
+// `fonts/` asset folders are copied by the build. Unlike SettingsIniPath this
+// is always the exe location on every OS (not a per-user config dir).
+fs::path ExecutableDir() {
+#ifdef _WIN32
+    wchar_t exePath[MAX_PATH] = {};
+    DWORD n = ::GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH)
+        return fs::current_path();
+    return fs::path(exePath).parent_path();
+#elif defined(__linux__)
+    char buf[PATH_MAX] = {};
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0)
+        return fs::current_path();
+    return fs::path(std::string(buf, static_cast<size_t>(n))).parent_path();
+#elif defined(__APPLE__)
+    char buf[PATH_MAX] = {};
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) != 0)
+        return fs::current_path();
+    std::error_code ec;
+    fs::path resolved = fs::canonical(fs::path(buf), ec);
+    if (ec)
+        resolved = fs::path(buf);
+    return resolved.parent_path();
+#else
+    return fs::current_path();
+#endif
+}
+
 void LoadStartupSettingsFromIni(RenderService& service) {
     IniMap ini;
     ini.Load(SettingsIniPath());
@@ -297,7 +331,8 @@ void LoadStartupSettingsFromIni(RenderService& service) {
     }
 }
 
-void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy, bool& forceHd) {
+void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy, bool& forceHd,
+                     std::string& languageCode) {
     IniMap ini;
     ini.Load(SettingsIniPath());
 
@@ -325,6 +360,8 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy, bool& f
         if (ParseBool(*s, v))
             loopNonLoopingPolicy = v;
     }
+    if (auto* s = ini.Get(KeyOf("Language")); s && !s->empty())
+        languageCode = *s;
     if (auto* s = ini.Get(KeyOf("ReforgedGraphics"))) {
         bool v = false;
         if (ParseBool(*s, v))
@@ -474,7 +511,8 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy, bool& f
     }
 }
 
-void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy, bool forceHd) {
+void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy, bool forceHd,
+                     const std::string& languageCode) {
     const fs::path path = SettingsIniPath();
     // Round-trip: load existing values first so unrelated keys (older
     // settings, future additions) don't get nuked when a single setting
@@ -494,6 +532,7 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy, bo
     ini.Set(KeyOf("SoundVolume"), FloatToString(service.Sound().GetVolume()));
     ini.Set(KeyOf("LoopNonLooping"), loopNonLoopingPolicy ? "1" : "0");
     ini.Set(KeyOf("ReforgedGraphics"), forceHd ? "1" : "0");
+    ini.Set(KeyOf("Language"), languageCode);
     ini.Set(KeyOf("GraphicsDebug"), service.Settings().GraphicsDebug() ? "1" : "0");
 
     {

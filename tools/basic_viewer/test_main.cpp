@@ -7,6 +7,7 @@
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
+#include "localization.h"
 #include "settings_ini.h"
 #include "viewer_app.h"
 #include "whiteout/flakes/gfx_types.h"
@@ -654,9 +655,19 @@ int main(int argc, char* argv[]) {
     // dependent state (e.g. ShadowService cascade count).
     bool loopPolicy = app.LoopNonLoopingPolicy();
     bool forceHdPolicy = app.ForceHd();
-    whiteout::flakes::LoadSettingsIni(renderer, loopPolicy, forceHdPolicy);
+    std::string languageCode = "en";
+    whiteout::flakes::LoadSettingsIni(renderer, loopPolicy, forceHdPolicy, languageCode);
     app.SetLoopNonLoopingPolicy(loopPolicy);
     app.SetForceHd(forceHdPolicy);
+
+    // UI localization: load the `<code>.ini` catalogs from `lang/` next to the
+    // exe and activate the persisted language (English fallback otherwise).
+    {
+        namespace i18n = whiteout::flakes::i18n;
+        const std::string langDir =
+            whiteout::flakes::io::PathToUtf8(whiteout::flakes::ExecutableDir() / "lang");
+        i18n::Localizer::instance().load(langDir, i18n::languageFromCode(languageCode));
+    }
 
     // IO overrides — Settings > IO can repoint the install path, toggle CASC
     // or MPQ off entirely, and reorder the MPQ load list.
