@@ -1166,7 +1166,11 @@ void ViewerUI::BuildSettingsWindow() {
             ImGui::TextDisabled(i18n::tr("settings.io.auto_detected"), autoDetected.c_str());
         ImGui::Spacing();
 
-        // Commit the entire IO state (install path + flags + list) to ini.
+        // Commit the entire IO state (install path + flags + list) to ini, then
+        // retry any asset that failed to load under the previous sources — the
+        // provider now resolves paths differently, so textures/models that 404'd
+        // (and are stuck on the placeholder) get another fetch on the next pump,
+        // no restart needed.
         auto saveIo = [&] {
             IoPathOverrides o;
             // Treat "install path == auto-detected" as "no override" so the
@@ -1179,6 +1183,7 @@ void ViewerUI::BuildSettingsWindow() {
             o.mpqListSet = true;
             o.mpqList = provider.MpqList();
             SaveIoPathOverrides(o);
+            svc.RetryUnloadedAssets();
         };
 
         // ---- Install path row ----

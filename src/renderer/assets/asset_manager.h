@@ -125,6 +125,15 @@ public:
     ///        mid-call (avoids re-entry).
     void DrainNeeds(const NeededFn& cb);
 
+    /// @brief Re-queue every slot whose payload never arrived (still on the
+    ///        placeholder) back onto the needs list, so the host's next
+    ///        DrainNeeds re-fetches it. Acquire alone can't do this — an
+    ///        already-existing slot just bumps its refcount. Call after the
+    ///        content provider's sources change (an IO-settings edit) so
+    ///        textures that couldn't be found under the old paths get another
+    ///        chance without an app restart. Returns the count re-queued.
+    std::size_t RetryUnloaded();
+
     /// @brief Number of paths currently queued in the needs list.
     std::size_t PendingNeedsCount() const;
 

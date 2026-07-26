@@ -148,6 +148,15 @@ public:
     ///        per-kind caches.
     assets::AssetManager& Assets();
     const assets::AssetManager& Assets() const;
+
+    /// @brief Re-queue every asset that failed to load (still on the placeholder)
+    ///        so the next provider pump re-fetches it. Hosts call this after the
+    ///        content provider's sources change (an IO-settings edit) to refresh
+    ///        textures that couldn't be found before, without a restart.
+    ///        Forwards to AssetManager::RetryUnloaded so hosts needn't pull in
+    ///        the asset-manager (and its engine-internal) headers.
+    void RetryUnloadedAssets();
+
     debug::DebugRenderer& Debug();
     dnc::DncService* GetDncService();
     const dnc::DncService* GetDncService() const;

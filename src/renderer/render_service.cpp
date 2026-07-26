@@ -224,6 +224,9 @@ AssetManager& RenderService::Assets() {
 const AssetManager& RenderService::Assets() const {
     return *impl_->assets_;
 }
+void RenderService::RetryUnloadedAssets() {
+    impl_->assets_->RetryUnloaded();
+}
 DebugRenderer& RenderService::Debug() {
     return *impl_->debug_;
 }

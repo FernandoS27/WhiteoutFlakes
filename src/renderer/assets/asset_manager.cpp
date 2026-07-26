@@ -188,6 +188,21 @@ void AssetManager::DrainNeeds(const NeededFn& cb) {
         cb(kind, path);
 }
 
+std::size_t AssetManager::RetryUnloaded() {
+    std::lock_guard<std::mutex> lk(mu_);
+    std::size_t n = 0;
+    for (auto& [id, s] : slots_) {
+        if (s.loaded)
+            continue;
+        // A duplicate already in needs_ (a slot Acquired but not yet drained
+        // this frame) is harmless — DrainNeeds just re-fetches, and a re-Apply
+        // of the same path is idempotent.
+        needs_.emplace_back(s.kind, s.path);
+        ++n;
+    }
+    return n;
+}
+
 std::size_t AssetManager::PendingNeedsCount() const {
     std::lock_guard<std::mutex> lk(mu_);
     return needs_.size();
