@@ -95,14 +95,13 @@ void DebugRenderer::RenderCollisions() {
 
     for (auto& cs : shapes) {
 
-        const Vector3f& piv = cs.pivot;
+        // Collision vertices are in model space, and cs.transform (the node's
+        // world matrix) already bakes the pivot in — so transform them directly.
+        // Adding the pivot first double-counts it and slides the shape off the
+        // node (upward, by the torso pivot, for a hero's body sphere).
         auto pushLine = [&](const Vector3f& a, const Vector3f& b) {
-            Vector3f ap = {a.x + piv.x, a.y + piv.y, a.z + piv.z};
-            Vector3f bp = {b.x + piv.x, b.y + piv.y, b.z + piv.z};
-            Vector3f pa = whiteout::transform_point(ap, cs.transform);
-            Vector3f pb = whiteout::transform_point(bp, cs.transform);
-            lines.push_back({pa, col});
-            lines.push_back({pb, col});
+            lines.push_back({whiteout::transform_point(a, cs.transform), col});
+            lines.push_back({whiteout::transform_point(b, cs.transform), col});
         };
         auto emitCircle = [&](const Vector3f& c, f32 r, i32 axis) {
             const i32 segs = 24;
