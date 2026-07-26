@@ -1,0 +1,103 @@
+# AGENTS.md
+
+Guidance for AI coding agents working in **WhiteoutFlakes** — a real-time
+renderer for Warcraft III (classic + Reforged) model/texture/effect data, with
+a standalone viewer, a 3ds Max plugin, and a web viewer. C++20, CMake.
+
+See [`README.md`](README.md) for the full feature list, backend matrix, and the
+exhaustive CMake-option table. This file is the short, agent-facing version:
+how to build, how we work, and the traps that have actually bitten.
+
+## Build & run
+
+Primary target is the standalone viewer. On Windows (MSVC, the primary
+toolchain):
+
+```
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Release --target WhiteoutFlakesStandalone
+```
+
+- Target name: `WhiteoutFlakesStandalone` → **`WhiteoutFlakes.exe`**.
+- Output dir is pinned to **`build/standalone/`** (no per-config subdir — set via
+  `RUNTIME_OUTPUT_DIRECTORY_*`). Runtime assets (`shaders/`, `lang/`, `fonts/`)
+  are staged next to the exe by a POST_BUILD step.
+- Static gfx lib: `WhiteoutFlakesGfx`; engine/adapter lib: `WhiteoutFlakesLib`.
+
+Reconfigure (`cmake build`) after adding/removing source files — sources are
+listed explicitly in `CMakeLists.txt` (no globbing), so **a new `.cpp` must be
+added to its target's source list** or it silently won't compile/link.
+
+CI-equivalent viewer build flags (used by the workflows):
+`-DWDX_BUILD_WC3_SHADERS=OFF -DWDX_USE_PREBUILT_SHADERS=ON
+-DWDX_BUILD_WC3_DEBUG_SHADERS=OFF -DWDX_ENABLE_TRACY=OFF
+-DWDX_BUILD_MAX_PLUGIN=OFF -DWDX_ENABLE_WEBGPU=OFF`.
+
+## Layout (where things live)
+
+- `src/gfx/` — backend-agnostic `gfx::IGFXDevice` + D3D11/D3D12/Vulkan/Metal/WebGPU
+  impls. The engine never touches `HWND`/`VkDevice`/`ID3D12*`/`MTLDevice`.
+- `src/renderer/` — pipeline, `RenderService`, `SceneManager`, BLS shader cache,
+  particles, shadow/IBL, `cornflakes` (Reforged effects runtime).
+- `src/io/` — MDX/MDL adapter, BLP/DDS/TGA loaders, CASC/MPQ providers.
+- `tools/basic_viewer/` — the standalone GLFW + Dear ImGui host.
+- `tools/common/` — shared host utilities (imgui theme, sound, log console).
+- `externals/` — submodules (WhiteoutLib, Wc3Shaders, GLFW, ImGui, cubeb, …).
+- `prebuilt/` — committed BLS shader pack + PSO trace, so a fresh clone renders
+  without the Slang toolchain.
+
+## Conventions (how we work here)
+
+- **Renderer stays host-agnostic.** Host/UI concerns — focus handling, camera
+  presets, sequence dropdowns, file dialogs — belong in `tools/basic_viewer/`
+  or `tools/max_plugin/`, **not** in `RenderService`/`SceneManager`. The engine
+  exposes state; hosts drive policy.
+- **Comments proportional to the code.** No multi-paragraph essays above a
+  one-line change. Comment volume tracks the subtlety/size of what it explains.
+  Explain *why*, not *what*.
+- **Scope dependencies to the target that needs them.** A new third-party dep
+  for the viewer is linked into the viewer alone — never pushed up into
+  `WhiteoutFlakesLib` or other shared libs.
+- **Match surrounding code.** Mirror the local file's naming, idiom, and comment
+  density rather than importing a different house style.
+- Reference `file.cpp:line` so it's clickable.
+
+## Localization (i18n)
+
+- Catalogs live in `resources/lang/<code>.ini` (11 languages: `en es de fr it
+  pt-br ru zh zh-hant ja ko`), **UTF-8 without BOM**, `key=value` per line.
+- `i18n::tr("key")` resolves active → English → key. **Every new user-facing
+  UI string needs its key added to all 11 catalogs**, keeping key-parity (each
+  file has the same key set). The fonts (`resources/fonts/NotoSans{SC,KR}`)
+  pre-bake CJK/Hangul ranges into the ImGui atlas.
+- Passing a translated string straight into a printf-style ImGui call
+  (`ImGui::Text(i18n::tr(...))`) is a bug — a `%` in a translation is read as a
+  format spec. Use `ImGui::TextUnformatted(...)` or `"%s", i18n::tr(...)`.
+
+## CI & release
+
+- Per-OS reusable workflows in `.github/workflows/`: `windows.yml`,
+  `macos-dmg.yml`, `linux-appimage.yml`. `release.yml` calls all three and
+  publishes a GitHub Release (on a `v*` tag, or a manual `nightly` prerelease).
+- The LunarG **Vulkan SDK is a build dependency on every OS**: it provides
+  `slangc`, which compiles the small engine shaders (line/blit/gtao/…) to
+  DXBC + SPIR-V at build time — this is *separate* from the prebuilt WC3 model
+  shaders and is not covered by `WDX_USE_PREBUILT_SHADERS`.
+- Pin the same SDK version across all three jobs so `slangc` emits identical
+  shader bytes.
+
+## Platform gotchas (learned the hard way)
+
+- **Vulkan gfx backend compiles on Windows too** (the viewer offers it beside
+  D3D12/D3D11), so the Windows SDK install must include the **VMA** component
+  (`com.lunarg.vulkan.vma` → `Include/vma/vk_mem_alloc.h`); the default silent
+  install omits it. `vulkan-1.dll` itself is driver-provided, so it isn't
+  bundled.
+- **macOS `.app` codesign rejects non-code files under `Contents/MacOS/`.**
+  Bundled assets (`lang/`, `fonts/`) must install into `Contents/Resources/`;
+  the asset lookup resolves there on macOS.
+- **Release exe is GUI-subsystem** (`/SUBSYSTEM:WINDOWS /ENTRY:mainCRTStartup`,
+  non-Debug MSVC) so no console window appears for users. Debug keeps the
+  console. `stdout`/`stderr` are captured into the in-app **Log Console**
+  (Debug menu) via `tools/common/log_console.*`.
+
