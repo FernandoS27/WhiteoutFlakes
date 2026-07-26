@@ -57,7 +57,10 @@ inline bool PointInQuad(const ImVec2& p, const ImVec2 q[4]) {
 
 // Draws the view-cube as a small borderless overlay near the top-right of the
 // main viewport.
-inline void DrawViewCube(renderer::Camera& camera) {
+// `topOffset` pushes the cube down below any host chrome the main viewport's
+// WorkPos doesn't account for (the viewer's toolbar + tab-bar strips); 0 anchors
+// it right under the menu bar (the Max plugin has no extra strips).
+inline void DrawViewCube(renderer::Camera& camera, float topOffset = 0.0f) {
     using renderer::CoordinateSystem;
     using renderer::CoordSpace;
 
@@ -109,7 +112,8 @@ inline void DrawViewCube(renderer::Camera& camera) {
     const f32 boxH = kCube + kHome + 2.0f * kPad;
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    const ImVec2 boxPos(vp->WorkPos.x + vp->WorkSize.x - boxW - 8.0f, vp->WorkPos.y + 8.0f);
+    const ImVec2 boxPos(vp->WorkPos.x + vp->WorkSize.x - boxW - 8.0f,
+                        vp->WorkPos.y + topOffset + 8.0f);
 
     ImGui::SetNextWindowPos(boxPos);
     ImGui::SetNextWindowSize(ImVec2(boxW, boxH));

@@ -151,8 +151,12 @@ void ViewerUI::BuildFrame() {
 
 void ViewerUI::BuildViewCubeWidget() {
     // The view-cube is a pure host-side ImGui widget — the renderer has no
-    // notion of it. See tools/common/imgui_viewcube.h.
-    tools::DrawViewCube(app_.Service().Scene().Camera());
+    // notion of it. See tools/common/imgui_viewcube.h. Offset it below our
+    // toolbar (+ tab bar, when documents are open) so it isn't tucked under the
+    // top strips — both are menuH+8 tall and sit stacked under the menu bar.
+    const f32 stripH = ImGui::GetFrameHeight() + 8.0f;
+    const f32 topOffset = stripH + (app_.DocumentCount() > 0 ? stripH : 0.0f);
+    tools::DrawViewCube(app_.Service().Scene().Camera(), topOffset);
 }
 
 void ViewerUI::OpenFileDialog() {
