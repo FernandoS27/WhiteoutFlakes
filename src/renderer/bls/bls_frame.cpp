@@ -171,22 +171,20 @@ void BuildBonePalette(BonePaletteCb& out, const Matrix44f* src, i32 numBones) {
 }
 
 ShaderTexMtx ComposeTexAnimMatrix(const Quaternion& q, const Vector3f& s, const Vector3f& t) {
-
+    // WC3 AnimateTextureMap: uv' = ((uv + t - 0.5) * S) * R + 0.5, A = R*S with
+    // CCW rotation. See the live build in mdx_model_adapter's texAnimMatrices.
     const f32 ang = 2.0f * std::atan2(q.z, q.w);
-    const f32 c = std::cos(ang);
-    const f32 si = std::sin(ang);
+    const f32 c = std::cos(ang), si = std::sin(ang);
 
     const f32 a = s.x * c;
-    const f32 b = -s.x * si;
-    const f32 d = s.y * si;
+    const f32 b = -s.y * si;
+    const f32 d = s.x * si;
     const f32 e = s.y * c;
 
-    const f32 cc = 0.5f - (a * 0.5f + b * 0.5f) + t.x;
-    const f32 ff = 0.5f - (d * 0.5f + e * 0.5f) + t.y;
-
+    const f32 px = t.x - 0.5f, py = t.y - 0.5f;
     ShaderTexMtx m{};
-    m.rows[0] = {a, b, 0.0f, cc};
-    m.rows[1] = {d, e, 0.0f, ff};
+    m.rows[0] = {a, b, 0.0f, a * px + b * py + 0.5f};
+    m.rows[1] = {d, e, 0.0f, d * px + e * py + 0.5f};
     return m;
 }
 

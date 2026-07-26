@@ -1145,14 +1145,23 @@ FrameState MdxModelAdapter::Evaluate(i32 sequenceIdx, i32 timeMs, i32 globalTime
         Vector3f scale = evalVec3(ta.scalingTracks, {1, 1, 1});
         Quaternion rot = evalQuat(ta.rotationTracks, Quaternion(0, 0, 0, 1));
 
+        // Faithful to WC3 Reforged AnimateTextureMap (Engine/Source/Anim/Anim.cpp):
+        // rotate then scale about the texture centre (0.5,0.5), then translate,
+        // all pre-multiplied — net  uv' = ((uv + T - 0.5) * S) * R + 0.5. As the
+        // shader's column-vector matrix (u' = row0·(u,v,1)) that's A = R*S with
+        // the translation carried through A. Rotation is CCW by the quaternion's
+        // Z angle; scale rides A's columns (b←scale.y, d←scale.x). Prior code did
+        // S*R and added T raw outside the pivot — wrong once scale is non-uniform
+        // or a rotating layer also scrolls.
         const f32 ang = 2.0f * std::atan2(rot.z, rot.w);
         const f32 c = std::cos(ang), si = std::sin(ang);
         const f32 a = scale.x * c;
-        const f32 b = -scale.x * si;
-        const f32 d = scale.y * si;
+        const f32 b = -scale.y * si;
+        const f32 d = scale.x * si;
         const f32 e = scale.y * c;
-        const f32 cc = 0.5f - (a * 0.5f + b * 0.5f) + trans.x;
-        const f32 ff = 0.5f - (d * 0.5f + e * 0.5f) + trans.y;
+        const f32 px = trans.x - 0.5f, py = trans.y - 0.5f;
+        const f32 cc = a * px + b * py + 0.5f;
+        const f32 ff = d * px + e * py + 0.5f;
 
         FrameState::TexAnimMatrix tam{};
         tam.textureAnimId = i;
