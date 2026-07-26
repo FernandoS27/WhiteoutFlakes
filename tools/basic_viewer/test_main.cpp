@@ -8,6 +8,7 @@
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #include "localization.h"
+#include "log_console.h"
 #include "settings_ini.h"
 #include "viewer_app.h"
 #include "whiteout/flakes/gfx_types.h"
@@ -346,6 +347,11 @@ static int RunMultiSceneTest(whiteout::flakes::renderer::RenderService& renderer
 }
 
 int main(int argc, char* argv[]) {
+    // Capture stdout/stderr into the in-app Log Console before anything logs, so
+    // startup output is caught. In Release the exe is GUI-subsystem (no console
+    // window); this is the only way users can see the dev log.
+    whiteout::flakes::tools::LogConsole::Instance().Begin();
+
     whiteout::flakes::gfx::GfxApi backend = whiteout::flakes::gfx::GfxApi::Vulkan;
 #if defined(_WIN32)
     // Windows historically defaults to D3D12; Linux only has Vulkan so the

@@ -13,6 +13,7 @@
 #include "renderer/scene_manager.h"
 #include "renderer/shadow/shadow_service.h"
 #include "localization.h"
+#include "log_console.h"
 #include "settings_ini.h"
 #include "viewer_app.h"
 
@@ -145,6 +146,7 @@ void ViewerUI::BuildFrame() {
     BuildSaveAsPopup();
     BuildExportPopup();
     app_.BuildStorageExplorerWindow();
+    tools::LogConsole::Instance().DrawUi(&showLogConsole_);
 }
 
 void ViewerUI::BuildViewCubeWidget() {
@@ -534,6 +536,9 @@ void ViewerUI::BuildMenuBar() {
                 }
                 ImGui::EndMenu();
             }
+
+            ImGui::Separator();
+            ImGui::MenuItem(i18n::tr("menu.debug.log_console"), nullptr, &showLogConsole_);
 
             ImGui::EndMenu();
         }

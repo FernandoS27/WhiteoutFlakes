@@ -1317,6 +1317,7 @@ set(WHITEOUTFLAKES_VIEWER_SOURCES
     # Shared host utilities live in tools/common (used by the Max plugin too).
     tools/common/cubeb_sound_emitter.cpp
     tools/common/imgui_theme.cpp
+    tools/common/log_console.cpp
     # thumbnail_framing now ships in WhiteoutFlakesExplorerLib (linked below),
     # which the viewer also uses for its own camera framing + the embedded
     # Storage Explorer panel.
@@ -1353,6 +1354,18 @@ set_target_properties(WhiteoutFlakesStandalone PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY_DEBUG   "${CMAKE_BINARY_DIR}/standalone"
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/standalone"
 )
+
+# Ship as a GUI-subsystem app in non-Debug configs so no console window pops up
+# for end users — the in-app Log Console (Debug menu) surfaces stdout/stderr on
+# demand. Debug keeps the default console subsystem so developers still get a
+# terminal automatically. /ENTRY:mainCRTStartup preserves the standard int
+# main() under /SUBSYSTEM:WINDOWS (which would otherwise want WinMain).
+if(MSVC)
+    target_link_options(WhiteoutFlakesStandalone PRIVATE
+        $<$<NOT:$<CONFIG:Debug>>:/SUBSYSTEM:WINDOWS>
+        $<$<NOT:$<CONFIG:Debug>>:/ENTRY:mainCRTStartup>
+    )
+endif()
 
 target_include_directories(WhiteoutFlakesStandalone PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/basic_viewer"
