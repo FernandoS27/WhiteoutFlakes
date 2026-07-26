@@ -7,6 +7,9 @@
 #include <imgui.h>
 
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 #include <system_error>
 
 namespace whiteout::flakes {
@@ -101,7 +104,8 @@ void ApplyImGuiTheme() {
     c[ImGuiCol_ModalWindowDimBg] = ImVec4(0.8f, 0.8f, 0.8f, 0.35f);
 }
 
-void ApplyImGuiDpiScale(float scale, const std::string& fontsDir) {
+void ApplyImGuiDpiScale(float scale, const std::string& fontsDir,
+                        const std::string& extraGlyphText) {
     if (scale <= 0.0f)
         scale = 1.0f;
     ImGuiIO& io = ImGui::GetIO();
@@ -142,6 +146,36 @@ void ApplyImGuiDpiScale(float scale, const std::string& fontsDir) {
             // pt/fr/de/es/it beyond the default range).
             static const ImWchar kLatinExt[] = {0x0100, 0x024F, 0x1E00, 0x1EFF, 0};
             b.AddRanges(kLatinExt);
+
+            // The ranges above are a common-case baseline; they miss glyphs a
+            // catalog actually uses that fall outside them — most visibly
+            // Traditional Chinese (zh-hant), whose characters aren't all in the
+            // Simplified-Common range and would otherwise render as '?'. Feed the
+            // builder every catalog's text so exactly the glyphs we ship get
+            // baked (keeps the atlas small vs. GetGlyphRangesChineseFull). The
+            // SC font bakes what it has and skips the rest (e.g. Hangul), which
+            // the merged KR font below supplies. Catalogs live in ../lang.
+            const fs::path langDir = dir.parent_path() / "lang";
+            if (fs::exists(langDir, ec)) {
+                for (const auto& entry : fs::directory_iterator(langDir, ec)) {
+                    if (ec)
+                        break;
+                    if (!entry.is_regular_file() || entry.path().extension() != ".ini")
+                        continue;
+                    std::ifstream f(entry.path(), std::ios::binary);
+                    if (!f)
+                        continue;
+                    const std::string content((std::istreambuf_iterator<char>(f)),
+                                              std::istreambuf_iterator<char>());
+                    b.AddText(content.c_str(), content.c_str() + content.size());
+                }
+            }
+
+            // Text outside the catalogs (language-picker endonyms).
+            if (!extraGlyphText.empty())
+                b.AddText(extraGlyphText.c_str(),
+                          extraGlyphText.c_str() + extraGlyphText.size());
+
             s_baseRanges.clear();
             b.BuildRanges(&s_baseRanges);
 

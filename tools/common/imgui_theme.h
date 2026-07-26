@@ -20,6 +20,12 @@ void ApplyImGuiTheme();
 // The engine ImGui renderer bakes one static atlas, so the CJK ranges are
 // pre-baked here. Call once after ApplyImGuiTheme() — ScaleAllSizes is not
 // idempotent.
-void ApplyImGuiDpiScale(float scale, const std::string& fontsDir = "");
+//
+// The atlas bakes exactly the glyphs used by the shipped `lang/*.ini` catalogs
+// (found next to `fontsDir`). `extraGlyphText` (UTF-8) bakes glyphs from text
+// that lives outside the catalogs — e.g. the language-picker endonyms, which
+// are hardcoded and can use characters (like 體 in 繁體中文) no translation does.
+void ApplyImGuiDpiScale(float scale, const std::string& fontsDir = "",
+                        const std::string& extraGlyphText = "");
 
 } // namespace whiteout::flakes
