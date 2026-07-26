@@ -1531,12 +1531,14 @@ add_dependencies(WhiteoutFlakesStandalone WhiteoutFlakesEmbedded)
 # files. On Windows/Linux standalone/ IS the exe dir, so the viewer finds them
 # next to itself; on macOS they sit beside the .app and the install() rules below
 # copy them into Contents/Resources/ (where AssetDir() resolves them at runtime).
-# copy_directory_if_different keeps it a no-op when nothing changed.
+# Uses copy_directory (not copy_directory_if_different) — the latter needs CMake
+# 3.26, but our floor is 3.20 and CI runners ship as old as 3.22, matching the
+# copy_directory the shader-staging rules above already use.
 add_custom_command(TARGET WhiteoutFlakesStandalone POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/lang"
         "${CMAKE_BINARY_DIR}/standalone/lang"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/fonts"
         "${CMAKE_BINARY_DIR}/standalone/fonts"
     VERBATIM)
