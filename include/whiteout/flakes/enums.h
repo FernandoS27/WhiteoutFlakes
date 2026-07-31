@@ -16,12 +16,14 @@ using ::whiteout::flakes::gfx::GfxApi;
 
 /// @brief Material-rendering path: legacy fixed-function-style (SD) vs
 ///        Reforged PBR (HD).
+/// @bind
 enum class RenderMode : u8 {
     SD = 0, ///< Standard-Definition: classic WC3 materials.
     HD = 1, ///< High-Definition: Reforged PBR materials with IBL.
 };
 
 /// @brief Light-rig preset selectable from the host UI.
+/// @bind
 enum class LightingMode : u8 {
     InGame = 0,  ///< Engine-runtime rig (game look).
     Glue = 1,    ///< Loading-screen / portrait rig (stronger key light).
@@ -29,6 +31,7 @@ enum class LightingMode : u8 {
 };
 
 /// @brief Image-Based-Lighting probe set selection.
+/// @bind
 enum class IblMode : u8 {
     Portrait = 0,
     DayNight = 1,
@@ -40,6 +43,7 @@ enum class IblMode : u8 {
 ///
 /// Exposed to host code (e.g. the Max plugin) so it can mark an actor as
 /// host-driven (`External`) and suppress automatic per-frame evaluation.
+/// @bind
 enum class ActorRole : u8 {
     Unit = 0,       ///< Top-level model the engine animates.
     External = 1,   ///< Host pushes time + evaluates manually.
@@ -52,6 +56,10 @@ enum class ActorRole : u8 {
 ///
 /// Values mirror the engine's encoding so MDX/PE2 → renderer mappings
 /// stay equality-stable across format versions.
+///
+/// NOT bound — same trailing-segment naming problem as `gfx::Format`:
+/// `FILTER_MODULATE_2X` becomes the invalid identifier `2X`. Unreachable
+/// from the bound surface anyway. See BINDINGS.md.
 enum FilterMode {
     FILTER_NONE = 0,
     FILTER_TRANSPARENT = 1,

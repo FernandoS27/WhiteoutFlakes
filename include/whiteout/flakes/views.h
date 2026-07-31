@@ -42,6 +42,7 @@ class RendererImpl;
 }
 
 /// @brief Swap-chain + frame-submit surface.
+/// @bind no_default_ctor, methods
 class PipelineView {
 public:
     /// @brief Create the gfx device. Must succeed before any other
@@ -78,6 +79,7 @@ public:
     void Shutdown();
     /// @brief Last-frame stats (geoset / texture / node / particle /
     ///        segment counts).
+    /// @bind rename=FrameStats
     FrameStats GetFrameStats() const;
     /// @brief Live GPU bytes currently allocated. WebGPU backend tracks
     ///        every CreateTexture / CreateBuffer and subtracts on
@@ -92,6 +94,7 @@ private:
 };
 
 /// @brief Scene-clock + content-provider surface.
+/// @bind no_default_ctor, methods
 class SceneView {
 public:
     /// @brief Master animation clock the renderer ticks (ms).
@@ -122,9 +125,11 @@ private:
 };
 
 /// @brief Free-orbit + scripted camera surface.
+/// @bind no_default_ctor, methods
 class CameraView {
 public:
     /// @brief Camera control mode.
+    /// @bind
     enum class Mode {
         Orbital, ///< Pitch/yaw/distance + target follow.
         Direct,  ///< Position/target/roll set by a `CameraPreset` animator.
@@ -152,8 +157,10 @@ public:
     void SetClip(f32 nz, f32 fz);
     /// @brief Switch to `Direct` mode and set the pose.
     void SetDirectPose(Vector3f pos, Vector3f target, f32 roll);
+    /// @bind rename=Mode
     Mode GetMode() const;
     Vector3f GetTarget() const;
+    /// @bind rename=Distance
     f32 GetDistance() const;
 
     /// @brief Scale factor: distance-units per wheel-detent in `Zoom`.
@@ -172,8 +179,10 @@ private:
 
 /// @brief Display flags, post-processing tunables, and persistent host
 ///        knobs that survive across runs.
+/// @bind no_default_ctor, methods
 class SettingsView {
 public:
+    /// @bind rename=DisplayFlags
     DisplayFlags GetDisplayFlags() const;
     void SetDisplayFlags(const DisplayFlags&);
     /// @brief Returns `true` once (then resets) whenever the render mode
@@ -181,6 +190,7 @@ public:
     ///        re-spawn / material refresh on this.
     bool ConsumeRenderModeDirty();
 
+    /// @bind rename=LightingMode
     LightingMode GetLightingMode() const;
     void SetLightingMode(LightingMode);
 
@@ -188,9 +198,11 @@ public:
     u32 BackgroundColorRaw() const;
     void SetBackgroundColor(u8 r, u8 g, u8 b);
 
+    /// @bind rename=TonemapExposure
     f32 GetTonemapExposure() const;
     void SetTonemapExposure(f32);
 
+    /// @bind rename=IblMode
     IblMode GetIblMode() const;
     void SetIblMode(IblMode);
 
@@ -215,6 +227,7 @@ private:
 };
 
 /// @brief Spawn / refresh / clear actors.
+/// @bind no_default_ctor, methods
 class LoaderView {
 public:
     /// @brief Spawn an actor from a path resolvable by the content provider.
@@ -253,10 +266,12 @@ private:
 ///   * push fetched bytes back in via `ApplyAsset`.
 ///
 /// Stays valid for the renderer's lifetime; cheap to copy.
+/// @bind no_default_ctor, methods
 class AssetsView {
 public:
     /// @brief Asset categories the manager tracks. Keep in sync with
     ///        `renderer::assets::AssetKind`.
+    /// @bind
     enum class Kind : u8 {
         Texture    = 0,
         Particle   = 1,
@@ -280,6 +295,7 @@ public:
                     std::span<const u8> bytes, std::string_view foundExt = {});
 
     /// @brief Snapshot diagnostic counters.
+    /// @bind value_object
     struct Stats {
         std::size_t liveSlots        = 0;
         std::size_t loadedSlots      = 0;
@@ -289,6 +305,7 @@ public:
         std::size_t totalApplies     = 0;
         std::size_t totalApplyMisses = 0;
     };
+    /// @bind rename=Stats
     Stats GetStats() const;
 
     /// @brief Acquire slots for every SPL/UBR texture and SPN child-model
@@ -320,20 +337,28 @@ private:
 };
 
 /// @brief Day-night-cycle service.
+/// @bind no_default_ctor, methods
 class DncView {
 public:
     /// @brief `true` once the host has set a unit-MDL path and the DNC
     ///        service has loaded successfully.
     bool IsValid() const;
     /// @brief Time of day in hours (0..@ref GetHoursPerDay).
+    /// @bind rename=TimeOfDay
     f32 GetTimeOfDay() const;
     void SetTimeOfDay(f32);
     /// @brief TOD playback rate (`0` = paused; `1` = real-time-equivalent).
+    /// @bind rename=TodScale
     f32 GetTodScale() const;
     void SetTodScale(f32);
     /// @brief Length of a full DNC cycle in hours (typically `24`).
+    /// @bind rename=HoursPerDay
     f32 GetHoursPerDay() const;
     /// @brief Currently-loaded DNC unit-MDL path.
+    /// @bind skip — the C emitter moves string returns into the wrapper,
+    ///              which a `const&` return can't satisfy. Hand-written in
+    ///              bindings/c/whiteout_flakes_shims.cpp under the same
+    ///              symbol the generator would have produced.
     const std::string& UnitMdlPath() const;
     /// @brief Replace the DNC unit-MDL path (re-loads from the content provider).
     void SetUnitMdl(const std::string&);
@@ -347,6 +372,7 @@ private:
 };
 
 /// @brief Cascade-shadow-map service.
+/// @bind no_default_ctor, methods
 class ShadowView {
 public:
     bool IsValid() const;
@@ -362,6 +388,7 @@ private:
 };
 
 /// @brief Splat-decal service (engine-spawned SPL/UBR events).
+/// @bind no_default_ctor, methods
 class SplatView {
 public:
     /// @brief Remove every live splat. Hosts call this on sequence
@@ -375,6 +402,7 @@ private:
 };
 
 /// @brief Replaceable-texture / tileset switching.
+/// @bind no_default_ctor, methods
 class ReplaceablesView {
 public:
     /// @brief Returns `true` once when the tileset has changed since

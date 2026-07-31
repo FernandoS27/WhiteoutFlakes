@@ -14,6 +14,7 @@ namespace whiteout::flakes {
 /// `cascadeResolution × cascadeResolution` each are rendered every
 /// frame; `lambdaSplit` mixes uniform and logarithmic cascade
 /// distribution (0 = uniform, 1 = log).
+/// @bind value_object
 struct ShadowParams {
     /// Number of cascades; the renderer accepts 1..3.
     i32 cascadeCount = 3;

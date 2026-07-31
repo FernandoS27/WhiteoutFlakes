@@ -56,6 +56,7 @@ using whiteout::Vector4f;
 /// @brief Integer-coordinate screen-space rectangle (top-down, pixel units).
 ///
 /// Used by host frontends for laying out UI overlays.
+/// @bind value_object
 struct Rect {
     i32 left;
     i32 top;

@@ -24,6 +24,7 @@ using ActorHandle = u32;
 /// Constructed by `Renderer::Actor(handle)`. Cheap to copy; under the
 /// hood it's just `{ RendererImpl*, ActorHandle }`. Lifetime mirrors
 /// the renderer's — copies become invalid when the actor is removed.
+/// @bind no_default_ctor, methods
 class ActorView {
 public:
     /// @brief `true` if the underlying actor still exists in the scene.

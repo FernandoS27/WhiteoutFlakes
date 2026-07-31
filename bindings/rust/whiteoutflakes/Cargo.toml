@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: BSD-3-Clause
+[package]
+name        = "whiteoutflakes"
+description = "Rust bindings for the WhiteoutFlakes renderer service library."
+keywords    = ["warcraft", "renderer", "mdx", "graphics"]
+categories  = ["game-development", "rendering"]
+readme      = "README.md"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[dependencies]
+
+[dev-dependencies]
+raw-window-handle = "0.6"
+winit = "0.30"

@@ -34,6 +34,7 @@ namespace whiteout::flakes {
 ///
 /// Construct one per process / per host. Holds every internal subsystem
 /// behind a stable PIMPL pointer; copies are disallowed.
+/// @bind methods
 class Renderer {
 public:
     Renderer();

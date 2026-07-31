@@ -19,6 +19,7 @@ namespace whiteout::flakes::io {
 
 /// @brief The 16 canonical WC3 tilesets, ordered to match the in-game
 ///        World Editor enum so persisted indices round-trip.
+/// @bind
 enum class Tileset : u8 {
     LordaeronSummer = 0,
     Ashenvale,

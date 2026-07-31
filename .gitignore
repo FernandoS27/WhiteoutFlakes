@@ -2,3 +2,6 @@ build*
 war3.w3mod
 prebuilt/debug_shaders/
 stage*
+.pyc
+__pycache__
+bindings/rust/target/

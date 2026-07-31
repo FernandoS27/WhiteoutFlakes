@@ -21,6 +21,7 @@ namespace whiteout::flakes::gfx {
 /// and uses Dawn's native runtime — see `WebGPU.md` for the design.
 /// Metal is macOS-only and opt-in (-DWDX_ENABLE_METAL=ON, default ON
 /// on Apple platforms). It is the preferred native backend on macOS.
+/// @bind
 enum class GfxApi { D3D11, D3D12, Vulkan, WebGPU, Metal };
 
 /// @brief Pixel format used by `TextureData` and swap-chain surfaces.
@@ -28,6 +29,12 @@ enum class GfxApi { D3D11, D3D12, Vulkan, WebGPU, Metal };
 /// Mirrors the D3D / VK / MoltenVK common subset; the gfx backends map
 /// each value to their native enum. `Unknown` is the default-constructed
 /// sentinel and is rejected by every backend.
+///
+/// NOT bound: the Rust emitter names each variant after the trailing
+/// `_`-segment, which collapses `R8G8B8A8_UNORM_SRGB` and
+/// `B8G8R8A8_UNORM_SRGB` to one `SRGB` and silently drops the loser.
+/// Nothing in the bound surface takes a `Format` today (`TextureData`
+/// is out of scope), so this waits on the upstream fix. See BINDINGS.md.
 enum class Format : u16 {
     Unknown,
 

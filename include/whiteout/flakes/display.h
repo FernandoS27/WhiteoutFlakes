@@ -21,6 +21,7 @@ using RenderTargetId = u32;
 ///
 /// Persisted by the host as a single block; defaults shown match the
 /// out-of-the-box viewer experience.
+/// @bind value_object
 struct DisplayFlags {
     bool showGrid = true;                   ///< Reference grid on the ground plane.
     bool showParticles = true;              ///< MDX particle emitters.
@@ -35,6 +36,7 @@ struct DisplayFlags {
 ///
 /// Names mirror the internal `RenderPipeline::GetFrameStats` out
 /// parameters. Hosts surface these in title-bar / overlay HUDs.
+/// @bind value_object
 struct FrameStats {
     i32 geosets = 0;
     i32 textures = 0;
@@ -49,6 +51,7 @@ struct FrameStats {
 /// (`position` / `target` / FoV / clip planes / roll) plus an optional
 /// per-frame animator that overrides them based on the active sequence's
 /// time cursor.
+/// @bind value_object
 struct CameraPreset {
     /// UTF-8 preset name as authored by the artist (used by host UI
     /// dropdowns); was `std::wstring` historically but normalised to UTF-8
@@ -88,6 +91,7 @@ struct CameraPreset {
 /// Times are in milliseconds (matches MDX's internal unit). `moveSpeed`
 /// is the artist-authored locomotion speed in world-units / second,
 /// used by hosts to drive walk-cycle drift along the camera axis.
+/// @bind value_object
 struct SequenceInfo {
     std::string name;
     i32 startMs = 0;
