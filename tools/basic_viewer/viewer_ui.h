@@ -33,15 +33,15 @@ private:
     void BuildTabBar();
     void BuildSettingsWindow();
     void BuildViewCubeWidget();
-    // Renders the deferred "pick MDL dialect" modal when an MDL Save As is
-    // pending. No-op otherwise.
-    void BuildSaveAsPopup();
+    // Renders the deferred Save As options modal (MDL dialect + texture export)
+    // when a model save is pending. No-op otherwise.
+    void BuildSaveOptionsPopup();
     // Renders the "Export Animation Frames" modal (animation + FPS + folder).
     void BuildExportPopup();
 
     void OpenFileDialog();
-    // Save As entry point — pops the native save dialog, then either writes
-    // immediately (MDX) or defers to the dialect modal (MDL).
+    // Save As entry point — pops the native save dialog, then defers to the
+    // options modal (dialect for MDL, texture export for both).
     void SaveAsDialog();
 
     ViewerApp& app_;
@@ -50,10 +50,14 @@ private:
     bool showViewCube_ = true;    // View > View Cube toggle
     bool showLogConsole_ = false; // Debug > Log Console toggle
 
-    // Save As state. `pendingSaveMdlPath_` is non-empty only between the user
-    // choosing an .mdl target and picking a dialect in the modal.
-    std::string pendingSaveMdlPath_;
-    bool openDialectPopup_ = false;
+    // Save As state. `pendingSavePath_` is non-empty only between the user
+    // choosing a target and confirming in the options modal.
+    std::string pendingSavePath_;
+    bool pendingSaveIsMdl_ = false;    // target is .mdl → show dialect choice
+    bool openSaveOptionsPopup_ = false;
+    i32 saveDialect_ = 0;              // 0 = Warcraft III, 1 = Hiveworkshop
+    bool saveExportTextures_ = false;  // export used textures next to the model
+    i32 saveTexFormatIdx_ = 0;         // index into kExportFormats (0 = keep original)
 
     // DNC path edit buffer (ImGui InputText needs a writable buffer the UI
     // owns; we sync from DncService.UnitMdlPath() on each frame so external

@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -387,29 +388,49 @@ struct FileContentProvider::Impl {
             std::string stem = StripExtension(normCasc);
             std::string cascExt = GetLowerExtension(normCasc);
             auto [altExts, altCount] = AltExtensionsFor(cascExt);
-            for (const char* prefix : PickCascPrefixes(hdMode.load(std::memory_order_relaxed))) {
-                if (!cascExt.empty()) {
-                    std::string cascPath = std::string(prefix) + stem + cascExt;
-                    auto data = cascStorage->readFile(cascPath);
-                    if (data && !data->empty()) {
-                        out.actualExt = cascExt;
-                        out.data = std::move(*data);
-                        out.ok = true;
-                        return;
+
+            // Try one stem across every mod prefix and extension; fills `out` and
+            // returns true on the first hit.
+            auto tryCascStem = [&](const std::string& s) -> bool {
+                for (const char* prefix :
+                     PickCascPrefixes(hdMode.load(std::memory_order_relaxed))) {
+                    if (!cascExt.empty()) {
+                        auto data = cascStorage->readFile(std::string(prefix) + s + cascExt);
+                        if (data && !data->empty()) {
+                            out.actualExt = cascExt;
+                            out.data = std::move(*data);
+                            out.ok = true;
+                            return true;
+                        }
+                    }
+                    for (usize i = 0; i < altCount; ++i) {
+                        if (altExts[i] == cascExt)
+                            continue;
+                        auto data = cascStorage->readFile(std::string(prefix) + s + altExts[i]);
+                        if (data && !data->empty()) {
+                            out.actualExt = altExts[i];
+                            out.data = std::move(*data);
+                            out.ok = true;
+                            return true;
+                        }
                     }
                 }
-                for (usize i = 0; i < altCount; ++i) {
-                    if (altExts[i] == cascExt)
-                        continue;
-                    std::string cascPath = std::string(prefix) + stem + altExts[i];
-                    auto data = cascStorage->readFile(cascPath);
-                    if (data && !data->empty()) {
-                        out.actualExt = altExts[i];
-                        out.data = std::move(*data);
-                        out.ok = true;
-                        return;
-                    }
-                }
+                return false;
+            };
+
+            if (tryCascStem(stem))
+                return;
+
+            // Reforged dropped the classic "-<frame>" suffix on some stock texture
+            // sets — e.g. the terrain water frames Textures\Water07-0.blp ship as
+            // textures\water07.dds. On a miss, retry with a trailing -<digits>
+            // stripped so those classic paths resolve to the Reforged asset.
+            if (auto dash = stem.rfind('-');
+                dash != std::string::npos && dash + 1 < stem.size() &&
+                std::all_of(stem.begin() + dash + 1, stem.end(),
+                            [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
+                if (tryCascStem(stem.substr(0, dash)))
+                    return;
             }
         }
 #endif

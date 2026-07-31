@@ -17,7 +17,18 @@
 #include "settings_ini.h"
 #include "viewer_app.h"
 
+#include "renderer/model/model_source_utils.h" // DispatchTextureParser (decode)
 #include <whiteout/models/mdx/writer.h>
+// Texture encoders for the Save As "export textures" option (every WhiteoutLib
+// image writer except GIF).
+#include <whiteout/textures/bmp/writer.h>
+#include <whiteout/textures/blp/writer.h>
+#include <whiteout/textures/dds/writer.h>
+#include <whiteout/textures/jpeg/writer.h>
+#include <whiteout/textures/png/writer.h>
+#include <whiteout/textures/texture.h>
+#include <whiteout/textures/tga/writer.h>
+#include <whiteout/textures/tiff/writer.h>
 #include "whiteout/flakes/content_provider.h"
 #include "whiteout/flakes/display.h"
 #include "whiteout/flakes/enums.h"
@@ -143,7 +154,7 @@ void ViewerUI::BuildFrame() {
         BuildViewCubeWidget();
     if (settingsOpen_)
         BuildSettingsWindow();
-    BuildSaveAsPopup();
+    BuildSaveOptionsPopup();
     BuildExportPopup();
     app_.BuildStorageExplorerWindow();
     tools::LogConsole::Instance().DrawUi(&showLogConsole_);
@@ -175,20 +186,182 @@ void ViewerUI::OpenFileDialog() {
 
 namespace {
 
+// Image formats the Save As "export textures" option can convert to — every
+// WhiteoutLib image writer except GIF. `ext` includes the dot (it's the output
+// extension and what the model's texture path is rewritten to); "" means keep
+// the source format. `label` is the format name (not localized); the empty
+// entry uses the localized "keep original" string at draw time.
+struct TexExportFormat {
+    const char* ext;
+    const char* label;
+};
+constexpr TexExportFormat kExportFormats[] = {
+    {"", ""},        {".blp", "BLP"}, {".png", "PNG"},  {".tga", "TGA"},
+    {".dds", "DDS"}, {".bmp", "BMP"}, {".jpg", "JPEG"}, {".tif", "TIFF"},
+};
+
+// Re-encode a decoded texture into `ext`. Converts to RGBA8 first — accepted by
+// every writer and the common denominator across formats (BCn/paletted sources
+// are decoded). Returns nullopt on an unknown ext or a writer failure.
+std::optional<std::vector<u8>> EncodeTextureAs(const whiteout::textures::Texture& src,
+                                               const std::string& ext) {
+    namespace tx = whiteout::textures;
+    tx::Texture t = src;
+    t.format(tx::PixelFormat::RGBA8);
+    auto run = [&](tx::Writer& w) -> std::optional<std::vector<u8>> {
+        try {
+            std::vector<u8> bytes = w.write(t);
+            if (bytes.empty())
+                return std::nullopt;
+            return bytes;
+        } catch (const std::exception&) {
+            return std::nullopt;
+        }
+    };
+    if (ext == ".png") { tx::png::Writer w; return run(w); }
+    if (ext == ".tga") { tx::tga::Writer w; return run(w); }
+    if (ext == ".blp") { tx::blp::Writer w; return run(w); }
+    if (ext == ".dds") { tx::dds::Writer w; return run(w); }
+    if (ext == ".bmp") { tx::bmp::Writer w; return run(w); }
+    if (ext == ".jpg" || ext == ".jpeg") { tx::jpeg::Writer w; return run(w); }
+    if (ext == ".tif" || ext == ".tiff") { tx::tiff::Writer w; return run(w); }
+    return std::nullopt;
+}
+
+struct ExportStats {
+    int exported = 0;
+    int skipped = 0;
+    int failed = 0;
+};
+
+// Writes the model's file-backed textures into `targetDir`, preserving each
+// texture's relative path. A non-empty `formatExt` converts each texture to that
+// format and rewrites the model's texture path to match (so the saved model
+// references the exported files); "" keeps the referenced format (verbatim copy
+// when the source bytes already match, else re-encoded to it — e.g. Reforged
+// serves .dds for a .blp path). Textures already present at the target are left
+// untouched. `model` is mutated (path rewrites); the caller writes it after.
+ExportStats ExportModelTextures(ViewerApp& app, whiteout::mdx::Model& model,
+                                const std::filesystem::path& targetDir,
+                                const std::string& formatExt) {
+    namespace fs = std::filesystem;
+    ExportStats st;
+    io::IContentProvider* provider = app.Service().Scene().ActiveContentProvider();
+
+    auto lower = [](std::string s) {
+        for (auto& c : s)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return s;
+    };
+
+    for (auto& tex : model.textures) {
+        // replaceableId != 0 → runtime team-color/glow/tileset, no source file.
+        if (tex.replaceableId != 0 || tex.fileName.empty())
+            continue;
+
+        const std::string origName = tex.fileName; // capture before any rewrite
+
+        std::string relStr = origName;
+        std::replace(relStr.begin(), relStr.end(), '\\', '/');
+        const fs::path relPath(io::FsPathFromUtf8(relStr));
+        const std::string srcExt = lower(relPath.extension().string());
+        const std::string targetExt = formatExt.empty() ? srcExt : formatExt;
+
+        fs::path outRel = relPath;
+        outRel.replace_extension(targetExt);
+        const fs::path outFile = targetDir / outRel;
+
+        // Point the saved model at the exported file when the format changed
+        // (WC3 texture paths use backslashes).
+        if (targetExt != srcExt) {
+            std::string nn = origName;
+            if (const auto dot = nn.rfind('.'); dot != std::string::npos)
+                nn.resize(dot);
+            tex.fileName = nn + targetExt;
+        }
+
+        std::error_code ec;
+        if (fs::exists(outFile, ec)) {
+            st.skipped++;
+            continue;
+        }
+        if (!provider) {
+            st.failed++;
+            continue;
+        }
+
+        std::string actualExt;
+        std::optional<std::vector<u8>> bytes = provider->ReadFile(origName, &actualExt);
+        if (!bytes || bytes->empty()) {
+            std::fprintf(stderr, "[viewer] Export: source texture not found: %s\n",
+                         origName.c_str());
+            st.failed++;
+            continue;
+        }
+        actualExt = lower(actualExt);
+
+        std::vector<u8> outBytes;
+        if (targetExt == actualExt) {
+            outBytes = std::move(*bytes);
+        } else {
+            auto decoded = model::DispatchTextureParser(
+                actualExt, [&](auto& p) { return p.parse(std::span<const u8>(*bytes)); });
+            std::optional<std::vector<u8>> enc =
+                decoded ? EncodeTextureAs(*decoded, targetExt) : std::nullopt;
+            if (!enc) {
+                std::fprintf(stderr, "[viewer] Export: convert failed %s -> %s\n",
+                             origName.c_str(), targetExt.c_str());
+                st.failed++;
+                continue;
+            }
+            outBytes = std::move(*enc);
+        }
+
+        fs::create_directories(outFile.parent_path(), ec);
+        std::ofstream f(outFile, std::ios::binary);
+        if (f)
+            f.write(reinterpret_cast<const char*>(outBytes.data()),
+                    static_cast<std::streamsize>(outBytes.size()));
+        if (!f) {
+            st.failed++;
+            continue;
+        }
+        st.exported++;
+    }
+    return st;
+}
+
 // Re-serialises the currently-loaded model to `outPath`. The Writer picks
 // MDX-binary vs MDL-text from the file extension; `dialect` only matters for
-// .mdl output. Returns false (and logs) when no model is loaded or the write
-// throws.
+// .mdl output. When `exportTextures`, the model's used textures are written next
+// to it first (see ExportModelTextures) — `formatExt` optionally converts them.
+// Returns false (and logs) when no model is loaded or the write throws.
 bool WriteCurrentModel(ViewerApp& app, const std::string& outPath,
-                       whiteout::mdx::MdlFormat dialect) {
-    auto tmpl = app.Service().Scene().Templates().Lookup(io::PathToUtf8(app.CurrentModelPath()));
+                       whiteout::mdx::MdlFormat dialect, bool exportTextures,
+                       const std::string& formatExt) {
+    // The active document's actor holds a strong ref to its template — the most
+    // reliable source. Fall back to the (weak) path-keyed cache if there's no
+    // focused actor.
+    std::shared_ptr<model::ModelTemplate> tmpl;
+    if (model::Actor* actor = app.FocusActorPtr())
+        tmpl = actor->sourceTemplate;
+    if (!tmpl || !tmpl->adapter)
+        tmpl = app.Service().Scene().Templates().Lookup(io::PathToUtf8(app.CurrentModelPath()));
     if (!tmpl || !tmpl->adapter) {
         std::fprintf(stderr, "[viewer] Save As: no source model to write\n");
         return false;
     }
+    // Copy so texture-path rewrites during export don't touch the live template.
+    whiteout::mdx::Model model = tmpl->adapter->SourceModel();
+    if (exportTextures) {
+        const ExportStats st = ExportModelTextures(
+            app, model, std::filesystem::path(io::FsPathFromUtf8(outPath)).parent_path(), formatExt);
+        std::printf("[viewer] Textures: %d exported, %d skipped, %d failed\n", st.exported,
+                    st.skipped, st.failed);
+    }
     try {
         whiteout::mdx::Writer writer;
-        writer.write(outPath, tmpl->adapter->SourceModel(), dialect);
+        writer.write(outPath, model, dialect);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[viewer] Save As FAILED '%s': %s\n", outPath.c_str(), e.what());
         return false;
@@ -275,20 +448,17 @@ void ViewerUI::SaveAsDialog() {
     for (auto& c : ext)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
 
-    if (ext == ".mdl") {
-        // MDL needs a dialect — stash the path and pop the modal next frame.
-        pendingSaveMdlPath_ = std::move(path);
-        openDialectPopup_ = true;
-    } else {
-        // MDX (binary) — dialect is irrelevant to the writer here.
-        WriteCurrentModel(app_, path, whiteout::mdx::MdlFormat::WarcraftIII);
-    }
+    // Both MDX and MDL route through the options modal next frame (texture
+    // export + format); MDL additionally offers the dialect choice there.
+    pendingSavePath_ = std::move(path);
+    pendingSaveIsMdl_ = (ext == ".mdl");
+    openSaveOptionsPopup_ = true;
 }
 
-void ViewerUI::BuildSaveAsPopup() {
-    if (openDialectPopup_) {
+void ViewerUI::BuildSaveOptionsPopup() {
+    if (openSaveOptionsPopup_) {
         ImGui::OpenPopup(i18n::tr("dialog.saveas.title"));
-        openDialectPopup_ = false;
+        openSaveOptionsPopup_ = false;
     }
 
     const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
@@ -297,26 +467,52 @@ void ViewerUI::BuildSaveAsPopup() {
                                 ImGuiWindowFlags_AlwaysAutoResize))
         return;
 
-    ImGui::TextUnformatted(i18n::tr("dialog.saveas.prompt"));
-    ImGui::Spacing();
-    ImGui::TextDisabled(i18n::tr("dialog.saveas.wc3_desc"));
-    ImGui::TextDisabled(i18n::tr("dialog.saveas.hive_desc"));
-    ImGui::Separator();
-
-    if (ImGui::Button(i18n::tr("dialog.saveas.wc3"), ImVec2(130, 0))) {
-        WriteCurrentModel(app_, pendingSaveMdlPath_, whiteout::mdx::MdlFormat::WarcraftIII);
-        pendingSaveMdlPath_.clear();
-        ImGui::CloseCurrentPopup();
+    // ---- MDL dialect (text format only) ----
+    if (pendingSaveIsMdl_) {
+        ImGui::TextUnformatted(i18n::tr("dialog.saveas.prompt"));
+        ImGui::RadioButton(i18n::tr("dialog.saveas.wc3"), &saveDialect_, 0);
+        ImGui::SameLine();
+        ImGui::RadioButton(i18n::tr("dialog.saveas.hive"), &saveDialect_, 1);
+        ImGui::TextDisabled("%s", i18n::tr("dialog.saveas.wc3_desc"));
+        ImGui::TextDisabled("%s", i18n::tr("dialog.saveas.hive_desc"));
+        ImGui::Separator();
     }
-    ImGui::SameLine();
-    if (ImGui::Button(i18n::tr("dialog.saveas.hive"), ImVec2(130, 0))) {
-        WriteCurrentModel(app_, pendingSaveMdlPath_, whiteout::mdx::MdlFormat::Hiveworkshop);
-        pendingSaveMdlPath_.clear();
+
+    // ---- Texture export ----
+    ImGui::Checkbox(i18n::tr("dialog.saveas.export_textures"), &saveExportTextures_);
+    ImGui::BeginDisabled(!saveExportTextures_);
+    ImGui::TextDisabled("%s", i18n::tr("dialog.saveas.export_hint"));
+    saveTexFormatIdx_ =
+        std::clamp(saveTexFormatIdx_, 0, static_cast<i32>(std::size(kExportFormats)) - 1);
+    auto formatLabel = [&](i32 i) {
+        return kExportFormats[i].ext[0] ? kExportFormats[i].label
+                                        : i18n::tr("dialog.saveas.keep_original");
+    };
+    ImGui::SetNextItemWidth(180);
+    if (ImGui::BeginCombo(i18n::tr("dialog.saveas.convert_to"), formatLabel(saveTexFormatIdx_))) {
+        for (i32 i = 0; i < static_cast<i32>(std::size(kExportFormats)); ++i) {
+            const bool sel = (i == saveTexFormatIdx_);
+            if (ImGui::Selectable(formatLabel(i), sel))
+                saveTexFormatIdx_ = i;
+            if (sel)
+                ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    if (ImGui::Button(i18n::tr("app.save"), ImVec2(120, 0))) {
+        const auto dialect = (saveDialect_ == 1) ? whiteout::mdx::MdlFormat::Hiveworkshop
+                                                 : whiteout::mdx::MdlFormat::WarcraftIII;
+        WriteCurrentModel(app_, pendingSavePath_, dialect, saveExportTextures_,
+                          kExportFormats[saveTexFormatIdx_].ext);
+        pendingSavePath_.clear();
         ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
     if (ImGui::Button(i18n::tr("app.cancel"), ImVec2(80, 0))) {
-        pendingSaveMdlPath_.clear();
+        pendingSavePath_.clear();
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
