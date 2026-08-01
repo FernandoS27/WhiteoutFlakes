@@ -5,3 +5,6 @@ stage*
 .pyc
 __pycache__
 bindings/rust/target/
+# Staged by scripts/vendor-rust.ps1 for `cargo publish`; regenerated, never edited.
+bindings/rust/whiteoutflakes-sys/vendor/
+bindings/rust/whiteoutflakes-shaders-*/pack/

@@ -49,6 +49,10 @@ extern "C" {
         self_: *mut ffi::whiteout_FlakesSceneView,
         path: *const core::ffi::c_char,
     );
+    fn whiteout_flakes_FlakesSceneView_SetEngineAssetRoot(
+        self_: *mut ffi::whiteout_FlakesSceneView,
+        root: *const core::ffi::c_char,
+    );
     fn whiteout_flakes_FlakesDncView_UnitMdlPath(
         self_: *const ffi::whiteout_FlakesDncView,
     ) -> RawCString;
@@ -217,6 +221,99 @@ impl SceneView {
         // SAFETY: the C side copies the string into an fs::path and does
         // not retain the pointer.
         unsafe { whiteout_flakes_FlakesSceneView_SetPE1BasePath(self.raw.as_ptr(), cpath.as_ptr()) }
+    }
+
+    /// Set the root the renderer searches for engine-shipped assets — the
+    /// BLS `shaders/` pack.
+    ///
+    /// **Must be called before [`PipelineView::init_device`]**, or shader
+    /// acquisition fails and device init aborts. The C++ default is the
+    /// executable's directory, which is never right for a library: your
+    /// binary is not shipped beside the renderer's shader pack.
+    ///
+    /// [`Renderer::use_bundled_shaders`](crate::Renderer::use_bundled_shaders)
+    /// points this at the pack `whiteoutflakes-sys` staged at build time,
+    /// which is what most callers want.
+    pub fn set_engine_asset_root(&mut self, root: &str) {
+        let croot = std::ffi::CString::new(root).unwrap_or_default();
+        // SAFETY: as above.
+        unsafe {
+            whiteout_flakes_FlakesSceneView_SetEngineAssetRoot(self.raw.as_ptr(), croot.as_ptr())
+        }
+    }
+}
+
+impl crate::Renderer {
+    /// Point the renderer at the shader pack `whiteoutflakes-sys` bundled
+    /// at build time, and report whether one was actually there.
+    ///
+    /// Call before [`PipelineView::init_device`]. Returns `false` when the
+    /// crate was built with no shader-pack feature enabled or the build
+    /// directory has been cleaned — in that case set your own root with
+    /// [`SceneView::set_engine_asset_root`] or device init will fail.
+    ///
+    /// The bundled path lives under `target/`, so it is valid on the
+    /// machine that built the crate and not after you ship the binary. A
+    /// distributable application should copy the tree and set the root
+    /// itself.
+    pub fn use_bundled_shaders(&mut self) -> bool {
+        if !whiteoutflakes_sys::has_bundled_shaders() {
+            return false;
+        }
+        let root = whiteoutflakes_sys::ENGINE_ASSET_ROOT;
+        match self.scene() {
+            Some(mut scene) => {
+                scene.set_engine_asset_root(root);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether a bundled shader pack covers `api`.
+    ///
+    /// Enabling the `d3d12` feature and then asking for a D3D11 device is
+    /// an easy mistake to make, and without this check the failure it
+    /// produces is a shader-read error deep inside
+    /// [`PipelineView::init_device`]. Check first and you get to say
+    /// something useful instead:
+    ///
+    /// ```no_run
+    /// # use whiteoutflakes::{GfxApi, Renderer};
+    /// # let mut r = Renderer::new();
+    /// let api = GfxApi::D3D11;
+    /// assert!(
+    ///     r.has_shaders_for(api),
+    ///     "no bundled shaders for {api:?} — enable the matching cargo feature"
+    /// );
+    /// ```
+    pub fn has_shaders_for(&self, api: crate::GfxApi) -> bool {
+        // The subdirectory each backend reads from. D3D11 is the odd one
+        // out — its DXBC sits directly under shaders/ps and shaders/vs.
+        let subdir = match api {
+            crate::GfxApi::D3D11 => "",
+            crate::GfxApi::D3D12 => "d3d12",
+            crate::GfxApi::Vulkan => "vulkan",
+            crate::GfxApi::WebGPU => "webgpu",
+            crate::GfxApi::Metal => "metal",
+        };
+        whiteoutflakes_sys::has_shaders_for(subdir)
+    }
+}
+
+impl SceneView {
+    /// Point this scene at the shader pack `whiteoutflakes-sys` bundled at
+    /// build time.
+    ///
+    /// The [`Renderer::use_bundled_shaders`](crate::Renderer::use_bundled_shaders)
+    /// convenience covers the single-scene case; this is the equivalent
+    /// for a host driving several scenes.
+    pub fn use_bundled_shaders(&mut self) -> bool {
+        if !whiteoutflakes_sys::has_bundled_shaders() {
+            return false;
+        }
+        self.set_engine_asset_root(whiteoutflakes_sys::ENGINE_ASSET_ROOT);
+        true
     }
 }
 

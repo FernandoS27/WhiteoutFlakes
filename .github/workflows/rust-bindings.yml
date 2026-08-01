@@ -1,0 +1,133 @@
+name: Rust bindings
+
+# The published crates build the C++ from a vendored copy rather than from
+# the repository's own CMakeLists, with its own source globs and exclusion
+# list. Nothing in the normal build exercises that path, so it rots
+# silently — a file added under src/, or one that stops compiling in this
+# narrower configuration, only shows up when somebody tries to publish.
+# This job is what catches that.
+#
+# Deliberately no Vulkan SDK: proving the vendored build needs no slangc
+# and no SDK is half the point. It uses the committed
+# prebuilt/compiled_shaders.h, same as a crates.io consumer would.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+    paths:
+      - 'bindings/**'
+      - 'tools/bindings/**'
+      - 'scripts/vendor-rust.ps1'
+      - 'scripts/publish-rust.ps1'
+      - 'include/whiteout/flakes/**'
+      - 'src/**'
+      - '.github/workflows/rust-bindings.yml'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build:
+    name: Vendored build + tests (Windows x64, MSVC)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings/rust
+
+      # Copies the C++ tree and shader packs into the crate directories.
+      # Also runs the drift check that warns when a .cpp exists that no
+      # CMakeLists names — the vendor glob compiles those regardless, which
+      # is how an orphaned, uncompilable upstream file got picked up once.
+      - name: Stage vendored sources
+        shell: pwsh
+        run: ./scripts/vendor-rust.ps1
+
+      - name: Formatting
+        working-directory: bindings/rust
+        run: cargo fmt --all -- --check
+
+      # Builds the vendored C++ through CMake as a side effect — this is
+      # the step that actually proves the published crate compiles.
+      - name: Clippy
+        working-directory: bindings/rust
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        working-directory: bindings/rust
+        run: cargo test
+
+      # Catches size regressions against the 10 MiB crates.io cap before a
+      # release does. The sys and wrapper crates report as deferred until
+      # their dependencies are actually published, which is expected.
+      - name: Package (dry run)
+        shell: pwsh
+        run: ./scripts/publish-rust.ps1 -DryRun
+
+  regen:
+    name: Codegen is up to date
+    runs-on: windows-latest
+    # Advisory. The emitters run the output through rustfmt and libclang
+    # reads the toolchain's own STL headers, so a runner on a different
+    # MSVC or libclang than the author's can produce a byte-different but
+    # equally correct file. A red X here means "look at the diff", not
+    # necessarily "someone forgot to regenerate" — promote it to blocking
+    # once it has proven stable across a few runs.
+    continue-on-error: true
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # rustfmt matters here: emit_rust pipes its output through it and
+      # silently falls back to unformatted text when it is missing, which
+      # would make every file look changed.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Install libclang
+        run: pip install libclang==18.1.1
+
+      # The generated C ABI and Rust module are committed so a checkout
+      # without libclang still builds. That only holds if they match the
+      # headers they were generated from.
+      - name: Regenerate
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python -m tools.bindings.codegen flakes
+
+      - name: Check for drift
+        shell: pwsh
+        run: |
+          # `git diff --exit-code` returning 1 would abort the step before
+          # anything useful got printed, so ask for the status separately.
+          $changed = git diff --name-only -- bindings/c bindings/rust
+          if ($changed) {
+            Write-Host "::error::Generated bindings differ from the committed ones."
+            Write-Host "Run: python -m tools.bindings.codegen flakes"
+            $changed | ForEach-Object { Write-Host "  $_" }
+            git diff --stat -- bindings/c bindings/rust
+            exit 1
+          }
+          Write-Host "Generated bindings match."

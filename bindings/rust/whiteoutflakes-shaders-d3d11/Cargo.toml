@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: BSD-3-Clause
+[package]
+name        = "whiteoutflakes-shaders-d3d11"
+description = "Prebuilt WhiteoutFlakes BLS shader pack — Direct3D 11 (DXBC)."
+keywords    = ["warcraft", "shaders", "graphics"]
+categories  = ["game-development", "rendering"]
+include     = ["src/**/*.rs", "pack/**", "README.md"]
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+[dependencies]

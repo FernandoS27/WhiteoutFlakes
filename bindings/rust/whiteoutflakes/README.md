@@ -8,27 +8,57 @@ renderer service library — a Warcraft III model renderer with SD and HD
 `include/whiteout/flakes/`; `src/shims.rs` and `src/support.rs` are
 hand-written. See [BINDINGS.md](../../../BINDINGS.md) for the pipeline.
 
-## Building
+## Installing
 
-The crate links a native library it does not build. Point it at one:
-
-```pwsh
-cmake -S . -B build-rust -DWDX_BUILD_C_BINDINGS=ON
-cmake --build build-rust --config Release --target whiteoutflakes_c
-$env:WHITEOUTFLAKES_LIB_DIR = "build-rust/c-dist/Release"
-cargo test
+```toml
+[dependencies]
+whiteoutflakes = "0.1"
 ```
 
-`scripts/build-rust.ps1` does all of the above, plus `cargo fmt --check`
-and clippy.
+That builds the C++ renderer from source through CMake — a C++20
+compiler and about three minutes, no submodules, no vcpkg, no SDKs.
+
+| Feature | Default | Effect |
+|---|---|---|
+| `d3d11` | yes | D3D11 backend + shader pack (0.9 MiB) |
+| `casc` | yes | Reads assets out of an installed Warcraft III |
+| `d3d12` | | D3D12 backend + shader pack (8.7 MiB) |
+| `vulkan` | | Vulkan backend; needs a Vulkan SDK to build |
+| `metal` | | Metal shader pack only — backend not vendored, see the sys crate |
+
+```toml
+whiteoutflakes = { version = "0.1", features = ["d3d12"] }
+```
+
+Each backend brings its own prebuilt shader pack as a separate crate —
+the combined pack is 27.6 MB compressed and crates.io caps a crate at
+10 MiB. `Renderer::use_bundled_shaders()` points the renderer at whichever
+packs got staged.
+
+Turning `casc` off is possible but rarely what you want: a model whose
+textures live in game storage still renders its geometry, with every
+surface a placeholder magenta.
+
+### Working from a checkout
+
+The crates only build from a clone once the C++ sources have been staged
+into them — cargo cannot package files from outside a crate directory:
+
+```pwsh
+scripts\vendor-rust.ps1
+```
+
+Or skip the from-source build entirely and link a library you already
+built:
+
+```pwsh
+scripts\build-rust.ps1          # cmake + fmt + clippy + test
+```
 
 | Variable | Meaning |
 |---|---|
-| `WHITEOUTFLAKES_LIB_DIR` | Directory holding `whiteoutflakes_native` (required) |
+| `WHITEOUTFLAKES_LIB_DIR` | Link a prebuilt `whiteoutflakes_native` from here, skipping CMake |
 | `WHITEOUTFLAKES_STATIC` | `1` to link `whiteoutflakes_native_static` instead |
-
-Without either, `build.rs` falls back to `pkg-config --libs whiteoutflakes`
-and then fails with instructions.
 
 ## The example viewer
 
@@ -48,9 +78,11 @@ Linux / macOS equivalents (`VkSurfaceKHR`, `NSWindow`) would mean an
 `ash`/`objc` dependency the example declines to take. The bindings
 themselves are platform-neutral.
 
-The example needs `shaders/` beside its binary — the BLS cache resolves
-shader bundles against the *executable* directory. `build-rust.ps1`
-stages it into `target/debug/examples/`; without it `init_device` fails.
+The example calls `Renderer::use_bundled_shaders()` before
+`init_device`, which points the renderer at the shader pack
+`whiteoutflakes-sys` staged at build time. Any host has to do the
+equivalent: the C++ default search root is the executable's directory,
+which is never right for a library.
 
 ## Usage
 

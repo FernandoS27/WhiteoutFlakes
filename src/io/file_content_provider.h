@@ -24,6 +24,13 @@ public:
 
     void SetBasePath(const std::filesystem::path& basePath);
 
+    // Root for engine-shipped assets (the BLS `shaders/` pack, pso_trace.bin).
+    // The ctor defaults it to the executable's directory, which is only right
+    // when the host IS an executable shipped beside those files. Hosts loaded
+    // as a shared library — language bindings, plugins — have to point this
+    // somewhere real themselves.
+    void SetSystemBasePath(const std::filesystem::path& root);
+
     // ---- IContentProvider async surface ----
     RequestId Request(const std::string& path, CompletionCallback cb) override;
     void Wait(RequestId id) override;

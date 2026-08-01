@@ -15,6 +15,8 @@
 //! use whiteoutflakes::{GfxApi, Renderer};
 //!
 //! let mut r = Renderer::new();
+//! // Before init_device: tell the renderer where its shaders are.
+//! assert!(r.use_bundled_shaders());
 //! r.pipeline().unwrap().init_device(GfxApi::D3D11);
 //! let actor = r.loader().unwrap().spawn_unit("Units/Human/Footman/Footman.mdx");
 //! loop {
@@ -23,6 +25,15 @@
 //! }
 //! # let _ = actor;
 //! ```
+//!
+//! # Shaders come from a directory, and you have to say which
+//!
+//! Device bring-up reads the BLS shader pack through the renderer's
+//! content provider, whose default search root is the *executable's*
+//! directory — which is never right for a library. Call
+//! [`Renderer::use_bundled_shaders`] (or
+//! [`SceneView::set_engine_asset_root`] with your own path) before
+//! [`PipelineView::init_device`], or init fails.
 //!
 //! # Views borrow the renderer
 //!

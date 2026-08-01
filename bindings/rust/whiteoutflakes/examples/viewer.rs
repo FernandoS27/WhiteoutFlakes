@@ -12,10 +12,6 @@
 // and macOS it wants a VkSurfaceKHR / NSWindow that the host has to
 // build itself, and doing that from Rust needs an `ash` (or objc)
 // dependency this example deliberately does not take.
-//
-// The renderer resolves BLS shaders relative to the *executable*
-// directory, so `shaders/` must sit next to the example binary. See
-// scripts/build-rust.ps1, which stages it.
 
 #[cfg(not(windows))]
 fn main() {
@@ -124,8 +120,15 @@ mod imp {
             };
 
             let mut renderer = Renderer::new();
-            let mut pipeline = renderer.pipeline().expect("live renderer");
 
+            // Before anything else: device init reads the BLS shader pack,
+            // and the default search root (the executable's directory) is
+            // wrong for a crate. Point it at what whiteoutflakes-sys staged.
+            if !renderer.use_bundled_shaders() {
+                return Err("no bundled shader pack — build with a backend feature enabled".into());
+            }
+
+            let mut pipeline = renderer.pipeline().expect("live renderer");
             pipeline.init_device(GfxApi::D3D11);
             // InitDevice reports failure through a bool the public C++
             // facade drops on the floor, so ask separately.

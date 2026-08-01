@@ -12,8 +12,31 @@ license.workspace      = true
 authors.workspace      = true
 repository.workspace   = true
 
+include = [
+    "src/**/*.rs",
+    "examples/**/*.rs",
+    "tests/**/*.rs",
+    "README.md",
+]
+
+[features]
+# Passed straight through to the sys crate, which is where they decide
+# which gfx backends compile and which shader packs get staged.
+default = ["d3d11", "casc"]
+d3d11  = ["whiteoutflakes-sys/d3d11"]
+d3d12  = ["whiteoutflakes-sys/d3d12"]
+vulkan = ["whiteoutflakes-sys/vulkan"]
+metal  = ["whiteoutflakes-sys/metal"]
+casc   = ["whiteoutflakes-sys/casc"]
+
 [dependencies]
+whiteoutflakes-sys = { version = "0.1.0", path = "../whiteoutflakes-sys", default-features = false }
 
 [dev-dependencies]
 raw-window-handle = "0.6"
 winit = "0.30"
+
+[package.metadata.docs.rs]
+# docs.rs has no C++ toolchain and no patience for one; build.rs skips the
+# native build when DOCS_RS is set, so the crate still documents.
+all-features = false

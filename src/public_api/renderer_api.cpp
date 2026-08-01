@@ -196,6 +196,12 @@ void SceneView::Update(f32 dt) {
 void SceneView::SetPE1BasePath(const std::filesystem::path& p) {
     Scn(impl_).SetPE1BasePath(p);
 }
+void SceneView::SetEngineAssetRoot(const std::filesystem::path& root) {
+    // Deliberately the internal provider rather than ActiveContentProvider():
+    // an external provider owns its own resolution and has no such root.
+    // GetContentProvider() realises the internal one, matching SetPE1BasePath.
+    Scn(impl_).GetContentProvider().SetSystemBasePath(root);
+}
 IContentProvider* SceneView::ActiveContentProvider() {
     return Scn(impl_).ActiveContentProvider();
 }

@@ -1,6 +1,13 @@
 # SPDX-License-Identifier: BSD-3-Clause
 [workspace]
-members  = ["whiteoutflakes"]
+members = [
+    "whiteoutflakes",
+    "whiteoutflakes-sys",
+    "whiteoutflakes-shaders-d3d11",
+    "whiteoutflakes-shaders-d3d12",
+    "whiteoutflakes-shaders-vulkan",
+    "whiteoutflakes-shaders-metal",
+]
 resolver = "2"
 
 [workspace.package]

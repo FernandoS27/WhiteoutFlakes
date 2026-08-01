@@ -43,12 +43,13 @@ sys.path.insert(0, str(WHITEOUT_LIB))
 # alongside the hand-written support code.
 RUST_CRATE = 'bindings/rust/whiteoutflakes'
 
-# Runtime types (whiteout_Bytes / whiteout_CString) plus the shared math
-# accessors. Module-independent, emitted once.
-C_COMMON_HEADER = 'bindings/c/whiteout_c_common.h'
-C_COMMON_SOURCE = 'bindings/c/whiteout_c_common.cpp'
-
-BACKENDS = ('c-common-header', 'c-common', 'c-header', 'c-source', 'rust')
+# NOTE: the runtime-types TU (`whiteout_c_common.{h,cpp}` upstream) is NOT
+# generated here. Ours is hand-written as
+# `bindings/c/whiteout_c_common.h` + `whiteout_flakes_common.cpp` so the
+# release functions can carry a project prefix — upstream's
+# `whiteout_Bytes_free` collides with WhiteoutLib's identically-named export
+# when both are linked statically into one binary. See that header's comment.
+BACKENDS = ('c-header', 'c-source', 'rust')
 
 
 def _load_config(name: str):
@@ -66,14 +67,9 @@ def _write(rel: str, text: str) -> None:
 
 
 def _run(backend: str, config, module) -> None:
-    """Emit one backend. `module` is None for the module-independent ones."""
     from tools.codegen import emit_c
 
-    if backend == 'c-common-header':
-        _write(C_COMMON_HEADER, emit_c.emit_common_header())
-    elif backend == 'c-common':
-        _write(C_COMMON_SOURCE, emit_c.emit_common())
-    elif backend == 'c-header':
+    if backend == 'c-header':
         _write(config.c_header_output_path, emit_c.emit_header(module))
     elif backend == 'c-source':
         _write(config.c_source_output_path, emit_c.emit_source(module))
@@ -96,11 +92,9 @@ def main(argv: list[str] | None = None) -> int:
     # A libclang parse of the umbrella TU costs ~40s, so do it once and
     # feed every module-dependent emitter from the same IR.
     config = _load_config(args.module)
-    module = None
-    if any(b not in ('c-common', 'c-common-header') for b in backends):
-        print(f'== parse {config.name} ==')
-        from tools.codegen.parser import parse_module
-        module = parse_module(config, REPO_ROOT)
+    print(f'== parse {config.name} ==')
+    from tools.codegen.parser import parse_module
+    module = parse_module(config, REPO_ROOT)
 
     for backend in backends:
         print(f'== {backend} ==')

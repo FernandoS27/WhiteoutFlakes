@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: BSD-3-Clause
+[package]
+name        = "whiteoutflakes-sys"
+description = "Native library and raw FFI declarations for the WhiteoutFlakes renderer."
+keywords    = ["warcraft", "renderer", "ffi", "sys"]
+categories  = ["external-ffi-bindings", "game-development"]
+readme      = "README.md"
+build       = "build.rs"
+# Declared so cargo rejects two crates linking the same native library, and
+# so `whiteoutflakes` can read this build script's DEP_WHITEOUTFLAKES_*
+# metadata (that mechanism only works through a `links` crate).
+links       = "whiteoutflakes"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+
+# `vendor/` is staged by scripts/vendor-rust.ps1 and is gitignored — the
+# C++ sources live at the repo root, and cargo cannot package files from
+# outside the crate directory. Publishing without staging first yields a
+# crate that cannot build; `cargo package` catches that because the
+# verification build runs.
+include = [
+    "src/**/*.rs",
+    "build.rs",
+    "vendor-cmake/**",
+    "vendor/**",
+    "README.md",
+]
+
+[features]
+# Which shader packs get staged, and which gfx backends get compiled.
+# d3d11 is the default because its pack is the small one (~1 MB vs ~9 MB)
+# and it needs no SDK.
+default = ["d3d11", "casc"]
+d3d11  = ["dep:whiteoutflakes-shaders-d3d11"]
+d3d12  = ["dep:whiteoutflakes-shaders-d3d12"]
+vulkan = ["dep:whiteoutflakes-shaders-vulkan"]
+metal  = ["dep:whiteoutflakes-shaders-metal"]
+# CASC lets the renderer resolve assets out of an installed Warcraft III.
+# WhiteoutLib implements it directly — no external library — so this only
+# costs compile time. Default ON: without it a Reforged model whose
+# textures live in game storage renders as untextured placeholder pink.
+casc = []
+
+[dependencies]
+
+[build-dependencies]
+cmake = "0.1"
+# Build-dependencies rather than regular ones: these crates exist to hand
+# the build script a directory of files to copy, and nothing links them.
+whiteoutflakes-shaders-d3d11  = { version = "0.1.0", path = "../whiteoutflakes-shaders-d3d11",  optional = true }
+whiteoutflakes-shaders-d3d12  = { version = "0.1.0", path = "../whiteoutflakes-shaders-d3d12",  optional = true }
+whiteoutflakes-shaders-vulkan = { version = "0.1.0", path = "../whiteoutflakes-shaders-vulkan", optional = true }
+whiteoutflakes-shaders-metal  = { version = "0.1.0", path = "../whiteoutflakes-shaders-metal",  optional = true }

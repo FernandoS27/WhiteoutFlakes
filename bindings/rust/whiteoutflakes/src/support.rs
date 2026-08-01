@@ -36,9 +36,12 @@ pub struct RawCString {
     pub owner: *mut c_void,
 }
 
+// Project-prefixed rather than upstream's `whiteout_Bytes_free`: WhiteoutLib's
+// C ABI exports that name too, and two static libraries in one binary cannot
+// both define it. See bindings/c/whiteout_c_common.h.
 extern "C" {
-    fn whiteout_Bytes_free(buf: RawBytes);
-    fn whiteout_CString_free(s: RawCString);
+    fn whiteout_flakes_Bytes_free(buf: RawBytes);
+    fn whiteout_flakes_CString_free(s: RawCString);
 }
 
 /// An owned byte buffer produced by the native library.
@@ -116,7 +119,7 @@ impl Drop for Bytes {
         }
         // SAFETY: `from_raw` only constructs a Bytes for an owning buffer,
         // and Drop runs exactly once.
-        unsafe { whiteout_Bytes_free(self.raw) }
+        unsafe { whiteout_flakes_Bytes_free(self.raw) }
     }
 }
 
@@ -139,14 +142,14 @@ pub(crate) unsafe fn take_string(raw: RawCString) -> String {
     if raw.chars.is_null() {
         // Still hand it back: freeing a null-owner CString is a no-op, and
         // this keeps the caller from having to special-case the empty case.
-        unsafe { whiteout_CString_free(raw) };
+        unsafe { whiteout_flakes_CString_free(raw) };
         return String::new();
     }
     // SAFETY: `chars`/`length` describe a valid UTF-8 run owned by the
     // native side until we free it below.
     let bytes = unsafe { core::slice::from_raw_parts(raw.chars as *const u8, raw.length) };
     let out = String::from_utf8_lossy(bytes).into_owned();
-    unsafe { whiteout_CString_free(raw) };
+    unsafe { whiteout_flakes_CString_free(raw) };
     out
 }
 

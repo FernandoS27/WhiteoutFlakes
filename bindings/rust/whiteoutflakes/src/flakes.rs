@@ -2169,6 +2169,7 @@ impl Default for Renderer {
 //   - PipelineView::FrameStats (return whiteout::flakes::FrameStats)
 //   - Renderer::SwapSoundEmitter (parameter shape)
 //   - SceneView::SetContentProvider (parameter shape)
+//   - SceneView::SetEngineAssetRoot (parameter shape)
 //   - SceneView::SetPE1BasePath (parameter shape)
 //   - ShadowView::Params (return whiteout::flakes::ShadowParams)
 //   - ShadowView::SetParams (parameter shape)

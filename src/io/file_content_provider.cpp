@@ -569,6 +569,11 @@ void FileContentProvider::SetBasePath(const std::filesystem::path& basePath) {
     impl_->resolver.SetBasePath(basePath);
 }
 
+void FileContentProvider::SetSystemBasePath(const std::filesystem::path& root) {
+    std::unique_lock sg(impl_->storageMu);
+    impl_->resolver.SetSystemBasePath(root);
+}
+
 // ---- Async surface ----------------------------------------------------------
 
 RequestId FileContentProvider::Request(const std::string& path, CompletionCallback cb) {

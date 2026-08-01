@@ -77,6 +77,14 @@ void whiteout_flakes_FlakesSceneView_SetPE1BasePath(whiteout_FlakesSceneView* se
     as<SceneView>(self)->SetPE1BasePath(FsPathFromUtf8(path ? path : ""));
 }
 
+/* Root for the engine-shipped BLS shader pack. Must be set before
+ * InitDevice by any host that isn't an executable sitting next to
+ * `shaders/` — which is every language binding. */
+void whiteout_flakes_FlakesSceneView_SetEngineAssetRoot(whiteout_FlakesSceneView* self,
+                                                        const char* root) {
+    as<SceneView>(self)->SetEngineAssetRoot(FsPathFromUtf8(root ? root : ""));
+}
+
 // ── DncView: string return ────────────────────────────────────────────────
 
 /* Currently-loaded DNC unit-MDL path. Free with whiteout_CString_free. */

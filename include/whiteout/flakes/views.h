@@ -105,6 +105,19 @@ public:
     /// @brief Set the directory PE1 emitter child-MDX paths are resolved
     ///        against. Hosts typically pass the parent of the loaded model.
     void SetPE1BasePath(const std::filesystem::path&);
+
+    /// @brief Set the root the renderer searches for engine-shipped assets
+    ///        — the BLS `shaders/` pack and `pso_trace.bin`.
+    ///
+    /// Defaults to the executable's directory, which is only correct when
+    /// the host *is* an executable shipped beside those files. Hosts loaded
+    /// as a shared library — language bindings, the Max plugin — must point
+    /// this at a real directory **before** `PipelineView::InitDevice`, or
+    /// shader acquisition fails and device init aborts.
+    ///
+    /// No-op for scenes running on a host-supplied content provider: those
+    /// resolve engine assets however the host's provider chooses to.
+    void SetEngineAssetRoot(const std::filesystem::path& root);
     /// @brief The renderer's installed content provider (`nullptr` until
     ///        the host attaches one). Used by adapters that need to read
     ///        extra files referenced by the model.
