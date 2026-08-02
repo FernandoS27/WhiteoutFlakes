@@ -1,12 +1,14 @@
 # whiteoutflakes
 
-Rust bindings for the [WhiteoutFlakes](https://github.com/Sahmkow/WhiteoutFlakes)
+Rust bindings for the [WhiteoutFlakes](https://github.com/FernandoS27/WhiteoutFlakes)
 renderer service library — a Warcraft III model renderer with SD and HD
 (Reforged PBR) material paths.
 
-`src/flakes.rs` is generated from the annotated C++ headers in
-`include/whiteout/flakes/`; `src/shims.rs` and `src/support.rs` are
-hand-written. See [BINDINGS.md](../../../BINDINGS.md) for the pipeline.
+Load an `.mdx` model, drive its animation and camera, and render it into a
+window or an offscreen target — from Rust, without an ImGui host. The C++
+engine is built from source by `whiteoutflakes-sys` and the prebuilt
+shaders ship as separate crates, so a plain `cargo build` needs a C++20
+compiler and CMake and nothing else.
 
 ## Installing
 
@@ -40,6 +42,16 @@ Turning `casc` off is possible but rarely what you want: a model whose
 textures live in game storage still renders its geometry, with every
 surface a placeholder magenta.
 
+`webgpu` is the one backend that cannot be self-contained. Dawn is only
+distributed as a shared library, and this crate never downloads it, so you
+supply an unpacked distribution at build time and copy `webgpu_dawn.*`
+beside your executable at run time:
+
+```pwsh
+$env:WHITEOUTFLAKES_DAWN_DIR = "C:\path\to\dawn"
+cargo run --example viewer --features webgpu -- model.mdx --backend webgpu
+```
+
 ### Alongside `whiteoutlib`
 
 The renderer is built on WhiteoutLib and ships a copy of it. If your
@@ -58,17 +70,18 @@ Both must agree on `casc` — the renderer compiles against headers gated on
 it and calls into the other archive. The build fails with an explanation
 rather than mislinking if they disagree.
 
-[`whiteoutlib`]: https://crates.io/crates/whiteoutlib
+`whiteoutlib` declares `links = "whiteout_native"`, so cargo permits
+exactly one copy in the graph. If you depend on it from a local checkout
+rather than crates.io, that collides with the registry copy this crate
+resolves — the error names the `links` value. Point both at the same
+source with a patch:
 
-`webgpu` is the one backend that cannot be self-contained. Dawn is only
-distributed as a shared library, and this crate never downloads it, so you
-supply an unpacked distribution at build time and copy `webgpu_dawn.*`
-beside your executable at run time:
-
-```pwsh
-$env:WHITEOUTFLAKES_DAWN_DIR = "C:\path	o\dawn"
-cargo run --example viewer --features webgpu -- model.mdx --backend webgpu
+```toml
+[patch.crates-io]
+whiteoutlib = { path = "…/WhiteoutLib/bindings/rust/whiteout" }
 ```
+
+[`whiteoutlib`]: https://crates.io/crates/whiteoutlib
 
 ### Working from a checkout
 
@@ -170,14 +183,18 @@ the compiler will not catch. Keep views at the call site.
 device init; calling them before then crashes. This is a precondition of
 the underlying library, not something the bindings add.
 
-**Loading both this and the `whiteout` crate.** Both native libraries
-export `whiteout_Bytes_free` / `whiteout_CString_free` from the same
-generated common TU. The implementations are identical, so whichever the
-linker picks behaves correctly — but the two libraries must be built
-against the same C++ runtime, since a buffer allocated by one may be
-freed through the other's copy of the function.
+**Using this and `whiteoutlib` together.** Enable `system-whiteoutlib`,
+as above. Without it both crates compile WhiteoutLib and the linker picks
+between the duplicate definitions. The C ABIs do not collide — this
+crate's runtime helpers are named `whiteout_flakes_Bytes_free` /
+`whiteout_flakes_CString_free`, so a buffer is always freed through the
+function that allocated it.
 
 ## Coverage
+
+`src/flakes.rs` is generated from the annotated C++ headers in
+`include/whiteout/flakes/`; `src/shims.rs` and `src/support.rs` are
+hand-written.
 
 The bindings cover the public renderer surface with the exceptions listed
 at the bottom of `src/flakes.rs` under "Not yet bound". Broadly: the

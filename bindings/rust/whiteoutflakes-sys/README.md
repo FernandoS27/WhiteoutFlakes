@@ -1,6 +1,6 @@
 # whiteoutflakes-sys
 
-Builds and links the native [WhiteoutFlakes](https://github.com/Sahmkow/WhiteoutFlakes)
+Builds and links the native [WhiteoutFlakes](https://github.com/FernandoS27/WhiteoutFlakes)
 renderer, and stages its shader pack. Use
 [`whiteoutflakes`](https://crates.io/crates/whiteoutflakes) instead.
 

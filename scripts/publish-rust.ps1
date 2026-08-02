@@ -46,7 +46,15 @@ try {
     # set behind (crates.io versions are immutable and cannot be re-uploaded).
     Write-Host "== packaging ==" -ForegroundColor Cyan
     foreach ($crate in $order) {
-        $out = & cargo package -p $crate --allow-dirty 2>&1
+        # cargo reports progress on stderr, and under Windows PowerShell
+        # 5.1 redirecting a native command's stderr wraps each line in an
+        # ErrorRecord — which `$ErrorActionPreference = "Stop"` then treats
+        # as fatal. The exit code is the only thing worth believing here.
+        # pwsh 7 (what CI uses) does not do this, so it only bites locally.
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        $out = & cargo package -p $crate --allow-dirty 2>&1 | ForEach-Object { "$_" }
+        $ErrorActionPreference = $prevEap
         $out | Write-Host
 
         if ($LASTEXITCODE -ne 0) {

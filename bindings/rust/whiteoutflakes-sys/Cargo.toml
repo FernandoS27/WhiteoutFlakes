@@ -75,8 +75,17 @@ system-whiteoutlib  = ["dep:whiteoutlib"]
 # A regular dependency, not a build-dependency: `DEP_WHITEOUT_NATIVE_*`
 # reaches the build script either way, but this also puts the crate's own
 # Rust API in the dependency graph, which is the situation this mode is
-# for. `version` is what a published build resolves; `path` is what a
-# checkout uses.
+# for.
+#
+# From the registry rather than `externals/WhiteoutLib`, deliberately. In
+# this mode the headers compiled against and the archive linked both come
+# from here, so pointing at the submodule would test a snapshot no consumer
+# can resolve — and the version requirement would be satisfied however far
+# the submodule had drifted. To develop against an unpublished upstream
+# change, add to the workspace root instead:
+#
+#   [patch.crates-io]
+#   whiteoutlib = { path = "../../externals/WhiteoutLib/bindings/rust/whiteout" }
 whiteoutlib = { version = "0.1.0", optional = true }
 
 [build-dependencies]

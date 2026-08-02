@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Fernando Sahmkow
 
 //! Prebuilt BLS shader bundles for the Direct3D 11 (DXBC) backend of
-//! [WhiteoutFlakes](https://github.com/Sahmkow/WhiteoutFlakes).
+//! [WhiteoutFlakes](https://github.com/FernandoS27/WhiteoutFlakes).
 //!
 //! Data only — no code, no dependencies. The pack ships as files rather
 //! than `include_bytes!` constants because there are dozens of megabytes

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 // Copyright (c) 2026 Fernando Sahmkow
 
-//! Native library for [WhiteoutFlakes](https://github.com/Sahmkow/WhiteoutFlakes).
+//! Native library for [WhiteoutFlakes](https://github.com/FernandoS27/WhiteoutFlakes).
 //!
 //! Use [`whiteoutflakes`](https://docs.rs/whiteoutflakes) instead — this
 //! crate exists to build and link the C++ renderer, and to say where its

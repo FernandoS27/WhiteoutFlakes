@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 // Copyright (c) 2026 Fernando Sahmkow
 
-//! Rust bindings for the [WhiteoutFlakes](https://github.com/Sahmkow/WhiteoutFlakes)
+//! Rust bindings for the [WhiteoutFlakes](https://github.com/FernandoS27/WhiteoutFlakes)
 //! renderer service library — a Warcraft III model renderer with SD and
 //! HD (Reforged PBR) material paths.
 //!

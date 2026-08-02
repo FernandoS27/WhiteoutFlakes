@@ -17,4 +17,4 @@ edition      = "2021"
 rust-version = "1.77"
 license      = "BSD-3-Clause"
 authors      = ["Fernando Sahmkow"]
-repository   = "https://github.com/Sahmkow/WhiteoutFlakes"
+repository   = "https://github.com/FernandoS27/WhiteoutFlakes"
