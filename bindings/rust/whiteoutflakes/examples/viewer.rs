@@ -44,6 +44,8 @@ mod imp {
         // exits. Gives the example a self-checking mode that doesn't need
         // somebody to close the window.
         let mut frame_budget = None;
+        // None = let the renderer pick for this platform and build.
+        let mut backend: Option<GfxApi> = None;
         let mut positional = Vec::new();
         let mut it = args.into_iter();
         while let Some(a) = it.next() {
@@ -55,6 +57,20 @@ mod imp {
                             .parse::<u32>()
                             .map_err(|e| format!("--frames: {e}"))?,
                     )
+                }
+                // Override the automatic choice. Only backends this crate
+                // was built with will work; WebGPU additionally wants
+                // webgpu_dawn.dll beside the binary at run time.
+                "--backend" => {
+                    backend = match it.next().ok_or("--backend needs a name")?.as_str() {
+                        "auto" => None,
+                        "d3d11" => Some(GfxApi::D3D11),
+                        "d3d12" => Some(GfxApi::D3D12),
+                        "vulkan" => Some(GfxApi::Vulkan),
+                        "webgpu" => Some(GfxApi::WebGPU),
+                        "metal" => Some(GfxApi::Metal),
+                        other => return Err(format!("unknown backend: {other}").into()),
+                    }
                 }
                 _ => positional.push(a),
             }
@@ -73,7 +89,7 @@ mod imp {
         // Animation runs off the clock, so drive frames continuously
         // rather than waiting for input.
         event_loop.set_control_flow(ControlFlow::Poll);
-        let mut app = App::new(model, frame_budget);
+        let mut app = App::new(model, frame_budget, backend);
         event_loop.run_app(&mut app)?;
         app.result
     }
@@ -87,26 +103,37 @@ mod imp {
 
     struct App {
         model: Option<PathBuf>,
-        window: Option<Window>,
+        // `gpu` before `window`: Rust drops fields in declaration order,
+        // and releasing the swap chain while its HWND is still alive is
+        // the right order regardless. (It is not what fixes the D3D12
+        // teardown crash — see BINDINGS.md §15.11 — but it is correct.)
         gpu: Option<Gpu>,
+        window: Option<Window>,
         last_frame: Instant,
         /// Drag state: (button, last cursor position).
         drag: Option<(MouseButton, (f64, f64))>,
         cursor: (f64, f64),
         frames_left: Option<u32>,
+        backend: Option<GfxApi>,
+        /// Set once teardown starts. Events can still arrive between
+        /// `event_loop.exit()` and the loop actually unwinding, and
+        /// ticking or drawing through a shut-down device faults.
+        closing: bool,
         result: Result<(), Box<dyn std::error::Error>>,
     }
 
     impl App {
-        fn new(model: Option<PathBuf>, frames_left: Option<u32>) -> Self {
+        fn new(model: Option<PathBuf>, frames_left: Option<u32>, backend: Option<GfxApi>) -> Self {
             App {
                 model,
-                window: None,
                 gpu: None,
+                window: None,
                 last_frame: Instant::now(),
                 drag: None,
                 cursor: (0.0, 0.0),
                 frames_left,
+                backend,
+                closing: false,
                 result: Ok(()),
             }
         }
@@ -128,12 +155,35 @@ mod imp {
                 return Err("no bundled shader pack — build with a backend feature enabled".into());
             }
 
+            // Without --backend, take whatever this build can use here:
+            // D3D12 then D3D11 on Windows, Metal on macOS, Vulkan
+            // elsewhere, skipping anything not compiled in or missing its
+            // shader pack.
+            let api = match self.backend {
+                Some(api) => {
+                    if !whiteoutflakes::backend_compiled_in(api) {
+                        return Err(format!("{api:?} was not compiled into this build").into());
+                    }
+                    if !renderer.has_shaders_for(api) {
+                        return Err(format!(
+                            "no bundled shaders for {api:?} — enable the matching cargo feature"
+                        )
+                        .into());
+                    }
+                    api
+                }
+                None => renderer.preferred_backend().ok_or(
+                    "no usable gfx backend in this build — enable a backend cargo feature",
+                )?,
+            };
+            println!("backend: {api:?}");
+
             let mut pipeline = renderer.pipeline().expect("live renderer");
-            pipeline.init_device(GfxApi::D3D11);
+            pipeline.init_device(api);
             // InitDevice reports failure through a bool the public C++
             // facade drops on the floor, so ask separately.
             if !pipeline.is_device_ready() {
-                return Err("InitDevice failed — no D3D11 device".into());
+                return Err(format!("InitDevice failed for {api:?}").into());
             }
 
             let size = window.inner_size();
@@ -171,6 +221,9 @@ mod imp {
         }
 
         fn frame(&mut self) {
+            if self.closing {
+                return;
+            }
             let Some(gpu) = self.gpu.as_mut() else { return };
 
             let now = Instant::now();
@@ -181,6 +234,21 @@ mod imp {
             let mut pipeline = gpu.renderer.pipeline().expect("live renderer");
             pipeline.render_frame(gpu.target);
             pipeline.present(gpu.target);
+        }
+
+        /// Release the gfx device while the window is still alive — the
+        /// swap chain holds its HWND. Called from both exit routes
+        /// (`CloseRequested` and `exiting`), so it has to tolerate running
+        /// twice; `Pipeline::shutdown` is idempotent, and the
+        /// `is_device_ready` check keeps this honest even against an older
+        /// native library where it was not.
+        fn shutdown_device(&mut self) {
+            self.closing = true;
+            let Some(gpu) = self.gpu.as_mut() else { return };
+            let mut pipeline = gpu.renderer.pipeline().expect("live renderer");
+            if pipeline.is_device_ready() {
+                pipeline.shutdown();
+            }
         }
 
         /// `--frames` epilogue: print what the last frame actually drew.
@@ -285,9 +353,21 @@ mod imp {
             event: WindowEvent,
         ) {
             match event {
-                WindowEvent::CloseRequested => event_loop.exit(),
+                WindowEvent::CloseRequested => {
+                    // Mirror the C++ viewer's shutdown order exactly:
+                    // ViewerApp::Close() tears the *device* down while the
+                    // window is still alive, and its RenderService — owned
+                    // by main() — is destroyed later, after the window has
+                    // gone. Dropping the renderer here instead crashes on
+                    // exit once a model is loaded.
+                    self.shutdown_device();
+                    event_loop.exit();
+                }
 
                 WindowEvent::Resized(size) => {
+                    if self.closing {
+                        return;
+                    }
                     if let Some(gpu) = self.gpu.as_mut() {
                         let (w, h) = (size.width.max(1), size.height.max(1));
                         if (w, h) != gpu.size {
@@ -357,12 +437,11 @@ mod imp {
         }
 
         fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-            // Tear the device down while the window is still alive: the
-            // swap chain holds the HWND.
-            if let Some(gpu) = self.gpu.as_mut() {
-                gpu.renderer.pipeline().expect("live renderer").shutdown();
-            }
-            self.gpu = None;
+            // Covers exits that don't come through CloseRequested — the
+            // `--frames` budget running out, say. Idempotent: Shutdown()
+            // is documented as such, and the renderer is dropped after
+            // this returns, when App's fields go.
+            self.shutdown_device();
         }
     }
 }

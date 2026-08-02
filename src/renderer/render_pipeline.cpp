@@ -32,9 +32,12 @@
 #include "whiteout/flakes/event_data.h"
 #include "renderer/corn_effects/corn_effects_gfx_backend.h"
 #include "renderer/corn_effects/corn_effects_service.h"
+#include "renderer/dof/dof_service.h"
+#include "renderer/gtao/gtao_service.h"
 #include "renderer/model/model_template.h"
 #include "renderer/model/model_template_manager.h"
 #include "renderer/perf_zone.h"
+#include "renderer/post_process/post_process_service.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_pipeline_impl.h"
 #include "renderer/render_service.h"
@@ -167,6 +170,40 @@ RenderPipeline::ShadowResources RenderPipeline::Shadow() const {
 }
 
 void RenderPipeline::Shutdown() {
+    // Everything below releases GPU objects through `*impl_->gfx_`, which
+    // CleanupGFX() clears — so a second call would dereference null. The
+    // public API (views.h) documents this as idempotent and the viewer
+    // guards it with IsDeviceReady() at its one call site; make the
+    // promise true here instead of relying on every host to know.
+    if (!impl_->gfx_)
+        return;
+
+    // Actors survive Shutdown — the SceneManager owns them, and it usually
+    // outlives the RenderService (it is constructed first and so destroyed
+    // last). What they point *into* does not: CleanupGFX below destroys the
+    // AssetManager and the replaceable-texture manager. Drop those
+    // references while their owners are still alive, exactly as
+    // DestroyScene does for a scene torn down at runtime. Skipping it left
+    // every actor holding slot ids into a freed AssetManager and left the
+    // replaceables manager's dirty list holding freed Actor*; D3D11
+    // happened to survive reading that, D3D12 access-violated on it.
+    rs_.ForEachScene([this](SceneManager& scene) {
+        for (auto& [h, mi] : scene.Actors().All()) {
+            for (auto& aslot : mi->attachmentSlots) {
+                if (aslot.assetSlot != 0) {
+                    rs_.Assets().Release(aslot.assetSlot);
+                    aslot.assetSlot = 0;
+                }
+            }
+            for (auto slot : mi->assetSlots) {
+                if (slot != 0)
+                    rs_.Assets().Release(slot);
+            }
+            mi->assetSlots.clear();
+            rs_.Replaceables().UnregisterModel(*mi);
+        }
+    });
+
     rs_.Spn().Clear();   // CPU state of the default scene (others freed on destroy)
     rs_.Splats().Clear();
     // Per-scene: clear each scene's corn emitters and release its actors' +
@@ -1275,6 +1312,15 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
 
 void RenderPipeline::CleanupGFX() {
 
+    // Everything below releases GPU resources, and teardown typically
+    // follows the last Present immediately — so those resources can still
+    // be referenced by frames the GPU has not finished. D3D11's immediate
+    // context hides that; the explicit backends do not (D3D12 only flushes
+    // in ~D3D12Device, long after these Destroy calls). Wait once here so
+    // every release below is safe on every backend.
+    if (impl_->gfx_)
+        impl_->gfx_->WaitIdle();
+
     // ImGui adapter releases its GPU resources through the device, so it
     // must go down before the device is dropped at the end of this routine.
     rs_.ShutdownImGui();
@@ -1301,6 +1347,22 @@ void RenderPipeline::CleanupGFX() {
         impl_->gfx_->Destroy(impl_->cbPerFrame_);
 
         rs_.Debug().DestroyResources();
+
+        // The post-process / GTAO / DoF services cache the IGFXDevice and
+        // release their PSOs, shaders and buffers through it. Nothing tore
+        // them down here, and ~PostProcessService calls Shutdown() on the
+        // way out — which, once the device is destroyed at the end of this
+        // routine, dereferences a dangling pointer. That is the D3D12
+        // crash-on-exit: D3D11 happened to read freed-but-mapped memory and
+        // survive, D3D12 access-violated (0xC0000005 reading -1). GTAO and
+        // DoF never had Shutdown() called at all and simply leaked.
+        // Release all three while the device is still alive.
+        if (auto* pp = rs_.GetPostProcessService())
+            pp->Shutdown();
+        if (auto* g = rs_.GetGtaoService())
+            g->Shutdown();
+        if (auto* d = rs_.GetDofService())
+            d->Shutdown();
 
         // Tear down CornEffects FIRST — its emitters hold references
         // into the AssetManager (assets_.Release(assetSlot_) in

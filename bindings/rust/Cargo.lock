@@ -1518,6 +1518,10 @@ name = "whiteoutflakes-shaders-vulkan"
 version = "0.1.0"
 
 [[package]]
+name = "whiteoutflakes-shaders-webgpu"
+version = "0.1.0"
+
+[[package]]
 name = "whiteoutflakes-sys"
 version = "0.1.0"
 dependencies = [
@@ -1526,6 +1530,7 @@ dependencies = [
  "whiteoutflakes-shaders-d3d12",
  "whiteoutflakes-shaders-metal",
  "whiteoutflakes-shaders-vulkan",
+ "whiteoutflakes-shaders-webgpu",
 ]
 
 [[package]]

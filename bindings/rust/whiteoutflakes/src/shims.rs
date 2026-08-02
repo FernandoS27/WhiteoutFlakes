@@ -24,7 +24,8 @@
 
 use crate::flakes::ffi;
 use crate::flakes::{ActorView, AssetsView, AssetsViewStats, CameraPreset, DncView, SceneView};
-use crate::flakes::{CameraView, FrameStats, PipelineView, SequenceInfo, ShadowParams, ShadowView};
+use crate::flakes::{CameraView, FrameStats, GfxApi, PipelineView, SequenceInfo};
+use crate::flakes::{ShadowParams, ShadowView};
 use crate::support::{take_string, RawCString};
 
 extern "C" {
@@ -45,6 +46,7 @@ extern "C" {
     ) -> *mut ffi::whiteout_FlakesAssetsViewStats;
 
     // Hand-written (whiteout_flakes_shims.cpp).
+    fn whiteout_flakes_BackendCompiledIn(api: i32) -> i32;
     fn whiteout_flakes_FlakesSceneView_SetPE1BasePath(
         self_: *mut ffi::whiteout_FlakesSceneView,
         path: *const core::ffi::c_char,
@@ -98,6 +100,39 @@ extern "C" {
         self_: *const ffi::whiteout_FlakesActorView,
         index: usize,
     ) -> *mut ffi::whiteout_FlakesCameraPreset;
+}
+
+// ── Backend selection ─────────────────────────────────────────────────────
+
+/// Whether the linked library was built with this backend at all.
+///
+/// Distinct from [`Renderer::has_shaders_for`]: a backend can be compiled
+/// in with no shader pack bundled, or a pack can be bundled for a backend
+/// the library was built without. [`Renderer::preferred_backend`] wants
+/// both, which is why it checks both.
+pub fn backend_compiled_in(api: GfxApi) -> bool {
+    // SAFETY: a pure predicate over compile-time constants; no state.
+    unsafe { whiteout_flakes_BackendCompiledIn(api as i32) != 0 }
+}
+
+/// Backends to try on this platform, best first.
+///
+/// Mirrors `RenderSettings::defaultBackend_` — D3D12 on Windows, Metal on
+/// macOS, Vulkan everywhere else — then falls through the rest so a build
+/// that omits the first choice still finds something.
+const fn platform_order() -> &'static [GfxApi] {
+    #[cfg(windows)]
+    {
+        &[GfxApi::D3D12, GfxApi::D3D11, GfxApi::Vulkan, GfxApi::WebGPU]
+    }
+    #[cfg(target_os = "macos")]
+    {
+        &[GfxApi::Metal, GfxApi::WebGPU, GfxApi::Vulkan]
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        &[GfxApi::Vulkan, GfxApi::WebGPU]
+    }
 }
 
 // ── Value-struct round trips ──────────────────────────────────────────────
@@ -287,6 +322,34 @@ impl crate::Renderer {
     ///     "no bundled shaders for {api:?} — enable the matching cargo feature"
     /// );
     /// ```
+    /// The best backend this build can actually use here, if any.
+    ///
+    /// Walks the platform's preference order — D3D12 then D3D11 on
+    /// Windows, Metal on macOS, Vulkan elsewhere, mirroring the C++
+    /// viewer's own default — and returns the first that is both compiled
+    /// into the library and has a bundled shader pack. Prefer this to
+    /// naming a backend: which ones exist depends on the platform *and*
+    /// on which cargo features the crate was built with.
+    ///
+    /// `None` means this build has no usable backend here — a macOS build
+    /// (the Metal backend isn't vendored), or every backend feature turned
+    /// off. Say so rather than calling `init_device` and reading a null
+    /// device out of it.
+    ///
+    /// ```no_run
+    /// # use whiteoutflakes::Renderer;
+    /// let mut r = Renderer::new();
+    /// let api = r.preferred_backend().expect("no usable gfx backend");
+    /// r.use_bundled_shaders();
+    /// r.pipeline().unwrap().init_device(api);
+    /// ```
+    pub fn preferred_backend(&self) -> Option<crate::GfxApi> {
+        platform_order()
+            .iter()
+            .copied()
+            .find(|&api| backend_compiled_in(api) && self.has_shaders_for(api))
+    }
+
     pub fn has_shaders_for(&self, api: crate::GfxApi) -> bool {
         // The subdirectory each backend reads from. D3D11 is the odd one
         // out — its DXBC sits directly under shaders/ps and shaders/vs.

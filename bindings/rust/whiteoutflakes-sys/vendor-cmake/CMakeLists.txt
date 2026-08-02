@@ -35,6 +35,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 option(WFS_ENABLE_VULKAN "Build the Vulkan backend (requires a Vulkan SDK)" OFF)
+# WebGPU needs a Dawn distribution. The repository fetches one by cloning
+# eliemichel/WebGPU-distribution at configure time; a published crate must
+# not do that, so here the path is supplied and nothing is downloaded.
+# WFS_DAWN_DIR points at an unpacked distribution containing include/ and
+# lib/ (what WebGPU-distribution's prebuilt zip unpacks to).
+option(WFS_ENABLE_WEBGPU "Build the WebGPU backend (requires WFS_DAWN_DIR)" OFF)
+set(WFS_DAWN_DIR "" CACHE PATH "Unpacked Dawn distribution (include/ + lib/)")
 # WhiteoutLib implements CASC itself — no CascLib, no external package — so
 # this costs compile time and nothing else. On by default: without it the
 # renderer sees only loose files, and a Reforged model whose textures live
@@ -51,9 +58,11 @@ file(GLOB_RECURSE _wlib_src   CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/whi
 
 set(_excluded_dirs
     "/src/renderer/imgui/"      # needs externals/imgui
-    "/src/gfx/webgpu/"          # needs Dawn
     "/src/gfx/metal/"           # needs the macOS SDK; .mm anyway
 )
+if(NOT WFS_ENABLE_WEBGPU)
+    list(APPEND _excluded_dirs "/src/gfx/webgpu/")
+endif()
 if(NOT WFS_ENABLE_VULKAN)
     list(APPEND _excluded_dirs "/src/gfx/vulkan/")
 endif()
@@ -124,7 +133,6 @@ target_include_directories(whiteoutflakes_native PUBLIC
 
 target_compile_definitions(whiteoutflakes_native PUBLIC
     WDX_ENABLE_IMGUI=0
-    WDX_HAS_WEBGPU=0
     WDX_HAS_METAL=0
     # cornflakes asserts this is defined in every TU that includes
     # core/determinism.hpp.
@@ -137,9 +145,58 @@ target_compile_definitions(whiteoutflakes_native PUBLIC
 if(WFS_ENABLE_VULKAN)
     find_package(Vulkan REQUIRED)
     target_link_libraries(whiteoutflakes_native PUBLIC Vulkan::Vulkan)
+    # VMA ships under <Vulkan SDK>/Include/vma/vk_mem_alloc.h — a directory
+    # the Vulkan::Vulkan target does not put on the include path. The
+    # default silent SDK install omits the VMA component entirely, so a
+    # missing vk_mem_alloc.h here means the SDK needs reinstalling with it.
+    target_include_directories(whiteoutflakes_native PRIVATE
+        "${Vulkan_INCLUDE_DIRS}/vma")
     target_compile_definitions(whiteoutflakes_native PUBLIC WDX_HAS_VULKAN=1)
+    # vulkan.hpp is configured by macros, not headers: without these the
+    # RAII wrappers return exception-throwing types instead of the
+    # result-carrying ones the backend is written against, and every call
+    # site fails with "'result' is not a member of vk::raii::…". Must match
+    # the top-level CMakeLists exactly.
+    target_compile_definitions(whiteoutflakes_native PRIVATE
+        VULKAN_HPP_NO_EXCEPTIONS
+        VULKAN_HPP_NO_SMART_HANDLE
+        VULKAN_HPP_NO_CONSTRUCTORS)
+    if(WIN32)
+        target_compile_definitions(whiteoutflakes_native PRIVATE
+            VK_USE_PLATFORM_WIN32_KHR=1
+            NOMINMAX
+            WIN32_LEAN_AND_MEAN)
+    endif()
 else()
     target_compile_definitions(whiteoutflakes_native PUBLIC WDX_HAS_VULKAN=0)
+endif()
+
+if(WFS_ENABLE_WEBGPU)
+    if(NOT WFS_DAWN_DIR OR NOT EXISTS "${WFS_DAWN_DIR}/include")
+        message(FATAL_ERROR
+            "WFS_ENABLE_WEBGPU=ON needs WFS_DAWN_DIR pointing at an unpacked "
+            "Dawn distribution (include/ + lib/). Nothing is downloaded here: "
+            "fetch one yourself, e.g. from eliemichel/WebGPU-distribution's "
+            "prebuilt releases, and set WHITEOUTFLAKES_DAWN_DIR.")
+    endif()
+    if(NOT WIN32)
+        # The macOS and Linux surface paths call glfwGetCocoaWindow /
+        # glfwGetX11Display / glfwGetWaylandDisplay to assemble handle pairs
+        # that don't fit in one void*. GLFW is not vendored, and a binding
+        # host has its own windowing library, so those paths need to take
+        # raw handles before this can build off Windows.
+        message(FATAL_ERROR
+            "WFS_ENABLE_WEBGPU is Windows-only in this build: the macOS and "
+            "Linux surface paths in src/gfx/webgpu/webgpu_swap_chain.cpp go "
+            "through GLFW, which is not vendored.")
+    endif()
+    target_include_directories(whiteoutflakes_native PUBLIC "${WFS_DAWN_DIR}/include")
+    find_library(WFS_DAWN_LIB NAMES webgpu_dawn dawn
+                 PATHS "${WFS_DAWN_DIR}/lib" REQUIRED NO_DEFAULT_PATH)
+    target_link_libraries(whiteoutflakes_native PUBLIC "${WFS_DAWN_LIB}")
+    target_compile_definitions(whiteoutflakes_native PUBLIC WDX_HAS_WEBGPU=1)
+else()
+    target_compile_definitions(whiteoutflakes_native PUBLIC WDX_HAS_WEBGPU=0)
 endif()
 
 if(WFS_ENABLE_CASC)

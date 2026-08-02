@@ -78,6 +78,7 @@ mod shims;
 mod support;
 
 pub use flakes::*;
+pub use shims::backend_compiled_in;
 pub use support::{BorrowedSlice, Bytes};
 
 use core::fmt;

@@ -29,6 +29,7 @@ $order = @(
     "whiteoutflakes-shaders-d3d12",
     "whiteoutflakes-shaders-vulkan",
     "whiteoutflakes-shaders-metal",
+    "whiteoutflakes-shaders-webgpu",
     "whiteoutflakes-sys",
     "whiteoutflakes"
 )

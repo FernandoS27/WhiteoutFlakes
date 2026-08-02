@@ -30,7 +30,6 @@
 #include <emscripten/html5.h>
 #elif defined(_WIN32)
 #include <windows.h>
-#define GLFW_EXPOSE_NATIVE_WIN32
 #elif defined(__APPLE__)
 #define GLFW_EXPOSE_NATIVE_COCOA
 #else
@@ -38,7 +37,12 @@
 #define GLFW_EXPOSE_NATIVE_WAYLAND
 #endif
 
-#if !defined(__EMSCRIPTEN__)
+// GLFW is only reachable from the macOS and Linux branches below, which
+// need handle pairs (NSWindow, Display+Window, wl_display+wl_surface) that
+// don't fit in one void*. Windows takes the HWND straight through, so
+// including GLFW there would impose a viewer dependency on hosts that
+// have none — the Rust bindings among them.
+#if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 #endif

@@ -34,10 +34,22 @@ $shaderCrates = @(
     @{ Name = "d3d12"; Dirs = @("d3d12") }                 # ~8.6 MB gz
     @{ Name = "vulkan"; Dirs = @("vulkan") }               # ~9.4 MB gz
     @{ Name = "metal"; Dirs = @("mtlvs", "mtlfs") }        # ~6.5 MB gz
+    @{ Name = "webgpu"; Dirs = @("webgpu") }               # ~2.0 MB gz
 )
 
 function Remove-Staged {
-    if (Test-Path $vendor) { Remove-Item -Recurse -Force $vendor }
+    # A concurrent cargo build holds the vendored headers open, and
+    # Remove-Item deletes what it can before failing — leaving a tree that
+    # is neither the old one nor a new one. Fail before touching anything
+    # instead: partial removal is the worst outcome available here.
+    if (Test-Path $vendor) {
+        try {
+            Remove-Item -Recurse -Force $vendor -ErrorAction Stop
+        } catch {
+            throw "could not clear $vendor - a build is probably using it. " +
+                  "Wait for cargo/MSBuild to finish and re-run. ($($_.Exception.Message))"
+        }
+    }
     foreach ($c in $shaderCrates) {
         $p = Join-Path $rustDir "whiteoutflakes-shaders-$($c.Name)/pack"
         if (Test-Path $p) { Remove-Item -Recurse -Force $p }
@@ -61,16 +73,34 @@ if ($Clean) {
 # file that build deliberately drops is not reported as drift and the
 # exclusion list stays the single source of truth. CMake's regex flavour
 # matches .NET's closely enough for the simple path patterns used there.
-# Several exclusions are applied through a foreach variable, so matching on
-# `EXCLUDE REGEX "..."` alone would miss them. Take every quoted literal
-# that looks like a path fragment instead. Anything picked up that is not
-# actually an exclusion (an include directory, say) is a pattern that
-# matches no source path, so it costs nothing.
-$vendorCMake = Get-Content (Join-Path $sysDir "vendor-cmake/CMakeLists.txt") -Raw
-$excludePatterns = [regex]::Matches($vendorCMake, '"([^"]+)"') |
-    ForEach-Object { $_.Groups[1].Value } |
-    Where-Object { $_ -match '/' -or $_ -match '\.cpp\$$' } |
-    Sort-Object -Unique
+# Paths the vendored build drops on purpose, in at least one configuration.
+# A file matching one of these is handled, not drift.
+#
+# KEEP IN SYNC with the list(FILTER ... EXCLUDE REGEX) calls in
+# whiteoutflakes-sys/vendor-cmake/CMakeLists.txt. Scraping them out of the
+# CMake source was tried and abandoned: several are applied through a
+# foreach variable rather than written literally, and a looser "any quoted
+# literal" match drags in prose from the FATAL_ERROR messages. Duplicating
+# twelve lines is worse than nothing and better than a parser that breaks
+# on a comment. Getting it wrong here costs a spurious warning, never a
+# bad build.
+$excludePatterns = @(
+    '/src/renderer/imgui/'
+    '/src/gfx/webgpu/'
+    '/src/gfx/metal/'
+    '/src/gfx/vulkan/'
+    '/src/gfx/d3d11/'
+    '/src/gfx/d3d12/'
+    '/casc/'
+    'casc_file_system\.cpp$'
+    '/mpq/'
+    'mpq_file_system\.cpp$'
+    'deflate_zlibng\.cpp$'
+    '/models/m2/'
+    '/models/m3/'
+    '/models/wem/'
+    '/sno/'
+)
 
 function Test-Drift($tree, $cmakeFile, $label) {
     $root = (Resolve-Path $tree).Path
@@ -81,8 +111,11 @@ function Test-Drift($tree, $cmakeFile, $label) {
     $drift = $paths | Where-Object {
         $path = $_
         $name = Split-Path $path -Leaf
-        # Named in the real build? Not drift.
-        if ($text -match [regex]::Escape($name)) { return $false }
+        # Named in the real build? Not drift. Anchor on a path separator or
+        # start of line: a bare substring test reports `device.cpp` as named
+        # because `d3d11_device.cpp` is, and silently swallows exactly the
+        # new files this check exists to surface.
+        if ($text -match "(^|[/\\`"'\s])$([regex]::Escape($name))") { return $false }
         # Dropped by the vendored build on purpose? Not drift either.
         foreach ($pat in $excludePatterns) {
             if ($path -match $pat) { return $false }

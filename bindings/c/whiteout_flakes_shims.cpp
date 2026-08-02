@@ -56,6 +56,34 @@ const T* as(const H* h) {
 
 extern "C" {
 
+// ── Backend availability ──────────────────────────────────────────────────
+
+/* Whether the library was compiled with the backend `api` (values match
+ * whiteout::flakes::gfx::GfxApi). `CreateDevice` just returns null for a
+ * backend that isn't there, which is indistinguishable from a device that
+ * failed to initialise — this lets a host tell the two apart before
+ * trying, and pick a backend that exists on the platform it is running
+ * on. Mirrors the #if ladder in src/gfx/gfx_factory.cpp exactly; if that
+ * changes, this must follow. */
+int32_t whiteout_flakes_BackendCompiledIn(int32_t api) {
+    switch (static_cast<gfx::GfxApi>(api)) {
+    case gfx::GfxApi::D3D11:
+    case gfx::GfxApi::D3D12:
+#if defined(_WIN32)
+        return 1;
+#else
+        return 0;
+#endif
+    case gfx::GfxApi::Vulkan:
+        return WDX_HAS_VULKAN ? 1 : 0;
+    case gfx::GfxApi::WebGPU:
+        return WDX_HAS_WEBGPU ? 1 : 0;
+    case gfx::GfxApi::Metal:
+        return WDX_HAS_METAL ? 1 : 0;
+    }
+    return 0;
+}
+
 // ── PipelineView: swap-chain bring-up ─────────────────────────────────────
 
 /* Create a swap-chain target from a host window handle. `hwnd` is an HWND

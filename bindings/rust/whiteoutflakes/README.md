@@ -23,8 +23,9 @@ compiler and about three minutes, no submodules, no vcpkg, no SDKs.
 | `d3d11` | yes | D3D11 backend + shader pack (0.9 MiB) |
 | `casc` | yes | Reads assets out of an installed Warcraft III |
 | `d3d12` | | D3D12 backend + shader pack (8.7 MiB) |
-| `vulkan` | | Vulkan backend; needs a Vulkan SDK to build |
+| `vulkan` | | Vulkan backend; needs a Vulkan SDK (with the VMA component) |
 | `metal` | | Metal shader pack only — backend not vendored, see the sys crate |
+| `webgpu` | | WebGPU backend; Windows-only here, and needs `WHITEOUTFLAKES_DAWN_DIR` |
 
 ```toml
 whiteoutflakes = { version = "0.1", features = ["d3d12"] }
@@ -38,6 +39,16 @@ packs got staged.
 Turning `casc` off is possible but rarely what you want: a model whose
 textures live in game storage still renders its geometry, with every
 surface a placeholder magenta.
+
+`webgpu` is the one backend that cannot be self-contained. Dawn is only
+distributed as a shared library, and this crate never downloads it, so you
+supply an unpacked distribution at build time and copy `webgpu_dawn.*`
+beside your executable at run time:
+
+```pwsh
+$env:WHITEOUTFLAKES_DAWN_DIR = "C:\path	o\dawn"
+cargo run --example viewer --features webgpu -- model.mdx --backend webgpu
+```
 
 ### Working from a checkout
 
@@ -83,6 +94,22 @@ The example calls `Renderer::use_bundled_shaders()` before
 `whiteoutflakes-sys` staged at build time. Any host has to do the
 equivalent: the C++ default search root is the executable's directory,
 which is never right for a library.
+
+## Picking a backend
+
+`Renderer::preferred_backend()` returns the best backend this build can
+use here — D3D12 then D3D11 on Windows, Metal on macOS, Vulkan elsewhere,
+matching the C++ viewer's own order — skipping anything not compiled in or
+missing its shader pack. `None` means nothing usable, which is honest to
+report rather than discovering it inside `init_device`.
+
+```rust,no_run
+# use whiteoutflakes::Renderer;
+let mut r = Renderer::new();
+let api = r.preferred_backend().expect("no usable gfx backend");
+r.use_bundled_shaders();
+r.pipeline().unwrap().init_device(api);
+```
 
 ## Usage
 

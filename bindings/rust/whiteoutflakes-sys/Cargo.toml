@@ -39,6 +39,9 @@ d3d11  = ["dep:whiteoutflakes-shaders-d3d11"]
 d3d12  = ["dep:whiteoutflakes-shaders-d3d12"]
 vulkan = ["dep:whiteoutflakes-shaders-vulkan"]
 metal  = ["dep:whiteoutflakes-shaders-metal"]
+# WebGPU additionally needs a Dawn distribution at build time; point
+# WHITEOUTFLAKES_DAWN_DIR at one. Nothing is downloaded.
+webgpu = ["dep:whiteoutflakes-shaders-webgpu"]
 # CASC lets the renderer resolve assets out of an installed Warcraft III.
 # WhiteoutLib implements it directly — no external library — so this only
 # costs compile time. Default ON: without it a Reforged model whose
@@ -55,3 +58,4 @@ whiteoutflakes-shaders-d3d11  = { version = "0.1.0", path = "../whiteoutflakes-s
 whiteoutflakes-shaders-d3d12  = { version = "0.1.0", path = "../whiteoutflakes-shaders-d3d12",  optional = true }
 whiteoutflakes-shaders-vulkan = { version = "0.1.0", path = "../whiteoutflakes-shaders-vulkan", optional = true }
 whiteoutflakes-shaders-metal  = { version = "0.1.0", path = "../whiteoutflakes-shaders-metal",  optional = true }
+whiteoutflakes-shaders-webgpu = { version = "0.1.0", path = "../whiteoutflakes-shaders-webgpu", optional = true }

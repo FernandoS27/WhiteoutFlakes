@@ -27,6 +27,7 @@ d3d11  = ["whiteoutflakes-sys/d3d11"]
 d3d12  = ["whiteoutflakes-sys/d3d12"]
 vulkan = ["whiteoutflakes-sys/vulkan"]
 metal  = ["whiteoutflakes-sys/metal"]
+webgpu = ["whiteoutflakes-sys/webgpu"]
 casc   = ["whiteoutflakes-sys/casc"]
 
 [dependencies]
