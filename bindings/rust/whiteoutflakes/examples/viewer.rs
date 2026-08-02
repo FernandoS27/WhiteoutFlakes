@@ -260,12 +260,16 @@ mod imp {
                     .renderer
                     .pipeline()
                     .expect("live renderer")
-                    .frame_stats();
+                    .frame_stats()
+                    .expect("live");
                 println!(
                     "last frame: {} geosets, {} textures, {} nodes, {} particles",
-                    stats.geosets, stats.textures, stats.nodes, stats.particles
+                    stats.geosets(),
+                    stats.textures(),
+                    stats.nodes(),
+                    stats.particles()
                 );
-                if self.model.is_some() && stats.geosets == 0 {
+                if self.model.is_some() && stats.geosets() == 0 {
                     self.result = Err("model loaded but nothing was drawn".into());
                 }
             }
@@ -294,7 +298,17 @@ mod imp {
 
         let actor = renderer.actor(handle).expect("live renderer");
         let preferred = actor.preferred_render_mode();
-        let sequences = actor.sequences();
+        // Borrowed views into the actor's template, so the list has to
+        // outlive the reads below — hence the copy into owned strings
+        // rather than holding `sequences` across the `drop(actor)`.
+        let sequences: Vec<(String, i32, i32)> = actor
+            .sequences()
+            .map(|list| {
+                list.iter()
+                    .map(|s| (s.name(), s.start_ms(), s.end_ms()))
+                    .collect()
+            })
+            .unwrap_or_default();
         drop(actor);
 
         // SD models rendered through the HD path mis-blend their
@@ -312,8 +326,8 @@ mod imp {
             path.display(),
             sequences.len()
         );
-        for (i, s) in sequences.iter().enumerate() {
-            println!("  [{i}] {} ({}..{}ms)", s.name(), s.start_ms(), s.end_ms());
+        for (i, (name, start, end)) in sequences.iter().enumerate() {
+            println!("  [{i}] {name} ({start}..{end}ms)");
         }
         Ok(())
     }

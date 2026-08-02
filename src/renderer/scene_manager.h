@@ -91,6 +91,37 @@ public:
     // directly on the actors they care about.
     void Update(f32 dtSec);
 
+    // ---- Transport ---------------------------------------------------
+    // The scene owns one playback state, and both halves of a frame read it:
+    // Update() for animation clocks, FrameTicker::Tick() for particle, PE1,
+    // ribbon and corn-fx simulation. Keeping it here rather than in either
+    // caller is what makes a pause apply to models and effects alike, whether
+    // the host drives one entry point or both.
+    void SetPlaybackState(PlaybackState s) {
+        playbackState_ = s;
+    }
+    PlaybackState GetPlaybackState() const {
+        return playbackState_.load();
+    }
+    bool IsPaused() const {
+        return playbackState_.load() != PlaybackState::Playing;
+    }
+
+    // Multiplies every advancing dt. Independent of the transport state, so
+    // slow-motion survives a pause/resume.
+    void SetTimeScale(f32 s) {
+        timeScale_ = s;
+    }
+    f32 GetTimeScale() const {
+        return timeScale_.load();
+    }
+
+    // The dt a frame should actually advance by. Both halves call this rather
+    // than branching on the state themselves, so they cannot disagree.
+    f32 EffectiveDt(f32 dtSec) const {
+        return IsPaused() ? 0.0f : dtSec * timeScale_.load();
+    }
+
     io::FileContentProvider& GetContentProvider() {
         return EnsureInternalProvider();
     }
@@ -158,6 +189,8 @@ private:
     std::vector<std::unique_ptr<::whiteout::flakes::renderer::Camera>> cameras_;
 
     std::atomic<i32> animationTimeMs_{0};
+    std::atomic<PlaybackState> playbackState_{PlaybackState::Playing};
+    std::atomic<f32> timeScale_{1.0f};
 
     // Lazily created (see EnsureInternalProvider) so scenes that use a
     // host-supplied external provider never open a CASC or spawn IO threads.

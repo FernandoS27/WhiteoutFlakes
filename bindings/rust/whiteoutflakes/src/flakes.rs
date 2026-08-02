@@ -64,6 +64,35 @@ impl TryFrom<i32> for RenderMode {
     }
 }
 
+/// Transport state of a scene's playback clock.
+///
+/// `Paused` and `Stopped` both hold time still; they differ in where the clock sits. Pausing keeps the current instant, so resuming continues mid-animation with particles still in flight. Stopping rewinds to the start and discards transient effect state, so resuming plays the scene from the top.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PlaybackState {
+    /// Time advances normally (scaled by the scene's time scale).
+    Playing = 0,
+    /// Time held at the current instant.
+    Paused = 1,
+    /// Time held at zero, transient effect state discarded.
+    Stopped = 2,
+}
+
+impl TryFrom<i32> for PlaybackState {
+    type Error = crate::Error;
+    fn try_from(v: i32) -> Result<Self, crate::Error> {
+        match v {
+            0 => Ok(PlaybackState::Playing),
+            1 => Ok(PlaybackState::Paused),
+            2 => Ok(PlaybackState::Stopped),
+            other => Err(crate::Error::UnknownEnum {
+                name: "PlaybackState",
+                value: other,
+            }),
+        }
+    }
+}
+
 /// Light-rig preset selectable from the host UI.
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -253,46 +282,221 @@ impl TryFrom<i32> for AssetsViewKind {
     }
 }
 
+/// An owned list of [`SequenceInfo`] produced by the library.
+pub struct SequenceInfoList {
+    raw: core::ptr::NonNull<ffi::whiteout_SequenceInfoList>,
+}
+
+impl SequenceInfoList {
+    /// # Safety
+    /// `raw` must be a live list this value takes ownership of.
+    #[allow(dead_code)]
+    pub(crate) unsafe fn from_raw(raw: *mut ffi::whiteout_SequenceInfoList) -> Option<Self> {
+        core::ptr::NonNull::new(raw).map(|raw| SequenceInfoList { raw })
+    }
+
+    pub fn len(&self) -> usize {
+        // SAFETY: the list is live for `&self`.
+        unsafe { ffi::whiteout_flakes_SequenceInfoList_size(self.raw.as_ptr()) }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Borrow element `index`. `None` when out of range.
+    pub fn get(&self, index: usize) -> Option<crate::support::Ref<'_, SequenceInfo>> {
+        if index >= self.len() {
+            return None;
+        }
+        // SAFETY: index checked; the pointer is interior to the list and
+        // is never freed by the `Ref`.
+        unsafe {
+            Some(crate::support::Ref::new(SequenceInfo {
+                raw: core::ptr::NonNull::new_unchecked(ffi::whiteout_flakes_SequenceInfoList_at(
+                    self.raw.as_ptr(),
+                    index,
+                )),
+            }))
+        }
+    }
+
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = crate::support::Ref<'_, SequenceInfo>> {
+        (0..self.len()).map(move |i| self.get(i).expect("index below len"))
+    }
+}
+
+impl Drop for SequenceInfoList {
+    fn drop(&mut self) {
+        // SAFETY: the list was transferred to us and is freed once.
+        unsafe { ffi::whiteout_flakes_SequenceInfoList_delete(self.raw.as_ptr()) }
+    }
+}
+
+impl core::fmt::Debug for SequenceInfoList {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SequenceInfoList")
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
+// SAFETY: a plain heap vector with no thread affinity, owned exclusively.
+unsafe impl Send for SequenceInfoList {}
+
+/// An owned list of [`CameraPreset`] produced by the library.
+pub struct CameraPresetList {
+    raw: core::ptr::NonNull<ffi::whiteout_CameraPresetList>,
+}
+
+impl CameraPresetList {
+    /// # Safety
+    /// `raw` must be a live list this value takes ownership of.
+    #[allow(dead_code)]
+    pub(crate) unsafe fn from_raw(raw: *mut ffi::whiteout_CameraPresetList) -> Option<Self> {
+        core::ptr::NonNull::new(raw).map(|raw| CameraPresetList { raw })
+    }
+
+    pub fn len(&self) -> usize {
+        // SAFETY: the list is live for `&self`.
+        unsafe { ffi::whiteout_flakes_CameraPresetList_size(self.raw.as_ptr()) }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Borrow element `index`. `None` when out of range.
+    pub fn get(&self, index: usize) -> Option<crate::support::Ref<'_, CameraPreset>> {
+        if index >= self.len() {
+            return None;
+        }
+        // SAFETY: index checked; the pointer is interior to the list and
+        // is never freed by the `Ref`.
+        unsafe {
+            Some(crate::support::Ref::new(CameraPreset {
+                raw: core::ptr::NonNull::new_unchecked(ffi::whiteout_flakes_CameraPresetList_at(
+                    self.raw.as_ptr(),
+                    index,
+                )),
+            }))
+        }
+    }
+
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = crate::support::Ref<'_, CameraPreset>> {
+        (0..self.len()).map(move |i| self.get(i).expect("index below len"))
+    }
+}
+
+impl Drop for CameraPresetList {
+    fn drop(&mut self) {
+        // SAFETY: the list was transferred to us and is freed once.
+        unsafe { ffi::whiteout_flakes_CameraPresetList_delete(self.raw.as_ptr()) }
+    }
+}
+
+impl core::fmt::Debug for CameraPresetList {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CameraPresetList")
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
+// SAFETY: a plain heap vector with no thread affinity, owned exclusively.
+unsafe impl Send for CameraPresetList {}
+
 /// Integer-coordinate screen-space rectangle (top-down, pixel units).
 ///
 /// Used by host frontends for laying out UI overlays.
-#[derive(Clone, Debug, PartialEq)]
 pub struct Rect {
-    pub left: i32,
-    pub top: i32,
-    pub right: i32,
-    pub bottom: i32,
+    pub(crate) raw: core::ptr::NonNull<ffi::whiteout_FlakesRect>,
 }
 
-impl Default for Rect {
-    fn default() -> Self {
-        // SAFETY: `_new` always returns a live handle; freed before return.
-        unsafe {
-            let h = ffi::whiteout_flakes_FlakesRect_new();
-            let out = Rect {
-                left: ffi::whiteout_flakes_FlakesRect_get_left(h),
-                top: ffi::whiteout_flakes_FlakesRect_get_top(h),
-                right: ffi::whiteout_flakes_FlakesRect_get_right(h),
-                bottom: ffi::whiteout_flakes_FlakesRect_get_bottom(h),
-            };
-            ffi::whiteout_flakes_FlakesRect_delete(h);
-            out
-        }
+impl Drop for Rect {
+    fn drop(&mut self) {
+        // SAFETY: `raw` came from a native constructor and Drop runs once.
+        unsafe { ffi::whiteout_flakes_FlakesRect_delete(self.raw.as_ptr()) }
     }
 }
 
 impl Rect {
-    /// Build a native handle carrying these values. Caller frees it.
-    #[allow(dead_code)] // consumed once the methods taking these options bind
-    pub(crate) unsafe fn to_native(&self) -> *mut ffi::whiteout_FlakesRect {
+    /// # Safety
+    /// `raw` must be a live handle this value takes ownership of.
+    #[allow(dead_code)] // used by whichever methods return this type
+    pub(crate) unsafe fn from_raw(raw: *mut ffi::whiteout_FlakesRect) -> Option<Self> {
+        core::ptr::NonNull::new(raw).map(|raw| Rect { raw })
+    }
+}
+
+// SAFETY: handles are plain heap pointers with no thread affinity. `Sync`
+// is deliberately NOT implemented — the C++ types make no documented
+// guarantee about concurrent use, and claiming one we haven't verified
+// would be unsound. See `@bind thread_safe` in the plan.
+unsafe impl Send for Rect {}
+
+impl core::fmt::Debug for Rect {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Rect").finish_non_exhaustive()
+    }
+}
+
+impl Rect {
+    /// # Panics
+    /// Panics if the native allocation fails.
+    pub fn new() -> Self {
+        // SAFETY: the native constructor returns a live handle; a null here
+        // means the library is unusable.
         unsafe {
-            let h = ffi::whiteout_flakes_FlakesRect_new();
-            ffi::whiteout_flakes_FlakesRect_set_left(h, self.left);
-            ffi::whiteout_flakes_FlakesRect_set_top(h, self.top);
-            ffi::whiteout_flakes_FlakesRect_set_right(h, self.right);
-            ffi::whiteout_flakes_FlakesRect_set_bottom(h, self.bottom);
-            h
+            let raw = ffi::whiteout_flakes_FlakesRect_new();
+            Self::from_raw(raw).expect("native Rect allocation failed")
         }
+    }
+
+    pub fn left(&self) -> i32 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesRect_get_left(self.raw.as_ptr()) }
+    }
+
+    pub fn set_left(&mut self, value: i32) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesRect_set_left(self.raw.as_ptr(), value) }
+    }
+
+    pub fn top(&self) -> i32 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesRect_get_top(self.raw.as_ptr()) }
+    }
+
+    pub fn set_top(&mut self, value: i32) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesRect_set_top(self.raw.as_ptr(), value) }
+    }
+
+    pub fn right(&self) -> i32 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesRect_get_right(self.raw.as_ptr()) }
+    }
+
+    pub fn set_right(&mut self, value: i32) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesRect_set_right(self.raw.as_ptr(), value) }
+    }
+
+    pub fn bottom(&self) -> i32 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesRect_get_bottom(self.raw.as_ptr()) }
+    }
+
+    pub fn set_bottom(&mut self, value: i32) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesRect_set_bottom(self.raw.as_ptr(), value) }
+    }
+}
+
+impl Default for Rect {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -369,6 +573,15 @@ impl ShadowParams {
             );
             h
         }
+    }
+
+    /// Free a handle produced by [`Self::to_native`].
+    ///
+    /// # Safety
+    /// `h` must have come from `to_native` and not been freed already.
+    #[allow(dead_code)]
+    pub(crate) unsafe fn free_native(h: *mut ffi::whiteout_FlakesShadowParams) {
+        unsafe { ffi::whiteout_flakes_FlakesShadowParams_delete(h) }
     }
 }
 
@@ -542,46 +755,116 @@ impl Default for DisplayFlags {
 /// Per-frame statistics aggregated by the pipeline.
 ///
 /// Names mirror the internal `RenderPipeline::GetFrameStats` out parameters. Hosts surface these in title-bar / overlay HUDs.
-#[derive(Clone, Debug, PartialEq)]
 pub struct FrameStats {
-    pub geosets: i32,
-    pub textures: i32,
-    pub nodes: i32,
-    pub particles: i32,
-    pub segments: i32,
+    pub(crate) raw: core::ptr::NonNull<ffi::whiteout_FlakesFrameStats>,
 }
 
-impl Default for FrameStats {
-    fn default() -> Self {
-        // SAFETY: `_new` always returns a live handle; freed before return.
-        unsafe {
-            let h = ffi::whiteout_flakes_FlakesFrameStats_new();
-            let out = FrameStats {
-                geosets: ffi::whiteout_flakes_FlakesFrameStats_get_geosets(h),
-                textures: ffi::whiteout_flakes_FlakesFrameStats_get_textures(h),
-                nodes: ffi::whiteout_flakes_FlakesFrameStats_get_nodes(h),
-                particles: ffi::whiteout_flakes_FlakesFrameStats_get_particles(h),
-                segments: ffi::whiteout_flakes_FlakesFrameStats_get_segments(h),
-            };
-            ffi::whiteout_flakes_FlakesFrameStats_delete(h);
-            out
-        }
+impl Drop for FrameStats {
+    fn drop(&mut self) {
+        // SAFETY: `raw` came from a native constructor and Drop runs once.
+        unsafe { ffi::whiteout_flakes_FlakesFrameStats_delete(self.raw.as_ptr()) }
     }
 }
 
 impl FrameStats {
-    /// Build a native handle carrying these values. Caller frees it.
-    #[allow(dead_code)] // consumed once the methods taking these options bind
-    pub(crate) unsafe fn to_native(&self) -> *mut ffi::whiteout_FlakesFrameStats {
+    /// # Safety
+    /// `raw` must be a live handle this value takes ownership of.
+    #[allow(dead_code)] // used by whichever methods return this type
+    pub(crate) unsafe fn from_raw(raw: *mut ffi::whiteout_FlakesFrameStats) -> Option<Self> {
+        core::ptr::NonNull::new(raw).map(|raw| FrameStats { raw })
+    }
+}
+
+// SAFETY: handles are plain heap pointers with no thread affinity. `Sync`
+// is deliberately NOT implemented — the C++ types make no documented
+// guarantee about concurrent use, and claiming one we haven't verified
+// would be unsound. See `@bind thread_safe` in the plan.
+unsafe impl Send for FrameStats {}
+
+impl core::fmt::Debug for FrameStats {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FrameStats").finish_non_exhaustive()
+    }
+}
+
+impl FrameStats {
+    /// # Panics
+    /// Panics if the native allocation fails.
+    pub fn new() -> Self {
+        // SAFETY: the native constructor returns a live handle; a null here
+        // means the library is unusable.
         unsafe {
-            let h = ffi::whiteout_flakes_FlakesFrameStats_new();
-            ffi::whiteout_flakes_FlakesFrameStats_set_geosets(h, self.geosets);
-            ffi::whiteout_flakes_FlakesFrameStats_set_textures(h, self.textures);
-            ffi::whiteout_flakes_FlakesFrameStats_set_nodes(h, self.nodes);
-            ffi::whiteout_flakes_FlakesFrameStats_set_particles(h, self.particles);
-            ffi::whiteout_flakes_FlakesFrameStats_set_segments(h, self.segments);
-            h
+            let raw = ffi::whiteout_flakes_FlakesFrameStats_new();
+            Self::from_raw(raw).expect("native FrameStats allocation failed")
         }
+    }
+
+    pub fn geosets(&self) -> i32 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesFrameStats_get_geosets(self.raw.as_ptr()) }
+    }
+
+    pub fn set_geosets(&mut self, value: i32) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesFrameStats_set_geosets(self.raw.as_ptr(), value) }
+    }
+
+    pub fn textures(&self) -> i32 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesFrameStats_get_textures(self.raw.as_ptr()) }
+    }
+
+    pub fn set_textures(&mut self, value: i32) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesFrameStats_set_textures(self.raw.as_ptr(), value) }
+    }
+
+    pub fn nodes(&self) -> i32 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesFrameStats_get_nodes(self.raw.as_ptr()) }
+    }
+
+    pub fn set_nodes(&mut self, value: i32) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesFrameStats_set_nodes(self.raw.as_ptr(), value) }
+    }
+
+    /// Live legacy (PE2) particles. Does **not** include corn effects — that is a separate simulation, counted by @ref cornParticles.
+    pub fn particles(&self) -> i32 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesFrameStats_get_particles(self.raw.as_ptr()) }
+    }
+
+    pub fn set_particles(&mut self, value: i32) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesFrameStats_set_particles(self.raw.as_ptr(), value) }
+    }
+
+    pub fn segments(&self) -> i32 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesFrameStats_get_segments(self.raw.as_ptr()) }
+    }
+
+    pub fn set_segments(&mut self, value: i32) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesFrameStats_set_segments(self.raw.as_ptr(), value) }
+    }
+
+    /// Live corn-effects particles across every registered emitter. Separate from @ref particles because the two are different simulations with different lifetimes, and a host watching one learns nothing about the other.
+    pub fn corn_particles(&self) -> i32 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesFrameStats_get_cornParticles(self.raw.as_ptr()) }
+    }
+
+    pub fn set_corn_particles(&mut self, value: i32) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesFrameStats_set_cornParticles(self.raw.as_ptr(), value) }
+    }
+}
+
+impl Default for FrameStats {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -990,6 +1273,16 @@ impl PipelineView {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
             ffi::whiteout_flakes_FlakesPipelineView_Shutdown(self.raw.as_ptr());
+        }
+    }
+
+    /// Last-frame stats (geoset / texture / node / particle / segment counts).
+    pub fn frame_stats(&self) -> Option<FrameStats> {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            FrameStats::from_raw(ffi::whiteout_flakes_FlakesPipelineView_FrameStats(
+                self.raw.as_ptr(),
+            ))
         }
     }
 
@@ -1408,6 +1701,21 @@ impl LoaderView {
         }
     }
 
+    /// Spawn a standalone corn effect (`.pkb` / `.pkfx`) as its own actor, with no model around it.
+    ///
+    /// A corn effect is normally reached through a model: an MDX's `CORN` chunk names the `.pkb` and the loader stages an emitter for it. This plays one on its own — the same thing the viewer does when you open a `.pkb` directly.
+    ///
+    /// Equivalent to `SpawnUnitFromSource` with the library's `CornEffectSource`, and exists because bindings cannot implement @ref IModelSource themselves. The actor carries a single always-on emitter and one looping placeholder sequence to keep it ticking; the effect's own runtime decides whether it loops or plays once.
+    ///
+    /// @param path Resolvable by the content provider, exactly like @ref SpawnUnit.
+    pub fn spawn_effect(&mut self, path: &str) -> u32 {
+        let path_cstr = std::ffi::CString::new(path).unwrap_or_default();
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesLoaderView_SpawnEffect(self.raw.as_ptr(), path_cstr.as_ptr())
+        }
+    }
+
     /// Defer-destroy every actor currently in the scene.
     pub fn request_clear_all(&mut self) {
         // SAFETY: handle is live for the duration of the call.
@@ -1463,6 +1771,15 @@ impl core::fmt::Debug for AssetsView {
 }
 
 impl AssetsView {
+    pub fn stats(&self) -> Option<AssetsViewStats> {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            AssetsViewStats::from_raw(ffi::whiteout_flakes_FlakesAssetsView_Stats(
+                self.raw.as_ptr(),
+            ))
+        }
+    }
+
     /// Acquire slots for every SPL/UBR texture and SPN child-model referenced by the loaded event-data SLKs. The slots are held by the event-data cache for the rest of the session, so the host pump fetches them eagerly and they survive animation changes. Call after `LoadEventDataFiles` finishes populating the splat tables.
     pub fn prefetch_event_assets(&mut self) {
         // SAFETY: handle is live for the duration of the call.
@@ -1484,57 +1801,143 @@ impl AssetsView {
 }
 
 /// Snapshot diagnostic counters.
-#[derive(Clone, Debug, PartialEq)]
 pub struct AssetsViewStats {
-    pub live_slots: u64,
-    pub loaded_slots: u64,
-    pub pending_needs: u64,
-    pub total_acquires: u64,
-    pub total_releases: u64,
-    pub total_applies: u64,
-    pub total_apply_misses: u64,
+    pub(crate) raw: core::ptr::NonNull<ffi::whiteout_FlakesAssetsViewStats>,
 }
 
-impl Default for AssetsViewStats {
-    fn default() -> Self {
-        // SAFETY: `_new` always returns a live handle; freed before return.
-        unsafe {
-            let h = ffi::whiteout_flakes_FlakesAssetsViewStats_new();
-            let out = AssetsViewStats {
-                live_slots: ffi::whiteout_flakes_FlakesAssetsViewStats_get_liveSlots(h),
-                loaded_slots: ffi::whiteout_flakes_FlakesAssetsViewStats_get_loadedSlots(h),
-                pending_needs: ffi::whiteout_flakes_FlakesAssetsViewStats_get_pendingNeeds(h),
-                total_acquires: ffi::whiteout_flakes_FlakesAssetsViewStats_get_totalAcquires(h),
-                total_releases: ffi::whiteout_flakes_FlakesAssetsViewStats_get_totalReleases(h),
-                total_applies: ffi::whiteout_flakes_FlakesAssetsViewStats_get_totalApplies(h),
-                total_apply_misses: ffi::whiteout_flakes_FlakesAssetsViewStats_get_totalApplyMisses(
-                    h,
-                ),
-            };
-            ffi::whiteout_flakes_FlakesAssetsViewStats_delete(h);
-            out
-        }
+impl Drop for AssetsViewStats {
+    fn drop(&mut self) {
+        // SAFETY: `raw` came from a native constructor and Drop runs once.
+        unsafe { ffi::whiteout_flakes_FlakesAssetsViewStats_delete(self.raw.as_ptr()) }
     }
 }
 
 impl AssetsViewStats {
-    /// Build a native handle carrying these values. Caller frees it.
-    #[allow(dead_code)] // consumed once the methods taking these options bind
-    pub(crate) unsafe fn to_native(&self) -> *mut ffi::whiteout_FlakesAssetsViewStats {
+    /// # Safety
+    /// `raw` must be a live handle this value takes ownership of.
+    #[allow(dead_code)] // used by whichever methods return this type
+    pub(crate) unsafe fn from_raw(raw: *mut ffi::whiteout_FlakesAssetsViewStats) -> Option<Self> {
+        core::ptr::NonNull::new(raw).map(|raw| AssetsViewStats { raw })
+    }
+}
+
+// SAFETY: handles are plain heap pointers with no thread affinity. `Sync`
+// is deliberately NOT implemented — the C++ types make no documented
+// guarantee about concurrent use, and claiming one we haven't verified
+// would be unsound. See `@bind thread_safe` in the plan.
+unsafe impl Send for AssetsViewStats {}
+
+impl core::fmt::Debug for AssetsViewStats {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AssetsViewStats").finish_non_exhaustive()
+    }
+}
+
+impl AssetsViewStats {
+    /// # Panics
+    /// Panics if the native allocation fails.
+    pub fn new() -> Self {
+        // SAFETY: the native constructor returns a live handle; a null here
+        // means the library is unusable.
         unsafe {
-            let h = ffi::whiteout_flakes_FlakesAssetsViewStats_new();
-            ffi::whiteout_flakes_FlakesAssetsViewStats_set_liveSlots(h, self.live_slots);
-            ffi::whiteout_flakes_FlakesAssetsViewStats_set_loadedSlots(h, self.loaded_slots);
-            ffi::whiteout_flakes_FlakesAssetsViewStats_set_pendingNeeds(h, self.pending_needs);
-            ffi::whiteout_flakes_FlakesAssetsViewStats_set_totalAcquires(h, self.total_acquires);
-            ffi::whiteout_flakes_FlakesAssetsViewStats_set_totalReleases(h, self.total_releases);
-            ffi::whiteout_flakes_FlakesAssetsViewStats_set_totalApplies(h, self.total_applies);
-            ffi::whiteout_flakes_FlakesAssetsViewStats_set_totalApplyMisses(
-                h,
-                self.total_apply_misses,
-            );
-            h
+            let raw = ffi::whiteout_flakes_FlakesAssetsViewStats_new();
+            Self::from_raw(raw).expect("native AssetsViewStats allocation failed")
         }
+    }
+
+    pub fn live_slots(&self) -> u64 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesAssetsViewStats_get_liveSlots(self.raw.as_ptr()) }
+    }
+
+    pub fn set_live_slots(&mut self, value: u64) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe {
+            ffi::whiteout_flakes_FlakesAssetsViewStats_set_liveSlots(self.raw.as_ptr(), value)
+        }
+    }
+
+    pub fn loaded_slots(&self) -> u64 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesAssetsViewStats_get_loadedSlots(self.raw.as_ptr()) }
+    }
+
+    pub fn set_loaded_slots(&mut self, value: u64) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe {
+            ffi::whiteout_flakes_FlakesAssetsViewStats_set_loadedSlots(self.raw.as_ptr(), value)
+        }
+    }
+
+    pub fn pending_needs(&self) -> u64 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesAssetsViewStats_get_pendingNeeds(self.raw.as_ptr()) }
+    }
+
+    pub fn set_pending_needs(&mut self, value: u64) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe {
+            ffi::whiteout_flakes_FlakesAssetsViewStats_set_pendingNeeds(self.raw.as_ptr(), value)
+        }
+    }
+
+    pub fn total_acquires(&self) -> u64 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesAssetsViewStats_get_totalAcquires(self.raw.as_ptr()) }
+    }
+
+    pub fn set_total_acquires(&mut self, value: u64) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe {
+            ffi::whiteout_flakes_FlakesAssetsViewStats_set_totalAcquires(self.raw.as_ptr(), value)
+        }
+    }
+
+    pub fn total_releases(&self) -> u64 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesAssetsViewStats_get_totalReleases(self.raw.as_ptr()) }
+    }
+
+    pub fn set_total_releases(&mut self, value: u64) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe {
+            ffi::whiteout_flakes_FlakesAssetsViewStats_set_totalReleases(self.raw.as_ptr(), value)
+        }
+    }
+
+    pub fn total_applies(&self) -> u64 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesAssetsViewStats_get_totalApplies(self.raw.as_ptr()) }
+    }
+
+    pub fn set_total_applies(&mut self, value: u64) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe {
+            ffi::whiteout_flakes_FlakesAssetsViewStats_set_totalApplies(self.raw.as_ptr(), value)
+        }
+    }
+
+    pub fn total_apply_misses(&self) -> u64 {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe {
+            ffi::whiteout_flakes_FlakesAssetsViewStats_get_totalApplyMisses(self.raw.as_ptr())
+        }
+    }
+
+    pub fn set_total_apply_misses(&mut self, value: u64) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe {
+            ffi::whiteout_flakes_FlakesAssetsViewStats_set_totalApplyMisses(
+                self.raw.as_ptr(),
+                value,
+            )
+        }
+    }
+}
+
+impl Default for AssetsViewStats {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1681,6 +2084,16 @@ impl ShadowView {
             );
         }
     }
+
+    pub fn set_params(&mut self, arg: &ShadowParams) {
+        let arg_native = unsafe { arg.to_native() };
+        // SAFETY: handle is live for the call; the staged
+        // option handles are freed immediately after.
+        unsafe {
+            ffi::whiteout_flakes_FlakesShadowView_SetParams(self.raw.as_ptr(), arg_native);
+            ShadowParams::free_native(arg_native);
+        }
+    }
 }
 
 /// Splat-decal service (engine-spawned SPL/UBR events).
@@ -1771,6 +2184,125 @@ impl ReplaceablesView {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
             ffi::whiteout_flakes_FlakesReplaceablesView_SetTileset(self.raw.as_ptr(), arg as i32);
+        }
+    }
+}
+
+/// Transport controls for the scene clock — one switch that governs model animation and every effect system alike.
+///
+/// A frame advances in two halves: `SceneView::Update` moves the animation clocks, `Renderer::Tick` moves the particle, PE1, ribbon and corn effects simulations. Both read the state set here, so a host cannot pause one and leave the other running.
+///
+/// @code r.Playback().Pause();     // freeze mid-animation, particles hang in air r.Playback().Play();      // carry on from that instant r.Playback().Restart();   // rewind to the top and play r.Playback().Stop();      // rewind to the top and hold @endcode
+pub struct PlaybackView {
+    pub(crate) raw: core::ptr::NonNull<ffi::whiteout_FlakesPlaybackView>,
+}
+
+impl Drop for PlaybackView {
+    fn drop(&mut self) {
+        // SAFETY: `raw` came from a native constructor and Drop runs once.
+        unsafe { ffi::whiteout_flakes_FlakesPlaybackView_delete(self.raw.as_ptr()) }
+    }
+}
+
+impl PlaybackView {
+    /// # Safety
+    /// `raw` must be a live handle this value takes ownership of.
+    #[allow(dead_code)] // used by whichever methods return this type
+    pub(crate) unsafe fn from_raw(raw: *mut ffi::whiteout_FlakesPlaybackView) -> Option<Self> {
+        core::ptr::NonNull::new(raw).map(|raw| PlaybackView { raw })
+    }
+}
+
+// SAFETY: handles are plain heap pointers with no thread affinity. `Sync`
+// is deliberately NOT implemented — the C++ types make no documented
+// guarantee about concurrent use, and claiming one we haven't verified
+// would be unsound. See `@bind thread_safe` in the plan.
+unsafe impl Send for PlaybackView {}
+
+impl core::fmt::Debug for PlaybackView {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PlaybackView").finish_non_exhaustive()
+    }
+}
+
+impl PlaybackView {
+    /// Current transport state.
+    pub fn state(&self) -> PlaybackState {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            PlaybackState::try_from(ffi::whiteout_flakes_FlakesPlaybackView_State(
+                self.raw.as_ptr(),
+            ))
+            .expect("unknown enum discriminant from the native library (ABI version skew)")
+        }
+    }
+
+    /// Set the transport state directly. Entering @ref PlaybackState::Stopped rewinds; the other transitions do not.
+    pub fn set_state(&mut self, arg: PlaybackState) {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesPlaybackView_SetState(self.raw.as_ptr(), arg as i32);
+        }
+    }
+
+    /// Resume (or continue) advancing time.
+    pub fn play(&mut self) {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesPlaybackView_Play(self.raw.as_ptr());
+        }
+    }
+
+    /// Hold time at the current instant. Resuming continues from here.
+    pub fn pause(&mut self) {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesPlaybackView_Pause(self.raw.as_ptr());
+        }
+    }
+
+    /// Rewind to the start and hold. Animation cursors return to zero and transient effect state — live particles, ribbon trails, PE1 instances, corn effects runtimes — is discarded, so nothing is left hanging in mid-air.
+    pub fn stop(&mut self) {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesPlaybackView_Stop(self.raw.as_ptr());
+        }
+    }
+
+    /// Rewind to the start and play. Equivalent to `Stop()` then `Play()`, and the usual way to replay a one-shot effect.
+    pub fn restart(&mut self) {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesPlaybackView_Restart(self.raw.as_ptr());
+        }
+    }
+
+    /// Drop transient effect state so the effect systems replay from the cursor's current position.
+    ///
+    /// For hosts that move the clock themselves — a timeline scrub — rather than through this view. Particles, ribbons and corn effects are forward simulations with no seek: jumping the animation cursor leaves them mid-flight from wherever they were, which reads as the effects ignoring the scrub. This restarts them. The clock is untouched.
+    pub fn resync_effects(&mut self) {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesPlaybackView_ResyncEffects(self.raw.as_ptr());
+        }
+    }
+
+    /// `true` when time is not advancing (paused *or* stopped).
+    pub fn is_paused(&self) -> bool {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe { ffi::whiteout_flakes_FlakesPlaybackView_IsPaused(self.raw.as_ptr()) != 0 }
+    }
+
+    /// Multiplier applied to every advancing frame. Survives a pause/resume, so slow-motion is not lost on Play().
+    pub fn time_scale(&self) -> f32 {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe { ffi::whiteout_flakes_FlakesPlaybackView_TimeScale(self.raw.as_ptr()) }
+    }
+
+    pub fn set_time_scale(&mut self, arg: f32) {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesPlaybackView_SetTimeScale(self.raw.as_ptr(), arg);
         }
     }
 }
@@ -1883,6 +2415,17 @@ impl ActorView {
         }
     }
 
+    /// @name Animation cursor @{
+    pub fn sequences(&self) -> Option<SequenceInfoList> {
+        // SAFETY: the native side transfers ownership of
+        // the list; null means the operation produced none.
+        unsafe {
+            SequenceInfoList::from_raw(ffi::whiteout_flakes_FlakesActorView_Sequences(
+                self.raw.as_ptr(),
+            ))
+        }
+    }
+
     pub fn active_sequence_index(&self) -> i32 {
         // SAFETY: handle is live for the duration of the call.
         unsafe { ffi::whiteout_flakes_FlakesActorView_ActiveSequenceIndex(self.raw.as_ptr()) }
@@ -1947,6 +2490,17 @@ impl ActorView {
         unsafe { ffi::whiteout_flakes_FlakesActorView_CollisionShapeCount(self.raw.as_ptr()) }
     }
 
+    /// Camera presets attached to this actor's source model.
+    pub fn camera_presets(&self) -> Option<CameraPresetList> {
+        // SAFETY: the native side transfers ownership of
+        // the list; null means the operation produced none.
+        unsafe {
+            CameraPresetList::from_raw(ffi::whiteout_flakes_FlakesActorView_CameraPresets(
+                self.raw.as_ptr(),
+            ))
+        }
+    }
+
     /// Render mode the actor's template expects (`HD` if any material layer uses a non-zero BLS shaderId, else `SD`). Hosts call this after `SpawnUnit` and forward to `SettingsView::SetRenderMode` so SD models don't render through the HD pipeline (which mis-blends multi-layer SD materials) and vice-versa.
     pub fn preferred_render_mode(&self) -> RenderMode {
         // SAFETY: handle is live for the duration of the call.
@@ -1960,19 +2514,20 @@ impl ActorView {
 
     /// Every child-model path this actor's template will eventually need: attachment slots (`AttachmentConfig`) and legacy PE1 particle emitters (`PE1EmitterConfig`). Hosts running an async loader (web build) use this to eagerly prefetch the child MDX bytes so the first attachment spawn / first PE1 fire lands in a primed cache rather than triggering a miss.
     pub fn child_model_paths(&self) -> Vec<String> {
-        // SAFETY: index stays below the reported count.
+        // SAFETY: one call materialises the list; the
+        // elements are borrowed out of it and it is freed
+        // before returning. Reading is O(1) per element.
         unsafe {
-            let n = ffi::whiteout_flakes_FlakesActorView_ChildModelPaths_count(self.raw.as_ptr());
-            (0..n)
-                .map(|i| {
-                    crate::support::take_string(
-                        ffi::whiteout_flakes_FlakesActorView_ChildModelPaths_at(
-                            self.raw.as_ptr(),
-                            i,
-                        ),
-                    )
-                })
-                .collect()
+            let list = ffi::whiteout_flakes_FlakesActorView_ChildModelPaths(self.raw.as_ptr());
+            if list.is_null() {
+                return Vec::new();
+            }
+            let n = ffi::whiteout_flakes_StringList_size(list);
+            let out = (0..n)
+                .map(|i| crate::support::take_string(ffi::whiteout_flakes_StringList_at(list, i)))
+                .collect();
+            ffi::whiteout_flakes_StringList_delete(list);
+            out
         }
     }
 }
@@ -2125,6 +2680,16 @@ impl Renderer {
         }
     }
 
+    /// Play / pause / stop / restart the scene clock, for models and effects together.
+    pub fn playback(&mut self) -> Option<PlaybackView> {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            PlaybackView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Playback(
+                self.raw.as_ptr(),
+            ))
+        }
+    }
+
     /// Per-actor view. Returns an invalid view (`IsValid() == false`) for unknown handles.
     pub fn actor(&mut self, h: u32) -> Option<ActorView> {
         // SAFETY: handle is live for the duration of the call.
@@ -2154,32 +2719,36 @@ impl Default for Renderer {
 }
 
 // Not yet bound (shape unsupported by the emitter):
-//   - ActorView::CameraPresets (return std::vector<whiteout::flakes::CameraPreset>)
-//   - ActorView::Sequences (return std::vector<whiteout::flakes::SequenceInfo>)
 //   - ActorView::SetTransform (parameter shape)
 //   - ActorView::Transform (return whiteout::Matrix44f)
 //   - AssetsView::ApplyAsset (parameter shape)
 //   - AssetsView::DrainNeeds (parameter shape)
 //   - AssetsView::IsTextureCached (parameter shape)
-//   - AssetsView::Stats (return whiteout::flakes::AssetsView::Stats)
 //   - CameraView::GetTarget (return whiteout::Vector3f)
 //   - CameraView::SetDirectPose (parameter shape)
 //   - LoaderView::SpawnUnitFromSource (parameter shape)
 //   - LoaderView::UpdateMaterials (parameter shape)
-//   - PipelineView::FrameStats (return whiteout::flakes::FrameStats)
 //   - Renderer::SwapSoundEmitter (parameter shape)
 //   - SceneView::SetContentProvider (parameter shape)
 //   - SceneView::SetEngineAssetRoot (parameter shape)
 //   - SceneView::SetPE1BasePath (parameter shape)
 //   - ShadowView::Params (return whiteout::flakes::ShadowParams)
-//   - ShadowView::SetParams (parameter shape)
 
 #[doc(hidden)]
 pub mod ffi {
     #![allow(missing_debug_implementations)]
 
+    #[allow(unused_imports)]
     use crate::support::{RawBytes, RawCString};
 
+    #[repr(C)]
+    pub struct whiteout_SequenceInfoList {
+        _private: [u8; 0],
+    }
+    #[repr(C)]
+    pub struct whiteout_CameraPresetList {
+        _private: [u8; 0],
+    }
     #[repr(C)]
     pub struct whiteout_FlakesRect {
         _private: [u8; 0],
@@ -2249,6 +2818,10 @@ pub mod ffi {
         _private: [u8; 0],
     }
     #[repr(C)]
+    pub struct whiteout_FlakesPlaybackView {
+        _private: [u8; 0],
+    }
+    #[repr(C)]
     pub struct whiteout_FlakesActorView {
         _private: [u8; 0],
     }
@@ -2256,8 +2829,34 @@ pub mod ffi {
     pub struct whiteout_FlakesRenderer {
         _private: [u8; 0],
     }
+    #[repr(C)]
+    pub struct whiteout_StringList {
+        _private: [u8; 0],
+    }
 
     extern "C" {
+        pub fn whiteout_flakes_StringList_size(self_: *mut whiteout_StringList) -> usize;
+        pub fn whiteout_flakes_StringList_at(
+            self_: *mut whiteout_StringList,
+            index: usize,
+        ) -> RawCString;
+        pub fn whiteout_flakes_StringList_delete(self_: *mut whiteout_StringList);
+        pub fn whiteout_flakes_SequenceInfoList_size(
+            self_: *mut whiteout_SequenceInfoList,
+        ) -> usize;
+        pub fn whiteout_flakes_SequenceInfoList_at(
+            self_: *mut whiteout_SequenceInfoList,
+            index: usize,
+        ) -> *mut whiteout_FlakesSequenceInfo;
+        pub fn whiteout_flakes_SequenceInfoList_delete(self_: *mut whiteout_SequenceInfoList);
+        pub fn whiteout_flakes_CameraPresetList_size(
+            self_: *mut whiteout_CameraPresetList,
+        ) -> usize;
+        pub fn whiteout_flakes_CameraPresetList_at(
+            self_: *mut whiteout_CameraPresetList,
+            index: usize,
+        ) -> *mut whiteout_FlakesCameraPreset;
+        pub fn whiteout_flakes_CameraPresetList_delete(self_: *mut whiteout_CameraPresetList);
         // Rect
         pub fn whiteout_flakes_FlakesRect_new() -> *mut whiteout_FlakesRect;
         pub fn whiteout_flakes_FlakesRect_delete(self_: *mut whiteout_FlakesRect);
@@ -2425,6 +3024,13 @@ pub mod ffi {
             self_: *mut whiteout_FlakesFrameStats,
             value: i32,
         );
+        pub fn whiteout_flakes_FlakesFrameStats_get_cornParticles(
+            self_: *mut whiteout_FlakesFrameStats,
+        ) -> i32;
+        pub fn whiteout_flakes_FlakesFrameStats_set_cornParticles(
+            self_: *mut whiteout_FlakesFrameStats,
+            value: i32,
+        );
         // CameraPreset
         pub fn whiteout_flakes_FlakesCameraPreset_new() -> *mut whiteout_FlakesCameraPreset;
         pub fn whiteout_flakes_FlakesCameraPreset_delete(self_: *mut whiteout_FlakesCameraPreset);
@@ -2577,6 +3183,9 @@ pub mod ffi {
             t: u32,
         );
         pub fn whiteout_flakes_FlakesPipelineView_Shutdown(self_: *mut whiteout_FlakesPipelineView);
+        pub fn whiteout_flakes_FlakesPipelineView_FrameStats(
+            self_: *mut whiteout_FlakesPipelineView,
+        ) -> *mut whiteout_FlakesFrameStats;
         pub fn whiteout_flakes_FlakesPipelineView_LiveGpuBytes(
             self_: *mut whiteout_FlakesPipelineView,
         ) -> u64;
@@ -2721,6 +3330,10 @@ pub mod ffi {
             self_: *mut whiteout_FlakesLoaderView,
             path: *const core::ffi::c_char,
         ) -> u32;
+        pub fn whiteout_flakes_FlakesLoaderView_SpawnEffect(
+            self_: *mut whiteout_FlakesLoaderView,
+            path: *const core::ffi::c_char,
+        ) -> u32;
         pub fn whiteout_flakes_FlakesLoaderView_RequestClearAll(
             self_: *mut whiteout_FlakesLoaderView,
         );
@@ -2730,6 +3343,9 @@ pub mod ffi {
         );
         // AssetsView
         pub fn whiteout_flakes_FlakesAssetsView_delete(self_: *mut whiteout_FlakesAssetsView);
+        pub fn whiteout_flakes_FlakesAssetsView_Stats(
+            self_: *mut whiteout_FlakesAssetsView,
+        ) -> *mut whiteout_FlakesAssetsViewStats;
         pub fn whiteout_flakes_FlakesAssetsView_PrefetchEventAssets(
             self_: *mut whiteout_FlakesAssetsView,
         );
@@ -2823,6 +3439,10 @@ pub mod ffi {
             self_: *mut whiteout_FlakesShadowView,
             on: i32,
         );
+        pub fn whiteout_flakes_FlakesShadowView_SetParams(
+            self_: *mut whiteout_FlakesShadowView,
+            arg: *mut whiteout_FlakesShadowParams,
+        );
         // SplatView
         pub fn whiteout_flakes_FlakesSplatView_delete(self_: *mut whiteout_FlakesSplatView);
         pub fn whiteout_flakes_FlakesSplatView_Clear(self_: *mut whiteout_FlakesSplatView);
@@ -2836,6 +3456,32 @@ pub mod ffi {
         pub fn whiteout_flakes_FlakesReplaceablesView_SetTileset(
             self_: *mut whiteout_FlakesReplaceablesView,
             arg: i32,
+        );
+        // PlaybackView
+        pub fn whiteout_flakes_FlakesPlaybackView_delete(self_: *mut whiteout_FlakesPlaybackView);
+        pub fn whiteout_flakes_FlakesPlaybackView_State(
+            self_: *mut whiteout_FlakesPlaybackView,
+        ) -> i32;
+        pub fn whiteout_flakes_FlakesPlaybackView_SetState(
+            self_: *mut whiteout_FlakesPlaybackView,
+            arg: i32,
+        );
+        pub fn whiteout_flakes_FlakesPlaybackView_Play(self_: *mut whiteout_FlakesPlaybackView);
+        pub fn whiteout_flakes_FlakesPlaybackView_Pause(self_: *mut whiteout_FlakesPlaybackView);
+        pub fn whiteout_flakes_FlakesPlaybackView_Stop(self_: *mut whiteout_FlakesPlaybackView);
+        pub fn whiteout_flakes_FlakesPlaybackView_Restart(self_: *mut whiteout_FlakesPlaybackView);
+        pub fn whiteout_flakes_FlakesPlaybackView_ResyncEffects(
+            self_: *mut whiteout_FlakesPlaybackView,
+        );
+        pub fn whiteout_flakes_FlakesPlaybackView_IsPaused(
+            self_: *mut whiteout_FlakesPlaybackView,
+        ) -> i32;
+        pub fn whiteout_flakes_FlakesPlaybackView_TimeScale(
+            self_: *mut whiteout_FlakesPlaybackView,
+        ) -> f32;
+        pub fn whiteout_flakes_FlakesPlaybackView_SetTimeScale(
+            self_: *mut whiteout_FlakesPlaybackView,
+            arg: f32,
         );
         // ActorView
         pub fn whiteout_flakes_FlakesActorView_delete(self_: *mut whiteout_FlakesActorView);
@@ -2869,6 +3515,9 @@ pub mod ffi {
         pub fn whiteout_flakes_FlakesActorView_SetRoleExternal(
             self_: *mut whiteout_FlakesActorView,
         );
+        pub fn whiteout_flakes_FlakesActorView_Sequences(
+            self_: *mut whiteout_FlakesActorView,
+        ) -> *mut whiteout_SequenceInfoList;
         pub fn whiteout_flakes_FlakesActorView_ActiveSequenceIndex(
             self_: *mut whiteout_FlakesActorView,
         ) -> i32;
@@ -2902,16 +3551,15 @@ pub mod ffi {
         pub fn whiteout_flakes_FlakesActorView_CollisionShapeCount(
             self_: *mut whiteout_FlakesActorView,
         ) -> i32;
+        pub fn whiteout_flakes_FlakesActorView_CameraPresets(
+            self_: *mut whiteout_FlakesActorView,
+        ) -> *mut whiteout_CameraPresetList;
         pub fn whiteout_flakes_FlakesActorView_PreferredRenderMode(
             self_: *mut whiteout_FlakesActorView,
         ) -> i32;
-        pub fn whiteout_flakes_FlakesActorView_ChildModelPaths_count(
+        pub fn whiteout_flakes_FlakesActorView_ChildModelPaths(
             self_: *mut whiteout_FlakesActorView,
-        ) -> usize;
-        pub fn whiteout_flakes_FlakesActorView_ChildModelPaths_at(
-            self_: *mut whiteout_FlakesActorView,
-            index: usize,
-        ) -> RawCString;
+        ) -> *mut whiteout_StringList;
         // Renderer
         pub fn whiteout_flakes_FlakesRenderer_new() -> *mut whiteout_FlakesRenderer;
         pub fn whiteout_flakes_FlakesRenderer_delete(self_: *mut whiteout_FlakesRenderer);
@@ -2952,6 +3600,9 @@ pub mod ffi {
         pub fn whiteout_flakes_FlakesRenderer_Assets(
             self_: *mut whiteout_FlakesRenderer,
         ) -> *mut whiteout_FlakesAssetsView;
+        pub fn whiteout_flakes_FlakesRenderer_Playback(
+            self_: *mut whiteout_FlakesRenderer,
+        ) -> *mut whiteout_FlakesPlaybackView;
         pub fn whiteout_flakes_FlakesRenderer_Actor(
             self_: *mut whiteout_FlakesRenderer,
             h: u32,

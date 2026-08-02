@@ -18,9 +18,8 @@
 //      make every pose call allocate. Flat float arrays cross the
 //      boundary as-is and map onto the binding's own math types.
 //
-//   3. `std::vector<T>` returns of bound structs. The generator lowers
-//      `vector<string>` to a (count, at) pair but has no equivalent for
-//      vectors of class types; these follow the same pattern by hand.
+//   3. `std::vector<T>` returns of bound structs, when the generator has
+//      no lowering for them.
 //
 // Plus one outright generator bug: it moves string returns into the
 // CString wrapper, which a `const std::string&` return can't satisfy.
@@ -38,6 +37,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace {
 using namespace whiteout::flakes;
@@ -160,41 +160,6 @@ void whiteout_flakes_FlakesActorView_SetTransformFlat(whiteout_FlakesActorView* 
         for (int c = 0; c < 4; ++c)
             out.data[r][c] = m[r * 4 + c];
     as<ActorView>(self)->SetTransform(out);
-}
-
-// ── ActorView: vector-of-struct returns ───────────────────────────────────
-//
-// Both accessors rebuild the vector per call, so a full walk is O(n²).
-// The lists are short (sequences and camera presets are per-model, tens
-// at most) and the alternative — handing out a snapshot handle — buys a
-// lifetime problem for a saving nobody would notice.
-
-size_t whiteout_flakes_FlakesActorView_Sequences_count(const whiteout_FlakesActorView* self) {
-    return as<ActorView>(self)->Sequences().size();
-}
-
-/* Copy of the sequence at `index`, or NULL when out of range. Free with
- * whiteout_flakes_FlakesSequenceInfo_delete. */
-whiteout_FlakesSequenceInfo* whiteout_flakes_FlakesActorView_Sequences_at(
-    const whiteout_FlakesActorView* self, size_t index) {
-    const auto seqs = as<ActorView>(self)->Sequences();
-    if (index >= seqs.size())
-        return nullptr;
-    return reinterpret_cast<whiteout_FlakesSequenceInfo*>(new SequenceInfo(seqs[index]));
-}
-
-size_t whiteout_flakes_FlakesActorView_CameraPresets_count(const whiteout_FlakesActorView* self) {
-    return as<ActorView>(self)->CameraPresets().size();
-}
-
-/* Copy of the preset at `index`, or NULL when out of range. Free with
- * whiteout_flakes_FlakesCameraPreset_delete. */
-whiteout_FlakesCameraPreset* whiteout_flakes_FlakesActorView_CameraPresets_at(
-    const whiteout_FlakesActorView* self, size_t index) {
-    const auto presets = as<ActorView>(self)->CameraPresets();
-    if (index >= presets.size())
-        return nullptr;
-    return reinterpret_cast<whiteout_FlakesCameraPreset*>(new CameraPreset(presets[index]));
 }
 
 } // extern "C"

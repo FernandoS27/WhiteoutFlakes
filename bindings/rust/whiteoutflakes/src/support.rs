@@ -195,3 +195,43 @@ impl core::fmt::Debug for BorrowedSlice<'_> {
             .finish()
     }
 }
+
+/// A borrowed handle: a view of an object owned by something else.
+///
+/// The C ABI hands out interior pointers for struct fields and vector
+/// elements (`&self->field`, `&self->vec[i]`). Those must never be freed,
+/// so they cannot be represented by the owning handle types, which all
+/// implement `Drop`. `Ref` wraps one in `ManuallyDrop` and ties it to the
+/// parent's lifetime, so it neither frees nor outlives its owner.
+///
+/// Derefs to the underlying type, so it is used exactly like `&T`.
+pub struct Ref<'a, T> {
+    inner: core::mem::ManuallyDrop<T>,
+    _owner: PhantomData<&'a T>,
+}
+
+impl<T> Ref<'_, T> {
+    /// # Safety
+    /// `value` must wrap a pointer that stays valid for `'a` and is owned
+    /// by something other than the returned `Ref`.
+    #[allow(dead_code)] // used by generated element accessors
+    pub(crate) unsafe fn new(value: T) -> Self {
+        Ref {
+            inner: core::mem::ManuallyDrop::new(value),
+            _owner: PhantomData,
+        }
+    }
+}
+
+impl<T> Deref for Ref<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.inner
+    }
+}
+
+impl<T: core::fmt::Debug> core::fmt::Debug for Ref<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        (**self).fmt(f)
+    }
+}

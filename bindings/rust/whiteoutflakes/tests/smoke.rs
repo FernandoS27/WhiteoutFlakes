@@ -107,9 +107,9 @@ fn shadow_params_round_trip() {
 #[test]
 fn frame_stats_start_empty() {
     let mut r = Renderer::new();
-    let stats = r.pipeline().unwrap().frame_stats();
-    assert_eq!(stats.geosets, 0);
-    assert_eq!(stats.textures, 0);
+    let stats = r.pipeline().unwrap().frame_stats().unwrap();
+    assert_eq!(stats.geosets(), 0);
+    assert_eq!(stats.textures(), 0);
 }
 
 #[test]
@@ -118,8 +118,8 @@ fn unknown_actor_handle_is_invalid() {
     let actor = r.actor(9999).unwrap();
     assert!(!actor.is_valid());
     assert_eq!(actor.handle(), 9999);
-    assert!(actor.sequences().is_empty());
-    assert!(actor.camera_presets().is_empty());
+    assert!(actor.sequences().unwrap().is_empty());
+    assert!(actor.camera_presets().unwrap().is_empty());
     assert!(actor.child_model_paths().is_empty());
 }
 

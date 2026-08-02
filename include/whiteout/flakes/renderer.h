@@ -66,6 +66,9 @@ public:
     SplatView Splats();
     ReplaceablesView Replaceables();
     AssetsView Assets();
+    /// @brief Play / pause / stop / restart the scene clock, for models and
+    ///        effects together.
+    PlaybackView Playback();
     /// @}
 
     /// @brief Per-actor view. Returns an invalid view

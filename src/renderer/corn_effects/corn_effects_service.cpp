@@ -194,6 +194,12 @@ void CornEffectsService::SimulateInternal(f32 dt) {
     }
 }
 
+void CornEffectsService::ResetRuntimes() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [k, e] : emitters_)
+        e->ResetRuntime();
+}
+
 void CornEffectsService::Simulate(f32 dt) {
     std::lock_guard<std::mutex> lock(mutex_);
     SimulateInternal(dt);

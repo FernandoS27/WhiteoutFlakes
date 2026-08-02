@@ -21,8 +21,12 @@
 #include "renderer/dnc/dnc_service.h"
 #include "renderer/frame_ticker.h"
 #include "renderer/model/model_instance.h"
+#include "renderer/model/corn_effect_source.h"
 #include "renderer/model/model_loader.h"
+#include "renderer/corn_effects/corn_effects_service.h"
+#include "renderer/effects/spn_spawner.h"
 #include "renderer/model/model_template.h"
+#include "renderer/particle/particle_service.h"
 #include "renderer/particle/splat_service.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
@@ -93,6 +97,9 @@ ReplaceablesView Renderer::Replaceables() {
 }
 AssetsView Renderer::Assets() {
     return AssetsView(impl_.get());
+}
+PlaybackView Renderer::Playback() {
+    return PlaybackView(impl_.get());
 }
 
 ActorView Renderer::Actor(ActorHandle h) {
@@ -172,6 +179,9 @@ void PipelineView::Shutdown() {
 FrameStats PipelineView::GetFrameStats() const {
     FrameStats s{};
     Svc(impl_).Pipeline().GetFrameStats(s.geosets, s.textures, s.nodes, s.particles, s.segments);
+    // Separate call because corn effects are a separate simulation: the
+    // pipeline's own stats cover the legacy particle service only.
+    s.cornParticles = Svc(impl_).CornEffects().TotalParticleCount();
     return s;
 }
 
@@ -342,6 +352,12 @@ void SettingsView::SetRenderMode(RenderMode m) {
 
 ActorHandle LoaderView::SpawnUnit(const std::string& path) {
     auto* a = Svc(impl_).Loader().SpawnUnit(path);
+    return a ? a->handle : 0;
+}
+
+ActorHandle LoaderView::SpawnEffect(const std::string& path) {
+    auto* a = Svc(impl_).Loader().SpawnUnitFromSource(
+        std::make_shared<renderer::model::CornEffectSource>(path));
     return a ? a->handle : 0;
 }
 
@@ -576,8 +592,27 @@ i32 ActorView::AnimationTimeMs() const {
     return a ? a->animation.TimeMs() : 0;
 }
 void ActorView::SetAnimationTimeMs(i32 t) {
-    if (auto* a = FindActor(impl_, handle_))
-        a->animation.SetTimeMs(t);
+    auto* a = FindActor(impl_, handle_);
+    if (!a)
+        return;
+    a->animation.SetTimeMs(t);
+
+    // Setting the time alone does not hold for a renderer-driven actor:
+    // `Actor::Advance` recomputes the frame from `cursor.actorTimeMs` on
+    // every tick, so the next one would overwrite it and a host scrubbing a
+    // timeline would see nothing move. Re-base the sequence start so the
+    // cursor already reads as `t`, and Advance recomputes the same value.
+    //
+    // External actors are evaluated by the host and never see Advance, so
+    // the time set above is already the whole story for them.
+    if (a->role == renderer::model::ActorRole::External || !a->animation.HasSource())
+        return;
+    const auto seqs = a->animation.Sequences();
+    if (seqs.empty())
+        return;
+    const i32 n = static_cast<i32>(seqs.size());
+    const i32 idx = ((a->animation.ActiveSequenceIndex() % n) + n) % n;
+    a->cursor.sequenceStartTimeMs = a->cursor.actorTimeMs - (t - seqs[idx].startMs);
 }
 bool ActorView::HasAnimationSource() const {
     auto* a = FindActor(impl_, handle_);
@@ -633,6 +668,84 @@ std::vector<std::string> ActorView::ChildModelPaths() const {
     for (const auto& pc : t.pe1Configs)
         if (!pc.modelPath.empty()) out.push_back(pc.modelPath);
     return out;
+}
+
+// ============================================================================
+// PlaybackView
+// ============================================================================
+
+namespace {
+
+// Rewind the scene to its first frame. Two things have to happen and both
+// matter: the clocks go back to zero, and whatever the effect systems have
+// spawned since is thrown away. Skipping the second leaves particles frozen
+// in mid-air from the previous run, which reads as a bug the moment you press
+// play again.
+// Particles, splats and SPN instances are spawned by playback and mean
+// nothing once the clock has moved elsewhere, so they go. Corn-fx is the
+// exception: its emitters are registered when a model spawns, not when it
+// plays, so those are reset rather than cleared — dropping them would
+// silence the effects permanently instead of replaying them.
+void DropTransientEffects(detail::RendererImpl* p) {
+    Svc(p).Particles().Clear();
+    Svc(p).Splats().Clear();
+    Svc(p).Spn().Clear();
+    Svc(p).CornEffects().ResetRuntimes();
+}
+
+void RewindScene(detail::RendererImpl* p) {
+    Scn(p).SetAnimationTime(0);
+
+    for (auto& [h, mi] : Scn(p).Actors().All()) {
+        mi->animation.SetTimeMs(0);
+        // Children (PE1 / SPN / attachment) derive their cursor from
+        // wall-clock minus birth, so a birth time left in the future would
+        // make them evaluate at a negative age until the clock caught up.
+        mi->animation.SetBirthTimeMs(0);
+        mi->cursor = renderer::model::Actor::Cursor{};
+    }
+
+    DropTransientEffects(p);
+}
+
+} // namespace
+
+PlaybackState PlaybackView::GetState() const {
+    return Scn(impl_).GetPlaybackState();
+}
+void PlaybackView::SetState(PlaybackState s) {
+    if (s == PlaybackState::Stopped)
+        RewindScene(impl_);
+    Scn(impl_).SetPlaybackState(s);
+}
+
+void PlaybackView::Play() {
+    Scn(impl_).SetPlaybackState(PlaybackState::Playing);
+}
+void PlaybackView::Pause() {
+    Scn(impl_).SetPlaybackState(PlaybackState::Paused);
+}
+void PlaybackView::Stop() {
+    SetState(PlaybackState::Stopped);
+}
+void PlaybackView::Restart() {
+    RewindScene(impl_);
+    Scn(impl_).SetPlaybackState(PlaybackState::Playing);
+}
+
+void PlaybackView::ResyncEffects() {
+    DropTransientEffects(impl_);
+}
+
+bool PlaybackView::IsPaused() const {
+    return Scn(impl_).IsPaused();
+}
+
+f32 PlaybackView::GetTimeScale() const {
+    return Scn(impl_).GetTimeScale();
+}
+void PlaybackView::SetTimeScale(f32 s) {
+    Scn(impl_).SetTimeScale(s);
 }
 
 } // namespace whiteout::flakes

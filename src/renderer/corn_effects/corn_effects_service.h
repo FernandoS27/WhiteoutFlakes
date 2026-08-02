@@ -73,6 +73,12 @@ public:
         return pendingDt_;
     }
 
+    // Rewind every live effect to its first frame, keeping the emitters
+    // registered. Deliberately not Clear(): registrations are created when a
+    // model spawns or an attachment loads, so dropping them would silence the
+    // effects permanently rather than restarting them.
+    void ResetRuntimes();
+
     void AddCornEmitter(ActorId model, i32 emitterId, std::unique_ptr<CornEffectsEmitter> emitter);
     void RemoveModel(ActorId model);
     void Clear();

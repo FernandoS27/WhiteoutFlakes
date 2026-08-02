@@ -287,11 +287,15 @@ mod imp {
                         *left = left.saturating_sub(1);
                         if *left == 0 {
                             if let Some(renderer) = self.renderer.as_mut() {
-                                let stats = renderer.pipeline().expect("live").frame_stats();
+                                let stats = renderer
+                                    .pipeline()
+                                    .expect("live")
+                                    .frame_stats()
+                                    .expect("live");
                                 println!(
                                     "last frame: {} geosets, {} textures across {} viewports",
-                                    stats.geosets,
-                                    stats.textures,
+                                    stats.geosets(),
+                                    stats.textures(),
                                     self.panes.len()
                                 );
                             }

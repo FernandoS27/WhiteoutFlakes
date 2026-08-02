@@ -87,6 +87,7 @@ public:
     ///        Returns 0 on backends without tracking.
     u64 LiveGpuBytes() const;
 
+
 private:
     explicit PipelineView(detail::RendererImpl* impl) : impl_(impl) {}
     detail::RendererImpl* impl_;
@@ -252,6 +253,24 @@ public:
     /// @param initialTransform  World transform to start at.
     ActorHandle SpawnUnitFromSource(std::shared_ptr<IModelSource> source,
                                     const Matrix44f& initialTransform = Matrix44f::identity());
+    /// @brief Spawn a standalone corn effect (`.pkb` / `.pkfx`) as its own
+    ///        actor, with no model around it.
+    ///
+    /// A corn effect is normally reached through a model: an MDX's `CORN`
+    /// chunk names the `.pkb` and the loader stages an emitter for it. This
+    /// plays one on its own — the same thing the viewer does when you open a
+    /// `.pkb` directly.
+    ///
+    /// Equivalent to `SpawnUnitFromSource` with the library's
+    /// `CornEffectSource`, and exists because bindings cannot implement
+    /// @ref IModelSource themselves. The actor carries a single always-on
+    /// emitter and one looping placeholder sequence to keep it ticking; the
+    /// effect's own runtime decides whether it loops or plays once.
+    ///
+    /// @param path Resolvable by the content provider, exactly like
+    ///        @ref SpawnUnit.
+    ActorHandle SpawnEffect(const std::string& path);
+
     /// @brief Replace material + texture data for an already-spawned actor
     ///        without re-loading the rest of it (hot-reload from the Max
     ///        plugin's vertex-paint / material-property polling).
@@ -427,6 +446,68 @@ public:
 
 private:
     explicit ReplaceablesView(detail::RendererImpl* impl) : impl_(impl) {}
+    detail::RendererImpl* impl_;
+    friend class Renderer;
+};
+
+/// @brief Transport controls for the scene clock — one switch that governs
+///        model animation and every effect system alike.
+///
+/// A frame advances in two halves: `SceneView::Update` moves the animation
+/// clocks, `Renderer::Tick` moves the particle, PE1, ribbon and corn effects
+/// simulations. Both read the state set here, so a host cannot pause one and
+/// leave the other running.
+///
+/// @code
+/// r.Playback().Pause();     // freeze mid-animation, particles hang in air
+/// r.Playback().Play();      // carry on from that instant
+/// r.Playback().Restart();   // rewind to the top and play
+/// r.Playback().Stop();      // rewind to the top and hold
+/// @endcode
+/// @bind no_default_ctor, methods
+class PlaybackView {
+public:
+    /// @brief Current transport state.
+    /// @bind rename=State
+    PlaybackState GetState() const;
+    /// @brief Set the transport state directly. Entering @ref
+    ///        PlaybackState::Stopped rewinds; the other transitions do not.
+    void SetState(PlaybackState);
+
+    /// @brief Resume (or continue) advancing time.
+    void Play();
+    /// @brief Hold time at the current instant. Resuming continues from here.
+    void Pause();
+    /// @brief Rewind to the start and hold. Animation cursors return to zero
+    ///        and transient effect state — live particles, ribbon trails,
+    ///        PE1 instances, corn effects runtimes — is discarded, so nothing is
+    ///        left hanging in mid-air.
+    void Stop();
+    /// @brief Rewind to the start and play. Equivalent to `Stop()` then
+    ///        `Play()`, and the usual way to replay a one-shot effect.
+    void Restart();
+
+    /// @brief Drop transient effect state so the effect systems replay from
+    ///        the cursor's current position.
+    ///
+    /// For hosts that move the clock themselves — a timeline scrub — rather
+    /// than through this view. Particles, ribbons and corn effects are forward
+    /// simulations with no seek: jumping the animation cursor leaves them
+    /// mid-flight from wherever they were, which reads as the effects
+    /// ignoring the scrub. This restarts them. The clock is untouched.
+    void ResyncEffects();
+
+    /// @brief `true` when time is not advancing (paused *or* stopped).
+    bool IsPaused() const;
+
+    /// @brief Multiplier applied to every advancing frame. Survives a
+    ///        pause/resume, so slow-motion is not lost on Play().
+    /// @bind rename=TimeScale
+    f32 GetTimeScale() const;
+    void SetTimeScale(f32);
+
+private:
+    explicit PlaybackView(detail::RendererImpl* impl) : impl_(impl) {}
     detail::RendererImpl* impl_;
     friend class Renderer;
 };

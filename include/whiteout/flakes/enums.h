@@ -22,6 +22,20 @@ enum class RenderMode : u8 {
     HD = 1, ///< High-Definition: Reforged PBR materials with IBL.
 };
 
+/// @brief Transport state of a scene's playback clock.
+///
+/// `Paused` and `Stopped` both hold time still; they differ in where the
+/// clock sits. Pausing keeps the current instant, so resuming continues
+/// mid-animation with particles still in flight. Stopping rewinds to the
+/// start and discards transient effect state, so resuming plays the scene
+/// from the top.
+/// @bind
+enum class PlaybackState : u8 {
+    Playing = 0, ///< Time advances normally (scaled by the scene's time scale).
+    Paused = 1,  ///< Time held at the current instant.
+    Stopped = 2, ///< Time held at zero, transient effect state discarded.
+};
+
 /// @brief Light-rig preset selectable from the host UI.
 /// @bind
 enum class LightingMode : u8 {

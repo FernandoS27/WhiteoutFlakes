@@ -291,6 +291,14 @@ void EffectRuntime::reset() noexcept {
     nextSelfId_ = 1U;
     sceneTime_ = 0.0F;
     initialized_ = false;
+    // The render packets describe the last simulated frame. Marking the
+    // particles dead does not touch them, so leaving them here means a
+    // caller that resets and then reads `lastPackets()` — or draws from
+    // them — still sees the particles it just dropped, which is the
+    // opposite of what this function promises. A reset that is not
+    // followed by a tick (a host stopping playback) never clears them
+    // otherwise.
+    lastPackets_.clear();
 }
 
 bool EffectRuntime::ensureBackendPrepared(IssueBag& issues) {

@@ -1,12 +1,16 @@
 #pragma once
 
-// PkbEffectSource — a minimal IModelSource that plays a standalone PopcornFX
+// CornEffectSource — a minimal IModelSource that plays a standalone corn
 // effect (.pkb / .pkfx) on its own, with no model/skeleton/animation around it.
 //
 // MDX files carry geometry + a list of animation sequences the viewer lets you
 // switch between; a .pkb is just one particle effect, so this source exposes no
 // meshes and a single always-on CornFx emitter that simply runs the effect. It
-// reuses the whole spawn pipeline: ModelLoader::SpawnUnitFromSource snapshots
+// Lives in the library rather than a host: it is a file format's model
+// source, not UI, and `LoaderView::SpawnEffect` hands it to bindings that
+// cannot implement `IModelSource` themselves.
+//
+// It reuses the whole spawn pipeline: ModelLoader::SpawnUnitFromSource snapshots
 // this via Build() (which routes GetCornEmitterInits into the ModelTemplate),
 // stages one CornEffectsEmitter for the .pkb, and calls Evaluate() each frame —
 // where we emit a single visible CornFrameState so the effect keeps playing.
@@ -22,9 +26,9 @@
 
 namespace whiteout::flakes::renderer::model {
 
-class PkbEffectSource : public IModelSource {
+class CornEffectSource : public IModelSource {
 public:
-    explicit PkbEffectSource(std::string pkbPath) : pkbPath_(std::move(pkbPath)) {}
+    explicit CornEffectSource(std::string pkbPath) : pkbPath_(std::move(pkbPath)) {}
 
     // No geometry, skeleton, textures, materials, or non-CornFx emitters.
     std::vector<MeshData> GetMeshes() override {

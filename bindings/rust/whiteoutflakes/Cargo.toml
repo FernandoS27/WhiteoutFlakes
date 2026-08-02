@@ -37,11 +37,28 @@ bundled-whiteoutlib = ["whiteoutflakes-sys/bundled-whiteoutlib"]
 system-whiteoutlib  = ["whiteoutflakes-sys/system-whiteoutlib"]
 
 [dependencies]
-whiteoutflakes-sys = { version = "0.1.0", path = "../whiteoutflakes-sys", default-features = false }
+whiteoutflakes-sys = { version = "0.2.0", path = "../whiteoutflakes-sys", default-features = false }
 
 [dev-dependencies]
 raw-window-handle = "0.6"
 winit = "0.30"
+# examples/playback_gui only. A dev-dependency, so it never reaches anyone
+# who depends on this crate — the renderer brings no GUI toolkit and has no
+# opinion about which one a host uses.
+#
+# Raw Win32 rather than a toolkit because the point of that example is that
+# each panel is a real child window with its own swap chain, rendered
+# directly. A toolkit that owns the GPU (egui/wgpu and friends) would force
+# the scene through a readback instead, which is both slower and, outside
+# WebGPU, not implemented.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [package.metadata.docs.rs]
 # docs.rs has no C++ toolchain and no patience for one; build.rs skips the

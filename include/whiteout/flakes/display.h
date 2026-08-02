@@ -41,8 +41,15 @@ struct FrameStats {
     i32 geosets = 0;
     i32 textures = 0;
     i32 nodes = 0;
+    /// Live legacy (PE2) particles. Does **not** include corn effects — that
+    /// is a separate simulation, counted by @ref cornParticles.
     i32 particles = 0;
     i32 segments = 0;
+    /// Live corn-effects particles across every registered emitter. Separate
+    /// from @ref particles because the two are different simulations with
+    /// different lifetimes, and a host watching one learns nothing about
+    /// the other.
+    i32 cornParticles = 0;
 };
 
 /// @brief Scripted camera the host may select for a loaded model.

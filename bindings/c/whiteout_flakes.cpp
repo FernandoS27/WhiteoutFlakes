@@ -48,6 +48,46 @@ inline whiteout_CString emptyCString() {
 
 } // anonymous
 
+size_t whiteout_flakes_StringList_size(const whiteout_StringList* self) {
+    return reinterpret_cast<const std::vector<std::string>*>(self)->size();
+}
+
+whiteout_CString whiteout_flakes_StringList_at(whiteout_StringList* self, size_t index) {
+    auto* v = reinterpret_cast<std::vector<std::string>*>(self);
+    if (index >= v->size()) return emptyCString();
+    const std::string& s = (*v)[index];
+    return whiteout_CString{ s.c_str(), s.size(), nullptr };
+}
+
+void whiteout_flakes_StringList_delete(whiteout_StringList* self) {
+    delete reinterpret_cast<std::vector<std::string>*>(self);
+}
+
+size_t whiteout_flakes_SequenceInfoList_size(const whiteout_SequenceInfoList* self) {
+    return reinterpret_cast<const std::vector<whiteout::flakes::SequenceInfo>*>(self)->size();
+}
+
+struct whiteout_SequenceInfo* whiteout_flakes_SequenceInfoList_at(whiteout_SequenceInfoList* self, size_t index) {
+    auto* v = reinterpret_cast<std::vector<whiteout::flakes::SequenceInfo>*>(self);
+    return reinterpret_cast<struct whiteout_SequenceInfo*>(&(*v)[index]);
+}
+
+void whiteout_flakes_SequenceInfoList_delete(whiteout_SequenceInfoList* self) {
+    delete reinterpret_cast<std::vector<whiteout::flakes::SequenceInfo>*>(self);
+}
+
+size_t whiteout_flakes_CameraPresetList_size(const whiteout_CameraPresetList* self) {
+    return reinterpret_cast<const std::vector<whiteout::flakes::CameraPreset>*>(self)->size();
+}
+
+struct whiteout_CameraPreset* whiteout_flakes_CameraPresetList_at(whiteout_CameraPresetList* self, size_t index) {
+    auto* v = reinterpret_cast<std::vector<whiteout::flakes::CameraPreset>*>(self);
+    return reinterpret_cast<struct whiteout_CameraPreset*>(&(*v)[index]);
+}
+
+void whiteout_flakes_CameraPresetList_delete(whiteout_CameraPresetList* self) {
+    delete reinterpret_cast<std::vector<whiteout::flakes::CameraPreset>*>(self);
+}
 // ── FlakesRect ─────────────────────────────────────────────────
 
 extern "C" {
@@ -300,6 +340,14 @@ int32_t whiteout_flakes_FlakesFrameStats_get_segments(const whiteout_FlakesFrame
 
 void whiteout_flakes_FlakesFrameStats_set_segments(whiteout_FlakesFrameStats* self, int32_t value) {
     reinterpret_cast<whiteout::flakes::FrameStats*>(self)->segments = value;
+}
+
+int32_t whiteout_flakes_FlakesFrameStats_get_cornParticles(const whiteout_FlakesFrameStats* self) {
+    return reinterpret_cast<const whiteout::flakes::FrameStats*>(self)->cornParticles;
+}
+
+void whiteout_flakes_FlakesFrameStats_set_cornParticles(whiteout_FlakesFrameStats* self, int32_t value) {
+    reinterpret_cast<whiteout::flakes::FrameStats*>(self)->cornParticles = value;
 }
 
 } // extern "C"
@@ -696,6 +744,10 @@ uint32_t whiteout_flakes_FlakesLoaderView_SpawnUnit(whiteout_FlakesLoaderView* s
     return reinterpret_cast<whiteout::flakes::LoaderView*>(self)->SpawnUnit(std::string(path ? path : ""));
 }
 
+uint32_t whiteout_flakes_FlakesLoaderView_SpawnEffect(whiteout_FlakesLoaderView* self, const char* path) {
+    return reinterpret_cast<whiteout::flakes::LoaderView*>(self)->SpawnEffect(std::string(path ? path : ""));
+}
+
 void whiteout_flakes_FlakesLoaderView_RequestClearAll(whiteout_FlakesLoaderView* self) {
     reinterpret_cast<whiteout::flakes::LoaderView*>(self)->RequestClearAll();
 }
@@ -904,6 +956,56 @@ void whiteout_flakes_FlakesReplaceablesView_SetTileset(whiteout_FlakesReplaceabl
 
 } // extern "C"
 
+// ── FlakesPlaybackView ─────────────────────────────────────────────────
+
+extern "C" {
+
+void whiteout_flakes_FlakesPlaybackView_delete(whiteout_FlakesPlaybackView* self) {
+    delete reinterpret_cast<whiteout::flakes::PlaybackView*>(self);
+}
+
+int32_t whiteout_flakes_FlakesPlaybackView_State(const whiteout_FlakesPlaybackView* self) {
+    return static_cast<int32_t>(reinterpret_cast<const whiteout::flakes::PlaybackView*>(self)->GetState());
+}
+
+void whiteout_flakes_FlakesPlaybackView_SetState(whiteout_FlakesPlaybackView* self, int32_t arg) {
+    reinterpret_cast<whiteout::flakes::PlaybackView*>(self)->SetState(static_cast<whiteout::flakes::PlaybackState>(arg));
+}
+
+void whiteout_flakes_FlakesPlaybackView_Play(whiteout_FlakesPlaybackView* self) {
+    reinterpret_cast<whiteout::flakes::PlaybackView*>(self)->Play();
+}
+
+void whiteout_flakes_FlakesPlaybackView_Pause(whiteout_FlakesPlaybackView* self) {
+    reinterpret_cast<whiteout::flakes::PlaybackView*>(self)->Pause();
+}
+
+void whiteout_flakes_FlakesPlaybackView_Stop(whiteout_FlakesPlaybackView* self) {
+    reinterpret_cast<whiteout::flakes::PlaybackView*>(self)->Stop();
+}
+
+void whiteout_flakes_FlakesPlaybackView_Restart(whiteout_FlakesPlaybackView* self) {
+    reinterpret_cast<whiteout::flakes::PlaybackView*>(self)->Restart();
+}
+
+void whiteout_flakes_FlakesPlaybackView_ResyncEffects(whiteout_FlakesPlaybackView* self) {
+    reinterpret_cast<whiteout::flakes::PlaybackView*>(self)->ResyncEffects();
+}
+
+int32_t whiteout_flakes_FlakesPlaybackView_IsPaused(const whiteout_FlakesPlaybackView* self) {
+    return reinterpret_cast<const whiteout::flakes::PlaybackView*>(self)->IsPaused();
+}
+
+float whiteout_flakes_FlakesPlaybackView_TimeScale(const whiteout_FlakesPlaybackView* self) {
+    return reinterpret_cast<const whiteout::flakes::PlaybackView*>(self)->GetTimeScale();
+}
+
+void whiteout_flakes_FlakesPlaybackView_SetTimeScale(whiteout_FlakesPlaybackView* self, float arg) {
+    reinterpret_cast<whiteout::flakes::PlaybackView*>(self)->SetTimeScale(arg);
+}
+
+} // extern "C"
+
 // ── FlakesActorView ─────────────────────────────────────────────────
 
 extern "C" {
@@ -952,6 +1054,11 @@ void whiteout_flakes_FlakesActorView_SetRoleExternal(whiteout_FlakesActorView* s
     reinterpret_cast<whiteout::flakes::ActorView*>(self)->SetRoleExternal();
 }
 
+struct whiteout_SequenceInfoList* whiteout_flakes_FlakesActorView_Sequences(const whiteout_FlakesActorView* self) {
+    return reinterpret_cast<struct whiteout_SequenceInfoList*>(
+        new std::vector<whiteout::flakes::SequenceInfo>(reinterpret_cast<const whiteout::flakes::ActorView*>(self)->Sequences()));
+}
+
 int32_t whiteout_flakes_FlakesActorView_ActiveSequenceIndex(const whiteout_FlakesActorView* self) {
     return reinterpret_cast<const whiteout::flakes::ActorView*>(self)->ActiveSequenceIndex();
 }
@@ -992,6 +1099,11 @@ int32_t whiteout_flakes_FlakesActorView_CollisionShapeCount(const whiteout_Flake
     return reinterpret_cast<const whiteout::flakes::ActorView*>(self)->CollisionShapeCount();
 }
 
+struct whiteout_CameraPresetList* whiteout_flakes_FlakesActorView_CameraPresets(const whiteout_FlakesActorView* self) {
+    return reinterpret_cast<struct whiteout_CameraPresetList*>(
+        new std::vector<whiteout::flakes::CameraPreset>(reinterpret_cast<const whiteout::flakes::ActorView*>(self)->CameraPresets()));
+}
+
 int32_t whiteout_flakes_FlakesActorView_PreferredRenderMode(const whiteout_FlakesActorView* self) {
     return static_cast<int32_t>(reinterpret_cast<const whiteout::flakes::ActorView*>(self)->PreferredRenderMode());
 }
@@ -1006,6 +1118,12 @@ whiteout_CString whiteout_flakes_FlakesActorView_ChildModelPaths_at(const whiteo
     return wrapCString(std::string(__v[index]));
 }
 
+
+struct whiteout_StringList* whiteout_flakes_FlakesActorView_ChildModelPaths(const whiteout_FlakesActorView* self) {
+    return reinterpret_cast<struct whiteout_StringList*>(
+        new std::vector<std::string>(
+            reinterpret_cast<const whiteout::flakes::ActorView*>(self)->ChildModelPaths()));
+}
 } // extern "C"
 
 // ── FlakesRenderer ─────────────────────────────────────────────────
@@ -1077,6 +1195,11 @@ struct whiteout_FlakesReplaceablesView* whiteout_flakes_FlakesRenderer_Replaceab
 struct whiteout_FlakesAssetsView* whiteout_flakes_FlakesRenderer_Assets(whiteout_FlakesRenderer* self) {
     return reinterpret_cast<struct whiteout_FlakesAssetsView*>(
         new whiteout::flakes::AssetsView(reinterpret_cast<whiteout::flakes::Renderer*>(self)->Assets()));
+}
+
+struct whiteout_FlakesPlaybackView* whiteout_flakes_FlakesRenderer_Playback(whiteout_FlakesRenderer* self) {
+    return reinterpret_cast<struct whiteout_FlakesPlaybackView*>(
+        new whiteout::flakes::PlaybackView(reinterpret_cast<whiteout::flakes::Renderer*>(self)->Playback()));
 }
 
 struct whiteout_FlakesActorView* whiteout_flakes_FlakesRenderer_Actor(whiteout_FlakesRenderer* self, uint32_t h) {

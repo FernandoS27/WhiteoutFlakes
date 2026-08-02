@@ -8,7 +8,7 @@
 #include "renderer/model/model_loader.h"
 #include "renderer/model/model_template.h"
 #include "io/mdx_model_adapter.h"
-#include "pkb_effect_source.h"
+#include "renderer/model/corn_effect_source.h"
 #include "renderer/particle/splat_service.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
@@ -612,7 +612,7 @@ bool ViewerApp::OpenStorageDocument(const std::string& archivePath, bool effect,
         currentModelPath_ = apath;
         model::Actor* hero =
             effect ? service_.Loader().SpawnUnitFromSource(
-                         std::make_shared<model::PkbEffectSource>(archivePath))
+                         std::make_shared<model::CornEffectSource>(archivePath))
                    : service_.Loader().SpawnUnit(archivePath);
         if (!hero) {
             std::fprintf(stderr, "[viewer] storage open FAILED for %s\n", archivePath.c_str());
@@ -721,7 +721,7 @@ bool ViewerApp::LoadEffectIntoActiveScene(const std::filesystem::path& path) {
     service_.Scene().SetPE1BasePath(path.parent_path());
 
     service_.Loader().RequestClearAll();
-    auto source = std::make_shared<model::PkbEffectSource>(io::PathToUtf8(path));
+    auto source = std::make_shared<model::CornEffectSource>(io::PathToUtf8(path));
     model::Actor* hero = service_.Loader().SpawnUnitFromSource(source);
     if (!hero) {
         std::fprintf(stderr, "[viewer] effect spawn FAILED for %s\n",

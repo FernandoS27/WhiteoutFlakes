@@ -46,6 +46,14 @@ void FrameTicker::Tick(SceneManager& scene, f32 dt) {
         RenderService* rs;
         ~Restore() { rs->SetActiveScene(rs->DefaultSceneId()); }
     } restore{&rs_};
+
+    // The scene owns the transport, and this is the half of the frame that
+    // drives the effect simulations. Scaling dt here is what makes a pause
+    // reach particles, PE1, ribbons and corn-fx — SceneManager::Update only
+    // covers the animation clocks. Reading it from the scene rather than
+    // taking a parameter keeps the two halves from disagreeing when a host
+    // drives them separately, which is the normal arrangement.
+    const f32 sdt = scene.EffectiveDt(dt);
     {
         // Pump the AssetManager's render-thread half: drains the
         // prepared queue (CPU-decoded texture / particle / child-MDX
@@ -73,16 +81,22 @@ void FrameTicker::Tick(SceneManager& scene, f32 dt) {
     }
     {
         WDX_CPU_ZONE("UpdateParticles");
-        UpdateParticles(dt);
+        UpdateParticles(sdt);
     }
     {
         WDX_CPU_ZONE("UpdatePE1");
-        UpdatePE1(dt);
+        UpdatePE1(sdt);
     }
     {
         WDX_CPU_ZONE("UpdateRibbons");
-        UpdateRibbons(dt);
+        UpdateRibbons(sdt);
     }
+    // Deliberately NOT SetPaused(): the emitter's paused flag feeds
+    // ShouldBeSpawning, and an effect going inactive triggers cornflakes'
+    // own reset-and-reinitialise, which respawns the effect from frame
+    // zero — the opposite of holding it still. A zero dt freezes the sim
+    // while leaving the emitter active, so the particles stay exactly
+    // where they were and keep drawing.
 }
 
 void FrameTicker::UpdateAttachments() {

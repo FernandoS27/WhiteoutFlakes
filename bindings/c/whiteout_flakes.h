@@ -12,6 +12,27 @@
 extern "C" {
 #endif
 
+/* ── Owned string list ───────── */
+
+typedef struct whiteout_StringList whiteout_StringList;
+size_t whiteout_flakes_StringList_size(const whiteout_StringList* self);
+/* Borrowed; valid until the list is destroyed. */
+whiteout_CString whiteout_flakes_StringList_at(whiteout_StringList* self, size_t index);
+void whiteout_flakes_StringList_delete(whiteout_StringList* self);
+
+/* ── Owned handle lists ───────── */
+
+typedef struct whiteout_SequenceInfoList whiteout_SequenceInfoList;
+size_t whiteout_flakes_SequenceInfoList_size(const whiteout_SequenceInfoList* self);
+/* Borrowed element; valid until the list is destroyed. */
+struct whiteout_SequenceInfo* whiteout_flakes_SequenceInfoList_at(whiteout_SequenceInfoList* self, size_t index);
+void whiteout_flakes_SequenceInfoList_delete(whiteout_SequenceInfoList* self);
+typedef struct whiteout_CameraPresetList whiteout_CameraPresetList;
+size_t whiteout_flakes_CameraPresetList_size(const whiteout_CameraPresetList* self);
+/* Borrowed element; valid until the list is destroyed. */
+struct whiteout_CameraPreset* whiteout_flakes_CameraPresetList_at(whiteout_CameraPresetList* self, size_t index);
+void whiteout_flakes_CameraPresetList_delete(whiteout_CameraPresetList* self);
+
 /* ── Enums ─────────────────────────────────────────────────── */
 
 typedef enum {
@@ -26,6 +47,12 @@ typedef enum {
     whiteout_flakes_RenderMode_SD,
     whiteout_flakes_RenderMode_HD,
 } whiteout_flakes_RenderMode;
+
+typedef enum {
+    whiteout_flakes_PlaybackState_Playing,
+    whiteout_flakes_PlaybackState_Paused,
+    whiteout_flakes_PlaybackState_Stopped,
+} whiteout_flakes_PlaybackState;
 
 typedef enum {
     whiteout_flakes_LightingMode_InGame,
@@ -98,6 +125,7 @@ typedef struct whiteout_FlakesDncView whiteout_FlakesDncView;
 typedef struct whiteout_FlakesShadowView whiteout_FlakesShadowView;
 typedef struct whiteout_FlakesSplatView whiteout_FlakesSplatView;
 typedef struct whiteout_FlakesReplaceablesView whiteout_FlakesReplaceablesView;
+typedef struct whiteout_FlakesPlaybackView whiteout_FlakesPlaybackView;
 typedef struct whiteout_FlakesActorView whiteout_FlakesActorView;
 typedef struct whiteout_FlakesRenderer whiteout_FlakesRenderer;
 
@@ -196,10 +224,14 @@ int32_t whiteout_flakes_FlakesFrameStats_get_textures(const whiteout_FlakesFrame
 void whiteout_flakes_FlakesFrameStats_set_textures(whiteout_FlakesFrameStats* self, int32_t value);
 int32_t whiteout_flakes_FlakesFrameStats_get_nodes(const whiteout_FlakesFrameStats* self);
 void whiteout_flakes_FlakesFrameStats_set_nodes(whiteout_FlakesFrameStats* self, int32_t value);
+/* Live legacy (PE2) particles. Does **not** include corn effects — that is a separate simulation, counted by @ref cornParticles. */
 int32_t whiteout_flakes_FlakesFrameStats_get_particles(const whiteout_FlakesFrameStats* self);
 void whiteout_flakes_FlakesFrameStats_set_particles(whiteout_FlakesFrameStats* self, int32_t value);
 int32_t whiteout_flakes_FlakesFrameStats_get_segments(const whiteout_FlakesFrameStats* self);
 void whiteout_flakes_FlakesFrameStats_set_segments(whiteout_FlakesFrameStats* self, int32_t value);
+/* Live corn-effects particles across every registered emitter. Separate from @ref particles because the two are different simulations with different lifetimes, and a host watching one learns nothing about the other. */
+int32_t whiteout_flakes_FlakesFrameStats_get_cornParticles(const whiteout_FlakesFrameStats* self);
+void whiteout_flakes_FlakesFrameStats_set_cornParticles(whiteout_FlakesFrameStats* self, int32_t value);
 
 /* ── FlakesCameraPreset ─────────────────────────────────────────────── */
 
@@ -360,6 +392,14 @@ void whiteout_flakes_FlakesLoaderView_delete(whiteout_FlakesLoaderView* self);
 
 /* Spawn an actor from a path resolvable by the content provider. @return New actor handle, or `0` on failure. */
 uint32_t whiteout_flakes_FlakesLoaderView_SpawnUnit(whiteout_FlakesLoaderView* self, const char* path);
+/* Spawn a standalone corn effect (`.pkb` / `.pkfx`) as its own actor, with no model around it. */
+/*  */
+/* A corn effect is normally reached through a model: an MDX's `CORN` chunk names the `.pkb` and the loader stages an emitter for it. This plays one on its own — the same thing the viewer does when you open a `.pkb` directly. */
+/*  */
+/* Equivalent to `SpawnUnitFromSource` with the library's `CornEffectSource`, and exists because bindings cannot implement @ref IModelSource themselves. The actor carries a single always-on emitter and one looping placeholder sequence to keep it ticking; the effect's own runtime decides whether it loops or plays once. */
+/*  */
+/* @param path Resolvable by the content provider, exactly like @ref SpawnUnit. */
+uint32_t whiteout_flakes_FlakesLoaderView_SpawnEffect(whiteout_FlakesLoaderView* self, const char* path);
 /* Defer-destroy every actor currently in the scene. */
 void whiteout_flakes_FlakesLoaderView_RequestClearAll(whiteout_FlakesLoaderView* self);
 /* Destroy a single actor by handle. Used by JS wrappers that expose mdx-m3-viewer-style `instance.detach()` / `instance.hide()` semantics. */
@@ -450,6 +490,37 @@ int32_t whiteout_flakes_FlakesReplaceablesView_ConsumeDirty(whiteout_FlakesRepla
 /* Switch the active tileset; in-scene replaceables re-resolve on the next frame. */
 void whiteout_flakes_FlakesReplaceablesView_SetTileset(whiteout_FlakesReplaceablesView* self, int32_t arg);
 
+/* ── FlakesPlaybackView ─────────────────────────────────────────────── */
+
+/* Transport controls for the scene clock — one switch that governs model animation and every effect system alike. */
+/*  */
+/* A frame advances in two halves: `SceneView::Update` moves the animation clocks, `Renderer::Tick` moves the particle, PE1, ribbon and corn effects simulations. Both read the state set here, so a host cannot pause one and leave the other running. */
+/*  */
+/* @code r.Playback().Pause();     // freeze mid-animation, particles hang in air r.Playback().Play();      // carry on from that instant r.Playback().Restart();   // rewind to the top and play r.Playback().Stop();      // rewind to the top and hold @endcode */
+void whiteout_flakes_FlakesPlaybackView_delete(whiteout_FlakesPlaybackView* self);
+
+/* Current transport state. */
+int32_t whiteout_flakes_FlakesPlaybackView_State(const whiteout_FlakesPlaybackView* self);
+/* Set the transport state directly. Entering @ref PlaybackState::Stopped rewinds; the other transitions do not. */
+void whiteout_flakes_FlakesPlaybackView_SetState(whiteout_FlakesPlaybackView* self, int32_t arg);
+/* Resume (or continue) advancing time. */
+void whiteout_flakes_FlakesPlaybackView_Play(whiteout_FlakesPlaybackView* self);
+/* Hold time at the current instant. Resuming continues from here. */
+void whiteout_flakes_FlakesPlaybackView_Pause(whiteout_FlakesPlaybackView* self);
+/* Rewind to the start and hold. Animation cursors return to zero and transient effect state — live particles, ribbon trails, PE1 instances, corn effects runtimes — is discarded, so nothing is left hanging in mid-air. */
+void whiteout_flakes_FlakesPlaybackView_Stop(whiteout_FlakesPlaybackView* self);
+/* Rewind to the start and play. Equivalent to `Stop()` then `Play()`, and the usual way to replay a one-shot effect. */
+void whiteout_flakes_FlakesPlaybackView_Restart(whiteout_FlakesPlaybackView* self);
+/* Drop transient effect state so the effect systems replay from the cursor's current position. */
+/*  */
+/* For hosts that move the clock themselves — a timeline scrub — rather than through this view. Particles, ribbons and corn effects are forward simulations with no seek: jumping the animation cursor leaves them mid-flight from wherever they were, which reads as the effects ignoring the scrub. This restarts them. The clock is untouched. */
+void whiteout_flakes_FlakesPlaybackView_ResyncEffects(whiteout_FlakesPlaybackView* self);
+/* `true` when time is not advancing (paused *or* stopped). */
+int32_t whiteout_flakes_FlakesPlaybackView_IsPaused(const whiteout_FlakesPlaybackView* self);
+/* Multiplier applied to every advancing frame. Survives a pause/resume, so slow-motion is not lost on Play(). */
+float whiteout_flakes_FlakesPlaybackView_TimeScale(const whiteout_FlakesPlaybackView* self);
+void whiteout_flakes_FlakesPlaybackView_SetTimeScale(whiteout_FlakesPlaybackView* self, float arg);
+
 /* ── FlakesActorView ─────────────────────────────────────────────── */
 
 /* Value-typed view onto one actor. */
@@ -475,6 +546,8 @@ uint32_t whiteout_flakes_FlakesActorView_TeamColor(const whiteout_FlakesActorVie
 void whiteout_flakes_FlakesActorView_SetTeamColor(whiteout_FlakesActorView* self, uint8_t r, uint8_t g, uint8_t b);
 /* Mark this actor as host-driven so `Renderer::Tick` skips evaluating it. Used by the Max plugin, which receives time scrubs from Max's timeline and evaluates manually via @ref EvaluateAndApply. */
 void whiteout_flakes_FlakesActorView_SetRoleExternal(whiteout_FlakesActorView* self);
+/* @name Animation cursor @{ */
+struct whiteout_SequenceInfoList* whiteout_flakes_FlakesActorView_Sequences(const whiteout_FlakesActorView* self);
 int32_t whiteout_flakes_FlakesActorView_ActiveSequenceIndex(const whiteout_FlakesActorView* self);
 void whiteout_flakes_FlakesActorView_SetActiveSequence(whiteout_FlakesActorView* self, int32_t arg);
 int32_t whiteout_flakes_FlakesActorView_AnimationTimeMs(const whiteout_FlakesActorView* self);
@@ -491,11 +564,16 @@ void whiteout_flakes_FlakesActorView_EvaluateAt(whiteout_FlakesActorView* self, 
 int32_t whiteout_flakes_FlakesActorView_GeosetCount(const whiteout_FlakesActorView* self);
 int32_t whiteout_flakes_FlakesActorView_MaterialCount(const whiteout_FlakesActorView* self);
 int32_t whiteout_flakes_FlakesActorView_CollisionShapeCount(const whiteout_FlakesActorView* self);
+/* Camera presets attached to this actor's source model. */
+struct whiteout_CameraPresetList* whiteout_flakes_FlakesActorView_CameraPresets(const whiteout_FlakesActorView* self);
 /* Render mode the actor's template expects (`HD` if any material layer uses a non-zero BLS shaderId, else `SD`). Hosts call this after `SpawnUnit` and forward to `SettingsView::SetRenderMode` so SD models don't render through the HD pipeline (which mis-blends multi-layer SD materials) and vice-versa. */
 int32_t whiteout_flakes_FlakesActorView_PreferredRenderMode(const whiteout_FlakesActorView* self);
 /* Every child-model path this actor's template will eventually need: attachment slots (`AttachmentConfig`) and legacy PE1 particle emitters (`PE1EmitterConfig`). Hosts running an async loader (web build) use this to eagerly prefetch the child MDX bytes so the first attachment spawn / first PE1 fire lands in a primed cache rather than triggering a miss. */
 size_t whiteout_flakes_FlakesActorView_ChildModelPaths_count(const whiteout_FlakesActorView* self);
 whiteout_CString whiteout_flakes_FlakesActorView_ChildModelPaths_at(const whiteout_FlakesActorView* self, size_t index);
+/* Materialises the whole list in one call. Prefer this over the
+ * _count/_at pair above, which re-runs the query per index. */
+struct whiteout_StringList* whiteout_flakes_FlakesActorView_ChildModelPaths(const whiteout_FlakesActorView* self);
 
 /* ── FlakesRenderer ─────────────────────────────────────────────── */
 
@@ -521,6 +599,8 @@ struct whiteout_FlakesShadowView* whiteout_flakes_FlakesRenderer_Shadow(whiteout
 struct whiteout_FlakesSplatView* whiteout_flakes_FlakesRenderer_Splats(whiteout_FlakesRenderer* self);
 struct whiteout_FlakesReplaceablesView* whiteout_flakes_FlakesRenderer_Replaceables(whiteout_FlakesRenderer* self);
 struct whiteout_FlakesAssetsView* whiteout_flakes_FlakesRenderer_Assets(whiteout_FlakesRenderer* self);
+/* Play / pause / stop / restart the scene clock, for models and effects together. */
+struct whiteout_FlakesPlaybackView* whiteout_flakes_FlakesRenderer_Playback(whiteout_FlakesRenderer* self);
 /* Per-actor view. Returns an invalid view (`IsValid() == false`) for unknown handles. */
 struct whiteout_FlakesActorView* whiteout_flakes_FlakesRenderer_Actor(whiteout_FlakesRenderer* self, uint32_t h);
 /* Per-frame entry point. */

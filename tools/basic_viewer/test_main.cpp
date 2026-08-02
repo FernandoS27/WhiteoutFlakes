@@ -1,6 +1,6 @@
 #include "cubeb_sound_emitter.h"
 #include "gfx/gfx.h"
-#include "pkb_effect_source.h"
+#include "renderer/model/corn_effect_source.h"
 #include "renderer/frame_ticker.h"
 #include "renderer/model/model_loader.h"
 #include "renderer/particle/particle_service.h"
@@ -126,7 +126,7 @@ static int RunHeadlessTest(whiteout::flakes::renderer::RenderService& renderer,
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (ext == ".pkb" || ext == ".pkfx") {
             // Standalone PopcornFX effect — same path the viewer's LoadEffect uses.
-            auto src = std::make_shared<wf::renderer::model::PkbEffectSource>(
+            auto src = std::make_shared<wf::renderer::model::CornEffectSource>(
                 wf::io::PathToUtf8(mdxPath));
             hero = renderer.Loader().SpawnUnitFromSource(src);
             step(hero ? "SpawnEffect OK" : "SpawnEffect FAILED");

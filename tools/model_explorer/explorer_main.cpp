@@ -3,7 +3,7 @@
 
 #include "casc_browser.h"
 #include "explorer_app.h"
-#include "pkb_effect_source.h"
+#include "renderer/model/corn_effect_source.h"
 #include "thumbnail_framing.h"
 #include "thumbnail_pool.h"
 
@@ -336,7 +336,7 @@ int main(int argc, char* argv[]) {
                               cascRenderPath.find(".pkfx") != std::string::npos;
         wf::renderer::model::Actor* hero =
             isEffect ? renderer.Loader().SpawnUnitFromSource(
-                           std::make_shared<wf::renderer::model::PkbEffectSource>(cascRenderPath))
+                           std::make_shared<wf::renderer::model::CornEffectSource>(cascRenderPath))
                      : renderer.Loader().SpawnUnit(cascRenderPath);
         if (isEffect) {
             renderer.Settings().SetBackgroundColor(33, 38, 48); // match app UI bg for effects

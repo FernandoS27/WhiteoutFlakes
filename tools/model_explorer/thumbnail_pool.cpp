@@ -1,6 +1,6 @@
 #include "thumbnail_pool.h"
 
-#include "pkb_effect_source.h" // PkbEffectSource (from tools/basic_viewer)
+#include "renderer/model/corn_effect_source.h"
 #include "thumbnail_framing.h"
 
 #include "renderer/camera.h"
@@ -116,7 +116,7 @@ void ThumbnailPool::LoadCell(Cell& cell) {
         // particle textures and must load + render in HD, exactly as it would
         // when attached to an HD model.
         cell.isHd = cell.path.find("_hd.w3mod") != std::string::npos;
-        auto src = std::make_shared<renderer::model::PkbEffectSource>(cell.path);
+        auto src = std::make_shared<renderer::model::CornEffectSource>(cell.path);
         hero = svc_.Loader().SpawnUnitFromSource(src);
         cell.effectWarmup = 0; // frame once particles develop
     } else {
@@ -157,7 +157,7 @@ void ThumbnailPool::ResetEffect(Cell& cell) {
     svc_.SetActiveScene(cell.scene);
     if (cell.actor)
         svc_.Loader().DestroyActor(cell.actor);
-    auto src = std::make_shared<renderer::model::PkbEffectSource>(cell.path);
+    auto src = std::make_shared<renderer::model::CornEffectSource>(cell.path);
     auto* hero = svc_.Loader().SpawnUnitFromSource(src);
     cell.actor = hero ? hero->handle : 0;
     svc_.SetActiveScene(svc_.DefaultSceneId());

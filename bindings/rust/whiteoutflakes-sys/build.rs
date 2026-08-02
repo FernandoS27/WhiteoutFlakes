@@ -281,14 +281,33 @@ fn build_from_source(vendor: &Path) {
             );
         }
 
-        // Headers, and nothing else. The archives are named by whiteoutlib's
-        // own build script — two of them, `whiteout_native_static` for the C
-        // ABI and `whiteout_lib` for the C++ behind it — and cargo forwards a
-        // dependency's link directives to the final binary, after this
-        // crate's own. Naming one of them here as well would be worse than
-        // redundant: `DEP_WHITEOUT_NATIVE_LIB_DIR` points at the C-ABI
-        // directory, which does not contain the C++ archive that resolves
-        // what this crate actually references.
+        // WhiteoutLib ships two archives: `whiteout_native_static` for the C
+        // ABI and `whiteout_lib` for the C++ behind it. This crate's objects
+        // reference the C++ directly, so it has to ask for both.
+        //
+        // whiteoutlib's build script names them too, but that is not enough
+        // to rely on. A build script's `-l` rides on its crate's rlib and
+        // only reaches the link when that rlib does; a binary that uses the
+        // renderer without touching whiteoutlib's Rust API drops the unused
+        // rlib and the `-l` with it, and the link fails on every
+        // `whiteout::textures::Texture` symbol. `-L` is graph-wide and does
+        // arrive either way, which is why the search paths are left to
+        // whiteoutlib — deriving `whiteout_lib`'s directory from
+        // `DEP_WHITEOUT_NATIVE_LIB_DIR` (which points at the C-ABI
+        // directory) would mean hard-coding upstream's build layout here.
+        // Order matters for GNU ld, which resolves static archives in
+        // command-line order: the archives that *reference* whiteout_lib
+        // come first. MSVC does not care, so getting this wrong would
+        // survive local testing here and fail on Linux.
+        println!("cargo:rustc-link-lib=static=whiteout_native_static");
+        if cfg!(feature = "casc") {
+            println!("cargo:rustc-link-lib=static=whiteout_casc");
+        }
+        println!("cargo:rustc-link-lib=static=whiteout_lib");
+        if let Ok(dir) = env::var("DEP_WHITEOUT_NATIVE_LIB_DIR") {
+            println!("cargo:rustc-link-search=native={dir}");
+        }
+
         cfg.define("WFS_EXTERNAL_WHITEOUTLIB", "ON");
         cfg.define("WFS_WHITEOUTLIB_INCLUDE", &include);
     } else {

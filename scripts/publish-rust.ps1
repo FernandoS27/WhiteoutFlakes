@@ -20,6 +20,30 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# True if this exact name+version is already on crates.io. Releases move one
+# crate at a time — a shader pack only changes when the shaders do — so the
+# ones that did not move are skipped rather than failing the run on "crate
+# version already uploaded".
+function Test-AlreadyPublished([string]$name, [string]$version) {
+    $prefix = switch ($name.Length) {
+        1 { "1" }
+        2 { "2" }
+        3 { "3/" + $name.Substring(0, 1) }
+        default { $name.Substring(0, 2) + "/" + $name.Substring(2, 2) }
+    }
+    try {
+        $body = Invoke-WebRequest -UseBasicParsing -TimeoutSec 20 `
+            -Uri "https://index.crates.io/$prefix/$name"
+    } catch {
+        return $false   # unpublished crates 404 here; so does a network blip
+    }
+    foreach ($line in ($body.Content -split "`n")) {
+        if ($line.Trim() -and (ConvertFrom-Json $line).vers -eq $version) { return $true }
+    }
+    return $false
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $rustDir  = Join-Path $repoRoot "bindings/rust"
 
@@ -62,8 +86,20 @@ try {
             # resolves them, so a crate whose dependencies are not yet on
             # crates.io cannot be packaged at all. On a first publish that is
             # every crate above the shader packs, and it resolves itself as
-            # the run proceeds — so in a dry run it is expected, not a failure.
-            if ($DryRun -and ($out -match "no matching package named")) {
+            # the run proceeds — so it is expected, not a failure, in a real
+            # run as much as a dry one. Deferring costs nothing here: the
+            # crates that cannot be measured yet are the small ones, and
+            # `cargo publish` packages each again at upload time anyway. The
+            # shader packs are what sit near the cap, they have no
+            # dependencies, and they are always measured before anything is
+            # uploaded — which is what this pre-check exists for.
+            # Cargo words this two ways: "no matching package named" when the
+            # dependency has never been published, and "candidate versions
+            # found which didn't match" when an older version exists and the
+            # new one does not yet. A release that bumps sys and the wrapper
+            # together hits the second on the wrapper.
+            if (($out -match "no matching package named") -or
+                ($out -match "candidate versions found which didn't match")) {
                 Write-Host ("  {0,-32} deferred (dependencies not yet on crates.io)" -f $crate) `
                     -ForegroundColor DarkGray
                 continue
@@ -93,16 +129,39 @@ try {
     }
 
     Write-Host "== publishing ==" -ForegroundColor Cyan
+    $uploaded = @()
     foreach ($crate in $order) {
-        Write-Host "  $crate" -ForegroundColor Cyan
-        & cargo publish -p $crate
+        $ver = ((cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages |
+            Where-Object { $_.name -eq $crate }).version
+        if (Test-AlreadyPublished $crate $ver) {
+            Write-Host ("  {0,-32} {1} already on crates.io - skipped" -f $crate, $ver) `
+                -ForegroundColor DarkGray
+            continue
+        }
+        Write-Host "  $crate $ver" -ForegroundColor Cyan
+        # `--allow-dirty` is required, not lax. What these crates ship is
+        # generated and gitignored on purpose — the shader `pack/` trees and
+        # `whiteoutflakes-sys/vendor/` are staged by vendor-rust.ps1, and
+        # committing tens of megabytes of build output to keep cargo quiet
+        # would be the wrong trade. Cargo counts untracked files inside a
+        # package as uncommitted changes, so it refuses without this even
+        # when `git status` is clean. The check above runs vendor-rust.ps1's
+        # staging and verifies it is present, which is the guarantee that
+        # actually matters here.
+        & cargo publish -p $crate --allow-dirty
         if ($LASTEXITCODE -ne 0) { throw "cargo publish failed for $crate" }
+        $uploaded += $crate
         if ($crate -ne $order[-1]) {
             Write-Host "    waiting ${IndexWaitSeconds}s for the index" -ForegroundColor DarkGray
             Start-Sleep -Seconds $IndexWaitSeconds
         }
     }
-    Write-Host "`nPublished." -ForegroundColor Green
+    if ($uploaded.Count -eq 0) {
+        Write-Host "`nNothing to publish - every version is already on crates.io." `
+            -ForegroundColor Green
+    } else {
+        Write-Host ("`nPublished: " + ($uploaded -join ", ")) -ForegroundColor Green
+    }
 } finally {
     Pop-Location
 }

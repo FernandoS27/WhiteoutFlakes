@@ -6,44 +6,37 @@
 //
 // Everything here fills a gap the Rust emitter leaves; the "Not yet
 // bound" list at the bottom of `flakes.rs` is the authoritative
-// inventory of what is still missing. Two categories are covered:
-//
-//   * Field-only value structs (`FrameStats`, `ShadowParams`,
-//     `AssetsViewStats`) in method signatures. The emitter renders them
-//     as plain Rust structs but declines them as parameter and return
-//     shapes, so the round trip through the C handle is written here.
-//     These call *generated* C symbols.
+// inventory of what is still missing. Three categories are covered:
 //
 //   * Shapes the C generator declines too — `void*` window handles, math
-//     types, vectors of bound structs. These call the hand-written C
-//     symbols in `bindings/c/whiteout_flakes_shims.cpp`.
+//     types, target readback. These call the hand-written C symbols in
+//     `bindings/c/whiteout_flakes_shims.cpp`.
+//
+//   * Value structs the emitter still declines as a *return* shape.
+//     `ShadowView::params` is the last of these; it calls a *generated* C
+//     symbol and reads the fields out. `FrameStats`, `AssetsViewStats`,
+//     `Sequences` and `CameraPresets` used to be here and are not any
+//     more — the emitter grew handle types with getters and borrowed list
+//     views, which are better than what this file was doing by hand.
+//
+//   * Conveniences with no C++ counterpart: backend selection, the
+//     bundled shader pack, `Renderer::advance`.
 //
 // Math crosses as flat arrays rather than through a `Vector3f` type of
 // our own: callers already have a math library, and `[f32; 3]` converts
 // into every one of them for free.
 
 use crate::flakes::ffi;
-use crate::flakes::{ActorView, AssetsView, AssetsViewStats, CameraPreset, DncView, SceneView};
-use crate::flakes::{CameraView, FrameStats, GfxApi, PipelineView, SequenceInfo};
-use crate::flakes::{ShadowParams, ShadowView};
+use crate::flakes::{ActorView, CameraView, DncView, GfxApi, PipelineView};
+use crate::flakes::{SceneView, ShadowParams, ShadowView};
 use crate::support::{take_string, RawCString};
 
 extern "C" {
     // Generated (whiteout_flakes.cpp), but absent from `flakes.rs`'s own
     // extern block because the emitter skipped the wrapping method.
-    fn whiteout_flakes_FlakesPipelineView_FrameStats(
-        self_: *const ffi::whiteout_FlakesPipelineView,
-    ) -> *mut ffi::whiteout_FlakesFrameStats;
     fn whiteout_flakes_FlakesShadowView_Params(
         self_: *const ffi::whiteout_FlakesShadowView,
     ) -> *mut ffi::whiteout_FlakesShadowParams;
-    fn whiteout_flakes_FlakesShadowView_SetParams(
-        self_: *mut ffi::whiteout_FlakesShadowView,
-        params: *mut ffi::whiteout_FlakesShadowParams,
-    );
-    fn whiteout_flakes_FlakesAssetsView_Stats(
-        self_: *const ffi::whiteout_FlakesAssetsView,
-    ) -> *mut ffi::whiteout_FlakesAssetsViewStats;
 
     // Hand-written (whiteout_flakes_shims.cpp).
     fn whiteout_flakes_BackendCompiledIn(api: i32) -> i32;
@@ -86,20 +79,6 @@ extern "C" {
         self_: *mut ffi::whiteout_FlakesActorView,
         m: *const f32,
     );
-    fn whiteout_flakes_FlakesActorView_Sequences_count(
-        self_: *const ffi::whiteout_FlakesActorView,
-    ) -> usize;
-    fn whiteout_flakes_FlakesActorView_Sequences_at(
-        self_: *const ffi::whiteout_FlakesActorView,
-        index: usize,
-    ) -> *mut ffi::whiteout_FlakesSequenceInfo;
-    fn whiteout_flakes_FlakesActorView_CameraPresets_count(
-        self_: *const ffi::whiteout_FlakesActorView,
-    ) -> usize;
-    fn whiteout_flakes_FlakesActorView_CameraPresets_at(
-        self_: *const ffi::whiteout_FlakesActorView,
-        index: usize,
-    ) -> *mut ffi::whiteout_FlakesCameraPreset;
 }
 
 // ── Backend selection ─────────────────────────────────────────────────────
@@ -142,25 +121,6 @@ const fn platform_order() -> &'static [GfxApi] {
 
 /// # Safety
 /// `h` must be a live handle this call takes ownership of.
-unsafe fn frame_stats_from_raw(h: *mut ffi::whiteout_FlakesFrameStats) -> Option<FrameStats> {
-    if h.is_null() {
-        return None;
-    }
-    unsafe {
-        let out = FrameStats {
-            geosets: ffi::whiteout_flakes_FlakesFrameStats_get_geosets(h),
-            textures: ffi::whiteout_flakes_FlakesFrameStats_get_textures(h),
-            nodes: ffi::whiteout_flakes_FlakesFrameStats_get_nodes(h),
-            particles: ffi::whiteout_flakes_FlakesFrameStats_get_particles(h),
-            segments: ffi::whiteout_flakes_FlakesFrameStats_get_segments(h),
-        };
-        ffi::whiteout_flakes_FlakesFrameStats_delete(h);
-        Some(out)
-    }
-}
-
-/// # Safety
-/// As [`frame_stats_from_raw`].
 unsafe fn shadow_params_from_raw(h: *mut ffi::whiteout_FlakesShadowParams) -> Option<ShadowParams> {
     if h.is_null() {
         return None;
@@ -178,29 +138,6 @@ unsafe fn shadow_params_from_raw(h: *mut ffi::whiteout_FlakesShadowParams) -> Op
             enabled: ffi::whiteout_flakes_FlakesShadowParams_get_enabled(h) != 0,
         };
         ffi::whiteout_flakes_FlakesShadowParams_delete(h);
-        Some(out)
-    }
-}
-
-/// # Safety
-/// As [`frame_stats_from_raw`].
-unsafe fn assets_stats_from_raw(
-    h: *mut ffi::whiteout_FlakesAssetsViewStats,
-) -> Option<AssetsViewStats> {
-    if h.is_null() {
-        return None;
-    }
-    unsafe {
-        let out = AssetsViewStats {
-            live_slots: ffi::whiteout_flakes_FlakesAssetsViewStats_get_liveSlots(h),
-            loaded_slots: ffi::whiteout_flakes_FlakesAssetsViewStats_get_loadedSlots(h),
-            pending_needs: ffi::whiteout_flakes_FlakesAssetsViewStats_get_pendingNeeds(h),
-            total_acquires: ffi::whiteout_flakes_FlakesAssetsViewStats_get_totalAcquires(h),
-            total_releases: ffi::whiteout_flakes_FlakesAssetsViewStats_get_totalReleases(h),
-            total_applies: ffi::whiteout_flakes_FlakesAssetsViewStats_get_totalApplies(h),
-            total_apply_misses: ffi::whiteout_flakes_FlakesAssetsViewStats_get_totalApplyMisses(h),
-        };
-        ffi::whiteout_flakes_FlakesAssetsViewStats_delete(h);
         Some(out)
     }
 }
@@ -225,18 +162,6 @@ impl PipelineView {
                 width,
                 height,
             )
-        }
-    }
-
-    /// Last-frame stats (geoset / texture / node / particle / segment counts).
-    pub fn frame_stats(&self) -> FrameStats {
-        // SAFETY: handle is live for the duration of the call; the C side
-        // always returns an owned copy for a live view.
-        unsafe {
-            frame_stats_from_raw(whiteout_flakes_FlakesPipelineView_FrameStats(
-                self.raw.as_ptr(),
-            ))
-            .unwrap_or_default()
         }
     }
 }
@@ -362,6 +287,27 @@ impl crate::Renderer {
         };
         whiteoutflakes_sys::has_shaders_for(subdir)
     }
+
+    /// Advance the whole frame by `dt` seconds.
+    ///
+    /// A frame moves in two halves and they are separate calls on the C++
+    /// side: [`SceneView::update`] moves the animation clocks, and
+    /// [`Renderer::tick`](crate::Renderer::tick) moves the particle, PE1,
+    /// ribbon and corn effects simulations. A host that calls only `tick` gets
+    /// effects over a model frozen on frame zero, which looks like a broken
+    /// model rather than a missing call. This does both, in that order.
+    ///
+    /// Honours the transport: with playback paused or stopped the scene
+    /// ignores `dt`, so this is still the call to make every frame.
+    ///
+    /// Drives the default scene only. A host running several scenes calls
+    /// `update` and `tick` per scene itself.
+    pub fn advance(&mut self, dt: f32) {
+        if let Some(mut scene) = self.scene() {
+            scene.update(dt);
+        }
+        self.tick(dt);
+    }
 }
 
 impl SceneView {
@@ -388,30 +334,6 @@ impl ShadowView {
         // SAFETY: as above.
         unsafe {
             shadow_params_from_raw(whiteout_flakes_FlakesShadowView_Params(self.raw.as_ptr()))
-                .unwrap_or_default()
-        }
-    }
-
-    /// Replace the cascade-shadow-map tuning.
-    pub fn set_params(&mut self, params: &ShadowParams) {
-        // SAFETY: `to_native` hands us an owned handle; the C++ side copies
-        // out of it, so we free it as soon as the call returns.
-        unsafe {
-            let h = params.to_native();
-            whiteout_flakes_FlakesShadowView_SetParams(self.raw.as_ptr(), h);
-            ffi::whiteout_flakes_FlakesShadowParams_delete(h);
-        }
-    }
-}
-
-// ── AssetsView ────────────────────────────────────────────────────────────
-
-impl AssetsView {
-    /// Snapshot diagnostic counters.
-    pub fn stats(&self) -> AssetsViewStats {
-        // SAFETY: as above.
-        unsafe {
-            assets_stats_from_raw(whiteout_flakes_FlakesAssetsView_Stats(self.raw.as_ptr()))
                 .unwrap_or_default()
         }
     }
@@ -484,39 +406,6 @@ impl ActorView {
                 self.raw.as_ptr(),
                 m.as_ptr().cast::<f32>(),
             )
-        }
-    }
-
-    /// Animation sequences declared by this actor's source model.
-    pub fn sequences(&self) -> Vec<SequenceInfo> {
-        // SAFETY: index stays below the reported count; `_at` returns an
-        // owned copy that `SequenceInfo` takes over.
-        unsafe {
-            let n = whiteout_flakes_FlakesActorView_Sequences_count(self.raw.as_ptr());
-            (0..n)
-                .filter_map(|i| {
-                    SequenceInfo::from_raw(whiteout_flakes_FlakesActorView_Sequences_at(
-                        self.raw.as_ptr(),
-                        i,
-                    ))
-                })
-                .collect()
-        }
-    }
-
-    /// Camera presets attached to this actor's source model.
-    pub fn camera_presets(&self) -> Vec<CameraPreset> {
-        // SAFETY: as above.
-        unsafe {
-            let n = whiteout_flakes_FlakesActorView_CameraPresets_count(self.raw.as_ptr());
-            (0..n)
-                .filter_map(|i| {
-                    CameraPreset::from_raw(whiteout_flakes_FlakesActorView_CameraPresets_at(
-                        self.raw.as_ptr(),
-                        i,
-                    ))
-                })
-                .collect()
         }
     }
 }

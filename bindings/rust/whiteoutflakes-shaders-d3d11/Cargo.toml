@@ -5,7 +5,10 @@ description = "Prebuilt WhiteoutFlakes BLS shader pack — Direct3D 11 (DXBC)."
 keywords    = ["warcraft", "shaders", "graphics"]
 categories  = ["game-development", "rendering"]
 include     = ["src/**/*.rs", "pack/**", "README.md"]
-version.workspace      = true
+# Pinned, not inherited: the packs are prebuilt shader blobs that only
+# change when the shaders do, so they stay put while the crates around
+# them move.
+version                = "0.1.0"
 edition.workspace      = true
 rust-version.workspace = true
 license.workspace      = true

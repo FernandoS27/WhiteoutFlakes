@@ -8,6 +8,7 @@ namespace whiteout::flakes::renderer {
 using namespace ::whiteout::flakes::renderer::model;
 
 void SceneManager::Update(f32 dtSec) {
+    dtSec = EffectiveDt(dtSec);
     const i32 dtMs = (dtSec > 0.0f) ? (i32)(dtSec * 1000.0f + 0.5f) : 0;
     if (dtMs > 0)
         animationTimeMs_.fetch_add(dtMs);
