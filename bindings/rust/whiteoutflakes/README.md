@@ -40,6 +40,26 @@ Turning `casc` off is possible but rarely what you want: a model whose
 textures live in game storage still renders its geometry, with every
 surface a placeholder magenta.
 
+### Alongside `whiteoutlib`
+
+The renderer is built on WhiteoutLib and ships a copy of it. If your
+binary also depends on the [`whiteoutlib`] crate directly, that copy is
+compiled a second time and ~9,900 identically-mangled C++ symbols end up
+defined in both archives, with the linker silently picking one. Switch
+this crate to the copy `whiteoutlib` already built:
+
+```toml
+whiteoutflakes = { version = "0.1", default-features = false,
+                   features = ["d3d11", "casc", "system-whiteoutlib"] }
+whiteoutlib    = { version = "0.1", features = ["casc"] }
+```
+
+Both must agree on `casc` — the renderer compiles against headers gated on
+it and calls into the other archive. The build fails with an explanation
+rather than mislinking if they disagree.
+
+[`whiteoutlib`]: https://crates.io/crates/whiteoutlib
+
 `webgpu` is the one backend that cannot be self-contained. Dawn is only
 distributed as a shared library, and this crate never downloads it, so you
 supply an unpacked distribution at build time and copy `webgpu_dawn.*`

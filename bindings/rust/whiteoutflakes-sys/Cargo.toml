@@ -34,7 +34,7 @@ include = [
 # Which shader packs get staged, and which gfx backends get compiled.
 # d3d11 is the default because its pack is the small one (~1 MB vs ~9 MB)
 # and it needs no SDK.
-default = ["d3d11", "casc"]
+default = ["d3d11", "casc", "bundled-whiteoutlib"]
 d3d11  = ["dep:whiteoutflakes-shaders-d3d11"]
 d3d12  = ["dep:whiteoutflakes-shaders-d3d12"]
 vulkan = ["dep:whiteoutflakes-shaders-vulkan"]
@@ -46,9 +46,38 @@ webgpu = ["dep:whiteoutflakes-shaders-webgpu"]
 # WhiteoutLib implements it directly — no external library — so this only
 # costs compile time. Default ON: without it a Reforged model whose
 # textures live in game storage renders as untextured placeholder pink.
-casc = []
+#
+# In `system-whiteoutlib` mode the storage code lives in the other crate's
+# archive, so the feature has to reach it too — otherwise this crate would
+# compile against `WHITEOUT_HAS_CASC=1` headers and link against a library
+# built without them.
+casc = ["whiteoutlib?/casc"]
+
+# Where WhiteoutLib comes from.
+#
+# `bundled-whiteoutlib` (default) compiles the vendored copy into this
+# crate's archive: one dependency, self-contained, and correct for anyone
+# using the renderer alone.
+#
+# `system-whiteoutlib` instead depends on the `whiteoutlib` crate, which
+# declares `links = "whiteout_native"` and publishes where it built the
+# library. Use it when the same binary also uses `whiteoutlib` directly:
+# otherwise WhiteoutLib is compiled twice and ~1,551 identically-mangled
+# C++ symbols end up defined in both archives, with the linker silently
+# picking one. See BINDINGS.md §17.
+#
+# Features are additive, so enabling both is legal; `system-whiteoutlib`
+# wins, since the whole point is that the vendored copy stops being built.
+bundled-whiteoutlib = []
+system-whiteoutlib  = ["dep:whiteoutlib"]
 
 [dependencies]
+# A regular dependency, not a build-dependency: `DEP_WHITEOUT_NATIVE_*`
+# reaches the build script either way, but this also puts the crate's own
+# Rust API in the dependency graph, which is the situation this mode is
+# for. `version` is what a published build resolves; `path` is what a
+# checkout uses.
+whiteoutlib = { version = "0.1.0", optional = true }
 
 [build-dependencies]
 cmake = "0.1"

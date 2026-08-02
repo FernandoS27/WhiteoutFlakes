@@ -1531,6 +1531,14 @@ dependencies = [
  "whiteoutflakes-shaders-metal",
  "whiteoutflakes-shaders-vulkan",
  "whiteoutflakes-shaders-webgpu",
+ "whiteoutlib",
+]
+
+[[package]]
+name = "whiteoutlib"
+version = "0.1.0"
+dependencies = [
+ "cmake",
 ]
 
 [[package]]

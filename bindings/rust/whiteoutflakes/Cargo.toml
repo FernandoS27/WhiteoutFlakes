@@ -22,13 +22,19 @@ include = [
 [features]
 # Passed straight through to the sys crate, which is where they decide
 # which gfx backends compile and which shader packs get staged.
-default = ["d3d11", "casc"]
+default = ["d3d11", "casc", "bundled-whiteoutlib"]
 d3d11  = ["whiteoutflakes-sys/d3d11"]
 d3d12  = ["whiteoutflakes-sys/d3d12"]
 vulkan = ["whiteoutflakes-sys/vulkan"]
 metal  = ["whiteoutflakes-sys/metal"]
 webgpu = ["whiteoutflakes-sys/webgpu"]
 casc   = ["whiteoutflakes-sys/casc"]
+
+# Where WhiteoutLib's C++ comes from — see the sys crate. Switch to
+# `system-whiteoutlib` when the same binary also depends on the
+# `whiteoutlib` crate, so it is compiled once rather than twice.
+bundled-whiteoutlib = ["whiteoutflakes-sys/bundled-whiteoutlib"]
+system-whiteoutlib  = ["whiteoutflakes-sys/system-whiteoutlib"]
 
 [dependencies]
 whiteoutflakes-sys = { version = "0.1.0", path = "../whiteoutflakes-sys", default-features = false }

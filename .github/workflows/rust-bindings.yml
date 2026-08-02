@@ -69,6 +69,25 @@ jobs:
         working-directory: bindings/rust
         run: cargo test
 
+      # `system-whiteoutlib` builds against the archive the whiteoutlib
+      # crate already produced instead of compiling WhiteoutLib a second
+      # time. Configuring is enough to check that: the failure mode is a
+      # source list that ignores the flag, which showed up as 68 WhiteoutLib
+      # translation units in a build whose cache read ON. A full build in
+      # this mode would cost another ten minutes and prove the same thing.
+      - name: External WhiteoutLib compiles none of it
+        shell: pwsh
+        run: |
+          $src = "bindings/rust/whiteoutflakes-sys/vendor"
+          cmake -S $src -B "$env:RUNNER_TEMP/wfs-ext" `
+                -DWFS_EXTERNAL_WHITEOUTLIB=ON `
+                -DWFS_WHITEOUTLIB_INCLUDE="$src/whiteoutlib/include" | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "configure failed" }
+          $n = (Select-String -Path "$env:RUNNER_TEMP/wfs-ext/*.vcxproj" `
+                              -Pattern '<ClCompile Include="[^"]*whiteoutlib').Count
+          if ($n -ne 0) { throw "$n WhiteoutLib sources still compiled in external mode" }
+          Write-Host "external mode compiles 0 WhiteoutLib translation units"
+
       # Catches size regressions against the 10 MiB crates.io cap before a
       # release does. The sys and wrapper crates report as deferred until
       # their dependencies are actually published, which is expected.

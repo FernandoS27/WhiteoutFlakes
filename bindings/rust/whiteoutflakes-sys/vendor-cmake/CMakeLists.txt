@@ -48,13 +48,35 @@ set(WFS_DAWN_DIR "" CACHE PATH "Unpacked Dawn distribution (include/ + lib/)")
 # in the game's storage renders as untextured placeholder pink.
 option(WFS_ENABLE_CASC   "Build CASC storage support"                       ON)
 
+# WhiteoutLib can come from here (the vendored copy, default) or from the
+# `whiteoutlib` crate, which owns `whiteout_native` and publishes where it
+# put it. Building both copies links — MSVC silently keeps one definition
+# per duplicated COMDAT — but compiles WhiteoutLib twice and leaves the
+# choice of surviving copy to the linker. See BINDINGS.md §17.
+option(WFS_EXTERNAL_WHITEOUTLIB
+    "Compile against an externally-built WhiteoutLib instead of the vendored copy" OFF)
+set(WFS_WHITEOUTLIB_INCLUDE "" CACHE PATH "WhiteoutLib headers (external mode)")
+
 # ── Sources ───────────────────────────────────────────────────────────────
 # `src/` holds library code only — the viewer, Max plugin and explorer all
 # live under tools/, which is not vendored. So the whole tree is in scope
 # apart from the backends and adapters excluded above.
 
 file(GLOB_RECURSE _flakes_src CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
-file(GLOB_RECURSE _wlib_src   CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/whiteoutlib/src/*.cpp")
+if(WFS_EXTERNAL_WHITEOUTLIB)
+    if(NOT WFS_WHITEOUTLIB_INCLUDE OR NOT EXISTS "${WFS_WHITEOUTLIB_INCLUDE}")
+        message(FATAL_ERROR
+            "WFS_EXTERNAL_WHITEOUTLIB=ON needs WFS_WHITEOUTLIB_INCLUDE pointing "
+            "at WhiteoutLib's headers. The whiteoutlib crate publishes this as "
+            "DEP_WHITEOUT_NATIVE_INCLUDE.")
+    endif()
+    # Not one translation unit of WhiteoutLib: only its headers, and the
+    # archive the other crate already built and linked.
+    set(_wlib_src)
+else()
+    file(GLOB_RECURSE _wlib_src CONFIGURE_DEPENDS
+         "${CMAKE_CURRENT_SOURCE_DIR}/whiteoutlib/src/*.cpp")
+endif()
 
 set(_excluded_dirs
     "/src/renderer/imgui/"      # needs externals/imgui
@@ -126,10 +148,22 @@ target_include_directories(whiteoutflakes_native PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/io"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/corn_effects"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/corn_effects/cornflakes/internal"
-    "${CMAKE_CURRENT_SOURCE_DIR}/whiteoutlib/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/embedded"
     "${CMAKE_CURRENT_SOURCE_DIR}/c"
 )
+
+# WhiteoutLib headers: the external tree when the other crate owns the
+# library, the vendored copy otherwise.
+if(WFS_EXTERNAL_WHITEOUTLIB)
+    # Headers only. This target is a static archive, which cannot absorb
+    # another one, and the linking happens a level up: the `whiteoutlib`
+    # crate already tells cargo to link its archives, and cargo passes a
+    # dependency's link directives on to the final binary.
+    target_include_directories(whiteoutflakes_native PUBLIC "${WFS_WHITEOUTLIB_INCLUDE}")
+else()
+    target_include_directories(whiteoutflakes_native PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/whiteoutlib/include")
+endif()
 
 target_compile_definitions(whiteoutflakes_native PUBLIC
     WDX_ENABLE_IMGUI=0

@@ -1,4 +1,7 @@
 build*
+# `build*` is meant for the CMake build directories; a cargo build
+# script is a source file that happens to match it.
+!bindings/rust/*/build.rs
 war3.w3mod
 prebuilt/debug_shaders/
 stage*
