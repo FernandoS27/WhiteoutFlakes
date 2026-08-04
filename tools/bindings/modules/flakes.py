@@ -37,6 +37,7 @@ CONFIG = ModuleConfig(
         'include/whiteout/flakes/views.h',
         'include/whiteout/flakes/actor_view.h',
         'include/whiteout/flakes/renderer.h',
+        'include/whiteout/flakes/casc_browser.h',
     ],
     include_dirs=[
         'include',

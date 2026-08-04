@@ -18,8 +18,9 @@
 //      make every pose call allocate. Flat float arrays cross the
 //      boundary as-is and map onto the binding's own math types.
 //
-//   3. `std::vector<T>` returns of bound structs, when the generator has
-//      no lowering for them.
+//   3. `std::vector<u8>` returns alongside out-params. `ReadbackTarget`
+//      reports pixels plus a width and a height, which does not fit the
+//      generator's one-return convention.
 //
 // Plus one outright generator bug: it moves string returns into the
 // CString wrapper, which a `const std::string&` return can't satisfy.
@@ -160,6 +161,27 @@ void whiteout_flakes_FlakesActorView_SetTransformFlat(whiteout_FlakesActorView* 
         for (int c = 0; c < 4; ++c)
             out.data[r][c] = m[r * 4 + c];
     as<ActorView>(self)->SetTransform(out);
+}
+
+// ── PipelineView: target readback ─────────────────────────────────────────
+
+/* Composited RGBA8 of target `t`, tightly packed from the top-left. Writes
+ * the target's size through `out_w` / `out_h`. An empty buffer means the
+ * target is unknown, was resized, or is multisampled. Free with
+ * whiteout_flakes_Bytes_free. */
+whiteout_Bytes whiteout_flakes_FlakesPipelineView_ReadbackTarget(
+    whiteout_FlakesPipelineView* self, uint32_t t, int32_t* out_w, int32_t* out_h) {
+    int32_t w = 0;
+    int32_t h = 0;
+    // Heap-allocated because the buffer outlives this call: `_owner` is the
+    // vector itself and `data` points into it, which is what Bytes_free
+    // undoes.
+    auto* owned = new std::vector<unsigned char>(as<PipelineView>(self)->ReadbackTarget(t, w, h));
+    if (out_w)
+        *out_w = w;
+    if (out_h)
+        *out_h = h;
+    return {owned->data(), owned->size(), owned};
 }
 
 } // extern "C"

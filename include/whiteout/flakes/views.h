@@ -87,6 +87,32 @@ public:
     ///        Returns 0 on backends without tracking.
     u64 LiveGpuBytes() const;
 
+    /// @brief Read a target's composited colour back as tightly-packed RGBA8,
+    ///        row-major from the top-left.
+    ///
+    /// How a GUI shows the renderer somewhere it cannot hand over a window:
+    /// a preview thumbnail, a docked panel the toolkit composites itself, an
+    /// off-screen export. Render a viewport into a target, read it here, give
+    /// the pixels to the toolkit as a texture.
+    ///
+    /// Works on every backend this library exposes — D3D11, D3D12, Vulkan and
+    /// WebGPU each implement it. Row padding, and the BGRA ordering a swap
+    /// chain usually has, are dealt with here so the result is always tight
+    /// RGBA8.
+    ///
+    /// Synchronous: it submits and waits for the copy, so it costs a stall per
+    /// call. That is the right trade for a panel that updates when something
+    /// changes and the wrong one for a viewport running at full rate — give
+    /// that a window of its own via @ref CreateSwapChainTarget.
+    ///
+    /// Returns an empty vector if @p t is unknown, if the target was resized
+    /// out from under @p width / @p height, or if the source is multisampled.
+    /// @p width and @p height report the size read.
+    /// @bind skip — `std::vector<u8>` alongside two out-params does not fit
+    ///              the generator's one-return convention. Hand-written in
+    ///              bindings/c/whiteout_flakes_shims.cpp.
+    std::vector<u8> ReadbackTarget(RenderTargetId t, i32& width, i32& height);
+
 
 private:
     explicit PipelineView(detail::RendererImpl* impl) : impl_(impl) {}
@@ -119,6 +145,27 @@ public:
     /// No-op for scenes running on a host-supplied content provider: those
     /// resolve engine assets however the host's provider chooses to.
     void SetEngineAssetRoot(const std::filesystem::path& root);
+    /// @brief Point this scene's content provider at an installed Warcraft
+    ///        III, so archive paths resolve out of its CASC storage.
+    ///
+    /// The counterpart to @ref CascBrowser: browse an install, then hand the
+    /// same root here and `LoaderView::SpawnUnit` reads the paths the browser
+    /// returns. Loose files on disk keep working — CASC is consulted for what
+    /// is not found beside @ref SetPE1BasePath.
+    ///
+    /// No-op for scenes running on a host-supplied content provider, which
+    /// resolve however the host chooses.
+    void SetCascInstallPath(const std::string& root);
+
+    /// @brief Prefer the HD (Reforged) asset chain over SD when resolving
+    ///        archive paths.
+    ///
+    /// A CASC path exists in several mod layers; the provider tries them in
+    /// order, and which order is right depends on the model. Set this from
+    /// the actor's @ref ActorView::PreferredRenderMode, or textures resolve
+    /// to the wrong layer and a Reforged model renders with classic art.
+    void SetHdMode(bool enabled);
+
     /// @brief The renderer's installed content provider (`nullptr` until
     ///        the host attaches one). Used by adapters that need to read
     ///        extra files referenced by the model.

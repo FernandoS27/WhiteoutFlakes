@@ -30,6 +30,18 @@ TextureAssetManager::TextureAssetManager(gfx::IGFXDevice& gfx) : gfx_(gfx) {
 }
 
 TextureAssetManager::~TextureAssetManager() {
+    // Deliberately no gfx_.Destroy here. RenderService::Impl's
+    // destruction-order contract puts the asset managers LAST — after
+    // pipeline_, which owns the device — so by this point `gfx_` refers to a
+    // destroyed object and every Destroy dispatches through a freed vtable.
+    // The handles die with the device anyway; what matters is not touching
+    // it. `ReleaseGpu` is the ordered teardown, called while it is still
+    // alive.
+    owned_.clear();
+    defaults_ = {};
+}
+
+void TextureAssetManager::ReleaseGpu() {
     for (auto& [name, h] : owned_) {
         if (h != gfx::TextureHandle::Invalid)
             gfx_.Destroy(h);

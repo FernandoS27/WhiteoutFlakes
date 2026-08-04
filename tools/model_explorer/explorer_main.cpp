@@ -1,7 +1,7 @@
 // ModelExplorer — entry point. Brings up the renderer + window and runs the
 // explorer loop. Optional CLI: [--backend d3d11|d3d12|vulkan|webgpu] [<casc-root>].
 
-#include "casc_browser.h"
+#include "io/casc_browser.h"
 #include "explorer_app.h"
 #include "renderer/model/corn_effect_source.h"
 #include "thumbnail_framing.h"
@@ -149,7 +149,7 @@ int main(int argc, char* argv[]) {
             std::fprintf(stderr, "[explorer-selftest] usage: --selftest <casc-root>\n");
             return 1;
         }
-        whiteout::flakes::tools::CascBrowser br;
+        whiteout::flakes::io::CascBrowser br;
         std::string err;
         if (!br.Open(cascRoot, &err)) {
             std::fprintf(stderr, "[explorer-selftest] open FAILED: %s\n", err.c_str());
@@ -192,7 +192,7 @@ int main(int argc, char* argv[]) {
             std::fprintf(stderr, "[nav-stress] usage: <cascRoot> --nav-stress\n");
             return 1;
         }
-        wf::tools::CascBrowser br;
+        wf::io::CascBrowser br;
         std::string err;
         if (!br.Open(cascRoot, &err)) {
             std::fprintf(stderr, "[nav-stress] CASC open FAILED: %s\n", err.c_str());

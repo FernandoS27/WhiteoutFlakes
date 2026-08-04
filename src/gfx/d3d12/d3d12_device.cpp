@@ -1415,6 +1415,116 @@ void D3D12Device::WaitIdle() {
         immediateCtx_->OnFrameBegin();
 }
 
+// Copy a rendered texture into a READBACK-heap buffer and map it. D3D12
+// pads each row to D3D12_TEXTURE_DATA_PITCH_ALIGNMENT (256) in the buffer
+// layout, so the copy-out strips the padding to leave a tight image.
+bool D3D12Device::ReadbackTexture(TextureHandle h, i32 width, i32 height,
+                                  std::vector<u8>& outRgba) {
+    auto* tex = textures_.Get(static_cast<u64>(h));
+    if (!tex || !tex->resource || width <= 0 || height <= 0)
+        return false;
+
+    const D3D12_RESOURCE_DESC rd = tex->resource->GetDesc();
+    // A size mismatch means the target was resized under the caller; cropping
+    // silently would hand back a torn image.
+    if (static_cast<i32>(rd.Width) != width || static_cast<i32>(rd.Height) != height)
+        return false;
+    if (rd.SampleDesc.Count > 1)
+        return false; // would need a resolve first; nothing renders MSAA here
+
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+    UINT numRows = 0;
+    UINT64 rowSizeBytes = 0;
+    UINT64 totalBytes = 0;
+    device_->GetCopyableFootprints(&rd, 0, 1, 0, &fp, &numRows, &rowSizeBytes, &totalBytes);
+    if (totalBytes == 0)
+        return false;
+
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_READBACK;
+    D3D12_RESOURCE_DESC bd{};
+    bd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    bd.Width = totalBytes;
+    bd.Height = 1;
+    bd.DepthOrArraySize = 1;
+    bd.MipLevels = 1;
+    bd.Format = DXGI_FORMAT_UNKNOWN;
+    bd.SampleDesc.Count = 1;
+    bd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+    ID3D12Resource* rb = nullptr;
+    if (FAILED(device_->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &bd,
+                                                D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                IID_PPV_ARGS(&rb))) ||
+        !rb)
+        return false;
+
+    if (!cmdListOpen_) {
+        allocators_[frameIndex_]->Reset();
+        cmdList_->Reset(allocators_[frameIndex_], nullptr);
+        cmdListOpen_ = true;
+    }
+
+    const D3D12_RESOURCE_STATES before = tex->currentState;
+    auto transition = [&](D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
+        if (from == to)
+            return;
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = tex->resource;
+        b.Transition.StateBefore = from;
+        b.Transition.StateAfter = to;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        cmdList_->ResourceBarrier(1, &b);
+    };
+    transition(before, D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+    D3D12_TEXTURE_COPY_LOCATION src{};
+    src.pResource = tex->resource;
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src.SubresourceIndex = 0;
+    D3D12_TEXTURE_COPY_LOCATION dst{};
+    dst.pResource = rb;
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint = fp;
+    cmdList_->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+    // Put the texture back where the rest of the frame expects it.
+    transition(D3D12_RESOURCE_STATE_COPY_SOURCE, before);
+    tex->currentState = before;
+
+    // Submit and block: the buffer cannot be read until the copy retires.
+    WaitIdle();
+
+    void* mapped = nullptr;
+    D3D12_RANGE readRange{0, static_cast<SIZE_T>(totalBytes)};
+    if (FAILED(rb->Map(0, &readRange, &mapped)) || !mapped) {
+        rb->Release();
+        return false;
+    }
+
+    const bool bgra = rd.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+                      rd.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    constexpr size_t kBpp = 4;
+    const size_t rowBytes = static_cast<size_t>(width) * kBpp;
+    outRgba.resize(rowBytes * static_cast<size_t>(height));
+    const auto* rows = static_cast<const u8*>(mapped);
+    for (i32 y = 0; y < height; ++y) {
+        const u8* srcRow = rows + fp.Offset + static_cast<size_t>(y) * fp.Footprint.RowPitch;
+        u8* dstRow = outRgba.data() + static_cast<size_t>(y) * rowBytes;
+        std::memcpy(dstRow, srcRow, rowBytes);
+        if (bgra) {
+            // The contract is RGBA8; swap-chain buffers are usually BGRA.
+            for (size_t x = 0; x < rowBytes; x += kBpp)
+                std::swap(dstRow[x], dstRow[x + 2]);
+        }
+    }
+    D3D12_RANGE noWrite{0, 0};
+    rb->Unmap(0, &noWrite);
+    rb->Release();
+    return true;
+}
+
 TextureHandle D3D12Device::GetSwapChainBackBuffer(SwapChainHandle h) {
     auto* sc = swapChains_.Get(static_cast<u64>(h));
     if (!sc)

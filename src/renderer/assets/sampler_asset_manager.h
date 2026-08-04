@@ -21,6 +21,10 @@ public:
     explicit SamplerAssetManager(gfx::IGFXDevice& gfx);
     ~SamplerAssetManager();
 
+    /// Destroy every cached sampler. Must be called while the gfx device
+    /// is still alive — the destructor cannot, see its comment.
+    void ReleaseGpu();
+
     SamplerAssetManager(const SamplerAssetManager&) = delete;
     SamplerAssetManager& operator=(const SamplerAssetManager&) = delete;
 

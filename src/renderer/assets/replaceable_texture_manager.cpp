@@ -43,7 +43,15 @@ void ReplaceableTextureManager::SetContentProvider(IContentProvider* p) {
 }
 
 ReplaceableTextureManager::~ReplaceableTextureManager() {
-    Shutdown();
+    // Deliberately NOT Shutdown(): that destroys GPU textures through `gfx_`,
+    // and by the time this runs RenderService::Impl has already destroyed the
+    // device. The virtual call then dispatches through a freed vtable and the
+    // process dies here, which is what a host dropping a Renderer soon after
+    // loading a model used to hit. The GPU memory goes with the device
+    // anyway; what still has to happen is cancelling the in-flight requests,
+    // because those hold callbacks capturing `this`.
+    CancelPendingRequests();
+    slots_.clear();
 }
 
 void ReplaceableTextureManager::Shutdown() {
@@ -56,7 +64,23 @@ void ReplaceableTextureManager::Shutdown() {
     destroyAll(hdSwatchByColor_);
     destroyAll(sdTeamColorByColor_);
     destroyAll(sdTeamGlowByColor_);
+
+    // Cancel before clearing: each pending request holds a lambda capturing
+    // `this` and a raw Actor*, so dropping the slots without cancelling
+    // leaves the provider holding callbacks into freed memory.
+    // UnregisterModel already does this per model; shutting the whole
+    // manager down has to do it too.
+    CancelPendingRequests();
     slots_.clear();
+}
+
+void ReplaceableTextureManager::CancelPendingRequests() {
+    if (!contentProvider_)
+        return;
+    for (auto& [actorPtr, slots] : slots_)
+        for (auto& s : slots)
+            if (s.pendingLoad != io::kInvalidRequestId)
+                contentProvider_->Cancel(s.pendingLoad);
 }
 
 void ReplaceableTextureManager::RebakeDirtyActors() {

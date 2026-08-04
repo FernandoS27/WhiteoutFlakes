@@ -102,6 +102,10 @@ private:
 
     // Async completion for canonical-asset reads kicked off in BakeSlot.
     // Runs on the render thread via IContentProvider::Pump().
+    // Drop every in-flight canonical-asset request. Their callbacks
+    // capture `this` and a raw Actor*, so they must not outlive either.
+    void CancelPendingRequests();
+
     void OnCanonicalAssetLoaded(model::Actor* mi, i32 textureId, i32 replaceableId,
                                 io::RequestResult&& r);
 };

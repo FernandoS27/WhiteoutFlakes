@@ -1347,6 +1347,35 @@ impl SceneView {
             ffi::whiteout_flakes_FlakesSceneView_Update(self.raw.as_ptr(), dt);
         }
     }
+
+    /// Point this scene's content provider at an installed Warcraft III, so archive paths resolve out of its CASC storage.
+    ///
+    /// The counterpart to @ref CascBrowser: browse an install, then hand the same root here and `LoaderView::SpawnUnit` reads the paths the browser returns. Loose files on disk keep working — CASC is consulted for what is not found beside @ref SetPE1BasePath.
+    ///
+    /// No-op for scenes running on a host-supplied content provider, which resolve however the host chooses.
+    pub fn set_casc_install_path(&mut self, root: &str) {
+        let root_cstr = std::ffi::CString::new(root).unwrap_or_default();
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesSceneView_SetCascInstallPath(
+                self.raw.as_ptr(),
+                root_cstr.as_ptr(),
+            );
+        }
+    }
+
+    /// Prefer the HD (Reforged) asset chain over SD when resolving archive paths.
+    ///
+    /// A CASC path exists in several mod layers; the provider tries them in order, and which order is right depends on the model. Set this from the actor's @ref ActorView::PreferredRenderMode, or textures resolve to the wrong layer and a Reforged model renders with classic art.
+    pub fn set_hd_mode(&mut self, enabled: bool) {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesSceneView_SetHdMode(
+                self.raw.as_ptr(),
+                if enabled { 1 } else { 0 },
+            );
+        }
+    }
 }
 
 /// Free-orbit + scripted camera surface.
@@ -2718,6 +2747,226 @@ impl Default for Renderer {
     }
 }
 
+/// Browses an installed Warcraft III's CASC storage as a folder tree of model and effect files.
+///
+/// The Reforged TVFS encodes the mod chain with `:` and the content tree with `\` — `war3.w3mod:_hd.w3mod:units\nightelf\druid\druid.mdx`. This walks the archive once on open, keeps only the folders that lead to a `.mdx`, `.mdl`, `.pkb` or `.pkfx`, and presents them as directories you can descend into. Display paths drop the leading `war3.w3mod:` and use `\` throughout; each file leaf remembers its original archive path, which is what the renderer reads.
+///
+/// The browser is standalone — it opens its own handle on the archive and needs no `Renderer`. To render what you pick, point a scene at the same install and spawn the path this hands you:
+///
+/// @code CascBrowser br; if (!br.Open(R"(C:\Program Files\Warcraft III)")) return br.LastError(); br.Descend("units"); const auto path = br.ChildPath(br.Files()[0]);
+///
+/// r.Scene().SetCascInstallPath(br.Root()); r.Loader().SpawnUnit(path); @endcode
+pub struct CascBrowser {
+    pub(crate) raw: core::ptr::NonNull<ffi::whiteout_FlakesCascBrowser>,
+}
+
+impl Drop for CascBrowser {
+    fn drop(&mut self) {
+        // SAFETY: `raw` came from a native constructor and Drop runs once.
+        unsafe { ffi::whiteout_flakes_FlakesCascBrowser_delete(self.raw.as_ptr()) }
+    }
+}
+
+impl CascBrowser {
+    /// # Safety
+    /// `raw` must be a live handle this value takes ownership of.
+    #[allow(dead_code)] // used by whichever methods return this type
+    pub(crate) unsafe fn from_raw(raw: *mut ffi::whiteout_FlakesCascBrowser) -> Option<Self> {
+        core::ptr::NonNull::new(raw).map(|raw| CascBrowser { raw })
+    }
+}
+
+// SAFETY: handles are plain heap pointers with no thread affinity. `Sync`
+// is deliberately NOT implemented — the C++ types make no documented
+// guarantee about concurrent use, and claiming one we haven't verified
+// would be unsound. See `@bind thread_safe` in the plan.
+unsafe impl Send for CascBrowser {}
+
+impl core::fmt::Debug for CascBrowser {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CascBrowser").finish_non_exhaustive()
+    }
+}
+
+impl CascBrowser {
+    /// # Panics
+    /// Panics if the native allocation fails.
+    pub fn new() -> Self {
+        // SAFETY: the native constructor returns a live handle; a null here
+        // means the library is unusable.
+        unsafe {
+            let raw = ffi::whiteout_flakes_FlakesCascBrowser_new();
+            Self::from_raw(raw).expect("native CascBrowser allocation failed")
+        }
+    }
+
+    /// Open the CASC at @p root — the directory holding `.build.info`, or its `Data` subdirectory.
+    ///
+    /// Enumerating the archive is the expensive part and happens here, once. Returns `false` on failure; @ref LastError says why.
+    pub fn open(&mut self, root: &str) -> bool {
+        let root_cstr = std::ffi::CString::new(root).unwrap_or_default();
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesCascBrowser_Open(self.raw.as_ptr(), root_cstr.as_ptr()) != 0
+        }
+    }
+
+    /// Why the last @ref Open failed. Empty after a successful one.
+    pub fn is_open(&self) -> bool {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe { ffi::whiteout_flakes_FlakesCascBrowser_IsOpen(self.raw.as_ptr()) != 0 }
+    }
+
+    /// The root this was opened with.
+    pub fn root(&self) -> String {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            crate::support::take_string(ffi::whiteout_flakes_FlakesCascBrowser_Root(
+                self.raw.as_ptr(),
+            ))
+        }
+    }
+
+    /// Message from the last failed @ref Open, or empty.
+    pub fn last_error(&self) -> String {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            crate::support::take_string(ffi::whiteout_flakes_FlakesCascBrowser_LastError(
+                self.raw.as_ptr(),
+            ))
+        }
+    }
+
+    /// @name Navigation @{ @brief Current directory in display form (`\`-separated, empty at the root).
+    pub fn current_path(&self) -> String {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            crate::support::take_string(ffi::whiteout_flakes_FlakesCascBrowser_CurrentPath(
+                self.raw.as_ptr(),
+            ))
+        }
+    }
+
+    /// The current path split into segments, for a breadcrumb bar.
+    pub fn breadcrumb(&self) -> Vec<String> {
+        // SAFETY: one call materialises the list; the
+        // elements are borrowed out of it and it is freed
+        // before returning. Reading is O(1) per element.
+        unsafe {
+            let list = ffi::whiteout_flakes_FlakesCascBrowser_Breadcrumb(self.raw.as_ptr());
+            if list.is_null() {
+                return Vec::new();
+            }
+            let n = ffi::whiteout_flakes_StringList_size(list);
+            let out = (0..n)
+                .map(|i| crate::support::take_string(ffi::whiteout_flakes_StringList_at(list, i)))
+                .collect();
+            ffi::whiteout_flakes_StringList_delete(list);
+            out
+        }
+    }
+
+    /// Immediate subfolder names of the current directory.
+    pub fn folders(&self) -> Vec<String> {
+        // SAFETY: one call materialises the list; the
+        // elements are borrowed out of it and it is freed
+        // before returning. Reading is O(1) per element.
+        unsafe {
+            let list = ffi::whiteout_flakes_FlakesCascBrowser_Folders(self.raw.as_ptr());
+            if list.is_null() {
+                return Vec::new();
+            }
+            let n = ffi::whiteout_flakes_StringList_size(list);
+            let out = (0..n)
+                .map(|i| crate::support::take_string(ffi::whiteout_flakes_StringList_at(list, i)))
+                .collect();
+            ffi::whiteout_flakes_StringList_delete(list);
+            out
+        }
+    }
+
+    /// Model and effect file names directly inside the current directory. Names only — pair with @ref ChildPath to load one.
+    pub fn files(&self) -> Vec<String> {
+        // SAFETY: one call materialises the list; the
+        // elements are borrowed out of it and it is freed
+        // before returning. Reading is O(1) per element.
+        unsafe {
+            let list = ffi::whiteout_flakes_FlakesCascBrowser_Files(self.raw.as_ptr());
+            if list.is_null() {
+                return Vec::new();
+            }
+            let n = ffi::whiteout_flakes_StringList_size(list);
+            let out = (0..n)
+                .map(|i| crate::support::take_string(ffi::whiteout_flakes_StringList_at(list, i)))
+                .collect();
+            ffi::whiteout_flakes_StringList_delete(list);
+            out
+        }
+    }
+
+    /// Descend into a subfolder of the current directory. No-op for a name that is not in @ref Folders.
+    pub fn descend(&mut self, folder_name: &str) {
+        let folder_name_cstr = std::ffi::CString::new(folder_name).unwrap_or_default();
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesCascBrowser_Descend(
+                self.raw.as_ptr(),
+                folder_name_cstr.as_ptr(),
+            );
+        }
+    }
+
+    /// Go up one level. No-op at the root.
+    pub fn ascend(&mut self) {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesCascBrowser_Ascend(self.raw.as_ptr());
+        }
+    }
+
+    /// Jump to a display path, as returned by @ref GetCurrentPath.
+    pub fn navigate_to(&mut self, display_path: &str) {
+        let display_path_cstr = std::ffi::CString::new(display_path).unwrap_or_default();
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesCascBrowser_NavigateTo(
+                self.raw.as_ptr(),
+                display_path_cstr.as_ptr(),
+            );
+        }
+    }
+
+    /// The original archive path of a file in the current directory — what `LoaderView::SpawnUnit` / `SpawnEffect` reads. Empty for a name that is not in @ref Files.
+    pub fn child_path(&self, file_name: &str) -> String {
+        let file_name_cstr = std::ffi::CString::new(file_name).unwrap_or_default();
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            crate::support::take_string(ffi::whiteout_flakes_FlakesCascBrowser_ChildPath(
+                self.raw.as_ptr(),
+                file_name_cstr.as_ptr(),
+            ))
+        }
+    }
+
+    /// `true` if @p fileName is an effect (`.pkb` / `.pkfx`) rather than a model, so a host knows which spawn call to make.
+    pub fn is_effect(&self, file_name: &str) -> bool {
+        let file_name_cstr = std::ffi::CString::new(file_name).unwrap_or_default();
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesCascBrowser_IsEffect(
+                self.raw.as_ptr(),
+                file_name_cstr.as_ptr(),
+            ) != 0
+        }
+    }
+}
+
+impl Default for CascBrowser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // Not yet bound (shape unsupported by the emitter):
 //   - ActorView::SetTransform (parameter shape)
 //   - ActorView::Transform (return whiteout::Matrix44f)
@@ -2827,6 +3076,10 @@ pub mod ffi {
     }
     #[repr(C)]
     pub struct whiteout_FlakesRenderer {
+        _private: [u8; 0],
+    }
+    #[repr(C)]
+    pub struct whiteout_FlakesCascBrowser {
         _private: [u8; 0],
     }
     #[repr(C)]
@@ -3201,6 +3454,14 @@ pub mod ffi {
         pub fn whiteout_flakes_FlakesSceneView_Update(
             self_: *mut whiteout_FlakesSceneView,
             dt: f32,
+        );
+        pub fn whiteout_flakes_FlakesSceneView_SetCascInstallPath(
+            self_: *mut whiteout_FlakesSceneView,
+            root: *const core::ffi::c_char,
+        );
+        pub fn whiteout_flakes_FlakesSceneView_SetHdMode(
+            self_: *mut whiteout_FlakesSceneView,
+            enabled: i32,
         );
         // CameraView
         pub fn whiteout_flakes_FlakesCameraView_delete(self_: *mut whiteout_FlakesCameraView);
@@ -3608,5 +3869,50 @@ pub mod ffi {
             h: u32,
         ) -> *mut whiteout_FlakesActorView;
         pub fn whiteout_flakes_FlakesRenderer_Tick(self_: *mut whiteout_FlakesRenderer, dt: f32);
+        // CascBrowser
+        pub fn whiteout_flakes_FlakesCascBrowser_new() -> *mut whiteout_FlakesCascBrowser;
+        pub fn whiteout_flakes_FlakesCascBrowser_delete(self_: *mut whiteout_FlakesCascBrowser);
+        pub fn whiteout_flakes_FlakesCascBrowser_Open(
+            self_: *mut whiteout_FlakesCascBrowser,
+            root: *const core::ffi::c_char,
+        ) -> i32;
+        pub fn whiteout_flakes_FlakesCascBrowser_IsOpen(
+            self_: *mut whiteout_FlakesCascBrowser,
+        ) -> i32;
+        pub fn whiteout_flakes_FlakesCascBrowser_Root(
+            self_: *mut whiteout_FlakesCascBrowser,
+        ) -> RawCString;
+        pub fn whiteout_flakes_FlakesCascBrowser_LastError(
+            self_: *mut whiteout_FlakesCascBrowser,
+        ) -> RawCString;
+        pub fn whiteout_flakes_FlakesCascBrowser_CurrentPath(
+            self_: *mut whiteout_FlakesCascBrowser,
+        ) -> RawCString;
+        pub fn whiteout_flakes_FlakesCascBrowser_Breadcrumb(
+            self_: *mut whiteout_FlakesCascBrowser,
+        ) -> *mut whiteout_StringList;
+        pub fn whiteout_flakes_FlakesCascBrowser_Folders(
+            self_: *mut whiteout_FlakesCascBrowser,
+        ) -> *mut whiteout_StringList;
+        pub fn whiteout_flakes_FlakesCascBrowser_Files(
+            self_: *mut whiteout_FlakesCascBrowser,
+        ) -> *mut whiteout_StringList;
+        pub fn whiteout_flakes_FlakesCascBrowser_Descend(
+            self_: *mut whiteout_FlakesCascBrowser,
+            folder_name: *const core::ffi::c_char,
+        );
+        pub fn whiteout_flakes_FlakesCascBrowser_Ascend(self_: *mut whiteout_FlakesCascBrowser);
+        pub fn whiteout_flakes_FlakesCascBrowser_NavigateTo(
+            self_: *mut whiteout_FlakesCascBrowser,
+            display_path: *const core::ffi::c_char,
+        );
+        pub fn whiteout_flakes_FlakesCascBrowser_ChildPath(
+            self_: *mut whiteout_FlakesCascBrowser,
+            file_name: *const core::ffi::c_char,
+        ) -> RawCString;
+        pub fn whiteout_flakes_FlakesCascBrowser_IsEffect(
+            self_: *mut whiteout_FlakesCascBrowser,
+            file_name: *const core::ffi::c_char,
+        ) -> i32;
     }
 }

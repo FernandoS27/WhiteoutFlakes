@@ -5,6 +5,14 @@ namespace whiteout::flakes::renderer::assets {
 SamplerAssetManager::SamplerAssetManager(gfx::IGFXDevice& gfx) : gfx_(gfx) {}
 
 SamplerAssetManager::~SamplerAssetManager() {
+    // No gfx_.Destroy here — see ReleaseGpu. The asset managers are
+    // destroyed after the device (render_service_impl.h's destruction-order
+    // contract), so `gfx_` is a dangling reference by now.
+    cache_.clear();
+    shadowComparison_ = gfx::SamplerHandle::Invalid;
+}
+
+void SamplerAssetManager::ReleaseGpu() {
     for (auto& [key, handle] : cache_) {
         gfx_.Destroy(handle);
     }

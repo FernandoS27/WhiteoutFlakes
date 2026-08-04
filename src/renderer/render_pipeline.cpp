@@ -1323,6 +1323,13 @@ void RenderPipeline::CleanupGFX() {
 
     // ImGui adapter releases its GPU resources through the device, so it
     // must go down before the device is dropped at the end of this routine.
+    // The asset managers are destroyed after the device (see the
+    // destruction-order contract in render_service_impl.h), so their
+    // destructors cannot free GPU handles. Do it here, while it is alive.
+    rs_.Textures().ReleaseGpu();
+    rs_.Samplers().ReleaseGpu();
+    rs_.Replaceables().Shutdown();
+
     rs_.ShutdownImGui();
 
     ShutdownBlsShaders();

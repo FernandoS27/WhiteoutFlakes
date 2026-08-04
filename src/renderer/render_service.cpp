@@ -23,6 +23,18 @@
 
 namespace whiteout::flakes::renderer {
 
+RenderService::Impl::~Impl() {
+    // `scenes_` holds every SceneManager the service knows about — the
+    // borrowed default plus anything from CreateScene — so one pass covers
+    // them all. The scenes themselves are not touched; only the actors,
+    // whose destructors reach back into the asset managers.
+    for (auto& [id, scene] : scenes_) {
+        if (scene)
+            scene->Actors().Clear();
+    }
+}
+
+
 using namespace ::whiteout::flakes::renderer::model;
 using namespace ::whiteout::flakes::renderer::animation;
 using namespace ::whiteout::flakes::renderer::effects;

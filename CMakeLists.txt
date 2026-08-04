@@ -1122,7 +1122,9 @@ add_library(WhiteoutFlakesLib STATIC
     src/io/event_data.cpp
     src/io/slk.cpp
     src/io/texture_image_usage.cpp
+    src/io/casc_browser.cpp
     src/public_api/renderer_api.cpp
+    src/public_api/casc_browser_api.cpp
 )
 
 if(WDX_ENABLE_IMGUI)
@@ -1279,7 +1281,6 @@ add_subdirectory(externals/cubeb EXCLUDE_FROM_ALL)
 # standalone explorer shell, …) supplies all three and a shared RenderService.
 # See STORAGE_EXPLORER_DESIGN.md.
 add_library(WhiteoutFlakesExplorerLib STATIC
-    tools/model_explorer/casc_browser.cpp
     tools/model_explorer/thumbnail_pool.cpp
     tools/model_explorer/storage_explorer.cpp
     # Camera framing for a loaded model / standalone effect — used by the

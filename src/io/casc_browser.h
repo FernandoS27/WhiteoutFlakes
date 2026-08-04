@@ -17,7 +17,7 @@
 
 #include <whiteout/storages/casc/storage.h>
 
-namespace whiteout::flakes::tools {
+namespace whiteout::flakes::io {
 
 class CascBrowser {
 public:
@@ -76,4 +76,4 @@ private:
     Node tree_;
 };
 
-} // namespace whiteout::flakes::tools
+} // namespace whiteout::flakes::io

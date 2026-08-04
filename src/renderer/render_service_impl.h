@@ -62,6 +62,15 @@ struct SceneServices {
 };
 
 struct RenderService::Impl {
+    // Actors must not outlive the AssetManager. `Actor` → `RenderModel` →
+    // `TextureAssetManager::ModelScope` releases its asset slots from its
+    // destructor, and the scenes holding those actors are destroyed after
+    // `assets_` — the default scene is owned by RendererImpl (destroyed after
+    // the whole service) and `ownedScenes_` is declared before the asset
+    // managers, so both lose that race. Clearing every scene's actors here,
+    // before any member destructs, is the one place that covers both.
+    ~Impl();
+
     // ---- Destruction-order contract (members destroy in REVERSE
     //      declaration order, so LATER-declared = destroyed EARLIER) ----
     //
@@ -98,10 +107,16 @@ struct RenderService::Impl {
     std::function<void(corn_effects::CornEffectsService&)> cornInitApplier_;
 
     // ---- Asset managers (destroyed LAST) ----
+    // `assets_` FIRST, so it is destroyed LAST. TextureAssetManager's
+    // ModelScope::Clear calls assets_->Release from its own destructor; with
+    // assets_ declared after it, reverse-order destruction killed the
+    // AssetManager first and the Release walked a freed hash map. That is the
+    // exact symptom described at the top of this struct — it applied to the
+    // asset managers among themselves, not just to their consumers.
+    std::unique_ptr<assets::AssetManager> assets_;
     std::unique_ptr<assets::SamplerAssetManager> samplers_;
     std::unique_ptr<assets::TextureAssetManager> textures_;
     std::unique_ptr<assets::ReplaceableTextureManager> replaceables_;
-    std::unique_ptr<assets::AssetManager> assets_;
 
     // ---- App-tunable knobs ----
     RenderSettings settings_;

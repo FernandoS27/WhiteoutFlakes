@@ -1,9 +1,9 @@
-#include "casc_browser.h"
+#include "io/casc_browser.h"
 
 #include <algorithm>
 #include <cctype>
 
-namespace whiteout::flakes::tools {
+namespace whiteout::flakes::io {
 
 namespace {
 
@@ -170,4 +170,4 @@ std::string CascBrowser::ChildPath(const std::string& fileName) const {
     return it != node->files.end() ? it->second : std::string{};
 }
 
-} // namespace whiteout::flakes::tools
+} // namespace whiteout::flakes::io

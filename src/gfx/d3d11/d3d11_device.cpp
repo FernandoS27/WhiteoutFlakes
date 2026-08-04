@@ -749,6 +749,71 @@ void D3D11Device::WaitIdle() {
     query->Release();
 }
 
+// Copy a rendered texture into a staging texture the CPU can map. D3D11 has
+// no readback heap: a STAGING texture with CPU read access is the whole
+// mechanism, and CopyResource does the transfer.
+bool D3D11Device::ReadbackTexture(TextureHandle h, i32 width, i32 height,
+                                  std::vector<u8>& outRgba) {
+    auto* src = textures_.Get(static_cast<u64>(h));
+    if (!src || !src->tex || width <= 0 || height <= 0)
+        return false;
+
+    // Take the size and format from the texture itself. The caller's width and
+    // height describe the region it expects; a mismatch means the target was
+    // resized under it, and cropping silently would hand back a torn image.
+    D3D11_TEXTURE2D_DESC sd{};
+    src->tex->GetDesc(&sd);
+    if (static_cast<i32>(sd.Width) != width || static_cast<i32>(sd.Height) != height)
+        return false;
+
+    D3D11_TEXTURE2D_DESC td = sd;
+    td.Usage = D3D11_USAGE_STAGING;
+    td.BindFlags = 0;
+    td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    td.MiscFlags = 0;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    // Multisampled sources cannot be copied to a staging texture directly;
+    // they would need a resolve first. Nothing here renders the scene to an
+    // MSAA target, so refuse rather than pretend.
+    if (td.SampleDesc.Count > 1)
+        return false;
+
+    ID3D11Texture2D* staging = nullptr;
+    if (FAILED(device_->CreateTexture2D(&td, nullptr, &staging)) || !staging)
+        return false;
+
+    context_->CopyResource(staging, src->tex);
+    // The copy is queued on the immediate context; Map with no DO_NOT_WAIT
+    // blocks until it lands, so no explicit fence is needed.
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(context_->Map(staging, 0, D3D11_MAP_READ, 0, &mapped))) {
+        staging->Release();
+        return false;
+    }
+
+    const bool bgra = sd.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+                      sd.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    constexpr size_t kBpp = 4;
+    const size_t rowBytes = static_cast<size_t>(width) * kBpp;
+    outRgba.resize(rowBytes * static_cast<size_t>(height));
+    const auto* rows = static_cast<const u8*>(mapped.pData);
+    for (i32 y = 0; y < height; ++y) {
+        const u8* srcRow = rows + static_cast<size_t>(y) * mapped.RowPitch;
+        u8* dstRow = outRgba.data() + static_cast<size_t>(y) * rowBytes;
+        std::memcpy(dstRow, srcRow, rowBytes);
+        if (bgra) {
+            // Swap-chain buffers are usually BGRA; the contract is RGBA8, so
+            // swizzle in place rather than making every caller ask.
+            for (size_t x = 0; x < rowBytes; x += kBpp)
+                std::swap(dstRow[x], dstRow[x + 2]);
+        }
+    }
+    context_->Unmap(staging, 0);
+    staging->Release();
+    return true;
+}
+
 TextureHandle D3D11Device::GetSwapChainBackBuffer(SwapChainHandle h) {
     auto* sc = swapChains_.Get(static_cast<u64>(h));
     if (!sc)

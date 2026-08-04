@@ -29,7 +29,7 @@
 use crate::flakes::ffi;
 use crate::flakes::{ActorView, CameraView, DncView, GfxApi, PipelineView};
 use crate::flakes::{SceneView, ShadowParams, ShadowView};
-use crate::support::{take_string, RawCString};
+use crate::support::{take_string, Bytes, RawBytes, RawCString};
 
 extern "C" {
     // Generated (whiteout_flakes.cpp), but absent from `flakes.rs`'s own
@@ -57,6 +57,12 @@ extern "C" {
         width: i32,
         height: i32,
     ) -> u32;
+    fn whiteout_flakes_FlakesPipelineView_ReadbackTarget(
+        self_: *mut ffi::whiteout_FlakesPipelineView,
+        target: u32,
+        out_w: *mut i32,
+        out_h: *mut i32,
+    ) -> RawBytes;
     fn whiteout_flakes_FlakesCameraView_GetTargetFlat(
         self_: *const ffi::whiteout_FlakesCameraView,
         out: *mut f32,
@@ -163,6 +169,46 @@ impl PipelineView {
                 height,
             )
         }
+    }
+
+    /// Read a target's composited colour back as tightly-packed RGBA8,
+    /// row-major from the top-left, with the size it was read at.
+    ///
+    /// How a GUI shows the renderer somewhere it cannot hand over a window: a
+    /// preview thumbnail, a panel the toolkit composites itself, an
+    /// off-screen export. Works on every backend this crate exposes — D3D11,
+    /// D3D12, Vulkan and WebGPU. Row padding and BGRA ordering are handled
+    /// below, so the result is always tight RGBA8 and `len() == w * h * 4`.
+    ///
+    /// Synchronous: it submits and waits for the copy, so it costs a stall
+    /// per call. Right for a panel that updates when something changes, wrong
+    /// for a viewport at full rate — give that one a window of its own via
+    /// [`create_swap_chain_target`].
+    ///
+    /// `None` when the target is unknown, was resized out from under the
+    /// caller, or is multisampled.
+    ///
+    /// [`create_swap_chain_target`]: PipelineView::create_swap_chain_target
+    pub fn readback_target(&mut self, target: u32) -> Option<(Bytes, i32, i32)> {
+        let mut w = 0i32;
+        let mut h = 0i32;
+        // SAFETY: handle is live for the call; the out-params are real locals,
+        // and the returned buffer is owned — `Bytes` takes it over and frees
+        // it through the C ABI's own free on drop.
+        let bytes = unsafe {
+            Bytes::from_raw(whiteout_flakes_FlakesPipelineView_ReadbackTarget(
+                self.raw.as_ptr(),
+                target,
+                &mut w,
+                &mut h,
+            ))
+        }?;
+        // A live target that produced no pixels is a failed readback, not an
+        // image of size zero — report it the same way as an unknown target.
+        if bytes.is_empty() || w <= 0 || h <= 0 {
+            return None;
+        }
+        Some((bytes, w, h))
     }
 }
 

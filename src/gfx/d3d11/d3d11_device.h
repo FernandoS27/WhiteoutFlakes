@@ -45,6 +45,8 @@ public:
     void DestroySwapChain(SwapChainHandle) override;
     void Present(SwapChainHandle) override;
     void WaitIdle() override;
+    bool ReadbackTexture(TextureHandle h, i32 width, i32 height,
+                         std::vector<u8>& outRgba) override;
     TextureHandle GetSwapChainBackBuffer(SwapChainHandle) override;
     TextureHandle GetSwapChainBackBufferLinear(SwapChainHandle) override;
     Format GetSwapChainFormat(SwapChainHandle) const override;

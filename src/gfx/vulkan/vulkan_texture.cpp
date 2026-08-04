@@ -338,4 +338,140 @@ void VulkanDevice::Destroy(TextureHandle h) {
         }));
 }
 
+// ── Readback ─────────────────────────────────────────────────────────────
+//
+// Copy a rendered image into a host-visible buffer and map it. Two things
+// this has to get right that the upload path does not:
+//
+//   * The frame's rendering is recorded but not submitted until Present, and
+//     an off-screen target is never presented. SubmitFrame is the headless
+//     flush; without it the copy reads an image nothing has drawn into yet
+//     and every pixel comes back black.
+//   * The copy runs on the GRAPHICS queue, not the transfer queue. The image
+//     is owned by the graphics family, and when the device picked a dedicated
+//     transfer family (hasAsyncTransfer) reading it from there without an
+//     ownership transfer is undefined.
+bool VulkanDevice::ReadbackTexture(TextureHandle h, i32 width, i32 height,
+                                   std::vector<u8>& outRgba) {
+    auto& state = *state_;
+    auto* tex = state.textures.Get(static_cast<u64>(h));
+    if (!tex || tex->image == VK_NULL_HANDLE || width <= 0 || height <= 0)
+        return false;
+    // A size mismatch means the target was resized under the caller; cropping
+    // silently would hand back a torn image.
+    if (tex->width != width || tex->height != height)
+        return false;
+
+    // Flush whatever this frame recorded, then let it finish.
+    SubmitFrame();
+    WaitIdle();
+
+    constexpr size_t kBpp = 4;
+    const size_t rowBytes = static_cast<size_t>(width) * kBpp;
+    const VkDeviceSize totalBytes = rowBytes * static_cast<size_t>(height);
+
+    VkBufferCreateInfo bci{};
+    bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bci.size = totalBytes;
+    bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VmaAllocationCreateInfo aci{};
+    aci.usage = VMA_MEMORY_USAGE_AUTO;
+    aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VkBuffer dstBuf = VK_NULL_HANDLE;
+    VmaAllocation dstAlloc = VK_NULL_HANDLE;
+    VmaAllocationInfo dstInfo{};
+    if (vmaCreateBuffer(state.allocator, &bci, &aci, &dstBuf, &dstAlloc, &dstInfo) != VK_SUCCESS)
+        return false;
+
+    // The current frame's pool is graphics-family and idle after the flush
+    // above; the buffer is freed before anything resets it.
+    auto& frame = state.frames[state.frameIndex];
+    auto cbsR = state.device.allocateCommandBuffers({
+        .commandPool = *frame.commandPool,
+        .level = vk::CommandBufferLevel::ePrimary,
+        .commandBufferCount = 1,
+    });
+    if (cbsR.result != vk::Result::eSuccess) {
+        vmaDestroyBuffer(state.allocator, dstBuf, dstAlloc);
+        return false;
+    }
+    vk::raii::CommandBuffer cmdBuf = std::move(cbsR.value[0]);
+    (void)cmdBuf.begin({.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+    // Transition from the layout the last pass left, and put it back after —
+    // the rest of the frame still expects to find it there. Transitioning
+    // from eUndefined would be legal but would discard the contents, which is
+    // exactly what must not happen here.
+    const vk::ImageLayout original = tex->currentLayout == vk::ImageLayout::eUndefined
+                                         ? vk::ImageLayout::eColorAttachmentOptimal
+                                         : tex->currentLayout;
+    vk::ImageMemoryBarrier2 toCopy{
+        .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .srcAccessMask = vk::AccessFlagBits2::eMemoryWrite,
+        .dstStageMask = vk::PipelineStageFlagBits2::eCopy,
+        .dstAccessMask = vk::AccessFlagBits2::eTransferRead,
+        .oldLayout = original,
+        .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+        .image = vk::Image(tex->image),
+        .subresourceRange = {tex->aspect, 0, 1, 0, 1},
+    };
+    cmdBuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &toCopy});
+
+    vk::BufferImageCopy region{
+        .bufferOffset = 0,
+        .bufferRowLength = 0,   // tightly packed
+        .bufferImageHeight = 0, // ditto
+        .imageSubresource = {tex->aspect, 0, 0, 1},
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {static_cast<u32>(width), static_cast<u32>(height), 1},
+    };
+    cmdBuf.copyImageToBuffer(vk::Image(tex->image), vk::ImageLayout::eTransferSrcOptimal,
+                             vk::Buffer(dstBuf), region);
+
+    vk::ImageMemoryBarrier2 restore{
+        .srcStageMask = vk::PipelineStageFlagBits2::eCopy,
+        .srcAccessMask = vk::AccessFlagBits2::eTransferRead,
+        .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+        .dstAccessMask = vk::AccessFlagBits2::eMemoryRead,
+        .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+        .newLayout = original,
+        .image = vk::Image(tex->image),
+        .subresourceRange = {tex->aspect, 0, 1, 0, 1},
+    };
+    cmdBuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &restore});
+    (void)cmdBuf.end();
+    tex->currentLayout = original;
+
+    auto fenceR = state.device.createFence({});
+    if (fenceR.result != vk::Result::eSuccess) {
+        vmaDestroyBuffer(state.allocator, dstBuf, dstAlloc);
+        return false;
+    }
+    vk::raii::Fence fence = std::move(fenceR.value);
+    vk::CommandBufferSubmitInfo cbInfo{.commandBuffer = *cmdBuf};
+    vk::SubmitInfo2 submit{.commandBufferInfoCount = 1, .pCommandBufferInfos = &cbInfo};
+    (void)state.queue.submit2(submit, *fence);
+    (void)state.device.waitForFences({*fence}, VK_TRUE, UINT64_MAX);
+
+    vmaInvalidateAllocation(state.allocator, dstAlloc, 0, totalBytes);
+    const auto* mapped = static_cast<const u8*>(dstInfo.pMappedData);
+    if (!mapped) {
+        vmaDestroyBuffer(state.allocator, dstBuf, dstAlloc);
+        return false;
+    }
+
+    const bool bgra =
+        tex->format == vk::Format::eB8G8R8A8Unorm || tex->format == vk::Format::eB8G8R8A8Srgb;
+    outRgba.resize(totalBytes);
+    std::memcpy(outRgba.data(), mapped, totalBytes);
+    if (bgra) {
+        // The contract is RGBA8; swap-chain images are usually BGRA.
+        for (size_t i = 0; i + 3 < outRgba.size(); i += kBpp)
+            std::swap(outRgba[i], outRgba[i + 2]);
+    }
+    vmaDestroyBuffer(state.allocator, dstBuf, dstAlloc);
+    return true;
+}
+
 } // namespace whiteout::flakes::gfx::vulkan

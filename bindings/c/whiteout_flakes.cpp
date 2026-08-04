@@ -20,6 +20,7 @@
 #include <whiteout/flakes/views.h>
 #include <whiteout/flakes/actor_view.h>
 #include <whiteout/flakes/renderer.h>
+#include <whiteout/flakes/casc_browser.h>
 
 namespace { using namespace whiteout; }
 
@@ -579,6 +580,14 @@ void whiteout_flakes_FlakesSceneView_SetAnimationTimeMs(whiteout_FlakesSceneView
 
 void whiteout_flakes_FlakesSceneView_Update(whiteout_FlakesSceneView* self, float dt) {
     reinterpret_cast<whiteout::flakes::SceneView*>(self)->Update(dt);
+}
+
+void whiteout_flakes_FlakesSceneView_SetCascInstallPath(whiteout_FlakesSceneView* self, const char* root) {
+    reinterpret_cast<whiteout::flakes::SceneView*>(self)->SetCascInstallPath(std::string(root ? root : ""));
+}
+
+void whiteout_flakes_FlakesSceneView_SetHdMode(whiteout_FlakesSceneView* self, int32_t enabled) {
+    reinterpret_cast<whiteout::flakes::SceneView*>(self)->SetHdMode(enabled);
 }
 
 } // extern "C"
@@ -1209,6 +1218,108 @@ struct whiteout_FlakesActorView* whiteout_flakes_FlakesRenderer_Actor(whiteout_F
 
 void whiteout_flakes_FlakesRenderer_Tick(whiteout_FlakesRenderer* self, float dt) {
     reinterpret_cast<whiteout::flakes::Renderer*>(self)->Tick(dt);
+}
+
+} // extern "C"
+
+// ── FlakesCascBrowser ─────────────────────────────────────────────────
+
+extern "C" {
+
+whiteout_FlakesCascBrowser* whiteout_flakes_FlakesCascBrowser_new(void) {
+    return reinterpret_cast<whiteout_FlakesCascBrowser*>(new whiteout::flakes::CascBrowser());
+}
+
+void whiteout_flakes_FlakesCascBrowser_delete(whiteout_FlakesCascBrowser* self) {
+    delete reinterpret_cast<whiteout::flakes::CascBrowser*>(self);
+}
+
+int32_t whiteout_flakes_FlakesCascBrowser_Open(whiteout_FlakesCascBrowser* self, const char* root) {
+    return reinterpret_cast<whiteout::flakes::CascBrowser*>(self)->Open(std::string(root ? root : ""));
+}
+
+int32_t whiteout_flakes_FlakesCascBrowser_IsOpen(const whiteout_FlakesCascBrowser* self) {
+    return reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->IsOpen();
+}
+
+whiteout_CString whiteout_flakes_FlakesCascBrowser_Root(const whiteout_FlakesCascBrowser* self) {
+    return wrapCString(reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->GetRoot());
+}
+
+whiteout_CString whiteout_flakes_FlakesCascBrowser_LastError(const whiteout_FlakesCascBrowser* self) {
+    return wrapCString(reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->GetLastError());
+}
+
+whiteout_CString whiteout_flakes_FlakesCascBrowser_CurrentPath(const whiteout_FlakesCascBrowser* self) {
+    return wrapCString(reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->GetCurrentPath());
+}
+
+size_t whiteout_flakes_FlakesCascBrowser_Breadcrumb_count(const whiteout_FlakesCascBrowser* self) {
+    return reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Breadcrumb().size();
+}
+
+whiteout_CString whiteout_flakes_FlakesCascBrowser_Breadcrumb_at(const whiteout_FlakesCascBrowser* self, size_t index) {
+    const auto& __v = reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Breadcrumb();
+    if (index >= __v.size()) return emptyCString();
+    return wrapCString(std::string(__v[index]));
+}
+
+
+struct whiteout_StringList* whiteout_flakes_FlakesCascBrowser_Breadcrumb(const whiteout_FlakesCascBrowser* self) {
+    return reinterpret_cast<struct whiteout_StringList*>(
+        new std::vector<std::string>(
+            reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Breadcrumb()));
+}
+size_t whiteout_flakes_FlakesCascBrowser_Folders_count(const whiteout_FlakesCascBrowser* self) {
+    return reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Folders().size();
+}
+
+whiteout_CString whiteout_flakes_FlakesCascBrowser_Folders_at(const whiteout_FlakesCascBrowser* self, size_t index) {
+    const auto& __v = reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Folders();
+    if (index >= __v.size()) return emptyCString();
+    return wrapCString(std::string(__v[index]));
+}
+
+
+struct whiteout_StringList* whiteout_flakes_FlakesCascBrowser_Folders(const whiteout_FlakesCascBrowser* self) {
+    return reinterpret_cast<struct whiteout_StringList*>(
+        new std::vector<std::string>(
+            reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Folders()));
+}
+size_t whiteout_flakes_FlakesCascBrowser_Files_count(const whiteout_FlakesCascBrowser* self) {
+    return reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Files().size();
+}
+
+whiteout_CString whiteout_flakes_FlakesCascBrowser_Files_at(const whiteout_FlakesCascBrowser* self, size_t index) {
+    const auto& __v = reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Files();
+    if (index >= __v.size()) return emptyCString();
+    return wrapCString(std::string(__v[index]));
+}
+
+
+struct whiteout_StringList* whiteout_flakes_FlakesCascBrowser_Files(const whiteout_FlakesCascBrowser* self) {
+    return reinterpret_cast<struct whiteout_StringList*>(
+        new std::vector<std::string>(
+            reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Files()));
+}
+void whiteout_flakes_FlakesCascBrowser_Descend(whiteout_FlakesCascBrowser* self, const char* folderName) {
+    reinterpret_cast<whiteout::flakes::CascBrowser*>(self)->Descend(std::string(folderName ? folderName : ""));
+}
+
+void whiteout_flakes_FlakesCascBrowser_Ascend(whiteout_FlakesCascBrowser* self) {
+    reinterpret_cast<whiteout::flakes::CascBrowser*>(self)->Ascend();
+}
+
+void whiteout_flakes_FlakesCascBrowser_NavigateTo(whiteout_FlakesCascBrowser* self, const char* displayPath) {
+    reinterpret_cast<whiteout::flakes::CascBrowser*>(self)->NavigateTo(std::string(displayPath ? displayPath : ""));
+}
+
+whiteout_CString whiteout_flakes_FlakesCascBrowser_ChildPath(const whiteout_FlakesCascBrowser* self, const char* fileName) {
+    return wrapCString(reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->ChildPath(std::string(fileName ? fileName : "")));
+}
+
+int32_t whiteout_flakes_FlakesCascBrowser_IsEffect(const whiteout_FlakesCascBrowser* self, const char* fileName) {
+    return reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->IsEffect(std::string(fileName ? fileName : ""));
 }
 
 } // extern "C"

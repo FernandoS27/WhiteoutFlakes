@@ -22,6 +22,10 @@ public:
     explicit TextureAssetManager(gfx::IGFXDevice& gfx);
     ~TextureAssetManager();
 
+    /// Destroy every owned texture. Must be called while the gfx device
+    /// is still alive — the destructor cannot, see its comment.
+    void ReleaseGpu();
+
     TextureAssetManager(const TextureAssetManager&) = delete;
     TextureAssetManager& operator=(const TextureAssetManager&) = delete;
 

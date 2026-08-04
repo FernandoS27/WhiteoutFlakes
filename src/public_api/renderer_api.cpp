@@ -190,6 +190,15 @@ u64 PipelineView::LiveGpuBytes() const {
     return gfx ? gfx->LiveGpuBytes() : 0;
 }
 
+std::vector<u8> PipelineView::ReadbackTarget(RenderTargetId t, i32& width, i32& height) {
+    std::vector<u8> rgba;
+    width = 0;
+    height = 0;
+    if (!Svc(impl_).Pipeline().ReadbackTarget(t, rgba, width, height))
+        rgba.clear();
+    return rgba;
+}
+
 // ============================================================================
 // SceneView
 // ============================================================================
@@ -211,6 +220,14 @@ void SceneView::SetEngineAssetRoot(const std::filesystem::path& root) {
     // an external provider owns its own resolution and has no such root.
     // GetContentProvider() realises the internal one, matching SetPE1BasePath.
     Scn(impl_).GetContentProvider().SetSystemBasePath(root);
+}
+void SceneView::SetCascInstallPath(const std::string& root) {
+    // The internal provider deliberately, matching SetEngineAssetRoot: an
+    // external provider owns its own resolution and has no CASC of its own.
+    Scn(impl_).GetContentProvider().SetInstallPath(root);
+}
+void SceneView::SetHdMode(bool enabled) {
+    Scn(impl_).GetContentProvider().SetHdMode(enabled);
 }
 IContentProvider* SceneView::ActiveContentProvider() {
     return Scn(impl_).ActiveContentProvider();

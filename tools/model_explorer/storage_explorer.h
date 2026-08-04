@@ -13,7 +13,7 @@
 //
 // See STORAGE_EXPLORER_DESIGN.md.
 
-#include "casc_browser.h"
+#include "io/casc_browser.h"
 #include "thumbnail_pool.h"
 
 #include "renderer/render_service.h"
@@ -125,7 +125,7 @@ private:
     void OpenCascDialog(); // native folder picker → OpenCasc
 
     renderer::RenderService& svc_;
-    CascBrowser browser_;
+    io::CascBrowser browser_;
     std::shared_ptr<io::FileContentProvider> provider_;
     std::unique_ptr<ThumbnailPool> pool_;
 
