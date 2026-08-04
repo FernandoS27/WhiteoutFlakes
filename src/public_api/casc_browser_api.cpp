@@ -21,6 +21,7 @@ class CascBrowserImpl {
 public:
     io::CascBrowser browser;
     std::string lastError;
+    CascFileFilter filter = CascFileFilter::All;
 };
 
 } // namespace detail
@@ -36,6 +37,12 @@ bool EndsWithCi(const std::string& s, const std::string& suffix) {
         return std::tolower(static_cast<unsigned char>(a)) ==
                std::tolower(static_cast<unsigned char>(b));
     });
+}
+
+// The one place that decides model-vs-effect, shared by the filter and by
+// the public IsEffect so the two can never disagree.
+bool IsEffectName(const std::string& name) {
+    return EndsWithCi(name, ".pkb") || EndsWithCi(name, ".pkfx");
 }
 
 } // namespace
@@ -67,7 +74,28 @@ std::vector<std::string> CascBrowser::Folders() const {
     return impl_->browser.Current().folders;
 }
 std::vector<std::string> CascBrowser::Files() const {
-    return impl_->browser.Current().modelFiles;
+    const auto& all = impl_->browser.Current().modelFiles;
+    if (impl_->filter == CascFileFilter::All)
+        return all;
+    const bool wantEffects = impl_->filter == CascFileFilter::EffectsOnly;
+    std::vector<std::string> out;
+    out.reserve(all.size());
+    for (const auto& name : all) {
+        if (IsEffectName(name) == wantEffects)
+            out.push_back(name);
+    }
+    return out;
+}
+
+void CascBrowser::SetFilter(CascFileFilter filter) {
+    impl_->filter = filter;
+}
+CascFileFilter CascBrowser::GetFilter() const {
+    return impl_->filter;
+}
+
+i32 CascBrowser::UnfilteredFileCount() const {
+    return static_cast<i32>(impl_->browser.Current().modelFiles.size());
 }
 
 void CascBrowser::Descend(const std::string& folderName) {
@@ -85,7 +113,7 @@ std::string CascBrowser::ChildPath(const std::string& fileName) const {
 }
 
 bool CascBrowser::IsEffect(const std::string& fileName) const {
-    return EndsWithCi(fileName, ".pkb") || EndsWithCi(fileName, ".pkfx");
+    return IsEffectName(fileName);
 }
 
 } // namespace whiteout::flakes

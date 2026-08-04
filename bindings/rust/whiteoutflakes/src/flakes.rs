@@ -282,6 +282,35 @@ impl TryFrom<i32> for AssetsViewKind {
     }
 }
 
+/// Which file types @ref CascBrowser::Files reports.
+///
+/// Naming matches `StorageFileFilter` in the explorer panel, which has had the same three-way choice since before the browser was bindable.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CascFileFilter {
+    /// Models and effects both.
+    All = 0,
+    /// `.mdx` / `.mdl`.
+    ModelsOnly = 1,
+    /// `.pkb` / `.pkfx`.
+    EffectsOnly = 2,
+}
+
+impl TryFrom<i32> for CascFileFilter {
+    type Error = crate::Error;
+    fn try_from(v: i32) -> Result<Self, crate::Error> {
+        match v {
+            0 => Ok(CascFileFilter::All),
+            1 => Ok(CascFileFilter::ModelsOnly),
+            2 => Ok(CascFileFilter::EffectsOnly),
+            other => Err(crate::Error::UnknownEnum {
+                name: "CascFileFilter",
+                value: other,
+            }),
+        }
+    }
+}
+
 /// An owned list of [`SequenceInfo`] produced by the library.
 pub struct SequenceInfoList {
     raw: core::ptr::NonNull<ffi::whiteout_SequenceInfoList>,
@@ -2885,7 +2914,7 @@ impl CascBrowser {
         }
     }
 
-    /// Model and effect file names directly inside the current directory. Names only — pair with @ref ChildPath to load one.
+    /// File names directly inside the current directory, subject to @ref GetFilter. Names only — pair with @ref ChildPath to load one.
     pub fn files(&self) -> Vec<String> {
         // SAFETY: one call materialises the list; the
         // elements are borrowed out of it and it is freed
@@ -2902,6 +2931,34 @@ impl CascBrowser {
             ffi::whiteout_flakes_StringList_delete(list);
             out
         }
+    }
+
+    /// Restrict @ref Files to models, to effects, or to neither.
+    ///
+    /// Filters the file list only; @ref Folders is unchanged, so a folder whose contents are all filtered out still appears and simply reads as empty. That keeps the tree stable while the filter is toggled, which is what a panel wants — hiding folders would make the shape of the archive jump around.
+    ///
+    /// Costs nothing to change: the archive is walked once at @ref Open and the filter is applied per call.
+    pub fn set_filter(&mut self, filter: CascFileFilter) {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesCascBrowser_SetFilter(self.raw.as_ptr(), filter as i32);
+        }
+    }
+
+    pub fn filter(&self) -> CascFileFilter {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            CascFileFilter::try_from(ffi::whiteout_flakes_FlakesCascBrowser_Filter(
+                self.raw.as_ptr(),
+            ))
+            .expect("unknown enum discriminant from the native library (ABI version skew)")
+        }
+    }
+
+    /// How many files the current directory holds in total, ignoring the filter — so a panel can say "3 of 12" rather than making an empty folder look like a dead end.
+    pub fn unfiltered_file_count(&self) -> i32 {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe { ffi::whiteout_flakes_FlakesCascBrowser_UnfilteredFileCount(self.raw.as_ptr()) }
     }
 
     /// Descend into a subfolder of the current directory. No-op for a name that is not in @ref Folders.
@@ -3897,6 +3954,16 @@ pub mod ffi {
         pub fn whiteout_flakes_FlakesCascBrowser_Files(
             self_: *mut whiteout_FlakesCascBrowser,
         ) -> *mut whiteout_StringList;
+        pub fn whiteout_flakes_FlakesCascBrowser_SetFilter(
+            self_: *mut whiteout_FlakesCascBrowser,
+            filter: i32,
+        );
+        pub fn whiteout_flakes_FlakesCascBrowser_Filter(
+            self_: *mut whiteout_FlakesCascBrowser,
+        ) -> i32;
+        pub fn whiteout_flakes_FlakesCascBrowser_UnfilteredFileCount(
+            self_: *mut whiteout_FlakesCascBrowser,
+        ) -> i32;
         pub fn whiteout_flakes_FlakesCascBrowser_Descend(
             self_: *mut whiteout_FlakesCascBrowser,
             folder_name: *const core::ffi::c_char,

@@ -15,6 +15,17 @@ namespace detail {
 class CascBrowserImpl;
 }
 
+/// @brief Which file types @ref CascBrowser::Files reports.
+///
+/// Naming matches `StorageFileFilter` in the explorer panel, which has had
+/// the same three-way choice since before the browser was bindable.
+/// @bind
+enum class CascFileFilter : u8 {
+    All = 0,         ///< Models and effects both.
+    ModelsOnly = 1,  ///< `.mdx` / `.mdl`.
+    EffectsOnly = 2, ///< `.pkb`
+};
+
 /// @brief Browses an installed Warcraft III's CASC storage as a folder tree of
 ///        model and effect files.
 ///
@@ -73,9 +84,29 @@ public:
     std::vector<std::string> Breadcrumb() const;
     /// @brief Immediate subfolder names of the current directory.
     std::vector<std::string> Folders() const;
-    /// @brief Model and effect file names directly inside the current
-    ///        directory. Names only — pair with @ref ChildPath to load one.
+    /// @brief File names directly inside the current directory, subject to
+    ///        @ref GetFilter. Names only — pair with @ref ChildPath to load
+    ///        one.
     std::vector<std::string> Files() const;
+
+    /// @brief Restrict @ref Files to models, to effects, or to neither.
+    ///
+    /// Filters the file list only; @ref Folders is unchanged, so a folder
+    /// whose contents are all filtered out still appears and simply reads as
+    /// empty. That keeps the tree stable while the filter is toggled, which
+    /// is what a panel wants — hiding folders would make the shape of the
+    /// archive jump around.
+    ///
+    /// Costs nothing to change: the archive is walked once at @ref Open and
+    /// the filter is applied per call.
+    void SetFilter(CascFileFilter filter);
+    /// @bind rename=Filter
+    CascFileFilter GetFilter() const;
+
+    /// @brief How many files the current directory holds in total, ignoring
+    ///        the filter — so a panel can say "3 of 12" rather than making
+    ///        an empty folder look like a dead end.
+    i32 UnfilteredFileCount() const;
 
     /// @brief Descend into a subfolder of the current directory. No-op for a
     ///        name that is not in @ref Folders.

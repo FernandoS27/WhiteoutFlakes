@@ -1302,6 +1302,18 @@ struct whiteout_StringList* whiteout_flakes_FlakesCascBrowser_Files(const whiteo
         new std::vector<std::string>(
             reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Files()));
 }
+void whiteout_flakes_FlakesCascBrowser_SetFilter(whiteout_FlakesCascBrowser* self, int32_t filter) {
+    reinterpret_cast<whiteout::flakes::CascBrowser*>(self)->SetFilter(static_cast<whiteout::flakes::CascFileFilter>(filter));
+}
+
+int32_t whiteout_flakes_FlakesCascBrowser_Filter(const whiteout_FlakesCascBrowser* self) {
+    return static_cast<int32_t>(reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->GetFilter());
+}
+
+int32_t whiteout_flakes_FlakesCascBrowser_UnfilteredFileCount(const whiteout_FlakesCascBrowser* self) {
+    return reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->UnfilteredFileCount();
+}
+
 void whiteout_flakes_FlakesCascBrowser_Descend(whiteout_FlakesCascBrowser* self, const char* folderName) {
     reinterpret_cast<whiteout::flakes::CascBrowser*>(self)->Descend(std::string(folderName ? folderName : ""));
 }

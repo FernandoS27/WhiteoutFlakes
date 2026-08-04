@@ -33,12 +33,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .next()
         .ok_or("usage: casc_browse <warcraft-iii-install> [folder\\path]")?;
     let folder = args.next();
+    // all (default) | models | effects
+    let filter = match args.next().as_deref() {
+        None | Some("all") => whiteoutflakes::CascFileFilter::All,
+        Some("models") => whiteoutflakes::CascFileFilter::ModelsOnly,
+        Some("effects") => whiteoutflakes::CascFileFilter::EffectsOnly,
+        Some(other) => return Err(format!("unknown filter {other:?} (all|models|effects)").into()),
+    };
 
     let mut br = whiteoutflakes::CascBrowser::new();
     if !br.open(&install) {
         return Err(format!("open failed: {}", br.last_error()).into());
     }
     println!("opened {}", br.root());
+    br.set_filter(filter);
 
     if let Some(f) = &folder {
         br.navigate_to(f);
@@ -50,11 +58,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let folders = br.folders();
     let files = br.files();
     let here = br.current_path();
+    let total = br.unfiltered_file_count();
     println!(
-        "\n{}  —  {} folders, {} files",
+        "\n{}  —  {} folders, {} files{}",
         if here.is_empty() { "<root>" } else { &here },
         folders.len(),
-        files.len()
+        files.len(),
+        // Say what the filter hid, so an empty listing does not read as an
+        // empty folder.
+        if files.len() as i32 == total {
+            String::new()
+        } else {
+            format!("  ({total} before the {:?} filter)", br.filter())
+        }
     );
     for d in folders.iter().take(20) {
         println!("  [dir]  {d}");
@@ -71,7 +87,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let Some(first) = files.first() else {
-        println!("\nNo files here — pass a folder to render one, e.g. units\\nightelf\\druid");
+        if total > 0 {
+            println!("\nEverything here was filtered out — try `all`.");
+        } else {
+            println!("\nNo files here — pass a folder, e.g. units\\nightelf\\druidoftheclaw");
+        }
         return Ok(());
     };
 

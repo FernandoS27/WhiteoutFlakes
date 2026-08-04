@@ -130,3 +130,41 @@ fn scene_clock_is_settable() {
     scene.set_animation_time_ms(1234);
     assert_eq!(scene.animation_time_ms(), 1234);
 }
+
+#[test]
+fn casc_browser_starts_closed_and_unfiltered() {
+    let br = whiteoutflakes::CascBrowser::new();
+    assert!(!br.is_open());
+    assert!(br.root().is_empty());
+    assert!(br.last_error().is_empty());
+    assert_eq!(br.filter(), whiteoutflakes::CascFileFilter::All);
+    // Nothing to list, and nothing that pretends otherwise.
+    assert!(br.files().is_empty());
+    assert!(br.folders().is_empty());
+    assert_eq!(br.unfiltered_file_count(), 0);
+}
+
+#[test]
+fn casc_browser_classifies_effects_by_extension() {
+    // The same predicate backs `is_effect` and the ModelsOnly/EffectsOnly
+    // filter, so pinning it here pins the filter too — and it must be
+    // case-insensitive, since archive paths keep whatever case the authoring
+    // tool wrote.
+    let br = whiteoutflakes::CascBrowser::new();
+    for name in ["fog.pkb", "fog.pkfx", "FOG.PKB", "Fog.PkFx"] {
+        assert!(br.is_effect(name), "{name} should be an effect");
+    }
+    for name in ["druid.mdx", "druid.mdl", "DRUID.MDX", "pkb.mdx", "notpkb"] {
+        assert!(!br.is_effect(name), "{name} should not be an effect");
+    }
+}
+
+#[test]
+fn casc_browser_filter_round_trips() {
+    use whiteoutflakes::CascFileFilter::*;
+    let mut br = whiteoutflakes::CascBrowser::new();
+    for f in [ModelsOnly, EffectsOnly, All] {
+        br.set_filter(f);
+        assert_eq!(br.filter(), f);
+    }
+}

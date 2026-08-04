@@ -106,6 +106,12 @@ typedef enum {
     whiteout_flakes_Kind_ChildModel,
 } whiteout_flakes_Kind;
 
+typedef enum {
+    whiteout_flakes_CascFileFilter_All,
+    whiteout_flakes_CascFileFilter_ModelsOnly,
+    whiteout_flakes_CascFileFilter_EffectsOnly,
+} whiteout_flakes_CascFileFilter;
+
 /* ── Opaque handles ───────────────────────────────────────── */
 
 typedef struct whiteout_FlakesRect whiteout_FlakesRect;
@@ -657,12 +663,21 @@ whiteout_CString whiteout_flakes_FlakesCascBrowser_Folders_at(const whiteout_Fla
 /* Materialises the whole list in one call. Prefer this over the
  * _count/_at pair above, which re-runs the query per index. */
 struct whiteout_StringList* whiteout_flakes_FlakesCascBrowser_Folders(const whiteout_FlakesCascBrowser* self);
-/* Model and effect file names directly inside the current directory. Names only — pair with @ref ChildPath to load one. */
+/* File names directly inside the current directory, subject to @ref GetFilter. Names only — pair with @ref ChildPath to load one. */
 size_t whiteout_flakes_FlakesCascBrowser_Files_count(const whiteout_FlakesCascBrowser* self);
 whiteout_CString whiteout_flakes_FlakesCascBrowser_Files_at(const whiteout_FlakesCascBrowser* self, size_t index);
 /* Materialises the whole list in one call. Prefer this over the
  * _count/_at pair above, which re-runs the query per index. */
 struct whiteout_StringList* whiteout_flakes_FlakesCascBrowser_Files(const whiteout_FlakesCascBrowser* self);
+/* Restrict @ref Files to models, to effects, or to neither. */
+/*  */
+/* Filters the file list only; @ref Folders is unchanged, so a folder whose contents are all filtered out still appears and simply reads as empty. That keeps the tree stable while the filter is toggled, which is what a panel wants — hiding folders would make the shape of the archive jump around. */
+/*  */
+/* Costs nothing to change: the archive is walked once at @ref Open and the filter is applied per call. */
+void whiteout_flakes_FlakesCascBrowser_SetFilter(whiteout_FlakesCascBrowser* self, int32_t filter);
+int32_t whiteout_flakes_FlakesCascBrowser_Filter(const whiteout_FlakesCascBrowser* self);
+/* How many files the current directory holds in total, ignoring the filter — so a panel can say "3 of 12" rather than making an empty folder look like a dead end. */
+int32_t whiteout_flakes_FlakesCascBrowser_UnfilteredFileCount(const whiteout_FlakesCascBrowser* self);
 /* Descend into a subfolder of the current directory. No-op for a name that is not in @ref Folders. */
 void whiteout_flakes_FlakesCascBrowser_Descend(whiteout_FlakesCascBrowser* self, const char* folderName);
 /* Go up one level. No-op at the root. */
