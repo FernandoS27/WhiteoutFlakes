@@ -239,6 +239,51 @@ const AssetManager& RenderService::Assets() const {
 void RenderService::RetryUnloadedAssets() {
     impl_->assets_->RetryUnloaded();
 }
+
+namespace {
+
+// Extensions each asset kind can decode — used to filter a directory
+// listing down to the files the requested kind actually understands.
+// Matches the texture/model synonym sets FileContentProvider resolves.
+bool ExtensionSuitsKind(std::string_view path, assets::AssetKind kind) {
+    const auto dot = path.find_last_of('.');
+    if (dot == std::string_view::npos) return false;
+    const std::string_view ext = path.substr(dot);
+    switch (kind) {
+    case assets::AssetKind::Texture:
+        return ext == ".blp" || ext == ".dds" || ext == ".tga" || ext == ".png" || ext == ".tif";
+    case assets::AssetKind::Particle:
+        return ext == ".pkb" || ext == ".pkfx";
+    case assets::AssetKind::ChildModel:
+        return ext == ".mdx" || ext == ".mdl";
+    }
+    return false;
+}
+
+} // namespace
+
+assets::AssetPreload RenderService::PreloadAssets(assets::AssetKind kind,
+                                                  std::span<const std::string> paths) {
+    if (!impl_->assets_) return {};
+    return impl_->assets_->Preload(kind, paths);
+}
+
+assets::AssetPreload RenderService::PreloadAssetDirectory(assets::AssetKind kind,
+                                                          std::string_view directory,
+                                                          bool recursive) {
+    if (!impl_->assets_ || !impl_->activeScene_) return {};
+    auto* provider = Scene().ActiveContentProvider();
+    if (!provider) return {};
+
+    std::vector<std::string> listing = provider->ListFiles(std::string(directory), recursive);
+    listing.erase(std::remove_if(listing.begin(), listing.end(),
+                                 [kind](const std::string& p) {
+                                     return !ExtensionSuitsKind(p, kind);
+                                 }),
+                  listing.end());
+    return impl_->assets_->Preload(kind, listing);
+}
+
 DebugRenderer& RenderService::Debug() {
     return *impl_->debug_;
 }

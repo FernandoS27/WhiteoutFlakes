@@ -132,12 +132,13 @@ fn scene_clock_is_settable() {
 }
 
 #[test]
-fn casc_browser_starts_closed_and_unfiltered() {
-    let br = whiteoutflakes::CascBrowser::new();
+fn storage_browser_starts_closed_and_unfiltered() {
+    let br = whiteoutflakes::StorageBrowser::new();
     assert!(!br.is_open());
     assert!(br.root().is_empty());
     assert!(br.last_error().is_empty());
-    assert_eq!(br.filter(), whiteoutflakes::CascFileFilter::All);
+    assert_eq!(br.filter(), whiteoutflakes::StorageFileFilter::All);
+    assert_eq!(br.kind(), whiteoutflakes::StorageKind::Casc);
     // Nothing to list, and nothing that pretends otherwise.
     assert!(br.files().is_empty());
     assert!(br.folders().is_empty());
@@ -145,12 +146,12 @@ fn casc_browser_starts_closed_and_unfiltered() {
 }
 
 #[test]
-fn casc_browser_classifies_effects_by_extension() {
+fn storage_browser_classifies_effects_by_extension() {
     // The same predicate backs `is_effect` and the ModelsOnly/EffectsOnly
     // filter, so pinning it here pins the filter too — and it must be
     // case-insensitive, since archive paths keep whatever case the authoring
     // tool wrote.
-    let br = whiteoutflakes::CascBrowser::new();
+    let br = whiteoutflakes::StorageBrowser::new();
     for name in ["fog.pkb", "fog.pkfx", "FOG.PKB", "Fog.PkFx"] {
         assert!(br.is_effect(name), "{name} should be an effect");
     }
@@ -160,11 +161,19 @@ fn casc_browser_classifies_effects_by_extension() {
 }
 
 #[test]
-fn casc_browser_filter_round_trips() {
-    use whiteoutflakes::CascFileFilter::*;
-    let mut br = whiteoutflakes::CascBrowser::new();
+fn storage_browser_filter_round_trips() {
+    use whiteoutflakes::StorageFileFilter::*;
+    let mut br = whiteoutflakes::StorageBrowser::new();
     for f in [ModelsOnly, EffectsOnly, All] {
         br.set_filter(f);
         assert_eq!(br.filter(), f);
     }
+}
+
+#[test]
+fn storage_browser_open_auto_rejects_a_missing_path() {
+    let mut br = whiteoutflakes::StorageBrowser::new();
+    assert!(!br.open_auto("Z:/definitely/not/here"));
+    assert!(!br.last_error().is_empty(), "a failure must say why");
+    assert!(!br.is_open());
 }

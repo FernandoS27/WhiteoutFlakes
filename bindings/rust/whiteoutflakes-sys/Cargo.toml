@@ -53,6 +53,10 @@ webgpu = ["dep:whiteoutflakes-shaders-webgpu"]
 # built without them.
 casc = ["whiteoutlib?/casc"]
 
+# MPQ, the classic archive format. Only `StorageBrowser` needs it, so it is
+# off by default; same cross-crate agreement rule as `casc`.
+mpq = ["whiteoutlib?/mpq"]
+
 # Where WhiteoutLib comes from.
 #
 # `bundled-whiteoutlib` (default) compiles the vendored copy into this

@@ -36,6 +36,7 @@ public:
     void Wait(RequestId id) override;
     void Cancel(RequestId id) override;
     void Pump() override;
+    std::vector<std::string> ListFiles(const std::string& directory, bool recursive) override;
 
     bool HasCasc() const;
 

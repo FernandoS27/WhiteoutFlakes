@@ -282,29 +282,56 @@ impl TryFrom<i32> for AssetsViewKind {
     }
 }
 
-/// Which file types @ref CascBrowser::Files reports.
+/// Where a @ref StorageBrowser reads its entries from.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StorageKind {
+    /// An installed game's CASC storage.
+    Casc = 0,
+    /// A single `.mpq` / `.w3x` / `.w3m` archive.
+    Mpq = 1,
+    /// A directory on disk, walked recursively.
+    Folder = 2,
+}
+
+impl TryFrom<i32> for StorageKind {
+    type Error = crate::Error;
+    fn try_from(v: i32) -> Result<Self, crate::Error> {
+        match v {
+            0 => Ok(StorageKind::Casc),
+            1 => Ok(StorageKind::Mpq),
+            2 => Ok(StorageKind::Folder),
+            other => Err(crate::Error::UnknownEnum {
+                name: "StorageKind",
+                value: other,
+            }),
+        }
+    }
+}
+
+/// Which file types @ref StorageBrowser::Files reports.
 ///
 /// Naming matches `StorageFileFilter` in the explorer panel, which has had the same three-way choice since before the browser was bindable.
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum CascFileFilter {
+pub enum StorageFileFilter {
     /// Models and effects both.
     All = 0,
     /// `.mdx` / `.mdl`.
     ModelsOnly = 1,
-    /// `.pkb` / `.pkfx`.
+    /// `.pkb`
     EffectsOnly = 2,
 }
 
-impl TryFrom<i32> for CascFileFilter {
+impl TryFrom<i32> for StorageFileFilter {
     type Error = crate::Error;
     fn try_from(v: i32) -> Result<Self, crate::Error> {
         match v {
-            0 => Ok(CascFileFilter::All),
-            1 => Ok(CascFileFilter::ModelsOnly),
-            2 => Ok(CascFileFilter::EffectsOnly),
+            0 => Ok(StorageFileFilter::All),
+            1 => Ok(StorageFileFilter::ModelsOnly),
+            2 => Ok(StorageFileFilter::EffectsOnly),
             other => Err(crate::Error::UnknownEnum {
-                name: "CascFileFilter",
+                name: "StorageFileFilter",
                 value: other,
             }),
         }
@@ -1379,7 +1406,7 @@ impl SceneView {
 
     /// Point this scene's content provider at an installed Warcraft III, so archive paths resolve out of its CASC storage.
     ///
-    /// The counterpart to @ref CascBrowser: browse an install, then hand the same root here and `LoaderView::SpawnUnit` reads the paths the browser returns. Loose files on disk keep working — CASC is consulted for what is not found beside @ref SetPE1BasePath.
+    /// The counterpart to @ref StorageBrowser: browse an install, then hand the same root here and `LoaderView::SpawnUnit` reads the paths the browser returns. Loose files on disk keep working — CASC is consulted for what is not found beside @ref SetPE1BasePath.
     ///
     /// No-op for scenes running on a host-supplied content provider, which resolve however the host chooses.
     pub fn set_casc_install_path(&mut self, root: &str) {
@@ -2776,32 +2803,32 @@ impl Default for Renderer {
     }
 }
 
-/// Browses an installed Warcraft III's CASC storage as a folder tree of model and effect files.
+/// Browses a CASC install, an MPQ archive, or a directory as one folder tree of model and effect files.
 ///
 /// The Reforged TVFS encodes the mod chain with `:` and the content tree with `\` — `war3.w3mod:_hd.w3mod:units\nightelf\druid\druid.mdx`. This walks the archive once on open, keeps only the folders that lead to a `.mdx`, `.mdl`, `.pkb` or `.pkfx`, and presents them as directories you can descend into. Display paths drop the leading `war3.w3mod:` and use `\` throughout; each file leaf remembers its original archive path, which is what the renderer reads.
 ///
 /// The browser is standalone — it opens its own handle on the archive and needs no `Renderer`. To render what you pick, point a scene at the same install and spawn the path this hands you:
 ///
-/// @code CascBrowser br; if (!br.Open(R"(C:\Program Files\Warcraft III)")) return br.LastError(); br.Descend("units"); const auto path = br.ChildPath(br.Files()[0]);
+/// @code StorageBrowser br; if (!br.OpenAuto(R"(C:\Program Files\Warcraft III)")) return br.LastError(); br.Descend("units"); const auto path = br.ChildPath(br.Files()[0]);
 ///
 /// r.Scene().SetCascInstallPath(br.Root()); r.Loader().SpawnUnit(path); @endcode
-pub struct CascBrowser {
-    pub(crate) raw: core::ptr::NonNull<ffi::whiteout_FlakesCascBrowser>,
+pub struct StorageBrowser {
+    pub(crate) raw: core::ptr::NonNull<ffi::whiteout_FlakesStorageBrowser>,
 }
 
-impl Drop for CascBrowser {
+impl Drop for StorageBrowser {
     fn drop(&mut self) {
         // SAFETY: `raw` came from a native constructor and Drop runs once.
-        unsafe { ffi::whiteout_flakes_FlakesCascBrowser_delete(self.raw.as_ptr()) }
+        unsafe { ffi::whiteout_flakes_FlakesStorageBrowser_delete(self.raw.as_ptr()) }
     }
 }
 
-impl CascBrowser {
+impl StorageBrowser {
     /// # Safety
     /// `raw` must be a live handle this value takes ownership of.
     #[allow(dead_code)] // used by whichever methods return this type
-    pub(crate) unsafe fn from_raw(raw: *mut ffi::whiteout_FlakesCascBrowser) -> Option<Self> {
-        core::ptr::NonNull::new(raw).map(|raw| CascBrowser { raw })
+    pub(crate) unsafe fn from_raw(raw: *mut ffi::whiteout_FlakesStorageBrowser) -> Option<Self> {
+        core::ptr::NonNull::new(raw).map(|raw| StorageBrowser { raw })
     }
 }
 
@@ -2809,48 +2836,79 @@ impl CascBrowser {
 // is deliberately NOT implemented — the C++ types make no documented
 // guarantee about concurrent use, and claiming one we haven't verified
 // would be unsound. See `@bind thread_safe` in the plan.
-unsafe impl Send for CascBrowser {}
+unsafe impl Send for StorageBrowser {}
 
-impl core::fmt::Debug for CascBrowser {
+impl core::fmt::Debug for StorageBrowser {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("CascBrowser").finish_non_exhaustive()
+        f.debug_struct("StorageBrowser").finish_non_exhaustive()
     }
 }
 
-impl CascBrowser {
+impl StorageBrowser {
     /// # Panics
     /// Panics if the native allocation fails.
     pub fn new() -> Self {
         // SAFETY: the native constructor returns a live handle; a null here
         // means the library is unusable.
         unsafe {
-            let raw = ffi::whiteout_flakes_FlakesCascBrowser_new();
-            Self::from_raw(raw).expect("native CascBrowser allocation failed")
+            let raw = ffi::whiteout_flakes_FlakesStorageBrowser_new();
+            Self::from_raw(raw).expect("native StorageBrowser allocation failed")
         }
     }
 
-    /// Open the CASC at @p root — the directory holding `.build.info`, or its `Data` subdirectory.
+    /// Open @p root as @p kind and build the folder tree.
     ///
-    /// Enumerating the archive is the expensive part and happens here, once. Returns `false` on failure; @ref LastError says why.
-    pub fn open(&mut self, root: &str) -> bool {
+    /// For @ref StorageKind::Casc, @p root is the directory holding `.build.info` (or its `Data` subdirectory); for @ref StorageKind::Mpq, the archive file; for @ref StorageKind::Folder, the directory to walk.
+    ///
+    /// Enumerating is the expensive part and happens here, once. Returns `false` on failure; @ref GetLastError says why.
+    pub fn open(&mut self, root: &str, kind: StorageKind) -> bool {
         let root_cstr = std::ffi::CString::new(root).unwrap_or_default();
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesCascBrowser_Open(self.raw.as_ptr(), root_cstr.as_ptr()) != 0
+            ffi::whiteout_flakes_FlakesStorageBrowser_Open(
+                self.raw.as_ptr(),
+                root_cstr.as_ptr(),
+                kind as i32,
+            ) != 0
+        }
+    }
+
+    /// Work out what @p path is and open it.
+    ///
+    /// A directory holding `.build.info` is a CASC install, any other directory is walked as a folder, and a file is treated as an MPQ. What a dialog wants when the user has just typed or dropped a path.
+    pub fn open_auto(&mut self, path: &str) -> bool {
+        let path_cstr = std::ffi::CString::new(path).unwrap_or_default();
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesStorageBrowser_OpenAuto(
+                self.raw.as_ptr(),
+                path_cstr.as_ptr(),
+            ) != 0
+        }
+    }
+
+    /// What the open storage turned out to be.
+    pub fn kind(&self) -> StorageKind {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            StorageKind::try_from(ffi::whiteout_flakes_FlakesStorageBrowser_Kind(
+                self.raw.as_ptr(),
+            ))
+            .expect("unknown enum discriminant from the native library (ABI version skew)")
         }
     }
 
     /// Why the last @ref Open failed. Empty after a successful one.
     pub fn is_open(&self) -> bool {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesCascBrowser_IsOpen(self.raw.as_ptr()) != 0 }
+        unsafe { ffi::whiteout_flakes_FlakesStorageBrowser_IsOpen(self.raw.as_ptr()) != 0 }
     }
 
     /// The root this was opened with.
     pub fn root(&self) -> String {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            crate::support::take_string(ffi::whiteout_flakes_FlakesCascBrowser_Root(
+            crate::support::take_string(ffi::whiteout_flakes_FlakesStorageBrowser_Root(
                 self.raw.as_ptr(),
             ))
         }
@@ -2860,7 +2918,7 @@ impl CascBrowser {
     pub fn last_error(&self) -> String {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            crate::support::take_string(ffi::whiteout_flakes_FlakesCascBrowser_LastError(
+            crate::support::take_string(ffi::whiteout_flakes_FlakesStorageBrowser_LastError(
                 self.raw.as_ptr(),
             ))
         }
@@ -2870,7 +2928,7 @@ impl CascBrowser {
     pub fn current_path(&self) -> String {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            crate::support::take_string(ffi::whiteout_flakes_FlakesCascBrowser_CurrentPath(
+            crate::support::take_string(ffi::whiteout_flakes_FlakesStorageBrowser_CurrentPath(
                 self.raw.as_ptr(),
             ))
         }
@@ -2882,7 +2940,7 @@ impl CascBrowser {
         // elements are borrowed out of it and it is freed
         // before returning. Reading is O(1) per element.
         unsafe {
-            let list = ffi::whiteout_flakes_FlakesCascBrowser_Breadcrumb(self.raw.as_ptr());
+            let list = ffi::whiteout_flakes_FlakesStorageBrowser_Breadcrumb(self.raw.as_ptr());
             if list.is_null() {
                 return Vec::new();
             }
@@ -2901,7 +2959,7 @@ impl CascBrowser {
         // elements are borrowed out of it and it is freed
         // before returning. Reading is O(1) per element.
         unsafe {
-            let list = ffi::whiteout_flakes_FlakesCascBrowser_Folders(self.raw.as_ptr());
+            let list = ffi::whiteout_flakes_FlakesStorageBrowser_Folders(self.raw.as_ptr());
             if list.is_null() {
                 return Vec::new();
             }
@@ -2920,7 +2978,7 @@ impl CascBrowser {
         // elements are borrowed out of it and it is freed
         // before returning. Reading is O(1) per element.
         unsafe {
-            let list = ffi::whiteout_flakes_FlakesCascBrowser_Files(self.raw.as_ptr());
+            let list = ffi::whiteout_flakes_FlakesStorageBrowser_Files(self.raw.as_ptr());
             if list.is_null() {
                 return Vec::new();
             }
@@ -2938,17 +2996,17 @@ impl CascBrowser {
     /// Filters the file list only; @ref Folders is unchanged, so a folder whose contents are all filtered out still appears and simply reads as empty. That keeps the tree stable while the filter is toggled, which is what a panel wants — hiding folders would make the shape of the archive jump around.
     ///
     /// Costs nothing to change: the archive is walked once at @ref Open and the filter is applied per call.
-    pub fn set_filter(&mut self, filter: CascFileFilter) {
+    pub fn set_filter(&mut self, filter: StorageFileFilter) {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesCascBrowser_SetFilter(self.raw.as_ptr(), filter as i32);
+            ffi::whiteout_flakes_FlakesStorageBrowser_SetFilter(self.raw.as_ptr(), filter as i32);
         }
     }
 
-    pub fn filter(&self) -> CascFileFilter {
+    pub fn filter(&self) -> StorageFileFilter {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            CascFileFilter::try_from(ffi::whiteout_flakes_FlakesCascBrowser_Filter(
+            StorageFileFilter::try_from(ffi::whiteout_flakes_FlakesStorageBrowser_Filter(
                 self.raw.as_ptr(),
             ))
             .expect("unknown enum discriminant from the native library (ABI version skew)")
@@ -2958,7 +3016,7 @@ impl CascBrowser {
     /// How many files the current directory holds in total, ignoring the filter — so a panel can say "3 of 12" rather than making an empty folder look like a dead end.
     pub fn unfiltered_file_count(&self) -> i32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesCascBrowser_UnfilteredFileCount(self.raw.as_ptr()) }
+        unsafe { ffi::whiteout_flakes_FlakesStorageBrowser_UnfilteredFileCount(self.raw.as_ptr()) }
     }
 
     /// Descend into a subfolder of the current directory. No-op for a name that is not in @ref Folders.
@@ -2966,7 +3024,7 @@ impl CascBrowser {
         let folder_name_cstr = std::ffi::CString::new(folder_name).unwrap_or_default();
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesCascBrowser_Descend(
+            ffi::whiteout_flakes_FlakesStorageBrowser_Descend(
                 self.raw.as_ptr(),
                 folder_name_cstr.as_ptr(),
             );
@@ -2977,7 +3035,7 @@ impl CascBrowser {
     pub fn ascend(&mut self) {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesCascBrowser_Ascend(self.raw.as_ptr());
+            ffi::whiteout_flakes_FlakesStorageBrowser_Ascend(self.raw.as_ptr());
         }
     }
 
@@ -2986,7 +3044,7 @@ impl CascBrowser {
         let display_path_cstr = std::ffi::CString::new(display_path).unwrap_or_default();
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesCascBrowser_NavigateTo(
+            ffi::whiteout_flakes_FlakesStorageBrowser_NavigateTo(
                 self.raw.as_ptr(),
                 display_path_cstr.as_ptr(),
             );
@@ -2998,7 +3056,7 @@ impl CascBrowser {
         let file_name_cstr = std::ffi::CString::new(file_name).unwrap_or_default();
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            crate::support::take_string(ffi::whiteout_flakes_FlakesCascBrowser_ChildPath(
+            crate::support::take_string(ffi::whiteout_flakes_FlakesStorageBrowser_ChildPath(
                 self.raw.as_ptr(),
                 file_name_cstr.as_ptr(),
             ))
@@ -3010,7 +3068,7 @@ impl CascBrowser {
         let file_name_cstr = std::ffi::CString::new(file_name).unwrap_or_default();
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesCascBrowser_IsEffect(
+            ffi::whiteout_flakes_FlakesStorageBrowser_IsEffect(
                 self.raw.as_ptr(),
                 file_name_cstr.as_ptr(),
             ) != 0
@@ -3018,7 +3076,7 @@ impl CascBrowser {
     }
 }
 
-impl Default for CascBrowser {
+impl Default for StorageBrowser {
     fn default() -> Self {
         Self::new()
     }
@@ -3136,7 +3194,7 @@ pub mod ffi {
         _private: [u8; 0],
     }
     #[repr(C)]
-    pub struct whiteout_FlakesCascBrowser {
+    pub struct whiteout_FlakesStorageBrowser {
         _private: [u8; 0],
     }
     #[repr(C)]
@@ -3926,59 +3984,71 @@ pub mod ffi {
             h: u32,
         ) -> *mut whiteout_FlakesActorView;
         pub fn whiteout_flakes_FlakesRenderer_Tick(self_: *mut whiteout_FlakesRenderer, dt: f32);
-        // CascBrowser
-        pub fn whiteout_flakes_FlakesCascBrowser_new() -> *mut whiteout_FlakesCascBrowser;
-        pub fn whiteout_flakes_FlakesCascBrowser_delete(self_: *mut whiteout_FlakesCascBrowser);
-        pub fn whiteout_flakes_FlakesCascBrowser_Open(
-            self_: *mut whiteout_FlakesCascBrowser,
+        // StorageBrowser
+        pub fn whiteout_flakes_FlakesStorageBrowser_new() -> *mut whiteout_FlakesStorageBrowser;
+        pub fn whiteout_flakes_FlakesStorageBrowser_delete(
+            self_: *mut whiteout_FlakesStorageBrowser,
+        );
+        pub fn whiteout_flakes_FlakesStorageBrowser_Open(
+            self_: *mut whiteout_FlakesStorageBrowser,
             root: *const core::ffi::c_char,
+            kind: i32,
         ) -> i32;
-        pub fn whiteout_flakes_FlakesCascBrowser_IsOpen(
-            self_: *mut whiteout_FlakesCascBrowser,
+        pub fn whiteout_flakes_FlakesStorageBrowser_OpenAuto(
+            self_: *mut whiteout_FlakesStorageBrowser,
+            path: *const core::ffi::c_char,
         ) -> i32;
-        pub fn whiteout_flakes_FlakesCascBrowser_Root(
-            self_: *mut whiteout_FlakesCascBrowser,
+        pub fn whiteout_flakes_FlakesStorageBrowser_Kind(
+            self_: *mut whiteout_FlakesStorageBrowser,
+        ) -> i32;
+        pub fn whiteout_flakes_FlakesStorageBrowser_IsOpen(
+            self_: *mut whiteout_FlakesStorageBrowser,
+        ) -> i32;
+        pub fn whiteout_flakes_FlakesStorageBrowser_Root(
+            self_: *mut whiteout_FlakesStorageBrowser,
         ) -> RawCString;
-        pub fn whiteout_flakes_FlakesCascBrowser_LastError(
-            self_: *mut whiteout_FlakesCascBrowser,
+        pub fn whiteout_flakes_FlakesStorageBrowser_LastError(
+            self_: *mut whiteout_FlakesStorageBrowser,
         ) -> RawCString;
-        pub fn whiteout_flakes_FlakesCascBrowser_CurrentPath(
-            self_: *mut whiteout_FlakesCascBrowser,
+        pub fn whiteout_flakes_FlakesStorageBrowser_CurrentPath(
+            self_: *mut whiteout_FlakesStorageBrowser,
         ) -> RawCString;
-        pub fn whiteout_flakes_FlakesCascBrowser_Breadcrumb(
-            self_: *mut whiteout_FlakesCascBrowser,
+        pub fn whiteout_flakes_FlakesStorageBrowser_Breadcrumb(
+            self_: *mut whiteout_FlakesStorageBrowser,
         ) -> *mut whiteout_StringList;
-        pub fn whiteout_flakes_FlakesCascBrowser_Folders(
-            self_: *mut whiteout_FlakesCascBrowser,
+        pub fn whiteout_flakes_FlakesStorageBrowser_Folders(
+            self_: *mut whiteout_FlakesStorageBrowser,
         ) -> *mut whiteout_StringList;
-        pub fn whiteout_flakes_FlakesCascBrowser_Files(
-            self_: *mut whiteout_FlakesCascBrowser,
+        pub fn whiteout_flakes_FlakesStorageBrowser_Files(
+            self_: *mut whiteout_FlakesStorageBrowser,
         ) -> *mut whiteout_StringList;
-        pub fn whiteout_flakes_FlakesCascBrowser_SetFilter(
-            self_: *mut whiteout_FlakesCascBrowser,
+        pub fn whiteout_flakes_FlakesStorageBrowser_SetFilter(
+            self_: *mut whiteout_FlakesStorageBrowser,
             filter: i32,
         );
-        pub fn whiteout_flakes_FlakesCascBrowser_Filter(
-            self_: *mut whiteout_FlakesCascBrowser,
+        pub fn whiteout_flakes_FlakesStorageBrowser_Filter(
+            self_: *mut whiteout_FlakesStorageBrowser,
         ) -> i32;
-        pub fn whiteout_flakes_FlakesCascBrowser_UnfilteredFileCount(
-            self_: *mut whiteout_FlakesCascBrowser,
+        pub fn whiteout_flakes_FlakesStorageBrowser_UnfilteredFileCount(
+            self_: *mut whiteout_FlakesStorageBrowser,
         ) -> i32;
-        pub fn whiteout_flakes_FlakesCascBrowser_Descend(
-            self_: *mut whiteout_FlakesCascBrowser,
+        pub fn whiteout_flakes_FlakesStorageBrowser_Descend(
+            self_: *mut whiteout_FlakesStorageBrowser,
             folder_name: *const core::ffi::c_char,
         );
-        pub fn whiteout_flakes_FlakesCascBrowser_Ascend(self_: *mut whiteout_FlakesCascBrowser);
-        pub fn whiteout_flakes_FlakesCascBrowser_NavigateTo(
-            self_: *mut whiteout_FlakesCascBrowser,
+        pub fn whiteout_flakes_FlakesStorageBrowser_Ascend(
+            self_: *mut whiteout_FlakesStorageBrowser,
+        );
+        pub fn whiteout_flakes_FlakesStorageBrowser_NavigateTo(
+            self_: *mut whiteout_FlakesStorageBrowser,
             display_path: *const core::ffi::c_char,
         );
-        pub fn whiteout_flakes_FlakesCascBrowser_ChildPath(
-            self_: *mut whiteout_FlakesCascBrowser,
+        pub fn whiteout_flakes_FlakesStorageBrowser_ChildPath(
+            self_: *mut whiteout_FlakesStorageBrowser,
             file_name: *const core::ffi::c_char,
         ) -> RawCString;
-        pub fn whiteout_flakes_FlakesCascBrowser_IsEffect(
-            self_: *mut whiteout_FlakesCascBrowser,
+        pub fn whiteout_flakes_FlakesStorageBrowser_IsEffect(
+            self_: *mut whiteout_FlakesStorageBrowser,
             file_name: *const core::ffi::c_char,
         ) -> i32;
     }

@@ -79,7 +79,7 @@ std::shared_ptr<io::IContentProvider> StorageExplorer::Provider() const {
 
 bool StorageExplorer::OpenCasc(const std::string& root) {
     std::string err;
-    if (!browser_.Open(root, &err)) {
+    if (!browser_.Open(root, io::StorageKind::Casc, &err)) {
         lastError_ = "Failed to open CASC at '" + root + "': " + err;
         std::fprintf(stderr, "[explorer] %s\n", lastError_.c_str());
         return false;

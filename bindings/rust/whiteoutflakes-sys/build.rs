@@ -255,6 +255,10 @@ fn build_from_source(vendor: &Path) {
         "WFS_ENABLE_CASC",
         if cfg!(feature = "casc") { "ON" } else { "OFF" },
     );
+    cfg.define(
+        "WFS_ENABLE_MPQ",
+        if cfg!(feature = "mpq") { "ON" } else { "OFF" },
+    );
 
     // WhiteoutLib: vendored copy, or the archive the `whiteoutlib` crate
     // already built and linked. In the latter case not one of its 148
@@ -271,6 +275,13 @@ fn build_from_source(vendor: &Path) {
         // against are gated on it, and the code it calls lives in the other
         // archive. `casc = ["whiteoutlib?/casc"]` keeps them in step, so a
         // mismatch here means something re-configured that crate directly.
+        let their_mpq = env::var("DEP_WHITEOUT_NATIVE_HAS_MPQ").unwrap_or_default() == "1";
+        if their_mpq != cfg!(feature = "mpq") {
+            panic!(
+                "MPQ mismatch: whiteoutflakes-sys has mpq={}, the linked whiteoutlib                  was built with mpq={their_mpq}. Enable or disable the `mpq` feature                  on both, or drop `system-whiteoutlib`.",
+                cfg!(feature = "mpq")
+            );
+        }
         let their_casc = env::var("DEP_WHITEOUT_NATIVE_HAS_CASC").unwrap_or_default() == "1";
         if their_casc != cfg!(feature = "casc") {
             panic!(
@@ -302,6 +313,9 @@ fn build_from_source(vendor: &Path) {
         println!("cargo:rustc-link-lib=static=whiteout_native_static");
         if cfg!(feature = "casc") {
             println!("cargo:rustc-link-lib=static=whiteout_casc");
+        }
+        if cfg!(feature = "mpq") {
+            println!("cargo:rustc-link-lib=static=whiteout_mpq");
         }
         println!("cargo:rustc-link-lib=static=whiteout_lib");
         if let Ok(dir) = env::var("DEP_WHITEOUT_NATIVE_LIB_DIR") {

@@ -107,10 +107,16 @@ typedef enum {
 } whiteout_flakes_Kind;
 
 typedef enum {
-    whiteout_flakes_CascFileFilter_All,
-    whiteout_flakes_CascFileFilter_ModelsOnly,
-    whiteout_flakes_CascFileFilter_EffectsOnly,
-} whiteout_flakes_CascFileFilter;
+    whiteout_flakes_StorageKind_Casc,
+    whiteout_flakes_StorageKind_Mpq,
+    whiteout_flakes_StorageKind_Folder,
+} whiteout_flakes_StorageKind;
+
+typedef enum {
+    whiteout_flakes_StorageFileFilter_All,
+    whiteout_flakes_StorageFileFilter_ModelsOnly,
+    whiteout_flakes_StorageFileFilter_EffectsOnly,
+} whiteout_flakes_StorageFileFilter;
 
 /* ── Opaque handles ───────────────────────────────────────── */
 
@@ -134,7 +140,7 @@ typedef struct whiteout_FlakesReplaceablesView whiteout_FlakesReplaceablesView;
 typedef struct whiteout_FlakesPlaybackView whiteout_FlakesPlaybackView;
 typedef struct whiteout_FlakesActorView whiteout_FlakesActorView;
 typedef struct whiteout_FlakesRenderer whiteout_FlakesRenderer;
-typedef struct whiteout_FlakesCascBrowser whiteout_FlakesCascBrowser;
+typedef struct whiteout_FlakesStorageBrowser whiteout_FlakesStorageBrowser;
 
 /* ── FlakesRect ─────────────────────────────────────────────── */
 
@@ -336,7 +342,7 @@ void whiteout_flakes_FlakesSceneView_SetAnimationTimeMs(whiteout_FlakesSceneView
 void whiteout_flakes_FlakesSceneView_Update(whiteout_FlakesSceneView* self, float dt);
 /* Point this scene's content provider at an installed Warcraft III, so archive paths resolve out of its CASC storage. */
 /*  */
-/* The counterpart to @ref CascBrowser: browse an install, then hand the same root here and `LoaderView::SpawnUnit` reads the paths the browser returns. Loose files on disk keep working — CASC is consulted for what is not found beside @ref SetPE1BasePath. */
+/* The counterpart to @ref StorageBrowser: browse an install, then hand the same root here and `LoaderView::SpawnUnit` reads the paths the browser returns. Loose files on disk keep working — CASC is consulted for what is not found beside @ref SetPE1BasePath. */
 /*  */
 /* No-op for scenes running on a host-supplied content provider, which resolve however the host chooses. */
 void whiteout_flakes_FlakesSceneView_SetCascInstallPath(whiteout_FlakesSceneView* self, const char* root);
@@ -625,69 +631,77 @@ struct whiteout_FlakesActorView* whiteout_flakes_FlakesRenderer_Actor(whiteout_F
 /* Drives animation, attachment-graph propagation, particle / PE1 / ribbon / corn-effects simulation, splat decay, DNC advancement. Hosts that drive their own actor evaluation (e.g. the Max plugin, which receives time scrubs from the host timeline) can skip `Tick` and call @ref ActorView::EvaluateAndApply manually. @param dt Elapsed time since the last tick, in seconds. */
 void whiteout_flakes_FlakesRenderer_Tick(whiteout_FlakesRenderer* self, float dt);
 
-/* ── FlakesCascBrowser ─────────────────────────────────────────────── */
+/* ── FlakesStorageBrowser ─────────────────────────────────────────────── */
 
-/* Browses an installed Warcraft III's CASC storage as a folder tree of model and effect files. */
+/* Browses a CASC install, an MPQ archive, or a directory as one folder tree of model and effect files. */
 /*  */
 /* The Reforged TVFS encodes the mod chain with `:` and the content tree with `\` — `war3.w3mod:_hd.w3mod:units\nightelf\druid\druid.mdx`. This walks the archive once on open, keeps only the folders that lead to a `.mdx`, `.mdl`, `.pkb` or `.pkfx`, and presents them as directories you can descend into. Display paths drop the leading `war3.w3mod:` and use `\` throughout; each file leaf remembers its original archive path, which is what the renderer reads. */
 /*  */
 /* The browser is standalone — it opens its own handle on the archive and needs no `Renderer`. To render what you pick, point a scene at the same install and spawn the path this hands you: */
 /*  */
-/* @code CascBrowser br; if (!br.Open(R"(C:\Program Files\Warcraft III)")) return br.LastError(); br.Descend("units"); const auto path = br.ChildPath(br.Files()[0]); */
+/* @code StorageBrowser br; if (!br.OpenAuto(R"(C:\Program Files\Warcraft III)")) return br.LastError(); br.Descend("units"); const auto path = br.ChildPath(br.Files()[0]); */
 /*  */
 /* r.Scene().SetCascInstallPath(br.Root()); r.Loader().SpawnUnit(path); @endcode */
-whiteout_FlakesCascBrowser* whiteout_flakes_FlakesCascBrowser_new(void);
-void whiteout_flakes_FlakesCascBrowser_delete(whiteout_FlakesCascBrowser* self);
+whiteout_FlakesStorageBrowser* whiteout_flakes_FlakesStorageBrowser_new(void);
+void whiteout_flakes_FlakesStorageBrowser_delete(whiteout_FlakesStorageBrowser* self);
 
-/* Open the CASC at @p root — the directory holding `.build.info`, or its `Data` subdirectory. */
+/* Open @p root as @p kind and build the folder tree. */
 /*  */
-/* Enumerating the archive is the expensive part and happens here, once. Returns `false` on failure; @ref LastError says why. */
-int32_t whiteout_flakes_FlakesCascBrowser_Open(whiteout_FlakesCascBrowser* self, const char* root);
+/* For @ref StorageKind::Casc, @p root is the directory holding `.build.info` (or its `Data` subdirectory); for @ref StorageKind::Mpq, the archive file; for @ref StorageKind::Folder, the directory to walk. */
+/*  */
+/* Enumerating is the expensive part and happens here, once. Returns `false` on failure; @ref GetLastError says why. */
+int32_t whiteout_flakes_FlakesStorageBrowser_Open(whiteout_FlakesStorageBrowser* self, const char* root, int32_t kind);
+/* Work out what @p path is and open it. */
+/*  */
+/* A directory holding `.build.info` is a CASC install, any other directory is walked as a folder, and a file is treated as an MPQ. What a dialog wants when the user has just typed or dropped a path. */
+int32_t whiteout_flakes_FlakesStorageBrowser_OpenAuto(whiteout_FlakesStorageBrowser* self, const char* path);
+/* What the open storage turned out to be. */
+int32_t whiteout_flakes_FlakesStorageBrowser_Kind(const whiteout_FlakesStorageBrowser* self);
 /* Why the last @ref Open failed. Empty after a successful one. */
-int32_t whiteout_flakes_FlakesCascBrowser_IsOpen(const whiteout_FlakesCascBrowser* self);
+int32_t whiteout_flakes_FlakesStorageBrowser_IsOpen(const whiteout_FlakesStorageBrowser* self);
 /* The root this was opened with. */
-whiteout_CString whiteout_flakes_FlakesCascBrowser_Root(const whiteout_FlakesCascBrowser* self);
+whiteout_CString whiteout_flakes_FlakesStorageBrowser_Root(const whiteout_FlakesStorageBrowser* self);
 /* Message from the last failed @ref Open, or empty. */
-whiteout_CString whiteout_flakes_FlakesCascBrowser_LastError(const whiteout_FlakesCascBrowser* self);
+whiteout_CString whiteout_flakes_FlakesStorageBrowser_LastError(const whiteout_FlakesStorageBrowser* self);
 /* @name Navigation @{ @brief Current directory in display form (`\`-separated, empty at the root). */
-whiteout_CString whiteout_flakes_FlakesCascBrowser_CurrentPath(const whiteout_FlakesCascBrowser* self);
+whiteout_CString whiteout_flakes_FlakesStorageBrowser_CurrentPath(const whiteout_FlakesStorageBrowser* self);
 /* The current path split into segments, for a breadcrumb bar. */
-size_t whiteout_flakes_FlakesCascBrowser_Breadcrumb_count(const whiteout_FlakesCascBrowser* self);
-whiteout_CString whiteout_flakes_FlakesCascBrowser_Breadcrumb_at(const whiteout_FlakesCascBrowser* self, size_t index);
+size_t whiteout_flakes_FlakesStorageBrowser_Breadcrumb_count(const whiteout_FlakesStorageBrowser* self);
+whiteout_CString whiteout_flakes_FlakesStorageBrowser_Breadcrumb_at(const whiteout_FlakesStorageBrowser* self, size_t index);
 /* Materialises the whole list in one call. Prefer this over the
  * _count/_at pair above, which re-runs the query per index. */
-struct whiteout_StringList* whiteout_flakes_FlakesCascBrowser_Breadcrumb(const whiteout_FlakesCascBrowser* self);
+struct whiteout_StringList* whiteout_flakes_FlakesStorageBrowser_Breadcrumb(const whiteout_FlakesStorageBrowser* self);
 /* Immediate subfolder names of the current directory. */
-size_t whiteout_flakes_FlakesCascBrowser_Folders_count(const whiteout_FlakesCascBrowser* self);
-whiteout_CString whiteout_flakes_FlakesCascBrowser_Folders_at(const whiteout_FlakesCascBrowser* self, size_t index);
+size_t whiteout_flakes_FlakesStorageBrowser_Folders_count(const whiteout_FlakesStorageBrowser* self);
+whiteout_CString whiteout_flakes_FlakesStorageBrowser_Folders_at(const whiteout_FlakesStorageBrowser* self, size_t index);
 /* Materialises the whole list in one call. Prefer this over the
  * _count/_at pair above, which re-runs the query per index. */
-struct whiteout_StringList* whiteout_flakes_FlakesCascBrowser_Folders(const whiteout_FlakesCascBrowser* self);
+struct whiteout_StringList* whiteout_flakes_FlakesStorageBrowser_Folders(const whiteout_FlakesStorageBrowser* self);
 /* File names directly inside the current directory, subject to @ref GetFilter. Names only — pair with @ref ChildPath to load one. */
-size_t whiteout_flakes_FlakesCascBrowser_Files_count(const whiteout_FlakesCascBrowser* self);
-whiteout_CString whiteout_flakes_FlakesCascBrowser_Files_at(const whiteout_FlakesCascBrowser* self, size_t index);
+size_t whiteout_flakes_FlakesStorageBrowser_Files_count(const whiteout_FlakesStorageBrowser* self);
+whiteout_CString whiteout_flakes_FlakesStorageBrowser_Files_at(const whiteout_FlakesStorageBrowser* self, size_t index);
 /* Materialises the whole list in one call. Prefer this over the
  * _count/_at pair above, which re-runs the query per index. */
-struct whiteout_StringList* whiteout_flakes_FlakesCascBrowser_Files(const whiteout_FlakesCascBrowser* self);
+struct whiteout_StringList* whiteout_flakes_FlakesStorageBrowser_Files(const whiteout_FlakesStorageBrowser* self);
 /* Restrict @ref Files to models, to effects, or to neither. */
 /*  */
 /* Filters the file list only; @ref Folders is unchanged, so a folder whose contents are all filtered out still appears and simply reads as empty. That keeps the tree stable while the filter is toggled, which is what a panel wants — hiding folders would make the shape of the archive jump around. */
 /*  */
 /* Costs nothing to change: the archive is walked once at @ref Open and the filter is applied per call. */
-void whiteout_flakes_FlakesCascBrowser_SetFilter(whiteout_FlakesCascBrowser* self, int32_t filter);
-int32_t whiteout_flakes_FlakesCascBrowser_Filter(const whiteout_FlakesCascBrowser* self);
+void whiteout_flakes_FlakesStorageBrowser_SetFilter(whiteout_FlakesStorageBrowser* self, int32_t filter);
+int32_t whiteout_flakes_FlakesStorageBrowser_Filter(const whiteout_FlakesStorageBrowser* self);
 /* How many files the current directory holds in total, ignoring the filter — so a panel can say "3 of 12" rather than making an empty folder look like a dead end. */
-int32_t whiteout_flakes_FlakesCascBrowser_UnfilteredFileCount(const whiteout_FlakesCascBrowser* self);
+int32_t whiteout_flakes_FlakesStorageBrowser_UnfilteredFileCount(const whiteout_FlakesStorageBrowser* self);
 /* Descend into a subfolder of the current directory. No-op for a name that is not in @ref Folders. */
-void whiteout_flakes_FlakesCascBrowser_Descend(whiteout_FlakesCascBrowser* self, const char* folderName);
+void whiteout_flakes_FlakesStorageBrowser_Descend(whiteout_FlakesStorageBrowser* self, const char* folderName);
 /* Go up one level. No-op at the root. */
-void whiteout_flakes_FlakesCascBrowser_Ascend(whiteout_FlakesCascBrowser* self);
+void whiteout_flakes_FlakesStorageBrowser_Ascend(whiteout_FlakesStorageBrowser* self);
 /* Jump to a display path, as returned by @ref GetCurrentPath. */
-void whiteout_flakes_FlakesCascBrowser_NavigateTo(whiteout_FlakesCascBrowser* self, const char* displayPath);
+void whiteout_flakes_FlakesStorageBrowser_NavigateTo(whiteout_FlakesStorageBrowser* self, const char* displayPath);
 /* The original archive path of a file in the current directory — what `LoaderView::SpawnUnit` / `SpawnEffect` reads. Empty for a name that is not in @ref Files. */
-whiteout_CString whiteout_flakes_FlakesCascBrowser_ChildPath(const whiteout_FlakesCascBrowser* self, const char* fileName);
+whiteout_CString whiteout_flakes_FlakesStorageBrowser_ChildPath(const whiteout_FlakesStorageBrowser* self, const char* fileName);
 /* `true` if @p fileName is an effect (`.pkb` / `.pkfx`) rather than a model, so a host knows which spawn call to make. */
-int32_t whiteout_flakes_FlakesCascBrowser_IsEffect(const whiteout_FlakesCascBrowser* self, const char* fileName);
+int32_t whiteout_flakes_FlakesStorageBrowser_IsEffect(const whiteout_FlakesStorageBrowser* self, const char* fileName);
 
 
 #ifdef __cplusplus

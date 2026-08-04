@@ -44,6 +44,11 @@ extern "C" {
         self_: *mut ffi::whiteout_FlakesSceneView,
         path: *const core::ffi::c_char,
     );
+    fn whiteout_flakes_FlakesSceneView_SetMpqList(
+        self_: *mut ffi::whiteout_FlakesSceneView,
+        paths: *const *const core::ffi::c_char,
+        count: usize,
+    );
     fn whiteout_flakes_FlakesSceneView_SetEngineAssetRoot(
         self_: *mut ffi::whiteout_FlakesSceneView,
         root: *const core::ffi::c_char,
@@ -215,6 +220,33 @@ impl PipelineView {
 // ── SceneView ─────────────────────────────────────────────────────────────
 
 impl SceneView {
+    /// Point this scene's content provider at one or more MPQ archives,
+    /// replacing any it already had.
+    ///
+    /// The MPQ counterpart to [`set_casc_install_path`], and the other half
+    /// of browsing with [`StorageBrowser`](crate::StorageBrowser): hand it
+    /// the archive you opened and the paths the browser returns become
+    /// loadable. Resolved in list order, so a patch archive goes before the
+    /// base one.
+    ///
+    /// Needs the crate's `mpq` feature; without it this is a no-op.
+    ///
+    /// [`set_casc_install_path`]: SceneView::set_casc_install_path
+    pub fn set_mpq_list<S: AsRef<str>>(&mut self, archives: &[S]) {
+        // The CStrings must outlive the call, so they are held here rather
+        // than built inside the pointer map.
+        let owned: Vec<std::ffi::CString> = archives
+            .iter()
+            .map(|s| std::ffi::CString::new(s.as_ref()).unwrap_or_default())
+            .collect();
+        let ptrs: Vec<*const core::ffi::c_char> = owned.iter().map(|c| c.as_ptr()).collect();
+        // SAFETY: handle is live for the call; `ptrs` points at `owned`,
+        // which outlives it, and the C side copies each string.
+        unsafe {
+            whiteout_flakes_FlakesSceneView_SetMpqList(self.raw.as_ptr(), ptrs.as_ptr(), ptrs.len())
+        }
+    }
+
     /// Set the directory relative model references (textures, child MDX,
     /// PE1 emitters) resolve against.
     ///

@@ -27,7 +27,9 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <shared_mutex>
+#include <string_view>
 #include <thread>
 #include <unordered_set>
 #include <utility>
@@ -145,6 +147,52 @@ static std::string NormalizeCascPath(const std::string& relPath) {
     if (start > 0)
         out.erase(0, start);
     return out;
+}
+
+// Listing form of a path: lowercase, '/'-separated, no leading slash, and
+// with the CASC mod chain dropped ("war3.w3mod:_hd.w3mod:units\x.mdx" →
+// "units/x.mdx"). That is exactly the shape DoRead expects back — it
+// re-applies the prefixes itself — so a listed path can be read verbatim.
+static std::string ToListingPath(std::string_view stored) {
+    const auto colon = stored.rfind(':');
+    if (colon != std::string_view::npos)
+        stored.remove_prefix(colon + 1);
+    std::string out;
+    out.reserve(stored.size());
+    for (char c : stored) {
+        if (c == '\\')
+            c = '/';
+        out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    usize start = 0;
+    while (start < out.size() && out[start] == '/')
+        ++start;
+    if (start > 0)
+        out.erase(0, start);
+    return out;
+}
+
+// Same normalisation for the caller-supplied directory, minus any trailing
+// separator so `"textures/fx"` and `"Textures\FX\"` mean the same thing.
+static std::string NormalizeListingDir(const std::string& directory) {
+    std::string dir = ToListingPath(directory);
+    while (!dir.empty() && dir.back() == '/')
+        dir.pop_back();
+    return dir;
+}
+
+// Is `relPath` (already in listing form) inside `dir`? A non-recursive
+// match additionally requires the file to sit directly in it.
+static bool MatchesListingDir(const std::string& relPath, const std::string& dir,
+                              bool recursive) {
+    usize offset = 0;
+    if (!dir.empty()) {
+        if (relPath.size() <= dir.size() + 1 || relPath.compare(0, dir.size(), dir) != 0 ||
+            relPath[dir.size()] != '/')
+            return false;
+        offset = dir.size() + 1;
+    }
+    return recursive || relPath.find('/', offset) == std::string::npos;
 }
 
 static std::string StripExtension(const std::string& path) {
@@ -687,6 +735,86 @@ void FileContentProvider::Wait(RequestId id) {
     // (texture stubs, etc.) on the wrong thread.
     std::unique_lock lk(impl_->reqMu);
     impl_->doneCv.wait(lk, [&] { return impl_->alive.count(id) == 0; });
+}
+
+std::vector<std::string> FileContentProvider::ListFiles(const std::string& directory,
+                                                        bool recursive) {
+    const std::string dir = NormalizeListingDir(directory);
+
+    // Ordered + deduped: the same logical file usually exists under several
+    // CASC mod prefixes, and disk copies shadow archive ones.
+    std::set<std::string> out;
+    auto consider = [&](std::string relPath) {
+        if (MatchesListingDir(relPath, dir, recursive))
+            out.insert(std::move(relPath));
+    };
+
+    // ---- Disk (the base path a host points at a loose asset tree) ----
+    {
+        std::shared_lock sg(impl_->storageMu);
+        const fs::path base = impl_->resolver.BasePath();
+        if (!base.empty()) {
+            const fs::path root = dir.empty() ? base : base / FsPathFromUtf8(dir);
+            std::error_code ec;
+            if (fs::is_directory(root, ec)) {
+                auto add = [&](const fs::path& p) {
+                    std::error_code re;
+                    const std::string rel = PathToUtf8(fs::relative(p, base, re));
+                    if (!re && !rel.empty())
+                        consider(ToListingPath(rel));
+                };
+                // Skip-on-error so one unreadable subdirectory doesn't abort
+                // the walk, as StorageBrowser::OpenFolder does.
+                if (recursive) {
+                    fs::recursive_directory_iterator it(
+                        root, fs::directory_options::skip_permission_denied, ec);
+                    if (!ec) {
+                        for (const auto& entry : it) {
+                            std::error_code fe;
+                            if (entry.is_regular_file(fe) && !fe)
+                                add(entry.path());
+                        }
+                    }
+                } else {
+                    fs::directory_iterator it(
+                        root, fs::directory_options::skip_permission_denied, ec);
+                    if (!ec) {
+                        for (const auto& entry : it) {
+                            std::error_code fe;
+                            if (entry.is_regular_file(fe) && !fe)
+                                add(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- CASC ----
+#if WHITEOUT_HAS_CASC
+    {
+        std::shared_lock sg(impl_->storageMu);
+        if (impl_->cascStorage) {
+            impl_->cascStorage->enumerate(
+                [&](const whiteout::storages::casc::EnumerateEntry& e) {
+                    consider(ToListingPath(e.path));
+                    return true;
+                });
+        }
+    }
+#endif
+
+    // ---- MPQ ----
+#if WHITEOUT_HAS_MPQ
+    {
+        std::shared_lock sg(impl_->storageMu);
+        for (const auto& storage : impl_->mpqStorages)
+            for (auto& name : storage.listFiles())
+                consider(ToListingPath(name));
+    }
+#endif
+
+    return {out.begin(), out.end()};
 }
 
 // ---- Storage observers / configuration --------------------------------------

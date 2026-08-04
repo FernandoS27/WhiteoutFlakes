@@ -20,7 +20,7 @@
 #include <whiteout/flakes/views.h>
 #include <whiteout/flakes/actor_view.h>
 #include <whiteout/flakes/renderer.h>
-#include <whiteout/flakes/casc_browser.h>
+#include <whiteout/flakes/storage_browser.h>
 
 namespace { using namespace whiteout; }
 
@@ -1222,116 +1222,124 @@ void whiteout_flakes_FlakesRenderer_Tick(whiteout_FlakesRenderer* self, float dt
 
 } // extern "C"
 
-// ── FlakesCascBrowser ─────────────────────────────────────────────────
+// ── FlakesStorageBrowser ─────────────────────────────────────────────────
 
 extern "C" {
 
-whiteout_FlakesCascBrowser* whiteout_flakes_FlakesCascBrowser_new(void) {
-    return reinterpret_cast<whiteout_FlakesCascBrowser*>(new whiteout::flakes::CascBrowser());
+whiteout_FlakesStorageBrowser* whiteout_flakes_FlakesStorageBrowser_new(void) {
+    return reinterpret_cast<whiteout_FlakesStorageBrowser*>(new whiteout::flakes::StorageBrowser());
 }
 
-void whiteout_flakes_FlakesCascBrowser_delete(whiteout_FlakesCascBrowser* self) {
-    delete reinterpret_cast<whiteout::flakes::CascBrowser*>(self);
+void whiteout_flakes_FlakesStorageBrowser_delete(whiteout_FlakesStorageBrowser* self) {
+    delete reinterpret_cast<whiteout::flakes::StorageBrowser*>(self);
 }
 
-int32_t whiteout_flakes_FlakesCascBrowser_Open(whiteout_FlakesCascBrowser* self, const char* root) {
-    return reinterpret_cast<whiteout::flakes::CascBrowser*>(self)->Open(std::string(root ? root : ""));
+int32_t whiteout_flakes_FlakesStorageBrowser_Open(whiteout_FlakesStorageBrowser* self, const char* root, int32_t kind) {
+    return reinterpret_cast<whiteout::flakes::StorageBrowser*>(self)->Open(std::string(root ? root : ""), static_cast<whiteout::flakes::StorageKind>(kind));
 }
 
-int32_t whiteout_flakes_FlakesCascBrowser_IsOpen(const whiteout_FlakesCascBrowser* self) {
-    return reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->IsOpen();
+int32_t whiteout_flakes_FlakesStorageBrowser_OpenAuto(whiteout_FlakesStorageBrowser* self, const char* path) {
+    return reinterpret_cast<whiteout::flakes::StorageBrowser*>(self)->OpenAuto(std::string(path ? path : ""));
 }
 
-whiteout_CString whiteout_flakes_FlakesCascBrowser_Root(const whiteout_FlakesCascBrowser* self) {
-    return wrapCString(reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->GetRoot());
+int32_t whiteout_flakes_FlakesStorageBrowser_Kind(const whiteout_FlakesStorageBrowser* self) {
+    return static_cast<int32_t>(reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->GetKind());
 }
 
-whiteout_CString whiteout_flakes_FlakesCascBrowser_LastError(const whiteout_FlakesCascBrowser* self) {
-    return wrapCString(reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->GetLastError());
+int32_t whiteout_flakes_FlakesStorageBrowser_IsOpen(const whiteout_FlakesStorageBrowser* self) {
+    return reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->IsOpen();
 }
 
-whiteout_CString whiteout_flakes_FlakesCascBrowser_CurrentPath(const whiteout_FlakesCascBrowser* self) {
-    return wrapCString(reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->GetCurrentPath());
+whiteout_CString whiteout_flakes_FlakesStorageBrowser_Root(const whiteout_FlakesStorageBrowser* self) {
+    return wrapCString(reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->GetRoot());
 }
 
-size_t whiteout_flakes_FlakesCascBrowser_Breadcrumb_count(const whiteout_FlakesCascBrowser* self) {
-    return reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Breadcrumb().size();
+whiteout_CString whiteout_flakes_FlakesStorageBrowser_LastError(const whiteout_FlakesStorageBrowser* self) {
+    return wrapCString(reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->GetLastError());
 }
 
-whiteout_CString whiteout_flakes_FlakesCascBrowser_Breadcrumb_at(const whiteout_FlakesCascBrowser* self, size_t index) {
-    const auto& __v = reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Breadcrumb();
+whiteout_CString whiteout_flakes_FlakesStorageBrowser_CurrentPath(const whiteout_FlakesStorageBrowser* self) {
+    return wrapCString(reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->GetCurrentPath());
+}
+
+size_t whiteout_flakes_FlakesStorageBrowser_Breadcrumb_count(const whiteout_FlakesStorageBrowser* self) {
+    return reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->Breadcrumb().size();
+}
+
+whiteout_CString whiteout_flakes_FlakesStorageBrowser_Breadcrumb_at(const whiteout_FlakesStorageBrowser* self, size_t index) {
+    const auto& __v = reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->Breadcrumb();
     if (index >= __v.size()) return emptyCString();
     return wrapCString(std::string(__v[index]));
 }
 
 
-struct whiteout_StringList* whiteout_flakes_FlakesCascBrowser_Breadcrumb(const whiteout_FlakesCascBrowser* self) {
+struct whiteout_StringList* whiteout_flakes_FlakesStorageBrowser_Breadcrumb(const whiteout_FlakesStorageBrowser* self) {
     return reinterpret_cast<struct whiteout_StringList*>(
         new std::vector<std::string>(
-            reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Breadcrumb()));
+            reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->Breadcrumb()));
 }
-size_t whiteout_flakes_FlakesCascBrowser_Folders_count(const whiteout_FlakesCascBrowser* self) {
-    return reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Folders().size();
+size_t whiteout_flakes_FlakesStorageBrowser_Folders_count(const whiteout_FlakesStorageBrowser* self) {
+    return reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->Folders().size();
 }
 
-whiteout_CString whiteout_flakes_FlakesCascBrowser_Folders_at(const whiteout_FlakesCascBrowser* self, size_t index) {
-    const auto& __v = reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Folders();
+whiteout_CString whiteout_flakes_FlakesStorageBrowser_Folders_at(const whiteout_FlakesStorageBrowser* self, size_t index) {
+    const auto& __v = reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->Folders();
     if (index >= __v.size()) return emptyCString();
     return wrapCString(std::string(__v[index]));
 }
 
 
-struct whiteout_StringList* whiteout_flakes_FlakesCascBrowser_Folders(const whiteout_FlakesCascBrowser* self) {
+struct whiteout_StringList* whiteout_flakes_FlakesStorageBrowser_Folders(const whiteout_FlakesStorageBrowser* self) {
     return reinterpret_cast<struct whiteout_StringList*>(
         new std::vector<std::string>(
-            reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Folders()));
+            reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->Folders()));
 }
-size_t whiteout_flakes_FlakesCascBrowser_Files_count(const whiteout_FlakesCascBrowser* self) {
-    return reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Files().size();
+size_t whiteout_flakes_FlakesStorageBrowser_Files_count(const whiteout_FlakesStorageBrowser* self) {
+    return reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->Files().size();
 }
 
-whiteout_CString whiteout_flakes_FlakesCascBrowser_Files_at(const whiteout_FlakesCascBrowser* self, size_t index) {
-    const auto& __v = reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Files();
+whiteout_CString whiteout_flakes_FlakesStorageBrowser_Files_at(const whiteout_FlakesStorageBrowser* self, size_t index) {
+    const auto& __v = reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->Files();
     if (index >= __v.size()) return emptyCString();
     return wrapCString(std::string(__v[index]));
 }
 
 
-struct whiteout_StringList* whiteout_flakes_FlakesCascBrowser_Files(const whiteout_FlakesCascBrowser* self) {
+struct whiteout_StringList* whiteout_flakes_FlakesStorageBrowser_Files(const whiteout_FlakesStorageBrowser* self) {
     return reinterpret_cast<struct whiteout_StringList*>(
         new std::vector<std::string>(
-            reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->Files()));
+            reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->Files()));
 }
-void whiteout_flakes_FlakesCascBrowser_SetFilter(whiteout_FlakesCascBrowser* self, int32_t filter) {
-    reinterpret_cast<whiteout::flakes::CascBrowser*>(self)->SetFilter(static_cast<whiteout::flakes::CascFileFilter>(filter));
-}
-
-int32_t whiteout_flakes_FlakesCascBrowser_Filter(const whiteout_FlakesCascBrowser* self) {
-    return static_cast<int32_t>(reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->GetFilter());
+void whiteout_flakes_FlakesStorageBrowser_SetFilter(whiteout_FlakesStorageBrowser* self, int32_t filter) {
+    reinterpret_cast<whiteout::flakes::StorageBrowser*>(self)->SetFilter(static_cast<whiteout::flakes::StorageFileFilter>(filter));
 }
 
-int32_t whiteout_flakes_FlakesCascBrowser_UnfilteredFileCount(const whiteout_FlakesCascBrowser* self) {
-    return reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->UnfilteredFileCount();
+int32_t whiteout_flakes_FlakesStorageBrowser_Filter(const whiteout_FlakesStorageBrowser* self) {
+    return static_cast<int32_t>(reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->GetFilter());
 }
 
-void whiteout_flakes_FlakesCascBrowser_Descend(whiteout_FlakesCascBrowser* self, const char* folderName) {
-    reinterpret_cast<whiteout::flakes::CascBrowser*>(self)->Descend(std::string(folderName ? folderName : ""));
+int32_t whiteout_flakes_FlakesStorageBrowser_UnfilteredFileCount(const whiteout_FlakesStorageBrowser* self) {
+    return reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->UnfilteredFileCount();
 }
 
-void whiteout_flakes_FlakesCascBrowser_Ascend(whiteout_FlakesCascBrowser* self) {
-    reinterpret_cast<whiteout::flakes::CascBrowser*>(self)->Ascend();
+void whiteout_flakes_FlakesStorageBrowser_Descend(whiteout_FlakesStorageBrowser* self, const char* folderName) {
+    reinterpret_cast<whiteout::flakes::StorageBrowser*>(self)->Descend(std::string(folderName ? folderName : ""));
 }
 
-void whiteout_flakes_FlakesCascBrowser_NavigateTo(whiteout_FlakesCascBrowser* self, const char* displayPath) {
-    reinterpret_cast<whiteout::flakes::CascBrowser*>(self)->NavigateTo(std::string(displayPath ? displayPath : ""));
+void whiteout_flakes_FlakesStorageBrowser_Ascend(whiteout_FlakesStorageBrowser* self) {
+    reinterpret_cast<whiteout::flakes::StorageBrowser*>(self)->Ascend();
 }
 
-whiteout_CString whiteout_flakes_FlakesCascBrowser_ChildPath(const whiteout_FlakesCascBrowser* self, const char* fileName) {
-    return wrapCString(reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->ChildPath(std::string(fileName ? fileName : "")));
+void whiteout_flakes_FlakesStorageBrowser_NavigateTo(whiteout_FlakesStorageBrowser* self, const char* displayPath) {
+    reinterpret_cast<whiteout::flakes::StorageBrowser*>(self)->NavigateTo(std::string(displayPath ? displayPath : ""));
 }
 
-int32_t whiteout_flakes_FlakesCascBrowser_IsEffect(const whiteout_FlakesCascBrowser* self, const char* fileName) {
-    return reinterpret_cast<const whiteout::flakes::CascBrowser*>(self)->IsEffect(std::string(fileName ? fileName : ""));
+whiteout_CString whiteout_flakes_FlakesStorageBrowser_ChildPath(const whiteout_FlakesStorageBrowser* self, const char* fileName) {
+    return wrapCString(reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->ChildPath(std::string(fileName ? fileName : "")));
+}
+
+int32_t whiteout_flakes_FlakesStorageBrowser_IsEffect(const whiteout_FlakesStorageBrowser* self, const char* fileName) {
+    return reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->IsEffect(std::string(fileName ? fileName : ""));
 }
 
 } // extern "C"

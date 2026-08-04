@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <unordered_set>
 
 namespace whiteout::flakes::renderer::assets {
 
@@ -23,8 +24,14 @@ AssetManager::AssetManager(TextureAssetManager& textures) : textures_(textures) 
     // probes registered readers in priority order, first match wins.
     particleDispatch_.addReader(
         std::make_unique<::whiteout::cornflakes::PkbReader>());
+    link_->mgr = this;
 }
-AssetManager::~AssetManager() = default;
+
+AssetManager::~AssetManager() {
+    // Cut every outstanding AssetPreload loose before the slot table dies.
+    std::lock_guard<std::mutex> lk(link_->mu);
+    link_->mgr = nullptr;
+}
 
 void AssetManager::SetGfxDevice(gfx::IGFXDevice* gfx) {
     std::lock_guard<std::mutex> lk(mu_);
@@ -128,6 +135,50 @@ void AssetManager::Release(SlotId slot) {
     // takes mu_ itself.
     for (SlotId d : dependencies)
         Release(d);
+}
+
+AssetPreload AssetManager::Preload(AssetKind kind, std::span<const std::string> paths) {
+    AssetPreload out;
+    out.link_ = link_;
+    out.slots_.reserve(paths.size());
+    out.paths_.reserve(paths.size());
+
+    // One reference per distinct path — a caller handing us a directory
+    // listing that names the same texture twice shouldn't leak a ref.
+    std::unordered_set<std::string> seen;
+    seen.reserve(paths.size());
+    for (const std::string& p : paths) {
+        if (p.empty()) continue;
+        std::string norm = Normalize(p);
+        if (!seen.insert(norm).second) continue;
+        const SlotId slot = Acquire(kind, norm);
+        if (slot == kInvalidSlot) continue;
+        out.slots_.push_back(slot);
+        out.paths_.push_back(std::move(norm));
+    }
+    return out;
+}
+
+std::size_t AssetPreload::LoadedCount() const {
+    if (!link_) return 0;
+    std::lock_guard<std::mutex> lk(link_->mu);
+    if (!link_->mgr) return 0;
+    std::size_t n = 0;
+    for (AssetManager::SlotId slot : slots_)
+        if (link_->mgr->Loaded(slot)) ++n;
+    return n;
+}
+
+void AssetPreload::Release() {
+    if (link_) {
+        std::lock_guard<std::mutex> lk(link_->mu);
+        if (link_->mgr)
+            for (AssetManager::SlotId slot : slots_)
+                link_->mgr->Release(slot);
+    }
+    link_.reset();
+    slots_.clear();
+    paths_.clear();
 }
 
 bool AssetManager::Loaded(SlotId slot) const {

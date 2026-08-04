@@ -114,6 +114,17 @@ void whiteout_flakes_FlakesSceneView_SetEngineAssetRoot(whiteout_FlakesSceneView
     as<SceneView>(self)->SetEngineAssetRoot(FsPathFromUtf8(root ? root : ""));
 }
 
+/* Replace the scene's MPQ search list. `paths` is `count` UTF-8 strings,
+ * resolved in order — a patch archive belongs before the base one. */
+void whiteout_flakes_FlakesSceneView_SetMpqList(whiteout_FlakesSceneView* self,
+                                                const char* const* paths, size_t count) {
+    std::vector<std::string> list;
+    list.reserve(count);
+    for (size_t i = 0; i < count; ++i)
+        list.emplace_back(paths && paths[i] ? paths[i] : "");
+    as<SceneView>(self)->SetMpqList(list);
+}
+
 // ── DncView: string return ────────────────────────────────────────────────
 
 /* Currently-loaded DNC unit-MDL path. Free with whiteout_CString_free. */

@@ -226,6 +226,9 @@ void SceneView::SetCascInstallPath(const std::string& root) {
     // external provider owns its own resolution and has no CASC of its own.
     Scn(impl_).GetContentProvider().SetInstallPath(root);
 }
+void SceneView::SetMpqList(const std::vector<std::string>& archives) {
+    Scn(impl_).GetContentProvider().SetMpqList(archives);
+}
 void SceneView::SetHdMode(bool enabled) {
     Scn(impl_).GetContentProvider().SetHdMode(enabled);
 }
@@ -536,6 +539,53 @@ void AssetsView::PrefetchEventAssetsForActor(ActorHandle handle) {
 bool AssetsView::IsTextureCached(std::string_view path) const {
     if (!impl_) return false;
     return Svc(impl_).Assets().IsTextureCached(path);
+}
+
+namespace detail {
+// Public AssetPreload is a pimpl over the renderer-internal bundle, which
+// is what actually owns the slot references.
+class AssetPreloadState {
+public:
+    explicit AssetPreloadState(renderer::assets::AssetPreload preload)
+        : preload_(std::move(preload)) {}
+    renderer::assets::AssetPreload preload_;
+};
+} // namespace detail
+
+AssetPreload::AssetPreload() = default;
+AssetPreload::AssetPreload(std::unique_ptr<detail::AssetPreloadState> state)
+    : state_(std::move(state)) {}
+AssetPreload::~AssetPreload() = default;
+AssetPreload::AssetPreload(AssetPreload&&) noexcept = default;
+AssetPreload& AssetPreload::operator=(AssetPreload&&) noexcept = default;
+
+std::size_t AssetPreload::Count() const {
+    return state_ ? state_->preload_.Count() : 0;
+}
+std::size_t AssetPreload::LoadedCount() const {
+    return state_ ? state_->preload_.LoadedCount() : 0;
+}
+bool AssetPreload::Ready() const {
+    return !state_ || state_->preload_.Ready();
+}
+std::vector<std::string> AssetPreload::Paths() const {
+    return state_ ? state_->preload_.Paths() : std::vector<std::string>{};
+}
+void AssetPreload::Release() {
+    state_.reset();
+}
+
+AssetPreload AssetsView::Preload(AssetsView::Kind kind, std::span<const std::string> paths) {
+    if (!impl_) return {};
+    return AssetPreload(std::make_unique<detail::AssetPreloadState>(
+        Svc(impl_).PreloadAssets(ToInternal(kind), paths)));
+}
+
+AssetPreload AssetsView::PreloadDirectory(AssetsView::Kind kind, std::string_view directory,
+                                          bool recursive) {
+    if (!impl_) return {};
+    return AssetPreload(std::make_unique<detail::AssetPreloadState>(
+        Svc(impl_).PreloadAssetDirectory(ToInternal(kind), directory, recursive)));
 }
 
 // ============================================================================

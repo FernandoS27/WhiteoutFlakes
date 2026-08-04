@@ -47,6 +47,11 @@ set(WFS_DAWN_DIR "" CACHE PATH "Unpacked Dawn distribution (include/ + lib/)")
 # renderer sees only loose files, and a Reforged model whose textures live
 # in the game's storage renders as untextured placeholder pink.
 option(WFS_ENABLE_CASC   "Build CASC storage support"                       ON)
+# MPQ is the classic (pre-Reforged) archive format. Same deal as CASC —
+# WhiteoutLib implements it directly, so it costs compile time and nothing
+# else. Off by default: only StorageBrowser needs it, and a host pointed at
+# a modern install never sees one.
+option(WFS_ENABLE_MPQ    "Build MPQ storage support"                        OFF)
 
 # WhiteoutLib can come from here (the vendored copy, default) or from the
 # `whiteoutlib` crate, which owns `whiteout_native` and publishes where it
@@ -106,7 +111,11 @@ if(NOT WFS_ENABLE_CASC)
     list(FILTER _wlib_src EXCLUDE REGEX "/casc/")
     list(FILTER _wlib_src EXCLUDE REGEX "casc_file_system\\.cpp$")
 endif()
-list(FILTER _wlib_src EXCLUDE REGEX "/mpq/")
+if(NOT WFS_ENABLE_MPQ)
+    list(FILTER _wlib_src EXCLUDE REGEX "/mpq/")
+endif()
+# The adapter reaches storage headers through a path nothing here uses, and
+# it is not guarded by the feature macro the way its consumers are.
 list(FILTER _wlib_src EXCLUDE REGEX "mpq_file_system\\.cpp$")
 
 # The DEFLATE codec has two implementations; the built-in one is the
@@ -233,6 +242,9 @@ else()
     target_compile_definitions(whiteoutflakes_native PUBLIC WDX_HAS_WEBGPU=0)
 endif()
 
+if(WFS_ENABLE_MPQ)
+    target_compile_definitions(whiteoutflakes_native PUBLIC WHITEOUT_HAS_MPQ=1)
+endif()
 if(WFS_ENABLE_CASC)
     target_compile_definitions(whiteoutflakes_native PUBLIC WHITEOUT_HAS_CASC=1)
 endif()

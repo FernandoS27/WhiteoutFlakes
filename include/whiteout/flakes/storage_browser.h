@@ -1,7 +1,8 @@
 #pragma once
 
-/// @file casc_browser.h
-/// @brief Navigable view of the model and effect files inside a CASC archive.
+/// @file storage_browser.h
+/// @brief Navigable view of the model and effect files in a CASC install, an
+///        MPQ archive, or a directory.
 
 #include "types.h"
 
@@ -12,22 +13,30 @@
 namespace whiteout::flakes {
 
 namespace detail {
-class CascBrowserImpl;
+class StorageBrowserImpl;
 }
 
-/// @brief Which file types @ref CascBrowser::Files reports.
+/// @brief Where a @ref StorageBrowser reads its entries from.
+/// @bind
+enum class StorageKind : u8 {
+    Casc = 0,   ///< An installed game's CASC storage.
+    Mpq = 1,    ///< A single `.mpq` / `.w3x` / `.w3m` archive.
+    Folder = 2, ///< A directory on disk, walked recursively.
+};
+
+/// @brief Which file types @ref StorageBrowser::Files reports.
 ///
 /// Naming matches `StorageFileFilter` in the explorer panel, which has had
 /// the same three-way choice since before the browser was bindable.
 /// @bind
-enum class CascFileFilter : u8 {
+enum class StorageFileFilter : u8 {
     All = 0,         ///< Models and effects both.
     ModelsOnly = 1,  ///< `.mdx` / `.mdl`.
     EffectsOnly = 2, ///< `.pkb`
 };
 
-/// @brief Browses an installed Warcraft III's CASC storage as a folder tree of
-///        model and effect files.
+/// @brief Browses a CASC install, an MPQ archive, or a directory as one
+///        folder tree of model and effect files.
 ///
 /// The Reforged TVFS encodes the mod chain with `:` and the content tree with
 /// `\` — `war3.w3mod:_hd.w3mod:units\nightelf\druid\druid.mdx`. This walks the
@@ -42,8 +51,8 @@ enum class CascFileFilter : u8 {
 /// install and spawn the path this hands you:
 ///
 /// @code
-/// CascBrowser br;
-/// if (!br.Open(R"(C:\Program Files\Warcraft III)"))
+/// StorageBrowser br;
+/// if (!br.OpenAuto(R"(C:\Program Files\Warcraft III)"))
 ///     return br.LastError();
 /// br.Descend("units");
 /// const auto path = br.ChildPath(br.Files()[0]);
@@ -52,19 +61,33 @@ enum class CascFileFilter : u8 {
 /// r.Loader().SpawnUnit(path);
 /// @endcode
 /// @bind methods
-class CascBrowser {
+class StorageBrowser {
 public:
-    CascBrowser();
-    ~CascBrowser();
-    CascBrowser(const CascBrowser&) = delete;
-    CascBrowser& operator=(const CascBrowser&) = delete;
+    StorageBrowser();
+    ~StorageBrowser();
+    StorageBrowser(const StorageBrowser&) = delete;
+    StorageBrowser& operator=(const StorageBrowser&) = delete;
 
-    /// @brief Open the CASC at @p root — the directory holding `.build.info`,
-    ///        or its `Data` subdirectory.
+    /// @brief Open @p root as @p kind and build the folder tree.
     ///
-    /// Enumerating the archive is the expensive part and happens here, once.
-    /// Returns `false` on failure; @ref LastError says why.
-    bool Open(const std::string& root);
+    /// For @ref StorageKind::Casc, @p root is the directory holding
+    /// `.build.info` (or its `Data` subdirectory); for @ref StorageKind::Mpq,
+    /// the archive file; for @ref StorageKind::Folder, the directory to walk.
+    ///
+    /// Enumerating is the expensive part and happens here, once. Returns
+    /// `false` on failure; @ref GetLastError says why.
+    bool Open(const std::string& root, StorageKind kind);
+
+    /// @brief Work out what @p path is and open it.
+    ///
+    /// A directory holding `.build.info` is a CASC install, any other
+    /// directory is walked as a folder, and a file is treated as an MPQ.
+    /// What a dialog wants when the user has just typed or dropped a path.
+    bool OpenAuto(const std::string& path);
+
+    /// @brief What the open storage turned out to be.
+    /// @bind rename=Kind
+    StorageKind GetKind() const;
     /// @brief Why the last @ref Open failed. Empty after a successful one.
     bool IsOpen() const;
     /// @brief The root this was opened with.
@@ -99,9 +122,9 @@ public:
     ///
     /// Costs nothing to change: the archive is walked once at @ref Open and
     /// the filter is applied per call.
-    void SetFilter(CascFileFilter filter);
+    void SetFilter(StorageFileFilter filter);
     /// @bind rename=Filter
-    CascFileFilter GetFilter() const;
+    StorageFileFilter GetFilter() const;
 
     /// @brief How many files the current directory holds in total, ignoring
     ///        the filter — so a panel can say "3 of 12" rather than making
@@ -127,7 +150,7 @@ public:
     bool IsEffect(const std::string& fileName) const;
 
 private:
-    std::unique_ptr<detail::CascBrowserImpl> impl_;
+    std::unique_ptr<detail::StorageBrowserImpl> impl_;
 };
 
 } // namespace whiteout::flakes

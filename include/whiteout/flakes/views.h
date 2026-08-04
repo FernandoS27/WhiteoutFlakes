@@ -39,6 +39,7 @@ using CameraHandle = u32;
 
 namespace detail {
 class RendererImpl;
+class AssetPreloadState;
 }
 
 /// @brief Swap-chain + frame-submit surface.
@@ -148,7 +149,7 @@ public:
     /// @brief Point this scene's content provider at an installed Warcraft
     ///        III, so archive paths resolve out of its CASC storage.
     ///
-    /// The counterpart to @ref CascBrowser: browse an install, then hand the
+    /// The counterpart to @ref StorageBrowser: browse an install, then hand the
     /// same root here and `LoaderView::SpawnUnit` reads the paths the browser
     /// returns. Loose files on disk keep working — CASC is consulted for what
     /// is not found beside @ref SetPE1BasePath.
@@ -156,6 +157,21 @@ public:
     /// No-op for scenes running on a host-supplied content provider, which
     /// resolve however the host chooses.
     void SetCascInstallPath(const std::string& root);
+
+    /// @brief Point this scene's content provider at one or more MPQ
+    ///        archives, replacing any it already had.
+    ///
+    /// The MPQ counterpart to @ref SetCascInstallPath, and the other half of
+    /// browsing with @ref StorageBrowser: hand it the archive you opened and
+    /// the paths the browser returns become loadable. Paths are resolved in
+    /// list order, so a patch archive belongs before the base one.
+    ///
+    /// Requires a build with MPQ support (the crate's `mpq` feature); without
+    /// it this is a no-op and archive paths will not resolve.
+    /// @bind skip — a `std::vector<std::string>` parameter is a shape neither
+    ///              emitter models. Hand-written as a (pointer, count) pair in
+    ///              bindings/c/whiteout_flakes_shims.cpp.
+    void SetMpqList(const std::vector<std::string>& archives);
 
     /// @brief Prefer the HD (Reforged) asset chain over SD when resolving
     ///        archive paths.
@@ -337,6 +353,56 @@ private:
     friend class Renderer;
 };
 
+/// @brief Keeps a batch of preloaded assets resident.
+///
+/// Returned by `AssetsView::Preload` / `PreloadDirectory`. Every asset in
+/// the batch holds a reference for as long as this object is alive; when it
+/// dies (or `Release()` is called) the references drop and the assets are
+/// freed once nothing else uses them. Move-only — the batch has one owner.
+///
+/// Preloading only *asks* for the assets: the paths go onto the renderer's
+/// needs queue and the host's usual asset pump fetches them, so the bytes
+/// land a frame or more later. `Ready()` / `LoadedCount()` say how far
+/// along that is.
+///
+/// @code
+/// // Pin every texture the FX folder holds for as long as the effect
+/// // editor is open.
+/// auto pinned = r.Assets().PreloadDirectory(AssetsView::Kind::Texture,
+///                                           "Textures/FX", true);
+/// @endcode
+///
+/// Safe to outlive the `Renderer`, unlike the views: a batch whose renderer
+/// (or GPU device) is already gone simply has nothing left to release.
+/// @bind skip — move-only owned return value, not modelled by the emitters.
+class AssetPreload {
+public:
+    AssetPreload();
+    ~AssetPreload();
+
+    AssetPreload(AssetPreload&&) noexcept;
+    AssetPreload& operator=(AssetPreload&&) noexcept;
+    AssetPreload(const AssetPreload&) = delete;
+    AssetPreload& operator=(const AssetPreload&) = delete;
+
+    /// @brief How many assets this batch holds references to.
+    std::size_t Count() const;
+    /// @brief How many of them have finished loading.
+    std::size_t LoadedCount() const;
+    /// @brief `true` once every asset in the batch has loaded. An empty
+    ///        batch is trivially ready.
+    bool Ready() const;
+    /// @brief The paths held, normalised (lowercase, `/` separators).
+    std::vector<std::string> Paths() const;
+    /// @brief Drop the references now rather than at destruction.
+    void Release();
+
+private:
+    explicit AssetPreload(std::unique_ptr<detail::AssetPreloadState> state);
+    std::unique_ptr<detail::AssetPreloadState> state_;
+    friend class AssetsView;
+};
+
 /// @brief Push-based asset registry view.
 ///
 /// Renderer subsystems call into `AssetManager` directly to Acquire
@@ -408,6 +474,31 @@ public:
     ///        Used by hosts that want to dedup texture decode work
     ///        across models (e.g. the Max plugin's live adapter).
     bool IsTextureCached(std::string_view path) const;
+
+    /// @brief Pin a known set of assets in memory.
+    ///
+    /// Each path is Acquired once (duplicates collapse) and the whole set
+    /// is handed back as an @ref AssetPreload that holds the references
+    /// until it dies. Use it for assets you know are about to be needed —
+    /// an ability's splat textures, a unit's team-colour variants — so
+    /// they're resident before the first frame that draws them, and stay
+    /// resident when the last model using them is unloaded.
+    /// @bind skip — returns a move-only owned object.
+    AssetPreload Preload(Kind kind, std::span<const std::string> paths);
+
+    /// @brief Pin every asset of @p kind under @p directory.
+    ///
+    /// The active content provider enumerates the directory (CASC, MPQ and
+    /// the loose-file base path) and the listing is filtered to the
+    /// extensions @p kind can decode. Enumerating an archive costs a full
+    /// walk of its manifest — do this once per directory, not per frame.
+    /// Returns an empty batch when the provider can't enumerate (the web
+    /// fetch provider) or the directory holds nothing of that kind.
+    /// @param directory Provider-relative, e.g. `"Textures/FX"`; empty
+    ///                  means everything the provider knows about.
+    /// @param recursive Include nested subdirectories.
+    /// @bind skip — returns a move-only owned object.
+    AssetPreload PreloadDirectory(Kind kind, std::string_view directory, bool recursive = true);
 
 private:
     explicit AssetsView(detail::RendererImpl* impl) : impl_(impl) {}

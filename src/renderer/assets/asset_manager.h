@@ -27,6 +27,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -44,6 +45,19 @@ struct ModelTemplate;
 namespace whiteout::flakes::renderer::assets {
 
 class TextureAssetManager;
+class AssetManager;
+class AssetPreload;
+
+namespace detail {
+/// @brief Back-pointer an AssetPreload uses to reach its manager. The
+///        manager clears it in its destructor, so a bundle that outlives
+///        the manager (device teardown drops the whole AssetManager)
+///        releases nothing instead of touching freed slots.
+struct AssetManagerLink {
+    std::mutex mu;
+    AssetManager* mgr = nullptr;
+};
+} // namespace detail
 
 /// @brief Kinds of asset the manager tracks. Drives Apply()'s dispatch
 ///        and disambiguates which payload field a slot holds.
@@ -89,6 +103,15 @@ public:
     /// @brief Decrement refcount. When it hits zero the slot is freed
     ///        and any held GPU resources are scheduled for destruction.
     void Release(SlotId slot);
+
+    /// @brief Acquire one reference per entry in @p paths and hand the
+    ///        whole set back as an RAII bundle — the assets stay resident
+    ///        (and, being on the needs queue, get fetched by the host
+    ///        pump) until the returned object dies. Duplicates within
+    ///        @p paths take a single reference. Use this to pin textures
+    ///        that are about to be needed; there is no separate "unload",
+    ///        dropping the bundle is the release.
+    AssetPreload Preload(AssetKind kind, std::span<const std::string> paths);
 
     /// @brief True once a successful Apply has populated the payload.
     bool Loaded(SlotId slot) const;
@@ -260,6 +283,10 @@ private:
     SlotId AllocSlotId() noexcept;
     static std::string Normalize(std::string_view in);
 
+    // Handed to every AssetPreload this manager issues; see AssetManagerLink.
+    std::shared_ptr<detail::AssetManagerLink> link_ =
+        std::make_shared<detail::AssetManagerLink>();
+
     mutable std::mutex mu_;
     std::unordered_map<std::string, SlotId> pathToSlot_;
     std::unordered_map<SlotId, Slot> slots_;
@@ -288,6 +315,76 @@ private:
     std::size_t statReleases_      = 0;
     std::size_t statApplies_       = 0;
     std::size_t statApplyMisses_   = 0;
+};
+
+/// @brief A set of asset references held open for as long as this object
+///        lives — what AssetManager::Preload hands back. Move-only: the
+///        references belong to exactly one owner, and the destructor
+///        releases them.
+///
+/// Safe to outlive its manager: the slots are simply forgotten if the
+/// AssetManager died first (device teardown), so nothing is released
+/// twice and no freed slot is touched.
+class AssetPreload {
+public:
+    AssetPreload() = default;
+    ~AssetPreload() {
+        Release();
+    }
+
+    AssetPreload(AssetPreload&& other) noexcept
+        : link_(std::move(other.link_)), slots_(std::move(other.slots_)),
+          paths_(std::move(other.paths_)) {
+        other.link_.reset();
+        other.slots_.clear();
+        other.paths_.clear();
+    }
+    AssetPreload& operator=(AssetPreload&& other) noexcept {
+        if (this != &other) {
+            Release();
+            link_  = std::move(other.link_);
+            slots_ = std::move(other.slots_);
+            paths_ = std::move(other.paths_);
+            other.link_.reset();
+            other.slots_.clear();
+            other.paths_.clear();
+        }
+        return *this;
+    }
+
+    AssetPreload(const AssetPreload&)            = delete;
+    AssetPreload& operator=(const AssetPreload&) = delete;
+
+    /// @brief How many assets this bundle holds a reference to.
+    std::size_t Count() const noexcept {
+        return slots_.size();
+    }
+
+    /// @brief How many of them have had their payload applied. Poll this
+    ///        (or Ready()) to know when the preload has actually landed —
+    ///        Preload only queues the fetches, the host pump performs them.
+    std::size_t LoadedCount() const;
+
+    /// @brief True once every held asset is loaded. An empty bundle is
+    ///        trivially ready.
+    bool Ready() const {
+        return LoadedCount() == slots_.size();
+    }
+
+    /// @brief The normalised paths, in the order they were acquired.
+    const std::vector<std::string>& Paths() const noexcept {
+        return paths_;
+    }
+
+    /// @brief Drop the references now instead of at destruction.
+    void Release();
+
+private:
+    friend class AssetManager;
+
+    std::shared_ptr<detail::AssetManagerLink> link_;
+    std::vector<AssetManager::SlotId> slots_;
+    std::vector<std::string> paths_;
 };
 
 } // namespace whiteout::flakes::renderer::assets

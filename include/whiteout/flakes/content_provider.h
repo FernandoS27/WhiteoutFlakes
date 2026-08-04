@@ -85,6 +85,24 @@ public:
     std::optional<std::vector<u8>> ReadFile(const std::string& path,
                                             std::string* actualExt = nullptr);
 
+    /// @brief List the files the provider knows about under @p directory.
+    ///
+    /// Used by bulk-preload paths that want "everything under
+    /// `Textures/FX`" without the caller enumerating the archive itself.
+    /// @param directory Provider-relative directory, `/` or `\` separated
+    ///                  and case-insensitive (empty = every known file).
+    /// @param recursive Include files in nested subdirectories.
+    /// @return Provider-relative paths, lowercased with `/` separators,
+    ///         each readable via Request()/ReadFile(). The default returns
+    ///         nothing — a provider that cannot enumerate (the web fetch
+    ///         one, a host's own callback shim) simply doesn't support
+    ///         directory preloads.
+    virtual std::vector<std::string> ListFiles(const std::string& directory, bool recursive) {
+        (void)directory;
+        (void)recursive;
+        return {};
+    }
+
     /// @brief Toggle HD mod-overlay precedence for subsequent reads.
     ///        When `enabled` is true, providers that layer CASC/MPQ
     ///        archives prefer the `_hd.w3mod` overlay before the base

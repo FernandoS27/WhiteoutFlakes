@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: BSD-3-Clause
 // Copyright (c) 2026 Fernando Sahmkow
 //
-// Browse an installed Warcraft III's CASC storage and render what you pick.
+// Browse a storage — a CASC install, an MPQ archive, or a directory — and
+// render what you pick.
 //
-//   cargo run --example casc_browse -- "C:\Program Files\Warcraft III"
-//   cargo run --example casc_browse -- <install> units\nightelf\druid
+//   cargo run --example storage_browse -- "C:\Program Files\Warcraft III"
+//   cargo run --example storage_browse -- <install> units\nightelf\druid
 //
 // The two halves that make this useful together:
 //
-//   * `CascBrowser` walks the archive as a folder tree of models and effects.
+//   * `StorageBrowser` presents any of the three as one folder tree of models
+//     and effects, which is what makes it usable as an open-dialog backend.
 //     It is standalone — no Renderer, no gfx device — so a tool can list and
-//     filter an install without bringing the engine up.
+//     filter without bringing the engine up.
 //   * `SceneView::set_casc_install_path` points a scene's content provider at
 //     the same archive, so the paths the browser hands back load directly.
 //     `child_path` returns the original archive path for exactly that.
@@ -31,21 +33,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     let install = args
         .next()
-        .ok_or("usage: casc_browse <warcraft-iii-install> [folder\\path]")?;
+        .ok_or("usage: storage_browse <warcraft-iii-install> [folder\\path]")?;
     let folder = args.next();
     // all (default) | models | effects
     let filter = match args.next().as_deref() {
-        None | Some("all") => whiteoutflakes::CascFileFilter::All,
-        Some("models") => whiteoutflakes::CascFileFilter::ModelsOnly,
-        Some("effects") => whiteoutflakes::CascFileFilter::EffectsOnly,
+        None | Some("all") => whiteoutflakes::StorageFileFilter::All,
+        Some("models") => whiteoutflakes::StorageFileFilter::ModelsOnly,
+        Some("effects") => whiteoutflakes::StorageFileFilter::EffectsOnly,
         Some(other) => return Err(format!("unknown filter {other:?} (all|models|effects)").into()),
     };
 
-    let mut br = whiteoutflakes::CascBrowser::new();
-    if !br.open(&install) {
+    let mut br = whiteoutflakes::StorageBrowser::new();
+    // Let the browser work out what it was handed: a CASC install, an MPQ
+    // archive, or a plain directory to walk.
+    if !br.open_auto(&install) {
         return Err(format!("open failed: {}", br.last_error()).into());
     }
-    println!("opened {}", br.root());
+    println!("opened {} as {:?}", br.root(), br.kind());
     br.set_filter(filter);
 
     if let Some(f) = &folder {
@@ -110,13 +114,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err(format!("InitDevice failed for {api:?}").into());
     }
 
-    // The same install the browser is reading, so `path` resolves.
-    r.scene().expect("live").set_casc_install_path(&install);
+    // Point the provider at whatever the browser opened, so `path` resolves.
+    match br.kind() {
+        whiteoutflakes::StorageKind::Casc => {
+            r.scene().expect("live").set_casc_install_path(&install)
+        }
+        whiteoutflakes::StorageKind::Mpq => {
+            r.scene().expect("live").set_mpq_list(&[install.as_str()])
+        }
+        // A folder's entries are absolute paths already; the provider reads
+        // them straight off disk, and PE1 base path is set below.
+        whiteoutflakes::StorageKind::Folder => {}
+    }
     // HD and SD are different layers of the archive; picking the wrong one
     // resolves textures to the other art set.
     r.scene()
         .expect("live")
         .set_hd_mode(path.contains("_hd.w3mod"));
+
+    if br.kind() == whiteoutflakes::StorageKind::Folder {
+        if let Some(dir) = std::path::Path::new(&path).parent() {
+            r.scene()
+                .expect("live")
+                .set_pe1_base_path(&dir.to_string_lossy());
+        }
+    }
 
     let mut loader = r.loader().expect("live");
     let handle = if is_effect {

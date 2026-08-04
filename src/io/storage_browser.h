@@ -16,22 +16,43 @@
 #include <vector>
 
 #include <whiteout/storages/casc/storage.h>
+#if WHITEOUT_HAS_MPQ
+#include <whiteout/storages/mpq/storage.h>
+#endif
 
 namespace whiteout::flakes::io {
 
-class CascBrowser {
+// Where a browser's entries come from.
+enum class StorageKind {
+    Casc,   // an installed game's CASC storage
+    Mpq,    // a single .mpq / .w3x / .w3m archive
+    Folder, // a directory on disk, walked recursively
+};
+
+class StorageBrowser {
 public:
     struct Listing {
         std::vector<std::string> folders;    // immediate subfolder names
         std::vector<std::string> modelFiles; // model/effect file names in this folder
     };
 
-    // Opens the CASC at `root` (the dir containing .build.info, or its Data
-    // subdir). Returns false and fills `error` on failure. Builds the model
-    // folder tree and sets the current path to the root.
-    bool Open(const std::string& root, std::string* error);
+    // Open `root` as `kind` and build the folder tree. For Casc, `root` is
+    // the directory holding .build.info (or its Data subdir); for Mpq, the
+    // archive file; for Folder, the directory to walk. Returns false and
+    // fills `error` on failure.
+    bool Open(const std::string& root, StorageKind kind, std::string* error);
+
+    // Guess the kind from what is actually at `path` — a directory holding
+    // .build.info is a CASC install, a file is an archive, any other
+    // directory is browsed as a folder — then open it. Convenience for a
+    // dialog that just received a drop or a path from the user.
+    bool OpenAuto(const std::string& path, std::string* error);
+
     bool IsOpen() const {
-        return storage_.has_value();
+        return open_;
+    }
+    StorageKind Kind() const {
+        return kind_;
     }
     const std::string& Root() const {
         return root_;
@@ -67,7 +88,18 @@ private:
 
     void Refresh();
     const Node* NodeAt(const std::string& displayPath) const;
+    // Insert one entry into the tree: `original` is what a provider reads,
+    // `display` is what the user navigates.
+    void Insert(const std::string& original, const std::string& display);
 
+    bool OpenCasc(const std::string& root, std::string* error);
+    bool OpenMpq(const std::string& path, std::string* error);
+    bool OpenFolder(const std::string& path, std::string* error);
+
+    bool open_ = false;
+    StorageKind kind_ = StorageKind::Casc;
+    // Kept alive only for CASC: enumerate() borrows the storage. MPQ and
+    // Folder are read once into the tree and need nothing retained.
     std::optional<storages::casc::Storage> storage_;
     std::string root_;
     std::string currentPath_; // display form, '\\'-separated

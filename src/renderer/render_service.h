@@ -30,6 +30,7 @@
 #include <memory>
 #include <functional>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -49,6 +50,8 @@ using SceneId = u32;
 
 namespace assets {
 class AssetManager;
+class AssetPreload;
+enum class AssetKind : u8;
 class SamplerAssetManager;
 class TextureAssetManager;
 class ReplaceableTextureManager;
@@ -156,6 +159,22 @@ public:
     ///        Forwards to AssetManager::RetryUnloaded so hosts needn't pull in
     ///        the asset-manager (and its engine-internal) headers.
     void RetryUnloadedAssets();
+
+    /// @brief Pin @p paths in the asset registry until the returned bundle
+    ///        dies. The assets are queued on the needs list like any other
+    ///        Acquire, so the host's usual pump (PumpAssetsViaProvider on
+    ///        desktop, the JS drain on web) fetches them — the bundle only
+    ///        guarantees they stay resident afterwards.
+    assets::AssetPreload PreloadAssets(assets::AssetKind kind,
+                                       std::span<const std::string> paths);
+
+    /// @brief Same, for every file of @p kind the active content provider
+    ///        lists under @p directory (filtered by the extensions that
+    ///        kind can decode). Enumerating an archive is not cheap —
+    ///        call this once per directory, not per frame. Returns an
+    ///        empty bundle when the provider can't enumerate.
+    assets::AssetPreload PreloadAssetDirectory(assets::AssetKind kind,
+                                               std::string_view directory, bool recursive);
 
     debug::DebugRenderer& Debug();
     dnc::DncService* GetDncService();
