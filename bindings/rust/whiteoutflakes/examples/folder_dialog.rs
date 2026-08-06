@@ -587,8 +587,11 @@ mod imp {
                         return;
                     };
                     match id {
-                        ID_FILTER => cycle_filter(app),
-                        ID_UP => {
+                        // Owner-drawn buttons notify on focus changes too, and
+                        // those arrive as WM_COMMAND from the same control —
+                        // only a click is a press.
+                        ID_FILTER if code == BN_CLICKED as u16 => cycle_filter(app),
+                        ID_UP if code == BN_CLICKED as u16 => {
                             app.browser.ascend();
                             refill(app);
                         }

@@ -24,6 +24,9 @@ pub const C_BTN_HOT: u32 = 0x003A342F;
 pub const C_TEXT: u32 = 0x00D8D0C8;
 pub const C_TEXT_DIM: u32 = 0x00908880;
 pub const C_ACCENT: u32 = 0x00E0A050;
+/// Folder glyphs, the same gold the storage explorer draws them in — a folder
+/// should not be the same colour as a selection.
+pub const C_FOLDER: u32 = 0x0059B8D9;
 
 /// A stock button cannot be made dark, so every button in these examples is
 /// owner-drawn and comes through [`draw_button`]. windows-sys types the style

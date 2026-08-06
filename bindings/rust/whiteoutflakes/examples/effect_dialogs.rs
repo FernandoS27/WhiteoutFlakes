@@ -12,8 +12,9 @@
 // around them: a viewport, two buttons, and somewhere to put the answer.
 //
 // Both dialogs list effects and nothing else (`StorageFileFilter::EffectsOnly`
-// over a `StorageBrowser`), and every row carries a live thumbnail of the
-// effect itself, rendered through `readback_target`.
+// over a `StorageBrowser`), shown as a grid of tiles like the storage
+// explorer's — every tile a live thumbnail of the effect itself, rendered
+// through `readback_target`.
 //
 // Save is a real save, not a mock: it copies the open effect to the chosen
 // path. There is no effect *authoring* in this API, so writing the file the
@@ -155,10 +156,14 @@ mod imp {
             .set_primary_target(target);
 
         // The dialogs share one thumbnail renderer, so the device cost is paid
-        // once for the process rather than once per dialog.
-        let thumbs = Thumbs::new(api);
-        if thumbs.is_none() {
-            eprintln!("warning: no thumbnail renderer — dialog rows will be text only");
+        // once for the process rather than once per dialog. Rendered at the
+        // dialog's tile size, so the pictures are the size they are drawn at.
+        let mut thumbs = Thumbs::with_size(api, effect_dialog::TILE);
+        match thumbs.as_mut() {
+            // Tiles animate: each effect is recorded as a short loop rather
+            // than one picture.
+            Some(t) => t.set_frames(effect_dialog::FRAMES),
+            None => eprintln!("warning: no thumbnail renderer — dialog tiles will be text only"),
         }
 
         let app = App {
@@ -445,6 +450,12 @@ mod imp {
     unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         match msg {
             WM_COMMAND => {
+                // Only a click. An owner-drawn button also notifies when it
+                // gains or loses focus, and the dialog closing hands focus
+                // back here — which would re-open it on the way out.
+                if ((wp >> 16) & 0xFFFF) as u32 != BN_CLICKED {
+                    return 0;
+                }
                 // A dialog runs its own message pump, so the borrow has to be
                 // released before it opens — otherwise the host's frame tick
                 // would re-enter it.
