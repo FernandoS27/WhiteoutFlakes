@@ -297,17 +297,30 @@ struct SkinWeightData {
     std::vector<i32> subsetNodeIndices;
 };
 
+/// @brief Shape encoding of @ref CollisionShapeData::type, mirroring MDX's
+///        CLID chunk (`whiteout::mdx::CollisionShape::ShapeType`).
+enum class CollisionShapeType : i32 {
+    Box = 0,      ///< vertices[0/1] are two opposite corners.
+    Plane = 1,    ///< vertices[0/1] are two opposite corners of a quad.
+    Sphere = 2,   ///< vertices[0] is the centre, `radius` the radius.
+    Cylinder = 3, ///< vertices[0/1] are the end-cap centres, `radius` the radius.
+};
+
 /// @brief Per-actor collision primitive (used for ground-clamp /
 ///        attack-event hit-tests on the engine side; visualised as
 ///        wireframes when @ref DisplayFlags::showCollisions is on).
 ///
-/// `type` mirrors MDX's encoding: 0 = box (vertices[0/1] are min/max),
-/// 1 = sphere (radius around pivot), 2 = capsule.
+/// Vertices are in the space that the shape's node matrix
+/// (@ref FrameState::collisionTransforms) maps to model space — i.e. the pivot
+/// is already folded in, so consumers transform them directly. Sources are
+/// responsible for normalising to that: MDX authors Box/Plane/Cylinder corners
+/// *relative* to the pivot but a Sphere's centre in model space, and
+/// MdxModelAdapter reconciles the two on load.
 struct CollisionShapeData {
-    i32 type;
+    i32 type; ///< @ref CollisionShapeType.
     Vector3f vertices[2];
     f32 radius;
-    Vector3f pivot = {0, 0, 0};
+    Vector3f pivot = {0, 0, 0}; ///< Node pivot, informational — already applied.
 };
 
 /// @brief Per-frame evaluation output for one actor.
@@ -348,7 +361,9 @@ struct FrameState {
     };
     std::vector<RibbonFrameState> ribbonStates;
 
-    /// Per-collision-shape world transforms (debug overlay).
+    /// Per-collision-shape node transforms, in model space — unlike the
+    /// emitter/attachment states these do *not* bake the actor's
+    /// worldTransform, so consumers must post-multiply it themselves.
     std::vector<Matrix44f> collisionTransforms;
 
     /// @brief Per-layer 2D texture-coord transform (offset / tile / rotation).
@@ -469,6 +484,7 @@ using ::whiteout::flakes::renderer::ParticleEmitterConfig;
 using ::whiteout::flakes::renderer::effects::RibbonEmitterConfig;
 using ::whiteout::flakes::renderer::model::AttachmentConfig;
 using ::whiteout::flakes::renderer::model::CollisionShapeData;
+using ::whiteout::flakes::renderer::model::CollisionShapeType;
 using ::whiteout::flakes::renderer::model::CornEmitterInit;
 using ::whiteout::flakes::renderer::model::EventObjectConfig;
 using ::whiteout::flakes::renderer::model::FrameState;

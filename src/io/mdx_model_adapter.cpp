@@ -762,6 +762,22 @@ std::vector<CollisionShapeData> MdxModelAdapter::GetCollisionShapes() {
 
         if (cs.node.objectId < model_.pivotPoints.size())
             cd.pivot = model_.pivotPoints[cs.node.objectId];
+
+        // CLID mixes two conventions, and CollisionShapeData exports only one
+        // (vertices in the space its node matrix maps). A Sphere's lone vertex
+        // is the centre in model space — the exporter writes the node's own
+        // position there, so it always equals the pivot. Every other type
+        // stores corner offsets *around* the pivot: across the corpus every
+        // Box is authored as (±w, ±l, -h..0), which lands underground if read
+        // as model space. So fold the pivot into the non-sphere types here and
+        // consumers get one convention.
+        if (cs.type != whiteout::mdx::CollisionShape::ShapeType::Sphere) {
+            for (auto& v : cd.vertices) {
+                v.x += cd.pivot.x;
+                v.y += cd.pivot.y;
+                v.z += cd.pivot.z;
+            }
+        }
         result.push_back(cd);
     }
     return result;

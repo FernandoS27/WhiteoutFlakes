@@ -134,7 +134,7 @@ struct RibbonEmitterInfo {
 };
 
 struct CollisionShapeInfo {
-    i32 type = 0;
+    i32 type = 0; ///< renderer::model::CollisionShapeType.
     INode* node = nullptr;
 };
 

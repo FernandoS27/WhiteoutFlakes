@@ -1218,9 +1218,9 @@ void MaxSceneAdapter::CollectCollisionShapes() {
         MSTR cnBuf;
         const MCHAR* cn = GetObjectClassName(baseObj, cnBuf);
         if (wcsstr(cn, L"CollisionSphere") || wcsstr(cn, L"Wc3CollisionSphere"))
-            collisions_.push_back({1, node});
+            collisions_.push_back({(i32)CollisionShapeType::Sphere, node});
         else if (wcsstr(cn, L"CollisionBox") || wcsstr(cn, L"Wc3CollisionBox"))
-            collisions_.push_back({0, node});
+            collisions_.push_back({(i32)CollisionShapeType::Box, node});
     });
 }
 
@@ -1671,7 +1671,7 @@ std::vector<CollisionShapeData> MaxSceneAdapter::GetCollisionShapes() {
         cs.vertices[0] = {0, 0, 0};
         cs.vertices[1] = {0, 0, 0};
 
-        if (ci.type == 1) {
+        if (ci.type == (i32)CollisionShapeType::Sphere) {
             cs.radius = PB2FloatOr(obj, L"radius", 0, 10.0f);
         } else {
             // Extent parameters are full width/length/height; bounding corners

@@ -68,14 +68,23 @@ void DebugRenderer::RenderGrid() {
 }
 
 void DebugRenderer::RenderCollisions() {
-    std::vector<CollisionShape> shapes;
+    // Shape plus the matrix that takes its vertices all the way to world space.
+    // CollisionShape::transform is the node's *model-space* animated matrix, so
+    // the owning actor's worldTransform still has to be applied — without it an
+    // attachment / PE1 child (or any actor the host has moved) draws its shapes
+    // back at the scene origin instead of on the parent it rides.
+    struct ShapeDraw {
+        const CollisionShape* shape;
+        Matrix44f toWorld;
+    };
+    std::vector<ShapeDraw> shapes;
     Matrix44f viewMat;
     {
         for (auto& [h, mi] : rs_.Scene().Actors().All()) {
             if (mi->parentVisibility <= 0.02f)
                 continue;
-            shapes.insert(shapes.end(), mi->render.collisionShapes.begin(),
-                          mi->render.collisionShapes.end());
+            for (const auto& cs : mi->render.collisionShapes)
+                shapes.push_back({&cs, cs.transform * mi->worldTransform});
         }
         if (shapes.empty())
             return;
@@ -93,15 +102,15 @@ void DebugRenderer::RenderCollisions() {
 
     std::vector<LV> lines;
 
-    for (auto& cs : shapes) {
+    for (auto& sd : shapes) {
+        const CollisionShape& cs = *sd.shape;
 
-        // Collision vertices are in model space, and cs.transform (the node's
-        // world matrix) already bakes the pivot in — so transform them directly.
-        // Adding the pivot first double-counts it and slides the shape off the
-        // node (upward, by the torso pivot, for a hero's body sphere).
+        // Vertices arrive in model space (the source folds the pivot in, see
+        // CollisionShapeData), so sd.toWorld is the whole placement — adding
+        // cs.pivot here would double-count it.
         auto pushLine = [&](const Vector3f& a, const Vector3f& b) {
-            lines.push_back({whiteout::transform_point(a, cs.transform), col});
-            lines.push_back({whiteout::transform_point(b, cs.transform), col});
+            lines.push_back({whiteout::transform_point(a, sd.toWorld), col});
+            lines.push_back({whiteout::transform_point(b, sd.toWorld), col});
         };
         auto emitCircle = [&](const Vector3f& c, f32 r, i32 axis) {
             const i32 segs = 24;
@@ -125,7 +134,7 @@ void DebugRenderer::RenderCollisions() {
             }
         };
 
-        if (cs.type == 0) {
+        if (cs.type == (i32)CollisionShapeType::Box) {
             Vector3f mn = cs.vmin, mx = cs.vmax;
             Vector3f corners[8] = {{mn.x, mn.y, mn.z}, {mx.x, mn.y, mn.z}, {mx.x, mx.y, mn.z},
                                    {mn.x, mx.y, mn.z}, {mn.x, mn.y, mx.z}, {mx.x, mn.y, mx.z},
@@ -134,11 +143,11 @@ void DebugRenderer::RenderCollisions() {
                              6, 7, 7, 4, 0, 4, 1, 5, 2, 6, 3, 7};
             for (i32 i = 0; i < 24; i += 2)
                 pushLine(corners[edges[i]], corners[edges[i + 1]]);
-        } else if (cs.type == 2) {
+        } else if (cs.type == (i32)CollisionShapeType::Sphere) {
             emitCircle(cs.vmin, cs.radius, 0);
             emitCircle(cs.vmin, cs.radius, 1);
             emitCircle(cs.vmin, cs.radius, 2);
-        } else if (cs.type == 1) {
+        } else if (cs.type == (i32)CollisionShapeType::Cylinder) {
             Vector3f axisVec = {cs.vmax.x - cs.vmin.x, cs.vmax.y - cs.vmin.y,
                                 cs.vmax.z - cs.vmin.z};
             f32 axisLen =
@@ -173,10 +182,23 @@ void DebugRenderer::RenderCollisions() {
                 f32 a = (f32)i / 4 * 6.28318530f;
                 pushLine(ringPt(cs.vmin, a), ringPt(cs.vmax, a));
             }
-        } else if (cs.type == 3) {
-            f32 hw = cs.vmin.x, hh = cs.vmin.y;
-            Vector3f p0 = {-hw, -hh, 0}, p1 = {hw, -hh, 0};
-            Vector3f p2 = {hw, hh, 0}, p3 = {-hw, hh, 0};
+        } else if (cs.type == (i32)CollisionShapeType::Plane) {
+            // Two opposite corners of an axis-aligned quad. The axis the two
+            // corners agree on is the plane normal, so span the other two.
+            const f32 mn[3] = {cs.vmin.x, cs.vmin.y, cs.vmin.z};
+            const f32 mx[3] = {cs.vmax.x, cs.vmax.y, cs.vmax.z};
+            const f32 d[3] = {std::abs(mx[0] - mn[0]), std::abs(mx[1] - mn[1]),
+                              std::abs(mx[2] - mn[2])};
+            const i32 n = (d[0] <= d[1] && d[0] <= d[2]) ? 0 : (d[1] <= d[2] ? 1 : 2);
+            const i32 a0 = (n + 1) % 3, a1 = (n + 2) % 3;
+            auto corner = [&](bool hi0, bool hi1) {
+                f32 c[3] = {mn[0], mn[1], mn[2]};
+                c[a0] = hi0 ? mx[a0] : mn[a0];
+                c[a1] = hi1 ? mx[a1] : mn[a1];
+                return Vector3f{c[0], c[1], c[2]};
+            };
+            const Vector3f p0 = corner(false, false), p1 = corner(true, false);
+            const Vector3f p2 = corner(true, true), p3 = corner(false, true);
             pushLine(p0, p1);
             pushLine(p1, p2);
             pushLine(p2, p3);
