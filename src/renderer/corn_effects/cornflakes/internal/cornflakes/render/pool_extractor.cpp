@@ -25,6 +25,8 @@ u8 componentsForSlot(RenderSlot slot, RendererClass cls) noexcept {
     case RenderSlot::Color:
         return 4;
     case RenderSlot::TextureID:
+    case RenderSlot::TextureU:
+    case RenderSlot::Cursor:
         return 1;
     case RenderSlot::SelfID:
     case RenderSlot::ParentID:
@@ -70,9 +72,10 @@ std::span<const std::byte> packSlot(const ParticlePool& pool, const LayerProgram
 
         const u16 resolved = (b->canonicalSlot == 0U && b->slot != 0U) ? b->slot : b->canonicalSlot;
         const auto slotIdx = static_cast<std::size_t>(resolved);
-        const f32* src = (slotIdx < exts.size()) ? exts[slotIdx].lanes : nullptr;
+        const bool inRange = slotIdx < exts.size();
+        const RegisterValue src = inRange ? exts[slotIdx] : RegisterValue{};
         for (u8 c = 0; c < components; ++c) {
-            buf[i * components + c] = (src != nullptr) ? src[c] : 0.0F;
+            buf[i * components + c] = inRange ? src.lanes[c] : 0.0F;
         }
     }
     return std::span<const std::byte>{reinterpret_cast<const std::byte*>(buf.data()),
@@ -135,13 +138,16 @@ RenderInputMap buildRenderInputMapFromAsset(const LayerRenderer& renderer,
         }
     };
     for (const auto& in : renderer.particleInputs) {
-
         if (!in.additionalFieldName.empty()) {
             const std::string_view n = in.additionalFieldName;
             if (n == "Color") {
                 setSlot(RenderSlot::Color, in.indexInStorage);
             } else if (n == "TextureID") {
                 setSlot(RenderSlot::TextureID, in.indexInStorage);
+            } else if (n == "TextureU") {
+                setSlot(RenderSlot::TextureU, in.indexInStorage);
+            } else if (n == "Cursor") {
+                setSlot(RenderSlot::Cursor, in.indexInStorage);
             } else if (n == "Orientation") {
                 setSlot(RenderSlot::Orientation, in.indexInStorage);
             } else if (n == "Axis0" || n == "Axis") {
@@ -160,6 +166,8 @@ RenderInputMap buildRenderInputMapFromAsset(const LayerRenderer& renderer,
         case 4: setSlot(RenderSlot::Axis0, in.indexInStorage); break;
         case 5: setSlot(RenderSlot::Axis1, in.indexInStorage); break;
         case 6: setSlot(RenderSlot::Rotation, in.indexInStorage); break;
+        case 8: setSlot(RenderSlot::Axis0, in.indexInStorage); break;
+        case 12: setSlot(RenderSlot::Orientation, in.indexInStorage); break;
         default: break;
         }
     }

@@ -2,6 +2,7 @@
 
 #include <cornflakes/interface/binding/effect_binder.hpp>
 
+#include <cstdio>
 #include <cstring>
 #include <unordered_map>
 
@@ -94,8 +95,12 @@ const std::unordered_map<std::string_view, SubPropHandler>& subPropHandlers() {
                  s.out.diffuseTexturePath = stableCopy(path, a);
              }
          }},
+        {"Blend.TextureBase", [](RendererBuildState& s, const AssetObject& p, IArena& a) {
+             if (auto path = fieldString(p, "PropertyValueStr"); !path.empty()) {
+                 s.out.diffuseTexturePath = stableCopy(path, a);
+             }
+         }},
         {"Atlas.SubDiv", [](RendererBuildState& s, const AssetObject& p, IArena&) {
-
              const auto bytes = fieldBytes(p, "PropertyValueNumeric");
              if (bytes.size() >= 2U * sizeof(u32)) {
                  u32 subX = 0;
@@ -107,7 +112,12 @@ const std::unordered_map<std::string_view, SubPropHandler>& subPropHandlers() {
              }
          }},
         {"Atlas.Blending",            [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.atlasBlending = readPropU32(p); }},
-        {"Atlas.Definition",          [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.atlasDefinition = readPropU32(p); }},
+        {"Atlas.Definition",          [](RendererBuildState& s, const AssetObject& p, IArena& a) {
+             s.out.atlasDefinition = readPropU32(p);
+             if (auto path = fieldString(p, "PropertyValueStr"); !path.empty()) {
+                 s.out.atlasDefinitionPath = stableCopy(path, a);
+             }
+         }},
         {"Atlas.Source",              [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.atlasSource = readPropU32(p); }},
         {"Atlas.DistortionStrength",  [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.atlasDistortionStrength = readPropF32(p); }},
         {"Atlas.MotionVectorsMap", [](RendererBuildState& s, const AssetObject& p, IArena& a) {
@@ -121,6 +131,7 @@ const std::unordered_map<std::string_view, SubPropHandler>& subPropHandlers() {
              }
          }},
         {"SoftParticles.SoftnessDistance", [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.softParticlesDistance = readPropF32(p); }},
+        {"NormalBend.NormalBendingFactor", [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.normalBendingFactor = readPropF32(p); }},
         {"TextureUVs.FlipU",               [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.textureFlipU = readPropToggle(p); }},
         {"TextureUVs.FlipV",               [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.textureFlipV = readPropToggle(p); }},
         {"TextureUVs.RotateTexture",       [](RendererBuildState& s, const AssetObject& p, IArena&) { s.out.textureRotateTexture = readPropToggle(p); }},
@@ -209,17 +220,32 @@ LayerRenderer buildRenderer(const EffectAssetModel& model, const AssetObject& rO
 
 }
 
+namespace {
+
+std::string_view renderFieldName(const AssetObject& fObj, IArena& arena) {
+    if (const std::string_view nm = fieldString(fObj, "FieldName"); !nm.empty()) {
+        return stableCopy(nm, arena);
+    }
+    const auto idOpt = fieldUint(fObj, "FieldNameID");
+    if (!idOpt.has_value() || (*idOpt & 0x80000000U) == 0U) {
+        return {};
+    }
+    char buf[16];
+    const int n = std::snprintf(buf, sizeof(buf), "%X", static_cast<unsigned>(*idOpt & 0x7FFFFFFFU));
+    return (n > 0) ? stableCopy(std::string_view{buf, static_cast<std::size_t>(n)}, arena)
+                   : std::string_view{};
+}
+
+}
+
 void loadRenderers(const EffectAssetModel& model, const AssetObject& layerCache, LayerProgram& lp,
                    IArena& arena) {
-
     const auto fieldUids = fieldLinks(layerCache, "Fields");
     if (!fieldUids.empty()) {
         const auto names = arenaArray<std::string_view>(arena, fieldUids.size());
         for (std::size_t i = 0; i < fieldUids.size(); ++i) {
             const AssetObject* fObj = findObjectByUid(model, fieldUids[i]);
-            const std::string_view nm =
-                (fObj != nullptr) ? fieldString(*fObj, "FieldName") : std::string_view{};
-            names[i] = stableCopy(nm, arena);
+            names[i] = (fObj != nullptr) ? renderFieldName(*fObj, arena) : std::string_view{};
         }
         lp.renderFieldNames = std::span<const std::string_view>{names.data(), fieldUids.size()};
     }

@@ -37,7 +37,7 @@ struct ShaderPermKey {
     bool operator==(const ShaderPermKey&) const = default;
 };
 
-ShaderPermKey classifyCornFxPerm(const LayerRendererFlags& flags, FogMode fog,
+ShaderPermKey classifyPopcornPerm(const LayerRendererFlags& flags, FogMode fog,
                                   RenderPass pass) noexcept;
 
 struct VsPermFields {

@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief `RenderPacket` — one renderer's worth of per-particle data ready for a backend.
-
 #include <cornflakes/interface/core/types.hpp>
 #include <cornflakes/interface/schema/handles.hpp>
 
@@ -12,7 +9,6 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief Top-level renderer family selector.
 enum class RendererClass : u32 {
     Billboard = 0,
     Ribbon = 1,
@@ -21,7 +17,6 @@ enum class RendererClass : u32 {
     Count,
 };
 
-/// @brief `Transparent.Type` mapped 1:1 from the asset.
 enum class BlendMode : u8 {
     Add = 0,
     NoAlphaAdd = 1,
@@ -32,7 +27,6 @@ enum class BlendMode : u8 {
     Count,
 };
 
-/// @brief Billboard alignment mode — drives the GPU/CPU expansion path.
 enum class BillboardMode : u8 {
     ScreenAligned = 0,
     ViewposAligned = 1,
@@ -42,7 +36,6 @@ enum class BillboardMode : u8 {
     PlaneAligned = 5,
 };
 
-/// @brief Per-renderer input slot; index into `RenderPacket::slots`.
 enum class RenderSlot : u32 {
     Position = 0,
     Size = 1,
@@ -56,24 +49,16 @@ enum class RenderSlot : u32 {
 
     SelfID = 9,
     ParentID = 10,
-    Count = 11,
+    TextureU = 11,
+    Cursor = 12,
+    Count = 13,
 };
 
 inline constexpr std::size_t kRenderSlotCount = static_cast<std::size_t>(RenderSlot::Count);
 
-/// @brief One renderer's output for one tick — typed slot-of-arrays handed to a backend.
-///
-/// Each slot is a span of raw bytes whose element layout is determined by
-/// `RenderSlot` semantics (Position is `Float3[]`, Size is `f32[]`, etc.).
-/// Empty spans mean "the layer has no binding for this slot" — backends should
-/// fall back to defaults rather than treating it as an error.
 struct RenderPacket {
     EmitterId emitter;
     LayerId layer;
-    /// Index of the renderer within the layer that produced this packet. A layer may carry
-    /// several renderers (e.g. two billboard quads with distinct textures sharing the same
-    /// particle data); each emits its own packet. Backends key per-renderer resources
-    /// (texture, atlas, UV transform) by `(layer, rendererIndex)`, not by layer alone.
     u32 rendererIndex = 0;
     RendererClass cls = RendererClass::Billboard;
     u32 particleCount = 0;
@@ -85,4 +70,4 @@ struct RenderPacket {
     std::array<std::span<const std::byte>, kRenderSlotCount> slots;
 };
 
-} // namespace whiteout::cornflakes
+}

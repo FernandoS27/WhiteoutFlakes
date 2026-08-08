@@ -1,13 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Opcode enum + IR/CBEM range predicates and a name table.
-///
-/// Two opcode families share the same VM:
-///  - **IR** (0x42..0x53) — emitted by the CornFx compiler.
-///  - **CBEM** (0x6B..0x7D) — runtime/CBEM-rewriter optimisations layered on top.
-/// Both appear in baked .pkb streams.
-
 #include <cornflakes/interface/core/types.hpp>
 
 namespace whiteout::cornflakes {
@@ -26,7 +18,6 @@ constexpr bool isCBEMOpcode(u8 raw) noexcept {
     return raw >= kCBEMOpcodeMin && raw <= kCBEMOpcodeMax;
 }
 
-/// @brief All VM opcodes — IR (0x42..0x53) and CBEM (0x6B..0x7D) in one enum.
 enum class Opcode : u8 {
     Nop = 0x42U,
     LoadExternal = 0x43U,
@@ -121,4 +112,4 @@ constexpr const char* opcodeName(u8 raw) noexcept {
     return opcodeName(static_cast<Opcode>(raw));
 }
 
-} // namespace whiteout::cornflakes
+}

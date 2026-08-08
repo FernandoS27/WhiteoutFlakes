@@ -116,6 +116,9 @@ set(CORNFLAKES_SOURCES
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/service/cornflakes_service.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/asset/asset_reader.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/asset/pkb_reader.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/asset/pkmm_reader.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/asset/pkvf_reader.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/asset/file_mesh_provider.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/asset/text_pkfx_reader.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/asset/war3_compatibility_validator.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/asset/object_accessors.cpp"
@@ -131,14 +134,17 @@ set(CORNFLAKES_SOURCES
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/vm/bytecode_trace.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/vm/cbem/cbem_interpreter.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/vm/cbem/cbem_ir_ops.cpp"
-    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/vm/cbem/cbem_cbem_ops.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/vm/cbem/cbem_dispatchers.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/vm/math_functions.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/vm/bytecode_decoder.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sampler/mesh.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sampler/shape_geometry.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sampler/shape.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sampler/curve.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sampler/curve_cdf.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sampler/texture.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sampler/turbulence.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sampler/vector_field.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/particle_page.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/spawn_processor.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/spawn_evaluator_driver.cpp"
@@ -147,6 +153,15 @@ set(CORNFLAKES_SOURCES
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/layer_tick_harness.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/particle_pool.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/effect_runtime.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/state_digest.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/state_compare.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/sim/lod.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/simt/layer_stream_store.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/simt/scratch_validator.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/simt/register_census.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/simt/packet_register_file.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/simt/stream_extract.cpp"
+    "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/simt/simt_interpreter.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/events/payload_cache_store.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/events/payload_builder.cpp"
     "${CORNFLAKES_MODULE_DIR}/internal/cornflakes/events/event_generator.cpp"
@@ -1080,6 +1095,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/effects/spn_spawner.cpp
     src/renderer/corn_effects/corn_effects_emitter.cpp
     src/renderer/corn_effects/corn_effects_gfx_backend.cpp
+    src/renderer/corn_effects/corn_effects_resource_providers.cpp
     src/renderer/corn_effects/corn_effects_service.cpp
     ${CORNFLAKES_SOURCES}
     src/renderer/particle/rnd_seed.cpp
@@ -1092,6 +1108,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/particle/splat_service.cpp
     src/renderer/dnc/dnc_asset.cpp
     src/renderer/dnc/dnc_cache.cpp
+    src/renderer/dnc/dnc_catalog.cpp
     src/renderer/dnc/dnc_service.cpp
     src/renderer/shadow/shadow_service.cpp
     src/renderer/shadow/shadow_pass.cpp
@@ -1122,9 +1139,9 @@ add_library(WhiteoutFlakesLib STATIC
     src/io/event_data.cpp
     src/io/slk.cpp
     src/io/texture_image_usage.cpp
-    src/io/casc_browser.cpp
+    src/io/storage_browser.cpp
     src/public_api/renderer_api.cpp
-    src/public_api/casc_browser_api.cpp
+    src/public_api/storage_browser_api.cpp
 )
 
 if(WDX_ENABLE_IMGUI)

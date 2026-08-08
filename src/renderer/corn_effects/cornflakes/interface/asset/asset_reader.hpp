@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Reader interface and priority-ordered dispatcher that selects a backend per source.
-
 #include <cornflakes/interface/asset/effect_asset_model.hpp>
 #include <cornflakes/interface/core/arena.hpp>
 #include <cornflakes/interface/core/types.hpp>
@@ -15,7 +12,6 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief Pluggable asset reader. Implementations claim sources via `canHandle` + `priority`.
 class IAssetReader {
 public:
     static constexpr i32 kPriorityPkb = 1000;
@@ -35,18 +31,16 @@ public:
                                                  IssueBag& issues) = 0;
 };
 
-/// @brief Holds registered readers and dispatches to the highest-priority match.
 class SerializerPriorityDispatcher {
 public:
     SerializerPriorityDispatcher();
 
     void addReader(std::unique_ptr<IAssetReader> reader);
 
-    /// @brief Try every registered reader in priority order; first match wins.
     std::optional<EffectAssetModel> read(const BakedSource& src, IArena& arena, IssueBag& issues);
 
 private:
     std::vector<std::unique_ptr<IAssetReader>> m_readers;
 };
 
-} // namespace whiteout::cornflakes
+}

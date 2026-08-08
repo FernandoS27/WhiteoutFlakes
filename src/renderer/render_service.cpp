@@ -77,7 +77,7 @@ SceneId RenderService::CreateScene() {
     impl_->sceneServices_[id] = std::make_unique<SceneServices>(*this);
     // Apply whatever device-dependent wiring is already available (corn-fx
     // backend, splat→AssetManager hook) to the new scene's bundle.
-    InitSceneServices(*impl_->sceneServices_[id]);
+    InitSceneServices(id, *impl_->sceneServices_[id]);
     return id;
 }
 
@@ -189,18 +189,24 @@ void RenderService::SetCornBackendInitApplier(
     InitAllSceneServices();
 }
 
-void RenderService::InitSceneServices(SceneServices& svc) {
+void RenderService::InitSceneServices(SceneId id, SceneServices& svc) {
     // Each step is idempotent and self-guards on its input being ready, so this
     // can run any number of times as inputs (assets, corn backend) come online.
     if (impl_->assets_)
         svc.splats.Configure(impl_->assets_.get());
     if (impl_->cornInitApplier_)
         impl_->cornInitApplier_(svc.corn);
+    // Corn-fx sampler resources (.pkmm / .pkvf / texture texels) resolve
+    // synchronously at bind time, so they read through the content provider
+    // rather than the push-based AssetManager. Per-scene, since each scene can
+    // carry its own provider.
+    if (auto sit = impl_->scenes_.find(id); sit != impl_->scenes_.end() && sit->second)
+        svc.corn.SetContentProvider(sit->second->ActiveContentProvider());
 }
 
 void RenderService::InitAllSceneServices() {
     for (auto& [id, svc] : impl_->sceneServices_)
-        InitSceneServices(*svc);
+        InitSceneServices(id, *svc);
 }
 
 void RenderService::ForEachCornService(

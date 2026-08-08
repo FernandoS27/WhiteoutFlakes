@@ -50,6 +50,9 @@ public:
         if (m_config.workerPool == nullptr) {
             m_ownedPool = std::make_unique<SerialWorkerPool>(m_schedulerIssues);
         }
+        m_binder.setMeshProvider(m_config.meshProvider);
+        m_binder.setTextureProvider(m_config.textureProvider);
+        m_binder.setVectorFieldProvider(m_config.vectorFieldProvider);
     }
 
     ServiceOutcome<EffectHandle> loadEffect(EffectId id, const BakedSource& src) override {

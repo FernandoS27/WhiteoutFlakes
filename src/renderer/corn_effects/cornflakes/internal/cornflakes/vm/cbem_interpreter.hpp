@@ -24,4 +24,13 @@ const std::map<std::string, u64>& vmFunctionCallCounts() noexcept;
 
 void vmResetFunctionCallCounts() noexcept;
 
+inline bool g_vmFunctionCallCounting = false;
+
+inline void vmSetFunctionCallCounting(bool enabled) noexcept {
+    g_vmFunctionCallCounting = enabled;
+}
+inline bool vmFunctionCallCountingEnabled() noexcept {
+    return g_vmFunctionCallCounting;
+}
+
 }

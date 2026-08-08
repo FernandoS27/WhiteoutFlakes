@@ -33,11 +33,42 @@ inline constexpr u32 kTextBadVersion = 0x24U;
 inline constexpr u32 kGenerator = 0x31U;
 inline constexpr u32 kNoRootEffect = 0x32U;
 inline constexpr u32 kNoRootLayer = 0x33U;
+
+inline constexpr u32 kPkmmTruncated = 0x41U;
+inline constexpr u32 kPkmmBadVersion = 0x42U;
+inline constexpr u32 kPkmmBadGeometry = 0x43U;
+inline constexpr u32 kPkmmVStreamSize = 0x44U;
+inline constexpr u32 kPkmmTrailingBytes = 0x45U;
+inline constexpr u32 kPkmmPdfSize = 0x46U;
 }
 
 namespace binding {
 inline constexpr u32 kLowerOutOfRange = 0x41U;
 inline constexpr u32 kLowerIrNotImplemented = 0x42U;
+}
+
+namespace sampler {
+inline constexpr u32 kMeshResourceEmpty = 0x01U;
+inline constexpr u32 kMeshNoProvider = 0x02U;
+inline constexpr u32 kMeshNotFound = 0x03U;
+inline constexpr u32 kMeshUnparsable = 0x04U;
+inline constexpr u32 kMeshSubMeshOob = 0x05U;
+inline constexpr u32 kMeshNoPositions = 0x06U;
+inline constexpr u32 kMeshUnsupportedFormat = 0x07U;
+inline constexpr u32 kMeshNoDensityStream = 0x08U;
+
+inline constexpr u32 kTextureResourceEmpty = 0x11U;
+inline constexpr u32 kTextureNoProvider = 0x12U;
+inline constexpr u32 kTextureNotFound = 0x13U;
+inline constexpr u32 kTextureBadDimensions = 0x14U;
+inline constexpr u32 kTextureAtlasUnsupported = 0x15U;
+
+inline constexpr u32 kVectorFieldResourceEmpty = 0x21U;
+inline constexpr u32 kVectorFieldNoProvider = 0x22U;
+inline constexpr u32 kVectorFieldNotFound = 0x23U;
+inline constexpr u32 kVectorFieldUnparsable = 0x24U;
+inline constexpr u32 kVectorFieldUnsupportedGrid = 0x25U;
+inline constexpr u32 kVectorFieldForeignFrame = 0x26U;
 }
 
 namespace vm {

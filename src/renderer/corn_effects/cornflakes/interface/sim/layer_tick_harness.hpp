@@ -1,48 +1,48 @@
 #pragma once
 
-/// @file
-/// @brief Per-particle execution context: register banks, RNG, life state, payload buffers.
-///
-/// One `LayerTickHarness` exists per particle slot in a `ParticlePool`. It owns
-/// the four per-scope register vectors, the externals vector, and all the
-/// per-tick scratch the VM and event/spawn code need. The harness is reused
-/// across ticks; only `BytecodeExecContext` views into it are rebuilt per call.
-
 #include <cornflakes/interface/binding/layer_program.hpp>
 #include <cornflakes/interface/core/arena.hpp>
 #include <cornflakes/interface/core/fast_rand.hpp>
 #include <cornflakes/interface/diagnostics/issue.hpp>
+#include <cornflakes/interface/sim/external_store.hpp>
 #include <cornflakes/interface/sim/proximity_hash.hpp>
 #include <cornflakes/interface/vm/bytecode_exec_context.hpp>
 #include <cornflakes/interface/vm/register_value.hpp>
 
 #include <array>
+#include <bit>
 #include <cstddef>
+#include <memory>
 #include <span>
 #include <vector>
 
 namespace whiteout::cornflakes {
 
-/// @brief One particle's worth of VM state — registers, RNG, life, payloads.
 class LayerTickHarness {
 public:
-    /// @brief Initial sizing for the per-scope register vectors and the externals vector.
-    struct Config {
+    static constexpr std::size_t kFallbackExternalCount = 1024;
 
-        std::size_t initialRegistersPerScope = 1024;
-        std::size_t externalCount = 1024;
+    static constexpr std::size_t kFallbackRegisterCount = 1024;
+
+    struct Config {
+        std::array<std::size_t, kScopeRegisterBuckets> registersPerBank{
+            kFallbackRegisterCount, kFallbackRegisterCount, kFallbackRegisterCount,
+            kFallbackRegisterCount};
+
+        std::size_t externalCount = kFallbackExternalCount;
     };
 
     LayerTickHarness();
     explicit LayerTickHarness(const Config& cfg);
 
-    /// @brief Resize register/external storage to fit `layer`'s declared counts.
     void resizeForLayer(const LayerProgram& layer);
 
-    /// @brief Run the layer's init scope on this slot.
+    static std::size_t externalStorageSizeFor(const LayerProgram& layer) noexcept;
+
+    static Config layoutFor(const LayerProgram& layer) noexcept;
+
     bool initParticle(const LayerProgram& layer, IArena& arena, IssueBag& issues);
 
-    /// @brief Run the per-tick scopes (physics + timeFixed/timeVarying) on this slot.
     bool tick(const LayerProgram& layer, IArena& arena, IssueBag& issues);
 
     std::span<RegisterValue> scopeRegs(std::size_t scope) noexcept {
@@ -51,11 +51,20 @@ public:
                                               scopeRegisters_[scope].size()}
                    : std::span<RegisterValue>{};
     }
-    std::span<RegisterValue> externals() noexcept {
-        return std::span<RegisterValue>{externals_.data(), externals_.size()};
+    std::span<const RegisterValue> scopeRegs(std::size_t scope) const noexcept {
+        return (scope < scopeRegisters_.size())
+                   ? std::span<const RegisterValue>{scopeRegisters_[scope].data(),
+                                                    scopeRegisters_[scope].size()}
+                   : std::span<const RegisterValue>{};
     }
-    std::span<const RegisterValue> externals() const noexcept {
-        return std::span<const RegisterValue>{externals_.data(), externals_.size()};
+    ExternalView externals() const noexcept {
+        return ExternalView{externalStore_, externalIndex_, externalCount_};
+    }
+
+    void bindExternals(ExternalStore* store, std::size_t index, std::size_t count) noexcept {
+        externalStore_ = store;
+        externalIndex_ = index;
+        externalCount_ = count;
     }
 
     std::size_t lastExecuted() const noexcept {
@@ -71,17 +80,14 @@ public:
     TFastRandU32& rng() noexcept {
         return rng_;
     }
+    u32 rngState() const noexcept {
+        return rng_.state();
+    }
 
     void setEffectAge(f32 age) noexcept {
         effectAge_ = age;
     }
 
-    /// @brief scene.time at spawn — re-injected into the init scope AFTER externals are cleared,
-    /// so scripts that capture `internal = scene.time` get the real spawn time (not 0). The clear
-    /// in `initParticle` would otherwise wipe an externally-fed scene.time. Engine-faithful: the
-    /// init scope evaluates with the current frame's scene.time (verified in Preview.exe — beam
-    /// n34's `internal_1ba6bc49` holds the spawn scene.time; a 0 capture saturates its `t4` time
-    /// fade and leaves `__sampler_4` at (1,1,1,1), over-brightening the alpha ~2x).
     void setInitSceneTime(f32 t) noexcept {
         initSceneTime_ = t;
     }
@@ -115,8 +121,9 @@ public:
     f32 lifeRatio() const noexcept {
         return lifeRatio_;
     }
+
     bool isDead() const noexcept {
-        return lifeRatio_ >= 1.0F;
+        return std::bit_cast<u32>(lifeRatio_) >= 0x3F800000U;
     }
 
     void noteFrameStartDeadState() noexcept {
@@ -131,6 +138,35 @@ public:
     }
     const Mat4x3& sceneL2W() const noexcept {
         return sceneL2W_;
+    }
+
+    void setCameras(std::span<const SceneCamera> cameras) noexcept {
+        cameras_ = cameras;
+    }
+
+    void setSimLod(f32 level) noexcept {
+        simLod_ = level;
+    }
+    f32 effectAge() const noexcept {
+        return effectAge_;
+    }
+    bool effectIsRunning() const noexcept {
+        return effectIsRunning_;
+    }
+    f32 simLodDistanceMin() const noexcept {
+        return simLodDistanceMin_;
+    }
+    f32 simLodDistanceMax() const noexcept {
+        return simLodDistanceMax_;
+    }
+
+    f32 simLod() const noexcept {
+        return simLod_;
+    }
+
+    void setSimLodDistances(f32 minDist, f32 maxDist) noexcept {
+        simLodDistanceMin_ = minDist;
+        simLodDistanceMax_ = maxDist;
     }
 
     void setSpawnTRS(const std::array<f32, 3>& translate, const std::array<f32, 4>& quaternion,
@@ -232,6 +268,12 @@ public:
 
     void setSpatialHashes(std::span<ProximityHash* const> hashes) noexcept {
         spatialHashes_ = hashes;
+        spatialHashesWrite_ = {};
+    }
+    void setSpatialHashes(std::span<ProximityHash* const> read,
+                          std::span<ProximityHash* const> write) noexcept {
+        spatialHashes_ = read;
+        spatialHashesWrite_ = write;
     }
 
     void setSelfId(u64 id) noexcept {
@@ -252,12 +294,20 @@ public:
         return parentRngState_;
     }
 
+    void bindContext(const VMProgramDescriptor& scope, const LayerProgram& layer,
+                     BytecodeExecContext& ctx);
+
+    void finishScope(const BytecodeExecContext& ctx);
+
 private:
     bool runScope(const VMProgramDescriptor& scope, const LayerProgram& layer, IArena& arena,
                   IssueBag& issues);
 
     std::array<std::vector<RegisterValue>, kScopeRegisterBuckets> scopeRegisters_;
-    std::vector<RegisterValue> externals_;
+    std::unique_ptr<ExternalStore> ownExternals_;
+    ExternalStore* externalStore_ = nullptr;
+    std::size_t externalIndex_ = 0U;
+    std::size_t externalCount_ = 0U;
     TFastRandU32 rng_{};
     f32 effectAge_ = 0.0F;
     f32 initSceneTime_ = 0.0F;
@@ -265,6 +315,10 @@ private:
     f32 timeWindowEnd_ = 0.0F;
     f32 timeWindowStart_ = 0.0F;
     Mat4x3 sceneL2W_ = Mat4x3::identity();
+    std::span<const SceneCamera> cameras_;
+    f32 simLod_ = 0.0F;
+    f32 simLodDistanceMin_ = 5.0F;
+    f32 simLodDistanceMax_ = 200.0F;
     std::array<f32, 3> spawnTranslate_{0.0F, 0.0F, 0.0F};
     std::array<f32, 4> spawnQuat_{0.0F, 0.0F, 0.0F, 1.0F};
     std::array<f32, 3> spawnScale_{1.0F, 1.0F, 1.0F};
@@ -282,6 +336,7 @@ private:
     BytecodeTrace* trace_ = nullptr;
     SpawnEventQueue* spawnQueue_ = nullptr;
     std::span<ProximityHash* const> spatialHashes_{};
+    std::span<ProximityHash* const> spatialHashesWrite_{};
     u64 selfId_ = 0U;
     u64 parentSelfId_ = 0U;
     u32 parentRngState_ = 0U;
@@ -292,4 +347,4 @@ private:
     std::size_t lastInstructions_ = 0;
 };
 
-} // namespace whiteout::cornflakes
+}

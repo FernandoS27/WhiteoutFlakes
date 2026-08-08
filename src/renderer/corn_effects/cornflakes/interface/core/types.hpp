@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Short-form fixed-width type aliases used everywhere in cornflakes.
-
 #include <cstdint>
 
 namespace whiteout::cornflakes {
@@ -20,4 +17,4 @@ using i64 = std::int64_t;
 using f32 = float;
 using f64 = double;
 
-} // namespace whiteout::cornflakes
+}

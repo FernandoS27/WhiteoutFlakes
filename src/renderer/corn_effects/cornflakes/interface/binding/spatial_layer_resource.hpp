@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Bound spatial layer resource — proximity-hash backing for closestF3/allocate/insert.
-
 #include <cornflakes/interface/core/types.hpp>
 
 #include <span>
@@ -10,14 +7,12 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief One named payload field carried alongside a spatial-layer entry.
 struct SpatialLayerPayload {
     std::string_view name;
     u32 payloadType = 0;
     u32 payloadFlags = 0;
 };
 
-/// @brief Bound spatial-hash backing layer (e.g. for proximity queries / collision-style lookups).
 struct SpatialLayerResource {
     std::string_view name;
 
@@ -30,4 +25,4 @@ struct SpatialLayerResource {
 const SpatialLayerResource* findSpatialLayerByName(std::span<const SpatialLayerResource> layers,
                                                    std::string_view name) noexcept;
 
-} // namespace whiteout::cornflakes
+}

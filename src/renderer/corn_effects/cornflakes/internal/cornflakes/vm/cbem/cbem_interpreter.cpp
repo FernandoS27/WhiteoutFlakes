@@ -1,5 +1,7 @@
 #include "cbem_internal.hpp"
 
+#include "cbem_core.hpp"
+
 #include <cornflakes/interface/binding/ir_to_cbem_lowerer.hpp>
 #include <cornflakes/core/determinism.hpp>
 #include <cornflakes/diagnostics/issue_codes.hpp>
@@ -53,7 +55,6 @@ Issue vmWarn(u32 code, std::string_view message) noexcept {
     return issue;
 }
 
-namespace {
 bool readConst(const BytecodeExecContext& ctx, u32 slot, u8 bankByte, RegisterValue& out,
                IssueBag& issues) noexcept {
     constexpr std::size_t kSlotBytes = 32U;
@@ -73,14 +74,12 @@ bool readConst(const BytecodeExecContext& ctx, u32 slot, u8 bankByte, RegisterVa
 }
 
 bool isConstPoolHit(const BytecodeExecContext& ctx, const DecodedRegId& d) noexcept {
-
-    if (d.scope != scope::kConstPool && d.scope != scope::kConstFlagged) {
+    if (d.scope != scope::kConstPool) {
         return false;
     }
     constexpr std::size_t kSlotBytes = 32U;
     const std::size_t off = static_cast<std::size_t>(d.localIdx) * kSlotBytes;
     return off + 16U <= ctx.constantsPool.size();
-}
 }
 
 bool readSrc(const BytecodeExecContext& ctx, u32 regId, RegisterValue& out,
@@ -115,8 +114,7 @@ bool readSrc(const BytecodeExecContext& ctx, u32 regId, RegisterValue& out,
 bool writeDst(BytecodeExecContext& ctx, u32 regId, const RegisterValue& v,
               IssueBag& issues) noexcept {
     const auto d = decodeRegId(regId);
-
-    if (isConstPoolHit(ctx, d) || d.scope == scope::kConstFlagged) {
+    if (isConstPoolHit(ctx, d)) {
         issues.push(
             vmFatal(issues::vm::kRegisterOob, "VM: write to constant-pool or input register"));
         return false;
@@ -130,13 +128,14 @@ bool writeDst(BytecodeExecContext& ctx, u32 regId, const RegisterValue& v,
         issues.push(vmFatal(issues::vm::kRegisterOob, "VM: register index out of bounds"));
         return false;
     }
-    bank[d.localIdx] = v;
-    if (bank[d.localIdx].componentCount == 0) {
-        bank[d.localIdx].componentCount = componentCountForBank(d.bank);
+    RegisterValue stored = v;
+    if (stored.componentCount == 0) {
+        stored.componentCount = componentCountForBank(d.bank);
     }
-    if (bank[d.localIdx].typeBank == 0) {
-        bank[d.localIdx].typeBank = d.bank;
+    if (stored.typeBank == 0) {
+        stored.typeBank = d.bank;
     }
+    bank[d.localIdx] = stored;
     return true;
 }
 
@@ -250,37 +249,7 @@ void recordTrace(const CBEMInstruction& ins, BytecodeExecContext& ctx) noexcept 
 
 bool CBEMInterpreter::step(const CBEMInstruction& ins, BytecodeExecContext& ctx,
                            IssueBag& issues) const {
-    auto run = [&]() -> bool {
-        switch (ins.opcode) {
-        case Opcode::Nop:             return execNop(ins, ctx, issues);
-        case Opcode::LoadExternal:    return execLoadExternal(ins, ctx, issues);
-        case Opcode::StoreToExternal: return execStoreToExternal(ins, ctx, issues);
-        case Opcode::Reinterpret:
-        case Opcode::TypeConverter:   return execMove(ins, ctx, issues);
-        case Opcode::VecCtor:         return execVecCtor(ins, ctx, issues);
-        case Opcode::VecSwizzle:      return execVecSwizzle(ins, ctx, issues);
-        case Opcode::MathOp:
-        case Opcode::MathOpCMeta:     return execMathOp(ins, ctx, issues);
-        case Opcode::MathFunc1:       return execMathFunc1(ins, ctx, issues);
-        case Opcode::MathFunc2:       return execMathFunc2(ins, ctx, issues);
-        case Opcode::MathFunc3:       return execMathFunc3(ins, ctx, issues);
-        case Opcode::Select:          return execSelect(ins, ctx, issues);
-        case Opcode::FunctionCall:    return execFunctionCall(ins, ctx, issues);
-        case Opcode::ExternalClear:   return execExternalClear(ins, ctx, issues);
-        case Opcode::Broadcast:       return execBroadcast(ins, ctx, issues);
-        case Opcode::MathOpAdd:       return execBinaryArith(ins, ctx, issues, MathOp::Add);
-        case Opcode::MathOpSub:       return execBinaryArith(ins, ctx, issues, MathOp::Sub);
-        case Opcode::MathOpMul:       return execBinaryArith(ins, ctx, issues, MathOp::Mul);
-        case Opcode::MathOpDiv:       return execBinaryArith(ins, ctx, issues, MathOp::Div);
-        case Opcode::IDivMulInv:      return execIDivMulInv(ins, ctx, issues);
-        case Opcode::Madd:            return execMadd(ins, ctx, issues);
-        case Opcode::FunctionProlog:  return execFunctionProlog(ins, ctx, issues);
-        case Opcode::FunctionEpilog:  return execFunctionEpilog(ins, ctx, issues);
-        }
-        issues.push(vmFatal(issues::vm::kUnknownOpcode, "VM: opcode not in IR or CBEM range"));
-        return false;
-    };
-    const bool ok = run();
+    const bool ok = cbem::step<cbem::ScalarBackend>(ins, ctx, cbem::AlwaysOn{}, issues);
     if (ok) {
         recordTrace(ins, ctx);
     }

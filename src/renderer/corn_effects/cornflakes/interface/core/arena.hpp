@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Bump-allocator arena interface and helpers used for all per-frame / per-bind storage.
-
 #include <cornflakes/interface/core/types.hpp>
 
 #include <cstddef>
@@ -14,7 +11,6 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief Bump-allocator interface. Allocations are valid until the next `reset()`.
 class IArena {
 public:
     IArena() = default;
@@ -31,7 +27,6 @@ public:
     virtual std::size_t capacity() const noexcept = 0;
 };
 
-/// @brief Default `IArena` impl backed by a chain of geometrically-growing chunks.
 class ExpandingArena final : public IArena {
 public:
     static constexpr std::size_t kDefaultFirstChunkBytes = 64 * 1024;
@@ -62,14 +57,12 @@ private:
     std::size_t m_firstChunkBytes;
 };
 
-/// @brief Construct a `T` in arena storage; lifetime ends at the next `reset()`.
 template <typename T, typename... Args>
 T* arenaNew(IArena& arena, Args&&... args) {
     void* mem = arena.allocate(sizeof(T), alignof(T));
     return new (mem) T(std::forward<Args>(args)...);
 }
 
-/// @brief Default-construct an array of `count` `T`s in arena storage.
 template <typename T>
 std::span<T> arenaArray(IArena& arena, std::size_t count) {
     if (count == 0) {
@@ -80,4 +73,4 @@ std::span<T> arenaArray(IArena& arena, std::size_t count) {
     return {typed, count};
 }
 
-} // namespace whiteout::cornflakes
+}

@@ -1,8 +1,6 @@
 #pragma once
 
-/// @file
-/// @brief Bound sampler resources (curves, shapes, event streams) attached to a layer.
-
+#include <cornflakes/interface/asset/vector_field_asset.hpp>
 #include <cornflakes/interface/core/types.hpp>
 
 #include <array>
@@ -11,88 +9,161 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief Discriminator selecting which payload of `SamplerResource` is live.
+struct MeshShapeData;
+
+struct TextureImageData;
+
 enum class SamplerKind : u8 {
     Unknown = 0,
     Curve,
     Shape,
     EventStream,
     Turbulence,
+    Texture,
 };
 
-/// @brief Tabulated curve sampler — times, values, optional Hermite tangents.
 struct SamplerCurve {
     std::span<const f32> times;
     std::span<const f32> values;
     std::span<const f32> tangents;
-    u8 components = 1;       ///< Channel count (1..4); set from asset, not derived from spans.
+    u8 components = 1;
     u32 interpolator = 0;
     bool looped = false;
+
+    bool isProbabilityCurve = false;
+
+    std::span<const f32> cdfTimes;
+    std::span<const f32> cdfValues;
 };
 
-/// @brief Shape kind for `SamplerShape`. Values match the asset enum.
 enum class ShapeType : u32 {
 
     Box = 0,
     Sphere = 1,
-    Cone = 2,
+    ComplexEllipsoid = 2,
     Cylinder = 3,
-    Mesh = 4,
+    Capsule = 4,
+    Cone = 5,
+    Mesh = 6,
 };
 
-/// @brief Spatial shape sampler (cone/box/sphere/cylinder/mesh) with TRS transform.
-///
-/// `eulerOrientation` is stored in DEGREES;
-/// the binder converts to radians before constructing the orientation quat.
+enum class SampleDimensionality : u32 {
+    Vertex = 1,
+    Surface = 2,
+    Volume = 3,
+};
+
 struct SamplerShape {
     ShapeType type = ShapeType::Box;
-    std::array<f32, 3> boxDimensions{};
+    SampleDimensionality dimensionality = SampleDimensionality::Surface;
+    std::array<f32, 3> boxDimensions{0.5F, 0.5F, 0.5F};
     f32 radius = 0.0F;
     f32 innerRadius = 0.0F;
     f32 height = 0.0F;
     bool hemisphere = false;
 
     std::array<f32, 3> position{0.0F, 0.0F, 0.0F};
-    std::array<f32, 3> eulerOrientation{0.0F, 0.0F, 0.0F}; ///< Degrees; converted to radians at bind.
+    std::array<f32, 3> eulerOrientation{0.0F, 0.0F,
+                                        0.0F};
     std::array<f32, 3> nonUniformScale{1.0F, 1.0F, 1.0F};
     bool transformTranslate = false;
     bool transformRotate = false;
+
+    std::string_view meshResource;
+    std::array<f32, 3> meshScale{1.0F, 1.0F, 1.0F};
+    u32 meshSamplingMode = 1U;
+    u32 subMeshIndex = 0U;
+    u32 defaultUvStream = 0U;
+    u32 defaultColorStream = 0U;
+    u32 densityColorStream = 0U;
+    u32 densityChannel = 0U;
+    bool meshHasTetrahedra = false;
+    const MeshShapeData* mesh = nullptr;
 };
 
-/// @brief Discrete event-time list used by EventStream samplers.
 struct SamplerEventStream {
     std::span<const f32> times;
 };
 
-/// @brief Procedural fractal curl-noise turbulence sampler (engine-faithful).
-///
-/// Mirrors `CParticleSamplerDescriptor_Turbulence_Default::Sample @ preview.exe
-/// 0x7ff60a46c5f0`: value-noise base (`CoherentSample*`) hashed through the engine
-/// permutation table, MT-seeded gradients, fBm octaves (`_SetupNoiseSampler @
-/// 0x7ff60a4f3b60`), and a finite-difference curl (FastFakeFlow path, δ=1e-4,
-/// DNorm=5000). `gradients` is precomputed at bind time (256 values); empty → zero field.
-///
-/// **Engine-faithful, NOT yet bit-exact** — see `TURBULENCE_RE_FINDINGS.md` for the
-/// documented gaps (exact MT19937 variant, true-flow analytic curl, RotateBasis time
-/// animation, coordinate remap, several HBO field defaults).
-struct SamplerTurbulence {
-    f32 strength = 1.0F;       ///< Output amplitude.
-    f32 wavelength = 1.0F;     ///< Base spatial scale (large = coarse features).
-    f32 globalScale = 1.0F;
-    f32 lacunarity = 2.0F;     ///< Per-octave frequency multiplier (≥1 → coarser octaves).
-    f32 gain = 0.5F;           ///< Per-octave amplitude multiplier.
-    f32 gainMultiplier = 1.0F; ///< Engine default 1.0 (RE-confirmed).
-    u32 octaves = 1U;          ///< fBm octave count (clamped to 24).
-    u32 interpolator = 0U;     ///< 0=Linear, 1=Quintic, 2=Cubic.
-    u32 seed = 0U;             ///< InitialSeed → MT gradient generation.
-    f32 timeScale = 0.0F;      ///< Animation: rotates the field by time*timeScale+timeBase.
-    f32 timeBase = 0.0F;
-    f32 delta = 1.0e-4F;       ///< FD-curl step (`m_Delta`).
-    f32 dnorm = 5000.0F;       ///< FD-curl normalizer `1/(2·delta)` (`m_DNorm`).
-    std::span<const f32> gradients; ///< 256 MT-seeded value-noise gradients; empty → zero field.
+enum class TurbulenceDataSource : u32 {
+    Procedural = 0,
+    External = 1,
 };
 
-/// @brief One named sampler bound to a layer — the active payload is selected by `kind`.
+enum class VectorFieldInterpolation : u32 {
+    Point = 0,
+    Trilinear = 1,
+    Quadrilinear = 2,
+};
+
+struct SamplerVectorField {
+    std::string_view resource;
+    std::span<const std::byte> data;
+    std::array<u32, 4> dimensions{};
+    std::array<f32, 3> gridScale{};
+    std::array<f32, 3> gridOffset{};
+    std::array<u32, 3> strideL2{};
+    std::array<i32, 3> addrMask{};
+    f32 timeScale = 0.0F;
+    bool wrapTime = true;
+    f32 vecScale = 0.0F;
+    VectorFieldDataType dataType = VectorFieldDataType::Fp32;
+    VectorFieldInterpolation interpolation = VectorFieldInterpolation::Trilinear;
+    bool valid = false;
+};
+
+struct SamplerTurbulence {
+    TurbulenceDataSource dataSource = TurbulenceDataSource::Procedural;
+    SamplerVectorField vectorField;
+
+    f32 strength = 0.1F;
+    f32 wavelength = 0.5F;
+    f32 globalScale = 1.0F;
+    f32 lacunarity = 0.5F;
+    f32 gain = 0.5F;
+    f32 gainMultiplier = 1.0F;
+    u32 octaves = 2U;
+    u32 interpolator = 1U;
+    u32 seed = 1114229502U;
+    f32 timeScale = 0.0F;
+    f32 timeBase = 0.0F;
+    f32 timeRandomVariation = 0.5F;
+    f32 delta = 1.0e-4F;
+    f32 dnorm = 5000.0F;
+    std::span<const f32> gradients;
+    std::span<const f32> rigidBasis;
+    std::span<const f32> spinRate;
+};
+
+enum class TextureGammaSpace : u32 {
+    Linear = 0,
+    SRGB = 1,
+    LinearToSRGB = 2,
+    SRGBToLinear = 3,
+};
+
+enum class TextureDensitySrc : u32 {
+    Red = 0,
+    Green = 1,
+    Blue = 2,
+    Alpha = 3,
+    RgbaAverage = 4,
+};
+
+struct SamplerTexture {
+    std::string_view textureResource;
+    std::string_view atlasDefinition;
+    u32 scriptOutputType = 4U;
+    bool sampleRawValues = true;
+    TextureGammaSpace gammaSpace = TextureGammaSpace::Linear;
+
+    f32 densityPower = 1.0F;
+    TextureDensitySrc densitySrc = TextureDensitySrc::RgbaAverage;
+    std::array<f32, 4> densityRgbaWeights{0.212671F, 0.71516F, 0.072169F, 0.0F};
+
+    const TextureImageData* image = nullptr;
+};
+
 struct SamplerResource {
     std::string_view name;
     SamplerKind kind = SamplerKind::Unknown;
@@ -101,16 +172,20 @@ struct SamplerResource {
     SamplerShape shape;
     SamplerEventStream eventStream;
     SamplerTurbulence turbulence;
+    SamplerTexture texture;
 };
 
-/// @brief Sample channel 0 of `curve` at `t`; returns `defaultValue` when empty.
 f32 evalSamplerCurveScalar(const SamplerCurve& curve, f32 t, f32 defaultValue = 0.0F) noexcept;
 
-/// @brief Sample up to `outLen` channels of `curve` at `t` into `out`.
-/// @return Number of channels written (≤ `outLen`).
 u8 evalSamplerCurveVec(const SamplerCurve& curve, f32 t, f32* out, u8 outLen) noexcept;
+
+f32 evalSamplerCurveCdf(const SamplerCurve& curve, f32 t, f32 defaultValue = 0.0F) noexcept;
 
 const SamplerResource* findSamplerByName(std::span<const SamplerResource> samplers,
                                          std::string_view name) noexcept;
 
-} // namespace whiteout::cornflakes
+u32 samplerBindGeneration() noexcept;
+
+void bumpSamplerBindGeneration() noexcept;
+
+}

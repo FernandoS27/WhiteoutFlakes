@@ -10,7 +10,7 @@
 
 namespace whiteout::cornflakes {
 
-struct CornEffectsInstance {
+struct PopcornInstance {
 
     f32 normal[3]{0.0F, 0.0F, 1.0F};
     f32 _pad0 = 0.0F;
@@ -32,25 +32,25 @@ struct CornEffectsInstance {
     f32 pivot[4]{0.0F, 0.0F, 0.0F, 1.0F};
 };
 
-static_assert(sizeof(CornEffectsInstance) == 128, "CornEffectsInstance layout drift");
+static_assert(sizeof(PopcornInstance) == 128, "PopcornInstance layout drift");
 
-struct CornEffectsAttribDesc {
+struct PopcornAttribDesc {
     u32 location;
     u32 components;
     std::size_t byteOffset;
 };
 
-inline constexpr std::array<CornEffectsAttribDesc, 8> kCornEffectsAttribTable{{
-    {1, 3, offsetof(CornEffectsInstance, normal)},
-    {2, 4, offsetof(CornEffectsInstance, vertColor)},
-    {3, 2, offsetof(CornEffectsInstance, uv0)},
-    {4, 4, offsetof(CornEffectsInstance, modeSlot4)},
-    {5, 4, offsetof(CornEffectsInstance, modeSlot5)},
-    {6, 1, offsetof(CornEffectsInstance, random)},
-    {7, 4, offsetof(CornEffectsInstance, tangent)},
-    {8, 4, offsetof(CornEffectsInstance, pivot)},
+inline constexpr std::array<PopcornAttribDesc, 8> kPopcornAttribTable{{
+    {1, 3, offsetof(PopcornInstance, normal)},
+    {2, 4, offsetof(PopcornInstance, vertColor)},
+    {3, 2, offsetof(PopcornInstance, uv0)},
+    {4, 4, offsetof(PopcornInstance, modeSlot4)},
+    {5, 4, offsetof(PopcornInstance, modeSlot5)},
+    {6, 1, offsetof(PopcornInstance, random)},
+    {7, 4, offsetof(PopcornInstance, tangent)},
+    {8, 4, offsetof(PopcornInstance, pivot)},
 }};
 
-std::span<const std::byte> packCornEffectsInstanceStream(const RenderPacket& packet, IArena& arena);
+std::span<const std::byte> packPopcornInstanceStream(const RenderPacket& packet, IArena& arena);
 
 }

@@ -1,7 +1,8 @@
-#include <cornflakes/interface/binding/external_binding.hpp>
-#include <cornflakes/interface/sim/layer_tick_harness.hpp>
 #include <cornflakes/vm/bytecode_decoder.hpp>
 #include <cornflakes/vm/cbem_interpreter.hpp>
+#include <cornflakes/interface/binding/external_binding.hpp>
+#include <cornflakes/interface/sim/layer_tick_harness.hpp>
+#include <cornflakes/interface/simt/register_census.hpp>
 
 #include <algorithm>
 
@@ -9,10 +10,82 @@ namespace whiteout::cornflakes {
 
 LayerTickHarness::LayerTickHarness() : LayerTickHarness(Config{}) {}
 
-LayerTickHarness::LayerTickHarness(const Config& cfg) : externals_(cfg.externalCount) {
-    for (auto& bank : scopeRegisters_) {
-        bank.resize(cfg.initialRegistersPerScope);
+LayerTickHarness::LayerTickHarness(const Config& cfg) {
+    ownExternals_ = std::make_unique<ExternalStore>();
+    ownExternals_->resize(cfg.externalCount, 1U);
+    externalStore_ = ownExternals_.get();
+    externalIndex_ = 0U;
+    externalCount_ = cfg.externalCount;
+    for (std::size_t b = 0; b < kScopeRegisterBuckets; ++b) {
+        scopeRegisters_[b].resize(cfg.registersPerBank[b]);
     }
+}
+
+std::size_t LayerTickHarness::externalStorageSizeFor(const LayerProgram& layer) noexcept {
+    std::size_t needed = 0;
+    bool sawAnything = false;
+
+    for (const auto* s : layerScopePrograms(layer)) {
+        if (!s->externals.empty()) {
+            sawAnything = true;
+            needed = std::max(needed, s->externals.size());
+            for (const auto& b : s->externals) {
+                needed = std::max(needed, static_cast<std::size_t>(resolveExternalSlot(b)) + 1U);
+            }
+        }
+
+        if (s->decodedInstructions.empty() && !s->cbemBytecode.empty()) {
+            return kFallbackExternalCount;
+        }
+        for (const auto& ins : s->decodedInstructions) {
+            u32 byteSlot = 0;
+            switch (ins.opcode) {
+            case Opcode::LoadExternal:
+            case Opcode::StoreToExternal:
+                if (ins.operandCount < 2) {
+                    continue;
+                }
+                byteSlot = ins.operands[1];
+                break;
+            case Opcode::ExternalClear:
+                if (ins.operandCount < 1) {
+                    continue;
+                }
+                byteSlot = ins.operands[0];
+                break;
+            default:
+                continue;
+            }
+            sawAnything = true;
+            needed = std::max(needed, static_cast<std::size_t>(static_cast<u16>(byteSlot)) + 1U);
+        }
+    }
+
+    if (!sawAnything) {
+        return kFallbackExternalCount;
+    }
+    return std::min(needed, kFallbackExternalCount);
+}
+
+LayerTickHarness::Config LayerTickHarness::layoutFor(const LayerProgram& layer) noexcept {
+    Config cfg;
+    std::array<std::size_t, kScopeRegisterBuckets> perBank{};
+    bool anyCount = false;
+    for (const auto* s : layerScopePrograms(layer)) {
+        for (std::size_t scopeIx = 0; scopeIx < kScopeRegisterBuckets; ++scopeIx) {
+            const std::size_t count =
+                (scopeIx + 1U < s->registerCounts.size()) ? s->registerCounts[scopeIx + 1U] : 0U;
+            if (count > perBank[scopeIx]) {
+                perBank[scopeIx] = count;
+                anyCount = true;
+            }
+        }
+    }
+    if (anyCount) {
+        cfg.registersPerBank = perBank;
+    }
+    cfg.externalCount = externalStorageSizeFor(layer);
+    return cfg;
 }
 
 void LayerTickHarness::resizeForLayer(const LayerProgram& layer) {
@@ -27,6 +100,12 @@ void LayerTickHarness::resizeForLayer(const LayerProgram& layer) {
                 anyCount = true;
             }
         }
+    }
+
+    const std::size_t wantExternals = externalStorageSizeFor(layer);
+    externalCount_ = wantExternals;
+    if (ownExternals_ != nullptr && externalStore_ == ownExternals_.get()) {
+        ownExternals_->resize(wantExternals, 1U);
     }
 
     if (!anyCount) {
@@ -54,12 +133,32 @@ bool LayerTickHarness::runScope(const VMProgramDescriptor& scope, const LayerPro
     }
     lastInstructions_ += instructions.size();
 
-    BytecodeExecContext ctx;
+    static thread_local BytecodeExecContext ctx;
+    bindContext(scope, layer, ctx);
+
+    auto* observer = simt::scopeRunObserver();
+    if (observer != nullptr) {
+        observer->onScopeBegin(layer, scope, ctx);
+    }
+
+    const CBEMInterpreter vm;
+    const auto executed = vm.run(instructions, ctx, issues);
+    lastExecuted_ += executed;
+    if (observer != nullptr) {
+        observer->onScopeEnd(layer, scope, ctx);
+    }
+    finishScope(ctx);
+    return !issues.hasFatal();
+}
+
+void LayerTickHarness::bindContext(const VMProgramDescriptor& scope, const LayerProgram& layer,
+                                   BytecodeExecContext& ctx) {
+    ctx.resetPerScopeRun();
     for (std::size_t s = 0; s < kScopeRegisterBuckets; ++s) {
         ctx.scopeRegisters[s] =
             std::span<RegisterValue>{scopeRegisters_[s].data(), scopeRegisters_[s].size()};
     }
-    ctx.externals = std::span<RegisterValue>{externals_.data(), externals_.size()};
+    ctx.externals = externals();
     ctx.constantsPool = scope.constantsPool;
     ctx.functions = scope.functions;
     ctx.externalBindings = scope.externals;
@@ -69,10 +168,16 @@ bool LayerTickHarness::runScope(const VMProgramDescriptor& scope, const LayerPro
     ctx.rootEventDecl = layer.rootEventDecl;
     ctx.spatialHashes =
         std::span<ProximityHash* const>{spatialHashes_.data(), spatialHashes_.size()};
+    ctx.spatialHashesWrite =
+        std::span<ProximityHash* const>{spatialHashesWrite_.data(), spatialHashesWrite_.size()};
     ctx.rng = &rng_;
     ctx.effectAge = effectAge_;
     ctx.effectIsRunning = effectIsRunning_;
     ctx.sceneL2W = sceneL2W_;
+    ctx.cameras = cameras_;
+    ctx.simLod = simLod_;
+    ctx.simLodDistanceMin = simLodDistanceMin_;
+    ctx.simLodDistanceMax = simLodDistanceMax_;
     ctx.spawnTranslate = spawnTranslate_;
     ctx.spawnQuat = spawnQuat_;
     ctx.spawnScale = spawnScale_;
@@ -94,21 +199,19 @@ bool LayerTickHarness::runScope(const VMProgramDescriptor& scope, const LayerPro
     ctx.spawnOrientationPayloadId = spawnOrientationPayloadId_;
     ctx.spawnFloatSlots = spawnFloatSlots_;
 
-    CBEMInterpreter vm;
-    const auto executed = vm.run(instructions, ctx, issues);
-    lastExecuted_ += executed;
-    if (ctx.selfKillRequested) {
+}
 
+void LayerTickHarness::finishScope(const BytecodeExecContext& ctx) {
+    if (ctx.selfKillRequested) {
         markDead();
     }
-    return !issues.hasFatal();
 }
 
 bool LayerTickHarness::initParticle(const LayerProgram& layer, IArena& arena, IssueBag& issues) {
     for (auto& bank : scopeRegisters_) {
         std::fill(bank.begin(), bank.end(), RegisterValue{});
     }
-    std::fill(externals_.begin(), externals_.end(), RegisterValue{});
+    externals().clear();
 
     for (const auto& attr : layer.attributeDefaults) {
         const auto* hit = findBindingAcrossScopes(layer, attr.name);
@@ -116,16 +219,16 @@ bool LayerTickHarness::initParticle(const LayerProgram& layer, IArena& arena, Is
             continue;
         }
         const u16 slot = resolveExternalSlot(*hit);
-        if (slot >= externals_.size()) {
+        if (slot >= externalCount_) {
             continue;
         }
-        RegisterValue& dst = externals_[slot];
-        dst = RegisterValue{};
+        RegisterValue dst;
         dst.lanes[0] = attr.defaultValue[0];
         dst.lanes[1] = attr.defaultValue[1];
         dst.lanes[2] = attr.defaultValue[2];
         dst.lanes[3] = attr.defaultValue[3];
         dst.componentCount = 4;
+        externals().set(slot, dst);
     }
 
     for (const auto& evt : layer.eventExternals) {
@@ -134,16 +237,16 @@ bool LayerTickHarness::initParticle(const LayerProgram& layer, IArena& arena, Is
             continue;
         }
         const u16 slot = resolveExternalSlot(*hit);
-        if (slot >= externals_.size()) {
+        if (slot >= externalCount_) {
             continue;
         }
-        externals_[slot] = RegisterValue::scalarI(static_cast<i32>(evt.globalEventSlotId));
+        externals().set(slot, RegisterValue::scalarI(static_cast<i32>(evt.globalEventSlotId)));
     }
 
     if (const auto* st = findBindingByName(layer.initProgram.externals, "scene.time")) {
         const u16 slot = resolveExternalSlot(*st);
-        if (slot < externals_.size()) {
-            externals_[slot] = RegisterValue::scalar(initSceneTime_);
+        if (slot < externalCount_) {
+            externals().set(slot, RegisterValue::scalar(initSceneTime_));
         }
     }
 
@@ -160,13 +263,7 @@ bool LayerTickHarness::tick(const LayerProgram& layer, IArena& arena, IssueBag& 
     lastExecuted_ = 0;
     lastInstructions_ = 0;
 
-    if (!layer.timeFixedProgram.cbemBytecode.empty()) {
-        return runScope(layer.timeFixedProgram, layer, arena, issues);
-    }
-    if (!layer.timeVaryingProgram.cbemBytecode.empty()) {
-        return runScope(layer.timeVaryingProgram, layer, arena, issues);
-    }
-    return runScope(layer.physicsProgram, layer, arena, issues);
+    return runScope(layer.evolveProgram(), layer, arena, issues);
 }
 
 }

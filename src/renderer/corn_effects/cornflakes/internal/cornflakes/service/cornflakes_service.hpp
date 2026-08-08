@@ -14,6 +14,9 @@
 namespace whiteout::cornflakes {
 
 class IWorkerPool;
+class IMeshResourceProvider;
+class ITextureResourceProvider;
+class IVectorFieldProvider;
 
 struct ServiceConfig {
     IWorkerPool* workerPool = nullptr;
@@ -21,11 +24,13 @@ struct ServiceConfig {
     TraceLevel traceLevel = TraceLevel::Summary;
     bool strictWar3 = true;
     AssetFormats allowedFormats = AssetFormats::all();
+    IMeshResourceProvider* meshProvider = nullptr;
+    ITextureResourceProvider* textureProvider = nullptr;
+    IVectorFieldProvider* vectorFieldProvider = nullptr;
 };
 
 class CornFlakesService {
 public:
-
     static std::unique_ptr<CornFlakesService> create(const ServiceConfig& cfg);
 
     CornFlakesService() = default;
@@ -49,7 +54,6 @@ public:
                                                   const EventPayload& payload) = 0;
 
     virtual ServiceOutcome<void> tick(f32 dt) = 0;
-
     virtual ServiceOutcome<std::span<const RenderPacket>> collectRenderPackets(FrameId frame) = 0;
 
     virtual DiagnosticsFacade& diagnostics() noexcept = 0;

@@ -39,15 +39,15 @@ void copyVec4(f32 dst[4], const f32* src, std::size_t laneStride, std::size_t pa
 
 }
 
-std::span<const std::byte> packCornEffectsInstanceStream(const RenderPacket& packet, IArena& arena) {
+std::span<const std::byte> packPopcornInstanceStream(const RenderPacket& packet, IArena& arena) {
     const std::size_t particles = packet.particleCount;
     if (particles == 0U) {
         return {};
     }
-    const auto buf = arenaArray<CornEffectsInstance>(arena, particles);
+    const auto buf = arenaArray<PopcornInstance>(arena, particles);
 
     for (std::size_t i = 0; i < particles; ++i) {
-        buf[i] = CornEffectsInstance{};
+        buf[i] = PopcornInstance{};
     }
 
     const f32* posF = slotFloats(packet, RenderSlot::Position, 3U, particles);
@@ -85,7 +85,7 @@ std::span<const std::byte> packCornEffectsInstanceStream(const RenderPacket& pac
     }
 
     return std::span<const std::byte>{reinterpret_cast<const std::byte*>(buf.data()),
-                                      particles * sizeof(CornEffectsInstance)};
+                                      particles * sizeof(PopcornInstance)};
 }
 
 }

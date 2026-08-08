@@ -1,5 +1,6 @@
 #include "binding_internal.hpp"
 
+#include <cornflakes/interface/asset/mesh_provider.hpp>
 #include <cornflakes/interface/binding/effect_binder.hpp>
 #include <cornflakes/core/determinism.hpp>
 
@@ -165,10 +166,10 @@ void loadEventPayloadDecls(const EffectAssetModel& model, const AssetObject& lay
 }
 
 void populateLayerPrograms(const EffectAssetModel& model, const AssetObject& layerCache,
-                           LayerProgram& lp, IArena& arena) {
+                           LayerProgram& lp, IArena& arena, const BindResources& res) {
     loadScopePrograms(model, layerCache, lp, arena);
     loadRenderers(model, layerCache, lp, arena);
-    loadSamplers(model, layerCache, lp, arena);
+    loadSamplers(model, layerCache, lp, arena, res);
     loadSpatialLayers(model, layerCache, lp, arena);
     loadAttributeDefaults(model, layerCache, lp, arena);
     loadEventPayloadDecls(model, layerCache, lp, arena);
@@ -182,14 +183,12 @@ void canonicaliseLayerExternals(LayerProgram& lp) {
                 return idx;
             }
         }
-
         const auto next = static_cast<u16>(nameToCanonical.size() + 1U);
         nameToCanonical.emplace_back(name, next);
         return next;
     };
     auto canonicalisePass = [&](std::span<const ExternalBinding> exts) {
         for (auto& b : exts) {
-
             const_cast<ExternalBinding&>(b).canonicalSlot = canonicalIdxFor(b.name);
         }
     };
@@ -244,7 +243,8 @@ std::vector<std::span<const u32>> loadLayerOwnedEventSlots(const EffectAssetMode
 }
 
 std::optional<LayerProgram> buildLayerFromSlot(const EffectAssetModel& model, u32 slotUid,
-                                                u32 layerId, IArena& arena) {
+                                                u32 layerId, IArena& arena,
+                                                const BindResources& res) {
     const AssetObject* slot = findObjectByUid(model, slotUid);
     if (slot == nullptr) {
         return std::nullopt;
@@ -260,7 +260,7 @@ std::optional<LayerProgram> buildLayerFromSlot(const EffectAssetModel& model, u3
     LayerProgram lp;
     lp.id = LayerId{layerId};
     lp.sourceUid = stableCopy(cache->uid, arena);
-    populateLayerPrograms(model, *cache, lp, arena);
+    populateLayerPrograms(model, *cache, lp, arena, res);
     canonicaliseLayerExternals(lp);
     return lp;
 }
@@ -314,7 +314,8 @@ EventRoutingTable buildEventRoutes(std::span<const EventSlotMetadata> eventSlots
 }
 
 std::span<LayerProgram> bindBakedLayers(const EffectAssetModel& model, const AssetObject& effect,
-                                        IArena& arena, EventRoutingTable& outRouting) {
+                                        IArena& arena, EventRoutingTable& outRouting,
+                                        const BindResources& res) {
     outRouting = {};
 
     const AssetObject* graph = nullptr;
@@ -343,7 +344,11 @@ std::span<LayerProgram> bindBakedLayers(const EffectAssetModel& model, const Ass
         return {};
     }
 
-    const auto eventSlotTable = loadEventSlots(model, fieldLinks(*graph, "EventSlots"), arena);
+    auto eventSlotUids = fieldLinks(*graph, "EventSlots");
+    if (eventSlotUids.empty()) {
+        eventSlotUids = fieldUintArray(*graph, "EventSlots");
+    }
+    const auto eventSlotTable = loadEventSlots(model, eventSlotUids, arena);
     const auto layerOwnedEventSlots = loadLayerOwnedEventSlots(model, layerSlotUids);
 
     std::vector<LayerProgram> built;
@@ -351,7 +356,7 @@ std::span<LayerProgram> bindBakedLayers(const EffectAssetModel& model, const Ass
 
     u32 nextLayerId = 0;
     for (std::size_t i = 0; i < layerSlotUids.size(); ++i) {
-        auto lp = buildLayerFromSlot(model, layerSlotUids[i], nextLayerId, arena);
+        auto lp = buildLayerFromSlot(model, layerSlotUids[i], nextLayerId, arena, res);
         if (!lp) {
             continue;
         }
@@ -407,7 +412,8 @@ std::span<LayerProgram> bindNodeGraphLayers(const EffectAssetModel& model, IAren
 }
 
 std::optional<EffectExecutionPlan> EffectBinder::bind(const EffectAssetModel& model, EffectId id,
-                                                      IArena& planArena, IssueBag&) const {
+                                                      IArena& planArena, IssueBag& issues) const {
+    const BindResources res{m_meshProvider, m_textureProvider, m_vectorFieldProvider, &issues};
     EffectExecutionPlan plan;
     plan.id = id;
     plan.version = model.version;
@@ -419,7 +425,8 @@ std::optional<EffectExecutionPlan> EffectBinder::bind(const EffectAssetModel& mo
 
     if (const AssetObject* effect = findRootEffect(model)) {
         EventRoutingTable routing;
-        if (auto baked = bindBakedLayers(model, *effect, planArena, routing); !baked.empty()) {
+        if (auto baked = bindBakedLayers(model, *effect, planArena, routing, res);
+            !baked.empty()) {
             plan.layers = baked;
             plan.eventRouting = routing;
             return plan;

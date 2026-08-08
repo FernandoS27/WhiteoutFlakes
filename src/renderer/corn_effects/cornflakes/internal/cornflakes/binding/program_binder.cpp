@@ -1,8 +1,10 @@
 #include "binding_internal.hpp"
 
-#include <cornflakes/interface/binding/effect_binder.hpp>
 #include <cornflakes/core/determinism.hpp>
 #include <cornflakes/vm/bytecode_decoder.hpp>
+#include <cornflakes/interface/binding/effect_binder.hpp>
+#include <cornflakes/vm/cbem/cbem_internal.hpp>
+#include <cornflakes/interface/simt/scratch_validator.hpp>
 
 #include <cstring>
 
@@ -28,6 +30,7 @@ VMProgramDescriptor descriptorFromBlob(const EffectAssetModel& model, const Asse
         const auto decoded = decodeBytecodeStream(d.cbemBytecode, arena, decodeIssues);
         if (!decodeIssues.hasFatal()) {
             d.decodedInstructions = decoded.instructions;
+            simt::checkBoundProgram(d.decodedInstructions);
         }
     }
     if (!parsed->constants.empty()) {
@@ -38,7 +41,6 @@ VMProgramDescriptor descriptorFromBlob(const EffectAssetModel& model, const Asse
     d.registerCounts = parsed->registerCounts;
 
     if (schema == HboSchemaVersion::V2_9) {
-
         const auto names = fieldStringArray(blob, "RuntimeExternalNames");
         const auto meta = fieldUintArray(blob, "RuntimeExternalsBlob");
         constexpr std::size_t kWordsPerExternal = 5U;
@@ -73,6 +75,7 @@ VMProgramDescriptor descriptorFromBlob(const EffectAssetModel& model, const Asse
                 FunctionBinding& f = fnArr[written++];
                 f.slot = static_cast<u16>(i);
                 f.symbolName = stableCopy(calls[i], arena);
+                f.canonicalName = canonicalizeSymbol(f.symbolName);
                 f.symbolSlot = 0xFFFFFFFFU;
                 f.traits = 0U;
             }
@@ -116,6 +119,7 @@ VMProgramDescriptor descriptorFromBlob(const EffectAssetModel& model, const Asse
             FunctionBinding& f = fnArr[written++];
             f.slot = static_cast<u16>(i);
             f.symbolName = stableCopy(view->symbolName, arena);
+            f.canonicalName = canonicalizeSymbol(f.symbolName);
             f.symbolSlot = view->symbolSlot;
             f.traits = view->traits;
         }
@@ -130,7 +134,6 @@ VMProgramDescriptor descriptorFromBlob(const EffectAssetModel& model, const Asse
 
 void loadScopePrograms(const EffectAssetModel& model, const AssetObject& layerCache,
                        LayerProgram& lp, IArena& arena) {
-
     const auto applyBlob = [&](u32 blobUid) {
         const AssetObject* blob = findObjectByUid(model, blobUid);
         if (blob == nullptr || blob->type != "CCompilerBlobCache") {
@@ -163,16 +166,13 @@ void loadScopePrograms(const EffectAssetModel& model, const AssetObject& layerCa
     };
 
     if (schemaForVersion(model.version.major, model.version.minor) == HboSchemaVersion::V2_9) {
-
         for (const u32 blobUid : fieldLinks(layerCache, "BlobCache_Backends")) {
             applyBlob(blobUid);
         }
     } else {
-
         for (const u32 blobUid : fieldLinks(layerCache, "BlobCache_IR_TimeFixed")) {
             applyBlob(blobUid);
         }
-
         if (const auto tvUid = fieldLink(layerCache, "BlobCache_IR_TimeVarying")) {
             if (const AssetObject* blob = findObjectByUid(model, *tvUid);
                 blob != nullptr && blob->type == "CCompilerBlobCache") {
@@ -181,7 +181,7 @@ void loadScopePrograms(const EffectAssetModel& model, const AssetObject& layerCa
         }
     }
 
-    lp.program = lp.timeFixedProgram;
+    lp.program = lp.evolveProgram();
 }
 
 }

@@ -51,7 +51,14 @@ void CornEffectsService::AddCornEmitter(ActorId model, i32 emitterId,
     emitter->gameToCornEffectsScale_ = gameToCornEffectsScale_;
     emitter->SetBackendInit(backendInit_);
     emitter->SetFrameArena(&frameArena_);
+    emitter->SetResourceProviders(&meshProvider_, &textureProvider_, &meshProvider_);
     emitters_[{model, emitterId}] = std::move(emitter);
+}
+
+void CornEffectsService::SetContentProvider(io::IContentProvider* content) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    meshProvider_.SetContentProvider(content);
+    textureProvider_.SetContentProvider(content);
 }
 
 void CornEffectsService::SetBackendInit(const std::optional<CornEffectsGfxBackend::Init>& init) {

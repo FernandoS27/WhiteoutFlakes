@@ -250,7 +250,6 @@ std::span<const FieldRaw> decodeObjectFields(const HandlerDef* handler, const st
             raw.stringValue =
                 resolveStringField(fd.type, body, valueStart, bodyEnd, strings, arena);
         } else if (fd.type == "string[]" || fd.type == "string_unicode[]") {
-
             const u32 count = readU32Le(body + valueStart);
             const auto out = arenaArray<std::string_view>(arena, count);
             for (u32 e = 0; e < count; ++e) {

@@ -15,6 +15,9 @@ struct EffectAssetModel;
 class EffectRuntime;
 class ExpandingArena;
 class IArena;
+class IMeshResourceProvider;
+class ITextureResourceProvider;
+class IVectorFieldProvider;
 struct Mat4x3;
 } // namespace whiteout::cornflakes
 
@@ -112,6 +115,15 @@ public:
     void SetFrameArena(::whiteout::cornflakes::IArena* arena) {
         frameArena_ = arena;
     }
+    // Sampler-resource hooks, consulted once at bind time. Owned by the
+    // service, which outlives every emitter it holds.
+    void SetResourceProviders(::whiteout::cornflakes::IMeshResourceProvider* mesh,
+                              ::whiteout::cornflakes::ITextureResourceProvider* texture,
+                              ::whiteout::cornflakes::IVectorFieldProvider* vectorField) {
+        meshProvider_ = mesh;
+        textureProvider_ = texture;
+        vectorFieldProvider_ = vectorField;
+    }
 
 private:
     bool TrySpawn();
@@ -180,6 +192,9 @@ private:
     bool wasActive_ = false;
 
     ::whiteout::cornflakes::IArena* frameArena_ = nullptr;
+    ::whiteout::cornflakes::IMeshResourceProvider* meshProvider_ = nullptr;
+    ::whiteout::cornflakes::ITextureResourceProvider* textureProvider_ = nullptr;
+    ::whiteout::cornflakes::IVectorFieldProvider* vectorFieldProvider_ = nullptr;
 
     std::optional<CornEffectsGfxBackend::Init> backendInit_;
     CornEffectsFrameInputs frameInputs_;

@@ -91,15 +91,15 @@ constexpr std::array<i32, 256> kFastNoisePerm = {
 };
 
 constexpr Float3 kPotentialOffset0{0.0F, 0.0F, 0.0F};
-constexpr Float3 kPotentialOffset1{31.416F, 47.853F, 12.793F};
-constexpr Float3 kPotentialOffset2{-42.137F, 17.310F, 73.911F};
+constexpr Float3 kPotentialOffset1{31.416F, 47.853001F, 12.793F};
+constexpr Float3 kPotentialOffset2{-233.145F, -113.408F, -185.31F};
 
 f32 fadeT(f32 t, u32 interp) noexcept {
     switch (interp) {
     case 1U:
-        return ((6.0F * t - 15.0F) * t + 10.0F) * t * t * t;
-    case 2U:
         return t * t * (3.0F - 2.0F * t);
+    case 2U:
+        return ((6.0F * t - 15.0F) * t + 10.0F) * t * t * t;
     default:
         return t;
     }
@@ -142,22 +142,23 @@ f32 coherentNoise(Float3 p, std::span<const f32> grad, u32 interp) noexcept {
     return y0v + w * (y1v - y0v);
 }
 
-f32 fbmPotential(const SamplerTurbulence& t, Float3 p, Float3 offset) noexcept {
-    f32 v6 = t.globalScale * t.wavelength;
-    if (!(v6 > 0.0F) && !(v6 < 0.0F)) {
-        v6 = 1.0e-7F;
+struct Octave {
+    f32 invFreq;
+    f32 amp;
+};
+
+inline constexpr std::size_t kMaxOctaves = 24;
+
+u32 buildOctaves(const SamplerTurbulence& t, std::array<Octave, kMaxOctaves>& out) noexcept {
+    f32 wavelength = t.globalScale * t.wavelength;
+    if (!(wavelength > 0.0F) && !(wavelength < 0.0F)) {
+        wavelength = 1.0e-7F;
     }
     const u32 octaves = std::max(1U, t.octaves);
     const f32 lac =
-        std::max(t.lacunarity, std::pow(1.0e-7F / v6, 1.0F / static_cast<f32>(octaves)));
+        std::max(t.lacunarity, std::pow(1.0e-7F / wavelength, 1.0F / static_cast<f32>(octaves)));
     const f32 g = t.gain * t.gainMultiplier;
     f32 amp = t.globalScale * t.strength;
-
-    const auto noiseAt = [&](f32 invFreq) -> f32 {
-        const Float3 q{invFreq * p.x + offset.x, invFreq * p.y + offset.y,
-                       invFreq * p.z + offset.z};
-        return coherentNoise(q, t.gradients, t.interpolator);
-    };
 
     if (lac == 1.0F || g == 0.0F) {
         f32 ampSum = 0.0F;
@@ -166,65 +167,105 @@ f32 fbmPotential(const SamplerTurbulence& t, Float3 p, Float3 offset) noexcept {
             ampSum += a;
             a *= g;
         }
-        return ampSum * noiseAt(1.0F / v6);
+        out[0] = Octave{1.0F / wavelength, ampSum};
+        return 1U;
     }
 
-    const u32 count = std::min(octaves, 24U);
-    f32 sum = 0.0F;
+    const u32 count = std::min(octaves, static_cast<u32>(kMaxOctaves));
     for (u32 i = 0; i < count; ++i) {
-        sum += amp * noiseAt(1.0F / v6);
-        v6 *= lac;
+        out[i] = Octave{1.0F / wavelength, amp};
+        wavelength *= lac;
         amp *= g;
     }
-    return sum;
+    return count;
 }
 
-Float3 vectorPotential(const SamplerTurbulence& t, Float3 p) noexcept {
-    return Float3{fbmPotential(t, p, kPotentialOffset0), fbmPotential(t, p, kPotentialOffset1),
-                  fbmPotential(t, p, kPotentialOffset2)};
+Float3 noiseGradient(Float3 s, std::span<const f32> grad, u32 interp, f32 delta,
+                     f32 dnorm) noexcept {
+    const f32 d = delta;
+    const f32 n = dnorm;
+    return Float3{
+        (coherentNoise(Float3{s.x + d, s.y, s.z}, grad, interp) -
+         coherentNoise(Float3{s.x - d, s.y, s.z}, grad, interp)) *
+            n,
+        (coherentNoise(Float3{s.x, s.y + d, s.z}, grad, interp) -
+         coherentNoise(Float3{s.x, s.y - d, s.z}, grad, interp)) *
+            n,
+        (coherentNoise(Float3{s.x, s.y, s.z + d}, grad, interp) -
+         coherentNoise(Float3{s.x, s.y, s.z - d}, grad, interp)) *
+            n,
+    };
 }
 
 }
 
-void generateTurbulenceGradients(u32 seed, std::span<f32> out) noexcept {
+void generateTurbulenceBasis(u32 seed, f32 timeRandomVariation, std::span<f32> rigidBasis,
+                             std::span<f32> spinRate) noexcept {
+    constexpr f32 kTau = 6.2831853071795864F;
+    constexpr f32 kPi = 3.1415926535897932F;
+    const bool uniformSpin = timeRandomVariation < 1.0e-5F;
 
     std::mt19937 mt(seed);
-    for (f32& gradient : out) {
-        const u32 r = mt() >> 8U;
-        gradient = static_cast<f32>(r) * (2.0F / 16777216.0F) - 1.0F;
+    const auto next01 = [&mt]() noexcept {
+        return static_cast<f32>(mt() >> 8U) * (1.0F / 16777216.0F);
+    };
+    for (std::size_t i = 0; i < rigidBasis.size(); ++i) {
+        rigidBasis[i] = next01() * kTau;
+        if (i < spinRate.size()) {
+            spinRate[i] =
+                uniformSpin ? kTau : kTau + ((next01() * 2.0F) - 1.0F) * timeRandomVariation * kPi;
+        }
     }
 }
 
-Float3 sampleTurbulenceVelocity(const SamplerTurbulence& t, Float3 pos, f32 time) noexcept {
+void rotateTurbulenceBasis(std::span<const f32> rigidBasis, std::span<const f32> spinRate,
+                           f32 rotation, std::span<f32> out) noexcept {
+    const std::size_t n = std::min({rigidBasis.size(), spinRate.size(), out.size()});
+    for (std::size_t i = 0; i < n; ++i) {
+        out[i] = std::sin(rigidBasis[i] + rotation * spinRate[i]);
+    }
+}
+
+Float3 sampleTurbulenceVelocity(const SamplerTurbulence& t, Float3 posWorld, f32 time) noexcept {
     if (t.gradients.empty()) {
         return Float3{0.0F, 0.0F, 0.0F};
     }
 
-    Float3 p = pos;
-    const f32 angle = time * t.timeScale + t.timeBase;
-    if (angle != 0.0F) {
-        const f32 c = std::cos(angle);
-        const f32 s = std::sin(angle);
-        p = Float3{c * pos.x - s * pos.y, s * pos.x + c * pos.y, pos.z};
+    const Float3 pos{posWorld.x, posWorld.z, -posWorld.y};
+
+    const Float3 p = pos;
+    const f32 rotation = time * t.timeScale + t.timeBase;
+    std::span<const f32> grad = t.gradients;
+    std::array<f32, kTurbulenceGradientCount> rotated{};
+    if (rotation != 0.0F && !t.rigidBasis.empty() && !t.spinRate.empty()) {
+        rotateTurbulenceBasis(t.rigidBasis, t.spinRate, rotation, rotated);
+        grad = std::span<const f32>{rotated.data(), rotated.size()};
     }
 
-    const f32 d = t.delta;
-    const f32 n = t.dnorm;
-    const Float3 dxP = vectorPotential(t, Float3{p.x + d, p.y, p.z});
-    const Float3 dxM = vectorPotential(t, Float3{p.x - d, p.y, p.z});
-    const Float3 dyP = vectorPotential(t, Float3{p.x, p.y + d, p.z});
-    const Float3 dyM = vectorPotential(t, Float3{p.x, p.y - d, p.z});
-    const Float3 dzP = vectorPotential(t, Float3{p.x, p.y, p.z + d});
-    const Float3 dzM = vectorPotential(t, Float3{p.x, p.y, p.z - d});
+    std::array<Octave, kMaxOctaves> oct{};
+    const u32 count = buildOctaves(t, oct);
 
-    const f32 dPyx = (dxP.y - dxM.y) * n;
-    const f32 dPzx = (dxP.z - dxM.z) * n;
-    const f32 dPxy = (dyP.x - dyM.x) * n;
-    const f32 dPzy = (dyP.z - dyM.z) * n;
-    const f32 dPxz = (dzP.x - dzM.x) * n;
-    const f32 dPyz = (dzP.y - dzM.y) * n;
+    Float3 dPsiX{0.0F, 0.0F, 0.0F};
+    Float3 dPsiY{0.0F, 0.0F, 0.0F};
+    Float3 dPsiZ{0.0F, 0.0F, 0.0F};
+    for (u32 i = 0; i < count; ++i) {
+        const f32 f = oct[i].invFreq;
+        const f32 a = oct[i].amp;
+        const auto accumulate = [&](Float3 offset, Float3& dst) noexcept {
+            const Float3 s{(f * p.x) + offset.x, (f * p.y) + offset.y, (f * p.z) + offset.z};
+            const Float3 g3 = noiseGradient(s, grad, t.interpolator, t.delta, t.dnorm);
+            dst.x += a * g3.x;
+            dst.y += a * g3.y;
+            dst.z += a * g3.z;
+        };
+        accumulate(kPotentialOffset0, dPsiX);
+        accumulate(kPotentialOffset1, dPsiY);
+        accumulate(kPotentialOffset2, dPsiZ);
+    }
 
-    return Float3{dPzy - dPyz, dPxz - dPzx, dPyx - dPxy};
+    const Float3 curl{dPsiZ.y - dPsiY.z, dPsiX.z - dPsiZ.x, dPsiY.x - dPsiX.y};
+
+    return Float3{curl.x, -curl.z, curl.y};
 }
 
 }

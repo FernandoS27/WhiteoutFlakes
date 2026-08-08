@@ -318,7 +318,8 @@ bool CornEffectsEmitter::TrySpawn() {
 
     ::whiteout::cornflakes::IssueBag issues;
     auto rt = std::make_unique<::whiteout::cornflakes::EffectRuntime>(
-        *assetModel_, NextEffectId(), *bindArena, *frameArena_, issues);
+        *assetModel_, NextEffectId(), *bindArena, *frameArena_, issues, meshProvider_,
+        textureProvider_, vectorFieldProvider_);
     if (!rt->isValid()) {
         std::fprintf(stderr, "[corn_fx] ERR: TrySpawn '%s' produced invalid runtime:\n",
                      pkbPath_.c_str());
@@ -328,6 +329,15 @@ bool CornEffectsEmitter::TrySpawn() {
                          (int)iss.message.size(), iss.message.data());
         }
         return false;
+    }
+
+    // Run every layer through the 32-lane SIMT interpreter. Selection is
+    // per-layer and must land before the first tick, since it also switches the
+    // pool over to planar registers. Layers whose evolve program has side
+    // effects the packet model can't order (spatial inserts) detect that and
+    // fall back to the scalar interpreter on their own.
+    for (size_t i = 0; i < rt->layerCount(); ++i) {
+        rt->setLayerModel(i, ::whiteout::cornflakes::EffectRuntime::LayerModel::ModelB);
     }
 
     if (const auto* plan = rt->plan()) {

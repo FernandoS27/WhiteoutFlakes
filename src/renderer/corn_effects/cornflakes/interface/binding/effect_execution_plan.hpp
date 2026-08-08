@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Top-level bound plan: layers + effect-wide tables (externals, events, payloads).
-
 #include <cornflakes/interface/asset/effect_asset_model.hpp>
 #include <cornflakes/interface/binding/layer_program.hpp>
 #include <cornflakes/interface/binding/tables.hpp>
@@ -12,7 +9,6 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief Effect-wide bound plan; spans into the bind arena owned by the binder caller.
 struct EffectExecutionPlan {
     EffectId id;
     AssetVersion version;
@@ -24,4 +20,4 @@ struct EffectExecutionPlan {
     PayloadElementViewTable payloadViews;
 };
 
-} // namespace whiteout::cornflakes
+}

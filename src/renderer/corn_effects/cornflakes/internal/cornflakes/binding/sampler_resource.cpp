@@ -1,5 +1,7 @@
 #include <cornflakes/interface/binding/sampler_resource.hpp>
 
+#include <atomic>
+
 #include <algorithm>
 
 namespace whiteout::cornflakes {
@@ -54,7 +56,6 @@ KeyHit locateKey(std::span<const f32> times, f32 t) noexcept {
             return {KeyRegion::Inside, i, u};
         }
     }
-
     return {KeyRegion::AfterLast, times.size() - 1U, 0.0F};
 }
 
@@ -143,6 +144,38 @@ u8 evalSamplerCurveVec(const SamplerCurve& curve, f32 t, f32* out, u8 outLen) no
     }
     }
     return 0;
+}
+
+f32 evalSamplerCurveCdf(const SamplerCurve& curve, f32 t, f32 defaultValue) noexcept {
+    if (curve.cdfTimes.empty() || curve.cdfValues.size() < curve.cdfTimes.size()) {
+        return defaultValue;
+    }
+    const KeyHit hit = locateKey(curve.cdfTimes, t);
+    switch (hit.kind) {
+    case KeyRegion::BeforeFirst:
+        return curve.cdfValues.front();
+    case KeyRegion::AfterLast:
+        return curve.cdfValues.back();
+    case KeyRegion::Inside: {
+        const std::size_t i = hit.upperKey;
+        const f32 v0 = curve.cdfValues[i - 1];
+        const f32 v1 = curve.cdfValues[i];
+        return v0 + (v1 - v0) * hit.u;
+    }
+    }
+    return defaultValue;
+}
+
+namespace {
+std::atomic<u32> g_samplerBindGeneration{1U};
+}
+
+u32 samplerBindGeneration() noexcept {
+    return g_samplerBindGeneration.load(std::memory_order_relaxed);
+}
+
+void bumpSamplerBindGeneration() noexcept {
+    g_samplerBindGeneration.fetch_add(1U, std::memory_order_relaxed);
 }
 
 const SamplerResource* findSamplerByName(std::span<const SamplerResource> samplers,

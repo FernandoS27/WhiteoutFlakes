@@ -10,6 +10,18 @@
 
 namespace whiteout::cornflakes {
 
+class IMeshResourceProvider;
+class ITextureResourceProvider;
+class IVectorFieldProvider;
+class IssueBag;
+
+struct BindResources {
+    IMeshResourceProvider* meshes = nullptr;
+    ITextureResourceProvider* textures = nullptr;
+    IVectorFieldProvider* vectorFields = nullptr;
+    IssueBag* issues = nullptr;
+};
+
 std::string_view stableCopy(std::string_view src, IArena& arena);
 
 void loadScopePrograms(const EffectAssetModel& model, const AssetObject& layerCache,
@@ -19,6 +31,6 @@ void loadRenderers(const EffectAssetModel& model, const AssetObject& layerCache,
                    IArena& arena);
 
 void loadSamplers(const EffectAssetModel& model, const AssetObject& layerCache, LayerProgram& lp,
-                  IArena& arena);
+                  IArena& arena, const BindResources& res);
 
 }

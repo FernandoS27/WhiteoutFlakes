@@ -180,7 +180,6 @@ std::optional<BlobView> parseBlob(const AssetObject& blob, HboSchemaVersion sche
     if (body.size() < 36U) {
         return std::nullopt;
     }
-
     BlobView v;
     std::memcpy(&v.reserved0, body.data() + 0, sizeof(u32));
     std::memcpy(&v.reserved1, body.data() + 4, sizeof(u32));

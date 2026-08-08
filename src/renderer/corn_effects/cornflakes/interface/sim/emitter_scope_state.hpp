@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Owned per-scope register storage shared across an emitter's particles for spawn-time evaluation.
-
 #include <cornflakes/interface/vm/bytecode_exec_context.hpp>
 #include <cornflakes/interface/vm/register_value.hpp>
 
@@ -13,7 +10,6 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief Owned per-scope register vectors + externals, with span-views for the VM context.
 struct EmitterScopeState {
 
     std::array<std::vector<RegisterValue>, kScopeRegisterBuckets> registers;
@@ -29,4 +25,4 @@ struct EmitterScopeState {
     }
 };
 
-} // namespace whiteout::cornflakes
+}

@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Issue/Severity/Category model and the `IssueBag` collector used everywhere as out-param.
-
 #include <cornflakes/interface/core/types.hpp>
 
 #include <cstddef>
@@ -12,7 +9,6 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief Diagnostic severity. `Fatal` aborts the operation that pushed it.
 enum class Severity : u8 {
     Info,
     Warning,
@@ -20,7 +16,6 @@ enum class Severity : u8 {
     Fatal,
 };
 
-/// @brief Subsystem source of an `Issue`. Used for filtering and code-namespacing.
 enum class Category : u8 {
     Asset,
     Binding,
@@ -36,7 +31,6 @@ enum class Category : u8 {
     Core,
 };
 
-/// @brief Optional structured context attached to every `Issue` for triage.
 struct IssueContext {
     u64 effectId = 0;
     u64 emitterId = 0;
@@ -47,7 +41,6 @@ struct IssueContext {
     f32 timeWindowEnd = 0.0F;
 };
 
-/// @brief One diagnostic record. `code` is namespaced by `category` (see issue_codes.hpp).
 struct Issue {
     Severity severity = Severity::Info;
     Category category = Category::Core;
@@ -56,7 +49,6 @@ struct Issue {
     IssueContext context;
 };
 
-/// @brief Append-only sink for diagnostics; callers pass one in by reference.
 class IssueBag {
 public:
     IssueBag() = default;
@@ -77,4 +69,4 @@ private:
     u32 m_fatalCount = 0;
 };
 
-} // namespace whiteout::cornflakes
+}

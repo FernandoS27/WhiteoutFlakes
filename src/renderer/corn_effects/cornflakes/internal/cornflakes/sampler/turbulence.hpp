@@ -18,8 +18,12 @@ f32 sampleTurbulence3D(const TurbulenceSampler& t, Float3 pos) noexcept;
 
 inline constexpr std::size_t kTurbulenceGradientCount = 256;
 
-void generateTurbulenceGradients(u32 seed, std::span<f32> out) noexcept;
+void generateTurbulenceBasis(u32 seed, f32 timeRandomVariation, std::span<f32> rigidBasis,
+                             std::span<f32> spinRate) noexcept;
 
-Float3 sampleTurbulenceVelocity(const SamplerTurbulence& t, Float3 pos, f32 time) noexcept;
+void rotateTurbulenceBasis(std::span<const f32> rigidBasis, std::span<const f32> spinRate,
+                           f32 rotation, std::span<f32> out) noexcept;
+
+Float3 sampleTurbulenceVelocity(const SamplerTurbulence& t, Float3 posWorld, f32 time) noexcept;
 
 }

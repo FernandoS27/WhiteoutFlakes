@@ -103,7 +103,7 @@ u32 computePsInner(const LayerRendererFlags& flags, FogMode fog, RenderPass pass
 
 }
 
-ShaderPermKey classifyCornFxPerm(const LayerRendererFlags& flags, FogMode fog,
+ShaderPermKey classifyPopcornPerm(const LayerRendererFlags& flags, FogMode fog,
                                   RenderPass pass) noexcept {
     const auto outer = resolveOuter(flags, pass);
     const u32 outerKey = outer.modeIdx * 3U + outer.uvVariant;

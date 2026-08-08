@@ -1,8 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Per-frame camera/lighting/fog parameters consumed by render backends.
-
 #include <cornflakes/interface/core/types.hpp>
 #include <cornflakes/interface/vm/bytecode_exec_context.hpp>
 
@@ -10,7 +7,6 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief Row-major 4x4 matrix used for view/projection.
 struct Mat4 {
     std::array<f32, 16> m{
         1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F,
@@ -21,7 +17,6 @@ struct Mat4 {
     }
 };
 
-/// @brief Per-light constants packed for shader upload.
 struct ShaderLight {
     std::array<f32, 3> ambient{};
     f32 _pad0 = 0.0F;
@@ -32,7 +27,6 @@ struct ShaderLight {
     std::array<f32, 4> _pad2{};
 };
 
-/// @brief Fog formula selector.
 enum class FogMode : u8 {
     None = 0,
     Linear = 1,
@@ -40,7 +34,6 @@ enum class FogMode : u8 {
     ExpSq = 3,
 };
 
-/// @brief Per-frame view/projection/fog/lighting bundle handed to render backends.
 struct ViewParams {
 
     Mat4 view = Mat4::identity();
@@ -62,4 +55,4 @@ struct ViewParams {
     f32 softParticlesScale = 0.0F;
 };
 
-} // namespace whiteout::cornflakes
+}

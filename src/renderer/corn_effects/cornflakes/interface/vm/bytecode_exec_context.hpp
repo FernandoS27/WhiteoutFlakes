@@ -1,12 +1,5 @@
 #pragma once
 
-/// @file
-/// @brief Per-execution VM state — register banks, externals, samplers, payload scratch.
-///
-/// `BytecodeExecContext` is the union of "everything the VM might touch while
-/// executing one scope of one particle". `LayerTickHarness` builds one of these
-/// each tick by aliasing into its owned register/external buffers.
-
 #include <cornflakes/interface/binding/event_payload_decl.hpp>
 #include <cornflakes/interface/binding/external_binding.hpp>
 #include <cornflakes/interface/binding/sampler_resource.hpp>
@@ -16,6 +9,7 @@
 #include <cornflakes/interface/sim/proximity_hash.hpp>
 #include <cornflakes/interface/sim/spawn_event.hpp>
 #include <cornflakes/interface/vm/bytecode_trace.hpp>
+#include <cornflakes/interface/sim/external_store.hpp>
 #include <cornflakes/interface/vm/register_value.hpp>
 
 #include <array>
@@ -24,7 +18,6 @@
 
 namespace whiteout::cornflakes {
 
-/// @brief Affine 3x4 transform (row-major) used for scene-local L2W transforms.
 struct Mat4x3 {
     f32 m[3][4]{
         {1.0F, 0.0F, 0.0F, 0.0F},
@@ -36,13 +29,11 @@ struct Mat4x3 {
         return Mat4x3{};
     }
 
-    /// @brief Apply as a point transform (includes translation).
     constexpr void apply(const f32 in[3], f32 out[3]) const noexcept {
         for (int i = 0; i < 3; ++i) {
             out[i] = m[i][0] * in[0] + m[i][1] * in[1] + m[i][2] * in[2] + m[i][3];
         }
     }
-    /// @brief Apply as a direction transform (translation skipped).
     constexpr void applyDirection(const f32 in[3], f32 out[3]) const noexcept {
         for (int i = 0; i < 3; ++i) {
             out[i] = m[i][0] * in[0] + m[i][1] * in[1] + m[i][2] * in[2];
@@ -50,26 +41,45 @@ struct Mat4x3 {
     }
 };
 
-/// @brief Number of scope register banks (init/physics/timeFixed/timeVarying).
 inline constexpr std::size_t kScopeRegisterBuckets = 4;
 
-/// @brief Aliased view of all per-execution state the VM may read/write.
+struct SceneCamera {
+    std::array<f32, 3> position{0.0F, 0.0F, 0.0F};
+    std::array<i32, 2> resolution{1, 1};
+    std::array<std::array<f32, 3>, 3> basis{
+        std::array<f32, 3>{1.0F, 0.0F, 0.0F},
+        std::array<f32, 3>{0.0F, 1.0F, 0.0F},
+        std::array<f32, 3>{0.0F, 0.0F, 1.0F},
+    };
+
+    std::array<std::array<f32, 4>, 6> frustum{};
+    bool hasFrustum = false;
+
+    f32 lodBias = 0.0F;
+};
+
 struct BytecodeExecContext {
     std::array<std::span<RegisterValue>, kScopeRegisterBuckets> scopeRegisters;
-    std::span<RegisterValue> externals;
+    ExternalView externals;
     std::span<const std::byte> constantsPool;
     std::span<const FunctionBinding> functions;
     std::span<const ExternalBinding> externalBindings;
     std::span<const SamplerResource> samplers;
     std::span<const SpatialLayerResource> spatialLayers;
 
-    /// Payload decls for name-matched payload elements. `kickedEventDecls` names the slots of
-    /// events this layer emits (appendPayload); `rootEventDecl` names the elements of the event
-    /// that spawned this layer (extractPayloadElement). See `event_payload_decl.hpp`.
     std::span<const KickedEventPayloadDecl> kickedEventDecls;
     std::span<const EventPayloadElement> rootEventDecl;
 
     std::span<ProximityHash* const> spatialHashes;
+    std::span<ProximityHash* const> spatialHashesWrite;
+
+    std::span<const SceneCamera> cameras;
+
+    f32 simLod = 0.0F;
+    f32 simLodBias = 0.0F;
+    f32 simLodDistanceMin = 5.0F;
+    f32 simLodDistanceMax = 200.0F;
+
     TFastRandU32* rng = nullptr;
     f32 effectAge = 0.0F;
 
@@ -96,13 +106,8 @@ struct BytecodeExecContext {
     u32 spawnPositionPayloadId = 0;
     u32 spawnOrientationPayloadId = 0;
 
-    /// Slot-indexed float payload elements delivered to THIS spawned particle (Color,
-    /// Size, …); read by extractPayloadElementF*. Populated from `SpawnEvent::floatSlots`.
     std::array<PayloadFloatSlot, kMaxPayloadFloatSlots> spawnFloatSlots{};
 
-    /// Transient build→append handoff: `buildPayloadElement` stashes the computed value
-    /// keyed by the elementId it returns; `appendPayload(slotId, elementId)` retrieves it
-    /// and places it into the pending event's `floatSlots[slotId]`.
     struct BuiltPayloadFloat {
         bool valid = false;
         u32 elementId = 0;
@@ -111,11 +116,6 @@ struct BytecodeExecContext {
     };
     std::array<BuiltPayloadFloat, 8> builtPayloadFloats{};
 
-    /// The no-value `buildPayloadElement(generate())` form — the engine builds a per-child
-    /// sequential INDEX int payload (`generate.newTotal + localChildIndex`), read by
-    /// `extractPayloadElementI1` and gated on `index % N == 0` to spawn 1/N of children. Stashed
-    /// by elementId; `appendPayload(slotId, elementId)` marks the pending event so `dispatchKick`
-    /// stamps `base + childIndex` per spawned child.
     struct BuiltPayloadIndex {
         bool valid = false;
         u32 elementId = 0;
@@ -123,16 +123,21 @@ struct BytecodeExecContext {
     };
     BuiltPayloadIndex builtPayloadIndex{};
 
-    /// Transient `__spatialLayer_N.appendPayload(key, value)` → `insert(key, location)` handoff,
-    /// analogous to `builtPayloadFloats` for events. Spatial appendPayload stashes the value keyed
-    /// by the allocatePayload key; insert retrieves it as the entry's payload (what `closest*`
-    /// returns — the appended world position, distinct from the synthetic hash key location).
     struct SpatialAppendSlot {
         bool valid = false;
         i32 key = 0;
-        std::array<f32, 3> value{0.0F, 0.0F, 0.0F};
+        u32 nameHash = 0;
+        u8 components = 0;
+        std::array<f32, 4> value{0.0F, 0.0F, 0.0F, 0.0F};
     };
-    std::array<SpatialAppendSlot, 8> spatialAppendStaged{};
+    std::array<SpatialAppendSlot, 16> spatialAppendStaged{};
+
+    struct HandleRegisterBinding {
+        u32 reg = 0;
+        u16 slot = 0;
+    };
+    std::array<HandleRegisterBinding, 16> handleRegisterSlots{};
+    u8 handleRegisterCount = 0;
 
     BytecodeTrace* trace = nullptr;
     SpawnEventQueue* spawnQueue = nullptr;
@@ -163,10 +168,6 @@ struct BytecodeExecContext {
         bool hasIntPayload = false;
         u8 intPayloadWidth = 0;
         std::array<i32, 4> intPayload{};
-        // Per-spawn INDEX int payload from the no-value `buildPayloadElement(generate())` form:
-        // the engine writes a sequential index `generate.newTotal + localChildIndex` per spawned
-        // child (read back by `extractPayloadElementI1`; effects gate spawns on `index % N == 0`).
-        // Distinct from `intPayload` (a fixed value) because it varies per child.
         bool hasSpawnIndexPayload = false;
         u32 spawnIndexPayloadId = 0;
         i32 spawnIndexBase = 0;
@@ -174,7 +175,6 @@ struct BytecodeExecContext {
         u8 boolPayloadWidth = 0;
         std::array<i32, 4> boolPayload{};
 
-        /// Slot-indexed float payload elements staged by appendPayload (Color, Size, …).
         std::array<PayloadFloatSlot, kMaxPayloadFloatSlots> floatSlots{};
 
         bool valid = false;
@@ -209,9 +209,41 @@ struct BytecodeExecContext {
     std::array<EventCacheEntry, kMaxEventCacheEntries> eventCaches{};
 
     u32 simUnitScratchCounter = 0;
+
+    void resetPerScopeRun() noexcept {
+        simUnitScratchCounter = 0U;
+        nextPayloadElementId = 1U;
+        selfKillRequested = false;
+        functionDepth = 0U;
+        handleRegisterCount = 0U;
+
+        lastGenerateValid = false;
+        lastGenerateCount = 0U;
+
+        builtPayloadIndex.valid = false;
+
+        for (auto& e : eventCaches) {
+            e.valid = false;
+        }
+        for (auto& p : pendingPayloadElements) {
+            p.valid = false;
+        }
+        for (auto& p : pendingKickPayloads) {
+            p.valid = false;
+        }
+        for (auto& b : builtPayloadFloats) {
+            b.valid = false;
+        }
+        for (auto& s : spatialAppendStaged) {
+            s.valid = false;
+        }
+    }
 };
 
-/// @brief Look up or claim an event-cache slot for `key`. Returns null when full.
+static_assert(sizeof(BytecodeExecContext) == 25048,
+              "BytecodeExecContext size changed -- update the M-3 field census above, "
+              "resetPerScopeRun(), and the arithmetic in SIMT_MIGRATION_PLAN.md §0 and §5/B4");
+
 inline BytecodeExecContext::EventCacheEntry* allocEventCacheEntry(BytecodeExecContext& ctx,
                                                                   u32 key) noexcept {
     for (auto& e : ctx.eventCaches) {
@@ -231,7 +263,6 @@ inline BytecodeExecContext::EventCacheEntry* allocEventCacheEntry(BytecodeExecCo
     return nullptr;
 }
 
-/// @brief Record an in-progress kick count for `eventId`, replacing any prior value.
 inline void setPendingKickCount(BytecodeExecContext& ctx, u32 eventId, u32 count) noexcept {
     for (auto& p : ctx.pendingKickPayloads) {
         if (p.valid && p.eventId == eventId) {
@@ -249,7 +280,6 @@ inline void setPendingKickCount(BytecodeExecContext& ctx, u32 eventId, u32 count
     }
 }
 
-/// @brief Consume the pending kick count for `eventId`. Returns 0 if none pending.
 inline u32 takePendingKickCount(BytecodeExecContext& ctx, u32 eventId) noexcept {
     for (auto& p : ctx.pendingKickPayloads) {
         if (p.valid && p.eventId == eventId) {
@@ -261,4 +291,4 @@ inline u32 takePendingKickCount(BytecodeExecContext& ctx, u32 eventId) noexcept 
     return 0U;
 }
 
-} // namespace whiteout::cornflakes
+}

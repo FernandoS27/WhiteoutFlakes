@@ -1,33 +1,56 @@
 #pragma once
 
-/// @file
-/// @brief Sparse cell-based spatial hash for closest-neighbour and neighbour-count queries.
-
 #include <cornflakes/interface/core/types.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <span>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace whiteout::cornflakes {
 
-/// @brief One inserted point — `position` is the proximity-query key (insert location);
-/// `payload` is the value returned by `closest*` (the `appendPayload`'d attribute, e.g. the
-/// real world position). Engine-faithful: `_FetchNeighborData` returns the entry's payload
-/// STREAM, not its hash position — the two differ in the associative-map usage (massteleportto
-/// inserts at a synthetic key and appends the real position). For the typical pattern (no
-/// `appendPayload`) the payload defaults to the insert position, so `closest` still returns it.
+inline constexpr u32 spatialPayloadNameHash(std::string_view name) noexcept {
+    u32 h = 2166136261U;
+    for (const char c : name) {
+        h ^= static_cast<u32>(static_cast<unsigned char>(c));
+        h *= 16777619U;
+    }
+    return h;
+}
+
+inline constexpr std::size_t kMaxProximityPayloads = 8;
+
+struct ProximityPayload {
+    u32 nameHash = 0;
+    u8 components = 0;
+    std::array<f32, 4> value{0.0F, 0.0F, 0.0F, 0.0F};
+};
+
 struct ProximityEntry {
     std::array<f32, 3> position{0.0F, 0.0F, 0.0F};
     std::array<f32, 3> payload{0.0F, 0.0F, 0.0F};
 
     u64 sourceSelfId = 0U;
+
+    u32 insertSeq = 0U;
+
+    u8 payloadCount = 0;
+    std::array<ProximityPayload, kMaxProximityPayloads> payloads{};
+
+    const ProximityPayload* findPayload(u32 nameHash) const noexcept {
+        for (u8 i = 0; i < payloadCount && i < kMaxProximityPayloads; ++i) {
+            if (payloads[i].nameHash == nameHash) {
+                return &payloads[i];
+            }
+        }
+        return nullptr;
+    }
 };
 
-/// @brief Integer 3D cell coordinate (cell-size-quantised position).
 struct CellCoord {
     i32 x = 0;
     i32 y = 0;
@@ -37,7 +60,6 @@ struct CellCoord {
     }
 };
 
-/// @brief FNV-1a hasher for `CellCoord`.
 struct CellCoordHash {
     std::size_t operator()(const CellCoord& c) const noexcept {
 
@@ -53,10 +75,9 @@ struct CellCoordHash {
     }
 };
 
-/// @brief Cell-bucketed spatial hash for proximity queries (closestN + neighbourCount).
 class ProximityHash {
 public:
-    static constexpr u32 kMaxCellsPerQuery = 64U * 64U * 64U; ///< Above this, fall back to full scan.
+    static constexpr u32 kMaxCellsPerQuery = 64U * 64U * 64U;
 
     explicit ProximityHash(f32 cellSize = 0.75F) noexcept : cellSize_(cellSize) {}
 
@@ -70,21 +91,32 @@ public:
         return entryCount_;
     }
 
-    /// @brief Insert `position` as the query key; the returned payload defaults to `position`.
-    /// Non-finite position components are rejected (mirrors engine `_FnSpatialLayer_Insert`).
     bool insert(const std::array<f32, 3>& position, u64 sourceSelfId) {
         return insert(position, position, sourceSelfId);
     }
 
-    /// @brief Insert with an explicit `payload` (the value `closest*` returns). The hash is
-    /// keyed by `position`; `payload` is the `appendPayload`'d attribute (e.g. world position).
     bool insert(const std::array<f32, 3>& position, const std::array<f32, 3>& payload,
                 u64 sourceSelfId) {
+        return insert(position, payload, sourceSelfId, {});
+    }
+
+    bool insert(const std::array<f32, 3>& position, const std::array<f32, 3>& payload,
+                u64 sourceSelfId, std::span<const ProximityPayload> named) {
         if (!isFiniteF32(position[0]) || !isFiniteF32(position[1]) || !isFiniteF32(position[2])) {
             return false;
         }
         const CellCoord c = cellOf(position);
-        cells_[c].push_back(ProximityEntry{position, payload, sourceSelfId});
+        ProximityEntry e{};
+        e.position = position;
+        e.payload = payload;
+        e.sourceSelfId = sourceSelfId;
+        const std::size_t n = std::min(named.size(), kMaxProximityPayloads);
+        for (std::size_t i = 0; i < n; ++i) {
+            e.payloads[i] = named[i];
+        }
+        e.payloadCount = static_cast<u8>(n);
+        e.insertSeq = static_cast<u32>(entryCount_);
+        cells_[c].push_back(e);
         ++entryCount_;
         return true;
     }
@@ -94,20 +126,24 @@ public:
         entryCount_ = 0;
     }
 
-    /// @brief Find the `n`-th closest entry within `radius` of `target`. Null if fewer than n+1 hits.
-    const ProximityEntry* closestN(const std::array<f32, 3>& target, f32 radius,
-                                   u32 n) const noexcept {
+    std::vector<ProximityEntry> entriesInInsertionOrder() const {
+        std::vector<ProximityEntry> out;
+        out.reserve(entryCount_);
+        for (const auto& kv : cells_) {
+            out.insert(out.end(), kv.second.begin(), kv.second.end());
+        }
+        std::sort(out.begin(), out.end(), [](const ProximityEntry& a, const ProximityEntry& b) {
+            return a.insertSeq < b.insertSeq;
+        });
+        return out;
+    }
+
+    template <typename Fn>
+    void forEachInRadius(const std::array<f32, 3>& target, f32 radius, Fn&& fn) const {
         if (radius <= 0.0F || cells_.empty()) {
-            return nullptr;
+            return;
         }
         const f32 rSq = radius * radius;
-
-        struct Candidate {
-            f32 distSq;
-            const ProximityEntry* entry;
-        };
-        std::vector<Candidate> hits;
-        hits.reserve(64);
         const auto consider = [&](const std::vector<ProximityEntry>& cell) {
             for (const auto& e : cell) {
                 const f32 dx = e.position[0] - target[0];
@@ -115,11 +151,10 @@ public:
                 const f32 dz = e.position[2] - target[2];
                 const f32 dSq = dx * dx + dy * dy + dz * dz;
                 if (dSq <= rSq) {
-                    hits.push_back(Candidate{dSq, &e});
+                    fn(e, dSq);
                 }
             }
         };
-
         const f32 inv = 1.0F / cellSize_;
         const i32 cxMin = floorI32((target[0] - radius) * inv);
         const i32 cxMax = floorI32((target[0] + radius) * inv);
@@ -137,19 +172,31 @@ public:
             for (const auto& kv : cells_) {
                 consider(kv.second);
             }
-        } else {
-            for (i32 cx = cxMin; cx <= cxMax; ++cx) {
-                for (i32 cy = cyMin; cy <= cyMax; ++cy) {
-                    for (i32 cz = czMin; cz <= czMax; ++cz) {
-                        auto it = cells_.find(CellCoord{cx, cy, cz});
-                        if (it == cells_.end()) {
-                            continue;
-                        }
-                        consider(it->second);
+            return;
+        }
+        for (i32 cx = cxMin; cx <= cxMax; ++cx) {
+            for (i32 cy = cyMin; cy <= cyMax; ++cy) {
+                for (i32 cz = czMin; cz <= czMax; ++cz) {
+                    auto it = cells_.find(CellCoord{cx, cy, cz});
+                    if (it == cells_.end()) {
+                        continue;
                     }
+                    consider(it->second);
                 }
             }
         }
+    }
+
+    const ProximityEntry* closestN(const std::array<f32, 3>& target, f32 radius,
+                                   u32 n) const noexcept {
+        struct Candidate {
+            f32 distSq;
+            const ProximityEntry* entry;
+        };
+        std::vector<Candidate> hits;
+        hits.reserve(64);
+        forEachInRadius(target, radius,
+                        [&](const ProximityEntry& e, f32 dSq) { hits.push_back({dSq, &e}); });
         if (hits.empty() || n >= hits.size()) {
             return nullptr;
         }
@@ -159,52 +206,9 @@ public:
         return hits[n].entry;
     }
 
-    /// @brief Count entries within `radius` of `target`.
     u32 neighborCount(const std::array<f32, 3>& target, f32 radius) const noexcept {
-        if (radius <= 0.0F || cells_.empty()) {
-            return 0U;
-        }
-        const f32 rSq = radius * radius;
-        const f32 inv = 1.0F / cellSize_;
-        const i32 cxMin = floorI32((target[0] - radius) * inv);
-        const i32 cxMax = floorI32((target[0] + radius) * inv);
-        const i32 cyMin = floorI32((target[1] - radius) * inv);
-        const i32 cyMax = floorI32((target[1] + radius) * inv);
-        const i32 czMin = floorI32((target[2] - radius) * inv);
-        const i32 czMax = floorI32((target[2] + radius) * inv);
-        const u64 cellsX = static_cast<u64>(cxMax - cxMin + 1);
-        const u64 cellsY = static_cast<u64>(cyMax - cyMin + 1);
-        const u64 cellsZ = static_cast<u64>(czMax - czMin + 1);
-        const u64 totalCells = cellsX * cellsY * cellsZ;
         u32 count = 0U;
-        const auto consider = [&](const std::vector<ProximityEntry>& cell) {
-            for (const auto& e : cell) {
-                const f32 dx = e.position[0] - target[0];
-                const f32 dy = e.position[1] - target[1];
-                const f32 dz = e.position[2] - target[2];
-                if (dx * dx + dy * dy + dz * dz <= rSq) {
-                    ++count;
-                }
-            }
-        };
-        if (totalCells > static_cast<u64>(kMaxCellsPerQuery) ||
-            totalCells > static_cast<u64>(cells_.size())) {
-            for (const auto& kv : cells_) {
-                consider(kv.second);
-            }
-        } else {
-            for (i32 cx = cxMin; cx <= cxMax; ++cx) {
-                for (i32 cy = cyMin; cy <= cyMax; ++cy) {
-                    for (i32 cz = czMin; cz <= czMax; ++cz) {
-                        auto it = cells_.find(CellCoord{cx, cy, cz});
-                        if (it == cells_.end()) {
-                            continue;
-                        }
-                        consider(it->second);
-                    }
-                }
-            }
-        }
+        forEachInRadius(target, radius, [&](const ProximityEntry&, f32) { ++count; });
         return count;
     }
 
@@ -233,4 +237,4 @@ private:
     std::size_t entryCount_ = 0U;
 };
 
-} // namespace whiteout::cornflakes
+}

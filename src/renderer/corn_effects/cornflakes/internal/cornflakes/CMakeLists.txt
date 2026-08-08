@@ -12,6 +12,9 @@ add_library(cornflakes_core STATIC
     service/cornflakes_service.cpp
     asset/asset_reader.cpp
     asset/pkb_reader.cpp
+    asset/pkmm_reader.cpp
+    asset/pkvf_reader.cpp
+    asset/file_mesh_provider.cpp
     asset/text_pkfx_reader.cpp
     asset/war3_compatibility_validator.cpp
     asset/object_accessors.cpp
@@ -26,14 +29,17 @@ add_library(cornflakes_core STATIC
     vm/bytecode_trace.cpp
     vm/cbem/cbem_interpreter.cpp
     vm/cbem/cbem_ir_ops.cpp
-    vm/cbem/cbem_cbem_ops.cpp
     vm/cbem/cbem_dispatchers.cpp
     vm/math_functions.cpp
     vm/bytecode_decoder.cpp
+    sampler/mesh.cpp
+    sampler/shape_geometry.cpp
     sampler/shape.cpp
     sampler/curve.cpp
+    sampler/curve_cdf.cpp
     sampler/texture.cpp
     sampler/turbulence.cpp
+    sampler/vector_field.cpp
     sim/particle_page.cpp
     sim/spawn_processor.cpp
     sim/spawn_evaluator_driver.cpp
@@ -42,6 +48,15 @@ add_library(cornflakes_core STATIC
     sim/layer_tick_harness.cpp
     sim/particle_pool.cpp
     sim/effect_runtime.cpp
+    sim/state_digest.cpp
+    sim/state_compare.cpp
+    simt/layer_stream_store.cpp
+    simt/scratch_validator.cpp
+    simt/register_census.cpp
+    simt/packet_register_file.cpp
+    simt/stream_extract.cpp
+    simt/simt_interpreter.cpp
+    sim/lod.cpp
     events/payload_cache_store.cpp
     events/payload_builder.cpp
     events/event_generator.cpp
@@ -72,6 +87,14 @@ target_link_libraries(cornflakes_core
     PUBLIC  cornflakes::determinism
     PRIVATE cornflakes::warnings
 )
+
+# MSVC's CRT marks getenv as "deprecated" under /W4, and /WX turns that into an error. The
+# library reads a couple of opt-in trace switches (CF_SPAWN_TRACE, CORNFLAKES_TRACE_CALLS) and
+# the host is trusted, so silence it here rather than reaching for _dupenv_s + manual free —
+# the same call the cornflakes_gl and cbem_dump targets already make.
+if(MSVC)
+    target_compile_definitions(cornflakes_core PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
 
 set_target_properties(cornflakes_core PROPERTIES
     CXX_STANDARD 20

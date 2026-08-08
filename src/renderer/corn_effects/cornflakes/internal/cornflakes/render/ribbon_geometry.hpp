@@ -15,13 +15,30 @@ struct RibbonVertex {
     Float4 color;
     f32 u;
     f32 v;
+    Float4 uvScaleBias;
+    Float4 uvFactors;
+    f32 cursor;
+    Float3 normal;
+    Float4 tangent;
 };
 
 struct RibbonGeometryOutput {
     std::span<const RibbonVertex> vertices;
 };
 
+struct RibbonUVConfig {
+    bool customTextureU = false;
+    bool flipU = false;
+    bool flipV = false;
+    bool rotate = false;
+    u16 atlasSubDivX = 0;
+    u16 atlasSubDivY = 0;
+    bool correctDeformation = false;
+    bool needsNormals = false;
+    f32 normalBendingFactor = 0.0F;
+};
+
 RibbonGeometryOutput buildRibbonGeometry(const RenderPacket& packet, const ViewParams& view,
-                                         IArena& arena);
+                                         const RibbonUVConfig& uv, IArena& arena);
 
 }

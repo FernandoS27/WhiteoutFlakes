@@ -1,15 +1,13 @@
 #pragma once
 
-/// @file
-
 #include <cornflakes/interface/core/types.hpp>
 
 namespace whiteout::cornflakes {
 
 class TFastRandU32 {
 public:
-    static constexpr u32 kMultiplier = 0x000D0F95U; ///< LCG multiplier; engine-locked.
-    static constexpr u32 kIncrement = 0x00D19EC3U;  ///< LCG increment; engine-locked.
+    static constexpr u32 kMultiplier = 0x000D0F95U;
+    static constexpr u32 kIncrement = 0x00D19EC3U;
 
     static constexpr u32 advanceStatic(u32 state) noexcept {
         return (state * kMultiplier) + kIncrement;
@@ -35,4 +33,4 @@ private:
     u32 m_state = 0;
 };
 
-} // namespace whiteout::cornflakes
+}

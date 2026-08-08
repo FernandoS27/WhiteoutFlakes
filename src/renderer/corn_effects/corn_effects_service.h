@@ -2,6 +2,7 @@
 
 #include "renderer/corn_effects/corn_effects_emitter.h"
 #include "renderer/corn_effects/corn_effects_gfx_backend.h"
+#include "renderer/corn_effects/corn_effects_resource_providers.h"
 #include "renderer/types.h"
 #include "whiteout/flakes/types.h"
 
@@ -63,6 +64,14 @@ public:
     }
 
     void SetBackendInit(const std::optional<CornEffectsGfxBackend::Init>& init);
+
+    /// @brief Point the sampler-resource providers (.pkmm meshes, .pkvf vector
+    ///        fields, texture-sampler texels) at this scene's content source.
+    ///        Until this is called those samplers bind with no data and sample
+    ///        zero, which is what the engine does for a missing descriptor.
+    ///        Applies to emitters spawned afterwards; already-bound runtimes
+    ///        keep the resources they resolved at bind time.
+    void SetContentProvider(io::IContentProvider* content);
 
     void SetFrameInputs(const CornEffectsFrameInputs& fi);
 
@@ -152,6 +161,10 @@ private:
 
     mutable std::mutex mutex_;
     ::whiteout::cornflakes::ExpandingArena frameArena_{1U << 20};
+    // Owned by the service so their buffers outlive every runtime bound
+    // against them — cornflakes keeps spans into the provider's storage.
+    CornEffectsMeshProvider meshProvider_{nullptr};
+    CornEffectsTextureProvider textureProvider_{nullptr};
     std::unordered_map<EmitterKey, std::unique_ptr<CornEffectsEmitter>, EmitterKeyHash> emitters_;
     f32 gameToCornEffectsScale_ = 0.01f;
     std::optional<CornEffectsGfxBackend::Init> backendInit_;
