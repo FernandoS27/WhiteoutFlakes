@@ -97,9 +97,13 @@ public:
             u32 layerIdx = 0;
             u32 rendererIdx = 0; // renderer within the layer (multi-renderer layers)
             u8  blendMode = 0;
+            // Classified from the renderer's asset flags in prepare(); the
+            // service feeds these to MakePsoRequest instead of one constant.
+            u32 vsPerm = 0;
+            u32 psPerm = 0;
         };
         std::vector<CornEffectsVertex> verts;
-        std::vector<u16> indices; // local 0..verts.size(); service offsets via baseVertex
+        std::vector<u32> indices; // local 0..verts.size(); service offsets via baseVertex
         std::vector<Draw> draws;
         bool Empty() const {
             return draws.empty();
@@ -123,6 +127,11 @@ public:
     // with its own diffuse, so the slot is keyed by (layer, renderer).
     std::uint32_t LayerDiffuseSlot(u32 layerIdx, u32 rendererIdx) const;
 
+    // AlphaRemap LUT slot for a draw, or 0 when the renderer has no remap
+    // curve. Bound at pixel SRV 1 (t1), which is where the popcorn PS
+    // declares t_popcornAlphaLut.
+    std::uint32_t LayerAlphaLutSlot(u32 layerIdx, u32 rendererIdx) const;
+
     // Map a packet's blend-mode byte to the matching BLS alpha mode.
     // Called by the service when building MatParams for each draw.
     static bls::GxMatAlpha BlendModeToGxAlpha(u8 blendMode);
@@ -140,15 +149,33 @@ private:
         // returns the shared white placeholder — no per-frame retry
         // needed, no missing-list spam.
         std::uint32_t diffuseSlot = 0;
+        // AlphaRemap LUT, sampled at (postVcAlpha, random.x) in the PS. Zero
+        // when this renderer has no remap curve.
+        std::uint32_t alphaLutSlot = 0;
         bool isDistortion = false;
         bool renderable = false;
+        bool isRibbon = false;
         u16 atlasX = 0;
         u16 atlasY = 0;
         bool flipU = false;
         bool flipV = false;
         bool rotate = false;
-        bool size2D = false;
+        // Ribbon-only UV knobs. correctDeformation is recorded but not yet
+        // honoured — applying it needs the per-vertex uvFactors the BasicUV
+        // perm has nowhere to carry.
+        bool customTextureU = false;
+        bool correctDeformation = false;
+        bool isAtlas = false;
+        u32 vsPerm = 0;
+        u32 psPerm = 0;
     };
+
+    // Ribbon geometry comes from cornflakes' shared buildRibbonGeometry, which
+    // is the same helper the engine-verified GL reference uses. Appends to
+    // pending_ after the billboard run, matching the reference's ordering
+    // (ribbons are not depth-interleaved with billboards).
+    void SubmitRibbons(std::span<const ::whiteout::cornflakes::RenderPacket> packets,
+                       const ::whiteout::cornflakes::ViewParams& view);
 
     gfx::IGFXDevice* device_ = nullptr;
     const bls::BlsProgram* program_ = nullptr;

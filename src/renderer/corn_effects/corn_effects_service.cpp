@@ -275,7 +275,7 @@ bool CornEffectsService::EnsureSharedBuffers(u32 totalVerts, u32 totalIndices) {
         const u32 clamped = std::min(doubled, kMaxSharedIbCap);
         sharedIbCap_ = std::max(totalIndices, clamped);
         gfx::BufferDesc bd;
-        bd.size = sizeof(u16) * sharedIbCap_;
+        bd.size = sizeof(u32) * sharedIbCap_;
         bd.usage = gfx::BufferUsage::Index | gfx::BufferUsage::CpuWritable;
         sharedIb_ = device->CreateBuffer(bd);
     }
@@ -322,14 +322,14 @@ bool CornEffectsService::ConsolidatePending() {
         device->UnmapBuffer(sharedVb_);
     }
     if (void* ip = device->MapBuffer(sharedIb_)) {
-        auto* dst = static_cast<u16*>(ip);
+        auto* dst = static_cast<u32*>(ip);
         u32 voff = 0, ioff = 0;
         for (auto& [k, e] : emitters_) {
             auto* be = e->live_.backend.get();
             if (!be) continue;
             const auto& p = be->Pending();
             if (p.Empty()) continue;
-            std::memcpy(dst + ioff, p.indices.data(), sizeof(u16) * p.indices.size());
+            std::memcpy(dst + ioff, p.indices.data(), sizeof(u32) * p.indices.size());
             preparedSlices_.push_back({be, voff, ioff, k});
             voff += static_cast<u32>(p.verts.size());
             ioff += static_cast<u32>(p.indices.size());
@@ -359,6 +359,13 @@ bool CornEffectsService::ConsolidatePending() {
         cb.worldView     = worldView;
         cb.view          = frameInputs_.view;
         cb.projection    = frameInputs_.projection;
+        // NOTE: the popcorn PS block aliases two of these. At offset 240 the
+        // shader reads `depthUVRemap` (engine value (1,-1,0,1)) where we write
+        // viewportRect, and at 256 it reads `depthFadeScale` (engine default
+        // 1e-6, per-draw 1/softness) where we write pixelParams1.x = 1.0f.
+        // Inert today because no perm we select reads them — but a soft-particle
+        // perm would fade everything to nothing and send the depth lookup
+        // off-screen. Fix these before enabling SoftParticles.
         cb.viewportRect  = frameInputs_.viewportRect;
         cb.pixelParams1  = {1.0f, 0.0f, 0.0f, 0.0f};
         cb.effectTime    = frameInputs_.effectTime;
@@ -376,7 +383,7 @@ void CornEffectsService::DrawPreparedSlice(const PreparedSlice& s) {
     // other transparent producers; redundant-bind suppression de-dupes runs of
     // consecutive corn slices.
     cmd->BindVertexBuffer(0, sharedVb_, sizeof(CornEffectsVertex));
-    cmd->BindIndexBuffer(sharedIb_, gfx::Format::R16_UINT);
+    cmd->BindIndexBuffer(sharedIb_, gfx::Format::R32_UINT);
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, sharedVsCb_);
     cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 2, sharedPsCb_);
     if (backendInit_->samplers) {
@@ -394,7 +401,10 @@ void CornEffectsService::DrawPreparedSlice(const PreparedSlice& s) {
         mp.disables    = bls::kDisableLighting | bls::kDisableDepthWrite | bls::kDisableCull;
         mp.diffuseColor = {1, 1, 1, 1};
 
-        bls::PermuteIndices perm{kVsPermBasicUVWithVC, kPsPermBasicUVWithVC};
+        // Classified per (layer, renderer) in the backend's prepare(). Falls
+        // back to the BasicUV+VC pair for a draw that predates classification.
+        bls::PermuteIndices perm{d.vsPerm ? d.vsPerm : kVsPermBasicUVWithVC,
+                                 d.psPerm ? d.psPerm : kPsPermBasicUVWithVC};
 
         auto req =
             bls::MakePsoRequest(backendInit_->program, bls::VertexLayoutKind::CornFx, mp, perm);
@@ -418,6 +428,23 @@ void CornEffectsService::DrawPreparedSlice(const PreparedSlice& s) {
             tex = tex_mgr->GetDefaults().White;
         if (tex != gfx::TextureHandle::Invalid)
             cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, tex);
+
+        // AlphaRemap LUT at t1/s1. Only the perms with the LUT bit sample it,
+        // and prepare() only sets that bit when this slot is non-zero.
+        const auto lutSlot = s.backend->LayerAlphaLutSlot(d.layerIdx, d.rendererIdx);
+        if (lutSlot != 0 && assets) {
+            const gfx::TextureHandle lut = assets->TextureOf(lutSlot);
+            if (lut != gfx::TextureHandle::Invalid) {
+                cmd->BindShaderResource(gfx::ShaderStage::Pixel, 1, lut);
+                if (backendInit_->samplers) {
+                    // Clamp: the LUT is a curve, not a tiling texture — wrapping
+                    // would fold the ends of the remap onto each other.
+                    cmd->BindSampler(gfx::ShaderStage::Pixel, 1,
+                                     backendInit_->samplers->WrapVariant(
+                                         assets::WrapMode::ClampClamp));
+                }
+            }
+        }
 
         cmd->DrawIndexed(d.indexCount, s.baseIndex + d.indexFirst, static_cast<i32>(s.baseVertex));
     }

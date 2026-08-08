@@ -15,6 +15,14 @@ enum class GxMatAlpha : u8 {
     Add = 3,
     Modulate = 4,
     Modulate2X = 5,
+    // Corn-fx only. PopcornFX's Transparent.Type carries two additive
+    // variants the geoset modes above can't express, and its blend mode wants
+    // destination alpha left alone (the engine binds Zero/One for the alpha
+    // channel on every particle blend mode). Kept separate rather than
+    // widening Add/Blend, which geosets rely on as-is.
+    AddNoAlpha = 6,    ///< One / One — colour already carries its intensity.
+    PremulBlend = 7,   ///< One / InvSrcAlpha — premultiplied "over".
+    BlendKeepDst = 8,  ///< SrcAlpha / InvSrcAlpha, destination alpha preserved.
 };
 
 // WC3 alpha-test reference for the alpha-key (Transparent) cutoff. Fragments

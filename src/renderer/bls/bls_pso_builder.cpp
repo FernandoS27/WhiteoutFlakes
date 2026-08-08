@@ -76,11 +76,18 @@ constexpr gfx::InputElement kMeshHDSkinnedNoTangent[] = {
 // CornEffects (BasicUV-mode subset). Matches the corn fx VS HAS_VC=1 /
 // HAS_NT=0 / HAS_RANDOM=0 permute — slot 0 only, 64 B / vertex,
 // trivially memcpy-able. See CornEffectsVertex in corn_effects_vertex.h.
+// Superset of every popcorn VS perm we select. The popcorn shader trims its
+// input signature per perm, and providing more elements than the signature
+// declares is legal on every backend — so one layout serves BasicUV, atlas and
+// random-bearing perms alike. Offsets match CornEffectsVertex.
 constexpr gfx::InputElement kCornFx[] = {
     {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0, 0},     // position
     {"ATTR", 2, gfx::Format::R32G32B32A32_FLOAT, 16, 0}, // color (vc)
-    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 32, 0},       // uv0
+    {"ATTR", 3, gfx::Format::R32G32_FLOAT, 32, 0},       // uv0 / atlas frame A
+    {"ATTR", 6, gfx::Format::R32_FLOAT, 40, 0},          // per-particle random
     {"ATTR", 8, gfx::Format::R32G32B32A32_FLOAT, 48, 0}, // pivot (particle origin)
+    {"ATTR", 4, gfx::Format::R32G32B32A32_FLOAT, 64, 0}, // atlas frame B UV in .xy
+    {"ATTR", 5, gfx::Format::R32G32B32A32_FLOAT, 80, 0}, // atlas blend cursor in .x
 };
 
 // ---- D3D12 (DXIL) full-signature layouts ----
@@ -273,6 +280,32 @@ gfx::BlendDesc BlendFor(GxMatAlpha alpha) {
         bd.srcAlpha = gfx::BlendFactor::DstAlpha;
         bd.dstAlpha = gfx::BlendFactor::SrcAlpha;
         break;
+    // Corn-fx modes. All three leave destination alpha untouched — the engine
+    // binds Zero/One for the alpha channel on every particle blend mode.
+    case GxMatAlpha::AddNoAlpha:
+
+        bd.enable = true;
+        bd.srcColor = gfx::BlendFactor::One;
+        bd.dstColor = gfx::BlendFactor::One;
+        bd.srcAlpha = gfx::BlendFactor::Zero;
+        bd.dstAlpha = gfx::BlendFactor::One;
+        break;
+    case GxMatAlpha::PremulBlend:
+
+        bd.enable = true;
+        bd.srcColor = gfx::BlendFactor::One;
+        bd.dstColor = gfx::BlendFactor::InvSrcAlpha;
+        bd.srcAlpha = gfx::BlendFactor::Zero;
+        bd.dstAlpha = gfx::BlendFactor::One;
+        break;
+    case GxMatAlpha::BlendKeepDst:
+
+        bd.enable = true;
+        bd.srcColor = gfx::BlendFactor::SrcAlpha;
+        bd.dstColor = gfx::BlendFactor::InvSrcAlpha;
+        bd.srcAlpha = gfx::BlendFactor::Zero;
+        bd.dstAlpha = gfx::BlendFactor::One;
+        break;
     }
     return bd;
 }
@@ -303,11 +336,16 @@ u64 HashRequest(const PsoRequest& r) {
     // 2-bit field collided (e.g. ParticleSD=3 vs MeshHDSkinnedNoTangent=7),
     // making the cache return a wrong-layout PSO whose VertexBufferLayout
     // declared slot 1 the renderer never bound.
-    u32 bits = (u32(r.material.alpha) & 0x07u) | ((r.material.disables & 0x1Fu) << 3) |
-               ((u32(r.layout) & 0x0Fu) << 8) | ((u32(r.topology) & 0x03u) << 12) |
-               ((u32(r.rtvFormat) & 0xFFu) << 14) | ((u32(r.dsvFormat) & 0xFFu) << 22) |
-               ((r.wireframe ? 1u : 0u) << 30) | ((r.lhClipSpace ? 1u : 0u) << 31);
+    u32 bits = ((r.material.disables & 0x1Fu) << 3) | ((u32(r.layout) & 0x0Fu) << 8) |
+               ((u32(r.topology) & 0x03u) << 12) | ((u32(r.rtvFormat) & 0xFFu) << 14) |
+               ((u32(r.dsvFormat) & 0xFFu) << 22) | ((r.wireframe ? 1u : 0u) << 30) |
+               ((r.lhClipSpace ? 1u : 0u) << 31);
     k ^= u64(bits) * 0xFF51AFD7ED558CCDull;
+    // `alpha` used to live in bits 0-2, but the corn-fx blend modes pushed
+    // GxMatAlpha past 8 values. `bits` is full, so mix it separately rather
+    // than re-laying every field — a 3-bit mask would alias BlendKeepDst(8)
+    // onto Opaque(0) and hand corn draws an opaque PSO.
+    k ^= u64(u32(r.material.alpha)) * 0xD6E8FEB86659FD93ull;
     // ColorWriteEnabled didn't fit in the 32-bit field after widening
     // the layout slot — mix it in separately.
     k ^= u64(r.material.ColorWriteEnabled() ? 0u : 1u) * 0x94D049BB133111EBull;

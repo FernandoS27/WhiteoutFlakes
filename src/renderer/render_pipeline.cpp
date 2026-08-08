@@ -2889,6 +2889,15 @@ void RenderPipeline::RenderTransparentSceneT() {
             fi.extraRtvFormats[1] = kNormalBufferFormat;
             fi.extraRtvCount = 2;
         }
+        // Corn-fx sampler resources (.pkmm meshes, .pkvf vector fields, texture
+        // texels) are resolved synchronously at bind time, so they read through
+        // the content provider rather than the push-based AssetManager. Pushed
+        // here rather than at scene creation because the host installs the
+        // scene's provider AFTER CreateScene returns, and resolving it early
+        // would force a throwaway internal provider into existence. By frame
+        // time PumpAssetsViaProvider has already realised the same one, and the
+        // setter early-outs when it hasn't changed.
+        rs_.CornEffects().SetContentProvider(rs_.Scene().ActiveContentProvider());
         rs_.CornEffects().SetFrameInputs(fi);
         rs_.CornEffects().Simulate(rs_.CornEffects().PendingDt());
         rs_.CornEffects().PrepareInterleavedDraws(cornUnits);

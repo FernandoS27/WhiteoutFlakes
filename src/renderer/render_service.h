@@ -286,7 +286,7 @@ private:
     // InitSceneServices is the one place that applies all currently-available
     // wiring to one bundle; InitAllSceneServices re-applies to every live scene
     // whenever a new input becomes available. Both steps are idempotent.
-    void InitSceneServices(SceneId id, SceneServices& svc);
+    void InitSceneServices(SceneServices& svc);
     void InitAllSceneServices();
 
     // ---- Pimpl: all instance state lives here. ----
