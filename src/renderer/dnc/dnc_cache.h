@@ -22,7 +22,13 @@ public:
     void Release(DncAsset* asset);
     void ReleaseAll();
 
+    /// Re-point at another scene's provider. Drops every entry — they were
+    /// resolved through the old provider's mod chain.
+    void SetContentProvider(io::IContentProvider* contentProvider);
+
 private:
+    // Callers hand in a mod-pinned path when they care about SD vs HD, so the
+    // variant is already part of `path` and the key needs nothing extra.
     static std::string NormalizeKey(const std::string& path);
     static bool IsTextPath(const std::string& key);
 

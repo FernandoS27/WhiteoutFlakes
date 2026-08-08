@@ -375,14 +375,22 @@ struct FrameState {
     };
     std::vector<TexAnimState> texAnims;
 
+    /// @brief MDX light type. Mirrors `mdx::Light::LightType`; only `Omni` is
+    ///        positional — WC3 drives both `Directional` and `Ambient` through
+    ///        its directional light path (`CreateLight_1`: omni iff type == 0).
     enum class LightKind : u8 { Directional = 0, Omni = 1, Ambient = 2 };
-    /// @brief Per-MDX-light sampled state (KLAC / KLAI / KLAS tracks).
+    /// @brief Per-MDX-light sampled state (KLAC / KLAI / KLBC / KLBI tracks).
     struct LightState {
         LightKind kind = LightKind::Directional;
         Vector3f worldPos = {0, 0, 0};
         Vector3f worldDir = {0, 0, -1};
+        /// @brief KLAC colour premultiplied by KLAI intensity, shader-ready.
         Vector3f diffuse = {0, 0, 0};
-        Vector3f ambient = {0, 0, 0};
+        /// @brief KLBC ambient colour, clamped 0..1. Only reaches the shader
+        ///        through the SD-on-HD compensation term; see BuildLightPalette.
+        Vector3f ambientColor = {0, 0, 0};
+        f32 dirIntensity = 0.0f;
+        f32 ambIntensity = 0.0f;
         f32 attenStart = 0.0f;
         f32 attenEnd = 0.0f;
         bool enabled = true;

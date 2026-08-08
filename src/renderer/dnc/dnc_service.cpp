@@ -2,6 +2,7 @@
 
 #include "dnc_asset.h"
 #include "dnc_cache.h"
+#include "dnc_catalog.h"
 #include "whiteout/flakes/content_provider.h"
 #include "whiteout/flakes/types.h"
 
@@ -29,7 +30,7 @@ DncService::DncService(IContentProvider* contentProvider)
     : contentProvider_(contentProvider), cache_(std::make_unique<DncCache>(contentProvider)),
       unitPath_(kDefaultUnitMdl) {
 
-    unitAsset_ = cache_->Acquire(unitPath_);
+    ReacquireAsset();
     if (!unitAsset_ || !unitAsset_->HasLight()) {
         std::fprintf(stderr,
                      "[dnc] WARN: default unit MDL failed to acquire a usable "
@@ -37,6 +38,45 @@ DncService::DncService(IContentProvider* contentProvider)
                      unitPath_.c_str());
     }
 }
+
+void DncService::ReacquireAsset() {
+    if (unitAsset_) {
+        cache_->Release(unitAsset_);
+        unitAsset_ = nullptr;
+    }
+    if (unitPath_.empty())
+        return;
+    // An already-pinned path (the host picked SD or HD explicitly) is honoured
+    // as-is; an unpinned one is pinned to this scene's preference so it never
+    // depends on a shared provider's global HD flag.
+    const std::string resolved =
+        (DncVariantOf(unitPath_) == DncVariant::Auto)
+            ? DncPathForVariant(unitPath_, hdPreference_ ? DncVariant::Hd : DncVariant::Sd)
+            : unitPath_;
+    unitAsset_ = cache_->Acquire(resolved);
+}
+
+void DncService::SetHdPreference(bool hd) {
+    if (hd == hdPreference_)
+        return;
+    hdPreference_ = hd;
+    // Only an unpinned path changes meaning; a pinned one already names its layer.
+    if (DncVariantOf(unitPath_) == DncVariant::Auto)
+        ReacquireAsset();
+}
+
+void DncService::SetContentProvider(io::IContentProvider* contentProvider) {
+    if (contentProvider == contentProvider_)
+        return;
+    if (unitAsset_) {
+        cache_->Release(unitAsset_);
+        unitAsset_ = nullptr;
+    }
+    contentProvider_ = contentProvider;
+    cache_->SetContentProvider(contentProvider);
+    ReacquireAsset();
+}
+
 
 DncService::~DncService() {
     if (unitAsset_) {
@@ -48,15 +88,8 @@ DncService::~DncService() {
 void DncService::SetUnitMdl(const std::string& path) {
     if (path == unitPath_)
         return;
-
-    if (unitAsset_) {
-        cache_->Release(unitAsset_);
-        unitAsset_ = nullptr;
-    }
     unitPath_ = path;
-    if (!path.empty()) {
-        unitAsset_ = cache_->Acquire(path);
-    }
+    ReacquireAsset();
 }
 
 bool DncService::HasAsset() const {

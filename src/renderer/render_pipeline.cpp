@@ -1583,6 +1583,9 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     // camera. The guard restores the default scene + clears the others on every
     // exit path so out-of-frame queries fall back sanely.
     rs_.SetActiveScene(vp.scene);
+    // DNC is per-scene: build this scene's rig if it has none yet, and
+    // re-resolve it if the scene's provider flipped HD/SD since last frame.
+    rs_.EnsureDncService();
     impl_->activeTarget_ = &target;
     impl_->activeCamera_ = vp.camera ? vp.camera : &rs_.Scene().Camera();
     impl_->frameDrawImGui_ = vp.drawImGui;
@@ -2179,14 +2182,17 @@ public:
                 const Vector3f sunWS = ComputeSunDirWS(dnc);
                 const Vector3f dirVS = whiteout::transform_normal(
                     Vector3f{-sunWS.x, -sunWS.y, -sunWS.z}, view);
-                return {sample.ambient, sample.diffuse, dirVS};
+                return {.ambient = sample.ambient,
+                        .diffuse = sample.diffuse,
+                        .ambientColor = sample.ambientColor,
+                        .dirToSourceVS = dirVS};
             }
         }
 
         return {
-            {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z},
-            {kGeosetLightColor.x, kGeosetLightColor.y, kGeosetLightColor.z},
-            {0.0f, 0.0f, 1.0f},
+            .ambient = {kGeosetAmbientColor.x, kGeosetAmbientColor.y, kGeosetAmbientColor.z},
+            .diffuse = {kGeosetLightColor.x, kGeosetLightColor.y, kGeosetLightColor.z},
+            .dirToSourceVS = {0.0f, 0.0f, 1.0f},
         };
     }
 
@@ -2197,18 +2203,18 @@ public:
 
     void DrawOpaqueItem(const render_detail::OpaqueItem& item, bls::FrameInputs& frame,
                         const Matrix44f& viewMat, gfx::IGFXCommandList* cmd,
-                        const bls::BaselineLights& baseline) {
+                        const bls::LightingContext& lighting) {
         const auto& view_ = *item.view;
         EmitLayers(view_, (*view_.geosets)[item.geoIdx], bls::DepthFill::None, frame, viewMat, cmd,
-                   baseline);
+                   lighting);
     }
 
     void DrawTransparentItem(const render_detail::TransparentItem& item, bls::FrameInputs& frame,
                              const Matrix44f& viewMat, gfx::IGFXCommandList* cmd,
-                             const bls::BaselineLights& baseline) {
+                             const bls::LightingContext& lighting) {
         const auto& view_ = *item.view;
         EmitLayers(view_, (*view_.geosets)[item.geoIdx], item.depthFill, frame, viewMat, cmd,
-                   baseline);
+                   lighting);
     }
 
     // Draw a geoset's visible layers (in order) under `depthFill`. The per-layer
@@ -2216,7 +2222,7 @@ public:
     // there is no special-case prepass loop here.
     void EmitLayers(const render_detail::RenderableView& view_, const GPUGeoset& geo,
                     bls::DepthFill depthFill, bls::FrameInputs& frame, const Matrix44f& viewMat,
-                    gfx::IGFXCommandList* cmd, const bls::BaselineLights& baseline) {
+                    gfx::IGFXCommandList* cmd, const bls::LightingContext& lighting) {
         const GPUMaterial* mat = nullptr;
         if (geo.materialId >= 0 && geo.materialId < (i32)view_.materials->size())
             mat = &(*view_.materials)[geo.materialId];
@@ -2239,8 +2245,8 @@ public:
         const auto layout =
             hasBones ? bls::VertexLayoutKind::ParticleSDSkinned : bls::VertexLayoutKind::ParticleSD;
 
-        const i32 lightCount = bls::BuildLightPalette(frame, *view_.activeLights, viewMat, baseline,
-                                                      rs_.Settings().GetLightingMode());
+        const i32 lightCount = bls::BuildLightPalette(
+            frame, lighting, viewMat, render_detail::GeosetCentroidWS(view_, geo));
 
         for (i32 li = 0; li < numLayers; ++li) {
             const render_detail::UnpackedLayer layer = render_detail::UnpackLayer(mat, li);
@@ -2486,29 +2492,33 @@ public:
                 const Vector3f sunWS = ComputeSunDirWS(dnc);
                 const Vector3f dirVS = whiteout::transform_normal(
                     Vector3f{-sunWS.x, -sunWS.y, -sunWS.z}, view);
-                return {sample.ambient, sample.diffuse, dirVS};
+                return {.ambient = sample.ambient,
+                        .diffuse = sample.diffuse,
+                        .ambientColor = sample.ambientColor,
+                        .dirToSourceVS = dirVS};
             }
         }
 
         return {
-            {kHdBaselineAmbientColor.x, kHdBaselineAmbientColor.y, kHdBaselineAmbientColor.z},
-            {kHdBaselineLightColor.x, kHdBaselineLightColor.y, kHdBaselineLightColor.z},
-            {0.0f, 0.0f, -1.0f},
+            .ambient = {kHdBaselineAmbientColor.x, kHdBaselineAmbientColor.y,
+                        kHdBaselineAmbientColor.z},
+            .diffuse = {kHdBaselineLightColor.x, kHdBaselineLightColor.y, kHdBaselineLightColor.z},
+            .dirToSourceVS = {0.0f, 0.0f, -1.0f},
         };
     }
 
     void DrawOpaqueItem(const render_detail::OpaqueItem& item, bls::FrameInputs& frame,
                         const Matrix44f& viewMat, gfx::IGFXCommandList* cmd,
-                        const bls::BaselineLights& baseline) {
+                        const bls::LightingContext& lighting) {
         const auto& view_ = *item.view;
-        EmitLayersHd(view_, (*view_.geosets)[item.geoIdx], frame, viewMat, cmd, baseline);
+        EmitLayersHd(view_, (*view_.geosets)[item.geoIdx], frame, viewMat, cmd, lighting);
     }
 
     void DrawTransparentItem(const render_detail::TransparentItem& item, bls::FrameInputs& frame,
                              const Matrix44f& viewMat, gfx::IGFXCommandList* cmd,
-                             const bls::BaselineLights& baseline) {
+                             const bls::LightingContext& lighting) {
         const auto& view_ = *item.view;
-        EmitLayersHd(view_, (*view_.geosets)[item.geoIdx], frame, viewMat, cmd, baseline);
+        EmitLayersHd(view_, (*view_.geosets)[item.geoIdx], frame, viewMat, cmd, lighting);
     }
 
     // The HD submission, kept intact (HD/SD-on-HD/Crystal program selection,
@@ -2517,9 +2527,9 @@ public:
     // time by RunLists instead of the legacy bucket loop.
     void EmitLayersHd(const render_detail::RenderableView& view_, const GPUGeoset& geo,
                       bls::FrameInputs& frame, const Matrix44f& viewMat, gfx::IGFXCommandList* cmd,
-                      const bls::BaselineLights& baseline) {
+                      const bls::LightingContext& lighting) {
         const i32 lightCountForGeoset = bls::BuildLightPalette(
-            frame, *view_.activeLights, viewMat, baseline, rs_.Settings().GetLightingMode());
+            frame, lighting, viewMat, render_detail::GeosetCentroidWS(view_, geo));
 
         const GPUMaterial* mat = nullptr;
         const i32 matId = geo.materialId;
@@ -2814,8 +2824,8 @@ void RenderPipeline::RenderTransparentSceneT() {
     render_detail::CollectedDrawLists geo;
     bls::FrameInputs geoFrame;
     Matrix44f geoView;
-    bls::BaselineLights geoBaseline;
-    const bool haveGeo = pass.PrepareInterleaved(geo, geoFrame, geoView, geoBaseline);
+    bls::LightingContext geoLighting;
+    const bool haveGeo = pass.PrepareInterleaved(geo, geoFrame, geoView, geoLighting);
 
     // --- PE2 particles: build geometry into the shared VB ---
     std::vector<particle::EmitterDrawList> partDraws;
@@ -2916,7 +2926,7 @@ void RenderPipeline::RenderTransparentSceneT() {
         switch (e.kind) {
         case render_detail::TransparentKind::Geoset:
             pass.DrawTransparentItem(geo.lists.transparent[e.unit], geoFrame, geoView, cmd,
-                                     geoBaseline);
+                                     geoLighting);
             break;
         case render_detail::TransparentKind::Particle:
             DrawParticleEmitter(partDraws[e.unit], partFrame);

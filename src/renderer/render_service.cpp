@@ -307,10 +307,10 @@ SpnSpawner& RenderService::Spn() {
 }
 
 dnc::DncService* RenderService::GetDncService() {
-    return impl_->dncService_.get();
+    return impl_->activeServices_ ? impl_->activeServices_->dnc.get() : nullptr;
 }
 const dnc::DncService* RenderService::GetDncService() const {
-    return impl_->dncService_.get();
+    return impl_->activeServices_ ? impl_->activeServices_->dnc.get() : nullptr;
 }
 shadow::ShadowService* RenderService::GetShadowService() {
     return impl_->shadowService_.get();
@@ -457,10 +457,37 @@ void RenderService::ResetDeviceAssetManagers() {
 }
 
 dnc::DncService& RenderService::EnsureDncService() {
-    if (!impl_->dncService_)
-        impl_->dncService_ =
-            std::make_unique<dnc::DncService>(Scene().ActiveContentProvider());
-    return *impl_->dncService_;
+    // Per active scene, bound to that scene's provider. A scene later pointed
+    // at a different provider re-binds below, which drops the cached rig so
+    // `Auto` re-resolves against the new mod chain.
+    SceneServices& svc = *impl_->activeServices_;
+    if (!svc.dnc) {
+        svc.dnc = std::make_unique<dnc::DncService>(Scene().ActiveContentProvider());
+        // A new scene opens looking like the one the host has been configuring
+        // rather than snapping back to the built-in Lordaeron default — the
+        // settings ini seeds the default scene, and tabs inherit from it.
+        if (auto* seed = DefaultSceneDnc(); seed && seed != svc.dnc.get()) {
+            svc.dnc->SetUnitMdl(seed->UnitMdlPath());
+            svc.dnc->SetHoursPerDay(seed->GetHoursPerDay());
+            svc.dnc->SetDayLengthSeconds(seed->GetDayLengthSeconds());
+            svc.dnc->SetDawnHours(seed->GetDawnHours());
+            svc.dnc->SetDuskHours(seed->GetDuskHours());
+            svc.dnc->SetTimeOfDay(seed->GetTimeOfDay());
+            svc.dnc->SetTodScale(seed->GetTodScale());
+        }
+    } else {
+        svc.dnc->SetContentProvider(Scene().ActiveContentProvider());
+    }
+    // Which layer an unpinned path resolves from. RenderSettings is still
+    // service-wide, but the pipeline snapshots the render mode per viewport,
+    // so by the time a scene is published this is that scene's mode.
+    svc.dnc->SetHdPreference(impl_->settings_.GetRenderMode() == RenderMode::HD);
+    return *svc.dnc;
+}
+
+dnc::DncService* RenderService::DefaultSceneDnc() {
+    auto it = impl_->sceneServices_.find(impl_->defaultSceneId_);
+    return it != impl_->sceneServices_.end() ? it->second->dnc.get() : nullptr;
 }
 
 shadow::ShadowService& RenderService::EnsureShadowService(gfx::IGFXDevice& gfx) {

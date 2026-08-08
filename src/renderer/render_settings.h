@@ -389,8 +389,15 @@ private:
     std::atomic<u8> lightingMode_{static_cast<u8>(LightingMode::InGame)};
     std::atomic<u32> backgroundColor_{0x00453A35u};
 
-    // IBL.
-    IblMode iblMode_ = IblMode::Portrait;
+    // IBL. The world default has to be the day/night pair, not the portrait
+    // probe: `CWorldFrameWar3` loads `[DayEnvironmentMap]`/`[NightEnvironmentMap]`
+    // for the map's tileset, while `[PortraitEnvironmentMap]` belongs to
+    // `CPortraitButton` alone. It also matters more than it looks — the HD DNC
+    // rigs carry `ambientIntensity = 0`, so on the plain-HD shader this probe
+    // is the entire ambient term, and the portrait probe is ~30% dimmer than
+    // Lordaeron Summer's day map (mean luma 0.17 vs 0.25) and never varies
+    // with time of day.
+    IblMode iblMode_ = IblMode::DayNight;
     std::atomic<bool> iblModeDirty_{true}; // pipeline does an initial apply
 
     // Tonemap exposure.

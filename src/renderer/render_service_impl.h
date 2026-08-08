@@ -58,6 +58,12 @@ struct SceneServices {
     particle::ParticleService particles;
     particle::SplatService splats;
     std::unique_ptr<effects::SpnSpawner> spn;
+    // Per-scene, because the DNC model resolves through the scene's own
+    // content provider: `Auto` picks SD or HD from that provider's mod-chain
+    // order, so a scene showing an HD model and one showing SD need different
+    // rigs. Time of day is per-scene for the same reason. Created lazily by
+    // EnsureDncService once the scene has a provider.
+    std::unique_ptr<dnc::DncService> dnc;
     corn_effects::CornEffectsService corn; // declared last → destroyed first
 };
 
@@ -123,7 +129,6 @@ struct RenderService::Impl {
 
     // ---- Gfx device + subsystems that hold gfx handles ----
     std::unique_ptr<RenderPipeline> pipeline_;
-    std::unique_ptr<dnc::DncService> dncService_;
     std::unique_ptr<shadow::ShadowService> shadowService_;
     std::unique_ptr<gtao::GtaoService> gtaoService_;
     std::unique_ptr<dof::DofService> dofService_;

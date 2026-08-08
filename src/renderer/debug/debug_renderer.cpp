@@ -238,7 +238,10 @@ void DebugRenderer::RenderLightMarkers() {
             if (mi->parentVisibility <= 0.02f)
                 continue;
             for (const auto& L : mi->render.activeLights) {
-                const bool dir = (L.kind == FrameState::LightKind::Directional);
+                // Same split the renderer uses: only Omni is positional, so an
+                // Ambient light draws as a direction arrow, not a point marker
+                // (its worldPos is never populated).
+                const bool dir = (L.kind != FrameState::LightKind::Omni);
                 lights.push_back(
                     {dir ? whiteout::transform_point(Vector3f{0, 0, 0}, mi->worldTransform)
                          : L.worldPos,

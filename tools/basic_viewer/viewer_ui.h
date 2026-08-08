@@ -59,11 +59,6 @@ private:
     bool saveExportTextures_ = false;  // export used textures next to the model
     i32 saveTexFormatIdx_ = 0;         // index into kExportFormats (0 = keep original)
 
-    // DNC path edit buffer (ImGui InputText needs a writable buffer the UI
-    // owns; we sync from DncService.UnitMdlPath() on each frame so external
-    // updates take effect).
-    std::string dncPathBuf_;
-
     // IO tab edit buffers, mirroring the live FileContentProvider state.
     // Seeded from the provider on first display of Settings (and after a
     // Reset). installPathBuf_ commits to the provider + ini on

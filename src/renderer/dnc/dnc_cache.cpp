@@ -32,6 +32,13 @@ DncCache::~DncCache() {
     ReleaseAll();
 }
 
+void DncCache::SetContentProvider(io::IContentProvider* contentProvider) {
+    if (contentProvider == contentProvider_)
+        return;
+    contentProvider_ = contentProvider;
+    entries_.clear();
+}
+
 std::string DncCache::NormalizeKey(const std::string& path) {
     std::string out;
     out.reserve(path.size());

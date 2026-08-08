@@ -64,6 +64,7 @@ DncSample Sample(const DncAsset& asset, f32 todHours, f32 hoursPerDay, f32 ambMo
                                         asset.seqEndMs, L.ambientIntensity));
     s.ambient = {ambColor.x * ambModifier + ambI, ambColor.y * ambModifier + ambI,
                  ambColor.z * ambModifier + ambI};
+    s.ambientColor = ambColor;
 
     s.worldDir = whiteout::transform_normal(Vector3f{0.0f, 0.0f, -1.0f}, lightWorld);
     const f32 n2 =

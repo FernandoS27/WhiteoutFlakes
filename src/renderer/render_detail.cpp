@@ -22,7 +22,6 @@ void FillRenderableView(RenderableView& view, model::Actor& mi) {
     view.materials = &mi.render.gpuMaterials;
     view.textures = mi.render.textures.get();
     view.skinning = &mi.render.skinning;
-    view.activeLights = &mi.render.activeLights;
     view.texAnimPalette = &mi.render.texAnimPalette;
     view.worldTransform = mi.worldTransform;
     view.parentVisibility = mi.parentVisibility;
@@ -43,6 +42,7 @@ CollectedDrawLists BuildDrawLists(
     out.views.reserve(models.size());
     out.lists.opaque.reserve(models.size() * 4);
     out.lists.transparent.reserve(models.size() * 2);
+    out.sceneLights.reserve(models.size());
 
     for (const auto& [h, miPtr] : models) {
         Actor* mi = miPtr.get();
@@ -55,6 +55,12 @@ CollectedDrawLists BuildDrawLists(
         // `views` is reserved to models.size() so these pointers stay valid.
         RenderableView& view = out.views.emplace_back();
         FillRenderableView(view, *mi);
+
+        // LightState positions/directions already carry the actor's world
+        // transform (MdxModelAdapter::Evaluate applies it), so pooling across
+        // actors needs no further transform.
+        out.sceneLights.insert(out.sceneLights.end(), mi->render.activeLights.begin(),
+                               mi->render.activeLights.end());
 
         const i32 modelLod = mi->render.hasLods ? selectedLod : 0;
         const i32 geosetCount = static_cast<i32>(mi->render.gpuGeosets.size());
@@ -80,7 +86,7 @@ CollectedDrawLists BuildDrawLists(
                 // HD opaque-fading geosets carry the Color depth-fill twin (WC3
                 // RenderGeoset's DEPTHFILL_COLOR); true blend geosets stay None.
                 t.depthFill = gc.needsDepthFill ? bls::DepthFill::Color : bls::DepthFill::None;
-                const Vector3f wc = whiteout::transform_point(geo.localCentroid, view.worldTransform);
+                const Vector3f wc = GeosetCentroidWS(view, geo);
                 const Vector3f d = {wc.x - cameraPos.x, wc.y - cameraPos.y, wc.z - cameraPos.z};
                 t.sqDist = d.x * d.x + d.y * d.y + d.z * d.z;
                 t.priorityPlane = geo.priorityPlane;

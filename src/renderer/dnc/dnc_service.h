@@ -20,6 +20,9 @@ struct DncAsset;
 struct DncSample {
     whiteout::Vector3f ambient{0, 0, 0};
     whiteout::Vector3f diffuse{0, 0, 0};
+    // Raw KLBC colour, kept separate from `ambient` because only the SD-on-HD
+    // path folds it in (CGxLightToShaderLight's ambLightModifier).
+    whiteout::Vector3f ambientColor{0, 0, 0};
     whiteout::Vector3f worldDir{0, 0, -1};
     bool valid = false;
 };
@@ -42,6 +45,23 @@ public:
     void SetUnitMdl(const std::string& path);
     const std::string& UnitMdlPath() const {
         return unitPath_;
+    }
+
+    /// @brief Re-point at another provider (the owning scene was given a new
+    ///        one). Reloads the rig through it; a no-op if unchanged.
+    void SetContentProvider(io::IContentProvider* contentProvider);
+
+    /// @brief Which mod layer an unpinned ("Auto") path resolves from.
+    ///
+    /// An unpinned path names one file but reaches two — `war3.w3mod:` in SD,
+    /// `war3.w3mod:_hd.w3mod:` in HD — and the HD rigs carry a very different
+    /// curve (ambientIntensity 0 vs 0.3). This is per-scene state rather than
+    /// a read of the provider's HD flag, because the host may point several
+    /// scenes at one shared provider; resolving through a mod-pinned path
+    /// keeps each scene on its own variant regardless. A no-op if unchanged.
+    void SetHdPreference(bool hd);
+    bool HdPreference() const {
+        return hdPreference_;
     }
 
     bool HasAsset() const;
@@ -106,10 +126,13 @@ public:
     EnvMapBlend ComputeEnvMapBlend() const;
 
 private:
+    void ReacquireAsset();
+
     io::IContentProvider* contentProvider_ = nullptr;
     std::unique_ptr<DncCache> cache_;
     DncAsset* unitAsset_ = nullptr;
     std::string unitPath_;
+    bool hdPreference_ = false;
 
     std::atomic<f32> tod_{12.0f};
     f32 hoursPerDay_ = 24.0f;

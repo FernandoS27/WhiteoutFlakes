@@ -5,6 +5,7 @@
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/camera.h"
 #include "renderer/debug/debug_renderer.h"
+#include "renderer/dnc/dnc_catalog.h"
 #include "renderer/dnc/dnc_service.h"
 #include "renderer/model/model_instance.h"
 #include "renderer/model/model_template.h"
@@ -1213,27 +1214,70 @@ void ViewerUI::BuildSettingsWindow() {
 
         ImGui::Separator();
 
-        // ---- DNC model path ----
-        // ImGui InputText needs a writable buffer the UI owns across frames. We
-        // mirror DncService.UnitMdlPath() into dncPathBuf_ whenever the user
-        // isn't actively typing (matches the old EN_KILLFOCUS commit-on-blur
-        // flow); when they deactivate the field after an edit we push the new
-        // value back into the service.
+        // ---- DNC model ----
+        // The stock DNC set is small and fully enumerable (dnc_catalog.h), so
+        // this is two combos instead of a free-text path: which light rig, and
+        // which mod layer to read it from. A path the catalog doesn't know —
+        // an older ini, or a hand-edited one — still shows and still loads.
         if (auto* dnc = svc.GetDncService()) {
-            char buf[512];
-            std::snprintf(buf, sizeof(buf), "%s",
-                          dncPathBuf_.empty() ? dnc->UnitMdlPath().c_str() : dncPathBuf_.c_str());
-            if (ImGui::InputText(i18n::tr("settings.general.dnc_model"), buf, sizeof(buf)))
-                dncPathBuf_ = buf;
-            if (ImGui::IsItemDeactivatedAfterEdit()) {
-                dnc->SetUnitMdl(dncPathBuf_);
-                SaveIni(app_);
+            const auto catalog = dnc::DncCatalog();
+            const std::string current = dnc->UnitMdlPath();
+            const i32 sel = dnc::DncCatalogIndexOf(current);
+            const dnc::DncVariant variant = dnc::DncVariantOf(current);
+
+            ImGui::SetNextItemWidth(220.0f);
+            const std::string preview = (sel >= 0) ? dnc::DncEntryLabel(catalog[sel]) : current;
+            if (ImGui::BeginCombo(i18n::tr("settings.general.dnc_model"), preview.c_str())) {
+                for (usize i = 0; i < catalog.size(); ++i) {
+                    const auto& e = catalog[i];
+                    if (ImGui::Selectable(dnc::DncEntryLabel(e).c_str(),
+                                          static_cast<i32>(i) == sel)) {
+                        dnc->SetUnitMdl(dnc::DncPathForVariant(e.path, variant));
+                        SaveIni(app_);
+                    }
+                    if (ImGui::IsItemHovered()) {
+                        std::string tilesets;
+                        for (const auto& ts : dnc::DncTilesets()) {
+                            if (ts.family != e.family)
+                                continue;
+                            if (!tilesets.empty())
+                                tilesets += ", ";
+                            tilesets += std::string(ts.name);
+                        }
+                        ImGui::SetTooltip("%.*s\n%s %s", static_cast<i32>(e.path.size()),
+                                          e.path.data(), i18n::tr("settings.general.dnc_tilesets"),
+                                          tilesets.c_str());
+                    }
+                }
+                ImGui::EndCombo();
             }
             ImGui::SameLine();
             if (ImGui::Button(i18n::tr("settings.general.dnc_reset"))) {
-                dncPathBuf_ = dnc::DncService::kDefaultUnitMdl;
-                dnc->SetUnitMdl(dncPathBuf_);
+                dnc->SetUnitMdl(dnc::DncService::kDefaultUnitMdl);
                 SaveIni(app_);
+            }
+
+            // Auto follows the provider's HD-mode mod chain; SD/HD pin the
+            // path to one layer. Only Lordaeron's legacy target rig is
+            // SD-only, so the HD entry is greyed out rather than hidden.
+            const bool hasSd = sel < 0 || catalog[sel].hasSd;
+            const bool hasHd = sel < 0 || catalog[sel].hasHd;
+            const char* variantLabels[] = {i18n::tr("settings.general.dnc_variant_auto"), "SD",
+                                           "HD"};
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::BeginCombo(i18n::tr("settings.general.dnc_variant"),
+                                  variantLabels[static_cast<usize>(variant)])) {
+                const bool enabled[] = {true, hasSd, hasHd};
+                for (usize i = 0; i < std::size(variantLabels); ++i) {
+                    ImGui::BeginDisabled(!enabled[i]);
+                    if (ImGui::Selectable(variantLabels[i], i == static_cast<usize>(variant))) {
+                        dnc->SetUnitMdl(
+                            dnc::DncPathForVariant(current, static_cast<dnc::DncVariant>(i)));
+                        SaveIni(app_);
+                    }
+                    ImGui::EndDisabled();
+                }
+                ImGui::EndCombo();
             }
         }
 

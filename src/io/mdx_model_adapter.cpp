@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include "mdx_model_adapter.h"
@@ -1130,16 +1131,31 @@ FrameState MdxModelAdapter::Evaluate(i32 sequenceIdx, i32 timeMs, i32 globalTime
             Vector3f animated = evalVec3(L.colorTracks, L.color);
             color = {animated.z, animated.y, animated.x};
         }
+        Vector3f ambColor = L.ambientColor;
+        if (L.ambientColorTracks.isUsed) {
+            Vector3f animated = evalVec3(L.ambientColorTracks, L.ambientColor);
+            ambColor = {animated.z, animated.y, animated.x};
+        }
+        // SetLightColor clamps both colour tracks to 0..1; SetLightIntensity
+        // floors both intensities at 0 (Engine/Source/Anim/Anim.cpp).
+        auto sat = [](f32 v) { return std::clamp(v, 0.0f, 1.0f); };
+        ambColor = {sat(ambColor.x), sat(ambColor.y), sat(ambColor.z)};
+
         f32 inten = std::max(0.0f, evalF32(L.intensityTracks, L.intensity));
         f32 ambI = std::max(0.0f, evalF32(L.ambientIntensityTracks, L.ambientIntensity));
         ls.diffuse = {color.x * inten, color.y * inten, color.z * inten};
-        ls.ambient = {ambI, ambI, ambI};
+        ls.ambientColor = ambColor;
+        ls.dirIntensity = inten;
+        ls.ambIntensity = ambI;
 
+        // Only Omni is positional. WC3's CreateLight_1 is
+        // `if (type) EnvCreateLight() else EnvCreateOmniLight()`, so Ambient
+        // (type 2) is a directional light, not a point light.
         Matrix44f world = worldOf(lightNodeIdx) * worldTransform;
-        if (ls.kind == FrameState::LightKind::Directional) {
-            ls.worldDir = whiteout::transform_normal(Vector3f{0, 0, -1}, world);
-        } else {
+        if (ls.kind == FrameState::LightKind::Omni) {
             ls.worldPos = whiteout::transform_point(Vector3f{0, 0, 0}, world);
+        } else {
+            ls.worldDir = whiteout::transform_normal(Vector3f{0, 0, -1}, world);
         }
         ls.attenStart = L.attenuationStart;
         ls.attenEnd = L.attenuationEnd;
@@ -1321,9 +1337,8 @@ std::vector<SequenceInfo> MdxModelAdapter::GetSequences() const {
     for (const auto& seq : model_.sequences) {
         const bool nonLoop = (seq.flags & whiteout::mdx::Sequence::Flag::NonLooping) !=
                              whiteout::mdx::Sequence::Flag::None;
-        result.push_back(
-            {seq.name, (i32)seq.intervalStart, (i32)seq.intervalEnd,
-             seq.moveSpeed, seq.rarity, nonLoop});
+        result.push_back({seq.name, (i32)seq.intervalStart, (i32)seq.intervalEnd, seq.moveSpeed,
+                          seq.rarity, nonLoop});
     }
     return result;
 }

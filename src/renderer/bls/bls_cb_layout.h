@@ -17,6 +17,15 @@ struct ShaderTexMtx {
 };
 static_assert(sizeof(ShaderTexMtx) == 32);
 
+// 64 bytes, i.e. 4 constant registers per light. Verified against the shipped
+// shaders with `BlsReflect.exe <bls> <perm>`: vs/sd_highspec.bls perm 45 reads
+// light 0 at cb0[13..15] and light 1 at cb0[17..19]; ps/hd.bls and
+// ps/sd_on_hd.bls both index with `ishl <idx>, l(2)`. Only `_pad.x` of light 0
+// is ever read, and only by sd_on_hd (see BuildSdOnHdPsCb).
+//
+// Note the disassembled client (Warcraft IIId.exe) uses a 48-byte stride
+// (`imul rcx, 30h` in CGxDevice::IStateSync) — it predates these shader assets.
+// Re-run BlsReflect before trusting that binary over the .bls files.
 struct ShaderLight {
     Vector4f ambient;
     Vector4f diffuse;

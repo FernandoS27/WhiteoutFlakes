@@ -53,14 +53,14 @@ public:
         cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.Samplers().LinearWrap());
         d.BindPassResources(cmd, frame);
 
-        const bls::BaselineLights baseline = d.Baseline(view);
+        const bls::LightingContext lighting = MakeLightingContext(collected, view);
 
         if (bucket_ != GeosetBucket::Transparent)
             for (const auto& item : collected.lists.opaque)
-                d.DrawOpaqueItem(item, frame, view, cmd, baseline);
+                d.DrawOpaqueItem(item, frame, view, cmd, lighting);
         if (bucket_ != GeosetBucket::Opaque)
             for (const auto& item : collected.lists.transparent)
-                d.DrawTransparentItem(item, frame, view, cmd, baseline);
+                d.DrawTransparentItem(item, frame, view, cmd, lighting);
         return true;
     }
 
@@ -71,7 +71,7 @@ public:
     // isn't available or there are no actors.
     bool PrepareInterleaved(render_detail::CollectedDrawLists& outCollected,
                             bls::FrameInputs& outFrame, Matrix44f& outView,
-                            bls::BaselineLights& outBaseline) {
+                            bls::LightingContext& outLighting) {
         Derived& d = self();
         if (!d.IsAvailable() || rs_.Scene().Actors().All().empty())
             return false;
@@ -92,13 +92,24 @@ public:
 
         cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.Samplers().LinearWrap());
         d.BindPassResources(cmd, outFrame);
-        outBaseline = d.Baseline(outView);
+        outLighting = MakeLightingContext(outCollected, outView);
         return true;
     }
 
 protected:
     RenderService& rs_;
     GeosetBucket bucket_;
+
+    // `collected` must outlive the returned context — it holds the light list
+    // by pointer, and the collected lists already live for the whole pass.
+    bls::LightingContext MakeLightingContext(const render_detail::CollectedDrawLists& collected,
+                                             const Matrix44f& view) {
+        bls::LightingContext ctx;
+        ctx.sceneLights = &collected.sceneLights;
+        ctx.baseline = self().Baseline(view);
+        ctx.mode = rs_.Settings().GetLightingMode();
+        return ctx;
+    }
     Derived& self() {
         return *static_cast<Derived*>(this);
     }

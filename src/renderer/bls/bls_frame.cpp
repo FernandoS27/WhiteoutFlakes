@@ -30,6 +30,41 @@ inline f32 ResolveAlphaRef(const MatParams& mat) {
     return mat.alphaRef >= 0.0f ? mat.alphaRef : AlphaRefFor(mat.alpha);
 }
 
+// CGxDevice::m_sdOnHDLightCompensationValue, initialised to 0.3f at the tail of
+// CGxDevice::CGxDevice (Engine/Source/Gx/CGxDevice.cpp). IStateSync passes it to
+// CGxLightToShaderLight as ambLightModifier, but only for GxShaderID_SD_ON_HD;
+// every other shader gets 0.
+inline constexpr f32 kSdOnHdAmbientCompensation = 0.3f;
+
+// `ps/sd_on_hd.bls` reads lights[0]._pad.x (register 24) outside the light
+// loop, as a blend weight in the team-colour block:
+//     r6.y = hasTeamTex * (hasTeamTex + max(lights[0].diffuse.rgb)) * pad.x
+// and then lerps the team-colour result against the base by r6.y.
+//
+// The engine-side source of this value is unknown: the disassembled client
+// (Warcraft IIId.exe) predates the 64-byte ShaderLight and has no fourth
+// vec4 to write. 0 leaves the term inert, which is the behaviour we shipped
+// before — do not change it to a guess without a reference capture to
+// compare against.
+inline constexpr f32 kSdOnHdLight0BlendWeight = 0.0f;
+
+// `ps/hd.bls` reads the same register, and there it is *not* inert — it scales
+// the only NdotL-independent term in the lighting tail:
+//     r3.w  = iblRan * (iblRan + max(lights[0].diffuse.rgb)) * pad.x
+//     r12   = r3.w * irradiance
+//     r9    = saturate(dot(N,L)) * r9 + r12          <-- r12 survives at NdotL=0
+//     r9   += lights[0].ambient
+// so pad.x is what lets the env-probe irradiance reach an unlit surface. At 0
+// a back-facing pixel gets `lights[0].ambient` and nothing else, which on the
+// HD DNC rigs (ambientIntensity = 0) means pure black, and on the SD rigs
+// means a flat 0.3 with no probe contribution at all.
+//
+// Verified with BlsReflect over ps/hd.bls: register 24 is read by perms
+// 8, 9, 12, 13, 24 and 25 — every lit, non-prepass permutation, including
+// perm 9, the team-coloured unit perm. (Perms with lights=0 or prepass=1
+// have no lighting tail, which is why a spot-check of those reads nothing.)
+inline constexpr f32 kHdLight0BlendWeight = 0.15f;
+
 } // namespace
 
 void BuildSdVsCbA(SdVsCbA& out, const FrameInputs& in, const MatParams& mat) {
@@ -97,12 +132,14 @@ void BuildHdPsCb(HdPsCb& out, const FrameInputs& in, const MatParams& mat) {
 
     out.envMapParams = {in.envFromMipEnd, in.envToMipEnd, in.envTransitionT, 0.0f};
 
-    for (i32 i = 0; i < nLights; ++i) {
+    for (i32 i = 0; i < nLights; ++i)
         out.lights[i] = in.lights[i];
-        out.lights[i]._pad = {0.25f, 0.0f, 0.0f, 0.0f};
-    }
     for (i32 i = nLights; i < kMaxLights; ++i)
         out.lights[i] = {};
+
+    // Only light 0's slot is read (register 24); see kHdLight0BlendWeight.
+    if (nLights > 0)
+        out.lights[0]._pad = {kHdLight0BlendWeight, 0.0f, 0.0f, 0.0f};
 }
 
 void BuildSdOnHdPsCb(SdOnHdPsCb& out, const FrameInputs& in, const MatParams& mat) {
@@ -128,10 +165,21 @@ void BuildSdOnHdPsCb(SdOnHdPsCb& out, const FrameInputs& in, const MatParams& ma
     std::memcpy(&countAsFloat, &countBits, sizeof(f32));
     out.lightCountSlot = {0, 0, countAsFloat, 0};
 
-    for (i32 i = 0; i < n; ++i)
+    // SD-on-HD is the one path where CGxLightToShaderLight's ambLightModifier
+    // is non-zero, so it is the only place the MDX ambient colour (KLBC)
+    // contributes: ambient = ambIntensity + modifier * ambColor.
+    for (i32 i = 0; i < n; ++i) {
+        const Vector3f& ac = in.lightAmbientColors[i];
         out.lights[i] = in.lights[i];
+        out.lights[i].ambient.x += kSdOnHdAmbientCompensation * ac.x;
+        out.lights[i].ambient.y += kSdOnHdAmbientCompensation * ac.y;
+        out.lights[i].ambient.z += kSdOnHdAmbientCompensation * ac.z;
+    }
     for (i32 i = n; i < kMaxLights; ++i)
         out.lights[i] = {};
+
+    if (n > 0)
+        out.lights[0]._pad = {kSdOnHdLight0BlendWeight, 0.0f, 0.0f, 0.0f};
 }
 
 void PackBone(ShaderBone& out, const Matrix44f& m) {

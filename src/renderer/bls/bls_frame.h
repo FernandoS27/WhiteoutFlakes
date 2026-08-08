@@ -29,6 +29,13 @@ struct FrameInputs {
     ShaderTexMtx texMtx1 = {{Vector4f{1, 0, 0, 0}, Vector4f{0, 1, 0, 0}}};
 
     ShaderLight lights[kMaxLights] = {};
+
+    // Parallel to `lights`: the KLBC ambient colour of each selected light.
+    // Only the SD-on-HD constant buffer folds it in — CGxLightToShaderLight
+    // computes `ambient = ambIntensity + ambLightModifier * ambColor`, and
+    // ambLightModifier is non-zero only for GxShaderID_SD_ON_HD. Every other
+    // path ships `ambient = vec3(ambIntensity)`, which is what `lights` holds.
+    Vector3f lightAmbientColors[kMaxLights] = {};
 };
 
 void BuildSdVsCbA(SdVsCbA& out, const FrameInputs& in, const MatParams& mat);

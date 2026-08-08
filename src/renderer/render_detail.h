@@ -46,13 +46,19 @@ struct RenderableView {
     const std::vector<model::GPUMaterial>* materials = nullptr;
     assets::TextureAssetManager::ModelScope* textures = nullptr;
     const animation::SkinningSystem* skinning = nullptr;
-    const std::vector<model::FrameState::LightState>* activeLights = nullptr;
     const std::vector<model::RenderModel::TexAnimPaletteEntry>* texAnimPalette = nullptr;
     Matrix44f worldTransform = Matrix44f::identity();
     f32 parentVisibility = 1.0f;
     bool hasLods = false;
     u32 teamColor = 0x000000FFu;
 };
+
+// The point WC3's RenderGeosetPrep feeds to GxuLightSelect: the geoset's local
+// centroid pushed through the actor's world transform. Also what the
+// transparent pass sorts by, so the two agree by construction.
+inline Vector3f GeosetCentroidWS(const RenderableView& view, const model::GPUGeoset& geo) {
+    return whiteout::transform_point(geo.localCentroid, view.worldTransform);
+}
 
 // Owns the per-actor views the draw items point into (kept stable for the
 // frame), plus the classified + sorted opaque/transparent lists. Replaces the
@@ -61,6 +67,10 @@ struct RenderableView {
 struct CollectedDrawLists {
     std::vector<RenderableView> views;
     DrawLists lists;
+    // Every visible actor's lights, already in world space. WC3 keeps one
+    // global registry any geoset can draw from; collecting per scene here is
+    // the same thing scoped to what BuildDrawLists was handed.
+    std::vector<model::FrameState::LightState> sceneLights;
 };
 
 CollectedDrawLists BuildDrawLists(

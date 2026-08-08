@@ -259,7 +259,13 @@ public:
     bool HasDeviceAssetManagers() const;
     void CreateDeviceAssetManagers(gfx::IGFXDevice& gfx);
     void ResetDeviceAssetManagers();
+    // Ensures the ACTIVE scene's DNC exists, is bound to that scene's provider,
+    // and resolves `Auto` against that scene's render mode. Call after
+    // publishing a scene, before anything samples GetDncService().
     dnc::DncService& EnsureDncService();
+    // Default scene's DNC, or null before it is built. New scenes inherit its
+    // knobs so a fresh tab matches what the host has configured.
+    dnc::DncService* DefaultSceneDnc();
     shadow::ShadowService& EnsureShadowService(gfx::IGFXDevice& gfx);
     gtao::GtaoService& EnsureGtaoService(gfx::IGFXDevice& gfx, gfx::GfxApi api);
     dof::DofService& EnsureDofService(gfx::IGFXDevice& gfx, gfx::GfxApi api,
