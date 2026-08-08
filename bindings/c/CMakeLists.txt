@@ -11,7 +11,7 @@
 # shim TU has to catch that rather than let it cross the C boundary.
 
 set(_wf_c_sources
-    whiteout_c_common.cpp
+    whiteout_flakes_common.cpp
     whiteout_flakes.cpp
     whiteout_flakes_shims.cpp
 )
