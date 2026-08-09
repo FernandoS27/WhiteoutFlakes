@@ -240,9 +240,13 @@ struct BytecodeExecContext {
     }
 };
 
+// 64-bit only: the census counts 16-byte spans and 8-byte pointers. wasm32
+// packs the same fields into 24912, which is not a layout change.
+#if UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFULL
 static_assert(sizeof(BytecodeExecContext) == 25048,
               "BytecodeExecContext size changed -- update the M-3 field census above, "
               "resetPerScopeRun(), and the arithmetic in SIMT_MIGRATION_PLAN.md §0 and §5/B4");
+#endif
 
 inline BytecodeExecContext::EventCacheEntry* allocEventCacheEntry(BytecodeExecContext& ctx,
                                                                   u32 key) noexcept {

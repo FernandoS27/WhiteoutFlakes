@@ -14,8 +14,11 @@
 #include <set>
 #include <string>
 
-#if defined(_MSC_VER) || defined(__clang__)
+#if defined(_MSC_VER)
 #define CF_CBEM_OP __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+// GNU-mode clang (Emscripten, Linux, macOS) has no __declspec.
+#define CF_CBEM_OP __attribute__((noinline))
 #else
 #define CF_CBEM_OP
 #endif

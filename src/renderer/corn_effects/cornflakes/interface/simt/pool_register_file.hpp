@@ -150,7 +150,11 @@ private:
         void* p = std::aligned_alloc(kAlignment, bytes);
 #endif
         if (p == nullptr) {
+#if defined(__cpp_exceptions)
             throw std::bad_alloc{};
+#else
+            std::abort();  // -fno-exceptions (web build)
+#endif
         }
         std::memset(p, 0, bytes);
         return static_cast<u32*>(p);

@@ -212,7 +212,11 @@ private:
         void* p = std::aligned_alloc(kAlignment, ((bytes + kAlignment - 1U) / kAlignment) * kAlignment);
 #endif
         if (p == nullptr) {
+#if defined(__cpp_exceptions)
             throw std::bad_alloc{};
+#else
+            std::abort();  // -fno-exceptions (web build)
+#endif
         }
         return static_cast<u32*>(p);
     }

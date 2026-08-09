@@ -59,6 +59,26 @@ std::string& firstViolationStorage() {
     return s;
 }
 
+// Body of checkBoundProgram, split out so the exception guard around it stays
+// a thin wrapper — the web build compiles with -fno-exceptions.
+// Returns true when the program has at least one violation.
+bool recordViolations(std::span<const CBEMInstruction> program) {
+    const auto report = analyseLocalScratch(program);
+    if (report.clean()) {
+        return false;
+    }
+    violationCount += report.findings.size();
+    if (firstViolationStorage().empty()) {
+        const auto& f = report.findings.front();
+        char buf[192];
+        std::snprintf(buf, sizeof(buf),
+                      "local vr%u read before written (instruction %zu, stream offset 0x%x, %s)",
+                      f.localIndex, f.instructionIndex, f.streamOffset, opcodeName(f.opcode));
+        firstViolationStorage() = buf;
+    }
+    return true;
+}
+
 }
 
 u64 boundProgramViolationCount() noexcept {
@@ -78,24 +98,19 @@ void checkBoundProgram(std::span<const CBEMInstruction> program) noexcept {
     if (program.empty()) {
         return;
     }
+#if defined(__cpp_exceptions)
     try {
-        const auto report = analyseLocalScratch(program);
-        if (report.clean()) {
+        if (!recordViolations(program)) {
             return;
-        }
-        violationCount += report.findings.size();
-        if (firstViolationStorage().empty()) {
-            const auto& f = report.findings.front();
-            char buf[192];
-            std::snprintf(
-                buf, sizeof(buf),
-                "local vr%u read before written (instruction %zu, stream offset 0x%x, %s)",
-                f.localIndex, f.instructionIndex, f.streamOffset, opcodeName(f.opcode));
-            firstViolationStorage() = buf;
         }
     } catch (...) {
         return;
     }
+#else
+    if (!recordViolations(program)) {  // -fno-exceptions: nothing to catch
+        return;
+    }
+#endif
 #ifndef NDEBUG
     std::fprintf(stderr, "[cornflakes] SIMT scratch violation: %s\n",
                  firstViolationStorage().c_str());

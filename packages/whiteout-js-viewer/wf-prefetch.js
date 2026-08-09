@@ -4,7 +4,10 @@
 
 const VS_SHADERS = ['foliage', 'gritty_hd', 'hd', 'imgui', 'popcornfx',
                     'sd_highspec', 'sd_on_hd', 'sprite', 'terrain', 'toon_hd'];
-const PS_SHADERS = ['crystal', 'distortion', 'foliage', 'gritty_hd', 'hd', 'imgui',
+// bloomextract/bloomcombine back PostProcessService's bloom and depthoffield
+// backs DofService; without them the engine disables both at init.
+const PS_SHADERS = ['bloomcombine', 'bloomextract', 'crystal', 'depthoffield',
+                    'distortion', 'foliage', 'gritty_hd', 'hd', 'imgui',
                     'popcornfx', 'sd', 'sd_on_hd', 'sprite', 'terrain', 'tonemap', 'toon_hd'];
 
 // Engine assets that must come from the CASC service rather than the
