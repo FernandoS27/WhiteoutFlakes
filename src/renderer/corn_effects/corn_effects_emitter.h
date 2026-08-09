@@ -150,6 +150,11 @@ private:
     assets::AssetManager& assets_;
     std::uint32_t assetSlot_ = 0; // AssetManager::kInvalidSlot
     u32 lastAssetGen_ = 0;        // observed slot generation; bump triggers re-spawn
+    // Seed for this emitter's particle RNG, fixed at spawn. Derived from the
+    // effect id (a spawn-order counter) rather than the emitter's address, so a
+    // given effect simulates the same way on every run — an address-derived seed
+    // moves with ASLR and made playback differ from launch to launch.
+    u32 rngSeed_ = 0;
     std::string pkbPath_;
     std::string animVisibilityGuide_;
     bool cornEffectsScaling_ = false;

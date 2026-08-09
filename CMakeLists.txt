@@ -903,8 +903,11 @@ if(Vulkan_FOUND)
     message(STATUS "WhiteoutFlakesGfx: Vulkan = ${Vulkan_LIBRARIES} "
                    "(SDK=${Vulkan_INCLUDE_DIRS})")
     target_link_libraries(WhiteoutFlakesGfx PRIVATE Vulkan::Vulkan)
+    # PUBLIC, like WDX_HAS_WEBGPU / WDX_HAS_METAL below: the C ABI's
+    # BackendCompiledIn shim reads it in an expression, not an #if, so it
+    # has to be defined for consumers of the library and not just inside it.
+    target_compile_definitions(WhiteoutFlakesGfx PUBLIC WDX_HAS_VULKAN=1)
     target_compile_definitions(WhiteoutFlakesGfx PRIVATE
-        WDX_HAS_VULKAN=1
         # vulkan.hpp config: no exceptions, default-dispatch (the dynamic
         # dispatcher would let us use the loader without linking
         # vulkan-1.lib, but we already link it). Result-based error
@@ -935,7 +938,7 @@ if(Vulkan_FOUND)
     )
 else()
     message(STATUS "WhiteoutFlakesGfx: Vulkan SDK not found — Vulkan backend disabled")
-    target_compile_definitions(WhiteoutFlakesGfx PRIVATE WDX_HAS_VULKAN=0)
+    target_compile_definitions(WhiteoutFlakesGfx PUBLIC WDX_HAS_VULKAN=0)
 endif()
 
 # ---- WebGPU / Dawn backend ----

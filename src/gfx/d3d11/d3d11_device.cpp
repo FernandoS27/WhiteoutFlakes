@@ -458,8 +458,14 @@ ShaderHandle D3D11Device::CreateShader(ShaderStage stage, const void* bytecode, 
         hr = device_->CreateComputeShader(bytecode, size, nullptr, &entry.cs);
         break;
     }
-    if (FAILED(hr))
+    if (FAILED(hr)) {
+        // Loud on purpose. A rejected blob used to return Invalid silently, and
+        // the pipeline built around it still looked valid, so the only symptom
+        // was a draw that quietly rendered nothing.
+        std::fprintf(stderr, "[d3d11] CreateShader FAILED stage=%d hr=0x%08x size=%zu\n",
+                     static_cast<int>(stage), static_cast<unsigned>(hr), size);
         return ShaderHandle::Invalid;
+    }
     return static_cast<ShaderHandle>(shaders_.Insert(std::move(entry)));
 }
 
@@ -531,9 +537,17 @@ PipelineHandle D3D11Device::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
             d.InstanceDataStepRate = 0;
             elems.push_back(d);
         }
-        device_->CreateInputLayout(elems.data(), static_cast<UINT>(elems.size()),
-                                   vsEntry->bytecode.data(), vsEntry->bytecode.size(),
-                                   &entry.inputLayout);
+        const HRESULT ilHr = device_->CreateInputLayout(
+            elems.data(), static_cast<UINT>(elems.size()), vsEntry->bytecode.data(),
+            vsEntry->bytecode.size(), &entry.inputLayout);
+        if (FAILED(ilHr)) {
+            // The HRESULT used to be dropped entirely: a rejected layout left
+            // inputLayout null while the pipeline was still handed out as good,
+            // so the draw bound no vertex data and produced nothing.
+            std::fprintf(stderr,
+                         "[d3d11] CreateInputLayout FAILED hr=0x%08x vs_size=%zu elements=%zu\n",
+                         static_cast<unsigned>(ilHr), vsEntry->bytecode.size(), elems.size());
+        }
     }
 
     return static_cast<PipelineHandle>(pipelines_.Insert(std::move(entry)));

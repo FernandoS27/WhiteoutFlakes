@@ -38,7 +38,7 @@ bundled-whiteoutlib = ["whiteoutflakes-sys/bundled-whiteoutlib"]
 system-whiteoutlib  = ["whiteoutflakes-sys/system-whiteoutlib"]
 
 [dependencies]
-whiteoutflakes-sys = { version = "0.2.0", path = "../whiteoutflakes-sys", default-features = false }
+whiteoutflakes-sys = { version = "0.3.1", path = "../whiteoutflakes-sys", default-features = false }
 
 [dev-dependencies]
 raw-window-handle = "0.6"

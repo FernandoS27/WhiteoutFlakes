@@ -185,7 +185,7 @@ impl Thumbs {
         let (mut ok, mut blank, mut bad) = (0, 0, 0);
         for p in paths {
             match self.get(p) {
-                Some(b) if b.is_empty() => bad += 1,
+                Some([]) => bad += 1,
                 Some(b) if coverage(b) < 0.005 => blank += 1,
                 Some(_) => ok += 1,
                 None => {}

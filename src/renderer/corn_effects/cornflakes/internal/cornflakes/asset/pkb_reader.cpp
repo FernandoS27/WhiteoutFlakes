@@ -180,6 +180,17 @@ std::string_view resolveStringField(std::string_view t, const std::byte* body, s
     return internIntoArena(strings[idx], arena);
 }
 
+std::span<const std::byte> alignPayload(const std::byte* src, std::size_t size, IArena& arena) {
+    const auto words = arenaArray<u32>(arena, (size + 3U) / 4U);
+    if (words.empty()) {
+        // Arena exhausted — hand back the source view rather than dropping the
+        // field. Still misaligned, but no worse than before.
+        return std::span<const std::byte>{src, size};
+    }
+    std::memcpy(words.data(), src, size);
+    return std::span<const std::byte>{reinterpret_cast<const std::byte*>(words.data()), size};
+}
+
 struct ObjectHeader {
     u8 flags = 0;
     u32 handlerId = 0;
@@ -245,7 +256,7 @@ std::span<const FieldRaw> decodeObjectFields(const HandlerDef* handler, const st
         FieldRaw raw;
         raw.name = fd.name;
         raw.type = fd.type;
-        raw.bytes = std::span<const std::byte>{body + valueStart, consumed};
+        raw.bytes = alignPayload(body + valueStart, consumed, arena);
         if (fd.type == "string" || fd.type == "string_unicode") {
             raw.stringValue =
                 resolveStringField(fd.type, body, valueStart, bodyEnd, strings, arena);

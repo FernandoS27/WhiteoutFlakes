@@ -9,8 +9,9 @@ D3D11CommandList::D3D11CommandList(D3D11Device& device) : device_(device) {}
 
 void D3D11CommandList::BeginRenderPass(TextureHandle color, TextureHandle depth,
                                        const f32 clearColor[4], f32 clearDepth, u8 clearStencil) {
-    f32 clears[1][4];
-    std::memcpy(clears[0], clearColor, sizeof(clears[0]));
+    f32 clears[1][4] = {};
+    if (clearColor)
+        std::memcpy(clears[0], clearColor, sizeof(clears[0]));
     const TextureHandle colors[1] = {color};
     BeginRenderPass(colors, 1, depth, clears, clearDepth, clearStencil);
 }

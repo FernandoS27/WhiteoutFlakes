@@ -96,8 +96,8 @@ whiteoutlib = { version = "0.1.0", optional = true }
 cmake = "0.1"
 # Build-dependencies rather than regular ones: these crates exist to hand
 # the build script a directory of files to copy, and nothing links them.
-whiteoutflakes-shaders-d3d11  = { version = "0.1.0", path = "../whiteoutflakes-shaders-d3d11",  optional = true }
-whiteoutflakes-shaders-d3d12  = { version = "0.1.0", path = "../whiteoutflakes-shaders-d3d12",  optional = true }
-whiteoutflakes-shaders-vulkan = { version = "0.1.0", path = "../whiteoutflakes-shaders-vulkan", optional = true }
-whiteoutflakes-shaders-metal  = { version = "0.1.0", path = "../whiteoutflakes-shaders-metal",  optional = true }
-whiteoutflakes-shaders-webgpu = { version = "0.1.0", path = "../whiteoutflakes-shaders-webgpu", optional = true }
+whiteoutflakes-shaders-d3d11  = { version = "0.2.0", path = "../whiteoutflakes-shaders-d3d11",  optional = true }
+whiteoutflakes-shaders-d3d12  = { version = "0.2.0", path = "../whiteoutflakes-shaders-d3d12",  optional = true }
+whiteoutflakes-shaders-vulkan = { version = "0.2.0", path = "../whiteoutflakes-shaders-vulkan", optional = true }
+whiteoutflakes-shaders-metal  = { version = "0.2.0", path = "../whiteoutflakes-shaders-metal",  optional = true }
+whiteoutflakes-shaders-webgpu = { version = "0.2.0", path = "../whiteoutflakes-shaders-webgpu", optional = true }

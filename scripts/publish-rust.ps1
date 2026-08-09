@@ -148,8 +148,17 @@ try {
         # when `git status` is clean. The check above runs vendor-rust.ps1's
         # staging and verifies it is present, which is the guarantee that
         # actually matters here.
-        & cargo publish -p $crate --allow-dirty
-        if ($LASTEXITCODE -ne 0) { throw "cargo publish failed for $crate" }
+        # Same Windows PowerShell 5.1 stderr trap the packaging loop above
+        # guards against, and it bites harder here: cargo announces "Updating
+        # crates.io index" on stderr, which became a fatal ErrorRecord and
+        # aborted the run mid-upload. The exit code is the only signal worth
+        # believing.
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        & cargo publish -p $crate --allow-dirty 2>&1 | ForEach-Object { Write-Host "$_" }
+        $code = $LASTEXITCODE
+        $ErrorActionPreference = $prevEap
+        if ($code -ne 0) { throw "cargo publish failed for $crate" }
         $uploaded += $crate
         if ($crate -ne $order[-1]) {
             Write-Host "    waiting ${IndexWaitSeconds}s for the index" -ForegroundColor DarkGray

@@ -15,6 +15,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <sstream>
 
@@ -317,8 +318,12 @@ bool CornEffectsEmitter::TrySpawn() {
         std::make_unique<::whiteout::cornflakes::ExpandingArena>(std::size_t{1U} << 16);
 
     ::whiteout::cornflakes::IssueBag issues;
+    const auto effectId = NextEffectId();
+    // Distinct per emitter instance (so two copies of the same effect don't move
+    // in lockstep) but reproducible across runs, unlike an address-derived seed.
+    rngSeed_ = static_cast<u32>(effectId.value * 2654435761ull) ^ 0xC0FFEE00u;
     auto rt = std::make_unique<::whiteout::cornflakes::EffectRuntime>(
-        *assetModel_, NextEffectId(), *bindArena, *frameArena_, issues, meshProvider_,
+        *assetModel_, effectId, *bindArena, *frameArena_, issues, meshProvider_,
         textureProvider_, vectorFieldProvider_);
     if (!rt->isValid()) {
         std::fprintf(stderr, "[corn_fx] ERR: TrySpawn '%s' produced invalid runtime:\n",
@@ -336,8 +341,17 @@ bool CornEffectsEmitter::TrySpawn() {
     // pool over to planar registers. Layers whose evolve program has side
     // effects the packet model can't order (spatial inserts) detect that and
     // fall back to the scalar interpreter on their own.
+    // WF_CORN_MODEL=a falls back to the scalar reference interpreter, which is
+    // how a SIMT-specific divergence gets bisected (cornflakes_gl exposes the
+    // same switch as CORNFLAKES_GL_MODEL).
+    static const bool kUseModelA = [] {
+        const char* e = std::getenv("WF_CORN_MODEL");
+        return e != nullptr && (*e == 'a' || *e == 'A');
+    }();
     for (size_t i = 0; i < rt->layerCount(); ++i) {
-        rt->setLayerModel(i, ::whiteout::cornflakes::EffectRuntime::LayerModel::ModelB);
+        rt->setLayerModel(i, kUseModelA
+                                 ? ::whiteout::cornflakes::EffectRuntime::LayerModel::ModelA
+                                 : ::whiteout::cornflakes::EffectRuntime::LayerModel::ModelB);
     }
 
     if (const auto* plan = rt->plan()) {
@@ -489,7 +503,7 @@ void CornEffectsEmitter::Update(f32 dt, bool paused) {
     inputs.emitterL2W.m[0][3] = modelToWorld_.data[3][0] * gameToCornEffectsScale_;
     inputs.emitterL2W.m[1][3] = modelToWorld_.data[3][1] * gameToCornEffectsScale_;
     inputs.emitterL2W.m[2][3] = modelToWorld_.data[3][2] * gameToCornEffectsScale_;
-    inputs.baseRngSeed = static_cast<u32>(reinterpret_cast<uintptr_t>(this) >> 4) ^ 0xC0FFEE00u;
+    inputs.baseRngSeed = rngSeed_;
     inputs.effectIsRunning = active;
     if (active) {
         effectAge_ += dt;

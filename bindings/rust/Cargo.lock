@@ -1494,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "whiteoutflakes"
-version = "0.2.0"
+version = "0.3.1"
 dependencies = [
  "raw-window-handle",
  "whiteoutflakes-sys",
@@ -1504,27 +1504,27 @@ dependencies = [
 
 [[package]]
 name = "whiteoutflakes-shaders-d3d11"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "whiteoutflakes-shaders-d3d12"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "whiteoutflakes-shaders-metal"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "whiteoutflakes-shaders-vulkan"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "whiteoutflakes-shaders-webgpu"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "whiteoutflakes-sys"
-version = "0.2.0"
+version = "0.3.1"
 dependencies = [
  "cmake",
  "whiteoutflakes-shaders-d3d11",
