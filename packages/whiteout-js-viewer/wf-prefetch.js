@@ -11,29 +11,39 @@ const PS_SHADERS = ['bloomcombine', 'bloomextract', 'crystal', 'depthoffield',
                     'popcornfx', 'sd', 'sd_on_hd', 'sprite', 'terrain', 'tonemap', 'toon_hd'];
 
 // Engine assets that must come from the CASC service rather than the
-// local `engineAssetRoot` mirror. The IBL probe drives HD environment
-// lighting and the DNC unit drives the directional sun + ambient — a
-// stale/local copy renders the scene dark, so these always resolve
-// through viewer.cascUrl (authoritative, always current). Everything
-// else in ENGINE_ASSETS keeps the local-first, CASC-fallback order.
+// local `engineAssetRoot` mirror. The IBL probes drive HD environment
+// lighting — a stale/local copy renders the scene dark, so these always
+// resolve through viewer.cascUrl (authoritative, always current).
+// Everything else in ENGINE_ASSETS keeps the local-first, CASC-fallback
+// order. (The DNC rig is also CASC-only but has its own path — see
+// DNC_VARIANTS.)
 const CASC_ONLY = new Set([
     'Environment/EnvironmentMap/Portraits/PortraitDefault_IBL.dds',
-    // Day/Night IBL probes — used by IblMode::DayNight (the day/night toggle).
+    // Day/Night IBL probes — used by IblMode::DayNight (the default probe set).
     'Environment/EnvironmentMap/LordaeronSummer/Day_IBL.dds',
     'Environment/EnvironmentMap/LordaeronSummer/Night_IBL.dds',
-    'war3.w3mod:Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdx',
-    'war3.w3mod:Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdl',
 ]);
 
+// DNC rig — the directional sun + ambient for BOTH pipelines.
+//
+// DncService pins its catalog path to a mod layer before asking the provider
+// (`war3.w3mod:` in SD, `war3.w3mod:_hd.w3mod:` in HD — dnc_service.cpp's
+// ReacquireAsset), so the provider must be keyed WITH the mount or the lookup
+// misses and the scene loses its light entirely. The two layers are different
+// files with different curves (HD ambientIntensity 0 vs SD 0.3), and the
+// renderer switches between them with the render mode, so both are fetched.
+const DNC_UNIT = 'Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdl';
+const DNC_VARIANTS = [
+    { context: 'sd', mount: 'war3.w3mod:' },
+    { context: 'hd', mount: 'war3.w3mod:_hd.w3mod:' },
+];
+
 const ENGINE_ASSETS = [
-    // IBL probes (portrait default + day/night) + DNC unit (CASC-only — see
-    // CASC_ONLY above). The day/night probes back IblMode::DayNight, which the
-    // viewer flips to with the day/night toggle.
+    // IBL probes (portrait default + day/night; CASC-only — see above). The
+    // day/night probes back IblMode::DayNight, the viewer's default probe set.
     'Environment/EnvironmentMap/Portraits/PortraitDefault_IBL.dds',
     'Environment/EnvironmentMap/LordaeronSummer/Day_IBL.dds',
     'Environment/EnvironmentMap/LordaeronSummer/Night_IBL.dds',
-    'war3.w3mod:Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdx',
-    'war3.w3mod:Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdl',
     // Replaceable tree textures (IDs 31-36). The renderer's
     // ReplaceableTextureManager resolves these via ContentProvider::Request
     // (synchronous, not the AssetManager needs pump that JS drains), so
@@ -96,21 +106,6 @@ function extOf(s) {
     return dot >= 0 ? s.slice(dot).toLowerCase() : '';
 }
 
-// Strip a CASC mount prefix like "war3.w3mod:" from a path. The prefix is
-// only needed to address the Hive CASC fetch (some engine assets — the DNC
-// unit — only resolve through the mount); the renderer requests them by bare
-// path (e.g. DncService asks for "Environment/DNC/.../DNCLordaeronUnit.mdl"),
-// so the provider must be keyed without it or the lookup misses and the asset
-// (and thus the whole day-night cycle) silently never loads.
-function stripMount(p) {
-    const colon = p.indexOf(':');
-    if (colon > 0) {
-        const slash = p.indexOf('/');
-        if (slash === -1 || slash > colon) return p.slice(colon + 1);
-    }
-    return p;
-}
-
 // If Hive served e.g. foo.dds for our foo.blp request, store under
 // the served ext so FetchContentProvider's alt-ext walk hits and the
 // renderer parses with the right decoder.
@@ -125,27 +120,37 @@ function pathWithServedExt(originalPath, finalUrl) {
     return (dot >= 0 ? originalPath.slice(0, dot) : originalPath) + servedExt;
 }
 
+// Both DNC layers, each stored under the mod-pinned key DncService will ask
+// for. `context` is what selects the layer server-side; the request path keeps
+// the plain `war3.w3mod:` mount either way (Hive resolves the _hd.w3mod
+// overlay from the context, not the path).
+async function prefetchDnc(viewer) {
+    await Promise.all(DNC_VARIANTS.map(async ({ context, mount }) => {
+        const url = viewer.cascUrl('war3.w3mod:' + DNC_UNIT, false) + '&context=' + context;
+        const res = await fetchResult(url);
+        if (!res) { console.warn('[wf] prefetch FAIL dnc/' + context); return; }
+        putBytes(viewer, pathWithServedExt(mount + DNC_UNIT, res.finalUrl), res.bytes);
+    }));
+}
+
 // CASC_ONLY paths fetch straight from viewer.cascUrl; the rest try
-// `engineAssetRoot` (./ by default) first, then fall back to CASC.
-// The IBL probe is a single mode-agnostic file (no context). The DNC unit,
-// though, has SD/HD variants: with no context Hive serves the _hd.w3mod copy,
-// whose directional light is stripped down (HD leans on IBL) — the renderer
-// drives BOTH pipelines' sun from the DNC, so that copy renders the scene too
-// dark. Force &context=sd so we get the full-intensity light the desktop uses.
+// `engineAssetRoot` (./ by default) first, then fall back to CASC. The IBL
+// probes are mode-agnostic files, so they go out with no context.
 export async function prefetchEngineAssets(viewer) {
     const root = viewer.engineAssetRoot || './';
-    await Promise.all(ENGINE_ASSETS.map(async (p) => {
-        let res;
-        if (CASC_ONLY.has(p)) {
-            const url = p.includes('DNC') ? viewer.cascUrl(p, false) + '&context=sd'
-                                          : viewer.cascUrl(p, false);
-            res = await fetchResult(url);
-        } else {
-            res = await fetchResult(root + p);
-            if (!res) res = await fetchResult(viewer.cascUrl(p));
-        }
-        if (res) putBytes(viewer, stripMount(pathWithServedExt(p, res.finalUrl)), res.bytes);
-    }));
+    await Promise.all([
+        prefetchDnc(viewer),
+        ...ENGINE_ASSETS.map(async (p) => {
+            let res;
+            if (CASC_ONLY.has(p)) {
+                res = await fetchResult(viewer.cascUrl(p, false));
+            } else {
+                res = await fetchResult(root + p);
+                if (!res) res = await fetchResult(viewer.cascUrl(p));
+            }
+            if (res) putBytes(viewer, pathWithServedExt(p, res.finalUrl), res.bytes);
+        }),
+    ]);
 }
 
 export async function prefetchShaders(viewer) {

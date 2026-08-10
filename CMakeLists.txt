@@ -1142,10 +1142,17 @@ add_library(WhiteoutFlakesLib STATIC
     src/io/event_data.cpp
     src/io/slk.cpp
     src/io/texture_image_usage.cpp
-    src/io/storage_browser.cpp
     src/public_api/renderer_api.cpp
-    src/public_api/storage_browser_api.cpp
 )
+
+# Storage browser walks CASC/MPQ/the local filesystem — none of which the
+# web build has (WHITEOUT_ENABLE_CASC is forced OFF above).
+if(NOT EMSCRIPTEN)
+    target_sources(WhiteoutFlakesLib PRIVATE
+        src/io/storage_browser.cpp
+        src/public_api/storage_browser_api.cpp
+    )
+endif()
 
 if(WDX_ENABLE_IMGUI)
     target_sources(WhiteoutFlakesLib PRIVATE

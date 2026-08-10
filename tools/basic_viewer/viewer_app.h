@@ -236,6 +236,15 @@ private:
     void RunAnimationExport(const AnimationExportParams& params);
 
     void OnFramebufferResize(i32 w, i32 h);
+
+    // Renders one frame from inside a GLFW callback. Windows runs a modal
+    // message loop while the user drags a border or the title bar, so the
+    // main loop's Tick() doesn't run for the whole drag — the window would
+    // sit unpainted at its old size while the swap chain has already grown.
+    // The resize / refresh callbacks do fire from inside that loop, so we
+    // paint from there. Re-entrant calls are dropped.
+    void RedrawFromCallback();
+
     void OnMouseButton(i32 button, i32 action);
     void OnCursorPos(f64 x, f64 y);
     void OnScroll(f64 yoffset);
@@ -252,6 +261,7 @@ private:
     bool FrameCameraToEffect();
 
     static void FramebufferSizeCallback(GLFWwindow* w, int width, int height);
+    static void WindowRefreshCallback(GLFWwindow* w);
     static void MouseButtonCallback(GLFWwindow* w, int button, int action, int mods);
     static void CursorPosCallback(GLFWwindow* w, double x, double y);
     static void ScrollCallback(GLFWwindow* w, double xoff, double yoff);
@@ -342,6 +352,11 @@ private:
 
     i32 lastFbW_ = 0;
     i32 lastFbH_ = 0;
+
+    // Set while RedrawFromCallback is driving Tick() — suppresses the nested
+    // glfwPollEvents (we're already inside event dispatch) and guards against
+    // a callback firing recursively out of that frame.
+    bool inCallbackRedraw_ = false;
 
     std::unique_ptr<ViewerUI> ui_;
 

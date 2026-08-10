@@ -1494,7 +1494,7 @@ dependencies = [
 
 [[package]]
 name = "whiteoutflakes"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "raw-window-handle",
  "whiteoutflakes-sys",
@@ -1524,7 +1524,7 @@ version = "0.2.0"
 
 [[package]]
 name = "whiteoutflakes-sys"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "cmake",
  "whiteoutflakes-shaders-d3d11",

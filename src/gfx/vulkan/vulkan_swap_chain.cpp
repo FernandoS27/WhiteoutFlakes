@@ -162,6 +162,61 @@ bool CreateSwapchainObjects(VulkanDeviceState& state, SwapChainEntry& sc, i32 wi
     return true;
 }
 
+// Throw the images, views and semaphores away and build them again against
+// the surface as it is NOW.
+//
+// The swap chain outlives its images: a window resize leaves the VkSwapchainKHR
+// describing an extent the surface no longer has, and every acquire and present
+// on it reports VK_ERROR_OUT_OF_DATE_KHR until it is rebuilt. On Win32 the
+// surface's `currentExtent` is authoritative, so `width`/`height` are only the
+// fallback for platforms that let the application choose.
+//
+// Callers must be at a point where nothing is recorded and nothing is in
+// flight: this waits the device idle and destroys the semaphores a queued
+// present could still be waiting on.
+bool RebuildSwapchain(VulkanDeviceState& state, SwapChainEntry& sc, i32 width, i32 height) {
+    // A window with no client area — minimised, or collapsed to nothing by a
+    // splitter — reports a zero extent, and a swap chain cannot be created at
+    // that size. Leave the entry marked out-of-date and try again next frame
+    // rather than failing loudly once per frame for as long as it is down.
+    auto capsR = state.physicalDevice.getSurfaceCapabilitiesKHR(*sc.surface);
+    if (capsR.result == vk::Result::eSuccess && capsR.value.currentExtent.width != 0xFFFFFFFFu &&
+        (capsR.value.currentExtent.width == 0 || capsR.value.currentExtent.height == 0)) {
+        return false;
+    }
+    state.device.waitIdle();
+    sc.acquiredThisFrame = false;
+    sc.viewsSrgb.clear();
+    sc.viewsLinear.clear();
+    sc.images.clear();
+    sc.swapchain = nullptr; // raii destroy
+    const bool ok = CreateSwapchainObjects(state, sc, width, height,
+                                           sc.formatSrgb == vk::Format::eR8G8B8A8Srgb
+                                               ? Format::R8G8B8A8_UNORM_SRGB
+                                               : Format::B8G8R8A8_UNORM);
+    if (!ok)
+        return false;
+    // The proxy textures are what the renderer holds; repoint them at the new
+    // images, and at the new size — BeginRenderPass takes its render area from
+    // the attachment's own dimensions.
+    if (auto* proxy = state.textures.Get(static_cast<u64>(sc.proxySrgb))) {
+        proxy->image = sc.images[0];
+        proxy->view = *sc.viewsSrgb[0];
+        proxy->currentLayout = vk::ImageLayout::eUndefined;
+        proxy->width = static_cast<i32>(sc.extent.width);
+        proxy->height = static_cast<i32>(sc.extent.height);
+    }
+    if (auto* proxy = state.textures.Get(static_cast<u64>(sc.proxyLinear))) {
+        proxy->image = sc.images[0];
+        proxy->view = *sc.viewsLinear[0];
+        proxy->currentLayout = vk::ImageLayout::eUndefined;
+        proxy->width = static_cast<i32>(sc.extent.width);
+        proxy->height = static_cast<i32>(sc.extent.height);
+    }
+    sc.outOfDate = false;
+    return true;
+}
+
 } // namespace
 
 // ---- IGFXDevice swap-chain methods --------------------------------------
@@ -255,29 +310,7 @@ void VulkanDevice::ResizeSwapChain(SwapChainHandle handle, i32 width, i32 height
     auto* sc = state.swapchains.Get(static_cast<u64>(handle));
     if (!sc)
         return;
-    state.device.waitIdle();
-    sc->viewsSrgb.clear();
-    sc->viewsLinear.clear();
-    sc->images.clear();
-    sc->swapchain = nullptr; // raii destroy
-    if (!CreateSwapchainObjects(state, *sc, width, height,
-                                sc->formatSrgb == vk::Format::eR8G8B8A8Srgb
-                                    ? Format::R8G8B8A8_UNORM_SRGB
-                                    : Format::B8G8R8A8_UNORM)) {
-        return;
-    }
-    if (auto* proxy = state.textures.Get(static_cast<u64>(sc->proxySrgb))) {
-        proxy->image = sc->images[0];
-        proxy->view = *sc->viewsSrgb[0];
-        proxy->width = static_cast<i32>(sc->extent.width);
-        proxy->height = static_cast<i32>(sc->extent.height);
-    }
-    if (auto* proxy = state.textures.Get(static_cast<u64>(sc->proxyLinear))) {
-        proxy->image = sc->images[0];
-        proxy->view = *sc->viewsLinear[0];
-        proxy->width = static_cast<i32>(sc->extent.width);
-        proxy->height = static_cast<i32>(sc->extent.height);
-    }
+    (void)RebuildSwapchain(state, *sc, width, height);
 }
 
 void VulkanDevice::DestroySwapChain(SwapChainHandle handle) {
@@ -323,6 +356,12 @@ u32 AcquireSwapChainImageIfNeeded(VulkanDeviceState& state, SwapChainEntry& sc,
                                   FrameContext& frame) {
     if (sc.acquiredThisFrame)
         return sc.imageIndex;
+    // A rebuild that failed (a window with no client area, typically) leaves
+    // no swap chain to acquire from at all.
+    if (!*sc.swapchain) {
+        sc.outOfDate = true;
+        return UINT32_MAX;
+    }
 
     // Swap-with-spare so an acquire never reuses a semaphore that the
     // previous present is still waiting on:
@@ -331,21 +370,35 @@ u32 AcquireSwapChainImageIfNeeded(VulkanDeviceState& state, SwapChainEntry& sc,
     //     new spare. Releases one acquire cycle later, when the same
     //     previous semaphore (released N acquires ago for that image)
     //     image is next acquired.
-#if defined(TRACY_ENABLE)
-    vk::ResultValue<u32> r{vk::Result::eSuccess, 0u};
+    //
+    // Called through the dispatcher rather than vk::raii::SwapchainKHR's
+    // own wrapper: that one runs the result through `resultCheck`, whose
+    // success list is {eSuccess, eTimeout, eNotReady, eSuboptimalKHR}, and
+    // an out-of-date surface therefore trips a vulkan.hpp assert and takes
+    // the process down before the result can be looked at. A window being
+    // resized produces exactly that result, routinely.
+    u32 idx = 0;
+    vk::Result acq = vk::Result::eSuccess;
     {
+#if defined(TRACY_ENABLE)
         ZoneScopedN("vkAcquireNextImage");
-        r = sc.swapchain.acquireNextImage(UINT64_MAX, *sc.spareAcquireSem, VK_NULL_HANDLE);
-    }
-#else
-    auto r = sc.swapchain.acquireNextImage(UINT64_MAX, *sc.spareAcquireSem, VK_NULL_HANDLE);
 #endif
-    if (r.result != vk::Result::eSuccess && r.result != vk::Result::eSuboptimalKHR) {
-        std::fprintf(stderr, "[vk] acquireNextImage failed (%s)\n",
-                     vk::to_string(r.result).c_str());
+        acq = static_cast<vk::Result>(sc.swapchain.getDispatcher()->vkAcquireNextImageKHR(
+            static_cast<VkDevice>(*state.device), static_cast<VkSwapchainKHR>(*sc.swapchain),
+            UINT64_MAX, static_cast<VkSemaphore>(*sc.spareAcquireSem), VK_NULL_HANDLE, &idx));
+    }
+    if (acq == vk::Result::eErrorOutOfDateKHR || acq == vk::Result::eSuboptimalKHR) {
+        // The surface has moved on from the swap chain. Rebuilding here would
+        // resize the back buffer in the middle of a frame whose other
+        // attachments are already sized to the old extent, so the frame is
+        // simply left unpresented and the rebuild happens in `Present`.
+        sc.outOfDate = true;
+        if (acq == vk::Result::eErrorOutOfDateKHR)
+            return UINT32_MAX;
+    } else if (acq != vk::Result::eSuccess) {
+        std::fprintf(stderr, "[vk] acquireNextImage failed (%s)\n", vk::to_string(acq).c_str());
         return UINT32_MAX;
     }
-    const u32 idx = r.value;
     std::swap(sc.spareAcquireSem, sc.imageAcquireSems[idx]);
 
     sc.imageIndex = idx;
@@ -427,8 +480,19 @@ void VulkanDevice::SubmitFrame() {
 void VulkanDevice::Present(SwapChainHandle handle) {
     auto& state = *state_;
     auto* sc = state.swapchains.Get(static_cast<u64>(handle));
-    if (!sc || !sc->acquiredThisFrame)
+    if (!sc || !sc->acquiredThisFrame) {
+        // No back-buffer image this frame — an out-of-date surface, or a
+        // caller presenting a target it never rendered to. Whatever WAS
+        // recorded still has to be flushed: leaving the command buffer open
+        // would have the next frame append to it forever, and its fence would
+        // never signal.
+        SubmitFrame();
+        if (sc && sc->outOfDate) {
+            (void)RebuildSwapchain(state, *sc, static_cast<i32>(sc->extent.width),
+                                   static_cast<i32>(sc->extent.height));
+        }
         return;
+    }
 
     auto& frame = state.frames[state.frameIndex];
 
@@ -517,15 +581,36 @@ void VulkanDevice::Present(SwapChainHandle handle) {
         .pSwapchains = reinterpret_cast<const vk::SwapchainKHR*>(&swap),
         .pImageIndices = &idx,
     };
+    vk::Result pres = vk::Result::eSuccess;
     {
 #if defined(TRACY_ENABLE)
         ZoneScopedN("vkQueuePresent");
 #endif
-        (void)state.queue.presentKHR(pi);
+        // Through the dispatcher for the same reason as the acquire above:
+        // vk::raii::Queue::presentKHR asserts on VK_ERROR_OUT_OF_DATE_KHR,
+        // which is the ordinary result of presenting to a window that has
+        // just been resized.
+        pres = static_cast<vk::Result>(state.queue.getDispatcher()->vkQueuePresentKHR(
+            static_cast<VkQueue>(*state.queue), reinterpret_cast<const VkPresentInfoKHR*>(&pi)));
     }
 
     sc->acquiredThisFrame = false;
     state.frameIndex = (state.frameIndex + 1) % kFramesInFlight;
+
+    if (pres == vk::Result::eErrorOutOfDateKHR || pres == vk::Result::eSuboptimalKHR)
+        sc->outOfDate = true;
+    else if (pres != vk::Result::eSuccess)
+        std::fprintf(stderr, "[vk] queuePresent failed (%s)\n", vk::to_string(pres).c_str());
+
+    // End of frame is the one point where nothing is recorded and the rebuild
+    // can wait the device idle without stranding work, so an out-of-date
+    // surface is dealt with here whether the acquire or the present noticed
+    // it. The host resizes its own attachments when it next sees the window
+    // change size; this only keeps the swap chain presentable in the meantime.
+    if (sc->outOfDate) {
+        (void)RebuildSwapchain(state, *sc, static_cast<i32>(sc->extent.width),
+                               static_cast<i32>(sc->extent.height));
+    }
 
 #if defined(TRACY_ENABLE)
     // Mark the end of the frame for Tracy's CPU timeline. Place this

@@ -213,6 +213,7 @@ bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
     }
     glfwSetWindowUserPointer(window_, this);
     glfwSetFramebufferSizeCallback(window_, &ViewerApp::FramebufferSizeCallback);
+    glfwSetWindowRefreshCallback(window_, &ViewerApp::WindowRefreshCallback);
     glfwSetMouseButtonCallback(window_, &ViewerApp::MouseButtonCallback);
     glfwSetCursorPosCallback(window_, &ViewerApp::CursorPosCallback);
     glfwSetScrollCallback(window_, &ViewerApp::ScrollCallback);
@@ -410,6 +411,11 @@ void ViewerApp::FramebufferSizeCallback(GLFWwindow* w, int width, int height) {
     if (self)
         self->OnFramebufferResize(width, height);
 }
+void ViewerApp::WindowRefreshCallback(GLFWwindow* w) {
+    auto* self = static_cast<ViewerApp*>(glfwGetWindowUserPointer(w));
+    if (self)
+        self->RedrawFromCallback();
+}
 void ViewerApp::MouseButtonCallback(GLFWwindow* w, int button, int action, int /*mods*/) {
     auto* self = static_cast<ViewerApp*>(glfwGetWindowUserPointer(w));
     if (self)
@@ -436,6 +442,24 @@ void ViewerApp::OnFramebufferResize(i32 w, i32 h) {
     service_.Pipeline().ResizePrimaryTarget(w, h);
     lastFbW_ = w;
     lastFbH_ = h;
+
+    // Paint the new size right away: on Windows this callback fires from
+    // inside the modal sizing loop, so without it the freshly-resized swap
+    // chain stays unpresented for the whole drag and the window shows the
+    // old frame with black margins.
+    RedrawFromCallback();
+}
+
+void ViewerApp::RedrawFromCallback() {
+    if (inCallbackRedraw_ || !window_ || !ui_ || targetId_ == 0)
+        return;
+    if (!service_.Pipeline().IsDeviceReady())
+        return;
+    inCallbackRedraw_ = true;
+    // dt 0 — the modal loop owns wall-clock time here; advancing animation
+    // per repaint would fast-forward the scene while the user drags.
+    Tick(0.0f);
+    inCallbackRedraw_ = false;
 }
 
 void ViewerApp::OnMouseButton(i32 button, i32 action) {
@@ -1557,7 +1581,10 @@ void ViewerApp::Tick(f32 dt) {
     // Scene() read below must resolve to the active document too.
     PublishActiveScene();
 
-    glfwPollEvents();
+    // Already inside event dispatch when repainting from a GLFW callback —
+    // polling again there would recurse through the same message queue.
+    if (!inCallbackRedraw_)
+        glfwPollEvents();
     if (!window_ || glfwWindowShouldClose(window_))
         return;
 

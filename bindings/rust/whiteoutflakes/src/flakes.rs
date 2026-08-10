@@ -1679,6 +1679,22 @@ impl SettingsView {
         }
     }
 
+    /// HD-only bloom master switch. Off in SD, and inert if the backend has no bloom shader bundle.
+    pub fn bloom_enabled(&self) -> bool {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe { ffi::whiteout_flakes_FlakesSettingsView_BloomEnabled(self.raw.as_ptr()) != 0 }
+    }
+
+    pub fn set_bloom_enabled(&mut self, arg: bool) {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesSettingsView_SetBloomEnabled(
+                self.raw.as_ptr(),
+                if arg { 1 } else { 0 },
+            );
+        }
+    }
+
     pub fn ibl_mode(&self) -> IblMode {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
@@ -3667,6 +3683,13 @@ pub mod ffi {
         pub fn whiteout_flakes_FlakesSettingsView_SetTonemapExposure(
             self_: *mut whiteout_FlakesSettingsView,
             arg: f32,
+        );
+        pub fn whiteout_flakes_FlakesSettingsView_BloomEnabled(
+            self_: *mut whiteout_FlakesSettingsView,
+        ) -> i32;
+        pub fn whiteout_flakes_FlakesSettingsView_SetBloomEnabled(
+            self_: *mut whiteout_FlakesSettingsView,
+            arg: i32,
         );
         pub fn whiteout_flakes_FlakesSettingsView_IblMode(
             self_: *mut whiteout_FlakesSettingsView,

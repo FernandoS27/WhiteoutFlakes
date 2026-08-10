@@ -279,6 +279,12 @@ public:
     f32 GetTonemapExposure() const;
     void SetTonemapExposure(f32);
 
+    /// @brief HD-only bloom master switch. Off in SD, and inert if the
+    ///        backend has no bloom shader bundle.
+    /// @bind rename=BloomEnabled
+    bool GetBloomEnabled() const;
+    void SetBloomEnabled(bool);
+
     /// @bind rename=IblMode
     IblMode GetIblMode() const;
     void SetIblMode(IblMode);

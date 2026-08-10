@@ -703,6 +703,14 @@ void whiteout_flakes_FlakesSettingsView_SetTonemapExposure(whiteout_FlakesSettin
     reinterpret_cast<whiteout::flakes::SettingsView*>(self)->SetTonemapExposure(arg);
 }
 
+int32_t whiteout_flakes_FlakesSettingsView_BloomEnabled(const whiteout_FlakesSettingsView* self) {
+    return reinterpret_cast<const whiteout::flakes::SettingsView*>(self)->GetBloomEnabled();
+}
+
+void whiteout_flakes_FlakesSettingsView_SetBloomEnabled(whiteout_FlakesSettingsView* self, int32_t arg) {
+    reinterpret_cast<whiteout::flakes::SettingsView*>(self)->SetBloomEnabled(arg);
+}
+
 int32_t whiteout_flakes_FlakesSettingsView_IblMode(const whiteout_FlakesSettingsView* self) {
     return static_cast<int32_t>(reinterpret_cast<const whiteout::flakes::SettingsView*>(self)->GetIblMode());
 }

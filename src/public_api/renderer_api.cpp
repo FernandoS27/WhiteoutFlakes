@@ -338,6 +338,12 @@ f32 SettingsView::GetTonemapExposure() const {
 void SettingsView::SetTonemapExposure(f32 e) {
     Svc(impl_).Settings().SetTonemapExposure(e);
 }
+bool SettingsView::GetBloomEnabled() const {
+    return Svc(impl_).Settings().BloomEnabled();
+}
+void SettingsView::SetBloomEnabled(bool on) {
+    Svc(impl_).Settings().SetBloomEnabled(on);
+}
 IblMode SettingsView::GetIblMode() const {
     return Svc(impl_).Settings().GetIblMode();
 }

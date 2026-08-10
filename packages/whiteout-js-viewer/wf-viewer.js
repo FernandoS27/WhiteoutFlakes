@@ -245,6 +245,9 @@ export class WhiteoutViewer {
         } else {
             this._module._wf_set_shadows_enabled(this._handle, 1);
         }
+        // Bloom on by default (the engine ships it off). HD-only, and the
+        // extract/combine bundles it needs are in the prefetch set.
+        this._module._wf_set_bloom_enabled(this._handle, 1);
         // Initial render mode honours the constructor's `hdMode` option;
         // load() can still flip it per actor PreferredRenderMode.
         this._module._wf_set_render_mode(this._handle, this.hdMode ? 1 : 0);
@@ -334,6 +337,10 @@ export class WhiteoutViewer {
     // Default off on Firefox (3-cascade sample is expensive on wgpu/naga).
     setShadowsEnabled(on) {
         if (this._handle) this._module._wf_set_shadows_enabled(this._handle, on ? 1 : 0);
+    }
+    // HD-only bloom. On by default (see _initRenderer).
+    setBloomEnabled(on) {
+        if (this._handle) this._module._wf_set_bloom_enabled(this._handle, on ? 1 : 0);
     }
 
     // HD debug-vis mode (see HD_DEBUG_MODES below).

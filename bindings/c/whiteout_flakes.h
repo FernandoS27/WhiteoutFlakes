@@ -395,6 +395,9 @@ uint32_t whiteout_flakes_FlakesSettingsView_BackgroundColorRaw(const whiteout_Fl
 void whiteout_flakes_FlakesSettingsView_SetBackgroundColor(whiteout_FlakesSettingsView* self, uint8_t r, uint8_t g, uint8_t b);
 float whiteout_flakes_FlakesSettingsView_TonemapExposure(const whiteout_FlakesSettingsView* self);
 void whiteout_flakes_FlakesSettingsView_SetTonemapExposure(whiteout_FlakesSettingsView* self, float arg);
+/* HD-only bloom master switch. Off in SD, and inert if the backend has no bloom shader bundle. */
+int32_t whiteout_flakes_FlakesSettingsView_BloomEnabled(const whiteout_FlakesSettingsView* self);
+void whiteout_flakes_FlakesSettingsView_SetBloomEnabled(whiteout_FlakesSettingsView* self, int32_t arg);
 int32_t whiteout_flakes_FlakesSettingsView_IblMode(const whiteout_FlakesSettingsView* self);
 void whiteout_flakes_FlakesSettingsView_SetIblMode(whiteout_FlakesSettingsView* self, int32_t arg);
 /* HD-shader debug mode (0 = off, 1..7 = visualisations). */

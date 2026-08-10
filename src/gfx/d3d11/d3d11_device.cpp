@@ -653,9 +653,7 @@ void D3D11Device::CreateSwapChainViews(SwapChainEntry& sc) {
         if (h == 0)
             return;
         if (auto* te = textures_.Get(h)) {
-            SafeRelease(te->rtv);
-            SafeRelease(te->srv);
-            te->tex = nullptr;
+            te->Release();
         }
         textures_.Remove(h);
         h = 0;
@@ -702,9 +700,10 @@ void D3D11Device::ResizeSwapChain(SwapChainHandle h, i32 width, i32 height) {
         if (h == 0)
             return;
         if (auto* te = textures_.Get(h)) {
-            SafeRelease(te->rtv);
-            SafeRelease(te->srv);
-            te->tex = nullptr;
+            // Release(), not just the views: RegisterBackBuffer AddRef'd the
+            // back buffer into this proxy, and ResizeBuffers fails with
+            // DXGI_ERROR_INVALID_CALL while any reference to it is outstanding.
+            te->Release();
         }
         textures_.Remove(h);
         h = 0;
@@ -713,8 +712,14 @@ void D3D11Device::ResizeSwapChain(SwapChainHandle h, i32 width, i32 height) {
     dropProxy(sc->backBufferTexHandleLinear);
     sc->ReleaseBackBuffer();
 
-    sc->swapChain->ResizeBuffers(0, static_cast<UINT>(width), static_cast<UINT>(height),
-                                 DXGI_FORMAT_UNKNOWN, 0);
+    HRESULT hr = sc->swapChain->ResizeBuffers(0, static_cast<UINT>(width),
+                                              static_cast<UINT>(height), DXGI_FORMAT_UNKNOWN, 0);
+    if (FAILED(hr)) {
+        // Silently keeping the old buffers means the window renders at the
+        // stale size forever, which is near-impossible to trace back here.
+        std::fprintf(stderr, "[d3d11] ResizeBuffers(%dx%d) failed: 0x%08lX\n", width, height,
+                     static_cast<unsigned long>(hr));
+    }
     CreateSwapChainViews(*sc);
 }
 
@@ -727,9 +732,7 @@ void D3D11Device::DestroySwapChain(SwapChainHandle h) {
             if (handle == 0)
                 return;
             if (auto* te = textures_.Get(handle)) {
-                SafeRelease(te->rtv);
-                SafeRelease(te->srv);
-                te->tex = nullptr;
+                te->Release();
             }
             textures_.Remove(handle);
         };

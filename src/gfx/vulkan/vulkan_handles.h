@@ -112,6 +112,13 @@ struct SwapChainEntry {
 
     u32 imageIndex = 0;
     bool acquiredThisFrame = false;
+    // Set when acquire or present reported the surface no longer matches
+    // the swap chain — a window resize, a DPI change, a monitor swap.
+    // Rebuilt at the next safe point (end of frame, in Present), never
+    // mid-frame: the extent the surface hands back may differ from the one
+    // this frame's depth / G-buffer attachments were sized to, and a render
+    // area larger than an attachment is invalid.
+    bool outOfDate = false;
 
     TextureHandle proxySrgb = TextureHandle::Invalid;
     TextureHandle proxyLinear = TextureHandle::Invalid;

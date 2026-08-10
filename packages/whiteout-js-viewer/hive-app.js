@@ -207,6 +207,10 @@ export class HiveApp {
         }
         // Day-night cycle: the checkbox runs the 60 s animation; the slider
         // sets time-of-day manually (and seeds the animation's start point).
+        // The Day/Night IBL probe set is the default (matching the engine's
+        // RenderSettings and basic_viewer) so HD reflections track the DNC
+        // sun whether or not the cycle is animating.
+        this.viewer.setIblMode(1);
         if (this.todSlider) {
             this.todSlider.addEventListener('input', () => {
                 this.viewer.setTimeOfDay(Number(this.todSlider.value));
@@ -214,13 +218,12 @@ export class HiveApp {
             this.viewer.setTimeOfDay(Number(this.todSlider.value));
         }
         if (this.dayNightToggle) {
-            const apply = () => {
-                const on = this.dayNightToggle.checked;
-                this.viewer.setDayNightAnimate(on);
-                // Swap the HD IBL probe set to match: day/night sky while
-                // animating, portrait studio light otherwise (IblMode 1 vs 0).
-                this.viewer.setIblMode(on ? 1 : 0);
-            };
+            // The checkbox only runs the animation. The probe set stays on
+            // Day/Night (set once above) the way basic_viewer keeps it an
+            // independent setting — swapping to the portrait studio probe
+            // whenever the cycle paused made a still frame light differently
+            // from the same time-of-day mid-cycle.
+            const apply = () => this.viewer.setDayNightAnimate(this.dayNightToggle.checked);
             this.dayNightToggle.addEventListener('change', apply);
             apply();
             // While animating, mirror the engine's advancing TOD onto the
