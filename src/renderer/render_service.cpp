@@ -247,6 +247,17 @@ void RenderService::RetryUnloadedAssets() {
     impl_->assets_->RetryUnloaded();
 }
 
+u64 RenderService::AssetActivityCounter() const {
+    const auto st = impl_->assets_->GetStats();
+    return static_cast<u64>(st.totalAcquires) + AssetArrivalCounter();
+}
+
+u64 RenderService::AssetArrivalCounter() const {
+    const auto st = impl_->assets_->GetStats();
+    return static_cast<u64>(st.totalApplies) +
+           static_cast<u64>(impl_->assets_->PendingNeedsCount());
+}
+
 namespace {
 
 // Extensions each asset kind can decode — used to filter a directory

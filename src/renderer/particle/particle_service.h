@@ -8,7 +8,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <unordered_map>
+#include <map>
 #include <vector>
 
 namespace whiteout::flakes::renderer::particle {
@@ -26,12 +26,18 @@ struct EmitterKey {
     bool operator==(const EmitterKey& o) const {
         return model == o.model && output == o.output && id == o.id;
     }
-};
-
-struct EmitterKeyHash {
-    usize operator()(const EmitterKey& k) const noexcept {
-        return (static_cast<u64>(k.model) * 0x9E3779B97F4A7C15ull) ^
-               (static_cast<u32>(k.id) * 0x85EBCA6Bu) ^ static_cast<u32>(k.output);
+    // Ordering, not hashing: the emitter map's iteration order reaches output.
+    // BuildGeometry emits partDraws in map order, TransparentDrawOrder
+    // tie-breaks on the resulting `unit`, and PE1 child handles come from
+    // AllocActorId() called while walking the same map — so with a hashed
+    // container the tie-break and the handle assignment were both seeded by
+    // the hash. At these counts (tens of emitters) a tree is free.
+    bool operator<(const EmitterKey& o) const {
+        if (model != o.model)
+            return model < o.model;
+        if (output != o.output)
+            return static_cast<u8>(output) < static_cast<u8>(o.output);
+        return id < o.id;
     }
 };
 
@@ -107,7 +113,7 @@ public:
 
 private:
     mutable std::mutex mutex_;
-    std::unordered_map<EmitterKey, std::unique_ptr<Emitter2>, EmitterKeyHash> emitters_;
+    std::map<EmitterKey, std::unique_ptr<Emitter2>> emitters_;
 
     // Accumulated during Simulate, moved out by DrainChildModelEvents.
     std::vector<ChildModelEvent> childEvents_;

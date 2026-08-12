@@ -54,6 +54,7 @@ wdx_add_test(texture_usage_test texture_usage_test.cpp)
 
 # ---- renderer ----
 wdx_add_test(coordinate_system_test coordinate_system_test.cpp)
+wdx_add_test(draw_trace_test        draw_trace_test.cpp)
 wdx_add_test(geoset_classify_test   geoset_classify_test.cpp)
 wdx_add_test(particle_curve_test    particle_curve_test.cpp)
 wdx_add_test(particle_shape_test    particle_shape_test.cpp)

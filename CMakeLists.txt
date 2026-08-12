@@ -1092,6 +1092,8 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/assets/replaceable_texture_manager.cpp
     src/renderer/assets/asset_manager.cpp
     src/renderer/debug/debug_renderer.cpp
+    src/renderer/debug/draw_trace.cpp
+    src/renderer/debug/draw_trace_hooks.cpp
     src/renderer/effects/event_emitter_pool.cpp
     src/renderer/effects/ribbon.cpp
     src/renderer/effects/spn_spawner.cpp

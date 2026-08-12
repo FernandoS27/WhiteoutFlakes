@@ -5,9 +5,17 @@
 // and the collection (BuildDrawLists), classification (ClassifyGeoset) and
 // submission (DrawLayer) stages communicate only through these POD items.
 //
-// Ordering mirrors WC3 (ModelRender.cpp): opaque is a state-batching sort whose
-// correctness comes from the depth buffer; transparent is back-to-front by
-// camera distance with the Depth prepass twin drawn just before its Color draw.
+// Ordering mirrors WC3 (ModelRender.cpp): opaque is a state-batching sort;
+// transparent is back-to-front by camera distance with the Depth prepass twin
+// drawn just before its Color draw.
+//
+// Opaque order is NOT pixel-neutral, despite the depth buffer. Measured with
+// gate G2 (REFACTOR_PLAN.md §2): reversing the actor walk — a pure opaque
+// reordering — moved pixels in 5 of the 17 corpus models, from 1 byte on
+// Goblin_Combine_HD up to 18645 of 1048576 on nightelf_exp. Coplanar opaque
+// surfaces resolve by submit order under a LessEqual depth test, so "the depth
+// buffer sorts it" is a batching rationale, not a correctness guarantee. Treat
+// any change to these comparators as a pixel change and gate it on G2.
 
 #include "bls/layer_material.h" // bls::DepthFill
 #include "whiteout/flakes/types.h"
@@ -44,9 +52,11 @@ struct DrawLists {
     std::vector<TransparentItem> transparent;
 };
 
-// Opaque order: correctness is the depth buffer's job, so this is only a stable,
-// per-model grouping. (WC3 additionally batches by texture/material to cut state
-// changes; that's a perf optimization we can layer on later.)
+// Opaque order: a per-model grouping. `view` points into the frame's `views`
+// vector, which BuildDrawLists fills in ascending actor-handle order, so this
+// is a strict total order keyed on the scene rather than on container layout.
+// (WC3 additionally batches by texture/material to cut state changes; that's a
+// perf optimization we can layer on later.)
 inline bool OpaqueOrder(const OpaqueItem& a, const OpaqueItem& b) {
     if (a.view != b.view)
         return a.view < b.view;
@@ -56,6 +66,13 @@ inline bool OpaqueOrder(const OpaqueItem& a, const OpaqueItem& b) {
 // Transparent order mirrors CTransparentObject::HasHigherPriority: underwater
 // first, priorityPlane ascending, distance back-to-front, then the Depth
 // prepass twin (2) before its Color draw (1) at the same position.
+//
+// The trailing (view, geoIdx) term is not cosmetic. The depth-buffer argument
+// that lets the opaque list be loosely ordered covers only the opaque list —
+// two transparent geosets tying on all four keys (duplicate actors at the same
+// position, or two geosets sharing a centroid) reorder freely, and
+// back-to-front blend order does change pixels. With the term this is a strict
+// total order, which is also what makes stable_sort provably a no-op here.
 inline bool TransparentOrder(const TransparentItem& a, const TransparentItem& b) {
     if (a.underWater != b.underWater)
         return a.underWater;
@@ -63,7 +80,11 @@ inline bool TransparentOrder(const TransparentItem& a, const TransparentItem& b)
         return a.priorityPlane < b.priorityPlane;
     if (a.sqDist != b.sqDist)
         return a.sqDist > b.sqDist;
-    return static_cast<u8>(a.depthFill) > static_cast<u8>(b.depthFill);
+    if (a.depthFill != b.depthFill)
+        return static_cast<u8>(a.depthFill) > static_cast<u8>(b.depthFill);
+    if (a.view != b.view)
+        return a.view < b.view;
+    return a.geoIdx < b.geoIdx;
 }
 
 // One entry in the unified back-to-front transparent queue (WC3's

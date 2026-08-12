@@ -1,5 +1,6 @@
 #include "bls/bls_frame.h"
 #include "constants.h"
+#include "debug/draw_trace_hooks.h"
 #include "geoset_classify.h"
 #include "render_detail.h"
 #include "renderer/assets/sampler_asset_manager.h"
@@ -15,9 +16,11 @@ using namespace ::whiteout::flakes::renderer::assets;
 using namespace ::whiteout::flakes::renderer::bls;
 
 namespace {
+using ActorMap = std::unordered_map<u32, std::unique_ptr<model::Actor>>;
+
 // Bind a RenderableView to an actor's render state. Shared by both the legacy
 // per-geoset collector and BuildDrawLists so the wiring lives in one place.
-void FillRenderableView(RenderableView& view, model::Actor& mi) {
+void FillRenderableView(RenderableView& view, model::Actor& mi, const ActorMap& actors) {
     view.geosets = &mi.render.gpuGeosets;
     view.materials = &mi.render.gpuMaterials;
     view.textures = mi.render.textures.get();
@@ -27,6 +30,13 @@ void FillRenderableView(RenderableView& view, model::Actor& mi) {
     view.parentVisibility = mi.parentVisibility;
     view.hasLods = mi.render.hasLods;
     view.teamColor = mi.teamColor;
+    view.actorRole = static_cast<u8>(mi.role);
+    view.actorDepth = static_cast<u8>(mi.treeDepth);
+    view.spawnEmitterId = mi.spawnEmitterId;
+    view.spawnSlotIndex = mi.spawnSlotIndex;
+    // Ranking the root against every top-level actor is linear per actor, so
+    // it only runs when something is going to read it.
+    view.rootActor = debug::DrawTraceEnabled() ? debug::TraceRootOrdinal(actors, mi.handle) : 0;
 }
 
 bool GeosetDrawable(const model::GPUGeoset& geo) {
@@ -44,8 +54,26 @@ CollectedDrawLists BuildDrawLists(
     out.lists.transparent.reserve(models.size() * 2);
     out.sceneLights.reserve(models.size());
 
-    for (const auto& [h, miPtr] : models) {
-        Actor* mi = miPtr.get();
+    // Iterate by sorted handle, not in map order. ActorManager::Map is an
+    // unordered_map, `out.views` is filled in whatever order it yields, and
+    // OpaqueOrder compares `a.view < b.view` — raw pointers into that vector.
+    // So submit order was a function of container iteration order, which is
+    // STL-implementation dependent (a baseline recorded on Windows would not
+    // reproduce on Linux CI) and insertion/erasure-history dependent (PE1
+    // children spawn and die continuously). Sorting here rather than changing
+    // ActorManager::Map to std::map keeps the cost on the one site that needs
+    // the guarantee.
+    std::vector<u32> handles;
+    handles.reserve(models.size());
+    for (const auto& [h, miPtr] : models)
+        handles.push_back(h);
+    std::sort(handles.begin(), handles.end());
+
+    for (u32 h : handles) {
+        auto it = models.find(h);
+        if (it == models.end() || !it->second)
+            continue;
+        Actor* mi = it->second.get();
         if (mi->parentVisibility <= 0.02f)
             continue;
         // Skip skinned actors whose bone palette hasn't been uploaded yet —
@@ -54,7 +82,7 @@ CollectedDrawLists BuildDrawLists(
             continue;
         // `views` is reserved to models.size() so these pointers stay valid.
         RenderableView& view = out.views.emplace_back();
-        FillRenderableView(view, *mi);
+        FillRenderableView(view, *mi, models);
 
         // LightState positions/directions already carry the actor's world
         // transform (MdxModelAdapter::Evaluate applies it), so pooling across
@@ -95,8 +123,12 @@ CollectedDrawLists BuildDrawLists(
         }
     }
 
-    std::sort(out.lists.opaque.begin(), out.lists.opaque.end(), OpaqueOrder);
-    std::sort(out.lists.transparent.begin(), out.lists.transparent.end(), TransparentOrder);
+    // stable_sort, not sort: items tying on every comparator key would
+    // otherwise resolve in an unspecified order seeded by the input order.
+    // With the handle sort above, the input order is now well-defined, so
+    // stability is what carries that guarantee through to submit order.
+    std::stable_sort(out.lists.opaque.begin(), out.lists.opaque.end(), OpaqueOrder);
+    std::stable_sort(out.lists.transparent.begin(), out.lists.transparent.end(), TransparentOrder);
     return out;
 }
 

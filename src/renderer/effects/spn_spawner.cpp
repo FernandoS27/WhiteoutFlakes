@@ -73,6 +73,7 @@ void SpnSpawner::Tick(i32 nowMs) {
                 stillPending.push_back(std::move(p));
                 continue;
             }
+            child->spawnEmitterId = nextOrdinal_++;
             child->animation.SetActiveSequenceIndex(0);
             child->animation.SetBirthTimeMs(p.birthMs);
 

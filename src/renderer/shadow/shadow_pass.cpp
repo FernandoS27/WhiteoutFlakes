@@ -2,6 +2,7 @@
 
 #include "renderer/bls/bls_cb_layout.h"
 #include "renderer/bls/scoped_cb.h"
+#include "renderer/debug/draw_trace_hooks.h"
 #include "renderer/model/model_instance.h"
 #include "renderer/model/render_model.h"
 #include "renderer/render_detail.h"
@@ -10,6 +11,9 @@
 #include "renderer/scene_manager.h"
 #include "renderer/types.h"
 #include "whiteout/flakes/types.h"
+
+#include <algorithm>
+#include <vector>
 
 namespace whiteout::flakes::renderer::shadow {
 
@@ -53,6 +57,19 @@ bool ShadowPass::Run(ShadowService& service) {
         (psoSkinned != gfx::PipelineHandle::Invalid || psoRigid != gfx::PipelineHandle::Invalid) &&
         vsCb != gfx::BufferHandle::Invalid;
 
+    // Sorted handles, not map order. This is the second hash-ordered draw path
+    // (the scene's is BuildDrawLists): the loop below carries a currentPso
+    // state tracker whose bind/skip behaviour follows whatever order it gets,
+    // and G1 records a ShadowMap slot per cascade. Collected once and reused
+    // across cascades so the three passes agree with each other too.
+    std::vector<u32> topLevel;
+    topLevel.reserve(rs_.Scene().Actors().All().size());
+    for (auto& [h, mi] : rs_.Scene().Actors().All()) {
+        if (mi && !mi->IsChild())
+            topLevel.push_back(h);
+    }
+    std::sort(topLevel.begin(), topLevel.end());
+
     bool any = false;
     for (i32 c = 0; c < service.cascadeCount(); ++c) {
         const gfx::TextureHandle dst = service.depthTarget(c);
@@ -70,10 +87,9 @@ bool ShadowPass::Run(ShadowService& service) {
 
             gfx::PipelineHandle currentPso = gfx::PipelineHandle::Invalid;
 
-            for (auto& [h, mi] : rs_.Scene().Actors().All()) {
+            for (u32 h : topLevel) {
+                auto* mi = rs_.Scene().Actors().Find(h);
                 if (!mi)
-                    continue;
-                if (mi->IsChild())
                     continue;
                 if (mi->parentVisibility <= 0.02f)
                     continue;
@@ -139,6 +155,31 @@ bool ShadowPass::Run(ShadowService& service) {
                     if (hasBones) {
                         cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 3, paletteCb);
                         cmd->BindVertexBuffer(1, geo.boneVb, sizeof(BoneVertex));
+                    }
+
+                    // G1 hook. The cascade loop is a second hash-ordered draw
+                    // path (REFACTOR_PLAN §1.1 #7) with a currentPso state
+                    // tracker whose behaviour follows that order, so it needs
+                    // its own record — otherwise P0.8's fix here has no gate.
+                    if (debug::DrawTraceEnabled()) {
+                        debug::TraceDraw d;
+                        d.passSlot = static_cast<u8>(debug::TracePassSlot::ShadowMap);
+                        d.shadingModel = static_cast<u8>(debug::TraceShadingModel::None);
+                        d.sortOrder = c; // cascade index
+                        d.actor.rootActor =
+                            debug::TraceRootOrdinal(rs_.Scene().Actors().All(), mi->handle);
+                        d.actor.role = static_cast<u8>(mi->role);
+                        d.submesh = static_cast<i32>(&geo - mi->render.gpuGeosets.data());
+                        d.surface = geo.materialId;
+                        d.lod = geo.lod;
+                        d.indexCount = geo.indexCount;
+                        d.vertexCount = geo.vertexCount;
+                        d.streamMask =
+                            debug::kStreamBase | (hasBones ? debug::kStreamBone : 0);
+                        d.palettePath =
+                            hasBones ? (mi->render.skinning.UsesPerActorPalette() ? 1 : 2) : 0;
+                        d.psoKey = hasBones ? 2u : 1u;
+                        debug::DrawTraceRecorder::Instance().Record(d);
                     }
 
                     cmd->DrawIndexed(static_cast<u32>(geo.indexCount), 0, 0);

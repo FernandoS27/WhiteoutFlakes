@@ -94,6 +94,13 @@ struct Actor {
     i32 treeDepth = 0;         // top-level = 0; children = parent.treeDepth + 1
     std::vector<u32> children; // canonical owner list of child handles
 
+    // What in the parent produced this child: the PE1 emitter id, or the
+    // attachment slot index. `handle` alone is not an identity a recording can
+    // be keyed on — AllocActorId() hands out numbers in spawn order, and the
+    // spawn walks iterate hash maps — so the draw trace records these instead.
+    i32 spawnEmitterId = -1;
+    i32 spawnSlotIndex = -1;
+
     bool IsChild() const {
         return role != ActorRole::Unit && role != ActorRole::External;
     }

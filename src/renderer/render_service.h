@@ -160,6 +160,26 @@ public:
     ///        the asset-manager (and its engine-internal) headers.
     void RetryUnloadedAssets();
 
+    /// @brief A monotonic summary of asset-registry activity: acquires +
+    ///        applies + outstanding needs. The regression harnesses settle by
+    ///        pumping until this stops moving, which is the one axis a fixed
+    ///        dt / camera / LOD cannot pin — the IO worker count varies with
+    ///        the machine, and BuildDrawLists skips geosets whose VB hasn't
+    ///        landed, so the live actor set at frame N is otherwise
+    ///        timing-dependent. Counting activity rather than asserting
+    ///        "every slot loaded" is deliberate: an asset that genuinely
+    ///        cannot be resolved never loads, and must not block the settle.
+    ///        Same rationale as RetryUnloadedAssets for living here rather
+    ///        than making hosts include the asset-manager headers.
+    u64 AssetActivityCounter() const;
+
+    /// @brief The arrival half of the counter above: applies plus outstanding
+    ///        needs, with acquires excluded. A harness watches this *during*
+    ///        capture, where re-acquiring an already-resident path (every PE1
+    ///        birth does) is benign but a fresh apply or an unresolved need
+    ///        means the frame a texture lands on was decided by the disk.
+    u64 AssetArrivalCounter() const;
+
     /// @brief Pin @p paths in the asset registry until the returned bundle
     ///        dies. The assets are queued on the needs list like any other
     ///        Acquire, so the host's usual pump (PumpAssetsViaProvider on

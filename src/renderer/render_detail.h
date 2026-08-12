@@ -51,6 +51,17 @@ struct RenderableView {
     f32 parentVisibility = 1.0f;
     bool hasLods = false;
     u32 teamColor = 0x000000FFu;
+
+    // Structural actor identity for the draw trace (see debug/draw_trace.h).
+    // `Actor::handle` is not usable here: child handles come from
+    // AllocActorId() called while iterating unordered maps, so which child
+    // gets which number is hash-order dependent. The top-level ancestor's
+    // handle plus (role, depth, emitter/slot) is a function of the scene.
+    u32 rootActor = 0;
+    u8 actorRole = 0;
+    u8 actorDepth = 0;
+    i32 spawnEmitterId = -1;
+    i32 spawnSlotIndex = -1;
 };
 
 // The point WC3's RenderGeosetPrep feeds to GxuLightSelect: the geoset's local

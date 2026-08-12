@@ -10,6 +10,7 @@
 #include "bls/bls_draw_helpers.h"
 #include "bls/bls_frame.h"
 #include "renderer/assets/sampler_asset_manager.h"
+#include "renderer/debug/draw_trace.h"
 
 namespace whiteout::flakes::renderer {
 
@@ -55,12 +56,32 @@ public:
 
         const bls::LightingContext lighting = MakeLightingContext(collected, view);
 
-        if (bucket_ != GeosetBucket::Transparent)
-            for (const auto& item : collected.lists.opaque)
-                d.DrawOpaqueItem(item, frame, view, cmd, lighting);
-        if (bucket_ != GeosetBucket::Opaque)
-            for (const auto& item : collected.lists.transparent)
+        // Publish the queue position for the draw trace (G1). `sortOrder` is
+        // the item's index in the sorted list, which is what pinpoints an
+        // ordering regression to a specific pair of draws.
+        auto& traceCtx = debug::DrawTraceRecorder::Instance().Context();
+        if (bucket_ != GeosetBucket::Transparent) {
+            traceCtx = {};
+            traceCtx.pass = debug::TracePassSlot::OpaqueColor;
+            for (u32 i = 0; i < collected.lists.opaque.size(); ++i) {
+                traceCtx.sortOrder = (i32)i;
+                d.DrawOpaqueItem(collected.lists.opaque[i], frame, view, cmd, lighting);
+            }
+        }
+        if (bucket_ != GeosetBucket::Opaque) {
+            for (u32 i = 0; i < collected.lists.transparent.size(); ++i) {
+                const auto& item = collected.lists.transparent[i];
+                traceCtx = {.pass = debug::TracePassSlot::TransparentScene,
+                            .producer = debug::TraceProducer::Geoset,
+                            .sortOrder = (i32)i,
+                            .sqDist = item.sqDist,
+                            .priorityPlane = item.priorityPlane,
+                            .underWater = static_cast<u8>(item.underWater),
+                            .depthFill = static_cast<u8>(item.depthFill)};
                 d.DrawTransparentItem(item, frame, view, cmd, lighting);
+            }
+        }
+        traceCtx = {};
         return true;
     }
 

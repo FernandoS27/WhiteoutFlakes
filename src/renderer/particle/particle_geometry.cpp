@@ -146,8 +146,13 @@ i32 BuildEmitterGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
     }
     if (emitter.SortZ()) {
 
-        std::sort(order.begin(), order.end(),
-                  [](const SortRecord& a, const SortRecord& b) { return a.viewZ > b.viewZ; });
+        // Index tie-break: a burst spawned at one point gives every particle
+        // the same viewZ, and equal elements resolve unspecified otherwise.
+        std::sort(order.begin(), order.end(), [](const SortRecord& a, const SortRecord& b) {
+            if (a.viewZ != b.viewZ)
+                return a.viewZ > b.viewZ;
+            return a.aliveIndex < b.aliveIndex;
+        });
     }
 
     const usize startSize = out.size();

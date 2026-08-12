@@ -9,6 +9,7 @@
 #include "whiteout/flakes/types.h"
 
 #include <memory>
+#include <map>
 #include <unordered_map>
 #include <vector>
 
@@ -118,7 +119,10 @@ struct PE2State {
 
 struct RenderModel {
 
-    std::unordered_map<i32, StagedGeoset> stagedGeosets;
+    // Ordered by geoset id: UploadStagedGeosets drains this into gpuGeosets,
+    // and that vector's order is the `geoIdx` OpaqueOrder tie-breaks on for
+    // every SpawnUnitFromSource actor (Max plugin, CornEffectSource, M2/M3).
+    std::map<i32, StagedGeoset> stagedGeosets;
     std::unordered_map<i32, StagedMaterial> stagedMaterials;
     std::unordered_map<i32, StagedTexture> stagedTextures;
     bool stagedDirty = false;

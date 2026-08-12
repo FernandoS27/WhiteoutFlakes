@@ -4,6 +4,8 @@
 #include "renderer/frame_ticker.h"
 #include "renderer/model/model_instance.h"
 #include "renderer/model/model_loader.h"
+#include "renderer/debug/draw_trace.h"
+#include "renderer/dnc/dnc_service.h"
 #include "renderer/particle/particle_service.h"
 #include "renderer/particle/particle_trace.h"
 #include "renderer/render_pipeline.h"
@@ -23,7 +25,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -317,6 +321,250 @@ static int RunParticleDiff(whiteout::flakes::renderer::RenderService& renderer,
     std::cout.flush();
     std::cerr.flush();
     std::_Exit(pass ? 0 : 8);
+}
+
+// Draw trace (gate G1) — a deterministic record of every decision the draw path
+// makes, per REFACTOR_PLAN.md §2. Unlike --particle-diff this needs a device:
+// the hooks sit inside the submission paths, after PSO resolve, so only draws
+// that were really submitted get recorded.
+//
+// The scene is pinned along every axis that reaches submit order or pixels:
+// fixed dt, fixed camera pose, fixed LOD, fixed time-of-day and lighting mode.
+// What that pinning cannot cover is asset arrival — the IO worker pool means
+// which frame a texture or child template lands on varies with core count and
+// disk cache, and BuildDrawLists skips geosets whose VB is still Invalid. So
+// capture is preceded by a settle phase and the capture itself fails rather
+// than emitting a divergent trace if a new need appears (§1.1 #13).
+static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
+                        whiteout::flakes::renderer::SceneManager& scene,
+                        whiteout::flakes::gfx::GfxApi backend,
+                        const std::filesystem::path& mdxPath, const std::string& recordPath,
+                        const std::string& checkPath, const std::string& goldenPath, i32 frames,
+                        bool hdMode, f32 distanceTol, i32 cameraDistance, i32 perturbSeed,
+                        i32 instances) {
+    namespace wf = whiteout::flakes;
+    namespace dbg = wf::renderer::debug;
+
+    if (mdxPath.empty()) {
+        std::cerr << "[dtrace] --draw-trace needs a model path" << std::endl;
+        return 2;
+    }
+    if (recordPath.empty() && checkPath.empty()) {
+        std::cerr << "[dtrace] pass --draw-trace-record <file> or --draw-trace-check <file>"
+                  << std::endl;
+        return 2;
+    }
+    auto& pipe = renderer.Pipeline();
+    if (!pipe.InitDevice(backend)) {
+        std::cerr << "[dtrace] InitDevice failed" << std::endl;
+        return 3;
+    }
+
+    constexpr i32 kW = 512, kH = 512;
+    const wf::renderer::RenderTargetId tid = pipe.CreateOffscreenTarget(kW, kH);
+    if (!tid) {
+        std::cerr << "[dtrace] CreateOffscreenTarget failed" << std::endl;
+        return 3;
+    }
+    pipe.SetPrimaryTarget(tid);
+    // G2 reads back through ReadbackTarget, which applies no conversion. The
+    // capture ring has a GPU-side sRGB flag, so leaving it on would let an
+    // encoding change silently re-baseline the golden.
+    pipe.EnableFrameCapture(false);
+
+    auto& settings = renderer.Settings();
+    settings.SetRenderMode(hdMode ? wf::renderer::RenderMode::HD : wf::renderer::RenderMode::SD);
+    settings.SetBackgroundColor(0, 0, 0);
+    settings.SetLodOverride(0);
+    settings.SetLightingMode(wf::renderer::LightingMode::InGame);
+
+    // The gate's perturbation arm: a different first handle puts every actor
+    // in a different hash bucket, so any draw path that follows unordered_map
+    // iteration order diverges. Must be set before the first spawn.
+    if (perturbSeed > 0)
+        scene.SeedActorIds(static_cast<wf::renderer::model::ActorId>(perturbSeed));
+
+    scene.SetPE1BasePath(mdxPath.parent_path());
+    // More than one top-level actor on purpose. With a single actor,
+    // BuildDrawLists iterates a one-entry unordered_map and the hash-order
+    // dependence §1.1a is about cannot show up at all — the perturbation arm
+    // would pass while the bug was fully live. Spread them along +X so the
+    // transparent back-to-front sort has real work and equal-depth ties are
+    // reachable.
+    wf::renderer::model::Actor* hero = nullptr;
+    const i32 copies = (instances < 1) ? 1 : instances;
+    for (i32 n = 0; n < copies; ++n) {
+        // Uneven gaps in the handle sequence, not just a shifted start. With
+        // an identity hash and consecutive ids, a uniform shift leaves the
+        // bucket *order* intact for small maps, so the arm would still pass
+        // with the bug live. Irregular spacing changes the residues.
+        for (i32 burn = 0; perturbSeed > 0 && burn < ((perturbSeed >> (n & 7)) & 3) + 1; ++burn)
+            (void)scene.AllocActorId();
+        auto* a = renderer.Loader().SpawnUnit(wf::io::PathToUtf8(mdxPath));
+        if (!a)
+            break;
+        if (!hero)
+            hero = a;
+        a->worldTransform = wf::Matrix44f::translation(
+            {static_cast<f32>(n) * 120.0f, 0.0f, 0.0f});
+    }
+    if (!hero) {
+        std::cerr << "[dtrace] SpawnUnit failed: " << wf::io::PathToUtf8(mdxPath) << std::endl;
+        return 4;
+    }
+    if (auto* dnc = renderer.GetDncService())
+        dnc->SetTimeOfDay(12.0f);
+
+    // Deterministic pose rather than a framed one: FrameCameraToModel reads
+    // model bounds the engine does not expose format-neutrally yet (P9), and a
+    // framing rule that changes would silently re-baseline every golden.
+    auto& cam = scene.Camera();
+    cam.SetOrbitalMode();
+    cam.SetTarget(0.0f, 0.0f, 50.0f);
+    cam.SetPitch(0.35f);
+    cam.SetYaw(0.7f);
+    cam.SetDistance(static_cast<f32>(cameraDistance));
+
+    // ---- Settle: drain asset arrival until nothing is outstanding ----------
+    constexpr i32 kQuietIterations = 16;
+    constexpr i32 kSettleCap = 2000;
+    i32 quiet = 0, iters = 0;
+    wf::u64 lastActivity = ~0ull;
+    for (; iters < kSettleCap && quiet < kQuietIterations; ++iters) {
+        if (auto* cp = scene.ActiveContentProvider())
+            cp->Pump();
+        renderer.PumpAssetsViaProvider();
+        renderer.Ticker().Tick(0.0f);
+        renderer.Loader().CommitPendingUploads();
+        const wf::u64 activity = renderer.AssetActivityCounter();
+        quiet = (activity == lastActivity) ? quiet + 1 : 0;
+        lastActivity = activity;
+    }
+    if (quiet < kQuietIterations) {
+        std::cerr << "[dtrace] assets never settled after " << iters << " iterations" << std::endl;
+        return 5;
+    }
+    std::cout << "[dtrace] " << mdxPath.filename().string() << ": settled in " << iters
+              << " iteration(s), " << (hdMode ? "HD" : "SD") << ", " << frames << " frames"
+              << std::endl;
+
+    // ---- Capture ----------------------------------------------------------
+    wf::renderer::Viewport vp;
+    vp.target = tid;
+    vp.camera = &cam;
+
+    constexpr f32 kDt = 1.0f / 60.0f;
+    auto& rec = dbg::DrawTraceRecorder::Instance();
+    rec.Clear();
+    rec.Begin();
+    bool needAppeared = false;
+    const wf::u64 arrivalAtStart = renderer.AssetArrivalCounter();
+    for (i32 i = 0; i < frames; ++i) {
+        scene.Update(kDt);
+        renderer.Ticker().Tick(kDt);
+        rec.BeginFrame(i);
+        pipe.RenderViewport(vp);
+        pipe.Present(tid);
+        // Deliberately no pump here: a need raised mid-capture means bytes the
+        // frame wanted were not resolved, and whichever frame they land on is
+        // a function of the disk, not of the renderer. Re-acquiring a resident
+        // path is fine — every PE1 birth does it — so this watches arrivals,
+        // not acquires.
+        if (renderer.AssetArrivalCounter() != arrivalAtStart)
+            needAppeared = true;
+    }
+    rec.End();
+    pipe.Gfx()->WaitIdle();
+
+    if (needAppeared) {
+        std::cerr << "[dtrace] a new asset need appeared mid-capture — the trace would be "
+                     "timing-dependent; aborting rather than recording it"
+                  << std::endl;
+        return 6;
+    }
+
+    const dbg::DrawTrace& trace = rec.Trace();
+    std::size_t totalDraws = 0;
+    i32 kinds[4] = {0, 0, 0, 0};
+    for (const auto& fr : trace.frames) {
+        totalDraws += fr.draws.size();
+        for (const auto& d : fr.draws)
+            if (d.producer < 4)
+                ++kinds[d.producer];
+    }
+    std::cout << "[dtrace] " << totalDraws << " draw(s) over " << trace.frames.size()
+              << " frame(s); kinds geoset=" << kinds[0] << " particle=" << kinds[1]
+              << " ribbon=" << kinds[2] << " corn=" << kinds[3] << std::endl;
+
+    bool pass = true;
+    std::string err;
+    if (!recordPath.empty()) {
+        if (!dbg::WriteTrace(trace, recordPath, err)) {
+            std::cerr << "[dtrace] " << err << std::endl;
+            return 5;
+        }
+        std::cout << "[dtrace] recorded -> " << recordPath << std::endl;
+    }
+    if (!checkPath.empty()) {
+        dbg::DrawTrace baseline;
+        if (!dbg::ReadTrace(baseline, checkPath, err)) {
+            std::cerr << "[dtrace] " << err << std::endl;
+            return 5;
+        }
+        dbg::CompareTolerance tol;
+        if (distanceTol > 0.0f) {
+            tol.distance = distanceTol;
+            tol.requireCbHash = false;
+        }
+        std::string report;
+        pass = dbg::CompareTraces(baseline, trace, tol, report);
+        std::cout << "[dtrace] " << (pass ? "MATCH" : "DIFF") << ": " << report << std::endl;
+    }
+
+    // ---- G2: golden image -------------------------------------------------
+    if (!goldenPath.empty()) {
+        std::vector<wf::u8> rgba;
+        i32 cw = 0, ch = 0;
+        if (!pipe.ReadbackTarget(tid, rgba, cw, ch) || cw != kW || ch != kH) {
+            std::cerr << "[dtrace] golden: ReadbackTarget unavailable on this backend" << std::endl;
+            pass = false;
+        } else if (!recordPath.empty()) {
+            std::ofstream out(goldenPath, std::ios::binary);
+            out.write(reinterpret_cast<const char*>(rgba.data()),
+                      static_cast<std::streamsize>(rgba.size()));
+            std::cout << "[dtrace] golden recorded -> " << goldenPath << std::endl;
+        } else {
+            std::ifstream in(goldenPath, std::ios::binary);
+            std::vector<wf::u8> ref((std::istreambuf_iterator<char>(in)),
+                                    std::istreambuf_iterator<char>());
+            // Byte-exact on the raw readback. Do NOT sRGB-encode first: that is
+            // a lossy many-to-one map which collapses distinguishable bright
+            // values onto one byte, hiding regressions exactly where additive
+            // and emissive bugs live.
+            if (ref.size() != rgba.size()) {
+                std::cerr << "[dtrace] golden size differs: " << ref.size() << " vs " << rgba.size()
+                          << std::endl;
+                pass = false;
+            } else {
+                std::size_t diff = 0;
+                for (std::size_t p = 0; p < ref.size(); ++p)
+                    diff += (ref[p] != rgba[p]) ? 1 : 0;
+                if (diff) {
+                    std::cerr << "[dtrace] golden differs in " << diff << " of " << ref.size()
+                              << " bytes" << std::endl;
+                    pass = false;
+                } else {
+                    std::cout << "[dtrace] golden MATCH" << std::endl;
+                }
+            }
+        }
+    }
+
+    std::cout << "[dtrace] " << (pass ? "PASS" : "FAIL") << std::endl;
+    pipe.Shutdown();
+    std::cout.flush();
+    std::cerr.flush();
+    std::_Exit(pass ? 0 : 9);
 }
 
 // Child-model (PE1) validation. Folding PE1 into the particle service changed
@@ -631,6 +879,15 @@ int main(int argc, char* argv[]) {
     i32 particleDiffFrames = 120;
     std::string particleTraceRecord;
     std::string particleTraceCheck;
+    bool drawTrace = false;
+    bool drawTraceHd = false;
+    std::string drawTraceRecord;
+    std::string drawTraceCheck;
+    std::string drawTraceGolden;
+    f32 drawTraceDistanceTol = 0.0f;
+    i32 drawTraceCameraDistance = 350;
+    i32 drawTracePerturb = 0;
+    i32 drawTraceInstances = 3;
     std::filesystem::path mdxPath;
     // Extra positional paths beyond the first open in their own tabs, so
     // `WhiteoutFlakes a.mdx b.mdx c.mdx` launches with three documents.
@@ -729,6 +986,24 @@ int main(int argc, char* argv[]) {
             particleDiffCurveTol = true;
         } else if (std::strcmp(a, "--trace-no-device") == 0) {
             particleDiffDevice = false;
+        } else if (std::strcmp(a, "--draw-trace") == 0) {
+            drawTrace = true;
+        } else if (std::strcmp(a, "--draw-trace-record") == 0 && i + 1 < argc) {
+            drawTraceRecord = argv[++i];
+        } else if (std::strcmp(a, "--draw-trace-check") == 0 && i + 1 < argc) {
+            drawTraceCheck = argv[++i];
+        } else if (std::strcmp(a, "--draw-trace-golden") == 0 && i + 1 < argc) {
+            drawTraceGolden = argv[++i];
+        } else if (std::strcmp(a, "--draw-trace-hd") == 0) {
+            drawTraceHd = true;
+        } else if (std::strcmp(a, "--draw-trace-distance-tol") == 0 && i + 1 < argc) {
+            drawTraceDistanceTol = static_cast<f32>(std::atof(argv[++i]));
+        } else if (std::strcmp(a, "--draw-trace-camera-distance") == 0 && i + 1 < argc) {
+            drawTraceCameraDistance = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--draw-trace-perturb") == 0 && i + 1 < argc) {
+            drawTracePerturb = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--draw-trace-instances") == 0 && i + 1 < argc) {
+            drawTraceInstances = std::atoi(argv[++i]);
         } else if (std::strcmp(a, "--wgpu-backend") == 0 && i + 1 < argc) {
             // Force Dawn's underlying adapter backend (d3d11/d3d12/vulkan/gl/metal).
             // Only meaningful when --backend webgpu is selected.
@@ -913,6 +1188,11 @@ int main(int argc, char* argv[]) {
         return RunParticleDiff(renderer, scene, backend, mdxPath, particleTraceRecord,
                                particleTraceCheck, particleDiffFrames, particleDiffCurveTol,
                                particleDiffDevice);
+
+    if (drawTrace)
+        return RunDrawTrace(renderer, scene, backend, mdxPath, drawTraceRecord, drawTraceCheck,
+                            drawTraceGolden, particleDiffFrames, drawTraceHd, drawTraceDistanceTol,
+                            drawTraceCameraDistance, drawTracePerturb, drawTraceInstances);
 
     whiteout::flakes::ViewerApp app(renderer);
     if (!app.Open(1024, 768, backend)) {

@@ -52,6 +52,18 @@ public:
         return nextActorId_++;
     }
 
+    /// @brief Shift the handle sequence before anything spawns. Exists for the
+    ///        draw-trace gate's perturbation arm (REFACTOR_PLAN.md, GATE P0):
+    ///        recording twice from the same binary proves nothing, because an
+    ///        unseeded rand() and a fixed insertion sequence are both
+    ///        deterministic within a process. Moving the first handle changes
+    ///        every actor's hash bucket, which is what actually exposes a draw
+    ///        path that depends on unordered_map iteration order.
+    void SeedActorIds(model::ActorId first) {
+        if (first != 0)
+            nextActorId_ = first;
+    }
+
     ::whiteout::flakes::renderer::Camera& Camera() {
         return *cameras_[0];
     }

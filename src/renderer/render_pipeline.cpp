@@ -21,6 +21,7 @@
 #include "compiled_shaders.h"
 #include "constants.h"
 #include "debug/debug_renderer.h"
+#include "debug/draw_trace_hooks.h"
 #include "ibl/env_probe.h"
 #include "ibl/split_sum.h"
 #include "render_detail.h"
@@ -304,6 +305,35 @@ void RenderPipeline::DrawParticleEmitter(const particle::EmitterDrawList& dl,
         cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, rs_.Textures().GetDefaults().White);
     cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.Samplers().WrapVariant(wrapFlags));
 
+    if (debug::DrawTraceEnabled()) {
+        debug::TraceDraw d;
+        d.shadingModel = static_cast<u8>(debug::TraceShadingModel::Wc3Sd);
+        d.blendClass = static_cast<u8>(mp.alpha);
+        d.actor.rootActor = debug::TraceRootOrdinal(rs_.Scene().Actors().All(), dl.model);
+        d.actor.emitterId = dl.emitterId;
+        d.vertexCount = dl.vertexCount;
+        d.filterMode = static_cast<i32>(dl.material.filterMode);
+        d.texIds[0] = dl.material.textureId;
+        d.texIds[1] = dl.material.replaceableId;
+        d.streamMask = debug::kStreamBase;
+        d.psoKey = debug::TracePsoKey({.vsPermute = req.vsIndex,
+                                       .psPermute = req.psIndex,
+                                       .matAlpha = static_cast<u32>(mp.alpha),
+                                       .disables = mp.disables,
+                                       .vertexLayout = static_cast<u32>(req.layout),
+                                       .extraRtvCount = req.extraRtvCount,
+                                       .extraColorWrite = req.extraColorWrite,
+                                       .wireframe = req.wireframe,
+                                       .lhClipSpace = req.lhClipSpace});
+        bls::SdVsCbA vs{};
+        bls::SdPsCbA ps{};
+        bls::BuildSdVsCbA(vs, frame, mp);
+        bls::BuildSdPsCbA(ps, frame, mp);
+        d.cbHash = debug::TraceHashBytes(&ps, sizeof(ps), debug::TraceHashBytes(&vs, sizeof(vs)));
+        d.texMtxHash = debug::HashTexMtx(frame);
+        debug::RecordProducerDraw(d);
+    }
+
     cmd->Draw(dl.vertexCount, dl.vertexOffset);
 }
 
@@ -481,9 +511,17 @@ void RenderPipeline::PrepareRibbons(std::vector<RibbonDrawUnit>& out, bls::Frame
     outFrame.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
     outFrame.viewportRect = {(f32)Width(), (f32)Height(), 0.0f, 0.0f};
 
-    for (auto& [_mh, _mi] : rs_.Scene().Actors().All()) {
-        auto* mi = _mi.get();
-        if (!mi->render.ribbons.HasEmitters() || mi->parentVisibility <= 0.02f)
+    // Sorted handles: the ribbon unit index this walk assigns is what
+    // TransparentDrawOrder tie-breaks on, so map order reached submit order.
+    std::vector<u32> ribbonActors;
+    ribbonActors.reserve(rs_.Scene().Actors().All().size());
+    for (auto& [h, _mi] : rs_.Scene().Actors().All())
+        ribbonActors.push_back(h);
+    std::sort(ribbonActors.begin(), ribbonActors.end());
+
+    for (u32 h : ribbonActors) {
+        auto* mi = rs_.Scene().Actors().Find(h);
+        if (!mi || !mi->render.ribbons.HasEmitters() || mi->parentVisibility <= 0.02f)
             continue;
         RibbonSystem::StripResult stripResult = mi->render.ribbons.BuildStrips();
         auto& verts = stripResult.vertices;
@@ -573,6 +611,37 @@ void RenderPipeline::DrawRibbonStrip(const RibbonDrawUnit& u, const bls::FrameIn
 
     render_detail::BindLayerAlbedo(cmd, u.actor->render.textures.get(), u.textureId,
                                    rs_.Textures().GetDefaults().White, rs_.Samplers());
+
+    if (debug::DrawTraceEnabled()) {
+        debug::TraceDraw d;
+        d.shadingModel = static_cast<u8>(debug::TraceShadingModel::Wc3Sd);
+        d.blendClass = static_cast<u8>(mp.alpha);
+        d.actor.rootActor = debug::TraceRootOrdinal(rs_.Scene().Actors().All(), u.actor->handle);
+        d.actor.role = static_cast<u8>(u.actor->role);
+        d.actor.treeDepth = static_cast<u8>(u.actor->treeDepth);
+        d.vertexCount = u.count;
+        d.filterMode = u.filterMode;
+        d.matFlags = u.matFlags;
+        d.texIds[0] = u.textureId;
+        d.streamMask = debug::kStreamBase;
+        d.psoKey = debug::TracePsoKey({.vsPermute = req.vsIndex,
+                                       .psPermute = req.psIndex,
+                                       .matAlpha = static_cast<u32>(mp.alpha),
+                                       .disables = mp.disables,
+                                       .vertexLayout = static_cast<u32>(req.layout),
+                                       .extraRtvCount = req.extraRtvCount,
+                                       .extraColorWrite = req.extraColorWrite,
+                                       .wireframe = req.wireframe,
+                                       .lhClipSpace = req.lhClipSpace});
+        bls::SdVsCbA vs{};
+        bls::SdPsCbA ps{};
+        bls::BuildSdVsCbA(vs, frame, mp);
+        bls::BuildSdPsCbA(ps, frame, mp);
+        d.cbHash = debug::TraceHashBytes(&ps, sizeof(ps), debug::TraceHashBytes(&vs, sizeof(vs)));
+        d.texMtxHash = debug::HashTexMtx(frame);
+        debug::RecordProducerDraw(d);
+    }
+
     cmd->Draw(u.count, u.offset);
 }
 
@@ -2267,14 +2336,16 @@ public:
 
             const bool unlit = (mp.disables & bls::kDisableLighting) != 0;
             const i32 activeN = unlit ? 0 : lightCount;
-            DrawLayer(view_, geo, layer, mp, activeN, unlit, hasBones, layout, frame, cmd);
+            DrawLayer(view_, geo, layer, li, combinedAlpha, mp, activeN, unlit, hasBones, layout,
+                      frame, cmd);
         }
     }
 
     void DrawLayer(const render_detail::RenderableView& view_, const GPUGeoset& geo,
-                   const render_detail::UnpackedLayer& layer, const bls::MatParams& matParams,
-                   i32 activeN, bool unlit, bool hasBones, bls::VertexLayoutKind layout,
-                   bls::FrameInputs& frame, gfx::IGFXCommandList* cmd) {
+                   const render_detail::UnpackedLayer& layer, i32 layerIndex, f32 combinedAlpha,
+                   const bls::MatParams& matParams, i32 activeN, bool unlit, bool hasBones,
+                   bls::VertexLayoutKind layout, bls::FrameInputs& frame,
+                   gfx::IGFXCommandList* cmd) {
         auto* impl = rs_.Pipeline().impl_.get();
         frame.numLights = activeN;
         render_detail::ApplyTexAnimPaletteToFrame(frame, view_.texAnimPalette,
@@ -2309,7 +2380,56 @@ public:
 
         render_detail::BindLayerAlbedo(cmd, view_.textures, layer.textureId,
                                        rs_.Textures().GetDefaults().White, rs_.Samplers());
+
+        // G1 hook. Placed after the PSO resolved and the CBs were written, so
+        // the record covers exactly the draws that were submitted — an
+        // item-level hook would also record layers DrawLayer returned from.
+        if (debug::DrawTraceEnabled())
+            TraceThisLayer(view_, geo, layer, layerIndex, combinedAlpha, matParams, activeN,
+                           hasBones, layout, reqLocal, frame);
+
         cmd->DrawIndexed(geo.indexCount);
+    }
+
+    void TraceThisLayer(const render_detail::RenderableView& view_, const GPUGeoset& geo,
+                        const render_detail::UnpackedLayer& layer, i32 layerIndex,
+                        f32 combinedAlpha, const bls::MatParams& matParams, i32 activeN,
+                        bool hasBones, bls::VertexLayoutKind layout, const bls::PsoRequest& req,
+                        bls::FrameInputs& frame) {
+        debug::TraceDraw d;
+        d.shadingModel = static_cast<u8>(debug::TraceShadingModel::Wc3Sd);
+        d.blendClass = static_cast<u8>(matParams.alpha);
+        d.lightCount = static_cast<u8>(activeN);
+        d.combinedAlpha = combinedAlpha;
+        d.texIds[0] = layer.textureId;
+        d.streamMask = debug::kStreamBase | (hasBones ? debug::kStreamBone : 0) |
+                       ((layer.coordId == 1 &&
+                         geo.unskinnedVb1 != gfx::BufferHandle::Invalid)
+                            ? debug::kStreamBaseUv1
+                            : 0);
+        if (hasBones) {
+            const bool pathA = view_.skinning && view_.skinning->UsesPerActorPalette();
+            d.palettePath = pathA ? 1 : 2;
+            d.paletteSlots = view_.skinning ? view_.skinning->NodeCount() : 0;
+        }
+        d.psoKey = debug::TracePsoKey({.vsPermute = req.vsIndex,
+                                       .psPermute = req.psIndex,
+                                       .matAlpha = static_cast<u32>(matParams.alpha),
+                                       .disables = matParams.disables,
+                                       .vertexLayout = static_cast<u32>(layout),
+                                       .extraRtvCount = req.extraRtvCount,
+                                       .extraColorWrite = req.extraColorWrite,
+                                       .wireframe = req.wireframe,
+                                       .lhClipSpace = req.lhClipSpace});
+        // Hash the constant-buffer *values*, not just the list shape: an
+        // off-by-one that hands layer 1's alpha to layer 0 leaves every other
+        // recorded field identical.
+        bls::SdVsCbA vs{};
+        bls::SdPsCbA ps{};
+        bls::BuildSdVsCbA(vs, frame, matParams);
+        bls::BuildSdPsCbA(ps, frame, matParams);
+        d.cbHash = debug::TraceHashBytes(&ps, sizeof(ps), debug::TraceHashBytes(&vs, sizeof(vs)));
+        debug::RecordGeosetDraw(d, view_, geo, layer, layerIndex, frame);
     }
 };
 
@@ -2574,6 +2694,7 @@ public:
             const bls::BlsProgram* program = nullptr;
             bls::GxShaderID programShaderId = bls::GxShaderID::SD_on_HD;
             i32 activeN = 0;
+            f32 combinedAlpha = 1.0f;
             bool unlit = false;
             bool isOpaqueFading = false;
             bool valid = false;
@@ -2627,12 +2748,14 @@ public:
             jobs[li].program = program;
             jobs[li].programShaderId = programShaderId;
             jobs[li].activeN = activeN;
+            jobs[li].combinedAlpha = combinedAlpha;
             jobs[li].unlit = unlit;
             jobs[li].isOpaqueFading = isOpaqueFading;
             jobs[li].valid = true;
         }
 
-        auto issueHdDraw = [&](const LayerJob& job, const bls::MatParams& matParams) {
+        auto issueHdDraw = [&](const LayerJob& job, const bls::MatParams& matParams, i32 layerIndex,
+                               bool prepassTwin) {
             const auto& layer = job.layer;
             const bool unlit = job.unlit;
             const i32 activeN = job.activeN;
@@ -2772,6 +2895,12 @@ public:
                 }
                 cmd->BindSampler(gfx::ShaderStage::Pixel, 0, rs_.Samplers().WrapVariant(wrapFlags));
 
+                // G1 hook — see the SD path's TraceThisLayer for why this sits
+                // after the PSO resolved rather than at item level.
+                if (debug::DrawTraceEnabled())
+                    TraceThisLayer(view_, geo, job, matParams, layerIndex, prepassTwin, req,
+                                   hasTangents, hasBones, frame);
+
                 cmd->DrawIndexed(geo.indexCount);
             }
         };
@@ -2783,14 +2912,74 @@ public:
             prepass.diffuseColor = {1.0f, 1.0f, 1.0f, 1.0f};
             prepass.disables &= ~bls::kDisableDepthWrite;
             prepass.disables |= bls::kDisableBit8;
-            issueHdDraw(jobs[li], prepass);
+            issueHdDraw(jobs[li], prepass, li, true);
         }
 
         for (i32 li = 0; li < numLayers; ++li) {
             if (!jobs[li].valid)
                 continue;
-            issueHdDraw(jobs[li], jobs[li].mp);
+            issueHdDraw(jobs[li], jobs[li].mp, li, false);
         }
+    }
+
+    template <class Job>
+    void TraceThisLayer(const render_detail::RenderableView& view_, const GPUGeoset& geo,
+                        const Job& job, const bls::MatParams& matParams, i32 layerIndex,
+                        bool prepassTwin, const bls::PsoRequest& req, bool hasTangents,
+                        bool hasBones, bls::FrameInputs& frame) {
+        const auto& layer = job.layer;
+        debug::TraceDraw d;
+        d.shadingModel = static_cast<u8>(
+            job.programShaderId == bls::GxShaderID::Crystal  ? debug::TraceShadingModel::Wc3Crystal
+            : job.programShaderId == bls::GxShaderID::HD     ? debug::TraceShadingModel::Wc3Hd
+                                                             : debug::TraceShadingModel::Wc3SdOnHd);
+        d.blendClass = static_cast<u8>(matParams.alpha);
+        d.lightCount = static_cast<u8>(job.activeN);
+        d.combinedAlpha = job.combinedAlpha;
+        // The fading-opaque twin is a real depth-only draw, so it says so
+        // rather than tying with its colour draw on everything but the PSO.
+        if (prepassTwin)
+            d.depthFill = static_cast<u8>(bls::DepthFill::Depth);
+        d.texIds[0] = layer.textureId;
+        d.texIds[1] = layer.normalMapId;
+        d.texIds[2] = layer.ormMapId;
+        d.texIds[3] = layer.emissiveMapId;
+        d.texIds[4] = layer.teamColorMapId;
+        d.streamMask = debug::kStreamBase | (hasTangents ? debug::kStreamTangent : 0) |
+                       (hasBones ? debug::kStreamBone : 0) |
+                       ((layer.coordId == 1 &&
+                         geo.unskinnedVb1 != gfx::BufferHandle::Invalid)
+                            ? debug::kStreamBaseUv1
+                            : 0);
+        if (hasBones) {
+            const bool pathA = view_.skinning && view_.skinning->UsesPerActorPalette();
+            d.palettePath = pathA ? 1 : 2;
+            d.paletteSlots = view_.skinning ? view_.skinning->NodeCount() : 0;
+        }
+        d.psoKey = debug::TracePsoKey({.vsPermute = req.vsIndex,
+                                       .psPermute = req.psIndex,
+                                       .matAlpha = static_cast<u32>(matParams.alpha),
+                                       .disables = matParams.disables,
+                                       .vertexLayout = static_cast<u32>(req.layout),
+                                       .extraRtvCount = req.extraRtvCount,
+                                       .extraColorWrite = req.extraColorWrite,
+                                       .wireframe = req.wireframe,
+                                       .lhClipSpace = req.lhClipSpace});
+        bls::HdVsCb vs{};
+        bls::BuildHdVsCb(vs, frame, matParams);
+        u64 h = debug::TraceHashBytes(&vs, sizeof(vs));
+        if (job.program == rs_.Pipeline().impl_->blsHdProgram_ ||
+            job.program == rs_.Pipeline().impl_->blsCrystalProgram_) {
+            bls::HdPsCb ps{};
+            bls::BuildHdPsCb(ps, frame, matParams);
+            h = debug::TraceHashBytes(&ps, sizeof(ps), h);
+        } else {
+            bls::SdOnHdPsCb ps{};
+            bls::BuildSdOnHdPsCb(ps, frame, matParams);
+            h = debug::TraceHashBytes(&ps, sizeof(ps), h);
+        }
+        d.cbHash = h;
+        debug::RecordGeosetDraw(d, view_, geo, layer, layerIndex, frame);
     }
 };
 
@@ -2931,9 +3120,23 @@ void RenderPipeline::RenderTransparentSceneT() {
     std::sort(entries.begin(), entries.end(), render_detail::TransparentDrawOrder);
 
     // --- Dispatch in sorted order ---
-    for (const auto& e : entries) {
+    // The interleave is the most fragile behaviour in the renderer, so the
+    // trace records the queue position of every entry, from all four
+    // producers, in submit order (G1).
+    auto& traceCtx = debug::DrawTraceRecorder::Instance().Context();
+    for (u32 ei = 0; ei < entries.size(); ++ei) {
+        const auto& e = entries[ei];
+        if (debug::DrawTraceEnabled()) {
+            traceCtx = {.pass = debug::TracePassSlot::TransparentScene,
+                        .producer = static_cast<debug::TraceProducer>(e.kind),
+                        .sortOrder = (i32)ei,
+                        .sqDist = e.sqDist,
+                        .priorityPlane = e.priorityPlane};
+        }
         switch (e.kind) {
         case render_detail::TransparentKind::Geoset:
+            traceCtx.underWater = static_cast<u8>(geo.lists.transparent[e.unit].underWater);
+            traceCtx.depthFill = static_cast<u8>(geo.lists.transparent[e.unit].depthFill);
             pass.DrawTransparentItem(geo.lists.transparent[e.unit], geoFrame, geoView, cmd,
                                      geoLighting);
             break;
@@ -2944,10 +3147,24 @@ void RenderPipeline::RenderTransparentSceneT() {
             DrawRibbonStrip(ribbonUnits[e.unit], ribbonFrame);
             break;
         case render_detail::TransparentKind::Corn:
+            // Corn draws have no producer-level hook — DrawCornSlice is inside
+            // the cornflakes backend — so the queue records the entry itself.
+            // Without it the kind histogram would lose a quarter of the
+            // interleave and the loss would be invisible in a re-recorded
+            // baseline.
+            if (debug::DrawTraceEnabled()) {
+                debug::TraceDraw d;
+                d.shadingModel = static_cast<u8>(debug::TraceShadingModel::None);
+                d.actor.rootActor =
+                    debug::TraceRootOrdinal(rs_.Scene().Actors().All(), cornUnits[e.unit].model);
+                d.submesh = (i32)e.unit;
+                debug::RecordProducerDraw(d);
+            }
             rs_.CornEffects().DrawCornSlice(cornUnits[e.unit].slice);
             break;
         }
     }
+    traceCtx = {};
 }
 
 void RenderPipeline::RenderTransparentScene() {

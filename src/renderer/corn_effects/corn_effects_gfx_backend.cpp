@@ -340,7 +340,14 @@ void CornEffectsGfxBackend::submit(std::span<const ::whiteout::cornflakes::Rende
     // farthest particle must come first. The GL reference sorts ascending
     // because its right-handed view makes the same expression negative in
     // front — porting that comparator verbatim inverted the order.
-    std::sort(order.begin(), order.end(), [&](u32 a, u32 b) { return depthOf[a] > depthOf[b]; });
+    // Index tie-break: particles spawned together at one point have identical
+    // depth, and without it their blend order was whatever std::sort happened
+    // to produce.
+    std::sort(order.begin(), order.end(), [&](u32 a, u32 b) {
+        if (depthOf[a] != depthOf[b])
+            return depthOf[a] > depthOf[b];
+        return a < b;
+    });
 
     const size_t totalLive = order.size();
     auto& verts   = pending_.verts;

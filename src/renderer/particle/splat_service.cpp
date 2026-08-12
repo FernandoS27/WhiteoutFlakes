@@ -3,7 +3,6 @@
 #include "renderer/assets/asset_manager.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstring>
 
@@ -21,21 +20,10 @@ void SplatService::Configure(AssetManager* assets) {
     assets_ = assets;
 }
 
-void SplatService::Tick() {
-    using namespace std::chrono;
-    const i64 nowNs = duration_cast<nanoseconds>(steady_clock::now().time_since_epoch()).count();
-
+void SplatService::Tick(f32 dtSec) {
     std::lock_guard<std::mutex> lk(mutex_);
 
-    if (lastTickNs_ < 0) {
-        lastTickNs_ = nowNs;
-        return;
-    }
-
-    const f64 dtSec = (f64)(nowNs - lastTickNs_) * 1e-9;
-    lastTickNs_ = nowNs;
-
-    const f32 dt = (f32)std::min(dtSec, 0.5);
+    const f32 dt = (f32)std::min((f64)dtSec, 0.5);
     if (dt <= 0.f)
         return;
 
@@ -56,7 +44,6 @@ void SplatService::Clear() {
     for (auto& s : splats_)
         ReleaseSplat(s);
     splats_.clear();
-    lastTickNs_ = -1;
 }
 
 i32 SplatService::Count() const {
@@ -229,11 +216,16 @@ void SplatService::BuildGeometry(std::vector<Vertex>& outVertices,
     // entry, which Firefox's WebGPU pays ~5µs/draw of IPC overhead for).
     std::vector<u32> order(splats_.size());
     for (u32 i = 0; i < splats_.size(); ++i) order[i] = i;
+    // The index tie-break makes this a strict total order. Without it a batch
+    // of same-texture, same-blend splats (a burst of footsteps) resolved in an
+    // unspecified order, and std::sort is free to pick a different one for the
+    // same input on a different build.
     std::sort(order.begin(), order.end(), [&](u32 a, u32 b) {
         const auto& sa = splats_[a];
         const auto& sb = splats_[b];
         if (sa.textureSlot != sb.textureSlot) return sa.textureSlot < sb.textureSlot;
-        return sa.blendMode < sb.blendMode;
+        if (sa.blendMode != sb.blendMode) return sa.blendMode < sb.blendMode;
+        return a < b;
     });
 
     outVertices.reserve(outVertices.size() + splats_.size() * 6);

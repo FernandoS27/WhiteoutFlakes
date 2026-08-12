@@ -10,7 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <unordered_map>
+#include <map>
 #include <vector>
 
 namespace whiteout::flakes::renderer::effects {
@@ -69,7 +69,9 @@ public:
     i32 GetEmitterVertCount(i32 emitterId) const;
 
 private:
-    std::unordered_map<i32, RibbonEmitter> emitters_;
+    // Ordered: BuildStrips walks this map and the resulting strip order becomes
+    // the ribbon unit index the transparent queue tie-breaks on.
+    std::map<i32, RibbonEmitter> emitters_;
 };
 
 } // namespace whiteout::flakes::renderer::effects

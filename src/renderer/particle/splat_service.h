@@ -57,7 +57,11 @@ public:
 
     void Configure(assets::AssetManager* assets);
 
-    void Tick();
+    // `dt` is the scene's simulation delta, the same one every other tick
+    // consumer gets. This used to read steady_clock::now() itself, which made
+    // splat ageing a function of wall time — so a trace or an export replayed
+    // at a fixed dt still aged its splats by however long the frame took.
+    void Tick(f32 dt);
 
     void Clear();
 
@@ -88,8 +92,6 @@ private:
 
     assets::AssetManager* assets_ = nullptr;
 
-    // -1 means "no prior sample" — first Tick() seeds the timer.
-    i64 lastTickNs_ = -1;
 };
 
 } // namespace whiteout::flakes::renderer::particle

@@ -20,9 +20,11 @@
 #include "model/model_template.h"
 #include "particle/child_model_emitter.h"
 #include "particle/particle2_emitter.h"
+#include "particle/rnd_seed.h"
 #include "render_service.h"
 #include "render_service_impl.h"
 
+#include <algorithm>
 #include <vector>
 
 namespace whiteout::flakes::renderer {
@@ -105,16 +107,25 @@ void FrameTicker::Tick(SceneManager& scene, f32 dt) {
 }
 
 void FrameTicker::UpdateAttachments() {
+    // Sorted, not just snapshotted. SpawnChild takes its handle from
+    // AllocActorId(), so walking in map order made *which child gets which
+    // handle* a function of container iteration order. Sorting inside
+    // BuildDrawLists cannot repair that — the sort key would itself be
+    // unstable. With this, a child's handle is a function of the parent handle
+    // and the slot index.
     std::vector<u32> handles;
+    handles.reserve(rs_.Scene().Actors().All().size());
     for (auto& [h, mi] : rs_.Scene().Actors().All())
         handles.push_back(h);
+    std::sort(handles.begin(), handles.end());
 
     for (u32 h : handles) {
         auto* mi = rs_.Scene().Actors().Find(h);
         if (!mi)
             continue;
 
-        for (auto& slot : mi->attachmentSlots) {
+        for (i32 si = 0; si < (i32)mi->attachmentSlots.size(); ++si) {
+            auto& slot = mi->attachmentSlots[si];
             if (slot.loaded || slot.config.modelPath.empty())
                 continue;
 
@@ -133,9 +144,16 @@ void FrameTicker::UpdateAttachments() {
             auto* child = rs_.Loader().SpawnChild(*mi, ActorRole::Attachment, tmpl);
             if (!child)
                 continue;
+            child->spawnSlotIndex = si;
             auto seqs = tmpl->adapter->GetSequences();
-            if (!seqs.empty())
-                child->animation.SetActiveSequenceIndex(rand() % (i32)seqs.size());
+            if (!seqs.empty()) {
+                // See ApplyAttachmentStates: same unseeded-rand() bug, and this
+                // one fires for *any* model with attachments, on the very first
+                // frame. Keyed on (parent, slot) so it is a function of the
+                // scene rather than of global RNG state.
+                const u32 pick = particle::MixSeed(mi->handle, (u32)si);
+                child->animation.SetActiveSequenceIndex((i32)(pick % (u32)seqs.size()));
+            }
 
             slot.loaded = true;
             slot.childModelHandle = child->handle;
@@ -158,6 +176,9 @@ void FrameTicker::EvaluateActorTree() {
         if (!mi->IsChild())
             tops.push_back(h);
     }
+    // Same reason as UpdateAttachments: this walk reaches SpawnChild through
+    // the PE1/SPN paths, so handle assignment must not follow map order.
+    std::sort(tops.begin(), tops.end());
     for (u32 h : tops) {
         if (auto* a = rs_.Scene().Actors().Find(h))
             EvaluateActorTreeRec(*a, ctx, a->cursor.actorTimeMs);
@@ -364,7 +385,7 @@ void FrameTicker::UpdateAnimation() {
 
 void FrameTicker::UpdateParticles(f32 dt) {
     rs_.Particles().Simulate(dt);
-    rs_.Splats().Tick();
+    rs_.Splats().Tick(dt);
     // CornFx deliberately is NOT ticked here — the corn-fx service ticks
     // every emitter (CPU sim) and emits one consolidated batch of GPU
     // draws from inside its SimulateAndRender pass, which must run
@@ -411,7 +432,9 @@ void FrameTicker::DriveChildModels() {
             if (!tmpl)
                 break;
 
-            rs_.Loader().SpawnChild(*owner, ActorRole::PE1, tmpl, ev.transform, ev.childHandle);
+            if (auto* child = rs_.Loader().SpawnChild(*owner, ActorRole::PE1, tmpl, ev.transform,
+                                                      ev.childHandle))
+                child->spawnEmitterId = ev.emitterId;
             break;
         }
         case particle::ChildModelEvent::Kind::Transform:
@@ -433,6 +456,9 @@ void FrameTicker::DriveChildModels() {
 }
 
 void FrameTicker::UpdateRibbons(f32 dt) {
+    // Each ribbon emitter owns its own RNG-free segment history, so the sim is
+    // order-independent here; the ordering that matters is BuildStrips', fixed
+    // by making RibbonSystem's emitter map ordered.
     for (auto& [h, mi] : rs_.Scene().Actors().All()) {
         if (mi->parentVisibility <= 0.02f)
             continue;

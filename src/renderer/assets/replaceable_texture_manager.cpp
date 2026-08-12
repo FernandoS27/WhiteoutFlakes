@@ -1,4 +1,4 @@
-#include "dbg_print.h"
+﻿#include "dbg_print.h"
 #include "model/model_source_utils.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/assets/texture_asset_manager.h"
@@ -77,20 +77,20 @@ void ReplaceableTextureManager::Shutdown() {
 void ReplaceableTextureManager::CancelPendingRequests() {
     if (!contentProvider_)
         return;
-    for (auto& [actorPtr, slots] : slots_)
-        for (auto& s : slots)
+    for (auto& [id, e] : slots_)
+        for (auto& s : e.slots)
             if (s.pendingLoad != io::kInvalidRequestId)
                 contentProvider_->Cancel(s.pendingLoad);
 }
 
 void ReplaceableTextureManager::RebakeDirtyActors() {
     bool anyRebaked = false;
-    for (auto& [actorPtr, slots] : slots_) {
-        if (!actorPtr->teamColorDirty)
+    for (auto& [id, e] : slots_) {
+        if (!e.actor || !e.actor->teamColorDirty)
             continue;
-        for (auto& s : slots)
-            BakeSlot(*actorPtr, s.textureId, (i32)s.replaceableId);
-        actorPtr->teamColorDirty = false;
+        for (auto& s : e.slots)
+            BakeSlot(*e.actor, s.textureId, (i32)s.replaceableId);
+        e.actor->teamColorDirty = false;
         anyRebaked = true;
     }
     if (anyRebaked)
@@ -100,10 +100,12 @@ void ReplaceableTextureManager::RebakeDirtyActors() {
 void ReplaceableTextureManager::SetTileset(io::Tileset ts) {
     io::SetCurrentTileset(ts);
 
-    for (auto& [mi, slots] : slots_) {
-        for (auto& s : slots) {
+    for (auto& [id, e] : slots_) {
+        if (!e.actor)
+            continue;
+        for (auto& s : e.slots) {
             if (s.replaceableId >= 11 && s.replaceableId <= 14)
-                BakeSlot(*mi, s.textureId, (i32)s.replaceableId);
+                BakeSlot(*e.actor, s.textureId, (i32)s.replaceableId);
         }
     }
     dirty_.store(true);
@@ -117,7 +119,9 @@ void ReplaceableTextureManager::RegisterModelSlot(Actor& mi, i32 textureId, i32 
     if (!isTeamColor && !isTeamGlow && !isCanonical)
         return;
 
-    auto& list = slots_[&mi];
+    auto& entry = slots_[mi.handle];
+    entry.actor = &mi;
+    auto& list = entry.slots;
 
     for (auto& s : list)
         if (s.textureId == textureId && (i32)s.replaceableId == replaceableId)
@@ -127,7 +131,7 @@ void ReplaceableTextureManager::RegisterModelSlot(Actor& mi, i32 textureId, i32 
             char msg[160];
             std::snprintf(msg, sizeof(msg),
                           "[WDEX replaceable] textureId %d registered with replaceableId %d AND %d "
-                          "— second registration overwrites the first's pixels on bake.\n",
+                          "â€” second registration overwrites the first's pixels on bake.\n",
                           textureId, (i32)s.replaceableId, replaceableId);
             DbgPrint(msg);
             break;
@@ -137,7 +141,7 @@ void ReplaceableTextureManager::RegisterModelSlot(Actor& mi, i32 textureId, i32 
 }
 
 void ReplaceableTextureManager::UnregisterModel(Actor& mi) {
-    auto it = slots_.find(&mi);
+    auto it = slots_.find(mi.handle);
     if (it == slots_.end())
         return;
     // Cancel any in-flight canonical-asset loads so the completion callback
@@ -146,7 +150,7 @@ void ReplaceableTextureManager::UnregisterModel(Actor& mi) {
     // cancelled IDs, so even a callback that's mid-flight in the worker is
     // safe.
     if (contentProvider_) {
-        for (auto& s : it->second) {
+        for (auto& s : it->second.slots) {
             if (s.pendingLoad != io::kInvalidRequestId)
                 contentProvider_->Cancel(s.pendingLoad);
         }
@@ -172,7 +176,7 @@ void ReplaceableTextureManager::BakeSlot(Actor& mi, i32 textureId, i32 replaceab
         return;
     }
     if (replaceableId == 1) {
-        // Team color swatch — same idea, no IO.
+        // Team color swatch â€” same idea, no IO.
         st.width = 4;
         st.height = 4;
         st.pixels.resize(64);
@@ -186,7 +190,7 @@ void ReplaceableTextureManager::BakeSlot(Actor& mi, i32 textureId, i32 replaceab
         return;
     }
 
-    // ---- Canonical asset (replaceable IDs 11–37): stub now, real bytes
+    // ---- Canonical asset (replaceable IDs 11â€“37): stub now, real bytes
     // ---- later via the async content provider.
     //
     // The diffuse stub keeps the model visible at neutral-white the first
@@ -208,11 +212,11 @@ void ReplaceableTextureManager::BakeSlot(Actor& mi, i32 textureId, i32 replaceab
 
     // Locate the matching Slot to attach the new request id. RegisterModelSlot
     // pushes the entry before calling BakeSlot, so it must exist.
-    auto it = slots_.find(&mi);
+    auto it = slots_.find(mi.handle);
     if (it == slots_.end())
         return;
     Slot* slot = nullptr;
-    for (auto& s : it->second) {
+    for (auto& s : it->second.slots) {
         if (s.textureId == textureId && (i32)s.replaceableId == replaceableId) {
             slot = &s;
             break;
@@ -223,25 +227,26 @@ void ReplaceableTextureManager::BakeSlot(Actor& mi, i32 textureId, i32 replaceab
     if (slot->pendingLoad != io::kInvalidRequestId)
         contentProvider_->Cancel(slot->pendingLoad);
 
-    Actor* miPtr = &mi;
+    const u32 owner = mi.handle;
     slot->pendingLoad = contentProvider_->Request(
-        canon, [this, miPtr, textureId, replaceableId](io::RequestResult&& r) {
-            OnCanonicalAssetLoaded(miPtr, textureId, replaceableId, std::move(r));
+        canon, [this, owner, textureId, replaceableId](io::RequestResult&& r) {
+            OnCanonicalAssetLoaded(owner, textureId, replaceableId, std::move(r));
         });
 }
 
-void ReplaceableTextureManager::OnCanonicalAssetLoaded(Actor* miPtr, i32 textureId,
+void ReplaceableTextureManager::OnCanonicalAssetLoaded(u32 owner, i32 textureId,
                                                        i32 replaceableId, io::RequestResult&& r) {
     // The actor may have been unregistered (and possibly destroyed) between
     // request submission and this callback. UnregisterModel cancels pending
     // loads, but a late-completion path through Pump still suppresses cancelled
-    // ids — defensively, also re-check the slots_ map so we never write through
+    // ids â€” defensively, also re-check the slots_ map so we never write through
     // a stale Actor*.
-    auto it = slots_.find(miPtr);
-    if (it == slots_.end())
+    auto it = slots_.find(owner);
+    if (it == slots_.end() || !it->second.actor)
         return;
+    Actor* miPtr = it->second.actor;
     Slot* slot = nullptr;
-    for (auto& s : it->second) {
+    for (auto& s : it->second.slots) {
         if (s.textureId == textureId && (i32)s.replaceableId == replaceableId) {
             slot = &s;
             break;

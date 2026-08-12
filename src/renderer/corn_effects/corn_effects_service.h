@@ -9,6 +9,7 @@
 #include <cornflakes/interface/core/arena.hpp>
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -30,11 +31,14 @@ struct EmitterKey {
     bool operator==(const EmitterKey& o) const {
         return model == o.model && id == o.id;
     }
-};
-
-struct EmitterKeyHash {
-    size_t operator()(const EmitterKey& k) const noexcept {
-        return (static_cast<u64>(k.model) * 0x9E3779B97F4A7C15ull) ^ static_cast<u32>(k.id);
+    // Ordering, not hashing — same reason as particle::EmitterKey. Corn packs
+    // its shared VB/IB by walking this map and then emits priorityPlane 0 for
+    // every unit, so every corn draw ties in the transparent queue and
+    // resolves purely on the index this walk assigned.
+    bool operator<(const EmitterKey& o) const {
+        if (model != o.model)
+            return model < o.model;
+        return id < o.id;
     }
 };
 
@@ -165,7 +169,7 @@ private:
     // against them — cornflakes keeps spans into the provider's storage.
     CornEffectsMeshProvider meshProvider_{nullptr};
     CornEffectsTextureProvider textureProvider_{nullptr};
-    std::unordered_map<EmitterKey, std::unique_ptr<CornEffectsEmitter>, EmitterKeyHash> emitters_;
+    std::map<EmitterKey, std::unique_ptr<CornEffectsEmitter>> emitters_;
     f32 gameToCornEffectsScale_ = 0.01f;
     std::optional<CornEffectsGfxBackend::Init> backendInit_;
     CornEffectsFrameInputs frameInputs_;

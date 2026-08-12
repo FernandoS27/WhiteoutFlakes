@@ -7,6 +7,7 @@
 #include "whiteout/flakes/util/replaceable_paths.h"
 
 #include <atomic>
+#include <map>
 #include <unordered_map>
 #include <vector>
 
@@ -69,8 +70,8 @@ public:
     DebugCounts DebugSnapshot() const noexcept {
         DebugCounts c;
         c.models = slots_.size();
-        for (auto& [mi, v] : slots_)
-            c.slots += v.size();
+        for (auto& [id, e] : slots_)
+            c.slots += e.slots.size();
         return c;
     }
 
@@ -94,7 +95,15 @@ private:
         // so the callback never writes into a destroyed actor's pixels.
         io::RequestId pendingLoad = io::kInvalidRequestId;
     };
-    std::unordered_map<model::Actor*, std::vector<Slot>> slots_;
+    // Keyed on the actor handle, not on Actor* — a heap pointer's value is an
+    // allocator artifact, so both the map's iteration order and (with a hashed
+    // container) its bucket layout varied run to run. The pointer rides along
+    // in the value because the bake paths need the actor itself.
+    struct ActorSlots {
+        model::Actor* actor = nullptr;
+        std::vector<Slot> slots;
+    };
+    std::map<u32, ActorSlots> slots_;
 
     io::IContentProvider* contentProvider_ = nullptr;
 
@@ -102,11 +111,12 @@ private:
 
     // Async completion for canonical-asset reads kicked off in BakeSlot.
     // Runs on the render thread via IContentProvider::Pump().
-    // Drop every in-flight canonical-asset request. Their callbacks
-    // capture `this` and a raw Actor*, so they must not outlive either.
+    // Drop every in-flight canonical-asset request. Their callbacks capture
+    // `this`, so they must not outlive it; the actor they target is looked up
+    // by handle at completion rather than captured.
     void CancelPendingRequests();
 
-    void OnCanonicalAssetLoaded(model::Actor* mi, i32 textureId, i32 replaceableId,
+    void OnCanonicalAssetLoaded(u32 actor, i32 textureId, i32 replaceableId,
                                 io::RequestResult&& r);
 };
 

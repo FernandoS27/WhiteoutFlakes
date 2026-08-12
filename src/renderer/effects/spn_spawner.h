@@ -40,6 +40,11 @@ private:
     RenderService& rs_;
     std::vector<Pending> pending_;
     std::vector<Active> active_;
+    // Discriminates same-parent SPN siblings in the draw trace. An SPN child
+    // has no emitter or slot to name it by, and `handle` is not a recordable
+    // identity; `pending_` drains in queue order so this counter is a function
+    // of the scene, not of container iteration.
+    i32 nextOrdinal_ = 0;
 };
 
 } // namespace whiteout::flakes::renderer::effects

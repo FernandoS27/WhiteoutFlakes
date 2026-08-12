@@ -1,0 +1,40 @@
+# Particle refactor validation corpus (see PARTICLE_TYPES_DESIGN.md).
+#
+# Paths are relative to the corpus root passed to scripts/particle-diff.ps1
+# (-CorpusRoot, default C:/Projects/WhiteoutLib/Corpus/MDL).
+#
+# Chosen for particle *activity in the default sequence*, not just for having a
+# PRE2 chunk — a model whose emitters never fire validates nothing. The counts
+# below are alive-particle records over 60 frames at the time of selection.
+# Models with paths containing [] are deliberately excluded: they are glob
+# metacharacters and the runner would need -LiteralPath everywhere.
+
+# --- stock Blizzard UI scenes: many emitters, long-running, stable ---
+war3.w3mod/ui/glues/mainmenu/mainmenu3d/mainmenu3d.mdx                          # 38k / 12 emitters
+war3.w3mod/ui/glues/singleplayer/tutorialcampaign3d/tutorialcampaign3d.mdx      # 32k / 15
+war3.w3mod/ui/glues/singleplayer/nightelf_exp/nightelf_exp.mdx                  # 13k
+war3.w3mod/ui/glues/mainmenu/mainmenu3d_exp/mainmenu3d_exp.mdx                  # 4.1k / 33 emitters
+war3.w3mod/ui/glues/singleplayer/alliance_exp/alliance_exp.mdx                  # 6.7k
+
+# --- models that really spawn PE1 child models (step 9 coverage) ---
+# Verified by counting registered ChildModel emitters, not by grepping the file
+# for "PREM": a raw byte scan false-positives on unrelated data.
+war3.w3mod/units/creeps/blackdragon/blackdragon.mdx                             # PE1 child models
+war3.w3mod/units/creeps/azuredragon/azuredragon.mdx                             # PE1 child models
+war3.w3mod/_hd.w3mod/units/nightelf/chimaera/chimaera.mdx                       # 2 PE1 emitters, HD
+BeeForge/BreeForge_Cuvette49.mdx                                                # 6 PE1 emitters
+
+# --- community models, PE2-heavy ---
+HoTS Maiev High Priestess Upgraded/Maiev.mdx                                    # 9.2k
+Emerald Ranger/EmeraldRanger.mdx                                                # 1.7k
+Moarg Overlord/MoargOverlord1.mdx                                               # 1.9k
+
+# --- assorted shapes / filter modes / sprite sheets ---
+Succorbenoth/Succorbenoth.mdx                                                   # 9.1k
+ChineseFairy/nwdg2.mdx                                                          # 6.7k
+Altar of Stars/objects/spawnmodels/nightelf/nedeathmedium/nedeath.mdx           # 4.7k
+Goblin Combine - HD Version/Goblin Combine - HD Version/Goblin_Combine_HD.mdx   # 4.6k, HD
+
+# --- stress: 731 emitters, ~145k particle records. Slowest entry by far;
+#     keeps the pool/compaction and draw-list paths honest at scale. ---
+dragon_firework_test16.mdx

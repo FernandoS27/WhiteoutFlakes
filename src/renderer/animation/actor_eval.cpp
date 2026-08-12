@@ -19,6 +19,7 @@
 #include "model/model_template.h"
 #include "particle/child_model_emitter.h"
 #include "particle/particle_service.h"
+#include "particle/rnd_seed.h"
 #include "particle/splat_service.h"
 #include "scene_manager.h"
 #include "whiteout/flakes/model_types.h"
@@ -186,8 +187,16 @@ void ApplyAttachmentStates(Actor& mi, const FrameState& state, const ActorEvalCo
         if (visible && !slot.wasVisible) {
             child->animation.SetBirthTimeMs(ancestorClock);
             auto seqs = child->animation.Sequences();
-            if (!seqs.empty())
-                child->animation.SetActiveSequenceIndex(rand() % (i32)seqs.size());
+            if (!seqs.empty()) {
+                // Was libc `rand()` — never seeded, state shared process-wide,
+                // so the sequence a re-shown attachment picks depended on how
+                // many other draws had consumed the global stream. MixSeed is
+                // the particle sim's deterministic mixer; keying it on the
+                // parent handle and the slot makes the choice a function of
+                // the scene.
+                const u32 pick = particle::MixSeed(mi.handle, (u32)as.attachmentIndex);
+                child->animation.SetActiveSequenceIndex((i32)(pick % (u32)seqs.size()));
+            }
             slot.wasVisible = true;
         } else if (!visible) {
             slot.wasVisible = false;
