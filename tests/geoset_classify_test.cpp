@@ -4,9 +4,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "geoset_classify.h"
+#include "core/geoset_classify.h"
 #include "model/render_model.h"
-#include "render_detail.h"
+#include "core/render_detail.h"
 
 #include <vector>
 

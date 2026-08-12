@@ -5,7 +5,7 @@
 #include "renderer/debug/draw_trace_hooks.h"
 #include "renderer/model/model_instance.h"
 #include "renderer/model/render_model.h"
-#include "renderer/render_detail.h"
+#include "renderer/core/render_detail.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"

@@ -1,8 +1,8 @@
 #include "bls/bls_frame.h"
 #include "constants.h"
 #include "debug/draw_trace_hooks.h"
-#include "geoset_classify.h"
-#include "render_detail.h"
+#include "core/geoset_classify.h"
+#include "core/render_detail.h"
 #include "renderer/assets/sampler_asset_manager.h"
 #include "renderer/render_service.h"
 
@@ -108,7 +108,7 @@ CollectedDrawLists BuildDrawLists(
             } else {
                 // Transparent geoset: one whole-geoset draw, sorted back-to-front
                 // by its world-space centroid distance.
-                TransparentItem t;
+                DrawItem t;
                 t.view = &view;
                 t.geoIdx = i;
                 // HD opaque-fading geosets carry the Color depth-fill twin (WC3

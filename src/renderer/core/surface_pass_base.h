@@ -1,6 +1,6 @@
 #pragma once
 
-#include "render_detail.h"
+#include "core/render_detail.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_pipeline_impl.h"
 #include "renderer/render_service.h"

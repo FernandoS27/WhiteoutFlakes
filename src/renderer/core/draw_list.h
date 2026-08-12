@@ -18,6 +18,7 @@
 // any change to these comparators as a pixel change and gate it on G2.
 
 #include "bls/layer_material.h" // bls::DepthFill
+#include "core/surface_vocabulary.h"
 #include "whiteout/flakes/types.h"
 
 #include <vector>
@@ -26,21 +27,23 @@ namespace whiteout::flakes::renderer::render_detail {
 
 struct RenderableView;
 
-// One opaque draw: a whole geoset (all its visible layers, drawn in layer order
-// so a base layer precedes any additive detail on top). Correctness comes from
-// the depth buffer — drawing whole geosets matches per-layer splitting visually,
-// and fits both the SD and the HD (internal-prepass) submission paths.
-struct OpaqueItem {
+// One draw: a whole geoset (all its visible layers, drawn in layer order so a
+// base layer precedes any additive detail on top). Drawing whole geosets
+// matches per-layer splitting visually and fits both the SD and the HD
+// (internal-prepass) submission paths.
+//
+// One struct for both lists. The old OpaqueItem / TransparentItem already
+// shared `view` + `geoIdx`; the transparent one's extra fields are the
+// superset, and an opaque item leaves them at their defaults — which is why
+// unifying them changes no ordering: OpaqueOrder never looked at them.
+//
+// `depthFill` stays None on the SD path — SD never depth-fills and HD does its
+// fade internally; the field is the seam for a WC3-exact HD Color/Depth split.
+// `key` is unpopulated until P3a fills the surface tables; nothing reads it yet.
+struct DrawItem {
     const RenderableView* view = nullptr;
     i32 geoIdx = -1;
-};
-
-// One transparent draw (always the whole geoset), sorted back-to-front. depthFill
-// stays None today — SD never depth-fills and HD does its fade internally; the
-// field is the seam for a future WC3-exact HD Color/Depth split.
-struct TransparentItem {
-    const RenderableView* view = nullptr;
-    i32 geoIdx = -1;
+    core::SurfaceKey key;
     bls::DepthFill depthFill = bls::DepthFill::None;
     f32 sqDist = 0.0f; // squared camera distance (back-to-front key)
     i32 priorityPlane = 0;
@@ -48,8 +51,8 @@ struct TransparentItem {
 };
 
 struct DrawLists {
-    std::vector<OpaqueItem> opaque;
-    std::vector<TransparentItem> transparent;
+    std::vector<DrawItem> opaque;
+    std::vector<DrawItem> transparent;
 };
 
 // Opaque order: a per-model grouping. `view` points into the frame's `views`
@@ -57,7 +60,7 @@ struct DrawLists {
 // is a strict total order keyed on the scene rather than on container layout.
 // (WC3 additionally batches by texture/material to cut state changes; that's a
 // perf optimization we can layer on later.)
-inline bool OpaqueOrder(const OpaqueItem& a, const OpaqueItem& b) {
+inline bool OpaqueOrder(const DrawItem& a, const DrawItem& b) {
     if (a.view != b.view)
         return a.view < b.view;
     return a.geoIdx < b.geoIdx;
@@ -73,7 +76,7 @@ inline bool OpaqueOrder(const OpaqueItem& a, const OpaqueItem& b) {
 // position, or two geosets sharing a centroid) reorder freely, and
 // back-to-front blend order does change pixels. With the term this is a strict
 // total order, which is also what makes stable_sort provably a no-op here.
-inline bool TransparentOrder(const TransparentItem& a, const TransparentItem& b) {
+inline bool TransparentOrder(const DrawItem& a, const DrawItem& b) {
     if (a.underWater != b.underWater)
         return a.underWater;
     if (a.priorityPlane != b.priorityPlane)

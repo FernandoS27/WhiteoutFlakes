@@ -1,7 +1,7 @@
-#include "geoset_classify.h"
+#include "core/geoset_classify.h"
 
 #include "bls/bls_mat_params.h"
-#include "render_detail.h"
+#include "core/render_detail.h"
 
 #include <algorithm>
 

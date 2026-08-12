@@ -6,7 +6,7 @@
 
 #include "renderer/bls/bls_frame.h"
 #include "renderer/debug/draw_trace.h"
-#include "renderer/render_detail.h"
+#include "renderer/core/render_detail.h"
 
 namespace whiteout::flakes::renderer::debug {
 

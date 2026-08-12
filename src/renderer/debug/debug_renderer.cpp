@@ -1,7 +1,7 @@
 #include "assets/sampler_asset_manager.h"
 #include "assets/texture_asset_manager.h"
 #include "constants.h"
-#include "render_detail.h"
+#include "core/render_detail.h"
 #include "render_service.h"
 #include "renderer/debug/debug_renderer.h"
 #include "renderer/render_pipeline.h"
