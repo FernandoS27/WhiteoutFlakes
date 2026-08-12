@@ -63,7 +63,7 @@ struct CurveKey {
 
 // Locate the segment containing `t`, using `hint` as a starting guess. The hint
 // is an optimisation only: the result is identical for any hint value, which is
-// what the self-test asserts.
+// what tests/particle_curve_test.cpp asserts.
 template <class KeyVec>
 usize FindSegment(const KeyVec& keys, f32 t, u32 hint) {
     const usize last = keys.size() - 2; // index of the final segment
@@ -71,8 +71,8 @@ usize FindSegment(const KeyVec& keys, f32 t, u32 hint) {
     // Forward uses `>` and backward `<=` so the two agree on which side of an
     // exact key time a sample falls: a particle sitting precisely on a boundary
     // resolves to the earlier segment whatever the hint was. Mismatched
-    // comparisons here would make the result hint-dependent, which the
-    // self-test asserts against — and would matter for cell animation, where
+    // comparisons here would make the result hint-dependent, which the tests
+    // assert against — and would matter for cell animation, where
     // the two sides of a boundary select very different sprite cells.
     while (i < last && t > keys[i + 1].t)
         ++i;

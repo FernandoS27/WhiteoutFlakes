@@ -57,6 +57,8 @@ wdx_add_test(coordinate_system_test coordinate_system_test.cpp)
 wdx_add_test(geoset_classify_test   geoset_classify_test.cpp)
 wdx_add_test(particle_curve_test    particle_curve_test.cpp)
 wdx_add_test(particle_shape_test    particle_shape_test.cpp)
+wdx_add_test(particle_sim_test      particle_sim_test.cpp)
+wdx_add_test(particle_trace_test    particle_trace_test.cpp)
 
 # `cmake --build build --target wdx_tests` builds every test binary;
 # `--target check` builds them and runs the suite through CTest.

@@ -5,7 +5,6 @@
 #include "renderer/model/model_instance.h"
 #include "renderer/model/model_loader.h"
 #include "renderer/particle/particle_service.h"
-#include "renderer/particle/particle_selftest.h"
 #include "renderer/particle/particle_trace.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
@@ -716,12 +715,6 @@ int main(int argc, char* argv[]) {
             headlessTest = true;
         } else if (std::strcmp(a, "--multiscene-test") == 0) {
             multiSceneTest = true;
-        } else if (std::strcmp(a, "--particle-selftest") == 0) {
-            std::string rep;
-            const bool ok = whiteout::flakes::renderer::particle::RunParticleSelfTest(rep);
-            std::cout << "[pselftest] " << rep << std::endl;
-            std::cout << "[pselftest] " << (ok ? "PASS" : "FAIL") << std::endl;
-            return ok ? 0 : 9;
         } else if (std::strcmp(a, "--particle-diff") == 0) {
             particleDiff = true;
         } else if (std::strcmp(a, "--childmodel-check") == 0) {

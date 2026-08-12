@@ -144,9 +144,9 @@ viewer at it.
 ## Tests
 
 The `tests/` suite covers the headless parts of the engine — SLK parsing,
-particle curves and spawn shapes, geoset classification, coordinate-space
-conversion, path/texture-format policy. No GPU, window, or game archive is
-needed, so it runs anywhere:
+particle curves, spawn shapes, the particle sim and its trace harness, geoset
+classification, coordinate-space conversion, path/texture-format policy. No
+GPU, window, or game archive is needed, so it runs anywhere:
 
 ```
 cmake -S . -B build -DWDX_BUILD_TESTS=ON

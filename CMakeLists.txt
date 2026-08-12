@@ -1103,7 +1103,6 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/particle/child_model_emitter.cpp
     src/renderer/particle/particle_adapters.cpp
     src/renderer/particle/particle_curve.cpp
-    src/renderer/particle/particle_selftest.cpp
     src/renderer/particle/particle_pool.cpp
     src/renderer/particle/particle2_emitter.cpp
     src/renderer/particle/particle_shape.cpp

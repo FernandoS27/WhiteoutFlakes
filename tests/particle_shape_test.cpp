@@ -6,13 +6,11 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
-#include "renderer/particle/particle_selftest.h"
 #include "renderer/particle/particle_shape.h"
 #include "renderer/particle/rnd_seed.h"
 
 #include <algorithm>
 #include <cmath>
-#include <string>
 
 using namespace whiteout::flakes::renderer::particle;
 using whiteout::flakes::f32;
@@ -236,13 +234,4 @@ TEST_CASE("Each spawn consumes a fixed number of random draws") {
             CRandom::next_u32(raw);
         REQUIRE(shaped.state == raw.state);
     }
-}
-
-TEST_CASE("The viewer's --particle-selftest checks still pass") {
-    // Keeps the standalone's built-in check path covered now that the same
-    // invariants have proper test cases above.
-    std::string report;
-    const bool ok = RunParticleSelfTest(report);
-    INFO(report);
-    REQUIRE(ok);
 }
