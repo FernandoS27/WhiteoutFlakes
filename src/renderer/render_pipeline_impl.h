@@ -2,7 +2,9 @@
 
 #include "frame_capture.h"
 #include "render_pipeline.h"
+#include "shading/shading_registry.h"
 
+#include <memory>
 #include <unordered_map>
 
 namespace whiteout::flakes::renderer::bls {
@@ -54,6 +56,13 @@ struct RenderPipeline::Impl {
     bool frameDrawImGui_ = true;
 
     RenderMode frameRenderMode_ = RenderMode::SD;
+
+    // Shading models, long-lived so they can hold per-model caches and so
+    // P8/P9/P10 have somewhere to register their ids. Held by base pointer to
+    // keep the WC3 profile headers out of this one.
+    shading::ShadingRegistry shadingModels_;
+    std::unique_ptr<shading::IShadingModel> wc3SdShading_;
+    std::unique_ptr<shading::IShadingModel> wc3HdShading_;
 
     // Cached at InitDevice time via Gfx()->PreferredDepthStencilFormat().
     // Renderer-wide source of truth for the depth-target format and

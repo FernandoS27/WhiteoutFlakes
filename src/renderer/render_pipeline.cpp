@@ -26,9 +26,9 @@
 #include "ibl/split_sum.h"
 #include "core/render_detail.h"
 #include "core/surface_pass_base.h"
-#include "renderer/profiles/wc3/geoset_pass_bls.h"
-#include "renderer/profiles/wc3/geoset_pass_hd.h"
+#include "renderer/profiles/wc3/wc3_shading.h"
 #include "renderer/profiles/wc3/wc3_sun.h"
+#include "renderer/shading/surface_pass.h"
 #include "renderer/assets/asset_manager.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/assets/sampler_asset_manager.h"
@@ -2195,29 +2195,79 @@ bool RenderPipeline::DownloadCaptureSlot(i32 slot, std::vector<u8>& outRgba, i32
 }
 
 
-bool RenderPipeline::RenderGeosetsBls(GeosetBucket bucket) {
-    return GeosetPassBls{rs_, bucket}.RunLists();
-}
-
-
-bool RenderPipeline::RenderGeosetsHd(GeosetBucket bucket) {
-    return GeosetPassHd{rs_, bucket}.RunLists();
-}
-
-void RenderPipeline::RenderGeosets(GeosetBucket bucket) {
-    if (impl_->frameRenderMode_ == RenderMode::HD) {
-        RenderGeosetsHd(bucket);
-    } else {
-        RenderGeosetsBls(bucket);
+// The shading models are long-lived: the registry is what P8/P9/P10 register
+// their own ids into, and a model that rebuilt itself per frame would have
+// nowhere to keep a PSO cache. Built on first use because they capture
+// RenderService, which is fully wired only after InitDevice.
+shading::IShadingModel& RenderPipeline::ActiveShadingModel() {
+    if (!impl_->wc3SdShading_) {
+        impl_->wc3SdShading_ = std::make_unique<profiles::wc3::Wc3SdShading>(rs_);
+        impl_->wc3HdShading_ = std::make_unique<profiles::wc3::Wc3HdShading>(rs_);
+        impl_->shadingModels_.Register(impl_->wc3SdShading_.get());
+        impl_->shadingModels_.Register(impl_->wc3HdShading_.get());
     }
+    // RenderMode still selects globally — one model live at a time. Per-surface
+    // selection is the mixed-shading work, which needs SceneHdrInSd because SD
+    // and HD disagree on scene format and linearity.
+    return (impl_->frameRenderMode_ == RenderMode::HD)
+               ? *impl_->wc3HdShading_
+               : *impl_->wc3SdShading_;
+}
+
+// Collect + classify + sort, then hand the bucket to SurfacePass, which opens
+// each naming model's pass and dispatches. Replaces BlsGeosetPass::RunLists.
+void RenderPipeline::RenderGeosets(GeosetBucket bucket) {
+    shading::IShadingModel& active = ActiveShadingModel();
+    if (!active.IsAvailable() || rs_.Scene().Actors().All().empty())
+        return;
+
+    const Vector3f camPos = rs_.Pipeline().FrameCamera().GetSource();
+    auto collected = render_detail::BuildDrawLists(rs_.Scene().Actors().All(),
+                                                   ComputeSelectedLod(), camPos, active.Id());
+    if (collected.lists.opaque.empty() && collected.lists.transparent.empty())
+        return;
+
+    core::PassContext ctx;
+    ctx.viewportWidth = Width();
+    ctx.viewportHeight = Height();
+    ctx.cameraPos = camPos;
+
+    auto& traceCtx = debug::DrawTraceRecorder::Instance().Context();
+    shading::SurfacePass pass(impl_->shadingModels_);
+
+    if (bucket != GeosetBucket::Transparent) {
+        ctx.pass = core::PassSlot::OpaqueColor;
+        traceCtx = {};
+        traceCtx.pass = debug::TracePassSlot::OpaqueColor;
+        for (u32 i = 0; i < collected.lists.opaque.size(); ++i) {
+            traceCtx.sortOrder = (i32)i;
+            pass.Submit(collected.lists.opaque[i], ctx, collected);
+        }
+        pass.Finish(ctx);
+    }
+    if (bucket != GeosetBucket::Opaque) {
+        ctx.pass = core::PassSlot::TransparentScene;
+        for (u32 i = 0; i < collected.lists.transparent.size(); ++i) {
+            const auto& item = collected.lists.transparent[i];
+            traceCtx = {.pass = debug::TracePassSlot::TransparentScene,
+                        .producer = debug::TraceProducer::Geoset,
+                        .sortOrder = (i32)i,
+                        .sqDist = item.sqDist,
+                        .priorityPlane = item.priorityPlane,
+                        .underWater = static_cast<u8>(item.underWater),
+                        .depthFill = static_cast<u8>(item.depthFill)};
+            pass.Submit(item, ctx, collected);
+        }
+        pass.Finish(ctx);
+    }
+    traceCtx = {};
 }
 
 // Unified transparent pass — WC3's IModelRenderSceneTransparent. Prepares each
 // transparent producer (geosets via the mode's GeosetPass, PE2 particles), then
 // interleaves their per-unit draws back-to-front by (priorityPlane, distance).
 // Ribbons + corn join here in a later step; for now they stay separate passes.
-template <class GeosetPass>
-void RenderPipeline::RenderTransparentSceneT() {
+void RenderPipeline::RenderTransparentScene() {
     auto* cmd = impl_->gfx_->GetImmediateContext();
     const Vector3f camPos = rs_.Pipeline().FrameCamera().GetSource();
     auto sqDistTo = [&](const Vector3f& p) {
@@ -2225,13 +2275,22 @@ void RenderPipeline::RenderTransparentSceneT() {
         return d.x * d.x + d.y * d.y + d.z * d.z;
     };
 
-    // --- Geosets: prepare the pass (also does the pass-global binds once) ---
-    GeosetPass pass(rs_, GeosetBucket::Transparent);
+    // --- Geosets: collect + classify + sort. The pass-global binds now happen
+    // inside the model's BeginPass, which SurfacePass triggers on the first
+    // geoset entry it dispatches. ---
+    shading::IShadingModel& active = ActiveShadingModel();
+    shading::SurfacePass pass(impl_->shadingModels_);
     render_detail::CollectedDrawLists geo;
-    bls::FrameInputs geoFrame;
-    Matrix44f geoView;
-    bls::LightingContext geoLighting;
-    const bool haveGeo = pass.PrepareInterleaved(geo, geoFrame, geoView, geoLighting);
+    core::PassContext geoCtx;
+    geoCtx.pass = core::PassSlot::TransparentScene;
+    geoCtx.cameraPos = camPos;
+    geoCtx.viewportWidth = Width();
+    geoCtx.viewportHeight = Height();
+    const bool haveGeo = active.IsAvailable() && !rs_.Scene().Actors().All().empty();
+    if (haveGeo) {
+        geo = render_detail::BuildDrawLists(rs_.Scene().Actors().All(), ComputeSelectedLod(),
+                                            camPos, active.Id());
+    }
 
     // --- PE2 particles: build geometry into the shared VB ---
     std::vector<particle::EmitterDrawList> partDraws;
@@ -2354,8 +2413,7 @@ void RenderPipeline::RenderTransparentSceneT() {
         case render_detail::TransparentKind::Geoset:
             traceCtx.underWater = static_cast<u8>(geo.lists.transparent[e.unit].underWater);
             traceCtx.depthFill = static_cast<u8>(geo.lists.transparent[e.unit].depthFill);
-            pass.DrawTransparentItem(geo.lists.transparent[e.unit], geoFrame, geoView, cmd,
-                                     geoLighting);
+            pass.Submit(geo.lists.transparent[e.unit], geoCtx, geo);
             break;
         case render_detail::TransparentKind::Particle:
             DrawParticleEmitter(partDraws[e.unit], partFrame);
@@ -2381,14 +2439,8 @@ void RenderPipeline::RenderTransparentSceneT() {
             break;
         }
     }
+    pass.Finish(geoCtx);
     traceCtx = {};
-}
-
-void RenderPipeline::RenderTransparentScene() {
-    if (impl_->frameRenderMode_ == RenderMode::HD)
-        RenderTransparentSceneT<GeosetPassHd>();
-    else
-        RenderTransparentSceneT<GeosetPassBls>();
 }
 
 } // namespace whiteout::flakes::renderer

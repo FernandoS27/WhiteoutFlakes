@@ -11,6 +11,7 @@
 #include "renderer/core/surface_pass_base.h"
 #include "renderer/debug/draw_trace_hooks.h"
 #include "renderer/profiles/wc3/wc3_sun.h"
+#include "renderer/shading/shading_model.h"
 #include "renderer/shadow/shadow_service.h"
 
 namespace whiteout::flakes::renderer {
@@ -118,7 +119,7 @@ public:
         const auto layout =
             hasBones ? bls::VertexLayoutKind::ParticleSDSkinned : bls::VertexLayoutKind::ParticleSD;
 
-        const i32 lightCount = bls::BuildLightPalette(
+        const i32 lightCount = owner_->SelectLights(
             frame, lighting, viewMat, render_detail::GeosetCentroidWS(view_, geo));
 
         for (i32 li = 0; li < numLayers; ++li) {

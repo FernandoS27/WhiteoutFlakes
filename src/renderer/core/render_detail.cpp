@@ -47,7 +47,7 @@ bool GeosetDrawable(const model::GPUGeoset& geo) {
 
 CollectedDrawLists BuildDrawLists(
     const std::unordered_map<u32, std::unique_ptr<model::Actor>>& models, i32 selectedLod,
-    const Vector3f& cameraPos) {
+    const Vector3f& cameraPos, core::ShadingModelId activeModel) {
     CollectedDrawLists out;
     out.views.reserve(models.size());
     out.lists.opaque.reserve(models.size() * 4);
@@ -104,13 +104,18 @@ CollectedDrawLists BuildDrawLists(
             if (gc.opaque) {
                 // Opaque geoset: one whole-geoset draw (layers in order; depth
                 // buffer sorts it against the rest of the opaque set).
-                out.lists.opaque.push_back({&view, i});
+                DrawItem o;
+                o.view = &view;
+                o.geoIdx = i;
+                o.key.model = activeModel;
+                out.lists.opaque.push_back(o);
             } else {
                 // Transparent geoset: one whole-geoset draw, sorted back-to-front
                 // by its world-space centroid distance.
                 DrawItem t;
                 t.view = &view;
                 t.geoIdx = i;
+                t.key.model = activeModel;
                 // HD opaque-fading geosets carry the Color depth-fill twin (WC3
                 // RenderGeoset's DEPTHFILL_COLOR); true blend geosets stay None.
                 t.depthFill = gc.needsDepthFill ? bls::DepthFill::Color : bls::DepthFill::None;

@@ -84,9 +84,16 @@ struct CollectedDrawLists {
     std::vector<model::FrameState::LightState> sceneLights;
 };
 
+// `activeModel` stamps every item's SurfaceKey. RenderMode still selects
+// globally — one shading model live at a time — so this is the whole of
+// per-surface model assignment for now. Genuine per-surface assignment arrives
+// with the mixed-shading work; deriving it from layer.shaderId instead would
+// route a shaderId-1 surface in SD mode to the HD model, which is a behaviour
+// change disguised as a refactor (ClassifyGeoset is render-mode independent and
+// applies the HD fading rule regardless of mode).
 CollectedDrawLists BuildDrawLists(
     const std::unordered_map<u32, std::unique_ptr<model::Actor>>& models, i32 selectedLod,
-    const Vector3f& cameraPos);
+    const Vector3f& cameraPos, core::ShadingModelId activeModel);
 
 // `paletteCb` is the bone-palette CB to bind when this geoset has
 // skinning data. Pass `geo.bonePaletteCb` directly when the actor is

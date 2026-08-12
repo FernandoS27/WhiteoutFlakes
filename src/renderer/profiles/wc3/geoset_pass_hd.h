@@ -11,6 +11,7 @@
 #include "renderer/core/surface_pass_base.h"
 #include "renderer/debug/draw_trace_hooks.h"
 #include "renderer/profiles/wc3/wc3_sun.h"
+#include "renderer/shading/shading_model.h"
 #include "renderer/shadow/shadow_service.h"
 
 namespace whiteout::flakes::renderer {
@@ -234,7 +235,7 @@ public:
     void EmitLayersHd(const render_detail::RenderableView& view_, const GPUGeoset& geo,
                       bls::FrameInputs& frame, const Matrix44f& viewMat, gfx::IGFXCommandList* cmd,
                       const bls::LightingContext& lighting) {
-        const i32 lightCountForGeoset = bls::BuildLightPalette(
+        const i32 lightCountForGeoset = owner_->SelectLights(
             frame, lighting, viewMat, render_detail::GeosetCentroidWS(view_, geo));
 
         const GPUMaterial* mat = nullptr;

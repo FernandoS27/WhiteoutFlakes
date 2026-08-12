@@ -34,6 +34,10 @@ class GeosetPassHd;
 class Camera;
 enum class GeosetBucket : u8;
 
+namespace shading {
+class IShadingModel;
+}
+
 namespace particle {
 struct EmitterDrawList;
 }
@@ -218,16 +222,16 @@ private:
     bool InitBlsShaders(gfx::GfxApi api);
     void ShutdownBlsShaders();
     bool RenderSplatsBls();
-    bool RenderGeosetsBls(GeosetBucket bucket);
-    bool RenderGeosetsHd(GeosetBucket bucket);
+    // The shading model the active RenderMode selects, building the registry's
+    // WC3 entries on first use. One model is live at a time; per-surface
+    // selection is the mixed-shading work.
+    shading::IShadingModel& ActiveShadingModel();
     void RenderGeosets(GeosetBucket bucket);
     // Unified back-to-front transparent pass: interleaves transparent geosets,
     // PE2 particles, ribbons and corn by camera distance (WC3's
-    // IModelRenderSceneTransparent). RenderTransparentScene picks the geoset
-    // submission for the active render mode; the templated body does the work.
+    // IModelRenderSceneTransparent). Geoset draws go through SurfacePass, which
+    // opens the naming model's pass on the first entry it dispatches.
     void RenderTransparentScene();
-    template <class GeosetPass>
-    void RenderTransparentSceneT();
     void DrawParticleEmitter(const particle::EmitterDrawList& dl, const bls::FrameInputs& frame);
     // Build every actor's ribbon strips into their per-actor VBs and surface one
     // RibbonDrawUnit per emitter (with a world sort origin); `outFrame` is the

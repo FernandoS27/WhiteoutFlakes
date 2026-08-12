@@ -1084,6 +1084,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/render_service.cpp
     src/renderer/core/render_detail.cpp
     src/renderer/core/geoset_classify.cpp
+    src/renderer/shading/surface_pass.cpp
     src/renderer/render_target.cpp
     src/renderer/scene_manager.cpp
     src/renderer/coordinate_system.cpp
