@@ -181,7 +181,8 @@ for:
             -DWDX_USE_PREBUILT_SHADERS=ON `
             -DWDX_BUILD_WC3_DEBUG_SHADERS=OFF `
             -DWDX_ENABLE_TRACY=OFF `
-            -DWDX_BUILD_MAX_PLUGIN=OFF
+            -DWDX_BUILD_MAX_PLUGIN=OFF `
+            -DWDX_BUILD_TESTS=ON
           if ($LASTEXITCODE -ne 0) { throw "cmake configure failed" }
           cmake --build build --config Release --target WhiteoutFlakesStandalone --parallel
           if ($LASTEXITCODE -ne 0) { throw "cmake build failed" }
@@ -194,6 +195,14 @@ for:
           Compress-Archive `
             -Path build\standalone\* `
             -DestinationPath WhiteoutFlakes-windows-x64.zip -Force
+    # Catch2 suite (WDX_BUILD_TESTS=ON above). Headless — no GPU, no window,
+    # no game archives — so it runs on the stock AppVeyor image.
+    test_script:
+      - ps: |
+          cmake --build build --config Release --target wdx_tests --parallel
+          if ($LASTEXITCODE -ne 0) { throw "unit test build failed" }
+          ctest --test-dir build --build-config Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "unit tests failed" }
     artifacts:
       - path: WhiteoutFlakes-windows-x64.zip
         name: WhiteoutFlakes-windows-x64

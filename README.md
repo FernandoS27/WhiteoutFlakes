@@ -139,6 +139,24 @@ viewer at it.
 | `WDX_ENABLE_IMGUI`             | `ON`  | Engine-side BLS-backed Dear ImGui adapter + GLFW/Win32 frontends. |
 | `WDX_BUILD_MAX_PLUGIN`         | `OFF` | Build the 3ds Max plugin (Windows only; needs `-DMAX_VERSION=<year>`). |
 | `WDX_BUILD_CASC_SERVER`        | `OFF` | Build `wf_casc_server` — local dev replacement for Hive's CASC delivery. |
+| `WDX_BUILD_TESTS`              | `OFF` | Build the Catch2 unit tests under `tests/` (fetches Catch2 at configure time). |
+
+## Tests
+
+The `tests/` suite covers the headless parts of the engine — SLK parsing,
+particle curves and spawn shapes, geoset classification, coordinate-space
+conversion, path/texture-format policy. No GPU, window, or game archive is
+needed, so it runs anywhere:
+
+```
+cmake -S . -B build -DWDX_BUILD_TESTS=ON
+cmake --build build --config Release --target wdx_tests --parallel
+ctest --test-dir build --build-config Release --output-on-failure
+```
+
+`cmake --build build --target check` does the last two steps in one go. Each
+`TEST_CASE` registers as its own CTest test, so `ctest -R <name>` filters.
+The AppVeyor Windows job runs the suite on every build.
 
 ## Packaging
 
@@ -170,6 +188,9 @@ tools/
                 worker; the casc_server/ subdir is a Crow-based local
                 stand-in for Hive's CASC delivery.
   common/       Shared host utilities (cubeb sound emitter, ImGui theme).
+
+tests/          Catch2 unit tests for the headless engine components
+                (-DWDX_BUILD_TESTS=ON).
 
 externals/      Submodules: WhiteoutLib (MDX/CASC/MPQ), Wc3Shaders, GLFW,
                 Dear ImGui, cubeb, Tracy, nativefiledialog-extended.

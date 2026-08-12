@@ -1680,6 +1680,20 @@ endif()
 
 endif()  # NOT EMSCRIPTEN — standalone viewer block
 
+# ============================================================================
+# Unit tests — Catch2 v3 (opt-in)
+#
+# `cmake -S . -B build -DWDX_BUILD_TESTS=ON` then `ctest --test-dir build`
+# (or `cmake --build build --target check`). Off by default because it fetches
+# Catch2 at configure time, which an offline / air-gapped configure can't do.
+# Covers the headless parts of the engine only — see tests/CMakeLists.txt.
+# ============================================================================
+option(WDX_BUILD_TESTS "Build the Catch2 unit tests (fetches Catch2)" OFF)
+if(WDX_BUILD_TESTS AND NOT EMSCRIPTEN)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
 # ---- Web viewer: WASM module + JS facade (Emscripten only) ----
 # The package defines wf_web (wf-core.{js,wasm} + JS staging); the demo
 # layers index.html + sw.js on top, so the order matters.
