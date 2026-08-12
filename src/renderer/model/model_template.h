@@ -4,6 +4,7 @@
 #include "assets/texture_asset_manager.h"
 #include "effects/ribbon.h"
 #include "particle.h"
+#include "particle/emitter_desc.h"
 #include "render_target.h" // RenderMode
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
@@ -46,9 +47,13 @@ struct ModelTemplate {
     SkeletonData skeleton;
     std::vector<SkinWeightData> skinWeights;
     std::vector<ParticleEmitterConfig> pe2Configs;
+    // Immutable emitter descriptions, built once from pe2Configs on first spawn
+    // and shared by every actor of this template. Parallel to pe2Configs.
+    std::vector<std::shared_ptr<const particle::EmitterDesc>> pe2Descs;
     std::vector<effects::RibbonEmitterConfig> ribbonConfigs;
     std::vector<CollisionShapeData> collisionConfigs;
     std::vector<PE1EmitterConfig> pe1Configs;
+    std::vector<std::shared_ptr<const particle::EmitterDesc>> pe1Descs;
     std::vector<CornEmitterInit> cornEmitterInits;
     std::vector<AttachmentConfig> attachmentConfigs;
     std::vector<EventObjectConfig> eventObjects;

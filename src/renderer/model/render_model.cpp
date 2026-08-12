@@ -108,18 +108,5 @@ void RenderModel::ApplyRibbonFrameStates(const FrameState& state) {
     }
 }
 
-void RenderModel::ApplyPE1FrameStates(const FrameState& state) {
-    for (auto& ps : state.pe1States) {
-        PE1EmitterState st;
-        st.transform = ps.transform;
-        st.emissionRate = ps.emissionRate;
-        st.speed = ps.speed;
-        st.latitude = ps.latitude;
-        st.longitude = ps.longitude;
-        st.gravity = ps.gravity;
-        st.visibility = ps.visibility;
-        pe1.UpdateEmitterState(ps.emitterId, st);
-    }
-}
 
 } // namespace whiteout::flakes::renderer::model

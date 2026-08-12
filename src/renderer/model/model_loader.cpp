@@ -19,7 +19,9 @@
 #include "model/model_instance.h"
 #include "model/model_template.h"
 #include "model/model_template_manager.h"
-#include "particle/plane_emitter.h"
+#include "particle/child_model_emitter.h"
+#include "particle/particle_adapters.h"
+#include "particle/particle2_emitter.h"
 #include "render_service.h"
 #include "render_service_impl.h"
 #include "scene_manager.h"
@@ -163,8 +165,16 @@ void ModelLoader::SetPE1Configs(u32 handle, const std::vector<PE1EmitterConfig>&
     auto* mi = rs_.Scene().Actors().Find(handle);
     if (!mi)
         return;
-    for (i32 i = 0; i < (i32)configs.size(); i++)
-        mi->render.pe1.AddEmitter(i, configs[i]);
+    for (i32 i = 0; i < (i32)configs.size(); i++) {
+        if (configs[i].modelPath.empty())
+            continue;
+        auto em = std::make_unique<particle::ChildModelEmitter>(
+            handle, i, [this] { return rs_.Scene().AllocActorId(); });
+        em->SetDesc(particle::DescFromWc3ChildModelConfig(configs[i]));
+        em->SetSeed(particle::MixSeed(handle, 0x8000u + (u32)i));
+        rs_.Particles().AddEmitter(handle, particle::ParticleOutput::ChildModel, i,
+                                   std::move(em));
+    }
 }
 
 void ModelLoader::PreloadChildTemplates(Actor& a, const ModelTemplate& tmpl) {
@@ -247,19 +257,49 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
         mi->render.skinDirty = true;
     }
 
+    // Build the immutable descriptions once per template; every actor spawned
+    // from it shares them rather than carrying its own copy of every key,
+    // material and sprite-sheet constant.
+    if (tmpl->pe2Descs.size() != tmpl->pe2Configs.size()) {
+        tmpl->pe2Descs.clear();
+        tmpl->pe2Descs.reserve(tmpl->pe2Configs.size());
+        for (const auto& pcfg : tmpl->pe2Configs)
+            tmpl->pe2Descs.push_back(particle::DescFromWc3Config(pcfg));
+    }
     for (i32 i = 0; i < (i32)tmpl->pe2Configs.size(); i++) {
-        const auto& pcfg = tmpl->pe2Configs[i];
-        auto em = std::make_unique<particle::PlaneEmitter>();
-        particle::ApplyInit(*em, particle::InitFromLegacyConfig(pcfg));
-        rs_.Particles().AddPlaneEmitter(mi->handle, i, std::move(em));
+        auto em = std::make_unique<particle::Emitter2>();
+        em->SetDesc(tmpl->pe2Descs[i]);
+        // Seed from stable identity, not construction order, so the same scene
+        // reproduces its particle motion across runs.
+        em->SetSeed(particle::MixSeed(mi->handle, (u32)i));
+        rs_.Particles().AddEmitter(mi->handle, particle::ParticleOutput::Billboard, i,
+                                   std::move(em));
     }
     mi->render.pe2State.resize(tmpl->pe2Configs.size());
 
     for (i32 i = 0; i < (i32)tmpl->ribbonConfigs.size(); i++)
         mi->render.ribbons.AddEmitter(i, tmpl->ribbonConfigs[i]);
 
-    for (i32 i = 0; i < (i32)tmpl->pe1Configs.size(); i++)
-        mi->render.pe1.AddEmitter(i, tmpl->pe1Configs[i]);
+    // PE1 ("particles that ARE models") registers in the same service as the
+    // billboards — same pool, same sim, different output.
+    if (tmpl->pe1Descs.size() != tmpl->pe1Configs.size()) {
+        tmpl->pe1Descs.clear();
+        tmpl->pe1Descs.reserve(tmpl->pe1Configs.size());
+        for (const auto& cfg : tmpl->pe1Configs)
+            tmpl->pe1Descs.push_back(particle::DescFromWc3ChildModelConfig(cfg));
+    }
+    for (i32 i = 0; i < (i32)tmpl->pe1Configs.size(); i++) {
+        // Emitters with no spawn model still occupy an index (see
+        // GetPE1Configs) but have nothing to spawn.
+        if (tmpl->pe1Configs[i].modelPath.empty())
+            continue;
+        auto em = std::make_unique<particle::ChildModelEmitter>(
+            mi->handle, i, [this] { return rs_.Scene().AllocActorId(); });
+        em->SetDesc(tmpl->pe1Descs[i]);
+        em->SetSeed(particle::MixSeed(mi->handle, 0x8000u + (u32)i));
+        rs_.Particles().AddEmitter(mi->handle, particle::ParticleOutput::ChildModel, i,
+                                   std::move(em));
+    }
 
     // CornFx (CornEmitter) — register one emitter per init in the
     // service's per-(actor, emitterId) map. The emitter Acquires a
@@ -426,9 +466,11 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
 
     for (usize i = 0; i < particleConfigs.size(); i++) {
         const auto& pcfg = particleConfigs[i];
-        auto em = std::make_unique<particle::PlaneEmitter>();
-        particle::ApplyInit(*em, particle::InitFromLegacyConfig(pcfg));
-        rs_.Particles().AddPlaneEmitter(handle, (i32)i, std::move(em));
+        auto em = std::make_unique<particle::Emitter2>();
+        em->SetDesc(particle::DescFromWc3Config(pcfg));
+        em->SetSeed(particle::MixSeed(handle, (u32)i));
+        rs_.Particles().AddEmitter(handle, particle::ParticleOutput::Billboard, (i32)i,
+                                   std::move(em));
     }
     mi->render.pe2State.resize(particleConfigs.size());
 

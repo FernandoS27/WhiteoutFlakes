@@ -20,17 +20,14 @@ u32 CeilPow2(u32 x) {
 
 } // namespace
 
-void ParticlePool::Sync(f32 emissionRate, f32 lifeSpan) {
-    if (emissionRate <= 0.0f || lifeSpan <= 0.0f)
-        return;
-
-    u32 arraySize = static_cast<u32>(1.15f * emissionRate * lifeSpan);
-    if (arraySize == 0)
+void ParticlePool::Sync(u32 capacity) {
+    if (capacity == 0)
         return;
     u32 oldSize = static_cast<u32>(particles_.size());
-    if (oldSize >= arraySize)
+    if (oldSize >= capacity)
         return;
 
+    const u32 arraySize = capacity;
     u32 reserve = CeilPow2(arraySize);
     particles_.reserve(reserve);
     alive_.reserve(reserve);

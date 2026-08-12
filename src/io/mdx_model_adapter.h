@@ -6,7 +6,6 @@
 #include <whiteout/models/mdx/types.h>
 #include "file_resolver.h"
 #include "io/mdx_animation.h"
-#include "renderer/particle/plane_emitter.h"
 #include "whiteout/flakes/model_source.h"
 #include "whiteout/flakes/types.h"
 
@@ -28,8 +27,6 @@ public:
     std::vector<::whiteout::flakes::renderer::effects::RibbonEmitterConfig> GetRibbonConfigs()
         override;
 
-    std::vector<::whiteout::flakes::renderer::particle::PlaneEmitterInit> GetPlaneEmitterInits()
-        const;
     std::vector<::whiteout::flakes::renderer::model::CollisionShapeData> GetCollisionShapes()
         override;
     std::vector<::whiteout::flakes::renderer::model::AttachmentConfig> GetAttachmentConfigs()

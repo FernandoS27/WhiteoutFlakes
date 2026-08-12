@@ -3,7 +3,6 @@
 #include "../gfx/gfx.h"
 #include "animation/animation.h"
 #include "assets/texture_asset_manager.h"
-#include "effects/pe1_system.h"
 #include "effects/ribbon.h"
 #include "particle.h"
 #include "whiteout/flakes/model_types.h"
@@ -139,7 +138,6 @@ struct RenderModel {
     effects::RibbonSystem ribbons;
     gfx::BufferHandle ribbonVB = gfx::BufferHandle::Invalid;
     i32 ribbonVBSize = 0;
-    effects::PE1System pe1;
     std::vector<CollisionShape> collisionShapes;
 
     std::unordered_map<i32, TexAnimData> matTexAnim;
@@ -157,7 +155,6 @@ struct RenderModel {
     void ApplyGeosetStates(const FrameState& state);
     void ApplyLayerStates(const FrameState& state);
     void ApplyRibbonFrameStates(const FrameState& state);
-    void ApplyPE1FrameStates(const FrameState& state);
 };
 
 } // namespace whiteout::flakes::renderer::model

@@ -24,6 +24,12 @@ namespace whiteout::flakes::renderer::model {
 // app-spawned but their evaluation is hand-driven by the host (Max plugin
 // scrubs Max's timeline). Children are spawned by their parent's effects
 // and live in `parent->children`.
+// Caps on child-model ("particles that ARE models") spawning. Actor-tree
+// policy, enforced where actors are created rather than in the particle sim:
+// each instance is a full Actor with GPU resources. Raise with care.
+constexpr i32 kMaxChildModelDepth = 3;
+constexpr i32 kMaxChildModelInstances = 256;
+
 enum class ActorRole : u8 {
     Unit,       // top-level, app-spawned, normal scene-clock evaluation
     External,   // top-level, host evaluates manually (Max plugin)

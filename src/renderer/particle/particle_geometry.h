@@ -1,6 +1,7 @@
 #pragma once
 
 #include "particle2_emitter.h"
+#include "particle_material.h"
 #include "types.h"
 #include "whiteout/flakes/types.h"
 

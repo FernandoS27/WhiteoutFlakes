@@ -53,25 +53,22 @@ inline Vector3f Normalize(const Vector3f& v, const Vector3f& fallback = {0, 0, 1
     return {v.x * inv, v.y * inv, v.z * inv};
 }
 
-void CellToUV(const Emitter2& e, i32 cell, f32& u, f32& v) {
-    u32 cols = e.TextureCols();
+void CellToUV(const SpriteSheet& sheet, i32 cell, f32& u, f32& v) {
+    u32 cols = sheet.cols;
     if (cols == 0)
         cols = 1;
-    u32 rows = e.TextureRows();
-    if (rows == 0)
-        rows = 1;
 
     u32 col, row;
     if ((cols & (cols - 1)) == 0) {
 
         col = static_cast<u32>(cell) & (cols - 1);
-        row = static_cast<u32>(cell) >> e.TextureLog();
+        row = static_cast<u32>(cell) >> sheet.log2Cols;
     } else {
         col = static_cast<u32>(cell) % cols;
         row = static_cast<u32>(cell) / cols;
     }
-    u = col * e.OoTextureWidth();
-    v = row * e.OoTextureHeight();
+    u = col * sheet.ooWidth;
+    v = row * sheet.ooHeight;
 }
 
 ImVector CombineColors(ImVector a, ImVector b) {
@@ -109,6 +106,10 @@ i32 BuildEmitterGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
     const bool useAngVel = std::abs(angVel) > kEpsilon;
     const f32 tailLength = emitter.TailLength();
     const ParticleMaterialDesc& mat = emitter.Material();
+    const SpriteSheet& sheet = emitter.Sheet();
+    const LifetimeCurves& curves = emitter.Curves();
+    const f32 lifeSpan = emitter.LifeSpan();
+    const f32 ooLifeSpan = (lifeSpan > 0.0f) ? (1.0f / lifeSpan) : 0.0f;
 
     CameraBasis cam = BasisFromView(*in.worldToView);
 
@@ -156,16 +157,18 @@ i32 BuildEmitterGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
         u32 idx = pool.AliveAt(rec.aliveIndex);
         const Particle2& p = pool[idx];
 
-        i32 kf = static_cast<i32>(p.keyFrame);
-        if (kf < 0)
-            kf = 0;
-        if (kf > 1)
-            kf = 1;
-        f32 prevEnd = (kf == 0) ? 0.0f : emitter.Key(0).endTime;
-        ImVector baseColor;
-        i32 headCell = 0, tailCell = 0;
-        f32 scale = 0.0f;
-        emitter.Key(kf).Interpolate(p.age, prevEnd, baseColor, headCell, tailCell, scale);
+        // Normalised age drives every lifetime curve; keyFrame rides along as a
+        // segment hint so the lookup does not have to search.
+        const f32 u = ooLifeSpan * p.age;
+        const u32 hint = p.keyFrame;
+
+        const Vector3f rgb = curves.color.Evaluate(u, hint);
+        const f32 alpha = curves.alpha.Evaluate(u, hint);
+        const Vector2f size = curves.size.Evaluate(u, hint);
+        const i32 headCell = curves.headCells.Evaluate(u, hint);
+        const i32 tailCell = curves.tailCells.Evaluate(u, hint);
+
+        const ImVector baseColor = ImVector::FromUnitFloat(rgb.x, rgb.y, rgb.z, alpha);
 
         ImVector color = baseColor;
         if (in.fogEnabled && !mat.unfogged && in.fogSampler) {
@@ -178,7 +181,9 @@ i32 BuildEmitterGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
 
         Vector4f vcol = color.ToVec4();
 
-        const f32 corner = scale;
+        // WC3 quads are square; the curve carries 2D size for M2/M3, so the
+        // head uses x and the tail half-width uses y.
+        const f32 corner = size.x;
 
         Vector3f worldPos, worldVel;
         resolveWorld(p, worldPos, worldVel);
@@ -187,11 +192,11 @@ i32 BuildEmitterGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
             f32 u0, vq0, u1, vq1;
             {
                 f32 cellU, cellV;
-                CellToUV(emitter, headCell, cellU, cellV);
+                CellToUV(sheet, headCell, cellU, cellV);
                 u0 = cellU;
                 vq0 = cellV;
-                u1 = cellU + emitter.OoTextureWidth();
-                vq1 = cellV + emitter.OoTextureHeight();
+                u1 = cellU + sheet.ooWidth;
+                vq1 = cellV + sheet.ooHeight;
             }
 
             Vector3f right = cam.right;
@@ -253,11 +258,11 @@ i32 BuildEmitterGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
             f32 u0, vq0, u1, vq1;
             {
                 f32 cellU, cellV;
-                CellToUV(emitter, tailCell, cellU, cellV);
+                CellToUV(sheet, tailCell, cellU, cellV);
                 u0 = cellU;
                 vq0 = cellV;
-                u1 = cellU + emitter.OoTextureWidth();
-                vq1 = cellV + emitter.OoTextureHeight();
+                u1 = cellU + sheet.ooWidth;
+                vq1 = cellV + sheet.ooHeight;
             }
 
             Vector3f negVel = {-worldVel.x * tailLength, -worldVel.y * tailLength,

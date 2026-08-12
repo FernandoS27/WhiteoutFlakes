@@ -59,15 +59,23 @@ inline u32 dice_(u32 n, RndSeed& s) {
 
 } // namespace CRandom
 
-extern RndSeed g_globalRnd;
+// Deterministic seed mix. Despite the historical name of its predecessor
+// (MakeSeedFromTime) this never involved a clock — it is a pure hash, which is
+// what lets a fixed scene reproduce its particle motion run to run.
+inline u32 MixSeed(u32 x) {
 
-inline u32 MakeSeedFromTime(u32 counter) {
-
-    u32 x = counter + 0x9E3779B9u;
+    x += 0x9E3779B9u;
     x = (x ^ (x >> 16)) * 0x7FEB352Du;
     x = (x ^ (x >> 15)) * 0x846CA68Bu;
     x = x ^ (x >> 16);
     return x;
+}
+
+// Seed for one emitter, derived from its owning actor and its index within that
+// actor. Stable regardless of how many emitters were constructed before it —
+// which the old process-global counter was not.
+inline u32 MixSeed(u32 a, u32 b) {
+    return MixSeed((a * 0x9E3779B9u) ^ (b + 0x85EBCA6Bu));
 }
 
 } // namespace whiteout::flakes::renderer::particle

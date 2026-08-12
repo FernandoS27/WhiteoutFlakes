@@ -2,7 +2,7 @@
 // FrameTicker — per-frame scene-update orchestration.
 //
 // Drives one frame's worth of scene updates: attachment loading, animation
-// evaluation, particle / PE1 / ribbon simulation, bone-palette CB writes.
+// evaluation, particle / ribbon simulation, bone-palette CB writes.
 // Uses only the public RenderService accessors.
 // ============================================================================
 
@@ -18,7 +18,8 @@
 #include "bls/scoped_cb.h"
 #include "model/model_instance.h"
 #include "model/model_template.h"
-#include "particle/plane_emitter.h"
+#include "particle/child_model_emitter.h"
+#include "particle/particle2_emitter.h"
 #include "render_service.h"
 #include "render_service_impl.h"
 
@@ -84,8 +85,12 @@ void FrameTicker::Tick(SceneManager& scene, f32 dt) {
         UpdateParticles(sdt);
     }
     {
-        WDX_CPU_ZONE("UpdatePE1");
-        UpdatePE1(sdt);
+        // Billboards and child models are simulated together in
+        // UpdateParticles; this turns the child-model half's output into
+        // actors. Separate only because actor lifetime is not the particle
+        // service's business.
+        WDX_CPU_ZONE("DriveChildModels");
+        DriveChildModels();
     }
     {
         WDX_CPU_ZONE("UpdateRibbons");
@@ -368,66 +373,59 @@ void FrameTicker::UpdateParticles(f32 dt) {
     rs_.CornEffects().SetPendingDt(dt);
 }
 
-void FrameTicker::UpdatePE1(f32 dt) {
+void FrameTicker::DriveChildModels() {
+    // The sim already ran inside ParticleService::Simulate (UpdateParticles).
+    // What is left here is purely the actor-tree half: resolve the child
+    // template, enforce the depth / instance caps, and spawn, drive or destroy.
+    // All of that has to stay at this layer — the particle service has no
+    // business knowing about actors, and calling DestroyActor from inside it
+    // would re-enter its own mutex through RemoveModel.
+    std::vector<particle::ChildModelEvent> events;
+    rs_.Particles().DrainChildModelEvents(events);
+
     std::vector<u32> toRemove;
+    for (const auto& ev : events) {
+        switch (ev.kind) {
+        case particle::ChildModelEvent::Kind::Birth: {
+            auto* owner = rs_.Scene().Actors().Find(ev.owner);
+            if (!owner || owner->treeDepth >= model::kMaxChildModelDepth)
+                break;
+            if (rs_.Scene().PE1InstanceCount() >= model::kMaxChildModelInstances)
+                break;
 
-    std::vector<u32> handles;
-    for (auto& [h, mi] : rs_.Scene().Actors().All())
-        handles.push_back(h);
+            auto* em = rs_.Particles().GetEmitter(ev.owner, particle::ParticleOutput::ChildModel,
+                                                  ev.emitterId);
+            if (!em)
+                break;
+            const std::string& path = em->Desc().childModelPath;
+            if (path.empty())
+                break;
 
-    for (u32 h : handles) {
-        auto* mi = rs_.Scene().Actors().Find(h);
-        if (!mi)
-            continue;
-        if (mi->treeDepth >= effects::kMaxPE1Depth)
-            continue;
-
-        // No per-frame prefetch needed — ModelLoader::PreloadChild
-        // Templates already Acquired and stored slot refs on the
-        // actor at StageActor time. Those refs stay alive for the
-        // actor's lifetime; UpdatePE1 just resolves them via
-        // ChildModelOf when a Birth fires.
-        if (!mi->render.pe1.HasEmitters())
-            continue;
-        if (mi->parentVisibility <= 0.02f)
-            continue;
-
-        auto result = mi->render.pe1.Simulate(dt, [&] { return rs_.Scene().AllocActorId(); });
-
-        for (auto& birth : result.born) {
-            if (rs_.Scene().PE1InstanceCount() >= effects::kMaxPE1Instances)
-                continue;
-            auto* cfg = mi->render.pe1.GetConfig(birth.emitterId);
-            if (!cfg)
-                continue;
-            // Birth fired — by now the prefetch above has had at least
-            // one frame to load the template. Resolve via slot; skip
-            // the birth if the child isn't ready yet (will retry on
-            // next emit).
-            const auto slot = rs_.Assets().Acquire(
-                assets::AssetKind::ChildModel, cfg->modelPath);
+            // PreloadChildTemplates already Acquired a slot per unique child
+            // path at stage time and holds it for the actor's lifetime; this
+            // just resolves it. A birth that lands before the host pump has
+            // parsed the MDX is dropped and retried on the next emit.
+            const auto slot = rs_.Assets().Acquire(assets::AssetKind::ChildModel, path);
             auto tmpl = rs_.Assets().ChildModelOf(slot);
-            // We held a temp ref via Acquire above; release it once
-            // we've extracted the shared_ptr (or skipped the birth).
             rs_.Assets().Release(slot);
             if (!tmpl)
-                continue;
+                break;
 
-            auto* child = rs_.Loader().SpawnChild(*mi, ActorRole::PE1, tmpl, birth.worldTransform,
-                                                  birth.handle);
-            if (!child)
-                continue;
+            rs_.Loader().SpawnChild(*owner, ActorRole::PE1, tmpl, ev.transform, ev.childHandle);
+            break;
         }
-
-        for (u32 childH : result.died)
-            toRemove.push_back(childH);
-
-        for (auto& [childH, tm] : result.transforms) {
-            if (auto* c = rs_.Scene().Actors().Find(childH))
-                c->worldTransform = tm;
+        case particle::ChildModelEvent::Kind::Transform:
+            if (auto* c = rs_.Scene().Actors().Find(ev.childHandle))
+                c->worldTransform = ev.transform;
+            break;
+        case particle::ChildModelEvent::Kind::Death:
+            toRemove.push_back(ev.childHandle);
+            break;
         }
     }
 
+    // Tolerates handles already reaped by DestroyActor's recursion when the
+    // owning actor went away mid-frame.
     for (u32 rh : toRemove)
         rs_.Loader().DestroyActor(rh);
 

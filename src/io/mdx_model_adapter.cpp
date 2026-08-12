@@ -5,6 +5,7 @@
 #include "renderer/model/model_source_utils.h"
 #include "whiteout/flakes/content_provider.h"
 #include "whiteout/flakes/types.h"
+#include "whiteout/flakes/util/coordinate_system.h"
 #include "whiteout/flakes/util/team_glow_data.h"
 #include "whiteout/flakes/util/texture_image_usage.h"
 
@@ -13,7 +14,6 @@ namespace whiteout::flakes::io {
 using namespace ::whiteout::flakes::renderer;
 using namespace ::whiteout::flakes::renderer::model;
 using namespace ::whiteout::flakes::renderer::effects;
-namespace particle = ::whiteout::flakes::renderer::particle;
 
 using namespace whiteout;
 using namespace whiteout::mdx;
@@ -599,114 +599,7 @@ std::vector<ParticleEmitterConfig> MdxModelAdapter::GetParticleConfigs() {
     return result;
 }
 
-namespace {
 
-particle::FilterMode MapToServiceFilterMode(whiteout::u32 mdxMode) {
-
-    switch (mdxMode) {
-    case 0:
-        return particle::FilterMode::Blend;
-    case 1:
-        return particle::FilterMode::Additive;
-    case 2:
-        return particle::FilterMode::Modulate;
-    case 3:
-        return particle::FilterMode::Modulate2X;
-    case 4:
-        return particle::FilterMode::AlphaKey;
-    default:
-        return particle::FilterMode::Blend;
-    }
-}
-
-particle::ImVector MdxColorToImVector(const whiteout::Vector3f& rgb, whiteout::u8 alpha) {
-
-    auto clamp8 = [](f32 v) -> u8 {
-        if (v <= 0.0f)
-            return 0;
-        if (v >= 1.0f)
-            return 255;
-        return static_cast<u8>(v * 255.0f);
-    };
-    return {alpha, clamp8(rgb.x), clamp8(rgb.y), clamp8(rgb.z)};
-}
-
-} // namespace
-
-std::vector<particle::PlaneEmitterInit> MdxModelAdapter::GetPlaneEmitterInits() const {
-    std::vector<particle::PlaneEmitterInit> result;
-    result.reserve(model_.particleEmitters2.size());
-
-    using namespace whiteout::mdx;
-
-    for (const auto& pe : model_.particleEmitters2) {
-        particle::PlaneEmitterInit init;
-
-        init.textureRows = pe.rows;
-        init.textureCols = pe.columns;
-        init.lifeSpan = pe.lifespan;
-        init.tailLength = pe.tailLength;
-        init.angularVelocity = 0.0f;
-        init.priorityPlane = static_cast<i32>(pe.priorityPlane);
-        init.replaceableId = static_cast<i32>(pe.replaceableId);
-
-        init.hasHead = (pe.headOrTail != 1);
-        init.hasTail = (pe.headOrTail != 0);
-
-        const whiteout::u32 nf = static_cast<whiteout::u32>(pe.node.flags);
-        using NF = Node::NodeFlag;
-        init.modelSpace = hasFlag(nf, NF::ModelSpace);
-        init.xyQuads = hasFlag(nf, NF::XYQuad);
-        init.sortZ = hasFlag(nf, NF::SortPrimitives);
-        init.longitude = hasFlag(nf, NF::LineEmitter) ? 0.0f : 6.2831853071795864769f;
-
-        init.material.textureId = static_cast<i32>(pe.textureId);
-        init.material.filterMode = MapToServiceFilterMode(pe.filterMode);
-        init.material.unshaded = hasFlag(nf, NF::Unshaded);
-        init.material.unfogged = hasFlag(nf, NF::Unfogged);
-        init.material.replaceableId = static_cast<i32>(pe.replaceableId);
-
-        init.squirtAtStart = (pe.squirt != 0);
-
-        const f32 midTime = pe.time * pe.lifespan;
-
-        particle::ImVector startColor = MdxColorToImVector(pe.segmentColor[0], pe.segmentAlpha[0]);
-        particle::ImVector midColor = MdxColorToImVector(pe.segmentColor[1], pe.segmentAlpha[1]);
-        particle::ImVector endColor = MdxColorToImVector(pe.segmentColor[2], pe.segmentAlpha[2]);
-
-        auto& k0 = init.keys[0];
-        k0.endTime = midTime;
-        k0.startColor = startColor;
-        k0.endColor = midColor;
-        k0.startScale = pe.segmentScaling[0];
-        k0.endScale = pe.segmentScaling[1];
-        k0.headCellStart = static_cast<i32>(pe.headInterval[0]);
-        k0.headCellEnd = static_cast<i32>(pe.headInterval[1]);
-        k0.headCellRepeat = static_cast<i32>(pe.headInterval[2]);
-        k0.tailCellStart = static_cast<i32>(pe.tailInterval[0]);
-        k0.tailCellEnd = static_cast<i32>(pe.tailInterval[1]);
-        k0.tailCellRepeat = static_cast<i32>(pe.tailInterval[2]);
-
-        auto& k1 = init.keys[1];
-        k1.endTime = pe.lifespan;
-        k1.startColor = midColor;
-        k1.endColor = endColor;
-        k1.startScale = pe.segmentScaling[1];
-        k1.endScale = pe.segmentScaling[2];
-        k1.headCellStart = static_cast<i32>(pe.headDecayInterval[0]);
-        k1.headCellEnd = static_cast<i32>(pe.headDecayInterval[1]);
-        k1.headCellRepeat = static_cast<i32>(pe.headDecayInterval[2]);
-        k1.tailCellStart = static_cast<i32>(pe.tailDecayInterval[0]);
-        k1.tailCellEnd = static_cast<i32>(pe.tailDecayInterval[1]);
-        k1.tailCellRepeat = static_cast<i32>(pe.tailDecayInterval[2]);
-
-        init.coordSpace = kDefaultCoordSpace;
-
-        result.push_back(std::move(init));
-    }
-
-    return result;
-}
 
 std::vector<RibbonEmitterConfig> MdxModelAdapter::GetRibbonConfigs() {
     std::vector<RibbonEmitterConfig> result;
@@ -1241,10 +1134,13 @@ std::vector<AttachmentConfig> MdxModelAdapter::GetAttachmentConfigs() {
 }
 
 std::vector<PE1EmitterConfig> MdxModelAdapter::GetPE1Configs() {
+    // One entry per particle emitter, including those with no spawn model.
+    // FrameState::pe1States indexes the unfiltered list, so dropping entries
+    // here would slide every later emitter's id and drive the wrong one — the
+    // registration side skips empty paths instead, keeping the indices aligned.
     std::vector<PE1EmitterConfig> result;
+    result.reserve(model_.particleEmitters.size());
     for (const auto& pe : model_.particleEmitters) {
-        if (pe.spawnModelFileName.empty())
-            continue;
         PE1EmitterConfig cfg;
         cfg.modelPath = pe.spawnModelFileName;
         cfg.lifespan = pe.lifespan;

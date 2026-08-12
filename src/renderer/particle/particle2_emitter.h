@@ -1,198 +1,148 @@
 #pragma once
 
+#include "emitter_desc.h"
 #include "particle2.h"
-#include "particle_key.h"
-#include "particle_material.h"
 #include "particle_pool.h"
+#include "particle_shape.h"
 #include "rnd_seed.h"
 #include "types.h"
+// FrameState::ParticleFrameState is a nested type, so it cannot be forward
+// declared — ApplyState takes it by reference and needs the full definition.
+#include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
-#include "whiteout/flakes/util/coordinate_system.h"
+
+#include <memory>
+#include <vector>
 
 namespace whiteout::flakes::renderer::particle {
 
-void SetGlobalEmissionScaler(f32 s);
-f32 GetGlobalEmissionScaler();
-
+// Only the two genuinely per-frame flags survive: everything else that used to
+// live here (head/tail, sortZ, model space, XY quads) is fixed at load time and
+// now reads off the shared EmitterDesc.
 enum EmitterFlag : u32 {
     kFlagVisible = 0x001,
-    kFlagEnabled2 = 0x002,
-    kFlagHasHead = 0x004,
-    kFlagHasTail = 0x008,
-    kFlagSortZ = 0x010,
     kFlagNeedSquirt = 0x020,
-    kFlagUpdated = 0x040,
-    kFlagPaused = 0x080,
-    kFlagSystemDead = 0x100,
-    kFlagUseModelSpace = 0x200,
-    kFlagXYQuads = 0x400,
-    kFlagUpdatedByAnim = 0x800
 };
 
-enum class EmitterType : u32 { Base = 0, Plane = 1 };
-
+// One concrete emitter. What used to be expressed by subclassing (PlaneEmitter)
+// is now composition: the shared desc carries the spawn shape, so a sphere or
+// cone emitter is a different desc rather than a different class.
 class Emitter2 {
 public:
     Emitter2();
     virtual ~Emitter2() = default;
 
+    // Per-frame animated state from the model's FrameState. Virtual so an
+    // output kind that reads different fields (child models use latitude and
+    // longitude but no plane extent) can override without the service or
+    // actor-eval knowing which kind it is holding.
+    virtual void ApplyState(const model::FrameState::ParticleFrameState& st);
+
+    // The immutable half, shared across every actor spawned from one model.
+    // Never null: an emitter without one reads a static default.
+    void SetDesc(std::shared_ptr<const EmitterDesc> desc);
+    const EmitterDesc& Desc() const {
+        return *desc_;
+    }
+
     void SetVisible(bool v) {
         SetFlag(kFlagVisible, v);
-    }
-    void SetEnabled2(bool v) {
-        SetFlag(kFlagEnabled2, v);
-    }
-    void SetSortZ(bool v) {
-        SetFlag(kFlagSortZ, v);
-    }
-    void SetUseModelSpace(bool v) {
-        SetFlag(kFlagUseModelSpace, v);
-    }
-    void SetXYQuads(bool v) {
-        SetFlag(kFlagXYQuads, v);
     }
     void SetSquirtPending(bool v) {
         SetFlag(kFlagNeedSquirt, v);
     }
 
+    // ---- animated per frame from FrameState ----
     void SetEmissionRate(f32 v) {
         emissionRate_ = v;
     }
-    void SetLifeSpan(f32 v) {
-        lifeSpan_ = v;
+    MotionParams& Motion() {
+        return motion_;
     }
-    void SetVelocity(f32 v) {
-        velocity_ = v;
+    const MotionParams& Motion() const {
+        return motion_;
     }
-    void SetAcceleration(f32 v) {
-        acceleration_ = v;
+    SpawnParams& Spawn() {
+        return spawn_;
     }
-    void SetVelocityVariation(f32 v) {
-        velocityVariation_ = v;
-    }
-    void SetAngularVelocity(f32 v) {
-        angularVelocity_ = v;
-    }
-    void SetTailLength(f32 v) {
-        tailLength_ = v;
+    const SpawnParams& Spawn() const {
+        return spawn_;
     }
 
-    void SetParticleStyle(bool hasHead, bool hasTail, f32 tailLength);
-    void SetTextureDimensions(u32 rows, u32 cols);
-    void SetMaterial(const ParticleMaterialDesc& d) {
-        material_ = d;
-    }
-    void SetKey(i32 index, const ParticleKey& k);
-    void SetPriorityPlane(i32 p) {
-        priorityPlane_ = p;
-    }
-    void SetReplaceableId(i32 id) {
-        replaceableId_ = id;
-    }
-    void SetCoordSpace(CoordSpace s) {
-        coordSpace_ = s;
-    }
+    // Outputs that drive something outside the vertex stream (child actors
+    // today) report what happened during the last Update here. Default no-op.
+    virtual void CollectOutputEvents(std::vector<struct ChildModelEvent>& out) {}
+
+    // Deterministic per-emitter RNG seed. Callers derive it from stable identity
+    // (actor handle + emitter index) so the same scene reproduces run to run.
+    void SetSeed(u32 seed);
 
     void Squirt() {
         flags_ |= kFlagNeedSquirt;
     }
-    void SetDead() {
-        flags_ |= kFlagSystemDead;
-    }
-    void Flush();
 
     void SetModelToWorld(const Matrix44f& m) {
         modelToWorld_ = m;
     }
 
-    void Update(f32 elapsed);
+    // `emissionScaler` multiplies the emission rate. Threaded in from the owning
+    // service rather than read from a global, so two scenes can scale
+    // independently.
+    void Update(f32 elapsed, f32 emissionScaler);
 
-    void Update(f32 elapsed, const Matrix44f& worldMatrix);
-
-    bool Enabled() const {
-        return (flags_ & (kFlagVisible | kFlagEnabled2)) == (kFlagVisible | kFlagEnabled2);
-    }
-    bool IsDead() const {
-        return (flags_ & kFlagSystemDead) != 0;
-    }
     bool Visible() const {
         return (flags_ & kFlagVisible) != 0;
-    }
-    bool HasHead() const {
-        return (flags_ & kFlagHasHead) != 0;
-    }
-    bool HasTail() const {
-        return (flags_ & kFlagHasTail) != 0;
-    }
-    bool SortZ() const {
-        return (flags_ & kFlagSortZ) != 0;
-    }
-    bool UseModelSpace() const {
-        return (flags_ & kFlagUseModelSpace) != 0;
-    }
-    bool XYQuads() const {
-        return (flags_ & kFlagXYQuads) != 0;
     }
     u32 Flags() const {
         return flags_;
     }
 
-    EmitterType Type() const {
-        return type_;
+    // ---- forwarded from the shared desc ----
+    bool HasHead() const {
+        return desc_->hasHead;
+    }
+    bool HasTail() const {
+        return desc_->hasTail;
+    }
+    bool SortZ() const {
+        return desc_->sortZ;
+    }
+    bool UseModelSpace() const {
+        return desc_->modelSpace;
+    }
+    bool XYQuads() const {
+        return desc_->xyQuads;
     }
     CoordSpace GetCoordSpace() const {
-        return coordSpace_;
+        return desc_->coordSpace;
     }
-
     f32 LifeSpan() const {
-        return lifeSpan_;
-    }
-    f32 EmissionRate() const {
-        return emissionRate_;
-    }
-    f32 Velocity() const {
-        return velocity_;
-    }
-    f32 Acceleration() const {
-        return acceleration_;
-    }
-    f32 VelocityVariation() const {
-        return velocityVariation_;
+        return desc_->lifeSpan;
     }
     f32 AngularVelocity() const {
-        return angularVelocity_;
+        return desc_->angularVelocity;
     }
     f32 TailLength() const {
-        return tailLength_;
+        return desc_->tailLength;
+    }
+    ParticleOutput Output() const {
+        return desc_->output;
     }
     i32 PriorityPlane() const {
-        return priorityPlane_;
+        return desc_->priorityPlane;
     }
-    i32 ReplaceableId() const {
-        return replaceableId_;
+    const SpriteSheet& Sheet() const {
+        return desc_->sheet;
     }
-
-    u32 TextureRows() const {
-        return textureRows_;
-    }
-    u32 TextureCols() const {
-        return textureCols_;
-    }
-    u32 TextureLog() const {
-        return textureLog_;
-    }
-    f32 OoTextureWidth() const {
-        return ooTextureWidth_;
-    }
-    f32 OoTextureHeight() const {
-        return ooTextureHeight_;
-    }
-
-    const ParticleKey& Key(i32 i) const {
-        return keys_[i];
+    const LifetimeCurves& Curves() const {
+        return desc_->curves;
     }
     const ParticleMaterialDesc& Material() const {
-        return material_;
+        return desc_->material;
+    }
+
+    f32 EmissionRate() const {
+        return emissionRate_;
     }
     const Matrix44f& ModelToWorld() const {
         return modelToWorld_;
@@ -210,9 +160,10 @@ public:
     }
 
 protected:
-    virtual void CreateParticle(Particle2& p, f32 elapsed) = 0;
-
-    f32 CalcVelocity();
+    // Spawn one particle: age jitter, then the shape's position/velocity draw,
+    // then the emitter-space transform. Virtual only so a child-model output can
+    // hook birth; the shape choice is data, not a subclass.
+    virtual void CreateParticle(Particle2& p, f32 elapsed);
 
     void SetFlag(u32 mask, bool on) {
         if (on)
@@ -221,46 +172,41 @@ protected:
             flags_ &= ~mask;
     }
 
-    void MoveParticle(Particle2& p, f32 elapsed) const;
 
-    void InternalUpdate(f32 elapsed);
+    void InternalUpdate(f32 elapsed, f32 emissionScaler);
 
-    void Sync() {
-        pool_.Sync(emissionRate_, lifeSpan_);
-    }
+    void Sync();
+
+    // Called after the pool grows, with the new particle capacity. Outputs that
+    // keep per-particle side data (a child actor handle, a rotation, a spawn
+    // seed) resize it here so it stays index-parallel with the pool. Particle2
+    // is frozen at 32 bytes to mirror the engine layout, so extra per-particle
+    // state has to live alongside rather than inside it.
+    virtual void OnPoolResized(usize capacity) {}
+
+    // Fired once per particle birth and once per death, keyed by pool index.
+    // Per-birth and per-death only — never per particle per frame, so the
+    // integration loop stays non-virtual. This is what lets a particle own an
+    // external resource (a child actor now; a light, decal or sub-emitter
+    // later) with a defined release point.
+    virtual void OnParticleBorn(u32 poolIndex) {}
+    virtual void OnParticleDied(u32 poolIndex) {}
 
 protected:
-    EmitterType type_ = EmitterType::Base;
+    std::shared_ptr<const EmitterDesc> desc_;
 
-    u32 flags_ = kFlagEnabled2 | kFlagHasHead;
-    CoordSpace coordSpace_ = kDefaultCoordSpace;
+    u32 flags_ = 0;
 
+    SpawnParams spawn_;
+    MotionParams motion_;
     f32 emissionRate_ = 0.0f;
-    f32 lifeSpan_ = 0.0f;
-    f32 tailLength_ = 1.0f;
-    f32 velocity_ = 0.0f;
-    f32 acceleration_ = 0.0f;
-    f32 velocityVariation_ = 0.1f;
-    f32 angularVelocity_ = 0.0f;
 
     f32 numNew_ = 0.0f;
-
-    u32 textureRows_ = 1;
-    u32 textureCols_ = 1;
-    u32 textureLog_ = 0;
-    f32 ooTextureWidth_ = 1.0f;
-    f32 ooTextureHeight_ = 1.0f;
-
-    ParticleKey keys_[2];
-
-    i32 replaceableId_ = 0;
-    i32 priorityPlane_ = 0;
-
-    ParticleMaterialDesc material_;
 
     Matrix44f modelToWorld_ = Matrix44f::identity();
 
     RndSeed randSeed_;
+    RndSeed compactSeed_;
 
     ParticlePool pool_;
 };

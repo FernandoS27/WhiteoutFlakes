@@ -1093,7 +1093,6 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/assets/asset_manager.cpp
     src/renderer/debug/debug_renderer.cpp
     src/renderer/effects/event_emitter_pool.cpp
-    src/renderer/effects/pe1_system.cpp
     src/renderer/effects/ribbon.cpp
     src/renderer/effects/spn_spawner.cpp
     src/renderer/corn_effects/corn_effects_emitter.cpp
@@ -1101,13 +1100,16 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/corn_effects/corn_effects_resource_providers.cpp
     src/renderer/corn_effects/corn_effects_service.cpp
     ${CORNFLAKES_SOURCES}
-    src/renderer/particle/rnd_seed.cpp
-    src/renderer/particle/particle_key.cpp
+    src/renderer/particle/child_model_emitter.cpp
+    src/renderer/particle/particle_adapters.cpp
+    src/renderer/particle/particle_curve.cpp
+    src/renderer/particle/particle_selftest.cpp
     src/renderer/particle/particle_pool.cpp
     src/renderer/particle/particle2_emitter.cpp
-    src/renderer/particle/plane_emitter.cpp
+    src/renderer/particle/particle_shape.cpp
     src/renderer/particle/particle_geometry.cpp
     src/renderer/particle/particle_service.cpp
+    src/renderer/particle/particle_trace.cpp
     src/renderer/particle/splat_service.cpp
     src/renderer/dnc/dnc_asset.cpp
     src/renderer/dnc/dnc_cache.cpp

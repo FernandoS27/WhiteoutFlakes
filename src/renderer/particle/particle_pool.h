@@ -8,7 +8,10 @@ namespace whiteout::flakes::renderer::particle {
 
 class ParticlePool {
 public:
-    void Sync(f32 emissionRate, f32 lifeSpan);
+    // Grow to hold `capacity` particles. The pool no longer derives that from
+    // the emission model — how many particles an emitter needs is the
+    // emitter's business, not the container's.
+    void Sync(u32 capacity);
     void Clear();
     void Compact();
 

@@ -15,10 +15,10 @@ ParticleService::ParticleService() : fogSampler_(&DefaultFog) {}
 
 ParticleService::~ParticleService() = default;
 
-void ParticleService::AddPlaneEmitter(ModelId model, i32 emitterId,
-                                      std::unique_ptr<PlaneEmitter> emitter) {
+void ParticleService::AddEmitter(ModelId model, ParticleOutput output, i32 emitterId,
+                                 std::unique_ptr<Emitter2> emitter) {
     std::lock_guard<std::mutex> lock(mutex_);
-    emitters_[{model, emitterId}] = std::move(emitter);
+    emitters_[{model, output, emitterId}] = std::move(emitter);
 }
 
 void ParticleService::RemoveModel(ModelId model) {
@@ -36,9 +36,9 @@ void ParticleService::Clear() {
     emitters_.clear();
 }
 
-PlaneEmitter* ParticleService::GetEmitter(ModelId model, i32 emitterId) {
+Emitter2* ParticleService::GetEmitter(ModelId model, ParticleOutput output, i32 emitterId) {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = emitters_.find({model, emitterId});
+    auto it = emitters_.find({model, output, emitterId});
     return (it != emitters_.end()) ? it->second.get() : nullptr;
 }
 
@@ -65,11 +65,25 @@ bool ParticleService::HasEmittersForModel(ModelId model) const {
     return false;
 }
 
+void ParticleService::ForEachEmitter(
+    const std::function<void(const EmitterKey&, const Emitter2&)>& fn) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& [k, e] : emitters_)
+        fn(k, *e);
+}
+
 void ParticleService::Simulate(f32 dt) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& [k, e] : emitters_) {
-        e->Update(dt);
+        e->Update(dt, emissionScaler_);
+        e->CollectOutputEvents(childEvents_);
     }
+}
+
+void ParticleService::DrainChildModelEvents(std::vector<ChildModelEvent>& out) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    out = std::move(childEvents_);
+    childEvents_.clear();
 }
 
 void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Vertex>& outVertices,
@@ -82,6 +96,8 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
     in.fogSampler = fogSampler_;
 
     for (const auto& [k, e] : emitters_) {
+        if (e->Output() != ParticleOutput::Billboard)
+            continue;
         const i32 offset = (i32)outVertices.size();
         i32 vcount = BuildEmitterGeometry(*e, in, outVertices);
         if (vcount > 0) {
@@ -92,12 +108,14 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
     }
 }
 
-void ParticleService::SetGlobalScaler(f32 s) {
-    SetGlobalEmissionScaler(s);
+void ParticleService::SetEmissionScaler(f32 s) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    emissionScaler_ = s;
 }
 
-f32 ParticleService::GlobalScaler() const {
-    return GetGlobalEmissionScaler();
+f32 ParticleService::EmissionScaler() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return emissionScaler_;
 }
 
 void ParticleService::SetFogSampler(FogSampler sampler) {

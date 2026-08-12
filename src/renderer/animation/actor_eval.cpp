@@ -17,6 +17,7 @@
 #include "effects/spn_spawner.h"
 #include "model/model_instance.h"
 #include "model/model_template.h"
+#include "particle/child_model_emitter.h"
 #include "particle/particle_service.h"
 #include "particle/splat_service.h"
 #include "scene_manager.h"
@@ -57,19 +58,18 @@ void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
                               particle::ParticleService& particles) {
     for (usize i = 0; i < state.particleStates.size(); ++i) {
         const auto& ps = state.particleStates[i];
-        auto* em = particles.GetEmitter(mi.handle, ps.emitterId);
+        auto* em = particles.GetEmitter(mi.handle, particle::ParticleOutput::Billboard,
+                                        ps.emitterId);
         if (!em)
             continue;
 
-        em->SetEmissionRate(ps.emissionRate);
-        em->SetVelocity(ps.speed);
-        em->SetVelocityVariation(ps.variation);
-        em->SetLatitude(ps.coneAngle);
-        em->SetAcceleration(ps.gravity);
-        em->SetWidth(ps.width);
-        em->SetHeight(ps.length);
+        // Everything the emitter itself needs — rate, spawn params, gravity,
+        // visibility, transform — goes through one virtual call, so this loop
+        // no longer has to know which kind of emitter it is driving.
+        em->ApplyState(ps);
 
-        em->SetVisible(ps.visibility > 0.0f && !ps.squirting);
+        // The squirt edge (rate crossing zero) is actor state, not emitter
+        // state: it needs last frame's rate, which lives on the actor.
         if (ps.squirting) {
             auto& st = mi.render.pe2State[i];
             if (st.emissionValid) {
@@ -79,9 +79,18 @@ void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
             st.lastEmissionRate = ps.emissionRate;
             st.emissionValid = true;
         }
+    }
+}
 
-        em->SetModelToWorld(CoordinateSystem::ConvertTransform(CoordinateSystem::Default(),
-                                                               em->GetCoordSpace(), ps.transform));
+// PE1 emitters live in the same service; only the frame-state struct differs.
+void ApplyChildModelFrameStates(Actor& mi, const FrameState& state,
+                                particle::ParticleService& particles) {
+    for (const auto& ps : state.pe1States) {
+        auto* em = particles.GetEmitter(mi.handle, particle::ParticleOutput::ChildModel,
+                                        ps.emitterId);
+        if (!em)
+            continue;
+        static_cast<particle::ChildModelEmitter*>(em)->ApplyPE1State(ps);
     }
 }
 
@@ -197,7 +206,8 @@ void Actor::ApplyFrameState(const FrameState& state, i32 localTimeMs, const Acto
     if (ctx.particles)
         ApplyParticleFrameStates(*this, state, *ctx.particles);
     render.ApplyRibbonFrameStates(state);
-    render.ApplyPE1FrameStates(state);
+    if (ctx.particles)
+        ApplyChildModelFrameStates(*this, state, *ctx.particles);
 
     for (i32 i = 0;
          i < (i32)state.collisionTransforms.size() && i < (i32)render.collisionShapes.size(); i++)

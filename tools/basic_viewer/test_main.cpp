@@ -2,8 +2,11 @@
 #include "gfx/gfx.h"
 #include "renderer/model/corn_effect_source.h"
 #include "renderer/frame_ticker.h"
+#include "renderer/model/model_instance.h"
 #include "renderer/model/model_loader.h"
 #include "renderer/particle/particle_service.h"
+#include "renderer/particle/particle_selftest.h"
+#include "renderer/particle/particle_trace.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
@@ -215,6 +218,247 @@ static int RunHeadlessTest(whiteout::flakes::renderer::RenderService& renderer,
     std::_Exit(pass ? 0 : 6);
 }
 
+// Particle trace diff: the L1/L2 harness from PARTICLE_TYPES_DESIGN.md. Spawns
+// the model, ticks a fixed number of frames at a fixed dt, and captures the
+// particle pool state plus each emitter's slice of the vertex stream. With
+// --trace-record it writes a baseline; with --trace-check it compares against
+// one and reports the first divergence (frame, emitter, particle, field).
+//
+// Both trace levels are pure CPU — BuildGeometry is a function of sim state and
+// a view matrix — and emitter registration is synchronous (GetOrLoadSync stages
+// the actor inside SpawnUnit). The per-frame tick is not yet device-free
+// though: FrameTicker::Tick faults without a live device, so the harness brings
+// the backend up. Making the tick null-gfx safe would let this run on a CI
+// machine with no GPU; --trace-no-device exists to retest that.
+static int RunParticleDiff(whiteout::flakes::renderer::RenderService& renderer,
+                           whiteout::flakes::renderer::SceneManager& scene,
+                           whiteout::flakes::gfx::GfxApi backend,
+                           const std::filesystem::path& mdxPath, const std::string& recordPath,
+                           const std::string& checkPath, i32 traceFrames, bool curveTolerance,
+                           bool useDevice) {
+    namespace wf = whiteout::flakes;
+    namespace part = wf::renderer::particle;
+
+    if (mdxPath.empty()) {
+        std::cerr << "[ptrace] --particle-diff needs a model path" << std::endl;
+        return 2;
+    }
+    if (recordPath.empty() && checkPath.empty()) {
+        std::cerr << "[ptrace] pass --trace-record <file> or --trace-check <file>" << std::endl;
+        return 2;
+    }
+    if (useDevice && !renderer.Pipeline().InitDevice(backend)) {
+        std::cerr << "[ptrace] InitDevice failed" << std::endl;
+        return 3;
+    }
+
+    scene.SetPE1BasePath(mdxPath.parent_path());
+    auto* hero = renderer.Loader().SpawnUnit(wf::io::PathToUtf8(mdxPath));
+    if (!hero) {
+        std::cerr << "[ptrace] SpawnUnit failed: " << wf::io::PathToUtf8(mdxPath) << std::endl;
+        return 4;
+    }
+
+    const i32 emitters = renderer.Particles().EmitterCount();
+    std::cout << "[ptrace] " << mdxPath.filename().string() << ": " << emitters
+              << " emitter(s), " << traceFrames << " frames" << std::endl;
+    if (emitters == 0)
+        std::cout << "[ptrace] note: model has no PE2 emitters — trace covers PE1/none only"
+                  << std::endl;
+
+    // Fixed, non-axis-aligned view so the billboard basis, tail perpendicular
+    // and sort key are all exercised, and the trace stays independent of
+    // wherever the scene camera happens to sit.
+    const wf::Matrix44f kTraceView =
+        wf::Matrix44f::rotation_x(0.4f) * wf::Matrix44f::rotation_y(0.7f);
+    constexpr f32 kDt = 1.0f / 60.0f;
+
+    part::Trace trace;
+    for (i32 i = 0; i < traceFrames; ++i) {
+        scene.Update(kDt);
+        renderer.Ticker().Tick(kDt);
+        part::CaptureFrame(renderer.Particles(), kTraceView, i, trace);
+    }
+
+    std::string err;
+    if (!recordPath.empty()) {
+        if (!part::WriteTrace(trace, recordPath, err)) {
+            std::cerr << "[ptrace] " << err << std::endl;
+            return 5;
+        }
+        std::cout << "[ptrace] recorded " << trace.frames.size() << " frames -> " << recordPath
+                  << std::endl;
+    }
+
+    bool pass = true;
+    if (!checkPath.empty()) {
+        part::Trace baseline;
+        if (!part::ReadTrace(baseline, checkPath, err)) {
+            std::cerr << "[ptrace] " << err << std::endl;
+            return 5;
+        }
+        part::CompareTolerance tol;
+        if (curveTolerance) {
+            // Step 5's declared budget: colour within 1/255, geometry within
+            // 1e-5 relative. Re-normalising particle age into [0,1] and back
+            // costs a few float ULPs, which shows up in the vertex bounds.
+            tol.color = 1.0f / 255.0f;
+            tol.position = 1e-5f;
+            tol.bounds = 1e-5f;
+            tol.requireVertexHash = false;
+        }
+        std::string report;
+        pass = part::CompareTraces(baseline, trace, tol, report);
+        std::cout << "[ptrace] " << (pass ? "MATCH" : "DIFF") << ": " << report << std::endl;
+    }
+
+    std::cout << "[ptrace] " << (pass ? "PASS" : "FAIL") << std::endl;
+    if (useDevice)
+        renderer.Pipeline().Shutdown();
+    std::cout.flush();
+    std::cerr.flush();
+    std::_Exit(pass ? 0 : 8);
+}
+
+// Child-model (PE1) validation. Folding PE1 into the particle service changed
+// its RNG, so there is no bit-exact oracle to compare against — this checks the
+// invariants instead, per PARTICLE_TYPES_DESIGN.md:
+//
+//   * every Birth eventually gets exactly one Death — i.e. live child actors
+//     track live child particles, so nothing leaks and nothing is orphaned;
+//   * the instance and depth caps still bind;
+//   * the population is bounded rather than growing without limit.
+static int RunChildModelCheck(whiteout::flakes::renderer::RenderService& renderer,
+                              whiteout::flakes::renderer::SceneManager& scene,
+                              whiteout::flakes::gfx::GfxApi backend,
+                              const std::filesystem::path& mdxPath, i32 frames) {
+    namespace wf = whiteout::flakes;
+    namespace part = wf::renderer::particle;
+
+    if (mdxPath.empty()) {
+        std::cerr << "[cmcheck] needs a model path" << std::endl;
+        return 2;
+    }
+    if (!renderer.Pipeline().InitDevice(backend)) {
+        std::cerr << "[cmcheck] InitDevice failed" << std::endl;
+        return 3;
+    }
+
+    scene.SetPE1BasePath(mdxPath.parent_path());
+    auto* hero = renderer.Loader().SpawnUnit(wf::io::PathToUtf8(mdxPath));
+    if (!hero) {
+        std::cerr << "[cmcheck] SpawnUnit failed" << std::endl;
+        return 4;
+    }
+
+    i32 childEmitters = 0;
+    renderer.Particles().ForEachEmitter([&](const part::EmitterKey& k, const part::Emitter2&) {
+        if (k.output == part::ParticleOutput::ChildModel)
+            ++childEmitters;
+    });
+    std::cout << "[cmcheck] " << mdxPath.filename().string() << ": " << childEmitters
+              << " child-model emitter(s)" << std::endl;
+    renderer.Particles().ForEachEmitter([&](const part::EmitterKey& k, const part::Emitter2& e) {
+        if (k.output == part::ParticleOutput::ChildModel)
+            std::cout << "[cmcheck]   emitter " << k.id << " path='" << e.Desc().childModelPath
+                      << "' lifeSpan=" << e.Desc().lifeSpan << std::endl;
+    });
+    if (childEmitters == 0) {
+        std::cout << "[cmcheck] no child-model emitters — nothing to check" << std::endl;
+        std::cout << "[cmcheck] PASS" << std::endl;
+        std::cout.flush();
+        std::_Exit(0);
+    }
+
+    constexpr f32 kDt = 1.0f / 60.0f;
+    i32 peakActors = 0;
+    i32 peakParticles = 0;
+    i32 worstOrphans = 0; // live actors with no live particle behind them
+    bool capHeld = true;
+
+    // A unit's PE1 emitters usually fire in one specific animation (a breath
+    // attack, a death), so first find a sequence that actually emits, then dwell
+    // on it. Each sequence gets at least a few particle lifespans' worth of
+    // frames: dwelling for less than one lifespan means nothing ever dies, and
+    // the Birth/Death balance — the assertion that matters — goes untested.
+    const i32 seqCount = (std::max)(1, (i32)hero->animation.Sequences().size());
+    i32 longestLife = 0;
+    renderer.Particles().ForEachEmitter([&](const part::EmitterKey& k, const part::Emitter2& e) {
+        if (k.output == part::ParticleOutput::ChildModel)
+            longestLife = (std::max)(longestLife, (i32)(e.Desc().lifeSpan * 60.0f));
+    });
+    const i32 perSeq = (std::max)(frames / seqCount, longestLife * 3 + 60);
+
+    for (i32 s = 0; s < seqCount; ++s) {
+        hero->animation.SetActiveSequenceIndex(s);
+        for (i32 i = 0; i < perSeq; ++i) {
+            // Drive the host content-provider pump: it is what actually fetches
+            // and parses the child MDX a Birth needs. Without it every birth is
+            // dropped as unresolved and the whole check is vacuous.
+            if (auto* cp = scene.ActiveContentProvider())
+                cp->Pump();
+            scene.Update(kDt);
+            renderer.Ticker().Tick(kDt);
+
+            i32 aliveParticles = 0;
+            renderer.Particles().ForEachEmitter(
+                [&](const part::EmitterKey& k, const part::Emitter2& e) {
+                    if (k.output == part::ParticleOutput::ChildModel)
+                        aliveParticles += e.TotalAlive();
+                });
+            const i32 liveActors = scene.PE1InstanceCount();
+
+            peakActors = (std::max)(peakActors, liveActors);
+            peakParticles = (std::max)(peakParticles, aliveParticles);
+            // Actors may lag particles (a birth whose template is not loaded
+            // yet, or one refused by the cap) but must never exceed them: that
+            // would mean a Death went unreported and the actor leaked.
+            worstOrphans = (std::max)(worstOrphans, liveActors - aliveParticles);
+            if (liveActors > wf::renderer::model::kMaxChildModelInstances)
+                capHeld = false;
+        }
+    }
+
+    std::cout << "[cmcheck] swept " << seqCount << " sequence(s): peak child actors=" << peakActors
+              << " peak child particles=" << peakParticles
+              << " worst orphaned actors=" << worstOrphans << std::endl;
+
+    // Settled state: live child actors must exactly match live child particles.
+    // Combined with worstOrphans this is the Birth/Death balance check — every
+    // Birth that produced an actor eventually produced exactly one Death.
+    i32 finalParticles = 0;
+    renderer.Particles().ForEachEmitter([&](const part::EmitterKey& k, const part::Emitter2& e) {
+        if (k.output == part::ParticleOutput::ChildModel)
+            finalParticles += e.TotalAlive();
+    });
+    const i32 finalActors = scene.PE1InstanceCount();
+    const bool balanced = (finalActors <= finalParticles);
+    std::cout << "[cmcheck] settled: child actors=" << finalActors
+              << " child particles=" << finalParticles << std::endl;
+
+    // Nothing ever spawning would make every other assertion vacuous.
+    if (peakParticles == 0)
+        std::cerr << "[cmcheck] no child particles were ever emitted — check is vacuous"
+                  << std::endl;
+    if (!balanced)
+        std::cerr << "[cmcheck] " << (finalActors - finalParticles)
+                  << " child actor(s) leaked past their particle" << std::endl;
+
+    const bool pass = capHeld && worstOrphans <= 0 && peakParticles > 0 && balanced;
+    if (!capHeld)
+        std::cerr << "[cmcheck] instance cap exceeded" << std::endl;
+    if (worstOrphans > 0)
+        std::cerr << "[cmcheck] " << worstOrphans
+                  << " child actor(s) outlived their particle — Birth/Death unbalanced"
+                  << std::endl;
+
+    std::cout << "[cmcheck] " << (pass ? "PASS" : "FAIL") << std::endl;
+    renderer.Pipeline().Shutdown();
+    std::cout.flush();
+    std::cerr.flush();
+    std::_Exit(pass ? 0 : 10);
+}
+
 // Multi-scene smoke test: proves two scenes render into their own targets with
 // no cross-bleed. Scene B (a CreateScene'd scene) gets the model; the default
 // scene A stays empty. Renders both into separate offscreen targets and reads
@@ -381,6 +625,13 @@ int main(int argc, char* argv[]) {
     bool backendFromCli = false;
     bool headlessTest = false;
     bool multiSceneTest = false;
+    bool particleDiff = false;
+    bool childModelCheck = false;
+    bool particleDiffDevice = true;
+    bool particleDiffCurveTol = false;
+    i32 particleDiffFrames = 120;
+    std::string particleTraceRecord;
+    std::string particleTraceCheck;
     std::filesystem::path mdxPath;
     // Extra positional paths beyond the first open in their own tabs, so
     // `WhiteoutFlakes a.mdx b.mdx c.mdx` launches with three documents.
@@ -465,6 +716,26 @@ int main(int argc, char* argv[]) {
             headlessTest = true;
         } else if (std::strcmp(a, "--multiscene-test") == 0) {
             multiSceneTest = true;
+        } else if (std::strcmp(a, "--particle-selftest") == 0) {
+            std::string rep;
+            const bool ok = whiteout::flakes::renderer::particle::RunParticleSelfTest(rep);
+            std::cout << "[pselftest] " << rep << std::endl;
+            std::cout << "[pselftest] " << (ok ? "PASS" : "FAIL") << std::endl;
+            return ok ? 0 : 9;
+        } else if (std::strcmp(a, "--particle-diff") == 0) {
+            particleDiff = true;
+        } else if (std::strcmp(a, "--childmodel-check") == 0) {
+            childModelCheck = true;
+        } else if (std::strcmp(a, "--trace-record") == 0 && i + 1 < argc) {
+            particleTraceRecord = argv[++i];
+        } else if (std::strcmp(a, "--trace-check") == 0 && i + 1 < argc) {
+            particleTraceCheck = argv[++i];
+        } else if (std::strcmp(a, "--trace-frames") == 0 && i + 1 < argc) {
+            particleDiffFrames = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--trace-curve-tol") == 0) {
+            particleDiffCurveTol = true;
+        } else if (std::strcmp(a, "--trace-no-device") == 0) {
+            particleDiffDevice = false;
         } else if (std::strcmp(a, "--wgpu-backend") == 0 && i + 1 < argc) {
             // Force Dawn's underlying adapter backend (d3d11/d3d12/vulkan/gl/metal).
             // Only meaningful when --backend webgpu is selected.
@@ -641,6 +912,14 @@ int main(int argc, char* argv[]) {
 
     if (multiSceneTest)
         return RunMultiSceneTest(renderer, backend, mdxPath);
+
+    if (childModelCheck)
+        return RunChildModelCheck(renderer, scene, backend, mdxPath, particleDiffFrames);
+
+    if (particleDiff)
+        return RunParticleDiff(renderer, scene, backend, mdxPath, particleTraceRecord,
+                               particleTraceCheck, particleDiffFrames, particleDiffCurveTol,
+                               particleDiffDevice);
 
     whiteout::flakes::ViewerApp app(renderer);
     if (!app.Open(1024, 768, backend)) {

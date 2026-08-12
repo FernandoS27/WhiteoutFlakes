@@ -53,7 +53,9 @@ private:
     void SilenceCornEmittersRec(model::Actor& actor);
     void UpdateAnimation();
     void UpdateParticles(f32 dt);
-    void UpdatePE1(f32 dt);
+    // Turn the particle service's child-model output (Birth / Transform /
+    // Death) into actor spawns, transform writes and destroys.
+    void DriveChildModels();
     void UpdateRibbons(f32 dt);
 
     RenderService& rs_;
