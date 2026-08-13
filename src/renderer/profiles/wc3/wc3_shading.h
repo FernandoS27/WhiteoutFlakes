@@ -8,7 +8,7 @@
 // per-pass state that used to be locals in RunLists, and the SelectLights
 // forward.
 
-#include "core/geoset_classify.h"
+#include "profiles/wc3/wc3_classify.h"
 #include "core/surface_vocabulary.h"
 #include "profiles/wc3/geoset_pass_bls.h"
 #include "profiles/wc3/geoset_pass_hd.h"
@@ -52,10 +52,9 @@ public:
 
     core::SurfaceClass Classify(const render_detail::RenderableView& view,
                                 const model::GPUGeoset& geo) const override {
-        // Forwarding for now. P3b moves the rule itself behind this method and
-        // makes it the sole authority; landing the signature here is what lets
-        // that phase be a pure body move against a byte-identical gate.
-        const render_detail::GeosetClass gc = render_detail::ClassifyGeoset(view, geo);
+        // Both WC3 models share one rule body — this template is instantiated
+        // for each, so they cannot drift apart.
+        const GeosetClass gc = ClassifyGeoset(view, geo);
         return {.visible = gc.visible,
                 .blend = gc.opaque ? core::BlendClass::Opaque : core::BlendClass::Transparent,
                 .needsDepthFill = gc.needsDepthFill};

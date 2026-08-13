@@ -1,11 +1,14 @@
-#include "core/geoset_classify.h"
+#include "profiles/wc3/wc3_classify.h"
 
 #include "bls/bls_mat_params.h"
 #include "core/render_detail.h"
+#include "profiles/wc3/wc3_surface_table.h"
 
 #include <algorithm>
 
-namespace whiteout::flakes::renderer::render_detail {
+namespace whiteout::flakes::renderer::profiles::wc3 {
+
+using render_detail::RenderableView;
 
 namespace {
 // A layer/geoset alpha at or below ~1/255 is invisible — matches WC3 testing
@@ -24,16 +27,18 @@ GeosetClass ClassifyGeoset(const RenderableView& view, const model::GPUGeoset& g
     if (geoAlpha <= kAlphaEps)
         return c; // whole geoset faded out — not visible
 
-    const model::GPUMaterial* mat = nullptr;
-    if (geo.materialId >= 0 && geo.materialId < static_cast<i32>(view.materials->size()))
-        mat = &(*view.materials)[geo.materialId];
+    // Downcast for now: the rule is still core-side, and it reads WC3 layer
+    // data. P3b moves it behind IShadingModel::Classify, where the model
+    // already knows its own table and this goes away.
+    const auto* table = core::SurfaceTableCast<Wc3SurfaceTable>(view.surfaceTable);
+    const model::GPUMaterial* mat = table ? table->Material(geo.materialId) : nullptr;
 
     // An untextured/material‑less geoset is one implicit opaque layer.
     const i32 numLayers = mat ? std::max<i32>(1, (i32)mat->cpu.layers.size()) : 1;
 
     // Classify by the first *visible* layer, exactly as WC3's IsOpaque does.
     for (i32 li = 0; li < numLayers; ++li) {
-        const UnpackedLayer layer = UnpackLayer(mat, li);
+        const UnpackedLayer layer = Wc3SurfaceTable::Layer(mat, li);
         if (layer.alpha <= kAlphaEps)
             continue;
         c.visible = true;
@@ -61,4 +66,4 @@ GeosetClass ClassifyGeoset(const RenderableView& view, const model::GPUGeoset& g
     return c;
 }
 
-} // namespace whiteout::flakes::renderer::render_detail
+} // namespace whiteout::flakes::renderer::profiles::wc3

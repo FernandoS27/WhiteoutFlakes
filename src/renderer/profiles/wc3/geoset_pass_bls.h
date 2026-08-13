@@ -11,6 +11,7 @@
 #include "renderer/core/surface_pass_base.h"
 #include "renderer/debug/draw_trace_hooks.h"
 #include "renderer/profiles/wc3/wc3_sun.h"
+#include "renderer/profiles/wc3/wc3_surface_table.h"
 #include "renderer/shading/shading_model.h"
 #include "renderer/shadow/shadow_service.h"
 
@@ -23,6 +24,8 @@ using namespace ::whiteout::flakes::renderer::assets;
 using namespace ::whiteout::flakes::renderer::bls;
 using namespace ::whiteout::flakes::renderer::render_detail;
 using profiles::wc3::ComputeSunDirWS;
+using profiles::wc3::UnpackedLayer;
+using profiles::wc3::Wc3SurfaceTable;
 
 class GeosetPassBls : public BlsGeosetPass<GeosetPassBls> {
 public:
@@ -97,9 +100,8 @@ public:
     void EmitLayers(const render_detail::RenderableView& view_, const GPUGeoset& geo,
                     bls::DepthFill depthFill, bls::FrameInputs& frame, const Matrix44f& viewMat,
                     gfx::IGFXCommandList* cmd, const bls::LightingContext& lighting) {
-        const GPUMaterial* mat = nullptr;
-        if (geo.materialId >= 0 && geo.materialId < (i32)view_.materials->size())
-            mat = &(*view_.materials)[geo.materialId];
+        const auto* table = core::SurfaceTableCast<Wc3SurfaceTable>(view_.surfaceTable);
+        const GPUMaterial* mat = table ? table->Material(geo.materialId) : nullptr;
 
         const f32 geoAlpha = geo.geosetAlpha * view_.parentVisibility;
         if (geoAlpha <= 0.0f)
@@ -123,7 +125,7 @@ public:
             frame, lighting, viewMat, render_detail::GeosetCentroidWS(view_, geo));
 
         for (i32 li = 0; li < numLayers; ++li) {
-            const render_detail::UnpackedLayer layer = render_detail::UnpackLayer(mat, li);
+            const UnpackedLayer layer = Wc3SurfaceTable::Layer(mat, li);
             const f32 combinedAlpha = geoAlpha * layer.alpha;
             if (combinedAlpha < 0.004f)
                 continue;
@@ -147,7 +149,7 @@ public:
     }
 
     void DrawLayer(const render_detail::RenderableView& view_, const GPUGeoset& geo,
-                   const render_detail::UnpackedLayer& layer, i32 layerIndex, f32 combinedAlpha,
+                   const UnpackedLayer& layer, i32 layerIndex, f32 combinedAlpha,
                    const bls::MatParams& matParams, i32 activeN, bool unlit, bool hasBones,
                    bls::VertexLayoutKind layout, bls::FrameInputs& frame,
                    gfx::IGFXCommandList* cmd) {
@@ -197,7 +199,7 @@ public:
     }
 
     void TraceThisLayer(const render_detail::RenderableView& view_, const GPUGeoset& geo,
-                        const render_detail::UnpackedLayer& layer, i32 layerIndex,
+                        const UnpackedLayer& layer, i32 layerIndex,
                         f32 combinedAlpha, const bls::MatParams& matParams, i32 activeN,
                         bool hasBones, bls::VertexLayoutKind layout, const bls::PsoRequest& req,
                         bls::FrameInputs& frame) {

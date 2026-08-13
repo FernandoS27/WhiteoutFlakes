@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/draw_list.h"
+#include "core/surface_table.h"
 #include "gfx/gfx.h"
 #include "renderer/model/model_instance.h"
 #include "renderer/types.h"
@@ -18,32 +19,15 @@ namespace whiteout::flakes::renderer::assets {
 class SamplerAssetManager;
 }
 
+namespace whiteout::flakes::renderer::shading {
+class IShadingModel;
+}
+
 namespace whiteout::flakes::renderer::render_detail {
-
-struct UnpackedLayer {
-    i32 filterMode = model::FILTER_NONE;
-    i32 flags = 0;
-    f32 alpha = 1.0f;
-    i32 textureId = -1;
-    i32 textureAnimationId = -1;
-    i32 shaderId = 0;
-    i32 normalMapId = -1;
-    i32 ormMapId = -1;
-    i32 emissiveMapId = -1;
-    i32 teamColorMapId = -1;
-    f32 emissiveGain = 0.0f;
-    f32 fresnelOpacity = 0.0f;
-    f32 fresnelTeamColor = 0.0f;
-    Vector3f fresnelColor = {0.0f, 0.0f, 0.0f};
-
-    i32 coordId = 0;
-};
-
-UnpackedLayer UnpackLayer(const model::GPUMaterial* mat, i32 layerIndex);
 
 struct RenderableView {
     const std::vector<model::GPUGeoset>* geosets = nullptr;
-    const std::vector<model::GPUMaterial>* materials = nullptr;
+    const core::ISurfaceTable* surfaceTable = nullptr;
     assets::TextureAssetManager::ModelScope* textures = nullptr;
     const animation::SkinningSystem* skinning = nullptr;
     const std::vector<model::RenderModel::TexAnimPaletteEntry>* texAnimPalette = nullptr;
@@ -84,16 +68,21 @@ struct CollectedDrawLists {
     std::vector<model::FrameState::LightState> sceneLights;
 };
 
-// `activeModel` stamps every item's SurfaceKey. RenderMode still selects
-// globally — one shading model live at a time — so this is the whole of
-// per-surface model assignment for now. Genuine per-surface assignment arrives
-// with the mixed-shading work; deriving it from layer.shaderId instead would
-// route a shaderId-1 surface in SD mode to the HD model, which is a behaviour
-// change disguised as a refactor (ClassifyGeoset is render-mode independent and
-// applies the HD fading rule regardless of mode).
+// `shadingModel` both stamps every item's SurfaceKey and answers what each
+// geoset currently classifies as. Classification is asked every frame and is
+// never cached: WC3's rule is genuinely animated — it reports "some layer is
+// *currently* visible" and "this HD opaque layer has *faded* below full" — so
+// SurfaceKey::blend is a load-time bucket-reservation hint and nothing here
+// reads it.
+//
+// RenderMode still selects globally, one model live at a time, so the model
+// also decides every surface's SurfaceKey::model. Deriving that from
+// layer.shaderId instead would route a shaderId-1 surface in SD mode to the HD
+// model — a behaviour change disguised as a refactor, since the classification
+// rule is render-mode independent and applies the HD fading test regardless.
 CollectedDrawLists BuildDrawLists(
     const std::unordered_map<u32, std::unique_ptr<model::Actor>>& models, i32 selectedLod,
-    const Vector3f& cameraPos, core::ShadingModelId activeModel);
+    const Vector3f& cameraPos, const shading::IShadingModel& shadingModel);
 
 // `paletteCb` is the bone-palette CB to bind when this geoset has
 // skinning data. Pass `geo.bonePaletteCb` directly when the actor is

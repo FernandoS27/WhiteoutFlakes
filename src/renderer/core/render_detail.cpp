@@ -1,8 +1,8 @@
 #include "bls/bls_frame.h"
 #include "constants.h"
 #include "debug/draw_trace_hooks.h"
-#include "core/geoset_classify.h"
 #include "core/render_detail.h"
+#include "shading/shading_model.h"
 #include "renderer/assets/sampler_asset_manager.h"
 #include "renderer/render_service.h"
 
@@ -22,7 +22,7 @@ using ActorMap = std::unordered_map<u32, std::unique_ptr<model::Actor>>;
 // per-geoset collector and BuildDrawLists so the wiring lives in one place.
 void FillRenderableView(RenderableView& view, model::Actor& mi, const ActorMap& actors) {
     view.geosets = &mi.render.gpuGeosets;
-    view.materials = &mi.render.gpuMaterials;
+    view.surfaceTable = mi.render.surfaceTable.get();
     view.textures = mi.render.textures.get();
     view.skinning = &mi.render.skinning;
     view.texAnimPalette = &mi.render.texAnimPalette;
@@ -47,7 +47,8 @@ bool GeosetDrawable(const model::GPUGeoset& geo) {
 
 CollectedDrawLists BuildDrawLists(
     const std::unordered_map<u32, std::unique_ptr<model::Actor>>& models, i32 selectedLod,
-    const Vector3f& cameraPos, core::ShadingModelId activeModel) {
+    const Vector3f& cameraPos, const shading::IShadingModel& shadingModel) {
+    const core::ShadingModelId activeModel = shadingModel.Id();
     CollectedDrawLists out;
     out.views.reserve(models.size());
     out.lists.opaque.reserve(models.size() * 4);
@@ -97,11 +98,13 @@ CollectedDrawLists BuildDrawLists(
             if (!GeosetPassesLod(geo.lod, modelLod) || !GeosetDrawable(geo))
                 continue;
 
-            const GeosetClass gc = ClassifyGeoset(view, geo);
-            if (!gc.visible)
+            // The sole authority. Asked per geoset per frame, through the
+            // interface, so a non-WC3 model answers with its own rule.
+            const core::SurfaceClass sc = shadingModel.Classify(view, geo);
+            if (!sc.visible)
                 continue;
 
-            if (gc.opaque) {
+            if (sc.blend != core::BlendClass::Transparent) {
                 // Opaque geoset: one whole-geoset draw (layers in order; depth
                 // buffer sorts it against the rest of the opaque set).
                 DrawItem o;
@@ -118,7 +121,7 @@ CollectedDrawLists BuildDrawLists(
                 t.key.model = activeModel;
                 // HD opaque-fading geosets carry the Color depth-fill twin (WC3
                 // RenderGeoset's DEPTHFILL_COLOR); true blend geosets stay None.
-                t.depthFill = gc.needsDepthFill ? bls::DepthFill::Color : bls::DepthFill::None;
+                t.depthFill = sc.needsDepthFill ? bls::DepthFill::Color : bls::DepthFill::None;
                 const Vector3f wc = GeosetCentroidWS(view, geo);
                 const Vector3f d = {wc.x - cameraPos.x, wc.y - cameraPos.y, wc.z - cameraPos.z};
                 t.sqDist = d.x * d.x + d.y * d.y + d.z * d.z;
@@ -214,30 +217,6 @@ void ApplyTexAnimPaletteToFrame(bls::FrameInputs& frame,
         frame.texMtx0 = bls::IdentityTexMtx();
     }
     frame.texMtx1 = bls::IdentityTexMtx();
-}
-
-UnpackedLayer UnpackLayer(const GPUMaterial* mat, i32 layerIndex) {
-    UnpackedLayer out;
-    if (!mat || layerIndex < 0 || layerIndex >= static_cast<i32>(mat->cpu.layers.size())) {
-        return out;
-    }
-    const auto& L = mat->cpu.layers[layerIndex];
-    out.filterMode = L.filterMode;
-    out.flags = L.flags;
-    out.alpha = L.alpha;
-    out.textureId = L.textureId;
-    out.textureAnimationId = L.textureAnimationId;
-    out.shaderId = L.shaderId;
-    out.normalMapId = L.normalMapId;
-    out.ormMapId = L.ormMapId;
-    out.emissiveMapId = L.emissiveMapId;
-    out.teamColorMapId = L.teamColorMapId;
-    out.emissiveGain = L.emissiveGain;
-    out.fresnelOpacity = L.fresnelOpacity;
-    out.fresnelTeamColor = L.fresnelTeamColor;
-    out.fresnelColor = L.fresnelColor;
-    out.coordId = L.coordId;
-    return out;
 }
 
 } // namespace whiteout::flakes::renderer::render_detail

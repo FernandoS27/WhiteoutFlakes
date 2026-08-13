@@ -1,5 +1,7 @@
 #include "renderer/model/render_model.h"
 
+#include "renderer/profiles/wc3/wc3_surface_table.h"
+
 #include <algorithm>
 
 namespace whiteout::flakes::renderer::model {
@@ -42,6 +44,15 @@ void RenderModel::ApplyLayerStates(const FrameState& state) {
         }
     }
 
+    // The animated half of the material. It lives in the table because the
+    // submission path reads it from there, but it is rewritten every frame —
+    // which is why Wc3SurfaceTable is mutable rather than build-once. An actor
+    // whose table hasn't been built yet has nothing to animate; the empty
+    // stand-in keeps the loops below bounds-checked without a branch each.
+    static const std::vector<GPUMaterial> kNoMaterials;
+    auto* table = core::SurfaceTableCast<profiles::wc3::Wc3SurfaceTable>(surfaceTable.get());
+    auto& gpuMaterials =
+        table ? table->Materials() : const_cast<std::vector<GPUMaterial>&>(kNoMaterials);
     for (auto& la : state.layerAlphas) {
         if (la.materialId >= 0 && la.materialId < (i32)gpuMaterials.size()) {
             auto& layers = gpuMaterials[la.materialId].cpu.layers;

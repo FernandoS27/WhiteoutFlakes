@@ -2223,7 +2223,7 @@ void RenderPipeline::RenderGeosets(GeosetBucket bucket) {
 
     const Vector3f camPos = rs_.Pipeline().FrameCamera().GetSource();
     auto collected = render_detail::BuildDrawLists(rs_.Scene().Actors().All(),
-                                                   ComputeSelectedLod(), camPos, active.Id());
+                                                   ComputeSelectedLod(), camPos, active);
     if (collected.lists.opaque.empty() && collected.lists.transparent.empty())
         return;
 
@@ -2289,7 +2289,7 @@ void RenderPipeline::RenderTransparentScene() {
     const bool haveGeo = active.IsAvailable() && !rs_.Scene().Actors().All().empty();
     if (haveGeo) {
         geo = render_detail::BuildDrawLists(rs_.Scene().Actors().All(), ComputeSelectedLod(),
-                                            camPos, active.Id());
+                                            camPos, active);
     }
 
     // --- PE2 particles: build geometry into the shared VB ---

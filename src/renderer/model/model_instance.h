@@ -167,7 +167,8 @@ struct Actor {
         render.gpuGeosets.clear();
         if (render.textures)
             render.textures->Clear();
-        render.gpuMaterials.clear();
+        render.surfaceTable.reset();
+        render.surfaces.clear();
         gfx.Destroy(render.ribbonVB);
         render.ribbonVB = gfx::BufferHandle::Invalid;
         render.ribbonVBSize = 0;

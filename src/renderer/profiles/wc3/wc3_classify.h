@@ -13,8 +13,15 @@ struct GPUGeoset;
 }
 
 namespace whiteout::flakes::renderer::render_detail {
-
 struct RenderableView;
+}
+
+// Shared by BOTH WC3 shading models. The shaderId-based HD fading test stays
+// inside: Wc3SdShading::Classify must still apply it to a shaderId-1 layer,
+// because that is what the rule does today regardless of render mode.
+// Splitting it per model is a behaviour change and belongs to the
+// mixed-shading work, not here.
+namespace whiteout::flakes::renderer::profiles::wc3 {
 
 struct GeosetClass {
     bool visible = false;       // some layer is currently visible
@@ -23,6 +30,7 @@ struct GeosetClass {
     bool needsDepthFill = false; // HD opaque layer faded below full → Color path + depth twin
 };
 
-GeosetClass ClassifyGeoset(const RenderableView& view, const model::GPUGeoset& geo);
+GeosetClass ClassifyGeoset(const render_detail::RenderableView& view,
+                           const model::GPUGeoset& geo);
 
-} // namespace whiteout::flakes::renderer::render_detail
+} // namespace whiteout::flakes::renderer::profiles::wc3

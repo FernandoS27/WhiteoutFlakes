@@ -28,6 +28,8 @@
 
 #include "dbg_print.h"
 
+#include "renderer/profiles/wc3/wc3_surface_table.h"
+
 #include <algorithm>
 #include <cstring>
 #include <string>
@@ -42,6 +44,16 @@ using namespace ::whiteout::flakes::renderer::particle;
 using namespace ::whiteout::flakes::renderer::assets;
 using namespace ::whiteout::flakes::renderer::bls;
 using namespace ::whiteout::flakes::io;
+
+namespace {
+// The actor's WC3 table, created on first use. Every WC3 load path funnels
+// through here, so an actor never has a null table by the time anything draws.
+profiles::wc3::Wc3SurfaceTable& Wc3TableFor(RenderModel& render) {
+    if (!render.surfaceTable)
+        render.surfaceTable = std::make_unique<profiles::wc3::Wc3SurfaceTable>();
+    return *core::SurfaceTableCast<profiles::wc3::Wc3SurfaceTable>(render.surfaceTable.get());
+}
+} // namespace
 
 ModelLoader::ModelLoader(RenderService& rs) : rs_(rs) {}
 ModelLoader::~ModelLoader() = default;
@@ -784,16 +796,15 @@ void ModelLoader::UploadStagedGeosets(Actor& mi) {
                 gg.vertexCount = shared.vertexCount;
                 gg.localCentroid = shared.localCentroid;
                 gg.hasSkinning = true;
-                if (shared.materialId >= 0 &&
-                    shared.materialId < (i32)mi.render.gpuMaterials.size())
-                    gg.priorityPlane = mi.render.gpuMaterials[shared.materialId].cpu.priorityPlane;
+                if (const auto* m = Wc3TableFor(mi.render).Material(shared.materialId))
+                    gg.priorityPlane = m->cpu.priorityPlane;
                 mi.render.gpuGeosets.push_back(gg);
             }
         } else {
 
             for (auto& gg : mi.render.gpuGeosets) {
-                if (gg.materialId >= 0 && gg.materialId < (i32)mi.render.gpuMaterials.size())
-                    gg.priorityPlane = mi.render.gpuMaterials[gg.materialId].cpu.priorityPlane;
+                if (const auto* m = Wc3TableFor(mi.render).Material(gg.materialId))
+                    gg.priorityPlane = m->cpu.priorityPlane;
             }
         }
         mi.render.stagedGeosets.clear();
@@ -810,8 +821,8 @@ void ModelLoader::UploadStagedGeosets(Actor& mi) {
                 GeosetBoundsCenter(gg.vertexCount, [&](i32 i) { return sg.vertices[i].position; });
             gg.hasSkinning = true;
 
-            if (sg.materialId >= 0 && sg.materialId < (i32)mi.render.gpuMaterials.size())
-                gg.priorityPlane = mi.render.gpuMaterials[sg.materialId].cpu.priorityPlane;
+            if (const auto* m = Wc3TableFor(mi.render).Material(sg.materialId))
+                gg.priorityPlane = m->cpu.priorityPlane;
 
             const u32 vbBytes = (u32)(sizeof(Vertex) * sg.vertices.size());
             const GeosetSkinInfo* skinInfo = mi.render.skinning.GetGeosetWeights(id);
@@ -962,10 +973,19 @@ void ModelLoader::CommitPendingUploads() {
         if (mi->render.stagedDirty) {
             UploadStagedTextures(*mi);
 
-            for (auto& [id, sm] : mi->render.stagedMaterials) {
-                if ((i32)mi->render.gpuMaterials.size() <= id)
-                    mi->render.gpuMaterials.resize(id + 1);
-                mi->render.gpuMaterials[id].cpu = sm;
+            // Rebuild the actor's table in place. UpdateMaterials (public
+            // API, called by the Max plugin's RefreshMaterials) lands here too,
+            // which is why its signature survives: MaterialData is unchanged,
+            // only its owner moved.
+            {
+                auto& table = Wc3TableFor(mi->render);
+                auto& mats = table.Materials();
+                for (auto& [id, sm] : mi->render.stagedMaterials) {
+                    if ((i32)mats.size() <= id)
+                        mats.resize(id + 1);
+                    mats[id].cpu = sm;
+                }
+                mi->render.surfaces.resize(mats.size());
             }
             mi->render.stagedMaterials.clear();
 

@@ -11,6 +11,7 @@
 #include "renderer/core/surface_pass_base.h"
 #include "renderer/debug/draw_trace_hooks.h"
 #include "renderer/profiles/wc3/wc3_sun.h"
+#include "renderer/profiles/wc3/wc3_surface_table.h"
 #include "renderer/shading/shading_model.h"
 #include "renderer/shadow/shadow_service.h"
 
@@ -23,6 +24,8 @@ using namespace ::whiteout::flakes::renderer::assets;
 using namespace ::whiteout::flakes::renderer::bls;
 using namespace ::whiteout::flakes::renderer::render_detail;
 using profiles::wc3::ComputeSunDirWS;
+using profiles::wc3::UnpackedLayer;
+using profiles::wc3::Wc3SurfaceTable;
 
 class GeosetPassHd : public BlsGeosetPass<GeosetPassHd> {
 public:
@@ -238,10 +241,8 @@ public:
         const i32 lightCountForGeoset = owner_->SelectLights(
             frame, lighting, viewMat, render_detail::GeosetCentroidWS(view_, geo));
 
-        const GPUMaterial* mat = nullptr;
-        const i32 matId = geo.materialId;
-        if (matId >= 0 && matId < (i32)view_.materials->size())
-            mat = &(*view_.materials)[matId];
+        const auto* table = core::SurfaceTableCast<Wc3SurfaceTable>(view_.surfaceTable);
+        const GPUMaterial* mat = table ? table->Material(geo.materialId) : nullptr;
 
         const f32 geoAlpha = geo.geosetAlpha * view_.parentVisibility;
 
@@ -276,7 +277,7 @@ public:
         }
 
         struct LayerJob {
-            render_detail::UnpackedLayer layer;
+            UnpackedLayer layer;
             bls::MatParams mp;
             const bls::BlsProgram* program = nullptr;
             bls::GxShaderID programShaderId = bls::GxShaderID::SD_on_HD;
@@ -289,7 +290,7 @@ public:
         std::vector<LayerJob> jobs(numLayers);
 
         for (i32 li = 0; li < numLayers; ++li) {
-            jobs[li].layer = render_detail::UnpackLayer(mat, li);
+            jobs[li].layer = Wc3SurfaceTable::Layer(mat, li);
             const auto& layer = jobs[li].layer;
             f32 combinedAlpha = geoAlpha * layer.alpha;
             if (combinedAlpha < 0.004f)

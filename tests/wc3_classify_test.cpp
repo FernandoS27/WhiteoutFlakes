@@ -4,9 +4,10 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include "core/geoset_classify.h"
+#include "profiles/wc3/wc3_classify.h"
 #include "model/render_model.h"
 #include "core/render_detail.h"
+#include "profiles/wc3/wc3_surface_table.h"
 
 #include <vector>
 
@@ -15,8 +16,8 @@ using whiteout::flakes::i32;
 using whiteout::flakes::renderer::model::GPUGeoset;
 using whiteout::flakes::renderer::model::GPUMaterial;
 using whiteout::flakes::renderer::model::MaterialLayerData;
-using whiteout::flakes::renderer::render_detail::ClassifyGeoset;
-using whiteout::flakes::renderer::render_detail::GeosetClass;
+using whiteout::flakes::renderer::profiles::wc3::ClassifyGeoset;
+using whiteout::flakes::renderer::profiles::wc3::GeosetClass;
 using whiteout::flakes::renderer::render_detail::RenderableView;
 
 namespace whiteout_flakes_test {
@@ -38,19 +39,20 @@ MaterialLayerData MakeLayer(i32 filterMode, f32 alpha, i32 shaderId = 0) {
 // One geoset, one material, the fields ClassifyGeoset actually reads. The
 // vectors have to outlive the view, so the caller owns them.
 struct Fixture {
-    std::vector<GPUMaterial> materials{GPUMaterial{}};
+    whiteout::flakes::renderer::profiles::wc3::Wc3SurfaceTable table;
     GPUGeoset geo;
     RenderableView view;
 
     Fixture() {
+        table.Materials().resize(1);
         geo.materialId = 0;
         geo.geosetAlpha = 1.0f;
-        view.materials = &materials;
+        view.surfaceTable = &table;
         view.parentVisibility = 1.0f;
     }
 
     void SetLayers(std::initializer_list<MaterialLayerData> layers) {
-        materials[0].cpu.layers.assign(layers);
+        table.Materials()[0].cpu.layers.assign(layers);
     }
 
     GeosetClass Classify() {

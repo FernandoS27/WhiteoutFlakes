@@ -363,7 +363,7 @@ Value* ndxStart_cf(Value** /*arg_list*/, i32 count) {
     // Diagnostic readout from the actor's render-side counts.
     mprintf(_M("\nWhiteoutDex: === STARTED in %d ms ===\n"), ms);
     mprintf(_M("  %d geosets, %d materials\n"), (i32)g_actor->render.gpuGeosets.size(),
-            (i32)g_actor->render.gpuMaterials.size());
+            g_actor->render.surfaceTable ? (i32)g_actor->render.surfaceTable->Count() : 0);
     mprintf(_M("  %d collisions\n"), (i32)g_actor->render.collisionShapes.size());
 
     return Integer::intern(ms);

@@ -5,6 +5,8 @@
 #include "assets/texture_asset_manager.h"
 #include "effects/ribbon.h"
 #include "particle.h"
+#include "core/surface_table.h"
+#include "core/surface_vocabulary.h"
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
 
@@ -130,7 +132,12 @@ struct RenderModel {
 
     std::vector<GPUGeoset> gpuGeosets;
     std::unique_ptr<assets::TextureAssetManager::ModelScope> textures;
-    std::vector<GPUMaterial> gpuMaterials;
+    // The product's own material data, behind the core interface. Built by
+    // the loader; recovered by a shading model via SurfaceTableCast.
+    std::unique_ptr<core::ISurfaceTable> surfaceTable;
+    // One key per surface, parallel to the table. Populated at upload; what
+    // SurfaceKey::surface indexes into.
+    std::vector<core::SurfaceKey> surfaces;
 
     animation::SkinningSystem skinning;
     bool skinDirty = false;

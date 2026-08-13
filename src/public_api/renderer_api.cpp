@@ -710,7 +710,7 @@ i32 ActorView::GeosetCount() const {
 }
 i32 ActorView::MaterialCount() const {
     auto* a = FindActor(impl_, handle_);
-    return a ? static_cast<i32>(a->render.gpuMaterials.size()) : 0;
+    return (a && a->render.surfaceTable) ? static_cast<i32>(a->render.surfaceTable->Count()) : 0;
 }
 i32 ActorView::CollisionShapeCount() const {
     auto* a = FindActor(impl_, handle_);

@@ -7,6 +7,7 @@
 #include "renderer/bls/bls_frame.h"
 #include "renderer/debug/draw_trace.h"
 #include "renderer/core/render_detail.h"
+#include "renderer/profiles/wc3/wc3_surface_table.h"
 
 namespace whiteout::flakes::renderer::debug {
 
@@ -34,7 +35,7 @@ u64 HashTexMtx(const bls::FrameInputs& f);
 // decision inputs, stream mask, palette path, CB hash, combined alpha,
 // resolved texture ids, light count.
 void RecordGeosetDraw(TraceDraw& d, const render_detail::RenderableView& view,
-                      const model::GPUGeoset& geo, const render_detail::UnpackedLayer& layer,
+                      const model::GPUGeoset& geo, const profiles::wc3::UnpackedLayer& layer,
                       i32 layerIndex, const bls::FrameInputs& frame);
 
 // Non-geoset producers: particles, ribbons and corn are not IShadingModel

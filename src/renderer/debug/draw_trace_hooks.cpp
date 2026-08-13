@@ -37,7 +37,7 @@ u64 HashTexMtx(const bls::FrameInputs& f) {
 }
 
 void RecordGeosetDraw(TraceDraw& d, const render_detail::RenderableView& view,
-                      const model::GPUGeoset& geo, const render_detail::UnpackedLayer& layer,
+                      const model::GPUGeoset& geo, const profiles::wc3::UnpackedLayer& layer,
                       i32 layerIndex, const bls::FrameInputs& frame) {
     auto& rec = DrawTraceRecorder::Instance();
     const TraceSubmitContext& ctx = rec.Context();
