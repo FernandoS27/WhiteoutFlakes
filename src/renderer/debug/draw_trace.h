@@ -123,11 +123,13 @@ struct TraceDraw {
     u64 texMtxHash = 0;
 };
 
-// Which vertex streams the draw bound. A rename of today's interleaved reality
-// (P4 keeps `Base` interleaved), not a claim about per-attribute buffers.
+// Which vertex streams the draw bound. Bit positions are core::StreamId's
+// values — the same four buffers, named once. Kept as plain constants here so
+// draw_trace stays dependency-free and the comparator is unit-testable without
+// pulling in the renderer.
 enum TraceStream : u8 {
     kStreamBase = 1 << 0,    // slot 0, the interleaved Vertex
-    kStreamBaseUv1 = 1 << 1, // slot 0 came from unskinnedVb1 (coordId 1)
+    kStreamBaseUv1 = 1 << 1, // slot 0 came from the second interleaved copy
     kStreamTangent = 1 << 2,
     kStreamBone = 1 << 3,
 };

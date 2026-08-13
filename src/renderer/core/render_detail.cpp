@@ -141,9 +141,11 @@ CollectedDrawLists BuildDrawLists(
 }
 
 gfx::BufferHandle PickSlot0Vb(const GPUGeoset& geo, i32 coordId) {
-    if (coordId == 1 && geo.unskinnedVb1 != gfx::BufferHandle::Invalid)
-        return geo.unskinnedVb1;
-    return geo.unskinnedVb;
+    // Slot 0 is always a complete interleaved vertex; coordId only chooses
+    // which of the two copies (see core::StreamId).
+    if (coordId == 1 && geo.Stream(core::StreamId::BaseUv1) != gfx::BufferHandle::Invalid)
+        return geo.Stream(core::StreamId::BaseUv1);
+    return geo.Stream(core::StreamId::Base);
 }
 
 bool BindSdMeshGeometry(gfx::IGFXCommandList* cmd, const GPUGeoset& geo,

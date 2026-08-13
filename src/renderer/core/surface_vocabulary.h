@@ -192,8 +192,35 @@ struct AnimatedSurface {
     i32 shaderId = 0;
 };
 
+// The vertex buffers a draw can bind. Base is WC3's fully-interleaved
+// `Vertex` {position, normal, color, uv} at sizeof == 48 — NOT a position
+// stream. BaseUv1 is its twin, a second complete copy differing only in which
+// UV set is baked into `uv` (PickSlot0Vb selects between them per layer by
+// coordId). Tangent and Bone are the two real siblings.
+//
+// So this enum names four buffers that already exist. De-interleaving Base
+// would mean changing every VertexLayoutKind, every input layout, every PSO and
+// the BLS shader input signatures — explicitly out of scope for this refactor.
+// `Uv` and `Colors` are the standalone streams a non-WC3 surface can ask for;
+// nothing WC3 ever requests them.
+enum class StreamId : u8 {
+    Base = 0,
+    BaseUv1 = 1,
+    Tangent = 2,
+    Bone = 3,
+    Uv = 4,
+    Colors = 5,
+
+    Count,
+};
+
+inline constexpr u8 StreamBit(StreamId s) {
+    return static_cast<u8>(1u << static_cast<u8>(s));
+}
+
 // Vertex streams and derived data a surface requires. WC3 asks for none of the
-// optional ones: its `Vertex` is fully interleaved and stays that way (P4).
+// optional ones: its `Vertex` is fully interleaved and stays that way, so
+// nothing about its upload path or input layout moves.
 struct VertexNeeds {
     bool position = true;
     bool normal = false;

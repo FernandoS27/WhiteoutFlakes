@@ -73,6 +73,22 @@ public:
         return bls::BuildLightPalette(frame, lighting, viewMat, surfaceWS);
     }
 
+    core::EmitMask Emits(u32 surface, core::PassSlot pass) const override {
+        (void)surface;
+        switch (pass) {
+        case core::PassSlot::ShadowMap:
+        case core::PassSlot::DepthPrepass:
+            return core::EmitMask::Depth;
+        case core::PassSlot::GBuffer:
+            // The HD opaque MRT permutation forward-shades and writes linear
+            // depth + normal in the same draw.
+            return core::EmitMask::DefaultColor | core::EmitMask::LinearDepth |
+                   core::EmitMask::Normal;
+        default:
+            return core::EmitMask::DefaultColor;
+        }
+    }
+
     std::span<const core::SurfaceParamDecl> Params() const override {
         return {};
     }

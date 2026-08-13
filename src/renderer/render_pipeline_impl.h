@@ -2,6 +2,7 @@
 
 #include "frame_capture.h"
 #include "render_pipeline.h"
+#include "core/render_profile.h"
 #include "shading/shading_registry.h"
 
 #include <memory>
@@ -63,6 +64,12 @@ struct RenderPipeline::Impl {
     shading::ShadingRegistry shadingModels_;
     std::unique_ptr<shading::IShadingModel> wc3SdShading_;
     std::unique_ptr<shading::IShadingModel> wc3HdShading_;
+
+    // The two WC3 frames, declared. ValidateProfile runs once when they are
+    // built, so a declaration that contradicts itself fails at init rather
+    // than at whichever frame first reads a target nobody wrote.
+    std::unique_ptr<core::IRenderProfile> wc3SdProfile_;
+    std::unique_ptr<core::IRenderProfile> wc3HdProfile_;
 
     // Cached at InitDevice time via Gfx()->PreferredDepthStencilFormat().
     // Renderer-wide source of truth for the depth-target format and

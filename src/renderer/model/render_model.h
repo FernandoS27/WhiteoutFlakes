@@ -67,6 +67,25 @@ struct GPUGeoset {
 
     bool hasSkinning = false;
 
+    // The four buffers named by core::StreamId. Base and BaseUv1 are two
+    // complete interleaved copies differing only in which UV set is baked into
+    // `uv`; the draw path picks between them per layer by coordId.
+    gfx::BufferHandle Stream(core::StreamId s) const {
+        switch (s) {
+        case core::StreamId::Base:
+            return unskinnedVb;
+        case core::StreamId::BaseUv1:
+            return unskinnedVb1;
+        case core::StreamId::Tangent:
+            return tangentVb;
+        case core::StreamId::Bone:
+            return boneVb;
+        default:
+            // Uv / Colors are standalone streams no WC3 geoset uploads.
+            return gfx::BufferHandle::Invalid;
+        }
+    }
+
     f32 geosetAlpha = 1.0f;
     Vector3f geosetColor = {1, 1, 1};
     Matrix44f worldMatrix = Matrix44f::identity();

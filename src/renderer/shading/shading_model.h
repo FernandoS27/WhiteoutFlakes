@@ -78,6 +78,20 @@ public:
     virtual i32 SelectLights(bls::FrameInputs& frame, const bls::LightingContext& lighting,
                              const Matrix44f& viewMat, const Vector3f& surfaceWS) const = 0;
 
+    /// @brief Which attachments this model writes for `surface` in `pass`.
+    ///        The profile uses it to pick the RTV set and validate a pass's
+    ///        declared writes; the model folds it into the PSO key alongside
+    ///        the pass itself.
+    ///
+    ///        We already carry a one-bit version of this: RenderState::depthWrite
+    ///        doubles as the WC3_IS_MRT permutation axis (bls_permuter.h), which
+    ///        is precisely "does this shader emit the extra G-buffer
+    ///        attachments" smuggled in as a depth-state flag. This generalises a
+    ///        hack rather than adding a concept — and it has to exist from here,
+    ///        because retrofitting an output signature means revisiting every
+    ///        shading model and every pass a second time.
+    virtual core::EmitMask Emits(u32 surface, core::PassSlot pass) const = 0;
+
     /// @brief Animatable parameters this model exposes. Empty until the first
     ///        animated format; the `surfaceParams` blob that consumes it is
     ///        deferred with the animation work.

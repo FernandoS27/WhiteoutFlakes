@@ -19,6 +19,7 @@
 #include "gfx_types.h"
 #include "types.h"
 
+#include <array>
 #include <functional>
 #include <string>
 #include <vector>
@@ -189,6 +190,18 @@ struct MeshData {
     std::vector<Vector2f> uvs1;     ///< Optional second UV channel (HD models).
     std::vector<Vector4f> tangents; ///< xyz = tangent, w = bitangent sign.
     std::vector<u32> indices;
+
+    /// @brief Additional standalone UV sets, beyond the two `uvs`/`uvs1`
+    ///        channels the interleaved WC3 vertex bakes in. Requested via
+    ///        @ref VertexNeeds::uvSets; empty for every WC3 model, which
+    ///        needs no standalone stream at all.
+    ///
+    ///        Additive, not a replacement: `positions`/`normals`/`uvs` still
+    ///        feed the interleaved base buffer exactly as before.
+    std::array<std::vector<Vector2f>, 5> uvSets;
+    /// @brief Optional standalone per-vertex colour stream (BGRA8), for
+    ///        formats whose colours are not folded into the base vertex.
+    std::vector<u32> colors;
 };
 
 /// @brief Sentinel layer-textureId meaning "synthesize the team-colour

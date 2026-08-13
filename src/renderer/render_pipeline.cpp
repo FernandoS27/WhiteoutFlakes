@@ -26,6 +26,7 @@
 #include "ibl/split_sum.h"
 #include "core/render_detail.h"
 #include "core/surface_pass_base.h"
+#include "renderer/profiles/wc3/wc3_profile.h"
 #include "renderer/profiles/wc3/wc3_shading.h"
 #include "renderer/profiles/wc3/wc3_sun.h"
 #include "renderer/shading/surface_pass.h"
@@ -1690,8 +1691,14 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     // when the host opts in (SceneHdrInSd). SD-HDR keeps the single-RTV forward
     // SD shading but routes it through the tonemap so additive / team-color
     // geosets roll off instead of clipping to white on the LDR swap chain.
-    const bool useHdr = (impl_->frameRenderMode_ == RenderMode::HD);
-    const bool sceneToHdr = useHdr || rs_.Settings().SceneHdrInSd();
+    // The profile is the source of truth for the frame's colour space. Both
+    // are exact substitutions, which is the point: Wc3HdProfile is the only
+    // linear one, and its scene format is the only float one apart from SD's
+    // SceneHdrInSd opt-in. Building the profile here is also what runs
+    // ValidateProfile against the real declarations.
+    core::IRenderProfile& profile = ActiveProfile();
+    const bool useHdr = profile.LinearShading();
+    const bool sceneToHdr = profile.SceneColorFormat() == kHdrSceneFormat;
 
     // Frame capture (off unless exporting): BeginFrame redirects the final
     // composite to an off-screen target and EndFrame (below) copies it out +
@@ -1768,7 +1775,17 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         1.0f,
     };
 
-    if (rs_.GetShadowService() && rs_.GetShadowService()->IsEnabled()) {
+    // The one scene-block local that outlives the block: GTAO reads the same
+    // view/projection the scene pass built. Declared out here so both lambdas
+    // bind the same object; the assignments stay where they were.
+    Matrix44f view, proj;
+
+    // ---- Stage bodies -----------------------------------------------------
+    // Unchanged; only their invocation moved. Lambdas capture by reference so
+    // every local the chain already built stays exactly where it was — this is
+    // code motion inside one function, not an extraction to methods around a
+    // threaded frame-context struct.
+    auto runShadowPass = [&] {
         WDX_CPU_ZONE("ShadowPass");
         WDX_GPU_ZONE(cmd, "ShadowPass");
         Matrix44f csmCamView, csmCamProj;
@@ -1813,8 +1830,14 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
                                        rs_.Pipeline().FrameCamera().GetFarZ(), lightDirWS, sceneCenter,
                                        sceneRadius);
         shadow::ShadowPass(rs_).Run(*rs_.GetShadowService());
-    }
+    };
 
+    // The scene block is ONE render pass, and that is why the walk below maps
+    // several slots onto it. OpaqueColor/GBuffer and TransparentScene are two
+    // submissions inside a single Begin/EndRenderPass, with the grid, splats,
+    // debug overlays and SD's ImGui interleaved between them. Giving each slot
+    // its own pass boundary would change both pixels and cost.
+    auto runScenePass = [&] {
     // G-buffer MRT bind. In HD mode the scene pass writes 3 colour
     // attachments — scene HDR (slot 0), linear view-space depth (slot 1,
     // R32F), encoded world-space normal (slot 2, RGBA8). Mirrors the
@@ -1846,7 +1869,6 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     cmd->SetViewport({0, 0, (f32)target.width, (f32)target.height, 0, 1});
     WDX_GPU_ZONE(cmd, "ScenePass");
 
-    Matrix44f view, proj;
     {
         // GTAO must match the HD opaque scene pass's view-space
         // convention. That pass uses LH view+proj (see ComputeViewProj
@@ -1919,6 +1941,7 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     }
 #endif
     cmd->EndRenderPass();
+    };
 
     // GTAO ambient-occlusion. HD-only — needs the G-buffer slots populated
     // by the HD opaque MRT pass that just closed. Internally:
@@ -1926,7 +1949,7 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     //      writes scalar AO to target.aoBuffer.
     //   2. opens target.hdrColor with loadOp=Load and multiplies the AO
     //      into the existing colour via Zero-src + SrcColor-dst blend.
-    if (useHdr) {
+    auto runGtaoPass = [&] {
         if (auto* g = rs_.GetGtaoService()) {
             // Forward the user-facing toggle into the service each frame
             // — cheap atomic load + cheap setter, and keeps the service
@@ -1991,13 +2014,13 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
                 }
             }
         }
-    }
+    };
 
     // Depth of field — bokeh blur on `hdrColor` after GTAO/SSAO and before
     // bloom, exactly where WC3 runs GBuffer::ApplyDepthOfField (opaque → SSAO →
     // DoF → bloom). Forwards host-side `RenderSettings::Dof*` knobs into the
     // service; the pass self-disables unless a focal distance is set.
-    if (useHdr) {
+    auto runDofPass = [&] {
         if (auto* d = rs_.GetDofService()) {
             dof::DofParams dp = d->Params();
             dp.enabled = rs_.Settings().DofEnabled();
@@ -2013,13 +2036,13 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
                 d->Run(cmd, target);
             }
         }
-    }
+    };
 
     // HDR post-process — bloom runs on `hdrColor` between GTAO and
     // tonemap, matching the engine ordering (GBuffer::ApplyBloom is the
     // last thing before ApplyTonemap in OnPaint). Service forwards
     // host-side `RenderSettings::Bloom*` knobs into its CB.
-    if (useHdr) {
+    auto runBloomPass = [&] {
         if (auto* pp = rs_.GetPostProcessService()) {
             post_process::BloomParams bp = pp->Params();
             bp.enabled = rs_.Settings().BloomEnabled();
@@ -2033,12 +2056,54 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
                 pp->RunBloom(cmd, target);
             }
         }
-    }
+    };
 
-    if (sceneToHdr) {
+    auto runTonemapPass = [&] {
         WDX_CPU_ZONE("Tonemap");
         WDX_GPU_ZONE(cmd, "Tonemap");
         RunTonemapPass(target, finalColor);
+    };
+
+    // ---- The walk ---------------------------------------------------------
+    // Order comes from the profile, not from the order these lambdas happen to
+    // be written in. `Enabled()` is each pass's outer gate — the profile is
+    // handed service-backed predicates so it matches what the chain checked
+    // before; the *semantic* toggles (AoEnabled, DofEnabled, BloomEnabled)
+    // stay inside the services, which is where they live and where the
+    // per-frame param push that must happen regardless also lives.
+    for (const auto& entry : profile.Passes()) {
+        if (!entry.Enabled())
+            continue;
+        switch (entry.slot) {
+        case core::PassSlot::ShadowMap:
+            runShadowPass();
+            break;
+        case core::PassSlot::OpaqueColor:
+        case core::PassSlot::GBuffer:
+            runScenePass();
+            break;
+        case core::PassSlot::TransparentScene:
+        case core::PassSlot::ImGui:
+            // Submitted inside the scene block (SD) or by the tonemap composite
+            // (HD ImGui). Listed in the profile because they are real passes a
+            // surface opts into; not dispatched here because they do not own a
+            // render pass of their own.
+            break;
+        case core::PassSlot::Gtao:
+            runGtaoPass();
+            break;
+        case core::PassSlot::Dof:
+            runDofPass();
+            break;
+        case core::PassSlot::Bloom:
+            runBloomPass();
+            break;
+        case core::PassSlot::Tonemap:
+            runTonemapPass();
+            break;
+        default:
+            break;
+        }
     }
 
     // Copy the off-screen composite into the readback ring and mirror it
@@ -2212,6 +2277,46 @@ shading::IShadingModel& RenderPipeline::ActiveShadingModel() {
     return (impl_->frameRenderMode_ == RenderMode::HD)
                ? *impl_->wc3HdShading_
                : *impl_->wc3SdShading_;
+}
+
+core::IRenderProfile& RenderPipeline::ActiveProfile() {
+    if (!impl_->wc3SdProfile_) {
+        // Force the shading models into existence first — a profile lists the
+        // models it can dispatch to, and an empty list would be a lie.
+        (void)ActiveShadingModel();
+        auto sd = std::make_unique<profiles::wc3::Wc3SdProfile>(rs_.Settings());
+        auto hd = std::make_unique<profiles::wc3::Wc3HdProfile>(rs_.Settings());
+        const std::vector<shading::IShadingModel*> models{impl_->wc3SdShading_.get(),
+                                                          impl_->wc3HdShading_.get()};
+        sd->SetShadingModels(models);
+        hd->SetShadingModels(models);
+        // Shadows gate on the service, not on RenderSettings, so the profile
+        // is handed the predicate rather than reaching for it.
+        auto shadowsOn = [this] {
+            auto* svc = rs_.GetShadowService();
+            return svc && svc->IsEnabled();
+        };
+        sd->SetPassPredicate(core::PassSlot::ShadowMap, shadowsOn);
+        hd->SetPassPredicate(core::PassSlot::ShadowMap, shadowsOn);
+        hd->SetPassPredicate(core::PassSlot::Gtao,
+                             [this] { return rs_.GetGtaoService() != nullptr; });
+        hd->SetPassPredicate(core::PassSlot::Dof,
+                             [this] { return rs_.GetDofService() != nullptr; });
+        hd->SetPassPredicate(core::PassSlot::Bloom,
+                             [this] { return rs_.GetPostProcessService() != nullptr; });
+
+        for (const core::IRenderProfile* p :
+             {static_cast<const core::IRenderProfile*>(sd.get()),
+              static_cast<const core::IRenderProfile*>(hd.get())}) {
+            const auto v = core::ValidateProfile(*p);
+            if (!v.ok)
+                std::fprintf(stderr, "[profile] invalid render profile: %s\n", v.error.c_str());
+        }
+        impl_->wc3SdProfile_ = std::move(sd);
+        impl_->wc3HdProfile_ = std::move(hd);
+    }
+    return (impl_->frameRenderMode_ == RenderMode::HD) ? *impl_->wc3HdProfile_
+                                                       : *impl_->wc3SdProfile_;
 }
 
 // Collect + classify + sort, then hand the bucket to SurfacePass, which opens

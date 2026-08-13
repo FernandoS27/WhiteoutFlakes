@@ -1083,7 +1083,8 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/frame_capture.cpp
     src/renderer/render_service.cpp
     src/renderer/core/render_detail.cpp
-    src/renderer/core/geoset_classify.cpp
+    src/renderer/core/render_profile.cpp
+    src/renderer/profiles/wc3/wc3_classify.cpp
     src/renderer/shading/surface_pass.cpp
     src/renderer/render_target.cpp
     src/renderer/scene_manager.cpp

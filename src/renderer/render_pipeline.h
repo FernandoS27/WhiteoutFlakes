@@ -37,6 +37,9 @@ enum class GeosetBucket : u8;
 namespace shading {
 class IShadingModel;
 }
+namespace core {
+class IRenderProfile;
+}
 
 namespace particle {
 struct EmitterDrawList;
@@ -226,6 +229,10 @@ private:
     // WC3 entries on first use. One model is live at a time; per-surface
     // selection is the mixed-shading work.
     shading::IShadingModel& ActiveShadingModel();
+    // The frame the active RenderMode declares: pass order, conditions, target
+    // set, colour space, world scale. Built alongside the shading models and
+    // validated once.
+    core::IRenderProfile& ActiveProfile();
     void RenderGeosets(GeosetBucket bucket);
     // Unified back-to-front transparent pass: interleaves transparent geosets,
     // PE2 particles, ribbons and corn by camera distance (WC3's
