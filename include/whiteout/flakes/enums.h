@@ -121,6 +121,25 @@ enum BoneBillboardFlag : u32 {
     BONE_BILLBOARD_CAMERA_ANCHORED = 16,
 };
 
+/// @brief Which game's data a scene holds.
+///
+/// Selects the render profile, the model adapter and the surface table a
+/// scene uses. Detected from the storage the content came from — see
+/// @ref StorageBrowser::Product — or set outright with
+/// `Renderer::SetSceneProduct`.
+///
+/// Mirrors `renderer::core::ProductId`; `renderer_api.cpp` carries a
+/// `static_assert` per value so the two cannot drift silently.
+/// @bind
+enum class ProductId : u8 {
+    /// @brief No product data. What a scene reports before anything is
+    ///        loaded into it, and what the debug/unlit path uses.
+    Neutral = 0,
+    Wc3 = 1, ///< Warcraft III, classic or Reforged.
+    Wow = 2, ///< World of Warcraft.
+    Sc2 = 3, ///< StarCraft II.
+};
+
 /// @brief Per-material flag bits driving render-state setup.
 enum MaterialFlags {
     MAT_TWO_SIDED = 1,

@@ -203,6 +203,27 @@ std::vector<u8> PipelineView::ReadbackTarget(RenderTargetId t, i32& width, i32& 
 // SceneView
 // ============================================================================
 
+// Public/internal ProductId are the same shape for the same reason
+// AssetsView::Kind is: the public header cannot include renderer internals.
+// One assert per value, so a renumbering is a build error rather than a scene
+// silently picking the wrong render profile.
+#define WDX_ASSERT_PRODUCT_ID(name)                                                                 \
+    static_assert(static_cast<u8>(ProductId::name) ==                                              \
+                      static_cast<u8>(renderer::core::ProductId::name),                            \
+                  "ProductId::" #name " has drifted from renderer::core::ProductId::" #name)
+WDX_ASSERT_PRODUCT_ID(Neutral);
+WDX_ASSERT_PRODUCT_ID(Wc3);
+WDX_ASSERT_PRODUCT_ID(Wow);
+WDX_ASSERT_PRODUCT_ID(Sc2);
+#undef WDX_ASSERT_PRODUCT_ID
+
+ProductId SceneView::GetProduct() const {
+    return Scn(impl_).Product();
+}
+void SceneView::SetProduct(ProductId p) {
+    Scn(impl_).SetProduct(p);
+}
+
 i32 SceneView::AnimationTimeMs() const {
     return Scn(impl_).GetAnimationTime();
 }
@@ -376,8 +397,8 @@ void SettingsView::SetRenderMode(RenderMode m) {
 // LoaderView
 // ============================================================================
 
-ActorHandle LoaderView::SpawnUnit(const std::string& path) {
-    auto* a = Svc(impl_).Loader().SpawnUnit(path);
+ActorHandle LoaderView::SpawnUnitFromRef(const ContentRef& ref) {
+    auto* a = Svc(impl_).Loader().SpawnUnit(ref);
     return a ? a->handle : 0;
 }
 
@@ -493,6 +514,23 @@ namespace {
 // Public/internal AssetKind enums are intentionally kept in sync — one
 // belongs to the public header (no internal includes), one to the
 // renderer impl. Convert at the view boundary.
+//
+// The conversion is a numeric cast, so a renumbering on either side
+// compiles cleanly and mis-routes at runtime — a Model arriving as an
+// Effect, parsed by the wrong decoder. `AssetsView::Kind` is also `@bind`,
+// which puts the same wrong number in the C ABI and the Rust crate. One
+// assert per value makes the next divergence a build error instead.
+#define WDX_ASSERT_ASSET_KIND(name)                                                                \
+    static_assert(static_cast<u8>(AssetsView::Kind::name) ==                                       \
+                      static_cast<u8>(renderer::assets::AssetKind::name),                          \
+                  "AssetsView::Kind::" #name " has drifted from "                                  \
+                  "renderer::assets::AssetKind::" #name)
+WDX_ASSERT_ASSET_KIND(Texture);
+WDX_ASSERT_ASSET_KIND(Model);
+WDX_ASSERT_ASSET_KIND(Effect);
+WDX_ASSERT_ASSET_KIND(Data);
+#undef WDX_ASSERT_ASSET_KIND
+
 inline renderer::assets::AssetKind ToInternal(AssetsView::Kind k) {
     return static_cast<renderer::assets::AssetKind>(static_cast<u8>(k));
 }
@@ -504,15 +542,16 @@ inline AssetsView::Kind ToPublic(renderer::assets::AssetKind k) {
 void AssetsView::DrainNeeds(const AssetsView::NeededFn& cb) {
     if (!impl_) return;
     Svc(impl_).Assets().DrainNeeds(
-        [&cb](renderer::assets::AssetKind k, std::string_view p) {
-            if (cb) cb(ToPublic(k), p);
+        [&cb](renderer::assets::AssetKind k, renderer::assets::AssetSubKind sub,
+              const ContentRef& ref) {
+            if (cb) cb(ToPublic(k), sub, ref);
         });
 }
 
-bool AssetsView::ApplyAsset(AssetsView::Kind kind, std::string_view path,
+bool AssetsView::ApplyAsset(AssetsView::Kind kind, u8 subKind, const ContentRef& ref,
                             std::span<const u8> bytes, std::string_view foundExt) {
     if (!impl_) return false;
-    return Svc(impl_).Assets().ApplyPrepared(ToInternal(kind), path, bytes, foundExt);
+    return Svc(impl_).Assets().ApplyPrepared(ToInternal(kind), subKind, ref, bytes, foundExt);
 }
 
 AssetsView::Stats AssetsView::GetStats() const {
@@ -575,7 +614,13 @@ bool AssetPreload::Ready() const {
     return !state_ || state_->preload_.Ready();
 }
 std::vector<std::string> AssetPreload::Paths() const {
-    return state_ ? state_->preload_.Paths() : std::vector<std::string>{};
+    if (!state_) return {};
+    const auto& refs = state_->preload_.Refs();
+    std::vector<std::string> out;
+    out.reserve(refs.size());
+    for (const auto& r : refs)
+        out.push_back(r.Describe());
+    return out;
 }
 void AssetPreload::Release() {
     state_.reset();
@@ -583,15 +628,22 @@ void AssetPreload::Release() {
 
 AssetPreload AssetsView::Preload(AssetsView::Kind kind, std::span<const std::string> paths) {
     if (!impl_) return {};
+    // Path-typed on the public surface: every caller of this is a host
+    // enumerating files it can name. Id-addressed preloads have no host-side
+    // use case yet — the format that needs them resolves siblings internally.
+    std::vector<ContentRef> refs;
+    refs.reserve(paths.size());
+    for (const auto& p : paths)
+        refs.push_back(ContentRef::FromPath(p));
     return AssetPreload(std::make_unique<detail::AssetPreloadState>(
-        Svc(impl_).PreloadAssets(ToInternal(kind), paths)));
+        Svc(impl_).PreloadAssets(ToInternal(kind), renderer::assets::kSoleSubKind, refs)));
 }
 
 AssetPreload AssetsView::PreloadDirectory(AssetsView::Kind kind, std::string_view directory,
                                           bool recursive) {
     if (!impl_) return {};
-    return AssetPreload(std::make_unique<detail::AssetPreloadState>(
-        Svc(impl_).PreloadAssetDirectory(ToInternal(kind), directory, recursive)));
+    return AssetPreload(std::make_unique<detail::AssetPreloadState>(Svc(impl_).PreloadAssetDirectory(
+        ToInternal(kind), renderer::assets::kSoleSubKind, directory, recursive)));
 }
 
 // ============================================================================

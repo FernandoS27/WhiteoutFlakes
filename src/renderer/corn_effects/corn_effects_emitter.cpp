@@ -154,7 +154,7 @@ CornEffectsEmitter::CornEffectsEmitter(assets::AssetManager& assets, std::string
     // model pointer swaps in via CommitPrepared. TrySpawn polls
     // ParticleAssetOf each tick until it's non-null.
     if (!pkbPath_.empty())
-        assetSlot_ = assets_.Acquire(assets::AssetKind::Particle, pkbPath_);
+        assetSlot_ = assets_.Acquire(assets::AssetKind::Effect, assets::kSoleSubKind, pkbPath_);
 }
 
 CornEffectsEmitter::~CornEffectsEmitter() {

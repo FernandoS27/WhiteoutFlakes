@@ -66,19 +66,26 @@ std::string AssetManager::Normalize(std::string_view in) {
     return out;
 }
 
+ContentRef AssetManager::NormalizeRef(const ContentRef& in) {
+    // A fileDataID has no case and no separators to fold; only paths do.
+    if (!in.IsPath()) return in;
+    return ContentRef::FromPath(Normalize(in.path));
+}
+
 AssetManager::SlotId AssetManager::AllocSlotId() noexcept {
     SlotId id = nextSlot_++;
     if (id == kInvalidSlot) id = nextSlot_++; // skip 0 on wrap
     return id;
 }
 
-AssetManager::SlotId AssetManager::Acquire(AssetKind kind, std::string_view path) {
-    if (path.empty()) return kInvalidSlot;
-    const std::string norm = Normalize(path);
+AssetManager::SlotId AssetManager::Acquire(AssetKind kind, AssetSubKind subKind,
+                                           const ContentRef& ref) {
+    if (ref.Empty()) return kInvalidSlot;
+    const ContentRef norm = NormalizeRef(ref);
 
     std::lock_guard<std::mutex> lk(mu_);
     ++statAcquires_;
-    if (auto it = pathToSlot_.find(norm); it != pathToSlot_.end()) {
+    if (auto it = refToSlot_.find(norm); it != refToSlot_.end()) {
         slots_[it->second].refCount++;
         return it->second;
     }
@@ -86,19 +93,20 @@ AssetManager::SlotId AssetManager::Acquire(AssetKind kind, std::string_view path
     const SlotId id = AllocSlotId();
     Slot s;
     s.kind     = kind;
-    s.path     = norm;
+    s.subKind  = subKind;
+    s.ref      = norm;
     s.refCount = 1;
     // Capture the colour-space policy of the mode active at acquire time (the
     // acquiring model's mode) so the async decode uses it, not the live mode.
     s.acquireGamma = gammaColorTexturesQuery_ && gammaColorTexturesQuery_();
     // Texture: bind the manager's shared "white" default until real
-    // bytes arrive. Particle/ChildModel: leave payload null — consumers
+    // bytes arrive. Effect/Model: leave payload null — consumers
     // null-check the typed accessors.
     if (kind == AssetKind::Texture)
         s.texHandle = textures_.GetDefaults().White;
     slots_.emplace(id, std::move(s));
-    pathToSlot_.emplace(norm, id);
-    needs_.emplace_back(kind, norm);
+    refToSlot_.emplace(norm, id);
+    needs_.push_back(Need{kind, subKind, norm});
     return id;
 }
 
@@ -126,7 +134,7 @@ void AssetManager::Release(SlotId slot) {
         }
 
         dependencies = std::move(it->second.dependencies);
-        pathToSlot_.erase(it->second.path);
+        refToSlot_.erase(it->second.ref);
         slots_.erase(it);
     }
     if (toDestroy != gfx::TextureHandle::Invalid && gfx_)
@@ -137,24 +145,25 @@ void AssetManager::Release(SlotId slot) {
         Release(d);
 }
 
-AssetPreload AssetManager::Preload(AssetKind kind, std::span<const std::string> paths) {
+AssetPreload AssetManager::Preload(AssetKind kind, AssetSubKind subKind,
+                                   std::span<const ContentRef> refs) {
     AssetPreload out;
     out.link_ = link_;
-    out.slots_.reserve(paths.size());
-    out.paths_.reserve(paths.size());
+    out.slots_.reserve(refs.size());
+    out.refs_.reserve(refs.size());
 
-    // One reference per distinct path — a caller handing us a directory
+    // One reference per distinct ref — a caller handing us a directory
     // listing that names the same texture twice shouldn't leak a ref.
-    std::unordered_set<std::string> seen;
-    seen.reserve(paths.size());
-    for (const std::string& p : paths) {
-        if (p.empty()) continue;
-        std::string norm = Normalize(p);
+    std::unordered_set<ContentRef> seen;
+    seen.reserve(refs.size());
+    for (const ContentRef& r : refs) {
+        if (r.Empty()) continue;
+        ContentRef norm = NormalizeRef(r);
         if (!seen.insert(norm).second) continue;
-        const SlotId slot = Acquire(kind, norm);
+        const SlotId slot = Acquire(kind, subKind, norm);
         if (slot == kInvalidSlot) continue;
         out.slots_.push_back(slot);
-        out.paths_.push_back(std::move(norm));
+        out.refs_.push_back(std::move(norm));
     }
     return out;
 }
@@ -178,7 +187,7 @@ void AssetPreload::Release() {
     }
     link_.reset();
     slots_.clear();
-    paths_.clear();
+    refs_.clear();
 }
 
 bool AssetManager::Loaded(SlotId slot) const {
@@ -189,10 +198,10 @@ bool AssetManager::Loaded(SlotId slot) const {
 
 bool AssetManager::IsTextureCached(std::string_view path) const {
     if (path.empty()) return false;
-    const std::string norm = Normalize(path);
+    const ContentRef norm = ContentRef::FromPath(Normalize(path));
     std::lock_guard<std::mutex> lk(mu_);
-    auto it = pathToSlot_.find(norm);
-    if (it == pathToSlot_.end()) return false;
+    auto it = refToSlot_.find(norm);
+    if (it == refToSlot_.end()) return false;
     auto slotIt = slots_.find(it->second);
     if (slotIt == slots_.end()) return false;
     return slotIt->second.kind == AssetKind::Texture && slotIt->second.loaded;
@@ -215,7 +224,7 @@ gfx::TextureHandle AssetManager::TextureOf(SlotId slot) const {
 const cornflakes::EffectAssetModel* AssetManager::ParticleAssetOf(SlotId slot) const {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = slots_.find(slot);
-    if (it == slots_.end() || it->second.kind != AssetKind::Particle)
+    if (it == slots_.end() || it->second.kind != AssetKind::Effect)
         return nullptr;
     return it->second.particleAsset.get();
 }
@@ -223,20 +232,20 @@ const cornflakes::EffectAssetModel* AssetManager::ParticleAssetOf(SlotId slot) c
 std::shared_ptr<model::ModelTemplate> AssetManager::ChildModelOf(SlotId slot) const {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = slots_.find(slot);
-    if (it == slots_.end() || it->second.kind != AssetKind::ChildModel)
+    if (it == slots_.end() || it->second.kind != AssetKind::Model)
         return nullptr;
     return it->second.childTemplate;
 }
 
 void AssetManager::DrainNeeds(const NeededFn& cb) {
-    std::deque<std::pair<AssetKind, std::string>> batch;
+    std::deque<Need> batch;
     {
         std::lock_guard<std::mutex> lk(mu_);
         batch.swap(needs_);
     }
     if (!cb) return;
-    for (auto& [kind, path] : batch)
-        cb(kind, path);
+    for (const Need& n : batch)
+        cb(n.kind, n.subKind, n.ref);
 }
 
 std::size_t AssetManager::RetryUnloaded() {
@@ -247,8 +256,8 @@ std::size_t AssetManager::RetryUnloaded() {
             continue;
         // A duplicate already in needs_ (a slot Acquired but not yet drained
         // this frame) is harmless — DrainNeeds just re-fetches, and a re-Apply
-        // of the same path is idempotent.
-        needs_.emplace_back(s.kind, s.path);
+        // of the same ref is idempotent.
+        needs_.push_back(Need{s.kind, s.subKind, s.ref});
         ++n;
     }
     return n;
@@ -321,33 +330,41 @@ bool DecodeTexture(std::span<const u8> bytes, const std::string& ext,
 }
 } // namespace
 
-bool AssetManager::ApplyPrepared(AssetKind kind, std::string_view path,
+bool AssetManager::ApplyPrepared(AssetKind kind, AssetSubKind subKind, const ContentRef& ref,
                                  std::span<const u8> bytes, std::string_view foundExt) {
-    if (path.empty() || bytes.empty()) {
+    if (ref.Empty() || bytes.empty()) {
         std::lock_guard<std::mutex> lk(mu_);
         ++statApplyMisses_;
         return false;
     }
-    const std::string norm = Normalize(path);
+    const ContentRef norm = NormalizeRef(ref);
+    // Everything below that wants a *name* — the sRGB-policy heuristic, the
+    // extension fallback, cornflakes' BakedSource, the parse-failure log —
+    // gets the path when there is one and an empty string when there is not.
+    // An id-addressed asset genuinely has no name; the formats that use ids
+    // carry the kind in the reference that produced the id instead.
+    const std::string pathish = norm.IsPath() ? norm.path : std::string{};
 
     // Locate the target slot up front. If nothing is waiting on this
-    // path, drop the bytes — happens when consumers Release before the
+    // ref, drop the bytes — happens when consumers Release before the
     // host's fetch resolved. Stats count it as a miss.
     SlotId target = kInvalidSlot;
     AssetKind expectedKind = kind;
+    AssetSubKind expectedSubKind = subKind;
     bool acquireGamma = false;
     {
         std::lock_guard<std::mutex> lk(mu_);
-        auto it = pathToSlot_.find(norm);
-        if (it == pathToSlot_.end()) {
+        auto it = refToSlot_.find(norm);
+        if (it == refToSlot_.end()) {
             ++statApplyMisses_;
             return false;
         }
         target = it->second;
         expectedKind = slots_[target].kind;
+        expectedSubKind = slots_[target].subKind;
         acquireGamma = slots_[target].acquireGamma;
     }
-    if (expectedKind != kind) {
+    if (expectedKind != kind || expectedSubKind != subKind) {
         std::lock_guard<std::mutex> lk(mu_);
         ++statApplyMisses_;
         return false;
@@ -356,24 +373,25 @@ bool AssetManager::ApplyPrepared(AssetKind kind, std::string_view path,
     Prepared prep;
     prep.slot = target;
     prep.kind = kind;
+    prep.subKind = subKind;
 
     if (kind == AssetKind::Texture) {
         std::string ext(foundExt);
         if (ext.empty()) {
             // Fall back to the requested-path extension. Keeps Apply
             // usable without the host having to thread foundExt through.
-            ext = model::ExtensionLower(std::filesystem::path(norm));
+            ext = model::ExtensionLower(std::filesystem::path(pathish));
         }
         // Decode under the mode captured at Acquire (the model's mode), not the
         // live mode — the decode is async and the active mode may have moved on.
-        if (!DecodeTexture(bytes, ext, norm, textures_.SupportsBlockCompression(),
+        if (!DecodeTexture(bytes, ext, pathish, textures_.SupportsBlockCompression(),
                            acquireGamma, prep.pixels, prep.width, prep.height,
                            prep.mipLevels, prep.format)) {
             std::lock_guard<std::mutex> lk(mu_);
             ++statApplyMisses_;
             return false;
         }
-    } else if (kind == AssetKind::Particle) {
+    } else if (kind == AssetKind::Effect) {
         // .pkb / .pkfx — parse into a FRESH per-slot arena. PkbReader
         // keeps spans into both the source buffer and the arena, so
         // both have to outlive the slot — and FREE when the slot dies
@@ -385,7 +403,7 @@ bool AssetManager::ApplyPrepared(AssetKind kind, std::string_view path,
         std::memcpy(pinned->data(), bytes.data(), bytes.size());
         auto arena = std::make_unique<::whiteout::cornflakes::ExpandingArena>(64 * 1024);
         ::whiteout::cornflakes::BakedSource src;
-        src.path  = norm;
+        src.path  = pathish;
         src.bytes = std::span<const std::byte>(pinned->data(), pinned->size());
         ::whiteout::cornflakes::IssueBag issues;
         std::optional<::whiteout::cornflakes::EffectAssetModel> parsed;
@@ -403,7 +421,7 @@ bool AssetManager::ApplyPrepared(AssetKind kind, std::string_view path,
                 detail.append(iss.message.data(), iss.message.size());
             }
             std::fprintf(stderr, "[pkb] parse REJECTED %s: %s\n",
-                         norm.c_str(),
+                         norm.Describe().c_str(),
                          detail.empty() ? "<no issues recorded>" : detail.c_str());
             std::lock_guard<std::mutex> lk(mu_);
             ++statApplyMisses_;
@@ -413,7 +431,7 @@ bool AssetManager::ApplyPrepared(AssetKind kind, std::string_view path,
             std::make_shared<::whiteout::cornflakes::EffectAssetModel>(*parsed);
         prep.particleBytes = std::move(pinned);
         prep.particleArena = std::move(arena);
-    } else if (kind == AssetKind::ChildModel) {
+    } else if (kind == AssetKind::Model) {
         // MDX child template — defer to the host-provided builder. The
         // builder wraps ModelTemplateManager's parse path so AssetManager
         // doesn't need to drag MDX-parser headers into its translation
@@ -506,7 +524,7 @@ void AssetManager::CommitPrepared() {
             if (toDestroy != gfx::TextureHandle::Invalid)
                 gfx_->Destroy(toDestroy);
             if (slotApplied) applied.emplace_back(p.slot, p.kind);
-        } else if (p.kind == AssetKind::Particle) {
+        } else if (p.kind == AssetKind::Effect) {
             // Particle slot — swap in the parsed model and adopt the
             // per-slot arena + source bytes that back its spans. The
             // arena's unique_ptr lives on the slot, so when the slot
@@ -529,7 +547,7 @@ void AssetManager::CommitPrepared() {
                 }
             }
             if (slotApplied) applied.emplace_back(p.slot, p.kind);
-        } else if (p.kind == AssetKind::ChildModel) {
+        } else if (p.kind == AssetKind::Model) {
             // ChildModel slot — assign the parsed template. The
             // template's GPU geosets get uploaded lazily by
             // ModelLoader::uploadTemplateGpu when the first actor

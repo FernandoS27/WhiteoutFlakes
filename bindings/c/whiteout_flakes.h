@@ -76,6 +76,13 @@ typedef enum {
 } whiteout_flakes_ActorRole;
 
 typedef enum {
+    whiteout_flakes_ProductId_Neutral,
+    whiteout_flakes_ProductId_Wc3,
+    whiteout_flakes_ProductId_Wow,
+    whiteout_flakes_ProductId_Sc2,
+} whiteout_flakes_ProductId;
+
+typedef enum {
     whiteout_flakes_Tileset_LordaeronSummer,
     whiteout_flakes_Tileset_Ashenvale,
     whiteout_flakes_Tileset_Barrens,
@@ -102,8 +109,9 @@ typedef enum {
 
 typedef enum {
     whiteout_flakes_Kind_Texture,
-    whiteout_flakes_Kind_Particle,
-    whiteout_flakes_Kind_ChildModel,
+    whiteout_flakes_Kind_Model,
+    whiteout_flakes_Kind_Effect,
+    whiteout_flakes_Kind_Data,
 } whiteout_flakes_Kind;
 
 typedef enum {
@@ -335,6 +343,17 @@ uint64_t whiteout_flakes_FlakesPipelineView_LiveGpuBytes(const whiteout_FlakesPi
 /* Scene-clock + content-provider surface. */
 void whiteout_flakes_FlakesSceneView_delete(whiteout_FlakesSceneView* self);
 
+/* Which game's data this scene holds. */
+/*  */
+/* Selects the render profile, the model adapter and the surface table. Set it before loading anything: the product decides how the bytes are interpreted, so changing it under a populated scene means re-spawning. */
+/*  */
+/* @ref ProductId::Neutral is the starting value and means "not stated" — the renderer falls back to Warcraft III, which is what every existing host gets without calling this. */
+/*  */
+/* @ref StorageBrowser::Product supplies the value when the host is browsing an install: @code r.Scene().SetProduct(br.Product()); r.Scene().SetCascInstallPath(br.Root()); r.Loader().SpawnUnit(br.ChildPath(name)); @endcode */
+/*  */
+/* Scoped to *this* scene rather than taking a scene handle, because the public façade is single-scene today (every view routes through one `SceneManager`). It becomes per-scene for free when scene handles reach the public API. */
+int32_t whiteout_flakes_FlakesSceneView_Product(const whiteout_FlakesSceneView* self);
+void whiteout_flakes_FlakesSceneView_SetProduct(whiteout_FlakesSceneView* self, int32_t arg);
 /* Master animation clock the renderer ticks (ms). */
 int32_t whiteout_flakes_FlakesSceneView_AnimationTimeMs(const whiteout_FlakesSceneView* self);
 void whiteout_flakes_FlakesSceneView_SetAnimationTimeMs(whiteout_FlakesSceneView* self, int32_t arg);
@@ -660,6 +679,12 @@ int32_t whiteout_flakes_FlakesStorageBrowser_Open(whiteout_FlakesStorageBrowser*
 int32_t whiteout_flakes_FlakesStorageBrowser_OpenAuto(whiteout_FlakesStorageBrowser* self, const char* path);
 /* What the open storage turned out to be. */
 int32_t whiteout_flakes_FlakesStorageBrowser_Kind(const whiteout_FlakesStorageBrowser* self);
+/* Which game the open storage holds. */
+/*  */
+/* For a CASC install this is read from the build config's build-product string; an MPQ or a folder has no such record and reports @ref ProductId::Wc3, which is the only game whose files this browser recognises in those forms. @ref ProductId::Neutral means the storage is closed, or names a product this build does not know. */
+/*  */
+/* Pair with @ref SceneView::SetProduct to point a scene at the same install you are browsing: @code r.Scene().SetProduct(br.Product()); r.Scene().SetCascInstallPath(br.Root()); @endcode */
+int32_t whiteout_flakes_FlakesStorageBrowser_Product(const whiteout_FlakesStorageBrowser* self);
 /* Why the last @ref Open failed. Empty after a successful one. */
 int32_t whiteout_flakes_FlakesStorageBrowser_IsOpen(const whiteout_FlakesStorageBrowser* self);
 /* The root this was opened with. */

@@ -86,6 +86,10 @@ if ($Clean) {
 # bad build.
 $excludePatterns = @(
     '/src/renderer/imgui/'
+    '/src/renderer/profiles/m2/'
+    '/src/renderer/profiles/m3/'
+    '/src/io/m2/'
+    '/src/io/m3/'
     '/src/gfx/webgpu/'
     '/src/gfx/metal/'
     '/src/gfx/vulkan/'

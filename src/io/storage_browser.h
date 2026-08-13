@@ -9,6 +9,8 @@
 // a tree of only the folders that lead to models. Each file leaf remembers its
 // ORIGINAL archive path so the content provider can still read it verbatim.
 
+#include "whiteout/flakes/enums.h" // ProductId
+
 #include <map>
 #include <memory>
 #include <optional>
@@ -57,6 +59,11 @@ public:
     const std::string& Root() const {
         return root_;
     }
+    // Which game this storage holds, resolved once at Open. Neutral when the
+    // storage is closed or its build-product string isn't one we know.
+    ProductId Product() const {
+        return product_;
+    }
 
     // Current directory in display form ('\\'-separated, "" at the root).
     const std::string& CurrentPath() const {
@@ -98,6 +105,7 @@ private:
 
     bool open_ = false;
     StorageKind kind_ = StorageKind::Casc;
+    ProductId product_ = ProductId::Neutral;
     // Kept alive only for CASC: enumerate() borrows the storage. MPQ and
     // Folder are read once into the tree and need nothing retained.
     std::optional<storages::casc::Storage> storage_;

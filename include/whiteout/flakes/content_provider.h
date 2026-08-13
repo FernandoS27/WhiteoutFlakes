@@ -7,6 +7,7 @@
 ///        does the IO and a completion callback fires on the thread that
 ///        calls Pump(). Wait() and Cancel() act on a RequestId.
 
+#include "content_ref.h"
 #include "types.h"
 
 #include <functional>
@@ -51,16 +52,24 @@ public:
 
     /// @brief Submit a read. Safe to call from any thread. The callback
     ///        fires later on the thread that runs Pump().
-    /// @param path Forward- or backslash-separated relative path (e.g.
-    ///             `"Units/Human/Footman/Footman.mdx"`). Case-insensitive
-    ///             matching is recommended since MDX files commonly mix
-    ///             cases.
-    /// @param cb   Completion callback. Receives the bytes (or a
-    ///             not-ok result) and the resolved extension. Moved into
-    ///             the worker queue.
+    /// @param ref A path (forward- or backslash-separated, relative, e.g.
+    ///            `"Units/Human/Footman/Footman.mdx"` — case-insensitive
+    ///            matching is recommended since MDX files commonly mix
+    ///            cases), or a CASC fileDataID. A provider that cannot
+    ///            resolve fileDataIDs should return a not-ok result rather
+    ///            than guessing; see FileContentProvider for the CASC route.
+    /// @param cb  Completion callback. Receives the bytes (or a not-ok
+    ///            result) and the resolved extension. Moved into the worker
+    ///            queue.
     /// @return A RequestId usable with Wait()/Cancel(), or
     ///         kInvalidRequestId if the request was rejected outright.
-    virtual RequestId Request(const std::string& path, CompletionCallback cb) = 0;
+    virtual RequestId Request(const ContentRef& ref, CompletionCallback cb) = 0;
+
+    /// @brief Path-typed convenience. Every existing caller reaches the
+    ///        provider this way and none of them changed.
+    RequestId Request(const std::string& path, CompletionCallback cb) {
+        return Request(ContentRef::FromPath(path), std::move(cb));
+    }
 
     /// @brief Block the caller until the given request has either fired
     ///        its callback or been cancelled. Must be called from the
@@ -82,8 +91,13 @@ public:
     ///        callers that need bytes-in-hand (BLS shader cache, MDX
     ///        parse, DNC, corn-effects) keep this surface; it must be
     ///        called from the Pump thread.
-    std::optional<std::vector<u8>> ReadFile(const std::string& path,
+    std::optional<std::vector<u8>> ReadFile(const ContentRef& ref,
                                             std::string* actualExt = nullptr);
+    /// @overload Path-typed convenience, for the same reason Request has one.
+    std::optional<std::vector<u8>> ReadFile(const std::string& path,
+                                            std::string* actualExt = nullptr) {
+        return ReadFile(ContentRef::FromPath(path), actualExt);
+    }
 
     /// @brief List the files the provider knows about under @p directory.
     ///

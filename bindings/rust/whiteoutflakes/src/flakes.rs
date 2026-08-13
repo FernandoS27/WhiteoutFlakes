@@ -181,6 +181,40 @@ impl TryFrom<i32> for ActorRole {
     }
 }
 
+/// Which game's data a scene holds.
+///
+/// Selects the render profile, the model adapter and the surface table a scene uses. Detected from the storage the content came from — see @ref StorageBrowser::Product — or set outright with `Renderer::SetSceneProduct`.
+///
+/// Mirrors `renderer::core::ProductId`; `renderer_api.cpp` carries a `static_assert` per value so the two cannot drift silently.
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ProductId {
+    /// No product data. What a scene reports before anything is loaded into it, and what the debug/unlit path uses.
+    Neutral = 0,
+    /// Warcraft III, classic or Reforged.
+    Wc3 = 1,
+    /// World of Warcraft.
+    Wow = 2,
+    /// StarCraft II.
+    Sc2 = 3,
+}
+
+impl TryFrom<i32> for ProductId {
+    type Error = crate::Error;
+    fn try_from(v: i32) -> Result<Self, crate::Error> {
+        match v {
+            0 => Ok(ProductId::Neutral),
+            1 => Ok(ProductId::Wc3),
+            2 => Ok(ProductId::Wow),
+            3 => Ok(ProductId::Sc2),
+            other => Err(crate::Error::UnknownEnum {
+                name: "ProductId",
+                value: other,
+            }),
+        }
+    }
+}
+
 /// The 16 canonical WC3 tilesets, ordered to match the in-game World Editor enum so persisted indices round-trip.
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -259,12 +293,18 @@ impl TryFrom<i32> for CameraViewMode {
 }
 
 /// Asset categories the manager tracks. Keep in sync with `renderer::assets::AssetKind`.
+///
+/// This is a hand-written mirror of an internal enum, and it is ` so a divergence reaches the C ABI and the Rust crate. It compiles cleanly either way and mis-routes at runtime, so `renderer_api.cpp` carries a `static_assert` pairing every value with its internal counterpart. Add one with any new value.
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AssetsViewKind {
     Texture = 0,
-    Particle = 1,
-    ChildModel = 2,
+    /// Warcraft III: a secondary `.mdx`
+    Model = 1,
+    /// Warcraft III: a cornflakes `.pkb` / `.pkfx`
+    Effect = 2,
+    /// Format-specific side files; no Warcraft III use
+    Data = 3,
 }
 
 impl TryFrom<i32> for AssetsViewKind {
@@ -272,8 +312,9 @@ impl TryFrom<i32> for AssetsViewKind {
     fn try_from(v: i32) -> Result<Self, crate::Error> {
         match v {
             0 => Ok(AssetsViewKind::Texture),
-            1 => Ok(AssetsViewKind::Particle),
-            2 => Ok(AssetsViewKind::ChildModel),
+            1 => Ok(AssetsViewKind::Model),
+            2 => Ok(AssetsViewKind::Effect),
+            3 => Ok(AssetsViewKind::Data),
             other => Err(crate::Error::UnknownEnum {
                 name: "AssetsViewKind",
                 value: other,
@@ -1383,6 +1424,32 @@ impl core::fmt::Debug for SceneView {
 }
 
 impl SceneView {
+    /// Which game's data this scene holds.
+    ///
+    /// Selects the render profile, the model adapter and the surface table. Set it before loading anything: the product decides how the bytes are interpreted, so changing it under a populated scene means re-spawning.
+    ///
+    /// @ref ProductId::Neutral is the starting value and means "not stated" — the renderer falls back to Warcraft III, which is what every existing host gets without calling this.
+    ///
+    /// @ref StorageBrowser::Product supplies the value when the host is browsing an install: @code r.Scene().SetProduct(br.Product()); r.Scene().SetCascInstallPath(br.Root()); r.Loader().SpawnUnit(br.ChildPath(name)); @endcode
+    ///
+    /// Scoped to *this* scene rather than taking a scene handle, because the public façade is single-scene today (every view routes through one `SceneManager`). It becomes per-scene for free when scene handles reach the public API.
+    pub fn product(&self) -> ProductId {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ProductId::try_from(ffi::whiteout_flakes_FlakesSceneView_Product(
+                self.raw.as_ptr(),
+            ))
+            .expect("unknown enum discriminant from the native library (ABI version skew)")
+        }
+    }
+
+    pub fn set_product(&mut self, arg: ProductId) {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesSceneView_SetProduct(self.raw.as_ptr(), arg as i32);
+        }
+    }
+
     /// Master animation clock the renderer ticks (ms).
     pub fn animation_time_ms(&self) -> i32 {
         // SAFETY: handle is live for the duration of the call.
@@ -2914,6 +2981,21 @@ impl StorageBrowser {
         }
     }
 
+    /// Which game the open storage holds.
+    ///
+    /// For a CASC install this is read from the build config's build-product string; an MPQ or a folder has no such record and reports @ref ProductId::Wc3, which is the only game whose files this browser recognises in those forms. @ref ProductId::Neutral means the storage is closed, or names a product this build does not know.
+    ///
+    /// Pair with @ref SceneView::SetProduct to point a scene at the same install you are browsing: @code r.Scene().SetProduct(br.Product()); r.Scene().SetCascInstallPath(br.Root()); @endcode
+    pub fn product(&self) -> ProductId {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ProductId::try_from(ffi::whiteout_flakes_FlakesStorageBrowser_Product(
+                self.raw.as_ptr(),
+            ))
+            .expect("unknown enum discriminant from the native library (ABI version skew)")
+        }
+    }
+
     /// Why the last @ref Open failed. Empty after a successful one.
     pub fn is_open(&self) -> bool {
         // SAFETY: handle is live for the duration of the call.
@@ -3102,6 +3184,7 @@ impl Default for StorageBrowser {
 //   - ActorView::SetTransform (parameter shape)
 //   - ActorView::Transform (return whiteout::Matrix44f)
 //   - AssetsView::ApplyAsset (parameter shape)
+//   - AssetsView::ApplyAsset_kind_subKind_path_bytes_foundExt (parameter shape)
 //   - AssetsView::DrainNeeds (parameter shape)
 //   - AssetsView::IsTextureCached (parameter shape)
 //   - CameraView::GetTarget (return whiteout::Vector3f)
@@ -3575,6 +3658,12 @@ pub mod ffi {
         ) -> u64;
         // SceneView
         pub fn whiteout_flakes_FlakesSceneView_delete(self_: *mut whiteout_FlakesSceneView);
+        pub fn whiteout_flakes_FlakesSceneView_Product(self_: *mut whiteout_FlakesSceneView)
+            -> i32;
+        pub fn whiteout_flakes_FlakesSceneView_SetProduct(
+            self_: *mut whiteout_FlakesSceneView,
+            arg: i32,
+        );
         pub fn whiteout_flakes_FlakesSceneView_AnimationTimeMs(
             self_: *mut whiteout_FlakesSceneView,
         ) -> i32;
@@ -4022,6 +4111,9 @@ pub mod ffi {
             path: *const core::ffi::c_char,
         ) -> i32;
         pub fn whiteout_flakes_FlakesStorageBrowser_Kind(
+            self_: *mut whiteout_FlakesStorageBrowser,
+        ) -> i32;
+        pub fn whiteout_flakes_FlakesStorageBrowser_Product(
             self_: *mut whiteout_FlakesStorageBrowser,
         ) -> i32;
         pub fn whiteout_flakes_FlakesStorageBrowser_IsOpen(

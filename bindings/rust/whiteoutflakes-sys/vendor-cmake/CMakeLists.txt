@@ -86,6 +86,16 @@ endif()
 set(_excluded_dirs
     "/src/renderer/imgui/"      # needs externals/imgui
     "/src/gfx/metal/"           # needs the macOS SDK; .mm anyway
+    # M2 / M3 support is gated on WDX_ENABLE_M2 / WDX_ENABLE_M3 in the real
+    # build, and needs WhiteoutLib's m2/m3 parsers — which the exclusions
+    # further down deliberately drop, because the renderer reads MDX only.
+    # A glob has no gate, so without these the vendored build would sweep in
+    # sources that cannot compile against the parsers it is not vendoring.
+    # Drop them together or not at all.
+    "/src/renderer/profiles/m2/"
+    "/src/renderer/profiles/m3/"
+    "/src/io/m2/"
+    "/src/io/m3/"
 )
 if(NOT WFS_ENABLE_WEBGPU)
     list(APPEND _excluded_dirs "/src/gfx/webgpu/")

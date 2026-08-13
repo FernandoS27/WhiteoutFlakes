@@ -43,6 +43,7 @@ _wf_camera_activate_preset
 _wf_actor_preferred_render_mode
 _wf_assets_needs_count
 _wf_assets_needs_get_kind
+_wf_assets_needs_get_subkind
 _wf_assets_needs_get_path
 _wf_assets_apply
 _wf_assets_stat

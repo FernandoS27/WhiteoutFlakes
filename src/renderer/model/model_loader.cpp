@@ -201,7 +201,7 @@ void ModelLoader::PreloadChildTemplates(Actor& a, const ModelTemplate& tmpl) {
         if (ce.pkbPath.empty()) continue;
         if (!seenPkb.insert(ce.pkbPath).second) continue;
         a.assetSlots.push_back(
-            rs_.Assets().Acquire(assets::AssetKind::Particle, ce.pkbPath));
+            rs_.Assets().Acquire(assets::AssetKind::Effect, assets::kSoleSubKind, ce.pkbPath));
     }
 }
 
@@ -221,7 +221,7 @@ void ModelLoader::PreloadChildTemplates(Actor& a,
         if (path.empty()) return;
         if (!seen.insert(path).second) return;
         a.assetSlots.push_back(
-            rs_.Assets().Acquire(assets::AssetKind::ChildModel, path));
+            rs_.Assets().Acquire(assets::AssetKind::Model, assets::kSoleSubKind, path));
     };
     for (const auto& cfg : pe1Cfgs)
         hold(cfg.modelPath);
@@ -543,8 +543,10 @@ u32 ModelLoader::AddModelByPath(const std::string& mdxPath, const Matrix44f& ini
     return handle;
 }
 
-Actor* ModelLoader::SpawnUnit(const std::string& mdxPath, const Matrix44f& initialTm) {
-    const u32 h = AddModelByPath(mdxPath, initialTm);
+Actor* ModelLoader::SpawnUnit(const ContentRef& ref, const Matrix44f& initialTm) {
+    if (!ref.IsPath())
+        return nullptr; // see the header — P9 is what makes this reachable
+    const u32 h = AddModelByPath(ref.path, initialTm);
     if (h == 0)
         return nullptr;
     return rs_.Scene().Actors().Find(h);
@@ -613,7 +615,7 @@ void ModelLoader::UploadStagedTextures(Actor& mi) {
         // until the host fetches and Apply pushes the real bytes; the
         // ModelScope picks up the swap automatically via Get().
         if (!st.sharedKey.empty()) {
-            const auto slot = rs_.Assets().Acquire(AssetKind::Texture, st.sharedKey);
+            const auto slot = rs_.Assets().Acquire(AssetKind::Texture, assets::kSoleSubKind, st.sharedKey);
             mi.render.textures->BindSlot(id, slot, st.wrapFlags);
             continue;
         }

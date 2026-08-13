@@ -125,6 +125,32 @@ private:
 /// @bind no_default_ctor, methods
 class SceneView {
 public:
+    /// @brief Which game's data this scene holds.
+    ///
+    /// Selects the render profile, the model adapter and the surface table.
+    /// Set it before loading anything: the product decides how the bytes are
+    /// interpreted, so changing it under a populated scene means re-spawning.
+    ///
+    /// @ref ProductId::Neutral is the starting value and means "not stated" —
+    /// the renderer falls back to Warcraft III, which is what every existing
+    /// host gets without calling this.
+    ///
+    /// @ref StorageBrowser::Product supplies the value when the host is
+    /// browsing an install:
+    /// @code
+    /// r.Scene().SetProduct(br.Product());
+    /// r.Scene().SetCascInstallPath(br.Root());
+    /// r.Loader().SpawnUnit(br.ChildPath(name));
+    /// @endcode
+    ///
+    /// Scoped to *this* scene rather than taking a scene handle, because the
+    /// public façade is single-scene today (every view routes through one
+    /// `SceneManager`). It becomes per-scene for free when scene handles reach
+    /// the public API.
+    /// @bind rename=Product
+    ProductId GetProduct() const;
+    void SetProduct(ProductId);
+
     /// @brief Master animation clock the renderer ticks (ms).
     i32 AnimationTimeMs() const;
     void SetAnimationTimeMs(i32);
@@ -315,7 +341,27 @@ class LoaderView {
 public:
     /// @brief Spawn an actor from a path resolvable by the content provider.
     /// @return New actor handle, or `0` on failure.
-    ActorHandle SpawnUnit(const std::string& path);
+    ActorHandle SpawnUnit(const std::string& path) {
+        return SpawnUnitFromRef(ContentRef::FromPath(path));
+    }
+
+    /// @brief Spawn an actor from a reference resolvable by the content
+    ///        provider — a path, or a CASC fileDataID.
+    ///
+    /// The id form exists because a chunked World of Warcraft `.m2` names its
+    /// `.skin` / `.skel` / `.anim` siblings by fileDataID and nothing else, so
+    /// there is no path to spawn one by.
+    ///
+    /// A separate name rather than a `SpawnUnit` overload, and deliberately:
+    /// the generator disambiguates overloads by appending a parameter name, so
+    /// a second `SpawnUnit` silently renames the long-standing C symbol
+    /// `whiteout_flakes_FlakesLoaderView_SpawnUnit` to `..._SpawnUnit_path` and
+    /// breaks every host for a cosmetic reason. Reads correctly next to
+    /// @ref SpawnUnitFromSource anyway.
+    /// @return New actor handle, or `0` on failure.
+    /// @bind skip — `ContentRef` holds a `std::string`, a value-parameter
+    ///              shape neither emitter marshals.
+    ActorHandle SpawnUnitFromRef(const ContentRef& ref);
     /// @brief Spawn an actor from a custom @ref IModelSource.
     /// @param source            Implementation that produces the static
     ///                          snapshot and per-frame animation.
@@ -398,7 +444,8 @@ public:
     /// @brief `true` once every asset in the batch has loaded. An empty
     ///        batch is trivially ready.
     bool Ready() const;
-    /// @brief The paths held, normalised (lowercase, `/` separators).
+    /// @brief The references held, normalised (paths lowercased with `/`
+    ///        separators; a fileDataID renders as `#<id>`).
     std::vector<std::string> Paths() const;
     /// @brief Drop the references now rather than at destruction.
     void Release();
@@ -422,28 +469,50 @@ class AssetsView {
 public:
     /// @brief Asset categories the manager tracks. Keep in sync with
     ///        `renderer::assets::AssetKind`.
+    ///
+    /// This is a hand-written mirror of an internal enum, and it is `@bind`,
+    /// so a divergence reaches the C ABI and the Rust crate. It compiles
+    /// cleanly either way and mis-routes at runtime, so `renderer_api.cpp`
+    /// carries a `static_assert` pairing every value with its internal
+    /// counterpart. Add one with any new value.
     /// @bind
     enum class Kind : u8 {
-        Texture    = 0,
-        Particle   = 1,
-        ChildModel = 2,
+        Texture = 0,
+        Model   = 1, ///< Warcraft III: a secondary `.mdx`
+        Effect  = 2, ///< Warcraft III: a cornflakes `.pkb` / `.pkfx`
+        Data    = 3, ///< Format-specific side files; no Warcraft III use
     };
 
-    /// @brief Fired once per unique path the renderer Acquired since
+    /// @brief Fired once per unique reference the renderer Acquired since
     ///        the last drain. Use this to schedule fetches host-side.
-    using NeededFn = std::function<void(Kind, std::string_view path)>;
+    ///
+    /// @param subKind Refinement within the kind, numbered by whichever
+    ///        product owns the scene. Always `0` for Warcraft III, which
+    ///        has one form of each kind it uses.
+    /// @param ref The thing to fetch — a path, or a CASC fileDataID. **A
+    ///        host that resolves paths only (fetching URLs, reading a
+    ///        directory) must check `ref.IsFileId()` and skip**, rather
+    ///        than fetching whatever a stringified id resolves to.
+    using NeededFn = std::function<void(Kind, u8 subKind, const ContentRef& ref)>;
 
     /// @brief Drain the buffered needs queue. Safe to call any time;
     ///        typically once per tick / animation frame.
     void DrainNeeds(const NeededFn& cb);
 
-    /// @brief Push the bytes fetched for @p path. The manager decodes /
+    /// @brief Push the bytes fetched for @p ref. The manager decodes /
     ///        parses according to @p kind and queues the result for
     ///        the next `Commit` (which the FrameTicker pumps on the
     ///        render thread).
-    /// @return `true` if a slot existed for @p path AND decode succeeded.
-    bool ApplyAsset(Kind kind, std::string_view path,
+    /// @return `true` if a slot existed for @p ref, its kind and subKind
+    ///         matched, AND decode succeeded.
+    bool ApplyAsset(Kind kind, u8 subKind, const ContentRef& ref,
                     std::span<const u8> bytes, std::string_view foundExt = {});
+
+    /// @overload Path convenience, for hosts that only ever see paths.
+    bool ApplyAsset(Kind kind, u8 subKind, std::string_view path,
+                    std::span<const u8> bytes, std::string_view foundExt = {}) {
+        return ApplyAsset(kind, subKind, ContentRef::FromPath(path), bytes, foundExt);
+    }
 
     /// @brief Snapshot diagnostic counters.
     /// @bind value_object

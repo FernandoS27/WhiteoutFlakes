@@ -4,6 +4,7 @@
 /// @brief Navigable view of the model and effect files in a CASC install, an
 ///        MPQ archive, or a directory.
 
+#include "enums.h" // ProductId
 #include "types.h"
 
 #include <memory>
@@ -88,6 +89,23 @@ public:
     /// @brief What the open storage turned out to be.
     /// @bind rename=Kind
     StorageKind GetKind() const;
+
+    /// @brief Which game the open storage holds.
+    ///
+    /// For a CASC install this is read from the build config's build-product
+    /// string; an MPQ or a folder has no such record and reports
+    /// @ref ProductId::Wc3, which is the only game whose files this browser
+    /// recognises in those forms. @ref ProductId::Neutral means the storage
+    /// is closed, or names a product this build does not know.
+    ///
+    /// Pair with @ref SceneView::SetProduct to point a scene at the same
+    /// install you are browsing:
+    /// @code
+    /// r.Scene().SetProduct(br.Product());
+    /// r.Scene().SetCascInstallPath(br.Root());
+    /// @endcode
+    /// @bind rename=Product
+    ProductId GetProduct() const;
     /// @brief Why the last @ref Open failed. Empty after a successful one.
     bool IsOpen() const;
     /// @brief The root this was opened with.

@@ -570,6 +570,14 @@ void whiteout_flakes_FlakesSceneView_delete(whiteout_FlakesSceneView* self) {
     delete reinterpret_cast<whiteout::flakes::SceneView*>(self);
 }
 
+int32_t whiteout_flakes_FlakesSceneView_Product(const whiteout_FlakesSceneView* self) {
+    return static_cast<int32_t>(reinterpret_cast<const whiteout::flakes::SceneView*>(self)->GetProduct());
+}
+
+void whiteout_flakes_FlakesSceneView_SetProduct(whiteout_FlakesSceneView* self, int32_t arg) {
+    reinterpret_cast<whiteout::flakes::SceneView*>(self)->SetProduct(static_cast<whiteout::flakes::ProductId>(arg));
+}
+
 int32_t whiteout_flakes_FlakesSceneView_AnimationTimeMs(const whiteout_FlakesSceneView* self) {
     return reinterpret_cast<const whiteout::flakes::SceneView*>(self)->AnimationTimeMs();
 }
@@ -1252,6 +1260,10 @@ int32_t whiteout_flakes_FlakesStorageBrowser_OpenAuto(whiteout_FlakesStorageBrow
 
 int32_t whiteout_flakes_FlakesStorageBrowser_Kind(const whiteout_FlakesStorageBrowser* self) {
     return static_cast<int32_t>(reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->GetKind());
+}
+
+int32_t whiteout_flakes_FlakesStorageBrowser_Product(const whiteout_FlakesStorageBrowser* self) {
+    return static_cast<int32_t>(reinterpret_cast<const whiteout::flakes::StorageBrowser*>(self)->GetProduct());
 }
 
 int32_t whiteout_flakes_FlakesStorageBrowser_IsOpen(const whiteout_FlakesStorageBrowser* self) {

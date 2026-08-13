@@ -234,7 +234,7 @@ static bool ReadDiskFile(const fs::path& resolved, std::vector<u8>& outBytes) {
 
 struct PendingRequest {
     RequestId id = kInvalidRequestId;
-    std::string path;
+    ContentRef ref;
     CompletionCallback cb;
 };
 
@@ -404,6 +404,62 @@ struct FileContentProvider::Impl {
 #endif
     }
 
+    // A fileDataID names a file in the CASC root manifest and nowhere else —
+    // there is no disk fallback, no MPQ fallback, and no extension to probe.
+    // A miss is a miss.
+    //
+    // The locale walk is not belt-and-braces. A WoW fileDataID resolves to one
+    // root entry PER LOCALE — 13 of them for a stock localised file — and only
+    // the installed locale's data is actually on disk. `readFile(id)` with no
+    // locale mask takes whichever entry the root manifest happens to list
+    // first, which is the wrong one on any install that is not the manifest's
+    // first locale, and returns a miss because that archive was never
+    // downloaded. Worse, the order is not stable: opening the same storage
+    // with a worker pool (which FileContentProvider always does) parses the
+    // manifest in parallel and lists them differently, so the same id reads
+    // fine single-threaded and misses through the provider.
+    //
+    // Asking for a specific locale sidesteps all of it — the storage then
+    // selects by mask rather than by position. The unmasked attempt comes
+    // first because it is right and free whenever an id has a single entry,
+    // which is the case for models and textures; the walk only runs after a
+    // miss, and only one locale can have data.
+    void DoReadFileId(u32 fileId, RequestResult& out) {
+#if WHITEOUT_HAS_CASC
+        if (!cascStorage)
+            return;
+        namespace L = whiteout::storages::casc::LocaleMasks;
+        // Fixed order, so one machine always answers the same way. Which entry
+        // wins still varies BETWEEN machines, and correctly so — that is what
+        // a locale is.
+        static constexpr u32 kLocales[] = {
+            L::enUS, L::enGB, L::deDE, L::frFR, L::esES, L::esMX, L::ruRU,
+            L::ptBR, L::ptPT, L::itIT, L::plPL, L::koKR, L::zhCN, L::zhTW,
+            L::enCN, L::enTW, L::jaJP, L::thTH, L::trTR,
+        };
+        const i32 id = static_cast<i32>(fileId);
+        auto data = cascStorage->readFile(id);
+        for (u32 locale : kLocales) {
+            if (data && !data->empty())
+                break;
+            data = cascStorage->readFile(id, locale);
+        }
+        if (data && !data->empty()) {
+            out.data = std::move(*data);
+            out.ok = true;
+            // Deliberately left empty: the root manifest is id-keyed, so
+            // there is no name to take an extension from. Consumers that
+            // decode by extension must know the kind from the reference
+            // that produced the id (an M2's `.skin` slot, a texture slot),
+            // which is exactly how the formats that use ids work.
+            out.actualExt.clear();
+        }
+#else
+        (void)fileId;
+        (void)out;
+#endif
+    }
+
     // Disk-then-CASC-then-MPQ read, run on the worker thread with storageMu
     // already held. Mirrors the legacy synchronous ReadFile fallback chain.
     void DoRead(const std::string& path, RequestResult& out) {
@@ -539,7 +595,10 @@ struct FileContentProvider::Impl {
                 // Shared lock: any number of workers may read concurrently;
                 // only reconfiguration takes the exclusive lock.
                 std::shared_lock sg(storageMu);
-                DoRead(req->path, result);
+                if (req->ref.IsFileId())
+                    DoReadFileId(req->ref.fileId, result);
+                else
+                    DoRead(req->ref.path, result);
             }
 
             // Re-check cancellation between IO and delivery so a Cancel that
@@ -624,8 +683,8 @@ void FileContentProvider::SetSystemBasePath(const std::filesystem::path& root) {
 
 // ---- Async surface ----------------------------------------------------------
 
-RequestId FileContentProvider::Request(const std::string& path, CompletionCallback cb) {
-    if (path.empty() || !cb)
+RequestId FileContentProvider::Request(const ContentRef& ref, CompletionCallback cb) {
+    if (ref.Empty() || !cb)
         return kInvalidRequestId;
 #if defined(__EMSCRIPTEN__)
     // Web build: no worker pool exists (see ctor). Pushing onto `pending`
@@ -649,7 +708,7 @@ RequestId FileContentProvider::Request(const std::string& path, CompletionCallba
 #else
     auto req = std::make_shared<PendingRequest>();
     req->id = impl_->nextId.fetch_add(1, std::memory_order_relaxed);
-    req->path = path;
+    req->ref = ref;
     req->cb = std::move(cb);
     {
         std::lock_guard lk(impl_->reqMu);

@@ -76,6 +76,11 @@ bool StorageBrowser::OpenAuto(const std::string& path) {
 StorageKind StorageBrowser::GetKind() const {
     return static_cast<StorageKind>(impl_->browser.Kind());
 }
+ProductId StorageBrowser::GetProduct() const {
+    // Not a cast across a mirror: the internal browser already stores the
+    // public enum, because product detection reads a public header's type.
+    return impl_->browser.Product();
+}
 bool StorageBrowser::IsOpen() const {
     return impl_->browser.IsOpen();
 }

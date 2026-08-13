@@ -50,7 +50,7 @@ void SpnSpawner::Tick(i32 nowMs) {
             // because Acquire+Release here is balanced; the slot
             // survives across calls via pathToSlot_'s cache.
             const auto slot = rs_.Assets().Acquire(
-                ::whiteout::flakes::renderer::assets::AssetKind::ChildModel, p.mdxPath);
+                ::whiteout::flakes::renderer::assets::AssetKind::Model, assets::kSoleSubKind, p.mdxPath);
             auto tmpl = rs_.Assets().ChildModelOf(slot);
             rs_.Assets().Release(slot);
             if (!tmpl) {

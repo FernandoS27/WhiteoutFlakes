@@ -190,6 +190,36 @@ crate's runtime helpers are named `whiteout_flakes_Bytes_free` /
 `whiteout_flakes_CString_free`, so a buffer is always freed through the
 function that allocated it.
 
+## Breaking changes
+
+### 0.4.0 — `AssetsViewKind` renamed and renumbered
+
+`AssetsViewKind` grew from three Warcraft III-shaped values to four
+product-neutral ones, so the renderer can name a World of Warcraft or
+StarCraft II asset without the enum accumulating a variant per game:
+
+| 0.3.x | 0.4.0 | |
+|---|---|---|
+| `Texture = 0` | `Texture = 0` | unchanged |
+| `Particle = 1` | `Effect = 2` | **renamed and renumbered** |
+| `ChildModel = 2` | `Model = 1` | **renamed and renumbered** |
+| — | `Data = 3` | new; format-specific side files |
+
+Match on the new names. Code that round-tripped these through `i32` needs
+re-checking: `1` and `2` both still parse, and both now mean the other
+thing. There is no deprecation path — the discriminants moved, so an old
+value is a valid new value with a different meaning, and only a rename can
+surface that at compile time.
+
+Also new, and additive:
+
+- `SceneView::product` / `set_product` and `StorageBrowser::product`, both
+  returning the new `ProductId` enum (`Neutral`, `Wc3`, `Wow`, `Sc2`).
+  A scene defaults to `Neutral`, which the renderer treats as Warcraft III
+  — existing hosts need no change.
+- Asset needs now carry a `subKind` alongside the kind. Always `0` for
+  Warcraft III.
+
 ## Coverage
 
 `src/flakes.rs` is generated from the annotated C++ headers in

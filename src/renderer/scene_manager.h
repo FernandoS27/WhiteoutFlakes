@@ -4,6 +4,7 @@
 #include "camera.h"
 #include "model/actor_manager.h"
 #include "model/model_template_manager.h"
+#include "whiteout/flakes/enums.h" // ProductId
 #include "whiteout/flakes/model_source.h"
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
@@ -62,6 +63,20 @@ public:
     void SeedActorIds(model::ActorId first) {
         if (first != 0)
             nextActorId_ = first;
+    }
+
+    /// @brief Which game's data this scene holds. Selects the render profile,
+    ///        the model adapter and the surface table.
+    ///
+    /// Scene state rather than a global: the model explorer runs many scenes
+    /// at once, and there is no reason two of them must show the same game.
+    /// `Neutral` is the honest starting value — a scene with nothing in it
+    /// belongs to no product.
+    ProductId Product() const {
+        return product_;
+    }
+    void SetProduct(ProductId p) {
+        product_ = p;
     }
 
     ::whiteout::flakes::renderer::Camera& Camera() {
@@ -197,6 +212,7 @@ public:
 private:
     model::ActorManager actors_;
     model::ActorId nextActorId_ = 1;
+    ProductId product_ = ProductId::Neutral;
 
     std::vector<std::unique_ptr<::whiteout::flakes::renderer::Camera>> cameras_;
 

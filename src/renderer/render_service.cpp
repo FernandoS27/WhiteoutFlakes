@@ -270,10 +270,14 @@ bool ExtensionSuitsKind(std::string_view path, assets::AssetKind kind) {
     switch (kind) {
     case assets::AssetKind::Texture:
         return ext == ".blp" || ext == ".dds" || ext == ".tga" || ext == ".png" || ext == ".tif";
-    case assets::AssetKind::Particle:
+    case assets::AssetKind::Effect:
         return ext == ".pkb" || ext == ".pkfx";
-    case assets::AssetKind::ChildModel:
+    case assets::AssetKind::Model:
         return ext == ".mdx" || ext == ".mdl";
+    case assets::AssetKind::Data:
+        // No WC3 use, and no extension set that would mean anything across
+        // products — an M2's `.skin` and an M3's blob share nothing.
+        return false;
     }
     return false;
 }
@@ -281,12 +285,14 @@ bool ExtensionSuitsKind(std::string_view path, assets::AssetKind kind) {
 } // namespace
 
 assets::AssetPreload RenderService::PreloadAssets(assets::AssetKind kind,
-                                                  std::span<const std::string> paths) {
+                                                  assets::AssetSubKind subKind,
+                                                  std::span<const ContentRef> refs) {
     if (!impl_->assets_) return {};
-    return impl_->assets_->Preload(kind, paths);
+    return impl_->assets_->Preload(kind, subKind, refs);
 }
 
 assets::AssetPreload RenderService::PreloadAssetDirectory(assets::AssetKind kind,
+                                                          assets::AssetSubKind subKind,
                                                           std::string_view directory,
                                                           bool recursive) {
     if (!impl_->assets_ || !impl_->activeScene_) return {};
@@ -294,12 +300,13 @@ assets::AssetPreload RenderService::PreloadAssetDirectory(assets::AssetKind kind
     if (!provider) return {};
 
     std::vector<std::string> listing = provider->ListFiles(std::string(directory), recursive);
-    listing.erase(std::remove_if(listing.begin(), listing.end(),
-                                 [kind](const std::string& p) {
-                                     return !ExtensionSuitsKind(p, kind);
-                                 }),
-                  listing.end());
-    return impl_->assets_->Preload(kind, listing);
+    std::vector<ContentRef> refs;
+    refs.reserve(listing.size());
+    for (const std::string& p : listing) {
+        if (ExtensionSuitsKind(p, kind))
+            refs.push_back(ContentRef::FromPath(p));
+    }
+    return impl_->assets_->Preload(kind, subKind, refs);
 }
 
 DebugRenderer& RenderService::Debug() {
@@ -429,16 +436,22 @@ void RenderService::CreateDeviceAssetManagers(gfx::IGFXDevice& gfx) {
         // tonemap, so there colour textures must stay sRGB (linearised) like HD.
         return Settings().GetRenderMode() == RenderMode::SD && !Settings().SceneHdrInSd();
     });
-    // ChildModel parsing lives on ModelTemplateManager (so we don't drag
+    // Child-model parsing lives on ModelTemplateManager (so we don't drag
     // the MDX parser into AssetManager's translation unit). Install a
     // builder that wraps BuildFromBytes — AssetManager.ApplyPrepared
-    // (ChildModel) calls it with the pre-fetched bytes.
+    // (Model) calls it with the pre-fetched bytes.
     impl_->assets_->SetChildModelBuilder(
-        [this](std::string_view path, std::span<const u8> bytes,
+        [this](const ContentRef& ref, std::span<const u8> bytes,
                std::string_view foundExt) -> std::shared_ptr<model::ModelTemplate> {
+            // ModelTemplateManager keys its cache on a path string and picks
+            // MDX vs MDL by extension, so it cannot cache an id-addressed
+            // model at all. WC3 never hands it one; P9 generalises the cache
+            // when M2 does.
+            if (!ref.IsPath())
+                return nullptr;
             // Child MDX templates build into the active scene's cache (the
             // scene whose load triggered the asset apply).
-            return Scene().Templates().BuildFromBytes(std::string(path), bytes, foundExt);
+            return Scene().Templates().BuildFromBytes(ref.path, bytes, foundExt);
         });
     // The AssetManager is now live — wire every existing scene's SplatService to
     // it (new scenes pick it up at CreateScene). Without this, splats/ubersplats
@@ -451,13 +464,13 @@ void RenderService::CreateDeviceAssetManagers(gfx::IGFXDevice& gfx) {
     // eagerly the moment the .pkb commits, instead of waiting until the
     // emitter's first spawn.
     impl_->assets_->SetOnApplied([this](AssetManager::SlotId slot, AssetKind kind) {
-        if (kind != AssetKind::Particle)
+        if (kind != AssetKind::Effect)
             return;
         const auto* model = impl_->assets_->ParticleAssetOf(slot);
         if (!model) return;
         auto paths = corn_effects::CornEffectsService::ExtractDiffuseTexturePaths(*model);
         for (const auto& p : paths) {
-            const auto dep = impl_->assets_->Acquire(AssetKind::Texture, p);
+            const auto dep = impl_->assets_->Acquire(AssetKind::Texture, assets::kSoleSubKind, p);
             impl_->assets_->AddDependency(slot, dep);
         }
     });
@@ -653,26 +666,36 @@ void RenderService::PumpAssetsViaProvider() {
         return false;
     };
 
-    impl_->assets_->DrainNeeds([&](assets::AssetKind kind, std::string_view path) {
+    impl_->assets_->DrainNeeds([&](assets::AssetKind kind, assets::AssetSubKind subKind,
+                                   const ContentRef& ref) {
         std::vector<u8> bytes;
         std::string ext;
-        if (kind == assets::AssetKind::Texture) {
-            if (!readWithModPrefixFallback(path, bytes, ext))
+        if (ref.IsFileId()) {
+            // A fileDataID resolves in the root manifest or not at all —
+            // none of the fallbacks below mean anything for one. There is
+            // no mod prefix to strip and no extension to swap, because
+            // there is no name.
+            auto data = provider->ReadFile(ref, &ext);
+            if (!data || data->empty())
                 return;
-        } else if (kind == assets::AssetKind::Particle) {
-            if (!readParticleWithAltExt(path, bytes, ext))
+            bytes = std::move(*data);
+        } else if (kind == assets::AssetKind::Texture) {
+            if (!readWithModPrefixFallback(ref.path, bytes, ext))
                 return;
-        } else if (kind == assets::AssetKind::ChildModel) {
+        } else if (kind == assets::AssetKind::Effect) {
+            if (!readParticleWithAltExt(ref.path, bytes, ext))
+                return;
+        } else if (kind == assets::AssetKind::Model) {
             // MDX child reads ride the same content-provider path the
             // top-level SpawnUnit uses — alt-extension synonyms (.mdx
             // ↔ .mdl) are already handled inside FileContentProvider.
-            if (!readWithModPrefixFallback(path, bytes, ext))
+            if (!readWithModPrefixFallback(ref.path, bytes, ext))
                 return;
         } else {
             return;
         }
         impl_->assets_->ApplyPrepared(
-            kind, path,
+            kind, subKind, ref,
             std::span<const u8>(bytes.data(), bytes.size()),
             ext);
     });

@@ -1,5 +1,7 @@
 #include "io/storage_browser.h"
 
+#include "io/product_detect.h"
+
 #include <filesystem>
 #include <system_error>
 
@@ -70,6 +72,7 @@ std::string JoinSegments(const std::vector<std::string>& segs) {
 bool StorageBrowser::Open(const std::string& root, StorageKind kind, std::string* error) {
     open_ = false;
     kind_ = kind;
+    product_ = ProductId::Neutral;
     storage_.reset();
     tree_ = Node{};
     currentPath_.clear();
@@ -143,6 +146,13 @@ bool StorageBrowser::OpenCasc(const std::string& root, std::string* error) {
     storage_ = std::move(*s);
     root_ = usedRoot;
 
+    // The only place a product is genuinely *detected*. `product()` can be
+    // nullopt (a storage that carries no build config), and an unrecognised
+    // build-product string normalises to Neutral — both mean "we don't know",
+    // which is a better answer than a confident wrong one.
+    if (auto prod = storage_->product())
+        product_ = ProductIdFromBuildProduct(prod->name);
+
     storage_->enumerate([this](const storages::casc::EnumerateEntry& e) {
         if (IsModelOrEffect(e.path))
             Insert(std::string(e.path), CascToDisplay(e.path));
@@ -161,6 +171,11 @@ bool StorageBrowser::OpenMpq(const std::string& path, std::string* error) {
         return false;
     }
     root_ = path;
+    // MPQ has no build config and therefore no product record at all, but
+    // the only games that ship MPQs we can browse are Warcraft III and its
+    // maps. Reporting Wc3 unconditionally is a statement about the format,
+    // not a guess about this particular archive.
+    product_ = ProductId::Wc3;
     // MPQ paths are already ''-separated and carry no mod prefix, so the
     // display form is the stored form.
     for (const auto& name : s->listFiles()) {
@@ -185,6 +200,12 @@ bool StorageBrowser::OpenFolder(const std::string& path, std::string* error) {
         return false;
     }
     root_ = path;
+    // A loose directory has no product record either. It reports Wc3 because
+    // `IsModelOrEffect` only admits `.mdx` / `.mdl` / `.pkb` / `.pkfx`, so a
+    // folder this browser can show anything in is a Warcraft III folder by
+    // construction. When `.m2` / `.m3` join that filter this has to become
+    // extension-derived — it is a consequence of the filter, not a default.
+    product_ = ProductId::Wc3;
 
     // Skip-on-error so one unreadable subdirectory does not abort the walk —
     // a system folder the user pointed at may well contain some.

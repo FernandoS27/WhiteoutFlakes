@@ -17,6 +17,7 @@
 // ============================================================================
 
 #include "gfx/gfx.h"
+#include "whiteout/flakes/content_ref.h"
 #include "whiteout/flakes/types.h"
 
 #include <cornflakes/interface/asset/asset_reader.hpp>
@@ -61,11 +62,31 @@ struct AssetManagerLink {
 
 /// @brief Kinds of asset the manager tracks. Drives Apply()'s dispatch
 ///        and disambiguates which payload field a slot holds.
+///
+/// Four product-neutral categories rather than one flat enum accumulating
+/// every game's asset types. What a category *means* concretely is the
+/// product's business, expressed through @ref AssetSubKind.
+///
+/// **This enum is mirrored by `AssetsView::Kind`, which is `@bind`** — the
+/// mirror is a hand-written copy that a renumbering here would silently
+/// desync (it compiles either way and mis-routes at runtime). A
+/// `static_assert` per value in `renderer_api.cpp` turns that into a build
+/// error; add one whenever a value is added here.
 enum class AssetKind : u8 {
-    Texture     = 0,
-    Particle    = 1, ///< cornflakes .pkb / .pkfx
-    ChildModel  = 2, ///< secondary .mdx referenced by attachments / PE1
+    Texture = 0,
+    Model   = 1, ///< WC3: secondary .mdx referenced by attachments / PE1
+    Effect  = 2, ///< WC3: cornflakes .pkb / .pkfx
+    Data    = 3, ///< No WC3 use; M2's .skin / .skel / .anim land here
 };
+
+/// @brief Refinement within a kind, numbered by the owning product.
+///
+/// WC3 has exactly one form of each kind it uses, so every WC3 acquire
+/// passes @ref kSoleSubKind. M2 is the first product that needs more:
+/// `.skin` and `.anim` are both @ref AssetKind::Data and are distinguished
+/// only by this.
+using AssetSubKind = u8;
+inline constexpr AssetSubKind kSoleSubKind = 0;
 
 class AssetManager {
 public:
@@ -73,9 +94,13 @@ public:
     static constexpr SlotId kInvalidSlot = 0;
 
     /// @brief Fired (deferred via the needs queue, see DrainNeeds) the
-    ///        first time a path is Acquired. The host uses this to
+    ///        first time a ref is Acquired. The host uses this to
     ///        decide what to fetch.
-    using NeededFn = std::function<void(AssetKind, std::string_view path)>;
+    ///
+    /// A host that cannot resolve fileDataIDs — the web viewer fetches
+    /// URLs — must check `ref.IsFileId()` and skip, rather than fetching
+    /// whatever a stringified id happens to resolve to.
+    using NeededFn = std::function<void(AssetKind, AssetSubKind, const ContentRef&)>;
 
     explicit AssetManager(TextureAssetManager& textures);
     ~AssetManager();
@@ -94,24 +119,29 @@ public:
 
     // ── Renderer side ────────────────────────────────────────────────────
 
-    /// @brief Reserve a slot for @p path. Refcount is incremented if the
+    /// @brief Reserve a slot for @p ref. Refcount is incremented if the
     ///        slot already exists; otherwise a fresh slot is allocated
-    ///        with a placeholder payload and the path is queued onto the
+    ///        with a placeholder payload and the ref is queued onto the
     ///        needs list for the host to fetch.
-    SlotId Acquire(AssetKind kind, std::string_view path);
+    SlotId Acquire(AssetKind kind, AssetSubKind subKind, const ContentRef& ref);
+
+    /// @overload Path convenience — every WC3 acquire arrives this way.
+    SlotId Acquire(AssetKind kind, AssetSubKind subKind, std::string_view path) {
+        return Acquire(kind, subKind, ContentRef::FromPath(path));
+    }
 
     /// @brief Decrement refcount. When it hits zero the slot is freed
     ///        and any held GPU resources are scheduled for destruction.
     void Release(SlotId slot);
 
-    /// @brief Acquire one reference per entry in @p paths and hand the
+    /// @brief Acquire one reference per entry in @p refs and hand the
     ///        whole set back as an RAII bundle — the assets stay resident
     ///        (and, being on the needs queue, get fetched by the host
     ///        pump) until the returned object dies. Duplicates within
-    ///        @p paths take a single reference. Use this to pin textures
+    ///        @p refs take a single reference. Use this to pin textures
     ///        that are about to be needed; there is no separate "unload",
     ///        dropping the bundle is the release.
-    AssetPreload Preload(AssetKind kind, std::span<const std::string> paths);
+    AssetPreload Preload(AssetKind kind, AssetSubKind subKind, std::span<const ContentRef> refs);
 
     /// @brief True once a successful Apply has populated the payload.
     bool Loaded(SlotId slot) const;
@@ -120,7 +150,8 @@ public:
     ///        exists AND its payload has arrived (Apply has run). Used
     ///        by the Max plugin's live adapter for cross-model dedup —
     ///        skip BLP/CASC decode when another model already uploaded
-    ///        the same texture.
+    ///        the same texture. Path-typed on purpose: the Max plugin
+    ///        deals in paths and nothing else.
     bool IsTextureCached(std::string_view path) const;
 
     /// @brief Monotonic counter bumped each time a slot's payload swaps.
@@ -142,7 +173,7 @@ public:
     // ── Host side ────────────────────────────────────────────────────────
 
     /// @brief Drain the buffered "I need this" queue. The callback fires
-    ///        once per unique path that was Acquired since the previous
+    ///        once per unique ref that was Acquired since the previous
     ///        drain. Called after each renderer entry point returns so
     ///        the host can issue fetches without the renderer being
     ///        mid-call (avoids re-entry).
@@ -157,19 +188,25 @@ public:
     ///        chance without an app restart. Returns the count re-queued.
     std::size_t RetryUnloaded();
 
-    /// @brief Number of paths currently queued in the needs list.
+    /// @brief Number of refs currently queued in the needs list.
     std::size_t PendingNeedsCount() const;
 
     /// @brief CPU half of Apply: decode/parse @p bytes for the slot
-    ///        currently bound to @p path and stash the result in the
+    ///        currently bound to @p ref and stash the result in the
     ///        prepared queue. Texture bytes are decoded to gfx pixel
-    ///        data + mip chain; Particle bytes are parsed into an
-    ///        EffectAssetModel inside a per-slot arena; ChildModel
-    ///        bytes are handed to the host-provided builder for MDX
-    ///        parse. Returns true iff a slot exists for @p path AND
-    ///        the decode succeeded.
-    bool ApplyPrepared(AssetKind kind, std::string_view path,
+    ///        data + mip chain; Effect bytes are parsed into an
+    ///        EffectAssetModel inside a per-slot arena; Model bytes
+    ///        are handed to the host-provided builder for MDX parse.
+    ///        Returns true iff a slot exists for @p ref AND the decode
+    ///        succeeded.
+    bool ApplyPrepared(AssetKind kind, AssetSubKind subKind, const ContentRef& ref,
                        std::span<const u8> bytes, std::string_view foundExt = {});
+
+    /// @overload Path convenience, matching Acquire's.
+    bool ApplyPrepared(AssetKind kind, AssetSubKind subKind, std::string_view path,
+                       std::span<const u8> bytes, std::string_view foundExt = {}) {
+        return ApplyPrepared(kind, subKind, ContentRef::FromPath(path), bytes, foundExt);
+    }
 
     /// @brief GPU half of Apply: drains the prepared queue and finalises
     ///        each entry against its slot — creates GPU textures, swaps
@@ -184,16 +221,16 @@ public:
     ///        so it can be referenced by other subsystems.
     void SetGfxDevice(gfx::IGFXDevice* gfx);
 
-    /// @brief Builder for the ChildModel kind. AssetManager itself
-    ///        doesn't know how to parse MDX; RenderService installs a
-    ///        builder that wraps ModelTemplateManager's parse path
-    ///        (the same path SpawnUnit's GetOrLoadSync uses for the
-    ///        top-level MDX). Called from ApplyPrepared(ChildModel)
-    ///        with the pre-fetched bytes — return nullptr to signal
-    ///        parse failure.
+    /// @brief Builder for the Model kind. AssetManager itself doesn't
+    ///        know how to parse MDX; RenderService installs a builder
+    ///        that wraps ModelTemplateManager's parse path (the same
+    ///        path SpawnUnit's GetOrLoadSync uses for the top-level
+    ///        MDX). Called from ApplyPrepared(Model) with the
+    ///        pre-fetched bytes — return nullptr to signal parse
+    ///        failure.
     using ChildModelBuilder = std::function<
         std::shared_ptr<model::ModelTemplate>(
-            std::string_view path, std::span<const u8> bytes, std::string_view foundExt)>;
+            const ContentRef& ref, std::span<const u8> bytes, std::string_view foundExt)>;
     void SetChildModelBuilder(ChildModelBuilder builder);
 
     /// @brief Fires after a slot's payload is swapped in by CommitPrepared,
@@ -227,7 +264,8 @@ public:
 private:
     struct Slot {
         AssetKind kind;
-        std::string path;
+        AssetSubKind subKind = kSoleSubKind;
+        ContentRef ref;
         u32       refCount  = 0;
         u32       generation = 0;
         bool      loaded    = false;
@@ -263,6 +301,7 @@ private:
     struct Prepared {
         SlotId slot;
         AssetKind kind;
+        AssetSubKind subKind = kSoleSubKind;
         // Texture half-decoded payload — bytes are decoded in
         // ApplyPrepared (CPU); CommitPrepared turns the buffer into
         // the GPU texture (render thread). `pixels` holds every mip
@@ -282,15 +321,30 @@ private:
 
     SlotId AllocSlotId() noexcept;
     static std::string Normalize(std::string_view in);
+    /// @brief Lowercase + forward-slash a Path ref; pass a FileId ref through.
+    static ContentRef NormalizeRef(const ContentRef& in);
+
+    struct Need {
+        AssetKind kind = AssetKind::Texture;
+        AssetSubKind subKind = kSoleSubKind;
+        ContentRef ref;
+    };
 
     // Handed to every AssetPreload this manager issues; see AssetManagerLink.
     std::shared_ptr<detail::AssetManagerLink> link_ =
         std::make_shared<detail::AssetManagerLink>();
 
     mutable std::mutex mu_;
-    std::unordered_map<std::string, SlotId> pathToSlot_;
+    // Dedup does NOT cross the discriminant, deliberately. The same bytes
+    // acquired once by path and once by fileDataID occupy two slots and are
+    // fetched twice. Resolving that would need a path↔id resolver we do not
+    // have and do not need: WoW content is id-addressed, WC3 content is
+    // path-addressed, and the two never mix within one model. std::hash
+    // <ContentRef> folds the discriminant in for the same reason. Do not
+    // "fix" this by normalising ids to paths.
+    std::unordered_map<ContentRef, SlotId> refToSlot_;
     std::unordered_map<SlotId, Slot> slots_;
-    std::deque<std::pair<AssetKind, std::string>> needs_;
+    std::deque<Need> needs_;
     std::deque<Prepared> prepared_;
     SlotId nextSlot_ = 1;
 
@@ -334,20 +388,20 @@ public:
 
     AssetPreload(AssetPreload&& other) noexcept
         : link_(std::move(other.link_)), slots_(std::move(other.slots_)),
-          paths_(std::move(other.paths_)) {
+          refs_(std::move(other.refs_)) {
         other.link_.reset();
         other.slots_.clear();
-        other.paths_.clear();
+        other.refs_.clear();
     }
     AssetPreload& operator=(AssetPreload&& other) noexcept {
         if (this != &other) {
             Release();
             link_  = std::move(other.link_);
             slots_ = std::move(other.slots_);
-            paths_ = std::move(other.paths_);
+            refs_  = std::move(other.refs_);
             other.link_.reset();
             other.slots_.clear();
-            other.paths_.clear();
+            other.refs_.clear();
         }
         return *this;
     }
@@ -371,9 +425,9 @@ public:
         return LoadedCount() == slots_.size();
     }
 
-    /// @brief The normalised paths, in the order they were acquired.
-    const std::vector<std::string>& Paths() const noexcept {
-        return paths_;
+    /// @brief The normalised refs, in the order they were acquired.
+    const std::vector<ContentRef>& Refs() const noexcept {
+        return refs_;
     }
 
     /// @brief Drop the references now instead of at destruction.
@@ -384,7 +438,7 @@ private:
 
     std::shared_ptr<detail::AssetManagerLink> link_;
     std::vector<AssetManager::SlotId> slots_;
-    std::vector<std::string> paths_;
+    std::vector<ContentRef> refs_;
 };
 
 } // namespace whiteout::flakes::renderer::assets

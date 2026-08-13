@@ -32,10 +32,22 @@ bool FetchContentProvider::Evict(const std::string& path) {
     return cache_.erase(Normalize(path)) > 0;
 }
 
-RequestId FetchContentProvider::Request(const std::string& path, CompletionCallback cb) {
-    if (path.empty() || !cb) return kInvalidRequestId;
+RequestId FetchContentProvider::Request(const ContentRef& ref, CompletionCallback cb) {
+    if (ref.Empty() || !cb) return kInvalidRequestId;
 
     const RequestId id = nextId_.fetch_add(1, std::memory_order_relaxed);
+
+    if (ref.IsFileId()) {
+        // JS populates this cache by path; there is no root manifest here to
+        // resolve a fileDataID against. Retire it as a clean miss rather than
+        // fabricating a path from the id — the host is expected to skip
+        // FileId needs at the drain instead of reaching this point.
+        std::lock_guard lk(mu_);
+        completed_.push_back(Pending{id, std::move(cb), RequestResult{}});
+        return id;
+    }
+
+    const std::string& path = ref.path;
     const std::string key = Normalize(path);
 
     // Walk the same alt-extension chains FileResolver uses for textures

@@ -1,4 +1,4 @@
-// AssetManager bridge. Kinds: 0=Texture, 1=Particle, 2=ChildModel.
+// AssetManager bridge. Kinds: 0=Texture, 1=Model, 2=Effect, 3=Data.
 // _needs_count snapshots, then _get/_apply walk the snapshot.
 
 #include "wf_web_internal.h"
@@ -18,8 +18,17 @@ int wf_assets_needs_count(WfRenderer* h) {
     if (!h) return 0;
     h->lastNeeds.clear();
     h->renderer.Assets().DrainNeeds(
-        [&](whiteout::flakes::AssetsView::Kind k, std::string_view path) {
-            h->lastNeeds.push_back({static_cast<int>(k), std::string(path)});
+        [&](whiteout::flakes::AssetsView::Kind k, std::uint8_t subKind,
+            const whiteout::flakes::ContentRef& ref) {
+            // The drain resolves URLs, and a fileDataID is not one. Skipping
+            // here rather than downstream is deliberate: a stringified id
+            // would be a perfectly well-formed request for a file that does
+            // not exist, and the fetch would come back as 404-shaped garbage
+            // that AssetManager would then try to decode. Nothing WC3 loads
+            // is id-addressed, so this drops nothing today.
+            if (!ref.IsPath()) return;
+            h->lastNeeds.push_back(
+                {static_cast<int>(k), static_cast<int>(subKind), ref.path});
         });
     return static_cast<int>(h->lastNeeds.size());
 }
@@ -28,6 +37,12 @@ int wf_assets_needs_get_kind(WfRenderer* h, int index) {
     if (!h) return -1;
     if (index < 0 || index >= static_cast<int>(h->lastNeeds.size())) return -1;
     return h->lastNeeds[index].kind;
+}
+
+int wf_assets_needs_get_subkind(WfRenderer* h, int index) {
+    if (!h) return -1;
+    if (index < 0 || index >= static_cast<int>(h->lastNeeds.size())) return -1;
+    return h->lastNeeds[index].subKind;
 }
 
 int wf_assets_needs_get_path(WfRenderer* h, int index, char* outBuf, int bufCap) {
@@ -41,15 +56,16 @@ int wf_assets_needs_get_path(WfRenderer* h, int index, char* outBuf, int bufCap)
     return n;
 }
 
-int wf_assets_apply(WfRenderer* h, int kind, const char* path,
+int wf_assets_apply(WfRenderer* h, int kind, int subKind, const char* path,
                     const void* bytes, int len, const char* foundExt) {
     if (!h || !path || !bytes || len <= 0) return 0;
-    if (kind < 0 || kind > 2) return 0;
+    if (kind < 0 || kind > 3) return 0;
+    if (subKind < 0 || subKind > 255) return 0;
     const auto k = static_cast<whiteout::flakes::AssetsView::Kind>(kind);
     std::span<const std::uint8_t> span(
         static_cast<const std::uint8_t*>(bytes), static_cast<std::size_t>(len));
     return h->renderer.Assets().ApplyAsset(
-        k, std::string_view(path), span,
+        k, static_cast<std::uint8_t>(subKind), std::string_view(path), span,
         foundExt ? std::string_view(foundExt) : std::string_view{}) ? 1 : 0;
 }
 

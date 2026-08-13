@@ -440,8 +440,9 @@ void PrefetchEventAssetSlots(renderer::assets::AssetManager& assets) {
 
     std::vector<u32> fresh;
     fresh.reserve(textures.size() + models.size());
-    for (const auto& p : textures) fresh.push_back(assets.Acquire(AssetKind::Texture, p));
-    for (const auto& p : models)   fresh.push_back(assets.Acquire(AssetKind::ChildModel, p));
+    constexpr auto kSub = renderer::assets::kSoleSubKind;
+    for (const auto& p : textures) fresh.push_back(assets.Acquire(AssetKind::Texture, kSub, p));
+    for (const auto& p : models)   fresh.push_back(assets.Acquire(AssetKind::Model, kSub, p));
 
     std::lock_guard<std::mutex> lk(c.mu);
     c.prefetchSlots = std::move(fresh);
@@ -492,8 +493,9 @@ void PrefetchEventAssetSlotsForEvents(
 
     std::vector<u32> fresh;
     fresh.reserve(textures.size() + models.size());
-    for (const auto& p : textures) fresh.push_back(assets.Acquire(AssetKind::Texture, p));
-    for (const auto& p : models)   fresh.push_back(assets.Acquire(AssetKind::ChildModel, p));
+    constexpr auto kSub = renderer::assets::kSoleSubKind;
+    for (const auto& p : textures) fresh.push_back(assets.Acquire(AssetKind::Texture, kSub, p));
+    for (const auto& p : models)   fresh.push_back(assets.Acquire(AssetKind::Model, kSub, p));
 
     // Append to the session-level slot list so ReleaseEventAssetSlots
     // (called on teardown / re-parse) frees them along with the rest.

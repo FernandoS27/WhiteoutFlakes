@@ -9,10 +9,10 @@ namespace whiteout::flakes::io {
 // outlives this stack frame in case the worker thread is mid-write when the
 // callback fires; Wait() guarantees the write has finished before we read
 // from `*p`, so no further synchronisation is required.
-std::optional<std::vector<u8>> IContentProvider::ReadFile(const std::string& path,
+std::optional<std::vector<u8>> IContentProvider::ReadFile(const ContentRef& ref,
                                                           std::string* actualExt) {
     auto p = std::make_shared<RequestResult>();
-    const RequestId id = Request(path, [p](RequestResult&& r) { *p = std::move(r); });
+    const RequestId id = Request(ref, [p](RequestResult&& r) { *p = std::move(r); });
     if (id == kInvalidRequestId)
         return std::nullopt;
     Wait(id);

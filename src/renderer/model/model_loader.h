@@ -12,6 +12,7 @@
 // ============================================================================
 
 #include "types.h" // Matrix44f
+#include "whiteout/flakes/content_ref.h"
 #include "whiteout/flakes/model_source.h"
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
@@ -40,14 +41,27 @@ public:
     explicit ModelLoader(RenderService& rs);
     ~ModelLoader();
 
-    // Spawn one top-level Unit actor from an MDX path. Additive — does not
-    // clear or touch any other actor. Returns the new Actor* (caller owns the
-    // pointer's lifetime via DestroyActor / Clear). The actor's role defaults
-    // to ActorRole::Unit; the caller mutates fields like teamColor,
+    // Spawn one top-level Unit actor from a model reference. Additive — does
+    // not clear or touch any other actor. Returns the new Actor* (caller owns
+    // the pointer's lifetime via DestroyActor / Clear). The actor's role
+    // defaults to ActorRole::Unit; the caller mutates fields like teamColor,
     // playbackSpeed, and animation.SetActiveSequenceIndex on the returned
     // pointer to compose the scene.
-    Actor* SpawnUnit(const std::string& mdxPath,
+    //
+    // An id-addressed ref returns null today: the path below it
+    // (ModelTemplateManager) keys its cache on a string and picks MDX vs MDL
+    // by extension, so it cannot look one up. The signature takes ContentRef
+    // now so the entry point is in place — generalising the template cache is
+    // REFACTOR_PLAN.md P9, which is where `.m2` actually becomes loadable.
+    Actor* SpawnUnit(const ContentRef& ref,
                      const Matrix44f& initialTm = Matrix44f::identity());
+
+    // Path convenience. Every host reaches this one — a viewer, a plugin and
+    // a thumbnail grid all name models by path and always will.
+    Actor* SpawnUnit(const std::string& mdxPath,
+                     const Matrix44f& initialTm = Matrix44f::identity()) {
+        return SpawnUnit(ContentRef::FromPath(mdxPath), initialTm);
+    }
 
     // Spawn one top-level actor from a live model source (e.g. Max plugin's
     // adapter). Same shape as SpawnUnit; the role defaults to Unit. The Max

@@ -135,7 +135,7 @@ void FrameTicker::UpdateAttachments() {
             // skip this frame in that case.
             if (slot.assetSlot == 0) {
                 slot.assetSlot = rs_.Assets().Acquire(
-                    assets::AssetKind::ChildModel, slot.config.modelPath);
+                    assets::AssetKind::Model, assets::kSoleSubKind, slot.config.modelPath);
             }
             auto tmpl = rs_.Assets().ChildModelOf(slot.assetSlot);
             if (!tmpl)
@@ -426,7 +426,7 @@ void FrameTicker::DriveChildModels() {
             // path at stage time and holds it for the actor's lifetime; this
             // just resolves it. A birth that lands before the host pump has
             // parsed the MDX is dropped and retried on the next emit.
-            const auto slot = rs_.Assets().Acquire(assets::AssetKind::ChildModel, path);
+            const auto slot = rs_.Assets().Acquire(assets::AssetKind::Model, assets::kSoleSubKind, path);
             auto tmpl = rs_.Assets().ChildModelOf(slot);
             rs_.Assets().Release(slot);
             if (!tmpl)

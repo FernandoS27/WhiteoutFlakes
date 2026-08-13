@@ -812,7 +812,7 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
         pInit.samplers = &rs_.Samplers();
         pInit.assets   = &rs_.Assets();
         pInit.slotAcquire = [&rs = rs_](std::string_view path) -> std::uint32_t {
-            return rs.Assets().Acquire(assets::AssetKind::Texture, path);
+            return rs.Assets().Acquire(assets::AssetKind::Texture, assets::kSoleSubKind, path);
         };
         // Apply to every scene's corn service (current + future). The applier
         // runs immediately for existing scenes and at CreateScene() for new ones.

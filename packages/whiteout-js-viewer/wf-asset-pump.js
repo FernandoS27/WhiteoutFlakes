@@ -11,7 +11,7 @@ const TEX = ['.blp', '.dds', '.tga', '.png', '.tif'];
 const TEX_DECODABLE = new Set(['.blp', '.dds', '.tga', '.png', '.tif']);
 const MDL = ['.mdx', '.mdl'];
 const PRT = ['.pkb', '.pkfx'];
-const KIND_NAMES = ['Texture', 'Particle', 'ChildModel'];
+const KIND_NAMES = ['Texture', 'Model', 'Effect', 'Data'];
 
 const FETCH_TIMEOUT_MS = 15000;
 
@@ -71,7 +71,7 @@ function sniffTextureExt(bytes) {
 }
 
 // Push bytes into WASM and dispatch to wf_assets_apply.
-export function applyAsset(viewer, kind, path, u8, foundExt) {
+export function applyAsset(viewer, kind, subKind, path, u8, foundExt) {
     const M = viewer._module;
     const pathPtr = viewer._cstr(path);
     const extPtr  = viewer._cstr(foundExt || '');
@@ -79,7 +79,7 @@ export function applyAsset(viewer, kind, path, u8, foundExt) {
     M.HEAPU8.set(u8, dataPtr);
     try {
         return !!M._wf_assets_apply(
-            viewer._handle, kind, pathPtr, dataPtr, u8.byteLength, extPtr);
+            viewer._handle, kind, subKind, pathPtr, dataPtr, u8.byteLength, extPtr);
     } finally {
         M._free(dataPtr);
         M._free(pathPtr);
@@ -87,7 +87,7 @@ export function applyAsset(viewer, kind, path, u8, foundExt) {
     }
 }
 
-async function fetchAndApplyImpl(viewer, pathSolver, kind, relPath) {
+async function fetchAndApplyImpl(viewer, pathSolver, kind, subKind, relPath) {
     const fwd = relPath.replaceAll('\\', '/');
     const dot = fwd.lastIndexOf('.');
     const origExt = dot > 0 ? fwd.slice(dot).toLowerCase() : '';
@@ -126,7 +126,7 @@ async function fetchAndApplyImpl(viewer, pathSolver, kind, relPath) {
                         return false;
                     }
                 }
-                if (applyAsset(viewer, kind, relPath, bytes, appliedExt)) return true;
+                if (applyAsset(viewer, kind, subKind, relPath, bytes, appliedExt)) return true;
                 // Bytes came back but C++ refused them. Log the head so
                 // stale-PKB / zstd / HTML look distinguishable.
                 console.warn('[wf] apply REJECTED (' + kindName(kind) + ', '
@@ -141,10 +141,10 @@ async function fetchAndApplyImpl(viewer, pathSolver, kind, relPath) {
     return false;
 }
 
-export async function fetchAndApplyAsset(viewer, pathSolver, kind, relPath) {
+export async function fetchAndApplyAsset(viewer, pathSolver, kind, subKind, relPath) {
     if (viewer._onFetchStart) viewer._onFetchStart(relPath);
     try {
-        return await fetchAndApplyImpl(viewer, pathSolver, kind, relPath);
+        return await fetchAndApplyImpl(viewer, pathSolver, kind, subKind, relPath);
     } finally {
         if (viewer._onFetchEnd) viewer._onFetchEnd(relPath);
     }
@@ -159,28 +159,28 @@ export async function fetchAndApplyAsset(viewer, pathSolver, kind, relPath) {
 const MAX_RETRY_ATTEMPTS = 3;
 const RETRY_BACKOFF_MS    = 2000; // 2 s, then doubled per attempt
 
-function fireFetch(viewer, kind, path, dedupKey) {
-    const p = fetchAndApplyAsset(viewer, viewer._lazySolver, kind, path)
+function fireFetch(viewer, kind, subKind, path, dedupKey) {
+    const p = fetchAndApplyAsset(viewer, viewer._lazySolver, kind, subKind, path)
         .then(success => {
             if (success) {
                 viewer._failedAssets.delete(dedupKey);
                 return;
             }
-            recordFailure(viewer, dedupKey, kind, path);
+            recordFailure(viewer, dedupKey, kind, subKind, path);
         })
-        .catch(() => recordFailure(viewer, dedupKey, kind, path))
+        .catch(() => recordFailure(viewer, dedupKey, kind, subKind, path))
         .finally(() => { viewer._inflightAssets.delete(dedupKey); });
     viewer._inflightAssets.set(dedupKey, p);
 }
 
-function recordFailure(viewer, dedupKey, kind, path) {
-    const info = viewer._failedAssets.get(dedupKey) || { kind, path, attempts: 0 };
+function recordFailure(viewer, dedupKey, kind, subKind, path) {
+    const info = viewer._failedAssets.get(dedupKey) || { kind, subKind, path, attempts: 0 };
     info.attempts += 1;
     info.lastTryMs = performance.now();
     viewer._failedAssets.set(dedupKey, info);
 }
 
-// Drain the needs queue. Dedup by (kind, path) for in-flight only —
+// Drain the needs queue. Dedup by (kind, subKind, path) for in-flight only —
 // slot teardown + re-Acquire (model switch) needs a fresh fetch.
 export function pumpAssetNeeds(viewer) {
     if (!viewer._handle) return;
@@ -197,15 +197,20 @@ export function pumpAssetNeeds(viewer) {
         try {
             for (let i = 0; i < n; ++i) {
                 const kind = M._wf_assets_needs_get_kind(viewer._handle, i);
+                // Refinement within the kind, numbered by the scene's product.
+                // Always 0 for Warcraft III. Older builds have no such export,
+                // so fall back rather than pumping `undefined` into WASM.
+                const subKind = M._wf_assets_needs_get_subkind
+                    ? M._wf_assets_needs_get_subkind(viewer._handle, i) : 0;
                 M._wf_assets_needs_get_path(viewer._handle, i, buf, CAP);
                 const path = M.UTF8ToString(buf);
-                const dedupKey = kind + ':' + path;
+                const dedupKey = kind + '/' + subKind + ':' + path;
                 if (viewer._inflightAssets.has(dedupKey)) continue;
                 if (!viewer._lazySolver) continue;
                 // Re-surfacing a need cancels any prior failure record;
                 // the renderer asked again, so it's wanted again.
                 viewer._failedAssets.delete(dedupKey);
-                fireFetch(viewer, kind, path, dedupKey);
+                fireFetch(viewer, kind, subKind, path, dedupKey);
             }
         } finally {
             M._free(buf);
@@ -220,7 +225,7 @@ export function pumpAssetNeeds(viewer) {
             if (info.attempts >= MAX_RETRY_ATTEMPTS) continue;
             const dueAt = info.lastTryMs + RETRY_BACKOFF_MS * (1 << (info.attempts - 1));
             if (now < dueAt) continue;
-            fireFetch(viewer, info.kind, info.path, dedupKey);
+            fireFetch(viewer, info.kind, info.subKind || 0, info.path, dedupKey);
         }
     }
 }

@@ -51,6 +51,7 @@ endfunction()
 wdx_add_test(slk_test           slk_test.cpp)
 wdx_add_test(path_utils_test    path_utils_test.cpp)
 wdx_add_test(texture_usage_test texture_usage_test.cpp)
+wdx_add_test(content_ref_test   content_ref_test.cpp)
 
 # ---- renderer ----
 wdx_add_test(coordinate_system_test coordinate_system_test.cpp)

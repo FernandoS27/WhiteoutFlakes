@@ -52,6 +52,8 @@ namespace assets {
 class AssetManager;
 class AssetPreload;
 enum class AssetKind : u8;
+using AssetSubKind = u8; // mirrors asset_manager.h; kept here so the header
+                         // still forward-declares rather than includes
 class SamplerAssetManager;
 class TextureAssetManager;
 class ReplaceableTextureManager;
@@ -180,20 +182,25 @@ public:
     ///        means the frame a texture lands on was decided by the disk.
     u64 AssetArrivalCounter() const;
 
-    /// @brief Pin @p paths in the asset registry until the returned bundle
+    /// @brief Pin @p refs in the asset registry until the returned bundle
     ///        dies. The assets are queued on the needs list like any other
     ///        Acquire, so the host's usual pump (PumpAssetsViaProvider on
     ///        desktop, the JS drain on web) fetches them — the bundle only
     ///        guarantees they stay resident afterwards.
-    assets::AssetPreload PreloadAssets(assets::AssetKind kind,
-                                       std::span<const std::string> paths);
+    assets::AssetPreload PreloadAssets(assets::AssetKind kind, assets::AssetSubKind subKind,
+                                       std::span<const ContentRef> refs);
 
     /// @brief Same, for every file of @p kind the active content provider
     ///        lists under @p directory (filtered by the extensions that
     ///        kind can decode). Enumerating an archive is not cheap —
     ///        call this once per directory, not per frame. Returns an
     ///        empty bundle when the provider can't enumerate.
+    ///
+    /// Path-only, and stays that way: enumerating a directory is inherently
+    /// a path concept. An id-addressed root manifest has no directories to
+    /// walk.
     assets::AssetPreload PreloadAssetDirectory(assets::AssetKind kind,
+                                               assets::AssetSubKind subKind,
                                                std::string_view directory, bool recursive);
 
     debug::DebugRenderer& Debug();

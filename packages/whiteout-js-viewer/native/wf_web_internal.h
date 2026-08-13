@@ -21,7 +21,7 @@ struct WfRenderer {
     // JS pushes bytes via wf_provider_put; renderer holds a shared_ptr.
     std::shared_ptr<whiteout::flakes::io::FetchContentProvider> provider;
     // Snapshot of the AssetManager needs queue for JS pumping.
-    struct AssetNeed { int kind; std::string path; };
+    struct AssetNeed { int kind; int subKind; std::string path; };
     std::vector<AssetNeed> lastNeeds;
     bool inited = false;
     // LoadEventDataFiles retry throttle (see wf_tick).

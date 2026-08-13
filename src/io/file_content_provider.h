@@ -32,7 +32,10 @@ public:
     void SetSystemBasePath(const std::filesystem::path& root);
 
     // ---- IContentProvider async surface ----
-    RequestId Request(const std::string& path, CompletionCallback cb) override;
+    // The only provider that can resolve a fileDataID: it owns the
+    // casc::Storage handle, and readFile(i32, FileIdHint) is already there.
+    RequestId Request(const ContentRef& ref, CompletionCallback cb) override;
+    using IContentProvider::Request;
     void Wait(RequestId id) override;
     void Cancel(RequestId id) override;
     void Pump() override;

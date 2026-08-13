@@ -44,7 +44,8 @@ public:
     bool Evict(const std::string& path);
 
     // IContentProvider ------------------------------------------------------
-    RequestId Request(const std::string& path, CompletionCallback cb) override;
+    RequestId Request(const ContentRef& ref, CompletionCallback cb) override;
+    using IContentProvider::Request;
     void Wait(RequestId id) override;
     void Cancel(RequestId id) override;
     void Pump() override;

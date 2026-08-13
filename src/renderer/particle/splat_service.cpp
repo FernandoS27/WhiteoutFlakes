@@ -282,7 +282,7 @@ void SplatService::BuildGeometry(std::vector<Vertex>& outVertices,
 u32 SplatService::AcquireTexture(const std::string& path) {
     if (path.empty() || !assets_)
         return AssetManager::kInvalidSlot;
-    return assets_->Acquire(AssetKind::Texture, path);
+    return assets_->Acquire(AssetKind::Texture, assets::kSoleSubKind, path);
 }
 
 void SplatService::ReleaseSplat(Splat& s) {
