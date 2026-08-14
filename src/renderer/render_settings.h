@@ -98,6 +98,26 @@ public:
     }
 
     // ---- Debug visualization ----
+
+    // Route every odd-indexed geoset through UnlitShading instead of the
+    // active WC3 model, so one frame contains draws from two shading models.
+    //
+    // Not a "render everything unlit" switch, and the difference matters. A
+    // global one keeps exactly one model live per frame, which leaves
+    // SurfacePass's open/close transition never taken twice and the
+    // `key.model` sort term a no-op — the multi-model seam would ship
+    // unexercised. Per-geoset is what actually proves it, and it is why this
+    // is a debug toggle rather than a mode.
+    //
+    // Off by default: on, it changes what the frame draws, so every
+    // byte-identical gate is recorded and checked with it off.
+    bool DebugUnlitOddGeosets() const {
+        return debugUnlitOddGeosets_.load();
+    }
+    void SetDebugUnlitOddGeosets(bool on) {
+        debugUnlitOddGeosets_.store(on);
+    }
+
     i32 HdDebugMode() const {
         return hdDebugMode_.load();
     }
@@ -353,6 +373,7 @@ private:
 
     // Debug + LOD.
     std::atomic<i32> hdDebugMode_{0};
+    std::atomic<bool> debugUnlitOddGeosets_{false};
     std::atomic<i32> lodOverride_{0};
 
     // Ambient occlusion (HD-mode GTAO). On by default — the user can

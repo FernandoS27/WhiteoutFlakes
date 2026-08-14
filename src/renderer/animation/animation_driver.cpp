@@ -26,7 +26,15 @@ FrameState AnimationDriver::Evaluate(const Matrix44f& worldTransform, const Vect
                                      i32 globalTimeMs) const {
     if (!source_)
         return {};
-    return source_->Evaluate(currentSequenceIdx_, timeMs_, globalTimeMs, worldTransform, cameraPos);
+    // `clip` has to outlive the request — PoseRequest::clips is a view, and
+    // OneClip deletes its rvalue overload so a temporary here would not
+    // compile rather than dangle.
+    const ClipRef clip{.sequence = currentSequenceIdx_, .timeMs = timeMs_};
+    PoseRequest req = PoseRequest::OneClip(clip);
+    req.globalTimeMs = globalTimeMs;
+    req.world = worldTransform;
+    req.cameraPos = cameraPos;
+    return source_->Evaluate(req);
 }
 
 } // namespace whiteout::flakes::renderer::animation

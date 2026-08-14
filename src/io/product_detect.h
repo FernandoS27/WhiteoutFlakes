@@ -54,6 +54,14 @@ inline ProductId ProductIdFromBuildProduct(std::string_view name) {
         // StarCraft II
         {"sc2", ProductId::Sc2},    {"s2", ProductId::Sc2},
         {"s2t", ProductId::Sc2},    {"s2b", ProductId::Sc2},
+        // Heroes of the Storm, which has no ProductId of its own on purpose.
+        // The enum selects a *render profile*, and Heroes ships `.m3` through
+        // the same frame StarCraft II does — that is why the profile is named
+        // sc2_heroes. Splitting them is a bound-enum change, so it waits for
+        // the phase that regenerates bindings anyway (P11) and for a
+        // difference that actually needs expressing.
+        {"hero", ProductId::Sc2},   {"heroes", ProductId::Sc2},
+        {"herot", ProductId::Sc2},
     };
     for (const Entry& e : kTable) {
         if (k == e.key)

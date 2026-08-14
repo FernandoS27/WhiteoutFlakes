@@ -294,8 +294,12 @@ void Actor::EvaluateAndApply(const ActorEvalContext& ctx) {
         return;
     const i32 globalTime = ctx.sceneAnimationTimeMs - animation.BirthTimeMs();
     const i32 localTime = animation.TimeMs();
-    FrameState fs = animation.Source()->Evaluate(animation.ActiveSequenceIndex(), localTime,
-                                                 globalTime, worldTransform, ctx.camPos);
+    const ClipRef clip{.sequence = animation.ActiveSequenceIndex(), .timeMs = localTime};
+    PoseRequest req = PoseRequest::OneClip(clip);
+    req.globalTimeMs = globalTime;
+    req.world = ScaledWorldTransform();
+    req.cameraPos = ctx.camPos;
+    FrameState fs = animation.Source()->Evaluate(req);
     ApplyFrameState(fs, localTime, ctx);
 }
 

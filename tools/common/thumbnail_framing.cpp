@@ -54,7 +54,14 @@ int PickStandSequenceIndex(renderer::model::Actor* hero) {
 bool IsHdModel(renderer::model::Actor* hero) {
     if (!hero || !hero->sourceTemplate || !hero->sourceTemplate->adapter)
         return false;
-    const whiteout::mdx::Model& m = hero->sourceTemplate->adapter->SourceModel();
+    // Genuinely an MDX question — it reads Reforged layer shader types, which
+    // no other format has. The downcast says so instead of the type system
+    // pretending every template is MDX. A non-MDX model is not HD.
+    const auto* mdxAdapter =
+        dynamic_cast<const io::MdxModelAdapter*>(hero->sourceTemplate->adapter.get());
+    if (!mdxAdapter)
+        return false;
+    const whiteout::mdx::Model& m = mdxAdapter->SourceModel();
     for (const auto& mat : m.materials)
         for (const auto& layer : mat.layers)
             if (layer.shader != whiteout::mdx::Layer::ShaderType::SD)
@@ -90,8 +97,17 @@ void FrameCameraToModelSequence(Camera& cam, renderer::model::Actor* hero,
         hi.z = (std::max)(hi.z, e.maximum.z);
         have = true;
     };
-    if (hero && hero->sourceTemplate && hero->sourceTemplate->adapter) {
-        const whiteout::mdx::Model& m = hero->sourceTemplate->adapter->SourceModel();
+    // Per-*sequence* extents, which only MDX exposes: SequenceInfo carries no
+    // bounds, and inventing them for every format to serve a thumbnail helper
+    // would be a public-API change for one caller. A non-MDX model falls
+    // through to ApplyFraming's no-extent path, and FrameCameraToModel below
+    // is the format-neutral one.
+    const io::MdxModelAdapter* mdxAdapter =
+        (hero && hero->sourceTemplate)
+            ? dynamic_cast<const io::MdxModelAdapter*>(hero->sourceTemplate->adapter.get())
+            : nullptr;
+    if (mdxAdapter) {
+        const whiteout::mdx::Model& m = mdxAdapter->SourceModel();
         // The chosen sequence's own extent.
         const std::string want = Lower(sequenceName);
         for (const auto& s : m.sequences)
@@ -110,41 +126,23 @@ void FrameCameraToModelSequence(Camera& cam, renderer::model::Actor* hero,
 void FrameCameraToModel(Camera& cam, renderer::model::Actor* hero) {
     cam.SetOrbitalMode();
 
-    // Model AABB from the union of the per-sequence extents — these bound the
-    // model as it actually animates. Death / dissipate / birth sequences are
-    // skipped: they fling, collapse or scale the model and would bloat the box.
-    // Geoset bind-pose / modelExtent are fallbacks for degenerate extents.
-    Vector3f lo{1e30f, 1e30f, 1e30f}, hi{-1e30f, -1e30f, -1e30f};
+    // The template's own bounds. Format-neutral on purpose: this used to reach
+    // through the template into whiteout::mdx::Model, which meant a non-MDX
+    // model got no extents at all and fell back to a distance of 260 against
+    // camera constants sized in the hundreds — a World of Warcraft creature is
+    // 2–5 yards, so it rendered as a sub-pixel dot that a golden image cannot
+    // distinguish from a load failure.
+    //
+    // The value is unchanged for MDX: MdxModelAdapter::GetBounds applies
+    // exactly the rule that used to live here (union of non-death /
+    // non-dissipate / non-birth sequence extents, falling back to geoset
+    // extents then the model extent), so no WC3 camera moves.
+    Vector3f lo{0, 0, 0}, hi{0, 0, 0};
     bool have = false;
-    auto consume = [&](const whiteout::mdx::Extent& e) {
-        if (e.maximum.x <= e.minimum.x && e.maximum.y <= e.minimum.y &&
-            e.maximum.z <= e.minimum.z)
-            return; // degenerate / unset
-        lo.x = (std::min)(lo.x, e.minimum.x);
-        lo.y = (std::min)(lo.y, e.minimum.y);
-        lo.z = (std::min)(lo.z, e.minimum.z);
-        hi.x = (std::max)(hi.x, e.maximum.x);
-        hi.y = (std::max)(hi.y, e.maximum.y);
-        hi.z = (std::max)(hi.z, e.maximum.z);
+    if (hero && hero->sourceTemplate && hero->sourceTemplate->bounds.valid) {
+        lo = hero->sourceTemplate->bounds.min;
+        hi = hero->sourceTemplate->bounds.max;
         have = true;
-    };
-    auto excluded = [](std::string name) {
-        for (char& c : name)
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        return name.find("death") != std::string::npos ||
-               name.find("dissipate") != std::string::npos ||
-               name.find("birth") != std::string::npos;
-    };
-    if (hero && hero->sourceTemplate && hero->sourceTemplate->adapter) {
-        const whiteout::mdx::Model& m = hero->sourceTemplate->adapter->SourceModel();
-        for (const auto& s : m.sequences)
-            if (!excluded(s.name))
-                consume(s.extent);
-        if (!have)
-            for (const auto& gs : m.geosets)
-                consume(gs.extent);
-        if (!have)
-            consume(m.modelExtent);
     }
 
     Vector3f center{0.0f, 0.0f, 50.0f};

@@ -87,6 +87,14 @@ add_subdirectory(externals/WhiteoutLib)
 # everyone linking it; otherwise every TracyVk*/ZoneScoped macro expands
 # to nothing and there's zero runtime cost. TRACY_ON_DEMAND keeps the
 # client buffering minimal until Tracy.exe connects.
+# World of Warcraft `.m2`. Default OFF and staying that way for now: the
+# format loads geometry only (REFACTOR_PLAN.md P9), so a release viewer would
+# be shipping a half-implemented format, and CI has no `.m2` assets to exercise
+# it with. The build matrix covers both settings; a developer turns it on.
+option(WDX_ENABLE_M2 "Enable World of Warcraft .m2 loading (geometry only)" OFF)
+# StarCraft II / Heroes of the Storm `.m3`, on the same terms as `.m2` above.
+option(WDX_ENABLE_M3 "Enable StarCraft II / Heroes .m3 loading (geometry only)" OFF)
+
 option(WDX_ENABLE_TRACY "Enable Tracy profiler (CPU + Vulkan GPU)" ON)
 if(WDX_ENABLE_TRACY AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/externals/tracy/CMakeLists.txt")
     set(TRACY_ENABLE    ON  CACHE BOOL "" FORCE)
@@ -223,6 +231,10 @@ set(SHADER_ENTRIES
     "blit.slang|vsBlit|vertex|kBlitVS"
     "blit.slang|psBlit|fragment|kBlitPS"
     "framebuffer_capture.slang|csCapture|compute|kCaptureCS"
+    # UnlitShading — position-only, flat white. An IShadingModel of its own
+    # (not a BLS program), so it lives here rather than in a .bls bundle.
+    "unlit.slang|vsUnlit|vertex|kUnlitVS"
+    "unlit.slang|psUnlit|fragment|kUnlitPS"
     # GTAO ambient-occlusion pass — read by GtaoService. The same
     # vsGtao fullscreen-triangle VS feeds both the main pass (writes
     # the AO buffer) and the apply pass (modulates the HDR scene
@@ -1086,6 +1098,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/core/render_profile.cpp
     src/renderer/profiles/wc3/wc3_classify.cpp
     src/renderer/shading/surface_pass.cpp
+    src/renderer/shading/unlit_shading.cpp
     src/renderer/render_target.cpp
     src/renderer/scene_manager.cpp
     src/renderer/coordinate_system.cpp
@@ -1149,6 +1162,22 @@ add_library(WhiteoutFlakesLib STATIC
     src/io/texture_image_usage.cpp
     src/public_api/renderer_api.cpp
 )
+
+# `.m2`, opt-in. The sources are added rather than compiled-out with an #if so
+# that turning the option on is the only thing that ever builds them — a
+# half-implemented format should not cost compile time in a release viewer.
+if(WDX_ENABLE_M2)
+    target_sources(WhiteoutFlakesLib PRIVATE src/io/m2/m2_model_adapter.cpp)
+    target_compile_definitions(WhiteoutFlakesLib PUBLIC WDX_ENABLE_M2=1)
+    message(STATUS "WhiteoutFlakes: .m2 loading ENABLED (geometry only)")
+endif()
+
+# `.m3`, opt-in on the same terms.
+if(WDX_ENABLE_M3)
+    target_sources(WhiteoutFlakesLib PRIVATE src/io/m3/m3_model_adapter.cpp)
+    target_compile_definitions(WhiteoutFlakesLib PUBLIC WDX_ENABLE_M3=1)
+    message(STATUS "WhiteoutFlakes: .m3 loading ENABLED (geometry only)")
+endif()
 
 # Storage browser walks CASC/MPQ/the local filesystem — none of which the
 # web build has (WHITEOUT_ENABLE_CASC is forced OFF above).

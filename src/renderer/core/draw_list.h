@@ -55,12 +55,25 @@ struct DrawLists {
     std::vector<DrawItem> transparent;
 };
 
-// Opaque order: a per-model grouping. `view` points into the frame's `views`
-// vector, which BuildDrawLists fills in ascending actor-handle order, so this
-// is a strict total order keyed on the scene rather than on container layout.
-// (WC3 additionally batches by texture/material to cut state changes; that's a
-// perf optimization we can layer on later.)
+// Opaque order: group by shading model, then walk the scene. `view` points into
+// the frame's `views` vector, which BuildDrawLists fills in ascending
+// actor-handle order, so this is a strict total order keyed on the scene rather
+// than on container layout. (WC3 additionally batches by texture/material to cut
+// state changes; that's a perf optimization we can layer on later.)
+//
+// `key.model` leads because a model change is the most expensive transition in
+// the list — SurfacePass closes one model's pass and opens another's, which
+// rebinds every pass-global constant buffer, sampler and probe. Grouping makes
+// that O(models) instead of O(draws).
+//
+// It costs nothing to add while one model is live: an equal leading key leaves
+// the comparator exactly as it was, so this is provably order-preserving and
+// stays byte-identical. That is why it lands *before* two models coexist rather
+// than with them — landing it alongside would make a pixel change and an
+// ordering change arrive in one untestable step.
 inline bool OpaqueOrder(const DrawItem& a, const DrawItem& b) {
+    if (a.key.model != b.key.model)
+        return static_cast<u8>(a.key.model) < static_cast<u8>(b.key.model);
     if (a.view != b.view)
         return a.view < b.view;
     return a.geoIdx < b.geoIdx;

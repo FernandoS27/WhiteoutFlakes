@@ -4,6 +4,7 @@
 #include "animation/animation_driver.h"
 #include "effects/event_emitter_pool.h"
 #include "model/model_template.h"
+#include "core/surface_vocabulary.h"
 #include "model/render_model.h"
 #include "render_target.h" // RenderMode
 #include "whiteout/flakes/model_source.h"
@@ -43,7 +44,51 @@ struct Actor {
 
     Matrix44f worldTransform = Matrix44f::identity();
 
+    // Game units → renderer units, from the profile that owns this actor's
+    // product. Stamped once at StageActor, because it is a property of the
+    // format the template came from and never changes afterwards.
+    //
+    // Separate from `worldTransform` because that one belongs to the *host*:
+    // the viewer and the Max plugin write it, in game units, and would
+    // overwrite a scale folded into it. So it is applied where the renderer
+    // consumes the transform, not where the host writes it — see
+    // ScaledWorldTransform.
+    //
+    // 1.0 for Warcraft III, which authors in renderer units already. A World
+    // of Warcraft creature is 2–5 yards against camera constants sized in the
+    // hundreds, which is the whole reason this exists.
+    f32 worldScale = 1.0f;
+
+    // Which shading model draws this actor's surfaces, when it is not the one
+    // the active profile selects. `None` means "ask the profile", which is
+    // every Warcraft III actor.
+    //
+    // Per-actor rather than per-scene because a scene can legitimately hold
+    // both: the model explorer renders thumbnails of whatever it is pointed
+    // at, and P10 adds a third format. An M2 sets this to Unlit because it has
+    // no materials at all — handing it to a WC3 model would mean asking for a
+    // surface table that was never built.
+    core::ShadingModelId shadingModel = core::ShadingModelId::None;
+
+    // The transform the renderer draws and poses with.
+    //
+    // The identity case returns the host's matrix untouched rather than
+    // multiplying by a unit scale. Not an optimisation: `Scale(1) * M` is
+    // `M[i][j] + 0 + 0 + 0`, which flips a genuine `-0.0` to `+0.0`, and a
+    // rotation matrix has plenty of those. Skipping the multiply is what makes
+    // "identity for WC3" a fact about bits rather than an argument about
+    // floating point.
+    const Matrix44f& ScaledWorldTransform() const {
+        if (worldScale == 1.0f)
+            return worldTransform;
+        scaledWorld_ = Matrix44f::scaling({worldScale, worldScale, worldScale}) * worldTransform;
+        return scaledWorld_;
+    }
+
     animation::AnimationDriver animation;
+
+    // Cache for ScaledWorldTransform; never read unless worldScale != 1.
+    mutable Matrix44f scaledWorld_ = Matrix44f::identity();
 
     // Per-actor playback clock. The host calls Advance(dt) every frame; the
     // method scales dt by playbackSpeed and feeds the actor's animation

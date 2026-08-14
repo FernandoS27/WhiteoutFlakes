@@ -48,11 +48,15 @@ public:
     // playbackSpeed, and animation.SetActiveSequenceIndex on the returned
     // pointer to compose the scene.
     //
-    // An id-addressed ref returns null today: the path below it
-    // (ModelTemplateManager) keys its cache on a string and picks MDX vs MDL
-    // by extension, so it cannot look one up. The signature takes ContentRef
-    // now so the entry point is in place — generalising the template cache is
-    // REFACTOR_PLAN.md P9, which is where `.m2` actually becomes loadable.
+    // Dispatches on the *content*, not the name: an `.m2` or `.m3` (by path or
+    // by fileDataID) goes through TrySpawnForeign below, and everything else
+    // takes the MDX path route. A fileDataID has no extension to branch on,
+    // which is why detection is by chunk magic.
+    //
+    // An id-addressed ref that is neither still returns null:
+    // ModelTemplateManager keys its cache on a string and picks MDX vs MDL by
+    // extension, so it cannot look one up. Generalising that cache is only
+    // worth doing when a second path-addressed format needs it.
     Actor* SpawnUnit(const ContentRef& ref,
                      const Matrix44f& initialTm = Matrix44f::identity());
 
@@ -69,6 +73,14 @@ public:
     // FrameTicker skips its own evaluation pass.
     Actor* SpawnUnitFromSource(std::shared_ptr<IModelSource> source,
                                const Matrix44f& initialTm = Matrix44f::identity());
+
+    // Non-MDX route: reads @p ref once, sniffs the chunk magic, and spawns
+    // through SpawnUnitFromSource when it recognises `.m2` or `.m3`. Null for
+    // anything else — including every MDX — so SpawnUnit falls through to the
+    // path route untouched. Always null with both WDX_ENABLE_M2 and
+    // WDX_ENABLE_M3 off.
+    Actor* TrySpawnForeign(const ContentRef& ref,
+                           const Matrix44f& initialTm = Matrix44f::identity());
 
     // Schedule every actor in the scene for destruction at the next
     // CommitPendingUploads() pass (which runs at the start of RenderFrame).

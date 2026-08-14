@@ -155,6 +155,15 @@ public:
     // value through; hard-coding D24_UNORM_S8_UINT will crash on AMD
     // d3d12 and fail validation on AMD Vulkan.
     gfx::Format DepthStencilFormat() const;
+
+    // The frame the active RenderMode declares: pass order, conditions, target
+    // set, colour space, world scale. Built alongside the shading models and
+    // validated once.
+    //
+    // Public because the profile is the answer to "what does this product's
+    // frame look like", and ModelLoader has to ask it for WorldScale at spawn.
+    // Keeping it private would mean a one-off forwarder per question.
+    core::IRenderProfile& ActiveProfile();
     // Render mode snapshot for the in-flight frame. See the comment on
     // `Impl::frameRenderMode_`. Use this anywhere a per-frame decision
     // depends on HD vs SD; reading `Settings().GetRenderMode()` mid-
@@ -229,10 +238,6 @@ private:
     // WC3 entries on first use. One model is live at a time; per-surface
     // selection is the mixed-shading work.
     shading::IShadingModel& ActiveShadingModel();
-    // The frame the active RenderMode declares: pass order, conditions, target
-    // set, colour space, world scale. Built alongside the shading models and
-    // validated once.
-    core::IRenderProfile& ActiveProfile();
     void RenderGeosets(GeosetBucket bucket);
     // Unified back-to-front transparent pass: interleaves transparent geosets,
     // PE2 particles, ribbons and corn by camera distance (WC3's

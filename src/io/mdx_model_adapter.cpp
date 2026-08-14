@@ -677,9 +677,21 @@ std::vector<CollisionShapeData> MdxModelAdapter::GetCollisionShapes() {
     return result;
 }
 
-FrameState MdxModelAdapter::Evaluate(i32 sequenceIdx, i32 timeMs, i32 globalTimeMs,
-                                     const Matrix44f& worldTransform,
-                                     const Vector3f& cameraPos) const {
+FrameState MdxModelAdapter::Evaluate(const ::whiteout::flakes::PoseRequest& req) const {
+    // Unpacked into the names the sampler below already uses. This phase
+    // changes the signature and nothing else, so the body stays as it was and
+    // the byte-identical gate still means something.
+    //
+    // MDX has one clip and no blending concept, so `clips` beyond the first,
+    // `weight`, `speed`, `mask` and `rootNode` have nowhere to go here — as do
+    // `overrides` and `externallyDriven`, which are host hooks the WC3 host
+    // does not use. They exist for WoW and SC2; see PoseRequest.
+    const ::whiteout::flakes::ClipRef clip = req.PrimaryClip();
+    const i32 sequenceIdx = clip.sequence;
+    const i32 timeMs = clip.timeMs;
+    const i32 globalTimeMs = req.globalTimeMs;
+    const Matrix44f& worldTransform = req.world;
+    const Vector3f& cameraPos = req.cameraPos;
 
     i32 seqStart = 0, seqEnd = 0;
     if (sequenceIdx >= 0 && sequenceIdx < (i32)model_.sequences.size()) {
@@ -1239,7 +1251,46 @@ std::vector<SequenceInfo> MdxModelAdapter::GetSequences() const {
     return result;
 }
 
-std::vector<CameraPreset> MdxModelAdapter::GetCameraPresets() const {
+::whiteout::flakes::ModelBounds MdxModelAdapter::GetBounds() {
+    ::whiteout::flakes::ModelBounds b;
+    auto consume = [&](const whiteout::mdx::Extent& e) {
+        // Degenerate / unset extents are common in the corpus and must not
+        // drag the box to the origin.
+        if (e.maximum.x <= e.minimum.x && e.maximum.y <= e.minimum.y &&
+            e.maximum.z <= e.minimum.z)
+            return;
+        if (!b.valid) {
+            b.min = {e.minimum.x, e.minimum.y, e.minimum.z};
+            b.max = {e.maximum.x, e.maximum.y, e.maximum.z};
+            b.valid = true;
+            return;
+        }
+        b.min.x = (std::min)(b.min.x, e.minimum.x);
+        b.min.y = (std::min)(b.min.y, e.minimum.y);
+        b.min.z = (std::min)(b.min.z, e.minimum.z);
+        b.max.x = (std::max)(b.max.x, e.maximum.x);
+        b.max.y = (std::max)(b.max.y, e.maximum.y);
+        b.max.z = (std::max)(b.max.z, e.maximum.z);
+    };
+    auto excluded = [](std::string name) {
+        for (char& c : name)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return name.find("death") != std::string::npos ||
+               name.find("dissipate") != std::string::npos ||
+               name.find("birth") != std::string::npos;
+    };
+    for (const auto& s : model_.sequences)
+        if (!excluded(s.name))
+            consume(s.extent);
+    if (!b.valid)
+        for (const auto& gs : model_.geosets)
+            consume(gs.extent);
+    if (!b.valid)
+        consume(model_.modelExtent);
+    return b;
+}
+
+std::vector<CameraPreset> MdxModelAdapter::GetCameraPresets() {
     std::vector<CameraPreset> presets;
     for (const auto& cam : model_.cameras) {
         const auto& pos = cam.position;

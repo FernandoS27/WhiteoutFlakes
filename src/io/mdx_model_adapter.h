@@ -38,12 +38,21 @@ public:
     std::vector<u32> GetGlobalSequences() override;
 
     ::whiteout::flakes::renderer::model::FrameState Evaluate(
-        i32 sequenceIdx, i32 timeMs, i32 globalTimeMs, const Matrix44f& worldTransform,
-        const Vector3f& cameraPos) const override;
+        const ::whiteout::flakes::PoseRequest& req) const override;
 
     std::vector<::whiteout::flakes::renderer::model::SequenceInfo> GetSequences() const override;
 
-    std::vector<::whiteout::flakes::renderer::model::CameraPreset> GetCameraPresets() const;
+    std::vector<::whiteout::flakes::renderer::model::CameraPreset> GetCameraPresets() override;
+
+    // The union of every non-excluded sequence's extent — the box the model
+    // occupies as it *animates*, not its bind pose. Death / dissipate / birth
+    // are skipped because they fling, collapse or scale the model and would
+    // bloat the frame. Falls back to geoset extents, then the model extent.
+    //
+    // This is exactly the rule tools/common/thumbnail_framing.cpp applied by
+    // reaching into SourceModel(); moving it here is what lets the framing code
+    // stop being MDX-typed without changing a single WC3 camera.
+    ::whiteout::flakes::ModelBounds GetBounds() override;
 
     // The parsed source model, kept intact for animation Evaluate(). Exposed
     // so hosts can re-serialise it (Save As) without re-reading the file.

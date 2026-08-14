@@ -52,9 +52,18 @@ wdx_add_test(slk_test           slk_test.cpp)
 wdx_add_test(path_utils_test    path_utils_test.cpp)
 wdx_add_test(texture_usage_test texture_usage_test.cpp)
 wdx_add_test(content_ref_test   content_ref_test.cpp)
+# Only when the format is compiled in — the adapter it exercises does not
+# exist otherwise. The test itself skips without a configured WoW install.
+if(WDX_ENABLE_M2)
+    wdx_add_test(m2_geometry_test m2_geometry_test.cpp)
+endif()
+if(WDX_ENABLE_M3)
+    wdx_add_test(m3_geometry_test m3_geometry_test.cpp)
+endif()
 
 # ---- renderer ----
 wdx_add_test(coordinate_system_test coordinate_system_test.cpp)
+wdx_add_test(pose_request_test       pose_request_test.cpp)
 wdx_add_test(draw_trace_test        draw_trace_test.cpp)
 wdx_add_test(render_profile_test    render_profile_test.cpp)
 wdx_add_test(wc3_classify_test      wc3_classify_test.cpp)

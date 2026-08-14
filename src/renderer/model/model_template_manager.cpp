@@ -151,6 +151,7 @@ std::shared_ptr<ModelTemplate> ModelTemplateManager::BuildFromBytes(
     tmpl->eventObjects = adapter->GetEventObjects();
     tmpl->globalSequences = adapter->GetGlobalSequences();
     tmpl->cameraPresets = adapter->GetCameraPresets();
+    tmpl->bounds = adapter->GetBounds();
 
     // Decide per-actor palette path (Path A vs B). On Path A this
     // rewrites every vertex's boneIdx in `tmpl->skinWeights` to a

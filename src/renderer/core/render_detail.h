@@ -21,6 +21,7 @@ class SamplerAssetManager;
 
 namespace whiteout::flakes::renderer::shading {
 class IShadingModel;
+class ShadingRegistry;
 }
 
 namespace whiteout::flakes::renderer::render_detail {
@@ -80,9 +81,14 @@ struct CollectedDrawLists {
 // layer.shaderId instead would route a shaderId-1 surface in SD mode to the HD
 // model — a behaviour change disguised as a refactor, since the classification
 // rule is render-mode independent and applies the HD fading test regardless.
+// `unlitOddGeosets` is RenderSettings::DebugUnlitOddGeosets — see there for
+// why the multi-model toggle has to be per-geoset. It changes only which model
+// each item *names*; classification and collection stay the WC3 model's, so
+// with the flag false every key is what it was.
 CollectedDrawLists BuildDrawLists(
     const std::unordered_map<u32, std::unique_ptr<model::Actor>>& models, i32 selectedLod,
-    const Vector3f& cameraPos, const shading::IShadingModel& shadingModel);
+    const Vector3f& cameraPos, const shading::IShadingModel& shadingModel,
+    bool unlitOddGeosets = false, const shading::ShadingRegistry* registry = nullptr);
 
 // `paletteCb` is the bone-palette CB to bind when this geoset has
 // skinning data. Pass `geo.bonePaletteCb` directly when the actor is

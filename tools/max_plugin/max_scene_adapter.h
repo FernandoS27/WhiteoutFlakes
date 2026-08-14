@@ -172,9 +172,7 @@ public:
     std::vector<renderer::model::PE1EmitterConfig> GetPE1Configs() override;
 
     // ---- IAnimationSource ----
-    renderer::model::FrameState Evaluate(i32 sequenceIdx, i32 timeMs, i32 globalTimeMs,
-                                         const Matrix44f& worldTransform,
-                                         const Vector3f& cameraPos) const override;
+    renderer::model::FrameState Evaluate(const ::whiteout::flakes::PoseRequest& req) const override;
     std::vector<renderer::model::SequenceInfo> GetSequences() const override;
 
     // Camera presets from scene (Max cameras + "Active Viewport")

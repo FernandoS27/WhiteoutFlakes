@@ -6,6 +6,7 @@
 #include "particle.h"
 #include "particle/emitter_desc.h"
 #include "render_target.h" // RenderMode
+#include "whiteout/flakes/model_source.h" // IModelSource, ModelBounds
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
 
@@ -13,9 +14,7 @@
 #include <string>
 #include <vector>
 
-namespace whiteout::flakes::io {
-class MdxModelAdapter;
-}
+
 namespace whiteout::flakes::renderer::animation {
 struct SkinningData;
 }
@@ -39,7 +38,17 @@ struct ModelTemplate {
         Vector3f localCentroid = {0, 0, 0}; // local bounds center (transparent sort)
     };
 
-    std::shared_ptr<io::MdxModelAdapter> adapter;
+    // The source this template was built from, kept alive so per-frame
+    // Evaluate() has something to call. Typed as the interface, not as
+    // MdxModelAdapter: a template is the renderer's format-neutral snapshot,
+    // and every consumer that genuinely needs MDX (Save As, the HD-material
+    // probe, per-sequence extents) now downcasts and says so at the call site.
+    std::shared_ptr<IModelSource> adapter;
+
+    // What camera framing measures against — see ModelBounds. Filled from the
+    // source at build time so nothing has to reach back through `adapter` for
+    // it, which is the reason framing used to be MDX-typed.
+    ModelBounds bounds;
 
     std::vector<MeshData> meshes;
     std::vector<TextureData> textures;

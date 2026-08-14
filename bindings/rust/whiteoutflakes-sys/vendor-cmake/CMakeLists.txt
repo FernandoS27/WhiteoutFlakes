@@ -92,8 +92,8 @@ set(_excluded_dirs
     # A glob has no gate, so without these the vendored build would sweep in
     # sources that cannot compile against the parsers it is not vendoring.
     # Drop them together or not at all.
-    "/src/renderer/profiles/m2/"
-    "/src/renderer/profiles/m3/"
+    "/src/renderer/profiles/wow/"
+    "/src/renderer/profiles/sc2_heroes/"
     "/src/io/m2/"
     "/src/io/m3/"
 )

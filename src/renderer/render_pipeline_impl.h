@@ -4,6 +4,7 @@
 #include "render_pipeline.h"
 #include "core/render_profile.h"
 #include "shading/shading_registry.h"
+#include "shading/unlit_shading.h"
 
 #include <memory>
 #include <unordered_map>
@@ -64,12 +65,24 @@ struct RenderPipeline::Impl {
     shading::ShadingRegistry shadingModels_;
     std::unique_ptr<shading::IShadingModel> wc3SdShading_;
     std::unique_ptr<shading::IShadingModel> wc3HdShading_;
+    // Product-neutral, so it is held by concrete type: CleanupGFX calls its
+    // ReleaseGpu, which is not on the interface (nothing else owns GPU objects
+    // outside the BLS caches).
+    std::unique_ptr<shading::UnlitShading> unlitShading_;
 
     // The two WC3 frames, declared. ValidateProfile runs once when they are
     // built, so a declaration that contradicts itself fails at init rather
     // than at whichever frame first reads a target nobody wrote.
     std::unique_ptr<core::IRenderProfile> wc3SdProfile_;
     std::unique_ptr<core::IRenderProfile> wc3HdProfile_;
+#if WDX_ENABLE_M2
+    // Selected by the scene's ProductId rather than by RenderMode — see
+    // ActiveProfile. Null in a build without the format.
+    std::unique_ptr<core::IRenderProfile> wowProfile_;
+#endif
+#if WDX_ENABLE_M3
+    std::unique_ptr<core::IRenderProfile> sc2HeroesProfile_;
+#endif
 
     // Cached at InitDevice time via Gfx()->PreferredDepthStencilFormat().
     // Renderer-wide source of truth for the depth-target format and

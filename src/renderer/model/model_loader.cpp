@@ -28,6 +28,14 @@
 
 #include "dbg_print.h"
 
+#include "renderer/core/render_profile.h" // IRenderProfile::WorldScale
+#if WDX_ENABLE_M3
+#include "io/m3/m3_model_adapter.h"
+#endif
+#if WDX_ENABLE_M2
+#include "io/m2/m2_model_adapter.h"
+#include <whiteout/models/m2/types.h>
+#endif
 #include "renderer/profiles/wc3/wc3_surface_table.h"
 
 #include <algorithm>
@@ -235,6 +243,15 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
 
     mi->sourceTemplate = tmpl;
 
+    // Game units → renderer units, stamped once. The value is a property of
+    // the profile the scene is running, so it is read here rather than per
+    // frame; nothing about it changes while the actor lives.
+    //
+    // Exactly 1.0 for Warcraft III (pinned by tests/render_profile_test.cpp),
+    // and ScaledWorldTransform short-circuits on that, so no WC3 matrix is
+    // touched at all.
+    mi->worldScale = rs_.Pipeline().ActiveProfile().WorldScale();
+
     if (tmpl->adapter)
         mi->animation.Bind(tmpl->adapter);
 
@@ -384,6 +401,13 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
     u32 handle = rs_.Scene().AllocActorId();
     auto mi = std::make_unique<Actor>();
     mi->handle = handle;
+    // Same stamp StageActor applies, because this path never reaches it: a
+    // live IModelSource has no ModelTemplate, so SpawnUnitFromSource builds
+    // the actor here instead. Missing it left every M2 at scale 1 while the
+    // profile said 20 — which renders, plausibly, at a twentieth of the right
+    // size, and is exactly the failure a golden cannot distinguish from
+    // "loaded fine".
+    mi->worldScale = rs_.Pipeline().ActiveProfile().WorldScale();
 
     for (auto& tex : textures) {
         StagedTexture& st = mi->render.stagedTextures[tex.textureId];
@@ -543,13 +567,109 @@ u32 ModelLoader::AddModelByPath(const std::string& mdxPath, const Matrix44f& ini
     return handle;
 }
 
+#if WDX_ENABLE_M2
+namespace {
+// 'MD20' / 'MD21' little-endian, the two `.m2` chunk magics.
+bool LooksLikeM2(std::span<const u8> bytes) {
+    if (bytes.size() < 4)
+        return false;
+    const u32 tag = static_cast<u32>(bytes[0]) | (static_cast<u32>(bytes[1]) << 8) |
+                    (static_cast<u32>(bytes[2]) << 16) | (static_cast<u32>(bytes[3]) << 24);
+    return tag == ::whiteout::m2::MD20_TAG || tag == ::whiteout::m2::MD21_TAG;
+}
+} // namespace
+#endif
+
+#if WDX_ENABLE_M3
+namespace {
+// "43DM" / "33DM" — MD34 (release) and MD33 (beta) written little-endian, so
+// the four leading bytes read reversed. Spelled as the on-disk bytes rather
+// than reusing the parser's tag constants, which live in WhiteoutLib's private
+// `src/` tree and are stored pre-reversed for chunk comparison.
+bool LooksLikeM3(std::span<const u8> bytes) {
+    if (bytes.size() < 4)
+        return false;
+    return bytes[2] == 'D' && bytes[3] == 'M' && bytes[1] == '3' &&
+           (bytes[0] == '4' || bytes[0] == '3');
+}
+} // namespace
+#endif
+
 Actor* ModelLoader::SpawnUnit(const ContentRef& ref, const Matrix44f& initialTm) {
+    // Format detection by content, not by name. A fileDataID has no extension
+    // to branch on, and that is exactly the reference a chunked `.m2` names
+    // its siblings with — so sniffing the magic is the only rule that works
+    // for both halves of ContentRef.
+    if (auto* foreign = TrySpawnForeign(ref, initialTm))
+        return foreign;
+
     if (!ref.IsPath())
-        return nullptr; // see the header — P9 is what makes this reachable
+        return nullptr; // not an M2/M3, and nothing else loads by id yet
     const u32 h = AddModelByPath(ref.path, initialTm);
     if (h == 0)
         return nullptr;
     return rs_.Scene().Actors().Find(h);
+}
+
+// Reads the bytes once, sniffs the magic, and routes an `.m2` or `.m3` through
+// SpawnUnitFromSource. Returns null for anything else, including every MDX, so
+// the caller falls through to the path route unchanged.
+//
+// Each format is compiled out with its own CMake option — see there for why
+// they are opt-in rather than always present. With both off this reduces to
+// `return nullptr` and the single read below disappears with it.
+Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& initialTm) {
+#if WDX_ENABLE_M2 || WDX_ENABLE_M3
+    auto* provider = rs_.Scene().ActiveContentProvider();
+    if (!provider)
+        return nullptr;
+    auto bytes = provider->ReadFile(ref);
+    if (!bytes || bytes->empty())
+        return nullptr;
+    const std::span<const ::whiteout::u8> data(bytes->data(), bytes->size());
+
+    // Detection fills in what was not stated. ProductId::Neutral means "no
+    // product declared" (see SceneView::SetProduct), and a model of a given
+    // format having just parsed is direct evidence of one — so this settles
+    // it, while an explicit host choice is left alone. Without it the scene
+    // keeps the Warcraft III profile, whose WorldScale is 1, and the model
+    // renders at a fraction of the size the camera expects.
+    //
+    // Per actor, UnlitShading is named as the only model that can draw this:
+    // there are no materials and no surface table. Saying so per actor is what
+    // lets a foreign model and a WC3 model coexist in one scene.
+    std::shared_ptr<IModelSource> source;
+    ProductId product = ProductId::Neutral;
+
+#if WDX_ENABLE_M2
+    if (!source && LooksLikeM2(data)) {
+        source = io::M2ModelAdapter::Load(ref, data, provider);
+        product = ProductId::Wow;
+    }
+#endif
+#if WDX_ENABLE_M3
+    if (!source && LooksLikeM3(data)) {
+        // No provider: `.m3` is one self-contained file with no siblings to
+        // resolve, which is the whole difference from `.m2`.
+        source = io::M3ModelAdapter::Load(ref, data);
+        product = ProductId::Sc2;
+    }
+#endif
+    if (!source)
+        return nullptr;
+
+    if (product != ProductId::Neutral && rs_.Scene().Product() == ProductId::Neutral)
+        rs_.Scene().SetProduct(product);
+
+    Actor* actor = SpawnUnitFromSource(std::move(source), initialTm);
+    if (actor)
+        actor->shadingModel = core::ShadingModelId::Unlit;
+    return actor;
+#else
+    (void)ref;
+    (void)initialTm;
+    return nullptr;
+#endif
 }
 
 Actor* ModelLoader::SpawnUnitFromSource(std::shared_ptr<IModelSource> source,

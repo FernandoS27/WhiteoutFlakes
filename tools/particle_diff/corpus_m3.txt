@@ -1,0 +1,21 @@
+# StarCraft II / Heroes of the Storm `.m3` corpus for the P10 white-render gate.
+#
+# Paths are relative to C:/Projects/WhiteoutLib/Corpus. Unlike `.m2`, an `.m3`
+# is one self-contained file — no `.skin` siblings, no fileDataID resolution,
+# so any extracted model is loadable on its own.
+#
+# Chosen to span the range the WorldScale constant was measured against
+# (Zealot 1.59 units through Thor 12.08) and to cover all three shipped
+# generations: SC2 release, the SC2 beta MD33 magic, and Heroes.
+#
+# Run with (needs a build configured -DWDX_ENABLE_M3=ON):
+#   scripts/render-diff.ps1 -Record -Golden -M3 -Exe <m3-build>/standalone/RelWithDebInfo/WhiteoutFlakes.exe
+#   scripts/render-diff.ps1 -Check  -Golden -M3 -Exe <m3-build>/standalone/RelWithDebInfo/WhiteoutFlakes.exe
+
+Sc2M3/Marine.m3
+Sc2M3/Zergling.m3
+Sc2M3/Zealot.m3
+Sc2M3/SCV.m3
+Sc2M3/Thor.m3
+Sc2M3/Ultralisk.m3
+Sc2M3/BattleCruiser.m3

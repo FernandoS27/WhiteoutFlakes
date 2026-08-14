@@ -79,6 +79,40 @@ void RecordGeosetDraw(TraceDraw& d, const render_detail::RenderableView& view,
     rec.Record(d);
 }
 
+void RecordUnlitDraw(TraceDraw& d, const render_detail::RenderableView& view,
+                     const model::GPUGeoset& geo, const core::PassContext& ctx) {
+    auto& rec = DrawTraceRecorder::Instance();
+    const TraceSubmitContext& sub = rec.Context();
+
+    d.passSlot = static_cast<u8>(sub.pass);
+    d.producer = static_cast<u8>(TraceProducer::Geoset);
+    d.sortOrder = sub.sortOrder;
+    d.sqDist = sub.sqDist;
+    d.priorityPlane = sub.priorityPlane;
+    d.underWater = sub.underWater;
+    d.depthFill = sub.depthFill;
+
+    d.actor.rootActor = view.rootActor;
+    d.actor.role = view.actorRole;
+    d.actor.treeDepth = view.actorDepth;
+    d.actor.emitterId = view.spawnEmitterId;
+    d.actor.slotIndex = view.spawnSlotIndex;
+
+    d.submesh = view.geosets ? static_cast<i32>(&geo - view.geosets->data()) : -1;
+    d.surface = geo.materialId;
+    d.layer = -1; // no layers: this model draws a whole geoset in one call
+    d.lod = geo.lod;
+    d.indexCount = geo.indexCount;
+    d.vertexCount = geo.vertexCount;
+
+    // filterMode / matFlags / texAnimId / lightPaletteHash / texMtxHash stay
+    // at their defaults. Not "unknown" — this model genuinely has none of
+    // them, and the pass slot is the only thing that varies per draw.
+    (void)ctx;
+
+    rec.Record(d);
+}
+
 void RecordProducerDraw(TraceDraw& d) {
     auto& rec = DrawTraceRecorder::Instance();
     const TraceSubmitContext& ctx = rec.Context();

@@ -3,6 +3,7 @@
 #include "debug/draw_trace_hooks.h"
 #include "core/render_detail.h"
 #include "shading/shading_model.h"
+#include "shading/shading_registry.h"
 #include "renderer/assets/sampler_asset_manager.h"
 #include "renderer/render_service.h"
 
@@ -26,7 +27,9 @@ void FillRenderableView(RenderableView& view, model::Actor& mi, const ActorMap& 
     view.textures = mi.render.textures.get();
     view.skinning = &mi.render.skinning;
     view.texAnimPalette = &mi.render.texAnimPalette;
-    view.worldTransform = mi.worldTransform;
+    // Scaled, not raw: `worldTransform` is the host's, in game units. Returns
+    // the same object for WC3, whose scale is 1.
+    view.worldTransform = mi.ScaledWorldTransform();
     view.parentVisibility = mi.parentVisibility;
     view.hasLods = mi.render.hasLods;
     view.teamColor = mi.teamColor;
@@ -47,7 +50,8 @@ bool GeosetDrawable(const model::GPUGeoset& geo) {
 
 CollectedDrawLists BuildDrawLists(
     const std::unordered_map<u32, std::unique_ptr<model::Actor>>& models, i32 selectedLod,
-    const Vector3f& cameraPos, const shading::IShadingModel& shadingModel) {
+    const Vector3f& cameraPos, const shading::IShadingModel& shadingModel,
+    bool unlitOddGeosets, const shading::ShadingRegistry* registry) {
     const core::ShadingModelId activeModel = shadingModel.Id();
     CollectedDrawLists out;
     out.views.reserve(models.size());
@@ -91,6 +95,26 @@ CollectedDrawLists BuildDrawLists(
         out.sceneLights.insert(out.sceneLights.end(), mi->render.activeLights.begin(),
                                mi->render.activeLights.end());
 
+        // An actor can name its own model — an M2 has no materials, so asking
+        // the WC3 model to classify it would mean reading a surface table that
+        // was never built. Falls back to the profile's when unset, which is
+        // every WC3 actor.
+        const core::ShadingModelId actorModel = (mi->shadingModel != core::ShadingModelId::None)
+                                                    ? mi->shadingModel
+                                                    : activeModel;
+        const shading::IShadingModel* classifier = &shadingModel;
+        if (actorModel != activeModel && registry) {
+            if (auto* m = registry->Get(actorModel))
+                classifier = m;
+        }
+
+        // Which model each item names. The debug toggle overrides per geoset;
+        // see RenderSettings::DebugUnlitOddGeosets for why it has to be per
+        // geoset rather than global.
+        auto modelFor = [&](i32 geoIdx) {
+            return (unlitOddGeosets && (geoIdx & 1)) ? core::ShadingModelId::Unlit : actorModel;
+        };
+
         const i32 modelLod = mi->render.hasLods ? selectedLod : 0;
         const i32 geosetCount = static_cast<i32>(mi->render.gpuGeosets.size());
         for (i32 i = 0; i < geosetCount; ++i) {
@@ -100,7 +124,7 @@ CollectedDrawLists BuildDrawLists(
 
             // The sole authority. Asked per geoset per frame, through the
             // interface, so a non-WC3 model answers with its own rule.
-            const core::SurfaceClass sc = shadingModel.Classify(view, geo);
+            const core::SurfaceClass sc = classifier->Classify(view, geo);
             if (!sc.visible)
                 continue;
 
@@ -110,7 +134,7 @@ CollectedDrawLists BuildDrawLists(
                 DrawItem o;
                 o.view = &view;
                 o.geoIdx = i;
-                o.key.model = activeModel;
+                o.key.model = modelFor(i);
                 out.lists.opaque.push_back(o);
             } else {
                 // Transparent geoset: one whole-geoset draw, sorted back-to-front
@@ -118,7 +142,7 @@ CollectedDrawLists BuildDrawLists(
                 DrawItem t;
                 t.view = &view;
                 t.geoIdx = i;
-                t.key.model = activeModel;
+                t.key.model = modelFor(i);
                 // HD opaque-fading geosets carry the Color depth-fill twin (WC3
                 // RenderGeoset's DEPTHFILL_COLOR); true blend geosets stay None.
                 t.depthFill = sc.needsDepthFill ? bls::DepthFill::Color : bls::DepthFill::None;

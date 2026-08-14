@@ -33,6 +33,23 @@ param(
     # because ReadbackTexture has no Metal implementation, so a macOS developer
     # has G1 but not G2.
     [switch]$Golden,
+    # Multi-model arm: route every odd geoset through UnlitShading so one
+    # frame contains draws from two shading models. Its baselines are separate
+    # (`_unlit` suffix) because the toggle changes what the frame draws — the
+    # byte-identical gate is the arm WITHOUT this.
+    [switch]$Unlit,
+
+    # The `.m2` arm: a different corpus, a different root, and its own
+    # baselines. Needs a build configured with -DWDX_ENABLE_M2=ON — without it
+    # the viewer will not load an `.m2` at all and every model reports a miss.
+    [switch]$M2,
+
+    # The `.m3` arm. Same shape as -M2, and needs -DWDX_ENABLE_M3=ON. Its
+    # golden is *tonemapped* white rather than #FFFFFF: Sc2HeroesProfile reuses
+    # the HD frame, and a linear 1.0 through the tonemap and bloom chain does
+    # not land back at 1.0.
+    [switch]$M3,
+
     # SD is the default mode; -Hd records the HD profile's baselines instead.
     # A full gate run does both — they are different draw paths.
     [switch]$Hd,
@@ -53,6 +70,22 @@ if (-not $Record -and -not $Check) {
     Write-Error 'Pass -Record or -Check.'
     exit 2
 }
+# The perturbation arm reseeds actor ids, and particle::MixSeed mixes the actor
+# id into every emitter's RNG stream. So a perturbed run draws *the same
+# decisions* (the trace matches exactly) from *different particle positions*
+# — the golden image legitimately differs on every particle-carrying model,
+# 11 of the 17 in the corpus. Combining the two reports a total failure that
+# means nothing, with `MATCH: identical` printed directly above each one.
+#
+# -Perturb answers "does the draw path depend on hash order". -Golden answers
+# "did pixels move". Run them separately.
+if ($Perturb -gt 0 -and $Golden) {
+    Write-Error ('-Perturb and -Golden are not compatible: reseeding actor ids ' +
+                 'changes the particle RNG stream, so the image differs by design ' +
+                 'while the trace stays identical. Run them as separate arms.')
+    exit 2
+}
+
 if (-not (Test-Path $Exe)) {
     Write-Error "Viewer not built: $Exe"
     exit 2
@@ -62,6 +95,31 @@ if (-not (Test-Path $BaselineDir)) {
 }
 
 $mode = if ($Hd) { 'hd' } else { 'sd' }
+if ($Unlit) { $mode += '_unlit' }
+if ($M2 -and $M3) {
+    Write-Error '-M2 and -M3 are separate arms: pass one or the other.'
+    exit 2
+}
+if ($M2) {
+    $mode = 'm2'
+    # Only defaulted when the caller did not name their own; an explicit
+    # -CorpusRoot / -CorpusFile still wins.
+    if (-not $PSBoundParameters.ContainsKey('CorpusRoot')) {
+        $CorpusRoot = 'C:/Projects/WhiteoutLib/Corpus/WoW'
+    }
+    if (-not $PSBoundParameters.ContainsKey('CorpusFile')) {
+        $CorpusFile = "$PSScriptRoot/../tools/particle_diff/corpus_m2.txt"
+    }
+}
+if ($M3) {
+    $mode = 'm3'
+    if (-not $PSBoundParameters.ContainsKey('CorpusRoot')) {
+        $CorpusRoot = 'C:/Projects/WhiteoutLib/Corpus'
+    }
+    if (-not $PSBoundParameters.ContainsKey('CorpusFile')) {
+        $CorpusFile = "$PSScriptRoot/../tools/particle_diff/corpus_m3.txt"
+    }
+}
 
 $entries = Get-Content $CorpusFile |
     ForEach-Object { ($_ -split '#')[0].Trim() } |
@@ -79,13 +137,14 @@ foreach ($rel in $entries) {
     }
 
     # Flatten the relative path into a single baseline filename.
-    $key = (($rel -replace '[\\/ ]', '_') -replace '\.mdx$', '') + "_$mode"
+    $key = (($rel -replace '[\\/ ]', '_') -replace '\.(mdx|m2|m3)$', '') + "_$mode"
     $trace = Join-Path $BaselineDir "$key.txt"
     $image = Join-Path $BaselineDir "$key.raw"
 
     $argv = @('--draw-trace', $model, '--trace-frames', $Frames,
               '--draw-trace-camera-distance', $CameraDistance)
     if ($Hd) { $argv += '--draw-trace-hd' }
+    if ($Unlit) { $argv += '--draw-trace-unlit' }
     if ($Perturb -gt 0) { $argv += @('--draw-trace-perturb', $Perturb) }
     if ($Golden) { $argv += @('--draw-trace-golden', $image) }
 

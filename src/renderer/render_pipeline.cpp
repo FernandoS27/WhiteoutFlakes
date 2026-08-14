@@ -27,6 +27,12 @@
 #include "core/render_detail.h"
 #include "core/surface_pass_base.h"
 #include "renderer/profiles/wc3/wc3_profile.h"
+#if WDX_ENABLE_M2
+#include "renderer/profiles/wow/wow_profile.h"
+#endif
+#if WDX_ENABLE_M3
+#include "renderer/profiles/sc2_heroes/sc2_heroes_profile.h"
+#endif
 #include "renderer/profiles/wc3/wc3_shading.h"
 #include "renderer/profiles/wc3/wc3_sun.h"
 #include "renderer/shading/surface_pass.h"
@@ -1415,6 +1421,11 @@ void RenderPipeline::CleanupGFX() {
             g->Shutdown();
         if (auto* d = rs_.GetDofService())
             d->Shutdown();
+        // UnlitShading owns shaders, a constant buffer and a PSO cache through
+        // the same device, and has the same destructor-ordering hazard the
+        // three above shipped with. Released here for the same reason.
+        if (impl_->unlitShading_)
+            impl_->unlitShading_->ReleaseGpu();
 
         // Tear down CornEffects FIRST — its emitters hold references
         // into the AssetManager (assets_.Release(assetSlot_) in
@@ -2268,8 +2279,14 @@ shading::IShadingModel& RenderPipeline::ActiveShadingModel() {
     if (!impl_->wc3SdShading_) {
         impl_->wc3SdShading_ = std::make_unique<profiles::wc3::Wc3SdShading>(rs_);
         impl_->wc3HdShading_ = std::make_unique<profiles::wc3::Wc3HdShading>(rs_);
+        // Registered but never *active*: it is a target for individual
+        // surfaces (P9/P10's untextured M2/M3, and the debug toggle below),
+        // not a mode. `ActiveShadingModel` answers "which model classifies and
+        // collects", which is still a WC3 question.
+        impl_->unlitShading_ = std::make_unique<shading::UnlitShading>(rs_);
         impl_->shadingModels_.Register(impl_->wc3SdShading_.get());
         impl_->shadingModels_.Register(impl_->wc3HdShading_.get());
+        impl_->shadingModels_.Register(impl_->unlitShading_.get());
     }
     // RenderMode still selects globally — one model live at a time. Per-surface
     // selection is the mixed-shading work, which needs SceneHdrInSd because SD
@@ -2314,7 +2331,41 @@ core::IRenderProfile& RenderPipeline::ActiveProfile() {
         }
         impl_->wc3SdProfile_ = std::move(sd);
         impl_->wc3HdProfile_ = std::move(hd);
+#if WDX_ENABLE_M2
+        auto wow = std::make_unique<profiles::wow::WowProfile>(rs_.Settings());
+        wow->SetShadingModels({impl_->unlitShading_.get()});
+        const auto vwow = core::ValidateProfile(*wow);
+        if (!vwow.ok)
+            std::fprintf(stderr, "[profile] invalid WoW render profile: %s\n",
+                         vwow.error.c_str());
+        impl_->wowProfile_ = std::move(wow);
+#endif
+#if WDX_ENABLE_M3
+        auto sc2 = std::make_unique<profiles::sc2_heroes::Sc2HeroesProfile>(rs_.Settings());
+        sc2->SetShadingModels({impl_->unlitShading_.get()});
+        // Bloom gates on the service, like HD's — the profile is handed the
+        // predicate rather than reaching for it. GTAO and DoF are declared
+        // permanently off in the profile itself; see there for why.
+        sc2->SetPassPredicate(core::PassSlot::Bloom,
+                              [this] { return rs_.GetPostProcessService() != nullptr; });
+        const auto vsc2 = core::ValidateProfile(*sc2);
+        if (!vsc2.ok)
+            std::fprintf(stderr, "[profile] invalid SC2/Heroes render profile: %s\n",
+                         vsc2.error.c_str());
+        impl_->sc2HeroesProfile_ = std::move(sc2);
+#endif
     }
+#if WDX_ENABLE_M2
+    // The scene's product selects the frame. This is what SceneView::SetProduct
+    // and StorageBrowser::Product (P6) were for — until now nothing consumed
+    // the detection, so a wrong answer had no consequence and no test.
+    if (impl_->wowProfile_ && rs_.Scene().Product() == ProductId::Wow)
+        return *impl_->wowProfile_;
+#endif
+#if WDX_ENABLE_M3
+    if (impl_->sc2HeroesProfile_ && rs_.Scene().Product() == ProductId::Sc2)
+        return *impl_->sc2HeroesProfile_;
+#endif
     return (impl_->frameRenderMode_ == RenderMode::HD) ? *impl_->wc3HdProfile_
                                                        : *impl_->wc3SdProfile_;
 }
@@ -2328,7 +2379,9 @@ void RenderPipeline::RenderGeosets(GeosetBucket bucket) {
 
     const Vector3f camPos = rs_.Pipeline().FrameCamera().GetSource();
     auto collected = render_detail::BuildDrawLists(rs_.Scene().Actors().All(),
-                                                   ComputeSelectedLod(), camPos, active);
+                                                   ComputeSelectedLod(), camPos, active,
+                                                   rs_.Settings().DebugUnlitOddGeosets(),
+                                                   &impl_->shadingModels_);
     if (collected.lists.opaque.empty() && collected.lists.transparent.empty())
         return;
 
@@ -2336,6 +2389,13 @@ void RenderPipeline::RenderGeosets(GeosetBucket bucket) {
     ctx.viewportWidth = Width();
     ctx.viewportHeight = Height();
     ctx.cameraPos = camPos;
+    // The WC3 models get view/projection through their own bls::FrameInputs,
+    // so these sat at identity until a model without that machinery needed
+    // them. Filling them here rather than in UnlitShading keeps the camera a
+    // property of the pass, which is what PassContext is for.
+    ctx.view = FrameCamera().GetViewMatrix();
+    ctx.projection = FrameCamera().ProjectionRH(
+        Height() > 0 ? static_cast<f32>(Width()) / static_cast<f32>(Height()) : 1.0f);
 
     auto& traceCtx = debug::DrawTraceRecorder::Instance().Context();
     shading::SurfacePass pass(impl_->shadingModels_);
@@ -2391,10 +2451,15 @@ void RenderPipeline::RenderTransparentScene() {
     geoCtx.cameraPos = camPos;
     geoCtx.viewportWidth = Width();
     geoCtx.viewportHeight = Height();
+    geoCtx.view = FrameCamera().GetViewMatrix();
+    geoCtx.projection = FrameCamera().ProjectionRH(
+        Height() > 0 ? static_cast<f32>(Width()) / static_cast<f32>(Height()) : 1.0f);
     const bool haveGeo = active.IsAvailable() && !rs_.Scene().Actors().All().empty();
     if (haveGeo) {
         geo = render_detail::BuildDrawLists(rs_.Scene().Actors().All(), ComputeSelectedLod(),
-                                            camPos, active);
+                                            camPos, active,
+                                            rs_.Settings().DebugUnlitOddGeosets(),
+                                            &impl_->shadingModels_);
     }
 
     // --- PE2 particles: build geometry into the shared VB ---

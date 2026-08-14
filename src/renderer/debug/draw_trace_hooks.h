@@ -38,6 +38,15 @@ void RecordGeosetDraw(TraceDraw& d, const render_detail::RenderableView& view,
                       const model::GPUGeoset& geo, const profiles::wc3::UnpackedLayer& layer,
                       i32 layerIndex, const bls::FrameInputs& frame);
 
+// A geoset draw from a model with no layers, no material and no light palette.
+// Shares the identity, ordering and geometry fields with RecordGeosetDraw and
+// leaves the rest at their defaults — a separate entry point rather than a
+// nullable-layer parameter, because "there is no layer" is a different claim
+// from "the layer's fields happened to be zero", and a baseline cannot tell
+// those apart after the fact.
+void RecordUnlitDraw(TraceDraw& d, const render_detail::RenderableView& view,
+                     const model::GPUGeoset& geo, const core::PassContext& ctx);
+
 // Non-geoset producers: particles, ribbons and corn are not IShadingModel
 // draws, so they record identity by owning actor handle plus a unit index.
 // The hooks stay for the life of the refactor — collapsing them into the

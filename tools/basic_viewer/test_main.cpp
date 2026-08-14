@@ -341,7 +341,7 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
                         const std::filesystem::path& mdxPath, const std::string& recordPath,
                         const std::string& checkPath, const std::string& goldenPath, i32 frames,
                         bool hdMode, f32 distanceTol, i32 cameraDistance, i32 perturbSeed,
-                        i32 instances) {
+                        i32 instances, bool unlitOddGeosets) {
     namespace wf = whiteout::flakes;
     namespace dbg = wf::renderer::debug;
 
@@ -377,6 +377,11 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
     settings.SetBackgroundColor(0, 0, 0);
     settings.SetLodOverride(0);
     settings.SetLightingMode(wf::renderer::LightingMode::InGame);
+    // The multi-model arm. On, every odd-indexed geoset is drawn by
+    // UnlitShading instead of the WC3 model, so one frame exercises
+    // SurfacePass's open/close transition and the key.model sort term. Off is
+    // what every byte-identical baseline is recorded and checked with.
+    settings.SetDebugUnlitOddGeosets(unlitOddGeosets);
 
     // The gate's perturbation arm: a different first handle puts every actor
     // in a different hash bucket, so any draw path that follows unordered_map
@@ -881,6 +886,7 @@ int main(int argc, char* argv[]) {
     std::string particleTraceCheck;
     bool drawTrace = false;
     bool drawTraceHd = false;
+    bool drawTraceUnlit = false;
     std::string drawTraceRecord;
     std::string drawTraceCheck;
     std::string drawTraceGolden;
@@ -996,6 +1002,8 @@ int main(int argc, char* argv[]) {
             drawTraceGolden = argv[++i];
         } else if (std::strcmp(a, "--draw-trace-hd") == 0) {
             drawTraceHd = true;
+        } else if (std::strcmp(a, "--draw-trace-unlit") == 0) {
+            drawTraceUnlit = true;
         } else if (std::strcmp(a, "--draw-trace-distance-tol") == 0 && i + 1 < argc) {
             drawTraceDistanceTol = static_cast<f32>(std::atof(argv[++i]));
         } else if (std::strcmp(a, "--draw-trace-camera-distance") == 0 && i + 1 < argc) {
@@ -1192,7 +1200,8 @@ int main(int argc, char* argv[]) {
     if (drawTrace)
         return RunDrawTrace(renderer, scene, backend, mdxPath, drawTraceRecord, drawTraceCheck,
                             drawTraceGolden, particleDiffFrames, drawTraceHd, drawTraceDistanceTol,
-                            drawTraceCameraDistance, drawTracePerturb, drawTraceInstances);
+                            drawTraceCameraDistance, drawTracePerturb, drawTraceInstances,
+                            drawTraceUnlit);
 
     whiteout::flakes::ViewerApp app(renderer);
     if (!app.Open(1024, 768, backend)) {

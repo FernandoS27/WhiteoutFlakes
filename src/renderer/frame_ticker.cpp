@@ -242,8 +242,12 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
             globalTimeMs = localTime;
         }
 
-        FrameState fs = actor.animation.Source()->Evaluate(seqIdx, localTimeMs, globalTimeMs,
-                                                           actor.worldTransform, ctx.camPos);
+        const ClipRef clip{.sequence = seqIdx, .timeMs = localTimeMs};
+        PoseRequest req = PoseRequest::OneClip(clip);
+        req.globalTimeMs = globalTimeMs;
+        req.world = actor.ScaledWorldTransform();
+        req.cameraPos = ctx.camPos;
+        FrameState fs = actor.animation.Source()->Evaluate(req);
         actor.ApplyFrameState(fs, localTimeMs, ctx);
     }
 

@@ -85,9 +85,11 @@ public:
         return {s};
     }
 
-    FrameState Evaluate(i32 /*sequenceIdx*/, i32 /*timeMs*/, i32 /*globalTimeMs*/,
-                        const Matrix44f& worldTransform,
-                        const Vector3f& /*cameraPos*/) const override {
+    // A standalone corn effect has no skeleton and no tracks: the effect's own
+    // runtime owns its timeline, so every field of the request but `world` is
+    // irrelevant here rather than merely unimplemented.
+    FrameState Evaluate(const ::whiteout::flakes::PoseRequest& req) const override {
+        const Matrix44f& worldTransform = req.world;
         FrameState fs;
         FrameState::CornFrameState cs; // defaults: visible, identity, full multipliers
         cs.emitterId = 0;

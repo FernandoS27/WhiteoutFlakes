@@ -352,8 +352,17 @@ bool WriteCurrentModel(ViewerApp& app, const std::string& outPath,
         std::fprintf(stderr, "[viewer] Save As: no source model to write\n");
         return false;
     }
+    // Save As writes an MDX/MDL through whiteout::mdx::Writer, so it needs the
+    // parsed MDX model and not a format-neutral snapshot. Refuse a non-MDX
+    // template rather than writing something that is not the model the user is
+    // looking at.
+    const auto* mdxAdapter = dynamic_cast<const io::MdxModelAdapter*>(tmpl->adapter.get());
+    if (!mdxAdapter) {
+        std::fprintf(stderr, "[viewer] Save As: this model is not MDX; nothing to write\n");
+        return false;
+    }
     // Copy so texture-path rewrites during export don't touch the live template.
-    whiteout::mdx::Model model = tmpl->adapter->SourceModel();
+    whiteout::mdx::Model model = mdxAdapter->SourceModel();
     if (exportTextures) {
         const ExportStats st = ExportModelTextures(
             app, model, std::filesystem::path(io::FsPathFromUtf8(outPath)).parent_path(), formatExt);

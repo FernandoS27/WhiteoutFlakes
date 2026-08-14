@@ -1,0 +1,24 @@
+# World of Warcraft `.m2` corpus for the P9 white-render gate.
+#
+# Paths are relative to C:/Projects/WhiteoutLib/Corpus/WoW. Loose files with
+# their `.skin` siblings beside them — a shipped install's fileDataIDs cannot
+# be resolved without a listfile, so this is what a gate can actually reach.
+#
+# Run with (needs a build configured -DWDX_ENABLE_M2=ON):
+#   scripts/render-diff.ps1 -Record -Golden -M2 -Exe <m2-build>/standalone/RelWithDebInfo/WhiteoutFlakes.exe
+#   scripts/render-diff.ps1 -Check  -Golden -M2 -Exe <m2-build>/standalone/RelWithDebInfo/WhiteoutFlakes.exe
+
+creature/aggramar/aggramar.m2
+creature/airelemental/airelemental.m2
+creature/alexstrasza/alexstrasza.m2
+creature/alexstrasza/ladyalexstrasa.m2
+creature/alexstrasza/ladyalexstrasa2.m2
+creature/alleria/alleria.m2
+creature/aqir/aqir.m2
+creature/athissa/athissa.m2
+creature/batpet/batpet.m2
+creature/bloodtick/bloodtick.m2
+creature/broom/be_broom01.m2
+creature/cow/cow.m2
+creature/crabmount/crabmount.m2
+creature/cryptfiend/cryptfiend.m2

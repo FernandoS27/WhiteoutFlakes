@@ -86,8 +86,8 @@ if ($Clean) {
 # bad build.
 $excludePatterns = @(
     '/src/renderer/imgui/'
-    '/src/renderer/profiles/m2/'
-    '/src/renderer/profiles/m3/'
+    '/src/renderer/profiles/wow/'
+    '/src/renderer/profiles/sc2_heroes/'
     '/src/io/m2/'
     '/src/io/m3/'
     '/src/gfx/webgpu/'

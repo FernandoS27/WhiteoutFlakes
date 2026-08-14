@@ -1719,13 +1719,13 @@ std::vector<PE1EmitterConfig> MaxSceneAdapter::GetPE1Configs() {
 
 // ============================================================================
 // IAnimationSource::Evaluate() — compute per-frame state from Max scene.
-// Max controls the timeline, so sequenceIdx + globalTimeMs + worldTransform +
-// cameraPos are unused here; only timeMs (advanced via Max's TimeValue) feeds in.
+// Max controls the timeline and owns the world transform, so the only thing
+// read out of the request is the primary clip's local time, which the host
+// advances via Max's TimeValue.
 // ============================================================================
 
-FrameState MaxSceneAdapter::Evaluate(i32 /*sequenceIdx*/, i32 timeMs, i32 /*globalTimeMs*/,
-                                     const Matrix44f& /*worldTransform*/,
-                                     const Vector3f& /*cameraPos*/) const {
+FrameState MaxSceneAdapter::Evaluate(const ::whiteout::flakes::PoseRequest& req) const {
+    const i32 timeMs = req.PrimaryClip().timeMs;
     // Convert ms → Max ticks (0 if the tick rate is unavailable).
     const i32 tpf = GetTicksPerFrame(), fps = GetFrameRate();
     const TimeValue t =
