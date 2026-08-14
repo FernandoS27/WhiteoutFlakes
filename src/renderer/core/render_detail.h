@@ -76,8 +76,10 @@ struct CollectedDrawLists {
 // SurfaceKey::blend is a load-time bucket-reservation hint and nothing here
 // reads it.
 //
-// RenderMode still selects globally, one model live at a time, so the model
-// also decides every surface's SurfaceKey::model. Deriving that from
+// One WC3 model is live per frame — RenderMode picks which — so it also
+// decides every WC3 surface's SurfaceKey::model. Actors carrying their own
+// `shadingModel` (M2/M3, which name UnlitShading) override that per actor,
+// which is what lets a foreign model draw beside a WC3 one. Deriving it from
 // layer.shaderId instead would route a shaderId-1 surface in SD mode to the HD
 // model — a behaviour change disguised as a refactor, since the classification
 // rule is render-mode independent and applies the HD fading test regardless.

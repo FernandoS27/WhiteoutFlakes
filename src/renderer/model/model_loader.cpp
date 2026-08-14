@@ -658,8 +658,12 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
     if (!source)
         return nullptr;
 
-    if (product != ProductId::Neutral && rs_.Scene().Product() == ProductId::Neutral)
+    if (product != ProductId::Neutral && rs_.Scene().Product() == ProductId::Neutral) {
         rs_.Scene().SetProduct(product);
+        // Detection changed the profile, so the host's re-stage trigger has to
+        // fire exactly as it would for an explicit SceneView::SetProduct.
+        rs_.Settings().MarkRenderModeDirty();
+    }
 
     Actor* actor = SpawnUnitFromSource(std::move(source), initialTm);
     if (actor)

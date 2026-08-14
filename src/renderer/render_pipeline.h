@@ -156,19 +156,34 @@ public:
     // d3d12 and fail validation on AMD Vulkan.
     gfx::Format DepthStencilFormat() const;
 
-    // The frame the active RenderMode declares: pass order, conditions, target
-    // set, colour space, world scale. Built alongside the shading models and
-    // validated once.
+    // The frame this scene runs: pass order, conditions, target set, colour
+    // space, world scale. Selected by the scene's ProductId, falling back to
+    // RenderMode's choice between the two WC3 profiles. Built alongside the
+    // shading models and validated once.
     //
     // Public because the profile is the answer to "what does this product's
     // frame look like", and ModelLoader has to ask it for WorldScale at spawn.
     // Keeping it private would mean a one-off forwarder per question.
     core::IRenderProfile& ActiveProfile();
-    // Render mode snapshot for the in-flight frame. See the comment on
-    // `Impl::frameRenderMode_`. Use this anywhere a per-frame decision
-    // depends on HD vs SD; reading `Settings().GetRenderMode()` mid-
-    // frame is racy.
-    RenderMode FrameRenderMode() const;
+
+    // Extra colour attachments the in-flight frame's scene pass binds, written
+    // into @p out. Returns 0 for a single-attachment frame, 2 for an MRT one
+    // (slot 1 = linear depth, slot 2 = world normal).
+    //
+    // Every PSO submitted into the scene pass has to declare the same
+    // attachment count or Vulkan and WebGPU reject the bind — including
+    // shaders that write SV_Target0 alone, which is most of them. Ask this
+    // rather than the render mode: the two agree for WC3 and stop agreeing for
+    // a profile selected by product.
+    u32 SceneExtraRtvFormats(gfx::Format out[2]) const;
+
+    // There is deliberately no FrameRenderMode() accessor. It existed so
+    // per-frame code could branch on HD vs SD, and every one of those branches
+    // was really asking about the frame's shape — scene format, colour space,
+    // attachment count, world scale. All of those live on IRenderProfile now,
+    // and a profile selected by the scene's ProductId makes the mode's answer
+    // wrong. `Impl::frameRenderMode_` survives as the host's input to
+    // ActiveProfile / ActiveShadingModel and nothing else.
 
     // ---- Surface size + per-frame CB exposed for non-friend consumers
     //      (DebugRenderer, BLS pass templates, etc.) ----

@@ -160,24 +160,15 @@ void UnlitShading::Draw(const render_detail::DrawItem& item, const core::PassCon
     PsoKey key;
     key.rtv = rs_.Pipeline().SceneTargetFormat();
     key.dsv = rs_.Pipeline().DepthStencilFormat();
-    // The HD scene pass binds a three-attachment G-buffer. The PSO has to
+    // An MRT scene pass binds a three-attachment G-buffer, and the PSO has to
     // declare the same attachment count or Vulkan and WebGPU reject the bind —
     // even though this shader writes SV_Target0 alone and the backend masks
     // the other two. That is a pipeline-format concern and not an output
     // signature: `Emits` below still answers Color|Depth, honestly.
-    //
-    // Asked of the *profile*, because the profile is what decides the bind:
-    // runScenePass opens three attachments exactly when LinearShading() is
-    // true. RenderMode agrees with that for both WC3 profiles, so this is an
-    // exact substitution there — but it stops agreeing the moment a profile is
-    // selected by product rather than by mode. WowProfile in an HD-mode viewer
-    // would have declared two extra attachments against a one-attachment pass,
-    // and Sc2HeroesProfile in an SD-mode viewer the reverse.
-    if (rs_.Pipeline().ActiveProfile().LinearShading()) {
-        key.extra0 = RenderPipeline::kLinearDepthFormat;
-        key.extra1 = RenderPipeline::kNormalBufferFormat;
-        key.extraRtvCount = 2;
-    }
+    gfx::Format extra[2] = {gfx::Format::Unknown, gfx::Format::Unknown};
+    key.extraRtvCount = rs_.Pipeline().SceneExtraRtvFormats(extra);
+    key.extra0 = extra[0];
+    key.extra1 = extra[1];
     const gfx::PipelineHandle pso = GetOrBuildPso(key);
     if (pso == gfx::PipelineHandle::Invalid)
         return;

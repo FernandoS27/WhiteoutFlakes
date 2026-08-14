@@ -90,9 +90,11 @@ struct ModelTemplate {
 
     void ReleaseGPU(gfx::IGFXDevice& gfx);
 
-    // True if any layer uses a non-zero BLS shaderId (HD pipeline). The
-    // application uses this to decide which render mode to set on the
-    // RenderSettings — the renderer no longer auto-flips on load.
+    // HD if any layer uses a non-zero BLS shaderId. A hint the host may act on
+    // by setting RenderSettings' mode — the renderer never auto-flips on load,
+    // and since P5 the mode only chooses between the two WC3 profiles at all.
+    // Meaningless for a non-WC3 template, which has no BLS layers and so
+    // always reports SD.
     RenderMode PreferredRenderMode() const {
         for (const auto& mat : materials)
             for (const auto& layer : mat.layers)

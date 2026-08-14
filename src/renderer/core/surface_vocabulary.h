@@ -181,17 +181,6 @@ struct SurfaceKey {
     PassMask passes = PassMask::Default;
 };
 
-// The per-frame animated state Classify reads. A *result* type, never an
-// operand: blending two of these is adapter-internal at track-sample time for
-// every format, and keeping it one-way is what preserves that.
-struct AnimatedSurface {
-    f32 geosetAlpha = 1.0f;
-    f32 parentVisibility = 1.0f;
-    f32 layerAlpha = 1.0f;
-    i32 filterMode = 0;
-    i32 shaderId = 0;
-};
-
 // The vertex buffers a draw can bind. Base is WC3's fully-interleaved
 // `Vertex` {position, normal, color, uv} at sizeof == 48 — NOT a position
 // stream. BaseUv1 is its twin, a second complete copy differing only in which
@@ -213,10 +202,6 @@ enum class StreamId : u8 {
 
     Count,
 };
-
-inline constexpr u8 StreamBit(StreamId s) {
-    return static_cast<u8>(1u << static_cast<u8>(s));
-}
 
 // Vertex streams and derived data a surface requires. WC3 asks for none of the
 // optional ones: its `Vertex` is fully interleaved and stays that way, so

@@ -94,12 +94,17 @@ public:
     /// @brief Camera presets attached to this actor's source model.
     std::vector<CameraPreset> CameraPresets() const;
 
-    /// @brief Render mode the actor's template expects (`HD` if any
-    ///        material layer uses a non-zero BLS shaderId, else `SD`).
-    ///        Hosts call this after `SpawnUnit` and forward to
-    ///        `SettingsView::SetRenderMode` so SD models don't render
-    ///        through the HD pipeline (which mis-blends multi-layer SD
-    ///        materials) and vice-versa.
+    /// @brief A hint: which Warcraft III frame this actor's template would
+    ///        prefer (`HD` if any material layer uses a non-zero BLS shaderId,
+    ///        else `SD`). Hosts call this after `SpawnUnit` and forward it to
+    ///        `SettingsView::SetRenderMode` so SD models don't render through
+    ///        the HD pipeline (which mis-blends multi-layer SD materials) and
+    ///        vice-versa.
+    ///
+    ///        A hint and not a decision: the frame is chosen by the scene's
+    ///        @ref ProductId first, and only falls back to the render mode for
+    ///        Warcraft III content. A non-WC3 template reports `SD`, which
+    ///        carries no meaning for it — the host is free to ignore this.
     RenderMode PreferredRenderMode() const;
 
     /// @brief Every child-model path this actor's template will

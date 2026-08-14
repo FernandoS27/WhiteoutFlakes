@@ -76,8 +76,17 @@ public:
     void SetRenderMode(RenderMode m) {
         if (renderMode_ != m) {
             renderMode_ = m;
-            renderModeDirty_ = true;
+            MarkRenderModeDirty();
         }
+    }
+    // "The frame changed, re-stage what depends on it" — which since P5 is a
+    // change of *profile*, not only of mode. A scene's ProductId selects the
+    // profile directly, so setting it fires this too; the flag keeps its
+    // render-mode name because it is bound
+    // (whiteout_flakes_FlakesSettingsView_ConsumeRenderModeDirty) and renaming
+    // it would break the C ABI for a spelling.
+    void MarkRenderModeDirty() {
+        renderModeDirty_ = true;
     }
     bool ConsumeRenderModeDirty() {
         return renderModeDirty_.exchange(false);

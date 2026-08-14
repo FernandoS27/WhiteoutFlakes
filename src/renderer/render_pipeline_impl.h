@@ -58,6 +58,17 @@ struct RenderPipeline::Impl {
     bool frameDrawImGui_ = true;
 
     RenderMode frameRenderMode_ = RenderMode::SD;
+    // The profile the in-flight frame is running, latched beside the mode and
+    // for the same reason. After P5 the profile — not the mode — is what says
+    // whether the scene pass is MRT, what format it lands in, and what colour
+    // space it shades in; RenderMode only picks *which* WC3 profile. A frame
+    // that asked the mode instead would get the right answer for WC3 and the
+    // wrong one for any profile selected by product.
+    //
+    // Null until the first RenderViewport latches it. Queries that can run
+    // before any frame (PSO warm-up) fall back to the mode, which is what they
+    // read before this existed.
+    const core::IRenderProfile* frameProfile_ = nullptr;
 
     // Shading models, long-lived so they can hold per-model caches and so
     // P8/P9/P10 have somewhere to register their ids. Held by base pointer to

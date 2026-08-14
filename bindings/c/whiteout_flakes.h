@@ -611,7 +611,9 @@ int32_t whiteout_flakes_FlakesActorView_MaterialCount(const whiteout_FlakesActor
 int32_t whiteout_flakes_FlakesActorView_CollisionShapeCount(const whiteout_FlakesActorView* self);
 /* Camera presets attached to this actor's source model. */
 struct whiteout_CameraPresetList* whiteout_flakes_FlakesActorView_CameraPresets(const whiteout_FlakesActorView* self);
-/* Render mode the actor's template expects (`HD` if any material layer uses a non-zero BLS shaderId, else `SD`). Hosts call this after `SpawnUnit` and forward to `SettingsView::SetRenderMode` so SD models don't render through the HD pipeline (which mis-blends multi-layer SD materials) and vice-versa. */
+/* A hint: which Warcraft III frame this actor's template would prefer (`HD` if any material layer uses a non-zero BLS shaderId, else `SD`). Hosts call this after `SpawnUnit` and forward it to `SettingsView::SetRenderMode` so SD models don't render through the HD pipeline (which mis-blends multi-layer SD materials) and vice-versa. */
+/*  */
+/* A hint and not a decision: the frame is chosen by the scene's @ref ProductId first, and only falls back to the render mode for Warcraft III content. A non-WC3 template reports `SD`, which carries no meaning for it — the host is free to ignore this. */
 int32_t whiteout_flakes_FlakesActorView_PreferredRenderMode(const whiteout_FlakesActorView* self);
 /* Every child-model path this actor's template will eventually need: attachment slots (`AttachmentConfig`) and legacy PE1 particle emitters (`PE1EmitterConfig`). Hosts running an async loader (web build) use this to eagerly prefetch the child MDX bytes so the first attachment spawn / first PE1 fire lands in a primed cache rather than triggering a miss. */
 size_t whiteout_flakes_FlakesActorView_ChildModelPaths_count(const whiteout_FlakesActorView* self);

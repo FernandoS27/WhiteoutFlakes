@@ -7,6 +7,10 @@
 
 namespace whiteout::flakes::renderer {
 
+namespace core {
+class IRenderProfile;
+}
+
 // Public-API value types are re-imported into the renderer-internal namespace
 // so existing code that says `whiteout::flakes::renderer::Rect` /
 // `whiteout::flakes::renderer::RenderMode` / etc. keeps compiling. The
@@ -80,13 +84,19 @@ struct RenderTarget {
         u32 pingPong = 0; // even/odd selects aoBuffer vs aoBufferHistory as "current"
         u32 historyGen = 0;
         bool prevValid = false;
-        // The render mode THIS target last rendered in. A render-mode flip
-        // invalidates GTAO history, but only for the target whose own mode
-        // changed — a different viewport (e.g. an embedded HD thumbnail while the
-        // main view is SD) must NOT reset ours. `modeKnown` is false until the
-        // first render so the first frame doesn't spuriously invalidate.
-        RenderMode lastMode = RenderMode::SD;
-        bool modeKnown = false;
+        // The profile THIS target last rendered with. A profile change
+        // invalidates GTAO history — the G-buffer isn't populated by every
+        // frame shape, and the previous-camera matrices map onto a
+        // now-different opaque scene. Detected per target, not globally:
+        // history is per-target, so a different viewport (e.g. an embedded HD
+        // thumbnail while the main view is SD) must NOT reset ours.
+        //
+        // Keyed on the profile rather than the render mode because since P5
+        // the profile is what decides the frame's shape, and a scene whose
+        // ProductId changes swaps profiles without touching the mode. Null
+        // until the first render, so the first frame doesn't spuriously
+        // invalidate.
+        const core::IRenderProfile* lastProfile = nullptr;
     } gtao;
 
     // Bloom scratch buffers. Full-res HDR scratch the bloom pass ping-pongs

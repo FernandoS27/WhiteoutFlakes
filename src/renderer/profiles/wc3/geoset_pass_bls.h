@@ -163,13 +163,9 @@ public:
         auto reqLocal = bls::MakePsoRequest(impl->blsSdProgram_, layout, matParams, permLocal);
 
         reqLocal.rtvFormat = rs_.Pipeline().SceneTargetFormat();
-        // HD mode binds a 3-RT G-buffer; the SD-on-HD PSO must match the
-        // attachment count even though it only writes SV_Target0.
-        if (impl->frameRenderMode_ == RenderMode::HD) {
-            reqLocal.extraRtvFormats[0] = RenderPipeline::kLinearDepthFormat;
-            reqLocal.extraRtvFormats[1] = RenderPipeline::kNormalBufferFormat;
-            reqLocal.extraRtvCount = 2;
-        }
+        // An MRT scene pass binds a 3-RT G-buffer; the SD-on-HD PSO must match
+        // the attachment count even though it only writes SV_Target0.
+        reqLocal.extraRtvCount = rs_.Pipeline().SceneExtraRtvFormats(reqLocal.extraRtvFormats);
         reqLocal.dsvFormat = impl->depthStencilFormat_;
         auto pso = impl->blsPsoBuilder_->GetOrBuild(reqLocal);
         if (pso == gfx::PipelineHandle::Invalid)

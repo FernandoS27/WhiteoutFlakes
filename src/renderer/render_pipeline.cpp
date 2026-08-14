@@ -118,11 +118,20 @@ const gfx::IGFXDevice* RenderPipeline::Gfx() const {
 }
 
 gfx::Format RenderPipeline::SceneTargetFormat() const {
-    // HD always renders to the HDR scene target. SD does too when the
-    // host opts into SceneHdrInSd (so SD geometry/particle PSOs build for
-    // the HDR rtv and additive content rolls off through the tonemap
-    // instead of clipping on the LDR swap chain). See RenderViewport.
-    if (impl_->frameRenderMode_ == RenderMode::HD || rs_.Settings().SceneHdrInSd())
+    // The profile declares where the scene lands. For WC3 that is HD always,
+    // and SD when the host opts into SceneHdrInSd (so SD geometry/particle
+    // PSOs build for the HDR rtv and additive content rolls off through the
+    // tonemap instead of clipping on the LDR swap chain) — Wc3SdProfile
+    // already folds that flag into SceneColorFormat, so asking the profile is
+    // an exact substitution for asking both. See RenderViewport.
+    //
+    // Before the first frame there is no latched profile, so fall back to what
+    // this read before the latch existed.
+    const bool sceneToHdr =
+        impl_->frameProfile_
+            ? impl_->frameProfile_->SceneColorFormat() == kHdrSceneFormat
+            : (impl_->frameRenderMode_ == RenderMode::HD || rs_.Settings().SceneHdrInSd());
+    if (sceneToHdr)
         return kHdrSceneFormat;
     // SD mode renders directly to the swap-chain back buffer — PSO
     // rtvFormat must match its actual format. On most backends that's
@@ -152,8 +161,19 @@ gfx::Format RenderPipeline::DepthStencilFormat() const {
     return impl_->depthStencilFormat_;
 }
 
-RenderMode RenderPipeline::FrameRenderMode() const {
-    return impl_->frameRenderMode_;
+u32 RenderPipeline::SceneExtraRtvFormats(gfx::Format out[2]) const {
+    // LinearShading is the MRT question: runScenePass opens the three-
+    // attachment G-buffer exactly when it is true. Note this is NOT the same
+    // as "lands in the HDR target" — SceneHdrInSd routes SD colour through the
+    // HDR target while keeping the single-attachment forward pass, and
+    // Wc3SdProfile reports linear=false / format=HDR to say precisely that.
+    const bool mrt = impl_->frameProfile_ ? impl_->frameProfile_->LinearShading()
+                                          : (impl_->frameRenderMode_ == RenderMode::HD);
+    if (!mrt)
+        return 0;
+    out[0] = kLinearDepthFormat;
+    out[1] = kNormalBufferFormat;
+    return 2;
 }
 
 RenderTarget* RenderPipeline::PrimaryTarget() {
@@ -275,13 +295,9 @@ void RenderPipeline::DrawParticleEmitter(const particle::EmitterDrawList& dl,
     auto req =
         bls::MakePsoRequest(impl_->blsSdProgram_, bls::VertexLayoutKind::ParticleSD, mp, perm);
     req.rtvFormat = SceneTargetFormat();
-    // HD scene pass is MRT (slot 1 = linearDepth, slot 2 = normal); the SD
-    // particle PSO must match the attachment count or Vulkan/WebGPU reject it.
-    if (impl_->frameRenderMode_ == RenderMode::HD) {
-        req.extraRtvFormats[0] = kLinearDepthFormat;
-        req.extraRtvFormats[1] = kNormalBufferFormat;
-        req.extraRtvCount = 2;
-    }
+    // An MRT scene pass needs every PSO in it to declare the same attachment
+    // count, even one that writes SV_Target0 alone.
+    req.extraRtvCount = SceneExtraRtvFormats(req.extraRtvFormats);
     req.dsvFormat = impl_->depthStencilFormat_;
     auto pso = impl_->blsPsoBuilder_->GetOrBuild(req);
     if (pso == gfx::PipelineHandle::Invalid)
@@ -445,15 +461,9 @@ bool RenderPipeline::RenderSplatsBls() {
         auto req =
             bls::MakePsoRequest(impl_->blsSdProgram_, bls::VertexLayoutKind::ParticleSD, mp, perm);
         req.rtvFormat = SceneTargetFormat();
-        // Particles are drawn inside the main scene pass. In HD mode
-        // that pass is MRT (slot 1 = linearDepth, slot 2 = normal); the
-        // SD particle PSO has to match the attachment count or
-        // Vulkan/WebGPU validation rejects the bind.
-        if (impl_->frameRenderMode_ == RenderMode::HD) {
-            req.extraRtvFormats[0] = kLinearDepthFormat;
-            req.extraRtvFormats[1] = kNormalBufferFormat;
-            req.extraRtvCount = 2;
-        }
+        // Particles are drawn inside the main scene pass, so they inherit its
+        // attachment count.
+        req.extraRtvCount = SceneExtraRtvFormats(req.extraRtvFormats);
         req.dsvFormat = impl_->depthStencilFormat_;
         auto pso = impl_->blsPsoBuilder_->GetOrBuild(req);
         if (pso == gfx::PipelineHandle::Invalid)
@@ -571,11 +581,7 @@ void RenderPipeline::DrawRibbonStrip(const RibbonDrawUnit& u, const bls::FrameIn
     auto req =
         bls::MakePsoRequest(impl_->blsSdProgram_, bls::VertexLayoutKind::ParticleSD, mp, perm);
     req.rtvFormat = SceneTargetFormat();
-    if (impl_->frameRenderMode_ == RenderMode::HD) {
-        req.extraRtvFormats[0] = kLinearDepthFormat;
-        req.extraRtvFormats[1] = kNormalBufferFormat;
-        req.extraRtvCount = 2;
-    }
+    req.extraRtvCount = SceneExtraRtvFormats(req.extraRtvFormats);
     req.dsvFormat = impl_->depthStencilFormat_;
     auto pso = impl_->blsPsoBuilder_->GetOrBuild(req);
     if (pso == gfx::PipelineHandle::Invalid)
@@ -1562,7 +1568,12 @@ bool RenderPipeline::CreatePipelines() {
 }
 
 gfx::PipelineHandle RenderPipeline::CurrentLinePSO() const {
-    if (impl_->frameRenderMode_ == RenderMode::HD)
+    // The MRT question, not the format question: linePSOHdr_ declares the two
+    // extra attachments, the lazy SD one declares none. SceneHdrInSd puts an
+    // LDR-shaded frame in the HDR target with a single attachment, and takes
+    // the second branch — which then builds for the HDR format below.
+    gfx::Format extra[2];
+    if (SceneExtraRtvFormats(extra) != 0)
         return impl_->linePSOHdr_;
 
     const gfx::Format wantFmt = SceneTargetFormat();
@@ -1682,19 +1693,6 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     // the scene pass attaches the SRGB swap chain while CurrentLinePSO
     // hands out the HDR-rtv line PSO. See `Impl::frameRenderMode_`.
     impl_->frameRenderMode_ = rs_.Settings().GetRenderMode();
-    // Render-mode flip invalidates GTAO's history (the G-buffer wasn't populated
-    // during SD frames, and the previous-camera matrices map onto the
-    // now-different opaque scene). Detect this PER TARGET, not globally: GTAO
-    // history is per-target, so only the target whose OWN mode changed should
-    // drop its history. A global reset here thrashes every target's history every
-    // frame in a mixed-mode multi-viewport host — e.g. an embedded HD thumbnail
-    // grid rendering while the main document is SD, which flips the global mode
-    // twice per frame and would otherwise never let the thumbnails' temporal
-    // denoise accumulate (HD-only shimmer).
-    if (target.gtao.modeKnown && target.gtao.lastMode != impl_->frameRenderMode_)
-        target.gtao.prevValid = false; // our mode changed; our last AO is stale
-    target.gtao.lastMode = impl_->frameRenderMode_;
-    target.gtao.modeKnown = true;
     // `useHdr` gates the HD-only deferred machinery: the 3-RTV G-buffer, GTAO
     // and bloom (all need the linearDepth/normal slots the HD opaque pass
     // populates). `sceneToHdr` is the looser question of "does the scene land
@@ -1708,8 +1706,20 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     // SceneHdrInSd opt-in. Building the profile here is also what runs
     // ValidateProfile against the real declarations.
     core::IRenderProfile& profile = ActiveProfile();
+    // Latch it for the frame, beside the mode and before anything asks
+    // SceneTargetFormat / SceneExtraRtvFormats — those read the latch.
+    impl_->frameProfile_ = &profile;
     const bool useHdr = profile.LinearShading();
     const bool sceneToHdr = profile.SceneColorFormat() == kHdrSceneFormat;
+
+    // A profile change invalidates this target's GTAO history. Per target, not
+    // globally: a mixed multi-viewport host (an embedded HD thumbnail grid
+    // rendering while the main document is SD) flips profiles twice per frame,
+    // and a global reset would never let the thumbnails' temporal denoise
+    // accumulate — HD-only shimmer.
+    if (target.gtao.lastProfile && target.gtao.lastProfile != &profile)
+        target.gtao.prevValid = false;
+    target.gtao.lastProfile = &profile;
 
     // Frame capture (off unless exporting): BeginFrame redirects the final
     // composite to an off-screen target and EndFrame (below) copies it out +
@@ -2288,9 +2298,17 @@ shading::IShadingModel& RenderPipeline::ActiveShadingModel() {
         impl_->shadingModels_.Register(impl_->wc3HdShading_.get());
         impl_->shadingModels_.Register(impl_->unlitShading_.get());
     }
-    // RenderMode still selects globally — one model live at a time. Per-surface
-    // selection is the mixed-shading work, which needs SceneHdrInSd because SD
-    // and HD disagree on scene format and linearity.
+    // This is RenderMode's whole remaining job: choosing between the two WC3
+    // shading models. It is a legitimate use of the mode — SD and HD are two
+    // WC3 frames and the host picks one — and it is the only per-frame decision
+    // left that reads the mode rather than the profile.
+    //
+    // Note "active" means "which model classifies and collects", still a WC3
+    // question. Individual surfaces name their own model via
+    // Actor::shadingModel, which is how an M2 or M3 actor draws through
+    // UnlitShading in the same frame. Making the *default* per-surface too is
+    // the mixed-shading work, and it needs SceneHdrInSd because SD and HD
+    // disagree on scene format and linearity — see MULTI_FORMAT_DESIGN §3(E).
     return (impl_->frameRenderMode_ == RenderMode::HD)
                ? *impl_->wc3HdShading_
                : *impl_->wc3SdShading_;
@@ -2519,11 +2537,7 @@ void RenderPipeline::RenderTransparentScene() {
         fi.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
         fi.rtvFormat = SceneTargetFormat();
         fi.dsvFormat = impl_->depthStencilFormat_;
-        if (impl_->frameRenderMode_ == RenderMode::HD) {
-            fi.extraRtvFormats[0] = kLinearDepthFormat;
-            fi.extraRtvFormats[1] = kNormalBufferFormat;
-            fi.extraRtvCount = 2;
-        }
+        fi.extraRtvCount = SceneExtraRtvFormats(fi.extraRtvFormats);
         // Corn-fx sampler resources (.pkmm meshes, .pkvf vector fields, texture
         // texels) are resolved synchronously at bind time, so they read through
         // the content provider rather than the push-based AssetManager. Pushed

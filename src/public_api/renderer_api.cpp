@@ -221,7 +221,13 @@ ProductId SceneView::GetProduct() const {
     return Scn(impl_).Product();
 }
 void SceneView::SetProduct(ProductId p) {
+    if (Scn(impl_).Product() == p)
+        return;
     Scn(impl_).SetProduct(p);
+    // The product selects the profile, so this is a frame change — same
+    // re-stage trigger a render-mode flip fires. See
+    // RenderSettings::MarkRenderModeDirty for why it keeps that name.
+    Svc(impl_).Settings().MarkRenderModeDirty();
 }
 
 i32 SceneView::AnimationTimeMs() const {

@@ -62,6 +62,23 @@ plugin, and any host that links against `WhiteoutFlakesLib`.
 - **Camera presets** — scripted MDX cameras with optional animators, plus a
   ViewCube widget for free-orbit navigation.
 
+### Other Blizzard formats — geometry only, opt-in
+
+The renderer's frame is described by an `IRenderProfile` (pass order, target
+set, colour space, world scale) and its shading by an `IShadingModel`, so a
+second game is a new profile rather than a branch through the WC3 path. Two are
+wired up far enough to prove the seam:
+
+| Build option | Format | Game profile | State |
+| --- | --- | --- | --- |
+| `WDX_ENABLE_M2` | `.m2` | `wow` | positions + indices, drawn flat white |
+| `WDX_ENABLE_M3` | `.m3` | `sc2_heroes` | positions + indices, drawn flat white |
+
+**Both default OFF, and this is not asset support.** No bones, no textures, no
+materials, no animation — a model loads and its silhouette draws. They exist so
+the abstraction is checked against real files instead of asserted, and Warcraft
+III rendering is byte-identical whether they are compiled in or not.
+
 ## Graphics backends
 
 | Backend | Platform | Notes |
