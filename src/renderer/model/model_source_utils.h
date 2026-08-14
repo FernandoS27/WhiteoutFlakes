@@ -86,6 +86,32 @@ inline std::string NormalizeTextureKey(std::wstring_view path) {
     return NormalizeTextureKey(std::string_view(narrow));
 }
 
+/// @brief Guess a texture's extension from its container magic.
+///
+/// An id-addressed asset has no name to take an extension from — a WoW
+/// fileDataID resolves in the root manifest, which stores no filename, so
+/// `CascSource::ReadById` legitimately returns an empty `actualExt`. Every
+/// format the parsers dispatch on except TGA leads with a magic, so sniffing
+/// recovers what the name would have said. Empty when nothing matches, which
+/// leaves the caller's own fallback intact.
+inline std::string SniffTextureExtension(std::span<const u8> b) {
+    auto tag = [&](const char* m) {
+        return b.size() >= 4 && b[0] == u8(m[0]) && b[1] == u8(m[1]) && b[2] == u8(m[2]) &&
+               b[3] == u8(m[3]);
+    };
+    if (tag("BLP2") || tag("BLP1") || tag("BLP0"))
+        return ".blp";
+    if (tag("DDS "))
+        return ".dds";
+    if (b.size() >= 8 && b[0] == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G')
+        return ".png";
+    if (tag("II*\0") || tag("MM\0*"))
+        return ".tif";
+    // TGA has no leading magic; a caller with no extension and no match is
+    // better served by its own fallback than by a guess.
+    return {};
+}
+
 template <typename ParseFn>
 inline std::optional<whiteout::textures::Texture> DispatchTextureParser(const std::string& ext,
                                                                         ParseFn parse) {

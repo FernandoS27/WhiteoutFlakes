@@ -76,7 +76,11 @@ inline bool OpaqueOrder(const DrawItem& a, const DrawItem& b) {
         return static_cast<u8>(a.key.model) < static_cast<u8>(b.key.model);
     if (a.view != b.view)
         return a.view < b.view;
-    return a.geoIdx < b.geoIdx;
+    if (a.geoIdx != b.geoIdx)
+        return a.geoIdx < b.geoIdx;
+    // Keeps a multi-surface geoset's draws adjacent and in authored order.
+    // Zero for every WC3 item, so the comparator is unchanged for them.
+    return a.key.surface < b.key.surface;
 }
 
 // Transparent order mirrors CTransparentObject::HasHigherPriority: underwater
@@ -100,7 +104,13 @@ inline bool TransparentOrder(const DrawItem& a, const DrawItem& b) {
         return static_cast<u8>(a.depthFill) > static_cast<u8>(b.depthFill);
     if (a.view != b.view)
         return a.view < b.view;
-    return a.geoIdx < b.geoIdx;
+    if (a.geoIdx != b.geoIdx)
+        return a.geoIdx < b.geoIdx;
+    // M2's materialLayer, below distance: two batches of one submesh share a
+    // centroid, so distance cannot separate them and authored order must.
+    if (a.key.sortOrder != b.key.sortOrder)
+        return a.key.sortOrder < b.key.sortOrder;
+    return a.key.surface < b.key.surface;
 }
 
 // One entry in the unified back-to-front transparent queue (WC3's

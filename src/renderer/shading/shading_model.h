@@ -61,6 +61,20 @@ public:
     virtual core::SurfaceClass Classify(const render_detail::RenderableView& view,
                                         const model::GPUGeoset& geo) const = 0;
 
+    /// @brief Classification for one surface of a multi-surface geoset. Only a
+    ///        model whose geosets carry a `surfaceCount` is ever asked; the
+    ///        default forwards, so a model whose blend class is a property of
+    ///        the whole geoset — every WC3 one — implements nothing.
+    ///
+    ///        Additive rather than a new parameter on `Classify` because M2 is
+    ///        the first format where the answer differs per batch, and widening
+    ///        the signature would mean touching three models to change one.
+    virtual core::SurfaceClass ClassifySurface(const render_detail::RenderableView& view,
+                                               const model::GPUGeoset& geo, u32 surface) const {
+        (void)surface;
+        return Classify(view, geo);
+    }
+
     /// @brief Vertex streams this surface requires. WC3 asks for none of the
     ///        optional ones — its `Vertex` is interleaved and stays that way.
     virtual core::VertexNeeds Needs(u32 surface) const = 0;

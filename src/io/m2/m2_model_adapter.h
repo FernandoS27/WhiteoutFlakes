@@ -147,9 +147,21 @@ public:
 
     // ---- IModelDataSource ----
     std::vector<renderer::model::MeshData> GetMeshes() override;
-    std::vector<renderer::model::TextureData> GetTextures() override {
-        return {};
-    }
+
+    /// @brief One entry per M2 texture, keyed by its index in the model's
+    ///        texture list — which is also what the batch combo tables resolve
+    ///        to, so a resolved combo value *is* a renderer texture id.
+    ///
+    /// Nothing is decoded here: a named texture ships only its `sharedKey` and
+    /// the AssetManager fetches it, so a model with 30 textures does not block
+    /// the load thread 30 times. Textures with `type != 0` are character
+    /// customisation slots with no name of their own; they get an empty key and
+    /// bind the white default until the slot resolver lands.
+    std::vector<renderer::model::TextureData> GetTextures() override;
+
+    /// @brief Empty by design. M2's per-batch material data does not fit
+    ///        `MaterialData` — see M2SurfaceTable, which the WoW profile builds
+    ///        straight off `SourceModel()`.
     std::vector<renderer::model::MaterialData> GetMaterials() override {
         return {};
     }
@@ -191,6 +203,12 @@ public:
 
     const ::whiteout::m2::Model& SourceModel() const {
         return model_;
+    }
+
+    /// @brief Which `skinProfiles` entry GetMeshes read. The surface table has
+    ///        to be built against the same one — batches are per profile.
+    std::size_t ProfileIndex() const {
+        return profileIndex_;
     }
 
 private:

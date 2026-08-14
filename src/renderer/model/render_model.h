@@ -56,6 +56,11 @@ struct StagedGeoset {
     ///        renderer never decodes `baked.data` to recover them.
     i32 bakedVertexCount = 0;
     Vector3f centroid = {0, 0, 0};
+
+    /// @brief Range into RenderModel::surfaces, copied straight to the
+    ///        GPUGeoset at upload. Count 0 is the whole-geoset default.
+    u32 surfaceBegin = 0;
+    u32 surfaceCount = 0;
 };
 
 struct GPUGeoset {
@@ -114,6 +119,13 @@ struct GPUGeoset {
     // actor world matrix at collection time to give a per-geoset sort position
     // for the back-to-front transparent pass (mirrors WC3's geoset centroid).
     Vector3f localCentroid = {0, 0, 0};
+
+    // Range into RenderModel::surfaces this geoset draws, one DrawItem each.
+    // Count 0 means "one whole-geoset draw" — every WC3 geoset, and what keeps
+    // BuildDrawLists byte-identical for them. M2 needs the range because a
+    // submesh carries N batches, each its own material and its own draw.
+    u32 surfaceBegin = 0;
+    u32 surfaceCount = 0;
 
     void Release(gfx::IGFXDevice& gfx, bool freeSharedBuffers = true) {
         if (freeSharedBuffers) {

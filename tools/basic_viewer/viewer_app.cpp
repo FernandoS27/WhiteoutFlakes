@@ -636,7 +636,42 @@ bool ViewerApp::OpenDocumentScene(std::shared_ptr<io::IContentProvider> provider
     return true;
 }
 
+// Point the shared provider at the game a model file belongs to.
+//
+// Which game the provider serves is what decides which storage resolves the
+// model's textures, and every document shares one provider whose game comes
+// from Settings. So an `.m2` opened while that says Warcraft III loads its
+// geometry — the `.skin` sits next to it on disk — and then silently loses
+// every texture, because those are fileDataIDs and no WoW storage is open.
+//
+// Deliberately not persisted: the user did not pick this, they opened a file.
+// The Settings panel reads its selection off the provider, so it still shows
+// the truth for the session, and the next launch is back to their choice.
+void ViewerApp::FollowModelGame(const std::filesystem::path& path) {
+    std::string ext = path.extension().string();
+    for (char& c : ext)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+    ProductId game = ProductId::Neutral;
+    if (ext == ".m2")
+        game = ProductId::Wow;
+    else if (ext == ".m3")
+        game = ProductId::Sc2;
+    if (game == ProductId::Neutral)
+        return;
+
+    auto& provider = service_.DefaultScene().GetContentProvider();
+    if (provider.Game() == game)
+        return;
+    ApplyIoPathOverrides(provider, game);
+    // Same follow-up the Settings switch makes: assets that missed under the
+    // old game get another chance under the new one.
+    service_.RetryUnloadedAssets();
+}
+
 bool ViewerApp::OpenDocument(const std::filesystem::path& path, bool effect) {
+    if (!effect)
+        FollowModelGame(path);
     // All documents share one configured game provider so the CASC/MPQ/install
     // set is identical across tabs.
     return OpenDocumentScene(SharedProvider(), path.stem().string(), [&] {

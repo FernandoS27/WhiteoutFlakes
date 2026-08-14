@@ -1432,6 +1432,10 @@ void RenderPipeline::CleanupGFX() {
         // three above shipped with. Released here for the same reason.
         if (impl_->unlitShading_)
             impl_->unlitShading_->ReleaseGpu();
+#if WDX_ENABLE_M2
+        if (impl_->m2Shading_)
+            impl_->m2Shading_->ReleaseGpu();
+#endif
 
         // Tear down CornEffects FIRST — its emitters hold references
         // into the AssetManager (assets_.Release(assetSlot_) in
@@ -2297,6 +2301,12 @@ shading::IShadingModel& RenderPipeline::ActiveShadingModel() {
         impl_->shadingModels_.Register(impl_->wc3SdShading_.get());
         impl_->shadingModels_.Register(impl_->wc3HdShading_.get());
         impl_->shadingModels_.Register(impl_->unlitShading_.get());
+#if WDX_ENABLE_M2
+        // Same deal: named per surface by an `.m2` actor, never the active
+        // model — classification and collection stay a WC3 question.
+        impl_->m2Shading_ = std::make_unique<profiles::wow::M2CombinerShading>(rs_);
+        impl_->shadingModels_.Register(impl_->m2Shading_.get());
+#endif
     }
     // This is RenderMode's whole remaining job: choosing between the two WC3
     // shading models. It is a legitimate use of the mode — SD and HD are two
@@ -2355,7 +2365,7 @@ core::IRenderProfile& RenderPipeline::ActiveProfile() {
         impl_->wc3HdProfile_ = std::move(hd);
 #if WDX_ENABLE_M2
         auto wow = std::make_unique<profiles::wow::WowProfile>(rs_.Settings());
-        wow->SetShadingModels({impl_->unlitShading_.get()});
+        wow->SetShadingModels({impl_->m2Shading_.get(), impl_->unlitShading_.get()});
         const auto vwow = core::ValidateProfile(*wow);
         if (!vwow.ok)
             std::fprintf(stderr, "[profile] invalid WoW render profile: %s\n",

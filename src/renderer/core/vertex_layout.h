@@ -52,6 +52,13 @@ inline const char* SemanticName(VertexSemantic s) {
     return "POSITION";
 }
 
+/// @brief One entry of a shader's declared vertex inputs. The index matters
+///        whenever a shader reads two of the same semantic.
+struct SemanticRef {
+    VertexSemantic semantic = VertexSemantic::Position;
+    u8 semanticIndex = 0;
+};
+
 class VertexLayoutCache {
 public:
     /// @brief WC3's interleaved 48-byte `Vertex`. Not an interned entry —
@@ -93,10 +100,24 @@ public:
     /// caller checks with @ref Has first and picks a permutation that fits.
     std::vector<gfx::InputElement> Subset(u32 layoutId,
                                           std::span<const VertexSemantic> want) const {
+        std::vector<SemanticRef> refs;
+        refs.reserve(want.size());
+        for (VertexSemantic s : want)
+            refs.push_back({s, 0});
+        return Subset(layoutId, std::span<const SemanticRef>(refs));
+    }
+
+    /// @overload Indexed form, for a shader that reads more than one of a
+    ///           semantic — M2 samples two UV sets, so asking for TexCoord
+    ///           twice has to mean TEXCOORD0 then TEXCOORD1 rather than
+    ///           TEXCOORD0 twice (which is a duplicate element, and a location
+    ///           collision on the backends that derive locations positionally).
+    std::vector<gfx::InputElement> Subset(u32 layoutId,
+                                          std::span<const SemanticRef> want) const {
         std::vector<gfx::InputElement> out;
         out.reserve(want.size());
-        for (VertexSemantic s : want) {
-            const VertexAttribute* a = Find(layoutId, s, 0);
+        for (const SemanticRef& s : want) {
+            const VertexAttribute* a = Find(layoutId, s.semantic, s.semanticIndex);
             if (!a)
                 continue;
             out.push_back(gfx::InputElement{

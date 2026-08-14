@@ -382,6 +382,13 @@ bool AssetManager::ApplyPrepared(AssetKind kind, AssetSubKind subKind, const Con
             // usable without the host having to thread foundExt through.
             ext = model::ExtensionLower(std::filesystem::path(pathish));
         }
+        if (ext.empty()) {
+            // Neither a found extension nor a path to take one from: an
+            // id-addressed asset has no name at all, and the root manifest a
+            // fileDataID resolves in stores none. The container magic is what
+            // is left, and every format here but TGA has one.
+            ext = model::SniffTextureExtension(bytes);
+        }
         // Decode under the mode captured at Acquire (the model's mode), not the
         // live mode — the decode is async and the active mode may have moved on.
         if (!DecodeTexture(bytes, ext, pathish, textures_.SupportsBlockCompression(),

@@ -188,6 +188,37 @@ std::vector<MeshData> M2ModelAdapter::GetMeshes() {
     return out;
 }
 
+std::vector<TextureData> M2ModelAdapter::GetTextures() {
+    std::vector<TextureData> out;
+    out.reserve(model_.textures.size());
+    for (usize i = 0; i < model_.textures.size(); ++i) {
+        const auto& tex = model_.textures[i];
+        TextureData td;
+        td.textureId = static_cast<i32>(i);
+        // Zero, not the M2 texture *type*: replaceableId is WC3's
+        // team-colour/glow slot space, nothing maps the two, and AddModel reads
+        // *any* non-zero value as "hand this slot to the replaceable manager",
+        // which then owns the binding. M2's own customisation slots are carried
+        // by the empty sharedKey below instead.
+        td.replaceableId = 0;
+        // Bit 0 wrap-U, bit 1 wrap-V — the same encoding StagedTexture uses.
+        td.wrapFlags = tex.flags & 0x3u;
+
+        if (!tex.filename.empty()) {
+            td.sharedKey = tex.filename;
+        } else if (i < model_.texture_ids.size() && model_.texture_ids[i] != 0) {
+            // Chunked models name their textures by fileDataID in TXID and
+            // leave `filename` a lone NUL. `#<id>` is ContentRef::Describe's
+            // own spelling, which UploadStagedTextures reverses.
+            td.sharedKey = "#" + std::to_string(model_.texture_ids[i]);
+        }
+        // Anything left with an empty key is a customisation slot (type 1..26)
+        // or a genuinely nameless texture; both bind the white default.
+        out.push_back(std::move(td));
+    }
+    return out;
+}
+
 ::whiteout::flakes::ModelBounds M2ModelAdapter::GetBounds() {
     ::whiteout::flakes::ModelBounds b;
     const auto& e = model_.bounding;

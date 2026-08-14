@@ -6,6 +6,9 @@
 #include "core/vertex_layout.h"
 #include "shading/shading_registry.h"
 #include "shading/unlit_shading.h"
+#if WDX_ENABLE_M2
+#include "renderer/profiles/wow/m2_shading.h"
+#endif
 
 #include <memory>
 #include <unordered_map>
@@ -81,6 +84,11 @@ struct RenderPipeline::Impl {
     // ReleaseGpu, which is not on the interface (nothing else owns GPU objects
     // outside the BLS caches).
     std::unique_ptr<shading::UnlitShading> unlitShading_;
+#if WDX_ENABLE_M2
+    // Concrete for the same reason: CleanupGFX calls its ReleaseGpu, which is
+    // not on IShadingModel.
+    std::unique_ptr<profiles::wow::M2CombinerShading> m2Shading_;
+#endif
 
     // The two WC3 frames, declared. ValidateProfile runs once when they are
     // built, so a declaration that contradicts itself fails at init rather

@@ -354,6 +354,10 @@ private:
     // (its saved state + scene), or clear to the empty/default state if none.
     void RestoreActiveAfterFailedOpen(i32 prevDoc);
 
+    // Re-point the shared provider at the game a model file belongs to, so its
+    // textures have a storage to resolve against. See the definition.
+    void FollowModelGame(const std::filesystem::path& path);
+
     // Shared body of LoadModel/LoadEffect: opens `path` (from the shared game
     // provider) as a new document. `effect` selects the .pkb path.
     bool OpenDocument(const std::filesystem::path& path, bool effect);

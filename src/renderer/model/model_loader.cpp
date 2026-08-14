@@ -34,11 +34,13 @@
 #endif
 #if WDX_ENABLE_M2
 #include "io/m2/m2_model_adapter.h"
+#include "renderer/profiles/wow/m2_surface_table.h"
 #include <whiteout/models/m2/types.h>
 #endif
 #include "renderer/profiles/wc3/wc3_surface_table.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <unordered_map>
@@ -56,10 +58,32 @@ using namespace ::whiteout::flakes::io;
 namespace {
 // The actor's WC3 table, created on first use. Every WC3 load path funnels
 // through here, so an actor never has a null table by the time anything draws.
-profiles::wc3::Wc3SurfaceTable& Wc3TableFor(RenderModel& render) {
+//
+// Null when the actor's table belongs to another product — an `.m2` carries an
+// M2SurfaceTable built at spawn. Returning null rather than asserting is the
+// point: these call sites run for every actor in the scene, and a foreign one
+// simply has no WC3 material to read.
+profiles::wc3::Wc3SurfaceTable* Wc3TableFor(RenderModel& render) {
     if (!render.surfaceTable)
         render.surfaceTable = std::make_unique<profiles::wc3::Wc3SurfaceTable>();
-    return *core::SurfaceTableCast<profiles::wc3::Wc3SurfaceTable>(render.surfaceTable.get());
+    if (render.surfaceTable->Product() != core::ProductId::Wc3)
+        return nullptr;
+    return static_cast<profiles::wc3::Wc3SurfaceTable*>(render.surfaceTable.get());
+}
+
+// The public `flakes::ProductId`, which is what SceneView reports — not the
+// renderer-internal twin in core/surface_table.h.
+const char* ProductName(::whiteout::flakes::ProductId p) {
+    switch (p) {
+    case ::whiteout::flakes::ProductId::Wc3:
+        return "Warcraft III";
+    case ::whiteout::flakes::ProductId::Wow:
+        return "World of Warcraft";
+    case ::whiteout::flakes::ProductId::Sc2:
+        return "StarCraft II";
+    default:
+        return "no product";
+    }
 }
 
 // Local-space bounds center of a geoset. Used as its sort position in the
@@ -616,6 +640,57 @@ bool LooksLikeM2(std::span<const u8> bytes) {
                     (static_cast<u32>(bytes[2]) << 16) | (static_cast<u32>(bytes[3]) << 24);
     return tag == ::whiteout::m2::MD20_TAG || tag == ::whiteout::m2::MD21_TAG;
 }
+
+// Group the M2 table's batches by the submesh they draw and publish the result
+// as `surfaces` + a per-geoset range. Ordering inside a group is materialLayer
+// then file order, which is the order the client draws a submesh's layers in.
+//
+// Runs at spawn, before the geosets exist: the range lands on the staged geoset
+// and rides the normal staged→GPU copy, so nothing has to re-find it later.
+void BuildM2Surfaces(Actor& actor) {
+    const auto* table = static_cast<const profiles::wow::M2SurfaceTable*>(
+        actor.render.surfaceTable.get());
+    if (!table)
+        return;
+
+    const auto& src = table->Surfaces();
+    std::vector<u32> order(src.size());
+    for (u32 i = 0; i < order.size(); ++i)
+        order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&](u32 a, u32 b) {
+        if (src[a].skinSectionIndex != src[b].skinSectionIndex)
+            return src[a].skinSectionIndex < src[b].skinSectionIndex;
+        return src[a].materialLayer < src[b].materialLayer;
+    });
+
+    auto& surfaces = actor.render.surfaces;
+    surfaces.clear();
+    surfaces.reserve(order.size());
+
+    for (u32 pos = 0; pos < order.size();) {
+        const u16 section = src[order[pos]].skinSectionIndex;
+        const u32 begin = static_cast<u32>(surfaces.size());
+        u32 count = 0;
+        for (; pos < order.size() && src[order[pos]].skinSectionIndex == section; ++pos, ++count) {
+            const auto& s = src[order[pos]];
+            core::SurfaceKey key;
+            key.model = core::ShadingModelId::M2Combiners;
+            key.surface = order[pos];
+            using profiles::wow::M2Blend;
+            key.blend = (s.blend == M2Blend::Opaque)     ? core::BlendClass::Opaque
+                        : (s.blend == M2Blend::AlphaKey) ? core::BlendClass::AlphaKey
+                                                         : core::BlendClass::Transparent;
+            key.priorityPlane = s.priorityPlane;
+            key.sortOrder = static_cast<i16>(s.materialLayer);
+            surfaces.push_back(key);
+        }
+        auto it = actor.render.stagedGeosets.find(static_cast<i32>(section));
+        if (it != actor.render.stagedGeosets.end()) {
+            it->second.surfaceBegin = begin;
+            it->second.surfaceCount = count;
+        }
+    }
+}
 } // namespace
 #endif
 
@@ -667,22 +742,27 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
         return nullptr;
     const std::span<const ::whiteout::u8> data(bytes->data(), bytes->size());
 
-    // Detection fills in what was not stated. ProductId::Neutral means "no
-    // product declared" (see SceneView::SetProduct), and a model of a given
-    // format having just parsed is direct evidence of one — so this settles
-    // it, while an explicit host choice is left alone. Without it the scene
-    // keeps the Warcraft III profile, whose WorldScale is 1, and the model
-    // renders at a fraction of the size the camera expects.
+    // Detection settles the scene's product. A model of a given format having
+    // just parsed is direct evidence of one, and it outranks whatever the
+    // product happened to be — including a value restored from the settings
+    // file, which is where it usually comes from.
     //
-    // Per actor, UnlitShading is named as the only model that can draw this:
-    // there are no materials and no surface table. Saying so per actor is what
-    // lets a foreign model and a WC3 model coexist in one scene.
+    // This used to defer to any non-Neutral product on the grounds that an
+    // explicit host choice should be left alone. In practice that made an
+    // `.m2` opened in a scene left on `wc3` load its geometry and then silently
+    // lose every texture: the product is what selects the storage the content
+    // provider opens, so a WoW model in a WC3 scene has no WoW CASC to resolve
+    // its fileDataID textures against, and each one falls back to white. The
+    // profile is wrong for it too — WC3's WorldScale is 1 where WoW's is 100.
+    // One scene renders one product; mixing them is what multi-scene is for.
     std::shared_ptr<IModelSource> source;
     ProductId product = ProductId::Neutral;
 
 #if WDX_ENABLE_M2
+    std::shared_ptr<io::M2ModelAdapter> m2;
     if (!source && LooksLikeM2(data)) {
-        source = io::M2ModelAdapter::Load(ref, data, provider);
+        m2 = io::M2ModelAdapter::Load(ref, data, provider);
+        source = m2;
         product = ProductId::Wow;
     }
 #endif
@@ -697,16 +777,39 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
     if (!source)
         return nullptr;
 
-    if (product != ProductId::Neutral && rs_.Scene().Product() == ProductId::Neutral) {
+    if (product != ProductId::Neutral && rs_.Scene().Product() != product) {
+        const ProductId was = rs_.Scene().Product();
         rs_.Scene().SetProduct(product);
         // Detection changed the profile, so the host's re-stage trigger has to
         // fire exactly as it would for an explicit SceneView::SetProduct.
         rs_.Settings().MarkRenderModeDirty();
+        if (was != ProductId::Neutral) {
+            // Worth saying out loud: it also re-points the content provider at
+            // a different game's storage, which is the difference between the
+            // model's textures resolving and not.
+            std::fprintf(stderr, "[model] '%s' is %s content; switching the scene from %s\n",
+                         ref.Describe().c_str(), ProductName(product), ProductName(was));
+        }
     }
 
     Actor* actor = SpawnUnitFromSource(std::move(source), initialTm);
-    if (actor)
-        actor->shadingModel = core::ShadingModelId::Unlit;
+    if (!actor)
+        return nullptr;
+
+    // Per actor, which model can draw this. Saying so per actor is what lets a
+    // foreign model and a WC3 model coexist in one scene.
+    actor->shadingModel = core::ShadingModelId::Unlit;
+
+#if WDX_ENABLE_M2
+    if (m2) {
+        // Built here rather than through GetMaterials: M2's per-batch binding
+        // does not fit MaterialData, and the parsed model is right here.
+        actor->render.surfaceTable =
+            profiles::wow::BuildM2SurfaceTable(m2->SourceModel(), m2->ProfileIndex());
+        BuildM2Surfaces(*actor);
+        actor->shadingModel = core::ShadingModelId::M2Combiners;
+    }
+#endif
     return actor;
 #else
     (void)ref;
@@ -781,7 +884,15 @@ void ModelLoader::UploadStagedTextures(Actor& mi) {
         // until the host fetches and Apply pushes the real bytes; the
         // ModelScope picks up the swap automatically via Get().
         if (!st.sharedKey.empty()) {
-            const auto slot = rs_.Assets().Acquire(AssetKind::Texture, assets::kSoleSubKind, st.sharedKey);
+            // `#<id>` is ContentRef::Describe's form for an id-addressed ref,
+            // which is how a chunked `.m2` names its textures. Everything else
+            // is a path.
+            const ContentRef ref =
+                (st.sharedKey[0] == '#')
+                    ? ContentRef::FromFileId(
+                          static_cast<u32>(std::strtoul(st.sharedKey.c_str() + 1, nullptr, 10)))
+                    : ContentRef::FromPath(st.sharedKey);
+            const auto slot = rs_.Assets().Acquire(AssetKind::Texture, assets::kSoleSubKind, ref);
             mi.render.textures->BindSlot(id, slot, st.wrapFlags);
             continue;
         }
@@ -943,15 +1054,17 @@ void ModelLoader::UploadStagedGeosets(Actor& mi) {
                 gg.vertexCount = shared.vertexCount;
                 gg.localCentroid = shared.localCentroid;
                 gg.hasSkinning = true;
-                if (const auto* m = Wc3TableFor(mi.render).Material(shared.materialId))
-                    gg.priorityPlane = m->cpu.priorityPlane;
+                if (auto* t = Wc3TableFor(mi.render))
+                    if (const auto* m = t->Material(shared.materialId))
+                        gg.priorityPlane = m->cpu.priorityPlane;
                 mi.render.gpuGeosets.push_back(gg);
             }
         } else {
 
             for (auto& gg : mi.render.gpuGeosets) {
-                if (const auto* m = Wc3TableFor(mi.render).Material(gg.materialId))
-                    gg.priorityPlane = m->cpu.priorityPlane;
+                if (auto* t = Wc3TableFor(mi.render))
+                    if (const auto* m = t->Material(gg.materialId))
+                        gg.priorityPlane = m->cpu.priorityPlane;
             }
         }
         mi.render.stagedGeosets.clear();
@@ -966,10 +1079,13 @@ void ModelLoader::UploadStagedGeosets(Actor& mi) {
             gg.indexCount = (i32)sg.indices.size();
             gg.vertexCount = baked ? sg.bakedVertexCount : (i32)sg.vertices.size();
             gg.localCentroid = sg.centroid;
+            gg.surfaceBegin = sg.surfaceBegin;
+            gg.surfaceCount = sg.surfaceCount;
             gg.hasSkinning = true;
 
-            if (const auto* m = Wc3TableFor(mi.render).Material(sg.materialId))
-                gg.priorityPlane = m->cpu.priorityPlane;
+            if (auto* t = Wc3TableFor(mi.render))
+                if (const auto* m = t->Material(sg.materialId))
+                    gg.priorityPlane = m->cpu.priorityPlane;
 
             const GeosetSkinInfo* skinInfo = mi.render.skinning.GetGeosetWeights(id);
 
@@ -1137,9 +1253,11 @@ void ModelLoader::CommitPendingUploads() {
             // API, called by the Max plugin's RefreshMaterials) lands here too,
             // which is why its signature survives: MaterialData is unchanged,
             // only its owner moved.
-            {
-                auto& table = Wc3TableFor(mi->render);
-                auto& mats = table.Materials();
+            // Skipped for an actor whose table belongs to another product: its
+            // surfaces were built at spawn and there are no MaterialData to
+            // drain into a WC3 table that does not exist.
+            if (auto* table = Wc3TableFor(mi->render)) {
+                auto& mats = table->Materials();
                 for (auto& [id, sm] : mi->render.stagedMaterials) {
                     if ((i32)mats.size() <= id)
                         mats.resize(id + 1);

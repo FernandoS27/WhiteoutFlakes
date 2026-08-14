@@ -122,35 +122,60 @@ CollectedDrawLists BuildDrawLists(
             if (!GeosetPassesLod(geo.lod, modelLod) || !GeosetDrawable(geo))
                 continue;
 
-            // The sole authority. Asked per geoset per frame, through the
-            // interface, so a non-WC3 model answers with its own rule.
-            const core::SurfaceClass sc = classifier->Classify(view, geo);
-            if (!sc.visible)
-                continue;
+            // One item per (geoset, surface). `key` arrives pre-filled for a
+            // multi-surface geoset and default for a whole-geoset one, so the
+            // single-draw path below is bit-for-bit what it always was.
+            auto emit = [&](const core::SurfaceClass& sc, core::SurfaceKey key) {
+                key.model = modelFor(i);
+                if (sc.blend != core::BlendClass::Transparent) {
+                    // Opaque: layers in order; the depth buffer sorts it
+                    // against the rest of the opaque set.
+                    DrawItem o;
+                    o.view = &view;
+                    o.geoIdx = i;
+                    o.key = key;
+                    out.lists.opaque.push_back(o);
+                } else {
+                    // Transparent: sorted back-to-front by world-space centroid.
+                    DrawItem t;
+                    t.view = &view;
+                    t.geoIdx = i;
+                    t.key = key;
+                    // HD opaque-fading geosets carry the Color depth-fill twin
+                    // (WC3 RenderGeoset's DEPTHFILL_COLOR); true blends stay None.
+                    t.depthFill = sc.needsDepthFill ? bls::DepthFill::Color : bls::DepthFill::None;
+                    const Vector3f wc = GeosetCentroidWS(view, geo);
+                    const Vector3f d = {wc.x - cameraPos.x, wc.y - cameraPos.y,
+                                        wc.z - cameraPos.z};
+                    t.sqDist = d.x * d.x + d.y * d.y + d.z * d.z;
+                    // A surface's own plane wins when it has one; the geoset's
+                    // is the fallback and the only value WC3 ever sets.
+                    t.priorityPlane = key.priorityPlane ? key.priorityPlane : geo.priorityPlane;
+                    out.lists.transparent.push_back(t);
+                }
+            };
 
-            if (sc.blend != core::BlendClass::Transparent) {
-                // Opaque geoset: one whole-geoset draw (layers in order; depth
-                // buffer sorts it against the rest of the opaque set).
-                DrawItem o;
-                o.view = &view;
-                o.geoIdx = i;
-                o.key.model = modelFor(i);
-                out.lists.opaque.push_back(o);
-            } else {
-                // Transparent geoset: one whole-geoset draw, sorted back-to-front
-                // by its world-space centroid distance.
-                DrawItem t;
-                t.view = &view;
-                t.geoIdx = i;
-                t.key.model = modelFor(i);
-                // HD opaque-fading geosets carry the Color depth-fill twin (WC3
-                // RenderGeoset's DEPTHFILL_COLOR); true blend geosets stay None.
-                t.depthFill = sc.needsDepthFill ? bls::DepthFill::Color : bls::DepthFill::None;
-                const Vector3f wc = GeosetCentroidWS(view, geo);
-                const Vector3f d = {wc.x - cameraPos.x, wc.y - cameraPos.y, wc.z - cameraPos.z};
-                t.sqDist = d.x * d.x + d.y * d.y + d.z * d.z;
-                t.priorityPlane = geo.priorityPlane;
-                out.lists.transparent.push_back(t);
+            if (geo.surfaceCount == 0) {
+                // The sole authority. Asked per geoset per frame, through the
+                // interface, so a non-WC3 model answers with its own rule.
+                const core::SurfaceClass sc = classifier->Classify(view, geo);
+                if (sc.visible)
+                    emit(sc, core::SurfaceKey{});
+                continue;
+            }
+
+            // A submesh with N batches: each is its own material, its own
+            // blend class, and its own draw.
+            const auto& surfaces = mi->render.surfaces;
+            const u32 end =
+                (std::min)(geo.surfaceBegin + geo.surfaceCount, static_cast<u32>(surfaces.size()));
+            for (u32 s = geo.surfaceBegin; s < end; ++s) {
+                // The model's own table index, not the position in `surfaces` —
+                // the same value `Draw` reads back off `item.key.surface`.
+                const core::SurfaceClass sc =
+                    classifier->ClassifySurface(view, geo, surfaces[s].surface);
+                if (sc.visible)
+                    emit(sc, surfaces[s]);
             }
         }
     }

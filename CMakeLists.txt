@@ -268,6 +268,62 @@ set(SHADER_ENTRIES
     # on the engine's shipped gaussianblur.bls being staged.
     "gaussian_blur.slang|vsBlur|vertex|kGaussianBlurVS"
     "gaussian_blur.slang|psBlur|fragment|kGaussianBlurPS"
+    # M2CombinerShading — WoW `.m2`. 16 vertex + 35 pixel entry points, indexed
+    # directly by M2GetVertexShaderID / M2GetPixelShaderID (m2_shader_select.h).
+    # Any VS pairs with any PS, so all 51 share one interstage signature.
+    # Names keep Blizzard's underscores: Mod_AddAlpha and Mod_Add_Alpha are
+    # two different combiners that collide the moment you camel-case them.
+    "m2_combiners.slang|vsM2Diffuse_T1|vertex|kM2Vs_Diffuse_T1"
+    "m2_combiners.slang|vsM2Diffuse_Env|vertex|kM2Vs_Diffuse_Env"
+    "m2_combiners.slang|vsM2Diffuse_T1_T2|vertex|kM2Vs_Diffuse_T1_T2"
+    "m2_combiners.slang|vsM2Diffuse_T1_Env|vertex|kM2Vs_Diffuse_T1_Env"
+    "m2_combiners.slang|vsM2Diffuse_Env_T1|vertex|kM2Vs_Diffuse_Env_T1"
+    "m2_combiners.slang|vsM2Diffuse_Env_Env|vertex|kM2Vs_Diffuse_Env_Env"
+    "m2_combiners.slang|vsM2Diffuse_T1_Env_T1|vertex|kM2Vs_Diffuse_T1_Env_T1"
+    "m2_combiners.slang|vsM2Diffuse_T1_T1|vertex|kM2Vs_Diffuse_T1_T1"
+    "m2_combiners.slang|vsM2Diffuse_T1_T1_T1|vertex|kM2Vs_Diffuse_T1_T1_T1"
+    "m2_combiners.slang|vsM2Diffuse_EdgeFade_T1|vertex|kM2Vs_Diffuse_EdgeFade_T1"
+    "m2_combiners.slang|vsM2Diffuse_T2|vertex|kM2Vs_Diffuse_T2"
+    "m2_combiners.slang|vsM2Diffuse_T1_Env_T2|vertex|kM2Vs_Diffuse_T1_Env_T2"
+    "m2_combiners.slang|vsM2Diffuse_EdgeFade_T1_T2|vertex|kM2Vs_Diffuse_EdgeFade_T1_T2"
+    "m2_combiners.slang|vsM2Diffuse_T1_T1_T1_T2|vertex|kM2Vs_Diffuse_T1_T1_T1_T2"
+    "m2_combiners.slang|vsM2Diffuse_EdgeFade_Env|vertex|kM2Vs_Diffuse_EdgeFade_Env"
+    "m2_combiners.slang|vsM2Diffuse_T1_T2_T1|vertex|kM2Vs_Diffuse_T1_T2_T1"
+    "m2_combiners.slang|psM2Combiners_Opaque|fragment|kM2Ps_Combiners_Opaque"
+    "m2_combiners.slang|psM2Combiners_Mod|fragment|kM2Ps_Combiners_Mod"
+    "m2_combiners.slang|psM2Combiners_Opaque_Mod|fragment|kM2Ps_Combiners_Opaque_Mod"
+    "m2_combiners.slang|psM2Combiners_Opaque_Mod2x|fragment|kM2Ps_Combiners_Opaque_Mod2x"
+    "m2_combiners.slang|psM2Combiners_Opaque_Mod2xNA|fragment|kM2Ps_Combiners_Opaque_Mod2xNA"
+    "m2_combiners.slang|psM2Combiners_Opaque_Opaque|fragment|kM2Ps_Combiners_Opaque_Opaque"
+    "m2_combiners.slang|psM2Combiners_Mod_Mod|fragment|kM2Ps_Combiners_Mod_Mod"
+    "m2_combiners.slang|psM2Combiners_Mod_Mod2x|fragment|kM2Ps_Combiners_Mod_Mod2x"
+    "m2_combiners.slang|psM2Combiners_Mod_Add|fragment|kM2Ps_Combiners_Mod_Add"
+    "m2_combiners.slang|psM2Combiners_Mod_Mod2xNA|fragment|kM2Ps_Combiners_Mod_Mod2xNA"
+    "m2_combiners.slang|psM2Combiners_Mod_AddNA|fragment|kM2Ps_Combiners_Mod_AddNA"
+    "m2_combiners.slang|psM2Combiners_Mod_Opaque|fragment|kM2Ps_Combiners_Mod_Opaque"
+    "m2_combiners.slang|psM2Combiners_Opaque_Mod2xNA_Alpha|fragment|kM2Ps_Combiners_Opaque_Mod2xNA_Alpha"
+    "m2_combiners.slang|psM2Combiners_Opaque_AddAlpha|fragment|kM2Ps_Combiners_Opaque_AddAlpha"
+    "m2_combiners.slang|psM2Combiners_Opaque_AddAlpha_Alpha|fragment|kM2Ps_Combiners_Opaque_AddAlpha_Alpha"
+    "m2_combiners.slang|psM2Combiners_Opaque_Mod2xNA_Alpha_Add|fragment|kM2Ps_Combiners_Opaque_Mod2xNA_Alpha_Add"
+    "m2_combiners.slang|psM2Combiners_Mod_AddAlpha|fragment|kM2Ps_Combiners_Mod_AddAlpha"
+    "m2_combiners.slang|psM2Combiners_Mod_AddAlpha_Alpha|fragment|kM2Ps_Combiners_Mod_AddAlpha_Alpha"
+    "m2_combiners.slang|psM2Combiners_Opaque_Alpha_Alpha|fragment|kM2Ps_Combiners_Opaque_Alpha_Alpha"
+    "m2_combiners.slang|psM2Combiners_Opaque_Mod2xNA_Alpha_3s|fragment|kM2Ps_Combiners_Opaque_Mod2xNA_Alpha_3s"
+    "m2_combiners.slang|psM2Combiners_Opaque_AddAlpha_Wgt|fragment|kM2Ps_Combiners_Opaque_AddAlpha_Wgt"
+    "m2_combiners.slang|psM2Combiners_Mod_Add_Alpha|fragment|kM2Ps_Combiners_Mod_Add_Alpha"
+    "m2_combiners.slang|psM2Combiners_Opaque_ModNA_Alpha|fragment|kM2Ps_Combiners_Opaque_ModNA_Alpha"
+    "m2_combiners.slang|psM2Combiners_Mod_AddAlpha_Wgt|fragment|kM2Ps_Combiners_Mod_AddAlpha_Wgt"
+    "m2_combiners.slang|psM2Combiners_Opaque_Mod_Add_Wgt|fragment|kM2Ps_Combiners_Opaque_Mod_Add_Wgt"
+    "m2_combiners.slang|psM2Combiners_Opaque_Mod2xNA_Alpha_UnshAlpha|fragment|kM2Ps_Combiners_Opaque_Mod2xNA_Alpha_UnshAlpha"
+    "m2_combiners.slang|psM2Combiners_Mod_Dual_Crossfade|fragment|kM2Ps_Combiners_Mod_Dual_Crossfade"
+    "m2_combiners.slang|psM2Combiners_Opaque_Mod2xNA_Alpha_Alpha|fragment|kM2Ps_Combiners_Opaque_Mod2xNA_Alpha_Alpha"
+    "m2_combiners.slang|psM2Combiners_Mod_Masked_Dual_Crossfade|fragment|kM2Ps_Combiners_Mod_Masked_Dual_Crossfade"
+    "m2_combiners.slang|psM2Combiners_Opaque_Alpha|fragment|kM2Ps_Combiners_Opaque_Alpha"
+    "m2_combiners.slang|psM2Guild|fragment|kM2Ps_Guild"
+    "m2_combiners.slang|psM2Guild_NoBorder|fragment|kM2Ps_Guild_NoBorder"
+    "m2_combiners.slang|psM2Guild_Opaque|fragment|kM2Ps_Guild_Opaque"
+    "m2_combiners.slang|psM2Combiners_Mod_Depth|fragment|kM2Ps_Combiners_Mod_Depth"
+    "m2_combiners.slang|psM2Illum|fragment|kM2Ps_Illum"
     # NOTE: depth of field has no custom shader entry — DofService runs the
     # shipped WC3 depthoffield.bls (GxShaderID DepthOfField) through the BLS
     # shader cache, and reuses the embedded blit (kBlit*) for the round-trip.
@@ -1188,9 +1244,15 @@ add_library(WhiteoutFlakesLib STATIC
 # that turning the option on is the only thing that ever builds them — a
 # half-implemented format should not cost compile time in a release viewer.
 if(WDX_ENABLE_M2)
-    target_sources(WhiteoutFlakesLib PRIVATE src/io/m2/m2_model_adapter.cpp)
+    target_sources(WhiteoutFlakesLib PRIVATE
+        src/io/m2/m2_model_adapter.cpp
+        src/renderer/profiles/wow/m2_material.cpp
+        src/renderer/profiles/wow/m2_shader_select.cpp
+        src/renderer/profiles/wow/m2_shading.cpp
+        src/renderer/profiles/wow/m2_surface_table.cpp
+    )
     target_compile_definitions(WhiteoutFlakesLib PUBLIC WDX_ENABLE_M2=1)
-    message(STATUS "WhiteoutFlakes: .m2 loading ENABLED (geometry only)")
+    message(STATUS "WhiteoutFlakes: .m2 loading ENABLED (materials + combiners)")
 endif()
 
 # `.m3`, opt-in on the same terms.
