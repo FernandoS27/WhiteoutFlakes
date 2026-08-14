@@ -174,6 +174,53 @@ using ::whiteout::flakes::MAT_UNFOGGED;
 using ::whiteout::flakes::MAT_UNSHADED;
 using ::whiteout::flakes::MaterialFlags;
 
+/// @brief What one attribute in a @ref MeshBuffer means.
+///
+/// Maps to a shader semantic name, not to a slot: the renderer pairs
+/// `{semantic, semanticIndex}` with the element names its input layouts
+/// use ("POSITION", "NORMAL", "TEXCOORD0", …).
+enum class VertexSemantic : u8 {
+    Position,
+    Normal,
+    Tangent,
+    TexCoord,
+    Color,
+    BoneIndices,
+    BoneWeights,
+};
+
+/// @brief One attribute inside a @ref MeshBuffer's interleaved record.
+struct VertexAttribute {
+    VertexSemantic semantic = VertexSemantic::Position;
+    u8 semanticIndex = 0;
+    gfx::Format format = gfx::Format::Unknown;
+    u16 offset = 0; ///< Byte offset within one vertex record.
+};
+
+/// @brief Vertex data an adapter hands over already GPU-ready.
+///
+/// The second shape geometry can reach the renderer in. `.m2` and `.m3`
+/// both store a single interleaved blob that is already a valid vertex
+/// buffer; decoding it into parallel arrays only to re-interleave it into
+/// a different layout loses every attribute the target layout has no slot
+/// for. So: `attributes` *describes* `data` and the renderer uploads it
+/// verbatim, never decoding it.
+///
+/// Empty means "use the parallel-array path", which is every MDX mesh.
+struct MeshBuffer {
+    std::vector<u8> data;
+    u32 stride = 0;
+    std::vector<VertexAttribute> attributes;
+
+    bool Valid() const {
+        return stride != 0 && !attributes.empty() && !data.empty() &&
+               data.size() % stride == 0;
+    }
+    u32 VertexCount() const {
+        return stride ? static_cast<u32>(data.size() / stride) : 0;
+    }
+};
+
 /// @brief One geoset of mesh data — vertex streams + index buffer.
 ///
 /// Each MDX geoset becomes one `MeshData`; multiple LODs of the same
@@ -202,6 +249,18 @@ struct MeshData {
     /// @brief Optional standalone per-vertex colour stream (BGRA8), for
     ///        formats whose colours are not folded into the base vertex.
     std::vector<u32> colors;
+
+    /// @brief Already-interleaved, already-GPU-ready vertex data. When
+    ///        valid it replaces the arrays above as the *upload* source.
+    ///
+    /// `positions` stays populated alongside it and is not redundant: it is
+    /// the CPU-side copy, and two things read it that never touch the GPU
+    /// buffer — @ref IModelSource::GetBounds's union-over-positions default,
+    /// and the per-geoset sort centroid. Both adapters that fill `baked`
+    /// already decode positions anyway, so it costs nothing; recovering them
+    /// out of the blob instead would be the renderer decoding a buffer it
+    /// just promised not to decode.
+    MeshBuffer baked;
 };
 
 /// @brief Sentinel layer-textureId meaning "synthesize the team-colour
@@ -512,10 +571,13 @@ using ::whiteout::flakes::renderer::model::FrameState;
 using ::whiteout::flakes::renderer::model::GroupAverageRecord;
 using ::whiteout::flakes::renderer::model::MaterialData;
 using ::whiteout::flakes::renderer::model::MaterialLayerData;
+using ::whiteout::flakes::renderer::model::MeshBuffer;
 using ::whiteout::flakes::renderer::model::MeshData;
 using ::whiteout::flakes::renderer::model::PE1EmitterConfig;
 using ::whiteout::flakes::renderer::model::SkeletonData;
 using ::whiteout::flakes::renderer::model::SkinWeightData;
 using ::whiteout::flakes::renderer::model::TextureData;
+using ::whiteout::flakes::renderer::model::VertexAttribute;
 using ::whiteout::flakes::renderer::model::VertexInfluence;
+using ::whiteout::flakes::renderer::model::VertexSemantic;
 } // namespace whiteout::flakes

@@ -9,6 +9,7 @@
 #include "render_target.h" // RenderMode
 #include "whiteout/flakes/model_source.h"
 #include "whiteout/flakes/types.h"
+#include "whiteout/flakes/util/coordinate_system.h"
 
 #include <memory>
 #include <vector>
@@ -59,6 +60,19 @@ struct Actor {
     // hundreds, which is the whole reason this exists.
     f32 worldScale = 1.0f;
 
+    // The axis convention the actor's geometry is authored in, from the same
+    // profile as `worldScale` and stamped at the same moment.
+    //
+    // Applied on the transform rather than baked into the vertices, and that
+    // is now forced rather than merely tidy: a MeshBuffer is uploaded to the
+    // GPU byte for byte, so there is no CPU-side vertex array left to rotate.
+    // Bone matrices and particle samples ride the same transform, so one
+    // basis change covers all three.
+    //
+    // Blizzard (== renderer-native) for Warcraft III and World of Warcraft;
+    // StarCraft II and Heroes author +Y forward instead of +X.
+    CoordSpace sourceSpace = kDefaultCoordSpace;
+
     // The actor's model-space bounding box, in the same units `worldScale`
     // converts from. Stamped at spawn by both routes, because it is the only
     // thing an actor can be framed by and `sourceTemplate` is null for every
@@ -90,9 +104,17 @@ struct Actor {
     // "identity for WC3" a fact about bits rather than an argument about
     // floating point.
     const Matrix44f& ScaledWorldTransform() const {
-        if (worldScale == 1.0f)
+        const bool rebase = sourceSpace != kDefaultCoordSpace;
+        if (worldScale == 1.0f && !rebase)
             return worldTransform;
-        scaledWorld_ = Matrix44f::scaling({worldScale, worldScale, worldScale}) * worldTransform;
+        // Basis change first, then scale, then the host's matrix: the first
+        // two act on model-space geometry, and the host writes the last one in
+        // world space. The scale is uniform so it commutes with the rotation;
+        // the order is written the way it reads rather than to matter.
+        Matrix44f m = Matrix44f::scaling({worldScale, worldScale, worldScale});
+        if (rebase)
+            m = CoordinateSystem::BasisChange(sourceSpace, kDefaultCoordSpace) * m;
+        scaledWorld_ = m * worldTransform;
         return scaledWorld_;
     }
 

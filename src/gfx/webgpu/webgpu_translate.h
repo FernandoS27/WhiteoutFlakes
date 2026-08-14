@@ -121,8 +121,12 @@ inline wgpu::VertexFormat ToWgpuVertexFormat(Format f) {
         return wgpu::VertexFormat::Unorm8x4;
     case Format::R8G8B8A8_UINT:
         return wgpu::VertexFormat::Uint8x4;
+    case Format::R8G8B8A8_SNORM:
+        return wgpu::VertexFormat::Snorm8x4;
     case Format::R16G16_UNORM:
         return wgpu::VertexFormat::Unorm16x2;
+    case Format::R16G16_SNORM:
+        return wgpu::VertexFormat::Snorm16x2;
     case Format::R16G16B16A16_UNORM:
         return wgpu::VertexFormat::Unorm16x4;
     case Format::R16G16B16A16_FLOAT:

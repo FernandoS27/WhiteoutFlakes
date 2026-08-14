@@ -108,11 +108,12 @@ TEST_CASE("every corpus .m2 loads geometry", "[m2]") {
             CHECK(m.indices.size() % 3 == 0);
             for (auto idx : m.indices)
                 REQUIRE(idx < m.positions.size());
-            // The upload path builds a fully interleaved vertex and reads all
-            // three arrays, so they must agree in length even though only
-            // positions carry meaning at this stage.
-            CHECK(m.normals.size() == m.positions.size());
-            CHECK(m.uvs.size() == m.positions.size());
+            // Normals and UVs used to be zero-filled to match, because the
+            // upload path re-interleaved all three arrays. They are in the
+            // baked buffer now and the arrays are gone; mesh_buffer_test
+            // checks the buffer itself against the parser's decode.
+            CHECK(m.baked.Valid());
+            CHECK(m.baked.VertexCount() == m.positions.size());
             totalVerts += m.positions.size();
             totalIndices += m.indices.size();
         }

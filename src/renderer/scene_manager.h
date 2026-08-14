@@ -77,6 +77,17 @@ public:
     }
     void SetProduct(ProductId p) {
         product_ = p;
+        // The scene's product is also which storage rules its content obeys —
+        // WoW wants fileDataIDs and a listfile, StarCraft II wants CASC only
+        // and may need Heroes' install open alongside it. Forwarding here is
+        // what stops "the scene is WoW" and "the provider is reading WC3" from
+        // drifting apart.
+        //
+        // Only when the internal provider already exists: creating it opens a
+        // CASC and spawns threads, which is exactly the cost SetContentProvider
+        // goes out of its way not to pay on an externally-provided scene.
+        if (contentProvider_ && !externalContentProvider_)
+            contentProvider_->SetGame(p);
     }
 
     ::whiteout::flakes::renderer::Camera& Camera() {
@@ -232,6 +243,12 @@ private:
             contentProvider_ = std::make_unique<io::FileContentProvider>();
             if (!pe1BasePath_.empty())
                 contentProvider_->SetBasePath(pe1BasePath_);
+            // A scene whose product was set before it first touched its own
+            // provider — the ordinary order for a host that picks the game up
+            // front — would otherwise get a Warcraft III provider for a WoW
+            // scene. SetGame no-ops when the product is already Wc3.
+            if (product_ != ProductId::Neutral)
+                contentProvider_->SetGame(product_);
             if (!externalContentProvider_) {
                 activeContentProvider_ = contentProvider_.get();
                 templates_->SetContentProvider(activeContentProvider_);

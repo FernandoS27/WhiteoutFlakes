@@ -3,6 +3,7 @@
 #include "frame_capture.h"
 #include "render_pipeline.h"
 #include "core/render_profile.h"
+#include "core/vertex_layout.h"
 #include "shading/shading_registry.h"
 #include "shading/unlit_shading.h"
 
@@ -94,6 +95,10 @@ struct RenderPipeline::Impl {
 #if WDX_ENABLE_M3
     std::unique_ptr<core::IRenderProfile> sc2HeroesProfile_;
 #endif
+
+    // Interned MeshBuffer layouts. Holds no GPU objects, so it outlives
+    // CleanupGFX and needs no teardown hook.
+    core::VertexLayoutCache vertexLayouts_;
 
     // Cached at InitDevice time via Gfx()->PreferredDepthStencilFormat().
     // Renderer-wide source of truth for the depth-target format and

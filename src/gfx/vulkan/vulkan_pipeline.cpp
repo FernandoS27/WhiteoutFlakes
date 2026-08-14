@@ -97,6 +97,8 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         case Format::R32_UINT:
         case Format::R11G11B10_FLOAT:
         case Format::R16G16_UNORM:
+        case Format::R8G8B8A8_SNORM:
+        case Format::R16G16_SNORM:
             elemSize = 4;
             break;
         default:
@@ -109,9 +111,15 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
     for (u32 slot = 0; slot < slotUsed.size(); ++slot) {
         if (!slotUsed[slot])
             continue;
+        // An explicit stride wins over the inferred high-water mark: a
+        // layout that declares only the attributes its shader consumes
+        // cannot be measured from its own elements.
+        const u32 stride = (slot < kMaxVertexInputSlots && desc.inputSlotStrides[slot] != 0)
+                               ? desc.inputSlotStrides[slot]
+                               : slotStride[slot];
         bindings[bindingCount++] = vk::VertexInputBindingDescription{
             .binding = slot,
-            .stride = slotStride[slot],
+            .stride = stride,
             .inputRate = vk::VertexInputRate::eVertex,
         };
     }

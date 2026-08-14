@@ -7,6 +7,7 @@
 #include "particle.h"
 #include "core/surface_table.h"
 #include "core/surface_vocabulary.h"
+#include "core/vertex_layout.h"
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
 
@@ -45,6 +46,16 @@ struct StagedGeoset {
     std::vector<Vector4f> tangents;
     i32 materialId = -1;
     u32 lod = 0;
+
+    /// @brief Already-interleaved vertex data, uploaded verbatim. When this
+    ///        is valid `vertices` is empty and the two fields below carry
+    ///        what the upload would otherwise have read out of it.
+    MeshBuffer baked;
+    /// @brief Vertex count and local bounds centre for the baked path,
+    ///        computed at stage time from the source positions — the
+    ///        renderer never decodes `baked.data` to recover them.
+    i32 bakedVertexCount = 0;
+    Vector3f centroid = {0, 0, 0};
 };
 
 struct GPUGeoset {
@@ -66,6 +77,14 @@ struct GPUGeoset {
     u32 lod = 0;
 
     bool hasSkinning = false;
+
+    // Byte stride of the Base stream, and which interned layout describes
+    // it. WC3 leaves these at `sizeof(Vertex)` / kWc3Interleaved; a geoset
+    // uploaded from a MeshBuffer carries that buffer's own stride and its
+    // interned id. Only shading models that draw baked geometry read them
+    // — every WC3 bind site passes sizeof(Vertex) as a literal, as before.
+    u32 baseStride = sizeof(Vertex);
+    u32 layoutId = core::VertexLayoutCache::kWc3Interleaved;
 
     // The four buffers named by core::StreamId. Base and BaseUv1 are two
     // complete interleaved copies differing only in which UV set is baked into

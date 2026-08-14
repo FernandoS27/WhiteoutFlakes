@@ -8,10 +8,15 @@
 // which handles the actual draw submission.
 // ============================================================================
 
+#include "whiteout/flakes/enums.h" // ProductId
 #include "whiteout/flakes/types.h"
 
 #include <string>
 #include <vector>
+
+namespace whiteout::flakes::io {
+class FileContentProvider;
+} // namespace whiteout::flakes::io
 
 namespace whiteout::flakes {
 
@@ -31,7 +36,21 @@ private:
     // Strip of one tab per open document (model/effect), each with a close (x)
     // button. Selecting a tab activates that document; closing it unloads it.
     void BuildTabBar();
+    // Settings is a game picker (left panel) plus that game's pages. `game` is
+    // the picked profile, which is also the shared provider's active game —
+    // one source of truth rather than a selection to keep in sync.
     void BuildSettingsWindow();
+    void BuildSettingsGeneralTab(ProductId game);
+    void BuildSettingsIoTab(io::FileContentProvider& provider, ProductId game);
+    // Warcraft III and World of Warcraft share this page: one install root,
+    // the per-storage ignore switches, an editable MPQ load order. What
+    // differs is the data — WoW adds a listfile and scans its archive names.
+    void BuildIoArchivePage(io::FileContentProvider& provider, ProductId game);
+    // StarCraft II / Heroes: two CASC roots and no MPQs, ever.
+    void BuildIoCascPage(io::FileContentProvider& provider);
+    // Repoint the shared provider at `game` and apply that game's saved IO
+    // setup. What the left panel does when a row is clicked.
+    void SelectSettingsProfile(ProductId game);
     void BuildViewCubeWidget();
     // Renders the deferred Save As options modal (MDL dialect + texture export)
     // when a model save is pending. No-op otherwise.
@@ -65,8 +84,13 @@ private:
     // IsItemDeactivatedAfterEdit; the MPQ-list scratch is committed inline
     // by the add/remove/reorder buttons.
     std::string installPathBuf_;
+    std::string hotsPathBuf_;  // StarCraft II page: the Heroes root
+    std::string listfileBuf_;  // World of Warcraft page: the `id;path` CSV
     std::string newMpqEntryBuf_;
     bool ioBufsInitialised_ = false;
+    // Which game the buffers above hold. They are re-seeded when the profile
+    // panel selects a different one.
+    ProductId ioBufsGame_ = ProductId::Wc3;
 
     // Export Animation Frames modal state.
     bool openExportPopup_ = false;

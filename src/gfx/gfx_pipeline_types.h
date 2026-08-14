@@ -174,10 +174,28 @@ struct RasterizerDesc {
 // every backend's PSO and render-pass setup.
 constexpr u32 kMaxColorAttachments = 4;
 
+// Maximum vertex input slots a pipeline can bind. Matches the per-slot
+// arrays the Vulkan / WebGPU / Metal PSO builders already use.
+constexpr u32 kMaxVertexInputSlots = 8;
+
 struct GraphicsPipelineDesc {
     ShaderHandle vs = ShaderHandle{0};
     ShaderHandle ps = ShaderHandle{0};
     std::span<const InputElement> inputLayout;
+
+    // Per-slot vertex stride in bytes. 0 means "infer as
+    // max(offset + elementSize) over that slot's declared elements",
+    // which is what every backend did unconditionally before this field
+    // existed — so every existing call site keeps its exact layout.
+    //
+    // An explicit stride is required when the declared elements do not
+    // span the whole record. D3D takes the stride at BindVertexBuffer and
+    // never cared; Vulkan, WebGPU and Metal bake it into the PSO, so a
+    // pipeline that declares POSITION alone over a wider interleaved
+    // vertex would walk the buffer 12 bytes at a time and read garbage
+    // from the second vertex on.
+    u32 inputSlotStrides[kMaxVertexInputSlots] = {};
+
     PrimitiveTopology topology = PrimitiveTopology::TriangleList;
     BlendDesc blend;
     DepthStencilDesc depthStencil;

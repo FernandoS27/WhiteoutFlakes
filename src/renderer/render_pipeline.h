@@ -39,6 +39,7 @@ class IShadingModel;
 }
 namespace core {
 class IRenderProfile;
+class VertexLayoutCache;
 }
 
 namespace particle {
@@ -165,6 +166,11 @@ public:
     // frame look like", and ModelLoader has to ask it for WorldScale at spawn.
     // Keeping it private would mean a one-off forwarder per question.
     core::IRenderProfile& ActiveProfile();
+
+    // Interned MeshBuffer vertex layouts. One per pipeline because a layout
+    // id has to mean the same thing in a shading model's PSO key as it did
+    // at upload; per-model caches would collide on id 1.
+    core::VertexLayoutCache& VertexLayouts();
 
     // Extra colour attachments the in-flight frame's scene pass binds, written
     // into @p out. Returns 0 for a single-attachment frame, 2 for an MRT one

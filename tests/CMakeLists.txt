@@ -52,6 +52,20 @@ wdx_add_test(slk_test           slk_test.cpp)
 wdx_add_test(path_utils_test    path_utils_test.cpp)
 wdx_add_test(texture_usage_test texture_usage_test.cpp)
 wdx_add_test(content_ref_test   content_ref_test.cpp)
+# Per-product storage routing. Policy assertions run everywhere; the parts
+# that need a real WoW / SC2 / Heroes install skip without one.
+wdx_add_test(content_provider_games_test content_provider_games_test.cpp)
+# The layer under it: path spelling, each game's archive rules, and what the
+# builder assembles. Opens no storage, so it needs no install at all.
+wdx_add_test(game_storage_test game_storage_test.cpp)
+# The viewer's settings file, which now stores one IO section per game.
+# Compiles the viewer's settings_io.cpp directly — it belongs to the viewer
+# executable, not to WhiteoutFlakesLib. Its display-settings sibling
+# (settings_ini.cpp) is deliberately NOT here: that one links RenderService,
+# which would drag a gfx backend into a device-free test.
+wdx_add_test(settings_ini_test settings_ini_test.cpp
+             "${CMAKE_SOURCE_DIR}/tools/basic_viewer/settings_io.cpp")
+target_include_directories(settings_ini_test PRIVATE "${CMAKE_SOURCE_DIR}/tools/basic_viewer")
 # Only when the format is compiled in — the adapter it exercises does not
 # exist otherwise. The test itself skips without a configured WoW install.
 if(WDX_ENABLE_M2)
@@ -59,6 +73,12 @@ if(WDX_ENABLE_M2)
 endif()
 if(WDX_ENABLE_M3)
     wdx_add_test(m3_geometry_test m3_geometry_test.cpp)
+endif()
+# The baked-vertex-buffer description check. Compiled unconditionally — it
+# #ifdefs its two halves internally, so a build with neither format still
+# links and reports honestly rather than vanishing from the suite.
+if(WDX_ENABLE_M2 OR WDX_ENABLE_M3)
+    wdx_add_test(mesh_buffer_test mesh_buffer_test.cpp)
 endif()
 
 # ---- renderer ----

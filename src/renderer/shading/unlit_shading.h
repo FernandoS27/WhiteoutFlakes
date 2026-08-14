@@ -24,6 +24,7 @@
 // ============================================================================
 
 #include "core/surface_vocabulary.h"
+#include "core/vertex_layout.h"
 #include "gfx/gfx.h"
 #include "shading/shading_model.h"
 #include "whiteout/flakes/types.h"
@@ -88,16 +89,30 @@ private:
         Matrix44f projection;
     };
 
-    // A PSO varies only with the attachment formats it renders into — there is
-    // no material, no permutation and no light count to key on. SD and HD are
-    // therefore two entries, plus one more per distinct swap-chain format a
-    // Metal-backed target reports.
+    // Mirrors `UnlitLightData` — a separate buffer at slot 1 rather than more
+    // fields on UnlitCb, so the flat permutation's layout does not move.
+    struct alignas(16) UnlitLightCb {
+        Vector4f lightDirWS;
+        Vector4f lightColor;
+        Vector4f ambient;
+        Vector4f specular; // .w = Blinn-Phong exponent
+        Vector4f cameraPosWS;
+    };
+
+    // Attachment formats, plus the two axes a baked vertex buffer introduces:
+    // which interned layout describes the geometry (and at what stride), and
+    // how the active profile lights it. `lighting` is the *resolved* choice —
+    // a geoset with no NORMAL is keyed Flat, so the fallback is a property of
+    // the key rather than a branch at bind time.
     struct PsoKey {
         gfx::Format rtv = gfx::Format::Unknown;
         gfx::Format dsv = gfx::Format::Unknown;
         u32 extraRtvCount = 0;
         gfx::Format extra0 = gfx::Format::Unknown;
         gfx::Format extra1 = gfx::Format::Unknown;
+        u32 layoutId = core::VertexLayoutCache::kWc3Interleaved;
+        u32 stride = 0;
+        core::UnlitLightingModel lighting = core::UnlitLightingModel::Flat;
 
         bool operator==(const PsoKey&) const = default;
     };
@@ -108,11 +123,20 @@ private:
 
     gfx::PipelineHandle GetOrBuildPso(const PsoKey& key);
 
+    /// @brief The lighting model this geoset actually gets: the profile's
+    ///        choice, downgraded to Flat when the geometry has no normal.
+    core::UnlitLightingModel ResolveLighting(const render_detail::RenderableView& view,
+                                             const model::GPUGeoset& geo);
+
     RenderService& rs_;
     bool initTried_ = false;
     gfx::ShaderHandle vs_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle ps_ = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle vsLit_ = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle psLambert_ = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle psBlinnPhong_ = gfx::ShaderHandle::Invalid;
     gfx::BufferHandle cb_ = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle lightCb_ = gfx::BufferHandle::Invalid;
     std::vector<PsoEntry> psos_;
 
     // Captured in BeginPass, read by Draw. The view and projection are
@@ -120,6 +144,12 @@ private:
     // the CB inside Draw.
     Matrix44f passView_ = Matrix44f::identity();
     Matrix44f passProj_ = Matrix44f::identity();
+    Vector3f passCameraPos_ = {0.0f, 0.0f, 0.0f};
+    core::UnlitLightingModel passLighting_ = core::UnlitLightingModel::Flat;
+
+    // Actors already warned about a missing NORMAL, so the message is once
+    // per model rather than once per geoset per frame.
+    std::vector<u32> warnedNoNormal_;
 };
 
 } // namespace whiteout::flakes::renderer::shading

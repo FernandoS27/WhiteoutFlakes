@@ -14,11 +14,21 @@ struct SpaceAxes {
     Vector3f zAxis;
 };
 
+// Each row is where that space's +X / +Y / +Z lands in renderer-native
+// (Blizzard) coordinates, which are +X forward, +Y left, +Z up.
+//
+// Order must match the CoordSpace enum — these are indexed by its value.
 constexpr SpaceAxes kSpaceAxes[] = {
-
+    // Blizzard — identity, by definition.
     {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
 
+    // Max: forward is −Y, so +X lands on renderer +Y (left) and +Y on −X.
     {{0.0f, 1.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
+
+    // Sc2: forward is +Y and right is +X. Forward maps onto renderer +X, and
+    // right onto renderer −Y — the opposite sign from Max on both axes, which
+    // is the 180° yaw between the two.
+    {{0.0f, -1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
 };
 constexpr usize kSpaceCount = sizeof(kSpaceAxes) / sizeof(kSpaceAxes[0]);
 

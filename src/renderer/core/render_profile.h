@@ -139,6 +139,13 @@ public:
     ///        Identity for WC3.
     virtual CoordSpace SourceSpace() const = 0;
 
+    /// @brief How UnlitShading lights this product's surfaces. Flat by
+    ///        default, so the WC3 profiles are unchanged and their goldens
+    ///        stay byte-identical by construction rather than by inspection.
+    virtual UnlitLightingModel UnlitLighting() const {
+        return UnlitLightingModel::Flat;
+    }
+
     /// @brief The shading models this profile can dispatch to. Binds a profile
     ///        to the registry: a build with a product disabled never lists its
     ///        models here, so nothing can name one.

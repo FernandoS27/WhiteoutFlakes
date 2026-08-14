@@ -35,26 +35,16 @@ using core::TargetSlot;
 
 class Sc2HeroesProfile final : public core::IRenderProfile {
 public:
-    // SC2 model units → renderer units, measured rather than assumed — see
-    // WowProfile::kWowUnitsToRendererUnits for why this constant exists at all
-    // and why guessing it renders something plausible-looking and wrong.
+    // SC2 model units → renderer units. One SC2 unit is 100 Warcraft III
+    // units — the same ratio World of Warcraft uses, so this is deliberately
+    // the same number as WowProfile::kWowUnitsToRendererUnits rather than an
+    // independently measured one.
     //
-    // Longest bounding-box axis, measured per model by m3_geometry_test:
-    // Zealot 1.59, SCV 1.98, Zergling 2.06, Marine 4.06, Battlecruiser 4.68,
-    // Ultralisk 5.71, Thor 12.08. Across 261 corpus models with geometry the
-    // mean is 6.6, dragged up by terrain templates (MapTemplate.m3 is 256).
-    //
-    // Warcraft III authors the same silhouettes in the 90–300 range, which is
-    // what every camera constant here is tuned against (kDefaultDistance =
-    // 350, kMinDistance = 15). Anchoring on infantry rather than on the
-    // extremes — the same rule WowProfile uses — 2–4 units has to land near
-    // 90–120, which puts the ratio at 30. It checks out along the range:
-    // Marine 122, Zergling 62, Ultralisk 171, Thor 362.
-    //
-    // A framing constant, not a physical conversion. Nothing here claims to
-    // know how long an SC2 metre is, only what it takes for a model authored
-    // in SC2 units to be visible next to a Warcraft III camera.
-    static constexpr f32 kSc2UnitsToRendererUnits = 30.0f;
+    // Replaced a framing constant of 30 that had been fitted to corpus
+    // bounding boxes (Zealot 1.59 units, Marine 4.06, Thor 12.08) so infantry
+    // landed near WC3's 90–120 range. That made models look right against a
+    // fixed camera and was not the conversion.
+    static constexpr f32 kSc2UnitsToRendererUnits = 100.0f;
 
     explicit Sc2HeroesProfile(RenderSettings& settings) : settings_(settings) {
         targets_ = {
@@ -138,11 +128,20 @@ public:
     f32 WorldScale() const override {
         return kSc2UnitsToRendererUnits;
     }
+    core::UnlitLightingModel UnlitLighting() const override {
+        // Per-pixel Lambert — the diffuse half of WoW's Blinn-Phong, chosen
+        // so the two profiles are distinguishable at a glance. Same purpose:
+        // it reads the normal, so the `.m3` layout description is either
+        // right or visibly wrong. Not SC2's shading model.
+        return core::UnlitLightingModel::Lambert;
+    }
     CoordSpace SourceSpace() const override {
-        // Identity for now. M3 authors Z-up right-handed like MDX; a real
-        // divergence would show as a rotated model, which is visible in the
-        // white render rather than silent.
-        return kDefaultCoordSpace;
+        // The one profile that is not renderer-native. StarCraft II and Heroes
+        // author +Y forward / +X right, where Warcraft III and WoW use +X
+        // forward / +Y left — a 90° yaw. Applied on the actor transform, not
+        // baked into the vertices, because an `.m3` reaches the GPU as a
+        // verbatim MeshBuffer with no CPU-side copy left to rotate.
+        return CoordSpace::Sc2;
     }
     std::span<shading::IShadingModel* const> ShadingModels() const override {
         return models_;

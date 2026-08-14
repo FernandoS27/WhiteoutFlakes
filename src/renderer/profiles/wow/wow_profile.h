@@ -36,22 +36,18 @@ using core::TargetSlot;
 
 class WowProfile final : public core::IRenderProfile {
 public:
-    // WoW model units → renderer units, measured rather than assumed.
+    // WoW model units → renderer units. One WoW unit is 100 Warcraft III
+    // units; StarCraft II and Heroes use the same ratio, which is why
+    // Sc2HeroesProfile carries the same number rather than a second measured
+    // one.
     //
-    // Bounding-box extents across the `.m2` corpus: a cow is 3.8 units, a
-    // humanoid 5–6, a mid-size creature 10–15, and Alexstrasza — a dragon
-    // aspect, the largest thing in the set — 60. Warcraft III authors the same
-    // silhouettes in the 90–300 range, which is what every camera constant
-    // here is tuned against (kDefaultDistance = 350, kMinDistance = 15). That
-    // puts the ratio at roughly 20, consistently, across the size range.
-    //
-    // A framing constant, not a physical conversion: nothing here claims to
-    // know how long a yard is, only what it takes for a model authored in WoW
-    // units to be visible next to a Warcraft III camera. An earlier draft of
-    // this file guessed 40 from the design's "2–5 yards" note without
-    // measuring, which would have rendered every creature at twice the size it
-    // should be — visible, and therefore easy to mistake for correct.
-    static constexpr f32 kWowUnitsToRendererUnits = 20.0f;
+    // This replaced a *framing* constant of 20, reverse-engineered from corpus
+    // bounding boxes so models looked right against WC3's camera defaults
+    // (kDefaultDistance = 350). That number made things look plausible and was
+    // not the conversion — with auto-framing driving the camera off the actor's
+    // own bounds, the real ratio is what belongs here and the framing takes
+    // care of itself.
+    static constexpr f32 kWowUnitsToRendererUnits = 100.0f;
 
     explicit WowProfile(RenderSettings& settings) : settings_(settings) {
         targets_ = {
@@ -92,11 +88,19 @@ public:
     f32 WorldScale() const override {
         return kWowUnitsToRendererUnits;
     }
+    core::UnlitLightingModel UnlitLighting() const override {
+        // Per-pixel Blinn-Phong. Not WoW's shading — WoW's is a texture
+        // combiner chain this phase has no materials for. It is here because
+        // it reads the vertex normal, which is exactly the attribute the
+        // pre-MeshBuffer upload path discarded: a wrong layout description
+        // shows up as wrong shading, where flat white showed nothing.
+        return core::UnlitLightingModel::BlinnPhong;
+    }
     CoordSpace SourceSpace() const override {
-        // Identity for now. M2 authors Z-up right-handed like MDX; a real
-        // divergence would show as a rotated model, which is visible in the
-        // white render rather than silent.
-        return kDefaultCoordSpace;
+        // Genuinely identity: World of Warcraft shares Warcraft III's axes
+        // (+X forward, +Y left, +Z up), so nothing is rebased. StarCraft II is
+        // the one that diverges — see Sc2HeroesProfile.
+        return CoordSpace::Blizzard;
     }
     std::span<shading::IShadingModel* const> ShadingModels() const override {
         return models_;

@@ -236,6 +236,15 @@ struct SurfaceParamDecl {
 // Pass context
 // ---------------------------------------------------------------------------
 
+class IRenderProfile;
+
+// How UnlitShading lights a surface, chosen by the profile.
+//
+// Bring-up lighting, and only that: it exists because flat white cannot tell a
+// correct vertex-layout description from a wrong one, while anything that reads
+// the normal can. Nothing here claims to be WoW's or SC2's real shading.
+enum class UnlitLightingModel : u8 { Flat = 0, Lambert = 1, BlinnPhong = 2 };
+
 // What a shading model needs to know about the pass it is being asked to draw
 // into. Carries the slot because SC2 resolves a distinct compiled VS/PS *and*
 // an output mask from the pass index, so the slot has to reach the PSO key —
@@ -247,6 +256,11 @@ struct PassContext {
     Vector3f cameraPos = {0.0f, 0.0f, 0.0f};
     i32 viewportWidth = 0;
     i32 viewportHeight = 0;
+    // The frame this pass belongs to. Filled where view/projection are, for
+    // the same reason: which profile is running is a property of the pass,
+    // not something a shading model should reach back through the pipeline
+    // to rediscover. Null in a pass built without one.
+    const IRenderProfile* profile = nullptr;
 };
 
 } // namespace whiteout::flakes::renderer::core

@@ -4,8 +4,53 @@
 
 namespace whiteout::flakes::io {
 
+using renderer::model::MeshBuffer;
 using renderer::model::MeshData;
 using renderer::model::SequenceInfo;
+using renderer::model::VertexAttribute;
+using renderer::model::VertexSemantic;
+
+namespace {
+
+// The `.m3` vertex record, described rather than decoded. Offsets mirror
+// VertexBuffer::initialize() exactly — see whiteout/models/m3/types.cpp:
+//
+//   0  position      f32 x3
+//   12 boneWeights   u8  x4  (/255)
+//   16 boneIndices   u8  x4
+//   20 normal        i8  x4  (/127; .w is the tangent handedness sign)
+//   24 colour        u8  x4  BGRA, only when the VertexColor flag is set
+//   .. uv0..uv4      i16 x2  each, one per UV flag
+//   -4 tangent       i8  x4  (/127), always the last four bytes
+//
+// Deriving this a second time here rather than asking the parser is the one
+// genuinely risky thing in the M3 path, which is why mesh_buffer_test asserts
+// the description agrees with getPositions()/getNormals() byte for byte.
+std::vector<VertexAttribute> DescribeM3Vertex(const ::whiteout::m3::VertexBuffer& vb) {
+    const u16 stride = static_cast<u16>(vb.vertexSize());
+    const u16 uvBase = vb.hasVertexColors() ? 28 : 24;
+
+    std::vector<VertexAttribute> attrs;
+    attrs.push_back({VertexSemantic::Position, 0, gfx::Format::R32G32B32_FLOAT, 0});
+    attrs.push_back({VertexSemantic::BoneWeights, 0, gfx::Format::R8G8B8A8_UNORM, 12});
+    attrs.push_back({VertexSemantic::BoneIndices, 0, gfx::Format::R8G8B8A8_UINT, 16});
+    attrs.push_back({VertexSemantic::Normal, 0, gfx::Format::R8G8B8A8_SNORM, 20});
+    if (vb.hasVertexColors())
+        attrs.push_back({VertexSemantic::Color, 0, gfx::Format::R8G8B8A8_UNORM, 24});
+    for (u8 i = 0; i < static_cast<u8>(vb.UVsNum()); ++i) {
+        // Declared, but nothing consumes it yet: `.m3` UVs are i16/2048, and
+        // SNORM decodes /32767. The scale — plus REGN v5+'s per-region
+        // uvMultiply/uvOffset — is material work, so the honest description
+        // here is the storage layout, not a usable texture coordinate.
+        attrs.push_back({VertexSemantic::TexCoord, i, gfx::Format::R16G16_SNORM,
+                         static_cast<u16>(uvBase + i * 4)});
+    }
+    attrs.push_back(
+        {VertexSemantic::Tangent, 0, gfx::Format::R8G8B8A8_SNORM, static_cast<u16>(stride - 4)});
+    return attrs;
+}
+
+} // namespace
 
 std::shared_ptr<M3ModelAdapter> M3ModelAdapter::Load(const ContentRef& ref,
                                                      std::span<const ::whiteout::u8> bytes) {
@@ -53,8 +98,16 @@ std::vector<MeshData> M3ModelAdapter::GetMeshes() {
 
     // getPositions() decodes the whole blob, so it is called once rather than
     // per region — the stride walk is the expensive part and it is identical
-    // for every region.
+    // for every region. Still needed with the baked path: `positions` is the
+    // CPU-side copy GetBounds and the sort centroid read.
     const std::vector<::whiteout::Vector3f> positions = model_.vertices.getPositions();
+
+    // The blob is model-global and a region is a contiguous vertex range, so
+    // each region's buffer is a stride-aligned slice of it. No decode, no
+    // repack — the bytes reaching the GPU are the bytes that were in the file.
+    const std::vector<VertexAttribute> attrs = DescribeM3Vertex(model_.vertices);
+    const std::size_t stride = model_.vertices.vertexSize();
+    const std::vector<u8>& blob = model_.vertices.data;
 
     // Regions, in file order — see the header for why regions rather than
     // batches, and for the REGN v2 gap this counts.
@@ -82,14 +135,15 @@ std::vector<MeshData> M3ModelAdapter::GetMeshes() {
         mesh.lod = 0;
         mesh.positions.assign(positions.begin() + static_cast<std::ptrdiff_t>(vBegin),
                               positions.begin() + static_cast<std::ptrdiff_t>(vEnd));
-        // Normals and UVs are sized to match because the upload path builds a
-        // fully interleaved vertex and reads all three arrays. Left flat:
-        // UnlitShading reads position alone, and inventing plausible-looking
-        // normals would make a later lighting bug harder to spot than a
-        // visibly flat one — even though, unlike `.m2`, real normals are one
-        // getNormals() call away.
-        mesh.normals.assign(mesh.positions.size(), {0.0f, 0.0f, 1.0f});
-        mesh.uvs.assign(mesh.positions.size(), {0.0f, 0.0f});
+
+        const std::size_t byteBegin = vBegin * stride;
+        const std::size_t byteEnd = vEnd * stride;
+        if (byteEnd > blob.size())
+            continue; // vertexCount disagrees with the blob; skip the region
+        mesh.baked.stride = static_cast<u32>(stride);
+        mesh.baked.attributes = attrs;
+        mesh.baked.data.assign(blob.begin() + static_cast<std::ptrdiff_t>(byteBegin),
+                               blob.begin() + static_cast<std::ptrdiff_t>(byteEnd));
 
         mesh.indices.reserve(region.indexCount);
         for (std::size_t i = iBegin; i < iEnd; ++i)

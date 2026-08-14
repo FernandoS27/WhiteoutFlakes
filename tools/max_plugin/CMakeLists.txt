@@ -72,6 +72,7 @@ add_library(WhiteoutFlakesMaxPlugin SHARED
     # INI loader is still shared with the standalone viewer; the cubeb sound
     # emitter and the ImGui theme are shared host utilities under tools/common.
     "${BASIC_VIEWER_DIR}/settings_ini.cpp"
+    "${BASIC_VIEWER_DIR}/settings_io.cpp"
     "${TOOLS_COMMON_DIR}/cubeb_sound_emitter.cpp"
     "${TOOLS_COMMON_DIR}/imgui_theme.cpp"
 )

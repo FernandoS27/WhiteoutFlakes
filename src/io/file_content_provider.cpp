@@ -1,22 +1,30 @@
+// ============================================================================
+// FileContentProvider — the async surface hosts read content through.
+//
+// What lives here: the request queue and its worker pool, the loose-file
+// search path, the configuration a host can change, and the rule that a
+// configuration change is paid for by the next read rather than at the moment
+// it is made.
+//
+// What does not: anything that differs between games. Which storages a
+// product opens, how it spells a path, whether it has archives or file ids at
+// all — all of that is `storage/game_rules.cpp` and the sources under it. This
+// class asks for a GameStorage and reads through it.
+// ============================================================================
+
 #include "file_resolver.h"
 #include "io/file_content_provider.h"
+#include "io/storage/game_rules.h"
+#include "io/storage/install_locator.h"
+#include "io/storage/storage_paths.h"
 #include "whiteout/flakes/types.h"
 #include "whiteout/flakes/util/path_utf8.h"
 
-#include <whiteout/utils/blizzard_game_finder.h>
-
 #if WHITEOUT_HAS_CASC
-#include <whiteout/storages/casc/storage.h>
 #include <whiteout/utils/simple_thread_pool.h>
 #endif
 
-#if WHITEOUT_HAS_MPQ
-#include <whiteout/storages/mpq/storage.h>
-#endif
-
 #include <algorithm>
-#include <array>
-#include <cctype>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -26,10 +34,8 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
-#include <optional>
 #include <set>
 #include <shared_mutex>
-#include <string_view>
 #include <thread>
 #include <unordered_set>
 #include <utility>
@@ -52,15 +58,6 @@
 namespace whiteout::flakes::io {
 
 namespace fs = std::filesystem;
-
-// Stock load order for Warcraft III's MPQs — patch first so its overrides
-// win, then the expansion, then the base game. Surfaced via DefaultMpqList()
-// so the UI can offer "reset" without re-deriving the list itself.
-static const char* const kDefaultMpqNames[] = {
-    "War3Patch.mpq",
-    "War3x.mpq",
-    "war3.mpq",
-};
 
 // Returns the directory containing the running executable, or {} on failure.
 // Used as a fallback search root for engine-shipped assets (shaders, etc.)
@@ -95,124 +92,12 @@ static fs::path DiscoverExecutableDirectory() {
     if (ec)
         resolved = fs::path(buf);
     fs::path dir = resolved.parent_path();
-    if (dir.filename() == "MacOS" && dir.parent_path().filename() == "Contents") {
+    if (dir.filename() == "MacOS" && dir.parent_path().filename() == "Contents")
         return dir.parent_path() / "Resources";
-    }
     return dir;
 #else
     return {};
 #endif
-}
-
-// ---- File-extension classification helpers ----------------------------------
-
-static constexpr const char* kTextureExts[] = {".blp", ".dds", ".tga", ".png", ".tif"};
-static constexpr const char* kModelExts[] = {".mdx", ".mdl"};
-static constexpr const char* kArchiveTextureExts[] = {".blp", ".dds", ".tga", ".png", ".tif"};
-static constexpr const char* kArchiveModelExts[] = {".mdx", ".mdl"};
-// Base CASC mod prefixes; iteration order is picked at read time
-// based on the global HD-mode flag (see PickCascPrefixes). HD on
-// flips `_hd.w3mod:` above `war3.w3mod:` so HD-overridden SLKs and
-// textures win — same dance as Reforged's W3Data::OpenMod. The host
-// is responsible for setting the flag in sync with its render mode.
-static constexpr const char* kCascPrefixSd = "war3.w3mod:";
-static constexpr const char* kCascPrefixHd = "war3.w3mod:_hd.w3mod:";
-static constexpr const char* kCascPrefixDeprecated = "war3.w3mod:_deprecated.w3mod:";
-static constexpr const char* kCascEmptyPrefix = "";
-
-static std::array<const char*, 4> PickCascPrefixes(bool hdMode) {
-    if (hdMode)
-        return {kCascPrefixHd, kCascPrefixSd, kCascPrefixDeprecated, kCascEmptyPrefix};
-    return {kCascPrefixSd, kCascPrefixHd, kCascPrefixDeprecated, kCascEmptyPrefix};
-}
-
-static bool HasExtension(const std::string& ext, const char* const* list, usize count) {
-    for (usize i = 0; i < count; ++i)
-        if (ext == list[i])
-            return true;
-    return false;
-}
-
-static std::string NormalizeCascPath(const std::string& relPath) {
-    std::string out;
-    out.reserve(relPath.size());
-    for (char c : relPath) {
-        if (c == '/')
-            c = '\\';
-        out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-    usize start = 0;
-    while (start < out.size() && (out[start] == '\\' || out[start] == '/'))
-        ++start;
-    if (start > 0)
-        out.erase(0, start);
-    return out;
-}
-
-// Listing form of a path: lowercase, '/'-separated, no leading slash, and
-// with the CASC mod chain dropped ("war3.w3mod:_hd.w3mod:units\x.mdx" →
-// "units/x.mdx"). That is exactly the shape DoRead expects back — it
-// re-applies the prefixes itself — so a listed path can be read verbatim.
-static std::string ToListingPath(std::string_view stored) {
-    const auto colon = stored.rfind(':');
-    if (colon != std::string_view::npos)
-        stored.remove_prefix(colon + 1);
-    std::string out;
-    out.reserve(stored.size());
-    for (char c : stored) {
-        if (c == '\\')
-            c = '/';
-        out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-    usize start = 0;
-    while (start < out.size() && out[start] == '/')
-        ++start;
-    if (start > 0)
-        out.erase(0, start);
-    return out;
-}
-
-// Same normalisation for the caller-supplied directory, minus any trailing
-// separator so `"textures/fx"` and `"Textures\FX\"` mean the same thing.
-static std::string NormalizeListingDir(const std::string& directory) {
-    std::string dir = ToListingPath(directory);
-    while (!dir.empty() && dir.back() == '/')
-        dir.pop_back();
-    return dir;
-}
-
-// Is `relPath` (already in listing form) inside `dir`? A non-recursive
-// match additionally requires the file to sit directly in it.
-static bool MatchesListingDir(const std::string& relPath, const std::string& dir,
-                              bool recursive) {
-    usize offset = 0;
-    if (!dir.empty()) {
-        if (relPath.size() <= dir.size() + 1 || relPath.compare(0, dir.size(), dir) != 0 ||
-            relPath[dir.size()] != '/')
-            return false;
-        offset = dir.size() + 1;
-    }
-    return recursive || relPath.find('/', offset) == std::string::npos;
-}
-
-static std::string StripExtension(const std::string& path) {
-    auto dot = path.rfind('.');
-    return (dot != std::string::npos) ? path.substr(0, dot) : path;
-}
-
-static std::string GetLowerExtension(const std::string& relPath) {
-    std::string ext = fs::path(relPath).extension().string();
-    for (auto& c : ext)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return ext;
-}
-
-static std::pair<const char* const*, usize> AltExtensionsFor(const std::string& ext) {
-    if (HasExtension(ext, kTextureExts, std::size(kTextureExts)))
-        return {kArchiveTextureExts, std::size(kArchiveTextureExts)};
-    if (HasExtension(ext, kModelExts, std::size(kModelExts)))
-        return {kArchiveModelExts, std::size(kArchiveModelExts)};
-    return {nullptr, 0};
 }
 
 static bool ReadDiskFile(const fs::path& resolved, std::vector<u8>& outBytes) {
@@ -246,41 +131,45 @@ struct CompletedRequest {
 
 struct FileContentProvider::Impl {
     // ---- Storage state (guarded by storageMu) ----
-    // Worker threads hold a *shared* lock while reading — CASC and MPQ
-    // readFile() are themselves thread-safe (shared-lock internally), so N
-    // workers can decode in parallel. Reconfiguration paths (SetInstallPath /
-    // SetIgnoreCasc / SetMpqList) take the *exclusive* lock so a storage
-    // handle is never swapped out from under an in-flight read. The mutex is
-    // mutable because HasCasc() / HasMpq() are logically-const observers that
-    // still need to synchronise with worker reads.
+    // Worker threads hold a *shared* lock while reading — the underlying CASC
+    // and MPQ readers are themselves thread-safe, so N workers can decode in
+    // parallel. Reconfiguration takes the *exclusive* lock so a storage is
+    // never swapped out from under an in-flight read. The mutex is mutable
+    // because HasCasc() / HasMpq() are logically-const observers that still
+    // need to synchronise with worker reads.
     mutable std::shared_mutex storageMu;
-    std::string wc3Path;     // auto-detected; immutable after Discover()
-    std::string installPath; // currently-active install root
-    bool ignoreCasc = false;
-    bool ignoreMpq = false;
 
-    // HD mod-overlay precedence flag. Read by DoRead via
-    // PickCascPrefixes. Atomic so render-thread setters don't race
-    // the storage workers.
+    InstallLocator installs;
+
+    // What the host has asked for; `storage` below is what that resolved to.
+    StorageConfig config;
+    std::string hotsInstallPath; // active Heroes root, for the Sc2 product
+
+    // Storage opens are deferred: every reconfiguration path just sets this,
+    // and the first access that actually needs a storage does the work.
+    // Opening a CASC install parses its indices and encoding tables, which is
+    // the expensive part — a host clicking through the three games in a
+    // settings panel would otherwise pay for all three and read from one.
+    bool storagesDirty = true;
+
+    // HD mod-overlay precedence flag, read by the Warcraft III CASC source on
+    // every path it builds. Atomic so a render-thread setter doesn't race the
+    // storage workers, and a member so the source can hold a pointer to it.
     std::atomic<bool> hdMode{false};
-    std::vector<std::string> mpqList = FileContentProvider::DefaultMpqList();
+
     FileResolver resolver;
 
 #if WHITEOUT_HAS_CASC
-    // Worker pool handed to casc::Storage::open(). CASC parallelises the slow
-    // part of opening a Reforged install (index + encoding-table parsing) and
-    // also fans out BLTE block decompression of large files across it. The
-    // storage keeps a *non-owning* pointer, so the pool must outlive it —
-    // hence declared before cascStorage (members destruct in reverse order).
-    // Created lazily on first CASC open so MPQ-only installs spawn no idle
-    // threads.
+    // Handed to every CASC source. CASC parallelises the slow part of opening
+    // a Reforged install (index + encoding-table parsing) and also fans out
+    // BLTE block decompression across it. Sources keep a *non-owning* pointer,
+    // so the pool must outlive them — hence declared before `storage`, which
+    // owns them (members destruct in reverse declaration order).
     std::unique_ptr<whiteout::utils::SimpleThreadPool> cascPool;
-    std::optional<whiteout::storages::casc::Storage> cascStorage;
 #endif
 
-#if WHITEOUT_HAS_MPQ
-    std::vector<whiteout::storages::mpq::Storage> mpqStorages;
-#endif
+    // The opened storages for `config`. Null until something needs them.
+    std::unique_ptr<GameStorage> storage;
 
     // ---- Request queue (guarded by reqMu) ----
     // `pending` is the worker's input. `alive` tracks every id that has been
@@ -312,51 +201,30 @@ struct FileContentProvider::Impl {
 
     // ----------------------------------------------------------------
 
-    void Discover() {
-#if defined(__EMSCRIPTEN__)
-        // Web build: no native install discovery — the host swaps in a
-        // FetchContentProvider before any request runs. This member exists
-        // only so SceneManager's `FileContentProvider contentProvider_`
-        // member constructs; its Request() path is never reached.
-        wc3Path.clear();
-        installPath.clear();
-#else
-        auto games = whiteout::utils::findBlizzardGames();
-
-        std::string fallbackPath;
-        for (auto& info : games) {
-            if (info.game != whiteout::utils::BlizzardGame::WarcraftIII &&
-                info.game != whiteout::utils::BlizzardGame::WarcraftIIIReforged)
-                continue;
-            if (fs::exists(FsPathFromUtf8(info.path) / "Data")) {
-                wc3Path = info.path;
-                break;
-            }
-            if (fallbackPath.empty())
-                fallbackPath = info.path;
-        }
-        if (wc3Path.empty())
-            wc3Path = std::move(fallbackPath);
-
-        installPath = wc3Path;
-
-        if (wc3Path.empty()) {
-            std::printf("[FileContentProvider] Warcraft III installation not found.\n");
-            return;
-        }
-
-        std::printf("[FileContentProvider] Found Warcraft III at: %s\n", wc3Path.c_str());
-
-        TryOpenCascLocked();
-        TryOpenMpqLocked();
-#endif
+    Impl() {
+        config.game = ProductId::Wc3;
+        config.installPath = installs.Wc3();
+        config.archives = DefaultArchives(ProductId::Wc3);
+        hotsInstallPath = installs.Hots();
+        // Nothing is opened here: `storagesDirty` starts true, so the first
+        // read (or an observer that has to know) opens it. A scene that is
+        // constructed and never read from costs nothing.
     }
 
-    void TryOpenCascLocked() {
-#if WHITEOUT_HAS_CASC
-        cascStorage.reset();
-        if (ignoreCasc || installPath.empty())
+    // Realise the deferred build. Call WITHOUT storageMu held — it takes the
+    // lock itself, shared for the common "already built" check and exclusive
+    // only for the one call that does the work.
+    void EnsureStorage() {
+        {
+            std::shared_lock sg(storageMu);
+            if (!storagesDirty)
+                return;
+        }
+        std::unique_lock sg(storageMu);
+        if (!storagesDirty) // another thread got here first
             return;
+        storagesDirty = false;
+#if WHITEOUT_HAS_CASC
         if (!cascPool) {
             // 2–4 threads: enough to overlap index parsing and large-file
             // BLTE decompression without oversubscribing the request pool.
@@ -364,212 +232,16 @@ struct FileContentProvider::Impl {
             cascPool = std::make_unique<whiteout::utils::SimpleThreadPool>(
                 std::clamp<unsigned>(hw ? hw : 4u, 2u, 4u));
         }
-        std::string error;
-        cascStorage = whiteout::storages::casc::Storage::open(installPath, &error, cascPool.get());
-        if (cascStorage)
-            std::printf("[FileContentProvider] CASC storage opened: %s\n", installPath.c_str());
-        else {
-            std::printf("[FileContentProvider] CASC not available at '%s': %s\n",
-                        installPath.c_str(), error.c_str());
-            cascStorage.reset();
-        }
-#endif
-    }
-
-    void TryOpenMpqLocked() {
-#if WHITEOUT_HAS_MPQ
-        mpqStorages.clear();
-        if (ignoreMpq || installPath.empty())
-            return;
-        for (const std::string& name : mpqList) {
-            if (name.empty())
-                continue;
-            fs::path mpqFsPath = FsPathFromUtf8(installPath) / name;
-            if (!fs::exists(mpqFsPath)) {
-                std::printf("[FileContentProvider] MPQ not found, skipping: %s\n",
-                            PathToUtf8(mpqFsPath).c_str());
-                continue;
-            }
-            std::string error;
-            auto storage = whiteout::storages::mpq::Storage::open(PathToUtf8(mpqFsPath), &error);
-            if (storage) {
-                std::printf("[FileContentProvider] Opened MPQ: %s\n",
-                            PathToUtf8(mpqFsPath).c_str());
-                mpqStorages.push_back(std::move(*storage));
-            } else {
-                std::printf("[FileContentProvider] Failed to open %s: %s\n",
-                            PathToUtf8(mpqFsPath).c_str(), error.c_str());
-            }
-        }
-#endif
-    }
-
-    // A fileDataID names a file in the CASC root manifest and nowhere else —
-    // there is no disk fallback, no MPQ fallback, and no extension to probe.
-    // A miss is a miss.
-    //
-    // The locale walk is not belt-and-braces. A WoW fileDataID resolves to one
-    // root entry PER LOCALE — 13 of them for a stock localised file — and only
-    // the installed locale's data is actually on disk. `readFile(id)` with no
-    // locale mask takes whichever entry the root manifest happens to list
-    // first, which is the wrong one on any install that is not the manifest's
-    // first locale, and returns a miss because that archive was never
-    // downloaded. Worse, the order is not stable: opening the same storage
-    // with a worker pool (which FileContentProvider always does) parses the
-    // manifest in parallel and lists them differently, so the same id reads
-    // fine single-threaded and misses through the provider.
-    //
-    // Asking for a specific locale sidesteps all of it — the storage then
-    // selects by mask rather than by position. The unmasked attempt comes
-    // first because it is right and free whenever an id has a single entry,
-    // which is the case for models and textures; the walk only runs after a
-    // miss, and only one locale can have data.
-    void DoReadFileId(u32 fileId, RequestResult& out) {
-#if WHITEOUT_HAS_CASC
-        if (!cascStorage)
-            return;
-        namespace L = whiteout::storages::casc::LocaleMasks;
-        // Fixed order, so one machine always answers the same way. Which entry
-        // wins still varies BETWEEN machines, and correctly so — that is what
-        // a locale is.
-        static constexpr u32 kLocales[] = {
-            L::enUS, L::enGB, L::deDE, L::frFR, L::esES, L::esMX, L::ruRU,
-            L::ptBR, L::ptPT, L::itIT, L::plPL, L::koKR, L::zhCN, L::zhTW,
-            L::enCN, L::enTW, L::jaJP, L::thTH, L::trTR,
-        };
-        const i32 id = static_cast<i32>(fileId);
-        auto data = cascStorage->readFile(id);
-        for (u32 locale : kLocales) {
-            if (data && !data->empty())
-                break;
-            data = cascStorage->readFile(id, locale);
-        }
-        if (data && !data->empty()) {
-            out.data = std::move(*data);
-            out.ok = true;
-            // Deliberately left empty: the root manifest is id-keyed, so
-            // there is no name to take an extension from. Consumers that
-            // decode by extension must know the kind from the reference
-            // that produced the id (an M2's `.skin` slot, a texture slot),
-            // which is exactly how the formats that use ids work.
-            out.actualExt.clear();
-        }
+        auto* pool = cascPool.get();
 #else
-        (void)fileId;
-        (void)out;
+        whiteout::utils::SimpleThreadPool* pool = nullptr;
 #endif
-    }
-
-    // Disk-then-CASC-then-MPQ read, run on the worker thread with storageMu
-    // already held. Mirrors the legacy synchronous ReadFile fallback chain.
-    void DoRead(const std::string& path, RequestResult& out) {
-        // ---- Disk ----
-        std::string norm = FileResolver::NormalizeSeparators(path);
-        std::string ext = GetLowerExtension(norm);
-        fs::path resolved;
-        if (HasExtension(ext, kTextureExts, std::size(kTextureExts)))
-            resolved = resolver.ResolveTexture(norm);
-        else if (HasExtension(ext, kModelExts, std::size(kModelExts)))
-            resolved = resolver.ResolveModel(norm);
-        else
-            resolved = resolver.Resolve(norm, {});
-
-        std::vector<u8> bytes;
-        if (ReadDiskFile(resolved, bytes)) {
-            std::string e = resolved.extension().string();
-            for (auto& c : e)
-                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            out.actualExt = std::move(e);
-            out.data = std::move(bytes);
-            out.ok = true;
-            return;
-        }
-
-        // ---- CASC ----
-#if WHITEOUT_HAS_CASC
-        if (cascStorage) {
-            std::string normCasc = NormalizeCascPath(path);
-            std::string stem = StripExtension(normCasc);
-            std::string cascExt = GetLowerExtension(normCasc);
-            auto [altExts, altCount] = AltExtensionsFor(cascExt);
-
-            // Try one stem across every mod prefix and extension; fills `out` and
-            // returns true on the first hit.
-            auto tryCascStem = [&](const std::string& s) -> bool {
-                for (const char* prefix :
-                     PickCascPrefixes(hdMode.load(std::memory_order_relaxed))) {
-                    if (!cascExt.empty()) {
-                        auto data = cascStorage->readFile(std::string(prefix) + s + cascExt);
-                        if (data && !data->empty()) {
-                            out.actualExt = cascExt;
-                            out.data = std::move(*data);
-                            out.ok = true;
-                            return true;
-                        }
-                    }
-                    for (usize i = 0; i < altCount; ++i) {
-                        if (altExts[i] == cascExt)
-                            continue;
-                        auto data = cascStorage->readFile(std::string(prefix) + s + altExts[i]);
-                        if (data && !data->empty()) {
-                            out.actualExt = altExts[i];
-                            out.data = std::move(*data);
-                            out.ok = true;
-                            return true;
-                        }
-                    }
-                }
-                return false;
-            };
-
-            if (tryCascStem(stem))
-                return;
-
-            // Reforged dropped the classic "-<frame>" suffix on some stock texture
-            // sets — e.g. the terrain water frames Textures\Water07-0.blp ship as
-            // textures\water07.dds. On a miss, retry with a trailing -<digits>
-            // stripped so those classic paths resolve to the Reforged asset.
-            if (auto dash = stem.rfind('-');
-                dash != std::string::npos && dash + 1 < stem.size() &&
-                std::all_of(stem.begin() + dash + 1, stem.end(),
-                            [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
-                if (tryCascStem(stem.substr(0, dash)))
-                    return;
-            }
-        }
-#endif
-
-        // ---- MPQ ----
-#if WHITEOUT_HAS_MPQ
-        if (!mpqStorages.empty()) {
-            std::string mpqExt = GetLowerExtension(path);
-            std::string stem = StripExtension(path);
-            auto [altExts, altCount] = AltExtensionsFor(mpqExt);
-            for (const auto& mpq : mpqStorages) {
-                if (!mpqExt.empty()) {
-                    auto data = mpq.readFile(path);
-                    if (data && !data->empty()) {
-                        out.actualExt = mpqExt;
-                        out.data = std::move(*data);
-                        out.ok = true;
-                        return;
-                    }
-                }
-                for (usize i = 0; i < altCount; ++i) {
-                    if (altExts[i] == mpqExt)
-                        continue;
-                    auto data = mpq.readFile(stem + altExts[i]);
-                    if (data && !data->empty()) {
-                        out.actualExt = altExts[i];
-                        out.data = std::move(*data);
-                        out.ok = true;
-                        return;
-                    }
-                }
-            }
-        }
-#endif
-        // Miss — ok stays false; data + actualExt stay empty.
+        StorageConfig cfg = config;
+        cfg.secondaryPath = (cfg.game == ProductId::Sc2) ? hotsInstallPath : std::string{};
+        // Replaced wholesale rather than mutated: a storage set is only ever
+        // consistent as a whole, and the old one is dropped only once the new
+        // one exists.
+        storage = BuildGameStorage(cfg, pool, &hdMode);
     }
 
     void WorkerLoop() {
@@ -591,14 +263,18 @@ struct FileContentProvider::Impl {
             }
 
             RequestResult result;
+            // A read is what "actually needed" means: this is where a deferred
+            // build is paid for, on a worker thread rather than on whichever
+            // thread last touched a setting.
+            EnsureStorage();
             {
                 // Shared lock: any number of workers may read concurrently;
                 // only reconfiguration takes the exclusive lock.
                 std::shared_lock sg(storageMu);
                 if (req->ref.IsFileId())
-                    DoReadFileId(req->ref.fileId, result);
+                    ReadFileId(req->ref.fileId, result);
                 else
-                    DoRead(req->ref.path, result);
+                    ReadPath(req->ref.path, result);
             }
 
             // Re-check cancellation between IO and delivery so a Cancel that
@@ -626,13 +302,63 @@ struct FileContentProvider::Impl {
             doneCv.notify_all();
         }
     }
+
+    // A fileDataID names a file in a CASC root manifest and nowhere else —
+    // there is no disk fallback, no archive fallback, and no extension to
+    // probe. A miss is a miss.
+    void ReadFileId(u32 fileId, RequestResult& out) const {
+        if (!storage)
+            return;
+        SourceRead hit;
+        if (!storage->ReadById(fileId, hit))
+            return;
+        out.data = std::move(hit.data);
+        out.actualExt = std::move(hit.actualExt);
+        out.ok = true;
+    }
+
+    // Disk first, then whatever the game's storages are. Loose files shadow
+    // archived ones so a host can drop a modified asset next to the model and
+    // have it win, which is the whole point of the base path.
+    void ReadPath(const std::string& path, RequestResult& out) const {
+        const std::string norm = FileResolver::NormalizeSeparators(path);
+        const std::string ext = GetLowerExtension(norm);
+        fs::path resolved;
+        switch (ClassifyByExtension(ext)) {
+        case AssetKind::Texture:
+            resolved = resolver.ResolveTexture(norm);
+            break;
+        case AssetKind::Model:
+            resolved = resolver.ResolveModel(norm);
+            break;
+        case AssetKind::Other:
+            resolved = resolver.Resolve(norm, {});
+            break;
+        }
+
+        std::vector<u8> bytes;
+        if (ReadDiskFile(resolved, bytes)) {
+            std::string e = resolved.extension().string();
+            for (auto& c : e)
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            out.actualExt = std::move(e);
+            out.data = std::move(bytes);
+            out.ok = true;
+            return;
+        }
+
+        if (!storage)
+            return;
+        SourceRead hit;
+        if (!storage->Read(path, hit))
+            return;
+        out.data = std::move(hit.data);
+        out.actualExt = std::move(hit.actualExt);
+        out.ok = true;
+    }
 };
 
 FileContentProvider::FileContentProvider() : impl_(std::make_unique<Impl>()) {
-    // Discover runs storage IO directly; safe to call before the workers
-    // exist because no requests can be in flight yet.
-    impl_->Discover();
-
     const fs::path exeDir = DiscoverExecutableDirectory();
     if (!exeDir.empty()) {
         impl_->resolver.SetSystemBasePath(exeDir);
@@ -782,8 +508,11 @@ void FileContentProvider::Wait(RequestId id) {
                 return;
             // 10ms cap is a defensive backstop in case a notify is lost —
             // under normal operation the worker wakes us exactly on
-            // completion (it signals doneCv after pushing).
-            impl_->doneCv.wait_for(lk, std::chrono::milliseconds(10));
+            // completion.
+            impl_->doneCv.wait_for(lk, std::chrono::milliseconds(10),
+                                   [&] { return impl_->alive.count(id) == 0; });
+            if (impl_->alive.count(id) == 0)
+                return;
         }
     }
 
@@ -798,6 +527,7 @@ void FileContentProvider::Wait(RequestId id) {
 
 std::vector<std::string> FileContentProvider::ListFiles(const std::string& directory,
                                                         bool recursive) {
+    impl_->EnsureStorage();
     const std::string dir = NormalizeListingDir(directory);
 
     // Ordered + deduped: the same logical file usually exists under several
@@ -808,70 +538,48 @@ std::vector<std::string> FileContentProvider::ListFiles(const std::string& direc
             out.insert(std::move(relPath));
     };
 
+    std::shared_lock sg(impl_->storageMu);
+
     // ---- Disk (the base path a host points at a loose asset tree) ----
-    {
-        std::shared_lock sg(impl_->storageMu);
-        const fs::path base = impl_->resolver.BasePath();
-        if (!base.empty()) {
-            const fs::path root = dir.empty() ? base : base / FsPathFromUtf8(dir);
-            std::error_code ec;
-            if (fs::is_directory(root, ec)) {
-                auto add = [&](const fs::path& p) {
-                    std::error_code re;
-                    const std::string rel = PathToUtf8(fs::relative(p, base, re));
-                    if (!re && !rel.empty())
-                        consider(ToListingPath(rel));
-                };
-                // Skip-on-error so one unreadable subdirectory doesn't abort
-                // the walk, as StorageBrowser::OpenFolder does.
-                if (recursive) {
-                    fs::recursive_directory_iterator it(
-                        root, fs::directory_options::skip_permission_denied, ec);
-                    if (!ec) {
-                        for (const auto& entry : it) {
-                            std::error_code fe;
-                            if (entry.is_regular_file(fe) && !fe)
-                                add(entry.path());
-                        }
+    const fs::path base = impl_->resolver.BasePath();
+    if (!base.empty()) {
+        const fs::path root = dir.empty() ? base : base / FsPathFromUtf8(dir);
+        std::error_code ec;
+        if (fs::is_directory(root, ec)) {
+            auto add = [&](const fs::path& p) {
+                std::error_code re;
+                const std::string rel = PathToUtf8(fs::relative(p, base, re));
+                if (!re && !rel.empty())
+                    consider(ToListingPath(rel));
+            };
+            // Skip-on-error so one unreadable subdirectory doesn't abort the
+            // walk, as StorageBrowser::OpenFolder does.
+            if (recursive) {
+                fs::recursive_directory_iterator it(
+                    root, fs::directory_options::skip_permission_denied, ec);
+                if (!ec) {
+                    for (const auto& entry : it) {
+                        std::error_code fe;
+                        if (entry.is_regular_file(fe) && !fe)
+                            add(entry.path());
                     }
-                } else {
-                    fs::directory_iterator it(
-                        root, fs::directory_options::skip_permission_denied, ec);
-                    if (!ec) {
-                        for (const auto& entry : it) {
-                            std::error_code fe;
-                            if (entry.is_regular_file(fe) && !fe)
-                                add(entry.path());
-                        }
+                }
+            } else {
+                fs::directory_iterator it(root, fs::directory_options::skip_permission_denied, ec);
+                if (!ec) {
+                    for (const auto& entry : it) {
+                        std::error_code fe;
+                        if (entry.is_regular_file(fe) && !fe)
+                            add(entry.path());
                     }
                 }
             }
         }
     }
 
-    // ---- CASC ----
-#if WHITEOUT_HAS_CASC
-    {
-        std::shared_lock sg(impl_->storageMu);
-        if (impl_->cascStorage) {
-            impl_->cascStorage->enumerate(
-                [&](const whiteout::storages::casc::EnumerateEntry& e) {
-                    consider(ToListingPath(e.path));
-                    return true;
-                });
-        }
-    }
-#endif
-
-    // ---- MPQ ----
-#if WHITEOUT_HAS_MPQ
-    {
-        std::shared_lock sg(impl_->storageMu);
-        for (const auto& storage : impl_->mpqStorages)
-            for (auto& name : storage.listFiles())
-                consider(ToListingPath(name));
-    }
-#endif
+    // ---- Archives ----
+    if (impl_->storage)
+        impl_->storage->List(consider);
 
     return {out.begin(), out.end()};
 }
@@ -879,49 +587,128 @@ std::vector<std::string> FileContentProvider::ListFiles(const std::string& direc
 // ---- Storage observers / configuration --------------------------------------
 
 bool FileContentProvider::HasCasc() const {
-#if WHITEOUT_HAS_CASC
+    // "Is a storage open" cannot be answered without opening it. Callers that
+    // only want to know whether one is *pending* ask StoragesPending().
+    impl_->EnsureStorage();
     std::shared_lock sg(impl_->storageMu);
-    return impl_->cascStorage.has_value();
-#else
-    return false;
-#endif
+    return impl_->storage && impl_->storage->HasCasc();
 }
 
 bool FileContentProvider::HasMpq() const {
-#if WHITEOUT_HAS_MPQ
+    impl_->EnsureStorage();
     std::shared_lock sg(impl_->storageMu);
-    return !impl_->mpqStorages.empty();
-#else
-    return false;
-#endif
+    return impl_->storage && impl_->storage->HasArchives();
+}
+
+bool FileContentProvider::StoragesPending() const {
+    std::shared_lock sg(impl_->storageMu);
+    return impl_->storagesDirty;
 }
 
 const std::string& FileContentProvider::Wc3Path() const {
-    // Set once in Discover() and never written again; safe to return by ref
-    // without taking storageMu.
-    return impl_->wc3Path;
+    // Discovered once at construction and never written again; safe to return
+    // by reference without taking storageMu.
+    return impl_->installs.Wc3();
+}
+
+const std::string& FileContentProvider::HotsPath() const {
+    return impl_->installs.Hots();
+}
+
+std::string FileContentProvider::HotsInstallPath() const {
+    std::shared_lock sg(impl_->storageMu);
+    return impl_->hotsInstallPath;
+}
+
+void FileContentProvider::SetHotsInstallPath(const std::string& path) {
+    std::unique_lock sg(impl_->storageMu);
+    impl_->hotsInstallPath = path.empty() ? impl_->installs.Hots() : path;
+    // Only the Sc2 product reads this root, so for anything else the change
+    // cannot invalidate what is open.
+    if (impl_->config.game == ProductId::Sc2)
+        impl_->storagesDirty = true;
+}
+
+std::vector<std::string> FileContentProvider::OpenCascRoots() const {
+    impl_->EnsureStorage();
+    std::shared_lock sg(impl_->storageMu);
+    return impl_->storage ? impl_->storage->CascRoots() : std::vector<std::string>{};
+}
+
+std::string FileContentProvider::GamePath(ProductId game) const {
+    return impl_->installs.PathFor(game);
+}
+
+ProductId FileContentProvider::Game() const {
+    std::shared_lock sg(impl_->storageMu);
+    return impl_->config.game;
+}
+
+void FileContentProvider::SetGame(ProductId game) {
+    std::unique_lock sg(impl_->storageMu);
+    if (impl_->config.game == game)
+        return;
+    impl_->config.game = game;
+    // Follow the newly-selected product's discovered root. A host that wants
+    // a different install calls SetInstallPath afterwards — order matters, and
+    // this way round is the one where "switch game" means what it says rather
+    // than "switch game but keep pointing at the old one".
+    //
+    // A Heroes-only install leaves this empty for Sc2 and that is correct:
+    // Heroes has its own root, which that product's rules add regardless, so
+    // the storage still opens. Borrowing it here would report Heroes'
+    // directory as StarCraft II's.
+    impl_->config.installPath = impl_->installs.PathFor(game);
+    // The archive list belongs to the product: scanned for World of Warcraft,
+    // whose names move with the expansion; fixed for Warcraft III; empty for
+    // StarCraft II and Heroes, which never shipped one.
+    impl_->config.archives = ScanArchives(game, impl_->config.installPath);
+    impl_->storagesDirty = true;
+}
+
+void FileContentProvider::SetListfilePath(const std::filesystem::path& csv) {
+    std::unique_lock sg(impl_->storageMu);
+    impl_->config.listfilePath = PathToUtf8(csv);
+    impl_->storagesDirty = true;
+}
+
+std::string FileContentProvider::ListfilePath() const {
+    std::shared_lock sg(impl_->storageMu);
+    return impl_->config.listfilePath;
+}
+
+bool FileContentProvider::HasListfile() const {
+    std::shared_lock sg(impl_->storageMu);
+    return impl_->storage && impl_->storage->HasListfile();
+}
+
+std::vector<std::string> FileContentProvider::ScanMpqList() const {
+    std::shared_lock sg(impl_->storageMu);
+    return ScanArchives(impl_->config.game, impl_->config.installPath);
 }
 
 std::string FileContentProvider::InstallPath() const {
     std::shared_lock sg(impl_->storageMu);
-    return impl_->installPath;
+    return impl_->config.installPath;
 }
 
 void FileContentProvider::SetInstallPath(const std::string& path) {
     std::unique_lock sg(impl_->storageMu);
-    impl_->installPath = path.empty() ? impl_->wc3Path : path;
-    impl_->TryOpenCascLocked();
-    impl_->TryOpenMpqLocked();
+    // Empty reverts to the active product's discovered root, not always
+    // Warcraft III's — otherwise clearing the override on a WoW scene would
+    // silently point it at a WC3 install.
+    impl_->config.installPath = path.empty() ? impl_->installs.PathFor(impl_->config.game) : path;
+    impl_->storagesDirty = true;
 }
 
 bool FileContentProvider::IgnoreCasc() const {
     std::shared_lock sg(impl_->storageMu);
-    return impl_->ignoreCasc;
+    return impl_->config.ignoreCasc;
 }
 
 bool FileContentProvider::IgnoreMpq() const {
     std::shared_lock sg(impl_->storageMu);
-    return impl_->ignoreMpq;
+    return impl_->config.ignoreArchives;
 }
 
 void FileContentProvider::SetHdMode(bool enabled) {
@@ -934,37 +721,37 @@ bool FileContentProvider::HdMode() const {
 
 void FileContentProvider::SetIgnoreCasc(bool ignore) {
     std::unique_lock sg(impl_->storageMu);
-    if (impl_->ignoreCasc == ignore)
+    if (impl_->config.ignoreCasc == ignore)
         return;
-    impl_->ignoreCasc = ignore;
-    impl_->TryOpenCascLocked();
+    impl_->config.ignoreCasc = ignore;
+    impl_->storagesDirty = true;
 }
 
 void FileContentProvider::SetIgnoreMpq(bool ignore) {
     std::unique_lock sg(impl_->storageMu);
-    if (impl_->ignoreMpq == ignore)
+    if (impl_->config.ignoreArchives == ignore)
         return;
-    impl_->ignoreMpq = ignore;
-    impl_->TryOpenMpqLocked();
+    impl_->config.ignoreArchives = ignore;
+    impl_->storagesDirty = true;
 }
 
 std::vector<std::string> FileContentProvider::MpqList() const {
     std::shared_lock sg(impl_->storageMu);
-    return impl_->mpqList;
+    return impl_->config.archives;
 }
 
 void FileContentProvider::SetMpqList(std::vector<std::string> list) {
     std::unique_lock sg(impl_->storageMu);
-    impl_->mpqList = std::move(list);
-    impl_->TryOpenMpqLocked();
+    impl_->config.archives = std::move(list);
+    impl_->storagesDirty = true;
 }
 
 std::vector<std::string> FileContentProvider::DefaultMpqList() {
-    std::vector<std::string> out;
-    out.reserve(std::size(kDefaultMpqNames));
-    for (const char* n : kDefaultMpqNames)
-        out.emplace_back(n);
-    return out;
+    return DefaultArchives(ProductId::Wc3);
+}
+
+std::vector<std::string> FileContentProvider::DefaultMpqList(ProductId game) {
+    return DefaultArchives(game);
 }
 
 } // namespace whiteout::flakes::io

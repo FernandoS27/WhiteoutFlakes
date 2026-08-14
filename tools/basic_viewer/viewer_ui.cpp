@@ -109,6 +109,20 @@ constexpr std::array<const char*, 3> kLightingKeys = {"lighting.ingame", "lighti
 constexpr std::array<const char*, 4> kShadowKeys = {"shadow.off", "shadow.1", "shadow.2",
                                                     "shadow.3"};
 
+// The games the Settings window can configure, in left-panel order. Game
+// names, so they are not localised — same rule the backend list follows.
+// StarCraft II and Heroes of the Storm are one entry because they are one
+// ProductId: they share a render profile, and the provider opens both.
+struct SettingsProfile {
+    ProductId product;
+    const char* label;
+};
+constexpr std::array<SettingsProfile, 3> kSettingsProfiles = {{
+    {ProductId::Wc3, "Warcraft III"},
+    {ProductId::Sc2, "StarCraft II / Storm"},
+    {ProductId::Wow, "World of Warcraft"},
+}};
+
 i32 BackendToIdx(gfx::GfxApi b) {
     switch (b) {
     case gfx::GfxApi::D3D11:
@@ -971,609 +985,802 @@ void ViewerUI::BuildTabBar() {
 }
 
 void ViewerUI::BuildSettingsWindow() {
-    RenderService& svc = app_.Service();
-    ImGui::SetNextWindowSize(ImVec2(440, 540), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(660, 560), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin(i18n::tr("settings.title"), &settingsOpen_)) {
         ImGui::End();
         return;
     }
 
-    if (!ImGui::BeginTabBar("##SettingsTabs")) {
-        ImGui::End();
+    // Every document scene shares the DEFAULT scene's provider (see
+    // ViewerApp::SharedProvider), so which game that provider serves IS the
+    // selected profile. Reading the selection off the provider keeps the two
+    // from ever disagreeing.
+    auto& provider = app_.Service().DefaultScene().GetContentProvider();
+    const ProductId game = provider.Game();
+
+    ImGui::BeginChild("##profiles", ImVec2(170.0f, 0.0f), ImGuiChildFlags_Borders);
+    ImGui::TextDisabled("%s", i18n::tr("settings.profile.header"));
+    ImGui::Separator();
+    for (const auto& p : kSettingsProfiles) {
+        if (ImGui::Selectable(p.label, p.product == game) && p.product != game)
+            SelectSettingsProfile(p.product);
+    }
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+
+    ImGui::BeginChild("##profilebody", ImVec2(0.0f, 0.0f));
+    if (ImGui::BeginTabBar("##SettingsTabs")) {
+        if (ImGui::BeginTabItem(i18n::tr("settings.tab.general"))) {
+            BuildSettingsGeneralTab(game);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem(i18n::tr("settings.tab.io"))) {
+            BuildSettingsIoTab(provider, game);
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+    ImGui::EndChild();
+
+    ImGui::End();
+}
+
+void ViewerUI::SelectSettingsProfile(ProductId game) {
+    auto& provider = app_.Service().DefaultScene().GetContentProvider();
+    if (provider.Game() == game)
+        return;
+    // Switching storage is not just a display change: models and textures
+    // that failed to resolve under the old game get another chance, and ones
+    // that resolved may now be gone. Retrying is the same call the IO edits
+    // make, for the same reason.
+    ApplyIoPathOverrides(provider, game);
+    SaveIoProduct(game);
+    app_.Service().RetryUnloadedAssets();
+}
+
+void ViewerUI::BuildSettingsGeneralTab(ProductId game) {
+    RenderService& svc = app_.Service();
+    if (game != ProductId::Wc3) {
+        // Nothing here yet. Everything the General tab currently offers is
+        // either a Warcraft III concept (day/night cycle rigs, Reforged HD) or
+        // a global the WC3 page already owns.
+        ImGui::TextDisabled("%s", i18n::tr("settings.general.none_for_profile"));
         return;
     }
 
-    if (ImGui::BeginTabItem(i18n::tr("settings.tab.general"))) {
-        // ---- Background colour ----
-        {
-            const u32 bg = svc.Settings().BackgroundColorRaw();
-            f32 col[3] = {
-                static_cast<f32>(bg & 0xFFu) / 255.0f,
-                static_cast<f32>((bg >> 8) & 0xFFu) / 255.0f,
-                static_cast<f32>((bg >> 16) & 0xFFu) / 255.0f,
-            };
-            if (ImGui::ColorEdit3(i18n::tr("settings.general.background"), col)) {
-                svc.Settings().SetBackgroundColor(static_cast<u8>(col[0] * 255.0f),
-                                                  static_cast<u8>(col[1] * 255.0f),
-                                                  static_cast<u8>(col[2] * 255.0f));
-                SaveIni(app_);
-            }
+    // ---- Background colour ----
+    {
+        const u32 bg = svc.Settings().BackgroundColorRaw();
+        f32 col[3] = {
+            static_cast<f32>(bg & 0xFFu) / 255.0f,
+            static_cast<f32>((bg >> 8) & 0xFFu) / 255.0f,
+            static_cast<f32>((bg >> 16) & 0xFFu) / 255.0f,
+        };
+        if (ImGui::ColorEdit3(i18n::tr("settings.general.background"), col)) {
+            svc.Settings().SetBackgroundColor(static_cast<u8>(col[0] * 255.0f),
+                                              static_cast<u8>(col[1] * 255.0f),
+                                              static_cast<u8>(col[2] * 255.0f));
+            SaveIni(app_);
         }
-
-        // ---- Exposure ----
-        {
-            f32 exposure = svc.Settings().GetTonemapExposure();
-            if (ImGui::SliderFloat(i18n::tr("settings.general.exposure"), &exposure, 0.0f, 3.0f,
-                                   "%.2f")) {
-                svc.Settings().SetTonemapExposure(exposure);
-                SaveIni(app_);
-            }
-        }
-
-        // ---- Sound volume ----
-        {
-            f32 vol = svc.Sound().GetVolume();
-            if (ImGui::SliderFloat(i18n::tr("settings.general.snd_volume"), &vol, 0.0f, 1.0f,
-                                   "%.2f")) {
-                svc.Sound().SetVolume(vol);
-                SaveIni(app_);
-            }
-        }
-
-        // ---- Loop non-looping ----
-        {
-            bool on = app_.LoopNonLoopingPolicy();
-            if (ImGui::Checkbox(i18n::tr("settings.general.loop_nonlooping"), &on)) {
-                app_.SetLoopNonLoopingPolicy(on);
-                SaveIni(app_);
-            }
-        }
-
-        ImGui::Separator();
-
-        // ---- Time of day ----
-        if (auto* dnc = svc.GetDncService()) {
-            const f32 hpd = dnc->GetHoursPerDay();
-            f32 tod = dnc->GetTimeOfDay();
-            if (ImGui::SliderFloat(i18n::tr("settings.general.time_of_day"), &tod, 0.0f, hpd,
-                                   "%.2f h")) {
-                dnc->SetTimeOfDay(tod);
-                SaveIni(app_);
-            }
-            bool animating = dnc->GetTodScale() > 0.0f;
-            if (ImGui::Checkbox(i18n::tr("settings.general.animate_tod"), &animating)) {
-                dnc->SetTodScale(animating ? 1.0f : 0.0f);
-                SaveIni(app_);
-            }
-        }
-
-        ImGui::Separator();
-
-        // ---- IBL mode ----
-        {
-            i32 sel = static_cast<i32>(svc.Settings().GetIblMode());
-            const char* iblItems[4];
-            for (i32 i = 0; i < static_cast<i32>(kIblKeys.size()); ++i)
-                iblItems[i] = i18n::tr(kIblKeys[i]);
-            if (ImGui::Combo(i18n::tr("settings.general.ibl"), &sel, iblItems,
-                             static_cast<i32>(kIblLabels.size()))) {
-                svc.Settings().SetIblMode(static_cast<IblMode>(sel));
-                SaveIni(app_);
-            }
-        }
-
-        // ---- Shadows ----
-        {
-            i32 sel = 0;
-            if (auto* shadow = svc.GetShadowService()) {
-                sel = shadow->IsEnabled() ? std::clamp(shadow->Params().cascadeCount, 0, 3) : 0;
-            }
-            const char* shadowItems[4];
-            for (i32 i = 0; i < static_cast<i32>(kShadowKeys.size()); ++i)
-                shadowItems[i] = i18n::tr(kShadowKeys[i]);
-            if (ImGui::Combo(i18n::tr("settings.general.shadows"), &sel, shadowItems,
-                             static_cast<i32>(kShadowLabels.size()))) {
-                if (auto* shadow = svc.GetShadowService()) {
-                    shadow::ShadowParams p = shadow->Params();
-                    p.enabled = (sel > 0);
-                    p.cascadeCount = (sel > 0) ? sel : 1;
-                    shadow->SetParams(p);
-                    SaveIni(app_);
-                }
-            }
-        }
-
-        // ---- Ambient occlusion (GTAO) ----
-        {
-            bool ao = svc.Settings().AoEnabled();
-            if (ImGui::Checkbox(i18n::tr("settings.general.ao"), &ao)) {
-                svc.Settings().SetAoEnabled(ao);
-                SaveIni(app_);
-            }
-
-            static constexpr std::array<const char*, 3> kAoQualityLabels = {"Low", "Medium",
-                                                                            "High"};
-            static constexpr std::array<const char*, 3> kAoQualityKeys = {
-                "aoquality.low", "aoquality.medium", "aoquality.high"};
-            i32 q = static_cast<i32>(svc.Settings().AoQuality());
-            if (q < 0 || q >= static_cast<i32>(kAoQualityLabels.size()))
-                q = 1;
-            ImGui::SetNextItemWidth(180.0f);
-            const char* aoItems[3];
-            for (i32 i = 0; i < static_cast<i32>(kAoQualityKeys.size()); ++i)
-                aoItems[i] = i18n::tr(kAoQualityKeys[i]);
-            if (ImGui::Combo(i18n::tr("settings.general.ao_quality"), &q, aoItems,
-                             static_cast<i32>(kAoQualityLabels.size()))) {
-                svc.Settings().SetAoQuality(static_cast<u32>(q));
-                SaveIni(app_);
-            }
-
-            f32 boost = svc.Settings().AoBentBoost();
-            ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat(i18n::tr("settings.general.ao_bent_boost"), &boost, 0.0f, 0.5f,
-                                   "%.3f")) {
-                svc.Settings().SetAoBentBoost(boost);
-                SaveIni(app_);
-            }
-        }
-
-        // ---- Bloom (HD-only) ----
-        // CollapsingHeader keeps three sliders + a reset button from
-        // crowding the main settings list when bloom is off. Defaults
-        // mirror the engine's RegisterBloom (BL_BLOOM_D=off,
-        // threshold=1.0, intensity=1.25, saturation=1.0).
-        if (ImGui::CollapsingHeader(i18n::tr("settings.bloom.header"))) {
-            bool bloom = svc.Settings().BloomEnabled();
-            if (ImGui::Checkbox(i18n::tr("settings.bloom.enabled"), &bloom)) {
-                svc.Settings().SetBloomEnabled(bloom);
-                SaveIni(app_);
-            }
-            ImGui::SameLine();
-            if (ImGui::SmallButton(i18n::tr("settings.bloom.reset"))) {
-                svc.Settings().SetBloomThreshold(1.0f);
-                svc.Settings().SetBloomIntensity(1.25f);
-                svc.Settings().SetBloomSaturation(1.0f);
-                SaveIni(app_);
-            }
-            f32 threshold = svc.Settings().BloomThreshold();
-            f32 intensity = svc.Settings().BloomIntensity();
-            f32 saturation = svc.Settings().BloomSaturation();
-            ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat(i18n::tr("settings.bloom.threshold"), &threshold, 0.0f, 4.0f,
-                                   "%.2f")) {
-                svc.Settings().SetBloomThreshold(threshold);
-                SaveIni(app_);
-            }
-            ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat(i18n::tr("settings.bloom.intensity"), &intensity, 0.0f, 4.0f,
-                                   "%.2f")) {
-                svc.Settings().SetBloomIntensity(intensity);
-                SaveIni(app_);
-            }
-            ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat(i18n::tr("settings.bloom.saturation"), &saturation, 0.0f, 4.0f,
-                                   "%.2f")) {
-                svc.Settings().SetBloomSaturation(saturation);
-                SaveIni(app_);
-            }
-        }
-
-        // ---- Depth of Field (HD-only) ----
-        // Runs the shipped depthoffield.bls. The pass self-disables until a
-        // focal distance > 0 is set, so enabling with a zero distance seeds a
-        // sensible default — otherwise the checkbox would appear to do nothing.
-        if (ImGui::CollapsingHeader(i18n::tr("settings.dof.header"))) {
-            // Focus on the subject: the camera→target distance is the model
-            // centre's view-space depth, which is what `linearDepth` carries.
-            // The CoC is hyperbolic — (1/focus − 1/depth)·focusScale — so at
-            // view-space depths (hundreds) focusScale needs to be ~tens-hundreds
-            // for visible blur, not the ~1 a normalised-depth pass would use.
-            const f32 camDist = svc.Scene().Camera().GetDistance();
-            const f32 autoFocus = camDist > 0.0f ? camDist : 600.0f;
-            bool dof = svc.Settings().DofEnabled();
-            if (ImGui::Checkbox(i18n::tr("settings.dof.enabled"), &dof)) {
-                svc.Settings().SetDofEnabled(dof);
-                if (dof) {
-                    // Auto-focus on the model and seed a visible strength if the
-                    // current values would produce no perceptible blur.
-                    if (svc.Settings().DofFocusDistance() <= 0.0f)
-                        svc.Settings().SetDofFocusDistance(autoFocus);
-                    if (svc.Settings().DofFocusScale() < 5.0f)
-                        svc.Settings().SetDofFocusScale(50.0f);
-                }
-                SaveIni(app_);
-            }
-            ImGui::SameLine();
-            if (ImGui::SmallButton(i18n::tr("settings.dof.reset"))) {
-                svc.Settings().SetDofFocusDistance(autoFocus);
-                svc.Settings().SetDofFocusScale(50.0f);
-                svc.Settings().SetDofMaxBlurSize(20.0f);
-                svc.Settings().SetDofRadiusScale(1.0f);
-                svc.Settings().SetDofFarFieldOnly(false);
-                SaveIni(app_);
-            }
-            f32 focusDist = svc.Settings().DofFocusDistance();
-            f32 focusScale = svc.Settings().DofFocusScale();
-            f32 maxBlur = svc.Settings().DofMaxBlurSize();
-            f32 radius = svc.Settings().DofRadiusScale();
-            bool farOnly = svc.Settings().DofFarFieldOnly();
-            ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat(i18n::tr("settings.dof.focus_dist"), &focusDist, 0.0f, 3000.0f,
-                                   "%.0f")) {
-                svc.Settings().SetDofFocusDistance(focusDist);
-                SaveIni(app_);
-            }
-            ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat(i18n::tr("settings.dof.focus_scale"), &focusScale, 0.0f, 200.0f,
-                                   "%.1f")) {
-                svc.Settings().SetDofFocusScale(focusScale);
-                SaveIni(app_);
-            }
-            ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat(i18n::tr("settings.dof.max_blur"), &maxBlur, 1.0f, 40.0f,
-                                   "%.1f")) {
-                svc.Settings().SetDofMaxBlurSize(maxBlur);
-                SaveIni(app_);
-            }
-            ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::SliderFloat(i18n::tr("settings.dof.sample_density"), &radius, 0.25f, 4.0f,
-                                   "%.2f")) {
-                svc.Settings().SetDofRadiusScale(radius);
-                SaveIni(app_);
-            }
-            if (ImGui::Checkbox(i18n::tr("settings.dof.far_field_only"), &farOnly)) {
-                svc.Settings().SetDofFarFieldOnly(farOnly);
-                SaveIni(app_);
-            }
-        }
-
-        ImGui::Separator();
-
-        // ---- DNC model ----
-        // The stock DNC set is small and fully enumerable (dnc_catalog.h), so
-        // this is two combos instead of a free-text path: which light rig, and
-        // which mod layer to read it from. A path the catalog doesn't know —
-        // an older ini, or a hand-edited one — still shows and still loads.
-        if (auto* dnc = svc.GetDncService()) {
-            const auto catalog = dnc::DncCatalog();
-            const std::string current = dnc->UnitMdlPath();
-            const i32 sel = dnc::DncCatalogIndexOf(current);
-            const dnc::DncVariant variant = dnc::DncVariantOf(current);
-
-            ImGui::SetNextItemWidth(220.0f);
-            const std::string preview = (sel >= 0) ? dnc::DncEntryLabel(catalog[sel]) : current;
-            if (ImGui::BeginCombo(i18n::tr("settings.general.dnc_model"), preview.c_str())) {
-                for (usize i = 0; i < catalog.size(); ++i) {
-                    const auto& e = catalog[i];
-                    if (ImGui::Selectable(dnc::DncEntryLabel(e).c_str(),
-                                          static_cast<i32>(i) == sel)) {
-                        dnc->SetUnitMdl(dnc::DncPathForVariant(e.path, variant));
-                        SaveIni(app_);
-                    }
-                    if (ImGui::IsItemHovered()) {
-                        std::string tilesets;
-                        for (const auto& ts : dnc::DncTilesets()) {
-                            if (ts.family != e.family)
-                                continue;
-                            if (!tilesets.empty())
-                                tilesets += ", ";
-                            tilesets += std::string(ts.name);
-                        }
-                        ImGui::SetTooltip("%.*s\n%s %s", static_cast<i32>(e.path.size()),
-                                          e.path.data(), i18n::tr("settings.general.dnc_tilesets"),
-                                          tilesets.c_str());
-                    }
-                }
-                ImGui::EndCombo();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button(i18n::tr("settings.general.dnc_reset"))) {
-                dnc->SetUnitMdl(dnc::DncService::kDefaultUnitMdl);
-                SaveIni(app_);
-            }
-
-            // Auto follows the provider's HD-mode mod chain; SD/HD pin the
-            // path to one layer. Only Lordaeron's legacy target rig is
-            // SD-only, so the HD entry is greyed out rather than hidden.
-            const bool hasSd = sel < 0 || catalog[sel].hasSd;
-            const bool hasHd = sel < 0 || catalog[sel].hasHd;
-            const char* variantLabels[] = {i18n::tr("settings.general.dnc_variant_auto"), "SD",
-                                           "HD"};
-            ImGui::SetNextItemWidth(220.0f);
-            if (ImGui::BeginCombo(i18n::tr("settings.general.dnc_variant"),
-                                  variantLabels[static_cast<usize>(variant)])) {
-                const bool enabled[] = {true, hasSd, hasHd};
-                for (usize i = 0; i < std::size(variantLabels); ++i) {
-                    ImGui::BeginDisabled(!enabled[i]);
-                    if (ImGui::Selectable(variantLabels[i], i == static_cast<usize>(variant))) {
-                        dnc->SetUnitMdl(
-                            dnc::DncPathForVariant(current, static_cast<dnc::DncVariant>(i)));
-                        SaveIni(app_);
-                    }
-                    ImGui::EndDisabled();
-                }
-                ImGui::EndCombo();
-            }
-        }
-
-        ImGui::Separator();
-        ImGui::TextDisabled(i18n::tr("settings.general.startup_note"));
-
-        // ---- Default backend ----
-        // Platform availability:
-        //   Windows: D3D11, D3D12, Vulkan, WebGPU (when WDX_HAS_WEBGPU)
-        //   macOS:   Vulkan, WebGPU (when WDX_HAS_WEBGPU) — D3D11/D3D12 are
-        //            WIN32-only via CMake + gfx_factory
-        //   Linux:   Vulkan only — D3D11/D3D12 WIN32-only, WebGPU/Dawn isn't
-        //            wired into Linux builds.
-#if defined(_WIN32)
-        {
-            // Metal is Apple-only, so it's excluded from the Windows list. It's
-            // the trailing entry in kBackendLabels (index 4), so the windowed
-            // set is just the first four: D3D11, D3D12, Vulkan, WebGPU.
-            constexpr i32 kWinBackendCount = static_cast<i32>(kBackendLabels.size()) - 1;
-            i32 sel = BackendToIdx(svc.Settings().DefaultBackend());
-            if (sel >= kWinBackendCount)
-                sel = BackendToIdx(gfx::GfxApi::D3D12); // clamp a stale Metal selection
-            if (ImGui::Combo(i18n::tr("settings.general.backend"), &sel, kBackendLabels.data(),
-                             kWinBackendCount)) {
-                svc.Settings().SetDefaultBackend(IdxToBackend(sel));
-                SaveIni(app_);
-            }
-        }
-#elif defined(__APPLE__)
-        {
-#if WDX_HAS_WEBGPU
-            const char* macLabels[] = {"Metal", "Vulkan", "WebGPU"};
-            const gfx::GfxApi macApis[] = {gfx::GfxApi::Metal, gfx::GfxApi::Vulkan,
-                                           gfx::GfxApi::WebGPU};
-#else
-            const char* macLabels[] = {"Metal", "Vulkan"};
-            const gfx::GfxApi macApis[] = {gfx::GfxApi::Metal, gfx::GfxApi::Vulkan};
-#endif
-            // Find the index of the currently-selected backend; fall back to
-            // Metal (entry 0) if the saved value is something this build
-            // doesn't expose.
-            const auto cur = svc.Settings().DefaultBackend();
-            i32 sel = 0;
-            for (i32 i = 0; i < static_cast<i32>(std::size(macApis)); ++i) {
-                if (macApis[i] == cur) {
-                    sel = i;
-                    break;
-                }
-            }
-            if (ImGui::Combo(i18n::tr("settings.general.backend"), &sel, macLabels,
-                             static_cast<i32>(std::size(macLabels)))) {
-                svc.Settings().SetDefaultBackend(macApis[sel]);
-                SaveIni(app_);
-            }
-        }
-#else
-        {
-            ImGui::BeginDisabled();
-            i32 sel = 0;
-            const char* vkOnly[] = {"Vulkan"};
-            ImGui::Combo(i18n::tr("settings.general.backend"), &sel, vkOnly, 1);
-            ImGui::EndDisabled();
-        }
-#endif
-
-        // ---- Preferred device ----
-        {
-            static std::vector<std::string> devices;
-            static i32 lastBackendIdx = -1;
-            const i32 curBackendIdx = BackendToIdx(svc.Settings().DefaultBackend());
-            if (curBackendIdx != lastBackendIdx) {
-                devices = gfx::EnumerateDevices(svc.Settings().DefaultBackend());
-                lastBackendIdx = curBackendIdx;
-            }
-            const std::string& cur = svc.Settings().PreferredDevice();
-            const char* preview = cur.empty() ? i18n::tr("settings.general.device_auto") : cur.c_str();
-            if (ImGui::BeginCombo(i18n::tr("settings.general.device"), preview)) {
-                if (ImGui::Selectable(i18n::tr("settings.general.device_auto"), cur.empty())) {
-                    svc.Settings().SetPreferredDevice("");
-                    SaveIni(app_);
-                }
-                for (const auto& n : devices) {
-                    const bool isSel = (n == cur);
-                    if (ImGui::Selectable(n.c_str(), isSel)) {
-                        svc.Settings().SetPreferredDevice(n);
-                        SaveIni(app_);
-                    }
-                    if (isSel)
-                        ImGui::SetItemDefaultFocus();
-                }
-                ImGui::EndCombo();
-            }
-        }
-
-        // ---- Graphics debug ----
-        {
-            bool on = svc.Settings().GraphicsDebug();
-            if (ImGui::Checkbox(i18n::tr("settings.general.graphics_debug"), &on)) {
-                svc.Settings().SetGraphicsDebug(on);
-                SaveIni(app_);
-            }
-        }
-
-        ImGui::EndTabItem();
     }
 
-    // ---- IO tab ----
-    // Install path + ignore-flags + an editable MPQ load order. All three
-    // commit to ini through SaveIoPathOverrides so the changes survive across
-    // launches; the provider itself is mutated in place so the effect is live
-    // (next ReadFile sees the new state).
-    if (ImGui::BeginTabItem(i18n::tr("settings.tab.io"))) {
-        // Every document scene shares the DEFAULT scene's provider (see
-        // ViewerApp::SharedProvider). Target it directly rather than the active
-        // scene's, whose own internal provider is never configured.
-        auto& provider = svc.DefaultScene().GetContentProvider();
-        if (!ioBufsInitialised_) {
-            installPathBuf_ = provider.InstallPath();
-            ioBufsInitialised_ = true;
+    // ---- Exposure ----
+    {
+        f32 exposure = svc.Settings().GetTonemapExposure();
+        if (ImGui::SliderFloat(i18n::tr("settings.general.exposure"), &exposure, 0.0f, 3.0f,
+                               "%.2f")) {
+            svc.Settings().SetTonemapExposure(exposure);
+            SaveIni(app_);
+        }
+    }
+
+    // ---- Sound volume ----
+    {
+        f32 vol = svc.Sound().GetVolume();
+        if (ImGui::SliderFloat(i18n::tr("settings.general.snd_volume"), &vol, 0.0f, 1.0f, "%.2f")) {
+            svc.Sound().SetVolume(vol);
+            SaveIni(app_);
+        }
+    }
+
+    // ---- Loop non-looping ----
+    {
+        bool on = app_.LoopNonLoopingPolicy();
+        if (ImGui::Checkbox(i18n::tr("settings.general.loop_nonlooping"), &on)) {
+            app_.SetLoopNonLoopingPolicy(on);
+            SaveIni(app_);
+        }
+    }
+
+    ImGui::Separator();
+
+    // ---- Time of day ----
+    if (auto* dnc = svc.GetDncService()) {
+        const f32 hpd = dnc->GetHoursPerDay();
+        f32 tod = dnc->GetTimeOfDay();
+        if (ImGui::SliderFloat(i18n::tr("settings.general.time_of_day"), &tod, 0.0f, hpd,
+                               "%.2f h")) {
+            dnc->SetTimeOfDay(tod);
+            SaveIni(app_);
+        }
+        bool animating = dnc->GetTodScale() > 0.0f;
+        if (ImGui::Checkbox(i18n::tr("settings.general.animate_tod"), &animating)) {
+            dnc->SetTodScale(animating ? 1.0f : 0.0f);
+            SaveIni(app_);
+        }
+    }
+
+    ImGui::Separator();
+
+    // ---- IBL mode ----
+    {
+        i32 sel = static_cast<i32>(svc.Settings().GetIblMode());
+        const char* iblItems[4];
+        for (i32 i = 0; i < static_cast<i32>(kIblKeys.size()); ++i)
+            iblItems[i] = i18n::tr(kIblKeys[i]);
+        if (ImGui::Combo(i18n::tr("settings.general.ibl"), &sel, iblItems,
+                         static_cast<i32>(kIblLabels.size()))) {
+            svc.Settings().SetIblMode(static_cast<IblMode>(sel));
+            SaveIni(app_);
+        }
+    }
+
+    // ---- Shadows ----
+    {
+        i32 sel = 0;
+        if (auto* shadow = svc.GetShadowService()) {
+            sel = shadow->IsEnabled() ? std::clamp(shadow->Params().cascadeCount, 0, 3) : 0;
+        }
+        const char* shadowItems[4];
+        for (i32 i = 0; i < static_cast<i32>(kShadowKeys.size()); ++i)
+            shadowItems[i] = i18n::tr(kShadowKeys[i]);
+        if (ImGui::Combo(i18n::tr("settings.general.shadows"), &sel, shadowItems,
+                         static_cast<i32>(kShadowLabels.size()))) {
+            if (auto* shadow = svc.GetShadowService()) {
+                shadow::ShadowParams p = shadow->Params();
+                p.enabled = (sel > 0);
+                p.cascadeCount = (sel > 0) ? sel : 1;
+                shadow->SetParams(p);
+                SaveIni(app_);
+            }
+        }
+    }
+
+    // ---- Ambient occlusion (GTAO) ----
+    {
+        bool ao = svc.Settings().AoEnabled();
+        if (ImGui::Checkbox(i18n::tr("settings.general.ao"), &ao)) {
+            svc.Settings().SetAoEnabled(ao);
+            SaveIni(app_);
         }
 
-        const std::string& autoDetected = provider.Wc3Path();
-        if (autoDetected.empty())
-            ImGui::TextDisabled(i18n::tr("settings.io.not_detected"));
-        else
-            ImGui::TextDisabled(i18n::tr("settings.io.auto_detected"), autoDetected.c_str());
-        ImGui::Spacing();
+        static constexpr std::array<const char*, 3> kAoQualityLabels = {"Low", "Medium", "High"};
+        static constexpr std::array<const char*, 3> kAoQualityKeys = {
+            "aoquality.low", "aoquality.medium", "aoquality.high"};
+        i32 q = static_cast<i32>(svc.Settings().AoQuality());
+        if (q < 0 || q >= static_cast<i32>(kAoQualityLabels.size()))
+            q = 1;
+        ImGui::SetNextItemWidth(180.0f);
+        const char* aoItems[3];
+        for (i32 i = 0; i < static_cast<i32>(kAoQualityKeys.size()); ++i)
+            aoItems[i] = i18n::tr(kAoQualityKeys[i]);
+        if (ImGui::Combo(i18n::tr("settings.general.ao_quality"), &q, aoItems,
+                         static_cast<i32>(kAoQualityLabels.size()))) {
+            svc.Settings().SetAoQuality(static_cast<u32>(q));
+            SaveIni(app_);
+        }
 
-        // Commit the entire IO state (install path + flags + list) to ini, then
-        // retry any asset that failed to load under the previous sources — the
-        // provider now resolves paths differently, so textures/models that 404'd
-        // (and are stuck on the placeholder) get another fetch on the next pump,
-        // no restart needed.
-        auto saveIo = [&] {
-            IoPathOverrides o;
-            // Treat "install path == auto-detected" as "no override" so the
-            // ini stays clean and a future auto-detect (e.g. user installs WC3
-            // in a different place) is picked up.
-            o.installPath =
-                (installPathBuf_ == provider.Wc3Path()) ? std::string{} : installPathBuf_;
-            o.ignoreCasc = provider.IgnoreCasc();
-            o.ignoreMpq = provider.IgnoreMpq();
-            o.mpqListSet = true;
-            o.mpqList = provider.MpqList();
-            SaveIoPathOverrides(o);
-            svc.RetryUnloadedAssets();
-        };
+        f32 boost = svc.Settings().AoBentBoost();
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::SliderFloat(i18n::tr("settings.general.ao_bent_boost"), &boost, 0.0f, 0.5f,
+                               "%.3f")) {
+            svc.Settings().SetAoBentBoost(boost);
+            SaveIni(app_);
+        }
+    }
 
-        // ---- Install path row ----
-        {
-            char tmp[1024];
-            std::snprintf(tmp, sizeof(tmp), "%s", installPathBuf_.c_str());
-            ImGui::SetNextItemWidth(-180.0f);
-            if (ImGui::InputText("##install", tmp, sizeof(tmp)))
-                installPathBuf_ = tmp;
-            if (ImGui::IsItemDeactivatedAfterEdit()) {
+    // ---- Bloom (HD-only) ----
+    // CollapsingHeader keeps three sliders + a reset button from
+    // crowding the main settings list when bloom is off. Defaults
+    // mirror the engine's RegisterBloom (BL_BLOOM_D=off,
+    // threshold=1.0, intensity=1.25, saturation=1.0).
+    if (ImGui::CollapsingHeader(i18n::tr("settings.bloom.header"))) {
+        bool bloom = svc.Settings().BloomEnabled();
+        if (ImGui::Checkbox(i18n::tr("settings.bloom.enabled"), &bloom)) {
+            svc.Settings().SetBloomEnabled(bloom);
+            SaveIni(app_);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(i18n::tr("settings.bloom.reset"))) {
+            svc.Settings().SetBloomThreshold(1.0f);
+            svc.Settings().SetBloomIntensity(1.25f);
+            svc.Settings().SetBloomSaturation(1.0f);
+            SaveIni(app_);
+        }
+        f32 threshold = svc.Settings().BloomThreshold();
+        f32 intensity = svc.Settings().BloomIntensity();
+        f32 saturation = svc.Settings().BloomSaturation();
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::SliderFloat(i18n::tr("settings.bloom.threshold"), &threshold, 0.0f, 4.0f,
+                               "%.2f")) {
+            svc.Settings().SetBloomThreshold(threshold);
+            SaveIni(app_);
+        }
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::SliderFloat(i18n::tr("settings.bloom.intensity"), &intensity, 0.0f, 4.0f,
+                               "%.2f")) {
+            svc.Settings().SetBloomIntensity(intensity);
+            SaveIni(app_);
+        }
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::SliderFloat(i18n::tr("settings.bloom.saturation"), &saturation, 0.0f, 4.0f,
+                               "%.2f")) {
+            svc.Settings().SetBloomSaturation(saturation);
+            SaveIni(app_);
+        }
+    }
+
+    // ---- Depth of Field (HD-only) ----
+    // Runs the shipped depthoffield.bls. The pass self-disables until a
+    // focal distance > 0 is set, so enabling with a zero distance seeds a
+    // sensible default — otherwise the checkbox would appear to do nothing.
+    if (ImGui::CollapsingHeader(i18n::tr("settings.dof.header"))) {
+        // Focus on the subject: the camera→target distance is the model
+        // centre's view-space depth, which is what `linearDepth` carries.
+        // The CoC is hyperbolic — (1/focus − 1/depth)·focusScale — so at
+        // view-space depths (hundreds) focusScale needs to be ~tens-hundreds
+        // for visible blur, not the ~1 a normalised-depth pass would use.
+        const f32 camDist = svc.Scene().Camera().GetDistance();
+        const f32 autoFocus = camDist > 0.0f ? camDist : 600.0f;
+        bool dof = svc.Settings().DofEnabled();
+        if (ImGui::Checkbox(i18n::tr("settings.dof.enabled"), &dof)) {
+            svc.Settings().SetDofEnabled(dof);
+            if (dof) {
+                // Auto-focus on the model and seed a visible strength if the
+                // current values would produce no perceptible blur.
+                if (svc.Settings().DofFocusDistance() <= 0.0f)
+                    svc.Settings().SetDofFocusDistance(autoFocus);
+                if (svc.Settings().DofFocusScale() < 5.0f)
+                    svc.Settings().SetDofFocusScale(50.0f);
+            }
+            SaveIni(app_);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(i18n::tr("settings.dof.reset"))) {
+            svc.Settings().SetDofFocusDistance(autoFocus);
+            svc.Settings().SetDofFocusScale(50.0f);
+            svc.Settings().SetDofMaxBlurSize(20.0f);
+            svc.Settings().SetDofRadiusScale(1.0f);
+            svc.Settings().SetDofFarFieldOnly(false);
+            SaveIni(app_);
+        }
+        f32 focusDist = svc.Settings().DofFocusDistance();
+        f32 focusScale = svc.Settings().DofFocusScale();
+        f32 maxBlur = svc.Settings().DofMaxBlurSize();
+        f32 radius = svc.Settings().DofRadiusScale();
+        bool farOnly = svc.Settings().DofFarFieldOnly();
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::SliderFloat(i18n::tr("settings.dof.focus_dist"), &focusDist, 0.0f, 3000.0f,
+                               "%.0f")) {
+            svc.Settings().SetDofFocusDistance(focusDist);
+            SaveIni(app_);
+        }
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::SliderFloat(i18n::tr("settings.dof.focus_scale"), &focusScale, 0.0f, 200.0f,
+                               "%.1f")) {
+            svc.Settings().SetDofFocusScale(focusScale);
+            SaveIni(app_);
+        }
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::SliderFloat(i18n::tr("settings.dof.max_blur"), &maxBlur, 1.0f, 40.0f, "%.1f")) {
+            svc.Settings().SetDofMaxBlurSize(maxBlur);
+            SaveIni(app_);
+        }
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::SliderFloat(i18n::tr("settings.dof.sample_density"), &radius, 0.25f, 4.0f,
+                               "%.2f")) {
+            svc.Settings().SetDofRadiusScale(radius);
+            SaveIni(app_);
+        }
+        if (ImGui::Checkbox(i18n::tr("settings.dof.far_field_only"), &farOnly)) {
+            svc.Settings().SetDofFarFieldOnly(farOnly);
+            SaveIni(app_);
+        }
+    }
+
+    ImGui::Separator();
+
+    // ---- DNC model ----
+    // The stock DNC set is small and fully enumerable (dnc_catalog.h), so
+    // this is two combos instead of a free-text path: which light rig, and
+    // which mod layer to read it from. A path the catalog doesn't know —
+    // an older ini, or a hand-edited one — still shows and still loads.
+    if (auto* dnc = svc.GetDncService()) {
+        const auto catalog = dnc::DncCatalog();
+        const std::string current = dnc->UnitMdlPath();
+        const i32 sel = dnc::DncCatalogIndexOf(current);
+        const dnc::DncVariant variant = dnc::DncVariantOf(current);
+
+        ImGui::SetNextItemWidth(220.0f);
+        const std::string preview = (sel >= 0) ? dnc::DncEntryLabel(catalog[sel]) : current;
+        if (ImGui::BeginCombo(i18n::tr("settings.general.dnc_model"), preview.c_str())) {
+            for (usize i = 0; i < catalog.size(); ++i) {
+                const auto& e = catalog[i];
+                if (ImGui::Selectable(dnc::DncEntryLabel(e).c_str(), static_cast<i32>(i) == sel)) {
+                    dnc->SetUnitMdl(dnc::DncPathForVariant(e.path, variant));
+                    SaveIni(app_);
+                }
+                if (ImGui::IsItemHovered()) {
+                    std::string tilesets;
+                    for (const auto& ts : dnc::DncTilesets()) {
+                        if (ts.family != e.family)
+                            continue;
+                        if (!tilesets.empty())
+                            tilesets += ", ";
+                        tilesets += std::string(ts.name);
+                    }
+                    ImGui::SetTooltip("%.*s\n%s %s", static_cast<i32>(e.path.size()), e.path.data(),
+                                      i18n::tr("settings.general.dnc_tilesets"), tilesets.c_str());
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(i18n::tr("settings.general.dnc_reset"))) {
+            dnc->SetUnitMdl(dnc::DncService::kDefaultUnitMdl);
+            SaveIni(app_);
+        }
+
+        // Auto follows the provider's HD-mode mod chain; SD/HD pin the
+        // path to one layer. Only Lordaeron's legacy target rig is
+        // SD-only, so the HD entry is greyed out rather than hidden.
+        const bool hasSd = sel < 0 || catalog[sel].hasSd;
+        const bool hasHd = sel < 0 || catalog[sel].hasHd;
+        const char* variantLabels[] = {i18n::tr("settings.general.dnc_variant_auto"), "SD", "HD"};
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::BeginCombo(i18n::tr("settings.general.dnc_variant"),
+                              variantLabels[static_cast<usize>(variant)])) {
+            const bool enabled[] = {true, hasSd, hasHd};
+            for (usize i = 0; i < std::size(variantLabels); ++i) {
+                ImGui::BeginDisabled(!enabled[i]);
+                if (ImGui::Selectable(variantLabels[i], i == static_cast<usize>(variant))) {
+                    dnc->SetUnitMdl(
+                        dnc::DncPathForVariant(current, static_cast<dnc::DncVariant>(i)));
+                    SaveIni(app_);
+                }
+                ImGui::EndDisabled();
+            }
+            ImGui::EndCombo();
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::TextDisabled(i18n::tr("settings.general.startup_note"));
+
+    // ---- Default backend ----
+    // Platform availability:
+    //   Windows: D3D11, D3D12, Vulkan, WebGPU (when WDX_HAS_WEBGPU)
+    //   macOS:   Vulkan, WebGPU (when WDX_HAS_WEBGPU) — D3D11/D3D12 are
+    //            WIN32-only via CMake + gfx_factory
+    //   Linux:   Vulkan only — D3D11/D3D12 WIN32-only, WebGPU/Dawn isn't
+    //            wired into Linux builds.
+#if defined(_WIN32)
+    {
+        // Metal is Apple-only, so it's excluded from the Windows list. It's
+        // the trailing entry in kBackendLabels (index 4), so the windowed
+        // set is just the first four: D3D11, D3D12, Vulkan, WebGPU.
+        constexpr i32 kWinBackendCount = static_cast<i32>(kBackendLabels.size()) - 1;
+        i32 sel = BackendToIdx(svc.Settings().DefaultBackend());
+        if (sel >= kWinBackendCount)
+            sel = BackendToIdx(gfx::GfxApi::D3D12); // clamp a stale Metal selection
+        if (ImGui::Combo(i18n::tr("settings.general.backend"), &sel, kBackendLabels.data(),
+                         kWinBackendCount)) {
+            svc.Settings().SetDefaultBackend(IdxToBackend(sel));
+            SaveIni(app_);
+        }
+    }
+#elif defined(__APPLE__)
+    {
+#if WDX_HAS_WEBGPU
+        const char* macLabels[] = {"Metal", "Vulkan", "WebGPU"};
+        const gfx::GfxApi macApis[] = {gfx::GfxApi::Metal, gfx::GfxApi::Vulkan,
+                                       gfx::GfxApi::WebGPU};
+#else
+        const char* macLabels[] = {"Metal", "Vulkan"};
+        const gfx::GfxApi macApis[] = {gfx::GfxApi::Metal, gfx::GfxApi::Vulkan};
+#endif
+        // Find the index of the currently-selected backend; fall back to
+        // Metal (entry 0) if the saved value is something this build
+        // doesn't expose.
+        const auto cur = svc.Settings().DefaultBackend();
+        i32 sel = 0;
+        for (i32 i = 0; i < static_cast<i32>(std::size(macApis)); ++i) {
+            if (macApis[i] == cur) {
+                sel = i;
+                break;
+            }
+        }
+        if (ImGui::Combo(i18n::tr("settings.general.backend"), &sel, macLabels,
+                         static_cast<i32>(std::size(macLabels)))) {
+            svc.Settings().SetDefaultBackend(macApis[sel]);
+            SaveIni(app_);
+        }
+    }
+#else
+    {
+        ImGui::BeginDisabled();
+        i32 sel = 0;
+        const char* vkOnly[] = {"Vulkan"};
+        ImGui::Combo(i18n::tr("settings.general.backend"), &sel, vkOnly, 1);
+        ImGui::EndDisabled();
+    }
+#endif
+
+    // ---- Preferred device ----
+    {
+        static std::vector<std::string> devices;
+        static i32 lastBackendIdx = -1;
+        const i32 curBackendIdx = BackendToIdx(svc.Settings().DefaultBackend());
+        if (curBackendIdx != lastBackendIdx) {
+            devices = gfx::EnumerateDevices(svc.Settings().DefaultBackend());
+            lastBackendIdx = curBackendIdx;
+        }
+        const std::string& cur = svc.Settings().PreferredDevice();
+        const char* preview = cur.empty() ? i18n::tr("settings.general.device_auto") : cur.c_str();
+        if (ImGui::BeginCombo(i18n::tr("settings.general.device"), preview)) {
+            if (ImGui::Selectable(i18n::tr("settings.general.device_auto"), cur.empty())) {
+                svc.Settings().SetPreferredDevice("");
+                SaveIni(app_);
+            }
+            for (const auto& n : devices) {
+                const bool isSel = (n == cur);
+                if (ImGui::Selectable(n.c_str(), isSel)) {
+                    svc.Settings().SetPreferredDevice(n);
+                    SaveIni(app_);
+                }
+                if (isSel)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+    }
+
+    // ---- Graphics debug ----
+    {
+        bool on = svc.Settings().GraphicsDebug();
+        if (ImGui::Checkbox(i18n::tr("settings.general.graphics_debug"), &on)) {
+            svc.Settings().SetGraphicsDebug(on);
+            SaveIni(app_);
+        }
+    }
+}
+
+// ---- IO pages ----
+// Every edit commits to the ini through SaveIoPathOverrides so it survives a
+// restart, and mutates the provider in place so the effect is live (the next
+// ReadFile sees the new state). Both are per game.
+
+void ViewerUI::BuildSettingsIoTab(io::FileContentProvider& provider, ProductId game) {
+    if (!ioBufsInitialised_ || ioBufsGame_ != game) {
+        installPathBuf_ = provider.InstallPath();
+        hotsPathBuf_ = provider.HotsInstallPath();
+        listfileBuf_ = provider.ListfilePath();
+        newMpqEntryBuf_.clear();
+        ioBufsInitialised_ = true;
+        ioBufsGame_ = game;
+    }
+    if (game == ProductId::Sc2)
+        BuildIoCascPage(provider);
+    else
+        BuildIoArchivePage(provider, game);
+}
+
+void ViewerUI::BuildIoArchivePage(io::FileContentProvider& provider, ProductId game) {
+    RenderService& svc = app_.Service();
+    const std::string autoDetected = provider.GamePath(game);
+    if (autoDetected.empty())
+        ImGui::TextDisabled(i18n::tr(game == ProductId::Wow ? "settings.io.wow_not_detected"
+                                                            : "settings.io.not_detected"));
+    else
+        ImGui::TextDisabled(i18n::tr("settings.io.auto_detected"), autoDetected.c_str());
+    ImGui::Spacing();
+
+    // Commit the entire IO state (install path + flags + list) to ini, then
+    // retry any asset that failed to load under the previous sources — the
+    // provider now resolves paths differently, so textures/models that 404'd
+    // (and are stuck on the placeholder) get another fetch on the next pump,
+    // no restart needed.
+    auto saveIo = [&] {
+        IoPathOverrides o;
+        // Treat "install path == auto-detected" as "no override" so the
+        // ini stays clean and a future auto-detect (e.g. user installs the
+        // game somewhere else) is picked up.
+        o.installPath = (installPathBuf_ == autoDetected) ? std::string{} : installPathBuf_;
+        o.ignoreCasc = provider.IgnoreCasc();
+        o.ignoreMpq = provider.IgnoreMpq();
+        o.mpqListSet = true;
+        o.mpqList = provider.MpqList();
+        o.listfilePath = listfileBuf_;
+        SaveIoPathOverrides(game, o);
+        svc.RetryUnloadedAssets();
+    };
+
+    // ---- Install path row ----
+    {
+        char tmp[1024];
+        std::snprintf(tmp, sizeof(tmp), "%s", installPathBuf_.c_str());
+        ImGui::SetNextItemWidth(-180.0f);
+        if (ImGui::InputText("##install", tmp, sizeof(tmp)))
+            installPathBuf_ = tmp;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            provider.SetInstallPath(installPathBuf_);
+            saveIo();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(i18n::tr("settings.io.browse_install"))) {
+            NFD::UniquePathU8 outPath;
+            if (NFD::PickFolder(outPath) == NFD_OKAY) {
+                installPathBuf_ = outPath.get();
                 provider.SetInstallPath(installPathBuf_);
                 saveIo();
             }
-            ImGui::SameLine();
-            if (ImGui::Button(i18n::tr("settings.io.browse_install"))) {
-                NFD::UniquePathU8 outPath;
-                if (NFD::PickFolder(outPath) == NFD_OKAY) {
-                    installPathBuf_ = outPath.get();
-                    provider.SetInstallPath(installPathBuf_);
-                    saveIo();
-                }
-            }
-            ImGui::SameLine();
-            if (ImGui::Button(i18n::tr("settings.io.reset_install"))) {
-                provider.SetInstallPath("");
-                installPathBuf_ = provider.InstallPath();
-                saveIo();
-            }
-            ImGui::SameLine();
-            ImGui::TextUnformatted(i18n::tr("settings.io.install_path"));
         }
-
-        ImGui::Spacing();
-        ImGui::Separator();
-
-        // ---- Ignore flags ----
-        {
-            bool ignoreCasc = provider.IgnoreCasc();
-            if (ImGui::Checkbox(i18n::tr("settings.io.ignore_casc"), &ignoreCasc)) {
-                provider.SetIgnoreCasc(ignoreCasc);
-                saveIo();
-            }
-            bool ignoreMpq = provider.IgnoreMpq();
-            if (ImGui::Checkbox(i18n::tr("settings.io.ignore_mpq"), &ignoreMpq)) {
-                provider.SetIgnoreMpq(ignoreMpq);
-                saveIo();
-            }
-        }
-
-        ImGui::Spacing();
-        ImGui::Separator();
-
-        // ---- MPQ load list ----
-        // Earlier entries win. Buttons mutate the provider's vector in place
-        // (via SetMpqList(...)) which reopens the storages each time — fine
-        // for a settings dialog (low-frequency edits).
-        ImGui::TextUnformatted(i18n::tr("settings.io.mpq_header"));
-        ImGui::BeginDisabled(provider.IgnoreMpq());
-
-        std::vector<std::string> mpqs = provider.MpqList();
-        bool mpqsDirty = false;
-        i32 swapWith = -1; // [i, i+1] to swap when set
-        i32 removeAt = -1;
-        for (usize i = 0; i < mpqs.size(); ++i) {
-            ImGui::PushID(static_cast<int>(i));
-            const bool isFirst = (i == 0);
-            const bool isLast = (i + 1 == mpqs.size());
-            ImGui::BeginDisabled(isFirst);
-            if (ImGui::ArrowButton("up", ImGuiDir_Up))
-                swapWith = static_cast<i32>(i) - 1;
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            ImGui::BeginDisabled(isLast);
-            if (ImGui::ArrowButton("down", ImGuiDir_Down))
-                swapWith = static_cast<i32>(i);
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            if (ImGui::Button("X"))
-                removeAt = static_cast<i32>(i);
-            ImGui::SameLine();
-            ImGui::TextUnformatted(mpqs[i].c_str());
-            ImGui::PopID();
-        }
-        if (swapWith >= 0 && swapWith + 1 < static_cast<i32>(mpqs.size())) {
-            std::swap(mpqs[swapWith], mpqs[swapWith + 1]);
-            mpqsDirty = true;
-        }
-        if (removeAt >= 0 && removeAt < static_cast<i32>(mpqs.size())) {
-            mpqs.erase(mpqs.begin() + removeAt);
-            mpqsDirty = true;
-        }
-
-        // Add-new row.
-        {
-            char tmp[256];
-            std::snprintf(tmp, sizeof(tmp), "%s", newMpqEntryBuf_.c_str());
-            ImGui::SetNextItemWidth(-140.0f);
-            if (ImGui::InputText("##newmpq", tmp, sizeof(tmp)))
-                newMpqEntryBuf_ = tmp;
-            ImGui::SameLine();
-            const bool canAdd = !newMpqEntryBuf_.empty();
-            ImGui::BeginDisabled(!canAdd);
-            if (ImGui::Button(i18n::tr("settings.io.add_mpq"))) {
-                mpqs.push_back(newMpqEntryBuf_);
-                newMpqEntryBuf_.clear();
-                mpqsDirty = true;
-            }
-            ImGui::EndDisabled();
-        }
-
-        if (ImGui::SmallButton(i18n::tr("settings.io.reset_defaults"))) {
-            mpqs = io::FileContentProvider::DefaultMpqList();
-            mpqsDirty = true;
-        }
-
-        ImGui::EndDisabled(); // IgnoreMpq guard around the list controls
-
-        if (mpqsDirty) {
-            provider.SetMpqList(std::move(mpqs));
+        ImGui::SameLine();
+        if (ImGui::Button(i18n::tr("settings.io.reset_install"))) {
+            provider.SetInstallPath("");
+            installPathBuf_ = provider.InstallPath();
             saveIo();
         }
+        ImGui::SameLine();
+        ImGui::TextUnformatted(i18n::tr("settings.io.install_path"));
+    }
 
-        ImGui::Spacing();
-        ImGui::Separator();
+    // ---- Listfile row (World of Warcraft only) ----
+    // A WoW CASC root stores fileDataIDs and name hashes, not paths, so
+    // nothing can browse or path-read it without a community `id;path`
+    // CSV. Reads by id work regardless — this is what makes the Storage
+    // Explorer and by-path loads possible.
+    if (game == ProductId::Wow) {
+        char tmp[1024];
+        std::snprintf(tmp, sizeof(tmp), "%s", listfileBuf_.c_str());
+        ImGui::SetNextItemWidth(-180.0f);
+        if (ImGui::InputText("##listfile", tmp, sizeof(tmp)))
+            listfileBuf_ = tmp;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            provider.SetListfilePath(io::FsPathFromUtf8(listfileBuf_));
+            saveIo();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(i18n::tr("settings.io.browse_listfile"))) {
+            NFD::UniquePathU8 outPath;
+            nfdu8filteritem_t filter[1] = {{"Listfile", "csv,txt"}};
+            if (NFD::OpenDialog(outPath, filter, 1) == NFD_OKAY) {
+                listfileBuf_ = outPath.get();
+                provider.SetListfilePath(io::FsPathFromUtf8(listfileBuf_));
+                saveIo();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(i18n::tr("settings.io.clear_listfile"))) {
+            listfileBuf_.clear();
+            provider.SetListfilePath({});
+            saveIo();
+        }
+        ImGui::SameLine();
+        ImGui::TextUnformatted(i18n::tr("settings.io.listfile"));
+        // "A path is set" and "it loaded" are different facts, and only the
+        // second one makes the root browsable. The listfile is read as part of
+        // opening the storage, so before that it is pending like the rest.
+        ImGui::TextDisabled(i18n::tr("settings.io.listfile_status"),
+                            provider.StoragesPending() ? i18n::tr("settings.io.pending")
+                            : provider.HasListfile()   ? i18n::tr("settings.io.loaded")
+                                                       : i18n::tr("settings.io.not_loaded"));
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    // ---- Ignore flags ----
+    {
+        bool ignoreCasc = provider.IgnoreCasc();
+        if (ImGui::Checkbox(i18n::tr("settings.io.ignore_casc"), &ignoreCasc)) {
+            provider.SetIgnoreCasc(ignoreCasc);
+            saveIo();
+        }
+        bool ignoreMpq = provider.IgnoreMpq();
+        if (ImGui::Checkbox(i18n::tr("settings.io.ignore_mpq"), &ignoreMpq)) {
+            provider.SetIgnoreMpq(ignoreMpq);
+            saveIo();
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    // ---- MPQ load list ----
+    // Earlier entries win. Buttons mutate the provider's vector in place
+    // (via SetMpqList(...)) which reopens the storages each time — fine
+    // for a settings dialog (low-frequency edits).
+    ImGui::TextUnformatted(i18n::tr("settings.io.mpq_header"));
+    ImGui::BeginDisabled(provider.IgnoreMpq());
+
+    std::vector<std::string> mpqs = provider.MpqList();
+    bool mpqsDirty = false;
+    i32 swapWith = -1; // [i, i+1] to swap when set
+    i32 removeAt = -1;
+    for (usize i = 0; i < mpqs.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        const bool isFirst = (i == 0);
+        const bool isLast = (i + 1 == mpqs.size());
+        ImGui::BeginDisabled(isFirst);
+        if (ImGui::ArrowButton("up", ImGuiDir_Up))
+            swapWith = static_cast<i32>(i) - 1;
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(isLast);
+        if (ImGui::ArrowButton("down", ImGuiDir_Down))
+            swapWith = static_cast<i32>(i);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("X"))
+            removeAt = static_cast<i32>(i);
+        ImGui::SameLine();
+        ImGui::TextUnformatted(mpqs[i].c_str());
+        ImGui::PopID();
+    }
+    if (swapWith >= 0 && swapWith + 1 < static_cast<i32>(mpqs.size())) {
+        std::swap(mpqs[swapWith], mpqs[swapWith + 1]);
+        mpqsDirty = true;
+    }
+    if (removeAt >= 0 && removeAt < static_cast<i32>(mpqs.size())) {
+        mpqs.erase(mpqs.begin() + removeAt);
+        mpqsDirty = true;
+    }
+
+    // Add-new row.
+    {
+        char tmp[256];
+        std::snprintf(tmp, sizeof(tmp), "%s", newMpqEntryBuf_.c_str());
+        ImGui::SetNextItemWidth(-140.0f);
+        if (ImGui::InputText("##newmpq", tmp, sizeof(tmp)))
+            newMpqEntryBuf_ = tmp;
+        ImGui::SameLine();
+        const bool canAdd = !newMpqEntryBuf_.empty();
+        ImGui::BeginDisabled(!canAdd);
+        if (ImGui::Button(i18n::tr("settings.io.add_mpq"))) {
+            mpqs.push_back(newMpqEntryBuf_);
+            newMpqEntryBuf_.clear();
+            mpqsDirty = true;
+        }
+        ImGui::EndDisabled();
+    }
+
+    // "Defaults" means the fixed three for Warcraft III, but for WoW it
+    // means what is actually in Data/ — its archive names changed twice
+    // across the MPQ era, so a static list is wrong for most installs.
+    if (ImGui::SmallButton(i18n::tr("settings.io.reset_defaults"))) {
+        mpqs = provider.ScanMpqList();
+        mpqsDirty = true;
+    }
+
+    ImGui::EndDisabled(); // IgnoreMpq guard around the list controls
+
+    if (mpqsDirty) {
+        provider.SetMpqList(std::move(mpqs));
+        saveIo();
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    // Pending is checked first on purpose: storages open on demand, and
+    // HasCasc() is a demand. Reading the status must not be what triggers the
+    // open it is reporting on.
+    if (provider.StoragesPending()) {
+        ImGui::TextDisabled(i18n::tr("settings.io.casc_status"), i18n::tr("settings.io.pending"));
+        ImGui::TextDisabled(i18n::tr("settings.io.mpq_status"), i18n::tr("settings.io.pending"));
+    } else {
         ImGui::TextDisabled(i18n::tr("settings.io.casc_status"),
                             provider.HasCasc() ? i18n::tr("settings.io.open")
                                                : i18n::tr("settings.io.not_loaded"));
         ImGui::TextDisabled(i18n::tr("settings.io.mpq_status"),
                             provider.HasMpq() ? i18n::tr("app.yes") : i18n::tr("app.no"));
+    }
+}
 
-        ImGui::EndTabItem();
+// StarCraft II and Heroes of the Storm are two installs behind one product
+// (they share a render profile), so this page configures two CASC roots and
+// no archives: neither game ever shipped an MPQ.
+void ViewerUI::BuildIoCascPage(io::FileContentProvider& provider) {
+    RenderService& svc = app_.Service();
+
+    auto saveIo = [&] {
+        IoPathOverrides o;
+        // "Same as auto-detected" is stored as no override, so a later
+        // reinstall elsewhere is picked up instead of pinned to a stale path.
+        o.installPath = (installPathBuf_ == provider.GamePath(ProductId::Sc2)) ? std::string{}
+                                                                               : installPathBuf_;
+        o.hotsInstallPath = (hotsPathBuf_ == provider.HotsPath()) ? std::string{} : hotsPathBuf_;
+        o.ignoreCasc = provider.IgnoreCasc();
+        o.ignoreMpq = provider.IgnoreMpq();
+        SaveIoPathOverrides(ProductId::Sc2, o);
+        svc.RetryUnloadedAssets();
+    };
+
+    // One row per game: the text field, a folder picker, a reset to the
+    // discovered path, and a label. `commit` is the shared tail — the two
+    // rows differ only in which provider setter they call.
+    auto rootRow = [&](const char* id, std::string& buf, const std::string& discovered,
+                       const char* label, const auto& commit) {
+        ImGui::PushID(id);
+        char tmp[1024];
+        std::snprintf(tmp, sizeof(tmp), "%s", buf.c_str());
+        ImGui::SetNextItemWidth(-180.0f);
+        if (ImGui::InputText("##root", tmp, sizeof(tmp)))
+            buf = tmp;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            commit(buf);
+            saveIo();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(i18n::tr("settings.io.browse_install"))) {
+            NFD::UniquePathU8 outPath;
+            if (NFD::PickFolder(outPath) == NFD_OKAY) {
+                buf = outPath.get();
+                commit(buf);
+                saveIo();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(i18n::tr("settings.io.reset_install"))) {
+            commit(std::string{});
+            buf = discovered;
+            saveIo();
+        }
+        ImGui::SameLine();
+        ImGui::TextUnformatted(label);
+        if (discovered.empty())
+            ImGui::TextDisabled(i18n::tr("settings.io.casc_not_detected"), label);
+        ImGui::PopID();
+    };
+
+    rootRow("sc2", installPathBuf_, provider.GamePath(ProductId::Sc2), "StarCraft II",
+            [&](const std::string& p) { provider.SetInstallPath(p); });
+    ImGui::Spacing();
+    rootRow("hots", hotsPathBuf_, provider.HotsPath(), "Heroes of the Storm",
+            [&](const std::string& p) { provider.SetHotsInstallPath(p); });
+
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    {
+        bool ignoreCasc = provider.IgnoreCasc();
+        if (ImGui::Checkbox(i18n::tr("settings.io.ignore_casc"), &ignoreCasc)) {
+            provider.SetIgnoreCasc(ignoreCasc);
+            saveIo();
+        }
     }
 
-    ImGui::EndTabBar();
-    ImGui::End();
+    ImGui::Spacing();
+    ImGui::Separator();
+
+    // Which roots opened, not just whether any did: two are offered here and
+    // either can fail on its own, which a single "CASC: open" would hide.
+    // Pending is checked first so that reading the status is not itself the
+    // demand that opens them (see BuildIoArchivePage).
+    if (provider.StoragesPending()) {
+        ImGui::TextDisabled(i18n::tr("settings.io.casc_status"), i18n::tr("settings.io.pending"));
+        return;
+    }
+    const auto roots = provider.OpenCascRoots();
+    if (roots.empty()) {
+        ImGui::TextDisabled(i18n::tr("settings.io.casc_status"),
+                            i18n::tr("settings.io.not_loaded"));
+    } else {
+        ImGui::TextDisabled(i18n::tr("settings.io.casc_status"), i18n::tr("settings.io.open"));
+        for (const auto& r : roots)
+            ImGui::TextDisabled("    %s", r.c_str());
+    }
 }
 
 } // namespace whiteout::flakes

@@ -2314,6 +2314,10 @@ shading::IShadingModel& RenderPipeline::ActiveShadingModel() {
                : *impl_->wc3SdShading_;
 }
 
+core::VertexLayoutCache& RenderPipeline::VertexLayouts() {
+    return impl_->vertexLayouts_;
+}
+
 core::IRenderProfile& RenderPipeline::ActiveProfile() {
     if (!impl_->wc3SdProfile_) {
         // Force the shading models into existence first — a profile lists the
@@ -2414,6 +2418,7 @@ void RenderPipeline::RenderGeosets(GeosetBucket bucket) {
     ctx.view = FrameCamera().GetViewMatrix();
     ctx.projection = FrameCamera().ProjectionRH(
         Height() > 0 ? static_cast<f32>(Width()) / static_cast<f32>(Height()) : 1.0f);
+    ctx.profile = &ActiveProfile();
 
     auto& traceCtx = debug::DrawTraceRecorder::Instance().Context();
     shading::SurfacePass pass(impl_->shadingModels_);

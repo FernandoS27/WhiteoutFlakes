@@ -455,7 +455,11 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         if (!slotUsed[i])
             continue;
         wgpu::VertexBufferLayout vbl{};
-        vbl.arrayStride = slotStride[i];
+        // Explicit stride wins over the inferred high-water mark — see
+        // GraphicsPipelineDesc::inputSlotStrides.
+        vbl.arrayStride = (i < kMaxVertexInputSlots && desc.inputSlotStrides[i] != 0)
+                              ? desc.inputSlotStrides[i]
+                              : slotStride[i];
         vbl.stepMode = wgpu::VertexStepMode::Vertex;
         vbl.attributeCount = static_cast<u32>(slotAttrs[i].size());
         vbl.attributes = slotAttrs[i].data();

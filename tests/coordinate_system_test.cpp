@@ -1,6 +1,11 @@
-// Coordinate-space conversion (Blizzard <-> Max). The adapters that import
-// foreign-authored data lean on these being exact inverses of each other, so
-// the tests assert the invariants rather than one hand-picked mapping.
+// Coordinate-space conversion (Blizzard <-> Max <-> Sc2). The adapters that
+// import foreign-authored data lean on these being exact inverses of each
+// other, so most tests assert the invariants rather than one hand-picked
+// mapping — every space in `kSpaces` gets the round-trip sweep for free.
+//
+// Invariants alone cannot pin *which* convention a space is, though: a table
+// rotated 180° round-trips perfectly and still points every model backwards.
+// The axis-semantics case at the bottom is what fixes each space's meaning.
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -21,7 +26,7 @@ using Catch::Approx;
 
 namespace {
 
-constexpr CoordSpace kSpaces[] = {CoordSpace::Blizzard, CoordSpace::Max};
+constexpr CoordSpace kSpaces[] = {CoordSpace::Blizzard, CoordSpace::Max, CoordSpace::Sc2};
 
 f32 Length(const Vector3f& v) {
     return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
@@ -212,4 +217,53 @@ TEST_CASE("Forward axes are unit vectors") {
 
     RequireSameVector(whiteout::flakes::renderer::DefaultForwardAxis(),
                       whiteout::flakes::renderer::ForwardAxis(CoordinateSystem::Default()));
+}
+
+TEST_CASE("Each space's axes mean what its documentation says") {
+    // The one case the invariants above cannot cover. Round-trips, lengths and
+    // inverses all hold just as well for a table that is 180° out, which would
+    // render every StarCraft II model facing backwards — visible, but only if
+    // someone happens to know which way a Marine should face.
+    //
+    // Renderer-native is Blizzard: +X forward, +Y left, +Z up (right-handed,
+    // so right == forward × up == −Y).
+    const CoordSpace ref = CoordSpace::Blizzard;
+    constexpr Vector3f kFwdRef{1.0f, 0.0f, 0.0f};
+    constexpr Vector3f kRightRef{0.0f, -1.0f, 0.0f};
+    constexpr Vector3f kUpRef{0.0f, 0.0f, 1.0f};
+
+    SECTION("Blizzard is the reference") {
+        RequireSameVector(CoordinateSystem::ToDefaultDir(ref, {1.0f, 0.0f, 0.0f}), kFwdRef);
+        RequireSameVector(CoordinateSystem::ToDefaultDir(ref, {0.0f, -1.0f, 0.0f}), kRightRef);
+    }
+
+    SECTION("Sc2 is +Y forward, +X right") {
+        // The convention StarCraft II and Heroes author in. Both axes are
+        // asserted, not just forward: forward alone still admits a mirrored
+        // basis, which would flip every model's handedness.
+        RequireSameVector(CoordinateSystem::ToDefaultDir(CoordSpace::Sc2, {0.0f, 1.0f, 0.0f}),
+                          kFwdRef);
+        RequireSameVector(CoordinateSystem::ToDefaultDir(CoordSpace::Sc2, {1.0f, 0.0f, 0.0f}),
+                          kRightRef);
+        RequireSameVector(CoordinateSystem::ToDefaultDir(CoordSpace::Sc2, {0.0f, 0.0f, 1.0f}),
+                          kUpRef);
+    }
+
+    SECTION("Max is -Y forward, and is NOT Sc2") {
+        RequireSameVector(CoordinateSystem::ToDefaultDir(CoordSpace::Max, {0.0f, -1.0f, 0.0f}),
+                          kFwdRef);
+        // The two differ by a 180° yaw. Pinned because reusing Max for SC2 is
+        // the obvious shortcut — the enum comment even used to describe Max as
+        // "+X right, +Y forward", which is SC2's convention and not Max's.
+        RequireSameVector(CoordinateSystem::ToDefaultDir(CoordSpace::Max, {1.0f, 0.0f, 0.0f}),
+                          {0.0f, 1.0f, 0.0f});
+    }
+
+    SECTION("Forward axes agree with the basis tables") {
+        for (CoordSpace s : kSpaces) {
+            RequireSameVector(
+                CoordinateSystem::ToDefaultDir(s, whiteout::flakes::renderer::ForwardAxis(s)),
+                kFwdRef);
+        }
+    }
 }

@@ -61,6 +61,26 @@ profiles::wc3::Wc3SurfaceTable& Wc3TableFor(RenderModel& render) {
         render.surfaceTable = std::make_unique<profiles::wc3::Wc3SurfaceTable>();
     return *core::SurfaceTableCast<profiles::wc3::Wc3SurfaceTable>(render.surfaceTable.get());
 }
+
+// Local-space bounds center of a geoset. Used as its sort position in the
+// back-to-front transparent pass (transformed by the actor world matrix at
+// collection time). `get(i)` returns vertex i's position.
+template <class Get>
+Vector3f GeosetBoundsCenter(i32 count, Get&& get) {
+    if (count <= 0)
+        return {0, 0, 0};
+    Vector3f lo = get(0), hi = lo;
+    for (i32 i = 1; i < count; ++i) {
+        const Vector3f p = get(i);
+        lo.x = std::min(lo.x, p.x);
+        lo.y = std::min(lo.y, p.y);
+        lo.z = std::min(lo.z, p.z);
+        hi.x = std::max(hi.x, p.x);
+        hi.y = std::max(hi.y, p.y);
+        hi.z = std::max(hi.z, p.z);
+    }
+    return {(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f};
+}
 } // namespace
 
 ModelLoader::ModelLoader(RenderService& rs) : rs_(rs) {}
@@ -251,6 +271,7 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
     // and ScaledWorldTransform short-circuits on that, so no WC3 matrix is
     // touched at all.
     mi->worldScale = rs_.Pipeline().ActiveProfile().WorldScale();
+    mi->sourceSpace = rs_.Pipeline().ActiveProfile().SourceSpace();
     mi->bounds = tmpl->bounds;
 
     if (tmpl->adapter)
@@ -409,6 +430,7 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
     // size, and is exactly the failure a golden cannot distinguish from
     // "loaded fine".
     mi->worldScale = rs_.Pipeline().ActiveProfile().WorldScale();
+    mi->sourceSpace = rs_.Pipeline().ActiveProfile().SourceSpace();
 
     for (auto& tex : textures) {
         StagedTexture& st = mi->render.stagedTextures[tex.textureId];
@@ -437,6 +459,22 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
         sg.materialId = mesh.materialId;
         sg.lod = mesh.lod;
         i32 vc = (i32)mesh.positions.size();
+        // The sort centroid comes off `positions` either way — it is the CPU
+        // copy, and the baked path deliberately never decodes its own blob.
+        sg.centroid = GeosetBoundsCenter(vc, [&](i32 i) { return mesh.positions[i]; });
+        if (mesh.baked.Valid()) {
+            // Already a GPU vertex buffer. Uploaded verbatim, so there is
+            // nothing to interleave and `vertices` stays empty.
+            //
+            // Copied, not moved: `meshes` is a const ref and the signature is
+            // shared with the MDX path. No worse than what it replaces — the
+            // array path allocated and filled a 48-byte `Vertex` per vertex
+            // right here, and a baked record is never larger than that.
+            sg.baked = mesh.baked;
+            sg.bakedVertexCount = (i32)sg.baked.VertexCount();
+            sg.indices = mesh.indices;
+            continue;
+        }
         sg.vertices.resize(vc);
         for (i32 i = 0; i < vc; i++) {
             sg.vertices[i].position = mesh.positions[i];
@@ -765,27 +803,6 @@ void ModelLoader::UploadStagedTextures(Actor& mi) {
     mi.render.stagedTextures.clear();
 }
 
-namespace {
-// Local-space bounds center of a geoset. Used as its sort position in the
-// back-to-front transparent pass (transformed by the actor world matrix at
-// collection time). `get(i)` returns vertex i's position.
-template <class Get>
-Vector3f GeosetBoundsCenter(i32 count, Get&& get) {
-    if (count <= 0)
-        return {0, 0, 0};
-    Vector3f lo = get(0), hi = lo;
-    for (i32 i = 1; i < count; ++i) {
-        const Vector3f p = get(i);
-        lo.x = std::min(lo.x, p.x);
-        lo.y = std::min(lo.y, p.y);
-        lo.z = std::min(lo.z, p.z);
-        hi.x = std::max(hi.x, p.x);
-        hi.y = std::max(hi.y, p.y);
-        hi.z = std::max(hi.z, p.z);
-    }
-    return {(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f};
-}
-} // namespace
 
 void ModelLoader::uploadTemplateGpu(ModelTemplate& tmpl) {
     if (tmpl.gpuUploaded)
@@ -945,24 +962,37 @@ void ModelLoader::UploadStagedGeosets(Actor& mi) {
             gg.geosetId = id;
             gg.materialId = sg.materialId;
             gg.lod = sg.lod;
+            const bool baked = sg.baked.Valid();
             gg.indexCount = (i32)sg.indices.size();
-            gg.vertexCount = (i32)sg.vertices.size();
-            gg.localCentroid =
-                GeosetBoundsCenter(gg.vertexCount, [&](i32 i) { return sg.vertices[i].position; });
+            gg.vertexCount = baked ? sg.bakedVertexCount : (i32)sg.vertices.size();
+            gg.localCentroid = sg.centroid;
             gg.hasSkinning = true;
 
             if (const auto* m = Wc3TableFor(mi.render).Material(sg.materialId))
                 gg.priorityPlane = m->cpu.priorityPlane;
 
-            const u32 vbBytes = (u32)(sizeof(Vertex) * sg.vertices.size());
             const GeosetSkinInfo* skinInfo = mi.render.skinning.GetGeosetWeights(id);
 
-            gg.unskinnedVb = rs_.Pipeline().Gfx()->CreateBuffer(
-                {
-                    .size = vbBytes,
-                    .usage = gfx::BufferUsage::Vertex,
-                },
-                sg.vertices.data());
+            // Two shapes, one buffer. A baked blob goes up byte for byte and
+            // brings its own stride and layout description; everything else
+            // is WC3's interleaved Vertex at layout 0, exactly as before.
+            if (baked) {
+                gg.baseStride = sg.baked.stride;
+                gg.layoutId = rs_.Pipeline().VertexLayouts().Intern(sg.baked.attributes);
+                gg.unskinnedVb = rs_.Pipeline().Gfx()->CreateBuffer(
+                    {
+                        .size = (u32)sg.baked.data.size(),
+                        .usage = gfx::BufferUsage::Vertex,
+                    },
+                    sg.baked.data.data());
+            } else {
+                gg.unskinnedVb = rs_.Pipeline().Gfx()->CreateBuffer(
+                    {
+                        .size = (u32)(sizeof(Vertex) * sg.vertices.size()),
+                        .usage = gfx::BufferUsage::Vertex,
+                    },
+                    sg.vertices.data());
+            }
 
             gg.ib = rs_.Pipeline().Gfx()->CreateBuffer(
                 {

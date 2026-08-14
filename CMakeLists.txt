@@ -242,6 +242,12 @@ set(SHADER_ENTRIES
     # (not a BLS program), so it lives here rather than in a .bls bundle.
     "unlit.slang|vsUnlit|vertex|kUnlitVS"
     "unlit.slang|psUnlit|fragment|kUnlitPS"
+    # Lit permutations: POSITION+NORMAL, selected by the profile's
+    # UnlitLighting(). They exist to make a MeshBuffer's layout description
+    # checkable — flat white cannot tell a right normal from a missing one.
+    "unlit.slang|vsUnlitLit|vertex|kUnlitLitVS"
+    "unlit.slang|psUnlitLambert|fragment|kUnlitLambertPS"
+    "unlit.slang|psUnlitBlinnPhong|fragment|kUnlitBlinnPhongPS"
     # GTAO ambient-occlusion pass — read by GtaoService. The same
     # vsGtao fullscreen-triangle VS feeds both the main pass (writes
     # the AO buffer) and the apply pass (modulates the HDR scene
@@ -1160,6 +1166,14 @@ add_library(WhiteoutFlakesLib STATIC
     src/io/team_glow_data.cpp
     src/io/file_resolver.cpp
     src/io/file_content_provider.cpp
+    # Per-game storage: what each product opens and how it spells a path.
+    # The CASC / MPQ sources compile to nothing when their backend is off.
+    src/io/storage/storage_paths.cpp
+    src/io/storage/install_locator.cpp
+    src/io/storage/casc_source.cpp
+    src/io/storage/mpq_source.cpp
+    src/io/storage/game_storage.cpp
+    src/io/storage/game_rules.cpp
     src/io/fetch_content_provider.cpp
     src/io/content_provider.cpp
     src/io/path_utf8.cpp
@@ -1382,6 +1396,7 @@ set(WHITEOUTFLAKES_VIEWER_SOURCES
     tools/basic_viewer/viewer_app.cpp
     tools/basic_viewer/viewer_ui.cpp
     tools/basic_viewer/settings_ini.cpp
+    tools/basic_viewer/settings_io.cpp
     tools/basic_viewer/localization.cpp
     # Shared host utilities live in tools/common (used by the Max plugin too).
     tools/common/cubeb_sound_emitter.cpp

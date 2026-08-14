@@ -2,12 +2,50 @@
 
 #include <whiteout/models/m2/parser.h>
 
+#include <cstddef>
 #include <cstdio>
+#include <cstring>
+#include <type_traits>
 
 namespace whiteout::flakes::io {
 
+using renderer::model::MeshBuffer;
 using renderer::model::MeshData;
 using renderer::model::SequenceInfo;
+using renderer::model::VertexAttribute;
+using renderer::model::VertexSemantic;
+
+namespace {
+
+using M2Vertex = ::whiteout::m2::Vertex;
+
+// `whiteout::m2::Vertex` IS the on-disk record: 48 bytes, no padding, in the
+// order the file stores them. That is what makes the M2 path a copy rather
+// than a repack — but it is also invisible, so it is asserted. If WhiteoutLib
+// ever reorders or pads that struct, every baked buffer silently becomes
+// garbage and this is the only place that would catch it.
+static_assert(std::is_standard_layout_v<M2Vertex>, "m2::Vertex must be memcpy-able");
+static_assert(sizeof(M2Vertex) == 48, "m2::Vertex must match the on-disk record");
+static_assert(offsetof(M2Vertex, position) == 0);
+static_assert(offsetof(M2Vertex, boneWeights) == 12);
+static_assert(offsetof(M2Vertex, boneIndices) == 16);
+static_assert(offsetof(M2Vertex, normal) == 20);
+static_assert(offsetof(M2Vertex, texCoords) == 32);
+
+// The record above, described for the GPU. Fixed — unlike `.m3`, `.m2` has no
+// per-model vertex format flags.
+std::vector<VertexAttribute> DescribeM2Vertex() {
+    return {
+        {VertexSemantic::Position, 0, gfx::Format::R32G32B32_FLOAT, 0},
+        {VertexSemantic::BoneWeights, 0, gfx::Format::R8G8B8A8_UNORM, 12},
+        {VertexSemantic::BoneIndices, 0, gfx::Format::R8G8B8A8_UINT, 16},
+        {VertexSemantic::Normal, 0, gfx::Format::R32G32B32_FLOAT, 20},
+        {VertexSemantic::TexCoord, 0, gfx::Format::R32G32_FLOAT, 32},
+        {VertexSemantic::TexCoord, 1, gfx::Format::R32G32_FLOAT, 40},
+    };
+}
+
+} // namespace
 
 std::vector<::whiteout::u8> ContentProviderCascFs::readFile(::whiteout::u32 fileId) const {
     if (!provider_)
@@ -117,22 +155,27 @@ std::vector<MeshData> M2ModelAdapter::GetMeshes() {
         mesh.geosetId = static_cast<i32>(s);
         mesh.materialId = -1; // no materials in this phase; UnlitShading draws it
         mesh.lod = 0;
+        // A gather, not a slice: the skin indirection means a submesh's
+        // vertices are scattered through the global array. Still verbatim —
+        // what moves is whole 48-byte records, never a decoded attribute.
         mesh.positions.reserve(sec.vertexCount);
-        for (std::size_t v = vBegin; v < vEnd; ++v) {
+        mesh.baked.stride = sizeof(M2Vertex);
+        mesh.baked.attributes = DescribeM2Vertex();
+        mesh.baked.data.resize(sec.vertexCount * sizeof(M2Vertex));
+        u8* dst = mesh.baked.data.data();
+        for (std::size_t v = vBegin; v < vEnd; ++v, dst += sizeof(M2Vertex)) {
             const std::size_t gv = skin.vertices[v];
             if (gv >= model_.vertices.size()) {
+                // Out-of-range index: a zeroed record, matching the zeroed
+                // position the CPU copy gets. Degenerate, but in-bounds.
+                std::memset(dst, 0, sizeof(M2Vertex));
                 mesh.positions.push_back({0.0f, 0.0f, 0.0f});
                 continue;
             }
-            mesh.positions.push_back(model_.vertices[gv].position);
+            const M2Vertex& src = model_.vertices[gv];
+            std::memcpy(dst, &src, sizeof(M2Vertex));
+            mesh.positions.push_back(src.position);
         }
-        // Normals and UVs are sized to match because the upload path builds a
-        // fully interleaved vertex and reads all four arrays. Left at zero:
-        // UnlitShading reads position alone, and inventing plausible-looking
-        // normals would make a later lighting bug harder to spot than a
-        // visibly flat one.
-        mesh.normals.assign(mesh.positions.size(), {0.0f, 0.0f, 1.0f});
-        mesh.uvs.assign(mesh.positions.size(), {0.0f, 0.0f});
 
         mesh.indices.reserve(sec.indexCount);
         for (std::size_t i = iBegin; i < iEnd; ++i) {

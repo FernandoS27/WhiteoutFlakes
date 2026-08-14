@@ -165,9 +165,22 @@ void FrameCameraToModel(Camera& cam, renderer::model::Actor* hero) {
     if (have) {
         // Bounds are model-space; the renderer draws through
         // ScaledWorldTransform, so the camera has to frame the scaled extent
-        // or a WoW creature sits 20× closer than the box it is framed against.
+        // or a WoW creature sits 100× closer than the box it is framed against.
         // Exactly 1.0 for Warcraft III, so no WC3 camera moves.
         const f32 s = (hero->worldScale > 0.0f) ? hero->worldScale : 1.0f;
+        // …and through the same basis change, for a product that does not
+        // author in renderer axes. Both corners are converted and re-min/maxed
+        // rather than the centre alone: the conversion is a signed axis
+        // permutation, so it can swap which corner is the minimum. The longest
+        // axis survives it either way, but the centre does not — an SC2 model
+        // framed on an unconverted centre sits off to one side.
+        const CoordSpace src = hero->sourceSpace;
+        if (src != kDefaultCoordSpace) {
+            const Vector3f a = CoordinateSystem::ToDefault(src, lo);
+            const Vector3f b = CoordinateSystem::ToDefault(src, hi);
+            lo = {(std::min)(a.x, b.x), (std::min)(a.y, b.y), (std::min)(a.z, b.z)};
+            hi = {(std::max)(a.x, b.x), (std::max)(a.y, b.y), (std::max)(a.z, b.z)};
+        }
         center = {(lo.x + hi.x) * 0.5f * s, (lo.y + hi.y) * 0.5f * s, (lo.z + hi.z) * 0.5f * s};
         maxAxis = (std::max)({hi.x - lo.x, hi.y - lo.y, hi.z - lo.z}) * s;
     }

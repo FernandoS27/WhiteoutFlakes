@@ -16,9 +16,24 @@
 namespace whiteout::flakes::renderer {
 
 /// @brief Right-handed coordinate-system convention.
+///
+/// All three are Z-up and right-handed, so each is fully described by where
+/// "forward" points; "right" then follows as `forward × up`.
+///
+/// New entries append. `CoordSpace` is part of the bound `flakes_core` module
+/// (see BINDINGS.md) and `WDX_DEFAULT_COORD_SPACE` is pasted after
+/// `CoordSpace::`, so renumbering an existing value changes both.
 enum class CoordSpace {
-    Blizzard, ///< +X forward, +Y right, +Z up.
-    Max,      ///< +X right,   +Y forward, +Z up.
+    /// Warcraft III and World of Warcraft: +X forward, +Y **left**, +Z up.
+    /// (An earlier comment here said "+Y right", which contradicts both the
+    /// basis table and `ForwardAxis` — for a right-handed Z-up space with
+    /// +X forward, right is −Y.)
+    Blizzard,
+    /// 3ds Max: −Y forward, +X left, +Z up.
+    Max,
+    /// StarCraft II and Heroes of the Storm: +Y forward, +X right, +Z up.
+    /// A 180° yaw from @ref Max, not the same space — Max's +X is left.
+    Sc2,
 };
 
 #ifndef WDX_DEFAULT_COORD_SPACE
@@ -33,7 +48,15 @@ inline constexpr CoordSpace kDefaultCoordSpace = CoordSpace::WDX_DEFAULT_COORD_S
 
 /// @brief Forward unit vector in the given space.
 inline Vector3f ForwardAxis(CoordSpace s) {
-    return (s == CoordSpace::Blizzard) ? Vector3f{1.0f, 0.0f, 0.0f} : Vector3f{0.0f, -1.0f, 0.0f};
+    switch (s) {
+    case CoordSpace::Max:
+        return {0.0f, -1.0f, 0.0f};
+    case CoordSpace::Sc2:
+        return {0.0f, 1.0f, 0.0f};
+    case CoordSpace::Blizzard:
+        break;
+    }
+    return {1.0f, 0.0f, 0.0f};
 }
 /// @brief Forward unit vector in @ref kDefaultCoordSpace.
 inline Vector3f DefaultForwardAxis() {

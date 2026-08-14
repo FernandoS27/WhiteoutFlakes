@@ -9,6 +9,12 @@
 #include "core/render_profile.h"
 #include "profiles/wc3/wc3_profile.h"
 #include "renderer/render_settings.h"
+#if WDX_ENABLE_M2
+#include "profiles/wow/wow_profile.h"
+#endif
+#if WDX_ENABLE_M3
+#include "profiles/sc2_heroes/sc2_heroes_profile.h"
+#endif
 
 using namespace whiteout::flakes::renderer::core;
 namespace gfx = whiteout::flakes::gfx;
@@ -125,6 +131,34 @@ TEST_CASE("WorldScale and SourceSpace are exactly identity for WC3") {
     REQUIRE(sd.SourceSpace() == wfr::kDefaultCoordSpace);
     REQUIRE(hd.SourceSpace() == wfr::kDefaultCoordSpace);
 }
+
+#if WDX_ENABLE_M2 || WDX_ENABLE_M3
+TEST_CASE("The non-WC3 profiles agree on units and disagree on axes") {
+    RenderSettings settings;
+#if WDX_ENABLE_M2
+    whiteout::flakes::renderer::profiles::wow::WowProfile wow(settings);
+    // One game unit is 100 Warcraft III units. Both products, same ratio —
+    // asserted rather than assumed, because these used to be two independently
+    // fitted framing constants (20 and 30) and the equality is the claim.
+    REQUIRE(wow.WorldScale() == 100.0f);
+    // WoW shares WC3's axes; only SC2 diverges.
+    REQUIRE(wow.SourceSpace() == wfr::CoordSpace::Blizzard);
+    REQUIRE(wow.SourceSpace() == wfr::kDefaultCoordSpace);
+#endif
+#if WDX_ENABLE_M3
+    whiteout::flakes::renderer::profiles::sc2_heroes::Sc2HeroesProfile sc2(settings);
+    REQUIRE(sc2.WorldScale() == 100.0f);
+    REQUIRE(sc2.SourceSpace() == wfr::CoordSpace::Sc2);
+    // The whole point of the field: SC2 is the one profile that is not
+    // renderer-native, so a change that quietly made it identity would put
+    // every `.m3` back to facing 90° wrong with nothing to catch it.
+    REQUIRE(sc2.SourceSpace() != wfr::kDefaultCoordSpace);
+#endif
+#if WDX_ENABLE_M2 && WDX_ENABLE_M3
+    REQUIRE(wow.WorldScale() == sc2.WorldScale());
+#endif
+}
+#endif
 
 TEST_CASE("The two WC3 profiles disagree on format and linearity, as they must") {
     // SD and HD are not interchangeable: mixing them in one scene needs

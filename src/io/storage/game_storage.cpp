@@ -1,0 +1,157 @@
+#include "game_storage.h"
+
+#include "casc_source.h"
+#include "mpq_source.h"
+#include "whiteout/flakes/util/path_utf8.h"
+
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+
+namespace whiteout::flakes::io {
+
+namespace fs = std::filesystem;
+
+GameStorage::GameStorage(ProductId game, std::vector<u8> listfile)
+    : game_(game), listfile_(std::move(listfile)) {}
+
+GameStorage::~GameStorage() = default;
+
+bool GameStorage::Read(const std::string& path, SourceRead& out) const {
+    for (const auto& s : sources_) {
+        if (s->Read(path, out))
+            return true;
+    }
+    return false;
+}
+
+bool GameStorage::ReadById(u32 fileId, SourceRead& out) const {
+    for (const auto& s : sources_) {
+        if (s->ReadById(fileId, out))
+            return true;
+    }
+    return false;
+}
+
+void GameStorage::List(const std::function<void(std::string)>& emit) const {
+    for (const auto& s : sources_)
+        s->List(emit);
+}
+
+std::vector<std::string> GameStorage::CascRoots() const {
+    std::vector<std::string> out;
+    out.reserve(cascCount_);
+    for (usize i = 0; i < cascCount_; ++i)
+        out.push_back(sources_[i]->Root());
+    return out;
+}
+
+// ---- Builder ---------------------------------------------------------------
+
+StorageBuilder& StorageBuilder::Pool(whiteout::utils::SimpleThreadPool* pool) {
+    pool_ = pool;
+    return *this;
+}
+
+StorageBuilder& StorageBuilder::ModChain(const std::atomic<bool>* hdMode) {
+    hdMode_ = hdMode;
+    return *this;
+}
+
+StorageBuilder& StorageBuilder::FileIds() {
+    fileIds_ = true;
+    return *this;
+}
+
+StorageBuilder& StorageBuilder::FrameSuffixFallback() {
+    frameSuffixFallback_ = true;
+    return *this;
+}
+
+StorageBuilder& StorageBuilder::Listfile(std::string csvPath) {
+    listfilePath_ = std::move(csvPath);
+    return *this;
+}
+
+StorageBuilder& StorageBuilder::Casc(std::string root) {
+    if (root.empty())
+        return *this;
+    // Deduplicated: a Heroes-only install names the same directory twice.
+    for (const auto& r : cascRoots_)
+        if (r == root)
+            return *this;
+    cascRoots_.push_back(std::move(root));
+    return *this;
+}
+
+StorageBuilder& StorageBuilder::Archives(const std::string& installRoot,
+                                         const std::vector<std::string>& names) {
+    if (installRoot.empty())
+        return *this;
+    for (const std::string& name : names) {
+        if (name.empty())
+            continue;
+        const fs::path file = FsPathFromUtf8(installRoot) / name;
+        if (!fs::exists(file)) {
+            std::printf("[FileContentProvider] MPQ not found, skipping: %s\n",
+                        PathToUtf8(file).c_str());
+            continue;
+        }
+        archiveFiles_.push_back(PathToUtf8(file));
+    }
+    return *this;
+}
+
+std::unique_ptr<GameStorage> StorageBuilder::Build() {
+    std::vector<u8> listfile;
+    if (!listfilePath_.empty()) {
+        std::ifstream f(FsPathFromUtf8(listfilePath_), std::ios::binary);
+        if (f) {
+            listfile.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+            std::printf("[FileContentProvider] Listfile loaded: %s (%zu bytes)\n",
+                        listfilePath_.c_str(), listfile.size());
+        } else {
+            std::printf("[FileContentProvider] Listfile not readable: %s\n", listfilePath_.c_str());
+        }
+    }
+
+    // Constructed first so the listfile bytes are already at their final
+    // address: casc::Storage borrows the span for its lifetime.
+    std::unique_ptr<GameStorage> storage(new GameStorage(game_, std::move(listfile)));
+
+#if WHITEOUT_HAS_CASC
+    for (std::string& root : cascRoots_) {
+        CascSourceOptions opts;
+        opts.hdMode = hdMode_;
+        opts.fileIds = fileIds_;
+        opts.frameSuffixFallback = frameSuffixFallback_;
+        opts.listfile = std::span<const u8>(storage->listfile_);
+        opts.pool = pool_;
+        std::string error;
+        if (auto src = CascSource::Open(root, opts, error)) {
+            storage->sources_.push_back(std::move(src));
+        } else {
+            // Not necessarily a failure: StarCraft II and Heroes are offered
+            // both roots and only one may be installed.
+            std::printf("[FileContentProvider] CASC not available at '%s': %s\n", root.c_str(),
+                        error.c_str());
+        }
+    }
+#endif
+    storage->cascCount_ = storage->sources_.size();
+
+#if WHITEOUT_HAS_MPQ
+    for (std::string& file : archiveFiles_) {
+        std::string error;
+        if (auto src = MpqSource::Open(file, error))
+            storage->sources_.push_back(std::move(src));
+        else
+            std::printf("[FileContentProvider] Failed to open %s: %s\n", file.c_str(),
+                        error.c_str());
+    }
+#endif
+    return storage;
+}
+
+} // namespace whiteout::flakes::io

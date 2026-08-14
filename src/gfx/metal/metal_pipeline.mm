@@ -111,6 +111,10 @@ MTLVertexFormat ToMtlVertexFormat(Format f) {
         return MTLVertexFormatUChar4Normalized;
     case Format::R8G8B8A8_UINT:
         return MTLVertexFormatUChar4;
+    case Format::R8G8B8A8_SNORM:
+        return MTLVertexFormatChar4Normalized;
+    case Format::R16G16_SNORM:
+        return MTLVertexFormatShort2Normalized;
     case Format::B8G8R8A8_UNORM:
         // Metal has no BGRA8 vertex format. Renderer-side input layouts
         // that use BGRA8 mean "shader reads RGBA"; the swizzle is on the
@@ -415,7 +419,11 @@ PipelineHandle MetalDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
                     continue;
                 MTLVertexBufferLayoutDescriptor* layout =
                     vd.layouts[kVertexBufferIndexBase + s];
-                layout.stride = slotStride[s];
+                // Explicit stride wins over the inferred high-water mark —
+                // see GraphicsPipelineDesc::inputSlotStrides.
+                layout.stride = (s < kMaxVertexInputSlots && desc.inputSlotStrides[s] != 0)
+                                    ? desc.inputSlotStrides[s]
+                                    : slotStride[s];
                 layout.stepFunction = MTLVertexStepFunctionPerVertex;
                 layout.stepRate = 1;
             }

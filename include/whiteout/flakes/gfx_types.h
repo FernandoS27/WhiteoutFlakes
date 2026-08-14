@@ -76,6 +76,17 @@ enum class Format : u16 {
     BC6H_UF16,
     BC7_UNORM,
     BC7_UNORM_SRGB,
+
+    // Signed-normalised vertex attribute formats. Appended rather than
+    // filed next to their UNORM siblings on purpose: bls_pso_trace records
+    // a PSO's formats as raw `u8` enum values, so inserting mid-enum
+    // renumbers every previously recorded draw-trace golden.
+    //
+    // `.m3` bakes normals and tangents as i8x4/127, which is exactly what
+    // SNORM decodes to. Vertex-attribute use only — no backend here is
+    // asked for an SNORM *texture*.
+    R8G8B8A8_SNORM,
+    R16G16_SNORM,
 };
 
 /// @brief `true` if @p f is one of the BCn block-compressed families.
@@ -117,9 +128,11 @@ inline u32 FormatBytesPerBlock(Format f) {
     case Format::R8G8B8A8_UNORM:
     case Format::R8G8B8A8_UNORM_SRGB:
     case Format::R8G8B8A8_UINT:
+    case Format::R8G8B8A8_SNORM:
     case Format::B8G8R8A8_UNORM:
     case Format::B8G8R8A8_UNORM_SRGB:
     case Format::R16G16_UNORM:
+    case Format::R16G16_SNORM:
     case Format::R32_UINT:
     case Format::R32_FLOAT:
     case Format::D24_UNORM_S8_UINT:
