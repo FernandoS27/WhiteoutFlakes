@@ -87,13 +87,20 @@ add_subdirectory(externals/WhiteoutLib)
 # everyone linking it; otherwise every TracyVk*/ZoneScoped macro expands
 # to nothing and there's zero runtime cost. TRACY_ON_DEMAND keeps the
 # client buffering minimal until Tracy.exe connects.
-# World of Warcraft `.m2`. Default OFF and staying that way for now: the
-# format loads geometry only (REFACTOR_PLAN.md P9), so a release viewer would
-# be shipping a half-implemented format, and CI has no `.m2` assets to exercise
-# it with. The build matrix covers both settings; a developer turns it on.
-option(WDX_ENABLE_M2 "Enable World of Warcraft .m2 loading (geometry only)" OFF)
-# StarCraft II / Heroes of the Storm `.m3`, on the same terms as `.m2` above.
-option(WDX_ENABLE_M3 "Enable StarCraft II / Heroes .m3 loading (geometry only)" OFF)
+# World of Warcraft `.m2` and StarCraft II / Heroes `.m3`.
+#
+# ON so the standalone viewer can open them from File > Open — which is the
+# only reason the default changed; REFACTOR_PLAN.md P9/P10 landed them OFF on
+# the grounds that a release viewer shouldn't carry a half-implemented format.
+# That caveat still holds and is worth repeating: **both load geometry only**.
+# No bones, no textures, no materials, no animation — a model draws as a flat
+# untextured silhouette. Turn them off for a build that should not offer that.
+#
+# Warcraft III rendering is byte-identical either way (G1/G2 gated in both
+# configurations), so this costs compile time and nothing else. CI has no `.m2`
+# or `.m3` assets, so the tests that use them skip rather than fail.
+option(WDX_ENABLE_M2 "Enable World of Warcraft .m2 loading (geometry only)" ON)
+option(WDX_ENABLE_M3 "Enable StarCraft II / Heroes .m3 loading (geometry only)" ON)
 
 option(WDX_ENABLE_TRACY "Enable Tracy profiler (CPU + Vulkan GPU)" ON)
 if(WDX_ENABLE_TRACY AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/externals/tracy/CMakeLists.txt")

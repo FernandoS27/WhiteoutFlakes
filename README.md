@@ -74,10 +74,13 @@ wired up far enough to prove the seam:
 | `WDX_ENABLE_M2` | `.m2` | `wow` | positions + indices, drawn flat white |
 | `WDX_ENABLE_M3` | `.m3` | `sc2_heroes` | positions + indices, drawn flat white |
 
-**Both default OFF, and this is not asset support.** No bones, no textures, no
-materials, no animation — a model loads and its silhouette draws. They exist so
-the abstraction is checked against real files instead of asserted, and Warcraft
-III rendering is byte-identical whether they are compiled in or not.
+Both default ON, and the standalone viewer opens them from **File > Open** —
+but **this is not asset support**. No bones, no textures, no materials, no
+animation: a model loads and its silhouette draws. They exist so the
+abstraction is checked against real files instead of asserted. Warcraft III
+rendering is byte-identical whether they are compiled in or not; configure with
+`-DWDX_ENABLE_M2=OFF -DWDX_ENABLE_M3=OFF` for a build that shouldn't offer
+them.
 
 ## Graphics backends
 

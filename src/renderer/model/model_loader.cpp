@@ -251,6 +251,7 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
     // and ScaledWorldTransform short-circuits on that, so no WC3 matrix is
     // touched at all.
     mi->worldScale = rs_.Pipeline().ActiveProfile().WorldScale();
+    mi->bounds = tmpl->bounds;
 
     if (tmpl->adapter)
         mi->animation.Bind(tmpl->adapter);
@@ -691,6 +692,9 @@ Actor* ModelLoader::SpawnUnitFromSource(std::shared_ptr<IModelSource> source,
 
     actor->worldTransform = initialTm;
     actor->animation.Bind(source);
+    // The template path stamps these from ModelTemplate; this one has no
+    // template, so it takes them from the same Build() snapshot.
+    actor->bounds = data.bounds;
 
     if (!data.attachmentConfigs.empty())
         SetAttachmentConfigs(h, data.attachmentConfigs);

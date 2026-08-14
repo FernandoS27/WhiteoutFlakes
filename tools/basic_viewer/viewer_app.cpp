@@ -532,14 +532,46 @@ bool ViewerApp::FrameCameraToEffect() {
 }
 
 namespace {
-// .pkb / .pkfx are standalone PopcornFX effects, not models.
-bool IsEffectPath(const std::filesystem::path& path) {
+// Whether the renderer this viewer links was built with each foreign format.
+// Constants rather than #ifdef at every use site so the surrounding code reads
+// the same in either configuration.
+#if WDX_ENABLE_M2
+constexpr bool kM2Compiled = true;
+#else
+constexpr bool kM2Compiled = false;
+#endif
+#if WDX_ENABLE_M3
+constexpr bool kM3Compiled = true;
+#else
+constexpr bool kM3Compiled = false;
+#endif
+
+std::string LowerExt(const std::filesystem::path& path) {
     std::string ext = path.extension().string();
     for (char& c : ext)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext;
+}
+
+// .pkb / .pkfx are standalone PopcornFX effects, not models.
+bool IsEffectPath(const std::filesystem::path& path) {
+    const std::string ext = LowerExt(path);
     return ext == ".pkb" || ext == ".pkfx";
 }
+
+// A model from another Blizzard game. Loads through the same SpawnUnit — the
+// renderer sniffs the chunk magic — but none of the Warcraft III preamble
+// applies to it: no BLS layers to probe for HD-ness, no MDX writer to save
+// through, no Reforged art overlay to re-resolve.
+bool IsForeignModelPath(const std::filesystem::path& path) {
+    const std::string ext = LowerExt(path);
+    return ext == ".m2" || ext == ".m3";
+}
 } // namespace
+
+bool ViewerApp::CurrentModelIsForeign() const {
+    return IsForeignModelPath(currentModelPath_);
+}
 
 bool ViewerApp::LoadModel(const std::filesystem::path& path) {
     // A .pkb / .pkfx isn't a model — it's one particle effect with no
@@ -668,7 +700,14 @@ bool ViewerApp::LoadModelIntoActiveScene(const std::filesystem::path& path) {
     // material layers — any non-`SD` ShaderType means a Reforged HD layer
     // (Reforged shipping models tag their classic-on-HD path as `SDOnHD`,
     // which also counts as HD here per the user-set render mode).
-    {
+    //
+    // Skipped entirely for a non-WC3 model: the probe would throw on the first
+    // chunk, and "HD" is a Warcraft III distinction that means nothing to an
+    // .m2 or .m3 anyway — their frame is chosen by the scene's ProductId, which
+    // SpawnUnit sets from the magic it just sniffed.
+    if (IsForeignModelPath(path)) {
+        ApplyRenderMode(RenderMode::SD);
+    } else {
         bool anyHdLayer = false;
         try {
             whiteout::mdx::Parser parser;
@@ -695,6 +734,15 @@ bool ViewerApp::LoadModelIntoActiveScene(const std::filesystem::path& path) {
     model::Actor* hero = service_.Loader().SpawnUnit(io::PathToUtf8(path));
     if (!hero) {
         std::fprintf(stderr, "[viewer] SpawnUnit FAILED for %s\n", io::PathToUtf8(path).c_str());
+        // The likeliest cause for these two, and one "SpawnUnit FAILED" alone
+        // sends the reader looking for a corrupt file instead of a build flag.
+        const std::string ext = LowerExt(path);
+        if (ext == ".m2" && !kM2Compiled)
+            std::fprintf(stderr, "[viewer]   .m2 support is not compiled in — configure with "
+                                 "-DWDX_ENABLE_M2=ON\n");
+        if (ext == ".m3" && !kM3Compiled)
+            std::fprintf(stderr, "[viewer]   .m3 support is not compiled in — configure with "
+                                 "-DWDX_ENABLE_M3=ON\n");
         return false;
     }
     FillModelDocState(hero, path);
@@ -809,14 +857,11 @@ void ViewerApp::SetForceHd(bool on) {
     // Reload the active model so it re-probes (forced HD vs detected) and its
     // deps re-resolve under the new CASC overlay. Empty path ⇒ nothing loaded;
     // the next load picks it up. Effects (.pkb/.pkfx) are mode-agnostic and
-    // can't be re-probed as MDX, so leave them be.
+    // can't be re-probed as MDX; `.m2`/`.m3` render through a profile the
+    // scene's product picks, which "Reforged Graphics" does not touch. Both
+    // would be a reload with no possible effect, so leave them be.
     const std::filesystem::path path = currentModelPath_;
-    if (path.empty())
-        return;
-    std::string ext = path.extension().string();
-    for (char& c : ext)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (ext == ".pkb" || ext == ".pkfx")
+    if (path.empty() || IsEffectPath(path) || IsForeignModelPath(path))
         return;
     LoadModelIntoActiveScene(path);
 }

@@ -1258,10 +1258,13 @@ int main(int argc, char* argv[]) {
     // File > Open in the menu bar.
     if (mdxPath.empty()) {
         NFD::UniquePathU8 outPath;
-        nfdu8filteritem_t filter[3] = {{"All supported", "mdx,mdl,pkb,pkfx"},
+        nfdu8filteritem_t filter[4] = {{"All supported", whiteout::flakes::kOpenAllExtensions},
                                        {"Warcraft III Model", "mdx,mdl"},
-                                       {"PKB Effect", "pkb,pkfx"}};
-        if (NFD::OpenDialog(outPath, filter, 3) == NFD_OKAY)
+                                       {"PKB Effect", "pkb,pkfx"},
+                                       {"Other Blizzard model",
+                                        whiteout::flakes::kForeignModelExtensions}};
+        const nfdfiltersize_t nFilters = whiteout::flakes::kHasForeignModelFilter ? 4 : 3;
+        if (NFD::OpenDialog(outPath, filter, nFilters) == NFD_OKAY)
             mdxPath = whiteout::flakes::io::FsPathFromUtf8(outPath.get());
     }
     if (!mdxPath.empty()) {

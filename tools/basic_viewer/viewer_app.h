@@ -49,6 +49,34 @@ using namespace whiteout::flakes::renderer::model;
 
 class ViewerUI;
 
+// ---------------------------------------------------------------------------
+// What File > Open (and the startup picker) accept, as NFD filter specs.
+//
+// Shared by viewer_ui.cpp and test_main.cpp because they pop the same dialog
+// from two entry points and had drifted into two copies of the same literal.
+//
+// `.m2` / `.m3` appear only when the renderer was built with them
+// (WDX_ENABLE_M2 / WDX_ENABLE_M3): offering a file type the loader will then
+// refuse is worse than not listing it. `kHasForeignModelFilter` is how a call
+// site sizes its filter array.
+#if WDX_ENABLE_M2 && WDX_ENABLE_M3
+inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,m2,m3";
+inline constexpr const char* kForeignModelExtensions = "m2,m3";
+inline constexpr bool kHasForeignModelFilter = true;
+#elif WDX_ENABLE_M2
+inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,m2";
+inline constexpr const char* kForeignModelExtensions = "m2";
+inline constexpr bool kHasForeignModelFilter = true;
+#elif WDX_ENABLE_M3
+inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,m3";
+inline constexpr const char* kForeignModelExtensions = "m3";
+inline constexpr bool kHasForeignModelFilter = true;
+#else
+inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx";
+inline constexpr const char* kForeignModelExtensions = "";
+inline constexpr bool kHasForeignModelFilter = false;
+#endif
+
 // Output format for an animation export. The enum order is the canonical
 // order used by the UI format dropdown and by GetExportFormatInfo().
 enum class ExportFormat {
@@ -225,6 +253,11 @@ public:
     const std::filesystem::path& CurrentModelPath() const {
         return currentModelPath_;
     }
+
+    // True when the active document is a model from another Blizzard game
+    // (`.m2` / `.m3`). Geometry-only, and in particular there is no MDX to
+    // write, so Save As has nothing to offer for one.
+    bool CurrentModelIsForeign() const;
 
 private:
     void InitImGui();

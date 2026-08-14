@@ -59,6 +59,17 @@ struct Actor {
     // hundreds, which is the whole reason this exists.
     f32 worldScale = 1.0f;
 
+    // The actor's model-space bounding box, in the same units `worldScale`
+    // converts from. Stamped at spawn by both routes, because it is the only
+    // thing an actor can be framed by and `sourceTemplate` is null for every
+    // actor built from a live IModelSource — which is every `.m2` and `.m3`,
+    // and the Max plugin's live scene. Framing through the template alone left
+    // those at a hardcoded fallback distance.
+    //
+    // Invalid when the source reported no usable box; callers fall back rather
+    // than trusting a degenerate one.
+    ModelBounds bounds;
+
     // Which shading model draws this actor's surfaces, when it is not the one
     // the active profile selects. `None` means "ask the profile", which is
     // every Warcraft III actor.

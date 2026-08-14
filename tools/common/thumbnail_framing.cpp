@@ -126,20 +126,35 @@ void FrameCameraToModelSequence(Camera& cam, renderer::model::Actor* hero,
 void FrameCameraToModel(Camera& cam, renderer::model::Actor* hero) {
     cam.SetOrbitalMode();
 
-    // The template's own bounds. Format-neutral on purpose: this used to reach
+    // The actor's own bounds. Format-neutral on purpose: this used to reach
     // through the template into whiteout::mdx::Model, which meant a non-MDX
     // model got no extents at all and fell back to a distance of 260 against
     // camera constants sized in the hundreds — a World of Warcraft creature is
     // 2–5 yards, so it rendered as a sub-pixel dot that a golden image cannot
     // distinguish from a load failure.
     //
-    // The value is unchanged for MDX: MdxModelAdapter::GetBounds applies
-    // exactly the rule that used to live here (union of non-death /
-    // non-dissipate / non-birth sequence extents, falling back to geoset
-    // extents then the model extent), so no WC3 camera moves.
+    // Read off the *actor*, not the template: an actor spawned from a live
+    // IModelSource has no template at all — every `.m2` and `.m3`, and the Max
+    // plugin's live scene — so a template-only read put exactly those back on
+    // the fallback distance.
+    //
+    // The value is unchanged for MDX: StageActor copies the template's bounds
+    // onto the actor verbatim, and MdxModelAdapter::GetBounds applies exactly
+    // the rule that used to live here (union of non-death / non-dissipate /
+    // non-birth sequence extents, falling back to geoset extents then the
+    // model extent), so no WC3 camera moves.
     Vector3f lo{0, 0, 0}, hi{0, 0, 0};
     bool have = false;
-    if (hero && hero->sourceTemplate && hero->sourceTemplate->bounds.valid) {
+    if (hero && hero->bounds.valid) {
+        lo = hero->bounds.min;
+        hi = hero->bounds.max;
+        have = true;
+    } else if (hero && hero->sourceTemplate && hero->sourceTemplate->bounds.valid) {
+        // Belt and braces for the template path: StageActor copies these onto
+        // the actor, so reaching here means an actor was built some other way.
+        // Falling back keeps a WC3 camera where it was rather than dropping to
+        // the 260 fallback, which no gate would catch — the goldens use a fixed
+        // camera and never exercise framing at all.
         lo = hero->sourceTemplate->bounds.min;
         hi = hero->sourceTemplate->bounds.max;
         have = true;
@@ -148,8 +163,13 @@ void FrameCameraToModel(Camera& cam, renderer::model::Actor* hero) {
     Vector3f center{0.0f, 0.0f, 50.0f};
     f32 maxAxis = 260.0f; // fallback when the model carries no usable extents
     if (have) {
-        center = {(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f, (lo.z + hi.z) * 0.5f};
-        maxAxis = (std::max)({hi.x - lo.x, hi.y - lo.y, hi.z - lo.z});
+        // Bounds are model-space; the renderer draws through
+        // ScaledWorldTransform, so the camera has to frame the scaled extent
+        // or a WoW creature sits 20× closer than the box it is framed against.
+        // Exactly 1.0 for Warcraft III, so no WC3 camera moves.
+        const f32 s = (hero->worldScale > 0.0f) ? hero->worldScale : 1.0f;
+        center = {(lo.x + hi.x) * 0.5f * s, (lo.y + hi.y) * 0.5f * s, (lo.z + hi.z) * 0.5f * s};
+        maxAxis = (std::max)({hi.x - lo.x, hi.y - lo.y, hi.z - lo.z}) * s;
     }
     maxAxis = (std::max)(maxAxis, 1.0f);
 

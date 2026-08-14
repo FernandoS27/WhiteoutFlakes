@@ -176,10 +176,12 @@ void ViewerUI::OpenFileDialog() {
     // `char` literals on every platform — the native variant takes wchar_t
     // on Windows, which would break these inline string constants.
     NFD::UniquePathU8 outPath;
-    nfdu8filteritem_t filter[3] = {{"All supported", "mdx,mdl,pkb,pkfx"},
+    nfdu8filteritem_t filter[4] = {{"All supported", kOpenAllExtensions},
                                    {"Warcraft III Model", "mdx,mdl"},
-                                   {"PKB Effect", "pkb,pkfx"}};
-    if (NFD::OpenDialog(outPath, filter, 3) == NFD_OKAY) {
+                                   {"PKB Effect", "pkb,pkfx"},
+                                   {"Other Blizzard model", kForeignModelExtensions}};
+    const nfdfiltersize_t nFilters = kHasForeignModelFilter ? 4 : 3;
+    if (NFD::OpenDialog(outPath, filter, nFilters) == NFD_OKAY) {
         std::filesystem::path p = io::FsPathFromUtf8(outPath.get());
         app_.LoadModel(p); // dispatches .pkb / .pkfx to the effect loader
     }
@@ -670,7 +672,11 @@ void ViewerUI::BuildMenuBar() {
             if (ImGui::MenuItem(i18n::tr("menu.file.open"), "Ctrl+O"))
                 OpenFileDialog();
             const bool hasModel = !app_.CurrentModelPath().empty();
-            if (ImGui::MenuItem(i18n::tr("menu.file.save_as"), "Ctrl+Shift+S", false, hasModel))
+            // Save As writes MDX/MDL (or copies a .pkb verbatim). A `.m2` /
+            // `.m3` has no writer here, so the item greys out rather than
+            // opening a dialog that can only fail at the end.
+            const bool canSave = hasModel && !app_.CurrentModelIsForeign();
+            if (ImGui::MenuItem(i18n::tr("menu.file.save_as"), "Ctrl+Shift+S", false, canSave))
                 SaveAsDialog();
             const bool hasAnims = hasModel && !app_.SequenceNames().empty();
             if (ImGui::MenuItem(i18n::tr("menu.file.export_frames"), nullptr, false, hasAnims)) {
