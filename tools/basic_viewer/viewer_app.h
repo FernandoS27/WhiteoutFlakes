@@ -259,6 +259,14 @@ public:
     // write, so Save As has nothing to offer for one.
     bool CurrentModelIsForeign() const;
 
+    // The skins the active `.m2` can wear, and which one it is wearing. Empty
+    // when the model is not a creature, or with `.m2` compiled out — a UI
+    // asking should hide the control rather than offer an empty one. Setting it
+    // reloads the model, because the slots are filled during the parse.
+    std::vector<std::string> WowSkinNames() const;
+    u32 WowSkin() const;
+    void SetWowSkin(u32 skin);
+
 private:
     void InitImGui();
     void ShutdownImGui();
@@ -357,6 +365,7 @@ private:
     // Re-point the shared provider at the game a model file belongs to, so its
     // textures have a storage to resolve against. See the definition.
     void FollowModelGame(const std::filesystem::path& path);
+    void AdoptNearbyWowKeys(const std::filesystem::path& modelPath);
 
     // Shared body of LoadModel/LoadEffect: opens `path` (from the shared game
     // provider) as a new document. `effect` selects the .pkb path.

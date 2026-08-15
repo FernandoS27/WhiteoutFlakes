@@ -56,8 +56,19 @@ std::unique_ptr<CascSource> CascSource::Open(std::string root, const CascSourceO
     auto storage = casc::Storage::open(co);
     if (!storage)
         return nullptr;
-    std::printf("[FileContentProvider] CASC storage opened: %s%s\n", root.c_str(),
-                opts.listfile.empty() ? "" : " (with listfile)");
+    // Before the first read, and not conditional on the file being there: a
+    // storage with no keys still reads everything unencrypted, which is most
+    // of an install.
+    bool keys = false;
+    if (!opts.tactKeyFile.empty()) {
+        keys = storage->importKeysFromFile(opts.tactKeyFile);
+        if (!keys)
+            std::printf("[FileContentProvider] TACT keys not readable: %s\n",
+                        opts.tactKeyFile.c_str());
+    }
+    storage->setZeroFillEncrypted(opts.zeroFillEncrypted);
+    std::printf("[FileContentProvider] CASC storage opened: %s%s%s\n", root.c_str(),
+                opts.listfile.empty() ? "" : " (with listfile)", keys ? " (with TACT keys)" : "");
     return std::unique_ptr<CascSource>(new CascSource(std::move(root), std::move(*storage), opts));
 }
 
@@ -149,6 +160,28 @@ bool CascSource::ReadById(u32 fileId, SourceRead& out) const {
     // a texture slot), which is exactly how the formats that use ids work.
     out.actualExt.clear();
     return true;
+}
+
+// Longest suffix wins, and that is the whole subtlety. A listfile names files
+// relative to the storage root, but a model can perfectly well be opened from a
+// loose extraction of that same install — an absolute Windows path with the
+// storage-relative part on the end. Trying successive suffixes finds it; trying
+// the *longest* one first is what stops a bare `cow.m2` from matching a
+// different creature's file of the same name.
+u32 CascSource::FileIdForPath(const std::string& path) const {
+    if (!fileIds_)
+        return 0;
+    const std::string norm = NormalizeCascPath(path);
+    for (usize at = 0; at < norm.size();) {
+        auto info = storage_.fileInfo(norm.substr(at));
+        if (info && info->fileDataId > 0)
+            return static_cast<u32>(info->fileDataId);
+        const usize sep = norm.find_first_of("/\\", at);
+        if (sep == std::string::npos)
+            break;
+        at = sep + 1;
+    }
+    return 0;
 }
 
 void CascSource::List(const std::function<void(std::string)>& emit) const {

@@ -13,6 +13,9 @@
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
+#if WDX_ENABLE_M2
+#include "renderer/profiles/wow/wow_replaceable_textures.h"
+#endif
 #include "renderer/viewport.h"
 #include "storage_explorer.h"
 #if defined(_WIN32)
@@ -546,11 +549,14 @@ constexpr bool kM3Compiled = true;
 constexpr bool kM3Compiled = false;
 #endif
 
-std::string LowerExt(const std::filesystem::path& path) {
-    std::string ext = path.extension().string();
-    for (char& c : ext)
+std::string LowerAscii(std::string s) {
+    for (char& c : s)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return ext;
+    return s;
+}
+
+std::string LowerExt(const std::filesystem::path& path) {
+    return LowerAscii(path.extension().string());
 }
 
 // .pkb / .pkfx are standalone PopcornFX effects, not models.
@@ -571,6 +577,47 @@ bool IsForeignModelPath(const std::filesystem::path& path) {
 
 bool ViewerApp::CurrentModelIsForeign() const {
     return IsForeignModelPath(currentModelPath_);
+}
+
+// ---- World of Warcraft creature skins ---------------------------------------
+//
+// A skin is a property of the display record a creature was spawned with, not
+// of the model, so picking one is a host decision and switching costs a reload:
+// the slots are resolved while the `.m2` is parsed.
+
+std::vector<std::string> ViewerApp::WowSkinNames() const {
+#if WDX_ENABLE_M2
+    if (currentModelPath_.empty())
+        return {};
+    std::vector<std::string> names;
+    for (const auto& v : const_cast<ViewerApp*>(this)->service_.Loader().WowReplaceables().Variations(
+             ContentRef::FromPath(io::PathToUtf8(currentModelPath_))))
+        names.push_back(v.label);
+    return names;
+#else
+    return {};
+#endif
+}
+
+u32 ViewerApp::WowSkin() const {
+#if WDX_ENABLE_M2
+    return const_cast<ViewerApp*>(this)->service_.Loader().WowReplaceables().Variation();
+#else
+    return 0;
+#endif
+}
+
+void ViewerApp::SetWowSkin(u32 skin) {
+#if WDX_ENABLE_M2
+    auto& replaceables = service_.Loader().WowReplaceables();
+    if (replaceables.Variation() == skin)
+        return;
+    replaceables.SetVariation(skin);
+    if (!currentModelPath_.empty() && IsForeignModelPath(currentModelPath_))
+        LoadModelIntoActiveScene(currentModelPath_);
+#else
+    (void)skin;
+#endif
 }
 
 bool ViewerApp::LoadModel(const std::filesystem::path& path) {
@@ -661,12 +708,60 @@ void ViewerApp::FollowModelGame(const std::filesystem::path& path) {
         return;
 
     auto& provider = service_.DefaultScene().GetContentProvider();
-    if (provider.Game() == game)
-        return;
-    ApplyIoPathOverrides(provider, game);
-    // Same follow-up the Settings switch makes: assets that missed under the
-    // old game get another chance under the new one.
-    service_.RetryUnloadedAssets();
+    if (provider.Game() != game) {
+        ApplyIoPathOverrides(provider, game);
+        // Same follow-up the Settings switch makes: assets that missed under
+        // the old game get another chance under the new one.
+        service_.RetryUnloadedAssets();
+    }
+    if (game == ProductId::Wow)
+        AdoptNearbyWowKeys(path);
+}
+
+// A loose `.m2` tree was extracted from an id-keyed root by *something*, and
+// that something needed a listfile — so one is usually sitting a directory or
+// two above the model, next to the TACT key list the same extraction needed.
+// Adopting them turns the extraction back into a storage that knows its own
+// names and can read the client databases, which is the difference between a
+// creature wearing the skin CreatureDisplayInfo names and wearing one picked
+// off its folder (see WowReplaceableTextures).
+//
+// Session-only and never persisted, exactly like the game switch above: the
+// user opened a file, they did not pick either of these. An explicit path from
+// Settings > IO always wins.
+void ViewerApp::AdoptNearbyWowKeys(const std::filesystem::path& modelPath) {
+    auto& provider = service_.DefaultScene().GetContentProvider();
+    bool wantListfile = provider.ListfilePath().empty();
+    bool wantKeys = provider.TactKeyPath().empty();
+
+    std::error_code ec;
+    std::filesystem::path dir = modelPath.parent_path();
+    for (int up = 0; up < 5 && (wantListfile || wantKeys); ++up) {
+        for (const auto& entry : std::filesystem::directory_iterator(
+                 dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
+            const std::string name = LowerAscii(io::PathToUtf8(entry.path().filename()));
+            const bool isListfile = wantListfile && name.ends_with(".csv") &&
+                                    name.find("listfile") != std::string::npos;
+            const bool isKeys = wantKeys && name.ends_with(".txt") &&
+                                name.find("tactkey") != std::string::npos;
+            if (!isListfile && !isKeys)
+                continue;
+            std::fprintf(stderr, "[viewer] adopting %s beside the content: %s\n",
+                         isListfile ? "listfile" : "TACT keys",
+                         io::PathToUtf8(entry.path()).c_str());
+            if (isListfile) {
+                provider.SetListfilePath(entry.path());
+                wantListfile = false;
+            } else {
+                provider.SetTactKeyPath(entry.path());
+                wantKeys = false;
+            }
+        }
+        const std::filesystem::path parent = dir.parent_path();
+        if (parent == dir)
+            break;
+        dir = parent;
+    }
 }
 
 bool ViewerApp::OpenDocument(const std::filesystem::path& path, bool effect) {

@@ -78,6 +78,8 @@ if(WDX_ENABLE_M2)
     # transcription slip in the shader-selection or material-state rules.
     wdx_add_test(m2_shader_select_test m2_shader_select_test.cpp)
     wdx_add_test(m2_material_test m2_material_test.cpp)
+    # Corpus only: needs the `dbfilesclient/` dump beside the models.
+    wdx_add_test(wow_creature_skin_test wow_creature_skin_test.cpp)
 endif()
 if(WDX_ENABLE_M3)
     wdx_add_test(m3_geometry_test m3_geometry_test.cpp)

@@ -42,6 +42,14 @@ public:
         return false;
     }
 
+    // The manifest's id for `path`, 0 when this source has no id for it (or no
+    // ids at all). Same requirement as List: a WoW root only knows names once a
+    // listfile has been loaded.
+    virtual u32 FileIdForPath(const std::string& path) const {
+        (void)path;
+        return 0;
+    }
+
     // Emits every entry in listing form (see ToListingPath). Sources that
     // cannot enumerate — a WoW root with no listfile — emit nothing.
     virtual void List(const std::function<void(std::string)>& emit) const = 0;

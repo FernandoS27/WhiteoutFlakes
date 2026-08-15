@@ -903,6 +903,25 @@ void ViewerUI::BuildToolbar() {
         ImGui::SameLine();
     }
 
+    // ---- Creature skin (`.m2` only) ----
+    // A creature model leaves its skin blank for the game to fill; this is
+    // which fill. Absent for every other model, which is most of them.
+    if (const auto skins = app_.WowSkinNames(); !skins.empty()) {
+        const u32 sel = app_.WowSkin() % static_cast<u32>(skins.size());
+        ImGui::SetNextItemWidth(160);
+        if (ImGui::BeginCombo(i18n::tr("toolbar.skin"), skins[sel].c_str())) {
+            for (u32 i = 0; i < static_cast<u32>(skins.size()); ++i) {
+                const bool isSel = (i == sel);
+                if (ImGui::Selectable(skins[i].c_str(), isSel))
+                    app_.SetWowSkin(i);
+                if (isSel)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+    }
+
     // ---- Lighting mode ----
     {
         i32 sel = static_cast<i32>(svc.Settings().GetLightingMode());
@@ -1479,6 +1498,7 @@ void ViewerUI::BuildSettingsIoTab(io::FileContentProvider& provider, ProductId g
         installPathBuf_ = provider.InstallPath();
         hotsPathBuf_ = provider.HotsInstallPath();
         listfileBuf_ = provider.ListfilePath();
+        tactKeyBuf_ = provider.TactKeyPath();
         newMpqEntryBuf_.clear();
         ioBufsInitialised_ = true;
         ioBufsGame_ = game;
@@ -1515,6 +1535,7 @@ void ViewerUI::BuildIoArchivePage(io::FileContentProvider& provider, ProductId g
         o.mpqListSet = true;
         o.mpqList = provider.MpqList();
         o.listfilePath = listfileBuf_;
+        o.tactKeyPath = tactKeyBuf_;
         SaveIoPathOverrides(game, o);
         svc.RetryUnloadedAssets();
     };
@@ -1589,6 +1610,39 @@ void ViewerUI::BuildIoArchivePage(io::FileContentProvider& provider, ProductId g
                             provider.StoragesPending() ? i18n::tr("settings.io.pending")
                             : provider.HasListfile()   ? i18n::tr("settings.io.loaded")
                                                        : i18n::tr("settings.io.not_loaded"));
+
+        // ---- TACT key row ----
+        // The listfile's twin one layer down. Blizzard encrypts individual
+        // frames of shipped files, and a file holding one reads back as
+        // *missing* rather than as an error — so without a key list part of the
+        // install is simply invisible, with nothing to say why.
+        char keyTmp[1024];
+        std::snprintf(keyTmp, sizeof(keyTmp), "%s", tactKeyBuf_.c_str());
+        ImGui::SetNextItemWidth(-180.0f);
+        if (ImGui::InputText("##tactkeys", keyTmp, sizeof(keyTmp)))
+            tactKeyBuf_ = keyTmp;
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            provider.SetTactKeyPath(io::FsPathFromUtf8(tactKeyBuf_));
+            saveIo();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(i18n::tr("settings.io.browse_tactkeys"))) {
+            NFD::UniquePathU8 outPath;
+            nfdu8filteritem_t filter[1] = {{"TACT keys", "txt,csv"}};
+            if (NFD::OpenDialog(outPath, filter, 1) == NFD_OKAY) {
+                tactKeyBuf_ = outPath.get();
+                provider.SetTactKeyPath(io::FsPathFromUtf8(tactKeyBuf_));
+                saveIo();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(i18n::tr("settings.io.clear_tactkeys"))) {
+            tactKeyBuf_.clear();
+            provider.SetTactKeyPath({});
+            saveIo();
+        }
+        ImGui::SameLine();
+        ImGui::TextUnformatted(i18n::tr("settings.io.tactkeys"));
     }
 
     ImGui::Spacing();

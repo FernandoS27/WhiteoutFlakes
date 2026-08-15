@@ -62,6 +62,7 @@
 #include <whiteout/models/m2/m2.h>
 
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace whiteout::flakes::io {
@@ -166,10 +167,22 @@ public:
     ///
     /// Nothing is decoded here: a named texture ships only its `sharedKey` and
     /// the AssetManager fetches it, so a model with 30 textures does not block
-    /// the load thread 30 times. Textures with `type != 0` are character
-    /// customisation slots with no name of their own; they get an empty key and
-    /// bind the white default until the slot resolver lands.
+    /// the load thread 30 times. Textures with `type != 0` name no file of
+    /// their own — the game fills them — so they bind whatever
+    /// SetReplaceableTextures was given, and the white default otherwise.
     std::vector<renderer::model::TextureData> GetTextures() override;
+
+    /// @brief What fills the model's replaceable slots, indexed by
+    ///        `M2Texture::type`. Each entry is a texture key — `#<fileDataID>`
+    ///        or a path. An empty entry, or a type past the end, keeps the
+    ///        white default.
+    ///
+    /// Set before Build(). The renderer resolves this per spawn rather than per
+    /// model — see profiles::wow::WowReplaceableTextures, which picks the file
+    /// the same way the client does.
+    void SetReplaceableTextures(std::vector<std::string> byTextureType) {
+        replaceableByType_ = std::move(byTextureType);
+    }
 
     /// @brief Empty by design. M2's per-batch material data does not fit
     ///        `MaterialData` — see M2SurfaceTable, which the WoW profile builds
@@ -265,6 +278,8 @@ private:
     // The parse-time filesystem wrapper, held only for a lazy parse. See the
     // constructor.
     std::shared_ptr<void> fsKeepAlive_;
+    // Indexed by M2Texture::type; empty until the WoW profile resolves them.
+    std::vector<std::string> replaceableByType_;
     // Which entry of `skinProfiles` GetMeshes reads. Index 0 is the highest
     // detail level; the plan takes one LOD and no more.
     std::size_t profileIndex_ = 0;

@@ -80,6 +80,10 @@ else()
     set(WHITEOUT_ENABLE_CASC ON CACHE BOOL "Enable CASC archive support" FORCE)
     set(WHITEOUT_ENABLE_MPQ  ON CACHE BOOL "Enable MPQ archive support"  FORCE)
 endif()
+# DBC / DB2. Pure parsing over bytes the content provider hands it, so unlike
+# CASC/MPQ it costs the web build nothing to keep on. World of Warcraft's
+# replaceable textures are read out of these; see WowReplaceableTextures.
+set(WHITEOUT_ENABLE_DATABASE ON CACHE BOOL "Enable WoW client database support" FORCE)
 add_subdirectory(externals/WhiteoutLib)
 
 # Tracy — opt-in CPU + GPU profiler. When WDX_ENABLE_TRACY is ON, the
@@ -1247,11 +1251,20 @@ if(WDX_ENABLE_M2)
     target_sources(WhiteoutFlakesLib PRIVATE
         src/io/m2/m2_animation.cpp
         src/io/m2/m2_model_adapter.cpp
+        src/io/wow/creature_skin_table.cpp
         src/renderer/profiles/wow/m2_material.cpp
         src/renderer/profiles/wow/m2_shader_select.cpp
         src/renderer/profiles/wow/m2_shading.cpp
         src/renderer/profiles/wow/m2_surface_table.cpp
+        src/renderer/profiles/wow/wow_replaceable_textures.cpp
     )
+    # Only the `.m2` path reads client databases, so the dependency is scoped
+    # to the option that turns that path on.
+    if(TARGET whiteout_database)
+        target_link_libraries(WhiteoutFlakesLib PUBLIC whiteout_database)
+    else()
+        message(FATAL_ERROR "WDX_ENABLE_M2=ON needs WHITEOUT_ENABLE_DATABASE=ON.")
+    endif()
     target_compile_definitions(WhiteoutFlakesLib PUBLIC WDX_ENABLE_M2=1)
     message(STATUS "WhiteoutFlakes: .m2 loading ENABLED (materials + combiners + animation)")
 endif()
@@ -1681,13 +1694,18 @@ add_dependencies(WhiteoutFlakesStandalone WhiteoutFlakesEmbedded)
 # Uses copy_directory (not copy_directory_if_different) — the latter needs CMake
 # 3.26, but our floor is 3.20 and CI runners ship as old as 3.22, matching the
 # copy_directory the shader-staging rules above already use.
+#
+# `standalone/` is the exe dir only for a single-config generator: Visual Studio
+# and Xcode put the binary in a per-config subdirectory below it, so staging one
+# level up leaves AssetDir() reading whatever stale catalog is beside the exe.
+# CMAKE_CFG_INTDIR is that subdirectory, and "." on the generators that have none.
 add_custom_command(TARGET WhiteoutFlakesStandalone POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/lang"
-        "${CMAKE_BINARY_DIR}/standalone/lang"
+        "${CMAKE_BINARY_DIR}/standalone/${CMAKE_CFG_INTDIR}/lang"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/fonts"
-        "${CMAKE_BINARY_DIR}/standalone/fonts"
+        "${CMAKE_BINARY_DIR}/standalone/${CMAKE_CFG_INTDIR}/fonts"
     VERBATIM)
 
 # ---- ModelExplorer ----

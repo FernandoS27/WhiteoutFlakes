@@ -86,6 +86,7 @@ private:
     std::string installPathBuf_;
     std::string hotsPathBuf_;  // StarCraft II page: the Heroes root
     std::string listfileBuf_;  // World of Warcraft page: the `id;path` CSV
+    std::string tactKeyBuf_;   // World of Warcraft page: the TACT key list
     std::string newMpqEntryBuf_;
     bool ioBufsInitialised_ = false;
     // Which game the buffers above hold. They are re-seeded when the profile

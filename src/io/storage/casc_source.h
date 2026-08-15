@@ -57,6 +57,17 @@ struct CascSourceOptions {
     // bytes belong to whoever owns the source (see GameStorage).
     std::span<const u8> listfile;
 
+    // Community `keyName keyHex` list, read at open. Blizzard encrypts frames
+    // of shipped files with per-content TACT keys, and a file with one such
+    // frame reads as *missing* without the key — the encoding is inside the
+    // container, so there is no error to distinguish it from an absent file.
+    std::string tactKeyFile;
+
+    // Substitute zeros for a frame whose key is still unknown rather than
+    // failing the whole read. Unreleased content ships with keys nobody has
+    // published, and one such frame otherwise costs the entire file.
+    bool zeroFillEncrypted = false;
+
     // Shared with every other CASC source in the same storage set. CASC
     // parallelises index/encoding-table parsing and BLTE decompression across
     // it, and keeps a non-owning pointer — so the pool must outlive the source.
@@ -71,6 +82,7 @@ public:
 
     bool Read(const std::string& path, SourceRead& out) const override;
     bool ReadById(u32 fileId, SourceRead& out) const override;
+    u32 FileIdForPath(const std::string& path) const override;
     void List(const std::function<void(std::string)>& emit) const override;
     const std::string& Root() const override {
         return root_;

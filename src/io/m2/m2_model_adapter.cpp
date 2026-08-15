@@ -306,9 +306,16 @@ std::vector<TextureData> M2ModelAdapter::GetTextures() {
             // leave `filename` a lone NUL. `#<id>` is ContentRef::Describe's
             // own spelling, which UploadStagedTextures reverses.
             td.sharedKey = "#" + std::to_string(model_.texture_ids[i]);
+        } else if (tex.type < replaceableByType_.size() && !replaceableByType_[tex.type].empty()) {
+            // A replaceable slot the game filled in. TXID carries a 0 for these
+            // — the file that belongs here is a property of what the model was
+            // spawned as, not of the model — so this branch is reached only
+            // once the WoW profile has said what it is.
+            td.sharedKey = replaceableByType_[tex.type];
         }
-        // Anything left with an empty key is a customisation slot (type 1..26)
-        // or a genuinely nameless texture; both bind the white default.
+        // Anything left with an empty key is a slot nothing resolved (character
+        // customisation, or a creature opened without the client databases in
+        // reach) or a genuinely nameless texture; both bind the white default.
         out.push_back(std::move(td));
     }
     return out;

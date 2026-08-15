@@ -29,6 +29,9 @@ class FrameTicker;
 namespace whiteout::flakes::renderer::effects {
 class SpnSpawner;
 }
+namespace whiteout::flakes::renderer::profiles::wow {
+class WowReplaceableTextures;
+}
 
 namespace whiteout::flakes::renderer::model {
 
@@ -106,6 +109,15 @@ public:
     // counter if role == PE1.
     void DestroyActor(u32 handle);
 
+#if WDX_ENABLE_M2
+    // What fills a World of Warcraft model's replaceable texture slots. Lives
+    // here because the spawn path is its only caller: an `.m2` actor is built
+    // from a freshly parsed model every time, so the slots are resolved per
+    // spawn rather than cached on a template. Hosts reach it to offer a skin
+    // picker (see WowReplaceableTextures::SetVariation).
+    profiles::wow::WowReplaceableTextures& WowReplaceables();
+#endif
+
 private:
     u32 AddModel(const std::vector<MeshData>& meshes, const std::vector<TextureData>& textures,
                  const std::vector<MaterialData>& materials, const SkeletonData& skeleton,
@@ -157,6 +169,9 @@ private:
                                const std::vector<AttachmentConfig>& attachCfgs);
 
     RenderService& rs_;
+#if WDX_ENABLE_M2
+    std::unique_ptr<profiles::wow::WowReplaceableTextures> wowReplaceables_;
+#endif
 };
 
 } // namespace whiteout::flakes::renderer::model

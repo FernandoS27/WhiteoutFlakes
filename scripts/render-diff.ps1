@@ -53,6 +53,16 @@ param(
     #   .\scripts\render-diff.ps1 -Check  -M2 -Golden -LazyAnim   # must ALL MATCH
     [switch]$LazyAnim,
 
+    # `.m2` client-database arm. A creature model leaves its skin blank for the
+    # game to fill (see WowReplaceableTextures); a bare -M2 run fills it from
+    # the model's `.blp` siblings, and this arm fills it from CreatureDisplayInfo
+    # instead. That needs two things the bare run has not got: a listfile,
+    # because the tables key on fileDataID and a corpus is path-addressed, and a
+    # disk root, because `dbfilesclient/` sits above the models rather than
+    # beside them. The two routes can pick different files, so this records its
+    # own baselines (`m2_skins`) rather than sharing.
+    [string]$Listfile,
+
     # The `.m3` arm. Same shape as -M2, and needs -DWDX_ENABLE_M3=ON. Its
     # golden is *tonemapped* white rather than #FFFFFF: Sc2HeroesProfile reuses
     # the HD frame, and a linear 1.0 through the tonemap and bloom chain does
@@ -118,8 +128,16 @@ if ($M2 -and $M3) {
     Write-Error '-M2 and -M3 are separate arms: pass one or the other.'
     exit 2
 }
+if ($Listfile -and -not $M2) {
+    Write-Error '-Listfile is a -M2 arm: no other product reads a fileDataID listfile.'
+    exit 2
+}
+if ($Listfile -and -not (Test-Path $Listfile)) {
+    Write-Error "Listfile not found: $Listfile"
+    exit 2
+}
 if ($M2) {
-    $mode = 'm2'
+    $mode = if ($Listfile) { 'm2_skins' } else { 'm2' }
     # Only defaulted when the caller did not name their own; an explicit
     # -CorpusRoot / -CorpusFile still wins.
     if (-not $PSBoundParameters.ContainsKey('CorpusRoot')) {
@@ -164,6 +182,7 @@ foreach ($rel in $entries) {
     if ($Hd) { $argv += '--draw-trace-hd' }
     if ($Unlit) { $argv += '--draw-trace-unlit' }
     if ($LazyAnim) { $argv += '--draw-trace-lazy-anim' }
+    if ($Listfile) { $argv += @('--listfile', $Listfile, '--content-root', $CorpusRoot) }
     if ($Perturb -gt 0) { $argv += @('--draw-trace-perturb', $Perturb) }
     if ($Golden) { $argv += @('--draw-trace-golden', $image) }
 

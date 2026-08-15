@@ -51,12 +51,14 @@ void ConfigureWc3(StorageBuilder& b, const StorageConfig& c, const std::atomic<b
         b.Archives(c.installPath, c.archives);
 }
 
-// An id-keyed root — no readable names without a community listfile — plus,
-// on pre-Warlords installs only, a Data/ archive set whose names move with the
-// expansion. Retail has none, and that is not an error.
+// An id-keyed root — no readable names without a community listfile, and no
+// *contents* for a shipped file whose frames are TACT-encrypted without a
+// community key list — plus, on pre-Warlords installs only, a Data/ archive set
+// whose names move with the expansion. Retail has none, and that is not an
+// error.
 void ConfigureWow(StorageBuilder& b, const StorageConfig& c, const std::atomic<bool>*) {
     if (!c.ignoreCasc)
-        b.FileIds().Listfile(c.listfilePath).Casc(c.installPath);
+        b.FileIds().Listfile(c.listfilePath).TactKeys(c.tactKeyPath).Casc(c.installPath);
     if (!c.ignoreArchives)
         b.Archives(c.installPath, c.archives);
 }

@@ -220,6 +220,8 @@ IoPathOverrides LoadIoPathOverrides(ProductId game) {
     }
     if (auto* s = ini.Get(IoKeyOf(game, "Listfile")))
         o.listfilePath = *s;
+    if (auto* s = ini.Get(IoKeyOf(game, "TactKeys")))
+        o.tactKeyPath = *s;
     if (auto* s = ini.Get(IoKeyOf(game, "HotsInstallPath")))
         o.hotsInstallPath = *s;
     return o;
@@ -245,8 +247,10 @@ void SaveIoPathOverrides(ProductId game, const IoPathOverrides& overrides) {
         ini.Set(IoKeyOf(game, "MpqList"), JoinMpqList(overrides.mpqList));
     // Both are single-product settings; writing them for the others would put
     // a key in a section that never reads it.
-    if (game == ProductId::Wow)
+    if (game == ProductId::Wow) {
         ini.Set(IoKeyOf(game, "Listfile"), overrides.listfilePath);
+        ini.Set(IoKeyOf(game, "TactKeys"), overrides.tactKeyPath);
+    }
     if (game == ProductId::Sc2)
         ini.Set(IoKeyOf(game, "HotsInstallPath"), overrides.hotsInstallPath);
     ini.Save(path);
@@ -288,6 +292,7 @@ void ApplyIoPathOverrides(io::FileContentProvider& provider, ProductId game) {
     // only marks its own game's storages for the next read to rebuild.
     provider.SetGame(game);
     provider.SetListfilePath(io::FsPathFromUtf8(o.listfilePath));
+    provider.SetTactKeyPath(io::FsPathFromUtf8(o.tactKeyPath));
     if (!o.installPath.empty())
         provider.SetInstallPath(o.installPath);
     if (!o.hotsInstallPath.empty())

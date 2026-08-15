@@ -41,6 +41,8 @@ public:
     void Cancel(RequestId id) override;
     void Pump() override;
     std::vector<std::string> ListFiles(const std::string& directory, bool recursive) override;
+    // Needs the same listfile ListFiles does — see IContentProvider.
+    u32 FileIdForPath(const std::string& path) const override;
 
     // Both open the current game's storages if a reconfiguration left them
     // deferred — the question they answer cannot be answered otherwise.
@@ -115,6 +117,21 @@ public:
     void SetListfilePath(const std::filesystem::path& csv);
     std::string ListfilePath() const;
     bool HasListfile() const;
+
+    // ---- TACT keys (WoW) ----
+    //
+    // The listfile's twin, one layer down. Blizzard encrypts individual frames
+    // of shipped files with per-content keys, and there is no error a caller
+    // can see: the encoding lives inside the container, so a file with one
+    // encrypted frame reads back as *missing*. Community key lists are
+    // `keyName keyHex` per line.
+    //
+    // Supplying one also turns on zero-fill for the frames whose keys are still
+    // unpublished (unreleased content), because a client database that is 99%
+    // readable beats none of it. Same slot rules as the listfile: belongs to
+    // the current game, applied on its next storage open.
+    void SetTactKeyPath(const std::filesystem::path& keyList);
+    std::string TactKeyPath() const;
 
     // Currently-active install root. Both CASC and the MPQ list search from
     // this directory. Defaults to Wc3Path(); pass an empty string to revert.

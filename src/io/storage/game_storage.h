@@ -40,6 +40,8 @@ public:
     // First hit wins. False leaves `out` untouched.
     bool Read(const std::string& path, SourceRead& out) const;
     bool ReadById(u32 fileId, SourceRead& out) const;
+    // First source that recognises the name wins, 0 when none does.
+    u32 FileIdForPath(const std::string& path) const;
     void List(const std::function<void(std::string)>& emit) const;
 
     bool HasCasc() const {
@@ -99,6 +101,11 @@ public:
     // Build() time; a path that does not exist is reported and ignored.
     StorageBuilder& Listfile(std::string csvPath);
 
+    // Community `keyName keyHex` list, plus the policy for a frame whose key is
+    // still unknown: zeros for that frame rather than nothing for the file.
+    // Both are World of Warcraft's — see CascSourceOptions.
+    StorageBuilder& TactKeys(std::string keyPath);
+
     // A CASC install root. Empty is skipped, so callers can pass a path that
     // may not have been discovered. Add order is search order.
     StorageBuilder& Casc(std::string root);
@@ -117,6 +124,7 @@ private:
     bool fileIds_ = false;
     bool frameSuffixFallback_ = false;
     std::string listfilePath_;
+    std::string tactKeyPath_;
     std::vector<std::string> cascRoots_;
     std::vector<std::string> archiveFiles_;
 };

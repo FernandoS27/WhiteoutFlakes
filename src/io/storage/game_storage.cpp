@@ -34,6 +34,14 @@ bool GameStorage::ReadById(u32 fileId, SourceRead& out) const {
     return false;
 }
 
+u32 GameStorage::FileIdForPath(const std::string& path) const {
+    for (const auto& s : sources_) {
+        if (const u32 id = s->FileIdForPath(path))
+            return id;
+    }
+    return 0;
+}
+
 void GameStorage::List(const std::function<void(std::string)>& emit) const {
     for (const auto& s : sources_)
         s->List(emit);
@@ -71,6 +79,11 @@ StorageBuilder& StorageBuilder::FrameSuffixFallback() {
 
 StorageBuilder& StorageBuilder::Listfile(std::string csvPath) {
     listfilePath_ = std::move(csvPath);
+    return *this;
+}
+
+StorageBuilder& StorageBuilder::TactKeys(std::string keyPath) {
+    tactKeyPath_ = std::move(keyPath);
     return *this;
 }
 
@@ -127,6 +140,11 @@ std::unique_ptr<GameStorage> StorageBuilder::Build() {
         opts.fileIds = fileIds_;
         opts.frameSuffixFallback = frameSuffixFallback_;
         opts.listfile = std::span<const u8>(storage->listfile_);
+        opts.tactKeyFile = tactKeyPath_;
+        // Paired with the key list on purpose: a session that supplied keys is
+        // one that wants as much of the install as it can get, and the frames
+        // still left over are unreleased content nobody can decrypt.
+        opts.zeroFillEncrypted = !tactKeyPath_.empty();
         opts.pool = pool_;
         std::string error;
         if (auto src = CascSource::Open(root, opts, error)) {

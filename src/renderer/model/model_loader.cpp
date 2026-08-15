@@ -35,6 +35,7 @@
 #if WDX_ENABLE_M2
 #include "io/m2/m2_model_adapter.h"
 #include "renderer/profiles/wow/m2_surface_table.h"
+#include "renderer/profiles/wow/wow_replaceable_textures.h"
 #include <whiteout/models/m2/types.h>
 #endif
 #include "renderer/profiles/wc3/wc3_surface_table.h"
@@ -109,6 +110,14 @@ Vector3f GeosetBoundsCenter(i32 count, Get&& get) {
 
 ModelLoader::ModelLoader(RenderService& rs) : rs_(rs) {}
 ModelLoader::~ModelLoader() = default;
+
+#if WDX_ENABLE_M2
+profiles::wow::WowReplaceableTextures& ModelLoader::WowReplaceables() {
+    if (!wowReplaceables_)
+        wowReplaceables_ = std::make_unique<profiles::wow::WowReplaceableTextures>();
+    return *wowReplaceables_;
+}
+#endif
 
 Actor* ModelLoader::SpawnChild(Actor& parent, ActorRole role, std::shared_ptr<ModelTemplate> tmpl,
                                const Matrix44f& initialTm, u32 forceHandle) {
@@ -802,6 +811,14 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
     std::shared_ptr<io::M2ModelAdapter> m2;
     if (isM2) {
         m2 = io::M2ModelAdapter::Load(ref, data, provider, rs_.Settings().M2LazyAnimations());
+        if (m2) {
+            // Before Build(), which is where GetTextures turns the slots into
+            // asset keys. The scene's product was settled above, so the tables
+            // are read from the same install the model came from.
+            auto& replaceables = WowReplaceables();
+            replaceables.SetContentProvider(provider);
+            replaceables.Apply(*m2, ref);
+        }
         source = m2;
     }
 #endif

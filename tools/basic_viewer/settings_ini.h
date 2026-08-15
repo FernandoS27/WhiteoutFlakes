@@ -72,6 +72,9 @@ struct IoPathOverrides {
     // World of Warcraft only: community `id;path` CSV that turns its id-keyed
     // CASC root into something browsable.
     std::string listfilePath;
+    // World of Warcraft only: community `keyName keyHex` list, without which
+    // any file holding a TACT-encrypted frame reads back as missing.
+    std::string tactKeyPath;
     // StarCraft II only: the Heroes of the Storm root, the second CASC that
     // product opens.
     std::string hotsInstallPath;

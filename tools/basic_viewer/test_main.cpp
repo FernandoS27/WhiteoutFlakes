@@ -341,7 +341,8 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
                         const std::filesystem::path& mdxPath, const std::string& recordPath,
                         const std::string& checkPath, const std::string& goldenPath, i32 frames,
                         bool hdMode, f32 distanceTol, i32 cameraDistance, i32 perturbSeed,
-                        i32 instances, bool unlitOddGeosets, bool lazyAnim) {
+                        i32 instances, bool unlitOddGeosets, bool lazyAnim,
+                        const std::string& contentRoot) {
     namespace wf = whiteout::flakes;
     namespace dbg = wf::renderer::debug;
 
@@ -395,7 +396,13 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
     if (perturbSeed > 0)
         scene.SeedActorIds(static_cast<wf::renderer::model::ActorId>(perturbSeed));
 
-    scene.SetPE1BasePath(mdxPath.parent_path());
+    // Also the provider's disk search root (SetPE1BasePath sets both), which is
+    // why --content-root has to land here rather than at startup: the model's
+    // own folder would otherwise overwrite it. An extracted corpus keeps
+    // directory-named content — `dbfilesclient/` — above the model, out of
+    // reach from there.
+    scene.SetPE1BasePath(contentRoot.empty() ? mdxPath.parent_path()
+                                             : wf::io::FsPathFromUtf8(contentRoot));
     // More than one top-level actor on purpose. With a single actor,
     // BuildDrawLists iterates a one-entry unordered_map and the hash-order
     // dependence §1.1a is about cannot show up at all — the perturbation arm
@@ -901,6 +908,20 @@ int main(int argc, char* argv[]) {
     i32 drawTraceCameraDistance = 350;
     i32 drawTracePerturb = 0;
     i32 drawTraceInstances = 3;
+    // World of Warcraft's `id;path` CSV. The GUI takes this from Settings > IO,
+    // but the headless runs happen before those are applied — and without it a
+    // WoW root can only be read by id, so nothing can look a model up in the
+    // client databases (see WowReplaceableTextures).
+    std::string listfilePath;
+    // Community `keyName keyHex` list. Without it any file with a TACT-encrypted
+    // frame reads back as missing, which on retail includes several of the
+    // client databases.
+    std::string tactKeyPath;
+    // Loose asset tree searched before the archives, which is what the GUI
+    // points at the model's own folder on File > Open. The headless runs need
+    // to be told: an extracted corpus keeps files a model references by
+    // directory (`dbfilesclient/`) somewhere above the model itself.
+    std::string contentRoot;
     std::filesystem::path mdxPath;
     // Extra positional paths beyond the first open in their own tabs, so
     // `WhiteoutFlakes a.mdx b.mdx c.mdx` launches with three documents.
@@ -1013,6 +1034,12 @@ int main(int argc, char* argv[]) {
             drawTraceUnlit = true;
         } else if (std::strcmp(a, "--draw-trace-lazy-anim") == 0) {
             drawTraceLazyAnim = true;
+        } else if (std::strcmp(a, "--listfile") == 0 && i + 1 < argc) {
+            listfilePath = argv[++i];
+        } else if (std::strcmp(a, "--tact-keys") == 0 && i + 1 < argc) {
+            tactKeyPath = argv[++i];
+        } else if (std::strcmp(a, "--content-root") == 0 && i + 1 < argc) {
+            contentRoot = argv[++i];
         } else if (std::strcmp(a, "--draw-trace-distance-tol") == 0 && i + 1 < argc) {
             drawTraceDistanceTol = static_cast<f32>(std::atof(argv[++i]));
         } else if (std::strcmp(a, "--draw-trace-camera-distance") == 0 && i + 1 < argc) {
@@ -1189,6 +1216,21 @@ int main(int argc, char* argv[]) {
                                                                                  : "?";
     std::cout << "Backend: " << backendName << "\n";
 
+    // Set on the World of Warcraft slot specifically, and left there: it is
+    // that product's config, and the run does not know yet which game the model
+    // it was handed belongs to. Restoring the previous selection keeps this
+    // from being a back-door SetGame.
+    if (!listfilePath.empty() || !tactKeyPath.empty()) {
+        auto& cp = renderer.Scene().GetContentProvider();
+        const auto was = cp.Game();
+        cp.SetGame(whiteout::flakes::ProductId::Wow);
+        if (!listfilePath.empty())
+            cp.SetListfilePath(whiteout::flakes::io::FsPathFromUtf8(listfilePath));
+        if (!tactKeyPath.empty())
+            cp.SetTactKeyPath(whiteout::flakes::io::FsPathFromUtf8(tactKeyPath));
+        cp.SetGame(was);
+    }
+
     // Headless multi-viewport smoke test: no window, no ViewerApp — drive the
     // pipeline straight into an off-screen target and read it back. Runs and
     // exits without ever creating a GLFW window.
@@ -1210,7 +1252,7 @@ int main(int argc, char* argv[]) {
         return RunDrawTrace(renderer, scene, backend, mdxPath, drawTraceRecord, drawTraceCheck,
                             drawTraceGolden, particleDiffFrames, drawTraceHd, drawTraceDistanceTol,
                             drawTraceCameraDistance, drawTracePerturb, drawTraceInstances,
-                            drawTraceUnlit, drawTraceLazyAnim);
+                            drawTraceUnlit, drawTraceLazyAnim, contentRoot);
 
     whiteout::flakes::ViewerApp app(renderer);
     if (!app.Open(1024, 768, backend)) {

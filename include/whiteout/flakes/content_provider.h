@@ -104,17 +104,32 @@ public:
     /// Used by bulk-preload paths that want "everything under
     /// `Textures/FX`" without the caller enumerating the archive itself.
     /// @param directory Provider-relative directory, `/` or `\` separated
-    ///                  and case-insensitive (empty = every known file).
+    ///                  and case-insensitive (empty = every known file). An
+    ///                  absolute path is answered from disk alone, in the
+    ///                  same terms — see the return value.
     /// @param recursive Include files in nested subdirectories.
-    /// @return Provider-relative paths, lowercased with `/` separators,
-    ///         each readable via Request()/ReadFile(). The default returns
-    ///         nothing — a provider that cannot enumerate (the web fetch
-    ///         one, a host's own callback shim) simply doesn't support
-    ///         directory preloads.
+    /// @return Provider-relative paths, lowercased with `/` separators, each
+    ///         readable via Request()/ReadFile() — or absolute ones when
+    ///         @p directory was absolute. The default returns nothing — a
+    ///         provider that cannot enumerate (the web fetch one, a host's own
+    ///         callback shim) simply doesn't support directory preloads.
     virtual std::vector<std::string> ListFiles(const std::string& directory, bool recursive) {
         (void)directory;
         (void)recursive;
         return {};
+    }
+
+    /// @brief The fileDataID that names @p path, when the provider knows one.
+    ///
+    /// A World of Warcraft root is keyed by fileDataID and the client
+    /// databases join on the same key, so anything that has to look a model up
+    /// in them needs this — a path is not an identity the game recognises.
+    /// Answering it needs a listfile, which is the same thing browsing that
+    /// root needs, so a provider that can list one can usually answer this.
+    /// @return 0 when nothing can say. Never a guess.
+    virtual u32 FileIdForPath(const std::string& path) const {
+        (void)path;
+        return 0;
     }
 
     /// @brief Toggle HD mod-overlay precedence for subsequent reads.

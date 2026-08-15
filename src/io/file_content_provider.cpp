@@ -591,7 +591,15 @@ void FileContentProvider::Wait(RequestId id) {
 std::vector<std::string> FileContentProvider::ListFiles(const std::string& directory,
                                                         bool recursive) {
     impl_->EnsureStorage();
-    const std::string dir = NormalizeListingDir(directory);
+
+    // An absolute directory is a question only the disk can answer, and it is
+    // answered in the terms it was asked: absolute entries, which ReadFile
+    // resolves without a base path. That is what lets a caller enumerate the
+    // folder a model was opened from when the model itself was named
+    // absolutely. Kept out of the listing normaliser, which exists to strip
+    // CASC's `war3.w3mod:` prefixes and would eat the drive letter with them.
+    const bool absolute = FsPathFromUtf8(directory).is_absolute();
+    const std::string dir = absolute ? directory : NormalizeListingDir(directory);
 
     // Ordered + deduped: the same logical file usually exists under several
     // CASC mod prefixes, and disk copies shadow archive ones.
@@ -605,11 +613,17 @@ std::vector<std::string> FileContentProvider::ListFiles(const std::string& direc
 
     // ---- Disk (the base path a host points at a loose asset tree) ----
     const fs::path base = impl_->resolver.BasePath();
-    if (!base.empty()) {
+    if (!base.empty() || absolute) {
         const fs::path root = dir.empty() ? base : base / FsPathFromUtf8(dir);
         std::error_code ec;
         if (fs::is_directory(root, ec)) {
             auto add = [&](const fs::path& p) {
+                if (absolute) {
+                    std::string abs = PathToUtf8(p);
+                    std::replace(abs.begin(), abs.end(), '\\', '/');
+                    out.insert(std::move(abs));
+                    return;
+                }
                 std::error_code re;
                 const std::string rel = PathToUtf8(fs::relative(p, base, re));
                 if (!re && !rel.empty())
@@ -641,10 +655,22 @@ std::vector<std::string> FileContentProvider::ListFiles(const std::string& direc
     }
 
     // ---- Archives ----
-    if (const auto& storage = impl_->Slot().storage)
+    // Skipped for an absolute directory: nothing in an archive has one.
+    if (const auto& storage = impl_->Slot().storage; storage && !absolute)
         storage->List(consider);
 
     return {out.begin(), out.end()};
+}
+
+u32 FileContentProvider::FileIdForPath(const std::string& path) const {
+    if (path.empty())
+        return 0;
+    // Same reasoning as HasCasc(): the question cannot be answered without the
+    // manifest that answers it, so asking is what opens the install.
+    impl_->EnsureStorage();
+    std::shared_lock sg(impl_->storageMu);
+    const auto& storage = impl_->Slot().storage;
+    return storage ? storage->FileIdForPath(path) : 0;
 }
 
 // ---- Storage observers / configuration --------------------------------------
@@ -743,6 +769,21 @@ bool FileContentProvider::HasListfile() const {
     std::shared_lock sg(impl_->storageMu);
     const auto& storage = impl_->Slot().storage;
     return storage && storage->HasListfile();
+}
+
+void FileContentProvider::SetTactKeyPath(const std::filesystem::path& keyList) {
+    std::unique_lock sg(impl_->storageMu);
+    auto& s = impl_->Slot();
+    std::string next = PathToUtf8(keyList);
+    if (s.config.tactKeyPath == next)
+        return;
+    s.config.tactKeyPath = std::move(next);
+    impl_->Invalidate(s.config.game);
+}
+
+std::string FileContentProvider::TactKeyPath() const {
+    std::shared_lock sg(impl_->storageMu);
+    return impl_->Slot().config.tactKeyPath;
 }
 
 std::vector<std::string> FileContentProvider::ScanMpqList() const {

@@ -37,6 +37,10 @@ struct StorageConfig {
     std::vector<std::string> archives;
     // Community `id;path` CSV. World of Warcraft only.
     std::string listfilePath;
+    // Community `keyName keyHex` list. World of Warcraft only, and for the same
+    // reason as the listfile: without it a chunk of the install reads as
+    // missing rather than as encrypted.
+    std::string tactKeyPath;
     bool ignoreCasc = false;
     bool ignoreArchives = false;
 };
