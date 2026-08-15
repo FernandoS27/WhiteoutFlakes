@@ -42,8 +42,8 @@ public:
     void Pump() override;
     std::vector<std::string> ListFiles(const std::string& directory, bool recursive) override;
 
-    // Both open the storages if a reconfiguration left them deferred — the
-    // question they answer cannot be answered otherwise.
+    // Both open the current game's storages if a reconfiguration left them
+    // deferred — the question they answer cannot be answered otherwise.
     bool HasCasc() const;
 
     bool HasMpq() const;
@@ -68,7 +68,14 @@ public:
     //        profile (see ProductIdFromBuildProduct, where `hero` maps to Sc2).
     //
     // Defaults to Wc3, which is what keeps every existing host unchanged.
-    // Setting it reopens the storages.
+    //
+    // Every product has its own install root, archive list, listfile, ignore
+    // switches and open storages, so setting this closes nothing and opens
+    // nothing: it selects which set the reads and the settings below apply to.
+    // A game that has been visited keeps what it opened until its own
+    // configuration changes or the provider is destroyed, which is what makes
+    // clicking through a settings panel — or a scene following the game a
+    // loaded model turned out to belong to — free after the first visit.
     ProductId Game() const;
     void SetGame(ProductId game);
 
@@ -103,8 +110,8 @@ public:
     // Community listfiles are `id;path` CSV. Loading one is what turns a WoW
     // storage from "id reads only" into something ListFiles() can walk.
     //
-    // Applied on the next storage open, so it is set before SetGame/SetInstallPath
-    // or those are re-run. Empty path clears it.
+    // Belongs to the current game and is applied on its next storage open, so
+    // set it after SetGame. Empty path clears it.
     void SetListfilePath(const std::filesystem::path& csv);
     std::string ListfilePath() const;
     bool HasListfile() const;

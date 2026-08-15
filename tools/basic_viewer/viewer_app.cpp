@@ -911,13 +911,18 @@ void ViewerApp::ApplyRenderMode(RenderMode wanted) {
     // precedence, splat / SLK caches keyed under the old mode) have to be
     // applied here, before any subsequent texture / event-data fetch resolves
     // under the new mode.
-    if (auto* p = service_.Scene().ActiveContentProvider()) {
+    auto* p = service_.Scene().ActiveContentProvider();
+    if (p)
         p->SetHdMode(wanted == RenderMode::HD);
-        // Force-reload SplatData / UberSplatData / SpawnData so entries cached
-        // under the previous prefix order are replaced — texture paths stored in
-        // the entries re-resolve through the new CASC overlay on first fetch.
-        io::LoadEventDataFiles(p, /*force=*/true);
-    }
+    // Nothing cached under the old mode means nothing to re-resolve, and the
+    // tables are loaded on demand by the first Warcraft III model — forcing
+    // them in here would open that game's install for a mode flip alone.
+    if (!p || !io::IsSplCachePopulated())
+        return;
+    // Force-reload SplatData / UberSplatData / SpawnData so entries cached
+    // under the previous prefix order are replaced — texture paths stored in
+    // the entries re-resolve through the new CASC overlay on first fetch.
+    io::LoadEventDataFiles(p, /*force=*/true);
     // Kill any splats currently alive — each one holds a refcount on an
     // AssetManager slot keyed by the old-mode texture; without releasing them
     // the re-prefetch below only bumps the same stale handle.

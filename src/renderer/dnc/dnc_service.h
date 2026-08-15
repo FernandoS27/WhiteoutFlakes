@@ -125,14 +125,33 @@ public:
     };
     EnvMapBlend ComputeEnvMapBlend() const;
 
+    /// @brief Load the rig now, and keep it loaded across later path / HD
+    ///        changes.
+    ///
+    /// The rig is a Warcraft III file, so reading it is what opens that
+    /// game's install — and the service is constructed at device init, for
+    /// every session, including ones that only ever show a WoW or StarCraft II
+    /// model. So the first acquire waits until something that knows this
+    /// session loads Warcraft III content says so; RenderService::
+    /// EnsureWc3GameData is that caller. Until then HasAsset() answers false
+    /// and SampleNow() returns an invalid sample, which is exactly what they
+    /// answer for a rig that failed to load.
+    void RealiseAsset();
+
 private:
     void ReacquireAsset();
+    void AcquireNow();
 
     io::IContentProvider* contentProvider_ = nullptr;
     std::unique_ptr<DncCache> cache_;
     DncAsset* unitAsset_ = nullptr;
     std::string unitPath_;
     bool hdPreference_ = false;
+    // RealiseAsset has been called: this session wants the rig.
+    bool wanted_ = false;
+    // The resolved path has changed (or was never loaded) since the last
+    // acquire.
+    bool dirty_ = true;
 
     std::atomic<f32> tod_{12.0f};
     f32 hoursPerDay_ = 24.0f;

@@ -281,14 +281,13 @@ void SaveIoProduct(ProductId game) {
 
 void ApplyIoPathOverrides(io::FileContentProvider& provider, ProductId game) {
     const IoPathOverrides o = LoadIoPathOverrides(game);
-    // Listfile first: it is consumed when a storage opens, and everything
-    // below reopens them. Setting it after would leave the WoW root without
-    // paths until the next reconfiguration. Guarded because the setter always
-    // reopens CASC, and the common case (no listfile, never had one) would
-    // otherwise pay a full reopen at startup for no change.
-    if (provider.ListfilePath() != o.listfilePath)
-        provider.SetListfilePath(io::FsPathFromUtf8(o.listfilePath));
+    // Game first: every setting below belongs to one product's slot, so
+    // applying any of them before the switch would write them into whichever
+    // game the provider happened to be on. Nothing here reopens anything by
+    // itself — a setter that changes nothing is a no-op, and one that does
+    // only marks its own game's storages for the next read to rebuild.
     provider.SetGame(game);
+    provider.SetListfilePath(io::FsPathFromUtf8(o.listfilePath));
     if (!o.installPath.empty())
         provider.SetInstallPath(o.installPath);
     if (!o.hotsInstallPath.empty())

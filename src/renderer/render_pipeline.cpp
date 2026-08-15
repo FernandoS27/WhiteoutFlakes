@@ -976,9 +976,11 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
 
     rs_.Textures().RegisterOwned(kIblSplitSumLutName, ibl::CreateSplitSumLutTexture(*impl_->gfx_));
 
-    // Initial IBL apply — RenderFrame's poll handles subsequent mode changes.
-    ApplyIblMode(rs_.Settings().GetIblMode());
-    rs_.Settings().ConsumeIblModeDirty();
+    // No initial IBL apply: the probes are Warcraft III environment maps under
+    // `Environment/EnvironmentMap/`, so loading them here opened that game's
+    // install for every session. RenderService::EnsureWc3GameData marks the
+    // mode dirty when the session loads Warcraft III content, and RenderFrame's
+    // existing poll applies it — the same path every later mode change takes.
 
     // Build the engine-side ImGui adapter now that the BLS cache has been
     // pointed at the device + content provider. The adapter loads imgui.bls

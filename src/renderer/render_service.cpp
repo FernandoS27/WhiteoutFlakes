@@ -15,6 +15,8 @@
 #include "renderer/scene_manager.h"
 #include "renderer/shadow/shadow_service.h"
 #include "whiteout/flakes/content_provider.h"
+#include "whiteout/flakes/event_data.h"
+#include "whiteout/flakes/util/replaceable_paths.h"
 #include "whiteout/flakes/util/texture_image_usage.h"
 
 #include <algorithm>
@@ -245,6 +247,34 @@ const AssetManager& RenderService::Assets() const {
 }
 void RenderService::RetryUnloadedAssets() {
     impl_->assets_->RetryUnloaded();
+}
+
+void RenderService::EnsureWc3GameData() {
+    auto* cp = Scene().ActiveContentProvider();
+    if (!cp)
+        return;
+    // The day/night rig and the IBL probes are Warcraft III content too, and
+    // unlike the tables below they are per scene / per device — so these run
+    // every time rather than behind the once-per-session gate. Both are cheap
+    // once satisfied: the rig is already in hand, and the dirty flag is
+    // consumed by the first frame that sees it.
+    EnsureDncService().RealiseAsset();
+    impl_->settings_.MarkIblModeDirty();
+    // The splat table standing in for all of them: the loaders below fill the
+    // tables together, and each one early-returns after a successful pass, so
+    // this is what "already loaded" looks like from outside. It also makes a
+    // session with no Warcraft III install retry on the next model rather than
+    // give up for good, which is what should happen when the user is still
+    // pointing the settings panel at one.
+    if (!impl_->assets_ || io::IsSplCachePopulated())
+        return;
+    io::LoadGameDataFiles(cp);
+    io::LoadEventDataFiles(cp);
+    // Acquire every SPL/UBR texture and SPN child-model slot the tables name,
+    // so they are resident before the first splat is born rather than being
+    // fetched during it.
+    if (io::IsSplCachePopulated())
+        io::PrefetchEventAssetSlots(*impl_->assets_);
 }
 
 u64 RenderService::AssetActivityCounter() const {

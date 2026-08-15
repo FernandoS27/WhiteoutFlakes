@@ -291,12 +291,15 @@ public:
         return iblMode_;
     }
     void SetIblMode(IblMode m) {
-        if (iblMode_ != m) {
-            iblMode_ = m;
-            iblModeDirty_ = true;
-        } else {
-            iblModeDirty_ = true;
-        }
+        iblMode_ = m;
+        MarkIblModeDirty();
+    }
+    // Ask for a reload of the current mode's probes without changing it. The
+    // probes are Warcraft III environment maps, so the first apply waits for a
+    // session to load that game's content — see RenderService::
+    // EnsureWc3GameData, which is what calls this.
+    void MarkIblModeDirty() {
+        iblModeDirty_ = true;
     }
     bool ConsumeIblModeDirty() {
         return iblModeDirty_.exchange(false);
@@ -428,7 +431,9 @@ private:
     // Lordaeron Summer's day map (mean luma 0.17 vs 0.25) and never varies
     // with time of day.
     IblMode iblMode_ = IblMode::DayNight;
-    std::atomic<bool> iblModeDirty_{true}; // pipeline does an initial apply
+    // Starts clean: the first apply is triggered by the Warcraft III content
+    // gate, not by device init (see MarkIblModeDirty).
+    std::atomic<bool> iblModeDirty_{false};
 
     // Tonemap exposure.
     f32 tonemapExposure_ = 1.0f;

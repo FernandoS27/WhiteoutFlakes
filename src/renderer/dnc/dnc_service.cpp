@@ -29,17 +29,28 @@ f32 WrapTod(f32 tod, f32 hoursPerDay) {
 DncService::DncService(IContentProvider* contentProvider)
     : contentProvider_(contentProvider), cache_(std::make_unique<DncCache>(contentProvider)),
       unitPath_(kDefaultUnitMdl) {
+    // Nothing is read here. The rig is a Warcraft III file, so the first
+    // acquire waits for RealiseAsset — see its declaration.
+}
 
-    ReacquireAsset();
-    if (!unitAsset_ || !unitAsset_->HasLight()) {
-        std::fprintf(stderr,
-                     "[dnc] WARN: default unit MDL failed to acquire a usable "
-                     "light: %s\n",
-                     unitPath_.c_str());
-    }
+void DncService::RealiseAsset() {
+    wanted_ = true;
+    if (dirty_)
+        AcquireNow();
 }
 
 void DncService::ReacquireAsset() {
+    dirty_ = true;
+    // Before the first RealiseAsset there is nothing to re-acquire and no
+    // reason to start: this session has not shown itself to be a Warcraft III
+    // one. After it, a changed path or HD preference is loaded immediately —
+    // the install is open by then, so there is nothing left to defer.
+    if (wanted_)
+        AcquireNow();
+}
+
+void DncService::AcquireNow() {
+    dirty_ = false;
     if (unitAsset_) {
         cache_->Release(unitAsset_);
         unitAsset_ = nullptr;
@@ -54,6 +65,10 @@ void DncService::ReacquireAsset() {
             ? DncPathForVariant(unitPath_, hdPreference_ ? DncVariant::Hd : DncVariant::Sd)
             : unitPath_;
     unitAsset_ = cache_->Acquire(resolved);
+    if (!unitAsset_ || !unitAsset_->HasLight()) {
+        std::fprintf(stderr, "[dnc] WARN: unit MDL failed to acquire a usable light: %s\n",
+                     resolved.c_str());
+    }
 }
 
 void DncService::SetHdPreference(bool hd) {

@@ -36,10 +36,12 @@ ReplaceableTextureManager::ReplaceableTextureManager(gfx::IGFXDevice& gfx,
 
 void ReplaceableTextureManager::SetContentProvider(IContentProvider* p) {
     contentProvider_ = p;
-
-    io::LoadGameDataFiles(p);
-
-    io::LoadEventDataFiles(p);
+    // The Warcraft III lookup tables the manager reads (terrain SLK, splat,
+    // ubersplat, spawn, sound) used to load right here, which is device-init
+    // time. They live in that game's archives, so reading them is what opens a
+    // Warcraft III install — and this runs whether or not the session ever
+    // touches Warcraft III content. RenderService::EnsureWc3GameData loads
+    // them from the paths that actually do.
 }
 
 ReplaceableTextureManager::~ReplaceableTextureManager() {

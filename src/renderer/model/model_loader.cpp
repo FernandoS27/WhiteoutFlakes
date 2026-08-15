@@ -593,6 +593,10 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
 }
 
 u32 ModelLoader::AddModelByPath(const std::string& mdxPath, const Matrix44f& initialTm) {
+    // Everything that reaches here is an MDX/MDL — SpawnUnit routes `.m2` and
+    // `.m3` away first — so this is one of the two places a session commits to
+    // Warcraft III content, and therefore to opening its install.
+    rs_.EnsureWc3GameData();
 
     auto tmpl = rs_.Scene().Templates().GetOrLoadSync(mdxPath);
     if (!tmpl)
@@ -743,7 +747,7 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
     const std::span<const ::whiteout::u8> data(bytes->data(), bytes->size());
 
     // Detection settles the scene's product. A model of a given format having
-    // just parsed is direct evidence of one, and it outranks whatever the
+    // been recognised is direct evidence of one, and it outranks whatever the
     // product happened to be — including a value restored from the settings
     // file, which is where it usually comes from.
     //
@@ -755,29 +759,29 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
     // its fileDataID textures against, and each one falls back to white. The
     // profile is wrong for it too — WC3's WorldScale is 1 where WoW's is 100.
     // One scene renders one product; mixing them is what multi-scene is for.
-    std::shared_ptr<IModelSource> source;
-    ProductId product = ProductId::Neutral;
-
+    //
+    // Decided from the magic alone, and *before* anything is parsed. Parsing an
+    // `.m2` reads its `.skin` and `.anim` siblings back through this same
+    // provider, so settling the product afterwards sent every one of those
+    // reads to the previous game's storage — a guaranteed miss, and an install
+    // opened to serve it.
 #if WDX_ENABLE_M2
-    std::shared_ptr<io::M2ModelAdapter> m2;
-    if (!source && LooksLikeM2(data)) {
-        m2 = io::M2ModelAdapter::Load(ref, data, provider);
-        source = m2;
-        product = ProductId::Wow;
-    }
+    const bool isM2 = LooksLikeM2(data);
+#else
+    constexpr bool isM2 = false;
 #endif
 #if WDX_ENABLE_M3
-    if (!source && LooksLikeM3(data)) {
-        // No provider: `.m3` is one self-contained file with no siblings to
-        // resolve, which is the whole difference from `.m2`.
-        source = io::M3ModelAdapter::Load(ref, data);
-        product = ProductId::Sc2;
-    }
+    const bool isM3 = !isM2 && LooksLikeM3(data);
+#else
+    constexpr bool isM3 = false;
 #endif
-    if (!source)
+    const ProductId product = isM2   ? ProductId::Wow
+                              : isM3 ? ProductId::Sc2
+                                     : ProductId::Neutral;
+    if (product == ProductId::Neutral)
         return nullptr;
 
-    if (product != ProductId::Neutral && rs_.Scene().Product() != product) {
+    if (rs_.Scene().Product() != product) {
         const ProductId was = rs_.Scene().Product();
         rs_.Scene().SetProduct(product);
         // Detection changed the profile, so the host's re-stage trigger has to
@@ -791,6 +795,25 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
                          ref.Describe().c_str(), ProductName(product), ProductName(was));
         }
     }
+
+    // Parse only now — the provider is pointed at the right game's storage.
+    std::shared_ptr<IModelSource> source;
+#if WDX_ENABLE_M2
+    std::shared_ptr<io::M2ModelAdapter> m2;
+    if (isM2) {
+        m2 = io::M2ModelAdapter::Load(ref, data, provider);
+        source = m2;
+    }
+#endif
+#if WDX_ENABLE_M3
+    if (isM3) {
+        // No provider: `.m3` is one self-contained file with no siblings to
+        // resolve, which is the whole difference from `.m2`.
+        source = io::M3ModelAdapter::Load(ref, data);
+    }
+#endif
+    if (!source)
+        return nullptr;
 
     Actor* actor = SpawnUnitFromSource(std::move(source), initialTm);
     if (!actor)

@@ -25,6 +25,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -141,16 +142,29 @@ struct FileContentProvider::Impl {
 
     InstallLocator installs;
 
-    // What the host has asked for; `storage` below is what that resolved to.
-    StorageConfig config;
-    std::string hotsInstallPath; // active Heroes root, for the Sc2 product
+    // One per product, and each one keeps whatever it opened. Switching games
+    // — from the settings panel, or because a loaded model turned out to be
+    // another game's — only moves `active`; the storage the previous game was
+    // reading through stays open behind it, so coming back costs nothing.
+    // Opening a CASC install parses its indices and encoding tables, and doing
+    // that again for a game already visited is the expensive thing this
+    // arrangement exists to stop.
+    struct GameSlot {
+        // What the host has asked for; `storage` is what that resolved to.
+        StorageConfig config;
+        std::unique_ptr<GameStorage> storage;
+        // Config filled in from the install scan. Deferred per slot because
+        // ScanArchives walks a World of Warcraft install's Data/ directory,
+        // which is work for a product the host may never select.
+        bool configured = false;
+        // Config changed since `storage` was built, or it never was. The open
+        // itself is deferred further still — to the first read that cannot be
+        // answered without one.
+        bool dirty = true;
+    };
+    ProductId active = ProductId::Wc3;
 
-    // Storage opens are deferred: every reconfiguration path just sets this,
-    // and the first access that actually needs a storage does the work.
-    // Opening a CASC install parses its indices and encoding tables, which is
-    // the expensive part — a host clicking through the three games in a
-    // settings panel would otherwise pay for all three and read from one.
-    bool storagesDirty = true;
+    std::string hotsInstallPath; // active Heroes root, for the Sc2 product
 
     // HD mod-overlay precedence flag, read by the Warcraft III CASC source on
     // every path it builds. Atomic so a render-thread setter doesn't race the
@@ -163,13 +177,13 @@ struct FileContentProvider::Impl {
     // Handed to every CASC source. CASC parallelises the slow part of opening
     // a Reforged install (index + encoding-table parsing) and also fans out
     // BLTE block decompression across it. Sources keep a *non-owning* pointer,
-    // so the pool must outlive them — hence declared before `storage`, which
+    // so the pool must outlive them — hence declared before `games`, which
     // owns them (members destruct in reverse declaration order).
     std::unique_ptr<whiteout::utils::SimpleThreadPool> cascPool;
 #endif
 
-    // The opened storages for `config`. Null until something needs them.
-    std::unique_ptr<GameStorage> storage;
+    // Declared after the pool for the reason above.
+    std::array<GameSlot, 4> games; // indexed by ProductId
 
     // ---- Request queue (guarded by reqMu) ----
     // `pending` is the worker's input. `alive` tracks every id that has been
@@ -202,28 +216,60 @@ struct FileContentProvider::Impl {
     // ----------------------------------------------------------------
 
     Impl() {
-        config.game = ProductId::Wc3;
-        config.installPath = installs.Wc3();
-        config.archives = DefaultArchives(ProductId::Wc3);
         hotsInstallPath = installs.Hots();
-        // Nothing is opened here: `storagesDirty` starts true, so the first
-        // read (or an observer that has to know) opens it. A scene that is
-        // constructed and never read from costs nothing.
+        Configure(ProductId::Wc3);
+        // Nothing is opened here: every slot starts dirty, so the first read
+        // that needs one (or an observer that has to know) opens it. A scene
+        // that is constructed and never read from costs nothing.
     }
 
-    // Realise the deferred build. Call WITHOUT storageMu held — it takes the
-    // lock itself, shared for the common "already built" check and exclusive
-    // only for the one call that does the work.
+    GameSlot& Slot() {
+        return games[static_cast<usize>(active)];
+    }
+    const GameSlot& Slot() const {
+        return games[static_cast<usize>(active)];
+    }
+
+    // Fill in a slot's configuration from what is installed. Caller holds the
+    // exclusive lock (or is the constructor, where nothing else can see this).
+    void Configure(ProductId game) {
+        GameSlot& s = games[static_cast<usize>(game)];
+        if (s.configured)
+            return;
+        s.config.game = game;
+        s.config.installPath = installs.PathFor(game);
+        // The archive list belongs to the product: scanned for World of
+        // Warcraft, whose names move with the expansion; fixed for Warcraft
+        // III; empty for StarCraft II and Heroes, which never shipped one.
+        s.config.archives = ScanArchives(game, s.config.installPath);
+        s.configured = true;
+    }
+
+    // What a settings change costs: the storage that configuration opened is
+    // closed now rather than left to be replaced on the next read. Nothing can
+    // read through it again — the config it answered for is gone — so holding
+    // an open CASC install for it would only cost memory. Caller holds the
+    // exclusive lock.
+    void Invalidate(ProductId game) {
+        GameSlot& s = games[static_cast<usize>(game)];
+        s.dirty = true;
+        s.storage.reset();
+    }
+
+    // Realise the active slot's deferred build. Call WITHOUT storageMu held —
+    // it takes the lock itself, shared for the common "already built" check
+    // and exclusive only for the one call that does the work.
     void EnsureStorage() {
         {
             std::shared_lock sg(storageMu);
-            if (!storagesDirty)
+            if (!Slot().dirty)
                 return;
         }
         std::unique_lock sg(storageMu);
-        if (!storagesDirty) // another thread got here first
+        GameSlot& s = Slot();
+        if (!s.dirty) // another thread got here first
             return;
-        storagesDirty = false;
+        s.dirty = false;
 #if WHITEOUT_HAS_CASC
         if (!cascPool) {
             // 2–4 threads: enough to overlap index parsing and large-file
@@ -236,12 +282,12 @@ struct FileContentProvider::Impl {
 #else
         whiteout::utils::SimpleThreadPool* pool = nullptr;
 #endif
-        StorageConfig cfg = config;
+        StorageConfig cfg = s.config;
         cfg.secondaryPath = (cfg.game == ProductId::Sc2) ? hotsInstallPath : std::string{};
         // Replaced wholesale rather than mutated: a storage set is only ever
         // consistent as a whole, and the old one is dropped only once the new
         // one exists.
-        storage = BuildGameStorage(cfg, pool, &hdMode);
+        s.storage = BuildGameStorage(cfg, pool, &hdMode);
     }
 
     void WorkerLoop() {
@@ -262,19 +308,32 @@ struct FileContentProvider::Impl {
                 }
             }
 
+            // A read that cannot be answered any other way is what "actually
+            // needed" means: this is where a deferred build is paid for, on a
+            // worker thread rather than on whichever thread last touched a
+            // setting. The shared lock lets any number of workers read
+            // concurrently; only reconfiguration takes the exclusive one.
             RequestResult result;
-            // A read is what "actually needed" means: this is where a deferred
-            // build is paid for, on a worker thread rather than on whichever
-            // thread last touched a setting.
-            EnsureStorage();
-            {
-                // Shared lock: any number of workers may read concurrently;
-                // only reconfiguration takes the exclusive lock.
+            if (req->ref.IsFileId()) {
+                // A fileDataID names a file in a CASC root manifest and
+                // nowhere else, so there is nothing to try first.
+                EnsureStorage();
                 std::shared_lock sg(storageMu);
-                if (req->ref.IsFileId())
-                    ReadFileId(req->ref.fileId, result);
-                else
-                    ReadPath(req->ref.path, result);
+                ReadFileId(req->ref.fileId, result);
+            } else {
+                {
+                    std::shared_lock sg(storageMu);
+                    ReadDisk(req->ref.path, result);
+                }
+                // Only a disk miss is worth opening an install for. Every read
+                // this process makes before content is loaded is an
+                // engine-shipped asset sitting beside the executable — the BLS
+                // shader pack, the PSO trace — and they all land above.
+                if (!result.ok) {
+                    EnsureStorage();
+                    std::shared_lock sg(storageMu);
+                    ReadStorage(req->ref.path, result);
+                }
             }
 
             // Re-check cancellation between IO and delivery so a Cancel that
@@ -307,6 +366,7 @@ struct FileContentProvider::Impl {
     // there is no disk fallback, no archive fallback, and no extension to
     // probe. A miss is a miss.
     void ReadFileId(u32 fileId, RequestResult& out) const {
+        const auto& storage = Slot().storage;
         if (!storage)
             return;
         SourceRead hit;
@@ -317,10 +377,10 @@ struct FileContentProvider::Impl {
         out.ok = true;
     }
 
-    // Disk first, then whatever the game's storages are. Loose files shadow
-    // archived ones so a host can drop a modified asset next to the model and
-    // have it win, which is the whole point of the base path.
-    void ReadPath(const std::string& path, RequestResult& out) const {
+    // The loose-file half of a path read, and the half that needs no storage
+    // open. Disk shadows the archives so a host can drop a modified asset next
+    // to the model and have it win, which is the whole point of the base path.
+    void ReadDisk(const std::string& path, RequestResult& out) const {
         const std::string norm = FileResolver::NormalizeSeparators(path);
         const std::string ext = GetLowerExtension(norm);
         fs::path resolved;
@@ -344,9 +404,12 @@ struct FileContentProvider::Impl {
             out.actualExt = std::move(e);
             out.data = std::move(bytes);
             out.ok = true;
-            return;
         }
+    }
 
+    // The archive half, run only when ReadDisk missed.
+    void ReadStorage(const std::string& path, RequestResult& out) const {
+        const auto& storage = Slot().storage;
         if (!storage)
             return;
         SourceRead hit;
@@ -578,8 +641,8 @@ std::vector<std::string> FileContentProvider::ListFiles(const std::string& direc
     }
 
     // ---- Archives ----
-    if (impl_->storage)
-        impl_->storage->List(consider);
+    if (const auto& storage = impl_->Slot().storage)
+        storage->List(consider);
 
     return {out.begin(), out.end()};
 }
@@ -591,18 +654,20 @@ bool FileContentProvider::HasCasc() const {
     // only want to know whether one is *pending* ask StoragesPending().
     impl_->EnsureStorage();
     std::shared_lock sg(impl_->storageMu);
-    return impl_->storage && impl_->storage->HasCasc();
+    const auto& storage = impl_->Slot().storage;
+    return storage && storage->HasCasc();
 }
 
 bool FileContentProvider::HasMpq() const {
     impl_->EnsureStorage();
     std::shared_lock sg(impl_->storageMu);
-    return impl_->storage && impl_->storage->HasArchives();
+    const auto& storage = impl_->Slot().storage;
+    return storage && storage->HasArchives();
 }
 
 bool FileContentProvider::StoragesPending() const {
     std::shared_lock sg(impl_->storageMu);
-    return impl_->storagesDirty;
+    return impl_->Slot().dirty;
 }
 
 const std::string& FileContentProvider::Wc3Path() const {
@@ -622,17 +687,20 @@ std::string FileContentProvider::HotsInstallPath() const {
 
 void FileContentProvider::SetHotsInstallPath(const std::string& path) {
     std::unique_lock sg(impl_->storageMu);
-    impl_->hotsInstallPath = path.empty() ? impl_->installs.Hots() : path;
+    const std::string next = path.empty() ? impl_->installs.Hots() : path;
+    if (impl_->hotsInstallPath == next)
+        return;
+    impl_->hotsInstallPath = next;
     // Only the Sc2 product reads this root, so for anything else the change
     // cannot invalidate what is open.
-    if (impl_->config.game == ProductId::Sc2)
-        impl_->storagesDirty = true;
+    impl_->Invalidate(ProductId::Sc2);
 }
 
 std::vector<std::string> FileContentProvider::OpenCascRoots() const {
     impl_->EnsureStorage();
     std::shared_lock sg(impl_->storageMu);
-    return impl_->storage ? impl_->storage->CascRoots() : std::vector<std::string>{};
+    const auto& storage = impl_->Slot().storage;
+    return storage ? storage->CascRoots() : std::vector<std::string>{};
 }
 
 std::string FileContentProvider::GamePath(ProductId game) const {
@@ -641,74 +709,74 @@ std::string FileContentProvider::GamePath(ProductId game) const {
 
 ProductId FileContentProvider::Game() const {
     std::shared_lock sg(impl_->storageMu);
-    return impl_->config.game;
+    return impl_->active;
 }
 
 void FileContentProvider::SetGame(ProductId game) {
     std::unique_lock sg(impl_->storageMu);
-    if (impl_->config.game == game)
+    if (impl_->active == game)
         return;
-    impl_->config.game = game;
-    // Follow the newly-selected product's discovered root. A host that wants
-    // a different install calls SetInstallPath afterwards — order matters, and
-    // this way round is the one where "switch game" means what it says rather
-    // than "switch game but keep pointing at the old one".
-    //
-    // A Heroes-only install leaves this empty for Sc2 and that is correct:
-    // Heroes has its own root, which that product's rules add regardless, so
-    // the storage still opens. Borrowing it here would report Heroes'
-    // directory as StarCraft II's.
-    impl_->config.installPath = impl_->installs.PathFor(game);
-    // The archive list belongs to the product: scanned for World of Warcraft,
-    // whose names move with the expansion; fixed for Warcraft III; empty for
-    // StarCraft II and Heroes, which never shipped one.
-    impl_->config.archives = ScanArchives(game, impl_->config.installPath);
-    impl_->storagesDirty = true;
+    // Nothing is invalidated and nothing is opened. Each product's install
+    // root, archive list and open storage live in its own slot, so switching
+    // is a pointer move: the game being left keeps what it had open for when
+    // the host comes back, and the one being entered opens on its first read.
+    impl_->Configure(game);
+    impl_->active = game;
 }
 
 void FileContentProvider::SetListfilePath(const std::filesystem::path& csv) {
     std::unique_lock sg(impl_->storageMu);
-    impl_->config.listfilePath = PathToUtf8(csv);
-    impl_->storagesDirty = true;
+    auto& s = impl_->Slot();
+    std::string next = PathToUtf8(csv);
+    if (s.config.listfilePath == next)
+        return;
+    s.config.listfilePath = std::move(next);
+    impl_->Invalidate(s.config.game);
 }
 
 std::string FileContentProvider::ListfilePath() const {
     std::shared_lock sg(impl_->storageMu);
-    return impl_->config.listfilePath;
+    return impl_->Slot().config.listfilePath;
 }
 
 bool FileContentProvider::HasListfile() const {
     std::shared_lock sg(impl_->storageMu);
-    return impl_->storage && impl_->storage->HasListfile();
+    const auto& storage = impl_->Slot().storage;
+    return storage && storage->HasListfile();
 }
 
 std::vector<std::string> FileContentProvider::ScanMpqList() const {
     std::shared_lock sg(impl_->storageMu);
-    return ScanArchives(impl_->config.game, impl_->config.installPath);
+    const auto& cfg = impl_->Slot().config;
+    return ScanArchives(cfg.game, cfg.installPath);
 }
 
 std::string FileContentProvider::InstallPath() const {
     std::shared_lock sg(impl_->storageMu);
-    return impl_->config.installPath;
+    return impl_->Slot().config.installPath;
 }
 
 void FileContentProvider::SetInstallPath(const std::string& path) {
     std::unique_lock sg(impl_->storageMu);
+    auto& s = impl_->Slot();
     // Empty reverts to the active product's discovered root, not always
     // Warcraft III's — otherwise clearing the override on a WoW scene would
     // silently point it at a WC3 install.
-    impl_->config.installPath = path.empty() ? impl_->installs.PathFor(impl_->config.game) : path;
-    impl_->storagesDirty = true;
+    const std::string next = path.empty() ? impl_->installs.PathFor(s.config.game) : path;
+    if (s.config.installPath == next)
+        return;
+    s.config.installPath = next;
+    impl_->Invalidate(s.config.game);
 }
 
 bool FileContentProvider::IgnoreCasc() const {
     std::shared_lock sg(impl_->storageMu);
-    return impl_->config.ignoreCasc;
+    return impl_->Slot().config.ignoreCasc;
 }
 
 bool FileContentProvider::IgnoreMpq() const {
     std::shared_lock sg(impl_->storageMu);
-    return impl_->config.ignoreArchives;
+    return impl_->Slot().config.ignoreArchives;
 }
 
 void FileContentProvider::SetHdMode(bool enabled) {
@@ -721,29 +789,34 @@ bool FileContentProvider::HdMode() const {
 
 void FileContentProvider::SetIgnoreCasc(bool ignore) {
     std::unique_lock sg(impl_->storageMu);
-    if (impl_->config.ignoreCasc == ignore)
+    auto& s = impl_->Slot();
+    if (s.config.ignoreCasc == ignore)
         return;
-    impl_->config.ignoreCasc = ignore;
-    impl_->storagesDirty = true;
+    s.config.ignoreCasc = ignore;
+    impl_->Invalidate(s.config.game);
 }
 
 void FileContentProvider::SetIgnoreMpq(bool ignore) {
     std::unique_lock sg(impl_->storageMu);
-    if (impl_->config.ignoreArchives == ignore)
+    auto& s = impl_->Slot();
+    if (s.config.ignoreArchives == ignore)
         return;
-    impl_->config.ignoreArchives = ignore;
-    impl_->storagesDirty = true;
+    s.config.ignoreArchives = ignore;
+    impl_->Invalidate(s.config.game);
 }
 
 std::vector<std::string> FileContentProvider::MpqList() const {
     std::shared_lock sg(impl_->storageMu);
-    return impl_->config.archives;
+    return impl_->Slot().config.archives;
 }
 
 void FileContentProvider::SetMpqList(std::vector<std::string> list) {
     std::unique_lock sg(impl_->storageMu);
-    impl_->config.archives = std::move(list);
-    impl_->storagesDirty = true;
+    auto& s = impl_->Slot();
+    if (s.config.archives == list)
+        return;
+    s.config.archives = std::move(list);
+    impl_->Invalidate(s.config.game);
 }
 
 std::vector<std::string> FileContentProvider::DefaultMpqList() {

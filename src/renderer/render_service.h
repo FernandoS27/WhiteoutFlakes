@@ -154,6 +154,18 @@ public:
     assets::AssetManager& Assets();
     const assets::AssetManager& Assets() const;
 
+    /// @brief Load the Warcraft III lookup tables (terrain / replaceable
+    ///        paths, splat, ubersplat, spawn, sound SLKs) if they are not
+    ///        loaded already, and prefetch the asset slots they name.
+    ///
+    /// Call from every path that loads Warcraft III content — that is the
+    /// whole contract. The tables live in that game's archives, so this is
+    /// what opens a Warcraft III install, and doing it at device init opened
+    /// one for every session including the ones that only ever show a WoW or
+    /// StarCraft II model. Cheap to call repeatedly: it early-returns once the
+    /// tables are populated.
+    void EnsureWc3GameData();
+
     /// @brief Re-queue every asset that failed to load (still on the placeholder)
     ///        so the next provider pump re-fetches it. Hosts call this after the
     ///        content provider's sources change (an IO-settings edit) to refresh

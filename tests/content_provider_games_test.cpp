@@ -19,6 +19,8 @@
 #include "whiteout/flakes/content_ref.h"
 
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 using whiteout::flakes::ProductId;
@@ -63,6 +65,79 @@ TEST_CASE("Storages open on demand, not on configuration", "[provider]") {
     // for it once.
     (void)p.HasCasc();
     CHECK_FALSE(p.StoragesPending());
+}
+
+TEST_CASE("A visited game keeps its storages across a switch", "[provider]") {
+    FileContentProvider p;
+    (void)p.HasCasc(); // demands the Warcraft III open
+    REQUIRE_FALSE(p.StoragesPending());
+
+    p.SetGame(ProductId::Wow);
+    CHECK(p.StoragesPending()); // nothing has read WoW content yet
+
+    // The point of the per-product slots: coming back finds what Warcraft III
+    // opened still open. Rebuilding it would mean parsing a CASC index again
+    // for every trip through the settings panel, which is the cost that made
+    // switching games visibly stall.
+    p.SetGame(ProductId::Wc3);
+    CHECK_FALSE(p.StoragesPending());
+}
+
+TEST_CASE("Settings belong to the game they were made on", "[provider]") {
+    FileContentProvider p;
+    p.SetGame(ProductId::Wow);
+    p.SetIgnoreMpq(true);
+
+    p.SetGame(ProductId::Wc3);
+    CHECK_FALSE(p.IgnoreMpq());
+    CHECK(p.MpqList() == FileContentProvider::DefaultMpqList());
+
+    p.SetGame(ProductId::Wow);
+    CHECK(p.IgnoreMpq());
+}
+
+TEST_CASE("Re-applying a setting unchanged opens nothing", "[provider]") {
+    FileContentProvider p;
+    (void)p.HasCasc();
+    REQUIRE_FALSE(p.StoragesPending());
+
+    // What a host does at startup and after every settings edit: write back
+    // the values already in place. Treating those as changes is what turned
+    // ticking one checkbox into a full reopen of the install.
+    p.SetGame(ProductId::Wc3);
+    p.SetInstallPath(p.InstallPath());
+    p.SetMpqList(p.MpqList());
+    p.SetListfilePath(std::filesystem::path(p.ListfilePath()));
+    p.SetIgnoreCasc(p.IgnoreCasc());
+    p.SetIgnoreMpq(p.IgnoreMpq());
+    CHECK_FALSE(p.StoragesPending());
+
+    // A real change still costs what it should.
+    p.SetIgnoreCasc(!p.IgnoreCasc());
+    CHECK(p.StoragesPending());
+}
+
+TEST_CASE("A read served from disk opens no storage", "[provider]") {
+    // Every read this process makes before content is loaded is an
+    // engine-shipped asset sitting beside the executable — the BLS shader
+    // pack, the PSO trace. Opening a game install to answer them is what made
+    // startup pay for a CASC parse it then never used.
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / "wdx_provider_disk_read";
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    {
+        std::ofstream f(dir / "probe.txt", std::ios::binary);
+        f << "probe";
+    }
+
+    FileContentProvider p;
+    p.SetBasePath(dir);
+    const auto bytes = p.ReadFile("probe.txt");
+    CHECK(bytes.has_value());
+    CHECK(p.StoragesPending());
+
+    fs::remove_all(dir, ec);
 }
 
 TEST_CASE("A fresh provider is Warcraft III", "[provider]") {
