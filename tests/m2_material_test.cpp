@@ -4,12 +4,14 @@
 // s_gxBlend / s_fogModeList tables dumped from a WoW 6.0.1 client.
 
 #include "renderer/profiles/wow/m2_material.h"
+#include "renderer/profiles/wow/m2_surface_table.h"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 using namespace whiteout::flakes::renderer::profiles::wow;
 namespace gfx = whiteout::flakes::gfx;
+namespace core = whiteout::flakes::renderer::core;
 using Catch::Approx;
 
 TEST_CASE("M2 blend modes map to the EGxBlend factors", "[m2][material]") {
@@ -104,9 +106,14 @@ TEST_CASE("M2 depth and cull flags keep their polarity", "[m2][material]") {
     CHECK(none.depth.depthWrite);
     CHECK(none.depth.depthCompare == gfx::CompareOp::LessEqual);
 
-    const auto neither = M2StateFor(M2Blend::Opaque, kM2NoDepthTest | kM2NoDepthWrite, 1.0f);
-    CHECK_FALSE(neither.depth.depthTest);
-    CHECK_FALSE(neither.depth.depthWrite);
+    // ...but only one of them is honoured. SetupMaterial chooses between two
+    // GxDSState presets on kM2NoDepthWrite alone — {3,7} and {1,7}, differing in
+    // the write bit — and never reads kM2NoDepthTest. So the test stays on even
+    // when both bits are set.
+    const auto both = M2StateFor(M2Blend::Opaque, kM2NoDepthTest | kM2NoDepthWrite, 1.0f);
+    CHECK(both.depth.depthTest);
+    CHECK_FALSE(both.depth.depthWrite);
+    CHECK(M2StateFor(M2Blend::Opaque, kM2NoDepthTest, 1.0f).depth.depthTest);
 
     // 0x10 alone — the second most common value, and what an alpha-key layer
     // that must not occlude the layers behind it carries.
@@ -119,6 +126,102 @@ TEST_CASE("M2 depth and cull flags keep their polarity", "[m2][material]") {
     CHECK(M2StateFor(M2Blend::Opaque, 0, 1.0f).raster.cull == gfx::CullMode::Back);
     CHECK(M2StateFor(M2Blend::Opaque, kM2TwoSided, 1.0f).raster.cull == gfx::CullMode::None);
     CHECK(M2StateFor(M2Blend::Opaque, 0, 1.0f).raster.frontCCW);
+
+    // A mirrored actor flips which face is culled — SetupMaterial picks front
+    // or back off the reverse-culling bit. Two-sided still wins over both.
+    CHECK(M2StateFor(M2Blend::Opaque, 0, 1.0f, true).raster.cull == gfx::CullMode::Front);
+    CHECK(M2StateFor(M2Blend::Opaque, kM2TwoSided, 1.0f, true).raster.cull == gfx::CullMode::None);
+}
+
+TEST_CASE("M2 modulate blends feed the combiner a constant", "[m2][material]") {
+    const whiteout::Vector3f batch{0.25f, 0.5f, 0.75f};
+    const whiteout::Vector3f geoset{0.5f, 0.5f, 0.5f};
+
+    // Everything else is the batch colour track times the geoset's.
+    const auto plain = M2CombinerInput(M2Blend::Alpha, batch, geoset);
+    CHECK(plain.x == Approx(0.125f));
+    CHECK(plain.y == Approx(0.25f));
+    CHECK(plain.z == Approx(0.375f));
+
+    // Mod and Mod2x ignore both and take SetupMaterial's emissive constant.
+    const auto mod = M2CombinerInput(M2Blend::Mod, batch, geoset);
+    CHECK(mod.x == Approx(1.0f));
+    CHECK(mod.y == Approx(1.0f));
+    CHECK(mod.z == Approx(1.0f));
+
+    // 0.5 is the whole point: Mod2x's DstColor/SrcColor blend doubles, so 1.0
+    // here renders the surface at twice the client's brightness.
+    const auto mod2x = M2CombinerInput(M2Blend::Mod2x, batch, geoset);
+    CHECK(mod2x.x == Approx(0.5f));
+    CHECK(mod2x.y == Approx(0.5f));
+    CHECK(mod2x.z == Approx(0.5f));
+}
+
+TEST_CASE("M2 pass assignment follows the model's alpha, not the batch's",
+          "[m2][material][classify]") {
+    auto surf = [](M2Blend b) {
+        M2Surface s;
+        s.blend = b;
+        return s;
+    };
+
+    // At full model alpha the blend mode decides, as it always did.
+    CHECK(M2ClassifySurface(surf(M2Blend::Opaque), 1.0f, 1.0f).blend == core::BlendClass::Opaque);
+    CHECK(M2ClassifySurface(surf(M2Blend::AlphaKey), 1.0f, 1.0f).blend ==
+          core::BlendClass::AlphaKey);
+    CHECK(M2ClassifySurface(surf(M2Blend::Alpha), 1.0f, 1.0f).blend ==
+          core::BlendClass::Transparent);
+
+    // A *fading* model demotes both opaque classes into the sorted transparent
+    // set — this is the delta. It is the model's alpha that does it, so a batch
+    // whose own element alpha has dipped stays opaque while the model is solid.
+    CHECK(M2ClassifySurface(surf(M2Blend::Opaque), 0.5f, 0.5f).blend ==
+          core::BlendClass::Transparent);
+    CHECK(M2ClassifySurface(surf(M2Blend::AlphaKey), 0.5f, 0.5f).blend ==
+          core::BlendClass::Transparent);
+    CHECK(M2ClassifySurface(surf(M2Blend::Opaque), 1.0f, 0.25f).blend == core::BlendClass::Opaque);
+
+    // The threshold is 0.99999, not 1.0 — a model one ulp shy of solid is still
+    // solid to the client.
+    CHECK(M2ClassifySurface(surf(M2Blend::Opaque), 0.999995f, 1.0f).blend ==
+          core::BlendClass::Opaque);
+    CHECK(M2ClassifySurface(surf(M2Blend::Opaque), 0.99f, 1.0f).blend ==
+          core::BlendClass::Transparent);
+
+    // Culled below 1e-4 of model alpha...
+    CHECK_FALSE(M2ClassifySurface(surf(M2Blend::Alpha), 0.00001f, 1.0f).visible);
+    CHECK(M2ClassifySurface(surf(M2Blend::Alpha), 0.001f, 1.0f).visible);
+    // ...except BlendAdd, which is premultiplied and still adds light at zero.
+    CHECK(M2ClassifySurface(surf(M2Blend::BlendAdd), 0.0f, 0.0f).visible);
+
+    // A constant-zero weight track outranks all of it, BlendAdd included.
+    M2Surface suppressed = surf(M2Blend::BlendAdd);
+    suppressed.suppressed = true;
+    CHECK_FALSE(M2ClassifySurface(suppressed, 1.0f, 1.0f).visible);
+}
+
+TEST_CASE("M2 depth-writing transparent batches ask for a twin", "[m2][material][classify]") {
+    auto surf = [](M2Blend b, whiteout::flakes::u16 flags) {
+        M2Surface s;
+        s.blend = b;
+        s.materialFlags = flags;
+        return s;
+    };
+
+    // Transparent and still writing depth: drawn twice, and hoisted.
+    const auto writes = M2ClassifySurface(surf(M2Blend::Alpha, 0), 1.0f, 1.0f);
+    CHECK(writes.blend == core::BlendClass::Transparent);
+    CHECK(writes.needsDepthTwin);
+
+    // Opting out of depth writing is what turns the pair back into one draw.
+    CHECK_FALSE(M2ClassifySurface(surf(M2Blend::Alpha, kM2NoDepthWrite), 1.0f, 1.0f).needsDepthTwin);
+
+    // Opaque batches are not in the transparent list at all, so no twin.
+    CHECK_FALSE(M2ClassifySurface(surf(M2Blend::Opaque, 0), 1.0f, 1.0f).needsDepthTwin);
+    CHECK_FALSE(M2ClassifySurface(surf(M2Blend::AlphaKey, 0), 1.0f, 1.0f).needsDepthTwin);
+
+    // ...but a fading model demotes them, and then they do get one.
+    CHECK(M2ClassifySurface(surf(M2Blend::Opaque, 0), 0.5f, 1.0f).needsDepthTwin);
 }
 
 TEST_CASE("M2 raw blend values outside the enum stay in range", "[m2][material]") {

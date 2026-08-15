@@ -1125,6 +1125,17 @@ void ViewerUI::BuildSettingsGeneralTab(ProductId game) {
             ImGui::SetTooltip("%s", i18n::tr("settings.general.m2_lazy_anim.tip"));
     }
 
+    // ---- Transparent `.m2` geometry ordering ----
+    {
+        bool on = svc.Settings().M2DistanceSortGeometry();
+        if (ImGui::Checkbox(i18n::tr("settings.general.m2_dist_sort"), &on)) {
+            svc.Settings().SetM2DistanceSortGeometry(on);
+            SaveIni(app_);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", i18n::tr("settings.general.m2_dist_sort.tip"));
+    }
+
     ImGui::Separator();
 
     // ---- Time of day ----

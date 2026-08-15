@@ -35,6 +35,7 @@ struct RenderableView {
     const std::vector<model::RenderModel::SurfaceAnim>* surfaceAnim = nullptr;
     Matrix44f worldTransform = Matrix44f::identity();
     f32 parentVisibility = 1.0f;
+    bool mirrored = false; // reversed winding — see Actor::mirrored
     bool hasLods = false;
     u32 teamColor = 0x000000FFu;
 
@@ -88,10 +89,15 @@ struct CollectedDrawLists {
 // why the multi-model toggle has to be per-geoset. It changes only which model
 // each item *names*; classification and collection stay the WC3 model's, so
 // with the flag false every key is what it was.
+// `m2DistanceSortGeometry` is RenderSettings::M2DistanceSortGeometry. Off, a
+// transparent `.m2` geo item gets sort distance 0 — what the client passes —
+// so distance ties across all geometry and TransparentOrder falls through to
+// priorityPlane and materialLayer. WC3 items always carry their real distance.
 CollectedDrawLists BuildDrawLists(
     const std::unordered_map<u32, std::unique_ptr<model::Actor>>& models, i32 selectedLod,
     const Vector3f& cameraPos, const shading::IShadingModel& shadingModel,
-    bool unlitOddGeosets = false, const shading::ShadingRegistry* registry = nullptr);
+    bool unlitOddGeosets = false, const shading::ShadingRegistry* registry = nullptr,
+    bool m2DistanceSortGeometry = false);
 
 // `paletteCb` is the bone-palette CB to bind when this geoset has
 // skinning data. Pass `geo.bonePaletteCb` directly when the actor is

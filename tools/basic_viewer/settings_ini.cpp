@@ -175,6 +175,11 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy, bool& f
         if (ParseBool(*s, v))
             service.Settings().SetM2LazyAnimations(v);
     }
+    if (auto* s = ini.Get(KeyOf("M2DistanceSortGeometry"))) {
+        bool v = false;
+        if (ParseBool(*s, v))
+            service.Settings().SetM2DistanceSortGeometry(v);
+    }
     if (auto* s = ini.Get(KeyOf("AoEnabled"))) {
         bool v = true;
         if (ParseBool(*s, v))
@@ -326,6 +331,8 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy, bo
         ini.Set(KeyOf("ShadowCascades"), ToString(cascades));
     }
     ini.Set(KeyOf("M2LazyAnimations"), service.Settings().M2LazyAnimations() ? "1" : "0");
+    ini.Set(KeyOf("M2DistanceSortGeometry"),
+            service.Settings().M2DistanceSortGeometry() ? "1" : "0");
     ini.Set(KeyOf("AoEnabled"), service.Settings().AoEnabled() ? "1" : "0");
     ini.Set(KeyOf("AoQuality"), ToString(static_cast<i32>(service.Settings().AoQuality())));
     ini.Set(KeyOf("AoBentBoost"), FloatToString(service.Settings().AoBentBoost()));

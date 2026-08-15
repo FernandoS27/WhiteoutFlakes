@@ -2412,10 +2412,10 @@ void RenderPipeline::RenderGeosets(GeosetBucket bucket) {
         return;
 
     const Vector3f camPos = rs_.Pipeline().FrameCamera().GetSource();
-    auto collected = render_detail::BuildDrawLists(rs_.Scene().Actors().All(),
-                                                   ComputeSelectedLod(), camPos, active,
-                                                   rs_.Settings().DebugUnlitOddGeosets(),
-                                                   &impl_->shadingModels_);
+    auto collected = render_detail::BuildDrawLists(
+        rs_.Scene().Actors().All(), ComputeSelectedLod(), camPos, active,
+        rs_.Settings().DebugUnlitOddGeosets(), &impl_->shadingModels_,
+        rs_.Settings().M2DistanceSortGeometry());
     if (collected.lists.opaque.empty() && collected.lists.transparent.empty())
         return;
 
@@ -2494,7 +2494,8 @@ void RenderPipeline::RenderTransparentScene() {
         geo = render_detail::BuildDrawLists(rs_.Scene().Actors().All(), ComputeSelectedLod(),
                                             camPos, active,
                                             rs_.Settings().DebugUnlitOddGeosets(),
-                                            &impl_->shadingModels_);
+                                            &impl_->shadingModels_,
+                                            rs_.Settings().M2DistanceSortGeometry());
     }
 
     // --- PE2 particles: build geometry into the shared VB ---

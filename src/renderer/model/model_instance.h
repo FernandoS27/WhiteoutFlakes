@@ -206,6 +206,13 @@ struct Actor {
 
     f32 parentVisibility = 1.0f;
 
+    // Draw this actor with the winding reversed. `CM2Model::SetMirrored` is the
+    // client's only caller of SetReverseCulling, and that walks the child list —
+    // so a mirrored actor flips culling on everything attached to it too, which
+    // is what the propagation in UpdateAttachmentChildren reproduces. Nothing
+    // sets this yet; a negative-scale host would.
+    bool mirrored = false;
+
     std::shared_ptr<ModelTemplate> sourceTemplate;
 
     RenderModel render;

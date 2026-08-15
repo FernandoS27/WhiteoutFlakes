@@ -15,6 +15,7 @@
 // ============================================================================
 
 #include "core/surface_table.h"
+#include "core/surface_vocabulary.h"
 #include "m2_material.h"
 #include "m2_shader_select.h"
 #include "whiteout/flakes/types.h"
@@ -100,5 +101,23 @@ private:
 ///        so callers never branch on a null table.
 std::unique_ptr<M2SurfaceTable> BuildM2SurfaceTable(const ::whiteout::m2::Model& model,
                                                     usize profileIndex);
+
+/// @brief BeginDraw's two model-alpha thresholds. Below the first a batch is
+///        culled outright; only at or above the second can it take the opaque
+///        pass. Between them everything is transparent.
+inline constexpr f32 kM2CullModelAlpha = 0.0001f;
+inline constexpr f32 kM2OpaqueModelAlpha = 0.99999f;
+
+/// @brief Which bucket a batch draws in, this frame.
+///
+/// The blend mode does not decide it alone. `CM2Scene::BeginDraw` takes the
+/// opaque pass only when the *model* is at full alpha, so a fading creature's
+/// Opaque and AlphaKey batches join the sorted transparent set on the way out
+/// instead of staying in front of it.
+///
+/// @param modelAlpha  the model's own alpha — actor visibility times geoset
+///                    alpha, NOT the batch's element alpha. The client keeps
+///                    the two apart and only this one gates the pass.
+core::SurfaceClass M2ClassifySurface(const M2Surface& surface, f32 modelAlpha, f32 elementAlpha);
 
 } // namespace whiteout::flakes::renderer::profiles::wow

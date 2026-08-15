@@ -37,16 +37,17 @@ enum class M2Blend : u8 {
 
 /// @brief `M2Material::flags`.
 ///
-/// The depth bits are *disables*, despite wowdev.wiki naming them "depthTest"
-/// and "depthWrite" as if they enabled something. The data settles it: across
-/// the corpus every material with `blendingMode == 0` (opaque) carries
-/// flags == 0, and an opaque creature body cannot be drawn with depth testing
-/// and depth writing both off. The name says which knob; the bit turns it off —
-/// the same convention MDX spells out as MAT_NO_DEPTH_TEST / MAT_NO_DEPTH_SET.
+/// The depth bits are *disables*, despite wowdev.wiki (and our own
+/// M2_FILE_FORMAT_SPECIFICATION §8.4) naming them "depthTest" and "depthWrite"
+/// as if they enabled something. `SetupMaterial` settles it: `0x10` set selects
+/// the preset whose write bit is *clear*. The name says which knob; the bit
+/// turns it off — the same convention MDX spells out as MAT_NO_DEPTH_TEST /
+/// MAT_NO_DEPTH_SET.
 enum M2MaterialFlag : u16 {
     kM2Unlit = 0x01,
     kM2Unfogged = 0x02,
     kM2TwoSided = 0x04,
+    /// Parsed, never honoured — the client ignores it too (M2StateFor).
     kM2NoDepthTest = 0x08,
     kM2NoDepthWrite = 0x10,
     kM2NoAlphaComposite = 0x800,
@@ -97,9 +98,23 @@ M2FogMode M2FogModeFor(M2Blend mode);
 /// @brief Lighting is off for the modulate blends, whatever the material says.
 bool M2LightingEnabled(M2Blend mode, u16 materialFlags);
 
+/// @brief The combiner table's `in` — what a batch multiplies its textures by.
+///
+/// `SetupMaterial` does not merely unlight the modulate blends: it zeroes
+/// diffuse and writes a constant into emissive, ignoring the batch's colour
+/// track entirely. Mod2x's constant is 0.5, and its DstColor/SrcColor blend
+/// doubles that back to unity — feed it the usual ~1.0 and the surface comes
+/// out twice as bright.
+Vector3f M2CombinerInput(M2Blend mode, const Vector3f& batchColor, const Vector3f& geosetColor);
+
 /// @brief The whole translation. @p elementAlpha is
 ///        `batch.color.alpha * batch.textureWeight * model.alpha`.
-M2DrawState M2StateFor(M2Blend mode, u16 materialFlags, f32 elementAlpha);
+///
+/// @p mirrored is the actor's reverse-culling bit. `SetupMaterial` picks front
+/// or back from it and only drops to no culling on a two-sided material, so a
+/// mirrored model draws its far faces rather than turning inside out.
+M2DrawState M2StateFor(M2Blend mode, u16 materialFlags, f32 elementAlpha,
+                       bool mirrored = false);
 
 /// @brief Clamp a raw `blendingMode` into the enum. Values above 7 do not occur
 ///        in shipped data; treating one as Opaque draws something rather than

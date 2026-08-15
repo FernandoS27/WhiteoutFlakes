@@ -122,6 +122,24 @@ public:
         m2LazyAnimations_.store(on);
     }
 
+    // Sort transparent `.m2` geometry back-to-front by camera distance.
+    //
+    // The client does not: `CM2Scene::BeginDraw` passes 0.0 as the sort
+    // distance for every geo batch and a real one only for particles and
+    // ribbons, so `SortTransparent`'s distance key ties across all geometry and
+    // the order falls through to priorityPlane, then materialLayer, then blend
+    // mode. Off (the default) reproduces that.
+    //
+    // On restores our own distance sort, which is strictly better looking in a
+    // scene holding several transparent models — the client falls through to a
+    // raw `CM2Model*` there — at the cost of no longer matching it.
+    bool M2DistanceSortGeometry() const {
+        return m2DistanceSortGeometry_.load();
+    }
+    void SetM2DistanceSortGeometry(bool on) {
+        m2DistanceSortGeometry_.store(on);
+    }
+
     // ---- Debug visualization ----
 
     // Route every odd-indexed geoset through UnlitShading instead of the
@@ -399,6 +417,7 @@ private:
     std::atomic<bool> renderModeDirty_{false};
     std::atomic<bool> sceneHdrInSd_{false};
     std::atomic<bool> m2LazyAnimations_{false};
+    std::atomic<bool> m2DistanceSortGeometry_{false};
 
     // Debug + LOD.
     std::atomic<i32> hdDebugMode_{0};

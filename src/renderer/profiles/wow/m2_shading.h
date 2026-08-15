@@ -113,6 +113,7 @@ private:
         u8 psIndex = 0;
         u8 blend = 0;
         u16 materialFlags = 0;
+        bool mirrored = false;
 
         auto operator<=>(const PsoKey&) const = default;
     };

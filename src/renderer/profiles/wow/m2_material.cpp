@@ -96,16 +96,30 @@ bool M2LightingEnabled(M2Blend mode, u16 materialFlags) {
     return mode != M2Blend::Mod && mode != M2Blend::Mod2x;
 }
 
-M2DrawState M2StateFor(M2Blend mode, u16 materialFlags, f32 elementAlpha) {
+Vector3f M2CombinerInput(M2Blend mode, const Vector3f& batchColor, const Vector3f& geosetColor) {
+    if (mode == M2Blend::Mod)
+        return {1.0f, 1.0f, 1.0f};
+    if (mode == M2Blend::Mod2x)
+        return {0.5f, 0.5f, 0.5f};
+    return {batchColor.x * geosetColor.x, batchColor.y * geosetColor.y,
+            batchColor.z * geosetColor.z};
+}
+
+M2DrawState M2StateFor(M2Blend mode, u16 materialFlags, f32 elementAlpha, bool mirrored) {
     M2DrawState s;
     s.blend = M2BlendDesc(mode);
     s.alphaRef = M2AlphaRef(mode, elementAlpha);
 
-    s.depth.depthTest = (materialFlags & kM2NoDepthTest) == 0;
+    // Always tested. SetupMaterial picks between two GxDSState presets on
+    // kM2NoDepthWrite alone — {3,7} and {1,7}, differing in the write bit — and
+    // never reads kM2NoDepthTest at all.
+    s.depth.depthTest = true;
     s.depth.depthWrite = (materialFlags & kM2NoDepthWrite) == 0;
     s.depth.depthCompare = gfx::CompareOp::LessEqual;
 
-    s.raster.cull = (materialFlags & kM2TwoSided) ? gfx::CullMode::None : gfx::CullMode::Back;
+    s.raster.cull = (materialFlags & kM2TwoSided) ? gfx::CullMode::None
+                    : mirrored                    ? gfx::CullMode::Front
+                                                  : gfx::CullMode::Back;
     s.raster.frontCCW = true;
 
     s.fog = (materialFlags & kM2Unfogged) ? M2FogMode::Disabled : M2FogModeFor(mode);

@@ -203,6 +203,9 @@ void ApplyAttachmentStates(Actor& mi, const FrameState& state, const ActorEvalCo
         }
 
         child->parentVisibility = visible ? 1.0f : 0.0f;
+        // SetReverseCulling recurses into the child list, so an attachment
+        // inherits its parent's winding rather than keeping its own.
+        child->mirrored = mi.mirrored;
     }
 }
 

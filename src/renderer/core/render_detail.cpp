@@ -32,6 +32,7 @@ void FillRenderableView(RenderableView& view, model::Actor& mi, const ActorMap& 
     // the same object for WC3, whose scale is 1.
     view.worldTransform = mi.ScaledWorldTransform();
     view.parentVisibility = mi.parentVisibility;
+    view.mirrored = mi.mirrored;
     view.hasLods = mi.render.hasLods;
     view.teamColor = mi.teamColor;
     view.actorRole = static_cast<u8>(mi.role);
@@ -52,7 +53,8 @@ bool GeosetDrawable(const model::GPUGeoset& geo) {
 CollectedDrawLists BuildDrawLists(
     const std::unordered_map<u32, std::unique_ptr<model::Actor>>& models, i32 selectedLod,
     const Vector3f& cameraPos, const shading::IShadingModel& shadingModel,
-    bool unlitOddGeosets, const shading::ShadingRegistry* registry) {
+    bool unlitOddGeosets, const shading::ShadingRegistry* registry,
+    bool m2DistanceSortGeometry) {
     const core::ShadingModelId activeModel = shadingModel.Id();
     CollectedDrawLists out;
     out.views.reserve(models.size());
@@ -145,10 +147,27 @@ CollectedDrawLists BuildDrawLists(
                     // HD opaque-fading geosets carry the Color depth-fill twin
                     // (WC3 RenderGeoset's DEPTHFILL_COLOR); true blends stay None.
                     t.depthFill = sc.needsDepthFill ? bls::DepthFill::Color : bls::DepthFill::None;
-                    const Vector3f wc = GeosetCentroidWS(view, geo);
-                    const Vector3f d = {wc.x - cameraPos.x, wc.y - cameraPos.y,
-                                        wc.z - cameraPos.z};
-                    t.sqDist = d.x * d.x + d.y * d.y + d.z * d.z;
+                    t.hoist = sc.needsDepthTwin;
+                    // BeginDraw passes 0.0 as the sort distance for every `.m2`
+                    // geo batch — only particles and ribbons get a real one — so
+                    // distance ties across all geometry and the order falls
+                    // through to priorityPlane, then materialLayer. Feeding the
+                    // comparator the same input reproduces that without putting
+                    // a product branch inside it.
+                    if (m2DistanceSortGeometry || actorModel != core::ShadingModelId::M2Combiners) {
+                        const Vector3f wc = GeosetCentroidWS(view, geo);
+                        const Vector3f d = {wc.x - cameraPos.x, wc.y - cameraPos.y,
+                                            wc.z - cameraPos.z};
+                        t.sqDist = d.x * d.x + d.y * d.y + d.z * d.z;
+                    }
+                    // The depth half, ordered ahead of `t` by the depthFill
+                    // term. Same surface, same everything — the shading model
+                    // reads `depthFill` and forces the blend opaque.
+                    if (sc.needsDepthTwin) {
+                        DrawItem d2 = t;
+                        d2.depthFill = bls::DepthFill::Depth;
+                        out.lists.transparent.push_back(d2);
+                    }
                     // A surface's own plane wins when it has one; the geoset's
                     // is the fallback and the only value WC3 ever sets.
                     t.priorityPlane = key.priorityPlane ? key.priorityPlane : geo.priorityPlane;

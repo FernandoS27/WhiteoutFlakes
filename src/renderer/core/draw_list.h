@@ -48,6 +48,11 @@ struct DrawItem {
     f32 sqDist = 0.0f; // squared camera distance (back-to-front key)
     i32 priorityPlane = 0;
     bool underWater = false;
+    // Sort ahead of everything else in this priority plane. Set on both halves
+    // of an M2 depth-twin pair, standing in for the FLT_MAX that BeginDraw
+    // writes into the element's distance-tiebreak slot. A real sentinel float in
+    // `sqDist` would collide with the M2 geo zero.
+    bool hoist = false;
 };
 
 struct DrawLists {
@@ -87,6 +92,13 @@ inline bool OpaqueOrder(const DrawItem& a, const DrawItem& b) {
 // first, priorityPlane ascending, distance back-to-front, then the Depth
 // prepass twin (2) before its Color draw (1) at the same position.
 //
+// WoW reaches the same shape from the other end. CM2Scene::SortTransparent is
+// distance, then priorityPlane, then materialLayer — but every `.m2` geo batch
+// is given distance 0.0 (only particles and ribbons get a real one), so for
+// geometry the distance key ties and the two chains agree. BuildDrawLists feeds
+// that same 0.0 rather than branching here; see RenderSettings::
+// M2DistanceSortGeometry.
+//
 // The trailing (view, geoIdx) term is not cosmetic. The depth-buffer argument
 // that lets the opaque list be loosely ordered covers only the opaque list —
 // two transparent geosets tying on all four keys (duplicate actors at the same
@@ -100,16 +112,24 @@ inline bool TransparentOrder(const DrawItem& a, const DrawItem& b) {
         return a.priorityPlane < b.priorityPlane;
     if (a.sqDist != b.sqDist)
         return a.sqDist > b.sqDist;
+    // Depth-writing pairs first, so the plane's depth is laid down before
+    // anything blends against it (SortTransparent's FLT_MAX slot).
+    if (a.hoist != b.hoist)
+        return a.hoist;
     if (a.depthFill != b.depthFill)
         return static_cast<u8>(a.depthFill) > static_cast<u8>(b.depthFill);
+    // M2's materialLayer, and it sits ABOVE the actor/geoset terms because
+    // SortTransparent does: the client groups every layer-0 batch of a model
+    // before every layer-1 batch, rather than finishing one submesh at a time.
+    // Zero for every WC3 item, so an equal leading key leaves the WC3
+    // comparator exactly as it was — the same argument OpaqueOrder makes for
+    // `key.model`.
+    if (a.key.sortOrder != b.key.sortOrder)
+        return a.key.sortOrder < b.key.sortOrder;
     if (a.view != b.view)
         return a.view < b.view;
     if (a.geoIdx != b.geoIdx)
         return a.geoIdx < b.geoIdx;
-    // M2's materialLayer, below distance: two batches of one submesh share a
-    // centroid, so distance cannot separate them and authored order must.
-    if (a.key.sortOrder != b.key.sortOrder)
-        return a.key.sortOrder < b.key.sortOrder;
     return a.key.surface < b.key.surface;
 }
 

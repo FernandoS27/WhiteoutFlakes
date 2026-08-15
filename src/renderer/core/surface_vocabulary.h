@@ -53,6 +53,13 @@ struct SurfaceClass {
     // DEPTHFILL_COLOR). Not a blend class: it is a second draw of the same
     // surface, not a different bucket.
     bool needsDepthFill = false;
+    // Actually enqueue that second draw, depth-only, immediately ahead of the
+    // colour one — and hoist the pair above every other transparent surface in
+    // its priority plane. M2 only: CM2Scene::BeginDraw duplicates a
+    // depth-writing transparent batch, forces the copy's blend opaque, and
+    // stamps FLT_MAX into the sort key both halves share. WC3 HD sets
+    // needsDepthFill alone and does its fade inside the draw.
+    bool needsDepthTwin = false;
 };
 
 // ---------------------------------------------------------------------------

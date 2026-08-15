@@ -60,7 +60,7 @@ std::unique_ptr<M2SurfaceTable> BuildM2SurfaceTable(const wm2::Model& model, usi
         s.textureCount =
             static_cast<u8>(std::clamp<u32>(batch.textureCount, 1u, kM2MaxTextureUnits));
         s.priorityPlane = batch.priorityPlane;
-        s.materialLayer = (std::min<u16>)(batch.materialLayer, 7u); // CM2Scene::BeginDraw caps here
+        s.materialLayer = batch.materialLayer & 7u; // InitElement packs it as (layer << 4) & 0x70
         s.skinSectionIndex = batch.skinSectionIndex;
 
         // The material. Global flag 0x08 redirects the *second* texture's
@@ -132,6 +132,38 @@ std::unique_ptr<M2SurfaceTable> BuildM2SurfaceTable(const wm2::Model& model, usi
     }
 
     return table;
+}
+
+core::SurfaceClass M2ClassifySurface(const M2Surface& surface, f32 modelAlpha, f32 elementAlpha) {
+    // A constant-zero weight track means "do not draw" and outranks everything,
+    // blend mode included.
+    if (surface.suppressed)
+        return {.visible = false};
+
+    // BlendAdd is exempt from the alpha cull: it is premultiplied, so it still
+    // adds light at zero alpha, and the client draws it on a fully faded model.
+    if (surface.blend != M2Blend::BlendAdd &&
+        (modelAlpha < kM2CullModelAlpha || elementAlpha <= 0.0f))
+        return {.visible = false};
+
+    core::BlendClass blend = core::BlendClass::Transparent;
+    if (modelAlpha >= kM2OpaqueModelAlpha) {
+        if (surface.blend == M2Blend::Opaque)
+            blend = core::BlendClass::Opaque;
+        else if (surface.blend == M2Blend::AlphaKey)
+            blend = core::BlendClass::AlphaKey;
+    }
+
+    // A transparent batch that still writes depth is drawn twice: once with the
+    // blend forced opaque to lay depth down, then blended against it. Batches
+    // that opt out of depth writing get the single blended draw.
+    const bool twin = blend == core::BlendClass::Transparent &&
+                      (surface.materialFlags & kM2NoDepthWrite) == 0;
+
+    return {.visible = true,
+            .blend = blend,
+            .needsDepthFill = twin,
+            .needsDepthTwin = twin};
 }
 
 } // namespace whiteout::flakes::renderer::profiles::wow

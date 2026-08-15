@@ -51,13 +51,19 @@ const model::RenderModel::SurfaceAnim* SurfaceAnimFor(const render_detail::Rende
     return &(*view.surfaceAnim)[surface];
 }
 
+// The model's own alpha — what BeginDraw gates the pass and the cull on. Kept
+// apart from the batch's element alpha below, as the client keeps them.
+f32 ModelAlpha(const render_detail::RenderableView& view, const GPUGeoset& geo) {
+    return view.parentVisibility * geo.geosetAlpha;
+}
+
 // `element.alpha = batch.color.alpha * batch.textureWeight * model.alpha`. The
 // first two are the animated surface state (the table's constants until one
 // lands); the model's is the actor's visibility times the geoset's alpha.
 f32 ElementAlpha(const M2Surface& surf, const model::RenderModel::SurfaceAnim* anim,
                  const render_detail::RenderableView& view, const GPUGeoset& geo) {
     const f32 base = anim ? anim->alpha : surf.elementAlpha;
-    return base * view.parentVisibility * geo.geosetAlpha;
+    return base * ModelAlpha(view, geo);
 }
 
 } // namespace
@@ -262,7 +268,8 @@ gfx::PipelineHandle M2CombinerShading::GetOrBuildPso(const PsoKey& key) {
     // Element alpha does not reach the pipeline — it only moves alphaRef, which
     // is a uniform — so 1.0 here produces the same state for every draw sharing
     // this key.
-    const M2DrawState state = M2StateFor(static_cast<M2Blend>(key.blend), key.materialFlags, 1.0f);
+    const M2DrawState state =
+        M2StateFor(static_cast<M2Blend>(key.blend), key.materialFlags, 1.0f, key.mirrored);
 
     gfx::GraphicsPipelineDesc desc{};
     desc.vs = vs_[key.vsIndex];
@@ -356,8 +363,15 @@ void M2CombinerShading::Draw(const render_detail::DrawItem& item, const core::Pa
     key.stride = geo.baseStride;
     key.vsIndex = static_cast<u8>(surf->vertexShader);
     key.psIndex = static_cast<u8>(surf->pixelShader);
-    key.blend = static_cast<u8>(surf->blend);
+    // The depth half of a twin pair forces the blend opaque and nothing else —
+    // SetupMaterial swaps only the blend preset and still hands the shader the
+    // alpha reference the real material asked for, so an alpha-keyed surface
+    // keeps punching its holes while it lays depth down. `state` below is
+    // therefore built from the material's own blend, not this one.
+    const bool depthTwin = item.depthFill == bls::DepthFill::Depth;
+    key.blend = static_cast<u8>(depthTwin ? M2Blend::Opaque : surf->blend);
     key.materialFlags = surf->materialFlags;
+    key.mirrored = item.view->mirrored;
 
     const gfx::PipelineHandle pso = GetOrBuildPso(key);
     if (pso == gfx::PipelineHandle::Invalid)
@@ -386,8 +400,8 @@ void M2CombinerShading::Draw(const render_detail::DrawItem& item, const core::Pa
         c->world = item.view->worldTransform.transpose();
         c->texMtx0 = TexMatrixFor(*item.view, surf->transformId[0]).transpose();
         c->texMtx1 = TexMatrixFor(*item.view, surf->transformId[1]).transpose();
-        c->elementColor = {color.x * geo.geosetColor.x, color.y * geo.geosetColor.y,
-                           color.z * geo.geosetColor.z, elementAlpha};
+        const Vector3f in = M2CombinerInput(surf->blend, color, geo.geosetColor);
+        c->elementColor = {in.x, in.y, in.z, elementAlpha};
         c->unitWeights = {weights[0], weights[1], weights[2], weights[3]};
         c->params = {state.alphaRef, static_cast<f32>(state.fog), state.lit ? 1.0f : 0.0f, 0.0f};
         gfxDev->UnmapBuffer(drawCb_);
@@ -471,20 +485,8 @@ core::SurfaceClass M2CombinerShading::ClassifySurface(const render_detail::Rende
     if (!s)
         return {.visible = false};
 
-    // The zero-weight gate outranks the blend mode: a constant-zero weight
-    // track means "do not draw" even for an Opaque batch. A track that merely
-    // *reaches* zero this frame falls out through the alpha test below instead.
     const f32 alpha = ElementAlpha(*s, SurfaceAnimFor(view, surface), view, geo);
-    if (s->suppressed || alpha <= 0.0f)
-        return {.visible = false};
-
-    core::BlendClass blend = core::BlendClass::Transparent;
-    if (s->blend == M2Blend::Opaque)
-        blend = core::BlendClass::Opaque;
-    else if (s->blend == M2Blend::AlphaKey)
-        blend = core::BlendClass::AlphaKey;
-
-    return {.visible = true, .blend = blend, .needsDepthFill = false};
+    return M2ClassifySurface(*s, ModelAlpha(view, geo), alpha);
 }
 
 core::VertexNeeds M2CombinerShading::Needs(u32 surface) const {
