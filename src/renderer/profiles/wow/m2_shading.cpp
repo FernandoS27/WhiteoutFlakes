@@ -8,8 +8,11 @@
 #include "renderer/model/render_model.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
+#include "renderer/types.h"
 
 #include "compiled_shaders.h"
+
+#include <cstddef>
 
 namespace whiteout::flakes::renderer::profiles::wow {
 
@@ -17,13 +20,44 @@ using whiteout::flakes::renderer::model::GPUGeoset;
 
 namespace {
 
-// The texture-transform matrix for one unit. Identity until the animation phase
-// evaluates the tracks; the slot exists now so neither the shader signature nor
-// the bind order moves when it does.
+// The texture-transform matrix for one unit, from the actor's per-frame palette.
+//
+// The palette entry is the 2x4 affine `M2ModelAdapter::EvaluateTextureTransforms`
+// wrote (`u' = row0.x*u + row0.y*v + row0.w`, likewise row1 for v). Widening it
+// to a 4x4 loses nothing: the shader feeds (u, v, 0, 1) and reads .xy back, so
+// the row and column this fills with identity can never reach the output.
 Matrix44f TexMatrixFor(const render_detail::RenderableView& view, i32 transformId) {
-    (void)view;
-    (void)transformId;
-    return Matrix44f::identity();
+    Matrix44f m = Matrix44f::identity();
+    if (transformId < 0 || !view.texAnimPalette ||
+        static_cast<usize>(transformId) >= view.texAnimPalette->size())
+        return m;
+    const auto& e = (*view.texAnimPalette)[static_cast<usize>(transformId)];
+    m.data[0][0] = e.row0[0];
+    m.data[0][1] = e.row1[0];
+    m.data[1][0] = e.row0[1];
+    m.data[1][1] = e.row1[1];
+    m.data[3][0] = e.row0[3];
+    m.data[3][1] = e.row1[3];
+    return m;
+}
+
+// The animated half of a surface, or null when the actor's source animates
+// nothing (or fewer surfaces than the table holds) — in which case the caller
+// keeps the table's bind-pose constant.
+const model::RenderModel::SurfaceAnim* SurfaceAnimFor(const render_detail::RenderableView& view,
+                                                      u32 surface) {
+    if (!view.surfaceAnim || surface >= view.surfaceAnim->size())
+        return nullptr;
+    return &(*view.surfaceAnim)[surface];
+}
+
+// `element.alpha = batch.color.alpha * batch.textureWeight * model.alpha`. The
+// first two are the animated surface state (the table's constants until one
+// lands); the model's is the actor's visibility times the geoset's alpha.
+f32 ElementAlpha(const M2Surface& surf, const model::RenderModel::SurfaceAnim* anim,
+                 const render_detail::RenderableView& view, const GPUGeoset& geo) {
+    const f32 base = anim ? anim->alpha : surf.elementAlpha;
+    return base * view.parentVisibility * geo.geosetAlpha;
 }
 
 } // namespace
@@ -211,10 +245,18 @@ gfx::PipelineHandle M2CombinerShading::GetOrBuildPso(const PsoKey& key) {
         uv1->offset != uv0->offset + 8)
         return gfx::PipelineHandle::Invalid;
 
+    // Slot 1 is the bone stream — a `BoneVertex`, the same 8-byte record every
+    // skinned WC3 geoset uploads, so the two share PackBoneVertex and the
+    // palette CB layout. Always present: M2ModelAdapter emits weights for every
+    // submesh (synthesising a single identity bone if a model somehow has
+    // none), which is what lets the sixteen vertex shaders skin
+    // unconditionally instead of doubling into skinned/unskinned permutations.
     const gfx::InputElement elements[] = {
         {"POSITION", 0, pos->format, pos->offset, 0},
         {"NORMAL", 0, nrm->format, nrm->offset, 0},
         {"TEXCOORD", 0, gfx::Format::R32G32B32A32_FLOAT, uv0->offset, 0},
+        {"BLENDWEIGHT", 0, gfx::Format::R8G8B8A8_UNORM, offsetof(BoneVertex, weights), 1},
+        {"BLENDINDICES", 0, gfx::Format::R8G8B8A8_UINT, offsetof(BoneVertex, indices), 1},
     };
 
     // Element alpha does not reach the pipeline — it only moves alphaRef, which
@@ -230,6 +272,7 @@ gfx::PipelineHandle M2CombinerShading::GetOrBuildPso(const PsoKey& key) {
     // has to be stated or the backends that bake it into the PSO walk the
     // buffer wrong.
     desc.inputSlotStrides[0] = key.stride;
+    desc.inputSlotStrides[1] = sizeof(BoneVertex);
     desc.topology = gfx::PrimitiveTopology::TriangleList;
     desc.blend = state.blend;
     desc.depthStencil = state.depth;
@@ -320,27 +363,40 @@ void M2CombinerShading::Draw(const render_detail::DrawItem& item, const core::Pa
     if (pso == gfx::PipelineHandle::Invalid)
         return;
 
-    // element.alpha = batch.color.alpha * batch.textureWeight * model.alpha.
-    // The first two are baked into the surface; the model's is the actor's
-    // visibility times the geoset's animated alpha.
-    const f32 elementAlpha = surf->elementAlpha * item.view->parentVisibility * geo.geosetAlpha;
+    // Path A hands every geoset the actor's one palette; Path B gives each its
+    // own. Which one this actor is on was decided at load, and the vertex
+    // buffer's bone indices were rewritten to match — see
+    // DecidePaletteLayoutAndRewrite. Checked before anything is written,
+    // because the sixteen vertex shaders skin unconditionally: without both the
+    // stream and the palette there is no unskinned draw to fall back to.
+    gfx::BufferHandle paletteCb = geo.bonePaletteCb;
+    if (item.view->skinning && item.view->skinning->UsesPerActorPalette())
+        paletteCb = item.view->skinning->ActorPaletteCb();
+    if (geo.boneVb == gfx::BufferHandle::Invalid || paletteCb == gfx::BufferHandle::Invalid)
+        return;
+
+    const auto* anim = SurfaceAnimFor(*item.view, item.key.surface);
+    const f32 elementAlpha = ElementAlpha(*surf, anim, *item.view, geo);
     const M2DrawState state = M2StateFor(surf->blend, surf->materialFlags, elementAlpha);
+
+    const Vector3f color = anim ? anim->color : surf->elementColor;
+    const f32* weights = anim ? anim->unitWeights : surf->unitWeights;
 
     if (auto* c = static_cast<M2DrawCb*>(gfxDev->MapBuffer(drawCb_))) {
         c->world = item.view->worldTransform.transpose();
         c->texMtx0 = TexMatrixFor(*item.view, surf->transformId[0]).transpose();
         c->texMtx1 = TexMatrixFor(*item.view, surf->transformId[1]).transpose();
-        c->elementColor = {surf->elementColor.x * geo.geosetColor.x,
-                           surf->elementColor.y * geo.geosetColor.y,
-                           surf->elementColor.z * geo.geosetColor.z, elementAlpha};
-        c->unitWeights = {surf->unitWeights[0], surf->unitWeights[1], surf->unitWeights[2],
-                          surf->unitWeights[3]};
+        c->elementColor = {color.x * geo.geosetColor.x, color.y * geo.geosetColor.y,
+                           color.z * geo.geosetColor.z, elementAlpha};
+        c->unitWeights = {weights[0], weights[1], weights[2], weights[3]};
         c->params = {state.alphaRef, static_cast<f32>(state.fog), state.lit ? 1.0f : 0.0f, 0.0f};
         gfxDev->UnmapBuffer(drawCb_);
     }
 
     cmd->BindPipeline(pso);
     cmd->BindVertexBuffer(0, geo.Stream(core::StreamId::Base), geo.baseStride);
+    cmd->BindVertexBuffer(1, geo.boneVb, sizeof(BoneVertex));
+    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, paletteCb);
     cmd->BindIndexBuffer(geo.ib, gfx::Format::R32_UINT);
     // Both buffers in both stages: Vulkan and WebGPU build one descriptor set
     // per stage from the shared layout, so a declared binding left unbound in
@@ -416,8 +472,9 @@ core::SurfaceClass M2CombinerShading::ClassifySurface(const render_detail::Rende
         return {.visible = false};
 
     // The zero-weight gate outranks the blend mode: a constant-zero weight
-    // track means "do not draw" even for an Opaque batch.
-    const f32 alpha = s->elementAlpha * view.parentVisibility * geo.geosetAlpha;
+    // track means "do not draw" even for an Opaque batch. A track that merely
+    // *reaches* zero this frame falls out through the alpha test below instead.
+    const f32 alpha = ElementAlpha(*s, SurfaceAnimFor(view, surface), view, geo);
     if (s->suppressed || alpha <= 0.0f)
         return {.visible = false};
 
@@ -432,9 +489,12 @@ core::SurfaceClass M2CombinerShading::ClassifySurface(const render_detail::Rende
 
 core::VertexNeeds M2CombinerShading::Needs(u32 surface) const {
     (void)surface;
-    // All four are already in the `.m2` 48-byte record; naming them is what
-    // makes the Subset() call in GetOrBuildPso well-defined.
-    return core::VertexNeeds{.position = true, .normal = true, .uvSets = 2};
+    // All of these are already in the `.m2` 48-byte record; naming them is what
+    // makes the Subset() call in GetOrBuildPso well-defined. `boneWeights` is
+    // the one that does not come from that record — the draw binds the separate
+    // `BoneVertex` stream for it.
+    return core::VertexNeeds{
+        .position = true, .normal = true, .uvSets = 2, .boneWeights = true};
 }
 
 i32 M2CombinerShading::SelectLights(bls::FrameInputs& frame, const bls::LightingContext& lighting,

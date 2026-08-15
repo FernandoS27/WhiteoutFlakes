@@ -801,7 +801,7 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
 #if WDX_ENABLE_M2
     std::shared_ptr<io::M2ModelAdapter> m2;
     if (isM2) {
-        m2 = io::M2ModelAdapter::Load(ref, data, provider);
+        m2 = io::M2ModelAdapter::Load(ref, data, provider, rs_.Settings().M2LazyAnimations());
         source = m2;
     }
 #endif

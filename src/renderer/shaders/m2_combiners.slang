@@ -74,8 +74,22 @@ static const int WF_PS_BIND_OFFSET = 16;
 // slots: one global cannot carry two bindings, and the vertex-stage bind
 // writes the set-0 entry the pixel stage then reads. Same arrangement
 // unlit.slang relies on for its light CB.
+// One bone matrix per slot, three float4 rows each — the transposed 4x3 that
+// bls::PackBone writes, so the CB is byte-identical to the one WC3's skinned
+// geosets bind. Declared as a flat float4 array rather than an array of a
+// 48-byte struct: HLSL pads a struct array element to a 16-byte boundary, which
+// 48 already is, but the flat form leaves nothing to get wrong across four
+// backends. 256 slots x 3 rows = bls::kMaxBones.
+struct M2BoneData
+{
+    float4 rows[768];
+}
+
 [[vk::binding(0, 0)]] ConstantBuffer<M2PassData> pass : register(b0);
 [[vk::binding(1, 0)]] ConstantBuffer<M2DrawData> draw : register(b1);
+// Vertex stage only — the combiners never see a bone. Mirrors how the WC3
+// geoset passes bind their palette (vertex slot 3 there, b2 here).
+[[vk::binding(2, 0)]] ConstantBuffer<M2BoneData> bones : register(b2);
 
 // ---- Interstage signature --------------------------------------------------
 
@@ -89,9 +103,11 @@ static const int WF_PS_BIND_OFFSET = 16;
 // locations from array position and never noticed.
 struct VSInput
 {
-    float3 position : POSITION;
-    float3 normal   : NORMAL;
-    float4 uvs      : TEXCOORD0; // .xy = UV set 0, .zw = UV set 1
+    float3 position    : POSITION;
+    float3 normal      : NORMAL;
+    float4 uvs         : TEXCOORD0; // .xy = UV set 0, .zw = UV set 1
+    float4 boneWeights : BLENDWEIGHT;
+    uint4  boneIndices : BLENDINDICES;
 }
 
 struct PSInput
@@ -146,13 +162,48 @@ float2 M2Coord(int src, VSInput input, float3 posVS, float3 nrmVS)
     }
 }
 
+// Model space to *animated* model space. An `.m2` bone matrix folds its own
+// pivot in, so there is no inverse bind matrix to undo first — the same matrix
+// applies to a vertex straight out of the file.
+//
+// Weights are normalised at pack time (they quantise to 255 summing to 255), so
+// there is nothing to divide by here. A geoset whose vertices are all unweighted
+// still binds a palette; its lanes just sum to zero and the point stays put.
+void M2Skin(VSInput input, out float3 pos, out float3 nrm)
+{
+    pos = float3(0.0, 0.0, 0.0);
+    nrm = float3(0.0, 0.0, 0.0);
+    let p = float4(input.position, 1.0);
+    let n = float4(input.normal, 0.0);
+    // No early-out on a zero weight: `continue` inside an unrolled loop is what
+    // fxc refuses to unroll ("loop does not appear to terminate in a timely
+    // manner"), and a zero-weight lane costs one madd it then multiplies away.
+    // Its bone index is 0 by construction — every unused lane keeps the
+    // VertexInfluence default, which the palette rewrite maps to the geoset's
+    // first slot — so the read is always in range.
+    [unroll]
+    for (int i = 0; i < 4; ++i)
+    {
+        let w = input.boneWeights[i];
+        let b = input.boneIndices[i] * 3;
+        let r0 = bones.rows[b + 0];
+        let r1 = bones.rows[b + 1];
+        let r2 = bones.rows[b + 2];
+        pos += w * float3(dot(p, r0), dot(p, r1), dot(p, r2));
+        nrm += w * float3(dot(n, r0), dot(n, r1), dot(n, r2));
+    }
+}
+
 // The whole vertex stage. Every named entry point below is this with four
 // source codes; the client's sixteen vertex shaders differ in nothing else.
 PSInput M2Vertex(VSInput input, int s0, int s1, int s2, int s3)
 {
     PSInput o;
 
-    let worldPos = mul(float4(input.position, 1.0), draw.world);
+    float3 skinPos, skinNrm;
+    M2Skin(input, skinPos, skinNrm);
+
+    let worldPos = mul(float4(skinPos, 1.0), draw.world);
     let viewPos  = mul(worldPos, pass.view);
     o.position = mul(viewPos, pass.projection);
     o.worldPos = worldPos.xyz;
@@ -160,7 +211,7 @@ PSInput M2Vertex(VSInput input, int s0, int s1, int s2, int s3)
     // Uniform scale only (the actor world transform is rotation + translation +
     // WorldScale), so the world matrix carries normals correctly after the
     // renormalise — no inverse transpose needed.
-    let nrmWS = normalize(mul(float4(input.normal, 0.0), draw.world).xyz);
+    let nrmWS = normalize(mul(float4(skinNrm, 0.0), draw.world).xyz);
     let nrmVS = normalize(mul(float4(nrmWS, 0.0), pass.view).xyz);
 
     o.uv01 = float4(M2Coord(s0, input, viewPos.xyz, nrmVS),

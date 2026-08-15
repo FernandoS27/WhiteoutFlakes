@@ -1093,6 +1093,19 @@ void ViewerUI::BuildSettingsGeneralTab(ProductId game) {
         }
     }
 
+    // ---- Lazy `.anim` loading (`.m2` only) ----
+    // Applies to the next model loaded, not to the ones already in the scene:
+    // the choice is made while parsing.
+    {
+        bool on = svc.Settings().M2LazyAnimations();
+        if (ImGui::Checkbox(i18n::tr("settings.general.m2_lazy_anim"), &on)) {
+            svc.Settings().SetM2LazyAnimations(on);
+            SaveIni(app_);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", i18n::tr("settings.general.m2_lazy_anim.tip"));
+    }
+
     ImGui::Separator();
 
     // ---- Time of day ----

@@ -32,6 +32,7 @@ struct RenderableView {
     assets::TextureAssetManager::ModelScope* textures = nullptr;
     const animation::SkinningSystem* skinning = nullptr;
     const std::vector<model::RenderModel::TexAnimPaletteEntry>* texAnimPalette = nullptr;
+    const std::vector<model::RenderModel::SurfaceAnim>* surfaceAnim = nullptr;
     Matrix44f worldTransform = Matrix44f::identity();
     f32 parentVisibility = 1.0f;
     bool hasLods = false;

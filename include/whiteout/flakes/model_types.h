@@ -554,6 +554,27 @@ struct FrameState {
         f32 visibility = 1.0f;         ///< `gateByBoneAncestors(node)`: 0/1 bone-chain gate.
     };
     std::vector<CornFrameState> cornStates;
+
+    /// @brief Per-surface animated material values.
+    ///
+    /// The animated twin of whatever the actor's `ISurfaceTable` holds as a
+    /// load-time constant, indexed by the same `SurfaceKey::surface`. It exists
+    /// because a surface is finer than a geoset: an `.m2` submesh carries N
+    /// batches, each with its own colour, alpha and per-texture-unit weight
+    /// tracks, so `geosetAlphas` cannot express them.
+    ///
+    /// Warcraft III fills none of this — its per-layer values already have
+    /// `layerAlphas` / `layerFresnels`, which are keyed by material rather than
+    /// by surface.
+    struct SurfaceState {
+        i32 surface = 0;
+        Vector3f color = {1.0f, 1.0f, 1.0f};
+        f32 alpha = 1.0f;
+        /// One weight per texture unit; only the shaders that declare the
+        /// per-unit weight input read past `[0]`.
+        f32 unitWeights[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    };
+    std::vector<SurfaceState> surfaceStates;
 };
 
 } // namespace whiteout::flakes::renderer::model

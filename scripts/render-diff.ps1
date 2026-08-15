@@ -44,6 +44,15 @@ param(
     # the viewer will not load an `.m2` at all and every model reports a miss.
     [switch]$M2,
 
+    # `.m2` streaming arm: parse without the `.anim` siblings and read one the
+    # first time a sequence plays. Deliberately shares the -M2 baselines rather
+    # than recording its own — the claim being gated is that deferring the reads
+    # leaves the frame byte-identical, so:
+    #
+    #   .\scripts\render-diff.ps1 -Record -M2 -Golden
+    #   .\scripts\render-diff.ps1 -Check  -M2 -Golden -LazyAnim   # must ALL MATCH
+    [switch]$LazyAnim,
+
     # The `.m3` arm. Same shape as -M2, and needs -DWDX_ENABLE_M3=ON. Its
     # golden is *tonemapped* white rather than #FFFFFF: Sc2HeroesProfile reuses
     # the HD frame, and a linear 1.0 through the tonemap and bloom chain does
@@ -83,6 +92,15 @@ if ($Perturb -gt 0 -and $Golden) {
     Write-Error ('-Perturb and -Golden are not compatible: reseeding actor ids ' +
                  'changes the particle RNG stream, so the image differs by design ' +
                  'while the trace stays identical. Run them as separate arms.')
+    exit 2
+}
+
+# -LazyAnim is a check-only arm by construction: it is compared against the
+# baselines the eager run recorded, so recording with it on would compare the
+# streaming path against itself and prove nothing.
+if ($LazyAnim -and $Record) {
+    Write-Error ('-LazyAnim is a -Check arm: record the baselines with the eager parse, ' +
+                 'then check them with -LazyAnim.')
     exit 2
 }
 
@@ -145,6 +163,7 @@ foreach ($rel in $entries) {
               '--draw-trace-camera-distance', $CameraDistance)
     if ($Hd) { $argv += '--draw-trace-hd' }
     if ($Unlit) { $argv += '--draw-trace-unlit' }
+    if ($LazyAnim) { $argv += '--draw-trace-lazy-anim' }
     if ($Perturb -gt 0) { $argv += @('--draw-trace-perturb', $Perturb) }
     if ($Golden) { $argv += @('--draw-trace-golden', $image) }
 

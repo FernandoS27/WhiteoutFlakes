@@ -1245,6 +1245,7 @@ add_library(WhiteoutFlakesLib STATIC
 # half-implemented format should not cost compile time in a release viewer.
 if(WDX_ENABLE_M2)
     target_sources(WhiteoutFlakesLib PRIVATE
+        src/io/m2/m2_animation.cpp
         src/io/m2/m2_model_adapter.cpp
         src/renderer/profiles/wow/m2_material.cpp
         src/renderer/profiles/wow/m2_shader_select.cpp
@@ -1252,7 +1253,7 @@ if(WDX_ENABLE_M2)
         src/renderer/profiles/wow/m2_surface_table.cpp
     )
     target_compile_definitions(WhiteoutFlakesLib PUBLIC WDX_ENABLE_M2=1)
-    message(STATUS "WhiteoutFlakes: .m2 loading ENABLED (materials + combiners)")
+    message(STATUS "WhiteoutFlakes: .m2 loading ENABLED (materials + combiners + animation)")
 endif()
 
 # `.m3`, opt-in on the same terms.

@@ -70,6 +70,10 @@ target_include_directories(settings_ini_test PRIVATE "${CMAKE_SOURCE_DIR}/tools/
 # exist otherwise. The test itself skips without a configured WoW install.
 if(WDX_ENABLE_M2)
     wdx_add_test(m2_geometry_test m2_geometry_test.cpp)
+    # Half pure tables, half corpus sweep — see the file header.
+    wdx_add_test(m2_animation_test m2_animation_test.cpp)
+    # Corpus only: lazy `.anim` loading has to match the eager parse exactly.
+    wdx_add_test(m2_lazy_animation_test m2_lazy_animation_test.cpp)
     # Pure tables — no device, no corpus. These are the ones that catch a
     # transcription slip in the shader-selection or material-state rules.
     wdx_add_test(m2_shader_select_test m2_shader_select_test.cpp)

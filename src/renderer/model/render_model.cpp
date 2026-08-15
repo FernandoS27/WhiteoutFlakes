@@ -21,6 +21,23 @@ void RenderModel::ApplyGeosetStates(const FrameState& state) {
 
 void RenderModel::ApplyLayerStates(const FrameState& state) {
 
+    // Sized to the highest surface the source reported, not to the table:
+    // a source may animate fewer surfaces than the table holds, and a reader
+    // falls back to the table's constant for anything past the end.
+    i32 maxSurface = -1;
+    for (const auto& ss : state.surfaceStates)
+        maxSurface = std::max(maxSurface, ss.surface);
+    surfaceAnim.assign(static_cast<usize>(maxSurface + 1), SurfaceAnim{});
+    for (const auto& ss : state.surfaceStates) {
+        if (ss.surface < 0 || ss.surface > maxSurface)
+            continue;
+        auto& e = surfaceAnim[static_cast<usize>(ss.surface)];
+        e.color = ss.color;
+        e.alpha = ss.alpha;
+        for (i32 k = 0; k < 4; ++k)
+            e.unitWeights[k] = ss.unitWeights[k];
+    }
+
     matTexAnim.clear();
     for (auto& ta : state.texAnims) {
         i32 key = ta.materialId * 1000 + ta.layerIndex;

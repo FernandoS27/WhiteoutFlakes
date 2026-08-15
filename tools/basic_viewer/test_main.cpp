@@ -341,7 +341,7 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
                         const std::filesystem::path& mdxPath, const std::string& recordPath,
                         const std::string& checkPath, const std::string& goldenPath, i32 frames,
                         bool hdMode, f32 distanceTol, i32 cameraDistance, i32 perturbSeed,
-                        i32 instances, bool unlitOddGeosets) {
+                        i32 instances, bool unlitOddGeosets, bool lazyAnim) {
     namespace wf = whiteout::flakes;
     namespace dbg = wf::renderer::debug;
 
@@ -382,6 +382,12 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
     // SurfacePass's open/close transition and the key.model sort term. Off is
     // what every byte-identical baseline is recorded and checked with.
     settings.SetDebugUnlitOddGeosets(unlitOddGeosets);
+
+    // The `.m2` streaming arm, and the reason it shares its baselines rather
+    // than getting its own: deferring the `.anim` reads has to leave the frame
+    // byte-identical, so the claim only means something if it is checked
+    // against the same file the eager run recorded.
+    settings.SetM2LazyAnimations(lazyAnim);
 
     // The gate's perturbation arm: a different first handle puts every actor
     // in a different hash bucket, so any draw path that follows unordered_map
@@ -887,6 +893,7 @@ int main(int argc, char* argv[]) {
     bool drawTrace = false;
     bool drawTraceHd = false;
     bool drawTraceUnlit = false;
+    bool drawTraceLazyAnim = false;
     std::string drawTraceRecord;
     std::string drawTraceCheck;
     std::string drawTraceGolden;
@@ -1004,6 +1011,8 @@ int main(int argc, char* argv[]) {
             drawTraceHd = true;
         } else if (std::strcmp(a, "--draw-trace-unlit") == 0) {
             drawTraceUnlit = true;
+        } else if (std::strcmp(a, "--draw-trace-lazy-anim") == 0) {
+            drawTraceLazyAnim = true;
         } else if (std::strcmp(a, "--draw-trace-distance-tol") == 0 && i + 1 < argc) {
             drawTraceDistanceTol = static_cast<f32>(std::atof(argv[++i]));
         } else if (std::strcmp(a, "--draw-trace-camera-distance") == 0 && i + 1 < argc) {
@@ -1201,7 +1210,7 @@ int main(int argc, char* argv[]) {
         return RunDrawTrace(renderer, scene, backend, mdxPath, drawTraceRecord, drawTraceCheck,
                             drawTraceGolden, particleDiffFrames, drawTraceHd, drawTraceDistanceTol,
                             drawTraceCameraDistance, drawTracePerturb, drawTraceInstances,
-                            drawTraceUnlit);
+                            drawTraceUnlit, drawTraceLazyAnim);
 
     whiteout::flakes::ViewerApp app(renderer);
     if (!app.Open(1024, 768, backend)) {

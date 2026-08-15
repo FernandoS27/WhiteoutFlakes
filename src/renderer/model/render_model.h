@@ -209,6 +209,20 @@ struct RenderModel {
     };
     std::vector<TexAnimPaletteEntry> texAnimPalette;
 
+    /// @brief Per-frame `FrameState::SurfaceState`, indexed by surface.
+    ///
+    /// Kept here rather than written back into `surfaceTable` because the table
+    /// is the *static* half by contract (core/surface_table.h) — a shading
+    /// model reads the load-time constant from the table and the animated value
+    /// from here, and an actor whose source animates nothing simply leaves this
+    /// empty.
+    struct SurfaceAnim {
+        Vector3f color = {1.0f, 1.0f, 1.0f};
+        f32 alpha = 1.0f;
+        f32 unitWeights[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    };
+    std::vector<SurfaceAnim> surfaceAnim;
+
     std::vector<FrameState::LightState> activeLights;
 
     bool hasLods = false;

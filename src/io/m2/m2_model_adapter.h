@@ -1,13 +1,13 @@
 #pragma once
 
 // ============================================================================
-// M2ModelAdapter — World of Warcraft `.m2`, geometry only.
+// M2ModelAdapter — World of Warcraft `.m2`.
 //
-// Positions and indices from the chosen skin profile's submeshes, and nothing
-// else: no bones, no textures, no materials, no batches beyond "which
-// submesh". Every surface is drawn by UnlitShading, so "the model loads" is a
-// visible, gate-able claim before any of the material work exists
-// (REFACTOR_PLAN.md P9).
+// Geometry and textures from the chosen skin profile; per-batch material data
+// stays out of `MaterialData` and is built into `M2SurfaceTable` instead (see
+// below). Animation is here: the bone hierarchy, the per-sequence track
+// sampling, texture transforms, and the animated half of each batch's colour /
+// alpha / per-unit weights.
 //
 // ---------------------------------------------------------------------------
 // How the `.skin` arrives — the load route, chosen and stated
@@ -54,6 +54,7 @@
 // small; having only one made the format untestable.
 // ============================================================================
 
+#include "io/m2/m2_animation.h"
 #include "whiteout/flakes/content_provider.h"
 #include "whiteout/flakes/model_source.h"
 
@@ -139,11 +140,22 @@ public:
     /// Returns null when the parse fails or no skin profile resolved — the
     /// latter meaning the siblings could not be found, which is a
     /// configuration problem rather than a malformed model.
+    ///
+    /// With @p lazyAnimations, the parse skips the `.anim` siblings and
+    /// Evaluate reads one the first time a sequence is played. The adapter
+    /// keeps the filesystem wrapper alive for that, which is why @p provider
+    /// then has to outlive the adapter — as it already does, being the scene's.
     static std::shared_ptr<M2ModelAdapter> Load(const ContentRef& ref,
                                                 std::span<const ::whiteout::u8> bytes,
-                                                IContentProvider* provider);
+                                                IContentProvider* provider,
+                                                bool lazyAnimations = false);
 
-    explicit M2ModelAdapter(::whiteout::m2::Model model);
+    /// @p fsKeepAlive is the filesystem wrapper the model was parsed through.
+    /// A lazily parsed model reads its `.anim` siblings through it for the life
+    /// of the adapter, so the adapter has to own it; the exact type does not
+    /// matter here, only that it stays alive. Null for an eager parse.
+    explicit M2ModelAdapter(::whiteout::m2::Model model,
+                            std::shared_ptr<void> fsKeepAlive = nullptr);
 
     // ---- IModelDataSource ----
     std::vector<renderer::model::MeshData> GetMeshes() override;
@@ -165,12 +177,26 @@ public:
     std::vector<renderer::model::MaterialData> GetMaterials() override {
         return {};
     }
-    renderer::model::SkeletonData GetSkeleton() override {
-        return {};
-    }
-    std::vector<renderer::model::SkinWeightData> GetSkinWeights() override {
-        return {};
-    }
+    /// @brief The bone list, flat, in file order — which is also topological
+    ///        order, since the client asserts `parentIndex < boneIndex`.
+    ///
+    /// `inverseBindMatrices` are all identity, and that is not a stub: an M2
+    /// bone matrix maps model space to *animated* model space because the pivot
+    /// is folded into it (`T(-pivot) · S · R · T(pivot + t)`), so there is no
+    /// separate bind-pose inverse to undo. `CM2Model::GetBonePositionByIndex`
+    /// confirms it — it reads the bone's pivot straight through the bone matrix
+    /// with nothing in between.
+    renderer::model::SkeletonData GetSkeleton() override;
+
+    /// @brief One entry per submesh, weights from the `.m2` vertex record.
+    ///
+    /// Bone indices are rebased onto a per-submesh subset rather than shipped
+    /// global. The renderer's palette layout wants that shape (it is what
+    /// `subsetNodeIndices` means), and it is also what keeps a rig with more
+    /// than 256 bones drawable: the per-actor palette is capped at 256 slots
+    /// and only a per-geoset subset fits under it.
+    std::vector<renderer::model::SkinWeightData> GetSkinWeights() override;
+
     std::vector<renderer::ParticleEmitterConfig> GetParticleConfigs() override {
         return {};
     }
@@ -187,12 +213,25 @@ public:
     ///        to not render a 2-yard creature as a sub-pixel dot.
     ::whiteout::flakes::ModelBounds GetBounds() override;
 
+    /// @brief `globalLoops`, the periods every global-sequence track runs on.
+    std::vector<u32> GetGlobalSequences() override;
+
     // ---- IAnimationSource ----
-    /// @brief One placeholder sequence. Geometry-only: there are no bone
-    ///        tracks to sample, so every pose is the bind pose and the actor
-    ///        still needs a sequence to keep its clock running.
+    /// @brief One entry per `M2Sequence`, named from the client's
+    ///        `AnimationData` table and timed `[0, duration)`.
+    ///
+    /// Aliases are kept rather than resolved: an alias entry is a real index a
+    /// host can select, and the track sampler already falls back to sub-array 0
+    /// for a sequence with no keys of its own — which is what an alias is.
     std::vector<renderer::model::SequenceInfo> GetSequences() const override;
 
+    /// @brief Sample the whole model at one pose: bone matrices, texture
+    ///        transforms, and per-batch colour / alpha / weights.
+    ///
+    /// On a lazily parsed model this is also where a sequence's `.anim` sibling
+    /// gets read — the first frame that plays it, and no earlier. Same place
+    /// the client does it: CM2Model::LoadSequence runs off SetBoneSequence, not
+    /// off the model load.
     renderer::model::FrameState Evaluate(const PoseRequest& req) const override;
 
     /// @brief How many submeshes the chosen profile contributed. What the
@@ -212,11 +251,27 @@ public:
     }
 
 private:
-    ::whiteout::m2::Model model_;
+    void EvaluateBones(const M2AnimTime& at, bool bindPose,
+                       renderer::model::FrameState& fs) const;
+    void EvaluateTextureTransforms(const M2AnimTime& at, bool bindPose,
+                                   renderer::model::FrameState& fs) const;
+    void EvaluateSurfaces(const M2AnimTime& at, bool bindPose,
+                          renderer::model::FrameState& fs) const;
+
+    // Mutable because Evaluate is const and a lazily parsed model fills its
+    // tracks in on first play. Nothing a caller can observe changes: the keys
+    // that arrive are the ones the eager parse would already have read.
+    mutable ::whiteout::m2::Model model_;
+    // The parse-time filesystem wrapper, held only for a lazy parse. See the
+    // constructor.
+    std::shared_ptr<void> fsKeepAlive_;
     // Which entry of `skinProfiles` GetMeshes reads. Index 0 is the highest
     // detail level; the plan takes one LOD and no more.
     std::size_t profileIndex_ = 0;
     std::size_t submeshCount_ = 0;
+    // `globalLoops` flattened at construction. Evaluate is const and needs the
+    // periods every frame; GetGlobalSequences hands the same list to the loader.
+    std::vector<u32> globalLoops_;
 };
 
 } // namespace whiteout::flakes::io

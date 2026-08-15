@@ -106,6 +106,22 @@ public:
         sceneHdrInSd_.store(on);
     }
 
+    // Parse `.m2` models without reading their `.anim` siblings, and read one
+    // the first time a sequence is played — what the WoW client does. A
+    // character model can ship a hundred `.anim` files and several megabytes of
+    // keys, and a viewer showing one animation needs one of them.
+    //
+    // Read when a model is loaded, so flipping it affects the next load, not
+    // the models already in the scene. Off by default: the eager parse is what
+    // every byte-identical gate was recorded against, and a lazy load moves
+    // file reads onto the frame that first plays a sequence.
+    bool M2LazyAnimations() const {
+        return m2LazyAnimations_.load();
+    }
+    void SetM2LazyAnimations(bool on) {
+        m2LazyAnimations_.store(on);
+    }
+
     // ---- Debug visualization ----
 
     // Route every odd-indexed geoset through UnlitShading instead of the
@@ -382,6 +398,7 @@ private:
     RenderMode renderMode_ = RenderMode::SD;
     std::atomic<bool> renderModeDirty_{false};
     std::atomic<bool> sceneHdrInSd_{false};
+    std::atomic<bool> m2LazyAnimations_{false};
 
     // Debug + LOD.
     std::atomic<i32> hdDebugMode_{0};
