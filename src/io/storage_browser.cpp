@@ -18,13 +18,122 @@ std::string ToLower(std::string s) {
     return s;
 }
 
-bool IsModelOrEffect(std::string_view name) {
-    const auto dot = name.find_last_of('.');
+} // namespace
+
+BrowseType BrowseTypeOfFile(std::string_view fileName) {
+    const auto dot = fileName.find_last_of('.');
     if (dot == std::string_view::npos)
-        return false;
-    std::string ext = ToLower(std::string(name.substr(dot + 1)));
-    return ext == "mdx" || ext == "mdl" || ext == "pkb" || ext == "pkfx";
+        return BrowseType::None;
+    const std::string ext = ToLower(std::string(fileName.substr(dot + 1)));
+    if (ext == "mdx" || ext == "mdl")
+        return BrowseType::Models;
+    if (ext == "pkb" || ext == "pkfx")
+        return BrowseType::Effects;
+    if (ext == "m2")
+        return BrowseType::M2;
+    if (ext == "m3")
+        return BrowseType::M3;
+    return BrowseType::None;
 }
+
+BrowseType BrowseTypesFor(ProductId game) {
+    switch (game) {
+    case ProductId::Wc3:
+        return BrowseType::Models | BrowseType::Effects;
+    case ProductId::Wow:
+        // `.m2` and nothing else. A WoW install also ships `.wmo`, `.adt` and
+        // the rest of a world, none of which this draws, so offering a filter
+        // for them would be offering an empty grid.
+        return BrowseType::M2;
+    case ProductId::Sc2:
+        return BrowseType::M3;
+    default:
+        // Nobody said, which is what a loose folder is: show everything rather
+        // than guess which half of a mixed directory was meant.
+        return BrowseType::Models | BrowseType::Effects | BrowseType::M2 | BrowseType::M3;
+    }
+}
+
+namespace {
+
+// `*` (any run) / `?` (any one char) against the whole string, both already
+// lowercased. Iterative with one backtrack point, so a pattern of nothing but
+// stars can't blow the stack on a long name.
+bool GlobMatch(std::string_view pat, std::string_view s) {
+    std::size_t pi = 0, si = 0, star = std::string_view::npos, mark = 0;
+    while (si < s.size()) {
+        if (pi < pat.size() && (pat[pi] == '?' || pat[pi] == s[si])) {
+            ++pi;
+            ++si;
+        } else if (pi < pat.size() && pat[pi] == '*') {
+            star = pi++;
+            mark = si;
+        } else if (star != std::string_view::npos) {
+            pi = star + 1;
+            si = ++mark;
+        } else {
+            return false;
+        }
+    }
+    while (pi < pat.size() && pat[pi] == '*')
+        ++pi;
+    return pi == pat.size();
+}
+
+std::string_view Trim(std::string_view s) {
+    while (!s.empty() && (s.front() == ' ' || s.front() == '\t'))
+        s.remove_prefix(1);
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t'))
+        s.remove_suffix(1);
+    return s;
+}
+
+} // namespace
+
+bool MatchesFilter(std::string_view name, std::string_view pattern) {
+    const std::string hay = ToLower(std::string(name));
+    bool anyInclude = false;
+    bool included = false;
+    for (std::size_t i = 0; i <= pattern.size();) {
+        const std::size_t comma = pattern.find(',', i);
+        std::string_view term = Trim(pattern.substr(i, comma - i));
+        i = comma == std::string_view::npos ? pattern.size() + 1 : comma + 1;
+        const bool exclude = !term.empty() && term.front() == '-';
+        if (exclude)
+            term.remove_prefix(1);
+        if (term.empty())
+            continue;
+        const std::string needle = ToLower(std::string(term));
+        const bool hit = needle.find_first_of("*?") == std::string::npos
+                             ? hay.find(needle) != std::string::npos
+                             : GlobMatch(needle, hay);
+        if (exclude) {
+            if (hit)
+                return false; // an exclusion beats every include
+        } else {
+            anyInclude = true;
+            included = included || hit;
+        }
+    }
+    return !anyInclude || included;
+}
+
+const char* BrowseTypeLabel(BrowseType one) {
+    switch (one) {
+    case BrowseType::Models:
+        return "Models (.mdx/.mdl)";
+    case BrowseType::Effects:
+        return "Effects (.pkb/.pkfx)";
+    case BrowseType::M2:
+        return "Models (.m2)";
+    case BrowseType::M3:
+        return "Models (.m3)";
+    default:
+        return "";
+    }
+}
+
+namespace {
 
 // Display form of an archive path: drop the leading "war3.w3mod:" mod prefix
 // and treat ':' as a folder separator like '\'.
@@ -73,6 +182,7 @@ bool StorageBrowser::Open(const std::string& root, StorageKind kind, std::string
     open_ = false;
     kind_ = kind;
     product_ = ProductId::Neutral;
+    available_ = BrowseType::None;
     storage_.reset();
     tree_ = Node{};
     currentPath_.clear();
@@ -93,8 +203,32 @@ bool StorageBrowser::Open(const std::string& root, StorageKind kind, std::string
         return false;
 
     open_ = true;
+    // Everything the game offers, until the host says otherwise.
+    enabled_ = available_;
     Refresh();
     return true;
+}
+
+void StorageBrowser::SetCascKeys(std::string listfilePath, std::string tactKeyPath) {
+    listfilePath_ = std::move(listfilePath);
+    tactKeyPath_ = std::move(tactKeyPath);
+}
+
+void StorageBrowser::SetEnabledTypes(BrowseType types) {
+    // Only what the open storage actually has: a host that offers a stale
+    // checkbox must not be able to ask for a type nothing was walked for.
+    types = types & available_;
+    if (types == enabled_)
+        return;
+    enabled_ = types;
+    Refresh();
+}
+
+void StorageBrowser::SetFilter(std::string pattern) {
+    if (pattern == filter_)
+        return;
+    filter_ = std::move(pattern);
+    Refresh();
 }
 
 bool StorageBrowser::OpenAuto(const std::string& path, std::string* error) {
@@ -129,32 +263,41 @@ void StorageBrowser::Insert(const std::string& original, const std::string& disp
 }
 
 bool StorageBrowser::OpenCasc(const std::string& root, std::string* error) {
+    // Through the registry, so browsing an install a scene is already reading
+    // costs nothing and shows exactly what that scene sees.
+    CascOpenKey key;
+    key.root = root;
+    key.listfilePath = listfilePath_;
+    key.tactKeyFile = tactKeyPath_;
+    key.zeroFillEncrypted = !tactKeyPath_.empty();
     std::string err;
-    std::optional<storages::casc::Storage> s = storages::casc::Storage::open(root, &err);
-    std::string usedRoot = root;
+    auto s = AcquireSharedCasc(key, err);
     if (!s) {
         std::string err2;
-        s = storages::casc::Storage::open(root + "/Data", &err2);
-        if (s)
-            usedRoot = root + "/Data";
-        else {
+        key.root = root + "/Data";
+        s = AcquireSharedCasc(key, err2);
+        if (!s) {
             if (error)
                 *error = err.empty() ? err2 : err;
             return false;
         }
     }
-    storage_ = std::move(*s);
-    root_ = usedRoot;
+    storage_ = std::move(s);
+    root_ = storage_->Root();
 
     // The only place a product is genuinely *detected*. `product()` can be
     // nullopt (a storage that carries no build config), and an unrecognised
     // build-product string normalises to Neutral — both mean "we don't know",
     // which is a better answer than a confident wrong one.
-    if (auto prod = storage_->product())
+    if (auto prod = storage_->Storage().product())
         product_ = ProductIdFromBuildProduct(prod->name);
 
-    storage_->enumerate([this](const storages::casc::EnumerateEntry& e) {
-        if (IsModelOrEffect(e.path))
+    // Everything the game has, not just what is enabled: the walk is the
+    // expensive part (three quarters of a million entries on StarCraft II), so
+    // it happens once and a filter change re-lists rather than re-enumerates.
+    available_ = BrowseTypesFor(product_);
+    storage_->Storage().enumerate([this](const storages::casc::EnumerateEntry& e) {
+        if (Any(BrowseTypeOfFile(e.path) & available_))
             Insert(std::string(e.path), CascToDisplay(e.path));
         return true;
     });
@@ -176,10 +319,11 @@ bool StorageBrowser::OpenMpq(const std::string& path, std::string* error) {
     // maps. Reporting Wc3 unconditionally is a statement about the format,
     // not a guess about this particular archive.
     product_ = ProductId::Wc3;
+    available_ = BrowseTypesFor(product_);
     // MPQ paths are already ''-separated and carry no mod prefix, so the
     // display form is the stored form.
     for (const auto& name : s->listFiles()) {
-        if (IsModelOrEffect(name))
+        if (Any(BrowseTypeOfFile(name) & available_))
             Insert(name, name);
     }
     return true;
@@ -200,12 +344,12 @@ bool StorageBrowser::OpenFolder(const std::string& path, std::string* error) {
         return false;
     }
     root_ = path;
-    // A loose directory has no product record either. It reports Wc3 because
-    // `IsModelOrEffect` only admits `.mdx` / `.mdl` / `.pkb` / `.pkfx`, so a
-    // folder this browser can show anything in is a Warcraft III folder by
-    // construction. When `.m2` / `.m3` join that filter this has to become
-    // extension-derived — it is a consequence of the filter, not a default.
-    product_ = ProductId::Wc3;
+    // A loose directory has no product record, and now that `.m2` and `.m3`
+    // are browsable it cannot be assumed to be Warcraft III's either. Neutral
+    // is the honest answer, and BrowseTypesFor turns it into "show everything"
+    // — which is what a directory of mixed content deserves.
+    product_ = ProductId::Neutral;
+    available_ = BrowseTypesFor(product_);
 
     // Skip-on-error so one unreadable subdirectory does not abort the walk —
     // a system folder the user pointed at may well contain some.
@@ -227,7 +371,7 @@ bool StorageBrowser::OpenFolder(const std::string& path, std::string* error) {
             std::error_code fe;
             if (entry.is_regular_file(fe) && !fe) {
                 const std::string name = entry.path().filename().string();
-                if (IsModelOrEffect(name)) {
+                if (Any(BrowseTypeOfFile(name) & available_)) {
                     // Display relative to the root, with the tree's separator;
                     // the original stays absolute so a provider can open it
                     // directly.
@@ -268,14 +412,22 @@ const StorageBrowser::Node* StorageBrowser::NodeAt(const std::string& displayPat
 }
 
 void StorageBrowser::Refresh() {
-    listing_.folders.clear();
-    listing_.modelFiles.clear();
+    listing_ = Listing{};
     const Node* node = NodeAt(currentPath_);
     if (node) {
-        for (const auto& [key, disp] : node->folderDisplay)
-            listing_.folders.push_back(disp);
-        for (const auto& [name, orig] : node->files)
-            listing_.modelFiles.push_back(name);
+        const bool filtered = !filter_.empty();
+        for (const auto& [key, disp] : node->folderDisplay) {
+            ++listing_.folderTotal;
+            if (!filtered || MatchesFilter(disp, filter_))
+                listing_.folders.push_back(disp);
+        }
+        for (const auto& [name, orig] : node->files) {
+            if (!Any(BrowseTypeOfFile(name) & enabled_))
+                continue;
+            ++listing_.fileTotal;
+            if (!filtered || MatchesFilter(name, filter_))
+                listing_.modelFiles.push_back(name);
+        }
         auto ci = [](const std::string& a, const std::string& b) { return ToLower(a) < ToLower(b); };
         std::sort(listing_.folders.begin(), listing_.folders.end(), ci);
         std::sort(listing_.modelFiles.begin(), listing_.modelFiles.end(), ci);

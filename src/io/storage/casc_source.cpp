@@ -4,8 +4,6 @@
 
 #include "storage_paths.h"
 
-#include <whiteout/utils/simple_thread_pool.h>
-
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -36,40 +34,22 @@ std::array<const char*, 4> Prefixes(const std::atomic<bool>* hdMode) {
 
 } // namespace
 
-CascSource::CascSource(std::string root, casc::Storage storage, const CascSourceOptions& opts)
-    : root_(std::move(root)), storage_(std::move(storage)), hdMode_(opts.hdMode),
-      fileIds_(opts.fileIds), frameSuffixFallback_(opts.frameSuffixFallback) {}
+CascSource::CascSource(std::shared_ptr<const SharedCasc> shared, const CascSourceOptions& opts)
+    : shared_(std::move(shared)), hdMode_(opts.hdMode), fileIds_(opts.fileIds),
+      frameSuffixFallback_(opts.frameSuffixFallback) {}
 
 std::unique_ptr<CascSource> CascSource::Open(std::string root, const CascSourceOptions& opts,
                                              std::string& error) {
-    if (root.empty()) {
-        error = "no install path";
-        return nullptr;
-    }
-    casc::OpenOptions co;
-    co.path = root;
-    co.pool = opts.pool;
-    co.errorOut = &error;
-    if (!opts.listfile.empty())
-        co.listfile = opts.listfile;
+    CascOpenKey key;
+    key.root = std::move(root);
+    key.listfilePath = opts.listfilePath;
+    key.tactKeyFile = opts.tactKeyFile;
+    key.zeroFillEncrypted = opts.zeroFillEncrypted;
 
-    auto storage = casc::Storage::open(co);
-    if (!storage)
+    auto shared = AcquireSharedCasc(key, error);
+    if (!shared)
         return nullptr;
-    // Before the first read, and not conditional on the file being there: a
-    // storage with no keys still reads everything unencrypted, which is most
-    // of an install.
-    bool keys = false;
-    if (!opts.tactKeyFile.empty()) {
-        keys = storage->importKeysFromFile(opts.tactKeyFile);
-        if (!keys)
-            std::printf("[FileContentProvider] TACT keys not readable: %s\n",
-                        opts.tactKeyFile.c_str());
-    }
-    storage->setZeroFillEncrypted(opts.zeroFillEncrypted);
-    std::printf("[FileContentProvider] CASC storage opened: %s%s%s\n", root.c_str(),
-                opts.listfile.empty() ? "" : " (with listfile)", keys ? " (with TACT keys)" : "");
-    return std::unique_ptr<CascSource>(new CascSource(std::move(root), std::move(*storage), opts));
+    return std::unique_ptr<CascSource>(new CascSource(std::move(shared), opts));
 }
 
 bool CascSource::ReadStem(const std::string& stem, const std::string& ext, SourceRead& out) const {
@@ -78,7 +58,7 @@ bool CascSource::ReadStem(const std::string& stem, const std::string& ext, Sourc
         if (!prefix)
             break; // a bare-path root declares one prefix, not four
         if (!ext.empty()) {
-            auto data = storage_.readFile(std::string(prefix) + stem + ext);
+            auto data = storage_().readFile(std::string(prefix) + stem + ext);
             if (data && !data->empty()) {
                 out.actualExt = ext;
                 out.data = std::move(*data);
@@ -88,7 +68,7 @@ bool CascSource::ReadStem(const std::string& stem, const std::string& ext, Sourc
         for (usize i = 0; i < altCount; ++i) {
             if (altExts[i] == ext)
                 continue;
-            auto data = storage_.readFile(std::string(prefix) + stem + altExts[i]);
+            auto data = storage_().readFile(std::string(prefix) + stem + altExts[i]);
             if (data && !data->empty()) {
                 out.actualExt = altExts[i];
                 out.data = std::move(*data);
@@ -145,11 +125,11 @@ bool CascSource::ReadById(u32 fileId, SourceRead& out) const {
         L::plPL, L::koKR, L::zhCN, L::zhTW, L::enCN, L::enTW, L::jaJP, L::thTH, L::trTR,
     };
     const i32 id = static_cast<i32>(fileId);
-    std::optional<std::vector<u8>> data = storage_.readFile(id);
+    std::optional<std::vector<u8>> data = storage_().readFile(id);
     for (u32 locale : kLocales) {
         if (data && !data->empty())
             break;
-        data = storage_.readFile(id, locale);
+        data = storage_().readFile(id, locale);
     }
     if (!data || data->empty())
         return false;
@@ -173,7 +153,7 @@ u32 CascSource::FileIdForPath(const std::string& path) const {
         return 0;
     const std::string norm = NormalizeCascPath(path);
     for (usize at = 0; at < norm.size();) {
-        auto info = storage_.fileInfo(norm.substr(at));
+        auto info = storage_().fileInfo(norm.substr(at));
         if (info && info->fileDataId > 0)
             return static_cast<u32>(info->fileDataId);
         const usize sep = norm.find_first_of("/\\", at);
@@ -185,7 +165,7 @@ u32 CascSource::FileIdForPath(const std::string& path) const {
 }
 
 void CascSource::List(const std::function<void(std::string)>& emit) const {
-    storage_.enumerate([&](const casc::EnumerateEntry& e) {
+    storage_().enumerate([&](const casc::EnumerateEntry& e) {
         emit(ToListingPath(e.path));
         return true;
     });

@@ -33,11 +33,8 @@ class IContentProvider;
 
 namespace whiteout::flakes::tools {
 
-// Which file types the grid shows. Models = .mdx/.mdl, Effects = .pkb/.pkfx.
-enum class StorageFileFilter { All, ModelsOnly, EffectsOnly };
-
 // Concrete type of an activated file (a model dialect or an effect dialect).
-enum class StorageFileKind { Mdx, Mdl, Pkb, Pkfx };
+enum class StorageFileKind { Mdx, Mdl, Pkb, Pkfx, M2, M3 };
 
 // Handed to the activate callback when a file is double-clicked. `path` (the
 // CASC-native archive path) and `provider` (the storage it lives in) are always
@@ -88,17 +85,56 @@ public:
         return selectedPath_;
     }
 
-    // ---- File-type filter (consumer default + live UI combo) ----
-    void SetFileFilter(StorageFileFilter f) {
-        fileFilter_ = f;
+    // ---- Which game, and which of its file types ----
+    //
+    // The two are one control: what a filter even *means* depends on the game
+    // open, so the panel offers a game combo and a checkbox per type that game
+    // ships (io::BrowseTypesFor). Picking a game opens its detected install.
+    // Returns false and fills LastError() when that install is not there.
+    bool OpenGame(ProductId game);
+    ProductId Game() const {
+        return browser_.Product();
     }
-    StorageFileFilter FileFilter() const {
-        return fileFilter_;
+
+    void SetBrowseTypes(io::BrowseType types) {
+        browser_.SetEnabledTypes(types);
     }
-    // Show the filter combo in the panel so the end-user can switch too
-    // (default true). Hide it to lock the filter from SetFileFilter.
+    io::BrowseType BrowseTypes() const {
+        return browser_.EnabledTypes();
+    }
+    // Show the game combo + type checkboxes in the panel so the end-user can
+    // switch too (default true). Hide it to lock what SetBrowseTypes chose. The
+    // search box and zoom below are part of the grid itself and stay either way.
     void SetFilterUIVisible(bool on) {
         filterUiVisible_ = on;
+    }
+
+    // Free-text filter over the current folder (io::MatchesFilter syntax:
+    // substrings, `*`/`?` globs, comma-separated alternatives, `-` to exclude).
+    // Same box the panel's own search field drives.
+    void SetSearchText(const std::string& text);
+    const char* SearchText() const {
+        return searchText_;
+    }
+
+    // Grid icon edge length in logical pixels, clamped to [48, 320]. Also the
+    // size each thumbnail RENDERS at, so shrinking the icons makes a screenful
+    // cheaper rather than merely denser. The user drives this with the panel's
+    // zoom slider or Ctrl+wheel over the grid.
+    void SetIconSize(float px);
+    float IconSize() const {
+        return iconSize_;
+    }
+
+    // Listfile and TACT key list to open a World of Warcraft install with. Its
+    // root is id-keyed: without a listfile a browse of it is *empty*, not
+    // merely unnamed. Passing what the host's own provider uses also means the
+    // panel shares that storage rather than opening a second one. Applied on
+    // the next open.
+    void SetCascKeys(std::string listfilePath, std::string tactKeyPath) {
+        listfilePath_ = std::move(listfilePath);
+        tactKeyPath_ = std::move(tactKeyPath);
+        browser_.SetCascKeys(listfilePath_, tactKeyPath_);
     }
 
     // Whether the activate callback receives the file's bytes (DeliverBytes
@@ -122,6 +158,8 @@ public:
 
 private:
     void BuildGrid();      // breadcrumb + folder/file grid (inside the open window)
+    void BuildFilterBar(); // game combo + one checkbox per browsable type
+    void BuildSearchBar(); // search box + match count + zoom
     void OpenCascDialog(); // native folder picker → OpenCasc
 
     renderer::RenderService& svc_;
@@ -133,9 +171,19 @@ private:
     std::string selectedPath_;
     std::string lastError_;
     ActivateCb onActivate_;
-    StorageFileFilter fileFilter_ = StorageFileFilter::All;
+    // Kept so a game switch can re-apply them: they belong to the provider's
+    // per-product slot, not to one open.
+    std::string listfilePath_;
+    std::string tactKeyPath_;
     bool filterUiVisible_ = true;
     bool deliverBytes_ = false;
+
+    // Search box contents (a plain buffer: ImGui's InputText owns the editing,
+    // and the browser is told about it once per frame). `focusSearch_` is set by
+    // Ctrl+F and consumed by the next BuildSearchBar.
+    char searchText_[128] = {};
+    bool focusSearch_ = false;
+    float iconSize_ = 128.0f;
 
     // Navigation staged by the UI, applied at the start of the next frame (see
     // NewFrame) so it can't invalidate the listing mid-iteration or destroy

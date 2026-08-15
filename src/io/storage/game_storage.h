@@ -17,13 +17,8 @@
 
 #include <atomic>
 #include <memory>
-#include <span>
 #include <string>
 #include <vector>
-
-namespace whiteout::utils {
-class SimpleThreadPool;
-}
 
 namespace whiteout::flakes::io {
 
@@ -58,18 +53,16 @@ public:
     // True when a listfile was configured and read. A World of Warcraft root
     // is id-keyed and carries no names, so this is the difference between a
     // storage that can be browsed and one that can only be read by id.
-    bool HasListfile() const {
-        return !listfile_.empty();
-    }
+    //
+    // Asked of the sources rather than remembered here: the bytes belong to
+    // the shared CASC entry, which is also what knows whether they loaded.
+    bool HasListfile() const;
 
 private:
     friend class StorageBuilder;
-    explicit GameStorage(ProductId game, std::vector<u8> listfile);
+    explicit GameStorage(ProductId game);
 
     ProductId game_;
-    // Held for the storages' lifetime: casc::Storage borrows the bytes rather
-    // than copying them. Declared before `sources_` so it outlives them.
-    std::vector<u8> listfile_;
     std::vector<std::unique_ptr<IStorageSource>> sources_;
     // CASC sources lead, so this also splits `sources_` into its two halves.
     usize cascCount_ = 0;
@@ -82,10 +75,6 @@ class StorageBuilder {
 public:
     explicit StorageBuilder(ProductId game) : game_(game) {}
 
-    // Shared by every CASC source built here. CASC keeps a non-owning pointer,
-    // so the pool must outlive the GameStorage.
-    StorageBuilder& Pool(whiteout::utils::SimpleThreadPool* pool);
-
     // Warcraft III's TVFS mod chain, ordered by the flag `hdMode` points at.
     // Only this product has one.
     StorageBuilder& ModChain(const std::atomic<bool>* hdMode);
@@ -97,8 +86,9 @@ public:
     // Reforged rename of the classic frame-suffixed sets.
     StorageBuilder& FrameSuffixFallback();
 
-    // Community `id;path` CSV that makes an id-keyed root browsable. Read at
-    // Build() time; a path that does not exist is reported and ignored.
+    // Community `id;path` CSV that makes an id-keyed root browsable. Loaded
+    // and owned by the shared CASC entry, so two storages naming the same one
+    // read it once; a path that does not exist is reported and ignored.
     StorageBuilder& Listfile(std::string csvPath);
 
     // Community `keyName keyHex` list, plus the policy for a frame whose key is
@@ -119,7 +109,6 @@ public:
 
 private:
     ProductId game_;
-    whiteout::utils::SimpleThreadPool* pool_ = nullptr;
     const std::atomic<bool>* hdMode_ = nullptr;
     bool fileIds_ = false;
     bool frameSuffixFallback_ = false;

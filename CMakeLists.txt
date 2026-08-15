@@ -1230,6 +1230,7 @@ add_library(WhiteoutFlakesLib STATIC
     # The CASC / MPQ sources compile to nothing when their backend is off.
     src/io/storage/storage_paths.cpp
     src/io/storage/install_locator.cpp
+    src/io/storage/casc_registry.cpp
     src/io/storage/casc_source.cpp
     src/io/storage/mpq_source.cpp
     src/io/storage/game_storage.cpp

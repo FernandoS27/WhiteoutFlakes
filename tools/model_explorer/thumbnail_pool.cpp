@@ -38,6 +38,27 @@ void ThumbnailPool::BeginFrame(std::uint64_t) {
         c->visible = false;
 }
 
+void ThumbnailPool::SetCap(int cap) {
+    cap = (std::max)(1, cap);
+    if (cap == cap_)
+        return;
+    cap_ = cap;
+    if (static_cast<int>(cells_.size()) <= cap_)
+        return;
+    // Most-recently-visible first, so what survives the trim is what the user
+    // was just looking at. The cells themselves don't move, only the owning
+    // pointers, so byPath_ stays valid.
+    std::sort(cells_.begin(), cells_.end(),
+              [](const auto& a, const auto& b) { return a->lastVisibleFrame > b->lastVisibleFrame; });
+    if (auto* gfx = svc_.Pipeline().Gfx())
+        gfx->WaitIdle();
+    for (std::size_t i = static_cast<std::size_t>(cap_); i < cells_.size(); ++i) {
+        byPath_.erase(cells_[i]->path);
+        DestroyCell(*cells_[i]);
+    }
+    cells_.resize(static_cast<std::size_t>(cap_));
+}
+
 void ThumbnailPool::SetupScene(SceneId scene) {
     auto& sm = svc_.SceneAt(scene);
     // All cell scenes read files from the one shared CASC-backed provider.
@@ -66,8 +87,9 @@ ThumbnailPool::Cell* ThumbnailPool::AcquireSlot(const std::string& path, bool is
         cells_.push_back(std::make_unique<Cell>());
         slot = cells_.back().get();
         slot->scene = svc_.CreateScene();
-        slot->target = svc_.Pipeline().CreateOffscreenTarget(res_, res_);
-        slot->res = res_;
+        // No target yet: EnsureCellTargetSize creates it at the size the caller
+        // is about to display it at, so a small cell never allocates a large one
+        // just to throw it away on the same Acquire.
         SetupScene(slot->scene);
     } else {
         std::uint64_t oldest = ~0ull;
@@ -176,19 +198,23 @@ void ThumbnailPool::EnsureCellTargetSize(Cell& cell, int wantPx) {
     // Match the on-screen cell size so the texture isn't up-/down-scaled by ImGui
     // (an upscaled small thumbnail looks blurry; a static blur on an animating
     // model reads as "scaling"). Round up to a 64px step so a drag-resize doesn't
-    // recreate the target every pixel, and clamp: never below the pool default,
-    // never above kMaxRes (HD cells carry a full G-buffer + GTAO + bloom set, so
-    // the cap bounds memory).
+    // recreate the target every pixel, and clamp: never above kMaxRes (HD cells
+    // carry a full G-buffer + GTAO + bloom set, so the cap bounds memory), never
+    // below kMinRes — a zoomed-out grid of 64px icons rendered 1:1 is all
+    // aliasing, and at kMinRes it is supersampled and still a quarter of the
+    // pixel work a 256² cell costs, which is what makes a screenful affordable.
     constexpr int kStep = 64;
+    constexpr int kMinRes = 128;
     constexpr int kMaxRes = 768;
-    const int want = std::clamp(((wantPx + kStep - 1) / kStep) * kStep, res_, kMaxRes);
+    const int want = std::clamp(((wantPx + kStep - 1) / kStep) * kStep, kMinRes, kMaxRes);
     if (cell.target != 0 && cell.res == want)
         return;
-    // The old target may still be referenced by last frame's GPU work.
-    if (auto* gfx = svc_.Pipeline().Gfx())
-        gfx->WaitIdle();
-    if (cell.target)
+    if (cell.target) {
+        // The old target may still be referenced by last frame's GPU work.
+        if (auto* gfx = svc_.Pipeline().Gfx())
+            gfx->WaitIdle();
         svc_.Pipeline().DestroyTarget(cell.target);
+    }
     cell.target = svc_.Pipeline().CreateOffscreenTarget(want, want);
     cell.res = want;
 }

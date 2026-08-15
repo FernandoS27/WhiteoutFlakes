@@ -16,6 +16,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "io/file_content_provider.h"
+#include "io/storage/casc_registry.h"
+#include "io/storage_browser.h"
 #include "whiteout/flakes/content_ref.h"
 
 #include <cstdio>
@@ -25,6 +27,9 @@
 
 using whiteout::flakes::ProductId;
 using whiteout::flakes::io::FileContentProvider;
+using whiteout::flakes::io::OpenCascCount;
+using whiteout::flakes::io::StorageBrowser;
+using whiteout::flakes::io::StorageKind;
 
 TEST_CASE("MPQ defaults are per-product", "[provider]") {
     // Warcraft III's three archives, and the no-argument overload still
@@ -287,4 +292,53 @@ TEST_CASE("StarCraft II and Heroes can be open at once", "[provider]") {
     const auto files = p.ListFiles("", true);
     std::printf("[provider] sc2+hots: %zu listed entries\n", files.size());
     CHECK_FALSE(files.empty());
+}
+
+TEST_CASE("One install opens once, however many readers it has", "[provider][casc]") {
+    FileContentProvider probe;
+    if (probe.Wc3Path().empty())
+        SKIP("no Warcraft III install found");
+
+    // Every scene has its own provider and the Storage Explorer has neither —
+    // and opening a CASC parses its indices, encoding table and root manifest,
+    // which is seconds and hundreds of megabytes. Doing that per reader is what
+    // the registry exists to stop, so what is checked is the count of open
+    // installs, not that reads happen to work.
+    const std::size_t before = OpenCascCount();
+    {
+        FileContentProvider a;
+        FileContentProvider b;
+        REQUIRE(a.HasCasc());
+        REQUIRE(b.HasCasc());
+        CHECK(a.OpenCascRoots() == b.OpenCascRoots());
+
+        StorageBrowser browser;
+        std::string error;
+        REQUIRE(browser.Open(probe.Wc3Path(), StorageKind::Casc, &error));
+
+        // Three readers, one storage. The +1 is Warcraft III's, whether or not
+        // another test in this binary already had it open.
+        CHECK(OpenCascCount() <= before + 1);
+        CHECK(OpenCascCount() >= 1);
+
+        // ...and both readers genuinely read it. Named from the storage rather
+        // than hardcoded: which models a Warcraft III install ships is a
+        // property of the build, not something a test should assert.
+        std::string model;
+        for (const auto& f : a.ListFiles("units/human", true)) {
+            if (f.size() > 4 && f.compare(f.size() - 4, 4, ".mdx") == 0) {
+                model = f;
+                break;
+            }
+        }
+        REQUIRE_FALSE(model.empty());
+        auto viaA = a.ReadFile(model);
+        auto viaB = b.ReadFile(model);
+        REQUIRE(viaA);
+        REQUIRE(viaB);
+        CHECK(*viaA == *viaB);
+    }
+    // Weakly held, so the last reader closing it frees it rather than leaving
+    // an install open for the life of the process.
+    CHECK(OpenCascCount() <= before);
 }

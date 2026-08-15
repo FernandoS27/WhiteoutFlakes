@@ -58,6 +58,7 @@ wdx_add_test(content_provider_games_test content_provider_games_test.cpp)
 # The layer under it: path spelling, each game's archive rules, and what the
 # builder assembles. Opens no storage, so it needs no install at all.
 wdx_add_test(game_storage_test game_storage_test.cpp)
+wdx_add_test(storage_browser_test storage_browser_test.cpp)
 # The viewer's settings file, which now stores one IO section per game.
 # Compiles the viewer's settings_io.cpp directly — it belongs to the viewer
 # executable, not to WhiteoutFlakesLib. Its display-settings sibling

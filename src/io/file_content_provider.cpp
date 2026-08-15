@@ -20,10 +20,6 @@
 #include "whiteout/flakes/types.h"
 #include "whiteout/flakes/util/path_utf8.h"
 
-#if WHITEOUT_HAS_CASC
-#include <whiteout/utils/simple_thread_pool.h>
-#endif
-
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -173,16 +169,6 @@ struct FileContentProvider::Impl {
 
     FileResolver resolver;
 
-#if WHITEOUT_HAS_CASC
-    // Handed to every CASC source. CASC parallelises the slow part of opening
-    // a Reforged install (index + encoding-table parsing) and also fans out
-    // BLTE block decompression across it. Sources keep a *non-owning* pointer,
-    // so the pool must outlive them — hence declared before `games`, which
-    // owns them (members destruct in reverse declaration order).
-    std::unique_ptr<whiteout::utils::SimpleThreadPool> cascPool;
-#endif
-
-    // Declared after the pool for the reason above.
     std::array<GameSlot, 4> games; // indexed by ProductId
 
     // ---- Request queue (guarded by reqMu) ----
@@ -270,24 +256,12 @@ struct FileContentProvider::Impl {
         if (!s.dirty) // another thread got here first
             return;
         s.dirty = false;
-#if WHITEOUT_HAS_CASC
-        if (!cascPool) {
-            // 2–4 threads: enough to overlap index parsing and large-file
-            // BLTE decompression without oversubscribing the request pool.
-            const unsigned hw = std::thread::hardware_concurrency();
-            cascPool = std::make_unique<whiteout::utils::SimpleThreadPool>(
-                std::clamp<unsigned>(hw ? hw : 4u, 2u, 4u));
-        }
-        auto* pool = cascPool.get();
-#else
-        whiteout::utils::SimpleThreadPool* pool = nullptr;
-#endif
         StorageConfig cfg = s.config;
         cfg.secondaryPath = (cfg.game == ProductId::Sc2) ? hotsInstallPath : std::string{};
         // Replaced wholesale rather than mutated: a storage set is only ever
         // consistent as a whole, and the old one is dropped only once the new
         // one exists.
-        s.storage = BuildGameStorage(cfg, pool, &hdMode);
+        s.storage = BuildGameStorage(cfg, &hdMode);
     }
 
     void WorkerLoop() {

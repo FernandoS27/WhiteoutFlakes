@@ -17,6 +17,7 @@
 // one probe per extension instead of four.
 // ============================================================================
 
+#include "casc_registry.h"
 #include "storage_source.h"
 
 #if WHITEOUT_HAS_CASC
@@ -25,11 +26,6 @@
 
 #include <atomic>
 #include <memory>
-#include <span>
-
-namespace whiteout::utils {
-class SimpleThreadPool;
-}
 
 namespace whiteout::flakes::io {
 
@@ -53,9 +49,10 @@ struct CascSourceOptions {
     // it would be a wrong extra probe on every miss.
     bool frameSuffixFallback = false;
 
-    // Community `id;path` CSV. The storage borrows it for its lifetime, so the
-    // bytes belong to whoever owns the source (see GameStorage).
-    std::span<const u8> listfile;
+    // Community `id;path` CSV. A path rather than the bytes: the storage
+    // borrows them for its lifetime and is shared between readers, so the
+    // registry owns them (see casc_registry.h).
+    std::string listfilePath;
 
     // Community `keyName keyHex` list, read at open. Blizzard encrypts frames
     // of shipped files with per-content TACT keys, and a file with one such
@@ -67,11 +64,6 @@ struct CascSourceOptions {
     // failing the whole read. Unreleased content ships with keys nobody has
     // published, and one such frame otherwise costs the entire file.
     bool zeroFillEncrypted = false;
-
-    // Shared with every other CASC source in the same storage set. CASC
-    // parallelises index/encoding-table parsing and BLTE decompression across
-    // it, and keeps a non-owning pointer — so the pool must outlive the source.
-    whiteout::utils::SimpleThreadPool* pool = nullptr;
 };
 
 class CascSource final : public IStorageSource {
@@ -85,18 +77,26 @@ public:
     u32 FileIdForPath(const std::string& path) const override;
     void List(const std::function<void(std::string)>& emit) const override;
     const std::string& Root() const override {
-        return root_;
+        return shared_->Root();
+    }
+    bool HasListfile() const {
+        return shared_->HasListfile();
     }
 
 private:
-    CascSource(std::string root, whiteout::storages::casc::Storage storage,
-               const CascSourceOptions& opts);
+    CascSource(std::shared_ptr<const SharedCasc> shared, const CascSourceOptions& opts);
 
     // One stem, every prefix and extension this source knows. True on a hit.
     bool ReadStem(const std::string& stem, const std::string& ext, SourceRead& out) const;
 
-    std::string root_;
-    whiteout::storages::casc::Storage storage_;
+    const whiteout::storages::casc::Storage& storage_() const noexcept {
+        return shared_->Storage();
+    }
+
+    // Shared with every other reader of the same install, and const throughout
+    // — `casc::Storage`'s read API takes its own shared lock, so concurrent
+    // reads through one handle need nothing here.
+    std::shared_ptr<const SharedCasc> shared_;
     const std::atomic<bool>* hdMode_ = nullptr;
     bool fileIds_ = false;
     bool frameSuffixFallback_ = false;

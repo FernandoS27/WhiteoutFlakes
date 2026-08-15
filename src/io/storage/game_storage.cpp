@@ -13,8 +13,7 @@ namespace whiteout::flakes::io {
 
 namespace fs = std::filesystem;
 
-GameStorage::GameStorage(ProductId game, std::vector<u8> listfile)
-    : game_(game), listfile_(std::move(listfile)) {}
+GameStorage::GameStorage(ProductId game) : game_(game) {}
 
 GameStorage::~GameStorage() = default;
 
@@ -47,6 +46,15 @@ void GameStorage::List(const std::function<void(std::string)>& emit) const {
         s->List(emit);
 }
 
+bool GameStorage::HasListfile() const {
+#if WHITEOUT_HAS_CASC
+    for (usize i = 0; i < cascCount_; ++i)
+        if (static_cast<const CascSource*>(sources_[i].get())->HasListfile())
+            return true;
+#endif
+    return false;
+}
+
 std::vector<std::string> GameStorage::CascRoots() const {
     std::vector<std::string> out;
     out.reserve(cascCount_);
@@ -56,11 +64,6 @@ std::vector<std::string> GameStorage::CascRoots() const {
 }
 
 // ---- Builder ---------------------------------------------------------------
-
-StorageBuilder& StorageBuilder::Pool(whiteout::utils::SimpleThreadPool* pool) {
-    pool_ = pool;
-    return *this;
-}
 
 StorageBuilder& StorageBuilder::ModChain(const std::atomic<bool>* hdMode) {
     hdMode_ = hdMode;
@@ -117,21 +120,7 @@ StorageBuilder& StorageBuilder::Archives(const std::string& installRoot,
 }
 
 std::unique_ptr<GameStorage> StorageBuilder::Build() {
-    std::vector<u8> listfile;
-    if (!listfilePath_.empty()) {
-        std::ifstream f(FsPathFromUtf8(listfilePath_), std::ios::binary);
-        if (f) {
-            listfile.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-            std::printf("[FileContentProvider] Listfile loaded: %s (%zu bytes)\n",
-                        listfilePath_.c_str(), listfile.size());
-        } else {
-            std::printf("[FileContentProvider] Listfile not readable: %s\n", listfilePath_.c_str());
-        }
-    }
-
-    // Constructed first so the listfile bytes are already at their final
-    // address: casc::Storage borrows the span for its lifetime.
-    std::unique_ptr<GameStorage> storage(new GameStorage(game_, std::move(listfile)));
+    std::unique_ptr<GameStorage> storage(new GameStorage(game_));
 
 #if WHITEOUT_HAS_CASC
     for (std::string& root : cascRoots_) {
@@ -139,21 +128,19 @@ std::unique_ptr<GameStorage> StorageBuilder::Build() {
         opts.hdMode = hdMode_;
         opts.fileIds = fileIds_;
         opts.frameSuffixFallback = frameSuffixFallback_;
-        opts.listfile = std::span<const u8>(storage->listfile_);
+        opts.listfilePath = listfilePath_;
         opts.tactKeyFile = tactKeyPath_;
         // Paired with the key list on purpose: a session that supplied keys is
         // one that wants as much of the install as it can get, and the frames
         // still left over are unreleased content nobody can decrypt.
         opts.zeroFillEncrypted = !tactKeyPath_.empty();
-        opts.pool = pool_;
         std::string error;
         if (auto src = CascSource::Open(root, opts, error)) {
             storage->sources_.push_back(std::move(src));
         } else {
             // Not necessarily a failure: StarCraft II and Heroes are offered
             // both roots and only one may be installed.
-            std::printf("[FileContentProvider] CASC not available at '%s': %s\n", root.c_str(),
-                        error.c_str());
+            std::printf("[casc] not available at '%s': %s\n", root.c_str(), error.c_str());
         }
     }
 #endif

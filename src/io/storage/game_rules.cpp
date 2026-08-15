@@ -75,10 +75,8 @@ void ConfigureSc2(StorageBuilder& b, const StorageConfig& c, const std::atomic<b
 } // namespace
 
 std::unique_ptr<GameStorage> BuildGameStorage(const StorageConfig& config,
-                                              whiteout::utils::SimpleThreadPool* pool,
                                               const std::atomic<bool>* hdMode) {
     StorageBuilder b(config.game);
-    b.Pool(pool);
     switch (config.game) {
     case ProductId::Wow:
         ConfigureWow(b, config, hdMode);

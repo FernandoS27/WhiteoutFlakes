@@ -39,6 +39,16 @@ public:
     // Start a frame: marks all live cells as not-yet-visible.
     void BeginFrame(std::uint64_t frameId);
 
+    // Resize the live-cell budget. A cell that finds no free slot renders
+    // nothing, so the cap has to cover a whole screen of cells — and how many
+    // that is depends on the grid's icon size, which the user drives. Shrinking
+    // destroys the least-recently-visible cells above the new cap; they reload
+    // if they come back on screen.
+    void SetCap(int cap);
+    int Cap() const {
+        return cap_;
+    }
+
     // Request the live thumbnail for `path` (an archive path). Marks the cell
     // visible this frame. Returns its color texture, or Invalid if the cell is
     // still loading / had to be deferred (the caller draws a placeholder).

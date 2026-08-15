@@ -3,7 +3,9 @@
 
 #include "io/storage_browser.h"
 #include "explorer_app.h"
+#include "imgui_theme.h"
 #include "renderer/model/corn_effect_source.h"
+#include "storage_explorer.h"
 #include "thumbnail_framing.h"
 #include "thumbnail_pool.h"
 
@@ -106,10 +108,13 @@ int main(int argc, char* argv[]) {
     bool cascRender = false;
     bool windowRepro = false;
     bool navStress = false;
+    std::string panelShot; // --panel-shot <out.png>: render the panel, write it out
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
         if (std::strcmp(a, "--nav-stress") == 0) {
             navStress = true;
+        } else if (std::strcmp(a, "--panel-shot") == 0 && i + 1 < argc) {
+            panelShot = argv[++i];
         } else if (std::strcmp(a, "--selftest") == 0) {
             selfTest = true;
         } else if (std::strcmp(a, "--ls") == 0 && i + 1 < argc) {
@@ -527,6 +532,114 @@ int main(int argc, char* argv[]) {
             std::fflush(stdout);
             std::_Exit(pass ? 0 : 7);
         }
+    }
+
+    // Windowless screenshot of the REAL panel: drive StorageExplorer's per-frame
+    // contract into an offscreen "screen" target and write the result out. The
+    // panel is the one part of this tool a headless test could not look at —
+    // --window-repro proves a pooled cell reaches ImGui, not that the grid,
+    // search bar and zoom lay out. `--ls <folder>` picks the folder;
+    // PANEL_FILTER / PANEL_ICON set the search text and icon size.
+    if (!panelShot.empty()) {
+        namespace wf = whiteout::flakes;
+        if (cascRoot.empty()) {
+            std::fprintf(stderr, "[panel-shot] usage: <cascRoot> --panel-shot <out.png>\n");
+            return 1;
+        }
+        constexpr int kW = 1280, kH = 800;
+        ImGui::CreateContext();
+        ImGuiIO& io = ImGui::GetIO();
+        io.DisplaySize = ImVec2(kW, kH);
+        io.DeltaTime = 0.016f;
+        io.IniFilename = nullptr; // a saved layout would move the panel out of shot
+        wf::ApplyImGuiTheme();
+        wf::ApplyImGuiDpiScale(1.0f); // the same font the windowed shell bakes
+        unsigned char* px = nullptr;
+        int fw = 0, fh = 0;
+        io.Fonts->GetTexDataAsRGBA32(&px, &fw, &fh); // build the atlas before NewFrame
+
+        if (!renderer.Pipeline().InitDevice(backend)) {
+            std::fprintf(stderr, "[panel-shot] InitDevice FAILED\n");
+            return 2;
+        }
+        renderer.Settings().SetBackgroundColor(24, 27, 33);
+        { // nothing behind the panel but flat background
+            auto df = renderer.Settings().GetDisplayFlags();
+            df.showGrid = false;
+            renderer.Settings().SetDisplayFlags(df);
+        }
+        wf::renderer::RenderTargetId screen = renderer.Pipeline().CreateOffscreenTarget(kW, kH);
+        renderer.Pipeline().SetPrimaryTarget(screen);
+        renderer.Pipeline().EnableFrameCapture(true);
+        int written = 0;
+        {
+            wf::tools::StorageExplorer panel(renderer);
+            if (const char* icon = std::getenv("PANEL_ICON"))
+                panel.SetIconSize(static_cast<float>(std::atof(icon)));
+            // A World of Warcraft root is id-keyed: no listfile, no names.
+            if (const char* lf = std::getenv("PANEL_LISTFILE"))
+                panel.SetCascKeys(lf, std::getenv("PANEL_TACTKEYS") ? std::getenv("PANEL_TACTKEYS") : "");
+            if (!panel.OpenCasc(cascRoot)) {
+                std::fprintf(stderr, "[panel-shot] OpenCasc FAILED: %s\n", panel.LastError().c_str());
+                return 2;
+            }
+            if (lsPathSet)
+                panel.NavigateTo(lsPath);
+            if (const char* f = std::getenv("PANEL_FILTER"))
+                panel.SetSearchText(f);
+            // Enough frames for the thumbnails to load, frame and settle.
+            const int frames = std::getenv("PANEL_FRAMES") ? std::atoi(std::getenv("PANEL_FRAMES")) : 60;
+            // PANEL_WHEEL replays a Ctrl+wheel over the grid — the one bit of the
+            // panel that needs real input to exercise.
+            const char* wheelEnv = std::getenv("PANEL_WHEEL");
+            const float wheel = wheelEnv ? static_cast<float>(std::atof(wheelEnv)) : 0.0f;
+            const float iconBefore = panel.IconSize();
+            for (int f = 0; f < frames; ++f) {
+                if (wheel != 0.0f) {
+                    io.AddMousePosEvent(kW * 0.4f, kH * 0.5f); // over the grid child
+                    if (f == frames / 2) {
+                        io.AddKeyEvent(ImGuiMod_Ctrl, true);
+                        io.AddMouseWheelEvent(0.0f, wheel);
+                    } else if (f == frames / 2 + 1) {
+                        io.AddKeyEvent(ImGuiMod_Ctrl, false);
+                    }
+                }
+                panel.NewFrame(0.016f);
+                ImGui::NewFrame();
+                ImGui::SetNextWindowPos(ImVec2(20, 20));
+                panel.BuildWindow(nullptr);
+                ImGui::Render();
+                panel.RenderThumbnails(0.016f);
+                renderer.Pipeline().RenderFrame(screen);
+                renderer.Pipeline().Present(screen);
+            }
+            renderer.Pipeline().Gfx()->WaitIdle();
+            if (wheel != 0.0f) {
+                std::printf("[panel-shot] ctrl+wheel %+.1f: icon %.0f -> %.0f px\n", wheel,
+                            iconBefore, panel.IconSize());
+            }
+            std::vector<wf::u8> rgba;
+            int cw = 0, ch = 0;
+            const int slot = renderer.Pipeline().LastCapturedSlot();
+            bool rb = slot >= 0 && renderer.Pipeline().DownloadCaptureSlot(slot, rgba, cw, ch);
+            if (!rb)
+                rb = renderer.Pipeline().ReadbackTarget(screen, rgba, cw, ch);
+            if (rb && cw > 0 && (int)rgba.size() >= cw * ch * 4) {
+                auto tex = whiteout::textures::Texture::create2D(
+                    whiteout::textures::PixelFormat::RGBA8, (unsigned)cw, (unsigned)ch, 1);
+                auto dst = tex.mipData(0);
+                std::memcpy(dst.data(), rgba.data(), std::min<size_t>(dst.size(), rgba.size()));
+                whiteout::textures::png::Writer w;
+                w.write(panelShot.c_str(), tex);
+                written = 1;
+                std::printf("[panel-shot] wrote %s (%dx%d)\n", panelShot.c_str(), cw, ch);
+            }
+        }
+        std::printf("[panel-shot] %s\n", written ? "PASS" : "FAIL (no readback)");
+        renderer.Pipeline().EnableFrameCapture(false);
+        renderer.Pipeline().Shutdown();
+        std::fflush(stdout);
+        std::_Exit(written ? 0 : 7);
     }
 
     whiteout::flakes::tools::ExplorerApp app(renderer);

@@ -16,10 +16,6 @@
 #include <string>
 #include <vector>
 
-namespace whiteout::utils {
-class SimpleThreadPool;
-}
-
 namespace whiteout::flakes::io {
 
 // Everything a host can configure about where content comes from. What it
@@ -50,7 +46,6 @@ struct StorageConfig {
 // reports every read as a miss, which is what an unconfigured provider should
 // do.
 std::unique_ptr<GameStorage> BuildGameStorage(const StorageConfig& config,
-                                              whiteout::utils::SimpleThreadPool* pool,
                                               const std::atomic<bool>* hdMode);
 
 // The archive load order to use when the host has not chosen one. Warcraft

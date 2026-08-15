@@ -5,6 +5,7 @@
 #include "renderer/render_settings.h"
 
 #include "whiteout/flakes/content_provider.h"
+#include "whiteout/flakes/util/path_utf8.h"
 
 #include "gfx/gfx.h"
 
@@ -13,7 +14,10 @@
 #include <nfd.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <optional>
 #include <string>
 
@@ -39,6 +43,10 @@ StorageFileKind KindOf(const std::string& name) {
         return StorageFileKind::Pkfx;
     if (ext == "mdl")
         return StorageFileKind::Mdl;
+    if (ext == "m2")
+        return StorageFileKind::M2;
+    if (ext == "m3")
+        return StorageFileKind::M3;
     return StorageFileKind::Mdx;
 }
 
@@ -46,16 +54,66 @@ bool IsEffectKind(StorageFileKind k) {
     return k == StorageFileKind::Pkb || k == StorageFileKind::Pkfx;
 }
 
-bool MatchesFilter(StorageFileKind k, StorageFileFilter f) {
-    switch (f) {
-    case StorageFileFilter::ModelsOnly:
-        return !IsEffectKind(k);
-    case StorageFileFilter::EffectsOnly:
-        return IsEffectKind(k);
-    case StorageFileFilter::All:
+// The games worth offering, in the order the combo lists them. A game with no
+// detected install is shown disabled rather than hidden — "StarCraft II is not
+// installed" is a more useful answer than a combo that silently has two
+// entries on one machine and three on another.
+constexpr ProductId kGames[] = {ProductId::Wc3, ProductId::Wow, ProductId::Sc2};
+
+// Icon zoom range. The floor is the point where a thumbnail still reads as a
+// model rather than a smudge; the ceiling is about two cells across a default
+// panel, past which a grid stops being a grid.
+constexpr float kMinIcon = 48.0f;
+constexpr float kMaxIcon = 320.0f;
+// Live thumbnail cells the pool may hold. Sized to a screenful at the current
+// icon size (see BuildGrid) but never past this: every visible cell renders its
+// own scene every frame, so the bound is a frame-time bound, not a memory one.
+constexpr int kMinCells = 32;
+constexpr int kMaxCells = 128;
+
+const char* GameLabel(ProductId game) {
+    switch (game) {
+    case ProductId::Wow:
+        return "World of Warcraft";
+    case ProductId::Sc2:
+        return "StarCraft II";
+    case ProductId::Wc3:
+        return "Warcraft III";
     default:
-        return true;
+        return "(folder)";
     }
+}
+
+// Longest prefix of `text` that fits `width`, ellipsised when it had to cut.
+// The cell width is the user's now, so a fixed character count would be a
+// clipped label at one zoom level and a stub at another.
+std::string FitLabel(const std::string& text, float width) {
+    if (ImGui::CalcTextSize(text.c_str()).x <= width)
+        return text;
+    // ASCII dots, not '…': the atlas bakes the default Latin range plus whatever
+    // the language catalogs use, and U+2026 is in neither — it draws as a
+    // missing-glyph box on most builds.
+    constexpr const char* kCut = "...";
+    const float ellipsis = ImGui::CalcTextSize(kCut).x;
+    std::size_t lo = 0, hi = text.size();
+    while (lo < hi) {
+        const std::size_t mid = (lo + hi + 1) / 2;
+        const float w = ImGui::CalcTextSize(text.c_str(), text.c_str() + mid).x;
+        if (w + ellipsis <= width)
+            lo = mid;
+        else
+            hi = mid - 1;
+    }
+    while (lo > 0 && (static_cast<unsigned char>(text[lo]) & 0xC0) == 0x80)
+        --lo; // never cut a UTF-8 sequence in half
+    return text.substr(0, lo) + kCut;
+}
+
+// One label line, centred under a `cell`-wide icon.
+void CellLabel(const std::string& label, float cell) {
+    const float w = ImGui::CalcTextSize(label.c_str()).x;
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (std::max)(0.0f, (cell - w) * 0.5f));
+    ImGui::TextUnformatted(label.c_str());
 }
 } // namespace
 
@@ -84,8 +142,23 @@ bool StorageExplorer::OpenCasc(const std::string& root) {
         std::fprintf(stderr, "[explorer] %s\n", lastError_.c_str());
         return false;
     }
+    // Point the panel's own provider at the same game the browser detected.
+    // Without this every read goes to whichever product the provider defaulted
+    // to (Warcraft III), which for an `.m2` is not a missing texture but a
+    // missing *model*: its `.skin` siblings are fileDataIDs only a WoW storage
+    // can resolve, so the thumbnail never renders at all.
+    //
+    // Game first: the listfile, key list and install path all belong to one
+    // product's slot, so setting them before the switch writes them into the
+    // wrong one.
+    const ProductId product = browser_.Product();
+    if (product != ProductId::Neutral)
+        provider_->SetGame(product);
+    provider_->SetListfilePath(FsPathFromUtf8(listfilePath_));
+    provider_->SetTactKeyPath(FsPathFromUtf8(tactKeyPath_));
     provider_->SetInstallPath(browser_.Root());
-    provider_->SetHdMode(true); // prefer the _hd.w3mod overlay so HD textures resolve
+    // The `_hd.w3mod` overlay is Warcraft III's; nothing else has a mod chain.
+    provider_->SetHdMode(product == ProductId::Wc3 || product == ProductId::Neutral);
     if (pool_)
         pool_->Clear();
     selectedPath_.clear();
@@ -107,6 +180,112 @@ void StorageExplorer::OpenCascDialog() {
     NFD::UniquePathU8 outPath;
     if (NFD::PickFolder(outPath) == NFD_OKAY && outPath)
         OpenCasc(outPath.get());
+}
+
+bool StorageExplorer::OpenGame(ProductId game) {
+    const std::string root = provider_->GamePath(game);
+    if (root.empty()) {
+        lastError_ = std::string(GameLabel(game)) + " is not installed.";
+        return false;
+    }
+    return OpenCasc(root);
+}
+
+// Game first, then a checkbox per type that game ships. One row, because they
+// are one decision: which types exist at all is decided by the game, so a
+// filter offered without it would be a filter for whatever happened to be open.
+void StorageExplorer::BuildFilterBar() {
+    ImGui::Spacing(); // clear of the menu bar above
+    const ProductId open = browser_.Product();
+
+    ImGui::SetNextItemWidth(180);
+    if (ImGui::BeginCombo("Game", GameLabel(open))) {
+        for (ProductId game : kGames) {
+            const bool installed = !provider_->GamePath(game).empty();
+            ImGui::BeginDisabled(!installed);
+            if (ImGui::Selectable(GameLabel(game), game == open))
+                OpenGame(game);
+            ImGui::EndDisabled();
+            if (!installed && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("Not installed");
+        }
+        ImGui::EndCombo();
+    }
+
+    // Only the types the open storage was actually walked for. A Warcraft III
+    // install gets models and effects; World of Warcraft gets `.m2` and there
+    // is nothing else to offer.
+    const io::BrowseType available = browser_.AvailableTypes();
+    io::BrowseType enabled = browser_.EnabledTypes();
+    for (io::BrowseType type :
+         {io::BrowseType::Models, io::BrowseType::Effects, io::BrowseType::M2,
+          io::BrowseType::M3}) {
+        if (!Any(available & type))
+            continue;
+        ImGui::SameLine();
+        bool on = Any(enabled & type);
+        if (ImGui::Checkbox(io::BrowseTypeLabel(type), &on))
+            enabled = on ? (enabled | type) : (enabled & ~type);
+    }
+    browser_.SetEnabledTypes(enabled);
+}
+
+void StorageExplorer::SetSearchText(const std::string& text) {
+    std::snprintf(searchText_, sizeof(searchText_), "%s", text.c_str());
+    browser_.SetFilter(searchText_);
+}
+
+void StorageExplorer::SetIconSize(float px) {
+    iconSize_ = std::clamp(px, kMinIcon, kMaxIcon);
+}
+
+// Search box, match count and zoom — the controls that decide how much of the
+// folder you see and how big it is. Separate from BuildFilterBar: those pick
+// *what* the storage is walked for and a host may lock them, these are the
+// grid's own and always available.
+void StorageExplorer::BuildSearchBar() {
+    // Ctrl+F focuses the box, but only while this panel has focus — the host's
+    // other windows keep the shortcut for themselves.
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+        ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_F))
+        focusSearch_ = true;
+    if (focusSearch_) {
+        focusSearch_ = false;
+        ImGui::SetKeyboardFocusHere();
+    }
+    ImGui::SetNextItemWidth(260);
+    ImGui::InputTextWithHint("##search", "Filter (Ctrl+F)", searchText_, sizeof(searchText_));
+    // ASCII only: the font atlas bakes the default Latin range, so an em dash
+    // would draw as a missing-glyph box.
+    ImGui::SetItemTooltip("Case-insensitive substring.\n"
+                          "*.mdx / foot?an : wildcards match the whole name\n"
+                          "peasant, footman : comma-separated alternatives\n"
+                          "-portrait : exclude");
+    if (searchText_[0] != '\0') {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear"))
+            searchText_[0] = '\0';
+    }
+    // Every keystroke re-lists the current folder and nothing else.
+    browser_.SetFilter(searchText_);
+    if (searchText_[0] != '\0') {
+        const auto& l = browser_.Current();
+        ImGui::SameLine();
+        ImGui::TextDisabled("%zu of %zu", l.folders.size() + l.modelFiles.size(),
+                            l.folderTotal + l.fileTotal);
+    }
+
+    // Zoom, right-aligned so it stays put as the search row grows.
+    constexpr float kZoomWidth = 160.0f;
+    ImGui::SameLine();
+    const float rest = ImGui::GetContentRegionAvail().x;
+    if (rest > kZoomWidth)
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + rest - kZoomWidth);
+    ImGui::SetNextItemWidth(kZoomWidth);
+    float size = iconSize_;
+    if (ImGui::SliderFloat("##zoom", &size, kMinIcon, kMaxIcon, "%.0f px"))
+        SetIconSize(size);
+    ImGui::SetItemTooltip("Icon size, or Ctrl+scroll over the grid");
 }
 
 void StorageExplorer::NewFrame(float /*dt*/) {
@@ -175,15 +354,11 @@ void StorageExplorer::BuildGrid() {
     Nav navAction = Nav::None;
     std::string navTarget;
 
-    // File-type filter combo (end-user can switch what the grid shows).
     if (filterUiVisible_) {
-        const char* kFilterLabels[] = {"All", "Models (.mdx/.mdl)", "Effects (.pkb/.pkfx)"};
-        int fi = static_cast<int>(fileFilter_);
-        ImGui::SetNextItemWidth(180);
-        if (ImGui::Combo("Show", &fi, kFilterLabels, IM_ARRAYSIZE(kFilterLabels)))
-            fileFilter_ = static_cast<StorageFileFilter>(fi);
+        BuildFilterBar();
         ImGui::Separator();
     }
+    BuildSearchBar();
 
     // Breadcrumb.
     if (ImGui::SmallButton("root")) {
@@ -208,11 +383,30 @@ void StorageExplorer::BuildGrid() {
 
     ImGui::BeginChild("grid", ImVec2(0, 0), false);
 
+    // Ctrl+wheel zooms. ImGui leaves the wheel unclaimed while Ctrl is down
+    // (UpdateMouseWheel returns early unless io.FontAllowUserScaling, which is
+    // off), so reading it here does not also scroll the grid.
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.KeyCtrl && io.MouseWheel != 0.0f &&
+        ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows))
+        SetIconSize(iconSize_ * std::pow(1.1f, io.MouseWheel));
+
     ImGuiStyle& style = ImGui::GetStyle();
-    // Fixed 4-column grid (the cell size follows the window width).
-    constexpr int cols = 4;
+    // The user picks the cell size; how many fit across follows from it. A cell
+    // never exceeds the width available, so a narrow panel still shows one
+    // column rather than clipping.
     const float avail = ImGui::GetContentRegionAvail().x;
-    const float cell = (std::max)(64.0f, (avail - style.ItemSpacing.x * (cols - 1)) / cols);
+    const float cell = (std::min)(iconSize_, (std::max)(kMinIcon, avail));
+    const int cols =
+        (std::max)(1, static_cast<int>((avail + style.ItemSpacing.x) / (cell + style.ItemSpacing.x)));
+
+    // Keep the pool able to hold everything on screen at once: a cell that finds
+    // no free slot draws a placeholder forever, which at small icon sizes would
+    // be most of the grid.
+    const float rowHeight = cell + ImGui::GetTextLineHeightWithSpacing() + style.ItemSpacing.y;
+    const int rows = static_cast<int>(ImGui::GetContentRegionAvail().y / rowHeight) + 2;
+    if (pool_)
+        pool_->SetCap(std::clamp(cols * rows, kMinCells, kMaxCells));
 
     // Open transition: when the listing changes the grid fades + slides up
     // (navAnimT_ reset to 0 in NewFrame / OpenCasc). dt comes from ImGui so the
@@ -274,7 +468,7 @@ void StorageExplorer::BuildGrid() {
         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
             navAction = Nav::Ascend;
         drawFolder(p0, ImGui::IsItemHovered(), ImGui::IsItemActive(), ImGui::GetID("##upa"));
-        ImGui::TextUnformatted("..");
+        CellLabel("..", cell);
         ImGui::EndGroup();
         endCell();
     }
@@ -284,6 +478,7 @@ void StorageExplorer::BuildGrid() {
         ImGui::PushID(idx++);
         ImGui::BeginGroup();
         ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const bool onScreen = ImGui::IsRectVisible(ImVec2(cell, cell));
         ImGui::InvisibleButton("##f", ImVec2(cell, cell));
         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
             navAction = Nav::To;
@@ -292,21 +487,29 @@ void StorageExplorer::BuildGrid() {
                 navTarget.push_back('\\');
             navTarget += folder;
         }
-        drawFolder(p0, ImGui::IsItemHovered(), ImGui::IsItemActive(), ImGui::GetID("##fa"));
-        std::string label = folder;
-        if (label.size() > 18)
-            label = label.substr(0, 17) + "…";
-        ImGui::TextWrapped("%s", label.c_str());
+        // Off-screen cells cost layout and nothing else. Not an optimisation:
+        // `creature/` in a World of Warcraft install holds three thousand
+        // subfolders, and a folder icon is a dozen vertices — emitting them all
+        // overruns ImGui's 16-bit index buffer and the whole draw list comes out
+        // as stretched garbage. Warcraft III never had a folder big enough.
+        if (onScreen) {
+            const std::string label = FitLabel(folder, cell);
+            if (label != folder)
+                ImGui::SetItemTooltip("%s", folder.c_str());
+            drawFolder(p0, ImGui::IsItemHovered(), ImGui::IsItemActive(), ImGui::GetID("##fa"));
+            CellLabel(label, cell);
+        } else {
+            ImGui::NewLine(); // hold the label's row so the grid does not reflow
+        }
         ImGui::EndGroup();
         ImGui::PopID();
         endCell();
     }
 
-    // Model / effect files — live thumbnails, honouring the type filter.
+    // Model / effect files — live thumbnails. Already filtered: the browser's
+    // listing only carries the enabled types.
     for (const auto& file : listing.modelFiles) {
         const StorageFileKind kind = KindOf(file);
-        if (!MatchesFilter(kind, fileFilter_))
-            continue;
         const bool isEffect = IsEffectKind(kind);
         beginCell();
         ImGui::PushID(idx++);
@@ -341,25 +544,37 @@ void StorageExplorer::BuildGrid() {
             onActivate_(af);
         }
 
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        if (tex != gfx::TextureHandle::Invalid) {
-            dl->AddImage(static_cast<ImTextureID>(static_cast<std::uint64_t>(tex)), p0, p1,
-                         ImVec2(0, 0), ImVec2(1, 1),
-                         ImGui::GetColorU32(ImVec4(1, 1, 1, gridAlpha)));
+        // Same bound as the folders above, for the same reason.
+        if (onScreen) {
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            if (tex != gfx::TextureHandle::Invalid) {
+                dl->AddImage(static_cast<ImTextureID>(static_cast<std::uint64_t>(tex)), p0, p1,
+                             ImVec2(0, 0), ImVec2(1, 1),
+                             ImGui::GetColorU32(ImVec4(1, 1, 1, gridAlpha)));
+            } else {
+                dl->AddRectFilled(p0, p1, placeholderColor, 4.0f);
+            }
+            if (selectedPath_ == archivePath) {
+                dl->AddRect(p0, p1, ImGui::GetColorU32(ImVec4(0.4f, 0.7f, 1.0f, gridAlpha)), 4.0f,
+                            0, 2.0f);
+            }
+            const std::string label = FitLabel(file, cell);
+            if (label != file)
+                ImGui::SetItemTooltip("%s", file.c_str());
+            CellLabel(label, cell);
         } else {
-            dl->AddRectFilled(p0, p1, placeholderColor, 4.0f);
+            ImGui::NewLine();
         }
-        if (selectedPath_ == archivePath)
-            dl->AddRect(p0, p1, ImGui::GetColorU32(ImVec4(0.4f, 0.7f, 1.0f, gridAlpha)), 4.0f, 0,
-                        2.0f);
-
-        std::string label = file;
-        if (label.size() > 18)
-            label = label.substr(0, 17) + "…";
-        ImGui::TextWrapped("%s", label.c_str());
         ImGui::EndGroup();
         ImGui::PopID();
         endCell();
+    }
+
+    // An empty grid should say which kind of empty it is — a folder with nothing
+    // in it reads exactly like a filter that matched nothing.
+    if (listing.folders.empty() && listing.modelFiles.empty()) {
+        ImGui::TextDisabled("%s", searchText_[0] != '\0' ? "Nothing here matches the filter."
+                                                         : "Nothing to show in this folder.");
     }
 
     ImGui::PopStyleVar(); // grid alpha

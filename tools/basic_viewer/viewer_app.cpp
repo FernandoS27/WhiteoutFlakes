@@ -1170,10 +1170,15 @@ void ViewerApp::SetStorageExplorerOpen(bool on) {
         storageExplorer_->SetOnActivate([this](const tools::ActivatedFile& f) {
             OpenStorageDocument(f.path, f.isEffect, f.provider);
         });
+        // Hand over what the viewer's own provider reads World of Warcraft
+        // with. Without it a WoW browse is *empty* — the root is id-keyed — and
+        // with it the panel shares that storage rather than opening a second.
+        auto& provider = service_.DefaultScene().GetContentProvider();
+        storageExplorer_->SetCascKeys(provider.ListfilePath(), provider.TactKeyPath());
         // Default to the viewer's configured install path so the panel lands on
-        // the game storage without a folder pick; File ▸ Open CASC folder can
-        // still repoint it.
-        const std::string install = service_.DefaultScene().GetContentProvider().InstallPath();
+        // the game storage without a folder pick; the Game combo and File ▸ Open
+        // CASC folder can still repoint it.
+        const std::string install = provider.InstallPath();
         if (!install.empty())
             storageExplorer_->OpenCasc(install);
     }
