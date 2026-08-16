@@ -25,10 +25,19 @@ constexpr SpaceAxes kSpaceAxes[] = {
     // Max: forward is −Y, so +X lands on renderer +Y (left) and +Y on −X.
     {{0.0f, 1.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
 
-    // Sc2: forward is +Y and right is +X. Forward maps onto renderer +X, and
-    // right onto renderer −Y — the opposite sign from Max on both axes, which
-    // is the 180° yaw between the two.
-    {{0.0f, -1.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
+    // Sc2: forward is −Y and left is +X — Max's basis verbatim, because
+    // Blizzard's StarCraft II art tools were 3ds Max plugins and the exporter
+    // kept its axes. This row used to be the 180° yaw of what it is now, which
+    // drew every SC2 model back-to-front.
+    //
+    // Measured off the shipped skeletons, not assumed. Zergling names its own
+    // legs: `Bone_Leg Right Front` rests at y −0.05 and its foot at −0.20,
+    // `Bone_Leg Right Rear` at +0.04 rising to +0.15 — front is −Y. The same
+    // bones put `Left` at +X and `Right` at −X, so +X is the model's left.
+    // Marine, SCV and Zealot agree independently: `Ref_Head` at −Y on all
+    // three, Marine's `Ref_Weapon` (a rifle held out in front) at y −0.39,
+    // Thor's `Evt_FootPrintLeft` at +X.
+    {{0.0f, 1.0f, 0.0f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f}},
 };
 constexpr usize kSpaceCount = sizeof(kSpaceAxes) / sizeof(kSpaceAxes[0]);
 

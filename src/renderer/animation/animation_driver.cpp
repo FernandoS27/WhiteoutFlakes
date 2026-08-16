@@ -8,6 +8,12 @@ void AnimationDriver::Bind(std::shared_ptr<model::IAnimationSource> source) {
     source_ = std::move(source);
     sequences_ = source_ ? source_->GetSequences() : std::vector<SequenceInfo>{};
     playlist_.SetTransitionPolicy(source_ ? source_->DefaultTransition() : TransitionPolicy{});
+    // Rebuilt, not appended: Bind is how an actor changes model, and carrying a
+    // previous model's solvers forward would aim bone indices at a different
+    // skeleton.
+    stages_.clear();
+    if (source_)
+        source_->CreatePoseStages(stages_);
 }
 
 void AnimationDriver::Play(std::string_view sequenceName) {

@@ -1,5 +1,7 @@
 #include "renderer/effects/event_emitter_pool.h"
 
+#include "renderer/effects/event_crossing.h"
+
 #include "particle/splat_service.h"
 #include "renderer/effects/spn_spawner.h"
 #include "renderer/model/model_instance.h"
@@ -31,22 +33,6 @@ void EventEmitterPool::Reset(std::vector<EventObjectConfig> configs,
 }
 
 namespace {
-
-i32 KeysInHalfOpen(const std::vector<u32>& times, i32 lo, i32 hi, i32 windowLo, i32 windowHi) {
-    if (times.empty() || lo >= hi)
-        return 0;
-    const i32 loB = std::max(lo, windowLo - 1);
-    const i32 hiB = std::min(hi, windowHi);
-    if (loB >= hiB)
-        return 0;
-    i32 n = 0;
-    for (u32 raw : times) {
-        const i32 t = (i32)raw;
-        if (t > loB && t <= hiB)
-            ++n;
-    }
-    return n;
-}
 
 Matrix44f BuildNodeWorld(const Matrix44f& bone, const Vector3f& pivot,
                          const Matrix44f& actorWorld) {
@@ -122,6 +108,10 @@ void EventEmitterPool::Tick(const Actor& actor, const std::vector<Matrix44f>& bo
             continue;
         if (e.resolutionFailed)
             continue;
+        // A sequence-scoped config only ticks while its sequence is the one
+        // playing. `-1` means model-wide, which is every MDX and M2 event.
+        if (cfg.sequenceIndex >= 0 && cfg.sequenceIndex != activeSeqIdx)
+            continue;
 
         i32 frame = 0;
         i32 windowLo = 0;
@@ -150,15 +140,8 @@ void EventEmitterPool::Tick(const Actor& actor, const std::vector<Matrix44f>& bo
         if (e.lastFrame < 0)
             e.lastFrame = windowLo - 1;
 
-        i32 fireCount = 0;
-        if (frame >= e.lastFrame) {
-            fireCount =
-                KeysInHalfOpen(cfg.eventTrackTimes, e.lastFrame, frame, windowLo, windowHi);
-        } else {
-            fireCount =
-                KeysInHalfOpen(cfg.eventTrackTimes, e.lastFrame, windowHi, windowLo, windowHi) +
-                KeysInHalfOpen(cfg.eventTrackTimes, windowLo - 1, frame, windowLo, windowHi);
-        }
+        const i32 fireCount =
+            CrossedKeyCount(cfg.eventTrackTimes, e.lastFrame, frame, windowLo, windowHi);
         e.lastFrame = frame;
 
         if (fireCount <= 0)

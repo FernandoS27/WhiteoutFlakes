@@ -17,6 +17,7 @@
 #include "display.h" // SequenceInfo
 #include "model_types.h"
 #include "pose_request.h"
+#include "pose_stage.h"
 #include "types.h"
 
 #include <functional>
@@ -130,6 +131,21 @@ public:
     /// Warcraft do. StarCraft II overrides it.
     virtual TransitionPolicy DefaultTransition() const {
         return {};
+    }
+
+    /// @brief Append this model's post-sampling corrections, in run order.
+    ///
+    /// Called once per actor at load. Warcraft III, World of Warcraft, and any
+    /// `.m3` without solver chunks append nothing, which is why the default is
+    /// a no-op rather than pure.
+    ///
+    /// **Order is the contract**: solvers first (they correct the animated
+    /// pose), physics last (it consumes the corrected one) — StarCraft II's own
+    /// frame order. The runner executes what it is given and never sorts.
+    ///
+    /// Plural from the start on purpose. See @ref IPoseStage.
+    virtual void CreatePoseStages(animation::PoseStageList& out) const {
+        (void)out;
     }
 };
 

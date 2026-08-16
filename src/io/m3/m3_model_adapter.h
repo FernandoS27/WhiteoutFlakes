@@ -144,6 +144,20 @@ public:
         return {};
     }
 
+    /// @brief `SDEV` keys, grouped into one config per (sequence, payload).
+    ///
+    /// M3 has no model-wide event array: an event *is* a key inside a
+    /// sub-track container, carrying its own name, bone and option string. So
+    /// every sequence's events are found by walking that sequence's STG group,
+    /// and each config is stamped with `sequenceIndex` — without it an Attack
+    /// container's cue fires during Walk, since every container's track starts
+    /// at 0.
+    ///
+    /// The shipped vocabulary is three names (`Evt_Sound`, `Evt_SeqEnd`,
+    /// `Evt_Simulate`) over the whole 3607-model corpus, and only `Evt_Sound`
+    /// is an effect. See `M3DecodeEventKind`.
+    std::vector<renderer::model::EventObjectConfig> GetEventObjects() override;
+
     /// @brief `MODL.bounds`, which M3 stores directly. Preferred over the
     ///        interface's union-over-positions default because it covers the
     ///        animated extent, and it is what camera framing measures against.
@@ -155,6 +169,15 @@ public:
     std::vector<renderer::model::SequenceInfo> GetSequences() const override;
 
     renderer::model::FrameState Evaluate(const PoseRequest& req) const override;
+
+    /// @brief One `M3JtIkStage` per `IKJT` chain, then one `M3TurretStage` per
+    ///        `PATU` behaviour.
+    ///
+    /// That order is the contract, not an accident of iteration: solvers run
+    /// before physics, and within the solvers IK moves the mount a turret is
+    /// bolted to. Appends nothing for a model with neither chunk, which is
+    /// most of them.
+    void CreatePoseStages(renderer::animation::PoseStageList& out) const override;
 
     /// @brief StarCraft II cross-fades between sequences rather than cutting,
     ///        on a 150 ms default its content is authored around.

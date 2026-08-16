@@ -81,6 +81,19 @@ param(
     # is what the commit message has to say.
     [switch]$M3Anim,
 
+    # The solver arm of G5: same corpus and scenarios, but with the pose stages
+    # on and a ground plane installed, so terrain IK and the turret are visible
+    # to a golden at all. Its own baselines (`m3ik`) — the whole point is that
+    # it differs from the solvers-off run, which is what the plain -M3Anim arm
+    # keeps asserting stays put.
+    [switch]$Solvers,
+    # Ground plane height for -Solvers, in model units. The default of 0 puts it
+    # at the scene origin; a model standing on it already needs no correction,
+    # so a non-zero value is what makes the solve do work.
+    [double]$GroundZ = 0,
+    # Aim target for turrets, model space, as three components.
+    [double[]]$Aim,
+
     # SD is the default mode; -Hd records the HD profile's baselines instead.
     # A full gate run does both — they are different draw paths.
     [switch]$Hd,
@@ -140,6 +153,10 @@ if ((@($M2, $M3, $M3Anim) | Where-Object { $_ }).Count -gt 1) {
     Write-Error '-M2, -M3 and -M3Anim are separate arms: pass one of them.'
     exit 2
 }
+if ($Solvers -and -not $M3Anim) {
+    Write-Error '-Solvers is a -M3Anim arm: the pose stages only exist for `.m3`.'
+    exit 2
+}
 if ($Listfile -and -not $M2) {
     Write-Error '-Listfile is a -M2 arm: no other product reads a fileDataID listfile.'
     exit 2
@@ -160,7 +177,7 @@ if ($M2) {
     }
 }
 if ($M3 -or $M3Anim) {
-    $mode = if ($M3Anim) { 'm3anim' } else { 'm3' }
+    $mode = if ($M3Anim) { if ($Solvers) { 'm3ik' } else { 'm3anim' } } else { 'm3' }
     if (-not $PSBoundParameters.ContainsKey('CorpusRoot')) {
         $CorpusRoot = 'C:/Projects/WhiteoutLib/Corpus'
     }
@@ -243,6 +260,12 @@ foreach ($entry in $entries) {
     }
     if ($entry.Blend)  { $argv += @('--draw-trace-anim-blend', $entry.Blend) }
     if ($entry.Weight) { $argv += @('--draw-trace-anim-weight', $entry.Weight) }
+    if ($Solvers) {
+        $argv += @('--draw-trace-solvers', '--draw-trace-ground', $GroundZ)
+        if ($Aim -and $Aim.Count -eq 3) {
+            $argv += @('--draw-trace-aim', $Aim[0], $Aim[1], $Aim[2])
+        }
+    }
     if ($Hd) { $argv += '--draw-trace-hd' }
     if ($Unlit) { $argv += '--draw-trace-unlit' }
     if ($LazyAnim) { $argv += '--draw-trace-lazy-anim' }

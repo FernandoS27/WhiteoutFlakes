@@ -1288,6 +1288,7 @@ if(WDX_ENABLE_M3)
     target_sources(WhiteoutFlakesLib PRIVATE
         src/io/m3/m3_model_adapter.cpp
         src/io/m3/m3_animation.cpp
+        src/io/m3/m3_pose_solvers.cpp
     )
     target_compile_definitions(WhiteoutFlakesLib PUBLIC WDX_ENABLE_M3=1)
     message(STATUS "WhiteoutFlakes: .m3 loading ENABLED (geometry only)")

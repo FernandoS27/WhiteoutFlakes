@@ -353,6 +353,18 @@ struct AnimScenario {
     // sequence *indices* are export order and differ per model, so the corpus
     // names sequences and this is what tells you which names exist.
     bool list = false;
+    // Turn the pose stages on and install a ground plane, so a capture can see
+    // terrain IK and the turret at all. Off in every other arm, which is what
+    // makes the byte-identical baselines mean "the animation did not move".
+    bool solvers = false;
+    /// @brief Ground plane height for the solver arm. Non-zero is the
+    ///        interesting case: a plane at the model's own feet is what the
+    ///        tolerance skip already declines to solve.
+    f32 groundZ = 0.0f;
+    /// @brief Aim target for turrets, in model space. Only used with @ref
+    ///        solvers.
+    bool hasAim = false;
+    Vector3f aim{0.0f, 0.0f, 0.0f};
     // Print the skinning plumbing and a per-frame pose hash.
     //
     // Earns its place because the failure this gate is most likely to hit is
@@ -364,7 +376,8 @@ struct AnimScenario {
     bool probe = false;
 
     bool Any() const {
-        return !sequence.empty() || switchFrame >= 0 || layerFrame >= 0 || list || probe;
+        return !sequence.empty() || switchFrame >= 0 || layerFrame >= 0 || list || probe ||
+               solvers;
     }
 };
 
@@ -576,6 +589,29 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
             a->animation.SetActiveSequenceIndex(startSeq);
         std::cout << "[dtrace] scenario: start seq [" << startSeq << "] " << seqs[startSeq].name
                   << std::endl;
+    }
+
+    // The solver arm. Both inputs are host policy — the renderer has no terrain
+    // and no notion of what a unit is shooting at — so the harness plays host
+    // exactly as the viewer does.
+    if (anim.solvers) {
+        settings.SetPoseSolversEnabled(true);
+        const f32 planeZ = anim.groundZ;
+        settings.SetGroundQuery([planeZ](const Vector3f& pos, f32 up, f32 down, f32& outZ) {
+            if (planeZ > pos.z + up || planeZ < pos.z - down)
+                return false;
+            outZ = planeZ;
+            return true;
+        });
+        if (anim.hasAim)
+            for (auto* a : spawned)
+                a->aimTarget = anim.aim;
+        // The stage count is the difference between "this model has no solver
+        // chunks" and "the solver ran and changed nothing" — two very different
+        // reasons for a golden to match the solvers-off one.
+        std::cout << "[dtrace] scenario: solvers on, ground z=" << planeZ
+                  << (anim.hasAim ? ", aiming" : ", no aim target") << ", "
+                  << hero->animation.PoseStages().size() << " stage(s)" << std::endl;
     }
 
     // Everything between the sampler and the bound palette, in the order it has
@@ -1232,6 +1268,15 @@ int main(int argc, char* argv[]) {
             drawTraceAnim.list = true;
         } else if (std::strcmp(a, "--draw-trace-anim-probe") == 0) {
             drawTraceAnim.probe = true;
+        } else if (std::strcmp(a, "--draw-trace-solvers") == 0) {
+            drawTraceAnim.solvers = true;
+        } else if (std::strcmp(a, "--draw-trace-ground") == 0 && i + 1 < argc) {
+            drawTraceAnim.groundZ = static_cast<f32>(std::atof(argv[++i]));
+        } else if (std::strcmp(a, "--draw-trace-aim") == 0 && i + 3 < argc) {
+            drawTraceAnim.hasAim = true;
+            drawTraceAnim.aim.x = static_cast<f32>(std::atof(argv[++i]));
+            drawTraceAnim.aim.y = static_cast<f32>(std::atof(argv[++i]));
+            drawTraceAnim.aim.z = static_cast<f32>(std::atof(argv[++i]));
         } else if (std::strcmp(a, "--wgpu-backend") == 0 && i + 1 < argc) {
             // Force Dawn's underlying adapter backend (d3d11/d3d12/vulkan/gl/metal).
             // Only meaningful when --backend webgpu is selected.

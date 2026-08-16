@@ -248,6 +248,16 @@ struct EventObjectConfig {
     Vector3f pivot = {0, 0, 0};
     u32 globalSequenceId = 0xFFFFFFFFu; ///< Sentinel: not a global sequence.
     std::vector<u32> eventTrackTimes;   ///< Sample times in ms when the event fires.
+
+    /// @brief The sequence this config belongs to, or `-1` for "every sequence".
+    ///
+    /// MDX and M2 events sit on one model-wide track that the active sequence's
+    /// window slices, so they leave this at `-1` and behave as they always did.
+    /// StarCraft II authors events *inside* a sub-track container, and every
+    /// sequence's tracks restart at 0 — so without this an Attack container's
+    /// footstep fires while the model is walking, because both windows begin at
+    /// the same millisecond.
+    i32 sequenceIndex = -1;
 };
 
 // Canonical filter mode + helpers + material flags + bone billboard flags

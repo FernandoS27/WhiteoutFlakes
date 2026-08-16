@@ -1185,3 +1185,112 @@ TEST_CASE("profiles report their particle dialect", "[particle][dialect]") {
     REQUIRE(wow.Particles().sortedBuilderDefect);
 #endif
 }
+
+TEST_CASE("emitter motion converts into a model-space emitter's own units",
+          "[particle][dialect]") {
+    // The trap this closes. Emitter travel, inherited velocity and the follow
+    // delta are all measured on the *world* transform, so they arrive in
+    // renderer units. A model-space emitter keeps its particles in model units.
+    // The client can add one to the other because its world IS model units;
+    // here they differ by WorldScale (100), so an unconverted add threw every
+    // particle a hundred times further than the record asked for — which looks
+    // exactly like "the particles are scattered all over the model".
+    using whiteout::flakes::renderer::model::FrameState;
+
+    auto d = MakeDesc(4.0f);
+    d->modelSpace = true;
+    d->followPosition = true;
+    d->followBias = 1.0f; // constant factor 1, so the whole delta is followed
+    d->followSlope = 0.0f;
+
+    FrameState::ParticleFrameState st{};
+    st.transform = Matrix44f::identity();
+    st.unitScale = 100.0f;
+    st.visibility = 1.0f;
+    st.modelAlpha = 1.0f;
+    st.lifeSpan = 4.0f;
+    st.emissionRate = 40.0f;
+    st.hasGravityVector = true;
+
+    Emitter2 em;
+    em.SetDesc(d);
+    em.SetBehavior(ParticleBehavior::Wow());
+    em.SetSeed(1234u);
+    em.ApplyState(st); // seeds prev == cur, so frame one has no travel
+    Step(em, 0.05f, 3);
+    REQUIRE(em.TotalAlive() > 0);
+
+    SECTION("the spawn path does not reach a model-space emitter at all") {
+        // Not a scaled-down version of the world-space offset: the client puts
+        // the path into the spawn matrix's translation, and a local particle
+        // never reads that matrix. Newborns land where the generator put them.
+        st.worldPosition = {100.0f, 0, 0};
+        em.ApplyState(st);
+        Step(em, 0.05f);
+        f32 worst = 0.0f;
+        for (usize i = 0; i < em.Pool().AliveCount(); ++i)
+            worst = (std::max)(worst, std::abs(em.Pool()[em.Pool().AliveAt(i)].position.x));
+        // Only the follow term may have moved anything, and that is one model
+        // unit — a path offset would be a hundred.
+        CHECK(worst <= 1.0f + 1e-3f);
+    }
+
+    SECTION("the follow delta is scaled down") {
+        // Emission off first: a newborn lands on the path and would pass the
+        // check without any existing particle having followed anything.
+        st.emissionRate = 0.0f;
+        st.worldPosition = {100.0f, 0, 0};
+        em.ApplyState(st);
+        Step(em, 0.05f);
+        // Only particles older than 2*dt follow, so this is the oldest one —
+        // the same measurement "a following emitter drags its older particles
+        // along" makes, and for the same reason.
+        f32 worst = 0.0f;
+        for (usize i = 0; i < em.Pool().AliveCount(); ++i)
+            worst = (std::max)(worst, em.Pool()[em.Pool().AliveAt(i)].position.x);
+        // Followed by exactly one model unit, not a hundred.
+        CHECK(worst == Approx(1.0f).margin(0.05f));
+    }
+}
+
+TEST_CASE("the follow factor reads the emitter's speed in model units",
+          "[particle][dialect]") {
+    // followSpeed1/2 come off the record in model units per second, so the
+    // measured speed has to be divided back out of renderer units before the
+    // line is evaluated — otherwise every emitter that moves at all saturates
+    // the clamp and follows fully. This holds whatever space the particles
+    // themselves are in, so the emitter here is a world-space one.
+    using whiteout::flakes::renderer::model::FrameState;
+
+    auto d = MakeDesc(4.0f);
+    d->followPosition = true;
+    // A line that is still 0 at 1 model unit/s and only reaches 1 at 11 of
+    // them: at renderer scale the same motion would be 100 units/s and clamp.
+    d->followSlope = 0.1f;
+    d->followBias = -0.1f;
+
+    FrameState::ParticleFrameState st{};
+    st.transform = Matrix44f::identity();
+    st.unitScale = 100.0f;
+    st.visibility = 1.0f;
+    st.lifeSpan = 4.0f;
+    st.emissionRate = 40.0f;
+    st.hasGravityVector = true;
+
+    Emitter2 em;
+    em.SetDesc(d);
+    em.SetBehavior(ParticleBehavior::Wow());
+    em.SetSeed(1234u);
+    em.ApplyState(st);
+    Step(em, 0.05f, 3);
+    REQUIRE(em.TotalAlive() > 0);
+
+    // 5 renderer units over 0.05 s is 1 model unit/s — the far end of the
+    // line's dead zone, so nothing may follow.
+    st.emissionRate = 0.0f;
+    st.worldPosition = {5.0f, 0, 0};
+    em.ApplyState(st);
+    Step(em, 0.05f);
+    for (usize i = 0; i < em.Pool().AliveCount(); ++i)
+        CHECK(em.Pool()[em.Pool().AliveAt(i)].position.x == Approx(0.0f).margin(1e-3f));
+}

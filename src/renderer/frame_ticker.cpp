@@ -76,7 +76,7 @@ void FrameTicker::Tick(SceneManager& scene, f32 dt) {
     }
     {
         WDX_CPU_ZONE("EvaluateActorTree");
-        EvaluateActorTree();
+        EvaluateActorTree(dt);
     }
     {
         WDX_CPU_ZONE("UpdateAnimation");
@@ -161,8 +161,12 @@ void FrameTicker::UpdateAttachments() {
     }
 }
 
-void FrameTicker::EvaluateActorTree() {
-    const ActorEvalContext ctx = rs_.MakeActorEvalContext();
+void FrameTicker::EvaluateActorTree(f32 dt) {
+    ActorEvalContext ctx = rs_.MakeActorEvalContext();
+    // The *unscaled* delta on purpose: a rate-limited IK goal and a turret's
+    // slew are real-world motion, so a paused actor's feet still settle onto
+    // the ground instead of freezing mid-step.
+    ctx.frameDtMs = (dt > 0.0f) ? static_cast<i32>(dt * 1000.0f + 0.5f) : 0;
 
     // Walk every top-level actor (Unit + External). External actors are
     // evaluated by the host (Max plugin) directly, so we only RECURSE into
@@ -294,7 +298,11 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
         // model space and the sampler is told to leave it alone. Bones the
         // pairing missed still sample and compose normally, which is what an
         // intermediate link in the chain needs.
-        std::vector<NodeOverride> ridden;
+        // Last frame's stage claims, if any. Merged with the Skinned-child
+        // overrides rather than replacing them: a claimed bone and a ridden
+        // bone are different sources of the same instruction, and a model can
+        // in principle have both.
+        std::vector<NodeOverride> ridden = actor.stageOverrides;
         if (actor.role == ActorRole::Skinned && !parentBones.empty()) {
             ridden.reserve(actor.skinnedParentBone.size());
             for (usize i = 0; i < actor.skinnedParentBone.size(); ++i) {
@@ -304,10 +312,41 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
                 ridden.push_back({static_cast<i32>(i), parentBones[static_cast<usize>(from)],
                                   /*replace=*/true});
             }
-            req.overrides = std::span<const NodeOverride>(ridden);
         }
+        if (!ridden.empty())
+            req.overrides = std::span<const NodeOverride>(ridden);
 
         fs = actor.animation.Source()->Evaluate(req);
+
+        // Post-sampling corrections, between Evaluate and ApplyFrameState so
+        // the single palette build downstream already sees them (design
+        // §7.4.2 — SC2 builds twice because its stage order forces it; we do
+        // not replicate that).
+        //
+        // In creator order, never sorted: solvers correct the animated pose,
+        // and a future physics stage consumes the corrected one.
+        if (ctx.poseStagesEnabled && !actor.animation.PoseStages().empty()) {
+            animation::PoseStageContext sctx;
+            sctx.nodeParents = actor.render.nodeParents;
+            sctx.frameDtMs = ctx.frameDtMs;
+            sctx.world = actor.ScaledWorldTransform();
+            sctx.queryGround = ctx.queryGround;
+            sctx.aimTarget = actor.aimTarget;
+            actor.stageOverrides.clear();
+            for (auto& stage : actor.animation.PoseStages()) {
+                stage->Run(fs, sctx);
+                // Collected after each stage rather than after all of them, so
+                // the order a later stage sees is the order they ran in.
+                for (const auto& claim : stage->Claims())
+                    actor.stageOverrides.push_back({claim.node, claim.transform,
+                                                    /*replace=*/true});
+            }
+        } else if (!actor.stageOverrides.empty()) {
+            // Stages turned off mid-run: drop the claims with them, or the
+            // sampler keeps skipping bones nothing is driving any more.
+            actor.stageOverrides.clear();
+        }
+
         actor.ApplyFrameState(fs, localTimeMs, ctx);
     }
 

@@ -110,7 +110,11 @@ void AddRegion(m3::Model& model, u16 rootBone) {
 
 } // namespace
 
-TEST_CASE("Bone visibility is discrete — it holds, it does not fade", "[m3chan]") {
+// ASCII only in the name, deliberately: `catch_discover_tests` round-trips it
+// through the ctest filter, and a non-ASCII character does not survive the
+// Windows console codepage — the case then matches nothing and reports as a
+// failure that running the binary directly cannot reproduce.
+TEST_CASE("Bone visibility is discrete - it holds, it does not fade", "[m3chan]") {
     m3::Model model = VisibilityFixture(300, true);
     AddRegion(model, 0);
     M3ModelAdapter a(std::move(model));

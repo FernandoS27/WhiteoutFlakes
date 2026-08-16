@@ -137,10 +137,11 @@ public:
     }
     CoordSpace SourceSpace() const override {
         // The one profile that is not renderer-native. StarCraft II and Heroes
-        // author +Y forward / +X right, where Warcraft III and WoW use +X
-        // forward / +Y left — a 90° yaw. Applied on the actor transform, not
-        // baked into the vertices, because an `.m3` reaches the GPU as a
-        // verbatim MeshBuffer with no CPU-side copy left to rotate.
+        // author −Y forward / +X left (3ds Max's axes, which their exporter
+        // kept), where Warcraft III and WoW use +X forward / +Y left — a 90°
+        // yaw. Applied on the actor transform, not baked into the vertices,
+        // because an `.m3` reaches the GPU as a verbatim MeshBuffer with no
+        // CPU-side copy left to rotate.
         return CoordSpace::Sc2;
     }
     std::span<shading::IShadingModel* const> ShadingModels() const override {

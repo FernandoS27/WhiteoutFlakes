@@ -100,6 +100,13 @@ if(WDX_ENABLE_M3)
     wdx_add_test(m3_skinning_test m3_skinning_test.cpp)
     # Non-bone channels: hierarchical bone visibility, geoset gating, lights.
     wdx_add_test(m3_channels_test m3_channels_test.cpp)
+    # Discrete keyframe events: the shared crossing arithmetic (previously
+    # untested and private to EventEmitterPool) plus the `.m3` SDEV decode.
+    wdx_add_test(m3_events_test m3_events_test.cpp)
+    # Post-skeleton pose stages: terrain IK and the turret. Device-free —
+    # a stage reads a FrameState and plain values, so the real solver runs
+    # with no model, no adapter and no GPU.
+    wdx_add_test(m3_solver_test m3_solver_test.cpp)
 endif()
 # The baked-vertex-buffer description check. Compiled unconditionally — it
 # #ifdefs its two halves internally, so a build with neither format still

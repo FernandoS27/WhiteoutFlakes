@@ -31,8 +31,12 @@ enum class CoordSpace {
     Blizzard,
     /// 3ds Max: −Y forward, +X left, +Z up.
     Max,
-    /// StarCraft II and Heroes of the Storm: +Y forward, +X right, +Z up.
-    /// A 180° yaw from @ref Max, not the same space — Max's +X is left.
+    /// StarCraft II and Heroes of the Storm: −Y forward, +X left, +Z up —
+    /// **the same basis as @ref Max**, which is what the shipped skeletons
+    /// measure to (see the table in coordinate_system.cpp). SC2's art tools
+    /// were 3ds Max plugins and the exporter kept Max's axes. Still its own
+    /// value: a profile declares the game it authored in, not the DCC tool,
+    /// and the two are free to diverge again.
     Sc2,
 };
 
@@ -50,9 +54,8 @@ inline constexpr CoordSpace kDefaultCoordSpace = CoordSpace::WDX_DEFAULT_COORD_S
 inline Vector3f ForwardAxis(CoordSpace s) {
     switch (s) {
     case CoordSpace::Max:
-        return {0.0f, -1.0f, 0.0f};
     case CoordSpace::Sc2:
-        return {0.0f, 1.0f, 0.0f};
+        return {0.0f, -1.0f, 0.0f};
     case CoordSpace::Blizzard:
         break;
     }

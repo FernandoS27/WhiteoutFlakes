@@ -57,6 +57,20 @@ Sc2M3/Marine.m3          seq=Walk  layer=30:Attack blend=100
 # the two are different animations.
 Sc2M3/Colossus.m3        seq=Walk  switch=60:Attack+02
 Sc2M3/SiegeTank.m3       seq=Stand switch=50:Attack
+# The turret case. SiegeTank above carries no PATU chunk despite the name —
+# its barrel is animated, not solved — so it covers nothing for `-Solvers`.
+# Autoturret does, with exactly one behaviour on bone 2.
+#
+# Read its `-Solvers` result carefully: the turret demonstrably moves the pose
+# (`--draw-trace-anim-probe` shows a different bone hash with the stage on) but
+# the GOLDEN is identical to the solvers-off run, because bone 2 drives no
+# visible geometry. So this entry proves the stage runs on real chunk data
+# without exploding; it does not prove the turret looks right. The turret's
+# arithmetic is covered by m3_solver_test, and only there.
+#
+# Of the whole corpus, only Colossus shows a solver in the image — it is the
+# IKJT model, and the one entry that makes `-Solvers` non-vacuous.
+Sc2M3/Autoturret.m3      seq=Stand
 
 # --- not covered, and why -------------------------------------------------
 # §2.2 also asked for a >256-bone model, to exercise the Path A/Path B palette

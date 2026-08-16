@@ -438,6 +438,8 @@ ActorEvalContext RenderService::MakeActorEvalContext() {
     ctx.camPos = scene->Camera().GetSource();
     ctx.sceneAnimationTimeMs = scene->GetAnimationTime();
     ctx.fireEvents = impl_->settings_.ShowEvents();
+    ctx.poseStagesEnabled = impl_->settings_.PoseSolversEnabled();
+    ctx.queryGround = impl_->settings_.GetGroundQuery();
     ctx.scene = scene;
     ctx.particles = &svc->particles;
     ctx.splats = &svc->splats;

@@ -237,26 +237,37 @@ TEST_CASE("Each space's axes mean what its documentation says") {
         RequireSameVector(CoordinateSystem::ToDefaultDir(ref, {0.0f, -1.0f, 0.0f}), kRightRef);
     }
 
-    SECTION("Sc2 is +Y forward, +X right") {
-        // The convention StarCraft II and Heroes author in. Both axes are
+    SECTION("Sc2 is -Y forward, +X left") {
+        // Measured off the shipped skeletons, not taken from a wiki: Zergling
+        // names its own legs `… Front` / `… Rear` / `… Left` / `… Right`, and
+        // they rest at −Y / +Y / +X / −X respectively. `Ref_Head` sits at −Y on
+        // Marine, SCV and Zealot alike.
+        //
+        // This used to assert +Y forward / +X right, which is the 180° yaw of
+        // the truth and drew every SC2 model back-to-front. All three axes are
         // asserted, not just forward: forward alone still admits a mirrored
         // basis, which would flip every model's handedness.
-        RequireSameVector(CoordinateSystem::ToDefaultDir(CoordSpace::Sc2, {0.0f, 1.0f, 0.0f}),
+        RequireSameVector(CoordinateSystem::ToDefaultDir(CoordSpace::Sc2, {0.0f, -1.0f, 0.0f}),
                           kFwdRef);
-        RequireSameVector(CoordinateSystem::ToDefaultDir(CoordSpace::Sc2, {1.0f, 0.0f, 0.0f}),
+        RequireSameVector(CoordinateSystem::ToDefaultDir(CoordSpace::Sc2, {-1.0f, 0.0f, 0.0f}),
                           kRightRef);
         RequireSameVector(CoordinateSystem::ToDefaultDir(CoordSpace::Sc2, {0.0f, 0.0f, 1.0f}),
                           kUpRef);
     }
 
-    SECTION("Max is -Y forward, and is NOT Sc2") {
+    SECTION("Max is -Y forward, and Sc2 shares its basis") {
         RequireSameVector(CoordinateSystem::ToDefaultDir(CoordSpace::Max, {0.0f, -1.0f, 0.0f}),
                           kFwdRef);
-        // The two differ by a 180° yaw. Pinned because reusing Max for SC2 is
-        // the obvious shortcut — the enum comment even used to describe Max as
-        // "+X right, +Y forward", which is SC2's convention and not Max's.
         RequireSameVector(CoordinateSystem::ToDefaultDir(CoordSpace::Max, {1.0f, 0.0f, 0.0f}),
                           {0.0f, 1.0f, 0.0f});
+        // Not a shortcut — a measured coincidence. SC2's exporter was a 3ds Max
+        // plugin and kept Max's axes, so the change between the two spaces is
+        // the identity. Pinned so that a future space added by analogy ("Sc2 is
+        // surely a yaw off Max") has to argue with the assertion.
+        for (i32 i = 0; i < 3; ++i)
+            for (i32 j = 0; j < 3; ++j)
+                REQUIRE(CoordinateSystem::BasisChange(CoordSpace::Max, CoordSpace::Sc2).data[i][j] ==
+                        Approx(i == j ? 1.0f : 0.0f).margin(1e-6));
     }
 
     SECTION("Forward axes agree with the basis tables") {

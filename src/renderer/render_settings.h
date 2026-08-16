@@ -12,6 +12,7 @@
 // and reacts on the next frame.
 // ============================================================================
 
+#include <functional>
 #include "render_target.h"             // DisplayFlags, RenderMode, LightingMode, IblMode
 #include "whiteout/flakes/gfx_types.h" // gfx::GfxApi
 #include "whiteout/flakes/types.h"
@@ -65,6 +66,31 @@ public:
     }
     bool ShowEvents() const {
         return showEvents_;
+    }
+
+    // ---- Pose stages (terrain IK, turret) ----
+    // Off by default, and StarCraft II does the same thing: IK is gated on a
+    // world flag rather than per model, because a solver with no world to
+    // query has nothing to solve against. Off also means the pose is exactly
+    // what the sampler produced, which is what keeps the byte-identical gates
+    // meaningful.
+    bool PoseSolversEnabled() const {
+        return poseSolvers_;
+    }
+    void SetPoseSolversEnabled(bool v) {
+        poseSolvers_ = v;
+    }
+
+    // Host-supplied ground height under a model-space point, for terrain IK.
+    // Renderer policy stops at "call whatever the host registered": the viewer
+    // installs a flat plane, a game host would sample its terrain. Unset means
+    // no IK runs at all rather than IK against a guessed surface.
+    using GroundQuery = std::function<bool(const Vector3f& pos, f32 up, f32 down, f32& outZ)>;
+    const GroundQuery& GetGroundQuery() const {
+        return groundQuery_;
+    }
+    void SetGroundQuery(GroundQuery q) {
+        groundQuery_ = std::move(q);
     }
 
     // ---- Render mode (HD vs SD) ----
@@ -422,6 +448,8 @@ private:
     bool showCollisions_ = false;
     bool showLights_ = false;
     bool showEvents_ = true;
+    bool poseSolvers_ = false;
+    GroundQuery groundQuery_;
 
     // Render mode + dirty flag.
     RenderMode renderMode_ = RenderMode::SD;

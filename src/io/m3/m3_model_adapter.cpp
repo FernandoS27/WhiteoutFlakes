@@ -1,7 +1,10 @@
 #include "io/m3/m3_model_adapter.h"
 
+#include "io/m3/m3_pose_solvers.h"
+
 #include <algorithm>
 #include <cstdio>
+#include <memory>
 
 namespace whiteout::flakes::io {
 
@@ -403,6 +406,186 @@ std::vector<MeshData> M3ModelAdapter::GetMeshes() {
     // model carries no usable box of its own. Common in practice: MODL.bounds
     // is the *animated* extent and a model with no sequences leaves it zeroed.
     return IModelSource::GetBounds();
+}
+
+namespace {
+
+/// @brief What an `SDEV` key's name means.
+///
+/// Decided by **name**, not by `Event::eventType`. The census over 3607 corpus
+/// models says the type is not a discriminator: `Evt_Sound` ships as type 2 and
+/// as type 65283, `Evt_Simulate` as 2, 15619 and 65283. Only `Evt_SeqEnd` is
+/// consistently type 4, and it is the one that needs no decoding.
+///
+/// The whole shipped vocabulary is those three names over 7092 keys. That is
+/// not a sample — it is every event StarCraft II and Heroes author into a
+/// model.
+enum class M3EventKind { Sound, SequenceEnd, Simulate, Unknown };
+
+M3EventKind M3DecodeEventKind(const std::string& rawName) {
+    // The `Ref<CHAR>` keeps the terminator, so `name.size()` is one past the
+    // text and a plain `==` against a literal never matches. Silently: the
+    // strings print identically. Every comparison against an M3 name has to
+    // go through the c_str() round-trip.
+    const std::string name(rawName.c_str());
+    if (name == "Evt_Sound")
+        return M3EventKind::Sound;
+    if (name == "Evt_SeqEnd")
+        return M3EventKind::SequenceEnd;
+    if (name == "Evt_Simulate")
+        return M3EventKind::Simulate;
+    return M3EventKind::Unknown;
+}
+
+} // namespace
+
+std::vector<EventObjectConfig> M3ModelAdapter::GetEventObjects() {
+    std::vector<EventObjectConfig> out;
+    if (model_.sequences.empty())
+        return out;
+
+    // One config per (sequence, kind, id, bone). `EventObjectConfig` carries a
+    // single payload and a list of times, so distinct payloads have to become
+    // distinct configs — a container firing two different sounds is two.
+    struct Key {
+        i32 sequence;
+        i32 bone;
+        std::string id;
+        bool operator==(const Key&) const = default;
+    };
+    std::vector<std::pair<Key, std::vector<::whiteout::u32>>> groups;
+
+    bool warnedUnknown = false;
+    for (std::size_t s = 0; s < model_.sequences.size(); ++s) {
+        for (const auto& def : tables_.LayersFor(static_cast<i32>(s))) {
+            if (def.stc >= model_.subTrackCollections.size())
+                continue;
+            const auto& stc = model_.subTrackCollections[def.stc];
+            for (const auto& blk : stc.sdev) {
+                for (std::size_t ki = 0; ki < blk.keys.size(); ++ki) {
+                    const auto& ev = blk.keys[ki];
+                    const M3EventKind kind = M3DecodeEventKind(ev.name);
+                    if (kind == M3EventKind::Unknown) {
+                        if (!warnedUnknown) {
+                            std::fprintf(stderr,
+                                         "[m3 events] unhandled event name '%s' in %s — ignored\n",
+                                         std::string(ev.name.c_str()).c_str(),
+                                         std::string(model_.name.c_str()).c_str());
+                            warnedUnknown = true;
+                        }
+                        continue;
+                    }
+                    // Recognised and deliberately not dispatched:
+                    //   Evt_SeqEnd  — a playback marker on bone 0xFFFF at the
+                    //                 track's last frame. The playlist already
+                    //                 knows where a sequence ends.
+                    //   Evt_Simulate — the ragdoll hand-off (it appears in
+                    //                 *DeathRagdoll / *PhysicsDeath models on a
+                    //                 real bone). Nothing consumes it until
+                    //                 physics lands; emitting it now would only
+                    //                 add configs the pool skips.
+                    if (kind != M3EventKind::Sound)
+                        continue;
+                    if (ki >= blk.timestamps.size())
+                        continue;
+
+                    const Key k{static_cast<i32>(s),
+                                ev.boneIndex == 0xFFFFu ? -1 : static_cast<i32>(ev.boneIndex),
+                                std::string(ev.optionString.c_str())};
+                    auto it = std::find_if(groups.begin(), groups.end(),
+                                           [&](const auto& g) { return g.first == k; });
+                    if (it == groups.end()) {
+                        groups.push_back({k, {}});
+                        it = groups.end() - 1;
+                    }
+                    it->second.push_back(static_cast<::whiteout::u32>(blk.timestamps[ki]));
+                }
+            }
+        }
+    }
+
+    out.reserve(groups.size());
+    for (auto& [k, times] : groups) {
+        std::sort(times.begin(), times.end());
+        times.erase(std::unique(times.begin(), times.end()), times.end());
+        EventObjectConfig c;
+        c.name = "Evt_Sound";
+        c.kind = EventObjectConfig::Kind::SND;
+        // The option string is the cue name ("Terran_ExplosionLarge"), which
+        // resolves through StarCraft II's own sound tables rather than through
+        // anything in the model. Carried verbatim so a host that has those
+        // tables can dispatch it; without them the pool's SND path finds
+        // nothing and says so once.
+        c.id = k.id;
+        c.nodeIndex = k.bone;
+        c.sequenceIndex = k.sequence;
+        c.eventTrackTimes = std::move(times);
+        out.push_back(std::move(c));
+    }
+    return out;
+}
+
+void M3ModelAdapter::CreatePoseStages(renderer::animation::PoseStageList& out) const {
+    // ---- IKJT ------------------------------------------------------------
+    for (const auto& jt : model_.ikJoints) {
+        // The chunk names the two ends; the chain between them is the parent
+        // walk from the effector up to the root, which is exactly what
+        // `CJTIKSolver_Init` does before marking each bone.
+        const std::size_t root = jt.boneIndex1;
+        const std::size_t tip = jt.boneIndex2;
+        if (root >= model_.bones.size() || tip >= model_.bones.size())
+            continue;
+
+        std::vector<i32> chain;
+        std::size_t cur = tip;
+        // Bounded by the bone count: a malformed parent link that cycles would
+        // otherwise walk forever, and a damaged chunk should cost a skipped
+        // solver rather than a hang.
+        for (std::size_t guard = 0; guard <= model_.bones.size(); ++guard) {
+            chain.push_back(static_cast<i32>(cur));
+            if (cur == root)
+                break;
+            const ::whiteout::u16 p = model_.bones[cur].parentIndex;
+            if (p == 0xFFFFu || p >= model_.bones.size())
+                break;
+            cur = p;
+        }
+        // Only a walk that actually reached the named root is a chain.
+        if (chain.empty() || static_cast<std::size_t>(chain.back()) != root)
+            continue;
+        std::reverse(chain.begin(), chain.end()); // root-first
+        if (chain.size() < 2)
+            continue;
+
+        out.push_back(std::make_unique<M3JtIkStage>(std::move(chain), jt.raycastUp,
+                                                    jt.raycastDown, jt.maxSpeed,
+                                                    jt.goalThreshold));
+    }
+
+    // ---- PATU ------------------------------------------------------------
+    for (const auto& tb : model_.turretBehaviors) {
+        if (tb.boneIndex >= model_.bones.size())
+            continue;
+        // The permitted axis, from the descriptor's third basis row.
+        //
+        // Every PATU descriptor in the corpus is an identity transform with
+        // zero weights and zero limits (checked, not assumed — see
+        // m3_solver_test's corpus sweep), so this reduces to +Z, which is the
+        // yaw axis in StarCraft II's Z-up space and the right answer for a
+        // turret. The chunk names the bone and essentially nothing else; the
+        // axis, limits and turn rate a game would use live in SC2's Actor data,
+        // which is not in the model and not something we have.
+        const Vector3f axis{tb.transform.data[2][0], tb.transform.data[2][1],
+                            tb.transform.data[2][2]};
+        out.push_back(std::make_unique<M3TurretStage>(
+            static_cast<i32>(tb.boneIndex), axis,
+            // No turn rate is parsed; `yawWeight` is the closest authored
+            // quantity and behaves as one (larger = swings faster). A zero
+            // weight would freeze the turret, so it falls back to a rate that
+            // crosses 180 degrees in about a second.
+            tb.yawWeight > 0.0f ? tb.yawWeight : 3.0f, tb.yawLimited != 0, tb.yawMin,
+            tb.yawMax));
+    }
 }
 
 SkeletonData M3ModelAdapter::GetSkeleton() {

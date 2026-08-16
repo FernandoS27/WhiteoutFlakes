@@ -49,7 +49,7 @@ public:
 
 private:
     void UpdateAttachments();
-    void EvaluateActorTree();
+    void EvaluateActorTree(f32 dt);
     // @p parentBones is the caller's freshly evaluated bone matrices, which a
     // Skinned child poses from. Empty at the root and for a parent that
     // evaluated nothing.

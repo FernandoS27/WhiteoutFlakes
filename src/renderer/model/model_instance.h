@@ -12,6 +12,7 @@
 #include "whiteout/flakes/util/coordinate_system.h"
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 namespace whiteout::flakes::renderer::animation {
@@ -121,6 +122,23 @@ struct Actor {
     }
 
     animation::AnimationDriver animation;
+
+    // Where this actor's turrets should point, in model space. Empty releases
+    // them back to their animation, which is the resting state and the default.
+    // Host-set: nothing in a model file says what a unit is shooting at.
+    std::optional<Vector3f> aimTarget;
+
+    // Bones a pose stage took over, collected after the stages run and fed into
+    // the NEXT frame's PoseRequest so the sampler skips them.
+    //
+    // Empty for both current stages by design — IK and the turret compose a
+    // delta onto the animation rather than replacing it, and StarCraft II marks
+    // IK chains with a bit that explicitly does not suppress sampling. It
+    // exists because ragdoll is the stage that will claim bones, and the thing
+    // ragdoll actually needs is a writer for `PoseRequest::overrides` that is
+    // not the host. That writer is the part worth building early; the storage
+    // is one vector.
+    std::vector<NodeOverride> stageOverrides;
 
     // ActorRole::Skinned only: which of the *parent's* nodes drives each of
     // this actor's, or -1 for one it poses itself. Indexed by this actor's node.

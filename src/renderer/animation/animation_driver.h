@@ -2,6 +2,7 @@
 
 #include "clip_playlist.h"
 #include "types.h"
+#include "whiteout/flakes/pose_stage.h"
 #include "whiteout/flakes/model_source.h"
 #include "whiteout/flakes/types.h"
 
@@ -57,6 +58,18 @@ public:
         return playlist_;
     }
 
+    /// @brief This actor's post-sampling corrections, in run order.
+    ///
+    /// Built once by @ref Bind, because they are per-actor state (a
+    /// rate-limited IK goal, a turret's slew cursor) rather than per-model
+    /// data. Empty for wc3, wow, and any `.m3` without solver chunks.
+    PoseStageList& PoseStages() {
+        return stages_;
+    }
+    const PoseStageList& PoseStages() const {
+        return stages_;
+    }
+
     /// @brief Step the playback stack and latch the primary play's time.
     ///        @p nowMs is the actor clock.
     void Advance(i32 nowMs, bool forceLoop);
@@ -69,6 +82,7 @@ public:
 private:
     std::shared_ptr<model::IAnimationSource> source_;
     ClipPlaylist playlist_;
+    PoseStageList stages_;
     // Cached sequence table. Advance runs every frame for every actor and the
     // source builds this vector (strings included) on each call.
     std::vector<model::SequenceInfo> sequences_;
