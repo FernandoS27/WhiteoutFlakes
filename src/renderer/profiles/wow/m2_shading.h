@@ -17,6 +17,7 @@
 #include "core/surface_vocabulary.h"
 #include "core/vertex_layout.h"
 #include "gfx/gfx.h"
+#include "m2_lighting.h"
 #include "m2_material.h"
 #include "m2_shader_select.h"
 #include "m2_surface_table.h"
@@ -25,6 +26,7 @@
 
 #include <array>
 #include <map>
+#include <vector>
 
 namespace whiteout::flakes::renderer {
 class RenderService;
@@ -83,9 +85,6 @@ private:
         Vector4f cameraPosWS;
         Vector4f fogParams;
         Vector4f fogColor;
-        Vector4f sunDirWS;
-        Vector4f sunColor;
-        Vector4f ambient;
     };
 
     struct alignas(16) M2DrawCb {
@@ -94,7 +93,13 @@ private:
         Matrix44f texMtx1;
         Vector4f elementColor;
         Vector4f unitWeights;
-        Vector4f params; // .x alphaRef, .y fogMode, .z lit, .w unused
+        Vector4f params; // .x alphaRef, .y fogMode, .z lit, .w point light count
+        Vector4f lightAmbient;
+        Vector4f lightDiffuse;
+        Vector4f lightDir;
+        Vector4f pointColor[kM2MaxPointLights];
+        Vector4f pointPos[kM2MaxPointLights];
+        Vector4f pointAtten[kM2MaxPointLights];
     };
 
     // Everything baked into a pipeline. `blend` and `materialFlags` are here
@@ -124,6 +129,13 @@ private:
     ///        by another product — which a mixed scene has plenty of.
     static const M2SurfaceTable* TableOf(const render_detail::RenderableView& view);
 
+    /// @brief The resolved lighting for @p view, memoised on the view pointer.
+    ///
+    /// The client builds one CM2Lighting per model per frame; a draw list has
+    /// several batches per model, so rebuilding per draw would walk the scene's
+    /// light list once per batch for an answer that cannot change between them.
+    const M2LightingResult& LightingFor(const render_detail::RenderableView& view);
+
     RenderService& rs_;
     bool initTried_ = false;
 
@@ -140,6 +152,12 @@ private:
     Matrix44f passView_ = Matrix44f::identity();
     Matrix44f passProj_ = Matrix44f::identity();
     Vector3f passCameraPos_ = {0.0f, 0.0f, 0.0f};
+
+    // Borrowed from the CollectedDrawLists BeginPass was handed, which outlives
+    // the pass (shading_model.h states the contract).
+    const std::vector<model::FrameState::LightState>* passLights_ = nullptr;
+    const render_detail::RenderableView* lightingView_ = nullptr;
+    M2LightingResult lighting_;
 };
 
 } // namespace whiteout::flakes::renderer::profiles::wow

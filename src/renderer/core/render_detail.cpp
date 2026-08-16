@@ -31,6 +31,7 @@ void FillRenderableView(RenderableView& view, model::Actor& mi, const ActorMap& 
     // Scaled, not raw: `worldTransform` is the host's, in game units. Returns
     // the same object for WC3, whose scale is 1.
     view.worldTransform = mi.ScaledWorldTransform();
+    view.worldScale = mi.worldScale;
     view.parentVisibility = mi.parentVisibility;
     view.mirrored = mi.mirrored;
     view.hasLods = mi.render.hasLods;

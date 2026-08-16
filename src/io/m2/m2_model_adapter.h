@@ -270,6 +270,8 @@ private:
                                    renderer::model::FrameState& fs) const;
     void EvaluateSurfaces(const M2AnimTime& at, bool bindPose,
                           renderer::model::FrameState& fs) const;
+    void EvaluateLights(const M2AnimTime& at, const Matrix44f& world,
+                        renderer::model::FrameState& fs) const;
 
     // Mutable because Evaluate is const and a lazily parsed model fills its
     // tracks in on first play. Nothing a caller can observe changes: the keys

@@ -37,10 +37,12 @@ struct M2PassData
     float4 cameraPosWS;  // .xyz eye in world space
     float4 fogParams;    // .x start, .y end, .z density (0 disables), .w unused
     float4 fogColor;     // .rgb scene fog colour
-    float4 sunDirWS;     // .xyz direction TO the light, normalised
-    float4 sunColor;     // .rgb radiance
-    float4 ambient;      // .rgb ambient term
 }
+
+// Lighting lives here rather than in the pass block because the client resolves
+// it per *model*: one CM2Lighting per CM2Model per frame, holding one
+// directional term and the three nearest point lights. See m2_lighting.h.
+static const int kM2PointLights = 3;
 
 struct M2DrawData
 {
@@ -53,6 +55,12 @@ struct M2DrawData
     float4 elementColor; // .rgb batch colour, .a element alpha
     float4 unitWeights;  // per-texture-unit weight (batch.flags & 0x40)
     float4 params;       // .x alphaRef, .y fogMode, .z lit, .w unused
+    float4 lightAmbient; // .rgb summed ambient, unclamped
+    float4 lightDiffuse; // .rgb the directional term, clamped per channel to 1
+    float4 lightDir;     // .xyz direction the light TRAVELS, normalised
+    float4 pointColor[kM2PointLights];
+    float4 pointPos[kM2PointLights];   // .xyz world space
+    float4 pointAtten[kM2PointLights]; // .xyz constant / linear / quadratic
 }
 
 // Per-backend binding shifts, mirroring gtao.slang / gaussian_blur.slang.
@@ -309,22 +317,36 @@ float4 M2Finish(float3 rgb, float a, PSInput input)
     return float4(ApplyFog(rgb, input.worldPos, draw.params.y), a);
 }
 
-// The combiner table's `in`, lit. Bring-up lighting — one directional term
-// plus ambient — not WoW's; what *is* faithful is which blend modes and flags
-// switch it off (m2_material.h), which the draw CB carries in params.z.
+// The combiner table's `in`, lit — the client's own light model, resolved per
+// model on the CPU (m2_lighting.h) and evaluated here:
+//
+//     lit = saturate(ambient
+//                  + diffuse * saturate(dot(N, -lightDir))
+//                  + Σ pointColor[i] * saturate(dot(N, toLight)) * atten)
+//
+// with `atten = 1 / (k0 + k1·d + k2·d²)`, GL's form — GLDevice::SetLight hands
+// CM2Light's three floats to GL_CONSTANT/LINEAR/QUADRATIC_ATTENUATION, and the
+// unused shader slots default k0 to 1, which is the only value that makes a
+// reciprocal safe there. Which blend modes and flags switch the whole thing off
+// is m2_material.h's call, carried in params.z.
+//
+// `saturate` on the total, not on the parts: the client's ambient is a raw sum
+// and its portrait preset already reaches 1.45 at full N·L, so a lit batch is
+// meant to clip against an unlit neighbour rather than be normalised down to
+// meet it.
 //
 // Two properties it has to hold:
 //
-//   Peak at 1.0. A model mixes lit and unlit batches — Alexstrasza's body is
-//   lit and her mane is flagged 0x01 — and an unlit one multiplies its texture
-//   by exactly 1. A lit term peaking anywhere else makes the two read as
-//   different materials on the same creature.
+//   Direction is where the light *goes*, not where it comes from. CM2Lighting
+//   stores propagation and GLDevice::SetLight negates on the way to GL_POSITION,
+//   so the N·L term negates here.
 //
 //   Face toward the viewer, per pixel. Two-sided materials (flag 0x04) are the
 //   wing membranes and fins, and one side of every such triangle has a normal
 //   pointing away; without this they collapse to flat ambient and read as
 //   holes. Per *pixel* because the flip is a discontinuity — interpolating
-//   across it is what banded the wings.
+//   across it is what banded the wings. This is our one deliberate deviation:
+//   the client lights per vertex, in the sixteen vertex shaders.
 float4 M2In(PSInput i)
 {
     if (draw.params.z <= 0.5)
@@ -334,9 +356,26 @@ float4 M2In(PSInput i)
     let toEye = normalize(pass.cameraPosWS.xyz - i.worldPos);
     n = (dot(n, toEye) < 0.0) ? -n : n;
 
-    let ndotl = saturate(dot(n, pass.sunDirWS.xyz));
-    let lit = saturate(pass.ambient.rgb + pass.sunColor.rgb * ndotl);
-    return float4(i.color.rgb * lit, i.color.a);
+    float3 acc = draw.lightAmbient.rgb;
+    acc += draw.lightDiffuse.rgb * saturate(dot(n, -draw.lightDir.xyz));
+
+    // No count test and no early out: an unfilled slot arrives with colour 0 and
+    // attenuation (1, 0, 0), which is what ComputeLocalLights writes into the
+    // slots CM2Lighting did not fill, and it costs one madd that multiplies
+    // away. Branching instead is what fxc refuses to unroll — the same
+    // "does not appear to terminate in a timely manner" M2Skin documents.
+    [unroll]
+    for (int L = 0; L < kM2PointLights; ++L)
+    {
+        let d = draw.pointPos[L].xyz - i.worldPos;
+        let distSq = dot(d, d);
+        let dist = sqrt(max(distSq, 1e-8));
+        let a = draw.pointAtten[L].xyz;
+        let atten = 1.0 / max(a.x + a.y * dist + a.z * distSq, 1e-4);
+        acc += draw.pointColor[L].rgb * saturate(dot(n, d / dist)) * atten;
+    }
+
+    return float4(i.color.rgb * saturate(acc), i.color.a);
 }
 
 float4 T0(PSInput i) { return tex0.Sample(samp0, i.uv01.xy); }

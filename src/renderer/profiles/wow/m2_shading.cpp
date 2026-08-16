@@ -297,7 +297,6 @@ gfx::PipelineHandle M2CombinerShading::GetOrBuildPso(const PsoKey& key) {
 
 bool M2CombinerShading::BeginPass(const core::PassContext& ctx,
                                   const render_detail::CollectedDrawLists& lists) {
-    (void)lists; // SelectLights returns 0, so the scene light pool goes unread
     Init();
     if (!IsAvailable())
         return false;
@@ -305,6 +304,10 @@ bool M2CombinerShading::BeginPass(const core::PassContext& ctx,
     passView_ = ctx.view;
     passProj_ = ctx.projection;
     passCameraPos_ = ctx.cameraPos;
+    passLights_ = &lists.sceneLights;
+    // A new pass may hand a different light pool, and the views themselves are
+    // rebuilt each frame; anything cached against the old one is stale.
+    lightingView_ = nullptr;
 
     auto* gfxDev = rs_.Pipeline().Gfx();
     if (auto* c = static_cast<M2PassCb*>(gfxDev->MapBuffer(passCb_))) {
@@ -316,19 +319,49 @@ bool M2CombinerShading::BeginPass(const core::PassContext& ctx,
         // only the term they blend toward is missing.
         c->fogParams = {0.0f, 1.0f, 0.0f, 0.0f};
         c->fogColor = {0.5f, 0.55f, 0.6f, 0.0f};
-        // Bring-up lighting, and only that — a fixed key light so a model reads
-        // as solid rather than flat. What *is* faithful is which blend modes
-        // turn it off, which m2_material.h decides and the draw CB carries.
-        //
-        // ambient + sun sums to exactly 1: an unlit batch multiplies its
-        // texture by 1, so a lit one has to reach 1 at full N·L or the two look
-        // like different materials on the same model. See m2_combiners.slang.
-        c->sunDirWS = {-0.35f, -0.5f, 0.79f, 0.0f};
-        c->sunColor = {0.65f, 0.65f, 0.65f, 0.0f};
-        c->ambient = {0.35f, 0.35f, 0.35f, 0.0f};
         gfxDev->UnmapBuffer(passCb_);
     }
     return true;
+}
+
+const M2LightingResult&
+M2CombinerShading::LightingFor(const render_detail::RenderableView& view) {
+    if (lightingView_ == &view)
+        return lighting_;
+
+    // The point the client ranks point lights against is the model's bounding
+    // sphere centre; the actor's origin is what we have per view and is the
+    // same point for anything built around its pivot.
+    M2Lighting acc(whiteout::transform_point(Vector3f{0.0f, 0.0f, 0.0f}, view.worldTransform));
+
+    // Scene lights first, environment second — CM2Model::SetupLighting calls
+    // CM2Scene::SelectLights and only then the model's lighting callback, and
+    // AddDiffuse assigns rather than accumulates. A model carrying its own
+    // directional light is therefore overridden by the environment's, which is
+    // what the client does.
+    if (passLights_ && rs_.Settings().M2ModelLights()) {
+        for (const auto& L : *passLights_) {
+            if (!L.enabled)
+                continue;
+            M2LightInput in;
+            in.positional = L.kind == model::FrameState::LightKind::Omni;
+            in.positionWS = L.worldPos;
+            in.directionWS = L.worldDir;
+            in.ambient = {L.ambientColor.x * L.ambIntensity, L.ambientColor.y * L.ambIntensity,
+                          L.ambientColor.z * L.ambIntensity};
+            in.diffuse = L.diffuse;
+            acc.AddLight(in);
+        }
+    }
+
+    // PortraitLightingCallback, verbatim. The client's own answer to lighting
+    // one model with no world around it — which is what a viewer always is.
+    acc.AddAmbient(kM2PortraitAmbient);
+    acc.AddDiffuse(kM2PortraitDiffuse, kM2PortraitDirection);
+
+    lighting_ = acc.Resolve();
+    lightingView_ = &view;
+    return lighting_;
 }
 
 void M2CombinerShading::Draw(const render_detail::DrawItem& item, const core::PassContext& ctx) {
@@ -396,6 +429,8 @@ void M2CombinerShading::Draw(const render_detail::DrawItem& item, const core::Pa
     const Vector3f color = anim ? anim->color : surf->elementColor;
     const f32* weights = anim ? anim->unitWeights : surf->unitWeights;
 
+    const M2LightingResult& lit = LightingFor(*item.view);
+
     if (auto* c = static_cast<M2DrawCb*>(gfxDev->MapBuffer(drawCb_))) {
         c->world = item.view->worldTransform.transpose();
         c->texMtx0 = TexMatrixFor(*item.view, surf->transformId[0]).transpose();
@@ -404,6 +439,32 @@ void M2CombinerShading::Draw(const render_detail::DrawItem& item, const core::Pa
         c->elementColor = {in.x, in.y, in.z, elementAlpha};
         c->unitWeights = {weights[0], weights[1], weights[2], weights[3]};
         c->params = {state.alphaRef, static_cast<f32>(state.fog), state.lit ? 1.0f : 0.0f, 0.0f};
+        c->lightAmbient = {lit.ambient.x, lit.ambient.y, lit.ambient.z, 0.0f};
+        c->lightDiffuse = {lit.diffuse.x, lit.diffuse.y, lit.diffuse.z, 0.0f};
+        c->lightDir = {lit.directionWS.x, lit.directionWS.y, lit.directionWS.z, 0.0f};
+        // The attenuation constants are authored against `.m2` yards, and both
+        // the light positions and the shader's world position are in renderer
+        // units — a hundred of them per yard. Converting the coefficients
+        // rather than the distance keeps the shader's inner loop three madds:
+        // 1/(k0 + k1·d + k2·d²) with d = s·dYards is 1/(k0 + (k1/s)·d + (k2/s²)·d²).
+        // Selection is unaffected — ranking by distance is scale-invariant.
+        const f32 s = (item.view->worldScale > 0.0f) ? item.view->worldScale : 1.0f;
+        for (u32 L = 0; L < kM2MaxPointLights; ++L) {
+            if (L < lit.pointCount) {
+                const M2PointLight& p = lit.points[L];
+                c->pointColor[L] = {p.diffuse.x, p.diffuse.y, p.diffuse.z, 0.0f};
+                c->pointPos[L] = {p.positionWS.x, p.positionWS.y, p.positionWS.z, 1.0f};
+                c->pointAtten[L] = {p.attenuation.x, p.attenuation.y / s,
+                                    p.attenuation.z / (s * s), 0.0f};
+            } else {
+                // ComputeLocalLights' own blanking: colour zero, and a constant
+                // attenuation of 1 so the reciprocal the shader takes is
+                // defined without the shader having to test a count.
+                c->pointColor[L] = {0.0f, 0.0f, 0.0f, 0.0f};
+                c->pointPos[L] = {0.0f, 0.0f, 0.0f, 1.0f};
+                c->pointAtten[L] = {1.0f, 0.0f, 0.0f, 0.0f};
+            }
+        }
         gfxDev->UnmapBuffer(drawCb_);
     }
 
@@ -505,9 +566,10 @@ i32 M2CombinerShading::SelectLights(bls::FrameInputs& frame, const bls::Lighting
     (void)lighting;
     (void)viewMat;
     (void)surfaceWS;
-    // WoW's real budget is 3 point lights in VS constants with sun and ambient
-    // in PS constants. Until the M2 light blocks are read there is nothing to
-    // select from, and the pass CB's fixed key light stands in.
+    // Nothing to do here: `bls::FrameInputs` is WC3's constant block, and the
+    // M2 path selects its own lights per *model* rather than per geoset —
+    // CM2Lighting keeps the three nearest to the model centre, which
+    // LightingFor resolves straight into the draw CB.
     return 0;
 }
 

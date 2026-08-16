@@ -179,6 +179,17 @@ Quaternion SampleM2Quat(const ::whiteout::m2::AnimationTrack<::whiteout::m2::Com
 /// @brief fixed16 track — texture weights and colour alpha.
 f32 SampleM2Fixed16(const ::whiteout::m2::AnimationTrack<i16>& track, const M2AnimTime& at, f32 def);
 
+/// @brief `f32` track — light intensities and attenuation radii.
+f32 SampleM2Float(const ::whiteout::m2::AnimationTrack<f32>& track, const M2AnimTime& at, f32 def);
+
+/// @brief `u8` track — light visibility, and nothing else in the format.
+///
+/// Holds the key rather than interpolating. `M2AnimateTrack<uchar, uchar>` would
+/// lerp a linear track, but the arithmetic truncates on the way back to `uchar`,
+/// so a 0→1 segment stays 0 until it lands on the far key — which is what
+/// holding gives, and what the on/off flag the value feeds actually wants.
+u8 SampleM2U8(const ::whiteout::m2::AnimationTrack<u8>& track, const M2AnimTime& at, u8 def);
+
 /// @brief The client's `AnimationData` name for @p animationId, or an empty
 ///        view when the id is outside the table.
 ///

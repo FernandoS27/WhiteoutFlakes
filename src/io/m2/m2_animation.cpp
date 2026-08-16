@@ -60,6 +60,24 @@ f32 SampleM2Fixed16(const wm2::AnimationTrack<i16>& track, const M2AnimTime& at,
     return a + (M2DecodeFixed16(v[static_cast<usize>(k.k1)]) - a) * k.blend;
 }
 
+f32 SampleM2Float(const wm2::AnimationTrack<f32>& track, const M2AnimTime& at, f32 def) {
+    const M2KeySpan k = LocateM2Key(track, at);
+    if (!k.valid)
+        return def;
+    const auto& v = track.values[static_cast<usize>(k.sub)];
+    const f32 a = v[static_cast<usize>(k.k0)];
+    if (k.k0 == k.k1 || M2TrackSteps(track))
+        return a;
+    return a + (v[static_cast<usize>(k.k1)] - a) * k.blend;
+}
+
+u8 SampleM2U8(const wm2::AnimationTrack<u8>& track, const M2AnimTime& at, u8 def) {
+    const M2KeySpan k = LocateM2Key(track, at);
+    if (!k.valid)
+        return def;
+    return track.values[static_cast<usize>(k.sub)][static_cast<usize>(k.k0)];
+}
+
 namespace {
 
 // s_animationNames, dumped verbatim from the 6.0.1 client (the table

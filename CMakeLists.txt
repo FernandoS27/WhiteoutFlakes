@@ -1253,6 +1253,7 @@ if(WDX_ENABLE_M2)
         src/io/m2/m2_animation.cpp
         src/io/m2/m2_model_adapter.cpp
         src/io/wow/creature_skin_table.cpp
+        src/renderer/profiles/wow/m2_lighting.cpp
         src/renderer/profiles/wow/m2_material.cpp
         src/renderer/profiles/wow/m2_shader_select.cpp
         src/renderer/profiles/wow/m2_shading.cpp

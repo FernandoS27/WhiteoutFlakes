@@ -4,6 +4,7 @@
 #include "renderer/assets/sampler_asset_manager.h"
 #include "renderer/assets/texture_asset_manager.h"
 #include "renderer/bls/bls_shader_cache.h"
+#include "renderer/core/render_profile.h"
 #include "renderer/corn_effects/corn_effects_service.h"
 #include "renderer/dnc/dnc_service.h"
 #include "renderer/imgui/imgui_renderer.h"
@@ -458,13 +459,25 @@ void RenderService::CreateDeviceAssetManagers(gfx::IGFXDevice& gfx) {
     // provider wire-up.
     impl_->assets_ = std::make_unique<AssetManager>(*impl_->textures_);
     impl_->assets_->SetGfxDevice(&gfx);
-    // SD (classic) is a gamma-space pipeline: colour textures sample raw and
-    // multiply against gamma geoset/light colours into a UNORM target. Keep
-    // colour textures UNORM in SD mode (HD stays sRGB/linear).
+    // A gamma-space pipeline samples colour textures raw and multiplies them
+    // against gamma geoset/light colours into a UNORM target; a linear one
+    // needs them sRGB so the hardware linearises on sample. "Does the scene
+    // land in the HDR target" is exactly that question, and the profile is
+    // where it is answered — Wc3SdProfile already folds SceneHdrInSd into
+    // SceneColorFormat, so this is an exact substitution for reading the mode
+    // and the flag directly.
+    //
+    // Asking the profile is what makes it right for a product whose frame is
+    // not WC3's. WowProfile is gamma with a UNORM target and no tonemap at any
+    // setting, but the thumbnail grid turns SceneHdrInSd on globally while it
+    // renders cells — so the old mode+flag read handed every texture acquired
+    // during a browse an sRGB decode that WoW shading then never re-encodes.
+    // The policy is latched per slot at acquire time, so those textures stayed
+    // dark in the shared cache and followed the model into the document opened
+    // from the browser.
     impl_->assets_->SetGammaColorTexturesQuery([this]() {
-        // Pure SD only. SceneHdrInSd routes SD through the linear HDR target +
-        // tonemap, so there colour textures must stay sRGB (linearised) like HD.
-        return Settings().GetRenderMode() == RenderMode::SD && !Settings().SceneHdrInSd();
+        return Pipeline().LoadTimeProfile().SceneColorFormat() !=
+               RenderPipeline::kHdrSceneFormat;
     });
     // Child-model parsing lives on ModelTemplateManager (so we don't drag
     // the MDX parser into AssetManager's translation unit). Install a

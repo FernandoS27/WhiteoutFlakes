@@ -511,6 +511,9 @@ renderer::model::FrameState M2ModelAdapter::Evaluate(const PoseRequest& req) con
     EvaluateBones(at, bindPose, fs);
     EvaluateTextureTransforms(at, bindPose, fs);
     EvaluateSurfaces(at, bindPose, fs);
+    // Lights are evaluated at the bind pose too, unlike surfaces: nothing about
+    // an `.m2` stores them pre-posed, so there is no constant to fall back to.
+    EvaluateLights(at, req.world, fs);
     return fs;
 }
 
@@ -633,6 +636,61 @@ void M2ModelAdapter::EvaluateSurfaces(const M2AnimTime& at, bool bindPose,
         }
         st.alpha = std::clamp(st.alpha, 0.0f, 1.0f);
         fs.surfaceStates.push_back(st);
+    }
+}
+
+void M2ModelAdapter::EvaluateLights(const M2AnimTime& at, const Matrix44f& world,
+                                    renderer::model::FrameState& fs) const {
+    using LightKind = renderer::model::FrameState::LightKind;
+    if (model_.lights.empty())
+        return;
+    fs.lights.reserve(model_.lights.size());
+
+    for (const auto& L : model_.lights) {
+        renderer::model::FrameState::LightState st;
+        // Type 1 is the positional one, in the file and at runtime alike:
+        // CM2Model::AnimateST calls SetPosition on `type == 1` and SetDirection
+        // otherwise, and CM2Lighting::AddLight routes on the same value.
+        st.kind = (L.type == 1) ? LightKind::Omni : LightKind::Directional;
+
+        Matrix44f bone = Matrix44f::identity();
+        if (L.boneId >= 0 && static_cast<usize>(L.boneId) < fs.boneWorldMatrices.size())
+            bone = fs.boneWorldMatrices[static_cast<usize>(L.boneId)];
+        const Matrix44f toWorld = bone * world;
+
+        st.worldPos = whiteout::transform_point(L.position, toWorld);
+        // A directional light aims along its bone's *negative* Z. AnimateST
+        // negates the bone matrix's third row and rotates it out to world; the
+        // result is the direction the light travels, which is the sign
+        // CM2Lighting keeps and GLDevice::SetLight flips on the way to
+        // GL_POSITION.
+        const Vector3f boneZ{toWorld.data[2][0], toWorld.data[2][1], toWorld.data[2][2]};
+        st.worldDir = {-boneZ.x, -boneZ.y, -boneZ.z};
+
+        // `colour × intensity`, the product CM2Model::AnimateMT forms before
+        // handing either to CM2Light. Both default to zero, so a light whose
+        // intensity track is absent contributes nothing — the client's own
+        // behaviour, not a fallback.
+        const f32 ambI = SampleM2Float(L.ambientIntensity, at, 0.0f);
+        const f32 diffI = SampleM2Float(L.diffuseIntensity, at, 0.0f);
+        const Vector3f ambC = SampleM2Vec3(L.ambientColor, at, {0.0f, 0.0f, 0.0f});
+        const Vector3f diffC = SampleM2Vec3(L.diffuseColor, at, {0.0f, 0.0f, 0.0f});
+
+        st.ambientColor = ambC;
+        st.ambIntensity = ambI;
+        st.diffuse = {diffC.x * diffI, diffC.y * diffI, diffC.z * diffI};
+        st.dirIntensity = diffI;
+
+        // Carried because the file has them and a future consumer may want
+        // them; the WoW shading path does not read them. 6.0.1 never animates
+        // these two tracks — AnimateMT walks the other five and skips this pair
+        // — so every `.m2` point light attenuates by CM2Light's fixed
+        // constants instead. See kM2Attenuation.
+        st.attenStart = SampleM2Float(L.attenuationStart, at, 0.0f);
+        st.attenEnd = SampleM2Float(L.attenuationEnd, at, 0.0f);
+
+        st.enabled = SampleM2U8(L.visibility, at, 1) != 0;
+        fs.lights.push_back(st);
     }
 }
 

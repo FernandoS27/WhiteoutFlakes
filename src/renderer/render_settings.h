@@ -140,6 +140,17 @@ public:
         m2DistanceSortGeometry_.store(on);
     }
 
+    // Let a `.m2`'s own light blocks light it, the way CM2Scene::SelectLights
+    // feeds them to every model in range. Off leaves only the environment key
+    // light, which is what a model with no lights sees anyway — so this only
+    // changes torches, braziers and the handful of creatures that glow.
+    bool M2ModelLights() const {
+        return m2ModelLights_.load();
+    }
+    void SetM2ModelLights(bool on) {
+        m2ModelLights_.store(on);
+    }
+
     // ---- Debug visualization ----
 
     // Route every odd-indexed geoset through UnlitShading instead of the
@@ -418,6 +429,7 @@ private:
     std::atomic<bool> sceneHdrInSd_{false};
     std::atomic<bool> m2LazyAnimations_{false};
     std::atomic<bool> m2DistanceSortGeometry_{false};
+    std::atomic<bool> m2ModelLights_{true};
 
     // Debug + LOD.
     std::atomic<i32> hdDebugMode_{0};

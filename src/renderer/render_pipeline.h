@@ -167,6 +167,17 @@ public:
     // Keeping it private would mean a one-off forwarder per question.
     core::IRenderProfile& ActiveProfile();
 
+    // The same frame, selected for work that runs BETWEEN frames — asset loads.
+    //
+    // ActiveProfile answers off the frame's latched render mode, which is what
+    // keeps every decision inside one frame consistent. A load is not inside a
+    // frame: the host sets the render mode for the model it is about to spawn
+    // and only the next frame latches it, so during the load the latch still
+    // holds the previous model's mode. Anything a load decides and caches (a
+    // texture's colour space) must read the live mode instead, or an HD model
+    // loaded after an SD one bakes SD's answer.
+    core::IRenderProfile& LoadTimeProfile();
+
     // Interned MeshBuffer vertex layouts. One per pipeline because a layout
     // id has to mean the same thing in a shading model's PSO key as it did
     // at upload; per-model caches would collide on id 1.
@@ -244,6 +255,11 @@ private:
     // extents). Everyone else uses the public accessors above.
     friend class GeosetPassBls;
     friend class GeosetPassHd;
+
+    // Lazily builds every profile, then picks: the scene's product first, and
+    // only the WC3 pair reads @p mode. ActiveProfile and LoadTimeProfile differ
+    // solely in where that mode comes from.
+    core::IRenderProfile& ProfileForMode(RenderMode mode);
 
     // ---- All formerly-RenderService private methods that touch GPU state ----
     void CleanupGFX();

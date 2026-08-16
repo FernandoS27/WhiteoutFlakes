@@ -1060,6 +1060,43 @@ void ViewerUI::SelectSettingsProfile(ProductId game) {
 
 void ViewerUI::BuildSettingsGeneralTab(ProductId game) {
     RenderService& svc = app_.Service();
+    if (game == ProductId::Wow) {
+        // ---- Lazy `.anim` loading ----
+        // Applies to the next model loaded, not to the ones already in the
+        // scene: the choice is made while parsing.
+        {
+            bool on = svc.Settings().M2LazyAnimations();
+            if (ImGui::Checkbox(i18n::tr("settings.general.m2_lazy_anim"), &on)) {
+                svc.Settings().SetM2LazyAnimations(on);
+                SaveIni(app_);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", i18n::tr("settings.general.m2_lazy_anim.tip"));
+        }
+
+        // ---- Transparent geometry ordering ----
+        {
+            bool on = svc.Settings().M2DistanceSortGeometry();
+            if (ImGui::Checkbox(i18n::tr("settings.general.m2_dist_sort"), &on)) {
+                svc.Settings().SetM2DistanceSortGeometry(on);
+                SaveIni(app_);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", i18n::tr("settings.general.m2_dist_sort.tip"));
+        }
+
+        // ---- Embedded lights ----
+        {
+            bool on = svc.Settings().M2ModelLights();
+            if (ImGui::Checkbox(i18n::tr("settings.general.m2_model_lights"), &on)) {
+                svc.Settings().SetM2ModelLights(on);
+                SaveIni(app_);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", i18n::tr("settings.general.m2_model_lights.tip"));
+        }
+        return;
+    }
     if (game != ProductId::Wc3) {
         // Nothing here yet. Everything the General tab currently offers is
         // either a Warcraft III concept (day/night cycle rigs, Reforged HD) or
@@ -1110,30 +1147,6 @@ void ViewerUI::BuildSettingsGeneralTab(ProductId game) {
             app_.SetLoopNonLoopingPolicy(on);
             SaveIni(app_);
         }
-    }
-
-    // ---- Lazy `.anim` loading (`.m2` only) ----
-    // Applies to the next model loaded, not to the ones already in the scene:
-    // the choice is made while parsing.
-    {
-        bool on = svc.Settings().M2LazyAnimations();
-        if (ImGui::Checkbox(i18n::tr("settings.general.m2_lazy_anim"), &on)) {
-            svc.Settings().SetM2LazyAnimations(on);
-            SaveIni(app_);
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", i18n::tr("settings.general.m2_lazy_anim.tip"));
-    }
-
-    // ---- Transparent `.m2` geometry ordering ----
-    {
-        bool on = svc.Settings().M2DistanceSortGeometry();
-        if (ImGui::Checkbox(i18n::tr("settings.general.m2_dist_sort"), &on)) {
-            svc.Settings().SetM2DistanceSortGeometry(on);
-            SaveIni(app_);
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", i18n::tr("settings.general.m2_dist_sort.tip"));
     }
 
     ImGui::Separator();

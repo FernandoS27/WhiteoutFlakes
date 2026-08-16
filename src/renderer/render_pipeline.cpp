@@ -2331,6 +2331,14 @@ core::VertexLayoutCache& RenderPipeline::VertexLayouts() {
 }
 
 core::IRenderProfile& RenderPipeline::ActiveProfile() {
+    return ProfileForMode(impl_->frameRenderMode_);
+}
+
+core::IRenderProfile& RenderPipeline::LoadTimeProfile() {
+    return ProfileForMode(rs_.Settings().GetRenderMode());
+}
+
+core::IRenderProfile& RenderPipeline::ProfileForMode(RenderMode mode) {
     if (!impl_->wc3SdProfile_) {
         // Force the shading models into existence first — a profile lists the
         // models it can dispatch to, and an empty list would be a lie.
@@ -2400,8 +2408,7 @@ core::IRenderProfile& RenderPipeline::ActiveProfile() {
     if (impl_->sc2HeroesProfile_ && rs_.Scene().Product() == ProductId::Sc2)
         return *impl_->sc2HeroesProfile_;
 #endif
-    return (impl_->frameRenderMode_ == RenderMode::HD) ? *impl_->wc3HdProfile_
-                                                       : *impl_->wc3SdProfile_;
+    return (mode == RenderMode::HD) ? *impl_->wc3HdProfile_ : *impl_->wc3SdProfile_;
 }
 
 // Collect + classify + sort, then hand the bucket to SurfacePass, which opens

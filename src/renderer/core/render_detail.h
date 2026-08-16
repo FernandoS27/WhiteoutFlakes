@@ -34,6 +34,11 @@ struct RenderableView {
     const std::vector<model::RenderModel::TexAnimPaletteEntry>* texAnimPalette = nullptr;
     const std::vector<model::RenderModel::SurfaceAnim>* surfaceAnim = nullptr;
     Matrix44f worldTransform = Matrix44f::identity();
+    // Game units per renderer unit, from Actor::worldScale — 1 for Warcraft III
+    // and 100 for World of Warcraft. `worldTransform` already folds it in; this
+    // is here for the shading models that need the factor itself, which so far
+    // is anything reading a falloff radius authored in game units.
+    f32 worldScale = 1.0f;
     f32 parentVisibility = 1.0f;
     bool mirrored = false; // reversed winding — see Actor::mirrored
     bool hasLods = false;
