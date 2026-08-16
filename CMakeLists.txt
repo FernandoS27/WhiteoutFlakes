@@ -252,6 +252,12 @@ set(SHADER_ENTRIES
     "unlit.slang|vsUnlitLit|vertex|kUnlitLitVS"
     "unlit.slang|psUnlitLambert|fragment|kUnlitLambertPS"
     "unlit.slang|psUnlitBlinnPhong|fragment|kUnlitBlinnPhongPS"
+    # Skinned permutations. Same pixel shaders; the vertex side poses the
+    # geometry from a bone palette, reading BLENDWEIGHT/BLENDINDICES out of the
+    # same interleaved buffer that carries position — which is how `.m3` ships
+    # them, so nothing is decoded or duplicated to get here.
+    "unlit.slang|vsUnlitSkinned|vertex|kUnlitSkinnedVS"
+    "unlit.slang|vsUnlitSkinnedLit|vertex|kUnlitSkinnedLitVS"
     # GTAO ambient-occlusion pass — read by GtaoService. The same
     # vsGtao fullscreen-triangle VS feeds both the main pass (writes
     # the AO buffer) and the apply pass (modulates the HDR scene
@@ -1159,6 +1165,7 @@ set_property(CACHE WDX_DEFAULT_COORD_SPACE PROPERTY STRINGS "Blizzard" "Max")
 add_library(WhiteoutFlakesLib STATIC
     src/renderer/animation/actor_eval.cpp
     src/renderer/animation/animation_driver.cpp
+    src/renderer/animation/clip_playlist.cpp
     src/renderer/frame_ticker.cpp
     src/renderer/model/model_loader.cpp
     src/renderer/model/model_template.cpp
@@ -1278,7 +1285,10 @@ endif()
 
 # `.m3`, opt-in on the same terms.
 if(WDX_ENABLE_M3)
-    target_sources(WhiteoutFlakesLib PRIVATE src/io/m3/m3_model_adapter.cpp)
+    target_sources(WhiteoutFlakesLib PRIVATE
+        src/io/m3/m3_model_adapter.cpp
+        src/io/m3/m3_animation.cpp
+    )
     target_compile_definitions(WhiteoutFlakesLib PUBLIC WDX_ENABLE_M3=1)
     message(STATUS "WhiteoutFlakes: .m3 loading ENABLED (geometry only)")
 endif()

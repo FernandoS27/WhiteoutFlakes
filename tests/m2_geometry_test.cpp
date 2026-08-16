@@ -1,10 +1,10 @@
 // ============================================================================
-// M2 geometry (REFACTOR_PLAN.md P9) — the untextured-white claim, checked.
+// M2 geometry (REFACTOR_PLAN.md P9) â€” the untextured-white claim, checked.
 //
 // Runs against the extracted corpus at
 // `C:/Projects/WhiteoutLib/Corpus/WoW`, override with WDX_TEST_WOW_CORPUS.
 // Loose `.m2` files with their `.skin` siblings beside them, which is the
-// path-addressed route — a shipped install's fileDataIDs cannot be resolved
+// path-addressed route â€” a shipped install's fileDataIDs cannot be resolved
 // without a listfile, so the corpus is what a test can actually reach.
 //
 // The plan wanted a committed fixture; its own risk register named "skip when
@@ -78,11 +78,14 @@ TEST_CASE("every corpus .m2 loads geometry", "[m2]") {
     }
 
     io::FileContentProvider provider;
-
+    // A Legion-or-later `.m2` names its skins by fileDataID, which only a WoW
+    // storage resolves; the provider defaults to Warcraft III, where those ids
+    // mean nothing and the model reads as unloadable.
+    provider.SetGame(whiteout::flakes::ProductId::Wow);
     std::size_t loaded = 0;
     for (const auto& path : models) {
         // The provider resolves relative to its base path, and the parser asks
-        // it for siblings by name — so the model's own directory is the root.
+        // it for siblings by name â€” so the model's own directory is the root.
         provider.SetBasePath(path.parent_path());
         const std::string utf8 = path.string();
         INFO("model " << utf8);
@@ -94,7 +97,7 @@ TEST_CASE("every corpus .m2 loads geometry", "[m2]") {
         auto adapter = io::M2ModelAdapter::Load(
             ContentRef::FromPath(utf8),
             std::span<const whiteout::u8>(bytes->data(), bytes->size()), &provider);
-        // Null means no skin profile resolved — the `.skin` sibling was not
+        // Null means no skin profile resolved â€” the `.skin` sibling was not
         // found. That is the whole point of the phase, so it fails rather than
         // skipping.
         REQUIRE(adapter);
@@ -142,7 +145,7 @@ TEST_CASE("every corpus .m2 loads geometry", "[m2]") {
 // The pre-Legion container.
 //
 // Everything above is chunked MD21, because that is all retail ships. A client
-// from Warlords or earlier — and the Warlords client on this machine is one —
+// from Warlords or earlier â€” and the Warlords client on this machine is one â€”
 // stores the same MD20 payload with no chunk wrapper, and therefore no SFID
 // naming its `.skin` files. The parser used to read skin profiles only out of
 // SFID, so every such model parsed with no geometry at all and the adapter
@@ -169,7 +172,10 @@ TEST_CASE("a de-chunked MD20 loads the same geometry as its MD21 original", "[m2
     });
 
     io::FileContentProvider provider;
-    const fs::path temp = fs::temp_directory_path() / "wdx_md20_fixture";
+    // A Legion-or-later `.m2` names its skins by fileDataID, which only a WoW
+    // storage resolves; the provider defaults to Warcraft III, where those ids
+    // mean nothing and the model reads as unloadable.
+    provider.SetGame(whiteout::flakes::ProductId::Wow);    const fs::path temp = fs::temp_directory_path() / "wdx_md20_fixture";
     fs::remove_all(temp, ec);
     fs::create_directories(temp, ec);
 
@@ -207,7 +213,7 @@ TEST_CASE("a de-chunked MD20 loads the same geometry as its MD21 original", "[m2
         std::ofstream out(temp / (stem + ".m2"), std::ios::binary);
         out.write(bytes.data() + 8, static_cast<std::streamsize>(payload));
         out.close();
-        // Every profile the header counts, not just the first — the loop under
+        // Every profile the header counts, not just the first â€” the loop under
         // test walks them positionally.
         for (int i = 0; i < 8; ++i) {
             char suffix[3] = {static_cast<char>('0' + i / 10), static_cast<char>('0' + i % 10), 0};
@@ -246,8 +252,8 @@ TEST_CASE("a de-chunked MD20 loads the same geometry as its MD21 original", "[m2
 // ModelLoader::RestyleWowModel changes a character's appearance without
 // respawning the actor, and that rests on one claim about this adapter: a new
 // geoset selection lands in the next Evaluate and leaves the geometry alone.
-// If it did not — if the meshes were re-emitted, or the selection only took
-// effect through GetMeshes — the loader would have to re-upload vertex buffers
+// If it did not â€” if the meshes were re-emitted, or the selection only took
+// effect through GetMeshes â€” the loader would have to re-upload vertex buffers
 // and the actor would have to be rebuilt after all.
 //
 // Character models are not in the corpus and the tables that name their choices
@@ -262,7 +268,10 @@ TEST_CASE("a new geoset selection lands without touching the geometry", "[m2]") 
     }
 
     io::FileContentProvider provider;
-
+    // A Legion-or-later `.m2` names its skins by fileDataID, which only a WoW
+    // storage resolves; the provider defaults to Warcraft III, where those ids
+    // mean nothing and the model reads as unloadable.
+    provider.SetGame(whiteout::flakes::ProductId::Wow);
     std::size_t checked = 0;
     for (const auto& path : models) {
         provider.SetBasePath(path.parent_path());
@@ -306,7 +315,7 @@ TEST_CASE("a new geoset selection lands without touching the geometry", "[m2]") 
         CHECK(second.back() == 0);
 
         // And the geometry the loader already uploaded is still the geometry
-        // the adapter reports — same submeshes, same vertices, same indices.
+        // the adapter reports â€” same submeshes, same vertices, same indices.
         const auto after = adapter->GetMeshes();
         REQUIRE(after.size() == before.size());
         for (std::size_t i = 0; i < before.size(); ++i) {
@@ -314,6 +323,106 @@ TEST_CASE("a new geoset selection lands without touching the geometry", "[m2]") 
             CHECK(after[i].indices.size() == before[i].indices.size());
         }
         CHECK(adapter->EmittedSkinSections() == sections);
+        ++checked;
+        break;
+    }
+    CHECK(checked == 1);
+}
+
+// ---------------------------------------------------------------------------
+// The pose hook a collections model rides on.
+//
+// `PoseRequest::overrides` with `replace` means the host owns that node's
+// model-space matrix outright: the sampler must not sample it and must not
+// compose its parent chain into it. That is what lets a Dracthyr's horns â€” a
+// thirteen-bone rig in a different file â€” be posed bone-for-bone from the
+// character it rides. A bone the host did not claim still poses itself, and
+// still composes onto a claimed ancestor, which is what the one unpaired link
+// in that chain needs.
+// ---------------------------------------------------------------------------
+TEST_CASE("a driven bone takes the host's matrix and its children follow", "[m2]") {
+    const auto models = FindModels();
+    if (models.empty()) {
+        SKIP("no .m2 files under " + CorpusRoot().string() +
+             " (set WDX_TEST_WOW_CORPUS to point elsewhere)");
+    }
+
+    io::FileContentProvider provider;
+    // A Legion-or-later `.m2` names its skins by fileDataID, which only a WoW
+    // storage resolves; the provider defaults to Warcraft III, where those ids
+    // mean nothing and the model reads as unloadable.
+    provider.SetGame(whiteout::flakes::ProductId::Wow);
+
+    std::size_t checked = 0;
+    for (const auto& path : models) {
+        provider.SetBasePath(path.parent_path());
+        auto bytes = provider.ReadFile(path.string());
+        REQUIRE(bytes.has_value());
+        auto adapter = io::M2ModelAdapter::Load(
+            ContentRef::FromPath(path.string()),
+            std::span<const whiteout::u8>(bytes->data(), bytes->size()), &provider);
+        REQUIRE(adapter);
+
+        // A bone with a parent, so "does not compose the chain" is testable.
+        const auto& bones = adapter->SourceModel().bones;
+        int driven = -1, childOfDriven = -1;
+        for (std::size_t i = 0; i < bones.size(); ++i) {
+            if (bones[i].parentBoneId < 0)
+                continue;
+            for (std::size_t j = i + 1; j < bones.size(); ++j) {
+                if (bones[j].parentBoneId == static_cast<whiteout::i16>(i)) {
+                    driven = static_cast<int>(i);
+                    childOfDriven = static_cast<int>(j);
+                    break;
+                }
+            }
+            if (driven >= 0)
+                break;
+        }
+        if (driven < 0)
+            continue;
+
+        INFO("model " << path.string() << " bone " << driven);
+
+        const whiteout::flakes::ClipRef clip{};
+        const auto plain = whiteout::flakes::PoseRequest::OneClip(clip);
+        const auto before = adapter->Evaluate(plain).boneWorldMatrices;
+        REQUIRE(before.size() == bones.size());
+
+        // A matrix nothing in the file could produce, so a pass-through would
+        // be visible rather than coincidental.
+        whiteout::Matrix44f marker = whiteout::Matrix44f::identity();
+        marker.data[3][0] = 123.5f;
+        marker.data[3][1] = -47.25f;
+        marker.data[3][2] = 9.75f;
+
+        const whiteout::flakes::NodeOverride ov{driven, marker, /*replace=*/true};
+        auto req = whiteout::flakes::PoseRequest::OneClip(clip);
+        req.overrides = std::span<const whiteout::flakes::NodeOverride>(&ov, 1);
+        const auto after = adapter->Evaluate(req).boneWorldMatrices;
+        REQUIRE(after.size() == before.size());
+
+        // Taken verbatim â€” not sampled, not composed with its parent.
+        for (int r = 0; r < 4; ++r)
+            for (int c = 0; c < 4; ++c)
+                CHECK(after[static_cast<std::size_t>(driven)].data[r][c] == marker.data[r][c]);
+
+        // Its child moved with it, which is what "the whole subtree rides"
+        // means; a driven bone is still a parent.
+        const auto& kidBefore = before[static_cast<std::size_t>(childOfDriven)];
+        const auto& kidAfter = after[static_cast<std::size_t>(childOfDriven)];
+        bool kidMoved = false;
+        for (int r = 0; r < 4 && !kidMoved; ++r)
+            for (int c = 0; c < 4 && !kidMoved; ++c)
+                kidMoved = kidBefore.data[r][c] != kidAfter.data[r][c];
+        CHECK(kidMoved);
+
+        // ...and nothing above it did. An override is not a global reset.
+        const auto parent = static_cast<std::size_t>(bones[static_cast<std::size_t>(driven)].parentBoneId);
+        for (int r = 0; r < 4; ++r)
+            for (int c = 0; c < 4; ++c)
+                CHECK(after[parent].data[r][c] == before[parent].data[r][c]);
+
         ++checked;
         break;
     }

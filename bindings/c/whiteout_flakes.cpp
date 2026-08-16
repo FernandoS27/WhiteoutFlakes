@@ -1104,6 +1104,22 @@ int32_t whiteout_flakes_FlakesActorView_HasAnimationSource(const whiteout_Flakes
     return reinterpret_cast<const whiteout::flakes::ActorView*>(self)->HasAnimationSource();
 }
 
+uint32_t whiteout_flakes_FlakesActorView_Play(whiteout_FlakesActorView* self, int32_t sequence, float weight, float speed, int32_t loop, int32_t blendInMs, int32_t blendOutMs) {
+    return reinterpret_cast<whiteout::flakes::ActorView*>(self)->Play(sequence, weight, speed, loop, blendInMs, blendOutMs);
+}
+
+void whiteout_flakes_FlakesActorView_StopPlay(whiteout_FlakesActorView* self, uint32_t playHandle, int32_t blendOutMs) {
+    reinterpret_cast<whiteout::flakes::ActorView*>(self)->StopPlay(playHandle, blendOutMs);
+}
+
+void whiteout_flakes_FlakesActorView_StopAllPlays(whiteout_FlakesActorView* self, int32_t blendOutMs) {
+    reinterpret_cast<whiteout::flakes::ActorView*>(self)->StopAllPlays(blendOutMs);
+}
+
+int32_t whiteout_flakes_FlakesActorView_PlayCount(const whiteout_FlakesActorView* self) {
+    return reinterpret_cast<const whiteout::flakes::ActorView*>(self)->PlayCount();
+}
+
 void whiteout_flakes_FlakesActorView_EvaluateAndApply(whiteout_FlakesActorView* self) {
     reinterpret_cast<whiteout::flakes::ActorView*>(self)->EvaluateAndApply();
 }

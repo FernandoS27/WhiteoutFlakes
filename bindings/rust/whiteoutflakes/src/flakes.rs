@@ -410,10 +410,9 @@ impl SequenceInfoList {
         // is never freed by the `Ref`.
         unsafe {
             Some(crate::support::Ref::new(SequenceInfo {
-                raw: core::ptr::NonNull::new_unchecked(ffi::whiteout_flakes_SequenceInfoList_at(
-                    self.raw.as_ptr(),
-                    index,
-                )),
+                raw: core::ptr::NonNull::new_unchecked(
+                    ffi::whiteout_flakes_SequenceInfoList_at(self.raw.as_ptr(), index),
+                ),
             }))
         }
     }
@@ -432,9 +431,7 @@ impl Drop for SequenceInfoList {
 
 impl core::fmt::Debug for SequenceInfoList {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SequenceInfoList")
-            .field("len", &self.len())
-            .finish()
+        f.debug_struct("SequenceInfoList").field("len", &self.len()).finish()
     }
 }
 
@@ -472,10 +469,9 @@ impl CameraPresetList {
         // is never freed by the `Ref`.
         unsafe {
             Some(crate::support::Ref::new(CameraPreset {
-                raw: core::ptr::NonNull::new_unchecked(ffi::whiteout_flakes_CameraPresetList_at(
-                    self.raw.as_ptr(),
-                    index,
-                )),
+                raw: core::ptr::NonNull::new_unchecked(
+                    ffi::whiteout_flakes_CameraPresetList_at(self.raw.as_ptr(), index),
+                ),
             }))
         }
     }
@@ -494,9 +490,7 @@ impl Drop for CameraPresetList {
 
 impl core::fmt::Debug for CameraPresetList {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("CameraPresetList")
-            .field("len", &self.len())
-            .finish()
+        f.debug_struct("CameraPresetList").field("len", &self.len()).finish()
     }
 }
 
@@ -589,6 +583,7 @@ impl Rect {
         // SAFETY: plain scalar write through a live handle.
         unsafe { ffi::whiteout_flakes_FlakesRect_set_bottom(self.raw.as_ptr(), value) }
     }
+
 }
 
 impl Default for Rect {
@@ -627,9 +622,7 @@ impl Default for ShadowParams {
             let h = ffi::whiteout_flakes_FlakesShadowParams_new();
             let out = ShadowParams {
                 cascade_count: ffi::whiteout_flakes_FlakesShadowParams_get_cascadeCount(h),
-                cascade_resolution: ffi::whiteout_flakes_FlakesShadowParams_get_cascadeResolution(
-                    h,
-                ),
+                cascade_resolution: ffi::whiteout_flakes_FlakesShadowParams_get_cascadeResolution(h),
                 caster_height: ffi::whiteout_flakes_FlakesShadowParams_get_casterHeight(h),
                 lambda_split: ffi::whiteout_flakes_FlakesShadowParams_get_lambdaSplit(h),
                 depth_bias: ffi::whiteout_flakes_FlakesShadowParams_get_depthBias(h),
@@ -651,23 +644,14 @@ impl ShadowParams {
         unsafe {
             let h = ffi::whiteout_flakes_FlakesShadowParams_new();
             ffi::whiteout_flakes_FlakesShadowParams_set_cascadeCount(h, self.cascade_count);
-            ffi::whiteout_flakes_FlakesShadowParams_set_cascadeResolution(
-                h,
-                self.cascade_resolution,
-            );
+            ffi::whiteout_flakes_FlakesShadowParams_set_cascadeResolution(h, self.cascade_resolution);
             ffi::whiteout_flakes_FlakesShadowParams_set_casterHeight(h, self.caster_height);
             ffi::whiteout_flakes_FlakesShadowParams_set_lambdaSplit(h, self.lambda_split);
             ffi::whiteout_flakes_FlakesShadowParams_set_depthBias(h, self.depth_bias);
             ffi::whiteout_flakes_FlakesShadowParams_set_slopeScaledBias(h, self.slope_scaled_bias);
             ffi::whiteout_flakes_FlakesShadowParams_set_depthBiasClamp(h, self.depth_bias_clamp);
-            ffi::whiteout_flakes_FlakesShadowParams_set_texelSnap(
-                h,
-                if self.texel_snap { 1 } else { 0 },
-            );
-            ffi::whiteout_flakes_FlakesShadowParams_set_enabled(
-                h,
-                if self.enabled { 1 } else { 0 },
-            );
+            ffi::whiteout_flakes_FlakesShadowParams_set_texelSnap(h, if self.texel_snap { 1 } else { 0 });
+            ffi::whiteout_flakes_FlakesShadowParams_set_enabled(h, if self.enabled { 1 } else { 0 });
             h
         }
     }
@@ -737,12 +721,7 @@ impl DisplayFlags {
 
     pub fn set_show_grid(&mut self, value: bool) {
         // SAFETY: plain scalar write through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesDisplayFlags_set_showGrid(
-                self.raw.as_ptr(),
-                if value { 1 } else { 0 },
-            )
-        }
+        unsafe { ffi::whiteout_flakes_FlakesDisplayFlags_set_showGrid(self.raw.as_ptr(), if value { 1 } else { 0 }) }
     }
 
     /// MDX particle emitters.
@@ -753,12 +732,7 @@ impl DisplayFlags {
 
     pub fn set_show_particles(&mut self, value: bool) {
         // SAFETY: plain scalar write through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesDisplayFlags_set_showParticles(
-                self.raw.as_ptr(),
-                if value { 1 } else { 0 },
-            )
-        }
+        unsafe { ffi::whiteout_flakes_FlakesDisplayFlags_set_showParticles(self.raw.as_ptr(), if value { 1 } else { 0 }) }
     }
 
     /// MDX ribbon emitters.
@@ -769,30 +743,18 @@ impl DisplayFlags {
 
     pub fn set_show_ribbons(&mut self, value: bool) {
         // SAFETY: plain scalar write through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesDisplayFlags_set_showRibbons(
-                self.raw.as_ptr(),
-                if value { 1 } else { 0 },
-            )
-        }
+        unsafe { ffi::whiteout_flakes_FlakesDisplayFlags_set_showRibbons(self.raw.as_ptr(), if value { 1 } else { 0 }) }
     }
 
     /// Debug overlay for collision shapes.
     pub fn show_collisions(&self) -> bool {
         // SAFETY: plain scalar read through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesDisplayFlags_get_showCollisions(self.raw.as_ptr()) != 0
-        }
+        unsafe { ffi::whiteout_flakes_FlakesDisplayFlags_get_showCollisions(self.raw.as_ptr()) != 0 }
     }
 
     pub fn set_show_collisions(&mut self, value: bool) {
         // SAFETY: plain scalar write through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesDisplayFlags_set_showCollisions(
-                self.raw.as_ptr(),
-                if value { 1 } else { 0 },
-            )
-        }
+        unsafe { ffi::whiteout_flakes_FlakesDisplayFlags_set_showCollisions(self.raw.as_ptr(), if value { 1 } else { 0 }) }
     }
 
     /// Debug overlay for light positions.
@@ -803,12 +765,7 @@ impl DisplayFlags {
 
     pub fn set_show_lights(&mut self, value: bool) {
         // SAFETY: plain scalar write through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesDisplayFlags_set_showLights(
-                self.raw.as_ptr(),
-                if value { 1 } else { 0 },
-            )
-        }
+        unsafe { ffi::whiteout_flakes_FlakesDisplayFlags_set_showLights(self.raw.as_ptr(), if value { 1 } else { 0 }) }
     }
 
     /// MDX event objects (SPN / SPL / SND).
@@ -819,12 +776,7 @@ impl DisplayFlags {
 
     pub fn set_show_events(&mut self, value: bool) {
         // SAFETY: plain scalar write through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesDisplayFlags_set_showEvents(
-                self.raw.as_ptr(),
-                if value { 1 } else { 0 },
-            )
-        }
+        unsafe { ffi::whiteout_flakes_FlakesDisplayFlags_set_showEvents(self.raw.as_ptr(), if value { 1 } else { 0 }) }
     }
 
     /// Material path (SD vs HD).
@@ -837,10 +789,9 @@ impl DisplayFlags {
 
     pub fn set_render_mode(&mut self, value: RenderMode) {
         // SAFETY: scalar write through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesDisplayFlags_set_renderMode(self.raw.as_ptr(), value as i32)
-        }
+        unsafe { ffi::whiteout_flakes_FlakesDisplayFlags_set_renderMode(self.raw.as_ptr(), value as i32) }
     }
+
 }
 
 impl Default for DisplayFlags {
@@ -957,6 +908,7 @@ impl FrameStats {
         // SAFETY: plain scalar write through a live handle.
         unsafe { ffi::whiteout_flakes_FlakesFrameStats_set_cornParticles(self.raw.as_ptr(), value) }
     }
+
 }
 
 impl Default for FrameStats {
@@ -1015,19 +967,13 @@ impl CameraPreset {
     /// UTF-8 preset name as authored by the artist (used by host UI dropdowns); was `std::wstring` historically but normalised to UTF-8 so the same string flows from the MDX adapter through the UI without per-platform wide-char roundtrips.
     pub fn name(&self) -> String {
         // SAFETY: the native side hands over an owned CString.
-        unsafe {
-            crate::support::take_string(ffi::whiteout_flakes_FlakesCameraPreset_get_name(
-                self.raw.as_ptr(),
-            ))
-        }
+        unsafe { crate::support::take_string(ffi::whiteout_flakes_FlakesCameraPreset_get_name(self.raw.as_ptr())) }
     }
 
     pub fn set_name(&mut self, value: &str) {
         let value = std::ffi::CString::new(value).unwrap_or_default();
         // SAFETY: the pointer outlives the call.
-        unsafe {
-            ffi::whiteout_flakes_FlakesCameraPreset_set_name(self.raw.as_ptr(), value.as_ptr())
-        }
+        unsafe { ffi::whiteout_flakes_FlakesCameraPreset_set_name(self.raw.as_ptr(), value.as_ptr()) }
     }
 
     /// `true` if this preset should drive the camera every frame (i.e. the user can't free-orbit while it's active).
@@ -1038,12 +984,7 @@ impl CameraPreset {
 
     pub fn set_is_live(&mut self, value: bool) {
         // SAFETY: plain scalar write through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesCameraPreset_set_isLive(
-                self.raw.as_ptr(),
-                if value { 1 } else { 0 },
-            )
-        }
+        unsafe { ffi::whiteout_flakes_FlakesCameraPreset_set_isLive(self.raw.as_ptr(), if value { 1 } else { 0 }) }
     }
 
     /// Diagonal field of view (radians).
@@ -1120,6 +1061,7 @@ impl CameraPreset {
         // SAFETY: plain scalar write through a live handle.
         unsafe { ffi::whiteout_flakes_FlakesCameraPreset_set_distance(self.raw.as_ptr(), value) }
     }
+
 }
 
 impl Default for CameraPreset {
@@ -1177,19 +1119,13 @@ impl SequenceInfo {
 
     pub fn name(&self) -> String {
         // SAFETY: the native side hands over an owned CString.
-        unsafe {
-            crate::support::take_string(ffi::whiteout_flakes_FlakesSequenceInfo_get_name(
-                self.raw.as_ptr(),
-            ))
-        }
+        unsafe { crate::support::take_string(ffi::whiteout_flakes_FlakesSequenceInfo_get_name(self.raw.as_ptr())) }
     }
 
     pub fn set_name(&mut self, value: &str) {
         let value = std::ffi::CString::new(value).unwrap_or_default();
         // SAFETY: the pointer outlives the call.
-        unsafe {
-            ffi::whiteout_flakes_FlakesSequenceInfo_set_name(self.raw.as_ptr(), value.as_ptr())
-        }
+        unsafe { ffi::whiteout_flakes_FlakesSequenceInfo_set_name(self.raw.as_ptr(), value.as_ptr()) }
     }
 
     pub fn start_ms(&self) -> i32 {
@@ -1239,13 +1175,9 @@ impl SequenceInfo {
 
     pub fn set_non_looping(&mut self, value: bool) {
         // SAFETY: plain scalar write through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesSequenceInfo_set_nonLooping(
-                self.raw.as_ptr(),
-                if value { 1 } else { 0 },
-            )
-        }
+        unsafe { ffi::whiteout_flakes_FlakesSequenceInfo_set_nonLooping(self.raw.as_ptr(), if value { 1 } else { 0 }) }
     }
+
 }
 
 impl Default for SequenceInfo {
@@ -1298,18 +1230,16 @@ impl PipelineView {
 
     pub fn is_device_ready(&self) -> bool {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesPipelineView_IsDeviceReady(self.raw.as_ptr()) != 0 }
+        unsafe {
+            ffi::whiteout_flakes_FlakesPipelineView_IsDeviceReady(self.raw.as_ptr()) != 0
+        }
     }
 
     /// Create a headless (off-screen) target with no swap-chain. RenderFrame / RenderViewport draw into it; Present no-ops on it. Read the result back via the frame-capture ring. Use for thumbnail / render-to-texture viewports that aren't shown in a window.
     pub fn create_offscreen_target(&mut self, width: i32, height: i32) -> u32 {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesPipelineView_CreateOffscreenTarget(
-                self.raw.as_ptr(),
-                width,
-                height,
-            )
+            ffi::whiteout_flakes_FlakesPipelineView_CreateOffscreenTarget(self.raw.as_ptr(), width, height)
         }
     }
 
@@ -1333,11 +1263,7 @@ impl PipelineView {
     pub fn resize_primary_target(&mut self, width: i32, height: i32) {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesPipelineView_ResizePrimaryTarget(
-                self.raw.as_ptr(),
-                width,
-                height,
-            );
+            ffi::whiteout_flakes_FlakesPipelineView_ResizePrimaryTarget(self.raw.as_ptr(), width, height);
         }
     }
 
@@ -1377,17 +1303,18 @@ impl PipelineView {
     pub fn frame_stats(&self) -> Option<FrameStats> {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            FrameStats::from_raw(ffi::whiteout_flakes_FlakesPipelineView_FrameStats(
-                self.raw.as_ptr(),
-            ))
+            FrameStats::from_raw(ffi::whiteout_flakes_FlakesPipelineView_FrameStats(self.raw.as_ptr()))
         }
     }
 
     /// Live GPU bytes currently allocated. WebGPU backend tracks every CreateTexture / CreateBuffer and subtracts on deferred-delete drain — diagnostic for memory growth. Returns 0 on backends without tracking.
     pub fn live_gpu_bytes(&self) -> u64 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesPipelineView_LiveGpuBytes(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesPipelineView_LiveGpuBytes(self.raw.as_ptr())
+        }
     }
+
 }
 
 /// Scene-clock + content-provider surface.
@@ -1436,10 +1363,8 @@ impl SceneView {
     pub fn product(&self) -> ProductId {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ProductId::try_from(ffi::whiteout_flakes_FlakesSceneView_Product(
-                self.raw.as_ptr(),
-            ))
-            .expect("unknown enum discriminant from the native library (ABI version skew)")
+            ProductId::try_from(ffi::whiteout_flakes_FlakesSceneView_Product(self.raw.as_ptr()))
+                .expect("unknown enum discriminant from the native library (ABI version skew)")
         }
     }
 
@@ -1453,7 +1378,9 @@ impl SceneView {
     /// Master animation clock the renderer ticks (ms).
     pub fn animation_time_ms(&self) -> i32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesSceneView_AnimationTimeMs(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesSceneView_AnimationTimeMs(self.raw.as_ptr())
+        }
     }
 
     pub fn set_animation_time_ms(&mut self, arg: i32) {
@@ -1477,13 +1404,11 @@ impl SceneView {
     ///
     /// No-op for scenes running on a host-supplied content provider, which resolve however the host chooses.
     pub fn set_casc_install_path(&mut self, root: &str) {
-        let root_cstr = std::ffi::CString::new(root).unwrap_or_default();
+        let root_cstr = std::ffi::CString::new(root)
+            .unwrap_or_default();
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesSceneView_SetCascInstallPath(
-                self.raw.as_ptr(),
-                root_cstr.as_ptr(),
-            );
+            ffi::whiteout_flakes_FlakesSceneView_SetCascInstallPath(self.raw.as_ptr(), root_cstr.as_ptr());
         }
     }
 
@@ -1493,12 +1418,10 @@ impl SceneView {
     pub fn set_hd_mode(&mut self, enabled: bool) {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesSceneView_SetHdMode(
-                self.raw.as_ptr(),
-                if enabled { 1 } else { 0 },
-            );
+            ffi::whiteout_flakes_FlakesSceneView_SetHdMode(self.raw.as_ptr(), if enabled { 1 } else { 0 });
         }
     }
+
 }
 
 /// Free-orbit + scripted camera surface.
@@ -1630,17 +1553,18 @@ impl CameraView {
     pub fn mode(&self) -> CameraViewMode {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            CameraViewMode::try_from(ffi::whiteout_flakes_FlakesCameraView_Mode(
-                self.raw.as_ptr(),
-            ))
-            .expect("unknown enum discriminant from the native library (ABI version skew)")
+            CameraViewMode::try_from(ffi::whiteout_flakes_FlakesCameraView_Mode(self.raw.as_ptr()))
+                .expect("unknown enum discriminant from the native library (ABI version skew)")
         }
     }
 
     pub fn distance(&self) -> f32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesCameraView_Distance(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesCameraView_Distance(self.raw.as_ptr())
+        }
     }
+
 }
 
 /// Display flags, post-processing tunables, and persistent host knobs that survive across runs.
@@ -1680,19 +1604,14 @@ impl SettingsView {
     pub fn display_flags(&self) -> Option<DisplayFlags> {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            DisplayFlags::from_raw(ffi::whiteout_flakes_FlakesSettingsView_DisplayFlags(
-                self.raw.as_ptr(),
-            ))
+            DisplayFlags::from_raw(ffi::whiteout_flakes_FlakesSettingsView_DisplayFlags(self.raw.as_ptr()))
         }
     }
 
     pub fn set_display_flags(&mut self, arg: &DisplayFlags) {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesSettingsView_SetDisplayFlags(
-                self.raw.as_ptr(),
-                arg.raw.as_ptr(),
-            );
+            ffi::whiteout_flakes_FlakesSettingsView_SetDisplayFlags(self.raw.as_ptr(), arg.raw.as_ptr());
         }
     }
 
@@ -1707,10 +1626,8 @@ impl SettingsView {
     pub fn lighting_mode(&self) -> LightingMode {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            LightingMode::try_from(ffi::whiteout_flakes_FlakesSettingsView_LightingMode(
-                self.raw.as_ptr(),
-            ))
-            .expect("unknown enum discriminant from the native library (ABI version skew)")
+            LightingMode::try_from(ffi::whiteout_flakes_FlakesSettingsView_LightingMode(self.raw.as_ptr()))
+                .expect("unknown enum discriminant from the native library (ABI version skew)")
         }
     }
 
@@ -1724,7 +1641,9 @@ impl SettingsView {
     /// Background colour as packed 0x00BBGGRR.
     pub fn background_color_raw(&self) -> u32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesSettingsView_BackgroundColorRaw(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesSettingsView_BackgroundColorRaw(self.raw.as_ptr())
+        }
     }
 
     pub fn set_background_color(&mut self, r: u8, g: u8, b: u8) {
@@ -1736,7 +1655,9 @@ impl SettingsView {
 
     pub fn tonemap_exposure(&self) -> f32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesSettingsView_TonemapExposure(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesSettingsView_TonemapExposure(self.raw.as_ptr())
+        }
     }
 
     pub fn set_tonemap_exposure(&mut self, arg: f32) {
@@ -1749,26 +1670,23 @@ impl SettingsView {
     /// HD-only bloom master switch. Off in SD, and inert if the backend has no bloom shader bundle.
     pub fn bloom_enabled(&self) -> bool {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesSettingsView_BloomEnabled(self.raw.as_ptr()) != 0 }
+        unsafe {
+            ffi::whiteout_flakes_FlakesSettingsView_BloomEnabled(self.raw.as_ptr()) != 0
+        }
     }
 
     pub fn set_bloom_enabled(&mut self, arg: bool) {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesSettingsView_SetBloomEnabled(
-                self.raw.as_ptr(),
-                if arg { 1 } else { 0 },
-            );
+            ffi::whiteout_flakes_FlakesSettingsView_SetBloomEnabled(self.raw.as_ptr(), if arg { 1 } else { 0 });
         }
     }
 
     pub fn ibl_mode(&self) -> IblMode {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            IblMode::try_from(ffi::whiteout_flakes_FlakesSettingsView_IblMode(
-                self.raw.as_ptr(),
-            ))
-            .expect("unknown enum discriminant from the native library (ABI version skew)")
+            IblMode::try_from(ffi::whiteout_flakes_FlakesSettingsView_IblMode(self.raw.as_ptr()))
+                .expect("unknown enum discriminant from the native library (ABI version skew)")
         }
     }
 
@@ -1782,7 +1700,9 @@ impl SettingsView {
     /// HD-shader debug mode (0 = off, 1..7 = visualisations).
     pub fn hd_debug_mode(&self) -> i32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesSettingsView_HdDebugMode(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesSettingsView_HdDebugMode(self.raw.as_ptr())
+        }
     }
 
     pub fn set_hd_debug_mode(&mut self, arg: i32) {
@@ -1795,7 +1715,9 @@ impl SettingsView {
     /// GTAO quality preset (0 = Low, 1 = Medium, 2 = High).
     pub fn ao_quality(&self) -> u32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesSettingsView_AoQuality(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesSettingsView_AoQuality(self.raw.as_ptr())
+        }
     }
 
     pub fn set_ao_quality(&mut self, arg: u32) {
@@ -1808,7 +1730,9 @@ impl SettingsView {
     /// LOD override (`-1` = auto-pick by screen size, `0..3` = forced).
     pub fn lod_override(&self) -> i32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesSettingsView_LodOverride(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesSettingsView_LodOverride(self.raw.as_ptr())
+        }
     }
 
     pub fn set_lod_override(&mut self, arg: i32) {
@@ -1824,6 +1748,7 @@ impl SettingsView {
             ffi::whiteout_flakes_FlakesSettingsView_SetRenderMode(self.raw.as_ptr(), arg as i32);
         }
     }
+
 }
 
 /// Spawn / refresh / clear actors.
@@ -1862,7 +1787,8 @@ impl core::fmt::Debug for LoaderView {
 impl LoaderView {
     /// Spawn an actor from a path resolvable by the content provider. @return New actor handle, or `0` on failure.
     pub fn spawn_unit(&mut self, path: &str) -> u32 {
-        let path_cstr = std::ffi::CString::new(path).unwrap_or_default();
+        let path_cstr = std::ffi::CString::new(path)
+            .unwrap_or_default();
         // SAFETY: handle is live for the duration of the call.
         unsafe {
             ffi::whiteout_flakes_FlakesLoaderView_SpawnUnit(self.raw.as_ptr(), path_cstr.as_ptr())
@@ -1877,7 +1803,8 @@ impl LoaderView {
     ///
     /// @param path Resolvable by the content provider, exactly like @ref SpawnUnit.
     pub fn spawn_effect(&mut self, path: &str) -> u32 {
-        let path_cstr = std::ffi::CString::new(path).unwrap_or_default();
+        let path_cstr = std::ffi::CString::new(path)
+            .unwrap_or_default();
         // SAFETY: handle is live for the duration of the call.
         unsafe {
             ffi::whiteout_flakes_FlakesLoaderView_SpawnEffect(self.raw.as_ptr(), path_cstr.as_ptr())
@@ -1899,6 +1826,7 @@ impl LoaderView {
             ffi::whiteout_flakes_FlakesLoaderView_Destroy(self.raw.as_ptr(), handle);
         }
     }
+
 }
 
 /// Push-based asset registry view.
@@ -1942,9 +1870,7 @@ impl AssetsView {
     pub fn stats(&self) -> Option<AssetsViewStats> {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            AssetsViewStats::from_raw(ffi::whiteout_flakes_FlakesAssetsView_Stats(
-                self.raw.as_ptr(),
-            ))
+            AssetsViewStats::from_raw(ffi::whiteout_flakes_FlakesAssetsView_Stats(self.raw.as_ptr()))
         }
     }
 
@@ -1960,12 +1886,10 @@ impl AssetsView {
     pub fn prefetch_event_assets_for_actor(&mut self, actor: u32) {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesAssetsView_PrefetchEventAssetsForActor(
-                self.raw.as_ptr(),
-                actor,
-            );
+            ffi::whiteout_flakes_FlakesAssetsView_PrefetchEventAssetsForActor(self.raw.as_ptr(), actor);
         }
     }
+
 }
 
 /// Snapshot diagnostic counters.
@@ -2020,9 +1944,7 @@ impl AssetsViewStats {
 
     pub fn set_live_slots(&mut self, value: u64) {
         // SAFETY: plain scalar write through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesAssetsViewStats_set_liveSlots(self.raw.as_ptr(), value)
-        }
+        unsafe { ffi::whiteout_flakes_FlakesAssetsViewStats_set_liveSlots(self.raw.as_ptr(), value) }
     }
 
     pub fn loaded_slots(&self) -> u64 {
@@ -2032,9 +1954,7 @@ impl AssetsViewStats {
 
     pub fn set_loaded_slots(&mut self, value: u64) {
         // SAFETY: plain scalar write through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesAssetsViewStats_set_loadedSlots(self.raw.as_ptr(), value)
-        }
+        unsafe { ffi::whiteout_flakes_FlakesAssetsViewStats_set_loadedSlots(self.raw.as_ptr(), value) }
     }
 
     pub fn pending_needs(&self) -> u64 {
@@ -2044,9 +1964,7 @@ impl AssetsViewStats {
 
     pub fn set_pending_needs(&mut self, value: u64) {
         // SAFETY: plain scalar write through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesAssetsViewStats_set_pendingNeeds(self.raw.as_ptr(), value)
-        }
+        unsafe { ffi::whiteout_flakes_FlakesAssetsViewStats_set_pendingNeeds(self.raw.as_ptr(), value) }
     }
 
     pub fn total_acquires(&self) -> u64 {
@@ -2056,9 +1974,7 @@ impl AssetsViewStats {
 
     pub fn set_total_acquires(&mut self, value: u64) {
         // SAFETY: plain scalar write through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesAssetsViewStats_set_totalAcquires(self.raw.as_ptr(), value)
-        }
+        unsafe { ffi::whiteout_flakes_FlakesAssetsViewStats_set_totalAcquires(self.raw.as_ptr(), value) }
     }
 
     pub fn total_releases(&self) -> u64 {
@@ -2068,9 +1984,7 @@ impl AssetsViewStats {
 
     pub fn set_total_releases(&mut self, value: u64) {
         // SAFETY: plain scalar write through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesAssetsViewStats_set_totalReleases(self.raw.as_ptr(), value)
-        }
+        unsafe { ffi::whiteout_flakes_FlakesAssetsViewStats_set_totalReleases(self.raw.as_ptr(), value) }
     }
 
     pub fn total_applies(&self) -> u64 {
@@ -2080,27 +1994,19 @@ impl AssetsViewStats {
 
     pub fn set_total_applies(&mut self, value: u64) {
         // SAFETY: plain scalar write through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesAssetsViewStats_set_totalApplies(self.raw.as_ptr(), value)
-        }
+        unsafe { ffi::whiteout_flakes_FlakesAssetsViewStats_set_totalApplies(self.raw.as_ptr(), value) }
     }
 
     pub fn total_apply_misses(&self) -> u64 {
         // SAFETY: plain scalar read through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesAssetsViewStats_get_totalApplyMisses(self.raw.as_ptr())
-        }
+        unsafe { ffi::whiteout_flakes_FlakesAssetsViewStats_get_totalApplyMisses(self.raw.as_ptr()) }
     }
 
     pub fn set_total_apply_misses(&mut self, value: u64) {
         // SAFETY: plain scalar write through a live handle.
-        unsafe {
-            ffi::whiteout_flakes_FlakesAssetsViewStats_set_totalApplyMisses(
-                self.raw.as_ptr(),
-                value,
-            )
-        }
+        unsafe { ffi::whiteout_flakes_FlakesAssetsViewStats_set_totalApplyMisses(self.raw.as_ptr(), value) }
     }
+
 }
 
 impl Default for AssetsViewStats {
@@ -2146,13 +2052,17 @@ impl DncView {
     /// `true` once the host has set a unit-MDL path and the DNC service has loaded successfully.
     pub fn is_valid(&self) -> bool {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesDncView_IsValid(self.raw.as_ptr()) != 0 }
+        unsafe {
+            ffi::whiteout_flakes_FlakesDncView_IsValid(self.raw.as_ptr()) != 0
+        }
     }
 
     /// Time of day in hours (0..@ref GetHoursPerDay).
     pub fn time_of_day(&self) -> f32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesDncView_TimeOfDay(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesDncView_TimeOfDay(self.raw.as_ptr())
+        }
     }
 
     pub fn set_time_of_day(&mut self, arg: f32) {
@@ -2165,7 +2075,9 @@ impl DncView {
     /// TOD playback rate (`0` = paused; `1` = real-time-equivalent).
     pub fn tod_scale(&self) -> f32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesDncView_TodScale(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesDncView_TodScale(self.raw.as_ptr())
+        }
     }
 
     pub fn set_tod_scale(&mut self, arg: f32) {
@@ -2178,12 +2090,15 @@ impl DncView {
     /// Length of a full DNC cycle in hours (typically `24`).
     pub fn hours_per_day(&self) -> f32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesDncView_HoursPerDay(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesDncView_HoursPerDay(self.raw.as_ptr())
+        }
     }
 
     /// Replace the DNC unit-MDL path (re-loads from the content provider).
     pub fn set_unit_mdl(&mut self, arg: &str) {
-        let arg_cstr = std::ffi::CString::new(arg).unwrap_or_default();
+        let arg_cstr = std::ffi::CString::new(arg)
+            .unwrap_or_default();
         // SAFETY: handle is live for the duration of the call.
         unsafe {
             ffi::whiteout_flakes_FlakesDncView_SetUnitMdl(self.raw.as_ptr(), arg_cstr.as_ptr());
@@ -2197,6 +2112,7 @@ impl DncView {
             ffi::whiteout_flakes_FlakesDncView_Advance(self.raw.as_ptr(), dt);
         }
     }
+
 }
 
 /// Cascade-shadow-map service.
@@ -2235,21 +2151,22 @@ impl core::fmt::Debug for ShadowView {
 impl ShadowView {
     pub fn is_valid(&self) -> bool {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesShadowView_IsValid(self.raw.as_ptr()) != 0 }
+        unsafe {
+            ffi::whiteout_flakes_FlakesShadowView_IsValid(self.raw.as_ptr()) != 0
+        }
     }
 
     pub fn is_enabled(&self) -> bool {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesShadowView_IsEnabled(self.raw.as_ptr()) != 0 }
+        unsafe {
+            ffi::whiteout_flakes_FlakesShadowView_IsEnabled(self.raw.as_ptr()) != 0
+        }
     }
 
     pub fn set_enabled(&mut self, on: bool) {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesShadowView_SetEnabled(
-                self.raw.as_ptr(),
-                if on { 1 } else { 0 },
-            );
+            ffi::whiteout_flakes_FlakesShadowView_SetEnabled(self.raw.as_ptr(), if on { 1 } else { 0 });
         }
     }
 
@@ -2262,6 +2179,7 @@ impl ShadowView {
             ShadowParams::free_native(arg_native);
         }
     }
+
 }
 
 /// Splat-decal service (engine-spawned SPL/UBR events).
@@ -2305,6 +2223,7 @@ impl SplatView {
             ffi::whiteout_flakes_FlakesSplatView_Clear(self.raw.as_ptr());
         }
     }
+
 }
 
 /// Replaceable-texture / tileset switching.
@@ -2344,7 +2263,9 @@ impl ReplaceablesView {
     /// Returns `true` once when the tileset has changed since last call (hosts use this to invalidate cached swatches).
     pub fn consume_dirty(&mut self) -> bool {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesReplaceablesView_ConsumeDirty(self.raw.as_ptr()) != 0 }
+        unsafe {
+            ffi::whiteout_flakes_FlakesReplaceablesView_ConsumeDirty(self.raw.as_ptr()) != 0
+        }
     }
 
     /// Switch the active tileset; in-scene replaceables re-resolve on the next frame.
@@ -2354,6 +2275,7 @@ impl ReplaceablesView {
             ffi::whiteout_flakes_FlakesReplaceablesView_SetTileset(self.raw.as_ptr(), arg as i32);
         }
     }
+
 }
 
 /// Transport controls for the scene clock — one switch that governs model animation and every effect system alike.
@@ -2398,10 +2320,8 @@ impl PlaybackView {
     pub fn state(&self) -> PlaybackState {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            PlaybackState::try_from(ffi::whiteout_flakes_FlakesPlaybackView_State(
-                self.raw.as_ptr(),
-            ))
-            .expect("unknown enum discriminant from the native library (ABI version skew)")
+            PlaybackState::try_from(ffi::whiteout_flakes_FlakesPlaybackView_State(self.raw.as_ptr()))
+                .expect("unknown enum discriminant from the native library (ABI version skew)")
         }
     }
 
@@ -2458,13 +2378,17 @@ impl PlaybackView {
     /// `true` when time is not advancing (paused *or* stopped).
     pub fn is_paused(&self) -> bool {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesPlaybackView_IsPaused(self.raw.as_ptr()) != 0 }
+        unsafe {
+            ffi::whiteout_flakes_FlakesPlaybackView_IsPaused(self.raw.as_ptr()) != 0
+        }
     }
 
     /// Multiplier applied to every advancing frame. Survives a pause/resume, so slow-motion is not lost on Play().
     pub fn time_scale(&self) -> f32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesPlaybackView_TimeScale(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesPlaybackView_TimeScale(self.raw.as_ptr())
+        }
     }
 
     pub fn set_time_scale(&mut self, arg: f32) {
@@ -2473,6 +2397,7 @@ impl PlaybackView {
             ffi::whiteout_flakes_FlakesPlaybackView_SetTimeScale(self.raw.as_ptr(), arg);
         }
     }
+
 }
 
 /// Value-typed view onto one actor.
@@ -2514,13 +2439,17 @@ impl ActorView {
     /// `true` if the underlying actor still exists in the scene.
     pub fn is_valid(&self) -> bool {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesActorView_IsValid(self.raw.as_ptr()) != 0 }
+        unsafe {
+            ffi::whiteout_flakes_FlakesActorView_IsValid(self.raw.as_ptr()) != 0
+        }
     }
 
     /// The handle this view was constructed with.
     pub fn handle(&self) -> u32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesActorView_Handle(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesActorView_Handle(self.raw.as_ptr())
+        }
     }
 
     /// Role assigned at spawn time (see @ref ActorRole).
@@ -2535,7 +2464,9 @@ impl ActorView {
     /// Animation playback rate (`1.0` = nominal).
     pub fn playback_speed(&self) -> f32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesActorView_PlaybackSpeed(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesActorView_PlaybackSpeed(self.raw.as_ptr())
+        }
     }
 
     pub fn set_playback_speed(&mut self, arg: f32) {
@@ -2548,23 +2479,24 @@ impl ActorView {
     /// If `true`, non-looping sequences hold their last frame instead of restarting from the beginning.
     pub fn ignore_non_looping(&self) -> bool {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesActorView_IgnoreNonLooping(self.raw.as_ptr()) != 0 }
+        unsafe {
+            ffi::whiteout_flakes_FlakesActorView_IgnoreNonLooping(self.raw.as_ptr()) != 0
+        }
     }
 
     pub fn set_ignore_non_looping(&mut self, arg: bool) {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesActorView_SetIgnoreNonLooping(
-                self.raw.as_ptr(),
-                if arg { 1 } else { 0 },
-            );
+            ffi::whiteout_flakes_FlakesActorView_SetIgnoreNonLooping(self.raw.as_ptr(), if arg { 1 } else { 0 });
         }
     }
 
     /// Packed 0x00BBGGRR team colour (low 24 bits used).
     pub fn team_color(&self) -> u32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesActorView_TeamColor(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesActorView_TeamColor(self.raw.as_ptr())
+        }
     }
 
     /// Set the team colour from sRGB byte components.
@@ -2587,16 +2519,14 @@ impl ActorView {
     pub fn sequences(&self) -> Option<SequenceInfoList> {
         // SAFETY: the native side transfers ownership of
         // the list; null means the operation produced none.
-        unsafe {
-            SequenceInfoList::from_raw(ffi::whiteout_flakes_FlakesActorView_Sequences(
-                self.raw.as_ptr(),
-            ))
-        }
+        unsafe { SequenceInfoList::from_raw(ffi::whiteout_flakes_FlakesActorView_Sequences(self.raw.as_ptr())) }
     }
 
     pub fn active_sequence_index(&self) -> i32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesActorView_ActiveSequenceIndex(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesActorView_ActiveSequenceIndex(self.raw.as_ptr())
+        }
     }
 
     pub fn set_active_sequence(&mut self, arg: i32) {
@@ -2608,7 +2538,9 @@ impl ActorView {
 
     pub fn animation_time_ms(&self) -> i32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesActorView_AnimationTimeMs(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesActorView_AnimationTimeMs(self.raw.as_ptr())
+        }
     }
 
     pub fn set_animation_time_ms(&mut self, arg: i32) {
@@ -2621,7 +2553,43 @@ impl ActorView {
     /// `true` once the actor has an `IAnimationSource` bound (i.e. spawn-from-source completed successfully).
     pub fn has_animation_source(&self) -> bool {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesActorView_HasAnimationSource(self.raw.as_ptr()) != 0 }
+        unsafe {
+            ffi::whiteout_flakes_FlakesActorView_HasAnimationSource(self.raw.as_ptr()) != 0
+        }
+    }
+
+    /// Stack another play on top of whatever is running.
+    ///
+    /// @param sequence   Index into @ref Sequences. @param weight     Contribution before the blend envelope multiplies in. Weights are spent from a budget of 1.0, highest priority first, so a full-weight play on top hides the ones below it. @param speed      Clock rate for this play alone, independent of @ref SetPlaybackSpeed. @param loop       `false` retires the play when the sequence ends. @param blendInMs  Fade-in. `0` starts at full weight. @param blendOutMs Fade-out used when this play stops. `-1` takes the format's default. @return A handle for @ref StopPlay, or `0` if the actor is gone or has no animation source yet.
+    pub fn play(&mut self, sequence: i32, weight: f32, speed: f32, loop: bool, blend_in_ms: i32, blend_out_ms: i32) -> u32 {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesActorView_Play(self.raw.as_ptr(), sequence, weight, speed, if loop { 1 } else { 0 }, blend_in_ms, blend_out_ms)
+        }
+    }
+
+    /// Fade one play out and retire it. `blendOutMs < 0` uses the play's own blend-out. Unknown handles are ignored.
+    pub fn stop_play(&mut self, play_handle: u32, blend_out_ms: i32) {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesActorView_StopPlay(self.raw.as_ptr(), play_handle, blend_out_ms);
+        }
+    }
+
+    /// Fade every play out, including the one `SetActiveSequence` drives. The actor holds its last pose until something plays.
+    pub fn stop_all_plays(&mut self, blend_out_ms: i32) {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesActorView_StopAllPlays(self.raw.as_ptr(), blend_out_ms);
+        }
+    }
+
+    /// How many plays are live, blend-outs included.
+    pub fn play_count(&self) -> i32 {
+        // SAFETY: handle is live for the duration of the call.
+        unsafe {
+            ffi::whiteout_flakes_FlakesActorView_PlayCount(self.raw.as_ptr())
+        }
     }
 
     /// Evaluate the animation at the actor's current cursor and push the result into the renderer state.
@@ -2645,28 +2613,30 @@ impl ActorView {
     /// @name Read-only counts for status displays. @{
     pub fn geoset_count(&self) -> i32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesActorView_GeosetCount(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesActorView_GeosetCount(self.raw.as_ptr())
+        }
     }
 
     pub fn material_count(&self) -> i32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesActorView_MaterialCount(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesActorView_MaterialCount(self.raw.as_ptr())
+        }
     }
 
     pub fn collision_shape_count(&self) -> i32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesActorView_CollisionShapeCount(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesActorView_CollisionShapeCount(self.raw.as_ptr())
+        }
     }
 
     /// Camera presets attached to this actor's source model.
     pub fn camera_presets(&self) -> Option<CameraPresetList> {
         // SAFETY: the native side transfers ownership of
         // the list; null means the operation produced none.
-        unsafe {
-            CameraPresetList::from_raw(ffi::whiteout_flakes_FlakesActorView_CameraPresets(
-                self.raw.as_ptr(),
-            ))
-        }
+        unsafe { CameraPresetList::from_raw(ffi::whiteout_flakes_FlakesActorView_CameraPresets(self.raw.as_ptr())) }
     }
 
     /// A hint: which Warcraft III frame this actor's template would prefer (`HD` if any material layer uses a non-zero BLS shaderId, else `SD`). Hosts call this after `SpawnUnit` and forward it to `SettingsView::SetRenderMode` so SD models don't render through the HD pipeline (which mis-blends multi-layer SD materials) and vice-versa.
@@ -2675,10 +2645,8 @@ impl ActorView {
     pub fn preferred_render_mode(&self) -> RenderMode {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            RenderMode::try_from(ffi::whiteout_flakes_FlakesActorView_PreferredRenderMode(
-                self.raw.as_ptr(),
-            ))
-            .expect("unknown enum discriminant from the native library (ABI version skew)")
+            RenderMode::try_from(ffi::whiteout_flakes_FlakesActorView_PreferredRenderMode(self.raw.as_ptr()))
+                .expect("unknown enum discriminant from the native library (ABI version skew)")
         }
     }
 
@@ -2700,6 +2668,7 @@ impl ActorView {
             out
         }
     }
+
 }
 
 /// Top-level WhiteoutFlakes renderer.
@@ -2753,100 +2722,87 @@ impl Renderer {
     pub fn pipeline(&mut self) -> Option<PipelineView> {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            PipelineView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Pipeline(
-                self.raw.as_ptr(),
-            ))
+            PipelineView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Pipeline(self.raw.as_ptr()))
         }
     }
 
     pub fn scene(&mut self) -> Option<SceneView> {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { SceneView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Scene(self.raw.as_ptr())) }
+        unsafe {
+            SceneView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Scene(self.raw.as_ptr()))
+        }
     }
 
     /// View onto the scene's default camera (handle 0).
     pub fn camera(&mut self) -> Option<CameraView> {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            CameraView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Camera(
-                self.raw.as_ptr(),
-            ))
+            CameraView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Camera(self.raw.as_ptr()))
         }
     }
 
     /// Add a camera to the scene's set; returns its handle. Use for extra viewports onto the same scene (e.g. an editor's top/front/side/perspective layout). Pair with PipelineView::RenderViewport(target, handle).
     pub fn create_camera(&mut self) -> u32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesRenderer_CreateCamera(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesRenderer_CreateCamera(self.raw.as_ptr())
+        }
     }
 
     /// View onto a specific camera in the scene's set. An out-of-range handle drives the default camera.
     pub fn camera_at(&mut self, arg: u32) -> Option<CameraView> {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            CameraView::from_raw(ffi::whiteout_flakes_FlakesRenderer_CameraAt(
-                self.raw.as_ptr(),
-                arg,
-            ))
+            CameraView::from_raw(ffi::whiteout_flakes_FlakesRenderer_CameraAt(self.raw.as_ptr(), arg))
         }
     }
 
     pub fn settings(&mut self) -> Option<SettingsView> {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            SettingsView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Settings(
-                self.raw.as_ptr(),
-            ))
+            SettingsView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Settings(self.raw.as_ptr()))
         }
     }
 
     pub fn loader(&mut self) -> Option<LoaderView> {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            LoaderView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Loader(
-                self.raw.as_ptr(),
-            ))
+            LoaderView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Loader(self.raw.as_ptr()))
         }
     }
 
     pub fn dnc(&mut self) -> Option<DncView> {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { DncView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Dnc(self.raw.as_ptr())) }
+        unsafe {
+            DncView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Dnc(self.raw.as_ptr()))
+        }
     }
 
     pub fn shadow(&mut self) -> Option<ShadowView> {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ShadowView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Shadow(
-                self.raw.as_ptr(),
-            ))
+            ShadowView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Shadow(self.raw.as_ptr()))
         }
     }
 
     pub fn splats(&mut self) -> Option<SplatView> {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            SplatView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Splats(
-                self.raw.as_ptr(),
-            ))
+            SplatView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Splats(self.raw.as_ptr()))
         }
     }
 
     pub fn replaceables(&mut self) -> Option<ReplaceablesView> {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ReplaceablesView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Replaceables(
-                self.raw.as_ptr(),
-            ))
+            ReplaceablesView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Replaceables(self.raw.as_ptr()))
         }
     }
 
     pub fn assets(&mut self) -> Option<AssetsView> {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            AssetsView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Assets(
-                self.raw.as_ptr(),
-            ))
+            AssetsView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Assets(self.raw.as_ptr()))
         }
     }
 
@@ -2854,9 +2810,7 @@ impl Renderer {
     pub fn playback(&mut self) -> Option<PlaybackView> {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            PlaybackView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Playback(
-                self.raw.as_ptr(),
-            ))
+            PlaybackView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Playback(self.raw.as_ptr()))
         }
     }
 
@@ -2864,10 +2818,7 @@ impl Renderer {
     pub fn actor(&mut self, h: u32) -> Option<ActorView> {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ActorView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Actor(
-                self.raw.as_ptr(),
-                h,
-            ))
+            ActorView::from_raw(ffi::whiteout_flakes_FlakesRenderer_Actor(self.raw.as_ptr(), h))
         }
     }
 
@@ -2880,6 +2831,7 @@ impl Renderer {
             ffi::whiteout_flakes_FlakesRenderer_Tick(self.raw.as_ptr(), dt);
         }
     }
+
 }
 
 impl Default for Renderer {
@@ -2947,14 +2899,11 @@ impl StorageBrowser {
     ///
     /// Enumerating is the expensive part and happens here, once. Returns `false` on failure; @ref GetLastError says why.
     pub fn open(&mut self, root: &str, kind: StorageKind) -> bool {
-        let root_cstr = std::ffi::CString::new(root).unwrap_or_default();
+        let root_cstr = std::ffi::CString::new(root)
+            .unwrap_or_default();
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesStorageBrowser_Open(
-                self.raw.as_ptr(),
-                root_cstr.as_ptr(),
-                kind as i32,
-            ) != 0
+            ffi::whiteout_flakes_FlakesStorageBrowser_Open(self.raw.as_ptr(), root_cstr.as_ptr(), kind as i32) != 0
         }
     }
 
@@ -2962,13 +2911,11 @@ impl StorageBrowser {
     ///
     /// A directory holding `.build.info` is a CASC install, any other directory is walked as a folder, and a file is treated as an MPQ. What a dialog wants when the user has just typed or dropped a path.
     pub fn open_auto(&mut self, path: &str) -> bool {
-        let path_cstr = std::ffi::CString::new(path).unwrap_or_default();
+        let path_cstr = std::ffi::CString::new(path)
+            .unwrap_or_default();
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesStorageBrowser_OpenAuto(
-                self.raw.as_ptr(),
-                path_cstr.as_ptr(),
-            ) != 0
+            ffi::whiteout_flakes_FlakesStorageBrowser_OpenAuto(self.raw.as_ptr(), path_cstr.as_ptr()) != 0
         }
     }
 
@@ -2976,10 +2923,8 @@ impl StorageBrowser {
     pub fn kind(&self) -> StorageKind {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            StorageKind::try_from(ffi::whiteout_flakes_FlakesStorageBrowser_Kind(
-                self.raw.as_ptr(),
-            ))
-            .expect("unknown enum discriminant from the native library (ABI version skew)")
+            StorageKind::try_from(ffi::whiteout_flakes_FlakesStorageBrowser_Kind(self.raw.as_ptr()))
+                .expect("unknown enum discriminant from the native library (ABI version skew)")
         }
     }
 
@@ -2991,26 +2936,24 @@ impl StorageBrowser {
     pub fn product(&self) -> ProductId {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ProductId::try_from(ffi::whiteout_flakes_FlakesStorageBrowser_Product(
-                self.raw.as_ptr(),
-            ))
-            .expect("unknown enum discriminant from the native library (ABI version skew)")
+            ProductId::try_from(ffi::whiteout_flakes_FlakesStorageBrowser_Product(self.raw.as_ptr()))
+                .expect("unknown enum discriminant from the native library (ABI version skew)")
         }
     }
 
     /// Why the last @ref Open failed. Empty after a successful one.
     pub fn is_open(&self) -> bool {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesStorageBrowser_IsOpen(self.raw.as_ptr()) != 0 }
+        unsafe {
+            ffi::whiteout_flakes_FlakesStorageBrowser_IsOpen(self.raw.as_ptr()) != 0
+        }
     }
 
     /// The root this was opened with.
     pub fn root(&self) -> String {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            crate::support::take_string(ffi::whiteout_flakes_FlakesStorageBrowser_Root(
-                self.raw.as_ptr(),
-            ))
+            crate::support::take_string(ffi::whiteout_flakes_FlakesStorageBrowser_Root(self.raw.as_ptr()))
         }
     }
 
@@ -3018,9 +2961,7 @@ impl StorageBrowser {
     pub fn last_error(&self) -> String {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            crate::support::take_string(ffi::whiteout_flakes_FlakesStorageBrowser_LastError(
-                self.raw.as_ptr(),
-            ))
+            crate::support::take_string(ffi::whiteout_flakes_FlakesStorageBrowser_LastError(self.raw.as_ptr()))
         }
     }
 
@@ -3028,9 +2969,7 @@ impl StorageBrowser {
     pub fn current_path(&self) -> String {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            crate::support::take_string(ffi::whiteout_flakes_FlakesStorageBrowser_CurrentPath(
-                self.raw.as_ptr(),
-            ))
+            crate::support::take_string(ffi::whiteout_flakes_FlakesStorageBrowser_CurrentPath(self.raw.as_ptr()))
         }
     }
 
@@ -3106,28 +3045,26 @@ impl StorageBrowser {
     pub fn filter(&self) -> StorageFileFilter {
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            StorageFileFilter::try_from(ffi::whiteout_flakes_FlakesStorageBrowser_Filter(
-                self.raw.as_ptr(),
-            ))
-            .expect("unknown enum discriminant from the native library (ABI version skew)")
+            StorageFileFilter::try_from(ffi::whiteout_flakes_FlakesStorageBrowser_Filter(self.raw.as_ptr()))
+                .expect("unknown enum discriminant from the native library (ABI version skew)")
         }
     }
 
     /// How many files the current directory holds in total, ignoring the filter — so a panel can say "3 of 12" rather than making an empty folder look like a dead end.
     pub fn unfiltered_file_count(&self) -> i32 {
         // SAFETY: handle is live for the duration of the call.
-        unsafe { ffi::whiteout_flakes_FlakesStorageBrowser_UnfilteredFileCount(self.raw.as_ptr()) }
+        unsafe {
+            ffi::whiteout_flakes_FlakesStorageBrowser_UnfilteredFileCount(self.raw.as_ptr())
+        }
     }
 
     /// Descend into a subfolder of the current directory. No-op for a name that is not in @ref Folders.
     pub fn descend(&mut self, folder_name: &str) {
-        let folder_name_cstr = std::ffi::CString::new(folder_name).unwrap_or_default();
+        let folder_name_cstr = std::ffi::CString::new(folder_name)
+            .unwrap_or_default();
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesStorageBrowser_Descend(
-                self.raw.as_ptr(),
-                folder_name_cstr.as_ptr(),
-            );
+            ffi::whiteout_flakes_FlakesStorageBrowser_Descend(self.raw.as_ptr(), folder_name_cstr.as_ptr());
         }
     }
 
@@ -3141,39 +3078,34 @@ impl StorageBrowser {
 
     /// Jump to a display path, as returned by @ref GetCurrentPath.
     pub fn navigate_to(&mut self, display_path: &str) {
-        let display_path_cstr = std::ffi::CString::new(display_path).unwrap_or_default();
+        let display_path_cstr = std::ffi::CString::new(display_path)
+            .unwrap_or_default();
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesStorageBrowser_NavigateTo(
-                self.raw.as_ptr(),
-                display_path_cstr.as_ptr(),
-            );
+            ffi::whiteout_flakes_FlakesStorageBrowser_NavigateTo(self.raw.as_ptr(), display_path_cstr.as_ptr());
         }
     }
 
     /// The original archive path of a file in the current directory — what `LoaderView::SpawnUnit` / `SpawnEffect` reads. Empty for a name that is not in @ref Files.
     pub fn child_path(&self, file_name: &str) -> String {
-        let file_name_cstr = std::ffi::CString::new(file_name).unwrap_or_default();
+        let file_name_cstr = std::ffi::CString::new(file_name)
+            .unwrap_or_default();
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            crate::support::take_string(ffi::whiteout_flakes_FlakesStorageBrowser_ChildPath(
-                self.raw.as_ptr(),
-                file_name_cstr.as_ptr(),
-            ))
+            crate::support::take_string(ffi::whiteout_flakes_FlakesStorageBrowser_ChildPath(self.raw.as_ptr(), file_name_cstr.as_ptr()))
         }
     }
 
     /// `true` if @p fileName is an effect (`.pkb` / `.pkfx`) rather than a model, so a host knows which spawn call to make.
     pub fn is_effect(&self, file_name: &str) -> bool {
-        let file_name_cstr = std::ffi::CString::new(file_name).unwrap_or_default();
+        let file_name_cstr = std::ffi::CString::new(file_name)
+            .unwrap_or_default();
         // SAFETY: handle is live for the duration of the call.
         unsafe {
-            ffi::whiteout_flakes_FlakesStorageBrowser_IsEffect(
-                self.raw.as_ptr(),
-                file_name_cstr.as_ptr(),
-            ) != 0
+            ffi::whiteout_flakes_FlakesStorageBrowser_IsEffect(self.raw.as_ptr(), file_name_cstr.as_ptr()) != 0
         }
     }
+
 }
 
 impl Default for StorageBrowser {
@@ -3305,26 +3237,13 @@ pub mod ffi {
 
     extern "C" {
         pub fn whiteout_flakes_StringList_size(self_: *mut whiteout_StringList) -> usize;
-        pub fn whiteout_flakes_StringList_at(
-            self_: *mut whiteout_StringList,
-            index: usize,
-        ) -> RawCString;
+        pub fn whiteout_flakes_StringList_at(self_: *mut whiteout_StringList, index: usize) -> RawCString;
         pub fn whiteout_flakes_StringList_delete(self_: *mut whiteout_StringList);
-        pub fn whiteout_flakes_SequenceInfoList_size(
-            self_: *mut whiteout_SequenceInfoList,
-        ) -> usize;
-        pub fn whiteout_flakes_SequenceInfoList_at(
-            self_: *mut whiteout_SequenceInfoList,
-            index: usize,
-        ) -> *mut whiteout_FlakesSequenceInfo;
+        pub fn whiteout_flakes_SequenceInfoList_size(self_: *mut whiteout_SequenceInfoList) -> usize;
+        pub fn whiteout_flakes_SequenceInfoList_at(self_: *mut whiteout_SequenceInfoList, index: usize) -> *mut whiteout_FlakesSequenceInfo;
         pub fn whiteout_flakes_SequenceInfoList_delete(self_: *mut whiteout_SequenceInfoList);
-        pub fn whiteout_flakes_CameraPresetList_size(
-            self_: *mut whiteout_CameraPresetList,
-        ) -> usize;
-        pub fn whiteout_flakes_CameraPresetList_at(
-            self_: *mut whiteout_CameraPresetList,
-            index: usize,
-        ) -> *mut whiteout_FlakesCameraPreset;
+        pub fn whiteout_flakes_CameraPresetList_size(self_: *mut whiteout_CameraPresetList) -> usize;
+        pub fn whiteout_flakes_CameraPresetList_at(self_: *mut whiteout_CameraPresetList, index: usize) -> *mut whiteout_FlakesCameraPreset;
         pub fn whiteout_flakes_CameraPresetList_delete(self_: *mut whiteout_CameraPresetList);
         // Rect
         pub fn whiteout_flakes_FlakesRect_new() -> *mut whiteout_FlakesRect;
@@ -3340,833 +3259,285 @@ pub mod ffi {
         // ShadowParams
         pub fn whiteout_flakes_FlakesShadowParams_new() -> *mut whiteout_FlakesShadowParams;
         pub fn whiteout_flakes_FlakesShadowParams_delete(self_: *mut whiteout_FlakesShadowParams);
-        pub fn whiteout_flakes_FlakesShadowParams_get_cascadeCount(
-            self_: *mut whiteout_FlakesShadowParams,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesShadowParams_set_cascadeCount(
-            self_: *mut whiteout_FlakesShadowParams,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesShadowParams_get_cascadeResolution(
-            self_: *mut whiteout_FlakesShadowParams,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesShadowParams_set_cascadeResolution(
-            self_: *mut whiteout_FlakesShadowParams,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesShadowParams_get_casterHeight(
-            self_: *mut whiteout_FlakesShadowParams,
-        ) -> f32;
-        pub fn whiteout_flakes_FlakesShadowParams_set_casterHeight(
-            self_: *mut whiteout_FlakesShadowParams,
-            value: f32,
-        );
-        pub fn whiteout_flakes_FlakesShadowParams_get_lambdaSplit(
-            self_: *mut whiteout_FlakesShadowParams,
-        ) -> f32;
-        pub fn whiteout_flakes_FlakesShadowParams_set_lambdaSplit(
-            self_: *mut whiteout_FlakesShadowParams,
-            value: f32,
-        );
-        pub fn whiteout_flakes_FlakesShadowParams_get_depthBias(
-            self_: *mut whiteout_FlakesShadowParams,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesShadowParams_set_depthBias(
-            self_: *mut whiteout_FlakesShadowParams,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesShadowParams_get_slopeScaledBias(
-            self_: *mut whiteout_FlakesShadowParams,
-        ) -> f32;
-        pub fn whiteout_flakes_FlakesShadowParams_set_slopeScaledBias(
-            self_: *mut whiteout_FlakesShadowParams,
-            value: f32,
-        );
-        pub fn whiteout_flakes_FlakesShadowParams_get_depthBiasClamp(
-            self_: *mut whiteout_FlakesShadowParams,
-        ) -> f32;
-        pub fn whiteout_flakes_FlakesShadowParams_set_depthBiasClamp(
-            self_: *mut whiteout_FlakesShadowParams,
-            value: f32,
-        );
-        pub fn whiteout_flakes_FlakesShadowParams_get_texelSnap(
-            self_: *mut whiteout_FlakesShadowParams,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesShadowParams_set_texelSnap(
-            self_: *mut whiteout_FlakesShadowParams,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesShadowParams_get_enabled(
-            self_: *mut whiteout_FlakesShadowParams,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesShadowParams_set_enabled(
-            self_: *mut whiteout_FlakesShadowParams,
-            value: i32,
-        );
+        pub fn whiteout_flakes_FlakesShadowParams_get_cascadeCount(self_: *mut whiteout_FlakesShadowParams) -> i32;
+        pub fn whiteout_flakes_FlakesShadowParams_set_cascadeCount(self_: *mut whiteout_FlakesShadowParams, value: i32);
+        pub fn whiteout_flakes_FlakesShadowParams_get_cascadeResolution(self_: *mut whiteout_FlakesShadowParams) -> i32;
+        pub fn whiteout_flakes_FlakesShadowParams_set_cascadeResolution(self_: *mut whiteout_FlakesShadowParams, value: i32);
+        pub fn whiteout_flakes_FlakesShadowParams_get_casterHeight(self_: *mut whiteout_FlakesShadowParams) -> f32;
+        pub fn whiteout_flakes_FlakesShadowParams_set_casterHeight(self_: *mut whiteout_FlakesShadowParams, value: f32);
+        pub fn whiteout_flakes_FlakesShadowParams_get_lambdaSplit(self_: *mut whiteout_FlakesShadowParams) -> f32;
+        pub fn whiteout_flakes_FlakesShadowParams_set_lambdaSplit(self_: *mut whiteout_FlakesShadowParams, value: f32);
+        pub fn whiteout_flakes_FlakesShadowParams_get_depthBias(self_: *mut whiteout_FlakesShadowParams) -> i32;
+        pub fn whiteout_flakes_FlakesShadowParams_set_depthBias(self_: *mut whiteout_FlakesShadowParams, value: i32);
+        pub fn whiteout_flakes_FlakesShadowParams_get_slopeScaledBias(self_: *mut whiteout_FlakesShadowParams) -> f32;
+        pub fn whiteout_flakes_FlakesShadowParams_set_slopeScaledBias(self_: *mut whiteout_FlakesShadowParams, value: f32);
+        pub fn whiteout_flakes_FlakesShadowParams_get_depthBiasClamp(self_: *mut whiteout_FlakesShadowParams) -> f32;
+        pub fn whiteout_flakes_FlakesShadowParams_set_depthBiasClamp(self_: *mut whiteout_FlakesShadowParams, value: f32);
+        pub fn whiteout_flakes_FlakesShadowParams_get_texelSnap(self_: *mut whiteout_FlakesShadowParams) -> i32;
+        pub fn whiteout_flakes_FlakesShadowParams_set_texelSnap(self_: *mut whiteout_FlakesShadowParams, value: i32);
+        pub fn whiteout_flakes_FlakesShadowParams_get_enabled(self_: *mut whiteout_FlakesShadowParams) -> i32;
+        pub fn whiteout_flakes_FlakesShadowParams_set_enabled(self_: *mut whiteout_FlakesShadowParams, value: i32);
         // DisplayFlags
         pub fn whiteout_flakes_FlakesDisplayFlags_new() -> *mut whiteout_FlakesDisplayFlags;
         pub fn whiteout_flakes_FlakesDisplayFlags_delete(self_: *mut whiteout_FlakesDisplayFlags);
-        pub fn whiteout_flakes_FlakesDisplayFlags_get_showGrid(
-            self_: *mut whiteout_FlakesDisplayFlags,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesDisplayFlags_set_showGrid(
-            self_: *mut whiteout_FlakesDisplayFlags,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesDisplayFlags_get_showParticles(
-            self_: *mut whiteout_FlakesDisplayFlags,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesDisplayFlags_set_showParticles(
-            self_: *mut whiteout_FlakesDisplayFlags,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesDisplayFlags_get_showRibbons(
-            self_: *mut whiteout_FlakesDisplayFlags,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesDisplayFlags_set_showRibbons(
-            self_: *mut whiteout_FlakesDisplayFlags,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesDisplayFlags_get_showCollisions(
-            self_: *mut whiteout_FlakesDisplayFlags,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesDisplayFlags_set_showCollisions(
-            self_: *mut whiteout_FlakesDisplayFlags,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesDisplayFlags_get_showLights(
-            self_: *mut whiteout_FlakesDisplayFlags,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesDisplayFlags_set_showLights(
-            self_: *mut whiteout_FlakesDisplayFlags,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesDisplayFlags_get_showEvents(
-            self_: *mut whiteout_FlakesDisplayFlags,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesDisplayFlags_set_showEvents(
-            self_: *mut whiteout_FlakesDisplayFlags,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesDisplayFlags_get_renderMode(
-            self_: *mut whiteout_FlakesDisplayFlags,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesDisplayFlags_set_renderMode(
-            self_: *mut whiteout_FlakesDisplayFlags,
-            value: i32,
-        );
+        pub fn whiteout_flakes_FlakesDisplayFlags_get_showGrid(self_: *mut whiteout_FlakesDisplayFlags) -> i32;
+        pub fn whiteout_flakes_FlakesDisplayFlags_set_showGrid(self_: *mut whiteout_FlakesDisplayFlags, value: i32);
+        pub fn whiteout_flakes_FlakesDisplayFlags_get_showParticles(self_: *mut whiteout_FlakesDisplayFlags) -> i32;
+        pub fn whiteout_flakes_FlakesDisplayFlags_set_showParticles(self_: *mut whiteout_FlakesDisplayFlags, value: i32);
+        pub fn whiteout_flakes_FlakesDisplayFlags_get_showRibbons(self_: *mut whiteout_FlakesDisplayFlags) -> i32;
+        pub fn whiteout_flakes_FlakesDisplayFlags_set_showRibbons(self_: *mut whiteout_FlakesDisplayFlags, value: i32);
+        pub fn whiteout_flakes_FlakesDisplayFlags_get_showCollisions(self_: *mut whiteout_FlakesDisplayFlags) -> i32;
+        pub fn whiteout_flakes_FlakesDisplayFlags_set_showCollisions(self_: *mut whiteout_FlakesDisplayFlags, value: i32);
+        pub fn whiteout_flakes_FlakesDisplayFlags_get_showLights(self_: *mut whiteout_FlakesDisplayFlags) -> i32;
+        pub fn whiteout_flakes_FlakesDisplayFlags_set_showLights(self_: *mut whiteout_FlakesDisplayFlags, value: i32);
+        pub fn whiteout_flakes_FlakesDisplayFlags_get_showEvents(self_: *mut whiteout_FlakesDisplayFlags) -> i32;
+        pub fn whiteout_flakes_FlakesDisplayFlags_set_showEvents(self_: *mut whiteout_FlakesDisplayFlags, value: i32);
+        pub fn whiteout_flakes_FlakesDisplayFlags_get_renderMode(self_: *mut whiteout_FlakesDisplayFlags) -> i32;
+        pub fn whiteout_flakes_FlakesDisplayFlags_set_renderMode(self_: *mut whiteout_FlakesDisplayFlags, value: i32);
         // FrameStats
         pub fn whiteout_flakes_FlakesFrameStats_new() -> *mut whiteout_FlakesFrameStats;
         pub fn whiteout_flakes_FlakesFrameStats_delete(self_: *mut whiteout_FlakesFrameStats);
-        pub fn whiteout_flakes_FlakesFrameStats_get_geosets(
-            self_: *mut whiteout_FlakesFrameStats,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesFrameStats_set_geosets(
-            self_: *mut whiteout_FlakesFrameStats,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesFrameStats_get_textures(
-            self_: *mut whiteout_FlakesFrameStats,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesFrameStats_set_textures(
-            self_: *mut whiteout_FlakesFrameStats,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesFrameStats_get_nodes(
-            self_: *mut whiteout_FlakesFrameStats,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesFrameStats_set_nodes(
-            self_: *mut whiteout_FlakesFrameStats,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesFrameStats_get_particles(
-            self_: *mut whiteout_FlakesFrameStats,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesFrameStats_set_particles(
-            self_: *mut whiteout_FlakesFrameStats,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesFrameStats_get_segments(
-            self_: *mut whiteout_FlakesFrameStats,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesFrameStats_set_segments(
-            self_: *mut whiteout_FlakesFrameStats,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesFrameStats_get_cornParticles(
-            self_: *mut whiteout_FlakesFrameStats,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesFrameStats_set_cornParticles(
-            self_: *mut whiteout_FlakesFrameStats,
-            value: i32,
-        );
+        pub fn whiteout_flakes_FlakesFrameStats_get_geosets(self_: *mut whiteout_FlakesFrameStats) -> i32;
+        pub fn whiteout_flakes_FlakesFrameStats_set_geosets(self_: *mut whiteout_FlakesFrameStats, value: i32);
+        pub fn whiteout_flakes_FlakesFrameStats_get_textures(self_: *mut whiteout_FlakesFrameStats) -> i32;
+        pub fn whiteout_flakes_FlakesFrameStats_set_textures(self_: *mut whiteout_FlakesFrameStats, value: i32);
+        pub fn whiteout_flakes_FlakesFrameStats_get_nodes(self_: *mut whiteout_FlakesFrameStats) -> i32;
+        pub fn whiteout_flakes_FlakesFrameStats_set_nodes(self_: *mut whiteout_FlakesFrameStats, value: i32);
+        pub fn whiteout_flakes_FlakesFrameStats_get_particles(self_: *mut whiteout_FlakesFrameStats) -> i32;
+        pub fn whiteout_flakes_FlakesFrameStats_set_particles(self_: *mut whiteout_FlakesFrameStats, value: i32);
+        pub fn whiteout_flakes_FlakesFrameStats_get_segments(self_: *mut whiteout_FlakesFrameStats) -> i32;
+        pub fn whiteout_flakes_FlakesFrameStats_set_segments(self_: *mut whiteout_FlakesFrameStats, value: i32);
+        pub fn whiteout_flakes_FlakesFrameStats_get_cornParticles(self_: *mut whiteout_FlakesFrameStats) -> i32;
+        pub fn whiteout_flakes_FlakesFrameStats_set_cornParticles(self_: *mut whiteout_FlakesFrameStats, value: i32);
         // CameraPreset
         pub fn whiteout_flakes_FlakesCameraPreset_new() -> *mut whiteout_FlakesCameraPreset;
         pub fn whiteout_flakes_FlakesCameraPreset_delete(self_: *mut whiteout_FlakesCameraPreset);
-        pub fn whiteout_flakes_FlakesCameraPreset_get_name(
-            self_: *mut whiteout_FlakesCameraPreset,
-        ) -> RawCString;
-        pub fn whiteout_flakes_FlakesCameraPreset_set_name(
-            self_: *mut whiteout_FlakesCameraPreset,
-            value: *const core::ffi::c_char,
-        );
-        pub fn whiteout_flakes_FlakesCameraPreset_get_isLive(
-            self_: *mut whiteout_FlakesCameraPreset,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesCameraPreset_set_isLive(
-            self_: *mut whiteout_FlakesCameraPreset,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesCameraPreset_get_fovDiagonal(
-            self_: *mut whiteout_FlakesCameraPreset,
-        ) -> f32;
-        pub fn whiteout_flakes_FlakesCameraPreset_set_fovDiagonal(
-            self_: *mut whiteout_FlakesCameraPreset,
-            value: f32,
-        );
-        pub fn whiteout_flakes_FlakesCameraPreset_get_zNear(
-            self_: *mut whiteout_FlakesCameraPreset,
-        ) -> f32;
-        pub fn whiteout_flakes_FlakesCameraPreset_set_zNear(
-            self_: *mut whiteout_FlakesCameraPreset,
-            value: f32,
-        );
-        pub fn whiteout_flakes_FlakesCameraPreset_get_zFar(
-            self_: *mut whiteout_FlakesCameraPreset,
-        ) -> f32;
-        pub fn whiteout_flakes_FlakesCameraPreset_set_zFar(
-            self_: *mut whiteout_FlakesCameraPreset,
-            value: f32,
-        );
-        pub fn whiteout_flakes_FlakesCameraPreset_get_staticRoll(
-            self_: *mut whiteout_FlakesCameraPreset,
-        ) -> f32;
-        pub fn whiteout_flakes_FlakesCameraPreset_set_staticRoll(
-            self_: *mut whiteout_FlakesCameraPreset,
-            value: f32,
-        );
-        pub fn whiteout_flakes_FlakesCameraPreset_get_pitch(
-            self_: *mut whiteout_FlakesCameraPreset,
-        ) -> f32;
-        pub fn whiteout_flakes_FlakesCameraPreset_set_pitch(
-            self_: *mut whiteout_FlakesCameraPreset,
-            value: f32,
-        );
-        pub fn whiteout_flakes_FlakesCameraPreset_get_yaw(
-            self_: *mut whiteout_FlakesCameraPreset,
-        ) -> f32;
-        pub fn whiteout_flakes_FlakesCameraPreset_set_yaw(
-            self_: *mut whiteout_FlakesCameraPreset,
-            value: f32,
-        );
-        pub fn whiteout_flakes_FlakesCameraPreset_get_distance(
-            self_: *mut whiteout_FlakesCameraPreset,
-        ) -> f32;
-        pub fn whiteout_flakes_FlakesCameraPreset_set_distance(
-            self_: *mut whiteout_FlakesCameraPreset,
-            value: f32,
-        );
+        pub fn whiteout_flakes_FlakesCameraPreset_get_name(self_: *mut whiteout_FlakesCameraPreset) -> RawCString;
+        pub fn whiteout_flakes_FlakesCameraPreset_set_name(self_: *mut whiteout_FlakesCameraPreset, value: *const core::ffi::c_char);
+        pub fn whiteout_flakes_FlakesCameraPreset_get_isLive(self_: *mut whiteout_FlakesCameraPreset) -> i32;
+        pub fn whiteout_flakes_FlakesCameraPreset_set_isLive(self_: *mut whiteout_FlakesCameraPreset, value: i32);
+        pub fn whiteout_flakes_FlakesCameraPreset_get_fovDiagonal(self_: *mut whiteout_FlakesCameraPreset) -> f32;
+        pub fn whiteout_flakes_FlakesCameraPreset_set_fovDiagonal(self_: *mut whiteout_FlakesCameraPreset, value: f32);
+        pub fn whiteout_flakes_FlakesCameraPreset_get_zNear(self_: *mut whiteout_FlakesCameraPreset) -> f32;
+        pub fn whiteout_flakes_FlakesCameraPreset_set_zNear(self_: *mut whiteout_FlakesCameraPreset, value: f32);
+        pub fn whiteout_flakes_FlakesCameraPreset_get_zFar(self_: *mut whiteout_FlakesCameraPreset) -> f32;
+        pub fn whiteout_flakes_FlakesCameraPreset_set_zFar(self_: *mut whiteout_FlakesCameraPreset, value: f32);
+        pub fn whiteout_flakes_FlakesCameraPreset_get_staticRoll(self_: *mut whiteout_FlakesCameraPreset) -> f32;
+        pub fn whiteout_flakes_FlakesCameraPreset_set_staticRoll(self_: *mut whiteout_FlakesCameraPreset, value: f32);
+        pub fn whiteout_flakes_FlakesCameraPreset_get_pitch(self_: *mut whiteout_FlakesCameraPreset) -> f32;
+        pub fn whiteout_flakes_FlakesCameraPreset_set_pitch(self_: *mut whiteout_FlakesCameraPreset, value: f32);
+        pub fn whiteout_flakes_FlakesCameraPreset_get_yaw(self_: *mut whiteout_FlakesCameraPreset) -> f32;
+        pub fn whiteout_flakes_FlakesCameraPreset_set_yaw(self_: *mut whiteout_FlakesCameraPreset, value: f32);
+        pub fn whiteout_flakes_FlakesCameraPreset_get_distance(self_: *mut whiteout_FlakesCameraPreset) -> f32;
+        pub fn whiteout_flakes_FlakesCameraPreset_set_distance(self_: *mut whiteout_FlakesCameraPreset, value: f32);
         // SequenceInfo
         pub fn whiteout_flakes_FlakesSequenceInfo_new() -> *mut whiteout_FlakesSequenceInfo;
         pub fn whiteout_flakes_FlakesSequenceInfo_delete(self_: *mut whiteout_FlakesSequenceInfo);
-        pub fn whiteout_flakes_FlakesSequenceInfo_get_name(
-            self_: *mut whiteout_FlakesSequenceInfo,
-        ) -> RawCString;
-        pub fn whiteout_flakes_FlakesSequenceInfo_set_name(
-            self_: *mut whiteout_FlakesSequenceInfo,
-            value: *const core::ffi::c_char,
-        );
-        pub fn whiteout_flakes_FlakesSequenceInfo_get_startMs(
-            self_: *mut whiteout_FlakesSequenceInfo,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesSequenceInfo_set_startMs(
-            self_: *mut whiteout_FlakesSequenceInfo,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesSequenceInfo_get_endMs(
-            self_: *mut whiteout_FlakesSequenceInfo,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesSequenceInfo_set_endMs(
-            self_: *mut whiteout_FlakesSequenceInfo,
-            value: i32,
-        );
-        pub fn whiteout_flakes_FlakesSequenceInfo_get_moveSpeed(
-            self_: *mut whiteout_FlakesSequenceInfo,
-        ) -> f32;
-        pub fn whiteout_flakes_FlakesSequenceInfo_set_moveSpeed(
-            self_: *mut whiteout_FlakesSequenceInfo,
-            value: f32,
-        );
-        pub fn whiteout_flakes_FlakesSequenceInfo_get_rarity(
-            self_: *mut whiteout_FlakesSequenceInfo,
-        ) -> f32;
-        pub fn whiteout_flakes_FlakesSequenceInfo_set_rarity(
-            self_: *mut whiteout_FlakesSequenceInfo,
-            value: f32,
-        );
-        pub fn whiteout_flakes_FlakesSequenceInfo_get_nonLooping(
-            self_: *mut whiteout_FlakesSequenceInfo,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesSequenceInfo_set_nonLooping(
-            self_: *mut whiteout_FlakesSequenceInfo,
-            value: i32,
-        );
+        pub fn whiteout_flakes_FlakesSequenceInfo_get_name(self_: *mut whiteout_FlakesSequenceInfo) -> RawCString;
+        pub fn whiteout_flakes_FlakesSequenceInfo_set_name(self_: *mut whiteout_FlakesSequenceInfo, value: *const core::ffi::c_char);
+        pub fn whiteout_flakes_FlakesSequenceInfo_get_startMs(self_: *mut whiteout_FlakesSequenceInfo) -> i32;
+        pub fn whiteout_flakes_FlakesSequenceInfo_set_startMs(self_: *mut whiteout_FlakesSequenceInfo, value: i32);
+        pub fn whiteout_flakes_FlakesSequenceInfo_get_endMs(self_: *mut whiteout_FlakesSequenceInfo) -> i32;
+        pub fn whiteout_flakes_FlakesSequenceInfo_set_endMs(self_: *mut whiteout_FlakesSequenceInfo, value: i32);
+        pub fn whiteout_flakes_FlakesSequenceInfo_get_moveSpeed(self_: *mut whiteout_FlakesSequenceInfo) -> f32;
+        pub fn whiteout_flakes_FlakesSequenceInfo_set_moveSpeed(self_: *mut whiteout_FlakesSequenceInfo, value: f32);
+        pub fn whiteout_flakes_FlakesSequenceInfo_get_rarity(self_: *mut whiteout_FlakesSequenceInfo) -> f32;
+        pub fn whiteout_flakes_FlakesSequenceInfo_set_rarity(self_: *mut whiteout_FlakesSequenceInfo, value: f32);
+        pub fn whiteout_flakes_FlakesSequenceInfo_get_nonLooping(self_: *mut whiteout_FlakesSequenceInfo) -> i32;
+        pub fn whiteout_flakes_FlakesSequenceInfo_set_nonLooping(self_: *mut whiteout_FlakesSequenceInfo, value: i32);
         // PipelineView
         pub fn whiteout_flakes_FlakesPipelineView_delete(self_: *mut whiteout_FlakesPipelineView);
-        pub fn whiteout_flakes_FlakesPipelineView_InitDevice(
-            self_: *mut whiteout_FlakesPipelineView,
-            arg: i32,
-        );
-        pub fn whiteout_flakes_FlakesPipelineView_IsDeviceReady(
-            self_: *mut whiteout_FlakesPipelineView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesPipelineView_CreateOffscreenTarget(
-            self_: *mut whiteout_FlakesPipelineView,
-            width: i32,
-            height: i32,
-        ) -> u32;
-        pub fn whiteout_flakes_FlakesPipelineView_DestroyTarget(
-            self_: *mut whiteout_FlakesPipelineView,
-            arg: u32,
-        );
-        pub fn whiteout_flakes_FlakesPipelineView_SetPrimaryTarget(
-            self_: *mut whiteout_FlakesPipelineView,
-            arg: u32,
-        );
-        pub fn whiteout_flakes_FlakesPipelineView_ResizePrimaryTarget(
-            self_: *mut whiteout_FlakesPipelineView,
-            width: i32,
-            height: i32,
-        );
-        pub fn whiteout_flakes_FlakesPipelineView_RenderFrame(
-            self_: *mut whiteout_FlakesPipelineView,
-            t: u32,
-        );
-        pub fn whiteout_flakes_FlakesPipelineView_RenderViewport(
-            self_: *mut whiteout_FlakesPipelineView,
-            t: u32,
-            camera: u32,
-        );
-        pub fn whiteout_flakes_FlakesPipelineView_Present(
-            self_: *mut whiteout_FlakesPipelineView,
-            t: u32,
-        );
+        pub fn whiteout_flakes_FlakesPipelineView_InitDevice(self_: *mut whiteout_FlakesPipelineView, arg: i32);
+        pub fn whiteout_flakes_FlakesPipelineView_IsDeviceReady(self_: *mut whiteout_FlakesPipelineView) -> i32;
+        pub fn whiteout_flakes_FlakesPipelineView_CreateOffscreenTarget(self_: *mut whiteout_FlakesPipelineView, width: i32, height: i32) -> u32;
+        pub fn whiteout_flakes_FlakesPipelineView_DestroyTarget(self_: *mut whiteout_FlakesPipelineView, arg: u32);
+        pub fn whiteout_flakes_FlakesPipelineView_SetPrimaryTarget(self_: *mut whiteout_FlakesPipelineView, arg: u32);
+        pub fn whiteout_flakes_FlakesPipelineView_ResizePrimaryTarget(self_: *mut whiteout_FlakesPipelineView, width: i32, height: i32);
+        pub fn whiteout_flakes_FlakesPipelineView_RenderFrame(self_: *mut whiteout_FlakesPipelineView, t: u32);
+        pub fn whiteout_flakes_FlakesPipelineView_RenderViewport(self_: *mut whiteout_FlakesPipelineView, t: u32, camera: u32);
+        pub fn whiteout_flakes_FlakesPipelineView_Present(self_: *mut whiteout_FlakesPipelineView, t: u32);
         pub fn whiteout_flakes_FlakesPipelineView_Shutdown(self_: *mut whiteout_FlakesPipelineView);
-        pub fn whiteout_flakes_FlakesPipelineView_FrameStats(
-            self_: *mut whiteout_FlakesPipelineView,
-        ) -> *mut whiteout_FlakesFrameStats;
-        pub fn whiteout_flakes_FlakesPipelineView_LiveGpuBytes(
-            self_: *mut whiteout_FlakesPipelineView,
-        ) -> u64;
+        pub fn whiteout_flakes_FlakesPipelineView_FrameStats(self_: *mut whiteout_FlakesPipelineView) -> *mut whiteout_FlakesFrameStats;
+        pub fn whiteout_flakes_FlakesPipelineView_LiveGpuBytes(self_: *mut whiteout_FlakesPipelineView) -> u64;
         // SceneView
         pub fn whiteout_flakes_FlakesSceneView_delete(self_: *mut whiteout_FlakesSceneView);
-        pub fn whiteout_flakes_FlakesSceneView_Product(self_: *mut whiteout_FlakesSceneView)
-            -> i32;
-        pub fn whiteout_flakes_FlakesSceneView_SetProduct(
-            self_: *mut whiteout_FlakesSceneView,
-            arg: i32,
-        );
-        pub fn whiteout_flakes_FlakesSceneView_AnimationTimeMs(
-            self_: *mut whiteout_FlakesSceneView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesSceneView_SetAnimationTimeMs(
-            self_: *mut whiteout_FlakesSceneView,
-            arg: i32,
-        );
-        pub fn whiteout_flakes_FlakesSceneView_Update(
-            self_: *mut whiteout_FlakesSceneView,
-            dt: f32,
-        );
-        pub fn whiteout_flakes_FlakesSceneView_SetCascInstallPath(
-            self_: *mut whiteout_FlakesSceneView,
-            root: *const core::ffi::c_char,
-        );
-        pub fn whiteout_flakes_FlakesSceneView_SetHdMode(
-            self_: *mut whiteout_FlakesSceneView,
-            enabled: i32,
-        );
+        pub fn whiteout_flakes_FlakesSceneView_Product(self_: *mut whiteout_FlakesSceneView) -> i32;
+        pub fn whiteout_flakes_FlakesSceneView_SetProduct(self_: *mut whiteout_FlakesSceneView, arg: i32);
+        pub fn whiteout_flakes_FlakesSceneView_AnimationTimeMs(self_: *mut whiteout_FlakesSceneView) -> i32;
+        pub fn whiteout_flakes_FlakesSceneView_SetAnimationTimeMs(self_: *mut whiteout_FlakesSceneView, arg: i32);
+        pub fn whiteout_flakes_FlakesSceneView_Update(self_: *mut whiteout_FlakesSceneView, dt: f32);
+        pub fn whiteout_flakes_FlakesSceneView_SetCascInstallPath(self_: *mut whiteout_FlakesSceneView, root: *const core::ffi::c_char);
+        pub fn whiteout_flakes_FlakesSceneView_SetHdMode(self_: *mut whiteout_FlakesSceneView, enabled: i32);
         // CameraView
         pub fn whiteout_flakes_FlakesCameraView_delete(self_: *mut whiteout_FlakesCameraView);
         pub fn whiteout_flakes_FlakesCameraView_Reset(self_: *mut whiteout_FlakesCameraView);
-        pub fn whiteout_flakes_FlakesCameraView_SetPitch(
-            self_: *mut whiteout_FlakesCameraView,
-            arg: f32,
-        );
-        pub fn whiteout_flakes_FlakesCameraView_SetYaw(
-            self_: *mut whiteout_FlakesCameraView,
-            arg: f32,
-        );
-        pub fn whiteout_flakes_FlakesCameraView_SetDistance(
-            self_: *mut whiteout_FlakesCameraView,
-            arg: f32,
-        );
-        pub fn whiteout_flakes_FlakesCameraView_SetTarget(
-            self_: *mut whiteout_FlakesCameraView,
-            x: f32,
-            y: f32,
-            z: f32,
-        );
-        pub fn whiteout_flakes_FlakesCameraView_Rotate(
-            self_: *mut whiteout_FlakesCameraView,
-            dx: i32,
-            dy: i32,
-        );
-        pub fn whiteout_flakes_FlakesCameraView_Pan(
-            self_: *mut whiteout_FlakesCameraView,
-            dx: i32,
-            dy: i32,
-        );
-        pub fn whiteout_flakes_FlakesCameraView_Zoom(
-            self_: *mut whiteout_FlakesCameraView,
-            wheel_delta: i32,
-        );
-        pub fn whiteout_flakes_FlakesCameraView_ZoomSmooth(
-            self_: *mut whiteout_FlakesCameraView,
-            factor: f32,
-        );
-        pub fn whiteout_flakes_FlakesCameraView_SetOrbitalMode(
-            self_: *mut whiteout_FlakesCameraView,
-        );
-        pub fn whiteout_flakes_FlakesCameraView_SetFovDiagonal(
-            self_: *mut whiteout_FlakesCameraView,
-            arg: f32,
-        );
-        pub fn whiteout_flakes_FlakesCameraView_SetClip(
-            self_: *mut whiteout_FlakesCameraView,
-            nz: f32,
-            fz: f32,
-        );
+        pub fn whiteout_flakes_FlakesCameraView_SetPitch(self_: *mut whiteout_FlakesCameraView, arg: f32);
+        pub fn whiteout_flakes_FlakesCameraView_SetYaw(self_: *mut whiteout_FlakesCameraView, arg: f32);
+        pub fn whiteout_flakes_FlakesCameraView_SetDistance(self_: *mut whiteout_FlakesCameraView, arg: f32);
+        pub fn whiteout_flakes_FlakesCameraView_SetTarget(self_: *mut whiteout_FlakesCameraView, x: f32, y: f32, z: f32);
+        pub fn whiteout_flakes_FlakesCameraView_Rotate(self_: *mut whiteout_FlakesCameraView, dx: i32, dy: i32);
+        pub fn whiteout_flakes_FlakesCameraView_Pan(self_: *mut whiteout_FlakesCameraView, dx: i32, dy: i32);
+        pub fn whiteout_flakes_FlakesCameraView_Zoom(self_: *mut whiteout_FlakesCameraView, wheel_delta: i32);
+        pub fn whiteout_flakes_FlakesCameraView_ZoomSmooth(self_: *mut whiteout_FlakesCameraView, factor: f32);
+        pub fn whiteout_flakes_FlakesCameraView_SetOrbitalMode(self_: *mut whiteout_FlakesCameraView);
+        pub fn whiteout_flakes_FlakesCameraView_SetFovDiagonal(self_: *mut whiteout_FlakesCameraView, arg: f32);
+        pub fn whiteout_flakes_FlakesCameraView_SetClip(self_: *mut whiteout_FlakesCameraView, nz: f32, fz: f32);
         pub fn whiteout_flakes_FlakesCameraView_Mode(self_: *mut whiteout_FlakesCameraView) -> i32;
-        pub fn whiteout_flakes_FlakesCameraView_Distance(
-            self_: *mut whiteout_FlakesCameraView,
-        ) -> f32;
+        pub fn whiteout_flakes_FlakesCameraView_Distance(self_: *mut whiteout_FlakesCameraView) -> f32;
         // SettingsView
         pub fn whiteout_flakes_FlakesSettingsView_delete(self_: *mut whiteout_FlakesSettingsView);
-        pub fn whiteout_flakes_FlakesSettingsView_DisplayFlags(
-            self_: *mut whiteout_FlakesSettingsView,
-        ) -> *mut whiteout_FlakesDisplayFlags;
-        pub fn whiteout_flakes_FlakesSettingsView_SetDisplayFlags(
-            self_: *mut whiteout_FlakesSettingsView,
-            arg: *mut whiteout_FlakesDisplayFlags,
-        );
-        pub fn whiteout_flakes_FlakesSettingsView_ConsumeRenderModeDirty(
-            self_: *mut whiteout_FlakesSettingsView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesSettingsView_LightingMode(
-            self_: *mut whiteout_FlakesSettingsView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesSettingsView_SetLightingMode(
-            self_: *mut whiteout_FlakesSettingsView,
-            arg: i32,
-        );
-        pub fn whiteout_flakes_FlakesSettingsView_BackgroundColorRaw(
-            self_: *mut whiteout_FlakesSettingsView,
-        ) -> u32;
-        pub fn whiteout_flakes_FlakesSettingsView_SetBackgroundColor(
-            self_: *mut whiteout_FlakesSettingsView,
-            r: u8,
-            g: u8,
-            b: u8,
-        );
-        pub fn whiteout_flakes_FlakesSettingsView_TonemapExposure(
-            self_: *mut whiteout_FlakesSettingsView,
-        ) -> f32;
-        pub fn whiteout_flakes_FlakesSettingsView_SetTonemapExposure(
-            self_: *mut whiteout_FlakesSettingsView,
-            arg: f32,
-        );
-        pub fn whiteout_flakes_FlakesSettingsView_BloomEnabled(
-            self_: *mut whiteout_FlakesSettingsView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesSettingsView_SetBloomEnabled(
-            self_: *mut whiteout_FlakesSettingsView,
-            arg: i32,
-        );
-        pub fn whiteout_flakes_FlakesSettingsView_IblMode(
-            self_: *mut whiteout_FlakesSettingsView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesSettingsView_SetIblMode(
-            self_: *mut whiteout_FlakesSettingsView,
-            arg: i32,
-        );
-        pub fn whiteout_flakes_FlakesSettingsView_HdDebugMode(
-            self_: *mut whiteout_FlakesSettingsView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesSettingsView_SetHdDebugMode(
-            self_: *mut whiteout_FlakesSettingsView,
-            arg: i32,
-        );
-        pub fn whiteout_flakes_FlakesSettingsView_AoQuality(
-            self_: *mut whiteout_FlakesSettingsView,
-        ) -> u32;
-        pub fn whiteout_flakes_FlakesSettingsView_SetAoQuality(
-            self_: *mut whiteout_FlakesSettingsView,
-            arg: u32,
-        );
-        pub fn whiteout_flakes_FlakesSettingsView_LodOverride(
-            self_: *mut whiteout_FlakesSettingsView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesSettingsView_SetLodOverride(
-            self_: *mut whiteout_FlakesSettingsView,
-            arg: i32,
-        );
-        pub fn whiteout_flakes_FlakesSettingsView_SetRenderMode(
-            self_: *mut whiteout_FlakesSettingsView,
-            arg: i32,
-        );
+        pub fn whiteout_flakes_FlakesSettingsView_DisplayFlags(self_: *mut whiteout_FlakesSettingsView) -> *mut whiteout_FlakesDisplayFlags;
+        pub fn whiteout_flakes_FlakesSettingsView_SetDisplayFlags(self_: *mut whiteout_FlakesSettingsView, arg: *mut whiteout_FlakesDisplayFlags);
+        pub fn whiteout_flakes_FlakesSettingsView_ConsumeRenderModeDirty(self_: *mut whiteout_FlakesSettingsView) -> i32;
+        pub fn whiteout_flakes_FlakesSettingsView_LightingMode(self_: *mut whiteout_FlakesSettingsView) -> i32;
+        pub fn whiteout_flakes_FlakesSettingsView_SetLightingMode(self_: *mut whiteout_FlakesSettingsView, arg: i32);
+        pub fn whiteout_flakes_FlakesSettingsView_BackgroundColorRaw(self_: *mut whiteout_FlakesSettingsView) -> u32;
+        pub fn whiteout_flakes_FlakesSettingsView_SetBackgroundColor(self_: *mut whiteout_FlakesSettingsView, r: u8, g: u8, b: u8);
+        pub fn whiteout_flakes_FlakesSettingsView_TonemapExposure(self_: *mut whiteout_FlakesSettingsView) -> f32;
+        pub fn whiteout_flakes_FlakesSettingsView_SetTonemapExposure(self_: *mut whiteout_FlakesSettingsView, arg: f32);
+        pub fn whiteout_flakes_FlakesSettingsView_BloomEnabled(self_: *mut whiteout_FlakesSettingsView) -> i32;
+        pub fn whiteout_flakes_FlakesSettingsView_SetBloomEnabled(self_: *mut whiteout_FlakesSettingsView, arg: i32);
+        pub fn whiteout_flakes_FlakesSettingsView_IblMode(self_: *mut whiteout_FlakesSettingsView) -> i32;
+        pub fn whiteout_flakes_FlakesSettingsView_SetIblMode(self_: *mut whiteout_FlakesSettingsView, arg: i32);
+        pub fn whiteout_flakes_FlakesSettingsView_HdDebugMode(self_: *mut whiteout_FlakesSettingsView) -> i32;
+        pub fn whiteout_flakes_FlakesSettingsView_SetHdDebugMode(self_: *mut whiteout_FlakesSettingsView, arg: i32);
+        pub fn whiteout_flakes_FlakesSettingsView_AoQuality(self_: *mut whiteout_FlakesSettingsView) -> u32;
+        pub fn whiteout_flakes_FlakesSettingsView_SetAoQuality(self_: *mut whiteout_FlakesSettingsView, arg: u32);
+        pub fn whiteout_flakes_FlakesSettingsView_LodOverride(self_: *mut whiteout_FlakesSettingsView) -> i32;
+        pub fn whiteout_flakes_FlakesSettingsView_SetLodOverride(self_: *mut whiteout_FlakesSettingsView, arg: i32);
+        pub fn whiteout_flakes_FlakesSettingsView_SetRenderMode(self_: *mut whiteout_FlakesSettingsView, arg: i32);
         // LoaderView
         pub fn whiteout_flakes_FlakesLoaderView_delete(self_: *mut whiteout_FlakesLoaderView);
-        pub fn whiteout_flakes_FlakesLoaderView_SpawnUnit(
-            self_: *mut whiteout_FlakesLoaderView,
-            path: *const core::ffi::c_char,
-        ) -> u32;
-        pub fn whiteout_flakes_FlakesLoaderView_SpawnEffect(
-            self_: *mut whiteout_FlakesLoaderView,
-            path: *const core::ffi::c_char,
-        ) -> u32;
-        pub fn whiteout_flakes_FlakesLoaderView_RequestClearAll(
-            self_: *mut whiteout_FlakesLoaderView,
-        );
-        pub fn whiteout_flakes_FlakesLoaderView_Destroy(
-            self_: *mut whiteout_FlakesLoaderView,
-            handle: u32,
-        );
+        pub fn whiteout_flakes_FlakesLoaderView_SpawnUnit(self_: *mut whiteout_FlakesLoaderView, path: *const core::ffi::c_char) -> u32;
+        pub fn whiteout_flakes_FlakesLoaderView_SpawnEffect(self_: *mut whiteout_FlakesLoaderView, path: *const core::ffi::c_char) -> u32;
+        pub fn whiteout_flakes_FlakesLoaderView_RequestClearAll(self_: *mut whiteout_FlakesLoaderView);
+        pub fn whiteout_flakes_FlakesLoaderView_Destroy(self_: *mut whiteout_FlakesLoaderView, handle: u32);
         // AssetsView
         pub fn whiteout_flakes_FlakesAssetsView_delete(self_: *mut whiteout_FlakesAssetsView);
-        pub fn whiteout_flakes_FlakesAssetsView_Stats(
-            self_: *mut whiteout_FlakesAssetsView,
-        ) -> *mut whiteout_FlakesAssetsViewStats;
-        pub fn whiteout_flakes_FlakesAssetsView_PrefetchEventAssets(
-            self_: *mut whiteout_FlakesAssetsView,
-        );
-        pub fn whiteout_flakes_FlakesAssetsView_PrefetchEventAssetsForActor(
-            self_: *mut whiteout_FlakesAssetsView,
-            actor: u32,
-        );
+        pub fn whiteout_flakes_FlakesAssetsView_Stats(self_: *mut whiteout_FlakesAssetsView) -> *mut whiteout_FlakesAssetsViewStats;
+        pub fn whiteout_flakes_FlakesAssetsView_PrefetchEventAssets(self_: *mut whiteout_FlakesAssetsView);
+        pub fn whiteout_flakes_FlakesAssetsView_PrefetchEventAssetsForActor(self_: *mut whiteout_FlakesAssetsView, actor: u32);
         // AssetsViewStats
         pub fn whiteout_flakes_FlakesAssetsViewStats_new() -> *mut whiteout_FlakesAssetsViewStats;
-        pub fn whiteout_flakes_FlakesAssetsViewStats_delete(
-            self_: *mut whiteout_FlakesAssetsViewStats,
-        );
-        pub fn whiteout_flakes_FlakesAssetsViewStats_get_liveSlots(
-            self_: *mut whiteout_FlakesAssetsViewStats,
-        ) -> u64;
-        pub fn whiteout_flakes_FlakesAssetsViewStats_set_liveSlots(
-            self_: *mut whiteout_FlakesAssetsViewStats,
-            value: u64,
-        );
-        pub fn whiteout_flakes_FlakesAssetsViewStats_get_loadedSlots(
-            self_: *mut whiteout_FlakesAssetsViewStats,
-        ) -> u64;
-        pub fn whiteout_flakes_FlakesAssetsViewStats_set_loadedSlots(
-            self_: *mut whiteout_FlakesAssetsViewStats,
-            value: u64,
-        );
-        pub fn whiteout_flakes_FlakesAssetsViewStats_get_pendingNeeds(
-            self_: *mut whiteout_FlakesAssetsViewStats,
-        ) -> u64;
-        pub fn whiteout_flakes_FlakesAssetsViewStats_set_pendingNeeds(
-            self_: *mut whiteout_FlakesAssetsViewStats,
-            value: u64,
-        );
-        pub fn whiteout_flakes_FlakesAssetsViewStats_get_totalAcquires(
-            self_: *mut whiteout_FlakesAssetsViewStats,
-        ) -> u64;
-        pub fn whiteout_flakes_FlakesAssetsViewStats_set_totalAcquires(
-            self_: *mut whiteout_FlakesAssetsViewStats,
-            value: u64,
-        );
-        pub fn whiteout_flakes_FlakesAssetsViewStats_get_totalReleases(
-            self_: *mut whiteout_FlakesAssetsViewStats,
-        ) -> u64;
-        pub fn whiteout_flakes_FlakesAssetsViewStats_set_totalReleases(
-            self_: *mut whiteout_FlakesAssetsViewStats,
-            value: u64,
-        );
-        pub fn whiteout_flakes_FlakesAssetsViewStats_get_totalApplies(
-            self_: *mut whiteout_FlakesAssetsViewStats,
-        ) -> u64;
-        pub fn whiteout_flakes_FlakesAssetsViewStats_set_totalApplies(
-            self_: *mut whiteout_FlakesAssetsViewStats,
-            value: u64,
-        );
-        pub fn whiteout_flakes_FlakesAssetsViewStats_get_totalApplyMisses(
-            self_: *mut whiteout_FlakesAssetsViewStats,
-        ) -> u64;
-        pub fn whiteout_flakes_FlakesAssetsViewStats_set_totalApplyMisses(
-            self_: *mut whiteout_FlakesAssetsViewStats,
-            value: u64,
-        );
+        pub fn whiteout_flakes_FlakesAssetsViewStats_delete(self_: *mut whiteout_FlakesAssetsViewStats);
+        pub fn whiteout_flakes_FlakesAssetsViewStats_get_liveSlots(self_: *mut whiteout_FlakesAssetsViewStats) -> u64;
+        pub fn whiteout_flakes_FlakesAssetsViewStats_set_liveSlots(self_: *mut whiteout_FlakesAssetsViewStats, value: u64);
+        pub fn whiteout_flakes_FlakesAssetsViewStats_get_loadedSlots(self_: *mut whiteout_FlakesAssetsViewStats) -> u64;
+        pub fn whiteout_flakes_FlakesAssetsViewStats_set_loadedSlots(self_: *mut whiteout_FlakesAssetsViewStats, value: u64);
+        pub fn whiteout_flakes_FlakesAssetsViewStats_get_pendingNeeds(self_: *mut whiteout_FlakesAssetsViewStats) -> u64;
+        pub fn whiteout_flakes_FlakesAssetsViewStats_set_pendingNeeds(self_: *mut whiteout_FlakesAssetsViewStats, value: u64);
+        pub fn whiteout_flakes_FlakesAssetsViewStats_get_totalAcquires(self_: *mut whiteout_FlakesAssetsViewStats) -> u64;
+        pub fn whiteout_flakes_FlakesAssetsViewStats_set_totalAcquires(self_: *mut whiteout_FlakesAssetsViewStats, value: u64);
+        pub fn whiteout_flakes_FlakesAssetsViewStats_get_totalReleases(self_: *mut whiteout_FlakesAssetsViewStats) -> u64;
+        pub fn whiteout_flakes_FlakesAssetsViewStats_set_totalReleases(self_: *mut whiteout_FlakesAssetsViewStats, value: u64);
+        pub fn whiteout_flakes_FlakesAssetsViewStats_get_totalApplies(self_: *mut whiteout_FlakesAssetsViewStats) -> u64;
+        pub fn whiteout_flakes_FlakesAssetsViewStats_set_totalApplies(self_: *mut whiteout_FlakesAssetsViewStats, value: u64);
+        pub fn whiteout_flakes_FlakesAssetsViewStats_get_totalApplyMisses(self_: *mut whiteout_FlakesAssetsViewStats) -> u64;
+        pub fn whiteout_flakes_FlakesAssetsViewStats_set_totalApplyMisses(self_: *mut whiteout_FlakesAssetsViewStats, value: u64);
         // DncView
         pub fn whiteout_flakes_FlakesDncView_delete(self_: *mut whiteout_FlakesDncView);
         pub fn whiteout_flakes_FlakesDncView_IsValid(self_: *mut whiteout_FlakesDncView) -> i32;
         pub fn whiteout_flakes_FlakesDncView_TimeOfDay(self_: *mut whiteout_FlakesDncView) -> f32;
-        pub fn whiteout_flakes_FlakesDncView_SetTimeOfDay(
-            self_: *mut whiteout_FlakesDncView,
-            arg: f32,
-        );
+        pub fn whiteout_flakes_FlakesDncView_SetTimeOfDay(self_: *mut whiteout_FlakesDncView, arg: f32);
         pub fn whiteout_flakes_FlakesDncView_TodScale(self_: *mut whiteout_FlakesDncView) -> f32;
-        pub fn whiteout_flakes_FlakesDncView_SetTodScale(
-            self_: *mut whiteout_FlakesDncView,
-            arg: f32,
-        );
-        pub fn whiteout_flakes_FlakesDncView_HoursPerDay(self_: *mut whiteout_FlakesDncView)
-            -> f32;
-        pub fn whiteout_flakes_FlakesDncView_SetUnitMdl(
-            self_: *mut whiteout_FlakesDncView,
-            arg: *const core::ffi::c_char,
-        );
+        pub fn whiteout_flakes_FlakesDncView_SetTodScale(self_: *mut whiteout_FlakesDncView, arg: f32);
+        pub fn whiteout_flakes_FlakesDncView_HoursPerDay(self_: *mut whiteout_FlakesDncView) -> f32;
+        pub fn whiteout_flakes_FlakesDncView_SetUnitMdl(self_: *mut whiteout_FlakesDncView, arg: *const core::ffi::c_char);
         pub fn whiteout_flakes_FlakesDncView_Advance(self_: *mut whiteout_FlakesDncView, dt: f32);
         // ShadowView
         pub fn whiteout_flakes_FlakesShadowView_delete(self_: *mut whiteout_FlakesShadowView);
-        pub fn whiteout_flakes_FlakesShadowView_IsValid(
-            self_: *mut whiteout_FlakesShadowView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesShadowView_IsEnabled(
-            self_: *mut whiteout_FlakesShadowView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesShadowView_SetEnabled(
-            self_: *mut whiteout_FlakesShadowView,
-            on: i32,
-        );
-        pub fn whiteout_flakes_FlakesShadowView_SetParams(
-            self_: *mut whiteout_FlakesShadowView,
-            arg: *mut whiteout_FlakesShadowParams,
-        );
+        pub fn whiteout_flakes_FlakesShadowView_IsValid(self_: *mut whiteout_FlakesShadowView) -> i32;
+        pub fn whiteout_flakes_FlakesShadowView_IsEnabled(self_: *mut whiteout_FlakesShadowView) -> i32;
+        pub fn whiteout_flakes_FlakesShadowView_SetEnabled(self_: *mut whiteout_FlakesShadowView, on: i32);
+        pub fn whiteout_flakes_FlakesShadowView_SetParams(self_: *mut whiteout_FlakesShadowView, arg: *mut whiteout_FlakesShadowParams);
         // SplatView
         pub fn whiteout_flakes_FlakesSplatView_delete(self_: *mut whiteout_FlakesSplatView);
         pub fn whiteout_flakes_FlakesSplatView_Clear(self_: *mut whiteout_FlakesSplatView);
         // ReplaceablesView
-        pub fn whiteout_flakes_FlakesReplaceablesView_delete(
-            self_: *mut whiteout_FlakesReplaceablesView,
-        );
-        pub fn whiteout_flakes_FlakesReplaceablesView_ConsumeDirty(
-            self_: *mut whiteout_FlakesReplaceablesView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesReplaceablesView_SetTileset(
-            self_: *mut whiteout_FlakesReplaceablesView,
-            arg: i32,
-        );
+        pub fn whiteout_flakes_FlakesReplaceablesView_delete(self_: *mut whiteout_FlakesReplaceablesView);
+        pub fn whiteout_flakes_FlakesReplaceablesView_ConsumeDirty(self_: *mut whiteout_FlakesReplaceablesView) -> i32;
+        pub fn whiteout_flakes_FlakesReplaceablesView_SetTileset(self_: *mut whiteout_FlakesReplaceablesView, arg: i32);
         // PlaybackView
         pub fn whiteout_flakes_FlakesPlaybackView_delete(self_: *mut whiteout_FlakesPlaybackView);
-        pub fn whiteout_flakes_FlakesPlaybackView_State(
-            self_: *mut whiteout_FlakesPlaybackView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesPlaybackView_SetState(
-            self_: *mut whiteout_FlakesPlaybackView,
-            arg: i32,
-        );
+        pub fn whiteout_flakes_FlakesPlaybackView_State(self_: *mut whiteout_FlakesPlaybackView) -> i32;
+        pub fn whiteout_flakes_FlakesPlaybackView_SetState(self_: *mut whiteout_FlakesPlaybackView, arg: i32);
         pub fn whiteout_flakes_FlakesPlaybackView_Play(self_: *mut whiteout_FlakesPlaybackView);
         pub fn whiteout_flakes_FlakesPlaybackView_Pause(self_: *mut whiteout_FlakesPlaybackView);
         pub fn whiteout_flakes_FlakesPlaybackView_Stop(self_: *mut whiteout_FlakesPlaybackView);
         pub fn whiteout_flakes_FlakesPlaybackView_Restart(self_: *mut whiteout_FlakesPlaybackView);
-        pub fn whiteout_flakes_FlakesPlaybackView_ResyncEffects(
-            self_: *mut whiteout_FlakesPlaybackView,
-        );
-        pub fn whiteout_flakes_FlakesPlaybackView_IsPaused(
-            self_: *mut whiteout_FlakesPlaybackView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesPlaybackView_TimeScale(
-            self_: *mut whiteout_FlakesPlaybackView,
-        ) -> f32;
-        pub fn whiteout_flakes_FlakesPlaybackView_SetTimeScale(
-            self_: *mut whiteout_FlakesPlaybackView,
-            arg: f32,
-        );
+        pub fn whiteout_flakes_FlakesPlaybackView_ResyncEffects(self_: *mut whiteout_FlakesPlaybackView);
+        pub fn whiteout_flakes_FlakesPlaybackView_IsPaused(self_: *mut whiteout_FlakesPlaybackView) -> i32;
+        pub fn whiteout_flakes_FlakesPlaybackView_TimeScale(self_: *mut whiteout_FlakesPlaybackView) -> f32;
+        pub fn whiteout_flakes_FlakesPlaybackView_SetTimeScale(self_: *mut whiteout_FlakesPlaybackView, arg: f32);
         // ActorView
         pub fn whiteout_flakes_FlakesActorView_delete(self_: *mut whiteout_FlakesActorView);
-        pub fn whiteout_flakes_FlakesActorView_IsValid(self_: *mut whiteout_FlakesActorView)
-            -> i32;
+        pub fn whiteout_flakes_FlakesActorView_IsValid(self_: *mut whiteout_FlakesActorView) -> i32;
         pub fn whiteout_flakes_FlakesActorView_Handle(self_: *mut whiteout_FlakesActorView) -> u32;
         pub fn whiteout_flakes_FlakesActorView_Role(self_: *mut whiteout_FlakesActorView) -> i32;
-        pub fn whiteout_flakes_FlakesActorView_PlaybackSpeed(
-            self_: *mut whiteout_FlakesActorView,
-        ) -> f32;
-        pub fn whiteout_flakes_FlakesActorView_SetPlaybackSpeed(
-            self_: *mut whiteout_FlakesActorView,
-            arg: f32,
-        );
-        pub fn whiteout_flakes_FlakesActorView_IgnoreNonLooping(
-            self_: *mut whiteout_FlakesActorView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesActorView_SetIgnoreNonLooping(
-            self_: *mut whiteout_FlakesActorView,
-            arg: i32,
-        );
-        pub fn whiteout_flakes_FlakesActorView_TeamColor(
-            self_: *mut whiteout_FlakesActorView,
-        ) -> u32;
-        pub fn whiteout_flakes_FlakesActorView_SetTeamColor(
-            self_: *mut whiteout_FlakesActorView,
-            r: u8,
-            g: u8,
-            b: u8,
-        );
-        pub fn whiteout_flakes_FlakesActorView_SetRoleExternal(
-            self_: *mut whiteout_FlakesActorView,
-        );
-        pub fn whiteout_flakes_FlakesActorView_Sequences(
-            self_: *mut whiteout_FlakesActorView,
-        ) -> *mut whiteout_SequenceInfoList;
-        pub fn whiteout_flakes_FlakesActorView_ActiveSequenceIndex(
-            self_: *mut whiteout_FlakesActorView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesActorView_SetActiveSequence(
-            self_: *mut whiteout_FlakesActorView,
-            arg: i32,
-        );
-        pub fn whiteout_flakes_FlakesActorView_AnimationTimeMs(
-            self_: *mut whiteout_FlakesActorView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesActorView_SetAnimationTimeMs(
-            self_: *mut whiteout_FlakesActorView,
-            arg: i32,
-        );
-        pub fn whiteout_flakes_FlakesActorView_HasAnimationSource(
-            self_: *mut whiteout_FlakesActorView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesActorView_EvaluateAndApply(
-            self_: *mut whiteout_FlakesActorView,
-        );
-        pub fn whiteout_flakes_FlakesActorView_EvaluateAt(
-            self_: *mut whiteout_FlakesActorView,
-            time_ms: i32,
-        );
-        pub fn whiteout_flakes_FlakesActorView_GeosetCount(
-            self_: *mut whiteout_FlakesActorView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesActorView_MaterialCount(
-            self_: *mut whiteout_FlakesActorView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesActorView_CollisionShapeCount(
-            self_: *mut whiteout_FlakesActorView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesActorView_CameraPresets(
-            self_: *mut whiteout_FlakesActorView,
-        ) -> *mut whiteout_CameraPresetList;
-        pub fn whiteout_flakes_FlakesActorView_PreferredRenderMode(
-            self_: *mut whiteout_FlakesActorView,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesActorView_ChildModelPaths(
-            self_: *mut whiteout_FlakesActorView,
-        ) -> *mut whiteout_StringList;
+        pub fn whiteout_flakes_FlakesActorView_PlaybackSpeed(self_: *mut whiteout_FlakesActorView) -> f32;
+        pub fn whiteout_flakes_FlakesActorView_SetPlaybackSpeed(self_: *mut whiteout_FlakesActorView, arg: f32);
+        pub fn whiteout_flakes_FlakesActorView_IgnoreNonLooping(self_: *mut whiteout_FlakesActorView) -> i32;
+        pub fn whiteout_flakes_FlakesActorView_SetIgnoreNonLooping(self_: *mut whiteout_FlakesActorView, arg: i32);
+        pub fn whiteout_flakes_FlakesActorView_TeamColor(self_: *mut whiteout_FlakesActorView) -> u32;
+        pub fn whiteout_flakes_FlakesActorView_SetTeamColor(self_: *mut whiteout_FlakesActorView, r: u8, g: u8, b: u8);
+        pub fn whiteout_flakes_FlakesActorView_SetRoleExternal(self_: *mut whiteout_FlakesActorView);
+        pub fn whiteout_flakes_FlakesActorView_Sequences(self_: *mut whiteout_FlakesActorView) -> *mut whiteout_SequenceInfoList;
+        pub fn whiteout_flakes_FlakesActorView_ActiveSequenceIndex(self_: *mut whiteout_FlakesActorView) -> i32;
+        pub fn whiteout_flakes_FlakesActorView_SetActiveSequence(self_: *mut whiteout_FlakesActorView, arg: i32);
+        pub fn whiteout_flakes_FlakesActorView_AnimationTimeMs(self_: *mut whiteout_FlakesActorView) -> i32;
+        pub fn whiteout_flakes_FlakesActorView_SetAnimationTimeMs(self_: *mut whiteout_FlakesActorView, arg: i32);
+        pub fn whiteout_flakes_FlakesActorView_HasAnimationSource(self_: *mut whiteout_FlakesActorView) -> i32;
+        pub fn whiteout_flakes_FlakesActorView_Play(self_: *mut whiteout_FlakesActorView, sequence: i32, weight: f32, speed: f32, loop: i32, blend_in_ms: i32, blend_out_ms: i32) -> u32;
+        pub fn whiteout_flakes_FlakesActorView_StopPlay(self_: *mut whiteout_FlakesActorView, play_handle: u32, blend_out_ms: i32);
+        pub fn whiteout_flakes_FlakesActorView_StopAllPlays(self_: *mut whiteout_FlakesActorView, blend_out_ms: i32);
+        pub fn whiteout_flakes_FlakesActorView_PlayCount(self_: *mut whiteout_FlakesActorView) -> i32;
+        pub fn whiteout_flakes_FlakesActorView_EvaluateAndApply(self_: *mut whiteout_FlakesActorView);
+        pub fn whiteout_flakes_FlakesActorView_EvaluateAt(self_: *mut whiteout_FlakesActorView, time_ms: i32);
+        pub fn whiteout_flakes_FlakesActorView_GeosetCount(self_: *mut whiteout_FlakesActorView) -> i32;
+        pub fn whiteout_flakes_FlakesActorView_MaterialCount(self_: *mut whiteout_FlakesActorView) -> i32;
+        pub fn whiteout_flakes_FlakesActorView_CollisionShapeCount(self_: *mut whiteout_FlakesActorView) -> i32;
+        pub fn whiteout_flakes_FlakesActorView_CameraPresets(self_: *mut whiteout_FlakesActorView) -> *mut whiteout_CameraPresetList;
+        pub fn whiteout_flakes_FlakesActorView_PreferredRenderMode(self_: *mut whiteout_FlakesActorView) -> i32;
+        pub fn whiteout_flakes_FlakesActorView_ChildModelPaths(self_: *mut whiteout_FlakesActorView) -> *mut whiteout_StringList;
         // Renderer
         pub fn whiteout_flakes_FlakesRenderer_new() -> *mut whiteout_FlakesRenderer;
         pub fn whiteout_flakes_FlakesRenderer_delete(self_: *mut whiteout_FlakesRenderer);
-        pub fn whiteout_flakes_FlakesRenderer_Pipeline(
-            self_: *mut whiteout_FlakesRenderer,
-        ) -> *mut whiteout_FlakesPipelineView;
-        pub fn whiteout_flakes_FlakesRenderer_Scene(
-            self_: *mut whiteout_FlakesRenderer,
-        ) -> *mut whiteout_FlakesSceneView;
-        pub fn whiteout_flakes_FlakesRenderer_Camera(
-            self_: *mut whiteout_FlakesRenderer,
-        ) -> *mut whiteout_FlakesCameraView;
-        pub fn whiteout_flakes_FlakesRenderer_CreateCamera(
-            self_: *mut whiteout_FlakesRenderer,
-        ) -> u32;
-        pub fn whiteout_flakes_FlakesRenderer_CameraAt(
-            self_: *mut whiteout_FlakesRenderer,
-            arg: u32,
-        ) -> *mut whiteout_FlakesCameraView;
-        pub fn whiteout_flakes_FlakesRenderer_Settings(
-            self_: *mut whiteout_FlakesRenderer,
-        ) -> *mut whiteout_FlakesSettingsView;
-        pub fn whiteout_flakes_FlakesRenderer_Loader(
-            self_: *mut whiteout_FlakesRenderer,
-        ) -> *mut whiteout_FlakesLoaderView;
-        pub fn whiteout_flakes_FlakesRenderer_Dnc(
-            self_: *mut whiteout_FlakesRenderer,
-        ) -> *mut whiteout_FlakesDncView;
-        pub fn whiteout_flakes_FlakesRenderer_Shadow(
-            self_: *mut whiteout_FlakesRenderer,
-        ) -> *mut whiteout_FlakesShadowView;
-        pub fn whiteout_flakes_FlakesRenderer_Splats(
-            self_: *mut whiteout_FlakesRenderer,
-        ) -> *mut whiteout_FlakesSplatView;
-        pub fn whiteout_flakes_FlakesRenderer_Replaceables(
-            self_: *mut whiteout_FlakesRenderer,
-        ) -> *mut whiteout_FlakesReplaceablesView;
-        pub fn whiteout_flakes_FlakesRenderer_Assets(
-            self_: *mut whiteout_FlakesRenderer,
-        ) -> *mut whiteout_FlakesAssetsView;
-        pub fn whiteout_flakes_FlakesRenderer_Playback(
-            self_: *mut whiteout_FlakesRenderer,
-        ) -> *mut whiteout_FlakesPlaybackView;
-        pub fn whiteout_flakes_FlakesRenderer_Actor(
-            self_: *mut whiteout_FlakesRenderer,
-            h: u32,
-        ) -> *mut whiteout_FlakesActorView;
+        pub fn whiteout_flakes_FlakesRenderer_Pipeline(self_: *mut whiteout_FlakesRenderer) -> *mut whiteout_FlakesPipelineView;
+        pub fn whiteout_flakes_FlakesRenderer_Scene(self_: *mut whiteout_FlakesRenderer) -> *mut whiteout_FlakesSceneView;
+        pub fn whiteout_flakes_FlakesRenderer_Camera(self_: *mut whiteout_FlakesRenderer) -> *mut whiteout_FlakesCameraView;
+        pub fn whiteout_flakes_FlakesRenderer_CreateCamera(self_: *mut whiteout_FlakesRenderer) -> u32;
+        pub fn whiteout_flakes_FlakesRenderer_CameraAt(self_: *mut whiteout_FlakesRenderer, arg: u32) -> *mut whiteout_FlakesCameraView;
+        pub fn whiteout_flakes_FlakesRenderer_Settings(self_: *mut whiteout_FlakesRenderer) -> *mut whiteout_FlakesSettingsView;
+        pub fn whiteout_flakes_FlakesRenderer_Loader(self_: *mut whiteout_FlakesRenderer) -> *mut whiteout_FlakesLoaderView;
+        pub fn whiteout_flakes_FlakesRenderer_Dnc(self_: *mut whiteout_FlakesRenderer) -> *mut whiteout_FlakesDncView;
+        pub fn whiteout_flakes_FlakesRenderer_Shadow(self_: *mut whiteout_FlakesRenderer) -> *mut whiteout_FlakesShadowView;
+        pub fn whiteout_flakes_FlakesRenderer_Splats(self_: *mut whiteout_FlakesRenderer) -> *mut whiteout_FlakesSplatView;
+        pub fn whiteout_flakes_FlakesRenderer_Replaceables(self_: *mut whiteout_FlakesRenderer) -> *mut whiteout_FlakesReplaceablesView;
+        pub fn whiteout_flakes_FlakesRenderer_Assets(self_: *mut whiteout_FlakesRenderer) -> *mut whiteout_FlakesAssetsView;
+        pub fn whiteout_flakes_FlakesRenderer_Playback(self_: *mut whiteout_FlakesRenderer) -> *mut whiteout_FlakesPlaybackView;
+        pub fn whiteout_flakes_FlakesRenderer_Actor(self_: *mut whiteout_FlakesRenderer, h: u32) -> *mut whiteout_FlakesActorView;
         pub fn whiteout_flakes_FlakesRenderer_Tick(self_: *mut whiteout_FlakesRenderer, dt: f32);
         // StorageBrowser
         pub fn whiteout_flakes_FlakesStorageBrowser_new() -> *mut whiteout_FlakesStorageBrowser;
-        pub fn whiteout_flakes_FlakesStorageBrowser_delete(
-            self_: *mut whiteout_FlakesStorageBrowser,
-        );
-        pub fn whiteout_flakes_FlakesStorageBrowser_Open(
-            self_: *mut whiteout_FlakesStorageBrowser,
-            root: *const core::ffi::c_char,
-            kind: i32,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesStorageBrowser_OpenAuto(
-            self_: *mut whiteout_FlakesStorageBrowser,
-            path: *const core::ffi::c_char,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesStorageBrowser_Kind(
-            self_: *mut whiteout_FlakesStorageBrowser,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesStorageBrowser_Product(
-            self_: *mut whiteout_FlakesStorageBrowser,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesStorageBrowser_IsOpen(
-            self_: *mut whiteout_FlakesStorageBrowser,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesStorageBrowser_Root(
-            self_: *mut whiteout_FlakesStorageBrowser,
-        ) -> RawCString;
-        pub fn whiteout_flakes_FlakesStorageBrowser_LastError(
-            self_: *mut whiteout_FlakesStorageBrowser,
-        ) -> RawCString;
-        pub fn whiteout_flakes_FlakesStorageBrowser_CurrentPath(
-            self_: *mut whiteout_FlakesStorageBrowser,
-        ) -> RawCString;
-        pub fn whiteout_flakes_FlakesStorageBrowser_Breadcrumb(
-            self_: *mut whiteout_FlakesStorageBrowser,
-        ) -> *mut whiteout_StringList;
-        pub fn whiteout_flakes_FlakesStorageBrowser_Folders(
-            self_: *mut whiteout_FlakesStorageBrowser,
-        ) -> *mut whiteout_StringList;
-        pub fn whiteout_flakes_FlakesStorageBrowser_Files(
-            self_: *mut whiteout_FlakesStorageBrowser,
-        ) -> *mut whiteout_StringList;
-        pub fn whiteout_flakes_FlakesStorageBrowser_SetFilter(
-            self_: *mut whiteout_FlakesStorageBrowser,
-            filter: i32,
-        );
-        pub fn whiteout_flakes_FlakesStorageBrowser_Filter(
-            self_: *mut whiteout_FlakesStorageBrowser,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesStorageBrowser_UnfilteredFileCount(
-            self_: *mut whiteout_FlakesStorageBrowser,
-        ) -> i32;
-        pub fn whiteout_flakes_FlakesStorageBrowser_Descend(
-            self_: *mut whiteout_FlakesStorageBrowser,
-            folder_name: *const core::ffi::c_char,
-        );
-        pub fn whiteout_flakes_FlakesStorageBrowser_Ascend(
-            self_: *mut whiteout_FlakesStorageBrowser,
-        );
-        pub fn whiteout_flakes_FlakesStorageBrowser_NavigateTo(
-            self_: *mut whiteout_FlakesStorageBrowser,
-            display_path: *const core::ffi::c_char,
-        );
-        pub fn whiteout_flakes_FlakesStorageBrowser_ChildPath(
-            self_: *mut whiteout_FlakesStorageBrowser,
-            file_name: *const core::ffi::c_char,
-        ) -> RawCString;
-        pub fn whiteout_flakes_FlakesStorageBrowser_IsEffect(
-            self_: *mut whiteout_FlakesStorageBrowser,
-            file_name: *const core::ffi::c_char,
-        ) -> i32;
+        pub fn whiteout_flakes_FlakesStorageBrowser_delete(self_: *mut whiteout_FlakesStorageBrowser);
+        pub fn whiteout_flakes_FlakesStorageBrowser_Open(self_: *mut whiteout_FlakesStorageBrowser, root: *const core::ffi::c_char, kind: i32) -> i32;
+        pub fn whiteout_flakes_FlakesStorageBrowser_OpenAuto(self_: *mut whiteout_FlakesStorageBrowser, path: *const core::ffi::c_char) -> i32;
+        pub fn whiteout_flakes_FlakesStorageBrowser_Kind(self_: *mut whiteout_FlakesStorageBrowser) -> i32;
+        pub fn whiteout_flakes_FlakesStorageBrowser_Product(self_: *mut whiteout_FlakesStorageBrowser) -> i32;
+        pub fn whiteout_flakes_FlakesStorageBrowser_IsOpen(self_: *mut whiteout_FlakesStorageBrowser) -> i32;
+        pub fn whiteout_flakes_FlakesStorageBrowser_Root(self_: *mut whiteout_FlakesStorageBrowser) -> RawCString;
+        pub fn whiteout_flakes_FlakesStorageBrowser_LastError(self_: *mut whiteout_FlakesStorageBrowser) -> RawCString;
+        pub fn whiteout_flakes_FlakesStorageBrowser_CurrentPath(self_: *mut whiteout_FlakesStorageBrowser) -> RawCString;
+        pub fn whiteout_flakes_FlakesStorageBrowser_Breadcrumb(self_: *mut whiteout_FlakesStorageBrowser) -> *mut whiteout_StringList;
+        pub fn whiteout_flakes_FlakesStorageBrowser_Folders(self_: *mut whiteout_FlakesStorageBrowser) -> *mut whiteout_StringList;
+        pub fn whiteout_flakes_FlakesStorageBrowser_Files(self_: *mut whiteout_FlakesStorageBrowser) -> *mut whiteout_StringList;
+        pub fn whiteout_flakes_FlakesStorageBrowser_SetFilter(self_: *mut whiteout_FlakesStorageBrowser, filter: i32);
+        pub fn whiteout_flakes_FlakesStorageBrowser_Filter(self_: *mut whiteout_FlakesStorageBrowser) -> i32;
+        pub fn whiteout_flakes_FlakesStorageBrowser_UnfilteredFileCount(self_: *mut whiteout_FlakesStorageBrowser) -> i32;
+        pub fn whiteout_flakes_FlakesStorageBrowser_Descend(self_: *mut whiteout_FlakesStorageBrowser, folder_name: *const core::ffi::c_char);
+        pub fn whiteout_flakes_FlakesStorageBrowser_Ascend(self_: *mut whiteout_FlakesStorageBrowser);
+        pub fn whiteout_flakes_FlakesStorageBrowser_NavigateTo(self_: *mut whiteout_FlakesStorageBrowser, display_path: *const core::ffi::c_char);
+        pub fn whiteout_flakes_FlakesStorageBrowser_ChildPath(self_: *mut whiteout_FlakesStorageBrowser, file_name: *const core::ffi::c_char) -> RawCString;
+        pub fn whiteout_flakes_FlakesStorageBrowser_IsEffect(self_: *mut whiteout_FlakesStorageBrowser, file_name: *const core::ffi::c_char) -> i32;
     }
 }

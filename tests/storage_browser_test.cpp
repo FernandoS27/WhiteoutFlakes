@@ -248,3 +248,60 @@ TEST_CASE("A World of Warcraft browse is .m2 and nothing else", "[browser][casc]
     REQUIRE(bytes->size() > 4);
     CHECK(std::string(reinterpret_cast<const char*>(bytes->data()), 4) == "MD21");
 }
+
+// The same walk for StarCraft II / Heroes, which had none. The two roots differ
+// in the way that matters here: WoW's is id-keyed and unbrowsable without a
+// listfile, SC2's carries its own names — so this asks for no keys at all, and
+// a browse that comes back empty is a real failure rather than a missing file.
+TEST_CASE("A StarCraft II browse is .m3 and nothing else", "[browser][casc]") {
+    FileContentProvider probe;
+    // Either install serves: they share ProductId::Sc2 and ship the same format
+    // through the same frame, which is what the profile is named for.
+    std::string root = probe.GamePath(ProductId::Sc2);
+    if (root.empty())
+        root = probe.HotsPath();
+    if (root.empty())
+        SKIP("no StarCraft II or Heroes of the Storm install found");
+
+    StorageBrowser br;
+    std::string error;
+    REQUIRE(br.Open(root, StorageKind::Casc, &error));
+    CHECK(br.Product() == ProductId::Sc2);
+    CHECK(br.AvailableTypes() == BrowseType::M3);
+
+    // No fixed entry point, unlike WoW's `creature/`: SC2 buries its assets
+    // under a mod/base chain whose names moved between versions. Descend the
+    // first branch until files appear — an empty listing would pass a per-file
+    // loop without checking anything.
+    for (int depth = 0; depth < 10 && br.Current().modelFiles.empty(); ++depth) {
+        if (br.Current().folders.empty())
+            break;
+        br.Descend(br.Current().folders.front());
+    }
+    INFO(br.CurrentPath());
+    REQUIRE_FALSE(br.Current().modelFiles.empty());
+    std::printf("[browser] sc2 %s: %zu files\n", br.CurrentPath().c_str(),
+                br.Current().modelFiles.size());
+
+    for (const auto& f : br.Current().modelFiles) {
+        INFO(f);
+        CHECK(BrowseTypeOfFile(f) == BrowseType::M3);
+    }
+
+    // And readable through a provider configured the way StorageExplorer
+    // configures its own, which is what turns a listed name into a loaded model.
+    FileContentProvider reader;
+    reader.SetGame(ProductId::Sc2);
+    reader.SetInstallPath(br.Root());
+
+    const std::string archivePath = br.ChildPath(br.Current().modelFiles.front());
+    INFO(archivePath);
+    REQUIRE_FALSE(archivePath.empty());
+    auto bytes = reader.ReadFile(archivePath);
+    REQUIRE(bytes);
+    REQUIRE(bytes->size() > 4);
+    // "43DM" / "33DM" — MD34 (release) and MD33 (beta) written little-endian.
+    // The same two the loader's LooksLikeM3 admits, spelled the same way.
+    const std::string magic(reinterpret_cast<const char*>(bytes->data()), 4);
+    CHECK((magic == "43DM" || magic == "33DM"));
+}

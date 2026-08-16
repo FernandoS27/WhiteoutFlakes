@@ -97,13 +97,21 @@ inline PaletteLayoutDecision DecidePaletteLayoutAndRewrite(
     PaletteLayoutDecision result;
 
     i32 totalGroupAverages = 0;
+    bool paletteLocal = false;
     for (const auto& sw : skinWeights) {
         totalGroupAverages += (i32)sw.groupAverages.size();
+        paletteLocal |= sw.paletteLocalVertexIndices;
     }
     result.actorPaletteSize = nodeCount + totalGroupAverages;
 
-    if (result.actorPaletteSize > kActorPaletteCap) {
+    if (result.actorPaletteSize > kActorPaletteCap || paletteLocal) {
         // Path B: leave skinWeights untouched.
+        //
+        // Forced, not merely chosen, when a geoset's vertex indices are
+        // already palette-local: Path A rewrites `influences[].boneIdx` to
+        // global slots, and a source that keeps its indices in a baked blob
+        // has no `influences` to rewrite. Taking Path A there would point
+        // every vertex at the wrong bone with nothing to catch it.
         return result;
     }
 

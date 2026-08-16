@@ -47,6 +47,14 @@ struct ClipRef {
     i32 sequence = -1;
     /// @brief Local time within that sequence, in ms.
     i32 timeMs = 0;
+    /// @brief Milliseconds since this clip started, unwrapped and speed-scaled.
+    ///
+    /// Not derivable from @ref timeMs, which has already been folded into the
+    /// sequence's window. StarCraft II loops each *track* by that track's own
+    /// duration rather than by the sequence length, so a sampler handed only
+    /// the windowed time would alias every track whose duration differs from
+    /// its sequence's. Ignored by the MDX and M2 adapters.
+    i32 elapsedMs = 0;
     /// @brief Blend weight against the other clips in the request.
     f32 weight = 1.0f;
     /// @brief Per-clip playback rate. Per-*bone* in WoW and per-*layer* in
@@ -60,6 +68,20 @@ struct ClipRef {
     /// array — a clip drives a subtree, exactly as `UpdateBonesSeq` propagates
     /// a sequence pointer down to bones that do not own one.
     i32 rootNode = -1;
+};
+
+/// @brief What a bare sequence switch should do, answered by the source.
+///
+/// A property of how the format's content was authored, not of the render
+/// profile. MDX and M2 cut — neither format's parsed blend times are consumed
+/// by its engine's model layer — while M3 cross-fades, because StarCraft II's
+/// runtime does and its animations are authored expecting the overlap.
+struct TransitionPolicy {
+    bool crossFade = false;
+    /// @brief Ramp for the incoming play, ms. StarCraft II's default is 150.
+    i32 blendInMs = 150;
+    /// @brief Ramp for the outgoing play, ms.
+    i32 blendOutMs = 150;
 };
 
 /// @brief A host-supplied transform applied to one node after its local TRS is

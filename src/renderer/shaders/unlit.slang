@@ -151,6 +151,98 @@ float4 psUnlitLambert(PSInputLit input) : SV_Target
     return float4(color, 1.0);
 }
 
+// ============================================================================
+// Skinned permutations — the same two pixel shaders, posed by a bone palette.
+//
+// `.m3` carries BLENDWEIGHT and BLENDINDICES inside its own vertex blob (at
+// offsets 12 and 16), already coalesced for the GPU, and stores each index as a
+// slot into that region's bone palette rather than a global bone id. So there
+// is nothing to decode and no second vertex stream: the same slot-0 buffer that
+// supplies position and normal supplies the skinning attributes too, and the
+// palette the renderer binds is the region's own.
+//
+// The palette layout is byte-identical to the one WC3's skinned geosets bind —
+// bls::PackBone's transposed 4x3, three float4 rows per bone, 256 slots. Flat
+// float4 array for the same reason M2's is: nothing to get wrong across four
+// backends.
+// ============================================================================
+
+struct UnlitBoneData
+{
+    float4 rows[768];
+}
+
+ConstantBuffer<UnlitBoneData> bones;
+
+struct VSInputSkinned
+{
+    float3 position    : POSITION;
+    float3 normal      : NORMAL;
+    float4 boneWeights : BLENDWEIGHT;
+    uint4  boneIndices : BLENDINDICES;
+}
+
+// One bone's transform, rebuilt from its three packed rows.
+float4x4 BoneMatrix(uint slot)
+{
+    let b = slot * 3;
+    let r0 = bones.rows[b + 0];
+    let r1 = bones.rows[b + 1];
+    let r2 = bones.rows[b + 2];
+    // Undo the transpose PackBone applied, back to the row-vector form the
+    // rest of this shader multiplies with.
+    return float4x4(
+        float4(r0.x, r1.x, r2.x, 0.0),
+        float4(r0.y, r1.y, r2.y, 0.0),
+        float4(r0.z, r1.z, r2.z, 0.0),
+        float4(r0.w, r1.w, r2.w, 1.0));
+}
+
+// Linear blend skinning. Weights arrive UNORM-decoded and are used as authored
+// — no renormalise, because a deliberately under-weighted vertex is a thing
+// artists do and rescaling it would be the renderer overruling the asset.
+float4x4 SkinMatrix(float4 w, uint4 idx)
+{
+    float4x4 m = BoneMatrix(idx.x) * w.x;
+    m += BoneMatrix(idx.y) * w.y;
+    m += BoneMatrix(idx.z) * w.z;
+    m += BoneMatrix(idx.w) * w.w;
+    return m;
+}
+
+[shader("vertex")]
+PSInput vsUnlitSkinned(VSInputSkinned input)
+{
+    PSInput output;
+
+    let skin = SkinMatrix(input.boneWeights, input.boneIndices);
+    let modelPos = mul(float4(input.position, 1.0), skin);
+    let worldPos = mul(modelPos, cb.world);
+    let viewPos  = mul(worldPos, cb.view);
+    output.position = mul(viewPos, cb.projection);
+
+    return output;
+}
+
+[shader("vertex")]
+PSInputLit vsUnlitSkinnedLit(VSInputSkinned input)
+{
+    PSInputLit output;
+
+    let skin = SkinMatrix(input.boneWeights, input.boneIndices);
+    let modelPos = mul(float4(input.position, 1.0), skin);
+    let worldPos = mul(modelPos, cb.world);
+    let viewPos  = mul(worldPos, cb.view);
+    output.position = mul(viewPos, cb.projection);
+    output.worldPos = worldPos.xyz;
+    // Through the skin matrix as well as the world one, or every normal stays
+    // in bind pose while the geometry moves.
+    let skinnedNormal = mul(float4(input.normal, 0.0), skin).xyz;
+    output.normalWS = mul(float4(skinnedNormal, 0.0), cb.world).xyz;
+
+    return output;
+}
+
 [shader("fragment")]
 float4 psUnlitBlinnPhong(PSInputLit input) : SV_Target
 {

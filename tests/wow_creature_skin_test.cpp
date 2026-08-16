@@ -236,17 +236,22 @@ TEST_CASE("another variation is another skin", "[m2][wow][db2]") {
     REQUIRE(first);
     REQUIRE(replaceables.Apply(*first, ContentRef::FromPath(cow)) > 0);
 
-    // The cow has ten displays and three skins between them, so at least one
+    // The cow's ten displays wear two skins between them, so at least one
     // variation is a different texture. Found rather than named: which index
     // that is belongs to the table, not to this test.
-    const auto skins = replaceables.Table().ForModel(123288u);
-    REQUIRE(skins.size() > 1);
-    const auto other = std::find_if(skins.begin(), skins.end(), [&](const auto& s) {
-        return s.texture[0] != skins.front().texture[0];
+    //
+    // Searched in the offered list, not in the table behind it — the two are
+    // no longer parallel now that repeated looks collapse, and SetVariation
+    // indexes what a picker shows.
+    const auto& offered = replaceables.Variations(ContentRef::FromPath(cow));
+    REQUIRE(offered.size() > 1);
+    const auto other = std::find_if(offered.begin(), offered.end(), [&](const auto& s) {
+        return s.texture[0] != offered.front().texture[0];
     });
-    REQUIRE(other != skins.end());
+    REQUIRE(other != offered.end());
+    const std::string wanted = other->texture[0];
 
-    replaceables.SetVariation(static_cast<whiteout::u32>(other - skins.begin()));
+    replaceables.SetVariation(static_cast<whiteout::u32>(other - offered.begin()));
     auto second = LoadModel(provider, cow);
     REQUIRE(second);
     REQUIRE(replaceables.Apply(*second, ContentRef::FromPath(cow)) > 0);
@@ -258,7 +263,58 @@ TEST_CASE("another variation is another skin", "[m2][wow][db2]") {
     for (std::size_t i = 0; i < before.size(); ++i)
         differs = differs || before[i].sharedKey != after[i].sharedKey;
     CHECK(differs);
-    CHECK(after[0].sharedKey == "#" + std::to_string(other->texture[0]));
+    CHECK(after[0].sharedKey == wanted);
+}
+
+TEST_CASE("the skins offered are the distinct ones", "[m2][wow][db2]") {
+    std::error_code ec;
+    const fs::path root = CorpusRoot();
+    if (!fs::is_directory(root / "dbfilesclient", ec)) {
+        WARN("WoW corpus dbfilesclient/ not found — skipping");
+        return;
+    }
+
+    io::FileContentProvider backing;
+    backing.SetBasePath(root);
+    NamedProvider provider(backing);
+    for (const Fixture& c : kCreatures)
+        provider.ids.emplace(c.model, c.fileId);
+
+    wow::WowReplaceableTextures replaceables;
+    replaceables.SetContentProvider(&provider);
+
+    // A creature model is named by every display record that uses it, and those
+    // differ in far more than the model wears. The cryptfiend's 21 displays are
+    // three pictures; a picker offering 21 offers the same one nineteen times.
+    std::size_t collapsed = 0;
+    for (const Fixture& c : kCreatures) {
+        INFO(c.model);
+        if (!fs::exists(root / c.model, ec))
+            continue;
+        auto adapter = LoadModel(provider, c.model);
+        REQUIRE(adapter);
+        REQUIRE(replaceables.Apply(*adapter, ContentRef::FromPath(c.model)) > 0);
+
+        const auto& offered = replaceables.Variations(ContentRef::FromPath(c.model));
+        REQUIRE_FALSE(offered.empty());
+        for (std::size_t i = 0; i < offered.size(); ++i) {
+            for (std::size_t j = i + 1; j < offered.size(); ++j) {
+                INFO("variations " << i << " and " << j << " are the same skin");
+                CHECK_FALSE(std::equal(std::begin(offered[i].texture), std::end(offered[i].texture),
+                                       std::begin(offered[j].texture)));
+            }
+        }
+        // Still the client's own answer, and still in display order: dropping a
+        // repeat must not disturb which skin a model wears by default.
+        CHECK(offered.front().texture[0] == "#" + std::to_string(c.firstSkin));
+
+        const auto rows = replaceables.Table().ForModel(c.fileId).size();
+        CHECK(offered.size() <= rows);
+        if (offered.size() < rows)
+            ++collapsed;
+    }
+    // The premise: this is not a rule with no cases. cryptfiend alone is 21→3.
+    CHECK(collapsed > 0);
 }
 
 TEST_CASE("without a listfile the skins are the model's own siblings", "[m2][wow][db2]") {

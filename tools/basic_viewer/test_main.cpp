@@ -1,5 +1,6 @@
 #include "cubeb_sound_emitter.h"
 #include "gfx/gfx.h"
+#include "renderer/animation/clip_playlist.h"
 #include "renderer/model/corn_effect_source.h"
 #include "renderer/frame_ticker.h"
 #include "renderer/model/model_instance.h"
@@ -21,6 +22,7 @@
 
 #include <nfd.hpp>
 
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -323,6 +325,78 @@ static int RunParticleDiff(whiteout::flakes::renderer::RenderService& renderer,
     std::_Exit(pass ? 0 : 8);
 }
 
+// Gate G5's scripted scenario. The `.mdx` and `.m2` arms need nothing like it —
+// they play whatever sequence the model opens on and cut hard between them, so
+// "spawn and let it run" already covers their whole playback surface. StarCraft
+// II's does not: layered plays, blend envelopes and cross-fades only exist once
+// something asks for a second sequence, and a capture that never asks would
+// trace a single steady layer and call the blender covered.
+//
+// Everything here is frame-indexed rather than time-indexed on purpose. The
+// capture loop's dt is fixed, so a frame number is an exact millisecond, and a
+// baseline recorded today stays reproducible if the dt ever changes shape.
+struct AnimScenario {
+    // Index or (case-insensitive substring of a) name. Empty leaves whatever
+    // the model opens on, which is what the geometry arm records.
+    std::string sequence;
+    // Hard-ish switch: `SetActiveSequence`, so it takes the format's own
+    // transition policy — a cut for WC3/WoW, a cross-fade for M3.
+    i32 switchFrame = -1;
+    std::string switchSequence;
+    // Additive layer: a second play stacked on the first, which is the only
+    // way to reach the weight-budget blender.
+    i32 layerFrame = -1;
+    std::string layerSequence;
+    i32 layerBlendInMs = 250;
+    f32 layerWeight = 1.0f;
+    // Print the sequence table and stop. How the corpus file gets curated:
+    // sequence *indices* are export order and differ per model, so the corpus
+    // names sequences and this is what tells you which names exist.
+    bool list = false;
+    // Print the skinning plumbing and a per-frame pose hash.
+    //
+    // Earns its place because the failure this gate is most likely to hit is
+    // silent: every link between "the sampler produced new bone matrices" and
+    // "the GPU drew a new pose" fails by leaving the previous frame's palette
+    // in place, so the model renders perfectly in bind pose and the trace,
+    // the golden and the draw count all look healthy. A pose hash that never
+    // changes is the only cheap way to see it.
+    bool probe = false;
+
+    bool Any() const {
+        return !sequence.empty() || switchFrame >= 0 || layerFrame >= 0 || list || probe;
+    }
+};
+
+// `spec` is an index if it parses as one, else a case-insensitive substring
+// match against the sequence names. Returns -1 for "not found", which every
+// caller treats as "leave it alone" rather than as an error: a corpus curated
+// against one build should not hard-fail on a model whose export lacks the
+// sequence, it should say so and still trace.
+static i32 ResolveSequenceSpec(const std::vector<whiteout::flakes::SequenceInfo>& seqs,
+                               const std::string& spec) {
+    if (spec.empty() || seqs.empty())
+        return -1;
+    if (spec.find_first_not_of("0123456789") == std::string::npos) {
+        const i32 idx = std::atoi(spec.c_str());
+        return (idx >= 0 && idx < static_cast<i32>(seqs.size())) ? idx : -1;
+    }
+    // `+` stands in for a space: SC2 sequence names are "Attack 02", and the
+    // corpus file separates its scenario tokens on whitespace.
+    std::string needle;
+    for (char c : spec)
+        needle.push_back(c == '+' ? ' '
+                                  : static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    for (std::size_t i = 0; i < seqs.size(); ++i) {
+        std::string name;
+        for (char c : seqs[i].name)
+            name.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        if (name.find(needle) != std::string::npos)
+            return static_cast<i32>(i);
+    }
+    return -1;
+}
+
 // Draw trace (gate G1) — a deterministic record of every decision the draw path
 // makes, per REFACTOR_PLAN.md §2. Unlike --particle-diff this needs a device:
 // the hooks sit inside the submission paths, after PSO resolve, so only draws
@@ -342,7 +416,7 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
                         const std::string& checkPath, const std::string& goldenPath, i32 frames,
                         bool hdMode, f32 distanceTol, i32 cameraDistance, i32 perturbSeed,
                         i32 instances, bool unlitOddGeosets, bool lazyAnim,
-                        const std::string& contentRoot) {
+                        const std::string& contentRoot, const AnimScenario& anim) {
     namespace wf = whiteout::flakes;
     namespace dbg = wf::renderer::debug;
 
@@ -350,7 +424,7 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
         std::cerr << "[dtrace] --draw-trace needs a model path" << std::endl;
         return 2;
     }
-    if (recordPath.empty() && checkPath.empty()) {
+    if (recordPath.empty() && checkPath.empty() && !anim.list) {
         std::cerr << "[dtrace] pass --draw-trace-record <file> or --draw-trace-check <file>"
                   << std::endl;
         return 2;
@@ -410,6 +484,7 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
     // transparent back-to-front sort has real work and equal-depth ties are
     // reachable.
     wf::renderer::model::Actor* hero = nullptr;
+    std::vector<wf::renderer::model::Actor*> spawned;
     const i32 copies = (instances < 1) ? 1 : instances;
     for (i32 n = 0; n < copies; ++n) {
         // Uneven gaps in the handle sequence, not just a shifted start. With
@@ -423,6 +498,7 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
             break;
         if (!hero)
             hero = a;
+        spawned.push_back(a);
         a->worldTransform = wf::Matrix44f::translation(
             {static_cast<f32>(n) * 120.0f, 0.0f, 0.0f});
     }
@@ -466,6 +542,58 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
               << " iteration(s), " << (hdMode ? "HD" : "SD") << ", " << frames << " frames"
               << std::endl;
 
+    // ---- G5: scripted animation scenario ----------------------------------
+    // After the settle, not at spawn: the animation source arrives with the
+    // template, so a sequence table asked for any earlier is empty and every
+    // name would resolve to -1.
+    const auto seqs = hero->animation.Sequences();
+    if (anim.list) {
+        // The bone count is here because the corpus has to name a model whose
+        // palette overflows `kActorPaletteCap`, and that is not guessable from
+        // a filename.
+        // Through the source rather than the template: `sourceTemplate` is only
+        // set for actors born from the template cache, and a directly-spawned
+        // one leaves it null.
+        if (auto* ms = dynamic_cast<wf::renderer::model::IModelSource*>(
+                hero->animation.Source().get()))
+            std::cout << "[dtrace] " << ms->GetSkeleton().nodeCount << " bone(s)" << std::endl;
+        std::cout << "[dtrace] " << seqs.size() << " sequence(s):" << std::endl;
+        for (std::size_t s = 0; s < seqs.size(); ++s)
+            std::cout << "[dtrace]   [" << s << "] " << seqs[s].name << "  " << seqs[s].startMs
+                      << ".." << seqs[s].endMs << "ms"
+                      << (seqs[s].nonLooping ? " (non-looping)" : "") << std::endl;
+        pipe.Shutdown();
+        return 0;
+    }
+    const i32 startSeq = ResolveSequenceSpec(seqs, anim.sequence);
+    const i32 switchSeq = ResolveSequenceSpec(seqs, anim.switchSequence);
+    const i32 layerSeq = ResolveSequenceSpec(seqs, anim.layerSequence);
+    if (!anim.sequence.empty() && startSeq < 0)
+        std::cout << "[dtrace] scenario: no sequence matching '" << anim.sequence << "'"
+                  << std::endl;
+    if (startSeq >= 0) {
+        for (auto* a : spawned)
+            a->animation.SetActiveSequenceIndex(startSeq);
+        std::cout << "[dtrace] scenario: start seq [" << startSeq << "] " << seqs[startSeq].name
+                  << std::endl;
+    }
+
+    // Everything between the sampler and the bound palette, in the order it has
+    // to hold. Any `no` here explains a frozen model on its own.
+    if (anim.probe) {
+        const auto& sk = hero->render.skinning;
+        std::cout << "[dtrace] probe: skeleton=" << (sk.HasSkeleton() ? "yes" : "no")
+                  << " nodes=" << sk.NodeCount() << " ready=" << (sk.IsReady() ? "yes" : "no")
+                  << " perActorPalette=" << (sk.UsesPerActorPalette() ? "yes" : "no") << std::endl;
+        for (const auto& geo : hero->render.gpuGeosets)
+            std::cout << "[dtrace] probe: geoset " << geo.geosetId
+                      << " hasSkinning=" << (geo.hasSkinning ? "yes" : "no")
+                      << " paletteCb=" << (geo.bonePaletteCb != wf::gfx::BufferHandle::Invalid
+                                               ? "yes" : "no")
+                      << " paletteSlots=" << sk.GeosetPaletteSize(geo.geosetId)
+                      << " layout=" << geo.layoutId << std::endl;
+    }
+
     // ---- Capture ----------------------------------------------------------
     wf::renderer::Viewport vp;
     vp.target = tid;
@@ -478,8 +606,47 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
     bool needAppeared = false;
     const wf::u64 arrivalAtStart = renderer.AssetArrivalCounter();
     for (i32 i = 0; i < frames; ++i) {
+        // Before the update, so the frame this fires on is the first one that
+        // renders with it — a request applied afterwards would land a frame
+        // late and put the baseline's blend curve out of step with the plan.
+        if (i == anim.switchFrame && switchSeq >= 0) {
+            for (auto* a : spawned)
+                a->animation.SetActiveSequenceIndex(switchSeq);
+            std::cout << "[dtrace] scenario: frame " << i << " switch -> [" << switchSeq << "] "
+                      << seqs[switchSeq].name << std::endl;
+        }
+        if (i == anim.layerFrame && layerSeq >= 0) {
+            wf::renderer::animation::PlayDesc d;
+            d.sequence = layerSeq;
+            d.weight = anim.layerWeight;
+            d.blendInMs = anim.layerBlendInMs;
+            d.persistent = true; // survives the covered-play cull for the capture
+            for (auto* a : spawned)
+                a->animation.Playlist().Play(d, a->cursor.actorTimeMs);
+            std::cout << "[dtrace] scenario: frame " << i << " layer + [" << layerSeq << "] "
+                      << seqs[layerSeq].name << " @w" << anim.layerWeight << std::endl;
+        }
         scene.Update(kDt);
         renderer.Ticker().Tick(kDt);
+        if (anim.probe && (i % 20) == 0) {
+            // Over the offset matrices rather than the world ones: those are
+            // what the palette actually carries, so a hash that moves here but
+            // a frozen image narrows the fault to the upload or the shader.
+            const auto& sk = hero->render.skinning;
+            wf::u64 h = 1469598103934665603ull;
+            if (const Matrix44f* off = sk.OffsetMatrices()) {
+                const auto* raw = reinterpret_cast<const unsigned char*>(off);
+                for (std::size_t b = 0; b < sk.NodeCount() * sizeof(Matrix44f); ++b)
+                    h = (h ^ raw[b]) * 1099511628211ull;
+            }
+            std::cout << "[dtrace] probe: frame " << i << " t=" << hero->animation.TimeMs()
+                      << "ms seq=" << hero->animation.ActiveSequenceIndex()
+                      << " plays=" << hero->animation.Playlist().PlayCount() << " pose=" << h;
+            for (const auto& cl : hero->animation.Playlist().Clips())
+                std::cout << " | clip seq=" << cl.sequence << " time=" << cl.timeMs
+                          << " elapsed=" << cl.elapsedMs << " w=" << cl.weight;
+            std::cout << std::endl;
+        }
         rec.BeginFrame(i);
         pipe.RenderViewport(vp);
         pipe.Present(tid);
@@ -908,6 +1075,7 @@ int main(int argc, char* argv[]) {
     i32 drawTraceCameraDistance = 350;
     i32 drawTracePerturb = 0;
     i32 drawTraceInstances = 3;
+    AnimScenario drawTraceAnim;
     // World of Warcraft's `id;path` CSV. The GUI takes this from Settings > IO,
     // but the headless runs happen before those are applied — and without it a
     // WoW root can only be read by id, so nothing can look a model up in the
@@ -1048,6 +1216,22 @@ int main(int argc, char* argv[]) {
             drawTracePerturb = std::atoi(argv[++i]);
         } else if (std::strcmp(a, "--draw-trace-instances") == 0 && i + 1 < argc) {
             drawTraceInstances = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--draw-trace-anim") == 0 && i + 1 < argc) {
+            drawTraceAnim.sequence = argv[++i];
+        } else if (std::strcmp(a, "--draw-trace-anim-switch") == 0 && i + 2 < argc) {
+            drawTraceAnim.switchFrame = std::atoi(argv[++i]);
+            drawTraceAnim.switchSequence = argv[++i];
+        } else if (std::strcmp(a, "--draw-trace-anim-layer") == 0 && i + 2 < argc) {
+            drawTraceAnim.layerFrame = std::atoi(argv[++i]);
+            drawTraceAnim.layerSequence = argv[++i];
+        } else if (std::strcmp(a, "--draw-trace-anim-blend") == 0 && i + 1 < argc) {
+            drawTraceAnim.layerBlendInMs = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--draw-trace-anim-weight") == 0 && i + 1 < argc) {
+            drawTraceAnim.layerWeight = static_cast<f32>(std::atof(argv[++i]));
+        } else if (std::strcmp(a, "--draw-trace-anim-list") == 0) {
+            drawTraceAnim.list = true;
+        } else if (std::strcmp(a, "--draw-trace-anim-probe") == 0) {
+            drawTraceAnim.probe = true;
         } else if (std::strcmp(a, "--wgpu-backend") == 0 && i + 1 < argc) {
             // Force Dawn's underlying adapter backend (d3d11/d3d12/vulkan/gl/metal).
             // Only meaningful when --backend webgpu is selected.
@@ -1252,7 +1436,7 @@ int main(int argc, char* argv[]) {
         return RunDrawTrace(renderer, scene, backend, mdxPath, drawTraceRecord, drawTraceCheck,
                             drawTraceGolden, particleDiffFrames, drawTraceHd, drawTraceDistanceTol,
                             drawTraceCameraDistance, drawTracePerturb, drawTraceInstances,
-                            drawTraceUnlit, drawTraceLazyAnim, contentRoot);
+                            drawTraceUnlit, drawTraceLazyAnim, contentRoot, drawTraceAnim);
 
     whiteout::flakes::ViewerApp app(renderer);
     if (!app.Open(1024, 768, backend)) {

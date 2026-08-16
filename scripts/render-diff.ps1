@@ -69,6 +69,18 @@ param(
     # not land back at 1.0.
     [switch]$M3,
 
+    # GATE G5 — the `.m3` *animation* arm (M3_ANIMATION_PLAN.md §2.2). Same
+    # corpus root as -M3 and a separate corpus file whose lines carry a scripted
+    # scenario per model, because "spawn and let it run" cannot reach the parts
+    # of M3 playback that only exist once something asks for a second sequence.
+    #
+    # Its baselines are PROGRESSIVE by design and this is the one arm where that
+    # is true: the wc3/wow baselines assert "nothing moved", and each animation
+    # phase legitimately changes what M3 draws, so re-recording is the expected
+    # outcome of a phase rather than an admission. Which phase last re-recorded
+    # is what the commit message has to say.
+    [switch]$M3Anim,
+
     # SD is the default mode; -Hd records the HD profile's baselines instead.
     # A full gate run does both — they are different draw paths.
     [switch]$Hd,
@@ -124,8 +136,8 @@ if (-not (Test-Path $BaselineDir)) {
 
 $mode = if ($Hd) { 'hd' } else { 'sd' }
 if ($Unlit) { $mode += '_unlit' }
-if ($M2 -and $M3) {
-    Write-Error '-M2 and -M3 are separate arms: pass one or the other.'
+if ((@($M2, $M3, $M3Anim) | Where-Object { $_ }).Count -gt 1) {
+    Write-Error '-M2, -M3 and -M3Anim are separate arms: pass one of them.'
     exit 2
 }
 if ($Listfile -and -not $M2) {
@@ -147,38 +159,90 @@ if ($M2) {
         $CorpusFile = "$PSScriptRoot/../tools/particle_diff/corpus_m2.txt"
     }
 }
-if ($M3) {
-    $mode = 'm3'
+if ($M3 -or $M3Anim) {
+    $mode = if ($M3Anim) { 'm3anim' } else { 'm3' }
     if (-not $PSBoundParameters.ContainsKey('CorpusRoot')) {
         $CorpusRoot = 'C:/Projects/WhiteoutLib/Corpus'
     }
     if (-not $PSBoundParameters.ContainsKey('CorpusFile')) {
-        $CorpusFile = "$PSScriptRoot/../tools/particle_diff/corpus_m3.txt"
+        $CorpusFile = if ($M3Anim) { "$PSScriptRoot/../tools/particle_diff/corpus_m3_anim.txt" }
+                      else { "$PSScriptRoot/../tools/particle_diff/corpus_m3.txt" }
+    }
+    # A 30-frame capture at 60 Hz is half a second — long enough for a static
+    # pose and far too short for a cross-fade to start and settle. The scenario
+    # frames in the corpus file are written against this default.
+    if ($M3Anim -and -not $PSBoundParameters.ContainsKey('Frames')) {
+        $Frames = 120
     }
 }
 
+# One entry per corpus line. The animation corpus adds whitespace-separated
+# `key=value` scenario tokens after the path; every other corpus is a bare path
+# per line and MUST stay that way — the WC3 corpus has directories with spaces
+# in them ("HoTS Maiev High Priestess Upgraded/Maiev.mdx"), so tokenising those
+# lines would split a path into a path plus garbage.
 $entries = Get-Content $CorpusFile |
     ForEach-Object { ($_ -split '#')[0].Trim() } |
-    Where-Object { $_ -ne '' }
+    Where-Object { $_ -ne '' } |
+    ForEach-Object {
+        $line = $_
+        $e = [ordered]@{ Path = $line; Seq = ''; Switch = ''; Layer = ''; Blend = ''; Weight = '' }
+        if ($M3Anim) {
+            $tok = $line -split '\s+'
+            $e.Path = $tok[0]
+            for ($t = 1; $t -lt $tok.Count; $t++) {
+                if ($tok[$t] -notmatch '^(?<k>[a-z]+)=(?<v>.+)$') {
+                    Write-Error "Malformed scenario token '$($tok[$t])' in: $line"
+                    exit 2
+                }
+                $k = $Matches.k; $v = $Matches.v
+                switch ($k) {
+                    'seq'    { $e.Seq = $v }
+                    'switch' { $e.Switch = $v }
+                    'layer'  { $e.Layer = $v }
+                    'blend'  { $e.Blend = $v }
+                    'weight' { $e.Weight = $v }
+                    default  { Write-Error "Unknown scenario key '$k' in: $line"; exit 2 }
+                }
+            }
+        }
+        [pscustomobject]$e
+    }
 
 $pass = 0
 $fail = 0
 $failed = @()
 
-foreach ($rel in $entries) {
+foreach ($entry in $entries) {
+    $rel = $entry.Path
     $model = Join-Path $CorpusRoot $rel
     if (-not (Test-Path $model)) {
         Write-Host "SKIP (missing): $rel" -ForegroundColor DarkYellow
         continue
     }
 
-    # Flatten the relative path into a single baseline filename.
+    # Flatten the relative path into a single baseline filename. The scenario's
+    # start sequence joins the key so one model can appear in the corpus more
+    # than once — different sequences of the same unit are different baselines,
+    # not a collision.
     $key = (($rel -replace '[\\/ ]', '_') -replace '\.(mdx|m2|m3)$', '') + "_$mode"
+    if ($entry.Seq) { $key += '_' + ($entry.Seq -replace '[^A-Za-z0-9]', '') }
     $trace = Join-Path $BaselineDir "$key.txt"
     $image = Join-Path $BaselineDir "$key.raw"
 
     $argv = @('--draw-trace', $model, '--trace-frames', $Frames,
               '--draw-trace-camera-distance', $CameraDistance)
+    if ($entry.Seq)    { $argv += @('--draw-trace-anim', $entry.Seq) }
+    if ($entry.Switch) {
+        $s = $entry.Switch -split ':', 2
+        $argv += @('--draw-trace-anim-switch', $s[0], $s[1])
+    }
+    if ($entry.Layer) {
+        $l = $entry.Layer -split ':', 2
+        $argv += @('--draw-trace-anim-layer', $l[0], $l[1])
+    }
+    if ($entry.Blend)  { $argv += @('--draw-trace-anim-blend', $entry.Blend) }
+    if ($entry.Weight) { $argv += @('--draw-trace-anim-weight', $entry.Weight) }
     if ($Hd) { $argv += '--draw-trace-hd' }
     if ($Unlit) { $argv += '--draw-trace-unlit' }
     if ($LazyAnim) { $argv += '--draw-trace-lazy-anim' }

@@ -599,6 +599,16 @@ int32_t whiteout_flakes_FlakesActorView_AnimationTimeMs(const whiteout_FlakesAct
 void whiteout_flakes_FlakesActorView_SetAnimationTimeMs(whiteout_FlakesActorView* self, int32_t arg);
 /* `true` once the actor has an `IAnimationSource` bound (i.e. spawn-from-source completed successfully). */
 int32_t whiteout_flakes_FlakesActorView_HasAnimationSource(const whiteout_FlakesActorView* self);
+/* Stack another play on top of whatever is running. */
+/*  */
+/* @param sequence   Index into @ref Sequences. @param weight     Contribution before the blend envelope multiplies in. Weights are spent from a budget of 1.0, highest priority first, so a full-weight play on top hides the ones below it. @param speed      Clock rate for this play alone, independent of @ref SetPlaybackSpeed. @param loop       `false` retires the play when the sequence ends. @param blendInMs  Fade-in. `0` starts at full weight. @param blendOutMs Fade-out used when this play stops. `-1` takes the format's default. @return A handle for @ref StopPlay, or `0` if the actor is gone or has no animation source yet. */
+uint32_t whiteout_flakes_FlakesActorView_Play(whiteout_FlakesActorView* self, int32_t sequence, float weight, float speed, int32_t loop, int32_t blendInMs, int32_t blendOutMs);
+/* Fade one play out and retire it. `blendOutMs < 0` uses the play's own blend-out. Unknown handles are ignored. */
+void whiteout_flakes_FlakesActorView_StopPlay(whiteout_FlakesActorView* self, uint32_t playHandle, int32_t blendOutMs);
+/* Fade every play out, including the one `SetActiveSequence` drives. The actor holds its last pose until something plays. */
+void whiteout_flakes_FlakesActorView_StopAllPlays(whiteout_FlakesActorView* self, int32_t blendOutMs);
+/* How many plays are live, blend-outs included. */
+int32_t whiteout_flakes_FlakesActorView_PlayCount(const whiteout_FlakesActorView* self);
 /* Evaluate the animation at the actor's current cursor and push the result into the renderer state. */
 /*  */
 /* Used by host-driven actors (Max-plugin timeline scrub). Call `SetAnimationTimeMs(t)` first if you want a specific time. */

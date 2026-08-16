@@ -14,6 +14,7 @@
 
 #include "io/wow/character_appearance.h"
 #include "io/wow/character_geosets.h"
+#include "renderer/profiles/wow/wow_character_appearance.h"
 
 #include <whiteout/models/m2/m2.h>
 
@@ -299,4 +300,69 @@ TEST_CASE("A source of a different size is resampled into its section",
     CHECK(at(0, 0)[0] == 200); // base stretched over the whole sheet
     CHECK(at(7, 3)[2] == 200); // overlay squeezed into the section rect
     CHECK(at(0, 3)[0] == 200); // and not outside it
+}
+
+// ---------------------------------------------------------------------------
+// Collections models — the parts that are not in the character's own `.m2`.
+//
+// A Dracthyr's horns are twenty geosets of
+// `item/objectcomponents/collections/collections_dracthyr_dt_m.m2`, a
+// thirteen-bone rig against the character's two hundred and fifty-five. Nothing
+// pairs the two by index; the only thing they agree on is the key bone.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+m2::Model RigWithKeyBones(std::initializer_list<::whiteout::i32> keyBoneIds) {
+    m2::Model model;
+    for (const ::whiteout::i32 k : keyBoneIds) {
+        m2::Bone b;
+        b.keyBoneId = k;
+        b.parentBoneId = static_cast<::whiteout::i16>(model.bones.size()) - 1;
+        model.bones.push_back(b);
+    }
+    return model;
+}
+
+} // namespace
+
+TEST_CASE("A rig that rides another is paired by key bone, not by index",
+          "[m2][character]") {
+    namespace wow = ::whiteout::flakes::renderer::profiles::wow;
+
+    // The shapes the real files have: the character is long and its key bones
+    // land wherever the artist put them; the collections rig is short and
+    // carries the same key bones in a different order at different indices.
+    const m2::Model character = RigWithKeyBones({-1, -1, 4, -1, 2, 3, -1, 0, 1});
+    const m2::Model collections = RigWithKeyBones({4, -1, 2, 3, 0, 1});
+
+    const auto pairing = wow::PairBonesByKeyBone(character, collections);
+    REQUIRE(pairing.size() == collections.bones.size());
+    CHECK(pairing[0] == 2); // key 4
+    CHECK(pairing[1] == -1); // the unpaired link in the middle of the chain
+    CHECK(pairing[2] == 4); // key 2
+    CHECK(pairing[3] == 5); // key 3
+    CHECK(pairing[4] == 7); // key 0
+    CHECK(pairing[5] == 8); // key 1
+
+    // Every paired entry names a parent bone carrying that same key bone —
+    // the property the whole bridge rests on.
+    for (std::size_t i = 0; i < pairing.size(); ++i) {
+        if (pairing[i] < 0)
+            continue;
+        CHECK(character.bones[static_cast<std::size_t>(pairing[i])].keyBoneId ==
+              collections.bones[i].keyBoneId);
+    }
+}
+
+TEST_CASE("A key bone the parent does not carry pairs with nothing", "[m2][character]") {
+    namespace wow = ::whiteout::flakes::renderer::profiles::wow;
+    // Not an error and not a fallback to index: a bone the character has no
+    // counterpart for keeps posing itself off its own parent chain.
+    const auto pairing = wow::PairBonesByKeyBone(RigWithKeyBones({0, 1}),
+                                                 RigWithKeyBones({0, 7, 1}));
+    REQUIRE(pairing.size() == 3);
+    CHECK(pairing[0] == 0);
+    CHECK(pairing[1] == -1);
+    CHECK(pairing[2] == 1);
 }

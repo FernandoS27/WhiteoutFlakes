@@ -1,0 +1,70 @@
+# GATE G5 — StarCraft II `.m3` animation corpus (M3_ANIMATION_PLAN.md §2.2).
+#
+# Paths are relative to C:/Projects/WhiteoutLib/Corpus, same root as
+# corpus_m3.txt. What is different is the rest of the line: a scripted scenario,
+# because spawning an `.m3` and letting it run reaches one steady layer and
+# nothing else. Cross-fades, layered plays and the weight budget only exist once
+# something asks for a second sequence, so the corpus has to ask.
+#
+#   seq=<index|name>          which sequence to start in
+#   switch=<frame>:<seq>      SetActiveSequence at that capture frame — a cut
+#                             for wc3/wow, a cross-fade for M3
+#   layer=<frame>:<seq>       stack a second play at that frame — the only
+#                             route into the blender
+#   blend=<ms>                blend-in for the layered play (default 250)
+#   weight=<f>                its weight (default 1.0)
+#
+# `seq` matches an index if it parses as one, else a case-insensitive substring
+# of the sequence name, with `+` standing in for a space ("Attack+02"). Names
+# rather than indices on purpose: indices are export order and shift between a
+# unit and its skin variants. `--draw-trace-anim-list` prints the table (and the
+# bone count) for any model — that is how this file was curated, and how to
+# re-curate it if a name here stops resolving.
+#
+# Frames assume the arm's 120-frame default at a fixed 60 Hz, so frame 40 is
+# 667 ms — past a 150 ms cross-fade's settle, with room for the next event.
+#
+# Run with (needs a build configured -DWDX_ENABLE_M3=ON):
+#   scripts/render-diff.ps1 -Record -Golden -M3Anim
+#   scripts/render-diff.ps1 -Check  -Golden -M3Anim
+#
+# UNLIKE every other arm, these baselines are PROGRESSIVE: each animation phase
+# legitimately changes what M3 draws. A diff here is a question, not a verdict.
+
+# --- the seven geometry-gate models, now animated -------------------------
+# Same models corpus_m3.txt uses, so a regression that is really a geometry
+# regression shows up in both arms and is easy to tell apart from a blend bug.
+Sc2M3/Marine.m3          seq=Stand switch=40:Walk layer=80:Attack
+Sc2M3/Zergling.m3        seq=Walk  switch=60:Attack
+Sc2M3/Zealot.m3          seq=Stand switch=45:Attack
+Sc2M3/SCV.m3             seq=Walk
+Sc2M3/Thor.m3            seq=Stand switch=50:Attack
+# Half weight, so the budget has something left for the layer underneath and
+# the result is a real blend rather than the top layer winning outright.
+Sc2M3/Ultralisk.m3       seq=Walk  layer=70:Attack weight=0.5
+Sc2M3/BattleCruiser.m3   seq=Stand
+
+# --- the same unit twice, different scenario ------------------------------
+# The start sequence joins the baseline key, so this is a second baseline
+# rather than a collision. Marine is the split-body case: its attack rides an
+# upper-body container while the legs keep their own.
+Sc2M3/Marine.m3          seq=Walk  layer=30:Attack blend=100
+
+# --- solver models, traced before the solvers exist -----------------------
+# Both are here from P-A0 rather than from P-A7 on purpose: the baseline that
+# proves a solver changed something has to predate the solver. Colossus names
+# `Attack+02`: a bare "Attack" would match "Attack Ready Channel" first, and
+# the two are different animations.
+Sc2M3/Colossus.m3        seq=Walk  switch=60:Attack+02
+Sc2M3/SiegeTank.m3       seq=Stand switch=50:Attack
+
+# --- not covered, and why -------------------------------------------------
+# §2.2 also asked for a >256-bone model, to exercise the Path A/Path B palette
+# split. There is no such M3 case to find: `.m3` stores its vertex bone indices
+# region-local, so `DecidePaletteLayoutAndRewrite` forces Path B for every M3
+# model regardless of size, and the branch the requirement was aimed at has no
+# M3 arm at all. The remaining cap is `bls::kMaxBones` (256) per *geoset*
+# palette, which `WriteBonePalette` silently clamps to; the heaviest model here
+# is Thor at 139 bones total, so nothing in this corpus reaches it. Finding a
+# model that does is worth doing — the failure mode is a wrong pose, not a
+# crash — but it is a separate hunt from this gate.

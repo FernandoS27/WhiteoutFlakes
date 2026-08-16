@@ -16,6 +16,8 @@
 
 #include "whiteout/flakes/types.h"
 
+#include <span>
+
 namespace whiteout::flakes::renderer::animation {
 struct ActorEvalContext;
 }
@@ -48,8 +50,11 @@ public:
 private:
     void UpdateAttachments();
     void EvaluateActorTree();
+    // @p parentBones is the caller's freshly evaluated bone matrices, which a
+    // Skinned child poses from. Empty at the root and for a parent that
+    // evaluated nothing.
     void EvaluateActorTreeRec(model::Actor& actor, const animation::ActorEvalContext& ctx,
-                              i32 ancestorClock);
+                              i32 ancestorClock, std::span<const Matrix44f> parentBones = {});
     void SilenceCornEmittersRec(model::Actor& actor);
     void UpdateAnimation();
     void UpdateParticles(f32 dt);

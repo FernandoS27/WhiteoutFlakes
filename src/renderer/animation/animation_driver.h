@@ -1,5 +1,6 @@
 #pragma once
 
+#include "clip_playlist.h"
 #include "types.h"
 #include "whiteout/flakes/model_source.h"
 #include "whiteout/flakes/types.h"
@@ -12,9 +13,7 @@ namespace whiteout::flakes::renderer::animation {
 
 class AnimationDriver {
 public:
-    void Bind(std::shared_ptr<model::IAnimationSource> source) {
-        source_ = std::move(source);
-    }
+    void Bind(std::shared_ptr<model::IAnimationSource> source);
     bool HasSource() const {
         return static_cast<bool>(source_);
     }
@@ -23,16 +22,16 @@ public:
     }
 
     void Play(i32 sequenceIdx, i32 startTimeMs = 0) {
-        currentSequenceIdx_ = sequenceIdx;
+        playlist_.SetActiveSequence(sequenceIdx);
         timeMs_ = startTimeMs;
     }
     void Play(std::string_view sequenceName);
 
     i32 ActiveSequenceIndex() const {
-        return currentSequenceIdx_;
+        return playlist_.ActiveSequenceIndex();
     }
     void SetActiveSequenceIndex(i32 idx) {
-        currentSequenceIdx_ = idx;
+        playlist_.SetActiveSequence(idx);
     }
 
     i32 TimeMs() const {
@@ -49,6 +48,19 @@ public:
         birthTimeMs_ = ms;
     }
 
+    /// @brief The playback stack. Layered plays, blend envelopes and the
+    ///        scrub/cycle bookkeeping all live here.
+    ClipPlaylist& Playlist() {
+        return playlist_;
+    }
+    const ClipPlaylist& Playlist() const {
+        return playlist_;
+    }
+
+    /// @brief Step the playback stack and latch the primary play's time.
+    ///        @p nowMs is the actor clock.
+    void Advance(i32 nowMs, bool forceLoop);
+
     std::vector<model::SequenceInfo> Sequences() const;
 
     model::FrameState Evaluate(const Matrix44f& worldTransform, const Vector3f& cameraPos,
@@ -56,7 +68,10 @@ public:
 
 private:
     std::shared_ptr<model::IAnimationSource> source_;
-    i32 currentSequenceIdx_ = 0;
+    ClipPlaylist playlist_;
+    // Cached sequence table. Advance runs every frame for every actor and the
+    // source builds this vector (strings included) on each call.
+    std::vector<model::SequenceInfo> sequences_;
     i32 timeMs_ = 0;
     i32 birthTimeMs_ = 0;
 };

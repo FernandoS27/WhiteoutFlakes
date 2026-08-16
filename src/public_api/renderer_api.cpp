@@ -731,8 +731,8 @@ void ActorView::SetAnimationTimeMs(i32 t) {
     // Setting the time alone does not hold for a renderer-driven actor:
     // `Actor::Advance` recomputes the frame from `cursor.actorTimeMs` on
     // every tick, so the next one would overwrite it and a host scrubbing a
-    // timeline would see nothing move. Re-base the sequence start so the
-    // cursor already reads as `t`, and Advance recomputes the same value.
+    // timeline would see nothing move. Re-base the play's start so the
+    // playlist already reads as `t`, and Advance recomputes the same value.
     //
     // External actors are evaluated by the host and never see Advance, so
     // the time set above is already the whole story for them.
@@ -741,13 +741,46 @@ void ActorView::SetAnimationTimeMs(i32 t) {
     const auto seqs = a->animation.Sequences();
     if (seqs.empty())
         return;
-    const i32 n = static_cast<i32>(seqs.size());
-    const i32 idx = ((a->animation.ActiveSequenceIndex() % n) + n) % n;
-    a->cursor.sequenceStartTimeMs = a->cursor.actorTimeMs - (t - seqs[idx].startMs);
+    a->animation.Playlist().SetPrimaryTimeMs(t, a->cursor.actorTimeMs, seqs);
 }
 bool ActorView::HasAnimationSource() const {
     auto* a = FindActor(impl_, handle_);
     return a && a->animation.HasSource();
+}
+
+u32 ActorView::Play(i32 sequence, f32 weight, f32 speed, bool loop, i32 blendInMs,
+                    i32 blendOutMs) {
+    auto* a = FindActor(impl_, handle_);
+    if (!a || !a->animation.HasSource())
+        return 0;
+    renderer::animation::PlayDesc d;
+    d.sequence = sequence;
+    d.weight = weight;
+    d.speed = speed;
+    d.loop = loop;
+    d.blendInMs = blendInMs;
+    d.blendOutMs = blendOutMs;
+    // Host-started plays are exempt from the covered-play cull. The cull exists
+    // to drop plays a later full-weight one has buried, which is right for the
+    // ones a sequence switch spawns; a host that asked for this play by hand is
+    // holding a handle to it and expects to be the one to stop it.
+    d.persistent = true;
+    return a->animation.Playlist().Play(d, a->cursor.actorTimeMs);
+}
+
+void ActorView::StopPlay(u32 playHandle, i32 blendOutMs) {
+    if (auto* a = FindActor(impl_, handle_))
+        a->animation.Playlist().Stop(playHandle, blendOutMs, a->cursor.actorTimeMs);
+}
+
+void ActorView::StopAllPlays(i32 blendOutMs) {
+    if (auto* a = FindActor(impl_, handle_))
+        a->animation.Playlist().StopAll(blendOutMs, a->cursor.actorTimeMs);
+}
+
+i32 ActorView::PlayCount() const {
+    auto* a = FindActor(impl_, handle_);
+    return a ? static_cast<i32>(a->animation.Playlist().PlayCount()) : 0;
 }
 
 void ActorView::EvaluateAndApply() {

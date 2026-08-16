@@ -296,6 +296,13 @@ void Actor::EvaluateAndApply(const ActorEvalContext& ctx) {
 
     // The whole stack, not just the primary play: a single-clip adapter reads
     // PrimaryClip() and is unaffected, while a layering one sees every play.
+    //
+    // This is the HOST-driven path only — the Max plugin's timeline scrub and
+    // anything calling `ActorView::EvaluateAndApply`. Renderer-driven actors go
+    // through `FrameTicker::EvaluateActorTreeRec`, which builds its own clip
+    // because a child derives its cursor from an ancestor clock rather than
+    // from a playlist. Any change to what a clip must carry has to land in both
+    // places: fixing only this one is what left `.m3` rendering in bind pose.
     const auto clips = animation.Playlist().Clips();
     const ClipRef fallback{.sequence = animation.ActiveSequenceIndex(), .timeMs = localTime};
     PoseRequest req;

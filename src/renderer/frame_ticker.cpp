@@ -194,7 +194,8 @@ void FrameTicker::SilenceCornEmittersRec(Actor& actor) {
 }
 
 void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx,
-                                       i32 ancestorClock) {
+                                       i32 ancestorClock,
+                                       std::span<const Matrix44f> parentBones) {
     if (actor.IsChild() && actor.parentVisibility <= 0.02f) {
         // Hidden subtree: still tell descendants' corn fx emitters they're
         // invisible so they don't keep playing on stale state. Other
@@ -204,9 +205,13 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
         return;
     }
 
+    // Hoisted out of the block below so the recursion can hand it down: a
+    // Skinned child is posed from these, and they are the only copy.
+    FrameState fs;
     if (actor.role != ActorRole::External && actor.animation.HasSource()) {
         i32 localTimeMs;
         i32 globalTimeMs;
+        i32 childElapsedMs = 0;
         const i32 seqIdx = actor.animation.ActiveSequenceIndex();
 
         if (actor.role == ActorRole::Unit) {
@@ -226,28 +231,83 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
             i32 localTime = clock - actor.animation.BirthTimeMs();
             if (localTime < 0)
                 localTime = 0;
+            const i32 unwrappedTime = localTime;
             const auto seqs = actor.animation.Sequences();
             if (!seqs.empty()) {
                 const i32 boundedSeq = seqIdx % (i32)seqs.size();
                 const auto& seq = seqs[boundedSeq];
-                const i32 dur = seq.endMs - seq.startMs;
-                if (dur > 0) {
-                    if (seq.nonLooping && !actor.ignoreNonLooping)
-                        localTime = seq.startMs + (std::min)(localTime, dur);
-                    else
-                        localTime = seq.startMs + (localTime % dur);
-                }
+                // Shares the playlist's windowing rather than repeating it.
+                // The zero-duration case stays outside on purpose: a child
+                // holds its derived clock there, where a top-level actor
+                // snaps to the sequence start.
+                if (seq.endMs - seq.startMs > 0)
+                    localTime =
+                        animation::WindowSequence(seq, localTime, actor.ignoreNonLooping).frameMs;
             }
             localTimeMs = localTime;
             globalTimeMs = localTime;
+            // Before the window folded it: an M3 track loops on its own
+            // duration, so a child handed only the windowed time aliases every
+            // track shorter or longer than its sequence.
+            childElapsedMs = unwrappedTime;
         }
 
-        const ClipRef clip{.sequence = seqIdx, .timeMs = localTimeMs};
+        // The playlist is the authority on everything a clip carries beyond
+        // sequence-and-time, and this is the path every renderer-driven actor
+        // takes — `Actor::EvaluateAndApply` only runs for host-driven ones.
+        // Synthesising the clip here and leaving `elapsedMs` at its default
+        // pinned every M3 layer to t=0: the model rendered, posed, and never
+        // moved, with a healthy draw count and a stable trace the whole time.
+        //
+        // `sequence` and `timeMs` are still the ticker's own values in the
+        // single-play case rather than the playlist's, so Warcraft III and WoW
+        // stay byte-identical across this: the two agree by construction
+        // (`TimeMs()` *is* the primary play's frame time), and taking the
+        // playlist's copy would swap a raw host index for a bounded one.
+        const auto playlistClips = actor.animation.Playlist().Clips();
+        ClipRef clip{.sequence = seqIdx, .timeMs = localTimeMs};
+        if (!playlistClips.empty()) {
+            const ClipRef& p = playlistClips.front();
+            clip.elapsedMs = p.elapsedMs;
+            clip.weight = p.weight;
+            clip.speed = p.speed;
+            clip.loop = p.loop;
+            clip.mask = p.mask;
+            clip.rootNode = p.rootNode;
+        } else {
+            // Children derive their cursor from an ancestor clock and never
+            // run a playlist, so the unwrapped elapsed is the pre-window time.
+            clip.elapsedMs = childElapsedMs;
+        }
         PoseRequest req = PoseRequest::OneClip(clip);
+        // More than one play only exists once a host asks for a layer through
+        // `ActorView::Play`, so the single-clip path above stays the one every
+        // existing caller takes.
+        if (playlistClips.size() > 1)
+            req.clips = playlistClips;
         req.globalTimeMs = globalTimeMs;
         req.world = actor.ScaledWorldTransform();
         req.cameraPos = ctx.camPos;
-        FrameState fs = actor.animation.Source()->Evaluate(req);
+
+        // A Skinned child does not pose itself: it rides the parent's rig, so
+        // every bone the two share by key bone arrives already in the parent's
+        // model space and the sampler is told to leave it alone. Bones the
+        // pairing missed still sample and compose normally, which is what an
+        // intermediate link in the chain needs.
+        std::vector<NodeOverride> ridden;
+        if (actor.role == ActorRole::Skinned && !parentBones.empty()) {
+            ridden.reserve(actor.skinnedParentBone.size());
+            for (usize i = 0; i < actor.skinnedParentBone.size(); ++i) {
+                const i32 from = actor.skinnedParentBone[i];
+                if (from < 0 || static_cast<usize>(from) >= parentBones.size())
+                    continue;
+                ridden.push_back({static_cast<i32>(i), parentBones[static_cast<usize>(from)],
+                                  /*replace=*/true});
+            }
+            req.overrides = std::span<const NodeOverride>(ridden);
+        }
+
+        fs = actor.animation.Source()->Evaluate(req);
         actor.ApplyFrameState(fs, localTimeMs, ctx);
     }
 
@@ -257,8 +317,13 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
     // any future change to that contract.
     auto childList = actor.children;
     for (u32 ch : childList) {
-        if (auto* c = rs_.Scene().Actors().Find(ch))
-            EvaluateActorTreeRec(*c, ctx, ancestorClock);
+        if (auto* c = rs_.Scene().Actors().Find(ch)) {
+            // A Skinned child shares its parent's placement exactly; its own
+            // transform is never written by anything else.
+            if (c->role == ActorRole::Skinned)
+                c->worldTransform = actor.worldTransform;
+            EvaluateActorTreeRec(*c, ctx, ancestorClock, fs.boneWorldMatrices);
+        }
     }
 }
 

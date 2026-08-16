@@ -74,6 +74,50 @@ public:
     bool HasAnimationSource() const;
     /// @}
 
+    /// @name Layered playback
+    ///
+    /// `SetActiveSequence` above drives one play and replaces whatever was
+    /// running — the whole of Warcraft III's and World of Warcraft's playback
+    /// model. StarCraft II actors instead run a stack: an upper body swinging
+    /// through an attack over legs that keep walking, each with its own clock
+    /// and blend envelope. These four methods are that stack.
+    ///
+    /// Available on every format, not just `.m3`: a WC3 model asked for two
+    /// plays blends them, because the blend happens above the sampler. What is
+    /// format-specific is the *default* transition — WC3 and WoW cut, M3
+    /// cross-fades over 150 ms — and passing an explicit blend overrides it
+    /// either way.
+    /// @{
+
+    /// @brief Stack another play on top of whatever is running.
+    ///
+    /// @param sequence   Index into @ref Sequences.
+    /// @param weight     Contribution before the blend envelope multiplies in.
+    ///                   Weights are spent from a budget of 1.0, highest
+    ///                   priority first, so a full-weight play on top hides
+    ///                   the ones below it.
+    /// @param speed      Clock rate for this play alone, independent of
+    ///                   @ref SetPlaybackSpeed.
+    /// @param loop       `false` retires the play when the sequence ends.
+    /// @param blendInMs  Fade-in. `0` starts at full weight.
+    /// @param blendOutMs Fade-out used when this play stops. `-1` takes the
+    ///                   format's default.
+    /// @return A handle for @ref StopPlay, or `0` if the actor is gone or has
+    ///         no animation source yet.
+    u32 Play(i32 sequence, f32 weight, f32 speed, bool loop, i32 blendInMs, i32 blendOutMs);
+
+    /// @brief Fade one play out and retire it. `blendOutMs < 0` uses the
+    ///        play's own blend-out. Unknown handles are ignored.
+    void StopPlay(u32 playHandle, i32 blendOutMs);
+
+    /// @brief Fade every play out, including the one `SetActiveSequence`
+    ///        drives. The actor holds its last pose until something plays.
+    void StopAllPlays(i32 blendOutMs);
+
+    /// @brief How many plays are live, blend-outs included.
+    i32 PlayCount() const;
+    /// @}
+
     /// @brief Evaluate the animation at the actor's current cursor and
     ///        push the result into the renderer state.
     ///

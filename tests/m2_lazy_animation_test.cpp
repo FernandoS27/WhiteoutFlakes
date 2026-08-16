@@ -1,5 +1,5 @@
 // ============================================================================
-// Lazy `.anim` loading — does deferring the read change anything?
+// Lazy `.anim` loading â€” does deferring the read change anything?
 //
 // The claim under test is narrow and total: a model parsed with
 // Parser::setLazyAnimations, then told to load each sequence, holds exactly the
@@ -8,7 +8,7 @@
 // behaviour.
 //
 // Everything here needs the corpus (`C:/Projects/WhiteoutLib/Corpus/WoW`,
-// override with WDX_TEST_WOW_CORPUS) — the whole point is `.anim` siblings,
+// override with WDX_TEST_WOW_CORPUS) â€” the whole point is `.anim` siblings,
 // which no hand-built fixture has. Skips when it is absent; skipped is not
 // passed.
 // ============================================================================
@@ -65,8 +65,8 @@ std::vector<fs::path> FindModels() {
 
 /// A provider that records what was asked for, and forwards everything.
 ///
-/// Request is the one funnel — ReadFile is a non-virtual convenience over
-/// Request+Wait — so counting here counts every read the parser makes.
+/// Request is the one funnel â€” ReadFile is a non-virtual convenience over
+/// Request+Wait â€” so counting here counts every read the parser makes.
 class CountingProvider final : public io::IContentProvider {
 public:
     explicit CountingProvider(io::IContentProvider& inner) : inner_(inner) {}
@@ -234,7 +234,7 @@ TEST_CASE("a lazy parse reads no .anim sibling", "[m2][anim][lazy]") {
             continue; // a model with no external sequences proves nothing here
         ++streamedModels;
 
-        // And playing one sequence reads at most one file — the one that
+        // And playing one sequence reads at most one file â€” the one that
         // sequence's keys are in. At most, because an alias shares a file and a
         // sequence may have none.
         auto& model = const_cast<wm2::Model&>(lazy->SourceModel());
@@ -257,7 +257,7 @@ TEST_CASE("a lazy parse reads no .anim sibling", "[m2][anim][lazy]") {
         }
         CHECK(loadedOne);
 
-        // Loading the rest never costs more than one read each — a sequence
+        // Loading the rest never costs more than one read each â€” a sequence
         // whose file is already in hand or absent costs none.
         for (whiteout::u32 s = 0; s < model.sequences.size(); ++s)
             wm2::loadSequence(model, s);
@@ -277,6 +277,10 @@ TEST_CASE("a loaded lazy model holds exactly what an eager parse holds", "[m2][a
     }
 
     io::FileContentProvider provider;
+    // A Legion-or-later `.m2` names its skins by fileDataID, which only a WoW
+    // storage resolves; the provider defaults to Warcraft III, where those ids
+    // mean nothing and the model reads as unloadable.
+    provider.SetGame(whiteout::flakes::ProductId::Wow);
     std::size_t deferredTracks = 0;
 
     for (const auto& path : models) {
@@ -294,7 +298,7 @@ TEST_CASE("a loaded lazy model holds exactly what an eager parse holds", "[m2][a
         const auto& eagerModel = eager->SourceModel();
         REQUIRE(lazyModel.sequences.size() == eagerModel.sequences.size());
 
-        // Before loading, the deferred keys really are absent — otherwise the
+        // Before loading, the deferred keys really are absent â€” otherwise the
         // comparison below would pass on a model that never deferred anything.
         for (std::size_t b = 0; b < eagerModel.bones.size(); ++b) {
             const std::size_t eagerKeyed = KeyedSequences(eagerModel.bones[b].rotation);
@@ -333,6 +337,10 @@ TEST_CASE("an unloaded sequence reloads to the same keys", "[m2][anim][lazy]") {
     }
 
     io::FileContentProvider provider;
+    // A Legion-or-later `.m2` names its skins by fileDataID, which only a WoW
+    // storage resolves; the provider defaults to Warcraft III, where those ids
+    // mean nothing and the model reads as unloadable.
+    provider.SetGame(whiteout::flakes::ProductId::Wow);
     std::size_t roundTripped = 0;
 
     for (const auto& path : models) {
@@ -349,7 +357,7 @@ TEST_CASE("an unloaded sequence reloads to the same keys", "[m2][anim][lazy]") {
             wm2::loadSequence(lazyModel, s);
 
         // Unload puts back exactly the state the parse left, and only for the
-        // sequences that came from a file — the ones the `.m2` carried cannot
+        // sequences that came from a file â€” the ones the `.m2` carried cannot
         // be dropped, because nothing could read them again.
         std::vector<whiteout::u8> wasPending;
         wm2::unloadAllSequences(lazyModel);

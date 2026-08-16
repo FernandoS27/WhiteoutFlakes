@@ -113,6 +113,12 @@ private:
         u32 layoutId = core::VertexLayoutCache::kWc3Interleaved;
         u32 stride = 0;
         core::UnlitLightingModel lighting = core::UnlitLightingModel::Flat;
+        /// @brief Pose the geometry from a bone palette.
+        ///
+        /// Part of the key rather than a bind-time branch for the same reason
+        /// `lighting` is: it changes the vertex shader *and* the declared input
+        /// elements, so it has to select a PSO.
+        bool skinned = false;
 
         bool operator==(const PsoKey&) const = default;
     };
@@ -128,11 +134,22 @@ private:
     core::UnlitLightingModel ResolveLighting(const render_detail::RenderableView& view,
                                              const model::GPUGeoset& geo);
 
+    /// @brief Whether this geoset can be posed: it has a palette to bind and a
+    ///        buffer that carries the skinning attributes itself.
+    ///
+    /// Both halves matter. A geoset whose weights live in a separate stream
+    /// (the MDX path) is not skinned *by this model* — that stream is not bound
+    /// here — and one with no palette has nothing to pose against.
+    bool ResolveSkinned(const render_detail::RenderableView& view,
+                        const model::GPUGeoset& geo) const;
+
     RenderService& rs_;
     bool initTried_ = false;
     gfx::ShaderHandle vs_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle ps_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle vsLit_ = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle vsSkinned_ = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle vsSkinnedLit_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle psLambert_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle psBlinnPhong_ = gfx::ShaderHandle::Invalid;
     gfx::BufferHandle cb_ = gfx::BufferHandle::Invalid;

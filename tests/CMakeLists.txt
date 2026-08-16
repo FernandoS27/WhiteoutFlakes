@@ -81,11 +81,25 @@ if(WDX_ENABLE_M2)
     wdx_add_test(m2_material_test m2_material_test.cpp)
     wdx_add_test(m2_lighting_test m2_lighting_test.cpp)
     wdx_add_test(wow_character_test wow_character_test.cpp)
+    # `.m2` particle emitters. Half pure translation, half a corpus sweep — the
+    # sweep is what stops a green render-diff M2 arm from being read as proof
+    # that particles work when the corpus might carry none.
+    wdx_add_test(m2_particle_test m2_particle_test.cpp)
     # Corpus only: needs the `dbfilesclient/` dump beside the models.
     wdx_add_test(wow_creature_skin_test wow_creature_skin_test.cpp)
 endif()
 if(WDX_ENABLE_M3)
     wdx_add_test(m3_geometry_test m3_geometry_test.cpp)
+    # Half synthetic fixtures (m3_anim_builders.h), half corpus sweep — the
+    # sweep is what checks shipped files agree with the animRef encoding the
+    # reader indexes typed arrays with.
+    wdx_add_test(m3_animation_test m3_animation_test.cpp)
+    # Layered blending, asserted as poses through the real Evaluate path.
+    wdx_add_test(m3_blend_test m3_blend_test.cpp)
+    # Skeleton + palettes. Mostly guards the *absence* of a per-vertex decode.
+    wdx_add_test(m3_skinning_test m3_skinning_test.cpp)
+    # Non-bone channels: hierarchical bone visibility, geoset gating, lights.
+    wdx_add_test(m3_channels_test m3_channels_test.cpp)
 endif()
 # The baked-vertex-buffer description check. Compiled unconditionally — it
 # #ifdefs its two halves internally, so a build with neither format still
@@ -97,10 +111,19 @@ endif()
 # ---- renderer ----
 wdx_add_test(coordinate_system_test coordinate_system_test.cpp)
 wdx_add_test(pose_request_test       pose_request_test.cpp)
+# The shared playback layer. Its parity case carries a transcription of the
+# pre-refactor Actor::Advance — that copy is the point, see the file header.
+wdx_add_test(clip_playlist_test     clip_playlist_test.cpp)
+# Kernels shared between format adapters. Values pinned by hand, not captured
+# from the copies the extraction replaced.
+wdx_add_test(anim_math_test         anim_math_test.cpp)
 wdx_add_test(draw_trace_test        draw_trace_test.cpp)
 wdx_add_test(render_profile_test    render_profile_test.cpp)
 wdx_add_test(wc3_classify_test      wc3_classify_test.cpp)
 wdx_add_test(particle_curve_test    particle_curve_test.cpp)
+# The WC3/WoW dialect POD. Pins Wc3()'s defaults, which are the MDX contract
+# every "this did not move WC3" claim rests on.
+wdx_add_test(particle_dialect_test  particle_dialect_test.cpp)
 wdx_add_test(particle_shape_test    particle_shape_test.cpp)
 wdx_add_test(particle_sim_test      particle_sim_test.cpp)
 wdx_add_test(particle_trace_test    particle_trace_test.cpp)

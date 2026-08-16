@@ -1,5 +1,5 @@
 // ============================================================================
-// M2 animation — the sampler's rules, and the assumptions the adapter rests on.
+// M2 animation â€” the sampler's rules, and the assumptions the adapter rests on.
 //
 // Two halves, as the other M2 tests split:
 //
@@ -7,7 +7,7 @@
 //     This is where a transcription slip in the compressed-quaternion decode or
 //     the per-sequence sub-array fallback gets caught.
 //   * Corpus sweep over `C:/Projects/WhiteoutLib/Corpus/WoW` (override with
-//     WDX_TEST_WOW_CORPUS). Skips when the corpus is absent — skipped is not
+//     WDX_TEST_WOW_CORPUS). Skips when the corpus is absent â€” skipped is not
 //     passed.
 //
 // The corpus half exists for one claim in particular. `GetSkinWeights` reads
@@ -150,7 +150,7 @@ TEST_CASE("M2 track picks its sequence's keys, falling back to sub-array 0", "[m
     const auto track = MakeTrack<Vector3f>({{0}, {0}}, {{{1, 0, 0}}, {{2, 0, 0}}});
     CHECK_THAT(io::SampleM2Vec3(track, At(0, 0), {}).x, WithinAbs(1.0f, 1e-5f));
     CHECK_THAT(io::SampleM2Vec3(track, At(1, 0), {}).x, WithinAbs(2.0f, 1e-5f));
-    // Past the end of the array — an alias, or a sequence this track was never
+    // Past the end of the array â€” an alias, or a sequence this track was never
     // authored for. The client clamps the index to 0 rather than dropping the
     // track, which is what makes an aliased sequence animate at all.
     CHECK_THAT(io::SampleM2Vec3(track, At(7, 0), {}).x, WithinAbs(1.0f, 1e-5f));
@@ -158,7 +158,7 @@ TEST_CASE("M2 track picks its sequence's keys, falling back to sub-array 0", "[m
 
 TEST_CASE("M2 track with no keys for a sequence answers the default", "[m2][anim]") {
     // An empty sub-array is the branch M2AnimateTrack takes to the animref
-    // default — not to the previous key, and not to zero.
+    // default â€” not to the previous key, and not to zero.
     const auto track = MakeTrack<Vector3f>({{}, {0}}, {{}, {{5, 0, 0}}});
     const Vector3f def{9, 9, 9};
     CHECK_THAT(io::SampleM2Vec3(track, At(0, 0), def).x, WithinAbs(9.0f, 1e-5f));
@@ -180,7 +180,7 @@ TEST_CASE("M2 global-sequence tracks ignore the clip and wrap on their period",
 
     at.globalTimeMs = 250;
     CHECK_THAT(io::SampleM2Vec3(track, at, {}).x, WithinAbs(5.0f, 1e-5f));
-    // 1250 wraps to 250, giving the same sample — the wrap is the point.
+    // 1250 wraps to 250, giving the same sample â€” the wrap is the point.
     at.globalTimeMs = 1250;
     CHECK_THAT(io::SampleM2Vec3(track, at, {}).x, WithinAbs(5.0f, 1e-5f));
 }
@@ -201,6 +201,10 @@ TEST_CASE("every corpus .m2 animates coherently", "[m2][anim]") {
     }
 
     io::FileContentProvider provider;
+    // A Legion-or-later `.m2` names its skins by fileDataID, which only a WoW
+    // storage resolves; the provider defaults to Warcraft III, where those ids
+    // mean nothing and the model reads as unloadable.
+    provider.SetGame(whiteout::flakes::ProductId::Wow);
     std::size_t checked = 0;
 
     for (const auto& path : models) {
@@ -235,7 +239,7 @@ TEST_CASE("every corpus .m2 animates coherently", "[m2][anim]") {
             CHECK(s.endMs >= s.startMs);
         }
 
-        // Skin weights line up with the geometry one geoset at a time — the
+        // Skin weights line up with the geometry one geoset at a time â€” the
         // loader only builds a bone stream when the counts match exactly, so a
         // mismatch silently disables skinning rather than failing loudly.
         const auto meshes = const_cast<io::M2ModelAdapter&>(*adapter).GetMeshes();
@@ -284,7 +288,7 @@ TEST_CASE("every corpus .m2 animates coherently", "[m2][anim]") {
         }
 
         // Evaluate every sequence at three points. What this catches is an
-        // out-of-range key index or a NaN leaking out of a degenerate track —
+        // out-of-range key index or a NaN leaking out of a degenerate track â€”
         // both of which produce a model that draws as a single point.
         for (whiteout::i32 s = 0; s < static_cast<whiteout::i32>(seqs.size()); ++s) {
             const whiteout::i32 dur = seqs[s].endMs - seqs[s].startMs;

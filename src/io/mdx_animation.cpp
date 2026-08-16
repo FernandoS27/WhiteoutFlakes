@@ -1,5 +1,6 @@
 #include <algorithm>
 #include "io/mdx_animation.h"
+#include "renderer/animation/anim_math.h"
 #include "whiteout/flakes/types.h"
 
 using namespace whiteout;
@@ -292,11 +293,7 @@ Matrix44f BindPose3x4ToMatrix44f(const std::array<f32, 12>& bp) {
 
 Matrix44f Vec3QuatScaleToMatrix44f(const Vector3f& t, const Quaternion& r, const Vector3f& s,
                                    const Vector3f& pivot) {
-    Matrix44f mS = Matrix44f::scaling(s);
-    Matrix44f mR = Matrix44f::rotation(r).transpose();
-    Matrix44f mNegPiv = Matrix44f::translation({-pivot.x, -pivot.y, -pivot.z});
-    Matrix44f mPosPivT = Matrix44f::translation({pivot.x + t.x, pivot.y + t.y, pivot.z + t.z});
-    return mNegPiv * mS * mR * mPosPivT;
+    return renderer::animation::ComposePivotSRT(t, r, s, pivot);
 }
 
 void MdxHierarchy::Build(const whiteout::mdx::Model& model) {

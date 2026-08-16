@@ -92,6 +92,8 @@ void UnlitShading::Init() {
     vsLit_ = make(gfx::ShaderStage::Vertex, WDX_UNLIT_BLOB(UnlitLitVS));
     psLambert_ = make(gfx::ShaderStage::Pixel, WDX_UNLIT_BLOB(UnlitLambertPS));
     psBlinnPhong_ = make(gfx::ShaderStage::Pixel, WDX_UNLIT_BLOB(UnlitBlinnPhongPS));
+    vsSkinned_ = make(gfx::ShaderStage::Vertex, WDX_UNLIT_BLOB(UnlitSkinnedVS));
+    vsSkinnedLit_ = make(gfx::ShaderStage::Vertex, WDX_UNLIT_BLOB(UnlitSkinnedLitVS));
 #undef WDX_UNLIT_BLOB
 
     // Mapped once per draw, so the Vulkan CB ring needs room for a busy frame
@@ -131,6 +133,8 @@ void UnlitShading::ReleaseGpu() {
     vsLit_ = gfx::ShaderHandle::Invalid;
     psLambert_ = gfx::ShaderHandle::Invalid;
     psBlinnPhong_ = gfx::ShaderHandle::Invalid;
+    vsSkinned_ = gfx::ShaderHandle::Invalid;
+    vsSkinnedLit_ = gfx::ShaderHandle::Invalid;
     warnedNoNormal_.clear();
     initTried_ = false;
 }
@@ -158,6 +162,12 @@ gfx::PipelineHandle UnlitShading::GetOrBuildPso(const PsoKey& key) {
     static constexpr core::VertexSemantic kFlatWants[] = {core::VertexSemantic::Position};
     static constexpr core::VertexSemantic kLitWants[] = {core::VertexSemantic::Position,
                                                         core::VertexSemantic::Normal};
+    // The skinned permutations declare NORMAL even when the pixel side is flat,
+    // because they share one VS input struct — the flat one simply ignores it.
+    // Both skinning attributes come from the same slot-0 buffer as position.
+    static constexpr core::VertexSemantic kSkinnedWants[] = {
+        core::VertexSemantic::Position, core::VertexSemantic::Normal,
+        core::VertexSemantic::BoneWeights, core::VertexSemantic::BoneIndices};
 
     // POSITION at offset 0 with WC3's full 48-byte stride: the buffer is the
     // interleaved Vertex and the remaining 36 bytes are simply not read. This
@@ -174,13 +184,16 @@ gfx::PipelineHandle UnlitShading::GetOrBuildPso(const PsoKey& key) {
     // and makes "which permutation" and "which elements" one decision.
     std::vector<gfx::InputElement> baked;
     if (key.layoutId != core::VertexLayoutCache::kWc3Interleaved) {
-        baked = rs_.Pipeline().VertexLayouts().Subset(
-            key.layoutId, lit ? std::span<const core::VertexSemantic>(kLitWants)
-                              : std::span<const core::VertexSemantic>(kFlatWants));
+        std::span<const core::VertexSemantic> wants =
+            lit ? std::span<const core::VertexSemantic>(kLitWants)
+                : std::span<const core::VertexSemantic>(kFlatWants);
+        if (key.skinned)
+            wants = std::span<const core::VertexSemantic>(kSkinnedWants);
+        baked = rs_.Pipeline().VertexLayouts().Subset(key.layoutId, wants);
     }
 
     gfx::GraphicsPipelineDesc desc{};
-    desc.vs = lit ? vsLit_ : vs_;
+    desc.vs = key.skinned ? (lit ? vsSkinnedLit_ : vsSkinned_) : (lit ? vsLit_ : vs_);
     desc.ps = lit ? (key.lighting == core::UnlitLightingModel::BlinnPhong ? psBlinnPhong_
                                                                          : psLambert_)
                   : ps_;
@@ -206,6 +219,33 @@ gfx::PipelineHandle UnlitShading::GetOrBuildPso(const PsoKey& key) {
     e.pso = gfxDev->CreateGraphicsPipeline(desc);
     psos_.push_back(e);
     return e.pso;
+}
+
+bool UnlitShading::ResolveSkinned(const render_detail::RenderableView& view,
+                                  const GPUGeoset& geo) const {
+    // Needs a palette to pose against.
+    if (geo.bonePaletteCb == gfx::BufferHandle::Invalid)
+        return false;
+    // The interleaved WC3 vertex has no skinning attributes at all — its
+    // weights ride a second stream this model does not bind — so layout 0 is
+    // never skinned here. Keeping that explicit means the WC3 debug-unlit
+    // toggle stays bit-for-bit what it was.
+    if (geo.layoutId == core::VertexLayoutCache::kWc3Interleaved)
+        return false;
+    // Both attributes, in the same buffer as position. A layout carrying only
+    // one of them is malformed rather than half-skinned.
+    const auto& layouts = rs_.Pipeline().VertexLayouts();
+    if (!layouts.Has(geo.layoutId, core::VertexSemantic::BoneWeights) ||
+        !layouts.Has(geo.layoutId, core::VertexSemantic::BoneIndices))
+        return false;
+    // The skinned VS reads a normal from the same struct.
+    if (!layouts.Has(geo.layoutId, core::VertexSemantic::Normal))
+        return false;
+    // An actor-wide palette means the vertex indices are global slots that the
+    // loader rewrote — which cannot have happened for a buffer nobody decoded.
+    if (view.skinning && view.skinning->UsesPerActorPalette())
+        return false;
+    return true;
 }
 
 core::UnlitLightingModel UnlitShading::ResolveLighting(const render_detail::RenderableView& view,
@@ -332,6 +372,7 @@ void UnlitShading::Draw(const render_detail::DrawItem& item, const core::PassCon
     key.layoutId = geo.layoutId;
     key.stride = geo.baseStride;
     key.lighting = ResolveLighting(*item.view, geo);
+    key.skinned = ResolveSkinned(*item.view, geo);
     const gfx::PipelineHandle pso = GetOrBuildPso(key);
     if (pso == gfx::PipelineHandle::Invalid)
         return;
@@ -355,6 +396,13 @@ void UnlitShading::Draw(const render_detail::DrawItem& item, const core::PassCon
         cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 1, lightCb_);
         cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1, lightCb_);
     }
+    if (key.skinned) {
+        // Vertex slot 2, matching where the M2 combiners bind theirs. The
+        // per-geoset palette is the only one used here: a source whose vertex
+        // indices are palette-local is forced onto that path at load time, so
+        // an actor-wide palette cannot reach this draw.
+        cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, geo.bonePaletteCb);
+    }
 
     // G1 hook, after the PSO resolved and the CB was written, so the record
     // covers exactly the draws that were submitted.
@@ -363,16 +411,32 @@ void UnlitShading::Draw(const render_detail::DrawItem& item, const core::PassCon
         d.shadingModel = static_cast<u8>(debug::TraceShadingModel::Unlit);
         d.blendClass = static_cast<u8>(item.key.blend);
         d.streamMask = debug::kStreamBase;
-        // The two axes a baked buffer adds, folded into the PSO key the trace
-        // already carries. Both are 0 for WC3 — layout 0, lighting Flat — which
-        // is what these fields were being hashed as before they were filled in,
-        // so no existing baseline moves. The lit permutation is implied by the
-        // lighting model rather than given its own term: they cannot disagree.
+        // The axes a baked buffer adds, folded into the PSO key the trace
+        // already carries. All are 0 for WC3 — layout 0, lighting Flat, never
+        // skinned through this model — which is what these fields were being
+        // hashed as before they were filled in, so no existing baseline moves.
+        // The lit permutation is implied by the lighting model rather than
+        // given its own term: they cannot disagree.
+        //
+        // Skinning earns a bit here rather than being left implicit because
+        // the fallback is silent: a geoset that loses its palette or its
+        // attributes still draws, just in bind pose, and only this makes that
+        // visible to the gate.
         d.psoKey = debug::TracePsoKey({
-            .psPermute = static_cast<u32>(key.lighting),
+            .psPermute = static_cast<u32>(key.lighting) | (key.skinned ? 0x100u : 0u),
             .vertexLayout = key.layoutId,
             .extraRtvCount = key.extraRtvCount,
         });
+        // The palette this draw actually bound, not the one the actor owns.
+        // A skinned geoset whose PSO resolved unskinned draws bind pose, and
+        // without these two the trace records that as a perfectly healthy
+        // frame — which is exactly how a frozen `.m3` got through the gate
+        // once. Both stay 0 for WC3, which is never skinned through this
+        // model, so no existing baseline moves.
+        d.palettePath = key.skinned ? 2 : 0;
+        d.paletteSlots = (key.skinned && item.view->skinning)
+                             ? item.view->skinning->GeosetPaletteSize(geo.geosetId)
+                             : 0;
         debug::RecordUnlitDraw(d, *item.view, geo, ctx);
     }
 

@@ -63,11 +63,13 @@
 // would name the model.
 // ============================================================================
 
+#include "io/m3/m3_animation.h"
 #include "whiteout/flakes/content_ref.h"
 #include "whiteout/flakes/model_source.h"
 
 #include <whiteout/models/m3/m3.h>
 
+#include <cstddef>
 #include <memory>
 #include <span>
 #include <vector>
@@ -96,11 +98,41 @@ public:
     std::vector<renderer::model::MaterialData> GetMaterials() override {
         return {};
     }
-    renderer::model::SkeletonData GetSkeleton() override {
-        return {};
-    }
-    std::vector<renderer::model::SkinWeightData> GetSkinWeights() override {
-        return {};
+    /// @brief The BONE array as a node tree, with IREF as the inverse bind
+    ///        pose.
+    ///
+    /// M3 is the first format here whose inverse bind matrices are real. MDX
+    /// subtracts a pivot and M2 folds the pivot into the bone matrix, so both
+    /// leave this identity; M3 ships the matrices in `IREF` and the palette is
+    /// wrong without them.
+    ///
+    /// `nodePivots` stays empty on purpose — an M3 bone's animated TRS is a
+    /// complete local transform with no separate pivot to compose around.
+    renderer::model::SkeletonData GetSkeleton() override;
+
+    /// @brief Per-region bone palettes. Emits **no** per-vertex data.
+    ///
+    /// The blob already holds `BoneWeights` and `BoneIndices` at offsets 12
+    /// and 16, described by `DescribeM3Vertex` and uploaded untouched — the
+    /// format ships them pre-coalesced so they can go straight to the GPU.
+    /// Decoding them here would only feed a second vertex stream carrying the
+    /// same numbers.
+    ///
+    /// What the renderer genuinely cannot infer is the palette: a vertex names
+    /// its bone as an index into its region's window of `MODL.boneLookup`, so
+    /// that window, resolved to global bone indices, *is* the geoset's palette.
+    /// Filling `subsetNodeIndices` with it — and nothing else — is the whole
+    /// job. See `SkinWeightData::paletteLocalVertexIndices`.
+    std::vector<renderer::model::SkinWeightData> GetSkinWeights() override;
+
+    /// @brief Raw `RegionFlag` bits per emitted geoset, parallel to
+    ///        `GetMeshes()`.
+    ///
+    /// Carried so the cloth-simulated / cloth-influenced marks survive to the
+    /// render side. Nothing consumes them yet; physics will, and recovering
+    /// them later would mean re-walking the division.
+    std::span<const ::whiteout::u32> GeosetRegionFlags() const {
+        return geosetRegionFlags_;
     }
     std::vector<renderer::ParticleEmitterConfig> GetParticleConfigs() override {
         return {};
@@ -118,12 +150,21 @@ public:
     ::whiteout::flakes::ModelBounds GetBounds() override;
 
     // ---- IAnimationSource ----
-    /// @brief One placeholder sequence, as for `.m2`. Geometry-only: there are
-    ///        no bone tracks to sample, so every pose is the bind pose, and the
-    ///        actor still needs a sequence to keep its clock running.
+    /// @brief The `SEQS` table. Falls back to one synthetic sequence only when
+    ///        the model has none at all, so the actor still has a clock.
     std::vector<renderer::model::SequenceInfo> GetSequences() const override;
 
     renderer::model::FrameState Evaluate(const PoseRequest& req) const override;
+
+    /// @brief StarCraft II cross-fades between sequences rather than cutting,
+    ///        on a 150 ms default its content is authored around.
+    TransitionPolicy DefaultTransition() const override {
+        TransitionPolicy p;
+        p.crossFade = true;
+        p.blendInMs = 150;
+        p.blendOutMs = 150;
+        return p;
+    }
 
     /// @brief How many regions the chosen division holds. What the geometry
     ///        test asserts against.
@@ -136,11 +177,56 @@ public:
     }
 
 private:
+    /// @brief The regions `GetMeshes` emits, in emission order.
+    ///
+    /// `GetMeshes` skips empty and truncated regions, and `geosetId` is the
+    /// index into what survives. Every other per-geoset accessor has to take
+    /// exactly the same skips or the ids stop lining up, so the decision is
+    /// made once, here, rather than repeated in each.
+    void BuildEmittedRegions();
+
+    /// @brief Expand a pose request into sampler layers, priority-desc.
+    ///
+    /// One clip becomes one layer per sub-track container in its sequence's
+    /// group — the split-body expansion. Every layer of a clip carries that
+    /// clip's index as its play id, which is what limits a clip to one
+    /// contribution per property.
+    void BuildLayers(const PoseRequest& req, std::vector<M3Layer>& out) const;
+
+    /// @brief Sample one animatable property across @p layers.
+    ///
+    /// Walks the layers highest priority first, spending a weight budget from
+    /// 1.0, then combines what it gathered lowest priority first with a
+    /// smoothstep. Instantiated for the bone channels; the material and
+    /// emitter channels reuse it unchanged when they land.
+    template <typename T>
+    T SampleRef(const ::whiteout::m3::AnimRef<T>& ref, std::span<const M3Layer> layers) const;
+
+    /// @brief Sample a discrete channel in *override* mode.
+    ///
+    /// Separate from @ref SampleRef because the blend differs, not just the
+    /// type: every contributor enters at a flat weight and the first past the
+    /// filters wins outright. A visibility flag has no meaningful midpoint,
+    /// and the engine routes these through its own override worker.
+    ::whiteout::u32 SampleRefOverride(const ::whiteout::m3::AnimRef<::whiteout::u32>& ref,
+                                      std::span<const M3Layer> layers) const;
+
+    /// @brief Gate each emitted geoset on its region's root bone.
+    void EvaluateGeosetVisibility(std::span<const ::whiteout::u8> visible,
+                                  renderer::model::FrameState& fs) const;
+
+    /// @brief Sample the `LITE` chunk into `FrameState::lights`.
+    void EvaluateLights(std::span<const M3Layer> layers, std::span<const ::whiteout::u8> visible,
+                        const Matrix44f& world, renderer::model::FrameState& fs) const;
+
     ::whiteout::m3::Model model_;
+    M3AnimTables tables_;
     // Which entry of `divisions` GetMeshes reads. Division 0 is the highest
     // detail level; the plan takes one LOD and no more.
     std::size_t divisionIndex_ = 0;
     std::size_t regionCount_ = 0;
+    std::vector<std::size_t> emittedRegions_;
+    std::vector<::whiteout::u32> geosetRegionFlags_;
 };
 
 } // namespace whiteout::flakes::io
