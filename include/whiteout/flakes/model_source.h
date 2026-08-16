@@ -57,6 +57,9 @@ struct ModelData {
     SkeletonData skeleton;
     std::vector<SkinWeightData> skinWeights;
     std::vector<ParticleEmitterConfig> pe2Configs;
+    /// `.m2` emitters. Mutually exclusive with `pe2Configs` in practice — a
+    /// model comes from one format — so the two share an emitter id space.
+    std::vector<M2ParticleEmitterConfig> m2ParticleConfigs;
     std::vector<effects::RibbonEmitterConfig> ribbonConfigs;
     std::vector<CollisionShapeData> collisionConfigs;
     std::vector<AttachmentConfig> attachmentConfigs;
@@ -120,6 +123,14 @@ public:
 
     /// @brief Return the sequence table (name, start/end ms, move speed).
     virtual std::vector<SequenceInfo> GetSequences() const = 0;
+
+    /// @brief What a bare sequence switch should do for this format.
+    ///
+    /// Defaults to a hard cut, which is what Warcraft III and World of
+    /// Warcraft do. StarCraft II overrides it.
+    virtual TransitionPolicy DefaultTransition() const {
+        return {};
+    }
 };
 
 /// @brief Composite source that hosts implement to drive everything from
@@ -142,6 +153,12 @@ public:
         return {};
     }
     virtual std::vector<PE1EmitterConfig> GetPE1Configs() {
+        return {};
+    }
+    /// @brief `.m2` particle emitters. Empty for every other format — a model
+    ///        never has both these and `GetParticleConfigs()`, so the two share
+    ///        one emitter id space in the service without colliding.
+    virtual std::vector<M2ParticleEmitterConfig> GetM2ParticleConfigs() {
         return {};
     }
     virtual std::vector<CornEmitterInit> GetCornEmitterInits() {
@@ -196,6 +213,7 @@ public:
         d.skeleton = GetSkeleton();
         d.skinWeights = GetSkinWeights();
         d.pe2Configs = GetParticleConfigs();
+        d.m2ParticleConfigs = GetM2ParticleConfigs();
         d.ribbonConfigs = GetRibbonConfigs();
         d.collisionConfigs = GetCollisionShapes();
         d.attachmentConfigs = GetAttachmentConfigs();

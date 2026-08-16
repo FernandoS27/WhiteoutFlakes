@@ -58,6 +58,10 @@ struct ModelTemplate {
     // Immutable emitter descriptions, built once from pe2Configs on first spawn
     // and shared by every actor of this template. Parallel to pe2Configs.
     std::vector<std::shared_ptr<const particle::EmitterDesc>> pe2Descs;
+    // `.m2` emitters and their descs. A model has these or pe2Configs, never
+    // both, so the two share the service's Billboard id space.
+    std::vector<M2ParticleEmitterConfig> m2ParticleConfigs;
+    std::vector<std::shared_ptr<const particle::EmitterDesc>> m2ParticleDescs;
     std::vector<effects::RibbonEmitterConfig> ribbonConfigs;
     std::vector<CollisionShapeData> collisionConfigs;
     std::vector<PE1EmitterConfig> pe1Configs;

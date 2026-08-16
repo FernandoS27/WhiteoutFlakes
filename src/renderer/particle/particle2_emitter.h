@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/particle_dialect.h"
 #include "emitter_desc.h"
 #include "particle2.h"
 #include "particle_pool.h"
@@ -15,6 +16,8 @@
 #include <vector>
 
 namespace whiteout::flakes::renderer::particle {
+
+using ParticleBehavior = core::ParticleBehavior;
 
 // Only the two genuinely per-frame flags survive: everything else that used to
 // live here (head/tail, sortZ, model space, XY quads) is fixed at load time and
@@ -43,6 +46,16 @@ public:
     void SetDesc(std::shared_ptr<const EmitterDesc> desc);
     const EmitterDesc& Desc() const {
         return *desc_;
+    }
+
+    // Which client's simulation this emitter runs. Set once at registration
+    // from the profile — a load-time decision, like the ribbon dialect, so
+    // callers read LoadTimeProfile() rather than the frame latch.
+    void SetBehavior(const ParticleBehavior& b) {
+        behavior_ = b;
+    }
+    const ParticleBehavior& Behavior() const {
+        return behavior_;
     }
 
     void SetVisible(bool v) {
@@ -84,6 +97,50 @@ public:
     void SetModelToWorld(const Matrix44f& m) {
         modelToWorld_ = m;
     }
+
+    // The animated lifespan. WoW drives this from an M2 track and re-reads it
+    // every frame for every live particle; WC3 has no such track, so its
+    // emitters leave it at the desc value and nothing consults it.
+    void SetLifeSpan(f32 s) {
+        lifeSpan_ = s;
+    }
+
+    // Distance from the camera, for WoW's emission-rate falloff. Pushed by the
+    // service once per frame; ignored entirely under the WC3 dialect.
+    void SetViewDistance(f32 d) {
+        viewDistance_ = d;
+    }
+
+    // Renderer units per model unit. The `.m2` size, twinkle and tail values are
+    // authored in yards while the emitter draws in renderer units, so the
+    // geometry builder converts with this. MDX models are already in renderer
+    // units and leave it at 1.
+    f32 UnitScale() const {
+        return unitScale_;
+    }
+
+    // The model's own fade, which WoW multiplies into particle alpha instead of
+    // gating the emitter with it.
+    f32 ModelAlpha() const {
+        return modelAlpha_;
+    }
+
+    // This emitter's random flipbook offset, added to every cell it draws. Drawn
+    // once from the emitter's seed, so two actors of the same model animate
+    // their sheets out of phase.
+    u16 BaseCell() const {
+        return baseCell_;
+    }
+
+    // Emitter world position for this frame. WoW spawns along the segment
+    // between the previous frame's position and this one, and derives the
+    // velocity a particle inherits from the same delta.
+    void SetWorldPosition(const Vector3f& p);
+
+    // What one particle's lifespan actually is: uniform under WC3, per-particle
+    // and re-evaluated against the current animated track under WoW — so a
+    // lifespan keyframe retro-actively resizes particles already in flight.
+    f32 EffectiveLifeSpan(const Particle2& p) const;
 
     // `emissionScaler` multiplies the emission rate. Threaded in from the owning
     // service rather than read from a global, so two scenes can scale
@@ -175,6 +232,16 @@ protected:
 
     void InternalUpdate(f32 elapsed, f32 emissionScaler);
 
+    // One simulation step: release this step's particles, then age, kill and
+    // move the live ones. WC3 runs it once per frame; WoW runs it once per
+    // fixed sub-step plus once for the remainder.
+    void StepOnce(f32 dt, f32 emissionScaler);
+    void EmitStep(f32 dt, f32 emissionScaler);
+    void AdvanceStep(f32 dt);
+
+    // Emitter velocity refresh — WoW only, and only while the pool is empty.
+    void TickEmitterVelocity(f32 dt);
+
     void Sync();
 
     // Called after the pool grows, with the new particle capacity. Outputs that
@@ -194,6 +261,7 @@ protected:
 
 protected:
     std::shared_ptr<const EmitterDesc> desc_;
+    ParticleBehavior behavior_ = ParticleBehavior::Wc3();
 
     u32 flags_ = 0;
 
@@ -202,8 +270,22 @@ protected:
     f32 emissionRate_ = 0.0f;
 
     f32 numNew_ = 0.0f;
+    f32 lifeSpan_ = 0.0f;
 
     Matrix44f modelToWorld_ = Matrix44f::identity();
+
+    // ---- WoW emitter-motion state (inert under the WC3 dialect) ----
+    Vector3f worldPos_{0, 0, 0};
+    Vector3f prevWorldPos_{0, 0, 0};
+    bool worldPosSeeded_ = false;
+    Vector3f emitterVelocity_{0, 0, 0};
+    Vector3f spawnOffset_{0, 0, 0};
+    Vector3f followDelta_{0, 0, 0};
+    f32 velocityTimer_ = 0.0f;
+    f32 viewDistance_ = 0.0f;
+    f32 unitScale_ = 1.0f;
+    f32 modelAlpha_ = 1.0f;
+    u16 baseCell_ = 0;
 
     RndSeed randSeed_;
     RndSeed compactSeed_;

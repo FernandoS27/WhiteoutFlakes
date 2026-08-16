@@ -176,11 +176,34 @@ Vector3f SampleM2Vec3(const ::whiteout::m2::AnimationTrack<Vector3f>& track, con
 Quaternion SampleM2Quat(const ::whiteout::m2::AnimationTrack<::whiteout::m2::CompatQuaternion>& tr,
                         const M2AnimTime& at, const Quaternion& def);
 
+/// @brief The same track, keyed by uncompressed `C4Quaternion`. Texture
+///        transforms are stored that way at every M2 version; bone rotations
+///        never are.
+Quaternion SampleM2Quat(const ::whiteout::m2::AnimationTrack<Quaternion>& tr, const M2AnimTime& at,
+                        const Quaternion& def);
+
 /// @brief fixed16 track — texture weights and colour alpha.
 f32 SampleM2Fixed16(const ::whiteout::m2::AnimationTrack<i16>& track, const M2AnimTime& at, f32 def);
 
 /// @brief `f32` track — light intensities and attenuation radii.
 f32 SampleM2Float(const ::whiteout::m2::AnimationTrack<f32>& track, const M2AnimTime& at, f32 def);
+
+/// @brief One key of a compressed particle-gravity track.
+///
+/// The four bytes are `{i8 x, i8 y, i16 z}`: a unit direction whose Z is
+/// recovered from the other two, and a magnitude in the `i16` whose SIGN picks
+/// the Z hemisphere. @p packed is that word wearing a float's clothes — it is
+/// not a number and must never be interpolated before decoding.
+Vector3f M2DecodeCompressedGravity(f32 packed);
+
+/// @brief The particle gravity track, always as a vector.
+///
+/// @p compressed says the keys are packed (file flag `CompressedGravity`);
+/// otherwise they are a downward magnitude, negated onto -Z. The client
+/// decompresses the whole track at load and interpolates decoded vectors, so
+/// this decodes both endpoints and blends those.
+Vector3f SampleM2ParticleGravity(const ::whiteout::m2::AnimationTrack<f32>& track,
+                                 const M2AnimTime& at, bool compressed);
 
 /// @brief `u8` track — light visibility, and nothing else in the format.
 ///

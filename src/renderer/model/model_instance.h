@@ -38,6 +38,8 @@ enum class ActorRole : u8 {
     Attachment, // parent owns slot config; transform pushed from parent FrameState
     PE1,        // parent's PE1 sim drives transform + lifetime
     SPN,        // event-spawned, frozen transform, sequence-duration lifetime
+    Skinned,    // rides the parent's skeleton: same transform, bones copied per
+                // `skinnedParentBone`. See there.
 };
 
 struct Actor {
@@ -120,6 +122,18 @@ struct Actor {
 
     animation::AnimationDriver animation;
 
+    // ActorRole::Skinned only: which of the *parent's* nodes drives each of
+    // this actor's, or -1 for one it poses itself. Indexed by this actor's node.
+    //
+    // A rig that rides another is not the same rig: World of Warcraft's
+    // collections models — a Dracthyr's horns — carry thirteen bones against
+    // the character's two hundred and fifty-five, and the two are paired by key
+    // bone rather than by index. So the pairing is resolved once at spawn and
+    // the per-frame job is a copy. An entry left at -1 still composes onto its
+    // parent chain normally, which is what the one unpaired link in that chain
+    // needs.
+    std::vector<i32> skinnedParentBone;
+
     // Cache for ScaledWorldTransform; never read unless worldScale != 1.
     mutable Matrix44f scaledWorld_ = Matrix44f::identity();
 
@@ -129,18 +143,14 @@ struct Actor {
     // (e.g., one paused at speed=0, one at 2x), or have their cursors set
     // explicitly via animation.SetTimeMs (Max plugin scrubs the timeline).
     //
-    // `cursor` holds Advance()'s scratch state — actor-local clock plus the
-    // bookkeeping it needs to detect sequence transitions. Hosts shouldn't
-    // touch these fields; AncestorActorTimeMs() is the read API.
+    // `cursor` is the actor-local clock and nothing else. The sequence
+    // bookkeeping that used to sit beside it — start stamp, previous index,
+    // wrap counter — moved into `animation.Playlist()`, which needs it per
+    // play rather than per actor. Hosts shouldn't touch this;
+    // AncestorActorTimeMs() is the read API.
     f32 playbackSpeed = 1.0f;
     struct Cursor {
         i32 actorTimeMs = 0;
-        i32 sequenceStartTimeMs = 0;
-        i32 prevActiveSequence = -1;
-        // Increments each time the active sequence wraps (looped or
-        // ignoreNonLooping-forced-loop). Consumers (corn-fx emitters
-        // flagged IsNonLoopingEffect) read this to re-fire per loop.
-        i32 sequenceCycle = 0;
     };
     Cursor cursor;
 

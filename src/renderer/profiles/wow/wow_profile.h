@@ -103,6 +103,13 @@ public:
         // shared; see core/ribbon_dialect.h for each divergence this selects.
         return core::RibbonBehavior::Wow();
     }
+    core::ParticleBehavior Particles() const override {
+        // Same relationship as Ribbons(): WoW's CParticleEmitter2 and WC3's are
+        // the same emitter evolved — the emission accumulator, the pool, the
+        // squirt burst and the cell math are shared, and only the divergences
+        // in core/particle_dialect.h are selected here.
+        return core::ParticleBehavior::Wow();
+    }
     CoordSpace SourceSpace() const override {
         // Genuinely identity: World of Warcraft shares Warcraft III's axes
         // (+X forward, +Y left, +Z up), so nothing is rebased. StarCraft II is

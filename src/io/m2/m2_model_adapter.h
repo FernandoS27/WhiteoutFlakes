@@ -219,6 +219,16 @@ public:
         composed_ = std::move(byType);
     }
 
+    /// @brief The sheets set above, so a collections model can bind the same
+    ///        ones the character it rides was dressed in.
+    ///
+    /// Its type 1 / 9 / 20 slots *are* the character's body, horn and jewelry
+    /// composites — the horn colour is a layer of the character's layout, not
+    /// a texture of its own — so sharing the list is the whole of dressing it.
+    const std::vector<M2ComposedTexture>& ComposedTextures() const noexcept {
+        return composed_;
+    }
+
     /// @brief `skinSectionId` per submesh, in the order GetMeshes emits them.
     ///        Empty until GetMeshes has run.
     const std::vector<u16>& EmittedSkinSections() const noexcept {
@@ -251,9 +261,14 @@ public:
     /// and only a per-geoset subset fits under it.
     std::vector<renderer::model::SkinWeightData> GetSkinWeights() override;
 
+    /// @brief Empty: `.m2` particles are not MDX PE2 emitters and describe a
+    ///        different machine. They come out of GetM2ParticleConfigs.
     std::vector<renderer::ParticleEmitterConfig> GetParticleConfigs() override {
         return {};
     }
+    /// @brief One config per `M2Particle`. Simulation is shared with the MDX
+    ///        path (see core/particle_dialect.h); this reports the static half.
+    std::vector<renderer::M2ParticleEmitterConfig> GetM2ParticleConfigs() override;
     /// @brief One config per `M2Ribbon`. Ribbon *simulation* is shared with the
     ///        MDX path (see core/ribbon_dialect.h); this only reports the
     ///        static half — rate, lifespan, gravity, sprite grid, material.
@@ -306,7 +321,7 @@ public:
     }
 
 private:
-    void EvaluateBones(const M2AnimTime& at, bool bindPose,
+    void EvaluateBones(const M2AnimTime& at, bool bindPose, const PoseRequest& req,
                        renderer::model::FrameState& fs) const;
     void EvaluateTextureTransforms(const M2AnimTime& at, bool bindPose,
                                    renderer::model::FrameState& fs) const;
@@ -316,6 +331,8 @@ private:
                         renderer::model::FrameState& fs) const;
     void EvaluateRibbons(const M2AnimTime& at, const Matrix44f& world,
                          renderer::model::FrameState& fs) const;
+    void EvaluateParticles(const M2AnimTime& at, const Matrix44f& world,
+                           renderer::model::FrameState& fs) const;
     /// Re-derive `geosetHidden_` from the id set and the emission order. Both
     /// arrive independently — the set from the host, the order from GetMeshes —
     /// so whichever lands second rebuilds.

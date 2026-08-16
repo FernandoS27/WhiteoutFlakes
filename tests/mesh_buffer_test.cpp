@@ -1,17 +1,17 @@
 // ============================================================================
-// MeshBuffer — does the layout description match the bytes it describes?
+// MeshBuffer â€” does the layout description match the bytes it describes?
 //
 // This is the one thing the baked upload path can get wrong silently. The
 // renderer takes an adapter at its word: it uploads `MeshBuffer::data` verbatim
 // and builds an input layout from `MeshBuffer::attributes` without ever
 // decoding a single attribute. If an offset, a format or a stride is wrong, no
-// bounds check fires and no buffer overruns — the GPU just reads the wrong
+// bounds check fires and no buffer overruns â€” the GPU just reads the wrong
 // bytes and shades them confidently.
 //
 // So the assertions here decode the blob *independently*, using only the
 // description, and compare against the parser's own accessors
-// (`getPositions()`, `getNormals()`, and `m2::Vertex`). Structural checks —
-// stride, size, in-bounds attributes — come first because they localise a
+// (`getPositions()`, `getNormals()`, and `m2::Vertex`). Structural checks â€”
+// stride, size, in-bounds attributes â€” come first because they localise a
 // failure; the value comparisons are what actually prove the description.
 //
 // Device-free, so this is a G0 test and runs in CI. It needs the same corpora
@@ -131,6 +131,10 @@ TEST_CASE("m2 baked buffers describe their own bytes", "[m2][meshbuffer]") {
     }
 
     io::FileContentProvider provider;
+    // A Legion-or-later `.m2` names its skins by fileDataID, which only a WoW
+    // storage resolves; the provider defaults to Warcraft III, where those ids
+    // mean nothing and the model reads as unloadable.
+    provider.SetGame(whiteout::flakes::ProductId::Wow);
     std::size_t checked = 0;
 
     for (const auto& path : models) {
@@ -153,7 +157,7 @@ TEST_CASE("m2 baked buffers describe their own bytes", "[m2][meshbuffer]") {
             // The whole reason `.m2` needs no repack: the record IS the file's
             // 48-byte vertex. A stride that drifted from it would mean the
             // struct picked up padding, which the adapter's static_asserts
-            // would have caught at compile time — this is the runtime half.
+            // would have caught at compile time â€” this is the runtime half.
             CHECK(b.stride == 48);
             REQUIRE(b.VertexCount() == mesh.positions.size());
 
@@ -235,14 +239,14 @@ TEST_CASE("m3 baked buffers describe their own bytes", "[m3][meshbuffer]") {
 
             // The parser's own view of the same blob. The adapter derives the
             // layout a second time by hand, and this is what pins the two
-            // together — if VertexBuffer::initialize() ever changes its offsets
+            // together â€” if VertexBuffer::initialize() ever changes its offsets
             // or stride, this fires instead of the model rendering subtly wrong.
             const auto& vb = adapter->SourceModel().vertices;
             const auto parserNormals = vb.getNormals();
 
             const auto meshes = adapter->GetMeshes();
             if (meshes.empty())
-                continue; // no drawable region — REGN v<3 parser gap
+                continue; // no drawable region â€” REGN v<3 parser gap
 
             const auto& regions = adapter->SourceModel().divisions[0].regions;
 
@@ -279,7 +283,7 @@ TEST_CASE("m3 baked buffers describe their own bytes", "[m3][meshbuffer]") {
                     REQUIRE(got.z == want.z);
                 }
 
-                // SNORM decode, spelled the way D3D does it — max(v/127, -1).
+                // SNORM decode, spelled the way D3D does it â€” max(v/127, -1).
                 // The parser divides by 127.0 without the clamp, so a stored
                 // -128 is the one value where the two legitimately differ
                 // (-1.0 against -1.0079). Tolerated rather than asserted equal,

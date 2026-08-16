@@ -1,16 +1,40 @@
-#include "renderer/profiles/wow/wow_character_appearance.h"
+﻿#include "renderer/profiles/wow/wow_character_appearance.h"
 
 #include "io/m2/m2_model_adapter.h"
 #include "io/wow/character_geosets.h"
 #include "renderer/model/model_source_utils.h"
 #include "whiteout/flakes/content_provider.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <utility>
 
 namespace whiteout::flakes::renderer::profiles::wow {
 
 namespace wowio = ::whiteout::flakes::io::wow;
+
+std::vector<i32> PairBonesByKeyBone(const ::whiteout::m2::Model& parent,
+                                    const ::whiteout::m2::Model& child) {
+    std::unordered_map<i32, i32> parentByKey;
+    parentByKey.reserve(parent.bones.size());
+    for (usize i = 0; i < parent.bones.size(); ++i) {
+        // First wins. A key bone id is meant to be unique within a rig, and
+        // taking the earlier bone on a file that repeats one keeps the pairing
+        // a function of the file rather than of iteration order.
+        if (parent.bones[i].keyBoneId >= 0)
+            parentByKey.try_emplace(parent.bones[i].keyBoneId, static_cast<i32>(i));
+    }
+
+    std::vector<i32> out(child.bones.size(), -1);
+    for (usize i = 0; i < child.bones.size(); ++i) {
+        const i32 key = child.bones[i].keyBoneId;
+        if (key < 0)
+            continue;
+        if (const auto it = parentByKey.find(key); it != parentByKey.end())
+            out[i] = it->second;
+    }
+    return out;
+}
 
 void WowCharacterAppearance::SetContentProvider(io::IContentProvider* provider) {
     if (provider_ == provider)
@@ -72,14 +96,17 @@ void WowCharacterAppearance::SetChoice(const ContentRef& modelRef, u32 optionId,
             continue;
         const u32 count = static_cast<u32>(model->options[i].choices.size());
         // Wraps, so a host can step the value without knowing how many an
-        // option has — the same contract WowReplaceableTextures::SetVariation
+        // option has â€” the same contract WowReplaceableTextures::SetVariation
         // offers for creature skins.
         it->second.choiceIndex[i] = count ? choiceIndex % count : 0;
         return;
     }
 }
 
-bool WowCharacterAppearance::Apply(io::M2ModelAdapter& adapter, const ContentRef& modelRef) {
+bool WowCharacterAppearance::Apply(io::M2ModelAdapter& adapter, const ContentRef& modelRef,
+                                   std::vector<SkinnedModel>* outSkinned) {
+    if (outSkinned)
+        outSkinned->clear();
     const auto& model = adapter.SourceModel();
     if (!wowio::IsCharacterModel(model))
         return false;
@@ -111,9 +138,23 @@ bool WowCharacterAppearance::Apply(io::M2ModelAdapter& adapter, const ContentRef
     const wowio::ResolvedAppearance appearance = ResolveAppearance(tables_, *info, choiceIds);
     adapter.SetVisibleGeosets(wowio::VisibleGeosets(appearance.geosets, declared));
 
+    // Grouped by file: the twenty horn styles are twenty geosets of one
+    // collections `.m2`, and the horn jewelry is another geoset of the same
+    // one. One model, spawned once, showing the parts its choices asked for.
+    if (outSkinned) {
+        for (const wowio::SkinnedModelRef& s : appearance.skinnedModels) {
+            const auto it = std::find_if(outSkinned->begin(), outSkinned->end(),
+                                         [&](const SkinnedModel& m) { return m.fileId == s.fileId; });
+            SkinnedModel& entry = (it != outSkinned->end())
+                                      ? *it
+                                      : outSkinned->emplace_back(SkinnedModel{s.fileId, {}});
+            entry.geosets.push_back(static_cast<u16>(s.geoset));
+        }
+    }
+
     // Read and decode straight through the provider by fileDataID, which is the
     // only identity these rows carry. Synchronous, on the load thread, next to
-    // the `.m2` parse that already blocks on IO — and cached per sheet, because
+    // the `.m2` parse that already blocks on IO â€” and cached per sheet, because
     // one `.blp` routinely feeds several layers of the same composite.
     std::unordered_map<u32, std::pair<std::vector<u8>, std::pair<u32, u32>>> decoded;
     auto fetch = [&](u32 fileId, std::vector<u8>& rgba, u32& w, u32& h) {
@@ -144,7 +185,7 @@ bool WowCharacterAppearance::Apply(io::M2ModelAdapter& adapter, const ContentRef
         return true;
     };
 
-    // Moved rather than copied: the body sheet alone is 2048×1024 RGBA.
+    // Moved rather than copied: the body sheet alone is 2048Ã—1024 RGBA.
     std::vector<wowio::ComposedTexture> sheets = ComposeCharacter(*info, appearance, fetch);
     std::vector<io::M2ComposedTexture> composed;
     composed.reserve(sheets.size());
@@ -165,3 +206,4 @@ bool WowCharacterAppearance::Apply(io::M2ModelAdapter& adapter, const ContentRef
 }
 
 } // namespace whiteout::flakes::renderer::profiles::wow
+

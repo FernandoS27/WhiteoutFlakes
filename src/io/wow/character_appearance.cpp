@@ -106,6 +106,8 @@ ResolvedAppearance ResolveAppearance(const ChrCustomizationTable& tables, const 
                 continue;
             if (e.geoset >= 0)
                 out.geosets.Show(static_cast<u16>(e.geoset));
+            if (e.skinnedModelFileId != 0 && e.skinnedGeoset >= 0)
+                out.skinnedModels.push_back({e.skinnedModelFileId, e.skinnedGeoset});
             if (e.materialResourcesId == 0)
                 continue;
             const u32 file = tables.TextureFileFor(e.materialResourcesId);

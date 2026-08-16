@@ -85,6 +85,42 @@ struct EmitterDesc {
     LifetimeCurves curves;
 
     f32 lifeSpan = 0.0f;
+
+    // ---- WoW-only spread constants (M2 "FixedProp") ----
+    // Each particle's lifespan is `lifeSpan + varQ/32768 * lifespanVariation`,
+    // and the emission rate is re-jittered by `emissionRateVariation` every
+    // frame. Zero here leaves both exactly inert, which is the MDX case.
+    f32 lifespanVariation = 0.0f;
+    f32 emissionRateVariation = 0.0f;
+
+    // Scales the emitter motion a new particle inherits. This is the field the
+    // M2 spec calls `burstMultiplier`; the runtime consumes it only here, so
+    // the spec name is a misnomer (see M2_PARTICLE_DESIGN.md, answered Q4).
+    f32 inheritVelocityScale = 1.0f;
+
+    // Pull on particles older than 2*dt, so a trail follows its emitter. How
+    // much of the emitter's travel they inherit is a line in the emitter's own
+    // speed, clamped to [0,1]: `bias + slope * speed`. The record stores the
+    // line as two (speed, scale) sample points; SetFollowParams solves for
+    // these two at load, so this is the runtime form, not the file's.
+    f32 followBias = 0.0f;
+    f32 followSlope = 0.0f;
+
+    // Spawn positions randomised along the emitter's path rather than spaced
+    // evenly along it (M2 file flag InheritPosition). Costs one extra draw per
+    // particle, so it is a behaviour of the emitter, not a cosmetic option.
+    bool randomEmissionSpacing = false;
+
+    // Skip the distance falloff on emission rate (M2 LodIgnoreDistance).
+    bool lodIgnoreDistance = false;
+
+    // Whether THIS emitter uses the two optional WoW motion features. The
+    // dialect says the feature exists; these say the emitter asked for it —
+    // both are per-emitter runtime flags in the client, set from the M2 record.
+    // Enabling implosion dialect-wide would kill nearly every particle the
+    // frame it moved outward, which is exactly what it is designed to do.
+    bool implosionFilter = false;
+    bool followPosition = false;
     // Initial longitudinal sweep. Seeds SpawnParams::longitude at registration;
     // PE1 animates it per frame, PE2 never does.
     f32 longitude = 6.2831853071795864769f;
@@ -96,6 +132,55 @@ struct EmitterDesc {
     bool sortZ = false;
     bool modelSpace = false;
     bool xyQuads = false;
+
+    // ---- WoW-only appearance (see M2_PARTICLE_DESIGN.md C.3) ----
+    // Every one of these is read only by the WoW geometry builder; a WC3 desc
+    // leaves them off and never reaches that code at all.
+
+    /// Align the head quad along the particle's velocity instead of the screen,
+    /// foreshortened by how much of that velocity faces the camera.
+    bool velocityOrient = false;
+    /// Multiply the drawn size by the square root of the emitter bone's scale.
+    bool inheritBoneScale = false;
+    /// Spin backwards for particles whose seed is odd — half of them, so a
+    /// spinning emitter reads as tumbling rather than rotating as one.
+    bool negateSpinRandom = false;
+    /// Shorten the tail to the particle's age, so a fresh particle has none.
+    bool clampTailToAge = false;
+    /// Displace the head quad along its own spun up-axis, turning spin into an
+    /// orbit around the particle's position.
+    bool offsetHeadBySpin = false;
+    /// Draw the X and Y size jitter separately (two draws) rather than sharing
+    /// one multiplier. A draw-count difference, so it is per-emitter data that
+    /// shifts this particle's render stream and nothing else's.
+    bool unscaledSizeVariation = false;
+    /// Pick a random sheet cell when the head-cell track is empty.
+    bool chooseRandomTexture = false;
+    /// Give the emitter a random cell offset, drawn once from its own seed when
+    /// the seed is set — so two copies of one model flip books out of phase.
+    bool randFlipbookStart = false;
+
+    /// 2D billboard rotation, radians: `age * spinSpeed + baseSpin`. Both terms
+    /// take a symmetric per-particle variation re-derived from the particle's
+    /// seed every frame (`GetSpin` @0x1016a2120). Note the client tests only
+    /// the two SPEED terms when deciding whether to rotate at all, so a
+    /// baseSpin with no spinSpeed draws unrotated — reproduced, not repaired.
+    f32 baseSpin = 0.0f, baseSpinVariation = 0.0f;
+    f32 spinSpeed = 0.0f, spinSpeedVariation = 0.0f;
+
+    /// Per-particle size jitter, `max(1 + rand[-1,1] * variation, 1e-4)`. With
+    /// `unscaledSizeVariation` clear only the x component is consulted, for
+    /// both axes — the client's own asymmetry.
+    Vector2f sizeVariation{0, 0};
+
+    /// Twinkle. A particle is culled outright when `twinklePercent` falls below
+    /// its table entry, and its size is multiplied by
+    /// `twinkleBase + twinkleVary * entry` — the record's {min, max} range
+    /// stored as base and span, exactly as SetTwinkleScale keeps it.
+    f32 twinkleSpeed = 0.0f;
+    f32 twinklePercent = 1.0f;
+    f32 twinkleBase = 1.0f;
+    f32 twinkleVary = 0.0f;
 
     i32 priorityPlane = 0;
     ParticleMaterialDesc material;

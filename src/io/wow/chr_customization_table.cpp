@@ -42,9 +42,14 @@ constexpr u32 kOptName = 0, kOptModel = 4, kOptOrder = 5;
 // ChrCustomizationChoice
 constexpr u32 kChoName = 0, kChoOption = 2, kChoOrder = 5;
 // ChrCustomizationElement
-constexpr u32 kElemChoice = 0, kElemRelated = 1, kElemGeoset = 2, kElemMaterial = 4;
+constexpr u32 kElemChoice = 0, kElemRelated = 1, kElemGeoset = 2, kElemSkinned = 3,
+              kElemMaterial = 4;
 // ChrCustomizationGeoset
 constexpr u32 kGeoType = 0, kGeoId = 1;
+// ChrCustomizationSkinnedModel — same (type, id) spelling as the geoset table,
+// but the geoset belongs to the file in the first column rather than to the
+// character's own `.m2`.
+constexpr u32 kSkmFile = 0, kSkmGeoType = 1, kSkmGeoId = 2;
 // ChrCustomizationMaterial
 constexpr u32 kCmatTarget = 0, kCmatResources = 1;
 // TextureFileData — the row id *is* the fileDataID.
@@ -156,10 +161,11 @@ bool ChrCustomizationTable::Load(IContentProvider& provider) {
     auto choices = Read(provider, "dbfilesclient/chrcustomizationchoice.db2");
     auto elements = Read(provider, "dbfilesclient/chrcustomizationelement.db2");
     auto geosets = Read(provider, "dbfilesclient/chrcustomizationgeoset.db2");
+    auto skinned = Read(provider, "dbfilesclient/chrcustomizationskinnedmodel.db2");
     auto cmaterials = Read(provider, "dbfilesclient/chrcustomizationmaterial.db2");
     auto texFiles = Read(provider, "dbfilesclient/texturefiledata.db2");
     if (!raceXModel || !chrModel || !displays || !modelData || !materials || !layers || !sections ||
-        !options || !choices || !elements || !geosets || !cmaterials || !texFiles) {
+        !options || !choices || !elements || !geosets || !skinned || !cmaterials || !texFiles) {
         loadFailed_ = true;
         return false;
     }
@@ -180,6 +186,7 @@ bool ChrCustomizationTable::Load(IContentProvider& provider) {
         !Wide(*choices, kChoOrder, "ChrCustomizationChoice") ||
         !Wide(*elements, kElemMaterial, "ChrCustomizationElement") ||
         !Wide(*geosets, kGeoId, "ChrCustomizationGeoset") ||
+        !Wide(*skinned, kSkmGeoId, "ChrCustomizationSkinnedModel") ||
         !Wide(*cmaterials, kCmatResources, "ChrCustomizationMaterial") ||
         !Wide(*texFiles, kTfdResources, "TextureFileData")) {
         loadFailed_ = true;
@@ -359,6 +366,24 @@ bool ChrCustomizationTable::Load(IContentProvider& provider) {
         geosetByRow.emplace(row.id(), static_cast<i32>(row.getUInt(kGeoType) * 100 +
                                                        row.getUInt(kGeoId)));
     }
+    struct SkinnedRow {
+        u32 fileId = 0;
+        i32 geoset = -1;
+    };
+    std::unordered_map<u32, SkinnedRow> skinnedByRow;
+    skinnedByRow.reserve(skinned->rowCount());
+    for (usize i = 0; i < skinned->rowCount(); ++i) {
+        const db::Row row = skinned->row(i);
+        if (row.isEncrypted())
+            continue;
+        const u32 file = static_cast<u32>(row.getUInt(kSkmFile));
+        if (file == 0)
+            continue;
+        skinnedByRow.emplace(row.id(),
+                             SkinnedRow{file, static_cast<i32>(row.getUInt(kSkmGeoType) * 100 +
+                                                              row.getUInt(kSkmGeoId))});
+    }
+
     std::unordered_map<u32, std::pair<u32, u32>> materialByRow; // → (target, resources)
     materialByRow.reserve(cmaterials->rowCount());
     for (usize i = 0; i < cmaterials->rowCount(); ++i) {
@@ -381,16 +406,22 @@ bool ChrCustomizationTable::Load(IContentProvider& provider) {
             if (const auto it = geosetByRow.find(g); it != geosetByRow.end())
                 e.geoset = it->second;
         }
+        if (const u32 s = static_cast<u32>(row.getUInt(kElemSkinned)); s != 0) {
+            if (const auto it = skinnedByRow.find(s); it != skinnedByRow.end()) {
+                e.skinnedModelFileId = it->second.fileId;
+                e.skinnedGeoset = it->second.geoset;
+            }
+        }
         if (const u32 m = static_cast<u32>(row.getUInt(kElemMaterial)); m != 0) {
             if (const auto it = materialByRow.find(m); it != materialByRow.end()) {
                 e.materialTarget = it->second.first;
                 e.materialResourcesId = it->second.second;
             }
         }
-        // An element that resolved neither is one this renderer does not act on
-        // — a bone set, a skinned model, a voice. Dropping it keeps the runs
-        // below to the elements that matter.
-        if (e.geoset >= 0 || e.materialResourcesId != 0)
+        // An element that resolved none of the three is one this renderer does
+        // not act on — a bone set, a voice, an anim kit. Dropping it keeps the
+        // runs below to the elements that matter.
+        if (e.geoset >= 0 || e.materialResourcesId != 0 || e.skinnedModelFileId != 0)
             pairs.emplace_back(static_cast<u32>(row.getUInt(kElemChoice)), e);
     }
     std::stable_sort(pairs.begin(), pairs.end(),

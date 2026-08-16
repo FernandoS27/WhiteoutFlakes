@@ -20,6 +20,7 @@
 //   ChrCustomizationChoice  (by option)     → the pickable values
 //   ChrCustomizationElement (by choice)     → geoset row and/or material row
 //   ChrCustomizationGeoset                  → (GeosetType, GeosetID)
+//   ChrCustomizationSkinnedModel            → (CollectionsFile, GeosetType, ID)
 //   ChrCustomizationMaterial                → (TextureTarget, MaterialResources)
 //   TextureFileData         (by resources)  → the `.blp` fileDataID
 //
@@ -108,6 +109,17 @@ struct ChoiceElement {
     i32 geoset = -1;               ///< skinSectionId, or -1.
     u32 materialTarget = 0;        ///< ChrModelTextureTargetID, or 0.
     u32 materialResourcesId = 0;
+    /// A *second model* this choice puts on the character, from
+    /// ChrCustomizationSkinnedModel: the `.m2` and which of its geosets.
+    ///
+    /// Not everything a choice adds lives in the character's own `.m2`. A
+    /// Dracthyr's horns are twenty geosets of
+    /// `item/objectcomponents/collections/collections_dracthyr_dt_m.m2` — a
+    /// thirteen-bone rig posed from the character's skeleton — and the
+    /// character file declares no group 24 at all. A choice names one or the
+    /// other, never both.
+    u32 skinnedModelFileId = 0;
+    i32 skinnedGeoset = -1; ///< skinSectionId inside that model, or -1.
 };
 
 /// Everything the tables know about one character model.

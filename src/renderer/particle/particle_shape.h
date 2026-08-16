@@ -18,6 +18,9 @@
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
+#include <utility>
+#include <vector>
+
 namespace whiteout::flakes::renderer::particle {
 
 // A value plus the spread it is randomised over at spawn. WC3's
@@ -30,13 +33,29 @@ struct Ranged {
 };
 
 // The animated inputs to one spawn. Each shape reads the subset it has.
+//
+// WoW's generators reuse the same two "area" floats for different meanings —
+// rect width/length for a plane, min/max radius for a sphere, t0/t1 for a
+// spline — so `width`/`height` carry those rather than the struct growing a
+// field per generator. That reuse is the client's own, not a shortcut here.
 struct SpawnParams {
-    f32 width = 0.0f;    // plane extent along local X
-    f32 height = 0.0f;   // plane extent along local Y
-    f32 latitude = 0.0f;  // cone half-angle from local Z
+    f32 width = 0.0f;    // plane extent along local X | sphere min radius | spline t0
+    f32 height = 0.0f;   // plane extent along local Y | sphere max radius | spline t1
+    f32 latitude = 0.0f;  // cone half-angle from local Z; WoW's "vertical range"
     f32 longitude = 0.0f; // sweep around local Z
     Ranged<f32> speed{0.0f, 0.1f};
+
+    // WoW only. `horizontalRange` is the azimuth its generators draw over —
+    // WC3 folds that into `longitude`, but WoW animates the two separately.
+    f32 horizontalRange = 0.0f;
+    // When above kMinZSource, velocity aims from (0, 0, zSource) through the
+    // spawn point instead of being drawn from the angle ranges — which also
+    // means two fewer random draws for that particle.
+    f32 zSource = 0.0f;
 };
+
+// CGeneratorAniProp::MIN_ZSOURCE.
+inline constexpr f32 kMinZSource = 0.001f;
 
 struct SpawnSample {
     Vector3f localPos{0, 0, 0};
@@ -71,6 +90,45 @@ public:
 class ConeShape final : public IParticleShape {
 public:
     void Sample(SpawnSample& out, const SpawnParams& p, RndSeed& rnd) const override;
+};
+
+// ---------------------------------------------------------------------------
+// WoW generators. Separate classes rather than flags on the WC3 shapes because
+// they draw different numbers of randoms in a different order, and the WC3
+// shapes' draw order is pinned by the corpus traces.
+// ---------------------------------------------------------------------------
+
+// CPlaneGenerator @0x1016c6730. Uniform point in the centred W x L rectangle at
+// z = 0; velocity from a polar/azimuth pair, or aimed from zSource.
+class WowPlaneShape final : public IParticleShape {
+public:
+    void Sample(SpawnSample& out, const SpawnParams& p, RndSeed& rnd) const override;
+};
+
+// CSphereGenerator @0x1016c6f00. Radius drawn between the two area floats,
+// direction from elevation/azimuth; velocity radial unless zSource or the
+// hemisphere flag override it.
+class WowSphereShape final : public IParticleShape {
+public:
+    explicit WowSphereShape(bool hemisphereUp = false) : hemisphereUp_(hemisphereUp) {}
+    void Sample(SpawnSample& out, const SpawnParams& p, RndSeed& rnd) const override;
+
+private:
+    bool hemisphereUp_ = false;
+};
+
+// CSplineGenerator @0x1016c7990. Position on a polyline through the record's
+// points; velocity along the tangent, optionally rotated about it.
+class WowSplineShape final : public IParticleShape {
+public:
+    explicit WowSplineShape(std::vector<Vector3f> points) : points_(std::move(points)) {}
+    void Sample(SpawnSample& out, const SpawnParams& p, RndSeed& rnd) const override;
+
+    // Position and tangent at normalised parameter t across the whole polyline.
+    void Evaluate(f32 t, Vector3f& pos, Vector3f& tangent) const;
+
+private:
+    std::vector<Vector3f> points_;
 };
 
 } // namespace whiteout::flakes::renderer::particle

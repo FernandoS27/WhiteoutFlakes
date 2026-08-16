@@ -27,4 +27,10 @@ std::shared_ptr<const EmitterDesc> DescFromWc3Config(const ParticleEmitterConfig
 std::shared_ptr<const EmitterDesc>
 DescFromWc3ChildModelConfig(const model::PE1EmitterConfig& cfg);
 
+// `.m2` (`M2ParticleEmitterConfig`) — billboards driven by WoW's generators.
+// `linearColor` de-gammas the record's display-referred colour keys, which the
+// HDR profiles need and the gamma ones must not have.
+std::shared_ptr<const EmitterDesc> DescFromM2Config(const M2ParticleEmitterConfig& cfg,
+                                                    bool linearColor);
+
 } // namespace whiteout::flakes::renderer::particle

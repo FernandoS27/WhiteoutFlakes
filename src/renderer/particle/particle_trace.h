@@ -29,7 +29,10 @@ struct TraceParticle {
     Vector3f position{0, 0, 0};
     Vector3f velocity{0, 0, 0};
     f32 age = 0.0f;
-    u32 keyFrame = 0;
+    // Particle2's dialect-owned four bytes, recorded raw: a curve cursor under
+    // WC3, a packed lifespan variance + render seed under WoW. Compared
+    // verbatim either way, which is what a regression diff wants.
+    u32 aux = 0;
 };
 
 struct TraceEmitter {

@@ -16,6 +16,11 @@
 #include "whiteout/flakes/model_source.h"
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
+#if WDX_ENABLE_M2
+// Included rather than forward-declared: SpawnWowSkinnedModels takes its
+// nested SkinnedModel by reference, which needs the definition.
+#include "renderer/profiles/wow/wow_character_appearance.h"
+#endif
 
 #include <memory>
 #include <string>
@@ -29,9 +34,12 @@ class FrameTicker;
 namespace whiteout::flakes::renderer::effects {
 class SpnSpawner;
 }
+namespace whiteout::flakes::io {
+class IContentProvider;
+class M2ModelAdapter;
+} // namespace whiteout::flakes::io
 namespace whiteout::flakes::renderer::profiles::wow {
 class WowReplaceableTextures;
-class WowCharacterAppearance;
 } // namespace whiteout::flakes::renderer::profiles::wow
 
 namespace whiteout::flakes::renderer::model {
@@ -103,6 +111,14 @@ public:
     Actor* SpawnChild(Actor& parent, ActorRole role, std::shared_ptr<ModelTemplate> tmpl,
                       const Matrix44f& initialTm = Matrix44f::identity(), u32 forceHandle = 0);
 
+    // The same, for a child that arrives as a live IModelSource rather than a
+    // ModelTemplate. Attachments, PE1 and SPN all name their children by path
+    // and resolve a template; an `.m2` has no template to resolve — the format
+    // is parsed straight into an adapter — so it links a SpawnUnitFromSource
+    // actor into the tree instead of staging one.
+    Actor* SpawnChildFromSource(Actor& parent, ActorRole role,
+                                std::shared_ptr<IModelSource> source);
+
     // Recursively destroy an actor: tears down its children first, releases
     // GPU resources, unregisters from replaceables, removes from the scene
     // actor map, and clears the particle service. Also removes the handle
@@ -137,6 +153,23 @@ public:
     // which is a caller's cue to fall back to a reload.
     bool RestyleWowModel(u32 actorHandle, const ContentRef& ref);
 #endif
+
+private:
+#if WDX_ENABLE_M2
+    // Spawn the collections models @p wanted names as Skinned children of
+    // @p character, each showing only the geosets the appearance chose, and
+    // wearing the character's own composites. Destroys any it had already.
+    //
+    // These are where a Dracthyr's horns live: a separate `.m2` posed from the
+    // character's skeleton, because the character file declares no geoset for
+    // them at all. See profiles::wow::PairBonesByKeyBone.
+    void SpawnWowSkinnedModels(
+        Actor& character, io::M2ModelAdapter& characterAdapter,
+        const std::vector<profiles::wow::WowCharacterAppearance::SkinnedModel>& wanted,
+        io::IContentProvider* provider);
+#endif
+
+public:
 
 private:
     u32 AddModel(const std::vector<MeshData>& meshes, const std::vector<TextureData>& textures,
@@ -175,6 +208,10 @@ public:
 private:
     void SetAttachmentConfigs(u32 handle, const std::vector<AttachmentConfig>& configs);
     void SetPE1Configs(u32 handle, const std::vector<PE1EmitterConfig>& configs);
+    /// `.m2` emitters for the direct-source path. The template path registers
+    /// its own; without this one a model loaded straight from an IModelSource
+    /// (which is what the headless trace harness does) silently has none.
+    void SetM2ParticleConfigs(u32 handle, const std::vector<M2ParticleEmitterConfig>& configs);
 
     void uploadTemplateGpu(ModelTemplate& tmpl);
     void UploadStagedTextures(Actor& mi);

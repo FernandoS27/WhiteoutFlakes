@@ -4,6 +4,7 @@
 #include "whiteout/flakes/content_provider.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <string_view>
 #include <utility>
@@ -129,8 +130,22 @@ std::vector<SkinVariation> WowReplaceableTextures::FindVariations(const ContentR
     // The client's own answer, when the storage can name the model. Ordered by
     // display id, so variation 0 is the one a creature of that kind usually
     // looks like rather than whichever row the table happened to hold first.
+    //
+    // One entry per *look*, not per display record. A model is named by every
+    // display that uses it, and most of those differ in something the model
+    // does not wear — scale, sound, blood level, a spell visual — so the
+    // texture sets repeat: `cryptfiend` has 21 display rows behind 3 skins and
+    // `cow` 10 behind 2. Offering all 21 is offering the same picture 19 times.
+    // Keeping the first of each set keeps the lowest display id, which is the
+    // ordering variation 0 already relies on.
     if (const u32 modelFile = ModelFileId(modelRef); modelFile != 0 && table_.Load(*provider_)) {
+        std::vector<std::array<u32, kMonsterSkinSlots>> seen;
         for (const io::wow::MonsterSkin& skin : table_.ForModel(modelFile)) {
+            const std::array<u32, kMonsterSkinSlots> look{skin.texture[0], skin.texture[1],
+                                                          skin.texture[2]};
+            if (std::find(seen.begin(), seen.end(), look) != seen.end())
+                continue;
+            seen.push_back(look);
             SkinVariation v;
             v.label = "display " + std::to_string(skin.displayId);
             for (u32 slot = 0; slot < kMonsterSkinSlots; ++slot)

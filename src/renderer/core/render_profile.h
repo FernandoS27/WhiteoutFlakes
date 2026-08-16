@@ -13,6 +13,7 @@
 // simple is the acceptance test for this abstraction.
 // ============================================================================
 
+#include "core/particle_dialect.h"
 #include "core/ribbon_dialect.h"
 #include "core/surface_vocabulary.h"
 #include "gfx/gfx.h"
@@ -155,6 +156,16 @@ public:
     /// rather than by inspection — the same argument UnlitLighting makes.
     virtual RibbonBehavior Ribbons() const {
         return RibbonBehavior::Wc3();
+    }
+
+    /// @brief Which variant of Blizzard's CParticleEmitter2 this product's
+    ///        particles run. See core/particle_dialect.h — as with ribbons the
+    ///        two runtimes are one simulation plus measured divergences.
+    ///
+    /// Warcraft III by default, for the same reason Ribbons() is: the MDX path
+    /// stays unchanged by construction rather than by inspection.
+    virtual ParticleBehavior Particles() const {
+        return ParticleBehavior::Wc3();
     }
 
     /// @brief The shading models this profile can dispatch to. Binds a profile

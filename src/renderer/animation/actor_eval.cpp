@@ -29,6 +29,7 @@
 #include "whiteout/flakes/util/coordinate_system.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -71,7 +72,23 @@ void ApplyRibbonFrameStates(Actor& mi, const FrameState& state, ribbon::RibbonSe
 }
 
 void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
-                              particle::ParticleService& particles) {
+                              particle::ParticleService& particles, const Vector3f& camPos) {
+    // WoW fades an emitter's rate with distance, measured once per MODEL from
+    // its world transform — not per emitter from the bone the emitter rides.
+    // Every dialect but WoW's ignores the value entirely.
+    //
+    // In the emitter's OWN units, which for a `.m2` is yards: the falloff's
+    // constants (a 50-yard knee, a 0.25 floor) are calibrated against gameplay
+    // distances, and the transform above has already scaled the model into
+    // renderer units by WorldScale — 100 for WoW. Feeding it the unscaled
+    // number puts every emitter past the knee and pins the whole scene at the
+    // floor, which looks like a working falloff and is a quarter-rate bug.
+    const Vector3f origin = whiteout::transform_point({0, 0, 0}, mi.ScaledWorldTransform());
+    const f32 dx = origin.x - camPos.x, dy = origin.y - camPos.y, dz = origin.z - camPos.z;
+    const f32 distSq = dx * dx + dy * dy + dz * dz;
+    const f32 scale = (mi.worldScale > 0.0f) ? mi.worldScale : 1.0f;
+    const f32 viewDist = (distSq > 0.0f) ? (std::sqrt(distSq) / scale) : 0.0f;
+
     for (usize i = 0; i < state.particleStates.size(); ++i) {
         const auto& ps = state.particleStates[i];
         auto* em = particles.GetEmitter(mi.handle, particle::ParticleOutput::Billboard,
@@ -83,6 +100,7 @@ void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
         // visibility, transform — goes through one virtual call, so this loop
         // no longer has to know which kind of emitter it is driving.
         em->ApplyState(ps);
+        em->SetViewDistance(viewDist);
 
         // The squirt edge (rate crossing zero) is actor state, not emitter
         // state: it needs last frame's rate, which lives on the actor.
@@ -169,7 +187,7 @@ void ApplyCornFrameStates(Actor& mi, const FrameState& state, const ActorEvalCon
             continue;
         em->SetCurrentAnimationName(curAnimName.c_str());
         if (forcedLoopNonLooping && em->IsNonLoopingEffect())
-            em->SyncSequenceCycle(mi.cursor.sequenceCycle);
+            em->SyncSequenceCycle(mi.animation.Playlist().SequenceCycle());
         em->SetReplaceableColor(teamRGBA);
         em->SetModelToWorld(cs.transform);
         em->SetScale(cs.scale);
@@ -231,7 +249,7 @@ void Actor::ApplyFrameState(const FrameState& state, i32 localTimeMs, const Acto
     render.ApplyGeosetStates(state);
     render.ApplyLayerStates(state);
     if (ctx.particles)
-        ApplyParticleFrameStates(*this, state, *ctx.particles);
+        ApplyParticleFrameStates(*this, state, *ctx.particles, ctx.camPos);
     if (ctx.ribbons)
         ApplyRibbonFrameStates(*this, state, *ctx.ribbons);
     if (ctx.particles)
@@ -267,45 +285,7 @@ void Actor::Advance(f32 dtSec) {
 
     const i32 dtMs = (dtSec > 0.0f) ? (i32)(dtSec * playbackSpeed * 1000.0f + 0.5f) : 0;
     cursor.actorTimeMs += dtMs;
-    const i32 now = cursor.actorTimeMs;
-
-    const auto seqs = animation.Sequences();
-    if (seqs.empty())
-        return;
-
-    const i32 rawIdx = animation.ActiveSequenceIndex();
-    const i32 boundedIdx = ((rawIdx % (i32)seqs.size()) + (i32)seqs.size()) % (i32)seqs.size();
-    if (rawIdx != cursor.prevActiveSequence) {
-        cursor.sequenceStartTimeMs = now;
-        cursor.prevActiveSequence = rawIdx;
-        ++cursor.sequenceCycle;
-    }
-
-    const auto& seq = seqs[boundedIdx];
-    const i32 duration = seq.endMs - seq.startMs;
-    i32 elapsed = now - cursor.sequenceStartTimeMs;
-    if (elapsed < 0)
-        elapsed = 0;
-
-    i32 frameMs;
-    if (duration <= 0) {
-        frameMs = seq.startMs;
-    } else if (seq.nonLooping && !ignoreNonLooping) {
-        frameMs = seq.startMs + (std::min)(elapsed, duration);
-    } else {
-        // Roll sequenceStartTimeMs forward by whole durations so elapsed
-        // stays in [0, duration). Each roll is a fresh cycle — consumers
-        // (corn-fx single-shot effects under ignoreNonLooping) key off
-        // sequenceCycle to re-fire per loop.
-        if (elapsed >= duration) {
-            const i32 cycles = elapsed / duration;
-            cursor.sequenceStartTimeMs += cycles * duration;
-            cursor.sequenceCycle += cycles;
-            elapsed -= cycles * duration;
-        }
-        frameMs = seq.startMs + elapsed;
-    }
-    animation.SetTimeMs(frameMs);
+    animation.Advance(cursor.actorTimeMs, ignoreNonLooping);
 }
 
 void Actor::EvaluateAndApply(const ActorEvalContext& ctx) {
@@ -313,8 +293,13 @@ void Actor::EvaluateAndApply(const ActorEvalContext& ctx) {
         return;
     const i32 globalTime = ctx.sceneAnimationTimeMs - animation.BirthTimeMs();
     const i32 localTime = animation.TimeMs();
-    const ClipRef clip{.sequence = animation.ActiveSequenceIndex(), .timeMs = localTime};
-    PoseRequest req = PoseRequest::OneClip(clip);
+
+    // The whole stack, not just the primary play: a single-clip adapter reads
+    // PrimaryClip() and is unaffected, while a layering one sees every play.
+    const auto clips = animation.Playlist().Clips();
+    const ClipRef fallback{.sequence = animation.ActiveSequenceIndex(), .timeMs = localTime};
+    PoseRequest req;
+    req.clips = clips.empty() ? std::span<const ClipRef>(&fallback, 1) : clips;
     req.globalTimeMs = globalTime;
     req.world = ScaledWorldTransform();
     req.cameraPos = ctx.camPos;

@@ -42,10 +42,20 @@ struct CompositePaste {
     u32 textureFileId = 0;
 };
 
+/// A second model the chosen appearance puts on the character, posed from its
+/// skeleton. See `ChoiceElement::skinnedModelFileId`.
+struct SkinnedModelRef {
+    u32 fileId = 0;
+    i32 geoset = -1; ///< The one `skinSectionId` of that model this choice wants.
+};
+
 /// Everything a choice set produces.
 struct ResolvedAppearance {
     CharacterGeosetSelection geosets;
     std::vector<CompositePaste> pastes; ///< Sorted by (textureType, layer).
+    /// One entry per active choice that names one; several choices can name
+    /// geosets of the *same* file, which is one model wearing two of its parts.
+    std::vector<SkinnedModelRef> skinnedModels;
 };
 
 /// The first choice of every option — what the character creator opens on, and

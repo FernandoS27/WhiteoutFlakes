@@ -58,7 +58,7 @@ void CaptureFrame(const ParticleService& svc, const Matrix44f& worldToView, i32 
         te.particles.reserve(pool.AliveCount());
         for (usize i = 0; i < pool.AliveCount(); ++i) {
             const Particle2& p = pool[pool.AliveAt(i)];
-            te.particles.push_back({p.position, p.velocity, p.age, p.keyFrame});
+            te.particles.push_back({p.position, p.velocity, p.age, p.aux});
         }
 
         index[EmitterIndexKey(k.model, static_cast<u8>(k.output), k.id)] = tf.emitters.size();
@@ -141,7 +141,7 @@ bool WriteTrace(const Trace& t, const std::string& path, std::string& err) {
             for (const auto& p : e.particles) {
                 f << "p " << F(p.position.x) << " " << F(p.position.y) << " " << F(p.position.z)
                   << " " << F(p.velocity.x) << " " << F(p.velocity.y) << " " << F(p.velocity.z)
-                  << " " << F(p.age) << " " << p.keyFrame << "\n";
+                  << " " << F(p.age) << " " << p.aux << "\n";
             }
         }
     }
@@ -201,7 +201,7 @@ bool ReadTrace(Trace& t, const std::string& path, std::string& err) {
             }
             TraceParticle p;
             is >> p.position.x >> p.position.y >> p.position.z >> p.velocity.x >> p.velocity.y >>
-                p.velocity.z >> p.age >> p.keyFrame;
+                p.velocity.z >> p.age >> p.aux;
             t.frames.back().emitters.back().particles.push_back(p);
         }
     }
@@ -278,17 +278,17 @@ bool CompareTraces(const Trace& baseline, const Trace& actual, const CompareTole
                     field = "velocity";
                 else if (!Near(bp.age, ap.age, tol.age))
                     field = "age";
-                else if (bp.keyFrame != ap.keyFrame)
-                    field = "keyFrame";
+                else if (bp.aux != ap.aux)
+                    field = "aux";
                 if (field) {
                     os << Where(b.frame, be) << ", particle " << pi << ": " << field
                        << " differs\n  baseline pos=(" << bp.position.x << "," << bp.position.y
                        << "," << bp.position.z << ") vel=(" << bp.velocity.x << ","
                        << bp.velocity.y << "," << bp.velocity.z << ") age=" << bp.age
-                       << " kf=" << bp.keyFrame << "\n  actual   pos=(" << ap.position.x << ","
+                       << " aux=" << bp.aux << "\n  actual   pos=(" << ap.position.x << ","
                        << ap.position.y << "," << ap.position.z << ") vel=(" << ap.velocity.x
                        << "," << ap.velocity.y << "," << ap.velocity.z << ") age=" << ap.age
-                       << " kf=" << ap.keyFrame;
+                       << " aux=" << ap.aux;
                     report = os.str();
                     return false;
                 }

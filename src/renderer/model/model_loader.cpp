@@ -141,7 +141,8 @@ bool ModelLoader::RestyleWowModel(u32 actorHandle, const ContentRef& ref) {
     replaceables.Apply(*m2, ref);
     auto& characters = WowCharacters();
     characters.SetContentProvider(provider);
-    characters.Apply(*m2, ref);
+    std::vector<profiles::wow::WowCharacterAppearance::SkinnedModel> skinned;
+    characters.Apply(*m2, ref, &skinned);
 
     // Geosets need nothing more: which submeshes draw is frame state, so the
     // next Evaluate already reports the new set. The textures do — GetTextures
@@ -149,6 +150,9 @@ bool ModelLoader::RestyleWowModel(u32 actorHandle, const ContentRef& ref) {
     // makes UploadStagedTextures replace each one where it stands.
     StageTextures(*actor, m2->GetTextures());
     actor->render.stagedDirty = true;
+    // The one part of a restyle that is not in place. A collections model is a
+    // different file, and which file is itself a choice.
+    SpawnWowSkinnedModels(*actor, *m2, skinned, provider);
     return true;
 }
 #endif
@@ -188,6 +192,25 @@ Actor* ModelLoader::SpawnChild(Actor& parent, ActorRole role, std::shared_ptr<Mo
     if (role == ActorRole::PE1)
         rs_.Scene().IncrementPE1Instances();
     return ptr;
+}
+
+Actor* ModelLoader::SpawnChildFromSource(Actor& parent, ActorRole role,
+                                         std::shared_ptr<IModelSource> source) {
+    Actor* child = SpawnUnitFromSource(std::move(source), parent.worldTransform);
+    if (!child)
+        return nullptr;
+
+    // SpawnUnitFromSource built a top-level actor; this is the linking half of
+    // SpawnChild applied on top. Kept as two steps rather than a shared helper
+    // because the orders differ — a template child is linked before staging,
+    // a source child is built before there is anything to link.
+    child->parent = parent.handle;
+    child->role = role;
+    child->treeDepth = parent.treeDepth + 1;
+    child->teamColor = parent.teamColor;
+    child->animation.SetBirthTimeMs(AncestorActorTimeMs(parent, rs_.Scene().Actors()));
+    parent.children.push_back(child->handle);
+    return child;
 }
 
 void ModelLoader::DestroyActor(u32 handle) {
@@ -255,6 +278,24 @@ void ModelLoader::RequestClearAll() {
     rs_.CornEffects().Clear();
 }
 
+void ModelLoader::SetM2ParticleConfigs(u32 handle,
+                                       const std::vector<M2ParticleEmitterConfig>& configs) {
+    auto* mi = rs_.Scene().Actors().Find(handle);
+    if (!mi)
+        return;
+    const particle::ParticleBehavior behavior = rs_.Pipeline().LoadTimeProfile().Particles();
+    const bool linear = rs_.Pipeline().LoadTimeProfile().LinearShading();
+    for (i32 i = 0; i < (i32)configs.size(); i++) {
+        auto em = std::make_unique<particle::Emitter2>();
+        em->SetDesc(particle::DescFromM2Config(configs[i], linear));
+        em->SetBehavior(behavior);
+        em->SetSeed(particle::MixSeed(handle, (u32)i));
+        rs_.Particles().AddEmitter(handle, particle::ParticleOutput::Billboard, i, std::move(em));
+    }
+    if (mi->render.pe2State.size() < configs.size())
+        mi->render.pe2State.resize(configs.size());
+}
+
 void ModelLoader::SetAttachmentConfigs(u32 handle, const std::vector<AttachmentConfig>& configs) {
     auto* mi = rs_.Scene().Actors().Find(handle);
     if (!mi)
@@ -279,6 +320,7 @@ void ModelLoader::SetPE1Configs(u32 handle, const std::vector<PE1EmitterConfig>&
         auto em = std::make_unique<particle::ChildModelEmitter>(
             handle, i, [this] { return rs_.Scene().AllocActorId(); });
         em->SetDesc(particle::DescFromWc3ChildModelConfig(configs[i]));
+        em->SetBehavior(rs_.Pipeline().LoadTimeProfile().Particles());
         em->SetSeed(particle::MixSeed(handle, 0x8000u + (u32)i));
         rs_.Particles().AddEmitter(handle, particle::ParticleOutput::ChildModel, i,
                                    std::move(em));
@@ -385,20 +427,41 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
         for (const auto& pcfg : tmpl->pe2Configs)
             tmpl->pe2Descs.push_back(particle::DescFromWc3Config(pcfg));
     }
+    // The dialect is a load-time decision the emitter caches, so it reads the
+    // live mode's profile rather than the frame latch — same rule the texture
+    // colour space follows.
+    const particle::ParticleBehavior particleBehavior =
+        rs_.Pipeline().LoadTimeProfile().Particles();
     for (i32 i = 0; i < (i32)tmpl->pe2Configs.size(); i++) {
         auto em = std::make_unique<particle::Emitter2>();
         em->SetDesc(tmpl->pe2Descs[i]);
+        em->SetBehavior(particleBehavior);
         // Seed from stable identity, not construction order, so the same scene
         // reproduces its particle motion across runs.
         em->SetSeed(particle::MixSeed(mi->handle, (u32)i));
         rs_.Particles().AddEmitter(mi->handle, particle::ParticleOutput::Billboard, i,
                                    std::move(em));
     }
-    mi->render.pe2State.resize(tmpl->pe2Configs.size());
+    // `.m2` emitters register into the same Billboard id space: a model has
+    // MDX emitters or M2 ones, never both, so the ids cannot collide.
+    if (tmpl->m2ParticleDescs.size() != tmpl->m2ParticleConfigs.size()) {
+        const bool linear = rs_.Pipeline().LoadTimeProfile().LinearShading();
+        tmpl->m2ParticleDescs.clear();
+        tmpl->m2ParticleDescs.reserve(tmpl->m2ParticleConfigs.size());
+        for (const auto& mcfg : tmpl->m2ParticleConfigs)
+            tmpl->m2ParticleDescs.push_back(particle::DescFromM2Config(mcfg, linear));
+    }
+    for (i32 i = 0; i < (i32)tmpl->m2ParticleConfigs.size(); i++) {
+        auto em = std::make_unique<particle::Emitter2>();
+        em->SetDesc(tmpl->m2ParticleDescs[i]);
+        em->SetBehavior(particleBehavior);
+        em->SetSeed(particle::MixSeed(mi->handle, (u32)i));
+        rs_.Particles().AddEmitter(mi->handle, particle::ParticleOutput::Billboard, i,
+                                   std::move(em));
+    }
+    mi->render.pe2State.resize(
+        (std::max)(tmpl->pe2Configs.size(), tmpl->m2ParticleConfigs.size()));
 
-    // The dialect is a load-time decision the emitter caches, so it reads the
-    // live mode's profile rather than the frame latch — same rule the texture
-    // colour space follows.
     const ribbon::RibbonBehavior ribbonBehavior = rs_.Pipeline().LoadTimeProfile().Ribbons();
     for (i32 i = 0; i < (i32)tmpl->ribbonConfigs.size(); i++)
         rs_.Ribbons().AddEmitter(mi->handle, i,
@@ -421,6 +484,7 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
         auto em = std::make_unique<particle::ChildModelEmitter>(
             mi->handle, i, [this] { return rs_.Scene().AllocActorId(); });
         em->SetDesc(tmpl->pe1Descs[i]);
+        em->SetBehavior(particleBehavior);
         em->SetSeed(particle::MixSeed(mi->handle, 0x8000u + (u32)i));
         rs_.Particles().AddEmitter(mi->handle, particle::ParticleOutput::ChildModel, i,
                                    std::move(em));
@@ -617,10 +681,13 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
     if (!skinWeights.empty())
         mi->render.skinDirty = true;
 
+    const particle::ParticleBehavior particleBehavior =
+        rs_.Pipeline().LoadTimeProfile().Particles();
     for (usize i = 0; i < particleConfigs.size(); i++) {
         const auto& pcfg = particleConfigs[i];
         auto em = std::make_unique<particle::Emitter2>();
         em->SetDesc(particle::DescFromWc3Config(pcfg));
+        em->SetBehavior(particleBehavior);
         em->SetSeed(particle::MixSeed(handle, (u32)i));
         rs_.Particles().AddEmitter(handle, particle::ParticleOutput::Billboard, (i32)i,
                                    std::move(em));
@@ -856,6 +923,7 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
     std::shared_ptr<IModelSource> source;
 #if WDX_ENABLE_M2
     std::shared_ptr<io::M2ModelAdapter> m2;
+    std::vector<profiles::wow::WowCharacterAppearance::SkinnedModel> skinnedModels;
     if (isM2) {
         m2 = io::M2ModelAdapter::Load(ref, data, provider, rs_.Settings().M2LazyAnimations());
         if (m2) {
@@ -870,7 +938,7 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
             // against 11/12/13 — so both run and at most one finds anything.
             auto& characters = WowCharacters();
             characters.SetContentProvider(provider);
-            characters.Apply(*m2, ref);
+            characters.Apply(*m2, ref, &skinnedModels);
         }
         source = m2;
     }
@@ -901,6 +969,9 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
             profiles::wow::BuildM2SurfaceTable(m2->SourceModel(), m2->ProfileIndex());
         BuildM2Surfaces(*actor);
         actor->shadingModel = core::ShadingModelId::M2Combiners;
+        // After the character's own table: the children are spawned through the
+        // same route and each builds its own.
+        SpawnWowSkinnedModels(*actor, *m2, skinnedModels, provider);
     }
 #endif
     return actor;
@@ -909,6 +980,61 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
     (void)initialTm;
     return nullptr;
 #endif
+}
+
+void ModelLoader::SpawnWowSkinnedModels(
+    Actor& character, io::M2ModelAdapter& characterAdapter,
+    const std::vector<profiles::wow::WowCharacterAppearance::SkinnedModel>& wanted,
+    io::IContentProvider* provider) {
+    // Whatever it was wearing goes first: a restyle changes which parts the
+    // collections model shows, and there is no cheaper way to say so than to
+    // rebuild it — unlike geosets of the character itself, these are a
+    // different file whose very identity a choice can change. Collected before
+    // destroying, because DestroyActor edits the list being walked.
+    std::vector<u32> worn;
+    for (u32 h : character.children)
+        if (auto* c = rs_.Scene().Actors().Find(h); c && c->role == ActorRole::Skinned)
+            worn.push_back(h);
+    for (u32 h : worn)
+        DestroyActor(h);
+
+    if (!provider || wanted.empty())
+        return;
+
+    for (const auto& want : wanted) {
+        const ContentRef ref = ContentRef::FromFileId(want.fileId);
+        auto bytes = provider->ReadFile(ref);
+        if (!bytes || bytes->empty()) {
+            std::fprintf(stderr, "[wow] collections model %u not readable\n", want.fileId);
+            continue;
+        }
+        auto m2 = io::M2ModelAdapter::Load(
+            ref, std::span<const ::whiteout::u8>(bytes->data(), bytes->size()), provider,
+            rs_.Settings().M2LazyAnimations());
+        if (!m2)
+            continue;
+
+        // Only the parts this appearance asked for. A collections model carries
+        // every horn, frill and band the race offers in one file, so the set is
+        // small and the default — everything draws — would be all of them at
+        // once.
+        m2->SetVisibleGeosets(want.geosets);
+        // Its blank slots are the character's composites: type 1 is the body
+        // sheet, 9 the horn colour, 20 the jewelry. Nothing of its own to
+        // resolve, which is why there is no replaceable pass here.
+        m2->SetComposedTextures(characterAdapter.ComposedTextures());
+
+        const auto pairing =
+            profiles::wow::PairBonesByKeyBone(characterAdapter.SourceModel(), m2->SourceModel());
+        Actor* child = SpawnChildFromSource(character, ActorRole::Skinned, m2);
+        if (!child)
+            continue;
+        child->skinnedParentBone = pairing;
+        child->shadingModel = core::ShadingModelId::M2Combiners;
+        child->render.surfaceTable =
+            profiles::wow::BuildM2SurfaceTable(m2->SourceModel(), m2->ProfileIndex());
+        BuildM2Surfaces(*child);
+    }
 }
 
 Actor* ModelLoader::SpawnUnitFromSource(std::shared_ptr<IModelSource> source,
@@ -934,6 +1060,8 @@ Actor* ModelLoader::SpawnUnitFromSource(std::shared_ptr<IModelSource> source,
         SetAttachmentConfigs(h, data.attachmentConfigs);
     if (!data.pe1Configs.empty())
         SetPE1Configs(h, data.pe1Configs);
+    if (!data.m2ParticleConfigs.empty())
+        SetM2ParticleConfigs(h, data.m2ParticleConfigs);
 
     // CornEffect (PopcornFX) emitters — mirror StageActor's template path so a
     // live source (e.g. a directly-loaded .pkb) gets its effect too. Per-frame
@@ -1253,6 +1381,21 @@ void ModelLoader::UploadStagedGeosets(Actor& mi) {
 void ModelLoader::CreateNodePalette(Actor& mi) {
     auto& skinning = mi.render.skinning;
 
+    // A geoset is skinned when there is something to read weights *from*.
+    // Historically that was always the separate `BoneVertex` stream, so its
+    // presence doubled as the test. That stops being true once a format ships
+    // its weights inside the interleaved buffer — `.m3` does, and building a
+    // second stream to carry the same numbers is exactly what its adapter
+    // avoids — so the question is asked directly instead.
+    const auto& layouts = rs_.Pipeline().VertexLayouts();
+    auto skinnable = [&](const GPUGeoset& geo) {
+        if (geo.boneVb != gfx::BufferHandle::Invalid)
+            return true;
+        return geo.layoutId != core::VertexLayoutCache::kWc3Interleaved &&
+               layouts.Has(geo.layoutId, core::VertexSemantic::BoneWeights) &&
+               layouts.Has(geo.layoutId, core::VertexSemantic::BoneIndices);
+    };
+
     if (skinning.UsesPerActorPalette()) {
         // Path A: a single CB per actor, shared across every geoset.
         // The CB is sized to the full kMaxBones-slot shader struct so
@@ -1289,7 +1432,7 @@ void ModelLoader::CreateNodePalette(Actor& mi) {
             skinning.SetActorPaletteCb(cb);
         }
         for (auto& geo : mi.render.gpuGeosets) {
-            if (geo.boneVb == gfx::BufferHandle::Invalid)
+            if (!skinnable(geo))
                 continue;
             geo.hasSkinning = true;
             // geo.bonePaletteCb stays Invalid; draw path falls back to
@@ -1307,7 +1450,7 @@ void ModelLoader::CreateNodePalette(Actor& mi) {
     for (i32 i = 0; i < bls::kMaxBones; ++i)
         bls::PackBone(identity.bones[i], Matrix44f::identity());
     for (auto& geo : mi.render.gpuGeosets) {
-        if (geo.boneVb == gfx::BufferHandle::Invalid)
+        if (!skinnable(geo))
             continue;
         if (geo.bonePaletteCb != gfx::BufferHandle::Invalid)
             continue;

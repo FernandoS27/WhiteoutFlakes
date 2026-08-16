@@ -2,6 +2,9 @@
 
 #include "particle.h" // ParticleEmitterConfig
 
+#include <cmath>
+#include <vector>
+
 namespace whiteout::flakes::renderer::particle {
 
 namespace {
@@ -114,6 +117,197 @@ std::shared_ptr<const EmitterDesc> DescFromWc3Config(const ParticleEmitterConfig
 
     desc->coordSpace = kDefaultCoordSpace;
 
+    return desc;
+}
+
+namespace {
+
+// M2 blend index -> the service's filter modes. The loader's own file->id map
+// (M2ParticleFile.h) collapses to these six draw states.
+FilterMode M2BlendToFilter(i32 blend) {
+    switch (blend) {
+    case 0:
+        // "Opaque". Particles draw in the transparent pass regardless, and this
+        // enum has no opaque state, so it lands on the same default the MDX
+        // adapter uses.
+        return FilterMode::Blend;
+    case 1:
+        return FilterMode::AlphaKey;
+    case 2:
+        return FilterMode::Blend;
+    case 3:
+        return FilterMode::Additive;
+    case 4:
+        return FilterMode::Additive;
+    case 5:
+        return FilterMode::Modulate;
+    case 6:
+        return FilterMode::Modulate2X;
+    default:
+        return FilterMode::Blend;
+    }
+}
+
+// Display-referred -> linear. The record's colour keys were authored against a
+// gamma display, so an HDR profile that shades linearly has to de-gamma them or
+// every particle reads washed out.
+inline f32 Degamma(f32 c) {
+    return (c <= 0.04045f) ? (c / 12.92f) : std::pow((c + 0.055f) / 1.055f, 2.4f);
+}
+
+// M2 tracks are already normalised to [0,1] over the particle's life and are
+// linearly interpolated with no sampling bias — WC3's 0.99/0.005 skew is a WC3
+// quirk and must not leak into another format's curves.
+template <class Curve, class Values>
+void FillCurve(Curve& curve, const std::vector<f32>& times, const Values& values) {
+    curve.SetInterp(Interp::Linear);
+    if (values.empty())
+        return;
+    if (values.size() == 1 || times.size() != values.size()) {
+        curve.AddKey(0.0f, values[0]);
+        return;
+    }
+    for (usize i = 0; i < values.size(); ++i)
+        curve.AddKey(times[i], values[i]);
+}
+
+// Solve the FollowPosition factor's line through the record's two
+// (speed, scale) sample points, as CParticleEmitter2::SetFollowParams does.
+// A degenerate pair (the two speeds equal) clears both terms rather than
+// dividing, which makes the factor zero and the feature inert.
+void SolveFollowLine(EmitterDesc& desc, const M2ParticleEmitterConfig& cfg) {
+    const f32 ds = cfg.followSpeed2 - cfg.followSpeed1;
+    if (std::fabs(ds) < 2.3841858e-7f) {
+        desc.followBias = 0.0f;
+        desc.followSlope = 0.0f;
+        return;
+    }
+    const f32 slope = (cfg.followScale2 - cfg.followScale1) / ds;
+    desc.followSlope = slope;
+    desc.followBias = cfg.followScale1 - slope * cfg.followSpeed1;
+}
+
+// A cell track is a sequence of held integer cells, not an interpolated value,
+// so each key becomes a one-cell segment ending where the next begins.
+void FillCells(CellAnimTrack& track, const std::vector<f32>& times,
+               const std::vector<f32>& values) {
+    if (values.empty())
+        return;
+    if (values.size() == 1 || times.size() != values.size()) {
+        const i32 cell = static_cast<i32>(values[0]);
+        track.AddSegment(1.0f, cell, cell, 1);
+        return;
+    }
+    for (usize i = 0; i < values.size(); ++i) {
+        const f32 end = (i + 1 < values.size()) ? times[i + 1] : 1.0f;
+        const i32 cell = static_cast<i32>(values[i]);
+        track.AddSegment(end, cell, cell, 1);
+    }
+}
+
+} // namespace
+
+std::shared_ptr<const EmitterDesc> DescFromM2Config(const M2ParticleEmitterConfig& cfg,
+                                                    bool linearColor) {
+    auto desc = std::make_shared<EmitterDesc>();
+
+    desc->sheet.Set(static_cast<u32>(cfg.rows > 0 ? cfg.rows : 1),
+                    static_cast<u32>(cfg.cols > 0 ? cfg.cols : 1));
+    desc->lifeSpan = cfg.lifeSpan;
+    desc->lifespanVariation = cfg.lifespanVariation;
+    desc->emissionRateVariation = cfg.emissionRateVariation;
+    desc->tailLength = cfg.tailLength;
+    desc->hasHead = cfg.hasHead;
+    desc->hasTail = cfg.hasTail;
+    desc->sortZ = cfg.sortZ;
+    desc->modelSpace = cfg.modelSpace;
+    desc->xyQuads = cfg.xyQuad;
+    desc->priorityPlane = cfg.priorityPlane;
+
+    switch (cfg.generator) {
+    case M2ParticleEmitterConfig::Generator::Sphere:
+        desc->shape = std::make_shared<WowSphereShape>(cfg.hemisphereUp);
+        break;
+    case M2ParticleEmitterConfig::Generator::Spline:
+        desc->shape = std::make_shared<WowSplineShape>(cfg.splinePoints);
+        break;
+    case M2ParticleEmitterConfig::Generator::Bone:
+        // Bone emission needs the frame's bone matrices at spawn time, which is
+        // more than SpawnParams carries. Falls back to the plane generator so
+        // the emitter still produces particles rather than vanishing; the real
+        // generator is its own phase.
+        desc->shape = std::make_shared<WowPlaneShape>();
+        break;
+    case M2ParticleEmitterConfig::Generator::Plane:
+    default:
+        desc->shape = std::make_shared<WowPlaneShape>();
+        break;
+    }
+
+    desc->velocityOrient = cfg.velocityOrient;
+    desc->inheritBoneScale = cfg.inheritBoneScale;
+    desc->negateSpinRandom = cfg.negateSpinRandom;
+    desc->clampTailToAge = cfg.clampTailToAge;
+    desc->offsetHeadBySpin = cfg.offsetHeadBySpin;
+    desc->unscaledSizeVariation = cfg.unscaledSizeVariation;
+    desc->chooseRandomTexture = cfg.chooseRandomTexture;
+    desc->randFlipbookStart = cfg.randFlipbookStart;
+
+    desc->baseSpin = cfg.baseSpin;
+    desc->baseSpinVariation = cfg.baseSpinVariation;
+    desc->spinSpeed = cfg.spinSpeed;
+    desc->spinSpeedVariation = cfg.spinSpeedVariation;
+    desc->sizeVariation = cfg.scaleVariation;
+
+    desc->twinkleSpeed = cfg.twinkleSpeed;
+    desc->twinklePercent = cfg.twinklePercent;
+    // SetTwinkleScale keeps the record's {min, max} as base and span, so the
+    // multiplier is uniform in [min, max] — and a record that stores {0,0}
+    // scales its particles away, which is the record's choice, not a fallback
+    // to be second-guessed here.
+    desc->twinkleBase = cfg.twinkleScale.x;
+    desc->twinkleVary = cfg.twinkleScale.y - cfg.twinkleScale.x;
+
+    desc->randomEmissionSpacing = cfg.randomEmissionSpacing;
+    desc->lodIgnoreDistance = cfg.lodIgnoreDistance;
+    desc->implosionFilter = cfg.implosionFilter;
+    desc->followPosition = cfg.followPosition;
+    desc->inheritVelocityScale = cfg.inheritVelocity ? cfg.inheritVelocityScale : 0.0f;
+    SolveFollowLine(*desc, cfg);
+
+    desc->motion.drag = cfg.drag;
+    desc->motion.wind = cfg.windVector;
+
+    desc->material.textureId = cfg.textureId;
+    desc->material.filterMode = M2BlendToFilter(cfg.filterMode);
+    desc->material.unshaded = cfg.unshaded;
+    desc->material.unfogged = cfg.unfogged;
+
+    desc->emission.mode = EmissionDesc::Mode::Continuous;
+    // Squirt is the same mechanism in both clients: the emitter stops emitting
+    // continuously and instead bursts `(int)rate` particles each time the rate
+    // track rises through zero. WoW's loader expresses that by clearing the
+    // continuous-emission bit so only the burst path can fire; WC3 gates
+    // visibility on the same flag. The rising edge itself is detected once, at
+    // the actor layer, for both — see ApplyParticleFrameStates.
+    desc->emission.squirtAtStart = cfg.squirt;
+
+    auto& c = desc->curves;
+    if (linearColor) {
+        std::vector<Vector3f> linear;
+        linear.reserve(cfg.colorValues.size());
+        for (const Vector3f& v : cfg.colorValues)
+            linear.push_back({Degamma(v.x), Degamma(v.y), Degamma(v.z)});
+        FillCurve(c.color, cfg.colorTimes, linear);
+    } else {
+        FillCurve(c.color, cfg.colorTimes, cfg.colorValues);
+    }
+    FillCurve(c.alpha, cfg.alphaTimes, cfg.alphaValues);
+    FillCurve(c.size, cfg.scaleTimes, cfg.scaleValues);
+    FillCells(c.headCells, cfg.headCellTimes, cfg.headCellValues);
+    FillCells(c.tailCells, cfg.tailCellTimes, cfg.tailCellValues);
+
+    desc->coordSpace = kDefaultCoordSpace;
     return desc;
 }
 

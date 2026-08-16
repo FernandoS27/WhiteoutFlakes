@@ -193,36 +193,41 @@ TEST_CASE("A squirt is a one-shot burst, independent of visibility") {
     REQUIRE(svc.TotalParticleCount() == static_cast<i32>(kRate));
 }
 
-TEST_CASE("Integrate is semi-implicit Euler with the quadratic position term") {
+TEST_CASE("IntegrateWc3 is semi-implicit Euler with the quadratic position term") {
     SECTION("free fall from rest") {
         Particle2 p;
         MotionParams m;
         m.gravity = {0.0f, 0.0f, -10.0f};
-        Integrate(p, m, 0.5f);
+        IntegrateWc3(p, m, 0.5f);
         REQUIRE(p.position.z == Approx(-1.25f).margin(1e-6)); // 0.5 * g * dt^2
         REQUIRE(p.velocity.z == Approx(-5.0f).margin(1e-6));  // g * dt
         REQUIRE(p.position.x == 0.0f);
         REQUIRE(p.position.y == 0.0f);
     }
-    SECTION("zero drag and wind are exact no-ops, not approximations") {
+    SECTION("with no gravity it is pure kinematics") {
         Particle2 p;
         p.velocity = {1.0f, 2.0f, 3.0f};
-        MotionParams m; // all defaults: no gravity, no drag, no wind
-        Integrate(p, m, 0.25f);
+        MotionParams m; // all defaults
+        IntegrateWc3(p, m, 0.25f);
         REQUIRE(p.velocity.x == 1.0f);
         REQUIRE(p.velocity.y == 2.0f);
         REQUIRE(p.velocity.z == 3.0f);
         REQUIRE(p.position.x == Approx(0.25f).margin(1e-6));
     }
-    SECTION("drag damps velocity, wind adds to it") {
+    SECTION("drag and wind belong to the WoW force model, not this one") {
+        // MotionParams carries drag and wind because the WoW integrator reads
+        // them; the MDX path has neither to animate. This used to apply an
+        // approximation of both — in an order WoW does not actually use — so
+        // the terms moved to the dialect that was measured. Asserting the
+        // absence here is what stops them drifting back into the WC3 path.
         Particle2 p;
         p.velocity = {4.0f, 0.0f, 0.0f};
         MotionParams m;
         m.drag = 0.5f;
         m.wind = {0.0f, 2.0f, 0.0f};
-        Integrate(p, m, 0.5f);
-        REQUIRE(p.velocity.x == Approx(4.0f * (1.0f - 0.25f)).margin(1e-6));
-        REQUIRE(p.velocity.y == Approx(1.0f).margin(1e-6));
+        IntegrateWc3(p, m, 0.5f);
+        REQUIRE(p.velocity.x == 4.0f);
+        REQUIRE(p.velocity.y == 0.0f);
     }
 }
 

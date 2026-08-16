@@ -100,9 +100,9 @@ TEST_CASE("Every field the trace records is actually compared") {
         other.frames[0].emitters[0].particles[0].age += 0.5f;
         field = "age";
     }
-    SECTION("the per-particle curve cursor") {
-        other.frames[0].emitters[0].particles[1].keyFrame = 9u;
-        field = "keyFrame";
+    SECTION("the per-particle dialect word") {
+        other.frames[0].emitters[0].particles[1].aux = 9u;
+        field = "aux";
     }
     SECTION("alive count") {
         other.frames[0].emitters[0].particles.pop_back();
@@ -248,7 +248,7 @@ TEST_CASE("A v1 baseline without the output column still loads") {
     REQUIRE(e.output == 0u); // defaulted to Billboard, which is all v1 had
     REQUIRE(e.vertexCount == 6);
     REQUIRE(e.particles.size() == 1u);
-    REQUIRE(e.particles[0].keyFrame == 1u);
+    REQUIRE(e.particles[0].aux == 1u);
 }
 
 TEST_CASE("An unreadable or corrupt baseline is reported, not silently accepted") {

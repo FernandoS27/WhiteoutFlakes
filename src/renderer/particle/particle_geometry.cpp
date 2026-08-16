@@ -2,6 +2,7 @@
 #include "whiteout/flakes/util/coordinate_system.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace whiteout::flakes::renderer::particle {
@@ -85,15 +86,68 @@ struct SortRecord {
     f32 viewZ;
 };
 
-} // namespace
+// Corner order, shared by both dialects: -A+B, -A-B, +A+B, +A-B with UVs
+// (0,0), (0,1), (1,0), (1,1). WC3 spells it out as the `vc` table above; the
+// WoW builder writes the same four combinations inline, which is how the two
+// clients' quads end up interchangeable at this level.
+void EmitQuad(std::vector<Vertex>& out, const Vector3f& centre, const Vector3f& a,
+              const Vector3f& b, const Vector4f& color, const Vector3f& normal, f32 u0, f32 v0,
+              f32 u1, f32 v1) {
+    const Vector3f c0{centre.x - a.x + b.x, centre.y - a.y + b.y, centre.z - a.z + b.z};
+    const Vector3f c1{centre.x - a.x - b.x, centre.y - a.y - b.y, centre.z - a.z - b.z};
+    const Vector3f c2{centre.x + a.x + b.x, centre.y + a.y + b.y, centre.z + a.z + b.z};
+    const Vector3f c3{centre.x + a.x - b.x, centre.y + a.y - b.y, centre.z + a.z - b.z};
+    const Vector2f uv0{u0, v0}, uv1{u0, v1}, uv2{u1, v0}, uv3{u1, v1};
+    out.push_back({c0, normal, color, uv0});
+    out.push_back({c1, normal, color, uv1});
+    out.push_back({c2, normal, color, uv2});
+    out.push_back({c3, normal, color, uv3});
+    out.push_back({c2, normal, color, uv2});
+    out.push_back({c1, normal, color, uv1});
+}
 
-i32 BuildEmitterGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
-                         std::vector<Vertex>& out) {
-    if (!in.worldToView)
-        return 0;
+// Four corners given explicitly, for the velocity-stretched tail whose head and
+// end sit at different points.
+void EmitStrip(std::vector<Vertex>& out, const Vector3f& c0, const Vector3f& c1,
+               const Vector3f& c2, const Vector3f& c3, const Vector4f& color,
+               const Vector3f& normal, f32 u0, f32 v0, f32 u1, f32 v1) {
+    const Vector2f uv0{u0, v0}, uv1{u0, v1}, uv2{u1, v0}, uv3{u1, v1};
+    out.push_back({c0, normal, color, uv0});
+    out.push_back({c1, normal, color, uv1});
+    out.push_back({c2, normal, color, uv2});
+    out.push_back({c3, normal, color, uv3});
+    out.push_back({c2, normal, color, uv2});
+    out.push_back({c1, normal, color, uv1});
+}
+
+// The client's own guards. A velocity shorter than this cannot orient a quad,
+// and a tail whose on-screen length is under 1/36 of a unit is drawn as a plain
+// billboard instead of stretched. The tail one is a length in the emitter's own
+// units, so it scales with the model; the velocity one is a squared-magnitude
+// floor and does not.
+constexpr f32 kVelocityEpsilon = 2.3841858e-7f;
+constexpr f32 kTailMinPlaneLength = 1.0f / 36.0f;
+
+// The twinkle table. The client fills 128 floats with `rand()`-seeded noise when
+// the particle system starts (`CParticleEmitter2::Init` @0x10169efe0), so its
+// blink pattern genuinely differs between runs of the game. Ours is seeded
+// fixed: same uniform [0,1) distribution, reproducible run to run — the one
+// deliberate divergence in this file, and what lets a twinkling emitter be
+// trace-gated at all.
+const f32* TwinkleTable() {
+    static const std::array<f32, 128> table = [] {
+        std::array<f32, 128> t{};
+        RndSeed s(0x7A17C1E5u);
+        for (f32& v : t)
+            v = CRandom::real_(s);
+        return t;
+    }();
+    return table.data();
+}
+
+i32 BuildWc3Geometry(const Emitter2& emitter, const BuildGeometryInput& in,
+                     std::vector<Vertex>& out) {
     const ParticlePool& pool = emitter.Pool();
-    if (pool.AliveCount() == 0)
-        return 0;
 
     const bool hasHead = emitter.HasHead();
     const bool hasTail = emitter.HasTail();
@@ -162,10 +216,10 @@ i32 BuildEmitterGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
         u32 idx = pool.AliveAt(rec.aliveIndex);
         const Particle2& p = pool[idx];
 
-        // Normalised age drives every lifetime curve; keyFrame rides along as a
-        // segment hint so the lookup does not have to search.
+        // Normalised age drives every lifetime curve; the aux word rides along
+        // as a segment hint so the lookup does not have to search.
         const f32 u = ooLifeSpan * p.age;
-        const u32 hint = p.keyFrame;
+        const u32 hint = p.Cursor();
 
         const Vector3f rgb = curves.color.Evaluate(u, hint);
         const f32 alpha = curves.alpha.Evaluate(u, hint);
@@ -310,6 +364,339 @@ i32 BuildEmitterGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
     }
 
     return static_cast<i32>(out.size() - startSize);
+}
+
+// ===========================================================================
+// WoW builder.
+//
+// A separate function rather than branches inside the WC3 one, for the same
+// reason the two integrators are separate: the term order can only be right for
+// one client, and every WC3 vertex is pinned bit-for-bit by the L2 baselines.
+// Nothing below is reachable from a WC3 emitter.
+//
+// The client works in view space — it transforms each particle by
+// s_particleToView and builds the quad from view-space axes. This builds the
+// same quad in world space from the camera basis, which is the identical
+// construction under an orthonormal view transform and is what the rest of this
+// renderer expects. Reference: IBuildVertices<CParticle2,0,CGxVertexPCT>
+// @0x1016af940, InterpolateAllTracks<0> @0x1016a1b70, GetSpin @0x1016a2120.
+// ===========================================================================
+i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
+                     std::vector<Vertex>& out) {
+    const EmitterDesc& d = emitter.Desc();
+    const ParticlePool& pool = emitter.Pool();
+
+    const bool hasHead = d.hasHead;
+    const bool hasTail = d.hasTail;
+    if (!hasHead && !hasTail)
+        return 0;
+
+    const CameraBasis cam = BasisFromView(*in.worldToView);
+    const CoordSpace emSpace = d.coordSpace;
+    const bool needsConvert = (emSpace != CoordinateSystem::Default());
+    const Matrix44f& toWorld = emitter.ModelToWorld();
+
+    auto resolveWorld = [&](const Particle2& p, Vector3f& outPos, Vector3f& outVel) {
+        Vector3f pos = p.position;
+        Vector3f vel = p.velocity;
+        if (d.modelSpace) {
+            pos = whiteout::transform_point(pos, toWorld);
+            vel = whiteout::transform_normal(vel, toWorld);
+        }
+        if (needsConvert) {
+            pos = CoordinateSystem::ToDefault(emSpace, pos);
+            vel = CoordinateSystem::ToDefaultDir(emSpace, vel);
+        }
+        outPos = pos;
+        outVel = vel;
+    };
+
+    std::vector<SortRecord> order;
+    order.reserve(pool.AliveCount());
+    for (usize i = 0; i < pool.AliveCount(); ++i) {
+        SortRecord rec{static_cast<u32>(i), 0.0f};
+        if (d.sortZ) {
+            Vector3f wp, wv;
+            resolveWorld(pool[pool.AliveAt(i)], wp, wv);
+            rec.viewZ = Dot(wp, cam.fwd);
+        }
+        order.push_back(rec);
+    }
+    if (d.sortZ) {
+        std::sort(order.begin(), order.end(), [](const SortRecord& a, const SortRecord& b) {
+            if (a.viewZ != b.viewZ)
+                return a.viewZ > b.viewZ;
+            return a.aliveIndex < b.aliveIndex;
+        });
+        if (emitter.Behavior().sortedBuilderDefect && order.size() > 1) {
+            // The shipped defect. All six sorted `IBuildVertices` clones read
+            // `&s_pq.top()` AFTER calling pop(), so the record they draw is the
+            // one the heap just sifted into that slot: for N particles the
+            // emitted order is ranks 2,3,...,N,N — the farthest is dropped and
+            // the nearest drawn twice. Reproduce, do not repair; fixing it would
+            // diverge from every depth-sorted emitter in the client.
+            for (usize i = 0; i + 1 < order.size(); ++i)
+                order[i] = order[i + 1];
+        }
+    }
+
+    // Renderer units per model unit, and — separately — the emitter bone's own
+    // scale, which InheritBoneScale opts into as a SQUARE ROOT (the client's
+    // m_scaleFactor, extracted in UpdateXform). The emitter transform carries
+    // both, so dividing the first out leaves the second.
+    const f32 unit = emitter.UnitScale();
+    f32 boneScale = 1.0f;
+    if (d.inheritBoneScale) {
+        const Vector3f row{toWorld.data[0][0], toWorld.data[0][1], toWorld.data[0][2]};
+        const f32 len = std::sqrt(LengthSq(row));
+        boneScale = std::sqrt((unit > 0.0f) ? (len / unit) : len);
+    }
+
+    const f32* twinkle = TwinkleTable();
+    const bool twinkles = (d.twinklePercent < 1.0f) || (d.twinkleVary != 0.0f);
+    const bool scaleAlpha = emitter.Behavior().modelAlphaScalesParticles;
+    // The client decides whether to rotate at all from the two SPEED terms
+    // alone, so an emitter with a base spin and no spin speed draws unrotated.
+    const bool spins = (d.spinSpeed != 0.0f) || (d.spinSpeedVariation != 0.0f);
+
+    const u32 cells = d.sheet.rows * d.sheet.cols;
+    const u32 cellCount = (cells > 0) ? cells : 1u;
+    const u32 cellMask = cellCount - 1;
+    const f32 tailMin = kTailMinPlaneLength * unit;
+    const f32 tailMinSq = tailMin * tailMin;
+
+    const usize startSize = out.size();
+    const Vector3f normal{0.0f, 0.0f, 1.0f};
+
+    for (const SortRecord& rec : order) {
+        const Particle2& p = pool[pool.AliveAt(rec.aliveIndex)];
+        const u16 seed = p.RenderSeed();
+
+        // Twinkle culls before anything else is sampled: a blinked-off particle
+        // costs only its place in the queue.
+        u32 twIdx = 0;
+        if (twinkles) {
+            const u8 phase = static_cast<u8>(static_cast<i32>(p.age * d.twinkleSpeed));
+            twIdx = ((static_cast<u32>(seed) & 0xFFu) + phase) & 0x7Fu;
+        }
+        const f32 twRand = twinkle[twIdx];
+        if (d.twinklePercent < twRand)
+            continue;
+
+        // Per-particle life fraction: WoW gives every particle its own lifespan,
+        // so this is not the emitter's normalised age.
+        const f32 life = emitter.EffectiveLifeSpan(p);
+        const f32 t = (life > 0.0f) ? (p.age / life) : 0.0f;
+
+        // Hint 0 throughout. WoW tracks are one to three keys in practice and
+        // the aux word is spoken for (variance + seed), so there is no cursor to
+        // carry — `FindSegment` gives the same answer either way.
+        const Vector3f rgb = d.curves.color.Evaluate(t, 0);
+        f32 alpha = d.curves.alpha.Evaluate(t, 0);
+        if (scaleAlpha)
+            alpha *= emitter.ModelAlpha();
+        Vector2f size = d.curves.size.Evaluate(t, 0);
+
+        // Render randoms, in the client's order: the optional cell draw comes
+        // FIRST, so turning ChooseRandomTexture on shifts the size jitter with
+        // it. Everything here is a pure function of (seed, age), which is what
+        // makes drawing the same particle twice in one frame identical.
+        RndSeed rs(seed);
+        i32 headCell = 0;
+        i32 tailCell = 0;
+        if (!d.curves.headCells.Empty()) {
+            const u32 v = static_cast<u32>(d.curves.headCells.Evaluate(t, 0));
+            headCell = static_cast<i32>((v + emitter.BaseCell()) & cellMask);
+        } else if (d.chooseRandomTexture) {
+            headCell = static_cast<i32>(CRandom::dice_(cellCount, rs));
+        }
+        if (!d.curves.tailCells.Empty()) {
+            const u32 v = static_cast<u32>(d.curves.tailCells.Evaluate(t, 0));
+            tailCell = static_cast<i32>((v + emitter.BaseCell()) & cellMask);
+        }
+
+        const f32 sizeRand = CRandom::reals_(rs);
+        if (d.unscaledSizeVariation) {
+            const f32 sizeRand2 = CRandom::reals_(rs);
+            size.x *= (std::max)(1.0f + sizeRand * d.sizeVariation.x, 1e-4f);
+            size.y *= (std::max)(1.0f + sizeRand2 * d.sizeVariation.y, 1e-4f);
+        } else {
+            // One draw, and only the x variation, applied to both axes.
+            const f32 m = (std::max)(1.0f + sizeRand * d.sizeVariation.x, 1e-4f);
+            size.x *= m;
+            size.y *= m;
+        }
+
+        const f32 tw = d.twinkleBase + d.twinkleVary * twRand;
+        size.x *= tw;
+        size.y *= tw;
+        if (d.inheritBoneScale) {
+            size.x *= boneScale;
+            size.y *= boneScale;
+        }
+        // Model units to renderer units. The client never needs this — its whole
+        // world is yards — but here the tracks are in model units and the quad
+        // is built in renderer ones.
+        size.x *= unit;
+        size.y *= unit;
+
+        // GetSpin re-seeds from the same particle seed into its own stream, and
+        // draws only for the variations that are actually non-zero.
+        f32 baseSpin = d.baseSpin;
+        f32 spinSpeed = d.spinSpeed;
+        if (d.baseSpinVariation != 0.0f || d.spinSpeedVariation != 0.0f) {
+            RndSeed ss(seed);
+            if (d.baseSpinVariation != 0.0f)
+                baseSpin += CRandom::reals_(ss) * d.baseSpinVariation;
+            if (d.spinSpeedVariation != 0.0f)
+                spinSpeed += CRandom::reals_(ss) * d.spinSpeedVariation;
+        }
+
+        Vector3f worldPos, worldVel;
+        resolveWorld(p, worldPos, worldVel);
+
+        ImVector color = ImVector::FromUnitFloat(rgb.x, rgb.y, rgb.z, alpha);
+        if (in.fogEnabled && !d.material.unfogged && in.fogSampler) {
+            const ImVector fog = in.fogSampler(worldPos);
+            const u8 a = color.a;
+            color = CombineColors(color, fog);
+            color.a = a;
+        }
+        const Vector4f vcol = color.ToVec4();
+
+        // The plain screen-aligned pair, kept because the degenerate tail falls
+        // back to it whatever the head is doing.
+        const Vector3f screenA{cam.right.x * size.x, cam.right.y * size.x,
+                               cam.right.z * size.x};
+        const Vector3f screenB{cam.up.x * size.y, cam.up.y * size.y, cam.up.z * size.y};
+
+        Vector3f centre = worldPos;
+        Vector3f axisA = screenA;
+        Vector3f axisB = screenB;
+
+        const f32 velLenSq = LengthSq(worldVel);
+        if (d.velocityOrient && velLenSq > kVelocityEpsilon) {
+            // Lie the quad along the velocity as the camera sees it, and shorten
+            // that axis by how much of the velocity points at the viewer — so a
+            // particle flying straight at the camera draws round, not stretched.
+            const Vector3f nv{-worldVel.x, -worldVel.y, -worldVel.z};
+            const f32 vr = Dot(nv, cam.right);
+            const f32 vu = Dot(nv, cam.up);
+            const f32 planeSq = vr * vr + vu * vu;
+            if (planeSq <= kVelocityEpsilon) {
+                axisA = {0.0f, 0.0f, 0.0f};
+                axisB = {0.0f, 0.0f, 0.0f};
+            } else {
+                const f32 planeLen = std::sqrt(planeSq);
+                const f32 nx = vr / planeLen;
+                const f32 ny = vu / planeLen;
+                const f32 along = size.x * (planeLen / std::sqrt(velLenSq));
+                axisA = {(cam.right.x * nx + cam.up.x * ny) * along,
+                         (cam.right.y * nx + cam.up.y * ny) * along,
+                         (cam.right.z * nx + cam.up.z * ny) * along};
+                axisB = {(cam.up.x * nx - cam.right.x * ny) * size.y,
+                         (cam.up.y * nx - cam.right.y * ny) * size.y,
+                         (cam.up.z * nx - cam.right.z * ny) * size.y};
+            }
+        } else if (d.xyQuads) {
+            // XYQuad lies the sprite flat in the world XY plane instead of
+            // facing the camera. `s_quadToView` is one matrix for the whole
+            // frame, shared by every emitter, so it can only be the world basis
+            // — and the emitter caches its third row as the spin axis
+            // (RenderParticlesPrep @0x1016a2610), i.e. that plane's normal.
+            axisA = {size.x, 0.0f, 0.0f};
+            axisB = {0.0f, size.y, 0.0f};
+            if (spins) {
+                f32 angle = p.age * spinSpeed + baseSpin;
+                if (d.negateSpinRandom && (seed & 1u) != 0u)
+                    angle = -angle;
+                const f32 c = std::cos(angle);
+                const f32 s = std::sin(angle);
+                axisA = {size.x * c, size.x * s, 0.0f};
+                axisB = {-size.y * s, size.y * c, 0.0f};
+            }
+        } else if (spins) {
+            f32 angle = p.age * spinSpeed + baseSpin;
+            if (d.negateSpinRandom && (seed & 1u) != 0u)
+                angle = -angle;
+            const f32 c = std::cos(angle);
+            const f32 s = std::sin(angle);
+            axisA = {(cam.right.x * c + cam.up.x * s) * size.x,
+                     (cam.right.y * c + cam.up.y * s) * size.x,
+                     (cam.right.z * c + cam.up.z * s) * size.x};
+            axisB = {(cam.up.x * c - cam.right.x * s) * size.y,
+                     (cam.up.y * c - cam.right.y * s) * size.y,
+                     (cam.up.z * c - cam.right.z * s) * size.y};
+            // Push the quad along its own spun up-axis, so spin becomes an orbit
+            // around the particle rather than a rotation in place. The tail is
+            // drawn from the moved centre too, which is the client's own read of
+            // the same variable.
+            if (d.offsetHeadBySpin)
+                centre = {centre.x + axisB.x, centre.y + axisB.y, centre.z + axisB.z};
+        }
+
+        if (hasHead) {
+            f32 cu, cv;
+            CellToUV(d.sheet, headCell, cu, cv);
+            EmitQuad(out, centre, axisA, axisB, vcol, normal, cu, cv, cu + d.sheet.ooWidth,
+                     cv + d.sheet.ooHeight);
+        }
+
+        if (hasTail) {
+            f32 cu, cv;
+            CellToUV(d.sheet, tailCell, cu, cv);
+            const f32 cu1 = cu + d.sheet.ooWidth;
+            const f32 cv1 = cv + d.sheet.ooHeight;
+
+            f32 len = d.tailLength;
+            if (d.clampTailToAge && len > p.age)
+                len = p.age;
+            const Vector3f tail{-worldVel.x * len, -worldVel.y * len, -worldVel.z * len};
+            const f32 tr = Dot(tail, cam.right);
+            const f32 tu = Dot(tail, cam.up);
+            const f32 planeSq = tr * tr + tu * tu;
+
+            if (planeSq >= tailMinSq) {
+                const f32 inv = 1.0f / std::sqrt(planeSq);
+                // Half-width perpendicular to the tail on screen. Note the axes
+                // are scaled separately before the perpendicular is taken, so a
+                // non-square particle's tail is not a strict rotation of it —
+                // the client's asymmetry, kept.
+                const f32 wx = tr * inv * size.x;
+                const f32 wy = tu * inv * size.y;
+                const Vector3f w{cam.up.x * wx - cam.right.x * wy,
+                                 cam.up.y * wx - cam.right.y * wy,
+                                 cam.up.z * wx - cam.right.z * wy};
+                const Vector3f end{centre.x + tail.x, centre.y + tail.y, centre.z + tail.z};
+                EmitStrip(out, {centre.x + w.x, centre.y + w.y, centre.z + w.z},
+                          {centre.x - w.x, centre.y - w.y, centre.z - w.z},
+                          {end.x + w.x, end.y + w.y, end.z + w.z},
+                          {end.x - w.x, end.y - w.y, end.z - w.z}, vcol, normal, cu, cv, cu1,
+                          cv1);
+            } else {
+                // Too short to point anywhere on screen. The client draws a
+                // plain screen-aligned quad rather than dropping the tail, which
+                // is where WC3 skips the particle instead.
+                EmitQuad(out, centre, screenA, screenB, vcol, normal, cu, cv, cu1, cv1);
+            }
+        }
+    }
+
+    return static_cast<i32>(out.size() - startSize);
+}
+
+} // namespace
+
+i32 BuildEmitterGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
+                         std::vector<Vertex>& out) {
+    if (!in.worldToView)
+        return 0;
+    if (emitter.Pool().AliveCount() == 0)
+        return 0;
+    // Same split as the two integrators: the dialect picks a whole builder, not
+    // a set of branches inside one.
+    return emitter.Behavior().renderRandomsFromSeed ? BuildWowGeometry(emitter, in, out)
+                                                    : BuildWc3Geometry(emitter, in, out);
 }
 
 } // namespace whiteout::flakes::renderer::particle

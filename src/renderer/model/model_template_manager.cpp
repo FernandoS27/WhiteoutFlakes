@@ -143,6 +143,7 @@ std::shared_ptr<ModelTemplate> ModelTemplateManager::BuildFromBytes(
     tmpl->skeleton = adapter->GetSkeleton();
     tmpl->skinWeights = adapter->GetSkinWeights();
     tmpl->pe2Configs = adapter->GetParticleConfigs();
+    tmpl->m2ParticleConfigs = adapter->GetM2ParticleConfigs();
     tmpl->ribbonConfigs = adapter->GetRibbonConfigs();
     tmpl->collisionConfigs = adapter->GetCollisionShapes();
     tmpl->pe1Configs = adapter->GetPE1Configs();

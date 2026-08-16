@@ -1,6 +1,7 @@
 #include "io/m2/m2_model_adapter.h"
 
 #include "io/m2/m2_animation.h"
+#include "renderer/animation/anim_math.h"
 
 #include <whiteout/models/m2/parser.h>
 
@@ -102,17 +103,13 @@ std::vector<VertexAttribute> DescribeM2Vertex() {
 // which is `AnimateMT`'s `M = R; M.Scale(s); M.row3 += pivot + t;
 // M.Translate(-pivot)` read back out — C44Matrix::Translate and ::Scale both
 // *pre*-multiply, so the sequence composes to `T(-pivot) · S · R · T(pivot+t)`.
-// Identical in form to MDX's Vec3QuatScaleToMatrix44f, which is why that one is
-// not reused: it takes `mdx::` types and pulls the whole MDX structure header in
-// behind it.
+// Warcraft III's node transform is the same expression, so both now call one
+// kernel: `renderer::animation::ComposePivotSRT`. The copies existed only
+// because MDX's version took `mdx::` types and pulled that format's structure
+// header in behind it.
 Matrix44f M2BoneLocal(const Vector3f& t, const Quaternion& r, const Vector3f& s,
                       const Vector3f& pivot) {
-    const Matrix44f mS = Matrix44f::scaling(s);
-    const Matrix44f mR = Matrix44f::rotation(r).transpose();
-    const Matrix44f mNegPivot = Matrix44f::translation({-pivot.x, -pivot.y, -pivot.z});
-    const Matrix44f mPivotPlusT =
-        Matrix44f::translation({pivot.x + t.x, pivot.y + t.y, pivot.z + t.z});
-    return mNegPivot * mS * mR * mPivotPlusT;
+    return renderer::animation::ComposePivotSRT(t, r, s, pivot);
 }
 
 // The parent matrix bone `i` composes against, after its three "ignore parent"
@@ -235,11 +232,30 @@ std::shared_ptr<M2ModelAdapter> M2ModelAdapter::Load(const ContentRef& ref,
         for (const auto& issue : parser.getIssues())
             std::fprintf(stderr, "[m2] %s\n", issue.c_str());
     }
+    if (model.skinProfiles.empty() && !ref.IsFileId() && provider) {
+        // A path-addressed model is not necessarily a model with path-addressed
+        // siblings. Anything Legion or later names its skins by fileDataID in
+        // SFID, so a loose `.m2` sitting on disk beside no `.skin` at all is
+        // normal — those skins live in the install's CASC and are reachable by
+        // id, which is the route this retry takes. Pre-Legion models never get
+        // here: their positional `<name>NN.skin` siblings resolved above.
+        ::whiteout::m2::Parser byId;
+        byId.setLazyAnimations(lazyAnimations);
+        try {
+            auto fs = std::make_shared<ContentProviderCascFs>(provider);
+            ::whiteout::m2::Model retry = byId.parse(*fs, bytes);
+            if (!retry.skinProfiles.empty()) {
+                model = std::move(retry);
+                fsKeepAlive = std::move(fs);
+            }
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[m2] id-route retry failed for '%s': %s\n",
+                         ref.Describe().c_str(), e.what());
+        }
+    }
     if (model.skinProfiles.empty()) {
-        // Chunked M2 keeps its skin profiles in sibling files referenced by
-        // fileDataID. Reaching here means the parser could not read them,
-        // which on this route means the content provider could not resolve an
-        // id — a configuration problem, not a malformed model.
+        // Both routes are exhausted: the skins are named by id and no storage
+        // could resolve them. A configuration problem, not a malformed model.
         std::fprintf(stderr, "[m2] no skin profile resolved for '%s'; is a WoW CASC configured?\n",
                      model.modelName.c_str());
         return nullptr;
@@ -601,7 +617,7 @@ renderer::model::FrameState M2ModelAdapter::Evaluate(const PoseRequest& req) con
     // stored vertex positions exactly, because an `.m2` stores them posed.
     const bool bindPose = clip.sequence < 0;
 
-    EvaluateBones(at, bindPose, fs);
+    EvaluateBones(at, bindPose, req, fs);
     EvaluateTextureTransforms(at, bindPose, fs);
     EvaluateSurfaces(at, bindPose, fs);
     // Positional, and it has to be: RenderModel::ApplyGeosetStates pairs
@@ -615,16 +631,39 @@ renderer::model::FrameState M2ModelAdapter::Evaluate(const PoseRequest& req) con
     // an `.m2` stores them pre-posed, so there is no constant to fall back to.
     EvaluateLights(at, req.world, fs);
     EvaluateRibbons(at, req.world, fs);
+    EvaluateParticles(at, req.world, fs);
     return fs;
 }
 
-void M2ModelAdapter::EvaluateBones(const M2AnimTime& at, bool bindPose,
+void M2ModelAdapter::EvaluateBones(const M2AnimTime& at, bool bindPose, const PoseRequest& req,
                                    renderer::model::FrameState& fs) const {
     using ::whiteout::m2::BoneFlag;
     const usize boneCount = std::max<usize>(model_.bones.size(), 1);
     fs.boneWorldMatrices.assign(boneCount, Matrix44f::identity());
 
+    // `externallyDriven` + a `replace` override is the host saying "this bone's
+    // model-space matrix is mine, do not sample it and do not compose the parent
+    // chain into it". That is what a collections model needs: its thirteen-bone
+    // rig is posed bone-for-bone from the character it rides, by key bone, and
+    // the matrices arriving are already in the character's model space.
+    //
+    // A driven bone still acts as a parent for the bones below it, so an
+    // undriven one in the middle of the chain (there is one) composes onto a
+    // driven ancestor exactly as it would onto a sampled one.
+    std::vector<const ::whiteout::flakes::NodeOverride*> driven;
+    if (!req.overrides.empty()) {
+        driven.assign(boneCount, nullptr);
+        for (const auto& o : req.overrides) {
+            if (o.replace && o.node >= 0 && static_cast<usize>(o.node) < boneCount)
+                driven[static_cast<usize>(o.node)] = &o;
+        }
+    }
+
     for (usize i = 0; i < model_.bones.size(); ++i) {
+        if (!driven.empty() && driven[i]) {
+            fs.boneWorldMatrices[i] = driven[i]->m;
+            continue;
+        }
         const auto& b = model_.bones[i];
         const i32 parent = b.parentBoneId;
         // `parentIndex < boneIndex` is the client's own assertion, so one
@@ -858,6 +897,244 @@ void M2ModelAdapter::EvaluateRibbons(const M2AnimTime& at, const Matrix44f& worl
         st.visibility = SampleM2U8(r.visibility, at, 1) != 0 ? 1.0f : 0.0f;
         st.slot = 0;
         fs.ribbonStates.push_back(st);
+    }
+}
+
+namespace {
+
+using ::whiteout::m2::ParticleFlag;
+
+bool HasParticleFlag(ParticleFlag flags, u32 bit) {
+    return (static_cast<u32>(flags) & bit) != 0;
+}
+
+// A particle track's 16-bit fields are the client's `fixed16`: raw * 1/32767,
+// so a full-scale key is 0x7FFF and not 0xFFFF. WhiteoutLib types them
+// `unorm16`, whose float conversion divides by 65535 — half of what the client
+// reads (`InterpolateAllTracks` @0x1016a1b70 multiplies by 0.000030518509).
+// Taking `.value` and rescaling here is what keeps a track that ends at 1.0
+// from ending at 0.5.
+constexpr f32 kFixed16 = 1.0f / 32767.0f;
+
+template <class U>
+inline f32 Fixed16(U v) {
+    return static_cast<f32>(v.value) * kFixed16;
+}
+
+// Copy one M2 particle lifetime track. Times are fixed16 over [0,1] and the
+// last one is asserted to be 1.0 by the client, so they need no rescaling.
+template <class Track, class Out, class Conv>
+void CopyParticleTrack(const Track& track, std::vector<f32>& times, Out& values, Conv conv) {
+    const usize n = track.values.size();
+    times.reserve(n);
+    values.reserve(n);
+    for (usize i = 0; i < n; ++i) {
+        times.push_back(i < track.timestamps.size() ? Fixed16(track.timestamps[i])
+                                                    : (n > 1 ? static_cast<f32>(i) / (n - 1) : 0.0f));
+        values.push_back(conv(track.values[i]));
+    }
+}
+
+} // namespace
+
+std::vector<renderer::M2ParticleEmitterConfig> M2ModelAdapter::GetM2ParticleConfigs() {
+    std::vector<renderer::M2ParticleEmitterConfig> out;
+    out.reserve(model_.particleEmitters.size());
+
+    for (const auto& p : model_.particleEmitters) {
+        renderer::M2ParticleEmitterConfig cfg;
+        const u32 f = static_cast<u32>(p.flags);
+
+        // A plain emitter indexes the model's texture array with the whole
+        // 16-bit field (`InitializeLoaded` @0x100f57c29 loads it and indexes
+        // CM2Shared's handle array directly). A MultiTexture one packs three
+        // 5-bit indices into the same field; only the first is bound here,
+        // because the multi-texture shading path is out of scope.
+        cfg.textureId = ((f & 0x10000000u) != 0) ? static_cast<i32>(p.textureId & 0x1Fu)
+                                                 : static_cast<i32>(p.textureId);
+        cfg.filterMode = static_cast<i32>(p.blendingType);
+        cfg.rows = (p.rows > 0) ? p.rows : 1;
+        cfg.cols = (p.columns > 0) ? p.columns : 1;
+        // Shaded/Unshaded are two separate bits in the record; the loader turns
+        // them into the lighting bit of CParticleMat.
+        cfg.unshaded = (f & 0x8u) != 0 || (f & 0x1u) == 0;
+        cfg.unfogged = (f & 0x100000u) != 0;
+
+        cfg.generator = static_cast<renderer::M2ParticleEmitterConfig::Generator>(
+            static_cast<u8>(p.emitterType));
+        cfg.boneId = static_cast<i32>(p.boneId);
+        cfg.position = p.position;
+
+        cfg.lifespanVariation = p.lifespanVariation;
+        cfg.emissionRateVariation = p.emissionRateVariation;
+        cfg.tailLength = p.tailLength;
+
+        // HeadStyle / TailStyle. A record with neither draws nothing, which is
+        // faithful — SetParticleStyle leaves both quad flags clear.
+        cfg.hasHead = (f & 0x20000u) != 0;
+        cfg.hasTail = (f & 0x40000u) != 0;
+        if (!cfg.hasHead && !cfg.hasTail)
+            cfg.hasHead = true;
+
+        // Despite the name, file 0x10 is what makes a particle RIDE its
+        // emitter. It maps to runtime 0x200 (`InitializeLoaded` @0x100f553d0:
+        // set on 0x10, explicitly cleared otherwise), and 0x200 is the bit
+        // `CreateParticle` @0x1016a0640 tests to decide whether to bake the
+        // spawn into world space — it bakes when the bit is CLEAR. So set means
+        // "stay local, transform at draw", which is exactly modelSpace here,
+        // and clear means the particle is stamped into the world at birth and
+        // trails behind a moving emitter.
+        cfg.modelSpace = (f & 0x10u) != 0;
+        cfg.sortZ = (f & 0x2u) != 0;
+        cfg.xyQuad = (f & 0x1000u) != 0;
+        cfg.squirt = (f & 0x8000u) != 0;
+        cfg.hemisphereUp = (f & 0x100u) != 0;
+        cfg.followPosition = (f & 0x4000u) != 0;
+        cfg.randomEmissionSpacing = (f & 0x800u) != 0;
+        cfg.inheritVelocity = (f & 0x40u) != 0;
+        cfg.lodIgnoreDistance = (f & 0x4000000u) != 0;
+        // 6.0.1 keys the implosion filter off the DynamicWind sign bit for
+        // sphere emitters, not the documented 0x80 — a quirk of that build,
+        // reproduced rather than corrected.
+        cfg.implosionFilter =
+            cfg.generator == renderer::M2ParticleEmitterConfig::Generator::Sphere &&
+            (f & 0x80000000u) != 0;
+        cfg.inheritVelocityScale = p.inheritVelocityScale;
+
+        // Appearance. The file→runtime flag map is the loader's own
+        // (`InitializeLoaded` @0x100f553d0); the runtime bit numbers differ from
+        // the file ones, which is why these are read by file bit here and
+        // carried as named booleans rather than as a flag word.
+        cfg.velocityOrient = (f & 0x4u) != 0;
+        cfg.inheritBoneScale = (f & 0x20u) != 0;
+        cfg.negateSpinRandom = (f & 0x200u) != 0;
+        cfg.clampTailToAge = (f & 0x400u) != 0;
+        cfg.chooseRandomTexture = (f & 0x10000u) != 0;
+        cfg.unscaledSizeVariation = (f & 0x80000u) != 0;
+        cfg.randFlipbookStart = (f & 0x200000u) != 0;
+        cfg.offsetHeadBySpin = (f & 0x8000000u) != 0;
+
+        cfg.baseSpin = p.baseSpin;
+        cfg.baseSpinVariation = p.baseSpinVariation;
+        cfg.spinSpeed = p.spinSpeed;
+        cfg.spinSpeedVariation = p.spinSpeedVariation;
+        cfg.twinkleSpeed = p.twinkleSpeed;
+        cfg.twinklePercent = p.twinklePercent;
+        cfg.twinkleScale = p.twinkleScale;
+
+        cfg.drag = p.drag;
+        // The static wind vector applies only when DynamicWind is clear.
+        if ((f & 0x80000000u) == 0)
+            cfg.windVector = p.windVector;
+        cfg.followSpeed1 = p.followSpeed1;
+        cfg.followScale1 = p.followScale1;
+        cfg.followSpeed2 = p.followSpeed2;
+        cfg.followScale2 = p.followScale2;
+        cfg.splinePoints = p.splinePoints;
+        cfg.priorityPlane = p.textureTilerotation;
+
+        CopyParticleTrack(p.colorTrack, cfg.colorTimes, cfg.colorValues, [](const Vector3f& v) {
+            // Record colours are 0..255 display-referred.
+            return Vector3f{v.x / 255.0f, v.y / 255.0f, v.z / 255.0f};
+        });
+        CopyParticleTrack(p.alphaTrack, cfg.alphaTimes, cfg.alphaValues,
+                          [](auto v) { return Fixed16(v); });
+        CopyParticleTrack(p.scaleTrack, cfg.scaleTimes, cfg.scaleValues,
+                          [](const Vector2f& v) { return v; });
+        cfg.scaleVariation = p.scaleVary;
+        // Despite their `unorm16` type and their name, the two cell tracks hold
+        // raw sprite-sheet cell indices — the client reads them as plain u16 and
+        // masks them into the sheet. Normalising them would make every cell 0.
+        CopyParticleTrack(p.headUVScroll, cfg.headCellTimes, cfg.headCellValues,
+                          [](auto v) { return static_cast<f32>(v.value); });
+        CopyParticleTrack(p.tailUVScroll, cfg.tailCellTimes, cfg.tailCellValues,
+                          [](auto v) { return static_cast<f32>(v.value); });
+
+        out.push_back(std::move(cfg));
+    }
+    return out;
+}
+
+void M2ModelAdapter::EvaluateParticles(const M2AnimTime& at, const Matrix44f& world,
+                                       renderer::model::FrameState& fs) const {
+    if (model_.particleEmitters.empty())
+        return;
+    fs.particleStates.reserve(model_.particleEmitters.size());
+
+    // `world` is the actor's scaled transform, so the length of its first basis
+    // row is exactly the model-unit → renderer-unit factor (100 under the wow
+    // profile). Read off the actor rather than the bone: the emitter's own bone
+    // scale is a separate, opt-in effect (InheritBoneScale).
+    const f32 unitScale = std::sqrt(world.data[0][0] * world.data[0][0] +
+                                    world.data[0][1] * world.data[0][1] +
+                                    world.data[0][2] * world.data[0][2]);
+
+    for (usize i = 0; i < model_.particleEmitters.size(); ++i) {
+        const auto& p = model_.particleEmitters[i];
+        renderer::model::FrameState::ParticleFrameState st{};
+        st.emitterId = static_cast<i32>(i);
+
+        Matrix44f bone = Matrix44f::identity();
+        if (p.boneId < model_.bones.size() && p.boneId < fs.boneWorldMatrices.size())
+            bone = fs.boneWorldMatrices[static_cast<usize>(p.boneId)];
+        Matrix44f local = Matrix44f::identity();
+        local.data[3][0] = p.position.x;
+        local.data[3][1] = p.position.y;
+        local.data[3][2] = p.position.z;
+
+        // CM2Model::AnimateParticleST pre-multiplies by a constant 90-degree
+        // rotation about Z before the bone chain. Without it every generator's
+        // azimuth-zero points the wrong way and emitters spray sideways — and
+        // no unit test can catch that, only looking at the model.
+        Matrix44f baseFlip = Matrix44f::identity();
+        baseFlip.data[0][0] = 0.0f;
+        baseFlip.data[0][1] = 1.0f;
+        baseFlip.data[1][0] = -1.0f;
+        baseFlip.data[1][1] = 0.0f;
+        st.transform = baseFlip * local * bone * world;
+
+        st.worldPosition = {st.transform.data[3][0], st.transform.data[3][1],
+                            st.transform.data[3][2]};
+
+        st.emissionRate = SampleM2Float(p.emissionRate, at, 0.0f);
+        st.speed = SampleM2Float(p.emissionSpeed, at, 0.0f);
+        st.variation = SampleM2Float(p.speedVariation, at, 0.0f);
+        st.coneAngle = SampleM2Float(p.verticalRange, at, 0.0f);
+        st.horizontalRange = SampleM2Float(p.horizontalRange, at, 0.0f);
+        st.width = SampleM2Float(p.emissionAreaWidth, at, 0.0f);
+        st.length = SampleM2Float(p.emissionAreaLength, at, 0.0f);
+        st.zSource = SampleM2Float(p.zSource, at, 0.0f);
+        st.lifeSpan = SampleM2Float(p.lifespan, at, 1.0f);
+
+        // Gravity is a direction in M2, not just a magnitude — but only when
+        // the emitter says so. Both forms arrive as f32 keys; the compressed
+        // one is four packed bytes wearing a float's clothes.
+        st.gravityVector = SampleM2ParticleGravity(
+            p.gravity, at,
+            HasParticleFlag(p.flags, static_cast<u32>(ParticleFlag::CompressedGravity)));
+        st.gravity = -st.gravityVector.z;
+        st.hasGravityVector = true;
+
+        // Two distinct gates: `enabledIn` drives emission (and clamps a
+        // negative rate to zero), while visibility decides whether the emitter
+        // is simulated at all. Model alpha is neither — it scales the drawn
+        // particle and never stops emission.
+        st.enabled = SampleM2U8(p.enabledIn, at, 1) != 0;
+        if (!st.enabled || st.emissionRate < 0.0f)
+            st.emissionRate = 0.0f;
+        st.visibility = 1.0f;
+        // The client drives this from the model's own fade (`m_alphaScale`,
+        // written by CM2Model::AnimateParticleST). Nothing in the viewer fades a
+        // model, so it stays 1 — the multiply lives in the builder either way,
+        // so a host that does fade one gets the behaviour for free.
+        st.modelAlpha = 1.0f;
+        st.unitScale = (unitScale > 0.0f) ? unitScale : 1.0f;
+        // The emitter's static Squirt property, exactly as the MDX adapter
+        // reports it: "this emitter bursts rather than streams". The rate's
+        // rising edge is detected at the actor layer, shared by both formats.
+        st.squirting = (static_cast<u32>(p.flags) & 0x8000u) != 0;
+
+        fs.particleStates.push_back(st);
     }
 }
 

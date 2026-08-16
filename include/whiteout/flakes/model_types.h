@@ -72,6 +72,105 @@ struct ParticleEmitterConfig {
     i32 replaceableId = 0;
 };
 
+/// @brief Static description of one `.m2` particle emitter.
+///
+/// Deliberately not folded into `ParticleEmitterConfig`: the two formats
+/// describe genuinely different emitters (M2 has spawn generators, per-particle
+/// spread, spin, twinkle, wind and drag; MDX has none of them), and widening
+/// the MDX struct with two dozen always-default fields would make every WC3
+/// call site carry them. Both translate into the same renderer-side
+/// `EmitterDesc`, which is where the formats actually converge.
+///
+/// Animated values ride through `FrameState::particleStates` as usual.
+struct M2ParticleEmitterConfig {
+    /// Which generator produces spawn positions. Matches the on-disk
+    /// `emitterType`: 1 Plane, 2 Sphere, 3 Spline, 4 Bone.
+    enum class Generator : u8 { Plane = 1, Sphere = 2, Spline = 3, Bone = 4 };
+
+    i32 textureId = -1;
+    i32 filterMode = 0;     ///< @ref FilterMode.
+    i32 rows = 1, cols = 1; ///< Sprite-sheet grid.
+    bool unshaded = false;
+    bool unfogged = false;
+
+    Generator generator = Generator::Plane;
+    i32 boneId = 0;
+    Vector3f position{0, 0, 0}; ///< Emitter offset in its bone's space.
+
+    f32 lifeSpan = 1.0f;
+    f32 lifespanVariation = 0.0f;
+    f32 emissionRateVariation = 0.0f;
+
+    bool hasHead = true;
+    bool hasTail = false;
+    f32 tailLength = 1.0f;
+
+    // Spawn / motion flags, already decoded from the on-disk word.
+    bool modelSpace = false;   ///< Cleared WorldSpace: particles follow the bone.
+    bool sortZ = false;
+    bool xyQuad = false;
+    bool squirt = false;       ///< Burst on the emission-rate track's rising edge.
+    bool hemisphereUp = false; ///< Sphere generator: force +Z velocity.
+    bool implosionFilter = false;
+    bool followPosition = false;
+    bool randomEmissionSpacing = false; ///< InheritPosition.
+    bool inheritVelocity = false;
+    bool lodIgnoreDistance = false;
+    f32 inheritVelocityScale = 1.0f;
+
+    // Appearance flags. All of these change how the quad is built rather than
+    // where the particle is, so they are read by the geometry builder.
+    bool velocityOrient = false;       ///< Align the head quad along the velocity.
+    bool inheritBoneScale = false;     ///< Size scales with the emitter bone.
+    bool negateSpinRandom = false;     ///< Odd-seeded particles spin the other way.
+    bool clampTailToAge = false;       ///< Tail no longer than the particle is old.
+    bool offsetHeadBySpin = false;     ///< Push the head quad along its spun up-axis.
+    bool unscaledSizeVariation = false; ///< Draw X and Y size jitter separately.
+    bool chooseRandomTexture = false;  ///< Random cell when the head track is empty.
+    bool randFlipbookStart = false;    ///< Random per-emitter cell offset, drawn at load.
+
+    /// 2D billboard rotation, radians. `baseSpin` is the angle at birth and
+    /// `spinSpeed` the rate; each has a symmetric per-particle variation drawn
+    /// from the particle's own seed.
+    f32 baseSpin = 0.0f, baseSpinVariation = 0.0f;
+    f32 spinSpeed = 0.0f, spinSpeedVariation = 0.0f;
+
+    /// Twinkle: particles blink and pulse in size on a shared 128-entry random
+    /// table indexed by `(seed + age*speed) & 0x7F`. `twinkleScale` is the
+    /// {min, max} of the size multiplier — note that a record asking for
+    /// {0,0} really does scale its particles to nothing.
+    f32 twinkleSpeed = 0.0f;
+    f32 twinklePercent = 1.0f;
+    Vector2f twinkleScale{1, 1};
+
+    f32 drag = 0.0f;
+    Vector3f windVector{0, 0, 0};
+
+    /// Two (speed, scale) sample points defining the FollowPosition factor as a
+    /// line in emitter speed. Kept in the record's own form; the runtime slope
+    /// and bias are derived once when the desc is built.
+    f32 followSpeed1 = 0.0f, followScale1 = 0.0f;
+    f32 followSpeed2 = 0.0f, followScale2 = 0.0f;
+
+    std::vector<Vector3f> splinePoints;
+
+    /// Lifetime tracks over normalised particle age, already decompressed.
+    /// Times are in [0,1]; a single key means "constant".
+    std::vector<f32> colorTimes;
+    std::vector<Vector3f> colorValues; ///< 0..1, already converted from 0..255.
+    std::vector<f32> alphaTimes;
+    std::vector<f32> alphaValues;
+    std::vector<f32> scaleTimes;
+    std::vector<Vector2f> scaleValues;
+    Vector2f scaleVariation{0, 0};
+    std::vector<f32> headCellTimes;
+    std::vector<f32> headCellValues;
+    std::vector<f32> tailCellTimes;
+    std::vector<f32> tailCellValues;
+
+    i32 priorityPlane = 0;
+};
+
 } // namespace whiteout::flakes::renderer
 
 namespace whiteout::flakes::renderer::effects {
@@ -362,11 +461,29 @@ struct GroupAverageRecord {
 /// @brief Skinning data for one geoset.
 struct SkinWeightData {
     i32 geosetId;
+    /// @brief Per-vertex influences, when the source hands them over decoded.
+    ///
+    /// Left empty by a format that already carries `BoneWeights` /
+    /// `BoneIndices` inside its baked vertex blob — see
+    /// @ref paletteLocalVertexIndices. The loader builds the separate
+    /// `BoneVertex` stream only when this is populated.
     std::vector<VertexInfluence> influences;
     std::vector<GroupAverageRecord> groupAverages;
     /// Bones-this-geoset-actually-touches subset (matrix-palette index ⇒
     /// global node index); enables a smaller per-geoset bone palette.
     std::vector<i32> subsetNodeIndices;
+
+    /// @brief The vertex stream's bone indices are already palette-local
+    ///        slots into @ref subsetNodeIndices, and must not be rewritten.
+    ///
+    /// `.m3` stores a vertex's bone as an index into its region's window of
+    /// `MODL.boneLookup`, which is precisely a per-geoset palette — the format
+    /// ships pre-coalesced for exactly this. Such a geoset has to stay on the
+    /// per-geoset palette path: the per-actor path re-addresses every index to
+    /// a global node slot, and with the indices living in a blob nobody
+    /// decodes, that rewrite cannot happen and the vertices would read another
+    /// region's bones.
+    bool paletteLocalVertexIndices = false;
 };
 
 /// @brief Shape encoding of @ref CollisionShapeData::type, mirroring MDX's
@@ -428,6 +545,38 @@ struct FrameState {
         f32 emissionRate, speed, variation, coneAngle;
         f32 gravity, width, length, visibility;
         bool squirting;
+
+        // ---- `.m2` additions ----
+        //
+        // Defaulted so the MDX adapter is untouched and its emitters keep their
+        // existing meaning. `coneAngle` carries the vertical range and
+        // `width`/`length` the two area floats, which is the client's own reuse
+        // rather than an economy taken here.
+
+        /// Vector gravity. M2 animates a direction, not just a magnitude; the
+        /// MDX path leaves this zero and keeps using the scalar `gravity`.
+        Vector3f gravityVector{0, 0, 0};
+        bool hasGravityVector = false;
+
+        /// Animated lifespan. Re-read every frame for every live particle under
+        /// the WoW dialect, so a keyframe resizes particles already in flight.
+        f32 lifeSpan = 0.0f;
+        /// Azimuth range, animated separately from the polar range.
+        f32 horizontalRange = 0.0f;
+        /// Velocity aims from (0,0,zSource) once above 0.001.
+        f32 zSource = 0.0f;
+        /// Model alpha. Multiplies particle alpha rather than gating emission.
+        f32 modelAlpha = 1.0f;
+        /// The `enabledIn` track. Drives emission; distinct from `visibility`,
+        /// which decides whether the emitter is simulated at all.
+        bool enabled = true;
+        /// Emitter position in world space, for path-interpolated spawning and
+        /// inherited emitter velocity.
+        Vector3f worldPosition{0, 0, 0};
+        /// Renderer units per model unit for this actor (`Actor::worldScale`,
+        /// 100 for WoW). Particle sizes and forces are authored in model units
+        /// while the emitter draws in renderer ones. MDX leaves it 1.
+        f32 unitScale = 1.0f;
     };
     std::vector<ParticleFrameState> particleStates;
 
