@@ -1183,7 +1183,8 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/debug/draw_trace.cpp
     src/renderer/debug/draw_trace_hooks.cpp
     src/renderer/effects/event_emitter_pool.cpp
-    src/renderer/effects/ribbon.cpp
+    src/renderer/ribbon/ribbon_emitter.cpp
+    src/renderer/ribbon/ribbon_service.cpp
     src/renderer/effects/spn_spawner.cpp
     src/renderer/corn_effects/corn_effects_emitter.cpp
     src/renderer/corn_effects/corn_effects_gfx_backend.cpp
@@ -1252,12 +1253,16 @@ if(WDX_ENABLE_M2)
     target_sources(WhiteoutFlakesLib PRIVATE
         src/io/m2/m2_animation.cpp
         src/io/m2/m2_model_adapter.cpp
+        src/io/wow/character_appearance.cpp
+        src/io/wow/character_geosets.cpp
+        src/io/wow/chr_customization_table.cpp
         src/io/wow/creature_skin_table.cpp
         src/renderer/profiles/wow/m2_lighting.cpp
         src/renderer/profiles/wow/m2_material.cpp
         src/renderer/profiles/wow/m2_shader_select.cpp
         src/renderer/profiles/wow/m2_shading.cpp
         src/renderer/profiles/wow/m2_surface_table.cpp
+        src/renderer/profiles/wow/wow_character_appearance.cpp
         src/renderer/profiles/wow/wow_replaceable_textures.cpp
     )
     # Only the `.m2` path reads client databases, so the dependency is scoped

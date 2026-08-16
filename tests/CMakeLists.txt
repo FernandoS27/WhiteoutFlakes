@@ -80,6 +80,7 @@ if(WDX_ENABLE_M2)
     wdx_add_test(m2_shader_select_test m2_shader_select_test.cpp)
     wdx_add_test(m2_material_test m2_material_test.cpp)
     wdx_add_test(m2_lighting_test m2_lighting_test.cpp)
+    wdx_add_test(wow_character_test wow_character_test.cpp)
     # Corpus only: needs the `dbfilesclient/` dump beside the models.
     wdx_add_test(wow_creature_skin_test wow_creature_skin_test.cpp)
 endif()
@@ -103,6 +104,7 @@ wdx_add_test(particle_curve_test    particle_curve_test.cpp)
 wdx_add_test(particle_shape_test    particle_shape_test.cpp)
 wdx_add_test(particle_sim_test      particle_sim_test.cpp)
 wdx_add_test(particle_trace_test    particle_trace_test.cpp)
+wdx_add_test(ribbon_sim_test        ribbon_sim_test.cpp)
 
 # `cmake --build build --target wdx_tests` builds every test binary;
 # `--target check` builds them and runs the suite through CTest.

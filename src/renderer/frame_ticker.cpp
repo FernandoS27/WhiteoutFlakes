@@ -460,13 +460,17 @@ void FrameTicker::DriveChildModels() {
 }
 
 void FrameTicker::UpdateRibbons(f32 dt) {
-    // Each ribbon emitter owns its own RNG-free segment history, so the sim is
-    // order-independent here; the ordering that matters is BuildStrips', fixed
-    // by making RibbonSystem's emitter map ordered.
+    // Each ribbon emitter owns its own RNG-free edge history, so the sim is
+    // order-independent here; the ordering that matters is BuildGeometry's,
+    // fixed by making RibbonService's emitter map ordered.
+    //
+    // Driven per actor rather than with one RibbonService::Simulate call
+    // because the visibility gate reads actor state, which the service has no
+    // business knowing about.
     for (auto& [h, mi] : rs_.Scene().Actors().All()) {
         if (mi->parentVisibility <= 0.02f)
             continue;
-        mi->render.ribbons.Simulate(dt);
+        rs_.Ribbons().SimulateModel(h, dt);
     }
 }
 

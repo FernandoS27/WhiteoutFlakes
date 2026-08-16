@@ -407,6 +407,16 @@ struct FrameState {
     std::vector<Matrix44f> geosetTransforms;
     /// Per-geoset opacity (KGAO track sample); used to gate full-geoset fades.
     std::vector<f32> geosetAlphas;
+    /// Per-geoset "this submesh is not part of the model right now" — a
+    /// character's unchosen hairstyles, the hand a glove replaces.
+    ///
+    /// Not the same thing as `geosetAlphas[i] == 0`, and it cannot be expressed
+    /// as one: an additive batch draws at zero model alpha on purpose (it is
+    /// premultiplied, and the client fades a model without dropping the light it
+    /// adds), so an eye-glow geoset "hidden" by alpha stays on screen. The
+    /// client's own `SetGeometryVisible` takes the submesh out of the draw list
+    /// instead, which is what this is.
+    std::vector<u8> geosetHidden;
     /// Per-geoset RGB tint (KGAC); applied multiplicatively in the PS.
     std::vector<Vector3f> geosetColors;
 

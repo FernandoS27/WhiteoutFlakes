@@ -31,7 +31,8 @@ class SpnSpawner;
 }
 namespace whiteout::flakes::renderer::profiles::wow {
 class WowReplaceableTextures;
-}
+class WowCharacterAppearance;
+} // namespace whiteout::flakes::renderer::profiles::wow
 
 namespace whiteout::flakes::renderer::model {
 
@@ -116,6 +117,25 @@ public:
     // spawn rather than cached on a template. Hosts reach it to offer a skin
     // picker (see WowReplaceableTextures::SetVariation).
     profiles::wow::WowReplaceableTextures& WowReplaceables();
+
+    // The other half of the same idea, for the models the client dresses
+    // rather than skins: geoset selection and the composited body texture.
+    // Same lifetime and the same reason for living here.
+    profiles::wow::WowCharacterAppearance& WowCharacters();
+
+    // Re-dress an already-spawned `.m2` in place: runs the same two passes the
+    // spawn does against the actor's own adapter and re-stages its textures.
+    //
+    // Nothing else about the actor moves — same handle, same sequence, same
+    // cursor — so a host can step "Hair Style" without the document reloading
+    // underneath the camera. That only works because geoset visibility became
+    // frame state (`FrameState::geosetHidden`) and the composited sheets are
+    // scope-owned textures the staging path replaces where they stand; neither
+    // touches the geometry, which is the same either way.
+    //
+    // False when the handle is dead or the actor was not spawned from an `.m2`,
+    // which is a caller's cue to fall back to a reload.
+    bool RestyleWowModel(u32 actorHandle, const ContentRef& ref);
 #endif
 
 private:
@@ -132,6 +152,11 @@ private:
     // bindings. The GPU upload is committed in the next CommitPendingUploads()
     // pass. Callers go through SpawnUnit / SpawnUnitFromSource / SpawnChild.
     void StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl);
+
+    // Copy TextureData into an actor's staging map and register any replaceable
+    // slot. Shared by the spawn path and the in-place restyle above, which
+    // differ only in whether the actor already exists.
+    void StageTextures(Actor& mi, const std::vector<TextureData>& textures);
 
 public:
     // Upload a template's shared GPU resources (per-geoset vertex/index/
@@ -171,6 +196,7 @@ private:
     RenderService& rs_;
 #if WDX_ENABLE_M2
     std::unique_ptr<profiles::wow::WowReplaceableTextures> wowReplaceables_;
+    std::unique_ptr<profiles::wow::WowCharacterAppearance> wowCharacters_;
 #endif
 };
 

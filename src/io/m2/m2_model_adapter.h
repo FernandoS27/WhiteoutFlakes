@@ -130,6 +130,17 @@ private:
     IContentProvider* provider_ = nullptr;
 };
 
+/// @brief One runtime-built sheet for a texture slot the model leaves blank.
+///
+/// A character's body texture has no file: the game composites it. See
+/// io::wow::ComposeCharacter, which builds these, and the WoW profile, which
+/// hands them over before Build().
+struct M2ComposedTexture {
+    u32 textureType = 0; ///< The `M2Texture::type` this fills.
+    u32 width = 0, height = 0;
+    std::vector<u8> rgba;
+};
+
 /// @brief Geometry-only `IModelSource` over `whiteout::m2::Model`.
 class M2ModelAdapter final : public ::whiteout::flakes::renderer::model::IModelSource {
 public:
@@ -184,6 +195,36 @@ public:
         replaceableByType_ = std::move(byTextureType);
     }
 
+    /// @brief Draw only the submeshes whose `skinSectionId` is in @p ids.
+    ///
+    /// A character `.m2` ships every hairstyle, every beard and every armour
+    /// variant as its own submesh and expects the game to pick one per group —
+    /// `CCharacterComponent::GeosRenderPrep` (0x10033fa00) does it with
+    /// `CM2Model::SetGeometryVisible(first, last, on)` over ranges of
+    /// `skinSectionId`. Drawing them all is what makes `humanmale_hd` render as
+    /// 26 overlapping hairstyles. See io::wow::CharacterGeosets for the rules
+    /// that produce this set.
+    ///
+    /// Not called at all for a creature or a doodad, which is why the default
+    /// is "everything draws" rather than an empty set.
+    void SetVisibleGeosets(std::vector<u16> skinSectionIds);
+
+    /// @brief Fill blank texture slots with sheets built at load time.
+    ///
+    /// Keyed by `M2Texture::type`, like SetReplaceableTextures — but these
+    /// carry pixels rather than a key, because no file holds them. Set before
+    /// Build(); GetTextures hands them to the staging path, which uploads a
+    /// texture with no `sharedKey` from its own bytes.
+    void SetComposedTextures(std::vector<M2ComposedTexture> byType) {
+        composed_ = std::move(byType);
+    }
+
+    /// @brief `skinSectionId` per submesh, in the order GetMeshes emits them.
+    ///        Empty until GetMeshes has run.
+    const std::vector<u16>& EmittedSkinSections() const noexcept {
+        return emittedSections_;
+    }
+
     /// @brief Empty by design. M2's per-batch material data does not fit
     ///        `MaterialData` — see M2SurfaceTable, which the WoW profile builds
     ///        straight off `SourceModel()`.
@@ -213,9 +254,10 @@ public:
     std::vector<renderer::ParticleEmitterConfig> GetParticleConfigs() override {
         return {};
     }
-    std::vector<renderer::effects::RibbonEmitterConfig> GetRibbonConfigs() override {
-        return {};
-    }
+    /// @brief One config per `M2Ribbon`. Ribbon *simulation* is shared with the
+    ///        MDX path (see core/ribbon_dialect.h); this only reports the
+    ///        static half — rate, lifespan, gravity, sprite grid, material.
+    std::vector<renderer::effects::RibbonEmitterConfig> GetRibbonConfigs() override;
     std::vector<renderer::model::CollisionShapeData> GetCollisionShapes() override {
         return {};
     }
@@ -272,6 +314,12 @@ private:
                           renderer::model::FrameState& fs) const;
     void EvaluateLights(const M2AnimTime& at, const Matrix44f& world,
                         renderer::model::FrameState& fs) const;
+    void EvaluateRibbons(const M2AnimTime& at, const Matrix44f& world,
+                         renderer::model::FrameState& fs) const;
+    /// Re-derive `geosetHidden_` from the id set and the emission order. Both
+    /// arrive independently — the set from the host, the order from GetMeshes —
+    /// so whichever lands second rebuilds.
+    void RebuildGeosetVisibility();
 
     // Mutable because Evaluate is const and a lazily parsed model fills its
     // tracks in on first play. Nothing a caller can observe changes: the keys
@@ -282,6 +330,18 @@ private:
     std::shared_ptr<void> fsKeepAlive_;
     // Indexed by M2Texture::type; empty until the WoW profile resolves them.
     std::vector<std::string> replaceableByType_;
+    // Runtime-built sheets, by M2 texture type. Empty for everything but a
+    // character model with the client databases in reach.
+    std::vector<M2ComposedTexture> composed_;
+    // `skinSectionId` per emitted mesh, filled by GetMeshes.
+    std::vector<u16> emittedSections_;
+    // The visible id set, sorted; `hasVisibleSet_` separates "nothing visible"
+    // from "no selection made", which are opposite answers.
+    std::vector<u16> visibleSections_;
+    bool hasVisibleSet_ = false;
+    // The two above, joined: one flag per emitted mesh. Empty when no selection
+    // is in force, which is what keeps Evaluate silent.
+    std::vector<u8> geosetHidden_;
     // Which entry of `skinProfiles` GetMeshes reads. Index 0 is the highest
     // detail level; the plan takes one LOD and no more.
     std::size_t profileIndex_ = 0;

@@ -2,7 +2,6 @@
 
 #include "../gfx/gfx.h"
 #include "assets/texture_asset_manager.h"
-#include "effects/ribbon.h"
 #include "particle.h"
 #include "particle/emitter_desc.h"
 #include "render_target.h" // RenderMode

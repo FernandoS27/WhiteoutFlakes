@@ -6,7 +6,6 @@
 #include "camera.h"
 #include "corn_effects/corn_effects_service.h"
 #include "dnc/dnc_service.h"
-#include "effects/ribbon.h"
 #include "effects/spn_spawner.h"
 #include "file_content_provider.h"
 #include "frame_ticker.h"
@@ -17,6 +16,7 @@
 #include "particle.h"
 #include "particle/particle_service.h"
 #include "particle/splat_service.h"
+#include "ribbon/ribbon_service.h"
 #include "post_process/post_process_service.h"
 #include "render_pipeline.h"
 #include "render_settings.h"
@@ -57,6 +57,7 @@ struct SceneServices {
 
     particle::ParticleService particles;
     particle::SplatService splats;
+    ribbon::RibbonService ribbons;
     std::unique_ptr<effects::SpnSpawner> spn;
     // Per-scene, because the DNC model resolves through the scene's own
     // content provider: `Auto` picks SD or HD from that provider's mod-chain

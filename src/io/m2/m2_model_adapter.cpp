@@ -28,6 +28,30 @@ namespace {
 
 using M2Vertex = ::whiteout::m2::Vertex;
 
+// M2Material::blendingMode → the renderer's FilterMode. The two enums are the
+// same five states in a different order; anything unknown blends, which is what
+// a ribbon almost always wants.
+i32 M2BlendToFilterMode(u16 blendingMode) {
+    switch (blendingMode) {
+    case 0:
+        return ::whiteout::flakes::FILTER_NONE;
+    case 1:
+        return ::whiteout::flakes::FILTER_TRANSPARENT;
+    case 2:
+        return ::whiteout::flakes::FILTER_BLEND;
+    case 3:
+        return ::whiteout::flakes::FILTER_ADDITIVE;
+    case 4:
+        return ::whiteout::flakes::FILTER_ADD_ALPHA;
+    case 5:
+        return ::whiteout::flakes::FILTER_MODULATE;
+    case 6:
+        return ::whiteout::flakes::FILTER_MODULATE_2X;
+    default:
+        return ::whiteout::flakes::FILTER_BLEND;
+    }
+}
+
 // `whiteout::m2::Vertex` IS the on-disk record: 48 bytes, no padding, in the
 // order the file stores them. That is what makes the M2 path a copy rather
 // than a repack — but it is also invisible, so it is asserted. If WhiteoutLib
@@ -40,6 +64,23 @@ static_assert(offsetof(M2Vertex, boneWeights) == 12);
 static_assert(offsetof(M2Vertex, boneIndices) == 16);
 static_assert(offsetof(M2Vertex, normal) == 20);
 static_assert(offsetof(M2Vertex, texCoords) == 32);
+
+// A submesh's first index into `skin.indices`.
+//
+// `SkinSection::indexStart` is a u16 and a skin profile routinely holds more
+// than 65535 indices, so the format carries the missing high word in the
+// neighbouring `level` field rather than widening the struct. Reading
+// `indexStart` alone silently draws another submesh's triangles: it is in
+// bounds, so nothing faults — `humanmale_hd00.skin` has 147966 indices and 74
+// of its 113 submeshes past the first wrap. Verified on that file: with the
+// high word folded in, the submeshes tile [0, 147966) exactly and without it
+// they collide at the 65536 boundary.
+//
+// `vertexStart` gets no such treatment. It tiles contiguously on its own in
+// the same file, and a profile is capped below 65536 vertices for it.
+std::size_t M2IndexStart(const ::whiteout::m2::SkinSection& sec) {
+    return (static_cast<std::size_t>(sec.level) << 16) | sec.indexStart;
+}
 
 // The record above, described for the GPU. Fixed — unlike `.m3`, `.m2` has no
 // per-model vertex format flags.
@@ -234,6 +275,8 @@ std::vector<MeshData> M2ModelAdapter::GetMeshes() {
     // A submesh names a contiguous run of both. We flatten each submesh into
     // its own mesh with indices rebased to zero, because MeshData is one
     // vertex array per mesh and the renderer's geoset upload assumes that.
+    emittedSections_.clear();
+    emittedSections_.reserve(skin.submeshes.size());
     for (std::size_t s = 0; s < skin.submeshes.size(); ++s) {
         const auto& sec = skin.submeshes[s];
         if (sec.vertexCount == 0 || sec.indexCount == 0)
@@ -241,7 +284,7 @@ std::vector<MeshData> M2ModelAdapter::GetMeshes() {
 
         const std::size_t vBegin = sec.vertexStart;
         const std::size_t vEnd = vBegin + sec.vertexCount;
-        const std::size_t iBegin = sec.indexStart;
+        const std::size_t iBegin = M2IndexStart(sec);
         const std::size_t iEnd = iBegin + sec.indexCount;
         if (vEnd > skin.vertices.size() || iEnd > skin.indices.size())
             continue; // truncated skin; skip rather than read out of bounds
@@ -278,9 +321,40 @@ std::vector<MeshData> M2ModelAdapter::GetMeshes() {
             // skin.indices is profile-global; rebase into this submesh.
             mesh.indices.push_back(static_cast<u32>(local - vBegin));
         }
+        emittedSections_.push_back(sec.skinSectionId);
         out.push_back(std::move(mesh));
     }
+    RebuildGeosetVisibility();
     return out;
+}
+
+void M2ModelAdapter::SetVisibleGeosets(std::vector<u16> skinSectionIds) {
+    visibleSections_ = std::move(skinSectionIds);
+    std::sort(visibleSections_.begin(), visibleSections_.end());
+    visibleSections_.erase(std::unique(visibleSections_.begin(), visibleSections_.end()),
+                           visibleSections_.end());
+    hasVisibleSet_ = true;
+    RebuildGeosetVisibility();
+}
+
+void M2ModelAdapter::RebuildGeosetVisibility() {
+    geosetHidden_.clear();
+    // No selection is the common case — a creature, a prop, a doodad. Leaving
+    // the vector empty is what keeps Evaluate from writing geosetHidden at all,
+    // so nothing pays for a feature only character models use.
+    if (!hasVisibleSet_ || emittedSections_.empty())
+        return;
+    geosetHidden_.reserve(emittedSections_.size());
+    for (const u16 section : emittedSections_) {
+        const bool on = std::binary_search(visibleSections_.begin(), visibleSections_.end(),
+                                           section);
+        // A flag rather than a skip: the geoset stays uploaded, so a host can
+        // switch hairstyle without re-spawning the actor. And a flag rather than
+        // alpha zero, because `M2ClassifySurface` exempts additive batches from
+        // the alpha cull on purpose — an eye glow hidden that way kept drawing
+        // over the face.
+        geosetHidden_.push_back(on ? u8{0} : u8{1});
+    }
 }
 
 std::vector<TextureData> M2ModelAdapter::GetTextures() {
@@ -298,6 +372,25 @@ std::vector<TextureData> M2ModelAdapter::GetTextures() {
         td.replaceableId = 0;
         // Bit 0 wrap-U, bit 1 wrap-V — the same encoding StagedTexture uses.
         td.wrapFlags = tex.flags & 0x3u;
+
+        // A composited slot outranks everything below it. Nothing names these
+        // pixels — the game built them this load — so they ride the staging
+        // path, which uploads a texture with no `sharedKey` from its own bytes.
+        // First, so a character body whose type also has a TXID entry (an
+        // authoring leftover on some models) takes the composite rather than
+        // whatever that entry points at.
+        const auto composite =
+            std::find_if(composed_.begin(), composed_.end(),
+                         [&](const M2ComposedTexture& c) { return c.textureType == tex.type; });
+        if (composite != composed_.end() && !composite->rgba.empty()) {
+            td.width = static_cast<i32>(composite->width);
+            td.height = static_cast<i32>(composite->height);
+            td.mipLevels = 1;
+            td.format = gfx::Format::R8G8B8A8_UNORM;
+            td.pixels = composite->rgba;
+            out.push_back(std::move(td));
+            continue;
+        }
 
         if (!tex.filename.empty()) {
             td.sharedKey = tex.filename;
@@ -511,9 +604,17 @@ renderer::model::FrameState M2ModelAdapter::Evaluate(const PoseRequest& req) con
     EvaluateBones(at, bindPose, fs);
     EvaluateTextureTransforms(at, bindPose, fs);
     EvaluateSurfaces(at, bindPose, fs);
+    // Positional, and it has to be: RenderModel::ApplyGeosetStates pairs
+    // `geosetHidden[i]` with `gpuGeosets[i]`, and that vector is drained from a
+    // map keyed by the ids GetMeshes handed out — which ascend in emission
+    // order. So the i-th entry here is the i-th mesh GetMeshes emitted, not the
+    // i-th submesh of the profile; the two differ whenever a submesh is skipped.
+    if (!geosetHidden_.empty())
+        fs.geosetHidden = geosetHidden_;
     // Lights are evaluated at the bind pose too, unlike surfaces: nothing about
     // an `.m2` stores them pre-posed, so there is no constant to fall back to.
     EvaluateLights(at, req.world, fs);
+    EvaluateRibbons(at, req.world, fs);
     return fs;
 }
 
@@ -691,6 +792,72 @@ void M2ModelAdapter::EvaluateLights(const M2AnimTime& at, const Matrix44f& world
 
         st.enabled = SampleM2U8(L.visibility, at, 1) != 0;
         fs.lights.push_back(st);
+    }
+}
+
+std::vector<renderer::effects::RibbonEmitterConfig> M2ModelAdapter::GetRibbonConfigs() {
+    std::vector<renderer::effects::RibbonEmitterConfig> out;
+    out.reserve(model_.ribbonEmitters.size());
+
+    for (const auto& r : model_.ribbonEmitters) {
+        renderer::effects::RibbonEmitterConfig cfg;
+        // `textureIndices` indexes the model's texture array directly, which is
+        // the same space GetTextures numbers its output in. Only the first is
+        // used: the renderer draws a ribbon as one strip with one texture,
+        // where the client walks a CRibbonMat per entry.
+        cfg.textureId = r.textureIndices.empty() ? -1 : static_cast<i32>(r.textureIndices[0]);
+        cfg.filterMode = ::whiteout::flakes::FILTER_BLEND;
+        if (!r.materialIndices.empty()) {
+            const usize mi = r.materialIndices[0];
+            if (mi < model_.materials.size())
+                cfg.filterMode = M2BlendToFilterMode(model_.materials[mi].blendingMode);
+        }
+        cfg.rows = (r.textureRows > 0) ? r.textureRows : 1;
+        cfg.cols = (r.textureCols > 0) ? r.textureCols : 1;
+        cfg.emission = r.edgesPerSecond;
+        cfg.life = r.edgeLifetime;
+        cfg.gravity = r.gravity;
+        cfg.priorityPlane = r.priorityPlane;
+        // Ribbons are unlit in the client — CRibbonEmitter::Init loads
+        // "Particle_Unlit_T1" and Render calls SetLightingEnabled(false).
+        cfg.unshaded = true;
+        cfg.twoSided = true;
+        out.push_back(cfg);
+    }
+    return out;
+}
+
+void M2ModelAdapter::EvaluateRibbons(const M2AnimTime& at, const Matrix44f& world,
+                                     renderer::model::FrameState& fs) const {
+    if (model_.ribbonEmitters.empty())
+        return;
+    fs.ribbonStates.reserve(model_.ribbonEmitters.size());
+
+    for (usize i = 0; i < model_.ribbonEmitters.size(); ++i) {
+        const auto& r = model_.ribbonEmitters[i];
+        renderer::model::FrameState::RibbonFrameState st;
+        st.emitterId = static_cast<i32>(i);
+
+        Matrix44f bone = Matrix44f::identity();
+        if (r.boneId < model_.bones.size() && r.boneId < fs.boneWorldMatrices.size())
+            bone = fs.boneWorldMatrices[static_cast<usize>(r.boneId)];
+        // The emitter's frame IS the bone's, translated by the record's own
+        // offset. RibbonEmitter::SetState reads position from the translation,
+        // forward from row 2 and vertical from row 1 — the same decomposition
+        // CRibbonEmitter::SetPos does on the orientation it is handed.
+        Matrix44f local = Matrix44f::identity();
+        local.data[3][0] = r.position.x;
+        local.data[3][1] = r.position.y;
+        local.data[3][2] = r.position.z;
+        st.transform = local * bone * world;
+
+        st.above = SampleM2Float(r.heightAbove, at, 0.0f);
+        st.below = SampleM2Float(r.heightBelow, at, 0.0f);
+        st.color = SampleM2Vec3(r.colorTrack, at, {1.0f, 1.0f, 1.0f});
+        st.alpha = SampleM2Fixed16(r.alphaTrack, at, 1.0f);
+        st.visibility = SampleM2U8(r.visibility, at, 1) != 0 ? 1.0f : 0.0f;
+        st.slot = 0;
+        fs.ribbonStates.push_back(st);
     }
 }
 

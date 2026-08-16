@@ -113,7 +113,7 @@ bool ShadowPass::Run(ShadowService& service) {
                     if (geo.indexCount == 0)
                         continue;
 
-                    if (!GeosetPassesLod(geo.lod, modelLod))
+                    if (!GeosetPassesLod(geo.lod, modelLod) || geo.hidden)
                         continue;
 
                     const f32 geoAlpha = geo.geosetAlpha * mi->parentVisibility;

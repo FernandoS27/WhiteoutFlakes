@@ -96,6 +96,13 @@ public:
         // shows up as wrong shading, where flat white showed nothing.
         return core::UnlitLightingModel::BlinnPhong;
     }
+    core::RibbonBehavior Ribbons() const override {
+        // The one place the two ribbon runtimes are asked to differ. Everything
+        // the MDX path already did — the interpolation blend, the edge count,
+        // the `g*t^2` fall — was measured identical in WoW 6.0.1 and stays
+        // shared; see core/ribbon_dialect.h for each divergence this selects.
+        return core::RibbonBehavior::Wow();
+    }
     CoordSpace SourceSpace() const override {
         // Genuinely identity: World of Warcraft shares Warcraft III's axes
         // (+X forward, +Y left, +Z up), so nothing is rebased. StarCraft II is

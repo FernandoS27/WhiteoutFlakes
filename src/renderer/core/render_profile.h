@@ -13,6 +13,7 @@
 // simple is the acceptance test for this abstraction.
 // ============================================================================
 
+#include "core/ribbon_dialect.h"
 #include "core/surface_vocabulary.h"
 #include "gfx/gfx.h"
 #include "whiteout/flakes/util/coordinate_system.h"
@@ -144,6 +145,16 @@ public:
     ///        stay byte-identical by construction rather than by inspection.
     virtual UnlitLightingModel UnlitLighting() const {
         return UnlitLightingModel::Flat;
+    }
+
+    /// @brief Which variant of Blizzard's CRibbonEmitter this product's ribbon
+    ///        trails run. See core/ribbon_dialect.h: the two runtimes share one
+    ///        simulation and differ in a handful of measured details.
+    ///
+    /// Warcraft III by default, so the MDX path is unchanged by construction
+    /// rather than by inspection — the same argument UnlitLighting makes.
+    virtual RibbonBehavior Ribbons() const {
+        return RibbonBehavior::Wc3();
     }
 
     /// @brief The shading models this profile can dispatch to. Binds a profile

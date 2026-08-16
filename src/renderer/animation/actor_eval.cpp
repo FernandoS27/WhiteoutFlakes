@@ -21,6 +21,7 @@
 #include "particle/particle_service.h"
 #include "particle/rnd_seed.h"
 #include "particle/splat_service.h"
+#include "ribbon/ribbon_service.h"
 #include "scene_manager.h"
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/sound_emitter.h"
@@ -53,6 +54,20 @@ void ApplyBoneMatrices(Actor& mi, const FrameState& state) {
     for (i32 i = 0; i < bc; i++)
         std::memcpy(&worldFlat[i * 16], &state.boneWorldMatrices[i].data[0][0], 64);
     mi.render.skinning.UpdateNodeMatrices(bc, worldFlat.data());
+}
+
+void ApplyRibbonFrameStates(Actor& mi, const FrameState& state, ribbon::RibbonService& ribbons) {
+    for (const auto& rs : state.ribbonStates) {
+        ribbon::RibbonState st;
+        st.transform = rs.transform;
+        st.above = rs.above;
+        st.below = rs.below;
+        st.alpha = rs.alpha;
+        st.color = rs.color;
+        st.visibility = rs.visibility;
+        st.slot = rs.slot;
+        ribbons.SetState(mi.handle, rs.emitterId, st);
+    }
 }
 
 void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
@@ -217,7 +232,8 @@ void Actor::ApplyFrameState(const FrameState& state, i32 localTimeMs, const Acto
     render.ApplyLayerStates(state);
     if (ctx.particles)
         ApplyParticleFrameStates(*this, state, *ctx.particles);
-    render.ApplyRibbonFrameStates(state);
+    if (ctx.ribbons)
+        ApplyRibbonFrameStates(*this, state, *ctx.ribbons);
     if (ctx.particles)
         ApplyChildModelFrameStates(*this, state, *ctx.particles);
 

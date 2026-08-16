@@ -15,6 +15,9 @@ void RenderModel::ApplyGeosetStates(const FrameState& state) {
     for (i32 i = 0; i < (i32)state.geosetAlphas.size() && i < (i32)gpuGeosets.size(); i++)
         gpuGeosets[i].geosetAlpha = state.geosetAlphas[i];
 
+    for (i32 i = 0; i < (i32)state.geosetHidden.size() && i < (i32)gpuGeosets.size(); i++)
+        gpuGeosets[i].hidden = state.geosetHidden[i] != 0;
+
     for (i32 i = 0; i < (i32)state.geosetColors.size() && i < (i32)gpuGeosets.size(); i++)
         gpuGeosets[i].geosetColor = state.geosetColors[i];
 }
@@ -121,20 +124,5 @@ void RenderModel::ApplyLayerStates(const FrameState& state) {
 
     activeLights = state.lights;
 }
-
-void RenderModel::ApplyRibbonFrameStates(const FrameState& state) {
-    for (auto& rs : state.ribbonStates) {
-        RibbonEmitterState st;
-        st.transform = rs.transform;
-        st.above = rs.above;
-        st.below = rs.below;
-        st.alpha = rs.alpha;
-        st.color = rs.color;
-        st.visibility = rs.visibility;
-        st.slot = rs.slot;
-        ribbons.UpdateEmitterState(rs.emitterId, st);
-    }
-}
-
 
 } // namespace whiteout::flakes::renderer::model

@@ -24,6 +24,9 @@ namespace whiteout::flakes::renderer::particle {
 class ParticleService;
 class SplatService;
 } // namespace whiteout::flakes::renderer::particle
+namespace whiteout::flakes::renderer::ribbon {
+class RibbonService;
+}
 namespace whiteout::flakes::renderer::corn_effects {
 class CornEffectsService;
 }
@@ -37,6 +40,7 @@ struct ActorEvalContext {
     SceneManager* scene = nullptr;
     particle::ParticleService* particles = nullptr;
     particle::SplatService* splats = nullptr;
+    ribbon::RibbonService* ribbons = nullptr;
     corn_effects::CornEffectsService* cornEffects = nullptr;
     effects::SpnSpawner* spnSpawner = nullptr;
     ISoundEmitter* sound = nullptr;

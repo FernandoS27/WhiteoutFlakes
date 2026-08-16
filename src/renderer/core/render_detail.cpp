@@ -46,7 +46,7 @@ void FillRenderableView(RenderableView& view, model::Actor& mi, const ActorMap& 
 }
 
 bool GeosetDrawable(const model::GPUGeoset& geo) {
-    return geo.unskinnedVb != gfx::BufferHandle::Invalid &&
+    return !geo.hidden && geo.unskinnedVb != gfx::BufferHandle::Invalid &&
            geo.ib != gfx::BufferHandle::Invalid && geo.indexCount != 0;
 }
 } // namespace

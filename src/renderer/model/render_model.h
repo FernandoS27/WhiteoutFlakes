@@ -3,7 +3,6 @@
 #include "../gfx/gfx.h"
 #include "animation/animation.h"
 #include "assets/texture_asset_manager.h"
-#include "effects/ribbon.h"
 #include "particle.h"
 #include "core/surface_table.h"
 #include "core/surface_vocabulary.h"
@@ -111,6 +110,8 @@ struct GPUGeoset {
     }
 
     f32 geosetAlpha = 1.0f;
+    /// Not in the draw list at all this frame — see `FrameState::geosetHidden`.
+    bool hidden = false;
     Vector3f geosetColor = {1, 1, 1};
     Matrix44f worldMatrix = Matrix44f::identity();
     i32 priorityPlane = 0;
@@ -196,7 +197,8 @@ struct RenderModel {
     std::vector<i32> nodeParents;
 
     std::vector<PE2State> pe2State;
-    effects::RibbonSystem ribbons;
+    // Trails themselves live in the scene's RibbonService, keyed by actor
+    // handle; only the upload buffer is per-actor.
     gfx::BufferHandle ribbonVB = gfx::BufferHandle::Invalid;
     i32 ribbonVBSize = 0;
     std::vector<CollisionShape> collisionShapes;
@@ -229,7 +231,6 @@ struct RenderModel {
 
     void ApplyGeosetStates(const FrameState& state);
     void ApplyLayerStates(const FrameState& state);
-    void ApplyRibbonFrameStates(const FrameState& state);
 };
 
 } // namespace whiteout::flakes::renderer::model

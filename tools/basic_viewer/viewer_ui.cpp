@@ -922,6 +922,31 @@ void ViewerUI::BuildToolbar() {
         ImGui::SameLine();
     }
 
+    // ---- Character customisation (`.m2` only) ----
+    // A dozen options behind one button rather than a dozen combos: a character
+    // model offers skin, face, hair, beard, eyes and more, and the toolbar has
+    // room for none of that. Absent for every model that is not a character.
+    if (const auto options = app_.WowCharacterOptions(); !options.empty()) {
+        if (ImGui::Button(i18n::tr("toolbar.customize")))
+            ImGui::OpenPopup("##customize");
+        if (ImGui::BeginPopup("##customize")) {
+            for (const auto& opt : options) {
+                if (opt.choiceCount == 0)
+                    continue;
+                char label[128];
+                std::snprintf(label, sizeof(label), "%s##opt%u", opt.name.c_str(), opt.optionId);
+                i32 sel = static_cast<i32>(opt.selected);
+                ImGui::SetNextItemWidth(140);
+                // The choices are mostly unnamed — a skin swatch has a colour,
+                // not a name — so they are numbered rather than labelled.
+                if (ImGui::SliderInt(label, &sel, 0, static_cast<i32>(opt.choiceCount) - 1))
+                    app_.SetWowCharacterChoice(opt.optionId, static_cast<u32>(sel));
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::SameLine();
+    }
+
     // ---- Lighting mode ----
     {
         i32 sel = static_cast<i32>(svc.Settings().GetLightingMode());

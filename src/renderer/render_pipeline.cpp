@@ -255,8 +255,8 @@ void RenderPipeline::GetFrameStats(i32& geosets, i32& textures, i32& nodes, i32&
         geosets += (i32)mi->render.gpuGeosets.size();
         textures += mi->render.textures ? (i32)mi->render.textures->Size() : 0;
         nodes += mi->render.skinning.NodeCount();
-        segments += mi->render.ribbons.GetTotalSegmentCount();
     }
+    segments += rs_.Ribbons().TotalEdgeCount();
     particles += rs_.Particles().TotalParticleCount();
 }
 
@@ -511,13 +511,15 @@ void RenderPipeline::PrepareRibbons(std::vector<RibbonDrawUnit>& out, bls::Frame
         ribbonActors.push_back(h);
     std::sort(ribbonActors.begin(), ribbonActors.end());
 
+    std::vector<Vertex> verts;
+    std::vector<ribbon::RibbonDrawList> drawLists;
     for (u32 h : ribbonActors) {
         auto* mi = rs_.Scene().Actors().Find(h);
-        if (!mi || !mi->render.ribbons.HasEmitters() || mi->parentVisibility <= 0.02f)
+        if (!mi || !rs_.Ribbons().HasEmittersForModel(h) || mi->parentVisibility <= 0.02f)
             continue;
-        RibbonSystem::StripResult stripResult = mi->render.ribbons.BuildStrips();
-        auto& verts = stripResult.vertices;
-        auto& emitterIds = stripResult.emitterIds;
+        verts.clear();
+        drawLists.clear();
+        rs_.Ribbons().BuildGeometry(h, verts, drawLists);
         const i32 vertCount = (i32)verts.size();
         if (vertCount <= 0)
             continue;
@@ -543,24 +545,16 @@ void RenderPipeline::PrepareRibbons(std::vector<RibbonDrawUnit>& out, bls::Frame
             impl_->gfx_->UnmapBuffer(mi->render.ribbonVB);
         }
 
-        i32 running = 0;
-        for (i32 eid : emitterIds) {
-            const i32 offset = running;
-            const i32 n = mi->render.ribbons.GetEmitterVertCount(eid);
-            running += n;
-            if (n <= 0)
-                continue;
-            const auto* c = mi->render.ribbons.GetConfig(eid);
-            const RibbonEmitterConfig cfg = c ? *c : RibbonEmitterConfig{};
+        for (const auto& dl : drawLists) {
             RibbonDrawUnit u;
             u.actor = mi;
-            u.filterMode = cfg.filterMode;
-            u.matFlags = (cfg.twoSided ? MAT_TWO_SIDED : 0) | (cfg.unshaded ? MAT_UNSHADED : 0);
-            u.textureId = cfg.textureId;
-            u.count = n;
-            u.offset = offset;
-            u.origin = verts[offset].position; // world-space strip head
-            u.priorityPlane = cfg.priorityPlane;
+            u.filterMode = dl.filterMode;
+            u.matFlags = (dl.twoSided ? MAT_TWO_SIDED : 0) | (dl.unshaded ? MAT_UNSHADED : 0);
+            u.textureId = dl.textureId;
+            u.count = dl.vertexCount;
+            u.offset = dl.vertexOffset;
+            u.origin = dl.worldOrigin; // world-space strip head
+            u.priorityPlane = dl.priorityPlane;
             out.push_back(u);
         }
     }

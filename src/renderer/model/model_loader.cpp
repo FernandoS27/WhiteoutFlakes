@@ -35,6 +35,7 @@
 #if WDX_ENABLE_M2
 #include "io/m2/m2_model_adapter.h"
 #include "renderer/profiles/wow/m2_surface_table.h"
+#include "renderer/profiles/wow/wow_character_appearance.h"
 #include "renderer/profiles/wow/wow_replaceable_textures.h"
 #include <whiteout/models/m2/types.h>
 #endif
@@ -116,6 +117,39 @@ profiles::wow::WowReplaceableTextures& ModelLoader::WowReplaceables() {
     if (!wowReplaceables_)
         wowReplaceables_ = std::make_unique<profiles::wow::WowReplaceableTextures>();
     return *wowReplaceables_;
+}
+
+profiles::wow::WowCharacterAppearance& ModelLoader::WowCharacters() {
+    if (!wowCharacters_)
+        wowCharacters_ = std::make_unique<profiles::wow::WowCharacterAppearance>();
+    return *wowCharacters_;
+}
+
+bool ModelLoader::RestyleWowModel(u32 actorHandle, const ContentRef& ref) {
+    Actor* actor = rs_.Scene().Actors().Find(actorHandle);
+    if (!actor)
+        return false;
+    auto m2 = std::dynamic_pointer_cast<io::M2ModelAdapter>(actor->animation.Source());
+    if (!m2)
+        return false;
+
+    // The same pair TrySpawnForeign runs, in the same order and for the same
+    // reason — see there.
+    auto* provider = rs_.Scene().ActiveContentProvider();
+    auto& replaceables = WowReplaceables();
+    replaceables.SetContentProvider(provider);
+    replaceables.Apply(*m2, ref);
+    auto& characters = WowCharacters();
+    characters.SetContentProvider(provider);
+    characters.Apply(*m2, ref);
+
+    // Geosets need nothing more: which submeshes draw is frame state, so the
+    // next Evaluate already reports the new set. The textures do — GetTextures
+    // re-reads the slots the two passes just filled, and staging them again
+    // makes UploadStagedTextures replace each one where it stands.
+    StageTextures(*actor, m2->GetTextures());
+    actor->render.stagedDirty = true;
+    return true;
 }
 #endif
 
@@ -206,6 +240,7 @@ void ModelLoader::DestroyActor(u32 handle) {
         a.ReleaseGPU(*rs_.Pipeline().Gfx());
     actors.erase(it);
     rs_.Particles().RemoveModel(handle);
+    rs_.Ribbons().RemoveModel(handle);
     rs_.CornEffects().RemoveModel(handle);
 }
 
@@ -361,8 +396,14 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
     }
     mi->render.pe2State.resize(tmpl->pe2Configs.size());
 
+    // The dialect is a load-time decision the emitter caches, so it reads the
+    // live mode's profile rather than the frame latch — same rule the texture
+    // colour space follows.
+    const ribbon::RibbonBehavior ribbonBehavior = rs_.Pipeline().LoadTimeProfile().Ribbons();
     for (i32 i = 0; i < (i32)tmpl->ribbonConfigs.size(); i++)
-        mi->render.ribbons.AddEmitter(i, tmpl->ribbonConfigs[i]);
+        rs_.Ribbons().AddEmitter(mi->handle, i,
+                                 ribbon::DescFromWc3Config(tmpl->ribbonConfigs[i]),
+                                 ribbonBehavior);
 
     // PE1 ("particles that ARE models") registers in the same service as the
     // billboards — same pool, same sim, different output.
@@ -446,6 +487,23 @@ void ModelLoader::UpdateMaterials(u32 handle, const std::vector<MaterialData>& m
     mi->render.stagedDirty = true;
 }
 
+void ModelLoader::StageTextures(Actor& mi, const std::vector<TextureData>& textures) {
+    for (const auto& tex : textures) {
+        StagedTexture& st = mi.render.stagedTextures[tex.textureId];
+        st.width = tex.width;
+        st.height = tex.height;
+        st.mipLevels = tex.mipLevels;
+        st.replaceableId = tex.replaceableId;
+        st.wrapFlags = tex.wrapFlags;
+        st.format = tex.format;
+        st.pixels = tex.pixels;
+        st.sharedKey = tex.sharedKey;
+
+        if (tex.replaceableId != 0)
+            rs_.Replaceables().RegisterModelSlot(mi, tex.textureId, tex.replaceableId);
+    }
+}
+
 u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
                           const std::vector<TextureData>& textures,
                           const std::vector<MaterialData>& materials, const SkeletonData& skeleton,
@@ -465,20 +523,7 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
     mi->worldScale = rs_.Pipeline().ActiveProfile().WorldScale();
     mi->sourceSpace = rs_.Pipeline().ActiveProfile().SourceSpace();
 
-    for (auto& tex : textures) {
-        StagedTexture& st = mi->render.stagedTextures[tex.textureId];
-        st.width = tex.width;
-        st.height = tex.height;
-        st.mipLevels = tex.mipLevels;
-        st.replaceableId = tex.replaceableId;
-        st.wrapFlags = tex.wrapFlags;
-        st.format = tex.format;
-        st.pixels = tex.pixels;
-        st.sharedKey = tex.sharedKey;
-
-        if (tex.replaceableId != 0)
-            rs_.Replaceables().RegisterModelSlot(*mi, tex.textureId, tex.replaceableId);
-    }
+    StageTextures(*mi, textures);
 
     for (auto& mat : materials) {
         StagedMaterial& sm = mi->render.stagedMaterials[mat.materialId];
@@ -582,8 +627,10 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
     }
     mi->render.pe2State.resize(particleConfigs.size());
 
+    const ribbon::RibbonBehavior ribbonBehavior = rs_.Pipeline().LoadTimeProfile().Ribbons();
     for (usize i = 0; i < ribbonConfigs.size(); i++) {
-        mi->render.ribbons.AddEmitter((i32)i, ribbonConfigs[i]);
+        rs_.Ribbons().AddEmitter(handle, (i32)i, ribbon::DescFromWc3Config(ribbonConfigs[i]),
+                                 ribbonBehavior);
     }
 
     for (auto& cs : collisions) {
@@ -818,6 +865,12 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
             auto& replaceables = WowReplaceables();
             replaceables.SetContentProvider(provider);
             replaceables.Apply(*m2, ref);
+
+            // Characters and creatures fill disjoint slot families — 1/6/8
+            // against 11/12/13 — so both run and at most one finds anything.
+            auto& characters = WowCharacters();
+            characters.SetContentProvider(provider);
+            characters.Apply(*m2, ref);
         }
         source = m2;
     }

@@ -262,10 +262,28 @@ public:
     // The skins the active `.m2` can wear, and which one it is wearing. Empty
     // when the model is not a creature, or with `.m2` compiled out — a UI
     // asking should hide the control rather than offer an empty one. Setting it
-    // reloads the model, because the slots are filled during the parse.
+    // re-dresses the focus actor in place; the animation and the camera do not
+    // move.
     std::vector<std::string> WowSkinNames() const;
     u32 WowSkin() const;
     void SetWowSkin(u32 skin);
+
+    // The customisation a character `.m2` offers — "Skin Color", "Hair Style",
+    // one entry per ChrCustomizationOption the client databases list for this
+    // model. Empty when the model is not a character, when the databases are
+    // out of reach, or with `.m2` compiled out.
+    //
+    // Same contract as the skin above, and the same in-place restyle: stepping
+    // an option re-cuts the geosets and re-composites the body sheet on the
+    // actor that is already standing there.
+    struct WowCharacterOption {
+        std::string name;
+        u32 optionId = 0;
+        u32 choiceCount = 0;
+        u32 selected = 0;
+    };
+    std::vector<WowCharacterOption> WowCharacterOptions() const;
+    void SetWowCharacterChoice(u32 optionId, u32 choiceIndex);
 
 private:
     void InitImGui();

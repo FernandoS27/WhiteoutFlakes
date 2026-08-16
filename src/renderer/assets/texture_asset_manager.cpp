@@ -144,6 +144,12 @@ void TextureAssetManager::ModelScope::BindSlot(i32 textureId,
     auto it = entries_.find(textureId);
     if (it != entries_.end() && it->second.slot == slot && slot != 0) {
         it->second.wrapFlags = wrapFlags;
+        // The entry keeps the reference it adopted the first time, so the
+        // caller's fresh Acquire has to go back — re-staging the same key
+        // (an in-place restyle, RefreshMaterials) otherwise pins the slot
+        // one extra time per pass and it never reaches zero.
+        if (assets_)
+            assets_->Release(slot);
         return;
     }
     DropEntry(textureId);

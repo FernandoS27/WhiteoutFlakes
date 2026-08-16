@@ -350,6 +350,9 @@ particle::ParticleService& RenderService::Particles() {
 particle::SplatService& RenderService::Splats() {
     return impl_->activeServices_->splats;
 }
+ribbon::RibbonService& RenderService::Ribbons() {
+    return impl_->activeServices_->ribbons;
+}
 corn_effects::CornEffectsService& RenderService::CornEffects() {
     return impl_->activeServices_->corn;
 }
@@ -438,6 +441,7 @@ ActorEvalContext RenderService::MakeActorEvalContext() {
     ctx.scene = scene;
     ctx.particles = &svc->particles;
     ctx.splats = &svc->splats;
+    ctx.ribbons = &svc->ribbons;
     ctx.cornEffects = &svc->corn;
     ctx.spnSpawner = svc->spn.get();
     ctx.sound = impl_->soundEmitter_.get();

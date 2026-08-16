@@ -14,6 +14,7 @@
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #if WDX_ENABLE_M2
+#include "renderer/profiles/wow/wow_character_appearance.h"
 #include "renderer/profiles/wow/wow_replaceable_textures.h"
 #endif
 #include "renderer/viewport.h"
@@ -582,8 +583,10 @@ bool ViewerApp::CurrentModelIsForeign() const {
 // ---- World of Warcraft creature skins ---------------------------------------
 //
 // A skin is a property of the display record a creature was spawned with, not
-// of the model, so picking one is a host decision and switching costs a reload:
-// the slots are resolved while the `.m2` is parsed.
+// of the model, so picking one is a host decision. Both pickers below change
+// the actor where it stands via ModelLoader::RestyleWowModel and only reload
+// when that says it cannot — the document's pose and the camera's framing are
+// what the reload used to throw away, and neither is a function of the skin.
 
 std::vector<std::string> ViewerApp::WowSkinNames() const {
 #if WDX_ENABLE_M2
@@ -613,10 +616,48 @@ void ViewerApp::SetWowSkin(u32 skin) {
     if (replaceables.Variation() == skin)
         return;
     replaceables.SetVariation(skin);
-    if (!currentModelPath_.empty() && IsForeignModelPath(currentModelPath_))
+    if (currentModelPath_.empty() || !IsForeignModelPath(currentModelPath_))
+        return;
+    if (!service_.Loader().RestyleWowModel(focusActor_,
+                                           ContentRef::FromPath(io::PathToUtf8(currentModelPath_))))
         LoadModelIntoActiveScene(currentModelPath_);
 #else
     (void)skin;
+#endif
+}
+
+// ---- World of Warcraft character customisation ------------------------------
+//
+// The other half of the same idea: a character model leaves its geosets and its
+// body texture for the game to choose, and the choice is the player's rather
+// than the model's. See renderer::profiles::wow::WowCharacterAppearance.
+
+std::vector<ViewerApp::WowCharacterOption> ViewerApp::WowCharacterOptions() const {
+#if WDX_ENABLE_M2
+    if (currentModelPath_.empty())
+        return {};
+    std::vector<WowCharacterOption> out;
+    for (const auto& o : const_cast<ViewerApp*>(this)->service_.Loader().WowCharacters().Options(
+             ContentRef::FromPath(io::PathToUtf8(currentModelPath_)))) {
+        out.push_back({o.name, o.optionId, o.choiceCount, o.selected});
+    }
+    return out;
+#else
+    return {};
+#endif
+}
+
+void ViewerApp::SetWowCharacterChoice(u32 optionId, u32 choiceIndex) {
+#if WDX_ENABLE_M2
+    if (currentModelPath_.empty())
+        return;
+    const ContentRef ref = ContentRef::FromPath(io::PathToUtf8(currentModelPath_));
+    service_.Loader().WowCharacters().SetChoice(ref, optionId, choiceIndex);
+    if (!service_.Loader().RestyleWowModel(focusActor_, ref))
+        LoadModelIntoActiveScene(currentModelPath_);
+#else
+    (void)optionId;
+    (void)choiceIndex;
 #endif
 }
 

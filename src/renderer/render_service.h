@@ -76,6 +76,9 @@ namespace particle {
 class ParticleService;
 class SplatService;
 } // namespace particle
+namespace ribbon {
+class RibbonService;
+} // namespace ribbon
 namespace corn_effects {
 class CornEffectsService;
 }
@@ -244,6 +247,7 @@ public:
     // ---- Per-actor effect services (of the ACTIVE scene) ----
     particle::ParticleService& Particles();
     particle::SplatService& Splats();
+    ribbon::RibbonService& Ribbons();
     corn_effects::CornEffectsService& CornEffects();
     effects::SpnSpawner& Spn();
 
