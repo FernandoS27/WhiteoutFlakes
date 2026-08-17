@@ -2,6 +2,9 @@
 
 #include "io/m2/m2_animation.h"
 #include "renderer/animation/anim_math.h"
+#if WDX_HAS_PHYSICS
+#include "renderer/profiles/wow/wow_physics.h"
+#endif
 
 #include <whiteout/models/m2/parser.h>
 
@@ -9,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <type_traits>
@@ -688,6 +692,49 @@ void M2ModelAdapter::EvaluateBones(const M2AnimTime& at, bool bindPose, const Po
         const Vector3f s = SampleM2Vec3(b.scale, at, {1.0f, 1.0f, 1.0f});
         fs.boneWorldMatrices[i] = M2BoneLocal(t, r, s, b.pivot) * parentM;
     }
+
+    // Place the `.phys` wireframes on their bones for the Collisions view. The palette is a
+    // *skinning* matrix, so a shape's model-space placement is `T(pivot) * palette` — the same
+    // conversion the physics stage does, and the reason a shape drawn straight from the palette
+    // sits at the origin.
+    //
+    // These are one frame behind the solver: physics runs after `Evaluate` and its result
+    // arrives here through the next frame's claim overrides. That is invisible in an overlay
+    // and keeps the fill in one place.
+    if (!physicsShapeBones_.empty()) {
+        fs.collisionTransforms.resize(physicsShapeBones_.size());
+        for (usize k = 0; k < physicsShapeBones_.size(); ++k) {
+            const auto bone = static_cast<usize>(physicsShapeBones_[k]);
+            if (bone >= fs.boneWorldMatrices.size()) {
+                fs.collisionTransforms[k] = Matrix44f::identity();
+                continue;
+            }
+            const Matrix44f& m = fs.boneWorldMatrices[bone];
+            const Vector3f& p = model_.bones[bone].pivot;
+            Matrix44f placed = m;
+            placed.data[3][0] = p.x * m.data[0][0] + p.y * m.data[1][0] + p.z * m.data[2][0] +
+                                m.data[3][0];
+            placed.data[3][1] = p.x * m.data[0][1] + p.y * m.data[1][1] + p.z * m.data[2][1] +
+                                m.data[3][1];
+            placed.data[3][2] = p.x * m.data[0][2] + p.y * m.data[1][2] + p.z * m.data[2][2] +
+                                m.data[3][2];
+            fs.collisionTransforms[k] = placed;
+        }
+    }
+}
+
+void M2ModelAdapter::CreatePoseStages(renderer::animation::PoseStageList& out) const {
+#if WDX_HAS_PHYSICS
+    // Physics is last in the list by contract: solvers correct the animated
+    // pose and physics consumes the corrected one (`pose_stage.h`). Nothing
+    // else appends here yet, so "last" costs nothing to honour today and is
+    // the ordering to keep when something does.
+    if (auto stage = renderer::profiles::wow::CreateWowPhysicsStage(model_)) {
+        out.push_back(std::move(stage));
+    }
+#else
+    (void)out;
+#endif
 }
 
 void M2ModelAdapter::EvaluateTextureTransforms(const M2AnimTime& at, bool bindPose,
@@ -1259,6 +1306,103 @@ void M2ModelAdapter::EvaluateParticles(const M2AnimTime& at, const Matrix44f& wo
 
         fs.particleStates.push_back(st);
     }
+}
+
+std::vector<renderer::model::CollisionShapeData> M2ModelAdapter::GetCollisionShapes() {
+    physicsShapeBones_.clear();
+    std::vector<renderer::model::CollisionShapeData> out;
+#if WDX_HAS_PHYSICS
+    // "Debug -> Collision Markers is on and nothing draws" has three causes that look
+    // identical on screen: physics compiled out, no `.phys` in the model, every shape
+    // skipped. One gated line separates them.
+    const bool physDebug = std::getenv("WDX_PHYSICS_DEBUG") != nullptr;
+    if (!model_.physics.has_value()) {
+        if (physDebug)
+            std::fprintf(stderr, "[phys] collision draw: model has no .phys\n");
+        return out;
+    }
+    namespace w2 = ::whiteout::m2;
+    const w2::PhysicsData& phys = *model_.physics;
+
+    for (const w2::PhysicsBody& pb : phys.bodies) {
+        if (pb.boneIndex >= model_.bones.size())
+            continue;
+        const usize first = static_cast<usize>(std::max(0, pb.shapeIndex));
+        const usize count = static_cast<usize>(std::max(0, pb.shapeCount));
+        for (usize s = first; s < first + count && s < phys.shapes.size(); ++s) {
+            const w2::PhysicsShape& ps = phys.shapes[s];
+            const usize idx = static_cast<usize>(std::max<i16>(0, ps.shapeIndex));
+            renderer::model::CollisionShapeData d{};
+            bool ok = false;
+            switch (ps.shapeType) {
+            case w2::PhysicsShapeType::Capsule:
+                if (idx < phys.capsuleShapes.size()) {
+                    const w2::CapsuleShape& c = phys.capsuleShapes[idx];
+                    d.type = static_cast<i32>(renderer::model::CollisionShapeType::Cylinder);
+                    d.vertices[0] = c.localPosition1;
+                    d.vertices[1] = c.localPosition2;
+                    d.radius = c.radius;
+                    ok = true;
+                }
+                break;
+            case w2::PhysicsShapeType::Sphere:
+                if (idx < phys.sphereShapes.size()) {
+                    const w2::SphereShape& sp = phys.sphereShapes[idx];
+                    d.type = static_cast<i32>(renderer::model::CollisionShapeType::Sphere);
+                    d.vertices[0] = sp.localPosition;
+                    d.radius = sp.radius;
+                    ok = true;
+                }
+                break;
+            case w2::PhysicsShapeType::Box:
+                if (idx < phys.boxShapes.size()) {
+                    // The wire view has no oriented box, so a box draws as the axis-aligned
+                    // corner pair its half extents span. Orientation is lost; extent is not,
+                    // and extent is what says whether a collider covers the limb it should.
+                    const w2::BoxShape& b = phys.boxShapes[idx];
+                    const Vector3f& o = b.frame.origin;
+                    d.type = static_cast<i32>(renderer::model::CollisionShapeType::Box);
+                    d.vertices[0] = {o.x - b.halfExtents.x, o.y - b.halfExtents.y,
+                                     o.z - b.halfExtents.z};
+                    d.vertices[1] = {o.x + b.halfExtents.x, o.y + b.halfExtents.y,
+                                     o.z + b.halfExtents.z};
+                    ok = true;
+                }
+                break;
+            case w2::PhysicsShapeType::Polytope:
+                if (idx < phys.polytopeShapes.size()) {
+                    const w2::PolytopeShape& hull = phys.polytopeShapes[idx];
+                    if (!hull.vertices.empty()) {
+                        Vector3f lo = hull.vertices[0], hi = hull.vertices[0];
+                        for (const Vector3f& v : hull.vertices) {
+                            lo = {std::min(lo.x, v.x), std::min(lo.y, v.y), std::min(lo.z, v.z)};
+                            hi = {std::max(hi.x, v.x), std::max(hi.y, v.y), std::max(hi.z, v.z)};
+                        }
+                        d.type = static_cast<i32>(renderer::model::CollisionShapeType::Box);
+                        d.vertices[0] = lo;
+                        d.vertices[1] = hi;
+                        ok = true;
+                    }
+                }
+                break;
+            }
+            if (ok) {
+                // `.phys` encodes only these two — there is no static body in any
+                // version of the format, so the Static overlay stays empty for `.m2`.
+                d.bodyKind = static_cast<i32>(pb.type == w2::PhysicsBodyType::Dynamic
+                                                  ? renderer::model::CollisionBodyKind::Dynamic
+                                                  : renderer::model::CollisionBodyKind::Kinematic);
+                out.push_back(d);
+                physicsShapeBones_.push_back(static_cast<i32>(pb.boneIndex));
+            }
+        }
+    }
+    if (physDebug) {
+        std::fprintf(stderr, "[phys] collision draw: %zu shapes from %zu bodies\n", out.size(),
+                     phys.bodies.size());
+    }
+#endif
+    return out;
 }
 
 } // namespace whiteout::flakes::io

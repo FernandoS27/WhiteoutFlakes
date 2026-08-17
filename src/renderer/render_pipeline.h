@@ -146,6 +146,13 @@ public:
     gfx::IGFXDevice* Gfx();
     const gfx::IGFXDevice* Gfx() const;
     gfx::PipelineHandle CurrentLinePSO() const;
+    /// @brief `CurrentLinePSO` with the depth test off.
+    ///
+    /// For markers that annotate geometry rather than sit in the scene with it:
+    /// a `.phys` collider lives *inside* the silhouette it belongs to, so a
+    /// depth-tested wireframe of one is drawn correctly and then hidden by the
+    /// character wrapped around it — which looks exactly like drawing nothing.
+    gfx::PipelineHandle CurrentOverlayLinePSO() const;
     gfx::Format SceneTargetFormat() const;
     // Depth-stencil format picked at InitDevice time. AMD's Vulkan
     // driver doesn't expose D24_UNORM_S8_UINT, so the gfx layer
@@ -255,6 +262,10 @@ private:
     // extents). Everyone else uses the public accessors above.
     friend class GeosetPassBls;
     friend class GeosetPassHd;
+
+    // Shared body of CurrentLinePSO / CurrentOverlayLinePSO.
+    gfx::PipelineHandle LinePSO(bool depthTest, gfx::PipelineHandle hdrPso,
+                                gfx::PipelineHandle& sdPso, gfx::Format& sdFormat) const;
 
     // Lazily builds every profile, then picks: the scene's product first, and
     // only the WC3 pair reads @p mode. ActiveProfile and LoadTimeProfile differ

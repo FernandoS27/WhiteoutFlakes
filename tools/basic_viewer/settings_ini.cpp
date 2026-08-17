@@ -131,6 +131,16 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy, bool& f
             service.Settings().SetDisplayFlags(df);
     }
 
+    {
+        auto loadPhysFlag = [&](const char* key, void (RenderSettings::*set)(bool)) {
+            if (auto* s = ini.Get(KeyOf(key)))
+                (service.Settings().*set)(*s == "1");
+        };
+        loadPhysFlag("ShowPhysicsDynamic", &RenderSettings::SetShowPhysicsDynamic);
+        loadPhysFlag("ShowPhysicsKinematic", &RenderSettings::SetShowPhysicsKinematic);
+        loadPhysFlag("ShowPhysicsStatic", &RenderSettings::SetShowPhysicsStatic);
+    }
+
     if (auto* s = ini.Get(KeyOf("LightingMode"))) {
         i32 v = 0;
         if (ParseInt(*s, v) && v >= 0 && v <= 2)
@@ -323,6 +333,9 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy, bo
         saveFlag("ShowEvents", df.showEvents);
         saveFlag("ShowCollisions", df.showCollisions);
         saveFlag("ShowLights", df.showLights);
+        saveFlag("ShowPhysicsDynamic", service.Settings().ShowPhysicsDynamic());
+        saveFlag("ShowPhysicsKinematic", service.Settings().ShowPhysicsKinematic());
+        saveFlag("ShowPhysicsStatic", service.Settings().ShowPhysicsStatic());
     }
     ini.Set(KeyOf("LightingMode"),
             ToString(static_cast<u32>(service.Settings().GetLightingMode())));

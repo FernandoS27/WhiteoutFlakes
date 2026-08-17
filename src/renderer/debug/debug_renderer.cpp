@@ -68,23 +68,79 @@ void DebugRenderer::RenderGrid() {
 }
 
 void DebugRenderer::RenderCollisions() {
+    DrawCollisionShapes(false);
+}
+
+void DebugRenderer::RenderPhysicsBodies() {
+    DrawCollisionShapes(true);
+}
+
+void DebugRenderer::DrawCollisionShapes(bool physicsBodies) {
     // Shape plus the matrix that takes its vertices all the way to world space.
     // CollisionShape::transform is the node's *model-space* animated matrix, so
-    // the owning actor's worldTransform still has to be applied — without it an
+    // the owning actor's world matrix still has to be applied — without it an
     // attachment / PE1 child (or any actor the host has moved) draws its shapes
     // back at the scene origin instead of on the parent it rides.
+    //
+    // **`ScaledWorldTransform`, not `worldTransform`** — the same matrix the
+    // geosets are drawn with. It carries the profile's WorldScale and the
+    // source-space basis change, and model space is what both sides of this
+    // multiply are expressed in. Warcraft III makes the two identical (scale 1,
+    // no rebase), which is why the raw one stood for years; World of Warcraft's
+    // scale is 100, so a `.phys` rig drawn through the unscaled matrix lands at
+    // 1/100 size on a model rendered at full size — every shape inside a couple
+    // of units of the origin. That reads on screen as a single green dot at the
+    // model's feet, not as a scale error.
     struct ShapeDraw {
         const CollisionShape* shape;
         Matrix44f toWorld;
+        Vector4f color;
     };
+
+    // One colour per body kind. Dynamic is the one being debugged, so it keeps
+    // the green the collision overlay has always used; kinematic is cold to read
+    // as "driven, not simulated", and static is grey because nothing moves it.
+    constexpr Vector4f kPlainColor = {0.0f, 1.0f, 0.3f, 1.0f};
+    constexpr Vector4f kDynamicColor = {0.1f, 1.0f, 0.2f, 1.0f};
+    constexpr Vector4f kKinematicColor = {0.25f, 0.6f, 1.0f, 1.0f};
+    constexpr Vector4f kStaticColor = {0.7f, 0.7f, 0.7f, 1.0f};
+
+    const auto& settings = rs_.Settings();
     std::vector<ShapeDraw> shapes;
     Matrix44f viewMat;
     {
         for (auto& [h, mi] : rs_.Scene().Actors().All()) {
             if (mi->parentVisibility <= 0.02f)
                 continue;
-            for (const auto& cs : mi->render.collisionShapes)
-                shapes.push_back({&cs, cs.transform * mi->worldTransform});
+            for (const auto& cs : mi->render.collisionShapes) {
+                const auto kind = static_cast<CollisionBodyKind>(cs.bodyKind);
+                // The two overlays partition the shape list rather than sharing
+                // it: a physics body drawn under Collision Markers as well would
+                // be two wireframes in two colours on the same capsule.
+                if (physicsBodies == (kind == CollisionBodyKind::None))
+                    continue;
+                Vector4f color = kPlainColor;
+                if (physicsBodies) {
+                    switch (kind) {
+                    case CollisionBodyKind::Dynamic:
+                        if (!settings.ShowPhysicsDynamic())
+                            continue;
+                        color = kDynamicColor;
+                        break;
+                    case CollisionBodyKind::Kinematic:
+                        if (!settings.ShowPhysicsKinematic())
+                            continue;
+                        color = kKinematicColor;
+                        break;
+                    default:
+                        if (!settings.ShowPhysicsStatic())
+                            continue;
+                        color = kStaticColor;
+                        break;
+                    }
+                }
+                shapes.push_back({&cs, cs.transform * mi->ScaledWorldTransform(), color});
+            }
         }
         if (shapes.empty())
             return;
@@ -92,18 +148,24 @@ void DebugRenderer::RenderCollisions() {
     }
 
     auto* cmd = rs_.Pipeline().Gfx()->GetImmediateContext();
-    cmd->BindPipeline(rs_.Pipeline().CurrentLinePSO());
+    // Depth off. A collider sits inside the geometry it belongs to — a WoW
+    // `.phys` capsule is *entirely* inside the limb it drives — so a
+    // depth-tested wireframe of one is built, transformed, submitted, and then
+    // hidden by the model wrapped around it. Indistinguishable on screen from
+    // emitting no shapes at all, and the reason MDX never showed the problem:
+    // its collision spheres enclose the model rather than sitting within it.
+    cmd->BindPipeline(rs_.Pipeline().CurrentOverlayLinePSO());
 
     struct LV {
         Vector3f pos;
         Vector4f col;
     };
-    Vector4f col = {0.0f, 1.0f, 0.3f, 1.0f};
 
     std::vector<LV> lines;
 
     for (auto& sd : shapes) {
         const CollisionShape& cs = *sd.shape;
+        const Vector4f& col = sd.color;
 
         // Vertices arrive in model space (the source folds the pivot in, see
         // CollisionShapeData), so sd.toWorld is the whole placement — adding
@@ -254,7 +316,9 @@ void DebugRenderer::RenderLightMarkers() {
     }
 
     auto* cmd = rs_.Pipeline().Gfx()->GetImmediateContext();
-    cmd->BindPipeline(rs_.Pipeline().CurrentLinePSO());
+    // A light marker is a marker too — an M2 model light usually sits inside
+    // the mesh it lights.
+    cmd->BindPipeline(rs_.Pipeline().CurrentOverlayLinePSO());
 
     struct LV {
         Vector3f pos;

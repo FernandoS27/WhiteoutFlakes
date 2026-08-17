@@ -120,6 +120,21 @@ public:
     StcBuilder& U32(u32 animId, m3::AnimBlock<u32> b) {
         return Add(animId, SdSlot::U32, stc_.sdu3, std::move(b));
     }
+    /// @brief The slot shipped content actually uses for a discrete u32 channel.
+    ///
+    /// `SDFG` and `SDU3` both carry four-byte keys and a file may name either;
+    /// every keyed visibility and `dynamicState` in the corpus names this one,
+    /// so a fixture built only through @ref U32 exercises a path no model takes.
+    StcBuilder& Flags(u32 animId, const std::vector<i32>& stamps,
+                      const std::vector<u32>& values) {
+        m3::AnimBlock<m3::Flag> b;
+        b.timestamps = stamps;
+        b.flags = 0;
+        b.endFrame = stamps.empty() ? 0u : static_cast<u32>(stamps.back());
+        for (u32 v : values)
+            b.keys.push_back(m3::Flag{v});
+        return Add(animId, SdSlot::Flag, stc_.sdfg, std::move(b));
+    }
     StcBuilder& U16(u32 animId, m3::AnimBlock<u16> b) {
         return Add(animId, SdSlot::U16, stc_.sdu6, std::move(b));
     }

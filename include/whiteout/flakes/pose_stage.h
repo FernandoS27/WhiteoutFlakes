@@ -112,6 +112,23 @@ public:
     virtual std::vector<BoneClaim> Claims() const {
         return {};
     }
+
+    /// @brief Whether this stage is useless without the host-supplied halves of
+    ///        @ref PoseStageContext — the ground query and the aim target.
+    ///
+    /// The reason the two solvers are off by default is **not** that a
+    /// correction is risky; it is that the viewer has no terrain and no notion
+    /// of what a unit is shooting at, so IK and turret aiming have nothing to
+    /// solve against. That reasoning does not reach physics, which needs no
+    /// host input at all: a `.phys` ragdoll is fully described by the model.
+    ///
+    /// Gating them together made WoW cloth depend on a toggle labelled "M3 pose
+    /// solvers", which is a switch nobody would think to look for and a
+    /// dependency that does not exist. Stages that answer `false` run whenever
+    /// their own subsystem is compiled in.
+    virtual bool NeedsHostInputs() const {
+        return true;
+    }
 };
 
 using PoseStageList = std::vector<std::unique_ptr<IPoseStage>>;

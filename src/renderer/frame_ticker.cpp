@@ -326,7 +326,14 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
         //
         // In creator order, never sorted: solvers correct the animated pose,
         // and a future physics stage consumes the corrected one.
-        if (ctx.poseStagesEnabled && !actor.animation.PoseStages().empty()) {
+        //
+        // `poseStagesEnabled` gates only the stages that need something from
+        // the host. It is off by default because the viewer has no terrain for
+        // IK and no aim target for a turret — a reason that does not reach a
+        // `.phys` ragdoll, which is fully described by the model file. Gating
+        // both on one flag is what left WoW cloth inert behind a checkbox
+        // labelled "M3 pose solvers" (see `IPoseStage::NeedsHostInputs`).
+        if (!actor.animation.PoseStages().empty()) {
             animation::PoseStageContext sctx;
             sctx.nodeParents = actor.render.nodeParents;
             sctx.frameDtMs = ctx.frameDtMs;
@@ -335,6 +342,8 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
             sctx.aimTarget = actor.aimTarget;
             actor.stageOverrides.clear();
             for (auto& stage : actor.animation.PoseStages()) {
+                if (stage->NeedsHostInputs() && !ctx.poseStagesEnabled)
+                    continue;
                 stage->Run(fs, sctx);
                 // Collected after each stage rather than after all of them, so
                 // the order a later stage sees is the order they ran in.

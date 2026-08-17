@@ -742,6 +742,30 @@ void ViewerUI::BuildMenuBar() {
             dfChanged |= ImGui::MenuItem(i18n::tr("menu.debug.collisions"), nullptr,
                                          &df.showCollisions);
             dfChanged |= ImGui::MenuItem(i18n::tr("menu.debug.lights"), nullptr, &df.showLights);
+
+            if (ImGui::BeginMenu(i18n::tr("menu.debug.physics"))) {
+                struct PhysicsToggle {
+                    const char* key;
+                    bool (RenderSettings::*get)() const;
+                    void (RenderSettings::*set)(bool);
+                };
+                static constexpr PhysicsToggle kPhysicsToggles[] = {
+                    {"menu.debug.physics.dynamic", &RenderSettings::ShowPhysicsDynamic,
+                     &RenderSettings::SetShowPhysicsDynamic},
+                    {"menu.debug.physics.kinematic", &RenderSettings::ShowPhysicsKinematic,
+                     &RenderSettings::SetShowPhysicsKinematic},
+                    {"menu.debug.physics.static", &RenderSettings::ShowPhysicsStatic,
+                     &RenderSettings::SetShowPhysicsStatic},
+                };
+                for (const auto& t : kPhysicsToggles) {
+                    const bool on = (svc.Settings().*t.get)();
+                    if (ImGui::MenuItem(i18n::tr(t.key), nullptr, on)) {
+                        (svc.Settings().*t.set)(!on);
+                        SaveIni(app_);
+                    }
+                }
+                ImGui::EndMenu();
+            }
             ImGui::Separator();
 
             if (ImGui::BeginMenu(i18n::tr("menu.debug.debugview"))) {

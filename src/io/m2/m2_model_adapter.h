@@ -273,9 +273,20 @@ public:
     ///        MDX path (see core/ribbon_dialect.h); this only reports the
     ///        static half — rate, lifespan, gravity, sprite grid, material.
     std::vector<renderer::effects::RibbonEmitterConfig> GetRibbonConfigs() override;
-    std::vector<renderer::model::CollisionShapeData> GetCollisionShapes() override {
-        return {};
-    }
+    /// @brief The `.phys` rigid bodies, as wireframes for the Collisions view.
+    ///
+    /// `.m2` has no CLID chunk, so this slot was empty — and a ragdoll is exactly what it is
+    /// for. Reusing it means the physics bodies draw through the existing View > Collisions
+    /// toggle with no new rendering path and no new UI.
+    ///
+    /// It earns its place: a skinned mesh cannot tell "the bodies are in the wrong place" from
+    /// "the bodies are right and the skinning is wrong", and several rounds of this were lost
+    /// to inferring solver behaviour from screenshots of stretched cloth. Drawing the bodies
+    /// where the solver actually put them settles that in one look.
+    ///
+    /// Populated only when physics is compiled in; `physicsShapeBones_` records which bone each
+    /// entry rides so `Evaluate` can fill `collisionTransforms` alongside them.
+    std::vector<renderer::model::CollisionShapeData> GetCollisionShapes() override;
 
     /// @brief The model's own bounding box, which `.m2` stores directly —
     ///        better than the default's union over mesh positions because it
@@ -303,6 +314,11 @@ public:
     /// the client does it: CM2Model::LoadSequence runs off SetBoneSequence, not
     /// off the model load.
     renderer::model::FrameState Evaluate(const PoseRequest& req) const override;
+
+    /// @brief The `.phys` ragdoll, when the model carries one and physics is
+    ///        compiled in. Empty otherwise — including in a build without
+    ///        WDX_ENABLE_PHYSICS, where the stage does not exist at all.
+    void CreatePoseStages(renderer::animation::PoseStageList& out) const override;
 
     /// @brief How many submeshes the chosen profile contributed. What the
     ///        geometry test asserts against.
@@ -344,6 +360,10 @@ private:
     // Mutable because Evaluate is const and a lazily parsed model fills its
     // tracks in on first play. Nothing a caller can observe changes: the keys
     // that arrive are the ones the eager parse would already have read.
+    /// Which bone each entry of @ref GetCollisionShapes rides, so `Evaluate` can place them.
+    /// Parallel to the returned vector and filled by the same walk.
+    mutable std::vector<i32> physicsShapeBones_;
+
     mutable ::whiteout::m2::Model model_;
     // The parse-time filesystem wrapper, held only for a lazy parse. See the
     // constructor.

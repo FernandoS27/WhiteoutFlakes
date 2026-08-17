@@ -126,6 +126,11 @@ struct RenderPipeline::Impl {
     // screen). linePSOHdr_ doesn't need this because the HDR scene target is
     // a fixed R11G11B10_FLOAT offscreen.
     gfx::Format linePsoSdFormat_ = gfx::Format::Unknown;
+    // Same two pipelines with the depth test off, for markers that have to be
+    // visible through the model they annotate — see CurrentOverlayLinePSO.
+    gfx::PipelineHandle overlayLinePSOHdr_ = gfx::PipelineHandle::Invalid;
+    gfx::PipelineHandle overlayLinePSOSd_ = gfx::PipelineHandle::Invalid;
+    gfx::Format overlayLinePsoSdFormat_ = gfx::Format::Unknown;
     gfx::PipelineHandle tonemapPSO_ = gfx::PipelineHandle::Invalid;
     // RTV format the tonemapPSO_ was built against. Cached so RunTonemapPass
     // can rebuild the PSO whenever the swap-chain format changes (e.g. on

@@ -528,11 +528,27 @@ enum class CollisionShapeType : i32 {
 /// responsible for normalising to that: MDX authors Box/Plane/Cylinder corners
 /// *relative* to the pivot but a Sphere's centre in model space, and
 /// MdxModelAdapter reconciles the two on load.
+/// @brief How a shape's owning rigid body is driven, for @ref
+///        CollisionShapeData::bodyKind.
+///
+/// `None` is a plain collision primitive with no body behind it — every MDX
+/// CLID shape — and is what the *Collision Markers* overlay draws. The other
+/// three belong to a physics rig and get their own overlay, one toggle and
+/// colour per kind, because "which of these is the solver allowed to move" is
+/// the first question asked of a rig that misbehaves.
+enum class CollisionBodyKind : i32 {
+    None = 0,      ///< Not a physics body.
+    Static = 1,    ///< Never moves. No `.phys` version encodes one.
+    Kinematic = 2, ///< Animation-driven; the solver reads it but never writes it.
+    Dynamic = 3,   ///< Simulated, and written back over the animation.
+};
+
 struct CollisionShapeData {
     i32 type; ///< @ref CollisionShapeType.
     Vector3f vertices[2];
     f32 radius;
     Vector3f pivot = {0, 0, 0}; ///< Node pivot, informational — already applied.
+    i32 bodyKind = 0;           ///< @ref CollisionBodyKind.
 };
 
 /// @brief Per-frame evaluation output for one actor.
@@ -646,6 +662,20 @@ struct FrameState {
     /// emitter/attachment states these do *not* bake the actor's
     /// worldTransform, so consumers must post-multiply it themselves.
     std::vector<Matrix44f> collisionTransforms;
+
+    /// @brief Per-rigid-body "simulate me this frame", one entry per body in
+    ///        file order. Empty for a format whose bodies do not animate it.
+    ///
+    /// StarCraft II authors a body's type as a *channel*, not a constant: a
+    /// hero's collision proxies are animation-driven until a sequence keys them
+    /// dynamic and the model goes limp. Only the sampler can read that channel —
+    /// it needs the layer stack, and a pose stage sees a finished `FrameState` —
+    /// so the source samples it here and the physics stage flips body types from
+    /// what it finds.
+    ///
+    /// Indexed by body, not by bone: a body names its bone and not the reverse,
+    /// and two bodies can share one.
+    std::vector<u8> physicsBodyDynamic;
 
     /// @brief Per-layer 2D texture-coord transform (offset / tile / rotation).
     struct TexAnimState {

@@ -68,6 +68,33 @@ public:
         return showEvents_;
     }
 
+    // ---- Physics body overlay ----
+    //
+    // Deliberately *not* in DisplayFlags: that struct is the host-facing display
+    // contract, and these are debug views in the same class as HdDebugMode and
+    // LodOverride, which take the same direct-setter route.
+    bool ShowPhysicsDynamic() const {
+        return showPhysicsDynamic_;
+    }
+    bool ShowPhysicsKinematic() const {
+        return showPhysicsKinematic_;
+    }
+    bool ShowPhysicsStatic() const {
+        return showPhysicsStatic_;
+    }
+    bool ShowAnyPhysicsBodies() const {
+        return showPhysicsDynamic_ || showPhysicsKinematic_ || showPhysicsStatic_;
+    }
+    void SetShowPhysicsDynamic(bool v) {
+        showPhysicsDynamic_ = v;
+    }
+    void SetShowPhysicsKinematic(bool v) {
+        showPhysicsKinematic_ = v;
+    }
+    void SetShowPhysicsStatic(bool v) {
+        showPhysicsStatic_ = v;
+    }
+
     // ---- Pose stages (terrain IK, turret) ----
     // Off by default, and StarCraft II does the same thing: IK is gated on a
     // world flag rather than per model, because a solver with no world to
@@ -448,6 +475,9 @@ private:
     bool showCollisions_ = false;
     bool showLights_ = false;
     bool showEvents_ = true;
+    bool showPhysicsDynamic_ = false;
+    bool showPhysicsKinematic_ = false;
+    bool showPhysicsStatic_ = false;
     bool poseSolvers_ = false;
     GroundQuery groundQuery_;
 

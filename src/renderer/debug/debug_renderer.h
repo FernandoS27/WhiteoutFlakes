@@ -46,11 +46,19 @@ public:
     void DestroyResources();
 
     void RenderGrid();
+    /// Plain collision primitives — MDX CLID shapes and anything else with no
+    /// rigid body behind it.
     void RenderCollisions();
+    /// Physics rig bodies, coloured by kind and filtered by the three
+    /// `RenderSettings::ShowPhysics*` toggles.
+    void RenderPhysicsBodies();
     void RenderLightMarkers();
 
 private:
     bool CreateGridResources();
+    /// Shared body of the two shape overlays: same geometry, different
+    /// selection and colouring.
+    void DrawCollisionShapes(bool physicsBodies);
 
     RenderService& rs_;
 

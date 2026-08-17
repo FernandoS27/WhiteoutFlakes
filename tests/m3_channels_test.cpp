@@ -41,7 +41,13 @@ ClipRef Clip(i32 seq, i32 elapsed, f32 weight = 1.0f) {
 }
 
 // A bone whose visibility is driven by `animId`, keyed on then off.
-m3::Model VisibilityFixture(u32 animId, bool childOwnVisibility) {
+//
+// @p slot picks which of the two four-byte key arrays holds them. Both are
+// legal and shipped content uses only `SDFG` — measured over the whole corpus,
+// 30617 keyed visibilities resolve there and none to `SDU3` — so a fixture
+// built through `SDU3` alone exercises a path no model takes.
+m3::Model VisibilityFixture(u32 animId, bool childOwnVisibility,
+                            m3fix::SdSlot slot = m3fix::SdSlot::U32) {
     m3fix::ModelBuilder mb;
     m3::Bone root;
     root.name = "root";
@@ -64,7 +70,10 @@ m3::Model VisibilityFixture(u32 animId, bool childOwnVisibility) {
     child.visibility = childOwnVisibility ? m3fix::ConstRef<u32>(1u) : m3fix::ConstRef<u32>(1u);
 
     m3fix::StcBuilder s("s", 1, false);
-    s.U32(animId, m3fix::Block<u32>({0, 500}, {1u, 0u}));
+    if (slot == m3fix::SdSlot::Flag)
+        s.Flags(animId, {0, 500}, {1u, 0u});
+    else
+        s.U32(animId, m3fix::Block<u32>({0, 500}, {1u, 0u}));
 
     m3::Model model;
     model.bones.push_back(std::move(root));
@@ -125,6 +134,21 @@ TEST_CASE("Bone visibility is discrete - it holds, it does not fade", "[m3chan]"
     REQUIRE(EvalAt(a, {Clip(0, 250)}).geosetAlphas[0] == Approx(1.0f));
     REQUIRE(EvalAt(a, {Clip(0, 499)}).geosetAlphas[0] == Approx(1.0f));
     REQUIRE(EvalAt(a, {Clip(0, 500)}).geosetAlphas[0] == Approx(0.0f));
+}
+
+TEST_CASE("Visibility keyed in SDFG samples like visibility keyed in SDU3", "[m3chan]") {
+    // The slot the corpus actually uses. `SDFG` and `SDU3` differ only in the
+    // array the keys sit in — both are four bytes — and a sampler that accepts
+    // one of them returns the init value for every real model, which reads as
+    // an animation that simply has no visibility track rather than as a bug.
+    m3::Model model = VisibilityFixture(300, true, m3fix::SdSlot::Flag);
+    AddRegion(model, 0);
+    M3ModelAdapter a(std::move(model));
+
+    REQUIRE(EvalAt(a, {Clip(0, 250)}).geosetAlphas[0] == Approx(1.0f));
+    REQUIRE(EvalAt(a, {Clip(0, 499)}).geosetAlphas[0] == Approx(1.0f));
+    REQUIRE(EvalAt(a, {Clip(0, 500)}).geosetAlphas[0] == Approx(0.0f));
+    REQUIRE(EvalAt(a, {Clip(0, 600)}).geosetAlphas[0] == Approx(0.0f));
 }
 
 TEST_CASE("A hidden parent hides its whole subtree", "[m3chan]") {

@@ -87,6 +87,11 @@ if(WDX_ENABLE_M2)
     wdx_add_test(m2_particle_test m2_particle_test.cpp)
     # Corpus only: needs the `dbfilesclient/` dump beside the models.
     wdx_add_test(wow_creature_skin_test wow_creature_skin_test.cpp)
+    # `.phys` -> Snowball, end to end. Only exists when physics is compiled in;
+    # without it there is no stage to test and the adapter returns nothing.
+    if(WDX_ENABLE_PHYSICS)
+        wdx_add_test(wow_physics_test wow_physics_test.cpp)
+    endif()
 endif()
 if(WDX_ENABLE_M3)
     wdx_add_test(m3_geometry_test m3_geometry_test.cpp)
@@ -107,6 +112,19 @@ if(WDX_ENABLE_M3)
     # a stage reads a FrameState and plain values, so the real solver runs
     # with no model, no adapter and no GPU.
     wdx_add_test(m3_solver_test m3_solver_test.cpp)
+    # PHRB/PHYJ -> Snowball. Only exists when physics is compiled in; without
+    # it the adapter appends no physics stage and there is nothing to test.
+    if(WDX_ENABLE_PHYSICS)
+        wdx_add_test(sc2_physics_test sc2_physics_test.cpp)
+        # PHCL -> Snowball's cloth solver, and back into the skinning palette.
+        # Unlike the rigid-body test this one reads the built records, so it
+        # needs Snowball's headers — `Sc2ClothPiece` carries a `ClothDef` by
+        # value rather than hiding one, because the records *are* the result.
+        wdx_add_test(sc2_cloth_test sc2_cloth_test.cpp)
+        target_link_libraries(sc2_cloth_test PRIVATE snowball)
+        wdx_add_test(cloth_probe cloth_probe.cpp)
+        target_link_libraries(cloth_probe PRIVATE snowball)
+    endif()
 endif()
 # The baked-vertex-buffer description check. Compiled unconditionally — it
 # #ifdefs its two halves internally, so a build with neither format still

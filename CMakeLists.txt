@@ -106,6 +106,14 @@ add_subdirectory(externals/WhiteoutLib)
 option(WDX_ENABLE_M2 "Enable World of Warcraft .m2 loading (geometry only)" ON)
 option(WDX_ENABLE_M3 "Enable StarCraft II / Heroes .m3 loading (geometry only)" ON)
 
+# Rigid-body physics, driven by Snowball — the re-implementation of Blizzard's
+# Domino engine, vendored under src/renderer/physics/snowball. Both games that
+# ship Domino data are covered: WoW's `.m2` cloth and tassels (`.phys`/PFDC) and
+# StarCraft II's `.m3` rigid bodies and death ragdolls (PHRB/PHYJ). Needs at
+# least one of WDX_ENABLE_M2 / WDX_ENABLE_M3, since physics reaches us only
+# through a model format.
+option(WDX_ENABLE_PHYSICS "Enable rigid-body simulation (needs Snowball)" ON)
+
 option(WDX_ENABLE_TRACY "Enable Tracy profiler (CPU + Vulkan GPU)" ON)
 if(WDX_ENABLE_TRACY AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/externals/tracy/CMakeLists.txt")
     set(TRACY_ENABLE    ON  CACHE BOOL "" FORCE)
@@ -1280,6 +1288,7 @@ if(WDX_ENABLE_M2)
     else()
         message(FATAL_ERROR "WDX_ENABLE_M2=ON needs WHITEOUT_ENABLE_DATABASE=ON.")
     endif()
+
     target_compile_definitions(WhiteoutFlakesLib PUBLIC WDX_ENABLE_M2=1)
     message(STATUS "WhiteoutFlakes: .m2 loading ENABLED (materials + combiners + animation)")
 endif()
@@ -1293,6 +1302,32 @@ if(WDX_ENABLE_M3)
     )
     target_compile_definitions(WhiteoutFlakesLib PUBLIC WDX_ENABLE_M3=1)
     message(STATUS "WhiteoutFlakes: .m3 loading ENABLED (geometry only)")
+endif()
+
+# ---- Snowball rigid-body physics -----------------------------------------
+#
+# Everything the option adds is behind WDX_HAS_PHYSICS, and the rigid-body path
+# simply does not exist when it is off rather than compiling to a stub.
+#
+# One engine, two hosts, one profile source file each — WoW's `.phys` and
+# StarCraft II's PHRB/PHYJ share Snowball and essentially nothing above it (see
+# each file's header). Whichever formats are enabled bring their own glue; with
+# neither there is nothing to drive and Snowball is not built at all.
+if(WDX_ENABLE_PHYSICS AND (WDX_ENABLE_M2 OR WDX_ENABLE_M3))
+    add_subdirectory(src/renderer/physics/snowball EXCLUDE_FROM_ALL)
+    if(WDX_ENABLE_M2)
+        target_sources(WhiteoutFlakesLib PRIVATE
+            src/renderer/profiles/wow/wow_physics.cpp
+        )
+    endif()
+    if(WDX_ENABLE_M3)
+        target_sources(WhiteoutFlakesLib PRIVATE
+            src/renderer/profiles/sc2_heroes/sc2_physics.cpp
+            src/renderer/profiles/sc2_heroes/sc2_cloth.cpp
+        )
+    endif()
+    target_link_libraries(WhiteoutFlakesLib PRIVATE snowball)
+    target_compile_definitions(WhiteoutFlakesLib PRIVATE WDX_HAS_PHYSICS=1)
 endif()
 
 # Storage browser walks CASC/MPQ/the local filesystem — none of which the

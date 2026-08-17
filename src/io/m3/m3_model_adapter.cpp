@@ -1,6 +1,10 @@
 #include "io/m3/m3_model_adapter.h"
 
 #include "io/m3/m3_pose_solvers.h"
+#if WDX_HAS_PHYSICS
+#include "renderer/profiles/sc2_heroes/sc2_cloth.h"
+#include "renderer/profiles/sc2_heroes/sc2_physics.h"
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -238,21 +242,40 @@ T M3ModelAdapter::SampleRef(const ::whiteout::m3::AnimRef<T>& ref,
         if (l.play < 64 && ((visited >> l.play) & 1u) != 0)
             continue;
         const M3TrackHandle h = tables_.At(row, l.stc);
-        const bool has = h.Valid() && h.slot == M3SdSlot::U32 &&
-                         !model_.subTrackCollections[l.stc].sdu3[h.block].keys.empty();
-        if (!has && l.transparent)
+        const auto& coll = model_.subTrackCollections[l.stc];
+
+        // **A discrete u32 channel lands in `SDFG`, not `SDU3`.** Both hold
+        // four-byte keys and the engine reaches them through one generic
+        // indexer, so the file is free to pick either — and it always picks
+        // slot 11: measured over the 54724-model corpus, 30617 keyed bone
+        // visibilities and all 598 keyed `PHRB.dynamicState` resolve there, and
+        // not one to slot 10. Accepting only the u32 slot compiles, runs, and
+        // silently answers `initValue` for every keyed channel in shipped
+        // content, which renders as an animation that simply has no visibility
+        // track.
+        const bool isFlag = h.Valid() && h.slot == M3SdSlot::Flag &&
+                            h.block < coll.sdfg.size() && !coll.sdfg[h.block].keys.empty();
+        const bool isU32 = h.Valid() && h.slot == M3SdSlot::U32 && h.block < coll.sdu3.size() &&
+                           !coll.sdu3[h.block].keys.empty();
+        if (!isFlag && !isU32 && l.transparent)
             continue;
         if (l.play < 64)
             visited |= (::whiteout::u64{1} << l.play);
-        if (!has)
+        if (!isFlag && !isU32)
             return ref.initValue;
 
-        const auto& blk = model_.subTrackCollections[l.stc].sdu3[h.block];
         // Discrete: never interpolated, whatever the ref's interp type says.
-        const M3KeySpan sp = M3LocateKey(blk.timestamps, l.timeMs, l.loop, /*interpolate*/ false);
+        const std::vector<::whiteout::i32>& stamps =
+            isFlag ? coll.sdfg[h.block].timestamps : coll.sdu3[h.block].timestamps;
+        const M3KeySpan sp = M3LocateKey(stamps, l.timeMs, l.loop, /*interpolate*/ false);
         if (!sp.valid)
             return ref.initValue;
-        return blk.keys[(std::min)(sp.i0, blk.keys.size() - 1)];
+        if (isFlag) {
+            const auto& keys = coll.sdfg[h.block].keys;
+            return keys[(std::min)(sp.i0, keys.size() - 1)].value;
+        }
+        const auto& keys = coll.sdu3[h.block].keys;
+        return keys[(std::min)(sp.i0, keys.size() - 1)];
     }
     return ref.initValue;
 }
@@ -295,6 +318,33 @@ M3ModelAdapter::M3ModelAdapter(::whiteout::m3::Model model) : model_(std::move(m
         regionCount_ = model_.divisions[divisionIndex_].regions.size();
     BuildEmittedRegions();
     tables_.Build(model_);
+#if WDX_HAS_PHYSICS
+    if (auto build = renderer::profiles::sc2_heroes::Sc2BuildCloth(model_); !build.pieces.empty()) {
+        cloth_ = std::make_shared<const renderer::profiles::sc2_heroes::Sc2ClothBuild>(
+            std::move(build));
+    }
+#endif
+    BuildClothGeosetMap();
+}
+
+void M3ModelAdapter::BuildClothGeosetMap() {
+    geosetClothPiece_.assign(emittedRegions_.size(), -1);
+    geosetClothProxy_.assign(emittedRegions_.size(), 0);
+#if WDX_HAS_PHYSICS
+    if (!cloth_)
+        return;
+    for (std::size_t p = 0; p < cloth_->pieces.size(); ++p) {
+        const auto& piece = cloth_->pieces[p];
+        for (std::size_t g = 0; g < emittedRegions_.size(); ++g) {
+            if (emittedRegions_[g] == piece.simRegion)
+                geosetClothProxy_[g] = 1;
+            for (std::size_t r : piece.influencedRegions) {
+                if (emittedRegions_[g] == r)
+                    geosetClothPiece_[g] = static_cast<i32>(p);
+            }
+        }
+    }
+#endif
 }
 
 void M3ModelAdapter::BuildEmittedRegions() {
@@ -378,6 +428,7 @@ std::vector<MeshData> M3ModelAdapter::GetMeshes() {
         mesh.indices.reserve(region.indexCount);
         for (std::size_t i = iBegin; i < iEnd; ++i)
             mesh.indices.push_back(static_cast<u32>(div.faces[i]));
+        RewriteClothSkin(g, mesh);
         out.push_back(std::move(mesh));
     }
     if (noFaceRange > 0) {
@@ -390,6 +441,54 @@ std::vector<MeshData> M3ModelAdapter::GetMeshes() {
                      div.regions.empty() ? -1 : div.regions[0].getVersion());
     }
     return out;
+}
+
+void M3ModelAdapter::RewriteClothSkin([[maybe_unused]] std::size_t geoset,
+                                      [[maybe_unused]] MeshData& mesh) const {
+#if WDX_HAS_PHYSICS
+    if (!cloth_ || geoset >= geosetClothPiece_.size() || geosetClothPiece_[geoset] < 0)
+        return;
+    const auto& piece = cloth_->pieces[static_cast<std::size_t>(geosetClothPiece_[geoset])];
+    const auto& c = model_.clothPhysics[piece.chunkIndex];
+    const std::size_t region = emittedRegions_[geoset];
+
+    const ::whiteout::m3::ClothProxy* proxy = nullptr;
+    for (const auto& p : c.proxies) {
+        if (p.proxyIndex == region && p.clothIndex == piece.simRegion)
+            proxy = &p;
+    }
+    const std::size_t stride = mesh.baked.stride;
+    const std::size_t count = mesh.baked.data.size() / (stride != 0 ? stride : 1);
+    if (proxy == nullptr || stride < 20 || proxy->proxyVertices.size() != count ||
+        proxy->proxyWeights.size() != count) {
+        return;
+    }
+
+    // Offsets 12 and 16 are `BoneWeights` and `BoneIndices` — see
+    // `DescribeM3Vertex`. Overwriting them in place is the whole rewrite: the
+    // geoset's palette becomes the cloth's particles (`GetSkinWeights`), and a
+    // vertex that named a bone now names the particle that carries it.
+    for (std::size_t v = 0; v < count; ++v) {
+        const ::whiteout::u64 slots = proxy->proxyVertices[v];
+        const ::whiteout::u32 weights = proxy->proxyWeights[v];
+        ::whiteout::u8* rec = mesh.baked.data.data() + v * stride;
+        for (int k = 0; k < 4; ++k) {
+            const auto src = static_cast<std::size_t>((slots >> (16 * k)) & 0xFFFFu);
+            ::whiteout::u8 w = static_cast<::whiteout::u8>((weights >> (8 * k)) & 0xFFu);
+            // 0xFFFF is the format's "no influence"; so is a source vertex the
+            // cloth build dropped. Both become slot 0 at weight 0, which is what
+            // the solver's own absent-anchor lanes do.
+            const ::whiteout::i16 particle =
+                (src < piece.oldToNew.size()) ? piece.oldToNew[src] : ::whiteout::i16{-1};
+            const bool live = particle >= 0 &&
+                              static_cast<std::size_t>(particle) < piece.particleCount;
+            if (!live)
+                w = 0;
+            rec[16 + k] = live ? static_cast<::whiteout::u8>(particle) : 0u;
+            rec[12 + k] = w;
+        }
+    }
+#endif
 }
 
 ::whiteout::flakes::ModelBounds M3ModelAdapter::GetBounds() {
@@ -586,6 +685,26 @@ void M3ModelAdapter::CreatePoseStages(renderer::animation::PoseStageList& out) c
             tb.yawWeight > 0.0f ? tb.yawWeight : 3.0f, tb.yawLimited != 0, tb.yawMin,
             tb.yawMax));
     }
+
+#if WDX_HAS_PHYSICS
+    // ---- PHRB/PHYJ -------------------------------------------------------
+    // Physics is last in the list by contract: solvers correct the animated
+    // pose and physics consumes the corrected one (`pose_stage.h`). Nothing
+    // for the overwhelming majority of models, whose rigid bodies are
+    // kinematic hit proxies that never become dynamic.
+    if (auto stage = renderer::profiles::sc2_heroes::CreateSc2PhysicsStage(model_)) {
+        out.push_back(std::move(stage));
+    }
+
+    // ---- PHCL ------------------------------------------------------------
+    // After the bodies, which is the same "consumes the corrected pose" rule
+    // one step further along: a cloth anchored to a ragdoll's bone has to read
+    // where the ragdoll put it, not where the animation did.
+    if (auto stage = renderer::profiles::sc2_heroes::CreateSc2ClothStage(
+            model_, cloth_, static_cast<i32>(model_.bones.size()))) {
+        out.push_back(std::move(stage));
+    }
+#endif
 }
 
 SkeletonData M3ModelAdapter::GetSkeleton() {
@@ -621,6 +740,24 @@ SkeletonData M3ModelAdapter::GetSkeleton() {
         std::fprintf(stderr, "[m3] '%s': IREF has %zu matrices for %zu bones; the rest bind as identity\n",
                      model_.name.c_str(), model_.initialReference.size(), bones.size());
     }
+
+#if WDX_HAS_PHYSICS
+    // One node per cloth particle, appended after the skeleton. Their inverse
+    // bind is a pure translation because the rotation half already lives in the
+    // output frame the solver writes — see `sc2_cloth.h`. Parentless, and not
+    // billboards: nothing samples or composes them, the cloth stage writes each
+    // one outright.
+    if (cloth_) {
+        for (const auto& piece : cloth_->pieces) {
+            for (const Vector3f& rest : piece.restPositions) {
+                sk.inverseBindMatrices.push_back(Matrix44f::translation({-rest.x, -rest.y, -rest.z}));
+                sk.nodeParents.push_back(-1);
+                sk.billboardFlags.push_back(0u);
+            }
+        }
+        sk.nodeCount = static_cast<i32>(sk.inverseBindMatrices.size());
+    }
+#endif
     return sk;
 }
 
@@ -638,6 +775,22 @@ std::vector<SkinWeightData> M3ModelAdapter::GetSkinWeights() {
 
         SkinWeightData sw;
         sw.geosetId = static_cast<i32>(g);
+#if WDX_HAS_PHYSICS
+        // A cloth-influenced region's palette is the cloth, not the skeleton:
+        // `GetMeshes` has already repointed its per-vertex indices at particle
+        // slots, so the window it reads from has to be the particle nodes in
+        // particle order.
+        if (cloth_ != nullptr && g < geosetClothPiece_.size() && geosetClothPiece_[g] >= 0) {
+            const auto& piece = cloth_->pieces[static_cast<std::size_t>(geosetClothPiece_[g])];
+            sw.paletteLocalVertexIndices = true;
+            const i32 base = boneCount + static_cast<i32>(piece.firstParticle);
+            sw.subsetNodeIndices.reserve(piece.particleCount);
+            for (std::size_t k = 0; k < piece.particleCount; ++k)
+                sw.subsetNodeIndices.push_back(base + static_cast<i32>(k));
+            out.push_back(std::move(sw));
+            continue;
+        }
+#endif
         // `influences` stays empty, and that is the entire point: the weights
         // and indices are already in the baked vertex blob, described at
         // offsets 12 and 16, and go to the GPU untouched. Filling this in
@@ -748,26 +901,73 @@ renderer::model::FrameState M3ModelAdapter::Evaluate(const PoseRequest& req) con
     // Bind pose when nothing is playing: every channel falls back to its
     // AnimRef default, which is exactly what an empty layer list produces.
     fs.boneWorldMatrices.resize(boneCount);
+#if WDX_HAS_PHYSICS
+    // The cloth particles' nodes, seeded so an actor whose stage has not run
+    // yet — or a build with physics compiled out of the *stage* but not the
+    // palette — draws the cloth region in bind pose rather than collapsed on
+    // the origin. `translate(+rest)` is the exact inverse of the particle's
+    // inverse bind.
+    if (cloth_) {
+        fs.boneWorldMatrices.reserve(boneCount + cloth_->particleCount);
+        for (const auto& piece : cloth_->pieces)
+            for (const Vector3f& rest : piece.restPositions)
+                fs.boneWorldMatrices.push_back(Matrix44f::translation(rest));
+    }
+#endif
     std::vector<::whiteout::u8> visible(boneCount, 1);
+
+    // A `replace` override is the host saying "this bone's model-space matrix
+    // is mine: do not sample it and do not compose the parent chain into it".
+    // That is how a pose stage's claims come back — the ragdoll's bit-0 flag in
+    // StarCraft II's own runtime, which is read by the animation system for
+    // exactly this purpose (`DOMINO_GLUE.md` §6.6). Without it the sampler
+    // re-poses a simulated bone every frame and the stage overwrites it again,
+    // which lands in the same place but means a claim buys nothing.
+    //
+    // A driven bone is still a parent: bones below it compose onto the driven
+    // matrix exactly as they would onto a sampled one, which is what carries a
+    // ragdoll's hands and attachment points with its arms. Same rule as
+    // `M2ModelAdapter::EvaluateBones`.
+    std::vector<const ::whiteout::flakes::NodeOverride*> over;
+    if (!req.overrides.empty()) {
+        over.assign(boneCount, nullptr);
+        for (const auto& o : req.overrides) {
+            if (o.node >= 0 && static_cast<std::size_t>(o.node) < boneCount)
+                over[static_cast<std::size_t>(o.node)] = &o;
+        }
+    }
 
     for (std::size_t i = 0; i < boneCount; ++i) {
         const auto& b = model_.bones[i];
-
-        const Vector3f t = SampleRef(b.position, layers);
-        const Quaternion r = SampleRef(b.rotation, layers);
-        const Vector3f s = SampleRef(b.scale, layers);
-
-        Matrix44f local = M3ComposeLocal(t, r, s);
+        const ::whiteout::flakes::NodeOverride* ov = over.empty() ? nullptr : over[i];
 
         const ::whiteout::u16 p = b.parentIndex;
         // Bones are stored parents-first, so one linear pass resolves the
         // hierarchy; a forward reference would read an unwritten matrix, so it
         // is treated as a root instead.
         const bool hasParent = p != 0xFFFFu && p < i;
-        if (hasParent)
-            fs.boneWorldMatrices[i] = local * fs.boneWorldMatrices[p];
-        else
-            fs.boneWorldMatrices[i] = local;
+
+        if (ov != nullptr && ov->replace) {
+            fs.boneWorldMatrices[i] = ov->m;
+        } else {
+            const Vector3f t = SampleRef(b.position, layers);
+            const Quaternion r = SampleRef(b.rotation, layers);
+            const Vector3f s = SampleRef(b.scale, layers);
+
+            Matrix44f local = M3ComposeLocal(t, r, s);
+            // A non-replace override composes *after* the local TRS and before
+            // the parent multiply, which is where a turret or look-at correction
+            // belongs (`pose_request.h`). Nothing in-tree writes one — the
+            // solvers are pose stages instead — but a silent no-op here is the
+            // same failure the claims had.
+            if (ov != nullptr)
+                local = local * ov->m;
+
+            if (hasParent)
+                fs.boneWorldMatrices[i] = local * fs.boneWorldMatrices[p];
+            else
+                fs.boneWorldMatrices[i] = local;
+        }
 
         // Visibility is hierarchical: a bone under an invisible parent is
         // invisible whatever its own track says, and the engine never even
@@ -784,7 +984,52 @@ renderer::model::FrameState M3ModelAdapter::Evaluate(const PoseRequest& req) con
 
     EvaluateGeosetVisibility(visible, fs);
     EvaluateLights(layers, visible, req.world, fs);
+    EvaluatePhysics(layers, fs);
     return fs;
+}
+
+void M3ModelAdapter::EvaluatePhysics(std::span<const M3Layer> layers,
+                                     renderer::model::FrameState& fs) const {
+    if (model_.rigidBodies.empty())
+        return;
+
+    fs.physicsBodyDynamic.resize(model_.rigidBodies.size());
+    for (std::size_t i = 0; i < model_.rigidBodies.size(); ++i) {
+        const auto& rb = model_.rigidBodies[i];
+        // `initValue` is the *base*, not a fallback for the unbound case:
+        // `M3Physics_UpdateBodyDrivenState` loads PHRB+40 into its scratch and
+        // only lets the sampler overwrite it. And the gate on that sampler is
+        // the AnimRef's flag bit 1 rather than its `animId` — every shipped
+        // `dynamicState` has a non-zero id, so reading the id as the gate sends
+        // nine bodies in ten looking for keys that are not theirs.
+        ::whiteout::u32 v = rb.dynamicState.initValue;
+        if ((rb.dynamicState.flags & 0x2u) != 0u)
+            v = SampleRefOverride(rb.dynamicState, layers);
+        fs.physicsBodyDynamic[i] = v != 0 ? 1 : 0;
+    }
+
+#if WDX_HAS_PHYSICS
+    // One frame behind for a simulated bone: this runs before the pose stages,
+    // so a claimed bone still holds the animated pose here. The physics stage
+    // overwrites these with the poses it actually produced — this fill is what
+    // covers the models that have no stage at all, whose bodies are kinematic
+    // proxies that never simulate.
+    renderer::profiles::sc2_heroes::Sc2PlaceCollisionShapes(
+        physicsShapeBones_, physicsShapeLocals_, fs.boneWorldMatrices, fs.collisionTransforms);
+#endif
+}
+
+std::vector<renderer::model::CollisionShapeData> M3ModelAdapter::GetCollisionShapes() {
+    physicsShapeBones_.clear();
+    physicsShapeLocals_.clear();
+#if WDX_HAS_PHYSICS
+    auto built = renderer::profiles::sc2_heroes::Sc2BuildCollisionShapes(model_);
+    physicsShapeBones_ = std::move(built.bones);
+    physicsShapeLocals_ = std::move(built.locals);
+    return std::move(built.shapes);
+#else
+    return {};
+#endif
 }
 
 void M3ModelAdapter::EvaluateGeosetVisibility(std::span<const ::whiteout::u8> visible,
@@ -793,6 +1038,7 @@ void M3ModelAdapter::EvaluateGeosetVisibility(std::span<const ::whiteout::u8> vi
         return;
     const auto& div = model_.divisions[divisionIndex_];
     fs.geosetAlphas.assign(emittedRegions_.size(), 1.0f);
+    fs.geosetHidden.assign(emittedRegions_.size(), 0);
     for (std::size_t g = 0; g < emittedRegions_.size(); ++g) {
         // A region is gated by the bone it hangs off. The chain walk is already
         // folded into `visible`, so this is a single lookup.
@@ -800,6 +1046,12 @@ void M3ModelAdapter::EvaluateGeosetVisibility(std::span<const ::whiteout::u8> vi
         const std::size_t root = region.rootBone;
         if (root < visible.size() && !visible[root])
             fs.geosetAlphas[g] = 0.0f;
+        // A cloth's simulated region is a coarse invisible proxy — the visible
+        // surface is the region bound to it. Taken out of the draw list rather
+        // than faded, because it is not part of the model at all (the same
+        // distinction `geosetHidden` exists for).
+        if (g < geosetClothProxy_.size() && geosetClothProxy_[g])
+            fs.geosetHidden[g] = 1;
     }
 }
 

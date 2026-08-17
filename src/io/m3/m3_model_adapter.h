@@ -74,6 +74,10 @@
 #include <span>
 #include <vector>
 
+namespace whiteout::flakes::renderer::profiles::sc2_heroes {
+struct Sc2ClothBuild;
+}
+
 namespace whiteout::flakes::io {
 
 /// @brief Geometry-only `IModelSource` over `whiteout::m3::Model`.
@@ -140,9 +144,22 @@ public:
     std::vector<renderer::effects::RibbonEmitterConfig> GetRibbonConfigs() override {
         return {};
     }
-    std::vector<renderer::model::CollisionShapeData> GetCollisionShapes() override {
-        return {};
-    }
+    /// @brief The `PHRB` rigid bodies as wireframes for the Collisions view.
+    ///
+    /// M3 has no chunk of plain collision primitives the way MDX has CLID, so
+    /// this slot was empty and the physics bodies are exactly what it is for:
+    /// they draw through the existing View > Collisions toggle with no new
+    /// rendering path and no new UI, coloured by whether the solver is allowed
+    /// to move them.
+    ///
+    /// It earns its place on a rig that misbehaves. A skinned mesh cannot
+    /// separate "the bodies are in the wrong place" from "the bodies are right
+    /// and the skinning is wrong"; drawing the bodies where the solver actually
+    /// put them settles that in one look.
+    ///
+    /// Populated only when physics is compiled in; `physicsShapeBones_` records
+    /// which bone each entry rides so `Evaluate` can place them.
+    std::vector<renderer::model::CollisionShapeData> GetCollisionShapes() override;
 
     /// @brief `SDEV` keys, grouped into one config per (sequence, payload).
     ///
@@ -242,6 +259,14 @@ private:
     void EvaluateLights(std::span<const M3Layer> layers, std::span<const ::whiteout::u8> visible,
                         const Matrix44f& world, renderer::model::FrameState& fs) const;
 
+    /// @brief Sample each `PHRB`'s `dynamicState` and place its shapes.
+    ///
+    /// Both halves are things only the source can do — one needs the layer
+    /// stack, the other needs to agree with @ref GetCollisionShapes on shape
+    /// order — and both feed the physics stage, which runs after this.
+    void EvaluatePhysics(std::span<const M3Layer> layers,
+                         renderer::model::FrameState& fs) const;
+
     ::whiteout::m3::Model model_;
     M3AnimTables tables_;
     // Which entry of `divisions` GetMeshes reads. Division 0 is the highest
@@ -250,6 +275,34 @@ private:
     std::size_t regionCount_ = 0;
     std::vector<std::size_t> emittedRegions_;
     std::vector<::whiteout::u32> geosetRegionFlags_;
+    /// Which bone each entry of @ref GetCollisionShapes rides and the frame it
+    /// sits in on that bone, parallel to the returned vector and filled by the
+    /// same walk.
+    std::vector<i32> physicsShapeBones_;
+    std::vector<Matrix44f> physicsShapeLocals_;
+
+    /// @brief The model's `PHCL` cloths, or null when it has none we can drive.
+    ///
+    /// Built once here rather than inside the stage because the *palette*
+    /// depends on it: a cloth's particles are appended to the skeleton as
+    /// nodes, so `GetSkeleton`, `GetSkinWeights` and `GetMeshes` all need the
+    /// layout before any actor exists. Shared with every stage this adapter
+    /// makes — the records are immutable, only the solver state is per actor.
+    std::shared_ptr<const renderer::profiles::sc2_heroes::Sc2ClothBuild> cloth_;
+
+    /// @brief Geoset -> the cloth piece whose particles skin it, `-1` for the
+    ///        overwhelming majority that no cloth touches. Parallel to
+    ///        @ref emittedRegions_.
+    std::vector<i32> geosetClothPiece_;
+    /// @brief Geoset -> "this is a cloth's invisible simulation proxy".
+    std::vector<::whiteout::u8> geosetClothProxy_;
+
+    /// @brief Fill @ref geosetClothPiece_ / @ref geosetClothProxy_ from
+    ///        @ref cloth_. No-op without physics.
+    void BuildClothGeosetMap();
+    /// @brief Repoint one geoset's baked bone indices and weights at the cloth
+    ///        particles that drive it (`PHAC`).
+    void RewriteClothSkin(std::size_t geoset, renderer::model::MeshData& mesh) const;
 };
 
 } // namespace whiteout::flakes::io

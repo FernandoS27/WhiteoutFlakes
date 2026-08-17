@@ -159,6 +159,7 @@ struct CollisionShape {
     f32 radius = 0;
     Vector3f pivot = {0, 0, 0};
     Matrix44f transform = Matrix44f::identity();
+    i32 bodyKind = 0; ///< CollisionBodyKind — which overlay draws this.
 };
 
 struct TexAnimData {

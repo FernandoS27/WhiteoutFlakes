@@ -1393,6 +1393,8 @@ void RenderPipeline::CleanupGFX() {
         impl_->gfx_->Destroy(impl_->linePS_);
         impl_->gfx_->Destroy(impl_->linePSOHdr_);
         impl_->gfx_->Destroy(impl_->linePSOSd_);
+        impl_->gfx_->Destroy(impl_->overlayLinePSOHdr_);
+        impl_->gfx_->Destroy(impl_->overlayLinePSOSd_);
         impl_->gfx_->Destroy(impl_->tonemapPSO_);
         impl_->gfx_->Destroy(impl_->tonemapVB_);
         impl_->gfx_->Destroy(impl_->tonemapPsCb_);
@@ -1556,6 +1558,13 @@ bool RenderPipeline::CreatePipelines() {
     desc.extraRtvCount = 2;
     impl_->linePSOHdr_ = impl_->gfx_->CreateGraphicsPipeline(desc);
 
+    // Same pipeline, depth off — the marker variant. Depth *write* goes with
+    // it: a marker that wrote depth would occlude whatever drew after it.
+    desc.depthStencil.depthTest = false;
+    desc.depthStencil.depthWrite = false;
+    impl_->overlayLinePSOHdr_ = impl_->gfx_->CreateGraphicsPipeline(desc);
+    desc.depthStencil = {};
+
     // SD line PSO is built lazily by CurrentLinePSO against the actual
     // swap-chain RTV format (Metal-backed swap chains report BGRA8 even
     // when the rest of the engine targets RGBA8). Building it now with
@@ -1563,30 +1572,36 @@ bool RenderPipeline::CreatePipelines() {
     // and invalidate the whole command buffer.
     impl_->linePSOSd_ = PipelineHandle::Invalid;
     impl_->linePsoSdFormat_ = Format::Unknown;
+    impl_->overlayLinePSOSd_ = PipelineHandle::Invalid;
+    impl_->overlayLinePsoSdFormat_ = Format::Unknown;
 
     return impl_->linePSOHdr_ != PipelineHandle::Invalid;
 }
 
-gfx::PipelineHandle RenderPipeline::CurrentLinePSO() const {
+/// The depth-tested and marker variants differ only in `depthTest`, so both
+/// getters share this: the MRT branch, the lazy SD rebuild and the swap-chain
+/// format tracking are the same problem twice.
+gfx::PipelineHandle RenderPipeline::LinePSO(bool depthTest, gfx::PipelineHandle hdrPso,
+                                            gfx::PipelineHandle& sdPso,
+                                            gfx::Format& sdFormat) const {
     // The MRT question, not the format question: linePSOHdr_ declares the two
     // extra attachments, the lazy SD one declares none. SceneHdrInSd puts an
     // LDR-shaded frame in the HDR target with a single attachment, and takes
     // the second branch — which then builds for the HDR format below.
     gfx::Format extra[2];
     if (SceneExtraRtvFormats(extra) != 0)
-        return impl_->linePSOHdr_;
+        return hdrPso;
 
     const gfx::Format wantFmt = SceneTargetFormat();
-    if (impl_->linePSOSd_ != gfx::PipelineHandle::Invalid &&
-        impl_->linePsoSdFormat_ == wantFmt)
-        return impl_->linePSOSd_;
+    if (sdPso != gfx::PipelineHandle::Invalid && sdFormat == wantFmt)
+        return sdPso;
 
     if (!impl_->gfx_ || impl_->lineVS_ == gfx::ShaderHandle::Invalid ||
         impl_->linePS_ == gfx::ShaderHandle::Invalid)
         return gfx::PipelineHandle::Invalid;
 
-    if (impl_->linePSOSd_ != gfx::PipelineHandle::Invalid)
-        impl_->gfx_->Destroy(impl_->linePSOSd_);
+    if (sdPso != gfx::PipelineHandle::Invalid)
+        impl_->gfx_->Destroy(sdPso);
 
     static const gfx::InputElement lineInput[] = {
         {"POSITION", 0, gfx::Format::R32G32B32_FLOAT, 0},
@@ -1598,14 +1613,24 @@ gfx::PipelineHandle RenderPipeline::CurrentLinePSO() const {
     desc.inputLayout = lineInput;
     desc.topology = gfx::PrimitiveTopology::LineList;
     desc.blend.enable = false;
-    desc.depthStencil = {};
+    desc.depthStencil.depthTest = depthTest;
+    desc.depthStencil.depthWrite = depthTest;
     desc.rasterizer.cull = gfx::CullMode::None;
     desc.rasterizer.frontCCW = true;
     desc.dsvFormat = impl_->depthStencilFormat_;
     desc.rtvFormat = wantFmt;
-    impl_->linePSOSd_ = impl_->gfx_->CreateGraphicsPipeline(desc);
-    impl_->linePsoSdFormat_ = wantFmt;
-    return impl_->linePSOSd_;
+    sdPso = impl_->gfx_->CreateGraphicsPipeline(desc);
+    sdFormat = wantFmt;
+    return sdPso;
+}
+
+gfx::PipelineHandle RenderPipeline::CurrentLinePSO() const {
+    return LinePSO(true, impl_->linePSOHdr_, impl_->linePSOSd_, impl_->linePsoSdFormat_);
+}
+
+gfx::PipelineHandle RenderPipeline::CurrentOverlayLinePSO() const {
+    return LinePSO(false, impl_->overlayLinePSOHdr_, impl_->overlayLinePSOSd_,
+                   impl_->overlayLinePsoSdFormat_);
 }
 
 bool RenderPipeline::CreateDefaultResources() {
@@ -1940,6 +1965,8 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     }
     if (rs_.Settings().ShowCollisions())
         rs_.Debug().RenderCollisions();
+    if (rs_.Settings().ShowAnyPhysicsBodies())
+        rs_.Debug().RenderPhysicsBodies();
     if (rs_.Settings().ShowLights())
         rs_.Debug().RenderLightMarkers();
 
