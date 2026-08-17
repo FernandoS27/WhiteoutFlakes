@@ -872,6 +872,15 @@ void M2ModelAdapter::EvaluateRibbons(const M2AnimTime& at, const Matrix44f& worl
         return;
     fs.ribbonStates.reserve(model_.ribbonEmitters.size());
 
+    // Same factor the particle path reads, for the same reason: the record's
+    // heights are model units (0.04..6.9 across the corpus, mean 0.6) while the
+    // edges this feeds live in renderer units. Unscaled they draw a sub-pixel
+    // sliver — WC3's own authored half-widths are ~20, which is what 0.22 model
+    // units becomes at the wow profile's 100.
+    const f32 unitScale = std::sqrt(world.data[0][0] * world.data[0][0] +
+                                    world.data[0][1] * world.data[0][1] +
+                                    world.data[0][2] * world.data[0][2]);
+
     for (usize i = 0; i < model_.ribbonEmitters.size(); ++i) {
         const auto& r = model_.ribbonEmitters[i];
         renderer::model::FrameState::RibbonFrameState st;
@@ -896,6 +905,7 @@ void M2ModelAdapter::EvaluateRibbons(const M2AnimTime& at, const Matrix44f& worl
         st.alpha = SampleM2Fixed16(r.alphaTrack, at, 1.0f);
         st.visibility = SampleM2U8(r.visibility, at, 1) != 0 ? 1.0f : 0.0f;
         st.slot = 0;
+        st.unitScale = (unitScale > 0.0f) ? unitScale : 1.0f;
         fs.ribbonStates.push_back(st);
     }
 }
@@ -1212,20 +1222,10 @@ void M2ModelAdapter::EvaluateParticles(const M2AnimTime& at, const Matrix44f& wo
         st.horizontalRange = SampleM2Float(p.horizontalRange, at, 0.0f);
         st.width = SampleM2Float(p.emissionAreaWidth, at, 0.0f);
         st.length = SampleM2Float(p.emissionAreaLength, at, 0.0f);
-        // The record's zSource track is a DEAD field once a model carries the
-        // EXPT/EXP2 extension: 30718 of the corpus's emitters write the sentinel
-        // 255 into it, and honouring that aims every one of them down a virtual
-        // source 255 units overhead — a straight -Z beam that also throws away
-        // the verticalRange/horizontalRange cone the artist authored. The
-        // extension holds the live value: zero on all but 74 corpus emitters,
-        // and a real model-space distance on those (candleboss asks for
-        // 0.027778, a point just under the wick). Measured both ways — no
-        // emitter anywhere has the extension turn the aim ON where the record
-        // had it off, so the chunk only ever refines.
-        //
-        // The pre-Legion binary the rest of this path was verified against
-        // (6.0.1.18179) predates both chunks, which is why its loader reads the
-        // record field unconditionally. That is the fallback here, not the rule.
+        // The record track is dead once EXPT/EXP2 is present — it holds the
+        // sentinel 255 on 30718 corpus emitters, which aims them down a virtual
+        // source overhead and discards the authored cone. The record field is
+        // the pre-Legion fallback. See M2_PARTICLE_PLAN.md.
         st.zSource = p.extension ? p.extension->zSource : SampleM2Float(p.zSource, at, 0.0f);
         st.lifeSpan = SampleM2Float(p.lifespan, at, 1.0f);
 

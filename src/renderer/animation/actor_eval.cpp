@@ -67,6 +67,7 @@ void ApplyRibbonFrameStates(Actor& mi, const FrameState& state, ribbon::RibbonSe
         st.color = rs.color;
         st.visibility = rs.visibility;
         st.slot = rs.slot;
+        st.unitScale = rs.unitScale;
         ribbons.SetState(mi.handle, rs.emitterId, st);
     }
 }

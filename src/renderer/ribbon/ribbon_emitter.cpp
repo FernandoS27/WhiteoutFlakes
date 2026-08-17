@@ -100,6 +100,10 @@ void RibbonEmitter::Update(f32 dt) {
 
     bool emittedHead = false;
     if (ShouldEmit(dt)) {
+        // The record's half-widths are model units; the edges are renderer ones.
+        const f32 above = state_.above * state_.unitScale;
+        const f32 below = state_.below * state_.unitScale;
+
         const f32 dx = currPos_.x - prevPos_.x;
         const f32 dy = currPos_.y - prevPos_.y;
         const f32 dz = currPos_.z - prevPos_.z;
@@ -132,18 +136,18 @@ void RibbonEmitter::Update(f32 dt) {
             const Vector3f prevDirS = {prevDir_.x * dist, prevDir_.y * dist, prevDir_.z * dist};
             const Vector3f currDirS = {currDir_.x * dist, currDir_.y * dist, currDir_.z * dist};
 
-            const Vector3f above0 = {prevPos_.x + prevVertical_.x * state_.above,
-                                     prevPos_.y + prevVertical_.y * state_.above,
-                                     prevPos_.z + prevVertical_.z * state_.above};
-            const Vector3f above1 = {currPos_.x + currVertical_.x * state_.above,
-                                     currPos_.y + currVertical_.y * state_.above,
-                                     currPos_.z + currVertical_.z * state_.above};
-            const Vector3f below0 = {prevPos_.x - prevVertical_.x * state_.below,
-                                     prevPos_.y - prevVertical_.y * state_.below,
-                                     prevPos_.z - prevVertical_.z * state_.below};
-            const Vector3f below1 = {currPos_.x - currVertical_.x * state_.below,
-                                     currPos_.y - currVertical_.y * state_.below,
-                                     currPos_.z - currVertical_.z * state_.below};
+            const Vector3f above0 = {prevPos_.x + prevVertical_.x * above,
+                                     prevPos_.y + prevVertical_.y * above,
+                                     prevPos_.z + prevVertical_.z * above};
+            const Vector3f above1 = {currPos_.x + currVertical_.x * above,
+                                     currPos_.y + currVertical_.y * above,
+                                     currPos_.z + currVertical_.z * above};
+            const Vector3f below0 = {prevPos_.x - prevVertical_.x * below,
+                                     prevPos_.y - prevVertical_.y * below,
+                                     prevPos_.z - prevVertical_.z * below};
+            const Vector3f below1 = {currPos_.x - currVertical_.x * below,
+                                     currPos_.y - currVertical_.y * below,
+                                     currPos_.z - currVertical_.z * below};
 
             for (i32 i = 0; i < numNew; ++i) {
                 f32 t = (newEdgeTime - accumEmission_) * ooDenom;
@@ -166,12 +170,12 @@ void RibbonEmitter::Update(f32 dt) {
         accumEmission_ = endTime - floorf(endTime);
 
         RibbonEdge head;
-        head.top = {currPos_.x + currVertical_.x * state_.above,
-                    currPos_.y + currVertical_.y * state_.above,
-                    currPos_.z + currVertical_.z * state_.above};
-        head.bot = {currPos_.x - currVertical_.x * state_.below,
-                    currPos_.y - currVertical_.y * state_.below,
-                    currPos_.z - currVertical_.z * state_.below};
+        head.top = {currPos_.x + currVertical_.x * above,
+                    currPos_.y + currVertical_.y * above,
+                    currPos_.z + currVertical_.z * above};
+        head.bot = {currPos_.x - currVertical_.x * below,
+                    currPos_.y - currVertical_.y * below,
+                    currPos_.z - currVertical_.z * below};
         head.age = 0;
         edges_.push_back(head);
         emittedHead = true;
@@ -187,8 +191,9 @@ void RibbonEmitter::Update(f32 dt) {
         auto& e = edges_[i];
         // g*dt^2 + 2*g*age*dt == g*((age+dt)^2 - age^2), so the closed form is
         // z0 + g*t^2 — not the textbook 0.5*g*t^2. Halving it drifts by 2x.
-        const f32 fall =
-            behavior_.gravitySign * (desc_.gravity * dt * dt + 2.0f * desc_.gravity * e.age * dt);
+        // Model units per second squared, like the half-widths above.
+        const f32 g = desc_.gravity * state_.unitScale;
+        const f32 fall = behavior_.gravitySign * (g * dt * dt + 2.0f * g * e.age * dt);
         e.top.z += fall;
         e.bot.z += fall;
         e.age += dt;

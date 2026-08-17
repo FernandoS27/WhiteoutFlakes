@@ -477,3 +477,69 @@ TEST_CASE("ribbon desc carries the mdx config through unchanged", "[ribbon]") {
     REQUIRE(d.gravity == Approx(-3.0f));
     REQUIRE(d.priorityPlane == 2);
 }
+
+// ---------------------------------------------------------------------------
+// Model units vs renderer units.
+//
+// The simulation runs on positions the actor's transform has already scaled,
+// but `above`/`below` and `gravity` come off the `.m2` record unscaled. Across
+// the corpus those heights run 0.04..6.9 model units (mean 0.6), so at the wow
+// profile's 100 an unscaled ribbon draws roughly 1% of its authored width — a
+// sub-pixel sliver against a model 200+ renderer units tall. The independent
+// check on the factor is WC3's own authoring: its half-widths are ~20 renderer
+// units, which is what 0.22 model units becomes.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a ribbon's half-widths are model units and scale to renderer units") {
+    const f32 kAbove = 0.25f, kBelow = 0.75f;
+
+    auto widthAfterSweep = [&](f32 unitScale) {
+        RibbonEmitter em(MakeDesc(), RibbonBehavior::Wow());
+        for (i32 i = 0; i < 4; ++i) {
+            RibbonState st = StateAt({static_cast<f32>(i) * 10.0f, 0, 0}, kAbove, kBelow);
+            st.unitScale = unitScale;
+            em.SetState(st);
+            em.Update(0.1f);
+        }
+        REQUIRE_FALSE(em.Edges().empty());
+        // The edge straddles the emitter's vertical axis, which for a pure
+        // translation is +Y — so measure the separation, not a chosen component.
+        const auto& e = em.Edges().front();
+        const f32 dx = e.top.x - e.bot.x, dy = e.top.y - e.bot.y, dz = e.top.z - e.bot.z;
+        return std::sqrt(dx * dx + dy * dy + dz * dz);
+    };
+
+    SECTION("unscaled, as MDX leaves it") {
+        CHECK(widthAfterSweep(1.0f) == Approx(kAbove + kBelow));
+    }
+    SECTION("at the wow profile's 100") {
+        CHECK(widthAfterSweep(100.0f) == Approx((kAbove + kBelow) * 100.0f));
+    }
+}
+
+TEST_CASE("ribbon gravity is model units per second squared too") {
+    // Same record value under two scales: the fall has to differ by the scale,
+    // not stay put. Gravity lives on the desc, which is built at load time with
+    // no actor to ask, so this is the reason the factor rides the frame state.
+    auto fallAfter = [](f32 unitScale) {
+        RibbonDesc d = MakeDesc();
+        d.gravity = -2.0f;
+        RibbonEmitter em(d, RibbonBehavior::Wow());
+        for (i32 i = 0; i < 3; ++i) {
+            RibbonState st = StateAt({static_cast<f32>(i) * 10.0f, 0, 0}, 0.25f, 0.25f);
+            st.unitScale = unitScale;
+            em.SetState(st);
+            em.Update(0.1f);
+        }
+        REQUIRE_FALSE(em.Edges().empty());
+        return em.Edges().front().top.z;
+    };
+
+    const f32 one = fallAfter(1.0f);
+    const f32 hundred = fallAfter(100.0f);
+    // The vertical axis of a pure translation is +Y, so top.z carries the fall
+    // and nothing else. Scaled gravity makes it linear in the factor; an
+    // unscaled one would leave both runs falling by the same absolute amount.
+    CHECK(one < 0.0f);
+    CHECK(hundred == Approx(one * 100.0f));
+}

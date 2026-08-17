@@ -49,6 +49,9 @@ struct RibbonState {
     Vector3f color = {1, 1, 1};
     f32 visibility = 1.0f;
     i32 slot = 0;
+    /// Model units → renderer units. `above`/`below` and the desc's `gravity`
+    /// are authored in model units while the edges live in renderer ones.
+    f32 unitScale = 1.0f;
 };
 
 /// @brief Static description of one emitter, format-neutral.

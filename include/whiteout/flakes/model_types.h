@@ -634,6 +634,11 @@ struct FrameState {
         Vector3f color;
         f32 visibility;
         i32 slot;
+        /// Renderer units per model unit, as on @ref ParticleFrameState. The
+        /// simulation runs on positions the transform has already scaled, so
+        /// `above`/`below`/`gravity` — authored in model units — need the same
+        /// factor. MDX leaves it 1.
+        f32 unitScale = 1.0f;
     };
     std::vector<RibbonFrameState> ribbonStates;
 
