@@ -52,6 +52,11 @@ struct ChildModelEvent {  // NOLINT: forward-declared in particle2_emitter.h
     i32 emitterId = 0;
     u32 childHandle = 0;
     Matrix44f transform = Matrix44f::identity();
+    // Transform events only. Zero when the emitter wants the child hidden this
+    // frame without ending its life — an M2 model particle blinked off by
+    // twinkle, which the client expresses by clearing the child model's own
+    // render flags. PE1 has no twinkle and leaves this at 1.
+    f32 visibility = 1.0f;
 };
 
 struct EmitterDrawList {

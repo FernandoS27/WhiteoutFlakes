@@ -22,3 +22,26 @@ creature/broom/be_broom01.m2
 creature/cow/cow.m2
 creature/crabmount/crabmount.m2
 creature/cryptfiend/cryptfiend.m2
+
+# The only bone-generator (`emitterType` 4) carrier in the corpus. Nothing above
+# it reaches WowBoneShape, so without this line the generator is untested.
+creature/dragonwhelpnightmare/dragonwhelpnightmare.m2
+
+# Model-particle carriers (phase 6). Every emitter in the corpus that spawns a
+# geometry model rather than quads lives on one of these — 73 emitters over
+# 51440, so nothing above this line exercises the path at all, and without them
+# a green M2 arm says nothing about it. The `.m2` each one spawns is named by
+# fileDataID in GPID, so these need the WoW install's CASC in reach, same as
+# their textures.
+creature/sandvortex/sandvortex.m2
+spells/bonearmor_head.m2
+spells/coneofcold_hand.m2
+spells/coneofcold_mouth.m2
+spells/coneoffire_hand.m2
+spells/deathwish_state_hand.m2
+spells/missile_wave_ice.m2
+spells/missile_wave_stone.m2
+spells/sandvortex_state_base.m2
+spells/sha_whirlwind_state_base.m2
+spells/therazane_base_01.m2
+spells/whirlwind_state_base.m2

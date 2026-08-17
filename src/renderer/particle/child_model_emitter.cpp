@@ -21,9 +21,9 @@ void ChildModelEmitter::ApplyPE1State(const model::FrameState::PE1FrameState& st
                                                        desc_->coordSpace, st.transform);
 }
 
-Matrix44f ChildModelEmitter::TransformFor(const Particle2& p) const {
+Matrix44f ChildModelEmitter::TransformFor(u32 poolIndex) const {
     const f32 s = desc_->childScale;
-    return Matrix44f::scaling({s, s, s}) * Matrix44f::translation(p.position);
+    return Matrix44f::scaling({s, s, s}) * Matrix44f::translation(pool_[poolIndex].position);
 }
 
 void ChildModelEmitter::OnPoolResized(usize capacity) {
@@ -44,7 +44,7 @@ void ChildModelEmitter::OnParticleBorn(u32 poolIndex) {
     ev.owner = owner_;
     ev.emitterId = emitterId_;
     ev.childHandle = handle;
-    ev.transform = TransformFor(pool_[poolIndex]);
+    ev.transform = TransformFor(poolIndex);
     pending_.push_back(ev);
 }
 
@@ -84,7 +84,8 @@ void ChildModelEmitter::CollectOutputEvents(std::vector<ChildModelEvent>& out) {
         ev.owner = owner_;
         ev.emitterId = emitterId_;
         ev.childHandle = handle;
-        ev.transform = TransformFor(pool_[idx]);
+        ev.transform = TransformFor(idx);
+        ev.visibility = VisibilityFor(idx);
         out.push_back(ev);
     }
 }

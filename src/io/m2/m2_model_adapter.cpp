@@ -908,6 +908,37 @@ bool HasParticleFlag(ParticleFlag flags, u32 bit) {
     return (static_cast<u32>(flags) & bit) != 0;
 }
 
+// An M2 string array counts its terminator, so every name the parser hands back
+// ends in a NUL that std::string keeps as a character. Left in, it reaches the
+// content provider as part of the path and nothing ever resolves.
+std::string TrimTrailingNuls(std::string s) {
+    while (!s.empty() && s.back() == '\0')
+        s.pop_back();
+    return s;
+}
+
+// The `.m2` emitter @p index spawns instead of quads, empty when it spawns
+// quads. A pre-Legion record names it inline; a chunked one leaves the name
+// empty and puts a fileDataID in GPID, one entry per emitter — the same
+// substitution TXID makes for texture names, spelled the same way
+// (`ContentRef::Describe`). No record in the corpus uses the inline form.
+//
+// One function because two callers have to agree exactly: the config decides
+// which emitter class gets built, and the frame state decides which id space
+// its animated values are sent to.
+std::string GeometryModelKey(const ::whiteout::m2::Model& model, usize index) {
+    if (index >= model.particleEmitters.size())
+        return {};
+    std::string name = TrimTrailingNuls(model.particleEmitters[index].particleModelFilename);
+    if (!name.empty())
+        return name;
+    if (index < model.geometryParticleModelIds.size() &&
+        model.geometryParticleModelIds[index] != 0) {
+        return "#" + std::to_string(model.geometryParticleModelIds[index]);
+    }
+    return {};
+}
+
 // A particle track's 16-bit fields are the client's `fixed16`: raw * 1/32767,
 // so a full-scale key is 0x7FFF and not 0xFFFF. WhiteoutLib types them
 // `unorm16`, whose float conversion divides by 65535 — half of what the client
@@ -941,7 +972,8 @@ std::vector<renderer::M2ParticleEmitterConfig> M2ModelAdapter::GetM2ParticleConf
     std::vector<renderer::M2ParticleEmitterConfig> out;
     out.reserve(model_.particleEmitters.size());
 
-    for (const auto& p : model_.particleEmitters) {
+    for (usize ei = 0; ei < model_.particleEmitters.size(); ++ei) {
+        const auto& p = model_.particleEmitters[ei];
         renderer::M2ParticleEmitterConfig cfg;
         const u32 f = static_cast<u32>(p.flags);
 
@@ -1033,6 +1065,10 @@ std::vector<renderer::M2ParticleEmitterConfig> M2ModelAdapter::GetM2ParticleConf
         cfg.splinePoints = p.splinePoints;
         cfg.priorityPlane = p.textureTilerotation;
 
+        cfg.geometryModelPath = GeometryModelKey(model_, ei);
+        cfg.tumbleMin = p.tumble.minimum;
+        cfg.tumbleMax = p.tumble.maximum;
+
         CopyParticleTrack(p.colorTrack, cfg.colorTimes, cfg.colorValues, [](const Vector3f& v) {
             // Record colours are 0..255 display-referred.
             return Vector3f{v.x / 255.0f, v.y / 255.0f, v.z / 255.0f};
@@ -1055,6 +1091,75 @@ std::vector<renderer::M2ParticleEmitterConfig> M2ModelAdapter::GetM2ParticleConf
     return out;
 }
 
+// The bone-emitter table, per model rather than per emitter — exactly as
+// `CBoneGeneratorBase::CreateBoneEmitterTable` @0x10169d1a0 builds it.
+//
+// Membership is "every bone the rendered geometry actually uses, minus the ones
+// flagged 0x800". The client walks the skin's submeshes and maps their bone
+// ranges through the bone-combo table rather than taking every bone in the
+// model, which is what keeps attachment and helper bones out of the spray.
+void M2ModelAdapter::BuildBoneSpawnTable(renderer::model::FrameState& fs) const {
+    fs.boneSpawnTable.clear();
+    const bool anyBoneGenerator =
+        std::any_of(model_.particleEmitters.begin(), model_.particleEmitters.end(),
+                    [](const auto& p) {
+                        return p.emitterType == ::whiteout::m2::ParticleEmitterType::Bone;
+                    });
+    if (!anyBoneGenerator || model_.skinProfiles.empty())
+        return;
+
+    // Bit 0x800 of the bone flags. Skipped by the client, and the reason a
+    // billboarded bone never sprays.
+    constexpr u32 kBoneExcluded = 0x800u;
+
+    std::vector<u8> used(model_.bones.size(), 0);
+    const auto& skin = model_.skinProfiles.front();
+    for (const auto& sec : skin.submeshes) {
+        for (u32 k = 0; k < sec.boneCount; ++k) {
+            const usize combo = static_cast<usize>(sec.boneComboIndex) + k;
+            if (combo >= model_.boneCombos.size())
+                continue;
+            const u16 bone = model_.boneCombos[combo];
+            if (bone < used.size() && (model_.bones[bone].flags & kBoneExcluded) == 0)
+                used[bone] = 1;
+        }
+    }
+
+    for (usize b = 0; b < used.size(); ++b) {
+        // The pose is what carries the positions, so a bone the evaluator did
+        // not produce a matrix for has nothing to spawn from.
+        if (!used[b] || b >= fs.boneWorldMatrices.size())
+            continue;
+        renderer::model::FrameState::BoneSpawn e{};
+        const Matrix44f& m = fs.boneWorldMatrices[b];
+        e.pos = {m.data[3][0], m.data[3][1], m.data[3][2]};
+        e.parentPos = e.pos;
+
+        const i16 parent = model_.bones[b].parentBoneId;
+        if (parent >= 0 && static_cast<usize>(parent) < fs.boneWorldMatrices.size()) {
+            const Matrix44f& pm = fs.boneWorldMatrices[static_cast<usize>(parent)];
+            e.parentPos = {pm.data[3][0], pm.data[3][1], pm.data[3][2]};
+            e.hasParent = true;
+            // The bone's own direction, and any perpendicular to it: together
+            // the plane ApplyParams scatters the spawn in. Both fall back the
+            // way the client's SafeNormalize does when the bone is degenerate.
+            Vector3f dir{e.pos.x - e.parentPos.x, e.pos.y - e.parentPos.y,
+                         e.pos.z - e.parentPos.z};
+            const f32 len = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+            e.axisA = (len > 1e-6f) ? Vector3f{dir.x / len, dir.y / len, dir.z / len}
+                                    : Vector3f{1.0f, 0.0f, 0.0f};
+            const Vector3f up = (std::abs(e.axisA.z) > 0.99f) ? Vector3f{1.0f, 0.0f, 0.0f}
+                                                              : Vector3f{0.0f, 0.0f, 1.0f};
+            Vector3f perp{e.axisA.y * up.z - e.axisA.z * up.y, e.axisA.z * up.x - e.axisA.x * up.z,
+                          e.axisA.x * up.y - e.axisA.y * up.x};
+            const f32 pl = std::sqrt(perp.x * perp.x + perp.y * perp.y + perp.z * perp.z);
+            e.axisB = (pl > 1e-6f) ? Vector3f{perp.x / pl, perp.y / pl, perp.z / pl}
+                                   : Vector3f{0.0f, 0.0f, 1.0f};
+        }
+        fs.boneSpawnTable.push_back(e);
+    }
+}
+
 void M2ModelAdapter::EvaluateParticles(const M2AnimTime& at, const Matrix44f& world,
                                        renderer::model::FrameState& fs) const {
     if (model_.particleEmitters.empty())
@@ -1069,10 +1174,14 @@ void M2ModelAdapter::EvaluateParticles(const M2AnimTime& at, const Matrix44f& wo
                                     world.data[0][1] * world.data[0][1] +
                                     world.data[0][2] * world.data[0][2]);
 
+    BuildBoneSpawnTable(fs);
+
     for (usize i = 0; i < model_.particleEmitters.size(); ++i) {
         const auto& p = model_.particleEmitters[i];
         renderer::model::FrameState::ParticleFrameState st{};
         st.emitterId = static_cast<i32>(i);
+        st.boneGenerator = p.emitterType == ::whiteout::m2::ParticleEmitterType::Bone;
+        st.modelParticle = !GeometryModelKey(model_, i).empty();
 
         Matrix44f bone = Matrix44f::identity();
         if (p.boneId < model_.bones.size() && p.boneId < fs.boneWorldMatrices.size())
@@ -1103,7 +1212,21 @@ void M2ModelAdapter::EvaluateParticles(const M2AnimTime& at, const Matrix44f& wo
         st.horizontalRange = SampleM2Float(p.horizontalRange, at, 0.0f);
         st.width = SampleM2Float(p.emissionAreaWidth, at, 0.0f);
         st.length = SampleM2Float(p.emissionAreaLength, at, 0.0f);
-        st.zSource = SampleM2Float(p.zSource, at, 0.0f);
+        // The record's zSource track is a DEAD field once a model carries the
+        // EXPT/EXP2 extension: 30718 of the corpus's emitters write the sentinel
+        // 255 into it, and honouring that aims every one of them down a virtual
+        // source 255 units overhead — a straight -Z beam that also throws away
+        // the verticalRange/horizontalRange cone the artist authored. The
+        // extension holds the live value: zero on all but 74 corpus emitters,
+        // and a real model-space distance on those (candleboss asks for
+        // 0.027778, a point just under the wick). Measured both ways — no
+        // emitter anywhere has the extension turn the aim ON where the record
+        // had it off, so the chunk only ever refines.
+        //
+        // The pre-Legion binary the rest of this path was verified against
+        // (6.0.1.18179) predates both chunks, which is why its loader reads the
+        // record field unconditionally. That is the fallback here, not the rule.
+        st.zSource = p.extension ? p.extension->zSource : SampleM2Float(p.zSource, at, 0.0f);
         st.lifeSpan = SampleM2Float(p.lifespan, at, 1.0f);
 
         // Gravity is a direction in M2, not just a magnitude — but only when

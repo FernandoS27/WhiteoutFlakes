@@ -331,6 +331,9 @@ private:
                         renderer::model::FrameState& fs) const;
     void EvaluateRibbons(const M2AnimTime& at, const Matrix44f& world,
                          renderer::model::FrameState& fs) const;
+    /// @brief Fill @ref FrameState::boneSpawnTable when any emitter spawns off
+    ///        the skeleton. One table per model, shared by every bone emitter.
+    void BuildBoneSpawnTable(renderer::model::FrameState& fs) const;
     void EvaluateParticles(const M2AnimTime& at, const Matrix44f& world,
                            renderer::model::FrameState& fs) const;
     /// Re-derive `geosetHidden_` from the id set and the emission order. Both

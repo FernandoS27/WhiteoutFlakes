@@ -16,8 +16,10 @@
 #include "particle2.h"
 #include "rnd_seed.h"
 #include "types.h"
+#include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
 
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -52,6 +54,12 @@ struct SpawnParams {
     // spawn point instead of being drawn from the angle ranges — which also
     // means two fewer random draws for that particle.
     f32 zSource = 0.0f;
+
+    // The model's bone-emitter table, for the bone generator only. A view, not
+    // storage: the emitter owns the copy and keeps it alive across the spawn.
+    // Empty for every other generator, which is also what makes an unresolved
+    // table a silent no-spawn rather than a crash.
+    std::span<const ::whiteout::flakes::renderer::model::FrameState::BoneSpawn> boneTable;
 };
 
 // CGeneratorAniProp::MIN_ZSOURCE.
@@ -115,6 +123,16 @@ public:
 
 private:
     bool hemisphereUp_ = false;
+};
+
+// CBoneGeneratorBone @0x10169e140 + CBoneGeneratorBase @0x10169d7f0. Spawns
+// along a randomly chosen bone of the model rather than in an area of its own,
+// scattered radially in that bone's plane. The table it picks from is per
+// MODEL, so it arrives through SpawnParams every frame instead of living on
+// the desc.
+class WowBoneShape final : public IParticleShape {
+public:
+    void Sample(SpawnSample& out, const SpawnParams& p, RndSeed& rnd) const override;
 };
 
 // CSplineGenerator @0x1016c7990. Position on a polyline through the record's

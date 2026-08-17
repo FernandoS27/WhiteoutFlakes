@@ -232,11 +232,7 @@ std::shared_ptr<const EmitterDesc> DescFromM2Config(const M2ParticleEmitterConfi
         desc->shape = std::make_shared<WowSplineShape>(cfg.splinePoints);
         break;
     case M2ParticleEmitterConfig::Generator::Bone:
-        // Bone emission needs the frame's bone matrices at spawn time, which is
-        // more than SpawnParams carries. Falls back to the plane generator so
-        // the emitter still produces particles rather than vanishing; the real
-        // generator is its own phase.
-        desc->shape = std::make_shared<WowPlaneShape>();
+        desc->shape = std::make_shared<WowBoneShape>();
         break;
     case M2ParticleEmitterConfig::Generator::Plane:
     default:
@@ -306,6 +302,17 @@ std::shared_ptr<const EmitterDesc> DescFromM2Config(const M2ParticleEmitterConfi
     FillCurve(c.size, cfg.scaleTimes, cfg.scaleValues);
     FillCells(c.headCells, cfg.headCellTimes, cfg.headCellValues);
     FillCells(c.tailCells, cfg.tailCellTimes, cfg.tailCellValues);
+
+    // Model particles: same sim, same spawn shape, different output. The scale
+    // stays 1 — an M2 model particle takes its size from the emitter's scale
+    // track every frame, not from a fixed multiplier the way PE1 does.
+    if (!cfg.geometryModelPath.empty()) {
+        desc->output = ParticleOutput::ChildModel;
+        desc->childModelPath = cfg.geometryModelPath;
+    }
+    desc->tumbleBase = cfg.tumbleMin;
+    desc->tumbleVary = {cfg.tumbleMax.x - cfg.tumbleMin.x, cfg.tumbleMax.y - cfg.tumbleMin.y,
+                        cfg.tumbleMax.z - cfg.tumbleMin.z};
 
     desc->coordSpace = kDefaultCoordSpace;
     return desc;

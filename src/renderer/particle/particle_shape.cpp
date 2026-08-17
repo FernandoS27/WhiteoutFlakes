@@ -97,6 +97,57 @@ void WowSphereShape::Sample(SpawnSample& out, const SpawnParams& p, RndSeed& rnd
     out.localVel = {dir.x * speed, dir.y * speed, dir.z * speed};
 }
 
+void WowBoneShape::Sample(SpawnSample& out, const SpawnParams& p, RndSeed& rnd) const {
+    // No table means the model has no eligible bones (or none were supplied).
+    // The client's own answer is to zero the particle and refuse the spawn;
+    // ours is a particle at the emitter, which the caller cannot reject.
+    if (p.boneTable.empty()) {
+        out.localPos = {0.0f, 0.0f, 0.0f};
+        out.localVel = {0.0f, 0.0f, 0.0f};
+        return;
+    }
+
+    // The speed draw comes FIRST here, unlike every other generator: the client
+    // splits this spawn across two functions and `CalcVelocity` runs at the end
+    // of `BaseCreateParticle`, before the derived `CreateParticle` has picked a
+    // bone at all.
+    const f32 speed = DrawSpeed(rnd, p);
+
+    const auto& e = p.boneTable[CRandom::dice_(static_cast<u32>(p.boneTable.size()), rnd)];
+    Vector3f pos = e.pos;
+    if (e.hasParent) {
+        // Anywhere along the bone, not at its pivot — which is what makes a
+        // bone emitter trace a limb rather than dot its joints.
+        const f32 t = CRandom::real_(rnd);
+        pos = {e.pos.x + (e.parentPos.x - e.pos.x) * t, e.pos.y + (e.parentPos.y - e.pos.y) * t,
+               e.pos.z + (e.parentPos.z - e.pos.z) * t};
+    }
+
+    // ApplyParams @0x10169dcf0: a radial offset in the bone's own plane, radius
+    // drawn before the angle.
+    const f32 radius = p.width + CRandom::real_(rnd) * (p.height - p.width);
+    const f32 angle = CRandom::real_(rnd) * 6.2831855f;
+    const f32 c = std::cos(angle);
+    const f32 s = std::sin(angle);
+    pos = {pos.x + (e.axisA.x * c + e.axisB.x * s) * radius,
+           pos.y + (e.axisA.y * c + e.axisB.y * s) * radius,
+           pos.z + (e.axisA.z * c + e.axisB.z * s) * radius};
+    out.localPos = pos;
+
+    // Straight up when zSource is off — the bone generator has no angle ranges
+    // to fall back on, which is the one place it diverges from the others.
+    //
+    // The client aims the zSource branch at the particle's position *before*
+    // this generator writes it, so it reads whatever the recycled pool slot
+    // held. That is a use of stale memory rather than a rule, and it is not
+    // reproducible against a different pool layout; the fresh position is used
+    // here instead.
+    Vector3f dir{0.0f, 0.0f, 1.0f};
+    if (p.zSource > kMinZSource)
+        dir = AimFromZSource(pos, p.zSource);
+    out.localVel = {dir.x * speed, dir.y * speed, dir.z * speed};
+}
+
 void WowSplineShape::Evaluate(f32 t, Vector3f& pos, Vector3f& tangent) const {
     if (points_.empty()) {
         pos = {0.0f, 0.0f, 0.0f};

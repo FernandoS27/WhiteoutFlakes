@@ -351,6 +351,76 @@ TEST_CASE("twinkle scale is stored as a base and a span", "[m2][particle]") {
     CHECK(inert->twinkleVary == Approx(0.0f));
 }
 
+TEST_CASE("the EXPT/EXP2 extension's zSource beats the record's dead field",
+          "[m2][particle]") {
+    // The record's zSource track is legacy in any file carrying the extension:
+    // it holds the sentinel 255 on ~30.7k corpus emitters, which would aim each
+    // of them straight down a virtual source 255 units overhead and discard the
+    // authored verticalRange cone. The extension carries the live value.
+    //
+    // Corpus-backed rather than synthetic because the whole claim is about what
+    // shipped data puts in the two fields; a hand-built record could assert the
+    // precedence but not that it matters.
+    const auto models = FindModels();
+    if (models.empty())
+        SKIP("no .m2 files under " + CorpusRoot().string());
+
+    io::FileContentProvider provider;
+    provider.SetGame(whiteout::flakes::ProductId::Wow);
+
+    struct Expect {
+        const char* rel;
+        bool wantAimed;   // does the extension ask for a real aim?
+        f32 wantZSource;  // what the frame state should carry
+    };
+    // boundfireelemental: every one of its 24 emitters writes 255 in the record
+    // and 0 in the extension, and its flames must rise, not fall.
+    // candleboss: one of the 74 emitters that genuinely wants an aim, and it
+    // asks for a sane 1/36 of a model unit rather than 255.
+    const Expect cases[] = {
+        {"creature/boundfireelemental/boundfireelemental.m2", false, 0.0f},
+        {"creature/candleboss/candleboss.m2", true, 0.027778f},
+    };
+
+    std::size_t checked = 0;
+    for (const Expect& e : cases) {
+        const fs::path path = CorpusRoot() / e.rel;
+        if (!fs::exists(path))
+            continue;
+        provider.SetBasePath(path.parent_path());
+        auto bytes = provider.ReadFile(path.string());
+        REQUIRE(bytes.has_value());
+        auto adapter = io::M2ModelAdapter::Load(
+            ContentRef::FromPath(path.string()),
+            std::span<const whiteout::u8>(bytes->data(), bytes->size()), &provider);
+        REQUIRE(adapter);
+
+        whiteout::flakes::ClipRef clip{};
+        clip.sequence = 0;
+        const whiteout::flakes::ClipRef clips[] = {clip};
+        whiteout::flakes::PoseRequest req{};
+        req.clips = clips;
+        const auto state = adapter->Evaluate(req);
+        REQUIRE_FALSE(state.particleStates.empty());
+
+        INFO("model " << e.rel);
+        bool sawAimed = false;
+        for (const auto& ps : state.particleStates) {
+            CHECK(Finite(ps.zSource));
+            // Never the sentinel: that value reaching a shape is the bug.
+            CHECK(ps.zSource < 200.0f);
+            if (ps.zSource > 0.001f) {
+                sawAimed = true;
+                CHECK(ps.zSource == Approx(e.wantZSource).margin(1e-4f));
+            }
+            ++checked;
+        }
+        CHECK(sawAimed == e.wantAimed);
+    }
+    if (checked == 0)
+        SKIP("neither reference model is present in this corpus");
+}
+
 TEST_CASE("every corpus .m2 particle emitter yields a sane desc", "[m2][particle]") {
     const auto models = FindModels();
     if (models.empty())

@@ -19,6 +19,7 @@
 #include "model/model_instance.h"
 #include "model/model_template.h"
 #include "particle/child_model_emitter.h"
+#include "particle/model_particle_emitter.h"
 #include "particle/particle2_emitter.h"
 #include "particle/rnd_seed.h"
 #include "render_service.h"
@@ -530,6 +531,17 @@ void FrameTicker::DriveChildModels() {
             if (path.empty())
                 break;
 
+            // An M2 model particle names an `.m2` (by fileDataID, in practice),
+            // which the child-TEMPLATE cache cannot build — it is keyed on a
+            // path and always produces an MdxModelAdapter. The loader owns that
+            // route and its own per-model cache.
+            if (dynamic_cast<particle::ModelParticleEmitter*>(em)) {
+                if (auto* child = rs_.Loader().SpawnModelParticle(*owner, path, ev.transform,
+                                                                  ev.childHandle))
+                    child->spawnEmitterId = ev.emitterId;
+                break;
+            }
+
             // PreloadChildTemplates already Acquired a slot per unique child
             // path at stage time and holds it for the actor's lifetime; this
             // just resolves it. A birth that lands before the host pump has
@@ -546,8 +558,10 @@ void FrameTicker::DriveChildModels() {
             break;
         }
         case particle::ChildModelEvent::Kind::Transform:
-            if (auto* c = rs_.Scene().Actors().Find(ev.childHandle))
+            if (auto* c = rs_.Scene().Actors().Find(ev.childHandle)) {
                 c->worldTransform = ev.transform;
+                c->parentVisibility = ev.visibility;
+            }
             break;
         case particle::ChildModelEvent::Kind::Death:
             toRemove.push_back(ev.childHandle);

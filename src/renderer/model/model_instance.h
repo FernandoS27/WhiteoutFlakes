@@ -73,7 +73,7 @@ struct Actor {
     // basis change covers all three.
     //
     // Blizzard (== renderer-native) for Warcraft III and World of Warcraft;
-    // StarCraft II and Heroes author +Y forward instead of +X.
+    // StarCraft II and Heroes author −Y forward instead of +X.
     CoordSpace sourceSpace = kDefaultCoordSpace;
 
     // The actor's model-space bounding box, in the same units `worldScale`

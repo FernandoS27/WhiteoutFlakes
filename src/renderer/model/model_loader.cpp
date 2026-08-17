@@ -20,6 +20,7 @@
 #include "model/model_template.h"
 #include "model/model_template_manager.h"
 #include "particle/child_model_emitter.h"
+#include "particle/model_particle_emitter.h"
 #include "particle/particle_adapters.h"
 #include "particle/particle2_emitter.h"
 #include "render_service.h"
@@ -195,8 +196,8 @@ Actor* ModelLoader::SpawnChild(Actor& parent, ActorRole role, std::shared_ptr<Mo
 }
 
 Actor* ModelLoader::SpawnChildFromSource(Actor& parent, ActorRole role,
-                                         std::shared_ptr<IModelSource> source) {
-    Actor* child = SpawnUnitFromSource(std::move(source), parent.worldTransform);
+                                         std::shared_ptr<IModelSource> source, u32 forceHandle) {
+    Actor* child = SpawnUnitFromSource(std::move(source), parent.worldTransform, forceHandle);
     if (!child)
         return nullptr;
 
@@ -210,6 +211,12 @@ Actor* ModelLoader::SpawnChildFromSource(Actor& parent, ActorRole role,
     child->teamColor = parent.teamColor;
     child->animation.SetBirthTimeMs(AncestorActorTimeMs(parent, rs_.Scene().Actors()));
     parent.children.push_back(child->handle);
+    // Paired with DestroyActor's decrement, which keys off the role and not off
+    // how the child was spawned. Missing it once model particles took this route
+    // would have driven the instance counter negative rather than merely made
+    // the cap generous.
+    if (role == ActorRole::PE1)
+        rs_.Scene().IncrementPE1Instances();
     return child;
 }
 
@@ -278,6 +285,30 @@ void ModelLoader::RequestClearAll() {
     rs_.CornEffects().Clear();
 }
 
+void ModelLoader::AddM2Emitter(u32 handle, i32 index,
+                               std::shared_ptr<const particle::EmitterDesc> desc,
+                               const core::ParticleBehavior& behavior) {
+    // One M2 emitter is either quads or models, never both, so the index cannot
+    // collide across the two id spaces and the seed stays a function of
+    // (actor, emitter index) either way.
+    const bool models = desc && desc->output == particle::ParticleOutput::ChildModel;
+    std::unique_ptr<particle::Emitter2> em;
+    if (models) {
+        PreloadModelParticleGeometry(handle, desc->childModelPath);
+        em = std::make_unique<particle::ModelParticleEmitter>(
+            handle, index, [this] { return rs_.Scene().AllocActorId(); });
+    } else {
+        em = std::make_unique<particle::Emitter2>();
+    }
+    em->SetDesc(std::move(desc));
+    em->SetBehavior(behavior);
+    em->SetSeed(particle::MixSeed(handle, (u32)index));
+    rs_.Particles().AddEmitter(handle,
+                               models ? particle::ParticleOutput::ChildModel
+                                      : particle::ParticleOutput::Billboard,
+                               index, std::move(em));
+}
+
 void ModelLoader::SetM2ParticleConfigs(u32 handle,
                                        const std::vector<M2ParticleEmitterConfig>& configs) {
     auto* mi = rs_.Scene().Actors().Find(handle);
@@ -285,13 +316,8 @@ void ModelLoader::SetM2ParticleConfigs(u32 handle,
         return;
     const particle::ParticleBehavior behavior = rs_.Pipeline().LoadTimeProfile().Particles();
     const bool linear = rs_.Pipeline().LoadTimeProfile().LinearShading();
-    for (i32 i = 0; i < (i32)configs.size(); i++) {
-        auto em = std::make_unique<particle::Emitter2>();
-        em->SetDesc(particle::DescFromM2Config(configs[i], linear));
-        em->SetBehavior(behavior);
-        em->SetSeed(particle::MixSeed(handle, (u32)i));
-        rs_.Particles().AddEmitter(handle, particle::ParticleOutput::Billboard, i, std::move(em));
-    }
+    for (i32 i = 0; i < (i32)configs.size(); i++)
+        AddM2Emitter(handle, i, particle::DescFromM2Config(configs[i], linear), behavior);
     if (mi->render.pe2State.size() < configs.size())
         mi->render.pe2State.resize(configs.size());
 }
@@ -451,14 +477,8 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
         for (const auto& mcfg : tmpl->m2ParticleConfigs)
             tmpl->m2ParticleDescs.push_back(particle::DescFromM2Config(mcfg, linear));
     }
-    for (i32 i = 0; i < (i32)tmpl->m2ParticleConfigs.size(); i++) {
-        auto em = std::make_unique<particle::Emitter2>();
-        em->SetDesc(tmpl->m2ParticleDescs[i]);
-        em->SetBehavior(particleBehavior);
-        em->SetSeed(particle::MixSeed(mi->handle, (u32)i));
-        rs_.Particles().AddEmitter(mi->handle, particle::ParticleOutput::Billboard, i,
-                                   std::move(em));
-    }
+    for (i32 i = 0; i < (i32)tmpl->m2ParticleConfigs.size(); i++)
+        AddM2Emitter(mi->handle, i, tmpl->m2ParticleDescs[i], particleBehavior);
     mi->render.pe2State.resize(
         (std::max)(tmpl->pe2Configs.size(), tmpl->m2ParticleConfigs.size()));
 
@@ -574,8 +594,8 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
                           const std::vector<SkinWeightData>& skinWeights,
                           const std::vector<ParticleEmitterConfig>& particleConfigs,
                           const std::vector<RibbonEmitterConfig>& ribbonConfigs,
-                          const std::vector<CollisionShapeData>& collisions) {
-    u32 handle = rs_.Scene().AllocActorId();
+                          const std::vector<CollisionShapeData>& collisions, u32 forceHandle) {
+    u32 handle = (forceHandle != 0) ? forceHandle : rs_.Scene().AllocActorId();
     auto mi = std::make_unique<Actor>();
     mi->handle = handle;
     // Same stamp StageActor applies, because this path never reaches it: a
@@ -1037,15 +1057,104 @@ void ModelLoader::SpawnWowSkinnedModels(
     }
 }
 
+std::shared_ptr<io::M2ModelAdapter> ModelLoader::ResolveParticleModel(const std::string& key) {
+#if WDX_ENABLE_M2
+    if (key.empty())
+        return nullptr;
+    auto cached = particleModels_.find(key);
+    if (cached != particleModels_.end())
+        return cached->second;
+
+    std::shared_ptr<io::M2ModelAdapter> built;
+    if (auto* provider = rs_.Scene().ActiveContentProvider()) {
+        // `#<id>` is ContentRef::Describe's form, and GPID is the only thing
+        // that names a geometry model in shipped data — no record in the corpus
+        // carries the inline filename the pre-Legion layout had.
+        const ContentRef ref =
+            (key[0] == '#') ? ContentRef::FromFileId(
+                                  static_cast<u32>(std::strtoul(key.c_str() + 1, nullptr, 10)))
+                            : ContentRef::FromPath(key);
+        if (auto bytes = provider->ReadFile(ref); bytes && !bytes->empty()) {
+            built = io::M2ModelAdapter::Load(
+                ref, std::span<const ::whiteout::u8>(bytes->data(), bytes->size()), provider,
+                rs_.Settings().M2LazyAnimations());
+        }
+        if (!built)
+            std::fprintf(stderr, "[wow] particle model %s not readable\n", key.c_str());
+    }
+    // Cached even when null: an emitter births every frame, and re-reading a
+    // model that is not there would re-read it every frame.
+    return particleModels_.emplace(key, std::move(built)).first->second;
+#else
+    (void)key;
+    return nullptr;
+#endif
+}
+
+void ModelLoader::PreloadModelParticleGeometry(u32 handle, const std::string& key) {
+#if WDX_ENABLE_M2
+    // Same job PreloadChildTemplates does for PE1, and for the same reason: the
+    // first birth must not be the first time an asset is asked for. A PE1 child
+    // is a template the AssetManager fetches, so holding its Model slot is
+    // enough; a geometry model is parsed here, so what is left to warm is its
+    // TEXTURES — and those are what a mid-capture need would otherwise be.
+    auto model = ResolveParticleModel(key);
+    auto* a = rs_.Scene().Actors().Find(handle);
+    if (!model || !a)
+        return;
+    for (const auto& tex : model->GetTextures()) {
+        if (tex.sharedKey.empty())
+            continue;
+        const ContentRef ref =
+            (tex.sharedKey[0] == '#')
+                ? ContentRef::FromFileId(
+                      static_cast<u32>(std::strtoul(tex.sharedKey.c_str() + 1, nullptr, 10)))
+                : ContentRef::FromPath(tex.sharedKey);
+        a->assetSlots.push_back(rs_.Assets().Acquire(AssetKind::Texture, assets::kSoleSubKind, ref));
+    }
+#else
+    (void)handle;
+    (void)key;
+#endif
+}
+
+Actor* ModelLoader::SpawnModelParticle(Actor& owner, const std::string& key,
+                                       const Matrix44f& initialTm, u32 forceHandle) {
+#if WDX_ENABLE_M2
+    auto model = ResolveParticleModel(key);
+    if (!model)
+        return nullptr;
+
+    Actor* child = SpawnChildFromSource(owner, ActorRole::PE1, model, forceHandle);
+    if (!child)
+        return nullptr;
+    child->worldTransform = initialTm;
+    // The two things TrySpawnForeign sets by hand for a top-level `.m2`, and
+    // that nothing on the child-spawn path does: without them the model draws
+    // through the WC3 program with no surface bindings, which is a silhouette.
+    child->shadingModel = core::ShadingModelId::M2Combiners;
+    child->render.surfaceTable =
+        profiles::wow::BuildM2SurfaceTable(model->SourceModel(), model->ProfileIndex());
+    BuildM2Surfaces(*child);
+    return child;
+#else
+    (void)owner;
+    (void)key;
+    (void)initialTm;
+    (void)forceHandle;
+    return nullptr;
+#endif
+}
+
 Actor* ModelLoader::SpawnUnitFromSource(std::shared_ptr<IModelSource> source,
-                                        const Matrix44f& initialTm) {
+                                        const Matrix44f& initialTm, u32 forceHandle) {
     if (!source)
         return nullptr;
 
     ModelData data = source->Build();
     const u32 h =
         AddModel(data.meshes, data.textures, data.materials, data.skeleton, data.skinWeights,
-                 data.pe2Configs, data.ribbonConfigs, data.collisionConfigs);
+                 data.pe2Configs, data.ribbonConfigs, data.collisionConfigs, forceHandle);
     Actor* actor = rs_.Scene().Actors().Find(h);
     if (!actor)
         return nullptr;

@@ -154,6 +154,19 @@ struct M2ParticleEmitterConfig {
 
     std::vector<Vector3f> splinePoints;
 
+    /// @brief The `.m2` each particle *is*, instead of a billboard quad.
+    ///
+    /// From the record's `particleModelFilename`, or `#<fileDataID>` when the
+    /// GPID chunk names it instead. Empty for a billboard emitter, which is
+    /// nearly all of them.
+    std::string geometryModelPath;
+
+    /// @brief Per-particle angular velocity, radians/s, drawn between the two
+    ///        (the record's `tumble` box). Model particles only — a billboard
+    ///        spins in 2D off @ref baseSpin / @ref spinSpeed instead.
+    Vector3f tumbleMin{0, 0, 0};
+    Vector3f tumbleMax{0, 0, 0};
+
     /// Lifetime tracks over normalised particle age, already decompressed.
     /// Times are in [0,1]; a single key means "constant".
     std::vector<f32> colorTimes;
@@ -587,8 +600,30 @@ struct FrameState {
         /// 100 for WoW). Particle sizes and forces are authored in model units
         /// while the emitter draws in renderer ones. MDX leaves it 1.
         f32 unitScale = 1.0f;
+        /// This emitter spawns off the skeleton, so it needs @ref
+        /// FrameState::boneSpawnTable rather than an area on its own bone.
+        bool boneGenerator = false;
+        /// This emitter's particles are models, not quads, so it lives in the
+        /// service's ChildModel id space rather than the Billboard one.
+        bool modelParticle = false;
     };
     std::vector<ParticleFrameState> particleStates;
+
+    /// @brief One bone of the bone-emitter table: a segment to spawn along and
+    ///        the plane to scatter around it.
+    ///
+    /// Per *model*, not per emitter — the client builds one table and every
+    /// bone generator on the model picks out of it
+    /// (`CBoneGeneratorBase::CreateBoneEmitterTable` @0x10169d1a0).
+    struct BoneSpawn {
+        Vector3f pos{0, 0, 0};       ///< The bone's own position, model space.
+        Vector3f parentPos{0, 0, 0}; ///< Its parent's; equal to @ref pos when it has none.
+        Vector3f axisA{1, 0, 0};     ///< Bone direction; the scatter plane's first axis.
+        Vector3f axisB{0, 0, 1};     ///< A perpendicular; the plane's second axis.
+        bool hasParent = false;
+    };
+    /// Filled only when some emitter reports @ref ParticleFrameState::boneGenerator.
+    std::vector<BoneSpawn> boneSpawnTable;
 
     /// @brief Per-ribbon sampled state. `slot` is the texture slot
     ///        selected by KRTX tracks (0..3 typically).

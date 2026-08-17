@@ -21,4 +21,13 @@ struct BuildGeometryInput {
 i32 BuildEmitterGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
                          std::vector<Vertex>& out);
 
+/// @brief The 128-entry twinkle table, one copy for the whole process.
+///
+/// Exposed because model particles twinkle too, and they are placed by the
+/// emitter rather than built here — two tables would blink out of step.
+const f32* TwinkleTable();
+
+/// @brief Twinkle index for one particle: `(seed + age*speed) & 0x7F`.
+u32 TwinkleIndex(u16 seed, f32 age, f32 twinkleSpeed);
+
 } // namespace whiteout::flakes::renderer::particle

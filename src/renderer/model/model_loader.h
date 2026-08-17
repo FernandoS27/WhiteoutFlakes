@@ -25,6 +25,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace whiteout::flakes::renderer {
@@ -33,6 +34,12 @@ class FrameTicker;
 } // namespace whiteout::flakes::renderer
 namespace whiteout::flakes::renderer::effects {
 class SpnSpawner;
+}
+namespace whiteout::flakes::renderer::core {
+struct ParticleBehavior;
+}
+namespace whiteout::flakes::renderer::particle {
+struct EmitterDesc;
 }
 namespace whiteout::flakes::io {
 class IContentProvider;
@@ -83,8 +90,12 @@ public:
     // adapter). Same shape as SpawnUnit; the role defaults to Unit. The Max
     // plugin sets `actor->role = ActorRole::External` after the call so the
     // FrameTicker skips its own evaluation pass.
+    // `forceHandle` mirrors SpawnChild's: the particle service mints a handle
+    // before the actor exists, and a model particle's `.m2` arrives as a source
+    // rather than a template, so this route needs the same door.
     Actor* SpawnUnitFromSource(std::shared_ptr<IModelSource> source,
-                               const Matrix44f& initialTm = Matrix44f::identity());
+                               const Matrix44f& initialTm = Matrix44f::identity(),
+                               u32 forceHandle = 0);
 
     // Non-MDX route: reads @p ref once, sniffs the chunk magic, and spawns
     // through SpawnUnitFromSource when it recognises `.m2` or `.m3`. Null for
@@ -117,7 +128,20 @@ public:
     // is parsed straight into an adapter — so it links a SpawnUnitFromSource
     // actor into the tree instead of staging one.
     Actor* SpawnChildFromSource(Actor& parent, ActorRole role,
-                                std::shared_ptr<IModelSource> source);
+                                std::shared_ptr<IModelSource> source, u32 forceHandle = 0);
+
+    // One M2 model particle's geometry model, spawned as a PE1-role child of
+    // @p owner. @p key is `EmitterDesc::childModelPath` — a path, or `#<id>`
+    // when GPID named the model by fileDataID, which every shipped record does.
+    //
+    // Not routed through the child-TEMPLATE pipeline the MDX side uses: that
+    // cache is keyed on a path and always builds an MdxModelAdapter (see the
+    // child-model builder in RenderService, where generalising it is P9's job).
+    // The `.m2` is instead parsed once per unique key and shared by every
+    // particle naming it — `M2ModelAdapter::Evaluate` is const, and its one
+    // mutation (a lazily parsed sequence's keys) is idempotent.
+    Actor* SpawnModelParticle(Actor& owner, const std::string& key, const Matrix44f& initialTm,
+                              u32 forceHandle);
 
     // Recursively destroy an actor: tears down its children first, releases
     // GPU resources, unregisters from replaceables, removes from the scene
@@ -177,7 +201,7 @@ private:
                  const std::vector<SkinWeightData>& skinWeights,
                  const std::vector<ParticleEmitterConfig>& particleConfigs,
                  const std::vector<effects::RibbonEmitterConfig>& ribbonConfigs,
-                 const std::vector<CollisionShapeData>& collisions);
+                 const std::vector<CollisionShapeData>& collisions, u32 forceHandle = 0);
     u32 AddModelByPath(const std::string& mdxPath, const Matrix44f& initialTm);
 
     // Stage a freshly-allocated Actor against a parsed template — populates
@@ -212,6 +236,18 @@ private:
     /// its own; without this one a model loaded straight from an IModelSource
     /// (which is what the headless trace harness does) silently has none.
     void SetM2ParticleConfigs(u32 handle, const std::vector<M2ParticleEmitterConfig>& configs);
+    /// Register one `.m2` emitter, choosing the emitter class and the id space
+    /// from the desc's output. Shared by the template and direct-source paths so
+    /// "which kind of emitter is this" is decided once.
+    void AddM2Emitter(u32 handle, i32 index,
+                      std::shared_ptr<const particle::EmitterDesc> desc,
+                      const core::ParticleBehavior& behavior);
+    /// The geometry model behind @p key, parsed once and shared. Null (and
+    /// remembered as null) when nothing resolves it.
+    std::shared_ptr<io::M2ModelAdapter> ResolveParticleModel(const std::string& key);
+    /// Parse the geometry model and hold its texture slots on the owning actor,
+    /// so the first particle birth is not the first time an asset is asked for.
+    void PreloadModelParticleGeometry(u32 handle, const std::string& key);
 
     void uploadTemplateGpu(ModelTemplate& tmpl);
     void UploadStagedTextures(Actor& mi);
@@ -234,6 +270,10 @@ private:
 #if WDX_ENABLE_M2
     std::unique_ptr<profiles::wow::WowReplaceableTextures> wowReplaceables_;
     std::unique_ptr<profiles::wow::WowCharacterAppearance> wowCharacters_;
+    // Geometry models for M2 model particles, by `EmitterDesc::childModelPath`.
+    // A null entry is a remembered failure: an emitter births every frame, and
+    // re-reading a model that is not there would re-read it every frame.
+    std::unordered_map<std::string, std::shared_ptr<io::M2ModelAdapter>> particleModels_;
 #endif
 };
 

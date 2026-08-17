@@ -1199,6 +1199,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/corn_effects/corn_effects_service.cpp
     ${CORNFLAKES_SOURCES}
     src/renderer/particle/child_model_emitter.cpp
+    src/renderer/particle/model_particle_emitter.cpp
     src/renderer/particle/particle_adapters.cpp
     src/renderer/particle/particle_curve.cpp
     src/renderer/particle/particle_pool.cpp

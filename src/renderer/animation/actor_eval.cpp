@@ -91,8 +91,13 @@ void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
 
     for (usize i = 0; i < state.particleStates.size(); ++i) {
         const auto& ps = state.particleStates[i];
-        auto* em = particles.GetEmitter(mi.handle, particle::ParticleOutput::Billboard,
-                                        ps.emitterId);
+        // A model-particle emitter is registered under ChildModel, but its
+        // animated state is an ordinary ParticleFrameState — the sim does not
+        // care what the output is, so this loop drives both id spaces.
+        auto* em = particles.GetEmitter(mi.handle,
+                                       ps.modelParticle ? particle::ParticleOutput::ChildModel
+                                                        : particle::ParticleOutput::Billboard,
+                                       ps.emitterId);
         if (!em)
             continue;
 
@@ -101,6 +106,11 @@ void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
         // no longer has to know which kind of emitter it is driving.
         em->ApplyState(ps);
         em->SetViewDistance(viewDist);
+        // A bone generator spawns off the skeleton, so it needs the model's
+        // table rather than an area of its own. Pushed here because the table
+        // is per model and the emitter has no route to the FrameState.
+        if (ps.boneGenerator)
+            em->SetBoneSpawnTable(state.boneSpawnTable);
 
         // The squirt edge (rate crossing zero) is actor state, not emitter
         // state: it needs last frame's rate, which lives on the actor.

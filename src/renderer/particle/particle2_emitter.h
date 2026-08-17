@@ -13,6 +13,7 @@
 #include "whiteout/flakes/types.h"
 
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace whiteout::flakes::renderer::particle {
@@ -109,6 +110,15 @@ public:
     // service once per frame; ignored entirely under the WC3 dialect.
     void SetViewDistance(f32 d) {
         viewDistance_ = d;
+    }
+
+    // The model's bone-emitter table, for a bone generator. Copied rather than
+    // referenced: the FrameState it comes from is rebuilt every evaluation and
+    // the emitter reads this during its own update, which happens later.
+    void SetBoneSpawnTable(
+        std::span<const model::FrameState::BoneSpawn> table) {
+        boneSpawns_.assign(table.begin(), table.end());
+        spawn_.boneTable = boneSpawns_;
     }
 
     // Renderer units per model unit. The `.m2` size, twinkle and tail values are
@@ -274,6 +284,18 @@ protected:
 
     Matrix44f modelToWorld_ = Matrix44f::identity();
 
+    // Renderer units -> the space this emitter's particles are stored in.
+    //
+    // Every emitter-motion quantity (travel, inherited velocity, follow delta)
+    // is measured on the world transform, so it arrives in renderer units,
+    // while a model-space particle keeps its position in model units. The
+    // client mixes the two freely because its world IS model units; here they
+    // differ by WorldScale, and adding one to the other displaces a particle a
+    // hundred times further than the record asked for.
+    f32 MotionToParticleSpace() const {
+        return (desc_->modelSpace && unitScale_ > 0.0f) ? (1.0f / unitScale_) : 1.0f;
+    }
+
     // ---- WoW emitter-motion state (inert under the WC3 dialect) ----
     Vector3f worldPos_{0, 0, 0};
     Vector3f prevWorldPos_{0, 0, 0};
@@ -285,6 +307,7 @@ protected:
     f32 viewDistance_ = 0.0f;
     f32 unitScale_ = 1.0f;
     f32 modelAlpha_ = 1.0f;
+    std::vector<model::FrameState::BoneSpawn> boneSpawns_;
     u16 baseCell_ = 0;
 
     RndSeed randSeed_;

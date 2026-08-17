@@ -22,7 +22,7 @@
 
 namespace whiteout::flakes::renderer::particle {
 
-class ChildModelEmitter final : public Emitter2 {
+class ChildModelEmitter : public Emitter2 {
 public:
     // `allocHandle` mints a fresh ActorId per birth — routed through
     // SceneManager::AllocActorId by the caller so the renderer does not expose
@@ -42,9 +42,18 @@ protected:
     void OnParticleBorn(u32 poolIndex) override;
     void OnParticleDied(u32 poolIndex) override;
 
-private:
-    Matrix44f TransformFor(const Particle2& p) const;
+    // Where the child actor is put this frame. Keyed by pool index rather than
+    // by particle so an override can reach per-particle state alongside the
+    // pool — PE1 needs none, an M2 model particle needs its orientation.
+    virtual Matrix44f TransformFor(u32 poolIndex) const;
 
+    // Whether the child should draw this frame. Only twinkle answers anything
+    // but 1, and only M2 has twinkle.
+    virtual f32 VisibilityFor(u32 poolIndex) const {
+        return 1.0f;
+    }
+
+private:
     ModelId owner_;
     i32 emitterId_;
     HandleAllocator allocHandle_;

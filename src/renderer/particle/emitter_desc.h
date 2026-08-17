@@ -75,6 +75,14 @@ struct EmitterDesc {
     std::string childModelPath;
     f32 childScale = 1.0f;
 
+    /// Model-particle tumble: each particle draws its own angular velocity
+    /// (radians/s) from this range at birth. Kept as base-and-span the way
+    /// `InitializeLoaded` @0x100f57e30 stores it, because that is the form the
+    /// client's own draw reads — see M2ModelParticleEmitter for the two axes it
+    /// reads wrong.
+    Vector3f tumbleBase{0, 0, 0};
+    Vector3f tumbleVary{0, 0, 0};
+
     // How particles are released, and how they move once released.
     EmissionDesc emission;
     MotionDesc motion;

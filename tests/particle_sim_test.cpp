@@ -10,11 +10,14 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "renderer/particle/child_model_emitter.h"
+#include "renderer/particle/model_particle_emitter.h"
 #include "renderer/particle/particle_motion.h"
 #include "renderer/particle/particle_service.h"
 #include "renderer/particle/particle_trace.h"
 
 #include <algorithm>
+#include <cmath>
+#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -26,6 +29,7 @@ using whiteout::flakes::i32;
 using whiteout::flakes::u32;
 using whiteout::flakes::usize;
 using whiteout::flakes::Matrix44f;
+using whiteout::flakes::Vector3f;
 using whiteout::flakes::renderer::Vertex;
 using Catch::Approx;
 
@@ -469,4 +473,362 @@ TEST_CASE("Removing a model drops exactly its emitters") {
     REQUIRE(svc.HasEmittersForModel(2));
     REQUIRE(svc.GetEmitter(2, ParticleOutput::Billboard, 0) == b);
     REQUIRE(svc.GetEmitter(1, ParticleOutput::Billboard, 0) == nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// M2 model particles. Same protocol as PE1's — the sim does not know the two
+// apart — so what is worth pinning here is only what differs: the orientation,
+// the per-frame size, and the twinkle blink.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A model-particle desc: the same emitter, with a geometry model and a tumble.
+std::shared_ptr<EmitterDesc> MakeModelParticleDesc() {
+    auto d = MakeDesc(ParticleOutput::ChildModel);
+    d->shape = std::make_shared<ConeShape>();
+    d->childModelPath = "#12345";
+    return d;
+}
+
+f32 RowLength(const Matrix44f& m, i32 row) {
+    return std::sqrt(m.data[row][0] * m.data[row][0] + m.data[row][1] * m.data[row][1] +
+                     m.data[row][2] * m.data[row][2]);
+}
+
+// Rotation-only comparison: the placement matrix is scale * rotation *
+// translation, so a basis row carries the scale and has to be normalised before
+// two orientations can be compared.
+Vector3f UnitRow(const Matrix44f& m, i32 row) {
+    const f32 len = RowLength(m, row);
+    if (len <= 0.0f)
+        return {m.data[row][0], m.data[row][1], m.data[row][2]};
+    return {m.data[row][0] / len, m.data[row][1] / len, m.data[row][2] / len};
+}
+
+ModelParticleEmitter* AddModelParticles(ParticleService& svc,
+                                        std::shared_ptr<const EmitterDesc> desc, u32& nextHandle,
+                                        i32 id = 0, u32 seed = 4242u) {
+    auto e = std::make_unique<ModelParticleEmitter>(1u, id, [&nextHandle] { return nextHandle++; });
+    e->SetDesc(std::move(desc));
+    Arm(*e, seed);
+    ModelParticleEmitter* raw = e.get();
+    svc.AddEmitter(1u, ParticleOutput::ChildModel, id, std::move(e));
+    return raw;
+}
+
+} // namespace
+
+TEST_CASE("Model particles balance Birth against Death") {
+    // The PE1 invariant suite, re-pointed: an unmatched Birth is a leaked actor
+    // and an unmatched Death is one destroyed twice, and the M2 emitter reaches
+    // that protocol through two more virtual overrides than PE1 does.
+    ParticleService svc;
+    u32 nextHandle = 1;
+    auto* raw = AddModelParticles(svc, MakeModelParticleDesc(), nextHandle);
+
+    std::set<u32> liveHandles;
+    std::set<u32> everBorn;
+    i32 births = 0, deaths = 0, transforms = 0;
+    std::vector<ChildModelEvent> events;
+
+    for (i32 i = 0; i < 300; ++i) {
+        raw->SetVisible(true);
+        svc.Simulate(kDt);
+        svc.DrainChildModelEvents(events);
+        for (const ChildModelEvent& ev : events) {
+            REQUIRE(ev.childHandle != 0u);
+            switch (ev.kind) {
+            case ChildModelEvent::Kind::Birth:
+                REQUIRE(everBorn.insert(ev.childHandle).second);
+                REQUIRE(liveHandles.insert(ev.childHandle).second);
+                ++births;
+                break;
+            case ChildModelEvent::Kind::Death:
+                REQUIRE(liveHandles.erase(ev.childHandle) == 1u);
+                ++deaths;
+                break;
+            case ChildModelEvent::Kind::Transform:
+                REQUIRE(liveHandles.count(ev.childHandle) == 1u);
+                ++transforms;
+                break;
+            }
+        }
+        events.clear();
+    }
+
+    INFO("births=" << births << " deaths=" << deaths << " transforms=" << transforms);
+    REQUIRE(births > 0);
+    REQUIRE(deaths > 0);
+    REQUIRE(transforms > 0);
+    REQUIRE(births - deaths == static_cast<i32>(liveHandles.size()));
+    REQUIRE(static_cast<i32>(liveHandles.size()) == raw->TotalAlive());
+}
+
+TEST_CASE("Model particles contribute nothing to the vertex stream") {
+    // Same guarantee PE1 has, and worth re-checking rather than inheriting: an
+    // M2 model-particle desc carries a full set of appearance curves, and
+    // BuildGeometry skips on the output kind alone.
+    ParticleService svc;
+    u32 nextHandle = 1;
+    auto* raw = AddModelParticles(svc, MakeModelParticleDesc(), nextHandle);
+
+    for (i32 i = 0; i < 120; ++i) {
+        raw->SetVisible(true);
+        svc.Simulate(kDt);
+    }
+    REQUIRE(svc.TotalParticleCount() > 0);
+
+    std::vector<Vertex> verts;
+    std::vector<EmitterDrawList> draws;
+    const Matrix44f view = TraceView();
+    svc.BuildGeometry(view, verts, draws);
+    REQUIRE(verts.empty());
+    REQUIRE(draws.empty());
+}
+
+TEST_CASE("a model particle's placement carries the emitter's scale track") {
+    ParticleService svc;
+    u32 nextHandle = 1;
+    auto* raw = AddModelParticles(svc, MakeModelParticleDesc(), nextHandle);
+
+    std::vector<ChildModelEvent> events;
+    // Two lifespans, so the sampled ages span the whole 8 -> 2 size ramp.
+    f32 largest = 0.0f, smallest = 1e30f;
+    bool meanChecked = false;
+    for (i32 i = 0; i < 120; ++i) {
+        raw->SetVisible(true);
+        svc.Simulate(kDt);
+        svc.DrainChildModelEvents(events);
+        for (const ChildModelEvent& ev : events) {
+            if (ev.kind != ChildModelEvent::Kind::Transform)
+                continue;
+            const f32 sx = RowLength(ev.transform, 0);
+            const f32 sy = RowLength(ev.transform, 1);
+            const f32 sz = RowLength(ev.transform, 2);
+            largest = (std::max)(largest, sx);
+            smallest = (std::min)(smallest, sx);
+            // The record has no third scale. The client fills the gap with the
+            // mean of X and Y rather than with 1, so a square particle stays
+            // cubic instead of flattening.
+            REQUIRE(sz == Approx((sx + sy) * 0.5f).margin(1e-3f));
+            meanChecked = true;
+        }
+        events.clear();
+    }
+    // PE1 would report one fixed `childScale` for every particle at every age.
+    INFO("scale spread " << smallest << " .. " << largest);
+    REQUIRE(meanChecked);
+    REQUIRE(largest > smallest);
+    REQUIRE(largest <= Approx(8.0f).margin(1e-3f));
+    REQUIRE(smallest >= Approx(2.0f).margin(1e-3f));
+}
+
+TEST_CASE("a tumbling model particle turns and a still one does not") {
+    ParticleService svc;
+    u32 nextHandle = 1;
+
+    auto spinning = MakeModelParticleDesc();
+    // One axis, one rate: unambiguous, and X is the only pair the client reads
+    // as (min, range) — see ModelParticleEmitter for the other two.
+    spinning->tumbleBase = {2.0f, 0.0f, 0.0f};
+
+    auto* still = AddModelParticles(svc, MakeModelParticleDesc(), nextHandle, 0);
+    auto* turning = AddModelParticles(svc, spinning, nextHandle, 1);
+
+    std::vector<ChildModelEvent> events;
+    std::map<u32, Vector3f> bornRow;
+    std::map<u32, i32> bornFrom;
+    f32 worstStill = 0.0f, bestSpinning = 0.0f;
+    for (i32 i = 0; i < 90; ++i) {
+        still->SetVisible(true);
+        turning->SetVisible(true);
+        svc.Simulate(kDt);
+        svc.DrainChildModelEvents(events);
+        for (const ChildModelEvent& ev : events) {
+            if (ev.kind == ChildModelEvent::Kind::Birth) {
+                bornRow[ev.childHandle] = UnitRow(ev.transform, 1);
+                bornFrom[ev.childHandle] = ev.emitterId;
+                continue;
+            }
+            if (ev.kind != ChildModelEvent::Kind::Transform)
+                continue;
+            auto it = bornRow.find(ev.childHandle);
+            if (it == bornRow.end())
+                continue;
+            const Vector3f now = UnitRow(ev.transform, 1);
+            const f32 dx = now.x - it->second.x;
+            const f32 dy = now.y - it->second.y;
+            const f32 dz = now.z - it->second.z;
+            const f32 drift = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (bornFrom[ev.childHandle] == 0)
+                worstStill = (std::max)(worstStill, drift);
+            else
+                bestSpinning = (std::max)(bestSpinning, drift);
+        }
+        events.clear();
+    }
+    INFO("still drift " << worstStill << ", spinning drift " << bestSpinning);
+    // A zero tumble box is below the client's own angular-speed floor, so the
+    // orientation is left exactly alone rather than integrated by zero.
+    REQUIRE(worstStill == Approx(0.0f).margin(1e-6f));
+    REQUIRE(bestSpinning > 0.5f);
+}
+
+TEST_CASE("the tumble draw reads the range twice on Y and Z") {
+    // Reproduced, not corrected. `CreateParticle(CModelParticle&)` @0x1016a08e0
+    // multiplies and then adds the SAME field on Y and Z, where X correctly adds
+    // the minimum: `min.x + u*range.x` against `range.y*(1 + u)`. That is
+    // observable rather than academic — with a {0, max} box the correct reading
+    // lets a particle draw an angular speed of nearly zero, and the client's
+    // floor is `max` itself, so under the defect NOTHING is ever still.
+    auto desc = MakeModelParticleDesc();
+    desc->tumbleBase = {0.0f, 0.0f, 0.0f};
+    desc->tumbleVary = {0.0f, 1.0f, 0.0f}; // Y only: one defective axis, alone
+
+    ParticleService svc;
+    u32 nextHandle = 1;
+    auto* raw = AddModelParticles(svc, desc, nextHandle);
+
+    std::vector<ChildModelEvent> events;
+    std::map<u32, Vector3f> bornRow;
+    std::map<u32, f32> maxDrift;
+    std::map<u32, i32> seen;
+    for (i32 i = 0; i < 300; ++i) {
+        raw->SetVisible(true);
+        svc.Simulate(kDt);
+        svc.DrainChildModelEvents(events);
+        for (const ChildModelEvent& ev : events) {
+            if (ev.kind == ChildModelEvent::Kind::Birth) {
+                // Row 0, because the rotation is about Y and leaves row 1 fixed.
+                bornRow[ev.childHandle] = UnitRow(ev.transform, 0);
+                continue;
+            }
+            if (ev.kind != ChildModelEvent::Kind::Transform)
+                continue;
+            auto it = bornRow.find(ev.childHandle);
+            if (it == bornRow.end())
+                continue;
+            ++seen[ev.childHandle];
+            const Vector3f now = UnitRow(ev.transform, 0);
+            const f32 dx = now.x - it->second.x;
+            const f32 dy = now.y - it->second.y;
+            const f32 dz = now.z - it->second.z;
+            const f32 drift = std::sqrt(dx * dx + dy * dy + dz * dz);
+            f32& worst = maxDrift[ev.childHandle];
+            worst = (std::max)(worst, drift);
+        }
+        events.clear();
+    }
+
+    // Only particles that lived most of a lifespan: a young one has not had time
+    // to turn regardless of how fast it is turning.
+    i32 counted = 0;
+    f32 leastDrift = 1e30f;
+    for (const auto& [handle, frames] : seen) {
+        if (frames < 50)
+            continue;
+        ++counted;
+        leastDrift = (std::min)(leastDrift, maxDrift[handle]);
+    }
+    INFO("counted=" << counted << " least drift=" << leastDrift);
+    REQUIRE(counted > 4);
+    // 1 rad/s is the defect's floor; over 5/6 s that is a chord of ~0.8. The
+    // correct reading would put some particle near zero.
+    REQUIRE(leastDrift > 0.7f);
+}
+
+TEST_CASE("a model-space model particle is oriented exactly like its emitter") {
+    // The one claim the two candidate compositions disagreed on, and it is not
+    // arguable: a model-space particle that is not tumbling rides its emitter,
+    // so the placement basis IS the emitter basis. Getting this backwards
+    // (extracting a column-convention quaternion from row-convention basis
+    // vectors) applies the emitter's rotation inverted, which renders plausibly
+    // and is wrong — it cost one M2 golden and nothing else would have caught it.
+    auto desc = MakeModelParticleDesc();
+    desc->modelSpace = true;
+    desc->tumbleBase = {0.0f, 0.0f, 0.0f};
+    desc->tumbleVary = {0.0f, 0.0f, 0.0f};
+
+    ParticleService svc;
+    u32 nextHandle = 1;
+    auto* raw = AddModelParticles(svc, desc, nextHandle);
+
+    // A quarter turn about Z, in the row-vector form every emitter matrix here
+    // uses, plus a translation the orientation must ignore.
+    Matrix44f world = Matrix44f::identity();
+    world.data[0][0] = 0.0f;  world.data[0][1] = 1.0f;
+    world.data[1][0] = -1.0f; world.data[1][1] = 0.0f;
+    world.data[3][0] = 17.0f; world.data[3][1] = -4.0f; world.data[3][2] = 9.0f;
+    raw->SetModelToWorld(world);
+
+    std::vector<ChildModelEvent> events;
+    i32 checked = 0;
+    for (i32 i = 0; i < 30; ++i) {
+        raw->SetVisible(true);
+        raw->SetModelToWorld(world);
+        svc.Simulate(kDt);
+        svc.DrainChildModelEvents(events);
+        for (const ChildModelEvent& ev : events) {
+            if (ev.kind != ChildModelEvent::Kind::Transform)
+                continue;
+            const Vector3f r0 = UnitRow(ev.transform, 0);
+            const Vector3f r1 = UnitRow(ev.transform, 1);
+            REQUIRE(r0.x == Approx(0.0f).margin(1e-5f));
+            REQUIRE(r0.y == Approx(1.0f).margin(1e-5f));
+            REQUIRE(r1.x == Approx(-1.0f).margin(1e-5f));
+            REQUIRE(r1.y == Approx(0.0f).margin(1e-5f));
+            ++checked;
+        }
+        events.clear();
+    }
+    REQUIRE(checked > 0);
+}
+
+TEST_CASE("a world-space model particle keeps the emitter basis it was born with") {
+    // The other half of the same split: a world-space particle is stamped into
+    // the world at birth, so turning the emitter afterwards must not turn it.
+    auto desc = MakeModelParticleDesc();
+    desc->modelSpace = false;
+    desc->tumbleBase = {0.0f, 0.0f, 0.0f};
+    desc->tumbleVary = {0.0f, 0.0f, 0.0f};
+
+    ParticleService svc;
+    u32 nextHandle = 1;
+    auto* raw = AddModelParticles(svc, desc, nextHandle);
+
+    std::vector<ChildModelEvent> events;
+    std::map<u32, Vector3f> bornRow;
+    f32 worstDrift = 0.0f;
+    i32 compared = 0;
+    for (i32 i = 0; i < 60; ++i) {
+        // A different emitter rotation every frame. A world-space particle must
+        // ignore all of them after its own birth frame.
+        Matrix44f world = Matrix44f::rotation_z(static_cast<f32>(i) * 0.1f);
+        raw->SetModelToWorld(world);
+        raw->SetVisible(true);
+        svc.Simulate(kDt);
+        svc.DrainChildModelEvents(events);
+        for (const ChildModelEvent& ev : events) {
+            if (ev.kind == ChildModelEvent::Kind::Birth) {
+                bornRow[ev.childHandle] = UnitRow(ev.transform, 0);
+                continue;
+            }
+            if (ev.kind != ChildModelEvent::Kind::Transform)
+                continue;
+            auto it = bornRow.find(ev.childHandle);
+            if (it == bornRow.end())
+                continue;
+            const Vector3f now = UnitRow(ev.transform, 0);
+            const f32 dx = now.x - it->second.x;
+            const f32 dy = now.y - it->second.y;
+            const f32 dz = now.z - it->second.z;
+            worstDrift = (std::max)(worstDrift, std::sqrt(dx * dx + dy * dy + dz * dz));
+            ++compared;
+        }
+        events.clear();
+    }
+    INFO("compared=" << compared << " worst drift=" << worstDrift);
+    REQUIRE(compared > 10);
+    REQUIRE(worstDrift == Approx(0.0f).margin(1e-5f));
 }

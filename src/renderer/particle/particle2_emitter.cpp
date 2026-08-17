@@ -138,6 +138,10 @@ void Emitter2::CreateParticle(Particle2& p, f32 elapsed) {
     }
 
     SpawnSample s;
+    // Re-pointed here rather than once in the setter: `spawn_` holds a view into
+    // a member vector, and an emitter that gets moved would otherwise carry a
+    // span into its old storage.
+    spawn_.boneTable = boneSpawns_;
     desc_->shape->Sample(s, spawn_, randSeed_);
 
     if (desc_->modelSpace) {
@@ -150,7 +154,15 @@ void Emitter2::CreateParticle(Particle2& p, f32 elapsed) {
 
     // Guarded rather than "add zero": the WC3 trace compares exact bits, and
     // adding 0.0f to -0.0f is not the identity.
-    if (behavior_.emitAlongPath) {
+    //
+    // A model-space emitter is excluded because the client never offsets the
+    // particle at all: `EmitNewParticles` @0x1016a5c90 rewrites the TRANSLATION
+    // of the matrix it hands `CreateParticle`, and that matrix is only read on
+    // the branch that bakes the spawn into world space. So the path exists for
+    // a world-space emitter and does not exist for a local one — the two are
+    // algebraically identical for the first (R*local + pathPos either way) and
+    // nothing at all for the second.
+    if (behavior_.emitAlongPath && !desc_->modelSpace) {
         p.position.x += spawnOffset_.x;
         p.position.y += spawnOffset_.y;
         p.position.z += spawnOffset_.z;
@@ -351,7 +363,8 @@ void Emitter2::TickEmitterVelocity(f32 dt) {
         emitterVelocity_ = {0, 0, 0};
         return;
     }
-    const f32 scale = (kVelocitySampleSeconds / accumulated) * desc_->inheritVelocityScale;
+    const f32 scale = (kVelocitySampleSeconds / accumulated) * desc_->inheritVelocityScale *
+                      MotionToParticleSpace();
     emitterVelocity_ = {(worldPos_.x - prevWorldPos_.x) * scale,
                         (worldPos_.y - prevWorldPos_.y) * scale,
                         (worldPos_.z - prevWorldPos_.z) * scale};
@@ -383,11 +396,17 @@ void Emitter2::InternalUpdate(f32 elapsed, f32 emissionScaler) {
         // point, where we would divide by zero.
         if (behavior_.followPosition && desc_->followPosition && elapsed > kEmissionEpsilon) {
             const f32 distSq = travel.x * travel.x + travel.y * travel.y + travel.z * travel.z;
-            const f32 speed = (distSq > 0.0f) ? (std::sqrt(distSq) / elapsed) : 0.0f;
+            // The record's two sample speeds are in model units per second, so
+            // the measured speed has to be too — `travel` is renderer units
+            // whatever space the particles live in.
+            const f32 den = elapsed * ((unitScale_ > 0.0f) ? unitScale_ : 1.0f);
+            const f32 speed = (distSq > 0.0f) ? (std::sqrt(distSq) / den) : 0.0f;
             const f32 raw = speed * desc_->followSlope + desc_->followBias;
             follow = (raw >= 0.0f) ? ((raw < 1.0f) ? raw : 1.0f) : 0.0f;
         }
-        const Vector3f followed{travel.x * follow, travel.y * follow, travel.z * follow};
+        const f32 followScale = follow * MotionToParticleSpace();
+        const Vector3f followed{travel.x * followScale, travel.y * followScale,
+                                travel.z * followScale};
 
         const f32 stepSize = behavior_.subStepSeconds;
         if (elapsed <= stepSize) {

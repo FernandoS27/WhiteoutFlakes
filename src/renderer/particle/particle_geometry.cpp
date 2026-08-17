@@ -128,23 +128,6 @@ void EmitStrip(std::vector<Vertex>& out, const Vector3f& c0, const Vector3f& c1,
 constexpr f32 kVelocityEpsilon = 2.3841858e-7f;
 constexpr f32 kTailMinPlaneLength = 1.0f / 36.0f;
 
-// The twinkle table. The client fills 128 floats with `rand()`-seeded noise when
-// the particle system starts (`CParticleEmitter2::Init` @0x10169efe0), so its
-// blink pattern genuinely differs between runs of the game. Ours is seeded
-// fixed: same uniform [0,1) distribution, reproducible run to run — the one
-// deliberate divergence in this file, and what lets a twinkling emitter be
-// trace-gated at all.
-const f32* TwinkleTable() {
-    static const std::array<f32, 128> table = [] {
-        std::array<f32, 128> t{};
-        RndSeed s(0x7A17C1E5u);
-        for (f32& v : t)
-            v = CRandom::real_(s);
-        return t;
-    }();
-    return table.data();
-}
-
 i32 BuildWc3Geometry(const Emitter2& emitter, const BuildGeometryInput& in,
                      std::vector<Vertex>& out) {
     const ParticlePool& pool = emitter.Pool();
@@ -475,10 +458,8 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
         // Twinkle culls before anything else is sampled: a blinked-off particle
         // costs only its place in the queue.
         u32 twIdx = 0;
-        if (twinkles) {
-            const u8 phase = static_cast<u8>(static_cast<i32>(p.age * d.twinkleSpeed));
-            twIdx = ((static_cast<u32>(seed) & 0xFFu) + phase) & 0x7Fu;
-        }
+        if (twinkles)
+            twIdx = TwinkleIndex(seed, p.age, d.twinkleSpeed);
         const f32 twRand = twinkle[twIdx];
         if (d.twinklePercent < twRand)
             continue;
@@ -686,6 +667,28 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
 }
 
 } // namespace
+
+// The twinkle table. The client fills 128 floats with `rand()`-seeded noise when
+// the particle system starts (`CParticleEmitter2::Init` @0x10169efe0), so its
+// blink pattern genuinely differs between runs of the game. Ours is seeded
+// fixed: same uniform [0,1) distribution, reproducible run to run — the one
+// deliberate divergence in this file, and what lets a twinkling emitter be
+// trace-gated at all.
+const f32* TwinkleTable() {
+    static const std::array<f32, 128> table = [] {
+        std::array<f32, 128> t{};
+        RndSeed s(0x7A17C1E5u);
+        for (f32& v : t)
+            v = CRandom::real_(s);
+        return t;
+    }();
+    return table.data();
+}
+
+u32 TwinkleIndex(u16 seed, f32 age, f32 twinkleSpeed) {
+    const u8 phase = static_cast<u8>(static_cast<i32>(age * twinkleSpeed));
+    return ((static_cast<u32>(seed) & 0xFFu) + phase) & 0x7Fu;
+}
 
 i32 BuildEmitterGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
                          std::vector<Vertex>& out) {
