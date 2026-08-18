@@ -213,6 +213,12 @@ Vector3f SampleM2ParticleGravity(const ::whiteout::m2::AnimationTrack<f32>& trac
 /// holding gives, and what the on/off flag the value feeds actually wants.
 u8 SampleM2U8(const ::whiteout::m2::AnimationTrack<u8>& track, const M2AnimTime& at, u8 def);
 
+/// @brief `u16` track — the ribbon's sprite-sheet slot, and nothing else.
+///
+/// Holds the key for the same reason @ref SampleM2U8 does: the value selects a
+/// cell, and a half-interpolated cell index is not a cell.
+u16 SampleM2U16(const ::whiteout::m2::AnimationTrack<u16>& track, const M2AnimTime& at, u16 def);
+
 /// @brief The client's `AnimationData` name for @p animationId, or an empty
 ///        view when the id is outside the table.
 ///

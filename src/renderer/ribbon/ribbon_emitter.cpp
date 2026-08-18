@@ -15,11 +15,19 @@ RibbonDesc DescFromWc3Config(const RibbonEmitterConfig& cfg) {
     d.gravity = cfg.gravity;
     d.rows = cfg.rows;
     d.cols = cfg.cols;
-    d.textureId = cfg.textureId;
-    d.filterMode = cfg.filterMode;
-    d.unshaded = cfg.unshaded;
-    d.twoSided = cfg.twoSided;
     d.priorityPlane = cfg.priorityPlane;
+    // An MDX ribbon is one pass, so the scalar fields ARE its single layer.
+    // A config that filled `layers` (the `.m2` route) keeps them verbatim.
+    if (cfg.layers.empty()) {
+        RibbonLayer l;
+        l.textureId = cfg.textureId;
+        l.filterMode = cfg.filterMode;
+        l.unshaded = cfg.unshaded;
+        l.twoSided = cfg.twoSided;
+        d.layers = {l};
+    } else {
+        d.layers = cfg.layers;
+    }
     return d;
 }
 
@@ -209,19 +217,41 @@ i32 RibbonEmitter::BuildStrip(std::vector<Vertex>& out) const {
     if (state_.visibility <= 0.0f || edges_.size() < 2)
         return 0;
 
-    const f32 cellW = (desc_.cols > 0) ? 1.0f / desc_.cols : 1.0f;
-    const f32 cellH = (desc_.rows > 0) ? 1.0f / desc_.rows : 1.0f;
-    const i32 slotRow = (desc_.cols > 0) ? state_.slot / desc_.cols : 0;
-    const i32 slotCol = (desc_.cols > 0) ? state_.slot % desc_.cols : 0;
-    const f32 texL = cellW * slotCol;
-    const f32 texT = cellH * slotRow;
-    const f32 texB = texT + cellH;
-    const f32 texDU = (texL + cellW) - texL;
+    // Sprite-sheet cell, in the client's own axis assignment: Initialize sets
+    // tmpDU = texBox.width / ROWS and tmpDV = texBox.height / COLS (texBox is
+    // {0,0,1,1} for every `.m2`), and SetTexSlot @0x100e7d460 then indexes U by
+    // slot/cols and V by slot%cols. That is the transpose of the obvious
+    // reading, and it is unobservable in shipped data — every one of the
+    // corpus's 5293 ribbons is 1x1 — so it is transcribed, not inferred.
+    // SetTexSlot asserts `slot < m_rows * m_cols`; the slot arrives from an
+    // animation track, so clamp instead of trusting it into the divide.
+    const i32 rows = (std::max)(desc_.rows, 1);
+    const i32 cols = (std::max)(desc_.cols, 1);
+    const i32 slot = std::clamp(state_.slot, 0, rows * cols - 1);
+
+    const f32 cellU = 1.0f / static_cast<f32>(rows);
+    const f32 cellV = 1.0f / static_cast<f32>(cols);
+    const i32 slotRow = slot / cols;
+    const i32 slotCol = slot % cols;
+    const f32 texL = cellU * slotRow;
+    const f32 texT = cellV * slotCol;
+    const f32 texB = texT + cellV;
+    const f32 texDU = cellU;
 
     const f32 ooLife = 1.0f / SimLifespan();
 
     const Vector4f vertColor = {state_.color.x, state_.color.y, state_.color.z, state_.alpha};
     const Vector3f normal = {1, 0, 0};
+
+    // The emitter's texture transform, applied last and per vertex. The client
+    // hands it to the stage as a matrix and transforms per fragment, but it is
+    // affine in uv, so transforming the corners and interpolating is the same
+    // result — and it keeps the ribbon draw a plain textured strip.
+    const f32* const r0 = state_.texAnimRow0;
+    const f32* const r1 = state_.texAnimRow1;
+    const auto uv = [r0, r1](f32 u, f32 v) -> Vector2f {
+        return {r0[0] * u + r0[1] * v + r0[3], r1[0] * u + r1[1] * v + r1[3]};
+    };
 
     const i32 before = (i32)out.size();
     const i32 numEdges = (i32)edges_.size();
@@ -232,13 +262,13 @@ i32 RibbonEmitter::BuildStrip(std::vector<Vertex>& out) const {
         const f32 u0 = texDU * e0.age * ooLife + texL;
         const f32 u1 = texDU * e1.age * ooLife + texL;
 
-        out.push_back({e0.top, normal, vertColor, {u0, texT}});
-        out.push_back({e0.bot, normal, vertColor, {u0, texB}});
-        out.push_back({e1.top, normal, vertColor, {u1, texT}});
+        out.push_back({e0.top, normal, vertColor, uv(u0, texT)});
+        out.push_back({e0.bot, normal, vertColor, uv(u0, texB)});
+        out.push_back({e1.top, normal, vertColor, uv(u1, texT)});
 
-        out.push_back({e0.bot, normal, vertColor, {u0, texB}});
-        out.push_back({e1.bot, normal, vertColor, {u1, texB}});
-        out.push_back({e1.top, normal, vertColor, {u1, texT}});
+        out.push_back({e0.bot, normal, vertColor, uv(u0, texB)});
+        out.push_back({e1.bot, normal, vertColor, uv(u1, texB)});
+        out.push_back({e1.top, normal, vertColor, uv(u1, texT)});
     }
     return (i32)out.size() - before;
 }

@@ -24,6 +24,7 @@
 #include "renderer/ribbon/ribbon_service.h"
 
 #include <cmath>
+#include <cstddef>
 
 using namespace whiteout::flakes::renderer::ribbon;
 using whiteout::flakes::f32;
@@ -466,12 +467,14 @@ TEST_CASE("ribbon desc carries the mdx config through unchanged", "[ribbon]") {
     cfg.priorityPlane = 2;
 
     const RibbonDesc d = DescFromWc3Config(cfg);
-    REQUIRE(d.textureId == 4);
-    REQUIRE(d.filterMode == 3);
+    // MDX is single-pass, so the scalar fields become exactly one layer.
+    REQUIRE(d.layers.size() == 1);
+    REQUIRE(d.layers[0].textureId == 4);
+    REQUIRE(d.layers[0].filterMode == 3);
     REQUIRE(d.rows == 2);
     REQUIRE(d.cols == 4);
-    REQUIRE(d.unshaded);
-    REQUIRE_FALSE(d.twoSided);
+    REQUIRE(d.layers[0].unshaded);
+    REQUIRE_FALSE(d.layers[0].twoSided);
     REQUIRE(d.edgesPerSecond == Approx(25.0f));
     REQUIRE(d.edgeLifespan == Approx(0.75f));
     REQUIRE(d.gravity == Approx(-3.0f));
@@ -542,4 +545,230 @@ TEST_CASE("ribbon gravity is model units per second squared too") {
     // unscaled one would leave both runs falling by the same absolute amount.
     CHECK(one < 0.0f);
     CHECK(hundred == Approx(one * 100.0f));
+}
+
+// ---------------------------------------------------------------------------
+// Layered ribbons.
+//
+// `CRibbonEmitter::Render` @0x100e7e1d0 walks the emitter's CRibbonMat array
+// and draws the SAME strip once per entry, rebinding texture and blend state
+// between passes; CM2Model::InitializeLoaded sizes that array to the record's
+// `textureIndices.count`. 2977 of the corpus's 5293 ribbons carry more than one
+// texture and 2973 of those are genuinely distinct, so a single-texture ribbon
+// dropped a visible layer from over half of them.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a multi-layer ribbon draws one pass per layer over one strip") {
+    whiteout::flakes::renderer::effects::RibbonEmitterConfig cfg;
+    cfg.emission = 10.0f;
+    cfg.life = 1.0f;
+    cfg.layers.resize(3);
+    for (i32 i = 0; i < 3; ++i) {
+        cfg.layers[(std::size_t)i].textureId = 10 + i;
+        cfg.layers[(std::size_t)i].filterMode = i;
+    }
+
+    RibbonService svc;
+    svc.AddEmitter(1, 0, DescFromWc3Config(cfg), RibbonBehavior::Wow());
+    for (i32 i = 0; i < 4; ++i) {
+        svc.SetState(1, 0, StateAt({static_cast<f32>(i) * 10.0f, 0, 0}));
+        svc.SimulateModel(1, 0.1f);
+    }
+
+    std::vector<whiteout::flakes::renderer::Vertex> verts;
+    std::vector<RibbonDrawList> lists;
+    svc.BuildGeometry(1, verts, lists);
+
+    REQUIRE(lists.size() == 3);
+    // Every pass covers the identical vertex range — the strip is built once.
+    for (const auto& dl : lists) {
+        CHECK(dl.vertexOffset == lists[0].vertexOffset);
+        CHECK(dl.vertexCount == lists[0].vertexCount);
+        CHECK(dl.vertexCount == (i32)verts.size());
+    }
+    // ...and they differ only in material, in the array's order.
+    CHECK(lists[0].textureId == 10);
+    CHECK(lists[1].textureId == 11);
+    CHECK(lists[2].textureId == 12);
+    CHECK(lists[0].filterMode == 0);
+    CHECK(lists[2].filterMode == 2);
+}
+
+TEST_CASE("a single-layer ribbon still submits exactly one draw") {
+    whiteout::flakes::renderer::effects::RibbonEmitterConfig cfg;
+    cfg.emission = 10.0f;
+    cfg.life = 1.0f;
+    cfg.textureId = 7;
+
+    RibbonService svc;
+    svc.AddEmitter(1, 0, DescFromWc3Config(cfg), RibbonBehavior::Wc3());
+    for (i32 i = 0; i < 4; ++i) {
+        svc.SetState(1, 0, StateAt({static_cast<f32>(i) * 10.0f, 0, 0}));
+        svc.SimulateModel(1, 0.1f);
+    }
+
+    std::vector<whiteout::flakes::renderer::Vertex> verts;
+    std::vector<RibbonDrawList> lists;
+    svc.BuildGeometry(1, verts, lists);
+    REQUIRE(lists.size() == 1);
+    CHECK(lists[0].textureId == 7);
+}
+
+TEST_CASE("the sprite-sheet slot indexes U by rows and V by cols") {
+    // Initialize @0x100e7cc20 divides U by ROWS and V by COLS (texBox is
+    // {0,0,1,1} for every `.m2`), and SetTexSlot indexes U by slot/cols and V
+    // by slot%cols — the transpose of the obvious reading. Unobservable in
+    // shipped data (all 5293 corpus ribbons are 1x1), so it is pinned here.
+    whiteout::flakes::renderer::effects::RibbonEmitterConfig cfg;
+    cfg.emission = 10.0f;
+    cfg.life = 1.0f;
+    cfg.rows = 4; // U is quartered
+    cfg.cols = 2; // V is halved
+
+    auto vAt = [&](i32 slot) {
+        RibbonEmitter em(DescFromWc3Config(cfg), RibbonBehavior::Wow());
+        for (i32 i = 0; i < 4; ++i) {
+            RibbonState st = StateAt({static_cast<f32>(i) * 10.0f, 0, 0});
+            st.slot = slot;
+            em.SetState(st);
+            em.Update(0.1f);
+        }
+        std::vector<whiteout::flakes::renderer::Vertex> out;
+        em.BuildStrip(out);
+        REQUIRE_FALSE(out.empty());
+        return out[0].uv;
+    };
+
+    // slot 0 -> row 0, col 0.
+    const auto s0 = vAt(0);
+    CHECK(s0.y == Approx(0.0f));
+    // slot 1 -> row 0, col 1: V advances by 1/cols, U stays put.
+    const auto s1 = vAt(1);
+    CHECK(s1.y == Approx(0.5f));
+    // slot 2 -> row 1, col 0: U advances by 1/rows, V returns to 0.
+    const auto s2 = vAt(2);
+    CHECK(s2.y == Approx(0.0f));
+    CHECK(s2.x == Approx(s0.x + 0.25f));
+}
+
+TEST_CASE("an out-of-range sprite slot is clamped into the sheet") {
+    // SetTexSlot @0x100e7d460 asserts `slot < m_rows * m_cols`. The slot comes
+    // off an animation track, so a bad file must not index outside the sheet.
+    whiteout::flakes::renderer::effects::RibbonEmitterConfig cfg;
+    cfg.emission = 10.0f;
+    cfg.life = 1.0f;
+    cfg.rows = 2;
+    cfg.cols = 2;
+
+    auto uvFor = [&](i32 slot) {
+        RibbonEmitter em(DescFromWc3Config(cfg), RibbonBehavior::Wow());
+        for (i32 i = 0; i < 4; ++i) {
+            RibbonState st = StateAt({static_cast<f32>(i) * 10.0f, 0, 0});
+            st.slot = slot;
+            em.SetState(st);
+            em.Update(0.1f);
+        }
+        std::vector<whiteout::flakes::renderer::Vertex> out;
+        em.BuildStrip(out);
+        REQUIRE_FALSE(out.empty());
+        return out[0].uv;
+    };
+
+    // Past the end lands on the last cell, not outside the texture.
+    CHECK(uvFor(99).x == Approx(uvFor(3).x));
+    CHECK(uvFor(99).y == Approx(uvFor(3).y));
+    // Negative lands on the first.
+    CHECK(uvFor(-5).x == Approx(uvFor(0).x));
+    CHECK(uvFor(-5).y == Approx(uvFor(0).y));
+
+    // Every corner stays inside [0,1] whatever the track says.
+    for (i32 s : {-100, -1, 0, 3, 4, 1000}) {
+        const auto uv = uvFor(s);
+        CHECK(uv.x >= 0.0f);
+        CHECK(uv.x <= 1.0f);
+        CHECK(uv.y >= 0.0f);
+        CHECK(uv.y <= 1.0f);
+    }
+}
+
+TEST_CASE("the emitter's texture transform maps the strip's uvs") {
+    // The `.m2` record's textureTransformIndex resolves — via
+    // textureTransformCombos — to one of the model's texture transforms, and
+    // the adapter hands its matrix down as two rows. This is the last thing
+    // applied to a uv, after the age scroll and the sprite cell.
+    whiteout::flakes::renderer::effects::RibbonEmitterConfig cfg;
+    cfg.emission = 10.0f;
+    cfg.life = 1.0f;
+
+    auto uvsWith = [&](const RibbonState& seed) {
+        RibbonEmitter em(DescFromWc3Config(cfg), RibbonBehavior::Wow());
+        for (i32 i = 0; i < 4; ++i) {
+            RibbonState st = StateAt({static_cast<f32>(i) * 10.0f, 0, 0});
+            st.texAnimRow0[0] = seed.texAnimRow0[0];
+            st.texAnimRow0[1] = seed.texAnimRow0[1];
+            st.texAnimRow0[3] = seed.texAnimRow0[3];
+            st.texAnimRow1[0] = seed.texAnimRow1[0];
+            st.texAnimRow1[1] = seed.texAnimRow1[1];
+            st.texAnimRow1[3] = seed.texAnimRow1[3];
+            em.SetState(st);
+            em.Update(0.1f);
+        }
+        std::vector<whiteout::flakes::renderer::Vertex> out;
+        em.BuildStrip(out);
+        REQUIRE(out.size() >= 6);
+        return out;
+    };
+
+    RibbonState identity; // the default a ribbon that names no transform keeps
+    const auto plain = uvsWith(identity);
+
+    SECTION("the default rows are the identity") {
+        RibbonState explicitIdentity;
+        explicitIdentity.texAnimRow0[0] = 1.0f;
+        explicitIdentity.texAnimRow1[1] = 1.0f;
+        const auto same = uvsWith(explicitIdentity);
+        for (std::size_t i = 0; i < plain.size(); ++i) {
+            CHECK(same[i].uv.x == Approx(plain[i].uv.x));
+            CHECK(same[i].uv.y == Approx(plain[i].uv.y));
+        }
+    }
+
+    SECTION("a translation offsets every uv by the same amount") {
+        RibbonState scrolled;
+        scrolled.texAnimRow0[3] = 0.25f;
+        scrolled.texAnimRow1[3] = -0.5f;
+        const auto moved = uvsWith(scrolled);
+        for (std::size_t i = 0; i < plain.size(); ++i) {
+            CHECK(moved[i].uv.x == Approx(plain[i].uv.x + 0.25f));
+            CHECK(moved[i].uv.y == Approx(plain[i].uv.y - 0.5f));
+        }
+    }
+
+    SECTION("a 90 degree rotation swaps the axes") {
+        // (u,v) -> (-v, u), which is what row0={0,-1} row1={1,0} spells.
+        RibbonState turned;
+        turned.texAnimRow0[0] = 0.0f;
+        turned.texAnimRow0[1] = -1.0f;
+        turned.texAnimRow1[0] = 1.0f;
+        turned.texAnimRow1[1] = 0.0f;
+        const auto rotated = uvsWith(turned);
+        for (std::size_t i = 0; i < plain.size(); ++i) {
+            CHECK(rotated[i].uv.x == Approx(-plain[i].uv.y));
+            CHECK(rotated[i].uv.y == Approx(plain[i].uv.x));
+        }
+    }
+
+    SECTION("scale multiplies the age scroll rather than replacing it") {
+        // The v span across an edge is the sprite cell; the u span is the age
+        // scroll. A scale must stretch both, not clobber them.
+        RibbonState scaled;
+        scaled.texAnimRow0[0] = 3.0f;
+        scaled.texAnimRow1[1] = 2.0f;
+        const auto big = uvsWith(scaled);
+        CHECK(big[0].uv.x == Approx(plain[0].uv.x * 3.0f));
+        CHECK(big[1].uv.y == Approx(plain[1].uv.y * 2.0f));
+        // The u values still differ edge to edge — the transform is applied to
+        // the scroll, not in place of it.
+        CHECK(big[0].uv.x != Approx(big[2].uv.x));
+    }
 }

@@ -142,6 +142,13 @@ u8 SampleM2U8(const wm2::AnimationTrack<u8>& track, const M2AnimTime& at, u8 def
     return track.values[static_cast<usize>(k.sub)][static_cast<usize>(k.k0)];
 }
 
+u16 SampleM2U16(const wm2::AnimationTrack<u16>& track, const M2AnimTime& at, u16 def) {
+    const M2KeySpan k = LocateM2Key(track, at);
+    if (!k.valid)
+        return def;
+    return track.values[static_cast<usize>(k.sub)][static_cast<usize>(k.k0)];
+}
+
 namespace {
 
 // s_animationNames, dumped verbatim from the 6.0.1 client (the table

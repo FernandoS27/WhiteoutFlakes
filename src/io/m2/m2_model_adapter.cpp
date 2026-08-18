@@ -1,6 +1,7 @@
 #include "io/m2/m2_model_adapter.h"
 
 #include "io/m2/m2_animation.h"
+#include "renderer/profiles/wow/m2_material.h"
 #include "renderer/animation/anim_math.h"
 #if WDX_HAS_PHYSICS
 #include "renderer/profiles/wow/wow_physics.h"
@@ -888,26 +889,54 @@ std::vector<renderer::effects::RibbonEmitterConfig> M2ModelAdapter::GetRibbonCon
     for (const auto& r : model_.ribbonEmitters) {
         renderer::effects::RibbonEmitterConfig cfg;
         // `textureIndices` indexes the model's texture array directly, which is
-        // the same space GetTextures numbers its output in. Only the first is
-        // used: the renderer draws a ribbon as one strip with one texture,
-        // where the client walks a CRibbonMat per entry.
-        cfg.textureId = r.textureIndices.empty() ? -1 : static_cast<i32>(r.textureIndices[0]);
-        cfg.filterMode = ::whiteout::flakes::FILTER_BLEND;
-        if (!r.materialIndices.empty()) {
-            const usize mi = r.materialIndices[0];
-            if (mi < model_.materials.size())
-                cfg.filterMode = M2BlendToFilterMode(model_.materials[mi].blendingMode);
+        // the same space GetTextures numbers its output in. Only the FIRST is
+        // drawn, and the rest are deliberately dropped.
+        //
+        // 6.0.1's loader disagrees: CM2Model::InitializeLoaded sizes the
+        // emitter's CRibbonMat / CTexture / replaces arrays to
+        // `textureIndices.count` (`lea r14,[rec+0x14]`, then SetCount([r14]) on
+        // all three) and Render @0x100e7e1d0 loops that count, rebinding
+        // texture and blend over the same strip. It pairs layer i with
+        // `materialIndices[i]` unbounded — every shipped ribbon has exactly one
+        // material index, and the u16 it reads past the end is a literal 0 on
+        // all 5926 such layers in the corpus, so it lands on material 0.
+        //
+        // Drawing those extra passes is wrong on the content we have, and the
+        // textures say why: across this model every layer-0 texture's alpha
+        // reaches 0 (a shaped mask) while every layer-1/2 texture has a high
+        // alpha FLOOR — 118, 128, 50, 30, 40 — and two are 8x8/32x32 tiles that
+        // are opaque everywhere. Those are combiner inputs, not coverage masks;
+        // alpha-compositing them over the strip buries the base under a solid
+        // band. 6.0.1 is Warlords and this content is Legion+, the same version
+        // gap that made the record's zSource look live, so the pass loop is
+        // recorded here rather than acted on.
+        renderer::effects::RibbonLayer layer;
+        layer.textureId = r.textureIndices.empty() ? -1 : static_cast<i32>(r.textureIndices[0]);
+        layer.filterMode = ::whiteout::flakes::FILTER_BLEND;
+        if (!r.materialIndices.empty() && r.materialIndices[0] < model_.materials.size()) {
+            const auto& mat = model_.materials[r.materialIndices[0]];
+            layer.filterMode = M2BlendToFilterMode(mat.blendingMode);
+            // Render derives all three from the material rather than assuming
+            // them: SetLightingEnabled(flags & 1) on a bit the loader stores as
+            // !unlit, SetFogEnabled likewise. 356 of the corpus's ribbon
+            // materials are NOT unlit and 178 not two-sided, so hardcoding them
+            // was wrong for those.
+            layer.unshaded = (mat.flags & renderer::profiles::wow::kM2Unlit) != 0;
+            layer.unfogged = (mat.flags & renderer::profiles::wow::kM2Unfogged) != 0;
+            layer.twoSided = (mat.flags & renderer::profiles::wow::kM2TwoSided) != 0;
         }
+        cfg.layers.push_back(layer);
+
+        cfg.textureId = layer.textureId;
+        cfg.filterMode = layer.filterMode;
         cfg.rows = (r.textureRows > 0) ? r.textureRows : 1;
         cfg.cols = (r.textureCols > 0) ? r.textureCols : 1;
         cfg.emission = r.edgesPerSecond;
         cfg.life = r.edgeLifetime;
         cfg.gravity = r.gravity;
         cfg.priorityPlane = r.priorityPlane;
-        // Ribbons are unlit in the client — CRibbonEmitter::Init loads
-        // "Particle_Unlit_T1" and Render calls SetLightingEnabled(false).
-        cfg.unshaded = true;
-        cfg.twoSided = true;
+        cfg.unshaded = layer.unshaded;
+        cfg.twoSided = layer.twoSided;
         out.push_back(cfg);
     }
     return out;
@@ -951,8 +980,28 @@ void M2ModelAdapter::EvaluateRibbons(const M2AnimTime& at, const Matrix44f& worl
         st.color = SampleM2Vec3(r.colorTrack, at, {1.0f, 1.0f, 1.0f});
         st.alpha = SampleM2Fixed16(r.alphaTrack, at, 1.0f);
         st.visibility = SampleM2U8(r.visibility, at, 1) != 0 ? 1.0f : 0.0f;
-        st.slot = 0;
+        // CM2Model::AnimateST feeds this straight to CRibbonEmitter::SetTexSlot
+        // every frame. No corpus ribbon is anything but 1x1 with slot 0, so
+        // this is correctness rather than a visible change.
+        st.slot = static_cast<i32>(SampleM2U16(r.texSlot, at, 0));
         st.unitScale = (unitScale > 0.0f) ? unitScale : 1.0f;
+
+        // The record's index is into textureTransformCombos, not into
+        // textureTransforms: over the corpus's 5293 ribbons every non-zero
+        // index is in range for the combos array and 278 are not for the direct
+        // one. Both misses below are silent by design — 1353 of those indices
+        // resolve to the combos array's 0xFFFF "no transform" sentinel, which
+        // leaves the identity the state already holds. 213 name a real one.
+        if (r.textureTransformIndex >= 0 &&
+            static_cast<usize>(r.textureTransformIndex) < model_.textureTransformCombos.size()) {
+            const u16 combo =
+                model_.textureTransformCombos[static_cast<usize>(r.textureTransformIndex)];
+            if (combo < fs.texAnimMatrices.size()) {
+                const auto& m = fs.texAnimMatrices[combo];
+                std::copy(std::begin(m.row0), std::end(m.row0), std::begin(st.texAnimRow0));
+                std::copy(std::begin(m.row1), std::end(m.row1), std::begin(st.texAnimRow1));
+            }
+        }
         fs.ribbonStates.push_back(st);
     }
 }

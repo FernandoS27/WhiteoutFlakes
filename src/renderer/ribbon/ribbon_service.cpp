@@ -94,19 +94,27 @@ void RibbonService::BuildGeometry(ModelId model, std::vector<Vertex>& outVertice
         if (added <= 0)
             continue;
 
+        // One strip, drawn once per layer. `CRibbonEmitter::Render`
+        // @0x100e7e1d0 loops the emitter's CRibbonMat array rebinding texture
+        // and blend state each pass over the SAME vertex/index buffer, so the
+        // passes share a vertex range and differ only in material. Order is the
+        // array's, which the transparent queue preserves via the unit index.
         const RibbonDesc& d = em.Desc();
-        RibbonDrawList dl;
-        dl.model = model;
-        dl.emitterId = it->first.id;
-        dl.vertexOffset = offset;
-        dl.vertexCount = added;
-        dl.priorityPlane = d.priorityPlane;
-        dl.textureId = d.textureId;
-        dl.filterMode = d.filterMode;
-        dl.unshaded = d.unshaded;
-        dl.twoSided = d.twoSided;
-        dl.worldOrigin = outVertices[(usize)offset].position;
-        outDrawLists.push_back(dl);
+        const Vector3f origin = outVertices[(usize)offset].position;
+        for (const RibbonLayer& layer : d.layers) {
+            RibbonDrawList dl;
+            dl.model = model;
+            dl.emitterId = it->first.id;
+            dl.vertexOffset = offset;
+            dl.vertexCount = added;
+            dl.priorityPlane = d.priorityPlane;
+            dl.textureId = layer.textureId;
+            dl.filterMode = layer.filterMode;
+            dl.unshaded = layer.unshaded;
+            dl.twoSided = layer.twoSided;
+            dl.worldOrigin = origin;
+            outDrawLists.push_back(dl);
+        }
     }
 }
 

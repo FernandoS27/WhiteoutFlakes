@@ -52,6 +52,10 @@ struct RibbonState {
     /// Model units → renderer units. `above`/`below` and the desc's `gravity`
     /// are authored in model units while the edges live in renderer ones.
     f32 unitScale = 1.0f;
+    /// Texture-coordinate transform: `uv' = (row0, row1) · (u, v, 0, 1)`.
+    /// Identity is the no-transform case, so BuildStrip applies it unbranched.
+    f32 texAnimRow0[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+    f32 texAnimRow1[4] = {0.0f, 1.0f, 0.0f, 0.0f};
 };
 
 /// @brief Static description of one emitter, format-neutral.
@@ -64,11 +68,9 @@ struct RibbonDesc {
     f32 gravity = 0.0f;
     i32 rows = 1, cols = 1;
 
-    // Carried through to the draw unit rather than used by the simulation.
-    i32 textureId = -1;
-    i32 filterMode = 0;
-    bool unshaded = false;
-    bool twoSided = true;
+    /// Draw passes over the one strip, outermost first. Carried through to the
+    /// draw unit rather than used by the simulation. Always at least one.
+    std::vector<RibbonLayer> layers{RibbonLayer{}};
     i32 priorityPlane = 0;
 };
 

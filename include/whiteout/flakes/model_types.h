@@ -191,6 +191,19 @@ namespace whiteout::flakes::renderer::effects {
 /// @brief Static description of one MDX ribbon emitter. Per-frame state
 ///        (above/below/alpha/colour) flows through
 ///        `FrameState::ribbonStates`.
+/// @brief One draw pass over a ribbon's strip.
+///
+/// A `.m2` ribbon is layered: `CRibbonEmitter::Render` draws the SAME triangle
+/// strip once per `CRibbonMat`, rebinding texture and blend state each pass.
+/// MDX has one pass, so WC3 fills exactly one of these.
+struct RibbonLayer {
+    i32 textureId = -1;
+    i32 filterMode = 0; ///< @ref FilterMode.
+    bool unshaded = false;
+    bool unfogged = false;
+    bool twoSided = true;
+};
+
 struct RibbonEmitterConfig {
     i32 textureId = -1;
     i32 filterMode = 0;     ///< @ref FilterMode.
@@ -202,6 +215,10 @@ struct RibbonEmitterConfig {
     f32 gravity = 0.0f;
 
     i32 priorityPlane = 0;
+
+    /// Draw passes, outermost first. Empty means "one pass from the scalar
+    /// fields above" — the MDX shape, kept so the WC3 path is untouched.
+    std::vector<RibbonLayer> layers;
 };
 
 } // namespace whiteout::flakes::renderer::effects
@@ -655,6 +672,11 @@ struct FrameState {
         /// `above`/`below`/`gravity` — authored in model units — need the same
         /// factor. MDX leaves it 1.
         f32 unitScale = 1.0f;
+        /// The emitter's texture-coordinate transform, in @ref TexAnimMatrix's
+        /// form: `uv' = (row0, row1) · (u, v, 0, 1)`. Identity when the record
+        /// names no transform, which is every MDX ribbon and most `.m2` ones.
+        f32 texAnimRow0[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+        f32 texAnimRow1[4] = {0.0f, 1.0f, 0.0f, 0.0f};
     };
     std::vector<RibbonFrameState> ribbonStates;
 
@@ -821,6 +843,7 @@ struct FrameState {
 // Public re-exports.
 namespace whiteout::flakes {
 using ::whiteout::flakes::renderer::ParticleEmitterConfig;
+using ::whiteout::flakes::renderer::effects::RibbonLayer;
 using ::whiteout::flakes::renderer::effects::RibbonEmitterConfig;
 using ::whiteout::flakes::renderer::model::AttachmentConfig;
 using ::whiteout::flakes::renderer::model::CollisionShapeData;

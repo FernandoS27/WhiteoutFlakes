@@ -68,6 +68,8 @@ void ApplyRibbonFrameStates(Actor& mi, const FrameState& state, ribbon::RibbonSe
         st.visibility = rs.visibility;
         st.slot = rs.slot;
         st.unitScale = rs.unitScale;
+        std::copy(std::begin(rs.texAnimRow0), std::end(rs.texAnimRow0), std::begin(st.texAnimRow0));
+        std::copy(std::begin(rs.texAnimRow1), std::end(rs.texAnimRow1), std::begin(st.texAnimRow1));
         ribbons.SetState(mi.handle, rs.emitterId, st);
     }
 }
