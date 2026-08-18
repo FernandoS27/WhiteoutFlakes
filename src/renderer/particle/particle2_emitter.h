@@ -215,6 +215,12 @@ public:
         return modelToWorld_;
     }
 
+    // This frame's emitter position, after SetWorldPosition. Read by the sim
+    // tests to bound where a spawn may land relative to the emitter.
+    const Vector3f& WorldPosition() const {
+        return worldPos_;
+    }
+
     const ParticlePool& Pool() const {
         return pool_;
     }

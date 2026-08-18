@@ -108,6 +108,20 @@ struct ParticleBehavior {
     ///     `prev + u*(cur-prev)`, `u` uniform, one extra draw per particle.
     bool emitAlongPath = false;
 
+    /// A step the pool could not serve is DROPPED, not banked. WoW's
+    /// `EmitNewParticles` @0x1016a5c90 decrements `m_numNew` once per loop
+    /// iteration with the decrement outside the buffer guard, so its carry
+    /// always falls below 1 whatever the pool does. Banking it instead lets the
+    /// carry grow without bound while an emitter is saturated, and since
+    /// `emitAlongPath` reads that carry as the spawn's phase along the emitter
+    /// path, the effect walks steadily away from its model.
+    ///
+    /// Left off for WC3, whose own carry handling is not established — its
+    /// spawns do not read the carry as a position at all, so banking there only
+    /// delays particles rather than displacing them, and the draw-trace gate
+    /// pins the behaviour it has always had.
+    bool dropUnservedEmission = false;
+
     /// Distance LOD on the emission rate:
     /// `clamp((50 - viewDist)*0.02 + 1, 0.25, 1)`, skipped per-emitter by the
     /// LodIgnoreDistance flag. Needs a view position at simulate time, which is
@@ -178,6 +192,7 @@ struct ParticleBehavior {
         b.perParticleLifespan = true;
         b.rateJitterPerFrame = true;
         b.emitAlongPath = true;
+        b.dropUnservedEmission = true;
         b.lodEmissionScale = true;
         b.inheritEmitterVelocity = true;
         b.forceModel = ParticleForceModel::WowForces;

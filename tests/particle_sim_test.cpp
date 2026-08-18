@@ -832,3 +832,67 @@ TEST_CASE("a world-space model particle keeps the emitter basis it was born with
     REQUIRE(compared > 10);
     REQUIRE(worstDrift == Approx(0.0f).margin(1e-5f));
 }
+
+TEST_CASE("a starved emitter does not bank the emission it could not spawn") {
+    // The pool is sized from the animated lifespan, so a zero one sizes it to
+    // nothing and every step is dropped. `EmitNewParticles` @0x1016a5c90 drops
+    // that step's carry too — its `m_numNew -= 1` sits OUTSIDE the buffer guard
+    // — and banking it instead is what made effects walk away from their model:
+    // `carried` sets the first spawn's phase along the emitter's path, so a
+    // carry of N places that spawn N emission-periods of travel behind the
+    // emitter, growing for as long as the pool stays full.
+    auto desc = MakeDesc();
+    desc->modelSpace = false;
+
+    Emitter2 e;
+    e.SetDesc(desc);
+    e.SetBehavior(whiteout::flakes::renderer::core::ParticleBehavior::Wow());
+    Arm(e, 12345u);
+
+    // A moving emitter, so the path the spawn walks is non-degenerate.
+    auto stateAt = [](i32 frame, f32 life) {
+        whiteout::flakes::renderer::model::FrameState::ParticleFrameState st{};
+        st.emitterId = 0;
+        st.emissionRate = 60.0f;
+        st.lifeSpan = life;
+        st.visibility = 1.0f;
+        st.transform = Matrix44f::identity();
+        st.worldPosition = {static_cast<f32>(frame) * 5.0f, 0.0f, 0.0f};
+        st.transform.data[3][0] = st.worldPosition.x;
+        st.modelAlpha = 1.0f;
+        st.enabled = true;
+        st.unitScale = 1.0f;
+        return st;
+    };
+
+    // Phase 1: lifespan 0 sizes the pool to nothing, so 120 frames of emission
+    // are asked for and none can be served.
+    for (i32 i = 0; i < 120; ++i) {
+        e.ApplyState(stateAt(i, 0.0f));
+        e.SetVisible(true);
+        e.Update(kDt, 1.0f);
+    }
+    REQUIRE(e.Pool().AliveCount() == 0);
+
+    // Phase 2: a real lifespan grows the pool, and the first particles out of
+    // it must appear along THIS frame's travel — not 120 frames behind it.
+    const f32 travel = 5.0f;
+    for (i32 i = 120; i < 130; ++i) {
+        e.ApplyState(stateAt(i, kLife));
+        e.SetVisible(true);
+        e.Update(kDt, 1.0f);
+
+        const auto& pool = e.Pool();
+        for (usize k = 0; k < pool.AliveCount(); ++k) {
+            const auto& p = pool[pool.AliveAt(k)];
+            if (p.age > 2.0f * kDt)
+                continue; // only this frame's births carry the spawn offset
+            const f32 dx = p.position.x - e.WorldPosition().x;
+            // The spawn walks between the previous pose and this one, so the
+            // offset can never exceed one frame of travel plus the emitter's
+            // own spawn area.
+            CHECK(std::fabs(dx) <= travel + 20.0f);
+        }
+    }
+    CHECK(e.Pool().AliveCount() > 0);
+}

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 namespace whiteout::flakes::renderer::particle {
 
@@ -178,9 +179,17 @@ void Emitter2::CreateParticle(Particle2& p, f32 elapsed) {
 void Emitter2::Sync() {
     if (emissionRate_ <= 0.0f || desc_->lifeSpan <= 0.0f)
         return;
+    // The lifespan that actually decides how long a slot stays occupied. Under
+    // WoW that is the ANIMATED track plus the record's variance, not the desc's
+    // constant: EffectiveLifeSpan reads `lifeSpan_`, so sizing off
+    // `desc_->lifeSpan` undercounts every emitter whose track rises above its
+    // first key and pins the pool permanently full.
+    const f32 life = behavior_.perParticleLifespan
+                         ? ((std::max)(lifeSpan_, 0.0f) + std::fabs(desc_->lifespanVariation))
+                         : desc_->lifeSpan;
     // Headroom over the steady-state population (rate x lifespan) so a rate
     // spike does not immediately starve the free list.
-    const u32 capacity = static_cast<u32>(1.15f * emissionRate_ * desc_->lifeSpan);
+    const u32 capacity = static_cast<u32>(1.15f * emissionRate_ * life);
     const usize before = pool_.Capacity();
     pool_.Sync(capacity);
     if (pool_.Capacity() != before)
@@ -255,6 +264,18 @@ void Emitter2::EmitStep(f32 elapsed, f32 emissionScaler) {
         }
 
         u32 planned = static_cast<u32>(numNew_);
+        // Drained here, not by however many the pool could actually serve.
+        // `EmitNewParticles` @0x1016a5c90 decrements m_numNew once per loop
+        // iteration with the decrement OUTSIDE the buffer guard, so its carry
+        // always falls below 1 — a step it could not spawn is dropped, not
+        // banked. Subtracting only what we emitted lets the carry grow without
+        // bound whenever the pool is saturated, and `carried` is what sets the
+        // spawn's phase along the emitter path below: at carry 300 the first
+        // spawn lands 300 emission-periods of travel behind the emitter, which
+        // reads as the whole effect slowly separating from the model.
+        if (behavior_.dropUnservedEmission)
+            numNew_ -= static_cast<f32>(planned);
+
         u32 emitted = 0;
         while (planned > 0 && !pool_.DeadEmpty()) {
             if (behavior_.emitAlongPath) {
@@ -277,7 +298,8 @@ void Emitter2::EmitStep(f32 elapsed, f32 emissionScaler) {
             ++emitted;
             --planned;
         }
-        numNew_ -= static_cast<f32>(emitted);
+        if (!behavior_.dropUnservedEmission)
+            numNew_ -= static_cast<f32>(emitted);
     }
 }
 
