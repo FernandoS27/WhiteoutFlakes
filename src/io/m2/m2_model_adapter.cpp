@@ -117,6 +117,181 @@ Matrix44f M2BoneLocal(const Vector3f& t, const Quaternion& r, const Vector3f& s,
     return renderer::animation::ComposePivotSRT(t, r, s, pivot);
 }
 
+// The four billboard bits, as one value. Not a bitmask any more: the client
+// dispatches on `flags & 0x78` with a switch that has no `default`, so a bone
+// setting two of them billboards not at all. Six corpus bones do (two 0x18,
+// four 0x48) and this is why they are inert rather than picking a winner.
+enum class M2Billboard { None, Spherical, LockX, LockY, LockZ };
+
+M2Billboard M2BillboardOf(u32 flags) {
+    using ::whiteout::m2::BoneFlag;
+    switch (flags & (static_cast<u32>(BoneFlag::SphericalBillboard) |
+                     static_cast<u32>(BoneFlag::CylindricalBillboardX) |
+                     static_cast<u32>(BoneFlag::CylindricalBillboardY) |
+                     static_cast<u32>(BoneFlag::CylindricalBillboardZ))) {
+    case static_cast<u32>(BoneFlag::SphericalBillboard):
+        return M2Billboard::Spherical;
+    case static_cast<u32>(BoneFlag::CylindricalBillboardX):
+        return M2Billboard::LockX;
+    case static_cast<u32>(BoneFlag::CylindricalBillboardY):
+        return M2Billboard::LockY;
+    case static_cast<u32>(BoneFlag::CylindricalBillboardZ):
+        return M2Billboard::LockZ;
+    default:
+        return M2Billboard::None;
+    }
+}
+
+Vector3f RowOf(const Matrix44f& m, i32 r) {
+    return {m.data[r][0], m.data[r][1], m.data[r][2]};
+}
+
+void SetRow(Matrix44f& m, i32 r, const Vector3f& v) {
+    m.data[r][0] = v.x;
+    m.data[r][1] = v.y;
+    m.data[r][2] = v.z;
+}
+
+// C3Vector::SafeNormalize: unit length, or left alone when there is no length
+// to divide by. The client billboards through it three times per bone and never
+// checks the result, so a degenerate row has to survive as-is.
+Vector3f SafeNormalize(const Vector3f& v) {
+    const f32 lenSq = v.x * v.x + v.y * v.y + v.z * v.z;
+    if (lenSq <= 1e-12f)
+        return v;
+    return v * (1.0f / std::sqrt(lenSq));
+}
+
+// The camera's ORIENTATION in model space, and its inverse — the basis a
+// billboarded bone is aligned against.
+//
+// Orthonormalised, not just de-translated. An actor's world transform carries
+// the profile's unit scale (40x for a WoW creature) and its axis rebase, and
+// neither belongs in a rotation: the bone's row lengths are measured through
+// this basis and mapped back through its inverse, so any scale left in it gets
+// SQUARED — measured at 1600 on a 40x actor, which is a sprite covering the
+// screen. Orthonormal also makes the inverse a transpose, exactly.
+//
+// Then forced left-handed. The basis the client installs for an unrotated bone
+// is rows `(0,0,-1) (1,0,0) (0,1,0)`, whose determinant is -1; a billboard
+// cannot mirror a model, so the view basis those constants are written against
+// is left-handed too and the two cancel. Ours is `look_at_rh` composed with a
+// rebase of unknown handedness, so the sign is normalised here rather than
+// assumed — feeding the client's constants a right-handed basis inverts every
+// billboarded bone's frame, which flips its skinned normals and blows the
+// shading out to white.
+bool M2CameraBasis(const Matrix44f& world, const Matrix44f& view, Matrix44f& basis,
+                   Matrix44f& inverse) {
+    const Matrix44f mv = world * view;
+    Vector3f r[3] = {RowOf(mv, 0), RowOf(mv, 1), RowOf(mv, 2)};
+
+    // Gram-Schmidt, which keeps the handedness the input had.
+    for (i32 k = 0; k < 3; ++k) {
+        for (i32 j = 0; j < k; ++j)
+            r[k] = r[k] - r[j] * r[k].dot(r[j]);
+        const f32 len = r[k].length();
+        if (len <= 1e-8f)
+            return false;  // degenerate world transform: nothing to align to
+        r[k] = r[k] * (1.0f / len);
+    }
+    if (r[0].dot(whiteout::cross(r[1], r[2])) > 0.0f) {
+        for (i32 k = 0; k < 3; ++k)
+            r[k].z = -r[k].z;
+    }
+
+    basis = Matrix44f::identity();
+    inverse = Matrix44f::identity();
+    for (i32 k = 0; k < 3; ++k) {
+        SetRow(basis, k, r[k]);
+        // Orthonormal, so the inverse is the transpose.
+        inverse.data[0][k] = r[k].x;
+        inverse.data[1][k] = r[k].y;
+        inverse.data[2][k] = r[k].z;
+    }
+    return true;
+}
+
+// Screen-align one bone. `world` is the bone's model-space matrix as the parent
+// chain left it, `local` the local transform that produced it, and `viewBasis`
+// the model→view 3x3 with `viewBasisInv` its inverse.
+//
+// The client (`AnimateMT`, the `flags & 0x78` block) does this with no camera
+// vector at all, because it composes the whole palette in VIEW space: a root
+// bone's parent is `model x view`, so overwriting a bone's basis with one that
+// is constant in view space *is* the billboard. Ours is a model-space palette,
+// so the same three steps have to be conjugated through `viewBasis` — the axes
+// are read in view space, replaced there, and mapped back.
+//
+// Both halves of the client's fix-up are kept because both are load-bearing:
+// the row lengths are restored from the composed matrix (a billboard must not
+// also rescale the bone), and the translation is rebuilt so the pivot lands
+// where the pre-billboard matrix put it (a billboard rotates in place).
+Matrix44f M2BillboardBone(const Matrix44f& world, const Matrix44f& local, M2Billboard mode,
+                          const Matrix44f& viewBasis, const Matrix44f& viewBasisInv,
+                          const Vector3f& pivot) {
+    // The bone's axes as the camera sees them.
+    const Matrix44f viewSpace = world * viewBasis;
+    const f32 len[3] = {RowOf(viewSpace, 0).length(), RowOf(viewSpace, 1).length(),
+                        RowOf(viewSpace, 2).length()};
+    const Vector3f anchor = whiteout::transform_point(pivot, world);
+
+    Matrix44f bb = Matrix44f::identity();
+    switch (mode) {
+    case M2Billboard::Spherical: {
+        // Every axis replaced, from the bone's own LOCAL rotation with its
+        // columns permuted: row k becomes `(local[k][1], local[k][2],
+        // -local[k][0])`. Reinterpreting a local basis as a view-space one is
+        // the client's, not a reading of it — and it is what lets a bone that
+        // animates its own rotation spin in the screen plane instead of
+        // freezing. An unsampled bone's local transform is identity, which
+        // constant-folds to the fixed basis the client keeps in a literal.
+        for (i32 r = 0; r < 3; ++r)
+            SetRow(bb, r,
+                   SafeNormalize({local.data[r][1], local.data[r][2], -local.data[r][0]}));
+        break;
+    }
+    case M2Billboard::LockX: {
+        // Cylindrical: the named axis survives, the other two swing to face the
+        // camera. `(y, -x, 0)` is the locked axis turned a quarter turn inside
+        // the screen plane, which is what puts the third axis nearest the eye.
+        const Vector3f x = SafeNormalize(RowOf(viewSpace, 0));
+        const Vector3f y = SafeNormalize({x.y, -x.x, 0.0f});
+        SetRow(bb, 0, x);
+        SetRow(bb, 1, y);
+        SetRow(bb, 2, whiteout::cross(y, x));
+        break;
+    }
+    case M2Billboard::LockY: {
+        const Vector3f y = SafeNormalize(RowOf(viewSpace, 1));
+        const Vector3f x = SafeNormalize({-y.y, y.x, 0.0f});
+        SetRow(bb, 0, x);
+        SetRow(bb, 1, y);
+        SetRow(bb, 2, whiteout::cross(y, x));
+        break;
+    }
+    case M2Billboard::LockZ: {
+        const Vector3f z = SafeNormalize(RowOf(viewSpace, 2));
+        const Vector3f y = SafeNormalize({z.y, -z.x, 0.0f});
+        SetRow(bb, 0, whiteout::cross(z, y));
+        SetRow(bb, 1, y);
+        SetRow(bb, 2, z);
+        break;
+    }
+    case M2Billboard::None:
+        return world;
+    }
+
+    for (i32 r = 0; r < 3; ++r)
+        SetRow(bb, r, RowOf(bb, r) * len[r]);
+
+    Matrix44f out = bb * viewBasisInv;
+    const Vector3f rebased = whiteout::transform_normal(pivot, out);
+    out.data[3][0] = anchor.x - rebased.x;
+    out.data[3][1] = anchor.y - rebased.y;
+    out.data[3][2] = anchor.z - rebased.z;
+    return out;
+}
+
 // The parent matrix bone `i` composes against, after its three "ignore parent"
 // flags have had their say.
 //
@@ -147,10 +322,18 @@ Matrix44f M2ParentFor(const Matrix44f& parent, u32 flags, const Vector3f& pivot)
             m.data[row][1] = v.y;
             m.data[row][2] = v.z;
         }
+    } else if (basis == static_cast<u32>(BoneFlag::IgnoreParentRotation)) {
+        // Rotation only: the model's basis direction, at the magnitude the
+        // parent had. The client writes `MV.row_k * (|parent.row_k| /
+        // |MV.row_k|)`, so dropping the rotation must not also drop the scale.
+        for (i32 row = 0; row < 3; ++row) {
+            const Vector3f v{m.data[row][0], m.data[row][1], m.data[row][2]};
+            const f32 len = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+            for (i32 col = 0; col < 3; ++col)
+                m.data[row][col] = (row == col) ? len : 0.0f;
+        }
     } else if (basis != 0) {
-        // Scale *and* rotation ignored: the model's own basis, i.e. identity.
-        // The client branches on `flags & 6` and handles only 2 and 6, so
-        // rotation-without-scale lands here too rather than in its own case.
+        // Both ignored: the model's own basis verbatim, i.e. identity.
         for (i32 row = 0; row < 3; ++row)
             for (i32 col = 0; col < 3; ++col)
                 m.data[row][col] = (row == col) ? 1.0f : 0.0f;
@@ -472,22 +655,16 @@ SkeletonData M2ModelAdapter::GetSkeleton() {
             (b.parentBoneId >= 0 && static_cast<usize>(b.parentBoneId) < model_.bones.size())
                 ? static_cast<i32>(b.parentBoneId)
                 : -1;
-        // Recorded, not honoured: Evaluate does not billboard. The client does
-        // it in *camera* space (a fixed basis, or the bone's local rotation with
-        // its axes permuted) and PoseRequest carries a camera position but no
-        // view matrix, so a screen-aligned basis is not expressible from what
-        // Evaluate is handed. Publishing the flags keeps the data one step from
-        // whoever closes that.
-        u32 bb = BONE_BILLBOARD_NONE;
-        if (hasFlag(static_cast<BoneFlag>(b.flags), BoneFlag::SphericalBillboard))
-            bb = BONE_BILLBOARD_FULL;
-        else if (hasFlag(static_cast<BoneFlag>(b.flags), BoneFlag::CylindricalBillboardX))
-            bb = BONE_BILLBOARD_LOCK_X;
-        else if (hasFlag(static_cast<BoneFlag>(b.flags), BoneFlag::CylindricalBillboardY))
-            bb = BONE_BILLBOARD_LOCK_Y;
-        else if (hasFlag(static_cast<BoneFlag>(b.flags), BoneFlag::CylindricalBillboardZ))
-            bb = BONE_BILLBOARD_LOCK_Z;
-        sk.billboardFlags[i] = bb;
+        // Routed through the same decode `Evaluate` billboards with, so what
+        // this publishes is what the bone actually does — a bone setting two
+        // bits reads as NONE here because that is how it renders.
+        switch (M2BillboardOf(b.flags)) {
+        case M2Billboard::Spherical: sk.billboardFlags[i] = BONE_BILLBOARD_FULL; break;
+        case M2Billboard::LockX: sk.billboardFlags[i] = BONE_BILLBOARD_LOCK_X; break;
+        case M2Billboard::LockY: sk.billboardFlags[i] = BONE_BILLBOARD_LOCK_Y; break;
+        case M2Billboard::LockZ: sk.billboardFlags[i] = BONE_BILLBOARD_LOCK_Z; break;
+        case M2Billboard::None: break;
+        }
     }
     return sk;
 }
@@ -664,6 +841,22 @@ void M2ModelAdapter::EvaluateBones(const M2AnimTime& at, bool bindPose, const Po
         }
     }
 
+    // Flag coverage, for the ones nothing below acts on. `0x080` enables the
+    // sampled path alongside `Transformed` and multiplies in a host matrix, and
+    // `0x100` pairs with it — neither is set on a single bone in the 530283-bone
+    // corpus, so there is nothing to drive. `0x800` (608 bones), `0x1000`
+    // HelmetAnimScaled (143) and everything above `0x10000` (16548) are not read
+    // by `AnimateMT` at all: 6.0.1 is Warlords and the corpus is Legion+, so
+    // these are content the reference binary predates rather than behaviour it
+    // declines to implement. Inert until a binary that reads them says what for.
+
+    // Built once per pose; false means the caller's world transform is
+    // degenerate, and a bone with no camera basis to align to keeps the one the
+    // parent chain gave it.
+    Matrix44f viewBasis;
+    Matrix44f viewBasisInv;
+    const bool canBillboard = M2CameraBasis(req.world, req.view, viewBasis, viewBasisInv);
+
     for (usize i = 0; i < model_.bones.size(); ++i) {
         if (!driven.empty() && driven[i]) {
             fs.boneWorldMatrices[i] = driven[i]->m;
@@ -679,19 +872,41 @@ void M2ModelAdapter::EvaluateBones(const M2AnimTime& at, bool bindPose, const Po
                 ? M2ParentFor(fs.boneWorldMatrices[static_cast<usize>(parent)], b.flags, b.pivot)
                 : Matrix44f::identity();
 
-        // Only a bone the file marks `Transformed` is sampled. That is the
-        // client's own gate (`flags & 0x280`, of which 0x200 is the on-disk
-        // bit); an unflagged bone simply inherits its parent's matrix, which is
-        // what an identity local transform composes to anyway.
-        if (bindPose || !hasFlag(static_cast<BoneFlag>(b.flags), BoneFlag::Transformed)) {
-            fs.boneWorldMatrices[i] = parentM;
-            continue;
+        // Only a bone the file marks `Transformed`, and not `Kinematic`, is
+        // sampled. Both halves are the client's own gate — `(flags & 0x280) ==
+        // 0 || (flags & 0x400) != 0` sends a bone down the unsampled path,
+        // where it takes the solver's matrix if it has one and its parent's
+        // otherwise. An unflagged bone inheriting its parent is what an
+        // identity local transform composes to anyway.
+        //
+        // `Kinematic` reaching this at all is narrow: of the corpus's 2162 such
+        // bones, 2142 carry no keys to sample, and the 20 that do (all in
+        // `moargbrute_boss`) also ship a `.phys`, so the physics claim above
+        // has already taken them. The gate is what makes that true when the
+        // solver is off rather than only when it happens to run.
+        const bool sampled = !bindPose &&
+                             hasFlag(static_cast<BoneFlag>(b.flags), BoneFlag::Transformed) &&
+                             !hasFlag(static_cast<BoneFlag>(b.flags), BoneFlag::Kinematic);
+        Matrix44f local = Matrix44f::identity();
+        if (sampled) {
+            const Vector3f t = SampleM2Vec3(b.translation, at, {0.0f, 0.0f, 0.0f});
+            const Quaternion r = SampleM2Quat(b.rotation, at, Quaternion{0.0f, 0.0f, 0.0f, 1.0f});
+            const Vector3f s = SampleM2Vec3(b.scale, at, {1.0f, 1.0f, 1.0f});
+            local = M2BoneLocal(t, r, s, b.pivot);
         }
+        Matrix44f world = sampled ? (local * parentM) : parentM;
 
-        const Vector3f t = SampleM2Vec3(b.translation, at, {0.0f, 0.0f, 0.0f});
-        const Quaternion r = SampleM2Quat(b.rotation, at, Quaternion{0.0f, 0.0f, 0.0f, 1.0f});
-        const Vector3f s = SampleM2Vec3(b.scale, at, {1.0f, 1.0f, 1.0f});
-        fs.boneWorldMatrices[i] = M2BoneLocal(t, r, s, b.pivot) * parentM;
+        // Outside the sampled test on purpose, matching the client: four bones
+        // in five that billboard are not `Transformed` at all, and they still
+        // billboard — off an identity local transform. Applied here rather than
+        // downstream so a billboarded bone carries its whole subtree with it,
+        // which is what makes one flagged helper reorient a model's every
+        // attached sprite.
+        const M2Billboard bb = M2BillboardOf(b.flags);
+        if (bb != M2Billboard::None && canBillboard)
+            world = M2BillboardBone(world, local, bb, viewBasis, viewBasisInv, b.pivot);
+
+        fs.boneWorldMatrices[i] = world;
     }
 
     // Place the `.phys` wireframes on their bones for the Collisions view. The palette is a
@@ -815,8 +1030,9 @@ void M2ModelAdapter::EvaluateSurfaces(const M2AnimTime& at, bool bindPose,
         }
 
         // Whole-element alpha takes unit 0's weight whatever the texture count;
-        // the rest reach the shader as the per-unit float4 (batch flag 0x40).
-        st.alpha = st.unitWeights[0];
+        // the rest reach the shader as the per-unit float4. Batch flag 0x40
+        // drops the weight from the product entirely.
+        st.alpha = (batch.flags & 0x40u) ? 1.0f : st.unitWeights[0];
         if (batch.colorIndex >= 0 && static_cast<usize>(batch.colorIndex) < model_.colors.size()) {
             const auto& c = model_.colors[static_cast<usize>(batch.colorIndex)];
             st.color = SampleM2Vec3(c.color, at, {1.0f, 1.0f, 1.0f});

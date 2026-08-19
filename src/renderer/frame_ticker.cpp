@@ -293,6 +293,7 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
         req.globalTimeMs = globalTimeMs;
         req.world = actor.ScaledWorldTransform();
         req.cameraPos = ctx.camPos;
+        req.view = ctx.view;
 
         // A Skinned child does not pose itself: it rides the parent's rig, so
         // every bone the two share by key bone arrives already in the parent's

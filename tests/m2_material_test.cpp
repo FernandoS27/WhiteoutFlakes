@@ -6,6 +6,8 @@
 #include "renderer/profiles/wow/m2_material.h"
 #include "renderer/profiles/wow/m2_surface_table.h"
 
+#include <whiteout/models/m2/m2.h>
+
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
@@ -157,7 +159,7 @@ TEST_CASE("M2 modulate blends feed the combiner a constant", "[m2][material]") {
     CHECK(mod2x.z == Approx(0.5f));
 }
 
-TEST_CASE("M2 pass assignment follows the model's alpha, not the batch's",
+TEST_CASE("M2 pass assignment follows model alpha times element alpha",
           "[m2][material][classify]") {
     auto surf = [](M2Blend b) {
         M2Surface s;
@@ -173,13 +175,15 @@ TEST_CASE("M2 pass assignment follows the model's alpha, not the batch's",
           core::BlendClass::Transparent);
 
     // A *fading* model demotes both opaque classes into the sorted transparent
-    // set — this is the delta. It is the model's alpha that does it, so a batch
-    // whose own element alpha has dipped stays opaque while the model is solid.
+    // set — this is the delta. BeginDraw multiplies model alpha and element
+    // alpha into one scalar and tests that, so a solid model carrying a
+    // half-faded batch demotes just the same.
     CHECK(M2ClassifySurface(surf(M2Blend::Opaque), 0.5f, 0.5f).blend ==
           core::BlendClass::Transparent);
     CHECK(M2ClassifySurface(surf(M2Blend::AlphaKey), 0.5f, 0.5f).blend ==
           core::BlendClass::Transparent);
-    CHECK(M2ClassifySurface(surf(M2Blend::Opaque), 1.0f, 0.25f).blend == core::BlendClass::Opaque);
+    CHECK(M2ClassifySurface(surf(M2Blend::Opaque), 1.0f, 0.25f).blend ==
+          core::BlendClass::Transparent);
 
     // The threshold is 0.99999, not 1.0 — a model one ulp shy of solid is still
     // solid to the client.
@@ -194,10 +198,11 @@ TEST_CASE("M2 pass assignment follows the model's alpha, not the batch's",
     // ...except BlendAdd, which is premultiplied and still adds light at zero.
     CHECK(M2ClassifySurface(surf(M2Blend::BlendAdd), 0.0f, 0.0f).visible);
 
-    // A constant-zero weight track outranks all of it, BlendAdd included.
-    M2Surface suppressed = surf(M2Blend::BlendAdd);
-    suppressed.suppressed = true;
-    CHECK_FALSE(M2ClassifySurface(suppressed, 1.0f, 1.0f).visible);
+    // Element alpha culls on the same threshold and by the same product — the
+    // client has no separate "this batch never draws" gate, so a zeroed weight
+    // or colour track has to reach here as alpha and nothing else.
+    CHECK_FALSE(M2ClassifySurface(surf(M2Blend::Alpha), 1.0f, 0.00001f).visible);
+    CHECK(M2ClassifySurface(surf(M2Blend::BlendAdd), 1.0f, 0.0f).visible);
 }
 
 TEST_CASE("M2 depth-writing transparent batches ask for a twin", "[m2][material][classify]") {
@@ -231,4 +236,84 @@ TEST_CASE("M2 raw blend values outside the enum stay in range", "[m2][material]"
     // something rather than index off the end of the tables.
     CHECK(M2BlendFromRaw(8) == M2Blend::Opaque);
     CHECK(M2BlendFromRaw(0xFFFF) == M2Blend::Opaque);
+}
+
+// ---------------------------------------------------------------------------
+// Element alpha, as CM2Scene::BeginDraw @ 0x100f793b0 forms it:
+//
+//     alpha = model.alpha
+//           * colors[batch.colorIndex].alpha
+//           * (batch.textureCount && !(batch.flags & 0x40)
+//                  ? weights[weightCombos[batch.textureWeightComboIndex]] : 1)
+//
+// The weight lookup has no `+ unit` — units above the first reach the shader as
+// the per-unit float4 and never touch visibility.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// One three-unit batch over two weight tracks, wired the way `earthspiritsmall`
+// is: combos {0, 0, 1}, weight 0 solid and weight 1 a constant zero.
+whiteout::m2::Model TwoWeightModel(whiteout::u8 batchFlags) {
+    namespace wm2 = whiteout::m2;
+    wm2::Model m;
+    m.materials.push_back({.flags = 0, .blendingMode = 0});
+
+    wm2::TextureWeight solid;
+    solid.weight.values = {{32767}};
+    wm2::TextureWeight zero;
+    zero.weight.values = {{0}};
+    m.textureWeights = {solid, zero};
+    m.textureWeightCombos = {0, 0, 1};
+    m.textureCombos = {0, 0, 0};
+    m.textures.resize(1);
+
+    wm2::Batch b;
+    b.flags = batchFlags;
+    b.textureCount = 3;
+    b.colorIndex = -1;
+    m.skinProfiles.emplace_back().batches.push_back(b);
+    return m;
+}
+
+} // namespace
+
+TEST_CASE("M2 element alpha reads only the first unit's weight", "[m2][material][classify]") {
+    const auto model = TwoWeightModel(0);
+    const auto table = BuildM2SurfaceTable(model, 0);
+    const M2Surface* s = table->Surface(0);
+    REQUIRE(s);
+
+    // Unit 2's weight is zero and unit 0's is not, so the batch draws. Reading
+    // the wrong unit here emptied `earthspiritsmall` — all seven of its batches
+    // share this combo layout.
+    CHECK(s->elementAlpha == Approx(1.0f));
+    CHECK(s->unitWeights[2] == Approx(0.0f));
+    CHECK(M2ClassifySurface(*s, 1.0f, s->elementAlpha).visible);
+}
+
+TEST_CASE("M2 batch flag 0x40 drops the weight from element alpha",
+          "[m2][material][classify]") {
+    namespace wm2 = whiteout::m2;
+    auto model = TwoWeightModel(0);
+    // Point unit 0 at the zero track, so the flag is the only thing that can
+    // decide whether the batch draws.
+    model.textureWeightCombos = {1, 0, 0};
+
+    const M2Surface* off = BuildM2SurfaceTable(model, 0)->Surface(0);
+    REQUIRE(off);
+    CHECK(off->elementAlpha == Approx(0.0f));
+    CHECK_FALSE(off->ignoreWeights);
+    CHECK_FALSE(M2ClassifySurface(*off, 1.0f, off->elementAlpha).visible);
+
+    model.skinProfiles[0].batches[0].flags = 0x40;
+    const auto table = BuildM2SurfaceTable(model, 0);
+    const M2Surface* on = table->Surface(0);
+    REQUIRE(on);
+    CHECK(on->ignoreWeights);
+    CHECK(on->elementAlpha == Approx(1.0f));
+    CHECK(M2ClassifySurface(*on, 1.0f, on->elementAlpha).visible);
+    // Still handed to the shader — the flag moves the weight, it does not
+    // discard it.
+    CHECK(on->unitWeights[0] == Approx(0.0f));
 }

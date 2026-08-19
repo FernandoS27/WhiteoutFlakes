@@ -76,8 +76,11 @@ public:
 
     std::vector<model::SequenceInfo> Sequences() const;
 
+    /// @brief @p view is the world-to-view matrix; identity leaves WoW's
+    ///        screen-aligned bone billboards aligned to model axes instead.
     model::FrameState Evaluate(const Matrix44f& worldTransform, const Vector3f& cameraPos,
-                               i32 globalTimeMs) const;
+                               i32 globalTimeMs,
+                               const Matrix44f& view = Matrix44f::identity()) const;
 
 private:
     std::shared_ptr<model::IAnimationSource> source_;

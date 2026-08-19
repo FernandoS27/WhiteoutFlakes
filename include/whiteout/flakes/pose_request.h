@@ -119,6 +119,18 @@ struct PoseRequest {
     /// @brief Camera position in world space, for camera-anchored billboards.
     Vector3f cameraPos = {0.0f, 0.0f, 0.0f};
 
+    /// @brief World-to-view matrix, for billboards that are screen-aligned
+    ///        rather than point-at-eye.
+    ///
+    /// Warcraft III needs only `cameraPos`: its billboard aims a node's axis at
+    /// the eye. WoW's does not aim at anything — the client builds its bone
+    /// palette in *view* space (a root bone's parent is `model x view`) and a
+    /// billboard overwrites the bone's basis with one that is constant in that
+    /// space, so reproducing it from a model-space palette needs the basis
+    /// itself. Identity means "no camera", under which a WoW billboard aligns
+    /// to model axes instead of the screen.
+    Matrix44f view = Matrix44f::identity();
+
     /// @brief Per-node transforms applied after local TRS composition. Inert
     ///        for Warcraft III.
     std::span<const NodeOverride> overrides;

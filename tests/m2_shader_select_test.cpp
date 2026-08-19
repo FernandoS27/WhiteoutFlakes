@@ -83,7 +83,16 @@ TEST_CASE("M2 explicit combos index s_modelShaderEffect", "[m2][shader]") {
 
     // Out of range clamps rather than reading past the table.
     CHECK(M2ExplicitEffect(kNumM2Shaders).pixel == PS::Combiners_Opaque_Mod2xNA_Alpha);
-    CHECK(M2PixelShaderFor(2, 0xFFFF) == PS::Combiners_Opaque_Mod2xNA_Alpha);
+
+    // But SELECTION does not use that clamp. The table is 6.0.1's 30 entries and
+    // the corpus is Legion+, so indices past it are ordinary shipped content,
+    // not corruption — and entry 0 is an opaque two-texture environment
+    // combiner, which is the worst possible guess for one. Falling through to
+    // the legacy path keys off the batch's real texture count instead. This is
+    // what stopped `dimensiusboss03`'s BlendAdd star drawing as a black box.
+    CHECK(M2PixelShaderFor(2, 0xFFFF) == PS::Combiners_Mod_AddNA);
+    CHECK(M2PixelShaderFor(1, 0xFFFF) == PS::Combiners_Mod);
+    CHECK(M2VertexShaderFor(1, 0x8022) == VS::Diffuse_T1);
 }
 
 TEST_CASE("M2 every selectable shader is in range and named", "[m2][shader]") {

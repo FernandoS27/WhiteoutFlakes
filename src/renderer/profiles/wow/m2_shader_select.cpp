@@ -135,7 +135,19 @@ M2ShaderEffect M2ExplicitEffect(u32 index) {
 }
 
 M2PixelShader M2PixelShaderFor(u32 textureCount, u16 shaderId) {
-    if (M2IsExplicitCombo(shaderId))
+    // An explicit combo the table does not reach falls THROUGH to the legacy
+    // path rather than onto entry 0. `kExplicitEffects` is 6.0.1's, and 6.0.1
+    // is Warlords: `NUM_M2SHADERS` is 30 there and the corpus is Legion+, which
+    // ships 30 and above. Entry 0 is `Opaque_Mod2xNA_Alpha` + `Diffuse_T1_Env`
+    // — an OPAQUE two-texture environment combiner — so using it as the
+    // fallback drew `dimensiusboss03`'s BlendAdd star as a black box and
+    // `airshipmountgold`'s one-texture additive light cones as flat slabs.
+    // The legacy path at least keys off the batch's real texture count.
+    //
+    // Not the client's behaviour: 6.0.1 asserts and then indexes out of bounds
+    // anyway. A stopgap until the modern table is transcribed from a binary
+    // that has it.
+    if (M2IsExplicitCombo(shaderId) && (shaderId & 0x7FFFu) < kNumM2Shaders)
         return M2ExplicitEffect(shaderId & 0x7FFFu).pixel;
 
     if (textureCount == 1)
@@ -145,7 +157,9 @@ M2PixelShader M2PixelShaderFor(u32 textureCount, u16 shaderId) {
 }
 
 M2VertexShader M2VertexShaderFor(u32 textureCount, u16 shaderId) {
-    if (M2IsExplicitCombo(shaderId))
+    // Same out-of-table rule as the pixel side; the two must agree or a batch
+    // gets a vertex shader feeding inputs its pixel shader does not read.
+    if (M2IsExplicitCombo(shaderId) && (shaderId & 0x7FFFu) < kNumM2Shaders)
         return M2ExplicitEffect(shaderId & 0x7FFFu).vertex;
 
     if (textureCount == 1) {

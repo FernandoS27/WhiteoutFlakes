@@ -53,8 +53,8 @@ struct M2DrawData
     float4x4 texMtx0;
     float4x4 texMtx1;
     float4 elementColor; // .rgb batch colour, .a element alpha
-    float4 unitWeights;  // per-texture-unit weight (batch.flags & 0x40)
-    float4 params;       // .x alphaRef, .y fogMode, .z lit, .w unused
+    float4 unitWeights;  // per-texture-unit weight; only unit 0 gates visibility
+    float4 params;       // .x alphaRef, .y fogMode, .z lit, .w premultiply
     float4 lightAmbient; // .rgb summed ambient, unclamped
     float4 lightDiffuse; // .rgb the directional term, clamped per channel to 1
     float4 lightDir;     // .xyz direction the light TRAVELS, normalised
@@ -310,11 +310,21 @@ float3 ApplyFog(float3 color, float3 worldPos, float mode)
 // The one exit every combiner takes: alpha test, then fog. The comparison is
 // always >=, so a fragment at exactly alphaRef survives — matching
 // D3DCMP_GREATEREQUAL.
+//
+// params.w premultiplies. `CM2Model::InitializeLoaded`'s M2Blend-to-EGxBlend
+// table is {0, 1, 2, 10, 3, 4, 5, 13}, so blend mode 7 is EGxBlend 13 —
+// (ONE, INV_SRC_ALPHA), which is premultiplied "over" and reads nothing from
+// the source's alpha unless the source carries it in its colour. Left
+// unpremultiplied, alpha does not attenuate mode 7 at all, and a batch the
+// artist switched off by zeroing its colour track drew at full brightness:
+// `phoenix2mount` section 15 is 504 triangles whose alpha is 0 in every one of
+// its 63 sequences.
 float4 M2Finish(float3 rgb, float a, PSInput input)
 {
     if (a < draw.params.x)
         discard;
-    return float4(ApplyFog(rgb, input.worldPos, draw.params.y), a);
+    let out = lerp(rgb, rgb * a, draw.params.w);
+    return float4(ApplyFog(out, input.worldPos, draw.params.y), a);
 }
 
 // The combiner table's `in`, lit — the client's own light model, resolved per

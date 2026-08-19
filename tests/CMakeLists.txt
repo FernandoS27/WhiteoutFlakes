@@ -79,6 +79,10 @@ if(WDX_ENABLE_M2)
     # transcription slip in the shader-selection or material-state rules.
     wdx_add_test(m2_shader_select_test m2_shader_select_test.cpp)
     wdx_add_test(m2_material_test m2_material_test.cpp)
+    # Bone billboards. Pure: a hand-built model through the real adapter,
+    # with every assertion written on the view-space basis the client pins
+    # down rather than on our model-space palette.
+    wdx_add_test(m2_billboard_test m2_billboard_test.cpp)
     wdx_add_test(m2_lighting_test m2_lighting_test.cpp)
     wdx_add_test(wow_character_test wow_character_test.cpp)
     # `.m2` particle emitters. Half pure translation, half a corpus sweep — the

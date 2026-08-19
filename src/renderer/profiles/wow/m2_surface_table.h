@@ -57,12 +57,12 @@ struct M2Surface {
     /// the bind pose.
     f32 elementAlpha = 1.0f;
     Vector3f elementColor = {1.0f, 1.0f, 1.0f};
-    /// Per-unit weights, uploaded as one float4 when `batch.flags & 0x40`.
+    /// Per-unit weights, uploaded as one float4.
     f32 unitWeights[kM2MaxTextureUnits] = {1.0f, 1.0f, 1.0f, 1.0f};
 
-    /// A weight track holding the single value zero means "do not draw", and it
-    /// outranks the blend mode — an Opaque batch with one still draws nothing.
-    bool suppressed = false;
+    /// `batch.flags & 0x40` — BeginDraw then leaves the texture weight out of
+    /// whole-element alpha entirely, and only the shader sees it.
+    bool ignoreWeights = false;
 
     M2PixelShader pixelShader = M2PixelShader::Combiners_Opaque;
     M2VertexShader vertexShader = M2VertexShader::Diffuse_T1;

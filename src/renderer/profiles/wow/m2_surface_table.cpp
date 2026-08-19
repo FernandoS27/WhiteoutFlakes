@@ -26,15 +26,6 @@ const T* FirstValue(const wm2::AnimationTrack<T>& track) {
     return &track.values[0][0];
 }
 
-// True when the track carries exactly one value and it is zero. This is the
-// client's "do not render" gate, and it outranks the blend mode — see
-// OrgrimmarSmokeEmitter.m2, an Opaque batch that draws nothing.
-bool IsZeroConstantWeight(const wm2::AnimationTrack<i16>& track) {
-    if (track.values.size() != 1 || track.values[0].size() != 1)
-        return false;
-    return track.values[0][0] == 0;
-}
-
 // fixed16: 0 transparent, 0x7FFF opaque.
 f32 WeightToAlpha(i16 v) {
     return static_cast<f32>(v) / 32767.0f;
@@ -104,17 +95,21 @@ std::unique_ptr<M2SurfaceTable> BuildM2SurfaceTable(const wm2::Model& model, usi
 
             if (s.weightId[u] >= 0) {
                 const auto& track = model.textureWeights[s.weightId[u]].weight;
-                if (IsZeroConstantWeight(track))
-                    s.suppressed = true;
                 if (const i16* v = FirstValue(track))
                     s.unitWeights[u] = WeightToAlpha(*v);
             }
         }
 
         // Element alpha: the colour track's alpha times the *first* unit's
-        // weight, whatever the texture count — the client uses only weight[0]
-        // for whole-element alpha and leaves the rest to the per-unit float4.
-        f32 elementAlpha = s.unitWeights[0];
+        // weight — `weightCombos[batch.textureWeightComboIndex]` with no `+ u`,
+        // which is all BeginDraw reads. Units above the first reach the shader
+        // as the per-unit float4 and nothing else; treating one of *them* as a
+        // visibility gate is what emptied `earthspiritsmall`, whose combos are
+        // {0, 0, 1} with weight 1 a constant zero — every batch's third unit.
+        //
+        // Flag 0x40 drops the weight from the product altogether.
+        s.ignoreWeights = (batch.flags & 0x40u) != 0;
+        f32 elementAlpha = s.ignoreWeights ? 1.0f : s.unitWeights[0];
         s.colorIndex = batch.colorIndex;
         if (s.colorIndex >= 0 && static_cast<usize>(s.colorIndex) < model.colors.size()) {
             const auto& c = model.colors[s.colorIndex];
@@ -135,19 +130,17 @@ std::unique_ptr<M2SurfaceTable> BuildM2SurfaceTable(const wm2::Model& model, usi
 }
 
 core::SurfaceClass M2ClassifySurface(const M2Surface& surface, f32 modelAlpha, f32 elementAlpha) {
-    // A constant-zero weight track means "do not draw" and outranks everything,
-    // blend mode included.
-    if (surface.suppressed)
-        return {.visible = false};
+    // BeginDraw forms one scalar — model alpha times the colour track times the
+    // weight — and both decisions below read that product, not either factor.
+    const f32 alpha = modelAlpha * elementAlpha;
 
     // BlendAdd is exempt from the alpha cull: it is premultiplied, so it still
     // adds light at zero alpha, and the client draws it on a fully faded model.
-    if (surface.blend != M2Blend::BlendAdd &&
-        (modelAlpha < kM2CullModelAlpha || elementAlpha <= 0.0f))
+    if (surface.blend != M2Blend::BlendAdd && alpha < kM2CullModelAlpha)
         return {.visible = false};
 
     core::BlendClass blend = core::BlendClass::Transparent;
-    if (modelAlpha >= kM2OpaqueModelAlpha) {
+    if (alpha >= kM2OpaqueModelAlpha) {
         if (surface.blend == M2Blend::Opaque)
             blend = core::BlendClass::Opaque;
         else if (surface.blend == M2Blend::AlphaKey)

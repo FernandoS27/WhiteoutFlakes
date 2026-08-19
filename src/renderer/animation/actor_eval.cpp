@@ -323,6 +323,7 @@ void Actor::EvaluateAndApply(const ActorEvalContext& ctx) {
     req.globalTimeMs = globalTime;
     req.world = ScaledWorldTransform();
     req.cameraPos = ctx.camPos;
+    req.view = ctx.view;
     FrameState fs = animation.Source()->Evaluate(req);
     ApplyFrameState(fs, localTime, ctx);
 }

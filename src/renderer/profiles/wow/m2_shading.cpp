@@ -438,7 +438,12 @@ void M2CombinerShading::Draw(const render_detail::DrawItem& item, const core::Pa
         const Vector3f in = M2CombinerInput(surf->blend, color, geo.geosetColor);
         c->elementColor = {in.x, in.y, in.z, elementAlpha};
         c->unitWeights = {weights[0], weights[1], weights[2], weights[3]};
-        c->params = {state.alphaRef, static_cast<f32>(state.fog), state.lit ? 1.0f : 0.0f, 0.0f};
+        // .w premultiplies, for the one blend mode whose factors expect it —
+        // see M2Finish. Keyed on the blend actually bound, so the depth half of
+        // a twin pair, which forces the preset opaque, writes plain colour.
+        const f32 premul =
+            (!depthTwin && surf->blend == M2Blend::BlendAdd) ? 1.0f : 0.0f;
+        c->params = {state.alphaRef, static_cast<f32>(state.fog), state.lit ? 1.0f : 0.0f, premul};
         c->lightAmbient = {lit.ambient.x, lit.ambient.y, lit.ambient.z, 0.0f};
         c->lightDiffuse = {lit.diffuse.x, lit.diffuse.y, lit.diffuse.z, 0.0f};
         c->lightDir = {lit.directionWS.x, lit.directionWS.y, lit.directionWS.z, 0.0f};

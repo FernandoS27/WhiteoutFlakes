@@ -37,6 +37,10 @@ namespace whiteout::flakes::renderer::animation {
 
 struct ActorEvalContext {
     Vector3f camPos = {0, 0, 0};
+    /// @brief World-to-view matrix of the scene camera. WoW's bone
+    ///        billboards are screen-aligned, so a camera position alone does
+    ///        not describe them; see `PoseRequest::view`.
+    Matrix44f view = Matrix44f::identity();
     i32 sceneAnimationTimeMs = 0;
     bool fireEvents = false;
 

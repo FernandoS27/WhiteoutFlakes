@@ -436,6 +436,9 @@ ActorEvalContext RenderService::MakeActorEvalContext() {
     SceneServices* svc = impl_->activeServices_;
     ActorEvalContext ctx;
     ctx.camPos = scene->Camera().GetSource();
+    // The same accessor the geometry pass uses, so a screen-aligned bone
+    // basis lands in the space the rasterizer actually draws in.
+    ctx.view = scene->Camera().GetViewMatrix();
     ctx.sceneAnimationTimeMs = scene->GetAnimationTime();
     ctx.fireEvents = impl_->settings_.ShowEvents();
     ctx.poseStagesEnabled = impl_->settings_.PoseSolversEnabled();

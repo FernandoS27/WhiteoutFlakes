@@ -37,7 +37,7 @@ std::vector<SequenceInfo> AnimationDriver::Sequences() const {
 }
 
 FrameState AnimationDriver::Evaluate(const Matrix44f& worldTransform, const Vector3f& cameraPos,
-                                     i32 globalTimeMs) const {
+                                     i32 globalTimeMs, const Matrix44f& view) const {
     if (!source_)
         return {};
     // `clip` has to outlive the request — PoseRequest::clips is a view, and
@@ -48,6 +48,7 @@ FrameState AnimationDriver::Evaluate(const Matrix44f& worldTransform, const Vect
     req.globalTimeMs = globalTimeMs;
     req.world = worldTransform;
     req.cameraPos = cameraPos;
+    req.view = view;
     return source_->Evaluate(req);
 }
 
