@@ -26,6 +26,7 @@
 #include "io/wow/creature_skin_table.h"
 #include "renderer/profiles/wow/wow_replaceable_textures.h"
 #include "whiteout/flakes/content_ref.h"
+#include "whiteout/flakes/util/path_utf8.h"
 
 #include <whiteout/models/m2/m2.h>
 
@@ -54,6 +55,12 @@ struct Fixture {
     whiteout::u32 firstDisplayId;
     whiteout::u32 firstSkin; // TextureVariation[0] of that display
 };
+
+// The fourth variation slot, which fills texture type 5 rather than 14 — see
+// creature_skin_table.h. `sporebat3mount` names all four (body, bodyglow,
+// saddle, saddleglow) and is not in the loose `.m2` corpus, so it pins the
+// table half only.
+constexpr whiteout::u32 kFourSlotModel = 5884327; // creature/sporebat3mount
 
 // Every creature in the `.m2` corpus that declares a replaceable slot.
 constexpr Fixture kCreatures[] = {
@@ -112,6 +119,47 @@ std::shared_ptr<io::M2ModelAdapter> LoadModel(io::IContentProvider& provider,
                                     &provider);
 }
 
+/// A storage that answers the way a listfile-backed CASC root does: it matches
+/// a path by its longest recognised suffix, and it cannot list a directory it
+/// was handed absolutely, because no archive entry carries a drive letter.
+/// Standing in for a loose extraction, whose folder holds the `.m2` and nothing
+/// else at all.
+class SuffixProvider final : public io::IContentProvider {
+public:
+    explicit SuffixProvider(io::IContentProvider& inner) : inner_(inner) {}
+
+    io::RequestId Request(const ContentRef& ref, io::CompletionCallback cb) override {
+        return inner_.Request(ref, std::move(cb));
+    }
+    void Wait(io::RequestId id) override {
+        inner_.Wait(id);
+    }
+    void Cancel(io::RequestId id) override {
+        inner_.Cancel(id);
+    }
+    void Pump() override {
+        inner_.Pump();
+    }
+    whiteout::u32 FileIdForPath(const std::string& path) const override {
+        for (std::size_t at = 0; at != std::string::npos;) {
+            if (const auto it = ids.find(path.substr(at)); it != ids.end())
+                return it->second;
+            const auto slash = path.find('/', at);
+            at = slash == std::string::npos ? std::string::npos : slash + 1;
+        }
+        return 0;
+    }
+    std::vector<std::string> ListFiles(const std::string& directory, bool recursive) override {
+        return fs::path(directory).is_absolute() ? std::vector<std::string>()
+                                                 : inner_.ListFiles(directory, recursive);
+    }
+
+    std::unordered_map<std::string, whiteout::u32> ids;
+
+private:
+    io::IContentProvider& inner_;
+};
+
 /// How many of a model's textures the client would replace with skin `slot`.
 std::size_t SlotsOfType(const whiteout::m2::Model& model, whiteout::u32 type) {
     return static_cast<std::size_t>(
@@ -151,12 +199,24 @@ TEST_CASE("the creature tables name the skin an .m2 leaves blank", "[m2][wow][db
         for (const auto& skin : skins) {
             // A display that fills nothing replaces nothing, so it is not a
             // variation anything should be able to select.
-            CHECK((skin.texture[0] | skin.texture[1] | skin.texture[2]) != 0);
+            whiteout::u32 any = 0;
+            for (whiteout::u32 s = 0; s < io::wow::kMonsterSkinSlots; ++s)
+                any |= skin.texture[s];
+            CHECK(any != 0);
         }
         CHECK(std::is_sorted(skins.begin(), skins.end(), [](const auto& a, const auto& b) {
             return a.displayId < b.displayId;
         }));
     }
+
+    // Four slots, not three. Reading only three left `sporebat3mount`'s
+    // saddleglow — its type-5 texture — bound to nothing and rendering white.
+    REQUIRE(io::wow::kMonsterSkinSlots == 4);
+    CHECK(io::wow::kMonsterSkinTypes[3] == 5);
+    const auto four = table.ForModel(kFourSlotModel);
+    REQUIRE_FALSE(four.empty());
+    for (const auto& skin : four)
+        CHECK(skin.texture[3] != 0);
 }
 
 TEST_CASE("a creature model binds the skin its display names", "[m2][wow][db2]") {
@@ -191,9 +251,9 @@ TEST_CASE("a creature model binds the skin its display names", "[m2][wow][db2]")
 
         // Every slot the model declares AND the display fills, and no other.
         std::size_t expected = 0;
-        for (whiteout::u32 slot = 0; slot < 3; ++slot) {
+        for (whiteout::u32 slot = 0; slot < io::wow::kMonsterSkinSlots; ++slot) {
             if (skin.texture[slot] != 0)
-                expected += SlotsOfType(model, 11 + slot);
+                expected += SlotsOfType(model, io::wow::kMonsterSkinTypes[slot]);
         }
         CHECK(bound == expected);
         CHECK(bound > 0);
@@ -204,9 +264,14 @@ TEST_CASE("a creature model binds the skin its display names", "[m2][wow][db2]")
         for (std::size_t i = 0; i < textures.size(); ++i) {
             INFO("texture " << i << " type " << model.textures[i].type);
             const whiteout::u32 type = model.textures[i].type;
-            if (type < 11 || type > 13 || skin.texture[type - 11] == 0)
+            const auto* slot = std::find(std::begin(io::wow::kMonsterSkinTypes),
+                                         std::end(io::wow::kMonsterSkinTypes), type);
+            if (slot == std::end(io::wow::kMonsterSkinTypes))
                 continue;
-            CHECK(textures[i].sharedKey == "#" + std::to_string(skin.texture[type - 11]));
+            const whiteout::u32 id = skin.texture[slot - std::begin(io::wow::kMonsterSkinTypes)];
+            if (id == 0)
+                continue;
+            CHECK(textures[i].sharedKey == "#" + std::to_string(id));
         }
     }
 }
@@ -477,4 +542,42 @@ TEST_CASE("a model with no replaceable slot reads no client database", "[m2][wow
     // The point of the check: eight megabytes of client database is not the
     // price of opening a model that has no slot to fill.
     CHECK(provider.dbReads == 0);
+}
+
+TEST_CASE("a model opened absolutely still finds the storage's folder", "[m2][wow][db2]") {
+    std::error_code ec;
+    const fs::path root = CorpusRoot();
+    const std::string cow = "creature/cow/cow.m2";
+    if (!fs::exists(root / cow, ec)) {
+        WARN("creature/cow/cow.m2 not in the corpus — skipping");
+        return;
+    }
+
+    io::FileContentProvider backing;
+    backing.SetBasePath(root);
+    SuffixProvider provider(backing);
+    // An id no display row names, so the `.blp` beside the model is the only
+    // answer left — `revenantair` is the shipped case, with five skins in the
+    // storage and not one display record pointing at the model.
+    provider.ids.emplace(cow, 1u);
+
+    wow::WowReplaceableTextures replaceables;
+    replaceables.SetContentProvider(&provider);
+
+    // What a host's file dialog hands back for a file on disk. The folder it
+    // names holds the `.m2` alone; the folder the storage knows holds the
+    // skins, and before this both `revenantair` and `sporebat3mountglowing`
+    // rendered white because only the first was ever asked.
+    std::string absolute = whiteout::flakes::io::PathToUtf8(root / cow);
+    std::replace(absolute.begin(), absolute.end(), '\\', '/');
+    const ContentRef ref = ContentRef::FromPath(absolute);
+
+    auto adapter = LoadModel(provider, cow);
+    REQUIRE(adapter);
+    CHECK(replaceables.Apply(*adapter, ref) > 0);
+
+    const auto& offered = replaceables.Variations(ref);
+    REQUIRE_FALSE(offered.empty());
+    for (const auto& v : offered)
+        CHECK(v.texture[0].rfind("creature/cow/", 0) == 0);
 }
