@@ -80,6 +80,11 @@ StorageBuilder& StorageBuilder::FrameSuffixFallback() {
     return *this;
 }
 
+StorageBuilder& StorageBuilder::AssetPrefixes() {
+    assetPrefixes_ = true;
+    return *this;
+}
+
 StorageBuilder& StorageBuilder::Listfile(std::string csvPath) {
     listfilePath_ = std::move(csvPath);
     return *this;
@@ -128,6 +133,7 @@ std::unique_ptr<GameStorage> StorageBuilder::Build() {
         opts.hdMode = hdMode_;
         opts.fileIds = fileIds_;
         opts.frameSuffixFallback = frameSuffixFallback_;
+        opts.assetPrefixFallback = assetPrefixes_;
         opts.listfilePath = listfilePath_;
         opts.tactKeyFile = tactKeyPath_;
         // Paired with the key list on purpose: a session that supplied keys is

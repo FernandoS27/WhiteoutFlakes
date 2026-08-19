@@ -11,7 +11,11 @@
 //                 the Reforged frame-suffix rename.
 //   World of Warcraft  bare paths, but the root is keyed by fileDataID and
 //                 carries no names at all without a community listfile.
-//   StarCraft II / Heroes  bare paths, readable names, nothing else.
+//   StarCraft II / Heroes  readable names, but every asset lives under a mod
+//                 root (`mods/*.sc2mod/base.sc2assets/`, campaign variants)
+//                 while an `.m3` names its textures relative to that root
+//                 (`assets/textures/...`) — so relative asset reads retry
+//                 under prefixes learned from the storage's own listing.
 //
 // A source built without an option does not pay for it: no mod chain means
 // one probe per extension instead of four.
@@ -26,6 +30,9 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
 
 namespace whiteout::flakes::io {
 
@@ -64,6 +71,13 @@ struct CascSourceOptions {
     // failing the whole read. Unreleased content ships with keys nobody has
     // published, and one such frame otherwise costs the entire file.
     bool zeroFillEncrypted = false;
+
+    // StarCraft II / Heroes: retry a missed `assets/...` path under every
+    // `<mod root>/assets/` prefix the storage's listing carries, most-derived
+    // mod first — the same shadowing the game's dependency chain resolves.
+    // The prefix list is built lazily from one enumeration, on the first miss
+    // that needs it.
+    bool assetPrefixFallback = false;
 };
 
 class CascSource final : public IStorageSource {
@@ -89,6 +103,14 @@ private:
     // One stem, every prefix and extension this source knows. True on a hit.
     bool ReadStem(const std::string& stem, const std::string& ext, SourceRead& out) const;
 
+    // One prefix, the asked extension then its alternates. True on a hit.
+    bool ReadPrefixed(const std::string& prefix, const std::string& stem, const std::string& ext,
+                      SourceRead& out) const;
+
+    // The learned `<mod root>/` prefixes, built on first use (one enumeration
+    // of the storage), ordered most-derived mod first.
+    const std::vector<std::string>& AssetPrefixes() const;
+
     const whiteout::storages::casc::Storage& storage_() const noexcept {
         return shared_->Storage();
     }
@@ -100,6 +122,10 @@ private:
     const std::atomic<bool>* hdMode_ = nullptr;
     bool fileIds_ = false;
     bool frameSuffixFallback_ = false;
+    bool assetPrefixFallback_ = false;
+    mutable std::mutex assetPrefixMu_;
+    mutable bool assetPrefixesBuilt_ = false;
+    mutable std::vector<std::string> assetPrefixes_;
 };
 
 } // namespace whiteout::flakes::io

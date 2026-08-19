@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cstdio>
 #include <optional>
+#include <set>
 
 namespace whiteout::flakes::io {
 
@@ -36,7 +37,7 @@ std::array<const char*, 4> Prefixes(const std::atomic<bool>* hdMode) {
 
 CascSource::CascSource(std::shared_ptr<const SharedCasc> shared, const CascSourceOptions& opts)
     : shared_(std::move(shared)), hdMode_(opts.hdMode), fileIds_(opts.fileIds),
-      frameSuffixFallback_(opts.frameSuffixFallback) {}
+      frameSuffixFallback_(opts.frameSuffixFallback), assetPrefixFallback_(opts.assetPrefixFallback) {}
 
 std::unique_ptr<CascSource> CascSource::Open(std::string root, const CascSourceOptions& opts,
                                              std::string& error) {
@@ -52,29 +53,36 @@ std::unique_ptr<CascSource> CascSource::Open(std::string root, const CascSourceO
     return std::unique_ptr<CascSource>(new CascSource(std::move(shared), opts));
 }
 
-bool CascSource::ReadStem(const std::string& stem, const std::string& ext, SourceRead& out) const {
+bool CascSource::ReadPrefixed(const std::string& prefix, const std::string& stem,
+                              const std::string& ext, SourceRead& out) const {
     auto [altExts, altCount] = AltExtensionsFor(ext);
+    if (!ext.empty()) {
+        auto data = storage_().readFile(prefix + stem + ext);
+        if (data && !data->empty()) {
+            out.actualExt = ext;
+            out.data = std::move(*data);
+            return true;
+        }
+    }
+    for (usize i = 0; i < altCount; ++i) {
+        if (altExts[i] == ext)
+            continue;
+        auto data = storage_().readFile(prefix + stem + altExts[i]);
+        if (data && !data->empty()) {
+            out.actualExt = altExts[i];
+            out.data = std::move(*data);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool CascSource::ReadStem(const std::string& stem, const std::string& ext, SourceRead& out) const {
     for (const char* prefix : Prefixes(hdMode_)) {
         if (!prefix)
             break; // a bare-path root declares one prefix, not four
-        if (!ext.empty()) {
-            auto data = storage_().readFile(std::string(prefix) + stem + ext);
-            if (data && !data->empty()) {
-                out.actualExt = ext;
-                out.data = std::move(*data);
-                return true;
-            }
-        }
-        for (usize i = 0; i < altCount; ++i) {
-            if (altExts[i] == ext)
-                continue;
-            auto data = storage_().readFile(std::string(prefix) + stem + altExts[i]);
-            if (data && !data->empty()) {
-                out.actualExt = altExts[i];
-                out.data = std::move(*data);
-                return true;
-            }
-        }
+        if (ReadPrefixed(prefix, stem, ext, out))
+            return true;
     }
     return false;
 }
@@ -95,7 +103,68 @@ bool CascSource::Read(const std::string& path, SourceRead& out) const {
             return ReadStem(stem.substr(0, dash), ext, out);
         }
     }
+
+    // StarCraft II / Heroes: an `.m3` names its textures relative to whichever
+    // mod root the model shipped in ("assets/textures/foo.dds"), and the
+    // storage stores only the full path. Retry under every mod root the
+    // listing carries. Gated on the "assets/" head so an absolute path that
+    // simply is not there does not pay for a storage enumeration.
+    // NormalizeCascPath is backslash-separated — CascLib's own convention.
+    if (assetPrefixFallback_ && norm.rfind("assets\\", 0) == 0) {
+        for (const std::string& prefix : AssetPrefixes()) {
+            if (ReadPrefixed(prefix, stem, ext, out))
+                return true;
+        }
+    }
     return false;
+}
+
+// Ranked to mirror the game's dependency chain, most-derived first: void
+// overrides swarm overrides liberty overrides core, melee mods override
+// campaigns. Coarser than the real per-document dependency list (a viewer has
+// no document), but it resolves the shadowing cases that matter — a texture
+// present in two mods reads from the one the game would use for the newest
+// content.
+const std::vector<std::string>& CascSource::AssetPrefixes() const {
+    std::lock_guard lk(assetPrefixMu_);
+    if (assetPrefixesBuilt_)
+        return assetPrefixes_;
+    assetPrefixesBuilt_ = true;
+
+    std::set<std::string> found;
+    storage_().enumerate([&](const casc::EnumerateEntry& e) {
+        const std::string p = NormalizeCascPath(e.path);
+        // "mods\liberty.sc2mod\base.sc2assets\assets\textures\x.dds" — keep
+        // everything up to the separator before "assets\". The ".sc2assets"
+        // mod suffix cannot false-match: it is never preceded by a separator.
+        const auto at = p.find("\\assets\\");
+        if (at != std::string::npos)
+            found.insert(p.substr(0, at + 1));
+        return true;
+    });
+
+    auto rank = [](const std::string& p) {
+        if (p.rfind("mods\\", 0) == 0) {
+            if (p.find("void.sc2mod") != std::string::npos)
+                return 0;
+            if (p.find("swarm.sc2mod") != std::string::npos)
+                return 1;
+            if (p.find("liberty.sc2mod") != std::string::npos)
+                return 2;
+            if (p.find("core.sc2mod") != std::string::npos)
+                return 3;
+            return 4;
+        }
+        if (p.rfind("campaigns\\", 0) == 0)
+            return 5;
+        return 6;
+    };
+    assetPrefixes_.assign(found.begin(), found.end());
+    std::stable_sort(assetPrefixes_.begin(), assetPrefixes_.end(),
+                     [&](const std::string& a, const std::string& b) { return rank(a) < rank(b); });
+    std::printf("[casc] %zu asset prefixes learned for relative reads (%s)\n",
+                assetPrefixes_.size(), shared_->Root().c_str());
+    return assetPrefixes_;
 }
 
 // The locale walk is not belt-and-braces. A WoW fileDataID resolves to one

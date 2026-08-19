@@ -7,8 +7,10 @@
 #endif
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <memory>
+#include <unordered_map>
 
 namespace whiteout::flakes::io {
 
@@ -372,6 +374,102 @@ void M3ModelAdapter::BuildEmittedRegions() {
     }
 }
 
+std::string M3CleanPath(const std::string& raw) {
+    // The Ref<CHAR> keeps its terminator: size() is one past the text, and the
+    // embedded NUL survives every string operation silently. c_str() is the
+    // one honest exit.
+    return std::string(raw.c_str());
+}
+
+bool M3LayerHasTexture(const ::whiteout::m3::TextureLayer& layer) {
+    if ((static_cast<u32>(layer.flags) & static_cast<u32>(::whiteout::m3::TextureLayerFlag::Color)) != 0)
+        return false;
+    return !M3CleanPath(layer.texturePath).empty();
+}
+
+bool M3LayerActive(const ::whiteout::m3::TextureLayer& layer) {
+    if ((static_cast<u32>(layer.flags) & static_cast<u32>(::whiteout::m3::TextureLayerFlag::Color)) != 0)
+        return true;
+    return M3LayerHasTexture(layer);
+}
+
+const ::whiteout::m3::TextureLayer* M3LayerForSlot(const ::whiteout::m3::StandardMaterial& mat,
+                                                   M3LayerSlot slot) {
+    auto get = [](const std::optional<::whiteout::m3::TextureLayer>& l)
+        -> const ::whiteout::m3::TextureLayer* { return l ? &*l : nullptr; };
+    auto firstActive = [&](const std::optional<::whiteout::m3::TextureLayer>& a,
+                           const std::optional<::whiteout::m3::TextureLayer>& b)
+        -> const ::whiteout::m3::TextureLayer* {
+        if (const auto* l = get(a); l && M3LayerActive(*l))
+            return l;
+        if (const auto* l = get(b); l && M3LayerActive(*l))
+            return l;
+        return nullptr;
+    };
+    switch (slot) {
+    case M3LayerSlot::Diffuse:
+        return get(mat.diffuseLayer);
+    case M3LayerSlot::Decal:
+        return get(mat.decalLayer);
+    case M3LayerSlot::Specular:
+        return get(mat.specularLayer);
+    case M3LayerSlot::Emissive:
+        return get(mat.emissiveLayer1);
+    case M3LayerSlot::Emissive2:
+        return get(mat.emissiveLayer2);
+    case M3LayerSlot::Normal:
+        return get(mat.normalLayer);
+    case M3LayerSlot::AlphaMask:
+        return firstActive(mat.alphaLayer1, mat.alphaLayer2);
+    default:
+        return nullptr;
+    }
+}
+
+std::vector<M3TextureRef> CollectM3Textures(const ::whiteout::m3::Model& model) {
+    std::vector<M3TextureRef> out;
+    std::unordered_map<std::string, std::size_t> seen; // lowercase key -> index
+    for (const auto& mat : model.standardMaterials) {
+        for (u32 s = 0; s < static_cast<u32>(M3LayerSlot::Count); ++s) {
+            const auto* layer = M3LayerForSlot(mat, static_cast<M3LayerSlot>(s));
+            if (!layer || !M3LayerHasTexture(*layer))
+                continue;
+            const std::string path = M3CleanPath(layer->texturePath);
+            std::string key = path;
+            std::transform(key.begin(), key.end(), key.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (seen.contains(key))
+                continue;
+            seen.emplace(std::move(key), out.size());
+            using ::whiteout::m3::TextureLayerFlag;
+            const u32 f = static_cast<u32>(layer->flags);
+            M3TextureRef ref;
+            ref.path = path;
+            ref.wrapFlags = ((f & static_cast<u32>(TextureLayerFlag::UVWrapX)) ? 0x1u : 0u) |
+                            ((f & static_cast<u32>(TextureLayerFlag::UVWrapY)) ? 0x2u : 0u);
+            out.push_back(std::move(ref));
+        }
+    }
+    return out;
+}
+
+std::vector<renderer::model::TextureData> M3ModelAdapter::GetTextures() {
+    const std::vector<M3TextureRef> refs = CollectM3Textures(model_);
+    std::vector<renderer::model::TextureData> out;
+    out.reserve(refs.size());
+    for (std::size_t i = 0; i < refs.size(); ++i) {
+        renderer::model::TextureData td;
+        td.textureId = static_cast<i32>(i);
+        td.replaceableId = 0;
+        td.width = 0;
+        td.height = 0;
+        td.wrapFlags = refs[i].wrapFlags;
+        td.sharedKey = refs[i].path;
+        out.push_back(std::move(td));
+    }
+    return out;
+}
+
 std::vector<MeshData> M3ModelAdapter::GetMeshes() {
     std::vector<MeshData> out;
     if (divisionIndex_ >= model_.divisions.size())
@@ -411,7 +509,17 @@ std::vector<MeshData> M3ModelAdapter::GetMeshes() {
 
         MeshData mesh;
         mesh.geosetId = static_cast<i32>(g);
-        mesh.materialId = -1; // no materials in this phase; UnlitShading draws it
+        // The MATM index of the first batch naming this region. Multiple
+        // batches can name one region with different materials (multi-pass);
+        // the simple material system draws the first and only the first.
+        mesh.materialId = -1;
+        for (const auto& batch : div.batches) {
+            if (batch.regionIndex == emittedRegions_[g]) {
+                if (batch.materialIndex < model_.materialMaps.size())
+                    mesh.materialId = static_cast<i32>(batch.materialIndex);
+                break;
+            }
+        }
         mesh.lod = 0;
         mesh.positions.assign(positions.begin() + static_cast<std::ptrdiff_t>(vBegin),
                               positions.begin() + static_cast<std::ptrdiff_t>(vEnd));

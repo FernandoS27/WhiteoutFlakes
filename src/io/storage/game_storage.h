@@ -86,6 +86,11 @@ public:
     // Reforged rename of the classic frame-suffixed sets.
     StorageBuilder& FrameSuffixFallback();
 
+    // Retry a missed `assets/...` path under the storage's mod roots, for the
+    // StarCraft II / Heroes convention of naming M3 assets relative to the mod
+    // that ships them. See CascSourceOptions::assetPrefixFallback.
+    StorageBuilder& AssetPrefixes();
+
     // Community `id;path` CSV that makes an id-keyed root browsable. Loaded
     // and owned by the shared CASC entry, so two storages naming the same one
     // read it once; a path that does not exist is reported and ignored.
@@ -112,6 +117,7 @@ private:
     const std::atomic<bool>* hdMode_ = nullptr;
     bool fileIds_ = false;
     bool frameSuffixFallback_ = false;
+    bool assetPrefixes_ = false;
     std::string listfilePath_;
     std::string tactKeyPath_;
     std::vector<std::string> cascRoots_;

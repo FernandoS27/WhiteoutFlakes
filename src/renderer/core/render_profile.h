@@ -45,6 +45,11 @@ enum class TargetSlot : u8 {
     SceneColorCopy = 6,
     Bloom = 7,
     Backbuffer = 8,
+    // Appended, never inserted — the values above are baked into recorded
+    // baselines. The M3 G-buffer sidecar's fourth attachment (.rgb albedo,
+    // .a mono spec intensity); the normal/depth/exponent halves pack into the
+    // existing LinearDepth and Normal slots (M3_SIMPLE_MATERIAL_DESIGN.md §4).
+    GBufferDiffuse = 9,
 
     Count,
 };

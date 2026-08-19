@@ -111,6 +111,7 @@ private:
         gfx::Format dsv = gfx::Format::Unknown;
         gfx::Format extra0 = gfx::Format::Unknown;
         gfx::Format extra1 = gfx::Format::Unknown;
+        gfx::Format extra2 = gfx::Format::Unknown;
         u32 extraRtvCount = 0;
         u32 layoutId = core::VertexLayoutCache::kWc3Interleaved;
         u32 stride = 0;

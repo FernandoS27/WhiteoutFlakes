@@ -161,7 +161,7 @@ gfx::Format RenderPipeline::DepthStencilFormat() const {
     return impl_->depthStencilFormat_;
 }
 
-u32 RenderPipeline::SceneExtraRtvFormats(gfx::Format out[2]) const {
+u32 RenderPipeline::SceneExtraRtvFormats(gfx::Format out[3]) const {
     // LinearShading is the MRT question: runScenePass opens the three-
     // attachment G-buffer exactly when it is true. Note this is NOT the same
     // as "lands in the HDR target" — SceneHdrInSd routes SD colour through the
@@ -173,6 +173,17 @@ u32 RenderPipeline::SceneExtraRtvFormats(gfx::Format out[2]) const {
         return 0;
     out[0] = kLinearDepthFormat;
     out[1] = kNormalBufferFormat;
+    // The M3 sidecar attachment, present exactly when the frame profile
+    // declares the slot — Sc2Heroes does, the WC3 profiles never will, so
+    // their attachment count (and every recorded PSO trace) stays put.
+    if (impl_->frameProfile_) {
+        for (const auto& t : impl_->frameProfile_->TargetSet()) {
+            if (t.slot == core::TargetSlot::GBufferDiffuse) {
+                out[2] = kGBufferDiffuseFormat;
+                return 3;
+            }
+        }
+    }
     return 2;
 }
 
@@ -753,6 +764,9 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     rs_.EnsureDncService();
     rs_.EnsureShadowService(*impl_->gfx_);
     rs_.EnsureGtaoService(*impl_->gfx_, impl_->gfx_->GetApi());
+#if WDX_ENABLE_M3
+    rs_.EnsureM3DeferredLightService(*impl_->gfx_, impl_->gfx_->GetApi());
+#endif
     // DoF (EnsureDofService) is set up below alongside PostProcessService — both
     // need the shipped BLS shaders + the shared fullscreen-triangle VB, which
     // aren't created until the sprite/tonemap block further down.
@@ -1200,6 +1214,7 @@ RenderTargetId RenderPipeline::CreateSwapChainTarget(void* nativeWindowHandle, i
     // simply doesn't bind them.
     target.linearDepth = impl_->gfx_->CreateColorTarget(w, h, kLinearDepthFormat);
     target.normalBuffer = impl_->gfx_->CreateColorTarget(w, h, kNormalBufferFormat);
+    target.gbufDiffuse = impl_->gfx_->CreateColorTarget(w, h, kGBufferDiffuseFormat);
     // GTAO outputs. Four R8 AO slots + one RGBA8 bent normal, full-res.
     //   Raw       — main-pass output.
     //   Denoised  — spatial-denoised, pre-temporal.
@@ -1252,6 +1267,7 @@ RenderTargetId RenderPipeline::CreateOffscreenTarget(i32 w, i32 h, gfx::Format c
     target.depth = impl_->gfx_->CreateDepthTarget(w, h, impl_->depthStencilFormat_);
     target.linearDepth = impl_->gfx_->CreateColorTarget(w, h, kLinearDepthFormat);
     target.normalBuffer = impl_->gfx_->CreateColorTarget(w, h, kNormalBufferFormat);
+    target.gbufDiffuse = impl_->gfx_->CreateColorTarget(w, h, kGBufferDiffuseFormat);
     target.aoBufferRaw = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
     target.aoBufferDenoised = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
     target.aoBuffer = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
@@ -1279,6 +1295,7 @@ void RenderPipeline::DestroyTarget(RenderTargetId id) {
     impl_->gfx_->Destroy(t.hdrColor);
     impl_->gfx_->Destroy(t.linearDepth);
     impl_->gfx_->Destroy(t.normalBuffer);
+    impl_->gfx_->Destroy(t.gbufDiffuse);
     impl_->gfx_->Destroy(t.aoBufferRaw);
     impl_->gfx_->Destroy(t.aoBufferDenoised);
     impl_->gfx_->Destroy(t.aoBuffer);
@@ -1311,6 +1328,7 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
     impl_->gfx_->Destroy(t.hdrColor);
     impl_->gfx_->Destroy(t.linearDepth);
     impl_->gfx_->Destroy(t.normalBuffer);
+    impl_->gfx_->Destroy(t.gbufDiffuse);
     impl_->gfx_->Destroy(t.aoBufferRaw);
     impl_->gfx_->Destroy(t.aoBufferDenoised);
     impl_->gfx_->Destroy(t.aoBuffer);
@@ -1341,6 +1359,7 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
     t.depth = impl_->gfx_->CreateDepthTarget(w, h, impl_->depthStencilFormat_);
     t.linearDepth = impl_->gfx_->CreateColorTarget(w, h, kLinearDepthFormat);
     t.normalBuffer = impl_->gfx_->CreateColorTarget(w, h, kNormalBufferFormat);
+    t.gbufDiffuse = impl_->gfx_->CreateColorTarget(w, h, kGBufferDiffuseFormat);
     t.aoBufferRaw = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
     t.aoBufferDenoised = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
     t.aoBuffer = impl_->gfx_->CreateColorTarget(w, h, kAoBufferFormat);
@@ -1425,6 +1444,10 @@ void RenderPipeline::CleanupGFX() {
             g->Shutdown();
         if (auto* d = rs_.GetDofService())
             d->Shutdown();
+#if WDX_ENABLE_M3
+        if (auto* dl = rs_.GetM3DeferredLightService())
+            dl->Shutdown();
+#endif
         // UnlitShading owns shaders, a constant buffer and a PSO cache through
         // the same device, and has the same destructor-ordering hazard the
         // three above shipped with. Released here for the same reason.
@@ -1433,6 +1456,10 @@ void RenderPipeline::CleanupGFX() {
 #if WDX_ENABLE_M2
         if (impl_->m2Shading_)
             impl_->m2Shading_->ReleaseGpu();
+#endif
+#if WDX_ENABLE_M3
+        if (impl_->m3Shading_)
+            impl_->m3Shading_->ReleaseGpu();
 #endif
 
         // Tear down CornEffects FIRST — its emitters hold references
@@ -1588,7 +1615,7 @@ gfx::PipelineHandle RenderPipeline::LinePSO(bool depthTest, gfx::PipelineHandle 
     // extra attachments, the lazy SD one declares none. SceneHdrInSd puts an
     // LDR-shaded frame in the HDR target with a single attachment, and takes
     // the second branch — which then builds for the HDR format below.
-    gfx::Format extra[2];
+    gfx::Format extra[3];
     if (SceneExtraRtvFormats(extra) != 0)
         return hdrPso;
 
@@ -1894,8 +1921,6 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     // `depthWrite=true` opaque path — they emit SV_Target1/2 values that
     // we now actually capture instead of silently discarding.
     if (useHdr) {
-        const gfx::TextureHandle colors[3] = {sceneTarget, target.linearDepth,
-                                              target.normalBuffer};
         // Slot 0: hdr clear (already in `clearColor`).
         // Slot 1: linear depth — clear to a far-distance sentinel. The
         //         buffer carries real view-space Z (HD opaque PS writes
@@ -1903,12 +1928,23 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         //         field name — see vs_body.slang). GTAO treats anything
         //         past 1e4 as "no opaque draw landed here".
         // Slot 2: normal — clear to {0.5, 0.5, 1.0, 0} (encoded +Z up).
-        f32 clearColors[3][4] = {
+        // Slot 3 (Sc2Heroes only): the M3 albedo/spec sidecar — clear to
+        //         zero, which is what makes an empty pixel contribute
+        //         nothing in the DeferredLights pass.
+        const gfx::TextureHandle colors[4] = {sceneTarget, target.linearDepth,
+                                              target.normalBuffer, target.gbufDiffuse};
+        f32 clearColors[4][4] = {
             {clearColor[0], clearColor[1], clearColor[2], clearColor[3]},
             {1.0e5f, 0.0f, 0.0f, 0.0f},
             {0.5f, 0.5f, 1.0f, 0.0f},
+            {0.0f, 0.0f, 0.0f, 0.0f},
         };
-        cmd->BeginRenderPass(colors, 3, target.depth, clearColors, 1.0f, 0);
+        // The attachment count follows what the frame's PSOs declared,
+        // which is SceneExtraRtvFormats' answer — the two must agree or
+        // Vulkan and WebGPU reject every bind in the pass.
+        gfx::Format extra[3];
+        const u32 colorCount = 1 + SceneExtraRtvFormats(extra);
+        cmd->BeginRenderPass(colors, colorCount, target.depth, clearColors, 1.0f, 0);
     } else {
         cmd->BeginRenderPass(sceneTarget, target.depth, clearColor, 1.0f, 0);
     }
@@ -2064,6 +2100,70 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         }
     };
 
+    // M3 deferred local lights — one additive full-screen pass over the
+    // G-buffer sidecar, ordered by the profile between Gtao and the
+    // transparent queue. The lights are the visible actors' evaluated M3
+    // omnis (positions already world-space; attenuation distances are raw
+    // model units, so they scale by the profile's WorldScale) plus the
+    // settings' scripted debug point light, which is what the gate uses so
+    // goldens don't depend on which corpus models happen to ship lights.
+    auto runDeferredLightsPass = [&] {
+#if WDX_ENABLE_M3
+        auto* svc = rs_.GetM3DeferredLightService();
+        if (!svc || !rs_.Settings().DeferredLightsEnabled())
+            return;
+        std::vector<sc2::M3DeferredLightService::Light> lights;
+        auto toView = [&](const Vector3f& p) {
+            return Vector3f{
+                p.x * view.data[0][0] + p.y * view.data[1][0] + p.z * view.data[2][0] +
+                    view.data[3][0],
+                p.x * view.data[0][1] + p.y * view.data[1][1] + p.z * view.data[2][1] +
+                    view.data[3][1],
+                p.x * view.data[0][2] + p.y * view.data[1][2] + p.z * view.data[2][2] +
+                    view.data[3][2]};
+        };
+        const f32 worldScale = profile.WorldScale();
+        // Sorted handle walk, BuildDrawLists' discipline: CB order must be
+        // stable across STL implementations or the golden isn't.
+        const auto& actors = rs_.Scene().Actors().All();
+        std::vector<u32> handles;
+        handles.reserve(actors.size());
+        for (const auto& [h, miPtr] : actors)
+            handles.push_back(h);
+        std::sort(handles.begin(), handles.end());
+        for (u32 h : handles) {
+            auto it = actors.find(h);
+            if (it == actors.end() || !it->second)
+                continue;
+            for (const auto& ls : it->second->render.activeLights) {
+                if (!ls.enabled || ls.kind != model::FrameState::LightKind::Omni)
+                    continue;
+                if (ls.attenEnd <= 0.0f)
+                    continue;
+                sc2::M3DeferredLightService::Light l;
+                l.posVS = toView(ls.worldPos);
+                l.color = ls.diffuse;
+                l.attenStart = ls.attenStart * worldScale;
+                l.attenEnd = ls.attenEnd * worldScale;
+                lights.push_back(l);
+            }
+        }
+        if (rs_.Settings().DebugPointLightEnabled()) {
+            sc2::M3DeferredLightService::Light l;
+            l.posVS = toView(rs_.Settings().DebugPointLightPos());
+            l.color = rs_.Settings().DebugPointLightColor();
+            l.attenStart = 0.0f;
+            l.attenEnd = rs_.Settings().DebugPointLightRange();
+            lights.push_back(l);
+        }
+        if (lights.empty())
+            return;
+        WDX_CPU_ZONE("M3DeferredLights");
+        WDX_GPU_ZONE(cmd, "M3DeferredLights");
+        svc->Run(cmd, target, proj, lights, kHdrSceneFormat);
+#endif
+    };
+
     // Depth of field — bokeh blur on `hdrColor` after GTAO/SSAO and before
     // bloom, exactly where WC3 runs GBuffer::ApplyDepthOfField (opaque → SSAO →
     // DoF → bloom). Forwards host-side `RenderSettings::Dof*` knobs into the
@@ -2139,6 +2239,9 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
             break;
         case core::PassSlot::Gtao:
             runGtaoPass();
+            break;
+        case core::PassSlot::DeferredLights:
+            runDeferredLightsPass();
             break;
         case core::PassSlot::Dof:
             runDofPass();
@@ -2330,6 +2433,11 @@ shading::IShadingModel& RenderPipeline::ActiveShadingModel() {
         impl_->m2Shading_ = std::make_unique<profiles::wow::M2CombinerShading>(rs_);
         impl_->shadingModels_.Register(impl_->m2Shading_.get());
 #endif
+#if WDX_ENABLE_M3
+        // And the `.m3` twin.
+        impl_->m3Shading_ = std::make_unique<profiles::sc2_heroes::M3StandardShading>(rs_);
+        impl_->shadingModels_.Register(impl_->m3Shading_.get());
+#endif
     }
     // This is RenderMode's whole remaining job: choosing between the two WC3
     // shading models. It is a legitimate use of the mode — SD and HD are two
@@ -2405,12 +2513,15 @@ core::IRenderProfile& RenderPipeline::ProfileForMode(RenderMode mode) {
 #endif
 #if WDX_ENABLE_M3
         auto sc2 = std::make_unique<profiles::sc2_heroes::Sc2HeroesProfile>(rs_.Settings());
-        sc2->SetShadingModels({impl_->unlitShading_.get()});
-        // Bloom gates on the service, like HD's — the profile is handed the
-        // predicate rather than reaching for it. GTAO and DoF are declared
-        // permanently off in the profile itself; see there for why.
+        sc2->SetShadingModels({impl_->m3Shading_.get(), impl_->unlitShading_.get()});
+        // Bloom and GTAO gate on their services, like HD's — the profile is
+        // handed the predicates rather than reaching for them. GTAO is live
+        // now that M3StandardShading writes real normals; DoF stays declared
+        // off in the profile itself.
         sc2->SetPassPredicate(core::PassSlot::Bloom,
                               [this] { return rs_.GetPostProcessService() != nullptr; });
+        sc2->SetPassPredicate(core::PassSlot::Gtao,
+                              [this] { return rs_.GetGtaoService() != nullptr; });
         const auto vsc2 = core::ValidateProfile(*sc2);
         if (!vsc2.ok)
             std::fprintf(stderr, "[profile] invalid SC2/Heroes render profile: %s\n",

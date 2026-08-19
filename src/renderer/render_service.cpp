@@ -389,6 +389,14 @@ dof::DofService* RenderService::GetDofService() {
 const dof::DofService* RenderService::GetDofService() const {
     return impl_->dofService_.get();
 }
+#if WDX_ENABLE_M3
+sc2::M3DeferredLightService* RenderService::GetM3DeferredLightService() {
+    return impl_->m3DeferredLightService_.get();
+}
+const sc2::M3DeferredLightService* RenderService::GetM3DeferredLightService() const {
+    return impl_->m3DeferredLightService_.get();
+}
+#endif
 post_process::PostProcessService* RenderService::GetPostProcessService() {
     return impl_->postProcessService_.get();
 }
@@ -586,6 +594,17 @@ gtao::GtaoService& RenderService::EnsureGtaoService(gfx::IGFXDevice& gfx, gfx::G
     }
     return *impl_->gtaoService_;
 }
+
+#if WDX_ENABLE_M3
+sc2::M3DeferredLightService& RenderService::EnsureM3DeferredLightService(gfx::IGFXDevice& gfx,
+                                                                         gfx::GfxApi api) {
+    if (!impl_->m3DeferredLightService_) {
+        impl_->m3DeferredLightService_ = std::make_unique<sc2::M3DeferredLightService>();
+        impl_->m3DeferredLightService_->Init(gfx, api);
+    }
+    return *impl_->m3DeferredLightService_;
+}
+#endif
 
 dof::DofService& RenderService::EnsureDofService(gfx::IGFXDevice& gfx, gfx::GfxApi api,
                                                  bls::BlsShaderCache& cache,

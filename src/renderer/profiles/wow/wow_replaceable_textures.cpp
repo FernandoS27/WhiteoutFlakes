@@ -94,6 +94,34 @@ bool IStartsWith(std::string_view s, std::string_view head) {
     return s.size() >= head.size() && IEqual(s.substr(0, head.size()), head);
 }
 
+/// The path the storage knows @p path by, or empty when it knows none.
+///
+/// A host opens a model by whatever its file dialog produced, which for a file
+/// on disk is absolute — and beside an extracted `.m2` there is often nothing
+/// else at all, no `.blp` to find, while the install's own folder holds every
+/// skin the model can wear. ListFiles answers an absolute directory from disk
+/// alone (no archive entry carries a drive letter), so reaching that folder
+/// means naming it the way the storage does.
+///
+/// A storage matches a path by its longest recognised suffix, so every suffix
+/// longer than its own name for the file answers with the same id; the
+/// *shortest* one that still does is that name.
+std::string GameRelative(const std::string& path, const io::IContentProvider& provider) {
+    std::string norm = path;
+    std::replace(norm.begin(), norm.end(), '\\', '/');
+    const u32 id = provider.FileIdForPath(norm);
+    if (id == 0)
+        return {};
+    std::string known;
+    for (usize at = 0; at != std::string::npos;) {
+        if (std::string tail = norm.substr(at); provider.FileIdForPath(tail) == id)
+            known = std::move(tail);
+        const auto slash = norm.find('/', at);
+        at = slash == std::string::npos ? std::string::npos : slash + 1;
+    }
+    return known;
+}
+
 /// Pair a model's `.blp` siblings into skins, for the models that declare more
 /// than one slot. Empty when the names do not say how, which is the honest
 /// answer more often than not: `CreatureDisplayInfo` is the only place the
@@ -222,10 +250,14 @@ std::vector<SkinVariation> WowReplaceableTextures::FindVariations(const ContentR
     // the skins from the effect and reflection textures creatures share.
     if (modelRef.IsFileId() || modelRef.path.empty())
         return variations;
-    const auto slash = modelRef.path.find_last_of("/\\");
-    const std::string dir =
-        slash == std::string::npos ? std::string() : modelRef.path.substr(0, slash);
-    const std::string_view stem = Stem(modelRef.path);
+    // The storage's folder when it can place the model, the host's otherwise:
+    // an extracted `.m2` sitting alone on disk wears the same skins as the one
+    // in the install, and only one of the two folders holds them.
+    const std::string known = GameRelative(modelRef.path, *provider_);
+    const std::string& path = known.empty() ? modelRef.path : known;
+    const auto slash = path.find_last_of("/\\");
+    const std::string dir = slash == std::string::npos ? std::string() : path.substr(0, slash);
+    const std::string_view stem = Stem(path);
 
     std::vector<std::string> siblings;
     for (std::string& sibling : provider_->ListFiles(dir, /*recursive*/ false)) {

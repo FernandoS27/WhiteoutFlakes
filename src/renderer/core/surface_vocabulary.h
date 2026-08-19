@@ -83,6 +83,11 @@ enum class PassSlot : u8 {
     Fxaa = 10,
     Debug = 11,
     ImGui = 12,
+    // Appended, never inserted — the values above are baked into recorded
+    // baselines. The M3 deferred local-light screen pass: reads the G-buffer
+    // sidecar, adds onto SceneColor. Not a per-surface concept, so
+    // PassMaskBit maps it to None like every other screen pass.
+    DeferredLights = 13,
 
     Count,
 };

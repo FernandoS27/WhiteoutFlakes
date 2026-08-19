@@ -80,6 +80,59 @@ struct Sc2ClothBuild;
 
 namespace whiteout::flakes::io {
 
+// ---------------------------------------------------------------------------
+// The canonical texture set (M3_SIMPLE_MATERIAL_DESIGN.md §5)
+//
+// `.m3` has no texture list — layers name paths directly — so the renderer's
+// texture ids have to come from a canonical enumeration. These helpers ARE
+// that enumeration: `GetTextures()` emits exactly `CollectM3Textures()`, and
+// `BuildM3SurfaceTable` indexes into the same call, so the two sides agree by
+// construction rather than by parallel iteration code.
+// ---------------------------------------------------------------------------
+
+/// @brief The seven StandardMaterial layer slots the simple material system
+///        consumes, in M3Surface order. Emissive2 is a real slot because the
+///        shipped protoss set pairs a team-mask emissive1 (op TeamColor*Add)
+///        with the actual glow in emissive2 — a shared slot can only carry
+///        one of the two.
+enum class M3LayerSlot : ::whiteout::u32 {
+    Diffuse = 0,
+    Decal,
+    Specular,
+    Emissive,
+    Emissive2,
+    Normal,
+    AlphaMask,
+    Count,
+};
+
+/// @brief One referenced texture, in canonical (first-seen, deduped) order.
+struct M3TextureRef {
+    std::string path; ///< NUL-trimmed, as authored (forward slashes).
+    ::whiteout::u32 wrapFlags = 0; ///< Bit0 = repeat-U, bit1 = repeat-V.
+};
+
+/// @brief Strip the terminator every M3 `Ref<CHAR>` keeps. `size()` is one
+///        past the text, so a raw copy carries an embedded NUL into the asset
+///        key and misses CASC silently. Every path leaves through this.
+std::string M3CleanPath(const std::string& raw);
+
+/// @brief Whether @p layer samples a texture (a path, and not the solid-colour
+///        flag 0x400) / contributes at all (texture or solid colour).
+bool M3LayerHasTexture(const ::whiteout::m3::TextureLayer& layer);
+bool M3LayerActive(const ::whiteout::m3::TextureLayer& layer);
+
+/// @brief The layer serving @p slot, or null. AlphaMask falls back to its
+///        second layer when the first is inactive (retail multiplies both;
+///        one slot carries whichever exists). The emissive layers each have
+///        their own slot — their blend ops differ per layer.
+const ::whiteout::m3::TextureLayer* M3LayerForSlot(const ::whiteout::m3::StandardMaterial& mat,
+                                                   M3LayerSlot slot);
+
+/// @brief Every texture the standard materials reference through the seven
+///        slots, deduped case-insensitively, first-seen order.
+std::vector<M3TextureRef> CollectM3Textures(const ::whiteout::m3::Model& model);
+
 /// @brief Geometry-only `IModelSource` over `whiteout::m3::Model`.
 class M3ModelAdapter final : public ::whiteout::flakes::renderer::model::IModelSource {
 public:
@@ -96,9 +149,13 @@ public:
 
     // ---- IModelDataSource ----
     std::vector<renderer::model::MeshData> GetMeshes() override;
-    std::vector<renderer::model::TextureData> GetTextures() override {
-        return {};
-    }
+    /// @brief One `TextureData` per `CollectM3Textures` entry: `sharedKey` =
+    ///        the layer path, resolved through CASC by the asset manager. No
+    ///        pixels travel through here.
+    std::vector<renderer::model::TextureData> GetTextures() override;
+    /// @brief Empty by design, M2's precedent: per-batch material data does
+    ///        not fit `MaterialData` — the sc2_heroes profile builds
+    ///        `M3SurfaceTable` straight off `SourceModel()`.
     std::vector<renderer::model::MaterialData> GetMaterials() override {
         return {};
     }
@@ -210,6 +267,13 @@ public:
     ///        test asserts against.
     std::size_t RegionCount() const {
         return regionCount_;
+    }
+
+    /// @brief The regions `GetMeshes` emits, in emission order — `geosetId` is
+    ///        an index into this. `BuildM3SurfaceTable` takes it so the table
+    ///        never re-derives the skip filter.
+    std::span<const std::size_t> EmittedRegions() const {
+        return emittedRegions_;
     }
 
     const ::whiteout::m3::Model& SourceModel() const {

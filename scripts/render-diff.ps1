@@ -81,6 +81,20 @@ param(
     # is what the commit message has to say.
     [switch]$M3Anim,
 
+    # GATE G6 — the `.m3` *material* arm (M3_SIMPLE_MATERIAL_DESIGN.md §7).
+    # Same corpus root as -M3, its own corpus file and baselines (`sc2mat`).
+    # Like -M3Anim these baselines are PROGRESSIVE: each material phase
+    # legitimately changes what M3 draws, and the vacuity anchor is the -M3
+    # arm's unlit golden — a phase whose sc2mat golden still matches the unlit
+    # one proved nothing.
+    [switch]$Sc2Mat,
+
+    # The deferred-light sub-arm of -Sc2Mat: a scripted debug point light at a
+    # fixed offset (the values live in test_main, not here, so every model
+    # gets the identical light). Its own baselines (`sc2mat_lit`) — the claim
+    # is that it differs from the light-off run.
+    [switch]$DebugLight,
+
     # The solver arm of G5: same corpus and scenarios, but with the pose stages
     # on and a ground plane installed, so terrain IK and the turret are visible
     # to a golden at all. Its own baselines (`m3ik`) — the whole point is that
@@ -149,12 +163,16 @@ if (-not (Test-Path $BaselineDir)) {
 
 $mode = if ($Hd) { 'hd' } else { 'sd' }
 if ($Unlit) { $mode += '_unlit' }
-if ((@($M2, $M3, $M3Anim) | Where-Object { $_ }).Count -gt 1) {
-    Write-Error '-M2, -M3 and -M3Anim are separate arms: pass one of them.'
+if ((@($M2, $M3, $M3Anim, $Sc2Mat) | Where-Object { $_ }).Count -gt 1) {
+    Write-Error '-M2, -M3, -M3Anim and -Sc2Mat are separate arms: pass one of them.'
     exit 2
 }
 if ($Solvers -and -not $M3Anim) {
     Write-Error '-Solvers is a -M3Anim arm: the pose stages only exist for `.m3`.'
+    exit 2
+}
+if ($DebugLight -and -not $Sc2Mat) {
+    Write-Error '-DebugLight is a -Sc2Mat arm: only the M3 material frame consumes it.'
     exit 2
 }
 if ($Listfile -and -not $M2) {
@@ -190,6 +208,15 @@ if ($M3 -or $M3Anim) {
     # frames in the corpus file are written against this default.
     if ($M3Anim -and -not $PSBoundParameters.ContainsKey('Frames')) {
         $Frames = 120
+    }
+}
+if ($Sc2Mat) {
+    $mode = if ($DebugLight) { 'sc2mat_lit' } else { 'sc2mat' }
+    if (-not $PSBoundParameters.ContainsKey('CorpusRoot')) {
+        $CorpusRoot = 'C:/Projects/WhiteoutLib/Corpus'
+    }
+    if (-not $PSBoundParameters.ContainsKey('CorpusFile')) {
+        $CorpusFile = "$PSScriptRoot/../tools/sc2_material_corpus.txt"
     }
 }
 
@@ -267,6 +294,7 @@ foreach ($entry in $entries) {
         }
     }
     if ($Hd) { $argv += '--draw-trace-hd' }
+    if ($DebugLight) { $argv += '--draw-trace-debug-light' }
     if ($Unlit) { $argv += '--draw-trace-unlit' }
     if ($LazyAnim) { $argv += '--draw-trace-lazy-anim' }
     if ($Listfile) { $argv += @('--listfile', $Listfile, '--content-root', $CorpusRoot) }

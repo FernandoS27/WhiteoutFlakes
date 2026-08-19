@@ -342,6 +342,15 @@ set(SHADER_ENTRIES
     "m2_combiners.slang|psM2Guild_Opaque|fragment|kM2Ps_Guild_Opaque"
     "m2_combiners.slang|psM2Combiners_Mod_Depth|fragment|kM2Ps_Combiners_Mod_Depth"
     "m2_combiners.slang|psM2Illum|fragment|kM2Ps_Illum"
+    # M3 simple material (M3_SIMPLE_MATERIAL_DESIGN.md): forward and MRT pixel
+    # entries share one shading function; the split exists because Vulkan
+    # rejects a PS declaring outputs the pass never binds.
+    "m3_standard.slang|vsM3Standard|vertex|kM3StandardVS"
+    "m3_standard.slang|vsM3StandardSkinned|vertex|kM3StandardSkinnedVS"
+    "m3_standard.slang|psM3Standard|fragment|kM3StandardPS"
+    "m3_standard.slang|psM3StandardMrt|fragment|kM3StandardMrtPS"
+    "m3_deferred_light.slang|vsM3DeferredLight|vertex|kM3DeferredLightVS"
+    "m3_deferred_light.slang|psM3DeferredLight|fragment|kM3DeferredLightPS"
     # NOTE: depth of field has no custom shader entry — DofService runs the
     # shipped WC3 depthoffield.bls (GxShaderID DepthOfField) through the BLS
     # shader cache, and reuses the embedded blit (kBlit*) for the round-trip.
@@ -1299,6 +1308,9 @@ if(WDX_ENABLE_M3)
         src/io/m3/m3_model_adapter.cpp
         src/io/m3/m3_animation.cpp
         src/io/m3/m3_pose_solvers.cpp
+        src/renderer/profiles/sc2_heroes/m3_standard_shading.cpp
+        src/renderer/profiles/sc2_heroes/m3_surface_table.cpp
+        src/renderer/sc2/m3_deferred_light_service.cpp
     )
     target_compile_definitions(WhiteoutFlakesLib PUBLIC WDX_ENABLE_M3=1)
     message(STATUS "WhiteoutFlakes: .m3 loading ENABLED (geometry only)")

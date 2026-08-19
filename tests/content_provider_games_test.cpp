@@ -252,6 +252,43 @@ TEST_CASE("A StarCraft II storage enumerates by path", "[provider]") {
     CHECK_FALSE(files.empty());
 }
 
+TEST_CASE("A StarCraft II storage resolves mod-relative asset paths", "[provider]") {
+    FileContentProvider p;
+    if (p.GamePath(ProductId::Sc2).empty())
+        SKIP("no StarCraft II install found");
+    p.SetGame(ProductId::Sc2);
+    REQUIRE(p.HasCasc());
+
+    // An `.m3` names its textures relative to whichever mod shipped it
+    // ("assets/textures/foo.dds"); the storage stores only mod-rooted full
+    // paths ("mods/liberty.sc2mod/base.sc2assets/assets/textures/foo.dds").
+    // The provider bridges that with prefixes learned from the listing —
+    // asserted here against whatever texture this install actually carries,
+    // so the test does not depend on any one shipped file.
+    const auto files = p.ListFiles("", true);
+    std::string full, rel;
+    for (const auto& f : files) {
+        const auto at = f.find("/assets/textures/");
+        if (at == std::string::npos || f.size() < 5 || f.substr(f.size() - 4) != ".dds")
+            continue;
+        full = f;
+        rel = f.substr(at + 1);
+        break;
+    }
+    if (full.empty())
+        SKIP("install lists no mod-rooted assets/textures entry");
+
+    const auto direct = p.ReadFile(full);
+    REQUIRE(direct.has_value());
+    const auto relative = p.ReadFile(rel);
+    // Non-empty is the claim. NOT byte-equality with `full`: several mods can
+    // carry the same tail and the fallback deliberately prefers the game's
+    // most-derived one, which need not be the mod the listing happened to
+    // yield `full` from.
+    REQUIRE(relative.has_value());
+    CHECK_FALSE(relative->empty());
+}
+
 TEST_CASE("The Heroes root is overridable on its own", "[provider]") {
     FileContentProvider p;
     p.SetGame(ProductId::Sc2);

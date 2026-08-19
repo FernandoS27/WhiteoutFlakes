@@ -45,6 +45,11 @@ ImageUsage DetermineImageUsage(std::string_view path) {
         return ImageUsage::Default;
     if (EndsWith(stem, "_normal"))
         return ImageUsage::NormalMap;
+    // StarCraft II / Heroes spellings ("ZergConsole-Stukov_Norm.dds"). A
+    // normal map promoted to sRGB decodes wrong everywhere it is sampled, so
+    // the suffix set errs toward recognising them.
+    if (EndsWith(stem, "_norm") || EndsWith(stem, "_nrm"))
+        return ImageUsage::NormalMap;
     if (EndsWith(stem, "_orm"))
         return ImageUsage::ORM;
     if (EndsWith(stem, "_emissive"))

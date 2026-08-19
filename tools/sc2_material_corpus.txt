@@ -1,0 +1,38 @@
+# GATE G6 — the M3 simple material corpus (M3_SIMPLE_MATERIAL_DESIGN.md §7).
+#
+# Paths are relative to the -Sc2Mat arm's corpus root
+# (C:/Projects/WhiteoutLib/Corpus). Bare path per line, no scenario tokens.
+#
+# Run:
+#   .\scripts\render-diff.ps1 -Record -Sc2Mat -Golden
+#   ... material change ...
+#   .\scripts\render-diff.ps1 -Check  -Sc2Mat -Golden
+# and the deferred-light sub-arm:
+#   .\scripts\render-diff.ps1 -Record -Sc2Mat -Golden -DebugLight
+#
+# Baselines are PROGRESSIVE (each material phase legitimately changes what M3
+# draws). NOTE: since the simple material system became the default M3 render
+# path, the -M3 arm renders through the SAME lit pipeline — its golden is no
+# longer an unlit vacuity anchor, and a shared model's m3/sc2mat goldens are
+# legitimately byte-identical. Vacuity is checked by eye instead: a green
+# record whose image is a flat silhouette proved nothing.
+#
+# Textures: the corpus ships bare `.m3` files, so layer textures resolve
+# through the provider's SC2 CASC install (the mod-prefix fallback in
+# CascSource). Record and check on a machine with StarCraft II installed —
+# without it every layer falls back to white and the baselines mean nothing.
+#
+# Selection: the -M3 geometry corpus (so the two arms' images are directly
+# comparable) plus models chosen for the layer axes they exercise.
+
+Sc2M3/Marine.m3            # diffuse + spec + emissive + normal, the workhorse
+Sc2M3/Zergling.m3          # organic set, alpha-tested wing membranes
+Sc2M3/Zealot.m3            # strong emissive (psi blades), team-colour slots
+Sc2M3/SCV.m3               # metallic spec, high exponent
+Sc2M3/Thor.m3              # many regions, mixed blend modes
+Sc2M3/Ultralisk.m3         # large organic, normal-map heavy
+Sc2M3/BattleCruiser.m3     # emissive windows over dark albedo
+Sc2M3/Baneling.m3          # transparency (acid sacs), AlphaBlend surfaces
+Sc2M3/Immortal.m3          # protoss glow set, Add-blend layers
+Sc2M3/Mothership.m3        # additive effects geometry over hull
+Sc2M3/Abathur_ConsoleZerg_00.m3  # measured Diff/Spec/Emiss/Norm layer set

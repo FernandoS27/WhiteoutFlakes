@@ -42,6 +42,11 @@ struct RenderTarget {
     // never references them.
     gfx::TextureHandle linearDepth = gfx::TextureHandle::Invalid;
     gfx::TextureHandle normalBuffer = gfx::TextureHandle::Invalid;
+    // Slot 3 of the M3 sidecar (.rgb linear albedo, .a mono spec intensity),
+    // bound only when the frame profile declares TargetSlot::GBufferDiffuse.
+    // Read by the DeferredLights pass. Created for every target like the two
+    // above — the WC3 frames simply never bind it.
+    gfx::TextureHandle gbufDiffuse = gfx::TextureHandle::Invalid;
 
     // Previous frame's linearDepth. Written at the end of GTAO's temporal
     // pass (copy of the current frame's linearDepth) and sampled at the

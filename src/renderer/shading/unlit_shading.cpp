@@ -212,6 +212,7 @@ gfx::PipelineHandle UnlitShading::GetOrBuildPso(const PsoKey& key) {
     desc.dsvFormat = key.dsv;
     desc.extraRtvFormats[0] = key.extra0;
     desc.extraRtvFormats[1] = key.extra1;
+    desc.extraRtvFormats[2] = key.extra2;
     desc.extraRtvCount = key.extraRtvCount;
 
     PsoEntry e;
@@ -365,10 +366,11 @@ void UnlitShading::Draw(const render_detail::DrawItem& item, const core::PassCon
     // even though this shader writes SV_Target0 alone and the backend masks
     // the other two. That is a pipeline-format concern and not an output
     // signature: `Emits` below still answers Color|Depth, honestly.
-    gfx::Format extra[2] = {gfx::Format::Unknown, gfx::Format::Unknown};
+    gfx::Format extra[3] = {gfx::Format::Unknown, gfx::Format::Unknown, gfx::Format::Unknown};
     key.extraRtvCount = rs_.Pipeline().SceneExtraRtvFormats(extra);
     key.extra0 = extra[0];
     key.extra1 = extra[1];
+    key.extra2 = extra[2];
     key.layoutId = geo.layoutId;
     key.stride = geo.baseStride;
     key.lighting = ResolveLighting(*item.view, geo);

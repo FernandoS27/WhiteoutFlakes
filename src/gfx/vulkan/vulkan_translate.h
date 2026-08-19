@@ -27,6 +27,8 @@ inline vk::Format ToVkFormat(Format f) {
         return vk::Format::eR8G8B8A8Snorm;
     case Format::R16G16_SNORM:
         return vk::Format::eR16G16Snorm;
+    case Format::R16G16B16A16_SNORM:
+        return vk::Format::eR16G16B16A16Snorm;
     case Format::B8G8R8A8_UNORM:
         return vk::Format::eB8G8R8A8Unorm;
     case Format::B8G8R8A8_UNORM_SRGB:

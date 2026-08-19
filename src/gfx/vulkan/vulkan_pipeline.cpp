@@ -87,6 +87,7 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
             elemSize = 12;
             break;
         case Format::R32G32_FLOAT:
+        case Format::R16G16B16A16_SNORM:
             elemSize = 8;
             break;
         case Format::R8G8B8A8_UNORM:

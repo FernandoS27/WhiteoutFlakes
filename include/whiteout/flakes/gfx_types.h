@@ -87,6 +87,10 @@ enum class Format : u16 {
     // asked for an SNORM *texture*.
     R8G8B8A8_SNORM,
     R16G16_SNORM,
+    // Appended for the same recorded-trace reason as the two above. The M3
+    // simple material shader reads both `.m3` UV sets through one TEXCOORD0
+    // element (two contiguous i16x2 records), which needs the 4-channel twin.
+    R16G16B16A16_SNORM,
 };
 
 /// @brief `true` if @p f is one of the BCn block-compressed families.
@@ -141,6 +145,7 @@ inline u32 FormatBytesPerBlock(Format f) {
         return 4;
     case Format::R16G16B16A16_UNORM:
     case Format::R16G16B16A16_FLOAT:
+    case Format::R16G16B16A16_SNORM:
     case Format::R32G32_FLOAT:
         return 8;
     case Format::R32G32B32_FLOAT:

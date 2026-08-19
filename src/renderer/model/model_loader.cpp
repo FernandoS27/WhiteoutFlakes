@@ -32,6 +32,7 @@
 #include "renderer/core/render_profile.h" // IRenderProfile::WorldScale
 #if WDX_ENABLE_M3
 #include "io/m3/m3_model_adapter.h"
+#include "renderer/profiles/sc2_heroes/m3_surface_table.h"
 #endif
 #if WDX_ENABLE_M2
 #include "io/m2/m2_model_adapter.h"
@@ -858,6 +859,35 @@ bool LooksLikeM3(std::span<const u8> bytes) {
     return bytes[2] == 'D' && bytes[3] == 'M' && bytes[1] == '3' &&
            (bytes[0] == '4' || bytes[0] == '3');
 }
+
+// One surface per geoset — M3SurfaceTable entry g IS geoset g's resolved
+// material, so unlike BuildM2Surfaces there is no grouping to do. Runs at
+// spawn, before the geosets exist, for the same reason: the range lands on
+// the staged geoset and rides the staged→GPU copy.
+void BuildM3Surfaces(Actor& actor) {
+    const auto* table = static_cast<const profiles::sc2_heroes::M3SurfaceTable*>(
+        actor.render.surfaceTable.get());
+    if (!table)
+        return;
+    const auto& src = table->Surfaces();
+    auto& surfaces = actor.render.surfaces;
+    surfaces.clear();
+    surfaces.reserve(src.size());
+    for (u32 g = 0; g < src.size(); ++g) {
+        core::SurfaceKey key;
+        key.model = core::ShadingModelId::M3Standard;
+        key.surface = g;
+        key.blend = profiles::sc2_heroes::M3ClassifySurface(src[g]).blend;
+        key.priorityPlane = src[g].priority;
+        const u32 begin = static_cast<u32>(surfaces.size());
+        surfaces.push_back(key);
+        auto it = actor.render.stagedGeosets.find(static_cast<i32>(g));
+        if (it != actor.render.stagedGeosets.end()) {
+            it->second.surfaceBegin = begin;
+            it->second.surfaceCount = 1;
+        }
+    }
+}
 } // namespace
 #endif
 
@@ -969,10 +999,12 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
     }
 #endif
 #if WDX_ENABLE_M3
+    std::shared_ptr<io::M3ModelAdapter> m3;
     if (isM3) {
         // No provider: `.m3` is one self-contained file with no siblings to
         // resolve, which is the whole difference from `.m2`.
-        source = io::M3ModelAdapter::Load(ref, data);
+        m3 = io::M3ModelAdapter::Load(ref, data);
+        source = m3;
     }
 #endif
     if (!source)
@@ -997,6 +1029,24 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
         // After the character's own table: the children are spawned through the
         // same route and each builds its own.
         SpawnWowSkinnedModels(*actor, *m2, skinnedModels, provider);
+    }
+#endif
+#if WDX_ENABLE_M3
+    if (m3) {
+        // Built off the raw model, M2's precedent — per-batch binding does not
+        // fit MaterialData. Stamped only when something resolved: a table with
+        // no valid entry (every material displacement / volume / …) leaves the
+        // whole actor on Unlit, which draws where this model would vanish.
+        auto table = profiles::sc2_heroes::BuildM3SurfaceTable(m3->SourceModel(),
+                                                               m3->EmittedRegions());
+        bool anyValid = false;
+        for (const auto& s : table->Surfaces())
+            anyValid |= s.valid;
+        if (anyValid) {
+            actor->render.surfaceTable = std::move(table);
+            BuildM3Surfaces(*actor);
+            actor->shadingModel = core::ShadingModelId::M3Standard;
+        }
     }
 #endif
     return actor;

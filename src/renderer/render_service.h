@@ -26,6 +26,9 @@
 #include "dof/dof_service.h"
 #include "gtao/gtao_service.h"
 #include "post_process/post_process_service.h"
+#if WDX_ENABLE_M3
+#include "sc2/m3_deferred_light_service.h"
+#endif
 
 #include <memory>
 #include <functional>
@@ -229,6 +232,10 @@ public:
     const dof::DofService* GetDofService() const;
     post_process::PostProcessService* GetPostProcessService();
     const post_process::PostProcessService* GetPostProcessService() const;
+#if WDX_ENABLE_M3
+    sc2::M3DeferredLightService* GetM3DeferredLightService();
+    const sc2::M3DeferredLightService* GetM3DeferredLightService() const;
+#endif
 
     // Engine-side Dear ImGui adapter. Returns nullptr when WDX_ENABLE_IMGUI
     // is off at compile time, or before InitBlsShaders has had a chance to
@@ -311,6 +318,10 @@ public:
     dnc::DncService* DefaultSceneDnc();
     shadow::ShadowService& EnsureShadowService(gfx::IGFXDevice& gfx);
     gtao::GtaoService& EnsureGtaoService(gfx::IGFXDevice& gfx, gfx::GfxApi api);
+#if WDX_ENABLE_M3
+    sc2::M3DeferredLightService& EnsureM3DeferredLightService(gfx::IGFXDevice& gfx,
+                                                              gfx::GfxApi api);
+#endif
     dof::DofService& EnsureDofService(gfx::IGFXDevice& gfx, gfx::GfxApi api,
                                       bls::BlsShaderCache& cache, gfx::BufferHandle spriteVb);
     post_process::PostProcessService& EnsurePostProcessService(gfx::IGFXDevice& gfx,

@@ -429,7 +429,8 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
                         const std::string& checkPath, const std::string& goldenPath, i32 frames,
                         bool hdMode, f32 distanceTol, i32 cameraDistance, i32 perturbSeed,
                         i32 instances, bool unlitOddGeosets, bool lazyAnim,
-                        const std::string& contentRoot, const AnimScenario& anim) {
+                        const std::string& contentRoot, const AnimScenario& anim,
+                        bool debugLight = false) {
     namespace wf = whiteout::flakes;
     namespace dbg = wf::renderer::debug;
 
@@ -476,6 +477,18 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
     // byte-identical, so the claim only means something if it is checked
     // against the same file the eager run recorded.
     settings.SetM2LazyAnimations(lazyAnim);
+
+    // The -Sc2Mat -DebugLight sub-arm: one scripted point light for the M3
+    // DeferredLights pass, identical for every model. The values live HERE,
+    // not in the script, so a baseline never depends on shell quoting.
+    // Renderer units (post-WorldScale). Placed well OFF the body: an SC2
+    // infantry model is ~400 units tall at WorldScale 100, and a light inside
+    // the silhouette faces away from every visible pixel — atten and N·L
+    // never coincide and the pass proves nothing.
+    if (debugLight) {
+        settings.SetDebugPointLight(true, {250.0f, -250.0f, 320.0f}, {2.0f, 1.8f, 1.4f},
+                                    900.0f);
+    }
 
     // The gate's perturbation arm: a different first handle puts every actor
     // in a different hash bucket, so any draw path that follows unordered_map
@@ -1103,6 +1116,7 @@ int main(int argc, char* argv[]) {
     bool drawTrace = false;
     bool drawTraceHd = false;
     bool drawTraceUnlit = false;
+    bool drawTraceDebugLight = false;
     bool drawTraceLazyAnim = false;
     std::string drawTraceRecord;
     std::string drawTraceCheck;
@@ -1236,6 +1250,8 @@ int main(int argc, char* argv[]) {
             drawTraceHd = true;
         } else if (std::strcmp(a, "--draw-trace-unlit") == 0) {
             drawTraceUnlit = true;
+        } else if (std::strcmp(a, "--draw-trace-debug-light") == 0) {
+            drawTraceDebugLight = true;
         } else if (std::strcmp(a, "--draw-trace-lazy-anim") == 0) {
             drawTraceLazyAnim = true;
         } else if (std::strcmp(a, "--listfile") == 0 && i + 1 < argc) {
@@ -1481,7 +1497,8 @@ int main(int argc, char* argv[]) {
         return RunDrawTrace(renderer, scene, backend, mdxPath, drawTraceRecord, drawTraceCheck,
                             drawTraceGolden, particleDiffFrames, drawTraceHd, drawTraceDistanceTol,
                             drawTraceCameraDistance, drawTracePerturb, drawTraceInstances,
-                            drawTraceUnlit, drawTraceLazyAnim, contentRoot, drawTraceAnim);
+                            drawTraceUnlit, drawTraceLazyAnim, contentRoot, drawTraceAnim,
+                            drawTraceDebugLight);
 
     whiteout::flakes::ViewerApp app(renderer);
     if (!app.Open(1024, 768, backend)) {

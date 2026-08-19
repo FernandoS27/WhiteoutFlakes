@@ -54,6 +54,7 @@ enum class TraceShadingModel : u8 {
     Wc3Crystal = 3,
     Unlit = 4,
     M2Combiners = 5,
+    M3Standard = 6,
     None = 255,
 };
 

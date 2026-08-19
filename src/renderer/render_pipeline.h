@@ -192,14 +192,15 @@ public:
 
     // Extra colour attachments the in-flight frame's scene pass binds, written
     // into @p out. Returns 0 for a single-attachment frame, 2 for an MRT one
-    // (slot 1 = linear depth, slot 2 = world normal).
+    // (slot 1 = linear depth, slot 2 = view normal), 3 when the frame profile
+    // additionally declares TargetSlot::GBufferDiffuse (the M3 sidecar).
     //
     // Every PSO submitted into the scene pass has to declare the same
     // attachment count or Vulkan and WebGPU reject the bind — including
     // shaders that write SV_Target0 alone, which is most of them. Ask this
     // rather than the render mode: the two agree for WC3 and stop agreeing for
     // a profile selected by product.
-    u32 SceneExtraRtvFormats(gfx::Format out[2]) const;
+    u32 SceneExtraRtvFormats(gfx::Format out[3]) const;
 
     // There is deliberately no FrameRenderMode() accessor. It existed so
     // per-frame code could branch on HD vs SD, and every one of those branches
@@ -246,6 +247,10 @@ public:
     // a full-precision float and an 8-bit packed world-space normal.
     static constexpr gfx::Format kLinearDepthFormat = gfx::Format::R32_FLOAT;
     static constexpr gfx::Format kNormalBufferFormat = gfx::Format::R8G8B8A8_UNORM;
+    // The M3 G-buffer sidecar's fourth attachment (.rgb linear albedo,
+    // .a mono specular intensity). Bound only when the frame profile
+    // declares TargetSlot::GBufferDiffuse.
+    static constexpr gfx::Format kGBufferDiffuseFormat = gfx::Format::R8G8B8A8_UNORM;
     // GTAO output buffer: scalar visibility in [0, 1]. R8_UNORM is plenty
     // for the post-tonemap modulation budget — the noise floor of GTAO at
     // 4×4 sampling is already several LSBs above 8-bit precision.

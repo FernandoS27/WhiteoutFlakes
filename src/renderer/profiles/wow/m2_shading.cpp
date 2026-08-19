@@ -288,6 +288,7 @@ gfx::PipelineHandle M2CombinerShading::GetOrBuildPso(const PsoKey& key) {
     desc.dsvFormat = key.dsv;
     desc.extraRtvFormats[0] = key.extra0;
     desc.extraRtvFormats[1] = key.extra1;
+    desc.extraRtvFormats[2] = key.extra2;
     desc.extraRtvCount = key.extraRtvCount;
 
     const auto pso = gfxDev->CreateGraphicsPipeline(desc);
@@ -388,10 +389,11 @@ void M2CombinerShading::Draw(const render_detail::DrawItem& item, const core::Pa
     // An MRT scene pass binds a three-attachment G-buffer and the PSO must
     // declare the same count or Vulkan and WebGPU reject the bind, even though
     // these shaders write SV_Target0 alone.
-    gfx::Format extra[2] = {gfx::Format::Unknown, gfx::Format::Unknown};
+    gfx::Format extra[3] = {gfx::Format::Unknown, gfx::Format::Unknown, gfx::Format::Unknown};
     key.extraRtvCount = rs_.Pipeline().SceneExtraRtvFormats(extra);
     key.extra0 = extra[0];
     key.extra1 = extra[1];
+    key.extra2 = extra[2];
     key.layoutId = geo.layoutId;
     key.stride = geo.baseStride;
     key.vsIndex = static_cast<u8>(surf->vertexShader);

@@ -65,11 +65,13 @@ void ConfigureWow(StorageBuilder& b, const StorageConfig& c, const std::atomic<b
 
 // CASC only — neither game ever shipped an MPQ — and two roots, because
 // StarCraft II and Heroes of the Storm are separate installs sharing one
-// ProductId (they share a render profile). Either may be absent.
+// ProductId (they share a render profile). Either may be absent. The asset
+// prefixes are what let an `.m3`'s relative texture names
+// ("assets/textures/...") find the mod-rooted full paths the storage stores.
 void ConfigureSc2(StorageBuilder& b, const StorageConfig& c, const std::atomic<bool>*) {
     if (c.ignoreCasc)
         return;
-    b.Casc(c.installPath).Casc(c.secondaryPath);
+    b.AssetPrefixes().Casc(c.installPath).Casc(c.secondaryPath);
 }
 
 } // namespace

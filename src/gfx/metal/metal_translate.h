@@ -28,6 +28,8 @@ inline MTLPixelFormat ToMtlPixelFormat(Format f) {
         return MTLPixelFormatRGBA8Snorm;
     case Format::R16G16_SNORM:
         return MTLPixelFormatRG16Snorm;
+    case Format::R16G16B16A16_SNORM:
+        return MTLPixelFormatRGBA16Snorm;
     case Format::B8G8R8A8_UNORM:
         return MTLPixelFormatBGRA8Unorm;
     case Format::B8G8R8A8_UNORM_SRGB:

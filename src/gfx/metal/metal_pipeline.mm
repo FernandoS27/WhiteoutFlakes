@@ -115,6 +115,8 @@ MTLVertexFormat ToMtlVertexFormat(Format f) {
         return MTLVertexFormatChar4Normalized;
     case Format::R16G16_SNORM:
         return MTLVertexFormatShort2Normalized;
+    case Format::R16G16B16A16_SNORM:
+        return MTLVertexFormatShort4Normalized;
     case Format::B8G8R8A8_UNORM:
         // Metal has no BGRA8 vertex format. Renderer-side input layouts
         // that use BGRA8 mean "shader reads RGBA"; the swizzle is on the

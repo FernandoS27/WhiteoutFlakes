@@ -110,6 +110,7 @@ private:
         u32 extraRtvCount = 0;
         gfx::Format extra0 = gfx::Format::Unknown;
         gfx::Format extra1 = gfx::Format::Unknown;
+        gfx::Format extra2 = gfx::Format::Unknown;
         u32 layoutId = core::VertexLayoutCache::kWc3Interleaved;
         u32 stride = 0;
         core::UnlitLightingModel lighting = core::UnlitLightingModel::Flat;

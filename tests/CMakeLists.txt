@@ -83,6 +83,7 @@ if(WDX_ENABLE_M2)
     # with every assertion written on the view-space basis the client pins
     # down rather than on our model-space palette.
     wdx_add_test(m2_billboard_test m2_billboard_test.cpp)
+    wdx_add_test(m2_tex_verify_tmp m2_tex_verify_tmp.cpp)
     wdx_add_test(m2_lighting_test m2_lighting_test.cpp)
     wdx_add_test(wow_character_test wow_character_test.cpp)
     # `.m2` particle emitters. Half pure translation, half a corpus sweep — the
@@ -129,6 +130,10 @@ if(WDX_ENABLE_M3)
         wdx_add_test(cloth_probe cloth_probe.cpp)
         target_link_libraries(cloth_probe PRIVATE snowball)
     endif()
+    # The simple material system's table: batch→MATM→material resolution,
+    # the canonical texture set, layer fallbacks, classification. Synthetic
+    # models, no device.
+    wdx_add_test(m3_surface_table_test m3_surface_table_test.cpp)
 endif()
 # The baked-vertex-buffer description check. Compiled unconditionally — it
 # #ifdefs its two halves internally, so a build with neither format still

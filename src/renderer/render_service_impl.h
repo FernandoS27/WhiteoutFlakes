@@ -133,6 +133,9 @@ struct RenderService::Impl {
     std::unique_ptr<shadow::ShadowService> shadowService_;
     std::unique_ptr<gtao::GtaoService> gtaoService_;
     std::unique_ptr<dof::DofService> dofService_;
+#if WDX_ENABLE_M3
+    std::unique_ptr<sc2::M3DeferredLightService> m3DeferredLightService_;
+#endif
     std::unique_ptr<post_process::PostProcessService> postProcessService_;
     std::unique_ptr<FrameTicker> ticker_;
     std::unique_ptr<model::ModelLoader> loader_;

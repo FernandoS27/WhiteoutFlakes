@@ -278,6 +278,47 @@ public:
         aoBentBoost_.store(bits);
     }
 
+    // ---- M3 deferred local lights (Sc2Heroes profile) ----
+    // Gates the DeferredLights pass. The pass also self-disables when the
+    // frame collected no lights, so leaving this on costs nothing for a
+    // model without any.
+    bool DeferredLightsEnabled() const {
+        return deferredLightsEnabled_.load();
+    }
+    void SetDeferredLightsEnabled(bool on) {
+        deferredLightsEnabled_.store(on);
+    }
+
+    // Scripted debug point light, fed straight into the DeferredLights pass
+    // beside the collected M3 lights. Exists for the render gate: corpus
+    // models rarely ship lights (shipped M3 data is mostly empty), so the
+    // scenario needs a light it fully controls. Position and range are in
+    // renderer units (post-WorldScale).
+    bool DebugPointLightEnabled() const {
+        return dbgPointLightOn_.load();
+    }
+    Vector3f DebugPointLightPos() const {
+        return {loadF32(dbgPointLightPosX_), loadF32(dbgPointLightPosY_),
+                loadF32(dbgPointLightPosZ_)};
+    }
+    Vector3f DebugPointLightColor() const {
+        return {loadF32(dbgPointLightColR_), loadF32(dbgPointLightColG_),
+                loadF32(dbgPointLightColB_)};
+    }
+    f32 DebugPointLightRange() const {
+        return loadF32(dbgPointLightRange_);
+    }
+    void SetDebugPointLight(bool on, const Vector3f& pos, const Vector3f& color, f32 range) {
+        storeF32(dbgPointLightPosX_, pos.x);
+        storeF32(dbgPointLightPosY_, pos.y);
+        storeF32(dbgPointLightPosZ_, pos.z);
+        storeF32(dbgPointLightColR_, color.x);
+        storeF32(dbgPointLightColG_, color.y);
+        storeF32(dbgPointLightColB_, color.z);
+        storeF32(dbgPointLightRange_, range);
+        dbgPointLightOn_.store(on);
+    }
+
     // ---- Bloom (HD-only) ----
     // Master enable. Off ⇒ PostProcessService::RunBloom is a no-op.
     bool BloomEnabled() const {
@@ -506,6 +547,18 @@ private:
     // Bent-normal IBL boost (float bits in u32 — atomic<f32> isn't
     // portable). 0 disables the boost pass.
     std::atomic<u32> aoBentBoost_{0};
+
+    // M3 deferred local lights + the gate's scripted debug point light.
+    // Float knobs as raw bits, same as everything above.
+    std::atomic<bool> deferredLightsEnabled_{true};
+    std::atomic<bool> dbgPointLightOn_{false};
+    std::atomic<u32> dbgPointLightPosX_{0};
+    std::atomic<u32> dbgPointLightPosY_{0};
+    std::atomic<u32> dbgPointLightPosZ_{0};
+    std::atomic<u32> dbgPointLightColR_{0x3F800000u}; // 1.0f
+    std::atomic<u32> dbgPointLightColG_{0x3F800000u}; // 1.0f
+    std::atomic<u32> dbgPointLightColB_{0x3F800000u}; // 1.0f
+    std::atomic<u32> dbgPointLightRange_{0x42C80000u}; // 100.0f
 
     // Bloom — defaults match the engine's RegisterBloom (BL_BLOOM_D=0
     // off, threshold=1.0, intensity=1.25, saturation=1.0). Floats stored

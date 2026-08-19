@@ -52,6 +52,10 @@ public:
             TargetDesc{TargetSlot::Depth, gfx::Format::D24_UNORM_S8_UINT, 1.0f},
             TargetDesc{TargetSlot::LinearDepth, gfx::Format::R32_FLOAT, 1.0f},
             TargetDesc{TargetSlot::Normal, gfx::Format::R8G8B8A8_UNORM, 1.0f},
+            // The M3 sidecar's fourth attachment. Declaring this slot is what
+            // makes SceneExtraRtvFormats answer 3 for this profile — the WC3
+            // frames never declare it and keep their attachment count.
+            TargetDesc{TargetSlot::GBufferDiffuse, gfx::Format::R8G8B8A8_UNORM, 1.0f},
             TargetDesc{TargetSlot::AmbientOcclusion, gfx::Format::R8G8B8A8_UNORM, 1.0f},
             TargetDesc{TargetSlot::Bloom, gfx::Format::R11G11B10_FLOAT, 0.5f},
             TargetDesc{TargetSlot::Backbuffer, gfx::Format::R8G8B8A8_UNORM, 1.0f},
@@ -59,36 +63,51 @@ public:
         // No ShadowMap pass or target: nothing casts one yet, and declaring a
         // target nobody writes is what ValidateProfile exists to reject.
         //
-        // The G-buffer pass declares all four attachments even though the only
-        // model that can draw an `.m3` today writes SV_Target0 alone. That is
-        // not a lie: the declaration describes the *pass*, and the pass really
-        // does bind three colour attachments — UnlitShading::Emits is where
-        // "this model fills one of them" is stated, per model, which is the
-        // whole reason Emits is per-model rather than per-pass.
+        // The G-buffer pass declares all five attachments even though only
+        // M3StandardShading's MRT permutation fills the last three — the
+        // declaration describes the *pass*, and Emits is where "this model
+        // fills them" is stated per model. That is why an unlit fallback
+        // actor coexists: its PSO declares the same attachment count and
+        // masks the extra writes.
         passes_.push_back({PassSlot::GBuffer,
                            nullptr,
                            0,
                            0,
                            TargetBits({TargetSlot::SceneColor, TargetSlot::Depth,
-                                       TargetSlot::LinearDepth, TargetSlot::Normal})});
+                                       TargetSlot::LinearDepth, TargetSlot::Normal,
+                                       TargetSlot::GBufferDiffuse})});
         passes_.push_back({PassSlot::TransparentScene,
                            nullptr,
                            TargetBit(TargetSlot::Depth),
                            0,
                            TargetBit(TargetSlot::SceneColor)});
-        // GTAO and DoF are declared and gated OFF, not omitted. Both read
-        // LinearDepth (GTAO also Normal), and at this stage nothing writes
-        // either: the G-buffer slots hold their clear values — a 1e5 "no draw
-        // landed here" sentinel and a flat encoded +Z. GTAO over that computes
-        // no occlusion, and DoF over it blurs by a far-plane CoC. Declaring
-        // them keeps the frame's real shape visible and makes enabling them,
-        // once an `.m3` shading model writes a normal, a predicate change
-        // rather than a profile change.
+        // Live now that M3StandardShading writes real normals and linear
+        // depth — the predicate is replaced by ProfileForMode with the
+        // service-backed one, exactly as Wc3Hd's is. This was the moment the
+        // old `[]{ return false; }` gate was declared for.
         passes_.push_back({PassSlot::Gtao,
                            [] { return false; },
                            TargetBits({TargetSlot::LinearDepth, TargetSlot::Normal}),
                            0,
                            TargetBits({TargetSlot::AmbientOcclusion, TargetSlot::SceneColor})});
+        // The M3 deferred local-light pass (M3_SIMPLE_MATERIAL_DESIGN §4):
+        // reads the sidecar, adds onto SceneColor. Unconditional in the
+        // declaration — the dispatch self-gates on collected lights — which
+        // also keeps ValidateProfile's conditional-writer rule trivially
+        // satisfied. It necessarily runs after the scene pass closes (the
+        // sidecar becomes SRV-readable then), and the scene pass already
+        // contains the transparent queue — so a transparent pixel over a lit
+        // opaque gains the opaque's light response on top. Known v1 artifact;
+        // the real engine's TransparentLocalLights routing is full-plan work.
+        passes_.push_back({PassSlot::DeferredLights,
+                           nullptr,
+                           TargetBits({TargetSlot::LinearDepth, TargetSlot::Normal,
+                                       TargetSlot::GBufferDiffuse}),
+                           0,
+                           TargetBit(TargetSlot::SceneColor)});
+        // DoF stays gated off: it would run on real depth now, but nothing
+        // supplies a focal distance and it is out of the simple system's
+        // scope.
         passes_.push_back({PassSlot::Dof,
                            [] { return false; },
                            TargetBits({TargetSlot::SceneColor, TargetSlot::LinearDepth}),

@@ -9,6 +9,9 @@
 #if WDX_ENABLE_M2
 #include "renderer/profiles/wow/m2_shading.h"
 #endif
+#if WDX_ENABLE_M3
+#include "renderer/profiles/sc2_heroes/m3_standard_shading.h"
+#endif
 
 #include <memory>
 #include <unordered_map>
@@ -88,6 +91,10 @@ struct RenderPipeline::Impl {
     // Concrete for the same reason: CleanupGFX calls its ReleaseGpu, which is
     // not on IShadingModel.
     std::unique_ptr<profiles::wow::M2CombinerShading> m2Shading_;
+#endif
+#if WDX_ENABLE_M3
+    // Concrete for the same reason again.
+    std::unique_ptr<profiles::sc2_heroes::M3StandardShading> m3Shading_;
 #endif
 
     // The two WC3 frames, declared. ValidateProfile runs once when they are

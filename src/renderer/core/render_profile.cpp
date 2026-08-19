@@ -21,6 +21,7 @@ const char* SlotName(PassSlot s) {
     case PassSlot::Fxaa: return "Fxaa";
     case PassSlot::Debug: return "Debug";
     case PassSlot::ImGui: return "ImGui";
+    case PassSlot::DeferredLights: return "DeferredLights";
     default: return "?";
     }
 }
@@ -36,6 +37,7 @@ const char* TargetName(TargetSlot s) {
     case TargetSlot::SceneColorCopy: return "SceneColorCopy";
     case TargetSlot::Bloom: return "Bloom";
     case TargetSlot::Backbuffer: return "Backbuffer";
+    case TargetSlot::GBufferDiffuse: return "GBufferDiffuse";
     default: return "?";
     }
 }
