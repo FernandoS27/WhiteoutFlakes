@@ -84,8 +84,9 @@ bool CreatureSkinTable::Load(IContentProvider& provider) {
                      modelFields.size());
         return false;
     }
-    // The variation array is last, and there are three of it (a fourth slot
-    // appeared in Dragonflight and the client still only replaces 11..13).
+    // The variation array is last. Three wide on older builds, four on retail —
+    // read whichever it is rather than either number, so a build on the other
+    // side of that change still resolves the slots it does have.
     if (displayFields.size() <= kDisplayInfoModelId || displayFields.back().arrayCount < 3) {
         std::fprintf(stderr, "[wow] CreatureDisplayInfo has an unexpected layout (%zu fields) — "
                              "monster skins stay unresolved\n",
@@ -93,6 +94,7 @@ bool CreatureSkinTable::Load(IContentProvider& provider) {
         return false;
     }
     const u32 variationField = static_cast<u32>(displayFields.size()) - 1;
+    const u32 variationCount = std::min(displayFields.back().arrayCount, kMonsterSkinSlots);
 
     // CreatureModelData::ID → the `.m2` it names. Every display row is one
     // lookup into this.
@@ -121,7 +123,7 @@ bool CreatureSkinTable::Load(IContentProvider& provider) {
         MonsterSkin skin;
         skin.displayId = row.id();
         bool any = false;
-        for (u32 slot = 0; slot < 3; ++slot) {
+        for (u32 slot = 0; slot < variationCount; ++slot) {
             skin.texture[slot] = static_cast<u32>(row.getUInt(variationField, slot));
             any = any || skin.texture[slot] != 0;
         }

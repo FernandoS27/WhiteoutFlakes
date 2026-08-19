@@ -14,13 +14,35 @@ namespace whiteout::flakes::renderer::profiles::wow {
 
 namespace {
 
-// CM2Model::ReplaceTexture(i + 11, tex), for i in [0, 3) — see
-// CCharacterComponent::ReplaceMonsterSkin.
-constexpr u32 kMonsterSkinFirstType = 11;
-constexpr u32 kMonsterSkinSlots = 3;
+using io::wow::kMonsterSkinSlots;
+using io::wow::kMonsterSkinTypes;
+
+// Which variation slot fills texture type @p type, or -1 for a type no display
+// row touches. Not `type - 11`: the fourth slot fills type 5, so the set is not
+// contiguous. See creature_skin_table.h for the measurement.
+i32 MonsterSkinSlot(u32 type) {
+    for (u32 slot = 0; slot < kMonsterSkinSlots; ++slot)
+        if (kMonsterSkinTypes[slot] == type)
+            return static_cast<i32>(slot);
+    return -1;
+}
 
 bool IsMonsterSkin(u32 type) {
-    return type >= kMonsterSkinFirstType && type < kMonsterSkinFirstType + kMonsterSkinSlots;
+    return MonsterSkinSlot(type) >= 0;
+}
+
+/// The highest type any slot fills, so a by-type array can be sized once.
+constexpr u32 kMaxMonsterSkinType = 13;
+
+/// How many of the types @p slots names this variation actually fills.
+usize Filled(const SkinVariation& v, const std::vector<u32>& slots) {
+    usize n = 0;
+    for (u32 type : slots) {
+        const i32 slot = MonsterSkinSlot(type);
+        if (slot >= 0 && !v.texture[slot].empty())
+            ++n;
+    }
+    return n;
 }
 
 std::string_view Stem(std::string_view path) {
@@ -43,6 +65,29 @@ bool IEqual(std::string_view a, std::string_view b) {
 
 bool IEndsWith(std::string_view s, std::string_view tail) {
     return s.size() >= tail.size() && IEqual(s.substr(s.size() - tail.size()), tail);
+}
+
+/// True when @p path's only distinguishing part is a number that *is* its own
+/// fileDataID — `revenantair_4067960.blp`, `sporebat3mount_6254095.blp`. Those
+/// come from a listfile that could not name the file, so the name carries no
+/// information about what the texture is for.
+bool IsListfilePlaceholder(const std::string& path, std::string_view stem,
+                           const io::IContentProvider& provider) {
+    const std::string_view s = Stem(path);
+    const auto underscore = s.find_last_of('_');
+    if (underscore == std::string_view::npos || underscore < stem.size())
+        return false;
+    const std::string_view digits = s.substr(underscore + 1);
+    if (digits.empty() ||
+        !std::all_of(digits.begin(), digits.end(), [](char c) { return c >= '0' && c <= '9'; }))
+        return false;
+    u64 id = 0;
+    for (char c : digits) {
+        id = id * 10 + static_cast<u64>(c - '0');
+        if (id > 0xFFFFFFFFull)
+            return false;
+    }
+    return static_cast<u32>(id) == provider.FileIdForPath(path);
 }
 
 bool IStartsWith(std::string_view s, std::string_view head) {
@@ -92,7 +137,10 @@ std::vector<SkinVariation> GroupSiblings(const std::vector<std::string>& sibling
         for (usize i = 0; i < parts.size(); ++i) {
             if (split[at + i].first != split[at].first || split[at + i].second != parts[i])
                 return {}; // a variant with a different part set — not this shape
-            v.texture[slots[i] - kMonsterSkinFirstType] = siblings[at + i];
+            const i32 slot = MonsterSkinSlot(slots[i]);
+            if (slot < 0)
+                return {};
+            v.texture[slot] = siblings[at + i];
         }
         out.push_back(std::move(v));
     }
@@ -141,8 +189,9 @@ std::vector<SkinVariation> WowReplaceableTextures::FindVariations(const ContentR
     if (const u32 modelFile = ModelFileId(modelRef); modelFile != 0 && table_.Load(*provider_)) {
         std::vector<std::array<u32, kMonsterSkinSlots>> seen;
         for (const io::wow::MonsterSkin& skin : table_.ForModel(modelFile)) {
-            const std::array<u32, kMonsterSkinSlots> look{skin.texture[0], skin.texture[1],
-                                                          skin.texture[2]};
+            std::array<u32, kMonsterSkinSlots> look{};
+            for (u32 slot = 0; slot < kMonsterSkinSlots; ++slot)
+                look[slot] = skin.texture[slot];
             if (std::find(seen.begin(), seen.end(), look) != seen.end())
                 continue;
             seen.push_back(look);
@@ -153,6 +202,16 @@ std::vector<SkinVariation> WowReplaceableTextures::FindVariations(const ContentR
                     v.texture[slot] = "#" + std::to_string(skin.texture[slot]);
             variations.push_back(std::move(v));
         }
+        // Display-id order decides which look is canonical, but not at the cost
+        // of a white patch: a row may leave a slot the model *declares* empty
+        // while a later row fills it. `necromancer2` is the case — 106 displays,
+        // the lowest-id 85 of them naming only a body, the other 21 naming the
+        // cloak the model's type-12 texture is for. Stable, so among rows that
+        // fill the same number of the model's slots the lowest id still wins.
+        std::stable_sort(variations.begin(), variations.end(),
+                         [&](const SkinVariation& a, const SkinVariation& b) {
+                             return Filled(a, slots) > Filled(b, slots);
+                         });
         if (!variations.empty())
             return variations;
     }
@@ -174,6 +233,16 @@ std::vector<SkinVariation> WowReplaceableTextures::FindVariations(const ContentR
             siblings.push_back(std::move(sibling));
     }
     std::sort(siblings.begin(), siblings.end());
+    // A name that is only the model's stem and the file's own id is not a name:
+    // the community listfile spells an entry it cannot identify that way, and
+    // `_` sorts ahead of every letter, so such a file becomes variation 0 and
+    // the real skins move down. `revenantair` is the case — five named skins
+    // (black, blue, green, light, rust) losing to `revenantair_4067960.blp`.
+    // Kept in the list, because it is still a texture beside the model and the
+    // host may want it; just never the default.
+    std::stable_partition(siblings.begin(), siblings.end(), [&](const std::string& s) {
+        return !IsListfilePlaceholder(s, stem, *provider_);
+    });
 
     if (auto grouped = GroupSiblings(siblings, stem, slots); !grouped.empty())
         return grouped;
@@ -213,16 +282,17 @@ usize WowReplaceableTextures::Apply(io::M2ModelAdapter& adapter, const ContentRe
         return 0;
     const SkinVariation& skin = variations[variation_ % variations.size()];
 
-    std::vector<std::string> byType(kMonsterSkinFirstType + kMonsterSkinSlots);
+    std::vector<std::string> byType(kMaxMonsterSkinType + 1);
     for (u32 slot = 0; slot < kMonsterSkinSlots; ++slot)
-        byType[kMonsterSkinFirstType + slot] = skin.texture[slot];
+        byType[kMonsterSkinTypes[slot]] = skin.texture[slot];
     adapter.SetReplaceableTextures(std::move(byType));
 
     // Slots filled, not variations named: one texture can serve several slots,
     // and a model can declare a type this skin leaves empty.
     return static_cast<usize>(
         std::count_if(model.textures.begin(), model.textures.end(), [&](const auto& t) {
-            return IsMonsterSkin(t.type) && !skin.texture[t.type - kMonsterSkinFirstType].empty();
+            const i32 slot = MonsterSkinSlot(t.type);
+            return slot >= 0 && !skin.texture[slot].empty();
         }));
 }
 

@@ -7,10 +7,17 @@
 // A creature model names its own textures in TXID, except the ones whose
 // `M2Texture::type` is non-zero. Those are slots the *client* fills, and for a
 // creature that is `CCharacterComponent::ReplaceMonsterSkin` (0x100345b60):
-// it walks `CreatureDisplayInfo::TextureVariation[0..2]` and, for each entry
-// that names something, calls `CM2Model::ReplaceTexture(11 + i, tex)` — so
-// variation *i* fills every texture whose type is `11 + i`. Nothing in the
-// model says which; the display record does.
+// it walks `CreatureDisplayInfo::TextureVariation` and, for each entry that
+// names something, fills every texture carrying the matching type. Nothing in
+// the model says which; the display record does.
+//
+// **There are four variations, not three.** 6.0.1 replaces types 11, 12 and 13;
+// the shipped table's array is four wide and the fourth fills type *5* — the
+// slot the wiki still calls "environment (OBSOLETE)". Measured over the retail
+// `CreatureDisplayInfo`: 126 models fill the fourth entry, and in a sample of
+// 40 of them 13 declare a type-5 texture, against 0 of 80 sampled from the
+// models that fill only two or three. `sporebat3mount` names all four —
+// body, bodyglow, saddle, saddleglow — and the saddleglow is its type 5.
 //
 // The viewer has no display id, because it opens a model file rather than
 // spawning a creature. So the join runs backwards: `CreatureModelData` names
@@ -32,11 +39,17 @@ class IContentProvider;
 
 namespace whiteout::flakes::io::wow {
 
-/// One display variation of one creature model: the fileDataIDs that fill
-/// texture types 11, 12 and 13. Zero means the display leaves that slot alone.
+/// How many texture slots a display row can fill, and which `M2Texture::type`
+/// each one fills. Position is the meaning here — entry *i* is
+/// `TextureVariation[i]` — so this is the one place the 11/12/13/5 order lives.
+inline constexpr u32 kMonsterSkinSlots = 4;
+inline constexpr u32 kMonsterSkinTypes[kMonsterSkinSlots] = {11, 12, 13, 5};
+
+/// One display variation of one creature model: the fileDataIDs that fill the
+/// slots above. Zero means the display leaves that slot alone.
 struct MonsterSkin {
     u32 displayId = 0;
-    u32 texture[3] = {0, 0, 0};
+    u32 texture[kMonsterSkinSlots] = {0, 0, 0, 0};
 };
 
 /// The two client tables, parsed and joined.

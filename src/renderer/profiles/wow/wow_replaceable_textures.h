@@ -11,13 +11,14 @@
 // databases: a non-zero type is a slot, and which file fills it depends on
 // what the model was spawned *as*, not on the model.
 //
-// Only the creature slots are resolved here — types 11, 12 and 13, the ones
+// Only the creature slots are resolved here — the four
 // CCharacterComponent::ReplaceMonsterSkin fills from
-// CreatureDisplayInfo::TextureVariation. That is what leaves a creature `.m2`
-// rendering flat white in a model viewer, because a viewer opens a file and
-// never picks a display record. Character customisation (types 1..9) is a
-// different set of tables and is not handled; those slots keep the white
-// default they have today.
+// CreatureDisplayInfo::TextureVariation, which are types 11, 12, 13 and 5 in
+// that order (creature_skin_table.h has the measurement for the fourth). That
+// is what leaves a creature `.m2` rendering flat white in a model viewer,
+// because a viewer opens a file and never picks a display record. Character
+// customisation (types 1..9) is a different set of tables and is not handled;
+// those slots keep the white default they have today.
 //
 // Two ways to find the skins, because a viewer opens models from both kinds of
 // place:
@@ -55,7 +56,8 @@ namespace whiteout::flakes::renderer::profiles::wow {
 /// name for a host offering a picker. An empty key leaves that slot white.
 struct SkinVariation {
     std::string label;
-    std::string texture[3]; // types 11, 12, 13
+    /// One per variation slot, in `io::wow::kMonsterSkinTypes` order.
+    std::string texture[io::wow::kMonsterSkinSlots];
 };
 
 class WowReplaceableTextures {
