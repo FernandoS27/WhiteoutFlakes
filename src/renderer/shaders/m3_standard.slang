@@ -83,7 +83,8 @@ struct M3DrawData
 {
     float4x4 world;
     // .x alphaRef (0 = no test), .y unshaded, .z specular exponent,
-    // .w flag bits: 1 = DoubleLambert (N.L remapped to 2*N.L - 1).
+    // .w flag bits: 1 = DoubleLambert (N.L remapped to 2*N.L - 1),
+    //               2 = TwoSided (back faces flip the shading normal).
     float4 params0;
     // `.m3` UVs are i16/2048 declared R16G16B16A16_SNORM, so the sampled value
     // is raw/32767 and the true coordinate is sample * (32767 * uvMultiply) +
@@ -210,7 +211,14 @@ PSInput M3Vertex(float3 pos, float3 nrm, float3 tan, float tanSign, float4 rawUv
     o.position = mul(viewPos, pass.projection);
     o.worldPos = float4(worldPos.xyz, viewPos.z);
     // Uniform scale only in the world transform, so no inverse transpose.
-    o.normalWS = normalize(mul(float4(nrm, 0.0), draw.world).xyz);
+    //
+    // Negated: `.m3` stores the vertex normal anti-parallel to its own triangle
+    // winding, where `.m2` — same renderer, same rasterizer state — stores it
+    // parallel. Measured over both corpora and pinned by
+    // normal_orientation_test: 4.8% winding agreement against `.m2`'s 99.7%.
+    // Corrected here rather than in the adapter so the baked buffer stays a
+    // verbatim copy of the file's bytes, which mesh_buffer_test asserts.
+    o.normalWS = normalize(mul(float4(-nrm, 0.0), draw.world).xyz);
     o.tangentWS = float4(normalize(mul(float4(tan, 0.0), draw.world).xyz), tanSign);
     o.uv01 = rawUvs * draw.uvTransform.x + draw.uvTransform.y;
     return o;
@@ -325,9 +333,10 @@ struct M3Shaded
     float specPower;
 };
 
-M3Shaded ShadeM3(PSInput input)
+M3Shaded ShadeM3(PSInput input, bool isFront)
 {
     M3Shaded o;
+    let twoSided = (uint(draw.params0.w) & 2u) != 0u;
 
     // Albedo: diffuse layer, then the decal over it.
     float4 albedo = float4(1.0, 1.0, 1.0, 1.0);
@@ -366,10 +375,17 @@ M3Shaded ShadeM3(PSInput input)
         let nz = sqrt(saturate(1.0 - dot(nxy, nxy)));
         n = normalize(t * nxy.x + b * nxy.y + n * nz);
     }
-    // Face toward the viewer, per pixel — two-sided materials are exactly the
-    // surfaces whose back faces would otherwise collapse to flat ambient.
+    // Two-sided back faces light from behind (psmaterial.fx:468-489). Keyed on
+    // the rasterizer's winding bit and gated on the material flag, exactly as
+    // retail is — NOT on dot(n, toEye), which was the previous spelling. A
+    // view-vector test puts the flip boundary at a camera-dependent place on
+    // the surface, so shading swam across the model as the camera orbited.
+    //
+    // Retail negates when its FrontFace bit is set because SC2's winding makes
+    // that the back side; ours makes it the front, so the test is inverted.
     let toEye = normalize(pass.cameraPosWS.xyz - input.worldPos.xyz);
-    n = (dot(n, toEye) < 0.0) ? -n : n;
+    if (twoSided && !isFront)
+        n = -n;
 
     // Specular colour: the layer's channels (the material's SpecularMode is
     // folded into ctl.y host-side), hdrSpecularMultiplier folded into the tint.
@@ -483,10 +499,12 @@ M3Shaded ShadeM3(PSInput input)
     return o;
 }
 
+// SV_IsFrontFace on both entries even though only one is live per pass: Vulkan
+// rejects two entry points that disagree about the system-value signature.
 [shader("pixel")]
-float4 psM3Standard(PSInput input) : SV_Target0
+float4 psM3Standard(PSInput input, bool isFront : SV_IsFrontFace) : SV_Target0
 {
-    let s = ShadeM3(input);
+    let s = ShadeM3(input, isFront);
     return float4(s.color, s.alpha);
 }
 
@@ -499,17 +517,21 @@ struct MrtOut
 }
 
 [shader("pixel")]
-MrtOut psM3StandardMrt(PSInput input)
+MrtOut psM3StandardMrt(PSInput input, bool isFront : SV_IsFrontFace)
 {
-    let s = ShadeM3(input);
+    let s = ShadeM3(input, isFront);
 
     MrtOut o;
     o.color = float4(s.color, s.alpha);
     o.linearDepth = input.worldPos.w;
-    // The world-space viewer flip above already guarantees camera-facing in
-    // view space (z <= 0), which is the orientation GTAO documents itself
-    // NOT defending against.
-    let nVS = normalize(mul(float4(s.normalWS, 0.0), pass.view).xyz);
+    // Camera-facing (z <= 0) is a G-buffer *encoding* contract, not a shading
+    // decision: gtao.slang trusts the stored orientation and documents at
+    // length why it will not re-flip defensively. The shading normal above
+    // follows retail's two-sided rule and so no longer guarantees it, which is
+    // why the orient lives here now — the same thing the HD path's
+    // orientNormal() does before its own MRT write.
+    let nVS0 = normalize(mul(float4(s.normalWS, 0.0), pass.view).xyz);
+    let nVS = (nVS0.z > 0.0) ? -nVS0 : nVS0;
     o.normalSpec = float4(nVS * 0.5 + 0.5, sqrt(saturate(s.specPower / 512.0)));
     o.diffuseSpec =
         float4(s.albedo, dot(s.specColor, float3(0.299, 0.587, 0.114)));

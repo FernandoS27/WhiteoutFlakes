@@ -70,7 +70,18 @@ void RenderModel::ApplyLayerStates(const FrameState& state) {
     // whose table hasn't been built yet has nothing to animate; the empty
     // stand-in keeps the loops below bounds-checked without a branch each.
     static const std::vector<GPUMaterial> kNoMaterials;
-    auto* table = core::SurfaceTableCast<profiles::wc3::Wc3SurfaceTable>(surfaceTable.get());
+    // Only Warcraft III keeps its animated material state in the surface table.
+    // An `.m2` or `.m3` actor has its own product's table here, so asking for
+    // WC3's is a product-boundary crossing rather than the benign "no table
+    // yet" case — check the product first, which is the contract
+    // ISurfaceTable::Product documents. Casting unconditionally tripped
+    // SurfaceTableCast's assert on every M3/M2 actor from the frame their
+    // surface tables started being built; the release path was already null
+    // here, so nothing about what gets drawn changes.
+    auto* table =
+        (surfaceTable && surfaceTable->Product() == profiles::wc3::Wc3SurfaceTable::kProduct)
+            ? core::SurfaceTableCast<profiles::wc3::Wc3SurfaceTable>(surfaceTable.get())
+            : nullptr;
     auto& gpuMaterials =
         table ? table->Materials() : const_cast<std::vector<GPUMaterial>&>(kNoMaterials);
     for (auto& la : state.layerAlphas) {

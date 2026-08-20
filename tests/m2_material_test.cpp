@@ -300,7 +300,11 @@ TEST_CASE("M2 batch flag 0x40 drops the weight from element alpha",
     // decide whether the batch draws.
     model.textureWeightCombos = {1, 0, 0};
 
-    const M2Surface* off = BuildM2SurfaceTable(model, 0)->Surface(0);
+    // The table has to outlive the pointer into it: `BuildM2SurfaceTable`
+    // returns a `unique_ptr`, so calling `Surface(0)` on the temporary hands
+    // back a dangling pointer and the reads below are freed memory.
+    const auto offTable = BuildM2SurfaceTable(model, 0);
+    const M2Surface* off = offTable->Surface(0);
     REQUIRE(off);
     CHECK(off->elementAlpha == Approx(0.0f));
     CHECK_FALSE(off->ignoreWeights);

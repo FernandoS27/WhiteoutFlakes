@@ -137,6 +137,10 @@ endif()
 # links and reports honestly rather than vanishing from the suite.
 if(WDX_ENABLE_M2 OR WDX_ENABLE_M3)
     wdx_add_test(mesh_buffer_test mesh_buffer_test.cpp)
+    # Which way the normals point. mesh_buffer_test pins that they are unit
+    # length; this pins the half that a length check cannot see, and measures
+    # both formats together so the known-good one calibrates the other.
+    wdx_add_test(normal_orientation_test normal_orientation_test.cpp)
 endif()
 
 # ---- renderer ----

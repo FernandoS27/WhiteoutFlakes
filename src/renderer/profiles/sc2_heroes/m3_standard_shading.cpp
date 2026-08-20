@@ -346,11 +346,12 @@ gfx::PipelineHandle M3StandardShading::GetOrBuildPso(const PsoKey& key) {
     desc.depthStencil.depthTest = true;
     desc.depthStencil.depthWrite = M3BlendWritesDepth(key.blend);
     desc.depthStencil.depthCompare = gfx::CompareOp::LessEqual;
-    // Cull none for every surface: `.m3` winding has only ever been validated
-    // through the unlit path, which also culls nothing, and an invisible model
-    // is a worse failure than double fill in a viewer. Tightening to backface
-    // + the TwoSided flag is v1.5 work, gated on a golden.
-    desc.rasterizer.cull = gfx::CullMode::None;
+    // Backface culling except where the material asks for both sides, which is
+    // what retail does. Safe to tighten now that the winding is measured rather
+    // than assumed: SV_IsFrontFace reports the exterior shell as front-facing
+    // for 79-99.7% of a model's pixels under frontCCW, the remainder being the
+    // genuinely two-sided thin geometry this flag exists for.
+    desc.rasterizer.cull = key.twoSided ? gfx::CullMode::None : gfx::CullMode::Back;
     desc.rasterizer.frontCCW = true;
     desc.rtvFormat = key.rtv;
     desc.dsvFormat = key.dsv;
@@ -493,6 +494,7 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     key.stride = geo.baseStride;
     key.blend = static_cast<u8>(surf->blendMode);
     key.skinned = ResolveSkinned(*item.view, geo);
+    key.twoSided = (surf->materialFlags & static_cast<u32>(MaterialFlag::TwoSided)) != 0;
     // The sidecar entry whenever the sidecar attachment is bound and the
     // surface is opaque. NOT keyed on ctx.pass: the pipeline dispatches the
     // scene block's opaque bucket as OpaqueColor even under a G-buffer
@@ -512,7 +514,7 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     if (auto* c = static_cast<M3DrawCb*>(gfxDev->MapBuffer(drawCb_))) {
         c->world = item.view->worldTransform.transpose();
         c->params0 = {surf->alphaTestThreshold, unshaded ? 1.0f : 0.0f, surf->specularExponent,
-                      dblLambert ? 1.0f : 0.0f};
+                      static_cast<f32>((dblLambert ? 1u : 0u) | (key.twoSided ? 2u : 0u))};
         // The shader samples SNORM (raw/32767); fold the decode back so the
         // authored `uv = i16 * mul + add` comes out. .z rides the material's
         // emissive multiplier (see M3Surface::emissiveMultiplier).

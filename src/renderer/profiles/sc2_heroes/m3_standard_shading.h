@@ -115,6 +115,9 @@ private:
         /// the G-buffer one AND the sidecar attachment is bound (count == 3).
         bool mrt = false;
         bool skinned = false;
+        /// m3::MaterialFlag::TwoSided — the only raster state that varies per
+        /// surface, so it has to key the PSO rather than ride the draw CB.
+        bool twoSided = false;
 
         auto operator<=>(const PsoKey&) const = default;
     };
