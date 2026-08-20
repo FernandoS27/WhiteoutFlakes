@@ -533,6 +533,10 @@ enum class CollisionShapeType : i32 {
     Plane = 1,    ///< vertices[0/1] are two opposite corners of a quad.
     Sphere = 2,   ///< vertices[0] is the centre, `radius` the radius.
     Cylinder = 3, ///< vertices[0/1] are the end-cap centres, `radius` the radius.
+    /// `hullPoints` + `hullEdges`; `vertices`/`radius` unused. Not an MDX kind —
+    /// StarCraft II's rigid bodies are convex hulls almost exclusively, and the
+    /// bounding box of one is not a picture of what the solver collides with.
+    Hull = 4,
 };
 
 /// @brief Per-actor collision primitive (used for ground-clamp /
@@ -565,7 +569,21 @@ struct CollisionShapeData {
     Vector3f vertices[2];
     f32 radius;
     Vector3f pivot = {0, 0, 0}; ///< Node pivot, informational — already applied.
-    i32 bodyKind = 0;           ///< @ref CollisionBodyKind.
+    i32 bodyKind = 0;           ///< @ref CollisionBodyKind, as authored.
+    /// @brief Which rigid body owns this shape — an index into
+    ///        @ref FrameState::physicsBodyDynamic, or -1 for none.
+    ///
+    /// @ref bodyKind is what the file says at rest, and for StarCraft II that is
+    /// only the opening frame: a body's type is a channel. The shape list is
+    /// per-template and built once, so the *current* type has to be looked up
+    /// per frame, and this is the key it is looked up by.
+    i32 bodyIndex = -1;
+    /// @name Convex hull (@ref CollisionShapeType::Hull only)
+    /// Vertices, and index pairs into them, in the same space as @ref vertices.
+    /// @{
+    std::vector<Vector3f> hullPoints;
+    std::vector<u16> hullEdges;
+    /// @}
 };
 
 /// @brief Per-frame evaluation output for one actor.
@@ -697,6 +715,11 @@ struct FrameState {
     ///
     /// Indexed by body, not by bone: a body names its bone and not the reverse,
     /// and two bodies can share one.
+    ///
+    /// The source writes the *sampled channel*; the physics stage then resolves
+    /// it in place, so what a consumer reads after the pose stages have run is
+    /// the type each body actually has this frame — inherit chains followed,
+    /// static bodies pinned, bodies with no link left alone.
     std::vector<u8> physicsBodyDynamic;
 
     /// @brief Per-cloth "simulate me this frame", one entry per `PHCL` in file
@@ -729,6 +752,16 @@ struct FrameState {
         Vector3f worldDir = {0, 0, -1};
         /// @brief KLAC colour premultiplied by KLAI intensity, shader-ready.
         Vector3f diffuse = {0, 0, 0};
+        /// @brief Specular colour x multiplier, shader-ready. `.m3` lights
+        ///        carry their own pair (LITE specularColor/specularMultiplier)
+        ///        and SC2's deferred pass tints the highlight with it rather
+        ///        than with `diffuse` (deferredlight.fx:220). MDX has no
+        ///        equivalent, so WC3 leaves this zero with @ref useSpecular
+        ///        false and the highlight is skipped, as it is today.
+        Vector3f specular = {0, 0, 0};
+        /// @brief The light contributes a specular highlight at all —
+        ///        m3::LightFlag::Specular.
+        bool useSpecular = false;
         /// @brief KLBC ambient colour, clamped 0..1. Only reaches the shader
         ///        through the SD-on-HD compensation term; see BuildLightPalette.
         Vector3f ambientColor = {0, 0, 0};

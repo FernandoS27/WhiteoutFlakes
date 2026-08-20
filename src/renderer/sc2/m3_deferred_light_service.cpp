@@ -121,6 +121,7 @@ void M3DeferredLightService::Run(gfx::IGFXCommandList* cmd, RenderTarget& target
             const Light& l = lights[i];
             c->lightPos[i] = {l.posVS.x, l.posVS.y, l.posVS.z, l.attenEnd};
             c->lightColor[i] = {l.color.x, l.color.y, l.color.z, l.attenStart};
+            c->lightSpecular[i] = {l.specular.x, l.specular.y, l.specular.z, 0.0f};
         }
         gfx_->UnmapBuffer(cb_);
     }

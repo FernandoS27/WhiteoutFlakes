@@ -397,15 +397,6 @@ const ::whiteout::m3::TextureLayer* M3LayerForSlot(const ::whiteout::m3::Standar
                                                    M3LayerSlot slot) {
     auto get = [](const std::optional<::whiteout::m3::TextureLayer>& l)
         -> const ::whiteout::m3::TextureLayer* { return l ? &*l : nullptr; };
-    auto firstActive = [&](const std::optional<::whiteout::m3::TextureLayer>& a,
-                           const std::optional<::whiteout::m3::TextureLayer>& b)
-        -> const ::whiteout::m3::TextureLayer* {
-        if (const auto* l = get(a); l && M3LayerActive(*l))
-            return l;
-        if (const auto* l = get(b); l && M3LayerActive(*l))
-            return l;
-        return nullptr;
-    };
     switch (slot) {
     case M3LayerSlot::Diffuse:
         return get(mat.diffuseLayer);
@@ -420,7 +411,11 @@ const ::whiteout::m3::TextureLayer* M3LayerForSlot(const ::whiteout::m3::Standar
     case M3LayerSlot::Normal:
         return get(mat.normalLayer);
     case M3LayerSlot::AlphaMask:
-        return firstActive(mat.alphaLayer1, mat.alphaLayer2);
+        return get(mat.alphaLayer1);
+    case M3LayerSlot::Gloss:
+        return get(mat.glossLayer);
+    case M3LayerSlot::AlphaMask2:
+        return get(mat.alphaLayer2);
     default:
         return nullptr;
     }
@@ -1216,6 +1211,14 @@ void M3ModelAdapter::EvaluateLights(std::span<const M3Layer> layers,
         // Premultiplied, matching what LightState documents as shader-ready.
         st.diffuse = {colour.x * intensity, colour.y * intensity, colour.z * intensity};
         st.dirIntensity = intensity;
+        // The highlight is its own colour, not a scaling of the diffuse —
+        // deferredlight.fx:220 multiplies the specular term by the light's own
+        // constant, and LightFlag::Specular is the axis that enables it.
+        const Vector3f spec = SampleRef(l.specularColor, layers);
+        const f32 specMul = SampleRef(l.specularMultiplier, layers);
+        st.specular = {spec.x * specMul, spec.y * specMul, spec.z * specMul};
+        st.useSpecular = (static_cast<u32>(l.flags) &
+                          static_cast<u32>(::whiteout::m3::LightFlag::Specular)) != 0;
         st.attenStart = SampleRef(l.attenuationStart, layers);
         st.attenEnd = l.attenuationEnd;
         st.enabled = bone >= visible.size() || visible[bone] != 0;

@@ -729,6 +729,9 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
         shape.radius = cs.radius;
         shape.pivot = cs.pivot;
         shape.bodyKind = cs.bodyKind;
+        shape.bodyIndex = cs.bodyIndex;
+        shape.hullPoints = cs.hullPoints;
+        shape.hullEdges = cs.hullEdges;
         mi->render.collisionShapes.push_back(shape);
     }
 
@@ -765,6 +768,9 @@ u32 ModelLoader::AddModelByPath(const std::string& mdxPath, const Matrix44f& ini
             // this field, so dropping it files every physics body under Collision Markers and
             // leaves all three physics toggles showing nothing.
             shape.bodyKind = cs.bodyKind;
+            shape.bodyIndex = cs.bodyIndex;
+            shape.hullPoints = cs.hullPoints;
+            shape.hullEdges = cs.hullEdges;
             mi->render.collisionShapes.push_back(shape);
         }
         rs_.Scene().Actors().All()[handle] = std::move(mi);

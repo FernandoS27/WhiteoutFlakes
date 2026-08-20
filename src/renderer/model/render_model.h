@@ -159,7 +159,13 @@ struct CollisionShape {
     f32 radius = 0;
     Vector3f pivot = {0, 0, 0};
     Matrix44f transform = Matrix44f::identity();
-    i32 bodyKind = 0; ///< CollisionBodyKind — which overlay draws this.
+    /// CollisionBodyKind — which overlay draws this, and in which colour.
+    /// Re-resolved every frame from `bodyIndex`: a StarCraft II body is
+    /// kinematic or dynamic by channel, not by authorship.
+    i32 bodyKind = 0;
+    i32 bodyIndex = -1;               ///< Into FrameState::physicsBodyDynamic, or -1.
+    std::vector<Vector3f> hullPoints; ///< CollisionShapeType::Hull only.
+    std::vector<u16> hullEdges;       ///< Index pairs into `hullPoints`.
 };
 
 struct TexAnimData {

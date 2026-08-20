@@ -12,9 +12,14 @@
 // own collapse, not a stencil.
 //
 // Not SC2's per-light volume quads: a viewer scene has a handful of lights
-// and one loop keeps the host side to a CB upload. Attenuation is the linear
-// M3 window (attenuationStart..End); the per-light decay exponent does not
-// survive into LightState yet, so it is not applied.
+// and one loop keeps the host side to a CB upload. Everything else follows
+// deferredlight.fx, which is the shader this one stands in for: retail's
+// squared attenuation, and a highlight tinted by the light's OWN specular
+// colour rather than by its diffuse (deferredlight.fx:218-220).
+//
+// The `.m3` decay exponent is deliberately unused: retail's point light has no
+// exponent term (ComputeLightAttenuation is the whole curve), so applying one
+// would be an invention rather than a missing feature.
 // ============================================================================
 
 static const int kM3MaxDeferredLights = 16;
@@ -24,8 +29,9 @@ struct M3DeferredLightData
     // .x = 1/proj[0][0], .y = 1/proj[1][1] — view-ray reconstruction for a
     // standard centred perspective, the same one GTAO uses. .z = light count.
     float4 unproject;
-    float4 lightPos[kM3MaxDeferredLights];   // view space; .w = attenuationEnd
-    float4 lightColor[kM3MaxDeferredLights]; // .rgb diffuse; .w = attenuationStart
+    float4 lightPos[kM3MaxDeferredLights];      // view space; .w = attenuationEnd
+    float4 lightColor[kM3MaxDeferredLights];    // .rgb diffuse; .w = attenuationStart
+    float4 lightSpecular[kM3MaxDeferredLights]; // .rgb specular colour x multiplier
 }
 
 #if defined(WGSL_TARGET) || defined(METAL_TARGET)
@@ -89,17 +95,27 @@ float4 psM3DeferredLight(VsOut input) : SV_Target0
         let d = length(toLight);
         let attenEnd = cb.lightPos[i].w;
         let attenStart = cb.lightColor[i].w;
-        let atten = saturate((attenEnd - d) / max(attenEnd - attenStart, 1e-4));
+        // lighttypes.fx ComputeLightAttenuation:
+        //     a = 1 - saturate(recipRange / recipDist) = 1 - saturate(d / range)
+        //     a = saturate(a * attenMultiplier)
+        //     a = a * a
+        // Retail carries range and multiplier per light; `.m3` carries the
+        // start/end pair, and range = end with multiplier = end/(end - start)
+        // is exactly the window below — so the linear window IS retail's, and
+        // the square is the part that was missing. It is what keeps a local
+        // light from ending in a visible ring at its radius.
+        let window = saturate((attenEnd - d) / max(attenEnd - attenStart, 1e-4));
+        let atten = window * window;
         if (atten <= 0.0)
             continue;
         let l = toLight / max(d, 1e-4);
         let ndl = saturate(dot(n, l));
         if (ndl <= 0.0)
             continue;
-        float3 term = diffuseSpec.rgb * ndl;
+        c += diffuseSpec.rgb * ndl * cb.lightColor[i].rgb * atten;
         let h = normalize(l + toEye);
-        term += diffuseSpec.a * pow(saturate(dot(n, h)), specPower);
-        c += term * cb.lightColor[i].rgb * atten;
+        c += diffuseSpec.a * pow(saturate(dot(n, h)), specPower) *
+             cb.lightSpecular[i].rgb * atten;
     }
     return float4(c, 0.0);
 }

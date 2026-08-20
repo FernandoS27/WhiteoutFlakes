@@ -272,6 +272,23 @@ void Actor::ApplyFrameState(const FrameState& state, i32 localTimeMs, const Acto
          i < (i32)state.collisionTransforms.size() && i < (i32)render.collisionShapes.size(); i++)
         render.collisionShapes[i].transform = state.collisionTransforms[i];
 
+    // A physics body's type is per-frame, not per-file: StarCraft II keys it as
+    // a channel and the physics stage resolves the inherit chains on top of
+    // that, so a hero's kinematic proxies become a ragdoll's dynamic segments
+    // mid-sequence. The shape list is per-template and cannot say that, which
+    // is why the overlay's colour is refreshed here instead of at load. Static
+    // is left alone — it is the one type that never switches.
+    for (auto& cs : render.collisionShapes) {
+        if (cs.bodyIndex < 0 || cs.bodyIndex >= (i32)state.physicsBodyDynamic.size())
+            continue;
+        const auto kind = static_cast<CollisionBodyKind>(cs.bodyKind);
+        if (kind == CollisionBodyKind::None || kind == CollisionBodyKind::Static)
+            continue;
+        cs.bodyKind =
+            static_cast<i32>(state.physicsBodyDynamic[cs.bodyIndex] ? CollisionBodyKind::Dynamic
+                                                                    : CollisionBodyKind::Kinematic);
+    }
+
     ApplyAttachmentStates(*this, state, ctx);
     ApplyCornFrameStates(*this, state, ctx);
 

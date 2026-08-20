@@ -2143,6 +2143,8 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
                 sc2::M3DeferredLightService::Light l;
                 l.posVS = toView(ls.worldPos);
                 l.color = ls.diffuse;
+                if (ls.useSpecular)
+                    l.specular = ls.specular;
                 l.attenStart = ls.attenStart * worldScale;
                 l.attenEnd = ls.attenEnd * worldScale;
                 lights.push_back(l);
@@ -2152,6 +2154,10 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
             sc2::M3DeferredLightService::Light l;
             l.posVS = toView(rs_.Settings().DebugPointLightPos());
             l.color = rs_.Settings().DebugPointLightColor();
+            // A scripted viewer light, so it carries no LITE record to read a
+            // specular colour off — its own colour is the sensible stand-in,
+            // and it keeps the gate's DebugLight arm exercising the highlight.
+            l.specular = l.color;
             l.attenStart = 0.0f;
             l.attenEnd = rs_.Settings().DebugPointLightRange();
             lights.push_back(l);

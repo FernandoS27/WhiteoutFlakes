@@ -32,6 +32,9 @@ public:
         f32 attenEnd = 0.0f;
         Vector3f color = {0.0f, 0.0f, 0.0f};
         f32 attenStart = 0.0f;
+        /// Specular colour x multiplier; zero means no highlight, which is
+        /// what a light without LightFlag::Specular resolves to.
+        Vector3f specular = {0.0f, 0.0f, 0.0f};
     };
 
     M3DeferredLightService() = default;
@@ -64,6 +67,7 @@ private:
         Vector4f unproject; // .x 1/p00, .y 1/p11, .z light count
         Vector4f lightPos[kMaxLights];
         Vector4f lightColor[kMaxLights];
+        Vector4f lightSpecular[kMaxLights];
     };
 
     gfx::IGFXDevice* gfx_ = nullptr;

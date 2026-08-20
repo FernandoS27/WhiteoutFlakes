@@ -514,7 +514,8 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     if (auto* c = static_cast<M3DrawCb*>(gfxDev->MapBuffer(drawCb_))) {
         c->world = item.view->worldTransform.transpose();
         c->params0 = {surf->alphaTestThreshold, unshaded ? 1.0f : 0.0f, surf->specularExponent,
-                      static_cast<f32>((dblLambert ? 1u : 0u) | (key.twoSided ? 2u : 0u))};
+                      static_cast<f32>((dblLambert ? 1u : 0u) | (key.twoSided ? 2u : 0u) |
+                                       (surf->dimPerPixel ? 4u : 0u))};
         // The shader samples SNORM (raw/32767); fold the decode back so the
         // authored `uv = i16 * mul + add` comes out. .z rides the material's
         // emissive multiplier (see M3Surface::emissiveMultiplier).
@@ -575,7 +576,7 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     if (key.skinned)
         cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 2, geo.bonePaletteCb);
 
-    // All six texture slots, every draw — which of them survive into the
+    // Every texture slot, every draw — which of them survive into the
     // compiled PS is Slang's dead-code decision, and binding fewer than it
     // kept is a descriptor the runtime never writes (m2_shading.cpp's
     // lesson). Samplers are the four wrap VARIANTS, not one per layer: the
@@ -603,7 +604,11 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
         d.surface = static_cast<i32>(item.key.surface);
         d.matFlags = static_cast<i32>(surf->materialFlags);
         d.filterMode = static_cast<i32>(surf->blendMode);
-        for (u32 u = 0; u < kLayerCount; ++u)
+        // Clamped to the trace record's width, which is a cross-profile file
+        // format — widening it would invalidate every recorded baseline, and
+        // the slots past it (gloss, the second alpha mask) are not what a
+        // draw-order diff is looking at.
+        for (u32 u = 0; u < kLayerCount && u < static_cast<u32>(debug::kTraceTexSlots); ++u)
             d.texIds[u] = surf->layers[u].textureId;
         d.psoKey = debug::TracePsoKey({
             .psPermute = static_cast<u32>(key.blend) | (key.mrt ? 0x100u : 0u) |

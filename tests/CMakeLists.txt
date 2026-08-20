@@ -131,6 +131,7 @@ if(WDX_ENABLE_M3)
     # the canonical texture set, layer fallbacks, classification. Synthetic
     # models, no device.
     wdx_add_test(m3_surface_table_test m3_surface_table_test.cpp)
+    wdx_add_test(m3_env_probe_tmp m3_env_probe_tmp.cpp)
 endif()
 # The baked-vertex-buffer description check. Compiled unconditionally — it
 # #ifdefs its two halves internally, so a build with neither format still

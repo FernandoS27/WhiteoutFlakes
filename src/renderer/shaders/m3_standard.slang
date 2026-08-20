@@ -2,10 +2,10 @@
 // WhiteoutFlakes Renderer — M3 simple material (StarCraft II / HotS `.m3`).
 //
 // The shader half of M3StandardShading (M3_SIMPLE_MATERIAL_DESIGN.md). NOT the
-// retail permutation machine: seven of StandardMaterial's eighteen layers
-// (diffuse, decal, specular, both emissives, normal, alpha mask), the retail
-// lighting model (lighting.fx: shadowed Blinn key light + ambient + two
-// diffuse-only fills, spec gated by sign(N.L)), the retail team-colour paths
+// retail permutation machine: nine of StandardMaterial's eighteen layers
+// (diffuse, decal, specular, both emissives, normal, both alpha masks, gloss),
+// the retail lighting model (lighting.fx: shadowed Blinn key light + ambient +
+// two diffuse-only fills, spec gated by sign(N.L)), the retail team-colour paths
 // (psmateriallayer.fx: diffuse-alpha mask lerp + the TeamColor*Add combine
 // ops), and the G-buffer sidecar the deferred local-light pass reads. The full
 // retail-BLS system replaces this draw-for-draw behind the same surface table;
@@ -66,10 +66,11 @@ struct M3PassData
     float4 teamParams;
 }
 
-// Layer slots, in M3Surface order. Fixed seven: absent layers branch off on
-// ctl.z and additionally bind the white default, belt and braces. Emissive2
-// is its own slot because retail pairs a team-mask emissive1 (TeamColor*Add)
-// with the real glow in emissive2.
+// Layer slots, in M3Surface order. Absent layers branch off on ctl.z and
+// additionally bind the white default, belt and braces. Emissive2 is its own
+// slot because retail pairs a team-mask emissive1 (TeamColor*Add) with the
+// real glow in emissive2; AlphaMask2 is its own because retail multiplies both
+// masks into the coverage rather than choosing between them.
 static const int kM3LayerDiffuse = 0;
 static const int kM3LayerDecal = 1;
 static const int kM3LayerSpecular = 2;
@@ -77,14 +78,19 @@ static const int kM3LayerEmissive = 3;
 static const int kM3LayerEmissive2 = 4;
 static const int kM3LayerNormal = 5;
 static const int kM3LayerAlphaMask = 6;
-static const int kM3LayerCount = 7;
+static const int kM3LayerGloss = 7;
+static const int kM3LayerAlphaMask2 = 8;
+static const int kM3LayerCount = 9;
 
 struct M3DrawData
 {
     float4x4 world;
-    // .x alphaRef (0 = no test), .y unshaded, .z specular exponent,
+    // .x alphaRef (0 = no test), .y unshaded, .z specular exponent (the
+    // material constant; a gloss layer modulates it per pixel),
     // .w flag bits: 1 = DoubleLambert (N.L remapped to 2*N.L - 1),
-    //               2 = TwoSided (back faces flip the shading normal).
+    //               2 = TwoSided (back faces flip the shading normal),
+    //               4 = the energy-conserving specular dim is NOT folded into
+    //                   the tint and must be evaluated per pixel.
     float4 params0;
     // `.m3` UVs are i16/2048 declared R16G16B16A16_SNORM, so the sampled value
     // is raw/32767 and the true coordinate is sample * (32767 * uvMultiply) +
@@ -135,6 +141,8 @@ static const int WF_PS_BIND_OFFSET = 16;
 [[vk::binding(WF_PS_BIND_OFFSET + 4, 1)]] Texture2D texEmissive2 : register(t4);
 [[vk::binding(WF_PS_BIND_OFFSET + 5, 1)]] Texture2D texNormal : register(t5);
 [[vk::binding(WF_PS_BIND_OFFSET + 6, 1)]] Texture2D texAlphaMask : register(t6);
+[[vk::binding(WF_PS_BIND_OFFSET + 7, 1)]] Texture2D texGloss : register(t7);
+[[vk::binding(WF_PS_BIND_OFFSET + 8, 1)]] Texture2D texAlphaMask2 : register(t8);
 // One sampler PER WRAP VARIANT, not per layer: the D3D12 root signature (and
 // its siblings) budget four samplers per stage, and four is also exactly how
 // many distinct states exist — wrap/clamp x U/V. Slot = the layer's wrap bits.
@@ -352,14 +360,21 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
         albedo.rgb = M3ApplyBlendOp(albedo.rgb, decal, ctlDecal.w);
     }
 
-    // Material alpha (psmaterial.fx:354-390): the alpha-mask layer times the
+    // Material alpha (psmaterial.fx:354-390): the alpha-mask layers times the
     // alpha factor — NOT the diffuse alpha, which is the team-colour mask.
-    // Then the test; >= survives, as everywhere else in this renderer.
+    // BOTH masks multiply in (`*=` each, lines 380-390); a material carrying
+    // the pair used to render at whichever one the slot happened to hold, so
+    // it came out too opaque. Then the test; >= survives, as everywhere else
+    // in this renderer.
     float alpha = 1.0;
     let ctlMask = draw.layerCtl[kM3LayerAlphaMask];
     if (ctlMask.z != 0u)
-        alpha = M3LayerValue(ctlMask, draw.layerTint[kM3LayerAlphaMask],
-                             M3SampleLayer(texAlphaMask, ctlMask, input.uv01)).a;
+        alpha *= M3LayerValue(ctlMask, draw.layerTint[kM3LayerAlphaMask],
+                              M3SampleLayer(texAlphaMask, ctlMask, input.uv01)).a;
+    let ctlMask2 = draw.layerCtl[kM3LayerAlphaMask2];
+    if (ctlMask2.z != 0u)
+        alpha *= M3LayerValue(ctlMask2, draw.layerTint[kM3LayerAlphaMask2],
+                              M3SampleLayer(texAlphaMask2, ctlMask2, input.uv01)).a;
     if (draw.params0.x > 0.0 && alpha < draw.params0.x)
         discard;
 
@@ -395,6 +410,30 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
         specColor = M3LayerValue(ctlSpec, draw.layerTint[kM3LayerSpecular],
                                  M3SampleLayer(texSpecular, ctlSpec, input.uv01)).rgb;
 
+    // psmaterial.fx:579 MaterialSpecularity — a gloss (SpecularExponent) layer
+    // scales the material's exponent by its alpha SQUARED; without one the
+    // exponent is the constant. Squared, so a mid-grey gloss pixel lands at a
+    // quarter of the exponent, not half.
+    float specPower = draw.params0.z;
+    let ctlGloss = draw.layerCtl[kM3LayerGloss];
+    if (ctlGloss.z != 0u)
+    {
+        let g = M3LayerValue(ctlGloss, draw.layerTint[kM3LayerGloss],
+                             M3SampleLayer(texGloss, ctlGloss, input.uv01)).a;
+        specPower *= g * g;
+        // FakeEnergyConservingSpec (psmaterial.fx:203) reads the SPECULARITY,
+        // i.e. this gloss-modulated exponent — so with a gloss layer the dim
+        // varies per pixel and the host cannot fold it into the tint. Flag bit
+        // 4 says it did not; without a gloss layer the fold still happens
+        // there and this branch never runs.
+        if ((uint(draw.params0.w) & 4u) != 0u)
+        {
+            let pc = clamp(specPower, 1.0, 512.0);
+            specColor *= saturate(-0.000004444 * pc * pc + 0.004333 * pc + 0.0020834);
+        }
+    }
+    specPower = max(specPower, 1.0);
+
     // The lighting accumulation (lighting.fx : Lighting, per-pixel arm, no
     // regions): shadowed Blinn key light, flat ambient, then the diffuse-only
     // fill lights. Shadow and ambient occlusion are 1 here — no shadow map or
@@ -413,7 +452,6 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     else
     {
         let dblLambert = (uint(draw.params0.w) & 1u) != 0u;
-        let specPower = max(draw.params0.z, 1.0);
 
         // Key light — lightingmodels.fx : BlinnShading with the sign(N.L)
         // gate: the highlight dies exactly where the light does, without the

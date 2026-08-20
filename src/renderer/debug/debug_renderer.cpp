@@ -8,6 +8,7 @@
 #include "renderer/render_pipeline_impl.h"
 #include "renderer/render_service_impl.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -243,6 +244,27 @@ void DebugRenderer::DrawCollisionShapes(bool physicsBodies) {
             for (i32 i = 0; i < 4; i++) {
                 f32 a = (f32)i / 4 * 6.28318530f;
                 pushLine(ringPt(cs.vmin, a), ringPt(cs.vmax, a));
+            }
+        } else if (cs.type == (i32)CollisionShapeType::Hull) {
+            // The `DMSE` edge list when the file has one, and the point cloud's own bounding
+            // box when it does not — a hull with no usable connectivity still has to show
+            // *something*, and where it is matters more than what shape it is.
+            if (!cs.hullEdges.empty()) {
+                for (usize i = 0; i + 1 < cs.hullEdges.size(); i += 2)
+                    pushLine(cs.hullPoints[cs.hullEdges[i]], cs.hullPoints[cs.hullEdges[i + 1]]);
+            } else if (!cs.hullPoints.empty()) {
+                Vector3f mn = cs.hullPoints[0], mx = mn;
+                for (const Vector3f& v : cs.hullPoints) {
+                    mn = {std::min(mn.x, v.x), std::min(mn.y, v.y), std::min(mn.z, v.z)};
+                    mx = {std::max(mx.x, v.x), std::max(mx.y, v.y), std::max(mx.z, v.z)};
+                }
+                Vector3f corners[8] = {{mn.x, mn.y, mn.z}, {mx.x, mn.y, mn.z}, {mx.x, mx.y, mn.z},
+                                       {mn.x, mx.y, mn.z}, {mn.x, mn.y, mx.z}, {mx.x, mn.y, mx.z},
+                                       {mx.x, mx.y, mx.z}, {mn.x, mx.y, mx.z}};
+                i32 edges[24] = {0, 1, 1, 2, 2, 3, 3, 0, 4, 5, 5, 6,
+                                 6, 7, 7, 4, 0, 4, 1, 5, 2, 6, 3, 7};
+                for (i32 i = 0; i < 24; i += 2)
+                    pushLine(corners[edges[i]], corners[edges[i + 1]]);
             }
         } else if (cs.type == (i32)CollisionShapeType::Plane) {
             // Two opposite corners of an axis-aligned quad. The axis the two

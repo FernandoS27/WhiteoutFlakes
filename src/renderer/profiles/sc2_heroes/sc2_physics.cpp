@@ -189,6 +189,51 @@ Matrix44f ToMatrix(const sb::Transform& xf, const Vector3f& scale) {
     return m;
 }
 
+/// @brief A `PHSH` convex hull's vertex cloud, which WhiteoutLib calls `hullFaceNormals`.
+///
+/// The chunk stores a `VEC3` array and then a `VEC4` array, and the parser names them
+/// `hullFaceNormals` and `hullVertexPositions` in that order. The data says the opposite, on all
+/// 401 hulls in the corpus and without an exception: every `VEC4` entry's `xyz` is **unit
+/// length**, and every `VEC3` point satisfies `dot(n, p) <= w` against every one of them
+/// exactly. So the `VEC4` array is the face **plane** table `(n, d)` and the `VEC3` array is the
+/// point cloud — which is also what makes `hullVertexFaceIndices` one entry per *face*.
+///
+/// Reading the `VEC4` array as the cloud is not a mild error: a hull built out of unit normals
+/// is a ~2-unit blob centred on the bone whatever the limb's real size, so every fixture is
+/// inflated to roughly the whole model and the overlay draws a cube to match.
+///
+/// Corrected here rather than in WhiteoutLib because the names are that library's to change.
+std::span<const Vector3f> HullPoints(const w3::PhysicsShape& ps) {
+    return ps.hullFaceNormals;
+}
+
+/// @brief The hull's edges as index pairs, from the `DMSE` half-edge table.
+///
+/// Half-edges are stored in consecutive twin pairs, so pair `2k`/`2k+1` is one edge and their
+/// two target vertices are its endpoints.
+///
+/// **`faceIndex` is the target vertex** — `ConvexHullHalfEdge`'s middle two bytes are named the
+/// wrong way round, the same slip as the two point arrays above and measurably so: read as
+/// named, only 13 of the corpus's 401 hulls keep both indices inside their own tables (and
+/// those 13 only because they happen to have as many faces as vertices); read swapped, all 401
+/// do. It also settles Euler — the Reaver's first hull is then 10 vertices, 19 edges and 11
+/// faces rather than a table indexing a vertex that does not exist.
+std::vector<::whiteout::u16> HullEdges(const w3::PhysicsShape& ps) {
+    const std::span<const Vector3f> pts = HullPoints(ps);
+    std::vector<::whiteout::u16> out;
+    out.reserve(ps.hullHalfEdges.size());
+    for (std::size_t k = 0; k + 1 < ps.hullHalfEdges.size(); k += 2) {
+        const auto a = static_cast<std::size_t>(ps.hullHalfEdges[k].faceIndex);
+        const auto b = static_cast<std::size_t>(ps.hullHalfEdges[k + 1].faceIndex);
+        if (a >= pts.size() || b >= pts.size() || a == b) {
+            continue;
+        }
+        out.push_back(static_cast<::whiteout::u16>(a));
+        out.push_back(static_cast<::whiteout::u16>(b));
+    }
+    return out;
+}
+
 /// @brief The rotation-and-translation part of a `PHSH`/`PHYJ` matrix, scale divided out.
 sb::Transform ShapeFrame(const Matrix44f& m) {
     const BoneFrame f = DecomposeBone(m);
@@ -253,7 +298,7 @@ private:
     void BuildFixtures(const w3::RigidBody& rb, sb::BodyId body, f32 scale);
     void BuildJoints(const FrameState& fs);
     void Seed(const FrameState& fs);
-    void UpdateDrivenState(const FrameState& fs);
+    void UpdateDrivenState(FrameState& fs);
     void EnterDynamic(Link& l, const FrameState& fs);
     void EnterKinematic(Link& l);
     void DriveKinematic(const FrameState& fs, f32 invT);
@@ -435,7 +480,8 @@ bool Sc2PhysicsStage::WouldSimulate() const {
 /// The client has a third input this cannot have: a model-level "ragdoll now" switch that
 /// forces every body dynamic except those flagged `0x100`. Nothing in a model file sets it —
 /// it is a gameplay event — so a viewer only ever sees the channel.
-void Sc2PhysicsStage::UpdateDrivenState(const FrameState& fs) {
+void Sc2PhysicsStage::UpdateDrivenState(FrameState& fs) {
+    // A view, not a copy: every read of it happens before the publish below.
     const std::span<const u8> sampled = fs.physicsBodyDynamic;
     for (Link& l : links_) {
         if (l.isStatic) {
@@ -462,6 +508,16 @@ void Sc2PhysicsStage::UpdateDrivenState(const FrameState& fs) {
             EnterDynamic(l, fs);
         } else {
             EnterKinematic(l);
+        }
+    }
+
+    // Published back over the sampled channel, which is the *input* to the pass and not its
+    // answer: the inherit chains, the static bodies and the bodies that got no link at all are
+    // all decided here. The overlay reads it to colour each shape, and reading the raw channel
+    // instead paints a pinned ragdoll dynamic-green while nothing is moving.
+    for (const Link& l : links_) {
+        if (l.rbIndex >= 0 && static_cast<std::size_t>(l.rbIndex) < fs.physicsBodyDynamic.size()) {
+            fs.physicsBodyDynamic[static_cast<std::size_t>(l.rbIndex)] = l.dynamic ? 1 : 0;
         }
     }
 }
@@ -723,8 +779,9 @@ void Sc2PhysicsStage::BuildFixtures(const w3::RigidBody& rb, sb::BodyId body, f3
             // transforms the point cloud and then writes the shape matrix back as identity, so
             // applying it here is a no-op on shipped data and the right thing on anything else.
             std::vector<sb::Vec4> pts;
-            pts.reserve(ps.hullVertexPositions.size());
-            for (const Vector4f& v : ps.hullVertexPositions) {
+            const std::span<const Vector3f> hull = HullPoints(ps);
+            pts.reserve(hull.size());
+            for (const Vector3f& v : hull) {
                 pts.push_back(basis.Transform(sb::Vec4{v.x, v.y, v.z, 0.0f}) + local.position);
             }
             if (pts.size() >= 4) {
@@ -1126,6 +1183,7 @@ Sc2CollisionShapes Sc2BuildCollisionShapes(const ::whiteout::m3::Model& model) {
 
             rm::CollisionShapeData d{};
             d.bodyKind = kind;
+            d.bodyIndex = static_cast<i32>(rbIndex);
             // Rotation and translation only. The three kinds that collapse their scale to one
             // number bake it into the geometry below instead, or the wireframe would be
             // stretched where the fixture is not.
@@ -1178,20 +1236,24 @@ Sc2CollisionShapes Sc2BuildCollisionShapes(const ::whiteout::m3::Model& model) {
                 break;
 
             case w3::PhysicsShapeType::ConvexHull: {
-                if (!ps.hullVertexPositions.empty()) {
-                    // A hull has no primitive to draw, so its extent is the box its points
-                    // span — under the same uniform scale the fixture takes.
+                // The hull's own points and its `DMSE` edges, under the same uniform scale the
+                // fixture takes. Drawn as the polytope rather than as the box it spans: SC2's
+                // rigid bodies are convex hulls almost exclusively, and a bounding box of one
+                // is both far larger than the collider and the same picture for every limb.
+                const std::span<const Vector3f> hull = HullPoints(ps);
+                if (!hull.empty()) {
+                    d.type = static_cast<i32>(rm::CollisionShapeType::Hull);
+                    d.hullPoints.assign(hull.begin(), hull.end());
+                    d.hullEdges = HullEdges(ps);
+                    // The fixture scales *after* the shape frame is applied — `MakePolytope`
+                    // takes already-placed points and multiplies the lot about the origin — so
+                    // the uniform lands on the frame's translation as well, not just its basis.
                     const f32 uniform = (std::max)({row.x, row.y, row.z});
-                    Vector3f lo{ps.hullVertexPositions[0].x, ps.hullVertexPositions[0].y,
-                                ps.hullVertexPositions[0].z};
-                    Vector3f hi = lo;
-                    for (const Vector4f& v : ps.hullVertexPositions) {
-                        lo = {(std::min)(lo.x, v.x), (std::min)(lo.y, v.y), (std::min)(lo.z, v.z)};
-                        hi = {(std::max)(hi.x, v.x), (std::max)(hi.y, v.y), (std::max)(hi.z, v.z)};
+                    for (int r = 0; r < 4; ++r) {
+                        for (int c = 0; c < 3; ++c) {
+                            local.data[r][c] *= uniform;
+                        }
                     }
-                    d.type = static_cast<i32>(rm::CollisionShapeType::Box);
-                    d.vertices[0] = {lo.x * uniform, lo.y * uniform, lo.z * uniform};
-                    d.vertices[1] = {hi.x * uniform, hi.y * uniform, hi.z * uniform};
                     ok = true;
                 }
                 break;

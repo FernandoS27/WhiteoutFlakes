@@ -90,11 +90,12 @@ namespace whiteout::flakes::io {
 // construction rather than by parallel iteration code.
 // ---------------------------------------------------------------------------
 
-/// @brief The seven StandardMaterial layer slots the simple material system
+/// @brief The StandardMaterial layer slots the simple material system
 ///        consumes, in M3Surface order. Emissive2 is a real slot because the
 ///        shipped protoss set pairs a team-mask emissive1 (op TeamColor*Add)
 ///        with the actual glow in emissive2 — a shared slot can only carry
-///        one of the two.
+///        one of the two. Appending only: a slot's ordinal is the texture id
+///        `CollectM3Textures` hands the renderer.
 enum class M3LayerSlot : ::whiteout::u32 {
     Diffuse = 0,
     Decal,
@@ -103,6 +104,12 @@ enum class M3LayerSlot : ::whiteout::u32 {
     Emissive2,
     Normal,
     AlphaMask,
+    /// SpecularExponent in retail's naming — modulates the Blinn exponent
+    /// per pixel (psmaterial.fx:579 MaterialSpecularity).
+    Gloss,
+    /// Retail multiplies BOTH alpha layers into the coverage, so the second
+    /// needs its own slot rather than standing in for a missing first.
+    AlphaMask2,
     Count,
 };
 
@@ -122,10 +129,9 @@ std::string M3CleanPath(const std::string& raw);
 bool M3LayerHasTexture(const ::whiteout::m3::TextureLayer& layer);
 bool M3LayerActive(const ::whiteout::m3::TextureLayer& layer);
 
-/// @brief The layer serving @p slot, or null. AlphaMask falls back to its
-///        second layer when the first is inactive (retail multiplies both;
-///        one slot carries whichever exists). The emissive layers each have
-///        their own slot — their blend ops differ per layer.
+/// @brief The layer serving @p slot, or null. One layer per slot — the
+///        emissive and alpha-mask pairs each get their own, because their
+///        blend ops differ and retail multiplies both alpha masks.
 const ::whiteout::m3::TextureLayer* M3LayerForSlot(const ::whiteout::m3::StandardMaterial& mat,
                                                    M3LayerSlot slot);
 

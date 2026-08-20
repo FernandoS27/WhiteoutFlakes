@@ -73,7 +73,7 @@ public:
     }
 
 private:
-    static constexpr u32 kLayerCount = 7;
+    static constexpr u32 kLayerCount = 9;
 
     // Mirrors of m3_standard.slang's constant buffers, uploaded transposed.
     struct alignas(16) M3PassCb {

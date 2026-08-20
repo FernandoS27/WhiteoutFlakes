@@ -24,6 +24,7 @@
 // anchor at all and must collapse under gravity rather than hold its pose.
 
 #include "io/m3/m3_model_adapter.h"
+#include "m3_anim_builders.h"
 #include "renderer/profiles/sc2_heroes/sc2_physics.h"
 #include "whiteout/flakes/pose_stage.h"
 
@@ -32,6 +33,7 @@
 
 #include <whiteout/models/m3/parser.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -604,4 +606,265 @@ TEST_CASE("physics chunks across the corpus build and step without incident",
     INFO("stepped " << built << " models (" << withJoints << " jointed), " << checked
                     << " bone matrices checked");
     CHECK(built > 0);
+}
+
+TEST_CASE("a convex hull's overlay geometry is the hull, at the hull's size",
+          "[m3][phys][corpus]") {
+    // The two arrays a `PHSH` hull ships are named backwards by the parser (see
+    // `HullPoints`), and reading them as named is invisible in every way except
+    // the one that matters: the fixtures still build, the rig still steps, and
+    // every hull is silently a ~2-unit blob of unit normals. On the overlay that
+    // is a cube the size of the whole model around each limb; in the solver it
+    // is six colliders that all overlap everything.
+    //
+    // Guarded here by the two properties that separate the arrays — the point
+    // cloud is not unit-length and it closes Euler against the `DMSE` table.
+    const fs::path path = CorpusRoot() / "Sc2M3" / "Reaver_Ragdoll_Death_00.m3";
+    if (!fs::exists(path))
+        SKIP("no corpus model at " + path.string());
+
+    const std::vector<whiteout::u8> bytes = ReadAll(path);
+    REQUIRE_FALSE(bytes.empty());
+    whiteout::m3::Model model;
+    {
+        whiteout::m3::Parser parser;
+        model = parser.parse(bytes);
+    }
+    M3ModelAdapter adapter(model);
+    const auto shapes = adapter.GetCollisionShapes();
+    REQUIRE(shapes.size() == 6);
+
+    for (const auto& sh : shapes) {
+        REQUIRE(sh.type == static_cast<whiteout::i32>(
+                               whiteout::flakes::renderer::model::CollisionShapeType::Hull));
+        REQUIRE(sh.hullPoints.size() >= 4);
+        REQUIRE_FALSE(sh.hullEdges.empty());
+        REQUIRE(sh.hullEdges.size() % 2 == 0);
+
+        Vector3f lo = sh.hullPoints[0], hi = sh.hullPoints[0];
+        for (const Vector3f& v : sh.hullPoints) {
+            lo = {std::min(lo.x, v.x), std::min(lo.y, v.y), std::min(lo.z, v.z)};
+            hi = {std::max(hi.x, v.x), std::max(hi.y, v.y), std::max(hi.z, v.z)};
+        }
+        // A body part of a Reaver, not a bounding box of the Reaver. The plane
+        // table read as points spans very nearly 2 on every axis, because its
+        // entries are unit vectors; no real collider on this model reaches 1.
+        CHECK(Dist(lo, hi) > 0.05f);
+        CHECK(hi.x - lo.x < 1.0f);
+        CHECK(hi.y - lo.y < 1.0f);
+        CHECK(hi.z - lo.z < 1.0f);
+
+        for (whiteout::u16 idx : sh.hullEdges)
+            REQUIRE(idx < sh.hullPoints.size());
+    }
+
+    // V - E + F = 2, against the chunk's own three tables. This is what settles
+    // which array is which: the count that pairs with the `DMSE` edges to close
+    // Euler is the one the wireframe has to be built from, and reading the
+    // arrays as named leaves the half-edge table indexing a vertex past the end.
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+        const auto& ps = model.rigidBodies[i].rigidBodyShape[0];
+        const std::size_t V = shapes[i].hullPoints.size();
+        const std::size_t E = shapes[i].hullEdges.size() / 2;
+        const std::size_t F = ps.hullVertexPositions.size();
+        CHECK(V + F == E + 2);
+        CHECK(E == ps.hullHalfEdges.size() / 2);
+    }
+}
+
+TEST_CASE("the overlay's body kind follows the solver, not the file", "[m3][phys][corpus]") {
+    // `bodyKind` is what the file says at rest and the shape list is built once
+    // per template, so the colour a body is drawn in can only track "which of
+    // these is the solver allowed to move" if the *current* type is published
+    // per frame. It is: the stage resolves the sampled channel — inherit chains
+    // and all — back into `physicsBodyDynamic`, and every shape names the body
+    // it belongs to.
+    //
+    // The keyed models are the case that matters. Their bodies are authored off
+    // and a Death sequence turns them on, which is exactly the transition an
+    // overlay reading the authored constant can never show.
+    int ran = 0;
+    for (const fs::path& path : KeyedPaths()) {
+        if (!fs::exists(path))
+            continue;
+        ++ran;
+        const std::vector<whiteout::u8> bytes = ReadAll(path);
+        REQUIRE_FALSE(bytes.empty());
+        whiteout::m3::Model model;
+        {
+            whiteout::m3::Parser parser;
+            model = parser.parse(bytes);
+        }
+        M3ModelAdapter adapter(model);
+        const auto shapes = adapter.GetCollisionShapes();
+        REQUIRE_FALSE(shapes.empty());
+        for (const auto& sh : shapes) {
+            REQUIRE(sh.bodyIndex >= 0);
+            REQUIRE(static_cast<std::size_t>(sh.bodyIndex) < model.rigidBodies.size());
+        }
+
+        auto stage = sc2::CreateSc2PhysicsStage(model);
+        REQUIRE(stage);
+        const auto skeleton = adapter.GetSkeleton();
+        PoseStageContext ctx;
+        ctx.nodeParents = skeleton.nodeParents;
+        ctx.frameDtMs = 16;
+
+        // At rest: nothing is dynamic yet, and the published state has to say so
+        // rather than repeating the channel it was handed.
+        FrameState fs = adapter.Evaluate(flakes::PoseRequest());
+        stage->Run(fs, ctx); // builds
+        stage->Run(fs, ctx);
+        REQUIRE(fs.physicsBodyDynamic.size() == model.rigidBodies.size());
+        std::size_t liveAtRest = 0;
+        for (auto d : fs.physicsBodyDynamic)
+            liveAtRest += d ? 1 : 0;
+        CHECK(liveAtRest == 0);
+
+        // Held past the switch, the same way `a keyed dynamicState turns bodies
+        // dynamic mid-sequence` finds it.
+        bool sawDynamic = false;
+        const auto seqs = adapter.GetSequences();
+        REQUIRE_FALSE(seqs.empty());
+        for (std::size_t seq = 0; seq < seqs.size() && !sawDynamic; ++seq) {
+            const whiteout::i32 span = std::max(1, seqs[seq].endMs - seqs[seq].startMs);
+            for (whiteout::i32 t = 0; t <= span && !sawDynamic; t += 33) {
+                flakes::ClipRef live;
+                live.sequence = static_cast<whiteout::i32>(seq);
+                live.timeMs = t;
+                live.elapsedMs = t;
+                fs = adapter.Evaluate(flakes::PoseRequest::OneClip(live));
+                stage->Run(fs, ctx);
+                for (auto d : fs.physicsBodyDynamic)
+                    if (d != 0) {
+                        sawDynamic = true;
+                        break;
+                    }
+            }
+        }
+        INFO(path.filename().string());
+        CHECK(sawDynamic);
+    }
+    if (ran == 0)
+        SKIP("no keyed corpus model under " + CorpusRoot().string());
+}
+
+TEST_CASE("a hull's overlay placement is the fixture's, in the fixture's order", "[m3][phys]") {
+    // `MakePolytope` takes points that are **already** in the shape frame and
+    // scales the lot about the origin, so the shape matrix's row scale lands on
+    // its translation too. Placing the wireframe the other way round — scale the
+    // points, then rotate and translate — draws a hull the right size in the
+    // wrong place, by exactly the shape offset times one minus the scale. That
+    // is invisible on the identity shape matrices most bodies ship and wrong on
+    // every collider that is actually offset from its bone.
+    const f32 yaw = 0.6f;
+    const f32 c = std::cos(yaw), sn = std::sin(yaw);
+    const Vector3f rowScale{2.0f, 0.5f, 1.5f};
+    const Vector3f offset{3.0f, -1.0f, 4.0f};
+
+    whiteout::m3::PhysicsShape ps;
+    ps.shapeType = whiteout::m3::PhysicsShapeType::ConvexHull;
+    ps.transform = Matrix44f::identity();
+    ps.transform.data[0][0] = c * rowScale.x;
+    ps.transform.data[0][1] = sn * rowScale.x;
+    ps.transform.data[1][0] = -sn * rowScale.y;
+    ps.transform.data[1][1] = c * rowScale.y;
+    ps.transform.data[2][2] = rowScale.z;
+    ps.transform.data[3][0] = offset.x;
+    ps.transform.data[3][1] = offset.y;
+    ps.transform.data[3][2] = offset.z;
+    // The point cloud lives in the array the parser calls `hullFaceNormals`.
+    ps.hullFaceNormals = {
+        {0.1f, 0.0f, 0.0f}, {0.0f, 0.2f, 0.0f}, {0.0f, 0.0f, 0.3f}, {-0.1f, -0.2f, -0.3f}};
+
+    whiteout::m3::RigidBody rb;
+    rb.parentBoneIndex = 0;
+    rb.simulationType = 1;
+    rb.dynamicState = whiteout::m3::AnimRef<whiteout::u32>{};
+    rb.dynamicState.initValue = 1;
+    rb.rigidBodyShape.push_back(ps);
+
+    m3fix::ModelBuilder mb;
+    mb.StaticBone("root", -1);
+    whiteout::m3::Model model = mb.Build();
+    model.rigidBodies.push_back(rb);
+
+    const sc2::Sc2CollisionShapes built = sc2::Sc2BuildCollisionShapes(model);
+    REQUIRE(built.shapes.size() == 1);
+    const auto& sh = built.shapes[0];
+    CHECK(sh.type ==
+          static_cast<whiteout::i32>(whiteout::flakes::renderer::model::CollisionShapeType::Hull));
+    CHECK(sh.bodyIndex == 0);
+    CHECK(sh.bodyKind == static_cast<whiteout::i32>(
+                             whiteout::flakes::renderer::model::CollisionBodyKind::Dynamic));
+    REQUIRE(sh.hullPoints.size() == ps.hullFaceNormals.size());
+
+    // An identity bone, so the whole placement is the shape frame and nothing
+    // else can absorb an ordering slip.
+    std::vector<Matrix44f> boneWorld{Matrix44f::identity()};
+    std::vector<Matrix44f> placed;
+    sc2::Sc2PlaceCollisionShapes(built.bones, built.locals, boneWorld, placed);
+    REQUIRE(placed.size() == 1);
+
+    const f32 uniform = std::max({rowScale.x, rowScale.y, rowScale.z});
+    for (std::size_t i = 0; i < sh.hullPoints.size(); ++i) {
+        const Vector3f& p = sh.hullPoints[i];
+        // (basis * p + t) * uniform — MakePolytope's own expression.
+        const Vector3f want{(p.x * c - p.y * sn + offset.x) * uniform,
+                            (p.x * sn + p.y * c + offset.y) * uniform, (p.z + offset.z) * uniform};
+        const Vector3f got = whiteout::transform_point(p, placed[0]);
+        CHECK(got.x == Approx(want.x).margin(1e-4));
+        CHECK(got.y == Approx(want.y).margin(1e-4));
+        CHECK(got.z == Approx(want.z).margin(1e-4));
+    }
+}
+
+TEST_CASE("a rig's placed colliders sit inside the model they wrap", "[m3][phys][corpus]") {
+    // The end-to-end shape of the overlay bug, and the one check that needs no
+    // knowledge of which array is which: a collider lives *inside* the limb it
+    // drives, so every wireframe point, once placed by the shape list's own
+    // transforms, has to land inside the model's own vertex bounds. A hull
+    // built from the plane table instead spans very nearly 2 on every axis
+    // whatever the limb's size, which on a model barely more than a unit tall
+    // puts most of the wireframe outside the mesh entirely.
+    //
+    // The tolerance is a hair rather than zero because a collider is allowed to
+    // graze the silhouette; it is not allowed to be twice the model.
+    for (const fs::path& path :
+         {CorpusRoot() / "Sc2M3" / "Reaver_Ragdoll_Death_00.m3", RagdollPath()}) {
+        if (!fs::exists(path))
+            continue;
+        const std::vector<whiteout::u8> bytes = ReadAll(path);
+        REQUIRE_FALSE(bytes.empty());
+        whiteout::m3::Model model;
+        {
+            whiteout::m3::Parser parser;
+            model = parser.parse(bytes);
+        }
+        M3ModelAdapter adapter(model);
+
+        Vector3f lo{1e9f, 1e9f, 1e9f}, hi{-1e9f, -1e9f, -1e9f};
+        for (const auto& mesh : adapter.GetMeshes())
+            for (const Vector3f& v : mesh.positions) {
+                lo = {std::min(lo.x, v.x), std::min(lo.y, v.y), std::min(lo.z, v.z)};
+                hi = {std::max(hi.x, v.x), std::max(hi.y, v.y), std::max(hi.z, v.z)};
+            }
+        REQUIRE(hi.z > lo.z);
+
+        const auto shapes = adapter.GetCollisionShapes();
+        REQUIRE_FALSE(shapes.empty());
+        const FrameState fs = adapter.Evaluate(flakes::PoseRequest());
+        REQUIRE(fs.collisionTransforms.size() == shapes.size());
+
+        const f32 tol = 0.05f * Dist(lo, hi);
+        f32 worst = 0.0f;
+        for (std::size_t i = 0; i < shapes.size(); ++i)
+            for (const Vector3f& p : shapes[i].hullPoints) {
+                const Vector3f w = whiteout::transform_point(p, fs.collisionTransforms[i]);
+                worst = std::max({worst, lo.x - w.x, w.x - hi.x, lo.y - w.y, w.y - hi.y, lo.z - w.z,
+                                  w.z - hi.z});
+            }
+        INFO(path.filename().string() << ": worst point " << worst << " outside the mesh box");
+        CHECK(worst < tol);
+    }
 }

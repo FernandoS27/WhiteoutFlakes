@@ -158,10 +158,19 @@ std::unique_ptr<M3SurfaceTable> BuildM3SurfaceTable(const Model& model,
         // axis to !(flags & SimulateRoughness) (CMaterial_ApplyForDraw,
         // 0x1028bc1a0) and no shipped corpus material carries the flag, so
         // retail effectively always dims — the 2-5x hdrSpecularMultiplier
-        // values are authored against it. Constant per surface, so folded into
-        // the spec tint here rather than paid per pixel.
-        if ((static_cast<u32>(mat->flags) &
-             static_cast<u32>(::whiteout::m3::MaterialFlag::SimulateRoughness)) == 0) {
+        // values are authored against it.
+        //
+        // Retail feeds it the SPECULARITY, which a gloss layer varies per
+        // pixel (psmainshading.fx:154 -> MaterialSpecularity). Constant
+        // exponent, constant dim: fold it into the spec tint. Gloss layer, and
+        // the shader has to pay it per pixel instead — `dimPerPixel` is that
+        // hand-off.
+        const bool energyDim =
+            (static_cast<u32>(mat->flags) &
+             static_cast<u32>(::whiteout::m3::MaterialFlag::SimulateRoughness)) == 0;
+        const TextureLayer* gloss = io::M3LayerForSlot(*mat, M3LayerSlot::Gloss);
+        s.dimPerPixel = energyDim && gloss && io::M3LayerActive(*gloss);
+        if (energyDim && !s.dimPerPixel) {
             const f32 p = std::clamp(s.specularExponent, 1.0f, 512.0f);
             const f32 dim =
                 std::clamp(-0.000004444f * p * p + 0.004333f * p + 0.0020834f, 0.0f, 1.0f);
@@ -211,6 +220,7 @@ std::unique_ptr<M3SurfaceTable> BuildM3SurfaceTable(const Model& model,
                 out.blendOp = static_cast<u8>(mat->emissiveBlendMode2);
                 break;
             case M3LayerSlot::AlphaMask:
+            case M3LayerSlot::AlphaMask2:
                 // A mask samples its alpha unless the author picked a channel.
                 if (layer->colorType == ColorChannelSelect::RGB)
                     out.channels = static_cast<u8>(ColorChannelSelect::Alpha);

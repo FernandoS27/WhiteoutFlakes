@@ -36,3 +36,14 @@ Sc2M3/Baneling.m3          # transparency (acid sacs), AlphaBlend surfaces
 Sc2M3/Immortal.m3          # protoss glow set, Add-blend layers
 Sc2M3/Mothership.m3        # additive effects geometry over hull
 Sc2M3/Abathur_ConsoleZerg_00.m3  # measured Diff/Spec/Emiss/Norm layer set
+# The eleven above are all pre-LotV material versions carrying NO gloss and no
+# second alpha mask, so on their own they cannot tell a working implementation
+# of either from a missing one. The two below cover one of those axes each, and
+# both were picked by measurement rather than by name: force the gloss layer off
+# in the shader and 9.9k pixels of Adept move and nothing else in this corpus
+# does; force the second alpha mask off and 107k pixels of the hologram move and
+# nothing else does. Carrying a layer is NOT enough to be a witness for it —
+# Aiur_Nydus_Building carries both, on materials no drawn region resolves to,
+# and renders byte-identical either way.
+Sc2M3/Adept.m3                        # gloss (SpecularExponent) layer, no alpha2
+Sc2M3/AI_Champion_Hologram_Adept.m3   # both alpha-mask layers, no gloss

@@ -109,10 +109,16 @@ void Sc2DecomposeBone(const Matrix44f& world, Quaternion& rotation, Vector3f& tr
 /// though they get no fixtures — "this body exists and touches nothing" is
 /// worth seeing, and hiding it looks like a body that failed to build.
 ///
-/// `bodyKind` is the body's type **as authored**. It can change at run time
-/// (see @ref CreateSc2PhysicsStage), and the overlay's colour cannot follow it:
-/// the shape list is per-template, built once, while the type is per-actor and
-/// per-frame.
+/// A convex hull comes back as @ref model::CollisionShapeType::Hull carrying
+/// the file's own points and `DMSE` edges, not as the box they span: SC2's
+/// bodies are hulls almost exclusively, and a box around one is both much
+/// larger than the collider and the same picture for every limb.
+///
+/// `bodyKind` is the body's type **as authored** — the opening frame's answer,
+/// and no more than that, since the type is a channel. `bodyIndex` is what
+/// carries the rest: the stage resolves each frame's real type into
+/// `FrameState::physicsBodyDynamic`, and the overlay re-colours the shape from
+/// it per actor per frame.
 ///
 /// Geometry comes back in each shape's **own** frame, with `locals` carrying
 /// that frame out to model space. A `PHSH` matrix is a full affine transform and

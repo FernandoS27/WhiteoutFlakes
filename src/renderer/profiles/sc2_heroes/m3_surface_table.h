@@ -33,7 +33,7 @@
 namespace whiteout::flakes::renderer::profiles::sc2_heroes {
 
 /// @brief Layer slots, matching io::M3LayerSlot and the shader's layerCtl.
-inline constexpr u32 kM3LayerCount = 7;
+inline constexpr u32 kM3LayerCount = 9;
 
 struct M3Layer {
     i32 textureId = -1; ///< Index into the adapter's CollectM3Textures order.
@@ -59,7 +59,13 @@ struct M3Surface {
     ::whiteout::m3::BlendMode blendMode = ::whiteout::m3::BlendMode::Opaque;
     u32 materialFlags = 0; ///< Raw m3::MaterialFlag bits.
     i32 priority = 0;
+    /// The material constant. A gloss layer scales it per pixel by its alpha
+    /// squared (psmaterial.fx MaterialSpecularity), so this is the ceiling
+    /// rather than the value whenever `layers[Gloss]` is on.
     f32 specularExponent = 20.0f;
+    /// FakeEnergyConservingSpec could not be folded into the specular tint —
+    /// the gloss layer makes the exponent, and therefore the dim, per-pixel.
+    bool dimPerPixel = false;
     /// Normalised [0,1]; 0 disables the test.
     f32 alphaTestThreshold = 0.0f;
     /// REGN v5+ per-region decode (`uv = i16 * uvMultiply + uvOffset`); older
