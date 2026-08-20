@@ -126,8 +126,6 @@ if(WDX_ENABLE_M3)
         # value rather than hiding one, because the records *are* the result.
         wdx_add_test(sc2_cloth_test sc2_cloth_test.cpp)
         target_link_libraries(sc2_cloth_test PRIVATE snowball)
-        wdx_add_test(cloth_probe cloth_probe.cpp)
-        target_link_libraries(cloth_probe PRIVATE snowball)
     endif()
     # The simple material system's table: batch→MATM→material resolution,
     # the canonical texture set, layer fallbacks, classification. Synthetic

@@ -307,11 +307,10 @@ TEST_CASE("a live model's chains hang off their kinematic anchors", "[m3][phys][
     REQUIRE(dynamic > 0);
     REQUIRE(kinematic > 0);
 
-    const M3ModelAdapter adapter(std::move(model));
-    flakes::renderer::animation::PoseStageList stages;
-    adapter.CreatePoseStages(stages);
-    REQUIRE_FALSE(stages.empty());
-    auto& stage = stages.back();
+    // Copy, not move: the stage below holds a reference to `model`.
+    const M3ModelAdapter adapter(model);
+    auto stage = sc2::CreateSc2PhysicsStage(model);
+    REQUIRE(stage);
 
     const auto sequences = adapter.GetSequences();
     REQUIRE_FALSE(sequences.empty());
@@ -395,13 +394,11 @@ TEST_CASE("a keyed dynamicState turns an animated body into a simulated one",
     }
     const std::size_t bodyCount = model.rigidBodies.size();
 
-    const M3ModelAdapter adapter(std::move(model));
-    flakes::renderer::animation::PoseStageList stages;
-    adapter.CreatePoseStages(stages);
+    const M3ModelAdapter adapter(model);
     // Read as a constant this model is inert, and the stage would be dropped as
     // useless before any of the rest could run.
-    REQUIRE_FALSE(stages.empty());
-    auto& stage = stages.back();
+    auto stage = sc2::CreateSc2PhysicsStage(model);
+    REQUIRE(stage);
 
     const auto skeleton = const_cast<M3ModelAdapter&>(adapter).GetSkeleton();
     PoseStageContext ctx;
@@ -491,7 +488,7 @@ TEST_CASE("the physics bodies draw where the solver put them", "[m3][phys][corpu
         whiteout::m3::Parser parser;
         model = parser.parse(bytes);
     }
-    M3ModelAdapter adapter(std::move(model));
+    M3ModelAdapter adapter(model);
 
     const auto shapes = adapter.GetCollisionShapes();
     REQUIRE_FALSE(shapes.empty());
@@ -504,10 +501,8 @@ TEST_CASE("the physics bodies draw where the solver put them", "[m3][phys][corpu
                   whiteout::flakes::renderer::model::CollisionBodyKind::Dynamic));
     }
 
-    flakes::renderer::animation::PoseStageList stages;
-    adapter.CreatePoseStages(stages);
-    REQUIRE_FALSE(stages.empty());
-    auto& stage = stages.back();
+    auto stage = sc2::CreateSc2PhysicsStage(model);
+    REQUIRE(stage);
 
     const auto skeleton = adapter.GetSkeleton();
     PoseStageContext ctx;

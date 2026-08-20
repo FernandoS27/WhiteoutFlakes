@@ -699,6 +699,16 @@ struct FrameState {
     /// and two bodies can share one.
     std::vector<u8> physicsBodyDynamic;
 
+    /// @brief Per-cloth "simulate me this frame", one entry per `PHCL` in file
+    ///        order. Empty for a format whose cloths do not animate it.
+    ///
+    /// The same shape as @ref physicsBodyDynamic and for the same reason: only
+    /// the source has the layer stack the channel is sampled against. 69 of the
+    /// corpus's 392 cloth records key it, and in StarCraft II it gates the whole
+    /// write-back — an inactive cloth stops feeding the mesh entirely rather
+    /// than simulating into a hidden buffer.
+    std::vector<u8> clothActive;
+
     /// @brief Per-layer 2D texture-coord transform (offset / tile / rotation).
     struct TexAnimState {
         i32 materialId;

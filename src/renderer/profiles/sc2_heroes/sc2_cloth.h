@@ -28,9 +28,16 @@
 // visible region's four-bone skin becomes a four-*particle* skin over a palette
 // of nodes appended after the real skeleton (see @ref Sc2ClothBuild).
 //
-// The recovery is `CLOTH_HOST_NOTES.md` in the Domino repo (host side, cloth's
-// §6 of `DOMINO_GLUE.md`) plus `CModelPhysics_Build` / `M3Physics_StepCloth` in
-// the SC2 IDB. Compiled only under WDX_ENABLE_PHYSICS.
+// That is not an economy taken here: it is what StarCraft II does, one layer
+// down. `M3Cloth_SkinInfluencedMesh` builds a matrix per particle and skins the
+// visible vertices by `inverseBind x liveFrame` on the CPU, into a dynamic
+// vertex buffer. The product is the same; a renderer that already has a
+// skinning palette can hand the second half to the GPU.
+//
+// The recovery is `DOMINO_GLUE.md` §6.8 (this half) and `CLOTH_HOST_NOTES.md`
+// (the solver's host contract) in the Domino repo, from `CModelPhysics_Build`,
+// `M3Physics_StepCloth` and `M3Cloth_SkinInfluencedMesh` in the SC2 IDB.
+// Compiled only under WDX_ENABLE_PHYSICS.
 // ============================================================================
 
 #include "whiteout/flakes/pose_stage.h"
@@ -109,12 +116,20 @@ struct Sc2ClothBuild {
 /// @brief Build every `PHCL` on @p model, or an empty result if it has none we
 ///        can drive.
 ///
-/// Returns nothing rather than a partial build for a cloth whose chunk
-/// disagrees with its geometry — a `clothMeshCount` that is not a region, a
-/// per-vertex array whose length is not the region's vertex count, or more than
-/// 256 particles, which an M3 vertex's `u8` bone index cannot address. The
-/// model then renders with its authored skin, which is a rigid approximation of
-/// the cloth rather than nothing at all.
+/// Three populations are skipped, and only the last is a limitation:
+///
+///   - a `PHCL` with **no per-vertex data at all**, which is not a cloth but a
+///     *collider source* — capsules for another model's cape to collide with,
+///     attached by the actor layer. Most of the corpus's records.
+///   - a chunk that disagrees with its geometry (a `clothMeshCount` that is not
+///     a region, a per-vertex array whose length is not the region's vertex
+///     count). None measured.
+///   - **more than 256 particles**, which neither an M3 vertex's `u8` bone
+///     index nor a 256-matrix palette can address. Twenty of the corpus's 216
+///     mesh-carrying cloths.
+///
+/// Skipped means the model renders with its authored skin, which carries the
+/// cape rigidly rather than not at all.
 Sc2ClothBuild Sc2BuildCloth(const ::whiteout::m3::Model& model);
 
 /// @brief The per-frame bridge: animated skeleton in, particle frames out.

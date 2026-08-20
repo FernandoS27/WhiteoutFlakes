@@ -399,6 +399,143 @@ TEST_CASE("the influenced region is skinned to particles, not bones", "[m3][clot
     CHECK(fs.geosetHidden[static_cast<std::size_t>(clothGeoset)] == 0);
 }
 
+TEST_CASE("the example models build and settle", "[m3][cloth][corpus]") {
+    // The models this feature is meant to be looked at on, asserted rather than
+    // written down: each has to build, and each has to settle to a finite pose.
+    // Two of them are the shapes the single-cloth cases cannot reach — Uther
+    // and the Mengsk barracks carry *two* cloths each, so the second one's
+    // particles start at a non-zero offset into the palette and every index
+    // that is really "particle + firstParticle" gets a chance to be wrong.
+    struct Example {
+        const char* path;
+        std::size_t cloths;
+    };
+    const Example examples[] = {
+        {"HotSM3/Storm_Hero_Kaelthas_Base.m3", 1},   {"HotSM3/Storm_Hero_KingLeoric_Base.m3", 1},
+        {"HotSM3/Storm_Hero_Artanis_Base.m3", 1},    {"HotSM3/Storm_Hero_Alexstrasza_Base.m3", 1},
+        {"HotSM3/Storm_Hero_Anduin_Base.m3", 1},     {"HotSM3/Storm_Hero_Uther_Base.m3", 2},
+        {"Sc2M3/Storm_Hero_Jaina_Base.m3", 1},       {"Sc2M3/Ghost_Heavens_COOP.m3", 1},
+        {"Sc2M3/Barracks_Mengsk_COOP.m3", 2},
+    };
+
+    std::size_t ran = 0;
+    for (const Example& ex : examples) {
+        const fs::path path = CorpusRoot() / ex.path;
+        whiteout::m3::Model model;
+        if (!LoadModel(path, model))
+            continue;
+        ++ran;
+        INFO(ex.path);
+
+        M3ModelAdapter adapter(model);
+        const auto skeleton = adapter.GetSkeleton();
+        const std::size_t boneCount = model.bones.size();
+        const sc2::Sc2ClothBuild build = sc2::Sc2BuildCloth(model);
+        CHECK(build.pieces.size() == ex.cloths);
+        if (build.pieces.empty())
+            continue;
+        CHECK(static_cast<std::size_t>(skeleton.nodeCount) == boneCount + build.particleCount);
+
+        // The pieces tile the palette end to end, with no gap and no overlap.
+        std::size_t expect = 0;
+        for (const auto& piece : build.pieces) {
+            CHECK(piece.firstParticle == expect);
+            CHECK(piece.particleCount > 0);
+            CHECK(!piece.influencedRegions.empty());
+            expect += piece.particleCount;
+        }
+        CHECK(expect == build.particleCount);
+
+        whiteout::flakes::renderer::animation::PoseStageList stages;
+        adapter.CreatePoseStages(stages);
+        REQUIRE(!stages.empty());
+        FrameState fs = BindPose(adapter);
+        const auto ctx = Ctx(skeleton.nodeParents, 16);
+        for (int frame = 0; frame < 30; ++frame)
+            for (auto& stage : stages)
+                stage->Run(fs, ctx);
+
+        std::size_t moved = 0;
+        for (std::size_t k = 0; k < build.particleCount; ++k) {
+            const Matrix44f& m = fs.boneWorldMatrices[boneCount + k];
+            for (int r = 0; r < 4; ++r)
+                for (int c = 0; c < 3; ++c)
+                    REQUIRE(std::isfinite(m.data[r][c]));
+            if (Dist(OriginOf(m), OriginOf(Matrix44f::identity())) > 0.0f)
+                ++moved;
+        }
+        // Every particle sits somewhere, and something in the model hangs.
+        CHECK(moved > 0);
+    }
+    if (ran == 0)
+        SKIP("no corpus models present under " + CorpusRoot().string());
+    INFO("ran " << ran << " of " << std::size(examples));
+    CHECK(ran > 0);
+}
+
+TEST_CASE("PHCL's active channel gates the simulation", "[m3][cloth][corpus]") {
+    // `active` is not decoration: 69 of the corpus's 216 mesh-carrying cloths
+    // key it, and in StarCraft II reading zero skips the cloth's whole
+    // per-vertex pass — the mesh keeps the pose it last had. Asserted on the
+    // flag rather than on a model that keys it, because the two questions are
+    // separate: does the adapter *sample* the channel (corpus), and does the
+    // stage *obey* it (here, by writing the flag directly).
+    whiteout::m3::Model model;
+    if (!LoadModel(KaelPath(), model)) {
+        SKIP("corpus model not present: " + KaelPath().string());
+    }
+    M3ModelAdapter adapter(model);
+    const auto skeleton = adapter.GetSkeleton();
+    const std::size_t boneCount = model.bones.size();
+    const sc2::Sc2ClothBuild build = sc2::Sc2BuildCloth(model);
+    REQUIRE(build.pieces.size() == 1);
+    const auto& piece = build.pieces[0];
+
+    // Sampled by the source, so a stage that never runs still sees the state.
+    FrameState fs = BindPose(adapter);
+    REQUIRE(fs.clothActive.size() == model.clothPhysics.size());
+    // Kael'thas's own flag bit 1 is clear, so his cloth is on unconditionally —
+    // which is what makes him a fair fixture for the *stage* half.
+    CHECK(fs.clothActive[0] == 1);
+
+    whiteout::flakes::renderer::animation::PoseStageList stages;
+    adapter.CreatePoseStages(stages);
+    REQUIRE(!stages.empty());
+    const auto ctx = Ctx(skeleton.nodeParents, 16);
+    for (auto& stage : stages)
+        stage->Run(fs, ctx);
+
+    std::vector<Vector3f> settled(piece.particleCount);
+    for (std::size_t k = 0; k < piece.particleCount; ++k)
+        settled[k] = OriginOf(fs.boneWorldMatrices[boneCount + k]);
+
+    // Off: the skeleton moves and the cloth does not follow. It also does not
+    // vanish — the palette is still written, with the frames it last had.
+    fs.clothActive[0] = 0;
+    for (std::size_t b = 0; b < boneCount; ++b)
+        fs.boneWorldMatrices[b].data[3][2] += 5.0f;
+    for (int frame = 0; frame < 60; ++frame)
+        for (auto& stage : stages)
+            stage->Run(fs, ctx);
+    for (std::size_t k = 0; k < piece.particleCount; ++k)
+        CHECK(Dist(OriginOf(fs.boneWorldMatrices[boneCount + k]), settled[k]) < 1e-4f);
+
+    // Back on: it catches up. Sixty frames is a second, which is long past the
+    // point where a pinned particle is placed outright.
+    fs.clothActive[0] = 1;
+    for (int frame = 0; frame < 60; ++frame)
+        for (auto& stage : stages)
+            stage->Run(fs, ctx);
+    std::size_t caught = 0;
+    for (std::size_t k = 0; k < piece.def.pinnedCount; ++k) {
+        if (Dist(OriginOf(fs.boneWorldMatrices[boneCount + k]),
+                 {settled[k].x, settled[k].y, settled[k].z + 5.0f}) < 1e-3f) {
+            ++caught;
+        }
+    }
+    CHECK(caught == piece.def.pinnedCount);
+}
+
 TEST_CASE("the visible cape deforms, and stays a cape", "[m3][cloth][corpus]") {
     // The one case that runs the *whole* chain the way the GPU does: build the
     // offset matrices the shader would get (`inverseBind * node`), skin the

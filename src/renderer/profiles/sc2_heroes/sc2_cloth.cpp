@@ -53,9 +53,14 @@ constexpr f32 kRestPoseStiffness = 0.0f;
 /// the rigid-body stage puts on its accumulator, for the same reason.
 constexpr f32 kMaxDt = 0.05f;
 
-/// An M3 vertex names its bone in a **byte**, so a cloth whose palette would
-/// not fit in one cannot be addressed by the region it drives. Nothing in the
-/// corpus comes close (the largest measured is 189).
+/// An M3 vertex names its bone in a **byte** and the skinning constant buffer
+/// holds `bls::kMaxBones` = 256 matrices, so a cloth of more than 256 particles
+/// cannot be addressed by the region it drives — both ceilings land on the same
+/// number. Twenty of the corpus's 216 mesh-carrying cloths are over it (Zeratul
+/// at 282, Tyrande Warden at 447, Zeratul Ultimate at 458); those models keep
+/// their authored skin, which is the cape carried rigidly rather than nothing
+/// at all. Lifting it means splitting the influenced region's triangles into
+/// groups of at most 256 distinct particles and emitting one geoset per group.
 constexpr std::size_t kMaxParticles = 256;
 
 Vector3f RowOf(const Matrix44f& m, int r) {
@@ -184,6 +189,12 @@ private:
     void Create();
     void WriteFrames(FrameState& fs);
 
+    /// @brief Whether @p piece is enabled this frame. Absent sampling — a
+    ///        format or a model that never keys it — reads as on.
+    static bool Active(const FrameState& fs, const Sc2ClothPiece& piece) {
+        return piece.chunkIndex >= fs.clothActive.size() || fs.clothActive[piece.chunkIndex] != 0;
+    }
+
     const w3::Model* model_;
     std::shared_ptr<const Sc2ClothBuild> build_;
     i32 firstNode_ = 0;
@@ -205,6 +216,14 @@ void Sc2ClothStage::Create() {
 void Sc2ClothStage::WriteFrames(FrameState& fs) {
     for (std::size_t i = 0; i < build_->pieces.size(); ++i) {
         const Sc2ClothPiece& piece = build_->pieces[i];
+        // `active` gates the *write-back*, not the step. StarCraft II samples it
+        // after `dmCloth_Step` and tests it at the top of the skinning pass, so
+        // an inactive cloth goes on simulating and simply stops feeding the
+        // mesh — which is why it snaps back to a settled shape rather than a
+        // stale one when it comes on again. Leaving the palette entries alone is
+        // the same thing as leaving that vertex buffer unwritten.
+        if (!Active(fs, piece))
+            continue;
         const sb::Cloth& cloth = cloths_[i];
         const std::size_t base =
             static_cast<std::size_t>(firstNode_) + piece.firstParticle;
@@ -293,6 +312,18 @@ Sc2ClothBuild Sc2BuildCloth(const w3::Model& model) {
 
     for (std::size_t ci = 0; ci < model.clothPhysics.size(); ++ci) {
         const w3::ClothPhysics& c = model.clothPhysics[ci];
+
+        // A `PHCL` with no per-vertex data is not a broken cloth: it is a
+        // **collider source**, a record that exists only to carry `PHCC`
+        // capsules for *another* model's cloth to collide against — a mount
+        // under a rider's cape. StarCraft II attaches those through
+        // `RegisterClothColliderSource` on the actor layer
+        // (`CLOTH_HOST_NOTES.md` §3.5), which needs two models and an
+        // attachment; the viewer has neither, so there is nothing to build.
+        // Common enough to be worth naming: it is most of the corpus's `PHCL`
+        // records.
+        if (c.simEnabled.empty())
+            continue;
 
         // `clothMeshCount` is a REGN *index*, not a count — measured over the
         // corpus, and confirmed by every `PHAC` naming the same region in its

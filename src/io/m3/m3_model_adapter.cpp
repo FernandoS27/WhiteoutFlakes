@@ -1098,6 +1098,21 @@ renderer::model::FrameState M3ModelAdapter::Evaluate(const PoseRequest& req) con
 
 void M3ModelAdapter::EvaluatePhysics(std::span<const M3Layer> layers,
                                      renderer::model::FrameState& fs) const {
+    // `PHCL.active` gates the cloth's whole contribution — StarCraft II skips
+    // the write-back outright when it reads zero, so the mesh keeps the pose it
+    // last had rather than simulating unseen. Sampled here, and on the same flag
+    // bit as `dynamicState`: 69 of the corpus's 392 cloth records ask for it.
+    if (!model_.clothPhysics.empty()) {
+        fs.clothActive.resize(model_.clothPhysics.size());
+        for (std::size_t i = 0; i < model_.clothPhysics.size(); ++i) {
+            const auto& c = model_.clothPhysics[i];
+            ::whiteout::u32 v = c.active.initValue;
+            if ((c.active.flags & 0x2u) != 0u)
+                v = SampleRefOverride(c.active, layers);
+            fs.clothActive[i] = v != 0 ? 1 : 0;
+        }
+    }
+
     if (model_.rigidBodies.empty())
         return;
 
