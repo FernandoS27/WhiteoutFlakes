@@ -75,6 +75,12 @@ struct EmitterDesc {
     std::string childModelPath;
     f32 childScale = 1.0f;
 
+    /// The `.m2` whose emitters trail every particle of THIS one (M2 RPID).
+    /// Unrelated to @ref childModelPath: those particles *are* models, these
+    /// particles *drag* emitters. Resolved by the loader, which builds the
+    /// trail emitters and hands them to this one — see M2_TRAIL_EMITTER_DESIGN.md.
+    std::string trailModelPath;
+
     /// Model-particle tumble: each particle draws its own angular velocity
     /// (radians/s) from this range at birth. Kept as base-and-span the way
     /// `InitializeLoaded` @0x100f57e30 stores it, because that is the form the
@@ -106,6 +112,12 @@ struct EmitterDesc {
     // the spec name is a misnomer (see M2_PARTICLE_DESIGN.md, answered Q4).
     f32 inheritVelocityScale = 1.0f;
 
+    // Whether the emitter asked to inherit motion at all (M2 file flag 0x40).
+    // Distinct from the scale above, which a record may legitimately set to
+    // zero with the flag on. Read where the flag alone decides: a trail emitter
+    // takes its driving particle's velocity only if this is set.
+    bool inheritVelocity = false;
+
     // Pull on particles older than 2*dt, so a trail follows its emitter. How
     // much of the emitter's travel they inherit is a line in the emitter's own
     // speed, clamped to [0,1]: `bias + slope * speed`. The record stores the
@@ -114,9 +126,11 @@ struct EmitterDesc {
     f32 followBias = 0.0f;
     f32 followSlope = 0.0f;
 
-    // Spawn positions randomised along the emitter's path rather than spaced
-    // evenly along it (M2 file flag InheritPosition). Costs one extra draw per
-    // particle, so it is a behaviour of the emitter, not a cosmetic option.
+    // M2 file flag InheritPosition. The client computes a random point along the
+    // emitter's path and then spawns at the emitter's current position anyway —
+    // see EmitStep for the two call sites that prove it. So what this flag
+    // really selects is "one extra draw, and no path spacing at all", which is
+    // still a behaviour of the emitter and not a cosmetic option.
     bool randomEmissionSpacing = false;
 
     // Skip the distance falloff on emission rate (M2 LodIgnoreDistance).

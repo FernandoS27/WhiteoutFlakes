@@ -33,4 +33,10 @@ DescFromWc3ChildModelConfig(const model::PE1EmitterConfig& cfg);
 std::shared_ptr<const EmitterDesc> DescFromM2Config(const M2ParticleEmitterConfig& cfg,
                                                     bool linearColor);
 
+// The frame state a trail emitter (M2 RPID) runs on for its whole life. Its
+// record's tracks are never walked — the model they came from is never placed —
+// so this is @ref M2ParticleEmitterConfig::initial in the shape ApplyState
+// wants. The owning emitter patches in unit scale, model alpha and transform.
+model::FrameState::ParticleFrameState TrailStateFromM2Config(const M2ParticleEmitterConfig& cfg);
+
 } // namespace whiteout::flakes::renderer::particle

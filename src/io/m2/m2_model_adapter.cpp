@@ -1261,6 +1261,22 @@ std::string GeometryModelKey(const ::whiteout::m2::Model& model, usize index) {
     return {};
 }
 
+// The same lookup for RPID — the `.m2` whose emitters trail every particle of
+// this one. Same two forms as GeometryModelKey and the same trailing-NUL trap:
+// both strings come out of the file with their terminator inside the field.
+std::string RecursionModelKey(const ::whiteout::m2::Model& model, usize index) {
+    if (index >= model.particleEmitters.size())
+        return {};
+    std::string name = TrimTrailingNuls(model.particleEmitters[index].childEmittersModelFilename);
+    if (!name.empty())
+        return name;
+    if (index < model.recursiveParticleModelIds.size() &&
+        model.recursiveParticleModelIds[index] != 0) {
+        return "#" + std::to_string(model.recursiveParticleModelIds[index]);
+    }
+    return {};
+}
+
 // A particle track's 16-bit fields are the client's `fixed16`: raw * 1/32767,
 // so a full-scale key is 0x7FFF and not 0xFFFF. WhiteoutLib types them
 // `unorm16`, whose float conversion divides by 65535 — half of what the client
@@ -1388,8 +1404,29 @@ std::vector<renderer::M2ParticleEmitterConfig> M2ModelAdapter::GetM2ParticleConf
         cfg.priorityPlane = p.textureTilerotation;
 
         cfg.geometryModelPath = GeometryModelKey(model_, ei);
+        cfg.recursionModelPath = RecursionModelKey(model_, ei);
         cfg.tumbleMin = p.tumble.minimum;
         cfg.tumbleMax = p.tumble.maximum;
+
+        // Sampled through the same sampler the animated path uses, at the start
+        // of sequence 0. Only a trail emitter reads these: it belongs to a model
+        // nothing animates, so the tracks are never walked for it.
+        {
+            const M2AnimTime at0{};
+            cfg.initial.emissionRate = (std::max)(SampleM2Float(p.emissionRate, at0, 0.0f), 0.0f);
+            cfg.initial.speed = SampleM2Float(p.emissionSpeed, at0, 0.0f);
+            cfg.initial.variation = SampleM2Float(p.speedVariation, at0, 0.0f);
+            cfg.initial.coneAngle = SampleM2Float(p.verticalRange, at0, 0.0f);
+            cfg.initial.horizontalRange = SampleM2Float(p.horizontalRange, at0, 0.0f);
+            cfg.initial.width = SampleM2Float(p.emissionAreaWidth, at0, 0.0f);
+            cfg.initial.length = SampleM2Float(p.emissionAreaLength, at0, 0.0f);
+            cfg.initial.zSource =
+                p.extension ? p.extension->zSource : SampleM2Float(p.zSource, at0, 0.0f);
+            cfg.initial.lifeSpan = SampleM2Float(p.lifespan, at0, 1.0f);
+            cfg.initial.gravityVector = SampleM2ParticleGravity(
+                p.gravity, at0,
+                HasParticleFlag(p.flags, static_cast<u32>(ParticleFlag::CompressedGravity)));
+        }
 
         CopyParticleTrack(p.colorTrack, cfg.colorTimes, cfg.colorValues, [](const Vector3f& v) {
             // Record colours are 0..255 display-referred.

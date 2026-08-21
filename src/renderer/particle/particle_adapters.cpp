@@ -268,6 +268,7 @@ std::shared_ptr<const EmitterDesc> DescFromM2Config(const M2ParticleEmitterConfi
     desc->lodIgnoreDistance = cfg.lodIgnoreDistance;
     desc->implosionFilter = cfg.implosionFilter;
     desc->followPosition = cfg.followPosition;
+    desc->inheritVelocity = cfg.inheritVelocity;
     desc->inheritVelocityScale = cfg.inheritVelocity ? cfg.inheritVelocityScale : 0.0f;
     SolveFollowLine(*desc, cfg);
 
@@ -310,12 +311,40 @@ std::shared_ptr<const EmitterDesc> DescFromM2Config(const M2ParticleEmitterConfi
         desc->output = ParticleOutput::ChildModel;
         desc->childModelPath = cfg.geometryModelPath;
     }
+    // Not an output kind: a trail emitter's particles are ordinary billboards.
+    // What this names is a second model whose emitters ride this one's
+    // particles, which the loader resolves and attaches.
+    desc->trailModelPath = cfg.recursionModelPath;
     desc->tumbleBase = cfg.tumbleMin;
     desc->tumbleVary = {cfg.tumbleMax.x - cfg.tumbleMin.x, cfg.tumbleMax.y - cfg.tumbleMin.y,
                         cfg.tumbleMax.z - cfg.tumbleMin.z};
 
     desc->coordSpace = kDefaultCoordSpace;
     return desc;
+}
+
+model::FrameState::ParticleFrameState TrailStateFromM2Config(const M2ParticleEmitterConfig& cfg) {
+    model::FrameState::ParticleFrameState st{};
+    st.emitterId = -1;
+    st.emissionRate = cfg.initial.emissionRate;
+    st.speed = cfg.initial.speed;
+    st.variation = cfg.initial.variation;
+    st.coneAngle = cfg.initial.coneAngle;
+    st.horizontalRange = cfg.initial.horizontalRange;
+    st.width = cfg.initial.width;
+    st.length = cfg.initial.length;
+    st.zSource = cfg.initial.zSource;
+    st.lifeSpan = cfg.initial.lifeSpan;
+    st.gravityVector = cfg.initial.gravityVector;
+    st.gravity = -cfg.initial.gravityVector.z;
+    st.hasGravityVector = true;
+    st.enabled = true;
+    st.visibility = 1.0f;
+    // A trail is driven particle by particle and never emits from its own
+    // position, so a squirt edge cannot reach it.
+    st.squirting = false;
+    st.boneGenerator = cfg.generator == M2ParticleEmitterConfig::Generator::Bone;
+    return st;
 }
 
 std::shared_ptr<const EmitterDesc>

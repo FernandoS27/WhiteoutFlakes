@@ -161,6 +161,33 @@ struct M2ParticleEmitterConfig {
     /// nearly all of them.
     std::string geometryModelPath;
 
+    /// @brief The `.m2` whose emitters trail every particle of this one.
+    ///
+    /// From the record's `childEmittersModelFilename`, or `#<fileDataID>` when
+    /// the RPID chunk names it instead. Eight emitters in five models carry it.
+    /// Unrelated to @ref geometryModelPath — see M2_TRAIL_EMITTER_DESIGN.md.
+    std::string recursionModelPath;
+
+    /// @brief The animated tracks sampled at the start of sequence 0.
+    ///
+    /// For an emitter nothing ever animates. A trail emitter belongs to a model
+    /// the scene never places, so the client's per-frame `AnimateParticleST`
+    /// never reaches it and it runs on whatever the loader left in its
+    /// generator. Every shipped trail record has a single key on each of these,
+    /// so "first key" and "animated" are the same values.
+    struct InitialAnimatedState {
+        f32 emissionRate = 0.0f;
+        f32 speed = 0.0f;
+        f32 variation = 0.0f;
+        f32 coneAngle = 0.0f;
+        f32 horizontalRange = 0.0f;
+        f32 width = 0.0f;
+        f32 length = 0.0f;
+        f32 zSource = 0.0f;
+        f32 lifeSpan = 1.0f;
+        Vector3f gravityVector{0, 0, 0};
+    } initial;
+
     /// @brief Per-particle angular velocity, radians/s, drawn between the two
     ///        (the record's `tumble` box). Model particles only — a billboard
     ///        spins in 2D off @ref baseSpin / @ref spinSpeed instead.

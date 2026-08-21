@@ -421,6 +421,75 @@ TEST_CASE("the EXPT/EXP2 extension's zSource beats the record's dead field",
         SKIP("neither reference model is present in this corpus");
 }
 
+TEST_CASE("the shipped RPID carriers name their trail models", "[m2][particle][trail]") {
+    // RPID is a per-emitter array, exactly like GPID: detectmagic_base has four
+    // emitters and three entries pointing at the same recursion model. Eight
+    // emitters in five models carry one in the whole corpus, so naming them is
+    // cheap and pins both the indexing and the `#<fileDataID>` form.
+    //
+    // Every one of these recursion models has exactly ONE emitter, which is why
+    // the client's four-child cap is dead code in shipped data — asserted here
+    // so a later corpus that breaks the assumption says so.
+    struct Expect {
+        const char* rel;
+        int emitterIndex;
+        const char* trailKey;
+        const char* trailModel;
+    };
+    const Expect cases[] = {
+        {"spells/detectmagic_base.m2", 0, "#165943", "spells/detectmagic_recursive.m2"},
+        {"spells/detectmagic_base.m2", 2, "#165943", "spells/detectmagic_recursive.m2"},
+        {"creature/zippelin/zippelin.m2", 3, "#166051", "spells/explodertrail.m2"},
+        {"spells/bomb_explosiona.m2", 4, "#166126", "spells/fire_smoketrail.m2"},
+        {"spells/hunter_firetrap.m2", 3, "#166404", "spells/immolationtrap_recursive.m2"},
+        {"spells/shadow_impactdot_med_head.m2", 0, "#166790", "spells/shadow_dotparticle.m2"},
+    };
+
+    io::FileContentProvider provider;
+    provider.SetGame(whiteout::flakes::ProductId::Wow);
+
+    auto load = [&](const fs::path& path) -> std::shared_ptr<io::M2ModelAdapter> {
+        provider.SetBasePath(path.parent_path());
+        auto bytes = provider.ReadFile(path.string());
+        if (!bytes)
+            return nullptr;
+        return io::M2ModelAdapter::Load(
+            ContentRef::FromPath(path.string()),
+            std::span<const whiteout::u8>(bytes->data(), bytes->size()), &provider);
+    };
+
+    std::size_t checked = 0;
+    for (const Expect& e : cases) {
+        const fs::path path = CorpusRoot() / e.rel;
+        if (!fs::exists(path))
+            continue;
+        auto adapter = load(path);
+        REQUIRE(adapter);
+        const auto configs = adapter->GetM2ParticleConfigs();
+        INFO("model " << e.rel << " emitter " << e.emitterIndex);
+        REQUIRE(configs.size() > static_cast<std::size_t>(e.emitterIndex));
+        CHECK(configs[static_cast<std::size_t>(e.emitterIndex)].recursionModelPath ==
+              std::string(e.trailKey));
+
+        const fs::path trailPath = CorpusRoot() / e.trailModel;
+        if (fs::exists(trailPath)) {
+            auto trail = load(trailPath);
+            REQUIRE(trail);
+            const auto trailConfigs = trail->GetM2ParticleConfigs();
+            CHECK(trailConfigs.size() == 1);
+            REQUIRE_FALSE(trailConfigs.empty());
+            // Nothing nests, and every one of them runs on a real rate — an
+            // emitter the loader would build and then never see emit.
+            CHECK(trailConfigs[0].recursionModelPath.empty());
+            CHECK(trailConfigs[0].initial.emissionRate > 0.0f);
+            CHECK(trailConfigs[0].initial.lifeSpan > 0.0f);
+        }
+        ++checked;
+    }
+    if (checked == 0)
+        SKIP("no RPID carrier present in " + CorpusRoot().string());
+}
+
 TEST_CASE("every corpus .m2 particle emitter yields a sane desc", "[m2][particle]") {
     const auto models = FindModels();
     if (models.empty())

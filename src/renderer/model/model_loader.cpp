@@ -60,6 +60,12 @@ using namespace ::whiteout::flakes::renderer::bls;
 using namespace ::whiteout::flakes::io;
 
 namespace {
+// Where a trail emitter's textures are bound on the OWNING actor's scope. A
+// trail's record indexes its own model's texture array, so its ids have to live
+// somewhere no real texture id can reach; the scope is an id->entry map, so a
+// sparse high id costs nothing. Four per parent emitter, the client's cap.
+constexpr i32 kTrailTextureIdBase = 0x40000;
+
 // The actor's WC3 table, created on first use. Every WC3 load path funnels
 // through here, so an actor never has a null table by the time anything draws.
 //
@@ -301,13 +307,88 @@ void ModelLoader::AddM2Emitter(u32 handle, i32 index,
     } else {
         em = std::make_unique<particle::Emitter2>();
     }
+    const std::string trailKey = desc ? desc->trailModelPath : std::string();
     em->SetDesc(std::move(desc));
     em->SetBehavior(behavior);
     em->SetSeed(particle::MixSeed(handle, (u32)index));
+    if (!trailKey.empty())
+        AttachTrailEmitters(handle, index, *em, trailKey, behavior);
     rs_.Particles().AddEmitter(handle,
                                models ? particle::ParticleOutput::ChildModel
                                       : particle::ParticleOutput::Billboard,
                                index, std::move(em));
+}
+
+void ModelLoader::AttachTrailEmitters(u32 handle, i32 index, particle::Emitter2& parent,
+                                      const std::string& key,
+                                      const core::ParticleBehavior& behavior) {
+#if WDX_ENABLE_M2
+    auto model = ResolveParticleModel(key);
+    auto* a = rs_.Scene().Actors().Find(handle);
+    if (!model || !a)
+        return;
+
+    const bool linear = rs_.Pipeline().LoadTimeProfile().LinearShading();
+    const auto configs = model->GetM2ParticleConfigs();
+    const auto textures = model->GetTextures();
+    constexpr i32 kMax = static_cast<i32>(particle::Emitter2::kMaxTrails);
+
+    i32 childIdx = 0;
+    for (const auto& tcfg : configs) {
+        // The client takes min(count, 4) emitters in file order and asserts on
+        // the fifth (`RecursiveEmitterModelLoaded` @0x1016a6b60). No shipped
+        // recursion model has more than one.
+        if (childIdx >= kMax)
+            break;
+        // Three shapes we do not carry, each dropped rather than half-built:
+        // a trail of trails (the client would nest without limit and nothing
+        // ships it), a trail whose particles are themselves models (it would
+        // need a child-actor channel per trail particle), and a bone generator
+        // (it would spawn off the OTHER model's skeleton, which no actor here
+        // poses).
+        if (!tcfg.recursionModelPath.empty() || !tcfg.geometryModelPath.empty() ||
+            tcfg.generator == M2ParticleEmitterConfig::Generator::Bone) {
+            std::fprintf(stderr, "[wow] trail emitter %s[%d] unsupported shape, dropped\n",
+                         key.c_str(), childIdx);
+            ++childIdx;
+            continue;
+        }
+
+        auto desc =
+            std::make_shared<particle::EmitterDesc>(*particle::DescFromM2Config(tcfg, linear));
+
+        // The texture id in a trail's record indexes ITS model's array, which
+        // this actor has never staged. Staging it at a reserved id on the
+        // owning actor lets the draw path resolve it with no special case: the
+        // scope is an id->entry map, so a sparse high id costs nothing.
+        if (tcfg.textureId >= 0 && static_cast<usize>(tcfg.textureId) < textures.size()) {
+            TextureData td = textures[static_cast<usize>(tcfg.textureId)];
+            td.textureId = kTrailTextureIdBase + index * kMax + childIdx;
+            desc->material.textureId = td.textureId;
+            StageTextures(*a, {td});
+            a->render.stagedDirty = true;
+        } else {
+            desc->material.textureId = -1;
+        }
+
+        auto trail = std::make_unique<particle::Emitter2>();
+        trail->SetDesc(std::move(desc));
+        trail->SetBehavior(behavior);
+        // A range no other emitter of this actor occupies, so the stream stays
+        // a function of (actor, emitter index, trail index) alone.
+        trail->SetSeed(particle::MixSeed(
+            handle, 0xC000u + static_cast<u32>(index * kMax + childIdx)));
+        trail->SetTrailState(particle::TrailStateFromM2Config(tcfg));
+        parent.AddTrail(std::move(trail));
+        ++childIdx;
+    }
+#else
+    (void)handle;
+    (void)index;
+    (void)parent;
+    (void)key;
+    (void)behavior;
+#endif
 }
 
 void ModelLoader::SetM2ParticleConfigs(u32 handle,

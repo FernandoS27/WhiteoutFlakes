@@ -44,7 +44,10 @@ Emitter2* ParticleService::GetEmitter(ModelId model, ParticleOutput output, i32 
 
 i32 ParticleService::EmitterCount() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    return static_cast<i32>(emitters_.size());
+    i32 n = static_cast<i32>(emitters_.size());
+    for (const auto& [k, e] : emitters_)
+        n += static_cast<i32>(e->Trails().size());
+    return n;
 }
 
 i32 ParticleService::TotalParticleCount() const {
@@ -52,6 +55,10 @@ i32 ParticleService::TotalParticleCount() const {
     i32 total = 0;
     for (const auto& [k, e] : emitters_) {
         total += e->TotalAlive();
+        // Trails are not in the map — their owner is — so the counter has to
+        // walk them or under-report every trail particle on screen.
+        for (const auto& t : e->Trails())
+            total += t->TotalAlive();
     }
     return total;
 }
@@ -68,8 +75,14 @@ bool ParticleService::HasEmittersForModel(ModelId model) const {
 void ParticleService::ForEachEmitter(
     const std::function<void(const EmitterKey&, const Emitter2&)>& fn) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (const auto& [k, e] : emitters_)
+    for (const auto& [k, e] : emitters_) {
         fn(k, *e);
+        // Under the same key the draw lists use — synthetic id, and always the
+        // billboard space, because that is what a trail's particles are.
+        i32 childIdx = 0;
+        for (const auto& t : e->Trails())
+            fn({k.model, ParticleOutput::Billboard, TrailEmitterId(k.id, childIdx++)}, *t);
+    }
 }
 
 void ParticleService::Simulate(f32 dt) {
@@ -95,16 +108,29 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
     in.fogEnabled = fogEnabled_;
     in.fogSampler = fogSampler_;
 
-    for (const auto& [k, e] : emitters_) {
-        if (e->Output() != ParticleOutput::Billboard)
-            continue;
+    // One emitter's own particles, then its trails'. A trail is an ordinary
+    // billboard emitter with its own texture, blend mode and sheet, so it needs
+    // its own draw list; it sorts on its OWNER's origin so the two stay
+    // together in the transparent pass instead of drifting apart.
+    auto build = [&](const Emitter2& e, ModelId model, i32 id, const Vector3f& origin) {
         const i32 offset = (i32)outVertices.size();
-        i32 vcount = BuildEmitterGeometry(*e, in, outVertices);
-        if (vcount > 0) {
-            const Vector3f origin = whiteout::transform_point({0, 0, 0}, e->ModelToWorld());
+        const i32 vcount = BuildEmitterGeometry(e, in, outVertices);
+        if (vcount > 0)
             outDrawLists.push_back(
-                {k.model, k.id, offset, vcount, e->PriorityPlane(), e->Material(), origin});
-        }
+                {model, id, offset, vcount, e.PriorityPlane(), e.Material(), origin});
+    };
+
+    for (const auto& [k, e] : emitters_) {
+        const Vector3f origin = whiteout::transform_point({0, 0, 0}, e->ModelToWorld());
+        if (e->Output() == ParticleOutput::Billboard)
+            build(*e, k.model, k.id, origin);
+        // Trails are billboards whatever their owner's output is: a
+        // model-particle emitter can carry one, and its trail still draws
+        // quads. An emitter index belongs to one output space or the other,
+        // never both, so the synthetic ids cannot collide across the two.
+        i32 childIdx = 0;
+        for (const auto& t : e->Trails())
+            build(*t, k.model, TrailEmitterId(k.id, childIdx++), origin);
     }
 }
 

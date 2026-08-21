@@ -40,7 +40,8 @@ struct ParticleBehavior;
 }
 namespace whiteout::flakes::renderer::particle {
 struct EmitterDesc;
-}
+class Emitter2;
+} // namespace whiteout::flakes::renderer::particle
 namespace whiteout::flakes::io {
 class IContentProvider;
 class M2ModelAdapter;
@@ -248,6 +249,11 @@ private:
     /// Parse the geometry model and hold its texture slots on the owning actor,
     /// so the first particle birth is not the first time an asset is asked for.
     void PreloadModelParticleGeometry(u32 handle, const std::string& key);
+    /// Resolve an emitter's RPID model and hand its emitters to @p parent as
+    /// trails, staging their textures on the owning actor at reserved ids.
+    /// See M2_TRAIL_EMITTER_DESIGN.md.
+    void AttachTrailEmitters(u32 handle, i32 index, particle::Emitter2& parent,
+                             const std::string& key, const core::ParticleBehavior& behavior);
 
     void uploadTemplateGpu(ModelTemplate& tmpl);
     void UploadStagedTextures(Actor& mi);

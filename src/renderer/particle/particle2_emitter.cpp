@@ -154,16 +154,9 @@ void Emitter2::CreateParticle(Particle2& p, f32 elapsed) {
     }
 
     // Guarded rather than "add zero": the WC3 trace compares exact bits, and
-    // adding 0.0f to -0.0f is not the identity.
-    //
-    // A model-space emitter is excluded because the client never offsets the
-    // particle at all: `EmitNewParticles` @0x1016a5c90 rewrites the TRANSLATION
-    // of the matrix it hands `CreateParticle`, and that matrix is only read on
-    // the branch that bakes the spawn into world space. So the path exists for
-    // a world-space emitter and does not exist for a local one — the two are
-    // algebraically identical for the first (R*local + pathPos either way) and
-    // nothing at all for the second.
-    if (behavior_.emitAlongPath && !desc_->modelSpace) {
+    // adding 0.0f to -0.0f is not the identity. What the guard tests is spelled
+    // out on PathOffsetsSpawn.
+    if (PathOffsetsSpawn()) {
         p.position.x += spawnOffset_.x;
         p.position.y += spawnOffset_.y;
         p.position.z += spawnOffset_.z;
@@ -174,6 +167,29 @@ void Emitter2::CreateParticle(Particle2& p, f32 elapsed) {
         p.velocity.y += emitterVelocity_.y * scale;
         p.velocity.z += emitterVelocity_.z * scale;
     }
+}
+
+void Emitter2::AddTrail(std::unique_ptr<Emitter2> trail) {
+    if (!trail || trails_.size() >= kMaxTrails)
+        return;
+    // Both bits the adoption is responsible for: the enable the client ORs in
+    // (`RecursiveEmitterModelLoaded` @0x1016a6b60), and the marker that keeps it
+    // from being cleared again — nothing animates a trail, so nothing would
+    // ever set it a second time.
+    trail->flags_ |= kFlagTrail | kFlagVisible;
+    // A trail never emits from its own position, so a squirt it inherited from
+    // its record would fire once, from wherever it happens to sit. The client
+    // cannot reach that either: the squirt bit is written by AnimateParticleST,
+    // which never runs for a trail.
+    trail->flags_ &= ~kFlagNeedSquirt;
+    trails_.push_back(std::move(trail));
+}
+
+void Emitter2::GrowPool(u32 capacity) {
+    const usize before = pool_.Capacity();
+    pool_.Sync(capacity);
+    if (pool_.Capacity() != before)
+        OnPoolResized(pool_.Capacity());
 }
 
 void Emitter2::Sync() {
@@ -190,10 +206,19 @@ void Emitter2::Sync() {
     // Headroom over the steady-state population (rate x lifespan) so a rate
     // spike does not immediately starve the free list.
     const u32 capacity = static_cast<u32>(1.15f * emissionRate_ * life);
-    const usize before = pool_.Capacity();
-    pool_.Sync(capacity);
-    if (pool_.Capacity() != before)
-        OnPoolResized(pool_.Capacity());
+    GrowPool(capacity);
+
+    // A trail is driven once per live particle of ours, so it needs room for
+    // its own steady-state population times ours — the client's own product,
+    // clamped the same way (`Sync` @0x10169f860). Both pools only ever grow,
+    // here and in the client (`SyncSize` @0x10169e8c0 "never shrinks"), so the
+    // trail's own Sync cannot undo this.
+    for (auto& t : trails_) {
+        const f32 tLife = (std::max)(t->lifeSpan_, 0.0f) + std::fabs(t->desc_->lifespanVariation);
+        const u32 own = static_cast<u32>(1.15f * t->emissionRate_ * tLife);
+        const u64 product = static_cast<u64>(capacity) * static_cast<u64>(own);
+        t->GrowPool(static_cast<u32>(product > 4096u ? 4096u : product));
+    }
 }
 
 void Emitter2::SetSeed(u32 seed) {
@@ -279,17 +304,25 @@ void Emitter2::EmitStep(f32 elapsed, f32 emissionScaler) {
         u32 emitted = 0;
         while (planned > 0 && !pool_.DeadEmpty()) {
             if (behavior_.emitAlongPath) {
-                Vector3f pos;
                 if (desc_->randomEmissionSpacing) {
-                    const f32 u = CRandom::real_(randSeed_);
-                    pos = {prevWorldPos_.x + travel.x * u, prevWorldPos_.y + travel.y * u,
-                           prevWorldPos_.z + travel.z * u};
+                    // The client draws the number and then throws the position
+                    // away. Both branches of `EmitNewParticles` @0x1016a5c90
+                    // copy the spawn matrix to the stack and overwrite its
+                    // translation with the position they computed, but only the
+                    // even-spacing branch hands that copy to `CreateParticle`
+                    // (`lea rdx,[rbp+var_68]` @0x1016a64ca). The random branch
+                    // passes the UNMODIFIED matrix instead (`mov
+                    // rdx,[rbp+var_80]` @0x1016a6492, spilled @0x1016a5ee3), so
+                    // the particle is born at the emitter's current position and
+                    // the randomised point is dead. The draw is not: it advances
+                    // the stream every other spawn is sequenced against.
+                    (void)CRandom::real_(randSeed_);
                 } else {
                     const f32 k = (1.0f - carried) + static_cast<f32>(emitted);
-                    pos = {prevWorldPos_.x + step.x * k, prevWorldPos_.y + step.y * k,
-                           prevWorldPos_.z + step.z * k};
+                    const Vector3f pos{prevWorldPos_.x + step.x * k, prevWorldPos_.y + step.y * k,
+                                       prevWorldPos_.z + step.z * k};
+                    spawnOffset_ = {pos.x - worldPos_.x, pos.y - worldPos_.y, pos.z - worldPos_.z};
                 }
-                spawnOffset_ = {pos.x - worldPos_.x, pos.y - worldPos_.y, pos.z - worldPos_.z};
             }
             u32 idx = pool_.PopDead();
             pool_.PushAlive(idx);
@@ -303,7 +336,55 @@ void Emitter2::EmitStep(f32 elapsed, f32 emissionScaler) {
     }
 }
 
-void Emitter2::AdvanceStep(f32 elapsed) {
+void Emitter2::DriveTrails(const Particle2& p, f32 dt, f32 emissionScaler) {
+    // Where this particle is in world space. A world-space emitter stores that
+    // directly; a model-space one stores model units and is transformed at
+    // draw, so its trail's spawn point has to go the same way. No shipped
+    // record carries a trail on a model-space emitter, so the second case is
+    // reasoned, not measured.
+    const Vector3f world = desc_->modelSpace
+                               ? whiteout::transform_point(p.position, modelToWorld_)
+                               : p.position;
+
+    for (auto& t : trails_) {
+        // The client stamps the particle's position into the translation row of
+        // its OWN particle-to-world matrix, hands that matrix to the trail as
+        // the spawn transform, and puts it back afterwards
+        // (`UpdateLiveParticle` @0x1016aa080, disassembly at 0x1016aa113 and
+        // 0x1016aa176). Restoring matters for the same reason it does there: a
+        // trail's DRAW transform must stay the parent model's, not the last
+        // particle's.
+        const Matrix44f saved = t->modelToWorld_;
+        t->modelToWorld_ = modelToWorld_;
+        t->modelToWorld_.data[3][0] = world.x;
+        t->modelToWorld_.data[3][1] = world.y;
+        t->modelToWorld_.data[3][2] = world.z;
+
+        // Seeded rather than left where it was. The client never writes a
+        // trail's previous position unless the trail asked for random spacing —
+        // no shipped one does — so its spawn segment runs from the world origin
+        // to the particle and smears across the map. That is uninitialised
+        // state, not a behaviour, and seeding prev := cur collapses the segment
+        // to the point the feature is for. See M2_TRAIL_EMITTER_DESIGN.md D1.
+        t->worldPos_ = world;
+        t->prevWorldPos_ = world;
+        t->worldPosSeeded_ = true;
+
+        // The flag consulted is the TRAIL's, not ours.
+        if (t->desc_->inheritVelocity) {
+            const Vector3f v = desc_->modelSpace
+                                   ? whiteout::transform_normal(p.velocity, modelToWorld_)
+                                   : p.velocity;
+            const f32 k = t->MotionToParticleSpace();
+            t->emitterVelocity_ = {v.x * k, v.y * k, v.z * k};
+        }
+
+        t->EmitStep(dt, emissionScaler);
+        t->modelToWorld_ = saved;
+    }
+}
+
+void Emitter2::AdvanceStep(f32 elapsed, f32 emissionScaler) {
     const auto& colorCurve = desc_->curves.color;
     const u32 lastSegment = static_cast<u32>(colorCurve.SegmentCount());
     const f32 ooLifeSpan = (desc_->lifeSpan > 0.0f) ? (1.0f / desc_->lifeSpan) : 0.0f;
@@ -362,13 +443,29 @@ void Emitter2::AdvanceStep(f32 elapsed) {
             pool_.RemoveAliveAt(i);
             continue;
         }
+        // Only a particle that survived its move drives anything: the client
+        // drives its children from the true half of `MoveParticle`'s result and
+        // nowhere else. The WC3 branch above has no equivalent because no MDX
+        // record can name a trail model.
+        if (!trails_.empty())
+            DriveTrails(p, elapsed, emissionScaler);
         ++i;
     }
 }
 
 void Emitter2::StepOnce(f32 dt, f32 emissionScaler) {
-    EmitStep(dt, emissionScaler);
-    AdvanceStep(dt);
+    // A trail's own emission is suppressed for the whole of its life, which is
+    // the same thing the client's `InternalUpdate(dt, 1)` recursion says: that
+    // second argument is `suppressEmit`, and being driven as a child is the
+    // only way a trail is ever updated.
+    if ((flags_ & kFlagTrail) == 0)
+        EmitStep(dt, emissionScaler);
+    AdvanceStep(dt, emissionScaler);
+
+    // After the parent's own particles have moved and driven them, exactly
+    // where `StepUpdate` @0x1016a95c0 recurses.
+    for (auto& t : trails_)
+        t->InternalUpdate(dt, emissionScaler);
 }
 
 void Emitter2::TickEmitterVelocity(f32 dt) {
@@ -456,10 +553,31 @@ void Emitter2::InternalUpdate(f32 elapsed, f32 emissionScaler) {
         pool_.Compact();
     }
 
-    flags_ &= ~kFlagVisible;
+    // Visibility is re-asserted every frame from the model's tracks — except
+    // for a trail, which has no tracks and whose enable bit the client sets
+    // once and never clears.
+    if ((flags_ & kFlagTrail) == 0)
+        flags_ &= ~kFlagVisible;
 }
 
 void Emitter2::Update(f32 elapsed, f32 emissionScaler) {
+    // What the client's `Update` @0x1016a55a0 does before stepping: run
+    // UpdateXform over its children with the parent's world matrix. Nothing
+    // else reaches a trail, so the rest of the per-frame state a trail reads
+    // has to arrive the same way — it belongs to the owning actor, not to the
+    // model the trail's record came from.
+    for (auto& t : trails_) {
+        model::FrameState::ParticleFrameState st = t->trailState_;
+        st.unitScale = unitScale_;
+        st.modelAlpha = modelAlpha_;
+        st.transform = modelToWorld_;
+        st.worldPosition = worldPos_;
+        t->ApplyState(st);
+        // ApplyState is the animation's entry point and clears the enable bit
+        // when the track says so; a trail has no track and stays on.
+        t->flags_ |= kFlagVisible;
+        t->viewDistance_ = viewDistance_;
+    }
     InternalUpdate(elapsed, emissionScaler);
 }
 

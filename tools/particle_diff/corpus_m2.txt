@@ -45,3 +45,14 @@ spells/sandvortex_state_base.m2
 spells/sha_whirlwind_state_base.m2
 spells/therazane_base_01.m2
 spells/whirlwind_state_base.m2
+
+# --- RPID trail-emitter carriers (M2_TRAIL_EMITTER_DESIGN.md) ---
+# The whole shipped population of the feature: 8 emitters across these 5, each
+# naming a second `.m2` whose emitters ride this one's particles. Nothing else
+# in the corpus exercises the trail path at all, so without these the gate
+# cannot see it. Baselines recorded 2026-08-21, the day the feature landed.
+spells/detectmagic_base.m2
+creature/zippelin/zippelin.m2
+spells/bomb_explosiona.m2
+spells/hunter_firetrap.m2
+spells/shadow_impactdot_med_head.m2

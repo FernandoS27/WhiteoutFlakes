@@ -26,6 +26,13 @@ using ParticleBehavior = core::ParticleBehavior;
 enum EmitterFlag : u32 {
     kFlagVisible = 0x001,
     kFlagNeedSquirt = 0x020,
+    // Adopted as another emitter's trail (M2 RPID). Two consequences, both of
+    // them the client's: such an emitter never emits from its own position
+    // (`StepUpdate` @0x1016a95c0 recurses with suppressEmit set, and that is the
+    // only way a trail is ever updated), and its enable bit is sticky rather
+    // than re-asserted per frame (`RecursiveEmitterModelLoaded` @0x1016a6b60 ORs
+    // it once at adoption, because nothing animates a trail afterwards).
+    kFlagTrail = 0x040,
 };
 
 // One concrete emitter. What used to be expressed by subclassing (PlaneEmitter)
@@ -157,6 +164,28 @@ public:
     // independently.
     void Update(f32 elapsed, f32 emissionScaler);
 
+    // Adopt one trail emitter: from here on, every live particle of this
+    // emitter drives its emission once per sub-step. Capped at four, the
+    // client's MAX_CHILD_EMITTERS (ParticleSystem2.cpp:2503) — the fifth is
+    // dropped, as the client's assert intends.
+    void AddTrail(std::unique_ptr<Emitter2> trail);
+
+    // The animated state a trail runs on. A trail has no tracks of its own —
+    // the model its record came from is never placed, so nothing walks them —
+    // so its owner re-applies this every frame, patching in the two fields that
+    // belong to the OWNING actor rather than to the record: the unit scale
+    // (which decides how the gravity vector is converted) and the model alpha.
+    void SetTrailState(const model::FrameState::ParticleFrameState& st) {
+        trailState_ = st;
+    }
+
+    // The adopted trails, in adoption order. The service walks these to build
+    // their geometry and to count them; nothing else may drive them.
+    const std::vector<std::unique_ptr<Emitter2>>& Trails() const {
+        return trails_;
+    }
+    static constexpr usize kMaxTrails = 4;
+
     bool Visible() const {
         return (flags_ & kFlagVisible) != 0;
     }
@@ -245,6 +274,15 @@ protected:
             flags_ &= ~mask;
     }
 
+    // Whether a spawn is displaced along the emitter's path this frame. False
+    // for a random-spacing emitter because the client discards the point it
+    // drew for one (see EmitStep), and false in model space because the client
+    // reads the spawn matrix only on the branch that bakes to world — so for a
+    // world-space emitter the two are algebraically identical and for a local
+    // one the path does not exist at all.
+    bool PathOffsetsSpawn() const {
+        return behavior_.emitAlongPath && !desc_->modelSpace && !desc_->randomEmissionSpacing;
+    }
 
     void InternalUpdate(f32 elapsed, f32 emissionScaler);
 
@@ -253,7 +291,14 @@ protected:
     // fixed sub-step plus once for the remainder.
     void StepOnce(f32 dt, f32 emissionScaler);
     void EmitStep(f32 dt, f32 emissionScaler);
-    void AdvanceStep(f32 dt);
+    void AdvanceStep(f32 dt, f32 emissionScaler);
+
+    // One live particle drives every trail's emission, at its own position.
+    void DriveTrails(const Particle2& p, f32 dt, f32 emissionScaler);
+
+    // Grow the pool and tell the output about it. Split out of Sync so a parent
+    // can size its trails' pools the way the client does.
+    void GrowPool(u32 capacity);
 
     // Emitter velocity refresh — WoW only, and only while the pool is empty.
     void TickEmitterVelocity(f32 dt);
@@ -320,6 +365,14 @@ protected:
     RndSeed compactSeed_;
 
     ParticlePool pool_;
+
+    // Owned outright, like the client's recursion model owns the emitters the
+    // parent borrows pointers to. Never re-entrant: a trail's own trails are
+    // dropped at load, so this vector is at most one level deep.
+    std::vector<std::unique_ptr<Emitter2>> trails_;
+
+    // Only meaningful on an emitter carrying kFlagTrail; see SetTrailState.
+    model::FrameState::ParticleFrameState trailState_{};
 };
 
 } // namespace whiteout::flakes::renderer::particle

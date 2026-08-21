@@ -59,6 +59,15 @@ struct ChildModelEvent {  // NOLINT: forward-declared in particle2_emitter.h
     f32 visibility = 1.0f;
 };
 
+// The id a trail emitter draws and traces under. Its owner holds it, so it has
+// no key of its own in the emitter map — this keeps it identifiable and stable
+// (a function of the parent's index and the adoption order) without colliding
+// with any real emitter index.
+constexpr i32 kTrailEmitterIdBase = 0x40000;
+constexpr i32 TrailEmitterId(i32 parentId, i32 childIndex) {
+    return kTrailEmitterIdBase + parentId * static_cast<i32>(Emitter2::kMaxTrails) + childIndex;
+}
+
 struct EmitterDrawList {
     ModelId model;
     i32 emitterId;
