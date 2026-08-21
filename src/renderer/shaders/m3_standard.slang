@@ -3,7 +3,8 @@
 //
 // The shader half of M3StandardShading (M3_SIMPLE_MATERIAL_DESIGN.md). NOT the
 // retail permutation machine: nine of StandardMaterial's eighteen layers
-// (diffuse, decal, specular, both emissives, normal, both alpha masks, gloss),
+// (diffuse, decal, specular, both emissives, normal, both alpha masks, gloss,
+// the environment map and its mask),
 // the retail lighting model (lighting.fx: shadowed Blinn key light + ambient +
 // two diffuse-only fills, spec gated by sign(N.L)), the retail team-colour paths
 // (psmateriallayer.fx: diffuse-alpha mask lerp + the TeamColor*Add combine
@@ -80,7 +81,9 @@ static const int kM3LayerNormal = 5;
 static const int kM3LayerAlphaMask = 6;
 static const int kM3LayerGloss = 7;
 static const int kM3LayerAlphaMask2 = 8;
-static const int kM3LayerCount = 9;
+static const int kM3LayerEnvironment = 9;
+static const int kM3LayerEnvMask = 10;
+static const int kM3LayerCount = 11;
 
 struct M3DrawData
 {
@@ -106,8 +109,14 @@ struct M3DrawData
     // .rgb = layer colour tint x rgbMultiply (the specular tint also folds
     // hdrSpecularMultiplier and the energy-conserving dim), .a = layer alpha.
     float4 layerTint[kM3LayerCount];
+    // .x = rgbAdd, the additive half of psmateriallayer.fx's
+    // `cResult.rgba = cResult.rgba * multiply + add`. Its own array because an
+    // HLSL cbuffer array strides by 16 bytes whatever the element type, so
+    // packing it into a spare component of another array would save nothing.
+    float4 layerAdd[kM3LayerCount];
     // .x = uv set (0/1) in the low nibble, sampler wrap variant (0..3, the
-    //      layer's UVWrapX/Y bits) in bits 4-5;
+    //      layer's UVWrapX/Y bits) in bits 4-5, ColorInvert in bit 6 and
+    //      ColorClamp in bit 7;
     // .y ColorChannelSelect; .z mode (0 off, 1 texture, 2 solid colour —
     // TextureLayerFlag 0x400); .w = LayerBlendOp for the decal and emissive
     // slots, TEAMCOLOR_DIFFUSE mode (1) for the diffuse slot.
@@ -143,6 +152,14 @@ static const int WF_PS_BIND_OFFSET = 16;
 [[vk::binding(WF_PS_BIND_OFFSET + 6, 1)]] Texture2D texAlphaMask : register(t6);
 [[vk::binding(WF_PS_BIND_OFFSET + 7, 1)]] Texture2D texGloss : register(t7);
 [[vk::binding(WF_PS_BIND_OFFSET + 8, 1)]] Texture2D texAlphaMask2 : register(t8);
+[[vk::binding(WF_PS_BIND_OFFSET + 9, 1)]] Texture2D texEnvMask : register(t9);
+// The environment map, and the one cube in this shader. t13 rather than the
+// next free register because the shared SRV bind-group layout types only
+// t13/t14 as cube arrays — that layout is a slot-TYPE map, and the WC3 HD IBL
+// probe that also lives at t13 never draws in the same frame as an `.m3`.
+// CubeArray rather than Cube because D3D builds TEXTURECUBEARRAY SRVs for
+// every cube; a lone cube is a one-element array on all four backends.
+[[vk::binding(WF_PS_BIND_OFFSET + 13, 1)]] TextureCubeArray<float4> texEnv : register(t13);
 // One sampler PER WRAP VARIANT, not per layer: the D3D12 root signature (and
 // its siblings) budget four samplers per stage, and four is also exactly how
 // many distinct states exist — wrap/clamp x U/V. Slot = the layer's wrap bits.
@@ -273,7 +290,7 @@ float4 SelectChannels(float4 t, uint sel)
 // ChannelSelect != RGB, keyed on the RAW sampled alpha (pre-select, pre-tint),
 // and it forces the layer alpha to 1. Only the diffuse slot carries mode 1 —
 // emissive team colour arrives through the TeamColor*Add combine ops instead.
-float4 M3LayerValue(uint4 ctl, float4 tint, float4 texel)
+float4 M3LayerValue(uint4 ctl, float4 tint, float add, float4 texel)
 {
     float4 v = SelectChannels(texel, ctl.y);
     if (ctl.z == 2u)
@@ -283,7 +300,17 @@ float4 M3LayerValue(uint4 ctl, float4 tint, float4 texel)
         let mask = saturate(pow(max(texel.a, 0.0), pass.teamParams.x));
         v = float4(lerp(draw.teamDiffuse.rgb, v.rgb, mask), 1.0);
     }
-    return v * tint;
+    // psmateriallayer.fx ComputeLayerColorInternal, its last three steps:
+    // ColorInvert, then `rgba * multiply + add`, then ColorClamp. `add` is the
+    // half that was missing, and it is not cosmetic — the environment layer
+    // that ships with the golden Adept is authored (x1.5, +0.4) under a Mod
+    // op, so dropping the +0.4 multiplied the whole model down to bronze.
+    if ((ctl.x & 0x40u) != 0u)
+        v = float4(1.0, 1.0, 1.0, 1.0) - v;
+    v = v * tint + add;
+    if ((ctl.x & 0x80u) != 0u)
+        v = saturate(v);
+    return v;
 }
 
 float2 M3LayerUV(uint4 ctl, float4 uv01)
@@ -350,12 +377,12 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     float4 albedo = float4(1.0, 1.0, 1.0, 1.0);
     let ctlDiffuse = draw.layerCtl[kM3LayerDiffuse];
     if (ctlDiffuse.z != 0u)
-        albedo = M3LayerValue(ctlDiffuse, draw.layerTint[kM3LayerDiffuse],
+        albedo = M3LayerValue(ctlDiffuse, draw.layerTint[kM3LayerDiffuse], draw.layerAdd[kM3LayerDiffuse].x,
                               M3SampleLayer(texDiffuse, ctlDiffuse, input.uv01));
     let ctlDecal = draw.layerCtl[kM3LayerDecal];
     if (ctlDecal.z != 0u)
     {
-        let decal = M3LayerValue(ctlDecal, draw.layerTint[kM3LayerDecal],
+        let decal = M3LayerValue(ctlDecal, draw.layerTint[kM3LayerDecal], draw.layerAdd[kM3LayerDecal].x,
                                  M3SampleLayer(texDecal, ctlDecal, input.uv01));
         albedo.rgb = M3ApplyBlendOp(albedo.rgb, decal, ctlDecal.w);
     }
@@ -369,18 +396,21 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     float alpha = 1.0;
     let ctlMask = draw.layerCtl[kM3LayerAlphaMask];
     if (ctlMask.z != 0u)
-        alpha *= M3LayerValue(ctlMask, draw.layerTint[kM3LayerAlphaMask],
+        alpha *= M3LayerValue(ctlMask, draw.layerTint[kM3LayerAlphaMask], draw.layerAdd[kM3LayerAlphaMask].x,
                               M3SampleLayer(texAlphaMask, ctlMask, input.uv01)).a;
     let ctlMask2 = draw.layerCtl[kM3LayerAlphaMask2];
     if (ctlMask2.z != 0u)
-        alpha *= M3LayerValue(ctlMask2, draw.layerTint[kM3LayerAlphaMask2],
+        alpha *= M3LayerValue(ctlMask2, draw.layerTint[kM3LayerAlphaMask2], draw.layerAdd[kM3LayerAlphaMask2].x,
                               M3SampleLayer(texAlphaMask2, ctlMask2, input.uv01)).a;
     if (draw.params0.x > 0.0 && alpha < draw.params0.x)
         discard;
 
     // Shading normal. SC2 normal maps are DXT5nm — x rides alpha, y green —
     // so the decode is .ag, with z reconstructed.
-    float3 n = normalize(input.normalWS);
+    // Kept because the environment layer needs the geometric normal, not this
+    // one — see the env block below.
+    let nGeom = normalize(input.normalWS);
+    float3 n = nGeom;
     let ctlNormal = draw.layerCtl[kM3LayerNormal];
     if (ctlNormal.z == 1u)
     {
@@ -407,7 +437,7 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     float3 specColor = float3(0.0, 0.0, 0.0);
     let ctlSpec = draw.layerCtl[kM3LayerSpecular];
     if (ctlSpec.z != 0u)
-        specColor = M3LayerValue(ctlSpec, draw.layerTint[kM3LayerSpecular],
+        specColor = M3LayerValue(ctlSpec, draw.layerTint[kM3LayerSpecular], draw.layerAdd[kM3LayerSpecular].x,
                                  M3SampleLayer(texSpecular, ctlSpec, input.uv01)).rgb;
 
     // psmaterial.fx:579 MaterialSpecularity — a gloss (SpecularExponent) layer
@@ -418,7 +448,7 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     let ctlGloss = draw.layerCtl[kM3LayerGloss];
     if (ctlGloss.z != 0u)
     {
-        let g = M3LayerValue(ctlGloss, draw.layerTint[kM3LayerGloss],
+        let g = M3LayerValue(ctlGloss, draw.layerTint[kM3LayerGloss], draw.layerAdd[kM3LayerGloss].x,
                              M3SampleLayer(texGloss, ctlGloss, input.uv01)).a;
         specPower *= g * g;
         // FakeEnergyConservingSpec (psmaterial.fx:203) reads the SPECULARITY,
@@ -501,7 +531,7 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     let ctlEmis = draw.layerCtl[kM3LayerEmissive];
     if (ctlEmis.z != 0u)
     {
-        let emis = M3LayerValue(ctlEmis, draw.layerTint[kM3LayerEmissive],
+        let emis = M3LayerValue(ctlEmis, draw.layerTint[kM3LayerEmissive], draw.layerAdd[kM3LayerEmissive].x,
                                 M3SampleLayer(texEmissive, ctlEmis, input.uv01));
         if (M3OpIsModFamily(ctlEmis.w))
         {
@@ -516,7 +546,7 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     let ctlEmis2 = draw.layerCtl[kM3LayerEmissive2];
     if (ctlEmis2.z != 0u)
     {
-        let emis = M3LayerValue(ctlEmis2, draw.layerTint[kM3LayerEmissive2],
+        let emis = M3LayerValue(ctlEmis2, draw.layerTint[kM3LayerEmissive2], draw.layerAdd[kM3LayerEmissive2].x,
                                 M3SampleLayer(texEmissive2, ctlEmis2, input.uv01));
         if (M3OpIsModFamily(ctlEmis2.w) && !addFamily)
         {
@@ -530,6 +560,60 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     }
     if (addFamily)
         color += cEmissive * (draw.uvTransform.z * pass.ambient.w);
+
+    // Environment (reflection) layer — psmaterial.fx:281-338, after emissive
+    // and on top of it, which is where retail runs it.
+    let ctlEnv = draw.layerCtl[kM3LayerEnvironment];
+    if (ctlEnv.z != 0u)
+    {
+        // psuvmapping.fx GenCubicEnvio: reflect the eye-to-vertex vector about
+        // the GEOMETRIC normal. Retail builds its env mappings once at the top
+        // of ComputeMaterial (psmaterial.fx:155), before the normal map and
+        // before the two-sided flip — so in SC2 a normal map does NOT ripple
+        // the reflection, and copying `n` here would be the wrong look rather
+        // than a better one. The non-Reflect mappings use the normal directly.
+        //
+        // p_mEnvironmentMapTransform stays identity: it is engine-set with no
+        // source in the `.m3`, and our world space already IS the z-up space
+        // both these cubemaps and the light rig are authored in (the rig
+        // directions reach this shader unrotated for the same reason).
+        //
+        // The flat maps behind the Spherical mappings were projected into
+        // cubes at decode time (BuildCubeFromSphereMap), so there is one
+        // lookup here rather than two texture slots — which is what makes this
+        // fit the shared binding layout at all.
+        let envReflect = (uint(draw.params0.w) & 8u) != 0u;
+        let dir = envReflect ? reflect(-toEye, nGeom) : nGeom;
+        let env = M3LayerValue(ctlEnv, draw.layerTint[kM3LayerEnvironment], draw.layerAdd[kM3LayerEnvironment].x,
+                               texEnv.Sample(sampWrap0, float4(dir, 0.0)));
+
+        // The mask defaults to the env layer's own alpha and the mask layer
+        // multiplies into it, rather than replacing it (psmaterial.fx:320-325).
+        float4 mask = float4(env.a, env.a, env.a, env.a);
+        let ctlEnvMask = draw.layerCtl[kM3LayerEnvMask];
+        if (ctlEnvMask.z != 0u)
+        {
+            float4 m = M3LayerValue(ctlEnvMask, draw.layerTint[kM3LayerEnvMask], draw.layerAdd[kM3LayerEnvMask].x,
+                                    M3SampleLayer(texEnvMask, ctlEnvMask, input.uv01));
+            if (ctlEnvMask.y == 1u) // CHANNELSELECT_RGBA
+                m = float4(m.rgb * m.a, m.a);
+            mask = m * env.a;
+        }
+
+        // ApplyEnv (psmaterial.fx:79-88) — only these three ops do anything.
+        // This is the `b_iEnvioMultipliers == false` arm: measured over 228
+        // v20 materials, hdrEnvironmentDiffuse and hdrEnvironmentSpecular are
+        // zero on every one, so the lighting-modulated arm is dead in shipped
+        // content and its lone live term (hdrEnvironmentConstant) is folded
+        // into the layer tint host-side.
+        switch (ctlEnv.w)
+        {
+        case 0u: color = color * env.rgb * mask.rgb; break;   // Mod
+        case 2u: color = color + env.rgb * mask.rgb; break;   // Add
+        case 3u: color = lerp(color, env.rgb, mask.a); break; // Lerp
+        default: break;
+        }
+    }
 
     o.color = color;
     o.alpha = alpha;

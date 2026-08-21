@@ -1,5 +1,6 @@
 #include "renderer/assets/asset_manager.h"
 
+#include "renderer/assets/env_cube_texture.h"
 #include "renderer/assets/texture_asset_manager.h"
 #include "renderer/model/model_source_utils.h"
 #include "renderer/model/model_template.h"
@@ -280,12 +281,15 @@ namespace {
 // math derived from format + (w, h).
 bool DecodeTexture(std::span<const u8> bytes, const std::string& ext,
                    const std::string& pathForSrgb, bool supportsBlockCompression,
-                   bool gammaColorPipeline, std::vector<u8>& outBytes, i32& outW, i32& outH,
-                   i32& outMipLevels, gfx::Format& outFormat) {
+                   bool gammaColorPipeline, bool wantCube, std::vector<u8>& outBytes, i32& outW,
+                   i32& outH, i32& outMipLevels, i32& outArraySize, bool& outIsCube,
+                   gfx::Format& outFormat) {
     auto result = model::DispatchTextureParser(
         ext, [&](auto& parser) { return parser.parse(bytes); });
     if (!result)
         return false;
+    outArraySize = 1;
+    outIsCube = false;
 
     // Pick the most faithful gfx::Format. If WhiteoutLib's PixelFormat
     // maps to something the backend supports, use it directly (keeps
@@ -308,6 +312,58 @@ bool DecodeTexture(std::span<const u8> bytes, const std::string& ext,
                                 : gfx::Format::R8G8B8A8_UNORM;
     }
     outFormat = ::whiteout::flakes::ApplyTextureSrgbPolicy(fmt, pathForSrgb, gammaColorPipeline);
+
+    if (wantCube) {
+        using TT = whiteout::textures::TextureType;
+        const bool sourceIsCube =
+            result->type() == TT::TextureCube || result->type() == TT::TextureCubeArray;
+        if (sourceIsCube) {
+            // Straight through: faces are layers, in DDS order, and the file
+            // already carries the mip chain. Layer-major / mip-minor, which is
+            // the order CreateTexture walks (env_probe.cpp packs the same way).
+            const u32 layers = result->layerCount();
+            const u32 mips = std::max(1u, result->mipCount());
+            if (layers < 6 || layers % 6 != 0)
+                return false;
+            std::size_t total = 0;
+            for (u32 l = 0; l < layers; ++l)
+                for (u32 m = 0; m < mips; ++m)
+                    total += result->mipData(m, l).size();
+            outBytes.resize(total);
+            u8* cursor = outBytes.data();
+            for (u32 l = 0; l < layers; ++l) {
+                for (u32 m = 0; m < mips; ++m) {
+                    auto src = result->mipData(m, l);
+                    std::memcpy(cursor, src.data(), src.size());
+                    cursor += src.size();
+                }
+            }
+            outW = static_cast<i32>(result->width());
+            outH = static_cast<i32>(result->height());
+            outMipLevels = static_cast<i32>(mips);
+            outArraySize = static_cast<i32>(layers);
+            outIsCube = true;
+            return outW > 0 && !outBytes.empty();
+        }
+        // A flat map behind one of the Spherical envio mappings. Project it,
+        // which needs the pixels uncompressed whatever the backend can sample.
+        result->format(whiteout::textures::PixelFormat::RGBA8);
+        const i32 srcW = static_cast<i32>(result->width());
+        const i32 srcH = static_cast<i32>(result->height());
+        const i32 face = SphereMapCubeFaceSize(srcW, srcH);
+        if (!BuildCubeFromSphereMap(result->mipData(0), srcW, srcH, face, outBytes,
+                                            outMipLevels))
+            return false;
+        outW = face;
+        outH = face;
+        outArraySize = 6;
+        outIsCube = true;
+        outFormat = ::whiteout::flakes::ApplyTextureSrgbPolicy(
+            result->isSrgb() ? gfx::Format::R8G8B8A8_UNORM_SRGB : gfx::Format::R8G8B8A8_UNORM,
+            pathForSrgb, gammaColorPipeline);
+        return !outBytes.empty();
+    }
+
     outW = static_cast<i32>(result->width());
     outH = static_cast<i32>(result->height());
     outMipLevels = static_cast<i32>(result->mipCount());
@@ -392,8 +448,9 @@ bool AssetManager::ApplyPrepared(AssetKind kind, AssetSubKind subKind, const Con
         // Decode under the mode captured at Acquire (the model's mode), not the
         // live mode — the decode is async and the active mode may have moved on.
         if (!DecodeTexture(bytes, ext, pathish, textures_.SupportsBlockCompression(),
-                           acquireGamma, prep.pixels, prep.width, prep.height,
-                           prep.mipLevels, prep.format)) {
+                           acquireGamma, subKind == kTextureCubeSubKind, prep.pixels, prep.width,
+                           prep.height, prep.mipLevels, prep.arraySize, prep.isCube,
+                           prep.format)) {
             std::lock_guard<std::mutex> lk(mu_);
             ++statApplyMisses_;
             return false;
@@ -502,8 +559,10 @@ void AssetManager::CommitPrepared() {
                 .width     = p.width,
                 .height    = p.height,
                 .mipLevels = (std::max)(1, p.mipLevels),
+                .arraySize = (std::max)(1, p.arraySize),
                 .format    = p.format,
                 .usage     = gfx::TextureUsage::ShaderResource,
+                .isCube    = p.isCube,
             };
             const gfx::TextureHandle freshHandle = gfx_->CreateTexture(desc, p.pixels.data());
 

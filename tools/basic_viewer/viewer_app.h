@@ -227,6 +227,25 @@ public:
         return sequenceRanges_;
     }
 
+    // ---- StarCraft II external animation files (`.m3a`) ----
+    //
+    // SC2 ships a model's animations in separate files and names them on the
+    // model's catalog entry, never inside the `.m3` itself. With no catalog
+    // here the user picks the file, and the merge below it is the game's:
+    // sequences append to the model's and bind by animId.
+    struct AttachedAnimationInfo {
+        std::string label;
+        std::size_t sequenceCount = 0;
+        std::size_t firstSequence = 0;
+    };
+    // True only when the focus actor is an `.m3` — nothing else takes one.
+    bool CanAttachAnimations() const;
+    std::vector<AttachedAnimationInfo> AttachedAnimations() const;
+    // Reads @p path, merges it, and refreshes the sequence dropdown. False on
+    // a parse failure, a file with no sequences, or one already attached.
+    bool AttachAnimationFile(const std::filesystem::path& path);
+    bool DetachAnimationFile(std::size_t index);
+
     // ---- Focus actor (the one driven by the sequence dropdown, team
     //      colour swatch, etc.) ----
     ActorId FocusActor() const {
@@ -399,6 +418,10 @@ private:
     // Common post-spawn flat-state fill (sequences, camera framing, presets)
     // shared by the model load paths. `hero` may be null (caller handles).
     void FillModelDocState(model::Actor* hero, const std::filesystem::path& path);
+    // Re-read the focus actor's sequence table into the dropdown mirrors,
+    // keeping the current selection when it is still in range. Shared by the
+    // load path and by attaching / detaching an animation file.
+    void RefreshSequenceCache(model::Actor* hero, bool resetSelection);
     // Post-spawn flat-state fill for a standalone effect (placeholder sequence,
     // provisional camera, deferred reframe). Caller sets currentModelPath_.
     void FillEffectDocState(model::Actor* hero);

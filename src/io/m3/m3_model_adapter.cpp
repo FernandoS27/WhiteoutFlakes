@@ -160,9 +160,12 @@ T M3ModelAdapter::SampleRef(const ::whiteout::m3::AnimRef<T>& ref,
             continue; // this play already contributed
 
         const M3TrackHandle h = tables_.At(row, l.stc);
+        // Global index: the container may live in the model or in any attached
+        // `.m3a`, so it is resolved through the tables, never by indexing
+        // `model_`.
+        const ::whiteout::m3::SubTrackContainer* coll = tables_.StcAt(l.stc);
         const ::whiteout::m3::AnimBlock<T>* blk =
-            h.Valid() ? BlockOf(model_.subTrackCollections[l.stc], h, static_cast<const T*>(nullptr))
-                      : nullptr;
+            (h.Valid() && coll) ? BlockOf(*coll, h, static_cast<const T*>(nullptr)) : nullptr;
 
         // A transparent layer with no track abstains entirely: it neither
         // contributes nor spends budget, so lower layers show through. This is
@@ -244,7 +247,10 @@ T M3ModelAdapter::SampleRef(const ::whiteout::m3::AnimRef<T>& ref,
         if (l.play < 64 && ((visited >> l.play) & 1u) != 0)
             continue;
         const M3TrackHandle h = tables_.At(row, l.stc);
-        const auto& coll = model_.subTrackCollections[l.stc];
+        const ::whiteout::m3::SubTrackContainer* collPtr = tables_.StcAt(l.stc);
+        if (!collPtr)
+            continue;
+        const auto& coll = *collPtr;
 
         // **A discrete u32 channel lands in `SDFG`, not `SDU3`.** Both hold
         // four-byte keys and the engine reaches them through one generic
@@ -319,7 +325,7 @@ M3ModelAdapter::M3ModelAdapter(::whiteout::m3::Model model) : model_(std::move(m
     if (divisionIndex_ < model_.divisions.size())
         regionCount_ = model_.divisions[divisionIndex_].regions.size();
     BuildEmittedRegions();
-    tables_.Build(model_);
+    RebuildAnimationTables();
 #if WDX_HAS_PHYSICS
     if (auto build = renderer::profiles::sc2_heroes::Sc2BuildCloth(model_); !build.pieces.empty()) {
         cloth_ = std::make_shared<const renderer::profiles::sc2_heroes::Sc2ClothBuild>(
@@ -327,6 +333,80 @@ M3ModelAdapter::M3ModelAdapter(::whiteout::m3::Model model) : model_(std::move(m
     }
 #endif
     BuildClothGeosetMap();
+}
+
+void M3ModelAdapter::RebuildAnimationTables() {
+    std::vector<const ::whiteout::m3::Model*> attached;
+    attached.reserve(animModels_.size());
+    for (const auto& m : animModels_)
+        attached.push_back(m.get());
+    tables_.Build(model_, attached);
+
+    // Restate where each file's sequences landed, so a host can label them
+    // without re-deriving the layout.
+    std::size_t next = model_.sequences.size();
+    for (std::size_t i = 0; i < attached_.size(); ++i) {
+        attached_[i].firstSequence = next;
+        attached_[i].sequenceCount = animModels_[i]->sequences.size();
+        next += attached_[i].sequenceCount;
+    }
+}
+
+bool M3ModelAdapter::AttachAnimationFile(std::string label,
+                                         std::span<const ::whiteout::u8> bytes) {
+    if (bytes.empty())
+        return false;
+    for (const auto& a : attached_) {
+        if (a.label == label) {
+            // Same rejection StarCraft II makes — it dedupes on the stored path
+            // before adding a record — but two mods' files can share a stem, so
+            // say which one was refused rather than failing mute.
+            std::fprintf(stderr, "[m3a] '%s' is already attached — ignored\n", label.c_str());
+            return false;
+        }
+    }
+
+    // An `.m3a` is an ordinary MD34 model — same MODL versions, same chunk
+    // layout — that happens to carry bones and no vertices. Measured over all
+    // 1110 shipped files: every one has BONE, none has vertex data. So it goes
+    // through the same parser, and only `Load`'s drawable-geometry check has to
+    // be skipped.
+    ::whiteout::m3::Model anim;
+    ::whiteout::m3::Parser parser;
+    try {
+        anim = parser.parse(bytes);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[m3a] parse failed for '%s': %s\n", label.c_str(), e.what());
+        return false;
+    }
+    if (anim.sequences.empty()) {
+        std::fprintf(stderr, "[m3a] '%s' carries no sequences — not attached\n", label.c_str());
+        return false;
+    }
+
+    animModels_.push_back(std::make_unique<::whiteout::m3::Model>(std::move(anim)));
+    AttachedAnimation info;
+    info.label = std::move(label);
+    attached_.push_back(std::move(info));
+    RebuildAnimationTables();
+    return true;
+}
+
+bool M3ModelAdapter::DetachAnimationFile(std::size_t index) {
+    if (index >= animModels_.size())
+        return false;
+    animModels_.erase(animModels_.begin() + static_cast<std::ptrdiff_t>(index));
+    attached_.erase(attached_.begin() + static_cast<std::ptrdiff_t>(index));
+    RebuildAnimationTables();
+    return true;
+}
+
+void M3ModelAdapter::ClearAnimationFiles() {
+    if (animModels_.empty())
+        return;
+    animModels_.clear();
+    attached_.clear();
+    RebuildAnimationTables();
 }
 
 void M3ModelAdapter::BuildClothGeosetMap() {
@@ -416,6 +496,10 @@ const ::whiteout::m3::TextureLayer* M3LayerForSlot(const ::whiteout::m3::Standar
         return get(mat.glossLayer);
     case M3LayerSlot::AlphaMask2:
         return get(mat.alphaLayer2);
+    case M3LayerSlot::Environment:
+        return get(mat.environmentLayer);
+    case M3LayerSlot::EnvironmentMask:
+        return get(mat.environmentMaskLayer);
     default:
         return nullptr;
     }
@@ -430,7 +514,10 @@ std::vector<M3TextureRef> CollectM3Textures(const ::whiteout::m3::Model& model) 
             if (!layer || !M3LayerHasTexture(*layer))
                 continue;
             const std::string path = M3CleanPath(layer->texturePath);
-            std::string key = path;
+            const bool cube = static_cast<M3LayerSlot>(s) == M3LayerSlot::Environment;
+            // Cube-ness joins the key: the same file wanted both ways is two
+            // GPU textures, and one view cannot answer both bindings.
+            std::string key = (cube ? "cube:" : "") + path;
             std::transform(key.begin(), key.end(), key.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (seen.contains(key))
@@ -442,6 +529,7 @@ std::vector<M3TextureRef> CollectM3Textures(const ::whiteout::m3::Model& model) 
             ref.path = path;
             ref.wrapFlags = ((f & static_cast<u32>(TextureLayerFlag::UVWrapX)) ? 0x1u : 0u) |
                             ((f & static_cast<u32>(TextureLayerFlag::UVWrapY)) ? 0x2u : 0u);
+            ref.cube = cube;
             out.push_back(std::move(ref));
         }
     }
@@ -459,6 +547,7 @@ std::vector<renderer::model::TextureData> M3ModelAdapter::GetTextures() {
         td.width = 0;
         td.height = 0;
         td.wrapFlags = refs[i].wrapFlags;
+        td.cubeMap = refs[i].cube;
         td.sharedKey = refs[i].path;
         out.push_back(std::move(td));
     }
@@ -643,7 +732,7 @@ M3EventKind M3DecodeEventKind(const std::string& rawName) {
 
 std::vector<EventObjectConfig> M3ModelAdapter::GetEventObjects() {
     std::vector<EventObjectConfig> out;
-    if (model_.sequences.empty())
+    if (tables_.SequenceCount() == 0)
         return out;
 
     // One config per (sequence, kind, id, bone). `EventObjectConfig` carries a
@@ -658,11 +747,22 @@ std::vector<EventObjectConfig> M3ModelAdapter::GetEventObjects() {
     std::vector<std::pair<Key, std::vector<::whiteout::u32>>> groups;
 
     bool warnedUnknown = false;
-    for (std::size_t s = 0; s < model_.sequences.size(); ++s) {
+    for (std::size_t s = 0; s < tables_.SequenceCount(); ++s) {
+        // The model's own sequences only. An event key carries a bone *index*,
+        // and an attached `.m3a`'s indices are in its own bone array — a
+        // differently-ordered subset that can name bones the model does not
+        // have — so anchoring one against this skeleton would fire the cue on
+        // whatever bone happened to land at that index. Tracks bind by animId
+        // and survive the merge; bone indices do not, so these are dropped
+        // rather than mis-anchored. (Moot today: the M3 spawn path never asks
+        // for event configs, and it reads them once at spawn either way.)
+        if (tables_.AssetOfSequence(static_cast<i32>(s)) != 0)
+            continue;
         for (const auto& def : tables_.LayersFor(static_cast<i32>(s))) {
-            if (def.stc >= model_.subTrackCollections.size())
+            const ::whiteout::m3::SubTrackContainer* stcPtr = tables_.StcAt(def.stc);
+            if (!stcPtr)
                 continue;
-            const auto& stc = model_.subTrackCollections[def.stc];
+            const auto& stc = *stcPtr;
             for (const auto& blk : stc.sdev) {
                 for (std::size_t ki = 0; ki < blk.keys.size(); ++ki) {
                     const auto& ev = blk.keys[ki];
@@ -929,8 +1029,16 @@ std::vector<SkinWeightData> M3ModelAdapter::GetSkinWeights() {
 
 std::vector<SequenceInfo> M3ModelAdapter::GetSequences() const {
     std::vector<SequenceInfo> out;
-    out.reserve(model_.sequences.size());
-    for (const auto& s : model_.sequences) {
+    // The model's own sequences first, then each attached `.m3a`'s — the same
+    // global index space `BuildLayers` decodes, so a host can hand an index
+    // straight back without knowing which file it came from. Names are left
+    // exactly as authored: a `.m3a` may well redefine one of the model's (we
+    // measured `Stand` in both halves of a shipped pair), and StarCraft II only
+    // hides the earlier one when the file is loaded with `EAnimLoadFlag`
+    // `Override`, which is not the default and which nothing here sets.
+    out.reserve(tables_.SequenceCount());
+    for (std::size_t q = 0; q < tables_.SequenceCount(); ++q) {
+        const ::whiteout::m3::Sequence& s = *tables_.SequenceAt(static_cast<i32>(q));
         SequenceInfo info;
         info.name = s.name.empty() ? "Sequence" : s.name;
         // Kept as authored rather than rebased to zero: the sub-track keys are
@@ -959,15 +1067,15 @@ void M3ModelAdapter::BuildLayers(const PoseRequest& req, std::vector<M3Layer>& o
     const auto clips = req.clips;
     for (std::size_t c = 0; c < clips.size() && c < 64; ++c) {
         const ClipRef& clip = clips[c];
-        if (model_.sequences.empty())
+        if (tables_.SequenceCount() == 0)
             break;
         // Wrapped rather than dropped. Hosts pass a raw, unbounded index and
         // rely on the wrap — it is what `ClipPlaylist::Advance` does — and a
         // dropped layer here is invisible: the model renders in bind pose and
         // nothing reports a miss.
-        const i32 n = static_cast<i32>(model_.sequences.size());
+        const i32 n = static_cast<i32>(tables_.SequenceCount());
         const i32 seqIdx = ((clip.sequence % n) + n) % n;
-        const auto& seq = model_.sequences[seqIdx];
+        const auto& seq = *tables_.SequenceAt(seqIdx);
         // Absolute frame time, as the keys are stamped. The unwrapped elapsed
         // is what arrives, because a looping track wraps on its own duration
         // and the sequence-windowed time has already lost that.

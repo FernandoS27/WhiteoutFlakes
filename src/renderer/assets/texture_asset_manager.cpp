@@ -16,6 +16,20 @@ gfx::TextureHandle Make1x1(gfx::IGFXDevice& gfx, u32 rgba) {
         },
         &rgba);
 }
+
+gfx::TextureHandle Make1x1Cube(gfx::IGFXDevice& gfx, u32 rgba) {
+    const u32 faces[6] = {rgba, rgba, rgba, rgba, rgba, rgba};
+    return gfx.CreateTexture(
+        {
+            .width = 1,
+            .height = 1,
+            .arraySize = 6,
+            .format = gfx::Format::R8G8B8A8_UNORM,
+            .usage = gfx::TextureUsage::ShaderResource,
+            .isCube = true,
+        },
+        faces);
+}
 } // namespace
 
 TextureAssetManager::TextureAssetManager(gfx::IGFXDevice& gfx) : gfx_(gfx) {
@@ -27,6 +41,7 @@ TextureAssetManager::TextureAssetManager(gfx::IGFXDevice& gfx) : gfx_(gfx) {
 
     defaults_.NeutralOrm = Make1x1(gfx_, 0x0000FFFFu);
     defaults_.Missing = Make1x1(gfx_, 0xFFFF00FFu);
+    defaults_.BlackCube = Make1x1Cube(gfx_, 0x00000000u);
 }
 
 TextureAssetManager::~TextureAssetManager() {
@@ -52,6 +67,7 @@ void TextureAssetManager::ReleaseGpu() {
     gfx_.Destroy(defaults_.FlatNormal);
     gfx_.Destroy(defaults_.NeutralOrm);
     gfx_.Destroy(defaults_.Missing);
+    gfx_.Destroy(defaults_.BlackCube);
     defaults_ = {};
 }
 

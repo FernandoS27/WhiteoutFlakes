@@ -96,17 +96,47 @@ std::span<const i32> TimesOf(const ::whiteout::m3::SubTrackContainer& stc, M3Tra
 
 } // namespace
 
-void M3AnimTables::Build(const ::whiteout::m3::Model& model) {
+void M3AnimTables::Build(const ::whiteout::m3::Model& model,
+                         std::span<const ::whiteout::m3::Model* const> attached) {
     rowOf_.clear();
     table_.clear();
     seqLayers_.clear();
+    assets_.clear();
+    stcs_.clear();
+    seqs_.clear();
 
-    const std::size_t stcCount = model.subTrackCollections.size();
-    stcCount_ = static_cast<u16>((std::min<std::size_t>)(stcCount, 0xFFFFu));
+    // Pass 0: lay the assets out end to end. The model first, then each
+    // attached file in attach order — StarCraft II's own layout, where a new
+    // record's bases are the running maxima of every record already loaded
+    // (`sub_1028819E0`). Order is what makes a global index decodable without a
+    // search, so it is fixed here and nowhere else.
+    assets_.reserve(attached.size() + 1);
+    const auto addAsset = [&](const ::whiteout::m3::Model* m) {
+        if (!m)
+            return;
+        Asset a;
+        a.model = m;
+        a.stcBase = static_cast<u32>(stcs_.size());
+        a.seqBase = static_cast<u32>(seqs_.size());
+        for (const auto& stc : m->subTrackCollections)
+            stcs_.push_back(&stc);
+        for (const auto& s : m->sequences)
+            seqs_.push_back(&s);
+        a.seqEnd = static_cast<u32>(seqs_.size());
+        assets_.push_back(a);
+    };
+    addAsset(&model);
+    for (const ::whiteout::m3::Model* m : attached)
+        addAsset(m);
 
-    // Pass 1: every animId any container drives gets a dense row.
-    for (const auto& stc : model.subTrackCollections)
-        for (u32 id : stc.animIds)
+    stcCount_ = static_cast<u16>((std::min<std::size_t>)(stcs_.size(), 0xFFFFu));
+
+    // Pass 1: every animId any container drives gets a dense row. An attached
+    // file contributes rows for ids the model never animates itself; those rows
+    // simply go unread, which is the same outcome as StarCraft II allocating a
+    // slot only for ids present in the model's sorted AnimRef list.
+    for (const auto* stc : stcs_)
+        for (u32 id : stc->animIds)
             if (id != 0)
                 rowOf_.emplace(id, static_cast<i32>(rowOf_.size()));
 
@@ -116,7 +146,7 @@ void M3AnimTables::Build(const ::whiteout::m3::Model& model) {
     // Pass 2: fill the (row × container) grid.
     table_.assign(rowOf_.size() * stcCount_, M3TrackHandle{});
     for (u16 s = 0; s < stcCount_; ++s) {
-        const auto& stc = model.subTrackCollections[s];
+        const auto& stc = *stcs_[s];
         const std::size_t n = (std::min)(stc.animIds.size(), stc.animRefs.size());
         for (std::size_t k = 0; k < n; ++k) {
             const u32 id = stc.animIds[k];
@@ -137,32 +167,51 @@ void M3AnimTables::Build(const ::whiteout::m3::Model& model) {
     // Pass 3: per sequence, the containers that drive it, priority-desc.
     //
     // The group array is parallel to the sequence array — group i names the
-    // containers for sequence i.
-    seqLayers_.resize(model.sequences.size());
-    for (std::size_t q = 0; q < model.sequences.size(); ++q) {
-        if (q >= model.animationGroups.size())
-            break;
-        auto& out = seqLayers_[q];
-        for (u32 idx : model.animationGroups[q].subtrackIndices) {
-            if (idx >= stcCount_)
-                continue;
-            const auto& stc = model.subTrackCollections[idx];
-            LayerDef d;
-            d.stc = static_cast<u16>(idx);
-            d.priority = stc.animPriority;
-            d.transparent = stc.runsConcurrent != 0;
-            out.push_back(d);
+    // containers for sequence i. Groups are read from the file that owns the
+    // sequence and rebased into the global space: a `.m3a`'s sequence drives
+    // its *own* containers, never the model's.
+    seqLayers_.resize(seqs_.size());
+    for (const Asset& a : assets_) {
+        const auto& groups = a.model->animationGroups;
+        for (u32 q = a.seqBase; q < a.seqEnd; ++q) {
+            const std::size_t local = q - a.seqBase;
+            if (local >= groups.size())
+                break;
+            auto& out = seqLayers_[q];
+            for (u32 idx : groups[local].subtrackIndices) {
+                const std::size_t global = static_cast<std::size_t>(a.stcBase) + idx;
+                if (idx >= a.model->subTrackCollections.size() || global >= stcCount_)
+                    continue;
+                const auto& stc = a.model->subTrackCollections[idx];
+                LayerDef d;
+                d.stc = static_cast<u16>(global);
+                d.priority = stc.animPriority;
+                d.transparent = stc.runsConcurrent != 0;
+                out.push_back(d);
+            }
+            // Stable, so containers of equal priority keep their authored order.
+            std::stable_sort(out.begin(), out.end(), [](const LayerDef& x, const LayerDef& y) {
+                return x.priority > y.priority;
+            });
         }
-        // Stable, so containers of equal priority keep their authored order.
-        std::stable_sort(out.begin(), out.end(),
-                         [](const LayerDef& a, const LayerDef& b) { return a.priority > b.priority; });
     }
 }
 
-i32 M3AnimTables::DurationOf(const ::whiteout::m3::Model& model, u16 stc, M3TrackHandle h) const {
-    if (!h.Valid() || stc >= model.subTrackCollections.size())
+i32 M3AnimTables::AssetOfSequence(i32 sequence) const {
+    if (sequence < 0 || static_cast<std::size_t>(sequence) >= seqs_.size())
+        return -1;
+    const u32 q = static_cast<u32>(sequence);
+    for (std::size_t i = assets_.size(); i-- > 0;)
+        if (q >= assets_[i].seqBase)
+            return static_cast<i32>(i);
+    return -1;
+}
+
+i32 M3AnimTables::DurationOf(u16 stc, M3TrackHandle h) const {
+    const ::whiteout::m3::SubTrackContainer* coll = StcAt(stc);
+    if (!h.Valid() || !coll)
         return 0;
-    const std::span<const i32> times = TimesOf(model.subTrackCollections[stc], h);
+    const std::span<const i32> times = TimesOf(*coll, h);
     return times.empty() ? 0 : times.back();
 }
 

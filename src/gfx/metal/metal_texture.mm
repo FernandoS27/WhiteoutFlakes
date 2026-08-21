@@ -120,8 +120,10 @@ TextureHandle MetalDevice::CreateTexture(const TextureDesc& desc, const void* in
 
         MTLTextureDescriptor* td = [[MTLTextureDescriptor alloc] init];
         if (desc.isCube) {
-            td.textureType = (desc.arraySize > 6) ? MTLTextureTypeCubeArray
-                                                  : MTLTextureTypeCube;
+            // CubeArray even for a lone cube — see vulkan_texture.cpp: D3D
+            // builds TEXTURECUBEARRAY SRVs unconditionally and one shader
+            // declaration has to serve every backend.
+            td.textureType = MTLTextureTypeCubeArray;
             td.arrayLength = std::max(1u, static_cast<u32>(desc.arraySize) / 6u);
         } else if (desc.arraySize > 1) {
             td.textureType = MTLTextureType2DArray;

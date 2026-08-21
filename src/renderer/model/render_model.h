@@ -26,6 +26,7 @@ struct StagedTexture {
     i32 mipLevels = 1;
     i32 replaceableId = 0;
     u32 wrapFlags = 0x3;
+    bool cubeMap = false; ///< See TextureData::cubeMap.
 
     std::string sharedKey;
 };

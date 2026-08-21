@@ -98,6 +98,11 @@ public:
         gfx::TextureHandle FlatNormal = gfx::TextureHandle::Invalid;
         gfx::TextureHandle NeutralOrm = gfx::TextureHandle::Invalid;
         gfx::TextureHandle Missing = gfx::TextureHandle::Invalid;
+        /// @brief 1x1 black, six faces. A shader that declares a cube slot
+        ///        must have one bound even on the draws whose layer is off —
+        ///        Vulkan rejects an unwritten descriptor rather than ignoring
+        ///        it, and a 2D texture cannot stand in for a cube view.
+        gfx::TextureHandle BlackCube = gfx::TextureHandle::Invalid;
     };
     const Defaults& GetDefaults() const noexcept {
         return defaults_;

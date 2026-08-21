@@ -1203,6 +1203,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/assets/texture_asset_manager.cpp
     src/renderer/assets/replaceable_texture_manager.cpp
     src/renderer/assets/asset_manager.cpp
+    src/renderer/assets/env_cube_texture.cpp
     src/renderer/debug/debug_renderer.cpp
     src/renderer/debug/draw_trace.cpp
     src/renderer/debug/draw_trace_hooks.cpp

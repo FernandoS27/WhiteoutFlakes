@@ -421,6 +421,7 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
         st.mipLevels = tex.mipLevels;
         st.replaceableId = tex.replaceableId;
         st.wrapFlags = tex.wrapFlags;
+        st.cubeMap = tex.cubeMap;
         st.format = tex.format;
         st.sharedKey = tex.sharedKey;
         // Pixels only flow through staging for synthetic textures (no
@@ -555,6 +556,7 @@ void ModelLoader::UpdateMaterials(u32 handle, const std::vector<MaterialData>& m
         st.mipLevels = tex.mipLevels;
         st.replaceableId = tex.replaceableId;
         st.wrapFlags = tex.wrapFlags;
+        st.cubeMap = tex.cubeMap;
         st.format = tex.format;
         st.pixels = tex.pixels;
         st.sharedKey = tex.sharedKey;
@@ -580,6 +582,7 @@ void ModelLoader::StageTextures(Actor& mi, const std::vector<TextureData>& textu
         st.mipLevels = tex.mipLevels;
         st.replaceableId = tex.replaceableId;
         st.wrapFlags = tex.wrapFlags;
+        st.cubeMap = tex.cubeMap;
         st.format = tex.format;
         st.pixels = tex.pixels;
         st.sharedKey = tex.sharedKey;
@@ -1283,7 +1286,9 @@ void ModelLoader::UploadStagedTextures(Actor& mi) {
                     ? ContentRef::FromFileId(
                           static_cast<u32>(std::strtoul(st.sharedKey.c_str() + 1, nullptr, 10)))
                     : ContentRef::FromPath(st.sharedKey);
-            const auto slot = rs_.Assets().Acquire(AssetKind::Texture, assets::kSoleSubKind, ref);
+            const auto slot = rs_.Assets().Acquire(
+                AssetKind::Texture,
+                st.cubeMap ? assets::kTextureCubeSubKind : assets::kSoleSubKind, ref);
             mi.render.textures->BindSlot(id, slot, st.wrapFlags);
             continue;
         }

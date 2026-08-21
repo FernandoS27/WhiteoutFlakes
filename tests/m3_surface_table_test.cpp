@@ -317,3 +317,117 @@ TEST_CASE("m3_surface_table: REGN v5 carries the UV transform, older implies 1/2
         CHECK_THAT(s->uvOffset, Catch::Matchers::WithinAbs(0.5f, 1e-9f));
     }
 }
+
+TEST_CASE("m3_surface_table: the environment layer and its mask are separate slots") {
+    m3::Model model;
+    m3::StandardMaterial mat;
+    mat.diffuseLayer = TexLayer("d.dds");
+    mat.environmentLayer = TexLayer("reflect.dds", m3::UVMappingMode::ReflectCubicEnvio);
+    mat.environmentMaskLayer = TexLayer("mask.dds");
+    // ApplyEnv reads the material's layer blend, the same field the decal does.
+    mat.layerBlendMode = m3::LayerBlendOp::Add;
+    model.standardMaterials = {mat};
+    model.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
+    model.divisions = {Division(0)};
+
+    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const M3Surface* s = table->Surface(0);
+    REQUIRE(s != nullptr);
+
+    const M3Layer& env = s->layers[static_cast<u32>(wio::M3LayerSlot::Environment)];
+    const M3Layer& envMask = s->layers[static_cast<u32>(wio::M3LayerSlot::EnvironmentMask)];
+    CHECK(env.mode == 1);
+    CHECK(envMask.mode == 1);
+    // Distinct textures: retail multiplies the mask into the env layer's own
+    // alpha rather than choosing between them, so one slot cannot serve both.
+    CHECK(env.textureId != envMask.textureId);
+    CHECK(env.blendOp == static_cast<u8>(m3::LayerBlendOp::Add));
+    CHECK(s->envReflect);
+
+    // The cube goes to the renderer marked as one — a cube view cannot answer
+    // a 2D binding, so the request has to travel with the reference.
+    const auto texs = wio::CollectM3Textures(model);
+    bool sawCube = false, sawFlat = false;
+    for (const auto& t : texs) {
+        if (t.path == "reflect.dds") { sawCube = t.cube; }
+        if (t.path == "mask.dds") { sawFlat = !t.cube; }
+    }
+    CHECK(sawCube);
+    CHECK(sawFlat);
+}
+
+TEST_CASE("m3_surface_table: only the Reflect envio mappings reflect") {
+    // psuvmapping.fx GenCubicEnvio takes a `reflect` flag: the plain
+    // Cubic/Spherical mappings look the cube up along the normal instead. 34
+    // of the 744 shipped env layers do that.
+    m3::Model model;
+    m3::StandardMaterial mat;
+    mat.environmentLayer = TexLayer("reflect.dds", m3::UVMappingMode::CubicEnvio);
+    model.standardMaterials = {mat};
+    model.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
+    model.divisions = {Division(0)};
+    CHECK_FALSE(BuildM3SurfaceTable(model, kOneRegion)->Surface(0)->envReflect);
+
+    model.standardMaterials[0].environmentLayer->uvMapping =
+        m3::UVMappingMode::ReflectSphericalEnvio;
+    CHECK(BuildM3SurfaceTable(model, kOneRegion)->Surface(0)->envReflect);
+}
+
+TEST_CASE("m3_surface_table: hdrEnvironmentConstant is only read at MAT_ v20") {
+    // The three hdrEnvironment* fields exist from v20; below that the parser
+    // leaves them zero. Measured: 717 of 744 shipped env materials read 0
+    // there, so taking the field at face value would multiply almost every
+    // reflection in the corpus to black.
+    m3::Model model;
+    m3::StandardMaterial mat;
+    mat.environmentLayer = TexLayer("reflect.dds", m3::UVMappingMode::ReflectCubicEnvio);
+    mat.hdrEnvironmentConstant = 0.0f;
+    model.standardMaterials = {mat};
+    model.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
+    model.divisions = {Division(0)};
+
+    const auto envSlot = static_cast<u32>(wio::M3LayerSlot::Environment);
+    {
+        // Version unset: no constant, so the tint keeps the layer's own value.
+        const auto table = BuildM3SurfaceTable(model, kOneRegion);
+        CHECK_THAT(table->Surface(0)->layers[envSlot].tint.x,
+                   Catch::Matchers::WithinAbs(1.0f, 1e-6f));
+    }
+    model.standardMaterials[0].setVersion(20);
+    model.standardMaterials[0].hdrEnvironmentConstant = 2.0f;
+    {
+        const auto table = BuildM3SurfaceTable(model, kOneRegion);
+        CHECK_THAT(table->Surface(0)->layers[envSlot].tint.x,
+                   Catch::Matchers::WithinAbs(2.0f, 1e-6f));
+    }
+}
+
+TEST_CASE("m3_surface_table: rgbAdd rides the same extra multiplier the tint does") {
+    // psmateriallayer.fx: `cResult.rgba = cResult.rgba * multiply + add`. The
+    // add half was missing, and it is not cosmetic — the golden Adept's
+    // environment layer is authored (x1.5, +0.4) under a Mod op, so dropping
+    // the +0.4 multiplied the whole model down to bronze. Whatever extra
+    // multiplier the tint folds in has to reach the add too, or the pair stops
+    // reading as `(texel * multiply + add) * extra`.
+    m3::Model model;
+    m3::StandardMaterial mat;
+    mat.environmentLayer = TexLayer("reflect.dds", m3::UVMappingMode::ReflectCubicEnvio);
+    mat.environmentLayer->rgbMultiply.initValue = 1.5f;
+    mat.environmentLayer->rgbAdd.initValue = 0.4f;
+    mat.environmentLayer->flags = static_cast<m3::TextureLayerFlag>(
+        static_cast<u32>(m3::TextureLayerFlag::ColorClamp) |
+        static_cast<u32>(m3::TextureLayerFlag::ColorInvert));
+    mat.setVersion(20);
+    mat.hdrEnvironmentConstant = 2.0f;
+    model.standardMaterials = {mat};
+    model.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
+    model.divisions = {Division(0)};
+
+    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const M3Layer& env =
+        table->Surface(0)->layers[static_cast<u32>(wio::M3LayerSlot::Environment)];
+    CHECK_THAT(env.tint.x, Catch::Matchers::WithinAbs(1.5f * 2.0f, 1e-6f));
+    CHECK_THAT(env.add, Catch::Matchers::WithinAbs(0.4f * 2.0f, 1e-6f));
+    CHECK(env.invert == 1);
+    CHECK(env.clampColor == 1);
+}

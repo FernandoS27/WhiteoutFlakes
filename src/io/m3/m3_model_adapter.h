@@ -72,6 +72,7 @@
 #include <cstddef>
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace whiteout::flakes::renderer::profiles::sc2_heroes {
@@ -110,6 +111,14 @@ enum class M3LayerSlot : ::whiteout::u32 {
     /// Retail multiplies BOTH alpha layers into the coverage, so the second
     /// needs its own slot rather than standing in for a missing first.
     AlphaMask2,
+    /// The reflection map (Envio). Sampled by direction rather than by UV, so
+    /// unlike every slot above it it is a CUBE — the flat sphere maps behind
+    /// the Spherical mappings are projected into one at decode time.
+    Environment,
+    /// EnvioMask — an ordinary UV-mapped 2D layer that scales the reflection.
+    /// Its own slot because retail applies it and the env layer's own alpha
+    /// together (psmaterial.fx:320-325), not one instead of the other.
+    EnvironmentMask,
     Count,
 };
 
@@ -117,6 +126,10 @@ enum class M3LayerSlot : ::whiteout::u32 {
 struct M3TextureRef {
     std::string path; ///< NUL-trimmed, as authored (forward slashes).
     ::whiteout::u32 wrapFlags = 0; ///< Bit0 = repeat-U, bit1 = repeat-V.
+    /// Wanted as a cubemap. Part of the dedupe key, not a property of the
+    /// path: one `.dds` can be an environment map on one material and a flat
+    /// layer on another, and those are two different GPU textures.
+    bool cube = false;
 };
 
 /// @brief Strip the terminator every M3 `Ref<CHAR>` keeps. `size()` is one
@@ -135,8 +148,9 @@ bool M3LayerActive(const ::whiteout::m3::TextureLayer& layer);
 const ::whiteout::m3::TextureLayer* M3LayerForSlot(const ::whiteout::m3::StandardMaterial& mat,
                                                    M3LayerSlot slot);
 
-/// @brief Every texture the standard materials reference through the seven
-///        slots, deduped case-insensitively, first-seen order.
+/// @brief Every texture the standard materials reference through the
+///        supported slots, deduped case-insensitively (and by cube-ness),
+///        first-seen order.
 std::vector<M3TextureRef> CollectM3Textures(const ::whiteout::m3::Model& model);
 
 /// @brief Geometry-only `IModelSource` over `whiteout::m3::Model`.
@@ -286,6 +300,47 @@ public:
         return model_;
     }
 
+    // ---- external animation files (`.m3a`) --------------------------------
+    //
+    // StarCraft II never finds these from the `.m3` — the chunk table holds no
+    // path of any kind. The game reads them off the model's catalog entry
+    // (`CModel.RequiredAnims` / `RequiredAnimsEx`) and merges each one into a
+    // single global sequence and container index space, binding tracks to the
+    // model purely by `animId`. We have no catalog, so the host names the file;
+    // everything downstream of that is the shipped mechanism.
+
+    /// @brief One attached animation file, as reported to a host.
+    struct AttachedAnimation {
+        /// @brief What the host called it — a file stem, shown in the UI and
+        ///        used to reject a double attach.
+        std::string label;
+        /// @brief Sequences this file contributed.
+        std::size_t sequenceCount = 0;
+        /// @brief Where its sequences start in `GetSequences()`.
+        std::size_t firstSequence = 0;
+    };
+
+    /// @brief Parse @p bytes as a `.m3a` and merge its sequences into this
+    ///        model's.
+    ///
+    /// Sequence indices already handed out stay valid: the new sequences append
+    /// after every existing one. Callers must re-read @ref GetSequences
+    /// afterwards (`AnimationDriver::Bind` does).
+    ///
+    /// Returns false when the parse fails, when the file carries no sequences,
+    /// or when @p label is already attached.
+    bool AttachAnimationFile(std::string label, std::span<const ::whiteout::u8> bytes);
+
+    /// @brief Drop one attached file. **Renumbers** every sequence after it.
+    bool DetachAnimationFile(std::size_t index);
+
+    /// @brief Drop them all, leaving only the model's own sequences.
+    void ClearAnimationFiles();
+
+    std::span<const AttachedAnimation> AttachedAnimations() const {
+        return attached_;
+    }
+
 private:
     /// @brief The regions `GetMeshes` emits, in emission order.
     ///
@@ -337,7 +392,20 @@ private:
     void EvaluatePhysics(std::span<const M3Layer> layers,
                          renderer::model::FrameState& fs) const;
 
+    /// @brief Rebuild @ref tables_ over the model plus @ref animModels_.
+    ///
+    /// Every attach and detach rebuilds from scratch, exactly as StarCraft II
+    /// does (`sub_1028F3580` re-runs the whole merge over every loaded record
+    /// on each add). Incremental merging would have to redo the animId row
+    /// allocation anyway, and this runs once per user action.
+    void RebuildAnimationTables();
+
     ::whiteout::m3::Model model_;
+    /// @brief Attached `.m3a` models. Held behind `unique_ptr` because
+    ///        @ref tables_ keeps pointers into them and this vector grows.
+    std::vector<std::unique_ptr<::whiteout::m3::Model>> animModels_;
+    /// @brief Host-facing description of @ref animModels_, same order.
+    std::vector<AttachedAnimation> attached_;
     M3AnimTables tables_;
     // Which entry of `divisions` GetMeshes reads. Division 0 is the highest
     // detail level; the plan takes one LOD and no more.

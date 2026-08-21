@@ -201,6 +201,31 @@ void ViewerUI::OpenFileDialog() {
     }
 }
 
+void ViewerUI::AttachAnimationDialog() {
+    animAttachError_.clear();
+    NFD::UniquePathSet outPaths;
+    nfdu8filteritem_t filter[1] = {{"StarCraft II animations", "m3a"}};
+    // Multi-select: a model's animations are routinely split across several
+    // files (`*_RequiredAnims`, `*OptionalAnims`, `*_SwarmAnims`), and picking
+    // them one dialog at a time is the same merge done slowly.
+    if (NFD::OpenDialogMultiple(outPaths, filter, 1) != NFD_OKAY)
+        return;
+    nfdpathsetsize_t count = 0;
+    if (NFD::PathSet::Count(outPaths, count) != NFD_OKAY)
+        return;
+    for (nfdpathsetsize_t i = 0; i < count; ++i) {
+        NFD::UniquePathSetPathU8 path;
+        if (NFD::PathSet::GetPath(outPaths, i, path) != NFD_OKAY)
+            continue;
+        const std::filesystem::path p = io::FsPathFromUtf8(path.get());
+        // A pick can be refused — unparseable, no sequences, or a stem already
+        // attached. Dropping that on the floor leaves the user staring at a
+        // list their file did not appear in, so the popup keeps the last one.
+        if (!app_.AttachAnimationFile(p))
+            animAttachError_ = io::PathToUtf8(p.filename());
+    }
+}
+
 namespace {
 
 // Image formats the Save As "export textures" option can convert to — every
@@ -878,6 +903,50 @@ void ViewerUI::BuildToolbar() {
                     ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+    }
+
+    // ---- External animation files (`.m3a`, StarCraft II only) ----
+    //
+    // Next to the sequence dropdown because that is what it changes: attaching
+    // a file appends its sequences to the list and nothing else. Hidden for
+    // every model that cannot take one.
+    if (app_.CanAttachAnimations()) {
+        if (ImGui::Button(i18n::tr("toolbar.animfiles")))
+            ImGui::OpenPopup("##animfiles");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", i18n::tr("toolbar.animfiles.tip"));
+        if (ImGui::BeginPopup("##animfiles")) {
+            const auto attached = app_.AttachedAnimations();
+            if (attached.empty()) {
+                ImGui::TextDisabled("%s", i18n::tr("toolbar.animfiles.none"));
+            } else {
+                for (std::size_t i = 0; i < attached.size(); ++i) {
+                    char rm[32];
+                    std::snprintf(rm, sizeof(rm), "x##rm%zu", i);
+                    // Detach first, then stop building this list — it is a
+                    // snapshot and the entries after the removed one shift.
+                    if (ImGui::SmallButton(rm)) {
+                        app_.DetachAnimationFile(i);
+                        break;
+                    }
+                    ImGui::SameLine();
+                    ImGui::Text("%s", attached[i].label.c_str());
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(%zu)", attached[i].sequenceCount);
+                }
+            }
+            if (!animAttachError_.empty()) {
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s: %s",
+                                   i18n::tr("toolbar.animfiles.failed"),
+                                   animAttachError_.c_str());
+            }
+            ImGui::Separator();
+            if (ImGui::Button(i18n::tr("toolbar.animfiles.add")))
+                AttachAnimationDialog();
+            ImGui::EndPopup();
         }
         ImGui::SameLine();
     }

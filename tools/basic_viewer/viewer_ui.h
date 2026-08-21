@@ -59,11 +59,18 @@ private:
     void BuildExportPopup();
 
     void OpenFileDialog();
+    // Pops a multi-select `.m3a` picker and attaches each pick to the focus
+    // actor. StarCraft II only — the toolbar hides the button otherwise.
+    void AttachAnimationDialog();
     // Save As entry point — pops the native save dialog, then defers to the
     // options modal (dialect for MDL, texture export for both).
     void SaveAsDialog();
 
     ViewerApp& app_;
+
+    // Last `.m3a` pick the attach refused, shown in the Anims popup until
+    // the next attempt. Empty when the last attempt succeeded.
+    std::string animAttachError_;
 
     bool settingsOpen_ = false;
     bool showViewCube_ = true;    // View > View Cube toggle

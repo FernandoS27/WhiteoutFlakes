@@ -1152,6 +1152,10 @@ int main(int argc, char* argv[]) {
     // (0-based); --ui composites the viewer UI overlay into each frame.
     bool doExport = false;
     i32 exportSeq = 0;
+    // `.m3a` files to merge into the loaded `.m3` before anything else runs.
+    // The UI route is the toolbar's Anims button; this is the same call, so a
+    // scripted render can exercise an attached sequence.
+    std::vector<std::filesystem::path> attachAnims;
     i32 exportFps = 30;
     whiteout::flakes::ExportFormat exportFmt = whiteout::flakes::ExportFormat::PngFrames;
     bool exportTransparent = false;
@@ -1205,6 +1209,8 @@ int main(int argc, char* argv[]) {
             exportSeq = std::atoi(argv[++i]);
             exportFps = std::atoi(argv[++i]);
             exportFolder = whiteout::flakes::io::FsPathFromUtf8(argv[++i]);
+        } else if (std::strcmp(a, "--attach-anim") == 0 && i + 1 < argc) {
+            attachAnims.push_back(whiteout::flakes::io::FsPathFromUtf8(argv[++i]));
         } else if (std::strcmp(a, "--gif") == 0) {
             exportFmt = whiteout::flakes::ExportFormat::Gif;
         } else if (std::strcmp(a, "--apng") == 0) {
@@ -1571,6 +1577,20 @@ int main(int argc, char* argv[]) {
             std::cerr << "File not found: " << whiteout::flakes::io::PathToUtf8(extra) << "\n";
         } else if (!app.LoadModel(extra)) {
             std::cerr << "Failed to load model: " << whiteout::flakes::io::PathToUtf8(extra) << "\n";
+        }
+    }
+
+    // Merge any external animation files into the freshly loaded model. After
+    // this the sequence list — and so the toolbar dropdown and --export-anim's
+    // index — spans the model's sequences followed by each attached file's.
+    for (const auto& anim : attachAnims) {
+        if (!app.AttachAnimationFile(anim)) {
+            std::cerr << "Failed to attach animation file: "
+                      << whiteout::flakes::io::PathToUtf8(anim) << "\n";
+        } else {
+            std::printf("[viewer] attached '%s'; %zu sequence(s) now available\n",
+                        whiteout::flakes::io::PathToUtf8(anim.filename()).c_str(),
+                        app.SequenceNames().size());
         }
     }
 

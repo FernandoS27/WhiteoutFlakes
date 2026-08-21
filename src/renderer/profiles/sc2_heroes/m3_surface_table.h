@@ -33,7 +33,13 @@
 namespace whiteout::flakes::renderer::profiles::sc2_heroes {
 
 /// @brief Layer slots, matching io::M3LayerSlot and the shader's layerCtl.
-inline constexpr u32 kM3LayerCount = 9;
+inline constexpr u32 kM3LayerCount = 11;
+/// The two ordinals the renderer treats specially — the normal layer switches
+/// itself off until its texture lands, and the environment layer is the one
+/// cube. Mirrors of io::M3LayerSlot, which m3_model_adapter.h owns; pinned
+/// against it by static_assert in m3_surface_table.cpp.
+inline constexpr u32 kM3LayerNormal = 5;
+inline constexpr u32 kM3LayerEnvironment = 9;
 
 struct M3Layer {
     i32 textureId = -1; ///< Index into the adapter's CollectM3Textures order.
@@ -52,6 +58,16 @@ struct M3Layer {
     /// multiplier stays OUT of the tint (see M3Surface::emissiveMultiplier —
     /// retail scales the additive emissive sum, team-colour adds included).
     Vector4f tint = {1.0f, 1.0f, 1.0f, 1.0f};
+    /// rgbAdd — the `+ add` half of psmateriallayer.fx's
+    /// `cResult.rgba = cResult.rgba * multiply + add`, applied to rgb AND
+    /// alpha. Carries whatever extra multiplier the tint carries, so the pair
+    /// still reads `(texel * rgbMultiply + rgbAdd) * extra`.
+    f32 add = 0.0f;
+    /// ColorInvert (0x10) / ColorClamp (0x20) — `1 - c` before the multiply,
+    /// `saturate` after it. Clamp is what decides whether a layer whose
+    /// multiply-add lifts it past 1 stays past 1.
+    u8 invert = 0;
+    u8 clampColor = 0;
 };
 
 struct M3Surface {
@@ -66,6 +82,10 @@ struct M3Surface {
     /// FakeEnergyConservingSpec could not be folded into the specular tint —
     /// the gloss layer makes the exponent, and therefore the dim, per-pixel.
     bool dimPerPixel = false;
+    /// The environment layer looks the cube up along the REFLECTED view
+    /// vector rather than along the normal — UVMappingMode Reflect*Envio
+    /// against plain *Envio. 710 of the 744 shipped env layers reflect.
+    bool envReflect = true;
     /// Normalised [0,1]; 0 disables the test.
     f32 alphaTestThreshold = 0.0f;
     /// REGN v5+ per-region decode (`uv = i16 * uvMultiply + uvOffset`); older

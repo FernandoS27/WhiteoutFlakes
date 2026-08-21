@@ -515,7 +515,8 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
         c->world = item.view->worldTransform.transpose();
         c->params0 = {surf->alphaTestThreshold, unshaded ? 1.0f : 0.0f, surf->specularExponent,
                       static_cast<f32>((dblLambert ? 1u : 0u) | (key.twoSided ? 2u : 0u) |
-                                       (surf->dimPerPixel ? 4u : 0u))};
+                                       (surf->dimPerPixel ? 4u : 0u) |
+                                       (surf->envReflect ? 8u : 0u))};
         // The shader samples SNORM (raw/32767); fold the decode back so the
         // authored `uv = i16 * mul + add` comes out. .z rides the material's
         // emissive multiplier (see M3Surface::emissiveMultiplier).
@@ -542,7 +543,7 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
             // so a normal layer whose texture has not resolved (still
             // loading, or a corpus with no assets beside it) switches off
             // instead. Flips on by itself the frame the texture lands.
-            if (i == 5 && mode == 1) { // io::M3LayerSlot::Normal
+            if (i == kM3LayerNormal && mode == 1) {
                 const bool resolved = l.textureId >= 0 && item.view->textures &&
                                       item.view->textures->Get(l.textureId) !=
                                           gfx::TextureHandle::Invalid;
@@ -550,10 +551,12 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
                     mode = 0;
             }
             c->layerTint[i] = l.tint;
+            c->layerAdd[i] = {l.add, 0.0f, 0.0f, 0.0f};
             // Low nibble = UV set; bits 4-5 = which of the four wrap-variant
-            // samplers this layer reads through.
-            c->layerCtl[i][0] =
-                l.uvSource | ((l.wrapFlags & assets::kSamplerWrapBitsMask) << 4);
+            // samplers this layer reads through; bit 6 invert, bit 7 clamp.
+            c->layerCtl[i][0] = l.uvSource |
+                                ((l.wrapFlags & assets::kSamplerWrapBitsMask) << 4) |
+                                (l.invert ? 0x40u : 0u) | (l.clampColor ? 0x80u : 0u);
             c->layerCtl[i][1] = l.channels;
             c->layerCtl[i][2] = mode;
             // The diffuse slot's .w is its team mode; the decal and emissive
@@ -585,12 +588,13 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     const auto& defaults = rs_.Textures().GetDefaults();
     for (u32 u = 0; u < kLayerCount; ++u) {
         const M3Layer& l = surf->layers[u];
+        const bool cubeSlot = u == kM3LayerEnvironment;
         gfx::TextureHandle tex = gfx::TextureHandle::Invalid;
         if (l.textureId >= 0 && item.view->textures)
             tex = item.view->textures->Get(l.textureId);
         if (tex == gfx::TextureHandle::Invalid)
-            tex = defaults.White;
-        cmd->BindShaderResource(gfx::ShaderStage::Pixel, u, tex);
+            tex = cubeSlot ? defaults.BlackCube : defaults.White;
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, kLayerRegister[u], tex);
     }
     for (u32 w = 0; w <= assets::kSamplerWrapBitsMask; ++w)
         cmd->BindSampler(gfx::ShaderStage::Pixel, w, rs_.Samplers().WrapVariant(w));

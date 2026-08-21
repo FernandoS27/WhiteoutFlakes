@@ -94,9 +94,21 @@ struct M3Layer {
 /// keys. Resolving that per sample would mean a linear scan of `animIds` for
 /// every property of every bone every frame, so it is flattened once into a
 /// dense (row × container) grid, mirroring what StarCraft II's loader builds.
+///
+/// The grid spans the model **and every attached `.m3a`**. StarCraft II keeps
+/// one record per loaded asset and hands each a contiguous slice of a single
+/// global sequence and container index space (`sub_1028819E0`); this is the
+/// same layout, so a sequence index means "the n-th sequence across all loaded
+/// files" and needs no per-asset decoding at the call site. Attached files bind
+/// to the model purely through `animId` — never through bone index, because an
+/// `.m3a`'s bone list is a differently-ordered subset that can even name bones
+/// the model does not have.
 class M3AnimTables {
 public:
-    void Build(const ::whiteout::m3::Model& model);
+    /// @param attached external animation files, in attach order. Their
+    ///        containers and sequences append to the base model's.
+    void Build(const ::whiteout::m3::Model& model,
+               std::span<const ::whiteout::m3::Model* const> attached = {});
 
     /// @brief Dense row for @p animId, or `-1` when nothing animates it.
     ::whiteout::i32 RowOf(::whiteout::u32 animId) const {
@@ -131,16 +143,52 @@ public:
         return rowOf_.size();
     }
 
+    /// @brief The container at a *global* index, or null when out of range.
+    ///
+    /// Callers hold global indices (an `M3Layer::stc`), which may name a
+    /// container in the model or in any attached file, so nothing outside this
+    /// class should be indexing `Model::subTrackCollections` directly.
+    const ::whiteout::m3::SubTrackContainer* StcAt(::whiteout::u16 stc) const {
+        return stc < stcs_.size() ? stcs_[stc] : nullptr;
+    }
+
+    /// @brief The sequence at a *global* index, or null when out of range.
+    const ::whiteout::m3::Sequence* SequenceAt(::whiteout::i32 sequence) const {
+        if (sequence < 0 || static_cast<std::size_t>(sequence) >= seqs_.size())
+            return nullptr;
+        return seqs_[static_cast<std::size_t>(sequence)];
+    }
+    /// @brief Sequences across the model and every attached file.
+    std::size_t SequenceCount() const {
+        return seqs_.size();
+    }
+    /// @brief Which loaded file owns a global sequence — 0 is the model itself,
+    ///        1.. are attached files in attach order. `-1` when out of range.
+    ::whiteout::i32 AssetOfSequence(::whiteout::i32 sequence) const;
+
     /// @brief Largest timestamp in a block, the modulus a looping track wraps
     ///        on. Zero for an empty or single-key block.
-    ::whiteout::i32 DurationOf(const ::whiteout::m3::Model& model, ::whiteout::u16 stc,
-                               M3TrackHandle h) const;
+    /// @param stc a *global* container index.
+    ::whiteout::i32 DurationOf(::whiteout::u16 stc, M3TrackHandle h) const;
 
 private:
+    /// @brief One loaded file's slice of the two global index spaces.
+    struct Asset {
+        const ::whiteout::m3::Model* model = nullptr;
+        ::whiteout::u32 stcBase = 0;
+        ::whiteout::u32 seqBase = 0;
+        ::whiteout::u32 seqEnd = 0;
+    };
+
     std::unordered_map<::whiteout::u32, ::whiteout::i32> rowOf_;
     std::vector<M3TrackHandle> table_;
     ::whiteout::u16 stcCount_ = 0;
     std::vector<std::vector<LayerDef>> seqLayers_;
+    std::vector<Asset> assets_;
+    // Flattened views over the assets, in global index order. The pointees live
+    // in models the adapter owns for as long as the tables do.
+    std::vector<const ::whiteout::m3::SubTrackContainer*> stcs_;
+    std::vector<const ::whiteout::m3::Sequence*> seqs_;
 };
 
 /// @brief Where a time lands in a keyframe block.

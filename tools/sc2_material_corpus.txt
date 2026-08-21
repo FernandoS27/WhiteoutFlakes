@@ -47,3 +47,14 @@ Sc2M3/Abathur_ConsoleZerg_00.m3  # measured Diff/Spec/Emiss/Norm layer set
 # and renders byte-identical either way.
 Sc2M3/Adept.m3                        # gloss (SpecularExponent) layer, no alpha2
 Sc2M3/AI_Champion_Hologram_Adept.m3   # both alpha-mask layers, no gloss
+# ...and neither of the thirteen above carries an environment (reflection)
+# layer on a material a drawn region resolves to, so the same measurement was
+# needed again. These two do, on EVERY drawn region, and they cover the two
+# halves of the layer: the cubemap the CubicEnvio mappings sample directly,
+# and the flat sphere map the Spherical ones need projected into a cube first.
+# Both are also framed well enough to eyeball, which the first two candidates
+# (Storm_Building_ArenaHell_FortressArchway, Sc2M3/AdeptIcon) were not — a
+# model that renders as an off-screen sliver can move thousands of bytes and
+# still show nothing.
+Sc2M3/Adept_Golden.m3                             # cubic env + env mask
+HotSM3/Storm_Doodad_ArenaHeaven_PortalFrame.m3    # spherical env + env mask

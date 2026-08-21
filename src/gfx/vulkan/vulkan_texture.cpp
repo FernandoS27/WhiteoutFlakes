@@ -197,11 +197,13 @@ TextureHandle VulkanDevice::CreateTexture(const TextureDesc& desc, const void* i
                    (hasStencilAspect ? vk::ImageAspectFlagBits::eStencil : vk::ImageAspectFlags{}))
                 : vk::ImageAspectFlags(vk::ImageAspectFlagBits::eColor);
 
-    // eCubeArray requires arraySize multiple of 6 (IBL probes are 12).
-    vk::ImageViewType viewType = vk::ImageViewType::e2D;
-    if (desc.isCube) {
-        viewType = (desc.arraySize > 6) ? vk::ImageViewType::eCubeArray : vk::ImageViewType::eCube;
-    }
+    // eCubeArray for every cube, including a lone one (arraySize 6). D3D11
+    // and D3D12 have always built TEXTURECUBEARRAY SRVs unconditionally, so
+    // an eCube here would have meant one shader declaration could not satisfy
+    // both families; a one-element cube array satisfies all four. arraySize is
+    // a multiple of 6 either way.
+    vk::ImageViewType viewType =
+        desc.isCube ? vk::ImageViewType::eCubeArray : vk::ImageViewType::e2D;
     auto viewR = state.device.createImageView({
         .image = vk::Image(texture.image),
         .viewType = viewType,

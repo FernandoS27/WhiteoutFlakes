@@ -73,7 +73,18 @@ public:
     }
 
 private:
-    static constexpr u32 kLayerCount = 9;
+    static constexpr u32 kLayerCount = 11;
+    /// Which PS texture register each layer slot binds to. The first nine are
+    /// the free 2D window t0..t8 in slot order; the environment MASK takes
+    /// t9, the last free 2D slot in the shared SRV layout; and the
+    /// environment map itself takes t13, which that layout already types as a
+    /// cube array for the WC3 HD IBL probe. Sharing t13 is deliberate — the
+    /// layout is a slot-TYPE map, not an ownership map, and the two passes
+    /// never draw in the same frame — but it does mean t13's binding is a
+    /// cube everywhere, which is why the environment slot binds
+    /// Defaults::BlackCube rather than Defaults::White when it is off.
+    static constexpr u32 kLayerRegister[kLayerCount] = {0, 1, 2, 3,  4, 5,
+                                                        6, 7, 8, 13, 9};
 
     // Mirrors of m3_standard.slang's constant buffers, uploaded transposed.
     struct alignas(16) M3PassCb {
@@ -97,8 +108,11 @@ private:
         Vector4f teamDiffuse;
         Vector4f teamEmissive;
         Vector4f layerTint[kLayerCount];
-        u32 layerCtl[kLayerCount][4]; // x uvSet, y channels, z mode,
-                                      // w blendOp / diffuse team mode
+        Vector4f layerAdd[kLayerCount]; // .x = rgbAdd (an HLSL cbuffer array
+                                        // strides by 16 whatever the element)
+        u32 layerCtl[kLayerCount][4];   // x uvSet | wrap | invert | clamp,
+                                        // y channels, z mode,
+                                        // w blendOp / diffuse team mode
     };
 
     struct PsoKey {

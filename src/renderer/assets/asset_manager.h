@@ -88,6 +88,16 @@ enum class AssetKind : u8 {
 using AssetSubKind = u8;
 inline constexpr AssetSubKind kSoleSubKind = 0;
 
+/// @brief Texture sub-kind: decode this file into a cubemap rather than a 2D
+///        texture. StarCraft II's environment layer is the only user.
+///
+/// It has to be a sub-kind rather than something read off the file, because
+/// the sub-kind is part of the slot key: the same `.dds` may legitimately be
+/// wanted both ways, and a slot holding a cube view cannot serve a 2D
+/// binding. A source that is not itself a cube is projected into one
+/// (@ref BuildCubeFromSphereMap).
+inline constexpr AssetSubKind kTextureCubeSubKind = 1;
+
 class AssetManager {
 public:
     using SlotId = u32;
@@ -311,6 +321,10 @@ private:
         i32 width     = 0;
         i32 height    = 0;
         i32 mipLevels = 1;
+        /// Layers, not cube count. A cube is 6, laid out layer-major /
+        /// mip-minor in `pixels` — the order CreateTexture reads.
+        i32 arraySize = 1;
+        bool isCube   = false;
         gfx::Format format = gfx::Format::Unknown;
         // Particle / ChildModel: already-parsed payload, ready to assign.
         std::shared_ptr<const cornflakes::EffectAssetModel> particleAsset;

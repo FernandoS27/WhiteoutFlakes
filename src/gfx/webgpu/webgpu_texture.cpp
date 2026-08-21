@@ -132,12 +132,12 @@ TextureHandle WebGPUDevice::CreateTexture(const TextureDesc& desc, const void* i
 
     wgpu::TextureViewDescriptor vd{};
     vd.format = fmt;
-    // Cube vs CubeArray distinction. Cube view requires exactly 6
-    // layers; CubeArray needs a multiple of 6. Plain 2D / 2D-array
-    // otherwise. The IBL pipeline ships 2-cube arrays (12 layers).
+    // CubeArray for every cube, a lone one included — the shared SRV layout
+    // types its cube slots CubeArray, and D3D builds TEXTURECUBEARRAY SRVs
+    // unconditionally, so one shader declaration has to serve both. Plain 2D /
+    // 2D-array otherwise.
     if (desc.isCube) {
-        vd.dimension = (td.size.depthOrArrayLayers > 6) ? wgpu::TextureViewDimension::CubeArray
-                                                        : wgpu::TextureViewDimension::Cube;
+        vd.dimension = wgpu::TextureViewDimension::CubeArray;
     } else if (td.size.depthOrArrayLayers > 1) {
         vd.dimension = wgpu::TextureViewDimension::e2DArray;
     } else {

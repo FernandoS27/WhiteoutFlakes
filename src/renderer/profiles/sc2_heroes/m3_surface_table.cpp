@@ -19,7 +19,12 @@ using ::whiteout::m3::SpecularMode;
 using ::whiteout::m3::StandardMaterial;
 using ::whiteout::m3::TextureLayer;
 using ::whiteout::m3::TextureLayerFlag;
+using ::whiteout::m3::UVMappingMode;
 using io::M3LayerSlot;
+
+static_assert(kM3LayerCount == static_cast<u32>(M3LayerSlot::Count));
+static_assert(kM3LayerNormal == static_cast<u32>(M3LayerSlot::Normal));
+static_assert(kM3LayerEnvironment == static_cast<u32>(M3LayerSlot::Environment));
 
 /// MATM index → standard material, through at most one composite hop.
 /// Composite sections reference MATM entries themselves; the highest
@@ -73,9 +78,9 @@ Vector4f LayerTint(const TextureLayer& layer, f32 extraMul) {
 }
 
 u8 ResolveUvSource(const TextureLayer& layer) {
-    using ::whiteout::m3::UVMappingMode;
-    // The v1 subset: explicit set 0 or 1. Envio and planar modes fall back to
-    // set 0 rather than sampling garbage — plumbed as data, not yet as math.
+    // The v1 subset: explicit set 0 or 1. Planar modes fall back to set 0
+    // rather than sampling garbage; the envio modes carry no UV at all and
+    // the environment slot reads a direction instead.
     return layer.uvMapping == UVMappingMode::ExplicitUV1 ? u8{1} : u8{0};
 }
 
@@ -177,6 +182,19 @@ std::unique_ptr<M3SurfaceTable> BuildM3SurfaceTable(const Model& model,
             hdrSpec *= dim;
         }
 
+        // p_vEnvioConstantDiffSpec.x. Only MAT_ v20 carries the three
+        // hdrEnvironment* fields, and the parser leaves them zero below that —
+        // measured, 717 of 744 shipped env materials read 0 there and the 27
+        // v20 ones read exactly 1. Taking the field at face value would
+        // multiply almost every reflection to black, so pre-v20 means "no
+        // constant", not "constant zero". The diffuse and specular
+        // multipliers are zero on all 228 v20 materials measured, so
+        // b_iEnvioMultipliers' lighting-modulated branches are dead in
+        // shipped content and this flat term is the whole of it.
+        f32 envConstant = 1.0f;
+        if (mat->getVersion() >= 20 && mat->hdrEnvironmentConstant > 0.0f)
+            envConstant = mat->hdrEnvironmentConstant;
+
         for (u32 slot = 0; slot < kM3LayerCount; ++slot) {
             M3Layer& out = s.layers[slot];
             const TextureLayer* layer =
@@ -225,10 +243,27 @@ std::unique_ptr<M3SurfaceTable> BuildM3SurfaceTable(const Model& model,
                 if (layer->colorType == ColorChannelSelect::RGB)
                     out.channels = static_cast<u8>(ColorChannelSelect::Alpha);
                 break;
+            case M3LayerSlot::Environment:
+                // ApplyEnv's op is the material's layer blend, the same field
+                // the decal reads (psmaterial.fx:332).
+                out.blendOp = static_cast<u8>(mat->layerBlendMode);
+                extraMul = envConstant;
+                s.envReflect = layer->uvMapping == UVMappingMode::ReflectCubicEnvio ||
+                               layer->uvMapping == UVMappingMode::ReflectSphericalEnvio;
+                break;
             default:
                 break;
             }
             out.tint = LayerTint(*layer, extraMul);
+            out.add = layer->rgbAdd.initValue * extraMul;
+            out.invert =
+                (static_cast<u32>(layer->flags) & static_cast<u32>(TextureLayerFlag::ColorInvert))
+                    ? u8{1}
+                    : u8{0};
+            out.clampColor =
+                (static_cast<u32>(layer->flags) & static_cast<u32>(TextureLayerFlag::ColorClamp))
+                    ? u8{1}
+                    : u8{0};
         }
     }
     return table;

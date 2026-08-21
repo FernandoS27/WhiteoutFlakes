@@ -51,6 +51,9 @@ endfunction()
 wdx_add_test(slk_test           slk_test.cpp)
 wdx_add_test(path_utils_test    path_utils_test.cpp)
 wdx_add_test(texture_usage_test texture_usage_test.cpp)
+# The sphere-map -> cubemap projection StarCraft II's Spherical envio
+# mappings are decoded through. Device-free, so it is unconditional.
+wdx_add_test(env_cube_test     env_cube_test.cpp)
 wdx_add_test(content_ref_test   content_ref_test.cpp)
 # Per-product storage routing. Policy assertions run everywhere; the parts
 # that need a real WoW / SC2 / Heroes install skip without one.
@@ -131,7 +134,6 @@ if(WDX_ENABLE_M3)
     # the canonical texture set, layer fallbacks, classification. Synthetic
     # models, no device.
     wdx_add_test(m3_surface_table_test m3_surface_table_test.cpp)
-    wdx_add_test(m3_env_probe_tmp m3_env_probe_tmp.cpp)
 endif()
 # The baked-vertex-buffer description check. Compiled unconditionally — it
 # #ifdefs its two halves internally, so a build with neither format still

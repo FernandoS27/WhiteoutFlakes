@@ -421,6 +421,10 @@ struct TextureData {
     i32 width, height;
     i32 mipLevels = 1;
     u32 wrapFlags = 0x3; ///< Bit0 = repeat-U, Bit1 = repeat-V.
+    /// @brief Decode this file into a cubemap. StarCraft II's environment
+    ///        layer is the only user; see AssetManager's kTextureCubeSubKind
+    ///        for why the request has to travel with the reference.
+    bool cubeMap = false;
 
     std::string sharedKey;
 };
