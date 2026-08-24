@@ -53,6 +53,37 @@ constexpr f32 kRestPoseStiffness = 0.0f;
 /// the rigid-body stage puts on its accumulator, for the same reason.
 constexpr f32 kMaxDt = 0.05f;
 
+/// @name Substepping
+///
+/// StarCraft II steps each cloth exactly once per rendered frame, at the
+/// world's frame delta (`CModel_Update` hands `M3Physics_StepCloth` the world's
+/// dt and nothing subdivides it). That is only accurate while the frame is
+/// short, and the collision pass is a single positional projection with no
+/// swept test: a collider that moves further than its own radius between two
+/// samples can end the step on the far side of the cloth.
+///
+/// Measured on Jaina — whose `PHCL.gravity` of 5 is the second highest in the
+/// corpus, so her cape is authored heavy and fast — the thigh and knee capsules
+/// sweep 1.0 to 1.6 times their own radius per 60 Hz frame during a walk, and
+/// half of those frames end with cloth inside a leg. So the cadence is
+/// reproduced faithfully and is still wrong on screen; a game hides it by
+/// tuning the numbers in the data editor, which is a lever a viewer of shipped
+/// models does not have.
+///
+/// Subdividing is therefore a deliberate divergence, and a cheap one: it
+/// touches only how often the host calls `Cloth::Step`, never a line inside it,
+/// so the byte-exact oracle (which drives `dmCloth_Step` with its own dt) is
+/// untouched either way. `PoseStageContext::substepPhysics` turns it off.
+///
+/// The frame is split into equal parts rather than run off a fixed-rate
+/// accumulator: an accumulator leaves some frames stepping zero times, which
+/// reads as a stuttering cape above 60 fps, where equal parts always advance
+/// exactly one frame's worth.
+/// @{
+constexpr f32 kMaxSubStep = 1.0f / 240.0f;
+constexpr i32 kMaxSubSteps = 8;
+/// @}
+
 /// An M3 vertex names its bone in a **byte** and the skinning constant buffer
 /// holds `bls::kMaxBones` = 256 matrices, so a cloth of more than 256 particles
 /// cannot be addressed by the region it drives — both ceilings land on the same
@@ -189,6 +220,15 @@ private:
     void Create();
     void WriteFrames(FrameState& fs);
 
+    /// @brief Fill `animStep_` with the anchor pose a fraction @p t through
+    ///        this frame, from `animPrev_` to `anim_`.
+    ///
+    /// Nlerp, not slerp: the two poses are one rendered frame apart, where the
+    /// angular error between the two is far below what a cloth collider can
+    /// resolve, and the solver renormalises nothing it is handed — so the
+    /// shorter-arc sign fix matters and the constant-speed property does not.
+    void LerpAnchors(f32 t);
+
     /// @brief Whether @p piece is enabled this frame. Absent sampling — a
     ///        format or a model that never keys it — reads as on.
     static bool Active(const FrameState& fs, const Sc2ClothPiece& piece) {
@@ -203,8 +243,42 @@ private:
     /// the solver indexes it by model bone index and two cloths on one model
     /// routinely share anchor bones.
     std::vector<sb::ClothAnchor> anim_;
+    /// Last frame's `anim_`, and the interpolated pose a substep is handed.
+    /// Both empty until the first stepped frame, which is why substepping only
+    /// engages once `animPrev_` has a frame in it.
+    std::vector<sb::ClothAnchor> animPrev_;
+    std::vector<sb::ClothAnchor> animStep_;
     bool created_ = false;
 };
+
+void Sc2ClothStage::LerpAnchors(f32 t) {
+    animStep_.resize(anim_.size());
+    for (std::size_t b = 0; b < anim_.size(); ++b) {
+        const sb::ClothAnchor& a = animPrev_[b];
+        const sb::ClothAnchor& c = anim_[b];
+        const f32 dot = a.rotation.x * c.rotation.x + a.rotation.y * c.rotation.y +
+                        a.rotation.z * c.rotation.z + a.rotation.w * c.rotation.w;
+        const f32 sign = dot < 0.0f ? -1.0f : 1.0f;
+        sb::Vec4 q{a.rotation.x + (c.rotation.x * sign - a.rotation.x) * t,
+                   a.rotation.y + (c.rotation.y * sign - a.rotation.y) * t,
+                   a.rotation.z + (c.rotation.z * sign - a.rotation.z) * t,
+                   a.rotation.w + (c.rotation.w * sign - a.rotation.w) * t};
+        const f32 lenSq = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+        // A blend of two opposed unit quaternions can cancel; identity is the
+        // only answer here that cannot spread NaN through the solver.
+        if (lenSq > 1e-12f) {
+            const f32 inv = 1.0f / std::sqrt(lenSq);
+            q = sb::Vec4{q.x * inv, q.y * inv, q.z * inv, q.w * inv};
+        } else {
+            q = sb::Vec4{0.0f, 0.0f, 0.0f, 1.0f};
+        }
+        animStep_[b].rotation = q;
+        animStep_[b].position =
+            sb::Vec4{a.position.x + (c.position.x - a.position.x) * t,
+                     a.position.y + (c.position.y - a.position.y) * t,
+                     a.position.z + (c.position.z - a.position.z) * t, 0.0f};
+    }
+}
 
 void Sc2ClothStage::Create() {
     cloths_.resize(build_->pieces.size());
@@ -268,6 +342,7 @@ void Sc2ClothStage::Run(FrameState& fs, const PoseStageContext& ctx) {
             for (i32 s = 0; s < kWarmupSteps; ++s)
                 cloths_[i].Step(frame);
         }
+        animPrev_ = anim_;
         WriteFrames(fs);
         return;
     }
@@ -276,14 +351,31 @@ void Sc2ClothStage::Run(FrameState& fs, const PoseStageContext& ctx) {
     // rule as the WoW stage, and for the same reason.
     const f32 dt = (std::min)(static_cast<f32>(ctx.frameDtMs) * 0.001f, kMaxDt);
     if (dt > 0.0f) {
-        for (std::size_t i = 0; i < cloths_.size(); ++i) {
-            sb::ClothFrame frame;
-            frame.dt = dt;
-            frame.bind = build_->pieces[i].def.bindPose.data();
-            frame.anim = anim_.data();
-            cloths_[i].Step(frame);
+        i32 steps = 1;
+        if (ctx.substepPhysics && dt > kMaxSubStep && animPrev_.size() == anim_.size()) {
+            steps = (std::min)(static_cast<i32>(std::ceil(dt / kMaxSubStep)), kMaxSubSteps);
+        }
+        const f32 subDt = dt / static_cast<f32>(steps);
+        for (i32 s = 1; s <= steps; ++s) {
+            // Substepping only helps if the colliders move *between* substeps.
+            // Handing every substep the same end-of-frame pose would shrink the
+            // cloth's own integration but leave each capsule teleporting its
+            // whole frame of travel in one go — the thing being fixed. So the
+            // anchor table is walked from last frame's pose to this one, and
+            // `AdvanceAnchors` derives its per-step deltas off that.
+            if (steps > 1) {
+                LerpAnchors(static_cast<f32>(s) / static_cast<f32>(steps));
+            }
+            for (std::size_t i = 0; i < cloths_.size(); ++i) {
+                sb::ClothFrame frame;
+                frame.dt = subDt;
+                frame.bind = build_->pieces[i].def.bindPose.data();
+                frame.anim = (steps > 1) ? animStep_.data() : anim_.data();
+                cloths_[i].Step(frame);
+            }
         }
     }
+    animPrev_ = anim_;
     WriteFrames(fs);
 }
 

@@ -1247,6 +1247,20 @@ void ViewerUI::BuildSettingsGeneralTab(ProductId game) {
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", i18n::tr("settings.general.m3_pose_solvers.tip"));
         }
+
+        // ---- Physics substepping ----
+        // On by default, unlike the solvers above: this one needs nothing from
+        // the host, and the cadence it replaces is visibly wrong on shipped
+        // content rather than merely unsimulated.
+        {
+            bool on = svc.Settings().PhysicsSubstepping();
+            if (ImGui::Checkbox(i18n::tr("settings.general.physics_substep"), &on)) {
+                svc.Settings().SetPhysicsSubstepping(on);
+                SaveIni(app_);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", i18n::tr("settings.general.physics_substep.tip"));
+        }
         return;
     }
     if (game != ProductId::Wc3) {

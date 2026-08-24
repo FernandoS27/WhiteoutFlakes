@@ -76,6 +76,14 @@ struct PoseStageContext {
     ///        integrator are in *real* time, not animation time — a paused
     ///        actor's feet still settle.
     i32 frameDtMs = 0;
+    /// @brief Split @ref frameDtMs into several smaller integration steps.
+    ///
+    /// A stage that integrates once per rendered frame is only as accurate as
+    /// the frame is short, and StarCraft II's cloth colliders routinely sweep
+    /// more than their own radius in one 60 Hz frame — measured on Jaina's
+    /// cape, where half the frames of a walk cycle end with the cloth inside a
+    /// leg. Off reproduces the shipped one-step-per-frame cadence.
+    bool substepPhysics = true;
     Matrix44f world = Matrix44f::identity();
 
     /// @brief Ground height under a model-space point.
