@@ -2,6 +2,7 @@
 
 #include "imgui_viewcube.h"
 #include "io/mdx_model_adapter.h"
+#include "io/storage/game_rules.h" // ScanArchives, for a profile that is not the active one
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/camera.h"
 #include "renderer/debug/debug_renderer.h"
@@ -1128,12 +1129,12 @@ void ViewerUI::BuildSettingsWindow() {
         return;
     }
 
-    // Every document scene shares the DEFAULT scene's provider (see
-    // ViewerApp::SharedProvider), so which game that provider serves IS the
-    // selected profile. Reading the selection off the provider keeps the two
-    // from ever disagreeing.
+    // The profile being EDITED and the product the provider is SERVING are two
+    // facts. They agree most of the time, and clicking a row moves only the
+    // first — configuring a game is not a reason to go read it.
     auto& provider = app_.Service().DefaultScene().GetContentProvider();
-    const ProductId game = provider.Game();
+    const ProductId game = app_.SettingsProfile();
+    const ProductId serving = provider.Game();
 
     ImGui::BeginChild("##profiles", ImVec2(170.0f, 0.0f), ImGuiChildFlags_Borders);
     ImGui::TextDisabled("%s", i18n::tr("settings.profile.header"));
@@ -1141,6 +1142,12 @@ void ViewerUI::BuildSettingsWindow() {
     for (const auto& p : kSettingsProfiles) {
         if (ImGui::Selectable(p.label, p.product == game) && p.product != game)
             SelectSettingsProfile(p.product);
+        // A dot on the one whose storage is actually in use, so a page showing
+        // "nothing is open" is legible rather than alarming.
+        if (p.product == serving) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("*");
+        }
     }
     ImGui::EndChild();
 
@@ -1164,16 +1171,11 @@ void ViewerUI::BuildSettingsWindow() {
 }
 
 void ViewerUI::SelectSettingsProfile(ProductId game) {
-    auto& provider = app_.Service().DefaultScene().GetContentProvider();
-    if (provider.Game() == game)
-        return;
-    // Switching storage is not just a display change: models and textures
-    // that failed to resolve under the old game get another chance, and ones
-    // that resolved may now be gone. Retrying is the same call the IO edits
-    // make, for the same reason.
-    ApplyIoPathOverrides(provider, game);
-    SaveIoProduct(game);
-    app_.Service().RetryUnloadedAssets();
+    // The whole of it. Picking a profile says which settings to show and which
+    // ini section to write; it does not repoint the provider, does not touch a
+    // storage, and does not retry a single asset. A profile's CASC opens when
+    // content from that game is loaded — see ViewerApp::FollowModelGame.
+    app_.SetSettingsProfile(game);
 }
 
 void ViewerUI::BuildSettingsGeneralTab(ProductId game) {
@@ -1661,28 +1663,129 @@ void ViewerUI::BuildSettingsGeneralTab(ProductId game) {
 }
 
 // ---- IO pages ----
-// Every edit commits to the ini through SaveIoPathOverrides so it survives a
-// restart, and mutates the provider in place so the effect is live (the next
-// ReadFile sees the new state). Both are per game.
+// These edit a PROFILE, not "the provider". A profile is an ini section plus,
+// for whichever product the provider is currently serving, a live slot inside
+// it. Every edit commits to the ini, because that is what a profile is; it
+// reaches the provider only when the profile is the active one, and then its
+// storage genuinely has to be reopened, since where it reads from just moved.
+// A profile that is not active has nothing open to reopen: it picks the new
+// settings up through ApplyIoPathOverrides at the moment content first needs
+// it, which is the only moment its CASC should open.
 
-void ViewerUI::BuildSettingsIoTab(io::FileContentProvider& provider, ProductId game) {
-    if (!ioBufsInitialised_ || ioBufsGame_ != game) {
+void ViewerUI::SeedIoBuffers(io::FileContentProvider& provider, ProductId game) {
+    // The provider's getters answer for its ACTIVE slot, so they are the truth
+    // for exactly one profile and the wrong product's answer for the others.
+    if (game == provider.Game()) {
         installPathBuf_ = provider.InstallPath();
         hotsPathBuf_ = provider.HotsInstallPath();
         listfileBuf_ = provider.ListfilePath();
         tactKeyBuf_ = provider.TactKeyPath();
-        newMpqEntryBuf_.clear();
+        ioIgnoreCascBuf_ = provider.IgnoreCasc();
+        ioIgnoreMpqBuf_ = provider.IgnoreMpq();
+        ioMpqListBuf_ = provider.MpqList();
+    } else {
+        const IoPathOverrides o = LoadIoPathOverrides(game);
+        installPathBuf_ = o.installPath.empty() ? provider.GamePath(game) : o.installPath;
+        hotsPathBuf_ = o.hotsInstallPath.empty() ? provider.HotsPath() : o.hotsInstallPath;
+        listfileBuf_ = o.listfilePath;
+        tactKeyBuf_ = o.tactKeyPath;
+        ioIgnoreCascBuf_ = o.ignoreCasc;
+        ioIgnoreMpqBuf_ = o.ignoreMpq;
+        // No saved order means the same answer the provider would have reached:
+        // what is actually on disk for this game. Reading a directory is not
+        // opening a storage.
+        ioMpqListBuf_ = o.mpqListSet ? o.mpqList : io::ScanArchives(game, installPathBuf_);
+    }
+    newMpqEntryBuf_.clear();
+}
+
+void ViewerUI::CommitIoProfile(io::FileContentProvider& provider, ProductId game) {
+    IoPathOverrides o;
+    // "Same as auto-detected" is stored as no override, so a later reinstall
+    // elsewhere is picked up instead of pinned to a stale path.
+    o.installPath = (installPathBuf_ == provider.GamePath(game)) ? std::string{} : installPathBuf_;
+    o.ignoreCasc = ioIgnoreCascBuf_;
+    o.ignoreMpq = ioIgnoreMpqBuf_;
+    o.listfilePath = listfileBuf_;
+    o.tactKeyPath = tactKeyBuf_;
+    if (game == ProductId::Sc2) {
+        o.hotsInstallPath = (hotsPathBuf_ == provider.HotsPath()) ? std::string{} : hotsPathBuf_;
+    } else {
+        o.mpqListSet = true;
+        o.mpqList = ioMpqListBuf_;
+    }
+    SaveIoPathOverrides(game, o);
+
+    if (game != provider.Game())
+        return; // not the active profile: nothing is open, so nothing reopens
+
+    // It IS the active profile, so its storage is in use and now points
+    // somewhere else. ApplyIoPathOverrides invalidates the slot; the retry's
+    // reads are what rebuild it — which for the game being read is the point,
+    // not a cost.
+    app_.ApplyProfile(game, /*force=*/true);
+    // The two roots ApplyIoPathOverrides deliberately skips when empty: at
+    // startup "no override" means "leave the detected path alone", but here it
+    // means the user pressed Reset, and the provider is still holding the
+    // override they just cleared.
+    provider.SetInstallPath(o.installPath);
+    if (game == ProductId::Sc2)
+        provider.SetHotsInstallPath(o.hotsInstallPath);
+    app_.Service().RetryUnloadedAssets();
+}
+
+void ViewerUI::BuildSettingsIoTab(io::FileContentProvider& provider, ProductId game) {
+    // Re-seed on a change of EITHER: a different profile is being edited, or
+    // the provider moved onto a different product — which changes where this
+    // profile's truth lives (its live slot vs its ini section), and can bring
+    // settings the ini never saw, like keys adopted beside a loose model.
+    if (!ioBufsInitialised_ || ioBufsGame_ != game || ioBufsServing_ != provider.Game()) {
+        SeedIoBuffers(provider, game);
         ioBufsInitialised_ = true;
         ioBufsGame_ = game;
+        ioBufsServing_ = provider.Game();
     }
     if (game == ProductId::Sc2)
         BuildIoCascPage(provider);
     else
         BuildIoArchivePage(provider, game);
+    BuildIoStorageStatus(provider, game);
+}
+
+// Live storage state, and only for the profile that has any. For the others the
+// honest answer is that nothing is open — saying "not loaded" would read as a
+// failure when it is the design.
+void ViewerUI::BuildIoStorageStatus(io::FileContentProvider& provider, ProductId game) {
+    ImGui::Spacing();
+    ImGui::Separator();
+    if (game != provider.Game()) {
+        ImGui::TextDisabled("%s", i18n::tr("settings.io.inactive_profile"));
+        return;
+    }
+    // Pending is checked first on purpose: storages open on demand, and
+    // HasCasc() is a demand. Reading the status must not be what triggers the
+    // open it is reporting on.
+    if (provider.StoragesPending()) {
+        ImGui::TextDisabled(i18n::tr("settings.io.casc_status"), i18n::tr("settings.io.pending"));
+        if (game != ProductId::Sc2)
+            ImGui::TextDisabled(i18n::tr("settings.io.mpq_status"),
+                                i18n::tr("settings.io.pending"));
+        return;
+    }
+    // Which roots opened, not just whether any did: StarCraft II offers two and
+    // either can fail on its own, which a single "CASC: open" would hide.
+    const auto roots = provider.OpenCascRoots();
+    ImGui::TextDisabled(i18n::tr("settings.io.casc_status"),
+                        roots.empty() ? i18n::tr("settings.io.not_loaded")
+                                      : i18n::tr("settings.io.open"));
+    for (const auto& r : roots)
+        ImGui::TextDisabled("    %s", r.c_str());
+    if (game != ProductId::Sc2)
+        ImGui::TextDisabled(i18n::tr("settings.io.mpq_status"),
+                            provider.HasMpq() ? i18n::tr("app.yes") : i18n::tr("app.no"));
 }
 
 void ViewerUI::BuildIoArchivePage(io::FileContentProvider& provider, ProductId game) {
-    RenderService& svc = app_.Service();
     const std::string autoDetected = provider.GamePath(game);
     if (autoDetected.empty())
         ImGui::TextDisabled(i18n::tr(game == ProductId::Wow ? "settings.io.wow_not_detected"
@@ -1691,26 +1794,7 @@ void ViewerUI::BuildIoArchivePage(io::FileContentProvider& provider, ProductId g
         ImGui::TextDisabled(i18n::tr("settings.io.auto_detected"), autoDetected.c_str());
     ImGui::Spacing();
 
-    // Commit the entire IO state (install path + flags + list) to ini, then
-    // retry any asset that failed to load under the previous sources — the
-    // provider now resolves paths differently, so textures/models that 404'd
-    // (and are stuck on the placeholder) get another fetch on the next pump,
-    // no restart needed.
-    auto saveIo = [&] {
-        IoPathOverrides o;
-        // Treat "install path == auto-detected" as "no override" so the
-        // ini stays clean and a future auto-detect (e.g. user installs the
-        // game somewhere else) is picked up.
-        o.installPath = (installPathBuf_ == autoDetected) ? std::string{} : installPathBuf_;
-        o.ignoreCasc = provider.IgnoreCasc();
-        o.ignoreMpq = provider.IgnoreMpq();
-        o.mpqListSet = true;
-        o.mpqList = provider.MpqList();
-        o.listfilePath = listfileBuf_;
-        o.tactKeyPath = tactKeyBuf_;
-        SaveIoPathOverrides(game, o);
-        svc.RetryUnloadedAssets();
-    };
+    auto commit = [&] { CommitIoProfile(provider, game); };
 
     // ---- Install path row ----
     {
@@ -1719,24 +1803,20 @@ void ViewerUI::BuildIoArchivePage(io::FileContentProvider& provider, ProductId g
         ImGui::SetNextItemWidth(-180.0f);
         if (ImGui::InputText("##install", tmp, sizeof(tmp)))
             installPathBuf_ = tmp;
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            provider.SetInstallPath(installPathBuf_);
-            saveIo();
-        }
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            commit();
         ImGui::SameLine();
         if (ImGui::Button(i18n::tr("settings.io.browse_install"))) {
             NFD::UniquePathU8 outPath;
             if (NFD::PickFolder(outPath) == NFD_OKAY) {
                 installPathBuf_ = outPath.get();
-                provider.SetInstallPath(installPathBuf_);
-                saveIo();
+                commit();
             }
         }
         ImGui::SameLine();
         if (ImGui::Button(i18n::tr("settings.io.reset_install"))) {
-            provider.SetInstallPath("");
-            installPathBuf_ = provider.InstallPath();
-            saveIo();
+            installPathBuf_ = autoDetected;
+            commit();
         }
         ImGui::SameLine();
         ImGui::TextUnformatted(i18n::tr("settings.io.install_path"));
@@ -1753,35 +1833,33 @@ void ViewerUI::BuildIoArchivePage(io::FileContentProvider& provider, ProductId g
         ImGui::SetNextItemWidth(-180.0f);
         if (ImGui::InputText("##listfile", tmp, sizeof(tmp)))
             listfileBuf_ = tmp;
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            provider.SetListfilePath(io::FsPathFromUtf8(listfileBuf_));
-            saveIo();
-        }
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            commit();
         ImGui::SameLine();
         if (ImGui::Button(i18n::tr("settings.io.browse_listfile"))) {
             NFD::UniquePathU8 outPath;
             nfdu8filteritem_t filter[1] = {{"Listfile", "csv,txt"}};
             if (NFD::OpenDialog(outPath, filter, 1) == NFD_OKAY) {
                 listfileBuf_ = outPath.get();
-                provider.SetListfilePath(io::FsPathFromUtf8(listfileBuf_));
-                saveIo();
+                commit();
             }
         }
         ImGui::SameLine();
         if (ImGui::Button(i18n::tr("settings.io.clear_listfile"))) {
             listfileBuf_.clear();
-            provider.SetListfilePath({});
-            saveIo();
+            commit();
         }
         ImGui::SameLine();
         ImGui::TextUnformatted(i18n::tr("settings.io.listfile"));
         // "A path is set" and "it loaded" are different facts, and only the
         // second one makes the root browsable. The listfile is read as part of
-        // opening the storage, so before that it is pending like the rest.
+        // opening the storage, so before that it is pending like the rest —
+        // and for a profile that is not the active one, nothing has read it.
         ImGui::TextDisabled(i18n::tr("settings.io.listfile_status"),
-                            provider.StoragesPending() ? i18n::tr("settings.io.pending")
-                            : provider.HasListfile()   ? i18n::tr("settings.io.loaded")
-                                                       : i18n::tr("settings.io.not_loaded"));
+                            (game != provider.Game() || provider.StoragesPending())
+                                ? i18n::tr("settings.io.pending")
+                            : provider.HasListfile() ? i18n::tr("settings.io.loaded")
+                                                     : i18n::tr("settings.io.not_loaded"));
 
         // ---- TACT key row ----
         // The listfile's twin one layer down. Blizzard encrypts individual
@@ -1793,25 +1871,21 @@ void ViewerUI::BuildIoArchivePage(io::FileContentProvider& provider, ProductId g
         ImGui::SetNextItemWidth(-180.0f);
         if (ImGui::InputText("##tactkeys", keyTmp, sizeof(keyTmp)))
             tactKeyBuf_ = keyTmp;
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            provider.SetTactKeyPath(io::FsPathFromUtf8(tactKeyBuf_));
-            saveIo();
-        }
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            commit();
         ImGui::SameLine();
         if (ImGui::Button(i18n::tr("settings.io.browse_tactkeys"))) {
             NFD::UniquePathU8 outPath;
             nfdu8filteritem_t filter[1] = {{"TACT keys", "txt,csv"}};
             if (NFD::OpenDialog(outPath, filter, 1) == NFD_OKAY) {
                 tactKeyBuf_ = outPath.get();
-                provider.SetTactKeyPath(io::FsPathFromUtf8(tactKeyBuf_));
-                saveIo();
+                commit();
             }
         }
         ImGui::SameLine();
         if (ImGui::Button(i18n::tr("settings.io.clear_tactkeys"))) {
             tactKeyBuf_.clear();
-            provider.SetTactKeyPath({});
-            saveIo();
+            commit();
         }
         ImGui::SameLine();
         ImGui::TextUnformatted(i18n::tr("settings.io.tactkeys"));
@@ -1822,36 +1896,29 @@ void ViewerUI::BuildIoArchivePage(io::FileContentProvider& provider, ProductId g
 
     // ---- Ignore flags ----
     {
-        bool ignoreCasc = provider.IgnoreCasc();
-        if (ImGui::Checkbox(i18n::tr("settings.io.ignore_casc"), &ignoreCasc)) {
-            provider.SetIgnoreCasc(ignoreCasc);
-            saveIo();
-        }
-        bool ignoreMpq = provider.IgnoreMpq();
-        if (ImGui::Checkbox(i18n::tr("settings.io.ignore_mpq"), &ignoreMpq)) {
-            provider.SetIgnoreMpq(ignoreMpq);
-            saveIo();
-        }
+        if (ImGui::Checkbox(i18n::tr("settings.io.ignore_casc"), &ioIgnoreCascBuf_))
+            commit();
+        if (ImGui::Checkbox(i18n::tr("settings.io.ignore_mpq"), &ioIgnoreMpqBuf_))
+            commit();
     }
 
     ImGui::Spacing();
     ImGui::Separator();
 
     // ---- MPQ load list ----
-    // Earlier entries win. Buttons mutate the provider's vector in place
-    // (via SetMpqList(...)) which reopens the storages each time — fine
-    // for a settings dialog (low-frequency edits).
+    // Earlier entries win. The buttons edit the buffer and commit, which for
+    // the active profile reopens its storages each time — fine for a settings
+    // dialog (low-frequency edits), and free for any other profile.
     ImGui::TextUnformatted(i18n::tr("settings.io.mpq_header"));
-    ImGui::BeginDisabled(provider.IgnoreMpq());
+    ImGui::BeginDisabled(ioIgnoreMpqBuf_);
 
-    std::vector<std::string> mpqs = provider.MpqList();
     bool mpqsDirty = false;
     i32 swapWith = -1; // [i, i+1] to swap when set
     i32 removeAt = -1;
-    for (usize i = 0; i < mpqs.size(); ++i) {
+    for (usize i = 0; i < ioMpqListBuf_.size(); ++i) {
         ImGui::PushID(static_cast<int>(i));
         const bool isFirst = (i == 0);
-        const bool isLast = (i + 1 == mpqs.size());
+        const bool isLast = (i + 1 == ioMpqListBuf_.size());
         ImGui::BeginDisabled(isFirst);
         if (ImGui::ArrowButton("up", ImGuiDir_Up))
             swapWith = static_cast<i32>(i) - 1;
@@ -1865,15 +1932,15 @@ void ViewerUI::BuildIoArchivePage(io::FileContentProvider& provider, ProductId g
         if (ImGui::Button("X"))
             removeAt = static_cast<i32>(i);
         ImGui::SameLine();
-        ImGui::TextUnformatted(mpqs[i].c_str());
+        ImGui::TextUnformatted(ioMpqListBuf_[i].c_str());
         ImGui::PopID();
     }
-    if (swapWith >= 0 && swapWith + 1 < static_cast<i32>(mpqs.size())) {
-        std::swap(mpqs[swapWith], mpqs[swapWith + 1]);
+    if (swapWith >= 0 && swapWith + 1 < static_cast<i32>(ioMpqListBuf_.size())) {
+        std::swap(ioMpqListBuf_[swapWith], ioMpqListBuf_[swapWith + 1]);
         mpqsDirty = true;
     }
-    if (removeAt >= 0 && removeAt < static_cast<i32>(mpqs.size())) {
-        mpqs.erase(mpqs.begin() + removeAt);
+    if (removeAt >= 0 && removeAt < static_cast<i32>(ioMpqListBuf_.size())) {
+        ioMpqListBuf_.erase(ioMpqListBuf_.begin() + removeAt);
         mpqsDirty = true;
     }
 
@@ -1888,7 +1955,7 @@ void ViewerUI::BuildIoArchivePage(io::FileContentProvider& provider, ProductId g
         const bool canAdd = !newMpqEntryBuf_.empty();
         ImGui::BeginDisabled(!canAdd);
         if (ImGui::Button(i18n::tr("settings.io.add_mpq"))) {
-            mpqs.push_back(newMpqEntryBuf_);
+            ioMpqListBuf_.push_back(newMpqEntryBuf_);
             newMpqEntryBuf_.clear();
             mpqsDirty = true;
         }
@@ -1899,82 +1966,46 @@ void ViewerUI::BuildIoArchivePage(io::FileContentProvider& provider, ProductId g
     // means what is actually in Data/ — its archive names changed twice
     // across the MPQ era, so a static list is wrong for most installs.
     if (ImGui::SmallButton(i18n::tr("settings.io.reset_defaults"))) {
-        mpqs = provider.ScanMpqList();
+        ioMpqListBuf_ = io::ScanArchives(game, installPathBuf_);
         mpqsDirty = true;
     }
 
     ImGui::EndDisabled(); // IgnoreMpq guard around the list controls
 
-    if (mpqsDirty) {
-        provider.SetMpqList(std::move(mpqs));
-        saveIo();
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    // Pending is checked first on purpose: storages open on demand, and
-    // HasCasc() is a demand. Reading the status must not be what triggers the
-    // open it is reporting on.
-    if (provider.StoragesPending()) {
-        ImGui::TextDisabled(i18n::tr("settings.io.casc_status"), i18n::tr("settings.io.pending"));
-        ImGui::TextDisabled(i18n::tr("settings.io.mpq_status"), i18n::tr("settings.io.pending"));
-    } else {
-        ImGui::TextDisabled(i18n::tr("settings.io.casc_status"),
-                            provider.HasCasc() ? i18n::tr("settings.io.open")
-                                               : i18n::tr("settings.io.not_loaded"));
-        ImGui::TextDisabled(i18n::tr("settings.io.mpq_status"),
-                            provider.HasMpq() ? i18n::tr("app.yes") : i18n::tr("app.no"));
-    }
+    if (mpqsDirty)
+        commit();
 }
 
 // StarCraft II and Heroes of the Storm are two installs behind one product
 // (they share a render profile), so this page configures two CASC roots and
 // no archives: neither game ever shipped an MPQ.
 void ViewerUI::BuildIoCascPage(io::FileContentProvider& provider) {
-    RenderService& svc = app_.Service();
-
-    auto saveIo = [&] {
-        IoPathOverrides o;
-        // "Same as auto-detected" is stored as no override, so a later
-        // reinstall elsewhere is picked up instead of pinned to a stale path.
-        o.installPath = (installPathBuf_ == provider.GamePath(ProductId::Sc2)) ? std::string{}
-                                                                               : installPathBuf_;
-        o.hotsInstallPath = (hotsPathBuf_ == provider.HotsPath()) ? std::string{} : hotsPathBuf_;
-        o.ignoreCasc = provider.IgnoreCasc();
-        o.ignoreMpq = provider.IgnoreMpq();
-        SaveIoPathOverrides(ProductId::Sc2, o);
-        svc.RetryUnloadedAssets();
-    };
+    auto commit = [&] { CommitIoProfile(provider, ProductId::Sc2); };
 
     // One row per game: the text field, a folder picker, a reset to the
-    // discovered path, and a label. `commit` is the shared tail — the two
-    // rows differ only in which provider setter they call.
+    // discovered path, and a label. The two rows differ only in the buffer.
     auto rootRow = [&](const char* id, std::string& buf, const std::string& discovered,
-                       const char* label, const auto& commit) {
+                       const char* label) {
         ImGui::PushID(id);
         char tmp[1024];
         std::snprintf(tmp, sizeof(tmp), "%s", buf.c_str());
         ImGui::SetNextItemWidth(-180.0f);
         if (ImGui::InputText("##root", tmp, sizeof(tmp)))
             buf = tmp;
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            commit(buf);
-            saveIo();
-        }
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            commit();
         ImGui::SameLine();
         if (ImGui::Button(i18n::tr("settings.io.browse_install"))) {
             NFD::UniquePathU8 outPath;
             if (NFD::PickFolder(outPath) == NFD_OKAY) {
                 buf = outPath.get();
-                commit(buf);
-                saveIo();
+                commit();
             }
         }
         ImGui::SameLine();
         if (ImGui::Button(i18n::tr("settings.io.reset_install"))) {
-            commit(std::string{});
             buf = discovered;
-            saveIo();
+            commit();
         }
         ImGui::SameLine();
         ImGui::TextUnformatted(label);
@@ -1983,43 +2014,15 @@ void ViewerUI::BuildIoCascPage(io::FileContentProvider& provider) {
         ImGui::PopID();
     };
 
-    rootRow("sc2", installPathBuf_, provider.GamePath(ProductId::Sc2), "StarCraft II",
-            [&](const std::string& p) { provider.SetInstallPath(p); });
+    rootRow("sc2", installPathBuf_, provider.GamePath(ProductId::Sc2), "StarCraft II");
     ImGui::Spacing();
-    rootRow("hots", hotsPathBuf_, provider.HotsPath(), "Heroes of the Storm",
-            [&](const std::string& p) { provider.SetHotsInstallPath(p); });
+    rootRow("hots", hotsPathBuf_, provider.HotsPath(), "Heroes of the Storm");
 
     ImGui::Spacing();
     ImGui::Separator();
 
-    {
-        bool ignoreCasc = provider.IgnoreCasc();
-        if (ImGui::Checkbox(i18n::tr("settings.io.ignore_casc"), &ignoreCasc)) {
-            provider.SetIgnoreCasc(ignoreCasc);
-            saveIo();
-        }
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-
-    // Which roots opened, not just whether any did: two are offered here and
-    // either can fail on its own, which a single "CASC: open" would hide.
-    // Pending is checked first so that reading the status is not itself the
-    // demand that opens them (see BuildIoArchivePage).
-    if (provider.StoragesPending()) {
-        ImGui::TextDisabled(i18n::tr("settings.io.casc_status"), i18n::tr("settings.io.pending"));
-        return;
-    }
-    const auto roots = provider.OpenCascRoots();
-    if (roots.empty()) {
-        ImGui::TextDisabled(i18n::tr("settings.io.casc_status"),
-                            i18n::tr("settings.io.not_loaded"));
-    } else {
-        ImGui::TextDisabled(i18n::tr("settings.io.casc_status"), i18n::tr("settings.io.open"));
-        for (const auto& r : roots)
-            ImGui::TextDisabled("    %s", r.c_str());
-    }
+    if (ImGui::Checkbox(i18n::tr("settings.io.ignore_casc"), &ioIgnoreCascBuf_))
+        commit();
 }
 
 } // namespace whiteout::flakes

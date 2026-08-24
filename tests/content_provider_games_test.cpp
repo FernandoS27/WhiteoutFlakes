@@ -88,6 +88,79 @@ TEST_CASE("A visited game keeps its storages across a switch", "[provider]") {
     CHECK_FALSE(p.StoragesPending());
 }
 
+TEST_CASE("A settings game switch opens nothing", "[provider]") {
+    // Clicking a profile in the Basic Viewer's Settings panel writes nothing to
+    // the provider at all — a profile is an ini section, and only content that
+    // needs a game moves the provider onto it. This asserts the weaker property
+    // that still has to hold underneath: even the full ApplyIoPathOverrides
+    // payload, setter for setter, opens nothing. That is what lets the *active*
+    // profile's pages configure freely and let the reopen fall out of the next
+    // read. Three quarters of a million entries for StarCraft II and a 149 MB
+    // listfile parse for World of Warcraft is what an eager one would cost.
+    // StoragesPending() says "configured, not built"; OpenCascCount() is the
+    // one that would notice a setter quietly demanding a build.
+    FileContentProvider p;
+    (void)p.HasCasc(); // a model is loaded, so Warcraft III's storage is up
+    REQUIRE_FALSE(p.StoragesPending());
+    const std::size_t open = OpenCascCount();
+
+    auto switchTo = [&](ProductId game) {
+        p.SetGame(game);
+        p.SetListfilePath({});
+        p.SetTactKeyPath({});
+        p.SetInstallPath(p.GamePath(game));
+        p.SetHotsInstallPath(p.HotsPath());
+        p.SetIgnoreCasc(false);
+        p.SetIgnoreMpq(false);
+        p.SetMpqList(FileContentProvider::DefaultMpqList(game));
+        CHECK(p.StoragesPending());
+        CHECK(OpenCascCount() <= open);
+    };
+    switchTo(ProductId::Sc2);
+    switchTo(ProductId::Wow);
+
+    // Coming back to the game that was open finds it open, and still nothing
+    // new was built for the two profiles that were only looked at.
+    p.SetGame(ProductId::Wc3);
+    CHECK_FALSE(p.StoragesPending());
+    CHECK(OpenCascCount() <= open);
+
+    // The other half of the rule the Settings pages follow: an edit to the
+    // profile that IS active does have to reopen, because that storage is in
+    // use and where it reads from just moved. Invalidation is what makes the
+    // next read rebuild it — the edit still opens nothing by itself.
+    p.SetInstallPath(p.GamePath(ProductId::Wow)); // any root that is not this one
+    CHECK(p.StoragesPending());
+    CHECK(OpenCascCount() <= open);
+}
+
+TEST_CASE("Switching between two loaded models rebuilds nothing", "[provider]") {
+    // Two open documents of different games share one provider, and switching
+    // between them must be a pointer move — that is what the per-product slots
+    // are for. What made it not one: the viewer re-applied the entering game's
+    // ini on every switch, which for World of Warcraft wrote the ini's empty
+    // listfile over the one AdoptNearbyWowKeys found beside the model. An ini
+    // write that changes a value invalidates the slot, the registry holds
+    // installs by weak_ptr, so the provider dropping the last reference
+    // DESTROYS the storage — and the next read re-parses indices, manifest and
+    // a 144 MB listfile. Measured at ~2.8 s of parse alone, per switch back.
+    FileContentProvider p;
+    (void)p.HasCasc(); // a Warcraft III model is loaded
+    REQUIRE_FALSE(p.StoragesPending());
+    const std::size_t open = OpenCascCount();
+
+    p.SetGame(ProductId::Wow); // open a .m2 in a second tab...
+    p.SetGame(ProductId::Wc3); // ...and switch back
+    CHECK_FALSE(p.StoragesPending());
+    CHECK(OpenCascCount() <= open);
+
+    // The mechanism that made it expensive, on the slot that is open: a setter
+    // whose value actually moves is what costs a rebuild. Re-applying settings
+    // the slot already holds must therefore be something a switch never does.
+    p.SetListfilePath(std::filesystem::path("nowhere/listfile.csv"));
+    CHECK(p.StoragesPending());
+}
+
 TEST_CASE("Settings belong to the game they were made on", "[provider]") {
     FileContentProvider p;
     p.SetGame(ProductId::Wow);

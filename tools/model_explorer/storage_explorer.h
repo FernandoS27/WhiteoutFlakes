@@ -49,6 +49,15 @@ struct ActivatedFile {
     std::vector<std::uint8_t> bytes;
 };
 
+// Everything a host knows about where one product's storage lives: its install
+// override, plus the listfile and TACT key list. An empty `installPath` means
+// "whatever this machine has detected".
+struct GameStorageKeys {
+    std::string installPath;
+    std::string listfilePath;
+    std::string tactKeyPath;
+};
+
 class StorageExplorer {
 public:
     // Borrows the host's RenderService. The gfx device must already be up — the
@@ -64,6 +73,12 @@ public:
     bool OpenCasc(const std::string& root);
     bool IsOpen() const {
         return browser_.IsOpen();
+    }
+    // The open succeeded but enumerated nothing browsable — a different state
+    // from !IsOpen(), and the one an id-keyed World of Warcraft root opened
+    // without a listfile lands in.
+    bool IsEmpty() const {
+        return openedEmpty_;
     }
     // Jump the browser to a folder (display form, '\\'-separated, "" = root) and
     // clear the thumbnail pool. Lets a host deep-link into a folder on open.
@@ -137,6 +152,30 @@ public:
         browser_.SetCascKeys(listfilePath_, tactKeyPath_);
     }
 
+    // Where those settings come from, ASKED at the moment a product is opened
+    // rather than pushed once. A host acquires them at times it has no reason
+    // to tell the panel about — a listfile adopted beside a loose model, an
+    // install path typed into its own settings — and they are per product,
+    // which the panel's game combo can switch independently of the host. Both
+    // are why a one-shot SetCascKeys goes stale: it captures one product's
+    // state at one instant. Optional; a host that knows its keys up front can
+    // keep calling SetCascKeys.
+    using GameKeysCb = std::function<GameStorageKeys(ProductId)>;
+    void SetGameKeys(GameKeysCb cb) {
+        gameKeys_ = std::move(cb);
+    }
+
+    // Reconcile the panel with the host's storage settings. Cheap, idempotent,
+    // and meant to be called every time the panel is shown:
+    //  - nothing open yet -> open `fallback` (the host's current product);
+    //  - already open     -> re-resolve THAT product's keys and reopen only if
+    //                        they moved.
+    // Where an open panel points is the user's own business (its game combo and
+    // folder picker both write it), so Sync never moves it — a close/reopen
+    // keeps the folder they were in, while a listfile acquired in between still
+    // takes effect.
+    void Sync(ProductId fallback);
+
     // Whether the activate callback receives the file's bytes (DeliverBytes
     // true — the panel reads the file synchronously) or just its path + provider
     // (false, the default — the consumer reads it however it wants, or not).
@@ -160,7 +199,11 @@ private:
     void BuildGrid();      // breadcrumb + folder/file grid (inside the open window)
     void BuildFilterBar(); // game combo + one checkbox per browsable type
     void BuildSearchBar(); // search box + match count + zoom
+    void BuildEmptyHint(); // why an opened storage enumerated nothing
     void OpenCascDialog(); // native folder picker → OpenCasc
+    // What the host says @p game's storage is, with the detected install filled
+    // in where it named none. Resolves only — opens nothing.
+    GameStorageKeys ResolveGame(ProductId game) const;
 
     renderer::RenderService& svc_;
     io::StorageBrowser browser_;
@@ -175,6 +218,16 @@ private:
     // per-product slot, not to one open.
     std::string listfilePath_;
     std::string tactKeyPath_;
+    GameKeysCb gameKeys_;
+    // The root the last successful open was asked for — not browser_.Root(),
+    // which is what the storage resolved it to (a `Data/` suffix, a normalised
+    // form). Sync reopens with it, so it has to be the request, not the answer.
+    std::string openedRoot_;
+    // The open succeeded and enumerated nothing browsable. A distinct state
+    // from "no storage open": it is what an id-keyed World of Warcraft root
+    // opened without a listfile looks like, and left unsaid it reads as an
+    // empty folder rather than as a missing setting.
+    bool openedEmpty_ = false;
     bool filterUiVisible_ = true;
     bool deliverBytes_ = false;
 

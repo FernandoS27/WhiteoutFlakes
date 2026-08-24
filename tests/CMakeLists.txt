@@ -55,6 +55,9 @@ wdx_add_test(texture_usage_test texture_usage_test.cpp)
 # mappings are decoded through. Device-free, so it is unconditional.
 wdx_add_test(env_cube_test     env_cube_test.cpp)
 wdx_add_test(content_ref_test   content_ref_test.cpp)
+# Event-data SLK tables, keyed per render mode so a flip back to a mode the
+# session already parsed re-reads nothing.
+wdx_add_test(event_data_mode_test event_data_mode_test.cpp)
 # Per-product storage routing. Policy assertions run everywhere; the parts
 # that need a real WoW / SC2 / Heroes install skip without one.
 wdx_add_test(content_provider_games_test content_provider_games_test.cpp)

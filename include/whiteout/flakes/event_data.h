@@ -77,8 +77,13 @@ struct SndEntry {
 };
 
 /// @brief One-shot load of the event-data SLKs (UnitData, SplatData, etc.).
+///
+/// The tables are cached per render mode — the SLKs and the texture paths in
+/// them resolve through the HD/SD overlay, so each mode gets its own set and
+/// `cp->HdMode()` selects which one every call (and every `FindXxx`) sees.
 /// @param cp     Content provider used to read the SLKs.
-/// @param force  When `true`, re-load even if a prior call succeeded.
+/// @param force  When `true`, re-load even if a prior call succeeded. Applies
+///               to the mode `cp` is serving; the other mode's tables stand.
 void LoadEventDataFiles(IContentProvider* cp, bool force = false);
 
 /// @name Event-id → entry lookups (`nullptr` if not found)
@@ -113,6 +118,17 @@ void PrefetchEventAssetSlotsForEvents(
 ///        LoadEventDataFiles ahead of a force re-parse, and exposed to
 ///        hosts that want to drop event-data assets on teardown.
 void ReleaseEventAssetSlots(renderer::assets::AssetManager& assets);
+
+/// @brief Follow `cp` into its current render mode: hand the AssetManager
+///        prefetch over from the outgoing mode to the incoming one, parsing
+///        the incoming tables only if the session has never been in that mode.
+///
+/// A host flips the mode by calling `IContentProvider::SetHdMode` and then
+/// this; it is a no-op when the tables are already on `cp`'s mode. The caller
+/// is responsible for killing live splats first — each one holds a refcount on
+/// a slot keyed by the old-mode texture, and the release below cannot take
+/// that slot to zero while they are alive.
+void SyncEventDataMode(IContentProvider* cp, renderer::assets::AssetManager& assets);
 
 /// @name "Has the cache for this entry-kind been populated yet?"
 ///

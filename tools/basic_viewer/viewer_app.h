@@ -21,6 +21,7 @@
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
 
+#include <array>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -188,6 +189,28 @@ public:
     void SetStorageExplorerOpen(bool on);
     // Build the panel window inside the host's ImGui frame (called by ViewerUI).
     void BuildStorageExplorerWindow();
+
+    // ---- Current profile ----
+    // Which game the user is working with. A PROFILE, not a storage: it names a
+    // settings page and an ini section, and nothing about it opens anything.
+    // The provider's active product is a separate fact, moved only by content
+    // that needs it (FollowModelGame) — the two agree most of the time and are
+    // allowed not to.
+    ProductId SettingsProfile() const {
+        return settingsProfile_;
+    }
+    // Picked by the user in Settings. Persisted, because next launch should
+    // come back to the game they were working with; applied to nothing.
+    void SetSettingsProfile(ProductId game);
+
+    // Load `game`'s ini settings into the provider's slot for it, and make it
+    // the product the provider serves. ONCE per product per session unless
+    // `force`: a slot keeps its configuration across a switch, so re-applying
+    // buys nothing and costs everything — it overwrites session-only state and
+    // invalidates a storage that is open and correct, and the install dies with
+    // the last reference to it. `force` is for an explicit settings edit, which
+    // must reach the live storage precisely so it reopens.
+    void ApplyProfile(ProductId game, bool force);
 
     // ---- Animation frame export ----
     // Queue an animation export (see AnimationExportParams). Deferred: the UI
@@ -466,6 +489,12 @@ private:
     // Embedded Storage Explorer panel (Tools ▸ Storage Explorer), created lazily.
     std::unique_ptr<tools::StorageExplorer> storageExplorer_;
     bool storageExplorerOpen_ = false;
+
+    // The profile the Settings panel is on. Seeded from the ini at startup.
+    ProductId settingsProfile_ = ProductId::Wc3;
+    // Which products have had their ini settings loaded into their slot this
+    // session, indexed by ProductId. See ApplyProfile.
+    std::array<bool, 4> ioProfileApplied_{};
 
     // ---- Host state (mirror of the ACTIVE document) ----
     bool loopNonLoopingPolicy_ = true;

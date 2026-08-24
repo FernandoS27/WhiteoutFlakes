@@ -161,7 +161,43 @@ std::string SanitizeName(const std::string& in) {
 } // namespace
 
 ViewerApp::ViewerApp(RenderService& service) : service_(service) {
+    // The game the user was last working with. Reading it is an ini read and
+    // nothing more — which product the provider ends up serving is decided by
+    // test_main applying the same value, and by content loaded later.
+    settingsProfile_ = LoadIoProduct();
     ui_ = std::make_unique<ViewerUI>(*this);
+}
+
+void ViewerApp::ApplyProfile(ProductId game, bool force) {
+    auto& provider = service_.DefaultScene().GetContentProvider();
+    const auto idx = static_cast<usize>(game);
+    const bool first = idx >= ioProfileApplied_.size() || !ioProfileApplied_[idx];
+    if (!force && !first) {
+        // The slot already holds this profile's settings — and whatever the
+        // session added to them, like the keys AdoptNearbyWowKeys found beside
+        // a model. Re-applying the ini would write its empty listfile back over
+        // that, and an ini write that changes a value invalidates the slot: the
+        // provider drops the last reference to the install and the registry
+        // holds it only by weak_ptr, so it is DESTROYED and the next read
+        // re-parses indices, manifest and a 144 MB listfile. Switching between
+        // two open models is supposed to be a pointer move, which is the whole
+        // point of the per-product slots.
+        provider.SetGame(game);
+        return;
+    }
+    ApplyIoPathOverrides(provider, game);
+    if (idx < ioProfileApplied_.size())
+        ioProfileApplied_[idx] = true;
+}
+
+void ViewerApp::SetSettingsProfile(ProductId game) {
+    if (settingsProfile_ == game)
+        return;
+    settingsProfile_ = game;
+    // Persisted so the next launch comes back here, and applied to nothing:
+    // a profile's storage opens when that profile is needed, not when its
+    // settings page is opened.
+    SaveIoProduct(game);
 }
 
 ViewerApp::~ViewerApp() {
@@ -837,6 +873,14 @@ bool ViewerApp::OpenDocumentScene(std::shared_ptr<io::IContentProvider> provider
 // geometry — the `.skin` sits next to it on disk — and then silently loses
 // every texture, because those are fileDataIDs and no WoW storage is open.
 //
+// Warcraft III is in the map for the same reason and not as a formality: with
+// the panel left on StarCraft II or World of Warcraft, an `.mdx` loses its CASC
+// textures, the day/night rig, the IBL probes and every event SLK — all of them
+// read during the load, through whichever storage is active then. That leaves a
+// Reforged model lit by the procedural fallback probe and wearing the white
+// placeholder, and switching the panel back does not repair it, because those
+// are load-time decisions.
+//
 // Deliberately not persisted: the user did not pick this, they opened a file.
 // The Settings panel reads its selection off the provider, so it still shows
 // the truth for the session, and the next launch is back to their choice.
@@ -850,14 +894,22 @@ void ViewerApp::FollowModelGame(const std::filesystem::path& path) {
         game = ProductId::Wow;
     else if (ext == ".m3")
         game = ProductId::Sc2;
+    else if (ext == ".mdx" || ext == ".mdl" || ext == ".pkb" || ext == ".pkfx")
+        game = ProductId::Wc3;
     if (game == ProductId::Neutral)
         return;
 
+    // Content is what makes a profile *needed*, and this is the only path that
+    // moves the provider onto one. Selecting a profile in Settings does not:
+    // that is a choice of what to configure, and configuring a game the user is
+    // not reading has no business opening its install.
+    settingsProfile_ = game;
     auto& provider = service_.DefaultScene().GetContentProvider();
     if (provider.Game() != game) {
-        ApplyIoPathOverrides(provider, game);
-        // Same follow-up the Settings switch makes: assets that missed under
-        // the old game get another chance under the new one.
+        ApplyProfile(game, /*force=*/false);
+        // The load that follows is about to demand this storage anyway, so
+        // retrying here costs no open that was not already coming — and assets
+        // that missed under the old game get their chance under the new one.
         service_.RetryUnloadedAssets();
     }
     if (game == ProductId::Wow)
@@ -911,8 +963,7 @@ void ViewerApp::AdoptNearbyWowKeys(const std::filesystem::path& modelPath) {
 }
 
 bool ViewerApp::OpenDocument(const std::filesystem::path& path, bool effect) {
-    if (!effect)
-        FollowModelGame(path);
+    FollowModelGame(path);
     // All documents share one configured game provider so the CASC/MPQ/install
     // set is identical across tabs.
     return OpenDocumentScene(SharedProvider(), path.stem().string(), [&] {
@@ -1170,17 +1221,15 @@ void ViewerApp::ApplyRenderMode(RenderMode wanted) {
     // them in here would open that game's install for a mode flip alone.
     if (!p || !io::IsSplCachePopulated())
         return;
-    // Force-reload SplatData / UberSplatData / SpawnData so entries cached
-    // under the previous prefix order are replaced — texture paths stored in
-    // the entries re-resolve through the new CASC overlay on first fetch.
-    io::LoadEventDataFiles(p, /*force=*/true);
     // Kill any splats currently alive — each one holds a refcount on an
     // AssetManager slot keyed by the old-mode texture; without releasing them
-    // the re-prefetch below only bumps the same stale handle.
+    // the hand-over below only bumps the same stale handle.
     service_.Splats().Clear();
-    // Re-acquire the global splat texture set so the AssetManager slots used by
-    // SpawnSpl/SpawnUbr at runtime resolve under the new HD/SD precedence.
-    io::PrefetchEventAssetSlots(service_.Assets());
+    // Move the event-data tables and the splat prefetch onto the new mode.
+    // The tables are kept per mode, so flipping back to one this session has
+    // already been in re-reads no SLKs — only the textures, whose slots are
+    // keyed by path alone and so cannot stay resident across the flip.
+    io::SyncEventDataMode(p, service_.Assets());
 }
 
 std::shared_ptr<io::IContentProvider> ViewerApp::SharedProvider() {
@@ -1326,18 +1375,37 @@ void ViewerApp::SetStorageExplorerOpen(bool on) {
         storageExplorer_->SetOnActivate([this](const tools::ActivatedFile& f) {
             OpenStorageDocument(f.path, f.isEffect, f.provider);
         });
-        // Hand over what the viewer's own provider reads World of Warcraft
-        // with. Without it a WoW browse is *empty* — the root is id-keyed — and
-        // with it the panel shares that storage rather than opening a second.
-        auto& provider = service_.DefaultScene().GetContentProvider();
-        storageExplorer_->SetCascKeys(provider.ListfilePath(), provider.TactKeyPath());
-        // Default to the viewer's configured install path so the panel lands on
-        // the game storage without a folder pick; the Game combo and File ▸ Open
-        // CASC folder can still repoint it.
-        const std::string install = provider.InstallPath();
-        if (!install.empty())
-            storageExplorer_->OpenCasc(install);
+        // Where the panel gets a product's install path and (for World of
+        // Warcraft, where it is the difference between a browse and an empty
+        // grid) its listfile. Answered per product and on demand, because
+        // neither is a fact the viewer holds in one place at one time: the live
+        // provider is authoritative for the game it is currently serving —
+        // Settings ▸ IO edits and the session-only keys AdoptNearbyWowKeys
+        // picks up beside a loose model both land there — while the ini is the
+        // only record of the games it is not on, which the panel's own game
+        // combo can still browse.
+        storageExplorer_->SetGameKeys([this](ProductId game) {
+            auto& provider = service_.DefaultScene().GetContentProvider();
+            tools::GameStorageKeys keys;
+            if (provider.Game() == game) {
+                keys.installPath = provider.InstallPath();
+                keys.listfilePath = provider.ListfilePath();
+                keys.tactKeyPath = provider.TactKeyPath();
+            } else {
+                const IoPathOverrides o = LoadIoPathOverrides(game);
+                keys.installPath = o.installPath;
+                keys.listfilePath = o.listfilePath;
+                keys.tactKeyPath = o.tactKeyPath;
+            }
+            return keys;
+        });
     }
+    // Every show, not only the first. The panel outlives any one of these
+    // settings: a listfile adopted beside a model opened after the panel was
+    // first built used to never reach it. Sync reopens only when what the host
+    // knows has actually moved, so the folder the user was browsing survives a
+    // close/reopen.
+    storageExplorer_->Sync(settingsProfile_);
 }
 
 void ViewerApp::BuildStorageExplorerWindow() {

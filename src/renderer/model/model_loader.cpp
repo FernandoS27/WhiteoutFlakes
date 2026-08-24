@@ -828,6 +828,16 @@ u32 ModelLoader::AddModelByPath(const std::string& mdxPath, const Matrix44f& ini
     // Everything that reaches here is an MDX/MDL — SpawnUnit routes `.m2` and
     // `.m3` away first — so this is one of the two places a session commits to
     // Warcraft III content, and therefore to opening its install.
+    //
+    // Settle the product first, for the same reason TrySpawnForeign settles it
+    // before parsing: on a scene that owns its provider, that is what re-points
+    // the storage, and everything below — the game data, the template, its
+    // textures — reads through it. Leaving a previous `.m2`/`.m3` load's product
+    // standing would also hand this model that game's render profile.
+    if (rs_.Scene().Product() != ProductId::Wc3) {
+        rs_.Scene().SetProduct(ProductId::Wc3);
+        rs_.Settings().MarkRenderModeDirty();
+    }
     rs_.EnsureWc3GameData();
 
     auto tmpl = rs_.Scene().Templates().GetOrLoadSync(mdxPath);

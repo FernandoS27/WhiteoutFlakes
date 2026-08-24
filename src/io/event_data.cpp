@@ -6,6 +6,7 @@
 #include "whiteout/flakes/types.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -84,9 +85,18 @@ struct DataCache {
     // SPN child models survive across animation switches once loaded.
     std::vector<u32> prefetchSlots;
 };
+// One table set per render mode. Both the SLKs and the texture paths inside
+// them resolve through the HD/SD overlay, so the two modes can legitimately
+// parse to different rows — but a mode the session already visited stays
+// parsed, so flipping back to it re-reads nothing.
+DataCache& Cache(bool hd) {
+    static DataCache sd;
+    static DataCache hd_;
+    return hd ? hd_ : sd;
+}
+std::atomic<bool> g_hd{false};
 DataCache& Cache() {
-    static DataCache c;
-    return c;
+    return Cache(g_hd.load(std::memory_order_relaxed));
 }
 
 void RewriteMdlToMdx(std::string& path) {
@@ -369,6 +379,9 @@ const typename Map::mapped_type* FindIn(const Map& m, std::string_view id) {
 void LoadEventDataFiles(IContentProvider* cp, bool force) {
     if (!cp)
         return;
+    // The provider owns the mode; the tables follow whichever one it is
+    // serving, and this is what makes the mode-keyed cache switch.
+    g_hd.store(cp->HdMode(), std::memory_order_relaxed);
     auto& c = Cache();
     std::lock_guard<std::mutex> lk(c.mu);
     // Restore the original "load once and skip future calls" semantics
@@ -511,6 +524,20 @@ void ReleaseEventAssetSlots(renderer::assets::AssetManager& assets) {
         slots.swap(c.prefetchSlots);
     }
     for (u32 s : slots) assets.Release(s);
+}
+
+void SyncEventDataMode(IContentProvider* cp, renderer::assets::AssetManager& assets) {
+    if (!cp || cp->HdMode() == g_hd.load(std::memory_order_relaxed))
+        return;
+    // An AssetManager slot is keyed by path alone, so the outgoing mode's
+    // textures have to fall to a zero refcount before those same paths can
+    // re-resolve under the new overlay: release first, acquire second, never
+    // both held at once.
+    ReleaseEventAssetSlots(assets);
+    // Switches the active tables, and parses them only on the session's first
+    // visit to this mode.
+    LoadEventDataFiles(cp, /*force=*/false);
+    PrefetchEventAssetSlots(assets);
 }
 
 bool IsSpnCachePopulated() {

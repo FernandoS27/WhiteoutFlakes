@@ -163,6 +163,10 @@ bool StorageExplorer::OpenCasc(const std::string& root) {
         pool_->Clear();
     selectedPath_.clear();
     lastError_.clear();
+    openedRoot_ = root;
+    // Totals, not the filtered listing: a search left over from the last open
+    // must not be read as an empty storage.
+    openedEmpty_ = browser_.Current().folderTotal == 0 && browser_.Current().fileTotal == 0;
     navAnimT_ = 0.0f; // fade the first listing in
     return true;
 }
@@ -182,13 +186,41 @@ void StorageExplorer::OpenCascDialog() {
         OpenCasc(outPath.get());
 }
 
+GameStorageKeys StorageExplorer::ResolveGame(ProductId game) const {
+    GameStorageKeys keys = gameKeys_ ? gameKeys_(game) : GameStorageKeys{};
+    if (keys.installPath.empty())
+        keys.installPath = provider_->GamePath(game);
+    return keys;
+}
+
 bool StorageExplorer::OpenGame(ProductId game) {
-    const std::string root = provider_->GamePath(game);
-    if (root.empty()) {
+    const GameStorageKeys keys = ResolveGame(game);
+    if (keys.installPath.empty()) {
         lastError_ = std::string(GameLabel(game)) + " is not installed.";
         return false;
     }
-    return OpenCasc(root);
+    // Before the open, not after: the listfile and key list are part of the
+    // CASC open key, so a storage acquired without them stays without them.
+    SetCascKeys(keys.listfilePath, keys.tactKeyPath);
+    return OpenCasc(keys.installPath);
+}
+
+void StorageExplorer::Sync(ProductId fallback) {
+    if (!browser_.IsOpen()) {
+        if (fallback != ProductId::Neutral)
+            OpenGame(fallback);
+        return;
+    }
+    // Neutral is a hand-picked folder or a storage whose build config names no
+    // product — the host has no settings for it to contribute.
+    const ProductId game = browser_.Product();
+    if (game == ProductId::Neutral)
+        return;
+    const GameStorageKeys keys = ResolveGame(game);
+    if (keys.listfilePath == listfilePath_ && keys.tactKeyPath == tactKeyPath_)
+        return; // already showing exactly what the host knows
+    SetCascKeys(keys.listfilePath, keys.tactKeyPath);
+    OpenCasc(openedRoot_);
 }
 
 // Game first, then a checkbox per type that game ships. One row, because they
@@ -288,6 +320,26 @@ void StorageExplorer::BuildSearchBar() {
     ImGui::SetItemTooltip("Icon size, or Ctrl+scroll over the grid");
 }
 
+// An open that enumerated nothing is indistinguishable from an empty folder,
+// and for the one product where it is routine it is not the storage's fault but
+// a missing setting. Say which.
+void StorageExplorer::BuildEmptyHint() {
+    ImGui::Spacing();
+    ImGui::TextWrapped("Nothing browsable in '%s'.", browser_.Root().c_str());
+    ImGui::Spacing();
+    if (browser_.Product() == ProductId::Wow && listfilePath_.empty()) {
+        ImGui::TextColored(ImVec4(1, 0.8f, 0.4f, 1), "No listfile is configured.");
+        ImGui::TextWrapped(
+            "A World of Warcraft root is keyed by fileDataID, not by path: the names to "
+            "browse are not in the install at all. Point the host at a community listfile "
+            "CSV (in the Basic Viewer: Settings > IO > World of Warcraft > Listfile), then "
+            "reopen this panel.");
+    } else {
+        ImGui::TextWrapped("The storage opened, but held no file of a type this game is "
+                           "browsed for.");
+    }
+}
+
 void StorageExplorer::NewFrame(float /*dt*/) {
     // Apply navigation staged by last frame's UI BEFORE anything references the
     // (about-to-be-cleared) thumbnails. Clear() waits for the GPU to finish with
@@ -357,6 +409,12 @@ void StorageExplorer::BuildGrid() {
     if (filterUiVisible_) {
         BuildFilterBar();
         ImGui::Separator();
+    }
+    // The filter bar first, so the game combo stays reachable: switching game is
+    // the way out of a storage that has nothing to show.
+    if (openedEmpty_) {
+        BuildEmptyHint();
+        return;
     }
     BuildSearchBar();
 

@@ -1540,10 +1540,11 @@ int main(int argc, char* argv[]) {
     }
 
     // IO overrides — Settings > IO can repoint the install path, toggle CASC
-    // or MPQ off entirely, and reorder the MPQ load list. Per game, and which
-    // game the settings panel was left on decides what opens now.
-    whiteout::flakes::ApplyIoPathOverrides(renderer.Scene().GetContentProvider(),
-                                           whiteout::flakes::LoadIoProduct());
+    // or MPQ off entirely, and reorder the MPQ load list. Per game, and the
+    // profile the settings panel was left on is the one loaded now. Through the
+    // app so it records the product as configured: after this, switching onto
+    // it must not re-apply (see ViewerApp::ApplyProfile).
+    app.ApplyProfile(app.SettingsProfile(), /*force=*/true);
 
     // NFD is also used by Settings > IO (folder picker) and File > Open
     // (re-opened from the menu bar), so initialise it unconditionally rather

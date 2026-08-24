@@ -577,11 +577,46 @@ int main(int argc, char* argv[]) {
             if (const char* icon = std::getenv("PANEL_ICON"))
                 panel.SetIconSize(static_cast<float>(std::atof(icon)));
             // A World of Warcraft root is id-keyed: no listfile, no names.
-            if (const char* lf = std::getenv("PANEL_LISTFILE"))
-                panel.SetCascKeys(lf, std::getenv("PANEL_TACTKEYS") ? std::getenv("PANEL_TACTKEYS") : "");
-            if (!panel.OpenCasc(cascRoot)) {
-                std::fprintf(stderr, "[panel-shot] OpenCasc FAILED: %s\n", panel.LastError().c_str());
-                return 2;
+            const char* lf = std::getenv("PANEL_LISTFILE");
+            const char* tk = std::getenv("PANEL_TACTKEYS");
+            if (const char* syncGame = std::getenv("PANEL_SYNC")) {
+                // The host contract the Basic Viewer drives: keys are ASKED for,
+                // per product, at open time. Gated in the shape that used to
+                // fail — a listfile the host only has for the SECOND Sync, which
+                // is what adopting one beside a model opened after the panel was
+                // built looks like. A one-shot SetCascKeys can't express it.
+                bool keysKnown = false;
+                panel.SetGameKeys([&](wf::ProductId) {
+                    wf::tools::GameStorageKeys k;
+                    k.installPath = cascRoot;
+                    if (keysKnown) {
+                        k.listfilePath = lf ? lf : "";
+                        k.tactKeyPath = tk ? tk : "";
+                    }
+                    return k;
+                });
+                const wf::ProductId fallback = CompareCi(syncGame, "sc2") == 0 ? wf::ProductId::Sc2
+                                               : CompareCi(syncGame, "wc3") == 0
+                                                   ? wf::ProductId::Wc3
+                                                   : wf::ProductId::Wow;
+                panel.Sync(fallback);
+                std::printf("[panel-sync] no keys yet: open=%d empty=%d\n", (int)panel.IsOpen(),
+                            (int)panel.IsEmpty());
+                keysKnown = true;
+                panel.Sync(fallback); // the host has them now; nothing told the panel
+                std::printf("[panel-sync] keys arrived: open=%d empty=%d\n", (int)panel.IsOpen(),
+                            (int)panel.IsEmpty());
+                panel.Sync(fallback); // idempotent: nothing moved, nothing reopens
+                std::printf("[panel-sync] settled:      open=%d empty=%d\n", (int)panel.IsOpen(),
+                            (int)panel.IsEmpty());
+            } else {
+                if (lf)
+                    panel.SetCascKeys(lf, tk ? tk : "");
+                if (!panel.OpenCasc(cascRoot)) {
+                    std::fprintf(stderr, "[panel-shot] OpenCasc FAILED: %s\n",
+                                 panel.LastError().c_str());
+                    return 2;
+                }
             }
             if (lsPathSet)
                 panel.NavigateTo(lsPath);

@@ -36,9 +36,10 @@ private:
     // Strip of one tab per open document (model/effect), each with a close (x)
     // button. Selecting a tab activates that document; closing it unloads it.
     void BuildTabBar();
-    // Settings is a game picker (left panel) plus that game's pages. `game` is
-    // the picked profile, which is also the shared provider's active game —
-    // one source of truth rather than a selection to keep in sync.
+    // Settings is a profile picker (left panel) plus that profile's pages. The
+    // picked profile is ViewerApp::SettingsProfile() — deliberately NOT the
+    // provider's active game: editing a profile must not repoint the content
+    // layer, let alone open its install.
     void BuildSettingsWindow();
     void BuildSettingsGeneralTab(ProductId game);
     void BuildSettingsIoTab(io::FileContentProvider& provider, ProductId game);
@@ -48,8 +49,17 @@ private:
     void BuildIoArchivePage(io::FileContentProvider& provider, ProductId game);
     // StarCraft II / Heroes: two CASC roots and no MPQs, ever.
     void BuildIoCascPage(io::FileContentProvider& provider);
-    // Repoint the shared provider at `game` and apply that game's saved IO
-    // setup. What the left panel does when a row is clicked.
+    // Live storage state for `game`, which only the active profile has.
+    void BuildIoStorageStatus(io::FileContentProvider& provider, ProductId game);
+    // Fill the edit buffers with `game`'s settings: from the live provider when
+    // it is the profile being served, from the ini otherwise.
+    void SeedIoBuffers(io::FileContentProvider& provider, ProductId game);
+    // Write the buffers back as `game`'s profile — always to the ini, and to
+    // the provider (reopening its storage) only when `game` is the one it is
+    // serving. See the IO pages comment in viewer_ui.cpp.
+    void CommitIoProfile(io::FileContentProvider& provider, ProductId game);
+    // What the left panel does when a row is clicked: change which profile is
+    // being edited, and nothing else.
     void SelectSettingsProfile(ProductId game);
     void BuildViewCubeWidget();
     // Renders the deferred Save As options modal (MDL dialect + texture export)
@@ -85,20 +95,23 @@ private:
     bool saveExportTextures_ = false;  // export used textures next to the model
     i32 saveTexFormatIdx_ = 0;         // index into kExportFormats (0 = keep original)
 
-    // IO tab edit buffers, mirroring the live FileContentProvider state.
-    // Seeded from the provider on first display of Settings (and after a
-    // Reset). installPathBuf_ commits to the provider + ini on
-    // IsItemDeactivatedAfterEdit; the MPQ-list scratch is committed inline
-    // by the add/remove/reorder buttons.
+    // IO tab edit buffers: the whole of one profile's settings. They are the
+    // page's state, not a mirror of the provider — the provider only ever holds
+    // the ACTIVE profile, and these have to be able to hold any of them (see
+    // SeedIoBuffers / CommitIoProfile).
     std::string installPathBuf_;
     std::string hotsPathBuf_;  // StarCraft II page: the Heroes root
     std::string listfileBuf_;  // World of Warcraft page: the `id;path` CSV
     std::string tactKeyBuf_;   // World of Warcraft page: the TACT key list
     std::string newMpqEntryBuf_;
+    bool ioIgnoreCascBuf_ = false;
+    bool ioIgnoreMpqBuf_ = false;
+    std::vector<std::string> ioMpqListBuf_;
     bool ioBufsInitialised_ = false;
-    // Which game the buffers above hold. They are re-seeded when the profile
-    // panel selects a different one.
+    // Which profile the buffers above hold, and which product the provider was
+    // serving when they were filled. Either changing re-seeds them.
     ProductId ioBufsGame_ = ProductId::Wc3;
+    ProductId ioBufsServing_ = ProductId::Wc3;
 
     // Export Animation Frames modal state.
     bool openExportPopup_ = false;
