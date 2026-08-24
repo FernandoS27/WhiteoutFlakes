@@ -295,7 +295,7 @@ private:
     };
 
     void Build(FrameState& fs);
-    void BuildFixtures(const w3::RigidBody& rb, sb::BodyId body, f32 scale);
+    void BuildFixtures(const w3::RigidBody& rb, sb::BodyId body, const Vector3f& boneScale);
     void BuildJoints(const FrameState& fs);
     void Seed(const FrameState& fs);
     void UpdateDrivenState(FrameState& fs);
@@ -316,6 +316,7 @@ private:
     /// source saw.
     std::vector<i32> shapeBones_;
     std::vector<Matrix44f> shapeLocals_;
+    std::vector<u8> shapeAniso_;
     std::vector<BoneClaim> claims_;
     /// The pose as the sampler produced it, snapshotted before the write-back overwrites the
     /// driven bones — the write-back reads it to recover each unclaimed bone's animated local
@@ -609,10 +610,9 @@ void Sc2PhysicsStage::Build(FrameState& fs) {
         link.scale = frame.scale;
         links_.push_back(link);
 
-        // **The smallest of the three scale components, splatted.** SC2 collapses the bone's
-        // per-axis world scale to one float and hands that to every fixture, so a
-        // non-uniformly scaled physics bone is simulated at its *thinnest* axis and
-        // non-uniform scale is fundamentally unsupported by the format's own runtime.
+        // The bone's scale goes to the fixtures whole — `BuildFixtures` collapses it per
+        // *shape*, because only three of the five kinds can wear all three axes. This one is
+        // the trace line's, and is what StarCraft II would have used for every fixture.
         const f32 uniform = (std::min)({frame.scale.x, frame.scale.y, frame.scale.z});
         // **A body that collides with nothing gets no fixtures.** SC2 says so through the
         // filter rather than through the shape list: a kinematic or static body with neither
@@ -626,7 +626,7 @@ void Sc2PhysicsStage::Build(FrameState& fs) {
         // turns it dynamic later.
         const bool inert = !CouldBeDynamic(rb) && (flags & 0x3u) == 0u;
         if (!inert) {
-            BuildFixtures(rb, body, uniform);
+            BuildFixtures(rb, body, frame.scale);
         }
         fixtureCount += static_cast<int>(scene_.Get(body).fixtures.size());
         skippedShapes += static_cast<int>(rb.rigidBodyShape.size() -
@@ -659,6 +659,7 @@ void Sc2PhysicsStage::Build(FrameState& fs) {
         Sc2CollisionShapes debug = Sc2BuildCollisionShapes(model);
         shapeBones_ = std::move(debug.bones);
         shapeLocals_ = std::move(debug.locals);
+        shapeAniso_ = std::move(debug.anisotropic);
     }
 
     // The ground. StarCraft II collides its ragdolls against the terrain collider; the viewer's
@@ -684,7 +685,7 @@ void Sc2PhysicsStage::Build(FrameState& fs) {
     Seed(fs);
     UpdateDrivenState(fs);
     RebuildClaims(fs);
-    Sc2PlaceCollisionShapes(shapeBones_, shapeLocals_, fs.boneWorldMatrices,
+    Sc2PlaceCollisionShapes(shapeBones_, shapeLocals_, shapeAniso_, fs.boneWorldMatrices,
                             fs.collisionTransforms);
 
     if (debug) {
@@ -708,7 +709,27 @@ void Sc2PhysicsStage::RebuildClaims(const FrameState& fs) {
     }
 }
 
-void Sc2PhysicsStage::BuildFixtures(const w3::RigidBody& rb, sb::BodyId body, f32 scale) {
+void Sc2PhysicsStage::BuildFixtures(const w3::RigidBody& rb, sb::BodyId body,
+                                    const Vector3f& boneScale) {
+    // **The bone's scale arrives per axis and is collapsed per shape, not per body.**
+    //
+    // StarCraft II collapses it once for the whole body: `M3Physics_CreateRigidBody` reduces the
+    // bone's three scale components to their minimum with a pair of `cmovb`s and writes that
+    // one float back over all three slots (`0x102946d22`-`0x102946d43`), then hands that triple to
+    // `M3Physics_CreateShapeFixture`. It can afford to, because a `dmFixture` carries a single
+    // `m_scaleOrRadius` and its polytopes are cooked offline — the per-axis part is bought back
+    // by baking it into the cook, which is why the box and the cylinder come out squashed anyway.
+    //
+    // Snowball builds its polytopes here, out of points, so box, cylinder and hull take all
+    // three axes and a stretched bone stretches its collider. A sphere and a capsule cannot —
+    // there is no ellipsoid in the engine and no elliptical capsule — so those two keep the
+    // client's `min` exactly, and the divergence stays confined to the kinds that had a choice.
+    // @ref Sc2PlaceCollisionShapes draws the same split, or the overlay would contradict the
+    // solver on every non-uniformly scaled bone.
+    const f32 uniform = (std::min)({boneScale.x, boneScale.y, boneScale.z});
+    const auto stretch = [&boneScale](const sb::Vec4& v) {
+        return sb::Vec4{v.x * boneScale.x, v.y * boneScale.y, v.z * boneScale.z, 0.0f};
+    };
     for (const w3::PhysicsShape& ps : rb.rigidBodyShape) {
         // The shape matrix decomposed exactly as `M3Physics_CreateShapeFixture` does it: an
         // orthonormal rotation, a translation, and three row lengths that scale the dimensions.
@@ -720,36 +741,66 @@ void Sc2PhysicsStage::BuildFixtures(const w3::RigidBody& rb, sb::BodyId body, f3
         const Vector3f row = shapeFrame.scale;
         const Vector3f dims = ps.shapeDimensions;
         const sb::Mtx basis = sb::RotationMatrix(local.rotation);
+        // The shape frame's translation is scaled too, not just its dimensions — the binary
+        // multiplies it by the body scale as a **vector**, and only ever sees three equal lanes
+        // because its caller splatted them. It is gated `(shapeType & 0xFE) != 4`, so the hull
+        // and the mesh are excluded; that costs nothing, their offsets being zero throughout the
+        // corpus. The box and the cylinder take the vector through `stretch` below, the sphere
+        // and the capsule the collapsed one here, so a collider and its offset always stay on
+        // the same footing.
+        const sb::Vec4 uniformOrigin = local.position * uniform;
         sb::ShapeId shape = -1;
 
         switch (ps.shapeType) {
-        case w3::PhysicsShapeType::Box:
+        case w3::PhysicsShapeType::Box: {
             // A box is a **polytope** to Domino, not a shape kind of its own — the same
             // conversion `.phys` boxes take (§3.2 against §6.2). Half extents come from the
             // three dimensions scaled by their own matrix row.
-            shape = shapes_.Add(sb::MakeBox(
-                sb::Vec4{dims.x * row.x, dims.y * row.y, dims.z * row.z, 0.0f}, local, scale));
+            //
+            // Built corner by corner rather than through `MakeBox` because the bone's scale has
+            // to land *after* the shape's rotation, in the bone space where its three axes mean
+            // something; `MakeBox` offers one factor on the finished points and nothing else.
+            //
+            // Its floor comes along: a `PHSH` authoring a zero extent would otherwise reach the
+            // hull builder as a degenerate point cloud instead of the thin slab it substitutes.
+            const sb::Vec4 h{(std::max)(dims.x * row.x, sb::kMinBoxHalfExtent),
+                             (std::max)(dims.y * row.y, sb::kMinBoxHalfExtent),
+                             (std::max)(dims.z * row.z, sb::kMinBoxHalfExtent), 0.0f};
+            std::vector<sb::Vec4> pts;
+            pts.reserve(8);
+            for (int sx = -1; sx <= 1; sx += 2) {
+                for (int sy = -1; sy <= 1; sy += 2) {
+                    for (int sz = -1; sz <= 1; sz += 2) {
+                        const sb::Vec4 corner{h.x * static_cast<f32>(sx),
+                                              h.y * static_cast<f32>(sy),
+                                              h.z * static_cast<f32>(sz), 0.0f};
+                        pts.push_back(stretch(basis.Transform(corner) + local.position));
+                    }
+                }
+            }
+            shape = shapes_.Add(sb::MakePolytope(pts));
             break;
+        }
 
         case w3::PhysicsShapeType::Sphere:
-            shape = shapes_.Add(sb::Sphere{
-                local.position, dims.x * (std::max)({row.x, row.y, row.z}) * scale});
+            shape = shapes_.Add(sb::Sphere{uniformOrigin,
+                                           dims.x * (std::max)({row.x, row.y, row.z}) * uniform});
             break;
 
         case w3::PhysicsShapeType::Capsule: {
             // **`shapeDimensions.y` is the full distance between the two cap centres**, not the
             // capsule's overall length and not a half-length: the endpoints are the midpoint
             // plus and minus half of it, along the frame's own +Z (its normalised row 2).
-            const f32 radius = dims.x * row.x * scale;
-            const f32 height = dims.y * row.z * scale;
+            const f32 radius = dims.x * row.x * uniform;
+            const f32 height = dims.y * row.z * uniform;
             if (height <= kCapsuleCollapse) {
-                shape = shapes_.Add(sb::Sphere{local.position, radius});
+                shape = shapes_.Add(sb::Sphere{uniformOrigin, radius});
                 break;
             }
             const sb::Vec4 axis =
                 basis.Transform(sb::Vec4{0.0f, 0.0f, height * 0.5f, 0.0f});
             shape =
-                shapes_.Add(sb::Capsule{local.position + axis, local.position - axis, radius});
+                shapes_.Add(sb::Capsule{uniformOrigin + axis, uniformOrigin - axis, radius});
             break;
         }
 
@@ -759,37 +810,54 @@ void Sc2PhysicsStage::BuildFixtures(const w3::RigidBody& rb, sb::BodyId body, f3
             // since a capsule's round caps are exactly what a cylinder is not.
             //
             // Eight sides is our choice — the shipped prism's vertex count is a property of the
-            // baked table, which is not in the file.
-            const f32 radius = dims.x * row.x * scale;
-            const f32 half = dims.y * row.z * scale * 0.5f;
+            // baked table, which is not in the file. The rotation and offset go into the points
+            // for the same reason: the client's cylinder fixture is built with an **identity**
+            // transform, so its cook must already carry the placement, and 156 of the corpus's
+            // 278 cylinders are rotated by a matrix that fixture never reads.
+            //
+            // **Row 0 and row 1 separately**, so the cross-section is an *ellipse* whenever the
+            // two differ (§6.2). A cylinder spends all three row lengths per axis, exactly as a
+            // box does; taking row 0 for both radii is the "collapse it to one factor" mistake
+            // that section warns about, and it makes a squashed prism round.
+            const f32 radiusX = dims.x * row.x;
+            const f32 radiusY = dims.x * row.y;
+            const f32 half = dims.y * row.z * 0.5f;
             std::vector<sb::Vec4> pts;
             pts.reserve(16);
             for (int k = 0; k < 8; ++k) {
                 const f32 a = 6.2831853f * static_cast<f32>(k) / 8.0f;
-                const f32 x = radius * std::cos(a), y = radius * std::sin(a);
-                pts.push_back(basis.Transform(sb::Vec4{x, y, half, 0.0f}) + local.position);
-                pts.push_back(basis.Transform(sb::Vec4{x, y, -half, 0.0f}) + local.position);
+                const f32 x = radiusX * std::cos(a), y = radiusY * std::sin(a);
+                pts.push_back(
+                    stretch(basis.Transform(sb::Vec4{x, y, half, 0.0f}) + local.position));
+                pts.push_back(
+                    stretch(basis.Transform(sb::Vec4{x, y, -half, 0.0f}) + local.position));
             }
             shape = shapes_.Add(sb::MakePolytope(pts));
             break;
         }
 
         case w3::PhysicsShapeType::ConvexHull: {
-            // **The hull's transform is already baked into its vertices.** SC2's offline cook
-            // transforms the point cloud and then writes the shape matrix back as identity, so
-            // applying it here is a no-op on shipped data and the right thing on anything else.
+            // **The hull's transform is already baked into its vertices**, which is why the
+            // client can build this fixture with an identity transform and nothing but
+            // `max(sx, sy, sz)` for scale: it takes the `PHSH` matrix's row lengths and discards
+            // its rotation and translation outright. Measured rather than inferred from that —
+            // of 4431 corpus hulls, the 54 whose matrix is *not* identity all carry an empty
+            // point cloud, so applying it here is a no-op on every hull that has geometry and
+            // the right thing on anything else.
             std::vector<sb::Vec4> pts;
             const std::span<const Vector3f> hull = HullPoints(ps);
+            const f32 shapeScale = (std::max)({row.x, row.y, row.z});
             pts.reserve(hull.size());
             for (const Vector3f& v : hull) {
-                pts.push_back(basis.Transform(sb::Vec4{v.x, v.y, v.z, 0.0f}) + local.position);
+                pts.push_back(stretch(
+                    (basis.Transform(sb::Vec4{v.x, v.y, v.z, 0.0f}) + local.position)
+                    * shapeScale));
             }
             if (pts.size() >= 4) {
                 // Rebuilt through our own hull builder rather than adopting the file's face and
                 // half-edge tables the way the client does: the topology is ours to choose, and
                 // a corrupt `DMSE` table would otherwise reach the narrowphase intact.
-                shape = shapes_.Add(
-                    sb::MakePolytope(pts, (std::max)({row.x, row.y, row.z}) * scale));
+                shape = shapes_.Add(sb::MakePolytope(pts));
             }
             break;
         }
@@ -1097,7 +1165,7 @@ void Sc2PhysicsStage::Run(FrameState& fs, const PoseStageContext& ctx) {
     // The two differ by exactly the thing the overlay exists to show — nothing else can
     // separate "the bodies are in the wrong place" from "the bodies are right and the skinning
     // is wrong".
-    Sc2PlaceCollisionShapes(shapeBones_, shapeLocals_, fs.boneWorldMatrices,
+    Sc2PlaceCollisionShapes(shapeBones_, shapeLocals_, shapeAniso_, fs.boneWorldMatrices,
                             fs.collisionTransforms);
 
     if (std::getenv("WDX_PHYSICS_DEBUG") != nullptr && ++debugFrame_ % 200 == 0) {
@@ -1139,6 +1207,13 @@ void Sc2DecomposeBone(const Matrix44f& world, Quaternion& rotation, Vector3f& tr
     translation = {f.xf.position.x, f.xf.position.y, f.xf.position.z};
 }
 
+Matrix44f Sc2ComposeBone(const Quaternion& rotation, const Vector3f& translation) {
+    sb::Transform xf;
+    xf.rotation = sb::Vec4{rotation.x, rotation.y, rotation.z, rotation.w};
+    xf.position = sb::Vec4{translation.x, translation.y, translation.z, 0.0f};
+    return ToMatrix(xf, Vector3f{1.0f, 1.0f, 1.0f});
+}
+
 Sc2CollisionShapes Sc2BuildCollisionShapes(const ::whiteout::m3::Model& model) {
     namespace rm = ::whiteout::flakes::renderer::model;
     Sc2CollisionShapes out;
@@ -1173,9 +1248,12 @@ Sc2CollisionShapes Sc2BuildCollisionShapes(const ::whiteout::m3::Model& model) {
             //   hull      the largest, uniformly, and the shape matrix's rotation is baked into
             //             the shipped vertices
             //
-            // The per-axis kinds get their scale through @ref Sc2CollisionShapes::locals, which
-            // is also what keeps their *orientation* — the alternative, an axis-aligned span of
-            // a rotated box's corners, is a wireframe that grows and shrinks as the limb turns.
+            // Wherever a kind's scale can go into its geometry it does, leaving `locals` to
+            // carry rotation and translation alone; only the cylinder needs it in the matrix,
+            // its wireframe being a circle that the frame turns into an ellipse. What `locals`
+            // must carry for every kind is the *orientation* — the alternative, an axis-aligned
+            // span of a rotated box's corners, is a wireframe that grows and shrinks as the limb
+            // turns.
             const BoneFrame sf = DecomposeBone(ps.transform);
             const Vector3f row = sf.scale;
             const Vector3f dims = ps.shapeDimensions;
@@ -1184,20 +1262,33 @@ Sc2CollisionShapes Sc2BuildCollisionShapes(const ::whiteout::m3::Model& model) {
             rm::CollisionShapeData d{};
             d.bodyKind = kind;
             d.bodyIndex = static_cast<i32>(rbIndex);
-            // Rotation and translation only. The three kinds that collapse their scale to one
-            // number bake it into the geometry below instead, or the wireframe would be
-            // stretched where the fixture is not.
+            // Which of the two placements this shape gets (@ref Sc2PlaceCollisionShapes).
+            // Off the *M3* kind, because it is the kind the *fixture* was built from — a
+            // collapsed capsule is drawn as the sphere it is simulated as, and asking the
+            // drawing what scale rule it wants would get the sphere's answer for the wrong
+            // reason.
+            const bool aniso = ps.shapeType == w3::PhysicsShapeType::Box ||
+                               ps.shapeType == w3::PhysicsShapeType::Cylinder ||
+                               ps.shapeType == w3::PhysicsShapeType::ConvexHull;
+            // Rotation and translation only, unless a kind below replaces it.
             Matrix44f local = ToMatrix(sf.xf, kUnitScale);
             bool ok = false;
 
             switch (ps.shapeType) {
-            case w3::PhysicsShapeType::Box:
+            case w3::PhysicsShapeType::Box: {
+                // The row scale goes into the extents rather than into `local` so that
+                // `kMinBoxHalfExtent` can be applied where the fixture applies it — after the
+                // rows, before the bone. A `PHSH` that authors a zero extent is simulated as
+                // the engine's thin slab, and the overlay of a slab is a slab, not a plane.
+                const Vector3f h{(std::max)(dims.x * row.x, sb::kMinBoxHalfExtent),
+                                 (std::max)(dims.y * row.y, sb::kMinBoxHalfExtent),
+                                 (std::max)(dims.z * row.z, sb::kMinBoxHalfExtent)};
                 d.type = static_cast<i32>(rm::CollisionShapeType::Box);
-                d.vertices[0] = {-dims.x, -dims.y, -dims.z};
-                d.vertices[1] = {dims.x, dims.y, dims.z};
-                local = ToMatrix(sf.xf, row);
+                d.vertices[0] = {-h.x, -h.y, -h.z};
+                d.vertices[1] = h;
                 ok = true;
                 break;
+            }
 
             case w3::PhysicsShapeType::Sphere:
                 d.type = static_cast<i32>(rm::CollisionShapeType::Sphere);
@@ -1214,7 +1305,10 @@ Sc2CollisionShapes Sc2BuildCollisionShapes(const ::whiteout::m3::Model& model) {
                     d.type = static_cast<i32>(rm::CollisionShapeType::Sphere);
                     d.vertices[0] = {0.0f, 0.0f, 0.0f};
                 } else {
-                    d.type = static_cast<i32>(rm::CollisionShapeType::Cylinder);
+                    // A capsule, and drawn as one: `shapeDimensions.y` is the distance between
+                    // the two cap centres, and the fixture reaches a full radius past each of
+                    // them. Flat-capped, that margin disappears from the picture.
+                    d.type = static_cast<i32>(rm::CollisionShapeType::Capsule);
                     d.vertices[0] = {0.0f, 0.0f, height * 0.5f};
                     d.vertices[1] = {0.0f, 0.0f, -height * 0.5f};
                 }
@@ -1269,6 +1363,7 @@ Sc2CollisionShapes Sc2BuildCollisionShapes(const ::whiteout::m3::Model& model) {
                 out.shapes.push_back(d);
                 out.locals.push_back(local);
                 out.bones.push_back(static_cast<i32>(bone));
+                out.anisotropic.push_back(aniso ? 1u : 0u);
             }
         }
     }
@@ -1276,6 +1371,7 @@ Sc2CollisionShapes Sc2BuildCollisionShapes(const ::whiteout::m3::Model& model) {
 }
 
 void Sc2PlaceCollisionShapes(std::span<const i32> bones, std::span<const Matrix44f> locals,
+                             std::span<const u8> anisotropic,
                              std::span<const Matrix44f> boneWorld, std::vector<Matrix44f>& out) {
     if (bones.empty() || locals.size() != bones.size()) {
         return;
@@ -1283,9 +1379,12 @@ void Sc2PlaceCollisionShapes(std::span<const i32> bones, std::span<const Matrix4
     out.resize(bones.size());
     // The bone frames are shared between shapes and cost a decompose each, so the last one is
     // kept rather than recomputed — a body's shapes are contiguous, which makes this the common
-    // case rather than an optimisation for a case that does not occur.
+    // case rather than an optimisation for a case that does not occur. Both placements are
+    // built together for the same reason: they share the decompose, and a body's shapes usually
+    // want the same one anyway.
     i32 cachedBone = -1;
-    Matrix44f placement = Matrix44f::identity();
+    Matrix44f stretched = Matrix44f::identity();
+    Matrix44f collapsed = Matrix44f::identity();
     for (std::size_t i = 0; i < bones.size(); ++i) {
         const i32 bone = bones[i];
         if (bone < 0 || static_cast<std::size_t>(bone) >= boneWorld.size()) {
@@ -1294,11 +1393,17 @@ void Sc2PlaceCollisionShapes(std::span<const i32> bones, std::span<const Matrix4
         }
         if (bone != cachedBone) {
             const BoneFrame f = DecomposeBone(boneWorld[static_cast<std::size_t>(bone)]);
+            // Scale then rotate, which is what `ToMatrix` builds — so the three factors are
+            // spent along the *bone's* own axes, the only space in which they mean anything.
+            stretched = ToMatrix(f.xf, f.scale);
             const f32 uniform = (std::min)({f.scale.x, f.scale.y, f.scale.z});
-            placement = ToMatrix(f.xf, Vector3f{uniform, uniform, uniform});
+            collapsed = ToMatrix(f.xf, Vector3f{uniform, uniform, uniform});
             cachedBone = bone;
         }
-        out[i] = locals[i] * placement;
+        // Missing flags mean the caller predates them; the collapsed placement is what the
+        // overlay has always drawn, so that is the safe answer rather than a silent stretch.
+        const bool aniso = i < anisotropic.size() && anisotropic[i] != 0u;
+        out[i] = locals[i] * (aniso ? stretched : collapsed);
     }
 }
 

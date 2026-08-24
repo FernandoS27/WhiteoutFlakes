@@ -2003,6 +2003,8 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         rs_.Debug().RenderCollisions();
     if (rs_.Settings().ShowAnyPhysicsBodies())
         rs_.Debug().RenderPhysicsBodies();
+    if (rs_.Settings().ShowPhysicsCloth())
+        rs_.Debug().RenderClothOverlay();
     if (rs_.Settings().ShowLights())
         rs_.Debug().RenderLightMarkers();
 

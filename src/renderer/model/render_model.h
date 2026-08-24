@@ -169,6 +169,19 @@ struct CollisionShape {
     std::vector<u16> hullEdges;       ///< Index pairs into `hullPoints`.
 };
 
+/// @brief One cloth's overlay: what it is, plus where it is this frame.
+///
+/// The static half is copied from the source at spawn; the two resolved arrays
+/// are refilled from the skinning palette every frame, the same way a collision
+/// shape's `transform` is. Resolving here rather than in the overlay keeps the
+/// debug pass out of the palette, which it has no other reason to read.
+struct ClothOverlay {
+    ClothOverlayData def;
+    std::vector<Vector3f> particles;  ///< Model space, per particle.
+    std::vector<Matrix44f> colliders; ///< Model space, per collider.
+    bool active = true;               ///< `PHCL.active` this frame.
+};
+
 struct TexAnimData {
     f32 uOff = 0, vOff = 0, uTile = 1, vTile = 1, rotation = 0;
 };
@@ -210,6 +223,7 @@ struct RenderModel {
     gfx::BufferHandle ribbonVB = gfx::BufferHandle::Invalid;
     i32 ribbonVBSize = 0;
     std::vector<CollisionShape> collisionShapes;
+    std::vector<ClothOverlay> cloths;
 
     std::unordered_map<i32, TexAnimData> matTexAnim;
 

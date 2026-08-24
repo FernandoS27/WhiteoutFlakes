@@ -16,10 +16,15 @@
 // would pass this suite while being wrong.
 
 #include "whiteout/flakes/pose_stage.h"
+#include "io/file_content_provider.h"
+#include "io/m2/m2_model_adapter.h"
 #include "renderer/profiles/wow/wow_physics.h"
+#include "whiteout/flakes/content_ref.h"
+#include "whiteout/flakes/pose_request.h"
 #include "whiteout/models/m2/parser.h"
 #include "whiteout/utils/os_file_system.h"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -37,6 +42,8 @@ namespace flakes = whiteout::flakes;
 
 using whiteout::Matrix44f;
 using whiteout::f32;
+using whiteout::flakes::renderer::model::FrameState;
+using Catch::Approx;
 
 namespace {
 
@@ -423,4 +430,148 @@ TEST_CASE("A model with no .phys produces no physics stage", "[m2][phys]") {
     // Not an inert stage: an empty one still costs a virtual call and a claim
     // copy per actor per frame, and every WC3 model in the scene would pay it.
     CHECK(flakes::renderer::profiles::wow::CreateWowPhysicsStage(bare) == nullptr);
+}
+
+TEST_CASE("every .phys shape draws as its own kind", "[m2][phys][corpus]") {
+    // The overlay's job is to show what the solver holds, and three of the four
+    // `.phys` kinds were showing something else: a capsule drew flat-capped,
+    // losing the hemisphere the fixture reaches past each cap centre; a
+    // polytope drew as the box it spans, which makes a shoulder plate and a
+    // torso plate the same picture and both of them far larger than the
+    // collider; and a box drew axis-aligned, throwing away the rotation that
+    // turns it onto the limb it wraps.
+    //
+    // Aqir is the fixture because he is the one corpus model carrying both a
+    // `.phys` and the `.skin` profiles the adapter needs to load at all.
+    const fs::path path = CorpusRoot() / "creature" / "aqir" / "aqir.m2";
+    if (!fs::exists(path)) {
+        WARN("no " << path.string() << " — skipping");
+        return;
+    }
+    whiteout::flakes::io::FileContentProvider provider;
+    provider.SetBasePath(path.parent_path());
+    const auto bytes = provider.ReadFile(path.string());
+    REQUIRE(bytes.has_value());
+    auto adapter = whiteout::flakes::io::M2ModelAdapter::Load(
+        whiteout::flakes::ContentRef::FromPath(path.string()),
+        std::span<const whiteout::u8>(bytes->data(), bytes->size()), &provider);
+    REQUIRE(adapter);
+
+    using Kind = whiteout::flakes::renderer::model::CollisionShapeType;
+    const auto shapes = adapter->GetCollisionShapes();
+    REQUIRE_FALSE(shapes.empty());
+
+    std::size_t capsules = 0, spheres = 0, boxes = 0, hulls = 0, other = 0;
+    for (const auto& cs : shapes) {
+        switch (static_cast<Kind>(cs.type)) {
+        case Kind::Capsule:
+            ++capsules;
+            // Two distinct cap centres and a radius, or there is nothing to cap.
+            CHECK(cs.radius > 0.0f);
+            CHECK(Dist(cs.vertices[0], cs.vertices[1]) > 0.0f);
+            break;
+        case Kind::Sphere:
+            ++spheres;
+            CHECK(cs.radius > 0.0f);
+            break;
+        case Kind::Box:
+            ++boxes;
+            // Half extents about the frame's own origin, so the pair straddles it.
+            CHECK(cs.vertices[0].x == Approx(-cs.vertices[1].x));
+            CHECK(cs.vertices[1].x > 0.0f);
+            break;
+        case Kind::Hull:
+            ++hulls;
+            CHECK_FALSE(cs.hullPoints.empty());
+            // Every edge has to land in the point cloud it indexes, and a hull
+            // needs at least as many edges as corners to be closed at all.
+            for (const whiteout::u16 idx : cs.hullEdges)
+                REQUIRE(idx < cs.hullPoints.size());
+            CHECK(cs.hullEdges.size() / 2 >= cs.hullPoints.size());
+            break;
+        default:
+            ++other;
+            break;
+        }
+    }
+    INFO("aqir: " << capsules << " capsules, " << spheres << " spheres, " << boxes << " boxes, "
+                  << hulls << " hulls, " << other << " other");
+    // Nothing may come back as a flat-capped tube: `.phys` has no cylinder, so a
+    // `Cylinder` here is a capsule that lost its caps on the way out.
+    CHECK(other == 0);
+    CHECK(capsules + spheres + boxes + hulls == shapes.size());
+
+    // A box's frame reaches the overlay through its placement, so that placement
+    // has to still be a rotation — axes read down the columns instead would
+    // transpose it, which is also orthonormal but points the box the other way.
+    const FrameState fs = adapter->Evaluate(whiteout::flakes::PoseRequest());
+    REQUIRE(fs.collisionTransforms.size() == shapes.size());
+    for (std::size_t i = 0; i < shapes.size(); ++i) {
+        const Matrix44f& m = fs.collisionTransforms[i];
+        REQUIRE(Finite(m));
+        for (int r = 0; r < 3; ++r) {
+            const f32 len = std::sqrt(m.data[r][0] * m.data[r][0] + m.data[r][1] * m.data[r][1] +
+                                      m.data[r][2] * m.data[r][2]);
+            INFO("shape " << i << " row " << r);
+            CHECK(len > 0.0f);
+        }
+    }
+}
+
+TEST_CASE("a PLYT hull's overlay edges are the hull's own", "[m2][phys]") {
+    // A `.phys` polytope used to draw as the box it spans, which makes a
+    // shoulder plate and a torso plate the same picture and both of them far
+    // larger than the collider. 182 of the corpus's polytopes across 19 of 40
+    // physicalised models were drawn that way, so this is not a corner.
+    //
+    // Synthetic rather than corpus, because the mapping cannot be reached
+    // through `M2ModelAdapter` here: every polytope-bearing model in the corpus
+    // is one whose `.skin` profiles are not beside it, so the adapter declines
+    // to load it. The edge walk is the whole of what changed.
+    namespace m2 = whiteout::m2;
+    m2::PolytopeShape hull;
+    for (int sx = -1; sx <= 1; sx += 2)
+        for (int sy = -1; sy <= 1; sy += 2)
+            for (int sz = -1; sz <= 1; sz += 2)
+                hull.vertices.push_back({(f32)sx, (f32)sy, (f32)sz});
+
+    // Four twin pairs over four distinct corner pairs, laid out the way `PLYT`
+    // lays them out: twins adjacent, `twinOffset` alternating +1 and -1.
+    const std::pair<int, int> wanted[4] = {{0, 1}, {1, 3}, {3, 2}, {2, 0}};
+    for (const auto& [a, b] : wanted) {
+        m2::PolytopeHalfEdge e{}, t{};
+        e.twinOffset = 1;
+        e.originVertex = static_cast<whiteout::u8>(a);
+        t.twinOffset = -1;
+        t.originVertex = static_cast<whiteout::u8>(b);
+        hull.edges.push_back(e);
+        hull.edges.push_back(t);
+    }
+    // And two the tables disagree about: a vertex index past the cloud, and a
+    // twin that steps off the end. Both have to vanish rather than clamp.
+    {
+        m2::PolytopeHalfEdge e{}, t{};
+        e.twinOffset = 1;
+        e.originVertex = 0;
+        t.twinOffset = -1;
+        t.originVertex = 200;
+        hull.edges.push_back(e);
+        hull.edges.push_back(t);
+        m2::PolytopeHalfEdge dangling{};
+        dangling.twinOffset = 1;
+        dangling.originVertex = 4;
+        hull.edges.push_back(dangling);
+    }
+
+    const auto edges = flakes::renderer::profiles::wow::WowPolytopeEdges(hull);
+    REQUIRE(edges.size() == 8); // four pairs, each walked once
+    for (std::size_t i = 0; i < edges.size(); i += 2) {
+        const int a = edges[i], b = edges[i + 1];
+        INFO("edge " << a << "-" << b);
+        CHECK(a < (int)hull.vertices.size());
+        CHECK(b < (int)hull.vertices.size());
+        CHECK(a != b);
+        CHECK(std::find(std::begin(wanted), std::end(wanted), std::pair<int, int>{a, b}) !=
+              std::end(wanted));
+    }
 }

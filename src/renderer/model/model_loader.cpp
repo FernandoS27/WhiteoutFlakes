@@ -1319,6 +1319,13 @@ Actor* ModelLoader::SpawnUnitFromSource(std::shared_ptr<IModelSource> source,
     // The template path stamps these from ModelTemplate; this one has no
     // template, so it takes them from the same Build() snapshot.
     actor->bounds = data.bounds;
+    // Cloth is `.m3`-only, so this path is the only one that can carry it —
+    // the template path never sees a source with a soft-body solver behind it.
+    for (auto& c : data.clothOverlays) {
+        ClothOverlay overlay;
+        overlay.def = std::move(c);
+        actor->render.cloths.push_back(std::move(overlay));
+    }
 
     if (!data.attachmentConfigs.empty())
         SetAttachmentConfigs(h, data.attachmentConfigs);

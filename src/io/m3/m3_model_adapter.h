@@ -237,6 +237,7 @@ public:
     /// Populated only when physics is compiled in; `physicsShapeBones_` records
     /// which bone each entry rides so `Evaluate` can place them.
     std::vector<renderer::model::CollisionShapeData> GetCollisionShapes() override;
+    std::vector<renderer::model::ClothOverlayData> GetClothOverlays() override;
 
     /// @brief `SDEV` keys, grouped into one config per (sequence, payload).
     ///
@@ -413,11 +414,12 @@ private:
     std::size_t regionCount_ = 0;
     std::vector<std::size_t> emittedRegions_;
     std::vector<::whiteout::u32> geosetRegionFlags_;
-    /// Which bone each entry of @ref GetCollisionShapes rides and the frame it
-    /// sits in on that bone, parallel to the returned vector and filled by the
-    /// same walk.
+    /// Which bone each entry of @ref GetCollisionShapes rides, the frame it sits
+    /// in on that bone, and whether it may wear the bone's scale per axis — all
+    /// parallel to the returned vector and filled by the same walk.
     std::vector<i32> physicsShapeBones_;
     std::vector<Matrix44f> physicsShapeLocals_;
+    std::vector<::whiteout::u8> physicsShapeAniso_;
 
     /// @brief The model's `PHCL` cloths, or null when it has none we can drive.
     ///

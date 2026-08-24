@@ -139,6 +139,7 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy, bool& f
         loadPhysFlag("ShowPhysicsDynamic", &RenderSettings::SetShowPhysicsDynamic);
         loadPhysFlag("ShowPhysicsKinematic", &RenderSettings::SetShowPhysicsKinematic);
         loadPhysFlag("ShowPhysicsStatic", &RenderSettings::SetShowPhysicsStatic);
+        loadPhysFlag("ShowPhysicsCloth", &RenderSettings::SetShowPhysicsCloth);
     }
 
     if (auto* s = ini.Get(KeyOf("LightingMode"))) {
@@ -336,6 +337,7 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy, bo
         saveFlag("ShowPhysicsDynamic", service.Settings().ShowPhysicsDynamic());
         saveFlag("ShowPhysicsKinematic", service.Settings().ShowPhysicsKinematic());
         saveFlag("ShowPhysicsStatic", service.Settings().ShowPhysicsStatic());
+        saveFlag("ShowPhysicsCloth", service.Settings().ShowPhysicsCloth());
     }
     ini.Set(KeyOf("LightingMode"),
             ToString(static_cast<u32>(service.Settings().GetLightingMode())));

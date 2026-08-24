@@ -210,7 +210,14 @@ void DebugRenderer::DrawCollisionShapes(bool physicsBodies) {
             emitCircle(cs.vmin, cs.radius, 0);
             emitCircle(cs.vmin, cs.radius, 1);
             emitCircle(cs.vmin, cs.radius, 2);
-        } else if (cs.type == (i32)CollisionShapeType::Cylinder) {
+        } else if (cs.type == (i32)CollisionShapeType::Cylinder ||
+                   cs.type == (i32)CollisionShapeType::Capsule) {
+            // Both are two centres and a radius, and they differ only in what
+            // closes the ends: flat for a cylinder, a hemisphere for a capsule.
+            // That hemisphere is a whole radius of reach past the last ring, so
+            // a capsule drawn as a cylinder reads as a collider that stops
+            // short of the limb it actually covers.
+            const bool capped = cs.type == (i32)CollisionShapeType::Capsule;
             Vector3f axisVec = {cs.vmax.x - cs.vmin.x, cs.vmax.y - cs.vmin.y,
                                 cs.vmax.z - cs.vmin.z};
             f32 axisLen =
@@ -244,6 +251,27 @@ void DebugRenderer::DrawCollisionShapes(bool physicsBodies) {
             for (i32 i = 0; i < 4; i++) {
                 f32 a = (f32)i / 4 * 6.28318530f;
                 pushLine(ringPt(cs.vmin, a), ringPt(cs.vmax, a));
+            }
+            if (capped) {
+                // Half a circle per cap, in the two planes the four shaft lines
+                // already sit in, so the caps close on lines that are drawn.
+                auto arc = [&](const Vector3f& c, const Vector3f& side, const Vector3f& out) {
+                    auto pt = [&](f32 a) {
+                        const f32 cs_ = cs.radius * cosf(a), sn_ = cs.radius * sinf(a);
+                        return Vector3f{c.x + side.x * cs_ + out.x * sn_,
+                                        c.y + side.y * cs_ + out.y * sn_,
+                                        c.z + side.z * cs_ + out.z * sn_};
+                    };
+                    for (i32 i = 0; i < segs / 2; i++) {
+                        pushLine(pt((f32)i / (segs / 2) * 3.14159265f),
+                                 pt((f32)(i + 1) / (segs / 2) * 3.14159265f));
+                    }
+                };
+                const Vector3f back{-axis.x, -axis.y, -axis.z};
+                arc(cs.vmin, u, back);
+                arc(cs.vmin, v, back);
+                arc(cs.vmax, u, axis);
+                arc(cs.vmax, v, axis);
             }
         } else if (cs.type == (i32)CollisionShapeType::Hull) {
             // The `DMSE` edge list when the file has one, and the point cloud's own bounding
@@ -297,6 +325,140 @@ void DebugRenderer::DrawCollisionShapes(bool physicsBodies) {
         f32 aspect = (rs_.Pipeline().Height() > 0)
                          ? (f32)rs_.Pipeline().Width() / (f32)rs_.Pipeline().Height()
                          : 1.0f;
+        render_detail::CbPerFrameDesc d;
+        d.view = viewMat;
+        d.projection = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);
+        d.lightColor = kCollisionLightColor;
+        d.ambientColor = kCollisionAmbientColor;
+        render_detail::WriteCbPerFrame(rs_.Pipeline().Gfx(), rs_.Pipeline().CbPerFrame(), d);
+    }
+    DrawWireLines(rs_.Pipeline().Gfx(), cmd, rs_.Pipeline().CbPerFrame(), lines);
+}
+
+void DebugRenderer::RenderClothOverlay() {
+    // A cloth's picture is its **constraint graph**, and the skinned mesh will
+    // not show it: a cape hanging correctly and a cape that has collapsed into
+    // a line both draw as a cape, and everything that separates them lives in
+    // the links between particles. The pinned row and the colliders come along
+    // because they are the two things that decide the rest — a cloth pinned to
+    // the wrong particles hangs off nothing, and a cloth that passes through a
+    // shoulder is missing the capsule, not the constraint.
+    constexpr Vector4f kLinkColor = {1.0f, 0.55f, 0.15f, 1.0f};
+    constexpr Vector4f kPinnedColor = {1.0f, 0.95f, 0.35f, 1.0f};
+    constexpr Vector4f kColliderColor = {0.9f, 0.4f, 0.9f, 1.0f};
+    // `PHCL.active` is a channel: 69 of the corpus's 392 cloth records key it,
+    // and an inactive cloth is not stepped at all. Greyed rather than hidden,
+    // because "not simulating" and "not built" are the two answers this overlay
+    // exists to tell apart.
+    constexpr Vector4f kInactiveColor = {0.45f, 0.45f, 0.45f, 1.0f};
+
+    struct LV {
+        Vector3f pos;
+        Vector4f col;
+    };
+    std::vector<LV> lines;
+    Matrix44f viewMat;
+    {
+        for (auto& [h, mi] : rs_.Scene().Actors().All()) {
+            if (mi->parentVisibility <= 0.02f || mi->render.cloths.empty())
+                continue;
+            // The same matrix the geosets and the shape overlay use: model space
+            // is what a particle's node origin is expressed in.
+            const Matrix44f toWorld = mi->ScaledWorldTransform();
+            for (const auto& cloth : mi->render.cloths) {
+                const Vector4f linkCol = cloth.active ? kLinkColor : kInactiveColor;
+                const Vector4f pinCol = cloth.active ? kPinnedColor : kInactiveColor;
+                const auto& pts = cloth.particles;
+                auto push = [&](const Vector3f& a, const Vector3f& b, const Vector4f& c) {
+                    lines.push_back({whiteout::transform_point(a, toWorld), c});
+                    lines.push_back({whiteout::transform_point(b, toWorld), c});
+                };
+
+                f32 meanLink = 0.0f;
+                i32 linkCount = 0;
+                for (usize i = 0; i + 1 < cloth.def.links.size(); i += 2) {
+                    const usize a = cloth.def.links[i], b = cloth.def.links[i + 1];
+                    if (a >= pts.size() || b >= pts.size())
+                        continue;
+                    push(pts[a], pts[b], linkCol);
+                    const Vector3f d = {pts[b].x - pts[a].x, pts[b].y - pts[a].y,
+                                        pts[b].z - pts[a].z};
+                    meanLink += std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+                    ++linkCount;
+                }
+                meanLink = linkCount > 0 ? meanLink / (f32)linkCount : 0.0f;
+
+                // A cross per pinned particle, sized off the cloth's own link
+                // length so it reads the same on a cape and on a banner.
+                const f32 tick = meanLink > 0.0f ? meanLink * 0.25f : 0.02f;
+                const usize pinned = std::min<usize>(cloth.def.pinnedCount, pts.size());
+                for (usize i = 0; i < pinned; i++) {
+                    const Vector3f& p = pts[i];
+                    push({p.x - tick, p.y, p.z}, {p.x + tick, p.y, p.z}, pinCol);
+                    push({p.x, p.y - tick, p.z}, {p.x, p.y + tick, p.z}, pinCol);
+                    push({p.x, p.y, p.z - tick}, {p.x, p.y, p.z + tick}, pinCol);
+                }
+
+                // The colliders, in their own frames. A cloth capsule is
+                // **tapered** — two end radii along local +X — so it is not the
+                // shape the rigid-body overlay draws and does not go through it.
+                for (usize c = 0; c < cloth.colliders.size() && c < cloth.def.colliders.size();
+                     c++) {
+                    const auto& cd = cloth.def.colliders[c];
+                    const Matrix44f place = cloth.colliders[c] * toWorld;
+                    auto pushLocal = [&](const Vector3f& a, const Vector3f& b) {
+                        lines.push_back({whiteout::transform_point(a, place), kColliderColor});
+                        lines.push_back({whiteout::transform_point(b, place), kColliderColor});
+                    };
+                    const f32 half = cd.length * 0.5f;
+                    const i32 segs = 16;
+                    auto ring = [&](f32 x, f32 r, f32 a) {
+                        return Vector3f{x, r * cosf(a), r * sinf(a)};
+                    };
+                    for (i32 i = 0; i < segs; i++) {
+                        const f32 a0 = (f32)i / segs * 6.28318530f;
+                        const f32 a1 = (f32)(i + 1) / segs * 6.28318530f;
+                        pushLocal(ring(-half, cd.radius0, a0), ring(-half, cd.radius0, a1));
+                        pushLocal(ring(half, cd.radius1, a0), ring(half, cd.radius1, a1));
+                    }
+                    for (i32 i = 0; i < 4; i++) {
+                        const f32 a = (f32)i / 4 * 6.28318530f;
+                        pushLocal(ring(-half, cd.radius0, a), ring(half, cd.radius1, a));
+                    }
+                    // A hemisphere per end, in the two planes the side lines
+                    // sit in. Both radii are drawn: a taper the overlay rounded
+                    // off would hide exactly the collider that is too thin.
+                    auto cap = [&](f32 x, f32 r, f32 dir, int plane) {
+                        for (i32 i = 0; i < segs / 2; i++) {
+                            auto pt = [&](f32 a) {
+                                const f32 c0 = r * cosf(a), s0 = r * sinf(a);
+                                return plane == 0 ? Vector3f{x + dir * s0, c0, 0.0f}
+                                                  : Vector3f{x + dir * s0, 0.0f, c0};
+                            };
+                            pushLocal(pt((f32)i / (segs / 2) * 3.14159265f),
+                                      pt((f32)(i + 1) / (segs / 2) * 3.14159265f));
+                        }
+                    };
+                    cap(-half, cd.radius0, -1.0f, 0);
+                    cap(-half, cd.radius0, -1.0f, 1);
+                    cap(half, cd.radius1, 1.0f, 0);
+                    cap(half, cd.radius1, 1.0f, 1);
+                }
+            }
+        }
+        if (lines.empty())
+            return;
+        viewMat = rs_.Pipeline().FrameCamera().GetViewMatrix();
+    }
+
+    auto* cmd = rs_.Pipeline().Gfx()->GetImmediateContext();
+    // Depth off, for the reason the shape overlay gives: a cloth's particles sit
+    // inside the mesh they drive.
+    cmd->BindPipeline(rs_.Pipeline().CurrentOverlayLinePSO());
+    {
+        const f32 aspect = (rs_.Pipeline().Height() > 0)
+                               ? (f32)rs_.Pipeline().Width() / (f32)rs_.Pipeline().Height()
+                               : 1.0f;
         render_detail::CbPerFrameDesc d;
         d.view = viewMat;
         d.projection = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);

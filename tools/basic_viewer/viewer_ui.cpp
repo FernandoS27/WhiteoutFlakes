@@ -782,6 +782,8 @@ void ViewerUI::BuildMenuBar() {
                      &RenderSettings::SetShowPhysicsKinematic},
                     {"menu.debug.physics.static", &RenderSettings::ShowPhysicsStatic,
                      &RenderSettings::SetShowPhysicsStatic},
+                    {"menu.debug.physics.cloth", &RenderSettings::ShowPhysicsCloth,
+                     &RenderSettings::SetShowPhysicsCloth},
                 };
                 for (const auto& t : kPhysicsToggles) {
                     const bool on = (svc.Settings().*t.get)();

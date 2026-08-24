@@ -1240,19 +1240,73 @@ void M3ModelAdapter::EvaluatePhysics(std::span<const M3Layer> layers,
     // overwrites these with the poses it actually produced — this fill is what
     // covers the models that have no stage at all, whose bodies are kinematic
     // proxies that never simulate.
-    renderer::profiles::sc2_heroes::Sc2PlaceCollisionShapes(
-        physicsShapeBones_, physicsShapeLocals_, fs.boneWorldMatrices, fs.collisionTransforms);
+    renderer::profiles::sc2_heroes::Sc2PlaceCollisionShapes(physicsShapeBones_,
+                                                            physicsShapeLocals_,
+                                                            physicsShapeAniso_,
+                                                            fs.boneWorldMatrices,
+                                                            fs.collisionTransforms);
 #endif
 }
 
 std::vector<renderer::model::CollisionShapeData> M3ModelAdapter::GetCollisionShapes() {
     physicsShapeBones_.clear();
     physicsShapeLocals_.clear();
+    physicsShapeAniso_.clear();
 #if WDX_HAS_PHYSICS
     auto built = renderer::profiles::sc2_heroes::Sc2BuildCollisionShapes(model_);
     physicsShapeBones_ = std::move(built.bones);
     physicsShapeLocals_ = std::move(built.locals);
+    physicsShapeAniso_ = std::move(built.anisotropic);
     return std::move(built.shapes);
+#else
+    return {};
+#endif
+}
+
+std::vector<renderer::model::ClothOverlayData> M3ModelAdapter::GetClothOverlays() {
+#if WDX_HAS_PHYSICS
+    if (!cloth_) {
+        return {};
+    }
+    namespace sc2 = renderer::profiles::sc2_heroes;
+    std::vector<renderer::model::ClothOverlayData> out;
+    out.reserve(cloth_->pieces.size());
+    const auto boneCount = static_cast<i32>(model_.bones.size());
+    for (const auto& piece : cloth_->pieces) {
+        renderer::model::ClothOverlayData d;
+        // The palette layout `sc2_cloth.h` promises: particle `i` of this piece
+        // is one node, appended after the real skeleton, and its live position
+        // is that node's origin.
+        d.particleNodes.reserve(piece.particleCount);
+        for (std::size_t i = 0; i < piece.particleCount; ++i) {
+            d.particleNodes.push_back(boneCount + static_cast<i32>(piece.firstParticle + i));
+        }
+        d.pinnedCount = piece.def.pinnedCount;
+        d.links.reserve(piece.def.edges.size() * 2);
+        for (const auto& e : piece.def.edges) {
+            if (e.a >= piece.particleCount || e.b >= piece.particleCount) {
+                continue;
+            }
+            d.links.push_back(e.a);
+            d.links.push_back(e.b);
+        }
+        d.colliders.reserve(piece.def.capsules.size());
+        for (const auto& c : piece.def.capsules) {
+            renderer::model::ClothColliderData cd;
+            cd.node = c.anchor >= 0 && c.anchor < boneCount ? c.anchor : -1;
+            cd.local = sc2::Sc2ComposeBone(
+                Quaternion{c.localRotation.x, c.localRotation.y, c.localRotation.z,
+                           c.localRotation.w},
+                Vector3f{c.localPosition.x, c.localPosition.y, c.localPosition.z});
+            cd.radius0 = c.radius0;
+            cd.radius1 = c.radius1;
+            cd.length = c.fullLength;
+            d.colliders.push_back(cd);
+        }
+        d.activeIndex = static_cast<i32>(piece.chunkIndex);
+        out.push_back(std::move(d));
+    }
+    return out;
 #else
     return {};
 #endif

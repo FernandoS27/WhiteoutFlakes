@@ -934,7 +934,10 @@ void M2ModelAdapter::EvaluateBones(const M2AnimTime& at, bool bindPose, const Po
                                 m.data[3][1];
             placed.data[3][2] = p.x * m.data[0][2] + p.y * m.data[1][2] + p.z * m.data[2][2] +
                                 m.data[3][2];
-            fs.collisionTransforms[k] = placed;
+            // A `BOXS` keeps its orientation in its own frame rather than in its corners,
+            // so that frame goes on the inside of the placement.
+            fs.collisionTransforms[k] =
+                k < physicsShapeLocals_.size() ? physicsShapeLocals_[k] * placed : placed;
         }
     }
 }
@@ -1612,6 +1615,7 @@ void M2ModelAdapter::EvaluateParticles(const M2AnimTime& at, const Matrix44f& wo
 
 std::vector<renderer::model::CollisionShapeData> M2ModelAdapter::GetCollisionShapes() {
     physicsShapeBones_.clear();
+    physicsShapeLocals_.clear();
     std::vector<renderer::model::CollisionShapeData> out;
 #if WDX_HAS_PHYSICS
     // "Debug -> Collision Markers is on and nothing draws" has three causes that look
@@ -1635,12 +1639,16 @@ std::vector<renderer::model::CollisionShapeData> M2ModelAdapter::GetCollisionSha
             const w2::PhysicsShape& ps = phys.shapes[s];
             const usize idx = static_cast<usize>(std::max<i16>(0, ps.shapeIndex));
             renderer::model::CollisionShapeData d{};
+            Matrix44f local = Matrix44f::identity();
             bool ok = false;
             switch (ps.shapeType) {
             case w2::PhysicsShapeType::Capsule:
                 if (idx < phys.capsuleShapes.size()) {
                     const w2::CapsuleShape& c = phys.capsuleShapes[idx];
-                    d.type = static_cast<i32>(renderer::model::CollisionShapeType::Cylinder);
+                    // The two fields are the **cap centres**, which is what
+                    // `CollisionShapeType::Capsule` wants — so the hemisphere the fixture
+                    // reaches past each of them is drawn rather than left implied.
+                    d.type = static_cast<i32>(renderer::model::CollisionShapeType::Capsule);
                     d.vertices[0] = c.localPosition1;
                     d.vertices[1] = c.localPosition2;
                     d.radius = c.radius;
@@ -1658,16 +1666,31 @@ std::vector<renderer::model::CollisionShapeData> M2ModelAdapter::GetCollisionSha
                 break;
             case w2::PhysicsShapeType::Box:
                 if (idx < phys.boxShapes.size()) {
-                    // The wire view has no oriented box, so a box draws as the axis-aligned
-                    // corner pair its half extents span. Orientation is lost; extent is not,
-                    // and extent is what says whether a collider covers the limb it should.
+                    // Half extents about the frame's origin with the frame carried in `local` —
+                    // the same `MakeBox(halfExtents, frame)` the fixture is built from. Spanning
+                    // the corners in bone space instead, which is what this did, throws the
+                    // rotation away, and a `.phys` box is turned onto the limb it wraps rather
+                    // than aligned to it.
                     const w2::BoxShape& b = phys.boxShapes[idx];
-                    const Vector3f& o = b.frame.origin;
                     d.type = static_cast<i32>(renderer::model::CollisionShapeType::Box);
-                    d.vertices[0] = {o.x - b.halfExtents.x, o.y - b.halfExtents.y,
-                                     o.z - b.halfExtents.z};
-                    d.vertices[1] = {o.x + b.halfExtents.x, o.y + b.halfExtents.y,
-                                     o.z + b.halfExtents.z};
+                    d.vertices[0] = {-b.halfExtents.x, -b.halfExtents.y, -b.halfExtents.z};
+                    d.vertices[1] = b.halfExtents;
+                    // Axes down the **rows**: a `PhysicsFrame` axis is the image of a basis
+                    // vector, and in a row-vector matrix that is a row. Down the columns instead
+                    // transposes the frame, which on an orthonormal basis is its inverse — a box
+                    // rotated the wrong way, and right-looking at rest (`wow_physics.cpp`).
+                    local.data[0][0] = b.frame.axisX.x;
+                    local.data[0][1] = b.frame.axisX.y;
+                    local.data[0][2] = b.frame.axisX.z;
+                    local.data[1][0] = b.frame.axisY.x;
+                    local.data[1][1] = b.frame.axisY.y;
+                    local.data[1][2] = b.frame.axisY.z;
+                    local.data[2][0] = b.frame.axisZ.x;
+                    local.data[2][1] = b.frame.axisZ.y;
+                    local.data[2][2] = b.frame.axisZ.z;
+                    local.data[3][0] = b.frame.origin.x;
+                    local.data[3][1] = b.frame.origin.y;
+                    local.data[3][2] = b.frame.origin.z;
                     ok = true;
                 }
                 break;
@@ -1675,14 +1698,14 @@ std::vector<renderer::model::CollisionShapeData> M2ModelAdapter::GetCollisionSha
                 if (idx < phys.polytopeShapes.size()) {
                     const w2::PolytopeShape& hull = phys.polytopeShapes[idx];
                     if (!hull.vertices.empty()) {
-                        Vector3f lo = hull.vertices[0], hi = hull.vertices[0];
-                        for (const Vector3f& v : hull.vertices) {
-                            lo = {std::min(lo.x, v.x), std::min(lo.y, v.y), std::min(lo.z, v.z)};
-                            hi = {std::max(hi.x, v.x), std::max(hi.y, v.y), std::max(hi.z, v.z)};
-                        }
-                        d.type = static_cast<i32>(renderer::model::CollisionShapeType::Box);
-                        d.vertices[0] = lo;
-                        d.vertices[1] = hi;
+                        // The hull itself, from the `PLYT` half-edges: twins sit at adjacent
+                        // indices, so taking only the ones that step *forward* walks every
+                        // undirected edge exactly once. Drawn as the box it spans — which is
+                        // what this did — a torso plate and a shoulder plate are the same
+                        // picture, and both far larger than the collider.
+                        d.type = static_cast<i32>(renderer::model::CollisionShapeType::Hull);
+                        d.hullPoints = hull.vertices;
+                        d.hullEdges = renderer::profiles::wow::WowPolytopeEdges(hull);
                         ok = true;
                     }
                 }
@@ -1696,6 +1719,7 @@ std::vector<renderer::model::CollisionShapeData> M2ModelAdapter::GetCollisionSha
                                                   : renderer::model::CollisionBodyKind::Kinematic);
                 out.push_back(d);
                 physicsShapeBones_.push_back(static_cast<i32>(pb.boneIndex));
+                physicsShapeLocals_.push_back(local);
             }
         }
     }

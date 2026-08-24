@@ -52,6 +52,10 @@ public:
     /// Physics rig bodies, coloured by kind and filtered by the three
     /// `RenderSettings::ShowPhysics*` toggles.
     void RenderPhysicsBodies();
+    /// The soft-body half: particles, the constraints between them, and the
+    /// capsules they collide against. Its own toggle, and its own pass — a
+    /// cloth shares no geometry with a rigid body.
+    void RenderClothOverlay();
     void RenderLightMarkers();
 
 private:

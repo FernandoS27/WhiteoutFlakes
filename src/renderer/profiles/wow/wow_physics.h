@@ -21,10 +21,12 @@
 #include "whiteout/flakes/pose_stage.h"
 
 #include <memory>
+#include <vector>
 
 namespace whiteout {
 namespace m2 {
 struct Model;
+struct PolytopeShape;
 }
 } // namespace whiteout
 
@@ -60,5 +62,19 @@ std::unique_ptr<animation::IPoseStage> CreateWowPhysicsStage(const ::whiteout::m
 /// buried under the settle. Returns @p palette unchanged when the conversions
 /// agree.
 Matrix44f RoundTripBoneFrame(const Matrix44f& palette, const Vector3f& pivot);
+
+/// @brief A `PLYT` hull's undirected edges, as index pairs into its vertices.
+///
+/// Twins sit at adjacent indices (`twinOffset` is only ever +1 or -1, in equal
+/// numbers), so taking the ones that step *forward* walks every edge exactly
+/// once. Out-of-range and degenerate pairs are dropped rather than clamped: a
+/// hull whose tables disagree should come out sparse, not folded.
+///
+/// Exposed for the overlay and for testing. The corpus's `.phys` files carry no
+/// box shapes at all and 182 polytopes across 19 of 40 models, so this is the
+/// hull path that actually renders — and the one that cannot be reached through
+/// `M2ModelAdapter` in a test, every polytope-bearing corpus model being one
+/// whose `.skin` profiles are not beside it.
+std::vector<::whiteout::u16> WowPolytopeEdges(const ::whiteout::m2::PolytopeShape& hull);
 
 } // namespace whiteout::flakes::renderer::profiles::wow

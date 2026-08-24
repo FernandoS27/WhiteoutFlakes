@@ -85,6 +85,16 @@ public:
     bool ShowAnyPhysicsBodies() const {
         return showPhysicsDynamic_ || showPhysicsKinematic_ || showPhysicsStatic_;
     }
+    /// Cloth is its own category rather than a fourth body kind: a cloth
+    /// particle is not a rigid body, its constraints are not colliders, and it
+    /// draws a mesh of links where the other three draw one shape each. On the
+    /// same rig the two overlays sit on top of each other, so they toggle apart.
+    bool ShowPhysicsCloth() const {
+        return showPhysicsCloth_;
+    }
+    void SetShowPhysicsCloth(bool v) {
+        showPhysicsCloth_ = v;
+    }
     void SetShowPhysicsDynamic(bool v) {
         showPhysicsDynamic_ = v;
     }
@@ -519,6 +529,7 @@ private:
     bool showPhysicsDynamic_ = false;
     bool showPhysicsKinematic_ = false;
     bool showPhysicsStatic_ = false;
+    bool showPhysicsCloth_ = false;
     bool poseSolvers_ = false;
     GroundQuery groundQuery_;
 

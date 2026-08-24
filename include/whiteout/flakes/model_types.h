@@ -568,6 +568,13 @@ enum class CollisionShapeType : i32 {
     /// StarCraft II's rigid bodies are convex hulls almost exclusively, and the
     /// bounding box of one is not a picture of what the solver collides with.
     Hull = 4,
+    /// `vertices[0/1]` are the two **cap centres** and `radius` the radius, so
+    /// the shape reaches `radius` past each of them. Also not an MDX kind, and
+    /// deliberately not folded into @ref Cylinder: both `.phys` and `PHSH`
+    /// author far more capsules than anything else, and a flat-capped tube
+    /// drawn over one hides a radius of reach at either end — the exact margin
+    /// that decides whether a collider covers the limb it drives.
+    Capsule = 5,
 };
 
 /// @brief Per-actor collision primitive (used for ground-clamp /
@@ -615,6 +622,50 @@ struct CollisionShapeData {
     std::vector<Vector3f> hullPoints;
     std::vector<u16> hullEdges;
     /// @}
+};
+
+/// @brief One `PHCC` capsule a cloth collides against.
+///
+/// A **tapered** capsule along its own local +X — two end radii and a full
+/// length — which is not a shape @ref CollisionShapeType::Capsule can carry,
+/// and not a rigid body either: a cloth collider belongs to no `PHRB` and never
+/// appears in the physics overlay. It is also the first thing to look at when a
+/// cape passes through a shoulder, so it gets drawn.
+struct ClothColliderData {
+    i32 node = -1;   ///< Palette node it rides; -1 = model space.
+    /// The collider's frame in that node's space, composed from the rotation
+    /// and position the solver holds rather than from the authored matrix —
+    /// the two differ by a scale the client re-applies, and the solver's is the
+    /// one being drawn.
+    Matrix44f local = Matrix44f::identity();
+    f32 radius0 = 0.0f; ///< At the -X end.
+    f32 radius1 = 0.0f; ///< At the +X end, which is why it is not a capsule.
+    f32 length = 0.0f;  ///< Between the two end centres, in full.
+};
+
+/// @brief One cloth's debug wireframe: the particles, what holds them together,
+///        and what they hang off.
+///
+/// Needs no per-frame channel of its own. A cloth's particles are appended to
+/// the skinning palette after the real skeleton and each one carries a full
+/// output frame (`sc2_cloth.h`), so a particle's live position is its node's
+/// origin and the overlay reads it out of the same array the shader does.
+struct ClothOverlayData {
+    /// Palette node per particle, in the solver's particle order.
+    std::vector<i32> particleNodes;
+    /// Index pairs into @ref particleNodes, one per distance constraint. This
+    /// is the picture: a cloth with its edges drawn shows where it is stretched
+    /// and where it has collapsed, neither of which the skinned mesh admits to.
+    std::vector<u16> links;
+    /// Particles `[0, pinnedCount)` are pinned. The build reorders them first,
+    /// and they are the ones the animation drives rather than the simulation —
+    /// a cloth that hangs off the wrong ones is the common authoring failure.
+    u32 pinnedCount = 0;
+    std::vector<ClothColliderData> colliders;
+    /// Index into @ref FrameState::clothActive, or -1 when the cloth is always
+    /// on. A cloth whose channel is off is not stepped at all, which from the
+    /// outside is indistinguishable from one that failed to build.
+    i32 activeIndex = -1;
 };
 
 /// @brief Per-frame evaluation output for one actor.

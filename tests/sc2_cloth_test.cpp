@@ -652,3 +652,103 @@ TEST_CASE("the visible cape deforms, and stays a cape", "[m3][cloth][corpus]") {
     CHECK(maxMove < 5.0f);
     CHECK(worstEdgeRatio < 3.0f);
 }
+
+TEST_CASE("the cloth overlay names the nodes the solver writes", "[m3][cloth][corpus]") {
+    // The overlay carries no per-frame state of its own: a particle *is* a
+    // palette node, so its live position is that node's origin and all the
+    // overlay holds is topology. That makes one wrong offset draw a complete,
+    // plausible cloth built out of somebody else's bones — nothing about the
+    // picture would say so. The check is therefore not "are the positions
+    // finite" but "do the nodes the overlay names behave like particles":
+    // the pinned prefix must hold still while the rest of the cloth falls.
+    for (const fs::path& path : {KaelPath(), LeoricPath()}) {
+        whiteout::m3::Model model;
+        if (!LoadModel(path, model)) {
+            WARN("corpus model not present: " + path.string());
+            continue;
+        }
+        INFO(path.filename().string());
+        M3ModelAdapter adapter(model);
+        const auto overlays = adapter.GetClothOverlays();
+        const sc2::Sc2ClothBuild build = sc2::Sc2BuildCloth(model);
+        REQUIRE_FALSE(overlays.empty());
+        REQUIRE(overlays.size() == build.pieces.size());
+
+        const std::size_t boneCount = model.bones.size();
+        const auto skeleton = adapter.GetSkeleton();
+        whiteout::flakes::renderer::animation::PoseStageList stages;
+        adapter.CreatePoseStages(stages);
+        REQUIRE_FALSE(stages.empty());
+        FrameState fs = BindPose(adapter);
+
+        std::vector<std::vector<Vector3f>> before(overlays.size());
+        for (std::size_t p = 0; p < overlays.size(); ++p) {
+            for (const whiteout::i32 n : overlays[p].particleNodes) {
+                REQUIRE(n >= static_cast<whiteout::i32>(boneCount));
+                REQUIRE(n < static_cast<whiteout::i32>(fs.boneWorldMatrices.size()));
+                before[p].push_back(OriginOf(fs.boneWorldMatrices[static_cast<std::size_t>(n)]));
+            }
+        }
+
+        const auto ctx = Ctx(skeleton.nodeParents, 16);
+        for (auto& stage : stages)
+            stage->Run(fs, ctx);
+
+        std::size_t colliders = 0;
+        for (std::size_t p = 0; p < overlays.size(); ++p) {
+            const auto& o = overlays[p];
+            const auto& piece = build.pieces[p];
+            INFO("piece " << p);
+            REQUIRE(o.particleNodes.size() == piece.particleCount);
+            CHECK(o.pinnedCount == piece.def.pinnedCount);
+            CHECK(o.activeIndex == static_cast<whiteout::i32>(piece.chunkIndex));
+
+            // Every drawn line has to land in the point set it indexes, and a
+            // cloth with no links has no picture at all.
+            CHECK_FALSE(o.links.empty());
+            CHECK(o.links.size() % 2 == 0);
+            for (const whiteout::u16 idx : o.links)
+                REQUIRE(idx < o.particleNodes.size());
+
+            std::size_t pinnedMoved = 0, freeMoved = 0;
+            for (std::size_t k = 0; k < o.particleNodes.size(); ++k) {
+                const Vector3f now =
+                    OriginOf(fs.boneWorldMatrices[static_cast<std::size_t>(o.particleNodes[k])]);
+                const f32 d = Dist(now, before[p][k]);
+                if (k < o.pinnedCount) {
+                    if (d > 1e-3f)
+                        ++pinnedMoved;
+                } else if (d > 1e-3f) {
+                    ++freeMoved;
+                }
+            }
+            // Pinned particles are placed by their bones, and at bind pose that
+            // puts them back where they were modelled. Anything else means the
+            // overlay's prefix is not the solver's.
+            CHECK(pinnedMoved == 0);
+            CHECK(freeMoved > (o.particleNodes.size() - o.pinnedCount) / 4);
+
+            colliders += o.colliders.size();
+            for (const auto& c : o.colliders) {
+                CHECK(c.node < static_cast<whiteout::i32>(boneCount));
+                CHECK(c.radius0 > 0.0f);
+                CHECK(c.radius1 > 0.0f);
+                CHECK(c.length >= 0.0f);
+                // `Sc2ComposeBone` builds a rotation, so the frame it hands the
+                // overlay is one: rows of unit length. A transposed compose is
+                // also orthonormal, which is why the round trip is what pins it
+                // (`Sc2RoundTripBoneFrame`) and this only catches a scale.
+                for (int r = 0; r < 3; ++r) {
+                    const f32 len = std::sqrt(c.local.data[r][0] * c.local.data[r][0] +
+                                              c.local.data[r][1] * c.local.data[r][1] +
+                                              c.local.data[r][2] * c.local.data[r][2]);
+                    CHECK(len == Approx(1.0f).margin(1e-3));
+                }
+            }
+        }
+        // Both fixtures drape over something — two capsules on Kael'thas, seven
+        // on Leoric — and the collider is the first thing looked at when a cape
+        // goes through a shoulder.
+        CHECK(colliders > 0);
+    }
+}

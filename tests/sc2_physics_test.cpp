@@ -47,6 +47,7 @@ namespace flakes = whiteout::flakes;
 namespace sc2 = whiteout::flakes::renderer::profiles::sc2_heroes;
 
 using whiteout::Matrix44f;
+using whiteout::Quaternion;
 using whiteout::Vector3f;
 using whiteout::f32;
 using whiteout::flakes::io::M3ModelAdapter;
@@ -803,7 +804,7 @@ TEST_CASE("a hull's overlay placement is the fixture's, in the fixture's order",
     // else can absorb an ordering slip.
     std::vector<Matrix44f> boneWorld{Matrix44f::identity()};
     std::vector<Matrix44f> placed;
-    sc2::Sc2PlaceCollisionShapes(built.bones, built.locals, boneWorld, placed);
+    sc2::Sc2PlaceCollisionShapes(built.bones, built.locals, built.anisotropic, boneWorld, placed);
     REQUIRE(placed.size() == 1);
 
     const f32 uniform = std::max({rowScale.x, rowScale.y, rowScale.z});
@@ -866,5 +867,298 @@ TEST_CASE("a rig's placed colliders sit inside the model they wrap", "[m3][phys]
             }
         INFO(path.filename().string() << ": worst point " << worst << " outside the mesh box");
         CHECK(worst < tol);
+    }
+}
+
+
+
+
+
+TEST_CASE("a scaled bone carries its shape offsets out with it", "[m3][phys]") {
+    // **The body scale multiplies the shape frame's translation, not only its
+    // dimensions** (`DOMINO_GLUE.md` §6.2, kinds 0-3). `MakeBox` gets this for
+    // free — it scales corners that already carry the offset — so the box path
+    // was right and the three kinds that place themselves by hand were not:
+    // their collider stayed at the *unscaled* offset while the overlay, the
+    // skinned mesh and the box beside them all moved. 676 of the corpus's 5587
+    // sphere/capsule/cylinder shapes sit on a scaled bone, up to 1.9 units out.
+    //
+    // Read off a settle height rather than off the fixture, because the fixture
+    // is what is under test: a sphere hung `h` below its bone on a bone scaled
+    // `s` comes to rest with the bone at `radius + s*h`, and at `radius + h` if
+    // the offset never got scaled. The two are far apart by construction.
+    const f32 kBoneScale = 3.0f;
+    const f32 kDrop = 0.5f;   // shape offset below the bone, in bone-local units
+    const f32 kRadius = 0.25f; // shapeDimensions.x
+
+    auto settle = [&](whiteout::m3::PhysicsShapeType type) {
+        whiteout::m3::PhysicsShape ps;
+        ps.shapeType = type;
+        ps.transform = Matrix44f::identity();
+        ps.transform.data[3][2] = -kDrop;
+        ps.shapeDimensions = {kRadius, 0.0f, 0.0f}; // a capsule of zero length is a sphere
+
+        whiteout::m3::RigidBody rb;
+        rb.parentBoneIndex = 0;
+        rb.simulationType = 1;
+        rb.density = 1.0f;
+        rb.friction = 0.5f;
+        rb.restitution = 0.0f;
+        rb.dynamicState = whiteout::m3::AnimRef<whiteout::u32>{};
+        rb.dynamicState.initValue = 1;
+        rb.rigidBodyShape.push_back(ps);
+
+        m3fix::ModelBuilder mb;
+        mb.Bone("root", -1, m3fix::ConstRef(Vector3f{0.0f, 0.0f, 5.0f}),
+                m3fix::ConstRef(Quaternion{0, 0, 0, 1}),
+                m3fix::ConstRef(Vector3f{kBoneScale, kBoneScale, kBoneScale}),
+                whiteout::m3::BoneFlag::None);
+        whiteout::m3::Model model = mb.Build();
+        model.rigidBodies.push_back(rb);
+
+        M3ModelAdapter adapter(model);
+        auto stage = sc2::CreateSc2PhysicsStage(model);
+        REQUIRE(stage);
+        const auto skeleton = adapter.GetSkeleton();
+        PoseStageContext ctx;
+        ctx.nodeParents = skeleton.nodeParents;
+        ctx.frameDtMs = 16;
+
+        FrameState fs;
+        for (int frame = 0; frame < 900; ++frame) {
+            fs = adapter.Evaluate(flakes::PoseRequest());
+            stage->Run(fs, ctx);
+        }
+        REQUIRE_FALSE(fs.boneWorldMatrices.empty());
+        REQUIRE(Finite(fs.boneWorldMatrices[0]));
+        return Origin(fs.boneWorldMatrices[0]).z;
+    };
+
+    const f32 radius = kRadius * kBoneScale;
+    const f32 want = radius + kDrop * kBoneScale; // 0.75 + 1.5
+    const f32 unscaledOffset = radius + kDrop;    // 0.75 + 0.5, the defect
+
+    // A margin, not an exactness: the solver rests a shape on a contact margin,
+    // and 0.05 is far tighter than the 1.0 that separates the two answers.
+    CHECK(settle(whiteout::m3::PhysicsShapeType::Sphere) == Approx(want).margin(0.05));
+    CHECK(settle(whiteout::m3::PhysicsShapeType::Capsule) == Approx(want).margin(0.05));
+    CHECK(std::fabs(want - unscaledOffset) > 0.5f);
+}
+
+TEST_CASE("a non-uniformly scaled bone stretches the colliders that can stretch", "[m3][phys]") {
+    // StarCraft II reduces a bone's three scale components to their minimum and
+    // splats it (`M3Physics_CreateRigidBody`, `0x102946d0d`), so its own runtime
+    // simulates a stretched physics bone at its thinnest axis. That is a
+    // consequence of `dmFixture` carrying one `m_scaleOrRadius` and cooking its
+    // polytopes offline — the per-axis part is baked into the cook — and not of
+    // anything the format cannot express.
+    //
+    // Snowball builds its polytopes from points handed to it, so the three
+    // polytope kinds take the bone's scale per axis and the collider tracks the
+    // limb. A sphere and a capsule still cannot: there is no ellipsoid in the
+    // engine, so they keep the client's `min` and this test pins that too — the
+    // divergence has to stay confined to the kinds that had a choice.
+    constexpr f32 kTall = 3.0f;   // bone scale is (1, 1, 3)
+    constexpr f32 kHalfZ = 0.3f;  // shapeDimensions.z, a half extent
+
+    auto settle = [&](whiteout::m3::PhysicsShapeType type, FrameState& fsOut) {
+        whiteout::m3::PhysicsShape ps;
+        ps.shapeType = type;
+        ps.transform = Matrix44f::identity();
+        ps.shapeDimensions = {kHalfZ, kHalfZ, kHalfZ};
+
+        whiteout::m3::RigidBody rb;
+        rb.parentBoneIndex = 0;
+        rb.simulationType = 1;
+        rb.density = 1.0f;
+        rb.friction = 0.5f;
+        rb.restitution = 0.0f;
+        rb.dynamicState = whiteout::m3::AnimRef<whiteout::u32>{};
+        rb.dynamicState.initValue = 1;
+        rb.rigidBodyShape.push_back(ps);
+
+        m3fix::ModelBuilder mb;
+        mb.Bone("root", -1, m3fix::ConstRef(Vector3f{0.0f, 0.0f, 5.0f}),
+                m3fix::ConstRef(Quaternion{0, 0, 0, 1}),
+                m3fix::ConstRef(Vector3f{1.0f, 1.0f, kTall}), whiteout::m3::BoneFlag::None);
+        whiteout::m3::Model model = mb.Build();
+        model.rigidBodies.push_back(rb);
+
+        M3ModelAdapter adapter(model);
+        auto stage = sc2::CreateSc2PhysicsStage(model);
+        REQUIRE(stage);
+        const auto skeleton = adapter.GetSkeleton();
+        PoseStageContext ctx;
+        ctx.nodeParents = skeleton.nodeParents;
+        ctx.frameDtMs = 16;
+        for (int frame = 0; frame < 900; ++frame) {
+            fsOut = adapter.Evaluate(flakes::PoseRequest());
+            stage->Run(fsOut, ctx);
+        }
+        REQUIRE_FALSE(fsOut.boneWorldMatrices.empty());
+        REQUIRE(Finite(fsOut.boneWorldMatrices[0]));
+        return Origin(fsOut.boneWorldMatrices[0]).z;
+    };
+
+    FrameState boxFs;
+    const f32 boxRest = settle(whiteout::m3::PhysicsShapeType::Box, boxFs);
+    // The box is a polytope, so its half-height is the bone's *own* z scale.
+    // Collapsed to min(1, 1, 3) = 1 it would rest at 0.3, a third of this.
+    CHECK(boxRest == Approx(kHalfZ * kTall).margin(0.05));
+
+    FrameState sphereFs;
+    const f32 sphereRest = settle(whiteout::m3::PhysicsShapeType::Sphere, sphereFs);
+    // One radius, so `min` — and unchanged by the bone being three times taller.
+    CHECK(sphereRest == Approx(kHalfZ).margin(0.05));
+
+    // And the overlay draws what the solver settled on, which is the whole point
+    // of the flag: a wireframe collapsed to min beside a box simulated per axis
+    // is the same wrong picture the other way round.
+    const auto shapes = [] {
+        whiteout::m3::PhysicsShape ps;
+        ps.shapeType = whiteout::m3::PhysicsShapeType::Box;
+        ps.transform = Matrix44f::identity();
+        ps.shapeDimensions = {kHalfZ, kHalfZ, kHalfZ};
+        whiteout::m3::RigidBody rb;
+        rb.parentBoneIndex = 0;
+        rb.simulationType = 1;
+        rb.dynamicState = whiteout::m3::AnimRef<whiteout::u32>{};
+        rb.dynamicState.initValue = 1;
+        rb.rigidBodyShape.push_back(ps);
+        m3fix::ModelBuilder mb;
+        mb.Bone("root", -1, m3fix::ConstRef(Vector3f{0.0f, 0.0f, 5.0f}),
+                m3fix::ConstRef(Quaternion{0, 0, 0, 1}),
+                m3fix::ConstRef(Vector3f{1.0f, 1.0f, kTall}), whiteout::m3::BoneFlag::None);
+        whiteout::m3::Model model = mb.Build();
+        model.rigidBodies.push_back(rb);
+        return sc2::Sc2BuildCollisionShapes(model);
+    }();
+    REQUIRE(shapes.shapes.size() == 1);
+    CHECK(shapes.anisotropic.size() == 1);
+    CHECK(shapes.anisotropic[0] == 1);
+    REQUIRE(boxFs.collisionTransforms.size() == 1);
+
+    f32 lowest = 1e9f, highest = -1e9f;
+    const Vector3f mn = shapes.shapes[0].vertices[0], mx = shapes.shapes[0].vertices[1];
+    const Vector3f corners[8] = {{mn.x, mn.y, mn.z}, {mx.x, mn.y, mn.z}, {mx.x, mx.y, mn.z},
+                                 {mn.x, mx.y, mn.z}, {mn.x, mn.y, mx.z}, {mx.x, mn.y, mx.z},
+                                 {mx.x, mx.y, mx.z}, {mn.x, mx.y, mx.z}};
+    for (const Vector3f& v : corners) {
+        const f32 z = whiteout::transform_point(v, boxFs.collisionTransforms[0]).z;
+        lowest = std::min(lowest, z);
+        highest = std::max(highest, z);
+    }
+    // Resting on the ground, and as tall as the stretched box the solver holds.
+    CHECK(lowest == Approx(0.0f).margin(0.05));
+    CHECK(highest - lowest == Approx(2.0f * kHalfZ * kTall).margin(0.05));
+}
+
+TEST_CASE("every PHSH kind draws as its own kind, at its own scale", "[m3][phys]") {
+    // Five kinds of fixture want five kinds of wireframe, and two of them used
+    // to share one: an M3 capsule and an M3 cylinder both came back as
+    // `Cylinder`, so a capsule was drawn flat-capped. That hides a whole radius
+    // of reach at either end — the exact margin that says whether a collider
+    // covers the limb it drives — and it is invisible in the picture, because a
+    // flat-capped tube is a perfectly plausible thing to be looking at.
+    //
+    // The second half of the case is the scale rule, on a bone scaled (1, 1, 3).
+    // A sphere and a capsule can only be *drawn* under a uniform placement,
+    // there being no ellipsoid to draw otherwise; a box, a cylinder and a hull
+    // have to take all three axes or the wireframe contradicts the fixture
+    // sitting inside it. One rig asserts both, because the two are the same
+    // decision made in two places.
+    namespace m3 = whiteout::m3;
+    using Kind = whiteout::flakes::renderer::model::CollisionShapeType;
+    constexpr f32 kTall = 3.0f;
+
+    auto authored = [](m3::PhysicsShapeType type, const Vector3f& dims) {
+        m3::PhysicsShape ps;
+        ps.shapeType = type;
+        ps.transform = Matrix44f::identity();
+        ps.shapeDimensions = dims;
+        return ps;
+    };
+
+    m3::RigidBody rb;
+    rb.parentBoneIndex = 0;
+    rb.simulationType = 1;
+    rb.density = 1.0f;
+    rb.rigidBodyShape.push_back(authored(m3::PhysicsShapeType::Box, {0.3f, 0.2f, 0.1f}));
+    rb.rigidBodyShape.push_back(authored(m3::PhysicsShapeType::Sphere, {0.25f, 0.0f, 0.0f}));
+    rb.rigidBodyShape.push_back(authored(m3::PhysicsShapeType::Capsule, {0.1f, 0.6f, 0.0f}));
+    rb.rigidBodyShape.push_back(authored(m3::PhysicsShapeType::Cylinder, {0.2f, 0.5f, 0.0f}));
+    {
+        m3::PhysicsShape hull = authored(m3::PhysicsShapeType::ConvexHull, {0.0f, 0.0f, 0.0f});
+        for (int sx = -1; sx <= 1; sx += 2)
+            for (int sy = -1; sy <= 1; sy += 2)
+                for (int sz = -1; sz <= 1; sz += 2)
+                    hull.hullFaceNormals.push_back(
+                        {0.2f * (f32)sx, 0.2f * (f32)sy, 0.2f * (f32)sz});
+        rb.rigidBodyShape.push_back(hull);
+    }
+    // Last, and deliberately: a capsule of zero length is simulated as a sphere,
+    // so it has to be *drawn* as one. The overlay shows the fixture, not the file.
+    rb.rigidBodyShape.push_back(authored(m3::PhysicsShapeType::Capsule, {0.15f, 0.0f, 0.0f}));
+    // And a box with a zero extent, which the engine simulates as a thin slab
+    // (`sb::kMinBoxHalfExtent`). A wireframe drawn at the authored zero is a flat
+    // quad over a collider that has thickness.
+    rb.rigidBodyShape.push_back(authored(m3::PhysicsShapeType::Box, {0.3f, 0.2f, 0.0f}));
+
+    m3fix::ModelBuilder mb;
+    mb.Bone("root", -1, m3fix::ConstRef(Vector3f{0.0f, 0.0f, 5.0f}),
+            m3fix::ConstRef(Quaternion{0, 0, 0, 1}),
+            m3fix::ConstRef(Vector3f{1.0f, 1.0f, kTall}), whiteout::m3::BoneFlag::None);
+    m3::Model model = mb.Build();
+    model.rigidBodies.push_back(rb);
+
+    const auto built = sc2::Sc2BuildCollisionShapes(model);
+    REQUIRE(built.shapes.size() == 7);
+    REQUIRE(built.anisotropic.size() == 7);
+
+    const Kind want[7] = {Kind::Box,      Kind::Sphere, Kind::Capsule, Kind::Cylinder,
+                          Kind::Hull,     Kind::Sphere, Kind::Box};
+    const whiteout::u8 perAxis[7] = {1, 0, 0, 1, 1, 0, 1};
+    for (std::size_t i = 0; i < 7; ++i) {
+        INFO("shape " << i);
+        CHECK(built.shapes[i].type == static_cast<whiteout::i32>(want[i]));
+        CHECK(built.anisotropic[i] == perAxis[i]);
+    }
+
+    // Each kind's own geometry, in the fields that kind's drawing reads.
+    CHECK(built.shapes[0].vertices[1].x == Approx(0.3f));
+    CHECK(built.shapes[0].vertices[1].z == Approx(0.1f));
+    CHECK(built.shapes[1].radius == Approx(0.25f));
+    CHECK(built.shapes[2].radius == Approx(0.1f));
+    // Cap centres, so 0.6 apart and reaching 0.1 further at each end.
+    CHECK(Dist(built.shapes[2].vertices[0], built.shapes[2].vertices[1]) == Approx(0.6f));
+    CHECK(built.shapes[3].radius == Approx(0.2f));
+    CHECK(Dist(built.shapes[3].vertices[0], built.shapes[3].vertices[1]) == Approx(0.5f));
+    CHECK(built.shapes[4].hullPoints.size() == 8);
+    CHECK(built.shapes[5].radius == Approx(0.15f));
+    CHECK(built.shapes[6].vertices[1].z > 0.0f);
+
+    // And the placement each one lands under.
+    M3ModelAdapter adapter(model);
+    const auto shapes = adapter.GetCollisionShapes();
+    REQUIRE(shapes.size() == 7);
+    const FrameState fs = adapter.Evaluate(flakes::PoseRequest());
+    REQUIRE(fs.collisionTransforms.size() == 7);
+
+    auto rowLen = [](const Matrix44f& m, int r) {
+        return std::sqrt(m.data[r][0] * m.data[r][0] + m.data[r][1] * m.data[r][1] +
+                         m.data[r][2] * m.data[r][2]);
+    };
+    for (std::size_t i = 0; i < 7; ++i) {
+        const Matrix44f& m = fs.collisionTransforms[i];
+        const f32 x = rowLen(m, 0), y = rowLen(m, 1), z = rowLen(m, 2);
+        INFO("shape " << i << " placed rows " << x << "," << y << "," << z);
+        if (perAxis[i] != 0) {
+            // The bone's 3 on z reaches the collider, so the wireframe grows with it.
+            CHECK(z == Approx(kTall * x).margin(0.01));
+        } else {
+            // Every axis equal, which is the only way a drawn circle stays a circle.
+            CHECK(y == Approx(x).margin(0.001));
+            CHECK(z == Approx(x).margin(0.001));
+        }
     }
 }

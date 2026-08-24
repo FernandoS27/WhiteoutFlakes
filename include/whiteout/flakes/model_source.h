@@ -63,6 +63,7 @@ struct ModelData {
     std::vector<M2ParticleEmitterConfig> m2ParticleConfigs;
     std::vector<effects::RibbonEmitterConfig> ribbonConfigs;
     std::vector<CollisionShapeData> collisionConfigs;
+    std::vector<ClothOverlayData> clothOverlays;
     std::vector<AttachmentConfig> attachmentConfigs;
     std::vector<PE1EmitterConfig> pe1Configs;
     std::vector<CornEmitterInit> cornEmitterInits;
@@ -165,6 +166,11 @@ public:
     virtual std::vector<ParticleEmitterConfig> GetParticleConfigs() = 0;
     virtual std::vector<effects::RibbonEmitterConfig> GetRibbonConfigs() = 0;
     virtual std::vector<CollisionShapeData> GetCollisionShapes() = 0;
+    /// @brief The model's cloths, for the debug overlay. Empty for every format
+    ///        but `.m3`, which is the only one with a soft-body solver behind it.
+    virtual std::vector<ClothOverlayData> GetClothOverlays() {
+        return {};
+    }
     virtual std::vector<AttachmentConfig> GetAttachmentConfigs() {
         return {};
     }
@@ -232,6 +238,7 @@ public:
         d.m2ParticleConfigs = GetM2ParticleConfigs();
         d.ribbonConfigs = GetRibbonConfigs();
         d.collisionConfigs = GetCollisionShapes();
+        d.clothOverlays = GetClothOverlays();
         d.attachmentConfigs = GetAttachmentConfigs();
         d.pe1Configs = GetPE1Configs();
         d.cornEmitterInits = GetCornEmitterInits();

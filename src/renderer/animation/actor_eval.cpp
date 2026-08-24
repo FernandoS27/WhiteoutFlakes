@@ -289,6 +289,32 @@ void Actor::ApplyFrameState(const FrameState& state, i32 localTimeMs, const Acto
                                                                     : CollisionBodyKind::Kinematic);
     }
 
+    // The cloth overlay's per-frame half is a *gather*, not a transform: a
+    // particle is a palette node, so its live position is already sitting in the
+    // matrix the shader will skin with. Resolved here rather than in the debug
+    // pass so that pass never has to read the palette.
+    for (auto& cloth : render.cloths) {
+        const i32 ai = cloth.def.activeIndex;
+        cloth.active =
+            ai < 0 || ai >= (i32)state.clothActive.size() || state.clothActive[ai] != 0;
+        cloth.particles.resize(cloth.def.particleNodes.size());
+        for (usize i = 0; i < cloth.def.particleNodes.size(); i++) {
+            const i32 n = cloth.def.particleNodes[i];
+            cloth.particles[i] = (n >= 0 && n < (i32)state.boneWorldMatrices.size())
+                                     ? Vector3f{state.boneWorldMatrices[n].data[3][0],
+                                                state.boneWorldMatrices[n].data[3][1],
+                                                state.boneWorldMatrices[n].data[3][2]}
+                                     : Vector3f{0, 0, 0};
+        }
+        cloth.colliders.resize(cloth.def.colliders.size());
+        for (usize i = 0; i < cloth.def.colliders.size(); i++) {
+            const auto& cd = cloth.def.colliders[i];
+            cloth.colliders[i] = (cd.node >= 0 && cd.node < (i32)state.boneWorldMatrices.size())
+                                     ? cd.local * state.boneWorldMatrices[cd.node]
+                                     : cd.local;
+        }
+    }
+
     ApplyAttachmentStates(*this, state, ctx);
     ApplyCornFrameStates(*this, state, ctx);
 

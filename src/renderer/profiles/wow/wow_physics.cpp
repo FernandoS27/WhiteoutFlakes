@@ -870,6 +870,28 @@ Matrix44f RoundTripBoneFrame(const Matrix44f& palette, const Vector3f& pivot) {
     return ToMatrix(BoneFrame(palette, pivot), pivot);
 }
 
+std::vector<::whiteout::u16> WowPolytopeEdges(const ::whiteout::m2::PolytopeShape& hull) {
+    std::vector<::whiteout::u16> out;
+    out.reserve(hull.edges.size());
+    for (std::size_t e = 0; e < hull.edges.size(); ++e) {
+        if (hull.edges[e].twinOffset <= 0) {
+            continue;
+        }
+        const std::size_t twin = e + static_cast<std::size_t>(hull.edges[e].twinOffset);
+        if (twin >= hull.edges.size()) {
+            continue;
+        }
+        const std::size_t a = hull.edges[e].originVertex;
+        const std::size_t b = hull.edges[twin].originVertex;
+        if (a >= hull.vertices.size() || b >= hull.vertices.size() || a == b) {
+            continue;
+        }
+        out.push_back(static_cast<::whiteout::u16>(a));
+        out.push_back(static_cast<::whiteout::u16>(b));
+    }
+    return out;
+}
+
 std::unique_ptr<animation::IPoseStage> CreateWowPhysicsStage(const ::whiteout::m2::Model& model) {
     if (!model.physics.has_value()) {
         return nullptr;

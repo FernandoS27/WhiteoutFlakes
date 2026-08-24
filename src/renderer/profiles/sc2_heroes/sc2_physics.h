@@ -96,6 +96,15 @@ Matrix44f Sc2RoundTripBoneFrame(const Matrix44f& world);
 /// Sc2RoundTripBoneFrame exists to catch — so the two spend one.
 void Sc2DecomposeBone(const Matrix44f& world, Quaternion& rotation, Vector3f& translation);
 
+/// @brief And the backward half: an SQT with no scale, as a matrix.
+///
+/// The exact inverse of @ref Sc2DecomposeBone, which is the only reason it is
+/// here rather than written out at the one call site — the cloth overlay places
+/// colliders the solver holds as `(rotation, position)` pairs, and composing
+/// those with the rotation written down the columns instead of the rows gives a
+/// conjugate that is stable, plausible, and mirrored.
+Matrix44f Sc2ComposeBone(const Quaternion& rotation, const Vector3f& translation);
+
 /// @brief The `PHSH` shapes as debug wireframes, plus the bone each one rides.
 ///
 /// One entry per `PHSH` on the bodies the stage builds, in the same order —
@@ -134,18 +143,34 @@ struct Sc2CollisionShapes {
     std::vector<Matrix44f> locals;
     /// @brief The bone each shape rides. Parallel to @ref shapes.
     std::vector<i32> bones;
+    /// @brief Whether this shape can wear the bone's scale **per axis**.
+    ///        Parallel to @ref shapes. See @ref Sc2PlaceCollisionShapes.
+    std::vector<::whiteout::u8> anisotropic;
 };
 Sc2CollisionShapes Sc2BuildCollisionShapes(const ::whiteout::m3::Model& model);
 
 /// @brief Place a shape list from a posed skeleton, into @p out.
 ///
-/// `local * (the frame the body was built in)`, where the second half is the
-/// bone's rotation and translation with the **smallest** of its three row
-/// scales splatted over all three axes — the single float StarCraft II hands
-/// every fixture (`DOMINO_GLUE.md` §6.1). Using the bone matrix directly would
-/// draw a non-uniformly scaled *body* fatter than the one being simulated,
-/// which is the opposite mistake from dropping the *shape's* own scale.
+/// `local * (the frame the body was built in)`, and the bone's scale enters that
+/// second half **two different ways depending on the shape**, which is why
+/// @p anisotropic has to be passed alongside:
+///
+///  - a shape built as a *polytope* — box, cylinder, convex hull — takes the
+///    bone's three axis scales verbatim, so a stretched bone stretches its
+///    collider;
+///  - a *sphere* or *capsule* takes the smallest of the three, splatted. Not a
+///    preference: Domino has no ellipsoid and no elliptical capsule, so there is
+///    no shape to place. `min` rather than `max` because that is the float
+///    StarCraft II hands every fixture (`DOMINO_GLUE.md` §6.1), leaving these
+///    two kinds behaving exactly as the client does.
+///
+/// StarCraft II collapses **all five** this way, because a `dmFixture` carries
+/// one `m_scaleOrRadius` float and its polytopes are cooked offline; it recovers
+/// the per-axis part by baking it into the cooked hull. Snowball builds its
+/// polytopes from points we hand it, so the three that can be anisotropic are,
+/// and the divergence is confined to the two kinds that cannot.
 void Sc2PlaceCollisionShapes(std::span<const i32> bones, std::span<const Matrix44f> locals,
+                             std::span<const ::whiteout::u8> anisotropic,
                              std::span<const Matrix44f> boneWorld,
                              std::vector<Matrix44f>& out);
 

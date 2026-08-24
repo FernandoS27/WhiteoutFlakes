@@ -363,6 +363,10 @@ private:
     /// Which bone each entry of @ref GetCollisionShapes rides, so `Evaluate` can place them.
     /// Parallel to the returned vector and filled by the same walk.
     mutable std::vector<i32> physicsShapeBones_;
+    /// The frame each shape sits in on its bone. Only a `BOXS` has a non-identity
+    /// one — a box is the single `.phys` kind whose orientation lives outside its
+    /// vertices — but it is kept per shape so the placement stays one multiply.
+    mutable std::vector<Matrix44f> physicsShapeLocals_;
 
     mutable ::whiteout::m2::Model model_;
     // The parse-time filesystem wrapper, held only for a lazy parse. See the
