@@ -58,7 +58,7 @@ bool IsEffectKind(StorageFileKind k) {
 // detected install is shown disabled rather than hidden — "StarCraft II is not
 // installed" is a more useful answer than a combo that silently has two
 // entries on one machine and three on another.
-constexpr ProductId kGames[] = {ProductId::Wc3, ProductId::Wow, ProductId::Sc2};
+constexpr ProductId kGames[] = {ProductId::Wc3, ProductId::Wow, ProductId::Sc2, ProductId::D3};
 
 // Icon zoom range. The floor is the point where a thumbnail still reads as a
 // model rather than a smudge; the ceiling is about two cells across a default
@@ -79,6 +79,8 @@ const char* GameLabel(ProductId game) {
         return "StarCraft II";
     case ProductId::Wc3:
         return "Warcraft III";
+    case ProductId::D3:
+        return "Diablo III";
     default:
         return "(folder)";
     }

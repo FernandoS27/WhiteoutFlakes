@@ -197,6 +197,8 @@ pub enum ProductId {
     Wow = 2,
     /// StarCraft II.
     Sc2 = 3,
+    /// Diablo III.
+    D3 = 4,
 }
 
 impl TryFrom<i32> for ProductId {
@@ -207,6 +209,7 @@ impl TryFrom<i32> for ProductId {
             1 => Ok(ProductId::Wc3),
             2 => Ok(ProductId::Wow),
             3 => Ok(ProductId::Sc2),
+            4 => Ok(ProductId::D3),
             other => Err(crate::Error::UnknownEnum {
                 name: "ProductId",
                 value: other,

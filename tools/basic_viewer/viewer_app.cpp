@@ -894,6 +894,8 @@ void ViewerApp::FollowModelGame(const std::filesystem::path& path) {
         game = ProductId::Wow;
     else if (ext == ".m3")
         game = ProductId::Sc2;
+    else if (ext == ".acr" || ext == ".app")
+        game = ProductId::D3;
     else if (ext == ".mdx" || ext == ".mdl" || ext == ".pkb" || ext == ".pkfx")
         game = ProductId::Wc3;
     if (game == ProductId::Neutral)

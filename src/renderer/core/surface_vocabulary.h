@@ -33,6 +33,7 @@ enum class ShadingModelId : u8 {
     M2Combiners = 3,
     M3Standard = 4,
     M3Composite = 5,
+    D3Standard = 6,
 
     Count,
     None = 0xFF,

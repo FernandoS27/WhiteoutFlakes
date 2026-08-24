@@ -33,6 +33,10 @@ BrowseType BrowseTypeOfFile(std::string_view fileName) {
         return BrowseType::M2;
     if (ext == "m3")
         return BrowseType::M3;
+    // Both halves of a Diablo III drawable: the `.acr` is what a host names,
+    // the `.app` is what actually holds geometry and is worth opening alone.
+    if (ext == "acr" || ext == "app")
+        return BrowseType::Actor;
     return BrowseType::None;
 }
 
@@ -47,10 +51,13 @@ BrowseType BrowseTypesFor(ProductId game) {
         return BrowseType::M2;
     case ProductId::Sc2:
         return BrowseType::M3;
+    case ProductId::D3:
+        return BrowseType::Actor;
     default:
         // Nobody said, which is what a loose folder is: show everything rather
         // than guess which half of a mixed directory was meant.
-        return BrowseType::Models | BrowseType::Effects | BrowseType::M2 | BrowseType::M3;
+        return BrowseType::Models | BrowseType::Effects | BrowseType::M2 | BrowseType::M3 |
+               BrowseType::Actor;
     }
 }
 
@@ -128,6 +135,8 @@ const char* BrowseTypeLabel(BrowseType one) {
         return "Models (.m2)";
     case BrowseType::M3:
         return "Models (.m3)";
+    case BrowseType::Actor:
+        return "Actors (.acr/.app)";
     default:
         return "";
     }

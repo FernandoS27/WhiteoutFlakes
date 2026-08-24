@@ -80,6 +80,7 @@ typedef enum {
     whiteout_flakes_ProductId_Wc3,
     whiteout_flakes_ProductId_Wow,
     whiteout_flakes_ProductId_Sc2,
+    whiteout_flakes_ProductId_D3,
 } whiteout_flakes_ProductId;
 
 typedef enum {

@@ -61,6 +61,7 @@ TEST_CASE("Storages open on demand, not on configuration", "[provider]") {
     // panel would otherwise mean three CASC opens for the one the user reads.
     p.SetGame(ProductId::Wow);
     p.SetGame(ProductId::Sc2);
+    p.SetGame(ProductId::D3);
     p.SetGame(ProductId::Wc3);
     p.SetIgnoreMpq(true);
     p.SetMpqList({});
@@ -70,6 +71,23 @@ TEST_CASE("Storages open on demand, not on configuration", "[provider]") {
     // for it once.
     (void)p.HasCasc();
     CHECK_FALSE(p.StoragesPending());
+}
+
+TEST_CASE("Every ProductId has a slot", "[provider]") {
+    // The provider's per-game slots live in a fixed-size array indexed directly
+    // by ProductId, and each holds a StorageConfig plus a unique_ptr. Adding a
+    // product without growing that array is a heap overrun on the first
+    // SetGame, not a benign read — which is exactly the kind of thing a build
+    // stays quiet about. Round-tripping every value is what catches it.
+    FileContentProvider p;
+    for (ProductId g : {ProductId::Wc3, ProductId::Wow, ProductId::Sc2, ProductId::D3}) {
+        p.SetGame(g);
+        CHECK(p.Game() == g);
+        // Reads the slot's own configured path, which is where an overrun
+        // would land.
+        (void)p.GamePath(g);
+    }
+    CHECK(p.StoragesPending()); // still nothing opened by configuration alone
 }
 
 TEST_CASE("A visited game keeps its storages across a switch", "[provider]") {
@@ -117,6 +135,7 @@ TEST_CASE("A settings game switch opens nothing", "[provider]") {
         CHECK(OpenCascCount() <= open);
     };
     switchTo(ProductId::Sc2);
+    switchTo(ProductId::D3);
     switchTo(ProductId::Wow);
 
     // Coming back to the game that was open finds it open, and still nothing

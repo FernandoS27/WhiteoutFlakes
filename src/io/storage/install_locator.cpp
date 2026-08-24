@@ -22,7 +22,7 @@ InstallLocator::InstallLocator() {
     namespace BG = whiteout::utils;
     auto games = BG::findBlizzardGames();
 
-    // One pass, four products. `Data/` presence is the tie-breaker for
+    // One pass, five products. `Data/` presence is the tie-breaker for
     // Warcraft III only, because a Reforged install and a stale classic one
     // both report as WarcraftIII and only the former has content we can open;
     // the others have no such ambiguity.
@@ -53,6 +53,10 @@ InstallLocator::InstallLocator() {
             if (hots_.empty())
                 hots_ = info.path;
             break;
+        case BG::BlizzardGame::DiabloIII:
+            if (d3_.empty())
+                d3_ = info.path;
+            break;
         default:
             break;
         }
@@ -68,6 +72,7 @@ InstallLocator::InstallLocator() {
     report("World of Warcraft", wow_);
     report("StarCraft II", sc2_);
     report("Heroes of the Storm", hots_);
+    report("Diablo III", d3_);
     if (wc3_.empty())
         std::printf("[FileContentProvider] Warcraft III installation not found.\n");
 #endif
@@ -82,6 +87,8 @@ const std::string& InstallLocator::PathFor(ProductId game) const {
         return wow_;
     case ProductId::Sc2:
         return sc2_;
+    case ProductId::D3:
+        return d3_;
     default:
         return kEmpty;
     }

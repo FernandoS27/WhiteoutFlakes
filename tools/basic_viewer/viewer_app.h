@@ -494,7 +494,7 @@ private:
     ProductId settingsProfile_ = ProductId::Wc3;
     // Which products have had their ini settings loaded into their slot this
     // session, indexed by ProductId. See ApplyProfile.
-    std::array<bool, 4> ioProfileApplied_{};
+    std::array<bool, 5> ioProfileApplied_{};
 
     // ---- Host state (mirror of the ACTIVE document) ----
     bool loopNonLoopingPolicy_ = true;

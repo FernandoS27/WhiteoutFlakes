@@ -81,6 +81,8 @@ TEST_CASE("Each game's archive rules are its own", "[storage]") {
     // StarCraft II and Heroes are CASC-only in every version, so an archive
     // list here would name files that have never existed.
     CHECK(DefaultArchives(ProductId::Sc2).empty());
+    // Diablo III likewise: CASC only, one root, and its own name table.
+    CHECK(DefaultArchives(ProductId::D3).empty());
 
     const auto wow = DefaultArchives(ProductId::Wow);
     REQUIRE_FALSE(wow.empty());
@@ -91,6 +93,7 @@ TEST_CASE("Each game's archive rules are its own", "[storage]") {
     // would be a directory walk that can only return what is already known.
     CHECK(ScanArchives(ProductId::Wc3, "D:/nowhere") == wc3);
     CHECK(ScanArchives(ProductId::Sc2, "D:/nowhere").empty());
+    CHECK(ScanArchives(ProductId::D3, "D:/nowhere").empty());
     // A WoW install that is not there yields nothing rather than the static
     // list — reporting archives that cannot be opened would be a lie.
     CHECK(ScanArchives(ProductId::Wow, "D:/nowhere").empty());

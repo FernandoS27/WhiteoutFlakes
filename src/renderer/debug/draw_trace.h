@@ -65,6 +65,7 @@ enum class TraceShadingModel : u8 {
     // particle draws, where "no shading model" would read as a gap in the
     // recording rather than as a different program.
     M2MultiTexParticle = 7,
+    D3Standard = 8,
     None = 255,
 };
 

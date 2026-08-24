@@ -138,6 +138,7 @@ enum class ProductId : u8 {
     Wc3 = 1, ///< Warcraft III, classic or Reforged.
     Wow = 2, ///< World of Warcraft.
     Sc2 = 3, ///< StarCraft II.
+    D3 = 4,  ///< Diablo III.
 };
 
 /// @brief Per-material flag bits driving render-state setup.

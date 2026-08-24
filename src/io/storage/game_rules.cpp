@@ -36,7 +36,7 @@ std::vector<std::string> ToVector(const char* const* names, usize count) {
     return out;
 }
 
-// ---- The three forms -------------------------------------------------------
+// ---- The four forms --------------------------------------------------------
 //
 // Each one says what its game has and nothing else. A reader should be able to
 // tell what Warcraft III does differently from World of Warcraft by reading
@@ -74,6 +74,14 @@ void ConfigureSc2(StorageBuilder& b, const StorageConfig& c, const std::atomic<b
     b.AssetPrefixes().Casc(c.installPath).Casc(c.secondaryPath);
 }
 
+// CASC only, one root, and ids that are SNO ids. The game ships its own name
+// table (CoreTOC), so there is no mod chain, no asset-prefix retry, no
+// community listfile and no TACT keys — the plainest of the four.
+void ConfigureD3(StorageBuilder& b, const StorageConfig& c, const std::atomic<bool>*) {
+    if (!c.ignoreCasc)
+        b.FileIds().Casc(c.installPath);
+}
+
 } // namespace
 
 std::unique_ptr<GameStorage> BuildGameStorage(const StorageConfig& config,
@@ -85,6 +93,9 @@ std::unique_ptr<GameStorage> BuildGameStorage(const StorageConfig& config,
         break;
     case ProductId::Sc2:
         ConfigureSc2(b, config, hdMode);
+        break;
+    case ProductId::D3:
+        ConfigureD3(b, config, hdMode);
         break;
     default:
         // Neutral included: a scene with nothing loaded reads Warcraft III,
@@ -103,6 +114,9 @@ std::vector<std::string> DefaultArchives(ProductId game) {
         // Deliberately empty. StarCraft II and Heroes are CASC-only — every
         // version of both — so an archive list here would be a list of files
         // that have never existed.
+        return {};
+    case ProductId::D3:
+        // Same, for the same reason.
         return {};
     default:
         return ToVector(kWc3Archives, std::size(kWc3Archives));

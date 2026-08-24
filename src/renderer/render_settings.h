@@ -200,6 +200,26 @@ public:
         m2LazyAnimations_.store(on);
     }
 
+    // The same idea for Diablo III, and **on** by default — the opposite of
+    // M2LazyAnimations, deliberately.
+    //
+    // The reason M2's is off is that every byte-identical gate was recorded
+    // against its eager parse. D3 has no such gate to protect, and its fan-out
+    // is an order of magnitude worse: one character AnimSet names 259 unique
+    // clips and 5.8 MB of keys, 100 of them in the core tag map alone, to play
+    // one idle. The `.ans` is 27 KB and holds the whole tag map, so the map is
+    // parsed eagerly and each `.ani` is fetched on first play.
+    //
+    // Stated here rather than copied silently, because two adjacent settings
+    // with the same shape and opposite defaults is exactly the kind of thing
+    // that gets "fixed" later by someone making them consistent.
+    bool D3LazyAnimations() const {
+        return d3LazyAnimations_.load();
+    }
+    void SetD3LazyAnimations(bool on) {
+        d3LazyAnimations_.store(on);
+    }
+
     // Sort transparent `.m2` geometry back-to-front by camera distance.
     //
     // The client does not: `CM2Scene::BeginDraw` passes 0.0 as the sort
@@ -588,6 +608,7 @@ private:
     std::atomic<bool> renderModeDirty_{false};
     std::atomic<bool> sceneHdrInSd_{false};
     std::atomic<bool> m2LazyAnimations_{false};
+    std::atomic<bool> d3LazyAnimations_{true};
     std::atomic<bool> m2DistanceSortGeometry_{false};
     std::atomic<bool> m2ModelLights_{true};
 

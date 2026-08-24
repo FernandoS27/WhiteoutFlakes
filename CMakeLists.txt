@@ -106,6 +106,11 @@ add_subdirectory(externals/WhiteoutLib)
 option(WDX_ENABLE_M2 "Enable World of Warcraft .m2 loading (geometry only)" ON)
 option(WDX_ENABLE_M3 "Enable StarCraft II / Heroes .m3 loading (geometry only)" ON)
 
+# Diablo III actors. Unlike the two above, nothing extra has to be enabled
+# upstream: WhiteoutLib builds sno/d3/native and textures/tex into its core
+# target unconditionally, so this option only gates our own sources.
+option(WDX_ENABLE_D3 "Enable Diablo III actor loading" ON)
+
 # Rigid-body physics, driven by Snowball — the re-implementation of Blizzard's
 # Domino engine, vendored under src/renderer/physics/snowball. Both games that
 # ship Domino data are covered: WoW's `.m2` cloth and tassels (`.phys`/PFDC) and
@@ -363,6 +368,11 @@ set(SHADER_ENTRIES
     "m3_standard.slang|vsM3StandardSkinned|vertex|kM3StandardSkinnedVS"
     "m3_standard.slang|psM3Standard|fragment|kM3StandardPS"
     "m3_standard.slang|psM3StandardMrt|fragment|kM3StandardMrtPS"
+    # D3 standard material (Diablo III actors). One PS: the frame is gamma-LDR
+    # with no G-buffer, so there is no MRT twin to split off.
+    "d3_standard.slang|vsD3Standard|vertex|kD3StandardVS"
+    "d3_standard.slang|vsD3StandardSkinned|vertex|kD3StandardSkinnedVS"
+    "d3_standard.slang|psD3Standard|fragment|kD3StandardPS"
     "m3_deferred_light.slang|vsM3DeferredLight|vertex|kM3DeferredLightVS"
     "m3_deferred_light.slang|psM3DeferredLight|fragment|kM3DeferredLightPS"
     # NOTE: depth of field has no custom shader entry — DofService runs the
@@ -1331,6 +1341,19 @@ if(WDX_ENABLE_M3)
     )
     target_compile_definitions(WhiteoutFlakesLib PUBLIC WDX_ENABLE_M3=1)
     message(STATUS "WhiteoutFlakes: .m3 loading ENABLED (geometry only)")
+endif()
+
+# Diablo III actors, opt-in on the same terms.
+if(WDX_ENABLE_D3)
+    target_sources(WhiteoutFlakesLib PRIVATE
+        src/io/d3/d3_asset_provider.cpp
+        src/io/d3/d3_model_adapter.cpp
+        src/io/d3/d3_sno_cache.cpp
+        src/renderer/profiles/diablo3/d3_standard_shading.cpp
+        src/renderer/profiles/diablo3/d3_surface_table.cpp
+    )
+    target_compile_definitions(WhiteoutFlakesLib PUBLIC WDX_ENABLE_D3=1)
+    message(STATUS "WhiteoutFlakes: Diablo III actor loading ENABLED")
 endif()
 
 # ---- Snowball rigid-body physics -----------------------------------------

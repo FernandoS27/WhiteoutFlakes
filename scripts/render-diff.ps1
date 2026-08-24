@@ -108,6 +108,21 @@ param(
     # Aim target for turrets, model space, as three components.
     [double[]]$Aim,
 
+    # GATE G7 — the Diablo III arm. Same shape as -M3: its own corpus root and
+    # corpus file, and its own baselines (`d3`). The corpus is the extracted
+    # `.app` tree, not the install, so this needs no CASC.
+    #
+    # Its baselines are PROGRESSIVE, for -M3Anim's reason: every D3 phase
+    # legitimately changes what D3 draws, so re-recording is the expected
+    # outcome of a phase rather than an admission — and which phase last
+    # re-recorded is what the commit message has to say. The wc3/wow/sc2
+    # baselines are NOT progressive and are never re-recorded here.
+    #
+    # A green -D3 run is not enough on its own: if two different actors'
+    # goldens come out byte-identical, the arm is proving nothing. That is the
+    # trap that made the first -M3Anim recording vacuous.
+    [switch]$D3,
+
     # SD is the default mode; -Hd records the HD profile's baselines instead.
     # A full gate run does both — they are different draw paths.
     [switch]$Hd,
@@ -163,8 +178,8 @@ if (-not (Test-Path $BaselineDir)) {
 
 $mode = if ($Hd) { 'hd' } else { 'sd' }
 if ($Unlit) { $mode += '_unlit' }
-if ((@($M2, $M3, $M3Anim, $Sc2Mat) | Where-Object { $_ }).Count -gt 1) {
-    Write-Error '-M2, -M3, -M3Anim and -Sc2Mat are separate arms: pass one of them.'
+if ((@($M2, $M3, $M3Anim, $Sc2Mat, $D3) | Where-Object { $_ }).Count -gt 1) {
+    Write-Error '-M2, -M3, -M3Anim, -Sc2Mat and -D3 are separate arms: pass one of them.'
     exit 2
 }
 if ($Solvers -and -not $M3Anim) {
@@ -208,6 +223,15 @@ if ($M3 -or $M3Anim) {
     # frames in the corpus file are written against this default.
     if ($M3Anim -and -not $PSBoundParameters.ContainsKey('Frames')) {
         $Frames = 120
+    }
+}
+if ($D3) {
+    $mode = 'd3'
+    if (-not $PSBoundParameters.ContainsKey('CorpusRoot')) {
+        $CorpusRoot = 'C:/Projects/WhiteoutLib/Corpus/D3'
+    }
+    if (-not $PSBoundParameters.ContainsKey('CorpusFile')) {
+        $CorpusFile = "$PSScriptRoot/../tools/particle_diff/corpus_d3.txt"
     }
 }
 if ($Sc2Mat) {
@@ -269,7 +293,7 @@ foreach ($entry in $entries) {
     # start sequence joins the key so one model can appear in the corpus more
     # than once — different sequences of the same unit are different baselines,
     # not a collision.
-    $key = (($rel -replace '[\\/ ]', '_') -replace '\.(mdx|m2|m3)$', '') + "_$mode"
+    $key = (($rel -replace '[\\/ ]', '_') -replace '\.(mdx|m2|m3|app)$', '') + "_$mode"
     if ($entry.Seq) { $key += '_' + ($entry.Seq -replace '[^A-Za-z0-9]', '') }
     $trace = Join-Path $BaselineDir "$key.txt"
     $image = Join-Path $BaselineDir "$key.raw"

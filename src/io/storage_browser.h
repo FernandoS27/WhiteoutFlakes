@@ -50,6 +50,7 @@ enum class BrowseType : u32 {
     Effects = 1u << 1, // .pkb / .pkfx
     M2 = 1u << 2,      // .m2
     M3 = 1u << 3,      // .m3
+    Actor = 1u << 4,   // .acr / .app
 };
 
 constexpr BrowseType operator|(BrowseType a, BrowseType b) {

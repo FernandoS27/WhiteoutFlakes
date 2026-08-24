@@ -48,7 +48,7 @@ private:
     // differs is the data — WoW adds a listfile and scans its archive names.
     void BuildIoArchivePage(io::FileContentProvider& provider, ProductId game);
     // StarCraft II / Heroes: two CASC roots and no MPQs, ever.
-    void BuildIoCascPage(io::FileContentProvider& provider);
+    void BuildIoCascPage(io::FileContentProvider& provider, ProductId game);
     // Live storage state for `game`, which only the active profile has.
     void BuildIoStorageStatus(io::FileContentProvider& provider, ProductId game);
     // Fill the edit buffers with `game`'s settings: from the live provider when

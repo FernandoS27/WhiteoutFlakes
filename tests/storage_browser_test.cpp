@@ -40,9 +40,11 @@ TEST_CASE("Each game declares what it is worth browsing for", "[browser]") {
     // the whole list.
     CHECK(BrowseTypesFor(ProductId::Wow) == BrowseType::M2);
     CHECK(BrowseTypesFor(ProductId::Sc2) == BrowseType::M3);
+    CHECK(BrowseTypesFor(ProductId::D3) == BrowseType::Actor);
     // A loose folder has no product record, so it narrows nothing.
     CHECK(BrowseTypesFor(ProductId::Neutral) ==
-          (BrowseType::Models | BrowseType::Effects | BrowseType::M2 | BrowseType::M3));
+          (BrowseType::Models | BrowseType::Effects | BrowseType::M2 | BrowseType::M3 |
+           BrowseType::Actor));
 
     // Extensions group by what a user would check, not by dialect: two model
     // dialects are one checkbox, two effect dialects are another.
@@ -52,6 +54,11 @@ TEST_CASE("Each game declares what it is worth browsing for", "[browser]") {
     CHECK(BrowseTypeOfFile("x.pkfx") == BrowseType::Effects);
     CHECK(BrowseTypeOfFile("creature/cow/cow.m2") == BrowseType::M2);
     CHECK(BrowseTypeOfFile("x.m3") == BrowseType::M3);
+    // Both Diablo III entry points are one checkbox: an `.acr` is the actor a
+    // user names and an `.app` is the model it resolves to, and browsing for
+    // one without the other would hide half the corpus.
+    CHECK(BrowseTypeOfFile("x.acr") == BrowseType::Actor);
+    CHECK(BrowseTypeOfFile("x.app") == BrowseType::Actor);
     // Not everything in an archive is a model.
     CHECK(BrowseTypeOfFile("x.blp") == BrowseType::None);
     CHECK(BrowseTypeOfFile("noextension") == BrowseType::None);

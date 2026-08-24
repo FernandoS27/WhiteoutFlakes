@@ -34,6 +34,10 @@
 #include "io/m3/m3_model_adapter.h"
 #include "renderer/profiles/sc2_heroes/m3_surface_table.h"
 #endif
+#if WDX_ENABLE_D3
+#include "io/d3/d3_model_adapter.h"
+#include "renderer/profiles/diablo3/d3_surface_table.h"
+#endif
 #if WDX_ENABLE_M2
 #include "io/m2/m2_model_adapter.h"
 #include "renderer/profiles/wow/m2_surface_table.h"
@@ -91,6 +95,8 @@ const char* ProductName(::whiteout::flakes::ProductId p) {
         return "World of Warcraft";
     case ::whiteout::flakes::ProductId::Sc2:
         return "StarCraft II";
+    case ::whiteout::flakes::ProductId::D3:
+        return "Diablo III";
     default:
         return "no product";
     }
@@ -119,6 +125,36 @@ Vector3f GeosetBoundsCenter(i32 count, Get&& get) {
 
 ModelLoader::ModelLoader(RenderService& rs) : rs_(rs) {}
 ModelLoader::~ModelLoader() = default;
+
+#if WDX_ENABLE_D3
+io::D3SnoCache& ModelLoader::D3Cache() {
+    if (!d3Cache_)
+        d3Cache_ = std::make_unique<io::D3SnoCache>(rs_.Scene().ActiveContentProvider());
+    return *d3Cache_;
+}
+
+std::shared_ptr<io::D3ModelAdapter> ModelLoader::D3Drawable(
+    const std::shared_ptr<io::D3ModelAdapter>& fresh) {
+    if (!fresh || fresh->AppearanceSno() <= 0)
+        return fresh;
+    const u64 key = (static_cast<u64>(static_cast<u32>(fresh->AppearanceSno())) << 8) |
+                    (fresh->LookIndex() & 0xFFu);
+    if (auto it = d3Drawables_.find(key); it != d3Drawables_.end()) {
+        auto held = it->second.lock();
+        // A host that moved the look on a shared adapter has invalidated the
+        // key it was filed under; drop the stale entry rather than handing back
+        // a drawable that no longer matches what was asked for.
+        if (held && held->LookIndex() == fresh->LookIndex())
+            return held;
+        d3Drawables_.erase(it);
+    }
+    // Weak, so an entry does not pin a 4.5 MB parse after every actor using it
+    // is gone. The parse itself stays in D3SnoCache, which is budgeted; this
+    // map only decides whether two actors share one drawable.
+    d3Drawables_.emplace(key, fresh);
+    return fresh;
+}
+#endif
 
 #if WDX_ENABLE_M2
 profiles::wow::WowReplaceableTextures& ModelLoader::WowReplaceables() {
@@ -991,6 +1027,36 @@ void BuildM3Surfaces(Actor& actor) {
 } // namespace
 #endif
 
+#if WDX_ENABLE_D3
+namespace {
+// One surface per emitted SubObject — D3SurfaceTable entry g IS geoset g's
+// resolved material, so like BuildM3Surfaces there is no grouping to do.
+void BuildD3Surfaces(Actor& actor) {
+    const auto* table = static_cast<const profiles::diablo3::D3SurfaceTable*>(
+        actor.render.surfaceTable.get());
+    if (!table)
+        return;
+    const auto& src = table->Surfaces();
+    auto& surfaces = actor.render.surfaces;
+    surfaces.clear();
+    surfaces.reserve(src.size());
+    for (u32 g = 0; g < src.size(); ++g) {
+        core::SurfaceKey key;
+        key.model = core::ShadingModelId::D3Standard;
+        key.surface = g;
+        key.blend = profiles::diablo3::D3ClassifySurface(src[g]).blend;
+        const u32 begin = static_cast<u32>(surfaces.size());
+        surfaces.push_back(key);
+        auto it = actor.render.stagedGeosets.find(static_cast<i32>(g));
+        if (it != actor.render.stagedGeosets.end()) {
+            it->second.surfaceBegin = begin;
+            it->second.surfaceCount = 1;
+        }
+    }
+}
+} // namespace
+#endif
+
 Actor* ModelLoader::SpawnUnit(const ContentRef& ref, const Matrix44f& initialTm) {
     // Format detection by content, not by name. A fileDataID has no extension
     // to branch on, and that is exactly the reference a chunked `.m2` names
@@ -1015,7 +1081,7 @@ Actor* ModelLoader::SpawnUnit(const ContentRef& ref, const Matrix44f& initialTm)
 // they are opt-in rather than always present. With both off this reduces to
 // `return nullptr` and the single read below disappears with it.
 Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& initialTm) {
-#if WDX_ENABLE_M2 || WDX_ENABLE_M3
+#if WDX_ENABLE_M2 || WDX_ENABLE_M3 || WDX_ENABLE_D3
     auto* provider = rs_.Scene().ActiveContentProvider();
     if (!provider)
         return nullptr;
@@ -1053,8 +1119,18 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
 #else
     constexpr bool isM3 = false;
 #endif
+#if WDX_ENABLE_D3
+    // Every D3 SNO asset opens 0xDEADBEEF, so the magic identifies the family
+    // and not the format; which group it is comes out of the version word (or
+    // the ref's extension) once the product is settled. Last of the three
+    // because it is the broadest test.
+    const bool isD3 = !isM2 && !isM3 && io::LooksLikeD3(data);
+#else
+    constexpr bool isD3 = false;
+#endif
     const ProductId product = isM2   ? ProductId::Wow
                               : isM3 ? ProductId::Sc2
+                              : isD3 ? ProductId::D3
                                      : ProductId::Neutral;
     if (product == ProductId::Neutral)
         return nullptr;
@@ -1107,6 +1183,35 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
         source = m3;
     }
 #endif
+#if WDX_ENABLE_D3
+    std::shared_ptr<io::D3ModelAdapter> d3;
+    if (isD3) {
+        auto& cache = D3Cache();
+        cache.SetContentProvider(provider);
+        // An `.acr` names an `.app` and an AnimSet; an `.app` is the model
+        // itself. Which one this is comes from the ref's extension where there
+        // is one and from the version word otherwise — never from the magic,
+        // which only says "some D3 asset".
+        const auto group = io::D3GroupFor(ref, data);
+        if (group == io::d3n::Group::Actor) {
+            // The drawable is keyed on `(appearanceSno, lookIndex)` and not on
+            // the `.acr`: 594 actors name one appearance, and keying on the
+            // file that was asked for would build 594 separate drawables off
+            // one correctly-shared parse. Neither the `.acr` nor the `.app` is
+            // re-read to get here — both come out of D3SnoCache.
+            d3 = D3Drawable(io::D3ModelAdapter::LoadActor(ref, data, cache,
+                                                          rs_.Settings().D3LazyAnimations()));
+        } else if (group == io::d3n::Group::Appearance) {
+            d3 = D3Drawable(io::D3ModelAdapter::LoadAppearance(ref, data, cache));
+        } else {
+            std::fprintf(stderr,
+                         "[d3] '%s' is a Diablo III asset this build does not draw "
+                         "(neither Actor nor Appearance)\n",
+                         ref.Describe().c_str());
+        }
+        source = d3;
+    }
+#endif
     if (!source)
         return nullptr;
 
@@ -1129,6 +1234,26 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
         // After the character's own table: the children are spawned through the
         // same route and each builds its own.
         SpawnWowSkinnedModels(*actor, *m2, skinnedModels, provider);
+    }
+#endif
+#if WDX_ENABLE_D3
+    if (d3) {
+        // Built off the parsed appearance, M2's and M3's precedent — per-look
+        // material data does not fit MaterialData. Stamped only when something
+        // resolved: a table with no valid entry leaves the whole actor on
+        // Unlit, which draws where this model would vanish.
+        auto table = profiles::diablo3::BuildD3SurfaceTable(
+            d3->SourceAppearance(), d3->LookIndex(),
+            io::CollectD3Textures(d3->SourceAppearance(), d3->LookIndex()),
+            d3->EmittedSubObjects(), &D3Cache());
+        bool anyValid = false;
+        for (const auto& s : table->Surfaces())
+            anyValid |= s.valid;
+        if (anyValid) {
+            actor->render.surfaceTable = std::move(table);
+            BuildD3Surfaces(*actor);
+            actor->shadingModel = core::ShadingModelId::D3Standard;
+        }
     }
 #endif
 #if WDX_ENABLE_M3
@@ -1157,6 +1282,9 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
 #endif
 }
 
+#if WDX_ENABLE_M2
+// Guarded from the outside, unlike its neighbours below: the declaration is
+// too, because the signature itself names M2-only types.
 void ModelLoader::SpawnWowSkinnedModels(
     Actor& character, io::M2ModelAdapter& characterAdapter,
     const std::vector<profiles::wow::WowCharacterAppearance::SkinnedModel>& wanted,
@@ -1211,6 +1339,7 @@ void ModelLoader::SpawnWowSkinnedModels(
         BuildM2Surfaces(*child);
     }
 }
+#endif
 
 std::shared_ptr<io::M2ModelAdapter> ModelLoader::ResolveParticleModel(const std::string& key) {
 #if WDX_ENABLE_M2

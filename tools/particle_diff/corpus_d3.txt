@@ -1,0 +1,27 @@
+# Diablo III `.app` corpus for the D3 render gate (render-diff.ps1 -D3).
+#
+# Paths are relative to C:/Projects/WhiteoutLib/Corpus/D3. These are
+# appearances, not actors: an `.app` is the model and needs nothing else, which
+# is what lets this arm run against an extracted tree with no CASC install. The
+# `.acr` route — look picking and the AnimSet — needs the storage, and belongs
+# to a run against the install rather than to this list.
+#
+# Chosen for spread rather than for count, because a golden set whose entries
+# are byte-identical to each other proves nothing (the trap that made the first
+# -M3Anim recording vacuous):
+#
+#   * two player classes, one heavily skinned and one lighter
+#   * a monster with a different bone count
+#   * a static prop with NO skeleton at all, which is 63% of the corpus and
+#     exercises the boneless path GetSkinWeights returns empty for
+#   * an appearance with more than one look, so the look index is doing work
+#
+# Add to this list when a phase makes a claim these do not exercise; do not add
+# to it to make a number bigger.
+
+Appearances/Barbarian_Male.app
+Appearances/Wizard_Female.app
+Appearances/Demonhunter_Male.app
+Appearances/SkeletonKing.app
+Appearances/Skeleton.app
+Appearances/Cow_skeleton.app

@@ -138,6 +138,27 @@ if(WDX_ENABLE_M3)
     # models, no device.
     wdx_add_test(m3_surface_table_test m3_surface_table_test.cpp)
 endif()
+if(WDX_ENABLE_D3)
+    # Gates D3-G1 (geometry in range) and D3-G2 (the two bind poses, and the
+    # divergent-bone COUNT that is the whole of why tTransform4 is the palette).
+    # Offline: no CASC, no device.
+    wdx_add_test(d3_geometry_test d3_geometry_test.cpp)
+    # Rigid-first, global influence indices, and the palette read back off the
+    # adapter on a model whose two bind poses actually differ.
+    wdx_add_test(d3_skinning_test d3_skinning_test.cpp)
+    # Looks, the material-name join, and the dwTextureType census the slot
+    # mapping is corrected against.
+    wdx_add_test(d3_surface_table_test d3_surface_table_test.cpp)
+    # Gate D3-G4: the signed quaternion decode, WITH the unsigned one failing
+    # the same test — otherwise the gate is a formality.
+    wdx_add_test(d3_animation_test d3_animation_test.cpp)
+    # Gate D3-G5: read/parse counters over a stub provider. The one gate that
+    # can prove "nothing is read twice" rather than measure that it got faster.
+    wdx_add_test(d3_cache_test d3_cache_test.cpp)
+    # `.tex` through the shared dispatcher, on the installed client.
+    wdx_add_test(d3_texture_test d3_texture_test.cpp)
+endif()
+
 # The baked-vertex-buffer description check. Compiled unconditionally — it
 # #ifdefs its two halves internally, so a build with neither format still
 # links and reports honestly rather than vanishing from the suite.

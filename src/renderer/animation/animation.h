@@ -138,9 +138,15 @@ inline PaletteLayoutDecision DecidePaletteLayoutAndRewrite(
         // Rewrite every vertex lane's boneIdx in place. Lanes with
         // weight==0 still get rewritten — the value is unused but a
         // consistent rewrite keeps the data trivially traceable.
+        // Already-global indices need no remap: a node's Path A slot is its
+        // node index. Only the pseudo slots below still have to be assigned.
+        const bool global = sw.globalVertexIndices;
         for (auto& inf : sw.influences) {
             for (i32 k = 0; k < 4; ++k) {
                 const i32 localIdx = inf.boneIdx[k];
+                if (global && localIdx >= 0 && localIdx < nodeCount) {
+                    continue;
+                }
                 if (localIdx >= 0 && localIdx < subsetCount) {
                     inf.boneIdx[k] = sw.subsetNodeIndices[localIdx];
                 } else {

@@ -141,6 +141,13 @@ TEST_CASE("build-product strings normalise to a ProductId") {
     CHECK(io::ProductIdFromBuildProduct("wow_classic") == ProductId::Wow);
     CHECK(io::ProductIdFromBuildProduct("Sc2") == ProductId::Sc2);
     CHECK(io::ProductIdFromBuildProduct("s2") == ProductId::Sc2);
+    // "diablo3" is the measured build-product; "d3" is the CDN code and the
+    // build-uid prefix. Both reach here — an online storage and a local one
+    // can each answer with either.
+    CHECK(io::ProductIdFromBuildProduct("Diablo3") == ProductId::D3);
+    CHECK(io::ProductIdFromBuildProduct("d3") == ProductId::D3);
+    CHECK(io::ProductIdFromBuildProduct("d3t") == ProductId::D3);
+    CHECK(io::ProductIdFromBuildProduct("d3b") == ProductId::D3);
 }
 
 TEST_CASE("product detection is case-insensitive and fails closed") {
@@ -152,7 +159,7 @@ TEST_CASE("product detection is case-insensitive and fails closed") {
     // and a wrong one would pick the wrong render profile for everything in
     // that scene.
     CHECK(io::ProductIdFromBuildProduct("") == ProductId::Neutral);
-    CHECK(io::ProductIdFromBuildProduct("d3") == ProductId::Neutral);
+    CHECK(io::ProductIdFromBuildProduct("d4") == ProductId::Neutral);
     CHECK(io::ProductIdFromBuildProduct("prometheus") == ProductId::Neutral);
     // Not prefix-matched: "w3" must not swallow an unrelated future product
     // whose name happens to start with it.
@@ -166,6 +173,7 @@ TEST_CASE("ProductId holds the values the C ABI emits") {
     CHECK(static_cast<int>(ProductId::Wc3) == 1);
     CHECK(static_cast<int>(ProductId::Wow) == 2);
     CHECK(static_cast<int>(ProductId::Sc2) == 3);
+    CHECK(static_cast<int>(ProductId::D3) == 4);
 }
 
 // ---------------------------------------------------------------------------

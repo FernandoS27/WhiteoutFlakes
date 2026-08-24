@@ -8,6 +8,7 @@
 #include "renderer/corn_effects/corn_effects_service.h"
 #include "renderer/dnc/dnc_service.h"
 #include "renderer/imgui/imgui_renderer.h"
+#include "renderer/model/model_loader.h"
 #include "renderer/model/model_source_utils.h"
 #include "renderer/model/model_template_manager.h"
 #include "renderer/render_pipeline.h"
@@ -248,6 +249,14 @@ const AssetManager& RenderService::Assets() const {
 }
 void RenderService::RetryUnloadedAssets() {
     impl_->assets_->RetryUnloaded();
+#if WDX_ENABLE_D3
+    // The one host-agnostic funnel every provider reconfiguration already goes
+    // through, which is exactly what the Diablo III SNO cache needs: a sno id
+    // means something different in another install, so a cache that survives a
+    // re-point serves one install's geometry against another's textures.
+    // Handed-out shared_ptrs stay valid; only the cache's own references go.
+    Loader().D3Cache().Clear();
+#endif
 }
 
 void RenderService::EnsureWc3GameData() {

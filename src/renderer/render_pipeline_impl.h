@@ -14,6 +14,9 @@
 #if WDX_ENABLE_M3
 #include "renderer/profiles/sc2_heroes/m3_standard_shading.h"
 #endif
+#if WDX_ENABLE_D3
+#include "renderer/profiles/diablo3/d3_standard_shading.h"
+#endif
 
 #include <memory>
 #include <unordered_map>
@@ -98,6 +101,9 @@ struct RenderPipeline::Impl {
     // Concrete for the same reason again.
     std::unique_ptr<profiles::sc2_heroes::M3StandardShading> m3Shading_;
 #endif
+#if WDX_ENABLE_D3
+    std::unique_ptr<profiles::diablo3::D3StandardShading> d3Shading_;
+#endif
 
     // The two WC3 frames, declared. ValidateProfile runs once when they are
     // built, so a declaration that contradicts itself fails at init rather
@@ -111,6 +117,9 @@ struct RenderPipeline::Impl {
 #endif
 #if WDX_ENABLE_M3
     std::unique_ptr<core::IRenderProfile> sc2HeroesProfile_;
+#endif
+#if WDX_ENABLE_D3
+    std::unique_ptr<core::IRenderProfile> d3Profile_;
 #endif
 
     // Interned MeshBuffer layouts. Holds no GPU objects, so it outlives

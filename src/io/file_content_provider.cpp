@@ -169,7 +169,7 @@ struct FileContentProvider::Impl {
 
     FileResolver resolver;
 
-    std::array<GameSlot, 4> games; // indexed by ProductId
+    std::array<GameSlot, 5> games; // indexed by ProductId
 
     // ---- Request queue (guarded by reqMu) ----
     // `pending` is the worker's input. `alive` tracks every id that has been

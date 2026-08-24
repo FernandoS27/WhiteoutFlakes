@@ -33,6 +33,9 @@
 #if WDX_ENABLE_M3
 #include "renderer/profiles/sc2_heroes/sc2_heroes_profile.h"
 #endif
+#if WDX_ENABLE_D3
+#include "renderer/profiles/diablo3/diablo3_profile.h"
+#endif
 #include "renderer/profiles/wc3/wc3_shading.h"
 #include "renderer/profiles/wc3/wc3_sun.h"
 #include "renderer/shading/surface_pass.h"
@@ -1542,6 +1545,10 @@ void RenderPipeline::CleanupGFX() {
         if (impl_->m3Shading_)
             impl_->m3Shading_->ReleaseGpu();
 #endif
+#if WDX_ENABLE_D3
+        if (impl_->d3Shading_)
+            impl_->d3Shading_->ReleaseGpu();
+#endif
 
         // Tear down CornEffects FIRST — its emitters hold references
         // into the AssetManager (assets_.Release(assetSlot_) in
@@ -2694,6 +2701,12 @@ shading::IShadingModel& RenderPipeline::ActiveShadingModel() {
         impl_->m3Shading_ = std::make_unique<profiles::sc2_heroes::M3StandardShading>(rs_);
         impl_->shadingModels_.Register(impl_->m3Shading_.get());
 #endif
+#if WDX_ENABLE_D3
+        // And Diablo III's. Same rule: named per surface by a D3 actor, never
+        // the active model.
+        impl_->d3Shading_ = std::make_unique<profiles::diablo3::D3StandardShading>(rs_);
+        impl_->shadingModels_.Register(impl_->d3Shading_.get());
+#endif
     }
     // This is RenderMode's whole remaining job: choosing between the two WC3
     // shading models. It is a legitimate use of the mode — SD and HD are two
@@ -2790,6 +2803,22 @@ core::IRenderProfile& RenderPipeline::ProfileForMode(RenderMode mode) {
                          vsc2.error.c_str());
         impl_->sc2HeroesProfile_ = std::move(sc2);
 #endif
+#if WDX_ENABLE_D3
+        auto d3 = std::make_unique<profiles::diablo3::Diablo3Profile>(rs_.Settings());
+        d3->SetShadingModels({impl_->d3Shading_.get(), impl_->unlitShading_.get()});
+        // Bloom rides SceneHdrInSd in the profile itself — a gamma-LDR frame
+        // has no compositing pass to fold a bloom target back in — so the only
+        // predicate left is the service's existence.
+        d3->SetPassPredicate(core::PassSlot::Bloom, [this] {
+            return rs_.GetPostProcessService() != nullptr && rs_.Settings().SceneHdrInSd() &&
+                   rs_.Settings().BloomEnabled();
+        });
+        const auto vd3 = core::ValidateProfile(*d3);
+        if (!vd3.ok)
+            std::fprintf(stderr, "[profile] invalid Diablo III render profile: %s\n",
+                         vd3.error.c_str());
+        impl_->d3Profile_ = std::move(d3);
+#endif
     }
 #if WDX_ENABLE_M2
     // The scene's product selects the frame. This is what SceneView::SetProduct
@@ -2801,6 +2830,10 @@ core::IRenderProfile& RenderPipeline::ProfileForMode(RenderMode mode) {
 #if WDX_ENABLE_M3
     if (impl_->sc2HeroesProfile_ && rs_.Scene().Product() == ProductId::Sc2)
         return *impl_->sc2HeroesProfile_;
+#endif
+#if WDX_ENABLE_D3
+    if (impl_->d3Profile_ && rs_.Scene().Product() == ProductId::D3)
+        return *impl_->d3Profile_;
 #endif
     return (mode == RenderMode::HD) ? *impl_->wc3HdProfile_ : *impl_->wc3SdProfile_;
 }

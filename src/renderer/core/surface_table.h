@@ -30,6 +30,7 @@ enum class ProductId : u8 {
     Wc3 = 1,
     Wow = 2,
     Sc2 = 3,
+    D3 = 4,
 };
 
 class ISurfaceTable {

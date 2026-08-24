@@ -62,6 +62,10 @@ inline ProductId ProductIdFromBuildProduct(std::string_view name) {
         // difference that actually needs expressing.
         {"hero", ProductId::Sc2},   {"heroes", ProductId::Sc2},
         {"herot", ProductId::Sc2},
+        // Diablo III. "diablo3" is the measured build-product; "d3" is the
+        // CDN code and the build-uid prefix.
+        {"diablo3", ProductId::D3}, {"d3", ProductId::D3},
+        {"d3t", ProductId::D3},     {"d3b", ProductId::D3},
     };
     for (const Entry& e : kTable) {
         if (k == e.key)

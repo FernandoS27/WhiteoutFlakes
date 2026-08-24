@@ -21,6 +21,9 @@
 // nested SkinnedModel by reference, which needs the definition.
 #include "renderer/profiles/wow/wow_character_appearance.h"
 #endif
+#if WDX_ENABLE_D3
+#include "io/d3/d3_sno_cache.h"
+#endif
 
 #include <memory>
 #include <string>
@@ -45,6 +48,7 @@ class Emitter2;
 namespace whiteout::flakes::io {
 class IContentProvider;
 class M2ModelAdapter;
+class D3ModelAdapter;
 } // namespace whiteout::flakes::io
 namespace whiteout::flakes::renderer::profiles::wow {
 class WowReplaceableTextures;
@@ -179,6 +183,27 @@ public:
     bool RestyleWowModel(u32 actorHandle, const ContentRef& ref);
 #endif
 
+#if WDX_ENABLE_D3
+    // Every parsed Diablo III SNO asset, shared across actors. Lives here for
+    // the same reason WowReplaceables does — the spawn path is its only caller
+    // — and lazily created, because a session that never opens a `.acr` should
+    // not pay for the map.
+    //
+    // 19,154 actors reference 8,550 distinct appearances and the most-shared is
+    // named by 594 of them, so this is what stops one 4.5 MB `.app` being read
+    // and parsed 594 times. See D3SnoCache for the four decisions behind it.
+    io::D3SnoCache& D3Cache();
+
+    // Drawable templates, keyed on `(appearanceSno, lookIndex)` and NOT on the
+    // `.acr`. An actor contributes nothing to a drawable beyond those two
+    // numbers plus its AnimSet, which rides the actor rather than the template
+    // — so keying on the file that was asked for would build 594 separate
+    // ModelTemplates off one correctly-shared parse.
+    /// @brief Get-or-insert: returns the drawable already built for @p fresh's
+    ///        `(appearanceSno, lookIndex)`, or records and returns @p fresh.
+    std::shared_ptr<io::D3ModelAdapter> D3Drawable(const std::shared_ptr<io::D3ModelAdapter>& fresh);
+#endif
+
 private:
 #if WDX_ENABLE_M2
     // Spawn the collections models @p wanted names as Skinned children of
@@ -273,6 +298,15 @@ private:
                                const std::vector<AttachmentConfig>& attachCfgs);
 
     RenderService& rs_;
+#if WDX_ENABLE_D3
+    std::unique_ptr<io::D3SnoCache> d3Cache_;
+    // (appearanceSno << 8) | lookIndex -> the adapter built for it. A look
+    // index above 255 does not exist in shipped content; the census tops out
+    // at eight. Weak: an entry decides whether two actors *share* a drawable,
+    // and pinning one after its last actor died would keep a 4.5 MB parse alive
+    // outside the cache that budgets those.
+    std::unordered_map<u64, std::weak_ptr<io::D3ModelAdapter>> d3Drawables_;
+#endif
 #if WDX_ENABLE_M2
     std::unique_ptr<profiles::wow::WowReplaceableTextures> wowReplaceables_;
     std::unique_ptr<profiles::wow::WowCharacterAppearance> wowCharacters_;

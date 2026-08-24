@@ -118,11 +118,19 @@ struct SettingsProfile {
     ProductId product;
     const char* label;
 };
-constexpr std::array<SettingsProfile, 3> kSettingsProfiles = {{
+constexpr std::array<SettingsProfile, 4> kSettingsProfiles = {{
     {ProductId::Wc3, "Warcraft III"},
     {ProductId::Sc2, "StarCraft II / Storm"},
     {ProductId::Wow, "World of Warcraft"},
+    {ProductId::D3, "Diablo III"},
 }};
+
+// Games that never shipped an MPQ, so their settings page offers CASC roots
+// and nothing else. Asking this rather than testing == Sc2 in five places is
+// what keeps a fourth CASC-only product from needing five edits.
+constexpr bool IsCascOnly(ProductId game) {
+    return game == ProductId::Sc2 || game == ProductId::D3;
+}
 
 i32 BackendToIdx(gfx::GfxApi b) {
     switch (b) {
@@ -1219,6 +1227,20 @@ void ViewerUI::BuildSettingsGeneralTab(ProductId game) {
         }
         return;
     }
+    if (game == ProductId::D3) {
+        // ---- Lazy clip loading ----
+        // On by default, unlike the `.m2` twin above: one character AnimSet
+        // names 259 clips and 5.8 MB of keys to play one idle, and D3 has no
+        // byte-identical gate recorded against an eager parse to protect.
+        bool on = svc.Settings().D3LazyAnimations();
+        if (ImGui::Checkbox(i18n::tr("settings.general.d3_lazy_anim"), &on)) {
+            svc.Settings().SetD3LazyAnimations(on);
+            SaveIni(app_);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", i18n::tr("settings.general.d3_lazy_anim.tip"));
+        return;
+    }
     if (game == ProductId::Sc2) {
         // ---- Pose solvers (terrain IK + turret) ----
         // Off by default because a solver needs a world to solve against, and
@@ -1724,9 +1746,9 @@ void ViewerUI::CommitIoProfile(io::FileContentProvider& provider, ProductId game
     o.ignoreMpq = ioIgnoreMpqBuf_;
     o.listfilePath = listfileBuf_;
     o.tactKeyPath = tactKeyBuf_;
-    if (game == ProductId::Sc2) {
+    if (game == ProductId::Sc2)
         o.hotsInstallPath = (hotsPathBuf_ == provider.HotsPath()) ? std::string{} : hotsPathBuf_;
-    } else {
+    if (!IsCascOnly(game)) {
         o.mpqListSet = true;
         o.mpqList = ioMpqListBuf_;
     }
@@ -1761,8 +1783,8 @@ void ViewerUI::BuildSettingsIoTab(io::FileContentProvider& provider, ProductId g
         ioBufsGame_ = game;
         ioBufsServing_ = provider.Game();
     }
-    if (game == ProductId::Sc2)
-        BuildIoCascPage(provider);
+    if (IsCascOnly(game))
+        BuildIoCascPage(provider, game);
     else
         BuildIoArchivePage(provider, game);
     BuildIoStorageStatus(provider, game);
@@ -1783,7 +1805,7 @@ void ViewerUI::BuildIoStorageStatus(io::FileContentProvider& provider, ProductId
     // open it is reporting on.
     if (provider.StoragesPending()) {
         ImGui::TextDisabled(i18n::tr("settings.io.casc_status"), i18n::tr("settings.io.pending"));
-        if (game != ProductId::Sc2)
+        if (!IsCascOnly(game))
             ImGui::TextDisabled(i18n::tr("settings.io.mpq_status"),
                                 i18n::tr("settings.io.pending"));
         return;
@@ -1796,7 +1818,7 @@ void ViewerUI::BuildIoStorageStatus(io::FileContentProvider& provider, ProductId
                                       : i18n::tr("settings.io.open"));
     for (const auto& r : roots)
         ImGui::TextDisabled("    %s", r.c_str());
-    if (game != ProductId::Sc2)
+    if (!IsCascOnly(game))
         ImGui::TextDisabled(i18n::tr("settings.io.mpq_status"),
                             provider.HasMpq() ? i18n::tr("app.yes") : i18n::tr("app.no"));
 }
@@ -1992,11 +2014,12 @@ void ViewerUI::BuildIoArchivePage(io::FileContentProvider& provider, ProductId g
         commit();
 }
 
-// StarCraft II and Heroes of the Storm are two installs behind one product
-// (they share a render profile), so this page configures two CASC roots and
-// no archives: neither game ever shipped an MPQ.
-void ViewerUI::BuildIoCascPage(io::FileContentProvider& provider) {
-    auto commit = [&] { CommitIoProfile(provider, ProductId::Sc2); };
+// The CASC-only products: no archives, because neither StarCraft II nor
+// Diablo III ever shipped an MPQ. StarCraft II is the one with *two* roots —
+// it and Heroes of the Storm are two installs behind one product, because they
+// share a render profile — so the second row is its alone.
+void ViewerUI::BuildIoCascPage(io::FileContentProvider& provider, ProductId game) {
+    auto commit = [&] { CommitIoProfile(provider, game); };
 
     // One row per game: the text field, a folder picker, a reset to the
     // discovered path, and a label. The two rows differ only in the buffer.
@@ -2030,9 +2053,13 @@ void ViewerUI::BuildIoCascPage(io::FileContentProvider& provider) {
         ImGui::PopID();
     };
 
-    rootRow("sc2", installPathBuf_, provider.GamePath(ProductId::Sc2), "StarCraft II");
-    ImGui::Spacing();
-    rootRow("hots", hotsPathBuf_, provider.HotsPath(), "Heroes of the Storm");
+    if (game == ProductId::D3) {
+        rootRow("d3", installPathBuf_, provider.GamePath(ProductId::D3), "Diablo III");
+    } else {
+        rootRow("sc2", installPathBuf_, provider.GamePath(ProductId::Sc2), "StarCraft II");
+        ImGui::Spacing();
+        rootRow("hots", hotsPathBuf_, provider.HotsPath(), "Heroes of the Storm");
+    }
 
     ImGui::Spacing();
     ImGui::Separator();

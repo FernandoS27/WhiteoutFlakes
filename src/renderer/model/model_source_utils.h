@@ -7,6 +7,7 @@
 #include <whiteout/textures/dds/parser.h>
 #include <whiteout/textures/png/parser.h>
 #include <whiteout/textures/texture.h>
+#include <whiteout/textures/tex/parser.h>
 #include <whiteout/textures/tga/parser.h>
 #include <whiteout/textures/tiff/parser.h>
 
@@ -107,6 +108,14 @@ inline std::string SniffTextureExtension(std::span<const u8> b) {
         return ".png";
     if (tag("II*\0") || tag("MM\0*"))
         return ".tif";
+    // Diablo III's SNO magic, little-endian 0xDEADBEEF. It identifies the asset
+    // *family* rather than the texture format, which is enough here: this only
+    // runs on a slot already acquired as AssetKind::Texture, so the family
+    // answers the only question being asked. D3 references textures by SNO id
+    // and never by path, so there is no name to take an extension from and this
+    // is the whole of how a `.tex` gets dispatched.
+    if (b.size() >= 4 && b[0] == 0xEF && b[1] == 0xBE && b[2] == 0xAD && b[3] == 0xDE)
+        return ".tex";
     // TGA has no leading magic; a caller with no extension and no match is
     // better served by its own fallback than by a guess.
     return {};
@@ -133,6 +142,13 @@ inline std::optional<whiteout::textures::Texture> DispatchTextureParser(const st
     }
     if (ext == ".tif" || ext == ".tiff") {
         whiteout::textures::tiff::Parser p;
+        return parse(p);
+    }
+    if (ext == ".tex") {
+        // Diablo III's monolithic TEX. The parser already handles the two
+        // things that make the container non-obvious: the planar/shuffled
+        // block-compressed layout, and cubemaps.
+        whiteout::textures::tex::Parser p;
         return parse(p);
     }
     return std::nullopt;

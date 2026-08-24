@@ -595,10 +595,11 @@ int main(int argc, char* argv[]) {
                     }
                     return k;
                 });
-                const wf::ProductId fallback = CompareCi(syncGame, "sc2") == 0 ? wf::ProductId::Sc2
-                                               : CompareCi(syncGame, "wc3") == 0
-                                                   ? wf::ProductId::Wc3
-                                                   : wf::ProductId::Wow;
+                const wf::ProductId fallback =
+                    CompareCi(syncGame, "sc2") == 0   ? wf::ProductId::Sc2
+                    : CompareCi(syncGame, "wc3") == 0 ? wf::ProductId::Wc3
+                    : CompareCi(syncGame, "d3") == 0  ? wf::ProductId::D3
+                                                      : wf::ProductId::Wow;
                 panel.Sync(fallback);
                 std::printf("[panel-sync] no keys yet: open=%d empty=%d\n", (int)panel.IsOpen(),
                             (int)panel.IsEmpty());

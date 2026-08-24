@@ -594,6 +594,18 @@ struct SkinWeightData {
     /// decodes, that rewrite cannot happen and the vertices would read another
     /// region's bones.
     bool paletteLocalVertexIndices = false;
+
+    /// @brief `influences[].boneIdx` are already GLOBAL node indices, so the
+    ///        per-actor path must leave them alone.
+    ///
+    /// The third case, and the one that has no `subsetNodeIndices` at all:
+    /// `.acr`/`.app` addresses the whole skeleton from every sub-object, so a
+    /// D3 influence names a node directly and the Path A palette slot for a
+    /// node IS its node index. Without this the rewrite finds every index
+    /// out of range of an empty subset and points the whole mesh at node 0 —
+    /// which draws a complete, correctly-textured model that simply never
+    /// deforms, so nothing downstream reports a problem.
+    bool globalVertexIndices = false;
 };
 
 /// @brief Shape encoding of @ref CollisionShapeData::type, mirroring MDX's

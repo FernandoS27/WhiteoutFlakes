@@ -142,7 +142,7 @@ TEST_CASE("one draw scales both axes of a layer's scroll rate", "[particle][refr
     REQUIRE(checked > 0);
 }
 
-TEST_CASE("layers scroll and wrap back into [0,1)", "[particle][refraction]") {
+TEST_CASE("layers scroll and wrap back into the unit range", "[particle][refraction]") {
     auto d = PointDesc();
     d->refraction = true;
     // One layer runs far forward per step, the other far backward: the wrap is

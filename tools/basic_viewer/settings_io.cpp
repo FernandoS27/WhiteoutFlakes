@@ -97,6 +97,8 @@ std::string IoSectionOf(ProductId game) {
         return std::string(kIoSection) + ".Wow";
     case ProductId::Sc2:
         return std::string(kIoSection) + ".Sc2";
+    case ProductId::D3:
+        return std::string(kIoSection) + ".D3";
     default:
         return kIoSection;
     }
@@ -266,6 +268,8 @@ ProductId LoadIoProduct() {
             return ProductId::Wow;
         if (*s == "sc2")
             return ProductId::Sc2;
+        if (*s == "d3")
+            return ProductId::D3;
     }
     return ProductId::Wc3;
 }
@@ -279,6 +283,8 @@ void SaveIoProduct(ProductId game) {
         name = "wow";
     else if (game == ProductId::Sc2)
         name = "sc2";
+    else if (game == ProductId::D3)
+        name = "d3";
     ini.Set(IoKeyOf("Product"), name);
     ini.Save(path);
 }

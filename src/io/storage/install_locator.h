@@ -36,12 +36,16 @@ public:
     const std::string& Hots() const {
         return hots_;
     }
+    const std::string& D3() const {
+        return d3_;
+    }
 
 private:
     std::string wc3_;
     std::string wow_;
     std::string sc2_;
     std::string hots_;
+    std::string d3_;
 };
 
 } // namespace whiteout::flakes::io
