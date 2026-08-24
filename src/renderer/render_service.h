@@ -24,6 +24,7 @@
 #include "imgui/imgui_renderer.h"
 #include "shadow/shadow_service.h"
 #include "dof/dof_service.h"
+#include "refraction/refraction_service.h"
 #include "gtao/gtao_service.h"
 #include "post_process/post_process_service.h"
 #if WDX_ENABLE_M3
@@ -230,6 +231,8 @@ public:
     const gtao::GtaoService* GetGtaoService() const;
     dof::DofService* GetDofService();
     const dof::DofService* GetDofService() const;
+    refraction::RefractionService* GetRefractionService();
+    const refraction::RefractionService* GetRefractionService() const;
     post_process::PostProcessService* GetPostProcessService();
     const post_process::PostProcessService* GetPostProcessService() const;
 #if WDX_ENABLE_M3
@@ -324,6 +327,7 @@ public:
 #endif
     dof::DofService& EnsureDofService(gfx::IGFXDevice& gfx, gfx::GfxApi api,
                                       bls::BlsShaderCache& cache, gfx::BufferHandle spriteVb);
+    refraction::RefractionService& EnsureRefractionService(gfx::IGFXDevice& gfx, gfx::GfxApi api);
     post_process::PostProcessService& EnsurePostProcessService(gfx::IGFXDevice& gfx,
                                                                gfx::GfxApi api,
                                                                bls::BlsShaderCache& cache,

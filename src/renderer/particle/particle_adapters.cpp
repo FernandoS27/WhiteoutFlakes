@@ -280,6 +280,13 @@ std::shared_ptr<const EmitterDesc> DescFromM2Config(const M2ParticleEmitterConfi
     desc->material.unshaded = cfg.unshaded;
     desc->material.unfogged = cfg.unfogged;
 
+    desc->refraction = cfg.refraction;
+    for (usize layer = 0; layer < 2; ++layer) {
+        desc->multiTexScale[layer] = cfg.multiTexScale[layer];
+        desc->multiTexScrollMid[layer] = cfg.multiTexScrollMid[layer];
+        desc->multiTexScrollRange[layer] = cfg.multiTexScrollRange[layer];
+    }
+
     desc->emission.mode = EmissionDesc::Mode::Continuous;
     // Squirt is the same mechanism in both clients: the emitter stops emitting
     // continuously and instead bursts `(int)rate` particles each time the rate

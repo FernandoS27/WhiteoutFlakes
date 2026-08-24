@@ -56,3 +56,18 @@ creature/zippelin/zippelin.m2
 spells/bomb_explosiona.m2
 spells/hunter_firetrap.m2
 spells/shadow_impactdot_med_head.m2
+
+# --- Refraction carriers (M2_REFRACTION_DESIGN.md) ---
+# A refraction emitter draws into the distortion buffer, not into the scene, so
+# it is absent from the transparent histogram by construction and only the
+# Refraction trace slot sees it. The three auras carry the strong masks that
+# actually bend pixels; `instancenewportal_blue` carries a deliberately faint
+# one (peak colour 10/255), which is what pins the magnitude rather than just
+# the presence. `8fx_generic_water_missile` is the BC5 arm: its distortion
+# texture is a BLP with alphaType 11, the one format the parser used to reject
+# outright, and a regression there shows up as a flat mask and nothing else.
+spells/cfx_paladin_divineshield_statebase.m2
+spells/cfx_paladin_dawnlight_aura.m2
+spells/11fx_manavent_aura.m2
+spells/instancenewportal_blue.m2
+spells/8fx_generic_water_missile.m2

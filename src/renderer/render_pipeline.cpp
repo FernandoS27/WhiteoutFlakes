@@ -44,6 +44,7 @@
 #include "renderer/corn_effects/corn_effects_gfx_backend.h"
 #include "renderer/corn_effects/corn_effects_service.h"
 #include "renderer/dof/dof_service.h"
+#include "renderer/refraction/refraction_service.h"
 #include "renderer/gtao/gtao_service.h"
 #include "renderer/model/model_template.h"
 #include "renderer/model/model_template_manager.h"
@@ -929,6 +930,9 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
         rs_.EnsureDofService(*impl_->gfx_, impl_->gfx_->GetApi(), *impl_->blsShaderCache_,
                              impl_->tonemapVB_);
     }
+    // Refraction needs neither: its two passes generate their own fullscreen
+    // triangle from SV_VertexID and its mask pass binds the particle stream.
+    rs_.EnsureRefractionService(*impl_->gfx_, impl_->gfx_->GetApi());
 
     // All BLS frame-uniform CBs get mapped once per draw call. With
     // ~2000+ draws/frame on PE1-heavy scenes (BreeForge Birth) the
@@ -1444,6 +1448,8 @@ void RenderPipeline::CleanupGFX() {
             g->Shutdown();
         if (auto* d = rs_.GetDofService())
             d->Shutdown();
+        if (auto* r = rs_.GetRefractionService())
+            r->Shutdown();
 #if WDX_ENABLE_M3
         if (auto* dl = rs_.GetM3DeferredLightService())
             dl->Shutdown();
@@ -1691,6 +1697,10 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     auto& target = it->second;
     if (target.color == gfx::TextureHandle::Invalid || !impl_->gfx_)
         return;
+    // Refraction geometry is produced by the transparent scene and consumed by
+    // a later pass, so it has to start empty: a frame that skips the
+    // transparent scene entirely must not re-draw the last one's distortion.
+    impl_->refractionGeo_.Clear();
     if (target.hdrColor == gfx::TextureHandle::Invalid)
         return;
 
@@ -1801,6 +1811,42 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         sceneTarget = target.colorLinear;
     } else {
         sceneTarget = finalColor;
+    }
+
+    // Refraction has to sample the finished scene, and the branch above can
+    // hand back a swap-chain back buffer, which no backend creates as a shader
+    // resource. Sampling one returns the null descriptor, and since the apply
+    // pass repaints every pixel from that sample the whole screen goes black.
+    // So when this frame can refract AND the scene would land on the back
+    // buffer, the scene is redirected into the service's own texture and the
+    // apply pass writes the back buffer instead — which is also what puts the
+    // frame on screen, so the Refraction pass then has to run whether or not
+    // anything refracted. Costs nothing in HD, where hdrColor is already an
+    // offscreen the tonemap samples anyway.
+    impl_->refractionMirrorDst_ = gfx::TextureHandle::Invalid;
+    impl_->refractionMirrorFmt_ = gfx::Format::Unknown;
+    if (auto* rsvc = rs_.GetRefractionService();
+        rsvc && (sceneTarget == target.colorLinear || sceneTarget == target.color)) {
+        refraction::RefractionParams rp = rsvc->Params();
+        rp.enabled = rs_.Settings().RefractionEnabled();
+        rp.debugShowMask = rs_.Settings().RefractionDebugMask();
+        rsvc->SetParams(rp);
+        const bool profileRefracts =
+            std::any_of(profile.Passes().begin(), profile.Passes().end(),
+                        [](const core::PassEntry& e) {
+                            return e.slot == core::PassSlot::Refraction && e.Enabled();
+                        });
+        if (profileRefracts && rsvc->IsEnabled()) {
+            const gfx::Format swapFmt = impl_->gfx_->GetSwapChainFormat(target.swap);
+            const gfx::Format outFmt = sdGamma ? StripSrgb(swapFmt) : swapFmt;
+            const gfx::TextureHandle redirect = rsvc->BeginSceneRedirect(
+                target.width, target.height, SceneTargetFormat());
+            if (redirect != gfx::TextureHandle::Invalid) {
+                impl_->refractionMirrorDst_ = sceneTarget;
+                impl_->refractionMirrorFmt_ = outFmt;
+                sceneTarget = redirect;
+            }
+        }
     }
 
     auto srgbByteToLinear = [](u8 b) {
@@ -2014,7 +2060,12 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     // via the tonemap composite. Compiled out when WDX_ENABLE_IMGUI=0 (web
     // build) — the forward-declared ImGuiRenderer has no complete type then.
 #if WDX_ENABLE_IMGUI
-    if (!sceneToHdr && impl_->frameDrawImGui_) {
+    // A redirected frame is the exception: the scene is going through the
+    // refraction apply, and UI drawn here would be distorted by it. It gets
+    // its own pass on the back buffer afterwards instead — the slot the
+    // profile has always listed it in.
+    if (!sceneToHdr && impl_->frameDrawImGui_ &&
+        impl_->refractionMirrorDst_ == gfx::TextureHandle::Invalid) {
         if (auto* im = rs_.ImGui()) {
             // Sync ImGui's PSO with the scene RTV format (which is the
             // swapchain backbuffer in SD mode). See the matching call in
@@ -2194,6 +2245,102 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         }
     };
 
+    // Refraction — WoW's refraction particles. Their quads went into
+    // `impl_->refractionGeo_` during the transparent scene instead of being
+    // drawn; this is where they become a distortion mask and bend the finished
+    // scene through it, the slot `CWorldSceneRender::Render` @0x10196d324 gives
+    // `RefractionBuffer::Render`: after opaque and alpha, before anything
+    // composites. Costs nothing when nothing refracted.
+    auto runRefractionPass = [&] {
+        auto* r = rs_.GetRefractionService();
+        if (!r)
+            return;
+        // A redirected frame runs even with nothing to refract: the scene is
+        // in the service's texture and this pass is what presents it.
+        const bool redirected = impl_->refractionMirrorDst_ != gfx::TextureHandle::Invalid;
+        if (impl_->refractionGeo_.draws.empty() && !redirected)
+            return;
+        refraction::RefractionParams rp = r->Params();
+        rp.enabled = rs_.Settings().RefractionEnabled();
+        rp.debugShowMask = rs_.Settings().RefractionDebugMask();
+        r->SetParams(rp);
+        if (!r->IsEnabled())
+            return;
+
+        WDX_CPU_ZONE("Refraction");
+        WDX_GPU_ZONE(cmd, "Refraction");
+        refraction::RefractionFrameInputs fi;
+        fi.view = impl_->refractionView_;
+        fi.projection = impl_->refractionProjection_;
+        // Renderer units per WoW yard, so the client's 100-yard distance fade
+        // stays a distance and not a count of renderer units.
+        fi.worldScale = impl_->frameProfile_ ? impl_->frameProfile_->WorldScale() : 1.0f;
+        fi.sceneColor = redirected ? impl_->refractionMirrorDst_ : sceneTarget;
+        fi.sceneFormat = SceneTargetFormat();
+        fi.outputFormat = redirected ? impl_->refractionMirrorFmt_ : SceneTargetFormat();
+        fi.depth = target.depth;
+        fi.depthFormat = impl_->depthStencilFormat_;
+        fi.width = Width();
+        fi.height = Height();
+        fi.wrapSampler = rs_.Samplers().WrapVariant(0x3);
+
+        // Same resolution DrawParticleEmitter does, and for the same reason:
+        // the service must not know about actors or texture scopes.
+        fi.drawTextures.reserve(impl_->refractionGeo_.draws.size());
+        for (const auto& dl : impl_->refractionGeo_.draws) {
+            gfx::TextureHandle tex = gfx::TextureHandle::Invalid;
+            if (Actor* owner = rs_.Scene().Actors().Find(dl.model)) {
+                if (owner->render.textures && dl.material.textureId >= 0)
+                    tex = owner->render.textures->Get(dl.material.textureId);
+            }
+            if (tex == gfx::TextureHandle::Invalid) {
+                // White makes the triple product constant, which is a FLAT
+                // height field — and a flat field has no gradient, so the pass
+                // runs and refracts nothing. Worth saying out loud, because the
+                // symptom is indistinguishable from the feature being off.
+                static bool warned = false;
+                if (!warned) {
+                    warned = true;
+                    std::fprintf(stderr,
+                                 "[refraction] emitter %d: texture %d unresolved, falling back "
+                                 "to white (the mask will be flat)\n",
+                                 dl.emitterId, dl.material.textureId);
+                }
+                tex = rs_.Textures().GetDefaults().White;
+            }
+            fi.drawTextures.push_back(tex);
+        }
+
+        // Recorded here rather than inside the service, the way the Corn
+        // producer is: the pass has no per-draw hook of its own, and without
+        // this the feature would have no trace signal at all — a refraction
+        // emitter is absent from the transparent histogram by construction, so
+        // "particle=0" cannot distinguish "routed correctly" from "dropped".
+        if (debug::DrawTraceEnabled()) {
+            auto& tctx = debug::DrawTraceRecorder::Instance().Context();
+            for (u32 i = 0; i < impl_->refractionGeo_.draws.size(); ++i) {
+                const auto& dl = impl_->refractionGeo_.draws[i];
+                tctx = {.pass = debug::TracePassSlot::Refraction,
+                        .producer = debug::TraceProducer::Particle,
+                        .sortOrder = (i32)i};
+                debug::TraceDraw d;
+                d.shadingModel = static_cast<u8>(debug::TraceShadingModel::None);
+                d.blendClass = static_cast<u8>(dl.material.filterMode);
+                d.actor.rootActor =
+                    debug::TraceRootOrdinal(rs_.Scene().Actors().All(), dl.model);
+                d.actor.emitterId = dl.emitterId;
+                d.vertexCount = dl.vertexCount;
+                d.filterMode = static_cast<i32>(dl.material.filterMode);
+                d.texIds[0] = dl.material.textureId;
+                d.streamMask = debug::kStreamBase;
+                debug::RecordProducerDraw(d);
+            }
+            tctx = {};
+        }
+
+        r->Run(cmd, fi, impl_->refractionGeo_);
+    };
+
     // HDR post-process — bloom runs on `hdrColor` between GTAO and
     // tonemap, matching the engine ordering (GBuffer::ApplyBloom is the
     // last thing before ApplyTonemap in OnPaint). Service forwards
@@ -2227,6 +2374,25 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     // before; the *semantic* toggles (AoEnabled, DofEnabled, BloomEnabled)
     // stay inside the services, which is where they live and where the
     // per-frame param push that must happen regardless also lives.
+    // Only ever does anything on a refraction-redirected frame; see the
+    // matching skip in the scene block.
+    auto runImGuiPass = [&] {
+#if WDX_ENABLE_IMGUI
+        if (sceneToHdr || !impl_->frameDrawImGui_ ||
+            impl_->refractionMirrorDst_ == gfx::TextureHandle::Invalid)
+            return;
+        auto* im = rs_.ImGui();
+        if (!im)
+            return;
+        im->SetRtvFormat(impl_->refractionMirrorFmt_);
+        WDX_GPU_ZONE(cmd, "ImGui");
+        cmd->BeginRenderPassLoad(impl_->refractionMirrorDst_, gfx::TextureHandle::Invalid, 1.0f, 0);
+        cmd->SetViewport({0, 0, (f32)target.width, (f32)target.height, 0, 1});
+        im->Render(*cmd, target.width, target.height);
+        cmd->EndRenderPass();
+#endif
+    };
+
     for (const auto& entry : profile.Passes()) {
         if (!entry.Enabled())
             continue;
@@ -2239,11 +2405,14 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
             runScenePass();
             break;
         case core::PassSlot::TransparentScene:
+            // Submitted inside the scene block. Listed in the profile because
+            // it is a real pass a surface opts into; not dispatched here
+            // because it does not own a render pass of its own.
+            break;
         case core::PassSlot::ImGui:
-            // Submitted inside the scene block (SD) or by the tonemap composite
-            // (HD ImGui). Listed in the profile because they are real passes a
-            // surface opts into; not dispatched here because they do not own a
-            // render pass of their own.
+            // Same — except on a refraction-redirected frame, where the scene
+            // block deliberately left the UI out so it would not be refracted.
+            runImGuiPass();
             break;
         case core::PassSlot::Gtao:
             runGtaoPass();
@@ -2253,6 +2422,9 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
             break;
         case core::PassSlot::Dof:
             runDofPass();
+            break;
+        case core::PassSlot::Refraction:
+            runRefractionPass();
             break;
         case core::PassSlot::Bloom:
             runBloomPass();
@@ -2513,6 +2685,12 @@ core::IRenderProfile& RenderPipeline::ProfileForMode(RenderMode mode) {
 #if WDX_ENABLE_M2
         auto wow = std::make_unique<profiles::wow::WowProfile>(rs_.Settings());
         wow->SetShadingModels({impl_->m2Shading_.get(), impl_->unlitShading_.get()});
+        // Refraction gates on the service the same way GTAO/DoF/Bloom do. The
+        // second half of the gate — "and some loaded model actually carries a
+        // refraction emitter" — is inside runRefractionPass, because it depends
+        // on the scene rather than on the frame's shape.
+        wow->SetPassPredicate(core::PassSlot::Refraction,
+                              [this] { return rs_.GetRefractionService() != nullptr; });
         const auto vwow = core::ValidateProfile(*wow);
         if (!vwow.ok)
             std::fprintf(stderr, "[profile] invalid WoW render profile: %s\n",
@@ -2652,7 +2830,22 @@ void RenderPipeline::RenderTransparentScene() {
     if (rs_.Settings().ShowParticles() && rs_.Particles().EmitterCount() > 0) {
         std::vector<Vertex> verts;
         const Matrix44f viewMat = rs_.Pipeline().FrameCamera().GetViewMatrix();
-        rs_.Particles().BuildGeometry(viewMat, verts, partDraws);
+        // A refraction emitter belongs to the Refraction pass, not to this one.
+        // Handing BuildGeometry somewhere to put it is what routes it there;
+        // handing it null (no service, or a profile without the pass) drops it,
+        // which is the correct answer — its quads carry a distortion mask, and
+        // drawing that into the scene would paint the mask as if it were colour.
+        particle::RefractionGeometry* refractOut = nullptr;
+        if (auto* rsvc = rs_.GetRefractionService()) {
+            if (rsvc->IsEnabled())
+                refractOut = &impl_->refractionGeo_;
+        }
+        rs_.Particles().BuildGeometry(viewMat, verts, partDraws, refractOut);
+        if (refractOut && !refractOut->draws.empty()) {
+            impl_->refractionView_ = viewMat;
+            const f32 aspect = (Height() > 0) ? (f32)Width() / (f32)Height() : 1.0f;
+            impl_->refractionProjection_ = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);
+        }
         const i32 vertCount = (i32)verts.size();
         if (vertCount > 0) {
             if (impl_->particleServiceVB_ == gfx::BufferHandle::Invalid ||

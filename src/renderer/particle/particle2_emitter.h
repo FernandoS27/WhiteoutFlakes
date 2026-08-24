@@ -257,6 +257,12 @@ public:
         return pool_;
     }
 
+    // The extra texture layers, index-parallel with the pool. Empty unless the
+    // desc asked for refraction — see MultiTexState.
+    const std::vector<MultiTexState>& MultiTex() const {
+        return multiTex_;
+    }
+
     i32 TotalAlive() const {
         return static_cast<i32>(pool_.AliveCount());
     }
@@ -299,6 +305,17 @@ protected:
     // Grow the pool and tell the output about it. Split out of Sync so a parent
     // can size its trails' pools the way the client does.
     void GrowPool(u32 capacity);
+
+    // Draw one newly born particle's extra texture layers. No-op unless the
+    // desc asked for refraction; when it did, this is six draws off the
+    // emitter's own stream, immediately after CreateParticle, exactly where
+    // `CreateParticle(CMultiTexParticle&)` @0x1016a10b0 takes them.
+    void SeedMultiTex(u32 poolIndex);
+
+    // Advance one live particle's layers by `dt` and wrap each back into
+    // [0,1). Runs before the move, where `UpdateLiveParticle<CMultiTexParticle>`
+    // @0x1016a9d30 puts it.
+    void AdvanceMultiTex(u32 poolIndex, f32 dt);
 
     // Emitter velocity refresh — WoW only, and only while the pool is empty.
     void TickEmitterVelocity(f32 dt);
@@ -365,6 +382,9 @@ protected:
     RndSeed compactSeed_;
 
     ParticlePool pool_;
+
+    // Index-parallel with the pool, and sized only for a refraction emitter.
+    std::vector<MultiTexState> multiTex_;
 
     // Owned outright, like the client's recursion model owns the emitters the
     // parent borrows pointers to. Never re-entrant: a trail's own trails are

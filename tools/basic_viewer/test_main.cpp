@@ -430,7 +430,8 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
                         bool hdMode, f32 distanceTol, i32 cameraDistance, i32 perturbSeed,
                         i32 instances, bool unlitOddGeosets, bool lazyAnim,
                         const std::string& contentRoot, const AnimScenario& anim,
-                        bool debugLight = false) {
+                        bool debugLight = false, bool noRefraction = false,
+                        bool refractionMask = false) {
     namespace wf = whiteout::flakes;
     namespace dbg = wf::renderer::debug;
 
@@ -477,6 +478,13 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
     // byte-identical, so the claim only means something if it is checked
     // against the same file the eager run recorded.
     settings.SetM2LazyAnimations(lazyAnim);
+
+    // The A/B arm for WoW's refraction particles. With the pass off, a
+    // refraction emitter draws nothing at all — so a golden recorded both ways
+    // is the only thing that can say the pass reached pixels, the trace being
+    // identical either way (the emitters are recorded before the service runs).
+    settings.SetRefractionEnabled(!noRefraction);
+    settings.SetRefractionDebugMask(refractionMask);
 
     // The -Sc2Mat -DebugLight sub-arm: one scripted point light for the M3
     // DeferredLights pass, identical for every model. The values live HERE,
@@ -1116,6 +1124,8 @@ int main(int argc, char* argv[]) {
     bool drawTrace = false;
     bool drawTraceHd = false;
     bool drawTraceUnlit = false;
+    bool drawTraceNoRefraction = false;
+    bool drawTraceRefractionMask = false;
     bool drawTraceDebugLight = false;
     bool drawTraceLazyAnim = false;
     std::string drawTraceRecord;
@@ -1256,6 +1266,10 @@ int main(int argc, char* argv[]) {
             drawTraceHd = true;
         } else if (std::strcmp(a, "--draw-trace-unlit") == 0) {
             drawTraceUnlit = true;
+        } else if (std::strcmp(a, "--draw-trace-no-refraction") == 0) {
+            drawTraceNoRefraction = true;
+        } else if (std::strcmp(a, "--draw-trace-refraction-mask") == 0) {
+            drawTraceRefractionMask = true;
         } else if (std::strcmp(a, "--draw-trace-debug-light") == 0) {
             drawTraceDebugLight = true;
         } else if (std::strcmp(a, "--draw-trace-lazy-anim") == 0) {
@@ -1504,7 +1518,8 @@ int main(int argc, char* argv[]) {
                             drawTraceGolden, particleDiffFrames, drawTraceHd, drawTraceDistanceTol,
                             drawTraceCameraDistance, drawTracePerturb, drawTraceInstances,
                             drawTraceUnlit, drawTraceLazyAnim, contentRoot, drawTraceAnim,
-                            drawTraceDebugLight);
+                            drawTraceDebugLight, drawTraceNoRefraction,
+                            drawTraceRefractionMask);
 
     whiteout::flakes::ViewerApp app(renderer);
     if (!app.Open(1024, 768, backend)) {

@@ -93,6 +93,25 @@ struct M2ParticleEmitterConfig {
     bool unshaded = false;
     bool unfogged = false;
 
+    /// @brief Draw this emitter as a screen-space distortion instead of colour.
+    ///
+    /// The record's `Refraction` flag, and only when `MultiTexture` is clear —
+    /// the loader tests the two together and lets MultiTexture win
+    /// (`InitializeLoaded` @0x100f57550). See M2_REFRACTION_DESIGN.md.
+    bool refraction = false;
+
+    /// @brief The two extra texture layers a refraction (or multi-texture)
+    ///        particle carries, in the runtime's own form.
+    ///
+    /// Each layer draws a random UV origin at birth and scrolls it at a random
+    /// rate; the quad's own corner coordinate is then scaled by
+    /// @ref multiTexScale. `mid` is the centre of the scroll-rate range and
+    /// `range` its half-width, which is exactly how `SetMultiTexParams`
+    /// @0x1016a45d0 stores the record's two fixed-point pairs.
+    f32 multiTexScale[2] = {0.0f, 0.0f};
+    Vector2f multiTexScrollMid[2] = {{0, 0}, {0, 0}};
+    Vector2f multiTexScrollRange[2] = {{0, 0}, {0, 0}};
+
     Generator generator = Generator::Plane;
     i32 boneId = 0;
     Vector3f position{0, 0, 0}; ///< Emitter offset in its bone's space.

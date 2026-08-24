@@ -99,8 +99,21 @@ void ParticleService::DrainChildModelEvents(std::vector<ChildModelEvent>& out) {
     childEvents_.clear();
 }
 
+bool ParticleService::HasRefractionEmitters() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& [k, e] : emitters_) {
+        if (e->Desc().refraction)
+            return true;
+        for (const auto& t : e->Trails())
+            if (t->Desc().refraction)
+                return true;
+    }
+    return false;
+}
+
 void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Vertex>& outVertices,
-                                    std::vector<EmitterDrawList>& outDrawLists) const {
+                                    std::vector<EmitterDrawList>& outDrawLists,
+                                    RefractionGeometry* refraction) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
     BuildGeometryInput in{};
@@ -108,11 +121,28 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
     in.fogEnabled = fogEnabled_;
     in.fogSampler = fogSampler_;
 
+    BuildGeometryInput refractIn = in;
+    if (refraction)
+        refractIn.refractionUV = &refraction->extraUV;
+
     // One emitter's own particles, then its trails'. A trail is an ordinary
     // billboard emitter with its own texture, blend mode and sheet, so it needs
     // its own draw list; it sorts on its OWNER's origin so the two stay
     // together in the transparent pass instead of drifting apart.
+    //
+    // A refraction emitter is routed to its own arrays instead — it belongs to
+    // one pass or the other, never both.
     auto build = [&](const Emitter2& e, ModelId model, i32 id, const Vector3f& origin) {
+        if (e.Desc().refraction) {
+            if (!refraction)
+                return;
+            const i32 offset = (i32)refraction->vertices.size();
+            const i32 vcount = BuildEmitterGeometry(e, refractIn, refraction->vertices);
+            if (vcount > 0)
+                refraction->draws.push_back(
+                    {model, id, offset, vcount, e.PriorityPlane(), e.Material(), origin});
+            return;
+        }
         const i32 offset = (i32)outVertices.size();
         const i32 vcount = BuildEmitterGeometry(e, in, outVertices);
         if (vcount > 0)

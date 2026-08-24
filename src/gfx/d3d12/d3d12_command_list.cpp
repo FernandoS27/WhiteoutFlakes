@@ -153,7 +153,7 @@ void D3D12CommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCou
 }
 
 void D3D12CommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle depth,
-                                           f32 clearDepth, u8 clearStencil) {
+                                           f32 clearDepth, u8 clearStencil, bool loadDepth) {
     // Same setup as BeginRenderPass, minus the ClearRenderTargetView.
     // The RTV stays in render-target state across BeginRenderPass calls
     // when the application explicitly chains a load-op pass, so the
@@ -180,10 +180,9 @@ void D3D12CommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle de
     cmd->OMSetRenderTargets(rtv.ptr ? 1 : 0, rtv.ptr ? &rtv : nullptr, FALSE,
                             dsv.ptr ? &dsv : nullptr);
 
-    // No ClearRenderTargetView — load-op preserves contents. Depth clear
-    // still fires; callers that need a depth-load pass can pass
-    // TextureHandle::Invalid for depth.
-    if (dsv.ptr) {
+    // No ClearRenderTargetView — load-op preserves contents. Depth is
+    // cleared unless the caller asked to keep it.
+    if (dsv.ptr && !loadDepth) {
         D3D12_CLEAR_FLAGS clearFlags = D3D12_CLEAR_FLAG_DEPTH;
         if (depthEntry && (depthEntry->desc.format == Format::D24_UNORM_S8_UINT ||
                            depthEntry->desc.format == Format::D32_FLOAT_S8_UINT)) {

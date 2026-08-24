@@ -6,6 +6,7 @@
 #include "core/vertex_layout.h"
 #include "shading/shading_registry.h"
 #include "shading/unlit_shading.h"
+#include "renderer/particle/particle_service.h"
 #if WDX_ENABLE_M2
 #include "renderer/profiles/wow/m2_shading.h"
 #endif
@@ -149,6 +150,20 @@ struct RenderPipeline::Impl {
     // ---- Particle / splat VBs ----
     gfx::BufferHandle particleServiceVB_ = gfx::BufferHandle::Invalid;
     i32 particleServiceVBSize_ = 0;
+    // This frame's refraction emitters. Built where every other particle's
+    // geometry is built — inside the transparent scene — but drawn later, by
+    // the Refraction pass, into a buffer of its own. Cleared at the top of
+    // every viewport so a frame that skips the transparent scene cannot draw
+    // the previous frame's distortion.
+    particle::RefractionGeometry refractionGeo_;
+    Matrix44f refractionView_ = Matrix44f::identity();
+    Matrix44f refractionProjection_ = Matrix44f::identity();
+    // Set for a frame whose scene was redirected into the refraction service's
+    // own texture because the real destination — a swap-chain back buffer —
+    // cannot be sampled. Holds that destination, which the Refraction pass then
+    // writes; Invalid means the scene went where it always goes.
+    gfx::TextureHandle refractionMirrorDst_ = gfx::TextureHandle::Invalid;
+    gfx::Format refractionMirrorFmt_ = gfx::Format::Unknown;
     gfx::BufferHandle splatServiceVB_ = gfx::BufferHandle::Invalid;
     i32 splatServiceVBSize_ = 0;
 

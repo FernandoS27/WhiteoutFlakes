@@ -22,6 +22,7 @@ const char* SlotName(PassSlot s) {
     case PassSlot::Debug: return "Debug";
     case PassSlot::ImGui: return "ImGui";
     case PassSlot::DeferredLights: return "DeferredLights";
+    case PassSlot::Refraction: return "Refraction";
     default: return "?";
     }
 }

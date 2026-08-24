@@ -389,6 +389,12 @@ dof::DofService* RenderService::GetDofService() {
 const dof::DofService* RenderService::GetDofService() const {
     return impl_->dofService_.get();
 }
+refraction::RefractionService* RenderService::GetRefractionService() {
+    return impl_->refractionService_.get();
+}
+const refraction::RefractionService* RenderService::GetRefractionService() const {
+    return impl_->refractionService_.get();
+}
 #if WDX_ENABLE_M3
 sc2::M3DeferredLightService* RenderService::GetM3DeferredLightService() {
     return impl_->m3DeferredLightService_.get();
@@ -614,6 +620,15 @@ dof::DofService& RenderService::EnsureDofService(gfx::IGFXDevice& gfx, gfx::GfxA
         impl_->dofService_->Init(gfx, api, cache, spriteVb);
     }
     return *impl_->dofService_;
+}
+
+refraction::RefractionService& RenderService::EnsureRefractionService(gfx::IGFXDevice& gfx,
+                                                                     gfx::GfxApi api) {
+    if (!impl_->refractionService_) {
+        impl_->refractionService_ = std::make_unique<refraction::RefractionService>();
+        impl_->refractionService_->Init(gfx, api);
+    }
+    return *impl_->refractionService_;
 }
 
 post_process::PostProcessService& RenderService::EnsurePostProcessService(

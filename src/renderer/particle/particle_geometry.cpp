@@ -435,6 +435,30 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
         boneScale = std::sqrt((unit > 0.0f) ? (len / unit) : len);
     }
 
+    // Refraction only: the second and third UV sets, appended one per vertex
+    // alongside `out`. `uvN = particleUV[N] + corner01 * multiTexScale[N]`, and
+    // the corner is the SAME 0/1 pair the sprite cell uses — the client scales
+    // one `s_renderTC` entry three ways per vertex
+    // (IBuildVertices<CMultiTexParticle,0,CGxVertexPCT3> @0x1016c5865).
+    const bool refract = d.refraction && in.refractionUV != nullptr;
+    const std::vector<MultiTexState>& mtx = emitter.MultiTex();
+    u32 particleIndex = 0;
+    auto appendRefractUV = [&](usize from, f32 u0, f32 v0) {
+        if (!refract || particleIndex >= mtx.size())
+            return;
+        const MultiTexState& m = mtx[particleIndex];
+        for (usize k = from; k < out.size(); ++k) {
+            // Exact, not a division: every quad UV this builder writes is
+            // literally one of the two cell corners it was handed.
+            const f32 su = (out[k].uv.x == u0) ? 0.0f : 1.0f;
+            const f32 sv = (out[k].uv.y == v0) ? 0.0f : 1.0f;
+            in.refractionUV->push_back({m.uv[0].x + su * d.multiTexScale[0],
+                                        m.uv[0].y + sv * d.multiTexScale[0],
+                                        m.uv[1].x + su * d.multiTexScale[1],
+                                        m.uv[1].y + sv * d.multiTexScale[1]});
+        }
+    };
+
     const f32* twinkle = TwinkleTable();
     const bool twinkles = (d.twinklePercent < 1.0f) || (d.twinkleVary != 0.0f);
     const bool scaleAlpha = emitter.Behavior().modelAlphaScalesParticles;
@@ -452,7 +476,8 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
     const Vector3f normal{0.0f, 0.0f, 1.0f};
 
     for (const SortRecord& rec : order) {
-        const Particle2& p = pool[pool.AliveAt(rec.aliveIndex)];
+        particleIndex = pool.AliveAt(rec.aliveIndex);
+        const Particle2& p = pool[particleIndex];
         const u16 seed = p.RenderSeed();
 
         // Twinkle culls before anything else is sampled: a blinked-off particle
@@ -619,8 +644,10 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
         if (hasHead) {
             f32 cu, cv;
             CellToUV(d.sheet, headCell, cu, cv);
+            const usize from = out.size();
             EmitQuad(out, centre, axisA, axisB, vcol, normal, cu, cv, cu + d.sheet.ooWidth,
                      cv + d.sheet.ooHeight);
+            appendRefractUV(from, cu, cv);
         }
 
         if (hasTail) {
@@ -637,6 +664,7 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
             const f32 tu = Dot(tail, cam.up);
             const f32 planeSq = tr * tr + tu * tu;
 
+            const usize tailFrom = out.size();
             if (planeSq >= tailMinSq) {
                 const f32 inv = 1.0f / std::sqrt(planeSq);
                 // Half-width perpendicular to the tail on screen. Note the axes
@@ -660,6 +688,7 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
                 // is where WC3 skips the particle instead.
                 EmitQuad(out, centre, screenA, screenB, vcol, normal, cu, cv, cu1, cv1);
             }
+            appendRefractUV(tailFrom, cu, cv);
         }
     }
 

@@ -23,6 +23,7 @@
 #include "core/render_profile.h"
 #include "renderer/render_settings.h"
 
+#include <functional>
 #include <vector>
 
 namespace whiteout::flakes::renderer::profiles::wow {
@@ -65,6 +66,17 @@ public:
         passes_.push_back({PassSlot::TransparentScene,
                            nullptr,
                            TargetBit(TargetSlot::Depth),
+                           0,
+                           TargetBit(TargetSlot::SceneColor)});
+        // Refraction. Reads the finished scene colour and the scene depth and
+        // writes the scene colour back — the same slot the client puts it in,
+        // after opaque and alpha and before anything composites
+        // (`CWorldSceneRender::Render` @0x10196d324). Conditional: the pass is
+        // skipped outright unless a loaded model carries a refraction emitter,
+        // so the predicate below is what keeps a plain scene paying nothing.
+        passes_.push_back({PassSlot::Refraction,
+                           nullptr,
+                           TargetBits({TargetSlot::SceneColor, TargetSlot::Depth}),
                            0,
                            TargetBit(TargetSlot::SceneColor)});
         passes_.push_back({PassSlot::ImGui, nullptr, 0, 0, TargetBit(TargetSlot::Backbuffer)});
@@ -121,6 +133,12 @@ public:
     }
     void SetShadingModels(std::vector<shading::IShadingModel*> models) {
         models_ = std::move(models);
+    }
+    void SetPassPredicate(PassSlot slot, std::function<bool()> pred) {
+        for (auto& e : passes_) {
+            if (e.slot == slot)
+                e.condition = pred;
+        }
     }
 
 private:

@@ -290,7 +290,7 @@ void VulkanCommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCo
 }
 
 void VulkanCommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle depth,
-                                            f32 clearDepth, u8 clearStencil) {
+                                            f32 clearDepth, u8 clearStencil, bool loadDepth) {
     // Same shape as the MRT BeginRenderPass with one color attachment,
     // but the color attachment's loadOp is vk::AttachmentLoadOp::eLoad
     // so its prior contents survive. Caller must have left the texture
@@ -389,7 +389,7 @@ void VulkanCommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle d
         depthAttach = vk::RenderingAttachmentInfo{
             .imageView = vk::ImageView(depthTex->view),
             .imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal,
-            .loadOp = vk::AttachmentLoadOp::eClear,
+            .loadOp = loadDepth ? vk::AttachmentLoadOp::eLoad : vk::AttachmentLoadOp::eClear,
             .storeOp = vk::AttachmentStoreOp::eStore,
             .clearValue =
                 vk::ClearValue{

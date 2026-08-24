@@ -80,6 +80,25 @@ struct EmitterDrawList {
     Vector3f worldOrigin = {0, 0, 0};
 };
 
+// The refraction emitters' half of one frame's particle geometry.
+//
+// Separate from the ordinary draw lists because a refraction emitter is not in
+// the transparent pass at all: the client buckets it into M2PASS_REFRACTION and
+// nowhere else (`AddParticleElement` @0x100f78590), so it is drawn into its own
+// buffer by its own pass. `extraUV` is index-parallel with `vertices` and holds
+// the two scrolling texture layers — see M2_REFRACTION_DESIGN.md.
+struct RefractionGeometry {
+    std::vector<Vertex> vertices;
+    std::vector<Vector4f> extraUV;
+    std::vector<EmitterDrawList> draws;
+
+    void Clear() {
+        vertices.clear();
+        extraUV.clear();
+        draws.clear();
+    }
+};
+
 class ParticleService {
 public:
     ParticleService();
@@ -107,8 +126,18 @@ public:
     // Simulate. Empty when no such emitter is registered.
     void DrainChildModelEvents(std::vector<ChildModelEvent>& out);
 
+    // Builds every emitter's geometry for this frame. A refraction emitter goes
+    // to @p refraction instead of the ordinary lists; pass null and it is
+    // skipped outright, which is the correct answer for a frame with no
+    // refraction pass — drawing it into the scene would paint a distortion mask
+    // as if it were colour.
     void BuildGeometry(const Matrix44f& worldToView, std::vector<Vertex>& outVertices,
-                       std::vector<EmitterDrawList>& outDrawLists) const;
+                       std::vector<EmitterDrawList>& outDrawLists,
+                       RefractionGeometry* refraction = nullptr) const;
+
+    // Whether any registered emitter (or trail) draws refraction. Cheap enough
+    // to ask per frame, and what lets the pipeline skip the pass entirely.
+    bool HasRefractionEmitters() const;
 
     // Emission-rate multiplier for every emitter in THIS service. Per-scene:
     // it used to be a process global, which meant scaling one viewport's

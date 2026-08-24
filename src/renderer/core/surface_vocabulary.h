@@ -88,6 +88,11 @@ enum class PassSlot : u8 {
     // sidecar, adds onto SceneColor. Not a per-surface concept, so
     // PassMaskBit maps it to None like every other screen pass.
     DeferredLights = 13,
+    /// WoW's refraction particles: a distortion mask, then a full-screen pass
+    /// that bends the finished scene through it. Runs after the transparent
+    /// scene and before the tonemap, which is where `CWorldSceneRender::Render`
+    /// @0x10196d324 calls `RefractionBuffer::Render`. Not a per-surface concept.
+    Refraction = 14,
 
     Count,
 };

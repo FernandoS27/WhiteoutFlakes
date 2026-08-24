@@ -1328,10 +1328,34 @@ std::vector<renderer::M2ParticleEmitterConfig> M2ModelAdapter::GetM2ParticleConf
         cfg.filterMode = static_cast<i32>(p.blendingType);
         cfg.rows = (p.rows > 0) ? p.rows : 1;
         cfg.cols = (p.columns > 0) ? p.columns : 1;
-        // Shaded/Unshaded are two separate bits in the record; the loader turns
-        // them into the lighting bit of CParticleMat.
-        cfg.unshaded = (f & 0x8u) != 0 || (f & 0x1u) == 0;
-        cfg.unfogged = (f & 0x100000u) != 0;
+        // Both lighting bits of CParticleMat are INVERSIONS of a record flag,
+        // and both are built in one place (`InitializeLoaded` @0x100f57a39 for
+        // the fog bit, @0x100f57a6b for the lighting one). A multi-texture or
+        // refraction emitter has the lighting bit masked off outright — those
+        // two branches do `and cl, 6` and never OR it back.
+        const bool multiTex = (f & 0x10000000u) != 0;
+        cfg.refraction = (f & 0x100000u) != 0 && !multiTex;
+        cfg.unshaded = (f & 0x1u) != 0 || multiTex || cfg.refraction;
+        cfg.unfogged = (f & 0x8u) != 0;
+
+        // The two extra texture layers. Both fixed-point forms are the
+        // client's, not the container's: the scale byte is UNSIGNED 3.5
+        // (`(b>>5) + (b&0x1F)/32`, i.e. b/32), and each scroll word is
+        // SIGN-MAGNITUDE — bit 15 picks ±1 and the remaining 15 bits are 6.9
+        // fixed point. Reading either through the generic `to_float()` would
+        // turn a negative scroll rate into a large positive one.
+        auto scrollValue = [](u16 raw) {
+            const f32 mag = static_cast<f32>(raw & 0x7FFFu) * (1.0f / 512.0f);
+            return (raw & 0x8000u) ? -mag : mag;
+        };
+        for (usize layer = 0; layer < 2; ++layer) {
+            cfg.multiTexScale[layer] =
+                static_cast<f32>(static_cast<u8>(p.multiTexScale[layer].raw)) * (1.0f / 32.0f);
+            cfg.multiTexScrollMid[layer] = {scrollValue(p.multiTexScrollMid[layer][0].raw),
+                                            scrollValue(p.multiTexScrollMid[layer][1].raw)};
+            cfg.multiTexScrollRange[layer] = {scrollValue(p.multiTexScrollRange[layer][0].raw),
+                                              scrollValue(p.multiTexScrollRange[layer][1].raw)};
+        }
 
         cfg.generator = static_cast<renderer::M2ParticleEmitterConfig::Generator>(
             static_cast<u8>(p.emitterType));

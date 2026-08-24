@@ -196,7 +196,7 @@ void WebGPUCommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCo
 }
 
 void WebGPUCommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle depth,
-                                            f32 clearDepth, u8 clearStencil) {
+                                            f32 clearDepth, u8 clearStencil, bool loadDepth) {
     auto& state = device_.State();
     EnsureEncoderOpen(state);
     auto& frame = state.frames[state.frameIndex];
@@ -231,11 +231,11 @@ void WebGPUCommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle d
     wgpu::RenderPassDepthStencilAttachment depthAttach{};
     if (depthTex && depthTex->view) {
         depthAttach.view = depthTex->view;
-        depthAttach.depthLoadOp = wgpu::LoadOp::Clear;
+        depthAttach.depthLoadOp = loadDepth ? wgpu::LoadOp::Load : wgpu::LoadOp::Clear;
         depthAttach.depthStoreOp = wgpu::StoreOp::Store;
         depthAttach.depthClearValue = clearDepth;
         if (hasStencilAspect(depthTex->format)) {
-            depthAttach.stencilLoadOp = wgpu::LoadOp::Clear;
+            depthAttach.stencilLoadOp = loadDepth ? wgpu::LoadOp::Load : wgpu::LoadOp::Clear;
             depthAttach.stencilStoreOp = wgpu::StoreOp::Store;
             depthAttach.stencilClearValue = clearStencil;
         }

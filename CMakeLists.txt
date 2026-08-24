@@ -286,6 +286,14 @@ set(SHADER_ENTRIES
     # on the engine's shipped gaussianblur.bls being staged.
     "gaussian_blur.slang|vsBlur|vertex|kGaussianBlurVS"
     "gaussian_blur.slang|psBlur|fragment|kGaussianBlurPS"
+    # WoW refraction particles (RefractionService). Two passes: the emitters'
+    # quads into a scalar distortion mask, then a full-screen pass that bends
+    # the finished scene through it. Transcribed from the retail `refraction`
+    # and `refractionapply` shaders — see M2_REFRACTION_DESIGN.md.
+    "refraction_mask.slang|vsRefractParticle|vertex|kRefractParticleVS"
+    "refraction_mask.slang|psRefractParticle|fragment|kRefractParticlePS"
+    "refraction_apply.slang|vsRefractApply|vertex|kRefractApplyVS"
+    "refraction_apply.slang|psRefractApply|fragment|kRefractApplyPS"
     # M2CombinerShading — WoW `.m2`. 16 vertex + 35 pixel entry points, indexed
     # directly by M2GetVertexShaderID / M2GetPixelShaderID (m2_shader_select.h).
     # Any VS pairs with any PS, so all 51 share one interstage signature.
@@ -1235,6 +1243,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/shadow/shadow_pass.cpp
     src/renderer/gtao/gtao_service.cpp
     src/renderer/dof/dof_service.cpp
+    src/renderer/refraction/refraction_service.cpp
     src/renderer/post_process/post_process_service.cpp
     src/renderer/bls/bls_container.cpp
     src/renderer/bls/bls_shader_cache.cpp

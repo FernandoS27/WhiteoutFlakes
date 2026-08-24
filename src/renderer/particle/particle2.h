@@ -45,4 +45,14 @@ struct Particle2 {
 
 static_assert(sizeof(Particle2) == 32, "Particle2 must be 32 bytes to mirror CParticle2");
 
+// The extra 32 bytes a refraction (or multi-texture) particle carries, which
+// is exactly what `CMultiTexParticle` adds past `CParticle2`: two UV origins
+// and two scroll rates. Kept alongside the pool rather than inside Particle2
+// because the 32-byte mirror above is load-bearing and because only a handful
+// of shipped emitters need this at all — a plain emitter's array stays empty.
+struct MultiTexState {
+    Vector2f uv[2]{{0, 0}, {0, 0}};
+    Vector2f scroll[2]{{0, 0}, {0, 0}};
+};
+
 } // namespace whiteout::flakes::renderer::particle

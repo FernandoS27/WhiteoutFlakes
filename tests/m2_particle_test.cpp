@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -488,6 +489,87 @@ TEST_CASE("the shipped RPID carriers name their trail models", "[m2][particle][t
     }
     if (checked == 0)
         SKIP("no RPID carrier present in " + CorpusRoot().string());
+}
+
+TEST_CASE("the shipped refraction carriers decode their extra layers",
+          "[m2][particle][refraction]") {
+    // 439 emitters across 366 corpus models set the Refraction flag; these are
+    // the ones this gate names. What they pin is the flag translation and the
+    // TWO fixed-point decodes the client does not share with the container:
+    // an UNSIGNED 3.5 scale byte and a SIGN-MAGNITUDE 6.9 scroll word (see
+    // M2_REFRACTION_DESIGN.md §1.5). Reading either through WhiteoutLib's own
+    // `to_float()` gives a plausible-looking wrong number — the tigermount row
+    // below is the case that separates them: a `fixed_point<u16,9>` read turns
+    // its -0.2988 into +64.2988, which is the kind of thing a render cannot
+    // tell you.
+    struct Layer {
+        f32 scale;
+        f32 midU, midV;
+        f32 rangeU, rangeV;
+    };
+    struct Expect {
+        const char* rel;
+        std::size_t emitterIndex;
+        Layer layer[2];
+    };
+    const Expect cases[] = {
+        // 307/512, 563/512, 153/512, 76/512, 25/512 — every one an exact
+        // multiple of 1/512, which is what the 6.9 split predicts.
+        {"creature/vampire_male/vampire_male.m2",
+         2,
+         {{1.0f, 0.599609375f, 1.099609375f, 0.599609375f, 0.599609375f},
+          {1.0f, 1.099609375f, 0.599609375f, 0.599609375f, 0.599609375f}}},
+        {"creature/tigermount/tigermount.m2",
+         9,
+         {{1.0f, 0.298828125f, 0.298828125f, 0.1484375f, 0.1484375f},
+          {1.0f, -0.298828125f, -0.298828125f, 0.1484375f, 0.1484375f}}},
+        {"spells/instancenewportal_blue.m2",
+         5,
+         {{1.0f, 0.1484375f, -0.599609375f, 0.048828125f, 0.048828125f},
+          {1.0f, 0.099609375f, -0.25f, 0.048828125f, 0.048828125f}}},
+        // Both layers static: the sprite sheet is the only thing that moves.
+        {"spells/8fx_generic_water_missile.m2",
+         1,
+         {{1.0f, 0.0f, 0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f, 0.0f, 0.0f}}},
+    };
+
+    io::FileContentProvider provider;
+    provider.SetGame(whiteout::flakes::ProductId::Wow);
+
+    std::size_t checked = 0;
+    for (const Expect& e : cases) {
+        const fs::path path = CorpusRoot() / e.rel;
+        if (!fs::exists(path))
+            continue;
+        provider.SetBasePath(path.parent_path());
+        auto bytes = provider.ReadFile(path.string());
+        if (!bytes)
+            continue;
+        auto adapter = io::M2ModelAdapter::Load(
+            ContentRef::FromPath(path.string()),
+            std::span<const whiteout::u8>(bytes->data(), bytes->size()), &provider);
+        REQUIRE(adapter);
+        const auto configs = adapter->GetM2ParticleConfigs();
+        INFO("model " << e.rel << " emitter " << e.emitterIndex);
+        REQUIRE(configs.size() > e.emitterIndex);
+        const auto& c = configs[e.emitterIndex];
+        ++checked;
+
+        CHECK(c.refraction);
+        // The loader masks the lighting bit off outright for this type, so a
+        // refraction emitter is never lit whatever its Unlit flag says.
+        CHECK(c.unshaded);
+        for (int layer = 0; layer < 2; ++layer) {
+            INFO("layer " << layer);
+            CHECK(c.multiTexScale[layer] == Approx(e.layer[layer].scale));
+            CHECK(c.multiTexScrollMid[layer].x == Approx(e.layer[layer].midU));
+            CHECK(c.multiTexScrollMid[layer].y == Approx(e.layer[layer].midV));
+            CHECK(c.multiTexScrollRange[layer].x == Approx(e.layer[layer].rangeU));
+            CHECK(c.multiTexScrollRange[layer].y == Approx(e.layer[layer].rangeV));
+        }
+    }
+    if (checked == 0)
+        SKIP("no refraction carrier present in " + CorpusRoot().string());
 }
 
 TEST_CASE("every corpus .m2 particle emitter yields a sane desc", "[m2][particle]") {

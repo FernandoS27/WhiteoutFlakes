@@ -208,7 +208,7 @@ void MetalCommandList::BeginRenderPass(const TextureHandle* colors, u32 colorCou
 }
 
 void MetalCommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle depth,
-                                           f32 clearDepth, u8 clearStencil) {
+                                           f32 clearDepth, u8 clearStencil, bool loadDepth) {
     @autoreleasepool {
         auto& state = device_.State();
         if (auto* sc = SwapChainOwnerOfTexture(state, color))
@@ -241,12 +241,14 @@ void MetalCommandList::BeginRenderPassLoad(TextureHandle color, TextureHandle de
         if (auto* depthTex = state.textures.Get(static_cast<u64>(depth))) {
             if (depthTex->texture) {
                 rpd.depthAttachment.texture = depthTex->texture;
-                rpd.depthAttachment.loadAction = MTLLoadActionClear;
+                rpd.depthAttachment.loadAction =
+                    loadDepth ? MTLLoadActionLoad : MTLLoadActionClear;
                 rpd.depthAttachment.storeAction = MTLStoreActionStore;
                 rpd.depthAttachment.clearDepth = clearDepth;
                 if (HasStencilAspect(depthTex->format)) {
                     rpd.stencilAttachment.texture = depthTex->texture;
-                    rpd.stencilAttachment.loadAction = MTLLoadActionClear;
+                    rpd.stencilAttachment.loadAction =
+                        loadDepth ? MTLLoadActionLoad : MTLLoadActionClear;
                     rpd.stencilAttachment.storeAction = MTLStoreActionStore;
                     rpd.stencilAttachment.clearStencil = clearStencil;
                 }

@@ -38,6 +38,11 @@ enum class TracePassSlot : u8 {
     ShadowMap = 2,
     DepthPrepass = 3,
     GBuffer = 4,
+    // WoW's refraction particles, which are in no scene pass at all — their
+    // quads go into a distortion buffer. Appended, so a baseline recorded
+    // before it existed still reads: only a model that carries a refraction
+    // emitter records anything here.
+    Refraction = 5,
 };
 
 // Which producer issued the draw. `SurfacePass` (P2) only ever sees Geoset;

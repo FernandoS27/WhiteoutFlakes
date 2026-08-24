@@ -133,6 +133,7 @@ struct RenderService::Impl {
     std::unique_ptr<shadow::ShadowService> shadowService_;
     std::unique_ptr<gtao::GtaoService> gtaoService_;
     std::unique_ptr<dof::DofService> dofService_;
+    std::unique_ptr<refraction::RefractionService> refractionService_;
 #if WDX_ENABLE_M3
     std::unique_ptr<sc2::M3DeferredLightService> m3DeferredLightService_;
 #endif

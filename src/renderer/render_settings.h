@@ -373,6 +373,26 @@ public:
         bloomSaturation_.store(bits);
     }
 
+    // ---- Refraction particles (WoW) ----
+    // On by default, unlike every other post-process toggle here: a refraction
+    // emitter draws nothing at all without the pass, so off is not a cheaper
+    // look but a missing effect. 439 emitters across 366 shipped `.m2` carry it.
+    bool RefractionEnabled() const {
+        return refractionEnabled_.load();
+    }
+    void SetRefractionEnabled(bool on) {
+        refractionEnabled_.store(on);
+    }
+    // Draw the distortion buffer instead of the distorted scene. The client has
+    // the same switch (`showRefractionBuffer`); it is the only way to tell an
+    // empty mask from a mask whose gradient happens to be flat.
+    bool RefractionDebugMask() const {
+        return refractionDebugMask_.load();
+    }
+    void SetRefractionDebugMask(bool on) {
+        refractionDebugMask_.store(on);
+    }
+
     // ---- Depth of field (HD-only) ----
     // Master enable. Off (and a focal distance of 0) ⇒ DofService::Run is a
     // no-op. Mirrors WC3's per-camera GetDepthOfFieldEnabled gate.
@@ -581,6 +601,8 @@ private:
 
     // Depth of field — off by default (the host supplies a focal distance).
     // Defaults mirror WC3: maxBlurSize=10, radiusScale=1, focusScale=1.
+    std::atomic<bool> refractionEnabled_{true};
+    std::atomic<bool> refractionDebugMask_{false};
     std::atomic<bool> dofEnabled_{false};
     std::atomic<u32> dofFocusDistance_{0};            // 0.0f — disables the pass
     std::atomic<u32> dofFocusScale_{0x3F800000u};     // 1.0f

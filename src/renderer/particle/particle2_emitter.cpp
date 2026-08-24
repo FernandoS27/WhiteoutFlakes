@@ -188,8 +188,41 @@ void Emitter2::AddTrail(std::unique_ptr<Emitter2> trail) {
 void Emitter2::GrowPool(u32 capacity) {
     const usize before = pool_.Capacity();
     pool_.Sync(capacity);
-    if (pool_.Capacity() != before)
+    if (pool_.Capacity() != before) {
+        if (desc_->refraction)
+            multiTex_.resize(pool_.Capacity());
         OnPoolResized(pool_.Capacity());
+    }
+}
+
+void Emitter2::SeedMultiTex(u32 poolIndex) {
+    if (!desc_->refraction || poolIndex >= multiTex_.size())
+        return;
+    MultiTexState& m = multiTex_[poolIndex];
+    // Three draws per layer, in the client's order: the UV origin's u, its v,
+    // then ONE symmetric draw that scales both components of the scroll rate.
+    // The single shared draw is the client's, not a simplification — a layer's
+    // u and v rates are perfectly correlated because of it.
+    for (usize layer = 0; layer < 2; ++layer) {
+        m.uv[layer].x = CRandom::real_(randSeed_);
+        m.uv[layer].y = CRandom::real_(randSeed_);
+        const f32 r = CRandom::reals_(randSeed_);
+        m.scroll[layer] = {desc_->multiTexScrollMid[layer].x + r * desc_->multiTexScrollRange[layer].x,
+                           desc_->multiTexScrollMid[layer].y + r * desc_->multiTexScrollRange[layer].y};
+    }
+}
+
+void Emitter2::AdvanceMultiTex(u32 poolIndex, f32 dt) {
+    if (!desc_->refraction || poolIndex >= multiTex_.size())
+        return;
+    MultiTexState& m = multiTex_[poolIndex];
+    for (usize layer = 0; layer < 2; ++layer) {
+        const f32 u = m.uv[layer].x + m.scroll[layer].x * dt;
+        const f32 v = m.uv[layer].y + m.scroll[layer].y * dt;
+        // floor, not fmod: the client wraps with `x - floorf(x)`, which keeps a
+        // negative scroll rate inside [0,1) instead of walking into -1.
+        m.uv[layer] = {u - std::floor(u), v - std::floor(v)};
+    }
 }
 
 void Emitter2::Sync() {
@@ -262,6 +295,7 @@ void Emitter2::EmitStep(f32 elapsed, f32 emissionScaler) {
             u32 idx = pool_.PopDead();
             pool_.PushAlive(idx);
             CreateParticle(pool_[idx], 0.0f);
+            SeedMultiTex(idx);
             OnParticleBorn(idx);
             --numToEmit;
         }
@@ -327,6 +361,7 @@ void Emitter2::EmitStep(f32 elapsed, f32 emissionScaler) {
             u32 idx = pool_.PopDead();
             pool_.PushAlive(idx);
             CreateParticle(pool_[idx], elapsed);
+            SeedMultiTex(idx);
             OnParticleBorn(idx);
             ++emitted;
             --planned;
@@ -436,6 +471,11 @@ void Emitter2::AdvanceStep(f32 elapsed, f32 emissionScaler) {
             p.position.y += followDelta_.y;
             p.position.z += followDelta_.z;
         }
+        // The extra texture layers scroll BEFORE the move, and before the move
+        // can kill the particle — `UpdateLiveParticle<CMultiTexParticle>`
+        // @0x1016a9d30 advances them at the top and only then calls
+        // MoveParticle. A particle that dies this step still scrolled.
+        AdvanceMultiTex(idx, elapsed);
         const bool implode = behavior_.implosionKill && desc_->implosionFilter;
         if (!MoveParticleWow(p, forces, elapsed, implode, center)) {
             OnParticleDied(idx);

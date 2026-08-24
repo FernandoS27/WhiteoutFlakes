@@ -204,6 +204,25 @@ struct EmitterDesc {
     f32 twinkleBase = 1.0f;
     f32 twinkleVary = 0.0f;
 
+    /// @brief This emitter draws a screen-space distortion, not colour.
+    ///
+    /// M2 `Refraction`. Such an emitter is excluded from the transparent pass
+    /// entirely — the client gives it its own render pass and its own buffer
+    /// (`AddParticleElement` @0x100f78590 buckets it into M2PASS_REFRACTION and
+    /// nowhere else) — and its particles carry the two extra scrolling UV sets
+    /// below. See M2_REFRACTION_DESIGN.md.
+    bool refraction = false;
+
+    /// @brief The two extra texture layers, in the runtime's form.
+    ///
+    /// `multiTexScale[i]` scales the quad's own corner coordinate into layer
+    /// i's UV; `scrollMid`/`scrollRange` are the centre and half-width of the
+    /// per-particle scroll rate, drawn once at birth. Read only when
+    /// @ref refraction is set — nothing else in the renderer has three UV sets.
+    f32 multiTexScale[2] = {0.0f, 0.0f};
+    Vector2f multiTexScrollMid[2] = {{0, 0}, {0, 0}};
+    Vector2f multiTexScrollRange[2] = {{0, 0}, {0, 0}};
+
     i32 priorityPlane = 0;
     ParticleMaterialDesc material;
     CoordSpace coordSpace = kDefaultCoordSpace;
