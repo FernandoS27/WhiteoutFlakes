@@ -258,7 +258,7 @@ public:
     }
 
     // The extra texture layers, index-parallel with the pool. Empty unless the
-    // desc asked for refraction — see MultiTexState.
+    // desc asked for refraction or multi-texture — see MultiTexState.
     const std::vector<MultiTexState>& MultiTex() const {
         return multiTex_;
     }
@@ -307,7 +307,7 @@ protected:
     void GrowPool(u32 capacity);
 
     // Draw one newly born particle's extra texture layers. No-op unless the
-    // desc asked for refraction; when it did, this is six draws off the
+    // desc asked for the layers; when it did, this is six draws off the
     // emitter's own stream, immediately after CreateParticle, exactly where
     // `CreateParticle(CMultiTexParticle&)` @0x1016a10b0 takes them.
     void SeedMultiTex(u32 poolIndex);
@@ -383,7 +383,8 @@ protected:
 
     ParticlePool pool_;
 
-    // Index-parallel with the pool, and sized only for a refraction emitter.
+    // Index-parallel with the pool, and sized only for an emitter that asked
+    // for the extra layers (refraction or multi-texture).
     std::vector<MultiTexState> multiTex_;
 
     // Owned outright, like the client's recursion model owns the emitters the

@@ -36,6 +36,20 @@ struct ParticleMaterialDesc {
     bool unshaded = false;
     bool unfogged = false;
     i32 replaceableId = 0;
+
+    /// @brief Shade through the three-texture combiner (M2 `MultiTexture`).
+    ///
+    /// Set on the DRAW as well as the desc, because it is what tells the
+    /// dispatcher that this draw's vertex offsets index the multi-texture
+    /// stream rather than the ordinary particle one — the two carry different
+    /// vertices and live in different buffers. The two flags below pick among
+    /// the client's four shared effects; see M2_MULTITEX_DESIGN.md.
+    bool multiTexture = false;
+    bool multiTexUse3Colors = false;
+    bool multiTexModx4 = false;
+    /// Layers 1 and 2, read only when @ref multiTexture is set.
+    i32 textureId2 = -1;
+    i32 textureId3 = -1;
 };
 
 } // namespace whiteout::flakes::renderer::particle

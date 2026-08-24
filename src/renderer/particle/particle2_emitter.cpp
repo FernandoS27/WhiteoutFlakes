@@ -189,14 +189,14 @@ void Emitter2::GrowPool(u32 capacity) {
     const usize before = pool_.Capacity();
     pool_.Sync(capacity);
     if (pool_.Capacity() != before) {
-        if (desc_->refraction)
+        if (desc_->UsesMultiTexLayers())
             multiTex_.resize(pool_.Capacity());
         OnPoolResized(pool_.Capacity());
     }
 }
 
 void Emitter2::SeedMultiTex(u32 poolIndex) {
-    if (!desc_->refraction || poolIndex >= multiTex_.size())
+    if (!desc_->UsesMultiTexLayers() || poolIndex >= multiTex_.size())
         return;
     MultiTexState& m = multiTex_[poolIndex];
     // Three draws per layer, in the client's order: the UV origin's u, its v,
@@ -213,7 +213,7 @@ void Emitter2::SeedMultiTex(u32 poolIndex) {
 }
 
 void Emitter2::AdvanceMultiTex(u32 poolIndex, f32 dt) {
-    if (!desc_->refraction || poolIndex >= multiTex_.size())
+    if (!desc_->UsesMultiTexLayers() || poolIndex >= multiTex_.size())
         return;
     MultiTexState& m = multiTex_[poolIndex];
     for (usize layer = 0; layer < 2; ++layer) {

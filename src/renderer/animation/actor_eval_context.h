@@ -54,6 +54,9 @@ struct ActorEvalContext {
     ///        slew. Real time, not animation time: a paused actor's feet still
     ///        settle onto the ground.
     i32 frameDtMs = 0;
+    /// @brief Subdivide @ref frameDtMs inside the physics stages. On by
+    ///        default; see `RenderSettings::PhysicsSubstepping`.
+    bool substepPhysics = true;
     /// @brief Host-supplied ground height. Absent ⇒ no terrain IK runs; the
     ///        renderer has no terrain of its own to guess from.
     std::function<bool(const Vector3f& pos, f32 up, f32 down, f32& outZ)> queryGround;

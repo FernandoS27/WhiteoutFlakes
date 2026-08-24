@@ -753,7 +753,7 @@ std::vector<SequenceInfo> M2ModelAdapter::GetSequences() const {
         // every sequence is a window into one global one.
         s.startMs = 0;
         s.endMs = static_cast<i32>(seq.duration);
-        s.moveSpeed = seq.movespeed;
+        s.moveSpeed = seq.movespeed * 100.0f;
         // `rarity` stays 0. M2's `frequency` is a selection *probability* and
         // MDX's rarity runs the other way, so feeding one to the other would
         // make a host's random pick prefer exactly the wrong variations.
@@ -1229,8 +1229,8 @@ namespace {
 
 using ::whiteout::m2::ParticleFlag;
 
-bool HasParticleFlag(ParticleFlag flags, u32 bit) {
-    return (static_cast<u32>(flags) & bit) != 0;
+bool HasParticleFlag(ParticleFlag flags, ParticleFlag bit) {
+    return (static_cast<u32>(flags) & static_cast<u32>(bit)) != 0;
 }
 
 // An M2 string array counts its terminator, so every name the parser hands back
@@ -1316,15 +1316,20 @@ std::vector<renderer::M2ParticleEmitterConfig> M2ModelAdapter::GetM2ParticleConf
     for (usize ei = 0; ei < model_.particleEmitters.size(); ++ei) {
         const auto& p = model_.particleEmitters[ei];
         renderer::M2ParticleEmitterConfig cfg;
-        const u32 f = static_cast<u32>(p.flags);
+        const auto has = [&p](ParticleFlag bit) { return HasParticleFlag(p.flags, bit); };
 
         // A plain emitter indexes the model's texture array with the whole
         // 16-bit field (`InitializeLoaded` @0x100f57c29 loads it and indexes
         // CM2Shared's handle array directly). A MultiTexture one packs three
-        // 5-bit indices into the same field; only the first is bound here,
-        // because the multi-texture shading path is out of scope.
-        cfg.textureId = ((f & 0x10000000u) != 0) ? static_cast<i32>(p.textureId & 0x1Fu)
-                                                 : static_cast<i32>(p.textureId);
+        // 5-bit indices into the same field and binds all three
+        // (@0x100f57aa8, three `SetTexture` calls at slots 0, 1 and 2).
+        if (has(ParticleFlag::MultiTexture)) {
+            cfg.textureId = static_cast<i32>(p.textureId & 0x1Fu);
+            cfg.textureId2 = static_cast<i32>((p.textureId >> 5) & 0x1Fu);
+            cfg.textureId3 = static_cast<i32>((p.textureId >> 10) & 0x1Fu);
+        } else {
+            cfg.textureId = static_cast<i32>(p.textureId);
+        }
         cfg.filterMode = static_cast<i32>(p.blendingType);
         cfg.rows = (p.rows > 0) ? p.rows : 1;
         cfg.cols = (p.columns > 0) ? p.columns : 1;
@@ -1333,10 +1338,17 @@ std::vector<renderer::M2ParticleEmitterConfig> M2ModelAdapter::GetM2ParticleConf
         // the fog bit, @0x100f57a6b for the lighting one). A multi-texture or
         // refraction emitter has the lighting bit masked off outright — those
         // two branches do `and cl, 6` and never OR it back.
-        const bool multiTex = (f & 0x10000000u) != 0;
-        cfg.refraction = (f & 0x100000u) != 0 && !multiTex;
-        cfg.unshaded = (f & 0x1u) != 0 || multiTex || cfg.refraction;
-        cfg.unfogged = (f & 0x8u) != 0;
+        const bool multiTex = has(ParticleFlag::MultiTexture);
+        cfg.refraction = has(ParticleFlag::Refraction) && !multiTex;
+        cfg.unshaded = has(ParticleFlag::Unlit) || multiTex || cfg.refraction;
+        cfg.unfogged = has(ParticleFlag::Unfogged);
+
+        // CParticleMat bits 4 and 3, and only a MultiTexture emitter reaches
+        // the branch that ORs them in (@0x100f57a89 / @0x100f57a98). All four
+        // combinations ship, so neither implies the other.
+        cfg.multiTexture = multiTex;
+        cfg.multiTexUse3Colors = multiTex && has(ParticleFlag::MultitexUse3Colors);
+        cfg.multiTexModx4 = multiTex && has(ParticleFlag::MultitexUseModx4);
 
         // The two extra texture layers. Both fixed-point forms are the
         // client's, not the container's: the scale byte is UNSIGNED 3.5
@@ -1368,8 +1380,8 @@ std::vector<renderer::M2ParticleEmitterConfig> M2ModelAdapter::GetM2ParticleConf
 
         // HeadStyle / TailStyle. A record with neither draws nothing, which is
         // faithful — SetParticleStyle leaves both quad flags clear.
-        cfg.hasHead = (f & 0x20000u) != 0;
-        cfg.hasTail = (f & 0x40000u) != 0;
+        cfg.hasHead = has(ParticleFlag::HeadStyle);
+        cfg.hasTail = has(ParticleFlag::TailStyle);
         if (!cfg.hasHead && !cfg.hasTail)
             cfg.hasHead = true;
 
@@ -1381,35 +1393,35 @@ std::vector<renderer::M2ParticleEmitterConfig> M2ModelAdapter::GetM2ParticleConf
         // "stay local, transform at draw", which is exactly modelSpace here,
         // and clear means the particle is stamped into the world at birth and
         // trails behind a moving emitter.
-        cfg.modelSpace = (f & 0x10u) != 0;
-        cfg.sortZ = (f & 0x2u) != 0;
-        cfg.xyQuad = (f & 0x1000u) != 0;
-        cfg.squirt = (f & 0x8000u) != 0;
-        cfg.hemisphereUp = (f & 0x100u) != 0;
-        cfg.followPosition = (f & 0x4000u) != 0;
-        cfg.randomEmissionSpacing = (f & 0x800u) != 0;
-        cfg.inheritVelocity = (f & 0x40u) != 0;
-        cfg.lodIgnoreDistance = (f & 0x4000000u) != 0;
+        cfg.modelSpace = has(ParticleFlag::WorldSpace);
+        cfg.sortZ = has(ParticleFlag::SortParticles);
+        cfg.xyQuad = has(ParticleFlag::XYQuad);
+        cfg.squirt = has(ParticleFlag::Squirt);
+        cfg.hemisphereUp = has(ParticleFlag::HemisphereUpDirection);
+        cfg.followPosition = has(ParticleFlag::FollowPosition);
+        cfg.randomEmissionSpacing = has(ParticleFlag::InheritPosition);
+        cfg.inheritVelocity = has(ParticleFlag::InheritVelocity);
+        cfg.lodIgnoreDistance = has(ParticleFlag::LodIgnoreDistance);
         // 6.0.1 keys the implosion filter off the DynamicWind sign bit for
         // sphere emitters, not the documented 0x80 — a quirk of that build,
         // reproduced rather than corrected.
         cfg.implosionFilter =
             cfg.generator == renderer::M2ParticleEmitterConfig::Generator::Sphere &&
-            (f & 0x80000000u) != 0;
+            has(ParticleFlag::DynamicWind);
         cfg.inheritVelocityScale = p.inheritVelocityScale;
 
         // Appearance. The file→runtime flag map is the loader's own
         // (`InitializeLoaded` @0x100f553d0); the runtime bit numbers differ from
         // the file ones, which is why these are read by file bit here and
         // carried as named booleans rather than as a flag word.
-        cfg.velocityOrient = (f & 0x4u) != 0;
-        cfg.inheritBoneScale = (f & 0x20u) != 0;
-        cfg.negateSpinRandom = (f & 0x200u) != 0;
-        cfg.clampTailToAge = (f & 0x400u) != 0;
-        cfg.chooseRandomTexture = (f & 0x10000u) != 0;
-        cfg.unscaledSizeVariation = (f & 0x80000u) != 0;
-        cfg.randFlipbookStart = (f & 0x200000u) != 0;
-        cfg.offsetHeadBySpin = (f & 0x8000000u) != 0;
+        cfg.velocityOrient = has(ParticleFlag::VelocityOrient);
+        cfg.inheritBoneScale = has(ParticleFlag::InheritBoneScale);
+        cfg.negateSpinRandom = has(ParticleFlag::NegateSpinRandom);
+        cfg.clampTailToAge = has(ParticleFlag::ClampTailToAge);
+        cfg.chooseRandomTexture = has(ParticleFlag::ChooseRandomTexture);
+        cfg.unscaledSizeVariation = has(ParticleFlag::UnscaledSizeVariation);
+        cfg.randFlipbookStart = has(ParticleFlag::RandFlipbookStart);
+        cfg.offsetHeadBySpin = has(ParticleFlag::OffsetHeadBySpin);
 
         cfg.baseSpin = p.baseSpin;
         cfg.baseSpinVariation = p.baseSpinVariation;
@@ -1421,7 +1433,7 @@ std::vector<renderer::M2ParticleEmitterConfig> M2ModelAdapter::GetM2ParticleConf
 
         cfg.drag = p.drag;
         // The static wind vector applies only when DynamicWind is clear.
-        if ((f & 0x80000000u) == 0)
+        if (!has(ParticleFlag::DynamicWind))
             cfg.windVector = p.windVector;
         cfg.followSpeed1 = p.followSpeed1;
         cfg.followScale1 = p.followScale1;
@@ -1452,7 +1464,7 @@ std::vector<renderer::M2ParticleEmitterConfig> M2ModelAdapter::GetM2ParticleConf
             cfg.initial.lifeSpan = SampleM2Float(p.lifespan, at0, 1.0f);
             cfg.initial.gravityVector = SampleM2ParticleGravity(
                 p.gravity, at0,
-                HasParticleFlag(p.flags, static_cast<u32>(ParticleFlag::CompressedGravity)));
+                HasParticleFlag(p.flags, ParticleFlag::CompressedGravity));
         }
 
         CopyParticleTrack(p.colorTrack, cfg.colorTimes, cfg.colorValues, [](const Vector3f& v) {
@@ -1610,7 +1622,7 @@ void M2ModelAdapter::EvaluateParticles(const M2AnimTime& at, const Matrix44f& wo
         // one is four packed bytes wearing a float's clothes.
         st.gravityVector = SampleM2ParticleGravity(
             p.gravity, at,
-            HasParticleFlag(p.flags, static_cast<u32>(ParticleFlag::CompressedGravity)));
+            HasParticleFlag(p.flags, ParticleFlag::CompressedGravity));
         st.gravity = -st.gravityVector.z;
         st.hasGravityVector = true;
 

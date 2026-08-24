@@ -114,4 +114,11 @@ private:
     bool inReplay_ = false;
 };
 
+// The blend and depth state a material's alpha mode implies. Shared rather
+// than private to the PSO builder because the multi-texture particle path
+// builds its own pipelines off the same MatParams and must blend identically
+// to the plain particles it interleaves with.
+gfx::BlendDesc BlendFor(GxMatAlpha alpha);
+gfx::DepthStencilDesc DepthFor(const MatParams& m);
+
 } // namespace whiteout::flakes::renderer::bls

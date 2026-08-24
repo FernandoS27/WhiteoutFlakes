@@ -298,6 +298,7 @@ private:
     // opens the naming model's pass on the first entry it dispatches.
     void RenderTransparentScene();
     void DrawParticleEmitter(const particle::EmitterDrawList& dl, const bls::FrameInputs& frame);
+    void DrawMultiTexParticleEmitter(const particle::EmitterDrawList& dl);
     // Build every actor's ribbon strips into their per-actor VBs and surface one
     // RibbonDrawUnit per emitter (with a world sort origin); `outFrame` is the
     // shared effect frame. DrawRibbonStrip renders one unit interleaved.

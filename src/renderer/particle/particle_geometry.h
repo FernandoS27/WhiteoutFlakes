@@ -17,14 +17,15 @@ struct BuildGeometryInput {
     bool fogEnabled = false;
     FogSampler fogSampler = nullptr;
 
-    /// @brief Where a refraction emitter's two extra UV sets go.
+    /// @brief Where an emitter's two extra UV sets go.
     ///
     /// One entry per emitted vertex — `(uv1.xy, uv2.xy)` — appended in lockstep
     /// with @p out, so the two arrays index together. Left null for every
-    /// ordinary emitter, and ignored unless the desc asked for refraction; a
-    /// refraction emitter built with it null still produces its quads, it just
-    /// cannot be shaded as one. See M2_REFRACTION_DESIGN.md.
-    std::vector<Vector4f>* refractionUV = nullptr;
+    /// ordinary emitter, and ignored unless the desc asked for the layers
+    /// (refraction or multi-texture); such an emitter built with it null still
+    /// produces its quads, it just cannot be shaded as one. See
+    /// M2_REFRACTION_DESIGN.md and M2_MULTITEX_DESIGN.md.
+    std::vector<Vector4f>* extraUV = nullptr;
 };
 
 i32 BuildEmitterGeometry(const Emitter2& emitter, const BuildGeometryInput& in,

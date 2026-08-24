@@ -196,7 +196,7 @@ TEST_CASE("the builder emits one extra UV pair per vertex", "[particle][refracti
     std::vector<Vector4f> extra;
     BuildGeometryInput in{};
     in.worldToView = &view;
-    in.refractionUV = &extra;
+    in.extraUV = &extra;
     const i32 n = BuildEmitterGeometry(e, in, verts);
 
     // One head quad: six vertices, and an extra pair for every one of them.
@@ -253,7 +253,7 @@ TEST_CASE("the service routes refraction emitters out of the scene", "[particle]
     SECTION("with a sink, the two go to different lists") {
         std::vector<Vertex> verts;
         std::vector<EmitterDrawList> draws;
-        RefractionGeometry refractGeo;
+        MultiTexGeometry refractGeo;
         svc.BuildGeometry(view, verts, draws, &refractGeo);
 
         REQUIRE(draws.size() == 1);

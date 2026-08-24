@@ -89,6 +89,21 @@ public:
     /// particle is not a rigid body, its constraints are not colliders, and it
     /// draws a mesh of links where the other three draw one shape each. On the
     /// same rig the two overlays sit on top of each other, so they toggle apart.
+    /// @brief Subdivide each frame's physics step instead of taking one step
+    ///        per rendered frame.
+    ///
+    /// A simulation setting, not a debug overlay, and on by default: the
+    /// shipped one-step-per-frame cadence lets a fast collider pass straight
+    /// through cloth, and a game covers that by retuning the numbers in its
+    /// data editor rather than by stepping finer. Off reproduces the shipped
+    /// cadence. Honoured today by the SC2/Heroes cloth stage.
+    bool PhysicsSubstepping() const {
+        return physicsSubstepping_;
+    }
+    void SetPhysicsSubstepping(bool v) {
+        physicsSubstepping_ = v;
+    }
+
     bool ShowPhysicsCloth() const {
         return showPhysicsCloth_;
     }
@@ -393,6 +408,20 @@ public:
         refractionDebugMask_.store(on);
     }
 
+    // ---- Multi-texture particles (WoW) ----
+    // On by default, and for the same reason refraction is: 23 253 emitters
+    // across 5 239 shipped `.m2` combine three textures, and off is not a
+    // cheaper look but their first layer alone at half the brightness. Kept as
+    // a switch because that fallback is the only A/B the render gate has —
+    // nothing else can tell "the combiner ran" from "the combiner ran and
+    // happened to look like one layer".
+    bool MultiTexParticlesEnabled() const {
+        return multiTexParticlesEnabled_.load();
+    }
+    void SetMultiTexParticlesEnabled(bool on) {
+        multiTexParticlesEnabled_.store(on);
+    }
+
     // ---- Depth of field (HD-only) ----
     // Master enable. Off (and a focal distance of 0) ⇒ DofService::Run is a
     // no-op. Mirrors WC3's per-camera GetDepthOfFieldEnabled gate.
@@ -550,6 +579,7 @@ private:
     bool showPhysicsKinematic_ = false;
     bool showPhysicsStatic_ = false;
     bool showPhysicsCloth_ = false;
+    bool physicsSubstepping_ = true;
     bool poseSolvers_ = false;
     GroundQuery groundQuery_;
 
@@ -603,6 +633,7 @@ private:
     // Defaults mirror WC3: maxBlurSize=10, radiusScale=1, focusScale=1.
     std::atomic<bool> refractionEnabled_{true};
     std::atomic<bool> refractionDebugMask_{false};
+    std::atomic<bool> multiTexParticlesEnabled_{true};
     std::atomic<bool> dofEnabled_{false};
     std::atomic<u32> dofFocusDistance_{0};            // 0.0f — disables the pass
     std::atomic<u32> dofFocusScale_{0x3F800000u};     // 1.0f

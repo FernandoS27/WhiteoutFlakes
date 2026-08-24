@@ -100,6 +100,26 @@ struct M2ParticleEmitterConfig {
     /// (`InitializeLoaded` @0x100f57550). See M2_REFRACTION_DESIGN.md.
     bool refraction = false;
 
+    /// @brief Draw this emitter through the three-texture combiner.
+    ///
+    /// The record's `MultiTexture` flag. Such an emitter packs THREE 5-bit
+    /// texture indices into the one 16-bit field a plain emitter uses whole
+    /// (`InitializeLoaded` @0x100f57aa8 splits it into bits 0-4, 5-9 and
+    /// 10-14), and its particles carry the two extra scrolling UV sets below.
+    /// See M2_MULTITEX_DESIGN.md.
+    bool multiTexture = false;
+
+    /// Layers 1 and 2. Valid only when @ref multiTexture is set; @ref textureId
+    /// is layer 0 either way.
+    i32 textureId2 = -1;
+    i32 textureId3 = -1;
+
+    /// The two `CParticleMat` bits the client uses to pick between the four
+    /// shared multi-texture shader effects (`SetMaterial` @0x1016a42c0):
+    /// three colour layers instead of two, and Mod4 instead of Mod2.
+    bool multiTexUse3Colors = false;
+    bool multiTexModx4 = false;
+
     /// @brief The two extra texture layers a refraction (or multi-texture)
     ///        particle carries, in the runtime's own form.
     ///

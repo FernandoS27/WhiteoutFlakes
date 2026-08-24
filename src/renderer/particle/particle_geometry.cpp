@@ -435,16 +435,17 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
         boneScale = std::sqrt((unit > 0.0f) ? (len / unit) : len);
     }
 
-    // Refraction only: the second and third UV sets, appended one per vertex
-    // alongside `out`. `uvN = particleUV[N] + corner01 * multiTexScale[N]`, and
-    // the corner is the SAME 0/1 pair the sprite cell uses — the client scales
-    // one `s_renderTC` entry three ways per vertex
+    // Refraction and multi-texture only: the second and third UV sets,
+    // appended one per vertex alongside `out`.
+    // `uvN = particleUV[N] + corner01 * multiTexScale[N]`, and the corner is the
+    // SAME 0/1 pair the sprite cell uses — the client scales one `s_renderTC`
+    // entry three ways per vertex
     // (IBuildVertices<CMultiTexParticle,0,CGxVertexPCT3> @0x1016c5865).
-    const bool refract = d.refraction && in.refractionUV != nullptr;
+    const bool extraLayers = d.UsesMultiTexLayers() && in.extraUV != nullptr;
     const std::vector<MultiTexState>& mtx = emitter.MultiTex();
     u32 particleIndex = 0;
-    auto appendRefractUV = [&](usize from, f32 u0, f32 v0) {
-        if (!refract || particleIndex >= mtx.size())
+    auto appendExtraUV = [&](usize from, f32 u0, f32 v0) {
+        if (!extraLayers || particleIndex >= mtx.size())
             return;
         const MultiTexState& m = mtx[particleIndex];
         for (usize k = from; k < out.size(); ++k) {
@@ -452,10 +453,10 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
             // literally one of the two cell corners it was handed.
             const f32 su = (out[k].uv.x == u0) ? 0.0f : 1.0f;
             const f32 sv = (out[k].uv.y == v0) ? 0.0f : 1.0f;
-            in.refractionUV->push_back({m.uv[0].x + su * d.multiTexScale[0],
-                                        m.uv[0].y + sv * d.multiTexScale[0],
-                                        m.uv[1].x + su * d.multiTexScale[1],
-                                        m.uv[1].y + sv * d.multiTexScale[1]});
+            in.extraUV->push_back({m.uv[0].x + su * d.multiTexScale[0],
+                                   m.uv[0].y + sv * d.multiTexScale[0],
+                                   m.uv[1].x + su * d.multiTexScale[1],
+                                   m.uv[1].y + sv * d.multiTexScale[1]});
         }
     };
 
@@ -647,7 +648,7 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
             const usize from = out.size();
             EmitQuad(out, centre, axisA, axisB, vcol, normal, cu, cv, cu + d.sheet.ooWidth,
                      cv + d.sheet.ooHeight);
-            appendRefractUV(from, cu, cv);
+            appendExtraUV(from, cu, cv);
         }
 
         if (hasTail) {
@@ -688,7 +689,7 @@ i32 BuildWowGeometry(const Emitter2& emitter, const BuildGeometryInput& in,
                 // is where WC3 skips the particle instead.
                 EmitQuad(out, centre, screenA, screenB, vcol, normal, cu, cv, cu1, cv1);
             }
-            appendRefractUV(tailFrom, cu, cv);
+            appendExtraUV(tailFrom, cu, cv);
         }
     }
 

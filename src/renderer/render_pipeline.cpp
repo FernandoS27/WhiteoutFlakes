@@ -286,6 +286,16 @@ void RenderPipeline::DrawParticleEmitter(const particle::EmitterDrawList& dl,
     if (dl.vertexCount <= 0)
         return;
     auto* cmd = impl_->gfx_->GetImmediateContext();
+
+    // A multi-texture emitter's offsets index the three-UV stream, not this
+    // one, and it needs a combiner the BLS SD program does not have. Its draw
+    // is still HERE, in the sorted transparent queue, because that is where the
+    // client draws it — only the shading and the vertex buffer differ.
+    if (dl.material.multiTexture) {
+        DrawMultiTexParticleEmitter(dl);
+        return;
+    }
+
     cmd->BindVertexBuffer(0, impl_->particleServiceVB_, sizeof(Vertex));
 
     bls::MatParams mp = bls::FromParticleDesc(dl.material, bls::GxShaderID::SD);
@@ -373,6 +383,62 @@ void RenderPipeline::DrawParticleEmitter(const particle::EmitterDrawList& dl,
     }
 
     cmd->Draw(dl.vertexCount, dl.vertexOffset);
+}
+
+// One multi-texture emitter's batch. Split out of DrawParticleEmitter rather
+// than folded into it because almost nothing is shared: a different vertex
+// buffer, a different program, and three textures instead of one. What IS
+// shared is where it happens — the caller is the same sorted transparent queue.
+void RenderPipeline::DrawMultiTexParticleEmitter(const particle::EmitterDrawList& dl) {
+    auto* svc = impl_->multiTexParticles_.get();
+    if (!svc)
+        return;
+
+    // Same resolution the single-texture path does, and for the same reason:
+    // the particle service must not know about actors or texture scopes.
+    gfx::TextureHandle tex[3] = {gfx::TextureHandle::Invalid, gfx::TextureHandle::Invalid,
+                                 gfx::TextureHandle::Invalid};
+    const i32 ids[3] = {dl.material.textureId, dl.material.textureId2, dl.material.textureId3};
+    if (Actor* owner = rs_.Scene().Actors().Find(dl.model)) {
+        if (owner->render.textures) {
+            for (u32 i = 0; i < 3; ++i) {
+                if (ids[i] >= 0)
+                    tex[i] = owner->render.textures->Get(ids[i]);
+            }
+        }
+    }
+    // White is the identity of the combiner's product, so an unresolved layer
+    // drops out instead of blacking the emitter — which is what the client's
+    // own "Particle Texture Handle NULL" path leaves behind too.
+    for (auto& t : tex) {
+        if (t == gfx::TextureHandle::Invalid)
+            t = rs_.Textures().GetDefaults().White;
+    }
+
+    if (debug::DrawTraceEnabled()) {
+        debug::TraceDraw d;
+        d.shadingModel = static_cast<u8>(debug::TraceShadingModel::M2MultiTexParticle);
+        d.blendClass = static_cast<u8>(dl.material.filterMode);
+        d.actor.rootActor = debug::TraceRootOrdinal(rs_.Scene().Actors().All(), dl.model);
+        d.actor.emitterId = dl.emitterId;
+        d.vertexCount = dl.vertexCount;
+        d.filterMode = static_cast<i32>(dl.material.filterMode);
+        d.texIds[0] = ids[0];
+        d.texIds[1] = ids[1];
+        d.texIds[2] = ids[2];
+        d.streamMask = debug::kStreamBase;
+        // The two combiner bits index the client's four shared multi-texture
+        // effects, so they ARE the pixel permutation here — the same thing
+        // `SetMaterial` @0x1016a42c0 computes to index s_pShaderEffects.
+        d.psoKey = debug::TracePsoKey(
+            {.psPermute = (dl.material.multiTexUse3Colors ? 1u : 0u) |
+                          (dl.material.multiTexModx4 ? 2u : 0u),
+             .matAlpha = static_cast<u32>(dl.material.filterMode),
+             .vertexLayout = static_cast<u32>(bls::VertexLayoutKind::ParticleSD)});
+        debug::RecordProducerDraw(d);
+    }
+
+    svc->Draw(impl_->gfx_->GetImmediateContext(), dl, tex[0], tex[1], tex[2]);
 }
 
 namespace {
@@ -933,6 +999,13 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     // Refraction needs neither: its two passes generate their own fullscreen
     // triangle from SV_VertexID and its mask pass binds the particle stream.
     rs_.EnsureRefractionService(*impl_->gfx_, impl_->gfx_->GetApi());
+    // Multi-texture particles draw inside the transparent pass rather than
+    // owning one, so this lives on the pipeline instead of the render service —
+    // nothing outside the draw dispatch has anything to ask it.
+    if (!impl_->multiTexParticles_) {
+        impl_->multiTexParticles_ = std::make_unique<particle::MultiTexParticleService>();
+        impl_->multiTexParticles_->Init(*impl_->gfx_, impl_->gfx_->GetApi());
+    }
 
     // All BLS frame-uniform CBs get mapped once per draw call. With
     // ~2000+ draws/frame on PE1-heavy scenes (BreeForge Birth) the
@@ -1450,6 +1523,8 @@ void RenderPipeline::CleanupGFX() {
             d->Shutdown();
         if (auto* r = rs_.GetRefractionService())
             r->Shutdown();
+        if (impl_->multiTexParticles_)
+            impl_->multiTexParticles_->Shutdown();
 #if WDX_ENABLE_M3
         if (auto* dl = rs_.GetM3DeferredLightService())
             dl->Shutdown();
@@ -1701,6 +1776,7 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     // a later pass, so it has to start empty: a frame that skips the
     // transparent scene entirely must not re-draw the last one's distortion.
     impl_->refractionGeo_.Clear();
+    impl_->multiTexGeo_.Clear();
     if (target.hdrColor == gfx::TextureHandle::Invalid)
         return;
 
@@ -2835,12 +2911,31 @@ void RenderPipeline::RenderTransparentScene() {
         // handing it null (no service, or a profile without the pass) drops it,
         // which is the correct answer — its quads carry a distortion mask, and
         // drawing that into the scene would paint the mask as if it were colour.
-        particle::RefractionGeometry* refractOut = nullptr;
+        particle::MultiTexGeometry* refractOut = nullptr;
         if (auto* rsvc = rs_.GetRefractionService()) {
             if (rsvc->IsEnabled())
                 refractOut = &impl_->refractionGeo_;
         }
-        rs_.Particles().BuildGeometry(viewMat, verts, partDraws, refractOut);
+        // Multi-texture emitters need the three-UV stream too, but their draws
+        // stay in `partDraws` and sort with everything else — see
+        // ParticleService::BuildGeometry. Handing this null makes them fall
+        // back to their first layer rather than disappear.
+        particle::MultiTexGeometry* multiTexOut = nullptr;
+        if (impl_->multiTexParticles_ && impl_->multiTexParticles_->IsReady() &&
+            rs_.Settings().MultiTexParticlesEnabled())
+            multiTexOut = &impl_->multiTexGeo_;
+        rs_.Particles().BuildGeometry(viewMat, verts, partDraws, refractOut, multiTexOut);
+        if (multiTexOut && !multiTexOut->vertices.empty()) {
+            particle::MultiTexFrameInputs mtf;
+            mtf.view = viewMat;
+            const f32 aspect = (Height() > 0) ? (f32)Width() / (f32)Height() : 1.0f;
+            mtf.projection = rs_.Pipeline().FrameCamera().ProjectionRH(aspect);
+            mtf.rtvFormat = SceneTargetFormat();
+            mtf.extraRtvCount = SceneExtraRtvFormats(mtf.extraRtvFormats);
+            mtf.dsvFormat = impl_->depthStencilFormat_;
+            mtf.wrapSampler = rs_.Samplers().WrapVariant(0x3);
+            impl_->multiTexParticles_->BeginFrame(*multiTexOut, mtf);
+        }
         if (refractOut && !refractOut->draws.empty()) {
             impl_->refractionView_ = viewMat;
             const f32 aspect = (Height() > 0) ? (f32)Width() / (f32)Height() : 1.0f;
@@ -2848,6 +2943,10 @@ void RenderPipeline::RenderTransparentScene() {
         }
         const i32 vertCount = (i32)verts.size();
         if (vertCount > 0) {
+            // Only the ORDINARY stream lands in this buffer. A model whose
+            // emitters are all multi-texture leaves it empty and still has
+            // draws, which is why `haveParticles` is decided by the draw list
+            // below rather than by this count.
             if (impl_->particleServiceVB_ == gfx::BufferHandle::Invalid ||
                 vertCount > impl_->particleServiceVBSize_) {
                 impl_->gfx_->Destroy(impl_->particleServiceVB_);
@@ -2873,8 +2972,8 @@ void RenderPipeline::RenderTransparentScene() {
             partFrame.effectTime = rs_.Scene().GetAnimationTime() * 0.001f;
             partFrame.numLights = 0;
             partFrame.viewportRect = {(f32)Width(), (f32)Height(), 0.0f, 0.0f};
-            haveParticles = true;
         }
+        haveParticles = !partDraws.empty();
     }
 
     // --- Ribbons: build each actor's strips into its per-actor VB ---

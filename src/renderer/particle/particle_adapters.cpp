@@ -279,8 +279,14 @@ std::shared_ptr<const EmitterDesc> DescFromM2Config(const M2ParticleEmitterConfi
     desc->material.filterMode = M2BlendToFilter(cfg.filterMode);
     desc->material.unshaded = cfg.unshaded;
     desc->material.unfogged = cfg.unfogged;
+    desc->material.multiTexture = cfg.multiTexture;
+    desc->material.multiTexUse3Colors = cfg.multiTexUse3Colors;
+    desc->material.multiTexModx4 = cfg.multiTexModx4;
+    desc->material.textureId2 = cfg.textureId2;
+    desc->material.textureId3 = cfg.textureId3;
 
     desc->refraction = cfg.refraction;
+    desc->multiTexture = cfg.multiTexture;
     for (usize layer = 0; layer < 2; ++layer) {
         desc->multiTexScale[layer] = cfg.multiTexScale[layer];
         desc->multiTexScrollMid[layer] = cfg.multiTexScrollMid[layer];

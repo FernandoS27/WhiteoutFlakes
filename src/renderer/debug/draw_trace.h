@@ -60,6 +60,11 @@ enum class TraceShadingModel : u8 {
     Unlit = 4,
     M2Combiners = 5,
     M3Standard = 6,
+    // WoW's multi-texture particle combiner. Its own value rather than `None`
+    // because these draws sit INSIDE the transparent queue next to Wc3Sd
+    // particle draws, where "no shading model" would read as a gap in the
+    // recording rather than as a different program.
+    M2MultiTexParticle = 7,
     None = 255,
 };
 

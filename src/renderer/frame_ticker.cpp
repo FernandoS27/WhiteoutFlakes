@@ -338,6 +338,7 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
             animation::PoseStageContext sctx;
             sctx.nodeParents = actor.render.nodeParents;
             sctx.frameDtMs = ctx.frameDtMs;
+            sctx.substepPhysics = ctx.substepPhysics;
             sctx.world = actor.ScaledWorldTransform();
             sctx.queryGround = ctx.queryGround;
             sctx.aimTarget = actor.aimTarget;

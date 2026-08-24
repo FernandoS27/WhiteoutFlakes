@@ -113,7 +113,8 @@ bool ParticleService::HasRefractionEmitters() const {
 
 void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Vertex>& outVertices,
                                     std::vector<EmitterDrawList>& outDrawLists,
-                                    RefractionGeometry* refraction) const {
+                                    MultiTexGeometry* refraction,
+                                    MultiTexGeometry* multiTex) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
     BuildGeometryInput in{};
@@ -123,7 +124,11 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
 
     BuildGeometryInput refractIn = in;
     if (refraction)
-        refractIn.refractionUV = &refraction->extraUV;
+        refractIn.extraUV = &refraction->extraUV;
+
+    BuildGeometryInput multiTexIn = in;
+    if (multiTex)
+        multiTexIn.extraUV = &multiTex->extraUV;
 
     // One emitter's own particles, then its trails'. A trail is an ordinary
     // billboard emitter with its own texture, blend mode and sheet, so it needs
@@ -132,6 +137,14 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
     //
     // A refraction emitter is routed to its own arrays instead — it belongs to
     // one pass or the other, never both.
+    //
+    // A multi-texture emitter takes a third route: its vertices need the extra
+    // UV sets so they go to their own stream, but the emitter itself is
+    // ordinary transparent colour, so its DRAW joins the sorted list and the
+    // material's `multiTexture` bit is what tells the dispatcher which stream
+    // the offsets belong to. With nowhere to put them it falls back to the
+    // single-texture path: the result is too bright and misses two layers, but
+    // an approximate particle beats a missing one.
     auto build = [&](const Emitter2& e, ModelId model, i32 id, const Vector3f& origin) {
         if (e.Desc().refraction) {
             if (!refraction)
@@ -143,11 +156,23 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
                     {model, id, offset, vcount, e.PriorityPlane(), e.Material(), origin});
             return;
         }
+        if (e.Desc().multiTexture && multiTex) {
+            const i32 offset = (i32)multiTex->vertices.size();
+            const i32 vcount = BuildEmitterGeometry(e, multiTexIn, multiTex->vertices);
+            if (vcount > 0)
+                outDrawLists.push_back(
+                    {model, id, offset, vcount, e.PriorityPlane(), e.Material(), origin});
+            return;
+        }
         const i32 offset = (i32)outVertices.size();
         const i32 vcount = BuildEmitterGeometry(e, in, outVertices);
-        if (vcount > 0)
-            outDrawLists.push_back(
-                {model, id, offset, vcount, e.PriorityPlane(), e.Material(), origin});
+        if (vcount > 0) {
+            EmitterDrawList dl{model, id, offset, vcount, e.PriorityPlane(), e.Material(), origin};
+            // Nothing downstream can shade three layers off this stream, so the
+            // draw must not claim it carries them.
+            dl.material.multiTexture = false;
+            outDrawLists.push_back(dl);
+        }
     };
 
     for (const auto& [k, e] : emitters_) {

@@ -357,7 +357,7 @@ gfx::TextureHandle RefractionService::BeginSceneRedirect(i32 w, i32 h, gfx::Form
     return sceneCopy_;
 }
 
-bool RefractionService::UploadVertices(const particle::RefractionGeometry& geo) {
+bool RefractionService::UploadVertices(const particle::MultiTexGeometry& geo) {
     const i32 count = static_cast<i32>(geo.vertices.size());
     if (count <= 0)
         return false;
@@ -400,7 +400,7 @@ bool RefractionService::UploadVertices(const particle::RefractionGeometry& geo) 
 }
 
 void RefractionService::Run(gfx::IGFXCommandList* cmd, const RefractionFrameInputs& frame,
-                            const particle::RefractionGeometry& geo) {
+                            const particle::MultiTexGeometry& geo) {
     // A redirected frame runs even with nothing to refract: the scene is in
     // `sceneCopy_` and this pass is the only thing that puts it on screen.
     const bool redirected = redirected_;

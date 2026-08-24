@@ -80,14 +80,18 @@ struct EmitterDrawList {
     Vector3f worldOrigin = {0, 0, 0};
 };
 
-// The refraction emitters' half of one frame's particle geometry.
+// One frame's geometry for the emitters whose particles are the client's
+// `CMultiTexParticle` — refraction and multi-texture both. `extraUV` is
+// index-parallel with `vertices` and holds the two scrolling texture layers;
+// nothing else in the engine has three UV sets, which is why these emitters
+// need a stream of their own rather than a wider shared vertex.
 //
-// Separate from the ordinary draw lists because a refraction emitter is not in
-// the transparent pass at all: the client buckets it into M2PASS_REFRACTION and
-// nowhere else (`AddParticleElement` @0x100f78590), so it is drawn into its own
-// buffer by its own pass. `extraUV` is index-parallel with `vertices` and holds
-// the two scrolling texture layers — see M2_REFRACTION_DESIGN.md.
-struct RefractionGeometry {
+// The two kinds fill separate instances and are consumed differently:
+// refraction leaves the transparent pass entirely (the client buckets it into
+// M2PASS_REFRACTION and nowhere else, `AddParticleElement` @0x100f78590),
+// while multi-texture stays in it and only changes shader. See
+// M2_REFRACTION_DESIGN.md and M2_MULTITEX_DESIGN.md.
+struct MultiTexGeometry {
     std::vector<Vertex> vertices;
     std::vector<Vector4f> extraUV;
     std::vector<EmitterDrawList> draws;
@@ -126,14 +130,21 @@ public:
     // Simulate. Empty when no such emitter is registered.
     void DrainChildModelEvents(std::vector<ChildModelEvent>& out);
 
-    // Builds every emitter's geometry for this frame. A refraction emitter goes
-    // to @p refraction instead of the ordinary lists; pass null and it is
-    // skipped outright, which is the correct answer for a frame with no
-    // refraction pass — drawing it into the scene would paint a distortion mask
-    // as if it were colour.
+    // Builds every emitter's geometry for this frame.
+    //
+    // A refraction emitter goes to @p refraction instead of the ordinary lists;
+    // pass null and it is skipped outright, which is the correct answer for a
+    // frame with no refraction pass — drawing it into the scene would paint a
+    // distortion mask as if it were colour.
+    //
+    // A multi-texture emitter puts its VERTICES in @p multiTex but its draw in
+    // @p outDrawLists, so it still sorts with everything else in the
+    // transparent pass; pass null and it falls back to single-texture shading
+    // off the ordinary stream.
     void BuildGeometry(const Matrix44f& worldToView, std::vector<Vertex>& outVertices,
                        std::vector<EmitterDrawList>& outDrawLists,
-                       RefractionGeometry* refraction = nullptr) const;
+                       MultiTexGeometry* refraction = nullptr,
+                       MultiTexGeometry* multiTex = nullptr) const;
 
     // Whether any registered emitter (or trail) draws refraction. Cheap enough
     // to ask per frame, and what lets the pipeline skip the pass entirely.

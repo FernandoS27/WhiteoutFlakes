@@ -71,3 +71,18 @@ spells/cfx_paladin_dawnlight_aura.m2
 spells/11fx_manavent_aura.m2
 spells/instancenewportal_blue.m2
 spells/8fx_generic_water_missile.m2
+
+# --- Multi-texture carriers (M2_MULTITEX_DESIGN.md) ---
+# Chosen by MEASURING the A/B against --draw-trace-no-multitex, not by reading
+# flags: most shipped multi-texture emitters are idle in this gate's default
+# pose, and one that never emits pins nothing. Each of these moves a large
+# fraction of the frame, and between them they cover all four combinations of
+# the two CParticleMat bits that pick among the client's four shared effects.
+#   10fx_darkaura01              4 emitters, all Modx4+3Colors   (21 718 ship)
+#   7fx_priest_lightswrath_impactbase   3Colors only             (331)
+#   monk_hurricanestrike_missile        neither                  (1 187)
+#   ogre_gemdust_impact_base     mixed, incl. the rare Modx4-only (17)
+spells/10fx_darkaura01.m2
+spells/7fx_priest_lightswrath_impactbase.m2
+spells/monk_hurricanestrike_missile.m2
+spells/ogre_gemdust_impact_base.m2

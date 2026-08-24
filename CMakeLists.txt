@@ -294,6 +294,12 @@ set(SHADER_ENTRIES
     "refraction_mask.slang|psRefractParticle|fragment|kRefractParticlePS"
     "refraction_apply.slang|vsRefractApply|vertex|kRefractApplyVS"
     "refraction_apply.slang|psRefractApply|fragment|kRefractApplyPS"
+    # WoW multi-texture particles (MultiTexParticleService). Three textures
+    # through three UV sets, drawn in the transparent pass like any other
+    # particle. Transcribed from the retail `particle_3colortex_3alphatex`
+    # shader — see M2_MULTITEX_DESIGN.md.
+    "particle_multitex.slang|vsMultiTexParticle|vertex|kMultiTexParticleVS"
+    "particle_multitex.slang|psMultiTexParticle|fragment|kMultiTexParticlePS"
     # M2CombinerShading — WoW `.m2`. 16 vertex + 35 pixel entry points, indexed
     # directly by M2GetVertexShaderID / M2GetPixelShaderID (m2_shader_select.h).
     # Any VS pairs with any PS, so all 51 share one interstage signature.
@@ -1233,6 +1239,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/particle/particle_shape.cpp
     src/renderer/particle/particle_geometry.cpp
     src/renderer/particle/particle_service.cpp
+    src/renderer/particle/multitex_particle_service.cpp
     src/renderer/particle/particle_trace.cpp
     src/renderer/particle/splat_service.cpp
     src/renderer/dnc/dnc_asset.cpp

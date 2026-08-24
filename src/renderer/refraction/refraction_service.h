@@ -142,12 +142,12 @@ public:
     /// emitter cost nothing, including the two textures. The one exception is
     /// a redirected frame, which always presents.
     void Run(gfx::IGFXCommandList* cmd, const RefractionFrameInputs& frame,
-             const particle::RefractionGeometry& geo);
+             const particle::MultiTexGeometry& geo);
 
 private:
     bool EnsureTargets(i32 w, i32 h, gfx::Format sceneFormat);
     void EnsurePsos(gfx::Format sceneFormat, gfx::Format outputFormat, gfx::Format depthFormat);
-    bool UploadVertices(const particle::RefractionGeometry& geo);
+    bool UploadVertices(const particle::MultiTexGeometry& geo);
 
     gfx::IGFXDevice* gfx_ = nullptr;
     gfx::GfxApi api_ = gfx::GfxApi::D3D12;

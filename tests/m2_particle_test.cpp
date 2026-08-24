@@ -572,6 +572,80 @@ TEST_CASE("the shipped refraction carriers decode their extra layers",
         SKIP("no refraction carrier present in " + CorpusRoot().string());
 }
 
+TEST_CASE("the shipped multi-texture carriers split one field into three layers",
+          "[m2][particle][multitex]") {
+    // 23 253 emitters across 5 239 corpus models set the MultiTexture flag —
+    // fifty times refraction's population. What this pins is the two decodes
+    // the flag turns on: the 16-bit `textureId` splitting into THREE 5-bit
+    // indices (`InitializeLoaded` @0x100f57aa8), and the two CParticleMat bits
+    // that pick among the client's four shared effects. One carrier per
+    // combination of those bits, because all four ship and 348 emitters set
+    // them differently from each other — see M2_MULTITEX_DESIGN.md §1.3.
+    struct Expect {
+        const char* rel;
+        std::size_t emitterIndex;
+        int tex0, tex1, tex2;
+        bool use3Colors;
+        bool modx4;
+    };
+    const Expect cases[] = {
+        {"spells/10fx_darkaura01.m2", 1, 3, 1, 2, true, true},
+        {"spells/7fx_priest_lightswrath_impactbase.m2", 1, 1, 2, 3, true, false},
+        {"spells/monk_hurricanestrike_missile.m2", 0, 2, 3, 0, false, false},
+        // The rare Modx4-without-3Colors combination: 17 emitters ship it, and
+        // this is one of them. Its neighbours in the same model set both bits,
+        // so a decode that read one flag for the other would still pass on
+        // emitter 0 and fail here.
+        {"spells/ogre_gemdust_impact_base.m2", 2, 3, 4, 5, false, true},
+    };
+
+    io::FileContentProvider provider;
+    provider.SetGame(whiteout::flakes::ProductId::Wow);
+
+    std::size_t checked = 0;
+    for (const Expect& e : cases) {
+        const fs::path path = CorpusRoot() / e.rel;
+        if (!fs::exists(path))
+            continue;
+        provider.SetBasePath(path.parent_path());
+        auto bytes = provider.ReadFile(path.string());
+        if (!bytes)
+            continue;
+        auto adapter = io::M2ModelAdapter::Load(
+            ContentRef::FromPath(path.string()),
+            std::span<const whiteout::u8>(bytes->data(), bytes->size()), &provider);
+        REQUIRE(adapter);
+        const auto configs = adapter->GetM2ParticleConfigs();
+        INFO("model " << e.rel << " emitter " << e.emitterIndex);
+        REQUIRE(configs.size() > e.emitterIndex);
+        const auto& c = configs[e.emitterIndex];
+        ++checked;
+
+        CHECK(c.multiTexture);
+        // The two are mutually exclusive: the loader tests MultiTexture first
+        // and lets it win.
+        CHECK_FALSE(c.refraction);
+        // The same branch masks the lighting bit off outright, which is why
+        // all four effect names start `Particle_Unlit_`.
+        CHECK(c.unshaded);
+
+        CHECK(c.textureId == e.tex0);
+        CHECK(c.textureId2 == e.tex1);
+        CHECK(c.textureId3 == e.tex2);
+        // Every index is a 5-bit field, so none of them can address past 31 —
+        // reading the whole 16-bit word as one index is the failure this
+        // catches, and it produces a plausible-looking out-of-range id.
+        CHECK(c.textureId <= 31);
+        CHECK(c.textureId2 <= 31);
+        CHECK(c.textureId3 <= 31);
+
+        CHECK(c.multiTexUse3Colors == e.use3Colors);
+        CHECK(c.multiTexModx4 == e.modx4);
+    }
+    if (checked == 0)
+        SKIP("no multi-texture carrier present in " + CorpusRoot().string());
+}
+
 TEST_CASE("every corpus .m2 particle emitter yields a sane desc", "[m2][particle]") {
     const auto models = FindModels();
     if (models.empty())

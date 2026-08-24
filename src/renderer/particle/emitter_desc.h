@@ -213,12 +213,27 @@ struct EmitterDesc {
     /// below. See M2_REFRACTION_DESIGN.md.
     bool refraction = false;
 
+    /// @brief This emitter draws three textures through three UV sets.
+    ///
+    /// M2 `MultiTexture`. Unlike @ref refraction it stays in the transparent
+    /// pass — it is ordinary colour, just combined from three layers — so what
+    /// this changes is the shader and the vertex stream, not the pass. Nearly
+    /// half the shipped `.m2` corpus carries one. See M2_MULTITEX_DESIGN.md.
+    bool multiTexture = false;
+
+    /// Whether this emitter's particles carry the two extra scrolling UV sets.
+    /// Refraction and multi-texture are the same `CMultiTexParticle` in the
+    /// client, and everything below the shader treats them alike.
+    bool UsesMultiTexLayers() const {
+        return refraction || multiTexture;
+    }
+
     /// @brief The two extra texture layers, in the runtime's form.
     ///
     /// `multiTexScale[i]` scales the quad's own corner coordinate into layer
     /// i's UV; `scrollMid`/`scrollRange` are the centre and half-width of the
     /// per-particle scroll rate, drawn once at birth. Read only when
-    /// @ref refraction is set — nothing else in the renderer has three UV sets.
+    /// @ref UsesMultiTexLayers — nothing else has three UV sets.
     f32 multiTexScale[2] = {0.0f, 0.0f};
     Vector2f multiTexScrollMid[2] = {{0, 0}, {0, 0}};
     Vector2f multiTexScrollRange[2] = {{0, 0}, {0, 0}};

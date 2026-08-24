@@ -237,8 +237,6 @@ std::span<const gfx::InputElement> LayoutFor(VertexLayoutKind k, gfx::GfxApi api
     return {kMeshSD, std::size(kMeshSD)};
 }
 
-namespace {
-
 gfx::BlendDesc BlendFor(GxMatAlpha alpha) {
 
     gfx::BlendDesc bd{};
@@ -317,6 +315,8 @@ gfx::DepthStencilDesc DepthFor(const MatParams& m) {
     ds.depthCompare = gfx::CompareOp::LessEqual;
     return ds;
 }
+
+namespace {
 
 gfx::RasterizerDesc RasterFor(const MatParams& m, bool wireframe, bool lhClipSpace) {
     (void)lhClipSpace;
