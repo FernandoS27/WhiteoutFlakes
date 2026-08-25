@@ -14,6 +14,7 @@
 #include "compiled_shaders.h"
 
 #include <cmath>
+#include <cstdio>
 
 namespace whiteout::flakes::renderer::profiles::diablo3 {
 
@@ -277,9 +278,25 @@ bool D3StandardShading::BeginPass(const core::PassContext& ctx,
                                        fwd.z + 0.45f * right.z - 0.35f * up.z},
                                       {0.0f, 1.0f, 0.0f});
         c->keyLightDir = {l.x, l.y, l.z, 0.0f};
-        c->keyLightDiffuse = lin(0.62f, 0.62f, 0.62f);
+        // A viewer rig, stated as one: the game's brightness comes from a
+        // level's Light SNOs, and a model viewer has no level. What the RE does
+        // settle is the SHAPE, and the first numbers here had it wrong.
+        //
+        // `Render_UploadLightConstants` (0x71001DE680) starts `colAmbient` from
+        // a base the caller supplies and then, for every DIRECTIONAL light,
+        // ADDS that light's own ambient (light+88..+100) into it. Ambient in D3
+        // is therefore a sum over the rig, not one constant — so a single key
+        // beside a fixed 0.24 is dimmer than the engine by construction, and no
+        // amount of tuning the key fixes the side facing away from it.
+        //
+        // 0.45 ambient + 0.75 key peaks at 1.20. Deliberately just over 1: the
+        // profile's LDR default has no tonemap (SceneColorFormat follows
+        // SceneHdrInSd), so only the brightest albedo at full N.L clips, while
+        // the unlit side lifts from 0.24 to 0.45 — which is the half the
+        // complaint was actually about.
+        c->keyLightDiffuse = lin(0.75f, 0.75f, 0.75f);
         c->keyLightSpecular = lin(0.28f, 0.28f, 0.28f);
-        c->ambient = lin(0.24f, 0.24f, 0.27f);
+        c->ambient = lin(0.45f, 0.45f, 0.50f);
 
         // The three point slots exist so the budget the original authors per
         // RenderPass has somewhere to land. Nothing supplies them yet: D3's

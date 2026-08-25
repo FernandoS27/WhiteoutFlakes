@@ -1244,26 +1244,15 @@ void ViewerUI::BuildSettingsGeneralTab(ProductId game) {
     if (game == ProductId::Sc2) {
         // ---- Pose solvers (terrain IK + turret) ----
         // Off by default because a solver needs a world to solve against, and
-        // the viewer's is a flat plane at z = 0 rather than terrain. StarCraft
-        // II gates its own IK the same way, on a world flag.
+        // the viewer's is the grid rather than terrain. StarCraft II gates its
+        // own IK the same way, on a world flag. The ground itself is the
+        // renderer's: the grid plane the physics stages already collide with,
+        // so nothing is installed here — a game host with terrain would
+        // SetGroundQuery its own.
         {
             bool on = svc.Settings().PoseSolversEnabled();
             if (ImGui::Checkbox(i18n::tr("settings.general.m3_pose_solvers"), &on)) {
                 svc.Settings().SetPoseSolversEnabled(on);
-                // The ground plane is host policy, so it is installed here and
-                // not in the renderer. Flat, at the scene origin, and honest
-                // about it: `up`/`down` bound how far a foot will reach for a
-                // surface, exactly as the chunk's raycast range intends.
-                if (on && !svc.Settings().GetGroundQuery()) {
-                    svc.Settings().SetGroundQuery(
-                        [](const Vector3f& pos, f32 up, f32 down, f32& outZ) {
-                            constexpr f32 kPlaneZ = 0.0f;
-                            if (kPlaneZ > pos.z + up || kPlaneZ < pos.z - down)
-                                return false;
-                            outZ = kPlaneZ;
-                            return true;
-                        });
-                }
                 SaveIni(app_);
             }
             if (ImGui::IsItemHovered())

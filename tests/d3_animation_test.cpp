@@ -25,6 +25,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "io/d3/d3_model_adapter.h"
+#include "io/d3/d3_sno_cache.h"
+#include "io/file_content_provider.h"
+#include "io/storage_browser.h"
+#include "whiteout/flakes/content_ref.h"
+
 #include <whiteout/sno/d3/native/d3_native.h>
 
 #include <algorithm>
@@ -257,4 +263,112 @@ TEST_CASE("D3 corpus: clip timing comes out of the permutation", "[d3][corpus]")
                 perms, sane, zeroFps, singleFrame, static_cast<double>(worstDuration));
     REQUIRE(perms > 0);
     CHECK(sane > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Clip DURATIONS reaching the host, which is a separate question from whether
+// the keys decode. `AnimationDriver::Advance` hands `GetSequences()` to the
+// playlist and the playlist wraps the playback cursor at `endMs`, so a wrong
+// duration is a wrong LOOP POINT no matter how correct the sampling is.
+//
+// D3 is the one format here whose durations are not free. `.m2` states every
+// sequence's duration in the main file, so its lazy `.anim` path costs nothing;
+// `AnimSetTagMapEntry` is 12 bytes — value type, tag id, Anim SNO — and states
+// no frame count, so a lazily-bound D3 clip can only advertise a nominal one.
+// Measured on `43_AD_graveDigger_A`: all 34 clips have a true duration other
+// than that nominal 1 s, spanning 33 ms to 7000 ms. Windowed at 1 s a 7 s clip
+// plays its first seventh and cuts back; only an exactly-1 s clip loops clean.
+//
+// Needs the install: the AnimSet names its clips by SNO id, and resolving an id
+// is what a CASC storage does. Skipped is not passed.
+// ---------------------------------------------------------------------------
+TEST_CASE("D3 clip durations reach the host, not a nominal placeholder",
+          "[d3][animation][install]") {
+    using ::whiteout::flakes::ContentRef;
+    using ::whiteout::flakes::ProductId;
+
+    flakes::io::FileContentProvider provider;
+    if (const char* root = std::getenv("WDX_TEST_D3_INSTALL"); root && *root)
+        provider.SetInstallPath(root);
+    provider.SetGame(ProductId::D3);
+    if (provider.GamePath(ProductId::D3).empty()) {
+        WARN("No Diablo III install (set WDX_TEST_D3_INSTALL). SKIPPED, not passed.");
+        return;
+    }
+
+    flakes::io::StorageBrowser browser;
+    std::string err;
+    if (!browser.Open(provider.GamePath(ProductId::D3), flakes::io::StorageKind::Casc, &err)) {
+        WARN("Could not browse the D3 install: " << err << ". SKIPPED, not passed.");
+        return;
+    }
+
+    // Walk for actors with a decent clip count — a one-clip prop proves nothing
+    // about a loop point.
+    std::vector<std::string> actors;
+    std::vector<std::string> stack{""};
+    while (!stack.empty() && actors.size() < 12) {
+        const std::string dir = stack.back();
+        stack.pop_back();
+        browser.NavigateTo(dir);
+        for (const auto& f : browser.Current().folders)
+            stack.push_back(dir.empty() ? f : dir + "\\" + f);
+        for (const auto& f : browser.Current().modelFiles) {
+            if (f.size() > 4 && f.compare(f.size() - 4, 4, ".acr") == 0) {
+                actors.push_back(browser.ChildPath(f));
+                if (actors.size() >= 12)
+                    break;
+            }
+        }
+    }
+    if (actors.empty()) {
+        WARN("No `.acr` in the install listing. SKIPPED, not passed.");
+        return;
+    }
+
+    std::size_t examined = 0, offNominal = 0, total = 0;
+    i32 shortest = 1 << 30, longest = 0;
+
+    for (const std::string& ref : actors) {
+        auto bytes = provider.ReadFile(ref);
+        if (!bytes)
+            continue;
+        flakes::io::D3SnoCache cache(&provider);
+        // The shipping default. Passing it explicitly rather than reading
+        // RenderSettings keeps this a statement about the adapter.
+        auto a = flakes::io::D3ModelAdapter::LoadActor(ContentRef::FromPath(ref), *bytes, cache,
+                                                       /*lazyClips=*/false);
+        if (!a)
+            continue;
+        const auto seqs = a->GetSequences();
+        if (seqs.size() < 4)
+            continue; // props and one-clip spawners say nothing about looping
+        ++examined;
+        for (const auto& s : seqs) {
+            ++total;
+            // 1000 ms is the placeholder an unresolved clip advertises. A real
+            // clip landing on exactly 1000 ms is possible but vanishingly rare;
+            // what would be damning is EVERY clip landing there.
+            if (s.endMs != 1000)
+                ++offNominal;
+            REQUIRE(s.endMs > 0);
+            shortest = (std::min)(shortest, s.endMs);
+            longest = (std::max)(longest, s.endMs);
+        }
+        if (examined >= 4)
+            break;
+    }
+
+    if (examined == 0) {
+        WARN("No multi-clip actor in the sample. SKIPPED, not passed.");
+        return;
+    }
+    std::printf("[d3-anim] %zu actor(s), %zu clip(s): %zu off the 1000 ms nominal, "
+                "range %d..%d ms\n",
+                examined, total, offNominal, shortest, longest);
+
+    // The discriminator. Bind lazily and every one of these collapses onto the
+    // placeholder, which is what silently cut every loop short.
+    CHECK(offNominal * 4 > total * 3); // >75% must carry a real duration
+    CHECK(longest > 1000);             // and something must be longer than the placeholder
 }

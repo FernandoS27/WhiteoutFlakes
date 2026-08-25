@@ -25,3 +25,10 @@ Appearances/Demonhunter_Male.app
 Appearances/SkeletonKing.app
 Appearances/Skeleton.app
 Appearances/Cow_skeleton.app
+#
+# Added 2026-08-25: Diablo rendered as a pure white silhouette and no gate saw
+# it. His body material carries vEmissive 1.0, and `color += emissive` made one
+# material covering most of the screen 80.9% pure white on its own, whatever
+# its (dark red) texture said. Kept because it is the only corpus entry whose
+# materials push a lighting term past what the albedo can carry.
+Appearances/Diablo.app

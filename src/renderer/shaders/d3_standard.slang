@@ -308,9 +308,20 @@ float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
 
     let V = normalize(pass.cameraPosWS.xyz - input.worldPos.xyz);
 
-    // Ambient. The irradiance slot (type 8) is an ambient term when authored;
-    // its unresolved default is black, so an absent slot contributes nothing.
-    float3 ambient = pass.ambient.rgb * draw.matAmbient.rgb;
+    // Ambient. Scene ambient lights the surface directly and `vAmbient` ADDS to
+    // it — it does not gate it. Measured over 200 corpus `.app` (1,764
+    // materials): `vAmbient` is all-zero on 98.1% of them, so the previous
+    // `pass.ambient * matAmbient` multiplied the scene's ambient away on
+    // essentially every D3 surface. That is what left the unlit side black and
+    // made raising the rig's ambient do nothing at all.
+    //
+    // It matches the engine's own shape: `Render_UploadLightConstants` builds
+    // ONE `colAmbient` for the scene by summing each directional light's
+    // ambient onto a base, and that is a scene term, not a per-material mask.
+    //
+    // The irradiance slot (type 8) is a further ambient term when authored; its
+    // unresolved default is black, so an absent slot contributes nothing.
+    float3 ambient = pass.ambient.rgb + draw.matAmbient.rgb;
     if (SlotOn(kD3SlotIrradiance))
         ambient += SampleSlot(kD3SlotIrradiance, texIrradiance, input.uv01).rgb;
 
@@ -372,12 +383,25 @@ float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
     if (SlotOn(kD3SlotLightmap))
         lightmap = SampleSlot(kD3SlotLightmap, texLightmap, input.uv01).rgb;
 
-    float3 color = albedo.rgb * (ambient + diffuseSum * lightmap) + specSum * specTint;
-
+    // Emissive SELF-ILLUMINATES THE SURFACE — it scales the albedo alongside
+    // the light terms rather than being added as raw light on top of them.
+    //
+    // Unlike `vSpecular`, this is real authored data and cannot be gated away:
+    // measured over 200 corpus `.app` (1,764 materials), `vEmissive` is zero on
+    // 65.0%, between 0 and 1 on 34.5%, and >= 1.0 on 0.5%, mean 0.151. But
+    // `color += emissive` makes any material at 1.0 a PURE WHITE pixel whatever
+    // its texture says, and that is what rendered Diablo as a white silhouette:
+    // his body material carries emissive 1.0, and one material covering most of
+    // the screen was 80.9% pure white on its own.
+    //
+    // Folding it into the lighting term keeps the surface's own colour — a
+    // fully-emissive Diablo reads as an unshaded Diablo rather than as a hole
+    // in the frame — and leaves the 65% that author zero completely unchanged.
     float3 emissive = draw.matEmissive.rgb;
     if (SlotOn(kD3SlotEmissive))
         emissive *= SampleSlot(kD3SlotEmissive, texEmissive, input.uv01).rgb;
-    color += emissive;
+
+    float3 color = albedo.rgb * (ambient + diffuseSum * lightmap + emissive) + specSum * specTint;
 
     return float4(color, albedo.a * draw.matDiffuse.a);
 }

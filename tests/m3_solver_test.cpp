@@ -65,6 +65,12 @@ FrameState Leg() {
 }
 
 /// @brief A ground plane at @p z that always reports a hit.
+///
+/// Read @p z as the terrain's height *relative to the model's base*: the goal
+/// keeps the effector's animated height above the model origin, so a plane at
+/// 0 asks for nothing and a plane at z lifts every foot by z. That is the
+/// shipped semantics — terrain IK applies the terrain's deviation from the
+/// unit's own position, not an absolute height.
 PoseStageContext FlatGround(f32 z, i32 dtMs = 16) {
     PoseStageContext ctx;
     ctx.frameDtMs = dtMs;
@@ -96,18 +102,31 @@ TEST_CASE("A goal inside tolerance leaves the pose bit-identical", "[m3solver]")
     // `ComputeGroundGoal` returns false and the whole solve is skipped. Not an
     // optimisation — it is why an actor standing on flat ground at its authored
     // height costs nothing and, more importantly, does not drift.
-    M3JtIkStage ik({0, 1, 2}, 50.0f, 50.0f, 1000.0f, 5.0f);
+    M3JtIkStage ik({0, 1, 2}, 50.0f, -50.0f, 1000.0f, 5.0f);
     FrameState fs = Leg();
     const FrameState before = fs;
-    auto ctx = FlatGround(12.0f); // effector is at z=10, tolerance 5
+    auto ctx = FlatGround(2.0f); // goal = 10 + 2, within the tolerance of 5
+    ik.Run(fs, ctx);
+    REQUIRE(Same(fs, before));
+}
+
+TEST_CASE("Flat ground at the model's base is a no-op", "[m3solver]") {
+    // The shipped case: the goal keeps the foot's animated height above the
+    // model node, so a plane through the model's origin gives back exactly the
+    // effector position and the tolerance skip fires — even with a tolerance
+    // far tighter than any shipped chunk.
+    M3JtIkStage ik({0, 1, 2}, 1.5f, -4.0f, 0.2f, 0.001f);
+    FrameState fs = Leg();
+    const FrameState before = fs;
+    auto ctx = FlatGround(0.0f);
     ik.Run(fs, ctx);
     REQUIRE(Same(fs, before));
 }
 
 TEST_CASE("The chain reaches a ground step below the foot", "[m3solver]") {
-    M3JtIkStage ik({0, 1, 2}, 50.0f, 50.0f, 100000.0f, 0.5f);
+    M3JtIkStage ik({0, 1, 2}, 50.0f, -50.0f, 100000.0f, 0.5f);
     FrameState fs = Leg();
-    auto ctx = FlatGround(5.0f); // 5 units below the effector, well inside reach
+    auto ctx = FlatGround(-5.0f); // the terrain dips 5 under the base: foot 10 -> 5
     ik.Run(fs, ctx);
 
     // Within tolerance of the goal plane, and bounded iterations got there.
@@ -121,53 +140,103 @@ TEST_CASE("The goal is rate-limited across frames", "[m3solver]") {
     // maxSpeed 10 * 0.03 = 0.3 units per ms; 16 ms => 4.8 units of goal travel.
     // The first frame has no previous goal and snaps, so the limit is measured
     // from the second onward — which is what the cached state is for.
-    M3JtIkStage ik({0, 1, 2}, 50.0f, 50.0f, 10.0f, 0.01f);
+    M3JtIkStage ik({0, 1, 2}, 50.0f, -50.0f, 10.0f, 0.01f);
     FrameState fs = Leg();
 
-    auto near = FlatGround(9.0f, 16);
-    ik.Run(fs, near); // seeds the goal at 9
+    auto near = FlatGround(-1.0f, 16);
+    ik.Run(fs, near); // seeds the goal at 10 - 1 = 9
     const f32 afterFirst = PosOf(fs, 2).z;
     REQUIRE(afterFirst == Approx(9.0f).margin(0.2f));
 
     // Now the ground drops 100 units in one frame — a cliff edge. The foot may
     // only follow 4.8 of it.
-    auto cliff = FlatGround(-91.0f, 16);
+    auto cliff = FlatGround(-101.0f, 16);
     ik.Run(fs, cliff);
     REQUIRE(PosOf(fs, 2).z == Approx(9.0f - 4.8f).margin(0.3f));
 }
 
 TEST_CASE("Two probes take the higher surface", "[m3solver]") {
-    // The ledge case: one probe under the foot, one past it. `fmaxf` of the
-    // hits, so a foot straddling an edge rests on the higher side instead of
-    // dropping into the gap.
-    M3JtIkStage ik({0, 1, 2}, 50.0f, 50.0f, 100000.0f, 0.5f);
+    // The ledge case: one probe under the foot, one at the foot mirrored
+    // through its parent — for the fixture, 2 * knee - ankle = (20, 0), at the
+    // knee's height. `fmaxf` of the hits, so a foot straddling an edge rests on
+    // the higher side instead of dropping into the gap.
+    M3JtIkStage ik({0, 1, 2}, 50.0f, -50.0f, 100000.0f, 0.5f);
     FrameState fs = Leg();
     PoseStageContext ctx;
     ctx.frameDtMs = 16;
-    // The far probe sits at effector + (effector - previous) = (-10, 0, 5).
-    ctx.queryGround = [](const Vector3f& p, f32, f32, f32& out) {
-        out = (p.x < -5.0f) ? 14.0f : 2.0f; // the far probe is over the high side
+    bool sawMirror = false;
+    ctx.queryGround = [&](const Vector3f& p, f32, f32, f32& out) {
+        if (p.x > 15.0f) {
+            sawMirror = true;
+            REQUIRE(p.z == Approx(15.0f)); // referenced to the parent, not the foot
+        }
+        out = (p.x > 15.0f) ? 4.0f : -8.0f; // the mirrored probe is over the high side
         return true;
     };
     ik.Run(fs, ctx);
+    REQUIRE(sawMirror);
+    // max(-8, 4) + 10 = 14. The heel-side hit (4) is below the knee (15), so
+    // the goal stays under the foot rather than sliding toward the midpoint.
     REQUIRE(PosOf(fs, 2).z == Approx(14.0f).margin(0.5f));
+    REQUIRE(PosOf(fs, 2).x == Approx(0.0f).margin(0.5f));
 }
 
-TEST_CASE("No ground hit falls back to boneZ + searchDown", "[m3solver]") {
+TEST_CASE("A heel-side surface above the parent slides the goal to the midpoint",
+          "[m3solver]") {
+    M3JtIkStage ik({0, 1, 2}, 50.0f, -50.0f, 100000.0f, 0.5f);
+    FrameState fs = Leg();
+    PoseStageContext ctx;
+    ctx.frameDtMs = 16;
+    // Under the foot the ground is 4 below the base; on the heel side it is at
+    // 16 — above the knee at 15, which is what the hit is compared against —
+    // so the goal slides to the knee/ankle midpoint (5, 0), at
+    // max(-4, 16) + 10 = 26.
+    ctx.queryGround = [](const Vector3f& p, f32, f32, f32& out) {
+        out = (p.x > 15.0f) ? 16.0f : -4.0f;
+        return true;
+    };
+    ik.Run(fs, ctx);
+    REQUIRE(PosOf(fs, 2).x == Approx(5.0f).margin(0.75f));
+    REQUIRE(PosOf(fs, 2).z == Approx(26.0f).margin(0.75f));
+}
+
+TEST_CASE("The search window is the chunk's signed offsets", "[m3solver]") {
+    // Shipped chunks store raycastDown = -4: the surface may be up to 4 below
+    // the probe and 1.5 above it. The query receives that as a positive reach,
+    // which is what lets a plane 3 below the foot count as a hit at all.
+    M3JtIkStage ik({0, 1, 2}, 1.5f, -4.0f, 100000.0f, 0.5f);
+    FrameState fs = Leg();
+    PoseStageContext ctx;
+    ctx.frameDtMs = 16;
+    f32 seenUp = 0.0f, seenDown = 0.0f;
+    ctx.queryGround = [&](const Vector3f&, f32 up, f32 down, f32& out) {
+        seenUp = up;
+        seenDown = down;
+        out = -3.0f;
+        return true;
+    };
+    ik.Run(fs, ctx);
+    REQUIRE(seenUp == Approx(1.5f));
+    REQUIRE(seenDown == Approx(4.0f));
+    REQUIRE(PosOf(fs, 2).z == Approx(7.0f).margin(0.5f));
+}
+
+TEST_CASE("No ground hit falls back to refZ + searchDown per probe", "[m3solver]") {
     M3JtIkStage ik({0, 1, 2}, 50.0f, -6.0f, 100000.0f, 0.5f);
     FrameState fs = Leg();
     PoseStageContext ctx;
     ctx.frameDtMs = 16;
     ctx.queryGround = [](const Vector3f&, f32, f32, f32&) { return false; };
     ik.Run(fs, ctx);
-    // 10 + (-6) = 4, and it is a real solve rather than a no-op.
-    REQUIRE(PosOf(fs, 2).z == Approx(4.0f).margin(0.5f));
+    // Foot probe: 10 - 6 = 4; mirrored probe, referenced to the knee: 15 - 6 =
+    // 9. max = 9, plus the foot's own height: 19. A real solve, not a no-op.
+    REQUIRE(PosOf(fs, 2).z == Approx(19.0f).margin(0.5f));
 }
 
 TEST_CASE("Without a ground query the stage does nothing at all", "[m3solver]") {
     // The renderer has no terrain of its own; a stage with no host input must
     // leave the pose alone rather than solve against a guessed plane.
-    M3JtIkStage ik({0, 1, 2}, 50.0f, 50.0f, 1000.0f, 0.5f);
+    M3JtIkStage ik({0, 1, 2}, 50.0f, -50.0f, 1000.0f, 0.5f);
     FrameState fs = Leg();
     const FrameState before = fs;
     PoseStageContext ctx;
@@ -180,13 +249,13 @@ TEST_CASE("A stage that moves a bone moves its descendants too", "[m3solver]") {
     // pose_stage.h's contract: there is no re-composition pass afterwards, so
     // a solver that rotated a parent and left the children behind would tear
     // the model apart and nothing would catch it.
-    M3JtIkStage ik({0, 1, 2}, 50.0f, 50.0f, 100000.0f, 0.5f);
+    M3JtIkStage ik({0, 1, 2}, 50.0f, -50.0f, 100000.0f, 0.5f);
     FrameState fs = Leg();
     const FrameState before = fs;
-    auto ctx = FlatGround(4.0f);
+    auto ctx = FlatGround(-6.0f); // foot 10 -> 4
     ik.Run(fs, ctx);
 
-    // The middle joint has to have moved: reaching 30 units down cannot happen
+    // The middle joint has to have moved: reaching 6 units down cannot happen
     // by rotating the last link alone.
     const Vector3f mid = PosOf(fs, 1), midBefore = PosOf(before, 1);
     const f32 moved = std::fabs(mid.x - midBefore.x) + std::fabs(mid.z - midBefore.z);
@@ -323,7 +392,7 @@ TEST_CASE("An IKJT chunk becomes one stage over the parent walk", "[m3solver]") 
     jt.boneIndex1 = 0; // root
     jt.boneIndex2 = 2; // effector
     jt.raycastUp = 10.0f;
-    jt.raycastDown = 10.0f;
+    jt.raycastDown = -10.0f;
     jt.maxSpeed = 100.0f;
     jt.goalThreshold = 0.5f;
     model.ikJoints.push_back(jt);
@@ -337,7 +406,7 @@ TEST_CASE("An IKJT chunk becomes one stage over the parent walk", "[m3solver]") 
     // ankle, which only happens if the chain is {hip, knee, ankle}.
     FrameState fs;
     fs.boneWorldMatrices = {At(0, 0, 30), At(10, 0, 15), At(0, 0, 10), At(0, 0, 0)};
-    auto ctx = FlatGround(5.0f);
+    auto ctx = FlatGround(-5.0f); // foot 10 -> 5
     stages[0]->Run(fs, ctx);
     REQUIRE(PosOf(fs, 2).z == Approx(5.0f).margin(0.6f));
     // The bone outside the chain is untouched.
@@ -375,6 +444,8 @@ TEST_CASE("Stage order is IK first, then turrets", "[m3solver]") {
     m3::IKJoint jt;
     jt.boneIndex1 = 0;
     jt.boneIndex2 = 1;
+    jt.raycastUp = 50.0f;
+    jt.raycastDown = -50.0f;
     jt.goalThreshold = 0.5f;
     jt.maxSpeed = 100.0f;
     model.ikJoints.push_back(jt);
@@ -396,7 +467,7 @@ TEST_CASE("Stage order is IK first, then turrets", "[m3solver]") {
     // extended, so the solver has something to do.
     FrameState fs;
     fs.boneWorldMatrices = {At(0, 0, 30), At(10, 0, 20), Matrix44f::identity()};
-    auto ground = FlatGround(22.0f);
+    auto ground = FlatGround(-3.0f); // knee 20 -> 17
     const FrameState before = fs;
     stages[0]->Run(fs, ground);
     REQUIRE_FALSE(Same(fs, before));
@@ -501,9 +572,9 @@ TEST_CASE("Neither current stage claims a bone", "[m3solver]") {
     // sampling (SC2_ANIM_RE §4c). A stage that started claiming bones here
     // would make the sampler skip them, and the model would freeze in the parts
     // the solver touches.
-    M3JtIkStage ik({0, 1, 2}, 50.0f, 50.0f, 1000.0f, 0.5f);
+    M3JtIkStage ik({0, 1, 2}, 50.0f, -50.0f, 1000.0f, 0.5f);
     FrameState fs = Leg();
-    auto ctx = FlatGround(5.0f);
+    auto ctx = FlatGround(-5.0f);
     ik.Run(fs, ctx);
     REQUIRE(ik.Claims().empty());
 

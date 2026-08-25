@@ -170,18 +170,20 @@ static const int WF_PS_BIND_OFFSET = 16;
 
 // ---- Vertex side -----------------------------------------------------------
 
-// The `.m3` record as the adapter describes it: normal.w is a second
-// handedness byte the lib ignores in favour of tangent.w, and both UV sets
-// ride one float4 for the TEXCOORD1 -> TEXCOORD10 toolchain reason
+// The `.m3` record as the adapter describes it. Normal and tangent arrive
+// UNORM (retail's `ubyte4n`) and decode `2 * v - 1`; the bitangent handedness
+// is normal.w, not tangent.w (which is 255 on every shipped vertex) — see
+// vsmodelvertexformat.fx TranslateVert and model.fx EmitModelBinormal. Both
+// UV sets ride one float4 for the TEXCOORD1 -> TEXCOORD10 toolchain reason
 // m2_combiners.slang documents.
 struct VSInput
 {
     float3 position    : POSITION;
     float4 boneWeights : BLENDWEIGHT;  // R8G8B8A8_UNORM
     uint4  boneIndices : BLENDINDICES; // R8G8B8A8_UINT
-    float4 normal      : NORMAL;       // .xyz normal, .w unused here
+    float4 normal      : NORMAL;       // R8G8B8A8_UNORM: .xyz normal, .w handedness
     float4 uvs         : TEXCOORD0;    // .xy set 0, .zw set 1 (SNORM raw)
-    float4 tangent     : TANGENT;      // .xyz tangent, .w handedness sign
+    float4 tangent     : TANGENT;      // R8G8B8A8_UNORM: .xyz tangent, .w unused
 }
 
 struct VSInputRigid
@@ -203,6 +205,16 @@ struct PSInput
     float4 tangentWS : TEXCOORD3; // .xyz tangent, .w handedness sign
 }
 
+float3 M3DecodeBasis(float3 unorm)
+{
+    return unorm * 2.0 - 1.0;
+}
+
+float M3Handedness(float4 normal)
+{
+    return (normal.w < 0.5) ? -1.0 : 1.0;
+}
+
 // Model space to animated model space, m2_combiners' M2Skin with the tangent
 // along for the ride. Weights are normalised at pack time; unused lanes carry
 // weight 0 and index 0, so every read is in range.
@@ -212,8 +224,8 @@ void M3Skin(VSInput input, out float3 pos, out float3 nrm, out float3 tan)
     nrm = float3(0.0, 0.0, 0.0);
     tan = float3(0.0, 0.0, 0.0);
     let p = float4(input.position, 1.0);
-    let n = float4(input.normal.xyz, 0.0);
-    let t = float4(input.tangent.xyz, 0.0);
+    let n = float4(M3DecodeBasis(input.normal.xyz), 0.0);
+    let t = float4(M3DecodeBasis(input.tangent.xyz), 0.0);
     [unroll]
     for (int i = 0; i < 4; ++i)
     {
@@ -237,13 +249,10 @@ PSInput M3Vertex(float3 pos, float3 nrm, float3 tan, float tanSign, float4 rawUv
     o.worldPos = float4(worldPos.xyz, viewPos.z);
     // Uniform scale only in the world transform, so no inverse transpose.
     //
-    // Negated: `.m3` stores the vertex normal anti-parallel to its own triangle
-    // winding, where `.m2` — same renderer, same rasterizer state — stores it
-    // parallel. Measured over both corpora and pinned by
-    // normal_orientation_test: 4.8% winding agreement against `.m2`'s 99.7%.
-    // Corrected here rather than in the adapter so the baked buffer stays a
-    // verbatim copy of the file's bytes, which mesh_buffer_test asserts.
-    o.normalWS = normalize(mul(float4(-nrm, 0.0), draw.world).xyz);
+    // No negation: decoded UNORM, the `.m3` normal agrees with its triangle
+    // winding 96% of the time, the same as `.m2` (normal_orientation_test).
+    // The negation this used to carry was compensating for the SNORM misread.
+    o.normalWS = normalize(mul(float4(nrm, 0.0), draw.world).xyz);
     o.tangentWS = float4(normalize(mul(float4(tan, 0.0), draw.world).xyz), tanSign);
     o.uv01 = rawUvs * draw.uvTransform.x + draw.uvTransform.y;
     return o;
@@ -252,8 +261,8 @@ PSInput M3Vertex(float3 pos, float3 nrm, float3 tan, float tanSign, float4 rawUv
 [shader("vertex")]
 PSInput vsM3Standard(VSInputRigid input)
 {
-    let s = (input.tangent.w < 0.0) ? -1.0 : 1.0;
-    return M3Vertex(input.position, input.normal.xyz, input.tangent.xyz, s, input.uvs);
+    return M3Vertex(input.position, M3DecodeBasis(input.normal.xyz),
+                    M3DecodeBasis(input.tangent.xyz), M3Handedness(input.normal), input.uvs);
 }
 
 [shader("vertex")]
@@ -261,8 +270,7 @@ PSInput vsM3StandardSkinned(VSInput input)
 {
     float3 pos, nrm, tan;
     M3Skin(input, pos, nrm, tan);
-    let s = (input.tangent.w < 0.0) ? -1.0 : 1.0;
-    return M3Vertex(pos, nrm, tan, s, input.uvs);
+    return M3Vertex(pos, nrm, tan, M3Handedness(input.normal), input.uvs);
 }
 
 // ---- Pixel side ------------------------------------------------------------
@@ -414,6 +422,7 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     let ctlNormal = draw.layerCtl[kM3LayerNormal];
     if (ctlNormal.z == 1u)
     {
+        // model.fx EmitModelBinormal: cross(normal, tangent) * sign(normal.w).
         let t = normalize(input.tangentWS.xyz);
         let b = cross(n, t) * input.tangentWS.w;
         float2 nxy = M3SampleLayer(texNormal, ctlNormal, input.uv01).ag * 2.0 - 1.0;

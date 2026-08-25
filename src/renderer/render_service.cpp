@@ -7,6 +7,7 @@
 #include "renderer/core/render_profile.h"
 #include "renderer/corn_effects/corn_effects_service.h"
 #include "renderer/dnc/dnc_service.h"
+#include "renderer/physics/ground_plane.h"
 #include "renderer/imgui/imgui_renderer.h"
 #include "renderer/model/model_loader.h"
 #include "renderer/model/model_source_utils.h"
@@ -466,7 +467,12 @@ ActorEvalContext RenderService::MakeActorEvalContext() {
     ctx.fireEvents = impl_->settings_.ShowEvents();
     ctx.poseStagesEnabled = impl_->settings_.PoseSolversEnabled();
     ctx.substepPhysics = impl_->settings_.PhysicsSubstepping();
-    ctx.queryGround = impl_->settings_.GetGroundQuery();
+    // The host's terrain if it registered one; otherwise the plane the physics
+    // stages already stand on — the grid — so feet and ragdolls agree on where
+    // the ground is without the host saying anything.
+    ctx.queryGround = impl_->settings_.GetGroundQuery()
+                          ? impl_->settings_.GetGroundQuery()
+                          : RenderSettings::GroundQuery(&physics::FlatGroundQuery);
     ctx.scene = scene;
     ctx.particles = &svc->particles;
     ctx.splats = &svc->splats;

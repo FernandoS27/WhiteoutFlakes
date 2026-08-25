@@ -108,46 +108,63 @@ void M3JtIkStage::Run(FrameState& fs, const PoseStageContext& ctx) {
 
     const i32 effector = chain_.back();
     const Vector3f effPos = TranslationOf(bones[effector]);
+    const Vector3f parPos = TranslationOf(bones[chain_[chain_.size() - 2]]);
 
-    // ---- goal ------------------------------------------------------------
-    // Two probes, `fmaxf` of the hits: one under the effector, one past it
-    // along the last link. A foot straddling a ledge rests on the higher
-    // surface rather than dropping into the gap.
-    const Vector3f prev = TranslationOf(bones[chain_[chain_.size() - 2]]);
-    const Vector3f along = Sub(effPos, prev);
-    const Vector3f probe2 = Add(effPos, along);
-
+    // ---- goal (CJTIKSolver_ComputeGroundGoal, SC2 0x10281C230) -----------
+    // `searchDown_` is the chunk's SIGNED offset — every shipped joint stores
+    // -4 or -3. The surface window is `[ref + searchDown, ref + searchUp]`;
+    // the query takes "down" as a positive reach, hence the negation, which
+    // is the binary's own sign flip on the way into CWorld_QueryGroundAt. A
+    // miss falls back to `ref + searchDown` with the value unnegated. Passing
+    // the raw negative as the reach is what put the Colossus underground:
+    // nothing ever hit, and the fallback sat four units under every foot.
+    const f32 downReach = -searchDown_;
     f32 z0 = 0.0f, z1 = 0.0f;
-    const bool hit0 = ctx.queryGround(effPos, searchUp_, searchDown_, z0);
-    const bool hit1 = ctx.queryGround(probe2, searchUp_, searchDown_, z1);
-    f32 goalZ;
-    if (hit0 && hit1)
-        goalZ = std::max(z0, z1);
-    else if (hit0)
-        goalZ = z0;
-    else if (hit1)
-        goalZ = z1;
-    else
-        goalZ = effPos.z + searchDown_; // documented no-hit fallback
+    if (!ctx.queryGround(effPos, searchUp_, downReach, z0))
+        z0 = effPos.z + searchDown_;
+    // Second probe: the effector mirrored through its parent (for a toe bone,
+    // roughly the heel), referenced to the PARENT's height. `fmaxf` of the
+    // two, so a foot straddling a ledge rests on the higher surface.
+    const Vector3f probe2{2.0f * parPos.x - effPos.x, 2.0f * parPos.y - effPos.y, parPos.z};
+    if (!ctx.queryGround(probe2, searchUp_, downReach, z1))
+        z1 = parPos.z + searchDown_;
+
+    // When the heel-side surface is above the parent, the goal slides to the
+    // midpoint between parent and effector; otherwise it stays under the
+    // effector.
+    Vector3f goal = (z1 > parPos.z)
+                        ? Vector3f{0.5f * (parPos.x + effPos.x), 0.5f * (parPos.y + effPos.y), 0.0f}
+                        : Vector3f{effPos.x, effPos.y, 0.0f};
+    // The goal keeps the foot's animated height ABOVE THE MODEL: retail adds
+    // `effector.z - modelNode.z`, so terrain IK lifts a foot by the terrain's
+    // deviation from the unit's own base and has nothing to do on a flat
+    // plane at that base. A FrameState is model space, where the model node
+    // is the origin, so the term is the effector's z itself.
+    f32 goalZ = std::max(z0, z1) + effPos.z;
 
     // Rate limit, in *real* time: the goal may move at most
-    // `dtMs * (maxSpeedPerFrame30 * 0.03)`. This is what stops feet popping
-    // when a unit crosses a cliff edge, and it is why the stage keeps state.
-    if (haveGoal_ && maxSpeedPerFrame30_ > 0.0f && ctx.frameDtMs > 0) {
-        const f32 maxDelta =
-            static_cast<f32>(ctx.frameDtMs) * (maxSpeedPerFrame30_ * 0.03f);
+    // `dtMs * (maxSpeedPerFrame30 * 0.03)`, with the delta capped at 1000 ms
+    // and a non-positive delta counting as one. This is what stops feet
+    // popping when a unit crosses a cliff edge, and it is why the stage keeps
+    // state. (Retail also waives the clamp when the model node itself moved
+    // by more than the limit; the node is the origin here, so never.)
+    if (haveGoal_ && maxSpeedPerFrame30_ > 0.0f) {
+        const f32 dt =
+            ctx.frameDtMs > 0 ? static_cast<f32>(std::min(ctx.frameDtMs, 1000)) : 1.0f;
+        const f32 maxDelta = dt * (maxSpeedPerFrame30_ * 0.03f);
         goalZ = std::clamp(goalZ, goalZ_ - maxDelta, goalZ_ + maxDelta);
     }
     goalZ_ = goalZ;
     haveGoal_ = true;
+    goal.z = goalZ;
 
-    // Already close enough: skip the whole solve, pose untouched. Faithful to
+    // Already close enough — the full 3-D distance, since the goal can move
+    // sideways too: skip the whole solve, pose untouched. Faithful to
     // `ComputeGroundGoal` returning false, and the reason a flat-ground actor
     // costs nothing.
-    if (std::fabs(goalZ - effPos.z) <= tolerance_)
+    const Vector3f off = Sub(goal, effPos);
+    if (Dot(off, off) <= tolerance_ * tolerance_)
         return;
-
-    const Vector3f goal{effPos.x, effPos.y, goalZ};
 
     // ---- solve plane -----------------------------------------------------
     // Through root, mid and effector. Degenerate (a straight chain) has no

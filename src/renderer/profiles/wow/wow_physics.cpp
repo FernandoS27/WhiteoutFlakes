@@ -1,5 +1,6 @@
 #include "renderer/profiles/wow/wow_physics.h"
 
+#include "renderer/physics/ground_plane.h"
 #include "whiteout/models/m2/structures.h"
 
 #include "snowball/joint.h"
@@ -552,11 +553,12 @@ void WowPhysicsStage::Build(const ::whiteout::m2::Model& model) {
     }
 
     // The ground. The shipped client collides cloth against Domino's baked world collider
-    // (`DOMINO_SPEC.md` phase 2h — the BVH the terrain bakes to); the viewer's world is a flat
-    // plane at z=0, so a flat plane is what stands in for it: one static box whose top face is
-    // the grid. A box rather than a halfspace because it is the shape the narrowphase already
-    // proves, and 100 yards of it because model space is yards and nothing simulated leaves a
-    // model's own neighbourhood.
+    // (`DOMINO_SPEC.md` phase 2h — the BVH the terrain bakes to); the viewer's world is the
+    // grid, so a flat plane is what stands in for it: one static box whose top face is the
+    // grid plane (ground_plane.h — shared with terrain IK and the SC2 stage). A box rather
+    // than a halfspace because it is the shape the narrowphase already proves, and 100 yards
+    // of it because model space is yards and nothing simulated leaves a model's own
+    // neighbourhood.
     //
     // Two honest limits, both fine for a viewer: the plane lives in *model* space, so it is the
     // ground only while the host leaves the actor at the origin (this viewer does); and the
@@ -565,13 +567,15 @@ void WowPhysicsStage::Build(const ::whiteout::m2::Model& model) {
     {
         const char* g = std::getenv("WDX_PHYSICS_GROUND");
         if (!(g != nullptr && g[0] == '0' && g[1] == '\0')) {
+            using namespace renderer::physics;
             sb::BodyDef groundDef;
             groundDef.type = sb::BodyType::Static;
             const sb::BodyId ground = scene_.AddBody(groundDef);
             sb::Transform xf;
-            xf.position = sb::Vec4{0.0f, 0.0f, -1.0f, 0.0f};  // top face exactly at z=0
-            const sb::ShapeId slab =
-                shapes_.Add(sb::MakeBox(sb::Vec4{100.0f, 100.0f, 1.0f, 0.0f}, xf));
+            xf.position = sb::Vec4{0.0f, 0.0f, kGroundZ - kGroundSlabThickness, 0.0f};
+            const sb::ShapeId slab = shapes_.Add(sb::MakeBox(
+                sb::Vec4{kGroundSlabHalfExtent, kGroundSlabHalfExtent, kGroundSlabThickness, 0.0f},
+                xf));
             scene_.AddFixture(ground, slab, 0.0f, 0.8f, 0.0f);
         }
     }

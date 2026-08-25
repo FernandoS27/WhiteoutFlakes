@@ -271,7 +271,8 @@ TEST_CASE("m3 baked buffers describe their own bytes", "[m3][meshbuffer]") {
                 REQUIRE(pos != nullptr);
                 REQUIRE(nrm != nullptr);
                 REQUIRE(tan != nullptr);
-                CHECK(nrm->format == gfx::Format::R8G8B8A8_SNORM);
+                CHECK(nrm->format == gfx::Format::R8G8B8A8_UNORM);
+                CHECK(tan->format == gfx::Format::R8G8B8A8_UNORM);
                 // Always the last four bytes of the record.
                 CHECK(tan->offset + 4 == b.stride);
 
@@ -283,23 +284,25 @@ TEST_CASE("m3 baked buffers describe their own bytes", "[m3][meshbuffer]") {
                     REQUIRE(got.z == want.z);
                 }
 
-                // SNORM decode, spelled the way D3D does it â€” max(v/127, -1).
-                // The parser divides by 127.0 without the clamp, so a stored
-                // -128 is the one value where the two legitimately differ
-                // (-1.0 against -1.0079). Tolerated rather than asserted equal,
-                // because the GPU is the side that clamps and it is right to.
+                // UNORM decode as the GPU does it (v/255) followed by the
+                // shader's `2 * v - 1`: retail's `ubyte4n` vertex basis. The
+                // parser spells the same formula, so the two agree to float
+                // rounding; and a unit-length result is what pins the format
+                // itself, since an SNORM misread of these bytes is 0.73..1.41
+                // long on four vertices in five.
                 for (std::size_t v = 0; v < b.VertexCount(); ++v) {
                     const whiteout::u8* rec = b.data.data() + v * b.stride + nrm->offset;
-                    const float nx = std::max(static_cast<float>(static_cast<int8_t>(rec[0])) / 127.0f, -1.0f);
-                    const float ny = std::max(static_cast<float>(static_cast<int8_t>(rec[1])) / 127.0f, -1.0f);
-                    const float nz = std::max(static_cast<float>(static_cast<int8_t>(rec[2])) / 127.0f, -1.0f);
+                    const float nx = static_cast<float>(rec[0]) / 255.0f * 2.0f - 1.0f;
+                    const float ny = static_cast<float>(rec[1]) / 255.0f * 2.0f - 1.0f;
+                    const float nz = static_cast<float>(rec[2]) / 255.0f * 2.0f - 1.0f;
                     const auto& want = parserNormals[base + v];
-                    // The only legitimate divergence: the parser's plain /127
-                    // gives -1.0079 where the clamp gives -1.0. One ulp of
-                    // 1/127 covers it and nothing else.
-                    REQUIRE(NearlyEqual(nx, want.x, 0.008f));
-                    REQUIRE(NearlyEqual(ny, want.y, 0.008f));
-                    REQUIRE(NearlyEqual(nz, want.z, 0.008f));
+                    REQUIRE(NearlyEqual(nx, want.x, 1e-5f));
+                    REQUIRE(NearlyEqual(ny, want.y, 1e-5f));
+                    REQUIRE(NearlyEqual(nz, want.z, 1e-5f));
+                    const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+                    // Degenerate normals exist in the corpus; with UNORM the
+                    // zero vector encodes as (127|128)^3, ~0.01 long.
+                    REQUIRE((NearlyEqual(len, 1.0f, 0.02f) || len < 0.02f));
                 }
                 ++checked;
             }

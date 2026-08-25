@@ -134,9 +134,10 @@ public:
     }
 
     // Host-supplied ground height under a model-space point, for terrain IK.
-    // Renderer policy stops at "call whatever the host registered": the viewer
-    // installs a flat plane, a game host would sample its terrain. Unset means
-    // no IK runs at all rather than IK against a guessed surface.
+    // A game host samples its terrain here. Unset means the renderer's own
+    // ground — the grid plane the physics stages collide with
+    // (physics/ground_plane.h) — so IK and physics never disagree about where
+    // the floor is unless the host says otherwise.
     using GroundQuery = std::function<bool(const Vector3f& pos, f32 up, f32 down, f32& outZ)>;
     const GroundQuery& GetGroundQuery() const {
         return groundQuery_;
@@ -200,19 +201,27 @@ public:
         m2LazyAnimations_.store(on);
     }
 
-    // The same idea for Diablo III, and **on** by default — the opposite of
-    // M2LazyAnimations, deliberately.
+    // The same idea for Diablo III, and now **off** by default, for the same
+    // reason M2's is: a clip's DURATION is only knowable by reading its `.ani`.
     //
-    // The reason M2's is off is that every byte-identical gate was recorded
-    // against its eager parse. D3 has no such gate to protect, and its fan-out
-    // is an order of magnitude worse: one character AnimSet names 259 unique
-    // clips and 5.8 MB of keys, 100 of them in the core tag map alone, to play
-    // one idle. The `.ans` is 27 KB and holds the whole tag map, so the map is
-    // parsed eagerly and each `.ani` is fetched on first play.
+    // `AnimSetTagMapEntry` is 12 bytes — value type, tag id, Anim SNO — and
+    // carries no frame count, unlike `.m2`, whose sequence table states every
+    // duration in the main file and makes its lazy path free. So a lazy D3
+    // clip has to advertise a nominal duration, and the host windows its
+    // playback cursor against exactly that: `AnimationDriver::Advance` hands
+    // `sequences_` to the playlist, which wraps the cursor at `endMs`.
     //
-    // Stated here rather than copied silently, because two adjacent settings
-    // with the same shape and opposite defaults is exactly the kind of thing
-    // that gets "fixed" later by someone making them consistent.
+    // Measured on `43_AD_graveDigger_A`: 34 of 34 clips have a true duration
+    // other than the 1 s nominal, spanning 33 ms to 7000 ms. Windowed at 1 s a
+    // 7 s clip plays its first seventh and cuts; a 33 ms clip restarts thirty
+    // times a cycle. Only an exactly-1 s clip loops cleanly.
+    //
+    // Eager costs a measured 490-650 ms and 1.25-1.56 MB on a character actor
+    // (32-42 reads), not the 5.8 MB the fan-out suggested — the core tag map
+    // names far fewer unique clips than the whole AnimSet does. That is the
+    // price of a clip that loops where it should, so it is the default; the
+    // setting stays for a host that drives its own cursor and never asks us
+    // for a duration.
     bool D3LazyAnimations() const {
         return d3LazyAnimations_.load();
     }
@@ -608,7 +617,7 @@ private:
     std::atomic<bool> renderModeDirty_{false};
     std::atomic<bool> sceneHdrInSd_{false};
     std::atomic<bool> m2LazyAnimations_{false};
-    std::atomic<bool> d3LazyAnimations_{true};
+    std::atomic<bool> d3LazyAnimations_{false};
     std::atomic<bool> m2DistanceSortGeometry_{false};
     std::atomic<bool> m2ModelLights_{true};
 

@@ -618,9 +618,10 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
                   << std::endl;
     }
 
-    // The solver arm. Both inputs are host policy — the renderer has no terrain
-    // and no notion of what a unit is shooting at — so the harness plays host
-    // exactly as the viewer does.
+    // The solver arm. The renderer's default ground is the grid plane at z = 0
+    // (physics/ground_plane.h); the harness overrides it with a plane at
+    // `groundZ` because a non-zero height is the case that makes IK visibly
+    // move, and supplies the aim target the renderer has no notion of.
     if (anim.solvers) {
         settings.SetPoseSolversEnabled(true);
         const f32 planeZ = anim.groundZ;

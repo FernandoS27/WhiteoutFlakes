@@ -1,5 +1,6 @@
 #include "renderer/profiles/sc2_heroes/sc2_physics.h"
 
+#include "renderer/physics/ground_plane.h"
 #include "whiteout/models/m3/structures.h"
 
 #include "snowball/joint.h"
@@ -663,19 +664,22 @@ void Sc2PhysicsStage::Build(FrameState& fs) {
     }
 
     // The ground. StarCraft II collides its ragdolls against the terrain collider; the viewer's
-    // world is a flat plane at z=0, so one static box stands in for it, exactly as the WoW
-    // stage does. Without it a `*DeathRagdoll` — whose bodies are *all* dynamic, with nothing
+    // world is the grid, so one static box whose top face is the grid plane stands in for it
+    // (ground_plane.h — the same plane terrain IK plants feet on), exactly as the WoW stage
+    // does. Without it a `*DeathRagdoll` — whose bodies are *all* dynamic, with nothing
     // kinematic anchoring them — falls forever.
     {
         const char* g = std::getenv("WDX_PHYSICS_GROUND");
         if (!(g != nullptr && g[0] == '0' && g[1] == '\0')) {
+            using namespace renderer::physics;
             sb::BodyDef groundDef;
             groundDef.type = sb::BodyType::Static;
             const sb::BodyId ground = scene_.AddBody(groundDef);
             sb::Transform xf;
-            xf.position = sb::Vec4{0.0f, 0.0f, -1.0f, 0.0f};  // top face exactly at z=0
-            const sb::ShapeId slab =
-                shapes_.Add(sb::MakeBox(sb::Vec4{100.0f, 100.0f, 1.0f, 0.0f}, xf));
+            xf.position = sb::Vec4{0.0f, 0.0f, kGroundZ - kGroundSlabThickness, 0.0f};
+            const sb::ShapeId slab = shapes_.Add(sb::MakeBox(
+                sb::Vec4{kGroundSlabHalfExtent, kGroundSlabHalfExtent, kGroundSlabThickness, 0.0f},
+                xf));
             scene_.AddFixture(ground, slab, 0.0f, 0.5f, 0.0f);
         }
     }

@@ -88,9 +88,10 @@ struct PoseStageContext {
 
     /// @brief Ground height under a model-space point.
     ///
-    /// Host policy, not renderer policy: the viewer registers a flat plane, a
-    /// game host would query its terrain. Returns false for "no surface", which
-    /// the IK stage turns into its documented fallback rather than a guess.
+    /// The host's terrain when it registered one, else the renderer's grid
+    /// plane — the same surface the physics stages collide with. Returns false
+    /// for "no surface", which the IK stage turns into its documented fallback
+    /// rather than a guess.
     /// @param up   accept a surface at most this far above @p pos
     /// @param down …and this far below
     std::function<bool(const Vector3f& pos, f32 up, f32 down, f32& outZ)> queryGround;

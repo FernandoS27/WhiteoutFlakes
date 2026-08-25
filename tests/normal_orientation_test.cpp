@@ -13,6 +13,12 @@
 // question on the CPU, from the parsed arrays alone — no device, no camera,
 // no projection, nothing that could impose a convention of its own.
 //
+// The answer turned out to be "decoded": the bytes are UNORM (retail's
+// `ubyte4n`, `2 * v - 1`), and an SNORM read of them scores 4.8% here while
+// being 0.73..1.41 long — per component its dot with the true value is
+// v^2 - |v| <= 0, so it reads as "inverted" without being the inverse of
+// anything. Decoded UNORM, `.m3` scores the same as `.m2`.
+//
 // Two independent metrics per mesh:
 //
 //   1. Winding agreement. For each triangle, `cross(p1-p0, p2-p0)` against the
@@ -116,6 +122,11 @@ Vector3f DecodeVec3(const whiteout::flakes::MeshBuffer& b, std::size_t v,
         return {std::max(static_cast<f32>(static_cast<std::int8_t>(rec[0])) / 127.0f, -1.0f),
                 std::max(static_cast<f32>(static_cast<std::int8_t>(rec[1])) / 127.0f, -1.0f),
                 std::max(static_cast<f32>(static_cast<std::int8_t>(rec[2])) / 127.0f, -1.0f)};
+    case whiteout::flakes::gfx::Format::R8G8B8A8_UNORM:
+        // The `.m3` basis: UNORM bytes, decoded `2 * v - 1` by the shader.
+        return {static_cast<f32>(rec[0]) / 255.0f * 2.0f - 1.0f,
+                static_cast<f32>(rec[1]) / 255.0f * 2.0f - 1.0f,
+                static_cast<f32>(rec[2]) / 255.0f * 2.0f - 1.0f};
     default:
         return {0.0f, 0.0f, 0.0f};
     }
@@ -237,10 +248,17 @@ fs::path Sc2Corpus() {
 }
 } // namespace
 
-TEST_CASE("m3 vertex normals point outward", "[m3][normals]") {
-    const auto models = FindByExt(Sc2Corpus(), ".m3", 400);
+namespace {
+fs::path HotsCorpus() {
+    if (const char* v = std::getenv("WDX_TEST_HOTS_CORPUS"); v && *v)
+        return fs::path(v);
+    return fs::path("C:/Projects/WhiteoutLib/Corpus/HotSM3");
+}
+
+void MeasureM3Corpus(const fs::path& root, const char* what) {
+    const auto models = FindByExt(root, ".m3", 400);
     if (models.empty())
-        SKIP("no .m3 files under " + Sc2Corpus().string());
+        SKIP("no .m3 files under " + root.string());
 
     Orientation o;
     for (const auto& path : models) {
@@ -260,17 +278,26 @@ TEST_CASE("m3 vertex normals point outward", "[m3][normals]") {
 
     REQUIRE(o.meshes > 0);
     REQUIRE(o.vertices > 0);
-    Report("m3", o);
+    Report(what, o);
 
-    // The measured fact, and the reason the shader negates. `.m3` stores the
-    // vertex normal ANTI-parallel to `cross(p1-p0, p2-p0)`, where `.m2` — which
-    // renders correctly through the same renderer, the same rasterizer state
-    // and the same winding — stores it parallel. The two formats disagree by a
-    // full inversion, and `.m2` is the one that is right.
-    //
-    // Pinned as a range rather than an exact figure: it is a corpus-wide vote,
-    // and degenerate triangles legitimately land on either side.
-    CHECK(o.WindingAgreeFraction() < 0.15);
+    // Decoded UNORM, `.m3` stores the vertex normal PARALLEL to
+    // `cross(p1-p0, p2-p0)` — the relationship `.m2` has, and `.m2` renders
+    // correctly through the same renderer, rasterizer state and winding. So
+    // the shader must not negate. Pinned as a range rather than an exact
+    // figure: it is a corpus-wide vote, and degenerate triangles legitimately
+    // land on either side.
+    CHECK(o.WindingAgreeFraction() > 0.85);
+}
+} // namespace
+
+TEST_CASE("m3 vertex normals point outward", "[m3][normals]") {
+    MeasureM3Corpus(Sc2Corpus(), "m3 (sc2)");
+}
+
+// The HotS corpus is MODL v29 throughout where SC2's is mostly v23: one vertex
+// format, two generations of exporter, and the models the misread was noticed on.
+TEST_CASE("m3 vertex normals point outward (hots)", "[m3][normals]") {
+    MeasureM3Corpus(HotsCorpus(), "m3 (hots)");
 }
 
 // How much of the corpus is two-sided decides whether retail's TwoSided-gated

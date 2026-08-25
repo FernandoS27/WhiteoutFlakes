@@ -12,8 +12,11 @@
 ///
 /// What is faithful here and what is not:
 ///
-/// - The IK goal, its two-probe `fmaxf`, the rate limit and the tolerance skip
-///   follow `CJTIKSolver_ComputeGroundGoal` as read.
+/// - The IK goal follows `CJTIKSolver_ComputeGroundGoal` as decompiled
+///   (SC2 `0x10281C230`): the signed search window, the second probe at the
+///   effector mirrored through its parent, `fmaxf` of the two, the goal's
+///   height kept relative to the model node, the midpoint slide, the
+///   rate limit and the tolerance skip.
 /// - The CCD loop keeps `CJTIKSolver_IterateCCD`'s shape — bounded iterations,
 ///   a damped angular step, an early-out on squared error — and solves in the
 ///   plane through effector/mid/root as the binary does. It does *not* keep the
@@ -49,6 +52,11 @@ namespace whiteout::flakes::io {
 class M3JtIkStage final : public renderer::animation::IPoseStage {
 public:
     /// @param chain Bone indices from root to effector, in that order.
+    /// @param searchUp   IKJT raycastUp: how far above a probe a surface may be.
+    /// @param searchDown IKJT raycastDown, the chunk's SIGNED offset (shipped
+    ///                   content stores -4 or -3): the window is
+    ///                   `[ref + searchDown, ref + searchUp]`, and a miss falls
+    ///                   back to `ref + searchDown`.
     M3JtIkStage(std::vector<i32> chain, f32 searchUp, f32 searchDown, f32 maxSpeedPerFrame30,
                 f32 tolerance)
         : chain_(std::move(chain)), searchUp_(searchUp), searchDown_(searchDown),

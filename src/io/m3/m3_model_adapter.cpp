@@ -30,10 +30,15 @@ namespace {
 //   0  position      f32 x3
 //   12 boneWeights   u8  x4  (/255)
 //   16 boneIndices   u8  x4
-//   20 normal        i8  x4  (/127; .w is the tangent handedness sign)
+//   20 normal        u8  x4  UNORM (v/255*2-1); .w is the bitangent handedness
 //   24 colour        u8  x4  BGRA, only when the VertexColor flag is set
 //   .. uv0..uv4      i16 x2  each, one per UV flag
-//   -4 tangent       i8  x4  (/127), always the last four bytes
+//   -4 tangent       u8  x4  UNORM, always the last four bytes; .w unused (255)
+//
+// UNORM, not SNORM: retail declares both basis vectors `ubyte4n` and decodes
+// them `2 * v - 1` (vsmodelvertexformat.fx TranslateVert). Read as i8/127 the
+// same bytes are 0.73..1.41 long and point the wrong way — that was the
+// "inverted .m3 normals" the shader used to negate.
 //
 // Deriving this a second time here rather than asking the parser is the one
 // genuinely risky thing in the M3 path, which is why mesh_buffer_test asserts
@@ -46,7 +51,7 @@ std::vector<VertexAttribute> DescribeM3Vertex(const ::whiteout::m3::VertexBuffer
     attrs.push_back({VertexSemantic::Position, 0, gfx::Format::R32G32B32_FLOAT, 0});
     attrs.push_back({VertexSemantic::BoneWeights, 0, gfx::Format::R8G8B8A8_UNORM, 12});
     attrs.push_back({VertexSemantic::BoneIndices, 0, gfx::Format::R8G8B8A8_UINT, 16});
-    attrs.push_back({VertexSemantic::Normal, 0, gfx::Format::R8G8B8A8_SNORM, 20});
+    attrs.push_back({VertexSemantic::Normal, 0, gfx::Format::R8G8B8A8_UNORM, 20});
     if (vb.hasVertexColors())
         attrs.push_back({VertexSemantic::Color, 0, gfx::Format::R8G8B8A8_UNORM, 24});
     for (u8 i = 0; i < static_cast<u8>(vb.UVsNum()); ++i) {
@@ -58,7 +63,7 @@ std::vector<VertexAttribute> DescribeM3Vertex(const ::whiteout::m3::VertexBuffer
                          static_cast<u16>(uvBase + i * 4)});
     }
     attrs.push_back(
-        {VertexSemantic::Tangent, 0, gfx::Format::R8G8B8A8_SNORM, static_cast<u16>(stride - 4)});
+        {VertexSemantic::Tangent, 0, gfx::Format::R8G8B8A8_UNORM, static_cast<u16>(stride - 4)});
     return attrs;
 }
 
