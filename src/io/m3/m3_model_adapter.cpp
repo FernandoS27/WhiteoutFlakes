@@ -437,6 +437,7 @@ void M3ModelAdapter::BuildClothGeosetMap() {
 void M3ModelAdapter::BuildEmittedRegions() {
     emittedRegions_.clear();
     geosetRegionFlags_.clear();
+    geosetVisibilityBone_.clear();
     if (divisionIndex_ >= model_.divisions.size())
         return;
     const auto& div = model_.divisions[divisionIndex_];
@@ -456,6 +457,16 @@ void M3ModelAdapter::BuildEmittedRegions() {
             continue;
         emittedRegions_.push_back(r);
         geosetRegionFlags_.push_back(static_cast<::whiteout::u32>(region.flags));
+        // The first batch naming the region is the one drawn (see GetMeshes),
+        // so it is also the one whose bone gates the draw.
+        ::whiteout::u16 gate = 0xFFFFu;
+        for (const auto& batch : div.batches) {
+            if (batch.regionIndex == r) {
+                gate = batch.boneCount;
+                break;
+            }
+        }
+        geosetVisibilityBone_.push_back(gate);
     }
 }
 
@@ -1321,16 +1332,21 @@ void M3ModelAdapter::EvaluateGeosetVisibility(std::span<const ::whiteout::u8> vi
                                               renderer::model::FrameState& fs) const {
     if (emittedRegions_.empty() || divisionIndex_ >= model_.divisions.size())
         return;
-    const auto& div = model_.divisions[divisionIndex_];
     fs.geosetAlphas.assign(emittedRegions_.size(), 1.0f);
     fs.geosetHidden.assign(emittedRegions_.size(), 0);
     for (std::size_t g = 0; g < emittedRegions_.size(); ++g) {
-        // A region is gated by the bone it hangs off. The chain walk is already
-        // folded into `visible`, so this is a single lookup.
-        const auto& region = div.regions[emittedRegions_[g]];
-        const std::size_t root = region.rootBone;
-        if (root < visible.size() && !visible[root])
+        // A geoset is gated by its BATCH's bone — `geosetVisibilityBone_`
+        // explains why that is not the region's root bone. The chain walk is
+        // already folded into `visible`, so this is a single lookup. Retail
+        // skips the batch's submission outright rather than drawing it at
+        // zero alpha, which is what `geosetHidden` means; the alpha goes too
+        // so anything reading only the fade agrees.
+        const ::whiteout::u16 gate =
+            g < geosetVisibilityBone_.size() ? geosetVisibilityBone_[g] : ::whiteout::u16{0xFFFFu};
+        if (gate != 0xFFFFu && gate < visible.size() && !visible[gate]) {
             fs.geosetAlphas[g] = 0.0f;
+            fs.geosetHidden[g] = 1;
+        }
         // A cloth's simulated region is a coarse invisible proxy — the visible
         // surface is the region bound to it. Taken out of the draw list rather
         // than faded, because it is not part of the model at all (the same

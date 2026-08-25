@@ -96,7 +96,10 @@ m3::Model VisibilityFixture(u32 animId, bool childOwnVisibility,
 }
 
 // One region hanging off `rootBone`, with a vertex blob big enough for it.
-void AddRegion(m3::Model& model, u16 rootBone) {
+/// @brief One drawable region plus the batch that draws it.
+/// @param batchBone the batch's visibility bone (`0xFFFF` = always drawn)
+/// @param rootBone  the region's root bone, which is NOT a visibility gate
+void AddRegion(m3::Model& model, u16 batchBone, u16 rootBone = 0) {
     m3::Region region;
     region.firstVertex = 0;
     region.vertexCount = 4;
@@ -114,7 +117,13 @@ void AddRegion(m3::Model& model, u16 rootBone) {
         model.vertices.data.assign(4 * 32, 0);
         model.vertices.initialize();
     }
-    model.divisions[0].regions.push_back(region);
+    auto& div = model.divisions[0];
+    m3::Batch batch;
+    batch.regionIndex = static_cast<u16>(div.regions.size());
+    batch.materialIndex = 0;
+    batch.boneCount = batchBone;
+    div.regions.push_back(region);
+    div.batches.push_back(batch);
 }
 
 } // namespace
@@ -170,13 +179,37 @@ TEST_CASE("A hidden parent hides its whole subtree", "[m3chan]") {
     }
 }
 
-TEST_CASE("A geoset is gated by its region's root bone", "[m3chan]") {
+TEST_CASE("A geoset is gated by its batch's bone", "[m3chan]") {
+    // The batch names the animated bone; the region's root bone is a different
+    // bone that stays visible. StarCraft II's submit loop keys on the former —
+    // the Ultralisk's blood plane is a batch gated on `Plane01` inside a
+    // region rooted at `Dummy09`, and a root-bone gate can never hide it.
     m3::Model model = VisibilityFixture(300, true);
-    AddRegion(model, 0); // hangs off the root, which is the animated bone
+    AddRegion(model, /*batchBone=*/0, /*rootBone=*/1);
     M3ModelAdapter a(std::move(model));
 
-    REQUIRE(EvalAt(a, {Clip(0, 0)}).geosetAlphas[0] == Approx(1.0f));
-    REQUIRE(EvalAt(a, {Clip(0, 600)}).geosetAlphas[0] == Approx(0.0f));
+    const auto shown = EvalAt(a, {Clip(0, 0)});
+    REQUIRE(shown.geosetAlphas[0] == Approx(1.0f));
+    REQUIRE(shown.geosetHidden[0] == 0);
+    // Retail skips the batch's submission outright, so it is hidden — out of
+    // the draw list — not merely faded to zero.
+    const auto hidden = EvalAt(a, {Clip(0, 600)});
+    REQUIRE(hidden.geosetAlphas[0] == Approx(0.0f));
+    REQUIRE(hidden.geosetHidden[0] == 1);
+}
+
+TEST_CASE("A region's root bone is not a visibility gate", "[m3chan]") {
+    // Measured over the SC2 and HotS corpora: of the 1967 batches that name a
+    // bone, only 422 name the region's root bone. Gating on the root would hide
+    // geometry the game draws, and — the Ultralisk case — fail to hide
+    // geometry the game hides.
+    m3::Model model = VisibilityFixture(300, true);
+    AddRegion(model, /*batchBone=*/0xFFFF, /*rootBone=*/0); // root is the animated bone
+    M3ModelAdapter a(std::move(model));
+
+    const auto fs = EvalAt(a, {Clip(0, 600)}); // bone 0 hidden here
+    REQUIRE(fs.geosetAlphas[0] == Approx(1.0f));
+    REQUIRE(fs.geosetHidden[0] == 0);
 }
 
 TEST_CASE("An unanimated visibility reference holds its init value", "[m3chan]") {
@@ -190,6 +223,7 @@ TEST_CASE("An unanimated visibility reference holds its init value", "[m3chan]")
     const auto fs = EvalAt(a, {});
     REQUIRE(fs.geosetAlphas.size() == 1);
     REQUIRE(fs.geosetAlphas[0] == Approx(0.0f));
+    REQUIRE(fs.geosetHidden[0] == 1);
 }
 
 TEST_CASE("Lights sample their colour and intensity", "[m3chan]") {

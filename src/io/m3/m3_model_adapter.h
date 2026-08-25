@@ -377,7 +377,8 @@ private:
     ::whiteout::u32 SampleRefOverride(const ::whiteout::m3::AnimRef<::whiteout::u32>& ref,
                                       std::span<const M3Layer> layers) const;
 
-    /// @brief Gate each emitted geoset on its region's root bone.
+    /// @brief Gate each emitted geoset on its batch's visibility bone
+    ///        (@ref geosetVisibilityBone_).
     void EvaluateGeosetVisibility(std::span<const ::whiteout::u8> visible,
                                   renderer::model::FrameState& fs) const;
 
@@ -414,6 +415,18 @@ private:
     std::size_t regionCount_ = 0;
     std::vector<std::size_t> emittedRegions_;
     std::vector<::whiteout::u32> geosetRegionFlags_;
+    /// @brief Geoset -> the bone whose visibility gates its draw, `0xFFFF` for
+    ///        "always drawn". Parallel to @ref emittedRegions_.
+    ///
+    /// It is the BATCH's bone (`BAT_`'s last u16, the field WhiteoutLib names
+    /// `boneCount`), not the region's `rootBone`: StarCraft II's submit loop
+    /// (`sub_10290A190`) reads the batch record's bone and skips the batch
+    /// when that bone's runtime visible bit is clear. Measured over the SC2
+    /// and HotS corpora, every one of the 1967 batches that names a bone names
+    /// one with a keyed visibility track, and only 422 of them coincide with
+    /// the region's root bone — the Ultralisk's blood plane is a batch gated
+    /// on `Plane01` inside a region rooted at `Dummy09`.
+    std::vector<::whiteout::u16> geosetVisibilityBone_;
     /// Which bone each entry of @ref GetCollisionShapes rides, the frame it sits
     /// in on that bone, and whether it may wear the bone's scale per axis — all
     /// parallel to the returned vector and filled by the same walk.
