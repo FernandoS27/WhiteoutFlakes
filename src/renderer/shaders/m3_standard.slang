@@ -382,7 +382,7 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     let twoSided = (uint(draw.params0.w) & 2u) != 0u;
 
     // Albedo: diffuse layer, then the decal over it.
-    float4 albedo = float4(1.0, 1.0, 1.0, 1.0);
+    float4 albedo = float4(0.0, 0.0, 0.0, 1.0);
     let ctlDiffuse = draw.layerCtl[kM3LayerDiffuse];
     if (ctlDiffuse.z != 0u)
         albedo = M3LayerValue(ctlDiffuse, draw.layerTint[kM3LayerDiffuse], draw.layerAdd[kM3LayerDiffuse].x,
