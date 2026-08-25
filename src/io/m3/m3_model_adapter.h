@@ -130,6 +130,15 @@ struct M3TextureRef {
     /// path: one `.dds` can be an environment map on one material and a flat
     /// layer on another, and those are two different GPU textures.
     bool cube = false;
+    /// Bound to the Normal slot, so it is linear data and must not be sampled
+    /// through an sRGB view. In the dedupe key for the same reason `cube` is.
+    ///
+    /// The slot is the authority here because the filename is not: over the
+    /// 51469-model SC2 + Heroes corpus, 16299 of 71792 normal-map references
+    /// (22.7%) carry a name the path heuristic reads as colour
+    /// (`Marine_Normal_Blood.dds`, `..._Normals.dds`, `Tank_Treads_Norms.dds`).
+    /// See AssetManager's kTextureLinearSubKind for what that costs.
+    bool linear = false;
 };
 
 /// @brief Strip the terminator every M3 `Ref<CHAR>` keeps. `size()` is one

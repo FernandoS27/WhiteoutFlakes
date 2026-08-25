@@ -1051,6 +1051,111 @@ void ViewerUI::BuildToolbar() {
         ImGui::SameLine();
     }
 
+    // ---- Character equipment (`.acr` / `.app` only) ----
+    // The Diablo III half of the same idea, and the opposite problem: a `.m2`
+    // character leaves its geosets blank for the game to fill, while a `.app`
+    // ships every armour variant at once for the game to pick between. So this
+    // offers pieces out of a wardrobe rather than choices out of a database.
+    // Absent for every model that is not a player character.
+    if (const auto slots = app_.D3CharacterSlots(); !slots.empty()) {
+        if (ImGui::Button(i18n::tr("toolbar.equip")))
+            ImGui::OpenPopup("##d3equip");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", i18n::tr("toolbar.equip.tip"));
+        if (ImGui::BeginPopup("##d3equip")) {
+            // Read once: an appearance carries up to ninety-odd looks and the
+            // list is the same for every row below it.
+            const auto looks = app_.D3LookNames();
+
+            // The set first, because putting one material set on every slot is
+            // what wearing a set *is* — the per-slot rows underneath are for
+            // mixing pieces from two of them.
+            if (!looks.empty()) {
+                const u32 shared = slots[0].lookIndex;
+                bool uniform = true;
+                for (const auto& s2 : slots)
+                    uniform &= (s2.lookIndex == shared);
+                const char* label = (uniform && shared < looks.size()) ? looks[shared].c_str() : "";
+                ImGui::SetNextItemWidth(180);
+                if (ImGui::BeginCombo(i18n::tr("toolbar.equip.set"), label)) {
+                    for (u32 i = 0; i < static_cast<u32>(looks.size()); ++i) {
+                        const bool isSel = uniform && (i == shared);
+                        if (ImGui::Selectable(looks[i].c_str(), isSel))
+                            app_.SetD3CharacterLookForAll(i);
+                        if (isSel)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", i18n::tr("toolbar.equip.set.tip"));
+                ImGui::Separator();
+            }
+
+            for (const auto& slot : slots) {
+                if (slot.items.empty())
+                    continue;
+                const u32 sel = std::min<u32>(slot.selectedItem,
+                                              static_cast<u32>(slot.items.size()) - 1);
+                char id[64];
+                std::snprintf(id, sizeof(id), "%s##d3item%d", slot.name.c_str(), slot.slot);
+                ImGui::SetNextItemWidth(130);
+                if (ImGui::BeginCombo(id, slot.items[sel].c_str())) {
+                    for (u32 i = 0; i < static_cast<u32>(slot.items.size()); ++i) {
+                        const bool isSel = (i == sel);
+                        if (ImGui::Selectable(slot.items[i].c_str(), isSel))
+                            app_.SetD3CharacterItem(slot.slot, i);
+                        if (isSel)
+                            ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+                // The material this one slot wears. Per slot and not per model
+                // because the original reads a look name off each equipped
+                // item — a heavy chest and heavy boots from two sets share one
+                // material read at two variant indices.
+                if (!looks.empty()) {
+                    ImGui::SameLine();
+                    std::snprintf(id, sizeof(id), "##d3look%d", slot.slot);
+                    const u32 li = std::min<u32>(slot.lookIndex,
+                                                 static_cast<u32>(looks.size()) - 1);
+                    ImGui::SetNextItemWidth(150);
+                    if (ImGui::BeginCombo(id, looks[li].c_str())) {
+                        for (u32 i = 0; i < static_cast<u32>(looks.size()); ++i) {
+                            const bool isSel = (i == li);
+                            if (ImGui::Selectable(looks[i].c_str(), isSel))
+                                app_.SetD3CharacterSlotLook(slot.slot, i);
+                            if (isSel)
+                                ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                }
+            }
+
+            // Everything no slot claims. Nothing in ActorModel_ApplyLook
+            // switches these — a decapitated body is gameplay, not equipment —
+            // so they are off until asked for rather than picked between.
+            if (const auto extras = app_.D3CharacterExtras(); !extras.empty()) {
+                ImGui::Separator();
+                if (ImGui::TreeNode(i18n::tr("toolbar.equip.extras"))) {
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", i18n::tr("toolbar.equip.extras.tip"));
+                    for (const auto& ex : extras) {
+                        bool on = ex.shown;
+                        char exid[160];
+                        std::snprintf(exid, sizeof(exid), "%s##d3x%u", ex.name.c_str(), ex.geoset);
+                        if (ImGui::Checkbox(exid, &on))
+                            app_.SetD3CharacterExtra(ex.geoset, on);
+                    }
+                    ImGui::TreePop();
+                }
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::SameLine();
+    }
+
     // ---- Lighting mode ----
     {
         i32 sel = static_cast<i32>(svc.Settings().GetLightingMode());

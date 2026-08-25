@@ -281,9 +281,19 @@ namespace {
 // math derived from format + (w, h).
 bool DecodeTexture(std::span<const u8> bytes, const std::string& ext,
                    const std::string& pathForSrgb, bool supportsBlockCompression,
-                   bool gammaColorPipeline, bool wantCube, std::vector<u8>& outBytes, i32& outW,
-                   i32& outH, i32& outMipLevels, i32& outArraySize, bool& outIsCube,
-                   gfx::Format& outFormat) {
+                   bool gammaColorPipeline, bool wantCube, bool forceLinear,
+                   std::vector<u8>& outBytes, i32& outW, i32& outH, i32& outMipLevels,
+                   i32& outArraySize, bool& outIsCube, gfx::Format& outFormat) {
+    // The binding said "linear data" (kTextureLinearSubKind), which outranks
+    // anything the filename suggests. Otherwise fall back to the path guess,
+    // which is all a format that does not declare its slots gives us.
+    const auto srgbPolicy = [&](gfx::Format raw) {
+        using ::whiteout::flakes::ImageUsage;
+        if (forceLinear)
+            return ::whiteout::flakes::ApplySrgbPolicy(raw, ImageUsage::NormalMap,
+                                                       gammaColorPipeline);
+        return ::whiteout::flakes::ApplyTextureSrgbPolicy(raw, pathForSrgb, gammaColorPipeline);
+    };
     auto result = model::DispatchTextureParser(
         ext, [&](auto& parser) { return parser.parse(bytes); });
     if (!result)
@@ -311,7 +321,7 @@ bool DecodeTexture(std::span<const u8> bytes, const std::string& ext,
         fmt = result->isSrgb() ? gfx::Format::R8G8B8A8_UNORM_SRGB
                                 : gfx::Format::R8G8B8A8_UNORM;
     }
-    outFormat = ::whiteout::flakes::ApplyTextureSrgbPolicy(fmt, pathForSrgb, gammaColorPipeline);
+    outFormat = srgbPolicy(fmt);
 
     if (wantCube) {
         using TT = whiteout::textures::TextureType;
@@ -358,9 +368,8 @@ bool DecodeTexture(std::span<const u8> bytes, const std::string& ext,
         outH = face;
         outArraySize = 6;
         outIsCube = true;
-        outFormat = ::whiteout::flakes::ApplyTextureSrgbPolicy(
-            result->isSrgb() ? gfx::Format::R8G8B8A8_UNORM_SRGB : gfx::Format::R8G8B8A8_UNORM,
-            pathForSrgb, gammaColorPipeline);
+        outFormat = srgbPolicy(result->isSrgb() ? gfx::Format::R8G8B8A8_UNORM_SRGB
+                                                : gfx::Format::R8G8B8A8_UNORM);
         return !outBytes.empty();
     }
 
@@ -448,9 +457,9 @@ bool AssetManager::ApplyPrepared(AssetKind kind, AssetSubKind subKind, const Con
         // Decode under the mode captured at Acquire (the model's mode), not the
         // live mode — the decode is async and the active mode may have moved on.
         if (!DecodeTexture(bytes, ext, pathish, textures_.SupportsBlockCompression(),
-                           acquireGamma, subKind == kTextureCubeSubKind, prep.pixels, prep.width,
-                           prep.height, prep.mipLevels, prep.arraySize, prep.isCube,
-                           prep.format)) {
+                           acquireGamma, subKind == kTextureCubeSubKind,
+                           subKind == kTextureLinearSubKind, prep.pixels, prep.width, prep.height,
+                           prep.mipLevels, prep.arraySize, prep.isCube, prep.format)) {
             std::lock_guard<std::mutex> lk(mu_);
             ++statApplyMisses_;
             return false;

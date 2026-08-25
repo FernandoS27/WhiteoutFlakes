@@ -541,9 +541,20 @@ std::vector<M3TextureRef> CollectM3Textures(const ::whiteout::m3::Model& model) 
                 continue;
             const std::string path = M3CleanPath(layer->texturePath);
             const bool cube = static_cast<M3LayerSlot>(s) == M3LayerSlot::Environment;
-            // Cube-ness joins the key: the same file wanted both ways is two
-            // GPU textures, and one view cannot answer both bindings.
-            std::string key = (cube ? "cube:" : "") + path;
+            // Only the Normal slot is declared linear. The mask and gloss
+            // slots are data too and still sample through an sRGB view — 56%
+            // of them read alpha, which that view leaves alone, so it is a
+            // separate question rather than this one.
+            const bool linear = static_cast<M3LayerSlot>(s) == M3LayerSlot::Normal;
+            // Cube-ness and linearity join the key: the same file wanted two
+            // ways is two GPU textures, and one view cannot answer both
+            // bindings.
+            std::string key;
+            if (cube)
+                key += "cube:";
+            if (linear)
+                key += "lin:";
+            key += path;
             std::transform(key.begin(), key.end(), key.begin(),
                            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
             if (seen.contains(key))
@@ -556,6 +567,7 @@ std::vector<M3TextureRef> CollectM3Textures(const ::whiteout::m3::Model& model) 
             ref.wrapFlags = ((f & static_cast<u32>(TextureLayerFlag::UVWrapX)) ? 0x1u : 0u) |
                             ((f & static_cast<u32>(TextureLayerFlag::UVWrapY)) ? 0x2u : 0u);
             ref.cube = cube;
+            ref.linear = linear;
             out.push_back(std::move(ref));
         }
     }
@@ -574,6 +586,7 @@ std::vector<renderer::model::TextureData> M3ModelAdapter::GetTextures() {
         td.height = 0;
         td.wrapFlags = refs[i].wrapFlags;
         td.cubeMap = refs[i].cube;
+        td.linearData = refs[i].linear;
         td.sharedKey = refs[i].path;
         out.push_back(std::move(td));
     }

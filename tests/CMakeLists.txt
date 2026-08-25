@@ -158,6 +158,10 @@ if(WDX_ENABLE_D3)
     wdx_add_test(d3_cache_test d3_cache_test.cpp)
     # `.tex` through the shared dispatcher, on the installed client.
     wdx_add_test(d3_texture_test d3_texture_test.cpp)
+    # Gate D3-G6: a player Appearance ships its whole wardrobe and the file
+    # never says which of it draws. Counts what dressing hides, and checks that
+    # a model with no wardrobe is left completely alone.
+    wdx_add_test(d3_character_test d3_character_test.cpp)
 endif()
 
 # The baked-vertex-buffer description check. Compiled unconditionally — it

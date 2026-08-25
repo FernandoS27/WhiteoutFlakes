@@ -262,6 +262,48 @@ std::vector<D3TextureRef> CollectD3Textures(const d3n::Appearances& app, u32 loo
     return out;
 }
 
+std::vector<D3TextureRef> CollectD3Textures(const d3n::Appearances& app, u32 lookIndex,
+                                            std::span<const D3SubObjectRef> emitted,
+                                            std::span<const u32> lookByGeoset) {
+    // The uniform pass first, unchanged and in the same order, so an undressed
+    // model produces the identical list it always did — the canonical order is
+    // an index space two other places hold ids into, and quietly permuting it
+    // is how `.m3` broke twice.
+    std::vector<D3TextureRef> out = CollectD3Textures(app, lookIndex);
+    auto add = [&out](i32 sno) {
+        if (sno <= 0)
+            return;
+        for (const auto& e : out) {
+            if (e.snoId == sno)
+                return;
+        }
+        out.push_back(D3TextureRef{sno, false});
+    };
+
+    // Then whatever the overrides reach that the uniform pass did not. Walking
+    // sub-objects rather than materials is the point: one material serves a
+    // whole weight class, so two pieces of it can sit at two look indices and
+    // the material walk can only ever see one.
+    const d3n::GeoSet* sets[2] = {&app.tGeoSet0, &app.tGeoSet1};
+    for (usize g = 0; g < emitted.size() && g < lookByGeoset.size(); ++g) {
+        const u32 look = lookByGeoset[g];
+        if (look == lookIndex)
+            continue;
+        const auto& r = emitted[g];
+        const auto& subs = sets[r.geoSet & 1]->arSubObjects;
+        if (r.index >= subs.size())
+            continue;
+        const d3n::SubObjectAppearance* variant = D3VariantFor(app, subs[r.index], look);
+        if (!variant)
+            continue;
+        for (const auto& tex : variant->tMaterial.arTextures) {
+            if (D3EntryOwnsTexture(tex.dwTextureType))
+                add(tex.snoTexture.id);
+        }
+    }
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // Construction
 // ---------------------------------------------------------------------------
@@ -474,7 +516,7 @@ std::vector<TextureData> D3ModelAdapter::GetTextures() {
     std::vector<TextureData> out;
     if (!app_)
         return out;
-    const auto refs = CollectD3Textures(*app_, lookIndex_);
+    const auto refs = CollectD3Textures(*app_, lookIndex_, emitted_, geosetLooks_);
     out.reserve(refs.size());
     for (usize i = 0; i < refs.size(); ++i) {
         TextureData td;
@@ -824,6 +866,12 @@ FrameState D3ModelAdapter::Evaluate(const PoseRequest& req) const {
                                       ? (local * fs.boneWorldMatrices[static_cast<usize>(p)])
                                       : local;
     }
+    // Not animated: D3 states visibility per equipped item, not per keyframe.
+    // It rides FrameState because that is the one channel RenderModel reads a
+    // per-geoset draw bit from, and a restyle takes effect on the next
+    // Evaluate rather than needing the mesh re-uploaded.
+    if (!geosetHidden_.empty())
+        fs.geosetHidden = geosetHidden_;
     return fs;
 }
 

@@ -324,7 +324,7 @@ TEST_CASE("D3: the canonical texture list and the table index into the same call
 
         d3p::D3TypeCensus census;
         auto table = d3p::BuildD3SurfaceTable(adapter->SourceAppearance(), adapter->LookIndex(),
-                                              textures, adapter->EmittedSubObjects(), &cache,
+                                              textures, adapter->EmittedSubObjects(), &cache, {},
                                               &census);
         REQUIRE(table != nullptr);
         // Entry g describes geoset g: the table and the mesh list are the same

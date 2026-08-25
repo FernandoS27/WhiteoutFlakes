@@ -59,4 +59,5 @@ Sc2M3/AI_Champion_Hologram_Adept.m3   # both alpha-mask layers, no gloss
 Sc2M3/Adept_Golden.m3                             # cubic env + env mask
 Sc2M3/GhostEx3.m3          # a material with NO diffuse layer, emissive solid colour
 Sc2M3/War3HD_HeroPaladin.m3 # ditto, emissive TEXTURE, and the one CMP_ composite here
+Sc2M3/Reaper.m3            # normal map named ReaperA_Norms.dds - the slot-declared linear path
 HotSM3/Storm_Doodad_ArenaHeaven_PortalFrame.m3    # spherical env + env mask

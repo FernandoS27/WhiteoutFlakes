@@ -11,6 +11,10 @@
 #if WDX_ENABLE_M3
 #include "io/m3/m3_model_adapter.h"
 #endif
+#if WDX_ENABLE_D3
+#include "io/d3/d3_model_adapter.h"
+#include "renderer/profiles/diablo3/d3_character_appearance.h"
+#endif
 #include "renderer/model/corn_effect_source.h"
 #include "renderer/particle/splat_service.h"
 #include "renderer/render_pipeline.h"
@@ -697,6 +701,157 @@ void ViewerApp::SetWowCharacterChoice(u32 optionId, u32 choiceIndex) {
 #else
     (void)optionId;
     (void)choiceIndex;
+#endif
+}
+
+// ---- Diablo III character dressing -----------------------------------------
+//
+// The third of the three: WowSkin picks a creature's fill, WowCharacterOptions
+// picks a character's, and this picks which of the armour variants a `.app`
+// already carries is the one being worn. All three restyle in place.
+//
+// Addressed through the focus actor rather than through a path, unlike the two
+// above, because a D3 outfit is keyed on the *appearance* — 594 actors name one
+// `.app` and ModelLoader hands them one shared drawable, so the file that was
+// asked for is not what is being dressed.
+
+#if WDX_ENABLE_D3
+namespace {
+
+renderer::profiles::diablo3::D3CharacterAppearance* D3Characters(renderer::RenderService& svc,
+                                                                 u32 actorHandle,
+                                                                 io::D3ModelAdapter** outAdapter) {
+    auto adapter = svc.Loader().D3AdapterOf(actorHandle);
+    if (!adapter)
+        return nullptr;
+    auto& chars = svc.Loader().D3Characters();
+    if (!chars.IsCharacter(*adapter))
+        return nullptr;
+    *outAdapter = adapter.get();
+    return &chars;
+}
+
+} // namespace
+#endif
+
+std::vector<ViewerApp::D3CharacterSlot> ViewerApp::D3CharacterSlots() const {
+#if WDX_ENABLE_D3
+    auto& svc = const_cast<ViewerApp*>(this)->service_;
+    io::D3ModelAdapter* adapter = nullptr;
+    auto* chars = D3Characters(svc, focusActor_, &adapter);
+    if (!chars)
+        return {};
+    std::vector<D3CharacterSlot> out;
+    for (const auto& s : chars->Slots(*adapter)) {
+        D3CharacterSlot row;
+        row.name = s.name;
+        row.slot = static_cast<i32>(s.slot);
+        for (const auto& item : s.items)
+            row.items.push_back(item.label);
+        row.selectedItem = s.selectedItem;
+        row.lookIndex = s.lookIndex;
+        out.push_back(std::move(row));
+    }
+    return out;
+#else
+    return {};
+#endif
+}
+
+void ViewerApp::SetD3CharacterItem(i32 slot, u32 itemIndex) {
+#if WDX_ENABLE_D3
+    io::D3ModelAdapter* adapter = nullptr;
+    auto* chars = D3Characters(service_, focusActor_, &adapter);
+    if (!chars)
+        return;
+    chars->SetItem(*adapter, static_cast<::whiteout::sno::d3::native::LookSlot>(slot), itemIndex);
+    RestyleD3();
+#else
+    (void)slot;
+    (void)itemIndex;
+#endif
+}
+
+void ViewerApp::SetD3CharacterSlotLook(i32 slot, u32 lookIndex) {
+#if WDX_ENABLE_D3
+    io::D3ModelAdapter* adapter = nullptr;
+    auto* chars = D3Characters(service_, focusActor_, &adapter);
+    if (!chars)
+        return;
+    chars->SetSlotLook(*adapter, static_cast<::whiteout::sno::d3::native::LookSlot>(slot),
+                       lookIndex);
+    RestyleD3();
+#else
+    (void)slot;
+    (void)lookIndex;
+#endif
+}
+
+std::vector<std::string> ViewerApp::D3LookNames() const {
+#if WDX_ENABLE_D3
+    auto& svc = const_cast<ViewerApp*>(this)->service_;
+    io::D3ModelAdapter* adapter = nullptr;
+    if (!D3Characters(svc, focusActor_, &adapter))
+        return {};
+    std::vector<std::string> out;
+    for (const auto& n : adapter->Looks())
+        out.push_back(n);
+    return out;
+#else
+    return {};
+#endif
+}
+
+void ViewerApp::SetD3CharacterLookForAll(u32 lookIndex) {
+#if WDX_ENABLE_D3
+    io::D3ModelAdapter* adapter = nullptr;
+    auto* chars = D3Characters(service_, focusActor_, &adapter);
+    if (!chars)
+        return;
+    chars->SetLookForAll(*adapter, lookIndex);
+    RestyleD3();
+#else
+    (void)lookIndex;
+#endif
+}
+
+std::vector<ViewerApp::D3CharacterExtra> ViewerApp::D3CharacterExtras() const {
+#if WDX_ENABLE_D3
+    auto& svc = const_cast<ViewerApp*>(this)->service_;
+    io::D3ModelAdapter* adapter = nullptr;
+    auto* chars = D3Characters(svc, focusActor_, &adapter);
+    if (!chars)
+        return {};
+    std::vector<D3CharacterExtra> out;
+    for (const auto& e : chars->Extras(*adapter))
+        out.push_back({e.name, e.geoset, e.shown});
+    return out;
+#else
+    return {};
+#endif
+}
+
+void ViewerApp::SetD3CharacterExtra(u32 geoset, bool shown) {
+#if WDX_ENABLE_D3
+    io::D3ModelAdapter* adapter = nullptr;
+    auto* chars = D3Characters(service_, focusActor_, &adapter);
+    if (!chars)
+        return;
+    chars->SetExtra(*adapter, geoset, shown);
+    RestyleD3();
+#else
+    (void)geoset;
+    (void)shown;
+#endif
+}
+
+void ViewerApp::RestyleD3() {
+#if WDX_ENABLE_D3
+    // A reload is the fallback and not the path: what a character wears is not
+    // a function of its pose or of where the camera is standing, and reloading
+    // throws both away.
+    if (!service_.Loader().RestyleD3Model(focusActor_) && !currentModelPath_.empty())
+        LoadModelIntoActiveScene(currentModelPath_);
 #endif
 }
 

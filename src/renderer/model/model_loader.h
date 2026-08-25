@@ -23,6 +23,9 @@
 #endif
 #if WDX_ENABLE_D3
 #include "io/d3/d3_sno_cache.h"
+// Included rather than forward-declared for WowCharacterAppearance's reason:
+// the accessor hands out a reference and callers reach through it.
+#include "renderer/profiles/diablo3/d3_character_appearance.h"
 #endif
 
 #include <memory>
@@ -202,6 +205,27 @@ public:
     /// @brief Get-or-insert: returns the drawable already built for @p fresh's
     ///        `(appearanceSno, lookIndex)`, or records and returns @p fresh.
     std::shared_ptr<io::D3ModelAdapter> D3Drawable(const std::shared_ptr<io::D3ModelAdapter>& fresh);
+
+    // What a player character is wearing. WowCharacters()' sibling and lazily
+    // created for the same reason.
+    profiles::diablo3::D3CharacterAppearance& D3Characters();
+
+    /// @brief The Diablo III adapter @p actorHandle draws through, or null.
+    ///
+    /// The outfit is addressed by the *appearance*, not by the file that was
+    /// asked for, so a host that wants to dress what it is looking at needs the
+    /// adapter rather than a path — see D3CharacterAppearance's keying note.
+    std::shared_ptr<io::D3ModelAdapter> D3AdapterOf(u32 actorHandle);
+
+    /// @brief Re-dress @p actorHandle in place after a wardrobe change.
+    ///
+    /// Returns false when the actor is gone or is not a D3 character, which is
+    /// the host's cue to fall back to a reload. Nothing about a restyle needs
+    /// one: which geosets draw is frame state, and the materials are a surface
+    /// table rebuild plus a re-stage — the same shape as RestyleWowModel, for
+    /// the same reason (the document's pose and the camera's framing are not a
+    /// function of what the character is wearing).
+    bool RestyleD3Model(u32 actorHandle);
 #endif
 
 private:
@@ -306,6 +330,7 @@ private:
     // and pinning one after its last actor died would keep a 4.5 MB parse alive
     // outside the cache that budgets those.
     std::unordered_map<u64, std::weak_ptr<io::D3ModelAdapter>> d3Drawables_;
+    std::unique_ptr<profiles::diablo3::D3CharacterAppearance> d3Characters_;
 #endif
 #if WDX_ENABLE_M2
     std::unique_ptr<profiles::wow::WowReplaceableTextures> wowReplaceables_;

@@ -173,6 +173,10 @@ struct D3TypeCensus {
 
 /// @brief Build the table for @p app under @p lookIndex.
 ///
+/// @p lookByGeoset overrides that index per geoset — a dressed character wears
+/// one look per equipment slot, not one per model. Empty (the default) puts
+/// every geoset on @p lookIndex, which is every model that is not a character.
+///
 /// @p emitted is the adapter's emission order (D3ModelAdapter::EmittedSubObjects)
 /// — entry g describes geoset g — and @p textures is the same
 /// `CollectD3Textures` call `GetTextures()` emits, so the two agree by
@@ -183,7 +187,8 @@ std::unique_ptr<D3SurfaceTable>
 BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
                     std::span<const ::whiteout::flakes::io::D3TextureRef> textures,
                     std::span<const ::whiteout::flakes::io::D3SubObjectRef> emitted,
-                    ::whiteout::flakes::io::D3SnoCache* cache, D3TypeCensus* census = nullptr);
+                    ::whiteout::flakes::io::D3SnoCache* cache,
+                    std::span<const u32> lookByGeoset = {}, D3TypeCensus* census = nullptr);
 
 /// @brief Which bucket a surface draws in.
 ///

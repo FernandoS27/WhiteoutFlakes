@@ -431,3 +431,47 @@ TEST_CASE("m3_surface_table: rgbAdd rides the same extra multiplier the tint doe
     CHECK(env.invert == 1);
     CHECK(env.clampColor == 1);
 }
+
+TEST_CASE("m3_surface_table: the normal slot declares itself linear") {
+    // The layer slot is the authority on colour space, not the filename. Over
+    // the 51469-model SC2 + Heroes corpus 16299 of 71792 normal-map references
+    // (22.7%) carry a name `DetermineImageUsage` reads as colour, and an sRGB
+    // view on a DXT5nm map gamma-decodes green (y) while leaving alpha (x)
+    // alone — every normal tilts along the bitangent, whose sign flips at a
+    // mirrored-UV seam, so half the model lights and half goes dark.
+    m3::Model model;
+    m3::StandardMaterial mat;
+    mat.diffuseLayer = TexLayer("Assets/Textures/Marine_Diffuse_Blood.dds");
+    // A shipped spelling the suffix list does NOT match, which is the point.
+    mat.normalLayer = TexLayer("Assets/Textures/Marine_Normal_Blood.dds");
+    mat.specularLayer = TexLayer("Assets/Textures/Marine_Specular_Blood.dds");
+    model.standardMaterials = {mat};
+    model.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
+    model.divisions = {Division(0)};
+
+    const auto texs = wio::CollectM3Textures(model);
+    REQUIRE(texs.size() == 3);
+    for (const auto& t : texs) {
+        const bool isNormal = t.path.find("_Normal_") != std::string::npos;
+        CHECK(t.linear == isNormal);
+    }
+}
+
+TEST_CASE("m3_surface_table: one file bound both ways is two textures") {
+    // Same reasoning as the cube flag above: linearity belongs to the binding,
+    // so a path wanted as colour on one material and as a normal map on
+    // another cannot collapse to one slot — one view cannot answer both.
+    m3::Model model;
+    m3::StandardMaterial colour;
+    colour.diffuseLayer = TexLayer("shared.dds");
+    m3::StandardMaterial data;
+    data.normalLayer = TexLayer("shared.dds");
+    model.standardMaterials = {colour, data};
+    model.materialMaps = {Matm(m3::MaterialType::Standard, 0),
+                          Matm(m3::MaterialType::Standard, 1)};
+    model.divisions = {Division(0)};
+
+    const auto texs = wio::CollectM3Textures(model);
+    REQUIRE(texs.size() == 2);
+    CHECK(texs[0].linear != texs[1].linear);
+}

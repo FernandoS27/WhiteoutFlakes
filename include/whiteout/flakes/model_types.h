@@ -491,6 +491,12 @@ struct TextureData {
     ///        layer is the only user; see AssetManager's kTextureCubeSubKind
     ///        for why the request has to travel with the reference.
     bool cubeMap = false;
+    /// @brief This texture holds linear data (a normal map), so it must not be
+    ///        sampled through an sRGB view. Set by sources that know the
+    ///        material slot a texture is bound to; left false by the ones that
+    ///        do not, which leaves the filename guess in charge. See
+    ///        AssetManager's kTextureLinearSubKind.
+    bool linearData = false;
 
     std::string sharedKey;
 };

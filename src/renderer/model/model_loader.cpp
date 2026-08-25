@@ -127,6 +127,12 @@ ModelLoader::ModelLoader(RenderService& rs) : rs_(rs) {}
 ModelLoader::~ModelLoader() = default;
 
 #if WDX_ENABLE_D3
+namespace {
+// Defined with the other surface builders further down; declared here because
+// RestyleD3Model needs it and sits with the rest of the D3 plumbing.
+void BuildD3Surfaces(Actor& actor);
+} // namespace
+
 io::D3SnoCache& ModelLoader::D3Cache() {
     if (!d3Cache_)
         d3Cache_ = std::make_unique<io::D3SnoCache>(rs_.Scene().ActiveContentProvider());
@@ -153,6 +159,48 @@ std::shared_ptr<io::D3ModelAdapter> ModelLoader::D3Drawable(
     // map only decides whether two actors share one drawable.
     d3Drawables_.emplace(key, fresh);
     return fresh;
+}
+
+profiles::diablo3::D3CharacterAppearance& ModelLoader::D3Characters() {
+    if (!d3Characters_)
+        d3Characters_ = std::make_unique<profiles::diablo3::D3CharacterAppearance>();
+    return *d3Characters_;
+}
+
+std::shared_ptr<io::D3ModelAdapter> ModelLoader::D3AdapterOf(u32 actorHandle) {
+    Actor* actor = rs_.Scene().Actors().Find(actorHandle);
+    if (!actor)
+        return nullptr;
+    return std::dynamic_pointer_cast<io::D3ModelAdapter>(actor->animation.Source());
+}
+
+bool ModelLoader::RestyleD3Model(u32 actorHandle) {
+    Actor* actor = rs_.Scene().Actors().Find(actorHandle);
+    if (!actor)
+        return false;
+    auto d3 = std::dynamic_pointer_cast<io::D3ModelAdapter>(actor->animation.Source());
+    if (!d3 || !D3Characters().Apply(*d3))
+        return false;
+
+    // Geosets need nothing more — which of them draw is frame state, so the
+    // next Evaluate already reports the new set. The materials do: a look is
+    // *which variant of its material* a piece wears, and that is a different
+    // texture as well as a different colour set.
+    auto table = profiles::diablo3::BuildD3SurfaceTable(
+        d3->SourceAppearance(), d3->LookIndex(),
+        io::CollectD3Textures(d3->SourceAppearance(), d3->LookIndex(), d3->EmittedSubObjects(),
+                              d3->GeosetLooks()),
+        d3->EmittedSubObjects(), &D3Cache(), d3->GeosetLooks());
+    bool anyValid = false;
+    for (const auto& sf : table->Surfaces())
+        anyValid |= sf.valid;
+    if (!anyValid)
+        return false;
+    actor->render.surfaceTable = std::move(table);
+    BuildD3Surfaces(*actor);
+    StageTextures(*actor, d3->GetTextures());
+    actor->render.stagedDirty = true;
+    return true;
 }
 #endif
 
@@ -539,6 +587,7 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
         st.replaceableId = tex.replaceableId;
         st.wrapFlags = tex.wrapFlags;
         st.cubeMap = tex.cubeMap;
+        st.linearData = tex.linearData;
         st.format = tex.format;
         st.sharedKey = tex.sharedKey;
         // Pixels only flow through staging for synthetic textures (no
@@ -674,6 +723,7 @@ void ModelLoader::UpdateMaterials(u32 handle, const std::vector<MaterialData>& m
         st.replaceableId = tex.replaceableId;
         st.wrapFlags = tex.wrapFlags;
         st.cubeMap = tex.cubeMap;
+        st.linearData = tex.linearData;
         st.format = tex.format;
         st.pixels = tex.pixels;
         st.sharedKey = tex.sharedKey;
@@ -700,6 +750,7 @@ void ModelLoader::StageTextures(Actor& mi, const std::vector<TextureData>& textu
         st.replaceableId = tex.replaceableId;
         st.wrapFlags = tex.wrapFlags;
         st.cubeMap = tex.cubeMap;
+        st.linearData = tex.linearData;
         st.format = tex.format;
         st.pixels = tex.pixels;
         st.sharedKey = tex.sharedKey;
@@ -1209,6 +1260,13 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
                          "(neither Actor nor Appearance)\n",
                          ref.Describe().c_str());
         }
+        if (d3) {
+            // Before the surface table, which resolves each geoset's material
+            // at the look this chooses for it — and before GetTextures, which
+            // collects exactly those variants' textures. A model with no
+            // wardrobe is left alone and keeps drawing everything.
+            D3Characters().Apply(*d3);
+        }
         source = d3;
     }
 #endif
@@ -1244,8 +1302,9 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
         // Unlit, which draws where this model would vanish.
         auto table = profiles::diablo3::BuildD3SurfaceTable(
             d3->SourceAppearance(), d3->LookIndex(),
-            io::CollectD3Textures(d3->SourceAppearance(), d3->LookIndex()),
-            d3->EmittedSubObjects(), &D3Cache());
+            io::CollectD3Textures(d3->SourceAppearance(), d3->LookIndex(),
+                                  d3->EmittedSubObjects(), d3->GeosetLooks()),
+            d3->EmittedSubObjects(), &D3Cache(), d3->GeosetLooks());
         bool anyValid = false;
         for (const auto& s : table->Surfaces())
             anyValid |= s.valid;
@@ -1513,9 +1572,12 @@ void ModelLoader::UploadStagedTextures(Actor& mi) {
                     ? ContentRef::FromFileId(
                           static_cast<u32>(std::strtoul(st.sharedKey.c_str() + 1, nullptr, 10)))
                     : ContentRef::FromPath(st.sharedKey);
-            const auto slot = rs_.Assets().Acquire(
-                AssetKind::Texture,
-                st.cubeMap ? assets::kTextureCubeSubKind : assets::kSoleSubKind, ref);
+            // Cube outranks linear: the only cube slot is the environment map,
+            // which is colour, so the two never contend.
+            const assets::AssetSubKind subKind = st.cubeMap  ? assets::kTextureCubeSubKind
+                                                 : st.linearData ? assets::kTextureLinearSubKind
+                                                                 : assets::kSoleSubKind;
+            const auto slot = rs_.Assets().Acquire(AssetKind::Texture, subKind, ref);
             mi.render.textures->BindSlot(id, slot, st.wrapFlags);
             continue;
         }

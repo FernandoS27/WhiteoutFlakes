@@ -94,6 +94,18 @@ namespace whiteout::flakes::io {
 ///        id, first-seen order.
 std::vector<D3TextureRef> CollectD3Textures(const d3n::Appearances& app, u32 lookIndex);
 
+/// @brief The same list, widened by whatever the per-geoset look overrides
+///        reach.
+///
+/// @p lookByGeoset is parallel to @p emitted and may be shorter or empty; every
+/// geoset it does not cover uses @p lookIndex. The uniform prefix is emitted
+/// first and unchanged, so a model with no override produces a list identical
+/// to the two-argument form — the canonical order is an index space the surface
+/// table holds ids into, and permuting it silently rebinds every texture.
+std::vector<D3TextureRef> CollectD3Textures(const d3n::Appearances& app, u32 lookIndex,
+                                            std::span<const D3SubObjectRef> emitted,
+                                            std::span<const u32> lookByGeoset);
+
 /// @brief The material serving @p sub under @p lookIndex, or null.
 ///
 /// `SubObject.szName` — *not* `szMaterialName`, whose name lies: it holds a
@@ -215,6 +227,47 @@ public:
     ///        change) — so the mesh upload survives.
     void SetLookIndex(u32 index);
 
+    // ---- dressing ---------------------------------------------------------
+    //
+    // A player Appearance carries every armour variant at once — naked, light,
+    // medium and heavy, for all four slots, plus the death and skill meshes —
+    // and the game decides which of them draw. Nothing in the file says; the
+    // rules live in ActorModel_ApplyLook. So the adapter holds the answer and
+    // does not compute it: profiles::diablo3::D3CharacterAppearance is the only
+    // caller, exactly as WowCharacterAppearance is for M2's geoset selection.
+
+    /// @brief Which emitted geosets are held back. One byte per geoset, empty
+    ///        for "all of them draw".
+    ///
+    /// Empty is the default and the only state a creature or a prop is ever in
+    /// — the same reason M2's visible-geoset set defaults to everything rather
+    /// than to nothing.
+    void SetGeosetHidden(std::vector<u8> hidden) {
+        geosetHidden_ = std::move(hidden);
+    }
+    std::span<const u8> GeosetHidden() const {
+        return geosetHidden_;
+    }
+
+    /// @brief Per-geoset look override. Empty = every geoset resolves its
+    ///        material at @ref LookIndex.
+    ///
+    /// The look is per *item* in the original — each equipped piece carries its
+    /// own look name on tag 0x10401 — and one material serves a whole weight
+    /// class, so a heavy chest and heavy boots from two different sets are one
+    /// material read at two variant indices. A model-wide index cannot express
+    /// that, which is why this is a vector and not a second scalar.
+    void SetGeosetLooks(std::vector<u32> lookByGeoset) {
+        geosetLooks_ = std::move(lookByGeoset);
+    }
+    std::span<const u32> GeosetLooks() const {
+        return geosetLooks_;
+    }
+    /// @brief The look geoset @p g resolves under, override or not.
+    u32 LookForGeoset(usize g) const {
+        return (g < geosetLooks_.size()) ? geosetLooks_[g] : lookIndex_;
+    }
+
     const d3n::Appearances& SourceAppearance() const {
         return *app_;
     }
@@ -287,6 +340,9 @@ private:
     u32 lookIndex_ = 0;
     std::vector<std::string> lookNames_;
     std::vector<D3SubObjectRef> emitted_;
+    /// @brief Parallel to `emitted_`; both empty until something dresses this.
+    std::vector<u8> geosetHidden_;
+    std::vector<u32> geosetLooks_;
 
     /// @brief Composed once at build: the local bind pose (tTransform2) as a
     ///        matrix per bone, and the attachment frame (tTransform1).

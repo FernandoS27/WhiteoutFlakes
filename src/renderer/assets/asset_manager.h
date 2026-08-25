@@ -98,6 +98,25 @@ inline constexpr AssetSubKind kSoleSubKind = 0;
 /// (@ref BuildCubeFromSphereMap).
 inline constexpr AssetSubKind kTextureCubeSubKind = 1;
 
+/// @brief Texture sub-kind: this file holds linear DATA, not colour, so it
+///        must never be sampled through an `_SRGB` view.
+///
+/// A sub-kind for the same reason the cube one is: the policy belongs to the
+/// *binding*, not to the file, and it is part of the slot key. Without a
+/// declaration the loader falls back to @ref DetermineImageUsage, which
+/// guesses from the filename and is wrong for 16299 of 71792 normal-map
+/// references (22.7%) over the StarCraft II + Heroes corpus — the shipped
+/// names are `Marine_Normal_Blood.dds`, `Tank_Treads_Norms.dds`,
+/// `..._Normals.dds`, and the suffix list matches only a trailing `_normal` /
+/// `_norm` / `_nrm`.
+///
+/// The cost is not subtle. On a DXT5nm map an sRGB view gamma-decodes green
+/// (which carries y) while leaving alpha (x) alone, so a flat 128 y-byte
+/// reads as -0.57 and every normal tilts along the bitangent — whose sign
+/// flips at a mirrored-UV seam, lighting one half of a symmetric model and
+/// darkening the other with a hard seam down the middle.
+inline constexpr AssetSubKind kTextureLinearSubKind = 2;
+
 class AssetManager {
 public:
     using SlotId = u32;

@@ -96,7 +96,8 @@ bool UvMatrixIsAuthored(const d3n::MaterialTextureEntry& e) {
 std::unique_ptr<D3SurfaceTable>
 BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
                     std::span<const D3TextureRef> textures, std::span<const D3SubObjectRef> emitted,
-                    ::whiteout::flakes::io::D3SnoCache* cache, D3TypeCensus* census) {
+                    ::whiteout::flakes::io::D3SnoCache* cache, std::span<const u32> lookByGeoset,
+                    D3TypeCensus* census) {
     auto table = std::make_unique<D3SurfaceTable>();
     auto& surfaces = table->Surfaces();
     surfaces.resize(emitted.size());
@@ -113,7 +114,8 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
         D3Surface& s = surfaces[g];
         s.rigid = sub.arVertexInfluences.empty();
 
-        const d3n::SubObjectAppearance* variant = ::whiteout::flakes::io::D3VariantFor(app, sub, lookIndex);
+        const u32 look = (g < lookByGeoset.size()) ? lookByGeoset[g] : lookIndex;
+        const d3n::SubObjectAppearance* variant = ::whiteout::flakes::io::D3VariantFor(app, sub, look);
         if (!variant) {
             // A name that finds no material is content, not a bug: the surface
             // stays invalid and the actor keeps the unlit fallback for it.

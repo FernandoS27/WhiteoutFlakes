@@ -327,7 +327,47 @@ public:
     std::vector<WowCharacterOption> WowCharacterOptions() const;
     void SetWowCharacterChoice(u32 optionId, u32 choiceIndex);
 
+    // What a Diablo III player character is wearing. The same idea as the two
+    // above and a different shape, because D3 states it differently: a `.m2`
+    // character leaves its geosets and its body sheet blank for the game to
+    // fill, and a `.app` ships every armour variant at once for the game to
+    // pick between. So this offers pieces out of a wardrobe rather than
+    // choices out of a database.
+    //
+    // Empty when the focus actor is not a D3 player character, or with `.acr`
+    // compiled out. Setting anything re-dresses the actor where it stands.
+    struct D3CharacterSlot {
+        std::string name;                ///< "Torso", "Legs", "Boots", "Gloves", "Hair".
+        i32 slot = 0;                    ///< native::LookSlot, opaque to the UI.
+        std::vector<std::string> items;  ///< "Naked", "Heavy A", "Medium B (CLS)".
+        u32 selectedItem = 0;
+        u32 lookIndex = 0;               ///< Index into D3LookNames().
+    };
+    std::vector<D3CharacterSlot> D3CharacterSlots() const;
+    void SetD3CharacterItem(i32 slot, u32 itemIndex);
+    void SetD3CharacterSlotLook(i32 slot, u32 lookIndex);
+
+    /// The material sets the appearance ships — "A", "Unique25", "A_skeleton".
+    /// This is what an equipped item names through tag 0x10401, so putting one
+    /// on every slot at once is what wearing an armour *set* means.
+    std::vector<std::string> D3LookNames() const;
+    void SetD3CharacterLookForAll(u32 lookIndex);
+
+    /// The sub-objects no equipment slot claims: death bodies, skill meshes,
+    /// the merged `oneBatch` LOD. Hidden unless asked for.
+    struct D3CharacterExtra {
+        std::string name;
+        u32 geoset = 0;
+        bool shown = false;
+    };
+    std::vector<D3CharacterExtra> D3CharacterExtras() const;
+    void SetD3CharacterExtra(u32 geoset, bool shown);
+
 private:
+    /// Re-dress the focus actor after a wardrobe change, reloading only if it
+    /// cannot be done in place.
+    void RestyleD3();
+
     void InitImGui();
     void ShutdownImGui();
 

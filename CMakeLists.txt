@@ -1350,6 +1350,7 @@ if(WDX_ENABLE_D3)
         src/io/d3/d3_asset_provider.cpp
         src/io/d3/d3_model_adapter.cpp
         src/io/d3/d3_sno_cache.cpp
+        src/renderer/profiles/diablo3/d3_character_appearance.cpp
         src/renderer/profiles/diablo3/d3_standard_shading.cpp
         src/renderer/profiles/diablo3/d3_surface_table.cpp
     )

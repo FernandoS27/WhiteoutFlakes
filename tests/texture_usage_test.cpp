@@ -92,3 +92,17 @@ TEST_CASE("The path convenience overload matches the two-step call") {
     REQUIRE(ApplyTextureSrgbPolicy(Format::BC7_UNORM, "Textures/rock.blp") ==
             ApplySrgbPolicy(Format::BC7_UNORM, ImageUsage::Default));
 }
+
+TEST_CASE("The name heuristic misses StarCraft II's shipped normal-map spellings") {
+    // Not a wish list — these are the four commonest misses over the 51469-model
+    // SC2 + Heroes corpus, where 22.7% of normal-map references are named in a
+    // way this function reads as colour. They are pinned as FAILURES on purpose:
+    // the fix is not more suffixes (the next model would spell it differently
+    // again), it is that a source which knows the material slot declares the
+    // colour space itself and the filename is only the fallback. See
+    // `M3TextureRef::linear` and AssetManager's `kTextureLinearSubKind`.
+    REQUIRE(DetermineImageUsage("Assets/Textures/Marine_Normal_Blood.dds") == ImageUsage::Default);
+    REQUIRE(DetermineImageUsage("Assets/Textures/Ultralisk_Normals.dds") == ImageUsage::Default);
+    REQUIRE(DetermineImageUsage("Assets/Textures/Tank_Treads_Norms.dds") == ImageUsage::Default);
+    REQUIRE(DetermineImageUsage("Assets/Textures/Gen_Splat4_Normal2.dds") == ImageUsage::Default);
+}
