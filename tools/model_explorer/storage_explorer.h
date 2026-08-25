@@ -126,7 +126,8 @@ public:
 
     // Free-text filter over the current folder (io::MatchesFilter syntax:
     // substrings, `*`/`?` globs, comma-separated alternatives, `-` to exclude).
-    // Same box the panel's own search field drives.
+    // Same box the panel's own search field drives; applied at once (typing in
+    // the box is what waits — see kSearchDebounce).
     void SetSearchText(const std::string& text);
     const char* SearchText() const {
         return searchText_;
@@ -236,6 +237,12 @@ private:
     // Ctrl+F and consumed by the next BuildSearchBar.
     char searchText_[128] = {};
     bool focusSearch_ = false;
+    // Typing debounce. A keystroke re-lists the whole folder, which on a CASC
+    // root is not free, so the box is handed to the browser only once the user
+    // has stopped typing: each keystroke re-arms this to kSearchDebounce and
+    // NewFrame counts it down. 0 = the box and the browser agree.
+    static constexpr float kSearchDebounce = 0.8f; // seconds
+    float searchDelay_ = 0.0f;
     float iconSize_ = 128.0f;
 
     // Navigation staged by the UI, applied at the start of the next frame (see

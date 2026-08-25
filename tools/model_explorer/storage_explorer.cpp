@@ -266,6 +266,7 @@ void StorageExplorer::BuildFilterBar() {
 
 void StorageExplorer::SetSearchText(const std::string& text) {
     std::snprintf(searchText_, sizeof(searchText_), "%s", text.c_str());
+    searchDelay_ = 0.0f; // a host setting it is not typing: apply at once
     browser_.SetFilter(searchText_);
 }
 
@@ -288,21 +289,29 @@ void StorageExplorer::BuildSearchBar() {
         ImGui::SetKeyboardFocusHere();
     }
     ImGui::SetNextItemWidth(260);
-    ImGui::InputTextWithHint("##search", "Filter (Ctrl+F)", searchText_, sizeof(searchText_));
+    const bool edited =
+        ImGui::InputTextWithHint("##search", "Filter (Ctrl+F)", searchText_, sizeof(searchText_));
     // ASCII only: the font atlas bakes the default Latin range, so an em dash
     // would draw as a missing-glyph box.
     ImGui::SetItemTooltip("Case-insensitive substring.\n"
                           "*.mdx / foot?an : wildcards match the whole name\n"
                           "peasant, footman : comma-separated alternatives\n"
                           "-portrait : exclude");
+    if (edited)
+        searchDelay_ = kSearchDebounce;
     if (searchText_[0] != '\0') {
         ImGui::SameLine();
-        if (ImGui::SmallButton("Clear"))
+        if (ImGui::SmallButton("Clear")) {
             searchText_[0] = '\0';
+            searchDelay_ = 0.0f; // a click is not typing: nothing more is coming
+        }
     }
-    // Every keystroke re-lists the current folder and nothing else.
-    browser_.SetFilter(searchText_);
-    if (searchText_[0] != '\0') {
+    // Only once the typing has settled: a keystroke re-lists the whole
+    // folder. Until then the grid keeps showing the filter last applied,
+    // match count included, so read that one and not the box.
+    if (searchDelay_ <= 0.0f)
+        browser_.SetFilter(searchText_);
+    if (!browser_.Filter().empty()) {
         const auto& l = browser_.Current();
         ImGui::SameLine();
         ImGui::TextDisabled("%zu of %zu", l.folders.size() + l.modelFiles.size(),
@@ -342,7 +351,12 @@ void StorageExplorer::BuildEmptyHint() {
     }
 }
 
-void StorageExplorer::NewFrame(float /*dt*/) {
+void StorageExplorer::NewFrame(float dt) {
+    // The search box's typing debounce, counted down here rather than in
+    // BuildSearchBar so a panel the host stopped drawing still settles.
+    if (searchDelay_ > 0.0f)
+        searchDelay_ = std::max(0.0f, searchDelay_ - dt);
+
     // Apply navigation staged by last frame's UI BEFORE anything references the
     // (about-to-be-cleared) thumbnails. Clear() waits for the GPU to finish with
     // the old cells' targets first.
@@ -633,8 +647,8 @@ void StorageExplorer::BuildGrid() {
     // An empty grid should say which kind of empty it is — a folder with nothing
     // in it reads exactly like a filter that matched nothing.
     if (listing.folders.empty() && listing.modelFiles.empty()) {
-        ImGui::TextDisabled("%s", searchText_[0] != '\0' ? "Nothing here matches the filter."
-                                                         : "Nothing to show in this folder.");
+        ImGui::TextDisabled("%s", !browser_.Filter().empty() ? "Nothing here matches the filter."
+                                                             : "Nothing to show in this folder.");
     }
 
     ImGui::PopStyleVar(); // grid alpha
