@@ -233,6 +233,16 @@ u32 CascSource::FileIdForPath(const std::string& path) const {
     return 0;
 }
 
+// No suffix walk and no listfile in the way: the root manifest either holds an
+// entry for the id or it does not. The path comes back in the manifest's own
+// spelling, which for a D3 install is the CoreTOC name — the point of asking.
+std::string CascSource::PathForFileId(u32 fileId) const {
+    auto info = storage_().fileInfo(static_cast<i32>(fileId));
+    if (!info || info->path.empty())
+        return {};
+    return info->path;
+}
+
 void CascSource::List(const std::function<void(std::string)>& emit) const {
     storage_().enumerate([&](const casc::EnumerateEntry& e) {
         emit(ToListingPath(e.path));

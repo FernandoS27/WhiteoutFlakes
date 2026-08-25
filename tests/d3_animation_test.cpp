@@ -39,6 +39,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -371,4 +372,123 @@ TEST_CASE("D3 clip durations reach the host, not a nominal placeholder",
     // placeholder, which is what silently cut every loop short.
     CHECK(offNominal * 4 > total * 3); // >75% must carry a real duration
     CHECK(longest > 1000);             // and something must be longer than the placeholder
+}
+
+// ============================================================================
+// Clip names — install-only, because the names are not in the model files.
+//
+// Nothing inside a D3 asset names anything it references. An AnimSet maps an
+// animation tag id to an Anim SNO and stops there, and the tag id has no name
+// either: 2.6.2's own tag-to-text call (AnimTagName, 0x71006A09A0) walks a
+// 453-entry table whose every name pointer aims at the same empty string, so
+// the shipped client cannot spell a tag out loud any more than we can. The
+// power-tag table sitting immediately after it in the same array kept all
+// 1,258 of its names, which is what makes the blanks a decision rather than a
+// misread record layout.
+//
+// What does name things is CoreTOC, which the CASC root has already parsed to
+// spell an id as `Base\Anim\<name>.ani`. So this asserts the two ends of that:
+// the id -> path direction exists at all, and clips come out of the adapter
+// carrying it. The discriminator is `Tag_%05X`, the fallback the adapter uses
+// when no name is in reach — a run where the plumbing is missing does not fail
+// to produce names, it produces those, which reads as working.
+// ============================================================================
+TEST_CASE("D3 clips are named after the `.ani` CoreTOC names, not their tag id",
+          "[d3][animation][install]") {
+    using ::whiteout::flakes::ContentRef;
+    using ::whiteout::flakes::ProductId;
+
+    flakes::io::FileContentProvider provider;
+    if (const char* root = std::getenv("WDX_TEST_D3_INSTALL"); root && *root)
+        provider.SetInstallPath(root);
+    provider.SetGame(ProductId::D3);
+    if (provider.GamePath(ProductId::D3).empty()) {
+        WARN("No Diablo III install (set WDX_TEST_D3_INSTALL). SKIPPED, not passed.");
+        return;
+    }
+
+    flakes::io::StorageBrowser browser;
+    std::string err;
+    if (!browser.Open(provider.GamePath(ProductId::D3), flakes::io::StorageKind::Casc, &err)) {
+        WARN("Could not browse the D3 install: " << err << ". SKIPPED, not passed.");
+        return;
+    }
+
+    std::vector<std::string> actors;
+    std::vector<std::string> stack{""};
+    while (!stack.empty() && actors.size() < 12) {
+        const std::string dir = stack.back();
+        stack.pop_back();
+        browser.NavigateTo(dir);
+        for (const auto& f : browser.Current().folders)
+            stack.push_back(dir.empty() ? f : dir + "\\" + f);
+        for (const auto& f : browser.Current().modelFiles) {
+            if (f.size() > 4 && f.compare(f.size() - 4, 4, ".acr") == 0) {
+                actors.push_back(browser.ChildPath(f));
+                if (actors.size() >= 12)
+                    break;
+            }
+        }
+    }
+    if (actors.empty()) {
+        WARN("No `.acr` in the install listing. SKIPPED, not passed.");
+        return;
+    }
+
+    // Half of the claim, on its own: the manifest answers in both directions
+    // for the actor we are about to load through it.
+    const u32 actorId = provider.FileIdForPath(actors.front());
+    REQUIRE(actorId != 0);
+    const std::string back = provider.PathForFileId(actorId);
+    CHECK_FALSE(back.empty());
+    CHECK(back.find(".acr") != std::string::npos);
+
+    std::size_t examined = 0, total = 0, placeholder = 0, duplicate = 0;
+    std::vector<std::string> sample;
+
+    for (const std::string& ref : actors) {
+        auto bytes = provider.ReadFile(ref);
+        if (!bytes)
+            continue;
+        flakes::io::D3SnoCache cache(&provider);
+        auto a = flakes::io::D3ModelAdapter::LoadActor(ContentRef::FromPath(ref), *bytes, cache,
+                                                       /*lazyClips=*/true);
+        if (!a)
+            continue;
+        const auto seqs = a->GetSequences();
+        if (seqs.size() < 4)
+            continue;
+        ++examined;
+        std::set<std::string> seen;
+        for (const auto& s : seqs) {
+            ++total;
+            REQUIRE_FALSE(s.name.empty());
+            if (s.name.compare(0, 4, "Tag_") == 0)
+                ++placeholder;
+            if (!seen.insert(s.name).second)
+                ++duplicate;
+            if (sample.size() < 6)
+                sample.push_back(s.name);
+        }
+        if (examined >= 4)
+            break;
+    }
+
+    if (examined == 0) {
+        WARN("No multi-clip actor in the sample. SKIPPED, not passed.");
+        return;
+    }
+    std::printf("[d3-names] %zu actor(s), %zu clip(s): %zu unnamed, %zu duplicate\n", examined,
+                total, placeholder, duplicate);
+    for (const std::string& n : sample)
+        std::printf("[d3-names]   %s\n", n.c_str());
+
+    // A handful of tags can genuinely point at an Anim the install does not
+    // hold (2 of Barbarian_Male's 259 do), so this is a supermajority and not
+    // an absolute.
+    CHECK(placeholder * 20 < total);
+    // Names go into a host's sequence list, where two identical rows are a
+    // bug report. The adapter disambiguates with the tag id; nothing should
+    // reach the host still colliding.
+    CHECK(duplicate == 0);
 }

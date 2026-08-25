@@ -647,6 +647,15 @@ u32 FileContentProvider::FileIdForPath(const std::string& path) const {
     return storage ? storage->FileIdForPath(path) : 0;
 }
 
+std::string FileContentProvider::PathForFileId(u32 fileId) const {
+    if (fileId == 0)
+        return {};
+    impl_->EnsureStorage();
+    std::shared_lock sg(impl_->storageMu);
+    const auto& storage = impl_->Slot().storage;
+    return storage ? storage->PathForFileId(fileId) : std::string{};
+}
+
 // ---- Storage observers / configuration --------------------------------------
 
 bool FileContentProvider::HasCasc() const {

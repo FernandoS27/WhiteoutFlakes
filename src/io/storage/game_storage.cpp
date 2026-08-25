@@ -41,6 +41,14 @@ u32 GameStorage::FileIdForPath(const std::string& path) const {
     return 0;
 }
 
+std::string GameStorage::PathForFileId(u32 fileId) const {
+    for (const auto& s : sources_) {
+        if (std::string p = s->PathForFileId(fileId); !p.empty())
+            return p;
+    }
+    return {};
+}
+
 void GameStorage::List(const std::function<void(std::string)>& emit) const {
     for (const auto& s : sources_)
         s->List(emit);

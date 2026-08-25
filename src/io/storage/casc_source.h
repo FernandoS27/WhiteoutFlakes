@@ -89,6 +89,7 @@ public:
     bool Read(const std::string& path, SourceRead& out) const override;
     bool ReadById(u32 fileId, SourceRead& out) const override;
     u32 FileIdForPath(const std::string& path) const override;
+    std::string PathForFileId(u32 fileId) const override;
     void List(const std::function<void(std::string)>& emit) const override;
     const std::string& Root() const override {
         return shared_->Root();

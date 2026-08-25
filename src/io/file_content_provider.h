@@ -43,6 +43,7 @@ public:
     std::vector<std::string> ListFiles(const std::string& directory, bool recursive) override;
     // Needs the same listfile ListFiles does — see IContentProvider.
     u32 FileIdForPath(const std::string& path) const override;
+    std::string PathForFileId(u32 fileId) const override;
 
     // Both open the current game's storages if a reconfiguration left them
     // deferred — the question they answer cannot be answered otherwise.

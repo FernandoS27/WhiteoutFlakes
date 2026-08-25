@@ -50,6 +50,13 @@ public:
         return 0;
     }
 
+    // The other direction. A manifest that can name an id answers; one that
+    // cannot returns empty rather than spelling the id back as a path.
+    virtual std::string PathForFileId(u32 fileId) const {
+        (void)fileId;
+        return {};
+    }
+
     // Emits every entry in listing form (see ToListingPath). Sources that
     // cannot enumerate — a WoW root with no listfile — emit nothing.
     virtual void List(const std::function<void(std::string)>& emit) const = 0;

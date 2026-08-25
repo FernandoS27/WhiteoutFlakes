@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <unordered_set>
 
 namespace whiteout::flakes::io {
 
@@ -601,18 +602,32 @@ void D3ModelAdapter::BindAnimations(D3SnoCache& cache, std::shared_ptr<const d3n
     // named groups a host can select and they land with the UI half of the tag
     // table.
     clips_.reserve(animSet_->tCoreTagMap.size());
+    std::unordered_set<std::string> taken;
     for (const auto& entry : animSet_->tCoreTagMap) {
         if (!entry.snoAnim.valid())
             continue;
         Clip c;
         c.tagId = entry.dwTagId;
         c.animSno = entry.snoAnim.id;
-        // Without the EActorAnimTag name table (2,055 ids, in no shipped file)
-        // a tag can only name itself. Playback does not need the table — the
-        // AnimSet maps tag -> Anim SNO directly — only the UI does.
+        // The clip is named after the `.ani` it plays, because the tag cannot
+        // name itself and the animation can. The runtime *does* have a tag name
+        // table — AnimTagName, 0x71006A09A0, 453 entries of 64 bytes — but 2.6.2
+        // ships it with every name pointer aimed at the same empty string, so
+        // even the client's own tag-to-text call returns "" for every tag it
+        // knows. (The power-tag table immediately after it in the same array
+        // kept its names, which is how you can tell the blanks are deliberate
+        // and not a misread record layout.) CoreTOC, meanwhile, names every
+        // SNO — and the storage root has already read it.
+        c.name = cache.NameOf(entry.snoAnim.id);
         char buf[32];
         std::snprintf(buf, sizeof(buf), "Tag_%05X", static_cast<unsigned>(entry.dwTagId));
-        c.name = buf;
+        if (c.name.empty())
+            c.name = buf;
+        else if (!taken.insert(c.name).second)
+            // Two tags sharing one `.ani` is ordinary — a hand-off and its
+            // idle, an attack and its variant. Only the second one onward pays
+            // for it, and it pays in the id that actually distinguishes them.
+            c.name += std::string(" (") + buf + ")";
         clips_.push_back(std::move(c));
     }
 

@@ -132,6 +132,20 @@ public:
         return 0;
     }
 
+    /// @brief The path that names @p fileId, when the provider knows one.
+    ///
+    /// The inverse of @ref FileIdForPath, and the only way a format whose
+    /// asset graph is addressed by id can put a readable name on anything it
+    /// references. A Diablo III AnimSet maps an animation tag to an Anim SNO
+    /// and no shipped file names either one; the storage root does, because
+    /// CoreTOC turns every id back into `Base\Anim\<name>.ani`.
+    /// @return Empty when nothing can say — the same contract as
+    ///         FileIdForPath, in the other direction.
+    virtual std::string PathForFileId(u32 fileId) const {
+        (void)fileId;
+        return {};
+    }
+
     /// @brief Toggle HD mod-overlay precedence for subsequent reads.
     ///        When `enabled` is true, providers that layer CASC/MPQ
     ///        archives prefer the `_hd.w3mod` overlay before the base

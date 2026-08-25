@@ -129,8 +129,36 @@ void D3SnoCache::SetBudgetBytes(usize bytes) {
 
 void D3SnoCache::Clear() {
     entries_.clear();
+    names_.clear();
     lru_.clear();
     stats_.bytesResident = 0;
+}
+
+const std::string& D3SnoCache::NameOf(i32 sno) {
+    static const std::string kNone;
+    if (sno <= 0)
+        return kNone;
+    if (auto it = names_.find(sno); it != names_.end())
+        return it->second;
+    std::string name;
+    if (provider_) {
+        // `Base\Anim\Barbarian_Male_idle_01.ani` -> `Barbarian_Male_idle_01`.
+        // A root with no CoreTOC spells the same entry `ani\123456`, which is
+        // a number wearing a name; the digits-only check drops it so the
+        // caller's own fallback wins rather than being shadowed by one.
+        const std::string path = provider_->PathForFileId(static_cast<u32>(sno));
+        const usize slash = path.find_last_of("/\\");
+        const usize begin = (slash == std::string::npos) ? 0 : slash + 1;
+        const usize dot = path.find_last_of('.');
+        const usize end = (dot != std::string::npos && dot > begin) ? dot : path.size();
+        std::string stem = path.substr(begin, end - begin);
+        if (!stem.empty() &&
+            stem.find_first_not_of("0123456789") != std::string::npos)
+            name = std::move(stem);
+    }
+    // A miss is remembered too: it is answered by the same manifest that would
+    // answer it next time, and the answer will be the same.
+    return names_.emplace(sno, std::move(name)).first->second;
 }
 
 void D3SnoCache::Touch(Entry& e) {

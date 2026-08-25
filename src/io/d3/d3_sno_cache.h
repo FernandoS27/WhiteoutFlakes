@@ -131,6 +131,21 @@ public:
     /// @brief Which group @p sno is, reading it through the cache if needed.
     d3n::Group GroupOf(i32 sno);
 
+    /// @brief The author's name for @p sno — the SNO's file name with no
+    ///        directory and no extension — or empty.
+    ///
+    /// Nothing inside a D3 asset names anything it references: an AnimSet maps
+    /// a tag id to an Anim SNO and stops. The name lives in CoreTOC, which the
+    /// storage root has already read to build `Base\Anim\<name>.ani`, so this
+    /// is a manifest lookup and not a file read — the file is never opened.
+    ///
+    /// Memoised for the same reason the parses are: a character AnimSet asks
+    /// this 259 times on load and the answers never change while a storage is
+    /// open. The map is separate from @ref entries_ so a name survives the LRU
+    /// evicting the asset — it weighs a few dozen bytes and re-deriving it
+    /// after eviction would put a manifest lookup on the *replay* path.
+    const std::string& NameOf(i32 sno);
+
     Stats GetStats() const {
         return stats_;
     }
@@ -178,6 +193,7 @@ private:
 
     IContentProvider* provider_ = nullptr;
     std::unordered_map<i32, Entry> entries_;
+    std::unordered_map<i32, std::string> names_;
     std::list<i32> lru_; ///< Front = most recently used.
     // 512 MB is a starting number to revise against Stats::bytesResident in the
     // model browser, not a measurement.

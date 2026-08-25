@@ -37,6 +37,7 @@ public:
     bool ReadById(u32 fileId, SourceRead& out) const;
     // First source that recognises the name wins, 0 when none does.
     u32 FileIdForPath(const std::string& path) const;
+    std::string PathForFileId(u32 fileId) const;
     void List(const std::function<void(std::string)>& emit) const;
 
     bool HasCasc() const {
