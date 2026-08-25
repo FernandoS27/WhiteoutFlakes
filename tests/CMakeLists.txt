@@ -114,6 +114,7 @@ if(WDX_ENABLE_M3)
     # Skeleton + palettes. Mostly guards the *absence* of a per-vertex decode.
     wdx_add_test(m3_skinning_test m3_skinning_test.cpp)
     # Non-bone channels: hierarchical bone visibility, geoset gating, lights.
+    wdx_add_test(m3_billboard_test m3_billboard_test.cpp)
     wdx_add_test(m3_channels_test m3_channels_test.cpp)
     # Discrete keyframe events: the shared crossing arithmetic (previously
     # untested and private to EventEmitterPool) plus the `.m3` SDEV decode.

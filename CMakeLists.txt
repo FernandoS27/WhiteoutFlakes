@@ -1334,6 +1334,7 @@ if(WDX_ENABLE_M3)
     target_sources(WhiteoutFlakesLib PRIVATE
         src/io/m3/m3_model_adapter.cpp
         src/io/m3/m3_animation.cpp
+        src/io/m3/m3_billboard.cpp
         src/io/m3/m3_pose_solvers.cpp
         src/renderer/profiles/sc2_heroes/m3_standard_shading.cpp
         src/renderer/profiles/sc2_heroes/m3_surface_table.cpp

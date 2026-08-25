@@ -50,7 +50,7 @@ d3n::Group D3GroupOfExtension(std::string_view ext) {
     if (e == "mat")
         return d3n::Group::Material;
     if (e == "tex")
-        return d3n::Group::Texture;
+        return d3n::Group::Textures;
     if (e == "prt")
         return d3n::Group::Particle;
     if (e == "clt")

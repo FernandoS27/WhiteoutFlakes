@@ -1,5 +1,6 @@
 #include "io/m3/m3_model_adapter.h"
 
+#include "io/m3/m3_billboard.h"
 #include "io/m3/m3_pose_solvers.h"
 #if WDX_HAS_PHYSICS
 #include "renderer/profiles/sc2_heroes/sc2_cloth.h"
@@ -69,24 +70,15 @@ std::vector<VertexAttribute> DescribeM3Vertex(const ::whiteout::m3::VertexBuffer
 
 // The local matrix, built exactly as M3Anim_EvaluateBoneTransform builds it:
 // the quaternion's row-vector rotation matrix with row i scaled by scale[i],
-// and the translation in row 3. Written out rather than routed through
-// Matrix44f::rotation because that one is the column-vector form.
+// and the translation in row 3. `M3RotationRows` is that rotation, shared with
+// the billboard code; `Matrix44f::rotation` is the column-vector form and
+// composes the wrong way round for every `.m3` matrix.
 Matrix44f M3ComposeLocal(const Vector3f& t, const Quaternion& q, const Vector3f& s) {
-    const f32 x2 = q.x + q.x, y2 = q.y + q.y, z2 = q.z + q.z;
-    const f32 xx = q.x * x2, xy = q.x * y2, xz = q.x * z2;
-    const f32 yy = q.y * y2, yz = q.y * z2, zz = q.z * z2;
-    const f32 wx = q.w * x2, wy = q.w * y2, wz = q.w * z2;
-
-    Matrix44f m = Matrix44f::identity();
-    m.data[0][0] = (1.0f - yy - zz) * s.x;
-    m.data[0][1] = (xy + wz) * s.x;
-    m.data[0][2] = (xz - wy) * s.x;
-    m.data[1][0] = (xy - wz) * s.y;
-    m.data[1][1] = (1.0f - xx - zz) * s.y;
-    m.data[1][2] = (yz + wx) * s.y;
-    m.data[2][0] = (xz + wy) * s.z;
-    m.data[2][1] = (yz - wx) * s.z;
-    m.data[2][2] = (1.0f - xx - yy) * s.z;
+    Matrix44f m = M3RotationRows(q);
+    const f32 sc[3] = {s.x, s.y, s.z};
+    for (i32 r = 0; r < 3; ++r)
+        for (i32 c = 0; c < 3; ++c)
+            m.data[r][c] *= sc[r];
     m.data[3][0] = t.x;
     m.data[3][1] = t.y;
     m.data[3][2] = t.z;
@@ -330,14 +322,32 @@ M3ModelAdapter::M3ModelAdapter(::whiteout::m3::Model model) : model_(std::move(m
     if (divisionIndex_ < model_.divisions.size())
         regionCount_ = model_.divisions[divisionIndex_].regions.size();
     BuildEmittedRegions();
+    BuildBoneBillboards();
     RebuildAnimationTables();
 #if WDX_HAS_PHYSICS
     if (auto build = renderer::profiles::sc2_heroes::Sc2BuildCloth(model_); !build.pieces.empty()) {
-        cloth_ = std::make_shared<const renderer::profiles::sc2_heroes::Sc2ClothBuild>(
-            std::move(build));
+        cloth_ =
+            std::make_shared<const renderer::profiles::sc2_heroes::Sc2ClothBuild>(std::move(build));
     }
 #endif
     BuildClothGeosetMap();
+}
+
+void M3ModelAdapter::BuildBoneBillboards() {
+    boneBillboard_.clear();
+    if (model_.billboardBehaviors.empty() || model_.bones.empty())
+        return;
+    boneBillboard_.assign(model_.bones.size(), -1);
+    bool any = false;
+    for (std::size_t i = 0; i < model_.billboardBehaviors.size(); ++i) {
+        const std::size_t bone = model_.billboardBehaviors[i].boneIndex;
+        if (bone >= boneBillboard_.size())
+            continue;
+        boneBillboard_[bone] = static_cast<i32>(i);
+        any = true;
+    }
+    if (!any)
+        boneBillboard_.clear();
 }
 
 void M3ModelAdapter::RebuildAnimationTables() {
@@ -942,13 +952,16 @@ SkeletonData M3ModelAdapter::GetSkeleton() {
         sk.nodeParents[i] =
             (p == 0xFFFFu || static_cast<std::size_t>(p) >= bones.size()) ? -1 : static_cast<i32>(p);
 
-        // Raw BONE flags, masked to the billboard bits. Not decoded into the
-        // renderer's billboard vocabulary because where StarCraft II applies
-        // these is still unresolved — its BBSC solver's Solve is a stub — and
-        // inventing a mapping now would be a guess wearing a type.
+        // Raw BONE flags, masked to the billboard bits, and always zero: no
+        // bone in 51469 corpus files sets either. `.m3` billboards come from
+        // the BBSC chunk instead, and `Evaluate` applies them itself (see
+        // m3_billboard.h) rather than exporting them here — the vocabulary
+        // this field speaks is WC3's four modes, and StarCraft II's seven do
+        // not fit it.
         const auto f = static_cast<::whiteout::u32>(bones[i].flags);
-        sk.billboardFlags[i] = f & (static_cast<::whiteout::u32>(::whiteout::m3::BoneFlag::Billboard1) |
-                                    static_cast<::whiteout::u32>(::whiteout::m3::BoneFlag::Billboard2));
+        sk.billboardFlags[i] =
+            f & (static_cast<::whiteout::u32>(::whiteout::m3::BoneFlag::Billboard1) |
+                 static_cast<::whiteout::u32>(::whiteout::m3::BoneFlag::Billboard2));
     }
 
     sk.inverseBindMatrices.assign(bones.size(), Matrix44f::identity());
@@ -1143,6 +1156,17 @@ renderer::model::FrameState M3ModelAdapter::Evaluate(const PoseRequest& req) con
 #endif
     std::vector<::whiteout::u8> visible(boneCount, 1);
 
+    // Billboards resolve against the camera, so they cost a matrix inverse per
+    // evaluate and are skipped outright on the nine models in ten that have no
+    // `BBSC` chunk. StarCraft II runs them later than this — in the draw-prep
+    // pass, after the solvers — but it runs them by rewriting the bone's local
+    // rotation and letting the dirty-bit walk re-resolve the subtree, and doing
+    // it inside this walk is the same thing with the subtree already ordered.
+    const bool billboarding = !boneBillboard_.empty();
+    M3CameraFrame cam;
+    if (billboarding)
+        cam = M3BuildCameraFrame(req.world, req.view, req.cameraPos);
+
     // A `replace` override is the host saying "this bone's model-space matrix
     // is mine: do not sample it and do not compose the parent chain into it".
     // That is how a pose stage's claims come back — the ragdoll's bit-0 flag in
@@ -1174,12 +1198,18 @@ renderer::model::FrameState M3ModelAdapter::Evaluate(const PoseRequest& req) con
         // is treated as a root instead.
         const bool hasParent = p != 0xFFFFu && p < i;
 
+        Quaternion sampledRotation{0.0f, 0.0f, 0.0f, 1.0f};
+        Vector3f sampledScale{1.0f, 1.0f, 1.0f};
+        bool sampled = false;
         if (ov != nullptr && ov->replace) {
             fs.boneWorldMatrices[i] = ov->m;
         } else {
             const Vector3f t = SampleRef(b.position, layers);
             const Quaternion r = SampleRef(b.rotation, layers);
             const Vector3f s = SampleRef(b.scale, layers);
+            sampledRotation = r;
+            sampledScale = s;
+            sampled = true;
 
             Matrix44f local = M3ComposeLocal(t, r, s);
             // A non-replace override composes *after* the local TRS and before
@@ -1194,6 +1224,32 @@ renderer::model::FrameState M3ModelAdapter::Evaluate(const PoseRequest& req) con
                 fs.boneWorldMatrices[i] = local * fs.boneWorldMatrices[p];
             else
                 fs.boneWorldMatrices[i] = local;
+        }
+
+        if (billboarding && boneBillboard_[i] >= 0) {
+            // A bone hanging off the model root keeps its own animated rotation
+            // composed onto the billboard — that is what lets a root-level
+            // sprite spin in the screen plane. A child bone's is discarded, and
+            // its correction quaternion takes its place. The engine draws the
+            // line at "is my parent a bone", which here is `hasParent`.
+            const Quaternion* spin = (!hasParent && sampled) ? &sampledRotation : nullptr;
+
+            // A host-replaced bone has no sampled local transform to divide
+            // through, so it is billboarded as a rigid frame of its own — the
+            // row lengths stand in for the scale and there is no parent to
+            // re-multiply. The engine has no equivalent of a `replace`
+            // override at all, so there is nothing to be faithful to here.
+            const Matrix44f* parentWorld =
+                (sampled && hasParent) ? &fs.boneWorldMatrices[p] : nullptr;
+            Vector3f scale = sampledScale;
+            if (!sampled) {
+                const Matrix44f& m = fs.boneWorldMatrices[i];
+                scale = {Vector3f{m.data[0][0], m.data[0][1], m.data[0][2]}.length(),
+                         Vector3f{m.data[1][0], m.data[1][1], m.data[1][2]}.length(),
+                         Vector3f{m.data[2][0], m.data[2][1], m.data[2][2]}.length()};
+            }
+            M3ApplyBillboard(model_.billboardBehaviors[static_cast<std::size_t>(boneBillboard_[i])],
+                             cam, spin, scale, parentWorld, fs.boneWorldMatrices[i]);
         }
 
         // Visibility is hierarchical: a bone under an invisible parent is

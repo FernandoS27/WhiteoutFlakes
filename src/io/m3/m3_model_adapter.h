@@ -351,6 +351,9 @@ private:
     /// made once, here, rather than repeated in each.
     void BuildEmittedRegions();
 
+    /// @brief Invert the `BBSC` list into @ref boneBillboard_.
+    void BuildBoneBillboards();
+
     /// @brief Expand a pose request into sampler layers, priority-desc.
     ///
     /// One clip becomes one layer per sub-track container in its sequence's
@@ -427,6 +430,13 @@ private:
     /// the region's root bone — the Ultralisk's blood plane is a batch gated
     /// on `Plane01` inside a region rooted at `Dummy09`.
     std::vector<::whiteout::u16> geosetVisibilityBone_;
+    /// @brief Bone -> index into `model_.billboardBehaviors`, or -1.
+    ///
+    /// Empty when the model has no `BBSC` chunk, which is the test `Evaluate`
+    /// uses to skip the camera work entirely — 90% of the corpus. Two records
+    /// naming the same bone leaves the later one, matching the engine, whose
+    /// solvers run in array order and each overwrite the bone's local rotation.
+    std::vector<i32> boneBillboard_;
     /// Which bone each entry of @ref GetCollisionShapes rides, the frame it sits
     /// in on that bone, and whether it may wear the bone's scale per axis — all
     /// parallel to the returned vector and filled by the same walk.
