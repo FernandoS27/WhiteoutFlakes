@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <span>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -14,31 +16,68 @@ namespace whiteout::flakes::renderer::profiles::wow {
 
 namespace {
 
+using io::wow::kMaxReplaceableType;
 using io::wow::kMonsterSkinSlots;
-using io::wow::kMonsterSkinTypes;
+using io::wow::kReplaceableSlots;
+using io::wow::kReplaceableTypes;
+using io::wow::ReplaceableSlotOfType;
 
-// Which variation slot fills texture type @p type, or -1 for a type no display
-// row touches. Not `type - 11`: the fourth slot fills type 5, so the set is not
-// contiguous. See creature_skin_table.h for the measurement.
-i32 MonsterSkinSlot(u32 type) {
-    for (u32 slot = 0; slot < kMonsterSkinSlots; ++slot)
-        if (kMonsterSkinTypes[slot] == type)
-            return static_cast<i32>(slot);
-    return -1;
-}
-
+/// Which family of table can fill texture type @p type: the creature one holds
+/// the first four slots, the item one the rest.
+///
+/// Slot 3 (type 5) is in both tables and counts as a creature's here. It is the
+/// creature array's fourth entry and only 72 of the item table's 141309 rows,
+/// so a model that declares it and nothing else is a creature.
 bool IsMonsterSkin(u32 type) {
-    return MonsterSkinSlot(type) >= 0;
+    const i32 slot = ReplaceableSlotOfType(type);
+    return slot >= 0 && static_cast<u32>(slot) < kMonsterSkinSlots;
 }
 
-/// The highest type any slot fills, so a by-type array can be sized once.
-constexpr u32 kMaxMonsterSkinType = 13;
+bool IsItemSkin(u32 type) {
+    const i32 slot = ReplaceableSlotOfType(type);
+    return slot >= 0 && static_cast<u32>(slot) >= kMonsterSkinSlots;
+}
+
+/// One picker entry per distinct set of files, not per record.
+///
+/// A model is named by every record that uses it, and most of those differ in
+/// something the model does not wear — scale, sound, blood level or a
+/// spell visual for a creature; a whole separate item for an appearance — so
+/// the texture sets repeat. `cryptfiend` has 21 display rows behind 3 skins,
+/// `cow` 10 behind 2, `shield_1h_artifactmagnar_d_03` 8 behind 4. Offering all
+/// of them is offering the same picture over and over; keeping the first of
+/// each set keeps the lowest id, which is the ordering variation 0 already
+/// relies on.
+///
+/// Written once for both tables because both hand back the same shape: an id
+/// and one fileDataID per slot, in `kReplaceableTypes` order. A creature row is
+/// only as wide as its own four slots, hence `std::size`.
+template <typename Row>
+std::vector<SkinVariation> DistinctLooks(std::span<const Row> rows) {
+    std::vector<SkinVariation> out;
+    std::vector<std::array<u32, kReplaceableSlots>> seen;
+    for (const Row& row : rows) {
+        std::array<u32, kReplaceableSlots> look{};
+        for (usize slot = 0; slot < std::size(row.texture); ++slot)
+            look[slot] = row.texture[slot];
+        if (std::find(seen.begin(), seen.end(), look) != seen.end())
+            continue;
+        seen.push_back(look);
+        SkinVariation v;
+        v.label = "display " + std::to_string(row.displayId);
+        for (u32 slot = 0; slot < kReplaceableSlots; ++slot)
+            if (look[slot] != 0)
+                v.texture[slot] = "#" + std::to_string(look[slot]);
+        out.push_back(std::move(v));
+    }
+    return out;
+}
 
 /// How many of the types @p slots names this variation actually fills.
 usize Filled(const SkinVariation& v, const std::vector<u32>& slots) {
     usize n = 0;
     for (u32 type : slots) {
-        const i32 slot = MonsterSkinSlot(type);
+        const i32 slot = ReplaceableSlotOfType(type);
         if (slot >= 0 && !v.texture[slot].empty())
             ++n;
     }
@@ -165,7 +204,7 @@ std::vector<SkinVariation> GroupSiblings(const std::vector<std::string>& sibling
         for (usize i = 0; i < parts.size(); ++i) {
             if (split[at + i].first != split[at].first || split[at + i].second != parts[i])
                 return {}; // a variant with a different part set — not this shape
-            const i32 slot = MonsterSkinSlot(slots[i]);
+            const i32 slot = ReplaceableSlotOfType(slots[i]);
             if (slot < 0)
                 return {};
             v.texture[slot] = siblings[at + i];
@@ -204,33 +243,22 @@ std::vector<SkinVariation> WowReplaceableTextures::FindVariations(const ContentR
     std::vector<SkinVariation> variations;
 
     // The client's own answer, when the storage can name the model. Ordered by
-    // display id, so variation 0 is the one a creature of that kind usually
-    // looks like rather than whichever row the table happened to hold first.
+    // record id, so variation 0 is the look the model usually has rather than
+    // whichever row the table happened to hold first.
     //
-    // One entry per *look*, not per display record. A model is named by every
-    // display that uses it, and most of those differ in something the model
-    // does not wear — scale, sound, blood level, a spell visual — so the
-    // texture sets repeat: `cryptfiend` has 21 display rows behind 3 skins and
-    // `cow` 10 behind 2. Offering all 21 is offering the same picture 19 times.
-    // Keeping the first of each set keeps the lowest display id, which is the
-    // ordering variation 0 already relies on.
-    if (const u32 modelFile = ModelFileId(modelRef); modelFile != 0 && table_.Load(*provider_)) {
-        std::vector<std::array<u32, kMonsterSkinSlots>> seen;
-        for (const io::wow::MonsterSkin& skin : table_.ForModel(modelFile)) {
-            std::array<u32, kMonsterSkinSlots> look{};
-            for (u32 slot = 0; slot < kMonsterSkinSlots; ++slot)
-                look[slot] = skin.texture[slot];
-            if (std::find(seen.begin(), seen.end(), look) != seen.end())
-                continue;
-            seen.push_back(look);
-            SkinVariation v;
-            v.label = "display " + std::to_string(skin.displayId);
-            for (u32 slot = 0; slot < kMonsterSkinSlots; ++slot)
-                if (skin.texture[slot] != 0)
-                    v.texture[slot] = "#" + std::to_string(skin.texture[slot]);
-            variations.push_back(std::move(v));
-        }
-        // Display-id order decides which look is canonical, but not at the cost
+    // Whichever family the model's slots belong to, and only that one: the two
+    // sets of tables are half a million rows between them, and a shield has no
+    // business parsing CreatureDisplayInfo. The item table is still tried when
+    // the creature one came back empty, so a model the wrong guess would leave
+    // white costs a lookup instead of a slot.
+    if (const u32 modelFile = ModelFileId(modelRef); modelFile != 0) {
+        const bool creature = std::any_of(slots.begin(), slots.end(), IsMonsterSkin);
+        const bool item = std::any_of(slots.begin(), slots.end(), IsItemSkin);
+        if (creature && table_.Load(*provider_))
+            variations = DistinctLooks<io::wow::MonsterSkin>(table_.ForModel(modelFile));
+        if (variations.empty() && item && items_.Load(*provider_))
+            variations = DistinctLooks<io::wow::ItemAppearance>(items_.ForModel(modelFile));
+        // Record-id order decides which look is canonical, but not at the cost
         // of a white patch: a row may leave a slot the model *declares* empty
         // while a later row fills it. `necromancer2` is the case — 106 displays,
         // the lowest-id 85 of them naming only a body, the other 21 naming the
@@ -280,12 +308,17 @@ std::vector<SkinVariation> WowReplaceableTextures::FindVariations(const ContentR
         return grouped;
 
     // Nothing said how to pair them, so each file is a skin on its own and
-    // fills the first slot. A second slot stays white rather than wearing a
-    // texture picked by guesswork — see GroupSiblings.
+    // fills the first slot the model declares — type 11 for a creature, type
+    // 2 for an item, which is what a shield's four coloured siblings are for. A
+    // second slot stays white rather than wearing a texture picked by
+    // guesswork — see GroupSiblings.
+    u32 first = kReplaceableSlots - 1;
+    for (u32 type : slots)
+        first = std::min(first, static_cast<u32>(ReplaceableSlotOfType(type)));
     for (std::string& sibling : siblings) {
         SkinVariation v;
         v.label = std::string(Stem(sibling));
-        v.texture[0] = std::move(sibling);
+        v.texture[first] = std::move(sibling);
         variations.push_back(std::move(v));
     }
     return variations;
@@ -294,13 +327,14 @@ std::vector<SkinVariation> WowReplaceableTextures::FindVariations(const ContentR
 usize WowReplaceableTextures::Apply(io::M2ModelAdapter& adapter, const ContentRef& modelRef) {
     const auto& model = adapter.SourceModel();
 
-    // The cheap question first. A model with no monster-skin slot is the common
-    // case, and answering it here is what keeps a session that never opens a
-    // creature from reading eight megabytes of client database. The slots it
-    // does declare are also what a skin has to fill, so collect them here.
+    // The cheap question first. A model with no replaceable slot at all is the
+    // common case, and answering it here is what keeps a session that opens
+    // neither a creature nor an item from reading a client database. The slots
+    // it does declare are also what a look has to fill, so collect them here.
     std::vector<u32> slots;
     for (const auto& tex : model.textures)
-        if (IsMonsterSkin(tex.type) && std::find(slots.begin(), slots.end(), tex.type) == slots.end())
+        if (ReplaceableSlotOfType(tex.type) >= 0 &&
+            std::find(slots.begin(), slots.end(), tex.type) == slots.end())
             slots.push_back(tex.type);
     if (!provider_ || slots.empty())
         return 0;
@@ -314,16 +348,16 @@ usize WowReplaceableTextures::Apply(io::M2ModelAdapter& adapter, const ContentRe
         return 0;
     const SkinVariation& skin = variations[variation_ % variations.size()];
 
-    std::vector<std::string> byType(kMaxMonsterSkinType + 1);
-    for (u32 slot = 0; slot < kMonsterSkinSlots; ++slot)
-        byType[kMonsterSkinTypes[slot]] = skin.texture[slot];
+    std::vector<std::string> byType(kMaxReplaceableType + 1);
+    for (u32 slot = 0; slot < kReplaceableSlots; ++slot)
+        byType[kReplaceableTypes[slot]] = skin.texture[slot];
     adapter.SetReplaceableTextures(std::move(byType));
 
     // Slots filled, not variations named: one texture can serve several slots,
     // and a model can declare a type this skin leaves empty.
     return static_cast<usize>(
         std::count_if(model.textures.begin(), model.textures.end(), [&](const auto& t) {
-            const i32 slot = MonsterSkinSlot(t.type);
+            const i32 slot = ReplaceableSlotOfType(t.type);
             return slot >= 0 && !skin.texture[slot].empty();
         }));
 }

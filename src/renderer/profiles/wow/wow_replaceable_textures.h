@@ -11,14 +11,24 @@
 // databases: a non-zero type is a slot, and which file fills it depends on
 // what the model was spawned *as*, not on the model.
 //
-// Only the creature slots are resolved here — the four
-// CCharacterComponent::ReplaceMonsterSkin fills from
-// CreatureDisplayInfo::TextureVariation, which are types 11, 12, 13 and 5 in
-// that order (creature_skin_table.h has the measurement for the fourth). That
-// is what leaves a creature `.m2` rendering flat white in a model viewer,
-// because a viewer opens a file and never picks a display record. Character
-// customisation (types 1..9) is a different set of tables and is not handled;
-// those slots keep the white default they have today.
+// Two families of slot are resolved here, because two families of model leave
+// one blank:
+//
+//   * A creature's, the four CCharacterComponent::ReplaceMonsterSkin fills
+//     from CreatureDisplayInfo::TextureVariation — types 11, 12, 13 and 5
+//     in that order (creature_skin_table.h has the measurement for the
+//     fourth).
+//   * An item's, the ones ItemDisplayInfoModelMatRes names — type 2 for an
+//     object's own skin, 3 and 4 for a weapon's blade and handle, and 24
+//     (item_appearance_table.h has the population).
+//
+// Either is what leaves a `.m2` rendering flat white in a model viewer,
+// because a viewer opens a file and never picks a display record. A model
+// belongs to one family or the other, so only one set of tables is ever read.
+//
+// Character customisation (types 1, 6, 8, 19) is a different set of tables and
+// is not handled here: those slots are not filled with a file at all but
+// composited from many. See chr_customization_table.h.
 //
 // Two ways to find the skins, because a viewer opens models from both kinds of
 // place:
@@ -30,7 +40,9 @@
 //     path by truncating the model path to its folder and appending the
 //     variation name, so a creature's skins are always its `.blp` siblings —
 //     which is the whole answer for a loose extraction with no listfile, and
-//     needs no configuration at all.
+//     needs no configuration at all. Items are laid out the same way — a
+//     shield's four looks are four `.blp`s beside it — so the fallback
+//     serves both.
 //
 // One manager per RenderService, holding one parsed copy of the tables. The
 // tables belong to the install they were read from, so pointing the provider
@@ -38,6 +50,7 @@
 // ============================================================================
 
 #include "io/wow/creature_skin_table.h"
+#include "io/wow/item_appearance_table.h"
 #include "whiteout/flakes/content_ref.h"
 #include "whiteout/flakes/types.h"
 
@@ -52,12 +65,14 @@ class M2ModelAdapter;
 
 namespace whiteout::flakes::renderer::profiles::wow {
 
-/// One skin a creature can wear: a texture key per monster-skin slot, and a
-/// name for a host offering a picker. An empty key leaves that slot white.
+/// One look a model can wear: a texture key per replaceable slot, and a name
+/// for a host offering a picker. An empty key leaves that slot white.
 struct SkinVariation {
     std::string label;
-    /// One per variation slot, in `io::wow::kMonsterSkinTypes` order.
-    std::string texture[io::wow::kMonsterSkinSlots];
+    /// One per slot, in `io::wow::kReplaceableTypes` order — whose first
+    /// four entries are the creature ones, so a creature look still indexes
+    /// 0..3.
+    std::string texture[io::wow::kReplaceableSlots];
 };
 
 class WowReplaceableTextures {
@@ -95,27 +110,35 @@ public:
 
     void Clear() {
         table_.Clear();
+        items_.Clear();
         byModel_.clear();
     }
 
     const io::wow::CreatureSkinTable& Table() const noexcept {
         return table_;
     }
+    const io::wow::ItemAppearanceTable& ItemTable() const noexcept {
+        return items_;
+    }
 
 private:
-    /// The fileDataID naming @p ref, which is the key both tables join on.
-    /// Zero when nothing can say — a loose file with no listfile behind it.
+    /// The fileDataID naming @p ref, which is the key every one of these
+    /// tables joins on. Zero when nothing can say — a loose file with no
+    /// listfile behind it.
     u32 ModelFileId(const ContentRef& ref) const;
 
-    /// The skins for @p modelRef, from the tables when they can name it and
+    /// The looks for @p modelRef, from the tables when they can name it and
     /// from its `.blp` siblings when they cannot. @p slots is the sorted set of
-    /// monster-skin types the model declares — a skin fills all of them, not
-    /// just the first, which is what pairs a mount's body with its saddle.
+    /// replaceable types the model declares — which decides both which family
+    /// of table to read and what a look has to fill, since it fills all of
+    /// them and not just the first. That is what pairs a mount's body with its
+    /// saddle, and a weapon's blade with its handle.
     std::vector<SkinVariation> FindVariations(const ContentRef& modelRef,
                                               const std::vector<u32>& slots);
 
     io::IContentProvider* provider_ = nullptr;
     io::wow::CreatureSkinTable table_;
+    io::wow::ItemAppearanceTable items_;
     // Keyed by ContentRef::Describe, so a host with several models open can
     // ask about any of them. Filled by Apply, which is also the only thing
     // that knows a model has a slot worth looking for at all.

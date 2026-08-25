@@ -1309,6 +1309,7 @@ if(WDX_ENABLE_M2)
         src/io/wow/character_geosets.cpp
         src/io/wow/chr_customization_table.cpp
         src/io/wow/creature_skin_table.cpp
+        src/io/wow/item_appearance_table.cpp
         src/renderer/profiles/wow/m2_lighting.cpp
         src/renderer/profiles/wow/m2_material.cpp
         src/renderer/profiles/wow/m2_shader_select.cpp

@@ -26,6 +26,7 @@
 // rest are what a "skin" picker would offer.
 // ============================================================================
 
+#include "io/wow/replaceable_slots.h"
 #include "whiteout/flakes/types.h"
 
 #include <span>
@@ -44,6 +45,14 @@ namespace whiteout::flakes::io::wow {
 /// `TextureVariation[i]` — so this is the one place the 11/12/13/5 order lives.
 inline constexpr u32 kMonsterSkinSlots = 4;
 inline constexpr u32 kMonsterSkinTypes[kMonsterSkinSlots] = {11, 12, 13, 5};
+
+// These *are* the first four replaceable slots, and a resolved look indexes
+// both by the same number — see replaceable_slots.h.
+static_assert(kMonsterSkinSlots <= kReplaceableSlots);
+static_assert(kMonsterSkinTypes[0] == kReplaceableTypes[0] &&
+              kMonsterSkinTypes[1] == kReplaceableTypes[1] &&
+              kMonsterSkinTypes[2] == kReplaceableTypes[2] &&
+              kMonsterSkinTypes[3] == kReplaceableTypes[3]);
 
 /// One display variation of one creature model: the fileDataIDs that fill the
 /// slots above. Zero means the display leaves that slot alone.
