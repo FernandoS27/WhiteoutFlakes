@@ -139,9 +139,25 @@ T M3ModelAdapter::SampleRef(const ::whiteout::m3::AnimRef<T>& ref,
     if (row < 0)
         return ref.initValue;
 
-    // interpType 0 and the runtime's step bit say the same thing; the file
-    // keeps both, the engine keeps only the second.
-    const bool interpolate = ref.interpType != 0 && (ref.flags & 0x10u) == 0;
+    // Bit 4 of `flags` is the *only* thing that makes a track step —
+    // `M3Anim_BlendQuat_Weighted` at 0x10285442f and its F32 twin both compute
+    // `interpolate = !(animRef->flags & 0x10)` and pass nothing else. The
+    // field WhiteoutLib calls `interpType` is not an interpolation type at
+    // sample time at all: the loader overwrites that u16 with the row this
+    // property occupies in the flattened track table, which is why both
+    // blenders read it as `trackTable[*ref * stride + globalStc]` and treat
+    // 0xFFFF as "no track bound".
+    //
+    // Reading it as an interp type does not merely add a redundant test, it
+    // breaks the models that need this most. A model with no sequences of its
+    // own ships that u16 zeroed — there was no track for the exporter to
+    // number — and animation reaches it entirely through an attached `.m3a`.
+    // Across the corpus that is 75.5% of bone SRT refs on `.m3a`-driven models
+    // (28868 of 38217, 175 models) against 11.4% on self-animated ones, so the
+    // extra test stepped every bone of every hero model and left the shipped
+    // step bit — set on 330 refs in 291027 — doing nothing it was not already
+    // doing.
+    const bool interpolate = (ref.flags & 0x10u) == 0;
 
     struct Contribution {
         T value;

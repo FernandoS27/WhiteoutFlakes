@@ -223,8 +223,10 @@ TEST_CASE("A track shorter than its sequence wraps on its own duration", "[m3ble
 
 TEST_CASE("A step track holds its left key", "[m3blend]") {
     m3fix::ModelBuilder mb;
-    // interpType 0 is the file's way of saying "no interpolation".
-    mb.Bone("root", -1, m3fix::Ref<Vector3f>(900, {0, 0, 0}, /*interpType*/ 0),
+    // Flag bit 4 is what steps a track: `interpolate = !(animRef->flags & 0x10)`
+    // in M3Anim_BlendQuat_Weighted / _BlendF32_Weighted, and nothing else feeds
+    // that decision.
+    mb.Bone("root", -1, m3fix::Ref<Vector3f>(900, {0, 0, 0}, /*interpType*/ 1, /*flags*/ 0x11),
             m3fix::ConstRef(Quaternion{0, 0, 0, 1}), m3fix::ConstRef(Vector3f{1, 1, 1}));
     m3fix::StcBuilder s("s", 1, false);
     s.Vec3(900, m3fix::Block<Vector3f>({0, 1000}, {{0, 0, 0}, {50, 0, 0}}));
@@ -234,6 +236,28 @@ TEST_CASE("A step track holds its left key", "[m3blend]") {
     M3ModelAdapter a(mb.Build());
     REQUIRE(Translation(EvalAt(a, {Clip(0, 500)}), 0).x == Approx(0.0f));
     REQUIRE(Translation(EvalAt(a, {Clip(0, 1000)}), 0).x == Approx(50.0f));
+}
+
+TEST_CASE("interpType 0 still interpolates — it is not an interp type", "[m3blend]") {
+    // The `.m3a` case, and the reason Jaina juddered. A model with no sequences
+    // of its own ships every bone AnimRef with that u16 zeroed, because the
+    // exporter had no track to number; the tracks arrive later from an attached
+    // file. At runtime the loader overwrites the field with the property's row
+    // in the flattened track table (0xFFFF = unbound), so it never reaches the
+    // interpolation decision — only `flags & 0x10` does. Treating a zero there
+    // as "step" turned 75.5% of bone SRT refs on `.m3a`-driven models into step
+    // tracks, which at 30 fps keys against a 60 fps present reads as a tremor.
+    m3fix::ModelBuilder mb;
+    mb.Bone("root", -1, m3fix::Ref<Vector3f>(900, {0, 0, 0}, /*interpType*/ 0, /*flags*/ 0),
+            m3fix::ConstRef(Quaternion{0, 0, 0, 1}), m3fix::ConstRef(Vector3f{1, 1, 1}));
+    m3fix::StcBuilder s("s", 1, false);
+    s.Vec3(900, m3fix::Block<Vector3f>({0, 1000}, {{0, 0, 0}, {50, 0, 0}}));
+    const u32 i = mb.AddStc(s.Build());
+    mb.Sequence("Lerp", 0, 1000, {i});
+
+    M3ModelAdapter a(mb.Build());
+    REQUIRE(Translation(EvalAt(a, {Clip(0, 500)}), 0).x == Approx(25.0f));
+    REQUIRE(Translation(EvalAt(a, {Clip(0, 250)}), 0).x == Approx(12.5f));
 }
 
 TEST_CASE("Bone composition carries the parent transform", "[m3blend]") {

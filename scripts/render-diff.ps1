@@ -1,4 +1,4 @@
-# Draw-path regression runner — gates G1 (draw trace) and G2 (golden image)
+﻿# Draw-path regression runner — gates G1 (draw trace) and G2 (golden image)
 # from REFACTOR_PLAN.md §2. Mirrors particle-diff.ps1: same corpus file, same
 # progressive-baseline model, same -Record / -Check shape.
 #
@@ -254,7 +254,7 @@ $entries = Get-Content $CorpusFile |
     Where-Object { $_ -ne '' } |
     ForEach-Object {
         $line = $_
-        $e = [ordered]@{ Path = $line; Seq = ''; Switch = ''; Layer = ''; Blend = ''; Weight = '' }
+        $e = [ordered]@{ Path = $line; Seq = ''; Switch = ''; Layer = ''; Blend = ''; Weight = ''; Anim = '' }
         if ($M3Anim) {
             $tok = $line -split '\s+'
             $e.Path = $tok[0]
@@ -270,6 +270,7 @@ $entries = Get-Content $CorpusFile |
                     'layer'  { $e.Layer = $v }
                     'blend'  { $e.Blend = $v }
                     'weight' { $e.Weight = $v }
+                    'anim'   { $e.Anim = $v }
                     default  { Write-Error "Unknown scenario key '$k' in: $line"; exit 2 }
                 }
             }
@@ -288,18 +289,24 @@ foreach ($entry in $entries) {
         Write-Host "SKIP (missing): $rel" -ForegroundColor DarkYellow
         continue
     }
+    if ($entry.Anim -and -not (Test-Path (Join-Path $CorpusRoot $entry.Anim))) {
+        Write-Host "SKIP (missing anim): $($entry.Anim)" -ForegroundColor DarkYellow
+        continue
+    }
 
     # Flatten the relative path into a single baseline filename. The scenario's
     # start sequence joins the key so one model can appear in the corpus more
     # than once — different sequences of the same unit are different baselines,
     # not a collision.
     $key = (($rel -replace '[\\/ ]', '_') -replace '\.(mdx|m2|m3|app)$', '') + "_$mode"
-    if ($entry.Seq) { $key += '_' + ($entry.Seq -replace '[^A-Za-z0-9]', '') }
+    if ($entry.Seq)  { $key += '_' + ($entry.Seq -replace '[^A-Za-z0-9]', '') }
+    if ($entry.Anim) { $key += '_' + ([IO.Path]::GetFileNameWithoutExtension($entry.Anim) -replace '[^A-Za-z0-9]', '') }
     $trace = Join-Path $BaselineDir "$key.txt"
     $image = Join-Path $BaselineDir "$key.raw"
 
     $argv = @('--draw-trace', $model, '--trace-frames', $Frames,
               '--draw-trace-camera-distance', $CameraDistance)
+    if ($entry.Anim)   { $argv += @('--attach-anim', (Join-Path $CorpusRoot $entry.Anim)) }
     if ($entry.Seq)    { $argv += @('--draw-trace-anim', $entry.Seq) }
     if ($entry.Switch) {
         $s = $entry.Switch -split ':', 2

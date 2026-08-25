@@ -12,6 +12,9 @@
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
+#if WDX_ENABLE_M3
+#include "io/m3/m3_model_adapter.h"
+#endif
 #include "localization.h"
 #include "log_console.h"
 #include "settings_ini.h"
@@ -22,6 +25,7 @@
 
 #include <nfd.hpp>
 
+#include <algorithm>
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
@@ -430,6 +434,7 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
                         bool hdMode, f32 distanceTol, i32 cameraDistance, i32 perturbSeed,
                         i32 instances, bool unlitOddGeosets, bool lazyAnim,
                         const std::string& contentRoot, const AnimScenario& anim,
+                        const std::vector<std::filesystem::path>& attachAnims,
                         bool debugLight = false, bool noRefraction = false,
                         bool refractionMask = false, bool noMultiTex = false) {
     namespace wf = whiteout::flakes;
@@ -546,6 +551,53 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
         std::cerr << "[dtrace] SpawnUnit failed: " << wf::io::PathToUtf8(mdxPath) << std::endl;
         return 4;
     }
+    // Merge any `.m3a` before the scenario resolves a sequence name, because
+    // an `.m3a`-driven model has no sequences of its own to resolve against.
+    // Same two calls ViewerApp::AttachAnimationFile makes — attach, then re-Bind
+    // so the playlist re-reads GetSequences.
+    for (const std::filesystem::path& ap : attachAnims) {
+#if WDX_ENABLE_M3
+        std::ifstream in(ap, std::ios::binary);
+        std::vector<wf::u8> bytes;
+        if (in)
+            bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        if (bytes.empty()) {
+            std::cerr << "[dtrace] --attach-anim unreadable: " << wf::io::PathToUtf8(ap)
+                      << std::endl;
+            return 4;
+        }
+        // Per adapter, not per actor: the loader may hand every copy the same
+        // one, and a second attach of the same label is refused by design.
+        std::vector<wf::io::M3ModelAdapter*> done;
+        for (auto* a : spawned) {
+            if (!a->animation.HasSource())
+                continue;
+            auto* m3 = dynamic_cast<wf::io::M3ModelAdapter*>(a->animation.Source().get());
+            if (!m3)
+                continue;
+            if (std::find(done.begin(), done.end(), m3) == done.end()) {
+                if (!m3->AttachAnimationFile(wf::io::PathToUtf8(ap.stem()), bytes)) {
+                    std::cerr << "[dtrace] --attach-anim rejected: " << wf::io::PathToUtf8(ap)
+                              << std::endl;
+                    return 4;
+                }
+                done.push_back(m3);
+            }
+            // Bind is what re-reads GetSequences; the merged sequences are
+            // invisible to playback until it runs.
+            a->animation.Bind(a->animation.Source());
+        }
+        if (done.empty()) {
+            std::cerr << "[dtrace] --attach-anim needs an `.m3` model: " << wf::io::PathToUtf8(ap)
+                      << std::endl;
+            return 4;
+        }
+#else
+        std::cerr << "[dtrace] --attach-anim needs -DWDX_ENABLE_M3=ON" << std::endl;
+        return 4;
+#endif
+    }
+
     if (auto* dnc = renderer.GetDncService())
         dnc->SetTimeOfDay(12.0f);
 
@@ -1528,7 +1580,7 @@ int main(int argc, char* argv[]) {
                             drawTraceGolden, particleDiffFrames, drawTraceHd, drawTraceDistanceTol,
                             drawTraceCameraDistance, drawTracePerturb, drawTraceInstances,
                             drawTraceUnlit, drawTraceLazyAnim, contentRoot, drawTraceAnim,
-                            drawTraceDebugLight, drawTraceNoRefraction,
+                            attachAnims, drawTraceDebugLight, drawTraceNoRefraction,
                             drawTraceRefractionMask, drawTraceNoMultiTex);
 
     whiteout::flakes::ViewerApp app(renderer);

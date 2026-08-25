@@ -6,6 +6,8 @@
 # nothing else. Cross-fades, layered plays and the weight budget only exist once
 # something asks for a second sequence, so the corpus has to ask.
 #
+#   anim=<path>               attach an `.m3a` (corpus-relative) before anything
+#                             else, so `seq=` resolves against the merged list
 #   seq=<index|name>          which sequence to start in
 #   switch=<frame>:<seq>      SetActiveSequence at that capture frame — a cut
 #                             for wc3/wow, a cross-fade for M3
@@ -71,6 +73,20 @@ Sc2M3/SiegeTank.m3       seq=Stand switch=50:Attack
 # Of the whole corpus, only Colossus shows a solver in the image — it is the
 # IKJT model, and the one entry that makes `-Solvers` non-vacuous.
 Sc2M3/Autoturret.m3      seq=Stand
+
+# --- `.m3a`-driven models -------------------------------------------------
+# Every entry above is a self-animated `.m3`, which is a coverage hole rather
+# than a choice: a Heroes hero ships its geometry and its animation in separate
+# files, and NOTHING above exercises that join. The hole had teeth. A model with
+# no `SEQS` of its own also ships every bone AnimRef with the `interpType` u16
+# zeroed, and reading that zero as "step" (rather than the engine's only rule,
+# `flags & 0x10`) stepped 75.5% of bone SRT refs on these models while leaving
+# every model above untouched — a visible tremor no baseline here could see.
+#
+# Jaina is the case that surfaced it: 139 bones, 0 sequences, 51 arriving from
+# the `.m3a`. The two scenarios cover the plain playhead and the blender.
+HotSM3/Storm_Hero_Jaina_Base.m3   anim=HotSM3/Storm_Hero_Jaina_RequiredAnims.m3a seq=Stand+Ready switch=45:Walk
+HotSM3/Storm_Hero_Jaina_Base.m3   anim=HotSM3/Storm_Hero_Jaina_RequiredAnims.m3a seq=Walk layer=50:Attack weight=0.5
 
 # --- not covered, and why -------------------------------------------------
 # §2.2 also asked for a >256-bone model, to exercise the Path A/Path B palette
