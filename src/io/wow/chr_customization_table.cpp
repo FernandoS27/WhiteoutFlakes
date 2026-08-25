@@ -58,13 +58,19 @@ constexpr u32 kTfdUsage = 1, kTfdResources = 2;
 std::optional<db::Table> Read(IContentProvider& provider, const char* path) {
     auto bytes = provider.ReadFile(path);
     if (!bytes || bytes->empty()) {
-        // Retry by fileDataID. On a World of Warcraft root the path is only a
-        // listfile alias, and the two routes are not equivalent: the by-name
-        // one resolves through the root manifest's name hashes and comes back
-        // empty for several tables on a live install — `texturefiledata.db2`
-        // among them, which is the one a composite cannot do without. Reading
-        // the same id directly works. A zero id means no listfile, and then
-        // there is nothing left to try.
+        // Retry by fileDataID. A zero id means no listfile, and then there is
+        // nothing left to try.
+        //
+        // This used to claim the two routes differ — that by-name reads come
+        // back empty for several tables, `texturefiledata.db2` among them,
+        // while the id works. That was a misattribution: re-measured
+        // 2026-08-25 against a stock 11.x install, path and id agree in every
+        // case, and `texturefiledata.db2` reads 3009910 bytes by *both*. What
+        // actually made those tables vanish was an encrypted BLTE frame with
+        // zero-fill off, which fails a read whichever way it is spelled (see
+        // StorageBuilder::Build). Kept anyway: it costs one read on a miss,
+        // and an install where the manifest disagrees with itself is cheap
+        // insurance rather than a fiction.
         if (const u32 id = provider.FileIdForPath(path); id != 0)
             bytes = provider.ReadFile(ContentRef::FromFileId(id));
     }

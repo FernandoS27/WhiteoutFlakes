@@ -16,8 +16,19 @@ namespace db = ::whiteout::database;
 
 namespace {
 
+// Both spellings of each table, because neither alone reaches every install.
+// The path is what an extracted `dbfilesclient/` dump answers to — and what a
+// CASC root answers to only through a listfile, which is a 140 MB download this
+// feature has no other use for. The fileDataID is what the root is actually
+// keyed by, so it works with no listfile at all.
+//
+// Hardcoding an id is safe here in a way hardcoding a row position is not: a
+// DB2's fileDataID is assigned once and never reissued. Both below are
+// unchanged between the March and August 2026 community listfiles.
 constexpr const char* kModelDataPath = "dbfilesclient/creaturemodeldata.db2";
 constexpr const char* kDisplayInfoPath = "dbfilesclient/creaturedisplayinfo.db2";
+constexpr u32 kModelDataFileId = 1365368;
+constexpr u32 kDisplayInfoFileId = 1108759;
 
 // ---- Column positions -------------------------------------------------------
 //
@@ -34,15 +45,22 @@ constexpr u32 kModelDataGeoBox = 0;      // float[6]
 constexpr u32 kModelDataFileDataId = 2;  // the `.m2` this row describes
 constexpr u32 kDisplayInfoModelId = 1;   // → CreatureModelData::ID
 
-bool ParseThrough(IContentProvider& provider, const char* path, db::Parser& parser,
+bool ParseThrough(IContentProvider& provider, const char* path, u32 knownId, db::Parser& parser,
                   std::optional<db::Table>& out) {
     auto bytes = provider.ReadFile(path);
+    // The id route, which is the only one a CASC root with no listfile has.
+    // Not a retry of the *same* question in another spelling: without a
+    // listfile the path cannot even be turned into an id, so this reaches an
+    // install the branch above cannot.
+    if (!bytes || bytes->empty())
+        bytes = provider.ReadFile(ContentRef::FromFileId(knownId));
     if (!bytes || bytes->empty()) {
-        // The id is worth printing: on a World of Warcraft root the path is a
-        // listfile alias for it, so "not found, id 0" is a missing listfile
-        // while "not found, id N" is a file the install really cannot produce.
-        std::fprintf(stderr, "[wow] creature tables: '%s' not found (id %u)\n", path,
-                     provider.FileIdForPath(path));
+        // Both routes are gone, so this is the install, not the naming — say
+        // which id was tried so the claim can be checked against a listfile.
+        std::fprintf(stderr,
+                     "[wow] creature tables: '%s' unreadable by path or by id %u — monster skins "
+                     "stay unresolved\n",
+                     path, knownId);
         return false;
     }
     out = parser.parse(std::move(*bytes));
@@ -71,8 +89,8 @@ bool CreatureSkinTable::Load(IContentProvider& provider) {
     db::Parser parser;
     std::optional<db::Table> models;
     std::optional<db::Table> displays;
-    if (!ParseThrough(provider, kModelDataPath, parser, models) ||
-        !ParseThrough(provider, kDisplayInfoPath, parser, displays))
+    if (!ParseThrough(provider, kModelDataPath, kModelDataFileId, parser, models) ||
+        !ParseThrough(provider, kDisplayInfoPath, kDisplayInfoFileId, parser, displays))
         return false;
 
     const auto& modelFields = models->fields();

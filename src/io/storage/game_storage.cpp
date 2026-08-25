@@ -144,10 +144,17 @@ std::unique_ptr<GameStorage> StorageBuilder::Build() {
         opts.assetPrefixFallback = assetPrefixes_;
         opts.listfilePath = listfilePath_;
         opts.tactKeyFile = tactKeyPath_;
-        // Paired with the key list on purpose: a session that supplied keys is
-        // one that wants as much of the install as it can get, and the frames
-        // still left over are unreleased content nobody can decrypt.
-        opts.zeroFillEncrypted = !tactKeyPath_.empty();
+        // Unconditional, and deliberately NOT paired with the key list. It was
+        // paired, and that made a session with no keys the one that got the
+        // least: `creaturedisplayinfo.db2` carries a TACT-locked frame on a
+        // stock 11.x install, so the whole table read back as *missing* and
+        // every creature wearing a CreatureDisplayInfo skin bound white.
+        // Measured 2026-08-25 — with zero-fill alone (no keys imported at all)
+        // the same file reads 2439358 bytes, and centaur2_male / aetherwyrm
+        // resolve their type-11/12 slots. Keys are what decrypts a frame;
+        // zero-fill is what stops one frame from costing the file, and wanting
+        // the second has never implied having the first.
+        opts.zeroFillEncrypted = true;
         std::string error;
         if (auto src = CascSource::Open(root, opts, error)) {
             storage->sources_.push_back(std::move(src));

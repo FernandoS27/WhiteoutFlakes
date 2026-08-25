@@ -278,7 +278,10 @@ bool StorageBrowser::OpenCasc(const std::string& root, std::string* error) {
     key.root = root;
     key.listfilePath = listfilePath_;
     key.tactKeyFile = tactKeyPath_;
-    key.zeroFillEncrypted = !tactKeyPath_.empty();
+    // Always on, matching StorageBuilder::Build — and it has to match, or the
+    // browser would key a *second* storage of the same install out of the
+    // registry. See the note there for why it is not tied to the key list.
+    key.zeroFillEncrypted = true;
     std::string err;
     auto s = AcquireSharedCasc(key, err);
     if (!s) {

@@ -581,3 +581,72 @@ TEST_CASE("a model opened absolutely still finds the storage's folder", "[m2][wo
     for (const auto& v : offered)
         CHECK(v.texture[0].rfind("creature/cow/", 0) == 0);
 }
+
+TEST_CASE("the creature tables load from a bare CASC root", "[m2][wow][db2]") {
+    // The regression this exists for. `creaturedisplayinfo.db2` ships a
+    // TACT-locked frame on a stock 11.x install, and a single such frame fails
+    // the whole read — so with zero-fill off the table came back *missing*,
+    // CreatureSkinTable::Load returned false, and every creature whose skin
+    // lives in TextureVariation bound white. It looked like a stale listfile
+    // and was not: the file is unreadable by path and by id alike.
+    //
+    // Bare on purpose — no listfile, no key list. Those are the two things a
+    // user is most likely not to have, and neither should be what stands
+    // between a creature and its skin: zero-fill salvages the encrypted table,
+    // and the hardcoded fileDataIDs reach it without a name.
+    io::FileContentProvider provider;
+    provider.SetGame(whiteout::flakes::ProductId::Wow);
+    if (provider.GamePath(whiteout::flakes::ProductId::Wow).empty() || !provider.HasCasc())
+        SKIP("no World of Warcraft CASC install found");
+    REQUIRE_FALSE(provider.HasListfile());
+
+    io::wow::CreatureSkinTable table;
+    REQUIRE(table.Load(provider));
+    // Thousands, not a handful: a table that parsed but joined nothing would
+    // satisfy a bare `Loaded()` and still leave every creature white.
+    CHECK(table.ModelCount() > 1000);
+    CHECK(table.DisplayCount() > table.ModelCount());
+}
+
+TEST_CASE("a creature skins itself from a bare CASC root", "[m2][wow][db2]") {
+    // The same claim one layer up, through the adapter that actually binds the
+    // slots. `centaur2_male` declares types 11 and 12 and names neither — its
+    // TXID carries 0 for both — so a filled count of 2 is the whole feature
+    // working end to end off nothing but an install.
+    constexpr whiteout::u32 kCentaur2Male = 4036647;
+
+    io::FileContentProvider provider;
+    provider.SetGame(whiteout::flakes::ProductId::Wow);
+    if (provider.GamePath(whiteout::flakes::ProductId::Wow).empty() || !provider.HasCasc())
+        SKIP("no World of Warcraft CASC install found");
+
+    const ContentRef ref = ContentRef::FromFileId(kCentaur2Male);
+    auto bytes = provider.ReadFile(ref);
+    if (!bytes || bytes->empty())
+        SKIP("creature/centaur2_male is not in this build of the install");
+
+    auto adapter = io::M2ModelAdapter::Load(
+        ref, std::span<const whiteout::u8>(bytes->data(), bytes->size()), &provider);
+    REQUIRE(adapter);
+    REQUIRE(SlotsOfType(adapter->SourceModel(), 11) == 1); // the premise
+    REQUIRE(SlotsOfType(adapter->SourceModel(), 12) == 1);
+
+    wow::WowReplaceableTextures replaceables;
+    replaceables.SetContentProvider(&provider);
+    CHECK(replaceables.Apply(*adapter, ref) == 2);
+
+    // And the ids it chose are readable — a slot filled with an id nothing can
+    // produce renders exactly as white as one that was never filled.
+    std::size_t named = 0;
+    for (const auto& td : adapter->GetTextures()) {
+        if (td.sharedKey.empty())
+            continue;
+        ++named;
+        INFO(td.sharedKey);
+        REQUIRE(td.sharedKey[0] == '#');
+        auto tex = provider.ReadFile(ContentRef::FromFileId(
+            static_cast<whiteout::u32>(std::strtoul(td.sharedKey.c_str() + 1, nullptr, 10))));
+        CHECK((tex && !tex->empty()));
+    }
+    CHECK(named == 4); // two skin slots + the two the model names in TXID
+}
