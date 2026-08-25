@@ -5,17 +5,19 @@
 <h1 align="center">WhiteoutFlakes</h1>
 
 <p align="center">
-  A rendering library for Warcraft III assets — classic and Reforged.
+  A rendering library for Blizzard game assets — Warcraft III, World of
+  Warcraft, StarCraft II, Heroes of the Storm and Diablo III.
 </p>
 
 ---
 
-WhiteoutFlakes is a modular real-time renderer that reads native Warcraft III
-model and texture data (`.mdx` / `.mdl`, `.blp`, `.dds`, animated sequences,
-particle emitters, ribbons, splats, attachments, camera presets, day/night
-cycle, …) and draws it through whichever graphics backend the platform
-supports. The same library powers a standalone viewer, a 3ds Max preview
-plugin, and any host that links against `WhiteoutFlakesLib`.
+WhiteoutFlakes is a modular real-time renderer that reads native model, texture
+and archive data and draws it through whichever graphics backend the platform
+supports. Each game gets a **render profile** (pass order, target set, colour
+space, world scale) and a **shading model**; each file format gets an
+**adapter**. A game is a new profile rather than a branch through an existing
+one. The same library powers a standalone viewer, a storage explorer, a 3ds Max
+preview plugin, and any host that links `WhiteoutFlakesLib`.
 
 ## Screenshots
 
@@ -42,45 +44,42 @@ plugin, and any host that links against `WhiteoutFlakesLib`.
 
 </details>
 
-## What it renders
+## Games
 
-- **MDX / MDL models** — classic (v800) and Reforged HD (v900, v1000, v1100, v1200),
-  including multiple texture slots, fresnel terms, emissive gain, layer
-  flipbooks, and per-vertex tangent frames.
-- **Skeletal animation** — Hermite / Bezier / Linear tracks, global
-  sequences, bone constraints, IK-free; multiple actors with independent
-  timelines.
-- **Particle emitters** — PartcileEmitter1, ParticleEmitter2, CornEffects
-  Reforged effects via an interpolarity layer called cornflakes
-  simulation runtime; ribbons, splats, projected decals, billboards.
-- **Replaceable textures** — team color, team glow, tilesets (16 regions),
-  cliff sets, water; the live-reload material path the Max plugin exposes
-  re-skins models without restart.
-- **Day / night cycle + IBL** — Portrait / Day-Night / Dungeon / Sunset
-  probe sets, shadow cascades (0–3), tonemap, three lighting modes
-  (InGame / Glue / Dynamic).
-- **Camera presets** — scripted MDX cameras with optional animators, plus a
-  ViewCube widget for free-orbit navigation.
-
-### Other Blizzard formats — geometry only, opt-in
-
-The renderer's frame is described by an `IRenderProfile` (pass order, target
-set, colour space, world scale) and its shading by an `IShadingModel`, so a
-second game is a new profile rather than a branch through the WC3 path. Two are
-wired up far enough to prove the seam:
-
-| Build option | Format | Game profile | State |
+| Game | Formats | Profile | Storage |
 | --- | --- | --- | --- |
-| `WDX_ENABLE_M2` | `.m2` | `wow` | positions + indices, drawn flat white |
-| `WDX_ENABLE_M3` | `.m3` | `sc2_heroes` | positions + indices, drawn flat white |
+| Warcraft III — classic + Reforged | `.mdx` / `.mdl`, `.blp` | `wc3` | CASC + MPQ |
+| World of Warcraft | `.m2` + `.skin`, `.phys`, `.blp` | `wow` | CASC + client DB2s |
+| StarCraft II | `.m3` + `.m3a`, `.dds` | `sc2_heroes` | CASC |
+| Heroes of the Storm | `.m3` + `.m3a`, `.dds` | `sc2_heroes` | CASC |
+| Diablo III | `.acr` / `.app`, `.tex` | `diablo3` | CASC |
 
-Both default ON, and the standalone viewer opens them from **File > Open** —
-but **this is not asset support**. No bones, no textures, no materials, no
-animation: a model loads and its silhouette draws. They exist so the
-abstraction is checked against real files instead of asserted. Warcraft III
-rendering is byte-identical whether they are compiled in or not; configure with
-`-DWDX_ENABLE_M2=OFF -DWDX_ENABLE_M3=OFF` for a build that shouldn't offer
-them.
+Installs are located automatically per game; the viewer's settings panel can
+point each one somewhere else or ignore CASC entirely.
+
+**Warcraft III** — classic (v800) and Reforged HD (v900–v1200): multi-slot HD
+materials, fresnel terms, emissive gain, layer flipbooks, tangent frames.
+ParticleEmitter1/2 plus Reforged CornEffects through the `cornflakes` runtime,
+ribbons, splats, projected decals. Replaceable textures (team colour and glow,
+tilesets, cliffs, water), day/night cycle with IBL probe sets, shadow cascades,
+scripted MDX cameras.
+
+**World of Warcraft** — `.m2` including pre-Legion MD20, `.skin` batches, the
+shipped shader-combo table, multi-texture and refraction particles, ribbons, and
+the per-model point-light rig. Character customisation and creature skin
+variations are read from the client DB2s. `.phys` cloth is simulated.
+
+**StarCraft II / Heroes of the Storm** — one profile, two games, because they
+ship the same format through the same frame. Up to eleven `.m3` material layers
+plus environment-cube reflections, team colour and billboards; animation
+including external `.m3a` clips joined by animId, priority-weighted blending,
+and pose solvers. PHRB/PHYJ ragdolls and PHCL cloth are simulated.
+
+**Diablo III** — actors (`.acr`) resolved to appearances (`.app`) with their
+AnimSet clips, baked vertex data with bone-palette skinning, `.tex` textures,
+and the fixed-function `MaterialColors` shading the data actually describes.
+Player models ship every armour variant at once, so dressing one is a
+per-geoset visibility and look pick.
 
 ## Graphics backends
 
@@ -92,26 +91,27 @@ them.
 | Metal   | macOS   | Native backend — default on macOS. |
 | WebGPU  | Browser | Emscripten + emdawnwebgpu; powers the web viewer. |
 
-The renderer abstracts every backend behind a unified `gfx::IGFXDevice`
-interface; the engine itself never sees an `HWND` / `VkDevice` / `ID3D12*` /
-`MTLDevice` / `WGPUDevice`. Shaders are compiled once from Slang sources
-into BLS bundles that target DXBC / DXIL / SPIR-V / MSL / WGSL in parallel;
-the prebuilt pack ships under [`prebuilt/shaders/`](prebuilt/shaders) so a
-fresh clone can render without installing the Slang toolchain.
+Every backend sits behind a unified `gfx::IGFXDevice`; the engine never sees an
+`HWND` / `VkDevice` / `ID3D12*` / `MTLDevice` / `WGPUDevice`. Shaders compile
+once from Slang sources into BLS bundles targeting DXBC / DXIL / SPIR-V / MSL /
+WGSL in parallel; the prebuilt pack ships under
+[`prebuilt/shaders/`](prebuilt/shaders) so a fresh clone renders without the
+Slang toolchain.
 
 ## Hosts
 
-- **[`tools/basic_viewer/`](tools/basic_viewer/) `WhiteoutFlakes` standalone** — GLFW window + Dear ImGui UI, file picker via
-  `nativefiledialog-extended`, cubeb-backed audio with 3D sound. Cross-platform.
-- **[`tools/max_plugin/`](tools/max_plugin/) `WhiteoutFlakes.dlx` 3ds Max plugin** — Win32 host with the same Dear
-  ImGui surface; lives next to the modeler, hot-reloads materials.
-- **[`tools/web_viewer/`](tools/web_viewer/) browser viewer** — Emscripten / WebGPU build (`wf-core.{js,wasm}`)
-  driven by a small ES module facade that mirrors mdx-m3-viewer's shape.
-  Assets stream from a local picked directory and/or Hiveworkshop's CASC
-  mirror; Web Audio handles SND events. The matching
-  [`tools/web_viewer/casc_server/`](tools/web_viewer/casc_server/) is a
-  Crow-based dev server that serves loose files out of a local WC3 install
-  for offline iteration.
+- **[`tools/basic_viewer/`](tools/basic_viewer/) — `WhiteoutFlakes`** standalone
+  GLFW + Dear ImGui viewer with a per-game settings panel, file picker, and
+  cubeb-backed 3D audio. Cross-platform.
+- **[`tools/model_explorer/`](tools/model_explorer/) — `WhiteoutFlakesExplorer`**
+  CASC/MPQ storage browser with live per-cell model thumbnails.
+- **[`tools/max_plugin/`](tools/max_plugin/) — `WhiteoutFlakes.dlx`** 3ds Max
+  plugin: the same ImGui surface next to the modeler, hot-reloads materials.
+- **[`tools/web_viewer/`](tools/web_viewer/)** Emscripten / WebGPU build
+  (`wf-core.{js,wasm}`) driven by an ES module facade mirroring mdx-m3-viewer's
+  shape. Assets stream from a picked local directory and/or Hiveworkshop's CASC
+  mirror; [`casc_server/`](tools/web_viewer/casc_server/) is a Crow-based dev
+  server for offline iteration.
 
 ## Building
 
@@ -122,7 +122,7 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release --target WhiteoutFlakesStandalone
 ```
 
-The standalone viewer lands at `build/standalone/Release/WhiteoutFlakes.exe`.
+The viewer lands at `build/standalone/Release/WhiteoutFlakes.exe`.
 
 ### Web viewer (Emscripten / WebGPU)
 
@@ -132,11 +132,6 @@ cmake --build build-web --target wf_web
 python tools/web_viewer/serve_nocache.py 8080   # then open http://localhost:8080
 ```
 
-`wf_web` outputs `build-web/web/wf-core.{js,wasm}` plus the staged JS facade
-and `index.html`. Asset delivery defaults to Hive's CASC mirror; for offline
-work, build `wf_casc_server` (`-DWDX_BUILD_CASC_SERVER=ON`) and point the
-viewer at it.
-
 ### Other toolchains
 
 | Toolchain | Tested |
@@ -145,28 +140,35 @@ viewer at it.
 | Clang 21 (LLVM) + Ninja | ✓ |
 | MinGW UCRT64 + Ninja | ✓ |
 | GCC 15 (Linux) + Ninja | ✓ via CI |
-| AppleClang 15 (macOS 13.3+) | ✓ first-class — Metal backend, native arm64 build, signed `.dmg` |
+| AppleClang 15 (macOS 13.3+) | ✓ first-class — Metal backend, native arm64, signed `.dmg` |
 | Emscripten 4.0.10+ + emdawnwebgpu | ✓ web viewer build (`-DEMSCRIPTEN=ON`) |
 
 ### Useful CMake options
 
 | Option | Default | Purpose |
 | --- | --- | --- |
+| `WDX_ENABLE_M2`                | `ON`  | World of Warcraft `.m2` support. |
+| `WDX_ENABLE_M3`                | `ON`  | StarCraft II / Heroes `.m3` support. |
+| `WDX_ENABLE_D3`                | `ON`  | Diablo III actor support. |
+| `WDX_ENABLE_PHYSICS`           | `ON`  | Snowball rigid-body and cloth simulation (needs M2 or M3). |
 | `WDX_BUILD_WC3_SHADERS`        | `OFF` | Run slangc and rebuild the BLS bundles from `externals/Wc3Shaders/`. |
-| `WDX_USE_PREBUILT_SHADERS`     | auto  | Use the committed `prebuilt/shaders/` pack (auto-enabled when the dir exists and shaders aren't being built from source). |
-| `WDX_BUILD_WC3_DEBUG_SHADERS`  | `ON`  | Also stage debug-symbol BLS bundles for the renderer's graphics-debug mode. |
-| `WDX_ENABLE_TRACY`             | `ON`  | Link Tracy profiler client (`TRACY_ENABLE`, `TRACY_ON_DEMAND`). |
+| `WDX_USE_PREBUILT_SHADERS`     | auto  | Use the committed `prebuilt/shaders/` pack. |
+| `WDX_ENABLE_TRACY`             | `ON`  | Link the Tracy profiler client. |
 | `WDX_ENABLE_IMGUI`             | `ON`  | Engine-side BLS-backed Dear ImGui adapter + GLFW/Win32 frontends. |
-| `WDX_BUILD_MAX_PLUGIN`         | `OFF` | Build the 3ds Max plugin (Windows only; needs `-DMAX_VERSION=<year>`). |
+| `WDX_BUILD_MAX_PLUGIN`         | `OFF` | Build the 3ds Max plugin (Windows; needs `-DMAX_VERSION=<year>`). |
 | `WDX_BUILD_CASC_SERVER`        | `OFF` | Build `wf_casc_server` — local dev replacement for Hive's CASC delivery. |
-| `WDX_BUILD_TESTS`              | `OFF` | Build the Catch2 unit tests under `tests/` (fetches Catch2 at configure time). |
+| `WDX_BUILD_TESTS`              | `OFF` | Build the Catch2 unit tests under `tests/`. |
+
+Warcraft III rendering is unaffected by the other games' toggles; configure with
+`-DWDX_ENABLE_M2=OFF -DWDX_ENABLE_M3=OFF -DWDX_ENABLE_D3=OFF` for a WC3-only
+build.
 
 ## Tests
 
-The `tests/` suite covers the headless parts of the engine — SLK parsing,
-particle curves, spawn shapes, the particle sim and its trace harness, geoset
-classification, coordinate-space conversion, path/texture-format policy. No
-GPU, window, or game archive is needed, so it runs anywhere:
+The `tests/` suite covers the headless engine — format adapters and skinning for
+every game, animation math and blending, the particle and ribbon simulations,
+surface classification, storage rules, path and texture-format policy. No GPU,
+window or game archive is needed:
 
 ```
 cmake -S . -B build -DWDX_BUILD_TESTS=ON
@@ -174,21 +176,17 @@ cmake --build build --config Release --target wdx_tests --parallel
 ctest --test-dir build --build-config Release --output-on-failure
 ```
 
-`cmake --build build --target check` does the last two steps in one go. Each
-`TEST_CASE` registers as its own CTest test, so `ctest -R <name>` filters.
-The AppVeyor Windows job runs the suite on every build.
+`cmake --build build --target check` does the last two in one go. Each
+`TEST_CASE` registers as its own CTest test, so `ctest -R <name>` filters. The
+AppVeyor Windows job runs the suite on every build.
 
 ## Packaging
 
-Prebuilt artifacts are produced by [GitHub Actions](.github/workflows/):
-
-- **`linux-appimage.yml`** — Ubuntu 24.04 + GCC 15 + LunarG SDK 1.4.341.0;
-  output: `WhiteoutFlakes-linux-x86_64.AppImage`.
-- **`macos-dmg.yml`** — macOS 14 (Apple Silicon) + AppleClang. Ships the
-  native Metal backend by default; Vulkan-via-MoltenVK is also linked in
-  via LunarG SDK 1.4.341.0 for backend-bring-up comparison. Output:
-  `WhiteoutFlakes-macos-arm64.dmg`, drag-and-drop installer with the .app,
-  ad-hoc signed.
+Prebuilt artifacts come from [GitHub Actions](.github/workflows/):
+`linux-appimage.yml` produces `WhiteoutFlakes-linux-x86_64.AppImage` (Ubuntu
+24.04, GCC 15, LunarG SDK), and `macos-dmg.yml` produces
+`WhiteoutFlakes-macos-arm64.dmg` (macOS 14 on Apple Silicon, native Metal with
+Vulkan-via-MoltenVK also linked for backend comparison, ad-hoc signed).
 
 ## Project layout
 
@@ -196,44 +194,38 @@ Prebuilt artifacts are produced by [GitHub Actions](.github/workflows/):
 src/
   gfx/          Backend-agnostic graphics interface; D3D11 / D3D12 /
                 Vulkan / Metal / WebGPU implementations.
-  renderer/     Engine: pipeline, scene, BLS shader cache, particle system,
-                shadow + IBL services, cornflakes (Reforged effects runtime).
-  io/           MDX parsing adapter, BLP/DDS/TGA loaders, CASC/MPQ provider.
+  io/           Format adapters — mdx, m2/, m3/, d3/ — plus image loaders,
+                WoW client-DB tables (wow/) and CASC/MPQ storage (storage/).
+  renderer/     Engine: pipeline, scene, BLS shader cache, particles,
+                ribbons, shadow / IBL / GTAO / DoF services, cornflakes
+                (Reforged effects), physics/snowball (Domino re-impl).
+    profiles/   One directory per game: wc3/, wow/, sc2_heroes/, diablo3/.
   public_api/   Stable C++ ABI used by external hosts (ActorView, etc.).
 
-tools/
-  basic_viewer/ Standalone GLFW + ImGui viewer.
-  max_plugin/   3ds Max .dlx plugin.
-  web_viewer/   Emscripten/WebGPU browser host + JS facade + service
-                worker; the casc_server/ subdir is a Crow-based local
-                stand-in for Hive's CASC delivery.
-  common/       Shared host utilities (cubeb sound emitter, ImGui theme).
-
-tests/          Catch2 unit tests for the headless engine components
-                (-DWDX_BUILD_TESTS=ON).
-
-externals/      Submodules: WhiteoutLib (MDX/CASC/MPQ), Wc3Shaders, GLFW,
-                Dear ImGui, cubeb, Tracy, nativefiledialog-extended.
-
-prebuilt/       Pre-compiled BLS shader pack + warmed-up PSO trace, so
-                CI / fresh clones don't need the Slang toolchain.
-
+tools/          Hosts — basic_viewer/, model_explorer/, max_plugin/,
+                web_viewer/, and common/ host utilities.
+tests/          Catch2 unit tests for the headless engine.
+externals/      Submodules: WhiteoutLib (formats, CASC/MPQ, client DBs),
+                Wc3Shaders, GLFW, Dear ImGui, cubeb, Tracy,
+                nativefiledialog-extended.
+prebuilt/       Pre-compiled BLS shader pack + warmed-up PSO trace.
 packaging/      Linux .desktop + macOS Info.plist template.
 ```
 
 ## Status
 
-Active development. The renderer is feature-complete for classic and
-Reforged MDX content.
+Active development. Warcraft III is feature-complete for classic and Reforged
+content; the other four games render textured, animated and simulated content
+and are still gaining coverage.
 
 ## License
 
 See [`LICENSE`](LICENSE) for project terms and
 [`LICENSE-AI.md`](LICENSE-AI.md) for the AI-tooling disclosure.
-WhiteoutFlakes bundles a number of third-party libraries under their own
-licenses; consult each submodule under [`externals/`](externals/) for
-details.
+WhiteoutFlakes bundles third-party libraries under their own licenses; consult
+each submodule under [`externals/`](externals/).
 
-> *Warcraft III is a trademark of Blizzard Entertainment, Inc.
-> WhiteoutFlakes is an independent project not affiliated with or endorsed
-> by Blizzard. The renderer reads only assets the user already owns.*
+> *Warcraft III, World of Warcraft, StarCraft II, Heroes of the Storm and
+> Diablo III are trademarks of Blizzard Entertainment, Inc. WhiteoutFlakes is
+> an independent project not affiliated with or endorsed by Blizzard. The
+> renderer reads only assets the user already owns.*
