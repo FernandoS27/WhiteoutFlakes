@@ -451,6 +451,176 @@ TEST_CASE("Covered plays are culled", "[clip_playlist]") {
     }
 }
 
+TEST_CASE("A concurrent sequence covers nothing", "[clip_playlist]") {
+    // The cull's fourth condition, and the one the host cannot state: a
+    // StarCraft II sequence whose sub-track containers all run concurrent only
+    // drives the properties it keys, so however settled and full-weight it is,
+    // what is under it still shows through. Judging coverage from `desc.mask`
+    // alone retired the primary play the instant a shield-only layer settled.
+    std::vector<SequenceInfo> seqs = {Seq("Stand", 0, 1000), Seq("Cover", 0, 33)};
+    seqs[1].concurrent = true;
+
+    ClipPlaylist pl;
+    PlayDesc under;
+    under.sequence = 0;
+    pl.Play(under, 0);
+    PlayDesc over;
+    over.sequence = 1;
+    pl.Play(over, 0);
+    pl.Advance(0, seqs, false);
+    REQUIRE(pl.PlayCount() == 2);
+
+    // ...and the opaque case is unchanged, which is what keeps every existing
+    // `layer=` baseline where it was.
+    seqs[1].concurrent = false;
+    ClipPlaylist pl2;
+    pl2.Play(under, 0);
+    pl2.Play(over, 0);
+    pl2.Advance(0, seqs, false);
+    REQUIRE(pl2.PlayCount() == 1);
+}
+
+TEST_CASE("Global loops play themselves", "[clip_playlist]") {
+    std::vector<SequenceInfo> seqs = {Seq("Stand", 0, 1000), Seq("GLstand", 0, 500),
+                                      Seq("GLbirth", 0, 700)};
+    seqs[1].alwaysPlays = true;
+    seqs[1].concurrent = true;
+    seqs[2].alwaysPlays = true;
+    seqs[2].concurrent = true;
+
+    SECTION("the set is reconciled, not replayed") {
+        ClipPlaylist pl;
+        pl.SetGlobalSequences({1, 2});
+        pl.Advance(0, seqs, false);
+        // Three: the two globals, plus the sequence-0 play the untouched
+        // `SetActiveSequence` default asks for once the stack is only globals.
+        REQUIRE(pl.PlayCount() == 3);
+
+        // Advance again: nothing restarts, because a live global that is still
+        // in the set keeps its play (and therefore its clock).
+        pl.Advance(100, seqs, false);
+        REQUIRE(pl.PlayCount() == 3);
+        for (const auto& c : pl.Clips())
+            REQUIRE(c.elapsedMs == 100);
+
+        // Dropping one leaves the other's clock alone rather than rebuilding
+        // both — the light does not blink when an `.m3a` brings new sequences.
+        pl.SetGlobalSequences({2});
+        pl.Advance(200, seqs, false);
+        REQUIRE(pl.PlayCount() == 2);
+        bool sawGlobal = false;
+        for (const auto& c : pl.Clips()) {
+            REQUIRE(c.sequence != 1);
+            REQUIRE(c.elapsedMs == 200);
+            sawGlobal = sawGlobal || c.sequence == 2;
+        }
+        REQUIRE(sawGlobal);
+    }
+
+    SECTION("a global loop does not make the stack look host-driven") {
+        // The regression this guards: a sequence request is only honoured when
+        // the host is not already layering, and reading a model's own global
+        // loops as "the host is layering" left the dropdown inert on every
+        // `.m3` that has one.
+        ClipPlaylist pl;
+        pl.SetGlobalSequences({1});
+        pl.Advance(0, seqs, false);
+        pl.SetActiveSequence(0);
+        pl.Advance(10, seqs, false);
+        REQUIRE(pl.PlayCount() == 2);
+        REQUIRE(pl.Clips()[1].sequence == 0); // the request, under the overlay
+    }
+
+    SECTION("a concurrent global stays above the sequence the host switches to") {
+        // The regression this guards: the global was played once and every
+        // later request went in *above* it, so a model's rotors turned until
+        // the first switch and then stopped — an opaque full-body play above
+        // an overlay spends the whole weight budget on default-fills before
+        // the overlay is ever reached.
+        ClipPlaylist pl;
+        pl.SetGlobalSequences({1});
+        pl.SetActiveSequence(0);
+        pl.Advance(0, seqs, false);
+        REQUIRE(pl.Clips()[0].sequence == 1);
+
+        pl.SetActiveSequence(2);
+        pl.Advance(10, seqs, false);
+        REQUIRE(pl.PlayCount() == 2);
+        REQUIRE(pl.Clips()[0].sequence == 1);
+        REQUIRE(pl.Clips()[1].sequence == 2);
+
+        // ... and a host layer goes under it too.
+        PlayDesc d;
+        d.sequence = 0;
+        d.persistent = true;
+        pl.Play(d, 10);
+        pl.Advance(20, seqs, false);
+        REQUIRE(pl.Clips()[0].sequence == 1);
+    }
+
+    SECTION("a global that is not concurrent stays at the bottom") {
+        // It is not an overlay — it keys the whole skeleton, so it is the
+        // model's own animation and an ordinary play is entitled to bury it.
+        // 61 of the 621 flagged sequences in the StarCraft II corpus.
+        std::vector<SequenceInfo> opaque = seqs;
+        opaque[1].concurrent = false;
+        ClipPlaylist pl;
+        pl.SetGlobalSequences({1});
+        pl.SetActiveSequence(0);
+        pl.Advance(0, opaque, false);
+        REQUIRE(pl.PlayCount() == 2);
+        REQUIRE(pl.Clips()[0].sequence == 0);
+        REQUIRE(pl.Clips()[1].sequence == 1);
+    }
+
+    SECTION("StopAll leaves them running") {
+        // They belong to the model, not to whoever asked for the last play.
+        ClipPlaylist pl;
+        pl.SetGlobalSequences({1});
+        PlayDesc d;
+        d.sequence = 0;
+        pl.Play(d, 0);
+        pl.Advance(0, seqs, false);
+        REQUIRE(pl.PlayCount() == 2);
+        pl.StopAll(0, 0);
+        pl.Advance(10, seqs, false);
+        REQUIRE(pl.PlayCount() == 1);
+        REQUIRE(pl.Clips()[0].sequence == 1);
+    }
+}
+
+TEST_CASE("Retune leaves the clock alone", "[clip_playlist]") {
+    // A host dragging a blend weight must not rewind the animation, which is
+    // the whole reason this is not stop-and-replay.
+    const std::vector<SequenceInfo> seqs = {Seq("Stand", 0, 1000)};
+    ClipPlaylist pl;
+    PlayDesc d;
+    d.sequence = 0;
+    d.persistent = true;
+    const PlayHandle h = pl.Play(d, 0);
+    pl.Advance(400, seqs, false);
+    REQUIRE(pl.Clips()[0].elapsedMs == 400);
+
+    REQUIRE(pl.Retune(h, 0.25f, 1.0f, true));
+    pl.Advance(500, seqs, false);
+    REQUIRE(pl.Clips()[0].elapsedMs == 500);
+    REQUIRE(pl.Clips()[0].weight == Approx(0.25f));
+
+    REQUIRE_FALSE(pl.Retune(h + 99, 1.0f, 1.0f, true));
+}
+
+TEST_CASE("A clip carries its sub-track selection", "[clip_playlist]") {
+    const std::vector<SequenceInfo> seqs = {Seq("Cover", 0, 33)};
+    ClipPlaylist pl;
+    PlayDesc d;
+    d.sequence = 0;
+    d.subtrack = 1;
+    d.persistent = true;
+    pl.Play(d, 0);
+    pl.Advance(0, seqs, false);
+    REQUIRE(pl.Clips()[0].subtrack == 1);
+}
+
 TEST_CASE("Scrubbing re-bases so the next advance recomputes the same frame",
           "[clip_playlist]") {
     const std::vector<SequenceInfo> seqs = {Seq("Walk", 1000, 2000)};

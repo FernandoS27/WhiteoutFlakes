@@ -68,6 +68,16 @@ struct ClipRef {
     /// array — a clip drives a subtree, exactly as `UpdateBonesSeq` propagates
     /// a sequence pointer down to bones that do not own one.
     i32 rootNode = -1;
+    /// @brief Which of the sequence's sub-tracks to play; `-1` ⇒ all of them.
+    ///
+    /// StarCraft II splits one sequence across several sub-track containers —
+    /// the Marine's `Cover` is `Cover_full` plus `Cover_Shield` — and a play
+    /// normally starts every one of them. Naming a single container is how a
+    /// host drives one prop or one body part from one sequence while the rest
+    /// of the skeleton runs another. Indexes the source's own container list
+    /// for this sequence, in the order it reports them. Inert for Warcraft III
+    /// and World of Warcraft, which have nothing to split.
+    i32 subtrack = -1;
 };
 
 /// @brief What a bare sequence switch should do, answered by the source.

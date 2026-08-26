@@ -350,3 +350,137 @@ TEST_CASE("An out-of-range clip sequence wraps rather than dropping the layer",
         REQUIRE(Translation(EvalAt(a, {c}), 0).x == Approx(inRange));
     }
 }
+
+// ---- Sub-track selection ---------------------------------------------------
+//
+// One StarCraft II sequence is several sub-track containers, and the game
+// normally starts them all. Naming one is how a host borrows a single prop or
+// limb out of a sequence it does not otherwise want: the Marine's combat
+// shield is `Cover_Shield`, one of `Cover`'s two containers, and holding it
+// alone is what leaves the shield up while the unit stands and walks.
+//
+// `SplitBodyFixture` is the same shape: `Attack` spans an opaque `lower`
+// (priority 1, drives both bones) and a concurrent `upper` (priority 2, drives
+// the chest only). The containers are reported priority-first, so index 0 is
+// `upper` and index 1 is `lower`.
+
+TEST_CASE("Sub-tracks are reported priority-first", "[m3blend]") {
+    M3ModelAdapter a(m3fix::SplitBodyFixture());
+    const auto subs = a.SubtracksOf(0);
+    REQUIRE(subs.size() == 2);
+    REQUIRE(subs[0].name == "upper");
+    REQUIRE(subs[0].priority == 2);
+    REQUIRE(subs[0].concurrent);
+    REQUIRE(subs[0].trackCount == 1);
+    REQUIRE(subs[1].name == "lower");
+    REQUIRE(subs[1].priority == 1);
+    REQUIRE_FALSE(subs[1].concurrent);
+    REQUIRE(subs[1].trackCount == 2);
+    REQUIRE(a.SubtracksOf(7).empty());
+}
+
+TEST_CASE("A clip naming no sub-track plays every container", "[m3blend]") {
+    M3ModelAdapter a(m3fix::SplitBodyFixture());
+    const auto fs = EvalAt(a, {Clip(0, 1000)});
+    // Root from `lower` (the only container that keys it); chest from `upper`,
+    // which outranks `lower` on the one property both drive.
+    REQUIRE(Translation(fs, 0).x == Approx(10.0f));
+    REQUIRE(Translation(fs, 1).z == Approx(30.0f));
+}
+
+TEST_CASE("subtrack names one container and drops the rest", "[m3blend]") {
+    M3ModelAdapter a(m3fix::SplitBodyFixture());
+
+    SECTION("the concurrent one leaves everything it does not key alone") {
+        ClipRef c = Clip(0, 1000);
+        c.subtrack = 0; // upper
+        const auto fs = EvalAt(a, {c});
+        // `upper` has no track for the root and abstains, so the root falls
+        // back to its AnimRef init rather than to `lower`'s 10.
+        REQUIRE(Translation(fs, 0).x == Approx(0.0f));
+        REQUIRE(Translation(fs, 1).z == Approx(30.0f));
+    }
+
+    SECTION("the opaque one drives what it keys and nothing else runs") {
+        ClipRef c = Clip(0, 1000);
+        c.subtrack = 1; // lower
+        const auto fs = EvalAt(a, {c});
+        REQUIRE(Translation(fs, 0).x == Approx(10.0f));
+        // `upper` is not playing, so the chest takes `lower`'s key for it.
+        REQUIRE(Translation(fs, 1).y == Approx(20.0f));
+        REQUIRE(Translation(fs, 1).z == Approx(0.0f));
+    }
+
+    SECTION("an out-of-range index plays nothing rather than everything") {
+        // Deliberate: a stale index (kept across an `.m3a` detach) silently
+        // widening back to the whole sequence would look like the layer works.
+        ClipRef c = Clip(0, 1000);
+        c.subtrack = 5;
+        const auto fs = EvalAt(a, {c});
+        REQUIRE(Translation(fs, 0).x == Approx(0.0f));
+        REQUIRE(Translation(fs, 1).z == Approx(0.0f));
+    }
+}
+
+TEST_CASE("A sub-track layer leaves the play under it visible", "[m3blend]") {
+    // The shield case end to end: a concurrent container held over a full-body
+    // play drives its own property and lets the rest through. Two clips, so
+    // this also pins that the per-play dedup counts the filtered layer as its
+    // own play rather than merging it into the one below.
+    M3ModelAdapter a(m3fix::SplitBodyFixture());
+    ClipRef overlay = Clip(0, 1000);
+    overlay.subtrack = 0; // upper only
+    ClipRef body = Clip(0, 1000);
+    body.subtrack = 1; // lower only
+    const auto fs = EvalAt(a, {overlay, body});
+    REQUIRE(Translation(fs, 0).x == Approx(10.0f)); // from `lower`
+    REQUIRE(Translation(fs, 1).z == Approx(30.0f)); // from `upper`
+}
+
+// ---- Global loops ----------------------------------------------------------
+
+TEST_CASE("Global loops are recognised", "[m3blend]") {
+    SECTION("the AlwaysGlobal flag, which is the engine's only rule") {
+        m3fix::ModelBuilder mb;
+        mb.StaticBone("root", -1);
+        m3fix::StcBuilder s("Stand_full", 0, /*runsConcurrent*/ false);
+        s.Float(900, m3fix::Block<f32>({0, 100}, {0.0f, 1.0f}));
+        const u32 i = mb.AddStc(s.Build());
+        mb.Sequence("Stand", 0, 100, {i});
+        mb.Sequence("Flagged", 0, 100, {i}, m3::SequenceFlag::AlwaysGlobal);
+        M3ModelAdapter a(mb.Build());
+        const auto seqs = a.GetSequences();
+        REQUIRE(seqs.size() == 2);
+        REQUIRE_FALSE(seqs[0].alwaysPlays);
+        REQUIRE(seqs[1].alwaysPlays);
+        // Neither is an overlay: the container is opaque, so playing either
+        // buries what is under it.
+        REQUIRE_FALSE(seqs[0].concurrent);
+        REQUIRE_FALSE(seqs[1].concurrent);
+    }
+
+    SECTION("the GL naming convention, but only when every container abstains") {
+        // 89% of the corpus's `GL*` sequences never set the flag — in the game
+        // the unit's actor data starts them, and a model viewer has none. The
+        // all-concurrent condition is what makes taking the name safe.
+        m3fix::ModelBuilder mb;
+        mb.StaticBone("root", -1);
+        m3fix::StcBuilder conc("GLstand_light", 0, /*runsConcurrent*/ true);
+        conc.Float(900, m3fix::Block<f32>({0, 100}, {0.0f, 1.0f}));
+        m3fix::StcBuilder opaque("GLstand_full", 0, /*runsConcurrent*/ false);
+        opaque.Float(901, m3fix::Block<f32>({0, 100}, {0.0f, 1.0f}));
+        const u32 c = mb.AddStc(conc.Build());
+        const u32 o = mb.AddStc(opaque.Build());
+        mb.Sequence("GLstand", 0, 100, {c});
+        mb.Sequence("GLstand A", 0, 100, {c, o});
+        mb.Sequence("Stand", 0, 100, {c});
+        M3ModelAdapter a(mb.Build());
+        const auto seqs = a.GetSequences();
+        REQUIRE(seqs[0].alwaysPlays);       // GL-named, all containers abstain
+        REQUIRE(seqs[0].concurrent);
+        REQUIRE_FALSE(seqs[1].alwaysPlays); // GL-named but one container buries
+        REQUIRE_FALSE(seqs[1].concurrent);
+        REQUIRE_FALSE(seqs[2].alwaysPlays); // concurrent, but not GL-named
+        REQUIRE(seqs[2].concurrent);
+    }
+}

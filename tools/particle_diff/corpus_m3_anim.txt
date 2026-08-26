@@ -15,6 +15,15 @@
 #                             route into the blender
 #   blend=<ms>                blend-in for the layered play (default 250)
 #   weight=<f>                its weight (default 1.0)
+#   subtrack=<n>              play only container `n` of the layered sequence,
+#                             indexed as `--draw-trace-anim-list` prints them
+#                             (priority-first). Default: every container, which
+#                             is what the game does.
+#   globals=off               silence the model's global loops. They run by
+#                             default because `M3AnimState::Init` starts every
+#                             `AlwaysGlobal` sequence before the actor asks for
+#                             anything; `off` is how a baseline pins one
+#                             sequence on its own.
 #
 # `seq` matches an index if it parses as one, else a case-insensitive substring
 # of the sequence name, with `+` standing in for a space ("Attack+02"). Names
@@ -87,6 +96,28 @@ Sc2M3/Autoturret.m3      seq=Stand
 # the `.m3a`. The two scenarios cover the plain playhead and the blender.
 HotSM3/Storm_Hero_Jaina_Base.m3   anim=HotSM3/Storm_Hero_Jaina_RequiredAnims.m3a seq=Stand+Ready switch=45:Walk
 HotSM3/Storm_Hero_Jaina_Base.m3   anim=HotSM3/Storm_Hero_Jaina_RequiredAnims.m3a seq=Walk layer=50:Attack weight=0.5
+
+# --- sub-tracks and global loops -------------------------------------------
+# A sequence is not one track. `Cover` is `Cover_Shield` (priority 11, three
+# animIds — the Marine's combat shield and nothing else) plus `Cover_full`
+# (priority 0, one animId); `Stand Right Ready` is `_Legs2` (30) plus `_full`.
+# The game holds one such container under a full-body play to keep a prop up,
+# and `subtrack=` is the only way to reach that from here. Measured on the pair
+# below: the shield-only layer and the whole-`Cover` layer produce the same
+# pose, and the `_full`-only layer produces the unlayered one — so container 0
+# is carrying all of it.
+Sc2M3/Marine.m3          seq=Stand layer=5:Cover subtrack=0 blend=0
+Sc2M3/Marine.m3          seq=Stand layer=5:Cover subtrack=1 blend=0
+# `GLstand` is a global loop: the model starts it itself, over everything, and
+# keeps it running through every sequence switch. Barracks sets the
+# `AlwaysGlobal` flag (a blinking `_RedLight` container at priority 10);
+# Hatchery does not — 89% of shipped `GL*` sequences do not — and is caught by
+# the naming convention instead. The `globals=off` pair is the control: a
+# difference between the two runs is the loop actually contributing.
+Sc2M3/Barracks.m3        seq=Stand switch=50:Stand+Work
+Sc2M3/Barracks.m3        seq=Stand switch=50:Stand+Work globals=off
+Sc2M3/Hatchery.m3        seq=Stand
+Sc2M3/Hatchery.m3        seq=Stand globals=off
 
 # --- not covered, and why -------------------------------------------------
 # §2.2 also asked for a >256-bone model, to exercise the Path A/Path B palette

@@ -353,6 +353,13 @@ struct AnimScenario {
     std::string layerSequence;
     i32 layerBlendInMs = 250;
     f32 layerWeight = 1.0f;
+    // One sub-track container of the layered sequence, or -1 for all of them.
+    // The Marine's shield is `Cover` sub-track 0; playing the whole of `Cover`
+    // also runs `Cover_full`, so only this can isolate a prop.
+    i32 layerSubtrack = -1;
+    // Silence the model's global loops. On by default because the engine plays
+    // them, and off is how a baseline pins one sequence on its own.
+    bool noGlobals = false;
     // Print the sequence table and stop. How the corpus file gets curated:
     // sequence *indices* are export order and differ per model, so the corpus
     // names sequences and this is what tells you which names exist.
@@ -380,7 +387,8 @@ struct AnimScenario {
     bool probe = false;
 
     bool Any() const {
-        return !sequence.empty() || switchFrame >= 0 || layerFrame >= 0 || list || probe ||
+        return !sequence.empty() || switchFrame >= 0 || layerFrame >= 0 || noGlobals || list ||
+               probe ||
                solvers;
     }
 };
@@ -650,10 +658,32 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
                 hero->animation.Source().get()))
             std::cout << "[dtrace] " << ms->GetSkeleton().nodeCount << " bone(s)" << std::endl;
         std::cout << "[dtrace] " << seqs.size() << " sequence(s):" << std::endl;
-        for (std::size_t s = 0; s < seqs.size(); ++s)
+#if WDX_ENABLE_M3
+        auto* m3 = dynamic_cast<wf::io::M3ModelAdapter*>(hero->animation.Source().get());
+#endif
+        for (std::size_t s = 0; s < seqs.size(); ++s) {
             std::cout << "[dtrace]   [" << s << "] " << seqs[s].name << "  " << seqs[s].startMs
                       << ".." << seqs[s].endMs << "ms"
-                      << (seqs[s].nonLooping ? " (non-looping)" : "") << std::endl;
+                      << (seqs[s].nonLooping ? " (non-looping)" : "")
+                      << (seqs[s].alwaysPlays ? " (global loop)" : "");
+#if WDX_ENABLE_M3
+            // The sub-track containers, because `subtrack=` in the corpus file
+            // names one by index and there is no other way to see the list.
+            // Only interesting when there is more than one — a lone `_full`
+            // container is what every sequence has.
+            if (m3) {
+                const auto subs = m3->SubtracksOf(static_cast<wf::i32>(s));
+                if (subs.size() > 1) {
+                    std::cout << "  subtracks:";
+                    for (std::size_t k = 0; k < subs.size(); ++k)
+                        std::cout << " [" << k << "]" << subs[k].name << "(p" << subs[k].priority
+                                  << (subs[k].concurrent ? ",conc" : ",excl") << ","
+                                  << subs[k].trackCount << ")";
+                }
+            }
+#endif
+            std::cout << std::endl;
+        }
         pipe.Shutdown();
         return 0;
     }
@@ -668,6 +698,23 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
             a->animation.SetActiveSequenceIndex(startSeq);
         std::cout << "[dtrace] scenario: start seq [" << startSeq << "] " << seqs[startSeq].name
                   << std::endl;
+    }
+
+    // Global loops run unless a scenario says otherwise, because the engine
+    // runs them: `M3AnimState::Init` starts every `AlwaysGlobal` sequence
+    // before the actor asks for anything. Silencing them is how a baseline
+    // isolates one sequence.
+    if (anim.noGlobals) {
+        for (auto* a : spawned)
+            a->animation.Playlist().SetGlobalSequences({});
+        std::cout << "[dtrace] scenario: global loops silenced" << std::endl;
+    } else {
+        std::size_t globals = 0;
+        for (const auto& s : seqs)
+            if (s.alwaysPlays)
+                ++globals;
+        if (globals)
+            std::cout << "[dtrace] scenario: " << globals << " global loop(s) playing" << std::endl;
     }
 
     // The solver arm. The renderer's default ground is the grid plane at z = 0
@@ -736,11 +783,15 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
             d.sequence = layerSeq;
             d.weight = anim.layerWeight;
             d.blendInMs = anim.layerBlendInMs;
+            d.subtrack = anim.layerSubtrack;
             d.persistent = true; // survives the covered-play cull for the capture
             for (auto* a : spawned)
                 a->animation.Playlist().Play(d, a->cursor.actorTimeMs);
             std::cout << "[dtrace] scenario: frame " << i << " layer + [" << layerSeq << "] "
-                      << seqs[layerSeq].name << " @w" << anim.layerWeight << std::endl;
+                      << seqs[layerSeq].name << " @w" << anim.layerWeight;
+            if (anim.layerSubtrack >= 0)
+                std::cout << " subtrack " << anim.layerSubtrack;
+            std::cout << std::endl;
         }
         scene.Update(kDt);
         renderer.Ticker().Tick(kDt);
@@ -1362,6 +1413,10 @@ int main(int argc, char* argv[]) {
             drawTraceAnim.layerBlendInMs = std::atoi(argv[++i]);
         } else if (std::strcmp(a, "--draw-trace-anim-weight") == 0 && i + 1 < argc) {
             drawTraceAnim.layerWeight = static_cast<f32>(std::atof(argv[++i]));
+        } else if (std::strcmp(a, "--draw-trace-anim-subtrack") == 0 && i + 1 < argc) {
+            drawTraceAnim.layerSubtrack = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--draw-trace-anim-no-globals") == 0) {
+            drawTraceAnim.noGlobals = true;
         } else if (std::strcmp(a, "--draw-trace-anim-list") == 0) {
             drawTraceAnim.list = true;
         } else if (std::strcmp(a, "--draw-trace-anim-probe") == 0) {

@@ -279,6 +279,7 @@ void FrameTicker::EvaluateActorTreeRec(Actor& actor, const ActorEvalContext& ctx
             clip.loop = p.loop;
             clip.mask = p.mask;
             clip.rootNode = p.rootNode;
+            clip.subtrack = p.subtrack;
         } else {
             // Children derive their cursor from an ancestor clock and never
             // run a playlist, so the unwrapped elapsed is the pre-window time.

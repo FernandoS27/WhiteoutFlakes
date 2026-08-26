@@ -309,6 +309,16 @@ float whiteout_flakes_FlakesSequenceInfo_get_rarity(const whiteout_FlakesSequenc
 void whiteout_flakes_FlakesSequenceInfo_set_rarity(whiteout_FlakesSequenceInfo* self, float value);
 int32_t whiteout_flakes_FlakesSequenceInfo_get_nonLooping(const whiteout_FlakesSequenceInfo* self);
 void whiteout_flakes_FlakesSequenceInfo_set_nonLooping(whiteout_FlakesSequenceInfo* self, int32_t value);
+/* The source plays this one by itself, continuously, alongside whatever the host asked for. */
+/*  */
+/* StarCraft II's global loops — the `GLstand` / `GLbirth` sequences that keep a radar dish turning or a warning light blinking while the unit stands, walks and attacks. `M3AnimState::Init` walks the whole sequence table and starts every one of these before the actor has asked for anything (SC2 4.8 `sub_10288B3C0`), so it is a property of the *model* rather than a request. Never set by Warcraft III or World of Warcraft. */
+int32_t whiteout_flakes_FlakesSequenceInfo_get_alwaysPlays(const whiteout_FlakesSequenceInfo* self);
+void whiteout_flakes_FlakesSequenceInfo_set_alwaysPlays(whiteout_FlakesSequenceInfo* self, int32_t value);
+/* Every one of this sequence's sub-tracks abstains on the properties it does not key, so playing it *layers over* what is already running instead of burying it. */
+/*  */
+/* `STC.runsConcurrent` aggregated over the containers the sequence spans, and the answer to "may the covered-play cull retire the stack under this?". Conservative on a mixed sequence: one opaque container is enough to bury, because in StarCraft II that container's player does exactly that to the players below it. Never set by Warcraft III or World of Warcraft, whose sequences always drive the whole skeleton. */
+int32_t whiteout_flakes_FlakesSequenceInfo_get_concurrent(const whiteout_FlakesSequenceInfo* self);
+void whiteout_flakes_FlakesSequenceInfo_set_concurrent(whiteout_FlakesSequenceInfo* self, int32_t value);
 
 /* ── FlakesPipelineView ─────────────────────────────────────────────── */
 

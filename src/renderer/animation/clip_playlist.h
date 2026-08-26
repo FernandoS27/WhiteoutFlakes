@@ -53,6 +53,9 @@ struct PlayDesc {
     i32 blendOutMs = -1;
     ClipMask mask = ClipMask::FillDefault;
     i32 rootNode = -1;
+    /// @brief One sub-track of the sequence, or `-1` for all of them. See
+    ///        @ref ClipRef::subtrack.
+    i32 subtrack = -1;
 };
 
 using PlayHandle = u32;
@@ -119,11 +122,38 @@ public:
     void Stop(PlayHandle h, i32 blendOutMs, i32 nowMs);
     void StopAll(i32 blendOutMs, i32 nowMs);
 
+    /// @brief Retune a live play in place. False when the handle is gone.
+    ///
+    /// Separate from stop-and-replay because that would restart the clock: a
+    /// host dragging a blend weight would rewind the animation on every frame
+    /// of the drag. Sequence and sub-track are *not* here — changing either is
+    /// a different animation and should restart.
+    bool Retune(PlayHandle h, f32 weight, f32 speed, bool loop);
+
+    // ---- global loops ----
+
+    /// @brief The sequences that play by themselves, continuously, over
+    ///        everything else — @ref SequenceInfo::alwaysPlays.
+    ///
+    /// Not `Play` calls, because they are not requests: they belong to the
+    /// model and have to come back after anything that rebuilds the stack.
+    /// The next @ref Advance reconciles the live set with this one, so a host
+    /// that wants one of them silenced passes the list without it rather than
+    /// hunting for its handle.
+    ///
+    /// StarCraft II does exactly this at `M3AnimState` init and again after
+    /// every `.m3a` merge, which here is `AnimationDriver::Bind` both times.
+    void SetGlobalSequences(std::vector<i32> sequences);
+    const std::vector<i32>& GlobalSequences() const {
+        return globalSeqs_;
+    }
+
     /// @brief Advance every play's cursor and envelope, retire what finished,
     ///        and rebuild the clip span.
     void Advance(i32 nowMs, std::span<const SequenceInfo> seqs, bool forceLoop);
 
-    /// @brief Newest play first. Empty only when nothing is playing.
+    /// @brief Global-loop overlays first, then the host's plays newest-first.
+    ///        Empty only when nothing is playing.
     std::span<const ClipRef> Clips() const {
         return clips_;
     }
@@ -174,9 +204,28 @@ private:
         /// @brief Set when the switch that spawned this play is the one the
         ///        simple surface tracks, so `SetActiveSequence` can find it.
         bool primary = false;
+        /// @brief Started by @ref SetGlobalSequences rather than by a host, so
+        ///        the reconcile owns it and neither surface may retire it.
+        bool global = false;
+        /// @brief Held at the top of the stack, above every host play.
+        ///
+        /// A global loop whose sub-tracks all run concurrent only keys the
+        /// properties it owns and abstains on the rest, so it can only ever
+        /// contribute from *above*: sampled below a full-body play, the opaque
+        /// container underneath it has already claimed the whole weight budget
+        /// with default-fills and the overlay is never reached. A global that
+        /// is not concurrent is the model's own animation rather than an
+        /// overlay and stays at the bottom, where an ordinary play buries it.
+        bool overlay = false;
     };
 
-    void RetireCovered();
+    void RetireCovered(std::span<const SequenceInfo> seqs);
+    /// @brief Bring the live global plays in line with @ref globalSeqs_.
+    void ReconcileGlobals(i32 nowMs, std::span<const SequenceInfo> seqs);
+    /// @brief Leading overlay plays — where a host play has to be inserted so
+    ///        it lands below them.
+    std::size_t OverlayCount() const;
+    PlayHandle PlayAt(const PlayDesc& desc, i32 nowMs, std::size_t at);
     PlayState* Primary();
     const PlayState* Primary() const;
 
@@ -184,6 +233,9 @@ private:
     std::vector<ClipRef> clips_;
     TransitionPolicy policy_;
     PlayHandle nextHandle_ = 1;
+
+    std::vector<i32> globalSeqs_;
+    bool globalsDirty_ = false;
 
     i32 requestedSequence_ = 0;
     i32 acknowledgedSequence_ = -1;

@@ -106,6 +106,27 @@ struct SequenceInfo {
     f32 moveSpeed = 0.0f;
     f32 rarity = 0.0f;
     bool nonLooping = false;
+    /// @brief The source plays this one by itself, continuously, alongside
+    ///        whatever the host asked for.
+    ///
+    /// StarCraft II's global loops — the `GLstand` / `GLbirth` sequences that
+    /// keep a radar dish turning or a warning light blinking while the unit
+    /// stands, walks and attacks. `M3AnimState::Init` walks the whole sequence
+    /// table and starts every one of these before the actor has asked for
+    /// anything (SC2 4.8 `sub_10288B3C0`), so it is a property of the *model*
+    /// rather than a request. Never set by Warcraft III or World of Warcraft.
+    bool alwaysPlays = false;
+    /// @brief Every one of this sequence's sub-tracks abstains on the
+    ///        properties it does not key, so playing it *layers over* what is
+    ///        already running instead of burying it.
+    ///
+    /// `STC.runsConcurrent` aggregated over the containers the sequence spans,
+    /// and the answer to "may the covered-play cull retire the stack under
+    /// this?". Conservative on a mixed sequence: one opaque container is enough
+    /// to bury, because in StarCraft II that container's player does exactly
+    /// that to the players below it. Never set by Warcraft III or World of
+    /// Warcraft, whose sequences always drive the whole skeleton.
+    bool concurrent = false;
 };
 
 } // namespace whiteout::flakes

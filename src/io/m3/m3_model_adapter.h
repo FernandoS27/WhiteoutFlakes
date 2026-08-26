@@ -351,7 +351,42 @@ public:
         return attached_;
     }
 
+    // ---- sub-tracks ------------------------------------------------------
+    //
+    // A `SEQS` entry is a name and a window; the keys live in the `STC_`
+    // containers its `STG_` group lists, and there is usually more than one.
+    // The Marine's `Cover` is `Cover_full` plus `Cover_Shield`; its
+    // `Stand Right Ready` is `_full` plus `_Legs2`. Playing the sequence runs
+    // every container, which is what the game does; naming one is how a host
+    // borrows a single prop or limb out of a sequence it does not otherwise
+    // want. See `ClipRef::subtrack`.
+
+    /// @brief One sub-track container of a sequence.
+    struct SubtrackInfo {
+        /// @brief The container name with the sequence's own name and the
+        ///        separating `_` trimmed off — `Cover_Shield` reads `Shield`.
+        ///        Falls back to the full container name when it does not carry
+        ///        the prefix, and to `full` when the container is unnamed.
+        std::string name;
+        /// @brief Priority the container blends at, highest first.
+        ::whiteout::u16 priority = 0;
+        /// @brief `STC.runsConcurrent`: the container abstains on properties it
+        ///        has no track for, instead of forcing their defaults.
+        bool concurrent = false;
+        /// @brief How many `animId`s this container drives. A one-property
+        ///        container is a switch, not a pose.
+        std::size_t trackCount = 0;
+    };
+
+    /// @brief The containers @p sequence spans, in the order `ClipRef::subtrack`
+    ///        indexes them. Empty for an out-of-range index.
+    std::vector<SubtrackInfo> SubtracksOf(::whiteout::i32 sequence) const;
+
 private:
+    /// @brief Does @p sequence play by itself, forever, over everything else?
+    ///        Backs `SequenceInfo::alwaysPlays`.
+    bool IsGlobalLoop(::whiteout::i32 sequence) const;
+
     /// @brief The regions `GetMeshes` emits, in emission order.
     ///
     /// `GetMeshes` skips empty and truncated regions, and `geosetId` is the

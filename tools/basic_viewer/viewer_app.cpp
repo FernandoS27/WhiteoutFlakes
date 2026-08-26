@@ -940,6 +940,135 @@ bool ViewerApp::AttachAnimationFile(const std::filesystem::path& path) {
 #endif
 }
 
+// ---- Animation tracks and global loops -------------------------------------
+//
+// Both sit on the focus actor's ClipPlaylist, which is the renderer's own
+// layering surface — the same one `ActorView::Play` exposes to an embedder.
+// Nothing here reaches into the sampler.
+
+bool ViewerApp::AddAnimTrack() {
+    model::Actor* hero = FocusActorPtr();
+    if (!hero || !hero->animation.HasSource())
+        return false;
+    AnimTrackInfo t;
+    t.sequence = hero->animation.ActiveSequenceIndex();
+    if (t.sequence < 0 || t.sequence >= static_cast<i32>(sequenceRanges_.size()))
+        t.sequence = 0;
+    animTracks_.push_back(t);
+    animTrackHandles_.push_back(0);
+    SetAnimTrack(animTracks_.size() - 1, t);
+    return true;
+}
+
+void ViewerApp::SetAnimTrack(std::size_t index, const AnimTrackInfo& t) {
+    if (index >= animTracks_.size())
+        return;
+    model::Actor* hero = FocusActorPtr();
+    if (!hero || !hero->animation.HasSource())
+        return;
+    auto& playlist = hero->animation.Playlist();
+    const AnimTrackInfo prev = animTracks_[index];
+    animTracks_[index] = t;
+
+    const bool restart = prev.sequence != t.sequence || prev.subtrack != t.subtrack ||
+                         animTrackHandles_[index] == 0;
+    if (!restart &&
+        playlist.Retune(animTrackHandles_[index], t.weight, t.speed, t.loop))
+        return;
+
+    // Either the animation itself changed or the play is gone (it ran out, or
+    // a Bind rebuilt the stack). Replace it outright.
+    if (animTrackHandles_[index] != 0)
+        playlist.Stop(animTrackHandles_[index], 0, hero->cursor.actorTimeMs);
+    renderer::animation::PlayDesc d;
+    d.sequence = t.sequence;
+    d.subtrack = t.subtrack;
+    d.weight = t.weight;
+    d.speed = t.speed;
+    d.loop = t.loop;
+    // Persistent, like every host-started play: the covered-play cull exists to
+    // drop what a sequence switch buried, and a track the user added by hand is
+    // not that. It also keeps the sequence dropdown working — the playlist
+    // treats a stack of persistent plays as an empty foreground.
+    d.persistent = true;
+    animTrackHandles_[index] = playlist.Play(d, hero->cursor.actorTimeMs);
+}
+
+void ViewerApp::RemoveAnimTrack(std::size_t index) {
+    if (index >= animTracks_.size())
+        return;
+    if (model::Actor* hero = FocusActorPtr(); hero && hero->animation.HasSource())
+        hero->animation.Playlist().Stop(animTrackHandles_[index], 0, hero->cursor.actorTimeMs);
+    animTracks_.erase(animTracks_.begin() + static_cast<std::ptrdiff_t>(index));
+    animTrackHandles_.erase(animTrackHandles_.begin() + static_cast<std::ptrdiff_t>(index));
+}
+
+std::vector<ViewerApp::SubtrackInfo> ViewerApp::SubtracksOf(i32 sequence) const {
+#if WDX_ENABLE_M3
+    std::vector<SubtrackInfo> out;
+    if (io::M3ModelAdapter* m3 = FocusM3Adapter(FocusActorPtr())) {
+        for (const auto& s : m3->SubtracksOf(sequence))
+            out.push_back({s.name, s.priority, s.concurrent, s.trackCount});
+    }
+    return out;
+#else
+    (void)sequence;
+    return {};
+#endif
+}
+
+std::vector<ViewerApp::GlobalLoopInfo> ViewerApp::GlobalLoops() const {
+    std::vector<GlobalLoopInfo> out;
+    for (std::size_t i = 0; i < sequenceRanges_.size(); ++i) {
+        if (!sequenceRanges_[i].alwaysPlays)
+            continue;
+        const i32 seq = static_cast<i32>(i);
+        const bool silenced =
+            std::find(silencedGlobals_.begin(), silencedGlobals_.end(), seq) !=
+            silencedGlobals_.end();
+        out.push_back({seq, sequenceNames_[i], !silenced});
+    }
+    return out;
+}
+
+void ViewerApp::SetGlobalLoopEnabled(i32 sequence, bool on) {
+    const auto it = std::find(silencedGlobals_.begin(), silencedGlobals_.end(), sequence);
+    if (on == (it == silencedGlobals_.end()))
+        return;
+    if (on)
+        silencedGlobals_.erase(it);
+    else
+        silencedGlobals_.push_back(sequence);
+    PublishGlobalLoops();
+}
+
+void ViewerApp::PublishGlobalLoops() {
+    model::Actor* hero = FocusActorPtr();
+    if (!hero || !hero->animation.HasSource())
+        return;
+    // The whole set, every time, rather than a stop on one play: the playlist
+    // owns the global plays and reconciles against this list, so handing it a
+    // subset is the only way to keep it from starting the silenced one straight
+    // back. Reconciling also means the ones that stay keep their clock.
+    std::vector<i32> live;
+    for (std::size_t i = 0; i < sequenceRanges_.size(); ++i) {
+        if (!sequenceRanges_[i].alwaysPlays)
+            continue;
+        const i32 seq = static_cast<i32>(i);
+        if (std::find(silencedGlobals_.begin(), silencedGlobals_.end(), seq) ==
+            silencedGlobals_.end())
+            live.push_back(seq);
+    }
+    hero->animation.Playlist().SetGlobalSequences(std::move(live));
+}
+
+void ViewerApp::ReassertAnimTracks() {
+    for (auto& h : animTrackHandles_)
+        h = 0; // forces SetAnimTrack down its restart path
+    for (std::size_t i = 0; i < animTracks_.size(); ++i)
+        SetAnimTrack(i, AnimTrackInfo(animTracks_[i]));
+}
+
 bool ViewerApp::DetachAnimationFile(std::size_t index) {
 #if WDX_ENABLE_M3
     model::Actor* hero = FocusActorPtr();
@@ -1245,6 +1374,20 @@ void ViewerApp::RefreshSequenceCache(model::Actor* hero, bool resetSelection) {
         sequenceNames_.push_back(s.name);
         sequenceRanges_.push_back(s);
     }
+    // `resetSelection` means the indices themselves changed meaning — a fresh
+    // model, or a detach that renumbered everything after it — so the tracks
+    // and the silenced-globals list go with the selection. An attach only
+    // appends, so those survive it; what does not survive is the playlist,
+    // which `Bind` rebuilt on the way here, taking every handle with it.
+    if (resetSelection) {
+        animTracks_.clear();
+        animTrackHandles_.clear();
+        silencedGlobals_.clear();
+    } else {
+        ReassertAnimTracks();
+        PublishGlobalLoops();
+    }
+
     if (sequences.empty())
         return;
     const i32 count = static_cast<i32>(sequences.size());
@@ -1260,7 +1403,6 @@ void ViewerApp::FillModelDocState(model::Actor* hero, const std::filesystem::pat
     hero->ignoreNonLooping = loopNonLoopingPolicy_;
 
     RefreshSequenceCache(hero, /*resetSelection*/ true);
-
     FrameCameraToModel(hero);
 
     cameraPresets_.clear();
@@ -1418,6 +1560,9 @@ void ViewerApp::SaveActiveDocState() {
     d.focusActor = focusActor_;
     d.sequenceNames = sequenceNames_;
     d.sequenceRanges = sequenceRanges_;
+    d.animTracks = animTracks_;
+    d.animTrackHandles = animTrackHandles_;
+    d.silencedGlobals = silencedGlobals_;
     d.cameraPresets = cameraPresets_;
     d.cameraPresetNamesUtf8 = cameraPresetNamesUtf8_;
     d.activeCameraPresetIdx = activeCameraPresetIdx_;
@@ -1437,6 +1582,11 @@ void ViewerApp::LoadActiveDocState() {
     focusActor_ = d.focusActor;
     sequenceNames_ = d.sequenceNames;
     sequenceRanges_ = d.sequenceRanges;
+    // Handles come back with the tracks because the playlist they name belongs
+    // to the document's own actor, which the tab switch left running.
+    animTracks_ = d.animTracks;
+    animTrackHandles_ = d.animTrackHandles;
+    silencedGlobals_ = d.silencedGlobals;
     cameraPresets_ = d.cameraPresets;
     cameraPresetNamesUtf8_ = d.cameraPresetNamesUtf8;
     activeCameraPresetIdx_ = d.activeCameraPresetIdx;
@@ -1454,6 +1604,9 @@ void ViewerApp::ClearWorkingState() {
     currentModelPath_.clear();
     sequenceNames_.clear();
     sequenceRanges_.clear();
+    animTracks_.clear();
+    animTrackHandles_.clear();
+    silencedGlobals_.clear();
     cameraPresets_.clear();
     cameraPresetNamesUtf8_.clear();
     activeCameraPresetIdx_ = -1;

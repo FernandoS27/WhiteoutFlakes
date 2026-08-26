@@ -254,7 +254,7 @@ $entries = Get-Content $CorpusFile |
     Where-Object { $_ -ne '' } |
     ForEach-Object {
         $line = $_
-        $e = [ordered]@{ Path = $line; Seq = ''; Switch = ''; Layer = ''; Blend = ''; Weight = ''; Anim = '' }
+        $e = [ordered]@{ Path = $line; Seq = ''; Switch = ''; Layer = ''; Blend = ''; Weight = ''; Anim = ''; Subtrack = ''; NoGlobals = $false }
         if ($M3Anim) {
             $tok = $line -split '\s+'
             $e.Path = $tok[0]
@@ -271,6 +271,8 @@ $entries = Get-Content $CorpusFile |
                     'blend'  { $e.Blend = $v }
                     'weight' { $e.Weight = $v }
                     'anim'   { $e.Anim = $v }
+                    'subtrack' { $e.Subtrack = $v }
+                    'globals'  { $e.NoGlobals = ($v -eq 'off') }
                     default  { Write-Error "Unknown scenario key '$k' in: $line"; exit 2 }
                 }
             }
@@ -301,6 +303,12 @@ foreach ($entry in $entries) {
     $key = (($rel -replace '[\\/ ]', '_') -replace '\.(mdx|m2|m3|app)$', '') + "_$mode"
     if ($entry.Seq)  { $key += '_' + ($entry.Seq -replace '[^A-Za-z0-9]', '') }
     if ($entry.Anim) { $key += '_' + ([IO.Path]::GetFileNameWithoutExtension($entry.Anim) -replace '[^A-Za-z0-9]', '') }
+    # Sub-track and globals join the key so the shield-on and shield-off runs of
+    # one model are two baselines. `layer=` deliberately does NOT — three
+    # scenarios already carry baselines under keys built without it, and
+    # renaming them would silently orphan all three.
+    if ($entry.Subtrack -ne '') { $key += '_st' + (($entry.Subtrack -replace '-', 'neg') -replace '[^A-Za-z0-9]', '') }
+    if ($entry.NoGlobals) { $key += '_nogl' }
     $trace = Join-Path $BaselineDir "$key.txt"
     $image = Join-Path $BaselineDir "$key.raw"
 
@@ -318,6 +326,8 @@ foreach ($entry in $entries) {
     }
     if ($entry.Blend)  { $argv += @('--draw-trace-anim-blend', $entry.Blend) }
     if ($entry.Weight) { $argv += @('--draw-trace-anim-weight', $entry.Weight) }
+    if ($entry.Subtrack -ne '') { $argv += @('--draw-trace-anim-subtrack', $entry.Subtrack) }
+    if ($entry.NoGlobals) { $argv += '--draw-trace-anim-no-globals' }
     if ($Solvers) {
         $argv += @('--draw-trace-solvers', '--draw-trace-ground', $GroundZ)
         if ($Aim -and $Aim.Count -eq 3) {

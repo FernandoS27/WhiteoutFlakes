@@ -11,6 +11,7 @@
 #include <cctype>
 #include <cstdio>
 #include <memory>
+#include <string_view>
 #include <unordered_map>
 
 namespace whiteout::flakes::io {
@@ -1085,6 +1086,90 @@ std::vector<SkinWeightData> M3ModelAdapter::GetSkinWeights() {
     return out;
 }
 
+namespace {
+
+/// @brief A shipped `.m3` string carries its terminator inside the
+///        `std::string` — the `Reference` count includes it — so anything
+///        comparing or concatenating one has to drop it first.
+std::string_view TrimNuls(std::string_view s) {
+    while (!s.empty() && s.back() == '\0')
+        s.remove_suffix(1);
+    return s;
+}
+
+} // namespace
+
+bool M3ModelAdapter::IsGlobalLoop(i32 sequence) const {
+    const ::whiteout::m3::Sequence* s = tables_.SequenceAt(sequence);
+    if (!s)
+        return false;
+
+    // The engine's rule, and only this one: `M3AnimState::Init` (SC2 4.8
+    // `sub_10288B3C0`, repeated by `sub_10288BAB0` after every `.m3a` merge)
+    // walks every sequence in the global table and starts the ones flagged
+    // `AlwaysGlobal`, at play flags `(seqFlags & 1) | 0x12` — persistent, on
+    // the world clock, and not counted as "playing". Nothing in the binary
+    // looks at the name; the string "GLstand" does not appear in it at all.
+    if ((s->flags & ::whiteout::m3::SequenceFlag::AlwaysGlobal) !=
+        ::whiteout::m3::SequenceFlag::None)
+        return true;
+
+    // ...and then the convention, because the flag alone leaves most of the
+    // shipped content dark. Measured over 119396 sequences in 4 corpora:
+    // `AlwaysGlobal` is set on 934, of which 893 are named `GL*` — but 8023
+    // sequences are named `GL*`, so 89% of them do NOT carry it. In the game
+    // those are started by the unit's actor data (`AnimBracketStart` against a
+    // catalog entry), which a model viewer has none of, so the name is the
+    // only signal left that a radar dish is supposed to keep turning.
+    //
+    // Restricted to sequences whose containers ALL run concurrent, which is
+    // what makes an overlay safe: such a container abstains on every property
+    // it does not key, so it cannot fight the sequence the host asked for.
+    // That covers 5692 of the 7130 unflagged `GL*` sequences; the 1438 it
+    // declines are doodads (`Aiur_..._Waterfall`) whose *only* sequence is
+    // `GLstand`, so the host plays it as the main sequence anyway and starting
+    // it twice would just double the weight.
+    const std::string_view name = TrimNuls(s->name);
+    if (name.size() < 2 || (name[0] != 'G' && name[0] != 'g') ||
+        (name[1] != 'L' && name[1] != 'l'))
+        return false;
+    const auto defs = tables_.LayersFor(sequence);
+    if (defs.empty())
+        return false;
+    for (const auto& d : defs)
+        if (!d.transparent)
+            return false;
+    return true;
+}
+
+std::vector<M3ModelAdapter::SubtrackInfo> M3ModelAdapter::SubtracksOf(i32 sequence) const {
+    std::vector<SubtrackInfo> out;
+    const ::whiteout::m3::Sequence* seq = tables_.SequenceAt(sequence);
+    if (!seq)
+        return out;
+    const std::string_view seqName = TrimNuls(seq->name);
+    for (const auto& d : tables_.LayersFor(sequence)) {
+        SubtrackInfo info;
+        info.priority = d.priority;
+        info.concurrent = d.transparent;
+        if (const auto* stc = tables_.StcAt(d.stc)) {
+            info.trackCount = stc->animIds.size();
+            std::string_view n = TrimNuls(stc->name);
+            // `<sequence>_<part>`. Authored that way throughout the corpus, but
+            // an `.m3a`'s containers can carry the *file's* naming instead, so
+            // a miss keeps the whole name rather than mangling it.
+            if (n.size() > seqName.size() + 1 && n.substr(0, seqName.size()) == seqName &&
+                n[seqName.size()] == '_')
+                n.remove_prefix(seqName.size() + 1);
+            info.name = n.empty() ? "full" : std::string(n);
+        } else {
+            info.name = "full";
+        }
+        out.push_back(std::move(info));
+    }
+    return out;
+}
+
 std::vector<SequenceInfo> M3ModelAdapter::GetSequences() const {
     std::vector<SequenceInfo> out;
     // The model's own sequences first, then each attached `.m3a`'s — the same
@@ -1107,6 +1192,11 @@ std::vector<SequenceInfo> M3ModelAdapter::GetSequences() const {
         info.moveSpeed = s.moveSpeed;
         info.nonLooping = (s.flags & ::whiteout::m3::SequenceFlag::NotLooping) !=
                           ::whiteout::m3::SequenceFlag::None;
+        info.alwaysPlays = IsGlobalLoop(static_cast<i32>(q));
+        const auto defs = tables_.LayersFor(static_cast<i32>(q));
+        info.concurrent = !defs.empty();
+        for (const auto& d : defs)
+            info.concurrent = info.concurrent && d.transparent;
         out.push_back(std::move(info));
     }
     if (out.empty()) {
@@ -1139,7 +1229,15 @@ void M3ModelAdapter::BuildLayers(const PoseRequest& req, std::vector<M3Layer>& o
         // and the sequence-windowed time has already lost that.
         const i32 t = static_cast<i32>(seq.startFrame) + clip.elapsedMs;
 
-        for (const auto& d : tables_.LayersFor(seqIdx)) {
+        const auto defs = tables_.LayersFor(seqIdx);
+        for (std::size_t k = 0; k < defs.size(); ++k) {
+            // One container out of the group, when the clip named one. Out of
+            // range drops the clip rather than falling back to all of them: a
+            // stale index (the host kept one across an `.m3a` detach) showing
+            // up as the whole sequence would look like the layer works.
+            if (clip.subtrack >= 0 && static_cast<std::size_t>(clip.subtrack) != k)
+                continue;
+            const auto& d = defs[k];
             M3Layer l;
             l.play = static_cast<::whiteout::u16>(c);
             l.stc = d.stc;

@@ -67,6 +67,13 @@ private:
     void BuildSaveOptionsPopup();
     // Renders the "Export Animation Frames" modal (animation + FPS + folder).
     void BuildExportPopup();
+    // The Animation window: the model's global loops, the extra plays layered
+    // under the sequence dropdown, and the attached `.m3a` files. StarCraft II
+    // only — everything in it is a thing only an `.m3` has.
+    void BuildAnimationWindow();
+    // One row of the track table. Returns false when the row asked to be
+    // removed, which the caller has to honour before touching the vector again.
+    bool BuildAnimTrackRow(std::size_t index);
 
     void OpenFileDialog();
     // Pops a multi-select `.m3a` picker and attaches each pick to the focus
@@ -83,6 +90,7 @@ private:
     std::string animAttachError_;
 
     bool settingsOpen_ = false;
+    bool animWindowOpen_ = false;
     bool showViewCube_ = true;    // View > View Cube toggle
     bool showLogConsole_ = false; // Debug > Log Console toggle
 

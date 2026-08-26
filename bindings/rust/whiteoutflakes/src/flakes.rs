@@ -1181,6 +1181,32 @@ impl SequenceInfo {
         unsafe { ffi::whiteout_flakes_FlakesSequenceInfo_set_nonLooping(self.raw.as_ptr(), if value { 1 } else { 0 }) }
     }
 
+    /// The source plays this one by itself, continuously, alongside whatever the host asked for.
+    ///
+    /// StarCraft II's global loops — the `GLstand` / `GLbirth` sequences that keep a radar dish turning or a warning light blinking while the unit stands, walks and attacks. `M3AnimState::Init` walks the whole sequence table and starts every one of these before the actor has asked for anything (SC2 4.8 `sub_10288B3C0`), so it is a property of the *model* rather than a request. Never set by Warcraft III or World of Warcraft.
+    pub fn always_plays(&self) -> bool {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesSequenceInfo_get_alwaysPlays(self.raw.as_ptr()) != 0 }
+    }
+
+    pub fn set_always_plays(&mut self, value: bool) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesSequenceInfo_set_alwaysPlays(self.raw.as_ptr(), if value { 1 } else { 0 }) }
+    }
+
+    /// Every one of this sequence's sub-tracks abstains on the properties it does not key, so playing it *layers over* what is already running instead of burying it.
+    ///
+    /// `STC.runsConcurrent` aggregated over the containers the sequence spans, and the answer to "may the covered-play cull retire the stack under this?". Conservative on a mixed sequence: one opaque container is enough to bury, because in StarCraft II that container's player does exactly that to the players below it. Never set by Warcraft III or World of Warcraft, whose sequences always drive the whole skeleton.
+    pub fn concurrent(&self) -> bool {
+        // SAFETY: plain scalar read through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesSequenceInfo_get_concurrent(self.raw.as_ptr()) != 0 }
+    }
+
+    pub fn set_concurrent(&mut self, value: bool) {
+        // SAFETY: plain scalar write through a live handle.
+        unsafe { ffi::whiteout_flakes_FlakesSequenceInfo_set_concurrent(self.raw.as_ptr(), if value { 1 } else { 0 }) }
+    }
+
 }
 
 impl Default for SequenceInfo {
@@ -3348,6 +3374,10 @@ pub mod ffi {
         pub fn whiteout_flakes_FlakesSequenceInfo_set_rarity(self_: *mut whiteout_FlakesSequenceInfo, value: f32);
         pub fn whiteout_flakes_FlakesSequenceInfo_get_nonLooping(self_: *mut whiteout_FlakesSequenceInfo) -> i32;
         pub fn whiteout_flakes_FlakesSequenceInfo_set_nonLooping(self_: *mut whiteout_FlakesSequenceInfo, value: i32);
+        pub fn whiteout_flakes_FlakesSequenceInfo_get_alwaysPlays(self_: *mut whiteout_FlakesSequenceInfo) -> i32;
+        pub fn whiteout_flakes_FlakesSequenceInfo_set_alwaysPlays(self_: *mut whiteout_FlakesSequenceInfo, value: i32);
+        pub fn whiteout_flakes_FlakesSequenceInfo_get_concurrent(self_: *mut whiteout_FlakesSequenceInfo) -> i32;
+        pub fn whiteout_flakes_FlakesSequenceInfo_set_concurrent(self_: *mut whiteout_FlakesSequenceInfo, value: i32);
         // PipelineView
         pub fn whiteout_flakes_FlakesPipelineView_delete(self_: *mut whiteout_FlakesPipelineView);
         pub fn whiteout_flakes_FlakesPipelineView_InitDevice(self_: *mut whiteout_FlakesPipelineView, arg: i32);

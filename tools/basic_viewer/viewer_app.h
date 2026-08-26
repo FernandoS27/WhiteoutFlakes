@@ -269,6 +269,57 @@ public:
     bool AttachAnimationFile(const std::filesystem::path& path);
     bool DetachAnimationFile(std::size_t index);
 
+    // ---- Animation tracks ----
+    //
+    // The sequence dropdown drives one play; a StarCraft II model routinely
+    // needs several at once, because a sequence is split across sub-track
+    // containers and the game layers them from separate brackets. The Marine's
+    // combat shield is `Cover_Shield`, one container of a 33 ms `Cover`
+    // sequence, held under whatever the unit is otherwise doing. This is that
+    // stack, minus the primary play, which stays the dropdown's.
+    struct AnimTrackInfo {
+        i32 sequence = 0;
+        // -1 ⇒ every sub-track of the sequence, which is what a plain play does.
+        i32 subtrack = -1;
+        f32 weight = 1.0f;
+        f32 speed = 1.0f;
+        bool loop = true;
+    };
+    const std::vector<AnimTrackInfo>& AnimTracks() const {
+        return animTracks_;
+    }
+    // Appends a track on the sequence the dropdown is showing. False when the
+    // focus actor has no animation source.
+    bool AddAnimTrack();
+    // Applies @p t to track @p index. Weight / speed / loop retune the live
+    // play; changing the sequence or sub-track restarts it.
+    void SetAnimTrack(std::size_t index, const AnimTrackInfo& t);
+    void RemoveAnimTrack(std::size_t index);
+
+    // One row per sub-track container of `sequence`, in the order
+    // AnimTrackInfo::subtrack indexes them. Empty for anything but an `.m3`.
+    struct SubtrackInfo {
+        std::string name;
+        u16 priority = 0;
+        bool concurrent = false;
+        std::size_t trackCount = 0;
+    };
+    std::vector<SubtrackInfo> SubtracksOf(i32 sequence) const;
+
+    // ---- Global loops ----
+    //
+    // Sequences the model plays by itself, forever, over everything else —
+    // StarCraft II's `GLstand` / `GLbirth`. On by default because that is what
+    // the engine does; the toggle exists because a viewer is also for looking
+    // at one thing at a time.
+    struct GlobalLoopInfo {
+        i32 sequence = 0;
+        std::string name;
+        bool enabled = true;
+    };
+    std::vector<GlobalLoopInfo> GlobalLoops() const;
+    void SetGlobalLoopEnabled(i32 sequence, bool on);
+
     // ---- Focus actor (the one driven by the sequence dropdown, team
     //      colour swatch, etc.) ----
     ActorId FocusActor() const {
@@ -418,6 +469,12 @@ private:
         ActorId focusActor = 0;
         std::vector<std::string> sequenceNames;
         std::vector<SequenceInfo> sequenceRanges;
+        std::vector<AnimTrackInfo> animTracks;
+        std::vector<u32> animTrackHandles;
+        // Global loops the user switched off, by sequence index. Cleared
+        // whenever the sequence table is rebuilt, since the indices are then
+        // meaningless — the same reason the sequence *selection* resets.
+        std::vector<i32> silencedGlobals;
         std::vector<CameraPreset> cameraPresets;
         std::vector<std::string> cameraPresetNamesUtf8;
         i32 activeCameraPresetIdx = -1;
@@ -485,6 +542,11 @@ private:
     // keeping the current selection when it is still in range. Shared by the
     // load path and by attaching / detaching an animation file.
     void RefreshSequenceCache(model::Actor* hero, bool resetSelection);
+    // Hand the focus actor's playlist the global loops minus silencedGlobals_.
+    void PublishGlobalLoops();
+    // Re-play every track after something rebuilt the playlist (a Bind), which
+    // leaves every handle we hold pointing at nothing.
+    void ReassertAnimTracks();
     // Post-spawn flat-state fill for a standalone effect (placeholder sequence,
     // provisional camera, deferred reframe). Caller sets currentModelPath_.
     void FillEffectDocState(model::Actor* hero);
@@ -547,6 +609,13 @@ private:
     std::vector<std::string> cameraPresetNamesUtf8_;
     std::vector<std::string> sequenceNames_;
     std::vector<SequenceInfo> sequenceRanges_;
+    // The extra plays the Animation window owns, and the playlist handles they
+    // were started with — parallel, one handle per track. A handle the playlist
+    // has already retired reads back as "not found" and the track simply
+    // restarts, which is what makes a non-looping track re-armable.
+    std::vector<AnimTrackInfo> animTracks_;
+    std::vector<u32> animTrackHandles_;
+    std::vector<i32> silencedGlobals_;
     i32 activeCameraPresetIdx_ = -1;
     bool cameraLocked_ = false;
     std::filesystem::path currentModelPath_;

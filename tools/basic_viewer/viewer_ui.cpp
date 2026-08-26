@@ -178,6 +178,8 @@ void ViewerUI::BuildFrame() {
         BuildViewCubeWidget();
     if (settingsOpen_)
         BuildSettingsWindow();
+    if (animWindowOpen_ && app_.CanAttachAnimations())
+        BuildAnimationWindow();
     BuildSaveOptionsPopup();
     BuildExportPopup();
     app_.BuildStorageExplorerWindow();
@@ -710,6 +712,204 @@ void ViewerUI::BuildExportPopup() {
     ImGui::EndPopup();
 }
 
+// ---- Animation window ------------------------------------------------------
+//
+// StarCraft II does not play "a sequence". It plays a *bracket*, and one
+// bracket expands into one player per sub-track container the sequence spans:
+// the Marine's `Cover` is `Cover_full` plus `Cover_Shield`, and the shield is
+// visible for as long as something holds that second container down. Several
+// brackets run at once and blend against a weight budget. The sequence
+// dropdown is one bracket; this window is the others, plus the ones the model
+// starts by itself.
+
+bool ViewerUI::BuildAnimTrackRow(std::size_t index) {
+    const auto& tracks = app_.AnimTracks();
+    if (index >= tracks.size())
+        return true;
+    ViewerApp::AnimTrackInfo t = tracks[index];
+    const auto& seqs = app_.SequenceNames();
+    bool changed = false;
+    bool keep = true;
+
+    ImGui::PushID(static_cast<int>(index));
+    ImGui::TableNextRow();
+
+    ImGui::TableNextColumn();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const char* preview =
+        (t.sequence >= 0 && t.sequence < static_cast<i32>(seqs.size())) ? seqs[t.sequence].c_str()
+                                                                       : "";
+    if (ImGui::BeginCombo("##seq", preview)) {
+        for (i32 i = 0; i < static_cast<i32>(seqs.size()); ++i) {
+            if (ImGui::Selectable(seqs[i].c_str(), i == t.sequence) && i != t.sequence) {
+                t.sequence = i;
+                // The old index named a container of the old sequence, and the
+                // groups are not parallel. Back to the whole sequence.
+                t.subtrack = -1;
+                changed = true;
+            }
+        }
+        ImGui::EndCombo();
+    }
+
+    // Sub-track. A sequence with one container has nothing to choose, so the
+    // cell names it instead of offering a combo with one entry.
+    ImGui::TableNextColumn();
+    const auto subs = app_.SubtracksOf(t.sequence);
+    if (subs.size() <= 1) {
+        ImGui::TextDisabled("%s", subs.empty() ? "-" : subs[0].name.c_str());
+    } else {
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        const char* subPreview = i18n::tr("anim.track.all");
+        if (t.subtrack >= 0 && t.subtrack < static_cast<i32>(subs.size()))
+            subPreview = subs[t.subtrack].name.c_str();
+        if (ImGui::BeginCombo("##sub", subPreview)) {
+            if (ImGui::Selectable(i18n::tr("anim.track.all"), t.subtrack < 0) && t.subtrack >= 0) {
+                t.subtrack = -1;
+                changed = true;
+            }
+            for (i32 i = 0; i < static_cast<i32>(subs.size()); ++i) {
+                if (ImGui::Selectable(subs[i].name.c_str(), i == t.subtrack) && i != t.subtrack) {
+                    t.subtrack = i;
+                    changed = true;
+                }
+                if (ImGui::IsItemHovered()) {
+                    // Priority decides which container wins a property;
+                    // concurrency decides whether it leaves the rest of the
+                    // skeleton alone. Both belong on the choice.
+                    ImGui::SetTooltip("%s %u  -  %s  -  %s %zu", i18n::tr("anim.track.priority"),
+                                      static_cast<unsigned>(subs[i].priority),
+                                      i18n::tr(subs[i].concurrent ? "anim.track.concurrent"
+                                                                  : "anim.track.exclusive"),
+                                      i18n::tr("anim.track.tracks"), subs[i].trackCount);
+                }
+            }
+            ImGui::EndCombo();
+        }
+    }
+
+    ImGui::TableNextColumn();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::DragFloat("##w", &t.weight, 0.01f, 0.0f, 1.0f, "%.2f"))
+        changed = true;
+
+    ImGui::TableNextColumn();
+    if (ImGui::Checkbox("##loop", &t.loop))
+        changed = true;
+
+    ImGui::TableNextColumn();
+    if (ImGui::SmallButton("x"))
+        keep = false;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", i18n::tr("anim.track.remove"));
+
+    ImGui::PopID();
+
+    if (!keep) {
+        app_.RemoveAnimTrack(index);
+        return false;
+    }
+    if (changed)
+        app_.SetAnimTrack(index, t);
+    return true;
+}
+
+void ViewerUI::BuildAnimationWindow() {
+    ImGui::SetNextWindowSize(ImVec2(560, 420), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin(i18n::tr("anim.title"), &animWindowOpen_)) {
+        ImGui::End();
+        return;
+    }
+
+    // ---- Global loops ----
+    const auto globals = app_.GlobalLoops();
+    if (!globals.empty() &&
+        ImGui::CollapsingHeader(i18n::tr("anim.globals"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextWrapped("%s", i18n::tr("anim.globals.help"));
+        for (const auto& g : globals) {
+            bool on = g.enabled;
+            ImGui::PushID(g.sequence);
+            if (ImGui::Checkbox(g.name.c_str(), &on))
+                app_.SetGlobalLoopEnabled(g.sequence, on);
+            const auto subs = app_.SubtracksOf(g.sequence);
+            if (!subs.empty()) {
+                std::string parts;
+                for (const auto& s : subs) {
+                    if (!parts.empty())
+                        parts += ", ";
+                    parts += s.name;
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(%s)", parts.c_str());
+            }
+            ImGui::PopID();
+        }
+        ImGui::Spacing();
+    }
+
+    // ---- Tracks ----
+    if (ImGui::CollapsingHeader(i18n::tr("anim.tracks"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::TextWrapped("%s", i18n::tr("anim.tracks.help"));
+        const auto& tracks = app_.AnimTracks();
+        if (!tracks.empty() &&
+            ImGui::BeginTable("##tracks", 5, ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn(i18n::tr("anim.track.sequence"),
+                                    ImGuiTableColumnFlags_WidthStretch, 0.40f);
+            ImGui::TableSetupColumn(i18n::tr("anim.track.subtrack"),
+                                    ImGuiTableColumnFlags_WidthStretch, 0.30f);
+            ImGui::TableSetupColumn(i18n::tr("anim.track.weight"),
+                                    ImGuiTableColumnFlags_WidthStretch, 0.18f);
+            // Wide enough for the header text, not just the checkbox: a fixed
+            // 22px column clipped "Loop" to "L...".
+            ImGui::TableSetupColumn(i18n::tr("anim.track.loop"), ImGuiTableColumnFlags_WidthFixed,
+                                    42.0f);
+            ImGui::TableSetupColumn("##rm", ImGuiTableColumnFlags_WidthFixed, 24.0f);
+            ImGui::TableHeadersRow();
+            // One removal per frame: a row that removed itself invalidated the
+            // vector this loop is walking.
+            for (std::size_t i = 0; i < tracks.size(); ++i) {
+                if (!BuildAnimTrackRow(i))
+                    break;
+            }
+            ImGui::EndTable();
+        }
+        if (ImGui::Button(i18n::tr("anim.tracks.add")))
+            app_.AddAnimTrack();
+        ImGui::Spacing();
+    }
+
+    // ---- Animation files ----
+    if (ImGui::CollapsingHeader(i18n::tr("anim.files"), ImGuiTreeNodeFlags_DefaultOpen)) {
+        const auto attached = app_.AttachedAnimations();
+        if (attached.empty()) {
+            ImGui::TextDisabled("%s", i18n::tr("toolbar.animfiles.none"));
+        } else {
+            for (std::size_t i = 0; i < attached.size(); ++i) {
+                ImGui::PushID(static_cast<int>(i));
+                // Detach first, then stop building this list - it is a snapshot
+                // and the entries after the removed one shift.
+                const bool drop = ImGui::SmallButton("x");
+                ImGui::SameLine();
+                ImGui::Text("%s", attached[i].label.c_str());
+                ImGui::SameLine();
+                ImGui::TextDisabled("(%zu)", attached[i].sequenceCount);
+                ImGui::PopID();
+                if (drop) {
+                    app_.DetachAnimationFile(i);
+                    break;
+                }
+            }
+        }
+        if (ImGui::Button(i18n::tr("toolbar.animfiles.add")))
+            AttachAnimationDialog();
+        if (!animAttachError_.empty())
+            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s: %s",
+                               i18n::tr("toolbar.animfiles.failed"), animAttachError_.c_str());
+    }
+
+    ImGui::End();
+}
+
 void ViewerUI::BuildMenuBar() {
     RenderService& svc = app_.Service();
     DisplayFlags df = svc.Settings().GetDisplayFlags();
@@ -918,47 +1118,17 @@ void ViewerUI::BuildToolbar() {
         ImGui::SameLine();
     }
 
-    // ---- External animation files (`.m3a`, StarCraft II only) ----
+    // ---- Animation window (StarCraft II only) ----
     //
-    // Next to the sequence dropdown because that is what it changes: attaching
-    // a file appends its sequences to the list and nothing else. Hidden for
-    // every model that cannot take one.
+    // Next to the sequence dropdown because it is the rest of that control:
+    // the dropdown picks one sequence, and an `.m3` needs several plays at
+    // once plus the global loops it starts on its own. Hidden for every model
+    // that has none of those concepts.
     if (app_.CanAttachAnimations()) {
         if (ImGui::Button(i18n::tr("toolbar.animfiles")))
-            ImGui::OpenPopup("##animfiles");
+            animWindowOpen_ = !animWindowOpen_;
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", i18n::tr("toolbar.animfiles.tip"));
-        if (ImGui::BeginPopup("##animfiles")) {
-            const auto attached = app_.AttachedAnimations();
-            if (attached.empty()) {
-                ImGui::TextDisabled("%s", i18n::tr("toolbar.animfiles.none"));
-            } else {
-                for (std::size_t i = 0; i < attached.size(); ++i) {
-                    char rm[32];
-                    std::snprintf(rm, sizeof(rm), "x##rm%zu", i);
-                    // Detach first, then stop building this list — it is a
-                    // snapshot and the entries after the removed one shift.
-                    if (ImGui::SmallButton(rm)) {
-                        app_.DetachAnimationFile(i);
-                        break;
-                    }
-                    ImGui::SameLine();
-                    ImGui::Text("%s", attached[i].label.c_str());
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(%zu)", attached[i].sequenceCount);
-                }
-            }
-            if (!animAttachError_.empty()) {
-                ImGui::Separator();
-                ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s: %s",
-                                   i18n::tr("toolbar.animfiles.failed"),
-                                   animAttachError_.c_str());
-            }
-            ImGui::Separator();
-            if (ImGui::Button(i18n::tr("toolbar.animfiles.add")))
-                AttachAnimationDialog();
-            ImGui::EndPopup();
-        }
         ImGui::SameLine();
     }
 

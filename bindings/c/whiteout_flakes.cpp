@@ -501,6 +501,22 @@ void whiteout_flakes_FlakesSequenceInfo_set_nonLooping(whiteout_FlakesSequenceIn
     reinterpret_cast<whiteout::flakes::SequenceInfo*>(self)->nonLooping = value;
 }
 
+int32_t whiteout_flakes_FlakesSequenceInfo_get_alwaysPlays(const whiteout_FlakesSequenceInfo* self) {
+    return reinterpret_cast<const whiteout::flakes::SequenceInfo*>(self)->alwaysPlays;
+}
+
+void whiteout_flakes_FlakesSequenceInfo_set_alwaysPlays(whiteout_FlakesSequenceInfo* self, int32_t value) {
+    reinterpret_cast<whiteout::flakes::SequenceInfo*>(self)->alwaysPlays = value;
+}
+
+int32_t whiteout_flakes_FlakesSequenceInfo_get_concurrent(const whiteout_FlakesSequenceInfo* self) {
+    return reinterpret_cast<const whiteout::flakes::SequenceInfo*>(self)->concurrent;
+}
+
+void whiteout_flakes_FlakesSequenceInfo_set_concurrent(whiteout_FlakesSequenceInfo* self, int32_t value) {
+    reinterpret_cast<whiteout::flakes::SequenceInfo*>(self)->concurrent = value;
+}
+
 } // extern "C"
 
 // ── FlakesPipelineView ─────────────────────────────────────────────────
