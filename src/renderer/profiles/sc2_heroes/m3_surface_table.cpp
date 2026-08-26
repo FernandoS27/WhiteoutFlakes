@@ -90,6 +90,41 @@ u32 LayerWrapFlags(const TextureLayer& layer) {
            ((f & static_cast<u32>(TextureLayerFlag::UVWrapY)) ? 0x2u : 0u);
 }
 
+/// psmateriallayer.fx CalcFresnelTerm's constants, straight off the LAYR.
+///
+/// `fresnelMin`/`fresnelMax` are the term's output range, so they reach the
+/// shader as the bias/scale pair `saturate(f * scale + bias)` wants — see
+/// M3Layer::fresnelExponentBiasScale.
+///
+/// The transform is the mask and translation only. Retail also composes two
+/// rotations (`fresnelRotation`, a yaw/pitch pair) about axes it takes from the
+/// frame — 457 of the corpus's 26463 fresnel layers author one, against 1205
+/// that mask and 1182 that translate, so the two cheap halves cover the flag
+/// and the rotation is left out rather than guessed at.
+///
+/// `b_i<Layer>FresnelSaturate` has no identified source field: no `.m3` layer
+/// flag correlates with it (the best candidate, 0x20000, is set on 833 layers
+/// of which 486 have fresnel — not the near-1.0 the 0x4000 transform bit
+/// shows). Its two arms differ only where the shading normal faces AWAY from
+/// the camera: `1 - saturate(-dot(N,V))` and `1 - abs(dot(N,V))` are equal for
+/// every front-facing pixel. The shader takes the `abs` arm, which is the one
+/// that keeps a rim on both sides of a two-sided surface.
+void ResolveFresnel(const TextureLayer& layer, M3Layer& out) {
+    out.fresnelMode = static_cast<u8>(layer.fresnelMode);
+    if (out.fresnelMode == 0)
+        return;
+    out.fresnelExponentBiasScale = {layer.fresnelExponent, layer.fresnelMin,
+                                    layer.fresnelMax - layer.fresnelMin};
+    const u32 f = static_cast<u32>(layer.flags);
+    if ((f & static_cast<u32>(TextureLayerFlag::FresnelTransform)) == 0)
+        return;
+    out.fresnelFlags = 0x1u;
+    if ((f & static_cast<u32>(TextureLayerFlag::FresnelNormalize)) != 0)
+        out.fresnelFlags |= 0x2u;
+    out.fresnelMask = layer.fresnelMask;
+    out.fresnelTranslation = layer.fresnelTranslation;
+}
+
 } // namespace
 
 std::unique_ptr<M3SurfaceTable> BuildM3SurfaceTable(const Model& model,
@@ -138,6 +173,9 @@ std::unique_ptr<M3SurfaceTable> BuildM3SurfaceTable(const Model& model,
         }
         if (!mat)
             continue;
+        // ResolveStandard only ever points into this array, so the index the
+        // UV-transform palette is keyed on comes straight back out of it.
+        const u32 matIndex = static_cast<u32>(mat - model.standardMaterials.data());
 
         s.valid = true;
         s.blendMode = mat->blendMode;
@@ -213,6 +251,8 @@ std::unique_ptr<M3SurfaceTable> BuildM3SurfaceTable(const Model& model,
             out.uvSource = ResolveUvSource(*layer);
             out.channels = static_cast<u8>(layer->colorType);
             out.wrapFlags = LayerWrapFlags(*layer);
+            out.uvTransformId = io::M3UvTransformId(matIndex, static_cast<M3LayerSlot>(slot));
+            ResolveFresnel(*layer, out);
 
             f32 extraMul = 1.0f;
             switch (static_cast<M3LayerSlot>(slot)) {

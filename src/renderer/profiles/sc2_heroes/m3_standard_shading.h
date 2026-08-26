@@ -113,6 +113,17 @@ private:
         u32 layerCtl[kLayerCount][4];   // x uvSet | wrap | invert | clamp,
                                         // y channels, z mode,
                                         // w blendOp / diffuse team mode
+        // p_m<L>UVTransform's two live rows: .xy linear, .z translation.
+        // Resolved per draw out of FrameState::texAnimMatrices, so two actors
+        // sharing a template scroll independently.
+        Vector4f layerUvRow0[kLayerCount];
+        Vector4f layerUvRow1[kLayerCount];
+        // CalcFresnelTerm — .xyz p_v<L>FresnelExponentBiasScale + .w the mode,
+        // then the transform's mask and translation with their two flag bits
+        // in .w. See M3Layer's fresnel fields.
+        Vector4f layerFresnel[kLayerCount];
+        Vector4f layerFresnelMask[kLayerCount];
+        Vector4f layerFresnelTrans[kLayerCount];
     };
 
     struct PsoKey {

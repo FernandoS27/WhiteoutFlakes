@@ -61,3 +61,12 @@ Sc2M3/GhostEx3.m3          # a material with NO diffuse layer, emissive solid co
 Sc2M3/War3HD_HeroPaladin.m3 # ditto, emissive TEXTURE, and the one CMP_ composite here
 Sc2M3/Reaper.m3            # normal map named ReaperA_Norms.dds - the slot-declared linear path
 HotSM3/Storm_Doodad_ArenaHeaven_PortalFrame.m3    # spherical env + env mask
+
+# Per-layer UV transforms and fresnel. Both features already sit on drawn
+# materials elsewhere in this list — Adept_Golden carries four fresnel layers
+# (a mode-1 reflection banded against a mode-2 mask, which is what puts the
+# gold rim on it) and Mothership six driven UV tracks — but neither is dense
+# enough to catch a partial regression. These two are: 5299 corpus models
+# carry both on a drawn material, and these are near the top of that list.
+Sc2M3/TempestPlasmaMissile_TeamColor.m3    # 14 fresnel layers, 17 driven UV tracks
+HotSM3/Storm_FX_Crusader_Base_FallingSword.m3  # scrolling flame column, 5 fresnel

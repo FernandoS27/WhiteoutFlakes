@@ -17,7 +17,9 @@
 // filter is never derived twice.
 //
 // Nothing animated lives here (core/surface_table.h states the split): tints
-// are the bind-pose values, and the `Params()` seam is where animation lands.
+// are the bind-pose values, and a layer's UV transform is named — not stored —
+// by `M3Layer::uvTransformId`, which indexes the per-frame
+// `FrameState::texAnimMatrices` palette the source fills.
 // ============================================================================
 
 #include "core/surface_table.h"
@@ -68,6 +70,30 @@ struct M3Layer {
     /// multiply-add lifts it past 1 stays past 1.
     u8 invert = 0;
     u8 clampColor = 0;
+    /// `FresnelMode`: 0 off, 1 standard (edge glow), 2 inverted (centre glow).
+    /// 26463 of the corpus's 2862196 standard layers carry one, 14036 mode 1
+    /// and 12427 mode 2, and they sit mostly on emissive1 (11196) and the
+    /// alpha masks (5513) — this is how a hero's rim light is authored.
+    u8 fresnelMode = 0;
+    /// bit 0 = `TextureLayerFlag::FresnelTransform`, bit 1 = `FresnelNormalize`.
+    u8 fresnelFlags = 0;
+    /// `p_v<L>FresnelExponentBiasScale` — psmateriallayer.fx applies
+    /// `saturate(f * scale + bias)` after the pow, so the record's
+    /// `fresnelMin`/`fresnelMax` are the output range: bias = min,
+    /// scale = max - min. 797 layers author min > max, which is a negative
+    /// scale and an intentionally inverted ramp.
+    Vector3f fresnelExponentBiasScale = {1.0f, 0.0f, 1.0f};
+    /// `p_m<L>FresnelTransform` reduced to what shipped content puts in it:
+    /// the view direction is scaled per axis by the mask and offset by the
+    /// translation before the dot. The rotation half is not built — see
+    /// `ResolveFresnel`.
+    Vector3f fresnelMask = {1.0f, 1.0f, 1.0f};
+    Vector3f fresnelTranslation = {0.0f, 0.0f, 0.0f};
+    /// `FrameState::texAnimMatrices` id for this layer's `p_m<L>UVTransform`
+    /// (io::M3UvTransformId). Stamped on every resolved layer; the palette
+    /// carries an entry only for the layers whose transform actually moves,
+    /// and a miss is the identity.
+    i32 uvTransformId = -1;
 };
 
 struct M3Surface {

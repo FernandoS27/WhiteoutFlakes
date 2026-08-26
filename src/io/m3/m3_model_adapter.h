@@ -162,6 +162,38 @@ const ::whiteout::m3::TextureLayer* M3LayerForSlot(const ::whiteout::m3::Standar
 ///        first-seen order.
 std::vector<M3TextureRef> CollectM3Textures(const ::whiteout::m3::Model& model);
 
+/// @brief `FrameState::texAnimMatrices` id for one standard material's layer
+///        UV transform.
+///
+/// A pure function of the model, so the surface table and the evaluator agree
+/// without sharing state: the table stamps this on every layer it resolves,
+/// and the evaluator emits an entry only for the layers whose transform is not
+/// the identity in every pose. A layer with no entry reads back as identity,
+/// which is what 95% of them want — 134812 of the corpus's 2862196 standard
+/// layers carry a live UV transform at all.
+inline ::whiteout::i32 M3UvTransformId(::whiteout::u32 materialIndex, M3LayerSlot slot) {
+    return static_cast<::whiteout::i32>(materialIndex * static_cast<::whiteout::u32>(
+                                                            M3LayerSlot::Count) +
+                                        static_cast<::whiteout::u32>(slot));
+}
+
+/// @brief Compose `p_m<L>UVTransform` — psmateriallayer.fx's 2x4, applied as
+///        `mul(m, float4(u, v, 0, 1)).xy`.
+///
+/// TRS about the UV origin: tile, then spin in the UV plane, then offset.
+/// `angle` is the LAYR's three-axis rotation and only `.z` (about W, i.e. in
+/// the plane) can survive a 2x4 fed `(u, v, 0, 1)`; it is in radians —
+/// measured, its shipped values cluster on ±pi/2 and ±pi. The rotation is
+/// about the origin rather than about (0.5, 0.5) the way `.mdx`/`.m2` do
+/// theirs: with wrap addressing the two agree for every quarter turn, which is
+/// what shipped content authors, and origin-relative is what makes `uvTiling`
+/// mean plain repeat count.
+///
+/// Only rows 0 and 1 exist because the third column and row can never reach
+/// the output — the same reason `FrameState::TexAnimMatrix` stores two.
+void M3ComposeUvTransform(const Vector2f& offset, const Vector3f& angle, const Vector2f& tiling,
+                          ::whiteout::f32 row0[4], ::whiteout::f32 row1[4]);
+
 /// @brief What `M3RestoreDataDrivenMaterials` made of a model's MADD records.
 struct M3DataDrivenResult {
     ::whiteout::u32 restored = 0;     ///< Rebuilt from a fixed-function record.
@@ -457,6 +489,16 @@ private:
     /// @brief Sample the `LITE` chunk into `FrameState::lights`.
     void EvaluateLights(std::span<const M3Layer> layers, std::span<const ::whiteout::u8> visible,
                         const Matrix44f& world, renderer::model::FrameState& fs) const;
+
+    /// @brief Sample every standard material layer's UV transform into
+    ///        `FrameState::texAnimMatrices`.
+    ///
+    /// Emits only the layers whose transform actually moves — a driven track,
+    /// or a bind-pose value that is not the identity. The rest are absent, and
+    /// `M3UvTransformId` is what lets the surface table name a slot it never
+    /// has to look up.
+    void EvaluateMaterialUvTransforms(std::span<const M3Layer> layers,
+                                      renderer::model::FrameState& fs) const;
 
     /// @brief Sample each `PHRB`'s `dynamicState` and place its shapes.
     ///

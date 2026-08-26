@@ -4,7 +4,8 @@
 // The shader half of M3StandardShading (M3_SIMPLE_MATERIAL_DESIGN.md). NOT the
 // retail permutation machine: nine of StandardMaterial's eighteen layers
 // (diffuse, decal, specular, both emissives, normal, both alpha masks, gloss,
-// the environment map and its mask),
+// the environment map and its mask), each through its own animated UV
+// transform and fresnel term,
 // the retail lighting model (lighting.fx: shadowed Blinn key light + ambient +
 // two diffuse-only fills, spec gated by sign(N.L)), the retail team-colour paths
 // (psmateriallayer.fx: diffuse-alpha mask lerp + the TeamColor*Add combine
@@ -121,6 +122,20 @@ struct M3DrawData
     // TextureLayerFlag 0x400); .w = LayerBlendOp for the decal and emissive
     // slots, TEAMCOLOR_DIFFUSE mode (1) for the diffuse slot.
     uint4 layerCtl[kM3LayerCount];
+    // p_m<L>UVTransform, the layer's animated 2x4 — psmateriallayer.fx feeds
+    // it (u, v, 0, 1) and keeps .xy, so the third column and row can never
+    // reach the output and only these two rows exist. .xy is the linear pair,
+    // .z the translation, .w unused. Identity on 95% of shipped layers.
+    float4 layerUvRow0[kM3LayerCount];
+    float4 layerUvRow1[kM3LayerCount];
+    // CalcFresnelTerm's constants (psmateriallayer.fx).
+    //   layerFresnel      .xyz p_v<L>FresnelExponentBiasScale, .w FresnelMode
+    //                     (0 off, 1 standard, 2 inverted)
+    //   layerFresnelMask  .xyz the transform's per-axis mask, .w != 0 = apply
+    //   layerFresnelTrans .xyz its translation, .w != 0 = re-normalise after
+    float4 layerFresnel[kM3LayerCount];
+    float4 layerFresnelMask[kM3LayerCount];
+    float4 layerFresnelTrans[kM3LayerCount];
 }
 
 struct M3BoneData
@@ -298,8 +313,9 @@ float4 SelectChannels(float4 t, uint sel)
 // ChannelSelect != RGB, keyed on the RAW sampled alpha (pre-select, pre-tint),
 // and it forces the layer alpha to 1. Only the diffuse slot carries mode 1 —
 // emissive team colour arrives through the TeamColor*Add combine ops instead.
-float4 M3LayerValue(uint4 ctl, float4 tint, float add, float4 texel)
+float4 M3LayerValue(uint slot, float4 texel, float3 n, float3 toEye)
 {
+    let ctl = draw.layerCtl[slot];
     float4 v = SelectChannels(texel, ctl.y);
     if (ctl.z == 2u)
         v = float4(1.0, 1.0, 1.0, 1.0);
@@ -308,36 +324,72 @@ float4 M3LayerValue(uint4 ctl, float4 tint, float add, float4 texel)
         let mask = saturate(pow(max(texel.a, 0.0), pass.teamParams.x));
         v = float4(lerp(draw.teamDiffuse.rgb, v.rgb, mask), 1.0);
     }
-    // psmateriallayer.fx ComputeLayerColorInternal, its last three steps:
-    // ColorInvert, then `rgba * multiply + add`, then ColorClamp. `add` is the
-    // half that was missing, and it is not cosmetic — the environment layer
-    // that ships with the golden Adept is authored (x1.5, +0.4) under a Mod
-    // op, so dropping the +0.4 multiplied the whole model down to bronze.
+    // psmateriallayer.fx ComputeLayerColorInternal, its last four steps:
+    // ColorInvert, then `rgba * multiply + add`, then ColorClamp, then the
+    // fresnel term scaling the whole thing. `add` is not cosmetic — the
+    // environment layer that ships with the golden Adept is authored (x1.5,
+    // +0.4) under a Mod op, so dropping the +0.4 multiplied the whole model
+    // down to bronze.
     if ((ctl.x & 0x40u) != 0u)
         v = float4(1.0, 1.0, 1.0, 1.0) - v;
-    v = v * tint + add;
+    v = v * draw.layerTint[slot] + draw.layerAdd[slot].x;
     if ((ctl.x & 0x80u) != 0u)
         v = saturate(v);
+    if (draw.layerFresnel[slot].w != 0.0)
+        v *= M3FresnelTerm(slot, n, toEye);
     return v;
 }
 
-float2 M3LayerUV(uint4 ctl, float4 uv01)
+// The layer's UV set, through its own UV transform — pscommon.fx GetUVEmitter,
+// which is where a scrolling texture actually scrolls.
+float2 M3LayerUV(uint slot, float4 uv01)
 {
-    return ((ctl.x & 0xFu) == 1u) ? uv01.zw : uv01.xy;
+    let uv = ((draw.layerCtl[slot].x & 0xFu) == 1u) ? uv01.zw : uv01.xy;
+    let p = float3(uv, 1.0);
+    return float2(dot(p, draw.layerUvRow0[slot].xyz), dot(p, draw.layerUvRow1[slot].xyz));
 }
 
 // Sample @p t with the layer's wrap variant. The selector is a per-draw
 // constant, so the branch is uniform and the implicit gradients are safe.
-float4 M3SampleLayer(Texture2D t, uint4 ctl, float4 uv01)
+float4 M3SampleLayer(Texture2D t, uint slot, float4 uv01)
 {
-    let uv = M3LayerUV(ctl, uv01);
-    switch ((ctl.x >> 4) & 0x3u)
+    let uv = M3LayerUV(slot, uv01);
+    switch ((draw.layerCtl[slot].x >> 4) & 0x3u)
     {
     case 1u: return t.Sample(sampWrap1, uv);
     case 2u: return t.Sample(sampWrap2, uv);
     case 3u: return t.Sample(sampWrap3, uv);
     default: return t.Sample(sampWrap0, uv);
     }
+}
+
+// psmateriallayer.fx CalcFresnelTerm. `V` is EyeToVertexFresnel, which
+// model_vs.fx emits as normalize(worldPos - eyePos) — the negation of the
+// view vector this shader already carries.
+//
+// The `abs` arm, not the `saturate(-dot)` one: b_i<Layer>FresnelSaturate has
+// no identified source field in the `.m3` (see ResolveFresnel), the two agree
+// on every front-facing pixel, and `abs` is what keeps a rim on the far side
+// of a two-sided surface.
+float M3FresnelTerm(uint slot, float3 n, float3 toEye)
+{
+    let p = draw.layerFresnel[slot];
+    let mask = draw.layerFresnelMask[slot];
+    let trans = draw.layerFresnelTrans[slot];
+    float3 v = -toEye;
+    if (mask.w != 0.0)
+    {
+        // p_m<L>FresnelTransform reduced to its diagonal and translation
+        // column, which is all shipped content puts in it.
+        v = v * mask.xyz + trans.xyz;
+        if (trans.w != 0.0)
+            v = normalize(v);
+    }
+    float f = 1.0 - abs(dot(n, v));
+    f = pow(max(f, 0.0001), p.x);
+    if (p.w == 2.0)
+        f = 1.0 - f;
+    return saturate(f * p.z + p.y);
 }
 
 // LayerBlendOp — psmateriallayer.fx : CombineLayerColor, all seven ops. The
@@ -380,18 +432,62 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
 {
     M3Shaded o;
     let twoSided = (uint(draw.params0.w) & 2u) != 0u;
+    let toEye = normalize(pass.cameraPosWS.xyz - input.worldPos.xyz);
+
+    // Shading normal, FIRST: every layer's fresnel term reads it, and retail
+    // decodes it once at the top of mainShading for exactly that reason
+    // (psmainshading.fx:139 feeds the same vDeferredNormal to lighting and to
+    // MaterialColor). SC2 normal maps are DXT5nm — x rides alpha, y green — so
+    // the decode is .ag, with z reconstructed.
+    //
+    // `nGeom` is kept because the environment layer needs the geometric normal,
+    // not this one — see the env block below.
+    let nGeom = normalize(input.normalWS);
+    float3 n = nGeom;
+    let ctlNormal = draw.layerCtl[kM3LayerNormal];
+    if (ctlNormal.z == 1u)
+    {
+        // model.fx EmitModelBinormal: cross(normal, tangent) * sign(normal.w).
+        //
+        // The sample is RAW — it goes through M3SampleLayer for the UV
+        // transform and NOTHING else. psmaterial.fx DecodeNormal reaches for
+        // the texture directly (model_normal.slang:126 decodeTextureNormal),
+        // never through ComputeLayerColorInternal, so the channel select, the
+        // tint and the fresnel term all skip this slot. That is not an
+        // optimisation: a normal layer's colorType is RGB on shipped content,
+        // and CHANNELSELECT_RGB forces alpha to 1 — which is the x component
+        // here, so routing it through the layer pipeline pins nx to +1 and
+        // collapses the shading normal onto the tangent. The tangent flips
+        // sign across a mirrored UV seam, so that draws a hard vertical line
+        // down the centre of every SC2 character.
+        let t = normalize(input.tangentWS.xyz);
+        let b = cross(n, t) * input.tangentWS.w;
+        float2 nxy = M3SampleLayer(texNormal, kM3LayerNormal, input.uv01).ag * 2.0 - 1.0;
+        let nz = sqrt(saturate(1.0 - dot(nxy, nxy)));
+        n = normalize(t * nxy.x + b * nxy.y + n * nz);
+    }
+    // Two-sided back faces light from behind (psmaterial.fx:468-489). Keyed on
+    // the rasterizer's winding bit and gated on the material flag, exactly as
+    // retail is — NOT on dot(n, toEye), which was the previous spelling. A
+    // view-vector test puts the flip boundary at a camera-dependent place on
+    // the surface, so shading swam across the model as the camera orbited.
+    //
+    // Retail negates when its FrontFace bit is set because SC2's winding makes
+    // that the back side; ours makes it the front, so the test is inverted.
+    if (twoSided && !isFront)
+        n = -n;
 
     // Albedo: diffuse layer, then the decal over it.
     float4 albedo = float4(0.0, 0.0, 0.0, 1.0);
     let ctlDiffuse = draw.layerCtl[kM3LayerDiffuse];
     if (ctlDiffuse.z != 0u)
-        albedo = M3LayerValue(ctlDiffuse, draw.layerTint[kM3LayerDiffuse], draw.layerAdd[kM3LayerDiffuse].x,
-                              M3SampleLayer(texDiffuse, ctlDiffuse, input.uv01));
+        albedo = M3LayerValue(kM3LayerDiffuse,
+                              M3SampleLayer(texDiffuse, kM3LayerDiffuse, input.uv01), n, toEye);
     let ctlDecal = draw.layerCtl[kM3LayerDecal];
     if (ctlDecal.z != 0u)
     {
-        let decal = M3LayerValue(ctlDecal, draw.layerTint[kM3LayerDecal], draw.layerAdd[kM3LayerDecal].x,
-                                 M3SampleLayer(texDecal, ctlDecal, input.uv01));
+        let decal = M3LayerValue(kM3LayerDecal,
+                                 M3SampleLayer(texDecal, kM3LayerDecal, input.uv01), n, toEye);
         albedo.rgb = M3ApplyBlendOp(albedo.rgb, decal, ctlDecal.w);
     }
 
@@ -404,50 +500,26 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     float alpha = 1.0;
     let ctlMask = draw.layerCtl[kM3LayerAlphaMask];
     if (ctlMask.z != 0u)
-        alpha *= M3LayerValue(ctlMask, draw.layerTint[kM3LayerAlphaMask], draw.layerAdd[kM3LayerAlphaMask].x,
-                              M3SampleLayer(texAlphaMask, ctlMask, input.uv01)).a;
+        alpha *= M3LayerValue(kM3LayerAlphaMask,
+                              M3SampleLayer(texAlphaMask, kM3LayerAlphaMask, input.uv01), n, toEye)
+                     .a;
     let ctlMask2 = draw.layerCtl[kM3LayerAlphaMask2];
     if (ctlMask2.z != 0u)
-        alpha *= M3LayerValue(ctlMask2, draw.layerTint[kM3LayerAlphaMask2], draw.layerAdd[kM3LayerAlphaMask2].x,
-                              M3SampleLayer(texAlphaMask2, ctlMask2, input.uv01)).a;
+        alpha *= M3LayerValue(kM3LayerAlphaMask2,
+                              M3SampleLayer(texAlphaMask2, kM3LayerAlphaMask2, input.uv01), n,
+                              toEye)
+                     .a;
     if (draw.params0.x > 0.0 && alpha < draw.params0.x)
         discard;
-
-    // Shading normal. SC2 normal maps are DXT5nm — x rides alpha, y green —
-    // so the decode is .ag, with z reconstructed.
-    // Kept because the environment layer needs the geometric normal, not this
-    // one — see the env block below.
-    let nGeom = normalize(input.normalWS);
-    float3 n = nGeom;
-    let ctlNormal = draw.layerCtl[kM3LayerNormal];
-    if (ctlNormal.z == 1u)
-    {
-        // model.fx EmitModelBinormal: cross(normal, tangent) * sign(normal.w).
-        let t = normalize(input.tangentWS.xyz);
-        let b = cross(n, t) * input.tangentWS.w;
-        float2 nxy = M3SampleLayer(texNormal, ctlNormal, input.uv01).ag * 2.0 - 1.0;
-        let nz = sqrt(saturate(1.0 - dot(nxy, nxy)));
-        n = normalize(t * nxy.x + b * nxy.y + n * nz);
-    }
-    // Two-sided back faces light from behind (psmaterial.fx:468-489). Keyed on
-    // the rasterizer's winding bit and gated on the material flag, exactly as
-    // retail is — NOT on dot(n, toEye), which was the previous spelling. A
-    // view-vector test puts the flip boundary at a camera-dependent place on
-    // the surface, so shading swam across the model as the camera orbited.
-    //
-    // Retail negates when its FrontFace bit is set because SC2's winding makes
-    // that the back side; ours makes it the front, so the test is inverted.
-    let toEye = normalize(pass.cameraPosWS.xyz - input.worldPos.xyz);
-    if (twoSided && !isFront)
-        n = -n;
 
     // Specular colour: the layer's channels (the material's SpecularMode is
     // folded into ctl.y host-side), hdrSpecularMultiplier folded into the tint.
     float3 specColor = float3(0.0, 0.0, 0.0);
     let ctlSpec = draw.layerCtl[kM3LayerSpecular];
     if (ctlSpec.z != 0u)
-        specColor = M3LayerValue(ctlSpec, draw.layerTint[kM3LayerSpecular], draw.layerAdd[kM3LayerSpecular].x,
-                                 M3SampleLayer(texSpecular, ctlSpec, input.uv01)).rgb;
+        specColor = M3LayerValue(kM3LayerSpecular,
+                                 M3SampleLayer(texSpecular, kM3LayerSpecular, input.uv01), n, toEye)
+                        .rgb;
 
     // psmaterial.fx:579 MaterialSpecularity — a gloss (SpecularExponent) layer
     // scales the material's exponent by its alpha SQUARED; without one the
@@ -457,8 +529,9 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     let ctlGloss = draw.layerCtl[kM3LayerGloss];
     if (ctlGloss.z != 0u)
     {
-        let g = M3LayerValue(ctlGloss, draw.layerTint[kM3LayerGloss], draw.layerAdd[kM3LayerGloss].x,
-                             M3SampleLayer(texGloss, ctlGloss, input.uv01)).a;
+        let g = M3LayerValue(kM3LayerGloss,
+                             M3SampleLayer(texGloss, kM3LayerGloss, input.uv01), n, toEye)
+                    .a;
         specPower *= g * g;
         // FakeEnergyConservingSpec (psmaterial.fx:203) reads the SPECULARITY,
         // i.e. this gloss-modulated exponent — so with a gloss layer the dim
@@ -540,8 +613,8 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     let ctlEmis = draw.layerCtl[kM3LayerEmissive];
     if (ctlEmis.z != 0u)
     {
-        let emis = M3LayerValue(ctlEmis, draw.layerTint[kM3LayerEmissive], draw.layerAdd[kM3LayerEmissive].x,
-                                M3SampleLayer(texEmissive, ctlEmis, input.uv01));
+        let emis = M3LayerValue(kM3LayerEmissive,
+                                M3SampleLayer(texEmissive, kM3LayerEmissive, input.uv01), n, toEye);
         if (M3OpIsModFamily(ctlEmis.w))
         {
             color = M3ApplyBlendOp(color, emis, ctlEmis.w);
@@ -555,8 +628,9 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     let ctlEmis2 = draw.layerCtl[kM3LayerEmissive2];
     if (ctlEmis2.z != 0u)
     {
-        let emis = M3LayerValue(ctlEmis2, draw.layerTint[kM3LayerEmissive2], draw.layerAdd[kM3LayerEmissive2].x,
-                                M3SampleLayer(texEmissive2, ctlEmis2, input.uv01));
+        let emis = M3LayerValue(kM3LayerEmissive2,
+                                M3SampleLayer(texEmissive2, kM3LayerEmissive2, input.uv01), n,
+                                toEye);
         if (M3OpIsModFamily(ctlEmis2.w) && !addFamily)
         {
             color = M3ApplyBlendOp(color, emis, ctlEmis2.w);
@@ -593,8 +667,8 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
         // fit the shared binding layout at all.
         let envReflect = (uint(draw.params0.w) & 8u) != 0u;
         let dir = envReflect ? reflect(-toEye, nGeom) : nGeom;
-        let env = M3LayerValue(ctlEnv, draw.layerTint[kM3LayerEnvironment], draw.layerAdd[kM3LayerEnvironment].x,
-                               texEnv.Sample(sampWrap0, float4(dir, 0.0)));
+        let env = M3LayerValue(kM3LayerEnvironment, texEnv.Sample(sampWrap0, float4(dir, 0.0)), n,
+                               toEye);
 
         // The mask defaults to the env layer's own alpha and the mask layer
         // multiplies into it, rather than replacing it (psmaterial.fx:320-325).
@@ -602,8 +676,9 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
         let ctlEnvMask = draw.layerCtl[kM3LayerEnvMask];
         if (ctlEnvMask.z != 0u)
         {
-            float4 m = M3LayerValue(ctlEnvMask, draw.layerTint[kM3LayerEnvMask], draw.layerAdd[kM3LayerEnvMask].x,
-                                    M3SampleLayer(texEnvMask, ctlEnvMask, input.uv01));
+            float4 m = M3LayerValue(kM3LayerEnvMask,
+                                    M3SampleLayer(texEnvMask, kM3LayerEnvMask, input.uv01), n,
+                                    toEye);
             if (ctlEnvMask.y == 1u) // CHANNELSELECT_RGBA
                 m = float4(m.rgb * m.a, m.a);
             mask = m * env.a;

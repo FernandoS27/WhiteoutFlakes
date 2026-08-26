@@ -562,6 +562,30 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
             // The diffuse slot's .w is its team mode; the decal and emissive
             // slots carry their LayerBlendOp.
             c->layerCtl[i][3] = (i == 0) ? l.teamColorMode : l.blendOp;
+
+            // The layer's UV transform, out of the per-frame palette the
+            // source fills (io::M3UvTransformId). A layer whose transform never
+            // moves has no entry — that is the common case, and the identity
+            // below is what it means.
+            c->layerUvRow0[i] = {1.0f, 0.0f, 0.0f, 0.0f};
+            c->layerUvRow1[i] = {0.0f, 1.0f, 0.0f, 0.0f};
+            if (l.uvTransformId >= 0 && item.view->texAnimPalette &&
+                static_cast<usize>(l.uvTransformId) < item.view->texAnimPalette->size()) {
+                const auto& e = (*item.view->texAnimPalette)[static_cast<usize>(l.uvTransformId)];
+                c->layerUvRow0[i] = {e.row0[0], e.row0[1], e.row0[3], 0.0f};
+                c->layerUvRow1[i] = {e.row1[0], e.row1[1], e.row1[3], 0.0f};
+            }
+
+            // Fresnel. `.w` carries the mode on the first and the two
+            // transform flags on the other two, which is what keeps the shader
+            // to one compare per layer for the 99% that have none.
+            const Vector3f& fbs = l.fresnelExponentBiasScale;
+            c->layerFresnel[i] = {fbs.x, fbs.y, fbs.z, static_cast<f32>(l.fresnelMode)};
+            c->layerFresnelMask[i] = {l.fresnelMask.x, l.fresnelMask.y, l.fresnelMask.z,
+                                      (l.fresnelFlags & 0x1u) ? 1.0f : 0.0f};
+            c->layerFresnelTrans[i] = {l.fresnelTranslation.x, l.fresnelTranslation.y,
+                                       l.fresnelTranslation.z,
+                                       (l.fresnelFlags & 0x2u) ? 1.0f : 0.0f};
         }
         gfxDev->UnmapBuffer(drawCb_);
     }

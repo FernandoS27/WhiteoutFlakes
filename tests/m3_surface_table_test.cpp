@@ -730,3 +730,166 @@ TEST_CASE("m3_surface_table: one file bound both ways is two textures") {
     REQUIRE(texs.size() == 2);
     CHECK(texs[0].linear != texs[1].linear);
 }
+
+TEST_CASE("m3_surface_table: the layer UV transform is a TRS about the UV origin") {
+    // psmateriallayer.fx feeds the 2x4 (u, v, 0, 1) and keeps .xy, so only
+    // these two rows exist and only uvAngle.z can reach the output.
+    f32 r0[4], r1[4];
+
+    wio::M3ComposeUvTransform({0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f}, r0, r1);
+    CHECK(r0[0] == 1.0f);
+    CHECK(r0[1] == 0.0f);
+    CHECK(r0[3] == 0.0f);
+    CHECK(r1[0] == 0.0f);
+    CHECK(r1[1] == 1.0f);
+    CHECK(r1[3] == 0.0f);
+
+    // Tiling is a plain repeat count about the origin: uv 1 lands on 3.
+    wio::M3ComposeUvTransform({0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {3.0f, 1.0f}, r0, r1);
+    CHECK(r0[0] == 3.0f);
+    CHECK(r1[1] == 1.0f);
+
+    // Offset is the translation column, applied after the linear half.
+    wio::M3ComposeUvTransform({0.25f, -0.5f}, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f}, r0, r1);
+    CHECK(r0[3] == 0.25f);
+    CHECK(r1[3] == -0.5f);
+
+    // A quarter turn in the UV plane, radians — the value shipped content
+    // clusters on. (u, v) = (1, 0) has to come out (0, 1).
+    constexpr f32 kHalfPi = 1.57079633f;
+    wio::M3ComposeUvTransform({0.0f, 0.0f}, {0.0f, 0.0f, kHalfPi}, {1.0f, 1.0f}, r0, r1);
+    const f32 u = r0[0] * 1.0f + r0[1] * 0.0f + r0[3];
+    const f32 v = r1[0] * 1.0f + r1[1] * 0.0f + r1[3];
+    CHECK_THAT(u, Catch::Matchers::WithinAbs(0.0, 1e-6));
+    CHECK_THAT(v, Catch::Matchers::WithinAbs(1.0, 1e-6));
+
+    // The two rotations that are NOT in the plane cannot reach the result.
+    f32 x0[4], x1[4];
+    wio::M3ComposeUvTransform({0.0f, 0.0f}, {kHalfPi, kHalfPi, 0.0f}, {1.0f, 1.0f}, x0, x1);
+    CHECK(x0[0] == 1.0f);
+    CHECK(x1[1] == 1.0f);
+}
+
+TEST_CASE("m3_surface_table: every resolved layer names its UV-transform slot") {
+    m3::Model model;
+    m3::StandardMaterial mat;
+    mat.diffuseLayer = TexLayer("diff.dds");
+    mat.emissiveLayer1 = TexLayer("glow.dds");
+    m3::StandardMaterial unused;
+    unused.diffuseLayer = TexLayer("other.dds");
+    // Two materials so the id is measurably keyed on the material index and
+    // not just on the slot.
+    model.standardMaterials = {unused, mat};
+    model.materialMaps = {Matm(m3::MaterialType::Standard, 1)};
+    model.divisions = {Division(0)};
+
+    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const M3Surface* s = table->Surface(0);
+    REQUIRE(s != nullptr);
+    REQUIRE(s->valid);
+    // Material 1, and the ordinals M3LayerSlot gives Diffuse and Emissive.
+    CHECK(s->layers[0].uvTransformId == static_cast<i32>(kM3LayerCount) + 0);
+    CHECK(s->layers[3].uvTransformId == static_cast<i32>(kM3LayerCount) + 3);
+    // A slot with no layer names nothing, so the shader keeps the identity.
+    CHECK(s->layers[1].uvTransformId == -1);
+    CHECK(s->layers[kM3LayerEnvironment].uvTransformId == -1);
+}
+
+TEST_CASE("m3_surface_table: fresnel constants come off the layer") {
+    m3::Model model;
+    m3::StandardMaterial mat;
+    mat.diffuseLayer = TexLayer("diff.dds");
+    // The shipped Golden Adept's reflection: standard mode, and a min/max
+    // that is an OUTPUT range — the shader wants it as (bias, scale).
+    mat.diffuseLayer->fresnelMode = m3::FresnelMode::Standard;
+    mat.diffuseLayer->fresnelExponent = 1.5f;
+    mat.diffuseLayer->fresnelMin = 0.6f;
+    mat.diffuseLayer->fresnelMax = 3.4f;
+    mat.emissiveLayer1 = TexLayer("glow.dds");
+    mat.emissiveLayer1->fresnelMode = m3::FresnelMode::Inverted;
+    mat.emissiveLayer1->fresnelExponent = 2.0f;
+    mat.emissiveLayer1->fresnelMin = 0.0f;
+    mat.emissiveLayer1->fresnelMax = 1.0f;
+    // The transform half, which only 1662 of 26463 shipped fresnel layers ask
+    // for and which is inert without its flag.
+    mat.emissiveLayer1->fresnelMask = {1.0f, 1.0f, 0.0f};
+    mat.emissiveLayer1->fresnelTranslation = {0.0f, 0.0f, 0.25f};
+    mat.specularLayer = TexLayer("spec.dds");
+    mat.specularLayer->fresnelMode = m3::FresnelMode::Standard;
+    mat.specularLayer->fresnelMask = {0.5f, 0.5f, 0.5f};
+    mat.specularLayer->flags = m3::TextureLayerFlag::FresnelTransform |
+                               m3::TextureLayerFlag::FresnelNormalize;
+
+    model.standardMaterials = {mat};
+    model.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
+    model.divisions = {Division(0)};
+
+    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const M3Surface* s = table->Surface(0);
+    REQUIRE(s != nullptr);
+
+    const M3Layer& diffuse = s->layers[0];
+    CHECK(diffuse.fresnelMode == 1);
+    CHECK(diffuse.fresnelExponentBiasScale.x == 1.5f);
+    CHECK(diffuse.fresnelExponentBiasScale.y == 0.6f);
+    CHECK_THAT(diffuse.fresnelExponentBiasScale.z, Catch::Matchers::WithinAbs(2.8, 1e-6));
+    // No transform flag: the mask and translation stay inert whatever the
+    // record put in them.
+    CHECK(diffuse.fresnelFlags == 0);
+
+    const M3Layer& emissive = s->layers[3];
+    CHECK(emissive.fresnelMode == 2);
+    CHECK(emissive.fresnelFlags == 0);
+    CHECK(emissive.fresnelMask.z == 1.0f);
+    CHECK(emissive.fresnelTranslation.z == 0.0f);
+
+    const M3Layer& specular = s->layers[2];
+    CHECK(specular.fresnelFlags == 0x3);
+    CHECK(specular.fresnelMask.x == 0.5f);
+
+    // A layer with no fresnel leaves the neutral term, so the shader's one
+    // compare per layer is all a non-fresnel material ever costs.
+    m3::Model plain;
+    m3::StandardMaterial pm;
+    pm.diffuseLayer = TexLayer("diff.dds");
+    plain.standardMaterials = {pm};
+    plain.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
+    plain.divisions = {Division(0)};
+    const auto plainTable = BuildM3SurfaceTable(plain, kOneRegion);
+    CHECK(plainTable->Surface(0)->layers[0].fresnelMode == 0);
+}
+
+TEST_CASE("m3_surface_table: the evaluator emits a palette entry only for a layer that moves") {
+    // The other half of the UV transform: the surface table names a slot and
+    // the source fills it, keyed by io::M3UvTransformId so the two never have
+    // to agree on anything but the model.
+    m3::Model model;
+    m3::Bone bone;
+    bone.parentIndex = 0xFFFFu;
+    bone.scale.initValue = {1.0f, 1.0f, 1.0f};
+    bone.rotation.initValue = {0.0f, 0.0f, 0.0f, 1.0f};
+    model.bones = {bone};
+
+    m3::StandardMaterial mat;
+    mat.diffuseLayer = TexLayer("diff.dds");
+    mat.diffuseLayer->uvTiling.initValue = {3.0f, 1.0f};
+    mat.diffuseLayer->uvOffset.initValue = {0.25f, 0.0f};
+    // Left at the identity: no track drives it and its bind pose is neutral,
+    // so it must NOT reach the palette.
+    mat.specularLayer = TexLayer("spec.dds");
+    mat.specularLayer->uvTiling.initValue = {1.0f, 1.0f};
+    model.standardMaterials = {mat};
+    model.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
+    model.divisions = {Division(0)};
+
+    wio::M3ModelAdapter adapter(std::move(model));
+    const auto fs = adapter.Evaluate(::whiteout::flakes::PoseRequest{});
+
+    REQUIRE(fs.texAnimMatrices.size() == 1);
+    const auto& e = fs.texAnimMatrices[0];
+    CHECK(e.textureAnimId == wio::M3UvTransformId(0, wio::M3LayerSlot::Diffuse));
+    CHECK(e.row0[0] == 3.0f);
+    CHECK(e.row0[3] == 0.25f);
+    CHECK(e.row1[1] == 1.0f);
+    CHECK(e.row1[3] == 0.0f);
+}

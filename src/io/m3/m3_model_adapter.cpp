@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -90,6 +91,10 @@ Matrix44f M3ComposeLocal(const Vector3f& t, const Quaternion& q, const Vector3f&
 
 // ---- per-type block access and interpolation -------------------------------
 
+const ::whiteout::m3::AnimBlock<Vector2f>* BlockOf(const ::whiteout::m3::SubTrackContainer& stc,
+                                                   M3TrackHandle h, const Vector2f*) {
+    return h.slot == M3SdSlot::Vec2 ? &stc.sd2v[h.block] : nullptr;
+}
 const ::whiteout::m3::AnimBlock<Vector3f>* BlockOf(const ::whiteout::m3::SubTrackContainer& stc,
                                                    M3TrackHandle h, const Vector3f*) {
     return h.slot == M3SdSlot::Vec3 ? &stc.sd3v[h.block] : nullptr;
@@ -106,11 +111,17 @@ const ::whiteout::m3::AnimBlock<f32>* BlockOf(const ::whiteout::m3::SubTrackCont
 Vector3f MixValue(const Vector3f& a, const Vector3f& b, f32 t) {
     return {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t};
 }
+Vector2f MixValue(const Vector2f& a, const Vector2f& b, f32 t) {
+    return {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t};
+}
 // Track-level: the raw componentwise lerp the engine uses (see m3_animation.h).
 Quaternion MixTrack(const Quaternion& a, const Quaternion& b, f32 t) {
     return M3LerpQuatRaw(a, b, t);
 }
 Vector3f MixTrack(const Vector3f& a, const Vector3f& b, f32 t) {
+    return MixValue(a, b, t);
+}
+Vector2f MixTrack(const Vector2f& a, const Vector2f& b, f32 t) {
     return MixValue(a, b, t);
 }
 f32 MixTrack(f32 a, f32 b, f32 t) {
@@ -121,6 +132,9 @@ Quaternion MixLayers(const Quaternion& a, const Quaternion& b, f32 t) {
     return M3SlerpQuat(a, b, t);
 }
 Vector3f MixLayers(const Vector3f& a, const Vector3f& b, f32 t) {
+    return MixValue(a, b, t);
+}
+Vector2f MixLayers(const Vector2f& a, const Vector2f& b, f32 t) {
     return MixValue(a, b, t);
 }
 f32 MixLayers(f32 a, f32 b, f32 t) {
@@ -520,6 +534,20 @@ bool M3LayerActive(const ::whiteout::m3::TextureLayer& layer) {
     if ((static_cast<u32>(layer.flags) & static_cast<u32>(::whiteout::m3::TextureLayerFlag::Color)) != 0)
         return true;
     return M3LayerHasTexture(layer);
+}
+
+void M3ComposeUvTransform(const Vector2f& offset, const Vector3f& angle, const Vector2f& tiling,
+                          f32 row0[4], f32 row1[4]) {
+    const f32 c = std::cos(angle.z);
+    const f32 s = std::sin(angle.z);
+    row0[0] = c * tiling.x;
+    row0[1] = -s * tiling.y;
+    row0[2] = 0.0f;
+    row0[3] = offset.x;
+    row1[0] = s * tiling.x;
+    row1[1] = c * tiling.y;
+    row1[2] = 0.0f;
+    row1[3] = offset.y;
 }
 
 const ::whiteout::m3::TextureLayer* M3LayerForSlot(const ::whiteout::m3::StandardMaterial& mat,
@@ -1526,9 +1554,44 @@ renderer::model::FrameState M3ModelAdapter::Evaluate(const PoseRequest& req) con
     }
 
     EvaluateGeosetVisibility(visible, fs);
+    EvaluateMaterialUvTransforms(layers, fs);
     EvaluateLights(layers, visible, req.world, fs);
     EvaluatePhysics(layers, fs);
     return fs;
+}
+
+void M3ModelAdapter::EvaluateMaterialUvTransforms(std::span<const M3Layer> layers,
+                                                  renderer::model::FrameState& fs) const {
+    for (std::size_t m = 0; m < model_.standardMaterials.size(); ++m) {
+        const auto& mat = model_.standardMaterials[m];
+        for (u32 slot = 0; slot < static_cast<u32>(M3LayerSlot::Count); ++slot) {
+            const ::whiteout::m3::TextureLayer* layer =
+                M3LayerForSlot(mat, static_cast<M3LayerSlot>(slot));
+            if (!layer)
+                continue;
+            // A driven track, or a bind pose that is not the identity. Every
+            // shipped AnimRef carries a non-zero animId whether or not anything
+            // drives it, so "is it animated" has to ask the tables — reading
+            // the id alone answers yes for all 2862196 layers in the corpus.
+            const bool driven = tables_.RowOf(layer->uvOffset.animId) >= 0 ||
+                                tables_.RowOf(layer->uvAngle.animId) >= 0 ||
+                                tables_.RowOf(layer->uvTiling.animId) >= 0;
+            const Vector2f& o = layer->uvOffset.initValue;
+            const Vector3f& a = layer->uvAngle.initValue;
+            const Vector2f& t = layer->uvTiling.initValue;
+            const bool moved = o.x != 0.0f || o.y != 0.0f || a.x != 0.0f || a.y != 0.0f ||
+                               a.z != 0.0f || t.x != 1.0f || t.y != 1.0f;
+            if (!driven && !moved)
+                continue;
+
+            renderer::model::FrameState::TexAnimMatrix out{};
+            out.textureAnimId = M3UvTransformId(static_cast<u32>(m), static_cast<M3LayerSlot>(slot));
+            M3ComposeUvTransform(SampleRef(layer->uvOffset, layers),
+                                 SampleRef(layer->uvAngle, layers),
+                                 SampleRef(layer->uvTiling, layers), out.row0, out.row1);
+            fs.texAnimMatrices.push_back(out);
+        }
+    }
 }
 
 void M3ModelAdapter::EvaluatePhysics(std::span<const M3Layer> layers,
