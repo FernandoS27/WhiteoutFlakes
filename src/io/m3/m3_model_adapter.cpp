@@ -8,8 +8,10 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string_view>
 #include <unordered_map>
@@ -332,6 +334,10 @@ std::shared_ptr<M3ModelAdapter> M3ModelAdapter::Load(const ContentRef& ref,
 }
 
 M3ModelAdapter::M3ModelAdapter(::whiteout::m3::Model model) : model_(std::move(model)) {
+    // Before anything reads a material: past this point the model has no
+    // data-driven maps left that could have been standard ones.
+    M3RestoreDataDrivenMaterials(model_);
+
     // Division 0 is the highest detail level. LOD selection is a later phase;
     // taking one and saying so beats taking whichever happens to be first
     // without noticing there were others.
@@ -586,6 +592,133 @@ std::vector<M3TextureRef> CollectM3Textures(const ::whiteout::m3::Model& model) 
             ref.cube = cube;
             ref.linear = linear;
             out.push_back(std::move(ref));
+        }
+    }
+    return out;
+}
+
+namespace {
+
+using MaddMaterial = ::whiteout::m3::StandardMaterial;
+using MaddLayerSlot = std::optional<::whiteout::m3::TextureLayer> MaddMaterial::*;
+
+/// Every layer of a StandardMaterial, wider than `M3LayerForSlot`, which stops
+/// at the eleven the renderer binds.
+const std::array<MaddLayerSlot, 14>& MaddLayerSlots() {
+    static const std::array<MaddLayerSlot, 14> slots = {
+        &MaddMaterial::diffuseLayer,        &MaddMaterial::decalLayer,
+        &MaddMaterial::specularLayer,       &MaddMaterial::glossLayer,
+        &MaddMaterial::emissiveLayer1,      &MaddMaterial::emissiveLayer2,
+        &MaddMaterial::environmentLayer,    &MaddMaterial::environmentMaskLayer,
+        &MaddMaterial::alphaLayer1,         &MaddMaterial::alphaLayer2,
+        &MaddMaterial::normalLayer,         &MaddMaterial::heightLayer,
+        &MaddMaterial::lightMapLayer,       &MaddMaterial::ambientOcclusionLayer};
+    return slots;
+}
+
+/// The address mode, which the record does not reliably carry: it only names one
+/// inside a per-layer UV transform, and most layers have none, so 5778 of the
+/// 7015 restored layers (82%) come back with no wrap bit at all. Clamp is not
+/// what that means — shipped MAT_ content wraps on 14464 of 14534 StarCraft II
+/// layers and 27664 of 28267 Heroes ones — and a clamped layer whose UVs leave
+/// [0,1] samples one edge column across the whole surface: half of Tracer's body
+/// flat-shaded, and a specular map reduced to a constant.
+void MaddWrapLayers(MaddMaterial& mat) {
+    using ::whiteout::m3::TextureLayerFlag;
+    for (const auto slot : MaddLayerSlots())
+        if (auto& layer = mat.*slot; layer)
+            layer->flags |= TextureLayerFlag::UVWrapX | TextureLayerFlag::UVWrapY;
+}
+
+/// Blend ops and masks a shader graph never names, whose defaults are wrong
+/// twice over: Mod darkens an emissive layer instead of lighting with it, and an
+/// unmasked cubemap washes the surface out to the reflection's own colour. These
+/// are the conventions the fixed-function records hold — §2.7 for the counts.
+void MaddApproximateLayerOps(::whiteout::m3::StandardMaterial& mat) {
+    using ::whiteout::m3::LayerBlendOp;
+    mat.emissiveBlendMode1 = LayerBlendOp::Add;
+    mat.emissiveBlendMode2 = LayerBlendOp::Add;
+    if (mat.environmentLayer && !mat.environmentMaskLayer && mat.specularLayer)
+        mat.environmentMaskLayer = mat.specularLayer;
+}
+
+/// The `LayerBlendOp` an `Envio` layer is applied with, or -1 when the record
+/// names none.
+i32 MaddEnvioBlendOp(const ::whiteout::m3::DataDrivenMaterial& madd) {
+    for (const auto& group : madd.decodeProperties().groups) {
+        for (const auto& prop : group.properties) {
+            if (prop.name != "EnvioControl" || prop.data.size() < sizeof(u32))
+                continue;
+            u32 op = 0;
+            std::memcpy(&op, prop.data.data(), sizeof(op));
+            return static_cast<i32>(op);
+        }
+    }
+    return -1;
+}
+
+} // namespace
+
+M3DataDrivenResult M3RestoreDataDrivenMaterials(::whiteout::m3::Model& model) {
+    using ::whiteout::m3::BlendMode;
+    using ::whiteout::m3::LayerBlendOp;
+    using ::whiteout::m3::MaterialType;
+
+    M3DataDrivenResult out;
+    if (model.dataDrivenMaterials.empty())
+        return out;
+
+    // MADD -> StandardMaterial index, or -1 for a record with no standard form.
+    // Keyed because several MATM entries can name the same record and the
+    // conversion is the expensive part.
+    std::unordered_map<u32, i64> rebuilt;
+    for (auto& map : model.materialMaps) {
+        if (map.materialType != MaterialType::DataDriven ||
+            map.materialIndex >= model.dataDrivenMaterials.size())
+            continue;
+        const auto [it, fresh] = rebuilt.try_emplace(map.materialIndex, i64{-1});
+        if (fresh) {
+            const auto& madd = model.dataDrivenMaterials[map.materialIndex];
+            auto conv = madd.toStandardMaterial();
+            const bool exact = conv.converted;
+            if (!exact)
+                conv = madd.approximateStandardMaterial();
+            if (conv.converted) {
+                MaddWrapLayers(conv.material);
+                if (!exact)
+                    MaddApproximateLayerOps(conv.material);
+                // MAT_.blendMode survives the forward conversion in the field
+                // WhiteoutLib still calls `unknown124` — measured across all
+                // 2582 shipped records, SC2_MATERIAL_RENDERING_DESIGN.md §2.7.
+                // The 15 values past the enum blend rather than paint an FX
+                // reticle as an opaque quad.
+                conv.material.blendMode = madd.unknown124 <= static_cast<u32>(BlendMode::Mod2x)
+                                              ? static_cast<BlendMode>(madd.unknown124)
+                                              : BlendMode::AlphaBlend;
+                // The op the reflection is applied with, which the
+                // conversion misses because the record files it under `Envio`
+                // and the layer under `EnvironmentMap`. Left at the default
+                // 0 = Mod it multiplies a hero's skin to black; a graph names
+                // no op at all, and Add is the likeness that does not (§2.7).
+                if (conv.material.environmentLayer) {
+                    const i32 op = MaddEnvioBlendOp(madd);
+                    conv.material.layerBlendMode =
+                        op >= 0 && op <= static_cast<i32>(LayerBlendOp::AddNoAlpha)
+                            ? static_cast<LayerBlendOp>(op)
+                            : LayerBlendOp::Add;
+                }
+                it->second = static_cast<i64>(model.standardMaterials.size());
+                model.standardMaterials.push_back(std::move(conv.material));
+                ++(exact ? out.restored : out.approximated);
+            } else {
+                ++out.refused;
+                std::fprintf(stderr, "[m3] '%s': material '%s' has no standard form — %s\n",
+                             model.name.c_str(), madd.materialName.c_str(), conv.blocker.c_str());
+            }
+        }
+        if (it->second >= 0) {
+            map.materialType = MaterialType::Standard;
+            map.materialIndex = static_cast<u32>(it->second);
         }
     }
     return out;

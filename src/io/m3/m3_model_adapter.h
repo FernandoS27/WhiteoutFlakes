@@ -162,6 +162,31 @@ const ::whiteout::m3::TextureLayer* M3LayerForSlot(const ::whiteout::m3::Standar
 ///        first-seen order.
 std::vector<M3TextureRef> CollectM3Textures(const ::whiteout::m3::Model& model);
 
+/// @brief What `M3RestoreDataDrivenMaterials` made of a model's MADD records.
+struct M3DataDrivenResult {
+    ::whiteout::u32 restored = 0;     ///< Rebuilt from a fixed-function record.
+    ::whiteout::u32 approximated = 0; ///< Inferred from a shader graph.
+    ::whiteout::u32 refused = 0;      ///< No standard form; the surface stays unlit and undrawn.
+};
+
+/// @brief Rewrite every `MaterialType::DataDriven` map into a StandardMaterial.
+///
+/// MADD is not a kind of material — it is what the engine converts every MAT_,
+/// DIS_ and REF_ into at load, and Heroes of the Storm ships models already in
+/// that form: 686 across the corpus, and in all of them *every* MATM entry is
+/// data-driven, 2581 of 2661 with not one MAT_ beside them. Nothing downstream
+/// reads MADD, so those 582 drawable models came out with no material at all.
+///
+/// The conversion has an inverse, so run it: WhiteoutLib reverses it exactly
+/// where the record is fixed-function (86%) and infers a likeness from node
+/// types and texture names where it is a graph. The result is appended to
+/// `standardMaterials` and the map repointed at it, so texture collection, the
+/// surface table and composite resolution all see an ordinary standard material
+/// and need no MADD path of their own. A record with no standard form — a
+/// converted DIS_ or REF_, or a graph with no assignable texture role — keeps
+/// its data-driven map and stays undrawn, which is what it did before.
+M3DataDrivenResult M3RestoreDataDrivenMaterials(::whiteout::m3::Model& model);
+
 /// @brief Geometry-only `IModelSource` over `whiteout::m3::Model`.
 class M3ModelAdapter final : public ::whiteout::flakes::renderer::model::IModelSource {
 public:

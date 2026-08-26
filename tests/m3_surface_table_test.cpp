@@ -12,6 +12,9 @@
 #include "io/m3/m3_model_adapter.h"
 #include "renderer/profiles/sc2_heroes/m3_surface_table.h"
 
+#include <cstring>
+#include <vector>
+
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
@@ -57,6 +60,103 @@ m3::MaterialMap Matm(m3::MaterialType type, u32 index) {
 }
 
 constexpr std::size_t kOneRegion[] = {0};
+
+// crc32 of the fragment and property names a MADD record keys on. Only the
+// handful these tests need — the full table lives in WhiteoutLib.
+constexpr u32 kFragDiffuse = 0x611cefedu;
+constexpr u32 kFragEnvio = 0xb48618d1u;
+constexpr u32 kFragLightingDeferred = 0x28828f0cu;
+constexpr u32 kFragFog = 0xbae5abf3u;
+constexpr u32 kFragRailTex = 0x22bd4618u;
+constexpr u32 kPropTexDiffuse = 0xc6443019u;
+constexpr u32 kPropTexEnvironmentMap = 0x3b7d7ea1u;
+constexpr u32 kPropEnvioControl = 0x6ce1012fu;
+constexpr u32 kPropTex = 0xd2a03992u;
+
+struct MaddProperty {
+    u32 hash;
+    std::vector<u8> value;
+};
+struct MaddGroup {
+    u32 hash;
+    std::vector<MaddProperty> properties;
+};
+
+/// A `MADD` property blob: the two-level dictionary `decodeProperties` reads,
+/// built here because there is no writer for it and a data-driven material is
+/// nothing without one. Both levels store parallel arrays behind absolute
+/// offsets, and the decoder rejects the record outright if any of them is off
+/// by a byte, so the offsets are computed rather than assumed.
+std::vector<u8> MaddBlob(const std::vector<MaddGroup>& groups) {
+    std::vector<u8> blob;
+    auto put = [&blob](const void* bytes, std::size_t n) {
+        const auto* p = static_cast<const u8*>(bytes);
+        blob.insert(blob.end(), p, p + n);
+    };
+    auto put32 = [&put](u32 v) { put(&v, sizeof v); };
+    auto put16 = [&put](u16 v) { put(&v, sizeof v); };
+    auto put64 = [&put](u64 v) { put(&v, sizeof v); };
+    auto patch64 = [&blob](std::size_t at, u64 v) { std::memcpy(blob.data() + at, &v, sizeof v); };
+
+    const u32 n = static_cast<u32>(groups.size());
+    put32(n);
+    put64(20);                    // the key array follows the 20-byte header
+    put64(20ull + 4ull * n);      // then the group offsets
+    for (const auto& g : groups)
+        put32(g.hash);
+    const std::size_t groupOffsets = blob.size();
+    for (u32 i = 0; i < n; ++i)
+        put64(0);
+
+    for (u32 i = 0; i < n; ++i) {
+        const auto& g = groups[i];
+        patch64(groupOffsets + 8ull * i, blob.size());
+        const u32 count = static_cast<u32>(g.properties.size());
+        if (count == 0) {
+            // A fragment with no properties — the decoder demands all four
+            // arrays be null rather than empty.
+            put32(0);
+            for (int j = 0; j < 4; ++j)
+                put64(0);
+            continue;
+        }
+        const u64 at = blob.size();
+        const u64 hashes = at + 36, sizes = hashes + 4ull * count;
+        const u64 types = sizes + 2ull * count, values = types + count;
+        put32(count);
+        put64(hashes);
+        put64(sizes);
+        put64(types);
+        put64(values);
+        for (const auto& prop : g.properties)
+            put32(prop.hash);
+        for (const auto& prop : g.properties)
+            put16(static_cast<u16>(prop.value.size()));
+        for (u32 j = 0; j < count; ++j)
+            blob.push_back(1); // live slot
+        const std::size_t valueOffsets = blob.size();
+        for (u32 j = 0; j < count; ++j)
+            put64(0);
+        for (u32 j = 0; j < count; ++j) {
+            patch64(valueOffsets + 8ull * j, blob.size());
+            put(g.properties[j].value.data(), g.properties[j].value.size());
+        }
+    }
+    return blob;
+}
+
+/// `{u32 index into texturePaths, u32 source}` — how a Tex* property points.
+std::vector<u8> MaddTex(u32 index) {
+    std::vector<u8> v(8, 0);
+    std::memcpy(v.data(), &index, sizeof index);
+    return v;
+}
+
+std::vector<u8> MaddU32(u32 value) {
+    std::vector<u8> v(4);
+    std::memcpy(v.data(), &value, sizeof value);
+    return v;
+}
 
 } // namespace
 
@@ -252,6 +352,161 @@ TEST_CASE("m3_surface_table: composite resolves to its dominant standard section
     CHECK(s->valid);
     // dominant.dds is texture index 1 in the canonical order (weak first).
     CHECK(s->layers[0].textureId == 1);
+}
+
+TEST_CASE("m3_surface_table: a data-driven material is restored as a standard one") {
+    m3::Model model;
+    m3::DataDrivenMaterial madd;
+    madd.materialName = "hero";
+    madd.texturePaths = {"body_diff.dds", "reflect.dds"};
+    madd.unknown124 = static_cast<u32>(m3::BlendMode::Opaque);
+    madd.propertyBlob = MaddBlob({
+        {kFragDiffuse, {{kPropTexDiffuse, MaddTex(0)}}},
+        {kFragEnvio,
+         {{kPropTexEnvironmentMap, MaddTex(1)},
+          {kPropEnvioControl, MaddU32(static_cast<u32>(m3::LayerBlendOp::Add))}}},
+        {kFragLightingDeferred, {}},
+        {kFragFog, {}},
+    });
+    model.dataDrivenMaterials = {madd};
+    model.materialMaps = {Matm(m3::MaterialType::DataDriven, 0)};
+    model.divisions = {Division(0)};
+
+    const wio::M3DataDrivenResult report = wio::M3RestoreDataDrivenMaterials(model);
+    CHECK(report.restored == 1);
+    CHECK(report.approximated == 0);
+    CHECK(report.refused == 0);
+
+    // The map is repointed, so nothing downstream needs a MADD path.
+    REQUIRE(model.standardMaterials.size() == 1);
+    CHECK(model.materialMaps[0].materialType == m3::MaterialType::Standard);
+    CHECK(model.materialMaps[0].materialIndex == 0);
+    CHECK(model.standardMaterials[0].name == "hero");
+    // Mod is the field's default, and the op the record names is what keeps an
+    // unmasked reflection from multiplying the surface to black.
+    CHECK(model.standardMaterials[0].layerBlendMode == m3::LayerBlendOp::Add);
+    // The record names no address mode for either layer, and clamp is not what
+    // that means: a clamped layer whose UVs leave [0,1] samples one edge column
+    // for the whole surface.
+    REQUIRE(model.standardMaterials[0].diffuseLayer.has_value());
+    CHECK(hasFlag(model.standardMaterials[0].diffuseLayer->flags, m3::TextureLayerFlag::UVWrapX));
+    CHECK(hasFlag(model.standardMaterials[0].diffuseLayer->flags, m3::TextureLayerFlag::UVWrapY));
+
+    const auto refs = wio::CollectM3Textures(model);
+    REQUIRE(refs.size() == 2);
+    CHECK(refs[0].path == "body_diff.dds");
+    CHECK(refs[0].wrapFlags == 0x3u);
+    CHECK(refs[1].cube);
+
+    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const M3Surface* s = table->Surface(0);
+    REQUIRE(s != nullptr);
+    CHECK(s->valid);
+    CHECK(s->blendMode == m3::BlendMode::Opaque);
+    CHECK(s->layers[0].textureId == 0);
+    CHECK(s->layers[kM3LayerEnvironment].textureId == 1);
+    CHECK(s->layers[kM3LayerEnvironment].blendOp == static_cast<u8>(m3::LayerBlendOp::Add));
+}
+
+TEST_CASE("m3_surface_table: a restored material keeps the record's blend mode") {
+    // MAT_.blendMode survives the engine's forward conversion in the record
+    // field WhiteoutLib still calls `unknown124`; the two values the shipped
+    // corpus holds past the enum blend rather than paint an FX quad opaque.
+    const std::pair<u32, m3::BlendMode> cases[] = {
+        {0, m3::BlendMode::Opaque},   {1, m3::BlendMode::AlphaBlend},
+        {2, m3::BlendMode::Add},      {3, m3::BlendMode::AlphaAdd},
+        {5, m3::BlendMode::Mod2x},    {7, m3::BlendMode::AlphaBlend},
+    };
+    for (const auto& [stored, expected] : cases) {
+        m3::Model model;
+        m3::DataDrivenMaterial madd;
+        madd.texturePaths = {"body_diff.dds"};
+        madd.unknown124 = stored;
+        madd.propertyBlob = MaddBlob({{kFragDiffuse, {{kPropTexDiffuse, MaddTex(0)}}}});
+        model.dataDrivenMaterials = {madd};
+        model.materialMaps = {Matm(m3::MaterialType::DataDriven, 0)};
+
+        CHECK(wio::M3RestoreDataDrivenMaterials(model).restored == 1);
+        REQUIRE(model.standardMaterials.size() == 1);
+        CHECK(model.standardMaterials[0].blendMode == expected);
+    }
+}
+
+TEST_CASE("m3_surface_table: a shader-graph material is approximated, not refused") {
+    m3::Model model;
+    m3::DataDrivenMaterial madd;
+    madd.materialName = "graph";
+    madd.texturePaths = {"hero_diff.dds", "hero_spec.dds", "hero_reflection.dds", "hero_emis.dds"};
+    // A Rail* node is the graph vocabulary, which never had a StandardMaterial
+    // form; the blob stores the nodes but not the edges, so the filename is the
+    // only signal left for what each texture is.
+    madd.propertyBlob = MaddBlob({{kFragRailTex,
+                                   {{kPropTex, MaddTex(0)},
+                                    {kPropTex, MaddTex(1)},
+                                    {kPropTex, MaddTex(2)},
+                                    {kPropTex, MaddTex(3)}}}});
+    model.dataDrivenMaterials = {madd};
+    model.materialMaps = {Matm(m3::MaterialType::DataDriven, 0)};
+    model.divisions = {Division(0)};
+
+    const wio::M3DataDrivenResult report = wio::M3RestoreDataDrivenMaterials(model);
+    CHECK(report.restored == 0);
+    CHECK(report.approximated == 1);
+    REQUIRE(model.standardMaterials.size() == 1);
+    CHECK(model.materialMaps[0].materialType == m3::MaterialType::Standard);
+
+    // The ops a graph never names. Mod is the field default for both, and it is
+    // the wrong one twice over: it darkens the emissive layer instead of
+    // lighting with it, and washes the surface out with an unmasked cubemap.
+    const m3::StandardMaterial& mat = model.standardMaterials[0];
+    CHECK(mat.emissiveBlendMode1 == m3::LayerBlendOp::Add);
+    REQUIRE(mat.environmentMaskLayer.has_value());
+    CHECK(mat.environmentMaskLayer->texturePath == "hero_spec.dds");
+
+    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const M3Surface* s = table->Surface(0);
+    REQUIRE(s != nullptr);
+    CHECK(s->valid);
+    CHECK(s->layers[0].textureId == 0);
+    // The mask reuses the specular texture rather than claiming its own slot.
+    CHECK(s->layers[kM3LayerEnvironment + 1].textureId == s->layers[2].textureId);
+}
+
+TEST_CASE("m3_surface_table: a record with no standard form keeps its data-driven map") {
+    m3::Model model;
+    m3::DataDrivenMaterial madd;
+    madd.materialName = "graph";
+    // A graph with nothing to sample: no role to infer, so there is no likeness
+    // to build and inventing one would be worse than drawing nothing.
+    madd.propertyBlob = MaddBlob({{kFragRailTex, {}}});
+    model.dataDrivenMaterials = {madd};
+    model.materialMaps = {Matm(m3::MaterialType::DataDriven, 0)};
+    model.divisions = {Division(0)};
+
+    const wio::M3DataDrivenResult report = wio::M3RestoreDataDrivenMaterials(model);
+    CHECK(report.refused == 1);
+    CHECK(model.standardMaterials.empty());
+    CHECK(model.materialMaps[0].materialType == m3::MaterialType::DataDriven);
+
+    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const M3Surface* s = table->Surface(0);
+    REQUIRE(s != nullptr);
+    CHECK_FALSE(s->valid);
+}
+
+TEST_CASE("m3_surface_table: two maps naming one record restore it once") {
+    m3::Model model;
+    m3::DataDrivenMaterial madd;
+    madd.texturePaths = {"body_diff.dds"};
+    madd.propertyBlob = MaddBlob({{kFragDiffuse, {{kPropTexDiffuse, MaddTex(0)}}}});
+    model.dataDrivenMaterials = {madd};
+    model.materialMaps = {Matm(m3::MaterialType::DataDriven, 0),
+                          Matm(m3::MaterialType::DataDriven, 0)};
+
+    CHECK(wio::M3RestoreDataDrivenMaterials(model).restored == 1);
+    CHECK(model.standardMaterials.size() == 1);
+    CHECK(model.materialMaps[0].materialIndex == 0);
+    CHECK(model.materialMaps[1].materialIndex == 0);
 }
 
 TEST_CASE("m3_surface_table: non-standard material types stay invalid") {

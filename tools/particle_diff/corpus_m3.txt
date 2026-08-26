@@ -19,3 +19,14 @@ Sc2M3/SCV.m3
 Sc2M3/Thor.m3
 Sc2M3/Ultralisk.m3
 Sc2M3/BattleCruiser.m3
+
+# Heroes' data-driven materials (MADD). Every MATM entry in these is type 12, so
+# they draw with no material at all unless the record is restored to a MAT_.
+# Chogall and Alexstrasza restore exactly and carry the reflection layer whose
+# blend op the record hides in `EnvioControl`; Brightwing has no reflection and
+# a second, alpha-add FX material; the Butcher is a shader graph, approximated
+# from node types and texture names.
+HotSM3/Storm_Hero_Chogall_Base.m3
+HotSM3/Storm_Hero_Alexstrasza_Cowl.m3
+HotSM3/Storm_Hero_Brightwing_Base.m3
+HotSM3/Storm_Hero_Butcher_Classic21.m3
