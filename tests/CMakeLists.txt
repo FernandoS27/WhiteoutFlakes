@@ -99,6 +99,8 @@ if(WDX_ENABLE_M2)
     # Corpus only: needs the `dbfilesclient/` dump beside the models.
     wdx_add_test(wow_creature_skin_test wow_creature_skin_test.cpp)
     wdx_add_test(wow_item_appearance_test wow_item_appearance_test.cpp)
+    # ParticleColor x particleColorIndex: the skin recolours emitters.
+    wdx_add_test(wow_particle_color_test wow_particle_color_test.cpp)
     # `.phys` -> Snowball, end to end. Only exists when physics is compiled in;
     # without it there is no stage to test and the adapter returns nothing.
     if(WDX_ENABLE_PHYSICS)

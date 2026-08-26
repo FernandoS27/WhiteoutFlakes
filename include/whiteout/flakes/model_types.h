@@ -250,6 +250,35 @@ struct M2ParticleEmitterConfig {
     i32 priorityPlane = 0;
 };
 
+/// @brief What a World of Warcraft skin says an emitter's colour keys are.
+///
+/// A creature's `CreatureDisplayInfo` row names a `ParticleColor` row, and that
+/// row carries three colours for each of three slots. An emitter opts into a
+/// slot with the record's `particleColorIndex`: 11, 12 and 13 are slots 0, 1
+/// and 2 — the same numbering `M2Texture::type` 11/12/13 uses for the skin's
+/// three textures.
+///
+/// `key[slot][k]` is start / mid / end, display-referred 0..1 exactly like
+/// @ref M2ParticleEmitterConfig::colorValues. The row's alpha byte is dropped
+/// because the client never reads it. See M2_SKIN_RECOLOR_DESIGN.md.
+struct M2ParticleColorOverride {
+    static constexpr u32 kSlots = 3;
+    static constexpr u32 kKeys = 3;
+
+    /// The `particleColorIndex` value slot 0 answers to. Slot *i* is
+    /// `kFirstIndex + i`; anything else never matches, which is how the
+    /// default 0 and the -1 sentinel stay inert.
+    static constexpr u16 kFirstIndex = 11;
+
+    Vector3f key[kSlots][kKeys] = {};
+
+    /// Which slot @p particleColorIndex selects, or -1 for none.
+    static constexpr i32 SlotOf(u16 particleColorIndex) {
+        const i32 slot = static_cast<i32>(particleColorIndex) - kFirstIndex;
+        return (slot >= 0 && slot < static_cast<i32>(kSlots)) ? slot : -1;
+    }
+};
+
 } // namespace whiteout::flakes::renderer
 
 namespace whiteout::flakes::renderer::effects {

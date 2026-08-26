@@ -195,6 +195,25 @@ public:
         replaceableByType_ = std::move(byTextureType);
     }
 
+    /// @brief What the skin says this model's recolourable emitters look like.
+    ///
+    /// The colour half of the same answer SetReplaceableTextures gives: a
+    /// `ParticleColor` row, resolved from the display record. Every emitter
+    /// whose `particleColorIndex` claims a slot takes that slot's three
+    /// colours *in place of its own*, keeping its own key times and its own
+    /// alpha — see M2_SKIN_RECOLOR_DESIGN.md.
+    ///
+    /// Set before Build(), beside the textures. Clearing it restores the
+    /// model's own colours, which is what makes stepping through variations
+    /// symmetric.
+    void SetParticleColorOverride(const renderer::M2ParticleColorOverride& colors) {
+        particleColors_ = colors;
+        hasParticleColors_ = true;
+    }
+    void ClearParticleColorOverride() {
+        hasParticleColors_ = false;
+    }
+
     /// @brief Draw only the submeshes whose `skinSectionId` is in @p ids.
     ///
     /// A character `.m2` ships every hairstyle, every beard and every armour
@@ -374,6 +393,8 @@ private:
     std::shared_ptr<void> fsKeepAlive_;
     // Indexed by M2Texture::type; empty until the WoW profile resolves them.
     std::vector<std::string> replaceableByType_;
+    renderer::M2ParticleColorOverride particleColors_;
+    bool hasParticleColors_ = false;
     // Runtime-built sheets, by M2 texture type. Empty for everything but a
     // character model with the client databases in reach.
     std::vector<M2ComposedTexture> composed_;

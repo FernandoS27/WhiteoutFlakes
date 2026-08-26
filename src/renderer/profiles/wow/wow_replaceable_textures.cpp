@@ -56,11 +56,18 @@ bool IsItemSkin(u32 type) {
 template <typename Row>
 std::vector<SkinVariation> DistinctLooks(std::span<const Row> rows) {
     std::vector<SkinVariation> out;
-    std::vector<std::array<u32, kReplaceableSlots>> seen;
+    // The particle colour is part of the key, not just of the result: rows that
+    // name the same textures and different colours are genuinely different
+    // looks, and collapsing them would hide every skin whose only difference is
+    // the colour of its fire. Only a creature row has one — an item row does
+    // not carry the column, hence the `requires`.
+    std::vector<std::array<u32, kReplaceableSlots + 1>> seen;
     for (const Row& row : rows) {
-        std::array<u32, kReplaceableSlots> look{};
+        std::array<u32, kReplaceableSlots + 1> look{};
         for (usize slot = 0; slot < std::size(row.texture); ++slot)
             look[slot] = row.texture[slot];
+        if constexpr (requires { row.particleColorId; })
+            look[kReplaceableSlots] = row.particleColorId;
         if (std::find(seen.begin(), seen.end(), look) != seen.end())
             continue;
         seen.push_back(look);
@@ -69,6 +76,7 @@ std::vector<SkinVariation> DistinctLooks(std::span<const Row> rows) {
         for (u32 slot = 0; slot < kReplaceableSlots; ++slot)
             if (look[slot] != 0)
                 v.texture[slot] = "#" + std::to_string(look[slot]);
+        v.particleColorId = look[kReplaceableSlots];
         out.push_back(std::move(v));
     }
     return out;
@@ -252,6 +260,9 @@ bool WowReplaceableTextures::Prewarm(io::ProgressMonitor* progress) {
     {
         io::ProgressMonitor step = m.Split(2);
         ok = table_.Load(*provider_, &step);
+        // 80 KB against the display table's 2.4 MB, so it rides along inside
+        // the creature step's budget rather than earning one of its own.
+        particleColors_.Load(*provider_, &step);
     }
     if (m.Cancelled())
         return false;
@@ -263,7 +274,8 @@ bool WowReplaceableTextures::Prewarm(io::ProgressMonitor* progress) {
 }
 
 std::vector<SkinVariation> WowReplaceableTextures::FindVariations(const ContentRef& modelRef,
-                                                                  const std::vector<u32>& slots) {
+                                                                  const std::vector<u32>& slots,
+                                                                  bool recolourable) {
     std::vector<SkinVariation> variations;
 
     // The client's own answer, when the storage can name the model. Ordered by
@@ -276,7 +288,11 @@ std::vector<SkinVariation> WowReplaceableTextures::FindVariations(const ContentR
     // the creature one came back empty, so a model the wrong guess would leave
     // white costs a lookup instead of a slot.
     if (const u32 modelFile = ModelFileId(modelRef); modelFile != 0) {
-        const bool creature = std::any_of(slots.begin(), slots.end(), IsMonsterSkin);
+        // A recolourable emitter makes a model a creature on its own. 139 of
+        // the 464 shipped carriers declare no replaceable texture at all, and
+        // their whole skin is the colour of what they are breathing.
+        const bool creature =
+            recolourable || std::any_of(slots.begin(), slots.end(), IsMonsterSkin);
         const bool item = std::any_of(slots.begin(), slots.end(), IsItemSkin);
         if (creature && table_.Load(*provider_))
             variations = DistinctLooks<io::wow::MonsterSkin>(table_.ForModel(modelFile));
@@ -300,7 +316,12 @@ std::vector<SkinVariation> WowReplaceableTextures::FindVariations(const ContentR
     // variation name to the model's directory, so every skin this model can
     // wear is a `.blp` beside it — and named after it, which is what separates
     // the skins from the effect and reflection textures creatures share.
-    if (modelRef.IsFileId() || modelRef.path.empty())
+    //
+    // Nothing to look for when the model declares no texture slot: it got here
+    // only because an emitter is recolourable, and a `.blp` beside the model
+    // cannot say what colour anything is. Listing the folder anyway would offer
+    // its siblings as skins that fill a slot the model does not have.
+    if (slots.empty() || modelRef.IsFileId() || modelRef.path.empty())
         return variations;
     // The storage's folder when it can place the model, the host's otherwise:
     // an extracted `.m2` sitting alone on disk wears the same skins as the one
@@ -360,14 +381,22 @@ usize WowReplaceableTextures::Apply(io::M2ModelAdapter& adapter, const ContentRe
         if (ReplaceableSlotOfType(tex.type) >= 0 &&
             std::find(slots.begin(), slots.end(), tex.type) == slots.end())
             slots.push_back(tex.type);
-    if (!provider_ || slots.empty())
+    // The other half of the same question: an emitter claiming one of the three
+    // recolour slots is a blank the skin fills too, and 139 of the 464 shipped
+    // carriers have no replaceable texture to give them away.
+    const bool recolourable =
+        std::any_of(model.particleEmitters.begin(), model.particleEmitters.end(),
+                    [](const auto& e) {
+                        return renderer::M2ParticleColorOverride::SlotOf(e.particleColorIndex) >= 0;
+                    });
+    if (!provider_ || (slots.empty() && !recolourable))
         return 0;
     std::sort(slots.begin(), slots.end());
 
     // Re-found on every spawn rather than cached-and-reused: the entry exists so
     // a host can ask later, not to make the second spawn cheaper.
     auto& variations = byModel_[modelRef.Describe()];
-    variations = FindVariations(modelRef, slots);
+    variations = FindVariations(modelRef, slots, recolourable);
     if (variations.empty())
         return 0;
     const SkinVariation& skin = variations[variation_ % variations.size()];
@@ -376,6 +405,16 @@ usize WowReplaceableTextures::Apply(io::M2ModelAdapter& adapter, const ContentRe
     for (u32 slot = 0; slot < kReplaceableSlots; ++slot)
         byType[kReplaceableTypes[slot]] = skin.texture[slot];
     adapter.SetReplaceableTextures(std::move(byType));
+
+    // The colour half. Cleared rather than left alone when this look names no
+    // row, so stepping from a red skin back to the default puts the model's own
+    // colours back instead of keeping the last one applied.
+    renderer::M2ParticleColorOverride colors;
+    if (recolourable && skin.particleColorId != 0 && particleColors_.Load(*provider_) &&
+        particleColors_.Resolve(skin.particleColorId, colors))
+        adapter.SetParticleColorOverride(colors);
+    else
+        adapter.ClearParticleColorOverride();
 
     // Slots filled, not variations named: one texture can serve several slots,
     // and a model can declare a type this skin leaves empty.

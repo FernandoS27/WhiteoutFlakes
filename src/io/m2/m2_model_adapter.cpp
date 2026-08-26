@@ -1471,6 +1471,27 @@ std::vector<renderer::M2ParticleEmitterConfig> M2ModelAdapter::GetM2ParticleConf
             // Record colours are 0..255 display-referred.
             return Vector3f{v.x / 255.0f, v.y / 255.0f, v.z / 255.0f};
         });
+        // The skin's recolour, if this emitter asked for one. Values only: the
+        // key TIMES stay the model's, because the client keeps sampling the
+        // model's own track and swaps nothing but the array the two bracketing
+        // keys are read from (`InterpolateColorTrack` @0x10169fd80). Alpha is
+        // untouched for the same reason — the replacement is RGB.
+        //
+        // Exactly three keys or nothing, which is the client's own rule: its
+        // replacement array is three entries indexed by the track's key
+        // indices, and it fatals on any other count
+        // (`ReplaceParticleColor` @0x100f5a940, M2Model.cpp:3143). Six shipped
+        // emitters break it — all in `spells/fotf_wings_slow.m2`, with four
+        // keys — and retail reads past the array for them. Skipping is the one
+        // deliberate divergence.
+        if (const i32 slot =
+                hasParticleColors_
+                    ? renderer::M2ParticleColorOverride::SlotOf(p.particleColorIndex)
+                    : -1;
+            slot >= 0 && cfg.colorValues.size() == renderer::M2ParticleColorOverride::kKeys) {
+            for (u32 k = 0; k < renderer::M2ParticleColorOverride::kKeys; ++k)
+                cfg.colorValues[k] = particleColors_.key[slot][k];
+        }
         CopyParticleTrack(p.alphaTrack, cfg.alphaTimes, cfg.alphaValues,
                           [](auto v) { return Fixed16(v); });
         CopyParticleTrack(p.scaleTrack, cfg.scaleTimes, cfg.scaleValues,

@@ -51,6 +51,7 @@
 
 #include "io/wow/creature_skin_table.h"
 #include "io/wow/item_appearance_table.h"
+#include "io/wow/particle_color_table.h"
 #include "whiteout/flakes/content_ref.h"
 #include "whiteout/flakes/types.h"
 
@@ -74,6 +75,14 @@ struct SkinVariation {
     /// four entries are the creature ones, so a creature look still indexes
     /// 0..3.
     std::string texture[io::wow::kReplaceableSlots];
+
+    /// The `ParticleColor` row this look recolours emitters with, or 0 to
+    /// leave the model's own colours alone. Part of the look, not a detail of
+    /// it: 155 shipped display rows change nothing else, and two rows that
+    /// name the same textures and different colours are two different skins.
+    /// Always 0 on the sibling fallback — a `.blp` beside the model cannot say
+    /// what colour anything is.
+    u32 particleColorId = 0;
 };
 
 class WowReplaceableTextures {
@@ -125,6 +134,7 @@ public:
     void Clear() {
         table_.Clear();
         items_.Clear();
+        particleColors_.Clear();
         byModel_.clear();
     }
 
@@ -133,6 +143,9 @@ public:
     }
     const io::wow::ItemAppearanceTable& ItemTable() const noexcept {
         return items_;
+    }
+    const io::wow::ParticleColorTable& ParticleColors() const noexcept {
+        return particleColors_;
     }
 
 private:
@@ -147,12 +160,17 @@ private:
     /// of table to read and what a look has to fill, since it fills all of
     /// them and not just the first. That is what pairs a mount's body with its
     /// saddle, and a weapon's blade with its handle.
+    /// @p recolourable says the model carries an emitter the skin can tint even
+    /// if it declares no replaceable texture at all — 139 of the 464 shipped
+    /// carriers are exactly that, and without it they would never reach the
+    /// creature tables.
     std::vector<SkinVariation> FindVariations(const ContentRef& modelRef,
-                                              const std::vector<u32>& slots);
+                                              const std::vector<u32>& slots, bool recolourable);
 
     io::IContentProvider* provider_ = nullptr;
     io::wow::CreatureSkinTable table_;
     io::wow::ItemAppearanceTable items_;
+    io::wow::ParticleColorTable particleColors_;
     // Keyed by ContentRef::Describe, so a host with several models open can
     // ask about any of them. Filled by Apply, which is also the only thing
     // that knows a model has a slot worth looking for at all.

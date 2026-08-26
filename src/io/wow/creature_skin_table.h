@@ -60,6 +60,13 @@ static_assert(kMonsterSkinTypes[0] == kReplaceableTypes[0] &&
 struct MonsterSkin {
     u32 displayId = 0;
     u32 texture[kMonsterSkinSlots] = {0, 0, 0, 0};
+
+    /// `CreatureDisplayInfo::ParticleColorID` — a `ParticleColor` row, which
+    /// recolours every emitter whose `particleColorIndex` claims one of the
+    /// first three slots above. Zero on most rows and on the whole fallback
+    /// path, and zero means "leave the model's own colours alone". See
+    /// io/wow/particle_color_table.h.
+    u32 particleColorId = 0;
 };
 
 /// The two client tables, parsed and joined.

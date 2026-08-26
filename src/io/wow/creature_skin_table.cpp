@@ -45,6 +45,11 @@ constexpr u32 kDisplayInfoFileId = 1108759;
 constexpr u32 kModelDataGeoBox = 0;     // float[6]
 constexpr u32 kModelDataFileDataId = 2; // the `.m2` this row describes
 constexpr u32 kDisplayInfoModelId = 1;  // → CreatureModelData::ID
+// → ParticleColor::ID. The index the 11.x client itself reads (its
+// ReplaceMonsterSkin falls back to field 9 of this table), and the only column
+// whose every non-zero value resolves to a ParticleColor row — 2694 of them,
+// with no exception. Both checks agree, which is what makes it safe to hardcode.
+constexpr u32 kDisplayInfoParticleColorId = 9;
 
 bool ParseThrough(IContentProvider& provider, const char* path, u32 knownId, db::Parser& parser,
                   std::optional<db::Table>& out) {
@@ -107,7 +112,8 @@ bool CreatureSkinTable::Load(IContentProvider& provider, ProgressMonitor* progre
     // The variation array is last. Three wide on older builds, four on retail —
     // read whichever it is rather than either number, so a build on the other
     // side of that change still resolves the slots it does have.
-    if (displayFields.size() <= kDisplayInfoModelId || displayFields.back().arrayCount < 3) {
+    if (displayFields.size() <= kDisplayInfoParticleColorId ||
+        displayFields.back().arrayCount < 3) {
         std::fprintf(stderr,
                      "[wow] CreatureDisplayInfo has an unexpected layout (%zu fields) — "
                      "monster skins stay unresolved\n",
@@ -143,14 +149,17 @@ bool CreatureSkinTable::Load(IContentProvider& provider, ProgressMonitor* progre
             continue;
         MonsterSkin skin;
         skin.displayId = row.id();
-        bool any = false;
+        skin.particleColorId = static_cast<u32>(row.getUInt(kDisplayInfoParticleColorId));
+        bool any = skin.particleColorId != 0;
         for (u32 slot = 0; slot < variationCount; ++slot) {
             skin.texture[slot] = static_cast<u32>(row.getUInt(variationField, slot));
             any = any || skin.texture[slot] != 0;
         }
-        // A display that names no texture replaces nothing — the client's loop
+        // A display that fills nothing replaces nothing — the client's loop
         // skips an empty variation rather than blanking the slot — so it is not
-        // a variation a picker should be able to land on.
+        // a variation a picker should be able to land on. A colour counts as
+        // filling something: 155 shipped rows recolour an emitter and name no
+        // texture at all, and dropping those would lose exactly those looks.
         if (any)
             pairs.emplace_back(model->second, skin);
     }
