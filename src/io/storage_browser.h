@@ -28,6 +28,12 @@
 
 namespace whiteout::flakes::io {
 
+class ProgressMonitor;
+
+class ProgressMonitor;
+
+class ProgressMonitor;
+
 // Where a browser's entries come from.
 enum class StorageKind {
     Casc,   // an installed game's CASC storage
@@ -106,7 +112,13 @@ public:
     // the directory holding .build.info (or its Data subdir); for Mpq, the
     // archive file; for Folder, the directory to walk. Returns false and
     // fills `error` on failure.
-    bool Open(const std::string& root, StorageKind kind, std::string* error);
+    // @param progress Optional. Covers both halves of an open — the CASC
+    //        open itself and the manifest walk that follows it, which on a
+    //        StarCraft II install is three quarters of a million entries and
+    //        the longest single wait the product has. Also carries
+    //        cancellation: a cancelled open leaves the browser closed.
+    bool Open(const std::string& root, StorageKind kind, std::string* error,
+              ProgressMonitor* progress = nullptr);
 
     // Listfile and TACT key list to open a CASC with. Only World of Warcraft
     // needs either — its root is id-keyed, so without a listfile a browse of it
@@ -182,9 +194,9 @@ private:
     // A folder node: subfolders + the model files directly inside it (display
     // name → original archive path).
     struct Node {
-        std::map<std::string, Node> folders;        // key = lowercase name
+        std::map<std::string, Node> folders;              // key = lowercase name
         std::map<std::string, std::string> folderDisplay; // lowercase → display
-        std::map<std::string, std::string> files;   // display name → archive path
+        std::map<std::string, std::string> files;         // display name → archive path
     };
 
     void Refresh();
@@ -193,7 +205,7 @@ private:
     // `display` is what the user navigates.
     void Insert(const std::string& original, const std::string& display);
 
-    bool OpenCasc(const std::string& root, std::string* error);
+    bool OpenCasc(const std::string& root, std::string* error, ProgressMonitor* progress);
     bool OpenMpq(const std::string& path, std::string* error);
     bool OpenFolder(const std::string& path, std::string* error);
 

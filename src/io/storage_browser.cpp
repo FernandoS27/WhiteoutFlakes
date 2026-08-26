@@ -1,6 +1,7 @@
 #include "io/storage_browser.h"
 
 #include "io/product_detect.h"
+#include "io/progress.h"
 
 #include <filesystem>
 #include <system_error>
@@ -187,7 +188,8 @@ std::string JoinSegments(const std::vector<std::string>& segs) {
 
 } // namespace
 
-bool StorageBrowser::Open(const std::string& root, StorageKind kind, std::string* error) {
+bool StorageBrowser::Open(const std::string& root, StorageKind kind, std::string* error,
+                          ProgressMonitor* progress) {
     open_ = false;
     kind_ = kind;
     product_ = ProductId::Neutral;
@@ -199,7 +201,7 @@ bool StorageBrowser::Open(const std::string& root, StorageKind kind, std::string
     bool ok = false;
     switch (kind) {
     case StorageKind::Casc:
-        ok = OpenCasc(root, error);
+        ok = OpenCasc(root, error, progress);
         break;
     case StorageKind::Mpq:
         ok = OpenMpq(root, error);
@@ -271,7 +273,14 @@ void StorageBrowser::Insert(const std::string& original, const std::string& disp
     node->files.emplace(segs.back(), original);
 }
 
-bool StorageBrowser::OpenCasc(const std::string& root, std::string* error) {
+bool StorageBrowser::OpenCasc(const std::string& root, std::string* error,
+                              ProgressMonitor* progress) {
+    ProgressMonitor inert;
+    ProgressMonitor& m = progress ? *progress : inert;
+    // The open dominates in wall-clock, but the walk is the part that used
+    // to look like a hang: it reports nothing, holds the calling thread and
+    // on StarCraft II runs for seconds after the open has finished.
+    m.Begin("Opening storage", 4);
     // Through the registry, so browsing an install a scene is already reading
     // costs nothing and shows exactly what that scene sees.
     CascOpenKey key;
@@ -283,16 +292,25 @@ bool StorageBrowser::OpenCasc(const std::string& root, std::string* error) {
     // registry. See the note there for why it is not tied to the key list.
     key.zeroFillEncrypted = true;
     std::string err;
-    auto s = AcquireSharedCasc(key, err);
-    if (!s) {
-        std::string err2;
-        key.root = root + "/Data";
-        s = AcquireSharedCasc(key, err2);
-        if (!s) {
-            if (error)
-                *error = err.empty() ? err2 : err;
-            return false;
+    std::shared_ptr<const SharedCasc> s;
+    {
+        ProgressMonitor step = m.Split(3);
+        s = AcquireSharedCasc(key, err, &step);
+        if (!s && !m.Cancelled()) {
+            std::string err2;
+            key.root = root + "/Data";
+            s = AcquireSharedCasc(key, err2, &step);
+            if (!s) {
+                if (error)
+                    *error = err.empty() ? err2 : err;
+                return false;
+            }
         }
+    }
+    if (!s) {
+        if (error)
+            *error = m.Cancelled() ? "Open cancelled" : err;
+        return false;
     }
     storage_ = std::move(s);
     root_ = storage_->Root();
@@ -308,11 +326,35 @@ bool StorageBrowser::OpenCasc(const std::string& root, std::string* error) {
     // expensive part (three quarters of a million entries on StarCraft II), so
     // it happens once and a filter change re-lists rather than re-enumerates.
     available_ = BrowseTypesFor(product_);
-    storage_->Storage().enumerate([this](const storages::casc::EnumerateEntry& e) {
+
+    ProgressMonitor walk = m.Split(1);
+    // entryCount() is what makes this a bar rather than a marquee. It is also
+    // the only reason the library grew an accessor for it.
+    walk.Begin("Indexing storage", storage_->Storage().entryCount());
+    // Batched: at three quarters of a million entries a per-entry report would
+    // cost more than the classification it is reporting on, and 4096 entries is
+    // far below one frame's worth of walk.
+    u64 seen = 0;
+    bool cancelled = false;
+    storage_->Storage().enumerate([&](const storages::casc::EnumerateEntry& e) {
         if (Any(BrowseTypeOfFile(e.path) & available_))
             Insert(std::string(e.path), CascToDisplay(e.path));
+        if ((++seen & 0xFFF) == 0) {
+            walk.Worked(0x1000);
+            if (walk.Cancelled()) {
+                cancelled = true;
+                return false;
+            }
+        }
         return true;
     });
+    if (cancelled) {
+        if (error)
+            *error = "Open cancelled";
+        storage_.reset();
+        tree_ = Node{};
+        return false;
+    }
     return true;
 }
 
@@ -440,7 +482,9 @@ void StorageBrowser::Refresh() {
             if (!filtered || MatchesFilter(name, filter_))
                 listing_.modelFiles.push_back(name);
         }
-        auto ci = [](const std::string& a, const std::string& b) { return ToLower(a) < ToLower(b); };
+        auto ci = [](const std::string& a, const std::string& b) {
+            return ToLower(a) < ToLower(b);
+        };
         std::sort(listing_.folders.begin(), listing_.folders.end(), ci);
         std::sort(listing_.modelFiles.begin(), listing_.modelFiles.end(), ci);
     }

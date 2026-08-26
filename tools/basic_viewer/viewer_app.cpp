@@ -1,5 +1,6 @@
 #include "viewer_app.h"
 
+#include "io/mdx_model_adapter.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/camera.h"
 #include "renderer/debug/debug_renderer.h"
@@ -7,7 +8,6 @@
 #include "renderer/model/model_instance.h"
 #include "renderer/model/model_loader.h"
 #include "renderer/model/model_template.h"
-#include "io/mdx_model_adapter.h"
 #if WDX_ENABLE_M3
 #include "io/m3/m3_model_adapter.h"
 #endif
@@ -30,6 +30,7 @@
 #include "resource.h" // IDI_WHITEOUT_ICON
 #endif
 #include "imgui_theme.h"
+#include "io/file_content_provider.h"
 #include "localization.h"
 #include "settings_ini.h"
 #include "thumbnail_framing.h"
@@ -71,8 +72,7 @@
 #define GLFW_EXPOSE_NATIVE_COCOA
 #include <GLFW/glfw3native.h>
 namespace whiteout::flakes {
-VkResult CreateVulkanSurfaceMacOS(VkInstance instance, void* nsWindow,
-                                  VkSurfaceKHR* outSurface);
+VkResult CreateVulkanSurfaceMacOS(VkInstance instance, void* nsWindow, VkSurfaceKHR* outSurface);
 void SetCocoaWindowChrome(void* nsWindow, float r, float g, float b);
 } // namespace whiteout::flakes
 #endif
@@ -116,6 +116,22 @@ namespace whiteout::flakes {
 namespace {
 
 const char* kWindowTitle = "WhiteoutFlakes";
+
+// For the progress modal's title. The same names the Settings profile combo
+// uses, kept here rather than reached for across viewer_ui.cpp because a
+// window title is not a settings concern.
+const char* GameDisplayName(ProductId game) {
+    switch (game) {
+    case ProductId::Wow:
+        return "World of Warcraft";
+    case ProductId::Sc2:
+        return "StarCraft II / Storm";
+    case ProductId::D3:
+        return "Diablo III";
+    default:
+        return "Warcraft III";
+    }
+}
 
 bool ContainsCi(const std::string& hay, const char* needle) {
     const usize hn = hay.size();
@@ -189,9 +205,136 @@ void ViewerApp::ApplyProfile(ProductId game, bool force) {
         provider.SetGame(game);
         return;
     }
+    if (game == ProductId::Wow)
+        wowTablesPrewarmed_ = false; // different install, different tables
     ApplyIoPathOverrides(provider, game);
     if (idx < ioProfileApplied_.size())
         ioProfileApplied_[idx] = true;
+}
+
+void ViewerApp::RunStorageOpenTask(io::FileContentProvider& provider,
+                                   std::function<void(bool ok)> onDone) {
+    // Already open, or already failed and not worth retrying: answer now rather
+    // than flashing a modal for a task with nothing to do.
+    const io::StorageState state = provider.StoragesState();
+    if (state == io::StorageState::Open || state == io::StorageState::Failed) {
+        if (onDone)
+            onDone(state == io::StorageState::Open);
+        return;
+    }
+    io::FileContentProvider* p = &provider;
+
+    if (state == io::StorageState::Opening) {
+        // A read on a provider worker already started one. We cannot report its
+        // progress — the monitor driving it belongs to that call — but waiting
+        // behind an indeterminate bar beats returning "not open" and letting
+        // the caller block the host thread on a read that is about to do this
+        // same wait invisibly.
+        tasks_.Run(
+            std::string("Opening ") + GameDisplayName(provider.Game()),
+            [p](io::ProgressMonitor& m) {
+                m.Begin("Waiting for storage"); // no total: not our open to count
+                while (p->StoragesState() == io::StorageState::Opening) {
+                    if (m.Cancelled())
+                        return io::TaskResult::Fail("Cancelled");
+                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                }
+                return io::TaskResult::Ok();
+            },
+            [p, onDone = std::move(onDone)](const io::TaskOutcome&) {
+                if (onDone)
+                    onDone(p->StoragesState() == io::StorageState::Open);
+            },
+            // Not cancellable, and saying so rather than offering a button that
+            // does nothing: the open belongs to another caller, and stopping
+            // this wait would not stop it.
+            /*cancellable=*/false);
+        return;
+    }
+
+    tasks_.Run(
+        std::string("Opening ") + GameDisplayName(provider.Game()),
+        [p](io::ProgressMonitor& m) {
+            // OpenStorages is the demanded path, so it retries a previously
+            // cancelled open - which is the whole point of the user asking
+            // again after pressing Cancel.
+            return p->OpenStorages(&m) ? io::TaskResult::Ok()
+                                       : io::TaskResult::Fail("No storage opened");
+        },
+        [onDone = std::move(onDone)](const io::TaskOutcome& out) {
+            if (onDone)
+                onDone(out.ok);
+        });
+}
+
+void ViewerApp::OpenStoragesAsync(std::function<void(bool ok)> onDone) {
+    RunStorageOpenTask(service_.DefaultScene().GetContentProvider(),
+                       [this, onDone = std::move(onDone)](bool ok) {
+                           // Assets that missed while nothing was open get another chance now
+                           // that something is. Cheap when nothing missed.
+                           if (ok) {
+                               service_.RetryUnloadedAssets();
+                               // Chained rather than kicked in parallel: both want the task
+                               // thread, and the tables cannot be read before the storage
+                               // that holds them is up.
+                               PrewarmWowTablesAsync();
+                           }
+                           if (onDone)
+                               onDone(ok);
+                       });
+}
+
+void ViewerApp::PrewarmWowTablesAsync() {
+    io::FileContentProvider& provider = service_.DefaultScene().GetContentProvider();
+    if (provider.Game() != ProductId::Wow)
+        return;
+    // Only once the storage is actually up. Kicking this against a pending
+    // storage would have the task thread trigger the open itself, silently,
+    // behind a bar that claims to be reading databases.
+    if (provider.StoragesState() != io::StorageState::Open)
+        return;
+    auto& replaceables = service_.Loader().WowReplaceables();
+    auto& characters = service_.Loader().WowCharacters();
+    if (replaceables.Table().Loaded() && characters.Tables().Loaded())
+        return;
+
+    replaceables.SetContentProvider(&provider);
+    characters.SetContentProvider(&provider);
+    tasks_.Run(
+        "Reading client databases",
+        [&replaceables, &characters](io::ProgressMonitor& m) {
+            // Character customisation is fourteen tables against the skin
+            // tables' four, and is the one that actually hurts.
+            m.Begin("Client databases", 4);
+            {
+                io::ProgressMonitor step = m.Split(3);
+                characters.Prewarm(&step);
+            }
+            if (m.Cancelled())
+                return io::TaskResult::Fail("Cancelled");
+            io::ProgressMonitor step = m.Split(1);
+            replaceables.Prewarm(&step);
+            // Deliberately always Ok: an install that cannot serve these tables
+            // is a normal state (no listfile, no keys, a classic client), and
+            // reporting it as a failed operation would put an error box in
+            // front of a user who asked for nothing.
+            return io::TaskResult::Ok();
+        },
+        [this](const io::TaskOutcome& out) {
+            if (!out.cancelled)
+                wowTablesPrewarmed_ = true;
+            if (!out.ok)
+                return;
+            // Re-apply to what is already loaded. RestyleWowModel runs exactly
+            // the pair the tables feed and re-stages the textures, which is why
+            // publishing on completion costs nothing new here.
+            RestyleLoadedWowModels();
+        },
+        /*cancellable=*/true,
+        // NOT modal. Nobody asked for these tables; a model spawned before they
+        // arrive simply shows its default look and is restyled above. Taking
+        // the screen for that would be a worse trade than the wait it replaces.
+        /*modal=*/false);
 }
 
 void ViewerApp::SetSettingsProfile(ProductId game) {
@@ -334,10 +477,9 @@ bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
         VkInstance instance = dev ? static_cast<VkInstance>(dev->GetNativeInstance()) : nullptr;
         VkSurfaceKHR surface = VK_NULL_HANDLE;
 #if defined(__APPLE__)
-        VkResult sr = instance ? CreateVulkanSurfaceMacOS(instance,
-                                                         glfwGetCocoaWindow(window_),
-                                                         &surface)
-                               : VK_ERROR_INITIALIZATION_FAILED;
+        VkResult sr =
+            instance ? CreateVulkanSurfaceMacOS(instance, glfwGetCocoaWindow(window_), &surface)
+                     : VK_ERROR_INITIALIZATION_FAILED;
 #else
         VkResult sr = instance ? glfwCreateWindowSurface(instance, window_, nullptr, &surface)
                                : VK_ERROR_INITIALIZATION_FAILED;
@@ -636,7 +778,8 @@ std::vector<std::string> ViewerApp::WowSkinNames() const {
     if (currentModelPath_.empty())
         return {};
     std::vector<std::string> names;
-    for (const auto& v : const_cast<ViewerApp*>(this)->service_.Loader().WowReplaceables().Variations(
+    for (const auto& v :
+         const_cast<ViewerApp*>(this)->service_.Loader().WowReplaceables().Variations(
              ContentRef::FromPath(io::PathToUtf8(currentModelPath_))))
         names.push_back(v.label);
     return names;
@@ -650,6 +793,18 @@ u32 ViewerApp::WowSkin() const {
     return const_cast<ViewerApp*>(this)->service_.Loader().WowReplaceables().Variation();
 #else
     return 0;
+#endif
+}
+
+void ViewerApp::RestyleLoadedWowModels() {
+#if WDX_ENABLE_M2
+    if (currentModelPath_.empty() || !IsForeignModelPath(currentModelPath_))
+        return;
+    // Same shape as SetWowSkin: restyle in place, and fall back to a reload
+    // only when the actor cannot be restyled where it stands.
+    if (!service_.Loader().RestyleWowModel(focusActor_,
+                                           ContentRef::FromPath(io::PathToUtf8(currentModelPath_))))
+        LoadModelIntoActiveScene(currentModelPath_);
 #endif
 }
 
@@ -970,10 +1125,9 @@ void ViewerApp::SetAnimTrack(std::size_t index, const AnimTrackInfo& t) {
     const AnimTrackInfo prev = animTracks_[index];
     animTracks_[index] = t;
 
-    const bool restart = prev.sequence != t.sequence || prev.subtrack != t.subtrack ||
-                         animTrackHandles_[index] == 0;
-    if (!restart &&
-        playlist.Retune(animTrackHandles_[index], t.weight, t.speed, t.loop))
+    const bool restart =
+        prev.sequence != t.sequence || prev.subtrack != t.subtrack || animTrackHandles_[index] == 0;
+    if (!restart && playlist.Retune(animTrackHandles_[index], t.weight, t.speed, t.loop))
         return;
 
     // Either the animation itself changed or the play is gone (it ran out, or
@@ -1023,9 +1177,8 @@ std::vector<ViewerApp::GlobalLoopInfo> ViewerApp::GlobalLoops() const {
         if (!sequenceRanges_[i].alwaysPlays)
             continue;
         const i32 seq = static_cast<i32>(i);
-        const bool silenced =
-            std::find(silencedGlobals_.begin(), silencedGlobals_.end(), seq) !=
-            silencedGlobals_.end();
+        const bool silenced = std::find(silencedGlobals_.begin(), silencedGlobals_.end(), seq) !=
+                              silencedGlobals_.end();
         out.push_back({seq, sequenceNames_[i], !silenced});
     }
     return out;
@@ -1100,6 +1253,116 @@ bool ViewerApp::LoadModel(const std::filesystem::path& path) {
     return OpenDocument(path, /*effect=*/false);
 }
 
+void ViewerApp::PreloadForDocumentAsync(std::function<void()> then) {
+    io::FileContentProvider& provider = service_.DefaultScene().GetContentProvider();
+
+    // Resolved on the host thread, not in the body: both are lazily
+    // constructed, and the task thread must not be what constructs them.
+    profiles::wow::WowReplaceableTextures* skins = nullptr;
+    profiles::wow::WowCharacterAppearance* chars = nullptr;
+#if WDX_ENABLE_M2
+    if (provider.Game() == ProductId::Wow && !wowTablesPrewarmed_) {
+        skins = &service_.Loader().WowReplaceables();
+        chars = &service_.Loader().WowCharacters();
+        skins->SetContentProvider(&provider);
+        chars->SetContentProvider(&provider);
+    }
+#endif
+
+    io::FileContentProvider* p = &provider;
+    const bool tables = chars != nullptr;
+    tasks_.Run(
+        std::string("Opening ") + GameDisplayName(provider.Game()),
+        [p, skins, chars, tables](io::ProgressMonitor& m) {
+            // Weighted by what actually costs: the install open is the long
+            // pole, the fourteen database reads behind it are the rest.
+            m.Begin("Preparing", tables ? 100u : 70u);
+            {
+                io::ProgressMonitor step = m.Split(70);
+                step.Begin("Waiting for storage");
+                // A read on a provider worker may already be opening it. Wait
+                // that out rather than queueing a second open behind it — and
+                // report while waiting, which is the whole point.
+                while (p->StoragesState() == io::StorageState::Opening) {
+                    if (m.Cancelled())
+                        return io::TaskResult::Fail("Cancelled");
+                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                }
+                // Demanded, so a previously cancelled open is retried. Its own
+                // plan replaces the placeholder stage above.
+                p->OpenStorages(&step);
+            }
+            if (m.Cancelled())
+                return io::TaskResult::Fail("Cancelled");
+
+            if (chars) {
+                // Character customisation is fourteen tables against the skin
+                // tables' four, and is the one that actually hurts.
+                {
+                    io::ProgressMonitor step = m.Split(22);
+                    chars->Prewarm(&step);
+                }
+                if (!m.Cancelled()) {
+                    io::ProgressMonitor step = m.Split(8);
+                    skins->Prewarm(&step);
+                }
+            }
+            // Always Ok. A storage that would not open and an install that
+            // cannot serve the databases are both normal states; the document
+            // opens either way and reports its own miss, which is a better
+            // answer than an error box in front of a load the user asked for.
+            return io::TaskResult::Ok();
+        },
+        [this, tables, then = std::move(then)](const io::TaskOutcome& out) {
+            // Tried, whether or not it worked — see wowTablesPrewarmed_.
+            if (tables && !out.cancelled)
+                wowTablesPrewarmed_ = true;
+            // Assets that missed while nothing was open get another chance.
+            service_.RetryUnloadedAssets();
+            if (then)
+                then();
+        });
+}
+
+void ViewerApp::QueueInitialOpen(const std::filesystem::path& path) {
+    pendingInitialOpens_.push_back(path);
+}
+
+bool ViewerApp::OpenModelAsync(const std::filesystem::path& path) {
+    if (!std::filesystem::exists(path)) {
+        std::fprintf(stderr, "[viewer] file not found: %s\n", io::PathToUtf8(path).c_str());
+        return false;
+    }
+    const bool effect = IsEffectPath(path);
+
+    // The game FIRST. Which storage this load needs is decided by the model's
+    // extension, so asking about the slot before this would ask about the
+    // wrong one — an `.m2` opened while the provider is still on Warcraft III
+    // would report Warcraft III's storage as the thing to wait for.
+    FollowModelGame(path);
+
+    io::FileContentProvider& provider = service_.DefaultScene().GetContentProvider();
+    const io::StorageState state = provider.StoragesState();
+    const bool needStorage = state != io::StorageState::Open && state != io::StorageState::Failed;
+    // The databases count too. The spawn reads them synchronously through
+    // WowReplaceableTextures::Apply, so a document opened before they are in
+    // hand freezes the host thread for fourteen CASC reads — which is most of
+    // what "opening a World of Warcraft model hangs" actually was.
+    const bool needTables = provider.Game() == ProductId::Wow && !wowTablesPrewarmed_;
+
+    if (!needStorage && !needTables)
+        return OpenDocument(path, effect); // nothing to wait for; behave as before
+
+    PreloadForDocumentAsync([this, path, effect] {
+        // Opened, failed or cancelled — the document opens either way. A model
+        // that needs no storage (a loose `.mdx` beside its textures) still
+        // loads, and one that does reports its own miss rather than being
+        // silently dropped because the install did not come up.
+        OpenDocument(path, effect);
+    });
+    return true;
+}
+
 bool ViewerApp::LoadEffect(const std::filesystem::path& path) {
     if (!std::filesystem::exists(path)) {
         std::fprintf(stderr, "[viewer] file not found: %s\n", io::PathToUtf8(path).c_str());
@@ -1144,8 +1407,8 @@ bool ViewerApp::OpenDocumentScene(std::shared_ptr<io::IContentProvider> provider
     doc.title = std::move(title);
     documents_.push_back(std::move(doc));
     activeDoc_ = static_cast<i32>(documents_.size()) - 1;
-    SaveActiveDocState();            // persist the freshly-loaded flat state
-    pendingTabSelect_ = activeDoc_;  // the tab bar must select this new tab
+    SaveActiveDocState();           // persist the freshly-loaded flat state
+    pendingTabSelect_ = activeDoc_; // the tab bar must select this new tab
     return true;
 }
 
@@ -1226,8 +1489,8 @@ void ViewerApp::AdoptNearbyWowKeys(const std::filesystem::path& modelPath) {
             const std::string name = LowerAscii(io::PathToUtf8(entry.path().filename()));
             const bool isListfile = wantListfile && name.ends_with(".csv") &&
                                     name.find("listfile") != std::string::npos;
-            const bool isKeys = wantKeys && name.ends_with(".txt") &&
-                                name.find("tactkey") != std::string::npos;
+            const bool isKeys =
+                wantKeys && name.ends_with(".txt") && name.find("tactkey") != std::string::npos;
             if (!isListfile && !isKeys)
                 continue;
             std::fprintf(stderr, "[viewer] adopting %s beside the content: %s\n",
@@ -1263,6 +1526,25 @@ bool ViewerApp::OpenDocument(const std::filesystem::path& path, bool effect) {
 
 bool ViewerApp::OpenStorageDocument(const std::string& archivePath, bool effect,
                                     std::shared_ptr<io::IContentProvider> provider) {
+    // The Storage Explorer's provider opens its storage on first read — and for
+    // a double-clicked model that read is this load, so the host thread would
+    // sit in Wait() through an install open with nothing on screen to say so.
+    // The panel's own open put a bar in front of the browse; this puts one in
+    // front of the spawn.
+    if (auto* fp = dynamic_cast<io::FileContentProvider*>(provider.get())) {
+        const io::StorageState state = fp->StoragesState();
+        if (state != io::StorageState::Open && state != io::StorageState::Failed) {
+            RunStorageOpenTask(*fp, [this, archivePath, effect, provider](bool) {
+                OpenStorageDocumentNow(archivePath, effect, provider);
+            });
+            return true;
+        }
+    }
+    return OpenStorageDocumentNow(archivePath, effect, std::move(provider));
+}
+
+bool ViewerApp::OpenStorageDocumentNow(const std::string& archivePath, bool effect,
+                                       std::shared_ptr<io::IContentProvider> provider) {
     const std::filesystem::path apath(archivePath);
     // The doc scene reads through the EXPLORER's CASC provider, so the model
     // resolves from the same storage the user is browsing.
@@ -1279,10 +1561,9 @@ bool ViewerApp::OpenStorageDocument(const std::string& archivePath, bool effect,
 
         service_.Loader().RequestClearAll();
         currentModelPath_ = apath;
-        model::Actor* hero =
-            effect ? service_.Loader().SpawnUnitFromSource(
-                         std::make_shared<model::CornEffectSource>(archivePath))
-                   : service_.Loader().SpawnUnit(archivePath);
+        model::Actor* hero = effect ? service_.Loader().SpawnUnitFromSource(
+                                          std::make_shared<model::CornEffectSource>(archivePath))
+                                    : service_.Loader().SpawnUnit(archivePath);
         if (!hero) {
             std::fprintf(stderr, "[viewer] storage open FAILED for %s\n", archivePath.c_str());
             return false;
@@ -1432,8 +1713,7 @@ bool ViewerApp::LoadEffectIntoActiveScene(const std::filesystem::path& path) {
     auto source = std::make_shared<model::CornEffectSource>(io::PathToUtf8(path));
     model::Actor* hero = service_.Loader().SpawnUnitFromSource(source);
     if (!hero) {
-        std::fprintf(stderr, "[viewer] effect spawn FAILED for %s\n",
-                     io::PathToUtf8(path).c_str());
+        std::fprintf(stderr, "[viewer] effect spawn FAILED for %s\n", io::PathToUtf8(path).c_str());
         return false;
     }
     FillEffectDocState(hero);
@@ -1679,6 +1959,10 @@ void ViewerApp::SetStorageExplorerOpen(bool on) {
         return;
     if (!storageExplorer_) {
         storageExplorer_ = std::make_unique<tools::StorageExplorer>(service_);
+        // Its opens go on the viewer's task thread, behind the viewer's modal.
+        // A StarCraft II switch walks three quarters of a million manifest
+        // entries, which used to run inside the panel's own game combo.
+        storageExplorer_->SetTaskRunner(&tasks_);
         // Double-clicking a model opens it as a new tab, loaded from the
         // explorer's CASC provider (the viewer wants the path, not the bytes —
         // it spawns through the same provider).
@@ -2321,6 +2605,22 @@ void ViewerApp::Tick(f32 dt) {
     // callbacks land before the rest of the tick reads what they produced.
     if (auto* cp = service_.Scene().ActiveContentProvider())
         cp->Pump();
+
+    // Task completions, on the same thread and for the same reason: an OnDone
+    // touches documents, scenes and the UI. Must come after the provider's
+    // pump — a task body blocked in ReadFile is woken by that, and delivering
+    // its completion first would report a task that has not returned yet.
+    tasks_.Pump();
+
+    // Startup-picker paths, one per frame and only while nothing else is
+    // loading, so each gets its own bar instead of racing the one before it.
+    // Before the ImGui pass below, so the modal opens in the same frame the
+    // task is submitted rather than a frame later.
+    if (!pendingInitialOpens_.empty() && !tasks_.Busy()) {
+        const std::filesystem::path next = pendingInitialOpens_.front();
+        pendingInitialOpens_.erase(pendingInitialOpens_.begin());
+        OpenModelAsync(next);
+    }
 
     // Per-frame size sync. The framebuffer-size callback alone isn't
     // reliable — GLFW on Windows can swallow callbacks during the maximize

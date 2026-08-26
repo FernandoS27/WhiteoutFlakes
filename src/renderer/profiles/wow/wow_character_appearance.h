@@ -34,6 +34,7 @@
 namespace whiteout::flakes::io {
 class IContentProvider;
 class M2ModelAdapter;
+class ProgressMonitor;
 } // namespace whiteout::flakes::io
 
 namespace whiteout::flakes::renderer::profiles::wow {
@@ -94,6 +95,19 @@ public:
     /// the next Apply — the next spawn, or sooner if the host re-dresses a live
     /// actor through ModelLoader::RestyleWowModel.
     void SetChoice(const ContentRef& modelRef, u32 optionId, u32 choiceIndex);
+
+    /// Read the client tables now, off the thread that draws.
+    ///
+    /// They are per-install and read once, but they are read from inside a
+    /// model load — so the first World of Warcraft model of a session used to
+    /// pay for fourteen CASC reads and a third of a million rows on the render
+    /// thread, with the window already up. Running this as a background task
+    /// instead means a model that arrives first simply shows its default look;
+    /// re-applying it afterwards is what ModelLoader::RestyleWowModel is for.
+    ///
+    /// Safe on any thread, provided the host keeps pumping the provider (see
+    /// io/load_task.h). Returns whether the tables ended up loaded.
+    bool Prewarm(io::ProgressMonitor* progress = nullptr);
 
     void Clear() {
         tables_.Clear();

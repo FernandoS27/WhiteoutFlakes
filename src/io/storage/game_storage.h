@@ -22,6 +22,8 @@
 
 namespace whiteout::flakes::io {
 
+class ProgressMonitor;
+
 class GameStorage {
 public:
     ~GameStorage();
@@ -111,7 +113,9 @@ public:
     // by expansion, so a missing one is expected rather than an error.
     StorageBuilder& Archives(const std::string& installRoot, const std::vector<std::string>& names);
 
-    std::unique_ptr<GameStorage> Build();
+    // @param progress Optional. Split across the CASC roots, so a product
+    //        with two installs walks one bar instead of restarting it.
+    std::unique_ptr<GameStorage> Build(ProgressMonitor* progress = nullptr);
 
 private:
     ProductId game_;

@@ -1,4 +1,5 @@
-﻿#include "renderer/profiles/wow/wow_character_appearance.h"
+﻿#include "io/progress.h"
+#include "renderer/profiles/wow/wow_character_appearance.h"
 
 #include "io/m2/m2_model_adapter.h"
 #include "io/wow/character_geosets.h"
@@ -51,8 +52,8 @@ u32 WowCharacterAppearance::ModelFileId(const ContentRef& ref) const {
     return provider_->FileIdForPath(ref.path);
 }
 
-WowCharacterAppearance::Selection&
-WowCharacterAppearance::SelectionFor(const ContentRef& ref, const wowio::ChrModelInfo& model) {
+WowCharacterAppearance::Selection& WowCharacterAppearance::SelectionFor(
+    const ContentRef& ref, const wowio::ChrModelInfo& model) {
     Selection& sel = byModel_[ref.Describe()];
     if (sel.chrModelId != model.id || sel.choiceIndex.size() != model.options.size()) {
         sel.chrModelId = model.id;
@@ -63,8 +64,7 @@ WowCharacterAppearance::SelectionFor(const ContentRef& ref, const wowio::ChrMode
     return sel;
 }
 
-std::vector<CharacterOptionView>
-WowCharacterAppearance::Options(const ContentRef& modelRef) const {
+std::vector<CharacterOptionView> WowCharacterAppearance::Options(const ContentRef& modelRef) const {
     std::vector<CharacterOptionView> out;
     const auto it = byModel_.find(modelRef.Describe());
     if (it == byModel_.end())
@@ -101,6 +101,10 @@ void WowCharacterAppearance::SetChoice(const ContentRef& modelRef, u32 optionId,
         it->second.choiceIndex[i] = count ? choiceIndex % count : 0;
         return;
     }
+}
+
+bool WowCharacterAppearance::Prewarm(io::ProgressMonitor* progress) {
+    return provider_ && tables_.Load(*provider_, progress);
 }
 
 bool WowCharacterAppearance::Apply(io::M2ModelAdapter& adapter, const ContentRef& modelRef,
@@ -143,8 +147,9 @@ bool WowCharacterAppearance::Apply(io::M2ModelAdapter& adapter, const ContentRef
     // one. One model, spawned once, showing the parts its choices asked for.
     if (outSkinned) {
         for (const wowio::SkinnedModelRef& s : appearance.skinnedModels) {
-            const auto it = std::find_if(outSkinned->begin(), outSkinned->end(),
-                                         [&](const SkinnedModel& m) { return m.fileId == s.fileId; });
+            const auto it =
+                std::find_if(outSkinned->begin(), outSkinned->end(),
+                             [&](const SkinnedModel& m) { return m.fileId == s.fileId; });
             SkinnedModel& entry = (it != outSkinned->end())
                                       ? *it
                                       : outSkinned->emplace_back(SkinnedModel{s.fileId, {}});
@@ -206,4 +211,3 @@ bool WowCharacterAppearance::Apply(io::M2ModelAdapter& adapter, const ContentRef
 }
 
 } // namespace whiteout::flakes::renderer::profiles::wow
-

@@ -3,6 +3,9 @@
 #include "imgui_viewcube.h"
 #include "io/mdx_model_adapter.h"
 #include "io/storage/game_rules.h" // ScanArchives, for a profile that is not the active one
+#include "localization.h"
+#include "log_console.h"
+#include "progress_dialog.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/camera.h"
 #include "renderer/debug/debug_renderer.h"
@@ -14,17 +17,15 @@
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
 #include "renderer/shadow/shadow_service.h"
-#include "localization.h"
-#include "log_console.h"
 #include "settings_ini.h"
 #include "viewer_app.h"
 
-#include "renderer/model/model_source_utils.h" // DispatchTextureParser (decode)
 #include <whiteout/models/mdx/writer.h>
+#include "renderer/model/model_source_utils.h" // DispatchTextureParser (decode)
 // Texture encoders for the Save As "export textures" option (every WhiteoutLib
 // image writer except GIF).
-#include <whiteout/textures/bmp/writer.h>
 #include <whiteout/textures/blp/writer.h>
+#include <whiteout/textures/bmp/writer.h>
 #include <whiteout/textures/dds/writer.h>
 #include <whiteout/textures/jpeg/writer.h>
 #include <whiteout/textures/png/writer.h>
@@ -95,9 +96,9 @@ constexpr std::array<const char*, 5> kBackendLabels = {"D3D11", "D3D12", "Vulkan
 // Parallel i18n key arrays for the visible label arrays above. Backend names
 // are product/tech names and stay in English, so they get no key array.
 constexpr std::array<const char*, 10> kDebugVisKeys = {
-    "debugvis.off",           "debugvis.albedo",       "debugvis.world_normal",
-    "debugvis.lod_heatmap",   "debugvis.light_count",  "debugvis.shading_white",
-    "debugvis.shading_grey",  "debugvis.specular_only", "debugvis.no_orm",
+    "debugvis.off",          "debugvis.albedo",        "debugvis.world_normal",
+    "debugvis.lod_heatmap",  "debugvis.light_count",   "debugvis.shading_white",
+    "debugvis.shading_grey", "debugvis.specular_only", "debugvis.no_orm",
     "debugvis.ao_only",
 };
 constexpr std::array<const char*, 5> kLodKeys = {
@@ -184,6 +185,9 @@ void ViewerUI::BuildFrame() {
     BuildExportPopup();
     app_.BuildStorageExplorerWindow();
     tools::LogConsole::Instance().DrawUi(&showLogConsole_);
+    // Last, so it lands over everything else — which is the point of a modal
+    // for work the rest of the UI cannot usefully be clicked during.
+    tools::DrawProgressModal(app_.Tasks());
 }
 
 void ViewerUI::BuildViewCubeWidget() {
@@ -208,7 +212,10 @@ void ViewerUI::OpenFileDialog() {
     const nfdfiltersize_t nFilters = kHasForeignModelFilter ? 4 : 3;
     if (NFD::OpenDialog(outPath, filter, nFilters) == NFD_OKAY) {
         std::filesystem::path p = io::FsPathFromUtf8(outPath.get());
-        app_.LoadModel(p); // dispatches .pkb / .pkfx to the effect loader
+        // Async: an `.m2` or `.m3` picked here may need a game install that
+        // is not open yet, and that open is seconds long. Dispatches
+        // .pkb / .pkfx to the effect loader exactly as LoadModel does.
+        app_.OpenModelAsync(p);
     }
 }
 
@@ -271,13 +278,34 @@ std::optional<std::vector<u8>> EncodeTextureAs(const whiteout::textures::Texture
             return std::nullopt;
         }
     };
-    if (ext == ".png") { tx::png::Writer w; return run(w); }
-    if (ext == ".tga") { tx::tga::Writer w; return run(w); }
-    if (ext == ".blp") { tx::blp::Writer w; return run(w); }
-    if (ext == ".dds") { tx::dds::Writer w; return run(w); }
-    if (ext == ".bmp") { tx::bmp::Writer w; return run(w); }
-    if (ext == ".jpg" || ext == ".jpeg") { tx::jpeg::Writer w; return run(w); }
-    if (ext == ".tif" || ext == ".tiff") { tx::tiff::Writer w; return run(w); }
+    if (ext == ".png") {
+        tx::png::Writer w;
+        return run(w);
+    }
+    if (ext == ".tga") {
+        tx::tga::Writer w;
+        return run(w);
+    }
+    if (ext == ".blp") {
+        tx::blp::Writer w;
+        return run(w);
+    }
+    if (ext == ".dds") {
+        tx::dds::Writer w;
+        return run(w);
+    }
+    if (ext == ".bmp") {
+        tx::bmp::Writer w;
+        return run(w);
+    }
+    if (ext == ".jpg" || ext == ".jpeg") {
+        tx::jpeg::Writer w;
+        return run(w);
+    }
+    if (ext == ".tif" || ext == ".tiff") {
+        tx::tiff::Writer w;
+        return run(w);
+    }
     return std::nullopt;
 }
 
@@ -362,8 +390,8 @@ ExportStats ExportModelTextures(ViewerApp& app, whiteout::mdx::Model& model,
             std::optional<std::vector<u8>> enc =
                 decoded ? EncodeTextureAs(*decoded, targetExt) : std::nullopt;
             if (!enc) {
-                std::fprintf(stderr, "[viewer] Export: convert failed %s -> %s\n",
-                             origName.c_str(), targetExt.c_str());
+                std::fprintf(stderr, "[viewer] Export: convert failed %s -> %s\n", origName.c_str(),
+                             targetExt.c_str());
                 st.failed++;
                 continue;
             }
@@ -389,9 +417,8 @@ ExportStats ExportModelTextures(ViewerApp& app, whiteout::mdx::Model& model,
 // .mdl output. When `exportTextures`, the model's used textures are written next
 // to it first (see ExportModelTextures) — `formatExt` optionally converts them.
 // Returns false (and logs) when no model is loaded or the write throws.
-bool WriteCurrentModel(ViewerApp& app, const std::string& outPath,
-                       whiteout::mdx::MdlFormat dialect, bool exportTextures,
-                       const std::string& formatExt) {
+bool WriteCurrentModel(ViewerApp& app, const std::string& outPath, whiteout::mdx::MdlFormat dialect,
+                       bool exportTextures, const std::string& formatExt) {
     // The active document's actor holds a strong ref to its template — the most
     // reliable source. Fall back to the (weak) path-keyed cache if there's no
     // focused actor.
@@ -417,7 +444,8 @@ bool WriteCurrentModel(ViewerApp& app, const std::string& outPath,
     whiteout::mdx::Model model = mdxAdapter->SourceModel();
     if (exportTextures) {
         const ExportStats st = ExportModelTextures(
-            app, model, std::filesystem::path(io::FsPathFromUtf8(outPath)).parent_path(), formatExt);
+            app, model, std::filesystem::path(io::FsPathFromUtf8(outPath)).parent_path(),
+            formatExt);
         std::printf("[viewer] Textures: %d exported, %d skipped, %d failed\n", st.exported,
                     st.skipped, st.failed);
     }
@@ -446,8 +474,8 @@ bool WriteCurrentPkb(ViewerApp& app, const std::string& outPath) {
 
     std::error_code ec;
     if (std::filesystem::exists(src, ec) && !ec) {
-        std::filesystem::copy_file(src, outPath,
-                                   std::filesystem::copy_options::overwrite_existing, ec);
+        std::filesystem::copy_file(src, outPath, std::filesystem::copy_options::overwrite_existing,
+                                   ec);
         if (!ec) {
             std::printf("[viewer] Saved effect: %s\n", outPath.c_str());
             return true;
@@ -736,9 +764,9 @@ bool ViewerUI::BuildAnimTrackRow(std::size_t index) {
 
     ImGui::TableNextColumn();
     ImGui::SetNextItemWidth(-FLT_MIN);
-    const char* preview =
-        (t.sequence >= 0 && t.sequence < static_cast<i32>(seqs.size())) ? seqs[t.sequence].c_str()
-                                                                       : "";
+    const char* preview = (t.sequence >= 0 && t.sequence < static_cast<i32>(seqs.size()))
+                              ? seqs[t.sequence].c_str()
+                              : "";
     if (ImGui::BeginCombo("##seq", preview)) {
         for (i32 i = 0; i < static_cast<i32>(seqs.size()); ++i) {
             if (ImGui::Selectable(seqs[i].c_str(), i == t.sequence) && i != t.sequence) {
@@ -940,7 +968,8 @@ void ViewerUI::BuildMenuBar() {
 
         if (ImGui::BeginMenu(i18n::tr("menu.view"))) {
             dfChanged |= ImGui::MenuItem(i18n::tr("menu.view.grid"), nullptr, &df.showGrid);
-            dfChanged |= ImGui::MenuItem(i18n::tr("menu.view.particles"), nullptr, &df.showParticles);
+            dfChanged |=
+                ImGui::MenuItem(i18n::tr("menu.view.particles"), nullptr, &df.showParticles);
             dfChanged |= ImGui::MenuItem(i18n::tr("menu.view.ribbons"), nullptr, &df.showRibbons);
             dfChanged |= ImGui::MenuItem(i18n::tr("menu.view.events"), nullptr, &df.showEvents);
             ImGui::MenuItem(i18n::tr("menu.view.viewcube"), nullptr, &showViewCube_);
@@ -973,8 +1002,8 @@ void ViewerUI::BuildMenuBar() {
         }
 
         if (ImGui::BeginMenu(i18n::tr("menu.debug"))) {
-            dfChanged |= ImGui::MenuItem(i18n::tr("menu.debug.collisions"), nullptr,
-                                         &df.showCollisions);
+            dfChanged |=
+                ImGui::MenuItem(i18n::tr("menu.debug.collisions"), nullptr, &df.showCollisions);
             dfChanged |= ImGui::MenuItem(i18n::tr("menu.debug.lights"), nullptr, &df.showLights);
 
             if (ImGui::BeginMenu(i18n::tr("menu.debug.physics"))) {
@@ -1265,8 +1294,8 @@ void ViewerUI::BuildToolbar() {
             for (const auto& slot : slots) {
                 if (slot.items.empty())
                     continue;
-                const u32 sel = std::min<u32>(slot.selectedItem,
-                                              static_cast<u32>(slot.items.size()) - 1);
+                const u32 sel =
+                    std::min<u32>(slot.selectedItem, static_cast<u32>(slot.items.size()) - 1);
                 char id[64];
                 std::snprintf(id, sizeof(id), "%s##d3item%d", slot.name.c_str(), slot.slot);
                 ImGui::SetNextItemWidth(130);
@@ -1287,8 +1316,8 @@ void ViewerUI::BuildToolbar() {
                 if (!looks.empty()) {
                     ImGui::SameLine();
                     std::snprintf(id, sizeof(id), "##d3look%d", slot.slot);
-                    const u32 li = std::min<u32>(slot.lookIndex,
-                                                 static_cast<u32>(looks.size()) - 1);
+                    const u32 li =
+                        std::min<u32>(slot.lookIndex, static_cast<u32>(looks.size()) - 1);
                     ImGui::SetNextItemWidth(150);
                     if (ImGui::BeginCombo(id, looks[li].c_str())) {
                         for (u32 i = 0; i < static_cast<u32>(looks.size()); ++i) {
@@ -1340,6 +1369,11 @@ void ViewerUI::BuildToolbar() {
         }
     }
 
+    // Background work nobody asked for — the client-database prewarm — reports
+    // here instead of taking the screen. Draws nothing when idle or when the
+    // running task is one the modal is already showing.
+    tools::DrawProgressStatus(app_.Tasks());
+
     ImGui::End();
     ImGui::PopStyleVar(2);
 }
@@ -1368,8 +1402,7 @@ void ViewerUI::BuildTabBar() {
         return;
     }
 
-    ImGuiTabBarFlags tbFlags = ImGuiTabBarFlags_AutoSelectNewTabs |
-                               ImGuiTabBarFlags_Reorderable |
+    ImGuiTabBarFlags tbFlags = ImGuiTabBarFlags_AutoSelectNewTabs | ImGuiTabBarFlags_Reorderable |
                                ImGuiTabBarFlags_FittingPolicyScroll;
     if (ImGui::BeginTabBar("##documents", tbFlags)) {
         // After an app-driven active change (CLI bulk-load, File > Open, a
@@ -1381,8 +1414,7 @@ void ViewerUI::BuildTabBar() {
         i32 toClose = -1;
         for (i32 i = 0; i < app_.DocumentCount(); ++i) {
             bool open = true;
-            const ImGuiTabItemFlags flags =
-                (i == forceSelect) ? ImGuiTabItemFlags_SetSelected : 0;
+            const ImGuiTabItemFlags flags = (i == forceSelect) ? ImGuiTabItemFlags_SetSelected : 0;
             // PushID disambiguates tabs whose labels (file stems) collide; the
             // visible label is still the file name.
             ImGui::PushID(i);
@@ -2033,7 +2065,14 @@ void ViewerUI::CommitIoProfile(io::FileContentProvider& provider, ProductId game
     provider.SetInstallPath(o.installPath);
     if (game == ProductId::Sc2)
         provider.SetHotsInstallPath(o.hotsInstallPath);
-    app_.Service().RetryUnloadedAssets();
+    // Opened here, deliberately, rather than left to the next read. This is the
+    // commit that used to freeze the window for the length of a retail World of
+    // Warcraft open — index files, encoding table, ~870 VFS manifests and a
+    // 90 MB listfile — because whichever thread read next paid for all of it.
+    // Asking now puts it on the task thread with a bar in front of it.
+    // RetryUnloadedAssets moves into the completion: retrying against a storage
+    // that is still opening just misses again.
+    app_.OpenStoragesAsync();
 }
 
 void ViewerUI::BuildSettingsIoTab(io::FileContentProvider& provider, ProductId game) {
@@ -2067,6 +2106,20 @@ void ViewerUI::BuildIoStorageStatus(io::FileContentProvider& provider, ProductId
     // Pending is checked first on purpose: storages open on demand, and
     // HasCasc() is a demand. Reading the status must not be what triggers the
     // open it is reporting on.
+    // Opening is checked FIRST and answered from an atomic. Every call below
+    // this point takes the storage lock, which an open holds for its entire
+    // duration — so asking one of them here would block the UI thread on the
+    // very operation the status line is trying to describe.
+    if (provider.StoragesOpening()) {
+        ImGui::TextDisabled(i18n::tr("settings.io.casc_status"), "opening...");
+        return;
+    }
+    if (provider.StoragesState() == io::StorageState::Cancelled) {
+        ImGui::TextDisabled(i18n::tr("settings.io.casc_status"), "cancelled");
+        if (ImGui::SmallButton("Retry"))
+            app_.OpenStoragesAsync();
+        return;
+    }
     if (provider.StoragesPending()) {
         ImGui::TextDisabled(i18n::tr("settings.io.casc_status"), i18n::tr("settings.io.pending"));
         if (!IsCascOnly(game))

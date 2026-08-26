@@ -54,6 +54,7 @@
 
 namespace whiteout::flakes::io {
 class IContentProvider;
+class ProgressMonitor;
 }
 
 namespace whiteout::flakes::io::wow {
@@ -106,8 +107,8 @@ struct CustomizationOption {
 /// is how the table says so.
 struct ChoiceElement {
     u32 relatedChoiceId = 0;
-    i32 geoset = -1;               ///< skinSectionId, or -1.
-    u32 materialTarget = 0;        ///< ChrModelTextureTargetID, or 0.
+    i32 geoset = -1;        ///< skinSectionId, or -1.
+    u32 materialTarget = 0; ///< ChrModelTextureTargetID, or 0.
     u32 materialResourcesId = 0;
     /// A *second model* this choice puts on the character, from
     /// ChrCustomizationSkinnedModel: the `.m2` and which of its geosets.
@@ -129,7 +130,7 @@ struct ChrModelInfo {
     u32 sex = 0;
     u32 layoutId = 0;
     u32 displayId = 0;
-    u32 modelFileId = 0;   ///< The `.m2` this model is.
+    u32 modelFileId = 0; ///< The `.m2` this model is.
     u32 skeletonFileId = 0;
     std::vector<CompositeTarget> composites;
     std::vector<CompositeLayer> layers; ///< Sorted by (textureType, layer).
@@ -147,7 +148,10 @@ public:
     ///
     /// Synchronous, on the caller's thread, next to a `.m2` parse that already
     /// blocks on IO. Roughly 300k rows across twelve tables.
-    bool Load(IContentProvider& provider);
+    /// @param progress Optional. Fourteen tables and a third of a million
+    ///        rows is long enough to need a bar, and this runs as a
+    ///        background task so the host keeps drawing one.
+    bool Load(IContentProvider& provider, ProgressMonitor* progress = nullptr);
 
     bool Loaded() const noexcept {
         return loaded_;

@@ -36,6 +36,7 @@
 
 namespace whiteout::flakes::io {
 class IContentProvider;
+class ProgressMonitor;
 }
 
 namespace whiteout::flakes::io::wow {
@@ -73,7 +74,8 @@ public:
     ///
     /// Synchronous, on the caller's Pump thread: this runs once per install
     /// off the first `.m2` load, next to a parse that already blocks on IO.
-    bool Load(IContentProvider& provider);
+    /// @param progress Optional; see ChrCustomizationTable::Load.
+    bool Load(IContentProvider& provider, ProgressMonitor* progress = nullptr);
 
     bool Loaded() const noexcept {
         return loaded_;

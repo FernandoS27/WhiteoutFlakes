@@ -1,3 +1,4 @@
+#include "io/progress.h"
 #include "renderer/profiles/wow/wow_replaceable_textures.h"
 
 #include "io/m2/m2_model_adapter.h"
@@ -95,8 +96,7 @@ std::string_view Stem(std::string_view path) {
 // Case-insensitive, because half these names come from a listing the provider
 // lowercased and half from whatever the host's open dialog handed back.
 bool IEqual(std::string_view a, std::string_view b) {
-    return a.size() == b.size() &&
-           std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
                return std::tolower(static_cast<unsigned char>(x)) ==
                       std::tolower(static_cast<unsigned char>(y));
            });
@@ -231,11 +231,35 @@ u32 WowReplaceableTextures::ModelFileId(const ContentRef& ref) const {
     return provider_->FileIdForPath(ref.path);
 }
 
-const std::vector<SkinVariation>&
-WowReplaceableTextures::Variations(const ContentRef& modelRef) const {
+const std::vector<SkinVariation>& WowReplaceableTextures::Variations(
+    const ContentRef& modelRef) const {
     static const std::vector<SkinVariation> kNone;
     const auto it = byModel_.find(modelRef.Describe());
     return it == byModel_.end() ? kNone : it->second;
+}
+
+bool WowReplaceableTextures::Prewarm(io::ProgressMonitor* progress) {
+    if (!provider_)
+        return false;
+    // Both families, because which one a model needs is not known until one
+    // arrives, and the point of a prewarm is that nothing waits when it does.
+    // Weighted by size: CreatureDisplayInfo and its model table are the larger
+    // pair by a wide margin.
+    io::ProgressMonitor inert;
+    io::ProgressMonitor& m = progress ? *progress : inert;
+    m.Begin("Skin tables", 3);
+    bool ok = false;
+    {
+        io::ProgressMonitor step = m.Split(2);
+        ok = table_.Load(*provider_, &step);
+    }
+    if (m.Cancelled())
+        return false;
+    {
+        io::ProgressMonitor step = m.Split(1);
+        ok = items_.Load(*provider_, &step) || ok;
+    }
+    return ok;
 }
 
 std::vector<SkinVariation> WowReplaceableTextures::FindVariations(const ContentRef& modelRef,

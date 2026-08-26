@@ -1290,6 +1290,8 @@ add_library(WhiteoutFlakesLib STATIC
     src/io/storage/game_rules.cpp
     src/io/fetch_content_provider.cpp
     src/io/content_provider.cpp
+    src/io/progress.cpp
+    src/io/load_task.cpp
     src/io/path_utf8.cpp
     src/io/replaceable_paths.cpp
     src/io/event_data.cpp
@@ -1554,6 +1556,10 @@ add_library(WhiteoutFlakesExplorerLib STATIC
     # thumbnail pool AND the basic_viewer, so it lives in this shared lib (each
     # consumer links the lib instead of compiling its own copy).
     tools/common/thumbnail_framing.cpp
+    # The load-progress modal. Here rather than in each executable because both
+    # hosts that draw it link this lib already, and the Storage Explorer panel
+    # itself needs it for its own async open.
+    tools/common/progress_dialog.cpp
 )
 set_target_properties(WhiteoutFlakesExplorerLib PROPERTIES
     CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON)

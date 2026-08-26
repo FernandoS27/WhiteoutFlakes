@@ -1,3 +1,4 @@
+#include "io/progress.h"
 #include "io/wow/chr_customization_table.h"
 
 #include "whiteout/flakes/content_provider.h"
@@ -92,8 +93,9 @@ std::optional<db::Table> Read(IContentProvider& provider, const char* path) {
 bool Wide(const db::Table& t, u32 minFields, const char* name) {
     if (t.fields().size() > minFields)
         return true;
-    std::fprintf(stderr, "[wow] %s has %zu fields, needs more than %u — character customisation "
-                         "stays unresolved\n",
+    std::fprintf(stderr,
+                 "[wow] %s has %zu fields, needs more than %u — character customisation "
+                 "stays unresolved\n",
                  name, t.fields().size(), minFields);
     return false;
 }
@@ -145,7 +147,7 @@ u32 ChrCustomizationTable::TextureFileFor(u32 materialResourcesId) const {
     return it == textureByResources_.end() ? 0u : it->second;
 }
 
-bool ChrCustomizationTable::Load(IContentProvider& provider) {
+bool ChrCustomizationTable::Load(IContentProvider& provider, ProgressMonitor* progress) {
     if (loaded_)
         return true;
     // One attempt per install, unlike CreatureSkinTable, which retries. Thirteen
@@ -156,20 +158,42 @@ bool ChrCustomizationTable::Load(IContentProvider& provider) {
     if (loadFailed_)
         return false;
 
-    auto raceXModel = Read(provider, "dbfilesclient/chrracexchrmodel.db2");
-    auto chrModel = Read(provider, "dbfilesclient/chrmodel.db2");
-    auto displays = Read(provider, "dbfilesclient/creaturedisplayinfo.db2");
-    auto modelData = Read(provider, "dbfilesclient/creaturemodeldata.db2");
-    auto materials = Read(provider, "dbfilesclient/chrmodelmaterial.db2");
-    auto layers = Read(provider, "dbfilesclient/chrmodeltexturelayer.db2");
-    auto sections = Read(provider, "dbfilesclient/charcomponenttexturesections.db2");
-    auto options = Read(provider, "dbfilesclient/chrcustomizationoption.db2");
-    auto choices = Read(provider, "dbfilesclient/chrcustomizationchoice.db2");
-    auto elements = Read(provider, "dbfilesclient/chrcustomizationelement.db2");
-    auto geosets = Read(provider, "dbfilesclient/chrcustomizationgeoset.db2");
-    auto skinned = Read(provider, "dbfilesclient/chrcustomizationskinnedmodel.db2");
-    auto cmaterials = Read(provider, "dbfilesclient/chrcustomizationmaterial.db2");
-    auto texFiles = Read(provider, "dbfilesclient/texturefiledata.db2");
+    // One unit per table, and the join afterwards is one more: the reads
+    // dominate (each is a CASC read plus a BLTE decode) but the join walks
+    // a third of a million rows and is not free either.
+    ProgressMonitor inert;
+    ProgressMonitor& m = progress ? *progress : inert;
+    m.Begin("Client databases", 15);
+
+    std::optional<db::Table> raceXModel, chrModel, displays, modelData, materials, layers, sections,
+        options, choices, elements, geosets, skinned, cmaterials, texFiles;
+    {
+        std::optional<db::Table>* const slots[] = {
+            &raceXModel, &chrModel, &displays, &modelData, &materials, &layers,     &sections,
+            &options,    &choices,  &elements, &geosets,   &skinned,   &cmaterials, &texFiles};
+        static constexpr const char* kPaths[] = {"dbfilesclient/chrracexchrmodel.db2",
+                                                 "dbfilesclient/chrmodel.db2",
+                                                 "dbfilesclient/creaturedisplayinfo.db2",
+                                                 "dbfilesclient/creaturemodeldata.db2",
+                                                 "dbfilesclient/chrmodelmaterial.db2",
+                                                 "dbfilesclient/chrmodeltexturelayer.db2",
+                                                 "dbfilesclient/charcomponenttexturesections.db2",
+                                                 "dbfilesclient/chrcustomizationoption.db2",
+                                                 "dbfilesclient/chrcustomizationchoice.db2",
+                                                 "dbfilesclient/chrcustomizationelement.db2",
+                                                 "dbfilesclient/chrcustomizationgeoset.db2",
+                                                 "dbfilesclient/chrcustomizationskinnedmodel.db2",
+                                                 "dbfilesclient/chrcustomizationmaterial.db2",
+                                                 "dbfilesclient/texturefiledata.db2"};
+        static_assert(std::size(slots) == std::size(kPaths));
+        for (usize i = 0; i < std::size(kPaths); ++i) {
+            if (m.Cancelled())
+                return false; // NOT latched as failed - see loadFailed_
+            m.Note(kPaths[i]);
+            *slots[i] = Read(provider, kPaths[i]);
+            m.Worked();
+        }
+    }
     if (!raceXModel || !chrModel || !displays || !modelData || !materials || !layers || !sections ||
         !options || !choices || !elements || !geosets || !skinned || !cmaterials || !texFiles) {
         loadFailed_ = true;
@@ -205,6 +229,8 @@ bool ChrCustomizationTable::Load(IContentProvider& provider) {
     }
 
     Clear();
+    ProgressMonitor join = m.Split(1);
+    join.Begin("Joining tables");
 
     // ---- Identity: which ChrModel each `.m2` is -----------------------------
     std::unordered_map<u32, u32> fileByModelRow; // CreatureModelData::ID → fileDataID
@@ -369,8 +395,8 @@ bool ChrCustomizationTable::Load(IContentProvider& provider) {
         // `GeosetType * 100 + GeosetID` is the `skinSectionId` the model
         // declares — group 4 value 1 is geoset 401, exactly as GeosRenderPrep
         // spells it.
-        geosetByRow.emplace(row.id(), static_cast<i32>(row.getUInt(kGeoType) * 100 +
-                                                       row.getUInt(kGeoId)));
+        geosetByRow.emplace(row.id(),
+                            static_cast<i32>(row.getUInt(kGeoType) * 100 + row.getUInt(kGeoId)));
     }
     struct SkinnedRow {
         u32 fileId = 0;
@@ -387,7 +413,7 @@ bool ChrCustomizationTable::Load(IContentProvider& provider) {
             continue;
         skinnedByRow.emplace(row.id(),
                              SkinnedRow{file, static_cast<i32>(row.getUInt(kSkmGeoType) * 100 +
-                                                              row.getUInt(kSkmGeoId))});
+                                                               row.getUInt(kSkmGeoId))});
     }
 
     std::unordered_map<u32, std::pair<u32, u32>> materialByRow; // → (target, resources)

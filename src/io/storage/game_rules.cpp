@@ -85,7 +85,8 @@ void ConfigureD3(StorageBuilder& b, const StorageConfig& c, const std::atomic<bo
 } // namespace
 
 std::unique_ptr<GameStorage> BuildGameStorage(const StorageConfig& config,
-                                              const std::atomic<bool>* hdMode) {
+                                              const std::atomic<bool>* hdMode,
+                                              ProgressMonitor* progress) {
     StorageBuilder b(config.game);
     switch (config.game) {
     case ProductId::Wow:
@@ -103,7 +104,7 @@ std::unique_ptr<GameStorage> BuildGameStorage(const StorageConfig& config,
         ConfigureWc3(b, config, hdMode);
         break;
     }
-    return b.Build();
+    return b.Build(progress);
 }
 
 std::vector<std::string> DefaultArchives(ProductId game) {

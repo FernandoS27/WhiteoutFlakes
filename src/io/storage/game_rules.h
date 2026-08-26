@@ -18,6 +18,8 @@
 
 namespace whiteout::flakes::io {
 
+class ProgressMonitor;
+
 // Everything a host can configure about where content comes from. What it
 // *means* is the game's business — an archive list is load order for Warcraft
 // III and dead weight for StarCraft II.
@@ -45,8 +47,12 @@ struct StorageConfig {
 // Never null: a config that resolves to nothing yields an empty storage that
 // reports every read as a miss, which is what an unconfigured provider should
 // do.
+// @param progress Optional. A product with two CASC roots (StarCraft II plus
+//        Heroes) splits it between them, so the bar walks through both rather
+//        than restarting halfway.
 std::unique_ptr<GameStorage> BuildGameStorage(const StorageConfig& config,
-                                              const std::atomic<bool>* hdMode);
+                                              const std::atomic<bool>* hdMode,
+                                              ProgressMonitor* progress = nullptr);
 
 // The archive load order to use when the host has not chosen one. Warcraft
 // III's three are fixed; StarCraft II and Heroes never shipped one; World of

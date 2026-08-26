@@ -2,6 +2,7 @@
 
 #if WHITEOUT_HAS_CASC
 
+#include "io/progress.h"
 #include "whiteout/flakes/util/path_utf8.h"
 
 #include <whiteout/utils/simple_thread_pool.h>
@@ -45,15 +46,39 @@ std::string NormalizeRoot(const std::string& root) {
     return out;
 }
 
-std::vector<u8> LoadListfile(const std::string& path) {
+// Read in chunks rather than with an istreambuf_iterator so it can report and
+// be cancelled. A community listfile is ~90 MB, which is a visible pause of its
+// own before the open the user is waiting for has even started — and the
+// library cannot see this step, because the registry does it, not casc::Storage.
+std::vector<u8> LoadListfile(const std::string& path, ProgressMonitor& mon) {
     if (path.empty())
         return {};
-    std::ifstream f(FsPathFromUtf8(path), std::ios::binary);
+    std::ifstream f(FsPathFromUtf8(path), std::ios::binary | std::ios::ate);
     if (!f) {
         std::printf("[casc] listfile not readable: %s\n", path.c_str());
         return {};
     }
-    std::vector<u8> bytes(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>{});
+    const std::streamoff size = f.tellg();
+    f.seekg(0);
+    if (size <= 0)
+        return {};
+
+    mon.Begin("Reading listfile");
+    mon.Note(path);
+
+    std::vector<u8> bytes(static_cast<usize>(size));
+    constexpr std::streamsize kChunk = 4 << 20;
+    std::streamoff done = 0;
+    while (done < size) {
+        const std::streamsize n = (std::min)(kChunk, static_cast<std::streamsize>(size - done));
+        if (!f.read(reinterpret_cast<char*>(bytes.data() + done), n))
+            break;
+        done += n;
+        mon.Bytes(static_cast<u64>(done), static_cast<u64>(size));
+        if (mon.Cancelled())
+            return {};
+    }
+
     std::printf("[casc] listfile loaded: %s (%zu bytes)\n", path.c_str(), bytes.size());
     return bytes;
 }
@@ -103,15 +128,15 @@ Registry() {
 
 } // namespace
 
-SharedCasc::SharedCasc(std::string root,
-                       std::shared_ptr<whiteout::utils::SimpleThreadPool> pool,
+SharedCasc::SharedCasc(std::string root, std::shared_ptr<whiteout::utils::SimpleThreadPool> pool,
                        std::vector<u8> listfile, casc::Storage storage)
     : root_(std::move(root)), pool_(std::move(pool)), listfile_(std::move(listfile)),
       storage_(std::move(storage)) {}
 
 SharedCasc::~SharedCasc() = default;
 
-std::shared_ptr<const SharedCasc> AcquireSharedCasc(const CascOpenKey& key, std::string& error) {
+std::shared_ptr<const SharedCasc> AcquireSharedCasc(const CascOpenKey& key, std::string& error,
+                                                    ProgressMonitor* progress) {
     if (key.root.empty()) {
         error = "no install path";
         return nullptr;
@@ -121,9 +146,8 @@ std::shared_ptr<const SharedCasc> AcquireSharedCasc(const CascOpenKey& key, std:
     std::shared_ptr<Slot> slot;
     {
         std::lock_guard lk(RegistryMutex());
-        auto& entry =
-            Registry()[std::make_tuple(root, key.listfilePath, key.tactKeyFile,
-                                       key.zeroFillEncrypted)];
+        auto& entry = Registry()[std::make_tuple(root, key.listfilePath, key.tactKeyFile,
+                                                 key.zeroFillEncrypted)];
         if (!entry)
             entry = std::make_shared<Slot>();
         slot = entry;
@@ -134,11 +158,34 @@ std::shared_ptr<const SharedCasc> AcquireSharedCasc(const CascOpenKey& key, std:
     // another. Two callers of the *same* install do serialise here, which is
     // the point — the second gets the first's result.
     std::lock_guard lk(slot->mu);
+    // Nothing was opened, so nothing is reported. The monitor's window closes
+    // itself when the caller's scope ends, which is what keeps a cache hit from
+    // leaving the bar parked partway through a step that never ran.
     if (auto existing = slot->storage.lock())
         return existing;
 
+    ProgressMonitor inert;
+    ProgressMonitor& m = progress ? *progress : inert;
+
+    // Weighted, and only for the steps this open will actually run. Skipping a
+    // step by not planning it is better than dropping one later: the bar never
+    // reserves room for work that was never going to happen. The open itself
+    // dominates by an order of magnitude, hence 90 of 100.
+    const bool wantsListfile = !key.listfilePath.empty();
+    const bool wantsKeys = !key.tactKeyFile.empty();
+    m.Begin("Opening storage", 90 + (wantsListfile ? 8u : 0u) + (wantsKeys ? 2u : 0u));
+
+    std::vector<u8> listfile;
+    if (wantsListfile) {
+        ProgressMonitor step = m.Split(8);
+        listfile = LoadListfile(key.listfilePath, step);
+    }
+    if (m.Cancelled()) {
+        error = "Open cancelled";
+        return nullptr;
+    }
+
     auto pool = Pool();
-    std::vector<u8> listfile = LoadListfile(key.listfilePath);
 
     casc::OpenOptions co;
     // The caller's spelling, not the normalised key: the key exists to decide
@@ -149,6 +196,19 @@ std::shared_ptr<const SharedCasc> AcquireSharedCasc(const CascOpenKey& key, std:
     if (!listfile.empty())
         co.listfile = std::span<const u8>(listfile);
 
+    ProgressMonitor openStep = m.Split(90);
+    // The library has reported all of this since it was written; nothing has
+    // ever asked for it. Its events are absolute (step index plus a fraction
+    // within the step), which is exactly what Report takes. Returning false is
+    // how a cancel reaches it — the open then fails with CascError::Cancelled.
+    casc::ProgressCallback cb = [&openStep](const casc::ProgressInfo& info) {
+        openStep.Report(casc::progressStepName(info.step), info.object,
+                        static_cast<f64>(info.stepIndex) + info.stepFraction(),
+                        static_cast<f64>(info.stepCount));
+        return !openStep.Cancelled();
+    };
+    co.progressCallback = cb;
+
     auto storage = casc::Storage::open(co);
     if (!storage)
         return nullptr;
@@ -157,15 +217,18 @@ std::shared_ptr<const SharedCasc> AcquireSharedCasc(const CascOpenKey& key, std:
     // storage with no keys still reads everything unencrypted, which is most
     // of an install.
     bool keys = false;
-    if (!key.tactKeyFile.empty()) {
+    if (wantsKeys) {
+        ProgressMonitor step = m.Split(2);
+        step.Begin("Importing TACT keys");
+        step.Note(key.tactKeyFile);
         keys = storage->importKeysFromFile(key.tactKeyFile);
         if (!keys)
             std::printf("[casc] TACT keys not readable: %s\n", key.tactKeyFile.c_str());
     }
     storage->setZeroFillEncrypted(key.zeroFillEncrypted);
 
-    std::shared_ptr<const SharedCasc> shared(new SharedCasc(
-        key.root, std::move(pool), std::move(listfile), std::move(*storage)));
+    std::shared_ptr<const SharedCasc> shared(
+        new SharedCasc(key.root, std::move(pool), std::move(listfile), std::move(*storage)));
     slot->storage = shared;
     std::printf("[casc] storage opened: %s%s%s\n", key.root.c_str(),
                 shared->HasListfile() ? " (with listfile)" : "", keys ? " (with TACT keys)" : "");

@@ -38,6 +38,8 @@ class SimpleThreadPool;
 
 namespace whiteout::flakes::io {
 
+class ProgressMonitor;
+
 /// What an open depends on. Two requests that agree here get the same storage;
 /// anything else is a different one, because it would read differently.
 struct CascOpenKey {
@@ -80,7 +82,8 @@ public:
     }
 
 private:
-    friend std::shared_ptr<const SharedCasc> AcquireSharedCasc(const CascOpenKey&, std::string&);
+    friend std::shared_ptr<const SharedCasc> AcquireSharedCasc(const CascOpenKey&, std::string&,
+                                                               ProgressMonitor*);
     SharedCasc(std::string root, std::shared_ptr<whiteout::utils::SimpleThreadPool> pool,
                std::vector<u8> listfile, whiteout::storages::casc::Storage storage);
 
@@ -96,7 +99,14 @@ private:
 /// Null on failure, with @p error set. Concurrent callers asking for the same
 /// key wait for the one open rather than racing to repeat it; callers asking
 /// for different keys do not wait for each other.
-std::shared_ptr<const SharedCasc> AcquireSharedCasc(const CascOpenKey& key, std::string& error);
+///
+/// @param progress Optional, and reported to only when this call is the one
+///        that actually opens. A caller that finds the storage already in the
+///        registry did no work and must report none — the callback belongs to
+///        the open, not to the entry. Also carries cancellation: a cancelled
+///        open returns null with @p error saying so, and nothing is cached.
+std::shared_ptr<const SharedCasc> AcquireSharedCasc(const CascOpenKey& key, std::string& error,
+                                                    ProgressMonitor* progress = nullptr);
 
 /// How many installs are open right now. For tests and diagnostics — the point
 /// of this file is that this number does not grow with the number of readers.

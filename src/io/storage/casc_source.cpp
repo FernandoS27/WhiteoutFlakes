@@ -2,6 +2,7 @@
 
 #if WHITEOUT_HAS_CASC
 
+#include "io/progress.h"
 #include "storage_paths.h"
 
 #include <algorithm>
@@ -37,20 +38,41 @@ std::array<const char*, 4> Prefixes(const std::atomic<bool>* hdMode) {
 
 CascSource::CascSource(std::shared_ptr<const SharedCasc> shared, const CascSourceOptions& opts)
     : shared_(std::move(shared)), hdMode_(opts.hdMode), fileIds_(opts.fileIds),
-      frameSuffixFallback_(opts.frameSuffixFallback), assetPrefixFallback_(opts.assetPrefixFallback) {}
+      frameSuffixFallback_(opts.frameSuffixFallback),
+      assetPrefixFallback_(opts.assetPrefixFallback) {}
 
 std::unique_ptr<CascSource> CascSource::Open(std::string root, const CascSourceOptions& opts,
-                                             std::string& error) {
+                                             std::string& error, ProgressMonitor* progress) {
     CascOpenKey key;
     key.root = std::move(root);
     key.listfilePath = opts.listfilePath;
     key.tactKeyFile = opts.tactKeyFile;
     key.zeroFillEncrypted = opts.zeroFillEncrypted;
 
-    auto shared = AcquireSharedCasc(key, error);
+    ProgressMonitor inert;
+    ProgressMonitor& m = progress ? *progress : inert;
+    // The open dominates; the mod-root walk below is a few percent of it.
+    m.Begin(key.root, opts.assetPrefixFallback ? 20u : 19u);
+
+    std::shared_ptr<const SharedCasc> shared;
+    {
+        ProgressMonitor step = m.Split(19);
+        shared = AcquireSharedCasc(key, error, &step);
+    }
     if (!shared)
         return nullptr;
-    return std::unique_ptr<CascSource>(new CascSource(std::move(shared), opts));
+    auto source = std::unique_ptr<CascSource>(new CascSource(std::move(shared), opts));
+
+    // Built here, inside the bar, rather than on the first missed `assets/...`
+    // read. It is a second full walk of the root manifest — three quarters of a
+    // million entries on StarCraft II — and lazily it lands mid-model-load on
+    // whichever thread took the miss, as a hitch nothing explains.
+    if (opts.assetPrefixFallback && progress) {
+        ProgressMonitor step = m.Split(1);
+        step.Begin("Indexing mod roots");
+        source->AssetPrefixes();
+    }
+    return source;
 }
 
 bool CascSource::ReadPrefixed(const std::string& prefix, const std::string& stem,

@@ -1,3 +1,4 @@
+#include "io/progress.h"
 #include "io/wow/item_appearance_table.h"
 
 #include "whiteout/flakes/content_provider.h"
@@ -93,7 +94,7 @@ void ItemAppearanceTable::Clear() {
     appearances_.shrink_to_fit();
 }
 
-bool ItemAppearanceTable::Load(IContentProvider& provider) {
+bool ItemAppearanceTable::Load(IContentProvider& provider, ProgressMonitor* progress) {
     if (loaded_)
         return true;
     if (loadFailed_)

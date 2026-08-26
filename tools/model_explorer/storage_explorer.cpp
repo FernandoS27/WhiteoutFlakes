@@ -1,5 +1,7 @@
 #include "storage_explorer.h"
 
+#include "io/load_task.h"
+
 #include "io/file_content_provider.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_settings.h"
@@ -138,12 +140,54 @@ std::shared_ptr<io::IContentProvider> StorageExplorer::Provider() const {
 }
 
 bool StorageExplorer::OpenCasc(const std::string& root) {
+    if (opening_)
+        return false; // one at a time; the runner would serialise these anyway
+
+    if (tasks_) {
+        opening_ = true;
+        navPending_ = false; // staged against a listing that is being replaced
+        // Cleared HERE, on the host thread, not in the completion: the pool
+        // owns GPU targets and Clear() waits for the device, neither of which
+        // belongs on the task thread.
+        if (pool_)
+            pool_->Clear();
+        selectedPath_.clear();
+        openError_.clear();
+        tasks_->Run(
+            "Opening " + root,
+            [this, root](io::ProgressMonitor& m) {
+                // The browser's tree is built here. Nothing may read it until
+                // the completion clears `opening_` — see BuildWindow.
+                const bool ok = browser_.Open(root, io::StorageKind::Casc, &openError_, &m);
+                return ok ? io::TaskResult::Ok()
+                          : io::TaskResult::Fail(openError_.empty() ? "open failed" : openError_);
+            },
+            [this, root](const io::TaskOutcome& out) {
+                opening_ = false;
+                if (!out.ok) {
+                    lastError_ = "Failed to open CASC at '" + root + "': " + out.error;
+                    std::fprintf(stderr, "[explorer] %s\n", lastError_.c_str());
+                    return;
+                }
+                FinishOpenCasc(root);
+            });
+        return true;
+    }
+
     std::string err;
     if (!browser_.Open(root, io::StorageKind::Casc, &err)) {
         lastError_ = "Failed to open CASC at '" + root + "': " + err;
         std::fprintf(stderr, "[explorer] %s\n", lastError_.c_str());
         return false;
     }
+    FinishOpenCasc(root);
+    return true;
+}
+
+// Everything the open implies for the panel and its provider. Host thread
+// only — it touches the thumbnail pool's GPU resources and the provider's
+// configuration, and it runs after the browser's tree is complete.
+void StorageExplorer::FinishOpenCasc(const std::string& root) {
     // Point the panel's own provider at the same game the browser detected.
     // Without this every read goes to whichever product the provider defaulted
     // to (Warcraft III), which for an `.m2` is not a missing texture but a
@@ -170,7 +214,6 @@ bool StorageExplorer::OpenCasc(const std::string& root) {
     // must not be read as an empty storage.
     openedEmpty_ = browser_.Current().folderTotal == 0 && browser_.Current().fileTotal == 0;
     navAnimT_ = 0.0f; // fade the first listing in
-    return true;
 }
 
 void StorageExplorer::NavigateTo(const std::string& displayPath) {
@@ -251,9 +294,8 @@ void StorageExplorer::BuildFilterBar() {
     // is nothing else to offer.
     const io::BrowseType available = browser_.AvailableTypes();
     io::BrowseType enabled = browser_.EnabledTypes();
-    for (io::BrowseType type :
-         {io::BrowseType::Models, io::BrowseType::Effects, io::BrowseType::M2,
-          io::BrowseType::M3}) {
+    for (io::BrowseType type : {io::BrowseType::Models, io::BrowseType::Effects, io::BrowseType::M2,
+                                io::BrowseType::M3}) {
         if (!Any(available & type))
             continue;
         ImGui::SameLine();
@@ -360,7 +402,12 @@ void StorageExplorer::NewFrame(float dt) {
     // Apply navigation staged by last frame's UI BEFORE anything references the
     // (about-to-be-cleared) thumbnails. Clear() waits for the GPU to finish with
     // the old cells' targets first.
-    if (navPending_) {
+    // Not while an open is in flight: the task thread is rebuilding the very
+    // tree Ascend/NavigateTo would walk. Staged navigation can outlive the
+    // frame that staged it — BuildGrid draws the old listing in the same frame
+    // the game combo starts a new open — so this needs its own guard rather
+    // than relying on BuildWindow returning early.
+    if (navPending_ && !opening_) {
         navPending_ = false;
         if (navAscend_)
             browser_.Ascend();
@@ -397,6 +444,14 @@ void StorageExplorer::BuildWindow(bool* pOpen) {
             ImGui::EndMenu();
         }
         ImGui::EndMenuBar();
+    }
+
+    if (opening_) {
+        // The listing is being built on the task thread; walking the tree now
+        // would race it. The host's progress modal is what shows the bar.
+        ImGui::TextUnformatted("Opening storage…");
+        ImGui::End();
+        return;
     }
 
     if (!browser_.IsOpen()) {
@@ -471,8 +526,8 @@ void StorageExplorer::BuildGrid() {
     // column rather than clipping.
     const float avail = ImGui::GetContentRegionAvail().x;
     const float cell = (std::min)(iconSize_, (std::max)(kMinIcon, avail));
-    const int cols =
-        (std::max)(1, static_cast<int>((avail + style.ItemSpacing.x) / (cell + style.ItemSpacing.x)));
+    const int cols = (std::max)(1, static_cast<int>((avail + style.ItemSpacing.x) /
+                                                    (cell + style.ItemSpacing.x)));
 
     // Keep the pool able to hold everything on screen at once: a cell that finds
     // no free slot draws a placeholder forever, which at small icon sizes would
@@ -521,9 +576,10 @@ void StorageExplorer::BuildGrid() {
         };
         ImDrawList* dl = ImGui::GetWindowDrawList();
         if (*h > 0.004f) { // selection highlight + border, eased in
-            dl->AddRectFilled(S(0.06f, 0.06f), S(0.94f, 0.94f),
-                              ImGui::GetColorU32(ImVec4(0.40f, 0.66f, 1.0f, 0.16f * *h * gridAlpha)),
-                              cell * 0.06f);
+            dl->AddRectFilled(
+                S(0.06f, 0.06f), S(0.94f, 0.94f),
+                ImGui::GetColorU32(ImVec4(0.40f, 0.66f, 1.0f, 0.16f * *h * gridAlpha)),
+                cell * 0.06f);
             dl->AddRect(S(0.06f, 0.06f), S(0.94f, 0.94f),
                         ImGui::GetColorU32(ImVec4(0.46f, 0.73f, 1.0f, 0.75f * *h * gridAlpha)),
                         cell * 0.06f, 0, 1.5f);

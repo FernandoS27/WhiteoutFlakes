@@ -1,3 +1,4 @@
+#include "io/progress.h"
 #include "io/wow/creature_skin_table.h"
 
 #include "whiteout/flakes/content_provider.h"
@@ -41,9 +42,9 @@ constexpr u32 kDisplayInfoFileId = 1108759;
 // fileDataIDs, and both are checked below against a shape only that layout has:
 // CreatureModelData opens with the 6-float GeoBox, and CreatureDisplayInfo ends
 // with the texture-variation array. Verified against WOWSTATIC_12_1_0_68914.
-constexpr u32 kModelDataGeoBox = 0;      // float[6]
-constexpr u32 kModelDataFileDataId = 2;  // the `.m2` this row describes
-constexpr u32 kDisplayInfoModelId = 1;   // → CreatureModelData::ID
+constexpr u32 kModelDataGeoBox = 0;     // float[6]
+constexpr u32 kModelDataFileDataId = 2; // the `.m2` this row describes
+constexpr u32 kDisplayInfoModelId = 1;  // → CreatureModelData::ID
 
 bool ParseThrough(IContentProvider& provider, const char* path, u32 knownId, db::Parser& parser,
                   std::optional<db::Table>& out) {
@@ -82,7 +83,7 @@ void CreatureSkinTable::Clear() {
     byModelFile_.clear();
 }
 
-bool CreatureSkinTable::Load(IContentProvider& provider) {
+bool CreatureSkinTable::Load(IContentProvider& provider, ProgressMonitor* progress) {
     if (loaded_)
         return true;
 
@@ -97,8 +98,9 @@ bool CreatureSkinTable::Load(IContentProvider& provider) {
     const auto& displayFields = displays->fields();
     if (modelFields.size() <= kModelDataFileDataId ||
         modelFields[kModelDataGeoBox].arrayCount != 6) {
-        std::fprintf(stderr, "[wow] CreatureModelData has an unexpected layout (%zu fields) — "
-                             "monster skins stay unresolved\n",
+        std::fprintf(stderr,
+                     "[wow] CreatureModelData has an unexpected layout (%zu fields) — "
+                     "monster skins stay unresolved\n",
                      modelFields.size());
         return false;
     }
@@ -106,8 +108,9 @@ bool CreatureSkinTable::Load(IContentProvider& provider) {
     // read whichever it is rather than either number, so a build on the other
     // side of that change still resolves the slots it does have.
     if (displayFields.size() <= kDisplayInfoModelId || displayFields.back().arrayCount < 3) {
-        std::fprintf(stderr, "[wow] CreatureDisplayInfo has an unexpected layout (%zu fields) — "
-                             "monster skins stay unresolved\n",
+        std::fprintf(stderr,
+                     "[wow] CreatureDisplayInfo has an unexpected layout (%zu fields) — "
+                     "monster skins stay unresolved\n",
                      displayFields.size());
         return false;
     }

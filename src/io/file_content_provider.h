@@ -12,6 +12,24 @@
 
 namespace whiteout::flakes::io {
 
+class ProgressMonitor;
+
+/// Where the active game's storages are in their life.
+///
+/// Only Open and Failed are answers a read acts on. The other three exist for
+/// the host: Dirty and Opening are the difference between "nothing has needed
+/// one yet" and "one is being opened right now", which a status display must
+/// tell apart or it reports "pending" for the whole of a forty-second open;
+/// and Cancelled is what makes a cancelled open retryable when a failed one
+/// is not.
+enum class StorageState : u8 {
+    Dirty,     ///< Configured but not built. The next demand opens it.
+    Opening,   ///< A build is in flight, on some thread.
+    Open,      ///< Built, with at least one source.
+    Failed,    ///< Built and empty, or the open errored. Not retried on reads.
+    Cancelled, ///< A caller stopped the open. Retried only when asked explicitly.
+};
+
 class FileContentProvider : public IContentProvider {
 public:
     FileContentProvider();
@@ -56,6 +74,31 @@ public:
     // HasCasc() alone reports identically. A status display should ask this
     // first; asking HasCasc() is what forces the open it is reporting on.
     bool StoragesPending() const;
+
+    // True while a build is in flight. Answered from an atomic, WITHOUT the
+    // storage lock — which is the point: an open holds that lock for its whole
+    // duration, so a host that asked HasCasc() to draw its status line would
+    // block on the very operation it is trying to report.
+    //
+    // Any host drawing storage status must check this (and StoragesPending)
+    // before it asks anything else here.
+    bool StoragesOpening() const;
+
+    // The full state, for a host that wants to say *why* nothing is open.
+    StorageState StoragesState() const;
+
+    // Open the active game's storages now, reporting through @p progress.
+    //
+    // This is the operation StoragesPending() has always been describing, made
+    // callable: hosts run it as a background task so the seconds of index and
+    // manifest parsing happen off the thread that draws. Safe from any thread.
+    // Returns true when the storages ended up usable.
+    //
+    // Unlike a read, this retries a Cancelled open — asking explicitly is what
+    // distinguishes "the user wants to try again" from "the load that was
+    // waiting behind the cancel would restart it immediately", which would
+    // make Cancel mean nothing.
+    bool OpenStorages(ProgressMonitor* progress = nullptr);
 
     // ---- Which game's content layout this provider serves ----
     //

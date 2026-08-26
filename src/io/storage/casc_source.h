@@ -36,6 +36,8 @@
 
 namespace whiteout::flakes::io {
 
+class ProgressMonitor;
+
 struct CascSourceOptions {
     // Warcraft III's mod-prefix chain. Non-null enables it, and the flag it
     // points at picks the order: HD first when set, so `_hd.w3mod` overrides
@@ -83,8 +85,11 @@ struct CascSourceOptions {
 class CascSource final : public IStorageSource {
 public:
     // Returns null when the root holds no storage; `error` says why.
+    // @param progress Optional. Also carries cancellation: a cancelled open
+    //        returns null, same as a failed one, with `error` saying which.
     static std::unique_ptr<CascSource> Open(std::string root, const CascSourceOptions& opts,
-                                            std::string& error);
+                                            std::string& error,
+                                            ProgressMonitor* progress = nullptr);
 
     bool Read(const std::string& path, SourceRead& out) const override;
     bool ReadById(u32 fileId, SourceRead& out) const override;

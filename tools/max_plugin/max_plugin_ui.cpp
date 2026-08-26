@@ -644,8 +644,19 @@ void MaxPluginUI::BuildSettingsWindow() {
 
         ImGui::Spacing();
         ImGui::Separator();
-        ImGui::TextDisabled("CASC: %s", provider.HasCasc() ? "open" : "not loaded");
-        ImGui::TextDisabled("MPQ:  %s open", provider.HasMpq() ? "yes" : "no");
+        // Asked in this order for a reason: HasCasc() is a *demand* — it opens
+        // the storage it reports on — and an open holds the storage lock for
+        // seconds, so calling it while one is in flight blocks this thread on
+        // exactly the operation the line is describing. StoragesOpening() and
+        // StoragesPending() are answered from an atomic and take no lock.
+        if (provider.StoragesOpening()) {
+            ImGui::TextDisabled("CASC: opening...");
+        } else if (provider.StoragesPending()) {
+            ImGui::TextDisabled("CASC: not opened yet");
+        } else {
+            ImGui::TextDisabled("CASC: %s", provider.HasCasc() ? "open" : "not loaded");
+            ImGui::TextDisabled("MPQ:  %s open", provider.HasMpq() ? "yes" : "no");
+        }
 
         ImGui::EndTabItem();
     }

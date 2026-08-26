@@ -13,6 +13,7 @@
 // focused on lifetime + dispatch.
 // ============================================================================
 
+#include "io/load_task.h"
 #include "model/actor_manager.h"
 #include "render_target.h"
 #include "whiteout/flakes/enums.h" // RenderMode
@@ -32,6 +33,7 @@ struct GLFWwindow;
 
 namespace whiteout::flakes::io {
 class IContentProvider;
+class FileContentProvider;
 } // namespace whiteout::flakes::io
 
 namespace whiteout::flakes::renderer {
@@ -135,11 +137,92 @@ public:
     bool ShouldClose() const;
     void Tick(f32 dt);
 
+    // Where every load long enough to freeze the window goes. One thread,
+    // tasks in submission order; the UI polls it once a frame and draws the
+    // modal. See tools/common/progress_dialog.h.
+    io::LoadTaskRunner& Tasks() {
+        return tasks_;
+    }
+
+    // Open the active game's storages as a background task. No-op when they
+    // are already open, so it is safe to call on every settings commit and
+    // every document open.
+    // @param onDone Runs on the host thread once the storages are up (or
+    //        failed); empty when the caller only wants the open.
+    void OpenStoragesAsync(std::function<void(bool ok)> onDone = {});
+
+    // The storage open on its own, for any provider — the Storage Explorer
+    // panel has its own, pointed at whatever the user is browsing.
+    // OpenStoragesAsync is this plus the asset retry and the table prewarm,
+    // which belong to the provider the scenes read through.
+    void RunStorageOpenTask(io::FileContentProvider& provider, std::function<void(bool ok)> onDone);
+
+    // Everything a document needs in place before the host thread can open
+    // it without stalling: the install, and — for World of Warcraft — the
+    // client databases the look passes read during the spawn.
+    //
+    // ONE task, so the bar covers both. Splitting them would put the
+    // database reads back on the host thread: the spawn calls
+    // WowReplaceableTextures::Apply synchronously, and a prewarm merely
+    // *queued* behind it has not finished by then.
+    void PreloadForDocumentAsync(std::function<void()> then);
+
+    // The World of Warcraft client tables have been read (or tried) for the
+    // install now configured. Not asked of the tables themselves: an install
+    // that cannot serve them leaves them un-Loaded forever, and that would
+    // re-run the prewarm on every model opened.
+    bool wowTablesPrewarmed_ = false;
+
+    // Read World of Warcraft's client databases as a background task, so
+    // the first character model of a session does not pay for fourteen
+    // CASC reads on the render thread. No-op for other products, and for a
+    // session that has already done it. Restyles whatever is loaded when it
+    // finishes, so a model that arrived first picks the tables up.
+    void PrewarmWowTablesAsync();
+
+private:
+    // Re-apply the World of Warcraft look passes to the model on screen.
+    // Called when the client databases finish loading behind a model that
+    // was spawned before they were there. The ACTIVE document only:
+    // RestyleWowModel resolves its actor through the active scene, so a
+    // background tab has nothing for it to find. Those pick the tables up
+    // on their next restyle instead.
+    void RestyleLoadedWowModels();
+
+public:
     // Load an MDX from disk into a NEW document (tab) and make it active.
     // Each open document owns its own scene, so previously-loaded models stay
     // resident and switchable; nothing is cleared. Dispatches .pkb / .pkfx
     // paths to LoadEffect. Returns false (and opens no tab) on failure.
+    // Synchronous. Keeps the CLI and headless harnesses working the way they
+    // always have: --attach-anim runs immediately after this returns and
+    // --export-anim counts a fixed number of ticks, so neither can tolerate
+    // a load that completes later. Interactive callers want OpenModelAsync.
     bool LoadModel(const std::filesystem::path& path);
+
+    // What File ▸ Open uses. Identical to LoadModel when the storages this
+    // model needs are already up; otherwise it opens them as a task first —
+    // behind the progress modal — and opens the document when that lands.
+    //
+    // The freeze it removes: an `.m2` picked from the dialog switches the
+    // provider to World of Warcraft, and the document's first read then
+    // triggers the install open on a provider worker while the host thread
+    // sits in Wait() with nothing on screen to say why.
+    //
+    // Returns false only for a path that cannot be opened at all; true means
+    // opened OR queued.
+    bool OpenModelAsync(const std::filesystem::path& path);
+
+    // Open @p path once the frame loop is running, via OpenModelAsync.
+    //
+    // The startup picker needs this and File ▸ Open does not: the picker
+    // runs before the first frame exists, so a load started there has no
+    // frame to report in and simply freezes the window until it finishes —
+    // which is the freeze this whole feature is about, reached one step
+    // earlier than the dialog can cover.
+    //
+    // Queued paths open one per frame, each behind its own bar.
+    void QueueInitialOpen(const std::filesystem::path& path);
 
     // Load a standalone PopcornFX effect (.pkb / .pkfx) into a NEW document and
     // play it. Unlike a model, there's no animation list — the effect just
@@ -388,11 +471,11 @@ public:
     // Empty when the focus actor is not a D3 player character, or with `.acr`
     // compiled out. Setting anything re-dresses the actor where it stands.
     struct D3CharacterSlot {
-        std::string name;                ///< "Torso", "Legs", "Boots", "Gloves", "Hair".
-        i32 slot = 0;                    ///< native::LookSlot, opaque to the UI.
-        std::vector<std::string> items;  ///< "Naked", "Heavy A", "Medium B (CLS)".
+        std::string name;               ///< "Torso", "Legs", "Boots", "Gloves", "Hair".
+        i32 slot = 0;                   ///< native::LookSlot, opaque to the UI.
+        std::vector<std::string> items; ///< "Naked", "Heavy A", "Medium B (CLS)".
         u32 selectedItem = 0;
-        u32 lookIndex = 0;               ///< Index into D3LookNames().
+        u32 lookIndex = 0; ///< Index into D3LookNames().
     };
     std::vector<D3CharacterSlot> D3CharacterSlots() const;
     void SetD3CharacterItem(i32 slot, u32 itemIndex);
@@ -464,7 +547,7 @@ private:
     // (actors, camera, clock) lives in the RenderService under `scene`.
     struct Document {
         SceneId scene = 0;
-        std::string title;                      // tab label (file stem)
+        std::string title; // tab label (file stem)
         std::filesystem::path modelPath;
         ActorId focusActor = 0;
         std::vector<std::string> sequenceNames;
@@ -533,6 +616,9 @@ private:
     // scene uses `provider` instead of the shared game provider, and HD-ness is
     // derived from the archive path (no filesystem MDX probe). `archivePath` is
     // a provider-native path (CASC ':'/'\\' separators).
+    // The document open itself, once whatever storage it needs is up.
+    bool OpenStorageDocumentNow(const std::string& archivePath, bool effect,
+                                std::shared_ptr<io::IContentProvider> provider);
     bool OpenStorageDocument(const std::string& archivePath, bool effect,
                              std::shared_ptr<io::IContentProvider> provider);
     // Common post-spawn flat-state fill (sequences, camera framing, presets)
@@ -640,10 +726,22 @@ private:
     // duplicate animation-clock tick.
     i32 lastParentTimeMs_ = 0;
 
+    // Paths handed over before the frame loop started (the startup picker),
+    // opened one per frame by Tick so each gets a drawable progress bar.
+    std::vector<std::filesystem::path> pendingInitialOpens_;
+
     // Pending animation export — filled by RequestAnimationExport, consumed
     // by the next Tick().
     bool exportPending_ = false;
     AnimationExportParams pendingExport_;
+
+    // LAST member, deliberately. Members are destroyed in reverse declaration
+    // order, so declaring it here is what makes it the FIRST thing torn down —
+    // and its destructor cancels the running task and joins the thread. A task
+    // body captures the Storage Explorer, the provider and this object; every
+    // one of them is still alive while that join happens, because every one of
+    // them is declared above.
+    io::LoadTaskRunner tasks_;
 
     friend class ViewerUI;
 };

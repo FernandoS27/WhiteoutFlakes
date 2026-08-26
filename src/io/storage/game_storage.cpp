@@ -1,5 +1,7 @@
 #include "game_storage.h"
 
+#include "io/progress.h"
+
 #include "casc_source.h"
 #include "mpq_source.h"
 #include "whiteout/flakes/util/path_utf8.h"
@@ -132,11 +134,23 @@ StorageBuilder& StorageBuilder::Archives(const std::string& installRoot,
     return *this;
 }
 
-std::unique_ptr<GameStorage> StorageBuilder::Build() {
+std::unique_ptr<GameStorage> StorageBuilder::Build(ProgressMonitor* progress) {
     std::unique_ptr<GameStorage> storage(new GameStorage(game_));
+
+    ProgressMonitor inert;
+    ProgressMonitor& m = progress ? *progress : inert;
+    // Archives are memory-mapped and cost effectively nothing next to a CASC
+    // open, so they share one unit between them rather than one each.
+    m.Begin("Opening storages", cascRoots_.size() + (archiveFiles_.empty() ? 0u : 1u));
 
 #if WHITEOUT_HAS_CASC
     for (std::string& root : cascRoots_) {
+        // One unit per install. StarCraft II and Heroes are two separate
+        // roots either of which may be absent, and without the split the
+        // second one restarts the bar at zero and reads as a hang.
+        ProgressMonitor step = m.Split(1);
+        if (m.Cancelled())
+            break;
         CascSourceOptions opts;
         opts.hdMode = hdMode_;
         opts.fileIds = fileIds_;
@@ -156,7 +170,7 @@ std::unique_ptr<GameStorage> StorageBuilder::Build() {
         // the second has never implied having the first.
         opts.zeroFillEncrypted = true;
         std::string error;
-        if (auto src = CascSource::Open(root, opts, error)) {
+        if (auto src = CascSource::Open(root, opts, error, &step)) {
             storage->sources_.push_back(std::move(src));
         } else {
             // Not necessarily a failure: StarCraft II and Heroes are offered
@@ -168,13 +182,17 @@ std::unique_ptr<GameStorage> StorageBuilder::Build() {
     storage->cascCount_ = storage->sources_.size();
 
 #if WHITEOUT_HAS_MPQ
+    ProgressMonitor archives = archiveFiles_.empty() ? ProgressMonitor{} : m.Split(1);
+    archives.Begin("Opening archives", archiveFiles_.size());
     for (std::string& file : archiveFiles_) {
+        archives.Note(file);
         std::string error;
         if (auto src = MpqSource::Open(file, error))
             storage->sources_.push_back(std::move(src));
         else
             std::printf("[FileContentProvider] Failed to open %s: %s\n", file.c_str(),
                         error.c_str());
+        archives.Worked();
     }
 #endif
     return storage;

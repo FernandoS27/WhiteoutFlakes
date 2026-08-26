@@ -14,6 +14,7 @@
 
 #include "file_resolver.h"
 #include "io/file_content_provider.h"
+#include "io/progress.h"
 #include "io/storage/game_rules.h"
 #include "io/storage/install_locator.h"
 #include "io/storage/storage_paths.h"
@@ -153,12 +154,23 @@ struct FileContentProvider::Impl {
         // ScanArchives walks a World of Warcraft install's Data/ directory,
         // which is work for a product the host may never select.
         bool configured = false;
-        // Config changed since `storage` was built, or it never was. The open
-        // itself is deferred further still — to the first read that cannot be
-        // answered without one.
-        bool dirty = true;
+        // Where this slot's storage is in its life. Atomic and readable
+        // WITHOUT storageMu, which is the whole point: an open holds the
+        // exclusive lock for its entire duration (seconds), so a host drawing
+        // "what is the storage doing" must be able to ask without joining the
+        // queue behind the answer.
+        //
+        // A bool cannot express this. Cancelled has to be told apart from
+        // Failed — a user who cancels must be able to retry without editing a
+        // setting, and a genuine failure must not be re-attempted on every
+        // read — and Opening has to be told apart from Dirty, or a status
+        // display reports "pending" for the whole of an open in flight.
+        std::atomic<StorageState> state{StorageState::Dirty};
     };
-    ProductId active = ProductId::Wc3;
+    // Read on the lock-free path of EnsureStorage, so it cannot be a plain
+    // ProductId: SetGame writes it under the exclusive lock while a worker may
+    // be reading it to pick a slot.
+    std::atomic<ProductId> active{ProductId::Wc3};
 
     std::string hotsInstallPath; // active Heroes root, for the Sc2 product
 
@@ -210,10 +222,10 @@ struct FileContentProvider::Impl {
     }
 
     GameSlot& Slot() {
-        return games[static_cast<usize>(active)];
+        return games[static_cast<usize>(active.load(std::memory_order_acquire))];
     }
     const GameSlot& Slot() const {
-        return games[static_cast<usize>(active)];
+        return games[static_cast<usize>(active.load(std::memory_order_acquire))];
     }
 
     // Fill in a slot's configuration from what is installed. Caller holds the
@@ -238,30 +250,71 @@ struct FileContentProvider::Impl {
     // exclusive lock.
     void Invalidate(ProductId game) {
         GameSlot& s = games[static_cast<usize>(game)];
-        s.dirty = true;
+        s.state.store(StorageState::Dirty, std::memory_order_release);
         s.storage.reset();
     }
 
     // Realise the active slot's deferred build. Call WITHOUT storageMu held —
-    // it takes the lock itself, shared for the common "already built" check
-    // and exclusive only for the one call that does the work.
-    void EnsureStorage() {
-        {
-            std::shared_lock sg(storageMu);
-            if (!Slot().dirty)
+    // it takes the lock itself, and only for the call that does the work.
+    //
+    // @param demanded True when a caller explicitly asked to open (a host
+    //        calling OpenStorages, typically from a background task), false
+    //        when a read merely needs one. The difference is Cancelled: an
+    //        explicit ask retries it, an incidental read does not. Otherwise
+    //        the model load that was waiting behind a cancelled open would
+    //        restart it immediately and Cancel would mean nothing.
+    // @param progress Where to report. Null for a read-triggered open, which
+    //        nobody asked to watch; non-null when a host ran OpenStorages as a
+    //        task. Borrowed for the duration of the call only — it lives on
+    //        the task body's stack, which is why it is a parameter and not a
+    //        member the host installs once.
+    void EnsureStorage(bool demanded = false, ProgressMonitor* progress = nullptr) {
+        // Lock-free fast path. Failed and Cancelled are terminal for a read —
+        // returning here is what stops every subsequent miss re-attempting a
+        // multi-second open that already answered.
+        switch (Slot().state.load(std::memory_order_acquire)) {
+        case StorageState::Open:
+        case StorageState::Failed:
+            return;
+        case StorageState::Cancelled:
+            if (!demanded)
                 return;
+            break;
+        default: // Dirty, or Opening on another thread — fall through and wait
+            break;
         }
+
         std::unique_lock sg(storageMu);
         GameSlot& s = Slot();
-        if (!s.dirty) // another thread got here first
+        // Re-checked under the lock: another thread may have finished the open
+        // while this one was queued on the mutex.
+        switch (s.state.load(std::memory_order_relaxed)) {
+        case StorageState::Open:
+        case StorageState::Failed:
             return;
-        s.dirty = false;
+        case StorageState::Cancelled:
+            if (!demanded)
+                return;
+            break;
+        default:
+            break;
+        }
+
+        s.state.store(StorageState::Opening, std::memory_order_release);
         StorageConfig cfg = s.config;
         cfg.secondaryPath = (cfg.game == ProductId::Sc2) ? hotsInstallPath : std::string{};
         // Replaced wholesale rather than mutated: a storage set is only ever
         // consistent as a whole, and the old one is dropped only once the new
         // one exists.
-        s.storage = BuildGameStorage(cfg, &hdMode);
+        s.storage = BuildGameStorage(cfg, &hdMode, progress);
+        // Cancellation is asked of the monitor rather than inferred from an
+        // empty result: a product whose install simply is not there also
+        // builds a storage with no sources, and that is Failed, not Cancelled.
+        const bool cancelled = progress && progress->Cancelled();
+        s.state.store(cancelled                                          ? StorageState::Cancelled
+                      : s.storage->HasCasc() || s.storage->HasArchives() ? StorageState::Open
+                                                                         : StorageState::Failed,
+                      std::memory_order_release);
     }
 
     void WorkerLoop() {
@@ -675,8 +728,23 @@ bool FileContentProvider::HasMpq() const {
 }
 
 bool FileContentProvider::StoragesPending() const {
-    std::shared_lock sg(impl_->storageMu);
-    return impl_->Slot().dirty;
+    return StoragesState() == StorageState::Dirty;
+}
+
+bool FileContentProvider::StoragesOpening() const {
+    return StoragesState() == StorageState::Opening;
+}
+
+StorageState FileContentProvider::StoragesState() const {
+    // No lock, deliberately — see the header. An open holds storageMu for its
+    // entire duration, and this is the one question a host must be able to ask
+    // while that is happening.
+    return impl_->Slot().state.load(std::memory_order_acquire);
+}
+
+bool FileContentProvider::OpenStorages(ProgressMonitor* progress) {
+    impl_->EnsureStorage(/*demanded=*/true, progress);
+    return StoragesState() == StorageState::Open;
 }
 
 const std::string& FileContentProvider::Wc3Path() const {

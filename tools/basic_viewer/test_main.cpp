@@ -1,12 +1,12 @@
 #include "cubeb_sound_emitter.h"
 #include "gfx/gfx.h"
 #include "renderer/animation/clip_playlist.h"
-#include "renderer/model/corn_effect_source.h"
-#include "renderer/frame_ticker.h"
-#include "renderer/model/model_instance.h"
-#include "renderer/model/model_loader.h"
 #include "renderer/debug/draw_trace.h"
 #include "renderer/dnc/dnc_service.h"
+#include "renderer/frame_ticker.h"
+#include "renderer/model/corn_effect_source.h"
+#include "renderer/model/model_instance.h"
+#include "renderer/model/model_loader.h"
 #include "renderer/particle/particle_service.h"
 #include "renderer/particle/particle_trace.h"
 #include "renderer/render_pipeline.h"
@@ -269,8 +269,8 @@ static int RunParticleDiff(whiteout::flakes::renderer::RenderService& renderer,
     }
 
     const i32 emitters = renderer.Particles().EmitterCount();
-    std::cout << "[ptrace] " << mdxPath.filename().string() << ": " << emitters
-              << " emitter(s), " << traceFrames << " frames" << std::endl;
+    std::cout << "[ptrace] " << mdxPath.filename().string() << ": " << emitters << " emitter(s), "
+              << traceFrames << " frames" << std::endl;
     if (emitters == 0)
         std::cout << "[ptrace] note: model has no PE2 emitters — trace covers PE1/none only"
                   << std::endl;
@@ -388,8 +388,7 @@ struct AnimScenario {
 
     bool Any() const {
         return !sequence.empty() || switchFrame >= 0 || layerFrame >= 0 || noGlobals || list ||
-               probe ||
-               solvers;
+               probe || solvers;
     }
 };
 
@@ -436,12 +435,11 @@ static i32 ResolveSequenceSpec(const std::vector<whiteout::flakes::SequenceInfo>
 // than emitting a divergent trace if a new need appears (§1.1 #13).
 static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
                         whiteout::flakes::renderer::SceneManager& scene,
-                        whiteout::flakes::gfx::GfxApi backend,
-                        const std::filesystem::path& mdxPath, const std::string& recordPath,
-                        const std::string& checkPath, const std::string& goldenPath, i32 frames,
-                        bool hdMode, f32 distanceTol, i32 cameraDistance, i32 perturbSeed,
-                        i32 instances, bool unlitOddGeosets, bool lazyAnim,
-                        const std::string& contentRoot, const AnimScenario& anim,
+                        whiteout::flakes::gfx::GfxApi backend, const std::filesystem::path& mdxPath,
+                        const std::string& recordPath, const std::string& checkPath,
+                        const std::string& goldenPath, i32 frames, bool hdMode, f32 distanceTol,
+                        i32 cameraDistance, i32 perturbSeed, i32 instances, bool unlitOddGeosets,
+                        bool lazyAnim, const std::string& contentRoot, const AnimScenario& anim,
                         const std::vector<std::filesystem::path>& attachAnims,
                         bool debugLight = false, bool noRefraction = false,
                         bool refractionMask = false, bool noMultiTex = false) {
@@ -513,8 +511,7 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
     // the silhouette faces away from every visible pixel — atten and N·L
     // never coincide and the pass proves nothing.
     if (debugLight) {
-        settings.SetDebugPointLight(true, {250.0f, -250.0f, 320.0f}, {2.0f, 1.8f, 1.4f},
-                                    900.0f);
+        settings.SetDebugPointLight(true, {250.0f, -250.0f, 320.0f}, {2.0f, 1.8f, 1.4f}, 900.0f);
     }
 
     // The gate's perturbation arm: a different first handle puts every actor
@@ -552,8 +549,7 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
         if (!hero)
             hero = a;
         spawned.push_back(a);
-        a->worldTransform = wf::Matrix44f::translation(
-            {static_cast<f32>(n) * 120.0f, 0.0f, 0.0f});
+        a->worldTransform = wf::Matrix44f::translation({static_cast<f32>(n) * 120.0f, 0.0f, 0.0f});
     }
     if (!hero) {
         std::cerr << "[dtrace] SpawnUnit failed: " << wf::io::PathToUtf8(mdxPath) << std::endl;
@@ -654,8 +650,8 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
         // Through the source rather than the template: `sourceTemplate` is only
         // set for actors born from the template cache, and a directly-spawned
         // one leaves it null.
-        if (auto* ms = dynamic_cast<wf::renderer::model::IModelSource*>(
-                hero->animation.Source().get()))
+        if (auto* ms =
+                dynamic_cast<wf::renderer::model::IModelSource*>(hero->animation.Source().get()))
             std::cout << "[dtrace] " << ms->GetSkeleton().nodeCount << " bone(s)" << std::endl;
         std::cout << "[dtrace] " << seqs.size() << " sequence(s):" << std::endl;
 #if WDX_ENABLE_M3
@@ -750,9 +746,8 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
                   << " perActorPalette=" << (sk.UsesPerActorPalette() ? "yes" : "no") << std::endl;
         for (const auto& geo : hero->render.gpuGeosets)
             std::cout << "[dtrace] probe: geoset " << geo.geosetId
-                      << " hasSkinning=" << (geo.hasSkinning ? "yes" : "no")
-                      << " paletteCb=" << (geo.bonePaletteCb != wf::gfx::BufferHandle::Invalid
-                                               ? "yes" : "no")
+                      << " hasSkinning=" << (geo.hasSkinning ? "yes" : "no") << " paletteCb="
+                      << (geo.bonePaletteCb != wf::gfx::BufferHandle::Invalid ? "yes" : "no")
                       << " paletteSlots=" << sk.GeosetPaletteSize(geo.geosetId)
                       << " layout=" << geo.layoutId << std::endl;
     }
@@ -1165,22 +1160,21 @@ static int RunMultiSceneTest(whiteout::flakes::renderer::RenderService& renderer
     auto [actorsA, geoA] = sceneGeosets(sceneA);
     auto [actorsB, geoB] = sceneGeosets(sceneB);
 
-    std::cout << "[multiscene] sceneA actors=" << actorsA << " geosets=" << geoA
-              << " mean=(" << mrA << "," << mgA << "," << mbA << ")  sceneB actors=" << actorsB
-              << " geosets=" << geoB << " mean=(" << mrB << "," << mgB << "," << mbB << ")"
-              << std::endl;
+    std::cout << "[multiscene] sceneA actors=" << actorsA << " geosets=" << geoA << " mean=(" << mrA
+              << "," << mgA << "," << mbA << ")  sceneB actors=" << actorsB << " geosets=" << geoB
+              << " mean=(" << mrB << "," << mgB << "," << mbB << ")" << std::endl;
 
     const bool isolated = (actorsA == 0 && geoA == 0) && (actorsB == 1 && geoB > 0);
     // Pixel corroboration where readback actually produced an image. The D3D12
     // capture ring can return all-zero for stacked offscreen targets — treat
     // that as "readback unavailable" (no evidence either way), not cross-bleed.
-    const bool readbackAvailable = okA && okB && !(mrA == 0 && mgA == 0 && mbA == 0) &&
-                                   !(mrB == 0 && mgB == 0 && mbB == 0);
+    const bool readbackAvailable =
+        okA && okB && !(mrA == 0 && mgA == 0 && mbA == 0) && !(mrB == 0 && mgB == 0 && mbB == 0);
     const bool pixelsOk = !readbackAvailable ||
                           ((std::abs(mrB - mrA) + std::abs(mgB - mgA) + std::abs(mbB - mbA)) > 0);
     const bool pass = isolated && pixelsOk;
-    std::cout << "[multiscene] " << (pass ? "PASS" : "FAIL")
-              << " (isolated=" << isolated << " pixelsOk=" << pixelsOk << ")" << std::endl;
+    std::cout << "[multiscene] " << (pass ? "PASS" : "FAIL") << " (isolated=" << isolated
+              << " pixelsOk=" << pixelsOk << ")" << std::endl;
 
     pipe.EnableFrameCapture(false);
     pipe.Shutdown();
@@ -1500,12 +1494,15 @@ int main(int argc, char* argv[]) {
     // Windows.
     using Api = whiteout::flakes::gfx::GfxApi;
     auto isMacOk = [](Api a) {
-        if (a == Api::Vulkan) return true;
+        if (a == Api::Vulkan)
+            return true;
 #if WDX_HAS_WEBGPU
-        if (a == Api::WebGPU) return true;
+        if (a == Api::WebGPU)
+            return true;
 #endif
 #if WDX_HAS_METAL
-        if (a == Api::Metal) return true;
+        if (a == Api::Metal)
+            return true;
 #endif
         return false;
     };
@@ -1687,20 +1684,34 @@ int main(int argc, char* argv[]) {
     // File > Open in the menu bar.
     if (mdxPath.empty()) {
         NFD::UniquePathU8 outPath;
-        nfdu8filteritem_t filter[4] = {{"All supported", whiteout::flakes::kOpenAllExtensions},
-                                       {"Warcraft III Model", "mdx,mdl"},
-                                       {"PKB Effect", "pkb,pkfx"},
-                                       {"Other Blizzard model",
-                                        whiteout::flakes::kForeignModelExtensions}};
+        nfdu8filteritem_t filter[4] = {
+            {"All supported", whiteout::flakes::kOpenAllExtensions},
+            {"Warcraft III Model", "mdx,mdl"},
+            {"PKB Effect", "pkb,pkfx"},
+            {"Other Blizzard model", whiteout::flakes::kForeignModelExtensions}};
         const nfdfiltersize_t nFilters = whiteout::flakes::kHasForeignModelFilter ? 4 : 3;
         if (NFD::OpenDialog(outPath, filter, nFilters) == NFD_OKAY)
             mdxPath = whiteout::flakes::io::FsPathFromUtf8(outPath.get());
     }
+    // Loading HERE, before the frame loop, is what made "open the app and pick
+    // a World of Warcraft model" freeze with nothing on screen: the install
+    // open and the client-database reads both happen on this thread, and there
+    // is no frame yet in which a progress bar could be drawn.
+    //
+    // So an interactive run hands the paths to the app and lets the first ticks
+    // open them through OpenModelAsync, behind the modal. The headless flags
+    // cannot: --attach-anim runs a few lines below and --export-anim counts a
+    // fixed number of ticks, so both need the model in hand right now.
+    const bool headlessWork = doExport || !attachAnims.empty();
+
     if (!mdxPath.empty()) {
         if (!std::filesystem::exists(mdxPath)) {
             std::cerr << "File not found: " << whiteout::flakes::io::PathToUtf8(mdxPath) << "\n";
-        } else if (!app.LoadModel(mdxPath)) {
-            std::cerr << "Failed to load model.\n";
+        } else if (headlessWork) {
+            if (!app.LoadModel(mdxPath))
+                std::cerr << "Failed to load model.\n";
+        } else {
+            app.QueueInitialOpen(mdxPath);
         }
     }
     // Open any additional positional paths in their own tabs. The last one
@@ -1708,8 +1719,12 @@ int main(int argc, char* argv[]) {
     for (const auto& extra : extraPaths) {
         if (!std::filesystem::exists(extra)) {
             std::cerr << "File not found: " << whiteout::flakes::io::PathToUtf8(extra) << "\n";
-        } else if (!app.LoadModel(extra)) {
-            std::cerr << "Failed to load model: " << whiteout::flakes::io::PathToUtf8(extra) << "\n";
+        } else if (headlessWork) {
+            if (!app.LoadModel(extra))
+                std::cerr << "Failed to load model: " << whiteout::flakes::io::PathToUtf8(extra)
+                          << "\n";
+        } else {
+            app.QueueInitialOpen(extra);
         }
     }
 

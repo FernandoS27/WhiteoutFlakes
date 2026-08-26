@@ -61,6 +61,7 @@ wdx_add_test(event_data_mode_test event_data_mode_test.cpp)
 # Per-product storage routing. Policy assertions run everywhere; the parts
 # that need a real WoW / SC2 / Heroes install skip without one.
 wdx_add_test(content_provider_games_test content_provider_games_test.cpp)
+wdx_add_test(progress_test progress_test.cpp)
 # The layer under it: path spelling, each game's archive rules, and what the
 # builder assembles. Opens no storage, so it needs no install at all.
 wdx_add_test(game_storage_test game_storage_test.cpp)

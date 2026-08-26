@@ -63,6 +63,7 @@
 
 namespace whiteout::flakes::io {
 class IContentProvider;
+class ProgressMonitor;
 }
 
 namespace whiteout::flakes::io::wow {
@@ -85,7 +86,8 @@ public:
     /// and so does the failure, because re-reading four tables and half a
     /// million rows on every spawn that is not an item is not a retry, it is a
     /// stall. Clear() when the provider changes.
-    bool Load(IContentProvider& provider);
+    /// @param progress Optional; see ChrCustomizationTable::Load.
+    bool Load(IContentProvider& provider, ProgressMonitor* progress = nullptr);
 
     void Clear();
 

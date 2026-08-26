@@ -14,6 +14,10 @@
 // See STORAGE_EXPLORER_DESIGN.md.
 
 #include "io/storage_browser.h"
+
+namespace whiteout::flakes::io {
+class LoadTaskRunner;
+}
 #include "thumbnail_pool.h"
 
 #include "renderer/render_service.h"
@@ -71,6 +75,10 @@ public:
     // Open a CASC archive root; points the explorer's OWN provider at it and
     // clears the thumbnail pool. Returns false + fills LastError() on failure.
     bool OpenCasc(const std::string& root);
+    // The panel/provider state an open implies, applied once the browser's
+    // tree is complete. Host thread only — it touches the thumbnail pool's
+    // GPU resources and the provider's configuration.
+    void FinishOpenCasc(const std::string& root);
     bool IsOpen() const {
         return browser_.IsOpen();
     }
@@ -88,6 +96,24 @@ public:
     }
     const std::string& LastError() const {
         return lastError_;
+    }
+
+    // Where a storage open should run. Injected rather than owned, for the
+    // same reason the game keys are asked for rather than pushed: a host
+    // with its own runner draws ONE progress modal, and a panel that made
+    // its own would put a second one behind it.
+    //
+    // Unset (the default) keeps the old synchronous open, which is what the
+    // headless self-tests want — there is no frame loop there to poll a bar.
+    void SetTaskRunner(io::LoadTaskRunner* runner) {
+        tasks_ = runner;
+    }
+
+    // An open is in flight on the task thread. The panel draws a placeholder
+    // instead of the listing while this is true: the browser's tree is being
+    // built from another thread and is not safe to walk.
+    bool Opening() const {
+        return opening_;
     }
 
     // ---- Per-frame host contract (call in this order) ----
@@ -208,6 +234,13 @@ private:
 
     renderer::RenderService& svc_;
     io::StorageBrowser browser_;
+    io::LoadTaskRunner* tasks_ = nullptr;
+    // Written on the host thread only (set before submitting, cleared in the
+    // completion), so the panel can test it without synchronisation.
+    bool opening_ = false;
+    // The task body's error slot. Not shared with lastError_: that one is
+    // read by the panel every frame, including while the task is running.
+    std::string openError_;
     std::shared_ptr<io::FileContentProvider> provider_;
     std::unique_ptr<ThumbnailPool> pool_;
 
