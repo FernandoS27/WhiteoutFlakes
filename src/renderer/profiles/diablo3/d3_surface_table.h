@@ -45,6 +45,7 @@
 
 #include <memory>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace whiteout::flakes::io {
@@ -85,6 +86,21 @@ struct D3Slot {
     /// The `EMaterialTextureType` this came from, for diagnostics. Never
     /// switched on outside D3SlotOfType.
     i32 rawType = 0;
+    /// @brief Which channels of this sample the surface consumes: bit 0 its
+    ///        RGB, bit 1 its ALPHA. Zero = the pass did not say, and the slot
+    ///        keeps its family default.
+    ///
+    /// Only a `Legacy.fx` pass states this, and it states it per stage - see
+    /// D3StageArg. It is the difference between "type 14 is an alpha mask" and
+    /// what the wing program actually does with type 14, which is multiply both
+    /// its rgb AND its alpha in.
+    u8 channels = 0;
+};
+
+/// @brief `D3Slot::channels` bits.
+enum : u8 {
+    kD3ChannelRgb = 0x1,
+    kD3ChannelAlpha = 0x2,
 };
 
 /// @brief The render state a Diablo III material does not carry.
@@ -160,6 +176,51 @@ struct D3PassState {
     /// where the original multiplies washed Imperius's wings from fire to
     /// white smoke.
     bool glowLights = false;
+
+    /// @brief Does this pass receive the scene's lights at all?
+    ///
+    /// `Render_EnsureShaderVariant` compiles one program per combination of
+    /// five clamped light counts, each read from **this pass's own tag map**;
+    /// and one further tag turns the whole light block off. `0xA000F` is that
+    /// tag, and over the corpus it separates the two perfectly: value 0 on 666
+    /// passes, every one of which binds a vertex program with no light block at
+    /// all, and value 1 on 114, every one of which has one. Absent on the
+    /// remaining 962 and the global default is ON.
+    ///
+    /// An unlit pass is not "dark": `result.color` is the **vertex colour,
+    /// verbatim** (`MOV result.color, vertex.attrib[3]` on 552 of the 637 unlit
+    /// assets), so the attribute is the whole light term and the pixel program
+    /// multiplies its texture chain by it. Lighting such a surface with the
+    /// scene's rig is what left Imperius's wings a dark sheet instead of fire.
+    bool lit = true;
+
+    /// `szEffectFile`, kept for the census and for diagnostics. Never switched
+    /// on outside D3PassStateFor — the flags above are the switch.
+    std::string effectFile;
+
+    /// @brief Did this pass carry the fixed-function stage block at all?
+    ///
+    /// `Legacy.fx` is the only family this shading model reproduces that does -
+    /// all 855 of its corpus passes carry it - and where it is present it
+    /// OVERRIDES the slot defaults, because it is the shipped answer and they
+    /// are a majority rule. See D3StageArg for the grammar.
+    bool stageArgs = false;
+
+    /// @brief Types whose stage feeds the colour / the alpha, one bit per
+    ///        `EMaterialTextureType`. Meaningless unless `stageArgs`.
+    u64 colorTypes = 0;
+    u64 alphaTypes = 0;
+
+    /// @brief The chain's output gain per channel: the product of its stages'
+    ///        MODULATE2X / MODULATE4X steps, 1 where nothing scales.
+    ///
+    /// Imperius's wings are (2, 4) - `cm2x` and `am4x`, which is also what the
+    /// shader asset is named - and the alpha half is what makes the tendrils a
+    /// sheet reaching the armour rather than a few separated strands: at x1
+    /// only the peaks of `diffuse.a * mask12.a * mask14.a` clear the
+    /// background, and the wing reads as detached from the model wearing it.
+    f32 colorGain = 1.0f;
+    f32 alphaGain = 1.0f;
 };
 
 struct D3Surface {
@@ -179,6 +240,20 @@ struct D3Surface {
     /// ShaderMap resolves, and from the material flags when it does not.
     f32 alphaTestThreshold = 0.0f;
     bool alphaBlend = false;
+    /// @brief Take no light: the vertex colour IS the light for this surface.
+    ///
+    /// `pass.lit` with one viewer deviation, made here because it needs the
+    /// geometry. A static family's vertex colour is a LEVEL BAKE, and outside a
+    /// level it ships (0, 0, 0) — measured 100 of the corpus's 132 unlit
+    /// sub-objects, 39 of them `Scene.fx`. Honouring `lit` there would multiply
+    /// the surface by black and draw a prop as a hole; the attribute is absent,
+    /// not zero. So an all-black attribute falls back to the viewer's rig,
+    /// which is the same call the shader's residency comment makes: in a viewer,
+    /// missing data must not become an invisible mesh.
+    ///
+    /// The content this is actually for keeps its answer — Imperius's wings
+    /// carry white on all 726 vertices, Malthael's on all 904.
+    bool unlit = false;
     /// The pass this sub-object binds, when its ShaderMap resolved.
     D3PassState pass;
 

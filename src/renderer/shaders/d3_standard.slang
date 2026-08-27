@@ -21,11 +21,66 @@
 // programs agree on, in one pass — the call M3_SIMPLE_MATERIAL_DESIGN made for
 // StarCraft II.
 //
-// The semantics are Blinn-Phong against `MaterialColors`, because that is
-// literally what the struct is: `{ diffuse, specular, emissive, ambient,
-// shininess, flags }`, four float4 and a float — a fixed-function material.
-// Deliberately NOT remapped to roughness/metalness: D3's material has no such
-// parameters, and inventing them would be inventing data.
+// The material semantics are fixed-function against `MaterialColors`, because
+// that is literally what the struct is: `{ diffuse, specular, emissive,
+// ambient, shininess, flags }`, four float4 and a float. Deliberately NOT
+// remapped to roughness/metalness: D3's material has no such parameters, and
+// inventing them would be inventing data.
+//
+// ---- The light model is the original's, transcribed --------------------------
+//
+// `Render_UploadLightConstants` resolves the bound pass to a variant holding
+// five clamped light counts and writes each scene light into its type's array:
+// 0 directional (3 float4), 1 point (5), 2 spot (6), 3 cylindrical (6),
+// 4 point-linear (4). `colAmbient` is separate and is a SUM — the engine starts
+// it from a scene base and adds every directional light's own ambient onto it.
+//
+// Two things make that reproducible in one loop:
+//
+//  * **A directional is a point with `w` = 0.** When the directional array is
+//    full the engine re-homes the light into the point array with its direction
+//    negated and attenuation (1, 0, 0) — `L = pos.xyz - P * pos.w` then reads a
+//    constant direction and the reciprocal is 1. The shipped vertex programs
+//    rely on this: they isolate the directional term for shadowing as
+//    `diffuse * (1 - pos.w)`, which only works because both live in one array.
+//
+//  * **Every shipped forward program has at most one point block.** Measured
+//    over the corpus's 1,466 distinct vertex programs: 796 have exactly one,
+//    670 have none, none has two. Plus one cylindrical on 470 of them. The
+//    16-per-type ceiling is a bound nothing reaches.
+//
+// Per light, from `scene_foliage_alphatest` and its `_spec` sibling, which
+// differ only by the specular term:
+//
+//     L      = lightPos.xyz - P * lightPos.w      ; w = 0 -> a direction
+//     atten  = 1 / (k0 + k1*d + k2*d*d)
+//     ambient += lightAmbient * atten             ; the per-light ambient is
+//     diffuse += lightDiffuse * max(N.L, 0) * atten   ; attenuated too
+//     spec    += lightSpecular * pow(max(dot(L, reflect(V, N)), 0), P) * atten
+//
+// and for the cylindrical light, whose axis the engine builds by pushing world
+// +Z through the view rotation:
+//
+//     Lc   = cylPos.xyz - P
+//     perp = sqrt(|Lc|^2 - dot(Lc, axis)^2)       ; distance from the axis
+//     f    = saturate((end - perp) * invRange)
+//     ambient += cylAmbient * f
+//     diffuse += cylDiffuse * max(dot(N, normalize(Lc)), 0) * f
+//
+// Three deliberate differences from the original, each for one reason:
+//
+//  1. **Per pixel, not per vertex.** The original evaluates all of the above in
+//     the VERTEX program and hands the pixel program two interpolants (the
+//     total light, halved so it survives the clamped colour register, and the
+//     ambient half unclamped in a texcoord). This shader is normal-mapped, so
+//     the light has to be evaluated where the normal is.
+//  2. **World space, not view space.** The engine transforms every light by the
+//     view matrix and works with the eye at the origin. The arithmetic above is
+//     invariant under that rigid transform; only the specular's view vector
+//     changes form, from `normalize(P)` to `normalize(P - eye)`.
+//  3. **Specular is PHONG, not Blinn.** `scene_foliage_alphatest_spec` builds
+//     `R = P - 2N(P.N)` and takes `dot(L, R)`. The exponent is the engine's
+//     `SpecularPower` constant, a global, not the material's `flShininess`.
 //
 // An *engine* shader on the embedded slangc path, for m2_combiners' reason:
 // `bls::PsoRequest` needs a `const BlsProgram*`, and producing a new `.bls`
@@ -59,22 +114,31 @@ static const int kD3SlotCount = 9;
 // Split by update frequency, both bound to both stages (Vulkan and WebGPU build
 // one descriptor set from the shared layout — see m2_combiners.slang).
 
+// The engine's light budget is authored per RenderPass as tag-map entries that
+// Render_EnsureShaderVariant clamps to 16 each; nothing shipped uses more than
+// one point and one cylindrical. Four leaves a rig room to add fill.
+static const int kD3MaxLights = 4;
+
 struct D3PassData
 {
     float4x4 view;
     float4x4 projection;
-    float4 cameraPosWS;      // .xyz eye in world space
-    float4 keyLightDir;      // .xyz direction the light TRAVELS, normalised
-    float4 keyLightDiffuse;  // .rgb
-    float4 keyLightSpecular; // .rgb
-    float4 ambient;          // .rgb scene ambient
-    // Three point lights. The original's budget is authored per RenderPass and
-    // clamped to 16 per type across five types (directional / point / spot /
-    // cylindrical / point-linear); we have no passes, so v1 is a fixed
-    // 1 directional + 3 point matching what the profile's rig supplies.
-    float4 pointPos[3];   // .xyz world position, .w 1 = live
-    float4 pointColor[3]; // .rgb
-    float4 pointAtten[3]; // 1 / (x + y*d + z*d*d)
+    float4 cameraPosWS;    // .xyz eye in world space
+    float4 colAmbient;     // .rgb — the engine's constant 21, itself a sum
+    float4 specularPower;  // .x — constant 39, a GLOBAL and not flShininess
+    // One array for directional and point both, exactly as the engine stores
+    // them: `.w` 0 makes `lightPos.xyz` a direction and the attenuation (1,0,0)
+    // makes the reciprocal 1.
+    float4 lightPos[kD3MaxLights];      // .xyz, .w 1 = point / 0 = direction
+    float4 lightAtten[kD3MaxLights];    // k0, k1, k2 | .w 1 = slot live
+    float4 lightAmbient[kD3MaxLights];  // .rgb, attenuated with the diffuse
+    float4 lightDiffuse[kD3MaxLights];  // .rgb
+    float4 lightSpecular[kD3MaxLights]; // .rgb
+    float4 cylPos;     // .xyz, .w 1 = live
+    float4 cylAxis;    // .xyz, unit
+    float4 cylRange;   // .x = 1/(end - start), .y = end
+    float4 cylAmbient; // .rgb
+    float4 cylDiffuse; // .rgb
 }
 
 struct D3DrawData
@@ -85,6 +149,10 @@ struct D3DrawData
     // vertex colour: bit 0 = its RGB is added into the light sum, bit 1 = its
     // alpha is the surface's. See D3PassState.
     float4 params0;
+    // The fixed-function chain's output gain: .x colour, .y alpha. `Legacy.fx`
+    // stages carry MODULATE2X / MODULATE4X steps and they multiply; 1 where
+    // nothing scales, which is every other family. See D3PassState::colorGain.
+    float4 params1;
     // MaterialColors, verbatim.
     float4 matDiffuse;
     float4 matSpecular;
@@ -283,9 +351,28 @@ float4 SampleSlot(int slot, Texture2D tex, float4 uv01)
     }
 }
 
+// Which channels of a slot's sample the surface takes, where the bound pass
+// said so per stage: bit 0 its RGB, bit 1 its ALPHA, 0 = it did not say. Only a
+// `Legacy.fx` pass does; every other family leaves this clear and the slot keeps
+// the default its type implies.
+uint SlotChannels(int slot)
+{
+    return draw.slotCtl[slot].w;
+}
+
 bool SlotOn(int slot)
 {
     return draw.slotCtl[slot].z != 0u;
+}
+
+// One mask layer's contribution, as a multiplier on (rgb, a). A slot the pass
+// said nothing about is alpha-only, which is what types 12/14/19 are on every
+// family that compiles its own program.
+float4 MaskWeight(uint channels, float4 s)
+{
+    let rgb = (channels & 0x1u) != 0u ? s.rgb : float3(1.0, 1.0, 1.0);
+    let a = (channels == 0u || (channels & 0x2u) != 0u) ? s.a : 1.0;
+    return float4(rgb, a);
 }
 
 [shader("fragment")]
@@ -301,13 +388,14 @@ float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
     // The host binds white for an absent 2D slot, so `SlotOn` is what
     // distinguishes "authored and still loading" from "not authored".
     //
-    // THE VERTEX COLOUR IS NOT A TINT. It used to multiply in here, and that is
+    // THE VERTEX COLOUR NEVER MULTIPLIES THE ALBEDO. It used to, and that is
     // what rendered most of the game's meshes solid black: the static families
     // bake the level's light into the attribute and ship (0, 0, 0) when there
     // is no bake — 84.6% of shipped sub-objects — so multiplying it away leaves
-    // nothing. `vs_scene` ADDS it into the light sum instead (see the lighting
-    // block below), and `vs_irrad_*` reads only its alpha. Neither touches the
-    // albedo.
+    // nothing. Every family reads it as a LIGHT term instead, in one of three
+    // ways the pass decides between (see the lighting block below): `vs_scene`
+    // adds it into the light sum, `vs_irrad_*` reads only its alpha, and an
+    // unlit program uses it AS the light. None of them touches the albedo.
     float4 albedo = draw.matDiffuse;
     if (SlotOn(kD3SlotDiffuse))
         albedo *= SampleSlot(kD3SlotDiffuse, texDiffuse, input.uv01);
@@ -316,18 +404,32 @@ float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
     if ((vertexColorMode & 0x2u) != 0u)
         albedo.a *= input.vertexCol.a;
 
-    // The alpha-mask layers multiply into the surface's alpha and contribute no
-    // colour. This is where a transparent D3 surface gets its shape: the base
-    // map of a smoke plume or a wing is opaque, and every one of these programs
-    // reads its rgb only, taking the opacity from one to three separate masks.
+    // The alpha-mask layers multiply into the surface's alpha. This is where a
+    // transparent D3 surface gets its shape: the base map of a smoke plume or a
+    // wing is opaque, and the opacity comes from one to three separate masks.
+    //
+    // "Alpha mask" is the majority reading of types 12/14/19 and not a property
+    // of the type: a `Legacy.fx` pass states per stage which channels its
+    // texture feeds, and Imperius's wings multiply type 14's RGB into the
+    // colour as well as its alpha into the alpha. Where the pass said so, that
+    // wins; where it did not, `channels` is 0 and the alpha-only default holds.
     // Spelled out rather than looped: a dynamic texture select inside an
     // unrolled loop is what fxc refuses to unroll.
     if (SlotOn(kD3SlotAlphaMask0))
-        albedo.a *= SampleSlot(kD3SlotAlphaMask0, texAlphaMask0, input.uv01).a;
+        albedo *= MaskWeight(SlotChannels(kD3SlotAlphaMask0),
+                             SampleSlot(kD3SlotAlphaMask0, texAlphaMask0, input.uv01));
     if (SlotOn(kD3SlotAlphaMask1))
-        albedo.a *= SampleSlot(kD3SlotAlphaMask1, texAlphaMask1, input.uv01).a;
+        albedo *= MaskWeight(SlotChannels(kD3SlotAlphaMask1),
+                             SampleSlot(kD3SlotAlphaMask1, texAlphaMask1, input.uv01));
     if (SlotOn(kD3SlotAlphaMask2))
-        albedo.a *= SampleSlot(kD3SlotAlphaMask2, texAlphaMask2, input.uv01).a;
+        albedo *= MaskWeight(SlotChannels(kD3SlotAlphaMask2),
+                             SampleSlot(kD3SlotAlphaMask2, texAlphaMask2, input.uv01));
+
+    // The chain's output gain, alpha half. Saturated because the fixed-function
+    // pipeline clamps every stage and because this value is a blend factor: the
+    // wings' x4 is what turns `diffuse.a * mask12.a * mask14.a` from a handful
+    // of surviving peaks into the sheet the armour actually wears.
+    albedo.a = saturate(albedo.a * draw.params1.y);
 
     // Against the whole alpha, masks included: the original's alpha test runs on
     // the value the pass is about to blend, not on the base map alone.
@@ -355,83 +457,128 @@ float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
 
     let V = normalize(pass.cameraPosWS.xyz - input.worldPos.xyz);
 
-    // Ambient. Scene ambient lights the surface directly and `vAmbient` ADDS to
-    // it — it does not gate it. Measured over 200 corpus `.app` (1,764
-    // materials): `vAmbient` is all-zero on 98.1% of them, so the previous
-    // `pass.ambient * matAmbient` multiplied the scene's ambient away on
-    // essentially every D3 surface. That is what left the unlit side black and
-    // made raising the rig's ambient do nothing at all.
-    //
-    // It matches the engine's own shape: `Render_UploadLightConstants` builds
-    // ONE `colAmbient` for the scene by summing each directional light's
-    // ambient onto a base, and that is a scene term, not a per-material mask.
-    //
-    // The irradiance slot (type 8) is a further ambient term when authored; its
-    // unresolved default is black, so an absent slot contributes nothing.
-    float3 ambient = pass.ambient.rgb + draw.matAmbient.rgb;
-    if (SlotOn(kD3SlotIrradiance))
-        ambient += SampleSlot(kD3SlotIrradiance, texIrradiance, input.uv01).rgb;
-
-    // The baked per-vertex light, for the families whose vertex program reads
-    // it. `vs_scene` closes with `MAD R0.xyz, vertex.attrib[3], 2, R0` then
-    // `MUL result.color.xyz, R0, 0.5` — the attribute enters the light sum at
-    // unit weight, alongside the ambient and directional terms, and this sum is
-    // already normalised the same way. Gated because the actor families leave
-    // the attribute at white while computing their light entirely in the vertex
-    // shader; adding it there would lift every character by a full unit.
-    if ((vertexColorMode & 0x1u) != 0u)
-        ambient += input.vertexCol.rgb;
-
     // Specular needs the MAP, not just the material colour. Measured over 200
     // corpus `.app` (1,764 materials): `vSpecular` is 1.0 on 99.0% of them and
     // `flShininess` is 0.0 on 99.4%. Neither carries a strength — they are a
     // tint and an unset field — so the per-pixel strength lives in the
     // specular map, and with the slot unresolved there is no signal at all.
     //
-    // So an absent slot means NO specular rather than full white specular.
-    // Taking the tint raw put a broad glossy highlight on every surface in the
-    // game, which is a fabricated term, not a dim one: nothing in the file
-    // asked for it.
+    // The shipped `_spec` programs agree: they multiply the vertex specular by
+    // the GLOSS map (type 5) and add the product after the albedo multiply,
+    // never before. An absent slot therefore means NO specular rather than full
+    // white specular — taking the tint raw put a broad glossy highlight on
+    // every surface in the game, which is a fabricated term, not a dim one.
     float3 specTint = float3(0.0, 0.0, 0.0);
     if (SlotOn(kD3SlotSpecular))
         specTint = draw.matSpecular.rgb * SampleSlot(kD3SlotSpecular, texSpecular, input.uv01).rgb;
-    let shininess = max(draw.params0.y, 1.0);
 
-    // Key directional.
+    // ---- The light sum, the original's shape -------------------------------
+    //
+    // Split in two because the original splits it: the ambient half rides a
+    // texcoord unclamped and the pixel program can substitute it for the whole
+    // sum when a surface is in shadow, so ambient and diffuse are never one
+    // number in a shipped program either.
+    float3 ambient = float3(0.0, 0.0, 0.0);
     float3 diffuseSum = float3(0.0, 0.0, 0.0);
     float3 specSum = float3(0.0, 0.0, 0.0);
+
+    // AN UNLIT PASS TAKES NO LIGHT AND ITS VERTEX COLOUR IS THE LIGHT. The pass
+    // says which it is (`D3PassState::lit`, tag 0xA000F, measured to separate
+    // the corpus perfectly), and an unlit vertex program ends
+    // `MOV result.color, vertex.attrib[3]` — the attribute verbatim, which the
+    // pixel program then multiplies its texture chain by. Imperius's wings are
+    // this: `Legacy.fx`, unlit, vertex colour white on all 726 vertices. Lighting
+    // them with the scene's rig is what drew them as a dark sheet.
+    if ((vertexColorMode & 0x4u) != 0u)
     {
-        let L = -normalize(pass.keyLightDir.xyz); // toward the light
-        let ndl = saturate(dot(N, L));
-        diffuseSum += pass.keyLightDiffuse.rgb * ndl;
-        if (ndl > 0.0)
+        ambient = input.vertexCol.rgb;
+    }
+    else
+    {
+        // `colAmbient` lights the surface directly and `vAmbient` ADDS to it —
+        // it does not gate it. Measured over 200 corpus `.app` (1,764
+        // materials): `vAmbient` is all-zero on 98.1% of them, so multiplying
+        // the two would erase the scene's ambient on essentially every D3
+        // surface, which is what used to leave the unlit side black.
+        ambient = pass.colAmbient.rgb + draw.matAmbient.rgb;
+
+        // The baked per-vertex light, for the families whose vertex program
+        // reads it. `vs_scene` closes `MAD R0.xyz, vertex.attrib[3], 2, R0` /
+        // `MUL result.color.xyz, R0, 0.5`, and the pixel program opens
+        // `MUL R2, fragment.color.primary, 2` — the halving is only there to
+        // survive the clamped colour register, so the attribute enters the
+        // light sum at TWICE unit weight, not once. Measured on 148 of the 167
+        // Scene.fx vertex programs. Gated because the actor families leave the
+        // attribute at white and compute their light in the vertex shader.
+        if ((vertexColorMode & 0x1u) != 0u)
+            ambient += input.vertexCol.rgb * 2.0;
+
+        // Phong, not Blinn: the shipped `_spec` programs reflect the eye-to-
+        // surface vector about the normal and dot it with L. In view space the
+        // eye is the origin, so their `R = P - 2N(P.N)` is this `reflect(-V, N)`.
+        let R = reflect(-V, N);
+        let specPower = max(pass.specularPower.x, 1.0);
+
+        [unroll]
+        for (int i = 0; i < kD3MaxLights; ++i)
         {
-            let H = normalize(L + V);
-            specSum += pass.keyLightSpecular.rgb * pow(saturate(dot(N, H)), shininess);
+            // `w` = 1 makes this a point light and `w` = 0 a directional whose
+            // `.xyz` is already the direction TOWARD the light — the engine
+            // negates it on the way in.
+            let lp = pass.lightPos[i];
+            let d = lp.xyz - input.worldPos.xyz * lp.w;
+            let dist = length(d);
+            let L = (dist > 1e-4) ? d / dist : float3(0.0, 0.0, 1.0);
+            let a = pass.lightAtten[i];
+            // `.w` is the live bit, so a dead slot attenuates to zero without
+            // the shader testing a count — the engine clears unused slots from
+            // a neutral template for the same reason.
+            let atten = a.w / max(a.x + a.y * dist + a.z * dist * dist, 1e-4);
+            ambient += pass.lightAmbient[i].rgb * atten;
+            let ndl = saturate(dot(N, L));
+            diffuseSum += pass.lightDiffuse[i].rgb * (ndl * atten);
+            specSum += pass.lightSpecular[i].rgb * (pow(saturate(dot(L, R)), specPower) * atten);
         }
+
+        // The cylindrical light — D3's hero light, a vertical tube around a
+        // point with a linear radial falloff. Its ambient half is what keeps a
+        // character's shadow side off the floor of the frame.
+        {
+            let lc = pass.cylPos.xyz - input.worldPos.xyz;
+            let axial = dot(lc, pass.cylAxis.xyz);
+            let perp = sqrt(max(dot(lc, lc) - axial * axial, 0.0));
+            let f = saturate((pass.cylRange.y - perp) * pass.cylRange.x) * pass.cylPos.w;
+            ambient += pass.cylAmbient.rgb * f;
+            let lcLen = length(lc);
+            let L = (lcLen > 1e-4) ? lc / lcLen : float3(0.0, 0.0, 1.0);
+            diffuseSum += pass.cylDiffuse.rgb * (saturate(dot(N, L)) * f);
+        }
+
     }
 
-    // Three point lights, attenuated by 1 / (k0 + k1*d + k2*d*d). A dead slot
-    // carries colour zero and a constant attenuation of 1, so the reciprocal is
-    // defined without the shader testing a count.
-    [unroll]
-    for (int i = 0; i < 3; ++i)
-    {
-        let d = pass.pointPos[i].xyz - input.worldPos.xyz;
-        let dist = length(d);
-        let L = (dist > 1e-4) ? d / dist : float3(0.0, 0.0, 1.0);
-        let atten = pass.pointPos[i].w /
-                    max(pass.pointAtten[i].x + pass.pointAtten[i].y * dist +
-                            pass.pointAtten[i].z * dist * dist,
-                        1e-4);
-        let ndl = saturate(dot(N, L));
-        diffuseSum += pass.pointColor[i].rgb * (ndl * atten);
-        if (ndl > 0.0)
-        {
-            let H = normalize(L + V);
-            specSum += pass.pointColor[i].rgb * (pow(saturate(dot(N, H)), shininess) * atten);
-        }
-    }
+    // THE IRRADIANCE FAMILY'S AMBIENT CARRIES A FACTOR OF `2 * cube`, AND THIS
+    // TREATS THE PAIR AS UNITY. `actor2_opaque` and `actor2_alphatest` — the
+    // two commonest actor programs, and they agree instruction for instruction
+    // — compose as
+    //
+    //     light = irradCube(N) * (secondary * 2) + primary
+    //     color = light * albedo * c[4] * 2 + rim
+    //
+    // with the vertex program writing `secondary = ambient * 0.5` and
+    // `primary = direct * 0.5`. Multiplied out, the ambient half arrives at
+    // `2 * cube` and the direct half at `1`. The `2` is a literal in the
+    // program; the cube is a texture this slot cannot sample — type 8 is a CUBE
+    // read through `matWorldIrrad` and the slot is a Texture2D.
+    //
+    // So the factor is known and its companion is not, and the two choices for
+    // an unsampled multiplicand disagree by 2x: the mechanical neutral for an
+    // unbound multiply is 1, which doubles every character's ambient, while an
+    // irradiance map normalised so a flat white environment integrates to 0.5
+    // cancels the literal exactly. Taking the first would light every
+    // ActorIrrad surface at twice the ambient of the Scene.fx prop standing
+    // beside it, which is the one thing the pair certainly does not do — both
+    // families light the same world. So: unity, stated, and the place to revisit
+    // the day the cube is sampled for real.
 
     // The lightmap (type 2) multiplies the lit result — that is what a baked
     // lighting term is — and its unresolved default is `default_lightmap`,
@@ -463,11 +610,29 @@ float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
     // The host only fills this slot for the families that ADD it at all: the
     // Legacy programs multiply it instead, and adding where they multiply
     // washed a wing of fire out to white smoke.
+    // Where the pass STATES that its glow stage feeds the colour, it means the
+    // fixed-function multiply, not this add: `actor_glowTendril_cm2x_bloom_skin`
+    // closes on `2 * vcol * glow.rgb * diffuse.rgb * mask14.rgb` and there is no
+    // light term anywhere in it. Dropping the map entirely was the safe answer
+    // while the two Legacy programs disagreed; the stage block is what settles
+    // it, and the wings were a dim smear without it.
+    float3 glowMul = float3(1.0, 1.0, 1.0);
     float3 emissive = draw.matEmissive.rgb;
     if (SlotOn(kD3SlotEmissive))
-        emissive += SampleSlot(kD3SlotEmissive, texEmissive, input.uv01).rgb;
+    {
+        let g = SampleSlot(kD3SlotEmissive, texEmissive, input.uv01).rgb;
+        if ((SlotChannels(kD3SlotEmissive) & 0x1u) != 0u)
+            glowMul = g;
+        else
+            emissive += g;
+    }
 
-    float3 color = albedo.rgb * (ambient + diffuseSum * lightmap + emissive) + specSum * specTint;
+    float3 color = albedo.rgb * glowMul * (ambient + diffuseSum * lightmap + emissive) +
+                   specSum * specTint;
+    // The chain's output gain, colour half. Not saturated: the original does not
+    // either — its `MUL result.color.xyz, R0, c[0].y` runs straight into a UNORM
+    // target, and clamping here would cost the HDR path its headroom.
+    color *= draw.params1.x;
 
     // matDiffuse.a once, not twice: the element/fade alpha rides on it host-side
     // and it was being squared here.

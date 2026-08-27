@@ -1206,3 +1206,549 @@ TEST_CASE("D3 install: the doodad that rendered black", "[d3][material][install]
     }
     CHECK(checked == std::size(kWant));
 }
+
+// ============================================================================
+// The lighting switch, and the surface it was found on.
+//
+// `Render_EnsureShaderVariant` compiles one GPU program per combination of five
+// clamped light counts, each read from the RenderPass's own tag map. One tag
+// above those turns the light block off entirely, and this is the measurement
+// that identifies it: pair every corpus `.shd` with the ARB vertex programs
+// shipped beside it under `OpenGLShaders/` and ask whether the program contains
+// a light block at all.
+//
+// The signature is unmistakable — `MAD Rd.xyz, -Rs, c[N].w, c[N]` is
+// `L = lightPos.xyz - P * lightPos.w`, the one instruction that makes a point
+// light and a directional share an array — and it is the only place a constant
+// is used both as a vector and as its own `.w` in the same instruction.
+// ============================================================================
+
+TEST_CASE("D3 corpus: a pass says whether it takes light at all", "[d3][corpus]") {
+    const auto shd = CorpusRoot() / "Shaders";
+    const auto gl = CorpusRoot() / "OpenGLShaders";
+    if (!fs::is_directory(shd) || !fs::is_directory(gl)) {
+        WARN("No D3 Shaders/OpenGLShaders corpus. SKIPPED, not passed.");
+        return;
+    }
+
+    // Asset name -> the ARB vertex programs compiled for it. One name can carry
+    // several, one per shader variant.
+    std::map<std::string, std::vector<fs::path>> vsByName;
+    for (const auto& de : fs::directory_iterator(gl)) {
+        const auto file = de.path().filename().string();
+        const auto ext = file.find(".vs.glsl");
+        // "<name>_<8 hex>.vs.glsl"
+        if (ext == std::string::npos || ext < 9)
+            continue;
+        vsByName[file.substr(0, ext - 9)].push_back(de.path());
+    }
+
+    // `MAD R0.xyz, -R1, c[25].w, c[25];` -- the same constant twice, once whole
+    // and once as its own `.w`. Nothing else in these programs does that.
+    auto hasLightBlock = [](const fs::path& p) {
+        const auto bytes = ReadAll(p);
+        const std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        for (std::size_t i = 0; (i = text.find("MAD R", i)) != std::string::npos; ++i) {
+            const auto eol = text.find('\n', i);
+            const auto line = text.substr(i, (eol == std::string::npos ? text.size() : eol) - i);
+            const auto w = line.find("].w, c[");
+            if (w == std::string::npos || line.find(".xyz, -R") == std::string::npos)
+                continue;
+            const auto open = line.rfind("c[", w);
+            if (open == std::string::npos)
+                continue;
+            const auto close = line.find(']', w + 7);
+            if (close == std::string::npos)
+                continue;
+            if (line.substr(open + 2, w - open - 2) == line.substr(w + 7, close - w - 7))
+                return true;
+        }
+        return false;
+    };
+
+    constexpr u32 kTag = 0xA000Fu;
+    std::size_t off = 0, offUnlit = 0, on = 0, onLit = 0, absent = 0, absentLit = 0;
+    std::map<u32, std::size_t> values;
+    for (const auto& de : fs::directory_iterator(shd)) {
+        if (de.path().extension() != ".shd")
+            continue;
+        auto sh = d3n::parseShaders(ReadAll(de.path()));
+        if (!sh)
+            continue;
+        const auto it = vsByName.find(de.path().stem().string());
+        if (it == vsByName.end())
+            continue;
+        // Only an asset whose variants agree can settle anything.
+        const bool lit = hasLightBlock(it->second.front());
+        bool agree = true;
+        for (const auto& v : it->second)
+            agree = agree && (hasLightBlock(v) == lit);
+        if (!agree)
+            continue;
+
+        for (const auto& p : sh->arRenderPasses) {
+            const d3n::ShaderTagMapEntry* tag = nullptr;
+            for (const auto& t : p.arShaderParams)
+                if (t.dwTagId == kTag)
+                    tag = &t;
+            if (!tag) {
+                ++absent;
+                absentLit += lit ? 1 : 0;
+                continue;
+            }
+            ++values[tag->dwValue];
+            if (tag->dwValue == 0) {
+                ++off;
+                offUnlit += lit ? 0 : 1;
+            } else {
+                ++on;
+                onLit += lit ? 1 : 0;
+            }
+        }
+    }
+    std::printf("[d3-lit] tag 0x%X: value 0 on %zu passes (%zu with no light block), nonzero on "
+                "%zu (%zu with one), absent on %zu (%zu with one)\n",
+                kTag, off, offUnlit, on, onLit, absent, absentLit);
+    for (const auto& [v, n] : values)
+        std::printf("[d3-lit]   value %u: %zu\n", v, n);
+
+    REQUIRE(off > 100);
+    REQUIRE(on > 20);
+    // The claim: the tag decides it, with no residue. Measured 666/666 and
+    // 114/114 over the corpus.
+    CHECK(offUnlit == off);
+    CHECK(onLit == on);
+    // And the global default behind an absent tag is ON, by a wide margin.
+    CHECK(absentLit * 10 > absent * 8);
+    // Only ever a flag.
+    for (const auto& [v, n] : values) {
+        INFO("tag value " << v << " on " << n << " passes");
+        CHECK(v <= 1u);
+    }
+}
+
+// ============================================================================
+// Imperius's wings, which is where both halves of this landed.
+//
+// The report was that they occlude each other, and asked whether depth write
+// was not disabled for them. It is, and this pins that end to end — because the
+// answer is that a near-black surface at high alpha is indistinguishable from
+// an occluder, and the blackness was the lighting rather than the depth state.
+// ============================================================================
+
+TEST_CASE("D3 install: the wings are unlit, blended and depth-write-off",
+          "[d3][material][install]") {
+    using ::whiteout::flakes::ProductId;
+    flakes::io::FileContentProvider provider;
+    if (const char* root = std::getenv("WDX_TEST_D3_INSTALL"); root && *root)
+        provider.SetInstallPath(root);
+    provider.SetGame(ProductId::D3);
+    if (provider.GamePath(ProductId::D3).empty()) {
+        WARN("No Diablo III install (set WDX_TEST_D3_INSTALL). SKIPPED, not passed.");
+        return;
+    }
+    flakes::io::D3SnoCache cache(&provider);
+
+    struct Want {
+        const char* file;
+        const char* sub;
+        bool lit;       ///< tag 0xA000F
+        bool blends;
+        bool depthWrite;
+        bool whiteVcol; ///< an unlit surface with no vertex colour draws black.
+        /// The fixed-function chain, decoded: which types feed the colour,
+        /// which feed the alpha, and the two output gains. Zero and 0.0f mean
+        /// "this pass carries no stage block", which every non-Legacy entry
+        /// here does.
+        u64 colorTypes;
+        u64 alphaTypes;
+        f32 colorGain;
+        f32 alphaGain;
+    };
+    // One bit per EMaterialTextureType: 1 base map, 6 glow, 12/14/16 masks.
+    constexpr u64 kT1 = 1ull << 1, kT6 = 1ull << 6, kT12 = 1ull << 12, kT14 = 1ull << 14,
+                  kT16 = 1ull << 16;
+    const Want kWant[] = {
+        // Imperius. Stages (6, 1, 12, 14), and both halves of
+        // `actor_glowTendril_cm2x_bloom_skin` verbatim:
+        //     colour = 2 * vcol * glow.rgb * diffuse.rgb * mask14.rgb
+        //     alpha  = 4 * vcol.a * diffuse.a * mask12.a * mask14.a
+        {"Imperius", "wing_mat", false, true, false, true, kT1 | kT6 | kT14, kT1 | kT12 | kT14,
+         2.0f, 4.0f},
+        // Malthael takes no glow into the colour and stacks his alpha gain to
+        // 16 across four stages -- the same grammar, a different chain.
+        {"x1_Malthael", "wingOuter_mat", false, true, false, true, kT12 | kT14,
+         kT1 | kT12 | kT14 | kT16, 1.0f, 16.0f},
+        // Cain's smoke plume is the OTHER Legacy program, and the one that made
+        // the glow map look ruleless: its colour chain is three replaces and an
+        // add (`saturate(diffuse + glow)`), so nothing modulates the colour and
+        // the glow keeps the additive path. Its alpha is the two masks at x2.
+        {"a1_Id_All_Book_Of_Cain", "SMOKE", false, true, false, true, 0, kT12 | kT14, 1.0f, 2.0f},
+        // The body beside them: lit, and it writes depth. Both halves matter --
+        // treating every blended surface as sorted would sweep in every D3
+        // character, and treating every Legacy surface as unlit would flatten
+        // the ones that do take light. ActorIrrad compiles its own program and
+        // carries no stage block at all, which is what the zeroes say.
+        {"Imperius", "A_normal_mat", true, true, true, true, 0, 0, 1.0f, 1.0f},
+    };
+
+    std::size_t checked = 0;
+    for (const auto& w : kWant) {
+        auto app = d3n::parseAppearances(
+            ReadAll(CorpusRoot() / "Appearances" / (std::string(w.file) + ".app")));
+        if (!app) {
+            WARN("missing " << w.file << " -- SKIPPED, not passed.");
+            continue;
+        }
+        const d3n::GeoSet* sets[2] = {&app->tGeoSet0, &app->tGeoSet1};
+        const d3n::SubObject* sub = nullptr;
+        for (const auto* set : sets)
+            for (const auto& s : set->arSubObjects)
+                if (EqualCiSv(s.szName, w.sub))
+                    sub = &s;
+        REQUIRE(sub != nullptr);
+        const auto* v = flakes::io::D3VariantFor(*app, *sub, 0);
+        REQUIRE(v != nullptr);
+        const auto st = d3p::D3PassStateFor(*v, &cache);
+        if (!st.resolved) {
+            WARN(w.file << " / " << w.sub << ": ShaderMap did not resolve -- SKIPPED.");
+            continue;
+        }
+        ++checked;
+
+        std::size_t white = 0;
+        for (const auto& vx : sub->arVertices) {
+            const auto c = d3n::vertexColor(vx);
+            white += (c.r == 255 && c.g == 255 && c.b == 255) ? 1 : 0;
+        }
+        std::printf("[d3-wing] %-24s %-16s lit=%d fx=%-14s blend=%d dW=%d cull=%u white=%zu/%zu"
+                    " rgb=0x%llx a=0x%llx gain=(%.0f, %.0f)\n",
+                    w.file, w.sub, st.lit, st.effectFile.c_str(), st.blendEnable, st.depthWrite,
+                    st.cull, white, sub->arVertices.size(),
+                    static_cast<unsigned long long>(st.colorTypes),
+                    static_cast<unsigned long long>(st.alphaTypes), st.colorGain, st.alphaGain);
+
+        CHECK(st.lit == w.lit);
+        CHECK(st.blendEnable == w.blends);
+        CHECK(st.depthWrite == w.depthWrite);
+        if (w.whiteVcol)
+            CHECK(white == sub->arVertices.size());
+        // The stage block, decoded. Imperius's wings are the whole grammar in
+        // one pass: stages (6, 1, 12, 14), colour from the glow, the base map
+        // and mask 14 at x2, alpha from the base map and both masks at x4 —
+        // which is what `actor_glowTendril_cm2x_bloom_skin` closes on, and what
+        // makes the tendrils a sheet reaching the armour instead of a few
+        // separated strands floating beside it.
+        CHECK(st.stageArgs == (w.colorTypes != 0 || w.alphaTypes != 0));
+        CHECK(st.colorTypes == w.colorTypes);
+        CHECK(st.alphaTypes == w.alphaTypes);
+        if (st.stageArgs) {
+            CHECK(st.colorGain == w.colorGain);
+            CHECK(st.alphaGain == w.alphaGain);
+        }
+
+        // And the classification the sorted-transparent bucket is chosen by: a
+        // blended pass that does not write depth is the one that cannot be
+        // depth-resolved, so it is the one that gets sorted.
+        d3p::D3Surface surf;
+        surf.valid = true;
+        surf.pass = st;
+        surf.alphaBlend = st.blendEnable;
+        const auto sc = d3p::D3ClassifySurface(surf);
+        CHECK(sc.visible);
+        CHECK((sc.blend == whiteout::flakes::renderer::core::BlendClass::Transparent) ==
+              (w.blends && !w.depthWrite));
+    }
+    CHECK(checked >= 3);
+}
+
+// ============================================================================
+// The fixed-function stage block, against the programs it was compiled into.
+//
+// `Legacy.fx` is the engine's fixed-function path: its passes carry three
+// groups of six tags — an op at 0xA0010+i and two combine codes at 0xA0016+i
+// (colour) and 0xA001C+i (alpha) — and the shipped ARB programs are what those
+// codes were compiled into. Pairing the two is the only way to read them, and
+// it settles two things this shading model needs:
+//
+//   * WHICH CHANNEL each stage's texture feeds. `TEX R0.w` samples alpha only,
+//     `TEX R0.xyz` colour only and `TEX R0` both, so the destination swizzle is
+//     the answer written down.
+//   * THE OUTPUT GAIN. A units digit of 4 is a MODULATE2X and of 5 a
+//     MODULATE4X, and they multiply — which the program folds into the constant
+//     its last instruction multiplies in. Imperius's wings are (2, 4), and the
+//     shader asset is called `actor_glowTendril_cm2x_bloom_skin`.
+//
+// Both are majority rules and reported as such: a pass is matched to a program
+// only where the match is unambiguous (one pass with that stage count, one
+// program with that sampler count, and every variant of it agreeing), which is
+// what makes a percentage mean anything here.
+// ============================================================================
+
+namespace {
+
+// The first ARB program in a `.ps.glsl` blob. The file repeats it once per
+// shader variant and they are byte-identical; the first is the whole content.
+std::string ArbProgram(const fs::path& p) {
+    const auto bytes = ReadAll(p);
+    const std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    const auto b = text.find("!!ARBfp1.0");
+    if (b == std::string::npos)
+        return {};
+    const auto e = text.find("END", b);
+    return text.substr(b, (e == std::string::npos ? text.size() : e + 3) - b);
+}
+
+// `texture[N]` -> {reads rgb, reads alpha}, from the TEX destination swizzles.
+struct ArbSampler {
+    bool rgb = false;
+    bool alpha = false;
+};
+
+std::map<int, ArbSampler> ArbSamplers(const std::string& prog) {
+    std::map<int, ArbSampler> out;
+    for (std::size_t i = 0; (i = prog.find("TEX ", i)) != std::string::npos; ++i) {
+        const auto eol = prog.find('\n', i);
+        const auto line = prog.substr(i, (eol == std::string::npos ? prog.size() : eol) - i);
+        const auto t = line.find("texture[");
+        if (t == std::string::npos)
+            continue;
+        const int unit = std::atoi(line.c_str() + t + 8);
+        // "TEX R0.xyz, ..." — the swizzle between the destination and the comma.
+        const auto comma = line.find(',');
+        const auto dot = line.find('.', 4);
+        std::string swz = "xyzw";
+        if (dot != std::string::npos && comma != std::string::npos && dot < comma)
+            swz = line.substr(dot + 1, comma - dot - 1);
+        auto& s = out[unit];
+        s.rgb = s.rgb || swz.find_first_of("xyz") != std::string::npos;
+        s.alpha = s.alpha || swz.find('w') != std::string::npos;
+    }
+    return out;
+}
+
+int ArbSamplerCount(const std::string& prog) {
+    int n = 0;
+    for (std::size_t i = 0; (i = prog.find("texture[", i)) != std::string::npos; ++i)
+        n = (std::max)(n, std::atoi(prog.c_str() + i + 8) + 1);
+    return n;
+}
+
+// The constant the program's final write to `result.color.<mask>` multiplies
+// in — the folded output gain. Returns -1 where the program does not end in a
+// `MUL ... c[N]` (a MAD, a fog lerp, an env constant), because those carry the
+// gain somewhere this cannot read and guessing would pollute the measurement.
+f32 ArbOutputGain(const std::string& prog, bool alpha) {
+    // PARAM c[K] = { {a, b, ...}, ... }; — literal blocks only. A block naming
+    // program.env holds a uniform, and its value is not in the file.
+    std::map<int, std::vector<f32>> params;
+    const auto pb = prog.find("PARAM c[");
+    if (pb != std::string::npos && prog.find("program.env", pb) == std::string::npos) {
+        const auto end = prog.find("};", pb);
+        std::size_t at = prog.find('{', pb);
+        int idx = 0;
+        while (at != std::string::npos && at < end) {
+            const auto open = prog.find('{', at + 1);
+            if (open == std::string::npos || open > end)
+                break;
+            const auto close = prog.find('}', open);
+            std::vector<f32> vals;
+            std::string cur;
+            for (std::size_t i = open + 1; i < close; ++i) {
+                if (prog[i] == ',') {
+                    vals.push_back(static_cast<f32>(std::atof(cur.c_str())));
+                    cur.clear();
+                } else {
+                    cur += prog[i];
+                }
+            }
+            if (!cur.empty())
+                vals.push_back(static_cast<f32>(std::atof(cur.c_str())));
+            params[idx++] = vals;
+            at = close;
+        }
+    }
+
+    const std::string want = alpha ? "result.color.w" : "result.color.xyz";
+    std::string last;
+    for (std::size_t i = 0; (i = prog.find(want, i)) != std::string::npos; ++i) {
+        auto bol = prog.rfind('\n', i);
+        bol = (bol == std::string::npos) ? 0 : bol + 1;
+        const auto eol = prog.find('\n', i);
+        last = prog.substr(bol, (eol == std::string::npos ? prog.size() : eol) - bol);
+    }
+    if (last.empty()) {
+        // `MOV result.color, ...` writes all four channels at unit gain.
+        if (prog.find("MOV result.color,") != std::string::npos)
+            return 1.0f;
+        return -1.0f;
+    }
+    while (!last.empty() && (last.front() == ' ' || last.front() == '\t'))
+        last.erase(last.begin());
+    if (last.rfind("MOV", 0) == 0)
+        return 1.0f;
+    if (last.rfind("MUL", 0) != 0)
+        return -1.0f;
+    const auto c = last.find("c[");
+    if (c == std::string::npos)
+        return 1.0f; // a MUL of two varying terms — no constant gain
+    const int idx = std::atoi(last.c_str() + c + 2);
+    const auto close = last.find(']', c);
+    int comp = 0;
+    if (close != std::string::npos && close + 1 < last.size() && last[close + 1] == '.') {
+        const char ch = last[close + 2];
+        comp = ch == 'y' ? 1 : ch == 'z' ? 2 : ch == 'w' ? 3 : 0;
+    }
+    const auto it = params.find(idx);
+    if (it == params.end() || comp >= static_cast<int>(it->second.size()))
+        return -1.0f;
+    return it->second[static_cast<std::size_t>(comp)];
+}
+
+} // namespace
+
+TEST_CASE("D3 corpus: a Legacy pass says which channel each stage feeds", "[d3][corpus]") {
+    const auto shdDir = CorpusRoot() / "Shaders";
+    const auto glDir = CorpusRoot() / "OpenGLShaders";
+    if (!fs::is_directory(shdDir) || !fs::is_directory(glDir)) {
+        WARN("No D3 Shaders/OpenGLShaders corpus. SKIPPED, not passed.");
+        return;
+    }
+
+    std::map<std::string, std::vector<fs::path>> psByName;
+    for (const auto& de : fs::directory_iterator(glDir)) {
+        const auto file = de.path().filename().string();
+        const auto ext = file.find(".ps.glsl");
+        if (ext == std::string::npos || ext < 9)
+            continue;
+        psByName[file.substr(0, ext - 9)].push_back(de.path());
+    }
+
+    // ---- The block is the fixed-function family's, and no other's ----------
+    std::map<std::string, std::pair<std::size_t, std::size_t>> byFx; // fx -> {with, total}
+    std::size_t chanOk = 0, chanBad = 0, gainOkC = 0, gainBadC = 0, gainOkA = 0, gainBadA = 0;
+
+    for (const auto& de : fs::directory_iterator(shdDir)) {
+        if (de.path().extension() != ".shd")
+            continue;
+        auto sh = d3n::parseShaders(ReadAll(de.path()));
+        if (!sh)
+            continue;
+        for (const auto& p : sh->arRenderPasses) {
+            bool has = false;
+            for (const auto& t : p.arShaderParams) {
+                if (t.dwTagId >= 0xA0010u && t.dwTagId <= 0xA0021u)
+                    has = true;
+            }
+            auto& e = byFx[p.szEffectFile];
+            e.second++;
+            e.first += has ? 1 : 0;
+        }
+
+        // ---- The decode, against the programs shipped beside it -----------
+        const auto it = psByName.find(de.path().stem().string());
+        if (it == psByName.end())
+            continue;
+        std::map<int, std::vector<std::string>> bySamplers;
+        for (const auto& p : it->second) {
+            const auto prog = ArbProgram(p);
+            if (!prog.empty())
+                bySamplers[ArbSamplerCount(prog)].push_back(prog);
+        }
+        for (const auto& pass : sh->arRenderPasses) {
+            if (pass.szEffectFile != "Legacy.fx")
+                continue;
+            const int n = static_cast<int>(pass.arTextureStages.size());
+            if (n == 0)
+                continue;
+            // Unambiguous only: one pass with this stage count, and every
+            // program with that many samplers agreeing on what it does.
+            std::size_t sameCount = 0;
+            for (const auto& q : sh->arRenderPasses)
+                sameCount += (static_cast<int>(q.arTextureStages.size()) == n) ? 1 : 0;
+            if (sameCount != 1)
+                continue;
+            const auto cand = bySamplers.find(n);
+            if (cand == bySamplers.end())
+                continue;
+            const auto samp = ArbSamplers(cand->second.front());
+            bool agree = true;
+            for (const auto& prog : cand->second) {
+                const auto s = ArbSamplers(prog);
+                for (int i = 0; i < n; ++i) {
+                    const auto a = s.find(i), b = samp.find(i);
+                    const bool ar = a != s.end() && a->second.rgb;
+                    const bool br = b != samp.end() && b->second.rgb;
+                    const bool aa = a != s.end() && a->second.alpha;
+                    const bool ba = b != samp.end() && b->second.alpha;
+                    agree = agree && ar == br && aa == ba;
+                }
+            }
+            if (!agree)
+                continue;
+
+            f32 gc = 1.0f, ga = 1.0f;
+            for (u32 i = 0; i < flakes::io::kD3StageArgCount; ++i) {
+                u32 cCode = 0, aCode = 0;
+                for (const auto& t : pass.arShaderParams) {
+                    if (t.dwTagId == flakes::io::kD3TagStageColor + i)
+                        cCode = t.dwValue;
+                    if (t.dwTagId == flakes::io::kD3TagStageAlpha + i)
+                        aCode = t.dwValue;
+                }
+                const auto ca = flakes::io::D3ReadStageArg(cCode);
+                const auto aa = flakes::io::D3ReadStageArg(aCode);
+                gc *= ca.gain;
+                ga *= aa.gain;
+                if (static_cast<int>(i) >= n)
+                    continue;
+                const auto s = samp.find(static_cast<int>(i));
+                const bool actRgb = s != samp.end() && s->second.rgb;
+                const bool actA = s != samp.end() && s->second.alpha;
+                (ca.usesTexture == actRgb) ? ++chanOk : ++chanBad;
+                (aa.usesTexture == actA) ? ++chanOk : ++chanBad;
+            }
+
+            const f32 progC = ArbOutputGain(cand->second.front(), false);
+            const f32 progA = ArbOutputGain(cand->second.front(), true);
+            if (progC >= 0.0f)
+                (std::abs(progC - gc) < 1e-3f) ? ++gainOkC : ++gainBadC;
+            if (progA >= 0.0f)
+                (std::abs(progA - ga) < 1e-3f) ? ++gainOkA : ++gainBadA;
+        }
+    }
+
+    for (const auto& [fx, n] : byFx) {
+        if (n.second >= 100)
+            std::printf("[d3-stage] %-16s block on %zu of %zu passes\n", fx.c_str(), n.first,
+                        n.second);
+    }
+    std::printf("[d3-stage] channel: %zu agree, %zu disagree; colour gain: %zu / %zu; "
+                "alpha gain: %zu / %zu\n",
+                chanOk, chanBad, gainOkC, gainOkC + gainBadC, gainOkA, gainOkA + gainBadA);
+
+    // Every Legacy pass carries the block, and the families whose programs this
+    // shading model reproduces overwhelmingly do not: measured 855/855 against
+    // 15/236 (ActorIrrad), 12/155 (Prop) and 6/179 (Scene). `Billboard.fx` is
+    // 223/223 -- it is the other fixed-function family, and it draws particles
+    // rather than geosets, so nothing here binds one.
+    REQUIRE(byFx.count("Legacy.fx") == 1);
+    CHECK(byFx["Legacy.fx"].first == byFx["Legacy.fx"].second);
+    for (const char* fx : {"ActorIrrad.fx", "Prop.fx", "Scene.fx"}) {
+        if (!byFx.count(fx))
+            continue;
+        INFO(fx << ": block on " << byFx[fx].first << " of " << byFx[fx].second);
+        CHECK(byFx[fx].first * 5 < byFx[fx].second);
+    }
+
+    // Majority rules, and the numbers they were set from: 93.5% channel,
+    // 97.0% colour gain, 91.8% alpha gain. The bounds are deliberately below
+    // those — this gate is here to catch the decode being *lost*, not to freeze
+    // a percentage that a corpus refresh would move.
+    REQUIRE(chanOk + chanBad > 500);
+    CHECK(chanOk * 10 > (chanOk + chanBad) * 8);
+    REQUIRE(gainOkC + gainBadC > 100);
+    CHECK(gainOkC * 10 > (gainOkC + gainBadC) * 8);
+    REQUIRE(gainOkA + gainBadA > 100);
+    CHECK(gainOkA * 10 > (gainOkA + gainBadA) * 8);
+}

@@ -155,9 +155,29 @@ enum class D3UvMode : i32 {
 ///        about the origin.
 ///
 /// The one bit `sub_71000F8590` tests (`*(_BYTE *)(a2 + 140) & 8`). Set on 26
-/// entries in the corpus; bits 0 and 1 dominate the field and neither has a
-/// recovered meaning, so neither is acted on.
+/// entries in the corpus.
 inline constexpr i32 kD3UvFlagRotateAboutCentre = 0x8;
+
+/// @brief Bits 0 and 1 of the same word: the U and V ADDRESS MODES, set = wrap.
+///
+/// The same encoding `assets::WrapMode` uses, bit for bit, which is why this is
+/// a mask and not a conversion. The evidence is the field's own distribution
+/// against the transform mode beside it, over 1.48M corpus entries:
+///
+///     bits 0 (clamp, clamp)  325,227   of which 308,355 are uv mode 0 or 1
+///     bits 3 (wrap,  wrap) 1,139,731   of which 1,139,130 are uv mode 2
+///     bits 1 (wrap,  clamp)   14,930   of which  14,846 are uv mode 2, 74%
+///                                       of them scrolling in U alone
+///     bits 2 (clamp, wrap)       384
+///
+/// A layer with a fixed matrix or no transform at all clamps; a layer that
+/// scrolls wraps, and one that scrolls only in U wraps only in U. That is an
+/// address mode and nothing else is.
+///
+/// Forcing wrap on everything is what tiled Imperius's wing SHAPE mask — uv
+/// mode 1, a verbatim 4x4 that walks its coordinates outside the tile — so the
+/// tendrils repeated instead of ending where the mask says they end.
+inline constexpr i32 kD3UvFlagWrapMask = 0x3;
 
 /// @brief Does an entry of this type name a texture THIS material owns?
 ///
@@ -295,6 +315,84 @@ inline constexpr i32 kD3TextureTypeCount = 62;
 inline u64 D3TypeBit(i32 type) {
     return (type >= 0 && type < kD3TextureTypeCount) ? (1ull << type) : 0ull;
 }
+
+/// @brief One texture stage's combine code, from the fixed-function tag block.
+///
+/// `Legacy.fx` is the engine's fixed-function path and the only family that
+/// carries this block: over 1,831 corpus passes it is present on **all 855**
+/// `Legacy.fx` passes and on 320 of the 976 others, none of which is a family
+/// this shading model reproduces. Three groups of six, one entry per stage:
+///
+///     0xA0010+i   the stage's op
+///     0xA0016+i   its COLOUR combine    <- read here
+///     0xA001C+i   its ALPHA combine     <- read here
+///
+/// The two combine codes are what say which channel a stage feeds, and the
+/// shipped ARB programs are the oracle for reading them. `actor_glowTendril_
+/// cm2x_bloom_skin` — Imperius's wings, stages (6, 1, 12, 14) — is the whole
+/// grammar in one pass:
+///
+///     colour codes  20 20  0 24   ->  glow.rgb * diffuse.rgb * mask14.rgb, x2
+///     alpha  codes   0 20 20 25   ->  diffuse.a * mask12.a * mask14.a,     x4
+///
+/// and its program closes on exactly that, `MUL result.color.xyz, R0, c[0].y`
+/// with c[0] = {4, 2}. The `cm2x` and `am4x` in its name are the same two
+/// numbers.
+///
+/// Two fields are read out of the code, both measured against the programs
+/// shipped beside the assets (see the corpus gate in d3_surface_table_test):
+///
+///  * **Does this stage's texture feed this channel?** 0 says no, and the
+///    non-texture argument forms (2, 41, 43, 71, 80, 82 — a constant or the
+///    interpolated colour rather than a sampler) say no. Everything else says
+///    yes. 98.4% of the codes that say no have no `TEX` for that channel and
+///    ~93% of the ones that say yes have one.
+///  * **The output gain.** A units digit of 4 is a x2 and of 5 a x4 — the
+///    fixed-function MODULATE2X and MODULATE4X — and the stage gains multiply.
+///    Measured 97.0% (colour) and 91.8% (alpha) against the constant the
+///    program's final instruction multiplies in.
+///
+/// The tens digit selects the first argument's source and the rest of the units
+/// digit the second's; neither is decoded here, because the shading model does
+/// not have the fixed-function chain to put them in. What it has is a texture
+/// per slot, and these two answers are what tell it what to do with one.
+struct D3StageArg {
+    bool usesTexture = false; ///< Is this stage's texture sampled for the channel?
+    /// @brief ... and MULTIPLIED into the channel, rather than replacing it or
+    ///        being added to it?
+    ///
+    /// The tens digit is the op class and 2 is the modulate: `20 20 0 24` is
+    /// Imperius's wing colour chain and every term in it is a multiply, while
+    /// Cain's smoke plume — the other Legacy program that was readable, and the
+    /// reason the glow map had no rule — opens `3 3 3 10`, three replaces and
+    /// an add, and closes `saturate(diffuse + glow)`. The two programs do not
+    /// disagree at all: their passes said different things.
+    ///
+    /// Only the modulate is acted on. A replace or an add is a chain operation
+    /// this shading model has no chain to put it in, so those slots keep the
+    /// default their type implies and the shader's own glow term handles the
+    /// add.
+    bool modulates = false;
+    f32 gain = 1.0f; ///< 1, 2 or 4 — MODULATE, MODULATE2X, MODULATE4X.
+};
+
+inline D3StageArg D3ReadStageArg(u32 code) {
+    D3StageArg a;
+    const u32 tens = code / 10;
+    const u32 units = code % 10;
+    // The forms whose first argument is not a sampler: a constant (tens 4 and
+    // the bare 2), the vertex colour (tens 8), or 71. Zero is the stage saying
+    // it does not touch this channel at all.
+    a.usesTexture = code != 0 && code != 2 && code != 71 && tens != 4 && tens != 8;
+    a.modulates = a.usesTexture && tens == 2;
+    a.gain = units == 4 ? 2.0f : units == 5 ? 4.0f : 1.0f;
+    return a;
+}
+
+/// @brief The tag ids of the two combine groups. Six stages each.
+inline constexpr u32 kD3TagStageColor = 0xA0016u;
+inline constexpr u32 kD3TagStageAlpha = 0xA001Cu;
+inline constexpr u32 kD3StageArgCount = 6;
 
 /// @brief The engine's nominal tick, and the unit every authored UV rate is in.
 ///

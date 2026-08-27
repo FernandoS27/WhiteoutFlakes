@@ -3,6 +3,8 @@
 #include "io/d3/d3_model_adapter.h"
 #include "io/d3/d3_sno_cache.h"
 
+#include <whiteout/sno/d3/native/geometry.h>
+
 #include <algorithm>
 #include <map>
 
@@ -24,6 +26,7 @@ enum : u32 {
     kMatFlagTwoSided = 0x4u,
 };
 
+using ::whiteout::flakes::io::D3ReadStageArg;
 using ::whiteout::flakes::io::D3ReadUvXform;
 using ::whiteout::flakes::io::D3SlotIsAlphaMask;
 using ::whiteout::flakes::io::D3SlotOfType;
@@ -43,6 +46,33 @@ using ::whiteout::flakes::io::D3UvTransformId;
 // 0x30500). The MSAA band (0x30861) is skipped: we do not run the original's
 // MSAA path, and taking its program would be claiming a pass we never bind.
 constexpr u32 kD3OpaqueTagChain[] = {0x30502u, 0x30850u, 0x30830u, 0x30600u, 0x30500u};
+
+/// The shader-variant tag that turns the light block off. Its neighbours are
+/// the five per-type light counts Render_EnsureShaderVariant clamps to 16
+/// (0xA0008 point, 0xA0009 spot, 0xA000A directional, 0xA000C cylindrical,
+/// 0xA000D point-linear); this one sits just above them and gates the lot.
+constexpr u32 kD3TagLightingEnable = 0xA000Fu;
+
+const d3n::ShaderTagMapEntry* FindTag(const d3n::RenderPass& pass, u32 id) {
+    for (const auto& t : pass.arShaderParams) {
+        if (t.dwTagId == id)
+            return &t;
+    }
+    return nullptr;
+}
+
+/// @brief Does this sub-object carry no vertex colour at all?
+///
+/// The level bake, absent. Stops at the first non-zero: a graded mesh answers
+/// on its first vertex and only a genuinely blank one walks the whole array.
+bool VertexColorAllBlack(const d3n::SubObject& sub) {
+    for (const auto& v : sub.arVertices) {
+        const auto c = d3n::vertexColor(v);
+        if (c.r != 0 || c.g != 0 || c.b != 0)
+            return false;
+    }
+    return true;
+}
 
 i32 ShadersIdFor(const d3n::ShaderMap& map) {
     for (const u32 tag : kD3OpaqueTagChain) {
@@ -125,6 +155,42 @@ D3PassState D3PassStateFor(const d3n::SubObjectAppearance& variant,
     st.blendDst = static_cast<u32>(r.dwUnknown58);
     for (const auto& stage : pass0.arTextureStages)
         st.declaredTypes |= D3TypeBit(stage.dwUnknown00);
+    st.effectFile = pass0.szEffectFile;
+    // The fixed-function stage block. Present on every Legacy.fx pass and on no
+    // other family this reproduces, so reading it needs no effect-file test:
+    // a pass either carries the tags or it does not. See D3StageArg.
+    for (u32 i = 0; i < io::kD3StageArgCount; ++i) {
+        const auto* color = FindTag(pass0, io::kD3TagStageColor + i);
+        const auto* alpha = FindTag(pass0, io::kD3TagStageAlpha + i);
+        if (!color && !alpha)
+            continue;
+        st.stageArgs = true;
+        // A gain can sit on a stage past the texture list -- Imperius's second
+        // wing pass parks its x4 on stage 3 of a two-stage pass -- so the gains
+        // are accumulated over the whole block and the channel bits only over
+        // the stages that name a type.
+        const auto c = D3ReadStageArg(color ? color->dwValue : 0);
+        const auto a = D3ReadStageArg(alpha ? alpha->dwValue : 0);
+        st.colorGain *= c.gain;
+        st.alphaGain *= a.gain;
+        if (i >= pass0.arTextureStages.size())
+            continue;
+        const i32 type = pass0.arTextureStages[i].dwUnknown00;
+        if (c.modulates)
+            st.colorTypes |= D3TypeBit(type);
+        if (a.modulates)
+            st.alphaTypes |= D3TypeBit(type);
+    }
+    // The pass's own tag map, which is where the light budget lives:
+    // Render_EnsureShaderVariant reads five counts from it (0xA0008 point,
+    // 0xA0009 spot, 0xA000A directional, 0xA000C cylindrical, 0xA000D
+    // point-linear) and compiles one program per combination. 0xA000F is the
+    // switch above those — see D3PassState::lit. Absent means "take the global
+    // default", and for this one the default is on.
+    for (const auto& t : pass0.arShaderParams) {
+        if (t.dwTagId == kD3TagLightingEnable)
+            st.lit = t.dwValue != 0;
+    }
     st.vertexColorLights = pass0.szEffectFile == "Scene.fx" || pass0.szEffectFile == "Prop.fx";
     st.vertexAlpha = pass0.szEffectFile == "ActorIrrad.fx" ||
                      pass0.szVertexShaderEntry.find("vertalpha") != std::string::npos;
@@ -190,6 +256,9 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
             s.alphaBlend = s.pass.blendEnable;
             s.twoSided = s.pass.cull == 1;
             s.alphaTestThreshold = static_cast<f32>(s.pass.alphaRef) * (1.0f / 255.0f);
+            // An unlit pass takes the vertex colour AS its light — but only
+            // where there is one to take. See D3Surface::unlit.
+            s.unlit = !s.pass.lit && !VertexColorAllBlack(sub);
         }
         // No embedded translucent material means the original had no
         // translucent Shaders id either, and skipped the sub-object outright
@@ -229,8 +298,12 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
             const D3SlotKind kind = D3SlotOfType(type);
             if (kind == D3SlotKind::Count)
                 continue;
-            // The glow map only where its family agrees on what to do with it.
-            if (kind == D3SlotKind::Emissive && s.pass.resolved && !s.pass.glowLights)
+            // The glow map only where its family agrees on what to do with it
+            // -- unless the pass states it per stage, which is the shipped
+            // answer and outranks the rule. Imperius's wings are exactly that
+            // case: `Legacy.fx`, and their type 6 MULTIPLIES the chain.
+            if (kind == D3SlotKind::Emissive && s.pass.resolved && !s.pass.stageArgs &&
+                !s.pass.glowLights)
                 continue;
             // 12/14/19 are alpha masks only where they sit BESIDE a base map.
             // A pass that declares one of them and no type 1 is a Legacy-family
@@ -238,7 +311,7 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
             // and multiplying a base map's alpha into the surface would fade it
             // for no reason. Measured: 147 mask entries land in a pass that also
             // declares type 1, 13 in one that does not.
-            if (D3SlotIsAlphaMask(kind) && s.pass.resolved &&
+            if (D3SlotIsAlphaMask(kind) && s.pass.resolved && !s.pass.stageArgs &&
                 (s.pass.declaredTypes & D3TypeBit(1)) == 0)
                 continue;
 
@@ -247,6 +320,14 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
                 continue; // a type never repeats inside a material, so this is a re-entry
             slot.rawType = type;
             slot.textureId = TextureIdOf(textures, entry.snoTexture.id);
+            // Which channels the surface takes from this sample. Stated only by
+            // a pass that carries the stage block; zero everywhere else, and
+            // the shader keeps the slot's family default.
+            if (s.pass.stageArgs) {
+                slot.channels = static_cast<u8>(
+                    ((s.pass.colorTypes & D3TypeBit(type)) != 0 ? kD3ChannelRgb : 0) |
+                    ((s.pass.alphaTypes & D3TypeBit(type)) != 0 ? kD3ChannelAlpha : 0));
+            }
             // UV set 0 always. The two candidate selectors both turned out to be
             // something else — the field at 0x0C is the transform mode and the
             // one at 0x98 a flags word — and nothing recovered picks a set.
@@ -254,7 +335,9 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
             // coordinates, and D3 authors both sets on every vertex, so nothing
             // about the geometry would say so.
             slot.uvSource = 0;
-            slot.wrapFlags = 0x3;
+            // The entry's own address modes -- see kD3UvFlagWrapMask. Forcing
+            // wrap here tiled every fixed-matrix layer in the game.
+            slot.wrapFlags = static_cast<u32>(io::D3UvFlagsOf(entry) & io::kD3UvFlagWrapMask);
 
             const auto uv = D3ReadUvXform(entry);
             if (uv.mode == D3UvMode::Matrix) {

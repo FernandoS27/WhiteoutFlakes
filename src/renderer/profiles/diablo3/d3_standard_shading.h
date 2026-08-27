@@ -3,11 +3,12 @@
 // ============================================================================
 // D3StandardShading — the Diablo III material system's IShadingModel.
 //
-// The host half of d3_standard.slang: six resolved slots out of D3SurfaceTable,
-// Blinn-Phong against `MaterialColors`, one key directional and three point
-// lights in the forward pass. Shaped on M3StandardShading (own engine shaders,
-// own CBs, own PSO cache) minus the G-buffer sidecar — a gamma-LDR frame has
-// no deferred pass to feed.
+// The host half of d3_standard.slang: nine resolved slots out of
+// D3SurfaceTable and the original's own light rig — `colAmbient` plus a light
+// array and one cylindrical light, each laid out as
+// Render_UploadLightConstants writes it. Shaped on M3StandardShading (own
+// engine shaders, own CBs, own PSO cache) minus the G-buffer sidecar — a
+// gamma-LDR frame has no deferred pass to feed.
 //
 // Like M3's and M2's, deliberately NOT a BLS program: engine shaders never
 // enter a `.bls` container, and producing a bundle needs WDX_BUILD_WC3_SHADERS
@@ -74,24 +75,58 @@ public:
 
 private:
     static constexpr u32 kSlotCount = kD3SlotCount;
-    static constexpr u32 kPointLights = 3;
+
+    /// @brief Slots in the generic light array.
+    ///
+    /// The original budgets 16 per type across five types and clamps there, but
+    /// nothing shipped comes close: over the corpus's 1,466 distinct vertex
+    /// programs **796 carry exactly one point-light block and none carries
+    /// two**, and the runtime's own uniform names give it away — `lightSpots[0]`
+    /// and `lightPointLinears[0]` keep their index while `lightDirectionals`,
+    /// `lightPoints` and `lightCylindricals` lose theirs, which is what an
+    /// array of one collapses to. So the forward budget is one point (a
+    /// directional demotes into it) plus one cylindrical; four leaves room for
+    /// a rig to add fill without another CB layout.
+    static constexpr u32 kLights = 4;
 
     // Mirrors of d3_standard.slang's constant buffers, uploaded transposed.
+    //
+    // The light block is the original's, field for field:
+    // Render_UploadLightConstants writes a point light as five float4
+    // {pos, 1}, {k0,k1,k2, 1}, ambient, diffuse, specular — and a DIRECTIONAL
+    // that overflows its own array is re-homed into the point array with its
+    // direction negated and `.w` 0, attenuation (1, 0, 0). One evaluation
+    // covers both, which is why there is no separate directional array here.
     struct alignas(16) D3PassCb {
         Matrix44f view;
         Matrix44f projection;
         Vector4f cameraPosWS;
-        Vector4f keyLightDir;
-        Vector4f keyLightDiffuse;
-        Vector4f keyLightSpecular;
-        Vector4f ambient;
-        Vector4f pointPos[kPointLights];
-        Vector4f pointColor[kPointLights];
-        Vector4f pointAtten[kPointLights];
+        /// Constant 21. Not one authored value: the engine starts it from a
+        /// scene base and ADDS every directional light's own ambient onto it.
+        Vector4f colAmbient;
+        /// Constant 39, `.x`. A GLOBAL in the original, not a material field —
+        /// which agrees with `flShininess` being 0.0 on 99.4% of the corpus.
+        Vector4f specularPower;
+        Vector4f lightPos[kLights];
+        Vector4f lightAtten[kLights];
+        Vector4f lightAmbient[kLights];
+        Vector4f lightDiffuse[kLights];
+        Vector4f lightSpecular[kLights];
+        /// The cylindrical light: six float4 in the original, of which the
+        /// shipped programs read five. `cylRange` is {1/max(end-start, 0.001),
+        /// end} — the engine computes exactly that reciprocal.
+        Vector4f cylPos;
+        Vector4f cylAxis;
+        Vector4f cylRange;
+        Vector4f cylAmbient;
+        Vector4f cylDiffuse;
     };
     struct alignas(16) D3DrawCb {
         Matrix44f world;
         Vector4f params0; // .x alphaRef, .y shininess, .z twoSided, .w vertex-colour mode
+        /// The fixed-function chain's output gain, `.x` colour and `.y` alpha.
+        /// See D3PassState::colorGain.
+        Vector4f params1;
         Vector4f matDiffuse;
         Vector4f matSpecular;
         Vector4f matEmissive;

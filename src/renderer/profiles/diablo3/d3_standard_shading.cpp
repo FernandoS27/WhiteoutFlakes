@@ -317,55 +317,88 @@ bool D3StandardShading::BeginPass(const core::PassContext& ctx,
             return {SrgbToLinear(r), SrgbToLinear(g), SrgbToLinear(b), 0.0f};
         };
 
-        // A three-quarter key placed relative to the camera, UnlitShading's
-        // rule and for its reason: the model is a thing being *inspected*, so
-        // the side facing the viewer has to be legible and a fixed world
-        // direction leaves it black from half the orbit. Deterministic — the
-        // gate poses the camera identically every run.
+        // ---- The rig ---------------------------------------------------------
+        //
+        // A VIEWER rig, stated as one: a scene's brightness in Diablo III comes
+        // from the level's Light SNOs, and a model viewer has no level. What the
+        // RE settles is the SHAPE — `colAmbient` plus lights of five types, each
+        // carrying its own ambient as well as a diffuse — and the shape is what
+        // this fills in. The numbers are picked; the arithmetic consuming them
+        // is the original's.
+        //
+        // Two lights, which is the shipped budget: one directional (stored the
+        // way the engine stores a demoted one, `.w` 0 with attenuation (1,0,0))
+        // and one cylindrical, D3's hero light.
         const Vector3f eye = passCameraPos_;
-        const Vector3f at = rs_.Pipeline().FrameCamera().GetTarget();
+        const auto& cam = rs_.Pipeline().FrameCamera();
+        const Vector3f at = cam.GetTarget();
         const Vector3f fwd =
             Normalized({at.x - eye.x, at.y - eye.y, at.z - eye.z}, {0.0f, 1.0f, 0.0f});
         const Vector3f right = Normalized(Cross(fwd, {0.0f, 0.0f, 1.0f}), {1.0f, 0.0f, 0.0f});
         const Vector3f up = Cross(right, fwd);
-        // keyLightDir is the direction the light TRAVELS.
-        const Vector3f l = Normalized({fwd.x + 0.45f * right.x - 0.35f * up.x,
-                                       fwd.y + 0.45f * right.y - 0.35f * up.y,
-                                       fwd.z + 0.45f * right.z - 0.35f * up.z},
-                                      {0.0f, 1.0f, 0.0f});
-        c->keyLightDir = {l.x, l.y, l.z, 0.0f};
-        // A viewer rig, stated as one: the game's brightness comes from a
-        // level's Light SNOs, and a model viewer has no level. What the RE does
-        // settle is the SHAPE, and the first numbers here had it wrong.
-        //
-        // `Render_UploadLightConstants` (0x71001DE680) starts `colAmbient` from
-        // a base the caller supplies and then, for every DIRECTIONAL light,
-        // ADDS that light's own ambient (light+88..+100) into it. Ambient in D3
-        // is therefore a sum over the rig, not one constant — so a single key
-        // beside a fixed 0.24 is dimmer than the engine by construction, and no
-        // amount of tuning the key fixes the side facing away from it.
-        //
-        // 0.45 ambient + 0.75 key peaks at 1.20. Deliberately just over 1: the
-        // profile's LDR default has no tonemap (SceneColorFormat follows
-        // SceneHdrInSd), so only the brightest albedo at full N.L clips, while
-        // the unlit side lifts from 0.24 to 0.45 — which is the half the
-        // complaint was actually about.
-        c->keyLightDiffuse = lin(0.75f, 0.75f, 0.75f);
-        c->keyLightSpecular = lin(0.28f, 0.28f, 0.28f);
-        c->ambient = lin(0.45f, 0.45f, 0.50f);
 
-        // The three point slots exist so the budget the original authors per
-        // RenderPass has somewhere to land. Nothing supplies them yet: D3's
-        // `.app` ships StaticLights we do not read, and a made-up rig would be
-        // three more numbers picked by eye. Blanked the way M2's own
-        // ComputeLocalLights blanks an unused slot — colour zero and a constant
-        // attenuation of 1, so the shader's reciprocal is defined without it
-        // testing a count.
-        for (u32 i = 0; i < kPointLights; ++i) {
-            c->pointPos[i] = {0.0f, 0.0f, 0.0f, 0.0f};
-            c->pointColor[i] = {0.0f, 0.0f, 0.0f, 0.0f};
-            c->pointAtten[i] = {1.0f, 0.0f, 0.0f, 0.0f};
+        for (u32 i = 0; i < kLights; ++i) {
+            c->lightPos[i] = {0.0f, 0.0f, 1.0f, 0.0f};
+            c->lightAtten[i] = {1.0f, 0.0f, 0.0f, 0.0f}; // .w 0 = dead
+            c->lightAmbient[i] = {0.0f, 0.0f, 0.0f, 0.0f};
+            c->lightDiffuse[i] = {0.0f, 0.0f, 0.0f, 0.0f};
+            c->lightSpecular[i] = {0.0f, 0.0f, 0.0f, 0.0f};
         }
+
+        // Slot 0: a three-quarter key placed relative to the camera —
+        // UnlitShading's rule and for its reason: the model is a thing being
+        // *inspected*, so the side facing the viewer has to be legible and a
+        // fixed world direction leaves it black from half the orbit.
+        // Deterministic: the gate poses the camera identically every run.
+        //
+        // Stored as a DIRECTION TOWARD THE LIGHT, because that is what the
+        // engine writes into the point array when a directional overflows —
+        // `Render_UploadLightConstants` negates it there — and the shader's
+        // `L = pos.xyz - P * pos.w` reads it back directly.
+        const Vector3f key = Normalized({-(fwd.x + 0.45f * right.x - 0.35f * up.x),
+                                         -(fwd.y + 0.45f * right.y - 0.35f * up.y),
+                                         -(fwd.z + 0.45f * right.z - 0.35f * up.z)},
+                                        {0.0f, -1.0f, 0.0f});
+        c->lightPos[0] = {key.x, key.y, key.z, 0.0f};
+        c->lightAtten[0] = {1.0f, 0.0f, 0.0f, 1.0f};
+        c->lightDiffuse[0] = lin(0.88f, 0.86f, 0.82f);
+        c->lightSpecular[0] = lin(0.55f, 0.55f, 0.55f);
+
+        // Slot 1 is the hero light's counterpart: a dim fill from behind and
+        // below, which is what the engine's *summed* `colAmbient` does for a
+        // real level and what a single constant cannot. Directional too.
+        const Vector3f fill = Normalized({-key.x - 0.2f * up.x, -key.y - 0.2f * up.y,
+                                          -key.z - 0.2f * up.z},
+                                         {0.0f, 1.0f, 0.0f});
+        c->lightPos[1] = {fill.x, fill.y, fill.z, 0.0f};
+        c->lightAtten[1] = {1.0f, 0.0f, 0.0f, 1.0f};
+        c->lightDiffuse[1] = lin(0.30f, 0.31f, 0.37f);
+
+        // The cylindrical light: a vertical tube standing on the model, lighting
+        // it from above and falling off linearly with distance from the axis.
+        // Sized off the camera's framing distance, which is the only measure of
+        // the model this seam has and which the viewer sets from its bounds.
+        const f32 span = (std::max)(cam.GetDistance(), 1.0f);
+        const f32 radius = span * 0.55f;
+        c->cylPos = {at.x, at.y, at.z + span * 0.9f, 1.0f};
+        c->cylAxis = {0.0f, 0.0f, 1.0f, 0.0f};
+        // {1 / (end - start), end} — the engine computes exactly this
+        // reciprocal, clamped, and the falloff is (end - perp) * that.
+        c->cylRange = {1.0f / (std::max)(radius - radius * 0.25f, 0.001f), radius, 0.0f, 0.0f};
+        c->cylAmbient = lin(0.20f, 0.20f, 0.22f);
+        c->cylDiffuse = lin(0.52f, 0.51f, 0.47f);
+
+        // The scene ambient. In the engine this is a sum, not a setting — a
+        // base plus every directional light's own ambient — so it is legitimate
+        // for it to be well above any single light's ambient.
+        c->colAmbient = lin(0.50f, 0.50f, 0.54f);
+        // The engine's `SpecularPower` is a GLOBAL (constant 39), which is what
+        // makes `flShininess` being 0.0 on 99.4% of shipped materials harmless.
+        // Its own default is 1.0 — a hemisphere-wide highlight — and the real
+        // value arrives per render record from data we do not read, so this is
+        // a viewer number: tight enough to read as a highlight rather than as a
+        // second diffuse term.
+        c->specularPower = {24.0f, 0.0f, 0.0f, 0.0f};
         gfxDev->UnmapBuffer(passCb_);
     }
     return true;
@@ -417,15 +450,17 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
 
     if (auto* c = static_cast<D3DrawCb*>(gfxDev->MapBuffer(drawCb_))) {
         c->world = item.view->worldTransform.transpose();
-        // .w: how the bound pass's vertex program consumes the vertex colour.
-        // Bit 0 adds its RGB into the light sum, bit 1 takes its alpha. Both
-        // stay clear when no pass resolved — the attribute means nothing on its
-        // own, and the wrong guess either blacks out a prop or blows out a
-        // character.
+        // .w: how the bound pass consumes the vertex colour and its light.
+        // Bit 0 adds the attribute's RGB into the light sum at twice unit
+        // weight, bit 1 takes its alpha, bit 2 says the pass is UNLIT and the
+        // attribute IS the light. All stay clear when no pass resolved — the
+        // attribute means nothing on its own, and the wrong guess either blacks
+        // out a prop or blows out a character.
         const u32 vcMode = (surf->pass.vertexColorLights ? 0x1u : 0u) |
-                           (surf->pass.vertexAlpha ? 0x2u : 0u);
+                           (surf->pass.vertexAlpha ? 0x2u : 0u) | (surf->unlit ? 0x4u : 0u);
         c->params0 = {surf->alphaTestThreshold, surf->shininess, surf->twoSided ? 1.0f : 0.0f,
                       static_cast<f32>(vcMode)};
+        c->params1 = {surf->pass.colorGain, surf->pass.alphaGain, 0.0f, 0.0f};
         c->matDiffuse = surf->diffuse;
         // The element alpha rides the material's own, which is what the
         // fixed-function pipeline does with it and what makes a fade a fade.
@@ -449,7 +484,10 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
             // is what "off" means in the shader. Flips on by itself the frame
             // the texture arrives.
             c->slotCtl[i][2] = resolved ? 1u : 0u;
-            c->slotCtl[i][3] = 0;
+            // Which channels of the sample the surface takes, where the pass
+            // said so. Zero is "it did not", and each slot keeps the default
+            // its type implies.
+            c->slotCtl[i][3] = s.channels;
         }
         gfxDev->UnmapBuffer(drawCb_);
     }
