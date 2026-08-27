@@ -305,9 +305,9 @@ set(SHADER_ENTRIES
     # shader — see M2_MULTITEX_DESIGN.md.
     "particle_multitex.slang|vsMultiTexParticle|vertex|kMultiTexParticleVS"
     "particle_multitex.slang|psMultiTexParticle|fragment|kMultiTexParticlePS"
-    # M2CombinerShading — WoW `.m2`. 16 vertex + 35 pixel entry points, indexed
+    # M2CombinerShading — WoW `.m2`. 16 vertex + 36 pixel entry points, indexed
     # directly by M2GetVertexShaderID / M2GetPixelShaderID (m2_shader_select.h).
-    # Any VS pairs with any PS, so all 51 share one interstage signature.
+    # Any VS pairs with any PS, so all 52 share one interstage signature.
     # Names keep Blizzard's underscores: Mod_AddAlpha and Mod_Add_Alpha are
     # two different combiners that collide the moment you camel-case them.
     "m2_combiners.slang|vsM2Diffuse_T1|vertex|kM2Vs_Diffuse_T1"
@@ -360,6 +360,7 @@ set(SHADER_ENTRIES
     "m2_combiners.slang|psM2Guild_NoBorder|fragment|kM2Ps_Guild_NoBorder"
     "m2_combiners.slang|psM2Guild_Opaque|fragment|kM2Ps_Guild_Opaque"
     "m2_combiners.slang|psM2Combiners_Mod_Depth|fragment|kM2Ps_Combiners_Mod_Depth"
+    "m2_combiners.slang|psM2Combiners_Mod_Mod_Depth|fragment|kM2Ps_Combiners_Mod_Mod_Depth"
     "m2_combiners.slang|psM2Illum|fragment|kM2Ps_Illum"
     # M3 simple material (M3_SIMPLE_MATERIAL_DESIGN.md): forward and MRT pixel
     # entries share one shading function; the split exists because Vulkan

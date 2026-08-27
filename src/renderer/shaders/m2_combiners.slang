@@ -1,7 +1,7 @@
 // ============================================================================
 // WhiteoutFlakes Renderer — M2 combiners (World of Warcraft `.m2`).
 //
-// The shader half of M2CombinerShading. 16 vertex entry points and 35 pixel
+// The shader half of M2CombinerShading. 16 vertex entry points and 36 pixel
 // ones, named and numbered exactly as the client's `s_modelVertexShaders` /
 // `s_modelPixelShaders`, because `M2GetVertexShaderID` / `M2GetPixelShaderID`
 // index straight into them (m2_shader_select.h).
@@ -256,8 +256,11 @@ PSInput M2Vertex(VSInput input, int s0, int s1, int s2, int s3)
     { return M2Vertex(i, kSrcT1_M0, kSrcEnv, kSrcT1, kSrcT1); }
 [shader("vertex")] PSInput vsM2Diffuse_T1_T1(VSInput i)
     { return M2Vertex(i, kSrcT1_M0, kSrcT1_M1, kSrcT1, kSrcT1); }
+// 12.1 deleted this one and gave row 18 plain Diffuse_T1, so all three of the
+// crossfade's samplers read the single T1 coord — one UV set through texture
+// matrix 0, not a matrix each. Kept as a name because our coords are positional.
 [shader("vertex")] PSInput vsM2Diffuse_T1_T1_T1(VSInput i)
-    { return M2Vertex(i, kSrcT1_M0, kSrcT1_M1, kSrcT1, kSrcT1); }
+    { return M2Vertex(i, kSrcT1_M0, kSrcT1_M0, kSrcT1_M0, kSrcT1_M0); }
 // EdgeFade needs the EDGF chunk, which nothing reads yet — these behave as
 // their non-fading twins until it does.
 [shader("vertex")] PSInput vsM2Diffuse_EdgeFade_T1(VSInput i)
@@ -268,8 +271,10 @@ PSInput M2Vertex(VSInput input, int s0, int s1, int s2, int s3)
     { return M2Vertex(i, kSrcT1_M0, kSrcEnv, kSrcT2, kSrcT2); }
 [shader("vertex")] PSInput vsM2Diffuse_EdgeFade_T1_T2(VSInput i)
     { return M2Vertex(i, kSrcT1_M0, kSrcT2_M1, kSrcT1, kSrcT2); }
+// Likewise row 22, which 12.1 names Diffuse_T1_T2: the three crossfade layers
+// share T1, and only the mask reads T2.
 [shader("vertex")] PSInput vsM2Diffuse_T1_T1_T1_T2(VSInput i)
-    { return M2Vertex(i, kSrcT1_M0, kSrcT1_M1, kSrcT1, kSrcT2); }
+    { return M2Vertex(i, kSrcT1_M0, kSrcT1_M0, kSrcT1_M0, kSrcT2_M1); }
 [shader("vertex")] PSInput vsM2Diffuse_EdgeFade_Env(VSInput i)
     { return M2Vertex(i, kSrcEnv, kSrcEnv, kSrcT1, kSrcT1); }
 [shader("vertex")] PSInput vsM2Diffuse_T1_T2_T1(VSInput i)
@@ -684,6 +689,16 @@ float4 T3(PSInput i) { return tex3.Sample(samp3, i.uv23.zw); }
     let c = M2In(i);
     let t0 = T0(i);
     return M2Finish(c.rgb * t0.rgb, c.a * t0.a, i);
+}
+
+// DERIVED — the two-texture twin of Combiners_Mod_Depth, and 12.1's pixel
+// shader 36 (row 35). Same standing as Mod_Depth: without the EDGF chunk the
+// fade term is 1, which leaves this exactly Mod_Mod.
+[shader("fragment")] float4 psM2Combiners_Mod_Mod_Depth(PSInput i) : SV_Target
+{
+    let c = M2In(i);
+    let t0 = T0(i); let t1 = T1(i);
+    return M2Finish(c.rgb * t0.rgb * t1.rgb, c.a * t0.a * t1.a, i);
 }
 
 // DERIVED — self-illuminated: the second unit is an emissive mask added

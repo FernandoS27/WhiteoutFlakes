@@ -120,6 +120,14 @@ void M2CombinerShading::Init() {
     vs_[k++] = mk(gfx::ShaderStage::Vertex, WDX_M2_BLOB(M2Vs_Diffuse_T1_T1_T1_T2));
     vs_[k++] = mk(gfx::ShaderStage::Vertex, WDX_M2_BLOB(M2Vs_Diffuse_EdgeFade_Env));
     vs_[k++] = mk(gfx::ShaderStage::Vertex, WDX_M2_BLOB(M2Vs_Diffuse_T1_T2_T1));
+    // 12.1's vertex shaders 14 and 15. Their sources are not in the client
+    // binary — only that both feed three samplers and that 14 sits beside
+    // Diffuse_T1_T2_T1 in the client's shader ordering — so both borrow it
+    // rather than inventing a combiner. Rows 30 and 31 are the only callers and
+    // nothing in the corpus selects them; if a model ever does, this is the
+    // first thing to look at.
+    vs_[k++] = mk(gfx::ShaderStage::Vertex, WDX_M2_BLOB(M2Vs_Diffuse_T1_T2_T1));
+    vs_[k++] = mk(gfx::ShaderStage::Vertex, WDX_M2_BLOB(M2Vs_Diffuse_T1_T2_T1));
 
     // Pixel, in M2PixelShader order.
     ps_[p++] = mk(gfx::ShaderStage::Pixel, WDX_M2_BLOB(M2Ps_Combiners_Opaque));
@@ -158,6 +166,11 @@ void M2CombinerShading::Init() {
     ps_[p++] = mk(gfx::ShaderStage::Pixel, WDX_M2_BLOB(M2Ps_Guild_Opaque));
     ps_[p++] = mk(gfx::ShaderStage::Pixel, WDX_M2_BLOB(M2Ps_Combiners_Mod_Depth));
     ps_[p++] = mk(gfx::ShaderStage::Pixel, WDX_M2_BLOB(M2Ps_Illum));
+    // Pixel shader 35 borrows the family it shares an uber-shader with, on the
+    // same terms as the two vertex shaders above.
+    ps_[p++] =
+        mk(gfx::ShaderStage::Pixel, WDX_M2_BLOB(M2Ps_Combiners_Opaque_Mod2xNA_Alpha_Alpha));
+    ps_[p++] = mk(gfx::ShaderStage::Pixel, WDX_M2_BLOB(M2Ps_Combiners_Mod_Mod_Depth));
 #undef WDX_M2_BLOB
 
     // One map per draw, so the Vulkan CB ring needs room for a busy frame —

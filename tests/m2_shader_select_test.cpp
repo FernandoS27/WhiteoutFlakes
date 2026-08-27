@@ -84,15 +84,34 @@ TEST_CASE("M2 explicit combos index s_modelShaderEffect", "[m2][shader]") {
     // Out of range clamps rather than reading past the table.
     CHECK(M2ExplicitEffect(kNumM2Shaders).pixel == PS::Combiners_Opaque_Mod2xNA_Alpha);
 
-    // But SELECTION does not use that clamp. The table is 6.0.1's 30 entries and
-    // the corpus is Legion+, so indices past it are ordinary shipped content,
-    // not corruption — and entry 0 is an opaque two-texture environment
-    // combiner, which is the worst possible guess for one. Falling through to
-    // the legacy path keys off the batch's real texture count instead. This is
-    // what stopped `dimensiusboss03`'s BlendAdd star drawing as a black box.
+    // But SELECTION does not use that clamp: an id past the table falls through
+    // to the legacy path, which at least keys off the batch's real texture
+    // count. Entry 0 is an opaque two-texture environment combiner and is the
+    // worst available guess. 0x7FFF is the only way to reach this now.
     CHECK(M2PixelShaderFor(2, 0xFFFF) == PS::Combiners_Mod_AddNA);
     CHECK(M2PixelShaderFor(1, 0xFFFF) == PS::Combiners_Mod);
-    CHECK(M2VertexShaderFor(1, 0x8022) == VS::Diffuse_T1);
+
+    // Rows 30-35, from 12.1.0.69404 @ 0x14443E9F0. 33, 34 and 35 are the three
+    // the corpus ships. The two below are what the legacy fallthrough used to
+    // answer for them: it happened to get 0x8022's combiner right and 0x8021's
+    // wrong, and it lost the edge fade on both.
+    CHECK(M2ExplicitEffect(30).pixel == PS::Combiners_Unnamed_35);
+    CHECK(M2ExplicitEffect(30).vertex == VS::Unnamed_14);
+    CHECK(M2ExplicitEffect(31).pixel == PS::Combiners_Unnamed_35);
+    CHECK(M2ExplicitEffect(31).vertex == VS::Unnamed_15);
+    CHECK(M2ExplicitEffect(32).pixel == PS::Combiners_Opaque);
+    CHECK(M2ExplicitEffect(32).vertex == VS::Diffuse_T1);
+    CHECK(M2ExplicitEffect(33).pixel == PS::Combiners_Mod_Mod2x);
+    CHECK(M2ExplicitEffect(33).vertex == VS::Diffuse_EdgeFade_T1_T2);
+    CHECK(M2ExplicitEffect(34).pixel == PS::Combiners_Mod);
+    CHECK(M2ExplicitEffect(34).vertex == VS::Diffuse_EdgeFade_T1);
+    CHECK(M2ExplicitEffect(35).pixel == PS::Combiners_Mod_Mod_Depth);
+    CHECK(M2ExplicitEffect(35).vertex == VS::Diffuse_EdgeFade_T1_T2);
+
+    CHECK(M2PixelShaderFor(1, 0x8022) == PS::Combiners_Mod);
+    CHECK(M2VertexShaderFor(1, 0x8022) == VS::Diffuse_EdgeFade_T1);
+    CHECK(M2PixelShaderFor(2, 0x8021) == PS::Combiners_Mod_Mod2x);
+    CHECK(M2VertexShaderFor(2, 0x8021) == VS::Diffuse_EdgeFade_T1_T2);
 }
 
 TEST_CASE("M2 every selectable shader is in range and named", "[m2][shader]") {
@@ -120,7 +139,8 @@ TEST_CASE("M2 combiner sampler counts match their paired vertex shader", "[m2][s
     // Every explicit-combo row pairs a pixel shader with a vertex shader whose
     // name spells the same unit count. That cross-check is what catches a typo
     // in either table.
-    const whiteout::flakes::u32 vsUnits[] = {1, 1, 2, 2, 2, 2, 3, 2, 3, 1, 1, 3, 2, 4, 1, 3};
+    const whiteout::flakes::u32 vsUnits[] = {1, 1, 2, 2, 2, 2, 3, 2, 3,
+                                            1, 1, 3, 2, 4, 1, 3, 3, 3};
     for (whiteout::flakes::u32 i = 0; i < kNumM2Shaders; ++i) {
         const auto e = M2ExplicitEffect(i);
         INFO("s_modelShaderEffect row " << i);

@@ -6,9 +6,15 @@ namespace {
 using PS = M2PixelShader;
 using VS = M2VertexShader;
 
-// s_modelShaderEffect, 6.0.1. The client's rows also carry hull/domain ids and
-// the fixed-function fallback ops; neither survives into a shader-only path, so
-// only the two we dispatch on are kept.
+// s_modelShaderEffect, transcribed from 12.1.0.69404 @ 0x14443E9F0 (36 rows of
+// {u32 pixel, u32 vertex}) and diffed against 6.0.1's @ 0x101c74150, whose rows
+// carry four more fields — hull/domain ids and the fixed-function fallback ops,
+// none of which survive into a shader-only path.
+//
+// The pixel column is identical across both clients for all 30 shared rows. The
+// vertex column differs only by 12.1's renumbering (see M2VertexShader), so the
+// names below are the same shaders 6.0.1 named; rows 18 and 22 are written with
+// the folded names because ours are positional. Rows 30-35 are new.
 constexpr M2ShaderEffect kExplicitEffects[kNumM2Shaders] = {
     {PS::Combiners_Opaque_Mod2xNA_Alpha, VS::Diffuse_T1_Env},
     {PS::Combiners_Opaque_AddAlpha, VS::Diffuse_T1_Env},
@@ -40,6 +46,16 @@ constexpr M2ShaderEffect kExplicitEffects[kNumM2Shaders] = {
     {PS::Guild_NoBorder, VS::Diffuse_T1_T2},
     {PS::Guild_Opaque, VS::Diffuse_T1_T2_T1},
     {PS::Illum, VS::Diffuse_T1_T1},
+    // 30-35, absent from 6.0.1. The corpus selects 33, 34 and 35 only; the
+    // 30-row table sent all three down the legacy path, which gets the edge
+    // fade wrong every time — row 34 is `airshipmountgold`'s additive light
+    // cones, and legacy answered Diffuse_T1 for its Diffuse_EdgeFade_T1.
+    {PS::Combiners_Unnamed_35, VS::Unnamed_14},
+    {PS::Combiners_Unnamed_35, VS::Unnamed_15},
+    {PS::Combiners_Opaque, VS::Diffuse_T1},
+    {PS::Combiners_Mod_Mod2x, VS::Diffuse_EdgeFade_T1_T2},
+    {PS::Combiners_Mod, VS::Diffuse_EdgeFade_T1},
+    {PS::Combiners_Mod_Mod_Depth, VS::Diffuse_EdgeFade_T1_T2},
 };
 
 // The client's two 8-entry tables, indexed by `shaderId & 7`. They are the
@@ -92,6 +108,8 @@ constexpr const char* kPixelShaderNames[static_cast<usize>(PS::Count)] = {
     "Guild_Opaque",
     "Combiners_Mod_Depth",
     "Illum",
+    "Combiners_Unnamed_35",
+    "Combiners_Mod_Mod_Depth",
 };
 
 constexpr const char* kVertexShaderNames[static_cast<usize>(VS::Count)] = {
@@ -100,7 +118,7 @@ constexpr const char* kVertexShaderNames[static_cast<usize>(VS::Count)] = {
     "Diffuse_T1_Env_T1",  "Diffuse_T1_T1",         "Diffuse_T1_T1_T1",
     "Diffuse_EdgeFade_T1", "Diffuse_T2",           "Diffuse_T1_Env_T2",
     "Diffuse_EdgeFade_T1_T2", "Diffuse_T1_T1_T1_T2", "Diffuse_EdgeFade_Env",
-    "Diffuse_T1_T2_T1",
+    "Diffuse_T1_T2_T1",   "Unnamed_14",            "Unnamed_15",
 };
 
 // How many samplers each combiner reads. Cross-checked against the vertex
@@ -126,6 +144,8 @@ constexpr u8 kPixelShaderTexCount[static_cast<usize>(PS::Count)] = {
     3, // Guild_Opaque
     1, // Mod_Depth
     2, // Illum
+    3, // Unnamed_35 — three-sampler, from the uber-shader it shares
+    2, // Mod_Mod_Depth
 };
 
 } // namespace
@@ -135,18 +155,12 @@ M2ShaderEffect M2ExplicitEffect(u32 index) {
 }
 
 M2PixelShader M2PixelShaderFor(u32 textureCount, u16 shaderId) {
-    // An explicit combo the table does not reach falls THROUGH to the legacy
-    // path rather than onto entry 0. `kExplicitEffects` is 6.0.1's, and 6.0.1
-    // is Warlords: `NUM_M2SHADERS` is 30 there and the corpus is Legion+, which
-    // ships 30 and above. Entry 0 is `Opaque_Mod2xNA_Alpha` + `Diffuse_T1_Env`
-    // — an OPAQUE two-texture environment combiner — so using it as the
-    // fallback drew `dimensiusboss03`'s BlendAdd star as a black box and
-    // `airshipmountgold`'s one-texture additive light cones as flat slabs.
-    // The legacy path at least keys off the batch's real texture count.
-    //
-    // Not the client's behaviour: 6.0.1 asserts and then indexes out of bounds
-    // anyway. A stopgap until the modern table is transcribed from a binary
-    // that has it.
+    // The table now covers every row 12.1 has, so this guard only catches a
+    // genuinely malformed id (0x7FFF and friends). It still falls THROUGH to
+    // the legacy path rather than onto entry 0, which is `Opaque_Mod2xNA_Alpha`
+    // + `Diffuse_T1_Env` — an OPAQUE two-texture environment combiner, and the
+    // worst available guess. Not the client's behaviour either way: 12.1 does
+    // no bounds check at all and reads straight off the end.
     if (M2IsExplicitCombo(shaderId) && (shaderId & 0x7FFFu) < kNumM2Shaders)
         return M2ExplicitEffect(shaderId & 0x7FFFu).pixel;
 
