@@ -539,7 +539,8 @@ int main(int argc, char* argv[]) {
     // panel is the one part of this tool a headless test could not look at —
     // --window-repro proves a pooled cell reaches ImGui, not that the grid,
     // search bar and zoom lay out. `--ls <folder>` picks the folder;
-    // PANEL_FILTER / PANEL_ICON set the search text and icon size.
+    // PANEL_FILTER / PANEL_ICON set the search text and icon size, and
+    // PANEL_VIEW=tree shoots the outline+preview view instead of the grid.
     if (!panelShot.empty()) {
         namespace wf = whiteout::flakes;
         if (cascRoot.empty()) {
@@ -621,6 +622,13 @@ int main(int argc, char* argv[]) {
             }
             if (lsPathSet)
                 panel.NavigateTo(lsPath);
+            // PANEL_VIEW picks the browser. Set it AFTER the navigate: switching
+            // to the tree reveals whatever folder the grid is in, which is the
+            // half of SetView a shot of the tree at the root would not show.
+            if (const char* v = std::getenv("PANEL_VIEW")) {
+                panel.SetView(CompareCi(v, "tree") == 0 ? wf::tools::ExplorerView::Tree
+                                                        : wf::tools::ExplorerView::Grid);
+            }
             if (const char* f = std::getenv("PANEL_FILTER"))
                 panel.SetSearchText(f);
             // Enough frames for the thumbnails to load, frame and settle.
@@ -629,8 +637,23 @@ int main(int argc, char* argv[]) {
             // panel that needs real input to exercise.
             const char* wheelEnv = std::getenv("PANEL_WHEEL");
             const float wheel = wheelEnv ? static_cast<float>(std::atof(wheelEnv)) : 0.0f;
+            // PANEL_CLICK="x,y" replays one left click there, early enough that
+            // the frames after it still load what the click selected. It is the
+            // only way into anything the panel gates behind a selection - the
+            // tree view's preview pane is empty until a row is picked.
+            const char* clickEnv = std::getenv("PANEL_CLICK");
+            float clickX = 0.0f, clickY = 0.0f;
+            const bool doClick =
+                clickEnv && std::sscanf(clickEnv, "%f,%f", &clickX, &clickY) == 2;
             const float iconBefore = panel.IconSize();
             for (int f = 0; f < frames; ++f) {
+                if (doClick) {
+                    io.AddMousePosEvent(clickX, clickY);
+                    if (f == 4)
+                        io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+                    else if (f == 5)
+                        io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+                }
                 if (wheel != 0.0f) {
                     io.AddMousePosEvent(kW * 0.4f, kH * 0.5f); // over the grid child
                     if (f == frames / 2) {
@@ -653,6 +676,10 @@ int main(int argc, char* argv[]) {
             if (wheel != 0.0f) {
                 std::printf("[panel-shot] ctrl+wheel %+.1f: icon %.0f -> %.0f px\n", wheel,
                             iconBefore, panel.IconSize());
+            }
+            if (doClick) {
+                std::printf("[panel-shot] click %.0f,%.0f selected '%s'\n", clickX, clickY,
+                            panel.Selected().c_str());
             }
             std::vector<wf::u8> rgba;
             int cw = 0, ch = 0;

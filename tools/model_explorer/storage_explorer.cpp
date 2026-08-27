@@ -22,6 +22,7 @@
 #include <cstring>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace whiteout::flakes::tools {
 
@@ -72,6 +73,29 @@ constexpr float kMaxIcon = 320.0f;
 // own scene every frame, so the bound is a frame-time bound, not a memory one.
 constexpr int kMinCells = 32;
 constexpr int kMaxCells = 128;
+
+// Outline row indent per depth level, in logical pixels.
+constexpr float kTreeIndent = 14.0f;
+// Rows one flatten will produce before it gives up. A backstop, not a budget:
+// the outline only walks folders that are open, so reaching this means a
+// filter auto-expanded something enormous, and a truncated tree that SAYS it
+// is truncated beats one that quietly stops.
+constexpr std::size_t kMaxTreeRows = 20000;
+// Folders a filter may leave standing and still be treated as a result set
+// worth expanding to. Past this the filter goes back to merely pruning; see
+// RebuildTreeRows.
+constexpr std::size_t kAutoExpandMax = 400;
+
+std::string LowerPath(std::string s) {
+    for (char& c : s)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+// Join a folder path and one of its entries, both in display form.
+std::string ChildDisplayPath(const std::string& path, const std::string& name) {
+    return path.empty() ? name : path + '\\' + name;
+}
 
 const char* GameLabel(ProductId game) {
     switch (game) {
@@ -151,7 +175,7 @@ bool StorageExplorer::OpenCasc(const std::string& root) {
         // belongs on the task thread.
         if (pool_)
             pool_->Clear();
-        selectedPath_.clear();
+        ClearSelection();
         openError_.clear();
         tasks_->Run(
             "Opening " + root,
@@ -207,8 +231,12 @@ void StorageExplorer::FinishOpenCasc(const std::string& root) {
     provider_->SetHdMode(product == ProductId::Wc3 || product == ProductId::Neutral);
     if (pool_)
         pool_->Clear();
-    selectedPath_.clear();
+    ClearSelection();
     lastError_.clear();
+    // A new storage is a new outline: the folders the user had expanded name
+    // paths that no longer exist.
+    treeOpen_.clear();
+    treeRowsDirty_ = true;
     openedRoot_ = root;
     // Totals, not the filtered listing: a search left over from the last open
     // must not be read as an empty storage.
@@ -222,7 +250,7 @@ void StorageExplorer::NavigateTo(const std::string& displayPath) {
     browser_.NavigateTo(displayPath);
     if (pool_)
         pool_->Clear();
-    selectedPath_.clear();
+    ClearSelection();
 }
 
 void StorageExplorer::OpenCascDialog() {
@@ -338,7 +366,11 @@ void StorageExplorer::BuildSearchBar() {
     ImGui::SetItemTooltip("Case-insensitive substring.\n"
                           "*.mdx / foot?an : wildcards match the whole name\n"
                           "peasant, footman : comma-separated alternatives\n"
-                          "-portrait : exclude");
+                          "-portrait : exclude\n"
+                          "%s",
+                          view_ == ExplorerView::Tree
+                              ? "Matched against the WHOLE path, so it prunes subtrees."
+                              : "Matched against the names in this folder.");
     if (edited)
         searchDelay_ = kSearchDebounce;
     if (searchText_[0] != '\0') {
@@ -354,23 +386,36 @@ void StorageExplorer::BuildSearchBar() {
     if (searchDelay_ <= 0.0f)
         browser_.SetFilter(searchText_);
     if (!browser_.Filter().empty()) {
-        const auto& l = browser_.Current();
         ImGui::SameLine();
-        ImGui::TextDisabled("%zu of %zu", l.folders.size() + l.modelFiles.size(),
-                            l.folderTotal + l.fileTotal);
+        if (view_ == ExplorerView::Tree) {
+            // The tree filters the whole storage, so "12 of 340 in this folder"
+            // would be counting the wrong thing entirely.
+            const std::size_t hits = browser_.TreeMatchCount();
+            // Say when the filter was too broad to expand to, or a pruned tree
+            // of collapsed folders reads as a search that found four things.
+            ImGui::TextDisabled("%zu match%s%s", hits, hits == 1 ? "" : "es",
+                                treeAutoExpand_ ? "" : " (too many to expand)");
+        } else {
+            const auto& l = browser_.Current();
+            ImGui::TextDisabled("%zu of %zu", l.folders.size() + l.modelFiles.size(),
+                                l.folderTotal + l.fileTotal);
+        }
     }
 
-    // Zoom, right-aligned so it stays put as the search row grows.
-    constexpr float kZoomWidth = 160.0f;
-    ImGui::SameLine();
-    const float rest = ImGui::GetContentRegionAvail().x;
-    if (rest > kZoomWidth)
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + rest - kZoomWidth);
-    ImGui::SetNextItemWidth(kZoomWidth);
-    float size = iconSize_;
-    if (ImGui::SliderFloat("##zoom", &size, kMinIcon, kMaxIcon, "%.0f px"))
-        SetIconSize(size);
-    ImGui::SetItemTooltip("Icon size, or Ctrl+scroll over the grid");
+    // Zoom, right-aligned so it stays put as the search row grows. The grid's
+    // own: the tree has one thumbnail and it fills whatever its pane is.
+    if (view_ == ExplorerView::Grid) {
+        constexpr float kZoomWidth = 160.0f;
+        ImGui::SameLine();
+        const float rest = ImGui::GetContentRegionAvail().x;
+        if (rest > kZoomWidth)
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + rest - kZoomWidth);
+        ImGui::SetNextItemWidth(kZoomWidth);
+        float size = iconSize_;
+        if (ImGui::SliderFloat("##zoom", &size, kMinIcon, kMaxIcon, "%.0f px"))
+            SetIconSize(size);
+        ImGui::SetItemTooltip("Icon size, or Ctrl+scroll over the grid");
+    }
 }
 
 // An open that enumerated nothing is indistinguishable from an empty folder,
@@ -415,7 +460,7 @@ void StorageExplorer::NewFrame(float dt) {
             browser_.NavigateTo(navTarget_);
         if (pool_)
             pool_->Clear();
-        selectedPath_.clear();
+        ClearSelection();
         navAnimT_ = 0.0f; // play the open transition for the new listing
     }
 
@@ -443,6 +488,9 @@ void StorageExplorer::BuildWindow(bool* pOpen) {
                 OpenCascDialog();
             ImGui::EndMenu();
         }
+        // Before the early returns below: which browser you want is a decision
+        // you may well be making *because* the other one showed nothing.
+        BuildViewSwitch();
         ImGui::EndMenuBar();
     }
 
@@ -465,8 +513,67 @@ void StorageExplorer::BuildWindow(bool* pOpen) {
         return;
     }
 
-    BuildGrid();
+    if (view_ == ExplorerView::Tree)
+        BuildTree();
+    else
+        BuildGrid();
     ImGui::End();
+}
+
+// Right-aligned in the menu bar, which is the one strip that survives every
+// early return in BuildWindow.
+void StorageExplorer::BuildViewSwitch() {
+    constexpr float kWidth = 110.0f;
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float x = ImGui::GetWindowWidth() - kWidth - style.WindowPadding.x - style.ItemSpacing.x;
+    ImGui::SetCursorPosX((std::max)(ImGui::GetCursorPosX(), x));
+    ImGui::SetNextItemWidth(kWidth);
+    const bool tree = view_ == ExplorerView::Tree;
+    if (ImGui::BeginCombo("##view", tree ? "Tree View" : "Grid View")) {
+        if (ImGui::Selectable("Grid View", !tree))
+            SetView(ExplorerView::Grid);
+        if (ImGui::Selectable("Tree View", tree))
+            SetView(ExplorerView::Tree);
+        ImGui::EndCombo();
+    }
+    ImGui::SetItemTooltip("Grid: one folder of thumbnails.\n"
+                          "Tree: the whole storage, with one large preview.");
+}
+
+void StorageExplorer::SetView(ExplorerView view) {
+    if (view == view_)
+        return;
+    view_ = view;
+    if (view_ != ExplorerView::Tree)
+        return;
+    // Land on the folder the grid was showing. The two are one browser, and an
+    // outline that opened collapsed at the root would throw away the place the
+    // user had already navigated to.
+    RevealFolder(browser_.CurrentPath());
+    treeRowsDirty_ = true;
+}
+
+void StorageExplorer::ClearSelection() {
+    selectedPath_.clear();
+    treeSelectedDisplay_.clear();
+    selectedKind_ = StorageFileKind::Mdx;
+}
+
+void StorageExplorer::Activate(const std::string& archivePath, StorageFileKind kind) {
+    if (!onActivate_ || archivePath.empty())
+        return;
+    ActivatedFile af;
+    af.path = archivePath;
+    af.kind = kind;
+    af.isEffect = IsEffectKind(kind);
+    af.provider = provider_;
+    if (deliverBytes_ && provider_) {
+        if (auto data = provider_->ReadFile(archivePath)) {
+            af.bytes = std::move(*data);
+            af.hasBytes = true;
+        }
+    }
+    onActivate_(af);
 }
 
 void StorageExplorer::BuildGrid() {
@@ -654,25 +761,16 @@ void StorageExplorer::BuildGrid() {
             tex = pool_->Acquire(archivePath, isEffect, frameCounter_, static_cast<int>(cell));
 
         ImGui::InvisibleButton("##m", ImVec2(cell, cell));
-        if (ImGui::IsItemClicked())
+        if (ImGui::IsItemClicked()) {
             selectedPath_ = archivePath;
-        // Double-click opens the file — the host decides what that means. Hand
-        // back the path + provider, plus the file's bytes when DeliverBytes is on.
-        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
-            onActivate_) {
-            ActivatedFile af;
-            af.path = archivePath;
-            af.kind = kind;
-            af.isEffect = isEffect;
-            af.provider = provider_;
-            if (deliverBytes_ && provider_) {
-                if (auto data = provider_->ReadFile(archivePath)) {
-                    af.bytes = std::move(*data);
-                    af.hasBytes = true;
-                }
-            }
-            onActivate_(af);
+            // The tree view previews whatever the grid last selected, so the
+            // selection has to carry everything that view needs to draw it.
+            treeSelectedDisplay_ = ChildDisplayPath(browser_.CurrentPath(), file);
+            selectedKind_ = kind;
         }
+        // Double-click opens the file — the host decides what that means.
+        if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+            Activate(archivePath, kind);
 
         // Same bound as the folders above, for the same reason.
         if (onScreen) {
@@ -719,6 +817,279 @@ void StorageExplorer::BuildGrid() {
         navAscend_ = false;
         navTarget_ = navTarget;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tree view
+// ---------------------------------------------------------------------------
+
+std::string StorageExplorer::TreeSignature() const {
+    return browser_.Root() + '\n' + browser_.Filter() + '\n' +
+           std::to_string(static_cast<std::uint32_t>(browser_.EnabledTypes()));
+}
+
+void StorageExplorer::RevealFolder(const std::string& displayPath) {
+    if (displayPath.empty())
+        return; // the root is always open
+    // Every ancestor prefix, so the row for `displayPath` is reachable at all.
+    std::string acc;
+    for (char c : displayPath) {
+        if (c == '\\' || c == '/') {
+            treeOpen_.insert(LowerPath(acc));
+            acc.push_back('\\');
+        } else {
+            acc.push_back(c);
+        }
+    }
+    treeOpen_.insert(LowerPath(acc));
+    treeScrollTo_ = displayPath;
+}
+
+void StorageExplorer::RebuildTreeRows() {
+    treeRows_.clear();
+    // While a filter is narrow enough to BE a result set, it — and not the
+    // user's arrows — decides what is expanded: an outline that hid its own
+    // matches behind collapsed folders would be a search that shows nothing.
+    // Past kAutoExpandMax it stops being a result set (a one-letter pattern
+    // over a World of Warcraft install matches most of it), so the filter goes
+    // back to merely pruning and the user's expansion drives the shape again.
+    treeAutoExpand_ =
+        !browser_.Filter().empty() && browser_.TreeVisibleFolderCount() <= kAutoExpandMax;
+    if (browser_.IsOpen())
+        AppendTreeRows({}, 0, treeAutoExpand_);
+    treeTruncated_ = treeRows_.size() >= kMaxTreeRows;
+}
+
+void StorageExplorer::AppendTreeRows(const std::string& displayPath, int depth, bool autoExpand) {
+    const io::StorageBrowser::TreeListing kids = browser_.TreeChildren(displayPath);
+    // Folders first, each immediately followed by its own subtree, then this
+    // folder's files — the shape every file tree has.
+    for (const auto& folder : kids.folders) {
+        if (treeRows_.size() >= kMaxTreeRows)
+            return;
+        TreeRow row;
+        row.name = folder;
+        row.path = ChildDisplayPath(displayPath, folder);
+        row.depth = depth;
+        row.isFolder = true;
+        row.open = autoExpand || treeOpen_.count(LowerPath(row.path)) != 0;
+        const bool open = row.open;
+        const std::string child = row.path;
+        treeRows_.push_back(std::move(row));
+        if (open)
+            AppendTreeRows(child, depth + 1, autoExpand);
+    }
+    for (const auto& file : kids.files) {
+        if (treeRows_.size() >= kMaxTreeRows)
+            return;
+        TreeRow row;
+        row.name = file;
+        row.path = ChildDisplayPath(displayPath, file);
+        row.archive = browser_.ChildPathAt(displayPath, file);
+        row.depth = depth;
+        treeRows_.push_back(std::move(row));
+    }
+}
+
+void StorageExplorer::BuildTree() {
+    if (filterUiVisible_) {
+        BuildFilterBar();
+        ImGui::Separator();
+    }
+    if (openedEmpty_) {
+        BuildEmptyHint();
+        return;
+    }
+    BuildSearchBar();
+    ImGui::Separator();
+
+    const std::string sig = TreeSignature();
+    if (sig != treeSig_) {
+        treeSig_ = sig;
+        treeRowsDirty_ = true;
+    }
+    if (treeRowsDirty_) {
+        treeRowsDirty_ = false;
+        RebuildTreeRows();
+    }
+
+    // Outline | splitter | preview.
+    constexpr float kSplitterW = 6.0f;
+    constexpr float kMinPane = 140.0f;
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    treeSplit_ =
+        std::clamp(treeSplit_, kMinPane, (std::max)(kMinPane, avail.x - kMinPane - kSplitterW));
+
+    BuildTreePane(treeSplit_, avail.y);
+
+    ImGui::SameLine(0.0f, 0.0f);
+    const ImVec2 sp = ImGui::GetCursorScreenPos();
+    const float barH = (std::max)(1.0f, avail.y);
+    ImGui::InvisibleButton("##split", ImVec2(kSplitterW, barH));
+    if (ImGui::IsItemActive())
+        treeSplit_ += ImGui::GetIO().MouseDelta.x;
+    const bool grabbed = ImGui::IsItemHovered() || ImGui::IsItemActive();
+    if (grabbed)
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        ImVec2(sp.x + kSplitterW * 0.5f - 1.0f, sp.y),
+        ImVec2(sp.x + kSplitterW * 0.5f + 1.0f, sp.y + barH),
+        ImGui::GetColorU32(grabbed ? ImGuiCol_SeparatorActive : ImGuiCol_Separator));
+
+    ImGui::SameLine(0.0f, 0.0f);
+    BuildPreviewPane();
+}
+
+void StorageExplorer::BuildTreePane(float width, float height) {
+    ImGui::BeginChild("outline", ImVec2(width, height), ImGuiChildFlags_Borders);
+
+    if (treeRows_.empty()) {
+        ImGui::TextDisabled("%s", !browser_.Filter().empty()
+                                      ? "Nothing in this storage matches the filter."
+                                      : "Nothing to show in this storage.");
+        ImGui::EndChild();
+        return;
+    }
+
+    const float pitch = ImGui::GetTextLineHeightWithSpacing();
+    const float glyph = ImGui::GetTextLineHeight(); // the disclosure column
+    // A reveal nobody scrolled to is a reveal that did not happen. The uniform
+    // row pitch is what makes this a multiply rather than a measure.
+    if (!treeScrollTo_.empty()) {
+        const float view = ImGui::GetContentRegionAvail().y;
+        for (std::size_t i = 0; i < treeRows_.size(); ++i) {
+            if (treeRows_[i].path != treeScrollTo_)
+                continue;
+            ImGui::SetScrollY((std::max)(0.0f, static_cast<float>(i) * pitch - view * 0.35f));
+            break;
+        }
+        treeScrollTo_.clear();
+    }
+
+    const ImU32 arrowCol = ImGui::GetColorU32(ImVec4(0.85f, 0.72f, 0.35f, 1.0f));
+    const ImU32 textCol = ImGui::GetColorU32(ImGuiCol_Text);
+    // Toggles are DEFERRED: opening a folder reflattens treeRows_, which is the
+    // very vector the clipper is walking.
+    std::string toggle;
+
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(treeRows_.size()), pitch);
+    while (clipper.Step()) {
+        for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+            const TreeRow& row = treeRows_[static_cast<std::size_t>(i)];
+            const float indent = kTreeIndent * static_cast<float>(row.depth);
+            ImGui::PushID(i);
+            // Guarded, because Indent(0.0f) does NOT indent by zero: ImGui reads
+            // 0 as "unspecified" and applies style.IndentSpacing. Unguarded, a
+            // depth-0 row is pushed 21px in and a depth-1 row only 14, so the
+            // second level draws LEFT of the first while every level below it
+            // nests correctly off its own parent.
+            if (indent > 0.0f)
+                ImGui::Indent(indent);
+
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            const float rowWidth = ImGui::GetContentRegionAvail().x;
+            const bool selected = !row.isFolder && row.path == treeSelectedDisplay_;
+            ImGui::Selectable("##row", selected, ImGuiSelectableFlags_AllowDoubleClick);
+            const bool hovered = ImGui::IsItemHovered();
+            if (ImGui::IsItemClicked()) {
+                if (!row.isFolder) {
+                    selectedPath_ = row.archive;
+                    treeSelectedDisplay_ = row.path;
+                    selectedKind_ = KindOf(row.name);
+                } else if (!treeAutoExpand_) {
+                    toggle = row.path;
+                }
+            }
+            if (!row.isFolder && hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                Activate(row.archive, KindOf(row.name));
+
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            if (row.isFolder) {
+                // Disclosure triangle, drawn rather than typed: the font atlas
+                // bakes the Latin range and no arrow glyph is in it.
+                const ImVec2 c(p.x + glyph * 0.5f, p.y + glyph * 0.5f);
+                const float r = glyph * 0.28f;
+                if (row.open) {
+                    dl->AddTriangleFilled(ImVec2(c.x - r, c.y - r * 0.6f),
+                                          ImVec2(c.x + r, c.y - r * 0.6f),
+                                          ImVec2(c.x, c.y + r * 0.8f), arrowCol);
+                } else {
+                    dl->AddTriangleFilled(ImVec2(c.x - r * 0.6f, c.y - r),
+                                          ImVec2(c.x + r * 0.8f, c.y),
+                                          ImVec2(c.x - r * 0.6f, c.y + r), arrowCol);
+                }
+            }
+            const float labelX = p.x + glyph + ImGui::GetStyle().ItemInnerSpacing.x;
+            const std::string label = FitLabel(row.name, p.x + rowWidth - labelX);
+            dl->AddText(ImVec2(labelX, p.y), textCol, label.c_str());
+            // The whole point of this view is the path, so hovering a file shows
+            // it in full; a folder only when its own name had to be cut.
+            if (hovered && (!row.isFolder || label != row.name))
+                ImGui::SetTooltip("%s", row.path.c_str());
+
+            if (indent > 0.0f)
+                ImGui::Unindent(indent);
+            ImGui::PopID();
+        }
+    }
+
+    if (treeTruncated_) {
+        ImGui::Spacing();
+        ImGui::TextDisabled("(stopped at %zu rows - narrow the filter)", kMaxTreeRows);
+    }
+    ImGui::EndChild();
+
+    if (toggle.empty())
+        return;
+    const std::string key = LowerPath(toggle);
+    if (!treeOpen_.insert(key).second)
+        treeOpen_.erase(key);
+    treeRowsDirty_ = true;
+}
+
+void StorageExplorer::BuildPreviewPane() {
+    ImGui::BeginChild("preview", ImVec2(0, 0), ImGuiChildFlags_Borders);
+
+    if (selectedPath_.empty()) {
+        ImGui::TextDisabled("Select a file to preview it.");
+        ImGui::Spacing();
+        ImGui::TextDisabled("Double-click opens it in the viewer.");
+        ImGui::EndChild();
+        return;
+    }
+
+    ImGui::TextWrapped("%s", treeSelectedDisplay_.empty() ? selectedPath_.c_str()
+                                                          : treeSelectedDisplay_.c_str());
+    if (ImGui::SmallButton("Open in viewer"))
+        Activate(selectedPath_, selectedKind_);
+    ImGui::Separator();
+
+    // One cell is all this view shows, but the pool keeps the last few alive so
+    // clicking back and forth along a folder does not reload each time.
+    if (pool_)
+        pool_->SetCap(kMinCells);
+
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const float edge = (std::max)(kMinIcon, (std::min)(avail.x, avail.y));
+    const ImVec2 p0(origin.x + (std::max)(0.0f, (avail.x - edge) * 0.5f),
+                    origin.y + (std::max)(0.0f, (avail.y - edge) * 0.5f));
+    const ImVec2 p1(p0.x + edge, p0.y + edge);
+
+    const gfx::TextureHandle tex = pool_->Acquire(selectedPath_, IsEffectKind(selectedKind_),
+                                                  frameCounter_, static_cast<int>(edge));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (tex != gfx::TextureHandle::Invalid) {
+        dl->AddImage(static_cast<ImTextureID>(static_cast<std::uint64_t>(tex)), p0, p1);
+    } else {
+        dl->AddRectFilled(p0, p1, ImGui::GetColorU32(ImVec4(0.25f, 0.28f, 0.34f, 1.0f)), 4.0f);
+        const char* loading = "Loading...";
+        const ImVec2 ts = ImGui::CalcTextSize(loading);
+        dl->AddText(ImVec2(p0.x + (edge - ts.x) * 0.5f, p0.y + (edge - ts.y) * 0.5f),
+                    ImGui::GetColorU32(ImGuiCol_TextDisabled), loading);
+    }
+    ImGui::EndChild();
 }
 
 void StorageExplorer::RenderThumbnails(float dt) {

@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 using whiteout::flakes::ProductId;
 using whiteout::flakes::io::Any;
@@ -311,4 +312,139 @@ TEST_CASE("A StarCraft II browse is .m3 and nothing else", "[browser][casc]") {
     // The same two the loader's LooksLikeM3 admits, spelled the same way.
     const std::string magic(reinterpret_cast<const char*>(bytes->data()), 4);
     CHECK((magic == "43DM" || magic == "33DM"));
+}
+
+// ============================================================================
+// The tree view's filter is a different filter.
+//
+// The grid narrows ONE folder by entry name. An outline shows every level at
+// once, where that rule collapses: `units` does not contain the string
+// "footman", so a name filter hides the only route to the file that does. The
+// tree matches full paths instead and keeps a folder exactly when something
+// under it survived, which prunes subtrees rather than levels.
+//
+// Folder-backed so it is deterministic and needs no install: the tree the
+// browser builds is the same one either way.
+// ============================================================================
+namespace {
+
+// A tiny model tree on disk, removed when the test leaves.
+struct TempTree {
+    std::filesystem::path root;
+    explicit TempTree(const char* tag) {
+        root = std::filesystem::temp_directory_path() / (std::string("wf_browser_") + tag);
+        std::error_code ec;
+        std::filesystem::remove_all(root, ec);
+        for (const char* rel : {"units/human/footman/footman.mdx",
+                                "units/human/footman/footman_portrait.mdx",
+                                "units/orc/grunt/grunt.mdx", "effects/blood/humanblood.mdx"}) {
+            const std::filesystem::path p = root / rel;
+            std::filesystem::create_directories(p.parent_path(), ec);
+            std::FILE* f = std::fopen(p.string().c_str(), "wb");
+            if (f)
+                std::fclose(f);
+        }
+    }
+    ~TempTree() {
+        std::error_code ec;
+        std::filesystem::remove_all(root, ec);
+    }
+};
+
+std::vector<std::string> Sorted(std::vector<std::string> v) {
+    std::sort(v.begin(), v.end());
+    return v;
+}
+
+} // namespace
+
+TEST_CASE("The tree filter prunes subtrees, where the grid filter prunes levels", "[browser]") {
+    TempTree tmp("tree_filter");
+    StorageBrowser br;
+    std::string err;
+    REQUIRE(br.Open(tmp.root.string(), StorageKind::Folder, &err));
+
+    // Unfiltered, the outline is simply the tree.
+    CHECK(Sorted(br.TreeChildren("").folders) == std::vector<std::string>{"effects", "units"});
+    CHECK(br.TreeChildren("").files.empty());
+    CHECK(Sorted(br.TreeChildren("units").folders) == std::vector<std::string>{"human", "orc"});
+    CHECK(Sorted(br.TreeChildren("units\\human\\footman").files) ==
+          std::vector<std::string>{"footman.mdx", "footman_portrait.mdx"});
+    // Nothing was pruned, so there is nothing to count.
+    CHECK(br.TreeMatchCount() == 0);
+
+    br.SetFilter("footman");
+
+    // The grid's answer, and the reason this API exists: at the root, no ENTRY
+    // is named "footman", so the folder view of the same filter is empty.
+    br.NavigateTo("");
+    CHECK(br.Current().folders.empty());
+
+    // The tree's answer: the one route to the match survives, whole.
+    CHECK(br.TreeChildren("").folders == std::vector<std::string>{"units"});
+    CHECK(br.TreeChildren("units").folders == std::vector<std::string>{"human"});
+    CHECK(br.TreeChildren("units\\human").folders == std::vector<std::string>{"footman"});
+    CHECK(Sorted(br.TreeChildren("units\\human\\footman").files) ==
+          std::vector<std::string>{"footman.mdx", "footman_portrait.mdx"});
+    // Three folders lead to the two matches; `effects` and `orc` do not.
+    CHECK(br.TreeVisibleFolderCount() == 3);
+    CHECK(br.TreeMatchCount() == 2);
+
+    // A filter that hits the other branch prunes the other way round, and the
+    // level they share keeps only the child that leads somewhere.
+    br.SetFilter("grunt");
+    CHECK(br.TreeChildren("").folders == std::vector<std::string>{"units"});
+    CHECK(br.TreeChildren("units").folders == std::vector<std::string>{"orc"});
+    CHECK(br.TreeMatchCount() == 1);
+
+    // A folder's own name counts too, because it is part of the path its files
+    // are matched by: everything under `effects` survives "effects".
+    br.SetFilter("effects");
+    CHECK(br.TreeChildren("").folders == std::vector<std::string>{"effects"});
+    CHECK(br.TreeChildren("effects\\blood").files ==
+          std::vector<std::string>{"humanblood.mdx"});
+
+    // An exclusion still beats every include, applied to the whole path.
+    br.SetFilter("footman, -portrait");
+    CHECK(br.TreeChildren("units\\human\\footman").files ==
+          std::vector<std::string>{"footman.mdx"});
+    CHECK(br.TreeMatchCount() == 1);
+
+    // Nothing matches: the tree empties rather than falling back to everything.
+    br.SetFilter("nosuchmodel");
+    CHECK(br.TreeChildren("").folders.empty());
+    CHECK(br.TreeMatchCount() == 0);
+
+    // And clearing it restores the whole tree - the cache is keyed to the
+    // filter, not baked at open.
+    br.SetFilter("");
+    CHECK(Sorted(br.TreeChildren("").folders) == std::vector<std::string>{"effects", "units"});
+}
+
+TEST_CASE("The tree reads any folder, without moving the one the grid is in", "[browser]") {
+    TempTree tmp("tree_paths");
+    StorageBrowser br;
+    std::string err;
+    REQUIRE(br.Open(tmp.root.string(), StorageKind::Folder, &err));
+
+    // ChildPathAt is ChildPath for a folder that is not the current one - what
+    // an outline needs, since every row it draws is somewhere else.
+    br.NavigateTo("");
+    const std::string archive = br.ChildPathAt("units\\orc\\grunt", "grunt.mdx");
+    CHECK_FALSE(archive.empty());
+    CHECK(std::filesystem::exists(archive));
+    CHECK(br.CurrentPath().empty()); // and reading it moved nothing
+    CHECK(br.ChildPath("grunt.mdx").empty());
+
+    // A path that is not there answers empty rather than throwing.
+    CHECK(br.ChildPathAt("units\\orc\\nosuchfolder", "grunt.mdx").empty());
+    CHECK(br.TreeChildren("units\\orc\\nosuchfolder").folders.empty());
+
+    // The type mask applies to the tree as well: with models off, the folders
+    // that led only to models stop leading anywhere.
+    br.SetEnabledTypes(BrowseType::Effects);
+    CHECK(br.TreeChildren("units\\orc\\grunt").files.empty());
+    br.SetFilter("grunt");
+    CHECK(br.TreeChildren("").folders.empty());
+    CHECK(br.TreeMatchCount() == 0);
 }

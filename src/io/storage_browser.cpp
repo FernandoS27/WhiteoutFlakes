@@ -176,6 +176,11 @@ void SplitSegments(const std::string& path, std::vector<std::string>& out) {
         out.push_back(seg);
 }
 
+// Join a folder path and one of its entries, both in display form.
+std::string ChildDisplay(const std::string& path, const std::string& name) {
+    return path.empty() ? name : path + '\\' + name;
+}
+
 std::string JoinSegments(const std::vector<std::string>& segs) {
     std::string out;
     for (const auto& s : segs) {
@@ -216,6 +221,7 @@ bool StorageBrowser::Open(const std::string& root, StorageKind kind, std::string
     open_ = true;
     // Everything the game offers, until the host says otherwise.
     enabled_ = available_;
+    treeCacheDirty_ = true;
     Refresh();
     return true;
 }
@@ -232,6 +238,7 @@ void StorageBrowser::SetEnabledTypes(BrowseType types) {
     if (types == enabled_)
         return;
     enabled_ = types;
+    treeCacheDirty_ = true;
     Refresh();
 }
 
@@ -239,6 +246,7 @@ void StorageBrowser::SetFilter(std::string pattern) {
     if (pattern == filter_)
         return;
     filter_ = std::move(pattern);
+    treeCacheDirty_ = true;
     Refresh();
 }
 
@@ -515,6 +523,86 @@ void StorageBrowser::NavigateTo(const std::string& displayPath) {
     SplitSegments(displayPath, segs);
     currentPath_ = JoinSegments(segs);
     Refresh();
+}
+
+void StorageBrowser::EnsureTreeCache() const {
+    if (!treeCacheDirty_)
+        return;
+    treeCacheDirty_ = false;
+    treeKeep_.clear();
+    treeMatches_ = 0;
+    if (!filter_.empty())
+        MarkTreeMatches(tree_, {});
+}
+
+bool StorageBrowser::MarkTreeMatches(const Node& node, const std::string& path) const {
+    bool any = false;
+    for (const auto& [key, disp] : node.folderDisplay) {
+        auto sub = node.folders.find(key);
+        if (sub == node.folders.end())
+            continue;
+        const std::string child = ChildDisplay(path, disp);
+        if (MarkTreeMatches(sub->second, child)) {
+            treeKeep_.insert(ToLower(child));
+            any = true;
+        }
+    }
+    for (const auto& [name, orig] : node.files) {
+        // The type mask first: a `.wmo` beside a matching `.m2` must not keep a
+        // folder alive that has nothing browsable in it.
+        if (!Any(BrowseTypeOfFile(name) & enabled_))
+            continue;
+        if (MatchesFilter(ChildDisplay(path, name), filter_)) {
+            ++treeMatches_;
+            any = true;
+        }
+    }
+    return any;
+}
+
+StorageBrowser::TreeListing StorageBrowser::TreeChildren(const std::string& displayPath) const {
+    TreeListing out;
+    const Node* node = NodeAt(displayPath);
+    if (!node)
+        return out;
+    const bool filtered = !filter_.empty();
+    if (filtered)
+        EnsureTreeCache();
+    for (const auto& [key, disp] : node->folderDisplay) {
+        if (filtered && !treeKeep_.count(ToLower(ChildDisplay(displayPath, disp))))
+            continue;
+        out.folders.push_back(disp);
+    }
+    for (const auto& [name, orig] : node->files) {
+        if (!Any(BrowseTypeOfFile(name) & enabled_))
+            continue;
+        if (filtered && !MatchesFilter(ChildDisplay(displayPath, name), filter_))
+            continue;
+        out.files.push_back(name);
+    }
+    // folderDisplay is already keyed by the lowercase name; the files are not.
+    auto ci = [](const std::string& a, const std::string& b) { return ToLower(a) < ToLower(b); };
+    std::sort(out.files.begin(), out.files.end(), ci);
+    return out;
+}
+
+std::string StorageBrowser::ChildPathAt(const std::string& displayPath,
+                                        const std::string& fileName) const {
+    const Node* node = NodeAt(displayPath);
+    if (!node)
+        return {};
+    auto it = node->files.find(fileName);
+    return it != node->files.end() ? it->second : std::string{};
+}
+
+std::size_t StorageBrowser::TreeVisibleFolderCount() const {
+    EnsureTreeCache();
+    return treeKeep_.size();
+}
+
+std::size_t StorageBrowser::TreeMatchCount() const {
+    EnsureTreeCache();
+    return treeMatches_;
 }
 
 std::string StorageBrowser::ChildPath(const std::string& fileName) const {

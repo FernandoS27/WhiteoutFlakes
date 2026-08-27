@@ -2,7 +2,8 @@
 
 // StorageExplorer — the embeddable model/storage explorer panel. Browses a CASC
 // archive and renders live model/effect thumbnails, each in its own
-// RenderService scene + offscreen viewport. Owns NO window / gfx device / ImGui
+// RenderService scene + offscreen viewport, as either a grid of icons or a
+// tree beside one large preview (ExplorerView). Owns NO window / gfx device / ImGui
 // context: a host supplies all three plus a shared RenderService, then drives
 // the per-frame contract each frame, in order:
 //
@@ -27,6 +28,7 @@ class LoadTaskRunner;
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -36,6 +38,18 @@ class IContentProvider;
 } // namespace whiteout::flakes::io
 
 namespace whiteout::flakes::tools {
+
+// Which of the panel's two browsers is on screen.
+//
+//   Grid - one folder at a time, as a wall of live thumbnails.
+//   Tree - the whole storage as an outline on the left, and the file selected
+//          in it as one large thumbnail on the right.
+//
+// One storage, one selection and one activate callback sit behind both. Only
+// the filter changes meaning: the grid narrows the current folder by entry
+// name, the tree matches full paths and so prunes subtrees rather than levels
+// (io::StorageBrowser::TreeChildren).
+enum class ExplorerView { Grid, Tree };
 
 // Concrete type of an activated file (a model dialect or an effect dialect).
 enum class StorageFileKind { Mdx, Mdl, Pkb, Pkfx, M2, M3 };
@@ -145,9 +159,19 @@ public:
     }
     // Show the game combo + type checkboxes in the panel so the end-user can
     // switch too (default true). Hide it to lock what SetBrowseTypes chose. The
-    // search box and zoom below are part of the grid itself and stay either way.
+    // search box, the zoom and the view switch are part of the browser itself
+    // and stay either way.
     void SetFilterUIVisible(bool on) {
         filterUiVisible_ = on;
+    }
+
+    // Which browser the panel shows. The user drives this with the switch in
+    // the panel's top-right corner; a host can preselect one. Switching to the
+    // tree reveals the folder the grid was in, so the two feel like one
+    // browser rather than two places.
+    void SetView(ExplorerView view);
+    ExplorerView View() const {
+        return view_;
     }
 
     // Free-text filter over the current folder (io::MatchesFilter syntax:
@@ -224,9 +248,28 @@ public:
 
 private:
     void BuildGrid();      // breadcrumb + folder/file grid (inside the open window)
+    void BuildTree();      // outline + preview panes (inside the open window)
+    void BuildTreePane(float width, float height); // the outline half
+    void BuildPreviewPane();                       // the one-thumbnail half
+    void BuildViewSwitch(); // the Grid/Tree control in the menu bar
     void BuildFilterBar(); // game combo + one checkbox per browsable type
     void BuildSearchBar(); // search box + match count + zoom
     void BuildEmptyHint(); // why an opened storage enumerated nothing
+    // Hand a file to the host's activate callback ("open this"). Shared by a
+    // grid cell's double-click and a tree row's.
+    void Activate(const std::string& archivePath, StorageFileKind kind);
+    void ClearSelection();
+    // Flatten the OPEN subtrees into treeRows_. Only what an expanded folder
+    // exposes is walked, so the cost tracks what is reachable on screen and
+    // not what the storage holds.
+    void RebuildTreeRows();
+    void AppendTreeRows(const std::string& displayPath, int depth, bool autoExpand);
+    // Open every ancestor of @p displayPath, and scroll the outline to it.
+    void RevealFolder(const std::string& displayPath);
+    // What treeRows_ was built for: storage, filter, type mask. Anything else
+    // that reshapes the outline (a folder toggled open) sets the dirty flag
+    // directly.
+    std::string TreeSignature() const;
     void OpenCascDialog(); // native folder picker → OpenCasc
     // What the host says @p game's storage is, with the detected install filled
     // in where it named none. Resolves only — opens nothing.
@@ -289,6 +332,43 @@ private:
     // open/ascend, or OpenCasc) so the grid fades + slides in. Driven off
     // ImGui's frame DeltaTime in BuildGrid; 1.0 = settled (no animation).
     float navAnimT_ = 1.0f;
+
+    // ---- Tree view ----
+    ExplorerView view_ = ExplorerView::Grid;
+
+    // One row of the outline, folder or file, already positioned by `depth`.
+    struct TreeRow {
+        std::string name;    // display name (the label)
+        std::string path;    // full display path, and the row's identity
+        std::string archive; // what the provider reads (files only)
+        int depth = 0;
+        bool isFolder = false;
+        bool open = false; // folders: expanded this rebuild
+    };
+    // Flattened rows, rebuilt only when the outline's shape moves (see
+    // TreeSignature) and drawn through an ImGuiListClipper. Never per frame: a
+    // World of Warcraft tree is tens of thousands of nodes, and emitting even
+    // the labels for one open folder of `creature/` overruns ImGui's 16-bit
+    // index buffer - the same wall the grid culls off-screen cells for.
+    std::vector<TreeRow> treeRows_;
+    bool treeRowsDirty_ = true;
+    bool treeTruncated_ = false; // rows hit kMaxTreeRows; say so rather than lie
+    // The filter is narrow enough that it, and not the user, decides what is
+    // expanded. See RebuildTreeRows.
+    bool treeAutoExpand_ = false;
+    std::string treeSig_;
+    // Folders the user opened, by lowercase display path.
+    std::set<std::string> treeOpen_;
+    // Display path of the selected row (selectedPath_ is its archive path) and
+    // the kind the preview needs to know to render it as an effect.
+    std::string treeSelectedDisplay_;
+    StorageFileKind selectedKind_ = StorageFileKind::Mdx;
+    // Set by RevealFolder, consumed by the next BuildTreePane: a reveal nobody
+    // scrolled to is a reveal that did not happen.
+    std::string treeScrollTo_;
+    // Outline pane width in logical pixels; the splitter between the panes
+    // drags it.
+    float treeSplit_ = 300.0f;
 };
 
 } // namespace whiteout::flakes::tools

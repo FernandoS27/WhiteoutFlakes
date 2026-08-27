@@ -16,6 +16,7 @@
 
 #include <map>
 #include <memory>
+#include <set>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -190,6 +191,41 @@ public:
     // the current folder — what the content provider reads. Empty if unknown.
     std::string ChildPath(const std::string& fileName) const;
 
+    // ---- Whole-tree browsing (a host that shows every level at once) ----
+    //
+    // Everything above is a folder at a time: one current directory, one
+    // listing, a filter matched against entry NAMES. A tree shows all levels
+    // together, where that filter rule reads wrong - a folder whose own name
+    // misses the pattern is usually the only way to reach the files that hit
+    // it. So here the filter is matched against each file's full display path,
+    // and a folder is kept exactly when some file under it survived. That
+    // prunes subtrees rather than levels, and it leaves the current folder,
+    // the breadcrumb and Current() untouched: a host can drive both views off
+    // one open browser.
+    struct TreeListing {
+        std::vector<std::string> folders; // subfolder display names to show
+        std::vector<std::string> files;   // model/effect display names to show
+    };
+
+    // Children of @p displayPath ("" = the root) under the rule above.
+    TreeListing TreeChildren(const std::string& displayPath) const;
+
+    // Original archive path for @p fileName inside @p displayPath - ChildPath
+    // for a folder that is not the current one.
+    std::string ChildPathAt(const std::string& displayPath,
+                            const std::string& fileName) const;
+
+    // How many folders anywhere in the tree the filter left standing. A host
+    // that wants to expand to the matches needs the count BEFORE it expands
+    // anything: auto-expanding a pattern that matched half a World of Warcraft
+    // install is not a search result, it is the tree again. 0 when no filter is
+    // set - nothing was pruned, so there is nothing to count.
+    std::size_t TreeVisibleFolderCount() const;
+
+    // Files anywhere in the tree the filter left standing. 0 when no filter is
+    // set, for the same reason.
+    std::size_t TreeMatchCount() const;
+
 private:
     // A folder node: subfolders + the model files directly inside it (display
     // name → original archive path).
@@ -201,6 +237,14 @@ private:
 
     void Refresh();
     const Node* NodeAt(const std::string& displayPath) const;
+    // Build the full-path filter cache (see TreeChildren) if it is stale. One
+    // pass over the whole tree, which is why it is cached rather than redone
+    // per folder: a host draws the tree every frame and the filter moves only
+    // when the user stops typing.
+    void EnsureTreeCache() const;
+    // DFS half of the above: records each folder under @p node whose subtree
+    // held a match, and returns whether @p node's own subtree did.
+    bool MarkTreeMatches(const Node& node, const std::string& path) const;
     // Insert one entry into the tree: `original` is what a provider reads,
     // `display` is what the user navigates.
     void Insert(const std::string& original, const std::string& display);
@@ -226,6 +270,12 @@ private:
     std::vector<std::string> breadcrumb_;
     Listing listing_;
     Node tree_;
+    // Full-path filter cache: lowercase display paths of the folders that
+    // survived, and how many files did. Built lazily, so a host that never
+    // asks for a tree never pays the walk.
+    mutable std::set<std::string> treeKeep_;
+    mutable std::size_t treeMatches_ = 0;
+    mutable bool treeCacheDirty_ = true;
 };
 
 } // namespace whiteout::flakes::io
