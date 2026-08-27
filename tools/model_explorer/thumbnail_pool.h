@@ -39,6 +39,13 @@ public:
     // Start a frame: marks all live cells as not-yet-visible.
     void BeginFrame(std::uint64_t frameId);
 
+    // Which game the cells are about to show. Only used to decide whether a
+    // new cell scene stands the Warcraft III lighting up (see SetupScene) —
+    // the models themselves are read by content, not by this.
+    void SetProduct(ProductId product) {
+        product_ = product;
+    }
+
     // Resize the live-cell budget. A cell that finds no free slot renders
     // nothing, so the cap has to cover a whole screen of cells — and how many
     // that is depends on the grid's icon size, which the user drives. Shrinking
@@ -72,6 +79,11 @@ public:
     renderer::RenderTargetId DebugFirstCellTarget() const {
         return cells_.empty() ? 0 : cells_.front()->target;
     }
+    // Test hook: its scene. A cell's lighting is per scene, so this is what a
+    // gate makes active before asking RenderService::GetDncService().
+    renderer::SceneId DebugFirstCellScene() const {
+        return cells_.empty() ? 0 : cells_.front()->scene;
+    }
 
 private:
     struct Cell {
@@ -101,6 +113,7 @@ private:
 
     renderer::RenderService& svc_;
     std::shared_ptr<io::IContentProvider> provider_;
+    ProductId product_ = ProductId::Neutral;
     int cap_;
     int res_;
     std::vector<std::unique_ptr<Cell>> cells_;

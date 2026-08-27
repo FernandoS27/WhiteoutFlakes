@@ -241,8 +241,13 @@ void StorageExplorer::FinishOpenCasc(const std::string& root) {
     provider_->SetInstallPath(browser_.Root());
     // The `_hd.w3mod` overlay is Warcraft III's; nothing else has a mod chain.
     provider_->SetHdMode(product == ProductId::Wc3 || product == ProductId::Neutral);
-    if (pool_)
+    if (pool_) {
+        // Before Clear, so the cells this open builds already know which game
+        // they are showing: it decides whether a new cell scene stands the
+        // Warcraft III lighting up instead of waiting for a model spawn to.
+        pool_->SetProduct(product);
         pool_->Clear();
+    }
     ClearSelection();
     lastError_.clear();
     // A new storage is a new outline: the folders the user had expanded name
@@ -1188,6 +1193,10 @@ void StorageExplorer::BuildPreviewPane() {
                     ImGui::GetColorU32(ImGuiCol_TextDisabled), loading);
     }
     ImGui::EndChild();
+}
+
+renderer::SceneId StorageExplorer::DebugFirstCellScene() const {
+    return pool_ ? pool_->DebugFirstCellScene() : 0;
 }
 
 void StorageExplorer::RenderThumbnails(float dt) {

@@ -221,6 +221,8 @@ struct RenderPipeline::Impl {
     f32 iblDayMipEnd_ = 0.0f;
     f32 iblNightMipEnd_ = 0.0f;
     bool iblDayNightLoaded_ = false;
+    // The single probe came out of the content, not CreateDebugFacesEnvProbe.
+    bool iblProbeFromContent_ = false;
 
     // ---- Tonemap GPU resources (exposure lives in settings_) ----
     bls::BlsShader* blsSpriteVs_ = nullptr;

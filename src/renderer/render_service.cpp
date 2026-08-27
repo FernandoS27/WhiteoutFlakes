@@ -265,12 +265,17 @@ void RenderService::EnsureWc3GameData() {
     if (!cp)
         return;
     // The day/night rig and the IBL probes are Warcraft III content too, and
-    // unlike the tables below they are per scene / per device — so these run
-    // every time rather than behind the once-per-session gate. Both are cheap
-    // once satisfied: the rig is already in hand, and the dirty flag is
-    // consumed by the first frame that sees it.
+    // unlike the tables below the rig is per scene — so it runs every time
+    // rather than behind the once-per-session gate, and is cheap once
+    // satisfied because it is already in hand.
     EnsureDncService().RealiseAsset();
-    impl_->settings_.MarkIblModeDirty();
+    // The probes are per device, and applying the mode is a destroy and reload
+    // of both cube maps — not the free flag-flip this used to assume. This
+    // runs on every model load, and a grid of thumbnails is one model load per
+    // cell, so ask first. Still marked while they are missing, which is what
+    // lets a session that had no install reachable pick them up later.
+    if (!Pipeline().HasIblProbes())
+        impl_->settings_.MarkIblModeDirty();
     // The splat table standing in for all of them: the loaders below fill the
     // tables together, and each one early-returns after a successful pass, so
     // this is what "already loaded" looks like from outside. It also makes a

@@ -63,6 +63,24 @@ void ThumbnailPool::SetupScene(SceneId scene) {
     auto& sm = svc_.SceneAt(scene);
     // All cell scenes read files from the one shared CASC-backed provider.
     sm.SetContentProvider(provider_);
+    // Stand the lighting up now rather than letting a model load do it.
+    // EnsureWc3GameData is what realises the day/night rig (per scene) and the
+    // IBL probes, and its only other caller is the Warcraft III model spawn —
+    // so a cell drew with the fixed studio fallback until its own model
+    // finished loading, and an effect cell, which spawns through
+    // SpawnUnitFromSource and never reaches that call, never got a rig at all.
+    // Per scene, because the rig is: this is where a cell scene is made.
+    //
+    // Only for Warcraft III content. It is that game's rig, that game's
+    // probes and that game's tables, and asking for them on a World of
+    // Warcraft browse is an install opened to serve reads that all miss.
+    // Neutral is a loose folder, which is the one other thing that can hold an
+    // `.mdx` — the same product the spawn would settle on.
+    if (product_ == ProductId::Wc3 || product_ == ProductId::Neutral) {
+        svc_.SetActiveScene(scene);
+        svc_.EnsureWc3GameData();
+        svc_.SetActiveScene(svc_.DefaultSceneId());
+    }
     auto& cam = sm.Camera();
     cam.SetOrbitalMode();
     cam.SetYaw(Camera::kDefaultYaw - 0.785398f);

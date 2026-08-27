@@ -161,6 +161,10 @@ gfx::Format RenderPipeline::SceneTargetFormat() const {
     return kSdSceneFormat;
 }
 
+bool RenderPipeline::HasIblProbes() const {
+    return impl_->iblDayNightLoaded_ || impl_->iblProbeFromContent_;
+}
+
 gfx::Format RenderPipeline::DepthStencilFormat() const {
     return impl_->depthStencilFormat_;
 }
@@ -1181,6 +1185,7 @@ void RenderPipeline::SetEnvProbe(const std::string& relPath) {
             mips = probe.mipCount;
         }
     }
+    impl_->iblProbeFromContent_ = fromHandle != gfx::TextureHandle::Invalid;
     if (fromHandle == gfx::TextureHandle::Invalid) {
         std::fprintf(stderr,
                      "[ibl] WARN: probe '%s' failed to load — using debug "
@@ -1310,6 +1315,7 @@ void RenderPipeline::ShutdownBlsShaders() {
             rs_.Textures().ReleaseOwned(kIblSplitSumLutName);
         }
         impl_->iblDayNightLoaded_ = false;
+        impl_->iblProbeFromContent_ = false;
     }
     // Flush the PSO trace before tearing the builder down — Save()
     // is a no-op if nothing changed this run. Detach first so the

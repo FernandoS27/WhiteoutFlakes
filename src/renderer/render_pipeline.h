@@ -154,6 +154,16 @@ public:
     /// character wrapped around it — which looks exactly like drawing nothing.
     gfx::PipelineHandle CurrentOverlayLinePSO() const;
     gfx::Format SceneTargetFormat() const;
+
+    /// @brief Whether the IBL probes are loaded from content — not the debug
+    ///        procedural stand-in SetEnvProbe registers when the read fails.
+    ///
+    /// Asked before marking the mode dirty: applying it is a destroy and
+    /// reload of both cube maps, so anything that re-realises the lighting
+    /// (every Warcraft III model load, which with a grid of thumbnails is once
+    /// per cell) must skip it once they are actually in hand.
+    bool HasIblProbes() const;
+
     // Depth-stencil format picked at InitDevice time. AMD's Vulkan
     // driver doesn't expose D24_UNORM_S8_UINT, so the gfx layer
     // queries each device for the best supported format

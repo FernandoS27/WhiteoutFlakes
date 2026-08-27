@@ -12,6 +12,7 @@
 #include "gfx/gfx.h"
 #include "io/file_content_provider.h"
 #include "renderer/camera.h"
+#include "renderer/dnc/dnc_service.h"
 #include "renderer/model/model_instance.h"
 #include "renderer/model/model_loader.h"
 #include "renderer/render_pipeline.h"
@@ -782,6 +783,19 @@ int main(int argc, char* argv[]) {
                             st.view == wf::tools::ExplorerView::Tree ? "tree" : "grid",
                             (int)st.game, st.folder.c_str(), st.filter.c_str(),
                             st.selected.c_str());
+            }
+            // What a preview is lit BY. Both used to be realised only by a
+            // Warcraft III model spawn, so a cell drew with the fixed studio
+            // fallback until its own model finished loading and an effect cell
+            // never got a rig at all — the panel stands them up when it makes
+            // the cell scene now. The rig is per scene, hence the switch.
+            if (const wf::renderer::SceneId cell = panel.DebugFirstCellScene()) {
+                renderer.SetActiveScene(cell);
+                const auto* dnc = renderer.GetDncService();
+                std::printf("[panel-light] cell scene=%u dnc=%d ibl=%d\n", cell,
+                            (int)(dnc && dnc->HasAsset()),
+                            (int)renderer.Pipeline().HasIblProbes());
+                renderer.SetActiveScene(renderer.DefaultSceneId());
             }
             std::vector<wf::u8> rgba;
             int cw = 0, ch = 0;

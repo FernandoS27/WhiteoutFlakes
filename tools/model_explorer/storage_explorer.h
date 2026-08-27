@@ -129,6 +129,11 @@ public:
         return selectedPath_;
     }
 
+    // Test hook: the scene of the first live thumbnail cell (0 if none). The
+    // day/night rig is per scene, so a gate has to make this one active before
+    // it can ask whether a preview is lit.
+    renderer::SceneId DebugFirstCellScene() const;
+
     // ---- Which game, and which of its file types ----
     //
     // The two are one control: what a filter even *means* depends on the game

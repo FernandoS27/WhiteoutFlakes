@@ -152,6 +152,9 @@ private:
     // The resolved path has changed (or was never loaded) since the last
     // acquire.
     bool dirty_ = true;
+    // A failed acquire has already been reported. Cleared by the next one that
+    // works, so a rig that comes and goes says so each time.
+    bool warnedMissing_ = false;
 
     std::atomic<f32> tod_{12.0f};
     f32 hoursPerDay_ = 24.0f;

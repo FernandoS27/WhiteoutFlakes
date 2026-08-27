@@ -66,9 +66,21 @@ void DncService::AcquireNow() {
             : unitPath_;
     unitAsset_ = cache_->Acquire(resolved);
     if (!unitAsset_ || !unitAsset_->HasLight()) {
-        std::fprintf(stderr, "[dnc] WARN: unit MDL failed to acquire a usable light: %s\n",
-                     resolved.c_str());
+        // Stay dirty, so the next RealiseAsset tries again. A rig read before
+        // its storage could serve it — a scene realised the moment it is
+        // created, a provider still opening — would otherwise leave this scene
+        // unlit for good, since RealiseAsset only acquires while dirty. Say so
+        // once per run of failures: retrying is now the point, and a line per
+        // attempt would bury the one that matters.
+        dirty_ = true;
+        if (!warnedMissing_) {
+            warnedMissing_ = true;
+            std::fprintf(stderr, "[dnc] WARN: unit MDL failed to acquire a usable light: %s\n",
+                         resolved.c_str());
+        }
+        return;
     }
+    warnedMissing_ = false;
 }
 
 void DncService::SetHdPreference(bool hd) {
