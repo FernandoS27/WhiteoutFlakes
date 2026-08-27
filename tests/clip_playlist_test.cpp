@@ -694,3 +694,86 @@ TEST_CASE("Per-play speed scales that play's clock only", "[clip_playlist]") {
     REQUIRE(pl.Clips()[0].timeMs == 400); // fast, newest first
     REQUIRE(pl.Clips()[1].timeMs == 100); // slow
 }
+
+// The animation export rewinds `Actor::cursor.actorTimeMs` to zero and exports
+// the sequence that is already on screen. Both halves of that are invisible to
+// the playlist on their own — a play's start stamp is left in the future by the
+// rewind, and a request for the live sequence is a no-op by design — so every
+// exported frame came out as the sequence's first frame.
+TEST_CASE("Restart re-bases a rewound clock", "[clip_playlist]") {
+    const std::vector<SequenceInfo> seqs = {Seq("Stand", 0, 1000), Seq("Walk", 1000, 2000)};
+    ClipPlaylist pl;
+    pl.SetActiveSequence(0);
+    // Nine seconds of viewing: the window start has rolled forward eight times.
+    for (int t = 0; t <= 9000; t += 100)
+        pl.Advance(t, seqs, false);
+    REQUIRE(pl.PrimaryTimeMs() == 0);
+
+    pl.SetActiveSequence(0); // the export asks for the sequence already playing
+    pl.Restart(0);
+    pl.Advance(0, seqs, false);
+    REQUIRE(pl.PrimaryTimeMs() == 0);
+    pl.Advance(33, seqs, false);
+    REQUIRE(pl.PrimaryTimeMs() == 33); // 0 without the restart, for every frame
+    pl.Advance(66, seqs, false);
+    REQUIRE(pl.PrimaryTimeMs() == 66);
+
+    // Restoring the viewer: back onto the old clock, then scrub to the frame it
+    // was showing.
+    pl.Restart(9000);
+    pl.Advance(9000, seqs, false);
+    pl.SetPrimaryTimeMs(400, 9000, seqs);
+    pl.Advance(9000, seqs, false);
+    REQUIRE(pl.PrimaryTimeMs() == 400);
+    pl.Advance(9100, seqs, false);
+    REQUIRE(pl.PrimaryTimeMs() == 500);
+}
+
+// A restart is a hard cut even where a plain sequence switch cross-fades: the
+// clock has moved, so there is no previous pose to fade out of.
+TEST_CASE("Restart hard-cuts under a cross-fade policy", "[clip_playlist]") {
+    const std::vector<SequenceInfo> seqs = {Seq("Stand", 0, 1000), Seq("Walk", 0, 800)};
+    ClipPlaylist pl;
+    TransitionPolicy policy;
+    policy.crossFade = true;
+    policy.blendInMs = 200;
+    policy.blendOutMs = 200;
+    pl.SetTransitionPolicy(policy);
+
+    pl.SetActiveSequence(0);
+    pl.Advance(0, seqs, false);
+    pl.Advance(2500, seqs, false);
+
+    pl.SetActiveSequence(1);
+    pl.Restart(0);
+    pl.Advance(0, seqs, false);
+    REQUIRE(pl.Clips().size() == 1);
+    REQUIRE(pl.Clips()[0].sequence == 1);
+    REQUIRE(pl.Clips()[0].weight == Approx(1.0f));
+    REQUIRE(pl.Clips()[0].timeMs == 0);
+}
+
+// Global loops are re-based too. They keep their own clock across a sequence
+// switch, which after a rewind would leave them stuck on their first frame for
+// the whole export.
+TEST_CASE("Restart re-bases global loops", "[clip_playlist]") {
+    std::vector<SequenceInfo> seqs = {Seq("Stand", 0, 1000), Seq("Glow", 0, 500)};
+    seqs[1].alwaysPlays = true;
+    ClipPlaylist pl;
+    pl.SetGlobalSequences({1});
+    pl.SetActiveSequence(0);
+    for (int t = 0; t <= 4000; t += 100)
+        pl.Advance(t, seqs, false);
+
+    pl.Restart(0);
+    pl.Advance(0, seqs, false);
+    pl.Advance(120, seqs, false);
+    bool sawGlow = false;
+    for (const auto& c : pl.Clips()) {
+        if (c.sequence != 1)
+            continue;
+        sawGlow = true;
+        REQUIRE(c.timeMs == 120);
+    }
+    REQUIRE(sawGlow);
+}

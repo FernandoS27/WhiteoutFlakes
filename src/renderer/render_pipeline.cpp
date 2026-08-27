@@ -212,7 +212,8 @@ gfx::BufferHandle RenderPipeline::CbPerFrame() const {
 }
 
 RenderPipeline::ShadowResources RenderPipeline::Shadow() const {
-    return {impl_->shadowPSO_, impl_->shadowPSORigid_, impl_->shadowVsCb_};
+    return {impl_->shadowPSO_,      impl_->shadowPSORigid_, impl_->shadowPSOAlpha_,
+            impl_->shadowPSORigidAlpha_, impl_->shadowVsCb_, impl_->shadowPsCb_};
 }
 
 void RenderPipeline::Shutdown() {
@@ -841,13 +842,6 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     // need the shipped BLS shaders + the shared fullscreen-triangle VB, which
     // aren't created until the sprite/tonemap block further down.
 
-    if (impl_->shadowVsCb_ == gfx::BufferHandle::Invalid) {
-        impl_->shadowVsCb_ = impl_->gfx_->CreateBuffer({
-            .size = sizeof(bls::HdVsCb),
-            .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
-        });
-    }
-
     // Graphics-debug runs load the -g2 -O0 bundles from debug_shaders/
     // (staged by the WDX_BUILD_WC3_DEBUG_SHADERS pipeline) so the bytecode
     // maps back to slang source in RenderDoc / PIX / the validation layers.
@@ -915,13 +909,45 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
         const shadow::ShadowParams& sp =
             rs_.GetShadowService() ? rs_.GetShadowService()->Params() : shadow::ShadowParams{};
 
-        auto buildShadowPso = [&](u32 permIndex,
+        // Both casters run the HD *depth-prepass* permutation: `prepass`
+        // compiles SV_Target out of PSOutput entirely (types/ps_io.slang), so
+        // the perm is depth-only exactly like the null-PS pipeline it replaces
+        // — with the one difference that matters, a pixel shader that can
+        // discard. `numTexCoords = 1` is what makes that possible: the
+        // no-UV perms this pass used before emit texCoord = 0 and would
+        // sample a single texel. The alpha-test variant additionally selects
+        // AlphaTestOn, whose discard is the same one the lit pass applies.
+        auto shadowPerms = [](bool skinned, bool alphaTest) {
+            bls::RenderState rs;
+            rs.shaderId = bls::GxShaderID::HD;
+            rs.numTexCoords = 1;
+            rs.numWeights = skinned ? 4 : 0;
+            rs.prepass = true;
+            rs.alphaMode = alphaTest ? static_cast<u8>(bls::GxMatAlpha::AlphaKey) : 0;
+            return bls::SelectPermutes(rs);
+        };
+
+        auto shaderAt = [](const bls::BlsShader* sh, u32 perm) -> gfx::ShaderHandle {
+            if (!sh || perm >= sh->permuteHandles.size())
+                return gfx::ShaderHandle{0};
+            return sh->permuteHandles[perm];
+        };
+
+        auto buildShadowPso = [&](bool skinned, bool alphaTest,
                                   bls::VertexLayoutKind layoutKind) -> gfx::PipelineHandle {
-            if (permIndex >= impl_->blsHdProgram_->vs->permuteHandles.size())
+            const bls::PermuteIndices perm = shadowPerms(skinned, alphaTest);
+            const gfx::ShaderHandle vs = shaderAt(impl_->blsHdProgram_->vs, perm.vs);
+            if (vs == gfx::ShaderHandle{0})
                 return gfx::PipelineHandle::Invalid;
             gfx::GraphicsPipelineDesc gpd{};
-            gpd.vs = impl_->blsHdProgram_->vs->permuteHandles[permIndex];
-            gpd.ps = gfx::ShaderHandle{0};
+            gpd.vs = vs;
+            // Handle 0 means "no PS", which is still the right answer for the
+            // non-alpha-tested caster if the bundle ever ships without the
+            // prepass perms: it degrades to the depth-only pipeline instead of
+            // failing to build.
+            gpd.ps = shaderAt(impl_->blsHdProgram_->ps, perm.ps);
+            if (alphaTest && gpd.ps == gfx::ShaderHandle{0})
+                return gfx::PipelineHandle::Invalid;
             gpd.inputLayout = bls::LayoutFor(layoutKind, impl_->gfx_->GetApi());
             gpd.topology = gfx::PrimitiveTopology::TriangleList;
             gpd.depthStencil.depthTest = true;
@@ -937,12 +963,16 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
             return impl_->gfx_->CreateGraphicsPipeline(gpd);
         };
 
-        if (impl_->shadowPSO_ == gfx::PipelineHandle::Invalid) {
-            impl_->shadowPSO_ = buildShadowPso(4, bls::VertexLayoutKind::MeshHDSkinnedNoTangent);
-        }
-        if (impl_->shadowPSORigid_ == gfx::PipelineHandle::Invalid) {
-            impl_->shadowPSORigid_ = buildShadowPso(0, bls::VertexLayoutKind::ParticleSD);
-        }
+        constexpr auto kSkinnedLayout = bls::VertexLayoutKind::MeshHDSkinnedNoTangent;
+        constexpr auto kRigidLayout = bls::VertexLayoutKind::ParticleSD;
+        if (impl_->shadowPSO_ == gfx::PipelineHandle::Invalid)
+            impl_->shadowPSO_ = buildShadowPso(true, false, kSkinnedLayout);
+        if (impl_->shadowPSORigid_ == gfx::PipelineHandle::Invalid)
+            impl_->shadowPSORigid_ = buildShadowPso(false, false, kRigidLayout);
+        if (impl_->shadowPSOAlpha_ == gfx::PipelineHandle::Invalid)
+            impl_->shadowPSOAlpha_ = buildShadowPso(true, true, kSkinnedLayout);
+        if (impl_->shadowPSORigidAlpha_ == gfx::PipelineHandle::Invalid)
+            impl_->shadowPSORigidAlpha_ = buildShadowPso(false, true, kRigidLayout);
     }
 
     impl_->blsSpriteVs_ = impl_->blsShaderCache_->Acquire(gfx::ShaderStage::Vertex, "sprite");
@@ -1053,6 +1083,19 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     });
     impl_->blsSdOnHdPsCb_ = impl_->gfx_->CreateBuffer({
         .size = sizeof(bls::SdOnHdPsCb),
+        .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        .ringSlotsHint = kHotCbRingSlots,
+    });
+    // Hot too, now that the shadow pass writes them per alpha-tested layer
+    // rather than once per actor — the cut-out silhouette needs that layer's
+    // UV matrix and combined alpha, which vary within one actor.
+    impl_->shadowVsCb_ = impl_->gfx_->CreateBuffer({
+        .size = sizeof(bls::HdVsCb),
+        .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        .ringSlotsHint = kHotCbRingSlots,
+    });
+    impl_->shadowPsCb_ = impl_->gfx_->CreateBuffer({
+        .size = sizeof(bls::HdPsCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
         .ringSlotsHint = kHotCbRingSlots,
     });
@@ -1236,9 +1279,21 @@ void RenderPipeline::ShutdownBlsShaders() {
             impl_->gfx_->Destroy(impl_->shadowPSORigid_);
             impl_->shadowPSORigid_ = gfx::PipelineHandle::Invalid;
         }
+        if (impl_->shadowPSOAlpha_ != gfx::PipelineHandle::Invalid) {
+            impl_->gfx_->Destroy(impl_->shadowPSOAlpha_);
+            impl_->shadowPSOAlpha_ = gfx::PipelineHandle::Invalid;
+        }
+        if (impl_->shadowPSORigidAlpha_ != gfx::PipelineHandle::Invalid) {
+            impl_->gfx_->Destroy(impl_->shadowPSORigidAlpha_);
+            impl_->shadowPSORigidAlpha_ = gfx::PipelineHandle::Invalid;
+        }
         if (impl_->shadowVsCb_ != gfx::BufferHandle::Invalid) {
             impl_->gfx_->Destroy(impl_->shadowVsCb_);
             impl_->shadowVsCb_ = gfx::BufferHandle::Invalid;
+        }
+        if (impl_->shadowPsCb_ != gfx::BufferHandle::Invalid) {
+            impl_->gfx_->Destroy(impl_->shadowPsCb_);
+            impl_->shadowPsCb_ = gfx::BufferHandle::Invalid;
         }
         impl_->gfx_->Destroy(impl_->blsHdPsCb_);
         impl_->blsHdPsCb_ = gfx::BufferHandle::Invalid;

@@ -286,6 +286,15 @@ private:
     /// its own; without this one a model loaded straight from an IModelSource
     /// (which is what the headless trace harness does) silently has none.
     void SetM2ParticleConfigs(u32 handle, const std::vector<M2ParticleEmitterConfig>& configs);
+    /// Push a re-resolved skin's particle colours into the emitters ALREADY
+    /// running on @p handle.
+    ///
+    /// A restyle happens in place — the actor keeps its particles, the way the
+    /// client's own `ReplaceParticleColor` writes into a live emitter — so the
+    /// new colours have to reach the emitter rather than the next spawn.
+    /// Without this a skin change moved every texture and left the fire the
+    /// colour of the skin the model was opened with.
+    void RestyleWowParticleColors(u32 handle, io::M2ModelAdapter& m2);
     /// Register one `.m2` emitter, choosing the emitter class and the id space
     /// from the desc's output. Shared by the template and direct-source paths so
     /// "which kind of emitter is this" is decided once.

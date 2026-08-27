@@ -152,6 +152,21 @@ public:
     ///        and rebuild the clip span.
     void Advance(i32 nowMs, std::span<const SequenceInfo> seqs, bool forceLoop);
 
+    /// @brief Re-base playback onto an actor clock that has just been moved,
+    ///        and restart the requested sequence from its first frame.
+    ///
+    /// A play remembers the clock value it started at, so a host that rewinds
+    /// `Actor::cursor.actorTimeMs` without saying so leaves every play with a
+    /// start stamp in the future: `elapsed` clamps at 0 and the model sits on
+    /// its first frame for as long as the rewind was long. The animation
+    /// export does exactly that, which is why it needs this.
+    ///
+    /// Unlike @ref SetActiveSequence the restart is not conditional on the
+    /// index changing — re-exporting the sequence already on screen has to
+    /// start it over — and it is always a hard cut: there is no previous pose
+    /// to cross-fade out of once the clock has moved.
+    void Restart(i32 nowMs);
+
     /// @brief Global-loop overlays first, then the host's plays newest-first.
     ///        Empty only when nothing is playing.
     std::span<const ClipRef> Clips() const {
@@ -239,6 +254,7 @@ private:
 
     i32 requestedSequence_ = 0;
     i32 acknowledgedSequence_ = -1;
+    bool restartPending_ = false;
     i32 primaryTimeMs_ = 0;
     i32 sequenceCycle_ = 0;
 };

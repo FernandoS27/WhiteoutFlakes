@@ -154,6 +154,7 @@ if(WDX_ENABLE_D3)
     # Looks, the material-name join, and the dwTextureType census the slot
     # mapping is corrected against.
     wdx_add_test(d3_surface_table_test d3_surface_table_test.cpp)
+    wdx_add_test(d3_probe_test d3_probe_test.cpp)
     # Gate D3-G4: the signed quaternion decode, WITH the unsigned one failing
     # the same test — otherwise the gate is a formality.
     wdx_add_test(d3_animation_test d3_animation_test.cpp)

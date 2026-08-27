@@ -60,6 +60,7 @@ GeosetClass ClassifyGeoset(const RenderableView& view, const model::GPUGeoset& g
         const bool hdFading = hdLayer && opaqueFilter && combinedAlpha < kOpaqueFadeAlpha;
 
         c.opaque = opaqueFilter && !hdFading;
+        c.opaqueFilter = opaqueFilter;
         c.needsDepthFill = hdFading;
         break;
     }

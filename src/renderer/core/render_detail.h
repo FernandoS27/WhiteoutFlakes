@@ -104,6 +104,12 @@ CollectedDrawLists BuildDrawLists(
     bool unlitOddGeosets = false, const shading::ShadingRegistry* registry = nullptr,
     bool m2DistanceSortGeometry = false);
 
+// Bind a RenderableView to an actor's render state. Shared by BuildDrawLists
+// and by the shadow pass, which classifies casters with the same rule the
+// scene passes use but runs before the draw lists are collected.
+void FillRenderableView(RenderableView& view, model::Actor& mi,
+                        const std::unordered_map<u32, std::unique_ptr<model::Actor>>& actors);
+
 // `paletteCb` is the bone-palette CB to bind when this geoset has
 // skinning data. Pass `geo.bonePaletteCb` directly when the actor is
 // on Path B (per-geoset palette); pass `actor.skinning.ActorPaletteCb()`

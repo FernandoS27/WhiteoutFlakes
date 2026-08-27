@@ -211,7 +211,10 @@ struct RenderPipeline::Impl {
     // ---- Shadow ----
     gfx::PipelineHandle shadowPSO_ = gfx::PipelineHandle::Invalid;
     gfx::PipelineHandle shadowPSORigid_ = gfx::PipelineHandle::Invalid;
+    gfx::PipelineHandle shadowPSOAlpha_ = gfx::PipelineHandle::Invalid;
+    gfx::PipelineHandle shadowPSORigidAlpha_ = gfx::PipelineHandle::Invalid;
     gfx::BufferHandle shadowVsCb_ = gfx::BufferHandle::Invalid;
+    gfx::BufferHandle shadowPsCb_ = gfx::BufferHandle::Invalid;
 
     // ---- IBL probe state (mip extents + load state; mode lives in settings_) ----
     f32 iblProbeMipEnd_ = 0.0f;

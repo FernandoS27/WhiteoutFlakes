@@ -19,8 +19,12 @@ using namespace ::whiteout::flakes::renderer::bls;
 namespace {
 using ActorMap = std::unordered_map<u32, std::unique_ptr<model::Actor>>;
 
-// Bind a RenderableView to an actor's render state. Shared by both the legacy
-// per-geoset collector and BuildDrawLists so the wiring lives in one place.
+bool GeosetDrawable(const model::GPUGeoset& geo) {
+    return !geo.hidden && geo.unskinnedVb != gfx::BufferHandle::Invalid &&
+           geo.ib != gfx::BufferHandle::Invalid && geo.indexCount != 0;
+}
+} // namespace
+
 void FillRenderableView(RenderableView& view, model::Actor& mi, const ActorMap& actors) {
     view.geosets = &mi.render.gpuGeosets;
     view.surfaceTable = mi.render.surfaceTable.get();
@@ -44,12 +48,6 @@ void FillRenderableView(RenderableView& view, model::Actor& mi, const ActorMap& 
     // it only runs when something is going to read it.
     view.rootActor = debug::DrawTraceEnabled() ? debug::TraceRootOrdinal(actors, mi.handle) : 0;
 }
-
-bool GeosetDrawable(const model::GPUGeoset& geo) {
-    return !geo.hidden && geo.unskinnedVb != gfx::BufferHandle::Invalid &&
-           geo.ib != gfx::BufferHandle::Invalid && geo.indexCount != 0;
-}
-} // namespace
 
 CollectedDrawLists BuildDrawLists(
     const std::unordered_map<u32, std::unique_ptr<model::Actor>>& models, i32 selectedLod,

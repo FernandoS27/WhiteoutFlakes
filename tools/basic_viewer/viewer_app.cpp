@@ -2142,6 +2142,14 @@ void CaptureSequenceFrames(RenderService& svc, SceneId scene, RenderTargetId tar
             if (dst.size() < rgba.size())
                 continue;
             std::memcpy(dst.data(), rgba.data(), rgba.size());
+            // Stamp the frame opaque. The captured alpha is the scene target's
+            // own, and that is not a coverage mask: every blended particle
+            // multiplies it down, so a WoW model's smoke exports as a hole the
+            // shape of its quads — invisible over a dark backdrop, a white card
+            // over a light one. This is the opaque capture path; the
+            // transparent export keys its own alpha in KeyOutBackground.
+            for (usize a = 3; a < dst.size(); a += 4)
+                dst[a] = 0xFF;
             sink(p.frameIndex, std::move(tex));
         }
         pending.clear();
@@ -2492,7 +2500,20 @@ void ViewerApp::RunAnimationExport(const AnimationExportParams& p) {
     const f32 savedSpeed = hero->playbackSpeed;
     hero->playbackSpeed = 1.0f;
     hero->animation.SetActiveSequenceIndex(p.sequenceIndex);
-    hero->cursor = {}; // prevActiveSequence=-1 forces a clean re-sync to frame 0
+    hero->cursor = {}; // actor clock back to zero, one dt step per exported frame
+    // The rewind above is not something the playlist can see: its plays hold
+    // start stamps on the clock that just moved, and a request for the sequence
+    // already playing is a no-op by design. Without this the export captures
+    // the sequence's first frame `frameCount` times.
+    hero->animation.Playlist().Restart(0);
+
+    // The export drives the clock itself, so the transport state must not be
+    // able to freeze or stretch it — same reason playbackSpeed is forced to 1.
+    auto& sceneClock = service_.SceneAt(ActiveSceneId());
+    const PlaybackState savedPlayback = sceneClock.GetPlaybackState();
+    const f32 savedTimeScale = sceneClock.GetTimeScale();
+    sceneClock.SetPlaybackState(PlaybackState::Playing);
+    sceneClock.SetTimeScale(1.0f);
 
     std::fprintf(stderr, "[viewer] Exporting '%s' as %s%s: %d frame(s) at %d FPS -> %s\n",
                  animName.c_str(), formatInfo.label, transparent ? " (transparent)" : "",
@@ -2557,8 +2578,17 @@ void ViewerApp::RunAnimationExport(const AnimationExportParams& p) {
     // Restore the focus actor + resolution before the (potentially slow) encode.
     hero->playbackSpeed = savedSpeed;
     hero->animation.SetActiveSequenceIndex(savedSeq);
-    hero->animation.SetTimeMs(savedTime);
     hero->cursor = savedCursor;
+    // Re-base onto the restored clock, then scrub back to the frame the viewer
+    // was on. The Advance in between is what materialises the restarted play —
+    // the scrub re-bases a play and there is none until then.
+    hero->animation.Playlist().Restart(savedCursor.actorTimeMs);
+    hero->animation.Advance(savedCursor.actorTimeMs, hero->ignoreNonLooping);
+    hero->animation.Playlist().SetPrimaryTimeMs(savedTime, savedCursor.actorTimeMs,
+                                                hero->animation.Sequences());
+    hero->animation.SetTimeMs(savedTime);
+    sceneClock.SetPlaybackState(savedPlayback);
+    sceneClock.SetTimeScale(savedTimeScale);
     if (customRes)
         service_.Pipeline().ResizePrimaryTarget(origW, origH);
 

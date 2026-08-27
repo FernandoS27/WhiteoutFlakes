@@ -230,7 +230,14 @@ public:
     struct ShadowResources {
         gfx::PipelineHandle psoSkinned;
         gfx::PipelineHandle psoRigid;
+        // The same two, on the HD depth-prepass permutation that runs the
+        // material's alpha test. A cut-out layer has to punch its real
+        // silhouette into the cascade or the shadow is the bounding quad —
+        // see ps/ps_depth_prepass.slang, which exists for exactly this.
+        gfx::PipelineHandle psoSkinnedAlphaTest;
+        gfx::PipelineHandle psoRigidAlphaTest;
         gfx::BufferHandle vsCb;
+        gfx::BufferHandle psCb;
     };
     ShadowResources Shadow() const;
 

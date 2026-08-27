@@ -72,6 +72,12 @@ public:
     void SetSquirtPending(bool v) {
         SetFlag(kFlagNeedSquirt, v);
     }
+    /// Whether a one-shot burst is still owed. Readable because SetDesc arms it
+    /// unconditionally for a squirting emitter, so anything that re-describes a
+    /// LIVE emitter has to put the real answer back or make it burst twice.
+    bool SquirtPending() const {
+        return (flags_ & kFlagNeedSquirt) != 0;
+    }
 
     // ---- animated per frame from FrameState ----
     void SetEmissionRate(f32 v) {

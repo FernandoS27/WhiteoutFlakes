@@ -242,10 +242,53 @@ bool ModelLoader::RestyleWowModel(u32 actorHandle, const ContentRef& ref) {
     // makes UploadStagedTextures replace each one where it stands.
     StageTextures(*actor, m2->GetTextures());
     actor->render.stagedDirty = true;
+    // Particles do NOT re-read anything: their colours were baked into an
+    // EmitterDesc at spawn, so they need the new skin pushed at them.
+    RestyleWowParticleColors(actorHandle, *m2);
     // The one part of a restyle that is not in place. A collections model is a
     // different file, and which file is itself a choice.
     SpawnWowSkinnedModels(*actor, *m2, skinned, provider);
     return true;
+}
+
+void ModelLoader::RestyleWowParticleColors(u32 handle, io::M2ModelAdapter& m2) {
+    const auto& records = m2.SourceModel().particleEmitters;
+    // Nothing to do for the 13 596 of 14 060 corpus models that carry no
+    // recolourable emitter, and answering that costs a walk over a short array
+    // rather than a rebuild of every emitter the actor has.
+    const bool any = std::any_of(records.begin(), records.end(), [](const auto& e) {
+        return M2ParticleColorOverride::SlotOf(e.particleColorIndex) >= 0;
+    });
+    if (!any)
+        return;
+
+    const auto configs = m2.GetM2ParticleConfigs();
+    const bool linear = rs_.Pipeline().LoadTimeProfile().LinearShading();
+    const usize n = (std::min)(configs.size(), records.size());
+    for (usize i = 0; i < n; ++i) {
+        // Only the emitters the skin can actually touch. Re-describing the rest
+        // would drop nothing visible but would re-arm their squirt for no
+        // reason, and this runs on a user gesture.
+        if (M2ParticleColorOverride::SlotOf(records[i].particleColorIndex) < 0)
+            continue;
+        auto desc = particle::DescFromM2Config(configs[i], linear);
+        // SetDesc substitutes a default for anything shapeless, so a desc that
+        // did not build would quietly turn a working emitter inert rather than
+        // leave it alone. Leaving it alone is the right answer.
+        if (!desc || !desc->shape)
+            continue;
+        // A new desc rather than a new emitter: the pool, the seed and the
+        // trails stay exactly as they were, so a skin change recolours the fire
+        // instead of putting it out and lighting it again.
+        for (const particle::ParticleOutput output :
+             {particle::ParticleOutput::Billboard, particle::ParticleOutput::ChildModel}) {
+            if (auto* em = rs_.Particles().GetEmitter(handle, output, static_cast<i32>(i))) {
+                const bool squirt = em->SquirtPending();
+                em->SetDesc(desc);
+                em->SetSquirtPending(squirt);
+            }
+        }
+    }
 }
 #endif
 

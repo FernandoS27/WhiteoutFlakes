@@ -217,6 +217,19 @@ void ClipPlaylist::SetPrimaryTimeMs(i32 frameMs, i32 nowMs, std::span<const Sequ
     primaryTimeMs_ = frameMs;
 }
 
+void ClipPlaylist::Restart(i32 nowMs) {
+    // Every stamp a play holds is in the old clock domain: the window start,
+    // the unwrapped origin and the envelope's phase start. Move all three, or a
+    // layered play comes back with a negative blend envelope.
+    for (auto& p : plays_) {
+        p.startTimeMs = nowMs;
+        p.originTimeMs = nowMs;
+        p.phaseStartMs = nowMs;
+        p.cycles = 0;
+    }
+    restartPending_ = true;
+}
+
 void ClipPlaylist::RetireCovered(std::span<const SequenceInfo> seqs) {
     // Newest first. Once a play is settled, at full weight, opaque and driving
     // the whole skeleton, nothing below it can show through — so everything
@@ -276,9 +289,16 @@ void ClipPlaylist::Advance(i32 nowMs, std::span<const SequenceInfo> seqs, bool f
     const PlayState* primary = Primary();
     const bool onlyGlobals =
         std::none_of(plays_.begin(), plays_.end(), [](const PlayState& p) { return !p.global; });
-    if (requestedSequence_ != acknowledgedSequence_ && (primary || onlyGlobals)) {
-        const bool hadPrimary = primary != nullptr;
+    //
+    // A pending @ref Restart is unconditional — it neither waits for the index
+    // to change nor asks whether the host is layering, because it is the host
+    // saying so outright.
+    const bool noticed = restartPending_ ||
+                         (requestedSequence_ != acknowledgedSequence_ && (primary || onlyGlobals));
+    if (noticed) {
+        const bool hadPrimary = primary != nullptr && !restartPending_;
         acknowledgedSequence_ = requestedSequence_;
+        restartPending_ = false;
         ++sequenceCycle_;
 
         if (policy_.crossFade && hadPrimary) {

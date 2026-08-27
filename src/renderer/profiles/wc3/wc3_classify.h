@@ -28,6 +28,11 @@ struct GeosetClass {
     i32 firstVisibleLayer = -1; // index of that layer (-1 if none)
     bool opaque = true;         // first visible layer blends < Blend (Opaque/AlphaKey)
     bool needsDepthFill = false; // HD opaque layer faded below full → Color path + depth twin
+    // The blend-mode half of `opaque`, before the HD fading demotion. A fading
+    // HD layer is still a solid surface that occludes — `opaque` says which
+    // scene queue it draws in, this says what the geometry *is*. The shadow
+    // pass reads it: a fading unit keeps casting, an additive glow never does.
+    bool opaqueFilter = true;
 };
 
 GeosetClass ClassifyGeoset(const render_detail::RenderableView& view,
