@@ -102,6 +102,14 @@ struct D3Slot {
 /// {1 none, 2 CW, 3 CCW}, the depth compare only {4 LessEqual, 6 GreaterEqual,
 /// 8 Always}, the blend op only ADD, and the (src, dst) pairs are led by
 /// (5, 6) SrcAlpha/InvSrcAlpha on 1,029 passes and (5, 2) SrcAlpha/One on 283.
+///
+/// The pass also says which of the material's texture entries are live, and
+/// which program consumes them. `arTextureStages` is an ordered list of
+/// `EMaterialTextureType` ids — unit *i* is bound the entry whose type is
+/// `stages[i]` — and `szEffectFile` / `szVertexShaderEntry` name the program.
+/// Both matter: an entry of a type the pass never declares is not bound at all
+/// (types 26..38 are declared by none of 2,208 resolved passes), and the vertex
+/// colour means something different per program family.
 struct D3PassState {
     bool resolved = false; ///< False = nothing was found; the material flags stand.
     bool blendEnable = false;
@@ -110,6 +118,48 @@ struct D3PassState {
     bool depthWrite = true;
     u32 cull = 2;      ///< D3DCULL: 1 none, 2 CW, 3 CCW.
     u8 alphaRef = 0;   ///< 0..255; 0 = no alpha test.
+
+    /// @brief One bit per declared `EMaterialTextureType`. A type is always a
+    ///        bit position: the resolve pass indexes a 62-slot array.
+    u64 declaredTypes = 0;
+
+    /// @brief Does this pass's vertex program ADD the vertex colour's RGB into
+    ///        its light sum?
+    ///
+    /// True for the static-geometry families — `Scene.fx` and `Prop.fx`, whose
+    /// meshes carry the level's baked light in the attribute and ship (0,0,0)
+    /// outside a level. False for the actor families, which compute the whole
+    /// light in the vertex shader and leave the attribute at (255,255,255);
+    /// adding it there would blow every character out by a full unit.
+    bool vertexColorLights = false;
+
+    /// @brief Does this pass's vertex program route the vertex colour's ALPHA
+    ///        into the interpolated alpha?
+    ///
+    /// `vs_irrad_*` opens `MOV result.color.w, vertex.attrib[3]`; `vs_scene`
+    /// takes a uniform there instead and only the `*_vertalpha* `entries read
+    /// the attribute. So this is the ActorIrrad family plus, by name, the
+    /// entries that say so.
+    bool vertexAlpha = false;
+
+    /// @brief Does this pass's pixel program ADD the glow map (type 6) into its
+    ///        light sum?
+    ///
+    /// The glow map's combine op is a property of the PROGRAM, not of the type,
+    /// and the shipped programs do not agree on one:
+    ///
+    ///   `actor2_opaque_glow_skin`  albedo * (light * 2 + glow * k)   ADD
+    ///   `scene_opaque_glow`        albedo * light * 2 + glow * k     ADD
+    ///   `actor_glowTendril_..`     albedo * light * glow             MULTIPLY
+    ///   `actor_complex_Trans..`    saturate(albedo + glow)           ADD to albedo
+    ///
+    /// So this is true only where two independent families agree — Scene.fx and
+    /// ActorIrrad.fx, which both add it as light. Legacy.fx disagrees with
+    /// *itself* across its own two programs, so there is no rule to implement
+    /// there and the slot stays empty rather than taking one at random: adding
+    /// where the original multiplies washed Imperius's wings from fire to
+    /// white smoke.
+    bool glowLights = false;
 };
 
 struct D3Surface {

@@ -91,7 +91,7 @@ private:
     };
     struct alignas(16) D3DrawCb {
         Matrix44f world;
-        Vector4f params0; // .x alphaRef, .y shininess, .z twoSided
+        Vector4f params0; // .x alphaRef, .y shininess, .z twoSided, .w vertex-colour mode
         Vector4f matDiffuse;
         Vector4f matSpecular;
         Vector4f matEmissive;

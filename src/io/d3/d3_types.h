@@ -47,6 +47,36 @@
 // The three fields keep WhiteoutLib's names — it is a submodule and renaming
 // them there is a separate change — so nothing outside this header touches them
 // raw. Go through the accessors.
+//
+// ---------------------------------------------------------------------------
+// THE PROGRAMS ARE READABLE AFTER ALL
+//
+// `d3_standard.slang` opens by saying the original's programs cannot be read.
+// That was true of the console build's `pscod`/`vscod` blobs; it is not true of
+// the game as shipped. `OpenGLShaders/` carries 7,236 ARB assemblies compiled
+// by cgc from the same `.fx` sources, in plain text, with their sampler names
+// in a string table — and a `RenderPass` names the program that consumes it
+// (`szEffectFile`, `szVertexShaderEntry`, `szPixelShaderEntry`) beside an
+// ORDERED list of the stage types it binds. So a material's semantics can be
+// read off the shipped data end to end, and D3SlotOfType below is transcribed
+// from it rather than inferred.
+//
+// Two consequences that are not local to the slot map:
+//
+//  * **The vertex colour is a LIGHT term, not a tint.** `vs_scene` ends
+//    `MAD R0.xyz, vertex.attrib[3], 2, R0` / `MUL result.color.xyz, R0, 0.5` —
+//    the attribute is ADDED into the light sum — and `vs_irrad_*` never reads
+//    its RGB at all, only `.w`. Which is why 84.6% of shipped sub-objects carry
+//    vertex colour (0,0,0) and 14.9% carry (255,255,255): the static
+//    families bake level light there and the actor families do not use it. A
+//    renderer that multiplies it into the albedo blacks out most of the
+//    game's meshes. See D3PassState for the per-family split.
+//
+//  * **A material may carry types its pass never asks for.** The pass's stage
+//    list is the authority on which entries are live. Measured over 2,208
+//    resolved passes: types 26..38 are declared by ZERO of them (274/274 of
+//    those entries undeclared), which is what the "model-wide 25..38 block" was
+//    — data no pass binds.
 
 #include "whiteout/flakes/types.h"
 
@@ -184,25 +214,40 @@ enum class D3SlotKind : u32 {
     Emissive,
     Lightmap,
     Irradiance,
+    /// The alpha-mask layers, whose ALPHA multiplies into the surface's own.
+    /// Three because a shipped material carries up to three of them (401
+    /// variants carry one, 67 two, 18 three); the product is commutative, so
+    /// which of 12/14/19 lands in which slot does not matter.
+    AlphaMask0,
+    AlphaMask1,
+    AlphaMask2,
     Count,
 };
 inline constexpr u32 kD3SlotCount = static_cast<u32>(D3SlotKind::Count);
 
 /// @brief Which slot binds an entry of this `EMaterialTextureType`.
 ///
-/// Only the four types the RE names are mapped. Every branch of
-/// Render_ResolveMaterialTextureStages identifies itself through the core asset
-/// it falls back to when the material leaves the type unset — 2 ->
-/// default_lightmap, 3 (and 47..52) -> flat_NM, 8 -> irradiance — and type 1 is
-/// the base map: of 3,586 shipped material variants carrying exactly one
-/// texture entry, 3,585 give it type 1, and 1,615 of the 1,831 RenderPasses in
-/// the corpus declare a type-1 stage, more than twice any other.
+/// Named from the shipped programs, not guessed. A `RenderPass` carries
+/// `szEffectFile` + entry names and an ORDERED stage list whose ids are these
+/// types (`TextureStageParams` +0), and the corpus ships the OpenGL builds of
+/// those programs beside the assets — 7,236 ARB assemblies under
+/// `OpenGLShaders/`, each with its sampler names in texture-unit order. Pairing
+/// a pass's stage list against its program's sampler list gives the type its
+/// name directly:
 ///
-/// Which of the remaining types is specular or emissive is NOT recovered — the
-/// enum's authored names are gone from the build and the fallback trick only
-/// names the special types — so those two slots stay unresolved rather than
-/// being filled by a guess. Guessing wrong here does not degrade gracefully: a
-/// diffuse map bound into the normal slot makes every surface face the viewer.
+///     1 diffuseSampler 268/268   2 lightMapSampler 258/258
+///     4 environmentMapSampler 88/88   5 glossMapSampler 87/87
+///     6 glowSampler   12/14/19 alphaMap0/1/2Sampler   20 waterSampler
+///     22 shadowMapSampler 257/257   23 vignetteSampler 257/257
+///     53 fogSampler   55 scumSampler   61 ssaoSampler 20/20
+///
+/// over 285 alignments anchored on the types the fallback trick had already
+/// named. Type 8 stays Irradiance from that older evidence: the ActorIrrad.fx
+/// programs ship no sampler names.
+///
+/// 4 (environment) and 11 (a second diffuse / overlay) have no slot here: this
+/// shading model has no cube reflection term and no second base map, and giving
+/// them one would be inventing the term as well as the binding.
 inline D3SlotKind D3SlotOfType(i32 type) {
     switch (type) {
     case 1:
@@ -217,11 +262,38 @@ inline D3SlotKind D3SlotOfType(i32 type) {
     case 51:
     case 52:
         return D3SlotKind::Normal;
+    case 5:
+        return D3SlotKind::Specular;
+    case 6:
+        return D3SlotKind::Emissive;
     case 8:
         return D3SlotKind::Irradiance;
+    case 12:
+        return D3SlotKind::AlphaMask0;
+    case 14:
+        return D3SlotKind::AlphaMask1;
+    case 19:
+        return D3SlotKind::AlphaMask2;
     default:
         return D3SlotKind::Count;
     }
+}
+
+/// @brief Is @p slot one of the alpha-mask layers?
+inline bool D3SlotIsAlphaMask(D3SlotKind slot) {
+    return slot == D3SlotKind::AlphaMask0 || slot == D3SlotKind::AlphaMask1 ||
+           slot == D3SlotKind::AlphaMask2;
+}
+
+/// @brief One past the largest `EMaterialTextureType` the resolve pass indexes.
+///
+/// `Render_ResolveMaterialTextureStages` writes into a 62-slot array, so a type
+/// is always a bit position in a u64 — which is how a pass's declared stage set
+/// is carried.
+inline constexpr i32 kD3TextureTypeCount = 62;
+
+inline u64 D3TypeBit(i32 type) {
+    return (type >= 0 && type < kD3TextureTypeCount) ? (1ull << type) : 0ull;
 }
 
 /// @brief The engine's nominal tick, and the unit every authored UV rate is in.

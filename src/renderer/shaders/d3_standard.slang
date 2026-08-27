@@ -3,15 +3,23 @@
 //
 // The shader half of D3StandardShading. **Not** a translation of the original's
 // programs: a `.shd` is a RenderPass table plus {offset, size} pairs into a blob
-// of compiled GPU binaries, and the programs themselves are the 9,672 `pscod`
-// and 4,845 `vscod` assets beside it — none of which can be executed,
-// translated or reflected into this pipeline. Every one of the 86
-// `eShaderConstant` slots is written only if the bound program declares it, so
-// without the programs the whole constant system has no consumers.
+// of compiled GPU binaries, and those binaries — the 9,672 `pscod` and 4,845
+// `vscod` assets beside it — cannot be executed, translated or reflected into
+// this pipeline.
 //
-// So this implements the material's **semantics**, which the data states, and
-// not its program, which we cannot read — the same call M3_SIMPLE_MATERIAL_DESIGN
-// made for StarCraft II.
+// The programs can nonetheless be *read*. The game ships the OpenGL build of
+// the same `.fx` sources as 7,236 plain-text ARB assemblies under
+// `OpenGLShaders/`, named for the `Shaders` asset that binds them, with their
+// sampler names in a string table. So the terms below are transcribed from the
+// original's own arithmetic rather than inferred from the material struct, and
+// where a comment cites a program by name — `scene_opaque`, `actor2_alphatest`,
+// `actor_complex_Transparent_Ground` — that program is the evidence.
+//
+// What is still not reproduced is the *shape* of the original's shading: it has
+// a program per material family, we have one, and the 86-slot `eShaderConstant`
+// system feeding them has no consumer here. This implements the semantics those
+// programs agree on, in one pass — the call M3_SIMPLE_MATERIAL_DESIGN made for
+// StarCraft II.
 //
 // The semantics are Blinn-Phong against `MaterialColors`, because that is
 // literally what the struct is: `{ diffuse, specular, emissive, ambient,
@@ -25,7 +33,7 @@
 // WDX_USE_PREBUILT_SHADERS every fresh clone builds with.
 //
 // Slot presence is a uniform branch (`slotCtl[i].z`), not a permutation, for
-// the same reason m2_combiners argues: a 2^6 matrix in compiled_shaders.h would
+// the same reason m2_combiners argues: a 2^9 matrix in compiled_shaders.h would
 // buy back a few scalar selects.
 // ============================================================================
 
@@ -41,7 +49,10 @@ static const int kD3SlotSpecular = 2;
 static const int kD3SlotEmissive = 3;
 static const int kD3SlotLightmap = 4;
 static const int kD3SlotIrradiance = 5;
-static const int kD3SlotCount = 6;
+static const int kD3SlotAlphaMask0 = 6;
+static const int kD3SlotAlphaMask1 = 7;
+static const int kD3SlotAlphaMask2 = 8;
+static const int kD3SlotCount = 9;
 
 // ---- Constant buffers ------------------------------------------------------
 //
@@ -70,7 +81,9 @@ struct D3DrawData
 {
     float4x4 world;
     // .x alphaTestRef (0 = no test; RenderPass+60 x 1/255 in the original),
-    // .y shininess, .z two-sided, .w unused.
+    // .y shininess, .z two-sided, .w how the pass's vertex program consumes the
+    // vertex colour: bit 0 = its RGB is added into the light sum, bit 1 = its
+    // alpha is the surface's. See D3PassState.
     float4 params0;
     // MaterialColors, verbatim.
     float4 matDiffuse;
@@ -112,6 +125,13 @@ static const int WF_PS_BIND_OFFSET = 16;
 [[vk::binding(WF_PS_BIND_OFFSET + 3, 1)]] Texture2D texEmissive : register(t3);
 [[vk::binding(WF_PS_BIND_OFFSET + 4, 1)]] Texture2D texLightmap : register(t4);
 [[vk::binding(WF_PS_BIND_OFFSET + 5, 1)]] Texture2D texIrradiance : register(t5);
+// The alpha-mask layers. Their ALPHA multiplies into the surface's own and
+// their colour is never read — `actor_complex_Transparent_Ground` is the whole
+// rule in five instructions: `alpha = tex(type12).w * tex(type14).w * matAlpha`,
+// with the base map contributing rgb only.
+[[vk::binding(WF_PS_BIND_OFFSET + 6, 1)]] Texture2D texAlphaMask0 : register(t6);
+[[vk::binding(WF_PS_BIND_OFFSET + 7, 1)]] Texture2D texAlphaMask1 : register(t7);
+[[vk::binding(WF_PS_BIND_OFFSET + 8, 1)]] Texture2D texAlphaMask2 : register(t8);
 // One sampler PER WRAP VARIANT, not per slot: the D3D12 root signature budgets
 // four samplers per stage, and four is exactly how many distinct states exist.
 [[vk::binding(WF_PS_BIND_OFFSET + 0, 2)]] SamplerState sampWrap0 : register(s0);
@@ -280,10 +300,37 @@ float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
     //
     // The host binds white for an absent 2D slot, so `SlotOn` is what
     // distinguishes "authored and still loading" from "not authored".
-    float4 albedo = draw.matDiffuse * input.vertexCol;
+    //
+    // THE VERTEX COLOUR IS NOT A TINT. It used to multiply in here, and that is
+    // what rendered most of the game's meshes solid black: the static families
+    // bake the level's light into the attribute and ship (0, 0, 0) when there
+    // is no bake — 84.6% of shipped sub-objects — so multiplying it away leaves
+    // nothing. `vs_scene` ADDS it into the light sum instead (see the lighting
+    // block below), and `vs_irrad_*` reads only its alpha. Neither touches the
+    // albedo.
+    float4 albedo = draw.matDiffuse;
     if (SlotOn(kD3SlotDiffuse))
         albedo *= SampleSlot(kD3SlotDiffuse, texDiffuse, input.uv01);
 
+    let vertexColorMode = uint(draw.params0.w);
+    if ((vertexColorMode & 0x2u) != 0u)
+        albedo.a *= input.vertexCol.a;
+
+    // The alpha-mask layers multiply into the surface's alpha and contribute no
+    // colour. This is where a transparent D3 surface gets its shape: the base
+    // map of a smoke plume or a wing is opaque, and every one of these programs
+    // reads its rgb only, taking the opacity from one to three separate masks.
+    // Spelled out rather than looped: a dynamic texture select inside an
+    // unrolled loop is what fxc refuses to unroll.
+    if (SlotOn(kD3SlotAlphaMask0))
+        albedo.a *= SampleSlot(kD3SlotAlphaMask0, texAlphaMask0, input.uv01).a;
+    if (SlotOn(kD3SlotAlphaMask1))
+        albedo.a *= SampleSlot(kD3SlotAlphaMask1, texAlphaMask1, input.uv01).a;
+    if (SlotOn(kD3SlotAlphaMask2))
+        albedo.a *= SampleSlot(kD3SlotAlphaMask2, texAlphaMask2, input.uv01).a;
+
+    // Against the whole alpha, masks included: the original's alpha test runs on
+    // the value the pass is about to blend, not on the base map alone.
     let alphaRef = draw.params0.x;
     if (alphaRef > 0.0 && albedo.a < alphaRef)
         discard;
@@ -324,6 +371,16 @@ float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
     float3 ambient = pass.ambient.rgb + draw.matAmbient.rgb;
     if (SlotOn(kD3SlotIrradiance))
         ambient += SampleSlot(kD3SlotIrradiance, texIrradiance, input.uv01).rgb;
+
+    // The baked per-vertex light, for the families whose vertex program reads
+    // it. `vs_scene` closes with `MAD R0.xyz, vertex.attrib[3], 2, R0` then
+    // `MUL result.color.xyz, R0, 0.5` — the attribute enters the light sum at
+    // unit weight, alongside the ambient and directional terms, and this sum is
+    // already normalised the same way. Gated because the actor families leave
+    // the attribute at white while computing their light entirely in the vertex
+    // shader; adding it there would lift every character by a full unit.
+    if ((vertexColorMode & 0x1u) != 0u)
+        ambient += input.vertexCol.rgb;
 
     // Specular needs the MAP, not just the material colour. Measured over 200
     // corpus `.app` (1,764 materials): `vSpecular` is 1.0 on 99.0% of them and
@@ -397,11 +454,22 @@ float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
     // Folding it into the lighting term keeps the surface's own colour — a
     // fully-emissive Diablo reads as an unshaded Diablo rather than as a hole
     // in the frame — and leaves the 65% that author zero completely unchanged.
+    // The GLOW MAP (type 6) enters the LIGHT sum, so it is still bounded by the
+    // albedo: `actor2_opaque_glow_skin` is `albedo * (light * 2 + glow * k)`.
+    // `scene_opaque_glow` adds it a step later, outside the albedo — the two
+    // differ only where the albedo is dark, and inside is the safer of the two
+    // to be wrong about.
+    //
+    // The host only fills this slot for the families that ADD it at all: the
+    // Legacy programs multiply it instead, and adding where they multiply
+    // washed a wing of fire out to white smoke.
     float3 emissive = draw.matEmissive.rgb;
     if (SlotOn(kD3SlotEmissive))
-        emissive *= SampleSlot(kD3SlotEmissive, texEmissive, input.uv01).rgb;
+        emissive += SampleSlot(kD3SlotEmissive, texEmissive, input.uv01).rgb;
 
     float3 color = albedo.rgb * (ambient + diffuseSum * lightmap + emissive) + specSum * specTint;
 
-    return float4(color, albedo.a * draw.matDiffuse.a);
+    // matDiffuse.a once, not twice: the element/fade alpha rides on it host-side
+    // and it was being squared here.
+    return float4(color, albedo.a);
 }

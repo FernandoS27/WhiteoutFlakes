@@ -43,6 +43,7 @@
 #include "renderer/profiles/diablo3/d3_surface_table.h"
 
 #include <whiteout/sno/d3/native/d3_native.h>
+#include <whiteout/sno/d3/native/geometry.h>
 
 #include <algorithm>
 #include <cctype>
@@ -51,6 +52,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <bit>
 #include <string>
 #include <functional>
 #include <functional>
@@ -680,6 +682,323 @@ TEST_CASE("D3: the three models this was found on", "[d3][corpus]") {
 }
 
 // ============================================================================
+// The vertex colour is a LIGHT term, and the corpus is what says so.
+//
+// Nothing in the file marks the attribute's role; the shipped vertex programs
+// do (`vs_scene` ends `MAD R0.xyz, vertex.attrib[3], 2, R0`, an ADD into the
+// light sum, while `vs_irrad_*` reads only `.w`). This is the measurement that
+// makes that reading the only tenable one, without needing the programs: the
+// attribute is bimodal, and the black mode is the majority. A tint that is
+// (0,0,0) on four fifths of the game's meshes is not a tint.
+// ============================================================================
+
+TEST_CASE("D3 corpus: the vertex colour is bimodal, so it cannot be a tint", "[d3][corpus]") {
+    const auto files = FindFiles(CorpusRoot() / "Appearances", ".app");
+    if (files.empty()) {
+        WARN("No D3 corpus at " << (CorpusRoot() / "Appearances").string()
+                                << " (set WDX_TEST_D3_CORPUS). SKIPPED, not passed.");
+        return;
+    }
+    const std::size_t limit = SweepLimit();
+    const std::size_t take = (limit == 0) ? files.size() : (std::min)(limit, files.size());
+
+    std::size_t subObjects = 0, allBlack = 0, allWhite = 0, mixed = 0;
+    CountIf(files, take, [&](const d3n::Appearances& app) {
+        const d3n::GeoSet* sets[2] = {&app.tGeoSet0, &app.tGeoSet1};
+        for (const auto* set : sets) {
+            for (const auto& sub : set->arSubObjects) {
+                if (sub.arVertices.empty())
+                    continue;
+                ++subObjects;
+                bool black = true, white = true;
+                for (const auto& v : sub.arVertices) {
+                    const auto c = d3n::vertexColor(v);
+                    if (c.r != 0 || c.g != 0 || c.b != 0)
+                        black = false;
+                    if (c.r != 255 || c.g != 255 || c.b != 255)
+                        white = false;
+                }
+                if (black)
+                    ++allBlack;
+                else if (white)
+                    ++allWhite;
+                else
+                    ++mixed;
+            }
+        }
+    });
+    REQUIRE(subObjects > 0);
+    std::printf("[d3-vcol] %zu sub-objects: RGB all-zero %zu (%.1f%%), all-white %zu (%.1f%%), "
+                "graded %zu (%.1f%%)\n",
+                subObjects, allBlack, 100.0 * static_cast<double>(allBlack) / static_cast<double>(subObjects),
+                allWhite, 100.0 * static_cast<double>(allWhite) / static_cast<double>(subObjects),
+                mixed, 100.0 * static_cast<double>(mixed) / static_cast<double>(subObjects));
+
+    // The claim, in the form that fails if the field is ever a tint after all:
+    // most meshes are at zero. Measured 81.2% over 300 files.
+    CHECK(allBlack * 2 > subObjects);
+    // And the rest are overwhelmingly at the other extreme rather than spread —
+    // two families, one of which computes its light elsewhere. Measured 18.2%
+    // white against 0.6% graded.
+    CHECK(allWhite > mixed * 4);
+    // Between them they are essentially the whole corpus, which is what makes
+    // "the attribute is a per-family light term" a complete account of it.
+    CHECK((allBlack + allWhite) * 20 > subObjects * 19);
+}
+
+// ============================================================================
+// The RenderPass's stage list decides which of a material's entries are live,
+// and its effect file decides what the vertex colour means. Both are read off
+// the `.shd` corpus, which is name-keyed and so needs no install.
+// ============================================================================
+
+TEST_CASE("D3 corpus: a pass declares the types it binds", "[d3][corpus]") {
+    const auto files = FindFiles(CorpusRoot() / "Shaders", ".shd");
+    if (files.empty()) {
+        WARN("No D3 Shaders corpus at " << (CorpusRoot() / "Shaders").string()
+                                        << ". SKIPPED, not passed.");
+        return;
+    }
+    std::map<i32, std::size_t> declaredBy;
+    std::map<std::string, std::size_t> effects;
+    std::size_t passes = 0, maxStages = 0;
+    std::size_t maskPasses = 0, maskWithBase = 0;
+    for (const auto& p : files) {
+        auto sh = d3n::parseShaders(ReadAll(p));
+        if (!sh)
+            continue;
+        for (const auto& rp : sh->arRenderPasses) {
+            ++passes;
+            ++effects[rp.szEffectFile];
+            maxStages = (std::max)(maxStages, rp.arTextureStages.size());
+            bool base = false, mask = false;
+            for (const auto& ts : rp.arTextureStages) {
+                ++declaredBy[ts.dwUnknown00];
+                if (ts.dwUnknown00 == 1)
+                    base = true;
+                if (ts.dwUnknown00 == 12 || ts.dwUnknown00 == 14 || ts.dwUnknown00 == 19)
+                    mask = true;
+            }
+            if (mask) {
+                ++maskPasses;
+                if (base)
+                    ++maskWithBase;
+            }
+        }
+    }
+    REQUIRE(passes > 0);
+
+    std::size_t detailBlock = 0;
+    for (i32 t = 26; t <= 38; ++t)
+        detailBlock += declaredBy[t];
+    std::printf("[d3-stage] %zu passes, max %zu stages; type 1 declared by %zu, type 2 by %zu, "
+                "type 5 by %zu, type 6 by %zu; types 26..38 by %zu\n",
+                passes, maxStages, declaredBy[1], declaredBy[2], declaredBy[5], declaredBy[6],
+                detailBlock);
+    std::printf("[d3-stage] effect files:");
+    for (const auto& [name, n] : effects) {
+        if (n * 40 > passes)
+            std::printf(" %s x%zu", name.c_str(), n);
+    }
+    std::printf("\n[d3-stage] passes binding an alpha mask: %zu, of which %zu also bind a type-1 "
+                "base map\n", maskPasses, maskWithBase);
+
+    // THE 26..38 BLOCK IS DEAD DATA. It is byte-identical across every material
+    // in a file and had no recovered meaning; this is what it turns out to be —
+    // not one of the 1,831 shipped passes asks for any of it. So the surface
+    // table's stage filter drops it by construction rather than by a rule about
+    // those particular numbers.
+    CHECK(detailBlock == 0);
+    // Type 1 is the base map, which is why it is the type a pass asks for most.
+    CHECK(declaredBy[1] > declaredBy[2] * 2);
+    // A stage list is short: it fits a u64 type bitmask with room to spare, and
+    // the bitmask is only valid while every type stays under 62.
+    CHECK(maxStages <= 32);
+    // The families the surface table switches on are all present and none is a
+    // rounding error.
+    CHECK(effects.count("Scene.fx") == 1);
+    CHECK(effects.count("Prop.fx") == 1);
+    CHECK(effects.count("ActorIrrad.fx") == 1);
+    CHECK(effects.count("Legacy.fx") == 1);
+    // An alpha mask nearly always sits beside a base map — which is what makes
+    // "no type 1 in this pass, so this id is the base map here" a safe reading
+    // of the minority. Measured 264 of 305.
+    CHECK(maskWithBase * 4 > maskPasses * 3);
+}
+
+// ============================================================================
+// The types are NAMED by the shipped programs, not guessed.
+//
+// EMaterialTextureType's authored names are gone from the build, and the
+// core-asset fallback trick only names the handful of types that have one. What
+// names the rest is that the game ships the OpenGL build of its own shaders:
+// `OpenGLShaders/<program>_<hash>.ps.glsl` is an ARB assembly carrying its
+// sampler names in a string table, in texture-unit order, and a `RenderPass`
+// carries an ORDERED list of the stage types it binds. Zip the two and each
+// type takes its name from the original.
+//
+// The alignment is anchored on the types the fallback had already named, so a
+// permutation that does not belong to this pass is rejected rather than
+// shifting every name along by one. What the anchor cannot vouch for is not
+// reported.
+// ============================================================================
+
+TEST_CASE("D3 corpus: the shipped programs name the texture types", "[d3][corpus]") {
+    const auto shaders = FindFiles(CorpusRoot() / "Shaders", ".shd");
+    const fs::path glDir = CorpusRoot() / "OpenGLShaders";
+    std::error_code ec;
+    if (shaders.empty() || !fs::is_directory(glDir, ec)) {
+        WARN("No D3 Shaders/OpenGLShaders corpus under " << CorpusRoot().string()
+                                                         << ". SKIPPED, not passed.");
+        return;
+    }
+
+    // Every `.ps.glsl` grouped by the program name it belongs to. One name owns
+    // many files: a permutation per light count, per pass, per feature toggle.
+    std::map<std::string, std::vector<fs::path>> byProgram;
+    for (fs::directory_iterator it(glDir, ec), end; it != end; it.increment(ec)) {
+        if (ec)
+            break;
+        const std::string f = it->path().filename().string();
+        constexpr std::string_view kSuffix = ".ps.glsl";
+        if (f.size() < kSuffix.size() + 9 ||
+            f.compare(f.size() - kSuffix.size(), kSuffix.size(), kSuffix) != 0)
+            continue;
+        const std::size_t stem = f.size() - kSuffix.size();
+        if (stem < 9 || f[stem - 9] != '_')
+            continue;
+        byProgram[f.substr(0, stem - 9)].push_back(it->path());
+    }
+    REQUIRE(!byProgram.empty());
+
+    // The sampler names an ARB assembly declares, in declaration order — which
+    // is the order the binding table beside them indexes by unit.
+    auto samplerNames = [](const fs::path& p) {
+        std::vector<std::string> out;
+        const auto bytes = ReadAll(p);
+        std::string cur;
+        for (const u8 b : bytes) {
+            if (b >= 0x20 && b < 0x7F) {
+                cur.push_back(static_cast<char>(b));
+                continue;
+            }
+            if (b == 0 && cur.size() > 7 && cur.compare(cur.size() - 7, 7, "Sampler") == 0 &&
+                std::find(out.begin(), out.end(), cur) == out.end())
+                out.push_back(cur);
+            cur.clear();
+        }
+        return out;
+    };
+
+    // The types the core-asset fallback had already named. An alignment that
+    // disagrees with any of them is the wrong permutation, not a discovery.
+    const std::map<i32, std::string> kAnchor = {
+        {1, "diffuseSampler"},   {2, "lightMapSampler"},   {4, "environmentMapSampler"},
+        {5, "glossMapSampler"},  {22, "shadowMapSampler"}, {23, "vignetteSampler"},
+        {53, "fogSampler"},      {61, "ssaoSampler"},
+    };
+
+    std::map<i32, std::map<std::string, std::size_t>> named;
+    std::map<std::string, std::vector<std::string>> cache;
+    std::size_t alignments = 0;
+    for (const auto& p : shaders) {
+        auto sh = d3n::parseShaders(ReadAll(p));
+        if (!sh)
+            continue;
+        const auto prog = byProgram.find(p.stem().string());
+        if (prog == byProgram.end())
+            continue;
+        for (const auto& rp : sh->arRenderPasses) {
+            std::vector<i32> types;
+            for (const auto& ts : rp.arTextureStages) {
+                if (ts.dwUnknown00 != 0)
+                    types.push_back(ts.dwUnknown00);
+            }
+            if (types.empty())
+                continue;
+            for (const auto& gl : prog->second) {
+                const std::string key = gl.string();
+                auto c = cache.find(key);
+                if (c == cache.end())
+                    c = cache.emplace(key, samplerNames(gl)).first;
+                const auto& names = c->second;
+                if (names.size() != types.size())
+                    continue;
+                bool anchored = false, agrees = true;
+                for (std::size_t k = 0; k < types.size(); ++k) {
+                    const auto a = kAnchor.find(types[k]);
+                    if (a == kAnchor.end())
+                        continue;
+                    anchored = true;
+                    if (a->second != names[k])
+                        agrees = false;
+                }
+                if (!anchored || !agrees)
+                    continue;
+                ++alignments;
+                for (std::size_t k = 0; k < types.size(); ++k)
+                    ++named[types[k]][names[k]];
+                break;
+            }
+        }
+    }
+    if (alignments == 0) {
+        WARN("No pass aligned with a shipped program. SKIPPED, not passed.");
+        return;
+    }
+
+    auto total = [&](i32 type) {
+        std::size_t n = 0;
+        const auto it = named.find(type);
+        if (it != named.end()) {
+            for (const auto& entry : it->second)
+                n += entry.second;
+        }
+        return n;
+    };
+    auto top = [&](i32 type) {
+        std::pair<std::string, std::size_t> best{"", 0};
+        const auto it = named.find(type);
+        if (it != named.end()) {
+            for (const auto& entry : it->second) {
+                if (entry.second > best.second)
+                    best = entry;
+            }
+        }
+        return best;
+    };
+
+    std::printf("[d3-name] %zu anchored alignments\n", alignments);
+    for (const auto& entry : named) {
+        const auto best = top(entry.first);
+        const auto n = total(entry.first);
+        std::printf("[d3-name]   type %-3d n=%-5zu %-5.1f%% %s\n", entry.first, n,
+                    100.0 * static_cast<double>(best.second) / static_cast<double>(n),
+                    best.first.c_str());
+    }
+
+    // The two the slot map already had by other means, re-derived here from the
+    // programs. If these disagree the alignment is broken and nothing under it
+    // can be believed either.
+    CHECK(top(1).first == "diffuseSampler");
+    CHECK(top(2).first == "lightMapSampler");
+    // The two this work added to the slot map. Type 6 is rare because a glow
+    // map is rare, not because it is uncertain.
+    CHECK(top(5).first == "glossMapSampler");
+    CHECK(total(5) >= 40);
+    CHECK(top(6).first == "glowSampler");
+    // And the alpha masks, which is where a transparent D3 surface gets its
+    // shape. The alphaMapN *index* shifts by family — the same id is mask 0 in
+    // one program and mask 1 in another — so the assertion is on the prefix.
+    // What has to hold is that all three are masks and none is a base map.
+    for (const i32 type : {12, 14, 19}) {
+        const auto best = top(type);
+        INFO("type " << type << " -> " << best.first);
+        CHECK(best.first.rfind("alphaMap", 0) == 0);
+    }
+}
+
+// ============================================================================
 // The render state lives on the Shaders asset, not on the material — and it is
 // only reachable through an install, because a ShaderMap is named by SNO id and
 // an id resolves through an opened storage.
@@ -770,4 +1089,120 @@ TEST_CASE("D3 install: render state comes from the ShaderMap's RenderPass",
         return;
     }
     CHECK(resolved == std::size(kWant));
+}
+
+// ============================================================================
+// One doodad, end to end, against a real install: the model the black-geometry
+// report came from.
+//
+// `a1_Id_All_Book_Of_Cain` is worth pinning because it carries both families at
+// once — Scene.fx props whose vertex colour is zero beside a Legacy.fx smoke
+// plume whose opacity lives entirely in two alpha masks — and because both of
+// its symptoms were invisible to every other gate: the props drew, they were
+// just black, and the smoke drew, it was just opaque.
+// ============================================================================
+
+TEST_CASE("D3 install: the doodad that rendered black", "[d3][material][install]") {
+    using ::whiteout::flakes::ProductId;
+
+    flakes::io::FileContentProvider provider;
+    if (const char* root = std::getenv("WDX_TEST_D3_INSTALL"); root && *root)
+        provider.SetInstallPath(root);
+    provider.SetGame(ProductId::D3);
+    if (provider.GamePath(ProductId::D3).empty()) {
+        WARN("No Diablo III install (set WDX_TEST_D3_INSTALL). SKIPPED, not passed.");
+        return;
+    }
+    flakes::io::D3SnoCache cache(&provider);
+
+    const auto path = CorpusRoot() / "Appearances" / "a1_Id_All_Book_Of_Cain.app";
+    auto app = d3n::parseAppearances(ReadAll(path));
+    if (!app) {
+        WARN("missing " << path.string() << " -- SKIPPED, not passed.");
+        return;
+    }
+
+    struct Want {
+        const char* subObject;
+        bool vertexColorLights; ///< Scene.fx / Prop.fx: the attribute is light.
+        bool alphaMasks;        ///< opacity comes from 12/14/19, not the base map.
+    };
+    // The satchel and the room decoration are the black ones: Scene.fx, vertex
+    // colour (0,0,0). SMOKE is the one that drew solid: Legacy.fx, base map for
+    // colour and two masks for shape.
+    const Want kWant[] = {
+        {"CainsSatchel", true, false},
+        {"town_interior_deco_A1", true, false},
+        {"SMOKE", false, true},
+    };
+
+    std::size_t checked = 0;
+    for (const auto& w : kWant) {
+        const d3n::GeoSet* sets[2] = {&app->tGeoSet0, &app->tGeoSet1};
+        const d3n::SubObject* sub = nullptr;
+        for (const auto* set : sets) {
+            for (const auto& s : set->arSubObjects) {
+                if (EqualCiSv(s.szName, w.subObject))
+                    sub = &s;
+            }
+        }
+        REQUIRE(sub != nullptr);
+        const auto* v = flakes::io::D3VariantFor(*app, *sub, 0);
+        REQUIRE(v != nullptr);
+        const auto st = d3p::D3PassStateFor(*v, &cache);
+        INFO(w.subObject << " shm=" << v->tMaterial.snoShaderMap.id);
+        if (!st.resolved) {
+            WARN(w.subObject << ": ShaderMap did not resolve through this install -- SKIPPED.");
+            continue;
+        }
+        ++checked;
+
+        // What the mesh actually carries in the attribute, beside what the pass
+        // says to do with it — the two halves of the black-geometry bug in one
+        // line.
+        bool blackVertexColor = !sub->arVertices.empty();
+        for (const auto& vert : sub->arVertices) {
+            const auto c = d3n::vertexColor(vert);
+            if (c.r != 0 || c.g != 0 || c.b != 0)
+                blackVertexColor = false;
+        }
+        u64 maskTypes = 0;
+        for (const auto& e : v->tMaterial.arTextures) {
+            const i32 t = flakes::io::D3TextureTypeOf(e);
+            if (flakes::io::D3SlotIsAlphaMask(flakes::io::D3SlotOfType(t)) &&
+                (st.declaredTypes & flakes::io::D3TypeBit(t)) != 0)
+                maskTypes |= flakes::io::D3TypeBit(t);
+        }
+        std::printf("[d3-cain] %-22s vcLights=%d vcAlpha=%d blackVcol=%d masks=%d blend=%d dw=%d\n",
+                    w.subObject, static_cast<int>(st.vertexColorLights),
+                    static_cast<int>(st.vertexAlpha), static_cast<int>(blackVertexColor),
+                    static_cast<int>(std::popcount(maskTypes)),
+                    static_cast<int>(st.blendEnable), static_cast<int>(st.depthWrite));
+
+        CHECK(st.vertexColorLights == w.vertexColorLights);
+        CHECK((maskTypes != 0) == w.alphaMasks);
+        // A pass always declares SOMETHING, which is what makes the stage filter
+        // safe to apply whenever it resolved.
+        CHECK(st.declaredTypes != 0);
+        if (w.vertexColorLights) {
+            // The half that made them black: a static-family mesh outside a
+            // level bake carries no vertex colour at all, so multiplying it into
+            // the albedo leaves nothing to draw.
+            CHECK(blackVertexColor);
+        }
+        if (w.alphaMasks) {
+            // The half that made the smoke solid: the pass blends and does not
+            // write depth, so the state was already right — the alpha was not.
+            CHECK(st.blendEnable);
+            CHECK(!st.depthWrite);
+            // Two masks, and the base map's own alpha is never read by
+            // `actor_complex_Transparent_Ground`.
+            CHECK(std::popcount(maskTypes) >= 2);
+        }
+    }
+    if (checked == 0) {
+        WARN("Nothing resolved. SKIPPED, not passed.");
+        return;
+    }
+    CHECK(checked == std::size(kWant));
 }

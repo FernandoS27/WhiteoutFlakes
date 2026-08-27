@@ -25,8 +25,10 @@ enum : u32 {
 };
 
 using ::whiteout::flakes::io::D3ReadUvXform;
+using ::whiteout::flakes::io::D3SlotIsAlphaMask;
 using ::whiteout::flakes::io::D3SlotOfType;
 using ::whiteout::flakes::io::D3TextureTypeOf;
+using ::whiteout::flakes::io::D3TypeBit;
 using ::whiteout::flakes::io::D3UvMode;
 using ::whiteout::flakes::io::D3UvTransformId;
 
@@ -112,7 +114,8 @@ D3PassState D3PassStateFor(const d3n::SubObjectAppearance& variant,
     // reproducing that is a submission change, not a state one — so the first
     // pass is the one whose state this carries, and the extra passes are simply
     // not drawn.
-    const auto& r = shaders->arRenderPasses[0].tRenderParams;
+    const auto& pass0 = shaders->arRenderPasses[0];
+    const auto& r = pass0.tRenderParams;
     st.resolved = true;
     st.cull = static_cast<u32>(r.dwUnknown00);
     st.depthWrite = r.dwUnknown04 != 0;
@@ -120,6 +123,12 @@ D3PassState D3PassStateFor(const d3n::SubObjectAppearance& variant,
     st.blendEnable = r.dwUnknown4C != 0;
     st.blendSrc = static_cast<u32>(r.dwUnknown54);
     st.blendDst = static_cast<u32>(r.dwUnknown58);
+    for (const auto& stage : pass0.arTextureStages)
+        st.declaredTypes |= D3TypeBit(stage.dwUnknown00);
+    st.vertexColorLights = pass0.szEffectFile == "Scene.fx" || pass0.szEffectFile == "Prop.fx";
+    st.vertexAlpha = pass0.szEffectFile == "ActorIrrad.fx" ||
+                     pass0.szVertexShaderEntry.find("vertalpha") != std::string::npos;
+    st.glowLights = pass0.szEffectFile == "ActorIrrad.fx" || pass0.szEffectFile == "Scene.fx";
     return st;
 }
 
@@ -200,8 +209,37 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
             const i32 type = D3TextureTypeOf(entry);
             ++typeCounts[type];
 
+            // The pass decides which entries are LIVE. The adapter's canonical
+            // texture list does not know that — it is built without a cache and
+            // so without a pass — which makes the list a superset of what the
+            // slots below bind. That is the safe direction: a texture nothing
+            // samples costs an upload, a texture the list is missing has no id.
+            //
+            // A material routinely
+            // carries types the bound program never asks for — Cain's book
+            // ships a lightmap its `actor2_opaque_glow_skin` pass does not
+            // declare, and the whole 26..38 block is declared by none of the
+            // 2,208 passes measured — and binding one is a term the original
+            // never applies. Only where the pass resolved: without one there is
+            // no stage list to consult and every entry stands, as before.
+            if (s.pass.resolved && s.pass.declaredTypes != 0 &&
+                (s.pass.declaredTypes & D3TypeBit(type)) == 0)
+                continue;
+
             const D3SlotKind kind = D3SlotOfType(type);
             if (kind == D3SlotKind::Count)
+                continue;
+            // The glow map only where its family agrees on what to do with it.
+            if (kind == D3SlotKind::Emissive && s.pass.resolved && !s.pass.glowLights)
+                continue;
+            // 12/14/19 are alpha masks only where they sit BESIDE a base map.
+            // A pass that declares one of them and no type 1 is a Legacy-family
+            // pass using its own numbering, where the same id is the base map —
+            // and multiplying a base map's alpha into the surface would fade it
+            // for no reason. Measured: 147 mask entries land in a pass that also
+            // declares type 1, 13 in one that does not.
+            if (D3SlotIsAlphaMask(kind) && s.pass.resolved &&
+                (s.pass.declaredTypes & D3TypeBit(1)) == 0)
                 continue;
 
             D3Slot& slot = s.slots[static_cast<u32>(kind)];

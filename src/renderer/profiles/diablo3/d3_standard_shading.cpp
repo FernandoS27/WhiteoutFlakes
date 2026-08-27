@@ -417,8 +417,15 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
 
     if (auto* c = static_cast<D3DrawCb*>(gfxDev->MapBuffer(drawCb_))) {
         c->world = item.view->worldTransform.transpose();
+        // .w: how the bound pass's vertex program consumes the vertex colour.
+        // Bit 0 adds its RGB into the light sum, bit 1 takes its alpha. Both
+        // stay clear when no pass resolved — the attribute means nothing on its
+        // own, and the wrong guess either blacks out a prop or blows out a
+        // character.
+        const u32 vcMode = (surf->pass.vertexColorLights ? 0x1u : 0u) |
+                           (surf->pass.vertexAlpha ? 0x2u : 0u);
         c->params0 = {surf->alphaTestThreshold, surf->shininess, surf->twoSided ? 1.0f : 0.0f,
-                      0.0f};
+                      static_cast<f32>(vcMode)};
         c->matDiffuse = surf->diffuse;
         // The element alpha rides the material's own, which is what the
         // fixed-function pipeline does with it and what makes a fade a fade.
