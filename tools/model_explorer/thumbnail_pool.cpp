@@ -233,8 +233,34 @@ void ThumbnailPool::EnsureCellTargetSize(Cell& cell, int wantPx) {
             gfx->WaitIdle();
         svc_.Pipeline().DestroyTarget(cell.target);
     }
-    cell.target = svc_.Pipeline().CreateOffscreenTarget(want, want);
+    cell.target = svc_.Pipeline().CreateOffscreenTarget(want, want, cell.fmt);
     cell.res = want;
+}
+
+void ThumbnailPool::EnsureCellTargetFormat(Cell& cell) {
+    // A tonemapped frame writes LINEAR and leaves the linear->sRGB encode to
+    // the RTV; a gamma frame writes display bytes that must not be encoded
+    // again. Get it wrong the first way and the cell holds linear pixels that
+    // ImGui hands to the swap chain unchanged — the whole preview, background
+    // included, comes out about a gamma step too dark. Which way a cell goes is
+    // its profile's answer, not the render mode's: a StarCraft II cell always
+    // tonemaps, a World of Warcraft one never does, and the Warcraft III SD and
+    // Diablo III frames follow SceneHdrInSd (which RenderVisible turns on).
+    // Hence here, per cell, after its model has settled the scene's product.
+    const gfx::Format want = svc_.Pipeline().CompositeColorFormat();
+    if (cell.fmt == want && cell.target != 0)
+        return;
+    cell.fmt = want;
+    const int res = cell.res;
+    if (cell.target) {
+        if (auto* gfx = svc_.Pipeline().Gfx())
+            gfx->WaitIdle();
+        svc_.Pipeline().DestroyTarget(cell.target);
+        cell.target = 0;
+        cell.res = 0;
+    }
+    if (res > 0)
+        EnsureCellTargetSize(cell, res);
 }
 
 gfx::TextureHandle ThumbnailPool::Acquire(const std::string& path, bool isEffect,
@@ -286,6 +312,15 @@ void ThumbnailPool::RenderVisible(float dt) {
                 ResetEffect(cell);
             }
         }
+
+        // The cell's scene decides its profile, and the profile decides the
+        // colour space its target has to be in. Both are settled now — the
+        // model is loaded and this cell's mode + SD-HDR are applied — and this
+        // is still before the target is drawn into. A cell that is already in
+        // the right format pays a compare.
+        svc_.SetActiveScene(cell.scene);
+        EnsureCellTargetFormat(cell);
+        svc_.SetActiveScene(svc_.DefaultSceneId());
 
         auto& sm = svc_.SceneAt(cell.scene);
         sm.Update(dt); // advance the scene clock so the stand animation actually plays

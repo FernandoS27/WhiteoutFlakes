@@ -155,6 +155,21 @@ public:
     gfx::PipelineHandle CurrentOverlayLinePSO() const;
     gfx::Format SceneTargetFormat() const;
 
+    /// @brief The colour format a target must have to be the destination of
+    ///        the frame this pipeline would render into it next.
+    ///
+    /// A frame whose scene lands in the HDR target composites through the
+    /// tonemap, and the tonemap writes LINEAR — the linear->sRGB encode is the
+    /// RTV's job, so that destination has to be an _SRGB view. A gamma frame
+    /// writes display bytes straight out and must not be encoded a second
+    /// time. Which of the two a scene is, is a property of its profile and not
+    /// of the render mode: World of Warcraft composites in gamma whatever the
+    /// mode, StarCraft II and Reforged HD always tonemap, and the Warcraft III
+    /// SD and Diablo III frames follow SceneHdrInSd. Read off LoadTimeProfile,
+    /// so it answers for the frame about to be built rather than the last one
+    /// latched.
+    gfx::Format CompositeColorFormat();
+
     /// @brief Whether the IBL probes are loaded from content — not the debug
     ///        procedural stand-in SetEnvProbe registers when the read fails.
     ///

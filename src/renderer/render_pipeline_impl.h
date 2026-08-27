@@ -20,6 +20,8 @@
 
 #include <memory>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace whiteout::flakes::renderer::bls {
 class BlsShaderCache;
@@ -149,12 +151,12 @@ struct RenderPipeline::Impl {
     gfx::PipelineHandle overlayLinePSOHdr_ = gfx::PipelineHandle::Invalid;
     gfx::PipelineHandle overlayLinePSOSd_ = gfx::PipelineHandle::Invalid;
     gfx::Format overlayLinePsoSdFormat_ = gfx::Format::Unknown;
-    gfx::PipelineHandle tonemapPSO_ = gfx::PipelineHandle::Invalid;
-    // RTV format the tonemapPSO_ was built against. Cached so RunTonemapPass
-    // can rebuild the PSO whenever the swap-chain format changes (e.g. on
-    // macOS the surface only offers BGRA8, while every other backend tends
-    // to advertise RGBA8). Format::Unknown = PSO not built yet.
-    gfx::Format tonemapPsoFormat_ = gfx::Format::Unknown;
+    // One tonemap PSO per destination RTV format. Kept per format rather than
+    // rebuilt on change because a host that renders thumbnails alternates
+    // formats WITHIN a frame — an offscreen cell then the sRGB swap chain —
+    // and destroying the PSO the previous viewport is still using is a
+    // use-after-free the driver crashes on. Formats seen per run: two.
+    std::vector<std::pair<gfx::Format, gfx::PipelineHandle>> tonemapPSOs_;
     gfx::BufferHandle cbPerFrame_ = gfx::BufferHandle::Invalid;
 
     // ---- Particle / splat VBs ----

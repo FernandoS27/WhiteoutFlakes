@@ -90,7 +90,10 @@ private:
         std::string path;
         renderer::SceneId scene = 0;
         renderer::RenderTargetId target = 0;
-        int res = 0;   // current target edge length in pixels
+        int res = 0; // current target edge length in pixels
+        // Colour format the target was built with. Which one a cell needs is a
+        // property of the frame that draws it — see EnsureCellTargetFormat.
+        gfx::Format fmt = gfx::Format::R8G8B8A8_UNORM;
         u32 actor = 0; // actor handle in `scene`
         bool isEffect = false;
         bool isHd = false; // render this cell in HD vs SD
@@ -106,6 +109,10 @@ private:
     // [res_, kMaxRes]) so it matches the on-screen cell size. Recreates the
     // target (with a GPU drain) only when the rounded size actually changes.
     void EnsureCellTargetSize(Cell& cell, int wantPx);
+    // Rebuild `cell`'s target if the frame about to draw it composites in the
+    // other colour space. Call with the cell's scene active and its settings
+    // applied — that is what the answer depends on.
+    void EnsureCellTargetFormat(Cell& cell);
     void SetupScene(renderer::SceneId scene);
     void LoadCell(Cell& cell);
     void ResetEffect(Cell& cell);

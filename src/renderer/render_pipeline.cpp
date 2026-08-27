@@ -161,6 +161,12 @@ gfx::Format RenderPipeline::SceneTargetFormat() const {
     return kSdSceneFormat;
 }
 
+gfx::Format RenderPipeline::CompositeColorFormat() {
+    return LoadTimeProfile().SceneColorFormat() == kHdrSceneFormat
+               ? gfx::Format::R8G8B8A8_UNORM_SRGB
+               : kSdSceneFormat;
+}
+
 bool RenderPipeline::HasIblProbes() const {
     return impl_->iblDayNightLoaded_ || impl_->iblProbeFromContent_;
 }
@@ -1160,11 +1166,11 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
         std::fprintf(stderr,
                      "[bls] InitBlsShaders incomplete: "
                      "SD=%p SD_on_HD=%p HD=%p Crystal=%p CornFx=%p "
-                     "spriteVs=%p tonemapPs=%p tonemapPSO=%llu\n",
+                     "spriteVs=%p tonemapPs=%p tonemapPSOs=%zu\n",
                      (void*)impl_->blsSdProgram_, (void*)impl_->blsSdOnHdProgram_,
                      (void*)impl_->blsHdProgram_, (void*)impl_->blsCrystalProgram_,
                      (void*)impl_->blsCornFxProgram_, (void*)impl_->blsSpriteVs_,
-                     (void*)impl_->blsTonemapPs_, (unsigned long long)impl_->tonemapPSO_);
+                     (void*)impl_->blsTonemapPs_, impl_->tonemapPSOs_.size());
     }
     return ok;
 }
@@ -1348,6 +1354,7 @@ RenderTargetId RenderPipeline::CreateSwapChainTarget(void* nativeWindowHandle, i
 
     target.color = impl_->gfx_->GetSwapChainBackBuffer(target.swap);
     target.colorLinear = impl_->gfx_->GetSwapChainBackBufferLinear(target.swap);
+    target.colorFormat = impl_->gfx_->GetSwapChainFormat(target.swap);
     target.hdrColor = impl_->gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
     target.depth = impl_->gfx_->CreateDepthTarget(w, h, impl_->depthStencilFormat_);
     // G-buffer slot 1 + slot 2 (HD MRT pass writes linear depth + world
@@ -1402,6 +1409,7 @@ RenderTargetId RenderPipeline::CreateOffscreenTarget(i32 w, i32 h, gfx::Format c
     // so colorLinear mirrors color (matching ResizePrimaryTarget's no-swap path).
     target.color = impl_->gfx_->CreateColorTarget(w, h, colorFormat);
     target.colorLinear = target.color;
+    target.colorFormat = colorFormat;
     // Same auxiliary G-buffer / GTAO / bloom set every target carries (HD MRT
     // and post-process bind these; SD simply doesn't).
     target.hdrColor = impl_->gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
@@ -1483,17 +1491,17 @@ void RenderPipeline::ResizePrimaryTarget(i32 w, i32 h) {
         impl_->gfx_->ResizeSwapChain(t.swap, w, h);
         t.color = impl_->gfx_->GetSwapChainBackBuffer(t.swap);
         t.colorLinear = impl_->gfx_->GetSwapChainBackBufferLinear(t.swap);
+        t.colorFormat = impl_->gfx_->GetSwapChainFormat(t.swap);
     } else {
         impl_->gfx_->Destroy(t.color);
-        // Pure SD writes gamma to a UNORM target; HD (and SD-HDR) composite
-        // post-tonemap to an _SRGB target (the tonemap relies on the RTV's
-        // linear→sRGB encode).
-        const bool sdGamma = rs_.Settings().GetRenderMode() == RenderMode::SD &&
-                             !rs_.Settings().SceneHdrInSd();
-        const gfx::Format offFmt =
-            sdGamma ? gfx::Format::R8G8B8A8_UNORM : gfx::Format::R8G8B8A8_UNORM_SRGB;
+        // Gamma frames write display bytes to a UNORM target; tonemapped ones
+        // composite to an _SRGB target and let the RTV do the encode. The profile
+        // is what knows which — this used to ask the render mode and SceneHdrInSd,
+        // which answers wrong for a World of Warcraft scene (gamma in both modes).
+        const gfx::Format offFmt = CompositeColorFormat();
         t.color = impl_->gfx_->CreateColorTarget(w, h, offFmt);
         t.colorLinear = t.color;
+        t.colorFormat = offFmt;
     }
 
     t.hdrColor = impl_->gfx_->CreateColorTarget(w, h, kHdrSceneFormat);
@@ -1555,11 +1563,12 @@ void RenderPipeline::CleanupGFX() {
         impl_->gfx_->Destroy(impl_->linePSOSd_);
         impl_->gfx_->Destroy(impl_->overlayLinePSOHdr_);
         impl_->gfx_->Destroy(impl_->overlayLinePSOSd_);
-        impl_->gfx_->Destroy(impl_->tonemapPSO_);
+        for (auto& [fmt, pso] : impl_->tonemapPSOs_)
+            impl_->gfx_->Destroy(pso);
+        impl_->tonemapPSOs_.clear();
         impl_->gfx_->Destroy(impl_->tonemapVB_);
         impl_->gfx_->Destroy(impl_->tonemapPsCb_);
         impl_->gfx_->Destroy(impl_->tonemapSampler_);
-        impl_->tonemapPSO_ = gfx::PipelineHandle::Invalid;
         impl_->tonemapVB_ = gfx::BufferHandle::Invalid;
         impl_->tonemapPsCb_ = gfx::BufferHandle::Invalid;
         impl_->tonemapSampler_ = gfx::SamplerHandle::Invalid;
@@ -2607,17 +2616,26 @@ void RenderPipeline::RunTonemapPass(const RenderTarget& target, gfx::TextureHand
         impl_->blsTonemapPs_->permuteHandles.empty())
         return;
 
-    // Lazy-build the tonemap PSO against the actual swap-chain format. Some
-    // backends only expose BGRA8 (Metal via MoltenVK, WebGPU/Dawn-D3D12),
-    // others give RGBA8 — a single hardcoded rtvFormat at CreateShaders
-    // time misses on the BGRA8 platforms and silently drops every present.
-    const gfx::Format dstFormat = (target.swap != gfx::SwapChainHandle::Invalid)
-                                      ? impl_->gfx_->GetSwapChainFormat(target.swap)
-                                      : kSdSceneFormat;
-    if (impl_->tonemapPSO_ == gfx::PipelineHandle::Invalid ||
-        impl_->tonemapPsoFormat_ != dstFormat) {
-        if (impl_->tonemapPSO_ != gfx::PipelineHandle::Invalid)
-            impl_->gfx_->Destroy(impl_->tonemapPSO_);
+    // Lazy-build the tonemap PSO against the destination view's real format.
+    // Some backends only expose BGRA8 (Metal via MoltenVK, WebGPU/Dawn-D3D12),
+    // others give RGBA8 — a single hardcoded rtvFormat at CreateShaders time
+    // misses on the BGRA8 platforms and silently drops every present. An
+    // offscreen target is likewise whatever the host asked for and not always
+    // kSdSceneFormat: the PSO's RTV format has to be the view's, or the
+    // linear->sRGB encode the tonemap leaves to the RTV never happens.
+    const gfx::Format dstFormat =
+        (target.swap != gfx::SwapChainHandle::Invalid)
+            ? impl_->gfx_->GetSwapChainFormat(target.swap)
+            : (target.colorFormat != gfx::Format::Unknown ? target.colorFormat
+                                                         : kSdSceneFormat);
+    gfx::PipelineHandle pso = gfx::PipelineHandle::Invalid;
+    for (const auto& [fmt, cached] : impl_->tonemapPSOs_) {
+        if (fmt == dstFormat) {
+            pso = cached;
+            break;
+        }
+    }
+    if (pso == gfx::PipelineHandle::Invalid) {
         const gfx::InputElement spriteInput[] = {
             {"ATTR", 0, gfx::Format::R32G32B32_FLOAT, 0},
             {"ATTR", 3, gfx::Format::R32G32_FLOAT, 12},
@@ -2634,10 +2652,10 @@ void RenderPipeline::RunTonemapPass(const RenderTarget& target, gfx::TextureHand
         tm.rasterizer.frontCCW = true;
         tm.rtvFormat = dstFormat;
         tm.dsvFormat = impl_->depthStencilFormat_;
-        impl_->tonemapPSO_ = impl_->gfx_->CreateGraphicsPipeline(tm);
-        impl_->tonemapPsoFormat_ = dstFormat;
-        if (impl_->tonemapPSO_ == gfx::PipelineHandle::Invalid)
+        pso = impl_->gfx_->CreateGraphicsPipeline(tm);
+        if (pso == gfx::PipelineHandle::Invalid)
             return;
+        impl_->tonemapPSOs_.emplace_back(dstFormat, pso);
     }
     auto* cmd = impl_->gfx_->GetImmediateContext();
 
@@ -2653,7 +2671,7 @@ void RenderPipeline::RunTonemapPass(const RenderTarget& target, gfx::TextureHand
         }
     }
 
-    cmd->BindPipeline(impl_->tonemapPSO_);
+    cmd->BindPipeline(pso);
     cmd->BindVertexBuffer(0, impl_->tonemapVB_, sizeof(f32) * 5);
     cmd->BindShaderResource(gfx::ShaderStage::Pixel, 0, target.hdrColor);
     cmd->BindSampler(gfx::ShaderStage::Pixel, 0, impl_->tonemapSampler_);

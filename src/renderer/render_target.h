@@ -30,6 +30,13 @@ struct RenderTarget {
 
     gfx::TextureHandle colorLinear = gfx::TextureHandle::Invalid;
 
+    // The format `color` was actually created with — the swap chain's real
+    // back-buffer format, or the offscreen colour format the host asked for.
+    // The composite PSOs have to be built against it: an offscreen target is
+    // not always kSdSceneFormat, and guessing that is how a tonemap ends up
+    // writing through a PSO whose RTV format is not the view's.
+    gfx::Format colorFormat = gfx::Format::Unknown;
+
     gfx::TextureHandle hdrColor = gfx::TextureHandle::Invalid;
     gfx::TextureHandle depth = gfx::TextureHandle::Invalid;
 
