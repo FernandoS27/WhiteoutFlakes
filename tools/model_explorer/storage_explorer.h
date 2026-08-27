@@ -14,6 +14,7 @@
 //
 // See STORAGE_EXPLORER_DESIGN.md.
 
+#include "explorer_state.h" // ExplorerView, ExplorerState
 #include "io/storage_browser.h"
 
 namespace whiteout::flakes::io {
@@ -38,18 +39,6 @@ class IContentProvider;
 } // namespace whiteout::flakes::io
 
 namespace whiteout::flakes::tools {
-
-// Which of the panel's two browsers is on screen.
-//
-//   Grid - one folder at a time, as a wall of live thumbnails.
-//   Tree - the whole storage as an outline on the left, and the file selected
-//          in it as one large thumbnail on the right.
-//
-// One storage, one selection and one activate callback sit behind both. Only
-// the filter changes meaning: the grid narrows the current folder by entry
-// name, the tree matches full paths and so prunes subtrees rather than levels
-// (io::StorageBrowser::TreeChildren).
-enum class ExplorerView { Grid, Tree };
 
 // Concrete type of an activated file (a model dialect or an effect dialect).
 enum class StorageFileKind { Mdx, Mdl, Pkb, Pkfx, M2, M3 };
@@ -174,6 +163,16 @@ public:
         return view_;
     }
 
+    // ---- Session state (see ExplorerState) ----
+    //
+    // A host that wants the panel to come back as it was reads State() while
+    // the panel is open and settled (IsOpen() && !Opening(); anything else
+    // describes a panel that is between storages) and hands it to RestoreState
+    // once, right after construction and BEFORE Sync - which prefers the
+    // restored game over its own fallback.
+    ExplorerState State() const;
+    void RestoreState(const ExplorerState& state);
+
     // Free-text filter over the current folder (io::MatchesFilter syntax:
     // substrings, `*`/`?` globs, comma-separated alternatives, `-` to exclude).
     // Same box the panel's own search field drives; applied at once (typing in
@@ -259,6 +258,8 @@ private:
     // grid cell's double-click and a tree row's.
     void Activate(const std::string& archivePath, StorageFileKind kind);
     void ClearSelection();
+    // The staged half of RestoreState, run by the open that completes.
+    void ApplyStagedRestore();
     // Flatten the OPEN subtrees into treeRows_. Only what an expanded folder
     // exposes is walked, so the cost tracks what is reachable on screen and
     // not what the storage holds.
@@ -332,6 +333,17 @@ private:
     // open/ascend, or OpenCasc) so the grid fades + slides in. Driven off
     // ImGui's frame DeltaTime in BuildGrid; 1.0 = settled (no animation).
     float navAnimT_ = 1.0f;
+
+    // ---- Staged restore (see ExplorerState / RestoreState) ----
+    // Applied by the first open that completes, and dropped either way: a
+    // folder from last session belongs to the storage it was recorded in, so a
+    // user who opens a different game first must not land in it.
+    bool restorePending_ = false;
+    ProductId restoreGame_ = ProductId::Neutral;
+    io::BrowseType restoreTypes_ = io::BrowseType::None;
+    std::string restoreFolder_;
+    std::string restoreFilter_;
+    std::string restoreSelected_;
 
     // ---- Tree view ----
     ExplorerView view_ = ExplorerView::Grid;

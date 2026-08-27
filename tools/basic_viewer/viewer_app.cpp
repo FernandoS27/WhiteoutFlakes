@@ -33,6 +33,7 @@
 #include "io/file_content_provider.h"
 #include "localization.h"
 #include "settings_ini.h"
+#include "storage_explorer_ini.h"
 #include "thumbnail_framing.h"
 #include "viewer_ui.h"
 #include "whiteout/flakes/content_provider.h"
@@ -1993,6 +1994,11 @@ void ViewerApp::SetStorageExplorerOpen(bool on) {
             }
             return keys;
         });
+        // Before Sync, which prefers the restored game over settingsProfile_:
+        // where the panel points is the user's own setting, and last session's
+        // answer is a better one than the host's current profile.
+        storageExplorer_->RestoreState(LoadStorageExplorerState());
+        explorerStateKey_.clear();
     }
     // Every show, not only the first. The panel outlives any one of these
     // settings: a listfile adopted beside a model opened after the panel was
@@ -2000,6 +2006,26 @@ void ViewerApp::SetStorageExplorerOpen(bool on) {
     // knows has actually moved, so the folder the user was browsing survives a
     // close/reopen.
     storageExplorer_->Sync(settingsProfile_);
+}
+
+// Persist where the panel was left, once it stops moving. Only while it is
+// open AND settled: a panel mid-open describes the storage it is leaving, and
+// saving that would hand the next session a folder from the wrong game.
+void ViewerApp::PollStorageExplorerState(f32 dt) {
+    if (!storageExplorer_->IsOpen() || storageExplorer_->Opening())
+        return;
+    constexpr f32 kSettle = 1.0f; // seconds
+    std::string key = ExplorerStateKey(storageExplorer_->State());
+    if (key != explorerStateKey_) {
+        explorerStateKey_ = std::move(key);
+        explorerSaveDelay_ = kSettle;
+        return;
+    }
+    if (explorerSaveDelay_ <= 0.0f)
+        return;
+    explorerSaveDelay_ -= dt;
+    if (explorerSaveDelay_ <= 0.0f)
+        SaveStorageExplorerState(storageExplorer_->State());
 }
 
 void ViewerApp::BuildStorageExplorerWindow() {
@@ -2712,8 +2738,10 @@ void ViewerApp::Tick(f32 dt) {
     // Storage Explorer: pump its (separate) CASC provider + apply staged folder
     // navigation, and mark its thumbnail cells not-yet-visible. Must run before
     // the panel's BuildWindow (in ui_->BuildFrame) acquires visible cells.
-    if (storageExplorerOpen_ && storageExplorer_)
+    if (storageExplorerOpen_ && storageExplorer_) {
         storageExplorer_->NewFrame(dt);
+        PollStorageExplorerState(dt);
+    }
 
     // ---- ImGui frame ----
     ImGui_ImplGlfw_NewFrame();

@@ -92,6 +92,18 @@ std::string LowerPath(std::string s) {
     return s;
 }
 
+// The folder holding a display path, and the entry name inside it - the two
+// halves ChildPathAt takes, and what a restored selection arrives as one of.
+std::string ParentOfPath(const std::string& path) {
+    const auto cut = path.find_last_of("\\/");
+    return cut == std::string::npos ? std::string{} : path.substr(0, cut);
+}
+
+std::string NameOfPath(const std::string& path) {
+    const auto cut = path.find_last_of("\\/");
+    return cut == std::string::npos ? path : path.substr(cut + 1);
+}
+
 // Join a folder path and one of its entries, both in display form.
 std::string ChildDisplayPath(const std::string& path, const std::string& name) {
     return path.empty() ? name : path + '\\' + name;
@@ -242,6 +254,87 @@ void StorageExplorer::FinishOpenCasc(const std::string& root) {
     // must not be read as an empty storage.
     openedEmpty_ = browser_.Current().folderTotal == 0 && browser_.Current().fileTotal == 0;
     navAnimT_ = 0.0f; // fade the first listing in
+    // Last, because it navigates and selects on top of everything cleared above.
+    ApplyStagedRestore();
+}
+
+ExplorerState StorageExplorer::State() const {
+    ExplorerState st;
+    st.view = view_;
+    st.game = browser_.Product();
+    st.browseTypes = browser_.EnabledTypes();
+    st.folder = browser_.CurrentPath();
+    // The applied filter, not searchText_: mid-debounce the box holds something
+    // the user has not finished typing, and a session should not come back to
+    // half a word.
+    st.filter = browser_.Filter();
+    st.selected = treeSelectedDisplay_;
+    st.iconSize = iconSize_;
+    st.treeSplit = treeSplit_;
+    return st;
+}
+
+void StorageExplorer::RestoreState(const ExplorerState& state) {
+    // These describe the panel itself and apply whether or not anything is
+    // open. SetView is deliberately not used: it would reveal the folder the
+    // grid is in, which at this point is the root.
+    view_ = state.view;
+    treeRowsDirty_ = true;
+    SetIconSize(state.iconSize);
+    treeSplit_ = state.treeSplit;
+
+    // The rest name things inside a storage nobody has opened yet.
+    restorePending_ = true;
+    restoreGame_ = state.game;
+    restoreTypes_ = state.browseTypes;
+    restoreFolder_ = state.folder;
+    restoreFilter_ = state.filter;
+    restoreSelected_ = state.selected;
+}
+
+// The staged half of RestoreState, run once the browser's tree is complete.
+void StorageExplorer::ApplyStagedRestore() {
+    if (!restorePending_)
+        return;
+    restorePending_ = false; // one shot, applied or not
+    // A folder, filter and selection belong to the storage they were recorded
+    // in. If the user opened a different game first, they name nothing here.
+    if (restoreGame_ != ProductId::Neutral && restoreGame_ != browser_.Product())
+        return;
+
+    if (Any(restoreTypes_))
+        browser_.SetEnabledTypes(restoreTypes_);
+
+    if (!restoreFolder_.empty()) {
+        browser_.NavigateTo(restoreFolder_);
+        // A folder that is no longer in the storage leaves the breadcrumb
+        // pointing at nothing and the grid empty. Totals are before the text
+        // filter, so this tests the folder and not the filter.
+        const auto& l = browser_.Current();
+        if (l.folderTotal == 0 && l.fileTotal == 0)
+            browser_.NavigateTo({});
+    }
+    if (!restoreFilter_.empty())
+        SetSearchText(restoreFilter_);
+
+    if (!restoreSelected_.empty()) {
+        const std::string folder = ParentOfPath(restoreSelected_);
+        const std::string name = NameOfPath(restoreSelected_);
+        const std::string archive = browser_.ChildPathAt(folder, name);
+        if (!archive.empty()) {
+            selectedPath_ = archive;
+            treeSelectedDisplay_ = restoreSelected_;
+            selectedKind_ = KindOf(name);
+        }
+    }
+
+    // Where the outline should land. In the tree the grid's folder never moves,
+    // so it is the SELECTION that says where the user was; in the grid it is
+    // the folder.
+    RevealFolder(view_ == ExplorerView::Tree && !treeSelectedDisplay_.empty()
+                     ? ParentOfPath(treeSelectedDisplay_)
+                     : browser_.CurrentPath());
+    treeRowsDirty_ = true;
 }
 
 void StorageExplorer::NavigateTo(const std::string& displayPath) {
@@ -280,8 +373,13 @@ bool StorageExplorer::OpenGame(ProductId game) {
 
 void StorageExplorer::Sync(ProductId fallback) {
     if (!browser_.IsOpen()) {
-        if (fallback != ProductId::Neutral)
-            OpenGame(fallback);
+        // A restored panel remembers which game its own combo was on, which is
+        // a more specific answer than the host's current profile.
+        const ProductId want = restorePending_ && restoreGame_ != ProductId::Neutral
+                                   ? restoreGame_
+                                   : fallback;
+        if (want != ProductId::Neutral)
+            OpenGame(want);
         return;
     }
     // Neutral is a hand-picked folder or a storage whose build config names no

@@ -1589,6 +1589,7 @@ set(WHITEOUTFLAKES_VIEWER_SOURCES
     tools/basic_viewer/viewer_ui.cpp
     tools/basic_viewer/settings_ini.cpp
     tools/basic_viewer/settings_io.cpp
+    tools/basic_viewer/storage_explorer_ini.cpp
     tools/basic_viewer/localization.cpp
     # Shared host utilities live in tools/common (used by the Max plugin too).
     tools/common/cubeb_sound_emitter.cpp

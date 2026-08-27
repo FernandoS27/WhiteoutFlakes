@@ -72,8 +72,11 @@ wdx_add_test(storage_browser_test storage_browser_test.cpp)
 # (settings_ini.cpp) is deliberately NOT here: that one links RenderService,
 # which would drag a gfx backend into a device-free test.
 wdx_add_test(settings_ini_test settings_ini_test.cpp
-             "${CMAKE_SOURCE_DIR}/tools/basic_viewer/settings_io.cpp")
-target_include_directories(settings_ini_test PRIVATE "${CMAKE_SOURCE_DIR}/tools/basic_viewer")
+             "${CMAKE_SOURCE_DIR}/tools/basic_viewer/settings_io.cpp"
+             "${CMAKE_SOURCE_DIR}/tools/basic_viewer/storage_explorer_ini.cpp")
+target_include_directories(settings_ini_test PRIVATE
+                           "${CMAKE_SOURCE_DIR}/tools/basic_viewer"
+                           "${CMAKE_SOURCE_DIR}/tools/model_explorer")
 # Only when the format is compiled in — the adapter it exercises does not
 # exist otherwise. The test itself skips without a configured WoW install.
 if(WDX_ENABLE_M2)

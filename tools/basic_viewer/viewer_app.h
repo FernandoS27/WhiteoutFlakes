@@ -273,6 +273,7 @@ public:
     // Build the panel window inside the host's ImGui frame (called by ViewerUI).
     void BuildStorageExplorerWindow();
 
+
     // ---- Current profile ----
     // Which game the user is working with. A PROFILE, not a storage: it names a
     // settings page and an ini section, and nothing about it opens anything.
@@ -674,9 +675,18 @@ private:
     // scene so they all resolve assets through the same configured provider.
     std::shared_ptr<io::IContentProvider> sharedProvider_;
 
+    // Save the panel's ini section once its state stops changing.
+    void PollStorageExplorerState(f32 dt);
+
     // Embedded Storage Explorer panel (Tools ▸ Storage Explorer), created lazily.
     std::unique_ptr<tools::StorageExplorer> storageExplorer_;
     bool storageExplorerOpen_ = false;
+    // What the panel's `[StorageExplorer]` ini section last held, and how long
+    // until it is rewritten. The panel's state moves continuously while a
+    // splitter or a zoom slider is being dragged, so the write waits for it to
+    // settle rather than rewriting the whole settings file every frame.
+    std::string explorerStateKey_;
+    float explorerSaveDelay_ = 0.0f;
 
     // The profile the Settings panel is on. Seeded from the ini at startup.
     ProductId settingsProfile_ = ProductId::Wc3;

@@ -16,6 +16,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "settings_ini.h"
+#include "storage_explorer_ini.h"
 
 #include <fstream>
 #include <string>
@@ -131,4 +132,118 @@ TEST_CASE("The selected game persists", "[settings]") {
     CHECK(LoadIoProduct() == ProductId::Sc2);
     SaveIoProduct(ProductId::Wow);
     CHECK(LoadIoProduct() == ProductId::Wow);
+}
+
+// ============================================================================
+// Where the Storage Explorer was left.
+//
+// One section, eight keys, and two things that would break quietly: writing it
+// dropping the IO sections beside it (they share one file), and a key the
+// panel reads as "not recorded" being written as a value that means something
+// else. `BrowseTypes=0` is the second kind - restored literally it is a panel
+// browsing for no file type at all, which looks exactly like an empty storage.
+// ============================================================================
+
+namespace {
+
+using whiteout::flakes::io::BrowseType;
+using whiteout::flakes::tools::ExplorerState;
+using whiteout::flakes::tools::ExplorerView;
+
+ExplorerState SampleState() {
+    ExplorerState st;
+    st.view = ExplorerView::Tree;
+    st.game = ProductId::Sc2;
+    st.browseTypes = BrowseType::M3;
+    // A real display path: backslashes and spaces, both of which an ini value
+    // has to carry verbatim.
+    st.folder = "campaigns\\liberty.sc2campaign\\base.sc2assets\\assets\\doodads";
+    st.filter = "marine, -death";
+    st.selected = "assets\\units\\terran\\marine\\marine.m3";
+    st.iconSize = 96.0f;
+    st.treeSplit = 412.0f;
+    return st;
+}
+
+} // namespace
+
+TEST_CASE("The Storage Explorer comes back where it was left", "[settings]") {
+    ScopedIni ini("test_explorer.ini");
+
+    // Nothing written yet: the defaults, not an empty panel.
+    const ExplorerState fresh = whiteout::flakes::LoadStorageExplorerState();
+    CHECK(fresh.view == ExplorerView::Grid);
+    CHECK(fresh.game == ProductId::Neutral);
+    CHECK(fresh.browseTypes == BrowseType::None);
+    CHECK(fresh.folder.empty());
+    CHECK(fresh.iconSize > 0.0f);
+    CHECK(fresh.treeSplit > 0.0f);
+
+    const ExplorerState saved = SampleState();
+    whiteout::flakes::SaveStorageExplorerState(saved);
+    const ExplorerState back = whiteout::flakes::LoadStorageExplorerState();
+
+    CHECK(back.view == saved.view);
+    CHECK(back.game == saved.game);
+    CHECK(back.browseTypes == saved.browseTypes);
+    CHECK(back.folder == saved.folder);
+    CHECK(back.filter == saved.filter);
+    CHECK(back.selected == saved.selected);
+    CHECK(back.iconSize == saved.iconSize);
+    CHECK(back.treeSplit == saved.treeSplit);
+
+    // The key is what a host polls instead of rewriting the file. It has to
+    // move when the state does and hold still when it doesn't - including
+    // across the save/load, or every restored session would write once for
+    // nothing.
+    CHECK(whiteout::flakes::ExplorerStateKey(back) ==
+          whiteout::flakes::ExplorerStateKey(saved));
+    ExplorerState moved = saved;
+    moved.folder += "\\props";
+    CHECK(whiteout::flakes::ExplorerStateKey(moved) !=
+          whiteout::flakes::ExplorerStateKey(saved));
+    // Sub-pixel drags must not: the file stores whole pixels, so a key that
+    // moved for one would rewrite the whole settings file for a mouse tremor.
+    ExplorerState nudged = saved;
+    nudged.treeSplit += 0.4f;
+    CHECK(whiteout::flakes::ExplorerStateKey(nudged) ==
+          whiteout::flakes::ExplorerStateKey(saved));
+}
+
+TEST_CASE("Saving the explorer section keeps the IO sections beside it", "[settings]") {
+    ScopedIni ini("test_explorer_coexist.ini");
+
+    IoPathOverrides wow;
+    wow.installPath = "D:\\Games\\World of Warcraft";
+    wow.listfilePath = "C:\\lists\\community.csv";
+    SaveIoPathOverrides(ProductId::Wow, wow);
+    SaveIoProduct(ProductId::Wow);
+
+    whiteout::flakes::SaveStorageExplorerState(SampleState());
+
+    // Both halves of the file survive the other's write.
+    const IoPathOverrides backWow = LoadIoPathOverrides(ProductId::Wow);
+    CHECK(backWow.installPath == wow.installPath);
+    CHECK(backWow.listfilePath == wow.listfilePath);
+    CHECK(LoadIoProduct() == ProductId::Wow);
+    CHECK(whiteout::flakes::LoadStorageExplorerState().game == ProductId::Sc2);
+
+    // And the reverse order: the IO write must not drop the explorer section.
+    SaveIoPathOverrides(ProductId::Wow, wow);
+    CHECK(whiteout::flakes::LoadStorageExplorerState().folder == SampleState().folder);
+}
+
+TEST_CASE("An unrecorded browse-type mask restores the game's own default", "[settings]") {
+    ScopedIni ini("test_explorer_types.ini");
+
+    // What a panel that never had its checkboxes touched writes, and what a
+    // hand-trimmed ini leaves behind. Restored literally it would be a panel
+    // browsing for nothing, which reads as an empty storage.
+    ExplorerState st = SampleState();
+    st.browseTypes = BrowseType::None;
+    whiteout::flakes::SaveStorageExplorerState(st);
+    CHECK(whiteout::flakes::LoadStorageExplorerState().browseTypes == BrowseType::None);
+
+    // The rest of the section still round-trips around it.
+    CHECK(whiteout::flakes::LoadStorageExplorerState().folder == st.folder);
 }

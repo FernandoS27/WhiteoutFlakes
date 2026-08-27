@@ -32,6 +32,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -75,6 +76,77 @@ static int CompareCi(const char* a, const char* b) {
     return strcasecmp(a, b);
 #endif
 }
+
+namespace wf = whiteout::flakes;
+
+// PANEL_STATE=<file> is the session-restore round trip: the file is READ into
+// RestoreState before the storage opens and WRITTEN from State() after the
+// frames, so running the harness twice against the same file is exactly what a
+// close and a reopen do. Deliberately not the viewer's ini format - that
+// mapping is a key-per-field table, and what is worth gating is the staged
+// restore underneath it (the game guard, the missing-folder fallback, the
+// selection re-resolve, the tree reveal).
+struct PanelStateFile {
+    static wf::tools::ExplorerState Read(const char* path, bool& found) {
+        wf::tools::ExplorerState st;
+        found = false;
+        std::ifstream f(path);
+        if (!f)
+            return st;
+        found = true;
+        std::string line;
+        while (std::getline(f, line)) {
+            const auto eq = line.find('=');
+            if (eq == std::string::npos)
+                continue;
+            const std::string k = line.substr(0, eq);
+            std::string v = line.substr(eq + 1);
+            while (!v.empty() && (v.back() == '\r' || v.back() == '\n'))
+                v.pop_back();
+            if (k == "view")
+                st.view = v == "tree" ? wf::tools::ExplorerView::Tree
+                                      : wf::tools::ExplorerView::Grid;
+            else if (k == "game")
+                st.game = v == "wow"   ? wf::ProductId::Wow
+                          : v == "sc2" ? wf::ProductId::Sc2
+                          : v == "d3"  ? wf::ProductId::D3
+                          : v == "wc3" ? wf::ProductId::Wc3
+                                       : wf::ProductId::Neutral;
+            else if (k == "types")
+                st.browseTypes = static_cast<wf::io::BrowseType>(std::atoi(v.c_str()));
+            else if (k == "folder")
+                st.folder = v;
+            else if (k == "filter")
+                st.filter = v;
+            else if (k == "selected")
+                st.selected = v;
+            else if (k == "icon")
+                st.iconSize = static_cast<float>(std::atof(v.c_str()));
+            else if (k == "split")
+                st.treeSplit = static_cast<float>(std::atof(v.c_str()));
+        }
+        return st;
+    }
+
+    static void Write(const char* path, const wf::tools::ExplorerState& st) {
+        std::ofstream f(path, std::ios::trunc);
+        if (!f)
+            return;
+        f << "view=" << (st.view == wf::tools::ExplorerView::Tree ? "tree" : "grid") << "\n";
+        const char* game = st.game == wf::ProductId::Wow   ? "wow"
+                           : st.game == wf::ProductId::Sc2 ? "sc2"
+                           : st.game == wf::ProductId::D3  ? "d3"
+                           : st.game == wf::ProductId::Wc3 ? "wc3"
+                                                           : "";
+        f << "game=" << game << "\n";
+        f << "types=" << static_cast<unsigned>(st.browseTypes) << "\n";
+        f << "folder=" << st.folder << "\n";
+        f << "filter=" << st.filter << "\n";
+        f << "selected=" << st.selected << "\n";
+        f << "icon=" << static_cast<int>(st.iconSize) << "\n";
+        f << "split=" << static_cast<int>(st.treeSplit) << "\n";
+    }
+};
 
 int main(int argc, char* argv[]) {
     std::setvbuf(stdout, nullptr, _IONBF, 0); // unbuffered so diagnostics survive crashes
@@ -541,6 +613,11 @@ int main(int argc, char* argv[]) {
     // search bar and zoom lay out. `--ls <folder>` picks the folder;
     // PANEL_FILTER / PANEL_ICON set the search text and icon size, and
     // PANEL_VIEW=tree shoots the outline+preview view instead of the grid.
+    // PANEL_STATE=<file> is the session round trip: read into RestoreState
+    // before the open, written from State() after, so two runs against one
+    // file are a close and a reopen. A state file present wins over --ls /
+    // PANEL_VIEW / PANEL_FILTER, which is what makes the second run a restore
+    // rather than a rerun.
     if (!panelShot.empty()) {
         namespace wf = whiteout::flakes;
         if (cascRoot.empty()) {
@@ -575,6 +652,22 @@ int main(int argc, char* argv[]) {
         int written = 0;
         {
             wf::tools::StorageExplorer panel(renderer);
+            // Before any open: RestoreState stages a folder/filter/selection
+            // that only the completing open can apply, and Sync prefers the
+            // restored game over its own fallback.
+            const char* stateFile = std::getenv("PANEL_STATE");
+            bool hadState = false;
+            if (stateFile) {
+                const wf::tools::ExplorerState st = PanelStateFile::Read(stateFile, hadState);
+                if (hadState) {
+                    panel.RestoreState(st);
+                    std::printf("[panel-state] restored view=%s game=%d folder='%s' filter='%s' "
+                                "selected='%s'\n",
+                                st.view == wf::tools::ExplorerView::Tree ? "tree" : "grid",
+                                (int)st.game, st.folder.c_str(), st.filter.c_str(),
+                                st.selected.c_str());
+                }
+            }
             if (const char* icon = std::getenv("PANEL_ICON"))
                 panel.SetIconSize(static_cast<float>(std::atof(icon)));
             // A World of Warcraft root is id-keyed: no listfile, no names.
@@ -620,16 +713,16 @@ int main(int argc, char* argv[]) {
                     return 2;
                 }
             }
-            if (lsPathSet)
+            if (lsPathSet && !hadState)
                 panel.NavigateTo(lsPath);
             // PANEL_VIEW picks the browser. Set it AFTER the navigate: switching
             // to the tree reveals whatever folder the grid is in, which is the
             // half of SetView a shot of the tree at the root would not show.
-            if (const char* v = std::getenv("PANEL_VIEW")) {
+            if (const char* v = std::getenv("PANEL_VIEW"); v && !hadState) {
                 panel.SetView(CompareCi(v, "tree") == 0 ? wf::tools::ExplorerView::Tree
                                                         : wf::tools::ExplorerView::Grid);
             }
-            if (const char* f = std::getenv("PANEL_FILTER"))
+            if (const char* f = std::getenv("PANEL_FILTER"); f && !hadState)
                 panel.SetSearchText(f);
             // Enough frames for the thumbnails to load, frame and settle.
             const int frames = std::getenv("PANEL_FRAMES") ? std::atoi(std::getenv("PANEL_FRAMES")) : 60;
@@ -680,6 +773,15 @@ int main(int argc, char* argv[]) {
             if (doClick) {
                 std::printf("[panel-shot] click %.0f,%.0f selected '%s'\n", clickX, clickY,
                             panel.Selected().c_str());
+            }
+            if (stateFile) {
+                const wf::tools::ExplorerState st = panel.State();
+                PanelStateFile::Write(stateFile, st);
+                std::printf("[panel-state] saved    view=%s game=%d folder='%s' filter='%s' "
+                            "selected='%s'\n",
+                            st.view == wf::tools::ExplorerView::Tree ? "tree" : "grid",
+                            (int)st.game, st.folder.c_str(), st.filter.c_str(),
+                            st.selected.c_str());
             }
             std::vector<wf::u8> rgba;
             int cw = 0, ch = 0;
