@@ -259,6 +259,7 @@ public:
     /// that, which is why this is a vector and not a second scalar.
     void SetGeosetLooks(std::vector<u32> lookByGeoset) {
         geosetLooks_ = std::move(lookByGeoset);
+        RefreshLookVisibility();
     }
     std::span<const u32> GeosetLooks() const {
         return geosetLooks_;
@@ -343,6 +344,22 @@ private:
     /// @brief Parallel to `emitted_`; both empty until something dresses this.
     std::vector<u8> geosetHidden_;
     std::vector<u32> geosetLooks_;
+    /// @brief Parallel to `emitted_`: the FILE's own per-look answer, as
+    ///        opposed to `geosetHidden_`, which is the host's.
+    ///
+    /// `ActorModel_BuildSubObjectRenderRecords` opens with
+    /// `record[0] = subObjectAppearance[0] & 1`, so bit 0 of the variant a look
+    /// selects is that sub-object's draw bit under that look. Refreshed on a
+    /// look change rather than per frame because it costs a name join per
+    /// geoset; `Evaluate` publishes the union of the two.
+    std::vector<u8> lookHidden_;
+
+    /// @brief Recompute @ref lookHidden_ for the current look selection.
+    void RefreshLookVisibility();
+
+    /// @brief Fill @p fs's texture-animation palette for the UV slots that
+    ///        scroll or spin. 60.8% of shipped material variants have one.
+    void PublishUvAnimation(const PoseRequest& req, renderer::model::FrameState& fs) const;
 
     /// @brief Composed once at build: the local bind pose (tTransform2) as a
     ///        matrix per bone, and the attachment frame (tTransform1).

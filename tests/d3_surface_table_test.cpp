@@ -16,14 +16,20 @@
 //     field leaves every sub-object materialless, which draws as unlit grey
 //     rather than failing — so nothing says so.
 //
-//  3. **The (`dwSlotIndex`, `dwTextureType`) census.** EMaterialTextureType's
-//     authored names were stripped from the build; every branch of
+//  3. **The (type, UV mode) census.** EMaterialTextureType's authored names were
+//     stripped from the build; every branch of
 //     Render_ResolveMaterialTextureStages names itself through the core asset it
-//     falls back to. What the census adds is which of those branches carry
-//     *this material's* texture: `dwTextureType == 0` (the default branch) does,
-//     and the named types arrive as a model-wide block at slots 25..38 that is
-//     byte-identical across every material in a file. Printed so the day that
-//     block is understood the numbers are already in front of whoever reads it.
+//     falls back to. The type is the field at 0x00 — see io/d3/d3_types.h for
+//     why, and for the two fields beside it that WhiteoutLib also names for
+//     something else. What the census adds is the residue: types 25..38 arrive
+//     as a model-wide block that is byte-identical across every material in a
+//     file and is still unexplained. Printed so the day it is understood the
+//     numbers are already in front of whoever reads it.
+//
+//  Three more cases follow, added when those field names turned out to be
+//  wrong: the LUT-key measurement that settles which field is the type, the
+//  per-look sub-object visibility bit, and the render state on the Shaders
+//  asset's RenderPass (which needs an install, and says so).
 //
 // Corpus root: WDX_TEST_D3_CORPUS, default C:/Projects/WhiteoutLib/Corpus/D3.
 // Skipped is not passed.
@@ -32,6 +38,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "io/d3/d3_model_adapter.h"
+#include "io/d3/d3_sno_cache.h"
+#include "io/file_content_provider.h"
 #include "renderer/profiles/diablo3/d3_surface_table.h"
 
 #include <whiteout/sno/d3/native/d3_native.h>
@@ -44,6 +52,9 @@
 #include <fstream>
 #include <map>
 #include <string>
+#include <functional>
+#include <functional>
+#include <string_view>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -95,6 +106,8 @@ std::vector<u8> ReadAll(const fs::path& p) {
 
 const char* NameOfType(i32 t) {
     switch (t) {
+    case 1:
+        return "Diffuse";
     case 2:
         return "Lightmap";
     case 3:
@@ -129,6 +142,30 @@ const char* NameOfType(i32 t) {
     default:
         return "(default branch: the entry's own texture)";
     }
+}
+
+std::size_t CountIf(const std::vector<fs::path>& files, std::size_t take,
+                    const std::function<void(const d3n::Appearances&)>& fn) {
+    std::size_t n = 0;
+    for (std::size_t i = 0; i < take; ++i) {
+        auto app = d3n::parseAppearances(ReadAll(files[i]));
+        if (!app)
+            continue;
+        ++n;
+        fn(*app);
+    }
+    return n;
+}
+
+bool EqualCiSv(const std::string& a, std::string_view b) {
+    if (a.size() != b.size())
+        return false;
+    for (std::size_t k = 0; k < a.size(); ++k) {
+        if (std::tolower(static_cast<unsigned char>(a[k])) !=
+            std::tolower(static_cast<unsigned char>(b[k])))
+            return false;
+    }
+    return true;
 }
 
 } // namespace
@@ -189,7 +226,7 @@ TEST_CASE("D3 corpus: the look invariant and the material name join", "[d3][corp
                 {
                     int n0 = 0;
                     for (const auto& e : v.tMaterial.arTextures)
-                        if (e.dwTextureType == 0)
+                        if (flakes::io::D3TextureTypeOf(e) == 1)
                             ++n0;
                     ++type0PerVariant[n0];
                 }
@@ -197,9 +234,9 @@ TEST_CASE("D3 corpus: the look invariant and the material name join", "[d3][corp
                     pastStageCap += v.tMaterial.arTextures.size() - d3p::kD3MaxTextureStages;
                 for (const auto& e : v.tMaterial.arTextures) {
                     ++textureEntries;
-                    ++typeCounts[e.dwTextureType];
-                    ++slotCounts[e.dwSlotIndex];
-                    ++pairCounts[{e.dwSlotIndex, e.dwTextureType}];
+                    ++typeCounts[flakes::io::D3TextureTypeOf(e)];
+                    ++slotCounts[flakes::io::D3UvFlagsOf(e)];
+                    ++pairCounts[{flakes::io::D3TextureTypeOf(e), flakes::io::D3UvModeOf(e)}];
                     if (e.snoTexture.valid())
                         ++entriesWithTexture;
                 }
@@ -241,19 +278,19 @@ TEST_CASE("D3 corpus: the look invariant and the material name join", "[d3][corp
                 subObjects, matched, matchPct, subObjects - matched);
     std::printf("[d3-mat] %zu texture entries, %zu naming a texture, %zu past the matTex11 cap\n",
                 textureEntries, entriesWithTexture, pastStageCap);
-    std::printf("[d3-mat] dwTextureType census:\n");
+    std::printf("[d3-mat] EMaterialTextureType census (the field at 0x00):\n");
     for (const auto& [type, n] : typeCounts)
         std::printf("[d3-mat]   %4d  x%-8zu  %s\n", type, n, NameOfType(type));
     std::printf("[d3-mat] JOIN: AppearanceMaterial.szName matches SubObject.szName %zu times, "
                 "SubObject.szMaterialName %zu times, of %zu sub-objects\n",
                 byName, byMaterialName, subObjects);
-    std::printf("[d3-mat] (dwSlotIndex, dwTextureType) pairs:\n");
+    std::printf("[d3-mat] (type, UV mode) pairs:\n");
     for (const auto& [k, n] : pairCounts)
-        std::printf("[d3-mat]   slot %-3d type %-3d x%zu\n", k.first, k.second, n);
-    std::printf("[d3-mat] entries with dwTextureType == 0, per variant:\n");
+        std::printf("[d3-mat]   type %-3d mode %-3d x%zu\n", k.first, k.second, n);
+    std::printf("[d3-mat] entries of type 1 (Diffuse), per variant:\n");
     for (const auto& [n0, n] : type0PerVariant)
         std::printf("[d3-mat]   %d x%zu\n", n0, n);
-    std::printf("[d3-mat] dwSlotIndex census:\n");
+    std::printf("[d3-mat] UV flags word (the field at 0x98) census:\n");
     for (const auto& [slot, n] : slotCounts)
         std::printf("[d3-mat]   %4d  x%zu\n", slot, n);
     for (const auto& s : sampleNames)
@@ -383,9 +420,10 @@ TEST_CASE("D3 diag: one character's material entries", "[.diag][d3]") {
                         v, var.snoMaterial.id, var.tMaterial.arTextures.size(),
                         var.tMaterial.snoShaderMap.id);
             for (const auto& e : var.tMaterial.arTextures) {
-                std::printf("[diag]     slotIndex=%-3d type=%-3d tex=%-7d flags=0x%X unk04=%d "
+                std::printf("[diag]     type=%-3d uvMode=%-3d tex=%-7d uvFlags=0x%X unk04=%d "
                             "unk9C=%d\n",
-                            e.dwSlotIndex, e.dwTextureType, e.snoTexture.id, e.dwTextureFlags,
+                            flakes::io::D3TextureTypeOf(e), flakes::io::D3UvModeOf(e), e.snoTexture.id,
+                            flakes::io::D3UvFlagsOf(e),
                             e.dwUnknown04, e.dwUnknown9C);
             }
         }
@@ -397,4 +435,339 @@ TEST_CASE("D3 diag: one character's material entries", "[.diag][d3]") {
             if (shown++ < 6)
                 std::printf("[diag] sub name='%s' materialName='%s' verts=%zu\n",
                             sub.szName.c_str(), sub.szMaterialName.c_str(), sub.arVertices.size());
+}
+
+// ============================================================================
+// The three fields of MaterialTextureEntry that WhiteoutLib names for the wrong
+// thing, and the two mechanisms reading them wrong cost.
+//
+// Every claim here is a counting claim, because the failure it guards against
+// is invisible by eye: a material with four texture layers renders *something*
+// whichever layer you bind as the diffuse, and a model that draws its whole
+// wardrobe at once still looks like a model.
+// ============================================================================
+
+TEST_CASE("D3 corpus: the texture entry's LUT key is the field at 0x00", "[d3][corpus]") {
+    const auto files = FindFiles(CorpusRoot() / "Appearances", ".app");
+    if (files.empty()) {
+        WARN("No D3 corpus at " << (CorpusRoot() / "Appearances").string()
+                                << " (set WDX_TEST_D3_CORPUS). SKIPPED, not passed.");
+        return;
+    }
+    const std::size_t limit = SweepLimit();
+    const std::size_t take = (limit == 0) ? files.size() : (std::min)(limit, files.size());
+
+    std::size_t variants = 0, dupType = 0, dupUvFlags = 0;
+    std::size_t sole = 0, soleIsDiffuse = 0, noDiffuse = 0;
+    std::map<i32, std::size_t> modes;
+    std::size_t animated = 0, animatedVariants = 0, entries = 0;
+    const std::size_t parsed = CountIf(files, take, [&](const d3n::Appearances& app) {
+        for (const auto& mat : app.arMaterials) {
+            for (const auto& v : mat.arVariants) {
+                const auto& t = v.tMaterial.arTextures;
+                if (t.empty())
+                    continue;
+                ++variants;
+                std::map<i32, int> byType, byUvFlags;
+                bool hasDiffuse = false, moves = false;
+                for (const auto& e : t) {
+                    ++entries;
+                    ++byType[flakes::io::D3TextureTypeOf(e)];
+                    ++byUvFlags[flakes::io::D3UvFlagsOf(e)];
+                    ++modes[flakes::io::D3UvModeOf(e)];
+                    if (flakes::io::D3TextureTypeOf(e) == 1)
+                        hasDiffuse = true;
+                    if (flakes::io::D3ReadUvXform(e).animated) {
+                        ++animated;
+                        moves = true;
+                    }
+                }
+                for (const auto& kv : byType) {
+                    if (kv.second > 1) {
+                        ++dupType;
+                        break;
+                    }
+                }
+                for (const auto& kv : byUvFlags) {
+                    if (kv.second > 1) {
+                        ++dupUvFlags;
+                        break;
+                    }
+                }
+                if (t.size() == 1) {
+                    ++sole;
+                    if (flakes::io::D3TextureTypeOf(t[0]) == 1)
+                        ++soleIsDiffuse;
+                }
+                if (!hasDiffuse)
+                    ++noDiffuse;
+                if (moves)
+                    ++animatedVariants;
+            }
+        }
+    });
+
+    std::printf("[d3-fields] %zu file(s), %zu material variants, %zu texture entries\n", parsed,
+                variants, entries);
+    std::printf("[d3-fields] a value repeats inside one material: type@0x00 %zu (%.2f%%), "
+                "uvFlags@0x98 %zu (%.2f%%)\n",
+                dupType, 100.0 * static_cast<double>(dupType) / static_cast<double>(variants),
+                dupUvFlags,
+                100.0 * static_cast<double>(dupUvFlags) / static_cast<double>(variants));
+    std::printf("[d3-fields] single-entry variants %zu, of which type 1 %zu; variants with no "
+                "type-1 entry %zu (%.2f%%)\n",
+                sole, soleIsDiffuse, noDiffuse,
+                100.0 * static_cast<double>(noDiffuse) / static_cast<double>(variants));
+    std::printf("[d3-fields] UV mode census:");
+    for (const auto& m : modes)
+        std::printf(" %d:%zu", m.first, m.second);
+    std::printf("\n[d3-fields] animated entries %zu, in %zu variants (%.2f%%)\n", animated,
+                animatedVariants,
+                100.0 * static_cast<double>(animatedVariants) / static_cast<double>(variants));
+
+    REQUIRE(variants > 1000);
+
+    // THE key property, and the whole reason the field at 0x00 is the type:
+    // Render_ResolveMaterialTextureStages builds `dest[type] = entry`, so a
+    // repeated value would silently lose an entry. It never repeats.
+    CHECK(dupType == 0);
+    // And the field that was being read as the type does repeat, in most
+    // materials — it cannot be a key at all. Asserted as well as measured,
+    // because it is what makes the first number a *choice* rather than a
+    // coincidence: a swap back would have to break this to pass that.
+    CHECK(dupUvFlags * 2 > variants);
+
+    // A material with exactly one texture has a base map and nothing else,
+    // which is what makes type 1 the diffuse rather than a guess.
+    CHECK(sole > 100);
+    CHECK(soleIsDiffuse * 1000 > sole * 999);
+
+    // Almost everything authors a diffuse. The residue is real content — effect
+    // materials whose only layers are detail types — not a mapping gap, but it
+    // is bounded, and a change that widened it would be a regression.
+    CHECK(noDiffuse * 20 < variants);
+
+    // The UV mode field takes only sub_71000F8590's own case labels. A value
+    // outside 0..6 would mean the field is not that enum.
+    CHECK(modes.upper_bound(6) == modes.end());
+    CHECK(modes.begin()->first >= 0);
+
+    // Enough of the corpus animates that dropping the rates is a visible loss,
+    // which is the case for reproducing them at all.
+    CHECK(animatedVariants * 4 > variants);
+}
+
+TEST_CASE("D3 corpus: a look decides which sub-objects draw", "[d3][corpus]") {
+    const auto files = FindFiles(CorpusRoot() / "Appearances", ".app");
+    if (files.empty()) {
+        WARN("No D3 corpus. SKIPPED, not passed.");
+        return;
+    }
+    const std::size_t limit = SweepLimit();
+    const std::size_t take = (limit == 0) ? files.size() : (std::min)(limit, files.size());
+
+    std::size_t drawable = 0, hidden = 0, allHiddenLooks = 0, looksSeen = 0;
+    const std::size_t parsed = CountIf(files, take, [&](const d3n::Appearances& app) {
+        const std::size_t looks = (std::max)(static_cast<std::size_t>(1), app.arLooks.size());
+        const d3n::GeoSet* sets[2] = {&app.tGeoSet0, &app.tGeoSet1};
+        for (std::size_t look = 0; look < looks; ++look) {
+            ++looksSeen;
+            std::size_t shown = 0, total = 0;
+            for (const auto* set : sets) {
+                for (const auto& sub : set->arSubObjects) {
+                    if (sub.arVertices.empty() || sub.arIndices.empty())
+                        continue;
+                    ++total;
+                    const auto* v = flakes::io::D3VariantFor(app, sub, static_cast<u32>(look));
+                    if (look == 0)
+                        ++drawable;
+                    if (v && (v->dwUnknown00 & flakes::io::kD3SubObjectVisibleBit) == 0) {
+                        if (look == 0)
+                            ++hidden;
+                    } else {
+                        ++shown;
+                    }
+                }
+            }
+            if (total > 0 && shown == 0)
+                ++allHiddenLooks;
+        }
+    });
+
+    std::printf("[d3-look] %zu file(s), %zu look(s); at look 0, %zu of %zu drawable sub-objects "
+                "are hidden by the visibility bit (%.2f%%); looks that hide everything: %zu\n",
+                parsed, looksSeen, hidden, drawable,
+                100.0 * static_cast<double>(hidden) / static_cast<double>(drawable),
+                allHiddenLooks);
+
+    REQUIRE(drawable > 1000);
+    // The bit does work. Without this the rule could be a no-op and every model
+    // would look exactly as it did before it existed.
+    CHECK(hidden > 0);
+    // ...and it is not a rule that hides most of the world. A model's default
+    // look shows most of what it ships; the hidden residue is death bodies,
+    // alternate weapons and the pieces another look wears instead.
+    CHECK(hidden * 2 < drawable);
+    // Looks that hide EVERYTHING exist and are named for it — Imperius ships
+    // one called `Invisible` — so this is a bound rather than a zero. Measured
+    // at 8.1% of looks; a rule that had the bit inverted would put it near 100.
+    CHECK(allHiddenLooks * 4 < looksSeen);
+}
+
+TEST_CASE("D3: the three models this was found on", "[d3][corpus]") {
+    struct Want {
+        const char* file;
+        const char* subObject;
+        bool visibleAtLook0;
+        bool wantsDiffuse;
+        bool wantsUvAnim;
+    };
+    // Tyrael ships the Stranger, the Restored angel and a skeleton; look `A` is
+    // the Stranger alone, and drawing all three put a skull through his head.
+    // Imperius's and Malthael's wings are multi-layer scrolling materials whose
+    // base map is type 1 — neither had one bound, and Malthael's had no texture
+    // at all because none of his wing layers is type 0.
+    const Want kWant[] = {
+        {"Tyrael", "A_normal_mat", true, true, false},
+        {"Tyrael", "A_restored_mat", false, true, false},
+        {"Tyrael", "A_skeleton_mat", false, true, false},
+        {"Imperius", "wing_mat", true, true, true},
+        {"Imperius", "A_unarmed_mat", false, true, false},
+        {"x1_Malthael", "wingMidLayer_mat", true, true, true},
+        {"x1_Malthael", "wingOuter_mat", true, true, true},
+        {"x1_Malthael", "A_wings_mat", false, true, false},
+    };
+
+    std::size_t checked = 0;
+    for (const auto& w : kWant) {
+        const auto path = CorpusRoot() / "Appearances" / (std::string(w.file) + ".app");
+        auto app = d3n::parseAppearances(ReadAll(path));
+        if (!app) {
+            WARN("missing " << path.string() << " -- SKIPPED, not passed.");
+            continue;
+        }
+        const d3n::GeoSet* sets[2] = {&app->tGeoSet0, &app->tGeoSet1};
+        const d3n::SubObject* sub = nullptr;
+        for (const auto* set : sets) {
+            for (const auto& s : set->arSubObjects) {
+                if (EqualCiSv(s.szName, w.subObject))
+                    sub = &s;
+            }
+        }
+        REQUIRE(sub != nullptr);
+        const auto* v = flakes::io::D3VariantFor(*app, *sub, 0);
+        REQUIRE(v != nullptr);
+        ++checked;
+
+        INFO(w.file << " / " << w.subObject);
+        const bool visible = (v->dwUnknown00 & flakes::io::kD3SubObjectVisibleBit) != 0;
+        CHECK(visible == w.visibleAtLook0);
+
+        bool diffuse = false, moves = false;
+        for (const auto& e : v->tMaterial.arTextures) {
+            if (flakes::io::D3SlotOfType(flakes::io::D3TextureTypeOf(e)) !=
+                flakes::io::D3SlotKind::Diffuse)
+                continue;
+            diffuse = diffuse || e.snoTexture.valid();
+            moves = moves || flakes::io::D3ReadUvXform(e).animated;
+        }
+        CHECK(diffuse == w.wantsDiffuse);
+        CHECK(moves == w.wantsUvAnim);
+    }
+    if (checked == 0) {
+        WARN("None of the three models present. SKIPPED, not passed.");
+    }
+}
+
+// ============================================================================
+// The render state lives on the Shaders asset, not on the material — and it is
+// only reachable through an install, because a ShaderMap is named by SNO id and
+// an id resolves through an opened storage.
+//
+// So this is the one half of the material system the corpus arm structurally
+// cannot see: an extracted tree has the `.shm` and `.shd` files but no CoreTOC
+// to find them by id. Gated here rather than left to the render arm for that
+// reason.
+// ============================================================================
+
+TEST_CASE("D3 install: render state comes from the ShaderMap's RenderPass",
+          "[d3][material][install]") {
+    using ::whiteout::flakes::ProductId;
+
+    flakes::io::FileContentProvider provider;
+    if (const char* root = std::getenv("WDX_TEST_D3_INSTALL"); root && *root)
+        provider.SetInstallPath(root);
+    provider.SetGame(ProductId::D3);
+    if (provider.GamePath(ProductId::D3).empty()) {
+        WARN("No Diablo III install (set WDX_TEST_D3_INSTALL). SKIPPED, not passed.");
+        return;
+    }
+    flakes::io::D3SnoCache cache(&provider);
+
+    struct Want {
+        const char* file;
+        const char* subObject;
+        bool blends;
+        bool depthWrite;
+    };
+    // Imperius's wings and Malthael's outer wing are the two the report was
+    // about: both blend and neither writes depth. The bodies beside them are
+    // the other half of the discriminator — they blend TOO (1,412 of the
+    // corpus's 1,831 passes do), and bucketing on the blend enable alone would
+    // sweep every D3 character into the sorted transparent list.
+    const Want kWant[] = {
+        {"Imperius", "wing_mat", true, false},
+        {"Imperius", "A_normal_mat", true, true},
+        {"x1_Malthael", "wingOuter_mat", true, false},
+        {"x1_Malthael", "A_normal_mat", true, true},
+        {"Tyrael", "A_normal_mat", true, true},
+    };
+
+    std::size_t resolved = 0;
+    for (const auto& w : kWant) {
+        const auto path = CorpusRoot() / "Appearances" / (std::string(w.file) + ".app");
+        auto app = d3n::parseAppearances(ReadAll(path));
+        if (!app) {
+            WARN("missing " << path.string() << " -- SKIPPED, not passed.");
+            continue;
+        }
+        const d3n::GeoSet* sets[2] = {&app->tGeoSet0, &app->tGeoSet1};
+        const d3n::SubObject* sub = nullptr;
+        for (const auto* set : sets) {
+            for (const auto& s : set->arSubObjects) {
+                if (EqualCiSv(s.szName, w.subObject))
+                    sub = &s;
+            }
+        }
+        REQUIRE(sub != nullptr);
+        const auto* v = flakes::io::D3VariantFor(*app, *sub, 0);
+        REQUIRE(v != nullptr);
+
+        const auto st = d3p::D3PassStateFor(*v, &cache);
+        INFO(w.file << " / " << w.subObject << " shm=" << v->tMaterial.snoShaderMap.id);
+        if (!st.resolved) {
+            WARN(w.file << " / " << w.subObject
+                        << ": ShaderMap did not resolve through this install -- SKIPPED.");
+            continue;
+        }
+        ++resolved;
+        std::printf("[d3-pass] %-12s %-18s blend=%d(%u,%u) depthW=%d cull=%u alphaRef=%u\n", w.file,
+                    w.subObject, static_cast<int>(st.blendEnable), st.blendSrc, st.blendDst,
+                    static_cast<int>(st.depthWrite), st.cull, static_cast<unsigned>(st.alphaRef));
+        CHECK(st.blendEnable == w.blends);
+        CHECK(st.depthWrite == w.depthWrite);
+        // D3DBLEND, and the corpus never leaves the enum.
+        CHECK(st.blendSrc >= 1u);
+        CHECK(st.blendSrc <= 11u);
+        CHECK(st.blendDst >= 1u);
+        CHECK(st.blendDst <= 11u);
+        // D3DCULL: 1 none, 2 CW, 3 CCW.
+        CHECK(st.cull >= 1u);
+        CHECK(st.cull <= 3u);
+    }
+    if (resolved == 0) {
+        WARN("No ShaderMap resolved. SKIPPED, not passed.");
+        return;
+    }
+    CHECK(resolved == std::size(kWant));
 }

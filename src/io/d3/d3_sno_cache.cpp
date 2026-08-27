@@ -63,6 +63,8 @@ d3n::Group D3GroupOfExtension(std::string_view ext) {
         return d3n::Group::AnimTree;
     if (e == "shm")
         return d3n::Group::ShaderMap;
+    if (e == "shd")
+        return d3n::Group::Shaders;
     if (e == "efg")
         return d3n::Group::EffectGroup;
     return d3n::Group::Unknown;
@@ -74,6 +76,8 @@ d3n::Group D3GroupOfBytes(std::span<const u8> bytes) {
     switch (ReadU32(bytes, 4)) {
     case 282:
         return d3n::Group::Actor;
+    case 150:
+        return d3n::Group::Shaders;
     case 260:
         return d3n::Group::Appearance;
     case 180:
@@ -234,6 +238,14 @@ D3SnoCache::Loaded D3SnoCache::Load(i32 sno, std::span<const u8> bytes) {
             if (auto v = d3n::parsePhysics(bytes))
                 e.value = std::make_shared<const d3n::Physics>(std::move(*v));
             break;
+        case d3n::Group::ShaderMap:
+            if (auto v = d3n::parseShaderMap(bytes))
+                e.value = std::make_shared<const d3n::ShaderMap>(std::move(*v));
+            break;
+        case d3n::Group::Shaders:
+            if (auto v = d3n::parseShaders(bytes))
+                e.value = std::make_shared<const d3n::Shaders>(std::move(*v));
+            break;
         default:
             break;
         }
@@ -292,6 +304,12 @@ std::shared_ptr<const d3n::Material> D3SnoCache::Material(i32 sno) {
 }
 std::shared_ptr<const d3n::Physics> D3SnoCache::Physics(i32 sno) {
     return Typed<d3n::Physics>(sno, d3n::Group::Physics);
+}
+std::shared_ptr<const d3n::ShaderMap> D3SnoCache::ShaderMap(i32 sno) {
+    return Typed<d3n::ShaderMap>(sno, d3n::Group::ShaderMap);
+}
+std::shared_ptr<const d3n::Shaders> D3SnoCache::Shaders(i32 sno) {
+    return Typed<d3n::Shaders>(sno, d3n::Group::Shaders);
 }
 
 std::shared_ptr<const d3n::Actor> D3SnoCache::AdoptActor(i32 sno, std::span<const u8> bytes) {

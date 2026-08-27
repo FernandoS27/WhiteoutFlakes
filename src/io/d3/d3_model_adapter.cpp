@@ -233,6 +233,15 @@ const d3n::UberMaterial* D3MaterialOf(const d3n::SubObjectAppearance& variant, D
     return variant.tMaterial.arTextures.empty() ? nullptr : &variant.tMaterial;
 }
 
+// Which entries reach the canonical texture list: exactly the ones a slot the
+// shading model consumes will bind. Collecting every own-texture entry instead
+// would acquire the model-wide 25..38 detail block — a dozen-odd GPU textures
+// per model that nothing samples.
+bool D3SlotSamples(const d3n::MaterialTextureEntry& e) {
+    const i32 type = D3TextureTypeOf(e);
+    return D3TypeOwnsTexture(type) && D3SlotOfType(type) != D3SlotKind::Count;
+}
+
 std::vector<D3TextureRef> CollectD3Textures(const d3n::Appearances& app, u32 lookIndex) {
     std::vector<D3TextureRef> out;
     auto add = [&out](i32 sno) {
@@ -255,7 +264,7 @@ std::vector<D3TextureRef> CollectD3Textures(const d3n::Appearances& app, u32 loo
         if (mat.arVariants.empty())
             continue;
         for (const auto& tex : mat.arVariants[v].tMaterial.arTextures) {
-            if (D3EntryOwnsTexture(tex.dwTextureType))
+            if (D3SlotSamples(tex))
                 add(tex.snoTexture.id);
         }
     }
@@ -297,7 +306,7 @@ std::vector<D3TextureRef> CollectD3Textures(const d3n::Appearances& app, u32 loo
         if (!variant)
             continue;
         for (const auto& tex : variant->tMaterial.arTextures) {
-            if (D3EntryOwnsTexture(tex.dwTextureType))
+            if (D3SlotSamples(tex))
                 add(tex.snoTexture.id);
         }
     }
@@ -360,12 +369,81 @@ D3ModelAdapter::D3ModelAdapter(std::shared_ptr<const d3n::Appearances> app, u32 
     if (lookIndex_ >= lookNames_.size())
         lookIndex_ = 0;
     BuildEmittedSubObjects();
+    RefreshLookVisibility();
     BuildSkeletonCache();
 }
 
 void D3ModelAdapter::SetLookIndex(u32 index) {
-    if (index < lookNames_.size())
+    if (index < lookNames_.size()) {
         lookIndex_ = index;
+        RefreshLookVisibility();
+    }
+}
+
+void D3ModelAdapter::PublishUvAnimation(const PoseRequest& req, FrameState& fs) const {
+    if (!app_)
+        return;
+    // World-clocked, not clip-clocked. The original seeds each entry's phase
+    // from a global frame time (`sub_71000F6E70` reads g_GameContext's clock and
+    // subtracts a per-instance random offset), so a scroll keeps running while
+    // an animation is paused or looping — and a clip time that wraps would snap
+    // every scrolling layer back to its start once a second.
+    const i32 ms = (req.globalTimeMs >= 0) ? req.globalTimeMs : req.PrimaryClip().timeMs;
+    const f32 seconds = static_cast<f32>(ms) * 0.001f;
+
+    const d3n::GeoSet* sets[2] = {&app_->tGeoSet0, &app_->tGeoSet1};
+    for (usize g = 0; g < emitted_.size(); ++g) {
+        const auto& subs = sets[emitted_[g].geoSet & 1]->arSubObjects;
+        if (emitted_[g].index >= subs.size())
+            continue;
+        const d3n::SubObjectAppearance* v =
+            D3VariantFor(*app_, subs[emitted_[g].index], LookForGeoset(g));
+        if (!v)
+            continue;
+        // The embedded material only. A SNO-only variant needs the cache the
+        // surface table holds, and this runs on the pose path where there is
+        // none — the same split D3MaterialOf already draws.
+        bool seen[kD3SlotCount] = {};
+        for (const auto& e : v->tMaterial.arTextures) {
+            const D3SlotKind kind = D3SlotOfType(D3TextureTypeOf(e));
+            if (kind == D3SlotKind::Count || seen[static_cast<u32>(kind)])
+                continue;
+            seen[static_cast<u32>(kind)] = true;
+            const auto uv = D3ReadUvXform(e);
+            if (uv.mode != D3UvMode::ScaleRotateScroll || !uv.animated)
+                continue;
+            f32 a[6];
+            D3UvAffine(uv, seconds, a);
+            FrameState::TexAnimMatrix m{};
+            m.textureAnimId = D3UvTransformId(g, kind);
+            m.row0[0] = a[0];
+            m.row0[1] = a[1];
+            m.row0[3] = a[2];
+            m.row1[0] = a[3];
+            m.row1[1] = a[4];
+            m.row1[3] = a[5];
+            fs.texAnimMatrices.push_back(m);
+        }
+    }
+}
+
+void D3ModelAdapter::RefreshLookVisibility() {
+    lookHidden_.assign(emitted_.size(), 0);
+    if (!app_)
+        return;
+    const d3n::GeoSet* sets[2] = {&app_->tGeoSet0, &app_->tGeoSet1};
+    for (usize g = 0; g < emitted_.size(); ++g) {
+        const auto& subs = sets[emitted_[g].geoSet & 1]->arSubObjects;
+        if (emitted_[g].index >= subs.size())
+            continue;
+        const d3n::SubObjectAppearance* v =
+            D3VariantFor(*app_, subs[emitted_[g].index], LookForGeoset(g));
+        // A sub-object whose name finds no material keeps drawing: an absent
+        // rule is not a rule that says "hide", and the surface table already
+        // reports the unmatched count.
+        if (v && (v->dwUnknown00 & kD3SubObjectVisibleBit) == 0)
+            lookHidden_[g] = 1;
+    }
 }
 
 void D3ModelAdapter::BuildEmittedSubObjects() {
@@ -866,12 +944,24 @@ FrameState D3ModelAdapter::Evaluate(const PoseRequest& req) const {
                                       ? (local * fs.boneWorldMatrices[static_cast<usize>(p)])
                                       : local;
     }
-    // Not animated: D3 states visibility per equipped item, not per keyframe.
-    // It rides FrameState because that is the one channel RenderModel reads a
-    // per-geoset draw bit from, and a restyle takes effect on the next
-    // Evaluate rather than needing the mesh re-uploaded.
-    if (!geosetHidden_.empty())
-        fs.geosetHidden = geosetHidden_;
+    // Not animated: D3 states visibility per equipped item and per look, not
+    // per keyframe. It rides FrameState because that is the one channel
+    // RenderModel reads a per-geoset draw bit from, and a restyle takes effect
+    // on the next Evaluate rather than needing the mesh re-uploaded.
+    //
+    // Two independent rules, unioned rather than either winning: the file's own
+    // per-look bit (`lookHidden_`) and whatever a host has dressed
+    // (`geosetHidden_`). Without the first, Tyrael draws the Stranger, the
+    // Restored angel AND the skeleton he is never both of.
+    if (!geosetHidden_.empty() || !lookHidden_.empty()) {
+        fs.geosetHidden.assign(emitted_.size(), 0);
+        for (usize g = 0; g < emitted_.size(); ++g) {
+            const bool hidden = (g < geosetHidden_.size() && geosetHidden_[g] != 0) ||
+                                (g < lookHidden_.size() && lookHidden_[g] != 0);
+            fs.geosetHidden[g] = hidden ? 1 : 0;
+        }
+    }
+    PublishUvAnimation(req, fs);
     return fs;
 }
 

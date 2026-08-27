@@ -118,6 +118,12 @@ public:
     std::shared_ptr<const d3n::AnimSet> AnimSet(i32 sno);
     std::shared_ptr<const d3n::Material> Material(i32 sno);
     std::shared_ptr<const d3n::Physics> Physics(i32 sno);
+    /// The `.shm` tag map and the `.shd` it resolves to. Together they carry
+    /// the render state a material does not: blend, cull, depth and the
+    /// alpha-test reference all live on the Shaders asset's RenderPass, never
+    /// on the UberMaterial. See `D3PassStateFor`.
+    std::shared_ptr<const d3n::ShaderMap> ShaderMap(i32 sno);
+    std::shared_ptr<const d3n::Shaders> Shaders(i32 sno);
 
     /// @brief Parse @p bytes the caller already has, and cache the result
     ///        under @p sno.

@@ -442,7 +442,9 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
                         bool lazyAnim, const std::string& contentRoot, const AnimScenario& anim,
                         const std::vector<std::filesystem::path>& attachAnims,
                         bool debugLight = false, bool noRefraction = false,
-                        bool refractionMask = false, bool noMultiTex = false) {
+                        bool refractionMask = false, bool noMultiTex = false,
+                        whiteout::flakes::ProductId traceGame =
+                            whiteout::flakes::ProductId::Neutral) {
     namespace wf = whiteout::flakes;
     namespace dbg = wf::renderer::debug;
 
@@ -460,6 +462,13 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
         std::cerr << "[dtrace] InitDevice failed" << std::endl;
         return 3;
     }
+
+    // After InitDevice, never before: the product selection repoints the
+    // content root, and the engine's own `.bls` shaders are read through the
+    // same provider — selecting a game first sends every shader lookup into a
+    // game install and leaves the device with nothing to draw with.
+    if (traceGame != wf::ProductId::Neutral)
+        scene.GetContentProvider().SetGame(traceGame);
 
     constexpr i32 kW = 512, kH = 512;
     const wf::renderer::RenderTargetId tid = pipe.CreateOffscreenTarget(kW, kH);
@@ -1246,6 +1255,10 @@ int main(int argc, char* argv[]) {
     // WoW root can only be read by id, so nothing can look a model up in the
     // client databases (see WowReplaceableTextures).
     std::string listfilePath;
+    // Which install the run may reach for assets a model references by SNO id.
+    // Empty is the corpus arm's state: the trace resolves nothing beyond the
+    // file it was handed, which is what lets it run on a box with no game.
+    std::string traceGame;
     // Community `keyName keyHex` list. Without it any file with a TACT-encrypted
     // frame reads back as missing, which on retail includes several of the
     // client databases.
@@ -1383,6 +1396,8 @@ int main(int argc, char* argv[]) {
             drawTraceLazyAnim = true;
         } else if (std::strcmp(a, "--listfile") == 0 && i + 1 < argc) {
             listfilePath = argv[++i];
+        } else if (std::strcmp(a, "--draw-trace-game") == 0 && i + 1 < argc) {
+            traceGame = argv[++i];
         } else if (std::strcmp(a, "--tact-keys") == 0 && i + 1 < argc) {
             tactKeyPath = argv[++i];
         } else if (std::strcmp(a, "--content-root") == 0 && i + 1 < argc) {
@@ -1610,6 +1625,30 @@ int main(int argc, char* argv[]) {
         cp.SetGame(was);
     }
 
+    // An explicit opt-in, never inferred from the model's extension. Diablo III
+    // reaches its ShaderMap, Shaders and shared Material assets by SNO id, and
+    // an id resolves only through an opened storage — so without this a `.app`
+    // renders with whatever its embedded material alone can say. The corpus arm
+    // deliberately runs without it. Applied inside RunDrawTrace, after the
+    // device is up.
+    auto traceGameId = whiteout::flakes::ProductId::Neutral;
+    if (!traceGame.empty()) {
+        using ::whiteout::flakes::ProductId;
+        if (traceGame == "wc3")
+            traceGameId = ProductId::Wc3;
+        else if (traceGame == "wow")
+            traceGameId = ProductId::Wow;
+        else if (traceGame == "sc2")
+            traceGameId = ProductId::Sc2;
+        else if (traceGame == "d3")
+            traceGameId = ProductId::D3;
+        else {
+            std::cerr << "[dtrace] --draw-trace-game: expected wc3|wow|sc2|d3, got '" << traceGame
+                      << "'" << std::endl;
+            return 2;
+        }
+    }
+
     // Headless multi-viewport smoke test: no window, no ViewerApp — drive the
     // pipeline straight into an off-screen target and read it back. Runs and
     // exits without ever creating a GLFW window.
@@ -1633,7 +1672,7 @@ int main(int argc, char* argv[]) {
                             drawTraceCameraDistance, drawTracePerturb, drawTraceInstances,
                             drawTraceUnlit, drawTraceLazyAnim, contentRoot, drawTraceAnim,
                             attachAnims, drawTraceDebugLight, drawTraceNoRefraction,
-                            drawTraceRefractionMask, drawTraceNoMultiTex);
+                            drawTraceRefractionMask, drawTraceNoMultiTex, traceGameId);
 
     whiteout::flakes::ViewerApp app(renderer);
     if (!app.Open(1024, 768, backend)) {

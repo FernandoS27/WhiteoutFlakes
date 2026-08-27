@@ -13,51 +13,51 @@ namespace {
 using ::whiteout::flakes::io::D3SubObjectRef;
 using ::whiteout::flakes::io::D3TextureRef;
 
-// MaterialColors::dwMaterialFlags. Only the two bits v1 acts on are named; the
-// rest travel to the shader raw. Read off the material's own flag word rather
-// than off a RenderPass, which we do not have — see the header.
+// MaterialColors::dwMaterialFlags. The fallback for a sub-object whose
+// ShaderMap does not resolve; where it does, the RenderPass wins, because that
+// is the field the original reads. Never confirmed against the binary — no
+// consumer of dwMaterialFlags has been found — which is the other reason the
+// pass takes precedence.
 enum : u32 {
     kMatFlagAlphaBlend = 0x1u,
     kMatFlagAlphaTest = 0x2u,
     kMatFlagTwoSided = 0x4u,
 };
 
-// EMaterialTextureType -> the slot we consume it in.
+using ::whiteout::flakes::io::D3ReadUvXform;
+using ::whiteout::flakes::io::D3SlotOfType;
+using ::whiteout::flakes::io::D3TextureTypeOf;
+using ::whiteout::flakes::io::D3UvMode;
+using ::whiteout::flakes::io::D3UvTransformId;
+
+// ShaderMap_ResolveShaderOpaque's tag chain (0x71001B5420). A ShaderMap has no
+// index: the runtime probes a fixed list and takes the first tag that resolves,
+// so a map missing a tag silently falls through to a more generic program.
 //
-// The RE recovered this enum without a single surviving string, because every
-// branch of Render_ResolveMaterialTextureStages names itself through the CORE
-// ASSET it falls back to: type 2 -> default_lightmap, type 3 (and 47..52) ->
-// flat_NM, type 8 -> irradiance, 21 -> vignette, 24 -> shadow_mask, 56 ->
-// dye_ramp, 59 -> Banner_Dye_Master, 7/9/39/60/61 -> engine render targets,
-// 20/22/23/53 computed per draw, and **default -> the entry's own texture**.
-//
-// Measured over 300 corpus `.app` (49,695 texture entries), which is what
-// decides how much of that we can act on:
-//
-//   * `dwTextureType == 0` is the default branch, and it is the only
-//     per-material one: for Barbarian_Male, material `oneBatch_mat` names
-//     texture 95384 and `Skeleton_mat` names 48525 through it. The mode is
-//     exactly one such entry per variant (2944 variants), with 2-6 common.
-//   * Types 2, 3 and 8 arrive almost entirely as a **model-wide shared block**
-//     at `dwSlotIndex` 25..38 — byte-identical across every material in a file
-//     (14 entries, same texture ids). That is the core-asset fallback list
-//     written into the file, not a per-material layer: binding it would put one
-//     normal map on every material of every model.
-//
-// So v1 consumes the default branch and nothing else, and the surface-table
-// test prints the (slot, type) census so the day someone recovers what the
-// 25..38 block actually is, the change is a table edit rather than an
-// excavation. An unconsumed slot falls back to the type's documented default,
-// which is what the shader's `SlotOn` false already means.
-D3SlotKind SlotOfType(i32 type) {
-    // Which *ordinal* within the default branch is diffuse, specular or
-    // emissive is the one thing the RE does not state — the enum's names are
-    // gone and the fallback trick only names the special types — so v1 takes
-    // the first and leaves the rest unresolved rather than inventing an order.
-    // Guessing wrong here does not degrade gracefully: a diffuse map bound into
-    // the normal slot makes every surface face the viewer.
-    return ::whiteout::flakes::io::D3EntryOwnsTexture(type) ? D3SlotKind::Diffuse
-                                                            : D3SlotKind::Count;
+// The head of the chain is chosen by the global view mode and the tail is
+// shared. We render one view mode, so only the tail plus its 0x30502 head is
+// walked — and 0x30500, the last-resort base shader, is what shipped content
+// overwhelmingly carries (Imperius's wing map holds exactly one entry, tagged
+// 0x30500). The MSAA band (0x30861) is skipped: we do not run the original's
+// MSAA path, and taking its program would be claiming a pass we never bind.
+constexpr u32 kD3OpaqueTagChain[] = {0x30502u, 0x30850u, 0x30830u, 0x30600u, 0x30500u};
+
+i32 ShadersIdFor(const d3n::ShaderMap& map) {
+    for (const u32 tag : kD3OpaqueTagChain) {
+        for (const auto& e : map.arShaders) {
+            if (e.dwTagId == tag && e.snoShader.valid())
+                return e.snoShader.id;
+        }
+    }
+    // Nothing on the chain. Shipped maps are small and single-tagged often
+    // enough that refusing here would drop real state, so the first valid entry
+    // stands in — a more generic program is exactly what the fall-through
+    // produces anyway.
+    for (const auto& e : map.arShaders) {
+        if (e.snoShader.valid())
+            return e.snoShader.id;
+    }
+    return -1;
 }
 
 i32 TextureIdOf(std::span<const D3TextureRef> textures, i32 sno) {
@@ -68,30 +68,60 @@ i32 TextureIdOf(std::span<const D3TextureRef> textures, i32 sno) {
     return -1;
 }
 
-Matrix44f UvMatrixOf(const d3n::MaterialTextureEntry& e) {
-    Matrix44f m = Matrix44f::identity();
+// The verbatim 4x4 of UV mode 1. An all-zero block is what an entry with no
+// authored matrix carries, and uploading it would collapse every texture
+// coordinate to the origin.
+bool UvMatrixOf(const d3n::MaterialTextureEntry& e, Matrix44f& out) {
     const Vector4f rows[4] = {e.vUvRow0, e.vUvRow1, e.vUvRow2, e.vUvRow3};
-    for (int r = 0; r < 4; ++r) {
-        m.data[r][0] = rows[r].x;
-        m.data[r][1] = rows[r].y;
-        m.data[r][2] = rows[r].z;
-        m.data[r][3] = rows[r].w;
-    }
-    return m;
-}
-
-// An all-zero UV block is what an entry with no authored matrix carries, and
-// uploading it would collapse every texture coordinate to the origin.
-bool UvMatrixIsAuthored(const d3n::MaterialTextureEntry& e) {
-    const Vector4f rows[4] = {e.vUvRow0, e.vUvRow1, e.vUvRow2, e.vUvRow3};
+    bool authored = false;
     for (const Vector4f& v : rows) {
         if (v.x != 0.0f || v.y != 0.0f || v.z != 0.0f || v.w != 0.0f)
-            return true;
+            authored = true;
     }
-    return false;
+    if (!authored)
+        return false;
+    out = Matrix44f::identity();
+    for (int r = 0; r < 4; ++r) {
+        out.data[r][0] = rows[r].x;
+        out.data[r][1] = rows[r].y;
+        out.data[r][2] = rows[r].z;
+        out.data[r][3] = rows[r].w;
+    }
+    return true;
 }
 
 } // namespace
+
+D3PassState D3PassStateFor(const d3n::SubObjectAppearance& variant,
+                           ::whiteout::flakes::io::D3SnoCache* cache) {
+    D3PassState st;
+    if (!cache || !variant.tMaterial.snoShaderMap.valid())
+        return st;
+    const auto map = cache->ShaderMap(variant.tMaterial.snoShaderMap.id);
+    if (!map)
+        return st;
+    const i32 shadersId = ShadersIdFor(*map);
+    if (shadersId < 0)
+        return st;
+    const auto shaders = cache->Shaders(shadersId);
+    if (!shaders || shaders->arRenderPasses.empty())
+        return st;
+
+    // Pass 0. A multi-pass Shaders draws the same geometry more than once with
+    // complementary colour-write masks (Imperius's wings are 1/0 then 0/1), and
+    // reproducing that is a submission change, not a state one — so the first
+    // pass is the one whose state this carries, and the extra passes are simply
+    // not drawn.
+    const auto& r = shaders->arRenderPasses[0].tRenderParams;
+    st.resolved = true;
+    st.cull = static_cast<u32>(r.dwUnknown00);
+    st.depthWrite = r.dwUnknown04 != 0;
+    st.alphaRef = r.bUnknown34;
+    st.blendEnable = r.dwUnknown4C != 0;
+    st.blendSrc = static_cast<u32>(r.dwUnknown54);
+    st.blendDst = static_cast<u32>(r.dwUnknown58);
+    return st;
+}
 
 std::unique_ptr<D3SurfaceTable>
 BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
@@ -142,6 +172,16 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
         s.alphaBlend = (s.materialFlags & kMatFlagAlphaBlend) != 0;
         s.twoSided = (s.materialFlags & kMatFlagTwoSided) != 0;
         s.alphaTestThreshold = (s.materialFlags & kMatFlagAlphaTest) != 0 ? (1.0f / 255.0f) : 0.0f;
+
+        // The RenderPass overrides all three where it resolves, because that is
+        // where the original reads them: `dwMaterialFlags` is 0 on Imperius's
+        // wing material and the wings are alpha-blended with depth writes off.
+        s.pass = D3PassStateFor(*variant, cache);
+        if (s.pass.resolved) {
+            s.alphaBlend = s.pass.blendEnable;
+            s.twoSided = s.pass.cull == 1;
+            s.alphaTestThreshold = static_cast<f32>(s.pass.alphaRef) * (1.0f / 255.0f);
+        }
         // No embedded translucent material means the original had no
         // translucent Shaders id either, and skipped the sub-object outright
         // when it faded. §6.3.
@@ -157,28 +197,38 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
             pastCap += mat->arTextures.size() - kD3MaxTextureStages;
 
         for (const d3n::MaterialTextureEntry& entry : mat->arTextures) {
-            ++typeCounts[entry.dwTextureType];
+            const i32 type = D3TextureTypeOf(entry);
+            ++typeCounts[type];
 
-            const D3SlotKind kind = SlotOfType(entry.dwTextureType);
+            const D3SlotKind kind = D3SlotOfType(type);
             if (kind == D3SlotKind::Count)
                 continue;
 
             D3Slot& slot = s.slots[static_cast<u32>(kind)];
             if (slot.textureId >= 0)
-                continue; // first entry of a kind wins
-            slot.rawType = entry.dwTextureType;
+                continue; // a type never repeats inside a material, so this is a re-entry
+            slot.rawType = type;
             slot.textureId = TextureIdOf(textures, entry.snoTexture.id);
-            // UV set 0. `dwTextureFlags` was the obvious candidate for a set
-            // selector and measurement says it is not one: it reads 0x1 on
-            // every per-material entry and 0x2 on every shared-block entry, so
-            // it separates the two families rather than choosing a UV set.
-            // Reading bit 0 as "set 1" would put every D3 diffuse on the wrong
+            // UV set 0 always. The two candidate selectors both turned out to be
+            // something else — the field at 0x0C is the transform mode and the
+            // one at 0x98 a flags word — and nothing recovered picks a set.
+            // Reading either as "set 1" would put every D3 diffuse on the wrong
             // coordinates, and D3 authors both sets on every vertex, so nothing
             // about the geometry would say so.
             slot.uvSource = 0;
             slot.wrapFlags = 0x3;
-            if (UvMatrixIsAuthored(entry))
-                slot.uvTransform = UvMatrixOf(entry);
+
+            const auto uv = D3ReadUvXform(entry);
+            if (uv.mode == D3UvMode::Matrix) {
+                UvMatrixOf(entry, slot.uvTransform);
+            } else if (uv.mode == D3UvMode::ScaleRotateScroll) {
+                slot.uvTransform = D3UvMatrix(uv, 0.0f);
+                if (uv.animated)
+                    slot.uvTransformId = D3UvTransformId(g, kind);
+            }
+            // Modes 3..6 drive the coordinates from an Anim2D frame table, the
+            // camera or a bone; none is reproduced, and identity is what an
+            // unreproduced one has to be — 49 entries in the whole corpus.
             if (slot.textureId >= 0)
                 s.valid = true;
         }
@@ -195,7 +245,20 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
 core::SurfaceClass D3ClassifySurface(const D3Surface& surface) {
     core::SurfaceClass c;
     c.visible = surface.valid;
-    if (surface.alphaBlend)
+    // DEPTH WRITE is the discriminator, not the blend enable.
+    //
+    // 1,412 of the corpus's 1,831 passes enable blending, character bodies
+    // included — a shipped body pass is blend (5, 6) *and* alpha test at 192
+    // *and* depth write, which is a solid draw whose blend only softens a hair
+    // card's edge. Bucketing on the blend enable alone would put every D3
+    // character into the sorted transparent list, where it would be ordered
+    // against its own cape.
+    //
+    // The pass that genuinely cannot be depth-resolved is the one that says so:
+    // depth write off. That is Imperius's wings and Malthael's four wing
+    // layers, and not one body.
+    const bool sorted = surface.alphaBlend && !surface.pass.depthWrite;
+    if (sorted)
         c.blend = core::BlendClass::Transparent;
     else if (surface.alphaTestThreshold > 0.0f)
         c.blend = core::BlendClass::AlphaKey;

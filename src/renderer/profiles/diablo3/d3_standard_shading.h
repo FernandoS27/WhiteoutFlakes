@@ -109,10 +109,13 @@ private:
         u32 extraRtvCount = 0;
         u32 layoutId = 0;
         u32 stride = 0;
-        /// 0 opaque, 1 alpha blend. D3 has no per-material blend *table*: the
-        /// original swaps the whole shader between an opaque and a translucent
-        /// `Shaders` asset, and those are the two states that survive.
+        /// 0 opaque, 1 blended. The factors come with it: the RenderPass
+        /// states them (D3DBLEND) and they are not one pair — (5, 6) alpha and
+        /// (5, 2) additive are both common in shipped content.
         u8 blend = 0;
+        u32 blendSrc = 5;
+        u32 blendDst = 6;
+        bool depthWrite = true;
         bool skinned = false;
         bool twoSided = false;
 

@@ -32,3 +32,23 @@ Appearances/Cow_skeleton.app
 # its (dark red) texture said. Kept because it is the only corpus entry whose
 # materials push a lighting term past what the albedo can carry.
 Appearances/Diablo.app
+#
+# Added 2026-08-27, for the material work. Between them they are the only
+# entries whose materials carry more than one texture layer, a per-look
+# visibility rule, or a UV animation — the three things that were being read
+# off the wrong field.
+#
+#   Tyrael      three bodies (Stranger, Restored, skeleton) and two looks; drew
+#               all three at once, which put a skull through his head.
+#   Imperius    a four-layer scrolling wing material; the diffuse is type 1 and
+#               an arbitrary layer was being bound in its place.
+#   x1_Malthael four wing layers, NONE of which is type 0 — so under the old
+#               field reading his wings bound no texture at all.
+#
+# NOTE: this arm runs with no install, so the ShaderMap -> Shaders -> RenderPass
+# half (blend, cull, depth write, alpha reference) does NOT resolve here and the
+# wings record as opaque. That half is gated in d3_surface_table_test's
+# `[install]` case, and `--draw-trace-game d3` is what renders it for real.
+Appearances/Tyrael.app
+Appearances/Imperius.app
+Appearances/x1_Malthael.app

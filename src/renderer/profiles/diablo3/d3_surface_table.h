@@ -11,25 +11,17 @@
 // The texture entries are not an ordered layer list
 //
 // An UberMaterial is `{ snoShaderMap, MaterialColors, MaterialTextureEntry[] }`.
-// Each entry carries a `dwTextureType` — an `EMaterialTextureType` — and the
-// engine binds it to whichever *stage* of the bound pass declares that type
-// (Render_GetTextureStageSlot -> Render_SetTextureStageAsset). The enum's names
-// were stripped from the build, but every branch of
-// Render_ResolveMaterialTextureStages (0x71001DD980) names itself through the
-// core asset it falls back to:
+// Each entry carries an `EMaterialTextureType` and the engine binds it to
+// whichever *stage* of the bound pass declares that type
+// (Render_BindShaderPass builds `stageSlotMap[type] = stage` from the pass's
+// own stage list; Render_ResolveMaterialTextureStages walks it back). So the
+// join between a material and a pass is BY TYPE and never by position — which
+// is why the type is a LUT key that never repeats inside one material, and why
+// io/d3/d3_types.h owns the enum, the slot map and the reader for it.
 //
-//   2         Lightmap    -> default_lightmap (152)
-//   3, 47-52  NormalMap   -> flat_NM (96), the IDENTITY default
-//   8         Irradiance  -> irradiance (151)
-//   21 Vignette (144)  24 ShadowMask (150)  56 DyeRamp (154)  59 BannerDye (155)
-//   7, 9, 39, 60, 61   engine render targets (39 = the scene-colour copy)
-//   20, 22, 23, 53     computed per draw, no static default  [unresolved]
-//   default            the entry's own snoTexture
-//
-// So this is a slot table keyed by an **enum class**, never by a raw int:
-// EMaterialTextureType (stage types) and eShaderConstant (uniform slots)
-// overlap numerically and mean nothing to each other. Stage type 39 is the
-// scene-colour copy; eShaderConstant 39 is SpecularPower.
+// The pass is reached through `snoShaderMap`: a `.shm` tag map whose values are
+// `Shaders` ids, probed along a fixed chain. That is also where every piece of
+// render state lives — see D3PassState.
 //
 // ---------------------------------------------------------------------------
 // Twelve, not sixteen
@@ -65,22 +57,10 @@ namespace d3n = ::whiteout::sno::d3::native;
 
 /// @brief The slots the shading model consumes, in shader order.
 ///
-/// An enum class rather than the raw `dwTextureType`, deliberately — see the
-/// header note about the two overlapping small-int namespaces. Appending only:
-/// a slot's ordinal is the register its texture binds to.
-enum class D3SlotKind : u32 {
-    Diffuse = 0,
-    /// The type-3 family. Its unresolved default is `flat_NM` — the *identity*
-    /// normal, not black. Confusing the two makes every un-normal-mapped
-    /// surface face the viewer.
-    Normal,
-    Specular,
-    Emissive,
-    Lightmap,
-    Irradiance,
-    Count,
-};
-inline constexpr u32 kD3SlotCount = static_cast<u32>(D3SlotKind::Count);
+/// Defined beside the canonical texture list (io/d3/d3_types.h) because the two
+/// are one statement: the list is exactly "the textures some slot samples".
+using ::whiteout::flakes::io::D3SlotKind;
+using ::whiteout::flakes::io::kD3SlotCount;
 
 /// @brief matTex0..matTex11 — the ceiling the per-draw flush enforces.
 inline constexpr u32 kD3MaxTextureStages = 12;
@@ -92,13 +72,44 @@ struct D3Slot {
     i32 textureId = -1;
     u8 uvSource = 0; ///< Which of the two UV sets.
     u32 wrapFlags = 0x3;
-    /// vUvRow0..3 — the engine's matTexN. Identity for the overwhelming
-    /// majority; carried because a scrolling material is otherwise silently
-    /// still.
+    /// The engine's matTexN at rest — the transform with the clock stopped.
     Matrix44f uvTransform = Matrix44f::identity();
-    /// The raw dwTextureType this came from, for diagnostics only. Never
-    /// switched on — that is what D3SlotKind is for.
+    /// @brief Index into `RenderableView::texAnimPalette`, or -1 when this slot
+    ///        does not move.
+    ///
+    /// The animated half does not live here — the table is the static one by
+    /// contract (core/surface_table.h) — so a scrolling slot names a palette
+    /// entry the adapter refills every frame and the shading model prefers it
+    /// over `uvTransform`. Same seam `.m3` layers use.
+    i32 uvTransformId = -1;
+    /// The `EMaterialTextureType` this came from, for diagnostics. Never
+    /// switched on outside D3SlotOfType.
     i32 rawType = 0;
+};
+
+/// @brief The render state a Diablo III material does not carry.
+///
+/// Blend, cull, depth and the alpha-test reference are all properties of the
+/// bound *RenderPass*, reached through the sub-object's ShaderMap: `.shm` is a
+/// tag map whose values are `Shaders` ids, `ShaderMap_ResolveShaderOpaque`
+/// probes a fixed tag chain and takes the first that resolves, and
+/// `Render_ApplyPassRenderState` (0x71001DBC80) replays the pass's fields onto
+/// the device. `MaterialColors::dwMaterialFlags` was standing in for all of it
+/// and is 0 on most of the content that needs blending — Imperius's wings among
+/// them.
+///
+/// The values are D3D9 enums, which the corpus confirms: cull takes only
+/// {1 none, 2 CW, 3 CCW}, the depth compare only {4 LessEqual, 6 GreaterEqual,
+/// 8 Always}, the blend op only ADD, and the (src, dst) pairs are led by
+/// (5, 6) SrcAlpha/InvSrcAlpha on 1,029 passes and (5, 2) SrcAlpha/One on 283.
+struct D3PassState {
+    bool resolved = false; ///< False = nothing was found; the material flags stand.
+    bool blendEnable = false;
+    u32 blendSrc = 5; ///< D3DBLEND
+    u32 blendDst = 6;
+    bool depthWrite = true;
+    u32 cull = 2;      ///< D3DCULL: 1 none, 2 CW, 3 CCW.
+    u8 alphaRef = 0;   ///< 0..255; 0 = no alpha test.
 };
 
 struct D3Surface {
@@ -111,14 +122,15 @@ struct D3Surface {
     /// that behaviour is this: a sub-object with no translucent variant
     /// disappears when faded instead of popping to opaque.
     bool noTranslucentVariant = false;
-    /// Cull mode is a *pass* property in the original, not a material one, so
-    /// v1 culls back faces uniformly and this is the per-surface override for
-    /// the inevitable two-sided cape.
+    /// Cull mode is a *pass* property in the original, and now comes from
+    /// there: 713 of the corpus's 1,831 passes ask for no culling at all.
     bool twoSided = false;
-    /// RenderPass+60 x 1/255 in the original. We have no RenderPass, so this
-    /// comes from the material flags and defaults to 0 (off).
+    /// RenderPass+60 x 1/255 in the original — now read from there when the
+    /// ShaderMap resolves, and from the material flags when it does not.
     f32 alphaTestThreshold = 0.0f;
     bool alphaBlend = false;
+    /// The pass this sub-object binds, when its ShaderMap resolved.
+    D3PassState pass;
 
     // MaterialColors, verbatim: a fixed-function material and nothing more.
     Vector4f diffuse = {1.0f, 1.0f, 1.0f, 1.0f};
@@ -160,7 +172,7 @@ private:
     std::vector<D3Surface> surfaces_;
 };
 
-/// @brief How many entries of each raw `dwTextureType` a build saw.
+/// @brief How many entries of each `EMaterialTextureType` a build saw.
 ///
 /// Reported rather than asserted: an unrecognised type is content, and the
 /// histogram is what turns "some slot is empty" into a number. The surface-table
@@ -189,6 +201,13 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
                     std::span<const ::whiteout::flakes::io::D3SubObjectRef> emitted,
                     ::whiteout::flakes::io::D3SnoCache* cache,
                     std::span<const u32> lookByGeoset = {}, D3TypeCensus* census = nullptr);
+
+/// @brief Resolve @p variant's ShaderMap to the render state of its first pass.
+///
+/// Returns an unresolved state — every caller then keeps the material flags —
+/// when there is no cache, no ShaderMap, or nothing on the tag chain.
+D3PassState D3PassStateFor(const d3n::SubObjectAppearance& variant,
+                           ::whiteout::flakes::io::D3SnoCache* cache);
 
 /// @brief Which bucket a surface draws in.
 ///

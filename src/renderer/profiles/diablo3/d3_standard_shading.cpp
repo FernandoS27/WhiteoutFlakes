@@ -38,17 +38,67 @@ f32 SrgbToLinear(f32 c) {
 
 using BF = gfx::BlendFactor;
 
-// Two states, not a table. D3 routes fade, dissolve and stealth by swapping the
-// whole *shader* — `ActorModel_EmitSubObjectDrawCalls` picks `rec[24]` (opaque)
-// or `rec[28]` (translucent) and skips the sub-object outright when the chosen
-// id is -1 — so there is no per-material blend enum to transcribe. What
-// survives translation is the opaque/translucent split itself.
 constexpr gfx::BlendDesc kD3Opaque = {.enable = false};
 constexpr gfx::BlendDesc kD3AlphaBlend = {.enable = true,
                                           .srcColor = BF::SrcAlpha,
                                           .dstColor = BF::InvSrcAlpha,
                                           .srcAlpha = BF::One,
                                           .dstAlpha = BF::InvSrcAlpha};
+
+// D3DBLEND, which is what a RenderPass stores. The corpus never leaves the
+// enum: over 1,831 shipped passes the source takes only {1, 2, 5, 9, 11} and
+// the destination only {1, 2, 5, 6, 9, 10}, and the blend OP is ADD on every
+// one of them. The pairs are led by (5, 6) SrcAlpha/InvSrcAlpha on 1,029 passes
+// and (5, 2) SrcAlpha/One — additive — on 283.
+//
+// SrcAlphaSat (11, 58 passes) has no equivalent in this gfx layer; SrcAlpha is
+// the nearest and differs only where the destination is already saturated.
+gfx::BlendFactor D3BlendFactor(u32 d3d, gfx::BlendFactor fallback) {
+    switch (d3d) {
+    case 1:
+        return BF::Zero;
+    case 2:
+        return BF::One;
+    case 3:
+        return BF::SrcColor;
+    case 4:
+        return BF::InvSrcColor;
+    case 5:
+    case 11:
+        return BF::SrcAlpha;
+    case 6:
+        return BF::InvSrcAlpha;
+    case 7:
+        return BF::DstAlpha;
+    case 8:
+        return BF::InvDstAlpha;
+    case 9:
+        return BF::DstColor;
+    case 10:
+        return BF::InvDstColor;
+    default:
+        return fallback;
+    }
+}
+
+// The animated UV transform for a slot, or the table's resting one. Same seam
+// `.m3` layers use: the palette entry is a 2x4 affine (`u' = row0.x*u +
+// row0.y*v + row0.w`), and widening it to a 4x4 loses nothing because the
+// shader feeds (u, v, 0, 1) and reads .xy back.
+Matrix44f D3SlotUvMatrix(const render_detail::RenderableView& view, const D3Slot& slot) {
+    if (slot.uvTransformId < 0 || !view.texAnimPalette ||
+        static_cast<usize>(slot.uvTransformId) >= view.texAnimPalette->size())
+        return slot.uvTransform;
+    const auto& e = (*view.texAnimPalette)[static_cast<usize>(slot.uvTransformId)];
+    Matrix44f m = Matrix44f::identity();
+    m.data[0][0] = e.row0[0];
+    m.data[1][0] = e.row0[1];
+    m.data[3][0] = e.row0[3];
+    m.data[0][1] = e.row1[0];
+    m.data[1][1] = e.row1[1];
+    m.data[3][1] = e.row1[3];
+    return m;
+}
 
 } // namespace
 
@@ -197,12 +247,18 @@ gfx::PipelineHandle D3StandardShading::GetOrBuildPso(const PsoKey& key) {
     desc.inputSlotStrides[0] = key.stride;
     desc.inputSlotStrides[1] = sizeof(BoneVertex);
     desc.topology = gfx::PrimitiveTopology::TriangleList;
-    desc.blend = (key.blend != 0) ? kD3AlphaBlend : kD3Opaque;
+    if (key.blend != 0) {
+        desc.blend = kD3AlphaBlend;
+        desc.blend.srcColor = D3BlendFactor(key.blendSrc, BF::SrcAlpha);
+        desc.blend.dstColor = D3BlendFactor(key.blendDst, BF::InvSrcAlpha);
+    } else {
+        desc.blend = kD3Opaque;
+    }
     desc.depthStencil.depthTest = true;
-    desc.depthStencil.depthWrite = key.blend == 0;
+    desc.depthStencil.depthWrite = key.depthWrite;
     desc.depthStencil.depthCompare = gfx::CompareOp::LessEqual;
-    // Cull mode is a *pass* property in the original, not a material one, so
-    // back faces are culled uniformly and the per-surface flag is the override.
+    // Cull mode is a *pass* property in the original, and the surface now reads
+    // it from there: 713 of the corpus's 1,831 passes ask for none.
     desc.rasterizer.cull = key.twoSided ? gfx::CullMode::None : gfx::CullMode::Back;
     desc.rasterizer.frontCCW = true;
     desc.rtvFormat = key.rtv;
@@ -346,6 +402,12 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     key.layoutId = geo.layoutId;
     key.stride = geo.baseStride;
     key.blend = (surf->alphaBlend || elementAlpha < 1.0f) ? 1u : 0u;
+    key.blendSrc = surf->pass.resolved ? surf->pass.blendSrc : 5u;
+    key.blendDst = surf->pass.resolved ? surf->pass.blendDst : 6u;
+    // A pass that blends and still writes depth is real (436 of 1,412), so this
+    // is the pass's own answer where there is one. Without a pass, the old rule
+    // stands: blended geometry does not write depth.
+    key.depthWrite = surf->pass.resolved ? surf->pass.depthWrite : (key.blend == 0);
     key.twoSided = surf->twoSided;
     gfx::BufferHandle paletteCb = gfx::BufferHandle::Invalid;
     key.skinned = ResolveSkinned(*item.view, geo, paletteCb);
@@ -366,7 +428,7 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
         c->matAmbient = surf->ambient;
         for (u32 i = 0; i < kSlotCount; ++i) {
             const D3Slot& s = surf->slots[i];
-            c->slotUv[i] = s.uvTransform.transpose();
+            c->slotUv[i] = D3SlotUvMatrix(*item.view, s).transpose();
             const bool resolved = s.textureId >= 0 && item.view->textures &&
                                   item.view->textures->Get(s.textureId) !=
                                       gfx::TextureHandle::Invalid;
