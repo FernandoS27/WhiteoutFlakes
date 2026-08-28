@@ -118,6 +118,10 @@ public:
     std::shared_ptr<const d3n::AnimSet> AnimSet(i32 sno);
     std::shared_ptr<const d3n::Material> Material(i32 sno);
     std::shared_ptr<const d3n::Physics> Physics(i32 sno);
+    /// The `.clt` cloth *tuning*. The cloth GEOMETRY is baked into the
+    /// Appearance's SubObjects, so this is the only asset a cloth needs beyond
+    /// the model it hangs off.
+    std::shared_ptr<const d3n::Cloth> Cloth(i32 sno);
     /// The `.shm` tag map and the `.shd` it resolves to. Together they carry
     /// the render state a material does not: blend, cull, depth and the
     /// alpha-test reference all live on the Shaders asset's RenderPass, never
@@ -133,6 +137,18 @@ public:
     /// read on the very first load.
     std::shared_ptr<const d3n::Actor> AdoptActor(i32 sno, std::span<const u8> bytes);
     std::shared_ptr<const d3n::Appearances> AdoptAppearance(i32 sno, std::span<const u8> bytes);
+
+    /// @brief The raw bytes of @p sno, read fresh and **not** cached.
+    ///
+    /// The one thing the parsed tree cannot answer: a `CollisionShape`'s cooked
+    /// polytope is a header holding four more payload references, and resolving
+    /// them needs the file the offsets are relative to. The cache stores parsed
+    /// values, not bytes, and holding a second copy of a 37 MB `.app` to serve
+    /// one caller would undo the budget the LRU exists to keep.
+    ///
+    /// So this deliberately re-reads. It is called once per model load, by the
+    /// collision builder; anything calling it per frame is using it wrong.
+    std::vector<u8> ReadBytes(i32 sno);
 
     /// @brief Which group @p sno is, reading it through the cache if needed.
     d3n::Group GroupOf(i32 sno);

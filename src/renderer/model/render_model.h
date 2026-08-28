@@ -62,6 +62,9 @@ struct StagedGeoset {
     ///        GPUGeoset at upload. Count 0 is the whole-geoset default.
     u32 surfaceBegin = 0;
     u32 surfaceCount = 0;
+
+    /// @brief `MeshData::deformable` — retain the bytes past upload.
+    bool deformable = false;
 };
 
 struct GPUGeoset {
@@ -84,6 +87,16 @@ struct GPUGeoset {
 
     bool hasSkinning = false;
 
+    /// @brief Per-frame rebuilt copy of the Base stream, or Invalid.
+    ///
+    /// When set it replaces @ref unskinnedVb for the draw and `hasSkinning` is
+    /// forced off, because a deformed vertex is already posed. The static
+    /// buffer is kept rather than replaced: the deform can stop (a look change
+    /// drops the cloth) and the geoset has to go back to being skinned.
+    gfx::BufferHandle deformVb = gfx::BufferHandle::Invalid;
+    /// True while @ref deformVb holds this frame's geometry.
+    bool deformActive = false;
+
     // Byte stride of the Base stream, and which interned layout describes
     // it. WC3 leaves these at `sizeof(Vertex)` / kWc3Interleaved; a geoset
     // uploaded from a MeshBuffer carries that buffer's own stride and its
@@ -98,7 +111,7 @@ struct GPUGeoset {
     gfx::BufferHandle Stream(core::StreamId s) const {
         switch (s) {
         case core::StreamId::Base:
-            return unskinnedVb;
+            return deformActive ? deformVb : unskinnedVb;
         case core::StreamId::BaseUv1:
             return unskinnedVb1;
         case core::StreamId::Tangent:
@@ -139,6 +152,11 @@ struct GPUGeoset {
             gfx.Destroy(boneVb);
         }
         gfx.Destroy(bonePaletteCb);
+        // Per-instance whatever the template says, like `bonePaletteCb`: a
+        // shared geoset is shared geometry, and a deform is this actor's.
+        gfx.Destroy(deformVb);
+        deformVb = gfx::BufferHandle::Invalid;
+        deformActive = false;
         ib = gfx::BufferHandle::Invalid;
         unskinnedVb = gfx::BufferHandle::Invalid;
         unskinnedVb1 = gfx::BufferHandle::Invalid;
@@ -225,6 +243,14 @@ struct RenderModel {
     i32 ribbonVBSize = 0;
     std::vector<CollisionShape> collisionShapes;
     std::vector<ClothOverlay> cloths;
+
+    /// @brief The retained upload bytes of every `deformable` geoset, keyed by
+    ///        geoset id. Only positions and normals are ever overwritten, so
+    ///        this is what supplies every other attribute each frame.
+    std::unordered_map<i32, std::vector<u8>> deformStaging;
+    /// @brief This frame's deforms, copied out of `FrameState` by
+    ///        `ApplyFrameState` and drained by the pipeline's upload.
+    std::vector<FrameState::GeosetDeform> pendingDeforms;
 
     std::unordered_map<i32, TexAnimData> matTexAnim;
 

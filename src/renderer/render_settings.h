@@ -104,6 +104,18 @@ public:
         physicsSubstepping_ = v;
     }
 
+    /// @brief Whether a solver may rewrite a geoset's vertices for the draw.
+    ///
+    /// Not an overlay: this one changes the picture. Off falls the deformed
+    /// geosets back to their skinning, which is the only way to see a cloth
+    /// solver's contribution as a difference rather than as an absolute.
+    bool ClothDeform() const {
+        return clothDeform_;
+    }
+    void SetClothDeform(bool v) {
+        clothDeform_ = v;
+    }
+
     bool ShowPhysicsCloth() const {
         return showPhysicsCloth_;
     }
@@ -608,6 +620,7 @@ private:
     bool showPhysicsKinematic_ = false;
     bool showPhysicsStatic_ = false;
     bool showPhysicsCloth_ = false;
+    bool clothDeform_ = true;
     bool physicsSubstepping_ = true;
     bool poseSolvers_ = false;
     GroundQuery groundQuery_;

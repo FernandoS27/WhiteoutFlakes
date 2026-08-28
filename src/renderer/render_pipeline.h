@@ -334,6 +334,9 @@ private:
     // Build every actor's ribbon strips into their per-actor VBs and surface one
     // RibbonDrawUnit per emitter (with a world sort origin); `outFrame` is the
     // shared effect frame. DrawRibbonStrip renders one unit interleaved.
+    /// @brief Rewrite every geoset a pose stage rebuilt this frame into its
+    ///        own CPU-writable vertex buffer, and mark it unskinned.
+    void UploadGeosetDeforms();
     void PrepareRibbons(std::vector<RibbonDrawUnit>& out, bls::FrameInputs& outFrame);
     void DrawRibbonStrip(const RibbonDrawUnit& u, const bls::FrameInputs& frame);
     void ApplyIblMode(IblMode mode);

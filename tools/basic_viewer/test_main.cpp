@@ -15,6 +15,9 @@
 #if WDX_ENABLE_M3
 #include "io/m3/m3_model_adapter.h"
 #endif
+#if WDX_ENABLE_D3
+#include "io/d3/d3_model_adapter.h"
+#endif
 #include "localization.h"
 #include "log_console.h"
 #include "settings_ini.h"
@@ -376,6 +379,14 @@ struct AnimScenario {
     ///        solvers.
     bool hasAim = false;
     Vector3f aim{0.0f, 0.0f, 0.0f};
+    // Collapse a Diablo III rigid rig, after the settle.
+    //
+    // D3 builds this on a gameplay event, not at load (d3_physics.h), so there
+    // is nothing to see until something arms it — and "nothing to see" is
+    // exactly what a rig that failed to build looks like too. This is the host
+    // half of that switch, and the only way a capture can tell the two apart.
+    bool ragdoll = false;
+
     // Print the skinning plumbing and a per-frame pose hash.
     //
     // Earns its place because the failure this gate is most likely to hit is
@@ -388,7 +399,7 @@ struct AnimScenario {
 
     bool Any() const {
         return !sequence.empty() || switchFrame >= 0 || layerFrame >= 0 || noGlobals || list ||
-               probe || solvers;
+               probe || solvers || ragdoll;
     }
 };
 
@@ -745,6 +756,25 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
                   << (anim.hasAim ? ", aiming" : ", no aim target") << ", "
                   << hero->animation.PoseStages().size() << " stage(s)" << std::endl;
     }
+
+#if WDX_ENABLE_D3
+    if (anim.ragdoll) {
+        std::size_t armed = 0;
+        for (auto* a : spawned) {
+            if (auto* d3 = dynamic_cast<wf::io::D3ModelAdapter*>(a->animation.Source().get())) {
+                if (d3->HasPhysicsRig()) {
+                    d3->SetRagdoll(true);
+                    ++armed;
+                }
+            }
+        }
+        // The rig count is the difference between "this model has no rig" and
+        // "the rig was armed and did not move" — two very different reasons for
+        // a capture to look like its animation.
+        std::cout << "[dtrace] scenario: ragdoll armed on " << armed << " actor(s), "
+                  << hero->animation.PoseStages().size() << " stage(s)" << std::endl;
+    }
+#endif
 
     // Everything between the sampler and the bound palette, in the order it has
     // to hold. Any `no` here explains a frozen model on its own.
@@ -1237,6 +1267,7 @@ int main(int argc, char* argv[]) {
     bool drawTrace = false;
     bool drawTraceHd = false;
     bool drawTraceUnlit = false;
+    bool noClothDeform = false;
     bool drawTraceNoRefraction = false;
     bool drawTraceNoMultiTex = false;
     bool drawTraceRefractionMask = false;
@@ -1288,6 +1319,11 @@ int main(int argc, char* argv[]) {
     whiteout::flakes::ExportFormat exportFmt = whiteout::flakes::ExportFormat::PngFrames;
     bool exportTransparent = false;
     bool exportCaptureUi = false;
+    /// Force the collision-shape overlay on for this run. The menu item is the
+    /// real control; this exists so a headless capture can show the colliders,
+    /// which is the only way to check a shape decode — a sphere read as a box
+    /// is obvious on screen and invisible to every numeric gate.
+    bool showCollisions = false;
     i32 exportResW = 0;
     i32 exportResH = 0;
     i32 exportCamera = -1; // -1 = free camera; >= 0 = model camera preset index
@@ -1349,6 +1385,8 @@ int main(int argc, char* argv[]) {
             exportTransparent = true;
         } else if (std::strcmp(a, "--ui") == 0) {
             exportCaptureUi = true;
+        } else if (std::strcmp(a, "--show-collisions") == 0) {
+            showCollisions = true;
         } else if (std::strcmp(a, "--res") == 0 && i + 2 < argc) {
             exportResW = std::atoi(argv[++i]);
             exportResH = std::atoi(argv[++i]);
@@ -1384,6 +1422,8 @@ int main(int argc, char* argv[]) {
             drawTraceHd = true;
         } else if (std::strcmp(a, "--draw-trace-unlit") == 0) {
             drawTraceUnlit = true;
+        } else if (std::strcmp(a, "--no-cloth-deform") == 0) {
+            noClothDeform = true;
         } else if (std::strcmp(a, "--draw-trace-no-refraction") == 0) {
             drawTraceNoRefraction = true;
         } else if (std::strcmp(a, "--draw-trace-refraction-mask") == 0) {
@@ -1432,6 +1472,8 @@ int main(int argc, char* argv[]) {
             drawTraceAnim.probe = true;
         } else if (std::strcmp(a, "--draw-trace-solvers") == 0) {
             drawTraceAnim.solvers = true;
+        } else if (std::strcmp(a, "--draw-trace-ragdoll") == 0) {
+            drawTraceAnim.ragdoll = true;
         } else if (std::strcmp(a, "--draw-trace-ground") == 0 && i + 1 < argc) {
             drawTraceAnim.groundZ = static_cast<f32>(std::atof(argv[++i]));
         } else if (std::strcmp(a, "--draw-trace-aim") == 0 && i + 3 < argc) {
@@ -1666,6 +1708,12 @@ int main(int argc, char* argv[]) {
                                particleTraceCheck, particleDiffFrames, particleDiffCurveTol,
                                particleDiffDevice);
 
+    // Before the trace, not with the interactive switches below: RunDrawTrace
+    // returns without ever reaching them, and nothing between here and it
+    // reloads the settings block.
+    if (noClothDeform)
+        renderer.Settings().SetClothDeform(false);
+
     if (drawTrace)
         return RunDrawTrace(renderer, scene, backend, mdxPath, drawTraceRecord, drawTraceCheck,
                             drawTraceGolden, particleDiffFrames, drawTraceHd, drawTraceDistanceTol,
@@ -1713,6 +1761,13 @@ int main(int argc, char* argv[]) {
     // app so it records the product as configured: after this, switching onto
     // it must not re-apply (see ViewerApp::ApplyProfile).
     app.ApplyProfile(app.SettingsProfile(), /*force=*/true);
+
+    // After the profile, because loading settings overwrites the flag block.
+    if (showCollisions) {
+        auto df = renderer.Settings().GetDisplayFlags();
+        df.showCollisions = true;
+        renderer.Settings().SetDisplayFlags(df);
+    }
 
     // NFD is also used by Settings > IO (folder picker) and File > Open
     // (re-opened from the menu bar), so initialise it unconditionally rather

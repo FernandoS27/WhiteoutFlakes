@@ -1356,6 +1356,9 @@ if(WDX_ENABLE_D3)
         src/io/d3/d3_model_adapter.cpp
         src/io/d3/d3_sno_cache.cpp
         src/renderer/profiles/diablo3/d3_character_appearance.cpp
+        # Collision primitives as DATA — no solver, so it is not behind
+        # WDX_ENABLE_PHYSICS. It is also the cheapest test of the shape decode.
+        src/renderer/profiles/diablo3/d3_collision.cpp
         src/renderer/profiles/diablo3/d3_standard_shading.cpp
         src/renderer/profiles/diablo3/d3_surface_table.cpp
     )
@@ -1368,11 +1371,13 @@ endif()
 # Everything the option adds is behind WDX_HAS_PHYSICS, and the rigid-body path
 # simply does not exist when it is off rather than compiling to a stub.
 #
-# One engine, two hosts, one profile source file each — WoW's `.phys` and
-# StarCraft II's PHRB/PHYJ share Snowball and essentially nothing above it (see
-# each file's header). Whichever formats are enabled bring their own glue; with
-# neither there is nothing to drive and Snowball is not built at all.
-if(WDX_ENABLE_PHYSICS AND (WDX_ENABLE_M2 OR WDX_ENABLE_M3))
+# One engine, three hosts, one profile source file each — WoW's `.phys`,
+# StarCraft II's PHRB/PHYJ and Diablo III's per-bone collision shapes share
+# Snowball and essentially nothing above it (see each file's header): three
+# gravity constants, three step policies, and in D3's case no kinematic body at
+# all. Whichever formats are enabled bring their own glue; with none of them
+# there is nothing to drive and Snowball is not built at all.
+if(WDX_ENABLE_PHYSICS AND (WDX_ENABLE_M2 OR WDX_ENABLE_M3 OR WDX_ENABLE_D3))
     add_subdirectory(src/renderer/physics/snowball EXCLUDE_FROM_ALL)
     if(WDX_ENABLE_M2)
         target_sources(WhiteoutFlakesLib PRIVATE
@@ -1383,6 +1388,16 @@ if(WDX_ENABLE_PHYSICS AND (WDX_ENABLE_M2 OR WDX_ENABLE_M3))
         target_sources(WhiteoutFlakesLib PRIVATE
             src/renderer/profiles/sc2_heroes/sc2_physics.cpp
             src/renderer/profiles/sc2_heroes/sc2_cloth.cpp
+        )
+    endif()
+    if(WDX_ENABLE_D3)
+        target_sources(WhiteoutFlakesLib PRIVATE
+            src/renderer/profiles/diablo3/d3_physics.cpp
+            # Cloth is NOT Snowball -- D3's is a game-side solver and the 2.6.2
+            # image has no `dmCloth` anything. It sits under this option only
+            # because "simulation" is the subsystem a user turns off, not
+            # because it links against the engine.
+            src/renderer/profiles/diablo3/d3_cloth.cpp
         )
     endif()
     target_link_libraries(WhiteoutFlakesLib PRIVATE snowball)

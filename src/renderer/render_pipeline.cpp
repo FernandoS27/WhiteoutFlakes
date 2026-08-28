@@ -63,7 +63,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 #include <numbers>
 
@@ -581,6 +580,95 @@ bool RenderPipeline::RenderSplatsBls() {
         cmd->Draw(dl.vertexCount, dl.vertexOffset);
     }
     return true;
+}
+
+void RenderPipeline::UploadGeosetDeforms() {
+    // Diablo III's cloth reaches the screen as a **CPU vertex deform**: the
+    // client rebuilds the sub-object's whole vertex stream every frame from the
+    // simulated positions and draws the result unskinned. There is no bone for
+    // a free cloth vertex to ride, so there is nothing a palette could do.
+    //
+    // Two attributes move — position and normal — and the other four come out
+    // of the retained upload bytes. The buffer is rewritten whole rather than
+    // patched in place because a CPU-writable buffer is ring-allocated: each
+    // frame maps a different slot whose other bytes are undefined, so a partial
+    // write would leave the UVs as garbage every second frame.
+    for (auto& [h, miPtr] : rs_.Scene().Actors().All()) {
+        auto* mi = miPtr.get();
+        // Cleared first, unconditionally: a geoset that stops being deformed
+        // has to go back to its static buffer and its skinning in the same
+        // frame, and the only place that is known is here.
+        for (auto& geo : mi->render.gpuGeosets)
+            geo.deformActive = false;
+        // Cleared above first, so switching the deform off puts every geoset
+        // back on its skinning in the same frame rather than freezing it at the
+        // last simulated shape.
+        if (!rs_.Settings().ClothDeform() || mi->render.pendingDeforms.empty()) {
+            mi->render.pendingDeforms.clear();
+            continue;
+        }
+
+        for (const auto& d : mi->render.pendingDeforms) {
+            auto staging = mi->render.deformStaging.find(d.geoset);
+            if (staging == mi->render.deformStaging.end() || d.positions.empty())
+                continue;
+            GPUGeoset* geo = nullptr;
+            for (auto& g : mi->render.gpuGeosets)
+                if (g.geosetId == d.geoset) {
+                    geo = &g;
+                    break;
+                }
+            if (!geo || geo->baseStride == 0)
+                continue;
+            std::vector<u8>& bytes = staging->second;
+            const std::size_t stride = geo->baseStride;
+            const std::size_t count = (std::min)(bytes.size() / stride, d.positions.size());
+            if (count == 0)
+                continue;
+
+            // The offsets come out of the interned layout rather than being
+            // assumed: this happens to be D3's 64-byte record with position at
+            // 0 and normal at 12, and a second deforming format with a
+            // different one should show up as a geoset that does not deform,
+            // never as one whose UVs have been overwritten with positions.
+            i32 posOff = -1;
+            i32 nrmOff = -1;
+            for (const auto& a : VertexLayouts().Attributes(geo->layoutId)) {
+                if (a.format != gfx::Format::R32G32B32_FLOAT || a.semanticIndex != 0)
+                    continue;
+                if (a.semantic == core::VertexSemantic::Position)
+                    posOff = static_cast<i32>(a.offset);
+                else if (a.semantic == core::VertexSemantic::Normal)
+                    nrmOff = static_cast<i32>(a.offset);
+            }
+            if (posOff < 0 || static_cast<std::size_t>(posOff) + sizeof(Vector3f) > stride)
+                continue;
+
+            for (std::size_t i = 0; i < count; ++i) {
+                u8* rec = bytes.data() + i * stride;
+                std::memcpy(rec + posOff, &d.positions[i], sizeof(Vector3f));
+                if (nrmOff >= 0 && static_cast<std::size_t>(nrmOff) + sizeof(Vector3f) <= stride &&
+                    i < d.normals.size())
+                    std::memcpy(rec + nrmOff, &d.normals[i], sizeof(Vector3f));
+            }
+
+            if (geo->deformVb == gfx::BufferHandle::Invalid) {
+                gfx::BufferDesc bd;
+                bd.size = (u32)bytes.size();
+                bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
+                bd.ringSlotsHint = 4;
+                geo->deformVb = impl_->gfx_->CreateBuffer(bd);
+            }
+            if (geo->deformVb == gfx::BufferHandle::Invalid)
+                continue;
+            if (void* mapped = impl_->gfx_->MapBuffer(geo->deformVb)) {
+                std::memcpy(mapped, bytes.data(), bytes.size());
+                impl_->gfx_->UnmapBuffer(geo->deformVb);
+                geo->deformActive = true;
+            }
+        }
+        mi->render.pendingDeforms.clear();
+    }
 }
 
 void RenderPipeline::PrepareRibbons(std::vector<RibbonDrawUnit>& out, bls::FrameInputs& outFrame) {
@@ -3087,6 +3175,9 @@ void RenderPipeline::RenderTransparentScene() {
         }
         haveParticles = !partDraws.empty();
     }
+
+    // --- CPU vertex deforms: rebuild any geoset a solver drives this frame ---
+    UploadGeosetDeforms();
 
     // --- Ribbons: build each actor's strips into its per-actor VB ---
     std::vector<RibbonDrawUnit> ribbonUnits;

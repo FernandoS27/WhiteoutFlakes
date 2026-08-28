@@ -1029,6 +1029,29 @@ void ViewerUI::BuildMenuBar() {
                         SaveIni(app_);
                     }
                 }
+
+                // Not an overlay: this one changes the picture. A cloth solver
+                // is only judgeable as a difference, so the host needs a way to
+                // put the geoset back on its skinning without a rebuild.
+                ImGui::Separator();
+                {
+                    const bool on = svc.Settings().ClothDeform();
+                    if (ImGui::MenuItem(i18n::tr("menu.debug.physics.deform"), nullptr, on)) {
+                        svc.Settings().SetClothDeform(!on);
+                        SaveIni(app_);
+                    }
+                }
+
+                // Everything above draws; this one *runs*. D3 builds a ragdoll
+                // on a gameplay event no model file carries, so the host is the
+                // only place it can come from. Per-actor, hence not saved to
+                // the ini, and greyed rather than hidden so a model without a
+                // rig still shows that the viewer has one.
+                ImGui::Separator();
+                const bool hasRig = app_.HasD3Ragdoll();
+                if (ImGui::MenuItem(i18n::tr("menu.debug.physics.ragdoll"), nullptr,
+                                    hasRig && app_.D3Ragdoll(), hasRig))
+                    app_.SetD3Ragdoll(!app_.D3Ragdoll());
                 ImGui::EndMenu();
             }
             ImGui::Separator();

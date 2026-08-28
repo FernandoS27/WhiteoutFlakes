@@ -1001,6 +1001,49 @@ void ViewerApp::SetD3CharacterExtra(u32 geoset, bool shown) {
 #endif
 }
 
+// The ragdoll switch goes straight to the adapter rather than through
+// `D3Characters`: the rig is not a wardrobe, and the models that carry one are
+// mostly not characters — 2,367 breakables against 570 skeletons.
+
+bool ViewerApp::HasD3Ragdoll() const {
+#if WDX_ENABLE_D3
+    auto& svc = const_cast<ViewerApp*>(this)->service_;
+    auto adapter = svc.Loader().D3AdapterOf(focusActor_);
+    if (!adapter)
+        return false;
+    // A rig exists when some bone would get a dynamic body at the lod the
+    // adapter builds at, which is exactly what makes it append a stage. Asked
+    // of the adapter rather than recomputed here so the button and the stage
+    // cannot disagree.
+    //
+    // That lod is 1, so this is true for the 570 models carrying a character
+    // proxy and false for the 2,367 breakables — which is faithful: a breakable
+    // collapses through the *other* builder in the client, and that one is PH3.
+    return adapter->HasPhysicsRig();
+#else
+    return false;
+#endif
+}
+
+bool ViewerApp::D3Ragdoll() const {
+#if WDX_ENABLE_D3
+    auto& svc = const_cast<ViewerApp*>(this)->service_;
+    auto adapter = svc.Loader().D3AdapterOf(focusActor_);
+    return adapter && adapter->IsRagdoll();
+#else
+    return false;
+#endif
+}
+
+void ViewerApp::SetD3Ragdoll(bool on) {
+#if WDX_ENABLE_D3
+    if (auto adapter = service_.Loader().D3AdapterOf(focusActor_))
+        adapter->SetRagdoll(on);
+#else
+    (void)on;
+#endif
+}
+
 void ViewerApp::RestyleD3() {
 #if WDX_ENABLE_D3
     // A reload is the fallback and not the path: what a character wears is not

@@ -22,6 +22,7 @@
 #include <array>
 #include <functional>
 #include <string>
+#include <span>
 #include <vector>
 
 // ----------------------------------------------------------------------------
@@ -495,6 +496,15 @@ struct MeshData {
     /// out of the blob instead would be the renderer decoding a buffer it
     /// just promised not to decode.
     MeshBuffer baked;
+
+    /// @brief A solver rebuilds this geoset's positions and normals every
+    ///        frame, so the renderer must keep the upload bytes to patch.
+    ///
+    /// Costs one retained CPU copy of the vertex stream per marked geoset and
+    /// nothing at all for the rest, which is why it is opt-in rather than
+    /// inferred: only Diablo III's cloth sets it, and only on the two or three
+    /// sub-objects of a model that carry a `ClothStructure`.
+    bool deformable = false;
 };
 
 /// @brief Sentinel layer-textureId meaning "synthesize the team-colour
@@ -899,6 +909,36 @@ struct FrameState {
     /// write-back — an inactive cloth stops feeding the mesh entirely rather
     /// than simulating into a hidden buffer.
     std::vector<u8> clothActive;
+
+    /// @brief Per-cloth simulated particle positions, model space, in the same
+    ///        order as the model's @ref ClothOverlayData list.
+    ///
+    /// Written by a pose stage whose solver does **not** put its particles on
+    /// the palette. StarCraft II's does — a particle there *is* a bone, so the
+    /// overlay reads the palette and this stays empty — but Diablo III's cloth
+    /// vertices are free vertices the client turns into geometry by rebuilding
+    /// the vertex stream, so there is no matrix to read them out of.
+    std::vector<std::vector<Vector3f>> clothParticles;
+
+    /// @brief A geoset whose vertices a solver has rebuilt this frame.
+    ///
+    /// Diablo III delivers cloth by rebuilding the sub-object's whole vertex
+    /// stream on the CPU and drawing it **unskinned** — the positions are
+    /// already posed, so skinning them again would apply the bones twice. That
+    /// is what the renderer does with these: patch position and normal into the
+    /// retained upload bytes, and drop the geoset's skinning for the draw.
+    ///
+    /// The spans point at storage the model source owns and are valid for this
+    /// frame only, which is the whole reason this is a span and not a vector —
+    /// a cape is a few thousand vertices and copying them twice per frame to
+    /// hand them one function further along would be the expensive half of the
+    /// feature.
+    struct GeosetDeform {
+        i32 geoset = -1;
+        std::span<const Vector3f> positions;
+        std::span<const Vector3f> normals;
+    };
+    std::vector<GeosetDeform> geosetDeforms;
 
     /// @brief Per-layer 2D texture-coord transform (offset / tile / rotation).
     struct TexAnimState {

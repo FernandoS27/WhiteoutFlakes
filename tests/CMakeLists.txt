@@ -169,6 +169,24 @@ if(WDX_ENABLE_D3)
     # never says which of it draws. Counts what dressing hides, and checks that
     # a model with no wardrobe is left completely alone.
     wdx_add_test(d3_character_test d3_character_test.cpp)
+    # The rig census the CollisionShape renames are corrected against, plus the
+    # physics gates. Registered outside the WDX_ENABLE_PHYSICS guard on purpose:
+    # the census reads shipped records and needs no solver, so a build without
+    # Snowball still gets to disagree with the decompile.
+    wdx_add_test(d3_physics_test d3_physics_test.cpp)
+    # The rig through Snowball. Only exists when physics is compiled in; without
+    # it the adapter appends no stage and there is nothing to step.
+    if(WDX_ENABLE_PHYSICS)
+        wdx_add_test(d3_physics_sim_test d3_physics_sim_test.cpp)
+        # Snowball's headers, because the joint mapping is checked directly
+        # rather than through a settled pose: a frame pre-rotated by the wrong
+        # quaternion still hangs, still collides and still settles.
+        target_link_libraries(d3_physics_sim_test PRIVATE snowball)
+        # Cloth. Under the same option and for the same reason as the profile
+        # source -- it links no Snowball at all, but it is the simulation the
+        # option turns off.
+        wdx_add_test(d3_cloth_test d3_cloth_test.cpp)
+    endif()
 endif()
 
 # The baked-vertex-buffer description check. Compiled unconditionally — it

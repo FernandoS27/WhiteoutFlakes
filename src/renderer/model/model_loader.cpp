@@ -835,6 +835,7 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
         StagedGeoset& sg = mi->render.stagedGeosets[mesh.geosetId];
         sg.materialId = mesh.materialId;
         sg.lod = mesh.lod;
+        sg.deformable = mesh.deformable;
         i32 vc = (i32)mesh.positions.size();
         // The sort centroid comes off `positions` either way — it is the CPU
         // copy, and the baked path deliberately never decodes its own blob.
@@ -1550,8 +1551,8 @@ Actor* ModelLoader::SpawnUnitFromSource(std::shared_ptr<IModelSource> source,
     // The template path stamps these from ModelTemplate; this one has no
     // template, so it takes them from the same Build() snapshot.
     actor->bounds = data.bounds;
-    // Cloth is `.m3`-only, so this path is the only one that can carry it —
-    // the template path never sees a source with a soft-body solver behind it.
+    // Only `.m3` and `.app` carry cloth, and both spawn here — the template
+    // path never sees a source with a soft-body solver behind it.
     for (auto& c : data.clothOverlays) {
         ClothOverlay overlay;
         overlay.def = std::move(c);
@@ -1829,6 +1830,12 @@ void ModelLoader::UploadStagedGeosets(Actor& mi) {
                         .usage = gfx::BufferUsage::Vertex,
                     },
                     sg.baked.data.data());
+                // The one place the upload bytes are still in hand. A deformed
+                // geoset rewrites two of its attributes per frame and needs the
+                // other four from somewhere, and reading them back off the GPU
+                // is not somewhere.
+                if (sg.deformable)
+                    mi.render.deformStaging[id] = sg.baked.data;
             } else {
                 gg.unskinnedVb = rs_.Pipeline().Gfx()->CreateBuffer(
                     {

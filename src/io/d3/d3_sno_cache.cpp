@@ -238,6 +238,10 @@ D3SnoCache::Loaded D3SnoCache::Load(i32 sno, std::span<const u8> bytes) {
             if (auto v = d3n::parsePhysics(bytes))
                 e.value = std::make_shared<const d3n::Physics>(std::move(*v));
             break;
+        case d3n::Group::Cloth:
+            if (auto v = d3n::parseCloth(bytes))
+                e.value = std::make_shared<const d3n::Cloth>(std::move(*v));
+            break;
         case d3n::Group::ShaderMap:
             if (auto v = d3n::parseShaderMap(bytes))
                 e.value = std::make_shared<const d3n::ShaderMap>(std::move(*v));
@@ -304,6 +308,19 @@ std::shared_ptr<const d3n::Material> D3SnoCache::Material(i32 sno) {
 }
 std::shared_ptr<const d3n::Physics> D3SnoCache::Physics(i32 sno) {
     return Typed<d3n::Physics>(sno, d3n::Group::Physics);
+}
+std::shared_ptr<const d3n::Cloth> D3SnoCache::Cloth(i32 sno) {
+    return Typed<d3n::Cloth>(sno, d3n::Group::Cloth);
+}
+
+std::vector<u8> D3SnoCache::ReadBytes(i32 sno) {
+    if (!provider_ || sno < 0)
+        return {};
+    ++stats_.reads;
+    auto read = provider_->ReadFile(ContentRef::FromFileId(static_cast<u32>(sno)));
+    if (!read)
+        return {};
+    return std::move(*read);
 }
 std::shared_ptr<const d3n::ShaderMap> D3SnoCache::ShaderMap(i32 sno) {
     return Typed<d3n::ShaderMap>(sno, d3n::Group::ShaderMap);

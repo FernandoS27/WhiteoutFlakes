@@ -82,7 +82,12 @@
 
 #include <whiteout/sno/d3/native/d3_native.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <optional>
+#include <span>
+#include <vector>
 
 namespace whiteout::flakes::io {
 
@@ -402,6 +407,155 @@ inline constexpr u32 kD3StageArgCount = 6;
 /// decimals once multiplied by 60, against 8.6% as authored — so the stored
 /// value is per tick and this is what turns it into per second.
 inline constexpr f32 kD3TicksPerSecond = 60.0f;
+
+// ---------------------------------------------------------------------------
+// The cooked convex polytope behind `CollisionShape::arPolytopeData`.
+//
+// A `CollisionShape` of kind 2 -- 25,775 of the corpus's 36,861, so the
+// majority -- carries no radius and no endpoints; its geometry is an offline
+// cook that `PhysicsBridge_CreateFixture` hands to Domino whole. WhiteoutLib
+// resolves the shape's own reference and stops, because the header it lands on
+// contains four MORE references and the generator's type table has no way to
+// say that. So the second level is read here.
+//
+// The header is **exactly 96 bytes on every one of the 25,775**, which is what
+// says it is a fixed record rather than a variable point cloud:
+//
+//     +0   32 bytes of zero -- eight runtime pointer slots, blanked on disk
+//     +32  Vector3f  the centroid
+//     +44  u32       vertex count
+//     +48  u32       face count
+//     +52  u32       HALF-edge count
+//     +56  f32       volume  <- the field the client validates, >= 4.4143e-6
+//     +60  f32       unrecovered (a second positive scalar)
+//     +64  (i32 offset, i32 size)  vertices,   12 bytes each  (Vector3f)
+//     +72  (i32 offset, i32 size)  face planes, 16 bytes each (Vector4f n,d)
+//     +80  (i32 offset, i32 size)  half-edges,  4 bytes each
+//     +88  (i32 offset, i32 size)  face -> first half-edge, 1 byte each
+//
+// The offsets are **payload-relative** -- measured from `file + 16`, past the
+// SNO preamble -- which is the same space every other D3 reference lives in and
+// the single thing that makes the arrays read as garbage if missed.
+//
+// The three counts satisfy Euler exactly -- V + F = E/2 + 2 on every sample
+// read (8/6/24, 22/15/70, 32/18/96, 7/7/24) -- and each of the four sizes
+// divides by its count to the stride above with no remainder. Together that
+// identifies the record; no single field would.
+//
+// A half-edge's four bytes, measured over 17,344 of them in 400 shapes:
+//
+//     lane 0   UNRECOVERED. Exactly 50.0% of values fall below each of V, F
+//              and E, which is what a *non*-index looks like; a twin would be
+//              100% below E. Nothing here needs it.
+//     lane 1   the ORIGIN vertex -- 100.0% below V
+//     lane 2   the FACE          -- 100.0% below F
+//     lane 3   `next` around the face -- 100.0% below E, and over the whole
+//              array a PERMUTATION of 0..E-1 on 400 shapes out of 400, which is
+//              what a next-pointer is and what a twin is not
+//
+// So an undirected edge list is `(origin[i], origin[next[i]])` deduplicated,
+// and that needs neither lane 0 nor the face planes.
+struct D3Polytope {
+    Vector3f centroid{0.0f, 0.0f, 0.0f};
+    f32 volume = 0.0f;
+    std::vector<Vector3f> points;
+    /// @brief Vertex index pairs, one pair per undirected edge.
+    std::vector<u16> edges;
+};
+
+inline constexpr usize kD3PolytopeHeaderBytes = 96;
+/// @brief The client rejects a cook whose volume is below this or non-finite.
+inline constexpr f32 kD3PolytopeMinVolume = 4.4143e-6f;
+
+/// @brief Bytes of SNO preamble ahead of every struct image and payload.
+inline constexpr usize kD3SnoPreambleBytes = 16;
+
+/// @brief Read the cook at @p header out of @p file, or nullopt.
+///
+/// @param header the 96 bytes of `CollisionShape::arPolytopeData`
+/// @param file   the whole `.app` the shape came from — the four references
+///               are payload offsets and mean nothing without it
+inline std::optional<D3Polytope> D3ReadPolytope(std::span<const u8> header,
+                                                std::span<const u8> file) {
+    if (header.size() != kD3PolytopeHeaderBytes || file.size() <= kD3SnoPreambleBytes)
+        return std::nullopt;
+    const auto word = [&](usize i) {
+        i32 v = 0;
+        std::memcpy(&v, header.data() + i * 4, 4);
+        return v;
+    };
+    const auto real = [&](usize i) {
+        f32 v = 0.0f;
+        std::memcpy(&v, header.data() + i * 4, 4);
+        return v;
+    };
+
+    const auto nv = static_cast<u32>(word(11));
+    const auto ne = static_cast<u32>(word(13));
+    const f32 volume = real(14);
+    // The client's own gate, verbatim: a cook below this volume, or one whose
+    // volume is not finite, builds no fixture at all.
+    if (!(volume >= kD3PolytopeMinVolume) || !std::isfinite(volume))
+        return std::nullopt;
+    // A convex solid is at least a tetrahedron. Below that the arrays are not
+    // wrong so much as meaningless, and a 1-point "hull" draws as a dot.
+    if (nv < 4 || ne < 6)
+        return std::nullopt;
+
+    const auto payload = file.subspan(kD3SnoPreambleBytes);
+    const auto arrayAt = [&](usize refWord, u32 stride, u32 count) -> const u8* {
+        const i32 off = word(refWord);
+        const i32 size = word(refWord + 1);
+        if (off <= 0 || size <= 0 || static_cast<u32>(size) != count * stride)
+            return nullptr;
+        const auto o = static_cast<usize>(off);
+        const auto n = static_cast<usize>(size);
+        if (o > payload.size() || n > payload.size() - o)
+            return nullptr;
+        return payload.data() + o;
+    };
+
+    const u8* pts = arrayAt(16, 12, nv);
+    const u8* hes = arrayAt(20, 4, ne);
+    if (!pts || !hes)
+        return std::nullopt;
+
+    D3Polytope out;
+    out.centroid = {real(8), real(9), real(10)};
+    out.volume = volume;
+    out.points.resize(nv);
+    for (u32 i = 0; i < nv; ++i) {
+        f32 c[3];
+        std::memcpy(c, pts + i * 12, 12);
+        out.points[i] = {c[0], c[1], c[2]};
+    }
+
+    // `(origin[i], origin[next[i]])`, deduplicated as an unordered pair. Every
+    // edge is walked twice — once per half — so without the dedupe a wireframe
+    // draws each line on top of itself.
+    std::vector<u32> keys;
+    keys.reserve(ne);
+    for (u32 i = 0; i < ne; ++i) {
+        const u32 a = hes[i * 4 + 1];
+        const u32 nxt = hes[i * 4 + 3];
+        if (nxt >= ne)
+            continue;
+        const u32 b = hes[nxt * 4 + 1];
+        if (a >= nv || b >= nv || a == b)
+            continue;
+        const u32 lo = a < b ? a : b;
+        const u32 hi = a < b ? b : a;
+        keys.push_back((lo << 16) | hi);
+    }
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    out.edges.reserve(keys.size() * 2);
+    for (const u32 k : keys) {
+        out.edges.push_back(static_cast<u16>(k >> 16));
+        out.edges.push_back(static_cast<u16>(k & 0xFFFFu));
+    }
+    return out;
+}
 
 /// @brief One texture entry's UV transform, read out of the 144-byte block.
 ///

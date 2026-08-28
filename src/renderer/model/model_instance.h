@@ -285,6 +285,10 @@ struct Actor {
         gfx.Destroy(render.ribbonVB);
         render.ribbonVB = gfx::BufferHandle::Invalid;
         render.ribbonVBSize = 0;
+        // Retained upload bytes for the deformed geosets, which the geosets
+        // they belong to have just been released.
+        render.deformStaging.clear();
+        render.pendingDeforms.clear();
 
         // Per-actor bone palette CB (Path A). Invalid for Path B
         // actors so Destroy is a no-op there. Always owned by this

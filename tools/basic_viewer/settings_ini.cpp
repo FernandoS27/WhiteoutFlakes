@@ -140,6 +140,7 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy, bool& f
         loadPhysFlag("ShowPhysicsKinematic", &RenderSettings::SetShowPhysicsKinematic);
         loadPhysFlag("ShowPhysicsStatic", &RenderSettings::SetShowPhysicsStatic);
         loadPhysFlag("ShowPhysicsCloth", &RenderSettings::SetShowPhysicsCloth);
+        loadPhysFlag("ClothDeform", &RenderSettings::SetClothDeform);
         loadPhysFlag("PhysicsSubstepping", &RenderSettings::SetPhysicsSubstepping);
     }
 
@@ -339,6 +340,7 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy, bo
         saveFlag("ShowPhysicsKinematic", service.Settings().ShowPhysicsKinematic());
         saveFlag("ShowPhysicsStatic", service.Settings().ShowPhysicsStatic());
         saveFlag("ShowPhysicsCloth", service.Settings().ShowPhysicsCloth());
+        saveFlag("ClothDeform", service.Settings().ClothDeform());
         saveFlag("PhysicsSubstepping", service.Settings().PhysicsSubstepping());
     }
     ini.Set(KeyOf("LightingMode"),

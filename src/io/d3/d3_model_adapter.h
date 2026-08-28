@@ -76,6 +76,11 @@
 #include <string>
 #include <vector>
 
+namespace whiteout::flakes::renderer::profiles::diablo3 {
+struct D3PhysicsControl;
+struct D3ClothPiece;
+}
+
 namespace whiteout::flakes::io {
 
 // ---------------------------------------------------------------------------
@@ -190,9 +195,22 @@ public:
     std::vector<renderer::effects::RibbonEmitterConfig> GetRibbonConfigs() override {
         return {};
     }
-    std::vector<renderer::model::CollisionShapeData> GetCollisionShapes() override {
-        return {};
-    }
+    /// @brief The bones' authored collision primitives, at LOD 0.
+    ///
+    /// Data only — nothing is simulated, and every shape comes back
+    /// `CollisionBodyKind::None`. Building them is also the only cheap check of
+    /// the shape decode: a sphere read as a box or a capsule whose endpoints
+    /// were taken for scales is obvious on screen and invisible to every
+    /// numeric gate. See `profiles/diablo3/d3_collision.h`.
+    std::vector<renderer::model::CollisionShapeData> GetCollisionShapes() override;
+
+    /// @brief The cloth debug wireframes, one per cloth the stage will build.
+    ///
+    /// Ordered and filtered identically to the stage's pieces, because the
+    /// index is what `FrameState::clothParticles` is keyed by — both go through
+    /// @ref ResolveClothPieces and then the same `D3BuildCloth` acceptance.
+    /// Empty in a build with physics off, where no stage runs to move them.
+    std::vector<renderer::model::ClothOverlayData> GetClothOverlays() override;
 
     /// @brief Appearances::tBounds, which D3 ships directly. Preferred over the
     ///        interface's union-over-positions default.
@@ -207,6 +225,33 @@ public:
     ///        D3 is the second format after M3 to cross-fade and, unlike M3, it
     ///        states the ramp.
     TransitionPolicy DefaultTransition() const override;
+
+    void CreatePoseStages(renderer::animation::PoseStageList& out) const override;
+
+    // ---- physics ----------------------------------------------------------
+    //
+    // D3 has no model-level "ragdoll now": the client builds the rig on a
+    // gameplay event and stops the actor animating in the same call. So the
+    // trigger belongs to whatever stands in for gameplay — the host, not the
+    // renderer (`feedback_renderer_scope`) — and these two are the handle it
+    // pulls. The switch is shared with the stage and survives a stage rebuild,
+    // so an actor re-bound mid-collapse comes back collapsed.
+    //
+    // Both are no-ops when physics is not compiled in, rather than absent: a
+    // host should not need an `#ifdef` to ask for something the build cannot
+    // give it.
+
+    /// @brief Collapse this actor's rigid-body rig, or release it.
+    void SetRagdoll(bool on);
+    bool IsRagdoll() const;
+
+    /// @brief Whether this appearance has a rig that could collapse at all.
+    ///
+    /// The same predicate that decides whether a stage is built, so a host
+    /// button and the stage cannot disagree about whether there is anything to
+    /// press. Pure data — no solver — so it answers honestly in a build with
+    /// physics off, where @ref SetRagdoll does nothing.
+    bool HasPhysicsRig() const;
 
     // ---- looks ------------------------------------------------------------
     //
@@ -308,6 +353,17 @@ private:
     void BuildEmittedSubObjects();
     void BuildSkeletonCache();
 
+    /// @brief The model's cloth pieces with `geoset` and `clothSno` filled in,
+    ///        plus the `.clt` each one resolved to.
+    ///
+    /// Shared by the stage and the overlay so the two cannot disagree about
+    /// which cloth is which: the look is per geoset here, not per model, so the
+    /// `.clt` has to be re-resolved against the look the geoset actually draws.
+    /// Returns false when there is no cloth or no cache to read one through.
+    bool ResolveClothPieces(
+        std::vector<renderer::profiles::diablo3::D3ClothPiece>& pieces,
+        std::vector<std::shared_ptr<const d3n::Cloth>>& cloths) const;
+
     /// @brief One playable clip: a tag, the Anim it names, and the permutation
     ///        chosen for it.
     struct Clip {
@@ -336,6 +392,23 @@ private:
     /// @brief Non-owning; the cache outlives every adapter it built (it is a
     ///        ModelLoader member and adapters die with their actors).
     D3SnoCache* cache_ = nullptr;
+    /// @brief The bone each collision shape rides, in the order
+    ///        @ref GetCollisionShapes returned them, so `Evaluate` can fill
+    ///        `FrameState::collisionTransforms` alongside.
+    std::vector<i32> collisionBones_;
+    /// @brief `Actor::snoPhysics`, or -1. The rig's material, damping and
+    ///        density class, one per actor — a `LoadAppearance` adapter has no
+    ///        actor and so takes the registered defaults.
+    i32 physicsSno_ = -1;
+    /// @brief The host's collapse switch, shared with every stage this adapter
+    ///        makes — and so, because `D3Drawable` files one adapter per
+    ///        (appearance, look), with every actor wearing it. Deliberate for a
+    ///        switch a host presses on the drawable; never do it for a stage's
+    ///        per-frame *output*. Incomplete type on purpose: a `shared_ptr`
+    ///        erases its deleter at construction, so nothing that holds or
+    ///        destroys one needs the physics headers — and neither does a
+    ///        build with physics off, where it simply stays null.
+    mutable std::shared_ptr<renderer::profiles::diablo3::D3PhysicsControl> ragdoll_;
     bool lazyClips_ = true;
 
     u32 lookIndex_ = 0;

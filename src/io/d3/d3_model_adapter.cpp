@@ -1,6 +1,11 @@
 #include "io/d3/d3_model_adapter.h"
 
 #include "renderer/animation/anim_math.h"
+#include "renderer/profiles/diablo3/d3_collision.h"
+#if WDX_HAS_PHYSICS
+#include "renderer/profiles/diablo3/d3_cloth.h"
+#include "renderer/profiles/diablo3/d3_physics.h"
+#endif
 
 #include <whiteout/sno/d3/native/geometry.h>
 
@@ -341,6 +346,11 @@ std::shared_ptr<D3ModelAdapter> D3ModelAdapter::LoadActor(const ContentRef& ref,
     const u32 look = PickWeightedLook(*actor, *app);
     auto self = std::make_shared<D3ModelAdapter>(std::move(app), look);
     self->cache_ = &cache;
+    // One `.phy` per ACTOR, not per body. An appearance opened on its own has
+    // none and takes the registered defaults, which the corpus says are also
+    // the shipped modes.
+    if (actor->snoPhysics.valid())
+        self->physicsSno_ = actor->snoPhysics.id;
     if (actor->snoAnimSet.valid())
         self->BindAnimations(cache, cache.AnimSet(actor->snoAnimSet.id), lazyClips);
     return self;
@@ -528,6 +538,12 @@ std::vector<MeshData> D3ModelAdapter::GetMeshes() {
         mesh.geosetId = static_cast<i32>(g);
         mesh.materialId = static_cast<i32>(g); // one SubObject is one material
         mesh.lod = 0;
+        // A sub-object with a `ClothStructure` has its vertices rebuilt every
+        // frame (§8.0 of the physics plan), so the renderer keeps the upload
+        // bytes for it. Asked of the geometry rather than of the resolved cloth
+        // pieces because this runs first — and because a block the look leaves
+        // unsimulated costs one retained copy, not a wrong picture.
+        mesh.deformable = !sub->arClothData.empty();
 
         const usize n = sub->arVertices.size();
         // `positions` stays populated alongside the baked blob and is not
@@ -961,8 +977,152 @@ FrameState D3ModelAdapter::Evaluate(const PoseRequest& req) const {
             fs.geosetHidden[g] = hidden ? 1 : 0;
         }
     }
+    if (!collisionBones_.empty()) {
+        renderer::profiles::diablo3::D3PlaceCollisionShapes(collisionBones_, fs.boneWorldMatrices,
+                                                            fs.collisionTransforms);
+    }
     PublishUvAnimation(req, fs);
     return fs;
+}
+
+std::vector<renderer::model::CollisionShapeData> D3ModelAdapter::GetCollisionShapes() {
+    collisionBones_.clear();
+    if (!app_)
+        return {};
+    // The cooked polytopes — 70% of every rig — are payload references, so the
+    // file has to come back. One read per model load; see `ReadBytes`. Without
+    // a provider it comes back empty and the builder drops kind 2 rather than
+    // inventing a box for it.
+    const std::vector<u8> bytes = cache_ ? cache_->ReadBytes(app_->dwSnoId) : std::vector<u8>{};
+    auto built = renderer::profiles::diablo3::D3BuildCollisionShapes(*app_, bytes);
+    collisionBones_ = std::move(built.bones);
+    return std::move(built.shapes);
+}
+
+void D3ModelAdapter::CreatePoseStages(renderer::animation::PoseStageList& out) const {
+#if WDX_HAS_PHYSICS
+    namespace d3p = renderer::profiles::diablo3;
+    if (!app_)
+        return;
+    // Made once and reused, so a rebind mid-collapse comes back collapsed.
+    if (!ragdoll_)
+        ragdoll_ = std::make_shared<d3p::D3PhysicsControl>();
+    // Two thirds of every rig is a cooked polytope held as a payload reference,
+    // so the file has to come back or most bodies would get no fixture and be
+    // dropped. One read per stage build; see `ReadBytes`.
+    const std::vector<u8> bytes = cache_ ? cache_->ReadBytes(app_->dwSnoId) : std::vector<u8>{};
+    std::shared_ptr<const d3n::Physics> phy;
+    if (cache_ && physicsSno_ >= 0)
+        phy = cache_->Physics(physicsSno_);
+    // Which builder. The client picks by call site, not by data: the anchored
+    // rig comes from `ActorAnim_InitAnimTree` and so exists from load, and the
+    // bone-body collapse replaces it on a gameplay event. An appearance that
+    // authors anchors is one the client would have built the anchored rig for,
+    // so that is the rule here — and it is the disjunction `HasPhysicsRig`
+    // reports, so the host's button and the stage always agree.
+    const auto mode = d3p::D3HasRagdollAnchor(*app_) ? d3p::D3RigMode::Ragdoll
+                                                     : d3p::D3RigMode::BoneBodies;
+    if (auto stage = d3p::CreateD3PhysicsStage(*app_, bytes, phy.get(), ragdoll_, mode))
+        out.push_back(std::move(stage));
+
+    // Cloth goes **after** the rigid stage, which is the ordering `pose_stage.h`
+    // states and `m3_model_adapter.cpp` already uses: a cape stapled to a bone a
+    // ragdoll drives has to read where the ragdoll put it, not where the
+    // animation did.
+    std::vector<d3p::D3ClothPiece> pieces;
+    std::vector<std::shared_ptr<const d3n::Cloth>> cloths;
+    if (ResolveClothPieces(pieces, cloths)) {
+        // A fresh buffer per call, never one the adapter keeps. `D3Drawable`
+        // hands the *same* adapter to every actor with the same (appearance,
+        // look), and what a cloth stage publishes is per-actor: the spans in
+        // `FrameState::geosetDeforms` point straight into this, so two actors
+        // sharing one would each draw whichever of them stepped last. Open the
+        // Storage Explorer on the model already in the viewer and that second
+        // actor exists.
+        auto cloth = std::make_shared<d3p::D3ClothOutput>();
+        if (auto stage = d3p::CreateD3ClothStage(*app_, pieces, cloths, std::move(cloth)))
+            out.push_back(std::move(stage));
+    }
+#else
+    (void)out;
+#endif
+}
+
+void D3ModelAdapter::SetRagdoll(bool on) {
+#if WDX_HAS_PHYSICS
+    if (!ragdoll_)
+        ragdoll_ = std::make_shared<renderer::profiles::diablo3::D3PhysicsControl>();
+    ragdoll_->simulating = on;
+#else
+    (void)on;
+#endif
+}
+
+bool D3ModelAdapter::ResolveClothPieces(
+    std::vector<renderer::profiles::diablo3::D3ClothPiece>& pieces,
+    std::vector<std::shared_ptr<const d3n::Cloth>>& cloths) const {
+#if WDX_HAS_PHYSICS
+    pieces.clear();
+    cloths.clear();
+    if (!app_ || !cache_)
+        return false;
+    pieces = renderer::profiles::diablo3::D3FindClothPieces(*app_, lookIndex_);
+    if (pieces.empty())
+        return false;
+    // Fill in the emitted-geoset index and re-resolve the `.clt` under the look
+    // that geoset actually draws: the cloth is a property of the variant, and
+    // looks are per geoset here, not per model.
+    cloths.reserve(pieces.size());
+    for (auto& piece : pieces) {
+        for (usize g = 0; g < emitted_.size(); ++g) {
+            if (emitted_[g].geoSet != 0 || emitted_[g].index != static_cast<u32>(piece.subObject))
+                continue;
+            piece.geoset = static_cast<i32>(g);
+            const d3n::SubObject& sub = app_->tGeoSet0.arSubObjects[emitted_[g].index];
+            if (const auto* v = D3VariantFor(*app_, sub, LookForGeoset(g)))
+                piece.clothSno = v->snoCloth.id;
+            break;
+        }
+        cloths.push_back(piece.clothSno >= 0 ? cache_->Cloth(piece.clothSno) : nullptr);
+    }
+    return true;
+#else
+    (void)pieces;
+    (void)cloths;
+    return false;
+#endif
+}
+
+std::vector<renderer::model::ClothOverlayData> D3ModelAdapter::GetClothOverlays() {
+#if WDX_HAS_PHYSICS
+    std::vector<renderer::profiles::diablo3::D3ClothPiece> pieces;
+    std::vector<std::shared_ptr<const d3n::Cloth>> cloths;
+    if (!ResolveClothPieces(pieces, cloths))
+        return {};
+    return renderer::profiles::diablo3::D3BuildClothOverlays(*app_, pieces, cloths);
+#else
+    // Without a solver nothing would ever move them, and a wireframe frozen in
+    // the authored rest shape is the one picture this overlay must not draw.
+    return {};
+#endif
+}
+
+bool D3ModelAdapter::HasPhysicsRig() const {
+    namespace d3p = renderer::profiles::diablo3;
+    if (!app_)
+        return false;
+    // Either builder counts: an anchored rig (`sub_71003E07B0`) or a bone-body
+    // collapse at the lod the client uses for one. The same disjunction the
+    // adapter picks its mode with, so the button and the stage cannot disagree.
+    return d3p::D3HasRagdollAnchor(*app_) || d3p::D3HasDynamicBody(*app_, d3p::kD3BoneBodyLod);
+}
+
+bool D3ModelAdapter::IsRagdoll() const {
+#if WDX_HAS_PHYSICS
+    return ragdoll_ && ragdoll_->simulating;
+#else
+    return false;
+#endif
 }
 
 } // namespace whiteout::flakes::io

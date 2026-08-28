@@ -498,6 +498,19 @@ public:
     std::vector<D3CharacterExtra> D3CharacterExtras() const;
     void SetD3CharacterExtra(u32 geoset, bool shown);
 
+    /// @name Ragdoll
+    ///
+    /// D3 has no model-level "collapse now": the client builds the rig on a
+    /// gameplay event and stops the actor animating in the same call. Nothing
+    /// in a model file carries that event, so the host supplies it — which is
+    /// why the switch is here and not in RenderService.
+    /// @{
+    /// @brief Whether the focus actor has a rig that could collapse at all.
+    bool HasD3Ragdoll() const;
+    bool D3Ragdoll() const;
+    void SetD3Ragdoll(bool on);
+    /// @}
+
 private:
     /// Re-dress the focus actor after a wardrobe change, reloading only if it
     /// cannot be done in place.

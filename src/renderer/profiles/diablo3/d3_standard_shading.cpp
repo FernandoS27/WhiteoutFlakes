@@ -281,6 +281,12 @@ bool D3StandardShading::ResolveSkinned(const render_detail::RenderableView& view
                                        const GPUGeoset& geo,
                                        gfx::BufferHandle& outPalette) const {
     outPalette = gfx::BufferHandle::Invalid;
+    // A deformed geoset arrives already posed — the cloth solver put every
+    // vertex where it belongs in model space — so skinning it would apply the
+    // bones a second time. This is the whole reason the client draws its
+    // rebuilt stream unskinned.
+    if (geo.deformActive)
+        return false;
     if (!geo.hasSkinning || geo.boneVb == gfx::BufferHandle::Invalid)
         return false;
     if (view.skinning && view.skinning->UsesPerActorPalette())
