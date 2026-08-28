@@ -317,6 +317,14 @@ public:
     const d3n::Appearances& SourceAppearance() const {
         return *app_;
     }
+    /// @brief The `.acr` this was opened from, or null for @ref LoadAppearance.
+    ///
+    /// Kept for one reason: `arMsgTriggeredEvents` is how a particle system
+    /// reaches the model (see `d3_effect_resolver.h`), and nothing downstream
+    /// of the appearance can see it.
+    const d3n::Actor* SourceActor() const {
+        return actor_.get();
+    }
     std::shared_ptr<const d3n::Appearances> SharedAppearance() const {
         return app_;
     }
@@ -388,6 +396,7 @@ private:
     bool EnsureClip(const Clip& clip) const;
 
     std::shared_ptr<const d3n::Appearances> app_;
+    std::shared_ptr<const d3n::Actor> actor_;
     std::shared_ptr<const d3n::AnimSet> animSet_;
     /// @brief Non-owning; the cache outlives every adapter it built (it is a
     ///        ModelLoader member and adapters die with their actors).

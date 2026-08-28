@@ -168,7 +168,20 @@ public:
     // `emissionScaler` multiplies the emission rate. Threaded in from the owning
     // service rather than read from a global, so two scenes can scale
     // independently.
-    void Update(f32 elapsed, f32 emissionScaler);
+    //
+    // Virtual because Diablo III is not a variation of this simulation but a
+    // different one — forty channels, five motion models, a per-particle
+    // orientation quaternion — and expressing it as data on EmitterDesc would
+    // grow a struct whose whole premise is "one simulation, listed
+    // divergences". The body below stays the WC3/WoW implementation, so the
+    // draw-trace gate cannot move. See D3_PARTICLE_DESIGN.md §12.2.
+    virtual void Update(f32 elapsed, f32 emissionScaler);
+
+    // This emitter's geometry for one frame, appended to @p out; returns the
+    // vertex count. The base implementation is the free function
+    // `BuildEmitterGeometry`, unchanged — a dialect that builds its quads
+    // differently overrides instead of branching inside it.
+    virtual i32 BuildGeometry(const struct BuildGeometryInput& in, std::vector<Vertex>& out) const;
 
     // Adopt one trail emitter: from here on, every live particle of this
     // emitter drives its emission once per sub-step. Capped at four, the

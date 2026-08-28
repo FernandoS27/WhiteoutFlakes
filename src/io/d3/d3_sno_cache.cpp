@@ -242,6 +242,14 @@ D3SnoCache::Loaded D3SnoCache::Load(i32 sno, std::span<const u8> bytes) {
             if (auto v = d3n::parseCloth(bytes))
                 e.value = std::make_shared<const d3n::Cloth>(std::move(*v));
             break;
+        case d3n::Group::Particle:
+            if (auto v = d3n::parseParticle(bytes))
+                e.value = std::make_shared<const d3n::Particle>(std::move(*v));
+            break;
+        case d3n::Group::EffectGroup:
+            if (auto v = d3n::parseEffectGroup(bytes))
+                e.value = std::make_shared<const d3n::EffectGroup>(std::move(*v));
+            break;
         case d3n::Group::ShaderMap:
             if (auto v = d3n::parseShaderMap(bytes))
                 e.value = std::make_shared<const d3n::ShaderMap>(std::move(*v));
@@ -309,8 +317,14 @@ std::shared_ptr<const d3n::Material> D3SnoCache::Material(i32 sno) {
 std::shared_ptr<const d3n::Physics> D3SnoCache::Physics(i32 sno) {
     return Typed<d3n::Physics>(sno, d3n::Group::Physics);
 }
+std::shared_ptr<const d3n::Particle> D3SnoCache::Particle(i32 sno) {
+    return Typed<d3n::Particle>(sno, d3n::Group::Particle);
+}
 std::shared_ptr<const d3n::Cloth> D3SnoCache::Cloth(i32 sno) {
     return Typed<d3n::Cloth>(sno, d3n::Group::Cloth);
+}
+std::shared_ptr<const d3n::EffectGroup> D3SnoCache::EffectGroup(i32 sno) {
+    return Typed<d3n::EffectGroup>(sno, d3n::Group::EffectGroup);
 }
 
 std::vector<u8> D3SnoCache::ReadBytes(i32 sno) {

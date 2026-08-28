@@ -346,6 +346,7 @@ std::shared_ptr<D3ModelAdapter> D3ModelAdapter::LoadActor(const ContentRef& ref,
     const u32 look = PickWeightedLook(*actor, *app);
     auto self = std::make_shared<D3ModelAdapter>(std::move(app), look);
     self->cache_ = &cache;
+    self->actor_ = actor;
     // One `.phy` per ACTOR, not per body. An appearance opened on its own has
     // none and takes the registered defaults, which the corpus says are also
     // the shipped modes.

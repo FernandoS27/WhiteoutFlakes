@@ -132,7 +132,17 @@ struct D3PassState {
     u32 blendSrc = 5; ///< D3DBLEND
     u32 blendDst = 6;
     bool depthWrite = true;
-    u32 cull = 2;      ///< D3DCULL: 1 none, 2 CW, 3 CCW.
+    u32 cull = 2;      ///< D3DCULL: 1 none, 2 CW, 3 CCW. Pass 0's, verbatim.
+
+    /// @brief Do these two passes together make ONE two-sided draw?
+    ///
+    /// D3DCULL has no two-sided value, so content that wants a sheet lit from
+    /// both sides ships the same pass twice with opposite windings, the second
+    /// raising the tag that negates the normal. Twelve corpus shaders do it,
+    /// every one named `cloth_*`, and a build that draws pass 0 alone draws
+    /// half of every cape. Set alongside `cull` rather than folded into it, so
+    /// the field keeps saying what the asset says.
+    bool twoSidedPair = false;
     u8 alphaRef = 0;   ///< 0..255; 0 = no alpha test.
 
     /// @brief One bit per declared `EMaterialTextureType`. A type is always a
@@ -234,7 +244,8 @@ struct D3Surface {
     /// disappears when faded instead of popping to opaque.
     bool noTranslucentVariant = false;
     /// Cull mode is a *pass* property in the original, and now comes from
-    /// there: 713 of the corpus's 1,831 passes ask for no culling at all.
+    /// there: 713 of the corpus's 1,831 passes ask for no culling at all, and
+    /// twelve more spell two-sided as a CW pass plus a CCW one.
     bool twoSided = false;
     /// RenderPass+60 x 1/255 in the original — now read from there when the
     /// ShaderMap resolves, and from the material flags when it does not.
@@ -331,6 +342,12 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
 ///
 /// Returns an unresolved state — every caller then keeps the material flags —
 /// when there is no cache, no ShaderMap, or nothing on the tag chain.
+/// @brief Is this Shaders one two-sided draw written as two passes?
+///
+/// Exposed for the corpus gate that pins the rule's population;
+/// `D3PassStateFor` is what applies it. See `D3PassState::twoSidedPair`.
+bool D3IsTwoSidedPassPair(const d3n::Shaders& shaders);
+
 D3PassState D3PassStateFor(const d3n::SubObjectAppearance& variant,
                            ::whiteout::flakes::io::D3SnoCache* cache);
 

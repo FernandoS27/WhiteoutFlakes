@@ -1752,3 +1752,450 @@ TEST_CASE("D3 corpus: a Legacy pass says which channel each stage feeds", "[d3][
     REQUIRE(gainOkA + gainBadA > 100);
     CHECK(gainOkA * 10 > (gainOkA + gainBadA) * 8);
 }
+
+// ============================================================================
+// DIAG: every RenderPass a named actor's sub-objects resolve to, verbatim.
+//
+// The two-sided report. `D3PassStateFor` reads pass 0's cull and nothing else,
+// so this prints the whole `arRenderPasses` list per sub-object: if the
+// original's two-sidedness is a second pass with the opposite winding, it is
+// visible here and nowhere in the surface table.
+// ============================================================================
+
+TEST_CASE("D3 diag: the render passes of one actor", "[.diag][d3][install]") {
+    using ::whiteout::flakes::ProductId;
+
+    flakes::io::FileContentProvider provider;
+    if (const char* root = std::getenv("WDX_TEST_D3_INSTALL"); root && *root)
+        provider.SetInstallPath(root);
+    provider.SetGame(ProductId::D3);
+    if (provider.GamePath(ProductId::D3).empty()) {
+        WARN("No Diablo III install. SKIPPED.");
+        return;
+    }
+    flakes::io::D3SnoCache cache(&provider);
+
+    const char* kFiles[] = {"Tyrael", "Imperius", "x1_Malthael"};
+    if (const char* only = std::getenv("WDX_DIAG_APP"); only && *only)
+        kFiles[0] = only;
+
+    constexpr u32 kChain[] = {0x30502u, 0x30850u, 0x30830u, 0x30600u, 0x30500u};
+
+    for (const char* file : kFiles) {
+        const auto path = CorpusRoot() / "Appearances" / (std::string(file) + ".app");
+        auto app = d3n::parseAppearances(ReadAll(path));
+        if (!app) {
+            WARN("missing " << path.string());
+            continue;
+        }
+        std::printf("\n===== %s =====\n", file);
+        const d3n::GeoSet* sets[2] = {&app->tGeoSet0, &app->tGeoSet1};
+        for (int gs = 0; gs < 2; ++gs) {
+            for (const auto& sub : sets[gs]->arSubObjects) {
+                const auto* v = flakes::io::D3VariantFor(*app, sub, 0);
+                if (!v) {
+                    std::printf("  [%d] %-28s  (no variant)\n", gs, sub.szName.c_str());
+                    continue;
+                }
+                const i32 shm = v->tMaterial.snoShaderMap.id;
+                auto map = v->tMaterial.snoShaderMap.valid() ? cache.ShaderMap(shm) : nullptr;
+                i32 shadersId = -1;
+                u32 hitTag = 0;
+                if (map) {
+                    for (const u32 tag : kChain) {
+                        for (const auto& e : map->arShaders) {
+                            if (e.dwTagId == tag && e.snoShader.valid() && shadersId < 0) {
+                                shadersId = e.snoShader.id;
+                                hitTag = tag;
+                            }
+                        }
+                        if (shadersId >= 0)
+                            break;
+                    }
+                }
+                auto sh = shadersId >= 0 ? cache.Shaders(shadersId) : nullptr;
+                std::printf("  [%d] %-28s shm=%-7d tag=%05X shaders=%-7d passes=%zu %s\n", gs,
+                            sub.szName.c_str(), shm, hitTag, shadersId,
+                            sh ? sh->arRenderPasses.size() : 0u,
+                            sh ? sh->szName.c_str() : "(unresolved)");
+                if (!sh)
+                    continue;
+                for (std::size_t p = 0; p < sh->arRenderPasses.size(); ++p) {
+                    const auto& rp = sh->arRenderPasses[p];
+                    const auto& r = rp.tRenderParams;
+                    std::printf("        p%zu cull=%d zw=%d aRef=%u blend=%d(%d,%d) flags=%08X "
+                                "u00=%d u04=%d fx=%s vs=%s ps=%s\n",
+                                p, r.dwUnknown00, r.dwUnknown04,
+                                static_cast<unsigned>(r.bUnknown34), r.dwUnknown4C, r.dwUnknown54,
+                                r.dwUnknown58, static_cast<unsigned>(rp.dwPassFlags),
+                                rp.dwUnknown00, rp.dwUnknown04, rp.szEffectFile.c_str(),
+                                rp.szVertexShaderEntry.c_str(), rp.szPixelShaderEntry.c_str());
+                    // Every RenderParams field, so a difference between two
+                    // passes cannot hide in one this dump does not name.
+                    const i32 all[] = {r.dwUnknown00, r.dwUnknown04, r.dwUnknown08,
+                                       std::bit_cast<i32>(r.flUnknown0C),
+                                       std::bit_cast<i32>(r.flUnknown10), r.dwUnknown14,
+                                       r.dwUnknown18, r.dwUnknown1C, r.dwUnknown20, r.dwUnknown24,
+                                       r.dwUnknown28, r.dwUnknown2C, r.dwUnknown30,
+                                       static_cast<i32>(r.bUnknown34), r.dwUnknown38, r.dwUnknown3C,
+                                       r.dwUnknown40, r.dwUnknown44, r.dwUnknown48, r.dwUnknown4C,
+                                       r.dwUnknown50, r.dwUnknown54, r.dwUnknown58};
+                    std::printf("           raw:");
+                    for (i32 x : all)
+                        std::printf(" %d", x);
+                    std::printf("\n           stages:");
+                    for (const auto& st : rp.arTextureStages)
+                        std::printf(" [%d %d %d %d %d %.3f]", st.dwUnknown00, st.dwUnknown04,
+                                    st.dwUnknown08, st.dwUnknown0C, st.dwUnknown10, st.flUnknown14);
+                    std::printf("\n           tags:");
+                    for (const auto& t : rp.arShaderParams)
+                        std::printf(" %X=%u", t.dwTagId, t.dwValue);
+                    std::printf("\n");
+                }
+                if (map) {
+                    std::printf("        shm entries:");
+                    for (const auto& e : map->arShaders)
+                        std::printf(" %05X->%d", e.dwTagId, e.snoShader.id);
+                    std::printf("\n");
+                }
+            }
+        }
+    }
+}
+
+
+// ============================================================================
+// Two-sided is TWO PASSES, and drawing only the first draws half a cape.
+//
+// D3DCULL has no two-sided value. Content that wants a sheet lit from both
+// sides therefore ships the same RenderPass twice — the second culling the
+// opposite winding and raising tag 0xA003D, which negates the normal — and a
+// build that submits pass 0 alone renders the front of every cape and nothing
+// of the back. That is what Tyrael's clothes were doing.
+//
+// Two claims, both measured over all 1,507 corpus `.shd`:
+//
+//  1. **0xA003D is worth 1 on exactly 12 passes**, every one of them the LAST
+//     pass of a `cloth_*` shader culling CCW against a pass 0 culling CW.
+//
+//  2. **`D3IsTwoSidedPassPair` fires on exactly those twelve.** The corpus has
+//     293 multi-pass shaders and every other one varies its program, its
+//     stages or its state as well — a second effect layer, not the same draw
+//     mirrored — so the collapse can never be applied to one of those.
+// ============================================================================
+
+TEST_CASE("D3 corpus: two-sided is a CW pass plus a CCW pass", "[d3][corpus]") {
+    const auto files = FindFiles(CorpusRoot() / "Shaders", ".shd");
+    if (files.empty()) {
+        WARN("No D3 Shaders corpus at " << (CorpusRoot() / "Shaders").string()
+                                        << " (set WDX_TEST_D3_CORPUS). SKIPPED, not passed.");
+        return;
+    }
+
+    // The whole population, by name. A thirteenth would be new content to look
+    // at, not a number to bump.
+    const std::vector<std::string> kExpect = {
+        "cloth_alphatest",
+        "cloth_alphatest_alphamask",
+        "cloth_alphatest_gloss",
+        "cloth_alphatest_gloss_alphamask",
+        "cloth_alphatest_gloss_glow",
+        "cloth_alphatest_gloss_glow_alphamask",
+        "cloth_alphatest_gloss_glow_herotint",
+        "cloth_alphatest_gloss_glow_herotint_alphamask",
+        "cloth_alphatest_gloss_herotint",
+        "cloth_alphatest_gloss_herotint_alphamask",
+        "cloth_alphatest_herotint",
+        "cloth_alphatest_herotint_alphamask",
+    };
+
+    std::vector<std::string> flagged; // D3IsTwoSidedPassPair said yes
+    std::vector<std::string> tagged;  // carries 0xA003D != 0 on some pass
+    std::size_t multiPass = 0, parsed = 0;
+    std::map<i32, std::size_t> cullCounts;
+
+    for (const auto& f : files) {
+        auto sh = d3n::parseShaders(ReadAll(f));
+        if (!sh)
+            continue;
+        ++parsed;
+        if (sh->arRenderPasses.size() > 1)
+            ++multiPass;
+        if (d3p::D3IsTwoSidedPassPair(*sh))
+            flagged.push_back(f.stem().string());
+        for (const auto& pass : sh->arRenderPasses) {
+            cullCounts[pass.tRenderParams.dwUnknown00]++;
+            for (const auto& t : pass.arShaderParams) {
+                if (t.dwTagId != 0xA003Du || t.dwValue == 0)
+                    continue;
+                tagged.push_back(f.stem().string());
+                INFO(f.stem().string());
+                // The tagged pass is the CCW one, and it is the last.
+                CHECK(pass.tRenderParams.dwUnknown00 == 3);
+                CHECK(&pass == &sh->arRenderPasses.back());
+            }
+        }
+    }
+    std::sort(flagged.begin(), flagged.end());
+    std::sort(tagged.begin(), tagged.end());
+
+    std::printf("[d3-2sided] %zu shaders parsed, %zu multi-pass, %zu pairs, %zu tagged\n", parsed,
+                multiPass, flagged.size(), tagged.size());
+    for (const auto& n : flagged)
+        std::printf("   %s\n", n.c_str());
+
+    CHECK(flagged == kExpect);
+    CHECK(tagged == kExpect);
+
+    // The reason `frontCCW = true` with a plain back-face cull is enough for
+    // everything this rule does not catch: **no shipped shader ever leads with
+    // CCW.** Cull 3 appears on 12 passes and they are exactly the back halves
+    // above, so there is no reverse-winding surface to get inside-out.
+    std::printf("[d3-2sided] cull over every pass: none=%zu CW=%zu CCW=%zu\n", cullCounts[1],
+                cullCounts[2], cullCounts[3]);
+    CHECK(cullCounts[3] == kExpect.size());
+    for (const auto& [value, n] : cullCounts) {
+        INFO("cull " << value << " on " << n << " passes");
+        CHECK(value >= 1);
+        CHECK(value <= 3);
+    }
+}
+
+// ============================================================================
+// The same thing end to end: the surface a cape resolves to is two-sided, and
+// the body beside it is not.
+// ============================================================================
+
+TEST_CASE("D3 install: cloth resolves two-sided and a body does not",
+          "[d3][material][install]") {
+    using ::whiteout::flakes::ProductId;
+
+    flakes::io::FileContentProvider provider;
+    if (const char* root = std::getenv("WDX_TEST_D3_INSTALL"); root && *root)
+        provider.SetInstallPath(root);
+    provider.SetGame(ProductId::D3);
+    if (provider.GamePath(ProductId::D3).empty()) {
+        WARN("No Diablo III install (set WDX_TEST_D3_INSTALL). SKIPPED, not passed.");
+        return;
+    }
+    flakes::io::D3SnoCache cache(&provider);
+
+    struct Want {
+        const char* file;
+        const char* subObject;
+        bool pair;     ///< two-sidedness spelled as a CW pass plus a CCW one
+        bool twoSided; ///< what the surface ends up with, either spelling
+    };
+    // Tyrael's cape is the report. Malthael's cloth resolves to the same
+    // Shaders asset, so it is the second actor the one fix reaches; the bodies
+    // beside them are single-pass CW and must stay culled, or a fix that simply
+    // stopped culling would pass this too. Imperius is the third spelling: his
+    // cloth pass 0 already asks for no culling, so he needs no pair rule and
+    // never did — which is why the wing work never turned this up.
+    const Want kWant[] = {
+        {"Tyrael", "A_restored_cloth", true, true},
+        {"Tyrael", "A_normal_mat", false, false},
+        {"x1_Malthael", "A_normal_cloth", true, true},
+        {"x1_Malthael", "A_normal_mat", false, false},
+        {"Imperius", "A_normal_Cloth", false, true},
+    };
+
+    std::size_t resolved = 0;
+    for (const auto& w : kWant) {
+        const auto path = CorpusRoot() / "Appearances" / (std::string(w.file) + ".app");
+        const auto bytes = ReadAll(path);
+        auto app = d3n::parseAppearances(bytes);
+        if (!app) {
+            WARN("missing " << path.string() << " -- SKIPPED, not passed.");
+            continue;
+        }
+        const d3n::GeoSet* sets[2] = {&app->tGeoSet0, &app->tGeoSet1};
+        const d3n::SubObject* sub = nullptr;
+        for (const auto* set : sets) {
+            for (const auto& s : set->arSubObjects) {
+                if (EqualCiSv(s.szName, w.subObject))
+                    sub = &s;
+            }
+        }
+        REQUIRE(sub != nullptr);
+        const auto* v = flakes::io::D3VariantFor(*app, *sub, 0);
+        REQUIRE(v != nullptr);
+
+        const auto st = d3p::D3PassStateFor(*v, &cache);
+        INFO(w.file << " / " << w.subObject);
+        if (!st.resolved) {
+            WARN(w.file << " / " << w.subObject << ": ShaderMap did not resolve -- SKIPPED.");
+            continue;
+        }
+        ++resolved;
+
+        // The whole way through, not just the pass state: the flag the PSO key
+        // reads is `D3Surface::twoSided`, and it is a different line of code.
+        auto adapter = flakes::io::D3ModelAdapter::LoadAppearance(
+            ContentRef::FromPath(path.string()), bytes, cache);
+        REQUIRE(adapter != nullptr);
+        const auto textures =
+            flakes::io::CollectD3Textures(adapter->SourceAppearance(), adapter->LookIndex());
+        auto table = d3p::BuildD3SurfaceTable(adapter->SourceAppearance(), adapter->LookIndex(),
+                                              textures, adapter->EmittedSubObjects(), &cache, {},
+                                              nullptr);
+        REQUIRE(table != nullptr);
+        const auto emitted = adapter->EmittedSubObjects();
+        const d3p::D3Surface* surface = nullptr;
+        for (std::size_t g = 0; g < emitted.size(); ++g) {
+            const d3n::GeoSet& set =
+                (emitted[g].geoSet == 0) ? adapter->SourceAppearance().tGeoSet0
+                                         : adapter->SourceAppearance().tGeoSet1;
+            if (emitted[g].index < set.arSubObjects.size() &&
+                EqualCiSv(set.arSubObjects[emitted[g].index].szName, w.subObject))
+                surface = table->Surface(static_cast<i32>(g));
+        }
+        REQUIRE(surface != nullptr);
+
+        std::printf("[d3-2sided] %-12s %-18s cull=%u pair=%d -> surface.twoSided=%d\n", w.file,
+                    w.subObject, st.cull, static_cast<int>(st.twoSidedPair),
+                    static_cast<int>(surface->twoSided));
+        CHECK(st.twoSidedPair == w.pair);
+        CHECK(surface->twoSided == w.twoSided);
+    }
+    if (resolved == 0) {
+        WARN("No ShaderMap resolved. SKIPPED, not passed.");
+        return;
+    }
+    CHECK(resolved == std::size(kWant));
+}
+
+// ============================================================================
+// How much of the game the twelve shaders reach.
+//
+// Offline end to end: a `.shd` carries its own SNO id and so does a `.shm`, so
+// the ShaderMap -> Shaders join needs no install — only the tag chain
+// `ShaderMap_ResolveShaderOpaque` walks. Every appearance whose variant names
+// one of those ShaderMaps was drawing one side of a two-sided surface.
+// ============================================================================
+
+TEST_CASE("D3 corpus: how many appearances the two-sided pairs reach", "[d3][corpus]") {
+    const auto shaderFiles = FindFiles(CorpusRoot() / "Shaders", ".shd");
+    const auto mapFiles = FindFiles(CorpusRoot() / "ShaderMap", ".shm");
+    const auto appFiles = FindFiles(CorpusRoot() / "Appearances", ".app");
+    if (shaderFiles.empty() || mapFiles.empty() || appFiles.empty()) {
+        WARN("No D3 corpus (Shaders/ShaderMap/Appearances). SKIPPED, not passed.");
+        return;
+    }
+
+    std::map<i32, std::string> pairShaders; // sno -> name, the twelve
+    for (const auto& f : shaderFiles) {
+        auto sh = d3n::parseShaders(ReadAll(f));
+        if (sh && d3p::D3IsTwoSidedPassPair(*sh))
+            pairShaders[sh->dwSnoId] = f.stem().string();
+    }
+    REQUIRE(pairShaders.size() == 12);
+
+    // The same chain D3PassStateFor walks, so a map that reaches a pair through
+    // a tag we never probe is correctly not counted.
+    constexpr u32 kChain[] = {0x30502u, 0x30850u, 0x30830u, 0x30600u, 0x30500u};
+    std::map<i32, std::string> pairMaps; // ShaderMap sno -> shader name
+    for (const auto& f : mapFiles) {
+        auto map = d3n::parseShaderMap(ReadAll(f));
+        if (!map)
+            continue;
+        for (const u32 tag : kChain) {
+            i32 hit = -1;
+            for (const auto& e : map->arShaders) {
+                if (e.dwTagId == tag && e.snoShader.valid() && hit < 0)
+                    hit = e.snoShader.id;
+            }
+            if (hit < 0)
+                continue;
+            if (auto it = pairShaders.find(hit); it != pairShaders.end())
+                pairMaps[map->dwSnoId] = it->second;
+            break;
+        }
+    }
+
+    std::size_t appsHit = 0, subObjectsHit = 0, subObjectsTotal = 0, parsed = 0;
+    std::vector<std::string> names;
+    for (const auto& f : appFiles) {
+        auto app = d3n::parseAppearances(ReadAll(f));
+        if (!app)
+            continue;
+        ++parsed;
+        bool hit = false;
+        const d3n::GeoSet* sets[2] = {&app->tGeoSet0, &app->tGeoSet1};
+        for (const auto* set : sets) {
+            for (const auto& sub : set->arSubObjects) {
+                ++subObjectsTotal;
+                const auto* v = flakes::io::D3VariantFor(*app, sub, 0);
+                if (!v || !v->tMaterial.snoShaderMap.valid())
+                    continue;
+                if (!pairMaps.count(v->tMaterial.snoShaderMap.id))
+                    continue;
+                ++subObjectsHit;
+                hit = true;
+            }
+        }
+        if (hit) {
+            ++appsHit;
+            if (names.size() < 12)
+                names.push_back(f.stem().string());
+        }
+    }
+
+    std::printf("[d3-2sided] %zu ShaderMaps reach a pair | %zu of %zu appearances, "
+                "%zu of %zu sub-objects\n",
+                pairMaps.size(), appsHit, parsed, subObjectsHit, subObjectsTotal);
+    std::printf("            e.g.");
+    for (const auto& n : names)
+        std::printf(" %s;", n.c_str());
+    std::printf("\n");
+
+    // The population is the point: every one of these was drawing half a
+    // surface, and a change that stopped reaching them would show up here as a
+    // collapse toward zero rather than as a render that merely looks fine.
+    CHECK(pairMaps.size() > 0);
+    CHECK(appsHit > 0);
+    CHECK(subObjectsHit >= appsHit);
+}
+
+TEST_CASE("D3 diag: which emitted sub-objects are two-sided", "[.diag][d3][install]") {
+    using ::whiteout::flakes::ProductId;
+    flakes::io::FileContentProvider provider;
+    provider.SetGame(ProductId::D3);
+    if (provider.GamePath(ProductId::D3).empty()) {
+        WARN("No install. SKIPPED.");
+        return;
+    }
+    flakes::io::D3SnoCache cache(&provider);
+    const char* kModels[] = {"Barbarian_Male", "Wizard_Female", "Demonhunter_Male",
+                             "SkeletonKing",   "Skeleton",      "Cow_skeleton",
+                             "Diablo",         "Tyrael",        "Imperius",
+                             "x1_Malthael"};
+    for (const char* m : kModels) {
+        const auto path = CorpusRoot() / "Appearances" / (std::string(m) + ".app");
+        const auto bytes = ReadAll(path);
+        auto adapter = flakes::io::D3ModelAdapter::LoadAppearance(
+            ContentRef::FromPath(path.string()), bytes, cache);
+        if (!adapter)
+            continue;
+        const auto textures =
+            flakes::io::CollectD3Textures(adapter->SourceAppearance(), adapter->LookIndex());
+        auto table = d3p::BuildD3SurfaceTable(adapter->SourceAppearance(), adapter->LookIndex(),
+                                              textures, adapter->EmittedSubObjects(), &cache, {},
+                                              nullptr);
+        const auto emitted = adapter->EmittedSubObjects();
+        std::printf("\n%s (look %d, %zu emitted)\n", m, adapter->LookIndex(), emitted.size());
+        for (std::size_t g = 0; g < emitted.size(); ++g) {
+            const d3n::GeoSet& set = (emitted[g].geoSet == 0)
+                                         ? adapter->SourceAppearance().tGeoSet0
+                                         : adapter->SourceAppearance().tGeoSet1;
+            if (emitted[g].index >= set.arSubObjects.size())
+                continue;
+            const auto* s = table->Surface(static_cast<i32>(g));
+            std::printf("   %2zu %-28s valid=%d cull=%u pair=%d twoSided=%d\n", g,
+                        set.arSubObjects[emitted[g].index].szName.c_str(),
+                        s ? static_cast<int>(s->valid) : -1, s ? s->pass.cull : 0u,
+                        s ? static_cast<int>(s->pass.twoSidedPair) : -1,
+                        s ? static_cast<int>(s->twoSided) : -1);
+        }
+    }
+}

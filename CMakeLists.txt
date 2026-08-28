@@ -1245,6 +1245,8 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/particle/model_particle_emitter.cpp
     src/renderer/particle/particle_adapters.cpp
     src/renderer/particle/particle_curve.cpp
+    src/renderer/particle/d3_path.cpp
+    src/renderer/particle/d3_emitter.cpp
     src/renderer/particle/particle_pool.cpp
     src/renderer/particle/particle2_emitter.cpp
     src/renderer/particle/particle_shape.cpp
@@ -1354,6 +1356,8 @@ if(WDX_ENABLE_D3)
     target_sources(WhiteoutFlakesLib PRIVATE
         src/io/d3/d3_asset_provider.cpp
         src/io/d3/d3_model_adapter.cpp
+        src/io/d3/d3_effect_resolver.cpp
+        src/io/d3/d3_particle_adapter.cpp
         src/io/d3/d3_sno_cache.cpp
         src/renderer/profiles/diablo3/d3_character_appearance.cpp
         # Collision primitives as DATA — no solver, so it is not behind

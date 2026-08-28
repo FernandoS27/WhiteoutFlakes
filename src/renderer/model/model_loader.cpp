@@ -29,13 +29,17 @@
 
 #include "dbg_print.h"
 
+#include "renderer/animation/anim_math.h"
 #include "renderer/core/render_profile.h" // IRenderProfile::WorldScale
 #if WDX_ENABLE_M3
 #include "io/m3/m3_model_adapter.h"
 #include "renderer/profiles/sc2_heroes/m3_surface_table.h"
 #endif
 #if WDX_ENABLE_D3
+#include "io/d3/d3_effect_resolver.h"
 #include "io/d3/d3_model_adapter.h"
+#include "io/d3/d3_particle_adapter.h"
+#include "renderer/particle/d3_emitter.h"
 #include "renderer/profiles/diablo3/d3_surface_table.h"
 #endif
 #if WDX_ENABLE_M2
@@ -1357,6 +1361,63 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
             BuildD3Surfaces(*actor);
             actor->shadingModel = core::ShadingModelId::D3Standard;
         }
+
+        // A `.prt` reaches a Diablo III model two ways, and only one of them
+        // carries the shipped content.
+        //
+        // The route that matters is a TriggerEvent on the ACTOR, fired by
+        // message 1000 when the actor comes into existence, resolving through
+        // an EffectGroup more often than not. The other is
+        // `BoneStructure::snoParticle` on the appearance, which is real but
+        // rare — 5 of the first 2,500 `.app`, 33 attachments, 3 distinct
+        // files. Both land here; see io/d3/d3_effect_resolver.h for the census
+        // that ranks them.
+        //
+        // Neither carries per-emitter animation tracks of the kind `.mdx` and
+        // `.m2` do. Everything animated lives inside the `.prt`, on the
+        // system's own clock, so all the host owes an emitter per frame is the
+        // world matrix of the bone (and hardpoint) it rides.
+        const auto& app = d3->SourceAppearance();
+        i32 emitterId = 0;
+
+        auto addEmitter = [&](i32 snoParticle, i32 bone, const Matrix44f& offset) {
+            auto prt = D3Cache().Particle(snoParticle);
+            if (!prt)
+                return;
+            auto em = std::make_unique<particle::d3::Emitter>();
+            em->SetD3Desc(io::d3::BuildD3EmitterDesc(*prt, snoParticle));
+            em->SetAttachBone(bone);
+            em->SetAttachOffset(offset);
+            rs_.Particles().AddEmitter(actor->handle, particle::ParticleOutput::Billboard,
+                                       emitterId++, std::move(em));
+        };
+
+        if (const io::d3n::Actor* acr = d3->SourceActor()) {
+            const std::string& look =
+                (d3->LookIndex() < d3->Looks().size()) ? d3->Looks()[d3->LookIndex()]
+                                                       : std::string{};
+            for (const auto& fx : io::d3::ResolveActorEffects(*acr, io::d3::kD3MsgActorSpawned,
+                                                              D3Cache(), look)) {
+                const i32 hp = io::d3::FindD3Hardpoint(app, fx.hardpoint);
+                i32 bone = -1;
+                Matrix44f offset = Matrix44f::identity();
+                if (hp >= 0) {
+                    const auto& h = app.arHardpoints[hp];
+                    bone = h.nBoneIndex;
+                    offset = animation::ComposePivotSRT(
+                        h.tTransform.vTranslation,
+                        Quaternion{h.tTransform.qRotation.x, h.tTransform.qRotation.y,
+                                   h.tTransform.qRotation.z, h.tTransform.qRotation.w},
+                        {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 0.0f});
+                }
+                addEmitter(fx.snoParticle, bone, offset);
+            }
+        }
+
+        for (usize b = 0; b < app.arBones.size(); ++b)
+            if (app.arBones[b].snoParticle.valid())
+                addEmitter(app.arBones[b].snoParticle.id, static_cast<i32>(b),
+                           Matrix44f::identity());
     }
 #endif
 #if WDX_ENABLE_M3

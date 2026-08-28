@@ -118,6 +118,13 @@ public:
     std::shared_ptr<const d3n::AnimSet> AnimSet(i32 sno);
     std::shared_ptr<const d3n::Material> Material(i32 sno);
     std::shared_ptr<const d3n::Physics> Physics(i32 sno);
+    /// The `.prt` particle system. Its channels are the whole animated
+    /// content of the effect; see D3_PARTICLE_DESIGN.md.
+    std::shared_ptr<const d3n::Particle> Particle(i32 sno);
+    /// The `.efg` effect group — the indirection that carries the bulk of the
+    /// shipped particles. 11,849 of the 21,593 `.prt` are named by an effect
+    /// group and by nothing else. See `D3EffectResolver`.
+    std::shared_ptr<const d3n::EffectGroup> EffectGroup(i32 sno);
     /// The `.clt` cloth *tuning*. The cloth GEOMETRY is baked into the
     /// Appearance's SubObjects, so this is the only asset a cloth needs beyond
     /// the model it hangs off.

@@ -150,7 +150,7 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
             if (!refraction)
                 return;
             const i32 offset = (i32)refraction->vertices.size();
-            const i32 vcount = BuildEmitterGeometry(e, refractIn, refraction->vertices);
+            const i32 vcount = e.BuildGeometry(refractIn, refraction->vertices);
             if (vcount > 0)
                 refraction->draws.push_back(
                     {model, id, offset, vcount, e.PriorityPlane(), e.Material(), origin});
@@ -158,14 +158,14 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
         }
         if (e.Desc().multiTexture && multiTex) {
             const i32 offset = (i32)multiTex->vertices.size();
-            const i32 vcount = BuildEmitterGeometry(e, multiTexIn, multiTex->vertices);
+            const i32 vcount = e.BuildGeometry(multiTexIn, multiTex->vertices);
             if (vcount > 0)
                 outDrawLists.push_back(
                     {model, id, offset, vcount, e.PriorityPlane(), e.Material(), origin});
             return;
         }
         const i32 offset = (i32)outVertices.size();
-        const i32 vcount = BuildEmitterGeometry(e, in, outVertices);
+        const i32 vcount = e.BuildGeometry(in, outVertices);
         if (vcount > 0) {
             EmitterDrawList dl{model, id, offset, vcount, e.PriorityPlane(), e.Material(), origin};
             // Nothing downstream can shade three layers off this stream, so the

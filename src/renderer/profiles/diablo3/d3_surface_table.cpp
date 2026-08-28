@@ -53,6 +53,13 @@ constexpr u32 kD3OpaqueTagChain[] = {0x30502u, 0x30850u, 0x30830u, 0x30600u, 0x3
 /// 0xA000D point-linear); this one sits just above them and gates the lot.
 constexpr u32 kD3TagLightingEnable = 0xA000Fu;
 
+/// The tag the back pass of a two-sided pair raises. Measured over all 1,507
+/// corpus `.shd`: worth 1 on exactly 12 passes and 0 on 15, and every one of
+/// the twelve is pass 1 of a `cloth_*` shader culling CCW against a pass 0
+/// culling CW. It is the flip-the-normal switch, which is what the second draw
+/// is for.
+constexpr u32 kD3TagBackFacePass = 0xA003Du;
+
 const d3n::ShaderTagMapEntry* FindTag(const d3n::RenderPass& pass, u32 id) {
     for (const auto& t : pass.arShaderParams) {
         if (t.dwTagId == id)
@@ -122,7 +129,88 @@ bool UvMatrixOf(const d3n::MaterialTextureEntry& e, Matrix44f& out) {
     return true;
 }
 
+bool SameStages(const d3n::RenderPass& a, const d3n::RenderPass& b) {
+    if (a.arTextureStages.size() != b.arTextureStages.size())
+        return false;
+    for (usize i = 0; i < a.arTextureStages.size(); ++i) {
+        const auto& x = a.arTextureStages[i];
+        const auto& y = b.arTextureStages[i];
+        if (x.dwUnknown00 != y.dwUnknown00 || x.dwUnknown04 != y.dwUnknown04 ||
+            x.dwUnknown08 != y.dwUnknown08 || x.dwUnknown0C != y.dwUnknown0C ||
+            x.dwUnknown10 != y.dwUnknown10 || x.flUnknown14 != y.flUnknown14)
+            return false;
+    }
+    return true;
+}
+
+/// Every RenderParams field but the cull mode. Field by field rather than a
+/// memcmp: `bUnknown34` is a byte between two ints, so the struct has padding
+/// a comparison must not read.
+bool SameRenderParamsButCull(const d3n::RenderParams& a, const d3n::RenderParams& b) {
+    return a.dwUnknown04 == b.dwUnknown04 && a.dwUnknown08 == b.dwUnknown08 &&
+           a.flUnknown0C == b.flUnknown0C && a.flUnknown10 == b.flUnknown10 &&
+           a.dwUnknown14 == b.dwUnknown14 && a.dwUnknown18 == b.dwUnknown18 &&
+           a.dwUnknown1C == b.dwUnknown1C && a.dwUnknown20 == b.dwUnknown20 &&
+           a.dwUnknown24 == b.dwUnknown24 && a.dwUnknown28 == b.dwUnknown28 &&
+           a.dwUnknown2C == b.dwUnknown2C && a.dwUnknown30 == b.dwUnknown30 &&
+           a.bUnknown34 == b.bUnknown34 && a.dwUnknown38 == b.dwUnknown38 &&
+           a.dwUnknown3C == b.dwUnknown3C && a.dwUnknown40 == b.dwUnknown40 &&
+           a.dwUnknown44 == b.dwUnknown44 && a.dwUnknown48 == b.dwUnknown48 &&
+           a.dwUnknown4C == b.dwUnknown4C && a.dwUnknown50 == b.dwUnknown50 &&
+           a.dwUnknown54 == b.dwUnknown54 && a.dwUnknown58 == b.dwUnknown58;
+}
+
+bool SameTagsButBackFace(const d3n::RenderPass& a, const d3n::RenderPass& b) {
+    std::map<u32, u32> ta, tb;
+    for (const auto& t : a.arShaderParams) {
+        if (t.dwTagId != kD3TagBackFacePass)
+            ta[t.dwTagId] = t.dwValue;
+    }
+    for (const auto& t : b.arShaderParams) {
+        if (t.dwTagId != kD3TagBackFacePass)
+            tb[t.dwTagId] = t.dwValue;
+    }
+    return ta == tb;
+}
+
 } // namespace
+
+/// @brief Is this Shaders one TWO-SIDED draw written as two passes?
+///
+/// A RenderPass has no two-sided cull state — D3DCULL is {none, CW, CCW} and
+/// nothing else — so content that wants a sheet lit from both sides ships the
+/// same pass twice, the second with the opposite winding and
+/// `kD3TagBackFacePass` raised to negate the normal. Twelve corpus shaders do
+/// it, all named `cloth_*`, and Tyrael's cape is one of them.
+///
+/// The test is deliberately narrow: same programs, same stages, same state, same
+/// tags, and the two culls covering both windings. Over the corpus's 293
+/// multi-pass shaders that fires on exactly those twelve. Every other
+/// multi-pass shader varies its program or its stages too, and is a second
+/// effect layer this build still does not draw — collapsing one of those would
+/// shade the extra layer with the first pass's program.
+///
+/// Collapsing rather than submitting twice is exact here because
+/// `psD3Standard` already flips the normal on `SV_IsFrontFace`: one cull-none
+/// draw shades each triangle the way whichever pass would have claimed it. The
+/// one thing it does not keep is the order — the client draws every front face
+/// before any back face, and a single draw follows the index buffer — which is
+/// visible only where a cloth folds over itself and blends against itself.
+bool D3IsTwoSidedPassPair(const d3n::Shaders& sh) {
+    if (sh.arRenderPasses.size() != 2)
+        return false;
+    const auto& a = sh.arRenderPasses[0];
+    const auto& b = sh.arRenderPasses[1];
+    const u32 ca = static_cast<u32>(a.tRenderParams.dwUnknown00);
+    const u32 cb = static_cast<u32>(b.tRenderParams.dwUnknown00);
+    if (!((ca == 2 && cb == 3) || (ca == 3 && cb == 2)))
+        return false;
+    return a.szEffectFile == b.szEffectFile && a.szVertexShaderEntry == b.szVertexShaderEntry &&
+           a.szPixelShaderEntry == b.szPixelShaderEntry && a.dwUnknown00 == b.dwUnknown00 &&
+           a.dwUnknown04 == b.dwUnknown04 && a.dwPassFlags == b.dwPassFlags &&
+           SameStages(a, b) && SameRenderParamsButCull(a.tRenderParams, b.tRenderParams) &&
+           SameTagsButBackFace(a, b);
+}
 
 D3PassState D3PassStateFor(const d3n::SubObjectAppearance& variant,
                            ::whiteout::flakes::io::D3SnoCache* cache) {
@@ -148,6 +236,7 @@ D3PassState D3PassStateFor(const d3n::SubObjectAppearance& variant,
     const auto& r = pass0.tRenderParams;
     st.resolved = true;
     st.cull = static_cast<u32>(r.dwUnknown00);
+    st.twoSidedPair = D3IsTwoSidedPassPair(*shaders);
     st.depthWrite = r.dwUnknown04 != 0;
     st.alphaRef = r.bUnknown34;
     st.blendEnable = r.dwUnknown4C != 0;
@@ -254,7 +343,9 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
         s.pass = D3PassStateFor(*variant, cache);
         if (s.pass.resolved) {
             s.alphaBlend = s.pass.blendEnable;
-            s.twoSided = s.pass.cull == 1;
+            // Either spelling: a pass that asks for no culling, or a pair
+            // of passes that between them cover both windings.
+            s.twoSided = s.pass.cull == 1 || s.pass.twoSidedPair;
             s.alphaTestThreshold = static_cast<f32>(s.pass.alphaRef) * (1.0f / 255.0f);
             // An unlit pass takes the vertex colour AS its light — but only
             // where there is one to take. See D3Surface::unlit.

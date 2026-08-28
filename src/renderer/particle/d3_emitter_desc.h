@@ -1,0 +1,93 @@
+#pragma once
+
+// ============================================================================
+// D3EmitterDesc — one `.prt` in the form the simulation reads.
+//
+// The immutable half, shared by every actor spawned from the model, exactly
+// like `EmitterDesc` is for the WC3/WoW dialect. It is a separate type rather
+// than more fields on `EmitterDesc` because D3 shares none of that struct's
+// subjects: no lifetime curve triple, no motion params, no spawn shape object,
+// no sprite sheet. See D3_PARTICLE_DESIGN.md §12.1.
+// ============================================================================
+
+#include "d3_channels.h"
+#include "d3_path.h"
+#include "particle_material.h"
+#include "types.h"
+#include "whiteout/flakes/types.h"
+
+#include <array>
+
+namespace whiteout::flakes::renderer::particle::d3 {
+
+struct EmitterDesc {
+    // ---- system ----
+    i32 systemType = 0;
+    u32 prtFlags = 0;
+    i32 renderMode = 0;
+
+    /// Seconds. The engine stores frame counts at 60 fps and multiplies all
+    /// three by 0.016667 on load; do the conversion once, here.
+    f32 lifetime = 0.0f;
+    f32 emissionPeriod = 0.0f;
+    f32 preSimulate = 0.0f;
+
+    f32 mass = 0.031059f;
+    i32 maxInstances = 0;
+
+    /// Kill radius, and the normalising divisor for driver mode 3.
+    f32 maxDistance = 10.0f;
+    /// Camera-relative placement scale, and the divisor for driver mode 6.
+    f32 cameraDistScale = 0.8f;
+
+    // ---- the wind spring (system types 6 and 8 only) ----
+    f32 burstZOffset = 0.0f;
+    f32 swayFrequency = 1.0f;
+    f32 swayDamping = 0.3f;
+    f32 swayMaxOffset = 1.0f;
+    f32 swayGustAmount = 1.25f;
+    f32 swayBaseAmount = 0.0f;
+
+    // ---- emitter shape ----
+    Shape shape = Shape::Point;
+    Path shapeExtent0;
+    Path shapeExtent1;
+    Path shapeExtent2;
+
+    /// Every channel, indexed by ENGINE CHANNEL ID. Slot 0 and the gaps
+    /// (4, 26, 27) stay empty and evaluate to zero, which is what an absent
+    /// channel does anyway.
+    std::array<Path, kChannelIdCount> channels;
+
+    /// Derived at load exactly the way `ParticleSystem_Spawn` derives it: ask
+    /// each channel whether its value range is non-trivial. Without this the
+    /// step function integrates five motion models for every particle of every
+    /// asset; with it the typical asset runs one.
+    u32 caps = 0;
+
+    ParticleMaterialDesc material;
+    i32 priorityPlane = 0;
+
+    /// The `.prt`'s own SNO id, for diagnostics and the trace.
+    i32 snoId = -1;
+    /// Actor spawned per particle, if any (4,796 of 21,593 files set one).
+    /// Reported through `ChildModelEvent`; the host owns the spawn.
+    i32 snoActor = -1;
+
+    const Path& Channel(i32 id) const {
+        return channels[(id >= 0 && id < kChannelIdCount) ? static_cast<usize>(id) : 0];
+    }
+    bool Has(i32 id) const {
+        return !Channel(id).nodes.empty();
+    }
+    bool Cap(u32 bit) const {
+        return (caps & bit) != 0;
+    }
+
+    /// Recompute @ref caps from the channels. Called by the adapter once the
+    /// paths are in place; separated so a hand-built desc in a test gets the
+    /// same treatment as a parsed one.
+    void DeriveCapabilities();
+};
+
+} // namespace whiteout::flakes::renderer::particle::d3

@@ -1,5 +1,7 @@
 #include "renderer/particle/particle2_emitter.h"
 
+#include "renderer/particle/particle_geometry.h"
+
 #include "whiteout/flakes/model_types.h" // FrameState::ParticleFrameState
 #include "whiteout/flakes/util/coordinate_system.h"
 
@@ -619,6 +621,10 @@ void Emitter2::Update(f32 elapsed, f32 emissionScaler) {
         t->viewDistance_ = viewDistance_;
     }
     InternalUpdate(elapsed, emissionScaler);
+}
+
+i32 Emitter2::BuildGeometry(const BuildGeometryInput& in, std::vector<Vertex>& out) const {
+    return BuildEmitterGeometry(*this, in, out);
 }
 
 } // namespace whiteout::flakes::renderer::particle

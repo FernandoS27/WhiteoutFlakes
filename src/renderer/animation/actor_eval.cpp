@@ -18,6 +18,9 @@
 #include "model/model_instance.h"
 #include "model/model_template.h"
 #include "particle/child_model_emitter.h"
+#if WDX_ENABLE_D3
+#include "particle/d3_emitter.h"
+#endif
 #include "particle/particle_service.h"
 #include "particle/rnd_seed.h"
 #include "particle/splat_service.h"
@@ -255,6 +258,62 @@ void ApplyAttachmentStates(Actor& mi, const FrameState& state, const ActorEvalCo
     }
 }
 
+#if WDX_ENABLE_D3
+// Diablo III emitters take no FrameState at all. Everything animated about a
+// `.prt` lives inside the file, evaluated against the system's own clock, so
+// the one thing the host owes an emitter is where it is — its bone's world
+// matrix, decomposed into a position and an orientation. That orientation is
+// load-bearing: it is frozen onto every particle at birth and is what makes
+// the emitter-local kinematic triple local.
+void ApplyD3ParticleFrames(Actor& mi, const FrameState& state,
+                           particle::ParticleService& particles) {
+    particles.ForEachEmitter([&](const particle::EmitterKey& key, const particle::Emitter2& e) {
+        if (key.model != mi.handle)
+            return;
+        auto* d3 = dynamic_cast<particle::d3::Emitter*>(const_cast<particle::Emitter2*>(&e));
+        if (!d3)
+            return;
+        const i32 bone = d3->AttachBone();
+        Matrix44f m = mi.ScaledWorldTransform();
+        if (bone >= 0 && bone < static_cast<i32>(state.boneWorldMatrices.size()))
+            m = state.boneWorldMatrices[bone] * m;
+        // The hardpoint's own frame, inside the bone. Identity unless the
+        // event named a hardpoint, so a bone-attached or origin-attached
+        // emitter costs nothing here.
+        m = d3->AttachOffset() * m;
+        d3->SetModelToWorld(m);
+        d3->SetWorldPosition(whiteout::transform_point({0, 0, 0}, m));
+        d3->SetVisible(true);
+        // The rotation part of the bone matrix, orthonormalised. A scaled bone
+        // would otherwise hand the birth quaternion a scale, and a quaternion
+        // has nowhere to put one.
+        Vector3f x{m.data[0][0], m.data[0][1], m.data[0][2]};
+        Vector3f y{m.data[1][0], m.data[1][1], m.data[1][2]};
+        Vector3f z{m.data[2][0], m.data[2][1], m.data[2][2]};
+        x.normalize();
+        y.normalize();
+        z.normalize();
+        const f32 tr = x.x + y.y + z.z;
+        Quaternion q = Quaternion::identity();
+        if (tr > 0.0f) {
+            const f32 s = std::sqrt(tr + 1.0f) * 2.0f;
+            q = {(y.z - z.y) / s, (z.x - x.z) / s, (x.y - y.x) / s, 0.25f * s};
+        } else if (x.x > y.y && x.x > z.z) {
+            const f32 s = std::sqrt(1.0f + x.x - y.y - z.z) * 2.0f;
+            q = {0.25f * s, (y.x + x.y) / s, (z.x + x.z) / s, (y.z - z.y) / s};
+        } else if (y.y > z.z) {
+            const f32 s = std::sqrt(1.0f + y.y - x.x - z.z) * 2.0f;
+            q = {(y.x + x.y) / s, 0.25f * s, (z.y + y.z) / s, (z.x - x.z) / s};
+        } else {
+            const f32 s = std::sqrt(1.0f + z.z - x.x - y.y) * 2.0f;
+            q = {(z.x + x.z) / s, (z.y + y.z) / s, 0.25f * s, (x.y - y.x) / s};
+        }
+        q.normalize();
+        d3->SetEmitterOrientation(q);
+    });
+}
+#endif
+
 } // namespace
 
 void Actor::ApplyFrameState(const FrameState& state, i32 localTimeMs, const ActorEvalContext& ctx) {
@@ -267,6 +326,10 @@ void Actor::ApplyFrameState(const FrameState& state, i32 localTimeMs, const Acto
         ApplyRibbonFrameStates(*this, state, *ctx.ribbons);
     if (ctx.particles)
         ApplyChildModelFrameStates(*this, state, *ctx.particles);
+#if WDX_ENABLE_D3
+    if (ctx.particles)
+        ApplyD3ParticleFrames(*this, state, *ctx.particles);
+#endif
 
     for (i32 i = 0;
          i < (i32)state.collisionTransforms.size() && i < (i32)render.collisionShapes.size(); i++)

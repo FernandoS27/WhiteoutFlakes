@@ -174,6 +174,15 @@ if(WDX_ENABLE_D3)
     # the census reads shipped records and needs no solver, so a build without
     # Snowball still gets to disagree with the decompile.
     wdx_add_test(d3_physics_test d3_physics_test.cpp)
+    # Gates D3-P0..P4 of D3_PARTICLE_DESIGN.md: the path evaluator, the
+    # nine random distributions, the emitter-shape samplers, the emission
+    # accumulator, the five motion models and the orientation pair. The
+    # corpus sweeps skip without an extracted D3 corpus; the rest are
+    # synthetic and run everywhere.
+    wdx_add_test(d3_particle_test d3_particle_test.cpp)
+    # How a `.prt` reaches an actor: the EffectGroup parser, the census that
+    # ranks the three routes, and the resolver's item selection.
+    wdx_add_test(d3_effect_test d3_effect_test.cpp)
     # The rig through Snowball. Only exists when physics is compiled in; without
     # it the adapter appends no stage and there is nothing to step.
     if(WDX_ENABLE_PHYSICS)
