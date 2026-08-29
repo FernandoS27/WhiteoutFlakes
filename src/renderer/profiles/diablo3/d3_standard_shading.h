@@ -30,6 +30,22 @@ class RenderService;
 
 namespace whiteout::flakes::renderer::profiles::diablo3 {
 
+/// @brief One D3DBLEND value, which is what a RenderPass stores.
+///
+/// The corpus never leaves the enum: over 1,831 shipped passes the source takes
+/// only {1, 2, 5, 9, 11} and the destination only {1, 2, 5, 6, 9, 10}, and the
+/// blend OP is ADD on every one of them. The pairs are led by (5, 6)
+/// SrcAlpha/InvSrcAlpha on 1,029 passes and (5, 2) SrcAlpha/One — additive — on
+/// 283. Particle passes agree: 115 of 223 are (5, 6) and 54 are (5, 2).
+///
+/// SrcAlphaSat (11, 58 passes here and 36 particle ones) has no equivalent in
+/// this gfx layer; SrcAlpha is the nearest and differs only where the
+/// destination is already saturated.
+///
+/// Shared with the particle path, which reads the same field off the same
+/// struct — see d3_particle_shading.h.
+gfx::BlendFactor D3BlendFactor(u32 d3d, gfx::BlendFactor fallback);
+
 class D3StandardShading final : public shading::IShadingModel {
 public:
     explicit D3StandardShading(RenderService& rs) : rs_(rs) {}

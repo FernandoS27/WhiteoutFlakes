@@ -40,6 +40,7 @@
 #include "io/d3/d3_model_adapter.h"
 #include "io/d3/d3_particle_adapter.h"
 #include "renderer/particle/d3_emitter.h"
+#include "renderer/profiles/diablo3/d3_particle_shading.h"
 #include "renderer/profiles/diablo3/d3_surface_table.h"
 #endif
 #if WDX_ENABLE_M2
@@ -245,16 +246,36 @@ void ModelLoader::SetupD3Actor(Actor& actor, const std::shared_ptr<io::D3ModelAd
     const auto& app = d3->SourceAppearance();
     i32 emitterId = 0;
 
+    // Emitter shapes 6, 7 and 11 spray off the model's own surface, so they
+    // need its triangles. Built at most once per actor and shared by every
+    // emitter that asks — 6.7% of the corpus does, and an actor that carries
+    // none never pays for it.
+    std::shared_ptr<const particle::d3::EmitMesh> emitMesh;
+    bool emitMeshTried = false;
+
     auto addEmitter = [&](i32 snoParticle, i32 bone, const Matrix44f& offset) {
         auto prt = D3Cache().Particle(snoParticle);
         if (!prt)
             return;
+        auto desc = io::d3::BuildD3EmitterDesc(*prt, snoParticle);
+        profiles::diablo3::D3ResolveParticleMaterial(*prt, &D3Cache(), desc->d3mat);
+        profiles::diablo3::D3BindParticleTextures(actor, desc);
         auto em = std::make_unique<particle::d3::Emitter>();
-        em->SetD3Desc(io::d3::BuildD3EmitterDesc(*prt, snoParticle));
+        if (desc->SamplesModelSurface()) {
+            if (!emitMeshTried) {
+                emitMeshTried = true;
+                emitMesh = io::d3::BuildD3EmitMesh(app, d3->EmittedSubObjects());
+            }
+            em->SetEmitMesh(emitMesh);
+        }
+        em->SetD3Desc(std::move(desc));
         em->SetAttachBone(bone);
         em->SetAttachOffset(offset);
-        rs_.Particles().AddEmitter(actor.handle, particle::ParticleOutput::Billboard, emitterId++,
-                                   std::move(em));
+        // Registered in the space its own output declares: a type 1/3/4 system
+        // emits models, and the two spaces are separate id ranges.
+        const auto out = em->Desc().output;
+        em->SetChildOwner(actor.handle, emitterId, [this] { return rs_.Scene().AllocActorId(); });
+        rs_.Particles().AddEmitter(actor.handle, out, emitterId++, std::move(em));
     };
 
     if (const io::d3n::Actor* acr = d3->SourceActor()) {
@@ -276,7 +297,29 @@ void ModelLoader::SetupD3Actor(Actor& actor, const std::shared_ptr<io::D3ModelAd
             addEmitter(app.arBones[b].snoParticle.id, static_cast<i32>(b), Matrix44f::identity());
 
     // Past every id the load-time route just used, so the two never collide.
-    actor.d3Attachments.Bind(d3, &D3Cache(), emitterId);
+    actor.d3Attachments.Bind(d3, &D3Cache(), emitterId,
+                             [this] { return rs_.Scene().AllocActorId(); });
+}
+
+Actor* ModelLoader::SpawnD3ParticleActor(Actor& owner, i32 snoActor, const Matrix44f& initialTm,
+                                         u32 forceHandle) {
+    if (owner.treeDepth >= kMaxD3AttachDepth)
+        return nullptr;
+    auto adapter =
+        io::D3ModelAdapter::LoadActorBySno(snoActor, D3Cache(), rs_.Settings().D3LazyAnimations());
+    if (!adapter)
+        return nullptr;
+    adapter = D3Drawable(adapter);
+
+    Actor* child = SpawnChildFromSource(owner, ActorRole::PE1, adapter, forceHandle);
+    if (!child)
+        return nullptr;
+    // A free placement, not a bone ride: `Actor_SpawnFromSno` takes a transform
+    // and the system never sends another one.
+    child->worldTransform = initialTm;
+    child->shadingModel = core::ShadingModelId::Unlit;
+    SetupD3Actor(*child, adapter);
+    return child;
 }
 
 Actor* ModelLoader::SpawnD3ChildActor(Actor& parent, i32 snoActor, i32 bone,

@@ -1,5 +1,7 @@
 #include "io/d3/d3_particle_adapter.h"
 
+#include "io/d3/d3_types.h"
+
 #include "whiteout/sno/d3/native/types.h"
 
 #include <cmath>
@@ -93,10 +95,16 @@ Path FromVector(const PathT& src) {
 }
 
 Vector4f UnpackColor(u32 c) {
-    // 0xAARRGGBB, the packing the engine writes at particle+232 and the same
-    // one the `.app` vertex colours use.
-    return {static_cast<f32>((c >> 16) & 0xFFu) / 255.0f,
-            static_cast<f32>((c >> 8) & 0xFFu) / 255.0f, static_cast<f32>(c & 0xFFu) / 255.0f,
+    // 0xAABBGGRR — RED IS THE LOW BYTE, the same order `unpackVertexColor`
+    // reads an `.app` vertex in. Two shipped files that name their own colour
+    // settle it: `a1dun_cave_TorchGlow_Orange` stops on 0x003CFFF0 and
+    // `a1dun_jail_Embers_blue` on 0xFFFA7D77, and only this order makes the
+    // first orange and the second blue. Corpus-wide the skew is the same
+    // shape — over the 2,005 fire/flame/torch/ember files the low byte is the
+    // largest on 3,027 non-grey stops against 559 for the high one, which is
+    // just to say that fire is warm.
+    return {static_cast<f32>(c & 0xFFu) / 255.0f, static_cast<f32>((c >> 8) & 0xFFu) / 255.0f,
+            static_cast<f32>((c >> 16) & 0xFFu) / 255.0f,
             static_cast<f32>((c >> 24) & 0xFFu) / 255.0f};
 }
 
@@ -115,9 +123,31 @@ Path FromColor(const d3n::ColorPath& src) {
     return p;
 }
 
+/// The four stage types `Particle_DrawBatch` binds, in the order it binds them:
+/// `sys+300`, `+304`, `+308`, `+312`. A `.prt`'s material carries entries of
+/// twelve other types between them (300 of 35,631) and no particle pass
+/// declares one, so the order is also the filter.
+constexpr i32 kParticleStageTypes[pd3::MaterialDesc::kMaxLayers] = {1, 19, 12, 14};
+
+void BuildMaterial(const d3n::Particle& prt, pd3::MaterialDesc& out) {
+    out.snoShaderMap = prt.tMaterial.snoShaderMap.valid() ? prt.tMaterial.snoShaderMap.id : -1;
+    for (const i32 want : kParticleStageTypes) {
+        for (const auto& e : prt.tMaterial.arTextures) {
+            if (D3TextureTypeOf(e) != want)
+                continue;
+            pd3::MaterialLayer& L = out.layers[out.layerCount++];
+            L.textureSno = e.snoTexture.valid() ? e.snoTexture.id : -1;
+            L.rawType = want;
+            L.wrapFlags = static_cast<u32>(D3UvFlagsOf(e) & kD3UvFlagWrapMask);
+            L.uv = D3ReadUvXform(e);
+            break; // A type never repeats inside one material — see d3_types.h.
+        }
+    }
+}
+
 } // namespace
 
-std::shared_ptr<const pd3::EmitterDesc> BuildD3EmitterDesc(const d3n::Particle& prt, i32 snoId) {
+std::shared_ptr<pd3::EmitterDesc> BuildD3EmitterDesc(const d3n::Particle& prt, i32 snoId) {
     auto d = std::make_shared<pd3::EmitterDesc>();
 
     d->snoId = (snoId != -1) ? snoId : prt.dwSnoId;
@@ -194,18 +224,100 @@ std::shared_ptr<const pd3::EmitterDesc> BuildD3EmitterDesc(const d3n::Particle& 
     d->channels[pd3::kChSeekSpeed] = FromScalar(prt.arRatePathCh13);
     d->channels[pd3::kChSeekOffset] = FromScalar(prt.arScalarPathCh14);
 
-    // The ShaderMap id is the whole of a particle's material resolve: a
-    // particle skips the UberMaterial, the Material SNO and the texture-entry
-    // array that geometry walks, and binds four textures by STAGE TYPE off the
-    // system record. The renderer-side half of that lands with the shading
-    // phase; carry the id so it has something to resolve.
-    d->material.textureId = prt.tMaterial.snoShaderMap.valid() ? prt.tMaterial.snoShaderMap.id : -1;
+    BuildMaterial(prt, d->d3mat);
+    // The narrow view the shared draw list carries. The texture id is still -1
+    // here: a layer's id is an index into the OWNING ACTOR's texture scope, and
+    // the file does not know which actor it is about to ride. D3BindParticleTextures
+    // fills both halves in.
     d->material.filterMode = renderer::particle::FilterMode::Additive;
     d->material.unshaded = true;
     d->material.unfogged = false;
 
     d->DeriveCapabilities();
     return d;
+}
+
+std::shared_ptr<const pd3::EmitMesh> BuildD3EmitMesh(const d3n::Appearances& app,
+                                                     std::span<const D3SubObjectRef> emitted) {
+    auto mesh = std::make_shared<pd3::EmitMesh>();
+    const d3n::GeoSet* sets[2] = {&app.tGeoSet0, &app.tGeoSet1};
+
+    for (const D3SubObjectRef& r : emitted) {
+        const auto& subs = sets[r.geoSet & 1]->arSubObjects;
+        pd3::EmitMesh::SubMesh sm;
+        sm.firstTri = static_cast<u32>(mesh->tris.size() / 3);
+        if (r.index >= subs.size()) {
+            mesh->subs.push_back(sm);
+            continue;
+        }
+        const d3n::SubObject& sub = subs[r.index];
+
+        const u32 base = static_cast<u32>(mesh->rest.size());
+        const usize influenced =
+            (std::min)(sub.arVertices.size(), sub.arVertexInfluences.size());
+        for (usize v = 0; v < sub.arVertices.size(); ++v) {
+            mesh->rest.push_back(sub.arVertices[v].vPosition);
+            // Bone 0 at weight 0 for a vertex past a truncated influence array,
+            // which SkinEmitMeshVertex reads as "no skin" and leaves at rest —
+            // the same degradation GetSkinWeights makes for the mesh itself.
+            std::array<i32, 3> b{0, 0, 0};
+            Vector3f w{0, 0, 0};
+            if (v < influenced) {
+                const d3n::VertInfluences& src = sub.arVertexInfluences[v];
+                const d3n::Influence* three[3] = {&src.tInfluence0, &src.tInfluence1,
+                                                  &src.tInfluence2};
+                f32* lane[3] = {&w.x, &w.y, &w.z};
+                for (i32 k = 0; k < 3; ++k) {
+                    b[k] = three[k]->nBoneIndex;
+                    *lane[k] = three[k]->flWeight;
+                }
+            } else if (sub.arVertexInfluences.empty() && sub.nBoneIndex >= 0) {
+                // A rigid sub-object names one bone for the whole of itself.
+                b[0] = sub.nBoneIndex;
+                w.x = 1.0f;
+            }
+            mesh->bones.push_back(b);
+            mesh->weights.push_back(w);
+        }
+
+        f32 run = 0.0f;
+        for (usize i = 0; i + 2 < sub.arIndices.size(); i += 3) {
+            const u32 i0 = base + sub.arIndices[i + 0];
+            const u32 i1 = base + sub.arIndices[i + 1];
+            const u32 i2 = base + sub.arIndices[i + 2];
+            if (i0 >= mesh->rest.size() || i1 >= mesh->rest.size() || i2 >= mesh->rest.size())
+                continue;
+            mesh->tris.push_back(i0);
+            mesh->tris.push_back(i1);
+            mesh->tris.push_back(i2);
+            const Vector3f& a = mesh->rest[i0];
+            const Vector3f& p = mesh->rest[i1];
+            const Vector3f& q = mesh->rest[i2];
+            const Vector3f e0{p.x - a.x, p.y - a.y, p.z - a.z};
+            const Vector3f e1{q.x - a.x, q.y - a.y, q.z - a.z};
+            const Vector3f n{e0.y * e1.z - e0.z * e1.y, e0.z * e1.x - e0.x * e1.z,
+                             e0.x * e1.y - e0.y * e1.x};
+            run += 0.5f * std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+            mesh->areaCdf.push_back(run);
+            ++sm.triCount;
+        }
+        mesh->subs.push_back(sm);
+    }
+
+    // A sub-object with no skeleton anywhere leaves the two skin arrays as dead
+    // weight; drop them so SkinEmitMeshVertex takes its rest-pose early-out on
+    // the 63% of the corpus that has no bones at all.
+    bool anyWeight = false;
+    for (const Vector3f& w : mesh->weights)
+        anyWeight |= (w.x > 0.0f || w.y > 0.0f || w.z > 0.0f);
+    if (!anyWeight) {
+        mesh->bones.clear();
+        mesh->bones.shrink_to_fit();
+        mesh->weights.clear();
+        mesh->weights.shrink_to_fit();
+    }
+
+    return mesh->Empty() ? nullptr : std::shared_ptr<const pd3::EmitMesh>(std::move(mesh));
 }
 
 } // namespace whiteout::flakes::io::d3

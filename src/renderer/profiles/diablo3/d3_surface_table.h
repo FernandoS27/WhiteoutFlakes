@@ -216,10 +216,27 @@ struct D3PassState {
     /// are a majority rule. See D3StageArg for the grammar.
     bool stageArgs = false;
 
-    /// @brief Types whose stage feeds the colour / the alpha, one bit per
+    /// @brief Types whose stage MODULATES the colour / the alpha, one bit per
     ///        `EMaterialTextureType`. Meaningless unless `stageArgs`.
     u64 colorTypes = 0;
     u64 alphaTypes = 0;
+
+    /// @brief Types whose stage SAMPLES its texture for the colour / the alpha
+    ///        at all, whatever it then does with it. Also `stageArgs` only.
+    ///
+    /// The weaker question, and for a chain this build cannot reproduce it is
+    /// the answerable one: a stage whose code is a constant, the vertex colour
+    /// or nothing genuinely does not feed that channel, while a REPLACE or an
+    /// ADD does feed it and only differs in how. The particle path gates on
+    /// this — over the corpus's 243 billboard passes it separates the two jobs
+    /// of `alphaMap2Sampler` cleanly (type 19 alpha-only on 55, both channels
+    /// on 95) where @ref colorTypes would have dropped the DIFFUSE's colour on
+    /// 26 passes and drawn a plain quad.
+    u64 colorSampledTypes = 0;
+    u64 alphaSampledTypes = 0;
+    /// @brief Types whose stage the combine block names at all. Zero bits means
+    ///        the pass did not say, and the caller keeps its own default.
+    u64 namedTypes = 0;
 
     /// @brief The chain's output gain per channel: the product of its stages'
     ///        MODULATE2X / MODULATE4X steps, 1 where nothing scales.
@@ -349,6 +366,15 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
 bool D3IsTwoSidedPassPair(const d3n::Shaders& shaders);
 
 D3PassState D3PassStateFor(const d3n::SubObjectAppearance& variant,
+                           ::whiteout::flakes::io::D3SnoCache* cache);
+
+/// @brief The same resolve, off an `UberMaterial` alone.
+///
+/// A `.prt` embeds one of these and no SubObjectAppearance around it, and the
+/// chain below the ShaderMap is identical for both — `ParticleSystem_Spawn`
+/// calls the same `ShaderMap_ResolveShaderOpaque`. This is the whole of the
+/// function; the overload above is a forwarder.
+D3PassState D3PassStateFor(const d3n::UberMaterial& material,
                            ::whiteout::flakes::io::D3SnoCache* cache);
 
 /// @brief Which bucket a surface draws in.

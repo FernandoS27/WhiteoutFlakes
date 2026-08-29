@@ -214,10 +214,15 @@ bool D3IsTwoSidedPassPair(const d3n::Shaders& sh) {
 
 D3PassState D3PassStateFor(const d3n::SubObjectAppearance& variant,
                            ::whiteout::flakes::io::D3SnoCache* cache) {
+    return D3PassStateFor(variant.tMaterial, cache);
+}
+
+D3PassState D3PassStateFor(const d3n::UberMaterial& material,
+                           ::whiteout::flakes::io::D3SnoCache* cache) {
     D3PassState st;
-    if (!cache || !variant.tMaterial.snoShaderMap.valid())
+    if (!cache || !material.snoShaderMap.valid())
         return st;
-    const auto map = cache->ShaderMap(variant.tMaterial.snoShaderMap.id);
+    const auto map = cache->ShaderMap(material.snoShaderMap.id);
     if (!map)
         return st;
     const i32 shadersId = ShadersIdFor(*map);
@@ -265,10 +270,17 @@ D3PassState D3PassStateFor(const d3n::SubObjectAppearance& variant,
         if (i >= pass0.arTextureStages.size())
             continue;
         const i32 type = pass0.arTextureStages[i].dwUnknown00;
+        const u64 bit = D3TypeBit(type);
+        if (color || alpha)
+            st.namedTypes |= bit;
         if (c.modulates)
-            st.colorTypes |= D3TypeBit(type);
+            st.colorTypes |= bit;
         if (a.modulates)
-            st.alphaTypes |= D3TypeBit(type);
+            st.alphaTypes |= bit;
+        if (c.usesTexture)
+            st.colorSampledTypes |= bit;
+        if (a.usesTexture)
+            st.alphaSampledTypes |= bit;
     }
     // The pass's own tag map, which is where the light budget lives:
     // Render_EnsureShaderVariant reads five counts from it (0xA0008 point,

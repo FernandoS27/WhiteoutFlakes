@@ -3,6 +3,12 @@
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
+#include <memory>
+
+namespace whiteout::flakes::renderer::particle::d3 {
+struct MaterialDesc;
+}
+
 namespace whiteout::flakes::renderer::particle {
 
 // 8-bit ARGB colour. The vertex stream and the fog combine both work in bytes,
@@ -50,6 +56,16 @@ struct ParticleMaterialDesc {
     /// Layers 1 and 2, read only when @ref multiTexture is set.
     i32 textureId2 = -1;
     i32 textureId3 = -1;
+
+    /// @brief The Diablo III stage chain, when this draw is one.
+    ///
+    /// Null for every other dialect, and null is what tells the dispatcher to
+    /// shade the draw off @ref textureId and @ref filterMode alone. A `.prt`
+    /// binds four textures by stage type with a UV transform each, which the
+    /// fields above have nowhere to put; this is an ALIASING pointer into the
+    /// emitter's own `d3::EmitterDesc`, so it costs a refcount and never a
+    /// copy of the chain. See d3_particle_material.h.
+    std::shared_ptr<const d3::MaterialDesc> d3;
 };
 
 } // namespace whiteout::flakes::renderer::particle

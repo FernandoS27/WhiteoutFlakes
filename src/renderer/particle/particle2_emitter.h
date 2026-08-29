@@ -100,6 +100,16 @@ public:
     // today) report what happened during the last Update here. Default no-op.
     virtual void CollectOutputEvents(std::vector<struct ChildModelEvent>& out) {}
 
+    /// @brief The clock this emitter's MATERIAL runs on, in seconds.
+    ///
+    /// Zero for every dialect whose material does not move on its own. A
+    /// Diablo III particle's layers each carry a UV transform sampled against
+    /// the system's own age, which is what makes a re-triggered effect restart
+    /// its scroll instead of jumping to wherever a scene clock had reached.
+    virtual f32 MaterialTimeSec() const {
+        return 0.0f;
+    }
+
     // Deterministic per-emitter RNG seed. Callers derive it from stable identity
     // (actor handle + emitter index) so the same scene reproduces run to run.
     void SetSeed(u32 seed);
@@ -140,6 +150,16 @@ public:
     // units and leave it at 1.
     f32 UnitScale() const {
         return unitScale_;
+    }
+
+    /// @brief Set it directly, for a dialect that takes no ParticleFrameState.
+    ///
+    /// Diablo III emitters carry no per-frame track at all (everything animated
+    /// lives inside the `.prt`), so they never reach ApplyState and the host has
+    /// to hand this over on its own. Ignored values <= 0 keep the current one.
+    void SetUnitScale(f32 s) {
+        if (s > 0.0f)
+            unitScale_ = s;
     }
 
     // The model's own fade, which WoW multiplies into particle alpha instead of

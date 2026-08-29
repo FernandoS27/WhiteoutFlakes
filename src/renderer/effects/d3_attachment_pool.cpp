@@ -7,6 +7,7 @@
 #include "renderer/model/model_instance.h"
 #include "renderer/particle/d3_emitter.h"
 #include "renderer/particle/particle_service.h"
+#include "renderer/profiles/diablo3/d3_particle_shading.h"
 
 #include <utility>
 
@@ -15,9 +16,10 @@ namespace whiteout::flakes::renderer::effects {
 using namespace ::whiteout::flakes::renderer::model;
 
 void D3AttachmentPool::Bind(std::shared_ptr<io::D3ModelAdapter> adapter, io::D3SnoCache* cache,
-                            i32 firstEmitterId) {
+                            i32 firstEmitterId, std::function<u32()> allocHandle) {
     adapter_ = std::move(adapter);
     cache_ = cache;
+    allocHandle_ = std::move(allocHandle);
     bySequence_.clear();
     pending_.clear();
     nextEmitterId_ = firstEmitterId;
@@ -61,7 +63,7 @@ std::vector<D3AttachmentPool::Entry>* D3AttachmentPool::Resolve(i32 seq) {
     return &bySequence_.emplace(seq, std::move(entries)).first->second;
 }
 
-void D3AttachmentPool::Tick(const Actor& actor, i32 activeSeq, i32 localTimeMs, i32 seqStartMs,
+void D3AttachmentPool::Tick(Actor& actor, i32 activeSeq, i32 localTimeMs, i32 seqStartMs,
                             i32 seqEndMs, particle::ParticleService* particles) {
     if (!adapter_)
         return;
@@ -96,17 +98,21 @@ void D3AttachmentPool::Tick(const Actor& actor, i32 activeSeq, i32 localTimeMs, 
                     e.dead = true;
                     continue;
                 }
+                auto desc = io::d3::BuildD3EmitterDesc(*prt, e.snoParticle);
+                profiles::diablo3::D3ResolveParticleMaterial(*prt, cache_, desc->d3mat);
+                profiles::diablo3::D3BindParticleTextures(actor, desc);
                 auto em = std::make_unique<particle::d3::Emitter>();
-                em->SetD3Desc(io::d3::BuildD3EmitterDesc(*prt, e.snoParticle));
+                em->SetD3Desc(std::move(desc));
                 em->SetAttachBone(e.bone);
                 em->SetAttachOffset(e.offset);
                 e.emitterId = nextEmitterId_++;
-                particles->AddEmitter(actor.handle, particle::ParticleOutput::Billboard,
-                                      e.emitterId, std::move(em));
+                e.output = em->Desc().output;
+                if (allocHandle_)
+                    em->SetChildOwner(actor.handle, e.emitterId, allocHandle_);
+                particles->AddEmitter(actor.handle, e.output, e.emitterId, std::move(em));
                 continue; // Freshly built: already at age zero.
             }
-            auto* em = particles->GetEmitter(actor.handle, particle::ParticleOutput::Billboard,
-                                             e.emitterId);
+            auto* em = particles->GetEmitter(actor.handle, e.output, e.emitterId);
             if (auto* d3 = dynamic_cast<particle::d3::Emitter*>(em))
                 d3->Restart();
             continue;

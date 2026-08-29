@@ -45,14 +45,8 @@ constexpr gfx::BlendDesc kD3AlphaBlend = {.enable = true,
                                           .srcAlpha = BF::One,
                                           .dstAlpha = BF::InvSrcAlpha};
 
-// D3DBLEND, which is what a RenderPass stores. The corpus never leaves the
-// enum: over 1,831 shipped passes the source takes only {1, 2, 5, 9, 11} and
-// the destination only {1, 2, 5, 6, 9, 10}, and the blend OP is ADD on every
-// one of them. The pairs are led by (5, 6) SrcAlpha/InvSrcAlpha on 1,029 passes
-// and (5, 2) SrcAlpha/One — additive — on 283.
-//
-// SrcAlphaSat (11, 58 passes) has no equivalent in this gfx layer; SrcAlpha is
-// the nearest and differs only where the destination is already saturated.
+} // namespace
+
 gfx::BlendFactor D3BlendFactor(u32 d3d, gfx::BlendFactor fallback) {
     switch (d3d) {
     case 1:
@@ -80,6 +74,8 @@ gfx::BlendFactor D3BlendFactor(u32 d3d, gfx::BlendFactor fallback) {
         return fallback;
     }
 }
+
+namespace {
 
 // The animated UV transform for a slot, or the table's resting one. Same seam
 // `.m3` layers use: the palette entry is a 2x4 affine (`u' = row0.x*u +

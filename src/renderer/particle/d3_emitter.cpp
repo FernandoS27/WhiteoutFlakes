@@ -1,5 +1,8 @@
 #include "renderer/particle/d3_emitter.h"
 
+#include "renderer/animation/anim_math.h"
+#include "renderer/particle/particle_service.h"
+
 #include "renderer/particle/particle_geometry.h"
 #include "whiteout/flakes/model_types.h"
 
@@ -171,7 +174,11 @@ void Emitter::SetD3Desc(std::shared_ptr<const EmitterDesc> desc) {
     auto base = std::make_shared<particle::EmitterDesc>();
     base->material = d3desc_->material;
     base->priorityPlane = d3desc_->priorityPlane;
-    base->output = ParticleOutput::Billboard;
+    // A type 1/3/4 system draws nothing of its own — every emission is a whole
+    // model — so it declares the child-model space and the geometry builder is
+    // never asked for it.
+    base->output = d3desc_->SpawnsChildActors() ? ParticleOutput::ChildModel
+                                                : ParticleOutput::Billboard;
     base->hasHead = true;
     base->shape = std::make_shared<PlaneShape>();
     Emitter2::SetDesc(base);
@@ -180,6 +187,21 @@ void Emitter::SetD3Desc(std::shared_ptr<const EmitterDesc> desc) {
 }
 
 void Emitter::Restart() {
+    // The children go with it. The ENGINE does not do this — a spawned ACD
+    // outlives the system that made it, and `ParticleSystem_ReleaseAttachments`
+    // frees the link nodes and nothing else — but a viewer replaying a clip
+    // would then stack one model per lap until the instance cap. Same call
+    // `D3AttachmentPool` makes for a TriggerEvent child, for the same reason.
+    for (u32 h : childHandles_) {
+        ChildModelEvent ev;
+        ev.kind = ChildModelEvent::Kind::Death;
+        ev.owner = childOwner_;
+        ev.emitterId = childEmitterId_;
+        ev.childHandle = h;
+        childPending_.push_back(ev);
+    }
+    childHandles_.clear();
+
     systemAge_ = 0.0f;
     emitElapsed_ = 0.0f;
     emitAccum_ = 0.0f;
@@ -234,8 +256,12 @@ EvalCtx Emitter::ParticleCtx(const ParticleState& st, const Vector3f& pos, f32 a
     // `flCameraDistScale` do double duty here: they are the kill radius and
     // the camera placement scale, AND the normalising divisors for modes 3
     // and 6.
+    // In `.prt` units, not renderer units: both divisors are authored numbers
+    // and the separation they normalise came off a scaled world matrix.
     const Vector3f sysPos = WorldPosition();
-    const Vector3f rel{pos.x - sysPos.x, pos.y - sysPos.y, pos.z - sysPos.z};
+    const f32 inv = 1.0f / UnitScale();
+    const Vector3f rel{(pos.x - sysPos.x) * inv, (pos.y - sysPos.y) * inv,
+                       (pos.z - sysPos.z) * inv};
     if (d.maxDistance > kEpsilon) {
         const f32 len = std::sqrt(rel.x * rel.x + rel.y * rel.y + rel.z * rel.z);
         c.driver.distNorm = len / d.maxDistance;
@@ -284,8 +310,95 @@ Emitter::EmitContext Emitter::BuildEmitContext() const {
     return c;
 }
 
+// `base` arrives in renderer units (it came off the emitter's world matrix);
+// everything this function computes is authored, so it leaves in `.prt` units
+// and is converted on the way out. See SetUnitScale.
+Vector3f Emitter::SkinEmitMeshVertex(const EmitMesh& m, u32 vertex) const {
+    const Vector3f& rest = m.rest[vertex];
+    if (m.bones.empty() || emitPose_.empty() || emitInvBind_.empty())
+        return rest;
+
+    const std::array<i32, 3>& b = m.bones[vertex];
+    const Vector3f& w = m.weights[vertex];
+    const f32 lane[3] = {w.x, w.y, w.z};
+    Vector3f acc{0, 0, 0};
+    f32 sum = 0.0f;
+    for (i32 k = 0; k < 3; ++k) {
+        if (!(lane[k] > 0.0f) || b[k] < 0 || b[k] >= static_cast<i32>(emitPose_.size()) ||
+            b[k] >= static_cast<i32>(emitInvBind_.size()))
+            continue;
+        const Vector3f p = whiteout::transform_point(
+            rest, emitInvBind_[static_cast<usize>(b[k])] * emitPose_[static_cast<usize>(b[k])]);
+        acc = {acc.x + p.x * lane[k], acc.y + p.y * lane[k], acc.z + p.z * lane[k]};
+        sum += lane[k];
+    }
+    if (!(sum > kEpsilon))
+        return rest;
+    const f32 inv = 1.0f / sum;
+    return {acc.x * inv, acc.y * inv, acc.z * inv};
+}
+
+bool Emitter::SampleEmitMeshPoint(bool sequential, u32 sequence, Vector3f& out) {
+    if (!emitMesh_ || emitMesh_->Empty())
+        return false;
+    const EmitMesh& m = *emitMesh_;
+
+    // Which sub-object. The engine reads the system's own index and draws
+    // uniformly when it is -1, with the modulo shortcut it uses everywhere a
+    // count might be a power of two; nothing in a viewer ever sets one, so
+    // this is always the draw.
+    const u32 subCount = static_cast<u32>(m.subs.size());
+    const u32 r = sysRng_.Next();
+    const EmitMesh::SubMesh& sm =
+        m.subs[(((subCount - 1) & subCount) != 0) ? (r % subCount) : (r & (subCount - 1))];
+    if (sm.triCount == 0)
+        return false;
+
+    u32 tri;
+    if (sequential) {
+        // Shape 11 walks its triangles in order off a counter that is never
+        // reset, so consecutive emissions spread over the surface instead of
+        // clustering the way a random draw does.
+        tri = sm.firstTri + (sequence % sm.triCount);
+    } else {
+        // Area-uniform, from the running sum. One draw, because the engine
+        // takes one — the stream is positional and an extra draw here shifts
+        // every value after it.
+        const u32 last = sm.firstTri + sm.triCount - 1;
+        const f32 pick = sysRng_.NextUnit() * m.areaCdf[last];
+        tri = last;
+        for (u32 i = sm.firstTri; i <= last; ++i) {
+            if (m.areaCdf[i] >= pick) {
+                tri = i;
+                break;
+            }
+        }
+    }
+
+    const Vector3f p0 = SkinEmitMeshVertex(m, m.tris[tri * 3 + 0]);
+    const Vector3f p1 = SkinEmitMeshVertex(m, m.tris[tri * 3 + 1]);
+    const Vector3f p2 = SkinEmitMeshVertex(m, m.tris[tri * 3 + 2]);
+
+    // Two draws folded into the triangle: when they land outside it the SECOND
+    // is mirrored and the first's complement is taken, which is the engine's
+    // arithmetic rather than the usual `if (a+b>1) { a=1-a; b=1-b; }`.
+    const f32 a = sysRng_.NextUnit();
+    f32 b = sysRng_.NextUnit();
+    f32 w1 = a;
+    if (a + b > 1.0f) {
+        b = 1.0f - b;
+        w1 = 1.0f - a;
+    }
+    const f32 w0 = (1.0f - w1) - b;
+    const Vector3f local{p0.x * w0 + p1.x * w1 + p2.x * b, p0.y * w0 + p1.y * w1 + p2.y * b,
+                         p0.z * w0 + p1.z * w1 + p2.z * b};
+    out = whiteout::transform_point(local, emitMeshToWorld_);
+    return true;
+}
+
 Vector3f Emitter::SampleShape(EmitContext& ec, const Vector3f& base) {
     Vector3f local{0, 0, 0};
+    const f32 u = UnitScale();
 
     switch (ec.shape) {
     case Shape::SphereShell: {
@@ -338,20 +451,27 @@ Vector3f Emitter::SampleShape(EmitContext& ec, const Vector3f& base) {
         }
         // The box case adds the base but NOT the emit-context offset. It is
         // the only shape that skips it; reproduced, not tidied.
-        return {base.x + v[0], base.y + v[1], base.z + v[2]};
+        return {base.x + v[0] * u, base.y + v[1] * u, base.z + v[2] * u};
     }
     case Shape::MeshRandom:
     case Shape::MeshActorKind4:
-    case Shape::MeshSequential:
-        ++emitSequence_;
-        [[fallthrough]];
+    case Shape::MeshSequential: {
+        // The counter advances whichever of the three this is — only shape 11
+        // reads it, and the engine increments it in TickEmitter before the
+        // dispatch rather than inside the sampler.
+        const u32 seq = emitSequence_++;
+        Vector3f p;
+        if (SampleEmitMeshPoint(ec.shape == Shape::MeshSequential, seq, p))
+            return p; // a surface point REPLACES the base; it is not an offset
+        break;        // no surface bound: the engine's own point-case fallback
+    }
     case Shape::Point:
     default:
         break;
     }
 
-    return {base.x + ec.offset.x + local.x, base.y + ec.offset.y + local.y,
-            base.z + ec.offset.z + local.z};
+    return {base.x + (ec.offset.x + local.x) * u, base.y + (ec.offset.y + local.y) * u,
+            base.z + (ec.offset.z + local.z) * u};
 }
 
 bool Emitter::BirthParticle(f32 dt, EmitContext& ec) {
@@ -461,6 +581,11 @@ bool Emitter::BirthParticle(f32 dt, EmitContext& ec) {
 
 void Emitter::TickEmit(f32 dt, f32 emissionScaler) {
     const EmitterDesc& d = *d3desc_;
+    // `ParticleSystem_TickEmitter` returns before the accumulator for these
+    // two: `if (eSystemType - 7 < 2) return 0`. Static clutter and the wind
+    // foliage that carries it place their instances at load, not per frame.
+    if (d.systemType == 7 || d.systemType == 8)
+        return;
     const EvalCtx ectx = EmitterCtx();
 
     // The three drivers, combined into one accumulator.
@@ -495,7 +620,11 @@ void Emitter::TickEmit(f32 dt, f32 emissionScaler) {
         ++n;
     }
 
-    const i32 alive = static_cast<i32>(Pool().AliveCount());
+    // `sys+408 + sys+376` — child actors AND particles. A child-actor system
+    // pools no particle at all, so for it the population IS the child count,
+    // and that is what makes a target of 1 mean one model rather than one
+    // model per frame forever.
+    const i32 alive = static_cast<i32>(Pool().AliveCount()) + ChildCount();
     if (d.Has(kChTargetCount)) {
         const f32 target = d.Channel(kChTargetCount).EvalScalar(emitterSeed_, kChTargetCount, ectx);
         n = std::max(n, static_cast<i32>(std::round(target)) - alive);
@@ -506,11 +635,88 @@ void Emitter::TickEmit(f32 dt, f32 emissionScaler) {
 
     EmitContext ec = BuildEmitContext();
     ec.emitCount = n;
+    const bool actors = d.SpawnsChildActors();
     for (i32 i = 0; i < n; ++i) {
         ec.emitIndex = i;
-        if (BirthParticle(dt, ec))
+        if (actors ? SpawnChildActor(ec) : BirthParticle(dt, ec))
             ++emittedLastUpdate_;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Child actors — eSystemType 1, 3 and 4
+// ---------------------------------------------------------------------------
+
+/// @brief One emission of a system whose particles are models.
+///
+/// `ParticleSystem_EmitParticle`'s first branch, which shares the emitter half
+/// with the ordinary path and none of the rest: the shape sampler places it,
+/// `Particle_InitLifeAndSize` can still reject it, and the scale is the birth
+/// size channel times the ACTOR's own — `Actor_SpawnFromSno` reads tags 65543
+/// and 65544 off the `.acr` and the emit path pre-computes the same product,
+/// which is why it passes spawn flag bit 2 to stop the spawn doing it twice.
+/// The actor's half is not available here (it is a tag map on the `.acr`, not
+/// a field), so what this carries is the `.prt`'s half and 1.0 for the rest.
+///
+/// The child is then FORGOTTEN by the engine: no transform is ever pushed to
+/// it, nothing kills it when the system ends, and `ReleaseAttachments` frees
+/// the link node alone. So a `cos_wings_*` system spawns its wings once, lives
+/// its authored second, and the wings stay — which is the behaviour, not a gap
+/// in the reading.
+bool Emitter::SpawnChildActor(EmitContext& ec) {
+    const EmitterDesc& d = *d3desc_;
+    if (!allocHandle_)
+        return false;
+
+    const u32 raw = sysRng_.Next();
+    const u32 seed = (raw >= 0xFFFFFFFEu) ? (raw + 2u) : raw;
+
+    // The same sub-frame interpolation an ordinary birth uses: the emitter may
+    // have moved this frame and a burst must not stamp every model on one spot.
+    const Vector3f now = WorldPosition();
+    const f32 u = sysRng_.NextUnit();
+    const Vector3f base{prevWorldPos_.x + u * (now.x - prevWorldPos_.x),
+                        prevWorldPos_.y + u * (now.y - prevWorldPos_.y),
+                        prevWorldPos_.z + u * (now.z - prevWorldPos_.z)};
+    const Vector3f pos = SampleShape(ec, base);
+
+    // `Particle_InitLifeAndSize` still runs, and still rejects: a non-positive
+    // lifetime hands the slot back before anything is spawned.
+    const EvalCtx ectx = EmitterCtx();
+    if (d.Has(kChParticleLife)) {
+        const f32 frames = d.Channel(kChParticleLife).EvalScalar(seed, kChParticleLife, ectx);
+        if (std::round(frames) * (1.0f / 60.0f) <= 0.0f)
+            return false;
+    }
+    const f32 size = d.Has(kChBirthSize)
+                         ? d.Channel(kChBirthSize).EvalScalar(seed, kChBirthSize, ectx)
+                         : 1.0f;
+    if (!(size > 0.0f))
+        return false;
+
+    const u32 handle = allocHandle_();
+    if (handle == 0)
+        return false;
+    childHandles_.push_back(handle);
+
+    ChildModelEvent ev;
+    ev.kind = ChildModelEvent::Kind::Birth;
+    ev.owner = childOwner_;
+    ev.emitterId = childEmitterId_;
+    ev.childHandle = handle;
+    ev.transform = renderer::animation::ComposePivotSRT(pos, emitterQuat_, {size, size, size},
+                                                        {0.0f, 0.0f, 0.0f});
+    childPending_.push_back(ev);
+    return true;
+}
+
+void Emitter::CollectOutputEvents(std::vector<ChildModelEvent>& out) {
+    // Births and deaths only. The engine pushes no per-frame transform to a
+    // spawned actor — it is a free ACD with its own animation from the moment
+    // it exists — so neither does this.
+    for (auto& ev : childPending_)
+        out.push_back(ev);
+    childPending_.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -526,6 +732,14 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
     const EvalCtx ctx = ParticleCtx(st, p.position, p.age);
     const f32 invDt = (dt > kEpsilon) ? (1.0f / dt) : 0.0f;
 
+    // The whole of this function works in `.prt` units — every speed, offset
+    // and acceleration below is a number straight out of the file, and the two
+    // models that read the particle's own position (orbit, seek) divide it in
+    // on the way. `disp` is converted once at the end, which is the only place
+    // renderer units appear.
+    const f32 u = UnitScale();
+    const f32 inv = 1.0f / u;
+
     Vector3f disp{0, 0, 0};
 
     // ---- cylindrical orbit: axis (ch 10), radius (7), radial speed (8),
@@ -537,8 +751,8 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
                              {0, 0, 1})
                 : Vector3f{0, 0, 1};
         const Quaternion q = RotationFromZTo(axis);
-        const Vector3f rel{p.position.x - sysPos.x, p.position.y - sysPos.y,
-                           p.position.z - sysPos.z};
+        const Vector3f rel{(p.position.x - sysPos.x) * inv, (p.position.y - sysPos.y) * inv,
+                           (p.position.z - sysPos.z) * inv};
         const Vector3f local = q.inverse().rotate_vector(rel);
 
         const f32 planarLen = std::sqrt(local.x * local.x + local.y * local.y);
@@ -655,8 +869,9 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
             s = d.Channel(kChSeekSpeed).EvalScalar(st.seed, kChSeekSpeed, ctx) * 60.0f;
         if (d.Has(kChSeekOffset)) {
             const f32 now = d.Channel(kChSeekOffset).EvalScalar(st.seed, kChSeekOffset, ctx);
-            const Vector3f toTarget{seekTarget_.x - sysPos.x, seekTarget_.y - sysPos.y,
-                                    seekTarget_.z - sysPos.z};
+            const Vector3f toTarget{(seekTarget_.x - sysPos.x) * inv,
+                                    (seekTarget_.y - sysPos.y) * inv,
+                                    (seekTarget_.z - sysPos.z) * inv};
             const f32 spread = std::sqrt(toTarget.x * toTarget.x + toTarget.y * toTarget.y +
                                          toTarget.z * toTarget.z);
             s = spread * (s + (now - st.prevSeek) * invDt);
@@ -674,7 +889,8 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
                 disp.z + p.velocity.z * dt};
     }
 
-    p.position = {p.position.x + disp.x, p.position.y + disp.y, p.position.z + disp.z};
+    p.position = {p.position.x + disp.x * u, p.position.y + disp.y * u,
+                  p.position.z + disp.z * u};
 
     // ---- orientation -------------------------------------------------------
     if (d.Cap(kCapRoll)) {
@@ -819,7 +1035,9 @@ void Emitter::Update(f32 elapsed, f32 emissionScaler) {
     // the system's kill radius (`flMaxDistance`), which is what fires the 3501
     // triggered event in the engine.
     const Vector3f sysPos = WorldPosition();
-    const f32 killR2 = d.maxDistance * d.maxDistance;
+    // The radius is authored, the separation is in renderer units; square the
+    // conversion into the threshold rather than the distance.
+    const f32 killR2 = d.maxDistance * d.maxDistance * UnitScale() * UnitScale();
     for (usize i = 0; i < Pool().AliveCount();) {
         const u32 idx = Pool().AliveAt(i);
         Particle2& p = Pool()[idx];
@@ -862,6 +1080,9 @@ i32 Emitter::BuildGeometry(const BuildGeometryInput& in, std::vector<Vertex>& ou
     const EmitterDesc& d = *d3desc_;
     const i32 before = static_cast<i32>(out.size());
     const Vector3f normal{0.0f, 0.0f, 1.0f};
+    // Renderer units per `.prt` unit. Positions are already in renderer units;
+    // the size channels and the wind spring's offset are not.
+    const f32 u = UnitScale();
 
     // The quad's corner signs and its UVs, matching the WC3/WoW builder so the
     // two streams stay interchangeable at the dispatcher.
@@ -875,8 +1096,8 @@ i32 Emitter::BuildGeometry(const BuildGeometryInput& in, std::vector<Vertex>& ou
 
         Vector3f pos = p.position;
         if (UsesWindSpring(d.systemType)) {
-            pos.x += st.swayOffset.x;
-            pos.y += st.swayOffset.y;
+            pos.x += st.swayOffset.x * u;
+            pos.y += st.swayOffset.y * u;
         }
 
         // Render mode 13 flattens the frame onto XY (a ground quad) and modes
@@ -907,12 +1128,15 @@ i32 Emitter::BuildGeometry(const BuildGeometryInput& in, std::vector<Vertex>& ou
             up = st.orientation.rotate_vector(up);
         }
 
-        const f32 half = st.size * st.scale * 0.5f;
+        const f32 half = st.size * st.scale * 0.5f * u;
         if (!(half > 0.0f))
             continue;
 
-        Vector4f vcol{st.color.x * st.color.w, st.color.y * st.color.w, st.color.z * st.color.w,
-                      st.color.w};
+        // Straight, not premultiplied: the blend factors come from the `.prt`'s
+        // own RenderPass and 169 of the corpus's 223 particle passes already
+        // source SrcAlpha, so folding alpha into the colour here would apply it
+        // twice. Same convention the WC3/WoW builder uses.
+        Vector4f vcol = st.color;
         if (in.fogEnabled && in.fogSampler) {
             const ImVector fog = in.fogSampler(pos);
             const Vector4f f = fog.ToVec4();

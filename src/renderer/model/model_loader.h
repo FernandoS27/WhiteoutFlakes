@@ -234,6 +234,15 @@ public:
     /// Appearance and AnimSet. Null when the actor does not resolve or the
     /// tree is already @ref kMaxD3AttachDepth deep. See
     /// `io/d3/d3_effect_resolver.h` and `renderer/effects/d3_attachment_pool.h`.
+    /// @brief One child of a `.prt` whose particles ARE models — eSystemType
+    ///        1, 3 and 4, 4,795 of the 21,593 shipped files.
+    ///
+    /// Unlike @ref SpawnD3ChildActor this does not ride a bone: the engine
+    /// spawns a free ACD at a world transform and never pushes another one to
+    /// it, so the transform the emitter reported is the whole placement.
+    Actor* SpawnD3ParticleActor(Actor& owner, i32 snoActor, const Matrix44f& initialTm,
+                                u32 forceHandle);
+
     Actor* SpawnD3ChildActor(Actor& parent, i32 snoActor, i32 bone, const Matrix44f& offset);
 
     /// @brief Everything a Diablo III actor needs after its Actor exists: the

@@ -35,8 +35,10 @@
 // view, applied for the same reason.
 // ============================================================================
 
+#include "renderer/particle/emitter_desc.h"
 #include "whiteout/flakes/types.h"
 
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -74,7 +76,7 @@ public:
     /// @p firstEmitterId is one past the last id the load-time route used, so
     /// the two never collide in the particle service's id space.
     void Bind(std::shared_ptr<io::D3ModelAdapter> adapter, io::D3SnoCache* cache,
-              i32 firstEmitterId);
+              i32 firstEmitterId, std::function<u32()> allocHandle = {});
 
     bool Empty() const {
         return adapter_ == nullptr;
@@ -85,7 +87,11 @@ public:
     /// @p seqStartMs / @p seqEndMs are the sequence's window, which for a D3
     /// clip always starts at zero; they are taken rather than assumed so the
     /// crossing arithmetic is the one every other format uses.
-    void Tick(const model::Actor& actor, i32 activeSeq, i32 localTimeMs, i32 seqStartMs,
+    ///
+    /// @p actor is mutable because an emitter firing here binds its `.prt`'s
+    /// textures onto the actor's own texture scope — a `.prt` names textures
+    /// the model does not.
+    void Tick(model::Actor& actor, i32 activeSeq, i32 localTimeMs, i32 seqStartMs,
               i32 seqEndMs, particle::ParticleService* particles);
 
     /// @brief Child spawns requested since the last drain.
@@ -110,6 +116,10 @@ private:
         i32 bone = -1;
         Matrix44f offset = Matrix44f::identity();
         i32 emitterId = -1;  ///< Assigned on the first fire.
+        /// Which id space the emitter took. A `.prt` whose particles are models
+        /// registers under ChildModel, and looking it up in the other one finds
+        /// nothing — which reads as an effect that fires once and never repeats.
+        particle::ParticleOutput output = particle::ParticleOutput::Billboard;
         u32 childHandle = 0; ///< Actor payloads; 0 until the spawn lands.
         bool dead = false;   ///< Asked for and refused. Stop asking.
     };
@@ -124,6 +134,8 @@ private:
     std::unordered_map<i32, std::vector<Entry>> bySequence_;
     std::vector<PendingChild> pending_;
     i32 nextEmitterId_ = 0;
+    /// Mints actor handles for the child-actor systems an attachment can carry.
+    std::function<u32()> allocHandle_;
     i32 prevSeq_ = -1;
     i32 prevTimeMs_ = 0;
 };

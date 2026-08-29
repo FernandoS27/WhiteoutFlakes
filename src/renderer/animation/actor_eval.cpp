@@ -34,6 +34,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <span>
 #include <vector>
 
 namespace whiteout::flakes::renderer::model {
@@ -138,9 +139,15 @@ void ApplyChildModelFrameStates(Actor& mi, const FrameState& state,
     for (const auto& ps : state.pe1States) {
         auto* em = particles.GetEmitter(mi.handle, particle::ParticleOutput::ChildModel,
                                         ps.emitterId);
-        if (!em)
+        // Checked, not a static_cast: the child-model space is no longer PE1's
+        // alone — a `.prt` whose particles are models registers there too, and
+        // it has no PE1 state to apply. One actor cannot produce both, so this
+        // never fires; it costs a type check per PE1 emitter per frame and buys
+        // a reinterpret that would be silent.
+        auto* pe1 = dynamic_cast<particle::ChildModelEmitter*>(em);
+        if (!pe1)
             continue;
-        static_cast<particle::ChildModelEmitter*>(em)->ApplyPE1State(ps);
+        pe1->ApplyPE1State(ps);
     }
 }
 
@@ -298,6 +305,23 @@ void ApplyD3ParticleFrames(Actor& mi, const FrameState& state,
         d3->SetModelToWorld(m);
         d3->SetWorldPosition(whiteout::transform_point({0, 0, 0}, m));
         d3->SetVisible(true);
+        // Renderer units per Diablo III unit. The matrix above already carries
+        // it, so the emitter's POSITION arrives scaled while every size, extent
+        // and speed inside the `.prt` is still raw — and the two are added
+        // together. Without this a particle draws at 1/17th of its authored
+        // size and its whole flight path shrinks to a clump on the bone.
+        d3->SetUnitScale(mi.worldScale);
+        // The live surface, for the three mesh emitter shapes. Node matrices
+        // rather than the palette's offset matrices: those are recomputed on
+        // the draw path and would be a frame stale here, while these were
+        // written by ApplyBoneMatrices at the top of this same pass.
+        if (d3->HasEmitMesh()) {
+            const auto data = mi.render.skinning.SharedData();
+            d3->SetEmitMeshPose(mi.render.skinning.NodeMatrices(),
+                                data ? std::span<const Matrix44f>(data->inverseBindMatrices)
+                                     : std::span<const Matrix44f>{},
+                                mi.ScaledWorldTransform());
+        }
         // The rotation part of the bone matrix, orthonormalised. A scaled bone
         // would otherwise hand the birth quaternion a scale, and a quaternion
         // has nowhere to put one.

@@ -15,6 +15,7 @@
 #include "renderer/profiles/sc2_heroes/m3_standard_shading.h"
 #endif
 #if WDX_ENABLE_D3
+#include "renderer/profiles/diablo3/d3_particle_shading.h"
 #include "renderer/profiles/diablo3/d3_standard_shading.h"
 #endif
 
@@ -105,6 +106,10 @@ struct RenderPipeline::Impl {
 #endif
 #if WDX_ENABLE_D3
     std::unique_ptr<profiles::diablo3::D3StandardShading> d3Shading_;
+    // Not an IShadingModel: a particle is not a surface and never enters the
+    // draw-item pipeline. It owns its shaders for the same reason d3Shading_
+    // does and is driven straight from DrawParticleEmitter.
+    std::unique_ptr<profiles::diablo3::D3ParticleShading> d3Particles_;
 #endif
 
     // The two WC3 frames, declared. ValidateProfile runs once when they are

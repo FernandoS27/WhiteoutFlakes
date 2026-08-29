@@ -78,6 +78,8 @@ struct EmitterDrawList {
     // Emitter origin in world space — sort key for the back-to-front
     // transparent pass (interleaves with geosets/ribbons/corn).
     Vector3f worldOrigin = {0, 0, 0};
+    // Emitter2::MaterialTimeSec at build time. Only a D3 draw reads it.
+    f32 materialTimeSec = 0.0f;
 };
 
 // One frame's geometry for the emitters whose particles are the client's

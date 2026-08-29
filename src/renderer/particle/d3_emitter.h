@@ -22,6 +22,7 @@
 //    degradation for the rest — each one named at its site.
 // ============================================================================
 
+#include "d3_emit_mesh.h"
 #include "d3_emitter_desc.h"
 #include "d3_particle.h"
 #include "d3_path.h"
@@ -29,7 +30,9 @@
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
+#include <functional>
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace whiteout::flakes::renderer::particle::d3 {
@@ -48,6 +51,32 @@ public:
     void Update(f32 elapsed, f32 emissionScaler) override;
     i32 BuildGeometry(const BuildGeometryInput& in, std::vector<Vertex>& out) const override;
     void ApplyState(const model::FrameState::ParticleFrameState& st) override;
+    void CollectOutputEvents(std::vector<ChildModelEvent>& out) override;
+
+    /// @brief Who the children belong to, and what mints their handles.
+    ///
+    /// Same seam ChildModelEmitter takes, and for the same reason: the emitter
+    /// reports births as data and the actor layer owns the spawn. Without an
+    /// allocator such a system counts its emissions and produces nothing, which
+    /// is the right answer for a test that only wants the simulation.
+    void SetChildOwner(u32 owner, i32 emitterId, std::function<u32()> alloc) {
+        childOwner_ = owner;
+        childEmitterId_ = emitterId;
+        allocHandle_ = std::move(alloc);
+    }
+
+    /// How many child actors this system has spawned. The engine's emit clamp
+    /// counts these and not particles (`sys+408 + sys+376`), which is what makes
+    /// a target count of 1 — 4,189 of 4,795 shipped files — mean "one model".
+    i32 ChildCount() const {
+        return static_cast<i32>(childHandles_.size());
+    }
+
+    /// The system's own age, which is the clock every layer's UV transform is
+    /// sampled against.
+    f32 MaterialTimeSec() const override {
+        return systemAge_;
+    }
 
     /// The emitter's orientation. Frozen onto each particle at birth and used
     /// for two things only: rotating the birth velocity, and rotating the
@@ -56,6 +85,30 @@ public:
     /// answer the engine gives for an unrotated emitter.
     void SetEmitterOrientation(const Quaternion& q) {
         emitterQuat_ = q;
+    }
+
+    /// @brief The model surface emitter shapes 6, 7 and 11 sample.
+    ///
+    /// Two halves because they change at different rates: the geometry is
+    /// built once per actor and shared, the pose arrives every frame. Without
+    /// either the three shapes fall back to the point case — the engine's own
+    /// answer when its actor lookup fails.
+    void SetEmitMesh(std::shared_ptr<const EmitMesh> mesh) {
+        emitMesh_ = std::move(mesh);
+    }
+    bool HasEmitMesh() const {
+        return emitMesh_ && !emitMesh_->Empty();
+    }
+    /// @param pose     Node world matrices, model space, by global bone index.
+    /// @param invBind  The matching inverse bind matrices. Skinning is
+    ///                 `rest * invBind[b] * pose[b]`, the same product the
+    ///                 bone palette uploads.
+    /// @param toWorld  Model space -> renderer units, scale included.
+    void SetEmitMeshPose(std::span<const Matrix44f> pose, std::span<const Matrix44f> invBind,
+                         const Matrix44f& toWorld) {
+        emitPose_ = pose;
+        emitInvBind_ = invBind;
+        emitMeshToWorld_ = toWorld;
     }
 
     /// The bound spawn target the seek model converges on. Without one the
@@ -139,6 +192,12 @@ private:
         f32 ringPhase = 0.0f;
     };
 
+    /// One area-weighted (or, for shape 11, sequential) point on @ref
+    /// emitMesh_, skinned and taken to renderer units. False leaves the caller
+    /// on the point case.
+    bool SampleEmitMeshPoint(bool sequential, u32 sequence, Vector3f& out);
+    Vector3f SkinEmitMeshVertex(const EmitMesh& m, u32 vertex) const;
+
     EvalCtx EmitterCtx() const;
     EvalCtx ParticleCtx(const ParticleState& st, const Vector3f& pos, f32 age) const;
 
@@ -146,6 +205,7 @@ private:
     EmitContext BuildEmitContext() const;
     Vector3f SampleShape(EmitContext& ec, const Vector3f& base);
     bool BirthParticle(f32 dt, EmitContext& ec);
+    bool SpawnChildActor(EmitContext& ec);
     void StepParticle(u32 idx, f32 dt);
     void StepWindSpring(f32 dt);
 
@@ -166,6 +226,11 @@ private:
     i32 emittedLastUpdate_ = 0;
     u32 emitSequence_ = 0; ///< shape 11's monotone counter; never reset
 
+    std::shared_ptr<const EmitMesh> emitMesh_;
+    std::span<const Matrix44f> emitPose_;
+    std::span<const Matrix44f> emitInvBind_;
+    Matrix44f emitMeshToWorld_ = Matrix44f::identity();
+
     i32 attachBone_ = -1;
     Matrix44f attachOffset_ = Matrix44f::identity();
     Quaternion emitterQuat_ = Quaternion::identity();
@@ -175,6 +240,15 @@ private:
     Vector2f windDir_{1, 0};
     f32 windStrength_ = 0.0f;
     f32 windPhase_ = 0.0f;
+
+    // The child actors a type 1/3/4 system has spawned, and the events not yet
+    // drained. Handles rather than pool indices: these are not particles, and
+    // the engine keeps them in a list of its own for exactly the same reason.
+    std::function<u32()> allocHandle_;
+    u32 childOwner_ = 0;
+    i32 childEmitterId_ = 0;
+    std::vector<u32> childHandles_;
+    std::vector<ChildModelEvent> childPending_;
 };
 
 /// The five random draws the shape sampler makes, exposed so the shape gate

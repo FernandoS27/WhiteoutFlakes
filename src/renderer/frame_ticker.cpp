@@ -19,6 +19,7 @@
 #include "model/model_instance.h"
 #include "model/model_template.h"
 #include "particle/child_model_emitter.h"
+#include "particle/d3_emitter.h"
 #include "particle/model_particle_emitter.h"
 #include "particle/particle2_emitter.h"
 #include "particle/rnd_seed.h"
@@ -582,6 +583,22 @@ void FrameTicker::DriveChildModels() {
                                                   ev.emitterId);
             if (!em)
                 break;
+
+#if WDX_ENABLE_D3
+            // A Diablo III system whose particles ARE models names an `.acr` by
+            // SNO id, which the child-template cache cannot build: that cache is
+            // keyed on a path and always produces an MdxModelAdapter.
+            if (auto* d3em = dynamic_cast<particle::d3::Emitter*>(em)) {
+                const i32 sno = d3em->D3Desc().snoActor;
+                if (sno < 0)
+                    break;
+                if (auto* child = rs_.Loader().SpawnD3ParticleActor(*owner, sno, ev.transform,
+                                                                    ev.childHandle))
+                    child->spawnEmitterId = ev.emitterId;
+                break;
+            }
+#endif
+
             const std::string& path = em->Desc().childModelPath;
             if (path.empty())
                 break;

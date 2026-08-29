@@ -16,6 +16,7 @@
 
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <span>
 #include <vector>
 
@@ -273,6 +274,17 @@ struct Actor {
     // Empty until ModelLoader::SetupD3Actor binds it, which is every non-D3
     // actor.
     effects::D3AttachmentPool d3Attachments;
+
+    /// @brief Texture SNO -> texture id, for the textures a `.prt` on this
+    ///        actor binds.
+    ///
+    /// A particle's material is resolved per emitter and its textures are not
+    /// in the model's own list, so they take ids from
+    /// `kD3ParticleTextureIdBase` rather than from the end of it: a look change
+    /// re-stages the model's textures and can change how many there are, and an
+    /// id derived from that count would then alias one. Also the dedupe — two
+    /// emitters naming the same `.tex` stage it once.
+    std::unordered_map<i32, i32> d3ParticleTextures;
 #endif
 
     RenderModel& Render() {

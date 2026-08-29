@@ -8,6 +8,7 @@
 #include "renderer/model/model_instance.h"
 #include "renderer/model/model_loader.h"
 #include "renderer/particle/particle_service.h"
+#include "renderer/particle/d3_emitter.h"
 #include "renderer/particle/particle_trace.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
@@ -35,6 +36,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <cstdio>
 #include <iostream>
 #include <iterator>
 #include <string>
@@ -247,7 +249,7 @@ static int RunParticleDiff(whiteout::flakes::renderer::RenderService& renderer,
                            whiteout::flakes::gfx::GfxApi backend,
                            const std::filesystem::path& mdxPath, const std::string& recordPath,
                            const std::string& checkPath, i32 traceFrames, bool curveTolerance,
-                           bool useDevice) {
+                           bool useDevice, const std::string& contentRoot, bool dump) {
     namespace wf = whiteout::flakes;
     namespace part = wf::renderer::particle;
 
@@ -255,8 +257,9 @@ static int RunParticleDiff(whiteout::flakes::renderer::RenderService& renderer,
         std::cerr << "[ptrace] --particle-diff needs a model path" << std::endl;
         return 2;
     }
-    if (recordPath.empty() && checkPath.empty()) {
-        std::cerr << "[ptrace] pass --trace-record <file> or --trace-check <file>" << std::endl;
+    if (recordPath.empty() && checkPath.empty() && !dump) {
+        std::cerr << "[ptrace] pass --trace-record <file>, --trace-check <file> or --trace-dump"
+                  << std::endl;
         return 2;
     }
     if (useDevice && !renderer.Pipeline().InitDevice(backend)) {
@@ -264,7 +267,10 @@ static int RunParticleDiff(whiteout::flakes::renderer::RenderService& renderer,
         return 3;
     }
 
-    scene.SetPE1BasePath(mdxPath.parent_path());
+    // Same reason --draw-trace takes one: a Diablo III `.acr` names its content
+    // by SNO, and the root that resolves those is above the file's own folder.
+    scene.SetPE1BasePath(contentRoot.empty() ? mdxPath.parent_path()
+                                             : wf::io::FsPathFromUtf8(contentRoot));
     auto* hero = renderer.Loader().SpawnUnit(wf::io::PathToUtf8(mdxPath));
     if (!hero) {
         std::cerr << "[ptrace] SpawnUnit failed: " << wf::io::PathToUtf8(mdxPath) << std::endl;
@@ -290,6 +296,59 @@ static int RunParticleDiff(whiteout::flakes::renderer::RenderService& renderer,
         scene.Update(kDt);
         renderer.Ticker().Tick(kDt);
         part::CaptureFrame(renderer.Particles(), kTraceView, i, trace);
+    }
+
+    // What each emitter actually put in the vertex stream, on the last frame.
+    // Enough to tell "nothing emitted" from "emitted at the origin" from
+    // "emitted the right shape at the wrong scale" without a GPU or a baseline.
+    if (dump && !trace.frames.empty()) {
+        // Where the host put each emitter, straight off the live service —
+        // the one number that separates "the sim is wrong" from "the emitter
+        // is in the wrong place", and the trace schema carries no equivalent.
+        renderer.Particles().ForEachEmitter(
+            [](const part::EmitterKey& k, const part::Emitter2& e) {
+                const wf::Vector3f& w = e.WorldPosition();
+                std::printf("  em %2d out=%u at=(%8.2f %8.2f %8.2f) visible=%d\n",
+                            k.id, unsigned(k.output), w.x, w.y, w.z, e.Visible() ? 1 : 0);
+#if WDX_ENABLE_D3
+                const auto* d3 = dynamic_cast<const part::d3::Emitter*>(&e);
+                if (!d3)
+                    return;
+                const auto& m = d3->D3Desc().d3mat;
+                std::printf("       sno=%d caps=0x%04X type=%d shape=%d mat: pass=%d %s blend=(%u,%u) gain=(%.2f "
+                            "%.2f) aTest=%.3f layers=%u\n",
+                            d3->D3Desc().snoId, d3->D3Desc().caps, d3->D3Desc().systemType,
+                            int(d3->D3Desc().shape), m.passResolved ? 1 : 0,
+                            m.effectFile.c_str(), m.blendSrc, m.blendDst, m.colorGain, m.alphaGain,
+                            m.alphaTest, m.layerCount);
+                for (unsigned L = 0; L < m.layerCount; ++L) {
+                    const auto& lay = m.layers[L];
+                    std::printf("         L%u type=%2d sno=%d texId=%d wrap=%u c=%d a=%d\n", L,
+                                lay.rawType, lay.textureSno, lay.textureId, lay.wrapFlags,
+                                lay.samplesColor ? 1 : 0, lay.samplesAlpha ? 1 : 0);
+                }
+#endif
+            });
+        const auto& f = trace.frames.back();
+        std::printf("[ptrace] frame %d: %zu emitter(s)\n", f.frame, f.emitters.size());
+        for (const auto& e : f.emitters) {
+            const wf::Vector3f c{(e.boundsMin.x + e.boundsMax.x) * 0.5f,
+                                 (e.boundsMin.y + e.boundsMax.y) * 0.5f,
+                                 (e.boundsMin.z + e.boundsMax.z) * 0.5f};
+            std::printf("  em %2d out=%u alive=%3zu verts=%5d centre=(%8.2f %8.2f %8.2f) "
+                        "extent=(%7.2f %7.2f %7.2f) rgba=(%.3f %.3f %.3f %.3f)\n",
+                        e.emitterId, unsigned(e.output), e.particles.size(), e.vertexCount, c.x,
+                        c.y, c.z, e.boundsMax.x - e.boundsMin.x, e.boundsMax.y - e.boundsMin.y,
+                        e.boundsMax.z - e.boundsMin.z, e.meanColor.x, e.meanColor.y, e.meanColor.z,
+                        e.meanColor.w);
+            for (std::size_t k = 0; k < e.particles.size() && k < 4; ++k) {
+                const auto& pt = e.particles[k];
+                std::printf("         p%zu pos=(%8.2f %8.2f %8.2f) vel=(%7.2f %7.2f %7.2f) "
+                            "age=%.3f\n",
+                            k, pt.position.x, pt.position.y, pt.position.z, pt.velocity.x,
+                            pt.velocity.y, pt.velocity.z, pt.age);
+            }
+        }
     }
 
     std::string err;
@@ -450,7 +509,8 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
                         const std::string& recordPath, const std::string& checkPath,
                         const std::string& goldenPath, i32 frames, bool hdMode, f32 distanceTol,
                         i32 cameraDistance, i32 perturbSeed, i32 instances, bool unlitOddGeosets,
-                        bool lazyAnim, const std::string& contentRoot, const AnimScenario& anim,
+                        bool lazyAnim, bool allowLateAssets, const std::string& contentRoot,
+                        const AnimScenario& anim,
                         const std::vector<std::filesystem::path>& attachAnims,
                         bool debugLight = false, bool noRefraction = false,
                         bool refractionMask = false, bool noMultiTex = false,
@@ -863,10 +923,18 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
     pipe.Gfx()->WaitIdle();
 
     if (needAppeared) {
+        // A Diablo III type-1 system spawns a whole `.acr` per emission, and
+        // its assets legitimately arrive mid-capture — there is no settle pass
+        // that can pre-resolve a model nothing has asked for yet. So this is
+        // still fatal for a trace, and a switch for someone who only wants to
+        // look at the picture.
         std::cerr << "[dtrace] a new asset need appeared mid-capture — the trace would be "
-                     "timing-dependent; aborting rather than recording it"
+                     "timing-dependent; "
+                  << (allowLateAssets ? "continuing anyway (--draw-trace-allow-late-assets)"
+                                      : "aborting rather than recording it")
                   << std::endl;
-        return 6;
+        if (!allowLateAssets)
+            return 6;
     }
 
     const dbg::DrawTrace& trace = rec.Trace();
@@ -1261,6 +1329,7 @@ int main(int argc, char* argv[]) {
     bool childModelCheck = false;
     bool particleDiffDevice = true;
     bool particleDiffCurveTol = false;
+    bool particleTraceDump = false;
     i32 particleDiffFrames = 120;
     std::string particleTraceRecord;
     std::string particleTraceCheck;
@@ -1273,6 +1342,7 @@ int main(int argc, char* argv[]) {
     bool drawTraceRefractionMask = false;
     bool drawTraceDebugLight = false;
     bool drawTraceLazyAnim = false;
+    bool drawTraceAllowLate = false;
     std::string drawTraceRecord;
     std::string drawTraceCheck;
     std::string drawTraceGolden;
@@ -1408,6 +1478,8 @@ int main(int argc, char* argv[]) {
             particleDiffFrames = std::atoi(argv[++i]);
         } else if (std::strcmp(a, "--trace-curve-tol") == 0) {
             particleDiffCurveTol = true;
+        } else if (std::strcmp(a, "--trace-dump") == 0) {
+            particleTraceDump = true;
         } else if (std::strcmp(a, "--trace-no-device") == 0) {
             particleDiffDevice = false;
         } else if (std::strcmp(a, "--draw-trace") == 0) {
@@ -1432,6 +1504,8 @@ int main(int argc, char* argv[]) {
             drawTraceNoMultiTex = true;
         } else if (std::strcmp(a, "--draw-trace-debug-light") == 0) {
             drawTraceDebugLight = true;
+        } else if (std::strcmp(a, "--draw-trace-allow-late-assets") == 0) {
+            drawTraceAllowLate = true;
         } else if (std::strcmp(a, "--draw-trace-lazy-anim") == 0) {
             drawTraceLazyAnim = true;
         } else if (std::strcmp(a, "--listfile") == 0 && i + 1 < argc) {
@@ -1706,7 +1780,7 @@ int main(int argc, char* argv[]) {
     if (particleDiff)
         return RunParticleDiff(renderer, scene, backend, mdxPath, particleTraceRecord,
                                particleTraceCheck, particleDiffFrames, particleDiffCurveTol,
-                               particleDiffDevice);
+                               particleDiffDevice, contentRoot, particleTraceDump);
 
     // Before the trace, not with the interactive switches below: RunDrawTrace
     // returns without ever reaching them, and nothing between here and it
@@ -1718,7 +1792,8 @@ int main(int argc, char* argv[]) {
         return RunDrawTrace(renderer, scene, backend, mdxPath, drawTraceRecord, drawTraceCheck,
                             drawTraceGolden, particleDiffFrames, drawTraceHd, drawTraceDistanceTol,
                             drawTraceCameraDistance, drawTracePerturb, drawTraceInstances,
-                            drawTraceUnlit, drawTraceLazyAnim, contentRoot, drawTraceAnim,
+                            drawTraceUnlit, drawTraceLazyAnim, drawTraceAllowLate, contentRoot,
+                            drawTraceAnim,
                             attachAnims, drawTraceDebugLight, drawTraceNoRefraction,
                             drawTraceRefractionMask, drawTraceNoMultiTex, traceGameId);
 

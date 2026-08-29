@@ -311,6 +311,40 @@ void RenderPipeline::DrawParticleEmitter(const particle::EmitterDrawList& dl,
 
     cmd->BindVertexBuffer(0, impl_->particleServiceVB_, sizeof(Vertex));
 
+#if WDX_ENABLE_D3
+    // A Diablo III particle binds four textures through a fixed-function
+    // combine chain with a UV transform each; the SD program has one texture
+    // and no chain. Falling through when the D3 program is unavailable draws
+    // the diffuse layer alone, which is approximate rather than missing.
+    if (dl.material.d3 && impl_->d3Particles_) {
+        impl_->d3Particles_->Init();
+        profiles::diablo3::D3ParticleFrameInputs d3f;
+        d3f.view = frame.view;
+        d3f.projection = frame.projection;
+        d3f.rtvFormat = SceneTargetFormat();
+        d3f.extraRtvCount = SceneExtraRtvFormats(d3f.extraRtvFormats);
+        d3f.dsvFormat = impl_->depthStencilFormat_;
+        d3f.vertexBuffer = impl_->particleServiceVB_;
+        if (impl_->d3Particles_->Draw(cmd, dl, d3f, rs_.Scene().Actors().Find(dl.model))) {
+            if (debug::DrawTraceEnabled()) {
+                debug::TraceDraw d;
+                d.shadingModel = static_cast<u8>(debug::TraceShadingModel::D3Standard);
+                d.actor.rootActor = debug::TraceRootOrdinal(rs_.Scene().Actors().All(), dl.model);
+                d.actor.emitterId = dl.emitterId;
+                d.vertexCount = dl.vertexCount;
+                d.filterMode = static_cast<i32>(dl.material.filterMode);
+                for (u32 i = 0; i < particle::d3::MaterialDesc::kMaxLayers &&
+                                i < static_cast<u32>(debug::kTraceTexSlots);
+                     ++i)
+                    d.texIds[i] = dl.material.d3->layers[i].textureId;
+                d.streamMask = debug::kStreamBase;
+                debug::RecordProducerDraw(d);
+            }
+            return;
+        }
+    }
+#endif
+
     bls::MatParams mp = bls::FromParticleDesc(dl.material, bls::GxShaderID::SD);
     mp.disables |= bls::kDisableLighting;
     mp.diffuseColor = {1, 1, 1, 1};
@@ -1706,6 +1740,8 @@ void RenderPipeline::CleanupGFX() {
 #if WDX_ENABLE_D3
         if (impl_->d3Shading_)
             impl_->d3Shading_->ReleaseGpu();
+        if (impl_->d3Particles_)
+            impl_->d3Particles_->ReleaseGpu();
 #endif
 
         // Tear down CornEffects FIRST — its emitters hold references
@@ -2873,6 +2909,7 @@ shading::IShadingModel& RenderPipeline::ActiveShadingModel() {
         // the active model.
         impl_->d3Shading_ = std::make_unique<profiles::diablo3::D3StandardShading>(rs_);
         impl_->shadingModels_.Register(impl_->d3Shading_.get());
+        impl_->d3Particles_ = std::make_unique<profiles::diablo3::D3ParticleShading>(rs_);
 #endif
     }
     // This is RenderMode's whole remaining job: choosing between the two WC3

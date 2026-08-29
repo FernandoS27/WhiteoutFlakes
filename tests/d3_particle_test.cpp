@@ -18,19 +18,26 @@
 // what it covered.
 // ============================================================================
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "io/d3/d3_particle_adapter.h"
+#include "io/d3/d3_sno_cache.h"
+#include "io/file_content_provider.h"
 #include "renderer/particle/d3_channels.h"
+#include "renderer/particle/d3_emit_mesh.h"
 #include "renderer/particle/d3_emitter.h"
 #include "renderer/particle/d3_emitter_desc.h"
 #include "renderer/particle/d3_path.h"
 #include "renderer/particle/particle_geometry.h"
+#include "renderer/particle/particle_service.h"
+#include "renderer/profiles/diablo3/d3_particle_shading.h"
 
 #include <whiteout/sno/d3/native/d3_native.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -865,8 +872,626 @@ TEST_CASE("d3 particle P1: a corpus asset simulates without producing NaN",
 }
 
 // ---------------------------------------------------------------------------
+// P5 — the material: four stage binds and a UV transform each
+// ---------------------------------------------------------------------------
+
+TEST_CASE("d3 particle P5: a material is four stage types, never a layer list",
+          "[d3][particle][p5][corpus]") {
+    // `Particle_DrawBatch` binds types 1, 19, 12 and 14 in that order and the
+    // `.prt` carries entries of a dozen other types beside them. The adapter's
+    // job is that filter and that order — get it wrong and a particle draws
+    // whichever entry happened to come first in the file.
+    const fs::path root = CorpusRoot();
+    const std::vector<fs::path> files = FindPrt(root);
+    if (files.empty()) {
+        WARN("no .prt corpus at " << root.string() << " — set WDX_TEST_D3_CORPUS. SKIPPED.");
+        return;
+    }
+    const std::size_t limit = SweepLimit();
+    const std::size_t n = (limit == 0) ? files.size() : std::min(limit, files.size());
+
+    std::map<i32, std::size_t> byType;
+    std::map<std::size_t, std::size_t> byCount;
+    std::size_t withDiffuse = 0, scaled = 0, scrolling = 0, orderBreaks = 0, repeats = 0;
+    std::size_t modes[7] = {};
+
+    for (std::size_t i = 0; i < n; ++i) {
+        auto prt = d3n::parseParticle(ReadAll(files[i]));
+        REQUIRE(prt.has_value());
+        auto desc = whiteout::flakes::io::d3::BuildD3EmitterDesc(*prt, -1);
+        const auto& m = desc->d3mat;
+        INFO("file " << files[i].filename().string());
+
+        REQUIRE(m.layerCount <= pd3::MaterialDesc::kMaxLayers);
+        ++byCount[m.layerCount];
+
+        // The bind order is the filter: 1, 19, 12, 14, and a type appears at
+        // most once — the property a `dest[type] = entry` LUT key must have.
+        static constexpr i32 kOrder[4] = {1, 19, 12, 14};
+        i32 seen = -1;
+        std::map<i32, int> once;
+        for (u32 L = 0; L < m.layerCount; ++L) {
+            const auto& layer = m.layers[L];
+            ++byType[layer.rawType];
+            i32 rank = -1;
+            for (i32 k = 0; k < 4; ++k)
+                if (kOrder[k] == layer.rawType)
+                    rank = k;
+            if (rank <= seen)
+                ++orderBreaks;
+            seen = rank;
+            if (++once[layer.rawType] > 1)
+                ++repeats;
+            if (layer.rawType == 1)
+                ++withDiffuse;
+            const int mode = static_cast<int>(layer.uv.mode);
+            if (mode >= 0 && mode < 7)
+                ++modes[mode];
+            if (layer.uv.scale.x != 1.0f || layer.uv.scale.y != 1.0f)
+                ++scaled;
+            if (layer.uv.animated)
+                ++scrolling;
+            // Nothing is resolved yet: which texture id a layer takes is a
+            // property of the actor it is about to ride, not of the file.
+            CHECK(layer.textureId == -1);
+        }
+    }
+
+    std::printf("[d3 mat] %zu files; layers per file:", n);
+    for (const auto& [c, k] : byCount)
+        std::printf(" %zu=%zu", c, k);
+    std::printf("\n[d3 mat] stage types:");
+    for (const auto& [t, k] : byType)
+        std::printf(" %d=%zu", t, k);
+    std::printf("\n[d3 mat] uv modes: identity=%zu matrix=%zu scaleRotScroll=%zu anim2D=%zu"
+                " (scaled %zu, animated %zu)\n",
+                modes[0], modes[1], modes[2], modes[3], scaled, scrolling);
+
+    // Order and uniqueness are the whole contract; a single break means the
+    // filter is reading the wrong field.
+    CHECK(orderBreaks == 0);
+    CHECK(repeats == 0);
+    // Nothing outside the four is ever carried.
+    for (const auto& [t, k] : byType) {
+        INFO("stage type " << t << " x" << k);
+        CHECK((t == 1 || t == 19 || t == 12 || t == 14));
+    }
+    // 18,473 of 21,593 shipped files carry a diffuse (85.5%); a sweep that
+    // finds almost none is reading `arTextures` at the wrong offset, which is
+    // exactly the failure that made this measurement wrong the first time.
+    CHECK(withDiffuse * 10 > n * 7);
+    // And the UV transforms are not decoration: 9,600 corpus entries scale
+    // (3,372 by 0.5, 0.5 — a quarter tile) and 13,996 scroll.
+    CHECK(scaled > n / 10);
+    CHECK(scrolling > n / 10);
+}
+
+TEST_CASE("d3 particle P5: a scrolling layer's affine moves with the clock",
+          "[d3][particle][p5]") {
+    // The host evaluates each layer against the emitter's own age and uploads
+    // six coefficients; a build that evaluated once at load would ship a still
+    // frame of every flame in the game.
+    whiteout::flakes::io::D3UvXform x;
+    x.mode = whiteout::flakes::io::D3UvMode::ScaleRotateScroll;
+    x.scale = {0.5f, 0.5f};
+    x.scrollPerSec = {0.25f, 0.0f};
+    x.animated = true;
+
+    f32 a0[6], a1[6];
+    whiteout::flakes::io::D3UvAffine(x, 0.0f, a0);
+    whiteout::flakes::io::D3UvAffine(x, 2.0f, a1);
+
+    // The scale is on the linear part and the scroll on the translation, so
+    // the two are separable — which is what lets one CB row carry both.
+    CHECK(a0[0] == Catch::Approx(0.5f));
+    CHECK(a0[4] == Catch::Approx(0.5f));
+    CHECK(a1[0] == Catch::Approx(a0[0]));
+    CHECK(a1[2] - a0[2] == Catch::Approx(0.5f));
+    CHECK(a1[5] == Catch::Approx(a0[5]));
+}
+
+TEST_CASE("D3 install: a particle's ShaderMap resolves to Billboard.fx",
+          "[d3][particle][p5][install]") {
+    // The half of the material a corpus tree structurally cannot see: an
+    // extracted `.prt` names its ShaderMap by SNO id and there is no CoreTOC
+    // beside it to find the `.shm` by. Skipped without an install, and skipped
+    // is not passed — the printout says what it covered.
+    using ::whiteout::flakes::ProductId;
+    namespace pdia = whiteout::flakes::renderer::profiles::diablo3;
+
+    const fs::path root = CorpusRoot();
+    const std::vector<fs::path> files = FindPrt(root);
+    if (files.empty()) {
+        WARN("no .prt corpus at " << root.string() << " — SKIPPED.");
+        return;
+    }
+    whiteout::flakes::io::FileContentProvider provider;
+    if (const char* r = std::getenv("WDX_TEST_D3_INSTALL"); r && *r)
+        provider.SetInstallPath(r);
+    provider.SetGame(ProductId::D3);
+    if (provider.GamePath(ProductId::D3).empty()) {
+        WARN("no Diablo III install (set WDX_TEST_D3_INSTALL). SKIPPED, not passed.");
+        return;
+    }
+    whiteout::flakes::io::D3SnoCache cache(&provider);
+
+    std::size_t bound = 400;
+    if (const char* v = std::getenv("WDX_TEST_D3_MAT_LIMIT"); v && *v)
+        bound = static_cast<std::size_t>(std::strtoul(v, nullptr, 10));
+    const std::size_t n = (bound == 0) ? files.size() : std::min(bound, files.size());
+
+    std::map<std::string, std::size_t> effects;
+    std::map<std::pair<u32, u32>, std::size_t> blends;
+    std::size_t resolved = 0, writesDepth = 0, gained = 0, alphaTested = 0;
+    // Per stage type: how the pass's combine block routes it.
+    std::map<i32, std::array<std::size_t, 4>> routing; // [both, colourOnly, alphaOnly, neither]
+
+    for (std::size_t i = 0; i < n; ++i) {
+        auto prt = d3n::parseParticle(ReadAll(files[i]));
+        REQUIRE(prt.has_value());
+        auto desc = whiteout::flakes::io::d3::BuildD3EmitterDesc(*prt, -1);
+        pdia::D3ResolveParticleMaterial(*prt, &cache, desc->d3mat);
+        const auto& m = desc->d3mat;
+        if (!m.passResolved)
+            continue;
+        ++resolved;
+        ++effects[m.effectFile];
+        ++blends[{m.blendSrc, m.blendDst}];
+        if (m.depthWrite)
+            ++writesDepth;
+        if (m.colorGain != 1.0f || m.alphaGain != 1.0f)
+            ++gained;
+        if (m.alphaTest > 0.0f)
+            ++alphaTested;
+        for (u32 L = 0; L < m.layerCount; ++L) {
+            const auto& layer = m.layers[L];
+            const std::size_t slot = layer.samplesColor ? (layer.samplesAlpha ? 0u : 1u)
+                                                        : (layer.samplesAlpha ? 2u : 3u);
+            ++routing[layer.rawType][slot];
+        }
+    }
+
+    std::printf("[d3 mat] %zu of %zu resolved a pass; effect files:", resolved, n);
+    for (const auto& [e, k] : effects)
+        std::printf(" %s=%zu", e.c_str(), k);
+    std::printf("\n[d3 mat] blend (src,dst):");
+    for (const auto& [b, k] : blends)
+        std::printf(" (%u,%u)=%zu", b.first, b.second, k);
+    std::printf("\n[d3 mat] %zu write depth, %zu carry a combine gain, %zu alpha-test\n",
+                writesDepth, gained, alphaTested);
+    std::printf("[d3 mat] stage routing (type: both / colour / alpha / neither):");
+    for (const auto& [t, r] : routing)
+        std::printf(" %d:%zu/%zu/%zu/%zu", t, r[0], r[1], r[2], r[3]);
+    std::printf("\n");
+
+    if (resolved == 0) {
+        WARN("no ShaderMap resolved through this install — SKIPPED, not passed.");
+        return;
+    }
+    // Every shipped particle pass is a billboard family, and that is what makes
+    // io/d3/d3_types.h's `Legacy.fx` stage-block decoder the authority for the
+    // combine chain: 19 of the corpus's 20 `SoftBillboard.fx` shaders bind
+    // `ps_legacy` too, and their stage list is the same one with type 39 — the
+    // scene-colour copy, an engine render target no material owns — pushed in
+    // front for the soft-particle depth fade. That fade is not reproduced; the
+    // four binds behind it are identical. A THIRD family here would mean the
+    // tag chain picked the wrong shader.
+    CHECK((effects["Billboard.fx"] + effects["SoftBillboard.fx"]) * 100 > resolved * 99);
+    // Depth write is the pass's own answer and it is almost always no: 6 of
+    // 18,420 shipped particles ask for it. Defaulting it ON would punch a hole
+    // in everything behind every effect in the game, which is why this is a
+    // bound and not a constant.
+    CHECK(writesDepth * 100 < resolved);
+    // And the gains are not a rounding term: 7,134 of 18,420 carry one, up to
+    // x4 on the colour and x32 on the alpha.
+    CHECK(gained > resolved / 4);
+
+    // The combine block routes each stage, and it says something: type 19 is
+    // `alphaMap2Sampler` in the shipped programs and a real fraction of passes
+    // bind it for the alpha alone. Reported as counts and asserted as a
+    // presence, because the exact split is a property of the install.
+    CHECK(routing[19][2] > 0);
+    // The DIFFUSE, though, is never dropped from BOTH channels — which is why
+    // the gate is on "does this stage sample the channel" and not on "does it
+    // modulate it". The modulate test drops type 1's colour on 26 of the
+    // corpus's 243 billboard passes, and a particle then draws as a plain
+    // untextured quad.
+    CHECK(routing[1][3] == 0);
+}
+
+
+// ---------------------------------------------------------------------------
+// P6/P7 — the systems whose particles ARE models (eSystemType 1, 3, 4)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("d3 particle P6: eSystemType 1 is a child-actor system, not a ribbon",
+          "[d3][particle][p6][corpus]") {
+    // `ParticleSystem_EmitParticle` opens on `(type - 3) < 2 || type == 1` and
+    // that branch spawns an ACTOR; the 176-byte segment record the first RE
+    // pass read as a ribbon belongs to type 9. The corpus is the independent
+    // check: if the branch really is "these three types", then those three
+    // types and nothing else should carry the `snoActor` the branch reads.
+    const fs::path root = CorpusRoot();
+    const std::vector<fs::path> files = FindPrt(root);
+    if (files.empty()) {
+        WARN("no .prt corpus at " << root.string() << " — SKIPPED.");
+        return;
+    }
+    const std::size_t limit = SweepLimit();
+    const std::size_t n = (limit == 0) ? files.size() : std::min(limit, files.size());
+
+    std::map<i32, std::size_t> byType;
+    std::map<i32, std::size_t> withActor;
+    std::size_t spawners = 0, strays = 0;
+    std::vector<std::string> strayNames;
+
+    for (std::size_t i = 0; i < n; ++i) {
+        auto prt = d3n::parseParticle(ReadAll(files[i]));
+        REQUIRE(prt.has_value());
+        auto desc = whiteout::flakes::io::d3::BuildD3EmitterDesc(*prt, -1);
+        const bool actorType =
+            desc->systemType == 1 || desc->systemType == 3 || desc->systemType == 4;
+        ++byType[desc->systemType];
+        if (desc->snoActor >= 0) {
+            ++withActor[desc->systemType];
+            if (!actorType) {
+                ++strays;
+                if (strayNames.size() < 4)
+                    strayNames.push_back(files[i].filename().string());
+            }
+        }
+        if (desc->SpawnsChildActors())
+            ++spawners;
+        // The branch is on the TYPE, so a type that takes it must have an actor
+        // to spawn — otherwise the engine returns before it does anything.
+        CHECK(desc->SpawnsChildActors() == (actorType && desc->snoActor >= 0));
+    }
+
+    std::printf("[d3 child] %zu files; snoActor by type:", n);
+    for (const auto& [t, k] : withActor)
+        std::printf(" %d=%zu/%zu", t, k, byType[t]);
+    std::printf("\n[d3 child] %zu spawn actors; %zu of another type carry one", spawners, strays);
+    for (const auto& sn : strayNames)
+        std::printf(" (%s)", sn.c_str());
+    std::printf("\n");
+
+    // Every file of the three types has one — 4,795 of 4,795 over the whole
+    // corpus. A single miss would mean the branch is not keyed on the type.
+    for (const i32 t : {1, 3, 4})
+        CHECK(withActor[t] == byType[t]);
+    // And almost nothing else does: exactly one type-0 file
+    // (`banner_treasureGoblin_glow.prt`) sets the field, where it is dead data
+    // because the type-0 branch never reads it.
+    CHECK(strays <= 1);
+    // 4,790 of the corpus's 21,593 are type 1 alone — 22%, and the largest
+    // single group after the plain billboard.
+    if (n == files.size())
+        CHECK(spawners > files.size() / 6);
+}
+
+TEST_CASE("d3 particle P7: a child-actor system emits models and pools nothing",
+          "[d3][particle][p7]") {
+    using whiteout::flakes::renderer::particle::ChildModelEvent;
+    using whiteout::flakes::renderer::particle::ParticleOutput;
+
+    // The shipped shape: type 1, one actor, a target count of 1 and no emission
+    // rate at all — 4,189 of 4,795 files author exactly this, which is what
+    // makes the count target mean "one model" rather than "one per frame".
+    auto d = std::make_shared<pd3::EmitterDesc>();
+    d->systemType = 1;
+    d->snoActor = 4242;
+    d->emissionPeriod = 1.0f;
+    d->lifetime = 1.0f;
+    d->channels[pd3::kChTargetCount] = ConstPath(1.0f);
+    d->channels[pd3::kChParticleLife] = ConstPath(1.0f);
+    d->channels[pd3::kChBirthSize] = ConstPath(2.0f);
+    d->DeriveCapabilities();
+    REQUIRE(d->SpawnsChildActors());
+
+    pd3::Emitter em;
+    em.SetD3Desc(d);
+    em.SetVisible(true);
+    // It declares the child-model space, so the geometry builder is never asked
+    // for it — a system that spawns models draws nothing of its own.
+    CHECK(em.Desc().output == ParticleOutput::ChildModel);
+
+    u32 next = 100;
+    em.SetChildOwner(7, 3, [&next] { return next++; });
+
+    std::vector<ChildModelEvent> events;
+    em.Update(1.0f / 60.0f, 1.0f);
+    em.CollectOutputEvents(events);
+
+    // One model, and NO particle: the engine's type-1 branch builds its record
+    // on the stack and never touches the pool.
+    REQUIRE(events.size() == 1);
+    CHECK(events[0].kind == ChildModelEvent::Kind::Birth);
+    CHECK(events[0].owner == 7u);
+    CHECK(events[0].emitterId == 3);
+    CHECK(events[0].childHandle == 100u);
+    CHECK(em.ChildCount() == 1);
+    CHECK(em.Pool().AliveCount() == 0);
+    // The birth size is a SCALE on the spawned actor, which is why it reaches
+    // the transform rather than a quad's half-extent.
+    CHECK(events[0].transform.data[0][0] == Catch::Approx(2.0f));
+
+    // The count target counts CHILDREN (`sys+408 + sys+376`), so a system that
+    // has reached it stops. Without that the emitter spawns one model a frame
+    // forever, which is the failure this test exists for.
+    events.clear();
+    for (int i = 0; i < 30; ++i)
+        em.Update(1.0f / 60.0f, 1.0f);
+    em.CollectOutputEvents(events);
+    CHECK(events.empty());
+    CHECK(em.ChildCount() == 1);
+
+    // A re-trigger takes its children with it. The engine forgets them — a
+    // spawned ACD outlives the system — but a looping viewer would then stack
+    // one model per lap; see Emitter::Restart.
+    em.Restart();
+    events.clear();
+    em.CollectOutputEvents(events);
+    REQUIRE(events.size() == 1);
+    CHECK(events[0].kind == ChildModelEvent::Kind::Death);
+    CHECK(events[0].childHandle == 100u);
+    CHECK(em.ChildCount() == 0);
+
+    events.clear();
+    em.Update(1.0f / 60.0f, 1.0f);
+    em.CollectOutputEvents(events);
+    REQUIRE(events.size() == 1);
+    CHECK(events[0].kind == ChildModelEvent::Kind::Birth);
+    CHECK(events[0].childHandle == 101u);
+}
+
+TEST_CASE("d3 particle P7: with no handle allocator a child system is inert",
+          "[d3][particle][p7]") {
+    // The emitter reports births as data and the actor layer owns the spawn, so
+    // an emitter nobody wired up must produce nothing rather than counting
+    // emissions it never made — otherwise its target count fills with ghosts
+    // and it goes quiet for good.
+    auto d = std::make_shared<pd3::EmitterDesc>();
+    d->systemType = 1;
+    d->snoActor = 1;
+    d->emissionPeriod = 1.0f;
+    d->channels[pd3::kChTargetCount] = ConstPath(4.0f);
+    d->DeriveCapabilities();
+
+    pd3::Emitter em;
+    em.SetD3Desc(d);
+    em.SetVisible(true);
+    for (int i = 0; i < 10; ++i)
+        em.Update(1.0f / 60.0f, 1.0f);
+    CHECK(em.ChildCount() == 0);
+    CHECK(em.Pool().AliveCount() == 0);
+}
+
+// ---------------------------------------------------------------------------
 // P5 — reachability: does a `.prt` reach a model at all?
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The three defects a viewer surfaced after P7 landed
+// ---------------------------------------------------------------------------
+
+TEST_CASE("d3 particle: the colour dword is 0xAABBGGRR, red in the LOW byte",
+          "[d3][particle][corpus]") {
+    // Two shipped files name their own colour, which is as close to a labelled
+    // sample as a reverse-engineered format gets. Read the other way round the
+    // orange one comes out cyan and the blue one salmon, and every fire in the
+    // game draws as its own complement.
+    const fs::path root = CorpusRoot();
+    const fs::path dir = fs::is_directory(root / "Particle") ? (root / "Particle") : root;
+    struct Named {
+        const char* file;
+        bool warm; // is the RED channel the dominant one?
+    };
+    const Named kNamed[] = {
+        {"a1dun_cave_TorchGlow_Orange.prt", true},
+        {"a1dun_jail_Embers_blue.prt", false},
+    };
+
+    std::size_t checked = 0;
+    for (const Named& n : kNamed) {
+        const fs::path f = dir / n.file;
+        std::error_code ec;
+        if (!fs::is_regular_file(f, ec))
+            continue;
+        auto prt = d3n::parseParticle(ReadAll(f));
+        REQUIRE(prt);
+        auto d = whiteout::flakes::io::d3::BuildD3EmitterDesc(*prt, -1);
+        REQUIRE(d->Has(pd3::kChColor));
+
+        pd3::EvalCtx ctx;
+        ctx.timeMode = 1;
+        ctx.period = 1.0f;
+        // Every stop of the path, not just the first: an ember fades, and one
+        // sample could sit on a grey node that says nothing either way.
+        bool sawDominant = false;
+        for (i32 step = 0; step <= 8; ++step) {
+            ctx.time = static_cast<f32>(step) / 8.0f;
+            const Vector4f c = d->Channel(pd3::kChColor).Eval(1u, pd3::kChColor, ctx);
+            if (std::fabs(c.x - c.z) < 0.02f)
+                continue; // a grey stop carries no evidence
+            sawDominant = true;
+            CHECK((c.x > c.z) == n.warm);
+        }
+        CHECK(sawDominant);
+        ++checked;
+    }
+    if (checked == 0)
+        WARN("d3 colour order: neither named corpus file present; nothing checked");
+    std::printf("[d3 colour] %zu of 2 named files checked\n", checked);
+}
+
+TEST_CASE("d3 particle: the unit scale converts sizes and paths, not positions",
+          "[d3][particle]") {
+    // The emitter POSITION arrives from a world matrix that already carries
+    // WorldScale; every size, extent and speed inside the `.prt` is raw. Run
+    // the same system at both scales and the geometry must differ by exactly
+    // that factor about the emitter — no more, and not zero.
+    const auto build = [] {
+        auto d = std::make_shared<pd3::EmitterDesc>();
+        d->systemType = 0;
+        d->shape = pd3::Shape::SphereShell;
+        d->shapeExtent0 = ConstPath(2.0f);
+        d->emissionPeriod = 4.0f;
+        d->lifetime = 4.0f;
+        d->maxDistance = 100.0f; // the kill radius is authored too
+        d->channels[pd3::kChEmissionRate] = ConstPath(1.0f);
+        d->channels[pd3::kChParticleLife] = ConstPath(120.0f);
+        d->channels[pd3::kChBirthSize] = ConstPath(3.0f);
+        d->channels[pd3::kChRadialSpeed] = ConstPath(0.5f);
+        d->DeriveCapabilities();
+        return d;
+    };
+
+    const Vector3f kOrigin{10.0f, -20.0f, 30.0f};
+    Matrix44f view = Matrix44f::identity();
+    whiteout::flakes::renderer::particle::BuildGeometryInput in{};
+    in.worldToView = &view;
+
+    const auto run = [&](f32 unit, Vector3f& lo, Vector3f& hi, std::size_t& alive) {
+        pd3::Emitter e;
+        e.SetD3Desc(build());
+        e.SetVisible(true);
+        e.SetUnitScale(unit);
+        e.SetWorldPosition(kOrigin);
+        for (i32 i = 0; i < 60; ++i)
+            e.Update(1.0f / 60.0f, 1.0f);
+        alive = e.Pool().AliveCount();
+        std::vector<whiteout::flakes::renderer::Vertex> out;
+        REQUIRE(e.BuildGeometry(in, out) > 0);
+        lo = hi = out[0].position;
+        for (const auto& v : out) {
+            lo = {std::min(lo.x, v.position.x), std::min(lo.y, v.position.y),
+                  std::min(lo.z, v.position.z)};
+            hi = {std::max(hi.x, v.position.x), std::max(hi.y, v.position.y),
+                  std::max(hi.z, v.position.z)};
+        }
+    };
+
+    Vector3f lo1, hi1, lo17, hi17;
+    std::size_t alive1 = 0, alive17 = 0;
+    run(1.0f, lo1, hi1, alive1);
+    run(17.0f, lo17, hi17, alive17);
+
+    // Same simulation, same random stream: the kill radius scales with the
+    // positions it is compared against, so the population is identical. Leave
+    // it unscaled and the system culls itself the moment the fix lands.
+    CHECK(alive1 == alive17);
+    CHECK(alive1 > 0);
+
+    const f32 kUnit = 17.0f;
+    const Vector3f d1{hi1.x - lo1.x, hi1.y - lo1.y, hi1.z - lo1.z};
+    const Vector3f d17{hi17.x - lo17.x, hi17.y - lo17.y, hi17.z - lo17.z};
+    REQUIRE(d1.x > 0.01f);
+    CHECK(d17.x == Catch::Approx(d1.x * kUnit).epsilon(1e-4));
+    CHECK(d17.y == Catch::Approx(d1.y * kUnit).epsilon(1e-4));
+    CHECK(d17.z == Catch::Approx(d1.z * kUnit).epsilon(1e-4));
+
+    // And it grows about the EMITTER, which does not move: the position came
+    // off a matrix that already applied the scale, so scaling it again would
+    // fling every effect away from the bone it rides.
+    CHECK(((lo17.x + hi17.x) * 0.5f - kOrigin.x) ==
+          Catch::Approx(((lo1.x + hi1.x) * 0.5f - kOrigin.x) * kUnit).margin(0.05f));
+}
+
+TEST_CASE("d3 particle: mesh shapes emit off the surface, not from the emitter",
+          "[d3][particle]") {
+    // Shapes 6, 7 and 11 are 1,454 shipped files and the fallback for them is
+    // the POINT case — which puts a whole-body fire in one spot at the model
+    // origin. A bound surface has to replace the emitter position outright.
+    auto mesh = std::make_shared<pd3::EmitMesh>();
+    // Two triangles, far from the emitter and from each other, the second six
+    // times the area of the first.
+    mesh->rest = {{100, 0, 0}, {101, 0, 0}, {100, 1, 0},
+                  {-100, 0, 0}, {-100, 3, 0}, {-102, 0, 0}};
+    mesh->tris = {0, 1, 2, 3, 4, 5};
+    mesh->areaCdf = {0.5f, 0.5f + 3.0f};
+    mesh->subs.push_back({0, 2});
+    REQUIRE_FALSE(mesh->Empty());
+
+    auto d = std::make_shared<pd3::EmitterDesc>();
+    d->systemType = 0;
+    d->shape = pd3::Shape::MeshRandom;
+    d->emissionPeriod = 10.0f;
+    d->lifetime = 10.0f;
+    // No kill radius: a surface point is nowhere near the emitter by design,
+    // and the default 10 would cull every one of them on the frame it was born.
+    d->maxDistance = 0.0f;
+    d->channels[pd3::kChEmissionRate] = ConstPath(4.0f);
+    d->channels[pd3::kChParticleLife] = ConstPath(600.0f);
+    d->channels[pd3::kChBirthSize] = ConstPath(1.0f);
+    d->DeriveCapabilities();
+    REQUIRE(d->SamplesModelSurface());
+
+    pd3::Emitter e;
+    e.SetD3Desc(d);
+    e.SetVisible(true);
+    e.SetWorldPosition({0, 0, 500});
+    e.SetEmitMesh(mesh);
+    REQUIRE(e.HasEmitMesh());
+    // No pose and no inverse binds: an unskinned model samples its rest mesh,
+    // which is 63% of the corpus.
+    e.SetEmitMeshPose({}, {}, Matrix44f::identity());
+
+    for (i32 i = 0; i < 120; ++i)
+        e.Update(1.0f / 60.0f, 1.0f);
+    REQUIRE(e.Pool().AliveCount() > 40);
+
+    std::size_t onFirst = 0, onSecond = 0;
+    for (std::size_t i = 0; i < e.Pool().AliveCount(); ++i) {
+        const Vector3f p = e.Pool()[e.Pool().AliveAt(i)].position;
+        // Nowhere near the emitter, and flat on the triangles own plane.
+        CHECK(std::fabs(p.z) < 1e-4f);
+        if (p.x > 0.0f) {
+            ++onFirst;
+            CHECK(p.x >= Catch::Approx(100.0f).margin(1e-4));
+            CHECK(p.x <= Catch::Approx(101.0f).margin(1e-4));
+        } else {
+            ++onSecond;
+            CHECK(p.x <= Catch::Approx(-100.0f).margin(1e-4));
+        }
+    }
+    // Area-uniform, not triangle-uniform: the second triangle is 6x the first
+    // and must take most of the births. Loose, because this is one seeded
+    // stream and not a limit.
+    CHECK(onSecond > onFirst * 2);
+
+    // Shape 11 walks its triangles in order instead, so with two triangles it
+    // strictly alternates — the property a random draw cannot have.
+    auto seqDesc = std::make_shared<pd3::EmitterDesc>(*d);
+    seqDesc->shape = pd3::Shape::MeshSequential;
+    pd3::Emitter seq;
+    seq.SetD3Desc(seqDesc);
+    seq.SetVisible(true);
+    seq.SetEmitMesh(mesh);
+    seq.SetEmitMeshPose({}, {}, Matrix44f::identity());
+    for (i32 i = 0; i < 8; ++i)
+        seq.Update(1.0f / 60.0f, 1.0f);
+    REQUIRE(seq.Pool().AliveCount() >= 4);
+    std::vector<bool> side;
+    for (std::size_t i = 0; i < seq.Pool().AliveCount(); ++i)
+        side.push_back(seq.Pool()[seq.Pool().AliveAt(i)].position.x > 0.0f);
+    for (std::size_t i = 1; i < side.size(); ++i)
+        CHECK(side[i] != side[i - 1]);
+
+    // And the model matrix is what takes the point to renderer units, so a
+    // scaled model puts its fire on its own skin rather than inside it.
+    pd3::Emitter scaled;
+    scaled.SetD3Desc(d);
+    scaled.SetVisible(true);
+    scaled.SetEmitMesh(mesh);
+    scaled.SetEmitMeshPose({}, {}, Matrix44f::scaling({17.0f, 17.0f, 17.0f}));
+    for (i32 i = 0; i < 30; ++i)
+        scaled.Update(1.0f / 60.0f, 1.0f);
+    REQUIRE(scaled.Pool().AliveCount() > 0);
+    for (std::size_t i = 0; i < scaled.Pool().AliveCount(); ++i) {
+        const f32 x = std::fabs(scaled.Pool()[scaled.Pool().AliveAt(i)].position.x);
+        CHECK(x > 17.0f * 99.0f);
+    }
+}
 
 TEST_CASE("d3 particle P5: appearances carry bone-attached particle systems",
           "[d3][particle][p5][corpus]") {

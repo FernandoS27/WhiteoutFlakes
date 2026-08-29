@@ -11,6 +11,7 @@
 // ============================================================================
 
 #include "d3_channels.h"
+#include "d3_particle_material.h"
 #include "d3_path.h"
 #include "particle_material.h"
 #include "types.h"
@@ -65,7 +66,13 @@ struct EmitterDesc {
     /// asset; with it the typical asset runs one.
     u32 caps = 0;
 
+    /// What the draw list carries: one texture id and a blend class, filled
+    /// from @ref d3mat once its layers have actor texture ids. The dialects
+    /// share this struct, so it is the narrow view of the material and
+    /// @ref d3mat is the whole of it.
     ParticleMaterialDesc material;
+    /// The four stage binds, the pass state and the per-layer UV transforms.
+    MaterialDesc d3mat;
     i32 priorityPlane = 0;
 
     /// The `.prt`'s own SNO id, for diagnostics and the trace.
@@ -73,6 +80,34 @@ struct EmitterDesc {
     /// Actor spawned per particle, if any (4,796 of 21,593 files set one).
     /// Reported through `ChildModelEvent`; the host owns the spawn.
     i32 snoActor = -1;
+
+    /// @brief Does an emission of this system produce a whole ACTOR rather than
+    ///        a particle?
+    ///
+    /// `ParticleSystem_EmitParticle` opens on `(type - 3) < 2 || type == 1` —
+    /// types 1, 3 and 4 — and that branch never touches the particle pool: it
+    /// builds a 352-byte record on the STACK, runs the simulation over it once,
+    /// and hands the result to `Actor_SpawnFromSno`. The corpus agrees exactly:
+    /// all 4,795 files of those three types set `snoActor` and only one other
+    /// file in 21,593 does (`banner_treasureGoblin_glow.prt`, type 0, where the
+    /// field is never read).
+    ///
+    /// So "eSystemType 1 is a ribbon" — which is what the first RE pass read
+    /// into the name `cos_wings_*` — is wrong. Type 1 is 4,790 files that each
+    /// spawn a MODEL, and the 176-byte segment record that reading was built on
+    /// belongs to type 9, the weather systems.
+    /// @brief Do this system's particles come off the owning model's surface?
+    ///
+    /// Shapes 6, 7 and 11 — 1,454 shipped files. The host builds the surface
+    /// only for an emitter that says yes here.
+    bool SamplesModelSurface() const {
+        return shape == Shape::MeshRandom || shape == Shape::MeshActorKind4 ||
+               shape == Shape::MeshSequential;
+    }
+
+    bool SpawnsChildActors() const {
+        return snoActor >= 0 && (systemType == 1 || systemType == 3 || systemType == 4);
+    }
 
     const Path& Channel(i32 id) const {
         return channels[(id >= 0 && id < kChannelIdCount) ? static_cast<usize>(id) : 0];
