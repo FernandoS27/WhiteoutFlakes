@@ -216,6 +216,20 @@ void ApplyCornFrameStates(Actor& mi, const FrameState& state, const ActorEvalCon
     }
 }
 
+// The active sequence's [start, end] in milliseconds, or the whole timeline
+// when there is no sequence to ask. Both event pools window on it.
+void SequenceWindowMs(const Actor& mi, i32 activeSeq, i32& lo, i32& hi) {
+    lo = 0;
+    hi = 0x7FFFFFFF;
+    if (!mi.animation.Source())
+        return;
+    auto seqs = mi.animation.Source()->GetSequences();
+    if (activeSeq >= 0 && activeSeq < (i32)seqs.size()) {
+        lo = seqs[activeSeq].startMs;
+        hi = seqs[activeSeq].endMs;
+    }
+}
+
 void ApplyAttachmentStates(Actor& mi, const FrameState& state, const ActorEvalContext& ctx) {
     if (!ctx.scene)
         return;
@@ -312,9 +326,42 @@ void ApplyD3ParticleFrames(Actor& mi, const FrameState& state,
         d3->SetEmitterOrientation(q);
     });
 }
+
+// A Diablo III child model rides a HARDPOINT of its parent, and there is no
+// attachment node and no per-frame track behind it — a TriggerEvent named the
+// child and stamped the placement on it at spawn. So this is the whole of the
+// per-frame work; the arithmetic is in BoneRidingTransform.
+void ApplyD3AttachedChildren(Actor& mi, const FrameState& state, const ActorEvalContext& ctx) {
+    if (!ctx.scene || mi.children.empty())
+        return;
+    for (u32 h : mi.children) {
+        auto* child = ctx.scene->Actors().Find(h);
+        if (!child || !child->ridesParentBone)
+            continue;
+        child->worldTransform = BoneRidingTransform(mi, state.boneWorldMatrices, *child);
+        child->parentVisibility = mi.parentVisibility;
+        child->mirrored = mi.mirrored;
+    }
+}
 #endif
 
 } // namespace
+
+Matrix44f BoneRidingTransform(const Actor& parent, std::span<const Matrix44f> parentBones,
+                              const Actor& child) {
+    // `S * W == X * S * parentWorld`, so `W = S^-1 * X * parentScaled`. S is a
+    // uniform scale times a basis swap, so its inverse is one matrix.
+    Matrix44f x = child.attachParentOffset;
+    const i32 bone = child.attachParentBone;
+    if (bone >= 0 && bone < static_cast<i32>(parentBones.size()))
+        x = x * parentBones[static_cast<usize>(bone)];
+
+    const f32 inv = (child.worldScale > 0.0f) ? 1.0f / child.worldScale : 1.0f;
+    Matrix44f invS = Matrix44f::scaling({inv, inv, inv});
+    if (child.sourceSpace != kDefaultCoordSpace)
+        invS = invS * CoordinateSystem::BasisChange(kDefaultCoordSpace, child.sourceSpace);
+    return invS * (x * parent.ScaledWorldTransform());
+}
 
 void Actor::ApplyFrameState(const FrameState& state, i32 localTimeMs, const ActorEvalContext& ctx) {
     ApplyBoneMatrices(*this, state);
@@ -327,8 +374,18 @@ void Actor::ApplyFrameState(const FrameState& state, i32 localTimeMs, const Acto
     if (ctx.particles)
         ApplyChildModelFrameStates(*this, state, *ctx.particles);
 #if WDX_ENABLE_D3
+    // Before ApplyD3ParticleFrames on purpose: an attachment firing this frame
+    // registers its emitter here, and the call below is what puts it on its
+    // hardpoint instead of leaving it a frame at the origin.
+    if (ctx.fireEvents && !d3Attachments.Empty()) {
+        i32 lo = 0, hi = 0x7FFFFFFF;
+        SequenceWindowMs(*this, animation.ActiveSequenceIndex(), lo, hi);
+        d3Attachments.Tick(*this, animation.ActiveSequenceIndex(), localTimeMs, lo, hi,
+                           ctx.particles);
+    }
     if (ctx.particles)
         ApplyD3ParticleFrames(*this, state, *ctx.particles);
+    ApplyD3AttachedChildren(*this, state, ctx);
 #endif
 
     for (i32 i = 0;
@@ -396,15 +453,8 @@ void Actor::ApplyFrameState(const FrameState& state, i32 localTimeMs, const Acto
 
     if (ctx.fireEvents && !events.Empty()) {
         const i32 activeSeq = animation.ActiveSequenceIndex();
-
         i32 seqStart = 0, seqEnd = 0x7FFFFFFF;
-        if (animation.Source()) {
-            auto seqs = animation.Source()->GetSequences();
-            if (activeSeq >= 0 && activeSeq < (i32)seqs.size()) {
-                seqStart = seqs[activeSeq].startMs;
-                seqEnd = seqs[activeSeq].endMs;
-            }
-        }
+        SequenceWindowMs(*this, activeSeq, seqStart, seqEnd);
         events.Tick(*this, state.boneWorldMatrices, activeSeq, localTimeMs,
                     ctx.sceneAnimationTimeMs, seqStart, seqEnd, ctx.splats, ctx.spnSpawner,
                     ctx.sound);

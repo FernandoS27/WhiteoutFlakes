@@ -332,14 +332,28 @@ std::shared_ptr<D3ModelAdapter> D3ModelAdapter::LoadActor(const ContentRef& ref,
         std::fprintf(stderr, "[d3] '%s' is not a parsable Actor\n", ref.Describe().c_str());
         return nullptr;
     }
+    return FromActor(std::move(actor), cache, lazyClips, ref.Describe());
+}
+
+std::shared_ptr<D3ModelAdapter> D3ModelAdapter::LoadActorBySno(i32 snoActor, D3SnoCache& cache,
+                                                               bool lazyClips) {
+    auto actor = cache.Actor(snoActor);
+    if (!actor)
+        return nullptr;
+    return FromActor(std::move(actor), cache, lazyClips, "#" + std::to_string(snoActor));
+}
+
+std::shared_ptr<D3ModelAdapter> D3ModelAdapter::FromActor(std::shared_ptr<const d3n::Actor> actor,
+                                                          D3SnoCache& cache, bool lazyClips,
+                                                          const std::string& what) {
     if (!actor->snoAppearance.valid()) {
-        std::fprintf(stderr, "[d3] actor '%s' names no appearance\n", ref.Describe().c_str());
+        std::fprintf(stderr, "[d3] actor '%s' names no appearance\n", what.c_str());
         return nullptr;
     }
     auto app = cache.Appearance(actor->snoAppearance.id);
     if (!app) {
-        std::fprintf(stderr, "[d3] actor '%s': appearance #%d did not resolve\n",
-                     ref.Describe().c_str(), actor->snoAppearance.id);
+        std::fprintf(stderr, "[d3] actor '%s': appearance #%d did not resolve\n", what.c_str(),
+                     actor->snoAppearance.id);
         return nullptr;
     }
 
@@ -839,6 +853,24 @@ bool D3ModelAdapter::EnsureClip(const Clip& clip) const {
             }
         }
     }
+    // Keyframed attachments: `{flFrame, TriggerEvent}` at the permutation's
+    // own frame rate, which is the same fps the duration above came from. The
+    // engine plays them through TriggerEvent_Execute exactly as it plays an
+    // actor's message events; only the key differs. Sorted because file order
+    // is authoring order and the driver walks a time window.
+    clip.attachments.clear();
+    clip.attachments.reserve(perm.arAttachments.size());
+    for (const auto& att : perm.arAttachments) {
+        ClipAttachment ca;
+        ca.timeMs = (fps > 0.0f) ? static_cast<i32>(att.flFrame / fps * 1000.0f + 0.5f) : 0;
+        ca.event = &att.tEvent;
+        clip.attachments.push_back(ca);
+    }
+    std::stable_sort(clip.attachments.begin(), clip.attachments.end(),
+                     [](const ClipAttachment& a, const ClipAttachment& b) {
+                         return a.timeMs < b.timeMs;
+                     });
+
     // Two ceilings from the binary: 512 bones for a native pose, 255 for a
     // retargeted clip (the private remap table is 255 x i16). Reported rather
     // than enforced — a model past either is data we have not seen.
@@ -851,6 +883,16 @@ bool D3ModelAdapter::EnsureClip(const Clip& clip) const {
                      retargeted ? "retargeted" : "native", ceiling);
     }
     return true;
+}
+
+std::span<const D3ModelAdapter::ClipAttachment> D3ModelAdapter::ClipAttachments(
+    i32 sequence) const {
+    if (sequence < 0 || static_cast<usize>(sequence) >= clips_.size())
+        return {};
+    const Clip& c = clips_[static_cast<usize>(sequence)];
+    if (!EnsureClip(c))
+        return {};
+    return c.attachments;
 }
 
 std::vector<SequenceInfo> D3ModelAdapter::GetSequences() const {

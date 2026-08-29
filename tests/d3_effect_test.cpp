@@ -18,6 +18,7 @@
 // WDX_TEST_D3_CORPUS). Skipped is not passed — each sweep prints its counts.
 // ============================================================================
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include "io/d3/d3_effect_resolver.h"
@@ -119,6 +120,18 @@ d3n::TriggerEvent ParticleEvent(i32 sno, const char* hardpoint = "Default", i32 
     d3n::TriggerEvent ev;
     ev.tConditions.nChance = chance;
     ev.tPayload.eSnoGroup = 27;
+    ev.tPayload.dwNameHandle = sno;
+    ev.tHardpoint0.szName = hardpoint;
+    return ev;
+}
+
+/// A group 1 payload: another whole model. Type 25 rather than 0 because the
+/// shipped data uses both and the resolver must take either.
+d3n::TriggerEvent ActorEvent(i32 sno, const char* hardpoint = "Default") {
+    d3n::TriggerEvent ev;
+    ev.eTriggerType = 25;
+    ev.tConditions.nChance = 255;
+    ev.tPayload.eSnoGroup = 1;
     ev.tPayload.dwNameHandle = sno;
     ev.tHardpoint0.szName = hardpoint;
     return ev;
@@ -369,8 +382,8 @@ TEST_CASE("d3 effect: what the spawn message actually reaches", "[d3][effect][co
     }
     wio::D3SnoCache cache(&prov);
 
-    std::size_t actors = 0, withFx = 0, effects = 0, viaGroup = 0, rootHp = 0;
-    std::set<i32> distinct;
+    std::size_t actors = 0, withFx = 0, effects = 0, viaGroup = 0, rootHp = 0, childActors = 0;
+    std::set<i32> distinct, distinctChild;
     std::map<std::string, std::size_t> hardpoints;
     for (const auto& f : acrs) {
         auto a = d3n::parseActor(ReadAll(f));
@@ -383,7 +396,12 @@ TEST_CASE("d3 effect: what the spawn message actually reaches", "[d3][effect][co
         ++withFx;
         effects += fx.size();
         for (const auto& e : fx) {
-            distinct.insert(e.snoParticle);
+            if (e.kind == wd3::ResolvedEffect::Kind::Actor) {
+                ++childActors;
+                distinctChild.insert(e.sno);
+            } else {
+                distinct.insert(e.sno);
+            }
             if (e.fromEffectGroup >= 0)
                 ++viaGroup;
             if (wd3::IsD3RootHardpoint(e.hardpoint))
@@ -397,6 +415,8 @@ TEST_CASE("d3 effect: what the spawn message actually reaches", "[d3][effect][co
                 " %zu distinct .prt | %zu through an .efg | %zu at the model origin\n",
                 actors, withFx, 100.0 * double(withFx) / double(actors), effects,
                 distinct.size(), viaGroup, rootHp);
+    std::printf("[d3 reach] %zu child models, %zu distinct .acr\n", childActors,
+                distinctChild.size());
     std::printf("[d3 reach] top hardpoints:");
     std::vector<std::pair<std::string, std::size_t>> hp(hardpoints.begin(), hardpoints.end());
     std::sort(hp.begin(), hp.end(), [](auto& a, auto& b) { return a.second > b.second; });
@@ -414,6 +434,106 @@ TEST_CASE("d3 effect: what the spawn message actually reaches", "[d3][effect][co
     // the *other* messages and from animation events. On the spawn message
     // specifically the actor names most of its own ambient systems directly.
     CHECK(viaGroup > effects / 5);
+    // A group 1 payload is a whole second model, not an effect. 546 of the 549
+    // shipped ones ride the spawn message.
+    CHECK(childActors > 400);
+}
+
+TEST_CASE("d3 effect: the anim route, and the type/payload pairing",
+          "[d3][effect][corpus]") {
+    // The third authoring site, and the only one keyed on a FRAME. Two claims
+    // are gated here. First the census: 52,138 attachments carrying 4,243
+    // distinct `.prt` and 549 distinct `.acr`, most of which nothing else
+    // reaches. Second, and the one the resolver leans on: a payload group and
+    // an eTriggerType are not independent. Particle and Actor payloads only
+    // ever ride type 0 or 25, EffectGroup payloads only ever type 16 — so a
+    // resolver that checks both is checking two spellings of one fact, and any
+    // file that breaks the pairing is asking for something else entirely.
+    const auto anis = FindGroup(CorpusRoot(), "Anim", ".ani");
+    if (anis.empty()) {
+        WARN("no D3 Anim corpus; skipping");
+        return;
+    }
+
+    std::size_t files = 0, withAtt = 0, atts = 0, offEnd = 0, chanceZero = 0;
+    std::map<i32, std::size_t> byGroup;
+    std::map<std::pair<i32, i32>, std::size_t> byGroupType;
+    std::set<i32> prts, acrs;
+    for (const auto& f : anis) {
+        auto a = d3n::parseAnim(ReadAll(f));
+        if (!a)
+            continue;
+        ++files;
+        bool any = false;
+        for (const auto& perm : a->arPermutations) {
+            // The adapter's conversion, verbatim: fps = flFramesPerTick * 60,
+            // and the clip runs (frames - 1) / fps seconds.
+            const f32 fps = perm.flFramesPerTick * 60.0f;
+            const f32 durSec =
+                (fps > 0.0f && perm.dwFrameCount > 1)
+                    ? static_cast<f32>(perm.dwFrameCount - 1) / fps
+                    : 0.0f;
+            for (const auto& att : perm.arAttachments) {
+                ++atts;
+                any = true;
+                const auto& ev = att.tEvent;
+                byGroup[ev.tPayload.eSnoGroup] += 1;
+                byGroupType[{ev.tPayload.eSnoGroup, ev.eTriggerType}] += 1;
+                if ((ev.tConditions.nChance & 0xFF) == 0)
+                    ++chanceZero;
+                if (ev.tPayload.dwNameHandle != -1) {
+                    if (ev.tPayload.eSnoGroup == 27)
+                        prts.insert(ev.tPayload.dwNameHandle);
+                    else if (ev.tPayload.eSnoGroup == 1)
+                        acrs.insert(ev.tPayload.dwNameHandle);
+                }
+                if (fps > 0.0f && att.flFrame / fps > durSec + 0.001f)
+                    ++offEnd;
+            }
+        }
+        if (any)
+            ++withAtt;
+    }
+
+    std::printf("[d3 ani] %zu files, %zu with attachments, %zu attachments, %zu chance-0,"
+                " %zu past the clip end\n",
+                files, withAtt, atts, chanceZero, offEnd);
+    std::printf("[d3 ani] payload: prt refs=%zu uniq=%zu | acr refs=%zu uniq=%zu |"
+                " efg refs=%zu | sound refs=%zu | none=%zu\n",
+                byGroup[27], prts.size(), byGroup[1], acrs.size(), byGroup[14], byGroup[40],
+                byGroup[-1]);
+
+    CHECK(files == 15258);
+    CHECK(withAtt == 10484);
+    CHECK(atts == 52138);
+    CHECK(byGroup[27] == 7570);
+    CHECK(prts.size() == 4178);
+    CHECK(byGroup[1] == 783);
+    CHECK(acrs.size() == 549);
+    CHECK(byGroup[14] == 3234);
+
+    // The pairing. Stated as a partition rather than as three counts so a new
+    // combination shows up as a failure instead of as a number that drifted.
+    std::size_t offPattern = 0;
+    for (const auto& [gt, n] : byGroupType) {
+        const auto [g, t] = gt;
+        const bool ok = (g == 27 || g == 1) ? (t == 0 || t == 25)
+                        : (g == 14)         ? (t == 16)
+                                            : true;
+        if (!ok) {
+            offPattern += n;
+            std::printf("[d3 ani] OFF PATTERN group=%d type=%d x%zu\n", g, t, n);
+        }
+    }
+    CHECK(offPattern == 0);
+    // 256 of the 52,138 are authored PAST their permutation's last frame and
+    // can never fire — `black_soulstone_activating_to_idle` keys out to frame
+    // 111 of a 51-frame clip. Leftovers from a longer edit, not a conversion
+    // error: only 42 of them are the +1 an off-by-one would produce and the
+    // rest scatter to +100. Pinned rather than tolerated, because the number
+    // moving is how a real scaling mistake would show itself — the conversion
+    // above is the adapter's, verbatim.
+    CHECK(offEnd == 256);
 }
 
 // ==========================================================================
@@ -433,14 +553,14 @@ TEST_CASE("d3 effect: select mode 2 plays every item, 0 plays one", "[d3][effect
     std::vector<wd3::ResolvedEffect> all;
     wd3::ExpandD3TriggerEvent(GroupEvent(500), cache, {}, all);
     REQUIRE(all.size() == 3);
-    CHECK(all[0].snoParticle == 10);
-    CHECK(all[2].snoParticle == 12);
+    CHECK(all[0].sno == 10);
+    CHECK(all[2].sno == 12);
     CHECK(all[0].fromEffectGroup == 500);
 
     std::vector<wd3::ResolvedEffect> one;
     wd3::ExpandD3TriggerEvent(GroupEvent(501), cache, {}, one);
     REQUIRE(one.size() == 1);
-    CHECK(one[0].snoParticle == 21);
+    CHECK(one[0].sno == 21);
     CHECK(one[0].weight == 90);
 }
 
@@ -457,7 +577,7 @@ TEST_CASE("d3 effect: a chance of zero drops the item", "[d3][effect]") {
     std::vector<wd3::ResolvedEffect> out;
     wd3::ExpandD3TriggerEvent(GroupEvent(600), cache, {}, out);
     REQUIRE(out.size() == 1);
-    CHECK(out[0].snoParticle == 31);
+    CHECK(out[0].sno == 31);
     CHECK(out[0].chance == 1.0f);
 }
 
@@ -473,7 +593,7 @@ TEST_CASE("d3 effect: mode 10 picks by look link", "[d3][effect]") {
     std::vector<wd3::ResolvedEffect> out;
     wd3::ExpandD3TriggerEvent(GroupEvent(700), cache, "b_RARE", out); // case-insensitive
     REQUIRE(out.size() == 1);
-    CHECK(out[0].snoParticle == 41);
+    CHECK(out[0].sno == 41);
 
     std::vector<wd3::ResolvedEffect> none;
     wd3::ExpandD3TriggerEvent(GroupEvent(700), cache, "C", none);
@@ -489,8 +609,8 @@ TEST_CASE("d3 effect: a cycle terminates", "[d3][effect]") {
     std::vector<wd3::ResolvedEffect> out;
     wd3::ExpandD3TriggerEvent(GroupEvent(800), cache, {}, out);
     REQUIRE(out.size() == 2);
-    CHECK(out[0].snoParticle == 51); // the nested group resolves first
-    CHECK(out[1].snoParticle == 50);
+    CHECK(out[0].sno == 51); // the nested group resolves first
+    CHECK(out[1].sno == 50);
 }
 
 TEST_CASE("d3 effect: an actor fires only the matching message", "[d3][effect]") {
@@ -514,12 +634,12 @@ TEST_CASE("d3 effect: an actor fires only the matching message", "[d3][effect]")
 
     auto fx = wd3::ResolveActorEffects(actor, wd3::kD3MsgActorSpawned, cache);
     REQUIRE(fx.size() == 2);
-    CHECK(fx[0].snoParticle == 60);
-    CHECK(fx[1].snoParticle == 62);
+    CHECK(fx[0].sno == 60);
+    CHECK(fx[1].sno == 62);
 
     auto ended = wd3::ResolveActorEffects(actor, wd3::kD3MsgActorEnded, cache);
     REQUIRE(ended.size() == 1);
-    CHECK(ended[0].snoParticle == 61);
+    CHECK(ended[0].sno == 61);
 }
 
 TEST_CASE("d3 effect: hardpoint lookup is case-insensitive and knows the root",
@@ -543,4 +663,99 @@ TEST_CASE("d3 effect: hardpoint lookup is case-insensitive and knows the root",
         CHECK(wd3::IsD3RootHardpoint(n));
         CHECK(wd3::FindD3Hardpoint(app, n) == -1);
     }
+}
+
+TEST_CASE("d3 effect: a group 1 payload is a model, not an effect", "[d3][effect]") {
+    MapProvider prov;
+    // The mixed group the corpus actually ships: an effect and the prop it
+    // hangs off, in one item list.
+    prov.Add(900, EncodeGroup(900, 2,
+                              {{100, ParticleEvent(70, "HP_chest")},
+                               {100, ActorEvent(71, "HP_Relic")}}));
+    wio::D3SnoCache cache(&prov);
+
+    std::vector<wd3::ResolvedEffect> out;
+    wd3::ExpandD3TriggerEvent(GroupEvent(900), cache, {}, out);
+    REQUIRE(out.size() == 2);
+    CHECK(out[0].kind == wd3::ResolvedEffect::Kind::Particle);
+    CHECK(out[0].sno == 70);
+    CHECK(out[0].hardpoint == "HP_chest");
+    CHECK(out[1].kind == wd3::ResolvedEffect::Kind::Actor);
+    CHECK(out[1].sno == 71);
+    CHECK(out[1].hardpoint == "HP_Relic");
+}
+
+TEST_CASE("d3 effect: only a spawn type spawns", "[d3][effect]") {
+    MapProvider prov;
+    wio::D3SnoCache cache(&prov);
+
+    // Type 7 is "stop every tracked instance carrying this tag" — the payload
+    // names what to stop, not what to start. Reading the group alone would
+    // start it instead, which is the one way this resolver could turn a stop
+    // into a spawn.
+    for (i32 type : {7, 26, 4, 11, 16}) {
+        auto ev = ParticleEvent(90);
+        ev.eTriggerType = type;
+        std::vector<wd3::ResolvedEffect> out;
+        wd3::ExpandD3TriggerEvent(ev, cache, {}, out);
+        CHECK(out.empty());
+    }
+    for (i32 type : {0, 25}) {
+        auto ev = ParticleEvent(90);
+        ev.eTriggerType = type;
+        std::vector<wd3::ResolvedEffect> out;
+        wd3::ExpandD3TriggerEvent(ev, cache, {}, out);
+        REQUIRE(out.size() == 1);
+        CHECK(out[0].sno == 90);
+    }
+}
+
+TEST_CASE("d3 effect: a hardpoint resolves to a bone and a frame", "[d3][effect]") {
+    // Two bones, with the hardpoint's transform authored in the same space as
+    // their `tTransform0` and `tTransform1` its inverse — which is what the
+    // shipped appearances hold.
+    d3n::Appearances app;
+    app.arBones.resize(2);
+    app.arBones[1].tTransform0.vTranslation = {1.0f, 2.0f, 3.0f};
+    app.arBones[1].tTransform0.qRotation = {0.0f, 0.0f, 0.0f, 1.0f};
+    app.arBones[1].tTransform0.flScale = 1.0f;
+    app.arBones[1].tTransform1.vTranslation = {-1.0f, -2.0f, -3.0f};
+    app.arBones[1].tTransform1.qRotation = {0.0f, 0.0f, 0.0f, 1.0f};
+    app.arBones[1].tTransform1.flScale = 1.0f;
+
+    app.arHardpoints.push_back({});
+    app.arHardpoints.back().szName = "HP_chest";
+    app.arHardpoints.back().nBoneIndex = 1;
+    app.arHardpoints.back().tTransform.vTranslation = {1.0f, 2.0f, 3.0f};
+    app.arHardpoints.back().tTransform.qRotation = {0.0f, 0.0f, 0.0f, 1.0f};
+
+    // Authored on its bone, so the two cancel and the frame IS the bone's.
+    // Taking the hardpoint alone gives (1, 2, 3) and puts whatever rides it a
+    // whole bone's depth away from the bone it names.
+    const auto at = wd3::ResolveD3Attach(app, "hp_CHEST");
+    CHECK(at.bone == 1);
+    CHECK(at.offset.data[3][0] == Catch::Approx(0.0f).margin(1e-5));
+    CHECK(at.offset.data[3][1] == Catch::Approx(0.0f).margin(1e-5));
+    CHECK(at.offset.data[3][2] == Catch::Approx(0.0f).margin(1e-5));
+
+    // Displaced from its bone — `HP_rightWeapon_mid` is the shipped example,
+    // a second point along the same blade — and only the displacement lives.
+    app.arHardpoints.back().tTransform.vTranslation = {1.5f, 2.0f, 3.0f};
+    const auto mid = wd3::ResolveD3Attach(app, "HP_chest");
+    CHECK(mid.offset.data[3][0] == Catch::Approx(0.5f).margin(1e-5));
+    CHECK(mid.offset.data[3][1] == Catch::Approx(0.0f).margin(1e-5));
+    CHECK(mid.offset.data[3][2] == Catch::Approx(0.0f).margin(1e-5));
+
+    // A bone index the appearance does not carry contributes nothing, rather
+    // than reading off the end of the array.
+    app.arHardpoints.back().nBoneIndex = 12;
+    const auto stray = wd3::ResolveD3Attach(app, "HP_chest");
+    CHECK(stray.bone == 12);
+    CHECK(stray.offset.data[3][0] == Catch::Approx(1.5f).margin(1e-5));
+
+    // "Default" is the model origin: no bone, and a frame that moves nothing.
+    const auto root = wd3::ResolveD3Attach(app, "Default");
+    CHECK(root.bone == -1);
+    CHECK(root.offset.data[3][0] == 0.0f);
+    CHECK(root.offset.data[0][0] == 1.0f);
 }

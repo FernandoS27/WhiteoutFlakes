@@ -61,6 +61,13 @@ private:
     // Turn the particle service's child-model output (Birth / Transform /
     // Death) into actor spawns, transform writes and destroys.
     void DriveChildModels();
+#if WDX_ENABLE_D3
+    // Drains the child-model requests the Diablo III keyframed-attachment
+    // pools raised during EvaluateActorTree. Separate for the same reason
+    // DriveChildModels is: the pools tick inside the walk over the actor map
+    // and cannot spawn into it.
+    void DriveD3Attachments();
+#endif
     void UpdateRibbons(f32 dt);
 
     RenderService& rs_;

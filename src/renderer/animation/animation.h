@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <unordered_map>
+#include <span>
 #include <vector>
 #include "gfx/gfx.h"
 #include "types.h"
@@ -235,6 +236,15 @@ public:
         }
         matricesDirty_ = true;
         nodesReady_ = true;
+    }
+
+    /// @brief The node world matrices last uploaded, in model space.
+    ///
+    /// Empty until the first @ref UpdateNodeMatrices. Read by anything that
+    /// has to place something on a bone *outside* the evaluation pass, where
+    /// the FrameState the matrices came from is already gone.
+    std::span<const Matrix44f> NodeMatrices() const {
+        return currentMatrices_;
     }
 
     bool HasSkeleton() const {

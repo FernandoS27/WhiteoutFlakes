@@ -79,6 +79,12 @@ void FrameTicker::Tick(SceneManager& scene, f32 dt) {
         WDX_CPU_ZONE("EvaluateActorTree");
         EvaluateActorTree(dt);
     }
+#if WDX_ENABLE_D3
+    {
+        WDX_CPU_ZONE("DriveD3Attachments");
+        DriveD3Attachments();
+    }
+#endif
     {
         WDX_CPU_ZONE("UpdateAnimation");
         UpdateAnimation();
@@ -161,6 +167,43 @@ void FrameTicker::UpdateAttachments() {
         }
     }
 }
+
+#if WDX_ENABLE_D3
+void FrameTicker::DriveD3Attachments() {
+    // Sorted for the reason UpdateAttachments is: SpawnChildFromSource takes
+    // its handle from AllocActorId, so walking in map order would make which
+    // child gets which handle a function of container iteration.
+    std::vector<u32> handles;
+    handles.reserve(rs_.Scene().Actors().All().size());
+    for (auto& [h, mi] : rs_.Scene().Actors().All())
+        if (!mi->d3Attachments.Empty())
+            handles.push_back(h);
+    if (handles.empty())
+        return;
+    std::sort(handles.begin(), handles.end());
+
+    const i32 clock = rs_.Scene().GetAnimationTime();
+    for (u32 h : handles) {
+        auto* mi = rs_.Scene().Actors().Find(h);
+        if (!mi)
+            continue;
+        for (const auto& p : mi->d3Attachments.TakePending()) {
+            if (p.existing != 0) {
+                // Already spawned once by this attachment. The engine would
+                // make a second ACD; a looping viewer would then grow one per
+                // lap, so the standing child is replayed from its own frame
+                // zero instead — ApplyAttachmentStates' rule, for the reason
+                // it gives.
+                if (auto* child = rs_.Scene().Actors().Find(p.existing))
+                    child->animation.SetBirthTimeMs(clock);
+                continue;
+            }
+            Actor* child = rs_.Loader().SpawnD3ChildActor(*mi, p.snoActor, p.bone, p.offset);
+            mi->d3Attachments.NoteChildSpawned(p.sequence, p.entry, child ? child->handle : 0);
+        }
+    }
+}
+#endif
 
 void FrameTicker::EvaluateActorTree(f32 dt) {
     ActorEvalContext ctx = rs_.MakeActorEvalContext();

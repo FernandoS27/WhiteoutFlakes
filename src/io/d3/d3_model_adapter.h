@@ -146,6 +146,14 @@ public:
                                                      std::span<const u8> bytes, D3SnoCache& cache,
                                                      bool lazyClips = true);
 
+    /// @brief The same, for an actor named by SNO id rather than by a file.
+    ///
+    /// A TriggerEvent's group 1 payload is a child model with no path and no
+    /// bytes to sniff — the `.acr` comes out of the cache and nothing else is
+    /// different. See `io/d3/d3_effect_resolver.h`.
+    static std::shared_ptr<D3ModelAdapter> LoadActorBySno(i32 snoActor, D3SnoCache& cache,
+                                                          bool lazyClips = true);
+
     /// @brief Open an `.app` directly. Look 0, no animations.
     static std::shared_ptr<D3ModelAdapter> LoadAppearance(const ContentRef& ref,
                                                           std::span<const u8> bytes,
@@ -355,7 +363,36 @@ public:
     void BindAnimations(D3SnoCache& cache, std::shared_ptr<const d3n::AnimSet> animSet,
                         bool lazy);
 
+    /// @brief One `KeyframedAttachment` of a clip, resolved to a time in it.
+    ///
+    /// The third of the three sites a TriggerEvent is authored at, and the one
+    /// keyed on a *frame* rather than on a message: 52,138 attachments over
+    /// 10,484 of the 15,258 shipped anims, carrying 4,243 distinct `.prt` and
+    /// 549 distinct `.acr`. See `io/d3/d3_effect_resolver.h`.
+    struct ClipAttachment {
+        /// Where in the clip it fires. `flFrame / (flFramesPerTick * 60)`,
+        /// the same conversion the clip's own duration uses.
+        i32 timeMs = 0;
+        /// Owned by the clip's cached `Anim`, which the adapter holds for its
+        /// own lifetime — so this outlives any frame that reads it.
+        const d3n::TriggerEvent* event = nullptr;
+    };
+
+    /// @brief Sequence @p sequence's keyframed attachments, in ascending time.
+    ///
+    /// Resolves the clip if lazy loading has not already. Empty for a clip
+    /// with no attachments (4,774 of the shipped anims), for one that does not
+    /// resolve, and for a browsed `.app` with no AnimSet at all.
+    std::span<const ClipAttachment> ClipAttachments(i32 sequence) const;
+
 private:
+    /// @brief The half `LoadActor` and `LoadActorBySno` share: resolve the
+    ///        appearance, pick a look, keep the physics and the AnimSet.
+    ///        @p what names the actor in the diagnostics.
+    static std::shared_ptr<D3ModelAdapter> FromActor(std::shared_ptr<const d3n::Actor> actor,
+                                                     D3SnoCache& cache, bool lazyClips,
+                                                     const std::string& what);
+
     /// @brief Decide which SubObjects are drawable, once, so every per-geoset
     ///        accessor takes the same skips and `geosetId` means one thing.
     void BuildEmittedSubObjects();
@@ -387,6 +424,8 @@ private:
         mutable u32 permutation = 0;
         /// @brief Resolved once the Anim lands: permutation bone -> our node.
         mutable std::vector<i32> boneMap;
+        /// @brief The permutation's keyframed attachments, times resolved.
+        mutable std::vector<ClipAttachment> attachments;
         mutable bool resolved = false;
     };
 

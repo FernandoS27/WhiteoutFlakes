@@ -226,6 +226,23 @@ public:
     /// the same reason (the document's pose and the camera's framing are not a
     /// function of what the character is wearing).
     bool RestyleD3Model(u32 actorHandle);
+
+    /// @brief The `.acr` @p snoActor, spawned as a child of @p parent riding
+    ///        one of its bones.
+    ///
+    /// A group 1 TriggerEvent payload: another whole model with its own
+    /// Appearance and AnimSet. Null when the actor does not resolve or the
+    /// tree is already @ref kMaxD3AttachDepth deep. See
+    /// `io/d3/d3_effect_resolver.h` and `renderer/effects/d3_attachment_pool.h`.
+    Actor* SpawnD3ChildActor(Actor& parent, i32 snoActor, i32 bone, const Matrix44f& offset);
+
+    /// @brief Everything a Diablo III actor needs after its Actor exists: the
+    ///        surface table, the effects its spawn message starts, and the
+    ///        keyframed-attachment pool.
+    ///
+    /// Shared by the top-level load and by @ref SpawnD3ChildActor, because a
+    /// child `.acr` is an actor like any other and has its own effects.
+    void SetupD3Actor(Actor& actor, const std::shared_ptr<io::D3ModelAdapter>& d3);
 #endif
 
 private:

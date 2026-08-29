@@ -1,7 +1,8 @@
 #pragma once
 
 // ============================================================================
-// D3EffectResolver — how a `.prt` actually reaches a Diablo III actor.
+// D3EffectResolver — how a `.prt` (and a whole second model) reaches a
+// Diablo III actor.
 //
 // Not through the model. `BoneStructure::snoParticle` exists and works, but it
 // is authored on 5 of the first 2,500 appearances — 33 attachments, 3 distinct
@@ -22,9 +23,18 @@
 // shape is one indirection deep —
 //
 //     Actor / Anim --(TriggerEvent)--> Particle
-//                                  \-> EffectGroup --(TriggerEvent)--> Particle
+//                                  |-> Actor  (another whole model)
+//                                  '-> EffectGroup --(TriggerEvent)--> ...
 //
 // and this resolver flattens it.
+//
+// **A payload is not always an effect.** 783 anim attachments (549 distinct)
+// and 594 actor events (251 distinct) name a group 1 **Actor**:
+// `Actor_SpawnFromSno` (0x710021FDA0) builds a full ACD with its own
+// Appearance and AnimSet and rides it on the event's hardpoint. A relic on an
+// altar, the lid a chest throws, the corpse a death animation leaves behind.
+// Those come back as @ref ResolvedEffect::Kind::Actor and the renderer turns
+// them into child models.
 //
 // **`MsgTriggeredEvent.eMessageType` decides which of an actor's events fire.**
 // `Actor_FireMsgTriggeredEvents` (0x71002101B0) walks the array and plays every
@@ -35,7 +45,14 @@
 // events — and the shipped names say the same thing outright (`staffGlow`,
 // `lightWhisps_cone`, `groundTrail`, `crystals`) where 17 is `CloseingFX` and
 // `death_wings_dissipate`, and 2021/2510/2550 are chest, shrine and waypoint
-// activations.
+// activations. An **anim** attachment has no message: its key is a frame.
+//
+// **`eTriggerType` and the payload group agree, everywhere.** A Particle or
+// Actor payload only ever rides type 0 (`TriggerEvent_Spawn`) or 25
+// (`TriggerEvent_SpawnAttached`); an EffectGroup payload only ever rides type
+// 16 (`EffectGroup_Play`). That holds at all three sites over 82,000 events, so
+// the type is checked here as well as the group — a file that breaks the
+// pattern is asking for something this cannot do, not for a spawn.
 //
 // What this deliberately does NOT do is roll dice. `TriggerConditions_RollDelay`
 // (0x710060CEA0) is `chance == 0 ? drop : (rand() % 255 > chance ? drop
@@ -66,10 +83,15 @@ enum : i32 {
     kD3MsgActorEnded = 17,
 };
 
-/// One particle system an actor wants running, flattened out of wherever it
-/// was authored.
+/// One thing an actor wants playing, flattened out of wherever it was authored.
 struct ResolvedEffect {
-    i32 snoParticle = -1;
+    /// What @ref sno names. The renderer builds a different object for each:
+    /// an emitter, or a whole child actor.
+    enum class Kind : u8 { Particle, Actor };
+    Kind kind = Kind::Particle;
+    /// The `.prt` or the `.acr`, by SNO id.
+    i32 sno = -1;
+
     /// The hardpoint to ride, verbatim from the event. `"Default"`, empty,
     /// `"- None -"` and `"Don't Override"` all mean the model origin — the
     /// last because it is the editor's "inherit from whatever played me", and
@@ -129,5 +151,24 @@ bool IsD3RootHardpoint(std::string_view name);
 /// shipped events spell them `HP_Head` (323 times) and `HP_Pelvis` (200), so a
 /// byte compare loses over five hundred real attachments.
 i32 FindD3Hardpoint(const d3n::Appearances& app, std::string_view name);
+
+/// @brief Where a hardpoint puts what rides it: a bone, and a frame inside it.
+struct D3Attach {
+    i32 bone = -1; ///< -1 is the model origin, which is what `Default` means.
+    /// Composes as `offset * boneWorld`, and is the identity for the majority
+    /// of hardpoints — one authored on its own bone cancels exactly. See
+    /// @ref ResolveD3Attach for why that is not the same as no offset at all.
+    Matrix44f offset = Matrix44f::identity();
+};
+
+/// @brief @ref FindD3Hardpoint plus that hardpoint's frame, so the emitter path
+///        and the child-model path do not each recompose it.
+///
+/// The frame is the hardpoint's own transform composed with its bone's
+/// `tTransform1`, because a hardpoint is authored in the same space as the
+/// bone's `tTransform0` rather than inside the bone. Dropping the second half
+/// adds the bone's own offset twice and throws a held weapon further than the
+/// model is tall.
+D3Attach ResolveD3Attach(const d3n::Appearances& app, std::string_view hardpoint);
 
 } // namespace whiteout::flakes::io::d3

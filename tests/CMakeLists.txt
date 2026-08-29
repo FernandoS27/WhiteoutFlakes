@@ -183,6 +183,11 @@ if(WDX_ENABLE_D3)
     # How a `.prt` reaches an actor: the EffectGroup parser, the census that
     # ranks the three routes, and the resolver's item selection.
     wdx_add_test(d3_effect_test d3_effect_test.cpp)
+    # The playback half of the same route: frames to milliseconds, and the pool
+    # that fires them. Corpus-backed on purpose — the shortest path to a
+    # ClipAttachments call runs through four assets, and faking them would be
+    # faking the thing under test.
+    wdx_add_test(d3_attachment_test d3_attachment_test.cpp)
     # The rig through Snowball. Only exists when physics is compiled in; without
     # it the adapter appends no stage and there is nothing to step.
     if(WDX_ENABLE_PHYSICS)

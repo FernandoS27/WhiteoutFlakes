@@ -206,6 +206,109 @@ bool ModelLoader::RestyleD3Model(u32 actorHandle) {
     actor->render.stagedDirty = true;
     return true;
 }
+
+void ModelLoader::SetupD3Actor(Actor& actor, const std::shared_ptr<io::D3ModelAdapter>& d3) {
+    // Built off the parsed appearance, M2's and M3's precedent — per-look
+    // material data does not fit MaterialData. Stamped only when something
+    // resolved: a table with no valid entry leaves the whole actor on Unlit,
+    // which draws where this model would vanish.
+    auto table = profiles::diablo3::BuildD3SurfaceTable(
+        d3->SourceAppearance(), d3->LookIndex(),
+        io::CollectD3Textures(d3->SourceAppearance(), d3->LookIndex(), d3->EmittedSubObjects(),
+                              d3->GeosetLooks()),
+        d3->EmittedSubObjects(), &D3Cache(), d3->GeosetLooks());
+    bool anyValid = false;
+    for (const auto& s : table->Surfaces())
+        anyValid |= s.valid;
+    if (anyValid) {
+        actor.render.surfaceTable = std::move(table);
+        BuildD3Surfaces(actor);
+        actor.shadingModel = core::ShadingModelId::D3Standard;
+    }
+
+    // What a TriggerEvent reaches, and it is not only particles.
+    //
+    // The route that carries the shipped content is a TriggerEvent on the
+    // ACTOR, fired by message 1000 when the actor comes into existence and
+    // resolving through an EffectGroup more often than not. Its payload is a
+    // `.prt` 10,690 times and a whole other `.acr` 594 — a relic on its altar,
+    // a banner on its pole — and the second kind becomes a child model here.
+    // The third route, `BoneStructure::snoParticle`, is real but rare: 5 of the
+    // first 2,500 `.app`, 33 attachments, 3 distinct files. See
+    // io/d3/d3_effect_resolver.h for the census that ranks them, and
+    // renderer/effects/d3_attachment_pool.h for the fourth, which is per frame.
+    //
+    // None of them carries per-emitter animation tracks of the kind `.mdx` and
+    // `.m2` do. Everything animated lives inside the `.prt`, on the system's
+    // own clock, so all the host owes an emitter per frame is the world matrix
+    // of the bone (and hardpoint) it rides.
+    const auto& app = d3->SourceAppearance();
+    i32 emitterId = 0;
+
+    auto addEmitter = [&](i32 snoParticle, i32 bone, const Matrix44f& offset) {
+        auto prt = D3Cache().Particle(snoParticle);
+        if (!prt)
+            return;
+        auto em = std::make_unique<particle::d3::Emitter>();
+        em->SetD3Desc(io::d3::BuildD3EmitterDesc(*prt, snoParticle));
+        em->SetAttachBone(bone);
+        em->SetAttachOffset(offset);
+        rs_.Particles().AddEmitter(actor.handle, particle::ParticleOutput::Billboard, emitterId++,
+                                   std::move(em));
+    };
+
+    if (const io::d3n::Actor* acr = d3->SourceActor()) {
+        std::string_view look;
+        if (d3->LookIndex() < d3->Looks().size())
+            look = d3->Looks()[d3->LookIndex()];
+        for (const auto& fx :
+             io::d3::ResolveActorEffects(*acr, io::d3::kD3MsgActorSpawned, D3Cache(), look)) {
+            const auto at = io::d3::ResolveD3Attach(app, fx.hardpoint);
+            if (fx.kind == io::d3::ResolvedEffect::Kind::Actor)
+                SpawnD3ChildActor(actor, fx.sno, at.bone, at.offset);
+            else
+                addEmitter(fx.sno, at.bone, at.offset);
+        }
+    }
+
+    for (usize b = 0; b < app.arBones.size(); ++b)
+        if (app.arBones[b].snoParticle.valid())
+            addEmitter(app.arBones[b].snoParticle.id, static_cast<i32>(b), Matrix44f::identity());
+
+    // Past every id the load-time route just used, so the two never collide.
+    actor.d3Attachments.Bind(d3, &D3Cache(), emitterId);
+}
+
+Actor* ModelLoader::SpawnD3ChildActor(Actor& parent, i32 snoActor, i32 bone,
+                                      const Matrix44f& offset) {
+    if (parent.treeDepth >= kMaxD3AttachDepth)
+        return nullptr;
+    auto adapter =
+        io::D3ModelAdapter::LoadActorBySno(snoActor, D3Cache(), rs_.Settings().D3LazyAnimations());
+    if (!adapter)
+        return nullptr;
+    // Shared on `(appearanceSno, lookIndex)` like any other D3 drawable. A
+    // hardpoint child is exactly the kind of model a scene holds several of.
+    adapter = D3Drawable(adapter);
+
+    Actor* child = SpawnChildFromSource(parent, ActorRole::Attachment, adapter);
+    if (!child)
+        return nullptr;
+    child->ridesParentBone = true;
+    child->attachParentBone = bone;
+    child->attachParentOffset = offset;
+    child->shadingModel = core::ShadingModelId::Unlit;
+    // Placed now, off the parent's live palette, rather than waiting for the
+    // next evaluation pass: an anim attachment spawns *after* the walk that
+    // would place it, and the frame it appears is a frame it would otherwise
+    // spend at the parent's origin.
+    child->worldTransform =
+        BoneRidingTransform(parent, parent.render.skinning.NodeMatrices(), *child);
+    // A spawned `.acr` is an actor like any other: its own materials, its own
+    // spawn-message effects, its own keyframed attachments.
+    SetupD3Actor(*child, adapter);
+    return child;
+}
 #endif
 
 #if WDX_ENABLE_M2
@@ -1343,82 +1446,8 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
     }
 #endif
 #if WDX_ENABLE_D3
-    if (d3) {
-        // Built off the parsed appearance, M2's and M3's precedent — per-look
-        // material data does not fit MaterialData. Stamped only when something
-        // resolved: a table with no valid entry leaves the whole actor on
-        // Unlit, which draws where this model would vanish.
-        auto table = profiles::diablo3::BuildD3SurfaceTable(
-            d3->SourceAppearance(), d3->LookIndex(),
-            io::CollectD3Textures(d3->SourceAppearance(), d3->LookIndex(),
-                                  d3->EmittedSubObjects(), d3->GeosetLooks()),
-            d3->EmittedSubObjects(), &D3Cache(), d3->GeosetLooks());
-        bool anyValid = false;
-        for (const auto& s : table->Surfaces())
-            anyValid |= s.valid;
-        if (anyValid) {
-            actor->render.surfaceTable = std::move(table);
-            BuildD3Surfaces(*actor);
-            actor->shadingModel = core::ShadingModelId::D3Standard;
-        }
-
-        // A `.prt` reaches a Diablo III model two ways, and only one of them
-        // carries the shipped content.
-        //
-        // The route that matters is a TriggerEvent on the ACTOR, fired by
-        // message 1000 when the actor comes into existence, resolving through
-        // an EffectGroup more often than not. The other is
-        // `BoneStructure::snoParticle` on the appearance, which is real but
-        // rare — 5 of the first 2,500 `.app`, 33 attachments, 3 distinct
-        // files. Both land here; see io/d3/d3_effect_resolver.h for the census
-        // that ranks them.
-        //
-        // Neither carries per-emitter animation tracks of the kind `.mdx` and
-        // `.m2` do. Everything animated lives inside the `.prt`, on the
-        // system's own clock, so all the host owes an emitter per frame is the
-        // world matrix of the bone (and hardpoint) it rides.
-        const auto& app = d3->SourceAppearance();
-        i32 emitterId = 0;
-
-        auto addEmitter = [&](i32 snoParticle, i32 bone, const Matrix44f& offset) {
-            auto prt = D3Cache().Particle(snoParticle);
-            if (!prt)
-                return;
-            auto em = std::make_unique<particle::d3::Emitter>();
-            em->SetD3Desc(io::d3::BuildD3EmitterDesc(*prt, snoParticle));
-            em->SetAttachBone(bone);
-            em->SetAttachOffset(offset);
-            rs_.Particles().AddEmitter(actor->handle, particle::ParticleOutput::Billboard,
-                                       emitterId++, std::move(em));
-        };
-
-        if (const io::d3n::Actor* acr = d3->SourceActor()) {
-            const std::string& look =
-                (d3->LookIndex() < d3->Looks().size()) ? d3->Looks()[d3->LookIndex()]
-                                                       : std::string{};
-            for (const auto& fx : io::d3::ResolveActorEffects(*acr, io::d3::kD3MsgActorSpawned,
-                                                              D3Cache(), look)) {
-                const i32 hp = io::d3::FindD3Hardpoint(app, fx.hardpoint);
-                i32 bone = -1;
-                Matrix44f offset = Matrix44f::identity();
-                if (hp >= 0) {
-                    const auto& h = app.arHardpoints[hp];
-                    bone = h.nBoneIndex;
-                    offset = animation::ComposePivotSRT(
-                        h.tTransform.vTranslation,
-                        Quaternion{h.tTransform.qRotation.x, h.tTransform.qRotation.y,
-                                   h.tTransform.qRotation.z, h.tTransform.qRotation.w},
-                        {1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 0.0f});
-                }
-                addEmitter(fx.snoParticle, bone, offset);
-            }
-        }
-
-        for (usize b = 0; b < app.arBones.size(); ++b)
-            if (app.arBones[b].snoParticle.valid())
-                addEmitter(app.arBones[b].snoParticle.id, static_cast<i32>(b),
-                           Matrix44f::identity());
-    }
+    if (d3)
+        SetupD3Actor(*actor, d3);
 #endif
 #if WDX_ENABLE_M3
     if (m3) {

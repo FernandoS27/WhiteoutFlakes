@@ -1,7 +1,10 @@
 #include "io/d3/d3_effect_resolver.h"
 
+#include "renderer/animation/anim_math.h"
+
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <unordered_set>
 
 namespace whiteout::flakes::io::d3 {
@@ -9,11 +12,19 @@ namespace whiteout::flakes::io::d3 {
 namespace {
 
 /// The whole SNO-group vocabulary a TriggerEvent's payload can carry. Only
-/// these two are assets this renderer can do anything with; Sound (5,313
+/// these three are assets this renderer can do anything with; Sound (5,313
 /// refs), Explosion, Shakes, Rope, Trail, Light and the 1,290 assetless
 /// records fall through, which is the honest answer for each of them.
+constexpr i32 kGroupActor = 1;
 constexpr i32 kGroupEffectGroup = 14;
 constexpr i32 kGroupParticle = 27;
+
+/// `TriggerEvent_Execute`'s switch (0x7100211040). A Particle or Actor payload
+/// rides one of the first two and an EffectGroup payload the third, at every
+/// one of the three authoring sites; see the header.
+constexpr i32 kTriggerSpawn = 0;
+constexpr i32 kTriggerSpawnAttached = 25;
+constexpr i32 kTriggerPlayEffectGroup = 16;
 
 /// Guards against an effect group naming itself, directly or round a cycle.
 /// Nothing in the corpus does, but the format permits it and one bad file
@@ -108,20 +119,26 @@ void Expand(const d3n::TriggerEvent& ev, D3SnoCache& cache, std::string_view loo
 
     const i32 group = ev.tPayload.eSnoGroup;
     const i32 handle = ev.tPayload.dwNameHandle;
+    const i32 type = ev.eTriggerType;
     if (handle == -1)
         return;
 
-    if (group == kGroupParticle) {
+    if (type == kTriggerSpawn || type == kTriggerSpawnAttached) {
+        if (group != kGroupParticle && group != kGroupActor)
+            return;
         ResolvedEffect r;
         FillFromEvent(ev, r);
-        r.snoParticle = handle;
+        r.kind = (group == kGroupActor) ? ResolvedEffect::Kind::Actor
+                                        : ResolvedEffect::Kind::Particle;
+        r.sno = handle;
         r.fromEffectGroup = fromGroup;
         r.weight = weight;
         out.push_back(std::move(r));
         return;
     }
 
-    if (group != kGroupEffectGroup || depth >= kMaxDepth || !visited.insert(handle).second)
+    if (type != kTriggerPlayEffectGroup || group != kGroupEffectGroup || depth >= kMaxDepth ||
+        !visited.insert(handle).second)
         return;
 
     auto grp = cache.EffectGroup(handle);
@@ -146,6 +163,38 @@ bool IsD3RootHardpoint(std::string_view name) {
            IEquals(name, "- None -") || IEquals(name, "Don't Override");
 }
 
+/// PRS -> matrix, normalising as the client does. Local to the resolver because
+/// the adapter's own copy takes a PRSTransform and a hardpoint carries a PR.
+Matrix44f MatrixOf(const Vector3f& t, const Vector4f& q, f32 scale) {
+    const f32 n = std::sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+    const f32 i = (n > 1e-8f) ? (1.0f / n) : 1.0f;
+    return renderer::animation::ComposePivotSRT(
+        t, Quaternion{q.x * i, q.y * i, q.z * i, q.w * i}, {scale, scale, scale},
+        {0.0f, 0.0f, 0.0f});
+}
+
+/// @brief The frame a hardpoint sits in, which is NOT its bone's animated pose.
+///
+/// `Skeleton_BuildSkinningPaletteAndBounds` writes three transforms into each
+/// 96-byte palette entry and `sub_7100213590`, the shipped hardpoint resolver,
+/// reads the middle one: quaternion at +32, translation at +48, scale at +60 —
+/// the pose composed with the bone's `tTransform1`.
+///
+/// That is not a refinement. A hardpoint's transform is authored in the same
+/// space as its bone's `tTransform0`, and `tTransform1` is exactly its inverse,
+/// so a hardpoint that rides its bone composes to the identity here and one
+/// like `HP_rightWeapon_mid` keeps only its own displacement along the blade.
+/// Compose the hardpoint straight onto the bone instead and the two add:
+/// Tyrael's sword lands 6.08 units out on a skeleton that reaches 6.04, holding
+/// the pose of a hand a body's length away. `d3_cloth.cpp`'s `AttachFrame` is
+/// the same composition, recovered for the collision capsules.
+Matrix44f HardpointBoneFrame(const d3n::Appearances& app, i32 bone) {
+    if (bone < 0 || static_cast<usize>(bone) >= app.arBones.size())
+        return Matrix44f::identity();
+    const d3n::PRSTransform& inv = app.arBones[static_cast<usize>(bone)].tTransform1;
+    return MatrixOf(inv.vTranslation, inv.qRotation, inv.flScale);
+}
+
 i32 FindD3Hardpoint(const d3n::Appearances& app, std::string_view name) {
     if (IsD3RootHardpoint(name))
         return -1;
@@ -153,6 +202,18 @@ i32 FindD3Hardpoint(const d3n::Appearances& app, std::string_view name) {
         if (IEquals(app.arHardpoints[i].szName, name))
             return static_cast<i32>(i);
     return -1;
+}
+
+D3Attach ResolveD3Attach(const d3n::Appearances& app, std::string_view hardpoint) {
+    D3Attach a;
+    const i32 hp = FindD3Hardpoint(app, hardpoint);
+    if (hp < 0)
+        return a;
+    const auto& h = app.arHardpoints[static_cast<usize>(hp)];
+    a.bone = h.nBoneIndex;
+    a.offset = MatrixOf(h.tTransform.vTranslation, h.tTransform.qRotation, 1.0f) *
+               HardpointBoneFrame(app, a.bone);
+    return a;
 }
 
 void ExpandD3TriggerEvent(const d3n::TriggerEvent& ev, D3SnoCache& cache,

@@ -3,6 +3,9 @@
 #include "../gfx/gfx.h"
 #include "animation/animation_driver.h"
 #include "effects/event_emitter_pool.h"
+#if WDX_ENABLE_D3
+#include "effects/d3_attachment_pool.h"
+#endif
 #include "model/model_template.h"
 #include "core/surface_vocabulary.h"
 #include "model/render_model.h"
@@ -13,6 +16,7 @@
 
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace whiteout::flakes::renderer::animation {
@@ -32,6 +36,11 @@ namespace whiteout::flakes::renderer::model {
 // each instance is a full Actor with GPU resources. Raise with care.
 constexpr i32 kMaxChildModelDepth = 3;
 constexpr i32 kMaxChildModelInstances = 256;
+// The same policy for Diablo III's hardpoint children, which nest for a
+// different reason: a spawned `.acr` has its own spawn-message effects and
+// those can name another `.acr`. Two deep covers every shipped chain measured
+// and stops a cycle in the data from turning into a load that never ends.
+constexpr i32 kMaxD3AttachDepth = 2;
 
 enum class ActorRole : u8 {
     Unit,       // top-level, app-spawned, normal scene-clock evaluation
@@ -152,6 +161,19 @@ struct Actor {
     // needs.
     std::vector<i32> skinnedParentBone;
 
+    // A child that rides one of its PARENT's bones with a fixed frame inside
+    // it, rather than being placed by the parent's FrameState. Diablo III's
+    // hardpoint attachments: a `.acr` a TriggerEvent named is a whole second
+    // model, and where it sits is `hardpointFrame * parentBone * parentWorld`
+    // — there is no attachment node and no per-frame track, so the two halves
+    // are stamped once at spawn and composed every frame.
+    //
+    // `attachParentBone` of -1 with a non-identity offset is legitimate: it
+    // means the model origin, which is what `Default` resolves to.
+    bool ridesParentBone = false;
+    i32 attachParentBone = -1;
+    Matrix44f attachParentOffset = Matrix44f::identity();
+
     // Cache for ScaledWorldTransform; never read unless worldScale != 1.
     mutable Matrix44f scaledWorld_ = Matrix44f::identity();
 
@@ -246,6 +268,12 @@ struct Actor {
     RenderModel render;
 
     effects::EventEmitterPool events;
+#if WDX_ENABLE_D3
+    // Keyframed attachments — the TriggerEvents an `.ani` fires at a frame.
+    // Empty until ModelLoader::SetupD3Actor binds it, which is every non-D3
+    // actor.
+    effects::D3AttachmentPool d3Attachments;
+#endif
 
     RenderModel& Render() {
         return render;
@@ -300,5 +328,15 @@ struct Actor {
         sourceTemplate.reset();
     }
 };
+
+/// @brief Where a child whose @ref Actor::ridesParentBone is set sits, given
+///        its parent and the parent's node matrices.
+///
+/// `hardpointFrame * parentBone * parentScaledWorld`, with the child's own
+/// scale-and-basis divided back out — it re-applies that to its own geometry,
+/// and taking it twice is a model at a hundred times the right distance.
+/// @p parentBones may be empty, which places the child at the parent's origin.
+Matrix44f BoneRidingTransform(const Actor& parent, std::span<const Matrix44f> parentBones,
+                              const Actor& child);
 
 } // namespace whiteout::flakes::renderer::model
