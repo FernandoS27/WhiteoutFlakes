@@ -374,6 +374,11 @@ set(SHADER_ENTRIES
     "d3_standard.slang|vsD3Standard|vertex|kD3StandardVS"
     "d3_standard.slang|vsD3StandardSkinned|vertex|kD3StandardSkinnedVS"
     "d3_standard.slang|psD3Standard|fragment|kD3StandardPS"
+    # D3 particles. `Billboard.fx` / `ps_legacy` is a four-stage fixed-function
+    # chain with a UV transform per stage; the SD program has one texture and no
+    # chain at all. See D3_PARTICLE_DESIGN.md §8.
+    "d3_particle.slang|vsD3Particle|vertex|kD3ParticleVS"
+    "d3_particle.slang|psD3Particle|fragment|kD3ParticlePS"
     "m3_deferred_light.slang|vsM3DeferredLight|vertex|kM3DeferredLightVS"
     "m3_deferred_light.slang|psM3DeferredLight|fragment|kM3DeferredLightPS"
     # NOTE: depth of field has no custom shader entry — DofService runs the
@@ -1359,10 +1364,12 @@ if(WDX_ENABLE_D3)
         src/io/d3/d3_effect_resolver.cpp
         src/io/d3/d3_particle_adapter.cpp
         src/io/d3/d3_sno_cache.cpp
+        src/renderer/effects/d3_attachment_pool.cpp
         src/renderer/profiles/diablo3/d3_character_appearance.cpp
         # Collision primitives as DATA — no solver, so it is not behind
         # WDX_ENABLE_PHYSICS. It is also the cheapest test of the shape decode.
         src/renderer/profiles/diablo3/d3_collision.cpp
+        src/renderer/profiles/diablo3/d3_particle_shading.cpp
         src/renderer/profiles/diablo3/d3_standard_shading.cpp
         src/renderer/profiles/diablo3/d3_surface_table.cpp
     )
@@ -1518,6 +1525,23 @@ if(WIN32 AND NOT EMSCRIPTEN AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer
   target_link_libraries(BlsReflect PRIVATE whiteout_lib d3d11.lib d3dcompiler.lib)
   if(MSVC)
     target_compile_options(BlsReflect PRIVATE /W3 /EHsc /wd4100 /wd4127 /wd4244 /wd4267)
+  endif()
+endif()
+
+# ---- Throwaway: extract Diablo III's shader tree out of CASC ----
+# Needs nothing but whiteout_casc, so it builds on any host that configured
+# with CASC support. tools/d3_shader_atlas/atlas.py does the analysis on the
+# folder it writes.
+if(TARGET whiteout_casc)
+  add_executable(D3ShaderAtlas tools/d3_shader_atlas/d3_shader_atlas.cpp)
+  set_target_properties(D3ShaderAtlas PROPERTIES
+      CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
+      RUNTIME_OUTPUT_DIRECTORY         "${CMAKE_BINARY_DIR}/standalone"
+      RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_BINARY_DIR}/standalone"
+  )
+  target_link_libraries(D3ShaderAtlas PRIVATE whiteout_casc)
+  if(MSVC)
+    target_compile_options(D3ShaderAtlas PRIVATE /W3 /EHsc /wd4100 /wd4127 /wd4244 /wd4267)
   endif()
 endif()
 

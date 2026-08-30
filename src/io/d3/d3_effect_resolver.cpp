@@ -26,6 +26,12 @@ constexpr i32 kTriggerSpawn = 0;
 constexpr i32 kTriggerSpawnAttached = 25;
 constexpr i32 kTriggerPlayEffectGroup = 16;
 
+/// The one message a viewer can serve out of a `.prt`'s own event array.
+/// `ParticleSystem_Spawn` fires 3000 when the system exists, `_Release` 3001,
+/// `_RequestStop` 3002, `_EmitParticle` 3500 per particle and three sites 3501
+/// when one dies. Only 3000 happens without a running simulation.
+constexpr i32 kMsgParticleSpawned = 3000;
+
 /// Guards against an effect group naming itself, directly or round a cycle.
 /// Nothing in the corpus does, but the format permits it and one bad file
 /// would hang a load.
@@ -109,6 +115,9 @@ void SelectItems(const d3n::EffectGroup& grp, std::string_view lookName,
     }
 }
 
+void ExpandParticleSpawn(i32 sno, D3SnoCache& cache, std::string_view lookName, int depth,
+                         std::unordered_set<i32>& visited, std::vector<ResolvedEffect>& out);
+
 void Expand(const d3n::TriggerEvent& ev, D3SnoCache& cache, std::string_view lookName, int depth,
             std::unordered_set<i32>& visited, i32 fromGroup, i32 weight,
             std::vector<ResolvedEffect>& out) {
@@ -134,6 +143,12 @@ void Expand(const d3n::TriggerEvent& ev, D3SnoCache& cache, std::string_view loo
         r.fromEffectGroup = fromGroup;
         r.weight = weight;
         out.push_back(std::move(r));
+        // A `.prt` is an authoring site of its own, not just a leaf: 773 of
+        // them carry a message-3000 event, which `ParticleSystem_Spawn`
+        // (0x71000AE0B0) fires the moment the system exists. Recurse so that
+        // playing one plays what it names.
+        if (group == kGroupParticle)
+            ExpandParticleSpawn(handle, cache, lookName, depth, visited, out);
         return;
     }
 
@@ -150,6 +165,23 @@ void Expand(const d3n::TriggerEvent& ev, D3SnoCache& cache, std::string_view loo
     for (usize i : picked) {
         const auto& item = grp->arEffectItems[i];
         Expand(item.tEvent.tEvent, cache, lookName, depth + 1, visited, handle, item.nWeight, out);
+    }
+}
+
+void ExpandParticleSpawn(i32 sno, D3SnoCache& cache, std::string_view lookName, int depth,
+                         std::unordered_set<i32>& visited, std::vector<ResolvedEffect>& out) {
+    if (depth >= kMaxDepth || !visited.insert(sno).second)
+        return;
+    auto prt = cache.Particle(sno);
+    if (!prt)
+        return;
+    for (const auto& ev : prt->arTriggeredEvents) {
+        // The spawn key is `{3000, 0.0f, 0}`, so the sub-key must be 0 — it is,
+        // on all 2,038 shipped particle events, and so is the impulse window
+        // the other arm of `MsgTriggeredEvent_MatchesKey` tests.
+        if (ev.eMessageType != kMsgParticleSpawned || ev.tEvent.tConditions.nSubKey != 0)
+            continue;
+        Expand(ev.tEvent, cache, lookName, depth + 1, visited, -1, 100, out);
     }
 }
 

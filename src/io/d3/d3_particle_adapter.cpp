@@ -4,6 +4,7 @@
 
 #include "whiteout/sno/d3/native/types.h"
 
+#include <bit>
 #include <cmath>
 
 namespace whiteout::flakes::io::d3 {
@@ -138,8 +139,21 @@ void BuildMaterial(const d3n::Particle& prt, pd3::MaterialDesc& out) {
             pd3::MaterialLayer& L = out.layers[out.layerCount++];
             L.textureSno = e.snoTexture.valid() ? e.snoTexture.id : -1;
             L.rawType = want;
-            L.wrapFlags = static_cast<u32>(D3UvFlagsOf(e) & kD3UvFlagWrapMask);
+            // wrapFlags is left at its wrap/wrap default here: the address mode
+            // is the PASS's, and D3ResolveParticleMaterial fills it once the
+            // ShaderMap chain resolves.
             L.uv = D3ReadUvXform(e);
+            if (L.uv.mode == D3UvMode::Anim2D) {
+                // tAnim4/tAnim5 stop being an anim triple here and become the
+                // flip-book's params block — see MaterialLayer::atlasRate. The
+                // two frame indices are INTEGERS in the same words.
+                L.atlasRate = e.tAnim4.flRate1 * kD3TicksPerSecond;
+                L.atlasRateJitter = e.tAnim5.flAmount * kD3TicksPerSecond;
+                L.atlasFrameBase = std::bit_cast<i32>(e.tAnim5.flRate0);
+                L.atlasFrameRange = std::bit_cast<i32>(e.tAnim5.flRate1);
+                if (L.atlasFrameRange < 0)
+                    L.atlasFrameRange = 0;
+            }
             break; // A type never repeats inside one material — see d3_types.h.
         }
     }
@@ -158,6 +172,8 @@ std::shared_ptr<pd3::EmitterDesc> BuildD3EmitterDesc(const d3n::Particle& prt, i
     d->lifetime = static_cast<f32>(prt.tmLifetime) * kFrameToSeconds;
     d->emissionPeriod = static_cast<f32>(prt.tmEmissionPeriod) * kFrameToSeconds;
     d->preSimulate = static_cast<f32>(prt.tmPreSimulate) * kFrameToSeconds;
+    d->lifetimeRandom = {prt.tLifetimeRandom.nMode, prt.tLifetimeRandom.flMin,
+                         prt.tLifetimeRandom.flMax};
 
     d->mass = prt.flMass;
     d->maxInstances = prt.nMaxInstances;

@@ -121,6 +121,30 @@ public:
         hasSeekTarget_ = false;
     }
 
+    /// @brief Where the ground is, for the two ground-conforming render modes.
+    ///
+    /// The engine raycasts the world per particle and caches the hit normal;
+    /// this is the renderer's equivalent — the shared ground query, which is
+    /// the grid unless a host registered real terrain through
+    /// `RenderSettings::SetGroundQuery`. It answers with a HEIGHT, so the
+    /// normal comes from two tangents sampled a step apart, which on the flat
+    /// grid is exactly world up: the engine's own raycast-miss value. Without a
+    /// query the modes still work and read flat.
+    /// @brief The camera's view direction, for the modes that face it.
+    ///
+    /// `Particle_PrepareDrawFrame` reads it off the per-view record at
+    /// `view+0x28C` — but so does `ParticleSystem_EmitParticle`, which is why a
+    /// child-actor system needs it too: render modes 0 and 13 turn a spawned
+    /// MODEL to the camera, and between them that is 1,094 shipped systems.
+    void SetCameraForward(const Vector3f& f) {
+        camForward_ = f;
+    }
+
+    using GroundQuery = std::function<bool(const Vector3f& pos, f32 up, f32 down, f32& outZ)>;
+    void SetGroundQuery(GroundQuery q) {
+        groundQuery_ = std::move(q);
+    }
+
     /// Global wind, for the two foliage system types. `phase` is a shared
     /// clock; each particle offsets it by its own random so a gust travels.
     void SetWind(const Vector2f& dir, f32 strength, f32 phase) {
@@ -183,8 +207,11 @@ private:
     struct EmitContext {
         Shape shape = Shape::Point;
         Vector3f offset{0, 0, 0};
-        f32 ext0Lo = 0.0f, ext0Span = 0.0f;
-        f32 ext1Lo = 0.0f, ext1Span = 0.0f;
+        /// The two LANES of each shape-extent path at the emitter's current
+        /// time, as `InterpolationPath_GetScalarEndpoints` hands them over —
+        /// not a min and a max over the whole curve.
+        f32 ext0Lo = 0.0f, ext0Hi = 0.0f;
+        f32 ext1Lo = 0.0f, ext1Hi = 0.0f;
         Vector3f boxLo{0, 0, 0};
         Vector3f boxHi{0, 0, 0};
         i32 emitCount = 0;
@@ -200,14 +227,37 @@ private:
 
     EvalCtx EmitterCtx() const;
     EvalCtx ParticleCtx(const ParticleState& st, const Vector3f& pos, f32 age) const;
+    /// The material's atlas layer, per particle. See the definitions.
+    void SeedAtlas(ParticleState& st) const;
+    void StepAtlas(ParticleState& st, f32 dt) const;
 
     void TickEmit(f32 dt, f32 emissionScaler);
     EmitContext BuildEmitContext() const;
     Vector3f SampleShape(EmitContext& ec, const Vector3f& base);
     bool BirthParticle(f32 dt, EmitContext& ec);
+    /// `Particle_ComputeInitialVelocity` — channels 38/39/40, in `.prt` units
+    /// per second. Draws from `sysRng_` when the cone applies, so both callers
+    /// must reach it at the same point in the birth sequence.
+    Vector3f BirthVelocity(u32 seed, const EvalCtx& ectx);
     bool SpawnChildActor(EmitContext& ec);
     void StepParticle(u32 idx, f32 dt);
     void StepWindSpring(f32 dt);
+    /// `ParticleSystem_SetEmitterTransform` @0x71000AFBE0's carry, G-D3P-21.
+    void CarryWithEmitter();
+
+    /// `Particle.tLifetimeRandom` resolved once per spawn — see
+    /// @ref EmitterDesc::lifetimeRandom. Never touches `sysRng_`: the engine's
+    /// draw comes off a global stream, and taking one out of the system stream
+    /// would shift every positional draw after it.
+    f32 LifetimeScale() const;
+
+    /// `Particle.tmPreSimulate` — the spawn-time catch-up, run once on the
+    /// first Update. See the definition.
+    void RunPreSimulate();
+
+    /// `Particle_UpdateGroundNormal` @0x71000BA330's job, against the grid.
+    /// Re-samples only when the particle's XY has moved, as the engine does.
+    void RefreshGroundNormal(ParticleState& st, const Vector3f& pos) const;
 
     std::shared_ptr<const EmitterDesc> d3desc_;
     std::vector<ParticleState> states_;
@@ -220,9 +270,9 @@ private:
     u32 emitterSeed_ = 1;
 
     f32 systemAge_ = 0.0f;
-    f32 emitElapsed_ = 0.0f;
     f32 emitAccum_ = 0.0f;
     f32 lifetimeScale_ = 1.0f;
+    bool preSimPending_ = false;
     i32 emittedLastUpdate_ = 0;
     u32 emitSequence_ = 0; ///< shape 11's monotone counter; never reset
 
@@ -234,12 +284,22 @@ private:
     i32 attachBone_ = -1;
     Matrix44f attachOffset_ = Matrix44f::identity();
     Quaternion emitterQuat_ = Quaternion::identity();
+
+    // The emitter placement the live particles were last carried to. Separate
+    // from `prevWorldPos_`, which is the birth-lerp segment and moves on a
+    // different schedule.
+    Vector3f carryPos_{0, 0, 0};
+    Quaternion carryQuat_ = Quaternion::identity();
+    bool carrySeeded_ = false;
     Vector3f seekTarget_{0, 0, 0};
     bool hasSeekTarget_ = false;
+
+    Vector3f camForward_{0, 1, 0};
 
     Vector2f windDir_{1, 0};
     f32 windStrength_ = 0.0f;
     f32 windPhase_ = 0.0f;
+    GroundQuery groundQuery_;
 
     // The child actors a type 1/3/4 system has spawned, and the events not yet
     // drained. Handles rather than pool indices: these are not particles, and

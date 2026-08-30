@@ -15,7 +15,7 @@
 //
 // and every one of those three names describes a different field's job. What
 // the engine actually does with the record (`Render_ResolveMaterialTextureStages`
-// 0x71001DD980, `sub_71000F8590`, `sub_71001D49D0`):
+// 0x71001DD980, `MatTex_BuildUvMatrix4x4`, `sub_71001D49D0`):
 //
 //     0x00  EMaterialTextureType   the LUT key. The resolve pass builds
 //                                  `dest[entry->type] = entry` over a 62-slot
@@ -26,7 +26,7 @@
 //                                  the literals 1, 12 and 14 for the water
 //                                  surface — the same types a wing material
 //                                  carries.
-//     0x0C  UV TRANSFORM MODE      `sub_71000F8590` switches on it, 0..6.
+//     0x0C  UV TRANSFORM MODE      `MatTex_BuildUvMatrix4x4` switches on it, 0..6.
 //     0x10  the 144-byte UV block  mode 1 reads a verbatim 4x4 from here;
 //                                  mode 2 reads uScale at +0 and vScale at +20.
 //     0x98  UV FLAGS               a bitfield; bit 3 rotates about (0.5, 0.5).
@@ -135,7 +135,7 @@ inline i32 D3UvFlagsOf(const d3n::MaterialTextureEntry& e) {
     return e.dwTextureType;
 }
 
-/// @brief `sub_71000F8590`'s switch, verbatim.
+/// @brief `MatTex_BuildUvMatrix4x4`'s switch, verbatim.
 ///
 /// Corpus population: 0 x 9,052, 1 x 32,139, 2 x 159,000, 3 x 35, 5 x 14 —
 /// which is the switch's own case list and nothing outside it, so the field is
@@ -149,40 +149,66 @@ enum class D3UvMode : i32 {
     ScaleRotateScroll = 2,
     /// An `Anim2D` frame table picks the sub-rect. Not reproduced.
     Anim2D = 3,
-    /// The camera / screen-space projection. Not reproduced.
+    /// An ENVIRONMENT-MAP projection, recovered by G-D3P-16: the render
+    /// system's 4x4 at +1672 with elements 12..14 zeroed, inverted, then its
+    /// first three columns negated. Not reproduced — the shading path has no
+    /// view matrix to hand — but no longer unknown.
     Screen = 4,
     /// A bone transform drives the coordinates. Not reproduced.
     Bone = 5,
     BoneAlt = 6,
 };
 
-/// @brief Bit 3 of the UV flags word: rotate about (0.5, 0.5) rather than
-///        about the origin.
+/// @brief Bit 3 of the UV flags word: pivot the rotation on the scroll offset
+///        re-centred on 0.5, rather than rotating about the origin.
 ///
-/// The one bit `sub_71000F8590` tests (`*(_BYTE *)(a2 + 140) & 8`). Set on 26
+/// Measured form (G-D3P-16): `t = (scroll - 0.5) . M + 0.5`. The pivot is the
+/// SCROLL, not a fixed (0.5, 0.5) — a distinction only a non-zero scroll can
+/// see, and ten of the gate's cases do.
+///
+/// The one bit `MatTex_BuildUvMatrix4x4` tests (`*(_BYTE *)(a2 + 140) & 8`). Set on 26
 /// entries in the corpus.
 inline constexpr i32 kD3UvFlagRotateAboutCentre = 0x8;
 
-/// @brief Bits 0 and 1 of the same word: the U and V ADDRESS MODES, set = wrap.
+/// @brief Bits 0 and 1 of the same word: RANDOMISE the initial U / V phase.
 ///
-/// The same encoding `assets::WrapMode` uses, bit for bit, which is why this is
-/// a mask and not a conversion. The evidence is the field's own distribution
-/// against the transform mode beside it, over 1.48M corpus entries:
+/// NOT an address mode, which is what they were read as until the particle
+/// pass measured them. `MatTex_InitUvState` — the per-instance initialiser for one
+/// texture stage's UV animation state — tests exactly these two bits and, for
+/// uv mode 2 alone, seeds the scroll phase from `Rand_MWC_Next` instead of from
+/// `flAmount`:
 ///
-///     bits 0 (clamp, clamp)  325,227   of which 308,355 are uv mode 0 or 1
-///     bits 3 (wrap,  wrap) 1,139,731   of which 1,139,130 are uv mode 2
-///     bits 1 (wrap,  clamp)   14,930   of which  14,846 are uv mode 2, 74%
-///                                       of them scrolling in U alone
-///     bits 2 (clamp, wrap)       384
+///     bit 0 set -> u0 = rand01()   clear -> u0 = tAnimU.flAmount
+///     bit 1 set -> v0 = rand01()   clear -> v0 = tAnimV.flAmount
 ///
-/// A layer with a fixed matrix or no transform at all clamps; a layer that
-/// scrolls wraps, and one that scrolls only in U wraps only in U. That is an
-/// address mode and nothing else is.
+/// which is why the corpus distribution looked so much like an address mode:
+/// 308,355 of the 325,227 zero entries are uv mode 0 or 1, where there is no
+/// phase to randomise, and 74% of the 14,930 single-bit entries scroll in U
+/// alone. Two readings, one histogram — the decompile is what separates them.
 ///
-/// Forcing wrap on everything is what tiled Imperius's wing SHAPE mask — uv
-/// mode 1, a verbatim 4x4 that walks its coordinates outside the tile — so the
-/// tendrils repeated instead of ending where the mask says they end.
-inline constexpr i32 kD3UvFlagWrapMask = 0x3;
+/// The real address mode is a property of the PASS, not of the entry: see
+/// @ref D3StageWrapBits.
+inline constexpr i32 kD3UvFlagRandomPhaseU = 0x1;
+inline constexpr i32 kD3UvFlagRandomPhaseV = 0x2;
+
+/// @brief One stage's U/V address modes as our own wrap bits (bit 0 = repeat U,
+///        bit 1 = repeat V).
+///
+/// `TextureStageParams` +0x04 and +0x08, whose values are 1 and 2 and which are
+/// **1 = clamp, 2 = wrap**. Three shipped shaders name their own answer, which
+/// is as close to a labelled sample as this format offers:
+///
+///     Particle_transparent_am4x_errosion        (1,2,2) (19,2,2) (12,2,2)
+///     Particle_transparent_am4x_clamp_errosion  (1,2,2) (19,2,1) (12,2,1)
+///     softparticle_additive_am4x                (39,1,1) (1,1,1) (19,2,2)
+///     softparticle_additive_am4x_wrap           (39,1,1) (1,2,2) (19,2,2)
+///     trail_additive_diffAdd_am4x_clamp         (1,2,2)  (19,1,1)
+///
+/// and the families agree: `PostFX.fx` is 55/55 clamp and `TextureFilter.fx`
+/// 58/59, while stage type 39 — the scene-colour copy — is clamp on 56 of 61.
+inline u32 D3StageWrapBits(const d3n::TextureStageParams& stage) {
+    return ((stage.dwAddressU == 2) ? 0x1u : 0u) | ((stage.dwAddressV == 2) ? 0x2u : 0u);
+}
 
 /// @brief Does an entry of this type name a texture THIS material owns?
 ///
@@ -344,57 +370,100 @@ inline u64 D3TypeBit(i32 type) {
 /// with c[0] = {4, 2}. The `cm2x` and `am4x` in its name are the same two
 /// numbers.
 ///
-/// Two fields are read out of the code, both measured against the programs
-/// shipped beside the assets (see the corpus gate in d3_surface_table_test):
+/// **Does this stage's texture feed this channel?** 0 says no, and the
+/// non-texture argument forms (2, 41, 43, 71, 80, 82 — a constant or the
+/// interpolated colour rather than a sampler) say no. Everything else says yes.
+/// 98.4% of the codes that say no have no `TEX` for that channel and ~93% of
+/// the ones that say yes have one.
 ///
-///  * **Does this stage's texture feed this channel?** 0 says no, and the
-///    non-texture argument forms (2, 41, 43, 71, 80, 82 — a constant or the
-///    interpolated colour rather than a sampler) say no. Everything else says
-///    yes. 98.4% of the codes that say no have no `TEX` for that channel and
-///    ~93% of the ones that say yes have one.
-///  * **The output gain.** A units digit of 4 is a x2 and of 5 a x4 — the
-///    fixed-function MODULATE2X and MODULATE4X — and the stage gains multiply.
-///    Measured 97.0% (colour) and 91.8% (alpha) against the constant the
-///    program's final instruction multiplies in.
+/// The tens digit is the OP and the units digit carries the second argument and
+/// the output gain. Both are read now, against the shipped programs: the uber
+/// reconstructions under `d3_re_shaders/pixel/{Legacy,Billboard}.fx__ps_legacy`
+/// are 670 permutations of exactly this block, and over their aligned stages the
+/// correspondence below is a bijection --
 ///
-/// The tens digit selects the first argument's source and the rest of the units
-/// digit the second's; neither is decoded here, because the shading model does
-/// not have the fixed-function chain to put them in. What it has is a texture
-/// per slot, and these two answers are what tell it what to do with one.
+///     tens 0   code 3 the texture alone; code 1 nothing but the vertex colour
+///     tens 1   ADD, and it always saturates
+///     tens 2   MODULATE by the texture, with the VERTEX COLOUR as argument 2
+///     tens 4   no texture: 40 multiplies by the vertex colour, 42 squares
+///     tens 8   no texture: the vertex colour is argument 1
+///
+///     units 0..3 x1   4 x2   5 x4   6 x2 and saturate   7 x4 and saturate   8 saturate
+///
+/// -- the units column holding under tens 2 and nowhere else.
+/// `actor_additive_cm_uv2_appfx_unlit` is what pins that: its colour code is 75
+/// and the shipped program modulates at x1, not x4.
+/// The three chain operations a stage can perform on a channel.
+inline constexpr u8 kD3StageSkip = 0;
+inline constexpr u8 kD3StageModulate = 1;
+inline constexpr u8 kD3StageAdd = 2;
+
+/// @brief `$texDepth` — the scene depth `SoftBillboard.fx` binds for its soft
+///        fade. It is a render-target read, not one of the material's textures,
+///        and the combine block does not count it as a stage.
+inline constexpr i32 kD3TextureTypeSceneDepth = 39;
+
 struct D3StageArg {
     bool usesTexture = false; ///< Is this stage's texture sampled for the channel?
     /// @brief ... and MULTIPLIED into the channel, rather than replacing it or
     ///        being added to it?
     ///
-    /// The tens digit is the op class and 2 is the modulate: `20 20 0 24` is
-    /// Imperius's wing colour chain and every term in it is a multiply, while
-    /// Cain's smoke plume — the other Legacy program that was readable, and the
-    /// reason the glow map had no rule — opens `3 3 3 10`, three replaces and
-    /// an add, and closes `saturate(diffuse + glow)`. The two programs do not
+    /// `20 20 0 24` is Imperius's wing colour chain and every term in it is a
+    /// multiply, while Cain's smoke plume opens `3 3 3 10` — three replaces and
+    /// an add — and closes `saturate(diffuse + glow)`. The two programs do not
     /// disagree at all: their passes said different things.
-    ///
-    /// Only the modulate is acted on. A replace or an add is a chain operation
-    /// this shading model has no chain to put it in, so those slots keep the
-    /// default their type implies and the shader's own glow term handles the
-    /// add.
     bool modulates = false;
-    f32 gain = 1.0f; ///< 1, 2 or 4 — MODULATE, MODULATE2X, MODULATE4X.
+    /// @brief tens 1 — the stage ADDS its texture into the channel. 45 of the
+    ///        corpus's 17,503 particle systems, and always saturating.
+    bool adds = false;
+    f32 gain = 1.0f;     ///< 1, 2 or 4 — MODULATE, MODULATE2X, MODULATE4X.
+    bool clamps = false; ///< Saturate the channel HERE, not once at the end.
 };
 
 inline D3StageArg D3ReadStageArg(u32 code) {
     D3StageArg a;
     const u32 tens = code / 10;
     const u32 units = code % 10;
-    // The forms whose first argument is not a sampler: a constant (tens 4 and
-    // the bare 2), the vertex colour (tens 8), or 71. Zero is the stage saying
-    // it does not touch this channel at all.
-    a.usesTexture = code != 0 && code != 2 && code != 71 && tens != 4 && tens != 8;
+    // The forms whose first argument is not a sampler: a constant (tens 4), the
+    // vertex colour (tens 8), or 71. Under tens 0 only code 3 samples -- 0 is
+    // the stage saying it does not touch this channel at all, 2 is a constant,
+    // and 1 leaves the channel alone (`x1_particle_crusader_fistofheavens_
+    // boltsparks` codes it and its program SKIPs stage 0's colour).
+    a.usesTexture = tens == 0 ? code == 3 : (code != 71 && tens != 4 && tens != 8);
     a.modulates = a.usesTexture && tens == 2;
-    a.gain = units == 4 ? 2.0f : units == 5 ? 4.0f : 1.0f;
+    a.adds = a.usesTexture && tens == 1;
+    if (tens == 2) {
+        a.gain = (units == 4 || units == 6) ? 2.0f : (units == 5 || units == 7) ? 4.0f : 1.0f;
+        a.clamps = units >= 6 && units <= 8;
+    } else {
+        a.clamps = a.adds;
+    }
     return a;
 }
 
-/// @brief The tag ids of the two combine groups. Six stages each.
+/// @brief Does this code take the VERTEX COLOUR as its second argument?
+///
+/// Only asked of a chain's FIRST active stage, which is the only place D3D9's
+/// fixed function reaches the diffuse: a leading `3` starts from the texture
+/// alone and the vertex colour never enters at all. 272 of the corpus's 15,841
+/// `ps_legacy` particle systems do that.
+inline bool D3StageTakesVertexColor(u32 code) {
+    return code / 10 == 2;
+}
+
+/// @brief Code 40 — a stage with no texture that multiplies the channel by the
+///        vertex colour, i.e. the colour entering LAST instead of first.
+///
+/// 411 particle systems, and `particle_transparent_blizzard` pairs it with a
+/// leading `20` so the colour enters twice.
+inline bool D3StageIsVertexColorOnly(u32 code) {
+    return code == 40;
+}
+
+/// @brief The tag ids of the two combine groups. Six stages each, consecutive,
+///        which is what lets a caller walk them as `base + i`. The shader-tag
+///        registry names them TAG_VS_PS0C_FUNC..TAG_VS_PS5C_FUNC ("Stage 1..6
+///        Color Function") and TAG_VS_PS0A_FUNC..TAG_VS_PS5A_FUNC.
 inline constexpr u32 kD3TagStageColor = 0xA0016u;
 inline constexpr u32 kD3TagStageAlpha = 0xA001Cu;
 inline constexpr u32 kD3StageArgCount = 6;
@@ -559,12 +628,17 @@ inline std::optional<D3Polytope> D3ReadPolytope(std::span<const u8> header,
 
 /// @brief One texture entry's UV transform, read out of the 144-byte block.
 ///
-/// `sub_71000F8590` is the whole of it: mode 1 copies a 4x4 verbatim from the
-/// block's +4 (entry 0x10); mode 2 builds `scale * rotate` with the scale at
-/// block +4 and +24 (entry 0x10 and 0x24) and takes rotation and translation
-/// from the per-draw animation state, optionally about (0.5, 0.5) when the
-/// flags word has bit 3. Modes 3..6 drive the coordinates from an `Anim2D`
-/// frame table, the camera or a bone and are not reproduced.
+/// `MatTex_BuildUvMatrix4x4` is the mesh half and `MatTex_BuildUvAffine2x3`
+/// @0x71000F8FF0 the particle half; G-D3P-16 runs the second and they agree
+/// except where noted. Mode 1 copies an authored transform verbatim from the
+/// block's +4 (entry 0x10), OFF-DIAGONALS INCLUDED; mode 2 builds
+/// `scale * rotate` with the scale at block +4 and +24 (entry 0x10 and 0x24) and
+/// takes rotation and translation from the per-draw animation state, pivoting
+/// the rotation about the scroll offset re-centred on 0.5 when the flags word
+/// has bit 3. Mode 3 is an `Anim2D` frame table (§19.4) and mode 4 is an
+/// ENVIRONMENT-MAP projection — the render system's view matrix with its
+/// translation row stripped, inverted, first three columns negated (G-D3P-16).
+/// Neither of those, nor the two bone modes, is reproduced here.
 struct D3UvXform {
     D3UvMode mode = D3UvMode::Identity;
     Vector2f scale = {1.0f, 1.0f};
@@ -573,11 +647,56 @@ struct D3UvXform {
     f32 rotate = 0.0f;
     f32 rotatePerSec = 0.0f;
     bool aboutCentre = false;
+    /// `tAnim3.flAmount`, tested as an integer by
+    /// `MatTex_TickUvStateEntry` @0x71000F8310: set, the scroll is CLAMPED into
+    /// [0,1] instead of wrapped, which turns a loop into a one-way reveal.
+    bool clampUv = false;
+    /// @brief UV mode 1's authored 2x3, in @ref D3UvAffine's own output order.
+    ///
+    /// `MatTex_BuildUvAffine2x3` @0x71000F8FF0 case 1 copies six floats from the
+    /// entry verbatim — `vUvRow0.xy`, `vUvRow1.xy` and `vUvRow3.xy` — so mode 1
+    /// is a full authored transform including its off-diagonals, not a scale
+    /// pair. Left at identity when the block is all zero, which is what an entry
+    /// with no authored matrix carries and which would otherwise collapse every
+    /// texture coordinate to the origin. Same guard as the mesh path's.
+    f32 authored[6] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
     /// @brief Does anything here move? Both the surface table and the adapter
     ///        ask, and they must agree on the answer or the palette id one
     ///        assigns names an entry the other never publishes.
     bool animated = false;
 };
+
+/// The engine's clamp-then-wrap, `MatTex_InitUvState` @0x71000F7C60: pin to
+/// 8x2pi first, then fold into [0, 2pi] a turn at a time.
+inline f32 D3WrapAngle(f32 a) {
+    constexpr f32 kTwoPi = 6.28318530717958647692f;
+    constexpr f32 kClamp = kTwoPi * 8.0f;
+    a = (a < -kClamp) ? -kClamp : ((a > kClamp) ? kClamp : a);
+    while (a < 0.0f)
+        a += kTwoPi;
+    while (a > kTwoPi)
+        a -= kTwoPi;
+    return a;
+}
+
+/// The engine's per-frame UV fold, `MatTex_TickUvStateEntry` @0x71000F8310.
+///
+/// There it is a loop of `+1` / `-1` run on a value that never leaves [0,1]
+/// before the step, so it terminates in an iteration or two. Evaluated in closed
+/// form the argument can be arbitrarily large, so this folds with `fmod` — the
+/// same number without the loop, with one wrinkle worth keeping: the engine's
+/// boundary test is a STRICT `> 1.0`, so a whole number folds to 1.0 where `fmod`
+/// would say 0.
+inline f32 D3FoldUv(f32 v) {
+    if (v >= 0.0f && v <= 1.0f)
+        return v;
+    f32 r = std::fmod(v, 1.0f);
+    if (r < 0.0f)
+        r += 1.0f;
+    if (r == 0.0f)
+        return v > 0.0f ? 1.0f : 0.0f;
+    return r;
+}
 
 /// @brief Read @p e's UV transform. The single reader; nothing else touches
 ///        `vUvRow*` or the anim triples.
@@ -592,16 +711,52 @@ inline D3UvXform D3ReadUvXform(const d3n::MaterialTextureEntry& e) {
         if (e.vUvRow0.x > 0.0f && e.vUvRow1.y > 0.0f) {
             x.scale = {e.vUvRow0.x, e.vUvRow1.y};
         }
+    } else if (x.mode == D3UvMode::Matrix) {
+        const Vector4f rows[4] = {e.vUvRow0, e.vUvRow1, e.vUvRow2, e.vUvRow3};
+        bool authored = false;
+        for (const Vector4f& v : rows) {
+            if (v.x != 0.0f || v.y != 0.0f || v.z != 0.0f || v.w != 0.0f)
+                authored = true;
+        }
+        if (authored) {
+            x.authored[0] = e.vUvRow0.x;
+            x.authored[1] = e.vUvRow1.x;
+            x.authored[2] = e.vUvRow3.x;
+            x.authored[3] = e.vUvRow0.y;
+            x.authored[4] = e.vUvRow1.y;
+            x.authored[5] = e.vUvRow3.y;
+        }
     }
-    // `flRate1` is left unread: 1,652 of ~15,700 authored channels set it and
-    // nothing recovered says what it adds, so it is better absent than
-    // invented. `flRate0` is the scroll and `flAmount` a constant phase — the
-    // 736 channels that set only flAmount are a static UV shift.
+    // `flRate0` is the scroll and `flAmount` a constant phase — the 736 channels
+    // that set only flAmount are a static UV shift.
+    //
+    // `flRate1` is a RATE JITTER, recovered by running `MatTex_InitUvState`
+    // @0x71000F7C60: the engine draws once per stage instance and stores
+    // `flRate0 + flRate1 * U` — and it takes that draw only when flRate1 is
+    // non-zero, which is what keeps the stream aligned. Left unread here for the
+    // same reason as the phase randomiser below: reproducing it needs a
+    // per-instance draw whose only visible effect is to desynchronise copies of
+    // the same effect, and it would put a random number in front of every
+    // existing golden. Measured, not invented, and no longer unexplained.
+    //
+    // Bits 0 and 1 of the flags word are the U and V phase randomisers, for uv
+    // mode 2 alone — G-D3P-09 settled the reading section 19.3 could not. Also
+    // not reproduced, and for the same reason.
     x.offset = {e.tAnimU.flAmount, e.tAnimV.flAmount};
     x.scrollPerSec = {e.tAnimU.flRate0 * kD3TicksPerSecond,
                       e.tAnimV.flRate0 * kD3TicksPerSecond};
-    x.rotate = e.tAnimRotate.flAmount;
+    // The engine clamps the authored rotation to 8x2pi and wraps it into
+    // [0, 2pi] before it ever reaches the matrix, so a negative or multi-turn
+    // amount is not the angle it looks like.
+    x.rotate = D3WrapAngle(e.tAnimRotate.flAmount);
     x.rotatePerSec = e.tAnimRotate.flRate0 * kD3TicksPerSecond;
+    // Tested as an INTEGER by the engine, so `-0.0f` is set. Reading it as a
+    // float would call the same authored value clear.
+    {
+        u32 bits = 0;
+        std::memcpy(&bits, &e.tAnim3.flAmount, sizeof(bits));
+        x.clampUv = bits != 0;
+    }
     // Mode 2 alone. It is the only case that reads the per-draw animation
     // state at all — mode 1 copies a fixed matrix and the rest are driven by an
     // Anim2D table, the camera or a bone — so rates on any other entry are dead
@@ -614,7 +769,7 @@ inline D3UvXform D3ReadUvXform(const d3n::MaterialTextureEntry& e) {
 
 /// @brief The six affine coefficients of @p x at @p seconds.
 ///
-/// `sub_71000F8590` case 2, verbatim: scale then rotate, translation last, and
+/// `MatTex_BuildUvMatrix4x4` case 2, verbatim: scale then rotate, translation last, and
 /// with the flags' bit 3 the translation is itself pushed through the rotation
 /// and re-centred on (0.5, 0.5) so the spin happens about the middle of the
 /// tile rather than about its corner.
@@ -622,6 +777,14 @@ inline D3UvXform D3ReadUvXform(const d3n::MaterialTextureEntry& e) {
 ///     u' = a[0]*u + a[1]*v + a[2]
 ///     v' = a[3]*u + a[4]*v + a[5]
 inline void D3UvAffine(const D3UvXform& x, f32 seconds, f32 (&a)[6]) {
+    // Mode 1 is an authored transform, not a scale pair, and nothing about it is
+    // animated. G-D3P-16; without this a mode-1 particle layer got the identity
+    // plus whatever tAnimU/tAnimV happened to carry.
+    if (x.mode == D3UvMode::Matrix) {
+        for (int i = 0; i < 6; ++i)
+            a[i] = x.authored[i];
+        return;
+    }
     const f32 angle = x.rotate + x.rotatePerSec * seconds;
     const f32 c = std::cos(angle);
     const f32 sn = std::sin(angle);
@@ -629,8 +792,20 @@ inline void D3UvAffine(const D3UvXform& x, f32 seconds, f32 (&a)[6]) {
     const f32 m01 = sn * x.scale.x;
     const f32 m10 = -sn * x.scale.y;
     const f32 m11 = c * x.scale.y;
+    // The engine keeps the scroll as state and folds it EVERY frame, so the
+    // translation it hands the matrix is always inside [0,1] (or clamped to it).
+    // Evaluating the same thing in closed form and never folding lets the value
+    // grow until the float stops resolving the rate — a scroll that visibly
+    // stalls in a long-running session.
     f32 tu = x.offset.x + x.scrollPerSec.x * seconds;
     f32 tv = x.offset.y + x.scrollPerSec.y * seconds;
+    if (x.clampUv) {
+        tu = std::clamp(tu, 0.0f, 1.0f);
+        tv = std::clamp(tv, 0.0f, 1.0f);
+    } else {
+        tu = D3FoldUv(tu);
+        tv = D3FoldUv(tv);
+    }
     if (x.aboutCentre) {
         const f32 ou = tu - 0.5f;
         const f32 ov = tv - 0.5f;

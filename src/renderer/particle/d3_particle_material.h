@@ -37,11 +37,13 @@
 // sheet on every particle.
 // ============================================================================
 
+#include "io/d3/d3_sno_cache.h"
 #include "io/d3/d3_types.h"
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
 #include <array>
+#include <memory>
 #include <string>
 
 namespace whiteout::flakes::renderer::particle::d3 {
@@ -62,18 +64,51 @@ struct MaterialLayer {
     u32 wrapFlags = 0x3;
     /// The entry's own transform, evaluated per frame against the system clock.
     ::whiteout::flakes::io::D3UvXform uv;
-    /// @brief Does the pass's combine block sample this stage for the colour /
-    ///        the alpha?
+
+    /// @brief The sprite sheet this layer flips through, when its entry is uv
+    ///        mode 3 and its texture carries a frame table.
     ///
-    /// Both default true, because a pass that names no stage is saying "the
-    /// program decides" and every particle program that binds a layer samples
-    /// it. Where the block does say, it usually says something: type 19 is
-    /// alpha-only on 55 of the corpus's 243 billboard passes and both ways on
-    /// 95, which is the difference between an alpha mask and a second colour
-    /// layer. See D3ResolveParticleMaterial for why the test is "samples"
-    /// rather than "modulates".
-    bool samplesColor = true;
-    bool samplesAlpha = true;
+    /// Null on every other layer, which samples the whole sheet — and that is
+    /// also what 6,934 of the corpus's 8,390 mode-3 entries get, because their
+    /// entry names no `.an2` and the engine nulls the state for those.
+    std::shared_ptr<const ::whiteout::flakes::io::D3TextureAtlas> atlas;
+    /// @brief The flip-book's playback parameters, read out of `tAnim4` and
+    ///        `tAnim5` — the two anim triples the UV transform never uses.
+    ///
+    /// `MatTex_InitUvState` hands `entry+120` (runtime) straight to
+    /// `Anim2D_BindAndInit` as its params block, which reads +4, +8, +12 and
+    /// +16 from it and nothing else. In file offsets off the entry that is
+    /// 132..148, i.e. `tAnim4.flRate0` (the `.an2` handle, always id 2 and only
+    /// ever consulted for the loop mode), `tAnim4.flRate1`, `tAnim5.flAmount`,
+    /// `tAnim5.flRate0` and `tAnim5.flRate1` — the last two REINTERPRETED AS
+    /// INTEGERS, which is what makes them read as 0, 3, 7, 15, 23, 63 rather
+    /// than as denormals.
+    f32 atlasRate = 0.0f;      ///< Frames per second; 0 = a still frame.
+    f32 atlasRateJitter = 0.0f; ///< Added, times a uniform draw, per particle.
+    i32 atlasFrameBase = 0;
+    i32 atlasFrameRange = 0; ///< The draw is `base + rand % (range + 1)`.
+    bool atlasLoops = true;  ///< `.an2`+20: 2 loops, 0 plays once and stops.
+    /// @brief This layer's step in the pass's combine chain, per channel.
+    ///
+    /// `kD3StageSkip` leaves the channel alone, `kD3StageModulate` multiplies
+    /// the texture in, `kD3StageAdd` adds it. Both default to Modulate, because
+    /// a pass that names no stage is saying "the program decides" and every
+    /// particle program that binds a layer samples it — but a pass that DOES
+    /// name its stages is the authority, and a layer of a type the pass never
+    /// declares is skipped outright: 3,242 of the corpus's 17,503 systems carry
+    /// a texture their own pass has no stage for, and the shipped program never
+    /// samples it. Type 19 is the common case, alpha-only on 55 of the corpus's
+    /// 243 billboard passes and both ways on 95 — an alpha mask against a second
+    /// colour layer.
+    u8 colorOp = ::whiteout::flakes::io::kD3StageModulate;
+    u8 alphaOp = ::whiteout::flakes::io::kD3StageModulate;
+    /// The stage's own MODULATE2X / MODULATE4X gain and its clamp. Per stage
+    /// rather than accumulated, because a clamp in the middle of a chain is
+    /// what separates `am2x_am2x` from `am4x` — 1,295 systems carry one.
+    f32 colorGain = 1.0f;
+    f32 alphaGain = 1.0f;
+    bool colorClamp = false;
+    bool alphaClamp = false;
 };
 
 /// The whole of a Diablo III particle's material.
@@ -96,23 +131,67 @@ struct MaterialDesc {
     bool passResolved = false;
 
     bool blendEnable = true;
-    u32 blendSrc = 5; ///< D3DBLEND_SRCALPHA
-    u32 blendDst = 2; ///< D3DBLEND_ONE
+    u32 blendSrc = 5; ///< The ENGINE's blend enum, not D3DBLEND. 5 = SrcAlpha.
+    u32 blendDst = 2; ///< 2 = One.
     bool depthWrite = false;
-    /// `RenderPass+60 / 255`. Zero means no alpha test.
+    /// The pass's depth compare, D3DCMPFUNC. 8 = Always, which the engine reads
+    /// as "no depth test at all" — and every premultiplied pass says 8.
+    u32 depthFunc = 4;
+    /// @brief The `_pma` output form: 0 none, 1 premultiply and invert the
+    ///        alpha, 2 premultiply and write 1, 3 premultiply only.
+    ///
+    /// 3,175 of the corpus's 21,593 systems resolve to a pass that needs one.
+    /// See D3PassState::pmaMode.
+    u32 pmaMode = 0;
+    /// The pass's two colour-write flags. 171 of the corpus's 243 billboard
+    /// passes mask the alpha off. See D3PassState::colorWrite.
+    bool colorWrite = true;
+    bool alphaWrite = true;
+    /// D3DRS_DEPTHBIAS, applied in the vertex shader. Twelve billboard passes
+    /// carry one, all named `*_biased` / `*_zbias` / `*_biasPos`.
+    /// See D3PassState::depthBias.
+    f32 depthBias = 0.0f;
+    /// `RenderPass+60 / 255`, and zero only when the pass switched the test off.
     f32 alphaTest = 0.0f;
+    /// The comparison the reference goes through, D3DCMPFUNC, or 0 for no test.
+    /// See D3Surface::alphaTestFunc for why the reference alone is not enough.
+    u32 alphaFunc = 0;
 
-    /// The stage block's accumulated MODULATE2X / MODULATE4X gains.
-    f32 colorGain = 1.0f;
-    f32 alphaGain = 1.0f;
+    /// @brief Where the vertex colour enters each chain — see
+    ///        D3PassState::colorVcolFirst.
+    bool colorVcolFirst = true;
+    bool colorVcolLast = false;
+    bool alphaVcolFirst = true;
+    bool alphaVcolLast = false;
 
     /// `szEffectFile` — `Billboard.fx` for every shipped particle. Carried so
     /// the corpus gate can say so rather than assume it.
     std::string effectFile;
 
-    /// The first layer, which is the diffuse for 18,462 of 18,473 entries that
-    /// carry one. -1 when the material binds nothing.
+    /// @brief Which layer drives the quad's UV rectangle, or -1.
+    ///
+    /// One, not a set. The engine gives every stage its own flip-book state and
+    /// its own texcoord — four per vertex — while this build interpolates one
+    /// UV and transforms it per layer in the pixel shader, so the per-PARTICLE
+    /// half of the atlas fits on exactly one layer. The corpus makes that a
+    /// cheap trade: 1,279 of the 1,365 files with an atlas have exactly one,
+    /// 81 have two and 5 have three. The extras keep the whole sheet, which is
+    /// what they had before this existed.
+    i32 atlasLayer = -1;
+
+    /// @brief The diffuse, by TYPE rather than by position.
+    ///
+    /// `Particle_BindDrawTextures` @0x71000B7620 asks the material for types
+    /// 1, 19, 12 and 14 in that order and parks each in its own slot, so the
+    /// diffuse is whichever entry says 1 and never "the first one" (G-D3P-23).
+    /// The two agree on 18,412 of the corpus's 18,473 textured materials and
+    /// disagree on 61, which used to bind an alpha mask as the diffuse.
+    /// Falling back to the first layer keeps a material that names no type 1
+    /// drawing something rather than white.
     i32 DiffuseTextureId() const {
+        for (u32 i = 0; i < layerCount; ++i)
+            if (layers[i].rawType == 1)
+                return layers[i].textureId;
         return layerCount > 0 ? layers[0].textureId : -1;
     }
 };

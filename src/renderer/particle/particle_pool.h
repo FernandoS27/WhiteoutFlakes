@@ -29,6 +29,16 @@ public:
         return alive_[i];
     }
     void RemoveAliveAt(usize i);
+    /// @brief Remove the live entry at @p i, keeping the others in order.
+    ///
+    /// `ParticleSystem_FreeParticle` @0x71000AF790 memmoves the pointers above
+    /// the hole down and rewrites each survivor's index (G-D3P-20), so a D3
+    /// system's emission order survives every death and the draw order that
+    /// follows from it is stable. @ref RemoveAliveAt is the swap-with-last the
+    /// other profiles use; whether their clients compact is a separate question
+    /// nothing here has measured, so this is a second entry point rather than a
+    /// change to theirs.
+    void RemoveAliveAtOrdered(usize i);
 
     bool DeadEmpty() const {
         return dead_.empty();

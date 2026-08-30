@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 namespace whiteout::flakes::renderer::particle::d3 {
 
@@ -113,10 +114,16 @@ void Path::ScalarRange(f32& lo, f32& hi) const {
         lo = hi = 0.0f;
         return;
     }
-    lo = hi = nodes[0].start.x;
-    for (const PathNode& n : nodes) {
-        lo = std::fmin(lo, std::fmin(n.start.x, n.end.x));
-        hi = std::fmax(hi, std::fmax(n.start.x, n.end.x));
+    // The minimum of the START lane and the maximum of the END lane, each over
+    // its own lane only — `InterpolationPath_GetScalarRange` @0x7100376030 never
+    // compares a start against an end. A path whose end lane dips below its
+    // start lane therefore reports a range that contains neither extreme, and
+    // that is the engine's answer.
+    lo = nodes[0].start.x;
+    hi = nodes[0].end.x;
+    for (usize k = 1; k < nodes.size(); ++k) {
+        lo = std::fmin(lo, nodes[k].start.x);
+        hi = std::fmax(hi, nodes[k].end.x);
     }
 }
 
@@ -132,27 +139,27 @@ bool Path::IsInert(f32 value) const {
     return true;
 }
 
-void Path::ScalarEndpoints(f32& lo, f32& span) const {
-    f32 a = 0.0f, b = 0.0f;
-    ScalarRange(a, b);
-    lo = a;
-    span = b - a;
-}
 
 namespace {
 
 // The normalised sample time, reproducing `InterpolationPath_Sample`'s three
 // time modes exactly — including the `period == 1/60` special case, which
 // falls through to t = 0 rather than dividing.
+//
+// Both thresholds are the constant pool's, not a decompile's: the period test is
+// against `1/60` (0.016666675) and NOT the `0.016667` pseudocode prints, which is
+// a different float and never compares equal; and the "full range" test is
+// `loopEnd > 0.999999f` @0x7100E3BFF8, not `> 1.0f`, which is the difference
+// between taking that branch and not for every path that ends at exactly 1.
 f32 NormalisedTime(const Path& p, const EvalCtx& ctx) {
     const f32 period = ctx.period;
-    if (period == 0.0f || period == 0.016667f)
+    if (period == 0.0f || period == 1.0f / 60.0f)
         return 0.0f;
     if (ctx.timeMode == 0)
         return ctx.time / period; // no wrap at all
     const f32 lo = p.loopStart;
     const f32 hi = p.loopEnd;
-    if (lo < 0.000001f && hi > 1.0f)
+    if (lo < 0.000001f && hi > 0.999999f)
         return ctx.time / period - std::trunc(ctx.time / period);
     const f32 hiT = period * hi;
     f32 time = ctx.time;
@@ -248,6 +255,54 @@ Vector4f SampleAt(const Path& p, const Vector4f& r, const EvalCtx& ctx) {
     return v;
 }
 
+void Path::ScalarEndpoints(const EvalCtx& ctx, f32& lo, f32& hi) const {
+    if (nodes.empty()) {
+        lo = hi = 0.0f;
+        return;
+    }
+    // The same early-out Sample has, and for the same reason: one node and no
+    // driver needs none of the machinery.
+    if (nodes.size() == 1 && driver.mode == 0) {
+        lo = nodes[0].start.x;
+        hi = nodes[0].end.x;
+        return;
+    }
+
+    auto lanesAt = [this](f32 t, f32& l, f32& h) {
+        const usize n = nodes.size();
+        usize k = 0;
+        while (k < n && nodes[k].time <= t)
+            ++k;
+        if (k >= n || k == 0) {
+            const PathNode& node = nodes[(k >= n) ? (n - 1) : 0];
+            l = node.start.x;
+            h = node.end.x;
+            return;
+        }
+        const PathNode& a = nodes[k - 1];
+        const PathNode& b = nodes[k];
+        const f32 dt = b.time - a.time;
+        const f32 u = (dt != 0.0f) ? ((t - a.time) / dt) : 0.0f;
+        l = a.start.x + u * (b.start.x - a.start.x);
+        h = a.end.x + u * (b.end.x - a.end.x);
+    };
+
+    lanesAt(NormalisedTime(*this, ctx), lo, hi);
+    if (ctx.timeMode == 2 && ctx.blend > 0.000001f) {
+        f32 lo2 = 0.0f, hi2 = 0.0f;
+        lanesAt(loopEnd + ctx.blendT * (1.0f - loopEnd), lo2, hi2);
+        lo = lo + ctx.blend * (lo2 - lo);
+        hi = hi + (hi2 - hi) * ctx.blend;
+    }
+
+    // Applied to BOTH outputs, through two separate calls on the same scalar.
+    f32 mul = 1.0f;
+    if (EvalDriver(driver, ctx.driver, mul)) {
+        lo *= mul;
+        hi *= mul;
+    }
+}
+
 Vector4f Path::Eval(u32 particleSeed, i32 channelId, const EvalCtx& ctx) const {
     if (nodes.empty())
         return {0, 0, 0, 0};
@@ -269,6 +324,187 @@ Vector4f Path::Eval(u32 particleSeed, i32 channelId, const EvalCtx& ctx) const {
         }
     }
     return SampleAt(*this, r, ctx);
+}
+
+// ---------------------------------------------------------------------------
+// The colour channel. `InterpolationPath_EvalColor` @0x71003779A0 and its
+// sampler @0x7100377550 / @0x71003777E0 never leave the byte domain: the packed
+// dword's four bytes are lerped in 8.8 fixed point, and the SAME single random
+// drives all four. See the header for why that is not the generic path.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// The exact inverse of the adapter's `UnpackColor`, which is `byte / 255`.
+u8 ByteOf(f32 v) {
+    return static_cast<u8>(std::lround(v * 255.0f));
+}
+
+/// `vcvts_n_s32_f32(v, 8)` — a saturating fixed-point convert, truncating
+/// toward zero. Every t in this file is already in [0,1], so the saturation
+/// arms are unreachable in practice and present for fidelity.
+i32 Fx8(f32 v) {
+    const f32 s = v * 256.0f;
+    if (!(s > -2147483648.0f))
+        return -2147483647 - 1;
+    if (s >= 2147483648.0f)
+        return 2147483647;
+    return static_cast<i32>(s);
+}
+
+/// `a + ((unsigned __int16)((b - a) * q) >> 8)`, truncated to a byte. The u16
+/// cast sits BEFORE the shift, so a negative delta wraps and un-wraps through
+/// the final byte truncation — which is why this is written out rather than
+/// expressed as a lerp.
+u8 LerpByte(u8 a, u8 b, i32 q) {
+    const i32 d = static_cast<i32>(b) - static_cast<i32>(a);
+    const u16 prod = static_cast<u16>(static_cast<u32>(d * q) & 0xFFFFu);
+    return static_cast<u8>(a + (prod >> 8));
+}
+
+struct Rgba8 {
+    u8 c[4];
+};
+
+Rgba8 NodeColor(const PathNode& n, i32 q) {
+    Rgba8 out{};
+    for (i32 i = 0; i < 4; ++i)
+        out.c[i] = LerpByte(ByteOf(n.start.data[i]), ByteOf(n.end.data[i]), q);
+    return out;
+}
+
+Rgba8 BlendColor(const Rgba8& a, const Rgba8& b, i32 q) {
+    Rgba8 out{};
+    for (i32 i = 0; i < 4; ++i)
+        out.c[i] = LerpByte(a.c[i], b.c[i], q);
+    return out;
+}
+
+/// `sub_71003777E0` — the node scan, with the same k == 0 guard SampleNodes
+/// uses and for the same reason.
+Rgba8 SampleColorNodes(const Path& p, f32 t, i32 q) {
+    const usize n = p.nodes.size();
+    if (n == 0)
+        return {};
+    usize k = 0;
+    while (k < n && p.nodes[k].time <= t)
+        ++k;
+    if (k >= n || k == 0)
+        return NodeColor(p.nodes[(k >= n) ? (n - 1) : 0], q);
+    const PathNode& a = p.nodes[k - 1];
+    const PathNode& b = p.nodes[k];
+    const f32 dt = b.time - a.time;
+    const f32 u = (dt != 0.0f) ? ((t - a.time) / dt) : 0.0f;
+    return BlendColor(NodeColor(a, q), NodeColor(b, q), Fx8(u));
+}
+
+/// @brief The engine's `x + 2^23` magic-number round.
+///
+/// Round-half-to-EVEN, not half-away-from-zero: adding 2^23 to a float forces
+/// the mantissa to integer under the current rounding mode, and the low 23 bits
+/// are then the rounded value. A decompile prints the constant as `8388600.0`,
+/// which is 2^23 shown to five significant digits, and reading it as a literal
+/// would put the whole trick eight off.
+///
+/// The engine has a second arm for |x| above 2^23 that rounds away from zero
+/// instead. Nothing in this format reaches it: an int channel is a population or
+/// a frame count, and a colour byte times a driver is at most a few hundred.
+i32 RoundHalfEven(f32 v) {
+    return static_cast<i32>(std::nearbyint(v));
+}
+
+/// `sub_7100378530` — the driver multiply, rounded into a byte.
+u8 ScaleByte(u8 v, f32 mul) {
+    return static_cast<u8>(RoundHalfEven(static_cast<f32>(v) * mul));
+}
+
+/// One int node's own start/end lerp: `start + round((end - start) * r)`, with
+/// the delta taken in INTEGERS and only the product in floats.
+i32 IntNodeValue(const PathNode& n, f32 r) {
+    const i32 a = static_cast<i32>(n.start.x);
+    const i32 b = static_cast<i32>(n.end.x);
+    const i32 d = b - a;
+    return d != 0 ? a + RoundHalfEven(static_cast<f32>(d) * r) : a;
+}
+
+/// `sub_7100376F70` — the int node scan. Every stage rounds back to an integer,
+/// so a count curve steps rather than ramps.
+i32 SampleIntNodes(const Path& p, f32 t, f32 r) {
+    const usize n = p.nodes.size();
+    if (n == 0)
+        return 0;
+    usize k = 0;
+    while (k < n && p.nodes[k].time <= t)
+        ++k;
+    if (k >= n || k == 0)
+        return IntNodeValue(p.nodes[(k >= n) ? (n - 1) : 0], r);
+    const PathNode& a = p.nodes[k - 1];
+    const PathNode& b = p.nodes[k];
+    const i32 va = IntNodeValue(a, r);
+    const i32 vb = IntNodeValue(b, r);
+    const f32 dt = b.time - a.time;
+    const f32 u = (dt != 0.0f) ? ((t - a.time) / dt) : 0.0f;
+    return va + RoundHalfEven(u * static_cast<f32>(vb - va));
+}
+
+} // namespace
+
+Vector4f Path::EvalColor(u32 particleSeed, i32 channelId, const EvalCtx& ctx) const {
+    if (nodes.empty())
+        return {0, 0, 0, 0};
+
+    // ONE draw, not one per component. The engine's constant test is the packed
+    // start dword against the packed end dword of the single node.
+    f32 r = 0.0f;
+    if (!IsConstant()) {
+        MwcRng rng = MwcRng::ForChannel(channelId, particleSeed);
+        r = ApplyDistribution(distribution, rng.NextUnit());
+    }
+    const i32 q = Fx8(r);
+
+    Rgba8 c{};
+    if (nodes.size() == 1 && driver.mode == 0) {
+        c = NodeColor(nodes[0], q);
+    } else {
+        const f32 t = NormalisedTime(*this, ctx);
+        c = SampleColorNodes(*this, t, q);
+        if (ctx.timeMode == 2 && ctx.blend > 0.000001f) {
+            const f32 t2 = loopEnd + ctx.blendT * (1.0f - loopEnd);
+            c = BlendColor(c, SampleColorNodes(*this, t2, q), Fx8(ctx.blend));
+        }
+        f32 mul = 1.0f;
+        if (EvalDriver(driver, ctx.driver, mul)) {
+            for (i32 i = 0; i < 4; ++i)
+                c.c[i] = ScaleByte(c.c[i], mul);
+        }
+    }
+    return {c.c[0] / 255.0f, c.c[1] / 255.0f, c.c[2] / 255.0f, c.c[3] / 255.0f};
+}
+
+i32 Path::EvalInt(u32 particleSeed, i32 channelId, const EvalCtx& ctx) const {
+    if (nodes.empty())
+        return 0;
+
+    f32 r = 0.0f;
+    if (!IsConstant()) {
+        MwcRng rng = MwcRng::ForChannel(channelId, particleSeed);
+        r = ApplyDistribution(distribution, rng.NextUnit());
+    }
+
+    if (nodes.size() == 1 && driver.mode == 0)
+        return IntNodeValue(nodes[0], r);
+
+    const f32 t = NormalisedTime(*this, ctx);
+    i32 v = SampleIntNodes(*this, t, r);
+    if (ctx.timeMode == 2 && ctx.blend > 0.000001f) {
+        const f32 t2 = loopEnd + ctx.blendT * (1.0f - loopEnd);
+        const i32 v2 = SampleIntNodes(*this, t2, r);
+        v += RoundHalfEven(ctx.blend * static_cast<f32>(v2 - v));
+    }
+    f32 mul = 1.0f;
+    if (EvalDriver(driver, ctx.driver, mul))
+        v = RoundHalfEven(mul * static_cast<f32>(v));
+    return v;
 }
 
 } // namespace whiteout::flakes::renderer::particle::d3

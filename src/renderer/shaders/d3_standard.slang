@@ -152,7 +152,12 @@ struct D3DrawData
     // The fixed-function chain's output gain: .x colour, .y alpha. `Legacy.fx`
     // stages carry MODULATE2X / MODULATE4X steps and they multiply; 1 where
     // nothing scales, which is every other family. See D3PassState::colorGain.
+    // .z is the premultiplied-alpha output mode (D3PassState::pmaMode) and .w
+    // the alpha-test comparison (D3Surface::alphaTestFunc).
     float4 params1;
+    // .x D3DRS_DEPTHBIAS, a constant added to the [0,1] window depth; .yzw
+    // spare. See D3PassState::depthBias.
+    float4 params2;
     // MaterialColors, verbatim.
     float4 matDiffuse;
     float4 matSpecular;
@@ -301,6 +306,9 @@ PSInput D3Vertex(float3 pos, float3 nrm, float3 tan, float tanSign, float4 uvs, 
     let worldPos = mul(float4(pos, 1.0), draw.world);
     let viewPos = mul(worldPos, pass.view);
     o.position = mul(viewPos, pass.projection);
+    // D3DRS_DEPTHBIAS adds a constant to the depth the rasteriser writes, which
+    // is z/w -- so biasing z by bias*w before the divide is the same number.
+    o.position.z += draw.params2.x * o.position.w;
     o.worldPos = float4(worldPos.xyz, viewPos.z);
     // Uniform scale only in the world transform, so no inverse transpose.
     o.normalWS = normalize(mul(float4(nrm, 0.0), draw.world).xyz);
@@ -376,6 +384,23 @@ float4 MaskWeight(uint channels, float4 s)
 }
 
 [shader("fragment")]
+// The fixed-function alpha test, which is a COMPARISON and a reference, not a
+// threshold: `sub_5717F0` sets ALPHAFUNC and ALPHAREF together and passes (0, 0)
+// when the enable is clear. 67 shipped passes compare LessEqual and 5 Less --
+// the same cut-out with the kept and discarded halves swapped.
+bool D3AlphaTestKeeps(float a, float reference, int func) {
+    switch (func) {
+    case 1: return false;              // Never
+    case 2: return a <  reference;     // Less
+    case 3: return a == reference;     // Equal
+    case 4: return a <= reference;     // LessEqual
+    case 5: return a >  reference;     // Greater
+    case 6: return a != reference;     // NotEqual
+    case 7: return a >= reference;     // GreaterEqual
+    default: return true;              // 0 no test, 8 Always
+    }
+}
+
 float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
 {
     // Unresolved slots fall back to the type's documented default, and the
@@ -433,8 +458,7 @@ float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
 
     // Against the whole alpha, masks included: the original's alpha test runs on
     // the value the pass is about to blend, not on the base map alone.
-    let alphaRef = draw.params0.x;
-    if (alphaRef > 0.0 && albedo.a < alphaRef)
+    if (!D3AlphaTestKeeps(albedo.a, draw.params0.x, (int)draw.params1.w))
         discard;
 
     // The tangent frame D3 ships explicitly (dwTangent / dwBinormal). The
@@ -636,5 +660,19 @@ float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
 
     // matDiffuse.a once, not twice: the element/fade alpha rides on it host-side
     // and it was being squared here.
-    return float4(color, albedo.a);
+    float4 outColor = float4(color, albedo.a);
+    // The `_pma` programs — eleven surface shaders, `actor_transparent_*_pma`
+    // through `x1_Crusader_Provoke_RingGeo` — premultiply and then write the
+    // alpha their pass's blend pair expects. Same rule as the particle path;
+    // see D3PassState::pmaMode.
+    let pma = (int)draw.params1.z;
+    if (pma != 0)
+    {
+        outColor.rgb *= outColor.a;
+        if (pma == 1)
+            outColor.a = 1.0 - outColor.a;
+        else if (pma == 2)
+            outColor.a = 1.0;
+    }
+    return outColor;
 }

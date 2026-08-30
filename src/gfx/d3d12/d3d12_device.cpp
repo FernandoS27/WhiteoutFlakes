@@ -1024,7 +1024,11 @@ PipelineHandle D3D12Device::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
     rt0.DestBlendAlpha = ToD3D12(desc.blend.dstAlpha);
     rt0.BlendOpAlpha = ToD3D12(desc.blend.opAlpha);
     rt0.LogicOp = D3D12_LOGIC_OP_NOOP;
-    rt0.RenderTargetWriteMask = desc.blend.colorWrite ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
+    rt0.RenderTargetWriteMask =
+        (desc.blend.colorWrite ? (D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN |
+                                  D3D12_COLOR_WRITE_ENABLE_BLUE)
+                               : 0) |
+        (desc.blend.alphaWrite ? D3D12_COLOR_WRITE_ENABLE_ALPHA : 0);
     pd.BlendState = bd;
     pd.SampleMask = UINT_MAX;
 

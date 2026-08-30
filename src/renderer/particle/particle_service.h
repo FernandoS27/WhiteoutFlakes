@@ -113,6 +113,14 @@ public:
     void AddEmitter(ModelId model, ParticleOutput output, i32 emitterId,
                     std::unique_ptr<Emitter2> emitter);
     void RemoveModel(ModelId model);
+    /// @brief Drop one emitter.
+    ///
+    /// Whatever it has already queued for the actor layer is harvested first,
+    /// so a child-model system that reported its children's deaths on the way
+    /// out does not take those reports with it. It does not itself END
+    /// anything: a caller that wants the children gone restarts the emitter
+    /// before calling this, which is what queues the deaths.
+    bool RemoveEmitter(ModelId model, ParticleOutput output, i32 emitterId);
     void Clear();
 
     Emitter2* GetEmitter(ModelId model, ParticleOutput output, i32 emitterId);

@@ -297,13 +297,82 @@ TEST_CASE("d3 attachment: the pool fires at the frame and reuses on the loop",
         pool.Tick(actor, f.sequence, t, 0, durMs, &particles);
     CHECK(particles.EmitterCount() == afterFirstLap);
 
-    // A different sequence uses its own entries and its own ids.
+    // A different sequence uses its own entries and its own ids -- and takes
+    // the old sequence's emitters with it on the way in. An attachment belongs
+    // to the animation that fired it; without that rule a viewer flipping
+    // through a monster's clips accumulates every effect it has ever played.
     const i32 other = (f.sequence + 1) % static_cast<i32>(seqs.size());
     if (other != f.sequence) {
+        pool.Tick(actor, other, 0, 0, durMs, &particles);
+        const i32 afterSwitch = particles.EmitterCount();
+        CHECK(afterSwitch <= afterFirstLap);
         for (i32 t = 0; t <= durMs; t += 16)
             pool.Tick(actor, other, t, 0, durMs, &particles);
-        CHECK(particles.EmitterCount() >= afterFirstLap);
+
+        // Coming back rebuilds the first sequence's emitters from scratch --
+        // released means unbuilt, not disabled, so the lazy path runs again.
+        pool.Tick(actor, f.sequence, 0, 0, durMs, &particles);
+        for (i32 t = 0; t <= durMs; t += 16)
+            pool.Tick(actor, f.sequence, t, 0, durMs, &particles);
+        CHECK(particles.EmitterCount() == afterFirstLap);
     }
+}
+
+TEST_CASE("d3 attachment: leaving a sequence releases the child actors it spawned",
+          "[d3][attachment][corpus]") {
+    CorpusProvider prov;
+    if (!prov.Index()) {
+        WARN("no D3 corpus; skipping");
+        return;
+    }
+    wio::D3SnoCache cache(&prov);
+    const Found f = FindActorWithAttachments(prov, cache, /*wantActorPayload=*/true, 900);
+    if (!f.adapter) {
+        WARN("no actor with an Actor-payload attachment in the first 900; skipping");
+        return;
+    }
+
+    const auto seqs = f.adapter->GetSequences();
+    const i32 durMs = std::max(1, seqs[static_cast<std::size_t>(f.sequence)].endMs);
+
+    wmodel::Actor actor;
+    actor.handle = 13;
+    wpart::ParticleService particles;
+    wfx::D3AttachmentPool pool;
+    pool.Bind(f.adapter, &cache, 100);
+
+    for (i32 t = 0; t <= durMs; t += 16)
+        pool.Tick(actor, f.sequence, t, 0, durMs, &particles);
+    const auto pending = pool.TakePending();
+    REQUIRE(!pending.empty());
+
+    // Answer every request, as the FrameTicker does.
+    u32 handle = 5000;
+    std::vector<u32> spawned;
+    for (const auto& p : pending) {
+        pool.NoteChildSpawned(p.sequence, p.entry, handle);
+        spawned.push_back(handle++);
+    }
+    CHECK(pool.TakeExpired().empty());
+
+    // Switch clips. Every actor the old sequence stood up comes back out, once,
+    // for the ticker to destroy -- and the entries forget them, so re-entering
+    // the sequence spawns fresh ones rather than re-birthing corpses.
+    const i32 other = (f.sequence + 1) % static_cast<i32>(seqs.size());
+    if (other == f.sequence) {
+        WARN("single-sequence actor; skipping the switch half");
+        return;
+    }
+    pool.Tick(actor, other, 0, 0, durMs, &particles);
+    const auto expired = pool.TakeExpired();
+    std::printf("[d3 att] actor #%d: %zu child actors released leaving seq %d\n", f.sno,
+                expired.size(), f.sequence);
+    CHECK(expired.size() == spawned.size());
+    for (u32 h : spawned)
+        CHECK(std::find(expired.begin(), expired.end(), h) != expired.end());
+    CHECK(pool.TakeExpired().empty());
+    for (const auto& p : pending)
+        CHECK(pool.ChildHandle(p.sequence, p.entry) == 0);
 }
 
 TEST_CASE("d3 attachment: a group 1 payload is reported as a child model, not an emitter",

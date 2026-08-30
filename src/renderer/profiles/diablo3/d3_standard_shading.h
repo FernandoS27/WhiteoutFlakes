@@ -30,21 +30,45 @@ class RenderService;
 
 namespace whiteout::flakes::renderer::profiles::diablo3 {
 
-/// @brief One D3DBLEND value, which is what a RenderPass stores.
+/// @brief One blend factor as a RenderPass stores it, which is the ENGINE's
+///        enum and NOT D3DBLEND.
 ///
-/// The corpus never leaves the enum: over 1,831 shipped passes the source takes
-/// only {1, 2, 5, 9, 11} and the destination only {1, 2, 5, 6, 9, 10}, and the
-/// blend OP is ADD on every one of them. The pairs are led by (5, 6)
-/// SrcAlpha/InvSrcAlpha on 1,029 passes and (5, 2) SrcAlpha/One — additive — on
-/// 283. Particle passes agree: 115 of 223 are (5, 6) and 54 are (5, 2).
+/// The Windows 2.8.x build translates it on the way to `SetRenderState` —
+/// `sub_73DAD0`, a bare switch — and the translation is not the identity:
 ///
-/// SrcAlphaSat (11, 58 passes here and 36 particle ones) has no equivalent in
-/// this gfx layer; SrcAlpha is the nearest and differs only where the
-/// destination is already saturated.
+///     1 -> ZERO   2 -> ONE   3 -> SRCCOLOR   4 -> INVSRCCOLOR
+///     5 -> SRCALPHA   6 -> INVSRCALPHA
+///     7 -> DESTCOLOR(9)   8 -> INVDESTCOLOR(10)
+///     9 -> DESTALPHA(7)  10 -> INVDESTALPHA(8)
+///    11 -> BLENDFACTOR(14), with D3DRS_BLENDFACTOR pinned to 0x00FFFFFF
+///
+/// so 7/8 and 9/10 are the opposite way round from D3DBLEND, and 11 is the
+/// CONSTANT, not SrcAlphaSat. Reading them as D3DBLEND is what drew 3,175 of
+/// the corpus's 21,593 particle systems as opaque black rectangles: the
+/// premultiplied family pairs `src = 11` with `dst = SRCALPHA`, and mapping 11
+/// to SrcAlpha makes both factors the source alpha, so every texel the sprite
+/// meant to leave alone resolves to `C*0 + dst*0`.
+///
+/// The constant has no per-channel equivalent in this gfx layer and needs none:
+/// 0x00FFFFFF is exactly One for the colour and Zero for the alpha, so @p alpha
+/// picks the channel and the answer is exact.
+///
+/// Over 1,831 shipped passes the source takes only {1, 2, 5, 9, 11} and the
+/// destination {1, 2, 5, 6, 9, 10}; the op is ADD on every one. Pairs are led
+/// by (5, 6) on 1,029 passes, (5, 2) on 283 and (11, 5) on 55.
 ///
 /// Shared with the particle path, which reads the same field off the same
 /// struct — see d3_particle_shading.h.
-gfx::BlendFactor D3BlendFactor(u32 d3d, gfx::BlendFactor fallback);
+gfx::BlendFactor D3BlendFactor(u32 engine, gfx::BlendFactor fallback, bool alpha = false);
+
+/// @brief A RenderPass's depth or alpha compare, D3DCMPFUNC, as a gfx op.
+///
+/// `sub_73DBB0` maps the engine's value onto D3DCMPFUNC unchanged except that 0
+/// means Always, so this is the D3D9 table plus that. NotEqual has no value in
+/// this gfx layer and falls to Always; one corpus pass asks for it. A compare of
+/// 8 is not really a compare at all — `sub_73DA60` turns it into ZENABLE 0 —
+/// which callers handle by dropping the test, not by passing it here.
+gfx::CompareOp D3CompareOp(u32 func);
 
 class D3StandardShading final : public shading::IShadingModel {
 public:
@@ -143,6 +167,10 @@ private:
         /// The fixed-function chain's output gain, `.x` colour and `.y` alpha.
         /// See D3PassState::colorGain.
         Vector4f params1;
+        /// `.x` the pass's depth bias, applied in the vertex shader because
+        /// D3D9 states it in depth units and the modern APIs do not. `.yzw`
+        /// spare. See D3PassState::depthBias.
+        Vector4f params2;
         Vector4f matDiffuse;
         Vector4f matSpecular;
         Vector4f matEmissive;
@@ -161,14 +189,24 @@ private:
         u32 layoutId = 0;
         u32 stride = 0;
         /// 0 opaque, 1 blended. The factors come with it: the RenderPass
-        /// states them (D3DBLEND) and they are not one pair — (5, 6) alpha and
-        /// (5, 2) additive are both common in shipped content.
+        /// states them (in its OWN enum, see D3BlendFactor) and they are not one
+        /// pair — (5, 6) alpha and (5, 2) additive are both common in shipped
+        /// content.
         u8 blend = 0;
         u32 blendSrc = 5;
         u32 blendDst = 6;
         bool depthWrite = true;
+        /// The pass's depth compare, D3DCMPFUNC. 8 is Always, which the engine
+        /// spells as no depth test at all — 150 passes, the `_pma` family among
+        /// them.
+        u32 depthFunc = 4;
         bool skinned = false;
         bool twoSided = false;
+        /// The pass's two colour-write flags. See D3PassState::colorWrite.
+        bool colorWrite = true;
+        bool alphaWrite = true;
+        /// 0 solid, 1 wireframe. See D3PassState::fillMode.
+        u32 fillMode = 0;
 
         auto operator<=>(const PsoKey&) const = default;
     };

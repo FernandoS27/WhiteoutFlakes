@@ -180,6 +180,13 @@ if(WDX_ENABLE_D3)
     # corpus sweeps skip without an extracted D3 corpus; the rest are
     # synthetic and run everywhere.
     wdx_add_test(d3_particle_test d3_particle_test.cpp)
+    # The same module measured against the ORIGINAL rather than against its own
+    # description: `tools/d3_particle_oracle/` runs the real 2.6.2 Switch binary
+    # under Unicorn and records what it computed; this replays those goldens.
+    # No emulator and no binary needed to run it — that is the point.
+    wdx_add_test(d3_particle_oracle_test d3_particle_oracle_test.cpp)
+    target_compile_definitions(d3_particle_oracle_test PRIVATE
+        WDX_D3_ORACLE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../tools/d3_particle_oracle/golden")
     # How a `.prt` reaches an actor: the EffectGroup parser, the census that
     # ranks the three routes, and the resolver's item selection.
     wdx_add_test(d3_effect_test d3_effect_test.cpp)

@@ -47,8 +47,8 @@ constexpr gfx::BlendDesc kD3AlphaBlend = {.enable = true,
 
 } // namespace
 
-gfx::BlendFactor D3BlendFactor(u32 d3d, gfx::BlendFactor fallback) {
-    switch (d3d) {
+gfx::BlendFactor D3BlendFactor(u32 engine, gfx::BlendFactor fallback, bool alpha) {
+    switch (engine) {
     case 1:
         return BF::Zero;
     case 2:
@@ -58,20 +58,46 @@ gfx::BlendFactor D3BlendFactor(u32 d3d, gfx::BlendFactor fallback) {
     case 4:
         return BF::InvSrcColor;
     case 5:
-    case 11:
         return BF::SrcAlpha;
     case 6:
         return BF::InvSrcAlpha;
     case 7:
-        return BF::DstAlpha;
-    case 8:
-        return BF::InvDstAlpha;
-    case 9:
         return BF::DstColor;
-    case 10:
+    case 8:
         return BF::InvDstColor;
+    case 9:
+        return BF::DstAlpha;
+    case 10:
+        return BF::InvDstAlpha;
+    case 11:
+        // D3DRS_BLENDFACTOR, which `sub_73D580` sets to 0x00FFFFFF and never
+        // changes: white with a zero alpha.
+        return alpha ? BF::Zero : BF::One;
     default:
         return fallback;
+    }
+}
+
+gfx::CompareOp D3CompareOp(u32 func) {
+    switch (func) {
+    case 1:
+        return gfx::CompareOp::Never;
+    case 2:
+        return gfx::CompareOp::Less;
+    case 3:
+        return gfx::CompareOp::Equal;
+    case 4:
+        return gfx::CompareOp::LessEqual;
+    case 5:
+        return gfx::CompareOp::Greater;
+    case 6:
+        // D3DCMP_NOTEQUAL, which this gfx layer has no value for. One corpus
+        // pass asks for it and Always is the nearest of the seven.
+        return gfx::CompareOp::Always;
+    case 7:
+        return gfx::CompareOp::GreaterEqual;
+    default:
+        return gfx::CompareOp::Always;
     }
 }
 
@@ -247,15 +273,29 @@ gfx::PipelineHandle D3StandardShading::GetOrBuildPso(const PsoKey& key) {
         desc.blend = kD3AlphaBlend;
         desc.blend.srcColor = D3BlendFactor(key.blendSrc, BF::SrcAlpha);
         desc.blend.dstColor = D3BlendFactor(key.blendDst, BF::InvSrcAlpha);
+        // Same enum both channels, but factor 11 is the constant 0x00FFFFFF,
+        // whose alpha is zero where its colour is one — so the pair has to be
+        // resolved per channel or the eleven `_pma` surface shaders composite
+        // against their own alpha and go black.
+        desc.blend.srcAlpha = D3BlendFactor(key.blendSrc, BF::One, true);
+        desc.blend.dstAlpha = D3BlendFactor(key.blendDst, BF::InvSrcAlpha, true);
     } else {
         desc.blend = kD3Opaque;
     }
-    desc.depthStencil.depthTest = true;
+    // Two flags, not one: 111 shipped passes write the alpha alone and 73
+    // write neither channel. See D3PassState::colorWrite.
+    desc.blend.colorWrite = key.colorWrite;
+    desc.blend.alphaWrite = key.alphaWrite;
+    // `sub_73DA60` sets ZFUNC and then ZENABLE = (func != Always), so a pass
+    // asking for Always is asking for the test to be off.
+    desc.depthStencil.depthTest = key.depthFunc != 8;
     desc.depthStencil.depthWrite = key.depthWrite;
-    desc.depthStencil.depthCompare = gfx::CompareOp::LessEqual;
+    desc.depthStencil.depthCompare = D3CompareOp(key.depthFunc);
     // Cull mode is a *pass* property in the original, and the surface now reads
     // it from there: 713 of the corpus's 1,831 passes ask for none.
     desc.rasterizer.cull = key.twoSided ? gfx::CullMode::None : gfx::CullMode::Back;
+    desc.rasterizer.fill =
+        key.fillMode == 1 ? gfx::FillMode::Wireframe : gfx::FillMode::Solid;
     desc.rasterizer.frontCCW = true;
     desc.rtvFormat = key.rtv;
     desc.dsvFormat = key.dsv;
@@ -443,6 +483,10 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     // is the pass's own answer where there is one. Without a pass, the old rule
     // stands: blended geometry does not write depth.
     key.depthWrite = surf->pass.resolved ? surf->pass.depthWrite : (key.blend == 0);
+    key.depthFunc = surf->pass.resolved ? surf->pass.depthFunc : 4u;
+    key.colorWrite = !surf->pass.resolved || surf->pass.colorWrite;
+    key.alphaWrite = !surf->pass.resolved || surf->pass.alphaWrite;
+    key.fillMode = surf->pass.resolved ? surf->pass.fillMode : 0u;
     key.twoSided = surf->twoSided;
     gfx::BufferHandle paletteCb = gfx::BufferHandle::Invalid;
     key.skinned = ResolveSkinned(*item.view, geo, paletteCb);
@@ -462,7 +506,10 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
                            (surf->pass.vertexAlpha ? 0x2u : 0u) | (surf->unlit ? 0x4u : 0u);
         c->params0 = {surf->alphaTestThreshold, surf->shininess, surf->twoSided ? 1.0f : 0.0f,
                       static_cast<f32>(vcMode)};
-        c->params1 = {surf->pass.colorGain, surf->pass.alphaGain, 0.0f, 0.0f};
+        c->params1 = {surf->pass.colorGain, surf->pass.alphaGain,
+                      static_cast<f32>(surf->pass.pmaMode),
+                      static_cast<f32>(surf->alphaTestFunc)};
+        c->params2 = {surf->pass.resolved ? surf->pass.depthBias : 0.0f, 0.0f, 0.0f, 0.0f};
         c->matDiffuse = surf->diffuse;
         // The element alpha rides the material's own, which is what the
         // fixed-function pipeline does with it and what makes a fade a fade.

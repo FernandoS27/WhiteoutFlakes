@@ -148,10 +148,41 @@ struct Path {
         return {v.x, v.y, v.z};
     }
 
-    /// The two endpoints of a scalar path's value range, in the form
-    /// `InterpolationPath_GetScalarEndpoints` hands the emit context: `lo` and
-    /// the span above it. The shape sampler draws inside that annulus.
-    void ScalarEndpoints(f32& lo, f32& span) const;
+    /// @brief The COLOUR channel, which is not the generic path evaluated with
+    ///        four components.
+    ///
+    /// `InterpolationPath_EvalColor` @0x71003779A0 draws ONE random, not three,
+    /// and its sampler @0x7100377550 interpolates in 8-BIT FIXED POINT: every
+    /// lerp is `a + (u16)((b - a) * (i32)(t * 256)) >> 8` on the packed bytes,
+    /// twice — once across each node's own start/end by the random, once between
+    /// the two bracketing nodes by time. Evaluating it as floats and rounding at
+    /// the end is a different number, and drawing three randoms is a different
+    /// colour entirely.
+    ///
+    /// @returns the four bytes as [0,1] floats, in the same channel order
+    ///          `UnpackColor` produced them.
+    Vector4f EvalColor(u32 particleSeed, i32 channelId, const EvalCtx& ctx) const;
+
+    /// @brief An INT channel — the target population (31) and the frame-count
+    ///        lifetime (29) — `InterpolationPath_EvalInt` @0x7100377290.
+    ///
+    /// Integer end to end: each node's own lerp is `start + round((end-start)*r)`
+    /// on the stored integers, and the lerp between nodes rounds again. So a
+    /// count curve STEPS. Evaluating it as a float and letting the caller
+    /// truncate is a different number at every fractional point, and the rounding
+    /// is half-to-even, which is what the `x + 2^23` trick does.
+    i32 EvalInt(u32 particleSeed, i32 channelId, const EvalCtx& ctx) const;
+
+    /// @brief The two LANES of a scalar path AT A TIME —
+    ///        `InterpolationPath_GetScalarEndpoints` @0x7100376130.
+    ///
+    /// Not the value range over the whole curve, which is what this used to
+    /// return. The engine runs the same three-mode time machinery `Sample` does,
+    /// finds the bracketing pair, and interpolates the START lane and the END
+    /// lane separately — no random is drawn at all. So an emitter whose radius
+    /// path grows over its life has a growing radius, and pinning it to the
+    /// curve's global min and max freezes every animated shape extent.
+    void ScalarEndpoints(const EvalCtx& ctx, f32& lo, f32& hi) const;
 };
 
 /// Sample one path at an explicit random vector, skipping the draw. This is

@@ -40,6 +40,7 @@
 #include "io/d3/d3_model_adapter.h"
 #include "io/d3/d3_sno_cache.h"
 #include "io/file_content_provider.h"
+#include "renderer/profiles/diablo3/d3_standard_shading.h"
 #include "renderer/profiles/diablo3/d3_surface_table.h"
 
 #include <whiteout/sno/d3/native/d3_native.h>
@@ -773,10 +774,10 @@ TEST_CASE("D3 corpus: a pass declares the types it binds", "[d3][corpus]") {
             maxStages = (std::max)(maxStages, rp.arTextureStages.size());
             bool base = false, mask = false;
             for (const auto& ts : rp.arTextureStages) {
-                ++declaredBy[ts.dwUnknown00];
-                if (ts.dwUnknown00 == 1)
+                ++declaredBy[ts.dwTextureType];
+                if (ts.dwTextureType == 1)
                     base = true;
-                if (ts.dwUnknown00 == 12 || ts.dwUnknown00 == 14 || ts.dwUnknown00 == 19)
+                if (ts.dwTextureType == 12 || ts.dwTextureType == 14 || ts.dwTextureType == 19)
                     mask = true;
             }
             if (mask) {
@@ -911,8 +912,8 @@ TEST_CASE("D3 corpus: the shipped programs name the texture types", "[d3][corpus
         for (const auto& rp : sh->arRenderPasses) {
             std::vector<i32> types;
             for (const auto& ts : rp.arTextureStages) {
-                if (ts.dwUnknown00 != 0)
-                    types.push_back(ts.dwUnknown00);
+                if (ts.dwTextureType != 0)
+                    types.push_back(ts.dwTextureType);
             }
             if (types.empty())
                 continue;
@@ -1075,7 +1076,7 @@ TEST_CASE("D3 install: render state comes from the ShaderMap's RenderPass",
                     static_cast<int>(st.depthWrite), st.cull, static_cast<unsigned>(st.alphaRef));
         CHECK(st.blendEnable == w.blends);
         CHECK(st.depthWrite == w.depthWrite);
-        // D3DBLEND, and the corpus never leaves the enum.
+        // The ENGINE's blend enum, not D3DBLEND, and the corpus never leaves it.
         CHECK(st.blendSrc >= 1u);
         CHECK(st.blendSrc <= 11u);
         CHECK(st.blendDst >= 1u);
@@ -1376,9 +1377,20 @@ TEST_CASE("D3 install: the wings are unlit, blended and depth-write-off",
         {"Imperius", "wing_mat", false, true, false, true, kT1 | kT6 | kT14, kT1 | kT12 | kT14,
          2.0f, 4.0f},
         // Malthael takes no glow into the colour and stacks his alpha gain to
-        // 16 across four stages -- the same grammar, a different chain.
+        // 32 across four stages -- the same grammar, a different chain. The
+        // shipped `ps_legacy_Malthael_wings_flow` spells all of it out:
+        //
+        //     dp2_sat r0.z, r1.wwww, v1.wwww   ; alpha code 26: x2 AND saturate
+        //     mul r0.x, r0.z, r1.w             ; x mask12.a
+        //     mul r0.x, r0.x, l(4.0)           ; code 25
+        //     mul r0.x, r0.x, r2.w             ; x mask14.a
+        //     mul r0.x, r0.x, l(4.0)           ; code 25
+        //     mul r0.x, r0.x, r1.w             ; x mask16.a
+        //
+        // -- 2 x 4 x 4 = 32. Reading the units digit as a gain alone made code
+        // 26 a x1 and this 16.
         {"x1_Malthael", "wingOuter_mat", false, true, false, true, kT12 | kT14,
-         kT1 | kT12 | kT14 | kT16, 1.0f, 16.0f},
+         kT1 | kT12 | kT14 | kT16, 1.0f, 32.0f},
         // Cain's smoke plume is the OTHER Legacy program, and the one that made
         // the glow map look ruleless: its colour chain is three replaces and an
         // add (`saturate(diffuse + glow)`), so nothing modulates the colour and
@@ -1825,28 +1837,28 @@ TEST_CASE("D3 diag: the render passes of one actor", "[.diag][d3][install]") {
                     const auto& r = rp.tRenderParams;
                     std::printf("        p%zu cull=%d zw=%d aRef=%u blend=%d(%d,%d) flags=%08X "
                                 "u00=%d u04=%d fx=%s vs=%s ps=%s\n",
-                                p, r.dwUnknown00, r.dwUnknown04,
-                                static_cast<unsigned>(r.bUnknown34), r.dwUnknown4C, r.dwUnknown54,
-                                r.dwUnknown58, static_cast<unsigned>(rp.dwPassFlags),
+                                p, r.dwCullMode, r.dwZWriteEnable,
+                                static_cast<unsigned>(r.bAlphaRef), r.dwAlphaBlendEnable, r.dwSrcBlend,
+                                r.dwDestBlend, static_cast<unsigned>(rp.dwPassFlags),
                                 rp.dwUnknown00, rp.dwUnknown04, rp.szEffectFile.c_str(),
                                 rp.szVertexShaderEntry.c_str(), rp.szPixelShaderEntry.c_str());
                     // Every RenderParams field, so a difference between two
                     // passes cannot hide in one this dump does not name.
-                    const i32 all[] = {r.dwUnknown00, r.dwUnknown04, r.dwUnknown08,
-                                       std::bit_cast<i32>(r.flUnknown0C),
-                                       std::bit_cast<i32>(r.flUnknown10), r.dwUnknown14,
-                                       r.dwUnknown18, r.dwUnknown1C, r.dwUnknown20, r.dwUnknown24,
-                                       r.dwUnknown28, r.dwUnknown2C, r.dwUnknown30,
-                                       static_cast<i32>(r.bUnknown34), r.dwUnknown38, r.dwUnknown3C,
-                                       r.dwUnknown40, r.dwUnknown44, r.dwUnknown48, r.dwUnknown4C,
-                                       r.dwUnknown50, r.dwUnknown54, r.dwUnknown58};
+                    const i32 all[] = {r.dwCullMode, r.dwZWriteEnable, r.dwZFunc,
+                                       std::bit_cast<i32>(r.flDepthBias),
+                                       std::bit_cast<i32>(r.flUnknown10), r.dwStencilEnable,
+                                       r.dwStencilFunc, r.dwStencilRef, r.dwStencilPass, r.dwStencilFail,
+                                       r.dwStencilZFail, r.dwAlphaTestEnable, r.dwAlphaFunc,
+                                       static_cast<i32>(r.bAlphaRef), r.dwAlphaToCoverage, r.dwFogEnable,
+                                       r.dwFillMode, r.dwColorWriteEnable, r.dwAlphaWriteEnable, r.dwAlphaBlendEnable,
+                                       r.dwBlendOp, r.dwSrcBlend, r.dwDestBlend};
                     std::printf("           raw:");
                     for (i32 x : all)
                         std::printf(" %d", x);
                     std::printf("\n           stages:");
                     for (const auto& st : rp.arTextureStages)
-                        std::printf(" [%d %d %d %d %d %.3f]", st.dwUnknown00, st.dwUnknown04,
-                                    st.dwUnknown08, st.dwUnknown0C, st.dwUnknown10, st.flUnknown14);
+                        std::printf(" [%d %d %d %d %d %.3f]", st.dwTextureType, st.dwAddressU,
+                                    st.dwAddressV, st.dwAddressW, st.dwFilter, st.flMipMapLodBias);
                     std::printf("\n           tags:");
                     for (const auto& t : rp.arShaderParams)
                         std::printf(" %X=%u", t.dwTagId, t.dwValue);
@@ -1924,14 +1936,14 @@ TEST_CASE("D3 corpus: two-sided is a CW pass plus a CCW pass", "[d3][corpus]") {
         if (d3p::D3IsTwoSidedPassPair(*sh))
             flagged.push_back(f.stem().string());
         for (const auto& pass : sh->arRenderPasses) {
-            cullCounts[pass.tRenderParams.dwUnknown00]++;
+            cullCounts[pass.tRenderParams.dwCullMode]++;
             for (const auto& t : pass.arShaderParams) {
                 if (t.dwTagId != 0xA003Du || t.dwValue == 0)
                     continue;
                 tagged.push_back(f.stem().string());
                 INFO(f.stem().string());
                 // The tagged pass is the CCW one, and it is the last.
-                CHECK(pass.tRenderParams.dwUnknown00 == 3);
+                CHECK(pass.tRenderParams.dwCullMode == 3);
                 CHECK(&pass == &sh->arRenderPasses.back());
             }
         }
@@ -2198,4 +2210,630 @@ TEST_CASE("D3 diag: which emitted sub-objects are two-sided", "[.diag][d3][insta
                         s ? static_cast<int>(s->twoSided) : -1);
         }
     }
+}
+
+// ============================================================================
+// The RenderParams field map, named off the Windows 2.8.x build.
+//
+// `sub_5717F0` @0x5717F0 hands every field of a RenderPass to one D3D9 setter
+// apiece -- the setters are the thin vtable wrappers at 0x73D450..0x73DC50,
+// each of which is one `SetRenderState(D3DRS_*, value)` -- so the offsets read
+// straight off the decompile:
+//
+//     +8  CULLMODE      +12 ZWRITEENABLE   +16 ZFUNC (+ ZENABLE = func != 8)
+//     +20 DEPTHBIAS     +28 STENCILENABLE  +32..+48 stencil func/ref/pass/fail/zfail
+//     +52 ALPHATESTENABLE  +56 ALPHAFUNC   +60 ALPHAREF
+//     +64 ALPHATOCOVERAGE (no D3D9 setter)  +68 fog enable (not a device state)
+//     +72 FILLMODE/SHADEMODE   +76/+80 COLORWRITEENABLE rgb / alpha
+//     +84 ALPHABLENDENABLE  +88 BLENDOP  +92 SRCBLEND  +96 DESTBLEND
+//     +100 a packed RGBA constant, -1 when unset
+//
+// Two of those are not `sub_5717F0` readings. RenderParams+0x38 goes to a
+// vtable slot the D3D9 device leaves as a nullsub, and is named from the data:
+// it is 1 on exactly the 43 `*_alphamask` passes, every one of which carries
+// TAG_VS_ALPHA_TO_COVERAGE. RenderParams+0x3C is applied nowhere in
+// `sub_5717F0`; `Render_BindShaderPass` @0x56CEC0 copies it into the render
+// context and then clears it when `Render_IsFogEnabled` is false, which is
+// what makes it the fog enable. Same function unpacks RenderParams+0x5C -- a
+// field WhiteoutLib used to drop as trailing padding -- into the context
+// float4, with -1 meaning (1,1,1,1).
+//
+// RenderParams sits at RenderPass+8, so subtract 8 for the offsets above. This
+// case is the census that keeps the map honest: every count below was read off
+// the shipped 1,506 `.shd`, and a value outside the enum the map claims is a
+// naming error, not content.
+// ============================================================================
+TEST_CASE("D3 corpus: the RenderParams field map and the premultiplied family",
+          "[d3][corpus][shd]") {
+    const auto files = FindFiles(CorpusRoot() / "Shaders", ".shd");
+    if (files.empty()) {
+        WARN("No D3 shader corpus at " << (CorpusRoot() / "Shaders").string()
+                                       << " (set WDX_TEST_D3_CORPUS). SKIPPED, not passed.");
+        return;
+    }
+
+    std::map<i32, std::size_t> zfunc, alphaFunc, fill, blendOp, srcFactor, dstFactor;
+    std::map<std::pair<i32, i32>, std::size_t> colorWrite;
+    std::size_t passes = 0, alphaTestOn = 0, depthBias = 0, stencilOn = 0;
+    std::map<i32, std::size_t> pmaTag, constColor;
+    std::size_t pmaByBlend = 0;
+    // The same three states restricted to PASS 0, which is the only pass this
+    // build submits. A count over every pass overstates what it can act on.
+    std::map<std::pair<i32, i32>, std::size_t> colorWrite0;
+    std::map<i32, std::size_t> fill0;
+    std::size_t depthBias0 = 0;
+    // The two fields the D3D9 wrapper layer does not name.
+    std::size_t a2cOn = 0, a2cTaggedAndSet = 0, a2cTaggedNotSet = 0, fogOn = 0;
+    // Two labelled samples: a shader whose NAME states its depth state, and the
+    // head of the premultiplied family.
+    bool sawNoZ = false, sawPma = false;
+
+    for (const auto& f : files) {
+        auto sh = d3n::parseShaders(ReadAll(f));
+        if (!sh)
+            continue;
+        const std::string name = f.stem().string();
+        for (const auto& pass : sh->arRenderPasses) {
+            const auto& r = pass.tRenderParams;
+            ++passes;
+            zfunc[r.dwZFunc]++;
+            if (r.flDepthBias != 0.0f)
+                ++depthBias;
+            if (r.dwStencilEnable != 0)
+                ++stencilOn;
+            if (r.dwAlphaTestEnable != 0)
+                ++alphaTestOn;
+            alphaFunc[r.dwAlphaFunc]++;
+            fill[r.dwFillMode]++;
+            colorWrite[{r.dwColorWriteEnable, r.dwAlphaWriteEnable}]++;
+            blendOp[r.dwBlendOp]++;
+            srcFactor[r.dwSrcBlend]++;
+            dstFactor[r.dwDestBlend]++;
+            if (r.dwSrcBlend == 11)
+                ++pmaByBlend;
+            constColor[r.dwConstantColor]++;
+            if (r.dwFogEnable != 0)
+                ++fogOn;
+            bool a2cTag = false;
+            for (const auto& t : pass.arShaderParams) {
+                if (t.dwTagId == 0xA002Bu)
+                    pmaTag[static_cast<i32>(t.dwValue)]++;
+                if (t.dwTagId == 0xA003Au)
+                    a2cTag = true;
+            }
+            if (r.dwAlphaToCoverage != 0) {
+                ++a2cOn;
+                if (a2cTag)
+                    ++a2cTaggedAndSet;
+            } else if (a2cTag) {
+                ++a2cTaggedNotSet;
+            }
+
+            // The dead fields, which is a claim worth asserting rather than
+            // leaving as an absence: nothing varies at RenderPass+4, at
+            // RenderParams+16, or at RenderPass+104.
+            CHECK(pass.dwUnknown04 == 0);
+            CHECK(r.flUnknown10 == 0.0f);
+            CHECK(pass.dwUnknown68 == 0);
+        }
+        if (!sh->arRenderPasses.empty()) {
+            const auto& r0 = sh->arRenderPasses.front().tRenderParams;
+            colorWrite0[{r0.dwColorWriteEnable, r0.dwAlphaWriteEnable}]++;
+            fill0[r0.dwFillMode]++;
+            if (r0.flDepthBias != 0.0f)
+                ++depthBias0;
+        }
+        if (name == "3D_prims_no_Z") {
+            sawNoZ = true;
+            // The one shader that states its own depth state out loud: no
+            // write, and a compare of Always, which `sub_73DA60` turns into
+            // ZENABLE 0.
+            CHECK(sh->arRenderPasses.at(0).tRenderParams.dwZWriteEnable == 0);
+            CHECK(sh->arRenderPasses.at(0).tRenderParams.dwZFunc == 8);
+        }
+        if (name == "particle_transparent_pma") {
+            sawPma = true;
+            const auto& p0 = sh->arRenderPasses.at(0);
+            const auto& r = p0.tRenderParams;
+            // (BLENDFACTOR, SRCALPHA), no alpha test, the alpha channel
+            // written, no depth test -- the four things that separate it from
+            // `particle_transparent`, which is (5, 6) / test on / alpha masked
+            // off / compare LessEqual.
+            CHECK(r.dwSrcBlend == 11);
+            CHECK(r.dwDestBlend == 5);
+            CHECK(r.dwAlphaTestEnable == 0);
+            CHECK(r.dwColorWriteEnable == 1);
+            CHECK(r.dwAlphaWriteEnable == 1);
+            CHECK(r.dwZFunc == 8);
+            bool tagged = false;
+            for (const auto& t : p0.arShaderParams)
+                if (t.dwTagId == 0xA002Bu && t.dwValue == 1u)
+                    tagged = true;
+            CHECK(tagged);
+        }
+    }
+    CHECK(sawNoZ);
+    CHECK(sawPma);
+
+    auto dump = [](const char* label, const std::map<i32, std::size_t>& m) {
+        std::printf("[d3-rp] %-12s", label);
+        for (const auto& [v, n] : m)
+            std::printf(" %d:%zu", v, n);
+        std::printf("\n");
+    };
+    std::printf("[d3-rp] %zu passes | alpha test on %zu | depth bias %zu | stencil %zu\n", passes,
+                alphaTestOn, depthBias, stencilOn);
+    dump("zfunc", zfunc);
+    dump("alphaFunc", alphaFunc);
+    dump("fill", fill);
+    dump("blendOp", blendOp);
+    dump("src", srcFactor);
+    dump("dst", dstFactor);
+    dump("pma tag", pmaTag);
+    std::printf("[d3-rp] colorWrite(rgb,a):");
+    for (const auto& [k, n] : colorWrite)
+        std::printf(" (%d,%d):%zu", k.first, k.second, n);
+    std::printf("\n");
+
+    // Every compare is a D3DCMPFUNC and every factor an engine blend enum. The
+    // bounds are what make the map falsifiable: a field named for the wrong job
+    // would spill outside them on the first shipped file that used it.
+    for (const auto& [v, n] : zfunc) {
+        INFO("zfunc " << v << " on " << n);
+        CHECK(v >= 1);
+        CHECK(v <= 8);
+    }
+    for (const auto& [v, n] : alphaFunc) {
+        INFO("alphaFunc " << v << " on " << n);
+        CHECK(v >= 0);
+        CHECK(v <= 8);
+    }
+    for (const auto& [v, n] : srcFactor) {
+        INFO("src " << v << " on " << n);
+        CHECK(v >= 1);
+        CHECK(v <= 11);
+    }
+    for (const auto& [v, n] : dstFactor) {
+        INFO("dst " << v << " on " << n);
+        CHECK(v >= 1);
+        CHECK(v <= 11);
+    }
+    // BLENDOP is ADD on every shipped pass, which is why the field is not read.
+    CHECK(blendOp.size() == 1);
+    CHECK(blendOp.begin()->first == 1);
+    // The colour write mask is a pair of booleans, not a D3D9 bit mask: the
+    // wrapper builds `(rgb ? 7 : 0) | (alpha ? 8 : 0)` out of the two.
+    for (const auto& [k, n] : colorWrite) {
+        INFO("colorWrite (" << k.first << ", " << k.second << ") on " << n);
+        CHECK(k.first >= 0);
+        CHECK(k.first <= 1);
+        CHECK(k.second >= 0);
+        CHECK(k.second <= 1);
+    }
+    // The premultiplied family: the tag states the mode on 56 passes and the
+    // blend factor is the constant on 58, so the two agree bar two passes that
+    // carry no tag. Neither number is allowed to drift silently.
+    CHECK(pmaByBlend == 58);
+    CHECK(pmaTag[1] + pmaTag[2] == 56);
+
+    // RenderParams+0x38 is alpha-to-coverage, and this is the whole evidence:
+    // it is set on 43 passes, every one of them ALSO carrying the shader tag
+    // the exe's own registry calls TAG_VS_ALPHA_TO_COVERAGE. Four more passes
+    // carry the tag with the field clear, which is the direction that has to
+    // hold -- the tag picks a program, the field asks the device for a mode
+    // D3D9 cannot give it.
+    std::printf("[d3-rp] alphaToCoverage set on %zu, all tagged %d, tag without the field %zu\n",
+                a2cOn, a2cOn == a2cTaggedAndSet, a2cTaggedNotSet);
+    CHECK(a2cOn == 43);
+    CHECK(a2cTaggedAndSet == a2cOn);
+    CHECK(a2cTaggedNotSet == 4);
+
+    // RenderParams+0x3C is the fog enable -- a render-context flag rather than
+    // a device state, which is why nothing in `sub_5717F0` touches it.
+    std::printf("[d3-rp] fog enable on %zu\n", fogOn);
+    CHECK(fogOn == 817);
+
+    // RenderParams+0x5C, the field the generated layout used to discard: a
+    // packed RGBA whose -1 means "unset". 931 passes leave it unset, 451 ship
+    // an all-zero colour and 301 ship opaque black.
+    std::printf("[d3-rp] constant colour: %zu unset, %zu zero, %zu 0xFF000000, %zu distinct\n",
+                constColor[-1], constColor[0], constColor[static_cast<i32>(0xFF000000u)],
+                constColor.size());
+    CHECK(constColor[-1] == 931);
+    CHECK(constColor[0] == 451);
+    CHECK(constColor[static_cast<i32>(0xFF000000u)] == 301);
+
+    // The three states this build applies out of the tail of the struct. The
+    // pass-0 numbers are the ones that bound what it can act on, and they are
+    // smaller: the (0,1) group is almost entirely pass 1 of a multi-pass
+    // shader, and this build submits pass 0 alone.
+    std::printf("[d3-rp] pass 0: colourWrite");
+    for (const auto& [k, n] : colorWrite0)
+        std::printf(" (%d,%d):%zu", k.first, k.second, n);
+    std::printf(" | depth bias %zu | fill 1:%zu 2:%zu\n", depthBias0, fill0[1], fill0[2]);
+    CHECK(depthBias == 28);
+    CHECK(fill[1] == 1);
+    CHECK(fill[2] == 4);
+    CHECK(colorWrite[{0, 0}] == 73);
+    CHECK(colorWrite[{0, 1}] == 111);
+    CHECK(stencilOn == 61);
+    CHECK(colorWrite0[{0, 0}] == 68);
+    CHECK(colorWrite0[{0, 1}] == 4);
+    CHECK(colorWrite0[{1, 0}] == 1164);
+    CHECK(colorWrite0[{1, 1}] == 270);
+    CHECK(depthBias0 == 28);
+    // Every shipped non-solid fill is 2 -- solid with flat shading. The
+    // wireframe wiring in D3StandardShading is faithful and unreachable.
+    CHECK(fill0[1] == 1);
+    CHECK(fill0[2] == 4);
+
+    // The alpha test is three fields. Reading the reference alone gets 266 of
+    // these passes wrong, and the two halves of that number are different
+    // mistakes: 194 carry a reference the pass never applies, and 72 compare
+    // the other way round.
+    std::size_t refWithoutEnable = 0, inverted = 0;
+    for (const auto& f : files) {
+        auto sh = d3n::parseShaders(ReadAll(f));
+        if (!sh)
+            continue;
+        for (const auto& pass : sh->arRenderPasses) {
+            const auto& r = pass.tRenderParams;
+            if (r.dwAlphaTestEnable == 0 && r.bAlphaRef != 0)
+                ++refWithoutEnable;
+            if (r.dwAlphaTestEnable != 0 && (r.dwAlphaFunc == 2 || r.dwAlphaFunc == 4))
+                ++inverted;
+        }
+    }
+    std::printf("[d3-rp] alpha test: %zu carry a reference with the test off, %zu compare "
+                "the other way round\n",
+                refWithoutEnable, inverted);
+    CHECK(refWithoutEnable == 194);
+    CHECK(inverted == 72);
+}
+
+// ============================================================================
+// D3BlendFactor is not a D3DBLEND table.
+//
+// `sub_73DAD0` in the Windows 2.8.x build is the whole proof: a bare switch
+// from the engine's enum to D3DBLEND that swaps the two DEST pairs and sends 11
+// to BLENDFACTOR, whose constant `sub_73D580` pins at 0x00FFFFFF. Reading the
+// field as D3DBLEND draws 3,175 of the corpus's 21,593 particle systems as
+// opaque black rectangles.
+// ============================================================================
+TEST_CASE("D3: the blend enum is the engine's, not D3DBLEND", "[d3][blend]") {
+    using BF = ::whiteout::flakes::gfx::BlendFactor;
+    const auto c = [](u32 v) { return d3p::D3BlendFactor(v, BF::Zero, false); };
+    const auto a = [](u32 v) { return d3p::D3BlendFactor(v, BF::Zero, true); };
+
+    CHECK(c(1) == BF::Zero);
+    CHECK(c(2) == BF::One);
+    CHECK(c(3) == BF::SrcColor);
+    CHECK(c(4) == BF::InvSrcColor);
+    CHECK(c(5) == BF::SrcAlpha);
+    CHECK(c(6) == BF::InvSrcAlpha);
+    // The two pairs D3DBLEND orders the other way round.
+    CHECK(c(7) == BF::DstColor);
+    CHECK(c(8) == BF::InvDstColor);
+    CHECK(c(9) == BF::DstAlpha);
+    CHECK(c(10) == BF::InvDstAlpha);
+    // The constant, which is white with a zero alpha -- exactly One for the
+    // colour and Zero for the alpha, so it needs no constant-blend support.
+    CHECK(c(11) == BF::One);
+    CHECK(a(11) == BF::Zero);
+    // Every other value is the same in both channels.
+    for (u32 v : {1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u}) {
+        INFO("factor " << v);
+        CHECK(c(v) == a(v));
+    }
+}
+
+// ============================================================================
+// The shader-tag registry.
+//
+// The Windows 2.8.x build carries the whole thing as data: a 63-entry array at
+// 0x148B680, stride 44, each entry `{ u32 id, u32 typeCode, const void*
+// pDefault, 0, const char* description, const char* TAG_NAME, ... }`. That is
+// where every tag id this build keys on comes from, and it turns four names
+// that were read out of the corpus into readings out of the binary:
+//
+//     0xA000F  TAG_VS_LIGHTING                 "Enable Lighting"
+//     0xA0016  TAG_VS_PS0C_FUNC                "Stage 1 Color Function"
+//     0xA001C  TAG_VS_PS0A_FUNC                "Stage 1 Alpha Function"
+//     0xA002B  TAG_VS_PMA_FUNC                 "PMA Func"
+//     0xA003D  TAG_VS_FLIP_NORMAL_BACKFACE     "Flip Normal (BackFace)"
+//
+// The last one is the sharpest: `kD3TagBackFacePass` was named from twelve
+// `cloth_*` shaders and nothing else, and the registry calls it exactly what
+// this build assumed -- the flip-the-normal switch of a back-face pass.
+//
+// The census below is the falsifiable half. A shipped pass carrying a tag the
+// registry does not list would mean the array is not the whole enum.
+// ============================================================================
+TEST_CASE("D3 corpus: every shipped shader tag is in the registry", "[d3][corpus][shd]") {
+    struct Tag {
+        u32 id;
+        const char* name;
+    };
+    // 0x148B680, in table order -- which is neither id order nor offset order.
+    static constexpr Tag kRegistry[] = {
+        {0xA0002u, "TAG_VS_ENABLE_SKINNING"},
+        {0xA0003u, "TAG_VS_NUM_BONE_WEIGHTS"},
+        {0xA0005u, "TAG_VS_EDGEALPHA"},
+        {0xA0006u, "TAG_VS_LIGHTMAP"},
+        {0xA000Au, "TAG_VS_NUM_DIRECTIONAL_LIGHTS"},
+        {0xA0008u, "TAG_VS_NUM_POINT_LIGHTS"},
+        {0xA0009u, "TAG_VS_NUM_SPOT_LIGHTS"},
+        {0xA000Cu, "TAG_VS_NUM_CYLINDRICAL_LIGHTS"},
+        {0xA000Du, "TAG_VS_NUM_POINT_LINEAR_LIGHTS"},
+        {0xA0007u, "TAG_VS_ENABLE_FOGGING"},
+        {0xA0004u, "TAG_VS_TIMER_PERIOD"},
+        {0xA000Eu, "TAG_VS_MATERIAL_FUNC"},
+        {0xA000Fu, "TAG_VS_LIGHTING"},
+        {0xA0022u, "TAG_VS_GLOSSY"},
+        {0xA0023u, "TAG_VS_TINT"},
+        {0xA0024u, "TAG_VS_MASK"},
+        {0xA0025u, "TAG_VS_SHADOW_SELF"},
+        {0xA0026u, "TAG_VS_GLOW"},
+        {0xA0027u, "TAG_VS_FRESNEL_BIAS"},
+        {0xA0028u, "TAG_VS_FRESNEL_POWER"},
+        {0xA000Bu, "TAG_VS_NUM_WAVES"},
+        {0xA0010u, "TAG_VS_TEXCOORD0_FUNC"},
+        {0xA0011u, "TAG_VS_TEXCOORD1_FUNC"},
+        {0xA0012u, "TAG_VS_TEXCOORD2_FUNC"},
+        {0xA0013u, "TAG_VS_TEXCOORD3_FUNC"},
+        {0xA0014u, "TAG_VS_TEXCOORD4_FUNC"},
+        {0xA0015u, "TAG_VS_TEXCOORD5_FUNC"},
+        {0xA0016u, "TAG_VS_PS0C_FUNC"},
+        {0xA0017u, "TAG_VS_PS1C_FUNC"},
+        {0xA0018u, "TAG_VS_PS2C_FUNC"},
+        {0xA0019u, "TAG_VS_PS3C_FUNC"},
+        {0xA001Au, "TAG_VS_PS4C_FUNC"},
+        {0xA001Bu, "TAG_VS_PS5C_FUNC"},
+        {0xA001Cu, "TAG_VS_PS0A_FUNC"},
+        {0xA001Du, "TAG_VS_PS1A_FUNC"},
+        {0xA001Eu, "TAG_VS_PS2A_FUNC"},
+        {0xA001Fu, "TAG_VS_PS3A_FUNC"},
+        {0xA0020u, "TAG_VS_PS4A_FUNC"},
+        {0xA0021u, "TAG_VS_PS5A_FUNC"},
+        {0xA0029u, "TAG_VS_SHADER_MODEL"},
+        {0xA002Au, "TAG_VS_USES_SHADOWS"},
+        {0xA002Bu, "TAG_VS_PMA_FUNC"},
+        {0xA002Cu, "TAG_VS_CLOTH"},
+        {0xA002Du, "TAG_VS_CLOTH_SINGLE_SIDED"},
+        {0xA002Eu, "TAG_VS_FLOAT_TEX_COORD"},
+        {0xA002Fu, "TAG_VS_HERO_TINT"},
+        {0xA0030u, "TAG_VS_ENABLE_DEFORM"},
+        {0xA0031u, "TAG_VS_WEATHER_SCALES_DEFORM"},
+        {0xA0032u, "TAG_VS_DIFF_ALPHA_IS_GLOSS"},
+        {0xA0033u, "TAG_VS_SHADOW_ENABLED"},
+        {0xA0034u, "TAG_VS_SHADOW_TECHNIQUE"},
+        {0xA0035u, "TAG_VS_ALPHATESTFUNC"},
+        {0xA0036u, "TAG_VS_VB_FORMAT"},
+        {0xA0037u, "TAG_VS_USES_TANGENTS"},
+        {0xA0038u, "TAG_VS_TRANSPARENT_ALPHA_TO_ONE"},
+        {0xA0039u, "TAG_VS_MESH_LIGHTING"},
+        {0xA003Au, "TAG_VS_ALPHA_TO_COVERAGE"},
+        {0xA003Bu, "TAG_VS_ENABLE_NEAR_FADE_IN"},
+        {0xA003Cu, "TAG_VS_PERPIXEL_LIGHTING"},
+        {0xA003Du, "TAG_VS_FLIP_NORMAL_BACKFACE"},
+        {0xA003Eu, "TAG_VS_SSAO"},
+        {0xA003Fu, "TAG_VS_EARLY_DEPTH_STENCIL"},
+        {0xA0040u, "TAG_VS_OUTPUT_FORMAT"},
+    };
+    CHECK(std::size(kRegistry) == 63);
+
+    std::map<u32, const char*> byId;
+    for (const auto& t : kRegistry)
+        byId[t.id] = t.name;
+    // 63 entries, 63 distinct ids: the table is a map, not a list with repeats.
+    CHECK(byId.size() == std::size(kRegistry));
+
+    // The five ids this build keys on, against the names the registry gives.
+    CHECK(std::string(byId.at(flakes::io::kD3TagStageColor)) == "TAG_VS_PS0C_FUNC");
+    CHECK(std::string(byId.at(flakes::io::kD3TagStageAlpha)) == "TAG_VS_PS0A_FUNC");
+    CHECK(std::string(byId.at(0xA000Fu)) == "TAG_VS_LIGHTING");
+    CHECK(std::string(byId.at(0xA002Bu)) == "TAG_VS_PMA_FUNC");
+    CHECK(std::string(byId.at(0xA003Du)) == "TAG_VS_FLIP_NORMAL_BACKFACE");
+    // The six stage-combine tags of each group are consecutive, which is what
+    // lets D3PassStateFor walk them as `base + i`.
+    for (u32 i = 0; i < flakes::io::kD3StageArgCount; ++i) {
+        INFO("stage " << i);
+        CHECK(byId.count(flakes::io::kD3TagStageColor + i) == 1);
+        CHECK(byId.count(flakes::io::kD3TagStageAlpha + i) == 1);
+    }
+
+    const auto files = FindFiles(CorpusRoot() / "Shaders", ".shd");
+    if (files.empty()) {
+        WARN("No D3 shader corpus at " << (CorpusRoot() / "Shaders").string()
+                                       << " (set WDX_TEST_D3_CORPUS). Registry checks ran; the "
+                                          "corpus census SKIPPED.");
+        return;
+    }
+
+    std::map<u32, std::size_t> used;
+    std::size_t unknown = 0, entries = 0;
+    for (const auto& f : files) {
+        auto sh = d3n::parseShaders(ReadAll(f));
+        if (!sh)
+            continue;
+        for (const auto& pass : sh->arRenderPasses)
+            for (const auto& t : pass.arShaderParams) {
+                ++entries;
+                used[t.dwTagId]++;
+                if (byId.count(t.dwTagId) == 0)
+                    ++unknown;
+            }
+    }
+    std::printf("[d3-tag] %zu tag entries over %zu shaders, %zu distinct ids, %zu outside the "
+                "registry\n",
+                entries, files.size(), used.size(), unknown);
+    for (const auto& [id, n] : used) {
+        INFO("tag id " << id << " on " << n << " passes");
+        CHECK(byId.count(id) == 1);
+    }
+    CHECK(unknown == 0);
+    // Shipped content exercises 59 of the 63. The four it never names are
+    // TAG_VS_MASK (0xA0024), TAG_VS_MESH_LIGHTING (0xA0039),
+    // TAG_VS_EARLY_DEPTH_STENCIL (0xA003F) and TAG_VS_OUTPUT_FORMAT (0xA0040) --
+    // and the last two the registry itself marks "Set Internally", so an
+    // authored asset was never going to carry them.
+    CHECK(used.size() == 59);
+}
+
+// ============================================================================
+// The fixed-function combine block, against the shipped programs.
+//
+// `d3_re_shaders/pixel/{Billboard,SoftBillboard}.fx__ps_legacy` are uber
+// reconstructions of the shipped particle pixel programs -- 137 permutations,
+// 121 distinct, each validated against its own bytecode. Decoding this block from the pass and running it as
+// an ordered chain reproduces 199 of those 200 shader assets exactly; the eight
+// witnesses below are the ones that pin the parts a single accumulated product
+// could not express.
+// ============================================================================
+
+TEST_CASE("D3 corpus: a pass's combine block decodes to the shipped chain",
+          "[d3][material][corpus]") {
+    namespace wio = ::whiteout::flakes::io;
+    struct Stage {
+        i32 type;
+        u8 colorOp;
+        f32 colorGain;
+        bool colorClamp;
+        u8 alphaOp;
+        f32 alphaGain;
+        bool alphaClamp;
+    };
+    struct Want {
+        const char* file;
+        std::vector<Stage> stages;
+        bool colorFirst, colorLast, alphaFirst, alphaLast;
+    };
+    constexpr u8 kSkip = wio::kD3StageSkip;
+    constexpr u8 kMod = wio::kD3StageModulate;
+    constexpr u8 kAdd = wio::kD3StageAdd;
+    const Want kWant[] = {
+        // The floor: one stage, plain modulate, the vertex colour at the head.
+        {"particle_additive", {{1, kMod, 1, false, kMod, 1, false}}, true, false, true, false},
+        // The `cm2x` / `am4x` in the name, and where they sit: on the SECOND
+        // stage, not on the chain's output.
+        {"particle_transparent_colorMult2x_alphaMult4x",
+         {{1, kMod, 1, false, kMod, 1, false}, {19, kMod, 2, false, kMod, 4, false}},
+         true, false, true, false},
+        // Codes 28 and 27 — the same chain with both alpha stages saturating.
+        // Reading the units digit as a gain alone loses the x4 and both clamps.
+        {"particle_transparent_colorMult2x_alphaMult4x_pma",
+         {{1, kMod, 1, false, kMod, 1, true}, {19, kMod, 2, false, kMod, 4, true}},
+         true, false, true, false},
+        // Alpha code 86 on the third stage: the erosion tail, which is a chain
+        // operation on COLOR1 and not a texture. Its stage samples nothing.
+        {"Particle_transparent_am4x_clamp_errosion",
+         {{1, kSkip, 1, false, kMod, 4, false},
+          {19, kSkip, 1, false, kMod, 4, false},
+          {12, kSkip, 1, false, kSkip, 1, false}},
+         true, false, true, false},
+        // SoftBillboard declares the scene depth (type 39) as stage 0 and the
+        // combine block does not count it. Read at the array's own index this
+        // gives type 1 the colour SKIP that belongs to type 19, which drops the
+        // diffuse's colour on 417 of the corpus's systems.
+        {"softParticle_transparent_am4x",
+         {{1, kMod, 1, false, kMod, 1, false}, {19, kSkip, 1, false, kMod, 4, false}},
+         true, false, true, false},
+        // An ADD stage, and the vertex colour entering the colour chain at BOTH
+        // ends — code 20 at the head and code 40 as a textureless stage 3.
+        {"particle_transparent_blizzard",
+         {{1, kMod, 1, false, kMod, 1, false},
+          {19, kMod, 2, false, kMod, 4, false},
+          {12, kAdd, 1, true, kAdd, 1, true},
+          {0, kSkip, 1, false, kSkip, 1, false}},
+         true, true, false, true},
+        // A leading code 3: the chain starts from the texture and the vertex
+        // colour never enters the colour at all.
+        {"particle_transparent_blood_cm1x_pma",
+         {{1, kMod, 1, false, kMod, 1, false},
+          {19, kMod, 2, false, kMod, 2, true},
+          {0, kSkip, 1, false, kSkip, 1, false}},
+         false, false, false, true},
+        // Four stages, and the alpha gain reaching 16 the way the asset spells
+        // it: 1 x 2 x 2 x 4, one stage at a time.
+        {"particle_transparent_glowTendril",
+         {{1, kMod, 1, false, kMod, 1, false},
+          {19, kMod, 2, false, kMod, 2, false},
+          {12, kSkip, 1, false, kMod, 2, false},
+          {14, kSkip, 1, false, kMod, 4, false}},
+         true, false, true, false},
+    };
+
+    std::size_t checked = 0;
+    for (const auto& w : kWant) {
+        const fs::path p = CorpusRoot() / "Shaders" / (std::string(w.file) + ".shd");
+        if (!fs::exists(p)) {
+            WARN("missing " << p.string() << " -- SKIPPED, not passed.");
+            continue;
+        }
+        auto sh = d3n::parseShaders(ReadAll(p));
+        REQUIRE(sh);
+        const auto st = d3p::D3PassStateOf(*sh);
+        INFO(w.file);
+        REQUIRE(st.resolved);
+        REQUIRE(st.stageArgs);
+        REQUIRE(st.combineCount == w.stages.size());
+        for (std::size_t i = 0; i < w.stages.size(); ++i) {
+            const auto& got = st.combines[i];
+            const auto& e = w.stages[i];
+            INFO("stage " << i << " of " << w.file);
+            CHECK(got.type == e.type);
+            CHECK(got.colorOp == e.colorOp);
+            CHECK(got.alphaOp == e.alphaOp);
+            CHECK(got.colorGain == e.colorGain);
+            CHECK(got.alphaGain == e.alphaGain);
+            CHECK(got.colorClamp == e.colorClamp);
+            CHECK(got.alphaClamp == e.alphaClamp);
+        }
+        CHECK(st.colorVcolFirst == w.colorFirst);
+        CHECK(st.colorVcolLast == w.colorLast);
+        CHECK(st.alphaVcolFirst == w.alphaFirst);
+        CHECK(st.alphaVcolLast == w.alphaLast);
+        ++checked;
+    }
+    if (checked == 0) {
+        WARN("No D3 Shaders corpus. SKIPPED, not passed.");
+        return;
+    }
+    CHECK(checked == std::size(kWant));
+
+    // And the population the decode moves, over the whole `.shd` corpus: how
+    // many billboard passes carry a mid-chain clamp, an ADD, or a vertex colour
+    // that is not simply at the head.
+    const auto files = FindFiles(CorpusRoot() / "Shaders", ".shd");
+    std::size_t billboard = 0, clamped = 0, added = 0, vcolNone = 0, vcolLast = 0, softShift = 0;
+    for (const auto& f : files) {
+        auto sh = d3n::parseShaders(ReadAll(f));
+        if (!sh || sh->arRenderPasses.empty())
+            continue;
+        const std::string& fx = sh->arRenderPasses[0].szEffectFile;
+        if (fx != "Billboard.fx" && fx != "SoftBillboard.fx")
+            continue;
+        const auto st = d3p::D3PassStateOf(*sh);
+        ++billboard;
+        bool anyClamp = false, anyAdd = false;
+        for (u32 i = 0; i < st.combineCount; ++i) {
+            anyClamp = anyClamp || st.combines[i].colorClamp || st.combines[i].alphaClamp;
+            anyAdd = anyAdd || st.combines[i].colorOp == kAdd || st.combines[i].alphaOp == kAdd;
+            // The whole point of indexing by content stage: the depth texture
+            // is never a combine stage on any shipped pass.
+            CHECK(st.combines[i].type != wio::kD3TextureTypeSceneDepth);
+        }
+        clamped += anyClamp ? 1 : 0;
+        added += anyAdd ? 1 : 0;
+        vcolNone += (!st.colorVcolFirst || !st.alphaVcolFirst) ? 1 : 0;
+        vcolLast += (st.colorVcolLast || st.alphaVcolLast) ? 1 : 0;
+        if (fx == "SoftBillboard.fx")
+            ++softShift;
+    }
+    std::printf("[d3-combine] %zu billboard passes: %zu clamp mid-chain, %zu add, %zu drop the "
+                "vertex colour, %zu take it last; %zu are SoftBillboard\n",
+                billboard, clamped, added, vcolNone, vcolLast, softShift);
+    CHECK(billboard == 243);
+    CHECK(softShift == 20);
+    CHECK(added == 5);
 }

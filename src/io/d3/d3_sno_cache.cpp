@@ -1,5 +1,6 @@
 #include "io/d3/d3_sno_cache.h"
 
+
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -134,6 +135,7 @@ void D3SnoCache::SetBudgetBytes(usize bytes) {
 void D3SnoCache::Clear() {
     entries_.clear();
     names_.clear();
+    atlases_.clear();
     lru_.clear();
     stats_.bytesResident = 0;
 }
@@ -349,6 +351,87 @@ std::shared_ptr<const d3n::Actor> D3SnoCache::AdoptActor(i32 sno, std::span<cons
 std::shared_ptr<const d3n::Appearances> D3SnoCache::AdoptAppearance(i32 sno,
                                                                     std::span<const u8> bytes) {
     return Typed<d3n::Appearances>(sno, d3n::Group::Appearance, bytes);
+}
+
+namespace {
+
+// The `.tex` header, in file offsets. Same numbers WhiteoutLib's TEX parser
+// uses (`tex_internal.h`), read here directly rather than through it: the
+// parser has no metadata-only entry point and this wants twenty floats, not a
+// decoded mip chain. See D3TextureAtlas.
+constexpr usize kTexDescOffset = 0x20;   ///< {format, width, height, depth, ...}
+constexpr usize kTexAtlasOffset = 0x218; ///< {frameCount, tableOffset, tableSize, ...}
+constexpr usize kTexFrameStride = 80;    ///< {u0, v0, u1, v1, char name[64]}
+
+/// @brief Does the record at @p at read as a frame rectangle?
+///
+/// The test that separates a frame from the table's leading junk slot: every
+/// shipped rect is a sub-rect of the sheet, so all four numbers are in [0,1]
+/// and both extents are positive. What sits in slot 0 passes none of that —
+/// `Axe_norm_unique_04`'s sheet holds the integers 4, 5, 6, 7 there (positive
+/// denormals as floats, which a bare `u1 > u0` test would accept) and
+/// `Wand_norm_unique_01`'s holds four zeros.
+bool IsFrameRect(std::span<const u8> b, usize at) {
+    f32 r[4];
+    std::memcpy(r, b.data() + at, sizeof(r));
+    for (f32 v : r) {
+        if (!(v >= 0.0f && v <= 1.0f))
+            return false;
+    }
+    return r[2] - r[0] > 1e-6f && r[3] - r[1] > 1e-6f;
+}
+
+} // namespace
+
+std::shared_ptr<const D3TextureAtlas> D3SnoCache::TextureAtlas(i32 sno) {
+    if (sno < 0)
+        return nullptr;
+    if (auto it = atlases_.find(sno); it != atlases_.end())
+        return it->second;
+
+    std::shared_ptr<const D3TextureAtlas> out;
+    const std::vector<u8> bytes = ReadBytes(sno);
+    const std::span<const u8> b{bytes};
+    if (b.size() >= kTexAtlasOffset + 12 && ReadU32(b, 0) == kSnoMagic) {
+        const u32 count = ReadU32(b, kTexAtlasOffset);
+        const u32 tableAt = ReadU32(b, kTexAtlasOffset + 4);
+        const u32 tableBytes = ReadU32(b, kTexAtlasOffset + 8);
+        // The frame table does not start at `frameTableOffset`: every sheet
+        // measured declares `count * 80` bytes there and puts a JUNK RECORD
+        // first, so the real frames are `count` records starting one slot in.
+        // Six sheets, four sizes — 512x64 and 512x128 with 4 tiles of 0.25,
+        // 1024x256 and 2048x256 with 8 of 0.125 — and in every one the sheet's
+        // LAST tile is what goes missing if that slot is taken as a frame. It
+        // cannot be one anyway: the engine reads the tile SIZE off frame 0, and
+        // the junk is not a rectangle. Skipped by testing rather than by a
+        // constant, because its content varies (integers on one sheet, zeros on
+        // another) and a sheet that needs no skip must not get one.
+        u32 first = 0;
+        while (first < 4 &&
+               static_cast<u64>(tableAt) + static_cast<u64>(first + 1) * kTexFrameStride <=
+                   b.size() &&
+               !IsFrameRect(b, tableAt + static_cast<usize>(first) * kTexFrameStride)) {
+            ++first;
+        }
+        const u64 end =
+            static_cast<u64>(tableAt) + static_cast<u64>(first + count) * kTexFrameStride;
+        (void)tableBytes;
+        if (count > 0 && tableAt > 0 && end <= b.size()) {
+            auto a = std::make_shared<D3TextureAtlas>();
+            a->width = ReadU32(b, kTexDescOffset + 4);
+            a->height = ReadU32(b, kTexDescOffset + 8);
+            a->frames.reserve(count);
+            for (u32 i = 0; i < count; ++i) {
+                const usize at = tableAt + static_cast<usize>(first + i) * kTexFrameStride;
+                f32 r[4];
+                std::memcpy(r, b.data() + at, sizeof(r));
+                a->frames.push_back({r[0], r[1], r[2], r[3]});
+            }
+            out = std::move(a);
+        }
+    }
+    atlases_.emplace(sno, out);
+    return out;
 }
 
 d3n::Group D3SnoCache::GroupOf(i32 sno) {

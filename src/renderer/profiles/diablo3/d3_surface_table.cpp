@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <map>
+#include <vector>
 
 namespace whiteout::flakes::renderer::profiles::diablo3 {
 
@@ -47,18 +48,48 @@ using ::whiteout::flakes::io::D3UvTransformId;
 // MSAA path, and taking its program would be claiming a pass we never bind.
 constexpr u32 kD3OpaqueTagChain[] = {0x30502u, 0x30850u, 0x30830u, 0x30600u, 0x30500u};
 
-/// The shader-variant tag that turns the light block off. Its neighbours are
-/// the five per-type light counts Render_EnsureShaderVariant clamps to 16
-/// (0xA0008 point, 0xA0009 spot, 0xA000A directional, 0xA000C cylindrical,
-/// 0xA000D point-linear); this one sits just above them and gates the lot.
+/// The shader-variant tag that turns the light block off -- TAG_VS_LIGHTING,
+/// "Enable Lighting", in the tag registry the Windows build ships at
+/// 0x148B680. Its neighbours are the five per-type light counts
+/// Render_EnsureShaderVariant clamps to 16 (0xA0008 TAG_VS_NUM_POINT_LIGHTS,
+/// 0xA0009 spot, 0xA000A directional, 0xA000C cylindrical, 0xA000D
+/// point-linear); this one sits just above them and gates the lot.
 constexpr u32 kD3TagLightingEnable = 0xA000Fu;
 
 /// The tag the back pass of a two-sided pair raises. Measured over all 1,507
 /// corpus `.shd`: worth 1 on exactly 12 passes and 0 on 15, and every one of
 /// the twelve is pass 1 of a `cloth_*` shader culling CCW against a pass 0
 /// culling CW. It is the flip-the-normal switch, which is what the second draw
-/// is for.
+/// is for -- and the registry agrees to the word: TAG_VS_FLIP_NORMAL_BACKFACE,
+/// "Flip Normal (BackFace)".
 constexpr u32 kD3TagBackFacePass = 0xA003Du;
+
+/// The tag that selects a `_pma` program's output form -- TAG_VS_PMA_FUNC,
+/// "PMA Func" -- 1 = premultiply and invert the alpha, 2 = premultiply and
+/// write 1. Measured over the corpus's
+/// 1,831 passes: present with value 1 on 43, 2 on 13, 0 on 4, and 55 of those
+/// 56 live values sit on a pass whose blend src is 11 (BLENDFACTOR). The two
+/// `src == 11` passes that carry no tag are read from the dst instead.
+constexpr u32 kD3TagPremultipliedAlpha = 0xA002Bu;
+
+/// The blend factor the engine's own enum reserves for the constant, and the
+/// constant `sub_73D580` hard-codes beside it: 0x00FFFFFF -- (1, 1, 1) for the
+/// colour and 0 for the alpha.
+constexpr u32 kD3BlendFactorConstant = 11u;
+
+/// @brief The premultiplied-alpha mode for a pass, or 0.
+///
+/// See D3PassState::pmaMode. The dst factor decides between the two forms that
+/// carry no tag, because it is what the shipped program is written against:
+/// `dst = SRCALPHA` needs the inverted alpha, `dst = INVSRCALPHA` does not.
+u32 D3PmaModeOf(const d3n::RenderPass& pass, u32 blendSrc, u32 blendDst) {
+    if (blendSrc != kD3BlendFactorConstant)
+        return 0;
+    for (const auto& t : pass.arShaderParams)
+        if (t.dwTagId == kD3TagPremultipliedAlpha && t.dwValue == 2u)
+            return 2;
+    return blendDst == 5u ? 1u : 3u;
+}
 
 const d3n::ShaderTagMapEntry* FindTag(const d3n::RenderPass& pass, u32 id) {
     for (const auto& t : pass.arShaderParams) {
@@ -135,29 +166,31 @@ bool SameStages(const d3n::RenderPass& a, const d3n::RenderPass& b) {
     for (usize i = 0; i < a.arTextureStages.size(); ++i) {
         const auto& x = a.arTextureStages[i];
         const auto& y = b.arTextureStages[i];
-        if (x.dwUnknown00 != y.dwUnknown00 || x.dwUnknown04 != y.dwUnknown04 ||
-            x.dwUnknown08 != y.dwUnknown08 || x.dwUnknown0C != y.dwUnknown0C ||
-            x.dwUnknown10 != y.dwUnknown10 || x.flUnknown14 != y.flUnknown14)
+        if (x.dwTextureType != y.dwTextureType || x.dwAddressU != y.dwAddressU ||
+            x.dwAddressV != y.dwAddressV || x.dwAddressW != y.dwAddressW ||
+            x.dwFilter != y.dwFilter || x.flMipMapLodBias != y.flMipMapLodBias)
             return false;
     }
     return true;
 }
 
 /// Every RenderParams field but the cull mode. Field by field rather than a
-/// memcmp: `bUnknown34` is a byte between two ints, so the struct has padding
+/// memcmp: `bAlphaRef` is a byte between two ints, so the struct has padding
 /// a comparison must not read.
 bool SameRenderParamsButCull(const d3n::RenderParams& a, const d3n::RenderParams& b) {
-    return a.dwUnknown04 == b.dwUnknown04 && a.dwUnknown08 == b.dwUnknown08 &&
-           a.flUnknown0C == b.flUnknown0C && a.flUnknown10 == b.flUnknown10 &&
-           a.dwUnknown14 == b.dwUnknown14 && a.dwUnknown18 == b.dwUnknown18 &&
-           a.dwUnknown1C == b.dwUnknown1C && a.dwUnknown20 == b.dwUnknown20 &&
-           a.dwUnknown24 == b.dwUnknown24 && a.dwUnknown28 == b.dwUnknown28 &&
-           a.dwUnknown2C == b.dwUnknown2C && a.dwUnknown30 == b.dwUnknown30 &&
-           a.bUnknown34 == b.bUnknown34 && a.dwUnknown38 == b.dwUnknown38 &&
-           a.dwUnknown3C == b.dwUnknown3C && a.dwUnknown40 == b.dwUnknown40 &&
-           a.dwUnknown44 == b.dwUnknown44 && a.dwUnknown48 == b.dwUnknown48 &&
-           a.dwUnknown4C == b.dwUnknown4C && a.dwUnknown50 == b.dwUnknown50 &&
-           a.dwUnknown54 == b.dwUnknown54 && a.dwUnknown58 == b.dwUnknown58;
+    return a.dwZWriteEnable == b.dwZWriteEnable && a.dwZFunc == b.dwZFunc &&
+           a.flDepthBias == b.flDepthBias && a.flUnknown10 == b.flUnknown10 &&
+           a.dwStencilEnable == b.dwStencilEnable && a.dwStencilFunc == b.dwStencilFunc &&
+           a.dwStencilRef == b.dwStencilRef && a.dwStencilPass == b.dwStencilPass &&
+           a.dwStencilFail == b.dwStencilFail && a.dwStencilZFail == b.dwStencilZFail &&
+           a.dwAlphaTestEnable == b.dwAlphaTestEnable && a.dwAlphaFunc == b.dwAlphaFunc &&
+           a.bAlphaRef == b.bAlphaRef && a.dwAlphaToCoverage == b.dwAlphaToCoverage &&
+           a.dwFogEnable == b.dwFogEnable && a.dwFillMode == b.dwFillMode &&
+           a.dwColorWriteEnable == b.dwColorWriteEnable &&
+           a.dwAlphaWriteEnable == b.dwAlphaWriteEnable &&
+           a.dwAlphaBlendEnable == b.dwAlphaBlendEnable && a.dwBlendOp == b.dwBlendOp &&
+           a.dwSrcBlend == b.dwSrcBlend && a.dwDestBlend == b.dwDestBlend &&
+           a.dwConstantColor == b.dwConstantColor;
 }
 
 bool SameTagsButBackFace(const d3n::RenderPass& a, const d3n::RenderPass& b) {
@@ -201,8 +234,8 @@ bool D3IsTwoSidedPassPair(const d3n::Shaders& sh) {
         return false;
     const auto& a = sh.arRenderPasses[0];
     const auto& b = sh.arRenderPasses[1];
-    const u32 ca = static_cast<u32>(a.tRenderParams.dwUnknown00);
-    const u32 cb = static_cast<u32>(b.tRenderParams.dwUnknown00);
+    const u32 ca = static_cast<u32>(a.tRenderParams.dwCullMode);
+    const u32 cb = static_cast<u32>(b.tRenderParams.dwCullMode);
     if (!((ca == 2 && cb == 3) || (ca == 3 && cb == 2)))
         return false;
     return a.szEffectFile == b.szEffectFile && a.szVertexShaderEntry == b.szVertexShaderEntry &&
@@ -229,7 +262,15 @@ D3PassState D3PassStateFor(const d3n::UberMaterial& material,
     if (shadersId < 0)
         return st;
     const auto shaders = cache->Shaders(shadersId);
-    if (!shaders || shaders->arRenderPasses.empty())
+    if (!shaders)
+        return st;
+    return D3PassStateOf(*shaders);
+}
+
+D3PassState D3PassStateOf(const d3n::Shaders& shadersAsset) {
+    D3PassState st;
+    const auto* shaders = &shadersAsset;
+    if (shaders->arRenderPasses.empty())
         return st;
 
     // Pass 0. A multi-pass Shaders draws the same geometry more than once with
@@ -240,36 +281,95 @@ D3PassState D3PassStateFor(const d3n::UberMaterial& material,
     const auto& pass0 = shaders->arRenderPasses[0];
     const auto& r = pass0.tRenderParams;
     st.resolved = true;
-    st.cull = static_cast<u32>(r.dwUnknown00);
+    // RenderParams, whose every field was named off the Windows 2.8.x build's
+    // `sub_5717F0` — it hands each one to a single D3D9 setter, so the map is a
+    // reading and not a guess. Four fields are decoded and deliberately not
+    // applied, for the reasons D3_MATERIAL_AUDIT.md §2.1 gives: the stencil
+    // block (`sub_5717F0` never calls the stencil setters at all),
+    // `dwAlphaToCoverage` (inert without MSAA, and this build has none),
+    // `dwFogEnable` (there is no fog here), and `dwConstantColor` (the float4
+    // the shader atlas names Constant0, which no shader here binds).
+    st.cull = static_cast<u32>(r.dwCullMode);
     st.twoSidedPair = D3IsTwoSidedPassPair(*shaders);
-    st.depthWrite = r.dwUnknown04 != 0;
-    st.alphaRef = r.bUnknown34;
-    st.blendEnable = r.dwUnknown4C != 0;
-    st.blendSrc = static_cast<u32>(r.dwUnknown54);
-    st.blendDst = static_cast<u32>(r.dwUnknown58);
-    for (const auto& stage : pass0.arTextureStages)
-        st.declaredTypes |= D3TypeBit(stage.dwUnknown00);
+    st.depthWrite = r.dwZWriteEnable != 0;
+    st.depthFunc = static_cast<u32>(r.dwZFunc);
+    st.depthBias = r.flDepthBias;
+    st.fillMode = static_cast<u32>(r.dwFillMode);
+    st.colorWrite = r.dwColorWriteEnable != 0;
+    st.alphaWrite = r.dwAlphaWriteEnable != 0;
+    st.alphaTestEnable = r.dwAlphaTestEnable != 0;
+    st.alphaFunc = static_cast<u32>(r.dwAlphaFunc);
+    st.alphaRef = r.bAlphaRef;
+    st.blendEnable = r.dwAlphaBlendEnable != 0;
+    st.blendSrc = static_cast<u32>(r.dwSrcBlend);
+    st.blendDst = static_cast<u32>(r.dwDestBlend);
+    st.pmaMode = D3PmaModeOf(pass0, st.blendSrc, st.blendDst);
+    for (const auto& stage : pass0.arTextureStages) {
+        st.declaredTypes |= D3TypeBit(stage.dwTextureType);
+        if (st.stageCount < D3PassState::kMaxStages)
+            st.stages[st.stageCount++] = {stage.dwTextureType, io::D3StageWrapBits(stage)};
+    }
     st.effectFile = pass0.szEffectFile;
     // The fixed-function stage block. Present on every Legacy.fx pass and on no
     // other family this reproduces, so reading it needs no effect-file test:
     // a pass either carries the tags or it does not. See D3StageArg.
+    //
+    // The block is indexed by CONTENT stage -- `arTextureStages` position with
+    // the scene-depth stage skipped, which only SoftBillboard.fx declares and
+    // always first.
+    std::vector<i32> content;
+    content.reserve(pass0.arTextureStages.size());
+    for (usize i = 0; i < pass0.arTextureStages.size(); ++i) {
+        if (pass0.arTextureStages[i].dwTextureType != io::kD3TextureTypeSceneDepth)
+            content.push_back(pass0.arTextureStages[i].dwTextureType);
+    }
+    bool colorSeen = false;
+    bool alphaSeen = false;
     for (u32 i = 0; i < io::kD3StageArgCount; ++i) {
         const auto* color = FindTag(pass0, io::kD3TagStageColor + i);
         const auto* alpha = FindTag(pass0, io::kD3TagStageAlpha + i);
         if (!color && !alpha)
             continue;
         st.stageArgs = true;
-        // A gain can sit on a stage past the texture list -- Imperius's second
-        // wing pass parks its x4 on stage 3 of a two-stage pass -- so the gains
-        // are accumulated over the whole block and the channel bits only over
-        // the stages that name a type.
-        const auto c = D3ReadStageArg(color ? color->dwValue : 0);
-        const auto a = D3ReadStageArg(alpha ? alpha->dwValue : 0);
+        const u32 cCode = color ? color->dwValue : 0;
+        const u32 aCode = alpha ? alpha->dwValue : 0;
+        // A gain can sit on a stage past the texture list -- `x1_Death_Orb_am_uv2`
+        // parks a x2 on stage 1 of a one-stage pass and its program applies it --
+        // so the summary gains are accumulated over the whole block and the
+        // channel bits only over the stages that name a type.
+        const auto c = D3ReadStageArg(cCode);
+        const auto a = D3ReadStageArg(aCode);
         st.colorGain *= c.gain;
         st.alphaGain *= a.gain;
+        // A stage with no texture is a chain operation on what is already there:
+        // 40 multiplies the vertex colour in at the END, 42 squares.
+        if (io::D3StageIsVertexColorOnly(cCode))
+            st.colorVcolLast = true;
+        if (io::D3StageIsVertexColorOnly(aCode))
+            st.alphaVcolLast = true;
+        if (c.usesTexture && !colorSeen) {
+            colorSeen = true;
+            st.colorVcolFirst = io::D3StageTakesVertexColor(cCode);
+        }
+        if (a.usesTexture && !alphaSeen) {
+            alphaSeen = true;
+            st.alphaVcolFirst = io::D3StageTakesVertexColor(aCode);
+        }
+        if (i < content.size() && st.combineCount < D3PassState::kMaxStages) {
+            D3PassState::Combine& cb = st.combines[st.combineCount++];
+            cb.type = content[i];
+            cb.colorOp = c.adds ? io::kD3StageAdd
+                                : (c.usesTexture ? io::kD3StageModulate : io::kD3StageSkip);
+            cb.alphaOp = a.adds ? io::kD3StageAdd
+                                : (a.usesTexture ? io::kD3StageModulate : io::kD3StageSkip);
+            cb.colorGain = c.gain;
+            cb.alphaGain = a.gain;
+            cb.colorClamp = c.clamps;
+            cb.alphaClamp = a.clamps;
+        }
         if (i >= pass0.arTextureStages.size())
             continue;
-        const i32 type = pass0.arTextureStages[i].dwUnknown00;
+        const i32 type = pass0.arTextureStages[i].dwTextureType;
         const u64 bit = D3TypeBit(type);
         if (color || alpha)
             st.namedTypes |= bit;
@@ -358,7 +458,14 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
             // Either spelling: a pass that asks for no culling, or a pair
             // of passes that between them cover both windings.
             s.twoSided = s.pass.cull == 1 || s.pass.twoSidedPair;
-            s.alphaTestThreshold = static_cast<f32>(s.pass.alphaRef) * (1.0f / 255.0f);
+            // Three fields, not one. `sub_5717F0` passes (0, 0) to the
+            // alpha-func setter when the enable is clear, so a pass carrying a
+            // reference with the test off tests nothing -- 194 shipped passes
+            // do exactly that, and reading the reference alone cuts holes in
+            // all of them.
+            s.alphaTestFunc = s.pass.alphaTestEnable ? s.pass.alphaFunc : 0u;
+            s.alphaTestThreshold =
+                s.pass.alphaTestEnable ? static_cast<f32>(s.pass.alphaRef) * (1.0f / 255.0f) : 0.0f;
             // An unlit pass takes the vertex colour AS its light — but only
             // where there is one to take. See D3Surface::unlit.
             s.unlit = !s.pass.lit && !VertexColorAllBlack(sub);
@@ -438,9 +545,10 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
             // coordinates, and D3 authors both sets on every vertex, so nothing
             // about the geometry would say so.
             slot.uvSource = 0;
-            // The entry's own address modes -- see kD3UvFlagWrapMask. Forcing
-            // wrap here tiled every fixed-matrix layer in the game.
-            slot.wrapFlags = static_cast<u32>(io::D3UvFlagsOf(entry) & io::kD3UvFlagWrapMask);
+            // The PASS's address modes for this stage, not the entry's flags
+            // word: that word's low bits randomise the scroll phase and say
+            // nothing about addressing. See D3PassState::WrapBitsFor.
+            slot.wrapFlags = s.pass.WrapBitsFor(type);
 
             const auto uv = D3ReadUvXform(entry);
             if (uv.mode == D3UvMode::Matrix) {

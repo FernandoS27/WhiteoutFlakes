@@ -491,7 +491,11 @@ PipelineHandle MetalDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& d
         auto applySlotZero = [&](MTLRenderPipelineColorAttachmentDescriptor* ca,
                                  MTLPixelFormat fmt) {
             ca.pixelFormat = fmt;
-            ca.writeMask = desc.blend.colorWrite ? MTLColorWriteMaskAll : MTLColorWriteMaskNone;
+            ca.writeMask =
+                (desc.blend.colorWrite ? (MTLColorWriteMaskRed | MTLColorWriteMaskGreen |
+                                          MTLColorWriteMaskBlue)
+                                       : MTLColorWriteMaskNone) |
+                (desc.blend.alphaWrite ? MTLColorWriteMaskAlpha : MTLColorWriteMaskNone);
             ca.blendingEnabled = desc.blend.enable;
             if (desc.blend.enable) {
                 ca.sourceRGBBlendFactor = ToMtlBlendFactor(desc.blend.srcColor);

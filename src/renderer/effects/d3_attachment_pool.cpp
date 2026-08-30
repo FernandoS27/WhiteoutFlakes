@@ -22,6 +22,7 @@ void D3AttachmentPool::Bind(std::shared_ptr<io::D3ModelAdapter> adapter, io::D3S
     allocHandle_ = std::move(allocHandle);
     bySequence_.clear();
     pending_.clear();
+    expired_.clear();
     nextEmitterId_ = firstEmitterId;
     prevSeq_ = -1;
     prevTimeMs_ = 0;
@@ -72,6 +73,10 @@ void D3AttachmentPool::Tick(Actor& actor, i32 activeSeq, i32 localTimeMs, i32 se
     // attachment sitting on the clip's very first millisecond still fires —
     // 4,283 of the 7,570 particle attachments are at frame 0.
     if (activeSeq != prevSeq_) {
+        // The sequence we are leaving takes its effects with it — see
+        // TakeExpired. Only a sequence that actually played has any.
+        if (prevSeq_ >= 0)
+            ReleaseSequence(prevSeq_, actor.handle, particles);
         prevSeq_ = activeSeq;
         prevTimeMs_ = seqStartMs - 1;
     }
@@ -133,9 +138,45 @@ void D3AttachmentPool::Tick(Actor& actor, i32 activeSeq, i32 localTimeMs, i32 se
     prevTimeMs_ = localTimeMs;
 }
 
+void D3AttachmentPool::ReleaseSequence(i32 seq, u32 owner,
+                                       particle::ParticleService* particles) {
+    auto it = bySequence_.find(seq);
+    if (it == bySequence_.end())
+        return;
+
+    for (Entry& e : it->second) {
+        if (e.childHandle != 0) {
+            expired_.push_back(e.childHandle);
+            e.childHandle = 0;
+        }
+        if (e.emitterId < 0)
+            continue;
+        if (particles) {
+            // Restart first, and only then remove: a `.prt` whose particles are
+            // whole models reports its children's deaths as events, and those
+            // have to be queued before the emitter carrying them is dropped.
+            if (auto* d3 = dynamic_cast<particle::d3::Emitter*>(
+                    particles->GetEmitter(owner, e.output, e.emitterId)))
+                d3->Restart();
+            particles->RemoveEmitter(owner, e.output, e.emitterId);
+        }
+        // Back to unbuilt. Firing again rebuilds the desc and rebinds the
+        // textures, which is what the first fire does anyway; `dead` is left
+        // alone, because an attachment that was asked for and refused stays
+        // refused.
+        e.emitterId = -1;
+    }
+}
+
 std::vector<D3AttachmentPool::PendingChild> D3AttachmentPool::TakePending() {
     std::vector<PendingChild> out;
     out.swap(pending_);
+    return out;
+}
+
+std::vector<u32> D3AttachmentPool::TakeExpired() {
+    std::vector<u32> out;
+    out.swap(expired_);
     return out;
 }
 

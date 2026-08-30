@@ -188,6 +188,13 @@ void FrameTicker::DriveD3Attachments() {
         auto* mi = rs_.Scene().Actors().Find(h);
         if (!mi)
             continue;
+        // The sequence the actor just left takes its effects with it. Drained
+        // ahead of the new sequence's spawns so a clip that re-enters and
+        // re-fires the same attachment gets a fresh actor rather than racing
+        // its own corpse.
+        for (u32 dead : mi->d3Attachments.TakeExpired())
+            rs_.Loader().DestroyActor(dead);
+
         for (const auto& p : mi->d3Attachments.TakePending()) {
             if (p.existing != 0) {
                 // Already spawned once by this attachment. The engine would

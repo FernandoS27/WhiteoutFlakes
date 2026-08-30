@@ -315,17 +315,41 @@ static int RunParticleDiff(whiteout::flakes::renderer::RenderService& renderer,
                 if (!d3)
                     return;
                 const auto& m = d3->D3Desc().d3mat;
-                std::printf("       sno=%d caps=0x%04X type=%d shape=%d mat: pass=%d %s blend=(%u,%u) gain=(%.2f "
-                            "%.2f) aTest=%.3f layers=%u\n",
+                std::printf("       sno=%d caps=0x%04X type=%d shape=%d mat: pass=%d %s blend=(%u,%u) "
+                            "vcol=(%d%d %d%d) aTest=%.3f layers=%u\n",
                             d3->D3Desc().snoId, d3->D3Desc().caps, d3->D3Desc().systemType,
                             int(d3->D3Desc().shape), m.passResolved ? 1 : 0,
-                            m.effectFile.c_str(), m.blendSrc, m.blendDst, m.colorGain, m.alphaGain,
+                            m.effectFile.c_str(), m.blendSrc, m.blendDst,
+                            m.colorVcolFirst ? 1 : 0, m.colorVcolLast ? 1 : 0,
+                            m.alphaVcolFirst ? 1 : 0, m.alphaVcolLast ? 1 : 0,
                             m.alphaTest, m.layerCount);
                 for (unsigned L = 0; L < m.layerCount; ++L) {
                     const auto& lay = m.layers[L];
-                    std::printf("         L%u type=%2d sno=%d texId=%d wrap=%u c=%d a=%d\n", L,
+                    std::printf("         L%u type=%2d sno=%d texId=%d wrap=%u op=%d/%d"
+                                " gain=%.0f/%.0f clamp=%d%d uv=%d", L,
                                 lay.rawType, lay.textureSno, lay.textureId, lay.wrapFlags,
-                                lay.samplesColor ? 1 : 0, lay.samplesAlpha ? 1 : 0);
+                                int(lay.colorOp), int(lay.alphaOp), lay.colorGain,
+                                lay.alphaGain, lay.colorClamp ? 1 : 0,
+                                lay.alphaClamp ? 1 : 0, int(lay.uv.mode));
+                    // The flip-book. `frames=0` beside `uv=3` is the honest
+                    // degradation and not a failure: 6,934 of the corpus's
+                    // 8,390 mode-3 entries name no sheet table at all.
+                    if (lay.uv.mode == wf::io::D3UvMode::Anim2D) {
+                        const unsigned n = lay.atlas ? unsigned(lay.atlas->frames.size()) : 0u;
+                        std::printf(" atlas: frames=%u tile=%.4f,%.4f px=%ux%u rate=%.1f(+%.1f)"
+                                    " start=%d..%d %s",
+                                    n, n ? lay.atlas->TileSize().x : 0.0f,
+                                    n ? lay.atlas->TileSize().y : 0.0f,
+                                    n ? lay.atlas->width : 0u, n ? lay.atlas->height : 0u,
+                                    lay.atlasRate, lay.atlasRateJitter, lay.atlasFrameBase,
+                                    lay.atlasFrameBase + lay.atlasFrameRange,
+                                    (int(L) == m.atlasLayer) ? "ACTIVE" : "-");
+                        for (unsigned k = 0; k < n && k < 3; ++k)
+                            std::printf(" [%.3f,%.3f..%.3f,%.3f]", lay.atlas->frames[k].x,
+                                        lay.atlas->frames[k].y, lay.atlas->frames[k].z,
+                                        lay.atlas->frames[k].w);
+                    }
+                    std::printf("\n");
                 }
 #endif
             });

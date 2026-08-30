@@ -366,18 +366,24 @@ TEST_CASE("d3 effect: what the spawn message actually reaches", "[d3][effect][co
     const auto root = CorpusRoot();
     const auto acrs = FindGroup(root, "Actor", ".acr");
     const auto efgs = FindGroup(root, "EffectGroup", ".efg");
+    const auto prts = FindGroup(root, "Particle", ".prt");
     if (acrs.empty() || efgs.empty()) {
         WARN("no D3 corpus; skipping");
         return;
     }
 
+    // Both indirections the resolver can follow: an `.efg` names items, and a
+    // `.prt` fires its own message-3000 events. Without the `.prt` bytes here
+    // the fourth site is inert and this census understates itself.
     MapProvider prov;
-    for (const auto& f : efgs) {
-        auto b = ReadAll(f);
-        if (b.size() >= 20) {
-            i32 id = 0;
-            std::memcpy(&id, b.data() + 16, 4);
-            prov.Add(id, std::move(b));
+    for (const auto* set : {&efgs, &prts}) {
+        for (const auto& f : *set) {
+            auto b = ReadAll(f);
+            if (b.size() >= 20) {
+                i32 id = 0;
+                std::memcpy(&id, b.data() + 16, 4);
+                prov.Add(id, std::move(b));
+            }
         }
     }
     wio::D3SnoCache cache(&prov);
@@ -758,4 +764,112 @@ TEST_CASE("d3 effect: a hardpoint resolves to a bone and a frame", "[d3][effect]
     CHECK(root.bone == -1);
     CHECK(root.offset.data[3][0] == 0.0f);
     CHECK(root.offset.data[0][0] == 1.0f);
+}
+
+TEST_CASE("d3 effect: a .prt is an authoring site of its own", "[d3][effect][corpus]") {
+    // The fourth site. `ParticleSystem_FireTriggeredEvents` (0x71000BD510)
+    // walks the Particle SNO's own `MsgTriggeredEvent` array and dispatches
+    // every entry whose message matches, exactly as the actor route does — and
+    // its six callers name the whole vocabulary: 3000 spawn
+    // (`ParticleSystem_Spawn`), 3001 release, 3002 stop, 3003 the animation
+    // shim, 3500 per emitted particle, 3501 per death. Only 3000 is something
+    // a viewer can serve without a running simulation, so only 3000 is wired.
+    const auto prts = FindGroup(CorpusRoot(), "Particle", ".prt");
+    if (prts.empty()) {
+        WARN("no D3 Particle corpus; skipping");
+        return;
+    }
+
+    MapProvider prov;
+    std::size_t files = 0, withEvents = 0, events = 0, subKeyed = 0, impulsed = 0;
+    std::map<i32, std::size_t> byMsg;
+    std::map<std::pair<i32, i32>, std::size_t> spawnByGroupType;
+    for (const auto& f : prts) {
+        auto b = ReadAll(f);
+        if (b.size() < 20)
+            continue;
+        i32 id = 0;
+        std::memcpy(&id, b.data() + 16, 4);
+        auto p = d3n::parseParticle(b);
+        prov.Add(id, std::move(b));
+        if (!p)
+            continue;
+        ++files;
+        if (p->arTriggeredEvents.empty())
+            continue;
+        ++withEvents;
+        for (const auto& ev : p->arTriggeredEvents) {
+            ++events;
+            byMsg[ev.eMessageType] += 1;
+            if (ev.tEvent.tConditions.nSubKey != 0)
+                ++subKeyed;
+            if (ev.tEvent.tConditions.flKeyValueMin != 0.0f ||
+                ev.tEvent.tConditions.flKeyValueRange != 0.0f)
+                ++impulsed;
+            if (ev.eMessageType == 3000)
+                spawnByGroupType[{ev.tEvent.tPayload.eSnoGroup, ev.tEvent.eTriggerType}] += 1;
+        }
+    }
+
+    std::printf("[d3 prt-fx] %zu .prt, %zu carry events, %zu events; msgs:", files, withEvents,
+                events);
+    for (const auto& [m, n] : byMsg)
+        std::printf(" %d=%zu", m, n);
+    std::printf("\n[d3 prt-fx] spawn payloads by (group,type):");
+    for (const auto& [k, n] : spawnByGroupType)
+        std::printf(" (%d,%d)=%zu", k.first, k.second, n);
+    std::printf("\n");
+
+    CHECK(files == 21593);
+    CHECK(withEvents == 1388);
+    CHECK(events == 2038);
+    // `MsgTriggeredEvent_MatchesKey` also tests a sub-key and an impulse
+    // window. Both are zero on every shipped particle event, so for this site
+    // the match is the message id alone — checked anyway, because the code
+    // applies the sub-key filter and a red here would mean it starts dropping.
+    CHECK(subKeyed == 0);
+    CHECK(impulsed == 0);
+    // Spawn dominates, and two thirds of what it names is sound.
+    CHECK(byMsg[3000] == 1158);
+    CHECK(byMsg[3001] == 62);
+    CHECK(byMsg[3002] == 207);
+    CHECK(byMsg[3500] == 486);
+    CHECK(byMsg[3501] == 90);
+    // The pairing the resolver leans on holds at this site too: group 27 rides
+    // trigger type 0 or 25, group 14 only ever 16.
+    CHECK(spawnByGroupType[{27, 0}] == 311);
+    CHECK(spawnByGroupType[{27, 25}] == 8);
+    CHECK(spawnByGroupType[{14, 16}] == 14);
+    CHECK(spawnByGroupType.count({14, 0}) == 0);
+    CHECK(spawnByGroupType.count({27, 16}) == 0);
+
+    // What the resolver makes of it, through the real cache. 50 of the 1,158
+    // spawn events are authored `nChance == 0` and are dropped, as everywhere
+    // else; the sound, explosion and light payloads fall through.
+    wio::D3SnoCache cache(&prov);
+    std::size_t roots = 0, nested = 0;
+    std::set<i32> nestedDistinct;
+    for (const auto& f : prts) {
+        auto p = d3n::parseParticle(ReadAll(f));
+        if (!p || p->arTriggeredEvents.empty())
+            continue;
+        d3n::TriggerEvent probe{};
+        probe.eTriggerType = 0;
+        probe.tPayload.eSnoGroup = 27;
+        probe.tPayload.dwNameHandle = p->dwSnoId;
+        probe.tConditions.nChance = 255;
+        std::vector<wd3::ResolvedEffect> fx;
+        wd3::ExpandD3TriggerEvent(probe, cache, {}, fx);
+        // One for the `.prt` itself, the rest from its own event array.
+        ++roots;
+        for (std::size_t i = 1; i < fx.size(); ++i) {
+            ++nested;
+            nestedDistinct.insert(fx[i].sno);
+        }
+    }
+    std::printf("[d3 prt-fx] %zu roots expand to %zu nested effects, %zu distinct\n", roots, nested,
+                nestedDistinct.size());
+    CHECK(roots == 1388);
+    CHECK(nested == 278);
+    CHECK(nestedDistinct.size() == 186);
 }

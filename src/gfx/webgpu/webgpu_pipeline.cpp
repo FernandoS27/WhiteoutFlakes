@@ -506,8 +506,12 @@ PipelineHandle WebGPUDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         t.format = ToWgpuFormat(desc.rtvFormat);
         if (desc.blend.enable)
             t.blend = &blend;
-        t.writeMask =
-            desc.blend.colorWrite ? wgpu::ColorWriteMask::All : wgpu::ColorWriteMask::None;
+        t.writeMask = (desc.blend.colorWrite ? (wgpu::ColorWriteMask::Red |
+                                                wgpu::ColorWriteMask::Green |
+                                                wgpu::ColorWriteMask::Blue)
+                                             : wgpu::ColorWriteMask::None) |
+                      (desc.blend.alphaWrite ? wgpu::ColorWriteMask::Alpha
+                                             : wgpu::ColorWriteMask::None);
         for (u32 i = 0; i < desc.extraRtvCount && colorTargetCount < kMaxColorAttachments; ++i) {
             const Format f = desc.extraRtvFormats[i];
             if (f == Format::Unknown)

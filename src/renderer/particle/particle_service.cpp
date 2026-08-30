@@ -85,6 +85,16 @@ void ParticleService::ForEachEmitter(
     }
 }
 
+bool ParticleService::RemoveEmitter(ModelId model, ParticleOutput output, i32 emitterId) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = emitters_.find(EmitterKey{model, output, emitterId});
+    if (it == emitters_.end())
+        return false;
+    it->second->CollectOutputEvents(childEvents_);
+    emitters_.erase(it);
+    return true;
+}
+
 void ParticleService::Simulate(f32 dt) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& [k, e] : emitters_) {

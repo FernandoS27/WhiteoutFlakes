@@ -29,9 +29,29 @@ struct EmitterDesc {
 
     /// Seconds. The engine stores frame counts at 60 fps and multiplies all
     /// three by 0.016667 on load; do the conversion once, here.
+    ///
+    /// @ref lifetime is the emitter clock's PERIOD — every emitter channel is
+    /// sampled at `elapsed / lifetime` — and, when @ref prtFlags lacks bit 0,
+    /// also the system's expiry. @ref emissionPeriod is NOT a loop length: it
+    /// is the wind-down the engine runs after a stop request, which a viewer
+    /// never sends, so nothing here reads it. Kept because the corpus gate
+    /// asserts on the parsed value.
     f32 lifetime = 0.0f;
     f32 emissionPeriod = 0.0f;
     f32 preSimulate = 0.0f;
+
+    /// `Particle.tLifetimeRandom`, an InterpolationScalar that SCALES
+    /// @ref lifetime once at spawn: `ParticleSystem_Spawn` @0x71000AC670 runs
+    /// `InterpolationScalar_Evaluate` on it and multiplies the result into the
+    /// one stored lifetime, so both the expiry and the emitter clock move
+    /// together.
+    ///
+    /// Mode 0 is "disabled" and the evaluate leaves 1.0 standing — 21,492 of
+    /// 21,593 shipped files. Of the 101 that do drive it, **47 use mode 10,
+    /// uniform random**, which is the only mode a viewer can answer; the other
+    /// 54 (modes 1, 2, 4, 8) read live actor and game state. See
+    /// `InterpolationDriver_Evaluate` @0x7100374760.
+    Driver lifetimeRandom{};
 
     f32 mass = 0.031059f;
     i32 maxInstances = 0;

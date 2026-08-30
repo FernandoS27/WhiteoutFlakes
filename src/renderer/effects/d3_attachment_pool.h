@@ -97,6 +97,19 @@ public:
     /// @brief Child spawns requested since the last drain.
     std::vector<PendingChild> TakePending();
 
+    /// @brief Child actors left standing by a sequence the actor has left.
+    ///
+    /// An attachment belongs to the animation that fired it, so when playback
+    /// moves to another sequence everything the old one produced is released:
+    /// its child actors come out here for the FrameTicker to destroy, and its
+    /// emitters are dropped from the particle service on the spot. The engine
+    /// does NOT do this — a TriggerEvent's ACD is a free actor and only
+    /// gameplay (`Actor_StopTrackedEffects` @0x710008AEB0) ever ends one — but
+    /// a viewer that switches clips would otherwise keep every effect every
+    /// sequence ever fired. Same rule, for the same reason, as re-birthing a
+    /// standing child instead of spawning a second one.
+    std::vector<u32> TakeExpired();
+
     /// @brief Record what a drained request produced. A zero handle marks the
     ///        entry dead, so an `.acr` that does not resolve is not retried on
     ///        every lap of the animation.
@@ -127,12 +140,16 @@ private:
     /// @brief Sequence @p seq's entries, resolving the clip on first use.
     std::vector<Entry>* Resolve(i32 seq);
 
+    /// @brief Undo everything sequence @p seq's attachments produced.
+    void ReleaseSequence(i32 seq, u32 owner, particle::ParticleService* particles);
+
     std::shared_ptr<io::D3ModelAdapter> adapter_;
     io::D3SnoCache* cache_ = nullptr;
     /// Per sequence, because a clip is resolved (and possibly fetched) the
     /// first time it plays and never again.
     std::unordered_map<i32, std::vector<Entry>> bySequence_;
     std::vector<PendingChild> pending_;
+    std::vector<u32> expired_;
     i32 nextEmitterId_ = 0;
     /// Mints actor handles for the child-actor systems an attachment can carry.
     std::function<u32()> allocHandle_;

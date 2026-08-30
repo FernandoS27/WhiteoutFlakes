@@ -7,26 +7,37 @@
 // Not through the model. `BoneStructure::snoParticle` exists and works, but it
 // is authored on 5 of the first 2,500 appearances — 33 attachments, 3 distinct
 // files. The route that carries the shipped content is a **TriggerEvent**, and
-// it appears at three sites. Measured over the full corpus by matching every
+// it appears at four sites. Measured over the full corpus by matching every
 // aligned `{eSnoGroup, snoHandle}` pair against the real id maps:
 //
 //     site                          refs      unique .prt   exclusive
 //     EffectGroup.arEffectItems    16,942        11,849       11,544
 //     Actor.arMsgTriggeredEvents   10,690         4,430        4,166
 //     Anim ... arAttachments        7,777         4,243        3,896
+//     Particle.arTriggeredEvents      319           219            —
 //     -------------------------------------------------------------
 //     union                                      20,060 of 21,593 (92.9%)
 //
-// The three barely overlap, and the effect group is the biggest by a factor of
-// two and a half. An `.efg` does not play itself, though: it is a *library*,
-// reached from the other two, which name 685 and 513 distinct groups. So the
-// shape is one indirection deep —
+// The first three barely overlap, and the effect group is the biggest by a
+// factor of two and a half. An `.efg` does not play itself, though: it is a
+// *library*, reached from the others, which name 685 and 513 distinct groups.
+// So the shape is one indirection deep —
 //
-//     Actor / Anim --(TriggerEvent)--> Particle
+//     Actor / Anim --(TriggerEvent)--> Particle --(TriggerEvent)--> Particle
 //                                  |-> Actor  (another whole model)
 //                                  '-> EffectGroup --(TriggerEvent)--> ...
 //
 // and this resolver flattens it.
+//
+// **The fourth site is the `.prt` itself.** `ParticleSystem_FireTriggeredEvents`
+// (0x71000BD510) walks the Particle SNO's own `MsgTriggeredEvent` array — the
+// same 412-byte record — on six occasions, and only the first happens without a
+// running simulation: 3000 spawn, 3001 release, 3002 stop, 3003 the animation
+// shim, 3500 per particle emitted, 3501 per particle died. 1,388 files carry
+// 2,038 events between them. Two thirds of what a spawn names is sound (group
+// 40 SoundBank, group 5 AmbientSound) and falls through here like the others;
+// what is left is 319 Particle and 14 EffectGroup payloads over 219 files, and
+// every one of them rides the model origin. See D3_PARTICLE_AUDIT.md §11.1.
 //
 // **A payload is not always an effect.** 783 anim attachments (549 distinct)
 // and 594 actor events (251 distinct) name a group 1 **Actor**:

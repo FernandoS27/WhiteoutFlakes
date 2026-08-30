@@ -28,6 +28,7 @@
 #include "renderer/particle/d3_channels.h"
 #include "renderer/particle/d3_emit_mesh.h"
 #include "renderer/particle/d3_emitter.h"
+#include "renderer/particle/d3_orientation.h"
 #include "renderer/particle/d3_emitter_desc.h"
 #include "renderer/particle/d3_path.h"
 #include "renderer/particle/particle_geometry.h"
@@ -44,6 +45,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -419,6 +421,12 @@ TEST_CASE("d3 particle P2: the circle sampler stays in XY", "[d3][particle][p2]"
 namespace {
 
 /// A minimal live emitter: one channel of lifetime, one of rate, nothing else.
+///
+/// The count channel is set EXPLICITLY to zero. `ParticleSystem_TickEmitter`
+/// defaults its target population to 1 when the count path is absent, so an
+/// emitter with no count channel emits one particle on its first frame no matter
+/// what its rate says — which is the engine's behaviour and is exactly what a
+/// test of the accumulator must not have mixed in.
 std::shared_ptr<pd3::EmitterDesc> MakeDesc(f32 ratePerFrame, f32 lifeFrames) {
     auto d = std::make_shared<pd3::EmitterDesc>();
     d->systemType = 0;
@@ -426,6 +434,7 @@ std::shared_ptr<pd3::EmitterDesc> MakeDesc(f32 ratePerFrame, f32 lifeFrames) {
     d->emissionPeriod = 10.0f;
     d->maxDistance = 0.0f; // no kill radius, so the count is the accumulator's
     d->channels[pd3::kChEmissionRate] = ConstPath(ratePerFrame);
+    d->channels[pd3::kChTargetCount] = ConstPath(0.0f);
     d->channels[pd3::kChParticleLife] = ConstPath(lifeFrames);
     d->channels[pd3::kChBirthSize] = ConstPath(1.0f);
     d->DeriveCapabilities();
@@ -463,6 +472,89 @@ TEST_CASE("d3 particle P2: the emission accumulator carries its fraction",
         scaled += half.EmittedLastUpdate();
     }
     REQUIRE(scaled == 30);
+
+    // And the default the engine actually uses when no count path exists: a
+    // target of ONE, so an emitter with no rate at all still shows a particle.
+    auto d = MakeDesc(0.0f, 600.0f);
+    d->channels[pd3::kChTargetCount] = pd3::Path{};
+    d->DeriveCapabilities();
+    pd3::Emitter bare;
+    bare.SetD3Desc(d);
+    bare.SetVisible(true);
+    bare.SetWorldPosition({0, 0, 0});
+    for (int i = 0; i < 30; ++i)
+        bare.Update(1.0f / 60.0f, 1.0f);
+    REQUIRE(static_cast<i32>(bare.Pool().AliveCount()) == 1);
+}
+
+TEST_CASE("d3 particle P3: tmPreSimulate makes a system already running on its first frame",
+          "[d3][particle][p3]") {
+    // `ParticleSystem_Spawn` @0x71000ADF84 runs TickEmitter(forceEmit) plus
+    // UpdateAndCull for `tmPreSimulate / 60` seconds at a fixed 1/60 step
+    // before the system is drawn once. 2,532 shipped files ask for it and they
+    // are the ambient set, so ignoring it starts every torch fire empty.
+    auto d = MakeDesc(1.0f, 600.0f); // one particle per frame, 10 s lifetimes
+    d->preSimulate = 0.5f;           // 30 frames
+
+    pd3::Emitter warm;
+    warm.SetD3Desc(d);
+    warm.SetVisible(true);
+    warm.SetWorldPosition({0, 0, 0});
+    warm.Update(1.0f / 60.0f, 1.0f);
+    // 30 catch-up steps plus the real one.
+    CHECK(static_cast<i32>(warm.Pool().AliveCount()) == 31);
+    CHECK(warm.SystemAge() == Catch::Approx(31.0f / 60.0f).margin(1e-4f));
+
+    // It happens ONCE. A second frame adds one particle, not another 30.
+    warm.Update(1.0f / 60.0f, 1.0f);
+    CHECK(static_cast<i32>(warm.Pool().AliveCount()) == 32);
+
+    // And a system that does not ask for it is untouched.
+    auto cold = MakeDesc(1.0f, 600.0f);
+    pd3::Emitter e;
+    e.SetD3Desc(cold);
+    e.SetVisible(true);
+    e.SetWorldPosition({0, 0, 0});
+    e.Update(1.0f / 60.0f, 1.0f);
+    CHECK(static_cast<i32>(e.Pool().AliveCount()) == 1);
+}
+
+TEST_CASE("d3 particle P3: tLifetimeRandom scales the SYSTEM lifetime, and only mode 10",
+          "[d3][particle][p3]") {
+    // `ParticleSystem_Spawn` @0x71000AC670 evaluates the InterpolationScalar at
+    // Particle+32 and multiplies the result into the one stored lifetime, so a
+    // driver moves the expiry and the emitter clock together. Mode 0 -- 21,492
+    // of 21,593 files -- makes `InterpolationScalar_Evaluate` return "not
+    // applied" and leaves 1.0.
+    auto make = [](i32 mode, f32 lo, f32 hi) {
+        auto d = MakeDesc(0.0f, 600.0f);
+        d->lifetime = 1.0f;
+        d->prtFlags = 0; // not persistent, so the expiry test runs
+        d->lifetimeRandom = {mode, lo, hi};
+        return d;
+    };
+    auto ageToFinish = [](const std::shared_ptr<pd3::EmitterDesc>& d) {
+        pd3::Emitter e;
+        e.SetD3Desc(d);
+        e.SetVisible(true);
+        e.SetWorldPosition({0, 0, 0});
+        for (int i = 0; i < 240 && !e.EmissionFinished(); ++i)
+            e.Update(1.0f / 60.0f, 1.0f);
+        return e.SystemAge();
+    };
+
+    // Mode 0 ignores lo/hi entirely -- a range that would otherwise halve the
+    // system must not touch it.
+    CHECK(ageToFinish(make(0, 0.0f, 0.5f)) == Catch::Approx(1.0f).margin(0.02f));
+    // Mode 10 applies. The draw is taken at its midpoint here, so a 0.5..1.5
+    // system runs its authored length and a 1.0..1.5 one runs a quarter longer.
+    CHECK(ageToFinish(make(10, 0.5f, 1.5f)) == Catch::Approx(1.0f).margin(0.02f));
+    CHECK(ageToFinish(make(10, 1.0f, 1.5f)) == Catch::Approx(1.25f).margin(0.02f));
+    CHECK(ageToFinish(make(10, 0.5f, 0.5f)) == Catch::Approx(0.5f).margin(0.02f));
+    // The four other authored modes read actor and game state a viewer has
+    // none of, and behave as mode 0 rather than guessing at a value.
+    for (i32 mode : {1, 2, 4, 8})
+        CHECK(ageToFinish(make(mode, 0.0f, 0.5f)) == Catch::Approx(1.0f).margin(0.02f));
 }
 
 TEST_CASE("d3 particle P2: a particle dies at its authored lifetime", "[d3][particle][p2]") {
@@ -730,7 +822,11 @@ TEST_CASE("d3 particle P1: every corpus .prt parses into a desc", "[d3][particle
     std::map<i32, std::size_t> shapes;
     std::map<u32, std::size_t> capBits;
     std::size_t parsed = 0, withRate = 0, distributionsSeen = 0;
+    std::size_t withLayers = 0, slotOrderMatches = 0, slotOrderDiffers = 0;
     std::map<i32, std::size_t> distributions;
+    std::map<i32, std::size_t> lifeDriver;
+    std::map<i32, std::size_t> renderModes;
+    std::size_t frameGated = 0;
 
     for (std::size_t i = 0; i < n; ++i) {
         const std::vector<u8> bytes = ReadAll(files[i]);
@@ -749,6 +845,46 @@ TEST_CASE("d3 particle P1: every corpus .prt parses into a desc", "[d3][particle
                 ++capBits[1u << b];
         if (desc->Has(pd3::kChEmissionRate))
             ++withRate;
+        ++lifeDriver[desc->lifetimeRandom.mode];
+        ++renderModes[desc->renderMode];
+        // What gates `Particle_BuildOrientationBasis` into its second column
+        // order is bit 13 of the system's RUNTIME word at sys+8, and
+        // `ParticleSystem_Spawn` @0x71000AC504 sets that for eSystemType 1, 3
+        // and 4 — the child-actor types. So the gated arm orients a spawned
+        // MODEL and never a quad, which is why `BuildQuadFrame` carries only
+        // the ungated arms.
+        if (desc->systemType == 1 || desc->systemType == 3 || desc->systemType == 4)
+            ++frameGated;
+
+        // Slot order. `Particle_BindDrawTextures` @0x71000B7620 asks for the
+        // four types in the fixed order 1, 19, 12, 14 and parks each in ITS OWN
+        // slot, leaving gaps null (G-D3P-23). This build binds in the entry
+        // array's order instead, so the two agree only when the `.prt` happens
+        // to list them the same way -- and this is the census that says whether
+        // "happens to" means every file or merely most.
+        {
+            static const i32 kEngineOrder[4] = {1, 19, 12, 14};
+            u32 slot = 0;
+            bool same = true;
+            for (u32 L = 0; L < desc->d3mat.layerCount; ++L) {
+                while (slot < 4 && kEngineOrder[slot] != desc->d3mat.layers[L].rawType)
+                    ++slot;
+                if (slot >= 4) {
+                    same = false;
+                    break;
+                }
+                if (slot != L)
+                    same = false;
+                ++slot;
+            }
+            if (desc->d3mat.layerCount > 0) {
+                ++withLayers;
+                if (same)
+                    ++slotOrderMatches;
+                else
+                    ++slotOrderDiffers;
+            }
+        }
 
         // Nothing outside 0..8 exists in the format, and anything that did
         // would silently evaluate to `r = 0` rather than failing.
@@ -783,6 +919,54 @@ TEST_CASE("d3 particle P1: every corpus .prt parses into a desc", "[d3][particle
     for (const auto& [v, c] : distributions)
         std::printf(" %d=%zu", v, c);
     std::printf("\n[d3-prt] with an emission-rate channel: %zu\n", withRate);
+    std::printf("[d3-prt] nRenderMode:");
+    for (const auto& [v, c] : renderModes)
+        std::printf(" %d=%zu", v, c);
+    std::printf("; %zu take the gated column order\n", frameGated);
+    std::printf("[d3-prt] tLifetimeRandom nMode:");
+    for (const auto& [v, c] : lifeDriver)
+        std::printf(" %d=%zu", v, c);
+    std::printf("\n");
+    std::printf("[d3-prt] %zu carry texture layers; %zu list them in the engine\'s "
+                "slot order (1, 19, 12, 14) and %zu do not\n",
+                withLayers, slotOrderMatches, slotOrderDiffers);
+
+    // `tLifetimeRandom` SCALES the system lifetime once at spawn
+    // (`ParticleSystem_Spawn` @0x71000AC670), and mode 0 means the evaluate
+    // leaves 1.0 standing. Only mode 10 -- a plain uniform -- is answerable
+    // without an actor, and it is the largest of the five that are authored, so
+    // ignoring the field entirely was wrong for 47 files and defensible for 54.
+    if (limit == 0) {
+        CHECK(lifeDriver[0] == 21492);
+        CHECK(lifeDriver[10] == 47);
+        CHECK(lifeDriver[1] == 44);
+        CHECK(lifeDriver[4] == 7);
+        CHECK(lifeDriver[2] == 1);
+        CHECK(lifeDriver[8] == 2);
+
+        // The orientation frame, censused. 8,476 files -- 39.3% -- ask for a
+        // frame that is not the caller's; modes 0 (ungated), 1 and 8 are the
+        // 13,117 that write nothing. `BuildQuadFrame` answers all but 7, 9
+        // and 10.
+        CHECK(renderModes[0] == 9181);
+        CHECK(renderModes[1] == 3917);
+        CHECK(renderModes[2] == 2124);
+        CHECK(renderModes[3] == 77);
+        CHECK(renderModes[4] == 351);
+        CHECK(renderModes[5] == 145);
+        CHECK(renderModes[6] == 176);
+        CHECK(renderModes[7] == 2312);
+        CHECK(renderModes[8] == 19);
+        CHECK(renderModes[9] == 24);
+        CHECK(renderModes[10] == 398);
+        CHECK(renderModes[11] == 115);
+        CHECK(renderModes[12] == 1428);
+        CHECK(renderModes[13] == 1326);
+        CHECK(renderModes.size() == 14);
+        // The gated column order belongs to the child-actor types alone, and
+        // this is the same 4,795 the emit clamp counts.
+        CHECK(frameGated == 4795);
+    }
 
     // The shipped set is closed, and a value outside it means the slot table
     // is being read at the wrong offset.
@@ -1023,6 +1207,11 @@ TEST_CASE("D3 install: a particle's ShaderMap resolves to Billboard.fx",
     std::map<std::string, std::size_t> effects;
     std::map<std::pair<u32, u32>, std::size_t> blends;
     std::size_t resolved = 0, writesDepth = 0, gained = 0, alphaTested = 0;
+    std::size_t clamped = 0, added = 0, vcolDropped = 0, vcolLast = 0;
+    // no ShaderMap / map missing / no valid entry / Shaders missing / no pass
+    std::array<std::size_t, 5> unresolved{};
+    std::map<i32, std::size_t> noMapByType, drawnByType;
+    std::size_t noMapNoLayers = 0;
     // Per stage type: how the pass's combine block routes it.
     std::map<i32, std::array<std::size_t, 4>> routing; // [both, colourOnly, alphaOnly, neither]
 
@@ -1032,25 +1221,81 @@ TEST_CASE("D3 install: a particle's ShaderMap resolves to Billboard.fx",
         auto desc = whiteout::flakes::io::d3::BuildD3EmitterDesc(*prt, -1);
         pdia::D3ResolveParticleMaterial(*prt, &cache, desc->d3mat);
         const auto& m = desc->d3mat;
-        if (!m.passResolved)
+        if (!m.passResolved) {
+            // Why, exactly. "Unresolved" is not one failure: the material can
+            // name no ShaderMap at all, name one the install does not hold,
+            // hold a map with no valid Shaders entry, or reach a Shaders asset
+            // with no render pass. Each leaves the layer on the constructed
+            // default — blendEnable with (SRCALPHA, ONE) — and each is a
+            // different bug, so they are counted apart.
+            const auto& mat = prt->tMaterial;
+            if (!mat.snoShaderMap.valid()) {
+                ++unresolved[0];
+                ++noMapByType[prt->eSystemType];
+                if (m.layerCount == 0)
+                    ++noMapNoLayers;
+            }
+            else if (!cache.ShaderMap(mat.snoShaderMap.id))
+                ++unresolved[1];
+            else {
+                const auto map = cache.ShaderMap(mat.snoShaderMap.id);
+                bool anyEntry = false;
+                i32 firstShader = -1;
+                for (const auto& e : map->arShaders)
+                    if (e.snoShader.valid()) {
+                        anyEntry = true;
+                        firstShader = e.snoShader.id;
+                        break;
+                    }
+                if (!anyEntry)
+                    ++unresolved[2];
+                else if (!cache.Shaders(firstShader))
+                    ++unresolved[3];
+                else
+                    ++unresolved[4];
+            }
             continue;
+        }
         ++resolved;
+        ++drawnByType[prt->eSystemType];
         ++effects[m.effectFile];
         ++blends[{m.blendSrc, m.blendDst}];
         if (m.depthWrite)
             ++writesDepth;
-        if (m.colorGain != 1.0f || m.alphaGain != 1.0f)
-            ++gained;
         if (m.alphaTest > 0.0f)
             ++alphaTested;
+        bool anyGain = false;
         for (u32 L = 0; L < m.layerCount; ++L) {
             const auto& layer = m.layers[L];
-            const std::size_t slot = layer.samplesColor ? (layer.samplesAlpha ? 0u : 1u)
-                                                        : (layer.samplesAlpha ? 2u : 3u);
-            ++routing[layer.rawType][slot];
+            const bool cOn = layer.colorOp != flakes::io::kD3StageSkip;
+            const bool aOn = layer.alphaOp != flakes::io::kD3StageSkip;
+            ++routing[layer.rawType][cOn ? (aOn ? 0u : 1u) : (aOn ? 2u : 3u)];
+            anyGain = anyGain || layer.colorGain != 1.0f || layer.alphaGain != 1.0f;
+            if (layer.colorClamp || layer.alphaClamp)
+                ++clamped;
+            if (layer.colorOp == flakes::io::kD3StageAdd ||
+                layer.alphaOp == flakes::io::kD3StageAdd)
+                ++added;
         }
+        if (anyGain)
+            ++gained;
+        if (!m.colorVcolFirst || !m.alphaVcolFirst)
+            ++vcolDropped;
+        if (m.colorVcolLast || m.alphaVcolLast)
+            ++vcolLast;
     }
 
+    std::printf("[d3 mat] no-ShaderMap by eSystemType:");
+    for (const auto& [t, k] : noMapByType)
+        std::printf(" %d=%zu", t, k);
+    std::printf(" | %zu of them declare no texture layer\n", noMapNoLayers);
+    std::printf("[d3 mat] resolved by eSystemType:");
+    for (const auto& [t, k] : drawnByType)
+        std::printf(" %d=%zu", t, k);
+    std::printf("\n");
+    std::printf("[d3 mat] unresolved: %zu no ShaderMap, %zu map missing, %zu no valid entry, "
+                "%zu Shaders missing, %zu no render pass\n",
+                unresolved[0], unresolved[1], unresolved[2], unresolved[3], unresolved[4]);
     std::printf("[d3 mat] %zu of %zu resolved a pass; effect files:", resolved, n);
     for (const auto& [e, k] : effects)
         std::printf(" %s=%zu", e.c_str(), k);
@@ -1059,6 +1304,9 @@ TEST_CASE("D3 install: a particle's ShaderMap resolves to Billboard.fx",
         std::printf(" (%u,%u)=%zu", b.first, b.second, k);
     std::printf("\n[d3 mat] %zu write depth, %zu carry a combine gain, %zu alpha-test\n",
                 writesDepth, gained, alphaTested);
+    std::printf("[d3 mat] %zu layers clamp mid-chain, %zu add; %zu materials drop the "
+                "vertex colour, %zu take it last\n",
+                clamped, added, vcolDropped, vcolLast);
     std::printf("[d3 mat] stage routing (type: both / colour / alpha / neither):");
     for (const auto& [t, r] : routing)
         std::printf(" %d:%zu/%zu/%zu/%zu", t, r[0], r[1], r[2], r[3]);
@@ -1068,6 +1316,16 @@ TEST_CASE("D3 install: a particle's ShaderMap resolves to Billboard.fx",
         WARN("no ShaderMap resolved through this install — SKIPPED, not passed.");
         return;
     }
+    // The chain never fails part-way. Over the whole corpus every unresolved
+    // material names no ShaderMap at all: no missing `.shm`, no empty entry
+    // list, no missing `.shd`, no passless `Shaders`. That is what makes an
+    // unresolved pass a property of the DATA rather than of this install, and
+    // it is what rules the lookup chain out as the cause of the untextured
+    // white squares — see D3_PARTICLE_AUDIT.md section 10.3.
+    CHECK(unresolved[1] == 0);
+    CHECK(unresolved[2] == 0);
+    CHECK(unresolved[3] == 0);
+    CHECK(unresolved[4] == 0);
     // Every shipped particle pass is a billboard family, and that is what makes
     // io/d3/d3_types.h's `Legacy.fx` stage-block decoder the authority for the
     // combine chain: 19 of the corpus's 20 `SoftBillboard.fx` shaders bind
@@ -1091,6 +1349,13 @@ TEST_CASE("D3 install: a particle's ShaderMap resolves to Billboard.fx",
     // bind it for the alpha alone. Reported as counts and asserted as a
     // presence, because the exact split is a property of the install.
     CHECK(routing[19][2] > 0);
+    // And the systems that name none are not arbitrary: they are overwhelmingly
+    // the child-actor spawners, which draw no billboard and need no material.
+    // Asserted as a majority rather than a count, because the split is a
+    // property of the install.
+    if (unresolved[0] > 0)
+        CHECK(noMapByType[1] * 2 > unresolved[0]);
+
     // The DIFFUSE, though, is never dropped from BOTH channels — which is why
     // the gate is on "does this stage sample the channel" and not on "does it
     // modulate it". The modulate test drops type 1's colour on 26 of the
@@ -1212,8 +1477,15 @@ TEST_CASE("d3 particle P7: a child-actor system emits models and pools nothing",
     CHECK(em.ChildCount() == 1);
     CHECK(em.Pool().AliveCount() == 0);
     // The birth size is a SCALE on the spawned actor, which is why it reaches
-    // the transform rather than a quad's half-extent.
-    CHECK(events[0].transform.data[0][0] == Catch::Approx(2.0f));
+    // the transform rather than a quad's half-extent. Read as a column length,
+    // because the rotation half is no longer identity: this desc leaves
+    // `renderMode` at 0, whose gated arm turns the child to face the camera.
+    {
+        const auto& m = events[0].transform;
+        const f32 sx = std::sqrt(m.data[0][0] * m.data[0][0] + m.data[0][1] * m.data[0][1] +
+                                 m.data[0][2] * m.data[0][2]);
+        CHECK(sx == Catch::Approx(2.0f));
+    }
 
     // The count target counts CHILDREN (`sys+408 + sys+376`), so a system that
     // has reached it stops. Without that the emitter spawns one model a frame
@@ -1493,6 +1765,299 @@ TEST_CASE("d3 particle: mesh shapes emit off the surface, not from the emitter",
     }
 }
 
+// ---------------------------------------------------------------------------
+// The three the viewer surfaced after §18: the timing model, the sampler
+// address modes and the flip-book
+// ---------------------------------------------------------------------------
+
+TEST_CASE("d3 particle: dwPrtFlags bit 0 makes the system persistent",
+          "[d3][particle]") {
+    // `tmLifetime` is 60 frames on 6,884 shipped files. Read as an expiry for
+    // every system it stops a third of the game's effects after exactly one
+    // second; the engine only runs that test when bit 0 is CLEAR, and when it
+    // is set the same quotient wraps instead.
+    const auto build = [](u32 flags) {
+        auto d = std::make_shared<pd3::EmitterDesc>();
+        d->systemType = 0;
+        d->prtFlags = flags;
+        d->shape = pd3::Shape::Point;
+        d->lifetime = 1.0f;        // 60 frames, the modal value
+        d->emissionPeriod = 0.5f;  // the wind-down, which must not be the period
+        d->maxDistance = 0.0f;
+        d->channels[pd3::kChEmissionRate] = ConstPath(1.0f);
+        d->channels[pd3::kChParticleLife] = ConstPath(30.0f);
+        d->channels[pd3::kChBirthSize] = ConstPath(1.0f);
+        d->DeriveCapabilities();
+        return d;
+    };
+
+    const auto run = [](const std::shared_ptr<pd3::EmitterDesc>& d, i32 frames) {
+        pd3::Emitter e;
+        e.SetD3Desc(d);
+        e.SetVisible(true);
+        i32 emitted = 0;
+        for (i32 i = 0; i < frames; ++i) {
+            e.Update(1.0f / 60.0f, 1.0f);
+            if (i >= 180) // after three lifetimes
+                emitted += e.EmittedLastUpdate();
+        }
+        return emitted;
+    };
+
+    CHECK(run(build(0u), 300) == 0);      // one-shot: silent after its second
+    CHECK(run(build(0x1u), 300) > 0);     // persistent: still going at five
+}
+
+TEST_CASE("d3 particle: the emitter clock's period is tmLifetime", "[d3][particle]") {
+    // Not tmEmissionPeriod. The engine divides the elapsed time by the value it
+    // took from SNO+20 in both branches of its timing switch, and normalising
+    // against SNO+24 instead runs every emitter channel at 1/2 to 1/6 of its
+    // authored length.
+    auto d = std::make_shared<pd3::EmitterDesc>();
+    d->systemType = 0;
+    d->shape = pd3::Shape::Point;
+    d->lifetime = 2.0f;
+    d->emissionPeriod = 0.5f;
+    d->maxDistance = 0.0f;
+    // A ramp from 0 to 60 over the path's normalised time, so the emitted
+    // count reads the clock back out.
+    pd3::Path ramp;
+    ramp.components = 1;
+    ramp.nodes.push_back({{0, 0, 0, 0}, {0, 0, 0, 0}, 0.0f});
+    ramp.nodes.push_back({{1, 0, 0, 0}, {1, 0, 0, 0}, 1.0f});
+    d->channels[pd3::kChEmissionRate] = ramp;
+    d->channels[pd3::kChParticleLife] = ConstPath(600.0f);
+    d->channels[pd3::kChBirthSize] = ConstPath(1.0f);
+    d->DeriveCapabilities();
+
+    pd3::Emitter e;
+    e.SetD3Desc(d);
+    e.SetVisible(true);
+    // Half of `lifetime`, so the ramp is at 0.5 and the rate is 30/s.
+    for (i32 i = 0; i < 60; ++i)
+        e.Update(1.0f / 60.0f, 1.0f);
+    const std::size_t atHalf = e.Pool().AliveCount();
+    // Against `emissionPeriod` the ramp would have saturated long ago and the
+    // population would be the full-rate one; against `lifetime` it is half.
+    CHECK(atHalf > 5);
+    CHECK(atHalf < 25);
+}
+
+TEST_CASE("d3 particle: dwPrtFlags bit 10 picks the particle time mode",
+          "[d3][particle]") {
+    // Mode 0 plays a channel's curve once across the particle's life; mode 1
+    // wraps it into the path's own loop sub-range. 18,415 of 21,593 files set
+    // the bit, so mode 0 is the rule and mode 1 the exception — and a colour or
+    // alpha channel with a short loop range is visibly different under each.
+    pd3::Path ramp;
+    ramp.components = 1;
+    ramp.nodes.push_back({{0, 0, 0, 0}, {0, 0, 0, 0}, 0.0f});
+    ramp.nodes.push_back({{1, 0, 0, 0}, {1, 0, 0, 0}, 1.0f});
+    ramp.loopStart = 0.0f;
+    ramp.loopEnd = 0.5f; // the curve is done at half life
+
+    // The OLDEST live particle, and its own normalised age — the population is
+    // continuous, so "the first alive one" is an arbitrary age and the answer
+    // has to be read against the particle actually sampled.
+    const auto oldest = [&](u32 flags, f32& outT) {
+        auto d = std::make_shared<pd3::EmitterDesc>();
+        d->systemType = 0;
+        d->prtFlags = flags;
+        d->shape = pd3::Shape::Point;
+        d->lifetime = 0.0f;
+        d->maxDistance = 0.0f;
+        d->channels[pd3::kChEmissionRate] = ConstPath(1.0f);
+        d->channels[pd3::kChParticleLife] = ConstPath(120.0f);
+        d->channels[pd3::kChBirthSize] = ConstPath(1.0f);
+        d->channels[pd3::kChAlpha] = ramp;
+        d->DeriveCapabilities();
+
+        pd3::Emitter e;
+        e.SetD3Desc(d);
+        e.SetVisible(true);
+        for (i32 i = 0; i < 90; ++i)
+            e.Update(1.0f / 60.0f, 1.0f);
+        REQUIRE(e.Pool().AliveCount() > 0);
+        u32 best = e.Pool().AliveAt(0);
+        for (std::size_t i = 1; i < e.Pool().AliveCount(); ++i) {
+            const u32 idx = e.Pool().AliveAt(i);
+            if (e.Pool()[idx].age > e.Pool()[best].age)
+                best = idx;
+        }
+        outT = e.Pool()[best].age / e.States()[best].lifetime;
+        return e.States()[best].color.w;
+    };
+
+    f32 t0 = 0.0f, t1 = 0.0f;
+    const f32 unwrapped = oldest(0x400u, t0);
+    const f32 wrapped = oldest(0u, t1);
+    // Same seed stream, so the same particle: the two runs differ only in how
+    // its age is turned into a curve position.
+    REQUIRE(t0 == Catch::Approx(t1));
+    REQUIRE(t0 > 0.5f); // past `loopEnd`, which is where the two disagree
+
+    // Mode 0 reads the curve at the raw quotient. Mode 1 folds it back into
+    // [loopStart, loopEnd] first, so it is exactly one loop-span behind.
+    CHECK(unwrapped == Catch::Approx(t0).margin(0.02));
+    CHECK(wrapped == Catch::Approx(t0 - 0.5f).margin(0.02));
+}
+
+TEST_CASE("d3 particle: a flip-book layer walks its sheet per particle",
+          "[d3][particle]") {
+    // A four-tile sheet, the shape 512x128 ships. The atlas replaces the
+    // layer's UV rectangle, and which tile is a property of the PARTICLE — the
+    // engine seeds one player per particle per stage precisely so a system's
+    // particles do not all show the same frame.
+    auto atlas = std::make_shared<whiteout::flakes::io::D3TextureAtlas>();
+    atlas->width = 512;
+    atlas->height = 128;
+    for (i32 k = 0; k < 4; ++k) {
+        const f32 u0 = static_cast<f32>(k) * 0.25f;
+        atlas->frames.push_back({u0, 0.0f, u0 + 0.25f, 1.0f});
+    }
+    CHECK(atlas->TileSize().x == Catch::Approx(0.25f));
+    CHECK(atlas->TileSize().y == Catch::Approx(1.0f));
+
+    auto d = std::make_shared<pd3::EmitterDesc>();
+    d->systemType = 0;
+    d->prtFlags = 0x1u; // persistent, so the population survives the run
+    d->shape = pd3::Shape::Point;
+    d->lifetime = 0.0f;
+    d->maxDistance = 0.0f;
+    d->channels[pd3::kChEmissionRate] = ConstPath(1.0f);
+    d->channels[pd3::kChParticleLife] = ConstPath(600.0f);
+    d->channels[pd3::kChBirthSize] = ConstPath(1.0f);
+    d->DeriveCapabilities();
+    d->d3mat.layerCount = 1;
+    d->d3mat.atlasLayer = 0;
+    d->d3mat.layers[0].uv.mode = whiteout::flakes::io::D3UvMode::Anim2D;
+    d->d3mat.layers[0].atlas = atlas;
+    d->d3mat.layers[0].atlasFrameRange = 3; // any of the four
+    d->d3mat.layers[0].atlasRate = 0.0f;    // a still frame per particle
+
+    pd3::Emitter e;
+    e.SetD3Desc(d);
+    e.SetVisible(true);
+    for (i32 i = 0; i < 240; ++i)
+        e.Update(1.0f / 60.0f, 1.0f);
+    REQUIRE(e.Pool().AliveCount() > 20);
+
+    // Every particle sits on a tile boundary, and the population is spread over
+    // more than one tile — the whole point of the per-particle draw.
+    std::set<i32> tiles;
+    for (std::size_t i = 0; i < e.Pool().AliveCount(); ++i) {
+        const f32 c = e.States()[e.Pool().AliveAt(i)].atlasCursor;
+        const i32 k = static_cast<i32>(c);
+        CHECK(k >= 0);
+        CHECK(k <= 3);
+        tiles.insert(k);
+    }
+    CHECK(tiles.size() >= 3);
+
+    // And the rectangle reaches the geometry: the quad's UVs stay 0..1 and the
+    // tile ORIGIN rides the normal, which this family never uses for anything
+    // else. A non-square tile also makes a non-square quad — 0.25 of a 512-wide
+    // sheet is 128px against a 128px-tall one, so this sheet is square and the
+    // aspect is 1.
+    Matrix44f view = Matrix44f::identity();
+    whiteout::flakes::renderer::particle::BuildGeometryInput in{};
+    in.worldToView = &view;
+    std::vector<whiteout::flakes::renderer::Vertex> out;
+    REQUIRE(e.BuildGeometry(in, out) > 0);
+    std::set<i32> originTiles;
+    for (const auto& v : out) {
+        CHECK(v.normal.z == 0.0f);
+        const f32 u = v.normal.x;
+        // Each origin is one of the four tile lefts.
+        const i32 k = static_cast<i32>(std::lround(u * 4.0f));
+        CHECK(u == Catch::Approx(static_cast<f32>(k) * 0.25f).margin(1e-5));
+        CHECK(v.normal.y == 0.0f);
+        originTiles.insert(k);
+    }
+    CHECK(originTiles.size() >= 3);
+
+    // A rate walks the same particle forward, and a loop wraps it rather than
+    // running off the end.
+    auto moving = std::make_shared<pd3::EmitterDesc>(*d);
+    moving->d3mat.layers[0].atlasRate = 8.0f;
+    moving->d3mat.layers[0].atlasFrameRange = 0; // everyone starts on tile 0
+    moving->d3mat.layers[0].atlasLoops = true;
+    pd3::Emitter m;
+    m.SetD3Desc(moving);
+    m.SetVisible(true);
+    m.Update(1.0f / 60.0f, 1.0f);
+    REQUIRE(m.Pool().AliveCount() > 0);
+    const u32 first = m.Pool().AliveAt(0);
+    const f32 t0 = m.States()[first].atlasCursor;
+    for (i32 i = 0; i < 30; ++i)
+        m.Update(1.0f / 60.0f, 1.0f);
+    const f32 t1 = m.States()[first].atlasCursor;
+    CHECK(t1 > t0);
+    CHECK(t1 < 4.0f);
+    // Long enough to have wrapped several times, and still in range.
+    for (i32 i = 0; i < 600; ++i)
+        m.Update(1.0f / 60.0f, 1.0f);
+    CHECK(m.States()[first].atlasCursor >= 0.0f);
+    CHECK(m.States()[first].atlasCursor < 4.0f);
+}
+
+TEST_CASE("d3 particle: a corpus flip-book resolves against the real install",
+          "[d3][particle][corpus]") {
+    // The join this phase added, end to end: a uv mode 3 entry names a `.tex`
+    // whose own frame table is the sheet's subdivision. Skipped when no D3
+    // install is reachable, because the `.tex` is not in the extracted corpus.
+    const fs::path root = CorpusRoot();
+    const fs::path dir = fs::is_directory(root / "Particle") ? (root / "Particle") : root;
+    const fs::path f = dir / "Axe_norm_unique_04_zappyRandom.prt";
+    std::error_code ec;
+    if (!fs::is_regular_file(f, ec)) {
+        WARN("d3 atlas: the named corpus file is absent; nothing checked");
+        return;
+    }
+    auto prt = d3n::parseParticle(ReadAll(f));
+    REQUIRE(prt);
+    auto d = whiteout::flakes::io::d3::BuildD3EmitterDesc(*prt, -1);
+    REQUIRE(d->d3mat.layerCount >= 1);
+    // The playback params, which are read out of tAnim4/tAnim5 and are not a
+    // UV animation at all.
+    CHECK(d->d3mat.layers[0].uv.mode == whiteout::flakes::io::D3UvMode::Anim2D);
+    CHECK(d->d3mat.layers[0].atlasRate == Catch::Approx(8.0f));
+    CHECK(d->d3mat.layers[0].atlasFrameBase == 0);
+    CHECK(d->d3mat.layers[0].atlasFrameRange == 7);
+
+    using ::whiteout::flakes::ProductId;
+    whiteout::flakes::io::FileContentProvider provider;
+    if (const char* r = std::getenv("WDX_TEST_D3_INSTALL"); r && *r)
+        provider.SetInstallPath(r);
+    provider.SetGame(ProductId::D3);
+    if (provider.GamePath(ProductId::D3).empty()) {
+        WARN("d3 atlas: no Diablo III install (set WDX_TEST_D3_INSTALL); SKIPPED.");
+        return;
+    }
+    whiteout::flakes::io::D3SnoCache cache(&provider);
+    whiteout::flakes::renderer::profiles::diablo3::D3ResolveParticleMaterial(*prt, &cache,
+                                                                            d->d3mat);
+    if (!d->d3mat.layers[0].atlas) {
+        WARN("d3 atlas: the sheet did not resolve; the frame table was not checked");
+        return;
+    }
+    // Eight tiles across a 1024x256 sheet: the LAST one is what a build that
+    // takes the table's junk leading slot for a frame loses.
+    const auto& a = *d->d3mat.layers[0].atlas;
+    CHECK(a.width == 1024u);
+    CHECK(a.height == 256u);
+    REQUIRE(a.frames.size() == 8u);
+    for (std::size_t k = 0; k < a.frames.size(); ++k) {
+        CHECK(a.frames[k].x == Catch::Approx(static_cast<f32>(k) * 0.125f).margin(1e-5));
+        CHECK(a.frames[k].z == Catch::Approx(static_cast<f32>(k + 1) * 0.125f).margin(1e-5));
+        CHECK(a.frames[k].y == Catch::Approx(0.0f).margin(1e-5));
+        CHECK(a.frames[k].w == Catch::Approx(1.0f).margin(1e-5));
+    }
+    CHECK(d->d3mat.atlasLayer == 0);
+    std::printf("[d3 atlas] %zu frames, tile %.3f x %.3f\n", a.frames.size(), a.TileSize().x,
+                a.TileSize().y);
+}
+
 TEST_CASE("d3 particle P5: appearances carry bone-attached particle systems",
           "[d3][particle][p5][corpus]") {
     // `BoneStructure::snoParticle` is the one route a `.prt` takes into a
@@ -1552,4 +2117,358 @@ TEST_CASE("d3 particle P5: appearances carry bone-attached particle systems",
                 "%zu carry bone particles, %zu attachments, %zu distinct .prt\n",
                 parsed, n, apps.size(), withParticle, boneEmitters, distinctPrt);
     REQUIRE(parsed > 0);
+}
+
+// ---------------------------------------------------------------------------
+// P6: the orientation frame. `Particle_BuildOrientationBasis` @0x71000BAB30.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("d3 particle P6: the orientation frame is a right/up pair per render mode",
+          "[d3][particle][p6]") {
+    using Catch::Approx;
+    using pd3::BuildQuadFrame;
+    using pd3::QuadFrame;
+
+    auto dot = [](const Vector3f& a, const Vector3f& b) {
+        return a.x * b.x + a.y * b.y + a.z * b.z;
+    };
+    auto unit = [&](const Vector3f& v) { return std::sqrt(dot(v, v)); };
+
+    // A camera looking along +Y, and a particle moving along +Z -- the shape of
+    // every lightning bolt in the corpus.
+    const Vector3f camF{0.0f, 1.0f, 0.0f};
+    const Vector3f up{0.0f, 0.0f, 1.0f};
+    const Vector3f none{0.0f, 0.0f, 0.0f};
+
+    SECTION("modes that write nothing leave the caller's basis") {
+        QuadFrame f;
+        // 0 is gated (and only ever for a child-actor system, which draws no
+        // quad) and 1 and 8 return immediately. All three must decline rather
+        // than invent a frame; the other eleven modes all build one.
+        for (i32 mode : {0, 1, 8})
+            CHECK_FALSE(BuildQuadFrame(mode, {camF, {1, 0, 0}, {1, 0, 0}, {1, 0, 0}}, f));
+    }
+
+    SECTION("mode 13 stands the quad up and yaws it at the camera") {
+        QuadFrame f;
+        REQUIRE(BuildQuadFrame(13, {camF}, f));
+        // This is the whole bug: the quad's up is WORLD Z, not world Y. A
+        // ground-plane basis -- right (1,0,0), up (0,1,0) -- lays every bolt
+        // flat, which is what this build drew.
+        CHECK(f.up.x == Approx(0.0f));
+        CHECK(f.up.y == Approx(0.0f));
+        CHECK(f.up.z == Approx(1.0f));
+        CHECK(f.right.z == Approx(0.0f));
+        CHECK(unit(f.right) == Approx(1.0f));
+        // Facing the camera means the quad's own right is across the view.
+        CHECK(dot(f.right, camF) == Approx(0.0f).margin(1e-6));
+        // ...and it tracks: turn the camera 90 degrees and the quad turns with it.
+        QuadFrame g;
+        REQUIRE(BuildQuadFrame(13, {{1.0f, 0.0f, 0.0f}}, g));
+        CHECK(dot(g.right, f.right) == Approx(0.0f).margin(1e-6));
+        CHECK(g.up.z == Approx(1.0f));
+        // A camera looking straight down has no XY to flatten; the engine bails.
+        CHECK_FALSE(BuildQuadFrame(13, {{0.0f, 0.0f, -1.0f}}, g));
+    }
+
+    SECTION("mode 6 reaches mode 13's frame by the other route") {
+        // The evidence for the column convention: mode 6 runs the negated
+        // camera direction through `Particle_SelectOrientationAxis`'s column
+        // order (-c, b, n) and mode 13 runs the flattened one through its own
+        // (c, b, u). They agree vector for vector only if a column order of
+        // (right, up, normal) is the right reading.
+        for (const Vector3f& cam :
+             {Vector3f{0, 1, 0}, Vector3f{1, 0, 0}, Vector3f{0.6f, -0.8f, 0.3f}}) {
+            QuadFrame a, b;
+            REQUIRE(BuildQuadFrame(6, {cam}, a));
+            REQUIRE(BuildQuadFrame(13, {cam}, b));
+            CHECK(a.right.x == Approx(b.right.x));
+            CHECK(a.right.y == Approx(b.right.y));
+            CHECK(a.right.z == Approx(b.right.z).margin(1e-6));
+            CHECK(a.up.x == Approx(b.up.x).margin(1e-6));
+            CHECK(a.up.y == Approx(b.up.y).margin(1e-6));
+            CHECK(a.up.z == Approx(b.up.z));
+        }
+    }
+
+    SECTION("modes 2 and 12 stretch the quad along the particle's own axis") {
+        const Vector3f vel{0.0f, 0.0f, 0.5f};
+        QuadFrame f2, f12;
+        REQUIRE(BuildQuadFrame(2, {camF, vel, {0, 0, 1}}, f2));
+        // Up IS the direction of travel, normalised -- a bolt runs along itself.
+        CHECK(f2.up.z == Approx(1.0f));
+        CHECK(unit(f2.up) == Approx(1.0f));
+        CHECK(dot(f2.right, f2.up) == Approx(0.0f).margin(1e-6));
+        // Mode 2 resolves the spin about that axis against the CAMERA...
+        CHECK(dot(f2.right, camF) == Approx(0.0f).margin(1e-6));
+
+        // ...and mode 12 against world up, which for a vertical bolt is the
+        // degenerate case the engine walks into and we decline.
+        CHECK_FALSE(BuildQuadFrame(12, {camF, vel, {0, 0, 1}}, f12));
+        const Vector3f lateral{0.3f, 0.4f, 0.0f};
+        REQUIRE(BuildQuadFrame(12, {camF, lateral, {0.6f, 0.8f, 0.0f}}, f12));
+        CHECK(f12.up.x == Approx(0.6f));
+        CHECK(f12.up.y == Approx(0.8f));
+        CHECK(dot(f12.right, up) == Approx(0.0f).margin(1e-6));
+        CHECK(dot(f12.right, f12.up) == Approx(0.0f).margin(1e-6));
+    }
+
+    SECTION("modes 3 to 5 stand the quad ACROSS its axis") {
+        QuadFrame f;
+        // Mode 4 is the direction from the system to the particle, flattened --
+        // an outward-facing wall, which is what an expanding ring of beams is.
+        REQUIRE(BuildQuadFrame(4, {camF, none, {1, 0, 0}, {3.0f, 0.0f, 9.0f}}, f));
+        CHECK(std::fabs(f.up.z) == Approx(1.0f).margin(1e-6));  // stands upright
+        CHECK(dot(f.right, Vector3f{1, 0, 0}) == Approx(0.0f).margin(1e-6));
+        // Mode 5 keeps the Z, so the same offset tilts the wall back.
+        QuadFrame g;
+        REQUIRE(BuildQuadFrame(5, {camF, none, {1, 0, 0}, {3.0f, 0.0f, 9.0f}}, g));
+        CHECK(std::fabs(g.up.z) != Approx(1.0f));
+    }
+
+    SECTION("mode 7 is the emitter's own frame, permuted") {
+        QuadFrame f;
+        // Columns (q*Y, q*Z, q*X). An unrotated emitter therefore stands the
+        // quad in the world YZ plane facing +X -- vertical, not flat.
+        REQUIRE(BuildQuadFrame(7, {camF}, f));
+        CHECK(f.right.y == Approx(1.0f));
+        CHECK(f.up.z == Approx(1.0f));
+        CHECK(dot(f.right, f.up) == Approx(0.0f).margin(1e-6));
+        // It ignores the camera entirely: turn the camera and nothing moves.
+        QuadFrame g;
+        REQUIRE(BuildQuadFrame(7, {{1.0f, 0.0f, 0.0f}}, g));
+        CHECK(g.right.y == Approx(f.right.y));
+        CHECK(g.up.z == Approx(f.up.z));
+        // Turn the EMITTER a quarter turn about Z and the frame goes with it.
+        pd3::FrameInput in;
+        in.camForward = camF;
+        in.emitterQuat = Quaternion::from_axis_angle({0.0f, 0.0f, 1.0f}, 1.57079633f);
+        QuadFrame h;
+        REQUIRE(BuildQuadFrame(7, in, h));
+        CHECK(h.right.x == Approx(-1.0f).margin(1e-5));  // q * worldY
+        CHECK(h.up.z == Approx(1.0f).margin(1e-5));      // q * worldUp, unmoved
+    }
+
+    SECTION("modes 9 and 10 lie flat and follow the ground") {
+        pd3::FrameInput in;
+        in.camForward = camF;
+        // The OTHER permutation: columns (R*X, R*Y, R*Z), so an identity R is a
+        // quad lying flat. That is the basis this build used to hand mode 13,
+        // which is vertical -- the two were swapped.
+        for (i32 mode : {9, 10}) {
+            QuadFrame f;
+            REQUIRE(BuildQuadFrame(mode, in, f));
+            CHECK(f.right.x == Approx(1.0f));
+            CHECK(f.up.y == Approx(1.0f));
+            CHECK(f.up.z == Approx(0.0f).margin(1e-6));
+        }
+        // On a slope the quad tilts with it: the frame's normal is the ground
+        // normal, which is what "ground-conforming" means.
+        in.groundNormal = {0.0f, 0.6f, 0.8f};
+        QuadFrame s;
+        REQUIRE(BuildQuadFrame(9, in, s));
+        const Vector3f n{s.right.y * s.up.z - s.right.z * s.up.y,
+                         s.right.z * s.up.x - s.right.x * s.up.z,
+                         s.right.x * s.up.y - s.right.y * s.up.x};
+        CHECK(n.x == Approx(in.groundNormal.x).margin(1e-5));
+        CHECK(n.y == Approx(in.groundNormal.y).margin(1e-5));
+        CHECK(n.z == Approx(in.groundNormal.z).margin(1e-5));
+        CHECK(unit(s.right) == Approx(1.0f));
+        CHECK(dot(s.right, s.up) == Approx(0.0f).margin(1e-5));
+        // The flat grid is world up, which is also the engine's raycast-miss
+        // value, so a viewer with no terrain gets the flat case above.
+        in.groundNormal = {0.0f, 0.0f, 1.0f};
+        QuadFrame g;
+        REQUIRE(BuildQuadFrame(10, in, g));
+        CHECK(g.up.y == Approx(1.0f));
+    }
+
+    SECTION("a particle that has stopped keeps the direction it had") {
+        // `SelectFrameAxis`: the raw step, else the last unit vector, else world
+        // X. The engine skips the normalise on a step below the epsilon rather
+        // than zeroing it, so a stalled bolt does not snap to world X.
+        QuadFrame f;
+        REQUIRE(BuildQuadFrame(12, {camF, none, {0.6f, 0.8f, 0.0f}}, f));
+        CHECK(f.up.x == Approx(0.6f));
+        CHECK(f.up.y == Approx(0.8f));
+        // One that never moved at all does.
+        QuadFrame g;
+        REQUIRE(BuildQuadFrame(12, {camF}, g));
+        CHECK(g.up.x == Approx(1.0f));
+        CHECK(g.up.y == Approx(0.0f));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P7: the GATED arm of the same function -- the orientation a spawned child
+// actor is born holding. `ParticleSystem_EmitParticle` @0x71000B1A00 runs the
+// switch at emit and hands the result straight to `Actor_SpawnFromSno`.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("d3 particle P7: the gated arm orients a spawned child actor",
+          "[d3][particle][p7]") {
+    using Catch::Approx;
+    using pd3::BuildChildOrientation;
+    using pd3::BuildQuadFrame;
+    using pd3::QuadFrame;
+
+    // The rotation's columns, which is what the quaternion is: column 0 is
+    // where the model's own +X ends up.
+    auto col = [](const Quaternion& q, int i) {
+        const Vector3f e[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+        return q.rotate_vector(e[i]);
+    };
+    auto same = [](const Vector3f& a, const Vector3f& b) {
+        return std::abs(a.x - b.x) < 1e-5f && std::abs(a.y - b.y) < 1e-5f &&
+               std::abs(a.z - b.z) < 1e-5f;
+    };
+
+    // A camera looking along +Y (so it sits at -Y) and a particle moving +Y.
+    const Vector3f camF{0.0f, 1.0f, 0.0f};
+    const Quaternion spun = Quaternion::from_axis_angle({0.0f, 0.0f, 1.0f}, 0.7f);
+
+    SECTION("modes 1 and 8 leave the emitter quaternion standing") {
+        // 3,917 + 19 files, and 1,116 of them spawn child actors -- the
+        // second-largest population there is. The engine writes nothing into
+        // the slot, and what is already in it is `sys+0x64`, the system's own
+        // quaternion, copied there at @0x71000B1EC0.
+        Quaternion q = spun;
+        for (i32 mode : {1, 8}) {
+            CHECK_FALSE(BuildChildOrientation(mode, {camF}, q));
+            CHECK(q.x == Approx(spun.x));
+            CHECK(q.w == Approx(spun.w));
+        }
+    }
+
+    SECTION("mode 7 is the emitter quaternion verbatim") {
+        // `if (gated) { *a3 = *a6; return; }` -- four floats, no arithmetic.
+        // 2,143 child-actor systems, the largest share of the 4,795.
+        pd3::FrameInput in;
+        in.camForward = camF;
+        in.emitterQuat = spun;
+        Quaternion q = Quaternion::identity();
+        REQUIRE(BuildChildOrientation(7, in, q));
+        CHECK(q.x == Approx(spun.x));
+        CHECK(q.y == Approx(spun.y));
+        CHECK(q.z == Approx(spun.z));
+        CHECK(q.w == Approx(spun.w));
+    }
+
+    SECTION("mode 3's gated arm is its ungated frame, cyclically shifted") {
+        // The two arms of one mode, cross-checked against each other. Ungated
+        // reads (right, up, normal); gated reads the same three vectors as
+        // (normal, right, up). Getting that permutation wrong is a 120-degree
+        // relabel, which is exactly what this catches.
+        pd3::FrameInput in;
+        in.camForward = camF;
+        in.axis = {0.0f, 1.0f, 0.0f};
+        in.axisUnit = in.axis;
+
+        QuadFrame f;
+        REQUIRE(BuildQuadFrame(3, in, f));
+        const Vector3f normal{f.right.y * f.up.z - f.right.z * f.up.y,
+                              f.right.z * f.up.x - f.right.x * f.up.z,
+                              f.right.x * f.up.y - f.right.y * f.up.x};
+
+        Quaternion q = Quaternion::identity();
+        REQUIRE(BuildChildOrientation(3, in, q));
+        CHECK(same(col(q, 0), normal));
+        CHECK(same(col(q, 1), f.right));
+        CHECK(same(col(q, 2), f.up));
+    }
+
+    SECTION("a velocity-aligned child faces the way it is going") {
+        // Modes 2, 3 and 12 -- 428 child-actor systems. Column 0 is the axis,
+        // which for a Z-up +X-forward model is its facing, and column 2 stays
+        // world up for as long as the axis is horizontal.
+        pd3::FrameInput in;
+        in.camForward = camF;
+        in.axis = {0.0f, 2.5f, 0.0f}; // unnormalised on purpose
+        in.axisUnit = in.axis;
+        for (i32 mode : {2, 3, 12}) {
+            Quaternion q = Quaternion::identity();
+            REQUIRE(BuildChildOrientation(mode, in, q));
+            CHECK(same(col(q, 0), {0.0f, 1.0f, 0.0f}));
+            CHECK(same(col(q, 2), {0.0f, 0.0f, 1.0f}));
+        }
+        // Straight up has no horizontal perpendicular, so the engine writes
+        // nothing and the emitter's quaternion stands.
+        pd3::FrameInput vert = in;
+        vert.axis = {0.0f, 0.0f, 1.0f};
+        vert.axisUnit = vert.axis;
+        Quaternion q = Quaternion::identity();
+        CHECK_FALSE(BuildChildOrientation(12, vert, q));
+    }
+
+    SECTION("modes 0 and 13 turn the child to face the camera") {
+        // 907 + 187 systems. Mode 0 takes the view direction as it is and mode
+        // 13 flattens it, so with a horizontal camera the two must agree --
+        // the same cross-check that settled the column convention for quads.
+        Quaternion a = Quaternion::identity(), b = Quaternion::identity();
+        REQUIRE(BuildChildOrientation(0, {camF}, a));
+        REQUIRE(BuildChildOrientation(13, {camF}, b));
+        for (int i = 0; i < 3; ++i)
+            CHECK(same(col(a, i), col(b, i)));
+        // Facing the camera means +X points back down the view direction.
+        CHECK(same(col(a, 0), {0.0f, -1.0f, 0.0f}));
+        CHECK(same(col(a, 2), {0.0f, 0.0f, 1.0f}));
+
+        // Tilt the camera down and mode 13 keeps the child upright while mode
+        // 0 leans it -- that is the whole difference between the two.
+        pd3::FrameInput tilted;
+        tilted.camForward = {0.0f, 0.707107f, -0.707107f};
+        Quaternion c = Quaternion::identity(), d = Quaternion::identity();
+        REQUIRE(BuildChildOrientation(0, tilted, c));
+        REQUIRE(BuildChildOrientation(13, tilted, d));
+        CHECK(same(col(d, 2), {0.0f, 0.0f, 1.0f}));
+        CHECK_FALSE(same(col(c, 2), {0.0f, 0.0f, 1.0f}));
+    }
+
+    SECTION("gated modes 2 and 11 drop the camera the ungated ones cross with") {
+        // `Particle_OrientationBasisHelper` @0x71000BBF10 opens with
+        // `if (gated) { Particle_QuaternionFromAxes(...); return; }` and never
+        // reaches the cross with the view direction.
+        pd3::FrameInput in;
+        in.axis = {0.3f, 0.9f, 0.1f};
+        in.axisUnit = in.axis;
+        in.fromSystem = {1.0f, 2.0f, 0.5f};
+        for (i32 mode : {2, 11}) {
+            pd3::FrameInput a = in, b = in;
+            a.camForward = {0.0f, 1.0f, 0.0f};
+            b.camForward = {1.0f, 0.0f, 0.0f};
+            Quaternion qa = Quaternion::identity(), qb = Quaternion::identity();
+            REQUIRE(BuildChildOrientation(mode, a, qa));
+            REQUIRE(BuildChildOrientation(mode, b, qb));
+            CHECK(qa.x == Approx(qb.x));
+            CHECK(qa.y == Approx(qb.y));
+            CHECK(qa.z == Approx(qb.z));
+            CHECK(qa.w == Approx(qb.w));
+        }
+        // The ungated arm of the same mode does not: it is a billboard.
+        QuadFrame fa, fb;
+        pd3::FrameInput a = in, b = in;
+        a.camForward = {0.0f, 1.0f, 0.0f};
+        b.camForward = {1.0f, 0.0f, 0.0f};
+        REQUIRE(BuildQuadFrame(2, a, fa));
+        REQUIRE(BuildQuadFrame(2, b, fb));
+        CHECK_FALSE(same(fa.right, fb.right));
+    }
+
+    SECTION("modes 9 and 10 stand the child on the ground normal") {
+        pd3::FrameInput in;
+        in.camForward = camF;
+        // Flat ground and an unrotated emitter compose to nothing at all.
+        Quaternion q = Quaternion::identity();
+        REQUIRE(BuildChildOrientation(9, in, q));
+        for (int i = 0; i < 3; ++i) {
+            const Vector3f e[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+            CHECK(same(col(q, i), e[i]));
+        }
+        // On a slope the child's own up lands on the terrain normal, which is
+        // what "ground-conforming" means for a model rather than a quad.
+        in.groundNormal = {0.0f, 0.6f, 0.8f};
+        Quaternion s = Quaternion::identity();
+        REQUIRE(BuildChildOrientation(10, in, s));
+        CHECK(same(col(s, 2), in.groundNormal));
+    }
 }

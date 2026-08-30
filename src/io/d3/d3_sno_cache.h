@@ -53,7 +53,9 @@
 #include <list>
 #include <memory>
 #include <span>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace whiteout::flakes::io {
 
@@ -89,6 +91,29 @@ bool LooksLikeD3(std::span<const u8> bytes);
 /// not, and is not a group anything asks this about — its bytes reach
 /// AssetManager, never the SNO cache.
 i32 D3SnoIdOfBytes(std::span<const u8> bytes);
+
+/// @brief One sprite sheet's flip-book table, as the particle simulation needs
+///        it.
+///
+/// A Diablo III `.tex` carries its own sub-rect table — `Textures+528` is the
+/// frame count and `+544` the array — and that, not any `.an2`, is where a
+/// particle atlas comes from. WhiteoutLib's TEX parser already reads it into
+/// `TexInfo::frames`; this is the shape the emitter wants, with the pixel size
+/// kept because the engine derives the quad's ASPECT from it.
+struct D3TextureAtlas {
+    /// (u0, v0, u1, v1) per frame, in the file's own order.
+    std::vector<Vector4f> frames;
+    u32 width = 0;  ///< Pixels, for the quad aspect.
+    u32 height = 0;
+
+    /// @brief The tile SIZE, which the engine takes from frame 0 alone and
+    ///        applies to every frame — only the origin varies per frame.
+    Vector2f TileSize() const {
+        if (frames.empty())
+            return {1.0f, 1.0f};
+        return {frames[0].z - frames[0].x, frames[0].w - frames[0].y};
+    }
+};
 
 class D3SnoCache {
 public:
@@ -157,6 +182,19 @@ public:
     /// collision builder; anything calling it per frame is using it wrong.
     std::vector<u8> ReadBytes(i32 sno);
 
+    /// @brief The flip-book frame table of the `.tex` @p sno, or null.
+    ///
+    /// Null both when the texture carries no table (the overwhelming majority)
+    /// and when it cannot be read, which are the same answer to the caller: a
+    /// layer with no atlas samples the whole sheet.
+    ///
+    /// Memoised in its own map rather than through the LRU: the value is a few
+    /// dozen floats and re-reading a 1 MB `.tex` to recover it would be the
+    /// expensive half. It does cost one full texture decode on the first ask,
+    /// because the TEX parser has no metadata-only entry point — which is why
+    /// this is a load-time call and nothing asks it per frame.
+    std::shared_ptr<const D3TextureAtlas> TextureAtlas(i32 sno);
+
     /// @brief Which group @p sno is, reading it through the cache if needed.
     d3n::Group GroupOf(i32 sno);
 
@@ -223,6 +261,8 @@ private:
     IContentProvider* provider_ = nullptr;
     std::unordered_map<i32, Entry> entries_;
     std::unordered_map<i32, std::string> names_;
+    /// Null values are remembered misses — see @ref TextureAtlas.
+    std::unordered_map<i32, std::shared_ptr<const D3TextureAtlas>> atlases_;
     std::list<i32> lru_; ///< Front = most recently used.
     // 512 MB is a starting number to revise against Stats::bytesResident in the
     // model browser, not a measurement.

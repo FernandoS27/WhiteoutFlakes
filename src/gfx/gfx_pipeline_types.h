@@ -149,6 +149,12 @@ struct BlendDesc {
     bool alphaToCoverage = false;
 
     bool colorWrite = true;
+    /// @brief The alpha channel's write mask, separate from the colour's.
+    ///
+    /// Two flags because Diablo III's RenderParams carries two: 1,395 of its
+    /// 1,831 shipped passes write RGB with the alpha masked off and 111 write
+    /// the alpha alone.
+    bool alphaWrite = true;
 };
 
 struct DepthStencilDesc {

@@ -287,7 +287,8 @@ void ApplyAttachmentStates(Actor& mi, const FrameState& state, const ActorEvalCo
 // load-bearing: it is frozen onto every particle at birth and is what makes
 // the emitter-local kinematic triple local.
 void ApplyD3ParticleFrames(Actor& mi, const FrameState& state,
-                           particle::ParticleService& particles) {
+                           particle::ParticleService& particles,
+                           const ActorEvalContext& ctx) {
     particles.ForEachEmitter([&](const particle::EmitterKey& key, const particle::Emitter2& e) {
         if (key.model != mi.handle)
             return;
@@ -311,6 +312,16 @@ void ApplyD3ParticleFrames(Actor& mi, const FrameState& state,
         // together. Without this a particle draws at 1/17th of its authored
         // size and its whole flight path shrinks to a clump on the bone.
         d3->SetUnitScale(mi.worldScale);
+        // Render modes 9 and 10 conform their quads to the ground. The host's
+        // terrain if it registered one, otherwise the grid — the same query
+        // terrain IK plants feet on, so a decal and a foot agree about where
+        // the floor is.
+        d3->SetGroundQuery(ctx.queryGround);
+        // Render modes 0 and 13 turn a spawned CHILD ACTOR to the camera, and
+        // that decision is made at emit rather than at draw, so the emitter has
+        // to be holding the view direction before it emits.
+        d3->SetCameraForward(
+            {-ctx.view.data[0][2], -ctx.view.data[1][2], -ctx.view.data[2][2]});
         // The live surface, for the three mesh emitter shapes. Node matrices
         // rather than the palette's offset matrices: those are recomputed on
         // the draw path and would be a frame stale here, while these were
@@ -408,7 +419,7 @@ void Actor::ApplyFrameState(const FrameState& state, i32 localTimeMs, const Acto
                            ctx.particles);
     }
     if (ctx.particles)
-        ApplyD3ParticleFrames(*this, state, *ctx.particles);
+        ApplyD3ParticleFrames(*this, state, *ctx.particles, ctx);
     ApplyD3AttachedChildren(*this, state, ctx);
 #endif
 

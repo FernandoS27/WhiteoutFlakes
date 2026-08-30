@@ -181,10 +181,13 @@ PipelineHandle VulkanDevice::CreateGraphicsPipeline(const GraphicsPipelineDesc& 
         .srcAlphaBlendFactor = ToVkBlendFactor(desc.blend.srcAlpha),
         .dstAlphaBlendFactor = ToVkBlendFactor(desc.blend.dstAlpha),
         .alphaBlendOp = ToVkBlendOp(desc.blend.opAlpha),
-        .colorWriteMask = desc.blend.colorWrite
-                              ? (vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-                                 vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA)
-                              : vk::ColorComponentFlags{},
+        .colorWriteMask =
+            (desc.blend.colorWrite ? (vk::ColorComponentFlagBits::eR |
+                                      vk::ColorComponentFlagBits::eG |
+                                      vk::ColorComponentFlagBits::eB)
+                                   : vk::ColorComponentFlags{}) |
+            (desc.blend.alphaWrite ? vk::ColorComponentFlags{vk::ColorComponentFlagBits::eA}
+                                   : vk::ColorComponentFlags{}),
     };
 
     // Extras never blend — the G-buffer depth/normal slots are non-

@@ -1,5 +1,7 @@
 #include "renderer/particle/particle_pool.h"
 
+#include <cstddef>
+
 namespace whiteout::flakes::renderer::particle {
 
 namespace {
@@ -65,6 +67,10 @@ void ParticlePool::RemoveAliveAt(usize i) {
         alive_[i] = alive_.back();
     }
     alive_.pop_back();
+}
+
+void ParticlePool::RemoveAliveAtOrdered(usize i) {
+    alive_.erase(alive_.begin() + static_cast<std::ptrdiff_t>(i));
 }
 
 u32 ParticlePool::PopDead() {
