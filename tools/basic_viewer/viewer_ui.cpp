@@ -165,7 +165,7 @@ gfx::GfxApi IdxToBackend(i32 idx) {
 
 } // namespace
 
-ViewerUI::ViewerUI(ViewerApp& app) : app_(app) {
+ViewerUI::ViewerUI(ViewerApp& app) : app_(app), exportWindow_(app) {
     // NFD's init / quit can be reference-counted; doing it once at first UI
     // construction matches its single-process expectations.
     NFD::Init();
@@ -182,7 +182,7 @@ void ViewerUI::BuildFrame() {
     if (animWindowOpen_ && app_.CanAttachAnimations())
         BuildAnimationWindow();
     BuildSaveOptionsPopup();
-    BuildExportPopup();
+    exportWindow_.Build();
     app_.BuildStorageExplorerWindow();
     tools::LogConsole::Instance().DrawUi(&showLogConsole_);
     // Last, so it lands over everything else — which is the point of a modal
@@ -608,138 +608,6 @@ void ViewerUI::BuildSaveOptionsPopup() {
     ImGui::EndPopup();
 }
 
-void ViewerUI::BuildExportPopup() {
-    if (openExportPopup_) {
-        ImGui::OpenPopup(i18n::tr("dialog.export.title"));
-        openExportPopup_ = false;
-    }
-
-    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
-    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    if (!ImGui::BeginPopupModal(i18n::tr("dialog.export.title"), nullptr,
-                                ImGuiWindowFlags_AlwaysAutoResize))
-        return;
-
-    const auto& seqs = app_.SequenceNames();
-    if (seqs.empty()) {
-        ImGui::TextUnformatted(i18n::tr("dialog.export.no_anims"));
-        if (ImGui::Button(i18n::tr("app.close"), ImVec2(80, 0)))
-            ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-        return;
-    }
-
-    exportSeqIdx_ = std::clamp(exportSeqIdx_, 0, static_cast<i32>(seqs.size()) - 1);
-
-    // ---- Animation ----
-    ImGui::SetNextItemWidth(280);
-    if (ImGui::BeginCombo(i18n::tr("toolbar.animation"), seqs[exportSeqIdx_].c_str())) {
-        for (i32 i = 0; i < static_cast<i32>(seqs.size()); ++i) {
-            const bool sel = (i == exportSeqIdx_);
-            if (ImGui::Selectable(seqs[i].c_str(), sel))
-                exportSeqIdx_ = i;
-            if (sel)
-                ImGui::SetItemDefaultFocus();
-        }
-        ImGui::EndCombo();
-    }
-
-    // ---- FPS ----
-    ImGui::SetNextItemWidth(120);
-    ImGui::InputInt(i18n::tr("dialog.export.fps"), &exportFps_);
-    exportFps_ = std::clamp(exportFps_, 1, 240);
-
-    // ---- Format ----
-    {
-        const char* formats[kExportFormatCount];
-        for (i32 i = 0; i < kExportFormatCount; ++i)
-            formats[i] = GetExportFormatInfo(static_cast<ExportFormat>(i)).label;
-        ImGui::SetNextItemWidth(200);
-        ImGui::Combo(i18n::tr("dialog.export.format"), &exportFormat_, formats, kExportFormatCount);
-    }
-    const ExportFormat exportFmt = static_cast<ExportFormat>(exportFormat_);
-
-    // ---- Resolution ----
-    {
-        const char* modes[] = {i18n::tr("dialog.export.res_current"),
-                               i18n::tr("dialog.export.res_custom")};
-        ImGui::SetNextItemWidth(200);
-        ImGui::Combo(i18n::tr("dialog.export.resolution"), &exportResMode_, modes, 2);
-        if (exportResMode_ == 1) {
-            ImGui::SetNextItemWidth(96);
-            ImGui::InputInt(i18n::tr("dialog.export.w"), &exportWidth_, 0);
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(96);
-            ImGui::InputInt(i18n::tr("dialog.export.h"), &exportHeight_, 0);
-            exportWidth_ = std::clamp(exportWidth_, 16, 8192);
-            exportHeight_ = std::clamp(exportHeight_, 16, 8192);
-        }
-    }
-
-    // ---- Transparent background ----
-    ImGui::Checkbox(i18n::tr("dialog.export.transparent"), &exportTransparent_);
-
-    // ---- Capture UI overlay ----
-    ImGui::Checkbox(i18n::tr("dialog.export.capture_ui"), &exportCaptureUi_);
-
-    // ---- Output folder ----
-    {
-        char tmp[1024];
-        std::snprintf(tmp, sizeof(tmp), "%s", exportFolder_.c_str());
-        ImGui::SetNextItemWidth(360);
-        if (ImGui::InputText("##exportfolder", tmp, sizeof(tmp)))
-            exportFolder_ = tmp;
-        ImGui::SameLine();
-        if (ImGui::Button(i18n::tr("dialog.export.browse"))) {
-            NFD::UniquePathU8 outPath;
-            if (NFD::PickFolder(outPath) == NFD_OKAY)
-                exportFolder_ = outPath.get();
-        }
-        ImGui::SameLine();
-        ImGui::TextUnformatted(i18n::tr("dialog.export.output_folder"));
-    }
-
-    // ---- Duration / frame-count preview ----
-    const auto& ranges = app_.SequenceRanges();
-    if (exportSeqIdx_ < static_cast<i32>(ranges.size())) {
-        const SequenceInfo& s = ranges[exportSeqIdx_];
-        const i32 durMs = std::max(0, s.endMs - s.startMs);
-        const i32 frames = std::max(
-            1, static_cast<i32>(std::llround(static_cast<f64>(durMs) * exportFps_ / 1000.0)));
-        ImGui::TextDisabled(i18n::tr("dialog.export.duration"), durMs, frames, exportFps_);
-    }
-    if (IsSingleFileFormat(exportFmt))
-        ImGui::TextDisabled(i18n::tr("dialog.export.output_single"),
-                            GetExportFormatInfo(exportFmt).extension);
-    else
-        ImGui::TextDisabled(i18n::tr("dialog.export.output_frames"));
-
-    ImGui::Separator();
-
-    const bool canExport = !exportFolder_.empty();
-    ImGui::BeginDisabled(!canExport);
-    if (ImGui::Button(i18n::tr("dialog.export.export"), ImVec2(120, 0))) {
-        AnimationExportParams params;
-        params.sequenceIndex = exportSeqIdx_;
-        params.fps = exportFps_;
-        params.format = exportFmt;
-        params.transparentBackground = exportTransparent_;
-        params.captureUi = exportCaptureUi_;
-        if (exportResMode_ == 1) {
-            params.width = exportWidth_;
-            params.height = exportHeight_;
-        }
-        params.outputFolder = io::FsPathFromUtf8(exportFolder_);
-        app_.RequestAnimationExport(std::move(params));
-        ImGui::CloseCurrentPopup();
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::Button(i18n::tr("app.cancel"), ImVec2(80, 0)))
-        ImGui::CloseCurrentPopup();
-    ImGui::EndPopup();
-}
-
 // ---- Animation window ------------------------------------------------------
 //
 // StarCraft II does not play "a sequence". It plays a *bracket*, and one
@@ -955,10 +823,14 @@ void ViewerUI::BuildMenuBar() {
             if (ImGui::MenuItem(i18n::tr("menu.file.save_as"), "Ctrl+Shift+S", false, canSave))
                 SaveAsDialog();
             const bool hasAnims = hasModel && !app_.SequenceNames().empty();
-            if (ImGui::MenuItem(i18n::tr("menu.file.export_frames"), nullptr, false, hasAnims)) {
-                model::Actor* focus = app_.FocusActorPtr();
-                exportSeqIdx_ = focus ? focus->animation.ActiveSequenceIndex() : 0;
-                openExportPopup_ = true;
+            if (ImGui::MenuItem(i18n::tr("menu.file.export_frames"), nullptr,
+                                exportWindow_.IsOpen(), hasAnims)) {
+                if (exportWindow_.IsOpen()) {
+                    exportWindow_.Close();
+                } else {
+                    model::Actor* focus = app_.FocusActorPtr();
+                    exportWindow_.Open(focus ? focus->animation.ActiveSequenceIndex() : 0);
+                }
             }
             ImGui::Separator();
             if (ImGui::MenuItem(i18n::tr("menu.file.exit")))

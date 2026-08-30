@@ -8,6 +8,7 @@
 // which handles the actual draw submission.
 // ============================================================================
 
+#include "export_window.h"
 #include "whiteout/flakes/enums.h" // ProductId
 #include "whiteout/flakes/types.h"
 
@@ -25,6 +26,12 @@ class ViewerApp;
 class ViewerUI {
 public:
     explicit ViewerUI(ViewerApp& app);
+
+    // The Export Animation window, so the host can advance its live preview
+    // outside the ImGui frame.
+    ExportWindow& Export() {
+        return exportWindow_;
+    }
 
     // Called every frame between ImGui::NewFrame() and ImGui::Render() to
     // build all the windows / menus the viewer exposes.
@@ -65,8 +72,6 @@ private:
     // Renders the deferred Save As options modal (MDL dialect + texture export)
     // when a model save is pending. No-op otherwise.
     void BuildSaveOptionsPopup();
-    // Renders the "Export Animation Frames" modal (animation + FPS + folder).
-    void BuildExportPopup();
     // The Animation window: the model's global loops, the extra plays layered
     // under the sequence dropdown, and the attached `.m3a` files. StarCraft II
     // only — everything in it is a thing only an `.m3` has.
@@ -121,17 +126,10 @@ private:
     ProductId ioBufsGame_ = ProductId::Wc3;
     ProductId ioBufsServing_ = ProductId::Wc3;
 
-    // Export Animation Frames modal state.
-    bool openExportPopup_ = false;
-    i32 exportSeqIdx_ = 0;
-    i32 exportFps_ = 30;
-    i32 exportFormat_ = 0; // 0 = PNG frames, 1 = GIF, 2 = APNG, 3 = WebP
-    bool exportTransparent_ = false;
-    bool exportCaptureUi_ = false;
-    i32 exportResMode_ = 0; // 0 = current view, 1 = custom
-    i32 exportWidth_ = 1280;
-    i32 exportHeight_ = 960;
-    std::string exportFolder_;
+    // The Export Animation window. A window rather than a modal: its Viewport
+    // camera mode and its timeline scrubber both need the viewport reachable
+    // while it is open.
+    ExportWindow exportWindow_;
 };
 
 } // namespace whiteout::flakes

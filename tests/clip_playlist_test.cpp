@@ -731,6 +731,94 @@ TEST_CASE("Restart re-bases a rewound clock", "[clip_playlist]") {
 
 // A restart is a hard cut even where a plain sequence switch cross-fades: the
 // clock has moved, so there is no previous pose to fade out of.
+// ---------------------------------------------------------------------------
+// What the animation exporter's clip queue relies on.
+//
+// The export runner switches clips by bumping the RAW requested index by a
+// whole multiple of the sequence count, and holds a pose by scrubbing every
+// frame while the clock keeps running. Neither mechanism is reachable from
+// export_recipe_test — that one is device-free and the schedule is a pure
+// function — so the two contracts they depend on are pinned here, where the
+// byte-identity contract for this class already lives.
+
+TEST_CASE("A raw-index bump restarts the primary and leaves globals alone",
+          "[clip_playlist]") {
+    std::vector<SequenceInfo> seqs = {Seq("Stand", 0, 1000), Seq("Walk", 1000, 2000),
+                                      Seq("GLstand", 2000, 2500)};
+    seqs[2].alwaysPlays = true;
+    seqs[2].concurrent = true;
+
+    ClipPlaylist pl;
+    pl.SetGlobalSequences({2});
+    pl.SetActiveSequence(0);
+    pl.Advance(0, seqs, false);
+
+    // Let both run for a while.
+    pl.Advance(400, seqs, false);
+    const auto globalAt = [&] {
+        for (const auto& c : pl.Clips())
+            if (c.sequence == 2)
+                return c.elapsedMs;
+        return -1;
+    };
+    REQUIRE(globalAt() == 400);
+    REQUIRE(pl.PrimaryTimeMs() == 400);
+
+    SECTION("a bump onto the SAME bounded sequence is still noticed") {
+        // The export's repeat case: the queue plays Stand twice in a row, so
+        // the bounded sequence does not change and only the raw value can say
+        // "start it again". Advance bounds with ((raw % n) + n) % n but
+        // compares the raw values.
+        const i32 cycleBefore = pl.SequenceCycle();
+        pl.SetActiveSequence(0 + static_cast<i32>(seqs.size())); // still bounds to 0
+        pl.Advance(400, seqs, false);
+        REQUIRE(pl.PrimaryTimeMs() == 0);        // the play restarted
+        REQUIRE(pl.SequenceCycle() == cycleBefore + 1); // single-shot emitters re-fire
+        REQUIRE(globalAt() == 400);              // …and the global loop did not
+    }
+
+    SECTION("a bump onto a different sequence cuts to it") {
+        pl.SetActiveSequence(1 + 2 * static_cast<i32>(seqs.size()));
+        pl.Advance(400, seqs, false);
+        REQUIRE(pl.PrimaryTimeMs() == seqs[1].startMs);
+        REQUIRE(globalAt() == 400);
+    }
+
+    SECTION("Restart, by contrast, re-bases EVERY play") {
+        // Which is why the export uses it only on frame 0, where the actor
+        // clock genuinely rewound. Using it per clip would visibly restart an
+        // `.m3`'s always-playing overlay at every boundary.
+        pl.Restart(400);
+        pl.Advance(400, seqs, false);
+        REQUIRE(globalAt() == 0);
+    }
+}
+
+TEST_CASE("A repeated scrub pins the pose while the clock advances",
+          "[clip_playlist]") {
+    // The export's hold. `playbackSpeed = 0` is NOT this: FrameTicker threads
+    // the actor clock down the tree, so the children and the PE1 emitters
+    // would freeze with their ancestor. The clock has to keep moving.
+    const std::vector<SequenceInfo> seqs = {Seq("Attack", 2000, 2500)};
+    ClipPlaylist pl;
+    pl.SetActiveSequence(0);
+    pl.Advance(0, seqs, false);
+
+    // One short of the end, which is what the schedule emits: a scrub is
+    // windowed exactly like playback, so 2500 on a 500 ms looping clip wraps
+    // to 2000 — the FIRST frame — and the hold would freeze the wrong pose.
+    const i32 holdFrameMs = 2499;
+    for (i32 nowMs = 100; nowMs <= 2000; nowMs += 100) {
+        pl.SetPrimaryTimeMs(holdFrameMs, nowMs, seqs);
+        pl.Advance(nowMs, seqs, false);
+        REQUIRE(pl.PrimaryTimeMs() == holdFrameMs);
+    }
+    // The play is still there and still pinned twenty holds later — the scrub
+    // re-bases the start stamp rather than writing an output the next Advance
+    // would overwrite.
+    REQUIRE(pl.PlayCount() == 1);
+}
+
 TEST_CASE("Restart hard-cuts under a cross-fade policy", "[clip_playlist]") {
     const std::vector<SequenceInfo> seqs = {Seq("Stand", 0, 1000), Seq("Walk", 0, 800)};
     ClipPlaylist pl;

@@ -46,7 +46,19 @@ struct IniMap {
             return;
         std::string line;
         std::string section;
+        bool firstLine = true;
         while (std::getline(f, line)) {
+            // Strip a UTF-8 BOM off the first line. Every Windows editor and
+            // PowerShell's `Set-Content -Encoding utf8` writes one, and it
+            // lands on the leading '[' — so the whole first section silently
+            // fails to open and every key under it is dropped.
+            if (firstLine) {
+                firstLine = false;
+                if (line.size() >= 3 && static_cast<unsigned char>(line[0]) == 0xEF &&
+                    static_cast<unsigned char>(line[1]) == 0xBB &&
+                    static_cast<unsigned char>(line[2]) == 0xBF)
+                    line.erase(0, 3);
+            }
             std::string t = Trim(line);
             if (t.empty() || t[0] == ';' || t[0] == '#')
                 continue;
@@ -105,6 +117,26 @@ struct IniMap {
     }
     void Set(const std::string& key, std::string val) {
         values[key] = std::move(val);
+    }
+
+    void Remove(const std::string& key) {
+        values.erase(key);
+    }
+
+    // Erase every key starting with `prefix`.
+    //
+    // The load-then-set-then-save round trip preserves unrelated keys, which
+    // is right for a fixed key set and wrong for a variable-length list:
+    // saving a two-clip export queue over a five-clip one would otherwise
+    // leave `[Export.Clip2..4]` in the file forever, and a later hand-edit of
+    // ClipCount would resurrect them.
+    void RemovePrefix(std::string_view prefix) {
+        for (auto it = values.begin(); it != values.end();) {
+            if (std::string_view(it->first).substr(0, prefix.size()) == prefix)
+                it = values.erase(it);
+            else
+                ++it;
+        }
     }
 };
 

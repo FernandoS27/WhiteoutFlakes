@@ -22,6 +22,7 @@
 #include "localization.h"
 #include "log_console.h"
 #include "settings_ini.h"
+#include "export_ini.h"
 #include "viewer_app.h"
 #include "whiteout/flakes/gfx_types.h"
 #include "whiteout/flakes/types.h"
@@ -1403,8 +1404,49 @@ int main(int argc, char* argv[]) {
     // [--camera <idx>]. Loads the model, exports, and exits — verifies the
     // capture pipeline without UI. --camera selects a model camera preset
     // (0-based); --ui composites the viewer UI overlay into each frame.
+    //
+    // The three positional arguments and every flag above keep their exact
+    // meaning and their exact output filenames. Everything the redesign added
+    // is additive and listed under "--export-clip" below; when any of those is
+    // given, the positional sequence index is ignored.
     bool doExport = false;
     i32 exportSeq = 0;
+    // Additive surface. Each --export-clip is `name|#index[:repeats][@speed]`.
+    struct CliClip {
+        std::string spec;
+    };
+    std::vector<CliClip> exportClips;
+    i32 exportDurationMs = 0; // 0 = the queue's own length
+    whiteout::flakes::ExportFill exportFill = whiteout::flakes::ExportFill::LoopLast;
+    i32 exportPreRollMs = 0;
+    // Applied to every clip start, so a queue can be cross-faded from the CLI
+    // without a recipe file.
+    i32 exportBlendMs = 0;
+    i32 exportFrameStep = 1;
+    bool exportOrbit = false;
+    f32 exportOrbitDegPerSec = 0.0f;
+    f32 exportOrbitRevs = 0.0f;
+    bool exportOrbitRevsSet = false;
+    f32 exportOrbitPitch = 0.0f;
+    bool exportOrbitPitchSet = false;
+    f32 exportOrbitDist = 0.0f;
+    f32 exportOrbitStart = 0.0f;
+    bool exportOrbitFit = false;
+    whiteout::flakes::OrbitSubject exportSubject = whiteout::flakes::OrbitSubject::Camera;
+    i32 exportAngles = 1;
+    i32 exportSheetCols = -1; // -1 = not a sheet
+    bool exportCrop = false;
+    std::string exportNameTemplate;
+    std::filesystem::path exportRecipeFile;
+    // A recipe file is the base and flags override it, so the overrides have
+    // to be the ones the user actually typed — otherwise a flag's *default*
+    // silently overwrites what the recipe stored.
+    bool exportFmtSet = false;
+    bool exportResSet = false;
+    bool exportTransparentSet = false;
+    bool exportUiSet = false;
+    bool exportFpsSet = false;
+    bool exportFillSet = false;
     // `.m3a` files to merge into the loaded `.m3` before anything else runs.
     // The UI route is the toolbar's Anims button; this is the same call, so a
     // scripted render can exercise an attached sequence.
@@ -1466,26 +1508,91 @@ int main(int argc, char* argv[]) {
             doExport = true;
             exportSeq = std::atoi(argv[++i]);
             exportFps = std::atoi(argv[++i]);
+            exportFpsSet = true;
             exportFolder = whiteout::flakes::io::FsPathFromUtf8(argv[++i]);
         } else if (std::strcmp(a, "--attach-anim") == 0 && i + 1 < argc) {
             attachAnims.push_back(whiteout::flakes::io::FsPathFromUtf8(argv[++i]));
         } else if (std::strcmp(a, "--gif") == 0) {
             exportFmt = whiteout::flakes::ExportFormat::Gif;
+            exportFmtSet = true;
         } else if (std::strcmp(a, "--apng") == 0) {
             exportFmt = whiteout::flakes::ExportFormat::Apng;
+            exportFmtSet = true;
         } else if (std::strcmp(a, "--webp") == 0) {
             exportFmt = whiteout::flakes::ExportFormat::Webp;
+            exportFmtSet = true;
         } else if (std::strcmp(a, "--transparent") == 0) {
             exportTransparent = true;
+            exportTransparentSet = true;
         } else if (std::strcmp(a, "--ui") == 0) {
             exportCaptureUi = true;
+            exportUiSet = true;
         } else if (std::strcmp(a, "--show-collisions") == 0) {
             showCollisions = true;
         } else if (std::strcmp(a, "--res") == 0 && i + 2 < argc) {
             exportResW = std::atoi(argv[++i]);
             exportResH = std::atoi(argv[++i]);
+            exportResSet = true;
         } else if (std::strcmp(a, "--camera") == 0 && i + 1 < argc) {
             exportCamera = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--export-clip") == 0 && i + 1 < argc) {
+            exportClips.push_back({argv[++i]});
+        } else if (std::strcmp(a, "--export-duration") == 0 && i + 1 < argc) {
+            exportDurationMs = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--export-fill") == 0 && i + 1 < argc) {
+            const char* v = argv[++i];
+            if (std::strcmp(v, "loop-queue") == 0)
+                exportFill = whiteout::flakes::ExportFill::LoopQueue;
+            else if (std::strcmp(v, "hold-last") == 0)
+                exportFill = whiteout::flakes::ExportFill::HoldLast;
+            else
+                exportFill = whiteout::flakes::ExportFill::LoopLast;
+            exportFillSet = true;
+        } else if (std::strcmp(a, "--export-preroll") == 0 && i + 1 < argc) {
+            exportPreRollMs = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--export-blend") == 0 && i + 1 < argc) {
+            exportBlendMs = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--export-step") == 0 && i + 1 < argc) {
+            exportFrameStep = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--export-orbit") == 0 && i + 1 < argc) {
+            exportOrbit = true;
+            exportOrbitDegPerSec = static_cast<f32>(std::atof(argv[++i]));
+        } else if (std::strcmp(a, "--export-orbit-revs") == 0 && i + 1 < argc) {
+            exportOrbit = true;
+            exportOrbitRevsSet = true;
+            exportOrbitRevs = static_cast<f32>(std::atof(argv[++i]));
+        } else if (std::strcmp(a, "--export-orbit-pitch") == 0 && i + 1 < argc) {
+            exportOrbitPitchSet = true;
+            exportOrbitPitch = static_cast<f32>(std::atof(argv[++i]));
+        } else if (std::strcmp(a, "--export-orbit-dist") == 0 && i + 1 < argc) {
+            exportOrbitDist = static_cast<f32>(std::atof(argv[++i]));
+        } else if (std::strcmp(a, "--export-orbit-start") == 0 && i + 1 < argc) {
+            exportOrbitStart = static_cast<f32>(std::atof(argv[++i]));
+        } else if (std::strcmp(a, "--export-fit") == 0) {
+            exportOrbitFit = true;
+        } else if (std::strcmp(a, "--export-subject") == 0 && i + 1 < argc) {
+            exportSubject = (std::strcmp(argv[++i], "model") == 0)
+                                ? whiteout::flakes::OrbitSubject::Model
+                                : whiteout::flakes::OrbitSubject::Camera;
+        } else if (std::strcmp(a, "--export-angles") == 0 && i + 1 < argc) {
+            exportOrbit = true;
+            exportAngles = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--export-sheet") == 0 && i + 1 < argc) {
+            const char* v = argv[++i];
+            exportSheetCols = (std::strcmp(v, "auto") == 0) ? 0 : std::atoi(v);
+        } else if (std::strcmp(a, "--export-crop") == 0) {
+            exportCrop = true;
+        } else if (std::strcmp(a, "--export-name") == 0 && i + 1 < argc) {
+            exportNameTemplate = argv[++i];
+        } else if (std::strcmp(a, "--export-recipe") == 0 && i + 1 < argc) {
+            exportRecipeFile = whiteout::flakes::io::FsPathFromUtf8(argv[++i]);
+            doExport = true;
+        } else if (std::strcmp(a, "--mp4") == 0) {
+            exportFmt = whiteout::flakes::ExportFormat::Mp4;
+            exportFmtSet = true;
+        } else if (std::strcmp(a, "--webm") == 0) {
+            exportFmt = whiteout::flakes::ExportFormat::WebmVp9;
+            exportFmtSet = true;
         } else if (std::strcmp(a, "--headless-test") == 0) {
             headlessTest = true;
         } else if (std::strcmp(a, "--multiscene-test") == 0) {
@@ -1953,16 +2060,131 @@ int main(int argc, char* argv[]) {
                         app.CameraPresets().size(), exportCamera);
             app.ActivateCameraPreset(exportCamera);
         }
-        whiteout::flakes::AnimationExportParams params;
-        params.sequenceIndex = exportSeq;
-        params.fps = exportFps;
-        params.format = exportFmt;
-        params.transparentBackground = exportTransparent;
-        params.captureUi = exportCaptureUi;
-        params.width = exportResW;
-        params.height = exportResH;
-        params.outputFolder = exportFolder;
-        app.RequestAnimationExport(std::move(params));
+        whiteout::flakes::ExportRecipe recipe;
+        // A recipe file is the base; individual flags override it.
+        if (!exportRecipeFile.empty()) {
+            whiteout::flakes::ExportRecipeLoadReport rep;
+            if (!whiteout::flakes::ReadExportRecipeFile(exportRecipeFile, recipe,
+                                                        app.SequenceNames(), &rep)) {
+                std::cerr << "Failed to read export recipe: "
+                          << whiteout::flakes::io::PathToUtf8(exportRecipeFile) << "\n";
+            }
+            for (const std::string& missing : rep.unresolvedClips)
+                std::cerr << "[viewer] recipe clip not in this model: " << missing << "\n";
+        }
+
+        if (!exportClips.empty()) {
+            // `name|#index[:repeats][@speed]`. When any of these is given the
+            // positional sequence index is ignored, and we say so.
+            if (exportSeq != 0)
+                std::printf("[viewer] --export-clip given; ignoring the positional index %d\n",
+                            exportSeq);
+            recipe.clips.clear();
+            for (const CliClip& c : exportClips) {
+                std::string spec = c.spec;
+                whiteout::flakes::ExportClip clip;
+                const std::size_t at = spec.rfind('@');
+                if (at != std::string::npos) {
+                    clip.speed = static_cast<f32>(std::atof(spec.c_str() + at + 1));
+                    spec.resize(at);
+                }
+                const std::size_t colon = spec.rfind(':');
+                if (colon != std::string::npos) {
+                    clip.repeats = std::atoi(spec.c_str() + colon + 1);
+                    spec.resize(colon);
+                }
+                if (!spec.empty() && spec[0] == '#') {
+                    clip.sequence = std::atoi(spec.c_str() + 1);
+                    clip.savedName =
+                        whiteout::flakes::SequenceKey(app.SequenceNames(), clip.sequence);
+                } else {
+                    clip.savedName = spec;
+                    clip.sequence = whiteout::flakes::ResolveSequenceKey(app.SequenceNames(), spec);
+                    if (clip.sequence < 0)
+                        std::cerr << "[viewer] no animation named '" << spec << "'\n";
+                }
+                recipe.clips.push_back(std::move(clip));
+            }
+        } else if (recipe.clips.empty()) {
+            whiteout::flakes::ExportClip clip;
+            clip.sequence = exportSeq;
+            clip.savedName = whiteout::flakes::SequenceKey(app.SequenceNames(), exportSeq);
+            recipe.clips.push_back(std::move(clip));
+        }
+
+        const bool fromRecipe = !exportRecipeFile.empty();
+        if (exportFpsSet || !fromRecipe)
+            recipe.timing.fps = exportFps;
+        if (exportDurationMs > 0) {
+            recipe.timing.duration = whiteout::flakes::ExportDuration::Fixed;
+            recipe.timing.durationMs = exportDurationMs;
+        }
+        if (exportFillSet || !fromRecipe)
+            recipe.timing.fill = exportFill;
+        if (exportPreRollMs > 0)
+            recipe.timing.preRollMs = exportPreRollMs;
+        if (exportBlendMs > 0)
+            for (whiteout::flakes::ExportClip& c : recipe.clips)
+                c.blendMs = exportBlendMs;
+        if (exportFrameStep > 1)
+            recipe.timing.frameStep = exportFrameStep;
+
+        if (exportOrbit) {
+            recipe.camera.mode = whiteout::flakes::ExportCameraMode::Orbit;
+            recipe.camera.subject = exportSubject;
+            recipe.camera.angleCount = exportAngles;
+            recipe.camera.startYawDeg = exportOrbitStart;
+            recipe.camera.fitToBounds = exportOrbitFit;
+            if (exportOrbitRevsSet) {
+                recipe.camera.timing = whiteout::flakes::OrbitTiming::Revolutions;
+                recipe.camera.revolutions = exportOrbitRevs;
+            } else {
+                recipe.camera.timing = whiteout::flakes::OrbitTiming::Velocity;
+                recipe.camera.degPerSec = exportOrbitDegPerSec;
+            }
+            if (exportOrbitPitchSet) {
+                recipe.camera.overridePitch = true;
+                recipe.camera.pitchDeg = exportOrbitPitch;
+            }
+            if (exportOrbitDist > 0.0f) {
+                recipe.camera.overrideDistance = true;
+                recipe.camera.distance = exportOrbitDist;
+            }
+        } else if (exportCamera >= 0) {
+            recipe.camera.mode = whiteout::flakes::ExportCameraMode::Preset;
+            recipe.camera.preset = exportCamera;
+        }
+
+        if (exportSheetCols >= 0)
+            recipe.output.format = whiteout::flakes::ExportFormat::PngSheet;
+        else if (exportFmtSet || !fromRecipe)
+            recipe.output.format = exportFmt;
+        if (exportSheetCols > 0)
+            recipe.output.sheetColumns = exportSheetCols;
+        if (exportTransparentSet || !fromRecipe)
+            recipe.output.transparent = exportTransparent;
+        if (exportUiSet || !fromRecipe)
+            recipe.output.captureUi = exportCaptureUi;
+        if (exportResSet || !fromRecipe) {
+            recipe.output.width = exportResW;
+            recipe.output.height = exportResH;
+        }
+        if (exportCrop)
+            recipe.output.autoCrop = true;
+        if (!fromRecipe) {
+            // A bare headless run is a gate: leave the overlays exactly where
+            // the other flags put them, or --show-collisions would export a
+            // picture without the colliders it was asked for, and write no
+            // sidecar beside a golden. A recipe says what it wants.
+            recipe.output.hideOverlays = false;
+            recipe.output.writeSidecar = false;
+        }
+        if (!exportNameTemplate.empty())
+            recipe.output.nameTemplate = exportNameTemplate;
+        if (!exportFolder.empty())
+            recipe.output.folder = exportFolder;
+
+        app.RequestAnimationExport(std::move(recipe));
         scene.Update(0.016f);
         app.Tick(0.016f); // runs the export synchronously
         app.Close();

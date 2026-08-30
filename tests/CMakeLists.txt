@@ -77,6 +77,17 @@ wdx_add_test(settings_ini_test settings_ini_test.cpp
 target_include_directories(settings_ini_test PRIVATE
                            "${CMAKE_SOURCE_DIR}/tools/basic_viewer"
                            "${CMAKE_SOURCE_DIR}/tools/model_explorer")
+# The animation-export recipe: the schedule arithmetic (clip boundaries,
+# fill-to-duration, drift compensation, loop closure), the name templates and
+# the ini round trip. Same precedent as settings_ini_test above — both viewer
+# TUs link nothing, so this is a G0 test with no device and no corpus.
+# settings_io.cpp comes along for SettingsIniPath(), which export_ini.cpp uses.
+wdx_add_test(export_recipe_test export_recipe_test.cpp
+             "${CMAKE_SOURCE_DIR}/tools/basic_viewer/export_recipe.cpp"
+             "${CMAKE_SOURCE_DIR}/tools/basic_viewer/export_ini.cpp"
+             "${CMAKE_SOURCE_DIR}/tools/basic_viewer/settings_io.cpp")
+target_include_directories(export_recipe_test PRIVATE
+                           "${CMAKE_SOURCE_DIR}/tools/basic_viewer")
 # Only when the format is compiled in — the adapter it exercises does not
 # exist otherwise. The test itself skips without a configured WoW install.
 if(WDX_ENABLE_M2)

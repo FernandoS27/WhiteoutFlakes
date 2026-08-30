@@ -13,6 +13,8 @@
 // focused on lifetime + dispatch.
 // ============================================================================
 
+#include "export_recipe.h"
+#include "export_runner.h"
 #include "io/load_task.h"
 #include "model/actor_manager.h"
 #include "render_target.h"
@@ -80,48 +82,9 @@ inline constexpr const char* kForeignModelExtensions = "";
 inline constexpr bool kHasForeignModelFilter = false;
 #endif
 
-// Output format for an animation export. The enum order is the canonical
-// order used by the UI format dropdown and by GetExportFormatInfo().
-enum class ExportFormat {
-    PngFrames, ///< One <model>_<anim>_<id>.png per frame.
-    Gif,       ///< A single animated <model>_<anim>.gif.
-    Apng,      ///< A single animated <model>_<anim>.apng (APNG).
-    Webp,      ///< A single animated <model>_<anim>.webp.
-};
-constexpr i32 kExportFormatCount = 4;
-
-// Static description of an ExportFormat — its human label and, for the
-// single-file animated formats, the output file extension. PngFrames has an
-// empty extension since it writes a numbered PNG per frame instead.
-struct ExportFormatInfo {
-    const char* label;     ///< e.g. "Animated WebP".
-    const char* extension; ///< Single-file extension incl. dot; "" = per-frame PNGs.
-};
-
-// Look up the description of a format. Indexed by ExportFormat.
-const ExportFormatInfo& GetExportFormatInfo(ExportFormat format);
-
-// True for the animated single-file formats (GIF/APNG/WebP); false for PngFrames.
-inline bool IsSingleFileFormat(ExportFormat format) {
-    return GetExportFormatInfo(format).extension[0] != '\0';
-}
-
-// Parameters for an animation-frame export.
-struct AnimationExportParams {
-    i32 sequenceIndex = 0;
-    i32 fps = 30;
-    ExportFormat format = ExportFormat::PngFrames;
-    // Transparent background: each frame is rendered twice (black + white
-    // backdrop) and keyed, recovering a real alpha channel. PNG and APNG
-    // carry it directly; GIF falls back to 1-bit transparency.
-    bool transparentBackground = false;
-    // Capture the viewer's ImGui UI overlay into each exported frame.
-    bool captureUi = false;
-    // Render resolution; 0×0 means "use the current view size".
-    i32 width = 0;
-    i32 height = 0;
-    std::filesystem::path outputFolder;
-};
+// The export recipe, the schedule built from it, and the output formats all
+// live in export_recipe.h — a device-free header the ini writer and the G0
+// test share with the viewer.
 
 class ViewerApp {
 public:
@@ -297,10 +260,31 @@ public:
     void ApplyProfile(ProductId game, bool force);
 
     // ---- Animation frame export ----
-    // Queue an animation export (see AnimationExportParams). Deferred: the UI
-    // calls this from inside the ImGui frame, and Tick() runs the actual
-    // render loop on the next tick (outside ImGui frame building).
-    void RequestAnimationExport(AnimationExportParams params);
+    // Queue an animation export (see ExportRecipe). Deferred: the UI calls
+    // this from inside the ImGui frame, and Tick() runs the actual render
+    // loop on the next tick (outside ImGui frame building).
+    void RequestAnimationExport(ExportRecipe recipe);
+
+    // The last run's outcome, for the dialog's footer. ConsumeExportFinished
+    // returns true exactly once per completed export, so the dialog can latch
+    // the report without polling a timestamp.
+    const ExportReport& LastExportReport() const {
+        return lastExportReport_;
+    }
+    bool ConsumeExportFinished();
+
+    // True while RunExport owns the frame loop. The export builds the viewer's
+    // own ImGui frame when capturing the UI overlay, so anything in that frame
+    // that would drive the model has to stand down for the duration.
+    bool IsExportRunning() const {
+        return exportRunning_;
+    }
+
+    // Pose the model (and, in orbit mode, the camera) at one frame of a
+    // recipe. Drives both the export dialog's timeline scrubber and its live
+    // preview — the same schedule the recording uses, so what they show is
+    // what the export will capture.
+    bool ScrubExportRecipe(const ExportRecipe& recipe, i32 frameIndex, bool applyCamera);
 
     // ---- Host policy (toggled by the UI, read by the per-frame tick) ----
     bool LoopNonLoopingPolicy() const {
@@ -520,9 +504,12 @@ private:
     void ShutdownImGui();
 
     // Runs a queued animation export synchronously: drives the focus actor
-    // through the sequence one frame at a time, captures each composited
-    // frame, and writes it as PNG frames or a GIF.
-    void RunAnimationExport(const AnimationExportParams& params);
+    // through the recipe's schedule one frame at a time, captures each
+    // composited frame and hands it to the output sink. The loop itself lives
+    // in export_runner.cpp; this wires it to the viewer.
+    void RunAnimationExport(const ExportRecipe& recipe);
+    // Fills the callback bundle export_runner.cpp drives the viewer through.
+    ExportHost MakeExportHost();
 
     void OnFramebufferResize(i32 w, i32 h);
 
@@ -756,7 +743,10 @@ private:
     // Pending animation export — filled by RequestAnimationExport, consumed
     // by the next Tick().
     bool exportPending_ = false;
-    AnimationExportParams pendingExport_;
+    ExportRecipe pendingExport_;
+    ExportReport lastExportReport_;
+    bool exportFinished_ = false;
+    bool exportRunning_ = false;
 
     // LAST member, deliberately. Members are destroyed in reverse declaration
     // order, so declaring it here is what makes it the FIRST thing torn down —

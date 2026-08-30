@@ -1532,7 +1532,7 @@ endif()
 # Needs nothing but whiteout_casc, so it builds on any host that configured
 # with CASC support. tools/d3_shader_atlas/atlas.py does the analysis on the
 # folder it writes.
-if(TARGET whiteout_casc)
+if(TARGET whiteout_casc AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tools/d3_shader_atlas/d3_shader_atlas.cpp")
   add_executable(D3ShaderAtlas tools/d3_shader_atlas/d3_shader_atlas.cpp)
   set_target_properties(D3ShaderAtlas PROPERTIES
       CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
@@ -1631,6 +1631,13 @@ set(WHITEOUTFLAKES_VIEWER_SOURCES
     tools/basic_viewer/test_main.cpp
     tools/basic_viewer/viewer_app.cpp
     tools/basic_viewer/viewer_ui.cpp
+    # The animation exporter: the device-free recipe/schedule and its ini, the
+    # output sinks, the capture loop, and the dialog.
+    tools/basic_viewer/export_recipe.cpp
+    tools/basic_viewer/export_ini.cpp
+    tools/basic_viewer/export_encoders.cpp
+    tools/basic_viewer/export_runner.cpp
+    tools/basic_viewer/export_window.cpp
     tools/basic_viewer/settings_ini.cpp
     tools/basic_viewer/settings_io.cpp
     tools/basic_viewer/storage_explorer_ini.cpp
@@ -1856,17 +1863,32 @@ add_dependencies(WhiteoutFlakesStandalone WhiteoutFlakesEmbedded)
 # 3.26, but our floor is 3.20 and CI runners ship as old as 3.22, matching the
 # copy_directory the shader-staging rules above already use.
 #
-# `standalone/` is the exe dir only for a single-config generator: Visual Studio
-# and Xcode put the binary in a per-config subdirectory below it, so staging one
-# level up leaves AssetDir() reading whatever stale catalog is beside the exe.
-# CMAKE_CFG_INTDIR is that subdirectory, and "." on the generators that have none.
+# Stage beside the exe, which is what AssetDir() reads. `standalone/` is NOT
+# always that directory: this target pins RUNTIME_OUTPUT_DIRECTORY_DEBUG and
+# _RELEASE to `standalone/`, so Visual Studio puts those two configs there —
+# but every other config (RelWithDebInfo) still lands in a per-config
+# subdirectory below it. A fixed CMAKE_CFG_INTDIR gets that backwards for
+# BOTH: it staged Release into `standalone/Release/lang` while the exe sat in
+# `standalone/` reading a catalog nothing had written since the last time the
+# paths happened to agree, so every string added after that point rendered as
+# its raw key. TARGET_FILE_DIR is the exe's directory in every config.
+#
+# Apple keeps the `standalone/` form: TARGET_FILE_DIR inside a bundle is
+# Contents/MacOS/, where codesign rejects non-code files, so the catalogs sit
+# beside the .app and the install() rules below place them in
+# Contents/Resources/ (where AssetDir() resolves them at runtime).
+if(APPLE)
+    set(WDX_ASSET_STAGE_DIR "${CMAKE_BINARY_DIR}/standalone/${CMAKE_CFG_INTDIR}")
+else()
+    set(WDX_ASSET_STAGE_DIR "$<TARGET_FILE_DIR:WhiteoutFlakesStandalone>")
+endif()
 add_custom_command(TARGET WhiteoutFlakesStandalone POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/lang"
-        "${CMAKE_BINARY_DIR}/standalone/${CMAKE_CFG_INTDIR}/lang"
+        "${WDX_ASSET_STAGE_DIR}/lang"
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/resources/fonts"
-        "${CMAKE_BINARY_DIR}/standalone/${CMAKE_CFG_INTDIR}/fonts"
+        "${WDX_ASSET_STAGE_DIR}/fonts"
     VERBATIM)
 
 # ---- ModelExplorer ----
