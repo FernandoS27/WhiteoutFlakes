@@ -39,6 +39,11 @@ preview plugin, and any host that links `WhiteoutFlakesLib`.
   </tr>
   <tr>
     <td><img src="resources/screenshots/animated_06.webp" alt="Screenshot 6" width="380"></td>
+    <td><img src="resources/screenshots/animated_07.webp" alt="Screenshot 7" width="380"></td>
+  </tr>
+  <tr>
+    <td><img src="resources/screenshots/animated_08.webp" alt="Screenshot 8" width="380"></td>
+    <td><img src="resources/screenshots/animated_09.webp" alt="Screenshot 7" width="380"></td>
   </tr>
 </table>
 
@@ -49,7 +54,7 @@ preview plugin, and any host that links `WhiteoutFlakesLib`.
 | Game | Formats | Profile | Storage |
 | --- | --- | --- | --- |
 | Warcraft III — classic + Reforged | `.mdx` / `.mdl`, `.blp` | `wc3` | CASC + MPQ |
-| World of Warcraft | `.m2` + `.skin`, `.phys`, `.blp` | `wow` | CASC + client DB2s |
+| World of Warcraft | `.m2` + `.skin`, `.phys`, `.blp` | `wow` | CASC + MPQ |
 | StarCraft II | `.m3` + `.m3a`, `.dds` | `sc2_heroes` | CASC |
 | Heroes of the Storm | `.m3` + `.m3a`, `.dds` | `sc2_heroes` | CASC |
 | Diablo III | `.acr` / `.app`, `.tex` | `diablo3` | CASC |
@@ -57,29 +62,23 @@ preview plugin, and any host that links `WhiteoutFlakesLib`.
 Installs are located automatically per game; the viewer's settings panel can
 point each one somewhere else or ignore CASC entirely.
 
-**Warcraft III** — classic (v800) and Reforged HD (v900–v1200): multi-slot HD
-materials, fresnel terms, emissive gain, layer flipbooks, tangent frames.
-ParticleEmitter1/2 plus Reforged CornEffects through the `cornflakes` runtime,
-ribbons, splats, projected decals. Replaceable textures (team colour and glow,
-tilesets, cliffs, water), day/night cycle with IBL probe sets, shadow cascades,
-scripted MDX cameras.
+### Current Support
 
-**World of Warcraft** — `.m2` including pre-Legion MD20, `.skin` batches, the
-shipped shader-combo table, multi-texture and refraction particles, ribbons, and
-the per-model point-light rig. Character customisation and creature skin
-variations are read from the client DB2s. `.phys` cloth is simulated.
+| Game | Materials | Animations | Physics | Effects |
+| --- | --- | --- | --- | --- |
+| Warcraft III — classic + Reforged | Complete | Complete | N/A | Complete |
+| World of Warcraft | Complete | Complete | Complete | Projections missing |
+| StarCraft II | WIP | WIP | Complete | MISSING |
+| Heroes of the Storm | WIP | WIP | Complete | MISSING |
+| Diablo III | WIP | Complete | Complete | WIP |
 
-**StarCraft II / Heroes of the Storm** — one profile, two games, because they
-ship the same format through the same frame. Up to eleven `.m3` material layers
-plus environment-cube reflections, team colour and billboards; animation
-including external `.m3a` clips joined by animId, priority-weighted blending,
-and pose solvers. PHRB/PHYJ ragdolls and PHCL cloth are simulated.
+### Planned Support
 
-**Diablo III** — actors (`.acr`) resolved to appearances (`.app`) with their
-AnimSet clips, baked vertex data with bone-palette skinning, `.tex` textures,
-and the fixed-function `MaterialColors` shading the data actually describes.
-Player models ship every armour variant at once, so dressing one is a
-per-geoset visibility and look pick.
+| Game |
+| --- |
+| Diablo IV |
+| Diablo II Resurrected |
+| Overwatch |
 
 ## Graphics backends
 
