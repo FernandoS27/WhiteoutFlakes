@@ -20,6 +20,7 @@
 namespace whiteout::flakes::io {
 class LoadTaskRunner;
 }
+#include "texture_thumbnail_cache.h"
 #include "thumbnail_pool.h"
 
 #include "renderer/render_service.h"
@@ -29,6 +30,7 @@ class LoadTaskRunner;
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -40,8 +42,10 @@ class IContentProvider;
 
 namespace whiteout::flakes::tools {
 
-// Concrete type of an activated file (a model dialect or an effect dialect).
-enum class StorageFileKind { Mdx, Mdl, Pkb, Pkfx, M2, M3 };
+// Concrete type of an activated file (a model dialect, an effect dialect, or
+// an image). Texture is the one kind that is not drawn as a scene: it has no
+// actor, no camera and no animation — the file is already the picture.
+enum class StorageFileKind { Mdx, Mdl, Pkb, Pkfx, M2, M3, Texture };
 
 // Handed to the activate callback when a file is double-clicked. `path` (the
 // CASC-native archive path) and `provider` (the storage it lives in) are always
@@ -50,7 +54,8 @@ enum class StorageFileKind { Mdx, Mdl, Pkb, Pkfx, M2, M3 };
 struct ActivatedFile {
     std::string path;
     StorageFileKind kind = StorageFileKind::Mdx;
-    bool isEffect = false; // kind is Pkb/Pkfx
+    bool isEffect = false;  // kind is Pkb/Pkfx
+    bool isTexture = false; // kind is Texture
     std::shared_ptr<io::IContentProvider> provider;
     bool hasBytes = false;
     std::vector<std::uint8_t> bytes;
@@ -59,6 +64,16 @@ struct ActivatedFile {
 // Everything a host knows about where one product's storage lives: its install
 // override, plus the listfile and TACT key list. An empty `installPath` means
 // "whatever this machine has detected".
+// One storage a host already knows about, offered by name in the File menu.
+// A host that has resolved its installs itself — out of its own settings,
+// where a game combo driven by BlizzardGameFinder would not look — lists them
+// here rather than making the user re-find them with the folder picker. The
+// order is the host's; the first is what it opened.
+struct NamedRoot {
+    std::string label; // "Warcraft III Reforged"
+    std::string root;  // the install directory
+};
+
 struct GameStorageKeys {
     std::string installPath;
     std::string listfilePath;
@@ -78,6 +93,29 @@ public:
     // Open a CASC archive root; points the explorer's OWN provider at it and
     // clears the thumbnail pool. Returns false + fills LastError() on failure.
     bool OpenCasc(const std::string& root);
+
+    // Open @p root as whatever it actually is (io::StorageBrowser::OpenAuto's
+    // rule): a CASC install, a directory of .mpq archives, a single archive,
+    // or a loose folder.
+    //
+    // This is what a host should call when it was handed "the Warcraft III
+    // install" and cannot know which generation it got — a Reforged install is
+    // CASC, a 1.2x one is four MPQs in a directory, and OpenCasc on the latter
+    // fails with a message about a missing .build.info that tells the user
+    // nothing they can act on.
+    bool OpenStorage(const std::string& root);
+
+    // Storages to list by name at the top of the File menu, each opened with
+    // OpenStorage. Purely additive: the folder picker stays below them, and a
+    // host that sets none gets the menu it had. The entry matching the open
+    // root is check-marked, so the menu also answers "which one am I in?".
+    void SetNamedRoots(std::vector<NamedRoot> roots) {
+        namedRoots_ = std::move(roots);
+    }
+    const std::vector<NamedRoot>& NamedRoots() const {
+        return namedRoots_;
+    }
+
     // The panel/provider state an open implies, applied once the browser's
     // tree is complete. Host thread only — it touches the thumbnail pool's
     // GPU resources and the provider's configuration.
@@ -147,6 +185,13 @@ public:
 
     void SetBrowseTypes(io::BrowseType types) {
         browser_.SetEnabledTypes(types);
+    }
+    // Narrow what the next open WALKS for, not merely what it lists — see
+    // io::StorageBrowser::SetOpenTypes. A picker that shows one kind should
+    // set this to that kind before opening; SetBrowseTypes alone still pays
+    // for the tree it then hides.
+    void SetOpenTypes(io::BrowseType types) {
+        browser_.SetOpenTypes(types);
     }
     io::BrowseType BrowseTypes() const {
         return browser_.EnabledTypes();
@@ -251,6 +296,10 @@ public:
     std::shared_ptr<io::IContentProvider> Provider() const;
 
 private:
+    // The one open path. `kind` unset means "work out what @p root is"
+    // (io::StorageBrowser::OpenAuto); set pins it, which is what OpenCasc and
+    // Sync's reopen want.
+    bool OpenInternal(const std::string& root, std::optional<io::StorageKind> kind);
     void BuildGrid();      // breadcrumb + folder/file grid (inside the open window)
     void BuildTree();      // outline + preview panes (inside the open window)
     void BuildTreePane(float width, float height); // the outline half
@@ -292,6 +341,13 @@ private:
     std::string openError_;
     std::shared_ptr<io::FileContentProvider> provider_;
     std::unique_ptr<ThumbnailPool> pool_;
+    // Textures do not go through the pool: they are decoded once and sampled,
+    // not loaded into a scene and rendered. See texture_thumbnail_cache.h.
+    std::unique_ptr<TextureThumbnailCache> textures_;
+    // What the last successful open turned out to be, so a reopen driven by
+    // Sync goes back to the same kind rather than re-guessing — and, more to
+    // the point, does not reopen a classic MPQ install as CASC.
+    io::StorageKind openedKind_ = io::StorageKind::Casc;
 
     std::uint64_t frameCounter_ = 0;
     std::string selectedPath_;
@@ -302,6 +358,7 @@ private:
     std::string listfilePath_;
     std::string tactKeyPath_;
     GameKeysCb gameKeys_;
+    std::vector<NamedRoot> namedRoots_;
     // The root the last successful open was asked for — not browser_.Root(),
     // which is what the storage resolved it to (a `Data/` suffix, a normalised
     // form). Sync reopens with it, so it has to be the request, not the answer.

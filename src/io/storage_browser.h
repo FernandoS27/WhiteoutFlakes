@@ -40,7 +40,34 @@ enum class StorageKind {
     Casc,   // an installed game's CASC storage
     Mpq,    // a single .mpq / .w3x / .w3m archive
     Folder, // a directory on disk, walked recursively
+    // Every .mpq in one directory, merged into a single tree — a pre-Reforged
+    // Warcraft III install, whose content is split across War3.mpq /
+    // War3x.mpq / War3xlocal.mpq / War3Patch.mpq and is only whole when all
+    // four are read together. `root` is the directory, not an archive.
+    MpqSet,
 };
+
+// Which kind `path` should be READ as, decided by what is actually on disk.
+// Anything that is not a directory is a single archive; a directory is one of
+// the three directory kinds. Split out of OpenAuto so a caller that must make
+// the same decision without opening anything — an extractor choosing which
+// storage to ask first — agrees with the browser by construction.
+//
+// The subtle case is Warcraft III, where the two generations are not exclusive
+// on disk. A Battle.net-managed classic install ("Warcraft III Legacy") is a
+// Reforged install with the 1.2x game laid back over it: it keeps the Data/
+// tree and the .build.info of what it replaced, while every model and texture
+// it can actually show lives in root-level War3.mpq / War3x.mpq /
+// War3Local.mpq / War3xLocal.mpq / Deprecated.mpq. Letting the marker decide
+// opens that as CASC, succeeds, and enumerates nothing — which reads as a
+// broken browser rather than as the wrong storage.
+//
+// So the rule is not "archives win": it is War3LegacyInstaller, the one file
+// that marks the downgrade, that decides. A real Reforged install owns its
+// content through CASC, and any .mpq sitting beside it is a leftover of an
+// older patch holding nothing the CASC has not got a newer copy of — there,
+// archives are ignored.
+StorageKind ClassifyStorage(const std::string& path);
 
 // What a storage is worth walking for, one bit per thing a host would offer as
 // a checkbox — so the grouping is the user's ("models", "effects"), not the
@@ -58,6 +85,10 @@ enum class BrowseType : u32 {
     M2 = 1u << 2,      // .m2
     M3 = 1u << 3,      // .m3
     Actor = 1u << 4,   // .acr / .app
+    // .blp / .dds / .tga — the images the models above sample. Not drawable
+    // themselves, which is why they are last: a host that browses for one
+    // shows a decoded picture, not a rendered scene.
+    Textures = 1u << 5,
 };
 
 constexpr BrowseType operator|(BrowseType a, BrowseType b) {
@@ -128,10 +159,12 @@ public:
     // opening a second copy (see casc_registry.h). Set before Open.
     void SetCascKeys(std::string listfilePath, std::string tactKeyPath);
 
-    // Guess the kind from what is actually at `path` — a directory holding
-    // .build.info is a CASC install, a file is an archive, any other
-    // directory is browsed as a folder — then open it. Convenience for a
-    // dialog that just received a drop or a path from the user.
+    // Open `path` as whatever ClassifyStorage says it is: a Reforged install
+    // is CASC, a classic one is the directory of MPQs beside its (misleading)
+    // .build.info, a file is a single archive, anything else is a folder.
+    // Convenience for a dialog that just received a drop or a path from the
+    // user, and the one call a host should make when "the Warcraft III
+    // install" may be either generation.
     bool OpenAuto(const std::string& path, std::string* error);
 
     bool IsOpen() const {
@@ -149,8 +182,28 @@ public:
         return product_;
     }
 
-    // The types this storage was walked for — the open game's set, and the
-    // menu a host's checkboxes should offer.
+    // Narrow what the NEXT Open walks for, within what the game ships.
+    //
+    // The tree is built once with every available type because toggling a
+    // checkbox should re-filter rather than reopen. That trade only pays while
+    // the types cost about the same, and textures break it: a Warcraft III
+    // install holds an order of magnitude more of them than models, and a WoW
+    // one is mostly `.blp`. So a host that will only ever show ONE kind — a
+    // picker, whose caller already said which — says so here and pays for that
+    // kind alone.
+    //
+    // None (the default) means "everything the game ships", which is what a
+    // general browser with a type row wants. A mask the game has none of is
+    // ignored rather than obeyed: an empty tree is never the useful reading.
+    void SetOpenTypes(BrowseType types) {
+        openTypes_ = types;
+    }
+    BrowseType OpenTypes() const {
+        return openTypes_;
+    }
+
+    // The types this storage was walked for — the open game's set narrowed by
+    // SetOpenTypes, and the menu a host's checkboxes should offer.
     BrowseType AvailableTypes() const {
         return available_;
     }
@@ -251,13 +304,22 @@ private:
 
     bool OpenCasc(const std::string& root, std::string* error, ProgressMonitor* progress);
     bool OpenMpq(const std::string& path, std::string* error);
+    bool OpenMpqSet(const std::string& directory, std::string* error);
     bool OpenFolder(const std::string& path, std::string* error);
+    // Insert every browsable entry of one already-open MPQ. Shared by the
+    // single-archive open and the set, which differ only in how many times
+    // this runs.
+    std::size_t InsertMpqEntries(const std::string& archiveFile, std::string* error);
+    // available_ for @p product, narrowed by openTypes_ when that leaves
+    // anything standing. The one place the narrowing rule lives.
+    BrowseType ResolveAvailable(ProductId product) const;
 
     bool open_ = false;
     StorageKind kind_ = StorageKind::Casc;
     ProductId product_ = ProductId::Neutral;
     BrowseType available_ = BrowseType::None;
     BrowseType enabled_ = BrowseType::None;
+    BrowseType openTypes_ = BrowseType::None; // see SetOpenTypes
     std::string filter_;
     std::string listfilePath_;
     std::string tactKeyPath_;

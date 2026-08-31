@@ -229,7 +229,7 @@ int main(int argc, char* argv[]) {
         }
         whiteout::flakes::io::StorageBrowser br;
         std::string err;
-        if (!br.Open(cascRoot, whiteout::flakes::io::StorageKind::Casc, &err)) {
+        if (!br.OpenAuto(cascRoot, &err)) {
             std::fprintf(stderr, "[explorer-selftest] open FAILED: %s\n", err.c_str());
             return 2;
         }
@@ -272,7 +272,7 @@ int main(int argc, char* argv[]) {
         }
         wf::io::StorageBrowser br;
         std::string err;
-        if (!br.Open(cascRoot, whiteout::flakes::io::StorageKind::Casc, &err)) {
+        if (!br.OpenAuto(cascRoot, &err)) {
             std::fprintf(stderr, "[nav-stress] CASC open FAILED: %s\n", err.c_str());
             return 2;
         }

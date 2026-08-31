@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <utility>
@@ -50,11 +51,57 @@ StorageFileKind KindOf(const std::string& name) {
         return StorageFileKind::M2;
     if (ext == "m3")
         return StorageFileKind::M3;
+    if (ext == "blp" || ext == "dds" || ext == "tga")
+        return StorageFileKind::Texture;
     return StorageFileKind::Mdx;
 }
 
 bool IsEffectKind(StorageFileKind k) {
     return k == StorageFileKind::Pkb || k == StorageFileKind::Pkfx;
+}
+
+bool IsTextureKind(StorageFileKind k) {
+    return k == StorageFileKind::Texture;
+}
+
+// Checkerboard behind a texture cell, so a transparent one reads as
+// transparent rather than as whatever the panel background happens to be.
+// Sized off the cell so the squares stay the same apparent size at any zoom.
+void DrawAlphaCheckers(ImDrawList* dl, const ImVec2& p0, const ImVec2& p1, float alpha) {
+    const float sq = std::max(4.0f, (p1.x - p0.x) / 12.0f);
+    dl->AddRectFilled(p0, p1, ImGui::GetColorU32(ImVec4(0.22f, 0.23f, 0.25f, alpha)));
+    const ImU32 light = ImGui::GetColorU32(ImVec4(0.30f, 0.31f, 0.34f, alpha));
+    dl->PushClipRect(p0, p1, true);
+    int row = 0;
+    for (float y = p0.y; y < p1.y; y += sq, ++row) {
+        for (int col = (row & 1); ; col += 2) {
+            const float x = p0.x + static_cast<float>(col) * sq;
+            if (x >= p1.x)
+                break;
+            dl->AddRectFilled(ImVec2(x, y), ImVec2(std::min(x + sq, p1.x), std::min(y + sq, p1.y)),
+                              light);
+        }
+    }
+    dl->PopClipRect();
+}
+
+// The rect inside [p0,p1] that shows a `w`x`h` image without distorting it.
+// A texture browser that stretched a 256x1024 gradient to a square cell would
+// be showing something the file is not.
+void FitRect(const ImVec2& p0, const ImVec2& p1, int w, int h, ImVec2& outMin, ImVec2& outMax) {
+    const float boxW = p1.x - p0.x;
+    const float boxH = p1.y - p0.y;
+    if (w <= 0 || h <= 0 || boxW <= 0.0f || boxH <= 0.0f) {
+        outMin = p0;
+        outMax = p1;
+        return;
+    }
+    const float scale =
+        std::min(boxW / static_cast<float>(w), boxH / static_cast<float>(h));
+    const float dw = static_cast<float>(w) * scale;
+    const float dh = static_cast<float>(h) * scale;
+    outMin = ImVec2(p0.x + (boxW - dw) * 0.5f, p0.y + (boxH - dh) * 0.5f);
+    outMax = ImVec2(outMin.x + dw, outMin.y + dh);
 }
 
 // The games worth offering, in the order the combo lists them. A game with no
@@ -90,6 +137,27 @@ std::string LowerPath(std::string s) {
     for (char& c : s)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
+}
+
+// Two spellings of one install directory. Lexical and case-insensitive on
+// purpose: what is compared here is a root a host configured against a root an
+// open was asked for, which differ in separators, case and a trailing slash and
+// in nothing else - no symlink to resolve, and nothing worth a stat per menu
+// item per frame. Used only to check-mark the File menu, so the worst a
+// case-sensitive filesystem can make of it is a mark on the wrong entry.
+bool SamePath(const std::string& a, const std::string& b) {
+    if (a.empty() || b.empty())
+        return false;
+    auto norm = [](const std::string& in) {
+        std::string out = LowerPath(std::filesystem::path(in).lexically_normal().string());
+        for (char& c : out)
+            if (c == '/')
+                c = '\\';
+        while (!out.empty() && out.back() == '\\')
+            out.pop_back();
+        return out;
+    };
+    return norm(a) == norm(b);
 }
 
 // The folder holding a display path, and the entry name inside it - the two
@@ -163,11 +231,17 @@ StorageExplorer::StorageExplorer(renderer::RenderService& svc) : svc_(svc) {
     // (and thus destroy) a scene whose GPU work may still be in flight.
     provider_ = std::make_shared<io::FileContentProvider>();
     pool_ = std::make_unique<ThumbnailPool>(svc_, provider_, /*cap*/ 32, /*res*/ 256);
+    // Far larger a cap than the pool's: an image cell costs one small texture
+    // and no per-frame work, so keeping a few folders' worth is what makes
+    // scrolling back up instant instead of a re-decode.
+    textures_ = std::make_unique<TextureThumbnailCache>(svc_, provider_, /*cap*/ 512);
 }
 
 StorageExplorer::~StorageExplorer() {
-    // The pool's scenes/targets must be released while the gfx device is still
-    // alive; the host guarantees that by destroying us before Pipeline shutdown.
+    // The pool's scenes/targets and the cache's textures must be released while
+    // the gfx device is still alive; the host guarantees that by destroying us
+    // before Pipeline shutdown.
+    textures_.reset();
     pool_.reset();
 }
 
@@ -176,32 +250,49 @@ std::shared_ptr<io::IContentProvider> StorageExplorer::Provider() const {
 }
 
 bool StorageExplorer::OpenCasc(const std::string& root) {
+    return OpenInternal(root, io::StorageKind::Casc);
+}
+
+bool StorageExplorer::OpenStorage(const std::string& root) {
+    return OpenInternal(root, std::nullopt);
+}
+
+bool StorageExplorer::OpenInternal(const std::string& root,
+                                   std::optional<io::StorageKind> kind) {
     if (opening_)
         return false; // one at a time; the runner would serialise these anyway
+
+    // "Failed to open CASC" is a lie when the caller asked us to work out what
+    // the path was, and the answer a user needs from a classic install is not
+    // that its .build.info is missing.
+    const std::string what = kind ? "CASC" : "the storage";
 
     if (tasks_) {
         opening_ = true;
         navPending_ = false; // staged against a listing that is being replaced
-        // Cleared HERE, on the host thread, not in the completion: the pool
-        // owns GPU targets and Clear() waits for the device, neither of which
+        // Cleared HERE, on the host thread, not in the completion: these own
+        // GPU resources and Clear() waits for the device, neither of which
         // belongs on the task thread.
         if (pool_)
             pool_->Clear();
+        if (textures_)
+            textures_->Clear();
         ClearSelection();
         openError_.clear();
         tasks_->Run(
             "Opening " + root,
-            [this, root](io::ProgressMonitor& m) {
+            [this, root, kind](io::ProgressMonitor& m) {
                 // The browser's tree is built here. Nothing may read it until
                 // the completion clears `opening_` — see BuildWindow.
-                const bool ok = browser_.Open(root, io::StorageKind::Casc, &openError_, &m);
+                const bool ok = kind ? browser_.Open(root, *kind, &openError_, &m)
+                                     : browser_.OpenAuto(root, &openError_);
                 return ok ? io::TaskResult::Ok()
                           : io::TaskResult::Fail(openError_.empty() ? "open failed" : openError_);
             },
-            [this, root](const io::TaskOutcome& out) {
+            [this, root, what](const io::TaskOutcome& out) {
                 opening_ = false;
                 if (!out.ok) {
-                    lastError_ = "Failed to open CASC at '" + root + "': " + out.error;
+                    lastError_ = "Failed to open " + what + " at '" + root + "': " + out.error;
                     std::fprintf(stderr, "[explorer] %s\n", lastError_.c_str());
                     return;
                 }
@@ -211,8 +302,10 @@ bool StorageExplorer::OpenCasc(const std::string& root) {
     }
 
     std::string err;
-    if (!browser_.Open(root, io::StorageKind::Casc, &err)) {
-        lastError_ = "Failed to open CASC at '" + root + "': " + err;
+    const bool ok =
+        kind ? browser_.Open(root, *kind, &err) : browser_.OpenAuto(root, &err);
+    if (!ok) {
+        lastError_ = "Failed to open " + what + " at '" + root + "': " + err;
         std::fprintf(stderr, "[explorer] %s\n", lastError_.c_str());
         return false;
     }
@@ -238,9 +331,17 @@ void StorageExplorer::FinishOpenCasc(const std::string& root) {
         provider_->SetGame(product);
     provider_->SetListfilePath(FsPathFromUtf8(listfilePath_));
     provider_->SetTactKeyPath(FsPathFromUtf8(tactKeyPath_));
-    provider_->SetInstallPath(browser_.Root());
-    // The `_hd.w3mod` overlay is Warcraft III's; nothing else has a mod chain.
-    provider_->SetHdMode(product == ProductId::Wc3 || product == ProductId::Neutral);
+    // For an MpqSet the browser's root IS the install directory the provider
+    // searches its MPQ chain under, so the same call serves both generations.
+    // A single archive is a file, not a directory; hand the provider the
+    // directory holding it so the rest of the load order is still reachable.
+    provider_->SetInstallPath(browser_.Kind() == io::StorageKind::Mpq
+                                  ? std::filesystem::path(browser_.Root()).parent_path().string()
+                                  : browser_.Root());
+    // The `_hd.w3mod` overlay is Warcraft III's Reforged CASC chain; a classic
+    // install has no mod chain to overlay and every HD lookup in one misses.
+    provider_->SetHdMode((product == ProductId::Wc3 || product == ProductId::Neutral) &&
+                         browser_.Kind() == io::StorageKind::Casc);
     if (pool_) {
         // Before Clear, so the cells this open builds already know which game
         // they are showing: it decides whether a new cell scene stands the
@@ -248,6 +349,9 @@ void StorageExplorer::FinishOpenCasc(const std::string& root) {
         pool_->SetProduct(product);
         pool_->Clear();
     }
+    if (textures_)
+        textures_->Clear();
+    openedKind_ = browser_.Kind();
     ClearSelection();
     lastError_.clear();
     // A new storage is a new outline: the folders the user had expanded name
@@ -354,7 +458,7 @@ void StorageExplorer::NavigateTo(const std::string& displayPath) {
 void StorageExplorer::OpenCascDialog() {
     NFD::UniquePathU8 outPath;
     if (NFD::PickFolder(outPath) == NFD_OKAY && outPath)
-        OpenCasc(outPath.get());
+        OpenStorage(outPath.get());
 }
 
 GameStorageKeys StorageExplorer::ResolveGame(ProductId game) const {
@@ -373,7 +477,9 @@ bool StorageExplorer::OpenGame(ProductId game) {
     // Before the open, not after: the listfile and key list are part of the
     // CASC open key, so a storage acquired without them stays without them.
     SetCascKeys(keys.listfilePath, keys.tactKeyPath);
-    return OpenCasc(keys.installPath);
+    // Auto: a detected Warcraft III root is CASC on Reforged and a directory
+    // of MPQs on 1.2x, and the game finder does not distinguish them.
+    return OpenStorage(keys.installPath);
 }
 
 void StorageExplorer::Sync(ProductId fallback) {
@@ -396,7 +502,10 @@ void StorageExplorer::Sync(ProductId fallback) {
     if (keys.listfilePath == listfilePath_ && keys.tactKeyPath == tactKeyPath_)
         return; // already showing exactly what the host knows
     SetCascKeys(keys.listfilePath, keys.tactKeyPath);
-    OpenCasc(openedRoot_);
+    // The kind it opened as, not CASC: a classic Warcraft III install is a
+    // directory of MPQs, and reopening it as CASC here would close a working
+    // browse over a listfile change that does not even apply to it.
+    OpenInternal(openedRoot_, openedKind_);
 }
 
 // Game first, then a checkbox per type that game ships. One row, because they
@@ -573,6 +682,8 @@ void StorageExplorer::NewFrame(float dt) {
     ++frameCounter_;
     if (pool_)
         pool_->BeginFrame(frameCounter_);
+    if (textures_)
+        textures_->BeginFrame(frameCounter_);
 }
 
 void StorageExplorer::BuildWindow(bool* pOpen) {
@@ -587,7 +698,22 @@ void StorageExplorer::BuildWindow(bool* pOpen) {
 
     if (ImGui::BeginMenuBar()) {
         if (ImGui::BeginMenu("File")) {
-            if (ImGui::MenuItem("Open CASC folder…"))
+            // The host's own installs first: switching between the two
+            // generations of Warcraft III, which a machine may well have both
+            // of, is then one click and no path typed. Check-marked rather
+            // than radio-selected, because the user can also be somewhere
+            // neither entry describes — and then none of them is marked.
+            if (!namedRoots_.empty()) {
+                for (const NamedRoot& entry : namedRoots_) {
+                    const bool current = SamePath(entry.root, openedRoot_);
+                    if (ImGui::MenuItem(entry.label.c_str(), nullptr, current) && !current)
+                        OpenStorage(entry.root);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", entry.root.c_str());
+                }
+                ImGui::Separator();
+            }
+            if (ImGui::MenuItem("Open game folder…"))
                 OpenCascDialog();
             ImGui::EndMenu();
         }
@@ -606,8 +732,9 @@ void StorageExplorer::BuildWindow(bool* pOpen) {
     }
 
     if (!browser_.IsOpen()) {
-        ImGui::TextWrapped("Open a CASC archive folder (File ▸ Open CASC folder…) to browse "
-                           "models and effects.");
+        ImGui::TextWrapped("Open a game folder (File ▸ Open game folder…) to browse its "
+                           "models, effects and textures. A CASC install, a directory of "
+                           "MPQ archives, or any folder of loose files.");
         if (!lastError_.empty()) {
             ImGui::Spacing();
             ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "%s", lastError_.c_str());
@@ -669,6 +796,7 @@ void StorageExplorer::Activate(const std::string& archivePath, StorageFileKind k
     af.path = archivePath;
     af.kind = kind;
     af.isEffect = IsEffectKind(kind);
+    af.isTexture = IsTextureKind(kind);
     af.provider = provider_;
     if (deliverBytes_ && provider_) {
         if (auto data = provider_->ReadFile(archivePath)) {
@@ -746,6 +874,12 @@ void StorageExplorer::BuildGrid() {
     const int rows = static_cast<int>(ImGui::GetContentRegionAvail().y / rowHeight) + 2;
     if (pool_)
         pool_->SetCap(std::clamp(cols * rows, kMinCells, kMaxCells));
+    // Several screenfuls of images, for the same reason but a different price:
+    // a texture cell is an idle texture, not a scene rendered every frame, so
+    // the cap can be generous — and generous is what makes scrolling back up
+    // instant instead of a wall of re-decodes.
+    if (textures_)
+        textures_->SetCap(std::max(512, cols * rows * 4));
 
     // Open transition: when the listing changes the grid fades + slides up
     // (navAnimT_ reset to 0 in NewFrame / OpenCasc). dt comes from ImGui so the
@@ -851,6 +985,7 @@ void StorageExplorer::BuildGrid() {
     for (const auto& file : listing.modelFiles) {
         const StorageFileKind kind = KindOf(file);
         const bool isEffect = IsEffectKind(kind);
+        const bool isTexture = IsTextureKind(kind);
         beginCell();
         ImGui::PushID(idx++);
         ImGui::BeginGroup();
@@ -860,8 +995,19 @@ void StorageExplorer::BuildGrid() {
 
         const bool onScreen = ImGui::IsRectVisible(p0, p1);
         gfx::TextureHandle tex = gfx::TextureHandle::Invalid;
-        if (onScreen) // render the cell at its on-screen size so it stays crisp
-            tex = pool_->Acquire(archivePath, isEffect, frameCounter_, static_cast<int>(cell));
+        // An image cell is the decoded file itself, so it needs the source
+        // dimensions to letterbox with; a model cell renders square into its
+        // own target and has none.
+        const TextureThumbnail* image = nullptr;
+        if (onScreen) {
+            if (isTexture) {
+                image = &textures_->Acquire(archivePath, frameCounter_);
+                tex = image->texture;
+            } else { // render the cell at its on-screen size so it stays crisp
+                tex = pool_->Acquire(archivePath, isEffect, frameCounter_,
+                                     static_cast<int>(cell));
+            }
+        }
 
         ImGui::InvisibleButton("##m", ImVec2(cell, cell));
         if (ImGui::IsItemClicked()) {
@@ -879,9 +1025,31 @@ void StorageExplorer::BuildGrid() {
         if (onScreen) {
             ImDrawList* dl = ImGui::GetWindowDrawList();
             if (tex != gfx::TextureHandle::Invalid) {
-                dl->AddImage(static_cast<ImTextureID>(static_cast<std::uint64_t>(tex)), p0, p1,
-                             ImVec2(0, 0), ImVec2(1, 1),
-                             ImGui::GetColorU32(ImVec4(1, 1, 1, gridAlpha)));
+                if (image) {
+                    // Letterboxed onto a checkerboard: an image cell shows the
+                    // file's own aspect, and the squares behind it are how a
+                    // transparent texture tells itself apart from a black one.
+                    ImVec2 q0, q1;
+                    FitRect(p0, p1, image->width, image->height, q0, q1);
+                    if (image->hasAlpha)
+                        DrawAlphaCheckers(dl, q0, q1, gridAlpha);
+                    dl->AddImage(static_cast<ImTextureID>(static_cast<std::uint64_t>(tex)), q0, q1,
+                                 ImVec2(0, 0), ImVec2(1, 1),
+                                 ImGui::GetColorU32(ImVec4(1, 1, 1, gridAlpha)));
+                } else {
+                    dl->AddImage(static_cast<ImTextureID>(static_cast<std::uint64_t>(tex)), p0, p1,
+                                 ImVec2(0, 0), ImVec2(1, 1),
+                                 ImGui::GetColorU32(ImVec4(1, 1, 1, gridAlpha)));
+                }
+            } else if (image && !image->error.empty()) {
+                // A texture that will not decode is a permanent state, not a
+                // pending one — say so rather than leaving a placeholder that
+                // reads as "still loading" forever.
+                dl->AddRectFilled(p0, p1, placeholderColor, 4.0f);
+                const ImVec2 sz = ImGui::CalcTextSize("?");
+                dl->AddText(ImVec2(p0.x + (cell - sz.x) * 0.5f, p0.y + (cell - sz.y) * 0.5f),
+                            ImGui::GetColorU32(ImVec4(0.75f, 0.45f, 0.45f, gridAlpha)), "?");
+                ImGui::SetItemTooltip("%s", image->error.c_str());
             } else {
                 dl->AddRectFilled(p0, p1, placeholderColor, 4.0f);
             }
@@ -1164,8 +1332,21 @@ void StorageExplorer::BuildPreviewPane() {
 
     ImGui::TextWrapped("%s", treeSelectedDisplay_.empty() ? selectedPath_.c_str()
                                                           : treeSelectedDisplay_.c_str());
-    if (ImGui::SmallButton("Open in viewer"))
+    const bool isTexture = IsTextureKind(selectedKind_);
+    if (ImGui::SmallButton(isTexture ? "Use this texture" : "Open in viewer"))
         Activate(selectedPath_, selectedKind_);
+
+    // What a texture preview is for: the numbers you cannot read off the
+    // picture. Drawn before the separator so the image still gets the pane.
+    const TextureThumbnail* image = nullptr;
+    if (isTexture && textures_) {
+        image = &textures_->Acquire(selectedPath_, frameCounter_);
+        if (image->ok) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%dx%d  %s%s", image->width, image->height, image->format.c_str(),
+                                image->hasAlpha ? "  alpha" : "");
+        }
+    }
     ImGui::Separator();
 
     // One cell is all this view shows, but the pool keeps the last few alive so
@@ -1180,17 +1361,28 @@ void StorageExplorer::BuildPreviewPane() {
                     origin.y + (std::max)(0.0f, (avail.y - edge) * 0.5f));
     const ImVec2 p1(p0.x + edge, p0.y + edge);
 
-    const gfx::TextureHandle tex = pool_->Acquire(selectedPath_, IsEffectKind(selectedKind_),
-                                                  frameCounter_, static_cast<int>(edge));
+    const gfx::TextureHandle tex =
+        image ? image->texture
+              : pool_->Acquire(selectedPath_, IsEffectKind(selectedKind_), frameCounter_,
+                               static_cast<int>(edge));
     ImDrawList* dl = ImGui::GetWindowDrawList();
     if (tex != gfx::TextureHandle::Invalid) {
-        dl->AddImage(static_cast<ImTextureID>(static_cast<std::uint64_t>(tex)), p0, p1);
+        if (image) {
+            ImVec2 q0, q1;
+            FitRect(p0, p1, image->width, image->height, q0, q1);
+            if (image->hasAlpha)
+                DrawAlphaCheckers(dl, q0, q1, 1.0f);
+            dl->AddImage(static_cast<ImTextureID>(static_cast<std::uint64_t>(tex)), q0, q1);
+        } else {
+            dl->AddImage(static_cast<ImTextureID>(static_cast<std::uint64_t>(tex)), p0, p1);
+        }
     } else {
         dl->AddRectFilled(p0, p1, ImGui::GetColorU32(ImVec4(0.25f, 0.28f, 0.34f, 1.0f)), 4.0f);
-        const char* loading = "Loading...";
-        const ImVec2 ts = ImGui::CalcTextSize(loading);
+        const char* status =
+            (image && !image->error.empty()) ? image->error.c_str() : "Loading...";
+        const ImVec2 ts = ImGui::CalcTextSize(status);
         dl->AddText(ImVec2(p0.x + (edge - ts.x) * 0.5f, p0.y + (edge - ts.y) * 0.5f),
-                    ImGui::GetColorU32(ImGuiCol_TextDisabled), loading);
+                    ImGui::GetColorU32(ImGuiCol_TextDisabled), status);
     }
     ImGui::EndChild();
 }
@@ -1200,6 +1392,14 @@ renderer::SceneId StorageExplorer::DebugFirstCellScene() const {
 }
 
 void StorageExplorer::RenderThumbnails(float dt) {
+    // Images first, and outside the settings guard below: a decode reads bytes
+    // and uploads a texture, which touches neither the render settings nor the
+    // active scene. Here rather than in BuildWindow because the budget should
+    // be spent on what the frame ACTUALLY asked for, which is only known once
+    // the draw list is built.
+    if (textures_)
+        textures_->EndFrame();
+
     if (!pool_)
         return;
 

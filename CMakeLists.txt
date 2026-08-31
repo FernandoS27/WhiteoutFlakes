@@ -1604,6 +1604,10 @@ add_subdirectory(externals/cubeb EXCLUDE_FROM_ALL)
 # See STORAGE_EXPLORER_DESIGN.md.
 add_library(WhiteoutFlakesExplorerLib STATIC
     tools/model_explorer/thumbnail_pool.cpp
+    # The pool's counterpart for images: a texture cell is one decode and one
+    # upload, with none of the scene/target/per-frame-render machinery a model
+    # cell needs. See texture_thumbnail_cache.h.
+    tools/model_explorer/texture_thumbnail_cache.cpp
     tools/model_explorer/storage_explorer.cpp
     # Camera framing for a loaded model / standalone effect — used by the
     # thumbnail pool AND the basic_viewer, so it lives in this shared lib (each

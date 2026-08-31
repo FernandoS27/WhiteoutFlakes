@@ -21,6 +21,51 @@ std::string ToLower(std::string s) {
 
 } // namespace
 
+StorageKind ClassifyStorage(const std::string& path) {
+    std::error_code ec;
+    const std::filesystem::path p = std::filesystem::path(path);
+    if (!std::filesystem::is_directory(p, ec))
+        return StorageKind::Mpq; // a file is one archive
+
+    // One walk, two questions: are there archives at the root, and is this a
+    // downgraded install? War3LegacyInstaller is the marker for the second,
+    // and the only thing that separates the generations — a classic install
+    // laid back over a Reforged one keeps the Data/ tree and the .build.info
+    // of what it replaced. Match on the stem; the extension varies.
+    bool anyMpq = false;
+    bool legacy = false;
+    for (const auto& entry : std::filesystem::directory_iterator(
+             p, std::filesystem::directory_options::skip_permission_denied, ec)) {
+        if (!entry.is_regular_file(ec))
+            continue;
+        const std::string name = ToLower(entry.path().filename().string());
+        if (name.size() > 4 && name.compare(name.size() - 4, 4, ".mpq") == 0)
+            anyMpq = true;
+        else if (name.compare(0, 19, "war3legacyinstaller") == 0)
+            legacy = true;
+    }
+
+    // Checking Data/ as well as the root matches what OpenCasc itself accepts.
+    const bool casc = std::filesystem::exists(p / ".build.info", ec) ||
+                      std::filesystem::exists(p / "Data" / ".build.info", ec);
+
+    // A real CASC install owns its content; .mpq files beside one are leftovers
+    // of an older patch and are ignored. This is the Reforged answer, and also
+    // World of Warcraft's — its archives live one level down in Data/ and were
+    // never seen by the walk above.
+    if (casc && !legacy)
+        return StorageKind::Casc;
+    // Classic, where the archives ARE the game.
+    if (anyMpq)
+        return StorageKind::MpqSet;
+    // A downgraded install whose archives have been moved away is still a CASC
+    // directory; better to open it and show what it has than to walk it as a
+    // folder of loose files it does not have.
+    if (casc)
+        return StorageKind::Casc;
+    return StorageKind::Folder;
+}
+
 BrowseType BrowseTypeOfFile(std::string_view fileName) {
     const auto dot = fileName.find_last_of('.');
     if (dot == std::string_view::npos)
@@ -38,27 +83,36 @@ BrowseType BrowseTypeOfFile(std::string_view fileName) {
     // the `.app` is what actually holds geometry and is worth opening alone.
     if (ext == "acr" || ext == "app")
         return BrowseType::Actor;
+    // The image containers Blizzard actually ships, and the ones the texture
+    // parsers dispatch on. `.png` / `.tif` are deliberately absent: nothing in
+    // a shipped archive is one, so listing them would only ever surface a
+    // user's own loose files in a Folder browse.
+    if (ext == "blp" || ext == "dds" || ext == "tga")
+        return BrowseType::Textures;
     return BrowseType::None;
 }
 
 BrowseType BrowseTypesFor(ProductId game) {
+    // Every product ships textures, so Textures is in every set below. What
+    // keeps that from making each tree an order of magnitude larger is
+    // StorageBrowser::SetOpenTypes: a host that shows one kind walks for one.
     switch (game) {
     case ProductId::Wc3:
-        return BrowseType::Models | BrowseType::Effects;
+        return BrowseType::Models | BrowseType::Effects | BrowseType::Textures;
     case ProductId::Wow:
-        // `.m2` and nothing else. A WoW install also ships `.wmo`, `.adt` and
-        // the rest of a world, none of which this draws, so offering a filter
-        // for them would be offering an empty grid.
-        return BrowseType::M2;
+        // `.m2` and textures. A WoW install also ships `.wmo`, `.adt` and the
+        // rest of a world, none of which this draws, so offering a filter for
+        // them would be offering an empty grid.
+        return BrowseType::M2 | BrowseType::Textures;
     case ProductId::Sc2:
-        return BrowseType::M3;
+        return BrowseType::M3 | BrowseType::Textures;
     case ProductId::D3:
-        return BrowseType::Actor;
+        return BrowseType::Actor | BrowseType::Textures;
     default:
         // Nobody said, which is what a loose folder is: show everything rather
         // than guess which half of a mixed directory was meant.
         return BrowseType::Models | BrowseType::Effects | BrowseType::M2 | BrowseType::M3 |
-               BrowseType::Actor;
+               BrowseType::Actor | BrowseType::Textures;
     }
 }
 
@@ -138,6 +192,8 @@ const char* BrowseTypeLabel(BrowseType one) {
         return "Models (.m3)";
     case BrowseType::Actor:
         return "Actors (.acr/.app)";
+    case BrowseType::Textures:
+        return "Textures (.blp/.dds)";
     default:
         return "";
     }
@@ -211,6 +267,9 @@ bool StorageBrowser::Open(const std::string& root, StorageKind kind, std::string
     case StorageKind::Mpq:
         ok = OpenMpq(root, error);
         break;
+    case StorageKind::MpqSet:
+        ok = OpenMpqSet(root, error);
+        break;
     case StorageKind::Folder:
         ok = OpenFolder(root, error);
         break;
@@ -224,6 +283,16 @@ bool StorageBrowser::Open(const std::string& root, StorageKind kind, std::string
     treeCacheDirty_ = true;
     Refresh();
     return true;
+}
+
+BrowseType StorageBrowser::ResolveAvailable(ProductId product) const {
+    const BrowseType all = BrowseTypesFor(product);
+    // A mask naming nothing this game has is a host asking for a type that was
+    // never on offer here — a texture picker pointed at a product with no
+    // images, say. Falling back to the full set says "not narrowed" rather
+    // than handing back an empty tree that reads as an empty install.
+    const BrowseType narrowed = all & openTypes_;
+    return Any(narrowed) ? narrowed : all;
 }
 
 void StorageBrowser::SetCascKeys(std::string listfilePath, std::string tactKeyPath) {
@@ -252,19 +321,12 @@ void StorageBrowser::SetFilter(std::string pattern) {
 
 bool StorageBrowser::OpenAuto(const std::string& path, std::string* error) {
     std::error_code ec;
-    const std::filesystem::path p = std::filesystem::path(path);
-    if (std::filesystem::is_directory(p, ec)) {
-        // A CASC install is a directory too, so the marker file decides.
-        // Checking Data/ as well matches what OpenCasc itself accepts.
-        const bool casc = std::filesystem::exists(p / ".build.info", ec) ||
-                          std::filesystem::exists(p / "Data" / ".build.info", ec);
-        return Open(path, casc ? StorageKind::Casc : StorageKind::Folder, error);
+    if (!std::filesystem::exists(std::filesystem::path(path), ec)) {
+        if (error)
+            *error = "no such file or directory: " + path;
+        return false;
     }
-    if (std::filesystem::is_regular_file(p, ec))
-        return Open(path, StorageKind::Mpq, error);
-    if (error)
-        *error = "no such file or directory: " + path;
-    return false;
+    return Open(path, ClassifyStorage(path), error);
 }
 
 void StorageBrowser::Insert(const std::string& original, const std::string& display) {
@@ -333,7 +395,7 @@ bool StorageBrowser::OpenCasc(const std::string& root, std::string* error,
     // Everything the game has, not just what is enabled: the walk is the
     // expensive part (three quarters of a million entries on StarCraft II), so
     // it happens once and a filter change re-lists rather than re-enumerates.
-    available_ = BrowseTypesFor(product_);
+    available_ = ResolveAvailable(product_);
 
     ProgressMonitor walk = m.Split(1);
     // entryCount() is what makes this a bar rather than a marquee. It is also
@@ -366,35 +428,126 @@ bool StorageBrowser::OpenCasc(const std::string& root, std::string* error,
     return true;
 }
 
-bool StorageBrowser::OpenMpq(const std::string& path, std::string* error) {
+std::size_t StorageBrowser::InsertMpqEntries(const std::string& archiveFile, std::string* error) {
 #if WHITEOUT_HAS_MPQ
     std::string err;
-    std::optional<storages::mpq::Storage> s = storages::mpq::Storage::open(path, &err);
+    std::optional<storages::mpq::Storage> s = storages::mpq::Storage::open(archiveFile, &err);
     if (!s) {
         if (error)
-            *error = err.empty() ? ("could not open MPQ: " + path) : err;
-        return false;
+            *error = err.empty() ? ("could not open MPQ: " + archiveFile) : err;
+        return 0;
     }
+    // MPQ paths are already '\'-separated and carry no mod prefix, so the
+    // display form is the stored form.
+    std::size_t inserted = 0;
+    for (const auto& name : s->listFiles()) {
+        if (Any(BrowseTypeOfFile(name) & available_)) {
+            Insert(name, name);
+            ++inserted;
+        }
+    }
+    return inserted;
+#else
+    (void)archiveFile;
+    if (error)
+        *error = "this build has no MPQ support (enable the `mpq` feature)";
+    return 0;
+#endif
+}
+
+bool StorageBrowser::OpenMpq(const std::string& path, std::string* error) {
     root_ = path;
     // MPQ has no build config and therefore no product record at all, but
     // the only games that ship MPQs we can browse are Warcraft III and its
     // maps. Reporting Wc3 unconditionally is a statement about the format,
     // not a guess about this particular archive.
     product_ = ProductId::Wc3;
-    available_ = BrowseTypesFor(product_);
-    // MPQ paths are already ''-separated and carry no mod prefix, so the
-    // display form is the stored form.
-    for (const auto& name : s->listFiles()) {
-        if (Any(BrowseTypeOfFile(name) & available_))
-            Insert(name, name);
+    available_ = ResolveAvailable(product_);
+    std::string err;
+    if (InsertMpqEntries(path, &err) == 0 && !err.empty()) {
+        if (error)
+            *error = err;
+        return false;
+    }
+    // An archive that opened and held nothing browsable is still an open
+    // archive — a map with no models in it is a legitimate answer, and the
+    // empty-tree hint a host draws is a better one than a failure box.
+    return true;
+}
+
+// Every .mpq in one directory, merged. What a pre-Reforged Warcraft III
+// install is: War3.mpq holds the base game, War3x.mpq the expansion,
+// War3Patch.mpq whatever a patch replaced — and no single one of them is a
+// browsable game.
+//
+// A path present in two archives collapses to one entry, and which archive was
+// read first does not matter: an MPQ stores no mod prefix, so both spell it
+// identically and the tree records the same string either way. Which COPY a
+// reader gets is decided when it reads, by whatever load order it walks the
+// archives in — not here.
+bool StorageBrowser::OpenMpqSet(const std::string& directory, std::string* error) {
+    std::error_code ec;
+    const std::filesystem::path base(directory);
+    if (!std::filesystem::is_directory(base, ec)) {
+        if (error)
+            *error = "not a directory: " + directory;
+        return false;
+    }
+
+    // Load order, lowest priority first: the Warcraft III archives in the
+    // order the game itself layers them, then anything else the directory
+    // holds — a mod's archive, a renamed patch — so an install that does not
+    // look like a retail one still browses. A name that is not present is
+    // simply skipped; which of these ship depends on the version and on
+    // whether the install is Reign of Chaos or The Frozen Throne.
+    static const char* kKnownOrder[] = {"deprecated.mpq",  "war3.mpq",
+                                        "war3x.mpq",       "war3local.mpq",
+                                        "war3xlocal.mpq",  "war3patch.mpq"};
+    std::vector<std::filesystem::path> known(std::size(kKnownOrder));
+    std::vector<std::filesystem::path> extra;
+    for (const auto& entry : std::filesystem::directory_iterator(
+             base, std::filesystem::directory_options::skip_permission_denied, ec)) {
+        if (!entry.is_regular_file(ec))
+            continue;
+        const std::string name = ToLower(entry.path().filename().string());
+        if (name.size() < 5 || name.compare(name.size() - 4, 4, ".mpq") != 0)
+            continue;
+        const auto it = std::find_if(std::begin(kKnownOrder), std::end(kKnownOrder),
+                                     [&](const char* k) { return name == k; });
+        if (it != std::end(kKnownOrder))
+            known[static_cast<std::size_t>(it - std::begin(kKnownOrder))] = entry.path();
+        else
+            extra.push_back(entry.path());
+    }
+    std::sort(extra.begin(), extra.end());
+
+    root_ = directory;
+    product_ = ProductId::Wc3;
+    available_ = ResolveAvailable(product_);
+
+    std::size_t opened = 0;
+    std::string lastErr;
+    auto take = [&](const std::filesystem::path& p) {
+        if (p.empty())
+            return;
+        std::string err;
+        InsertMpqEntries(p.string(), &err);
+        if (err.empty())
+            ++opened;
+        else
+            lastErr = std::move(err);
+    };
+    for (const auto& p : known)
+        take(p);
+    for (const auto& p : extra)
+        take(p);
+
+    if (opened == 0) {
+        if (error)
+            *error = lastErr.empty() ? ("no readable .mpq archives in " + directory) : lastErr;
+        return false;
     }
     return true;
-#else
-    (void)path;
-    if (error)
-        *error = "this build has no MPQ support (enable the `mpq` feature)";
-    return false;
-#endif
 }
 
 bool StorageBrowser::OpenFolder(const std::string& path, std::string* error) {
@@ -411,7 +564,7 @@ bool StorageBrowser::OpenFolder(const std::string& path, std::string* error) {
     // is the honest answer, and BrowseTypesFor turns it into "show everything"
     // — which is what a directory of mixed content deserves.
     product_ = ProductId::Neutral;
-    available_ = BrowseTypesFor(product_);
+    available_ = ResolveAvailable(product_);
 
     // Skip-on-error so one unreadable subdirectory does not abort the walk —
     // a system folder the user pointed at may well contain some.
