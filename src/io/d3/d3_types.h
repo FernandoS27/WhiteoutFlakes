@@ -424,6 +424,52 @@ inline constexpr u8 kD3StageReplace = 3;
 ///        and the combine block does not count it as a stage.
 inline constexpr i32 kD3TextureTypeSceneDepth = 39;
 
+/// @brief `RenderPass::dwUnknown00` is the pass's RENDER PHASE, and phase 3 is
+///        the screen-space DISTORTION buffer.
+///
+/// A distortion surface does not draw colour: it writes a signed screen-space
+/// offset into a side buffer that a full-screen pass afterwards bends the
+/// finished scene through. Nothing in the pass's own state says so -- the state
+/// is an ordinary blended draw -- and the effect file does not either, because
+/// only 5 of the 48 shipped distortion passes are `Distortion.fx`. The other 43
+/// are `Legacy.fx` / `Billboard.fx` running the same fixed-function chain
+/// everything else runs; what they compute is a vector, not a colour.
+///
+/// The phase is the discriminator, and it is exact. Over all 1,506 shipped
+/// `Shaders` assets, the 45 whose `dwShaderFlags` carries bit 3 are EXACTLY the
+/// 45 that declare a phase-3 pass -- zero mismatches either way. Bit 3 is what
+/// `ActorModel_EmitSubObjectDrawCalls` tests to skip a sub-object when
+/// capability 97 is unavailable, and 97 is the same capability the distortion
+/// post effect itself is gated on (`sub_744200` case 0), so the two readings
+/// close on each other.
+///
+/// It also picks the right PASS, which no name-based rule can: `actor_mysticAlly`
+/// is (6, 3) and `actor_watermonster` is (3, 6, 6) -- the distortion pass is
+/// last in one and first in the other.
+///
+/// The other phases the corpus uses, for orientation: 6 the main pass (1,047),
+/// 5 (318), 2 (136), 12 (74), 15 late transparent (68), 8 texture filter (53),
+/// 21/23 prepass, 9 shadow cookie, 11 reflection, 17 highlight.
+inline constexpr i32 kD3RenderPhaseDistortion = 3;
+
+/// @brief `Shaders::dwShaderFlags` bit 3 -- "this asset declares a distortion
+///        pass". Redundant with @ref kD3RenderPhaseDistortion by measurement,
+///        and kept because it is the bit the ENGINE tests.
+inline constexpr i32 kD3ShaderFlagDistortion = 0x8;
+
+/// @brief The resolve's fixed gain, in viewport UV.
+///
+/// `v14 PostFX Distortion` is 14 ARB instructions and this is the only constant
+/// in it that is not a bias:
+///
+///     offset = (texDistortion.rg * 2 - 1) * 0.03
+///     result = texOriginal(uv + offset)
+///
+/// So the buffer holds a signed offset encoded around 0.5, a pixel that nothing
+/// drew must READ BACK 0.5, and the clear is therefore (0.5, 0.5, 0.5, 0) --
+/// the write blends SRCALPHA / INVSRCALPHA over it.
+inline constexpr f32 kD3DistortionStrength = 0.03f;
+
 struct D3StageArg {
     bool usesTexture = false; ///< Is this stage's texture sampled for the channel?
     /// @brief ... and MULTIPLIED into the channel, rather than replacing it or
@@ -1100,7 +1146,11 @@ inline Matrix44f D3UvMatrix(const D3UvXform& x, f32 seconds) {
 /// function of (geoset, slot) and of nothing else. Slots that never animate
 /// simply leave their entry at identity, which is what RenderModel fills the
 /// palette with.
-inline constexpr u32 kD3UvTransformStride = kD3SlotCount + kD3MaxChainStages;
+///
+/// Three bands per geoset, not two: a material with a distortion pass has TWO
+/// chains, and the same stage position in each is a different layer.
+/// `actor_mysticAlly` scrolls `causticDistortion` on its distortion pass alone.
+inline constexpr u32 kD3UvTransformStride = kD3SlotCount + 2 * kD3MaxChainStages;
 
 inline i32 D3UvTransformId(usize g, D3SlotKind slot) {
     return static_cast<i32>(g * kD3UvTransformStride + static_cast<u32>(slot));
@@ -1116,6 +1166,15 @@ inline i32 D3UvTransformId(usize g, D3SlotKind slot) {
 /// table can both compute.
 inline i32 D3UvTransformIdForStage(usize g, u32 stage) {
     return static_cast<i32>(g * kD3UvTransformStride + kD3SlotCount + stage);
+}
+
+/// @brief The same again, for the DISTORTION pass's chain.
+///
+/// Its own band because a sub-object can bind both chains at once and the two
+/// disagree about what stage 0 is: `actor_mysticAlly` is (1, 4) on its scene
+/// pass and (0, 10, 6, 12) on its distortion pass, and only the second scrolls.
+inline i32 D3UvTransformIdForDistortionStage(usize g, u32 stage) {
+    return static_cast<i32>(g * kD3UvTransformStride + kD3SlotCount + kD3MaxChainStages + stage);
 }
 
 /// @brief Where an emitted geoset's SubObject lives.

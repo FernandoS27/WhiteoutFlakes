@@ -134,6 +134,7 @@ struct RenderService::Impl {
     std::unique_ptr<gtao::GtaoService> gtaoService_;
     std::unique_ptr<dof::DofService> dofService_;
     std::unique_ptr<refraction::RefractionService> refractionService_;
+    std::unique_ptr<distortion::DistortionService> distortionService_;
 #if WDX_ENABLE_M3
     std::unique_ptr<sc2::M3DeferredLightService> m3DeferredLightService_;
 #endif

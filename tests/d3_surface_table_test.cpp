@@ -3204,6 +3204,24 @@ TEST_CASE("D3 dump: surfaces of a named actor", "[.d3dump]") {
             } else if (s->slots[(u32)flakes::io::D3SlotKind::Diffuse].textureId < 0) {
                 std::printf("      *** NO DIFFUSE SLOT -> draws white ***\n");
             }
+            if (!d3p::D3SurfaceDrawsToScene(*s))
+                std::printf("      *** phase 3 ONLY -> not a scene draw ***\n");
+            if (s->distortion) {
+                const auto* dd = s->distortion.get();
+                const auto& dp = dd->pass;
+                std::printf("      >> DISTORTION phase=%d %s/%s twoTex=%d blend=%d(%u,%u) zw=%d "
+                            "cull=%u edgeAlpha=%u chain=%u\n",
+                            dp.renderPhase, dp.effectFile.c_str(), dp.pixelEntry.c_str(),
+                            (int)dp.distortionTwoTex, (int)dp.blendEnable, dp.blendSrc, dp.blendDst,
+                            (int)dp.depthWrite, dp.cull, dp.edgeAlpha, dd->chainCount);
+                for (u32 i = 0; i < dd->chainCount; ++i) {
+                    const auto& st = dd->chain[i];
+                    std::printf("      >> stage[%u] type=%-3d tex=%-3d cop=%u aop=%u cg=%.1f "
+                                "ag=%.1f uvAnim=%d\n",
+                                i, st.rawType, st.textureId, st.colorOp, st.alphaOp, st.colorGain,
+                                st.alphaGain, st.uvTransformId);
+                }
+            }
         }
     }
 }
@@ -3745,4 +3763,478 @@ TEST_CASE("D3 install: the chain over the corpus", "[d3][material][install]") {
     // cannot be met by mislabelling one.
     CHECK(unresolved == 0);
     CHECK(holes > 0);
+}
+
+// ============================================================================
+// The distortion phase. Diablo III draws a screen-space distortion by writing a
+// signed offset field into a side buffer and bending the finished scene through
+// it, and NOTHING about the pass's own state says so: 43 of the 48 shipped
+// distortion passes are `Legacy.fx :: ps_legacy`, the same combiner half the
+// game runs, with an ordinary blend and an ordinary chain. What says so is
+// `RenderPass::dwUnknown00` -- the pass's RENDER PHASE -- and phase 3 is the
+// distortion buffer.
+//
+// This is the gate on that reading, and it is a biconditional rather than a
+// count: `Shaders::dwShaderFlags` bit 3 is the flag the ENGINE tests
+// (`ActorModel_EmitSubObjectDrawCalls` skips a sub-object carrying it when
+// capability 97 is unavailable, and capability 97 is what gates the distortion
+// post effect in `sub_744200`), so the two readings have to close on each other
+// exactly or one of them is wrong.
+// ============================================================================
+TEST_CASE("D3 corpus: the distortion phase IS the distortion flag", "[d3][corpus][material]") {
+    namespace wio = ::whiteout::flakes::io;
+    const auto files = FindFiles(CorpusRoot() / "Shaders", ".shd");
+    if (files.empty()) {
+        WARN("No D3 corpus at " << (CorpusRoot() / "Shaders").string()
+                                << " (set WDX_TEST_D3_CORPUS). SKIPPED, not passed.");
+        return;
+    }
+    std::size_t shaders = 0, flagged = 0, phased = 0, phase3Passes = 0;
+    std::vector<std::string> flagNoPhase, phaseNoFlag;
+    std::map<std::string, std::size_t> programs;
+    std::map<i32, std::size_t> phaseCounts;
+    for (const auto& f : files) {
+        auto sh = d3n::parseShaders(ReadAll(f));
+        if (!sh)
+            continue;
+        ++shaders;
+        bool has3 = false;
+        for (const auto& p : sh->arRenderPasses) {
+            ++phaseCounts[p.dwUnknown00];
+            if (p.dwUnknown00 != wio::kD3RenderPhaseDistortion)
+                continue;
+            has3 = true;
+            ++phase3Passes;
+            ++programs[p.szEffectFile + "::" + p.szPixelShaderEntry];
+        }
+        const bool flag = (sh->dwShaderFlags & wio::kD3ShaderFlagDistortion) != 0;
+        flagged += flag ? 1 : 0;
+        phased += has3 ? 1 : 0;
+        if (flag && !has3)
+            flagNoPhase.push_back(sh->szName);
+        if (has3 && !flag)
+            phaseNoFlag.push_back(sh->szName);
+    }
+    std::printf("[d3-distort] %zu shaders: %zu carry flag 8, %zu declare a phase-3 pass "
+                "(%zu passes)\n",
+                shaders, flagged, phased, phase3Passes);
+    std::printf("[d3-distort] phase-3 programs:");
+    for (const auto& [k, n] : programs)
+        std::printf(" %s=%zu", k.c_str(), n);
+    std::printf("\n[d3-distort] phases:");
+    for (const auto& [k, n] : phaseCounts)
+        std::printf(" %d=%zu", k, n);
+    std::printf("\n");
+
+    for (const auto& n : flagNoPhase)
+        INFO("flag but no phase-3 pass: " << n);
+    for (const auto& n : phaseNoFlag)
+        INFO("phase-3 pass but no flag: " << n);
+    // The biconditional, both directions. Either failing means the phase is not
+    // what selects the distortion pass and the whole routing is guesswork.
+    CHECK(flagNoPhase.empty());
+    CHECK(phaseNoFlag.empty());
+    CHECK(flagged == phased);
+
+    // The atlas counted 1,506 shipped `Shaders` assets in build 2.8.0.99920;
+    // an extracted corpus can carry a couple more. Bounded rather than pinned
+    // so the two numbers below stay the claim.
+    CHECK(shaders >= 1506);
+    CHECK(flagged == 45);
+    CHECK(phase3Passes == 48);
+    // And the reason the EFFECT FILE cannot be the gate: only five of the 48
+    // are `Distortion.fx`. A build routing on the effect file would leave 43
+    // distortion passes painting their offset field into the scene as if it
+    // were colour, which is what the Mystic Ally's caustics were doing.
+    CHECK(programs["Distortion.fx::ps_distortion2tex"] == 5);
+    CHECK(programs["Legacy.fx::ps_legacy"] == 37);
+    CHECK(programs["Billboard.fx::ps_legacy"] == 5);
+    CHECK(programs["ActorIrrad.fx::ps_cloak"] == 1);
+}
+
+// The other half: WHICH pass, not just whether there is one. Position cannot
+// answer it -- the distortion pass is last in one shipped shader and first in
+// another -- so a build reading pass 0 draws one actor's offset field as its
+// body and drops the other's shimmer.
+TEST_CASE("D3 corpus: the distortion pass is picked by phase, not position",
+          "[d3][corpus][material]") {
+    namespace wio = ::whiteout::flakes::io;
+    struct Want {
+        const char* shader;
+        u32 scenePass;
+        i32 distortionPass;
+    };
+    const Want kWant[] = {
+        // (6, 3): the shimmer is the LAST pass. Reading pass 0 as the only pass
+        // loses it entirely.
+        {"actor_mysticAlly", 0, 1},
+        // (3, 6, 6): the shimmer is the FIRST pass. Reading pass 0 as the scene
+        // pass draws the offset field as the monster.
+        {"actor_watermonster", 1, 0},
+        {"actor_diamondSkin", 0, 2},
+        // Both passes are phase 3, so the scene index names a pass that must
+        // not reach the scene at all.
+        {"actor_snakeman_cloak", 0, 0},
+        // A single-pass distortion shader: the same, and the common case (26 of
+        // the 45).
+        {"distortion_2tex", 0, 0},
+        // Two families in one asset -- Prop.fx body, Distortion.fx shimmer.
+        {"prop_transparent_distortion_gloss_vertalpha", 0, 1},
+        // Not a distortion shader at all.
+        {"actor_alphatest_alphaComp_skin", 0, -1},
+    };
+    std::size_t checked = 0;
+    for (const auto& w : kWant) {
+        const auto path = CorpusRoot() / "Shaders" / (std::string(w.shader) + ".shd");
+        const auto bytes = ReadAll(path);
+        if (bytes.empty()) {
+            WARN("missing " << path.string() << " -- SKIPPED, not passed.");
+            continue;
+        }
+        auto sh = d3n::parseShaders(bytes);
+        if (!sh)
+            continue;
+        ++checked;
+        INFO(w.shader);
+        CHECK(wio::D3ScenePassIndex(*sh) == w.scenePass);
+        CHECK(wio::D3DistortionPassIndex(*sh) == w.distortionPass);
+    }
+    if (checked == 0) {
+        WARN("No D3 corpus. SKIPPED, not passed.");
+        return;
+    }
+    CHECK(checked >= 5);
+}
+
+// `Distortion.fx :: ps_distortion2tex` is six instructions and reads NO combine
+// block -- `prop_transparent_distortion_gloss_vertalpha` ships one and the
+// program cannot see it. So the surface table synthesises the two stages, and
+// this pins that synthesis against what the reconstruction validated at zero
+// difference: replace, then add, alpha from COLOR0.w alone.
+TEST_CASE("D3 corpus: ps_distortion2tex is a synthesised two-stage chain",
+          "[d3][corpus][material]") {
+    namespace wio = ::whiteout::flakes::io;
+    const auto files = FindFiles(CorpusRoot() / "Shaders", ".shd");
+    if (files.empty()) {
+        WARN("No D3 corpus. SKIPPED, not passed.");
+        return;
+    }
+    std::size_t seen = 0;
+    for (const auto& f : files) {
+        auto sh = d3n::parseShaders(ReadAll(f));
+        if (!sh)
+            continue;
+        for (u32 i = 0; i < sh->arRenderPasses.size(); ++i) {
+            if (sh->arRenderPasses[i].szPixelShaderEntry != "ps_distortion2tex")
+                continue;
+            ++seen;
+            INFO(sh->szName << " pass " << i);
+            const d3p::D3PassState st = d3p::D3PassStateOf(*sh, i);
+            CHECK(st.distortionTwoTex);
+            CHECK(st.distortion);
+            CHECK(st.renderPhase == wio::kD3RenderPhaseDistortion);
+            // Two stages, always: the program samples texLayer0 and texLayer1
+            // and nothing else.
+            CHECK(st.stageCount == 2);
+            // The pass state carries the edge alpha whatever the program does
+            // with it; here it is the whole alpha channel.
+            CHECK((st.edgeAlpha == 1 || st.edgeAlpha == 2));
+        }
+    }
+    std::printf("[d3-distort] ps_distortion2tex passes: %zu\n", seen);
+    CHECK(seen == 5);
+}
+
+// The surface side, on the two actors this work was reported for. A distortion
+// material builds TWO surfaces over one material, and which of them reaches the
+// scene is the thing that was wrong.
+TEST_CASE("D3 install: a distortion material builds both surfaces", "[d3][material][install]") {
+    using ::whiteout::flakes::ProductId;
+    namespace wio = ::whiteout::flakes::io;
+
+    flakes::io::FileContentProvider provider;
+    if (const char* root = std::getenv("WDX_TEST_D3_INSTALL"); root && *root)
+        provider.SetInstallPath(root);
+    provider.SetGame(ProductId::D3);
+    if (provider.GamePath(ProductId::D3).empty()) {
+        WARN("No Diablo III install (set WDX_TEST_D3_INSTALL). SKIPPED, not passed.");
+        return;
+    }
+    flakes::io::D3SnoCache cache(&provider);
+
+    struct Want {
+        const char* file;     ///< `.app` under Appearances/
+        const char* subObject;
+        bool drawsToScene;    ///< false = phase 3 is its ONLY pass
+        u32 distortionStages; ///< 0 = this sub-object declares no phase-3 pass
+        bool twoTex;
+    };
+    const Want kWant[] = {
+        // A blast wave: `distortion_2tex`, one pass, phase 3. Drawn into the
+        // scene it is a normal-map sphere, which is exactly what the Wizard's
+        // `p1_Wizard_archon_arcaneBlast_blastWave` was -- the same two geosets,
+        // and this is the twin of it the extracted corpus carries.
+        {"Enchantress_arcaneOrb_aoe_blastWave", "sphere2_mat", false, 2, true},
+        // ...and its sibling geoset, an ordinary additive ring that must be
+        // untouched by any of this.
+        {"Enchantress_arcaneOrb_aoe_blastWave", "sphere1_mat", true, 0, false},
+        // The Mystic Ally: a body pass AND a distortion pass over one material,
+        // four stages, the caustic layer scrolling. The body must still draw.
+        {"Monk_Male_mysticAlly", "mysticAlly_mat", true, 4, false},
+        {"Monk_Male_mysticAlly", "mysticAlly_cloth", true, 4, false},
+    };
+
+    std::size_t checked = 0;
+    for (const auto& w : kWant) {
+        const auto path = CorpusRoot() / "Appearances" / (std::string(w.file) + ".app");
+        const auto bytes = ReadAll(path);
+        auto app = d3n::parseAppearances(bytes);
+        if (!app) {
+            WARN("missing " << path.string() << " -- SKIPPED, not passed.");
+            continue;
+        }
+        auto adapter = flakes::io::D3ModelAdapter::LoadAppearance(
+            ContentRef::FromPath(path.string()), bytes, cache);
+        REQUIRE(adapter != nullptr);
+        const auto textures =
+            flakes::io::CollectD3Textures(adapter->SourceAppearance(), adapter->LookIndex(),
+                                          adapter->EmittedSubObjects(), adapter->GeosetLooks());
+        auto table = d3p::BuildD3SurfaceTable(adapter->SourceAppearance(), adapter->LookIndex(),
+                                              textures, adapter->EmittedSubObjects(), &cache, {},
+                                              nullptr);
+        REQUIRE(table != nullptr);
+
+        const auto emitted = adapter->EmittedSubObjects();
+        const d3p::D3Surface* surface = nullptr;
+        for (std::size_t g = 0; g < emitted.size(); ++g) {
+            const d3n::GeoSet& set = (emitted[g].geoSet == 0)
+                                         ? adapter->SourceAppearance().tGeoSet0
+                                         : adapter->SourceAppearance().tGeoSet1;
+            if (emitted[g].index < set.arSubObjects.size() &&
+                EqualCiSv(set.arSubObjects[emitted[g].index].szName, w.subObject))
+                surface = table->Surface(static_cast<u32>(g));
+        }
+        if (!surface || !surface->pass.resolved) {
+            WARN(w.file << " / " << w.subObject << ": did not resolve -- SKIPPED.");
+            continue;
+        }
+        ++checked;
+        INFO(w.file << " / " << w.subObject);
+        std::printf("[d3-distort] %-40s %-18s scene=%d dist=%u twoTex=%d\n", w.file, w.subObject,
+                    (int)d3p::D3SurfaceDrawsToScene(*surface),
+                    surface->distortion ? surface->distortion->chainCount : 0u,
+                    surface->distortion ? (int)surface->distortion->pass.distortionTwoTex : 0);
+
+        CHECK(d3p::D3SurfaceDrawsToScene(*surface) == w.drawsToScene);
+        const flakes::renderer::core::SurfaceClass sc = d3p::D3ClassifySurface(*surface);
+        // The two halves are independent: a surface can be invisible in the
+        // scene and still owe the distortion buffer a draw. 26 of the 45
+        // shipped distortion shaders are exactly that case.
+        CHECK(sc.visible == w.drawsToScene);
+        CHECK(sc.needsDistortion == (w.distortionStages > 0));
+
+        if (w.distortionStages == 0) {
+            CHECK(surface->distortion == nullptr);
+            continue;
+        }
+        REQUIRE(surface->distortion != nullptr);
+        const d3p::D3Surface& d = *surface->distortion;
+        CHECK(d.pass.renderPhase == wio::kD3RenderPhaseDistortion);
+        CHECK(d.pass.distortion);
+        CHECK(d.pass.distortionTwoTex == w.twoTex);
+        CHECK(d.chainCount == w.distortionStages);
+        // The defect a chain with no textures produces is white, not nothing --
+        // and in this buffer white is a saturated offset in both axes, which
+        // drags the whole scene sideways. Every declared stage must bind.
+        for (u32 i = 0; i < d.chainCount; ++i) {
+            if (d.chain[i].rawType == 0)
+                continue; // a hole binds nothing by construction
+            INFO("distortion stage " << i << " type " << d.chain[i].rawType);
+            CHECK(d.chain[i].textureId >= 0);
+        }
+        if (w.twoTex) {
+            // Replace then add, and neither stage touches the alpha: the whole
+            // of `out.rgb = tex0 + tex1 - 0.5; out.a = COLOR0.w`.
+            CHECK(d.chain[0].colorOp == wio::kD3StageReplace);
+            CHECK(d.chain[1].colorOp == wio::kD3StageAdd);
+            CHECK(d.chain[0].alphaOp == wio::kD3StageSkip);
+            CHECK(d.chain[1].alphaOp == wio::kD3StageSkip);
+            CHECK(d.pass.alphaVcolFirst);
+            CHECK_FALSE(d.pass.alphaVcolLast);
+        }
+    }
+    if (checked == 0) {
+        WARN("Nothing resolved. SKIPPED, not passed.");
+        return;
+    }
+    CHECK(checked == 4);
+}
+
+// How far the phase reaches over the whole install, and the number the routing
+// is accountable for: a distortion chain stage with no texture. Same shape as
+// the `Legacy.fx` chain's own sweep, because it is the same defect one target
+// over.
+TEST_CASE("D3 install: the distortion phase over the corpus", "[d3][material][install]") {
+    using ::whiteout::flakes::ProductId;
+    flakes::io::FileContentProvider provider;
+    if (const char* root = std::getenv("WDX_TEST_D3_INSTALL"); root && *root)
+        provider.SetInstallPath(root);
+    provider.SetGame(ProductId::D3);
+    if (provider.GamePath(ProductId::D3).empty()) {
+        WARN("No Diablo III install (set WDX_TEST_D3_INSTALL). SKIPPED, not passed.");
+        return;
+    }
+    flakes::io::D3SnoCache cache(&provider);
+
+    const auto files = FindFiles(CorpusRoot() / "Appearances", ".app");
+    if (files.empty()) {
+        WARN("No D3 corpus. SKIPPED, not passed.");
+        return;
+    }
+    const std::size_t sweep = SweepLimit();
+    const std::size_t limit = (sweep == 0) ? files.size() : (std::min)(sweep, files.size());
+    std::size_t models = 0, withDistortion = 0, surfaces = 0, distortSurfaces = 0;
+    std::size_t sceneDraws = 0, stages = 0, holes = 0, unresolved = 0, twoTex = 0;
+    // A distortion stage whose UV transform ANIMATES names a palette entry, and
+    // that entry is only ever filled by D3ModelAdapter::PublishUvAnimation --
+    // which reaches a chain through D3ChainStageTypes, whose gate is
+    // `Legacy.fx :: ps_legacy`. So a `ps_distortion2tex` stage could name an
+    // entry nothing writes, and its scroll would silently stand still.
+    std::size_t animStages = 0, animTwoTexStages = 0;
+    // ...so the gate is that the publisher and the consumer agree, stage for
+    // stage, on every distortion chain in the corpus.
+    std::size_t chainsChecked = 0, chainMismatch = 0;
+    std::vector<std::string> animTwoTexModels;
+    for (std::size_t i = 0; i < limit; ++i) {
+        const auto bytes = ReadAll(files[i]);
+        auto app = d3n::parseAppearances(bytes);
+        if (!app)
+            continue;
+        auto adapter = flakes::io::D3ModelAdapter::LoadAppearance(
+            ContentRef::FromPath(files[i].string()), bytes, cache);
+        if (!adapter)
+            continue;
+        ++models;
+        const auto textures =
+            flakes::io::CollectD3Textures(adapter->SourceAppearance(), adapter->LookIndex(),
+                                          adapter->EmittedSubObjects(), adapter->GeosetLooks());
+        auto table = d3p::BuildD3SurfaceTable(adapter->SourceAppearance(), adapter->LookIndex(),
+                                              textures, adapter->EmittedSubObjects(), &cache, {},
+                                              nullptr);
+        if (!table)
+            continue;
+        // The emitted order IS the surface order (BuildD3SurfaceTable indexes by
+        // it), which is what lets the publisher check below reach a surface's
+        // own material.
+        const auto emitted = adapter->EmittedSubObjects();
+        bool any = false;
+        std::size_t gi = 0;
+        for (const auto& s : table->Surfaces()) {
+            const std::size_t g = gi++;
+            if (!s.valid)
+                continue;
+            ++surfaces;
+            if (d3p::D3SurfaceDrawsToScene(s))
+                ++sceneDraws;
+            if (!s.distortion)
+                continue;
+            any = true;
+            ++distortSurfaces;
+            twoTex += s.distortion->pass.distortionTwoTex ? 1 : 0;
+            for (u32 k = 0; k < s.distortion->chainCount; ++k) {
+                const auto& st = s.distortion->chain[k];
+                ++stages;
+                if (st.rawType == 0) {
+                    ++holes;
+                    continue;
+                }
+                if (st.textureId < 0 && flakes::io::D3TypeOwnsTexture(st.rawType))
+                    ++unresolved;
+                if (st.uvTransformId >= 0) {
+                    ++animStages;
+                    if (s.distortion->pass.distortionTwoTex) {
+                        ++animTwoTexStages;
+                        if (animTwoTexModels.size() < 6)
+                            animTwoTexModels.push_back(files[i].filename().string());
+                    }
+                }
+            }
+            // Publisher vs consumer. `D3ModelAdapter::PublishUvAnimation` fills
+            // the UV palette by asking D3ChainStageTypes for the distortion
+            // pass's stage types and matching them against the material's
+            // texture entries by TYPE at position i; the surface table built
+            // `chain[i]` from the same pass. If the two ever index differently,
+            // an animated stage writes one palette entry and reads another —
+            // which does not fail loudly, it just stops scrolling.
+            if (s.distortion->chainCount > 0 && g < emitted.size()) {
+                const d3n::GeoSet& set = (emitted[g].geoSet == 0)
+                                             ? adapter->SourceAppearance().tGeoSet0
+                                             : adapter->SourceAppearance().tGeoSet1;
+                if (emitted[g].index < set.arSubObjects.size()) {
+                    const auto& sub = set.arSubObjects[emitted[g].index];
+                    // The PER-GEOSET look, which is what both the builder and
+                    // D3ModelAdapter::PublishUvAnimation use. Reading the
+                    // model-wide LookIndex here picks a different variant on a
+                    // dressed actor, and a different variant is a different
+                    // material.
+                    const d3n::SubObjectAppearance* variant = flakes::io::D3VariantFor(
+                        adapter->SourceAppearance(), sub, adapter->LookForGeoset(g));
+                    std::shared_ptr<const d3n::Material> keepAlive;
+                    const d3n::UberMaterial* mat =
+                        variant ? flakes::io::D3MaterialOf(*variant, &cache, keepAlive) : nullptr;
+                    if (mat) {
+                        std::array<i32, d3p::kD3MaxChainStages> types{};
+                        const u32 n = flakes::io::D3ChainStageTypes(*mat, &cache, types, true);
+                        ++chainsChecked;
+                        // Positions only, and only where the chain BOUND
+                        // something. A stage whose declared type has no entry
+                        // in the material stays a type-0 hole (28 in the
+                        // corpus) -- the pass still declares its type, and the
+                        // publisher still never emits for it, because it walks
+                        // the material's entries and there is none.
+                        bool bad = n < s.distortion->chainCount;
+                        for (u32 k = 0; !bad && k < s.distortion->chainCount; ++k)
+                            bad = s.distortion->chain[k].rawType != 0 &&
+                                  types[k] != s.distortion->chain[k].rawType;
+                        if (bad) {
+                            ++chainMismatch;
+                            std::string pub, got;
+                            for (u32 k = 0; k < n; ++k)
+                                pub += " " + std::to_string(types[k]);
+                            for (u32 k = 0; k < s.distortion->chainCount; ++k)
+                                got += " " + std::to_string(s.distortion->chain[k].rawType);
+                            std::printf("[d3-distort] MISMATCH %s g=%zu %s :: published[%s ] chain[%s ]\n",
+                                        files[i].filename().string().c_str(), g,
+                                        s.distortion->pass.pixelEntry.c_str(), pub.c_str(),
+                                        got.c_str());
+                        }
+                    }
+                }
+            }
+        }
+        withDistortion += any ? 1 : 0;
+    }
+    std::printf("[d3-distort] %zu models (%zu with a distortion pass), %zu surfaces "
+                "(%zu distort, %zu scene); %zu stages: %zu holes, %zu unresolved, %zu twoTex, "
+                "%zu animated (%zu of them twoTex); %zu chains checked, %zu mismatched\n",
+                models, withDistortion, surfaces, distortSurfaces, sceneDraws, stages, holes,
+                unresolved, twoTex, animStages, animTwoTexStages, chainsChecked,
+                chainMismatch);
+    for (const auto& name : animTwoTexModels)
+        std::printf("[d3-distort]   animated ps_distortion2tex: %s\n", name.c_str());
+    if (models == 0) {
+        WARN("No models parsed. SKIPPED, not passed.");
+        return;
+    }
+    CHECK(withDistortion > 0);
+    CHECK(distortSurfaces > 0);
+    // The gate. A stage whose type owns a texture and did not get one samples
+    // white into a buffer whose neutral is grey -- a saturated offset in both
+    // axes, which drags the entire scene sideways rather than shimmering.
+    CHECK(unresolved == 0);
+    // ...and that every distortion chain's animation can actually be published.
+    // Non-zero here is a stage frozen at its authored phase, which looks like a
+    // static shimmer and reports as nothing at all.
+    CHECK(chainsChecked > 0);
+    CHECK(chainMismatch == 0);
 }

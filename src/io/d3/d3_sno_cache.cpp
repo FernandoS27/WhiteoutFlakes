@@ -465,21 +465,58 @@ std::shared_ptr<const d3n::Shaders> D3ResolveShaders(const d3n::UberMaterial& ma
     return nullptr;
 }
 
+u32 D3ScenePassIndex(const d3n::Shaders& shaders) {
+    for (usize i = 0; i < shaders.arRenderPasses.size(); ++i) {
+        if (shaders.arRenderPasses[i].dwUnknown00 != kD3RenderPhaseDistortion)
+            return static_cast<u32>(i);
+    }
+    return 0;
+}
+
+i32 D3DistortionPassIndex(const d3n::Shaders& shaders) {
+    for (usize i = 0; i < shaders.arRenderPasses.size(); ++i) {
+        if (shaders.arRenderPasses[i].dwUnknown00 == kD3RenderPhaseDistortion)
+            return static_cast<i32>(i);
+    }
+    return -1;
+}
+
 u32 D3ChainStageTypes(const d3n::UberMaterial& material, D3SnoCache* cache,
-                      std::array<i32, kD3MaxChainStages>& out) {
+                      std::array<i32, kD3MaxChainStages>& out, bool distortionPass) {
     out.fill(0);
     const auto shaders = D3ResolveShaders(material, cache);
     if (!shaders || shaders->arRenderPasses.empty())
         return 0;
-    const auto& pass0 = shaders->arRenderPasses[0];
-    // `ps_legacy` alone, matching the surface table's own gate: the other 27
-    // `Legacy.fx` entry points are a program each and none of them is the
-    // fixed-function chain.
-    if (pass0.szEffectFile != "Legacy.fx" || pass0.szPixelShaderEntry != "ps_legacy")
+    i32 index = static_cast<i32>(D3ScenePassIndex(*shaders));
+    if (distortionPass) {
+        index = D3DistortionPassIndex(*shaders);
+        if (index < 0)
+            return 0;
+    }
+    const auto& pass0 = shaders->arRenderPasses[static_cast<usize>(index)];
+    // TWO chain shapes, and they do not index the same way.
+    //
+    // `Legacy.fx :: ps_legacy` is the combine block's chain, and `ps_legacy`
+    // alone: the family's other 27 pixel entry points are a program each and
+    // none of them is the fixed-function chain. Its stage i is the i-th
+    // CONTENT stage — declaration order with the scene-depth stage dropped,
+    // which is how the block itself counts.
+    //
+    // `Distortion.fx :: ps_distortion2tex` reads no block at all, so the
+    // surface table synthesises replace-then-add straight down
+    // `arTextureStages` and its stage i is simply the i-th declared stage.
+    // Leaving it out of this function does not lose a chain — it loses the
+    // ANIMATION on one, silently: the palette entry a scrolling stage names is
+    // written here and nowhere else, and 22 of the 55 shipped two-tex stages
+    // animate. They stood still.
+    const bool legacyChain =
+        pass0.szEffectFile == "Legacy.fx" && pass0.szPixelShaderEntry == "ps_legacy";
+    const bool twoTex = pass0.szPixelShaderEntry == "ps_distortion2tex";
+    if (!legacyChain && !twoTex)
         return 0;
     u32 n = 0;
     for (const auto& stage : pass0.arTextureStages) {
-        if (stage.dwTextureType == kD3TextureTypeSceneDepth)
+        if (legacyChain && stage.dwTextureType == kD3TextureTypeSceneDepth)
             continue;
         if (n >= kD3MaxChainStages)
             break;

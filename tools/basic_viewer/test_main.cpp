@@ -563,7 +563,8 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
                         bool debugLight = false, bool noRefraction = false,
                         bool refractionMask = false, bool noMultiTex = false,
                         whiteout::flakes::ProductId traceGame =
-                            whiteout::flakes::ProductId::Neutral) {
+                            whiteout::flakes::ProductId::Neutral,
+                        bool noDistortion = false, bool distortionBuffer = false) {
     namespace wf = whiteout::flakes;
     namespace dbg = wf::renderer::debug;
 
@@ -624,6 +625,11 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
     // identical either way (the emitters are recorded before the service runs).
     settings.SetRefractionEnabled(!noRefraction);
     settings.SetRefractionDebugMask(refractionMask);
+    // Diablo III's distortion. Off is not "the same picture, cheaper": the
+    // surfaces whose only pass is phase 3 have no scene draw either, so this
+    // arm is the A/B that shows what the buffer is contributing.
+    settings.SetD3DistortionEnabled(!noDistortion);
+    settings.SetD3DistortionDebugBuffer(distortionBuffer);
 
     // The A/B arm for WoW's multi-texture particles. With the combiner off the
     // emitter still draws — its first layer only, at half the brightness — so
@@ -1386,6 +1392,8 @@ int main(int argc, char* argv[]) {
     bool drawTraceUnlit = false;
     bool noClothDeform = false;
     bool drawTraceNoRefraction = false;
+    bool drawTraceNoDistortion = false;
+    bool drawTraceDistortionBuffer = false;
     bool drawTraceNoMultiTex = false;
     bool drawTraceRefractionMask = false;
     bool drawTraceDebugLight = false;
@@ -1654,6 +1662,10 @@ int main(int argc, char* argv[]) {
             drawTraceNoRefraction = true;
         } else if (std::strcmp(a, "--draw-trace-refraction-mask") == 0) {
             drawTraceRefractionMask = true;
+        } else if (std::strcmp(a, "--draw-trace-no-distortion") == 0) {
+            drawTraceNoDistortion = true;
+        } else if (std::strcmp(a, "--draw-trace-distortion-buffer") == 0) {
+            drawTraceDistortionBuffer = true;
         } else if (std::strcmp(a, "--draw-trace-no-multitex") == 0) {
             drawTraceNoMultiTex = true;
         } else if (std::strcmp(a, "--draw-trace-debug-light") == 0) {
@@ -1949,7 +1961,8 @@ int main(int argc, char* argv[]) {
                             drawTraceUnlit, drawTraceLazyAnim, drawTraceAllowLate, contentRoot,
                             drawTraceAnim,
                             attachAnims, drawTraceDebugLight, drawTraceNoRefraction,
-                            drawTraceRefractionMask, drawTraceNoMultiTex, traceGameId);
+                            drawTraceRefractionMask, drawTraceNoMultiTex, traceGameId,
+                            drawTraceNoDistortion, drawTraceDistortionBuffer);
 
     whiteout::flakes::ViewerApp app(renderer);
     if (!app.Open(1024, 768, backend)) {

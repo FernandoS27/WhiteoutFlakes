@@ -2,6 +2,7 @@
 
 #include "frame_capture.h"
 #include "render_pipeline.h"
+#include "core/render_detail.h"
 #include "core/render_profile.h"
 #include "core/vertex_layout.h"
 #include "shading/shading_registry.h"
@@ -191,6 +192,23 @@ struct RenderPipeline::Impl {
     // writes; Invalid means the scene went where it always goes.
     gfx::TextureHandle refractionMirrorDst_ = gfx::TextureHandle::Invalid;
     gfx::Format refractionMirrorFmt_ = gfx::Format::Unknown;
+    // The same redirect for Diablo III's distortion resolve, which has the same
+    // problem: it samples the finished scene and a back buffer cannot be
+    // sampled. Never both — one scene, one profile, one owner.
+    gfx::TextureHandle distortionMirrorDst_ = gfx::TextureHandle::Invalid;
+    gfx::Format distortionMirrorFmt_ = gfx::Format::Unknown;
+    // This frame's transparent-scene draw lists, kept past the function that
+    // builds them: the Distortion pass runs after the scene render pass closes
+    // and re-submits `lists.distortion` into another target, so the `views`
+    // these DrawItems point at have to outlive RenderTransparentScene.
+    render_detail::CollectedDrawLists transparentLists_;
+    // This frame's Diablo III distortion emitters, held back from the
+    // transparent queue. Their vertices are already in the shared particle VB,
+    // so only the draw list has to survive to the Distortion pass.
+    std::vector<particle::EmitterDrawList> distortionParticles_;
+    // The frame inputs those draws were prepared with — the same `partFrame`
+    // the transparent queue used, since the geometry is the same geometry.
+    bls::FrameInputs distortionParticleFrame_{};
     gfx::BufferHandle splatServiceVB_ = gfx::BufferHandle::Invalid;
     i32 splatServiceVBSize_ = 0;
 

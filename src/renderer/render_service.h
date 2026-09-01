@@ -24,6 +24,7 @@
 #include "imgui/imgui_renderer.h"
 #include "shadow/shadow_service.h"
 #include "dof/dof_service.h"
+#include "distortion/distortion_service.h"
 #include "refraction/refraction_service.h"
 #include "gtao/gtao_service.h"
 #include "post_process/post_process_service.h"
@@ -233,6 +234,10 @@ public:
     const dof::DofService* GetDofService() const;
     refraction::RefractionService* GetRefractionService();
     const refraction::RefractionService* GetRefractionService() const;
+
+    /// Diablo III's screen-space distortion. Null until a D3 frame asks for it.
+    distortion::DistortionService* GetDistortionService();
+    const distortion::DistortionService* GetDistortionService() const;
     post_process::PostProcessService* GetPostProcessService();
     const post_process::PostProcessService* GetPostProcessService() const;
 #if WDX_ENABLE_M3
@@ -328,6 +333,7 @@ public:
     dof::DofService& EnsureDofService(gfx::IGFXDevice& gfx, gfx::GfxApi api,
                                       bls::BlsShaderCache& cache, gfx::BufferHandle spriteVb);
     refraction::RefractionService& EnsureRefractionService(gfx::IGFXDevice& gfx, gfx::GfxApi api);
+    distortion::DistortionService& EnsureDistortionService(gfx::IGFXDevice& gfx, gfx::GfxApi api);
     post_process::PostProcessService& EnsurePostProcessService(gfx::IGFXDevice& gfx,
                                                                gfx::GfxApi api,
                                                                bls::BlsShaderCache& cache,

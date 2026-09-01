@@ -159,6 +159,18 @@ struct MaterialDesc {
     /// blend SrcAlpha/One. Guessing that is better than guessing opaque.
     bool passResolved = false;
 
+    /// @brief This emitter draws into the DISTORTION buffer, not the scene.
+    ///
+    /// `RenderPass::dwUnknown00 == 3` — see io/d3/d3_types.h. Five shipped
+    /// billboard shaders carry it (`particle_distortion`,
+    /// `particle_distortion_cm2x_am1x`, `particle_distortion_cm2x_am2x`,
+    /// `particle_fullscreen_distortion`, `particle_fullscreen_distortion_am4x`)
+    /// and every one of them is `Billboard.fx::ps_legacy`, so nothing about the
+    /// shading changes — only the target. Drawn in the scene instead, what they
+    /// paint is their distortion map as if it were colour: a hard blue-green
+    /// rectangle over the model, which is what the Mystic Ally's caustics were.
+    bool distortion = false;
+
     bool blendEnable = true;
     u32 blendSrc = 5; ///< The ENGINE's blend enum, not D3DBLEND. 5 = SrcAlpha.
     u32 blendDst = 2; ///< 2 = One.

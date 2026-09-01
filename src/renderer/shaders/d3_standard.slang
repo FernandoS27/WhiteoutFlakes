@@ -157,8 +157,11 @@ struct D3DrawData
     // .z is the premultiplied-alpha output mode (D3PassState::pmaMode) and .w
     // the alpha-test comparison (D3Surface::alphaTestFunc).
     float4 params1;
-    // .x D3DRS_DEPTHBIAS, a constant added to the [0,1] window depth; .yzw
-    // spare. See D3PassState::depthBias.
+    // .x D3DRS_DEPTHBIAS, a constant added to the [0,1] window depth. .y the
+    // `Distortion.fx::ps_distortion2tex` re-centring — non-zero subtracts 0.5
+    // from the chain's colour, which is the sixth instruction of that program
+    // and the reason its output is a signed OFFSET rather than a colour. See
+    // D3PassState::distortionTwoTex. .zw spare.
     float4 params2;
     // The `Legacy.fx` chain. .x how many stages are live — 0 runs the named
     // slots instead; .y where the vertex colour and the texture factor enter
@@ -633,6 +636,20 @@ float4 D3LegacyChain(PSInput input, bool frontFace, uint vertexColorMode, int st
     // original's runs unclamped into a UNORM target and the ROP clamps it, so
     // clamping here would cost the HDR path its headroom.
     float4 outColor = float4(rgb, saturate(alpha));
+
+    // `Distortion.fx::ps_distortion2tex`'s re-centring. The chain above has
+    // already summed the two layers (stage 0 replaces, stage 1 adds -- the
+    // surface table synthesises those, because the program reads no combine
+    // block); this is the sixth and last instruction of it:
+    //
+    //     o0.xyz = texLayer0 + texLayer1 - 0.5
+    //
+    // A signed offset, not a colour. It is only ever written into the
+    // distortion buffer, whose resolve reads `(rg * 2 - 1) * 0.03` back out, so
+    // the two halves of the encoding meet here and nowhere else.
+    if (draw.params2.y != 0.0)
+        outColor.rgb -= 0.5;
+
     let pma = (int)draw.params1.z;
     if (pma != 0)
     {
@@ -645,7 +662,6 @@ float4 D3LegacyChain(PSInput input, bool frontFace, uint vertexColorMode, int st
     return outColor;
 }
 
-[shader("fragment")]
 // The fixed-function alpha test, which is a COMPARISON and a reference, not a
 // threshold: `sub_5717F0` sets ALPHAFUNC and ALPHAREF together and passes (0, 0)
 // when the enable is clear. 67 shipped passes compare LessEqual and 5 Less --
@@ -663,6 +679,14 @@ bool D3AlphaTestKeeps(float a, float reference, int func) {
     }
 }
 
+// `[shader("fragment")]` belongs HERE and only here. It sat above
+// D3AlphaTestKeeps, one comment block up, where it made that helper an ENTRY
+// POINT: Slang then lowered its three parameters to `ptr<function, ...>`
+// varyings, which is invalid SPIR-V (`OpLoad Pointer is not a logical
+// pointer`) and invalid WGSL, so the whole D3 pixel stage failed to build on
+// Vulkan and WebGPU. DXBC never noticed, because `-entry psD3Standard` picks
+// the entry point by name.
+[shader("fragment")]
 float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
 {
     let vertexColorMode = uint(draw.params0.w);

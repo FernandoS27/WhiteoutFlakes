@@ -58,6 +58,11 @@ struct DrawItem {
 struct DrawLists {
     std::vector<DrawItem> opaque;
     std::vector<DrawItem> transparent;
+    // Diablo III's distortion buffer. Not a third blend bucket: the same
+    // geometry, drawn a second time into a different render target after the
+    // transparent scene. Sorted back-to-front like `transparent`, because the
+    // shipped passes blend (SRCALPHA, INVSRCALPHA) into the buffer.
+    std::vector<DrawItem> distortion;
 };
 
 // Opaque order: group by shading model, then walk the scene. `view` points into

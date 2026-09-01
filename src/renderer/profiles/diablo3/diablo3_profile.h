@@ -66,6 +66,21 @@ public:
         // same flag WC3 SD uses — and it is what puts a real HDR scene target
         // and a tonemap in the chain. Bloom gated on it as well keeps the
         // bloom target from being written by a frame that will never read it.
+        // Screen-space distortion, between the transparent scene and the
+        // tonemap — where `sub_741760` runs the post-effect chain, and where
+        // the buffer's contents are complete but the frame is not yet graded.
+        //
+        // Reads the depth (the phase-3 draws are depth-tested against the
+        // finished scene, never writing it) and writes the SceneColor it bends,
+        // which it also samples. The buffer itself is the service's, not a
+        // profile target: nothing else in the frame reads or writes it, and
+        // declaring a target one pass owns end to end would only make
+        // ValidateProfile police a private allocation.
+        passes_.push_back({PassSlot::Distortion,
+                           nullptr,
+                           TargetBits({TargetSlot::SceneColor, TargetSlot::Depth}),
+                           0,
+                           TargetBit(TargetSlot::SceneColor)});
         passes_.push_back({PassSlot::Bloom,
                            [this] { return settings_.SceneHdrInSd() && settings_.BloomEnabled(); },
                            TargetBit(TargetSlot::SceneColor),

@@ -302,13 +302,40 @@ inline constexpr u32 kD3OpaqueTagChain[] = {0x30502u, 0x30850u, 0x30830u, 0x3060
 std::shared_ptr<const d3n::Shaders> D3ResolveShaders(const d3n::UberMaterial& material,
                                                      D3SnoCache* cache);
 
-/// @brief The content texture types of @p material's pass 0, in declaration
-///        order, into @p out. Returns how many were written.
+/// @brief Which pass of @p shaders draws into the SCENE, and which into the
+///        distortion buffer.
+///
+/// A pass declares its phase (`RenderPass::dwUnknown00`) and phase 3 is the
+/// distortion buffer -- see kD3RenderPhaseDistortion. So the scene pass is the
+/// first that is NOT phase 3, and the distortion pass is the first that is.
+///
+/// Both halves matter. `actor_watermonster` is (3, 6, 6): reading pass 0 as
+/// the scene pass draws its distortion vectors as if they were the monster.
+/// `actor_mysticAlly` is (6, 3): reading pass 0 as the only pass drops the
+/// shimmer entirely. And 26 of the 45 distortion shaders have ONE pass, which is
+/// phase 3 -- for those the scene index below names a pass that must not reach
+/// the scene at all, and @ref D3DistortionPassIndex is what says so.
+u32 D3ScenePassIndex(const d3n::Shaders& shaders);
+
+/// @brief The phase-3 pass's index, or -1 when this asset declares none.
+i32 D3DistortionPassIndex(const d3n::Shaders& shaders);
+
+/// @brief The content texture types of one of @p material's passes, in
+///        declaration order, into @p out. Returns how many were written.
 ///
 /// "Content" is the combine block's own indexing: the scene-depth stage
 /// (`SoftBillboard.fx` declares it, always first) is not one, and a type-0 hole
 /// is — the block counts it, and the pass leaves its combine codes clear.
+///
+/// `Distortion.fx :: ps_distortion2tex` is the exception, and it has to be:
+/// that program reads NO combine block, so the surface table synthesises its
+/// chain straight down `arTextureStages` and stage i is the i-th DECLARED
+/// stage. Both shapes are answered here, each with its own indexing, because
+/// the palette ids this feeds are matched by position.
+///
+/// @p distortionPass selects the phase-3 pass instead of the scene one, and
+/// returns 0 when there is none.
 u32 D3ChainStageTypes(const d3n::UberMaterial& material, D3SnoCache* cache,
-                      std::array<i32, kD3MaxChainStages>& out);
+                      std::array<i32, kD3MaxChainStages>& out, bool distortionPass = false);
 
 } // namespace whiteout::flakes::io

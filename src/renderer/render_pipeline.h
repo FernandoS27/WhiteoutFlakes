@@ -329,7 +329,11 @@ private:
     // IModelRenderSceneTransparent). Geoset draws go through SurfacePass, which
     // opens the naming model's pass on the first entry it dispatches.
     void RenderTransparentScene();
-    void DrawParticleEmitter(const particle::EmitterDrawList& dl, const bls::FrameInputs& frame);
+    /// @p distortionTarget routes the draw into Diablo III's distortion buffer
+    /// instead of the scene — the same geometry and the same program, one
+    /// render-target format apart.
+    void DrawParticleEmitter(const particle::EmitterDrawList& dl, const bls::FrameInputs& frame,
+                             bool distortionTarget = false);
     void DrawMultiTexParticleEmitter(const particle::EmitterDrawList& dl);
     // Build every actor's ribbon strips into their per-actor VBs and surface one
     // RibbonDrawUnit per emitter (with a world sort origin); `outFrame` is the

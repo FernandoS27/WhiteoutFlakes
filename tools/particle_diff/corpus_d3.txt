@@ -102,3 +102,36 @@ Actor/mightyWeapon_1H_norm_unique_05.acr
 #                                rim on `inner_mat` and `innerShell_mat`.
 Appearances/x1_deathMaiden.app
 Appearances/x1_urzael_cannonball_model.app
+#
+# Added 2026-09-01 for the DISTORTION phase (D3_MATERIAL_DESIGN.md 7.9). None
+# of the entries above carries a phase-3 pass, so until these landed the whole
+# distortion arm -- a side buffer, a second target for the D3 shading model,
+# and a full-screen resolve -- drew nothing this gate could see. Both halves
+# are represented on purpose, because they fail differently:
+#
+#   Monk_Male_mysticAlly    a body pass AND a distortion pass over ONE material
+#                           (phases 6 and 3). The body must keep drawing; the
+#                           second pass has four stages of its own and scrolls
+#                           `causticDistortion`, which is the only corpus entry
+#                           exercising the distortion band of the UV palette.
+#   Enchantress_..blastWave `distortion_2tex` -- `Distortion.fx`, ONE pass, and
+#                           that pass is phase 3, so `sphere2_mat` must not
+#                           reach the scene at all while `sphere1_mat` beside
+#                           it is untouched. Drawn in the scene it is a
+#                           normal-map sphere, which is what the Wizard's twin
+#                           of this model was.
+#
+# The particle half is `Monk_male_mysticAlly_alabaster_v2.acr`: its emitters
+# bind `particle_distortion*`, five billboard shaders that are phase 3 and
+# `Billboard.fx::ps_legacy`, and in the scene they draw their offset field as a
+# hard cyan rectangle over the model.
+Appearances/Monk_Male_mysticAlly.app
+Appearances/Enchantress_arcaneOrb_aoe_blastWave.app
+Actor/Monk_male_mysticAlly_alabaster_v2.acr
+# actor_isSlowed carries a `ps_distortion2tex` pass whose UVs SCROLL -- the
+# slowed debuff, and one of six such models in the corpus. It is here because
+# a frozen distortion field and a moving one are the same picture in any ONE
+# frame: its buffer was byte-identical between frame 5 and frame 60 until
+# D3ChainStageTypes learned the two-tex chain. 22 of the 55 shipped two-tex
+# stages animate and every one of them stood still.
+Appearances/actor_isSlowed.app

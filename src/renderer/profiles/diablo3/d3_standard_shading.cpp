@@ -7,6 +7,7 @@
 #include "renderer/assets/texture_asset_manager.h"
 #include "renderer/camera.h"
 #include "renderer/debug/draw_trace_hooks.h"
+#include "renderer/distortion/distortion_service.h"
 #include "renderer/model/render_model.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
@@ -459,6 +460,17 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     if (!surf || !surf->valid)
         return;
 
+    // The distortion pass draws the SAME geometry through the SAME programs —
+    // only the surface and the target change. `D3Surface::distortion` is the
+    // phase-3 pass resolved as a surface of its own, and from here down nothing
+    // knows the difference.
+    const bool distortionPass = ctx.pass == core::PassSlot::Distortion;
+    if (distortionPass) {
+        surf = surf->distortion.get();
+        if (!surf || !surf->valid)
+            return;
+    }
+
     auto* gfxDev = rs_.Pipeline().Gfx();
     auto* cmd = gfxDev ? gfxDev->GetImmediateContext() : nullptr;
     if (!cmd)
@@ -467,10 +479,13 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     const f32 elementAlpha = geo.geosetAlpha * item.view->parentVisibility;
 
     PsoKey key;
-    key.rtv = rs_.Pipeline().SceneTargetFormat();
+    key.rtv = distortionPass ? distortion::DistortionService::kBufferFormat
+                             : rs_.Pipeline().SceneTargetFormat();
     key.dsv = rs_.Pipeline().DepthStencilFormat();
     gfx::Format extra[3] = {gfx::Format::Unknown, gfx::Format::Unknown, gfx::Format::Unknown};
-    key.extraRtvCount = rs_.Pipeline().SceneExtraRtvFormats(extra);
+    // One target. The distortion buffer is a side buffer, not the scene, and a
+    // G-buffer sidecar bound beside it would be written with an offset vector.
+    key.extraRtvCount = distortionPass ? 0 : rs_.Pipeline().SceneExtraRtvFormats(extra);
     key.extra0 = extra[0];
     key.extra1 = extra[1];
     key.extra2 = extra[2];
@@ -509,7 +524,10 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
         c->params1 = {surf->pass.colorGain, surf->pass.alphaGain,
                       static_cast<f32>(surf->pass.pmaMode),
                       static_cast<f32>(surf->alphaTestFunc)};
-        c->params2 = {surf->pass.resolved ? surf->pass.depthBias : 0.0f, 0.0f, 0.0f, 0.0f};
+        // .y: the `ps_distortion2tex` re-centring, which is a bias on the whole
+        // chain rather than a stage of it. See D3PassState::distortionTwoTex.
+        c->params2 = {surf->pass.resolved ? surf->pass.depthBias : 0.0f,
+                      surf->pass.distortionTwoTex ? 1.0f : 0.0f, 0.0f, 0.0f};
         // Where the vertex colour and the texture factor enter each channel of
         // a `Legacy.fx` chain. Mirrors d3_standard.slang's kD3Chain* bits.
         const u32 chainBits =
@@ -646,8 +664,13 @@ core::SurfaceClass D3StandardShading::ClassifySurface(const render_detail::Rende
         return {.visible = false};
 
     core::SurfaceClass c = D3ClassifySurface(*s);
-    if (!c.visible)
-        return c;
+
+    // No early-out on `!c.visible`, and that is the whole reason this reads the
+    // way it does: the gates below are SUB-OBJECT level in the engine
+    // (`ActorModel_EmitSubObjectDrawCalls` skips the sub-object, not one pass
+    // of it), so they own the distortion half too — and a phase-3-only surface
+    // is never visible, which is exactly the surface whose only draw is that
+    // half.
 
     // §6.3: the engine tests `alpha < 1.0` and swaps the whole shader —
     // `rec[24]` opaque, `rec[28]` translucent — and **skips the sub-object
@@ -658,12 +681,18 @@ core::SurfaceClass D3StandardShading::ClassifySurface(const render_detail::Rende
     if (alpha < 1.0f) {
         if (s->noTranslucentVariant) {
             c.visible = false;
+            c.needsDistortion = false;
             return c;
         }
-        c.blend = core::BlendClass::Transparent;
+        if (c.visible)
+            c.blend = core::BlendClass::Transparent;
     }
-    if (alpha <= 0.0f)
+    if (alpha <= 0.0f) {
+        // A fully faded sub-object distorts nothing either: `Factor.w` is that
+        // same alpha, and it multiplies the distortion pass's edge term.
         c.visible = false;
+        c.needsDistortion = false;
+    }
     return c;
 }
 

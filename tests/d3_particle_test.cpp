@@ -3023,3 +3023,103 @@ TEST_CASE("d3 particle P7: the gated arm orients a spawned child actor",
         CHECK(same(col(s, 2), in.groundNormal));
     }
 }
+
+// ---------------------------------------------------------------------------
+// The DISTORTION phase, particle side.
+//
+// A geoset surface resolves TWO surfaces when its `Shaders` declares both a
+// body pass and a phase-3 one (`D3Surface::distortion`). A particle material
+// resolves ONE `D3PassState`, through `D3ScenePassIndex`, and there is a real
+// question behind that: an emitter whose asset declared both phases would have
+// its distortion half silently dropped, because the scene pass wins the pick
+// and `MaterialDesc::distortion` then reads false.
+//
+// This measures whether that case is in the shipped data. It is not: every
+// particle material carrying phase 3 carries NOTHING ELSE, so the one pass the
+// emitter resolves IS the distortion pass and no second material is owed. The
+// gate is that count staying zero -- if a later corpus turns one up, the
+// emitter needs the two-material treatment the geoset side already has.
+// ---------------------------------------------------------------------------
+TEST_CASE("D3 install: a distortion particle declares phase 3 and nothing else",
+          "[d3][particle][material][install]") {
+    using ::whiteout::flakes::ProductId;
+    namespace wio = whiteout::flakes::io;
+
+    const fs::path root = CorpusRoot();
+    const std::vector<fs::path> files = FindPrt(root);
+    if (files.empty()) {
+        WARN("no .prt corpus at " << root.string() << " — SKIPPED.");
+        return;
+    }
+    whiteout::flakes::io::FileContentProvider provider;
+    if (const char* r = std::getenv("WDX_TEST_D3_INSTALL"); r && *r)
+        provider.SetInstallPath(r);
+    provider.SetGame(ProductId::D3);
+    if (provider.GamePath(ProductId::D3).empty()) {
+        WARN("no Diablo III install (set WDX_TEST_D3_INSTALL). SKIPPED, not passed.");
+        return;
+    }
+    whiteout::flakes::io::D3SnoCache cache(&provider);
+
+    // The whole tree by default: 21,593 `.prt`, and the population being
+    // counted is a handful of them. A limit here would report zero for the
+    // reason M3's sweeps did -- see the corpus notes in the M3 tests.
+    std::size_t bound = 0;
+    if (const char* v = std::getenv("WDX_TEST_D3_MAT_LIMIT"); v && *v)
+        bound = static_cast<std::size_t>(std::strtoul(v, nullptr, 10));
+    const std::size_t n = (bound == 0) ? files.size() : std::min(bound, files.size());
+
+    std::size_t resolved = 0, withDistortion = 0, distortionOnly = 0, mixed = 0;
+    std::map<std::string, std::size_t> programs;
+    std::vector<std::string> mixedNames;
+    for (std::size_t i = 0; i < n; ++i) {
+        auto prt = d3n::parseParticle(ReadAll(files[i]));
+        if (!prt)
+            continue;
+        const auto shaders = wio::D3ResolveShaders(prt->tMaterial, &cache);
+        if (!shaders || shaders->arRenderPasses.empty())
+            continue;
+        ++resolved;
+        const i32 di = wio::D3DistortionPassIndex(*shaders);
+        if (di < 0)
+            continue;
+        ++withDistortion;
+        std::size_t phase3 = 0;
+        for (const auto& pass : shaders->arRenderPasses)
+            if (pass.dwUnknown00 == wio::kD3RenderPhaseDistortion)
+                ++phase3;
+        if (phase3 == shaders->arRenderPasses.size()) {
+            ++distortionOnly;
+        } else {
+            ++mixed;
+            if (mixedNames.size() < 8)
+                mixedNames.push_back(files[i].filename().string());
+        }
+        const auto& p = shaders->arRenderPasses[static_cast<std::size_t>(di)];
+        ++programs[p.szEffectFile + "::" + p.szPixelShaderEntry];
+        // The pick the emitter actually makes. For a phase-3-only asset the
+        // scene index and the distortion index are the same pass, which is why
+        // `MaterialDesc::distortion` comes out true without a second material.
+        const auto st =
+            whiteout::flakes::renderer::profiles::diablo3::D3PassStateFor(prt->tMaterial, &cache);
+        CHECK(st.resolved);
+        CHECK(st.distortion == (phase3 == shaders->arRenderPasses.size()));
+    }
+
+    std::printf("[d3-distort/prt] %zu of %zu .prt resolve a Shaders; %zu carry phase 3 "
+                "(%zu phase-3 ONLY, %zu mixed)\n",
+                resolved, n, withDistortion, distortionOnly, mixed);
+    for (const auto& [name, count] : programs)
+        std::printf("[d3-distort/prt]   %-40s %zu\n", name.c_str(), count);
+    for (const auto& name : mixedNames)
+        std::printf("[d3-distort/prt]   MIXED: %s\n", name.c_str());
+
+    if (resolved == 0) {
+        WARN("no particle material resolved. SKIPPED, not passed.");
+        return;
+    }
+    // Vacuity: a run finding no distortion emitter at all proves nothing.
+    CHECK(withDistortion > 0);
+    // The gate. Non-zero means an emitter is losing its distortion half.
+    CHECK(mixed == 0);
+}

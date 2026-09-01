@@ -410,6 +410,12 @@ refraction::RefractionService* RenderService::GetRefractionService() {
 const refraction::RefractionService* RenderService::GetRefractionService() const {
     return impl_->refractionService_.get();
 }
+distortion::DistortionService* RenderService::GetDistortionService() {
+    return impl_->distortionService_.get();
+}
+const distortion::DistortionService* RenderService::GetDistortionService() const {
+    return impl_->distortionService_.get();
+}
 #if WDX_ENABLE_M3
 sc2::M3DeferredLightService* RenderService::GetM3DeferredLightService() {
     return impl_->m3DeferredLightService_.get();
@@ -650,6 +656,15 @@ refraction::RefractionService& RenderService::EnsureRefractionService(gfx::IGFXD
         impl_->refractionService_->Init(gfx, api);
     }
     return *impl_->refractionService_;
+}
+
+distortion::DistortionService& RenderService::EnsureDistortionService(gfx::IGFXDevice& gfx,
+                                                                     gfx::GfxApi api) {
+    if (!impl_->distortionService_) {
+        impl_->distortionService_ = std::make_unique<distortion::DistortionService>();
+        impl_->distortionService_->Init(gfx, api);
+    }
+    return *impl_->distortionService_;
 }
 
 post_process::PostProcessService& RenderService::EnsurePostProcessService(

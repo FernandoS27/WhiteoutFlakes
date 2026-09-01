@@ -463,6 +463,10 @@ void D3ModelAdapter::PublishUvAnimation(const PoseRequest& req, FrameState& fs) 
         // cache hits per geoset.
         std::array<i32, kD3MaxChainStages> chainTypes{};
         const u32 chainCount = D3ChainStageTypes(v->tMaterial, cache_, chainTypes);
+        // ... and again for the distortion pass, which is a second chain over
+        // the same material and routinely the only one that scrolls.
+        std::array<i32, kD3MaxChainStages> distTypes{};
+        const u32 distCount = D3ChainStageTypes(v->tMaterial, cache_, distTypes, true);
 
         auto emit = [&](const D3UvXform& uv, i32 id) {
             f32 a[6];
@@ -497,6 +501,10 @@ void D3ModelAdapter::PublishUvAnimation(const PoseRequest& req, FrameState& fs) 
             for (u32 i = 0; i < chainCount; ++i) {
                 if (chainTypes[i] == type)
                     emit(uv, D3UvTransformIdForStage(g, i));
+            }
+            for (u32 i = 0; i < distCount; ++i) {
+                if (distTypes[i] == type)
+                    emit(uv, D3UvTransformIdForDistortionStage(g, i));
             }
         }
     }

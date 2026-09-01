@@ -43,6 +43,11 @@ enum class TracePassSlot : u8 {
     // before it existed still reads: only a model that carries a refraction
     // emitter records anything here.
     Refraction = 5,
+    // Diablo III's screen-space distortion — geoset draws, but into a buffer of
+    // signed screen offsets rather than into any scene pass. Appended for the
+    // reason Refraction was: a baseline recorded before it existed still reads,
+    // and only a model carrying a phase-3 pass records anything here.
+    Distortion = 6,
 };
 
 // Which producer issued the draw. `SurfacePass` (P2) only ever sees Geoset;

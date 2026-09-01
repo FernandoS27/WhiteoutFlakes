@@ -295,7 +295,7 @@ void RenderPipeline::ReleaseModelGPU() {
 // Draw one PE2 emitter's batch. Binds the shared particle VB itself so it can be
 // invoked interleaved with other producers in the unified transparent pass.
 void RenderPipeline::DrawParticleEmitter(const particle::EmitterDrawList& dl,
-                                         const bls::FrameInputs& frame) {
+                                         const bls::FrameInputs& frame, bool distortionTarget) {
     if (dl.vertexCount <= 0)
         return;
     auto* cmd = impl_->gfx_->GetImmediateContext();
@@ -321,8 +321,12 @@ void RenderPipeline::DrawParticleEmitter(const particle::EmitterDrawList& dl,
         profiles::diablo3::D3ParticleFrameInputs d3f;
         d3f.view = frame.view;
         d3f.projection = frame.projection;
-        d3f.rtvFormat = SceneTargetFormat();
-        d3f.extraRtvCount = SceneExtraRtvFormats(d3f.extraRtvFormats);
+        // One target and its own format when this is the distortion buffer: a
+        // G-buffer sidecar bound beside it would be written with an offset
+        // vector.
+        d3f.rtvFormat = distortionTarget ? distortion::DistortionService::kBufferFormat
+                                         : SceneTargetFormat();
+        d3f.extraRtvCount = distortionTarget ? 0 : SceneExtraRtvFormats(d3f.extraRtvFormats);
         d3f.dsvFormat = impl_->depthStencilFormat_;
         d3f.vertexBuffer = impl_->particleServiceVB_;
         if (impl_->d3Particles_->Draw(cmd, dl, d3f, rs_.Scene().Actors().Find(dl.model))) {
@@ -1164,6 +1168,10 @@ bool RenderPipeline::InitBlsShaders(gfx::GfxApi api) {
     // Refraction needs neither: its two passes generate their own fullscreen
     // triangle from SV_VertexID and its mask pass binds the particle stream.
     rs_.EnsureRefractionService(*impl_->gfx_, impl_->gfx_->GetApi());
+    // Same for D3's distortion: a full-screen resolve and a side buffer, both
+    // its own. Its WRITE half is ordinary D3 geometry and lives in the shading
+    // model, so there is nothing else to hand it.
+    rs_.EnsureDistortionService(*impl_->gfx_, impl_->gfx_->GetApi());
     // Multi-texture particles draw inside the transparent pass rather than
     // owning one, so this lives on the pipeline instead of the render service —
     // nothing outside the draw dispatch has anything to ask it.
@@ -1718,6 +1726,8 @@ void RenderPipeline::CleanupGFX() {
             d->Shutdown();
         if (auto* r = rs_.GetRefractionService())
             r->Shutdown();
+        if (auto* ds = rs_.GetDistortionService())
+            ds->Shutdown();
         if (impl_->multiTexParticles_)
             impl_->multiTexParticles_->Shutdown();
 #if WDX_ENABLE_M3
@@ -2126,6 +2136,37 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         }
     }
 
+    // The same redirect for Diablo III's distortion resolve, and for the same
+    // reason. The two can never both fire — a scene has one product and one
+    // profile — but the D3 branch is second so that a frame which somehow
+    // reached both keeps the refraction claim rather than stacking them.
+    impl_->distortionMirrorDst_ = gfx::TextureHandle::Invalid;
+    impl_->distortionMirrorFmt_ = gfx::Format::Unknown;
+    if (auto* dsvc = rs_.GetDistortionService();
+        dsvc && impl_->refractionMirrorDst_ == gfx::TextureHandle::Invalid &&
+        (sceneTarget == target.colorLinear || sceneTarget == target.color)) {
+        distortion::DistortionParams dp = dsvc->Params();
+        dp.enabled = rs_.Settings().D3DistortionEnabled();
+        dp.debugShowBuffer = rs_.Settings().D3DistortionDebugBuffer();
+        dsvc->SetParams(dp);
+        const bool profileDistorts =
+            std::any_of(profile.Passes().begin(), profile.Passes().end(),
+                        [](const core::PassEntry& e) {
+                            return e.slot == core::PassSlot::Distortion && e.Enabled();
+                        });
+        if (profileDistorts && dsvc->IsEnabled()) {
+            const gfx::Format swapFmt = impl_->gfx_->GetSwapChainFormat(target.swap);
+            const gfx::Format outFmt = sdGamma ? StripSrgb(swapFmt) : swapFmt;
+            const gfx::TextureHandle redirect =
+                dsvc->BeginSceneRedirect(target.width, target.height, SceneTargetFormat());
+            if (redirect != gfx::TextureHandle::Invalid) {
+                impl_->distortionMirrorDst_ = sceneTarget;
+                impl_->distortionMirrorFmt_ = outFmt;
+                sceneTarget = redirect;
+            }
+        }
+    }
+
     auto srgbByteToLinear = [](u8 b) {
         const f32 f = b / 255.0f;
         return (f <= 0.04045f) ? (f / 12.92f) : std::pow((f + 0.055f) / 1.055f, 2.4f);
@@ -2342,7 +2383,8 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     // its own pass on the back buffer afterwards instead — the slot the
     // profile has always listed it in.
     if (!sceneToHdr && impl_->frameDrawImGui_ &&
-        impl_->refractionMirrorDst_ == gfx::TextureHandle::Invalid) {
+        impl_->refractionMirrorDst_ == gfx::TextureHandle::Invalid &&
+        impl_->distortionMirrorDst_ == gfx::TextureHandle::Invalid) {
         if (auto* im = rs_.ImGui()) {
             // Sync ImGui's PSO with the scene RTV format (which is the
             // swapchain backbuffer in SD mode). See the matching call in
@@ -2618,6 +2660,112 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
         r->Run(cmd, fi, impl_->refractionGeo_);
     };
 
+    // Diablo III's screen-space distortion. Two halves that look nothing alike:
+    // the WRITE is ordinary D3 geometry through the ordinary D3 programs, into
+    // a side buffer instead of the scene, and the RESOLVE is one full-screen
+    // pass that bends the finished scene through what it wrote. `sub_741760`
+    // runs the chain here — after the scene, before the grade.
+    auto runDistortionPass = [&] {
+        auto* d = rs_.GetDistortionService();
+        if (!d)
+            return;
+        distortion::DistortionParams dp = d->Params();
+        dp.enabled = rs_.Settings().D3DistortionEnabled();
+        dp.debugShowBuffer = rs_.Settings().D3DistortionDebugBuffer();
+        d->SetParams(dp);
+        // A redirected frame runs even with the effect switched off between the
+        // redirect and here: the scene is in the service's texture and this
+        // pass is the only thing that puts it on screen.
+        const bool redirected = impl_->distortionMirrorDst_ != gfx::TextureHandle::Invalid;
+        if (!d->IsEnabled() && !redirected)
+            return;
+        auto& items = impl_->transparentLists_.lists.distortion;
+        auto& emitters = impl_->distortionParticles_;
+        if (items.empty() && emitters.empty() && !redirected)
+            return;
+
+        WDX_CPU_ZONE("Distortion");
+        WDX_GPU_ZONE(cmd, "Distortion");
+
+        const Vector3f camPos = rs_.Pipeline().FrameCamera().GetSource();
+        auto sqDistToCamera = [&](const Vector3f& p) {
+            const Vector3f v = {p.x - camPos.x, p.y - camPos.y, p.z - camPos.z};
+            return v.x * v.x + v.y * v.y + v.z * v.z;
+        };
+
+        if (d->IsEnabled() && (!items.empty() || !emitters.empty())) {
+            const gfx::TextureHandle buffer =
+                d->BeginBuffer(cmd, Width(), Height(), SceneTargetFormat());
+            if (buffer != gfx::TextureHandle::Invalid) {
+                // Back-to-front, like the transparent scene: every one of the 48
+                // shipped distortion passes blends (SRCALPHA, INVSRCALPHA) into
+                // the buffer, so two overlapping ones do not commute.
+                std::sort(items.begin(), items.end(), render_detail::TransparentOrder);
+
+                // Load, not clear, and the DEPTH is the scene's: a distortion
+                // pass is depth-tested against the finished scene and never
+                // writes it, which is what stops a shimmer showing through the
+                // wall in front of it. BeginBuffer already cleared the colour to
+                // the neutral 0.5.
+                cmd->BeginRenderPassLoad(buffer, target.depth, 1.0f, 0, /*loadDepth=*/true);
+                cmd->SetViewport({0, 0, static_cast<f32>(Width()), static_cast<f32>(Height()),
+                                  0.0f, 1.0f});
+
+                core::PassContext dctx;
+                dctx.pass = core::PassSlot::Distortion;
+                dctx.viewportWidth = Width();
+                dctx.viewportHeight = Height();
+                dctx.cameraPos = camPos;
+                dctx.view = FrameCamera().GetViewMatrix();
+                dctx.projection = FrameCamera().ProjectionRH(
+                    Height() > 0 ? static_cast<f32>(Width()) / static_cast<f32>(Height()) : 1.0f);
+                dctx.profile = &ActiveProfile();
+
+                shading::SurfacePass dpass(impl_->shadingModels_);
+                auto& traceCtx = debug::DrawTraceRecorder::Instance().Context();
+                for (u32 i = 0; i < items.size(); ++i) {
+                    traceCtx = {.pass = debug::TracePassSlot::Distortion,
+                                .producer = debug::TraceProducer::Geoset,
+                                .sortOrder = (i32)i,
+                                .sqDist = items[i].sqDist,
+                                .priorityPlane = items[i].priorityPlane};
+                    dpass.Submit(items[i], dctx, impl_->transparentLists_);
+                }
+                dpass.Finish(dctx);
+
+                // ...and the emitters, held back from the transparent queue.
+                // Sorted among themselves only: a particle and a mesh in this
+                // buffer are both offsets, and the engine's own chain draws
+                // them in submission order rather than interleaving them.
+                std::sort(emitters.begin(), emitters.end(),
+                          [&](const particle::EmitterDrawList& a,
+                              const particle::EmitterDrawList& b) {
+                              return sqDistToCamera(a.worldOrigin) >
+                                     sqDistToCamera(b.worldOrigin);
+                          });
+                for (u32 i = 0; i < emitters.size(); ++i) {
+                    traceCtx = {.pass = debug::TracePassSlot::Distortion,
+                                .producer = debug::TraceProducer::Particle,
+                                .sortOrder = (i32)i};
+                    DrawParticleEmitter(emitters[i], impl_->distortionParticleFrame_,
+                                        /*distortionTarget=*/true);
+                }
+
+                traceCtx = {};
+                cmd->EndRenderPass();
+                d->MarkWritten();
+            }
+        }
+
+        distortion::DistortionFrameInputs fi;
+        fi.sceneColor = redirected ? impl_->distortionMirrorDst_ : sceneTarget;
+        fi.sceneFormat = SceneTargetFormat();
+        fi.outputFormat = redirected ? impl_->distortionMirrorFmt_ : SceneTargetFormat();
+        fi.width = Width();
+        fi.height = Height();
+        d->Run(cmd, fi);
+    };
+
     // HDR post-process — bloom runs on `hdrColor` between GTAO and
     // tonemap, matching the engine ordering (GBuffer::ApplyBloom is the
     // last thing before ApplyTonemap in OnPaint). Service forwards
@@ -2655,15 +2803,25 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     // matching skip in the scene block.
     auto runImGuiPass = [&] {
 #if WDX_ENABLE_IMGUI
-        if (sceneToHdr || !impl_->frameDrawImGui_ ||
-            impl_->refractionMirrorDst_ == gfx::TextureHandle::Invalid)
+        // Whichever redirect claimed the frame. Both put the scene through a
+        // full-screen resolve that would otherwise bend the UI with it, so the
+        // UI is drawn here instead, straight onto the destination.
+        const gfx::TextureHandle mirrorDst =
+            (impl_->refractionMirrorDst_ != gfx::TextureHandle::Invalid)
+                ? impl_->refractionMirrorDst_
+                : impl_->distortionMirrorDst_;
+        const gfx::Format mirrorFmt =
+            (impl_->refractionMirrorDst_ != gfx::TextureHandle::Invalid)
+                ? impl_->refractionMirrorFmt_
+                : impl_->distortionMirrorFmt_;
+        if (sceneToHdr || !impl_->frameDrawImGui_ || mirrorDst == gfx::TextureHandle::Invalid)
             return;
         auto* im = rs_.ImGui();
         if (!im)
             return;
-        im->SetRtvFormat(impl_->refractionMirrorFmt_);
+        im->SetRtvFormat(mirrorFmt);
         WDX_GPU_ZONE(cmd, "ImGui");
-        cmd->BeginRenderPassLoad(impl_->refractionMirrorDst_, gfx::TextureHandle::Invalid, 1.0f, 0);
+        cmd->BeginRenderPassLoad(mirrorDst, gfx::TextureHandle::Invalid, 1.0f, 0);
         cmd->SetViewport({0, 0, (f32)target.width, (f32)target.height, 0, 1});
         im->Render(*cmd, target.width, target.height);
         cmd->EndRenderPass();
@@ -2702,6 +2860,9 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
             break;
         case core::PassSlot::Refraction:
             runRefractionPass();
+            break;
+        case core::PassSlot::Distortion:
+            runDistortionPass();
             break;
         case core::PassSlot::Bloom:
             runBloomPass();
@@ -3013,6 +3174,9 @@ core::IRenderProfile& RenderPipeline::ProfileForMode(RenderMode mode) {
         // Bloom rides SceneHdrInSd in the profile itself — a gamma-LDR frame
         // has no compositing pass to fold a bloom target back in — so the only
         // predicate left is the service's existence.
+        d3->SetPassPredicate(core::PassSlot::Distortion, [this] {
+            return rs_.GetDistortionService() != nullptr && rs_.Settings().D3DistortionEnabled();
+        });
         d3->SetPassPredicate(core::PassSlot::Bloom, [this] {
             return rs_.GetPostProcessService() != nullptr && rs_.Settings().SceneHdrInSd() &&
                    rs_.Settings().BloomEnabled();
@@ -3118,7 +3282,14 @@ void RenderPipeline::RenderTransparentScene() {
     // geoset entry it dispatches. ---
     shading::IShadingModel& active = ActiveShadingModel();
     shading::SurfacePass pass(impl_->shadingModels_);
-    render_detail::CollectedDrawLists geo;
+    // On the impl, not the stack: Diablo III's Distortion pass runs after this
+    // render pass closes and re-submits `lists.distortion` into another target,
+    // so the `views` its DrawItems point at have to outlive this function.
+    // Rebuilt every frame; a frame that never reaches the assignment below
+    // leaves it empty, which is what makes a skipped transparent scene unable
+    // to distort with the previous frame's geometry.
+    impl_->transparentLists_ = {};
+    render_detail::CollectedDrawLists& geo = impl_->transparentLists_;
     core::PassContext geoCtx;
     geoCtx.pass = core::PassSlot::TransparentScene;
     geoCtx.cameraPos = camPos;
@@ -3235,6 +3406,9 @@ void RenderPipeline::RenderTransparentScene() {
             partFrame.viewportRect = {(f32)Width(), (f32)Height(), 0.0f, 0.0f};
         }
         haveParticles = !partDraws.empty();
+        // The Distortion pass draws the same geometry from the same buffer, so
+        // it needs the same frame inputs.
+        impl_->distortionParticleFrame_ = partFrame;
     }
 
     // --- CPU vertex deforms: rebuild any geoset a solver drives this frame ---
@@ -3282,10 +3456,22 @@ void RenderPipeline::RenderTransparentScene() {
             entries.push_back({geo.lists.transparent[i].sqDist,
                                geo.lists.transparent[i].priorityPlane,
                                render_detail::TransparentKind::Geoset, i});
+    // A Diablo III DISTORTION emitter belongs to the Distortion pass, not to
+    // this one — the same split refraction makes, one level lower. Its quads
+    // carry a screen-space offset field, and drawing that here would paint the
+    // field as if it were colour. Stashed rather than dropped, because unlike
+    // refraction's the geometry is already in the shared particle VB and the
+    // Distortion pass runs inside the same frame.
+    impl_->distortionParticles_.clear();
     if (haveParticles)
-        for (u32 i = 0; i < partDraws.size(); ++i)
+        for (u32 i = 0; i < partDraws.size(); ++i) {
+            if (partDraws[i].material.d3 && partDraws[i].material.d3->distortion) {
+                impl_->distortionParticles_.push_back(partDraws[i]);
+                continue;
+            }
             entries.push_back({sqDistTo(partDraws[i].worldOrigin), partDraws[i].priorityPlane,
                                render_detail::TransparentKind::Particle, i});
+        }
     for (u32 i = 0; i < ribbonUnits.size(); ++i)
         entries.push_back({sqDistTo(ribbonUnits[i].origin), ribbonUnits[i].priorityPlane,
                            render_detail::TransparentKind::Ribbon, i});

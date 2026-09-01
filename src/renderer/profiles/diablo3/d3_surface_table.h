@@ -168,6 +168,33 @@ struct D3PassState {
     u32 depthFunc = 4;
     u32 cull = 2;      ///< D3DCULL: 1 none, 2 CW, 3 CCW. Pass 0's, verbatim.
 
+    /// @brief `RenderPass::dwUnknown00` — which phase of the frame this pass
+    ///        belongs to. 3 is the distortion buffer; see @ref distortion.
+    i32 renderPhase = 0;
+
+    /// @brief This pass writes a screen-space OFFSET, not a colour.
+    ///
+    /// `renderPhase == kD3RenderPhaseDistortion`. The whole of what makes it
+    /// different is where it draws: everything else here — the blend, the
+    /// chain, the edge alpha — is read and applied exactly as for a scene pass,
+    /// because the shipped programs are the same programs. 43 of the 48
+    /// distortion passes are `ps_legacy`.
+    bool distortion = false;
+
+    /// @brief …and this one is `Distortion.fx::ps_distortion2tex`, whose six
+    ///        instructions are not a combine chain at all.
+    ///
+    ///     out.rgb = texLayer0(uv0).rgb + texLayer1(uv1).rgb - 0.5
+    ///     out.a   = COLOR0.w
+    ///
+    /// It ignores the combine block — `prop_transparent_distortion_gloss_vertalpha`
+    /// ships one and the program cannot read it — so the surface table
+    /// SYNTHESISES the two stages and this flag carries the `- 0.5` re-centring
+    /// and the "alpha is the edge term alone" rule. The 43 `ps_legacy`
+    /// distortion passes need neither: their combiner output IS the buffer
+    /// value, already authored around 0.5.
+    bool distortionTwoTex = false;
+
     /// @brief The colour-write mask, which the original carries as two flags.
     ///
     /// `sub_73D900` builds `COLORWRITEENABLE = (rgb ? RGB : 0) | (a ? A : 0)`,
@@ -561,7 +588,32 @@ struct D3Surface {
     /// unique two-hander's blade glow and Urzael's cannonball were.
     std::array<D3Slot, kD3MaxChainStages> chain{};
     u32 chainCount = 0;
+
+    /// @brief This material's DISTORTION pass, resolved as a surface of its own.
+    ///
+    /// A `Shaders` asset can declare a scene pass and a distortion pass over the
+    /// same geometry — `actor_mysticAlly` is (phase 6, phase 3) — and the two
+    /// have nothing in common but the material: different stages, different
+    /// chain, different edge alpha, and a different render target. So the
+    /// distortion half is a second surface rather than extra fields on this
+    /// one, and everything that reads a surface reads it unchanged.
+    ///
+    /// Null for all but 45 of the corpus's 1,506 shaders. Where the asset's
+    /// ONLY pass is phase 3 — 26 of those 45, `distortion_2tex` and every
+    /// `particle_distortion*` among them — this surface is a copy of that same
+    /// pass and @ref D3SurfaceDrawsToScene is false: it must not reach the
+    /// scene at all. Drawing it there is what made Urzael's blast wave a
+    /// normal-map sphere and the Mystic Ally's caustics a blue square.
+    std::shared_ptr<const D3Surface> distortion;
 };
+
+/// @brief Does this surface draw into the SCENE?
+///
+/// False only for a surface whose every pass is the distortion phase. The
+/// distortion half then still draws, through @ref D3Surface::distortion.
+inline bool D3SurfaceDrawsToScene(const D3Surface& s) {
+    return !s.pass.distortion;
+}
 
 class D3SurfaceTable final : public core::ISurfaceTable {
 public:
@@ -642,10 +694,17 @@ D3PassState D3PassStateFor(const d3n::SubObjectAppearance& variant,
 D3PassState D3PassStateFor(const d3n::UberMaterial& material,
                            ::whiteout::flakes::io::D3SnoCache* cache);
 
-/// @brief Pass 0 of a `Shaders` asset, decoded. The tail of both resolves, and
-///        the entry point the corpus gate uses: a `.shd` is name-keyed, so
-///        reading one needs no install and no ShaderMap.
+/// @brief Pass 0 of a `Shaders` asset, decoded. The entry point the corpus gate
+///        uses: a `.shd` is name-keyed, so reading one needs no install and no
+///        ShaderMap.
 D3PassState D3PassStateOf(const d3n::Shaders& shaders);
+
+/// @brief The same, for a NAMED pass. The tail of both resolves.
+///
+/// `D3PassStateFor` asks for `D3ScenePassIndex`, which is pass 0 on all but the
+/// 45 shaders that declare a distortion pass; the surface builder asks a second
+/// time for `D3DistortionPassIndex`.
+D3PassState D3PassStateOf(const d3n::Shaders& shaders, u32 passIndex);
 
 /// @brief Which bucket a surface draws in.
 ///

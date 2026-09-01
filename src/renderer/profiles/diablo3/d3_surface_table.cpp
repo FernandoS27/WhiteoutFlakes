@@ -272,23 +272,31 @@ D3PassState D3PassStateFor(const d3n::UberMaterial& material,
     const auto shaders = ::whiteout::flakes::io::D3ResolveShaders(material, cache);
     if (!shaders)
         return {};
-    return D3PassStateOf(*shaders);
+    return D3PassStateOf(*shaders, ::whiteout::flakes::io::D3ScenePassIndex(*shaders));
 }
 
 D3PassState D3PassStateOf(const d3n::Shaders& shadersAsset) {
+    return D3PassStateOf(shadersAsset, 0);
+}
+
+D3PassState D3PassStateOf(const d3n::Shaders& shadersAsset, u32 passIndex) {
     D3PassState st;
     const auto* shaders = &shadersAsset;
-    if (shaders->arRenderPasses.empty())
+    if (passIndex >= shaders->arRenderPasses.size())
         return st;
 
-    // Pass 0. A multi-pass Shaders draws the same geometry more than once with
-    // complementary colour-write masks (Imperius's wings are 1/0 then 0/1), and
-    // reproducing that is a submission change, not a state one — so the first
-    // pass is the one whose state this carries, and the extra passes are simply
-    // not drawn.
-    const auto& pass0 = shaders->arRenderPasses[0];
+    // ONE pass. A multi-pass Shaders draws the same geometry more than once
+    // with complementary colour-write masks (Imperius's wings are 1/0 then
+    // 0/1), and reproducing that is a submission change, not a state one — so
+    // the extra passes are simply not drawn. The one exception is the
+    // DISTORTION pass, which the caller resolves separately because it goes to
+    // a different render target: see D3Surface::distortion.
+    const auto& pass0 = shaders->arRenderPasses[passIndex];
     const auto& r = pass0.tRenderParams;
     st.resolved = true;
+    st.renderPhase = pass0.dwUnknown00;
+    st.distortion = st.renderPhase == io::kD3RenderPhaseDistortion;
+    st.distortionTwoTex = pass0.szPixelShaderEntry == "ps_distortion2tex";
     // RenderParams, whose every field was named off the Windows 2.8.x build's
     // `sub_5717F0` — it hands each one to a single D3D9 setter, so the map is a
     // reading and not a guess. Four fields are decoded and deliberately not
@@ -476,6 +484,8 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
         if (!mat)
             continue;
 
+        const auto shadersAsset = ::whiteout::flakes::io::D3ResolveShaders(*mat, cache);
+
         const auto& colors = mat->tColors;
         s.diffuse = colors.vDiffuse;
         s.specular = colors.vSpecular;
@@ -526,116 +536,209 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
         if (mat->arTextures.size() > kD3MaxTextureStages)
             pastCap += mat->arTextures.size() - kD3MaxTextureStages;
 
-        for (const d3n::MaterialTextureEntry& entry : mat->arTextures) {
-            const i32 type = D3TextureTypeOf(entry);
-            ++typeCounts[type];
+        // The layer set of ONE pass -- the named slots and, where the pass runs
+        // the fixed-function combiner, the chain. Run a second time for the
+        // distortion pass, which shares this material and agrees with the scene
+        // pass about nothing else: `actor_mysticAlly` declares (1, 4) on one and
+        // (0, 10, 6, 12) on the other.
+        auto fillLayers = [&](D3Surface& t, bool distortionPass) {
+            for (const d3n::MaterialTextureEntry& entry : mat->arTextures) {
+                const i32 type = D3TextureTypeOf(entry);
+                if (!distortionPass)
+                    ++typeCounts[type];
 
-            // The pass decides which entries are LIVE. The adapter's canonical
-            // texture list does not know that — it is built without a cache and
-            // so without a pass — which makes the list a superset of what the
-            // slots below bind. That is the safe direction: a texture nothing
-            // samples costs an upload, a texture the list is missing has no id.
-            //
-            // A material routinely
-            // carries types the bound program never asks for — Cain's book
-            // ships a lightmap its `actor2_opaque_glow_skin` pass does not
-            // declare, and the whole 26..38 block is declared by none of the
-            // 2,208 passes measured — and binding one is a term the original
-            // never applies. Only where the pass resolved: without one there is
-            // no stage list to consult and every entry stands, as before.
-            if (s.pass.resolved && s.pass.declaredTypes != 0 &&
-                (s.pass.declaredTypes & D3TypeBit(type)) == 0)
-                continue;
-
-            const D3SlotKind kind = D3SlotOfType(type);
-            if (kind == D3SlotKind::Count)
-                continue;
-            // The glow map only where its family agrees on what to do with it
-            // -- unless the pass states it per stage, which is the shipped
-            // answer and outranks the rule. Imperius's wings are exactly that
-            // case: `Legacy.fx`, and their type 6 MULTIPLIES the chain.
-            if (kind == D3SlotKind::Emissive && s.pass.resolved && !s.pass.stageArgs &&
-                !s.pass.glowLights)
-                continue;
-            // 12/14/19 are alpha masks only where they sit BESIDE a base map.
-            // A pass that declares one of them and no type 1 is a Legacy-family
-            // pass using its own numbering, where the same id is the base map —
-            // and multiplying a base map's alpha into the surface would fade it
-            // for no reason. Measured: 147 mask entries land in a pass that also
-            // declares type 1, 13 in one that does not.
-            if (D3SlotIsAlphaMask(kind) && s.pass.resolved && !s.pass.stageArgs &&
-                (s.pass.declaredTypes & D3TypeBit(1)) == 0)
-                continue;
-
-            D3Slot& slot = s.slots[static_cast<u32>(kind)];
-            if (slot.textureId >= 0)
-                continue; // a type never repeats inside a material, so this is a re-entry
-            FillSlotTexture(slot, entry, type, textures, s.pass, D3UvTransformId(g, kind));
-            // Which channels the surface takes from this sample. Stated only by
-            // a pass that carries the stage block; zero everywhere else, and
-            // the shader keeps the slot's family default.
-            if (s.pass.stageArgs) {
-                slot.channels = static_cast<u8>(
-                    ((s.pass.colorTypes & D3TypeBit(type)) != 0 ? kD3ChannelRgb : 0) |
-                    ((s.pass.alphaTypes & D3TypeBit(type)) != 0 ? kD3ChannelAlpha : 0));
-            }
-            if (slot.textureId >= 0)
-                s.valid = true;
-        }
-
-        // ---- and the other shape: the `Legacy.fx` chain -------------------
-        //
-        // Built ALONGSIDE the slots rather than instead of them, because the
-        // slots are what a fallback needs: a chain whose textures have not
-        // landed yet still has to draw something, and a `Legacy.fx` pass this
-        // build later decides it cannot run has somewhere to fall back to. The
-        // shading model picks between them on `chainCount`.
-        //
-        // Order is `combines`' order, which is the pass's declaration order
-        // with the scene-depth stage dropped — the same indexing the tag block
-        // uses, so stage i's ops and stage i's texture come from the same i.
-        //
-        // `ps_legacy` and not `Legacy.fx`: the family has 28 pixel entry points
-        // over its 855 corpus passes and only that one IS the combiner. 784 of
-        // the 855 name it; the other 71 are a program each —
-        // `ps_legacy_Malthael_wings_flow` warps its coordinates by a pair of
-        // flow maps (types 42 and 44) before it samples anything, and running
-        // his four wing layers as a plain chain thinned them to threads. The
-        // `.shd` says which program a pass runs, so this asks it.
-        if (s.pass.resolved && s.pass.stageArgs && s.pass.effectFile == "Legacy.fx" &&
-            s.pass.pixelEntry == "ps_legacy") {
-            for (u32 i = 0; i < s.pass.combineCount && i < kD3MaxChainStages; ++i) {
-                const auto& cb = s.pass.combines[i];
-                D3Slot& stage = s.chain[i];
-                s.chainCount = i + 1;
-                stage.colorOp = cb.colorOp;
-                stage.alphaOp = cb.alphaOp;
-                stage.colorGain = cb.colorGain;
-                stage.alphaGain = cb.alphaGain;
-                stage.colorClamp = cb.colorClamp;
-                stage.alphaClamp = cb.alphaClamp;
-                // A type-0 hole binds nothing and its ops are clear, so it
-                // stays in the chain as a no-op rather than shifting every
-                // stage after it onto the wrong texture.
-                if (cb.type == 0)
+                // The pass decides which entries are LIVE. The adapter's canonical
+                // texture list does not know that — it is built without a cache and
+                // so without a pass — which makes the list a superset of what the
+                // slots below bind. That is the safe direction: a texture nothing
+                // samples costs an upload, a texture the list is missing has no id.
+                //
+                // A material routinely
+                // carries types the bound program never asks for — Cain's book
+                // ships a lightmap its `actor2_opaque_glow_skin` pass does not
+                // declare, and the whole 26..38 block is declared by none of the
+                // 2,208 passes measured — and binding one is a term the original
+                // never applies. Only where the pass resolved: without one there is
+                // no stage list to consult and every entry stands, as before.
+                if (t.pass.resolved && t.pass.declaredTypes != 0 &&
+                    (t.pass.declaredTypes & D3TypeBit(type)) == 0)
                     continue;
-                for (const d3n::MaterialTextureEntry& entry : mat->arTextures) {
-                    if (D3TextureTypeOf(entry) != cb.type)
-                        continue;
-                    FillSlotTexture(stage, entry, cb.type, textures, s.pass,
-                                    ::whiteout::flakes::io::D3UvTransformIdForStage(g, i));
-                    break;
+
+                const D3SlotKind kind = D3SlotOfType(type);
+                if (kind == D3SlotKind::Count)
+                    continue;
+                // The glow map only where its family agrees on what to do with it
+                // -- unless the pass states it per stage, which is the shipped
+                // answer and outranks the rule. Imperius's wings are exactly that
+                // case: `Legacy.fx`, and their type 6 MULTIPLIES the chain.
+                if (kind == D3SlotKind::Emissive && t.pass.resolved && !t.pass.stageArgs &&
+                    !t.pass.glowLights)
+                    continue;
+                // 12/14/19 are alpha masks only where they sit BESIDE a base map.
+                // A pass that declares one of them and no type 1 is a Legacy-family
+                // pass using its own numbering, where the same id is the base map —
+                // and multiplying a base map's alpha into the surface would fade it
+                // for no reason. Measured: 147 mask entries land in a pass that also
+                // declares type 1, 13 in one that does not.
+                if (D3SlotIsAlphaMask(kind) && t.pass.resolved && !t.pass.stageArgs &&
+                    (t.pass.declaredTypes & D3TypeBit(1)) == 0)
+                    continue;
+
+                D3Slot& slot = t.slots[static_cast<u32>(kind)];
+                if (slot.textureId >= 0)
+                    continue; // a type never repeats inside a material, so this is a re-entry
+                FillSlotTexture(slot, entry, type, textures, t.pass, D3UvTransformId(g, kind));
+                // Which channels the surface takes from this sample. Stated only by
+                // a pass that carries the stage block; zero everywhere else, and
+                // the shader keeps the slot's family default.
+                if (t.pass.stageArgs) {
+                    slot.channels = static_cast<u8>(
+                        ((t.pass.colorTypes & D3TypeBit(type)) != 0 ? kD3ChannelRgb : 0) |
+                        ((t.pass.alphaTypes & D3TypeBit(type)) != 0 ? kD3ChannelAlpha : 0));
                 }
-                if (stage.textureId >= 0)
-                    s.valid = true;
+                if (slot.textureId >= 0)
+                    t.valid = true;
             }
-            // A chain that bound nothing is not a chain. Falls back to the
-            // slots, which is what every pre-chain build did.
-            bool any = false;
-            for (u32 i = 0; i < s.chainCount; ++i)
-                any = any || s.chain[i].textureId >= 0;
-            if (!any)
-                s.chainCount = 0;
+
+            // ---- and the other shape: the `Legacy.fx` chain -------------------
+            //
+            // Built ALONGSIDE the slots rather than instead of them, because the
+            // slots are what a fallback needs: a chain whose textures have not
+            // landed yet still has to draw something, and a `Legacy.fx` pass this
+            // build later decides it cannot run has somewhere to fall back to. The
+            // shading model picks between them on `chainCount`.
+            //
+            // Order is `combines`' order, which is the pass's declaration order
+            // with the scene-depth stage dropped — the same indexing the tag block
+            // uses, so stage i's ops and stage i's texture come from the same i.
+            //
+            // `ps_legacy` and not `Legacy.fx`: the family has 28 pixel entry points
+            // over its 855 corpus passes and only that one IS the combiner. 784 of
+            // the 855 name it; the other 71 are a program each —
+            // `ps_legacy_Malthael_wings_flow` warps its coordinates by a pair of
+            // flow maps (types 42 and 44) before it samples anything, and running
+            // his four wing layers as a plain chain thinned them to threads. The
+            // `.shd` says which program a pass runs, so this asks it.
+            if (t.pass.resolved && t.pass.stageArgs && t.pass.effectFile == "Legacy.fx" &&
+                t.pass.pixelEntry == "ps_legacy") {
+                for (u32 i = 0; i < t.pass.combineCount && i < kD3MaxChainStages; ++i) {
+                    const auto& cb = t.pass.combines[i];
+                    D3Slot& stage = t.chain[i];
+                    t.chainCount = i + 1;
+                    stage.colorOp = cb.colorOp;
+                    stage.alphaOp = cb.alphaOp;
+                    stage.colorGain = cb.colorGain;
+                    stage.alphaGain = cb.alphaGain;
+                    stage.colorClamp = cb.colorClamp;
+                    stage.alphaClamp = cb.alphaClamp;
+                    // A type-0 hole binds nothing and its ops are clear, so it
+                    // stays in the chain as a no-op rather than shifting every
+                    // stage after it onto the wrong texture.
+                    if (cb.type == 0)
+                        continue;
+                    for (const d3n::MaterialTextureEntry& entry : mat->arTextures) {
+                        if (D3TextureTypeOf(entry) != cb.type)
+                            continue;
+                        FillSlotTexture(stage, entry, cb.type, textures, t.pass,
+                                        distortionPass
+                                            ? ::whiteout::flakes::io::
+                                                  D3UvTransformIdForDistortionStage(g, i)
+                                            : ::whiteout::flakes::io::D3UvTransformIdForStage(g, i));
+                        break;
+                    }
+                    if (stage.textureId >= 0)
+                        t.valid = true;
+                }
+                // A chain that bound nothing is not a chain. Falls back to the
+                // slots, which is what every pre-chain build did.
+                bool any = false;
+                for (u32 i = 0; i < t.chainCount; ++i)
+                    any = any || t.chain[i].textureId >= 0;
+                if (!any)
+                    t.chainCount = 0;
+            }
+
+            // ---- and the third shape: `Distortion.fx::ps_distortion2tex` ----
+            //
+            // Six instructions, no combine block read, and the block is there to
+            // ignore -- `prop_transparent_distortion_gloss_vertalpha` ships one.
+            // So the two stages are SYNTHESISED from the pass's own declaration
+            // order, which is the only thing its program uses:
+            //
+            //     out.rgb = texLayer0(uv0).rgb + texLayer1(uv1).rgb - 0.5
+            //     out.a   = COLOR0.w
+            //
+            // Replace then add, with neither stage touching the alpha, so the
+            // edge term arrives alone. The `- 0.5` is `D3PassState::distortionTwoTex`
+            // and lives in the shader, because it is a bias on the whole chain and
+            // not a stage.
+            if (t.pass.resolved && t.pass.distortionTwoTex) {
+                t.chainCount = 0;
+                for (u32 i = 0; i < t.pass.stageCount && i < kD3MaxChainStages; ++i) {
+                    const i32 type = t.pass.stages[i].type;
+                    D3Slot& stage = t.chain[i];
+                    stage.colorOp = (i == 0) ? ::whiteout::flakes::io::kD3StageReplace
+                                             : ::whiteout::flakes::io::kD3StageAdd;
+                    stage.alphaOp = ::whiteout::flakes::io::kD3StageSkip;
+                    t.chainCount = i + 1;
+                    if (type == 0)
+                        continue;
+                    for (const d3n::MaterialTextureEntry& entry : mat->arTextures) {
+                        if (D3TextureTypeOf(entry) != type)
+                            continue;
+                        FillSlotTexture(stage, entry, type, textures, t.pass,
+                                        distortionPass
+                                            ? ::whiteout::flakes::io::
+                                                  D3UvTransformIdForDistortionStage(g, i)
+                                            : ::whiteout::flakes::io::D3UvTransformIdForStage(g, i));
+                        break;
+                    }
+                    if (stage.textureId >= 0)
+                        t.valid = true;
+                }
+                // The alpha is COLOR0.w and nothing else, whatever the block the
+                // program cannot read happens to say.
+                t.pass.alphaVcolFirst = true;
+                t.pass.alphaVcolLast = false;
+                t.pass.alphaFactorFirst = false;
+                t.pass.alphaFactorLast = false;
+                t.pass.alphaGain = 1.0f;
+            }
+        };
+        fillLayers(s, false);
+
+        // ---- and the distortion half ---------------------------------------
+        //
+        // A second surface over the same geometry and the same material, built
+        // from the phase-3 pass. It carries its own everything -- stages, chain,
+        // edge alpha, blend -- because the two passes share only the material.
+        //
+        // Where the asset's only pass IS phase 3 the two surfaces resolve to the
+        // same pass, and `D3SurfaceDrawsToScene` is what keeps the scene copy
+        // from being drawn: it is not a colour.
+        if (shadersAsset) {
+            const i32 di = ::whiteout::flakes::io::D3DistortionPassIndex(*shadersAsset);
+            if (di >= 0) {
+                auto d = std::make_shared<D3Surface>();
+                d->rigid = s.rigid;
+                d->diffuse = s.diffuse;
+                d->specular = s.specular;
+                d->emissive = s.emissive;
+                d->ambient = s.ambient;
+                d->shininess = s.shininess;
+                d->materialFlags = s.materialFlags;
+                d->pass = D3PassStateOf(*shadersAsset, static_cast<u32>(di));
+                d->alphaBlend = d->pass.blendEnable;
+                d->twoSided = d->pass.cull == 1 || d->pass.twoSidedPair;
+                d->alphaTestFunc = d->pass.alphaTestEnable ? d->pass.alphaFunc : 0u;
+                d->alphaTestThreshold =
+                    d->pass.alphaTestEnable ? static_cast<f32>(d->pass.alphaRef) * (1.0f / 255.0f)
+                                            : 0.0f;
+                d->unlit = !d->pass.lit && !VertexColorAllBlack(sub);
+                fillLayers(*d, true);
+                if (d->valid)
+                    s.distortion = std::move(d);
+            }
         }
     }
 
@@ -649,7 +752,12 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
 
 core::SurfaceClass D3ClassifySurface(const D3Surface& surface) {
     core::SurfaceClass c;
-    c.visible = surface.valid;
+    // A surface whose every pass is the distortion phase has no colour to
+    // contribute: what it computes is a screen-space offset, and the scene is
+    // not where it goes. Its distortion half still draws — see
+    // D3Surface::distortion — so this hides a draw, not an effect.
+    c.visible = surface.valid && D3SurfaceDrawsToScene(surface);
+    c.needsDistortion = surface.distortion != nullptr;
     // DEPTH WRITE is the discriminator, not the blend enable.
     //
     // 1,412 of the corpus's 1,831 passes enable blending, character bodies

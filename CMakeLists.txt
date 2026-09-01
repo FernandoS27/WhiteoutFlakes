@@ -307,6 +307,12 @@ set(SHADER_ENTRIES
     "refraction_mask.slang|psRefractParticle|fragment|kRefractParticlePS"
     "refraction_apply.slang|vsRefractApply|vertex|kRefractApplyVS"
     "refraction_apply.slang|psRefractApply|fragment|kRefractApplyPS"
+    # Diablo III screen-space distortion (DistortionService). Only the RESOLVE
+    # is a shader of its own — the buffer is written by the ordinary D3 programs
+    # into a different target. Transcribed from the shipped `v14 PostFX
+    # Distortion` orphan; see D3_MATERIAL_DESIGN.md.
+    "d3_distortion_apply.slang|vsD3DistortionApply|vertex|kD3DistortionApplyVS"
+    "d3_distortion_apply.slang|psD3DistortionApply|fragment|kD3DistortionApplyPS"
     # WoW multi-texture particles (MultiTexParticleService). Three textures
     # through three UV sets, drawn in the transparent pass like any other
     # particle. Transcribed from the retail `particle_3colortex_3alphatex`
@@ -1277,6 +1283,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/gtao/gtao_service.cpp
     src/renderer/dof/dof_service.cpp
     src/renderer/refraction/refraction_service.cpp
+    src/renderer/distortion/distortion_service.cpp
     src/renderer/post_process/post_process_service.cpp
     src/renderer/bls/bls_container.cpp
     src/renderer/bls/bls_shader_cache.cpp

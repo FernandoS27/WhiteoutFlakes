@@ -61,6 +61,11 @@ struct SurfaceClass {
     // stamps FLT_MAX into the sort key both halves share. WC3 HD sets
     // needsDepthFill alone and does its fade inside the draw.
     bool needsDepthTwin = false;
+    // A SECOND draw of this surface, into the distortion buffer rather than the
+    // scene — Diablo III's phase-3 pass. Independent of `visible`: 26 of the 45
+    // shipped distortion shaders have no scene pass at all, so a surface can be
+    // invisible here and still distort. See D3Surface::distortion.
+    bool needsDistortion = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -94,6 +99,15 @@ enum class PassSlot : u8 {
     /// scene and before the tonemap, which is where `CWorldSceneRender::Render`
     /// @0x10196d324 calls `RefractionBuffer::Render`. Not a per-surface concept.
     Refraction = 14,
+    /// Diablo III's screen-space distortion: the phase-3 draws into a side
+    /// buffer of signed screen offsets, then a full-screen pass that bends the
+    /// finished scene through it. Runs after the transparent scene and before
+    /// the tonemap, where `sub_741760` runs the post-effect chain. Unlike
+    /// Refraction this pass DRAWS SURFACES — they are ordinary D3 geometry
+    /// running the ordinary D3 programs, only into another target — so it is a
+    /// per-surface concept after all, and SurfaceClass::needsDistortion is
+    /// where a surface opts in.
+    Distortion = 15,
 
     Count,
 };
@@ -113,6 +127,12 @@ enum class PassMask : u8 {
     OpaqueColor = 1 << 2,
     TransparentScene = 1 << 3,
     GBuffer = 1 << 4,
+    // Diablo III's distortion buffer. NOT part of `Default`, and not something a
+    // surface carries from load time either: the collector stamps it on the
+    // second DrawItem it emits for a surface whose material declares a phase-3
+    // pass. So the bit says "this item is the distortion draw", which is what
+    // SurfacePass needs to let it through.
+    Distortion = 1 << 5,
 
     // What a WC3 surface opts into today: it casts a shadow and draws in
     // whichever scene pass its blend class routes it to. Classification, not
@@ -145,6 +165,8 @@ inline constexpr PassMask PassMaskBit(PassSlot slot) {
         return PassMask::TransparentScene;
     case PassSlot::GBuffer:
         return PassMask::GBuffer;
+    case PassSlot::Distortion:
+        return PassMask::Distortion;
     default:
         return PassMask::None;
     }

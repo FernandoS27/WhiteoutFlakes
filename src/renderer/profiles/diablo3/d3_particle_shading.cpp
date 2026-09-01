@@ -155,6 +155,7 @@ void D3ResolveParticleMaterial(const d3n::Particle& prt, ::whiteout::flakes::io:
         return;
 
     out.passResolved = true;
+    out.distortion = pass.distortion;
     out.blendEnable = pass.blendEnable;
     out.blendSrc = pass.blendSrc;
     out.blendDst = pass.blendDst;

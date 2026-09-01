@@ -449,6 +449,28 @@ public:
         refractionDebugMask_.store(on);
     }
 
+    // ---- Screen-space distortion (Diablo III) ----
+    // On by default, and more load-bearing than refraction's switch: 26 of the
+    // 45 shipped distortion shaders have NO scene pass, so off does not fall
+    // back to an undistorted look — those surfaces disappear. The 19 that also
+    // have a scene pass keep it and lose only the shimmer.
+    bool D3DistortionEnabled() const {
+        return d3DistortionEnabled_.load();
+    }
+    void SetD3DistortionEnabled(bool on) {
+        d3DistortionEnabled_.store(on);
+    }
+    // Draw the distortion buffer instead of the bent scene. Ours, not the
+    // engine's: a buffer of zero offsets and an empty buffer are the same
+    // picture once the resolve has run. Raw, never amplified — see
+    // DistortionParams::debugShowBuffer.
+    bool D3DistortionDebugBuffer() const {
+        return d3DistortionDebugBuffer_.load();
+    }
+    void SetD3DistortionDebugBuffer(bool on) {
+        d3DistortionDebugBuffer_.store(on);
+    }
+
     // ---- Multi-texture particles (WoW) ----
     // On by default, and for the same reason refraction is: 23 253 emitters
     // across 5 239 shipped `.m2` combine three textures, and off is not a
@@ -676,6 +698,8 @@ private:
     // Defaults mirror WC3: maxBlurSize=10, radiusScale=1, focusScale=1.
     std::atomic<bool> refractionEnabled_{true};
     std::atomic<bool> refractionDebugMask_{false};
+    std::atomic<bool> d3DistortionEnabled_{true};
+    std::atomic<bool> d3DistortionDebugBuffer_{false};
     std::atomic<bool> multiTexParticlesEnabled_{true};
     std::atomic<bool> dofEnabled_{false};
     std::atomic<u32> dofFocusDistance_{0};            // 0.0f — disables the pass

@@ -174,12 +174,38 @@ CollectedDrawLists BuildDrawLists(
                 }
             };
 
+            // Diablo III's distortion half: the SAME geometry drawn again into
+            // the distortion buffer after the scene. Deliberately outside
+            // `emit` and outside the `visible` test — a surface whose only pass
+            // is phase 3 has no colour to contribute and is invisible here,
+            // which is exactly the case that must still distort.
+            auto emitDistortion = [&](const core::SurfaceClass& sc, core::SurfaceKey key) {
+                if (!sc.needsDistortion)
+                    return;
+                key.model = modelFor(i);
+                // The item IS the distortion draw, so it carries the bit
+                // SurfacePass gates on. Without it every one of these is
+                // dropped by the opt-in check and only the particles reach the
+                // buffer — which is a working-looking half-effect.
+                key.passes = key.passes | core::PassMask::Distortion;
+                DrawItem d;
+                d.view = &view;
+                d.geoIdx = i;
+                d.key = key;
+                const Vector3f wc = GeosetCentroidWS(view, geo);
+                const Vector3f v = {wc.x - cameraPos.x, wc.y - cameraPos.y, wc.z - cameraPos.z};
+                d.sqDist = v.x * v.x + v.y * v.y + v.z * v.z;
+                d.priorityPlane = key.priorityPlane ? key.priorityPlane : geo.priorityPlane;
+                out.lists.distortion.push_back(d);
+            };
+
             if (geo.surfaceCount == 0) {
                 // The sole authority. Asked per geoset per frame, through the
                 // interface, so a non-WC3 model answers with its own rule.
                 const core::SurfaceClass sc = classifier->Classify(view, geo);
                 if (sc.visible)
                     emit(sc, core::SurfaceKey{});
+                emitDistortion(sc, core::SurfaceKey{});
                 continue;
             }
 
@@ -195,6 +221,7 @@ CollectedDrawLists BuildDrawLists(
                     classifier->ClassifySurface(view, geo, surfaces[s].surface);
                 if (sc.visible)
                     emit(sc, surfaces[s]);
+                emitDistortion(sc, surfaces[s]);
             }
         }
     }
