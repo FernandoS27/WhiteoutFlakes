@@ -243,12 +243,15 @@ float4 psD3Particle(D3ParticleVSOut input) : SV_Target {
         let aop = (int)gPsCb.stage[i].z;
         let g = gPsCb.gains[i];
         if (cop != 0) {
-            rgb = (cop == 1 ? rgb * s[i].rgb : rgb + s[i].rgb) * g.x;
+            // 3 is SELECTARG1(TEXTURE): the stage REPLACES the channel and
+            // everything before it is dead. `actor_complex_Transparent_Ground`
+            // is what pins it — see io/d3/d3_types.h::kD3StageReplace.
+            rgb = (cop == 1 ? rgb * s[i].rgb : cop == 2 ? rgb + s[i].rgb : s[i].rgb) * g.x;
             if (g.z > 0.0)
                 rgb = saturate(rgb);
         }
         if (aop != 0) {
-            alpha = (aop == 1 ? alpha * s[i].a : alpha + s[i].a) * g.y;
+            alpha = (aop == 1 ? alpha * s[i].a : aop == 2 ? alpha + s[i].a : s[i].a) * g.y;
             if (g.w > 0.0)
                 alpha = saturate(alpha);
         }

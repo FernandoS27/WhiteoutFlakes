@@ -171,12 +171,22 @@ private:
         /// D3D9 states it in depth units and the modern APIs do not. `.yzw`
         /// spare. See D3PassState::depthBias.
         Vector4f params2;
+        /// The `Legacy.fx` chain: `.x` live stage count (0 = run the named
+        /// slots), `.y` where the vertex colour and the texture factor enter,
+        /// `.z` `TAG_VS_EDGEALPHA`, `.w` the facing term's exponent.
+        Vector4f params3;
+        /// D3DTA_TFACTOR. `(1, 1, 1, elementAlpha)` — see D3PassState's note on
+        /// where the original gets it, which is the DRAW and not the pass.
+        Vector4f factor;
         Vector4f matDiffuse;
         Vector4f matSpecular;
         Vector4f matEmissive;
         Vector4f matAmbient;
         Matrix44f slotUv[kSlotCount];
         u32 slotCtl[kSlotCount][4];
+        /// A chain stage's own gain and clamp: `.x/.y` the MODULATE2X/4X gain
+        /// per channel, `.z/.w` non-zero to saturate that channel HERE.
+        Vector4f slotGain[kSlotCount];
     };
 
     struct PsoKey {

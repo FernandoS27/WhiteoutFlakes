@@ -276,6 +276,15 @@ enum class D3SlotKind : u32 {
 };
 inline constexpr u32 kD3SlotCount = static_cast<u32>(D3SlotKind::Count);
 
+/// @brief Stages in a `Legacy.fx` fixed-function chain — the OTHER shape a D3
+///        material resolves to, and the one the slots above cannot express.
+///
+/// Six, because the combine tag block is six wide and the reconstructed
+/// `ps_legacy` samples `tex0..tex5`. Here rather than beside the shading model
+/// because @ref D3UvTransformIdForStage keys the texture-animation palette on
+/// it, and the adapter that fills that palette is on this side of the line.
+inline constexpr u32 kD3MaxChainStages = 6;
+
 /// @brief Which slot binds an entry of this `EMaterialTextureType`.
 ///
 /// Named from the shipped programs, not guessed. A `RenderPass` carries
@@ -393,10 +402,22 @@ inline u64 D3TypeBit(i32 type) {
 /// -- the units column holding under tens 2 and nowhere else.
 /// `actor_additive_cm_uv2_appfx_unlit` is what pins that: its colour code is 75
 /// and the shipped program modulates at x1, not x4.
-/// The three chain operations a stage can perform on a channel.
+/// The four chain operations a stage can perform on a channel.
 inline constexpr u8 kD3StageSkip = 0;
 inline constexpr u8 kD3StageModulate = 1;
 inline constexpr u8 kD3StageAdd = 2;
+/// @brief D3DTOP_SELECTARG1 with the TEXTURE as argument 1 — the stage
+///        REPLACES the channel, discarding every stage before it.
+///
+/// Code 3, and it is a different number from a modulate whenever anything came
+/// before: `actor_complex_Transparent_Ground` codes its colour block
+/// `3 3 3 10` over stages (12, 14, 1, 6) and its shipped program is
+/// `saturate(tex1.rgb + tex6.rgb)` — the type-12 and type-14 samples do not
+/// appear in it at all. Read as a modulate it multiplies two masks into the
+/// albedo that the original throws away. 84 of the corpus's stage codes sit
+/// after a stage that does feed the channel, which is where the two readings
+/// part; on the other 641 the chain head is 1 and they agree.
+inline constexpr u8 kD3StageReplace = 3;
 
 /// @brief `$texDepth` — the scene depth `SoftBillboard.fx` binds for its soft
 ///        fade. It is a render-target read, not one of the material's textures,
@@ -416,6 +437,9 @@ struct D3StageArg {
     /// @brief tens 1 — the stage ADDS its texture into the channel. 45 of the
     ///        corpus's 17,503 particle systems, and always saturating.
     bool adds = false;
+    /// @brief tens 0 code 3 — the stage REPLACES the channel. See
+    ///        kD3StageReplace.
+    bool replaces = false;
     f32 gain = 1.0f;     ///< 1, 2 or 4 — MODULATE, MODULATE2X, MODULATE4X.
     bool clamps = false; ///< Saturate the channel HERE, not once at the end.
 };
@@ -432,6 +456,7 @@ inline D3StageArg D3ReadStageArg(u32 code) {
     a.usesTexture = tens == 0 ? code == 3 : (code != 71 && tens != 4 && tens != 8);
     a.modulates = a.usesTexture && tens == 2;
     a.adds = a.usesTexture && tens == 1;
+    a.replaces = code == 3;
     if (tens == 2) {
         a.gain = (units == 4 || units == 6) ? 2.0f : (units == 5 || units == 7) ? 4.0f : 1.0f;
         a.clamps = units >= 6 && units <= 8;
@@ -447,8 +472,27 @@ inline D3StageArg D3ReadStageArg(u32 code) {
 /// fixed function reaches the diffuse: a leading `3` starts from the texture
 /// alone and the vertex colour never enters at all. 272 of the corpus's 15,841
 /// `ps_legacy` particle systems do that.
+///
+/// **Units 2 is the TEXTURE FACTOR, not the diffuse.** `actor_transparent_
+/// edgeAlpha_cm2x2_am4x4_bloom` codes its first colour stage 22 and the
+/// reconstruction reads it `MOD|FACTOR`, against the `MOD|VCOLOR` its
+/// units-0 neighbours get; `actor_complex_Transparent_Ground` does the same in
+/// the alpha block. See D3StageTakesFactor. Units 3 is unmeasured (17 codes in
+/// the whole corpus) and stays on this side.
 inline bool D3StageTakesVertexColor(u32 code) {
-    return code / 10 == 2;
+    return code / 10 == 2 && code % 10 != 2;
+}
+
+/// @brief Does this code take the TEXTURE FACTOR as its second argument?
+///
+/// D3DTA_TFACTOR, which is the `Factor` shader constant — and `Factor` is the
+/// DRAW's colour, not the pass's: `Render_SetPassConstantColor` is called with
+/// `renderRecord + 8` immediately after `Render_BindShaderPass` on all three
+/// draw paths, so the pass's own `dwConstantColor` is overwritten before the
+/// first flush. In a viewer the record carries no tint and the sub-object's
+/// fade alpha, i.e. `(1, 1, 1, elementAlpha)`.
+inline bool D3StageTakesFactor(u32 code) {
+    return code / 10 == 2 && code % 10 == 2;
 }
 
 /// @brief Code 40 — a stage with no texture that multiplies the channel by the
@@ -458,6 +502,28 @@ inline bool D3StageTakesVertexColor(u32 code) {
 /// leading `20` so the colour enters twice.
 inline bool D3StageIsVertexColorOnly(u32 code) {
     return code == 40;
+}
+
+/// @brief Code 41 — the same, for the TEXTURE FACTOR.
+///
+/// 173 codes, and `actor_seismicSlam_wave` is why it had to be read: its
+/// four-stage alpha block ends `20 20 25 41` on a pass whose fourth stage is a
+/// type-0 hole, and the reconstruction folds that 41 into the third stage as
+/// `MOD_4X|FACTOR`. In the colour block `Factor.rgb` is white here, so this is
+/// visible in the alpha alone — where it is the actor's fade.
+inline bool D3StageIsFactorOnly(u32 code) {
+    return code == 41;
+}
+
+/// @brief Code 43 — a post-multiply by `appearanceFX.x`.
+///
+/// `sub_746D10` builds that constant from four SURFACE tags (0x30300..0x30303)
+/// as a periodic pulse; with the tag absent the mode is 0 and it stays at its
+/// initial `1.0`, which no shipped model this renderer opens overrides. So this
+/// is a no-op that is *known* to be a no-op rather than a code being ignored.
+/// 36 codes. (42, one code, SQUARES the channel and is not reproduced.)
+inline bool D3StageIsAppFxOnly(u32 code) {
+    return code == 43;
 }
 
 /// @brief The tag ids of the two combine groups. Six stages each, consecutive,
@@ -1034,8 +1100,22 @@ inline Matrix44f D3UvMatrix(const D3UvXform& x, f32 seconds) {
 /// function of (geoset, slot) and of nothing else. Slots that never animate
 /// simply leave their entry at identity, which is what RenderModel fills the
 /// palette with.
+inline constexpr u32 kD3UvTransformStride = kD3SlotCount + kD3MaxChainStages;
+
 inline i32 D3UvTransformId(usize g, D3SlotKind slot) {
-    return static_cast<i32>(g * kD3SlotCount + static_cast<u32>(slot));
+    return static_cast<i32>(g * kD3UvTransformStride + static_cast<u32>(slot));
+}
+
+/// @brief The same, for stage @p stage of a `Legacy.fx` chain.
+///
+/// A chain stage cannot borrow the slot key: its type is a join key with no
+/// slot at all on the ids that matter — `actor_seismicSlam_wave` scrolls types
+/// 11 and 13, and neither is in @ref D3SlotOfType. So the palette gets a second
+/// band per geoset, and both sides index it by the stage's POSITION in the
+/// pass's declaration order, which is the one thing the adapter and the surface
+/// table can both compute.
+inline i32 D3UvTransformIdForStage(usize g, u32 stage) {
+    return static_cast<i32>(g * kD3UvTransformStride + kD3SlotCount + stage);
 }
 
 /// @brief Where an emitted geoset's SubObject lives.

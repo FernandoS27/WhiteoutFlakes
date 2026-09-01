@@ -510,6 +510,23 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
                       static_cast<f32>(surf->pass.pmaMode),
                       static_cast<f32>(surf->alphaTestFunc)};
         c->params2 = {surf->pass.resolved ? surf->pass.depthBias : 0.0f, 0.0f, 0.0f, 0.0f};
+        // Where the vertex colour and the texture factor enter each channel of
+        // a `Legacy.fx` chain. Mirrors d3_standard.slang's kD3Chain* bits.
+        const u32 chainBits =
+            (surf->pass.colorVcolFirst ? 0x01u : 0u) | (surf->pass.colorVcolLast ? 0x02u : 0u) |
+            (surf->pass.alphaVcolFirst ? 0x04u : 0u) | (surf->pass.alphaVcolLast ? 0x08u : 0u) |
+            (surf->pass.colorFactorFirst ? 0x10u : 0u) |
+            (surf->pass.colorFactorLast ? 0x20u : 0u) |
+            (surf->pass.alphaFactorFirst ? 0x40u : 0u) | (surf->pass.alphaFactorLast ? 0x80u : 0u);
+        // `2 * edgealphaParams.x`, and `edgealphaParams.x` is
+        // `appearanceFX.x * surfaceTag(0x30100)` — both 1.0 unless a Surface
+        // asset animates them, which nothing this renderer opens does.
+        c->params3 = {static_cast<f32>(surf->chainCount), static_cast<f32>(chainBits),
+                      static_cast<f32>(surf->pass.edgeAlpha), 2.0f};
+        // The draw's colour. No tint here, so the live half is the fade — which
+        // is where the original puts it too: the chain has no material alpha to
+        // ride on, and `vs_legacy` closes its edge term on `Factor.w`.
+        c->factor = {1.0f, 1.0f, 1.0f, elementAlpha};
         c->matDiffuse = surf->diffuse;
         // The element alpha rides the material's own, which is what the
         // fixed-function pipeline does with it and what makes a fade a fade.
@@ -518,14 +535,22 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
         c->matEmissive = surf->emissive;
         c->matAmbient = surf->ambient;
         for (u32 i = 0; i < kSlotCount; ++i) {
-            const D3Slot& s = surf->slots[i];
+            // A chain surface puts its stages in the first six slots and leaves
+            // the rest empty; the shader reads them through the same
+            // `slotUv`/`slotCtl` pair either way, so only the source differs.
+            const D3Slot& s = (i < surf->chainCount) ? surf->chain[i] : surf->slots[i];
+            const bool chained = i < surf->chainCount;
             c->slotUv[i] = D3SlotUvMatrix(*item.view, s).transpose();
-            const bool resolved = s.textureId >= 0 && item.view->textures &&
+            const bool resolved = (chained || surf->chainCount == 0) && s.textureId >= 0 &&
+                                  item.view->textures &&
                                   item.view->textures->Get(s.textureId) !=
                                       gfx::TextureHandle::Invalid;
             c->slotCtl[i][0] =
                 s.uvSource | ((s.wrapFlags & assets::kSamplerWrapBitsMask) << 4);
-            c->slotCtl[i][1] = 0;
+            c->slotCtl[i][1] = chained ? (s.colorOp | (static_cast<u32>(s.alphaOp) << 4)) : 0u;
+            c->slotGain[i] = {chained ? s.colorGain : 1.0f, chained ? s.alphaGain : 1.0f,
+                              (chained && s.colorClamp) ? 1.0f : 0.0f,
+                              (chained && s.alphaClamp) ? 1.0f : 0.0f};
             // A slot whose texture has not landed yet stays *off* rather than
             // sampling the white default. For the normal slot that is the
             // difference between a neutral surface and every pixel facing the
@@ -561,9 +586,13 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     // descriptor the runtime never writes (m2_shading.cpp's lesson).
     const auto& defaults = rs_.Textures().GetDefaults();
     for (u32 u = 0; u < kSlotCount; ++u) {
-        const D3Slot& s = surf->slots[u];
+        const D3Slot& s = (u < surf->chainCount) ? surf->chain[u] : surf->slots[u];
         gfx::TextureHandle tex = gfx::TextureHandle::Invalid;
-        if (s.textureId >= 0 && item.view->textures)
+        // A chain leaves the slots past its own stages unbound: sampling a
+        // named slot there would be the surface's own diffuse arriving in a
+        // register the chain never asked for.
+        if (s.textureId >= 0 && item.view->textures &&
+            (u < surf->chainCount || surf->chainCount == 0))
             tex = item.view->textures->Get(s.textureId);
         if (tex == gfx::TextureHandle::Invalid)
             tex = defaults.White;
@@ -582,7 +611,9 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
         d.matFlags = static_cast<i32>(surf->materialFlags);
         d.filterMode = static_cast<i32>(key.blend);
         for (u32 u = 0; u < kSlotCount && u < static_cast<u32>(debug::kTraceTexSlots); ++u)
-            d.texIds[u] = surf->slots[u].textureId;
+            d.texIds[u] = (u < surf->chainCount) ? surf->chain[u].textureId
+                          : (surf->chainCount == 0) ? surf->slots[u].textureId
+                                                    : -1;
         d.psoKey = debug::TracePsoKey({
             .psPermute = static_cast<u32>(key.blend) | (key.skinned ? 0x200u : 0u) |
                          (key.twoSided ? 0x400u : 0u),

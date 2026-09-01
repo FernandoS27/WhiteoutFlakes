@@ -67,6 +67,11 @@ using ::whiteout::flakes::io::kD3SlotCount;
 /// @brief matTex0..matTex11 — the ceiling the per-draw flush enforces.
 inline constexpr u32 kD3MaxTextureStages = 12;
 
+/// @brief Stages in a `Legacy.fx` fixed-function chain — six, and no shipped
+///        pass declares more: over the corpus's 855 `Legacy.fx` passes the
+///        content-stage counts run 1:168 2:225 3:178 4:206 5:49 6:27.
+using ::whiteout::flakes::io::kD3MaxChainStages;
+
 /// @brief One MaterialTextureEntry, resolved.
 struct D3Slot {
     /// Index into the adapter's CollectD3Textures order; -1 = unresolved, and
@@ -96,6 +101,19 @@ struct D3Slot {
     /// what the wing program actually does with type 14, which is multiply both
     /// its rgb AND its alpha in.
     u8 channels = 0;
+
+    // ---- Chain use only (D3Surface::chain); ignored in the named slots ----
+    //
+    // One stage of `ps_legacy`'s D3D9 combiner, per channel. The same five
+    // fields the particle path's MaterialLayer carries, because it is the same
+    // machine: `Billboard.fx::ps_legacy` and `Legacy.fx::ps_legacy` are one
+    // reconstruction scaled up.
+    u8 colorOp = ::whiteout::flakes::io::kD3StageModulate;
+    u8 alphaOp = ::whiteout::flakes::io::kD3StageModulate;
+    f32 colorGain = 1.0f;
+    f32 alphaGain = 1.0f;
+    bool colorClamp = false; ///< Saturate after THIS stage, not at the end.
+    bool alphaClamp = false;
 };
 
 /// @brief `D3Slot::channels` bits.
@@ -421,6 +439,41 @@ struct D3PassState {
     bool alphaVcolFirst = true;
     bool alphaVcolLast = false;
 
+    /// @brief The same two positions for the TEXTURE FACTOR — D3D9's
+    ///        D3DTA_TFACTOR, which is `Factor` and which this renderer feeds
+    ///        `(1, 1, 1, elementAlpha)`. See io/d3/d3_types.h.
+    ///
+    /// A chain takes it *instead of* the vertex colour at the head (units 2)
+    /// and *as well as* it at the tail (code 41), so the two pairs are
+    /// independent rather than an enum.
+    bool colorFactorFirst = false;
+    bool colorFactorLast = false;
+    bool alphaFactorFirst = false;
+    bool alphaFactorLast = false;
+
+    /// @brief `TAG_VS_EDGEALPHA` (0xA0005, "Vertex Alpha Function") — what
+    ///        `vs_legacy` puts in COLOR0.a.
+    ///
+    /// 0 is the vertex attribute; everything else is a facing term,
+    /// `pow(dot(-V, N), 2 * edgealphaParams.x) * Factor.w`, with three
+    /// independent sub-flags in the reconstruction and four shipped
+    /// combinations. Measured over the corpus's 855 `Legacy.fx` passes and
+    /// joined against the `vs_legacy` permutation that each names:
+    ///
+    ///     0  538   the vertex alpha                       COLOR0_A 0
+    ///     1  172   rim, dot saturated                     EDGE_SAT
+    ///     2  104   INVERSE rim, dot saturated             EDGE_SAT + ONEX
+    ///     4   24   rim, dot raw, result clamped to <= 1   EDGE_MIN
+    ///     5   17   INVERSE rim, dot raw, clamped          EDGE_MIN + ONEX
+    ///
+    /// The saturate/clamp axis separating {1, 2} from {4, 5} only bites where
+    /// the dot leaves [0, 1], which for two unit vectors is the back face
+    /// alone, so this renderer clamps both ends for all four and the pair
+    /// collapses to "rim" and "inverse rim". `edgealphaParams.x` is
+    /// `appearanceFX.x * surfaceTag(0x30100)`, both of which default to 1.0
+    /// (`sub_746600`, `sub_746D10`), so the exponent is 2.
+    u32 edgeAlpha = 0;
+
     /// @brief The chain's output gain per channel: the product of its stages'
     ///        MODULATE2X / MODULATE4X steps, 1 where nothing scales.
     ///
@@ -486,6 +539,28 @@ struct D3Surface {
     bool rigid = true;
 
     D3Slot slots[kD3SlotCount];
+
+    /// @brief The `Legacy.fx` fixed-function chain, in stage order. Empty
+    ///        (@ref chainCount 0) means this surface uses @ref slots.
+    ///
+    /// THE NAMED SLOTS ARE THE WRONG SHAPE FOR `Legacy.fx`, and it is the
+    /// biggest family in the game — 855 of the corpus's 1,831 passes against
+    /// ActorIrrad's 236 and Scene's 179. Every other family compiles a program
+    /// per material shape and binds a texture BY TYPE, which is what makes
+    /// "type 1 is the diffuse, 5 the gloss, 12/14/19 alpha masks" a reading of
+    /// the data. `ps_legacy` binds by POSITION and combines by tag, so its type
+    /// ids are join keys with no semantics at all: `actor_seismicSlam_wave`
+    /// declares (12, 11, 13, 0) and its colour is `tex11 * tex13 * 2`, while
+    /// the type 1 its material carries — `solid_alpha100`, a white square — is
+    /// a stage the program never samples.
+    ///
+    /// Run through the slots that surface draws WHITE: the two colour layers
+    /// have no slot at all (11 and 13 are unmapped), 12 lands in AlphaMask0 and
+    /// contributes only its alpha, and the diffuse resolves to the white
+    /// square. Which is exactly what the Death Maiden's fire swoosh, the
+    /// unique two-hander's blade glow and Urzael's cannonball were.
+    std::array<D3Slot, kD3MaxChainStages> chain{};
+    u32 chainCount = 0;
 };
 
 class D3SurfaceTable final : public core::ISurfaceTable {

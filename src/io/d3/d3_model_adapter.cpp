@@ -238,13 +238,43 @@ const d3n::UberMaterial* D3MaterialOf(const d3n::SubObjectAppearance& variant, D
     return variant.tMaterial.arTextures.empty() ? nullptr : &variant.tMaterial;
 }
 
-// Which entries reach the canonical texture list: exactly the ones a slot the
-// shading model consumes will bind. Collecting every own-texture entry instead
-// would acquire the model-wide 25..38 detail block — a dozen-odd GPU textures
-// per model that nothing samples.
+// Which entries reach the canonical texture list: the ones a named slot binds,
+// plus the ones a `Legacy.fx` chain stage can. Collecting every own-texture
+// entry instead would acquire the model-wide 25..38 detail block — a dozen-odd
+// GPU textures per model that nothing samples.
+//
+// The second half is a MEASUREMENT, not a guess: these are the content-stage
+// types of all 855 shipped `Legacy.fx` passes that also own their texture
+// (`Render_ResolveMaterialTextureStages`' default branch), with 0, 25, 40 and
+// 41 dropped because those stages read a core asset and never the entry.
+// Widening costs 24.2% more canonical textures over the whole 11,347-model
+// corpus — mean 5.6 to 7.0 per model, worst 33 to 49 — and is what a chain
+// needs to draw at all: `actor_seismicSlam_wave`'s two colour layers are types
+// 11 and 13, and the slot map has no entry for either, so the list they were
+// missing from is why the Death Maiden's fire swoosh was a white sheet.
+bool D3LegacyChainType(i32 type) {
+    switch (type) {
+    case 4:
+    case 10:
+    case 11:
+    case 13:
+    case 15:
+    case 16:
+    case 17:
+    case 42:
+    case 44:
+    case 46:
+    case 58:
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool D3SlotSamples(const d3n::MaterialTextureEntry& e) {
     const i32 type = D3TextureTypeOf(e);
-    return D3TypeOwnsTexture(type) && D3SlotOfType(type) != D3SlotKind::Count;
+    return D3TypeOwnsTexture(type) &&
+           (D3SlotOfType(type) != D3SlotKind::Count || D3LegacyChainType(type));
 }
 
 std::vector<D3TextureRef> CollectD3Textures(const d3n::Appearances& app, u32 lookIndex) {
@@ -425,22 +455,20 @@ void D3ModelAdapter::PublishUvAnimation(const PoseRequest& req, FrameState& fs) 
             D3VariantFor(*app_, subs[emitted_[g].index], LookForGeoset(g));
         if (!v)
             continue;
-        // The embedded material only. A SNO-only variant needs the cache the
-        // surface table holds, and this runs on the pose path where there is
-        // none — the same split D3MaterialOf already draws.
-        bool seen[kD3SlotCount] = {};
-        for (const auto& e : v->tMaterial.arTextures) {
-            const D3SlotKind kind = D3SlotOfType(D3TextureTypeOf(e));
-            if (kind == D3SlotKind::Count || seen[static_cast<u32>(kind)])
-                continue;
-            seen[static_cast<u32>(kind)] = true;
-            const auto uv = D3ReadUvXform(e);
-            if (uv.mode != D3UvMode::ScaleRotateScroll || !uv.animated)
-                continue;
+        // The `Legacy.fx` chain's stage order, when this sub-object binds one.
+        // Its scrolling layers are keyed by POSITION and not by slot, because
+        // the types that scroll on a chain routinely have no slot at all —
+        // `actor_seismicSlam_wave` animates types 11 and 13, and D3SlotOfType
+        // maps neither. Empty for every other family, and then this costs two
+        // cache hits per geoset.
+        std::array<i32, kD3MaxChainStages> chainTypes{};
+        const u32 chainCount = D3ChainStageTypes(v->tMaterial, cache_, chainTypes);
+
+        auto emit = [&](const D3UvXform& uv, i32 id) {
             f32 a[6];
             D3UvAffine(uv, seconds, a);
             FrameState::TexAnimMatrix m{};
-            m.textureAnimId = D3UvTransformId(g, kind);
+            m.textureAnimId = id;
             m.row0[0] = a[0];
             m.row0[1] = a[1];
             m.row0[3] = a[2];
@@ -448,6 +476,28 @@ void D3ModelAdapter::PublishUvAnimation(const PoseRequest& req, FrameState& fs) 
             m.row1[1] = a[4];
             m.row1[3] = a[5];
             fs.texAnimMatrices.push_back(m);
+        };
+
+        // The embedded material only. A SNO-only variant needs the cache the
+        // surface table holds, and this runs on the pose path where there is
+        // none — the same split D3MaterialOf already draws.
+        bool seen[kD3SlotCount] = {};
+        for (const auto& e : v->tMaterial.arTextures) {
+            const i32 type = D3TextureTypeOf(e);
+            const auto uv = D3ReadUvXform(e);
+            const bool scrolls = uv.mode == D3UvMode::ScaleRotateScroll && uv.animated;
+            const D3SlotKind kind = D3SlotOfType(type);
+            if (kind != D3SlotKind::Count && !seen[static_cast<u32>(kind)]) {
+                seen[static_cast<u32>(kind)] = true;
+                if (scrolls)
+                    emit(uv, D3UvTransformId(g, kind));
+            }
+            if (!scrolls)
+                continue;
+            for (u32 i = 0; i < chainCount; ++i) {
+                if (chainTypes[i] == type)
+                    emit(uv, D3UvTransformIdForStage(g, i));
+            }
         }
     }
 }

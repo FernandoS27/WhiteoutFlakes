@@ -50,6 +50,9 @@
 
 #include <whiteout/sno/d3/native/d3_native.h>
 
+#include "io/d3/d3_types.h"
+
+#include <array>
 #include <list>
 #include <memory>
 #include <span>
@@ -277,5 +280,35 @@ private:
     usize budget_ = 512u * 1024u * 1024u;
     Stats stats_;
 };
+
+/// @brief `ShaderMap_ResolveShaderOpaque`'s tag chain (0x71001B5420).
+///
+/// A ShaderMap has no index: the runtime probes a fixed list and takes the
+/// first tag that resolves, so a map missing a tag silently falls through to a
+/// more generic program. The head of the chain is chosen by the global view
+/// mode and the tail is shared; we render one view mode, so only the tail plus
+/// its 0x30502 head is walked, and 0x30500 — the last-resort base shader — is
+/// what shipped content overwhelmingly carries. The MSAA band (0x30861) is
+/// skipped: we do not run the original's MSAA path, and taking its program
+/// would be claiming a pass we never bind.
+inline constexpr u32 kD3OpaqueTagChain[] = {0x30502u, 0x30850u, 0x30830u, 0x30600u, 0x30500u};
+
+/// @brief The `Shaders` asset @p material binds, or null.
+///
+/// Here rather than beside the surface table because two layers need it and
+/// only one of them is a shading model: the model adapter has to know the
+/// pass's texture-stage ORDER to key a `Legacy.fx` chain's scrolling layers
+/// into the texture-animation palette, and that is the same walk.
+std::shared_ptr<const d3n::Shaders> D3ResolveShaders(const d3n::UberMaterial& material,
+                                                     D3SnoCache* cache);
+
+/// @brief The content texture types of @p material's pass 0, in declaration
+///        order, into @p out. Returns how many were written.
+///
+/// "Content" is the combine block's own indexing: the scene-depth stage
+/// (`SoftBillboard.fx` declares it, always first) is not one, and a type-0 hole
+/// is — the block counts it, and the pass leaves its combine codes clear.
+u32 D3ChainStageTypes(const d3n::UberMaterial& material, D3SnoCache* cache,
+                      std::array<i32, kD3MaxChainStages>& out);
 
 } // namespace whiteout::flakes::io

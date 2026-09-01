@@ -44,6 +44,7 @@
 #include "renderer/profiles/diablo3/d3_surface_table.h"
 
 #include <whiteout/sno/d3/native/d3_native.h>
+#include <whiteout/sno/core_toc.h>
 #include <whiteout/sno/d3/native/geometry.h>
 
 #include <algorithm>
@@ -53,6 +54,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <bit>
 #include <string>
 #include <functional>
@@ -2711,6 +2713,7 @@ TEST_CASE("D3 corpus: a pass's combine block decodes to the shipped chain",
     constexpr u8 kSkip = wio::kD3StageSkip;
     constexpr u8 kMod = wio::kD3StageModulate;
     constexpr u8 kAdd = wio::kD3StageAdd;
+    constexpr u8 kD3Rep = wio::kD3StageReplace;
     const Want kWant[] = {
         // The floor: one stage, plain modulate, the vertex colour at the head.
         {"particle_additive", {{1, kMod, 1, false, kMod, 1, false}}, true, false, true, false},
@@ -2739,17 +2742,20 @@ TEST_CASE("D3 corpus: a pass's combine block decodes to the shipped chain",
          {{1, kMod, 1, false, kMod, 1, false}, {19, kSkip, 1, false, kMod, 4, false}},
          true, false, true, false},
         // An ADD stage, and the vertex colour entering the colour chain at BOTH
-        // ends — code 20 at the head and code 40 as a textureless stage 3.
+        // ends — code 20 at the head and code 40 as a textureless stage 3. Its
+        // ALPHA opens on code 3, which is the REPLACE: at stage 0 that is the
+        // same number as a modulate against the head's 1.0, so this row pins
+        // the decode rather than a rendered difference. See kD3StageReplace.
         {"particle_transparent_blizzard",
-         {{1, kMod, 1, false, kMod, 1, false},
+         {{1, kMod, 1, false, kD3Rep, 1, false},
           {19, kMod, 2, false, kMod, 4, false},
           {12, kAdd, 1, true, kAdd, 1, true},
           {0, kSkip, 1, false, kSkip, 1, false}},
          true, true, false, true},
-        // A leading code 3: the chain starts from the texture and the vertex
-        // colour never enters the colour at all.
+        // A leading code 3 in BOTH channels: the chain starts from the texture
+        // and the vertex colour never enters at all.
         {"particle_transparent_blood_cm1x_pma",
-         {{1, kMod, 1, false, kMod, 1, false},
+         {{1, kD3Rep, 1, false, kD3Rep, 1, false},
           {19, kMod, 2, false, kMod, 2, true},
           {0, kSkip, 1, false, kSkip, 1, false}},
          false, false, false, true},
@@ -2975,4 +2981,768 @@ TEST_CASE("D3 corpus: the pass names its pixel program and its texcoord count",
     // from code 13 at slot 2 except that -- both name matTex[2] -- so a matrix
     // reading of the block makes the author's choice mean nothing.
     CHECK(reroute == 39);
+}
+
+// ============================================================================
+// A dump, not a gate. Hidden (`[.d3dump]`), run by name:
+//
+//   tests/d3_surface_table_test.exe "[.d3dump]"
+//
+// WDX_D3_DUMP names the actors/appearances, comma separated, by their bare
+// stem; every sub-object material, its resolved RenderPass and its slots come
+// out. This is the tool the "why is that mesh white" questions are answered
+// with -- a surface with no Diffuse slot has one line saying so.
+// ============================================================================
+
+namespace {
+
+std::vector<std::string> DumpNames() {
+    std::vector<std::string> out;
+    const char* v = std::getenv("WDX_D3_DUMP");
+    if (!v || !*v)
+        return out;
+    std::string s(v), cur;
+    for (char c : s) {
+        if (c == ',') {
+            if (!cur.empty())
+                out.push_back(cur);
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
+    }
+    if (!cur.empty())
+        out.push_back(cur);
+    return out;
+}
+
+std::string TypeBits(u64 mask) {
+    std::string s;
+    for (int i = 0; i < 64; ++i) {
+        if (mask & (1ull << i)) {
+            if (!s.empty())
+                s += ",";
+            s += std::to_string(i);
+        }
+    }
+    return s.empty() ? "-" : s;
+}
+
+const char* SlotNameOf(u32 i) {
+    switch (static_cast<flakes::io::D3SlotKind>(i)) {
+    case flakes::io::D3SlotKind::Diffuse:
+        return "Diffuse";
+    case flakes::io::D3SlotKind::Normal:
+        return "Normal";
+    case flakes::io::D3SlotKind::Specular:
+        return "Specular";
+    case flakes::io::D3SlotKind::Emissive:
+        return "Emissive";
+    case flakes::io::D3SlotKind::Lightmap:
+        return "Lightmap";
+    case flakes::io::D3SlotKind::Irradiance:
+        return "Irradiance";
+    case flakes::io::D3SlotKind::AlphaMask0:
+        return "AlphaMask0";
+    case flakes::io::D3SlotKind::AlphaMask1:
+        return "AlphaMask1";
+    case flakes::io::D3SlotKind::AlphaMask2:
+        return "AlphaMask2";
+    default:
+        return "?";
+    }
+}
+
+} // namespace
+
+TEST_CASE("D3 dump: surfaces of a named actor", "[.d3dump]") {
+    using ::whiteout::flakes::ProductId;
+    const auto names = DumpNames();
+    if (names.empty()) {
+        WARN("Set WDX_D3_DUMP=<stem>[,<stem>...]. SKIPPED.");
+        return;
+    }
+    flakes::io::FileContentProvider provider;
+    if (const char* root = std::getenv("WDX_TEST_D3_INSTALL"); root && *root)
+        provider.SetInstallPath(root);
+    provider.SetGame(ProductId::D3);
+    if (provider.GamePath(ProductId::D3).empty()) {
+        WARN("No Diablo III install. SKIPPED.");
+        return;
+    }
+
+    ::whiteout::sno::CoreToc toc;
+    if (auto tocBytes = provider.ReadFile("Base\\CoreTOC.dat"))
+        toc.parse(*tocBytes);
+    auto snoName = [&toc](i32 sno) -> std::string {
+        if (const auto* e = toc.findById(sno))
+            return e->name;
+        return "#" + std::to_string(sno);
+    };
+
+    flakes::io::D3SnoCache cache(&provider);
+
+    for (const std::string& stem : names) {
+        std::shared_ptr<flakes::io::D3ModelAdapter> adapter;
+        std::string opened;
+        const char* kDirs[2] = {"Base\\Actor\\", "Base\\Appearance\\"};
+        const char* kExts[2] = {".acr", ".app"};
+        for (int k = 0; k < 2; ++k) {
+            const std::string ref = std::string(kDirs[k]) + stem + kExts[k];
+            auto bytes = provider.ReadFile(ref);
+            if (!bytes)
+                continue;
+            adapter = (k == 0) ? flakes::io::D3ModelAdapter::LoadActor(
+                                     ContentRef::FromPath(ref), *bytes, cache, true)
+                               : flakes::io::D3ModelAdapter::LoadAppearance(
+                                     ContentRef::FromPath(ref), *bytes, cache);
+            if (adapter) {
+                opened = ref;
+                break;
+            }
+        }
+        if (!adapter) {
+            std::printf("\n### %s: NOT FOUND\n", stem.c_str());
+            continue;
+        }
+        const auto& app = adapter->SourceAppearance();
+        const auto textures = flakes::io::CollectD3Textures(app, adapter->LookIndex());
+        const auto emitted = adapter->EmittedSubObjects();
+        auto table = d3p::BuildD3SurfaceTable(app, adapter->LookIndex(), textures, emitted, &cache,
+                                              {}, nullptr);
+        std::printf("\n### %s  (%s)  look=%u  geosets=%zu  textures=%zu\n", stem.c_str(),
+                    opened.c_str(), adapter->LookIndex(), emitted.size(), textures.size());
+        for (std::size_t t = 0; t < textures.size(); ++t)
+            std::printf("    tex[%zu] = %s\n", t, snoName(textures[t].snoId).c_str());
+
+        const auto hidden = adapter->GeosetHidden();
+        for (std::size_t g = 0; g < emitted.size(); ++g) {
+            const d3n::GeoSet& set = (emitted[g].geoSet == 0) ? app.tGeoSet0 : app.tGeoSet1;
+            if (emitted[g].index >= set.arSubObjects.size())
+                continue;
+            const d3n::SubObject& sub = set.arSubObjects[emitted[g].index];
+            const auto* s = table->Surface(static_cast<u32>(g));
+            if (!s)
+                continue;
+            std::printf("\n  [%zu] %-30s verts=%zu tris=%zu %s\n", g, sub.szName.c_str(),
+                        sub.arVertices.size(), sub.arIndices.size() / 3,
+                        (g < hidden.size() && hidden[g]) ? "HIDDEN" : "");
+            const auto* v = flakes::io::D3VariantFor(app, sub, adapter->LookIndex());
+            std::shared_ptr<const d3n::Material> keep;
+            const d3n::UberMaterial* mat = v ? flakes::io::D3MaterialOf(*v, &cache, keep) : nullptr;
+            if (!mat) {
+                std::printf("      NO MATERIAL (variant=%p)\n", static_cast<const void*>(v));
+                continue;
+            }
+            std::printf("      shaderMap=%s  entries=%zu  valid=%d unlit=%d twoSided=%d\n",
+                        mat->snoShaderMap.valid() ? snoName(mat->snoShaderMap.id).c_str() : "-",
+                        mat->arTextures.size(), (int)s->valid, (int)s->unlit, (int)s->twoSided);
+            std::printf("      colors: diff=(%.2f %.2f %.2f %.2f) spec=(%.2f %.2f %.2f %.2f) "
+                        "emis=(%.2f %.2f %.2f %.2f) amb=(%.2f %.2f %.2f %.2f) shin=%.2f fl=%u\n",
+                        s->diffuse.x, s->diffuse.y, s->diffuse.z, s->diffuse.w, s->specular.x,
+                        s->specular.y, s->specular.z, s->specular.w, s->emissive.x, s->emissive.y,
+                        s->emissive.z, s->emissive.w, s->ambient.x, s->ambient.y, s->ambient.z,
+                        s->ambient.w, s->shininess, s->materialFlags);
+            const auto& p = s->pass;
+            if (!p.resolved) {
+                std::printf("      PASS UNRESOLVED\n");
+            } else {
+                std::printf("      pass: %s / %s  cull=%u blend=%d(%u,%u) pma=%u zw=%d zf=%u "
+                            "atest=%d(%u,%u) cw=%d,%d lit=%d vcLight=%d vcAlpha=%d glow=%d "
+                            "stageArgs=%d gain=(%.2f,%.2f) hole=%d\n",
+                            p.effectFile.c_str(), p.pixelEntry.c_str(), p.cull, (int)p.blendEnable,
+                            p.blendSrc, p.blendDst, p.pmaMode, (int)p.depthWrite, p.depthFunc,
+                            (int)p.alphaTestEnable, p.alphaFunc, (u32)p.alphaRef, (int)p.colorWrite,
+                            (int)p.alphaWrite, (int)p.lit, (int)p.vertexColorLights,
+                            (int)p.vertexAlpha, (int)p.glowLights, (int)p.stageArgs, p.colorGain,
+                            p.alphaGain, (int)p.stageHole);
+                std::printf("      stages:");
+                for (u32 i = 0; i < p.stageCount; ++i)
+                    std::printf(" [%u]type=%d wrap=%u", i, p.stages[i].type, p.stages[i].wrapBits);
+                std::printf("\n      declared={%s} color={%s} alpha={%s} colorSampled={%s} "
+                            "alphaSampled={%s}\n",
+                            TypeBits(p.declaredTypes).c_str(), TypeBits(p.colorTypes).c_str(),
+                            TypeBits(p.alphaTypes).c_str(), TypeBits(p.colorSampledTypes).c_str(),
+                            TypeBits(p.alphaSampledTypes).c_str());
+                for (u32 i = 0; i < p.combineCount; ++i) {
+                    const auto& cb = p.combines[i];
+                    std::printf("      combine[%u] type=%d cop=%u aop=%u cg=%.2f ag=%.2f\n", i,
+                                cb.type, cb.colorOp, cb.alphaOp, cb.colorGain, cb.alphaGain);
+                }
+            }
+            std::printf("      entries:");
+            for (const auto& e : mat->arTextures) {
+                const i32 type = flakes::io::D3TextureTypeOf(e);
+                const auto uv = flakes::io::D3ReadUvXform(e);
+                std::printf(" (t%d->%s uv=%d%s)", type,
+                            e.snoTexture.valid() ? snoName(e.snoTexture.id).c_str() : "-",
+                            static_cast<int>(uv.mode), uv.animated ? " ANIM" : "");
+            }
+            std::printf("\n");
+            for (u32 i = 0; i < flakes::io::kD3SlotCount; ++i) {
+                const auto& sl = s->slots[i];
+                if (sl.textureId < 0 && sl.rawType == 0)
+                    continue;
+                std::printf("      slot %-11s tex=%d rawType=%d ch=%u\n", SlotNameOf(i),
+                            sl.textureId, sl.rawType, sl.channels);
+            }
+            if (s->chainCount > 0) {
+                std::printf("      CHAIN edgeAlpha=%u vcol=(cF%d cL%d aF%d aL%d) "
+                            "factor=(cF%d cL%d aF%d aL%d)\n",
+                            p.edgeAlpha, (int)p.colorVcolFirst, (int)p.colorVcolLast,
+                            (int)p.alphaVcolFirst, (int)p.alphaVcolLast, (int)p.colorFactorFirst,
+                            (int)p.colorFactorLast, (int)p.alphaFactorFirst,
+                            (int)p.alphaFactorLast);
+                for (u32 i = 0; i < s->chainCount; ++i) {
+                    const auto& st = s->chain[i];
+                    std::printf("      stage[%u] type=%-3d tex=%-3d cop=%u aop=%u cg=%.1f ag=%.1f "
+                                "cc=%d ac=%d wrap=%u uvAnim=%d\n",
+                                i, st.rawType, st.textureId, st.colorOp, st.alphaOp, st.colorGain,
+                                st.alphaGain, (int)st.colorClamp, (int)st.alphaClamp, st.wrapFlags,
+                                st.uvTransformId);
+                }
+            } else if (s->slots[(u32)flakes::io::D3SlotKind::Diffuse].textureId < 0) {
+                std::printf("      *** NO DIFFUSE SLOT -> draws white ***\n");
+            }
+        }
+    }
+}
+
+// The other half of the dump: a `Shaders` asset, pass by pass, with its whole
+// tag map. `.shd` is name-keyed, so this needs the corpus and no install.
+//
+//   WDX_D3_SHD=actor_transparent_edgeAlpha_cm2x2_am4x4_bloom tests/...exe "[.d3dump]"
+TEST_CASE("D3 dump: a Shaders asset, tags and all", "[.d3dump]") {
+    const char* v = std::getenv("WDX_D3_SHD");
+    if (!v || !*v) {
+        WARN("Set WDX_D3_SHD=<stem>[,<stem>...]. SKIPPED.");
+        return;
+    }
+    std::vector<std::string> names;
+    {
+        std::string s(v), cur;
+        for (char c : s) {
+            if (c == ',') {
+                if (!cur.empty())
+                    names.push_back(cur);
+                cur.clear();
+            } else {
+                cur.push_back(c);
+            }
+        }
+        if (!cur.empty())
+            names.push_back(cur);
+    }
+    for (const std::string& stem : names) {
+        const auto path = CorpusRoot() / "Shaders" / (stem + ".shd");
+        const auto bytes = ReadAll(path);
+        auto sh = d3n::parseShaders(bytes);
+        if (!sh) {
+            std::printf("\n### %s: NOT FOUND (%s)\n", stem.c_str(), path.string().c_str());
+            continue;
+        }
+        std::printf("\n### %s  passes=%zu\n", stem.c_str(), sh->arRenderPasses.size());
+        for (std::size_t i = 0; i < sh->arRenderPasses.size(); ++i) {
+            const auto& p = sh->arRenderPasses[i];
+            std::printf("  pass[%zu] %s  vs=%s ps=%s  flags=%u/%u/%u\n", i, p.szEffectFile.c_str(),
+                        p.szVertexShaderEntry.c_str(), p.szPixelShaderEntry.c_str(),
+                        p.dwUnknown00, p.dwUnknown04, p.dwPassFlags);
+            std::printf("    stages:");
+            for (const auto& st : p.arTextureStages)
+                std::printf(" (t%d au=%u av=%u f=%u)", st.dwTextureType, st.dwAddressU,
+                            st.dwAddressV, st.dwFilter);
+            std::printf("\n    tags:");
+            for (const auto& t : p.arShaderParams) {
+                const f32 asFloat = std::bit_cast<f32>(t.dwValue);
+                std::printf(" [%X type=%d val=%u/%.3f]", t.dwTagId, t.nValueType, t.dwValue,
+                            asFloat);
+            }
+            std::printf("\n");
+        }
+    }
+}
+
+// The Legacy.fx census: everything the chain needs, over every shipped `.shd`.
+TEST_CASE("D3 dump: the Legacy.fx chain census", "[.d3dump]") {
+    const auto files = FindFiles(CorpusRoot() / "Shaders", ".shd");
+    if (files.empty()) {
+        WARN("No D3 corpus. SKIPPED.");
+        return;
+    }
+    std::map<u32, std::size_t> edgeAlpha, constColor, constColorFactor, constColorLegacy;
+    std::map<u32, std::size_t> colorUnits, alphaUnits, colorTens, alphaTens;
+    std::map<std::string, std::size_t> families;
+    std::map<u32, std::size_t> stageCounts;
+    std::map<u32, std::size_t> legacyStageTypes;
+    std::map<std::string, std::size_t> legacyEntries;
+    std::size_t legacy = 0, legacyWithBlock = 0, blockNoLegacy = 0, factorUsers = 0;
+    std::size_t code3First = 0, code3Later = 0;
+    std::vector<std::string> later;
+    std::map<u32, std::size_t> tens4Codes, tens8Codes, tens0Codes;
+    for (const auto& f : files) {
+        auto sh = d3n::parseShaders(ReadAll(f));
+        if (!sh)
+            continue;
+        for (const auto& p : sh->arRenderPasses) {
+            ++families[p.szEffectFile];
+            const bool isLegacy = p.szEffectFile == "Legacy.fx";
+            bool hasBlock = false;
+            u32 ea = 0;
+            for (const auto& t : p.arShaderParams) {
+                if (t.dwTagId == 0xA0005u)
+                    ea = t.dwValue;
+                if (t.dwTagId >= 0xA0016u && t.dwTagId <= 0xA0021u)
+                    hasBlock = true;
+            }
+            if (isLegacy) {
+                ++legacy;
+                ++legacyEntries[p.szPixelShaderEntry];
+                for (const auto& sg : p.arTextureStages)
+                    ++legacyStageTypes[static_cast<u32>(sg.dwTextureType)];
+                ++edgeAlpha[ea];
+                ++constColorLegacy[static_cast<u32>(p.tRenderParams.dwConstantColor)];
+                if (hasBlock)
+                    ++legacyWithBlock;
+                u32 content = 0;
+                for (const auto& s : p.arTextureStages)
+                    if (s.dwTextureType != 39)
+                        ++content;
+                ++stageCounts[content];
+            } else if (hasBlock) {
+                ++blockNoLegacy;
+            }
+            ++constColor[static_cast<u32>(p.tRenderParams.dwConstantColor)];
+            bool usesFactor = false;
+            bool seenColor = false, seenAlpha = false;
+            for (u32 i = 0; i < 6; ++i) {
+                for (int ch = 0; ch < 2; ++ch) {
+                    const u32 want = (ch == 0 ? 0xA0016u : 0xA001Cu) + i;
+                    const d3n::ShaderTagMapEntry* tag = nullptr;
+                    for (const auto& t : p.arShaderParams)
+                        if (t.dwTagId == want)
+                            tag = &t;
+                    if (!tag)
+                        continue;
+                    const u32 code = tag->dwValue;
+                    const u32 tens = code / 10, units = code % 10;
+                    if (ch == 0) {
+                        ++colorTens[tens];
+                        if (tens == 2)
+                            ++colorUnits[units];
+                    } else {
+                        ++alphaTens[tens];
+                        if (tens == 2)
+                            ++alphaUnits[units];
+                    }
+                    if (tens == 4)
+                        ++tens4Codes[code];
+                    if (tens == 8)
+                        ++tens8Codes[code];
+                    if (tens == 0)
+                        ++tens0Codes[code];
+                    if ((tens == 2 && units == 2) || code == 41)
+                        usesFactor = true;
+                    if (code == 3) {
+                        bool& seen = (ch == 0) ? seenColor : seenAlpha;
+                        if (!seen) {
+                            ++code3First;
+                        } else {
+                            ++code3Later;
+                            if (ch == 0 && later.size() < 24)
+                                later.push_back(f.stem().string() + "/" +
+                                                std::to_string(i));
+                        }
+                    }
+                    if (tens == 0 ? code == 3 : (code != 71 && tens != 4 && tens != 8)) {
+                        if (ch == 0)
+                            seenColor = true;
+                        else
+                            seenAlpha = true;
+                    }
+                }
+            }
+            if (usesFactor) {
+                ++factorUsers;
+                ++constColorFactor[static_cast<u32>(p.tRenderParams.dwConstantColor)];
+            }
+        }
+    }
+    auto dump = [](const char* label, const std::map<u32, std::size_t>& m) {
+        std::printf("%-24s", label);
+        for (const auto& [k, n] : m)
+            std::printf(" %u:%zu", k, n);
+        std::printf("\n");
+    };
+    auto dumpHex = [](const char* label, const std::map<u32, std::size_t>& m) {
+        std::printf("%-24s", label);
+        for (const auto& [k, n] : m)
+            std::printf(" 0x%08X:%zu", k, n);
+        std::printf("\n");
+    };
+    std::printf("\n[legacy-census] files=%zu Legacy.fx passes=%zu withStageBlock=%zu "
+                "blockOnNonLegacy=%zu factorUsers=%zu\n",
+                files.size(), legacy, legacyWithBlock, blockNoLegacy, factorUsers);
+    dump("edgeAlpha(0xA0005)", edgeAlpha);
+    dump("legacy contentStages", stageCounts);
+    dump("legacy stage TYPES", legacyStageTypes);
+    dumpHex("constColor all", constColor);
+    dumpHex("constColor Legacy", constColorLegacy);
+    dumpHex("constColor FACTOR", constColorFactor);
+    dump("color tens", colorTens);
+    dump("alpha tens", alphaTens);
+    dump("color units(tens2)", colorUnits);
+    dump("alpha units(tens2)", alphaUnits);
+    dump("tens0 codes", tens0Codes);
+    dump("tens4 codes", tens4Codes);
+    dump("tens8 codes", tens8Codes);
+    std::printf("code3 first=%zu later=%zu\n", code3First, code3Later);
+    std::printf("code3 later examples:");
+    for (const auto& n : later)
+        std::printf(" %s", n.c_str());
+    std::printf("\n");
+    std::printf("legacy entries:");
+    for (const auto& [k, n] : legacyEntries)
+        std::printf(" %s=%zu", k.c_str(), n);
+    std::printf("|\nfamilies:");
+    for (const auto& [k, n] : families)
+        std::printf(" %s=%zu", k.c_str(), n);
+    std::printf("\n");
+}
+
+// ============================================================================
+// The `Legacy.fx` chain — D3_MATERIAL_DESIGN.md §7.6-7.8.
+//
+// Three claims, each with a discriminator that the reading it replaced fails:
+//
+//  1. **The chain's gate is the PIXEL ENTRY, not the effect file.** 784 of the
+//     855 `Legacy.fx` passes run `ps_legacy`; the other 71 are 27 different
+//     programs and none of them is the combiner. Both halves are asserted, so a
+//     gate widened back to the effect file trips the second.
+//
+//  2. **Code 3 is a REPLACE.** Read as a modulate it is the same number only
+//     while the chain head is still 1, so the two named shaders here are chosen
+//     for having a contributing stage BEFORE the code 3 — where the two
+//     readings disagree and the shipped program says which is right.
+//
+//  3. **`TAG_VS_EDGEALPHA` takes five values and no others.** The counts are
+//     exact, so a tag read at the wrong id or a value silently folded away
+//     moves one of them.
+// ============================================================================
+
+TEST_CASE("D3 corpus: the Legacy.fx chain's population and its gate", "[d3][corpus][material]") {
+    const auto files = FindFiles(CorpusRoot() / "Shaders", ".shd");
+    if (files.empty()) {
+        WARN("No D3 corpus at " << (CorpusRoot() / "Shaders").string()
+                                << " (set WDX_TEST_D3_CORPUS). SKIPPED, not passed.");
+        return;
+    }
+    std::size_t legacy = 0, psLegacy = 0, withBlock = 0;
+    std::map<u32, std::size_t> edgeAlpha;
+    std::set<std::string> otherEntries;
+    for (const auto& f : files) {
+        auto sh = d3n::parseShaders(ReadAll(f));
+        if (!sh)
+            continue;
+        for (const auto& p : sh->arRenderPasses) {
+            if (p.szEffectFile != "Legacy.fx")
+                continue;
+            ++legacy;
+            if (p.szPixelShaderEntry == "ps_legacy")
+                ++psLegacy;
+            else
+                otherEntries.insert(p.szPixelShaderEntry);
+            u32 ea = 0;
+            bool block = false;
+            for (const auto& t : p.arShaderParams) {
+                if (t.dwTagId == 0xA0005u)
+                    ea = t.dwValue;
+                if (t.dwTagId >= 0xA0016u && t.dwTagId <= 0xA0021u)
+                    block = true;
+            }
+            withBlock += block ? 1 : 0;
+            ++edgeAlpha[ea];
+        }
+    }
+    std::printf("[d3-chain] Legacy.fx passes=%zu ps_legacy=%zu otherEntries=%zu withBlock=%zu\n",
+                legacy, psLegacy, otherEntries.size(), withBlock);
+    std::printf("[d3-chain] TAG_VS_EDGEALPHA:");
+    for (const auto& [v, n] : edgeAlpha)
+        std::printf(" %u=%zu", v, n);
+    std::printf("\n");
+
+    CHECK(legacy == 855);
+    // The gate. 784 is the population the chain runs on; the 71 that are left
+    // are what a `Legacy.fx`-wide gate would wrongly claim, and they are 27
+    // distinct programs rather than a rounding error.
+    CHECK(psLegacy == 784);
+    CHECK(otherEntries.size() == 27);
+    CHECK(otherEntries.count("ps_legacy_Malthael_wings_flow") == 1);
+    // 830 of the 855 carry the combine block, which is why the block alone
+    // cannot be the gate either — it is present on 46 of the 71 passes whose
+    // program is not the combiner.
+    CHECK(withBlock == 830);
+
+    // Five values, exact counts, nothing else. The four non-zero ones join
+    // one-to-one onto the `vs_legacy` reconstruction's COLOR0_A permutations.
+    CHECK(edgeAlpha.size() == 5);
+    CHECK(edgeAlpha[0] == 538);
+    CHECK(edgeAlpha[1] == 172);
+    CHECK(edgeAlpha[2] == 104);
+    CHECK(edgeAlpha[4] == 24);
+    CHECK(edgeAlpha[5] == 17);
+}
+
+TEST_CASE("D3 corpus: stage code 3 replaces the channel", "[d3][corpus][material]") {
+    struct Want {
+        const char* shader;
+        std::vector<u8> colorOps; ///< kD3Stage*, in content-stage order.
+        std::vector<u8> alphaOps;
+    };
+    // Both chosen because a stage that FEEDS the channel comes before the code
+    // 3 — the only place a replace and a modulate are different numbers.
+    //
+    // `actor_complex_Transparent_Ground` codes its colour block 3/3/3/10 over
+    // stages (12, 14, 1, 6) and its shipped program is `saturate(tex1 + tex6)`:
+    // the two masks are sampled for their ALPHA and their colour is thrown
+    // away, which only a replace does.
+    //
+    // `actor_seismicSlam_wave` is the Death Maiden's and the two-hander's
+    // shader, 3/3/24/0 over (12, 11, 13, 0) against `tex11 * tex13 * 2`.
+    const Want kWant[] = {
+        {"actor_complex_Transparent_Ground",
+         {flakes::io::kD3StageReplace, flakes::io::kD3StageReplace, flakes::io::kD3StageReplace, flakes::io::kD3StageAdd},
+         {flakes::io::kD3StageModulate, flakes::io::kD3StageModulate, flakes::io::kD3StageSkip, flakes::io::kD3StageSkip}},
+        {"actor_seismicSlam_wave",
+         {flakes::io::kD3StageReplace, flakes::io::kD3StageReplace, flakes::io::kD3StageModulate, flakes::io::kD3StageSkip},
+         {flakes::io::kD3StageModulate, flakes::io::kD3StageModulate, flakes::io::kD3StageModulate, flakes::io::kD3StageSkip}},
+    };
+    std::size_t checked = 0;
+    for (const auto& w : kWant) {
+        const auto bytes = ReadAll(CorpusRoot() / "Shaders" / (std::string(w.shader) + ".shd"));
+        auto sh = d3n::parseShaders(bytes);
+        if (!sh) {
+            WARN("missing " << w.shader << " -- SKIPPED, not passed.");
+            continue;
+        }
+        ++checked;
+        INFO(w.shader);
+        const auto st = d3p::D3PassStateOf(*sh);
+        REQUIRE(st.resolved);
+        REQUIRE(st.stageArgs);
+        REQUIRE(st.combineCount == w.colorOps.size());
+        for (u32 i = 0; i < st.combineCount; ++i) {
+            INFO("stage " << i << " type " << st.combines[i].type);
+            CHECK(st.combines[i].colorOp == w.colorOps[i]);
+            CHECK(st.combines[i].alphaOp == w.alphaOps[i]);
+        }
+    }
+    if (checked == 0) {
+        WARN("No corpus shaders read. SKIPPED, not passed.");
+        return;
+    }
+    // The units digit that is NOT the vertex colour. `actor_transparent_
+    // edgeAlpha_cm2x2_am4x4_bloom` opens its colour block on 22, which the
+    // reconstruction reads `MOD|FACTOR`; every units-0 neighbour is
+    // `MOD|VCOLOR`. Reading 22 as the diffuse is what it did before.
+    {
+        auto sh = d3n::parseShaders(
+            ReadAll(CorpusRoot() / "Shaders" / "actor_transparent_edgeAlpha_cm2x2_am4x4_bloom.shd"));
+        if (sh) {
+            const auto st = d3p::D3PassStateOf(*sh);
+            CHECK(st.colorFactorFirst);
+            CHECK_FALSE(st.colorVcolFirst);
+            CHECK(st.alphaVcolFirst);
+            CHECK_FALSE(st.alphaFactorFirst);
+            CHECK(st.edgeAlpha == 1);
+        }
+    }
+}
+
+TEST_CASE("D3 install: the chain binds every stage it declares", "[d3][material][install]") {
+    using ::whiteout::flakes::ProductId;
+
+    flakes::io::FileContentProvider provider;
+    if (const char* root = std::getenv("WDX_TEST_D3_INSTALL"); root && *root)
+        provider.SetInstallPath(root);
+    provider.SetGame(ProductId::D3);
+    if (provider.GamePath(ProductId::D3).empty()) {
+        WARN("No Diablo III install (set WDX_TEST_D3_INSTALL). SKIPPED, not passed.");
+        return;
+    }
+    flakes::io::D3SnoCache cache(&provider);
+
+    struct Want {
+        const char* file;      ///< `.app` under Appearances/
+        const char* subObject;
+        u32 chainStages;       ///< 0 = this sub-object must NOT take the chain.
+        u32 edgeAlpha;
+    };
+    // The three actors this was written for, plus the two Malthael layers that
+    // are the discriminator: `wingCore_mat` runs `ps_legacy` and takes a chain,
+    // `wingMidLayer_mat` runs `ps_legacy_Malthael_wings_flow` and must not — a
+    // gate on the effect file alone passes the first and fails the second.
+    const Want kWant[] = {
+        {"x1_deathMaiden", "A_normal_fx", 5, 1},
+        {"x1_urzael_cannonball_model", "outer_mat", 3, 1},
+        {"x1_urzael_cannonball_model", "inner_mat", 2, 2},
+        {"Imperius", "wing_mat", 4, 0},
+        {"x1_Malthael", "wingCore_mat", 1, 1},
+        // The tag is read whatever the program is; only the CHAIN stands down.
+        {"x1_Malthael", "wingMidLayer_mat", 0, 1},
+        {"x1_Malthael", "A_normal_mat", 0, 0}, // ActorIrrad, the other family
+    };
+
+    std::size_t checked = 0;
+    for (const auto& w : kWant) {
+        const auto path = CorpusRoot() / "Appearances" / (std::string(w.file) + ".app");
+        const auto bytes = ReadAll(path);
+        auto app = d3n::parseAppearances(bytes);
+        if (!app) {
+            WARN("missing " << path.string() << " -- SKIPPED, not passed.");
+            continue;
+        }
+        auto adapter = flakes::io::D3ModelAdapter::LoadAppearance(
+            ContentRef::FromPath(path.string()), bytes, cache);
+        REQUIRE(adapter != nullptr);
+        const auto textures =
+            flakes::io::CollectD3Textures(adapter->SourceAppearance(), adapter->LookIndex(),
+                                          adapter->EmittedSubObjects(), adapter->GeosetLooks());
+        auto table = d3p::BuildD3SurfaceTable(adapter->SourceAppearance(), adapter->LookIndex(),
+                                              textures, adapter->EmittedSubObjects(), &cache, {},
+                                              nullptr);
+        REQUIRE(table != nullptr);
+
+        const auto emitted = adapter->EmittedSubObjects();
+        const d3p::D3Surface* surface = nullptr;
+        for (std::size_t g = 0; g < emitted.size(); ++g) {
+            const d3n::GeoSet& set = (emitted[g].geoSet == 0) ? adapter->SourceAppearance().tGeoSet0
+                                                              : adapter->SourceAppearance().tGeoSet1;
+            if (emitted[g].index < set.arSubObjects.size() &&
+                EqualCiSv(set.arSubObjects[emitted[g].index].szName, w.subObject))
+                surface = table->Surface(static_cast<u32>(g));
+        }
+        if (!surface) {
+            WARN(w.file << " / " << w.subObject << ": no such sub-object -- SKIPPED.");
+            continue;
+        }
+        if (!surface->pass.resolved) {
+            WARN(w.file << " / " << w.subObject << ": ShaderMap did not resolve -- SKIPPED.");
+            continue;
+        }
+        ++checked;
+        INFO(w.file << " / " << w.subObject << " (" << surface->pass.effectFile << " / "
+                    << surface->pass.pixelEntry << ")");
+        std::printf("[d3-chain] %-28s %-18s %s/%s stages=%u edge=%u\n", w.file, w.subObject,
+                    surface->pass.effectFile.c_str(), surface->pass.pixelEntry.c_str(),
+                    surface->chainCount, surface->pass.edgeAlpha);
+        CHECK(surface->chainCount == w.chainStages);
+        CHECK(surface->pass.edgeAlpha == w.edgeAlpha);
+        // The defect itself: a chain whose stages have no texture id draws the
+        // slot defaults, which is white. Every stage the pass declares a
+        // combine for must have resolved one.
+        for (u32 i = 0; i < surface->chainCount; ++i) {
+            if (surface->chain[i].rawType == 0)
+                continue; // a hole binds nothing by construction
+            INFO("stage " << i << " type " << surface->chain[i].rawType);
+            CHECK(surface->chain[i].textureId >= 0);
+        }
+    }
+    if (checked == 0) {
+        WARN("Nothing resolved. SKIPPED, not passed.");
+        return;
+    }
+    CHECK(checked >= 5);
+}
+
+// How much of the corpus the chain reaches, and how much of it resolves. The
+// defect this replaced was a stage with no texture id, so that is the number
+// with a bound on it.
+TEST_CASE("D3 install: the chain over the corpus", "[d3][material][install]") {
+    using ::whiteout::flakes::ProductId;
+    flakes::io::FileContentProvider provider;
+    if (const char* root = std::getenv("WDX_TEST_D3_INSTALL"); root && *root)
+        provider.SetInstallPath(root);
+    provider.SetGame(ProductId::D3);
+    if (provider.GamePath(ProductId::D3).empty()) {
+        WARN("No Diablo III install. SKIPPED, not passed.");
+        return;
+    }
+    const auto files = FindFiles(CorpusRoot() / "Appearances", ".app");
+    if (files.empty()) {
+        WARN("No D3 corpus. SKIPPED, not passed.");
+        return;
+    }
+    flakes::io::D3SnoCache cache(&provider);
+    const std::size_t limit = SweepLimit();
+    const std::size_t take = (limit == 0) ? files.size() : (std::min)(limit, files.size());
+
+    std::size_t models = 0, surfaces = 0, chained = 0, stages = 0, holes = 0, unresolved = 0;
+    std::size_t chainModels = 0, edgeAlphaSurfaces = 0;
+    std::map<u32, std::size_t> stageCounts;
+    std::vector<std::string> worst;
+    for (std::size_t i = 0; i < take; ++i) {
+        const auto bytes = ReadAll(files[i]);
+        auto adapter = flakes::io::D3ModelAdapter::LoadAppearance(
+            ContentRef::FromPath(files[i].string()), bytes, cache);
+        if (!adapter)
+            continue;
+        ++models;
+        const auto textures =
+            flakes::io::CollectD3Textures(adapter->SourceAppearance(), adapter->LookIndex(),
+                                          adapter->EmittedSubObjects(), adapter->GeosetLooks());
+        auto table = d3p::BuildD3SurfaceTable(adapter->SourceAppearance(), adapter->LookIndex(),
+                                              textures, adapter->EmittedSubObjects(), &cache, {},
+                                              nullptr);
+        bool any = false;
+        for (const auto& s : table->Surfaces()) {
+            ++surfaces;
+            if (s.chainCount == 0)
+                continue;
+            ++chained;
+            any = true;
+            ++stageCounts[s.chainCount];
+            if (s.pass.edgeAlpha != 0)
+                ++edgeAlphaSurfaces;
+            for (u32 k = 0; k < s.chainCount; ++k) {
+                ++stages;
+                // A type-0 hole binds nothing, and neither does a type whose
+                // stage reads a CORE ASSET rather than the entry's own texture
+                // (25, 40, 41 — see D3TypeOwnsTexture). Two stages in the whole
+                // corpus are the second case, both type 25 on
+                // `p6_necro_boneSpear_blood_spawn`, and the engine would give
+                // them `DeadBodyBlood`; this build samples white there.
+                if (s.chain[k].rawType == 0 ||
+                    !flakes::io::D3TypeOwnsTexture(s.chain[k].rawType)) {
+                    ++holes;
+                } else if (s.chain[k].textureId < 0) {
+                    ++unresolved;
+                    if (worst.size() < 12)
+                        worst.push_back(files[i].filename().string() + " type " +
+                                        std::to_string(s.chain[k].rawType));
+                }
+            }
+        }
+        chainModels += any ? 1 : 0;
+    }
+    std::printf("[d3-chain] %zu models (%zu with a chain), %zu surfaces, %zu chained; "
+                "%zu stages: %zu holes, %zu unresolved; %zu carry an edge alpha\n",
+                models, chainModels, surfaces, chained, stages, holes, unresolved,
+                edgeAlphaSurfaces);
+    std::printf("[d3-chain] stage counts:");
+    for (const auto& [k, n] : stageCounts)
+        std::printf(" %u=%zu", k, n);
+    std::printf("\n");
+    for (const auto& w : worst)
+        std::printf("[d3-chain] unresolved: %s\n", w.c_str());
+
+    REQUIRE(models > 0);
+    // The chain is not a corner case, and it is not everything either — a
+    // build that ran it on every surface would fail the second half.
+    CHECK(chained > 0);
+    CHECK(chained < surfaces);
+    // Every stage a chain declares must bind a texture. A type-0 hole is the
+    // one exception, and it is counted separately so "no unresolved stages"
+    // cannot be met by mislabelling one.
+    CHECK(unresolved == 0);
+    CHECK(holes > 0);
 }

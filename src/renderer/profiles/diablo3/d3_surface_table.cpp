@@ -36,17 +36,7 @@ using ::whiteout::flakes::io::D3TypeBit;
 using ::whiteout::flakes::io::D3UvMode;
 using ::whiteout::flakes::io::D3UvTransformId;
 
-// ShaderMap_ResolveShaderOpaque's tag chain (0x71001B5420). A ShaderMap has no
-// index: the runtime probes a fixed list and takes the first tag that resolves,
-// so a map missing a tag silently falls through to a more generic program.
-//
-// The head of the chain is chosen by the global view mode and the tail is
-// shared. We render one view mode, so only the tail plus its 0x30502 head is
-// walked — and 0x30500, the last-resort base shader, is what shipped content
-// overwhelmingly carries (Imperius's wing map holds exactly one entry, tagged
-// 0x30500). The MSAA band (0x30861) is skipped: we do not run the original's
-// MSAA path, and taking its program would be claiming a pass we never bind.
-constexpr u32 kD3OpaqueTagChain[] = {0x30502u, 0x30850u, 0x30830u, 0x30600u, 0x30500u};
+using ::whiteout::flakes::io::kD3OpaqueTagChain;
 
 /// The shader-variant tag that turns the light block off -- TAG_VS_LIGHTING,
 /// "Enable Lighting", in the tag registry the Windows build ships at
@@ -55,6 +45,10 @@ constexpr u32 kD3OpaqueTagChain[] = {0x30502u, 0x30850u, 0x30830u, 0x30600u, 0x3
 /// 0xA0009 spot, 0xA000A directional, 0xA000C cylindrical, 0xA000D
 /// point-linear); this one sits just above them and gates the lot.
 constexpr u32 kD3TagLightingEnable = 0xA000Fu;
+
+/// `TAG_VS_EDGEALPHA`, "Vertex Alpha Function" -- what `vs_legacy` writes into
+/// COLOR0.a. See D3PassState::edgeAlpha for the five shipped values.
+constexpr u32 kD3TagEdgeAlpha = 0xA0005u;
 
 /// The tag the back pass of a two-sided pair raises. Measured over all 1,507
 /// corpus `.shd`: worth 1 on exactly 12 passes and 0 on 15, and every one of
@@ -112,24 +106,6 @@ bool VertexColorAllBlack(const d3n::SubObject& sub) {
     return true;
 }
 
-i32 ShadersIdFor(const d3n::ShaderMap& map) {
-    for (const u32 tag : kD3OpaqueTagChain) {
-        for (const auto& e : map.arShaders) {
-            if (e.dwTagId == tag && e.snoShader.valid())
-                return e.snoShader.id;
-        }
-    }
-    // Nothing on the chain. Shipped maps are small and single-tagged often
-    // enough that refusing here would drop real state, so the first valid entry
-    // stands in — a more generic program is exactly what the fall-through
-    // produces anyway.
-    for (const auto& e : map.arShaders) {
-        if (e.snoShader.valid())
-            return e.snoShader.id;
-    }
-    return -1;
-}
-
 i32 TextureIdOf(std::span<const D3TextureRef> textures, i32 sno) {
     for (usize i = 0; i < textures.size(); ++i) {
         if (textures[i].snoId == sno)
@@ -158,6 +134,47 @@ bool UvMatrixOf(const d3n::MaterialTextureEntry& e, Matrix44f& out) {
         out.data[r][3] = rows[r].w;
     }
     return true;
+}
+
+/// @brief The half of a resolved layer that is the same whether it lands in a
+///        named slot or in a `Legacy.fx` chain stage: the texture, its
+///        addressing and its UV transform.
+///
+/// @p uvTransformId is the palette entry an ANIMATED transform names, and it is
+/// the one thing the two callers disagree about — a slot is keyed by its kind
+/// and a stage by its position. See D3UvTransformIdForStage.
+void FillSlotTexture(D3Slot& slot, const d3n::MaterialTextureEntry& entry, i32 type,
+                     std::span<const D3TextureRef> textures, const D3PassState& pass,
+                     i32 uvTransformId) {
+    slot.rawType = type;
+    slot.textureId = TextureIdOf(textures, entry.snoTexture.id);
+    // UV set 0 always. The two candidate selectors both turned out to be
+    // something else — the field at 0x0C is the transform mode and the one at
+    // 0x98 a flags word — and nothing recovered picks a set. Reading either as
+    // "set 1" would put every D3 diffuse on the wrong coordinates, and D3
+    // authors both sets on every vertex, so nothing about the geometry would
+    // say so.
+    slot.uvSource = 0;
+    // The PASS's address modes for this stage, not the entry's flags word: that
+    // word's low bits randomise the scroll phase and say nothing about
+    // addressing. See D3PassState::WrapBitsFor.
+    slot.wrapFlags = pass.WrapBitsFor(type);
+
+    const auto uv = D3ReadUvXform(entry);
+    if (uv.mode == D3UvMode::Matrix) {
+        UvMatrixOf(entry, slot.uvTransform);
+    } else if (uv.mode == D3UvMode::ScaleRotateScroll) {
+        slot.uvTransform = D3UvMatrix(uv, 0.0f);
+        if (uv.animated)
+            slot.uvTransformId = uvTransformId;
+    }
+    // Modes 3..6 drive the coordinates from an Anim2D frame table, the camera
+    // or a bone; none is reproduced, and identity is what an unreproduced one
+    // has to be — 49 entries in the whole corpus. `D3UvAffine` now makes the
+    // same choice internally, so the two arms above are belt and braces rather
+    // than the only guard: the particle path shared the helper without this
+    // switch and scrolled 2,221 mode-0 and mode-3 layers on triples the engine
+    // reads for mode 2 alone.
 }
 
 bool SameStages(const d3n::RenderPass& a, const d3n::RenderPass& b) {
@@ -252,18 +269,9 @@ D3PassState D3PassStateFor(const d3n::SubObjectAppearance& variant,
 
 D3PassState D3PassStateFor(const d3n::UberMaterial& material,
                            ::whiteout::flakes::io::D3SnoCache* cache) {
-    D3PassState st;
-    if (!cache || !material.snoShaderMap.valid())
-        return st;
-    const auto map = cache->ShaderMap(material.snoShaderMap.id);
-    if (!map)
-        return st;
-    const i32 shadersId = ShadersIdFor(*map);
-    if (shadersId < 0)
-        return st;
-    const auto shaders = cache->Shaders(shadersId);
+    const auto shaders = ::whiteout::flakes::io::D3ResolveShaders(material, cache);
     if (!shaders)
-        return st;
+        return {};
     return D3PassStateOf(*shaders);
 }
 
@@ -360,27 +368,38 @@ D3PassState D3PassStateOf(const d3n::Shaders& shadersAsset) {
         st.colorGain *= c.gain;
         st.alphaGain *= a.gain;
         // A stage with no texture is a chain operation on what is already there:
-        // 40 multiplies the vertex colour in at the END, 42 squares.
+        // 40 multiplies the vertex colour in at the END, 41 the texture factor,
+        // 42 squares, 43 folds in `appearanceFX` (which is 1.0 here).
         if (io::D3StageIsVertexColorOnly(cCode))
             st.colorVcolLast = true;
         if (io::D3StageIsVertexColorOnly(aCode))
             st.alphaVcolLast = true;
+        if (io::D3StageIsFactorOnly(cCode))
+            st.colorFactorLast = true;
+        if (io::D3StageIsFactorOnly(aCode))
+            st.alphaFactorLast = true;
         st.erosion = st.erosion || aCode == io::kD3StageAlphaErosion;
         if (c.usesTexture && !colorSeen) {
             colorSeen = true;
             st.colorVcolFirst = io::D3StageTakesVertexColor(cCode);
+            st.colorFactorFirst = io::D3StageTakesFactor(cCode);
         }
         if (a.usesTexture && !alphaSeen) {
             alphaSeen = true;
             st.alphaVcolFirst = io::D3StageTakesVertexColor(aCode);
+            st.alphaFactorFirst = io::D3StageTakesFactor(aCode);
         }
         if (i < content.size() && st.combineCount < D3PassState::kMaxStages) {
             D3PassState::Combine& cb = st.combines[st.combineCount++];
             cb.type = content[i];
-            cb.colorOp = c.adds ? io::kD3StageAdd
-                                : (c.usesTexture ? io::kD3StageModulate : io::kD3StageSkip);
-            cb.alphaOp = a.adds ? io::kD3StageAdd
-                                : (a.usesTexture ? io::kD3StageModulate : io::kD3StageSkip);
+            cb.colorOp = c.replaces  ? io::kD3StageReplace
+                         : c.adds    ? io::kD3StageAdd
+                         : c.usesTexture ? io::kD3StageModulate
+                                     : io::kD3StageSkip;
+            cb.alphaOp = a.replaces  ? io::kD3StageReplace
+                         : a.adds    ? io::kD3StageAdd
+                         : a.usesTexture ? io::kD3StageModulate
+                                     : io::kD3StageSkip;
             cb.colorGain = c.gain;
             cb.alphaGain = a.gain;
             cb.colorClamp = c.clamps;
@@ -410,6 +429,10 @@ D3PassState D3PassStateOf(const d3n::Shaders& shadersAsset) {
     for (const auto& t : pass0.arShaderParams) {
         if (t.dwTagId == kD3TagLightingEnable)
             st.lit = t.dwValue != 0;
+        // What COLOR0.a is: the vertex attribute, or a facing term the vertex
+        // program computes. See D3PassState::edgeAlpha.
+        if (t.dwTagId == kD3TagEdgeAlpha)
+            st.edgeAlpha = t.dwValue;
     }
     st.vertexColorLights = pass0.szEffectFile == "Scene.fx" || pass0.szEffectFile == "Prop.fx";
     st.vertexAlpha = pass0.szEffectFile == "ActorIrrad.fx" ||
@@ -547,8 +570,7 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
             D3Slot& slot = s.slots[static_cast<u32>(kind)];
             if (slot.textureId >= 0)
                 continue; // a type never repeats inside a material, so this is a re-entry
-            slot.rawType = type;
-            slot.textureId = TextureIdOf(textures, entry.snoTexture.id);
+            FillSlotTexture(slot, entry, type, textures, s.pass, D3UvTransformId(g, kind));
             // Which channels the surface takes from this sample. Stated only by
             // a pass that carries the stage block; zero everywhere else, and
             // the shader keeps the slot's family default.
@@ -557,36 +579,63 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
                     ((s.pass.colorTypes & D3TypeBit(type)) != 0 ? kD3ChannelRgb : 0) |
                     ((s.pass.alphaTypes & D3TypeBit(type)) != 0 ? kD3ChannelAlpha : 0));
             }
-            // UV set 0 always. The two candidate selectors both turned out to be
-            // something else — the field at 0x0C is the transform mode and the
-            // one at 0x98 a flags word — and nothing recovered picks a set.
-            // Reading either as "set 1" would put every D3 diffuse on the wrong
-            // coordinates, and D3 authors both sets on every vertex, so nothing
-            // about the geometry would say so.
-            slot.uvSource = 0;
-            // The PASS's address modes for this stage, not the entry's flags
-            // word: that word's low bits randomise the scroll phase and say
-            // nothing about addressing. See D3PassState::WrapBitsFor.
-            slot.wrapFlags = s.pass.WrapBitsFor(type);
-
-            const auto uv = D3ReadUvXform(entry);
-            if (uv.mode == D3UvMode::Matrix) {
-                UvMatrixOf(entry, slot.uvTransform);
-            } else if (uv.mode == D3UvMode::ScaleRotateScroll) {
-                slot.uvTransform = D3UvMatrix(uv, 0.0f);
-                if (uv.animated)
-                    slot.uvTransformId = D3UvTransformId(g, kind);
-            }
-            // Modes 3..6 drive the coordinates from an Anim2D frame table, the
-            // camera or a bone; none is reproduced, and identity is what an
-            // unreproduced one has to be — 49 entries in the whole corpus.
-            // `D3UvAffine` now makes the same choice internally, so the two
-            // arms above are belt and braces rather than the only guard: the
-            // particle path shared the helper without this switch and scrolled
-            // 2,221 mode-0 and mode-3 layers on triples the engine reads for
-            // mode 2 alone.
             if (slot.textureId >= 0)
                 s.valid = true;
+        }
+
+        // ---- and the other shape: the `Legacy.fx` chain -------------------
+        //
+        // Built ALONGSIDE the slots rather than instead of them, because the
+        // slots are what a fallback needs: a chain whose textures have not
+        // landed yet still has to draw something, and a `Legacy.fx` pass this
+        // build later decides it cannot run has somewhere to fall back to. The
+        // shading model picks between them on `chainCount`.
+        //
+        // Order is `combines`' order, which is the pass's declaration order
+        // with the scene-depth stage dropped — the same indexing the tag block
+        // uses, so stage i's ops and stage i's texture come from the same i.
+        //
+        // `ps_legacy` and not `Legacy.fx`: the family has 28 pixel entry points
+        // over its 855 corpus passes and only that one IS the combiner. 784 of
+        // the 855 name it; the other 71 are a program each —
+        // `ps_legacy_Malthael_wings_flow` warps its coordinates by a pair of
+        // flow maps (types 42 and 44) before it samples anything, and running
+        // his four wing layers as a plain chain thinned them to threads. The
+        // `.shd` says which program a pass runs, so this asks it.
+        if (s.pass.resolved && s.pass.stageArgs && s.pass.effectFile == "Legacy.fx" &&
+            s.pass.pixelEntry == "ps_legacy") {
+            for (u32 i = 0; i < s.pass.combineCount && i < kD3MaxChainStages; ++i) {
+                const auto& cb = s.pass.combines[i];
+                D3Slot& stage = s.chain[i];
+                s.chainCount = i + 1;
+                stage.colorOp = cb.colorOp;
+                stage.alphaOp = cb.alphaOp;
+                stage.colorGain = cb.colorGain;
+                stage.alphaGain = cb.alphaGain;
+                stage.colorClamp = cb.colorClamp;
+                stage.alphaClamp = cb.alphaClamp;
+                // A type-0 hole binds nothing and its ops are clear, so it
+                // stays in the chain as a no-op rather than shifting every
+                // stage after it onto the wrong texture.
+                if (cb.type == 0)
+                    continue;
+                for (const d3n::MaterialTextureEntry& entry : mat->arTextures) {
+                    if (D3TextureTypeOf(entry) != cb.type)
+                        continue;
+                    FillSlotTexture(stage, entry, cb.type, textures, s.pass,
+                                    ::whiteout::flakes::io::D3UvTransformIdForStage(g, i));
+                    break;
+                }
+                if (stage.textureId >= 0)
+                    s.valid = true;
+            }
+            // A chain that bound nothing is not a chain. Falls back to the
+            // slots, which is what every pre-chain build did.
+            bool any = false;
+            for (u32 i = 0; i < s.chainCount; ++i)
+                any = any || s.chain[i].textureId >= 0;
+            if (!any)
+                s.chainCount = 0;
         }
     }
 

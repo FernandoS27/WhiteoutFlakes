@@ -84,3 +84,21 @@ Actor/x1_mightyWeapon_1H_norm_unique_09.acr
 Actor/x1_mightyWeapon_1H_norm_unique_10.acr
 Actor/x1_mightyWeapon_2H_norm_unique_11.acr
 Actor/mightyWeapon_1H_norm_unique_05.acr
+#
+# Added 2026-09-01 for the `Legacy.fx` chain (D3_MATERIAL_DESIGN.md 7.6). The
+# ten entries above reach it on exactly two sub-objects -- Imperius's wing and
+# Malthael's wingCore -- and Imperius's decodes to the same numbers the named
+# slots already produced, so his golden does not move at all. A chain that
+# stopped resolving its textures would have shown up here as nothing.
+#
+#   x1_deathMaiden               `A_normal_fx` is the five-stage case: a REPLACE
+#                                at stage 0, a type-0 hole in the middle, and a
+#                                trailing type-1 stage its program never
+#                                samples. Its two colour layers are types 11
+#                                and 13, which no named slot maps.
+#   x1_urzael_cannonball_model   three chain materials on one model and the
+#                                only corpus entry with TAG_VS_EDGEALPHA on
+#                                both spellings -- rim on `outer_mat`, inverse
+#                                rim on `inner_mat` and `innerShell_mat`.
+Appearances/x1_deathMaiden.app
+Appearances/x1_urzael_cannonball_model.app

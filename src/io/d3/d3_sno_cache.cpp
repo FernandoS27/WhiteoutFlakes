@@ -441,4 +441,51 @@ d3n::Group D3SnoCache::GroupOf(i32 sno) {
     return Load(sno, {}).group;
 }
 
+std::shared_ptr<const d3n::Shaders> D3ResolveShaders(const d3n::UberMaterial& material,
+                                                     D3SnoCache* cache) {
+    if (!cache || !material.snoShaderMap.valid())
+        return nullptr;
+    const auto map = cache->ShaderMap(material.snoShaderMap.id);
+    if (!map)
+        return nullptr;
+    for (const u32 tag : kD3OpaqueTagChain) {
+        for (const auto& e : map->arShaders) {
+            if (e.dwTagId == tag && e.snoShader.valid())
+                return cache->Shaders(e.snoShader.id);
+        }
+    }
+    // Nothing on the chain. Shipped maps are small and single-tagged often
+    // enough that refusing here would drop real state, so the first valid entry
+    // stands in — a more generic program is exactly what the fall-through
+    // produces anyway.
+    for (const auto& e : map->arShaders) {
+        if (e.snoShader.valid())
+            return cache->Shaders(e.snoShader.id);
+    }
+    return nullptr;
+}
+
+u32 D3ChainStageTypes(const d3n::UberMaterial& material, D3SnoCache* cache,
+                      std::array<i32, kD3MaxChainStages>& out) {
+    out.fill(0);
+    const auto shaders = D3ResolveShaders(material, cache);
+    if (!shaders || shaders->arRenderPasses.empty())
+        return 0;
+    const auto& pass0 = shaders->arRenderPasses[0];
+    // `ps_legacy` alone, matching the surface table's own gate: the other 27
+    // `Legacy.fx` entry points are a program each and none of them is the
+    // fixed-function chain.
+    if (pass0.szEffectFile != "Legacy.fx" || pass0.szPixelShaderEntry != "ps_legacy")
+        return 0;
+    u32 n = 0;
+    for (const auto& stage : pass0.arTextureStages) {
+        if (stage.dwTextureType == kD3TextureTypeSceneDepth)
+            continue;
+        if (n >= kD3MaxChainStages)
+            break;
+        out[n++] = stage.dwTextureType;
+    }
+    return n;
+}
+
 } // namespace whiteout::flakes::io

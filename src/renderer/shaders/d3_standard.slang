@@ -108,6 +108,8 @@ static const int kD3SlotAlphaMask0 = 6;
 static const int kD3SlotAlphaMask1 = 7;
 static const int kD3SlotAlphaMask2 = 8;
 static const int kD3SlotCount = 9;
+// Stages in a `Legacy.fx` chain, and the first six slots are its units.
+static const int kD3MaxChainStages = 6;
 
 // ---- Constant buffers ------------------------------------------------------
 //
@@ -158,6 +160,17 @@ struct D3DrawData
     // .x D3DRS_DEPTHBIAS, a constant added to the [0,1] window depth; .yzw
     // spare. See D3PassState::depthBias.
     float4 params2;
+    // The `Legacy.fx` chain. .x how many stages are live — 0 runs the named
+    // slots instead; .y where the vertex colour and the texture factor enter
+    // each channel (kD3ChainVcol* below); .z `TAG_VS_EDGEALPHA`; .w the
+    // exponent `pow(dot(V, N), .w)` takes, i.e. 2 * edgealphaParams.x.
+    float4 params3;
+    // D3DTA_TFACTOR — the `Factor` constant, which is the DRAW's colour and
+    // not the pass's: `Render_SetPassConstantColor(renderRecord + 8)` runs
+    // immediately after `Render_BindShaderPass` on every draw path, so the
+    // pass's own dwConstantColor never reaches a shader. Here that is
+    // (1, 1, 1, elementAlpha).
+    float4 factor;
     // MaterialColors, verbatim.
     float4 matDiffuse;
     float4 matSpecular;
@@ -167,10 +180,30 @@ struct D3DrawData
     // the host caps at twelve entries. Row-vector: uv' = (uv, 0, 1) . M.
     float4x4 slotUv[kD3SlotCount];
     // .x uv set (0/1) in the low nibble and the sampler wrap variant in bits
-    // 4-5; .y unused; .z mode (0 = slot absent, 1 = sample the texture);
-    // .w unused.
+    // 4-5; .y the chain stage's combine ops, colour in bits 0-1 and alpha in
+    // bits 4-5 (kD3Stage* — 0 skip, 1 modulate, 2 add, 3 replace); .z mode
+    // (0 = slot absent, 1 = sample the texture); .w which channels the surface
+    // takes (kD3Channel*), for the named slots.
     uint4 slotCtl[kD3SlotCount];
+    // The chain stage's own gain and clamp: .x colour gain, .y alpha gain,
+    // .z/.w non-zero to saturate that channel HERE. Per stage rather than
+    // accumulated, because a clamp in the middle of a chain is what separates
+    // `cm2x_cm2x` from `cm4x`.
+    float4 slotGain[kD3SlotCount];
 }
+
+// `D3PassState::colorVcolFirst` and its seven neighbours, packed into
+// `params3.y`. The vertex colour and the texture factor are independent: a
+// chain takes one OR the other at the head (the stage's units digit picks) and
+// either at the tail (codes 40 and 41).
+static const uint kD3ChainColorVcolFirst   = 0x01u;
+static const uint kD3ChainColorVcolLast    = 0x02u;
+static const uint kD3ChainAlphaVcolFirst   = 0x04u;
+static const uint kD3ChainAlphaVcolLast    = 0x08u;
+static const uint kD3ChainColorFactorFirst = 0x10u;
+static const uint kD3ChainColorFactorLast  = 0x20u;
+static const uint kD3ChainAlphaFactorFirst = 0x40u;
+static const uint kD3ChainAlphaFactorLast  = 0x80u;
 
 struct D3BoneData
 {
@@ -383,6 +416,235 @@ float4 MaskWeight(uint channels, float4 s)
     return float4(rgb, a);
 }
 
+// ---- The light sum, the original's shape -----------------------------------
+//
+// Split in two because the original splits it: the ambient half rides a texcoord
+// unclamped and the pixel program can substitute it for the whole sum when a
+// surface is in shadow, so ambient and diffuse are never one number in a shipped
+// program either.
+//
+// A function rather than a block inside the entry point because BOTH material
+// shapes need it. For the slot path it is the light the albedo is multiplied by;
+// for a `Legacy.fx` chain it is COLOR0.rgb — `vs_legacy`'s `legacyLighting` is
+// this same ambient-plus-diffuse over the same rig, and the chain multiplies its
+// textures by the result.
+void D3LightSum(float3 worldPos, float3 N, float3 V, float4 vertexCol, uint vertexColorMode,
+                out float3 ambient, out float3 diffuseSum, out float3 specSum)
+{
+    ambient = float3(0.0, 0.0, 0.0);
+    diffuseSum = float3(0.0, 0.0, 0.0);
+    specSum = float3(0.0, 0.0, 0.0);
+
+    // AN UNLIT PASS TAKES NO LIGHT AND ITS VERTEX COLOUR IS THE LIGHT. The pass
+    // says which it is (`D3PassState::lit`, tag 0xA000F, measured to separate
+    // the corpus perfectly), and an unlit vertex program ends
+    // `MOV result.color, vertex.attrib[3]` — the attribute verbatim, which the
+    // pixel program then multiplies its texture chain by. Imperius's wings are
+    // this: `Legacy.fx`, unlit, vertex colour white on all 726 vertices. Lighting
+    // them with the scene's rig is what drew them as a dark sheet.
+    if ((vertexColorMode & 0x4u) != 0u)
+    {
+        ambient = vertexCol.rgb;
+        return;
+    }
+
+    // `colAmbient` lights the surface directly and `vAmbient` ADDS to it — it
+    // does not gate it. Measured over 200 corpus `.app` (1,764 materials):
+    // `vAmbient` is all-zero on 98.1% of them, so multiplying the two would
+    // erase the scene's ambient on essentially every D3 surface, which is what
+    // used to leave the unlit side black.
+    ambient = pass.colAmbient.rgb + draw.matAmbient.rgb;
+
+    // The baked per-vertex light, for the families whose vertex program reads
+    // it. `vs_scene` closes `MAD R0.xyz, vertex.attrib[3], 2, R0` /
+    // `MUL result.color.xyz, R0, 0.5`, and the pixel program opens
+    // `MUL R2, fragment.color.primary, 2` — the halving is only there to survive
+    // the clamped colour register, so the attribute enters the light sum at
+    // TWICE unit weight, not once. Measured on 148 of the 167 Scene.fx vertex
+    // programs. Gated because the actor families leave the attribute at white
+    // and compute their light in the vertex shader.
+    if ((vertexColorMode & 0x1u) != 0u)
+        ambient += vertexCol.rgb * 2.0;
+
+    // Phong, not Blinn: the shipped `_spec` programs reflect the eye-to-surface
+    // vector about the normal and dot it with L. In view space the eye is the
+    // origin, so their `R = P - 2N(P.N)` is this `reflect(-V, N)`.
+    let R = reflect(-V, N);
+    let specPower = max(pass.specularPower.x, 1.0);
+
+    [unroll]
+    for (int i = 0; i < kD3MaxLights; ++i)
+    {
+        // `w` = 1 makes this a point light and `w` = 0 a directional whose
+        // `.xyz` is already the direction TOWARD the light — the engine negates
+        // it on the way in.
+        let lp = pass.lightPos[i];
+        let d = lp.xyz - worldPos * lp.w;
+        let dist = length(d);
+        let L = (dist > 1e-4) ? d / dist : float3(0.0, 0.0, 1.0);
+        let a = pass.lightAtten[i];
+        // `.w` is the live bit, so a dead slot attenuates to zero without the
+        // shader testing a count — the engine clears unused slots from a neutral
+        // template for the same reason.
+        let atten = a.w / max(a.x + a.y * dist + a.z * dist * dist, 1e-4);
+        ambient += pass.lightAmbient[i].rgb * atten;
+        let ndl = saturate(dot(N, L));
+        diffuseSum += pass.lightDiffuse[i].rgb * (ndl * atten);
+        specSum += pass.lightSpecular[i].rgb * (pow(saturate(dot(L, R)), specPower) * atten);
+    }
+
+    // The cylindrical light — D3's hero light, a vertical tube around a point
+    // with a linear radial falloff. Its ambient half is what keeps a character's
+    // shadow side off the floor of the frame.
+    {
+        let lc = pass.cylPos.xyz - worldPos;
+        let axial = dot(lc, pass.cylAxis.xyz);
+        let perp = sqrt(max(dot(lc, lc) - axial * axial, 0.0));
+        let f = saturate((pass.cylRange.y - perp) * pass.cylRange.x) * pass.cylPos.w;
+        ambient += pass.cylAmbient.rgb * f;
+        let lcLen = length(lc);
+        let L = (lcLen > 1e-4) ? lc / lcLen : float3(0.0, 0.0, 1.0);
+        diffuseSum += pass.cylDiffuse.rgb * (saturate(dot(N, L)) * f);
+    }
+}
+
+// ---- The `Legacy.fx` fixed-function chain ----------------------------------
+//
+// `Legacy.fx` does not compile a program per material shape: it emulates D3D9's
+// TEXTURE-STAGE COMBINER, and the pass's tag block IS the program. 855 of the
+// corpus's 1,831 passes run it — more than every other family put together —
+// and the named slots above cannot express one, because its stage types are
+// join keys with no semantics. See D3Surface::chain.
+//
+// Stage i reads slot i, so the first six slot textures are the chain's units
+// and their `slotUv` / `slotCtl` carry the stage's own transform and wrap.
+float4 SampleChainStage(int i, float4 uv01)
+{
+    switch (i)
+    {
+    case 0: return SampleSlot(0, texDiffuse, uv01);
+    case 1: return SampleSlot(1, texNormal, uv01);
+    case 2: return SampleSlot(2, texSpecular, uv01);
+    case 3: return SampleSlot(3, texEmissive, uv01);
+    case 4: return SampleSlot(4, texLightmap, uv01);
+    default: return SampleSlot(5, texIrradiance, uv01);
+    }
+}
+
+// The chain, stage by stage and in order. Order matters for two reasons an
+// accumulated product has no room for: a REPLACE and an ADD, and a
+// MODULATE2X/4X that SATURATES before the next stage reads it. Same machine as
+// the particle path's, with two things a particle never has — the light sum in
+// COLOR0.rgb and the facing term in COLOR0.a.
+//
+// Nothing here reads MaterialColors, and that is the original's doing rather
+// than an omission: `ps_legacy` samples textures and folds in COLOR0, `Factor`
+// and `appearanceFX`, and the material's four colours reach no stage of it.
+float4 D3LegacyChain(PSInput input, bool frontFace, uint vertexColorMode, int stageCount)
+{
+    float3 N = normalize(input.normalWS);
+    if (draw.params0.z != 0.0 && !frontFace)
+        N = -N;
+    let V = normalize(pass.cameraPosWS.xyz - input.worldPos.xyz);
+
+    // COLOR0.rgb, as `vs_legacy` writes it: the light rig, or the vertex
+    // attribute verbatim when the pass is unlit. D3LightSum already makes that
+    // choice on `vertexColorMode`, and for a chain there is no albedo to
+    // multiply the result into — the textures are the albedo.
+    float3 ambient, diffuseSum, specSum;
+    D3LightSum(input.worldPos.xyz, N, V, input.vertexCol, vertexColorMode, ambient, diffuseSum,
+               specSum);
+    let vcolRgb = ambient + diffuseSum;
+
+    // COLOR0.a. `TAG_VS_EDGEALPHA` decides between the attribute and a facing
+    // term, and the facing term is what makes Urzael's cannonball a glowing orb
+    // rather than a flat disc: `pow(dot(-normalize(viewPos), N), 2 *
+    // edgealphaParams.x) * Factor.w`, one's-complemented on the inverse-rim
+    // values. `dot(V, N)` here is the same number — a dot is invariant under
+    // the view rotation, and V is already the surface-to-eye vector.
+    //
+    // `Factor.w` lands on BOTH arms, which is the original's doing: the render
+    // record's alpha is the sub-object's fade, and
+    // `ActorModel_EmitSubObjectDrawCalls` packs that same number into the
+    // vertex colour it emits. A chain has no `matDiffuse` to carry the fade on,
+    // so this is the only place it can enter.
+    let edgeMode = uint(draw.params3.z);
+    float vcolA = input.vertexCol.a * draw.factor.w;
+    if (edgeMode != 0u)
+    {
+        let e = pow(saturate(dot(V, N)), draw.params3.w);
+        vcolA = ((edgeMode == 2u || edgeMode == 5u) ? 1.0 - e : e) * draw.factor.w;
+    }
+
+    let bits = uint(draw.params3.y);
+    float3 rgb = float3(1.0, 1.0, 1.0);
+    float alpha = 1.0;
+    if ((bits & kD3ChainColorVcolFirst) != 0u)
+        rgb *= vcolRgb;
+    if ((bits & kD3ChainColorFactorFirst) != 0u)
+        rgb *= draw.factor.rgb;
+    if ((bits & kD3ChainAlphaVcolFirst) != 0u)
+        alpha *= vcolA;
+    if ((bits & kD3ChainAlphaFactorFirst) != 0u)
+        alpha *= draw.factor.w;
+
+    // Spelled out rather than looped, for the reason the mask block above gives:
+    // a dynamic texture select inside a loop is what fxc refuses to unroll, and
+    // the stage's texture IS the loop index.
+    [unroll]
+    for (int i = 0; i < 6; ++i)
+    {
+        let ops = draw.slotCtl[i].y;
+        let cop = ops & 0x3u;
+        let aop = (ops >> 4u) & 0x3u;
+        let live = i < stageCount;
+        // A stage whose texture has not landed samples white rather than the
+        // engine's black. The original's flush binds `Texture black` to an
+        // unbound stage and then drops the draw entirely if it is not
+        // resident; a viewer must not turn a streaming texture into an
+        // invisible mesh, and white is the neutral for a modulate.
+        let s = (live && SlotOn(i)) ? SampleChainStage(i, input.uv01)
+                                    : float4(1.0, 1.0, 1.0, 1.0);
+        let g = draw.slotGain[i];
+        if (live && cop != 0u)
+        {
+            rgb = (cop == 1u ? rgb * s.rgb : cop == 2u ? rgb + s.rgb : s.rgb) * g.x;
+            if (g.z > 0.0)
+                rgb = saturate(rgb);
+        }
+        if (live && aop != 0u)
+        {
+            alpha = (aop == 1u ? alpha * s.a : aop == 2u ? alpha + s.a : s.a) * g.y;
+            if (g.w > 0.0)
+                alpha = saturate(alpha);
+        }
+    }
+
+    if ((bits & kD3ChainColorVcolLast) != 0u)
+        rgb *= vcolRgb;
+    if ((bits & kD3ChainColorFactorLast) != 0u)
+        rgb *= draw.factor.rgb;
+    if ((bits & kD3ChainAlphaVcolLast) != 0u)
+        alpha *= vcolA;
+    if ((bits & kD3ChainAlphaFactorLast) != 0u)
+        alpha *= draw.factor.w;
+
+    // The colour is not saturated, for the reason the slot path gives: the
+    // original's runs unclamped into a UNORM target and the ROP clamps it, so
+    // clamping here would cost the HDR path its headroom.
+    float4 outColor = float4(rgb, saturate(alpha));
+    let pma = (int)draw.params1.z;
+    if (pma != 0)
+    {
+        outColor.rgb *= outColor.a;
+        if (pma == 1)
+            outColor.a = 1.0 - outColor.a;
+        else if (pma == 2)
+            outColor.a = 1.0;
+    }
+    return outColor;
+}
+
 [shader("fragment")]
 // The fixed-function alpha test, which is a COMPARISON and a reference, not a
 // threshold: `sub_5717F0` sets ALPHAFUNC and ALPHAREF together and passes (0, 0)
@@ -403,6 +665,20 @@ bool D3AlphaTestKeeps(float a, float reference, int func) {
 
 float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
 {
+    let vertexColorMode = uint(draw.params0.w);
+
+    // `Legacy.fx` first, because for that family the slots below are the wrong
+    // question — see D3LegacyChain. The alpha test runs on what was WRITTEN,
+    // which for a `_pma` pass is the inverted coverage.
+    let chainCount = int(draw.params3.x);
+    if (chainCount > 0)
+    {
+        let chained = D3LegacyChain(input, frontFace, vertexColorMode, chainCount);
+        if (!D3AlphaTestKeeps(chained.a, draw.params0.x, (int)draw.params1.w))
+            discard;
+        return chained;
+    }
+
     // Unresolved slots fall back to the type's documented default, and the
     // surface still draws. The original's residency gate returns *before* the
     // draw when a bound texture is not resident — an "invisible mesh" in D3 is
@@ -425,7 +701,6 @@ float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
     if (SlotOn(kD3SlotDiffuse))
         albedo *= SampleSlot(kD3SlotDiffuse, texDiffuse, input.uv01);
 
-    let vertexColorMode = uint(draw.params0.w);
     if ((vertexColorMode & 0x2u) != 0u)
         albedo.a *= input.vertexCol.a;
 
@@ -496,89 +771,9 @@ float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
     if (SlotOn(kD3SlotSpecular))
         specTint = draw.matSpecular.rgb * SampleSlot(kD3SlotSpecular, texSpecular, input.uv01).rgb;
 
-    // ---- The light sum, the original's shape -------------------------------
-    //
-    // Split in two because the original splits it: the ambient half rides a
-    // texcoord unclamped and the pixel program can substitute it for the whole
-    // sum when a surface is in shadow, so ambient and diffuse are never one
-    // number in a shipped program either.
-    float3 ambient = float3(0.0, 0.0, 0.0);
-    float3 diffuseSum = float3(0.0, 0.0, 0.0);
-    float3 specSum = float3(0.0, 0.0, 0.0);
-
-    // AN UNLIT PASS TAKES NO LIGHT AND ITS VERTEX COLOUR IS THE LIGHT. The pass
-    // says which it is (`D3PassState::lit`, tag 0xA000F, measured to separate
-    // the corpus perfectly), and an unlit vertex program ends
-    // `MOV result.color, vertex.attrib[3]` — the attribute verbatim, which the
-    // pixel program then multiplies its texture chain by. Imperius's wings are
-    // this: `Legacy.fx`, unlit, vertex colour white on all 726 vertices. Lighting
-    // them with the scene's rig is what drew them as a dark sheet.
-    if ((vertexColorMode & 0x4u) != 0u)
-    {
-        ambient = input.vertexCol.rgb;
-    }
-    else
-    {
-        // `colAmbient` lights the surface directly and `vAmbient` ADDS to it —
-        // it does not gate it. Measured over 200 corpus `.app` (1,764
-        // materials): `vAmbient` is all-zero on 98.1% of them, so multiplying
-        // the two would erase the scene's ambient on essentially every D3
-        // surface, which is what used to leave the unlit side black.
-        ambient = pass.colAmbient.rgb + draw.matAmbient.rgb;
-
-        // The baked per-vertex light, for the families whose vertex program
-        // reads it. `vs_scene` closes `MAD R0.xyz, vertex.attrib[3], 2, R0` /
-        // `MUL result.color.xyz, R0, 0.5`, and the pixel program opens
-        // `MUL R2, fragment.color.primary, 2` — the halving is only there to
-        // survive the clamped colour register, so the attribute enters the
-        // light sum at TWICE unit weight, not once. Measured on 148 of the 167
-        // Scene.fx vertex programs. Gated because the actor families leave the
-        // attribute at white and compute their light in the vertex shader.
-        if ((vertexColorMode & 0x1u) != 0u)
-            ambient += input.vertexCol.rgb * 2.0;
-
-        // Phong, not Blinn: the shipped `_spec` programs reflect the eye-to-
-        // surface vector about the normal and dot it with L. In view space the
-        // eye is the origin, so their `R = P - 2N(P.N)` is this `reflect(-V, N)`.
-        let R = reflect(-V, N);
-        let specPower = max(pass.specularPower.x, 1.0);
-
-        [unroll]
-        for (int i = 0; i < kD3MaxLights; ++i)
-        {
-            // `w` = 1 makes this a point light and `w` = 0 a directional whose
-            // `.xyz` is already the direction TOWARD the light — the engine
-            // negates it on the way in.
-            let lp = pass.lightPos[i];
-            let d = lp.xyz - input.worldPos.xyz * lp.w;
-            let dist = length(d);
-            let L = (dist > 1e-4) ? d / dist : float3(0.0, 0.0, 1.0);
-            let a = pass.lightAtten[i];
-            // `.w` is the live bit, so a dead slot attenuates to zero without
-            // the shader testing a count — the engine clears unused slots from
-            // a neutral template for the same reason.
-            let atten = a.w / max(a.x + a.y * dist + a.z * dist * dist, 1e-4);
-            ambient += pass.lightAmbient[i].rgb * atten;
-            let ndl = saturate(dot(N, L));
-            diffuseSum += pass.lightDiffuse[i].rgb * (ndl * atten);
-            specSum += pass.lightSpecular[i].rgb * (pow(saturate(dot(L, R)), specPower) * atten);
-        }
-
-        // The cylindrical light — D3's hero light, a vertical tube around a
-        // point with a linear radial falloff. Its ambient half is what keeps a
-        // character's shadow side off the floor of the frame.
-        {
-            let lc = pass.cylPos.xyz - input.worldPos.xyz;
-            let axial = dot(lc, pass.cylAxis.xyz);
-            let perp = sqrt(max(dot(lc, lc) - axial * axial, 0.0));
-            let f = saturate((pass.cylRange.y - perp) * pass.cylRange.x) * pass.cylPos.w;
-            ambient += pass.cylAmbient.rgb * f;
-            let lcLen = length(lc);
-            let L = (lcLen > 1e-4) ? lc / lcLen : float3(0.0, 0.0, 1.0);
-            diffuseSum += pass.cylDiffuse.rgb * (saturate(dot(N, L)) * f);
-        }
-
-    }
+    float3 ambient, diffuseSum, specSum;
+    D3LightSum(input.worldPos.xyz, N, V, input.vertexCol, vertexColorMode, ambient, diffuseSum,
+               specSum);
 
     // THE IRRADIANCE FAMILY'S AMBIENT CARRIES A FACTOR OF `2 * cube`, AND THIS
     // TREATS THE PAIR AS UNITY. `actor2_opaque` and `actor2_alphatest` — the
