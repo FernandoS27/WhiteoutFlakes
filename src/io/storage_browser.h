@@ -69,6 +69,33 @@ enum class StorageKind {
 // archives are ignored.
 StorageKind ClassifyStorage(const std::string& path);
 
+class StorageBrowser;
+class ProgressMonitor;
+
+// Open @p root into @p browser, honouring a host's own archive list.
+//
+// The one place that rule lives, because two hosts need it and disagreeing
+// about it is not a difference anyone could debug. What it says:
+//
+//   - a DIRECTORY OF MPQS is its archive set, so the list REPLACES the
+//     directory scan. A browse then shows exactly what a reader walking the
+//     same list can produce - and an archive the user took out of the order
+//     stays out of both. The alternative puts files in the picker that the
+//     extractor behind it will not hand over.
+//   - a CASC INSTALL owns its content through CASC and ignores any .mpq beside
+//     it, so there the list is ADDITIVE: what it names is a mod's archive,
+//     sitting on top of the install.
+//   - ONE ARCHIVE or A LOOSE FOLDER ignores the list entirely. The caller
+//     named exactly what it wanted to see, and folding a list into that would
+//     be answering a different question.
+//
+// An empty @p archives is the plain Open/OpenAuto this wraps. @p kind is the
+// kind to force, or nullopt for OpenAuto's "work out what this path is".
+bool OpenWithArchives(StorageBrowser& browser, const std::string& root,
+                      std::optional<StorageKind> kind,
+                      const std::vector<std::string>& archives, std::string* error,
+                      ProgressMonitor* progress = nullptr);
+
 // What a storage is worth walking for, one bit per thing a host would offer as
 // a checkbox — so the grouping is the user's ("models", "effects"), not the
 // file extension's.
@@ -151,6 +178,38 @@ public:
     //        cancellation: a cancelled open leaves the browser closed.
     bool Open(const std::string& root, StorageKind kind, std::string* error,
               ProgressMonitor* progress = nullptr);
+
+    // Open an explicit list of .mpq files as one merged tree.
+    //
+    // Same result as Open(dir, MpqSet) when the list happens to be every
+    // archive in `dir`, and what a host with a user-ordered archive list uses
+    // instead: there, the list decides what is in the browse, not what a
+    // directory happens to hold - so an archive living somewhere else is
+    // browsable and one the user removed from the order is not.
+    //
+    // Order does not matter here and is not remembered. An MPQ stores no mod
+    // prefix, so a path present in two archives spells the same either way and
+    // collapses to one entry; which COPY a reader gets is decided when it
+    // reads, by the load order it walks. Pass the list in priority order
+    // anyway - the reader that follows will want it, and a caller keeping two
+    // orders straight is a caller with a bug.
+    //
+    // `root` is only what Root() reports back: the directory the list is
+    // conceptually rooted at, for the host's own bookkeeping. Fails only when
+    // not one archive could be read.
+    bool OpenArchives(const std::string& root, const std::vector<std::string>& archiveFiles,
+                      std::string* error);
+
+    // Merge more archives into the tree of an already-open storage, and
+    // returns how many entries that added.
+    //
+    // The CASC half of the same setting: a Reforged install owns its content
+    // through CASC, and a mod ships an .mpq beside it that the CASC knows
+    // nothing about. Opening the install and then adding the mod is how both
+    // end up in one browse. A closed browser has no type mask to filter
+    // against and ignores the call; an archive that will not open is skipped
+    // with a log line rather than failing the others.
+    std::size_t AddArchives(const std::vector<std::string>& archiveFiles);
 
     // Listfile and TACT key list to open a CASC with. Only World of Warcraft
     // needs either — its root is id-keyed, so without a listfile a browse of it
@@ -301,6 +360,12 @@ private:
     // Insert one entry into the tree: `original` is what a provider reads,
     // `display` is what the user navigates.
     void Insert(const std::string& original, const std::string& display);
+
+    // The state every open clears, and the state every successful one sets.
+    // Split out so OpenArchives, which is not one of the switch's four kinds,
+    // begins and ends in exactly the same place Open does.
+    void ResetForOpen(StorageKind kind);
+    void FinishOpen();
 
     bool OpenCasc(const std::string& root, std::string* error, ProgressMonitor* progress);
     bool OpenMpq(const std::string& path, std::string* error);

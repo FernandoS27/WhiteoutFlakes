@@ -284,8 +284,8 @@ bool StorageExplorer::OpenInternal(const std::string& root,
             [this, root, kind](io::ProgressMonitor& m) {
                 // The browser's tree is built here. Nothing may read it until
                 // the completion clears `opening_` — see BuildWindow.
-                const bool ok = kind ? browser_.Open(root, *kind, &openError_, &m)
-                                     : browser_.OpenAuto(root, &openError_);
+                const bool ok = io::OpenWithArchives(browser_, root, kind, archiveOverride_,
+                                                     &openError_, &m);
                 return ok ? io::TaskResult::Ok()
                           : io::TaskResult::Fail(openError_.empty() ? "open failed" : openError_);
             },
@@ -302,8 +302,7 @@ bool StorageExplorer::OpenInternal(const std::string& root,
     }
 
     std::string err;
-    const bool ok =
-        kind ? browser_.Open(root, *kind, &err) : browser_.OpenAuto(root, &err);
+    const bool ok = io::OpenWithArchives(browser_, root, kind, archiveOverride_, &err);
     if (!ok) {
         lastError_ = "Failed to open " + what + " at '" + root + "': " + err;
         std::fprintf(stderr, "[explorer] %s\n", lastError_.c_str());

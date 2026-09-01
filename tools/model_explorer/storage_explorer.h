@@ -105,6 +105,23 @@ public:
     // nothing they can act on.
     bool OpenStorage(const std::string& root);
 
+    // The host's own MPQ load order, applied to every open from here on.
+    //
+    // A host that lets the user edit which archives are read - and in what
+    // order - has to browse the same set it reads, or the picker offers files
+    // the reader behind it will not produce. io::OpenWithArchives is what
+    // decides how the list combines with whatever `root` turns out to be;
+    // the rule is written out there.
+    //
+    // Absolute paths, highest priority first. Empty (the default) leaves every
+    // open exactly as it was.
+    void SetArchiveOverride(std::vector<std::string> files) {
+        archiveOverride_ = std::move(files);
+    }
+    const std::vector<std::string>& ArchiveOverride() const {
+        return archiveOverride_;
+    }
+
     // Storages to list by name at the top of the File menu, each opened with
     // OpenStorage. Purely additive: the folder picker stays below them, and a
     // host that sets none gets the menu it had. The entry matching the open
@@ -332,6 +349,9 @@ private:
 
     renderer::RenderService& svc_;
     io::StorageBrowser browser_;
+    // See SetArchiveOverride. Empty means "the host has no list", which is
+    // every host that never asked.
+    std::vector<std::string> archiveOverride_;
     io::LoadTaskRunner* tasks_ = nullptr;
     // Written on the host thread only (set before submitting, cleared in the
     // completion), so the panel can test it without synchronisation.

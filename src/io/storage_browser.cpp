@@ -7,6 +7,7 @@
 #include <system_error>
 
 #include <algorithm>
+#include <cstdio>
 #include <cctype>
 
 namespace whiteout::flakes::io {
@@ -249,8 +250,7 @@ std::string JoinSegments(const std::vector<std::string>& segs) {
 
 } // namespace
 
-bool StorageBrowser::Open(const std::string& root, StorageKind kind, std::string* error,
-                          ProgressMonitor* progress) {
+void StorageBrowser::ResetForOpen(StorageKind kind) {
     open_ = false;
     kind_ = kind;
     product_ = ProductId::Neutral;
@@ -258,6 +258,19 @@ bool StorageBrowser::Open(const std::string& root, StorageKind kind, std::string
     storage_.reset();
     tree_ = Node{};
     currentPath_.clear();
+}
+
+void StorageBrowser::FinishOpen() {
+    open_ = true;
+    // Everything the game offers, until the host says otherwise.
+    enabled_ = available_;
+    treeCacheDirty_ = true;
+    Refresh();
+}
+
+bool StorageBrowser::Open(const std::string& root, StorageKind kind, std::string* error,
+                          ProgressMonitor* progress) {
+    ResetForOpen(kind);
 
     bool ok = false;
     switch (kind) {
@@ -277,12 +290,82 @@ bool StorageBrowser::Open(const std::string& root, StorageKind kind, std::string
     if (!ok)
         return false;
 
-    open_ = true;
-    // Everything the game offers, until the host says otherwise.
-    enabled_ = available_;
-    treeCacheDirty_ = true;
-    Refresh();
+    FinishOpen();
     return true;
+}
+
+bool OpenWithArchives(StorageBrowser& browser, const std::string& root,
+                      std::optional<StorageKind> kind,
+                      const std::vector<std::string>& archives, std::string* error,
+                      ProgressMonitor* progress) {
+    // Resolve the kind up front - the same call OpenAuto would have made - so
+    // the decision below is about what `root` IS rather than about what the
+    // caller happened to pass.
+    const StorageKind resolved = kind ? *kind : ClassifyStorage(root);
+
+    if (!archives.empty() && resolved == StorageKind::MpqSet)
+        return browser.OpenArchives(root, archives, error);
+
+    const bool ok = kind ? browser.Open(root, *kind, error, progress)
+                         : browser.OpenAuto(root, error);
+    if (ok && !archives.empty() && browser.Kind() == StorageKind::Casc)
+        browser.AddArchives(archives);
+    return ok;
+}
+
+bool StorageBrowser::OpenArchives(const std::string& root,
+                                  const std::vector<std::string>& archiveFiles,
+                                  std::string* error) {
+    ResetForOpen(StorageKind::MpqSet);
+    root_ = root;
+    // Same statement about the format OpenMpq makes: MPQ carries no build
+    // config, and the only game whose archives this browses is Warcraft III.
+    product_ = ProductId::Wc3;
+    available_ = ResolveAvailable(product_);
+
+    std::size_t opened = 0;
+    std::string lastErr;
+    for (const std::string& file : archiveFiles) {
+        std::string err;
+        InsertMpqEntries(file, &err);
+        if (err.empty())
+            ++opened;
+        else
+            lastErr = std::move(err);
+    }
+
+    if (opened == 0) {
+        if (error)
+            *error = lastErr.empty() ? "none of the listed .mpq archives could be read"
+                                     : lastErr;
+        return false;
+    }
+    FinishOpen();
+    return true;
+}
+
+std::size_t StorageBrowser::AddArchives(const std::vector<std::string>& archiveFiles) {
+    // available_ is what InsertMpqEntries filters against and it is only set by
+    // an open, so there is nothing sensible to merge into a closed browser.
+    if (!open_)
+        return 0;
+
+    std::size_t inserted = 0;
+    for (const std::string& file : archiveFiles) {
+        std::string err;
+        inserted += InsertMpqEntries(file, &err);
+        // One unreadable archive costs that archive, not the browse: a saved
+        // list outlives the files it names, and a stale entry should not turn
+        // an install the user can still browse into an error box.
+        if (!err.empty())
+            std::printf("[StorageBrowser] skipping archive '%s': %s\n", file.c_str(),
+                        err.c_str());
+    }
+    if (inserted > 0) {
+        treeCacheDirty_ = true;
+        Refresh();
+    }
+    return inserted;
 }
 
 BrowseType StorageBrowser::ResolveAvailable(ProductId product) const {
