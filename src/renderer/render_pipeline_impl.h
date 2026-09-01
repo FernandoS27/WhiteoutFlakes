@@ -177,6 +177,11 @@ struct RenderPipeline::Impl {
     // but drawn where every other particle is — the emitter is ordinary colour,
     // it just takes three layers to make it. Cleared alongside the above.
     particle::MultiTexGeometry multiTexGeo_;
+    // This frame's Diablo III texcoords, index-parallel with the ORDINARY
+    // particle stream rather than a stream of its own — a D3 quad is an ordinary
+    // billboard everywhere but its four texture coordinates. Interleaved into
+    // the D3 program's own vertex by D3ParticleShading::BeginFrame.
+    particle::D3VertexStream d3UvGeo_;
     std::unique_ptr<particle::MultiTexParticleService> multiTexParticles_;
     Matrix44f refractionView_ = Matrix44f::identity();
     Matrix44f refractionProjection_ = Matrix44f::identity();

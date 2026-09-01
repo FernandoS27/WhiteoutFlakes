@@ -219,7 +219,7 @@ std::shared_ptr<pd3::EmitterDesc> BuildD3EmitterDesc(const d3n::Particle& prt, i
     d->channels[pd3::kChScale] = FromScalar(prt.arScalePath);
     d->channels[pd3::kChAlpha] = FromScalar(prt.arAlphaPath);
     d->channels[pd3::kChSize] = FromScalar(prt.arSizePath);
-    d->channels[pd3::kChChildScalar] = FromScalar(prt.arSize2Path);
+    d->channels[pd3::kChHeightRatio] = FromScalar(prt.arSize2Path);
     d->channels[pd3::kChRollAngle] = FromScalar(prt.arRotationPath);
     d->channels[pd3::kChRollRate] = FromScalar(prt.arRotationRatePath);
     d->channels[pd3::kChSpinRate] = FromScalar(prt.arRotation2RatePath);

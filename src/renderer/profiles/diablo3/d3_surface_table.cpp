@@ -304,12 +304,30 @@ D3PassState D3PassStateOf(const d3n::Shaders& shadersAsset) {
     st.blendSrc = static_cast<u32>(r.dwSrcBlend);
     st.blendDst = static_cast<u32>(r.dwDestBlend);
     st.pmaMode = D3PmaModeOf(pass0, st.blendSrc, st.blendDst);
+    bool sawHole = false;
     for (const auto& stage : pass0.arTextureStages) {
         st.declaredTypes |= D3TypeBit(stage.dwTextureType);
+        if (stage.dwTextureType == 0)
+            sawHole = true;
+        else
+            st.stageHole = st.stageHole || sawHole;
         if (st.stageCount < D3PassState::kMaxStages)
             st.stages[st.stageCount++] = {stage.dwTextureType, io::D3StageWrapBits(stage)};
     }
     st.effectFile = pass0.szEffectFile;
+    st.pixelEntry = pass0.szPixelShaderEntry;
+    // How many texcoord sets the vertex program emits, from its own tag block,
+    // and which uv set each one reads. 10 is the engine's "this slot does not
+    // exist"; the rest are collected in program-output order, because that is
+    // the order the vertex stage emits them in. This count is also the only
+    // thing that says whether a flow shader's fourth texture is a second flow
+    // map or nothing at all.
+    for (u32 i = 0; i < io::kD3StageArgCount; ++i) {
+        const auto* tc = FindTag(pass0, io::kD3TagTexcoordFunc + i);
+        const u32 code = tc ? tc->dwValue : io::kD3TexcoordDefault[i];
+        if (io::D3TexcoordIsLive(code))
+            st.texcoordFunc[st.texcoordCount++] = code;
+    }
     // The fixed-function stage block. Present on every Legacy.fx pass and on no
     // other family this reproduces, so reading it needs no effect-file test:
     // a pass either carries the tags or it does not. See D3StageArg.
@@ -347,6 +365,7 @@ D3PassState D3PassStateOf(const d3n::Shaders& shadersAsset) {
             st.colorVcolLast = true;
         if (io::D3StageIsVertexColorOnly(aCode))
             st.alphaVcolLast = true;
+        st.erosion = st.erosion || aCode == io::kD3StageAlphaErosion;
         if (c.usesTexture && !colorSeen) {
             colorSeen = true;
             st.colorVcolFirst = io::D3StageTakesVertexColor(cCode);
@@ -561,6 +580,11 @@ BuildD3SurfaceTable(const d3n::Appearances& app, u32 lookIndex,
             // Modes 3..6 drive the coordinates from an Anim2D frame table, the
             // camera or a bone; none is reproduced, and identity is what an
             // unreproduced one has to be — 49 entries in the whole corpus.
+            // `D3UvAffine` now makes the same choice internally, so the two
+            // arms above are belt and braces rather than the only guard: the
+            // particle path shared the helper without this switch and scrolled
+            // 2,221 mode-0 and mode-3 layers on triples the engine reads for
+            // mode 2 alone.
             if (slot.textureId >= 0)
                 s.valid = true;
         }

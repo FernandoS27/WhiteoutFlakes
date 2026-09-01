@@ -25,10 +25,10 @@ namespace whiteout::flakes::renderer::particle::d3 {
 // ---- particle channels (ids 1..25; there is no id 4) ----
 enum ChannelId : i32 {
     kChSize = 1,          ///< FloatPath   — multiplies the birth size
-    kChChildScalar = 2,   ///< FloatPath   — copied to a spawned child actor
+    kChHeightRatio = 2,   ///< FloatPath   — the quad's height / its width
     kChColor = 3,         ///< ColorPath   — packed RGBA
     kChScale = 5,         ///< FloatPath   — a second size term
-    kChAlpha = 6,         ///< FloatPath   — 0..1, replicated into all four bytes
+    kChAlpha = 6,         ///< FloatPath   — 0..1; the whole of COLOR1, not COLOR0.a
     kChOrbitRadius = 7,   ///< FloatPath   — orbit radial offset, differentiated
     kChOrbitRadSpeed = 8, ///< VelocityPath        — orbit radial speed, x60
     kChOrbitAngSpeed = 9, ///< AngularVelocityPath — orbit angular speed, x60
@@ -92,7 +92,7 @@ inline constexpr i32 kParticleSlotChannel[24] = {
     kChScale,          // 1  arScalePath
     kChAlpha,          // 2  arAlphaPath
     kChSize,           // 3  arSizePath
-    kChChildScalar,    // 4  arSize2Path
+    kChHeightRatio,    // 4  arSize2Path
     kChRollAngle,      // 5  arRotationPath
     kChRollRate,       // 6  arRotationRatePath
     kChSpinRate,       // 7  arRotation2RatePath

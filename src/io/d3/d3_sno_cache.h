@@ -105,6 +105,14 @@ struct D3TextureAtlas {
     std::vector<Vector4f> frames;
     u32 width = 0;  ///< Pixels, for the quad aspect.
     u32 height = 0;
+    /// @brief How many leading records the reader skipped as junk.
+    ///
+    /// Diagnostics only, and kept because the skip is a heuristic: if it were
+    /// really a fixed leading slot this would be 1 on every sheet, and if it
+    /// were really junk-detection it would vary. Counting it is what separates
+    /// the two, and the answer decides whether a sheet can silently lose its
+    /// last tile. See D3SnoCache::TextureAtlas.
+    u32 leadSkip = 0;
 
     /// @brief The tile SIZE, which the engine takes from frame 0 alone and
     ///        applies to every frame — only the origin varies per frame.

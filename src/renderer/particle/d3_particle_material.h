@@ -65,24 +65,43 @@ struct MaterialLayer {
     /// The entry's own transform, evaluated per frame against the system clock.
     ::whiteout::flakes::io::D3UvXform uv;
 
-    /// @brief The sprite sheet this layer flips through, when its entry is uv
-    ///        mode 3 and its texture carries a frame table.
+    /// @brief Which of the vertex's four TEXCOORDS this stage samples at.
     ///
-    /// Null on every other layer, which samples the whole sheet — and that is
-    /// also what 6,934 of the corpus's 8,390 mode-3 entries get, because their
-    /// entry names no `.an2` and the engine nulls the state for those.
+    /// `TAG_VS_TEXCOORD{i}_FUNC` names a uv SET, and the set is positional over
+    /// the stage types (0 type 1, 1 type 19, 2 type 12, 3 type 14) -- not this
+    /// array's compacted index. It is usually the stage's own set and sometimes
+    /// another's: 1,211 systems route one slot onto a neighbour's coordinate.
+    /// An absent set carries the identity rectangle, which is what
+    /// `Particle_WriteQuadVertices` bakes for a stage with no state.
+    u32 uvSet = 0;
+
+    /// @brief The frame table on this layer's TEXTURE, or null where it has
+    ///        none. Resolved for every layer, not only the uv mode 3 ones.
+    ///
+    /// The sheet is a property of the `.tex`, and the entry's uv mode decides
+    /// only what is done with it. `Particle_WriteQuadVertices` takes the quad's
+    /// base rectangle and its vertical aspect off **stage 0's** sheet before it
+    /// has read the mode at all, so a type-1 layer carrying frames shapes the
+    /// quad whatever its entry says; mode 3 on top of that walks the origin.
     std::shared_ptr<const ::whiteout::flakes::io::D3TextureAtlas> atlas;
     /// @brief The flip-book's playback parameters, read out of `tAnim4` and
     ///        `tAnim5` — the two anim triples the UV transform never uses.
     ///
     /// `MatTex_InitUvState` hands `entry+120` (runtime) straight to
     /// `Anim2D_BindAndInit` as its params block, which reads +4, +8, +12 and
-    /// +16 from it and nothing else. In file offsets off the entry that is
-    /// 132..148, i.e. `tAnim4.flRate0` (the `.an2` handle, always id 2 and only
-    /// ever consulted for the loop mode), `tAnim4.flRate1`, `tAnim5.flAmount`,
-    /// `tAnim5.flRate0` and `tAnim5.flRate1` — the last two REINTERPRETED AS
-    /// INTEGERS, which is what makes them read as 0, 3, 7, 15, 23, 63 rather
-    /// than as denormals.
+    /// +16 from it and nothing else. Runtime offsets are the file's MINUS 12,
+    /// so the block starts at file `entry+0x84` and the four fields are
+    /// `tAnim4.flRate1`, `tAnim5.flAmount`, `tAnim5.flRate0` and
+    /// `tAnim5.flRate1` — the last two REINTERPRETED AS INTEGERS, which is what
+    /// makes them read as 0, 3, 7, 15, 23, 63 rather than as denormals.
+    ///
+    /// The block's own first word (`tAnim4.flRate0`) is the `.an2` handle, which
+    /// `Anim2D_BindAndInit` never touches — it binds the TEXTURE's frame table —
+    /// and which `Anim2D_AdvanceCursor` consults for one thing, the loop mode at
+    /// the asset's +20. It is **0 on 6,934 mode-3 entries and 2 on 1,456**, and
+    /// 0 is a live SNO id rather than "absent" (only -1 stops the advance), so
+    /// every one of the 8,390 has a running flip-book. What is not known here is
+    /// what asset 0 says: @ref atlasLoops assumes 2/loop for both.
     f32 atlasRate = 0.0f;      ///< Frames per second; 0 = a still frame.
     f32 atlasRateJitter = 0.0f; ///< Added, times a uniform draw, per particle.
     i32 atlasFrameBase = 0;
@@ -122,6 +141,16 @@ struct MaterialDesc {
 
     /// The `.shm` the pass came from, or -1. Kept for the census.
     i32 snoShaderMap = -1;
+
+    /// @brief Which entry of @ref layers fills each POSITIONAL uv set (types 1,
+    ///        19, 12, 14), or -1 for a hole.
+    ///
+    /// The engine's stage slots are positional with holes -- `Particle_BindDrawTextures`
+    /// parks type 1 in slot 0 and type 14 in slot 3 whatever else is present --
+    /// while this array is compacted to the types the material carries. The two
+    /// only agree when the types are a prefix of the bind order, and 61 shipped
+    /// materials are not.
+    std::array<i8, kMaxLayers> setLayer{{-1, -1, -1, -1}};
 
     /// @brief Did the ShaderMap chain resolve to a RenderPass?
     ///
@@ -168,16 +197,50 @@ struct MaterialDesc {
     /// the corpus gate can say so rather than assume it.
     std::string effectFile;
 
-    /// @brief Which layer drives the quad's UV rectangle, or -1.
+    /// `szPixelShaderEntry`, kept for the census and the diagnostics dump.
+    std::string pixelEntry;
+
+    /// @brief Which of the three program shapes @ref pixelEntry names.
     ///
-    /// One, not a set. The engine gives every stage its own flip-book state and
-    /// its own texcoord — four per vertex — while this build interpolates one
-    /// UV and transforms it per layer in the pixel shader, so the per-PARTICLE
-    /// half of the atlas fits on exactly one layer. The corpus makes that a
-    /// cheap trade: 1,279 of the 1,365 files with an atlas have exactly one,
-    /// 81 have two and 5 have three. The extras keep the whole sheet, which is
-    /// what they had before this existed.
-    i32 atlasLayer = -1;
+    /// The `.shd` says outright which pixel program the pass runs, and eleven
+    /// of the corpus's twelve billboard entry points are NOT the fixed-function
+    /// chain. 1,662 of 17,503 systems, and they were all drawn as chains.
+    ::whiteout::flakes::io::D3ParticleProgram program =
+        ::whiteout::flakes::io::D3ParticleProgram::Chain;
+
+    /// @brief The first layer that is a FLOW MAP rather than a combine stage,
+    ///        or -1 where the program has none.
+    ///
+    /// A flow shader samples one to three maps, multiplies them, recentres the
+    /// pair on zero and offsets every OTHER layer's UV by it:
+    ///
+    ///     offset = (product * 2^(n-1) - 0.5) * 0.5
+    ///
+    /// which is one expression for all three counts. Which layers those are is
+    /// fixed by the entry point (`ps_particle_flow` warps from layer 1 on,
+    /// `ps_legacy_flow` from 2, `ps_firewall_flow` from 3), and how many of them
+    /// are live is the pass's own texcoord count.
+    i32 flowFirst = -1;
+    /// The last flow layer, inclusive. Meaningless when @ref flowFirst is -1.
+    i32 flowLast = -1;
+
+    /// @brief Does this program fade against the scene depth?
+    ///
+    /// `SoftBillboard.fx` multiplies every channel by
+    /// `saturate((sceneDepth - viewDepth) / 2)`. Recorded but not applied: the
+    /// scene target is not sampleable in SD. 1,911 systems.
+    bool softFade = false;
+
+    /// @brief The dissolve tail: `alpha = min(1, pow(alpha, 10 * COLOR1.a))`.
+    ///
+    /// COLOR1 is a per-particle constant written ONCE at emit
+    /// (`ParticleSystem_EmitParticle` copies it out of the emit context and
+    /// nothing else ever writes it), and with no emit context it is
+    /// 0xFFFFFFFF -- so `.a` is 1 and the exponent is a flat 10. What eats the
+    /// sprite away over its life is the alpha the chain hands it, not this.
+    /// 168 systems. See io/d3/d3_types.h::kD3StageAlphaErosion.
+    bool erosion = false;
+
 
     /// @brief The diffuse, by TYPE rather than by position.
     ///

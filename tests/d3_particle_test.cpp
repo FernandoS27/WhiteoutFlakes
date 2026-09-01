@@ -34,6 +34,7 @@
 #include "renderer/particle/particle_geometry.h"
 #include "renderer/particle/particle_service.h"
 #include "renderer/profiles/diablo3/d3_particle_shading.h"
+#include "renderer/profiles/diablo3/d3_surface_table.h"
 
 #include <whiteout/sno/d3/native/d3_native.h>
 
@@ -47,6 +48,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -822,6 +824,9 @@ TEST_CASE("d3 particle P1: every corpus .prt parses into a desc", "[d3][particle
     std::map<i32, std::size_t> shapes;
     std::map<u32, std::size_t> capBits;
     std::size_t parsed = 0, withRate = 0, distributionsSeen = 0;
+    std::size_t esAbsent = 0, esOne = 0, esLive = 0, esShrink = 0, esGrow = 0, esHalf = 0;
+    std::size_t hrOne = 0, hrLive = 0, hrSquat = 0, hrTall = 0;
+    std::size_t a6One = 0, a6Const = 0, a6Live = 0;
     std::size_t withLayers = 0, slotOrderMatches = 0, slotOrderDiffers = 0;
     std::map<i32, std::size_t> distributions;
     std::map<i32, std::size_t> lifeDriver;
@@ -845,6 +850,49 @@ TEST_CASE("d3 particle P1: every corpus .prt parses into a desc", "[d3][particle
                 ++capBits[1u << b];
         if (desc->Has(pd3::kChEmissionRate))
             ++withRate;
+        {
+            f32 lo = 0.0f, hi = 0.0f;
+            desc->Channel(pd3::kChEffectScale).ScalarRange(lo, hi);
+            if (!desc->Has(pd3::kChEffectScale))
+                ++esAbsent;
+            else if (lo == 1.0f && hi == 1.0f)
+                ++esOne;
+            else {
+                ++esLive;
+                if (hi < 1.0f)
+                    ++esShrink;
+                if (hi > 1.0f)
+                    ++esGrow;
+                if (hi < 0.5f)
+                    ++esHalf;
+            }
+        }
+        {
+            // Channel 2's blast radius: it scales the quad's HEIGHT alone, so a
+            // file whose range leaves 1.0 draws a sprite the width does not
+            // describe.
+            f32 lo = 0.0f, hi = 0.0f;
+            desc->Channel(pd3::kChHeightRatio).ScalarRange(lo, hi);
+            if (!desc->Has(pd3::kChHeightRatio) || (lo == 1.0f && hi == 1.0f))
+                ++hrOne;
+            else {
+                ++hrLive;
+                if (lo < 1.0f)
+                    ++hrSquat;
+                if (hi > 1.0f)
+                    ++hrTall;
+            }
+        }
+        {
+            f32 lo = 0.0f, hi = 0.0f;
+            desc->Channel(pd3::kChAlpha).ScalarRange(lo, hi);
+            if (!desc->Has(pd3::kChAlpha) || (lo == 1.0f && hi == 1.0f))
+                ++a6One;
+            else if (lo == hi)
+                ++a6Const;
+            else
+                ++a6Live;
+        }
         ++lifeDriver[desc->lifetimeRandom.mode];
         ++renderModes[desc->renderMode];
         // What gates `Particle_BuildOrientationBasis` into its second column
@@ -906,6 +954,10 @@ TEST_CASE("d3 particle P1: every corpus .prt parses into a desc", "[d3][particle
     }
 
     std::printf("[d3-prt] parsed %zu of %zu files (limit %zu)\n", parsed, files.size(), limit);
+    std::printf("[d3-prt] arAlphaPath (ch6): one=%zu const=%zu animated=%zu\n",
+                a6One, a6Const, a6Live);
+    std::printf("[d3-prt] arSize2Path (quad height ratio): one=%zu live=%zu squat=%zu tall=%zu\n",
+                hrOne, hrLive, hrSquat, hrTall);
     std::printf("[d3-prt] eSystemType:");
     for (const auto& [v, c] : systemTypes)
         std::printf(" %d=%zu", v, c);
@@ -966,6 +1018,38 @@ TEST_CASE("d3 particle P1: every corpus .prt parses into a desc", "[d3][particle
         // The gated column order belongs to the child-actor types alone, and
         // this is the same 4,795 the emit clamp counts.
         CHECK(frameGated == 4795);
+        // `arEffectScalePath` is stored inline on every file like the other
+        // thirty-nine, so "absent" means an all-default node and never a null.
+        // It multiplies the particle's OPACITY and only ever attenuates: no
+        // shipped file's range reaches above 1. That ceiling is the corpus-side
+        // evidence for what it is -- a size term would have no reason to stop at
+        // exactly 1.0 on all 14,012 of them.
+        CHECK(esAbsent == 0);
+        CHECK(esOne == 7581);
+        CHECK(esLive == 14012);
+        CHECK(esGrow == 0);
+        CHECK(esShrink == 7660);
+        CHECK(esHalf == 3435);
+
+        // `arSize2Path` is the quad's HEIGHT ratio and it is authored on 55% of
+        // the corpus, in both directions -- so leaving it unread stretched or
+        // squashed 11,930 files, and reading it as a second size would have
+        // moved their width too. Unlike `arEffectScalePath` it has no ceiling
+        // at 1.0, which is the other half of why the two are not the same kind
+        // of term.
+        CHECK(hrOne == 9663);
+        CHECK(hrLive == 11930);
+        CHECK(hrSquat == 7279);
+        CHECK(hrTall == 10446);
+
+        // Channel 6 is the whole of COLOR1, and COLOR1's only reader is the
+        // erosion tail. 265 files author it -- 1.2% -- but 253 of those ANIMATE
+        // it, which is why it has to ride the vertex and cannot be a per-draw
+        // constant. See the D3-install sweep for the other half: 163 of the
+        // corpus's 168 dissolve systems are in this set.
+        CHECK(a6One == 21328);
+        CHECK(a6Const == 12);
+        CHECK(a6Live == 253);
     }
 
     // The shipped set is closed, and a value outside it means the slot table
@@ -1035,6 +1119,7 @@ TEST_CASE("d3 particle P1: a corpus asset simulates without producing NaN",
             REQUIRE(std::isfinite(st.size));
             REQUIRE(st.size > 0.0f);
             REQUIRE(std::isfinite(st.color.w));
+            REQUIRE(std::isfinite(st.dissolve));
         }
 
         std::vector<whiteout::flakes::renderer::Vertex> out;
@@ -1214,6 +1299,31 @@ TEST_CASE("D3 install: a particle's ShaderMap resolves to Billboard.fx",
     std::size_t noMapNoLayers = 0;
     // Per stage type: how the pass's combine block routes it.
     std::map<i32, std::array<std::size_t, 4>> routing; // [both, colourOnly, alphaOnly, neither]
+    // Which pixel program each system actually runs, and how many of its four
+    // textures the flow shaders among them read as distortion.
+    std::map<std::string, std::size_t> programs;
+    std::map<int, std::size_t> flowMaps;
+    std::size_t blendAdd = 0, softFade = 0, uvReroute = 0, erosion = 0;
+    // The intersection that says whether COLOR1 is live: only `ps_legacy`'s
+    // erosion tail reads it, and only channel 6 fills it.
+    std::size_t erosionLiveA6 = 0, liveA6 = 0;
+    std::size_t phantom = 0, phantomGain = 0;
+    std::size_t phantomDeclared = 0;
+    std::map<i32, std::size_t> phantomType;
+    std::map<std::pair<u8, u8>, std::size_t> phantomOp;
+    // The UV half. `MatTex_BuildUvAffine2x3` reads the anim triples for uv mode
+    // 2 ALONE, and takes the quad's base rectangle off stage 0's SHEET whatever
+    // mode stage 0 is -- so what has to be counted is per (mode, stage), plus
+    // how many sheets exist at all and how many a material carries.
+    std::map<std::pair<i32, i32>, std::size_t> uvModeByType; // (rawType, mode)
+    std::map<i32, std::size_t> sheetByType;   // rawType -> layers with a frame table
+    std::map<i32, std::size_t> sheetFrames;   // frame count histogram
+    std::map<std::size_t, std::size_t> sheetsPerMaterial;
+    std::size_t stage0Sheet = 0, stage0SheetNotAnim2D = 0, atlasScaleSet = 0;
+    std::size_t stage0Tiled = 0, stage0TiledNotAnim2D = 0, lateSheetTiled = 0;
+    std::map<u32, std::size_t> leadSkip;
+    std::size_t partialSingle = 0, notContiguous = 0, wantsMoreFrames = 0;
+    std::size_t deadAnim = 0, liveFlip = 0;
 
     for (std::size_t i = 0; i < n; ++i) {
         auto prt = d3n::parseParticle(ReadAll(files[i]));
@@ -1221,6 +1331,76 @@ TEST_CASE("D3 install: a particle's ShaderMap resolves to Billboard.fx",
         auto desc = whiteout::flakes::io::d3::BuildD3EmitterDesc(*prt, -1);
         pdia::D3ResolveParticleMaterial(*prt, &cache, desc->d3mat);
         const auto& m = desc->d3mat;
+        {
+            std::size_t sheets = 0;
+            for (u32 L = 0; L < m.layerCount; ++L) {
+                const auto& lay = m.layers[L];
+                ++uvModeByType[{lay.rawType, static_cast<i32>(lay.uv.mode)}];
+                if (lay.atlas) {
+                    ++sheets;
+                    ++sheetByType[lay.rawType];
+                    ++sheetFrames[static_cast<i32>(lay.atlas->frames.size())];
+                    ++leadSkip[lay.atlas->leadSkip];
+                    const auto& fr = lay.atlas->frames;
+                    // A one-frame sheet that does NOT cover the whole texture,
+                    // and a multi-frame one whose tiles do not butt up against
+                    // each other, are both what a table read one record off
+                    // would look like.
+                    if (fr.size() == 1 &&
+                        (fr[0].x != 0.0f || fr[0].y != 0.0f || fr[0].z < 0.999f ||
+                         fr[0].w < 0.999f))
+                        ++partialSingle;
+                    for (std::size_t q = 1; q < fr.size(); ++q) {
+                        const bool joins = std::fabs(fr[q].x - fr[q - 1].z) < 1e-4f ||
+                                           std::fabs(fr[q].y - fr[q - 1].w) < 1e-4f;
+                        if (!joins) {
+                            ++notContiguous;
+                            break;
+                        }
+                    }
+                    // The entry asks for a start frame the sheet cannot supply.
+                    if (lay.uv.mode == flakes::io::D3UvMode::Anim2D &&
+                        lay.atlasFrameBase + lay.atlasFrameRange >=
+                            static_cast<i32>(fr.size()))
+                        ++wantsMoreFrames;
+                    // A sheet with ONE frame covering the whole texture is
+                    // what almost every `.tex` carries and is a no-op: the base
+                    // rectangle it builds is the unit square. Only a sheet that
+                    // really tiles moves anything, so count that apart.
+                    const bool tiled = lay.atlas->frames.size() > 1 ||
+                                       lay.atlas->TileSize().x < 0.999f ||
+                                       lay.atlas->TileSize().y < 0.999f;
+                    if (lay.rawType == 1) {
+                        ++stage0Sheet;
+                        if (lay.uv.mode != flakes::io::D3UvMode::Anim2D)
+                            ++stage0SheetNotAnim2D;
+                        if (tiled) {
+                            ++stage0Tiled;
+                            if (lay.uv.mode != flakes::io::D3UvMode::Anim2D)
+                                ++stage0TiledNotAnim2D;
+                        }
+                    } else if (tiled && lay.uv.mode == flakes::io::D3UvMode::Anim2D) {
+                        ++lateSheetTiled;
+                    }
+                }
+                if (lay.uv.mode == flakes::io::D3UvMode::Anim2D) {
+                    if (lay.uv.atlasScale)
+                        ++atlasScaleSet;
+                    if (lay.atlas && std::fabs(lay.atlasRate) >= 1e-6f)
+                        ++liveFlip;
+                }
+                // Animation data on a mode the engine never reads it for. This
+                // build applied it until 2026-08-31 and it is what slid a
+                // mode-0 ALPHA MASK off its own sprite.
+                if (lay.uv.mode != flakes::io::D3UvMode::ScaleRotateScroll &&
+                    lay.uv.mode != flakes::io::D3UvMode::Matrix &&
+                    (lay.uv.scrollPerSec.x != 0.0f || lay.uv.scrollPerSec.y != 0.0f ||
+                     lay.uv.rotatePerSec != 0.0f || lay.uv.offset.x != 0.0f ||
+                     lay.uv.offset.y != 0.0f || lay.uv.rotate != 0.0f))
+                    ++deadAnim;
+            }
+            ++sheetsPerMaterial[sheets];
+        }
         if (!m.passResolved) {
             // Why, exactly. "Unresolved" is not one failure: the material can
             // name no ShaderMap at all, name one the install does not hold,
@@ -1283,6 +1463,66 @@ TEST_CASE("D3 install: a particle's ShaderMap resolves to Billboard.fx",
             ++vcolDropped;
         if (m.colorVcolLast || m.alphaVcolLast)
             ++vcolLast;
+        ++programs[m.pixelEntry];
+        ++flowMaps[m.flowFirst < 0 ? 0 : m.flowLast - m.flowFirst + 1];
+        if (m.program == flakes::io::D3ParticleProgram::BlendAdd)
+            ++blendAdd;
+        if (m.softFade)
+            ++softFade;
+        if (m.erosion)
+            ++erosion;
+        {
+            f32 lo = 0.0f, hi = 0.0f;
+            desc->Channel(pd3::kChAlpha).ScalarRange(lo, hi);
+            const bool live = desc->Has(pd3::kChAlpha) && !(lo == 1.0f && hi == 1.0f);
+            if (live)
+                ++liveA6;
+            if (live && m.erosion)
+                ++erosionLiveA6;
+        }
+        // A content stage the PASS declares that the material binds no texture
+        // for -- the reverse of the 3,242 case above. The original still runs
+        // that chain step, against a unit nothing bound; this build skips it,
+        // which drops the stage's gain and its clamp with it. Type 0 is not a
+        // stage at all: the five BLENDADD passes pad their block with it (see
+        // D3PassState::stageHole) and no layer can ever carry it.
+        {
+            const auto ps = pdia::D3PassStateFor(prt->tMaterial, &cache);
+            bool any = false, gainy = false, declaredToo = false;
+            for (u32 k = 0; k < ps.combineCount; ++k) {
+                if (ps.combines[k].type == 0)
+                    continue;
+                bool bound = false;
+                for (u32 li = 0; li < m.layerCount; ++li)
+                    bound = bound || m.layers[li].rawType == ps.combines[k].type;
+                if (bound)
+                    continue;
+                any = true;
+                declaredToo = declaredToo ||
+                              (ps.declaredTypes & flakes::io::D3TypeBit(ps.combines[k].type)) != 0;
+                ++phantomType[ps.combines[k].type];
+                ++phantomOp[{ps.combines[k].colorOp, ps.combines[k].alphaOp}];
+                if (ps.combines[k].colorGain != 1.0f || ps.combines[k].alphaGain != 1.0f ||
+                    ps.combines[k].colorClamp || ps.combines[k].alphaClamp)
+                    gainy = true;
+            }
+            if (any)
+                ++phantom;
+            if (declaredToo)
+                ++phantomDeclared;
+            if (gainy) ++phantomGain;
+        }
+        for (u32 i = 0; i < m.layerCount; ++i) {
+            // Its own positional set, against the one the pass routed it to.
+            u32 own = 0;
+            for (u32 k = 0; k < pd3::MaterialDesc::kMaxLayers; ++k)
+                if (m.layers[i].rawType == flakes::io::kD3TexcoordSetType[k])
+                    own = k;
+            if (m.layers[i].uvSet != own) {
+                ++uvReroute;
+                break;
+            }
+        }
     }
 
     std::printf("[d3 mat] no-ShaderMap by eSystemType:");
@@ -1307,6 +1547,65 @@ TEST_CASE("D3 install: a particle's ShaderMap resolves to Billboard.fx",
     std::printf("[d3 mat] %zu layers clamp mid-chain, %zu add; %zu materials drop the "
                 "vertex colour, %zu take it last\n",
                 clamped, added, vcolDropped, vcolLast);
+    std::printf("[d3 mat] pixel programs:");
+    for (const auto& [pe, k] : programs)
+        std::printf(" %s=%zu", pe.c_str(), k);
+    std::printf("\n[d3 mat] flow maps per system:");
+    for (const auto& [f, k] : flowMaps)
+        std::printf(" %d=%zu", f, k);
+    std::printf(" | %zu blend-add, %zu soft depth fade, %zu sample at another layer's uv, %zu dissolve\n",
+                blendAdd, softFade, uvReroute, erosion);
+    // COLOR1 is channel 6 and nothing but the erosion tail reads it, so this
+    // pair is the whole of how live the second colour is.
+    std::printf("[d3 mat] COLOR1: %zu systems animate channel 6, %zu of those run the erosion tail\n",
+                liveA6, erosionLiveA6);
+    if (bound == 0) {
+        // The exponent the erosion tail raises the combined alpha to is
+        // `10 * COLOR1.a`, and COLOR1.a is channel 6. Assuming a flat 10 was
+        // wrong for 163 of the 168 systems that run the tail at all -- 97% --
+        // which is why the value now rides the vertex.
+        CHECK(erosion == 168);
+        CHECK(liveA6 == 262);
+        CHECK(erosionLiveA6 == 163);
+    }
+    std::printf("[d3 mat] uv modes by stage type:");
+    for (const auto& um : uvModeByType)
+        std::printf(" %d/m%d=%zu", um.first.first, um.first.second, um.second);
+    std::printf("\n[d3 mat] sheets: %zu layers carry a frame table (by type:", stage0Sheet);
+    for (const auto& sk : sheetByType)
+        std::printf(" %d=%zu", sk.first, sk.second);
+    std::printf("); %zu of the type-1 ones are NOT uv mode 3;"
+                " %zu mode-3 entries set the tile SCALE; %zu flip-books actually advance\n",
+                stage0SheetNotAnim2D, atlasScaleSet, liveFlip);
+    // The population the base-rectangle rule actually moves. A one-frame sheet
+    // covering the whole texture is the near-universal case and gives the unit
+    // square, so only a sheet that really tiles reshapes a quad.
+    std::printf("[d3 mat] type-1 sheets that really TILE: %zu, of which %zu are not uv mode 3"
+                " (those are the quads the base rectangle reshapes); %zu tiling flip-books sit"
+                " on a later stage and get no base rectangle\n",
+                stage0Tiled, stage0TiledNotAnim2D, lateSheetTiled);
+    std::printf("[d3 mat] sheets per material:");
+    for (const auto& sm : sheetsPerMaterial)
+        std::printf(" %zu=%zu", sm.first, sm.second);
+    std::printf(" | frames per sheet:");
+    for (const auto& sf : sheetFrames)
+        std::printf(" %d=%zu", sf.first, sf.second);
+    std::printf("\n[d3 mat] frame-table lead skip:");
+    for (const auto& ls : leadSkip)
+        std::printf(" %u=%zu", ls.first, ls.second);
+    std::printf(" | %zu one-frame sheets do not cover their texture, %zu multi-frame sheets do"
+                " not tile, %zu entries name a start frame past the end\n",
+                partialSingle, notContiguous, wantsMoreFrames);
+    std::printf("[d3 mat] %zu layers carry scroll/rotation on a uv mode that never reads it\n",
+                deadAnim);
+    std::printf("[d3 mat] phantom stages: %zu materials (%zu on a stage the pass also "
+                "DECLARES), %zu carry a gain or clamp; by type:",
+                phantom, phantomDeclared, phantomGain);
+    for (const auto& tk : phantomType) std::printf(" %d=%zu", tk.first, tk.second);
+    std::printf(" | (colourOp,alphaOp):");
+    for (const auto& op : phantomOp)
+        std::printf(" (%u,%u)=%zu", op.first.first, op.first.second, op.second);
+    std::printf("\n");
     std::printf("[d3 mat] stage routing (type: both / colour / alpha / neither):");
     for (const auto& [t, r] : routing)
         std::printf(" %d:%zu/%zu/%zu/%zu", t, r[0], r[1], r[2], r[3]);
@@ -1885,7 +2184,8 @@ TEST_CASE("d3 particle: dwPrtFlags bit 10 picks the particle time mode",
                 best = idx;
         }
         outT = e.Pool()[best].age / e.States()[best].lifetime;
-        return e.States()[best].color.w;
+        // Channel 6, which lives on `dissolve` rather than the colour's alpha.
+        return e.States()[best].dissolve;
     };
 
     f32 t0 = 0.0f, t1 = 0.0f;
@@ -1929,7 +2229,8 @@ TEST_CASE("d3 particle: a flip-book layer walks its sheet per particle",
     d->channels[pd3::kChBirthSize] = ConstPath(1.0f);
     d->DeriveCapabilities();
     d->d3mat.layerCount = 1;
-    d->d3mat.atlasLayer = 0;
+    d->d3mat.setLayer[0] = 0;
+    d->d3mat.layers[0].rawType = 1;
     d->d3mat.layers[0].uv.mode = whiteout::flakes::io::D3UvMode::Anim2D;
     d->d3mat.layers[0].atlas = atlas;
     d->d3mat.layers[0].atlasFrameRange = 3; // any of the four
@@ -1946,7 +2247,7 @@ TEST_CASE("d3 particle: a flip-book layer walks its sheet per particle",
     // more than one tile — the whole point of the per-particle draw.
     std::set<i32> tiles;
     for (std::size_t i = 0; i < e.Pool().AliveCount(); ++i) {
-        const f32 c = e.States()[e.Pool().AliveAt(i)].atlasCursor;
+        const f32 c = e.States()[e.Pool().AliveAt(i)].uv[0].cursor;
         const i32 k = static_cast<i32>(c);
         CHECK(k >= 0);
         CHECK(k <= 3);
@@ -1954,31 +2255,38 @@ TEST_CASE("d3 particle: a flip-book layer walks its sheet per particle",
     }
     CHECK(tiles.size() >= 3);
 
-    // And the rectangle reaches the geometry: the quad's UVs stay 0..1 and the
-    // tile ORIGIN rides the normal, which this family never uses for anything
-    // else. A non-square tile also makes a non-square quad — 0.25 of a 512-wide
-    // sheet is 128px against a 128px-tall one, so this sheet is square and the
-    // aspect is 1.
+    // And the rectangle reaches the geometry BAKED: the quad's own uv stays
+    // 0..1 while set 0's coordinate spans one tile, `[k*0.25, k*0.25+0.25]`.
+    // A non-square tile also makes a non-square quad — 0.25 of a 512-wide sheet
+    // is 128px against a 128px-tall one, so this sheet is square and the aspect
+    // is 1.
     Matrix44f view = Matrix44f::identity();
     whiteout::flakes::renderer::particle::BuildGeometryInput in{};
     in.worldToView = &view;
+    std::vector<Vector4f> uv01, uv23;
+    in.d3Uv01 = &uv01;
+    in.d3Uv23 = &uv23;
     std::vector<whiteout::flakes::renderer::Vertex> out;
     REQUIRE(e.BuildGeometry(in, out) > 0);
+    REQUIRE(uv01.size() == out.size());
     std::set<i32> originTiles;
-    for (const auto& v : out) {
-        CHECK(v.normal.z == 0.0f);
-        const f32 u = v.normal.x;
-        // Each origin is one of the four tile lefts.
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        CHECK(out[i].uv.x >= 0.0f);
+        CHECK(out[i].uv.x <= 1.0f);
+        // The u of a corner is `origin + 0.25 * quadU`, so both corners of a
+        // tile land on a multiple of 0.25 and the tile is which one.
+        const f32 u = uv01[i].x;
         const i32 k = static_cast<i32>(std::lround(u * 4.0f));
         CHECK(u == Catch::Approx(static_cast<f32>(k) * 0.25f).margin(1e-5));
-        CHECK(v.normal.y == 0.0f);
-        originTiles.insert(k);
+        CHECK(uv01[i].y == Catch::Approx(out[i].uv.y).margin(1e-5));
+        originTiles.insert(k - static_cast<i32>(std::lround(out[i].uv.x)));
     }
     CHECK(originTiles.size() >= 3);
 
     // A rate walks the same particle forward, and a loop wraps it rather than
     // running off the end.
     auto moving = std::make_shared<pd3::EmitterDesc>(*d);
+    moving->d3mat.setLayer[0] = 0;
     moving->d3mat.layers[0].atlasRate = 8.0f;
     moving->d3mat.layers[0].atlasFrameRange = 0; // everyone starts on tile 0
     moving->d3mat.layers[0].atlasLoops = true;
@@ -1988,17 +2296,261 @@ TEST_CASE("d3 particle: a flip-book layer walks its sheet per particle",
     m.Update(1.0f / 60.0f, 1.0f);
     REQUIRE(m.Pool().AliveCount() > 0);
     const u32 first = m.Pool().AliveAt(0);
-    const f32 t0 = m.States()[first].atlasCursor;
+    const f32 t0 = m.States()[first].uv[0].cursor;
     for (i32 i = 0; i < 30; ++i)
         m.Update(1.0f / 60.0f, 1.0f);
-    const f32 t1 = m.States()[first].atlasCursor;
+    const f32 t1 = m.States()[first].uv[0].cursor;
     CHECK(t1 > t0);
     CHECK(t1 < 4.0f);
     // Long enough to have wrapped several times, and still in range.
     for (i32 i = 0; i < 600; ++i)
         m.Update(1.0f / 60.0f, 1.0f);
-    CHECK(m.States()[first].atlasCursor >= 0.0f);
-    CHECK(m.States()[first].atlasCursor < 4.0f);
+    CHECK(m.States()[first].uv[0].cursor >= 0.0f);
+    CHECK(m.States()[first].uv[0].cursor < 4.0f);
+}
+
+TEST_CASE("d3 particle: each texture stage runs its OWN uv state",
+          "[d3][particle]") {
+    // `MatTex_InitUvState` runs once per STAGE from ParticleSystem_EmitParticle
+    // and `MatTex_TickUvStateEntry` once per stage per frame, so two stages of
+    // one material walk independently — 505 shipped materials carry two mode-3
+    // stages and 5 carry three, and `Mace_norm_unique_05_sparkles` runs its two
+    // 16-tile sheets at 24 and 26 fps off the same texture.
+    //
+    // And a mode-2 stage's phase belongs to the particle: 12,361 of the corpus's
+    // 13,897 mode-2 entries draw it at random, which is the difference between a
+    // puff of different tiles and one flat rectangle.
+    auto sheet = std::make_shared<whiteout::flakes::io::D3TextureAtlas>();
+    sheet->width = 512;
+    sheet->height = 128;
+    for (i32 k = 0; k < 4; ++k)
+        sheet->frames.push_back({static_cast<f32>(k) * 0.25f, 0.0f,
+                                 static_cast<f32>(k + 1) * 0.25f, 1.0f});
+
+    auto d = std::make_shared<pd3::EmitterDesc>();
+    d->systemType = 0;
+    d->prtFlags = 0x1u;
+    d->shape = pd3::Shape::Point;
+    d->lifetime = 0.0f;
+    d->maxDistance = 0.0f;
+    d->channels[pd3::kChEmissionRate] = ConstPath(1.0f);
+    d->channels[pd3::kChParticleLife] = ConstPath(600.0f);
+    d->channels[pd3::kChBirthSize] = ConstPath(1.0f);
+    d->DeriveCapabilities();
+
+    // Set 0 is a flip-book at 6 fps; set 1 is a second one at 30. Both start on
+    // frame 0 so only the RATES can separate them.
+    d->d3mat.layerCount = 2;
+    d->d3mat.setLayer[0] = 0;
+    d->d3mat.setLayer[1] = 1;
+    for (u32 i = 0; i < 2; ++i) {
+        auto& L = d->d3mat.layers[i];
+        L.rawType = (i == 0) ? 1 : 19;
+        L.uv.mode = whiteout::flakes::io::D3UvMode::Anim2D;
+        L.atlas = sheet;
+        L.atlasFrameRange = 0;
+        L.atlasRate = (i == 0) ? 6.0f : 30.0f;
+    }
+
+    pd3::Emitter e;
+    e.SetD3Desc(d);
+    e.SetVisible(true);
+    for (i32 i = 0; i < 12; ++i)
+        e.Update(1.0f / 60.0f, 1.0f);
+    REQUIRE(e.Pool().AliveCount() > 0);
+    {
+        const auto& st = e.States()[e.Pool().AliveAt(0)];
+        // The second stage has walked five times as far. A build with one state
+        // per particle reports the same number twice.
+        CHECK(st.uv[1].cursor > st.uv[0].cursor + 0.5f);
+    }
+
+    // A mode-2 stage with the V phase randomised: the population must SPREAD.
+    // Sharing one emitter-clock phase puts every particle on one coordinate.
+    auto r = std::make_shared<pd3::EmitterDesc>(*d);
+    r->d3mat.layers[1].atlas = nullptr;
+    r->d3mat.layers[1].uv.mode = whiteout::flakes::io::D3UvMode::ScaleRotateScroll;
+    r->d3mat.layers[1].uv.scale = {1.0f, 0.25f};
+    r->d3mat.layers[1].uv.randomPhaseV = true;
+    pd3::Emitter q;
+    q.SetD3Desc(r);
+    q.SetVisible(true);
+    for (i32 i = 0; i < 240; ++i)
+        q.Update(1.0f / 60.0f, 1.0f);
+    REQUIRE(q.Pool().AliveCount() > 20);
+    std::set<i32> bands;
+    for (std::size_t i = 0; i < q.Pool().AliveCount(); ++i) {
+        const f32 v = q.States()[q.Pool().AliveAt(i)].uv[1].v;
+        CHECK(v >= 0.0f);
+        CHECK(v <= 1.0f);
+        bands.insert(static_cast<i32>(v * 8.0f));
+    }
+    CHECK(bands.size() >= 4);
+}
+
+TEST_CASE("d3 particle: the emitter effect scale multiplies the particle opacity",
+          "[d3][particle]") {
+    // `arEffectScalePath` (channel 35). `ParticleSystem_TickEmitter` @0x71000AEF64
+    // samples it once per tick into sys+0x12C off the EMITTER's seed, and every
+    // branch of channel 5 in `ParticleSystem_UpdateParticles` multiplies by it:
+    // the evaluated path @0x71000BEE28, the cached constant @0x71000BEDE4, and
+    // the absent-path 1.0 that falls through the same instruction. So a system
+    // with no channel 5 at all still attenuates.
+    //
+    // The product is an OPACITY, not a size. `Particle_PrepareDrawFrame`
+    // @0x71000BCC48 quantises particle+0xD0 to a byte and skips the quad
+    // entirely when it comes out zero; the quad's extent is particle+0xD4, which
+    // neither channel touches. Both shipped shapes agree: channel 5 ramps
+    // 0 -> 1 -> 0 across a particle's life, and channel 35's range never exceeds
+    // 1.0 on any of the 21,593 files.
+    auto make = [](f32 effectScale, bool withScaleChannel) {
+        auto d = std::make_shared<pd3::EmitterDesc>();
+        d->systemType = 0;
+        d->prtFlags = 0x1u;
+        d->shape = pd3::Shape::Point;
+        d->lifetime = 0.0f;
+        d->maxDistance = 0.0f;
+        d->channels[pd3::kChEmissionRate] = ConstPath(1.0f);
+        d->channels[pd3::kChParticleLife] = ConstPath(600.0f);
+        d->channels[pd3::kChBirthSize] = ConstPath(2.0f);
+        if (withScaleChannel)
+            d->channels[pd3::kChScale] = ConstPath(3.0f);
+        if (effectScale != 1.0f)
+            d->channels[pd3::kChEffectScale] = ConstPath(effectScale);
+        d->DeriveCapabilities();
+        pd3::Emitter e;
+        e.SetD3Desc(d);
+        e.SetVisible(true);
+        for (i32 i = 0; i < 4; ++i)
+            e.Update(1.0f / 60.0f, 1.0f);
+        REQUIRE(e.Pool().AliveCount() > 0);
+        const auto& st = e.States()[e.Pool().AliveAt(0)];
+        return std::pair<f32, f32>{st.size, st.opacity};
+    };
+
+    const auto [size1, op1] = make(1.0f, true);
+    const auto [sizeH, opH] = make(0.4f, true);
+    CHECK(op1 == Catch::Approx(3.0f));
+    CHECK(opH == Catch::Approx(1.2f));
+    // The SIZE is the other emitter term's (channel 34) and must not move with
+    // the opacity -- the defect this pair of checks exists to catch.
+    CHECK(sizeH == Catch::Approx(size1));
+
+    // No channel 5: the engine multiplies its 1.0 anyway.
+    const auto [sizeN, opN] = make(0.25f, false);
+    CHECK(opN == Catch::Approx(0.25f));
+    CHECK(sizeN == Catch::Approx(size1));
+}
+
+TEST_CASE("d3 particle: channel 6 rides COLOR1, not the vertex alpha", "[d3][particle]") {
+    // `arAlphaPath` never touches COLOR0. `ParticleSystem_UpdateParticles`
+    // quantises it and replicates the byte into all four lanes of the SECOND
+    // dword (`MOV W9,#0x1010101` @0x71000BEF20 -> particle+0xEC), which
+    // `Particle_PrepareDrawFrame` @0x71000BCDC0 hands on as drawDesc[5];
+    // COLOR0's own alpha byte is overwritten by the `ch5 * ch35` opacity
+    // @0x71000BCCAC. `Billboard.fx__ps_legacy`'s erosion tail is the only
+    // consumer, `alpha = min(1, pow(alpha, 10 * COLOR1.a))`.
+    auto build = [](f32 ch6, f32 ch5) {
+        auto d = std::make_shared<pd3::EmitterDesc>();
+        d->systemType = 0;
+        d->prtFlags = 0x1u;
+        d->shape = pd3::Shape::Point;
+        d->lifetime = 0.0f;
+        d->maxDistance = 0.0f;
+        d->channels[pd3::kChEmissionRate] = ConstPath(1.0f);
+        d->channels[pd3::kChParticleLife] = ConstPath(600.0f);
+        d->channels[pd3::kChBirthSize] = ConstPath(2.0f);
+        d->channels[pd3::kChAlpha] = ConstPath(ch6);
+        d->channels[pd3::kChScale] = ConstPath(ch5);
+        d->DeriveCapabilities();
+        pd3::Emitter e;
+        e.SetD3Desc(d);
+        e.SetVisible(true);
+        e.Update(1.0f / 60.0f, 1.0f);
+        REQUIRE(e.Pool().AliveCount() >= 1);
+        Matrix44f view = Matrix44f::identity();
+        whiteout::flakes::renderer::particle::BuildGeometryInput in{};
+        in.worldToView = &view;
+        std::vector<Vector4f> uv01, uv23;
+        std::vector<f32> color1;
+        in.d3Uv01 = &uv01;
+        in.d3Uv23 = &uv23;
+        in.d3Color1 = &color1;
+        std::vector<whiteout::flakes::renderer::Vertex> out;
+        REQUIRE(e.BuildGeometry(in, out) >= 6);
+        // Every side array stays the same length as the shared stream, which is
+        // what lets a draw's vertexOffset index all three.
+        REQUIRE(color1.size() == out.size());
+        REQUIRE(uv01.size() == out.size());
+        return std::pair<f32, f32>{out[0].color.w, color1[0]};
+    };
+
+    // ch6 = 0.5 must NOT dim the vertex alpha; the alpha is the opacity byte,
+    // and ch5 = 0.5 quantises to ceil(0.5 * 255) / 255.
+    const auto [alphaHalf6, c1Half6] = build(0.5f, 1.0f);
+    CHECK(alphaHalf6 == Catch::Approx(1.0f));
+    CHECK(c1Half6 == Catch::Approx(0.5f));
+
+    const auto [alphaHalf5, c1Half5] = build(1.0f, 0.5f);
+    CHECK(alphaHalf5 == Catch::Approx(128.0f / 255.0f));
+    CHECK(c1Half5 == Catch::Approx(1.0f));
+
+    // And they do not mix: the pair that would look identical if ch6 were still
+    // folded into the alpha.
+    const auto [alphaBoth, c1Both] = build(0.5f, 0.5f);
+    CHECK(alphaBoth == Catch::Approx(alphaHalf5));
+    CHECK(c1Both == Catch::Approx(0.5f));
+}
+
+TEST_CASE("d3 particle: channel 2 scales the quad's height and not its width",
+          "[d3][particle]") {
+    // `arSize2Path` -> `particle+0xF0` (default 1.0 @0x71000BEF98), forwarded as
+    // drawDesc[2] @0x71000BCD68. `Particle_WriteQuadVertices` halves the WIDTH
+    // out of drawDesc[1] alone and builds the vertical half-extent as
+    // `(aspect * halfWidth) * drawDesc[2]` @0x71000BC4E4 -- one axis, not both.
+    auto extents = [](f32 ratio) {
+        auto d = std::make_shared<pd3::EmitterDesc>();
+        d->systemType = 0;
+        d->prtFlags = 0x1u;
+        d->shape = pd3::Shape::Point;
+        d->lifetime = 0.0f;
+        d->maxDistance = 0.0f;
+        d->channels[pd3::kChEmissionRate] = ConstPath(1.0f);
+        d->channels[pd3::kChParticleLife] = ConstPath(600.0f);
+        d->channels[pd3::kChBirthSize] = ConstPath(2.0f);
+        if (ratio != 1.0f)
+            d->channels[pd3::kChHeightRatio] = ConstPath(ratio);
+        d->DeriveCapabilities();
+        pd3::Emitter e;
+        e.SetD3Desc(d);
+        e.SetVisible(true);
+        e.Update(1.0f / 60.0f, 1.0f);
+        REQUIRE(e.Pool().AliveCount() >= 1);
+        Matrix44f view = Matrix44f::identity();
+        whiteout::flakes::renderer::particle::BuildGeometryInput in{};
+        in.worldToView = &view;
+        std::vector<whiteout::flakes::renderer::Vertex> out;
+        REQUIRE(e.BuildGeometry(in, out) >= 6);
+        Vector3f lo{1e30f, 1e30f, 1e30f}, hi{-1e30f, -1e30f, -1e30f};
+        for (std::size_t i = 0; i < 6; ++i)
+            for (i32 c = 0; c < 3; ++c) {
+                lo.data[c] = (std::min)(lo.data[c], out[i].position.data[c]);
+                hi.data[c] = (std::max)(hi.data[c], out[i].position.data[c]);
+            }
+        std::array<f32, 3> span{hi.x - lo.x, hi.y - lo.y, hi.z - lo.z};
+        std::sort(span.begin(), span.end(), [](f32 a, f32 b) { return a > b; });
+        return span;
+    };
+
+    const std::array<f32, 3> square = extents(1.0f);
+    const std::array<f32, 3> squat = extents(0.25f);
+    REQUIRE(square[0] > 0.0f);
+    // No sheet, so the aspect is 1 and an unscaled quad comes out square.
+    CHECK(square[1] == Catch::Approx(square[0]));
+    // The width survives and only the other axis is quartered. Reading channel 2
+    // as a second SIZE would have moved both.
+    CHECK(squat[0] == Catch::Approx(square[0]));
+    CHECK(squat[1] == Catch::Approx(square[0] * 0.25f));
 }
 
 TEST_CASE("d3 particle: a corpus flip-book resolves against the real install",
@@ -2053,7 +2605,6 @@ TEST_CASE("d3 particle: a corpus flip-book resolves against the real install",
         CHECK(a.frames[k].y == Catch::Approx(0.0f).margin(1e-5));
         CHECK(a.frames[k].w == Catch::Approx(1.0f).margin(1e-5));
     }
-    CHECK(d->d3mat.atlasLayer == 0);
     std::printf("[d3 atlas] %zu frames, tile %.3f x %.3f\n", a.frames.size(), a.TileSize().x,
                 a.TileSize().y);
 }

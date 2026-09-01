@@ -3161,7 +3161,31 @@ void RenderPipeline::RenderTransparentScene() {
         if (impl_->multiTexParticles_ && impl_->multiTexParticles_->IsReady() &&
             rs_.Settings().MultiTexParticlesEnabled())
             multiTexOut = &impl_->multiTexGeo_;
-        rs_.Particles().BuildGeometry(viewMat, verts, partDraws, refractOut, multiTexOut);
+        // A Diablo III particle carries FOUR texture coordinates, all baked per
+        // particle; they ride a parallel array and are interleaved into the D3
+        // program's own vertex below. Null when the profile is not D3 or the
+        // program is unavailable, and the draw then falls back to the SD path.
+        particle::D3VertexStream* d3UvOut = nullptr;
+#if WDX_ENABLE_D3
+        if (impl_->d3Particles_) {
+            impl_->d3UvGeo_.Clear();
+            d3UvOut = &impl_->d3UvGeo_;
+        }
+#endif
+        rs_.Particles().BuildGeometry(viewMat, verts, partDraws, refractOut, multiTexOut, d3UvOut);
+#if WDX_ENABLE_D3
+        // Only when a draw actually wants it. The parallel arrays cost memory
+        // whatever the dialect, but creating and mapping a vertex buffer is a
+        // device operation, and a WC3 or WoW frame must reach the device exactly
+        // as it did before this stream existed.
+        bool anyD3 = false;
+        for (const auto& dl : partDraws)
+            anyD3 = anyD3 || dl.material.d3 != nullptr;
+        if (anyD3 && d3UvOut && !d3UvOut->Empty()) {
+            impl_->d3Particles_->Init();
+            impl_->d3Particles_->BeginFrame(verts, *d3UvOut);
+        }
+#endif
         if (multiTexOut && !multiTexOut->vertices.empty()) {
             particle::MultiTexFrameInputs mtf;
             mtf.view = viewMat;

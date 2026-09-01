@@ -124,19 +124,35 @@ bool ParticleService::HasRefractionEmitters() const {
 void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Vertex>& outVertices,
                                     std::vector<EmitterDrawList>& outDrawLists,
                                     MultiTexGeometry* refraction,
-                                    MultiTexGeometry* multiTex) const {
+                                    MultiTexGeometry* multiTex, D3VertexStream* d3Uv) const {
     std::lock_guard<std::mutex> lock(mutex_);
 
     BuildGeometryInput in{};
     in.worldToView = &worldToView;
     in.fogEnabled = fogEnabled_;
     in.fogSampler = fogSampler_;
+    if (d3Uv) {
+        in.d3Uv01 = &d3Uv->uv01;
+        in.d3Uv23 = &d3Uv->uv23;
+        in.d3Color1 = &d3Uv->color1;
+    }
 
+    // The two side streams put their VERTICES somewhere other than
+    // `outVertices`, so they must not also append to arrays kept parallel with
+    // it. No shipped emitter is both Diablo III and multi-texture — the flags
+    // are M2's and the D3 adapter never sets them — but the invariant is worth
+    // holding structurally rather than by that argument.
     BuildGeometryInput refractIn = in;
+    refractIn.d3Uv01 = nullptr;
+    refractIn.d3Uv23 = nullptr;
+    refractIn.d3Color1 = nullptr;
     if (refraction)
         refractIn.extraUV = &refraction->extraUV;
 
     BuildGeometryInput multiTexIn = in;
+    multiTexIn.d3Uv01 = nullptr;
+    multiTexIn.d3Uv23 = nullptr;
+    multiTexIn.d3Color1 = nullptr;
     if (multiTex)
         multiTexIn.extraUV = &multiTex->extraUV;
 
@@ -174,6 +190,15 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
                                         e.Material(), origin, e.MaterialTimeSec()});
             return;
         }
+        // Levelled BEFORE the build, not after: a D3 emitter appends its
+        // texcoords as it appends its vertices, so the two arrays have to
+        // already be the same length or its first quad's coordinates land under
+        // whatever an earlier emitter's quads occupy.
+        if (in.d3Uv01) {
+            in.d3Uv01->resize(outVertices.size());
+            in.d3Uv23->resize(outVertices.size());
+            in.d3Color1->resize(outVertices.size(), 1.0f);
+        }
         const i32 offset = (i32)outVertices.size();
         const i32 vcount = e.BuildGeometry(in, outVertices);
         if (vcount > 0) {
@@ -197,6 +222,11 @@ void ParticleService::BuildGeometry(const Matrix44f& worldToView, std::vector<Ve
         i32 childIdx = 0;
         for (const auto& t : e->Trails())
             build(*t, k.model, TrailEmitterId(k.id, childIdx++), origin);
+    }
+    // The last emitter may have been one that writes no texcoords.
+    if (d3Uv) {
+        d3Uv->uv01.resize(outVertices.size());
+        d3Uv->uv23.resize(outVertices.size());
     }
 }
 

@@ -61,3 +61,26 @@ Appearances/Diablo.app
 Appearances/Tyrael.app
 Appearances/Imperius.app
 Appearances/x1_Malthael.app
+#
+# Added 2026-08-31, and they are `.acr` rather than `.app` for the reason the
+# header gives: an appearance carries no TriggerEvents, so the ten entries above
+# draw ZERO particles between them and every D3 particle defect so far has been
+# invisible to this gate. The actor route resolves out of the extracted tree
+# like the rest of it -- what needs the install is the texture, which is already
+# true of the `.app` arm (see the 2026-08-28 note).
+#
+#   unique_09   two emitters; the first is the only corpus entry whose stage-0
+#               layer is uv mode 0 with a scroll, which is the class of defect
+#               that made the mask slide off its own sprite.
+#   unique_10   a uv mode 3 flip-book beside a mode 2 mask, and the emitter
+#               rides a hardpoint with a non-identity frame.
+#   unique_11   two emitters that differ ONLY in their effect scale (0.42 and
+#               0.15), so an unread channel 35 moves this entry and not the
+#               others.
+#   unique_05   three emitters, one of them emitter shape 6 (the model's own
+#               skinned surface) -- the only shape in this arm that reads
+#               geometry rather than a radius.
+Actor/x1_mightyWeapon_1H_norm_unique_09.acr
+Actor/x1_mightyWeapon_1H_norm_unique_10.acr
+Actor/x1_mightyWeapon_2H_norm_unique_11.acr
+Actor/mightyWeapon_1H_norm_unique_05.acr

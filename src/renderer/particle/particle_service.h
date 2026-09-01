@@ -105,6 +105,29 @@ struct MultiTexGeometry {
     }
 };
 
+/// @brief What a Diablo III particle vertex carries that the shared one cannot.
+///
+/// Index-parallel with the ORDINARY vertex stream rather than a stream of its
+/// own: a D3 quad is an ordinary billboard in position, colour and sort order,
+/// and only its four baked texcoords and its SECOND colour need more room than
+/// the shared vertex has. The service keeps every array the same length as that
+/// stream, so a draw's `vertexOffset` indexes all of them.
+/// See BuildGeometryInput::d3Uv01 and ::d3Color1.
+struct D3VertexStream {
+    std::vector<Vector4f> uv01; ///< uv set 0 in .xy, set 1 in .zw
+    std::vector<Vector4f> uv23;
+    std::vector<f32> color1; ///< ch6, the erosion tail's exponent scale
+
+    bool Empty() const {
+        return uv01.empty();
+    }
+    void Clear() {
+        uv01.clear();
+        uv23.clear();
+        color1.clear();
+    }
+};
+
 class ParticleService {
 public:
     ParticleService();
@@ -151,10 +174,14 @@ public:
     // @p outDrawLists, so it still sorts with everything else in the
     // transparent pass; pass null and it falls back to single-texture shading
     // off the ordinary stream.
+    // A Diablo III emitter additionally fills @p d3Uv with its four baked
+    // texcoords per vertex, kept index-parallel with @p outVertices; pass null
+    // and it falls back to sampling every layer at the raw quad uv.
     void BuildGeometry(const Matrix44f& worldToView, std::vector<Vertex>& outVertices,
                        std::vector<EmitterDrawList>& outDrawLists,
                        MultiTexGeometry* refraction = nullptr,
-                       MultiTexGeometry* multiTex = nullptr) const;
+                       MultiTexGeometry* multiTex = nullptr,
+                       D3VertexStream* d3Uv = nullptr) const;
 
     // Whether any registered emitter (or trail) draws refraction. Cheap enough
     // to ask per frame, and what lets the pipeline skip the pass entirely.

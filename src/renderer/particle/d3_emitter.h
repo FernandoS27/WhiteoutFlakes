@@ -228,8 +228,8 @@ private:
     EvalCtx EmitterCtx() const;
     EvalCtx ParticleCtx(const ParticleState& st, const Vector3f& pos, f32 age) const;
     /// The material's atlas layer, per particle. See the definitions.
-    void SeedAtlas(ParticleState& st) const;
-    void StepAtlas(ParticleState& st, f32 dt) const;
+    void SeedUvStates(ParticleState& st) const;
+    void StepUvStates(ParticleState& st, f32 dt) const;
 
     void TickEmit(f32 dt, f32 emissionScaler);
     EmitContext BuildEmitContext() const;

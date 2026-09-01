@@ -300,7 +300,7 @@ foreach ($entry in $entries) {
     # start sequence joins the key so one model can appear in the corpus more
     # than once — different sequences of the same unit are different baselines,
     # not a collision.
-    $key = (($rel -replace '[\\/ ]', '_') -replace '\.(mdx|m2|m3|app)$', '') + "_$mode"
+    $key = (($rel -replace '[\\/ ]', '_') -replace '\.(mdx|m2|m3|app|acr)$', '') + "_$mode"
     if ($entry.Seq)  { $key += '_' + ($entry.Seq -replace '[^A-Za-z0-9]', '') }
     if ($entry.Anim) { $key += '_' + ([IO.Path]::GetFileNameWithoutExtension($entry.Anim) -replace '[^A-Za-z0-9]', '') }
     # Sub-track and globals join the key so the shield-on and shield-off runs of

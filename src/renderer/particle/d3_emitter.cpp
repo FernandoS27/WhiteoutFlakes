@@ -15,6 +15,26 @@ namespace whiteout::flakes::renderer::particle::d3 {
 namespace {
 
 constexpr f32 kEpsilon = 1e-6f;
+
+/// @brief `ch5 * ch35` as the byte the draw is gated on.
+///
+/// `Particle_PrepareDrawFrame` @0x71000BCC48 loads `particle+0xD0` and turns it
+/// into an integer: below 1e-6 (@0x7100E3BEA0) the result is zero and
+/// `TST W27,#0xFF / B.EQ` @0x71000BCD54 skips `Particle_WriteQuadVertices`
+/// outright; at or above 0.999999 (@0x7100E3BFF8) it is opaque; in between it is
+/// `FCVTPS(s * 255)` @0x71000BCC80, i.e. a ceil.
+///
+/// This is why neither channel belongs in the quad's extent. `arScalePath`'s
+/// shipped shape is a 0 -> 1 -> 0 ramp over the particle's life, which is a fade,
+/// and `arEffectScalePath`'s range never exceeds 1.0 on any of the 21,593 files,
+/// which is an attenuation.
+u8 D3OpacityByte(f32 s) {
+    if (!(s >= 1e-6f))
+        return 0;
+    if (s >= 0.999999f)
+        return 255;
+    return static_cast<u8>(std::ceil(s * 255.0f));
+}
 constexpr f32 kTwoPi = 6.28318530717958647692f;
 constexpr f32 kHalfPi = 1.57079632679489661923f;
 /// @brief The engine's OTHER two-pi, and the one every azimuth is built from.
@@ -214,7 +234,6 @@ Emitter::Emitter() : d3desc_(DefaultD3Desc()) {}
 
 void Emitter::SetD3Desc(std::shared_ptr<const EmitterDesc> desc) {
     d3desc_ = desc ? std::move(desc) : DefaultD3Desc();
-
     // The base class still owns the draw list's material and priority, so give
     // it a desc carrying those and nothing else. Everything the WC3/WoW
     // simulation would read off it stays at its default and is never
@@ -711,7 +730,7 @@ bool Emitter::BirthParticle(f32 dt, EmitContext& ec) {
     p.velocity = BirthVelocity(st.seed, ectx);
 
     st.swayPhase = sysRng_.NextUnit();
-    SeedAtlas(st);
+    SeedUvStates(st);
 
     Pool().PushAlive(idx);
     OnParticleBorn(idx);
@@ -723,66 +742,114 @@ bool Emitter::BirthParticle(f32 dt, EmitContext& ec) {
     return true;
 }
 
-/// @brief Seed one particle's flip-book, `Anim2D_BindAndInit` @0x710033F230.
+/// @brief Seed one particle's four UV animation states, `MatTex_InitUvState`
+///        @0x71000F7C60 once per stage, as `ParticleSystem_EmitParticle` does.
 ///
-/// The engine draws both the start frame and the rate randomly, "so instances
-/// of the same effect are desynchronised" — and for a particle system the
-/// instances are the PARTICLES, one player each at `particle+16 + 72*stage`.
-/// That randomisation is the whole point on the 687 of 1,456 atlas entries
-/// whose rate is zero: those pick one tile and hold it, and without the draw
-/// every particle of the system would show the same one.
+/// Everything here belongs to the PARTICLE. The engine draws the initial phase,
+/// the rate jitter and the flip-book's start frame "so instances of the same
+/// effect are desynchronised" — and for a particle system the instances are the
+/// particles, one 72-byte state each at `particle+16 + 72*stage`. Without the
+/// draws every member of a puff sits on the same tile of the same sheet, which
+/// is what 12,361 of the corpus's 13,897 mode-2 entries are authored against.
 ///
-/// The draws come off the PARTICLE's own stream rather than the engine's
-/// global one, which is a deliberate difference: the engine's is a process-wide
-/// counter that no trace could reproduce, and the particle's is already the
-/// seed every channel of this particle uses.
-void Emitter::SeedAtlas(ParticleState& st) const {
+/// The draws come off the PARTICLE's own stream rather than the engine's global
+/// one, which is a deliberate difference: the engine's is a process-wide counter
+/// no trace could reproduce, and the particle's is already the seed every
+/// channel of this particle uses. The ORDER is the engine's — stages ascending,
+/// and within a mode-2 stage the U phase, the V phase, then the U, V and
+/// rotation rate jitters — so a stage that takes no draw does not shift the
+/// ones after it.
+void Emitter::SeedUvStates(ParticleState& st) const {
     const MaterialDesc& m = d3desc_->d3mat;
-    if (m.atlasLayer < 0)
-        return;
-    const MaterialLayer& L = m.layers[static_cast<usize>(m.atlasLayer)];
-    const i32 count = static_cast<i32>(L.atlas->frames.size());
-    if (count <= 0)
-        return;
-
     MwcRng rng = MwcRng::Seed(st.seed ^ 0x2D32u);
-    const u32 span = static_cast<u32>(L.atlasFrameRange) + 1u;
-    i32 frame = L.atlasFrameBase + static_cast<i32>(rng.Next() % span);
-    // `>=`, not `>`: the engine clamps to count-1 with a `>=` test, so a range
-    // that overruns the sheet lands on the last frame rather than wrapping.
-    if (frame >= count - 1)
-        frame = count - 1;
-    if (frame < 0)
-        frame = 0;
-    st.atlasCursor = static_cast<f32>(frame);
-    st.atlasRate = L.atlasRate;
-    if (L.atlasRateJitter != 0.0f)
-        st.atlasRate += L.atlasRateJitter * rng.NextUnit();
+    for (u32 s = 0; s < MaterialDesc::kMaxLayers; ++s) {
+        if (m.setLayer[s] < 0)
+            continue;
+        const MaterialLayer& L = m.layers[static_cast<usize>(m.setLayer[s])];
+        ParticleState::UvState& u = st.uv[s];
+        if (L.uv.mode == ::whiteout::flakes::io::D3UvMode::Anim2D) {
+            if (!L.atlas || L.atlas->frames.empty())
+                continue;
+            const i32 count = static_cast<i32>(L.atlas->frames.size());
+            const u32 span = static_cast<u32>(L.atlasFrameRange) + 1u;
+            i32 frame = L.atlasFrameBase + static_cast<i32>(rng.Next() % span);
+            // `>=`, not `>`: the engine clamps to count-1 with a `>=` test, so a
+            // range that overruns the sheet lands on the last frame rather than
+            // wrapping.
+            if (frame >= count - 1)
+                frame = count - 1;
+            if (frame < 0)
+                frame = 0;
+            u.cursor = static_cast<f32>(frame);
+            u.cursorRate = L.atlasRate;
+            if (L.atlasRateJitter != 0.0f)
+                u.cursorRate += L.atlasRateJitter * rng.NextUnit();
+        } else if (L.uv.mode == ::whiteout::flakes::io::D3UvMode::ScaleRotateScroll) {
+            u.u = L.uv.randomPhaseU ? rng.NextUnit() : L.uv.offset.x;
+            u.v = L.uv.randomPhaseV ? rng.NextUnit() : L.uv.offset.y;
+            u.uRate = L.uv.scrollPerSec.x;
+            if (L.uv.scrollJitter.x != 0.0f)
+                u.uRate += L.uv.scrollJitter.x * rng.NextUnit();
+            u.vRate = L.uv.scrollPerSec.y;
+            if (L.uv.scrollJitter.y != 0.0f)
+                u.vRate += L.uv.scrollJitter.y * rng.NextUnit();
+            u.rotRate = L.uv.rotatePerSec;
+            if (L.uv.rotateJitter != 0.0f)
+                u.rotRate += L.uv.rotateJitter * rng.NextUnit();
+            // Already clamped to 8x2pi and folded into [0, 2pi] by D3ReadUvXform,
+            // which is what the engine does before the angle reaches the state.
+            u.rot = L.uv.rotate;
+        }
+    }
 }
 
-/// @brief Advance it, `Anim2D_AdvanceCursor` @0x710033EE90.
+/// @brief Advance them, `MatTex_TickUvStateEntry` @0x71000F8310 and
+///        `Anim2D_AdvanceCursor` @0x710033EE90.
 ///
-/// The length is `count - 0.0001`, which is what lets the last frame be
-/// reached while the loop still wraps before `count`. A once-shot clamps and
-/// zeroes its own rate; a loop subtracts the length until it is back in range.
-void Emitter::StepAtlas(ParticleState& st, f32 dt) const {
+/// Mode 2 integrates the scroll and either WRAPS it into [0,1] or, with
+/// `tAnim3.flAmount` set, CLAMPS it there — which turns a loop into a one-way
+/// reveal. The angle is clamped to 8x2pi and folded the same way. Mode 3 steps
+/// its flip-book: the length is `count - 0.0001`, which is what lets the last
+/// frame be reached while a loop still wraps before `count`; a once-shot clamps
+/// and zeroes its own rate.
+void Emitter::StepUvStates(ParticleState& st, f32 dt) const {
     const MaterialDesc& m = d3desc_->d3mat;
-    if (m.atlasLayer < 0 || st.atlasRate == 0.0f)
-        return;
-    const MaterialLayer& L = m.layers[static_cast<usize>(m.atlasLayer)];
-    const f32 length = static_cast<f32>(L.atlas->frames.size()) - 0.0001f;
-    if (length <= 0.0f)
-        return;
-
-    f32 c = st.atlasCursor + st.atlasRate * dt;
-    if (L.atlasLoops) {
-        while (c > length)
-            c -= length;
-    } else if (c > length) {
-        c = length;
-        st.atlasRate = 0.0f;
+    for (u32 s = 0; s < MaterialDesc::kMaxLayers; ++s) {
+        if (m.setLayer[s] < 0)
+            continue;
+        const MaterialLayer& L = m.layers[static_cast<usize>(m.setLayer[s])];
+        ParticleState::UvState& u = st.uv[s];
+        if (L.uv.mode == ::whiteout::flakes::io::D3UvMode::Anim2D) {
+            // `fabsf(rate) < 1e-6`, not `!= 0`: the engine's early-out is on the
+            // magnitude, so a NEGATIVE rate plays the sheet backwards. One
+            // shipped entry authors -30 fps.
+            if (!L.atlas || std::fabs(u.cursorRate) < 1e-6f)
+                continue;
+            const f32 length = static_cast<f32>(L.atlas->frames.size()) - 0.0001f;
+            if (length <= 0.0f)
+                continue;
+            f32 c = u.cursor + u.cursorRate * dt;
+            if (L.atlasLoops) {
+                while (c > length)
+                    c -= length;
+            } else if (c > length) {
+                c = length;
+                u.cursorRate = 0.0f;
+            }
+            u.cursor = c;
+        } else if (L.uv.mode == ::whiteout::flakes::io::D3UvMode::ScaleRotateScroll) {
+            u.u += u.uRate * dt;
+            u.v += u.vRate * dt;
+            if (L.uv.clampUv) {
+                u.u = std::clamp(u.u, 0.0f, 1.0f);
+                u.v = std::clamp(u.v, 0.0f, 1.0f);
+            } else {
+                u.u = ::whiteout::flakes::io::D3FoldUv(u.u);
+                u.v = ::whiteout::flakes::io::D3FoldUv(u.v);
+            }
+            u.rot = ::whiteout::flakes::io::D3WrapAngle(u.rot + u.rotRate * dt);
+        }
     }
-    st.atlasCursor = c;
 }
 
 void Emitter::TickEmit(f32 dt, f32 emissionScaler) {
@@ -971,10 +1038,10 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
     const EvalCtx ctx = ParticleCtx(st, p.position, p.age);
     const f32 invDt = (dt > kEpsilon) ? (1.0f / dt) : 0.0f;
 
-    // The flip-book runs on the same tick as the motion, ahead of it, the way
-    // ParticleSystem_ForEachParticle steps all four UV states before it calls
+    // The four UV states run on the same tick as the motion, ahead of it, the
+    // way ParticleSystem_ForEachParticle steps all four before it calls
     // ParticleSystem_UpdateParticles on the survivor.
-    StepAtlas(st, dt);
+    StepUvStates(st, dt);
 
     // The whole of this function works in `.prt` units — every speed, offset
     // and acceleration below is a number straight out of the file, and the two
@@ -1196,25 +1263,44 @@ void Emitter::StepParticle(u32 idx, f32 dt) {
         const Vector4f c = d.Channel(kChColor).EvalColor(st.seed, kChColor, ctx);
         st.color = {c.x, c.y, c.z, c.w};
     }
-    f32 alpha = 1.0f;
-    if (d.Has(kChAlpha))
-        alpha = std::clamp(d.Channel(kChAlpha).EvalScalar(st.seed, kChAlpha, ctx), 0.0f, 1.0f);
-    // The engine keeps the alpha as a separate dword replicated into all four
-    // bytes (particle+236), i.e. it modulates every channel, not just alpha.
-    st.color.w = alpha;
+    // ch6 is NOT this colour's alpha. `ParticleSystem_UpdateParticles` quantises
+    // it and replicates the byte into all four lanes of a SECOND dword
+    // (`MOV W9,#0x1010101` @0x71000BEF20 -> particle+0xEC), which
+    // `Particle_PrepareDrawFrame` @0x71000BCDC0 forwards as the vertex's COLOR1
+    // while COLOR0's own alpha byte is overwritten by the opacity. The only
+    // program that reads COLOR1 is `Billboard.fx__ps_legacy`'s erosion tail,
+    // `alpha = min(1, pow(alpha, 10 * COLOR1.a))`.
+    st.dissolve = d.Has(kChAlpha)
+                      ? std::clamp(d.Channel(kChAlpha).EvalScalar(st.seed, kChAlpha, ctx), 0.0f,
+                                   1.0f)
+                      : 1.0f;
 
-    st.scale = d.Has(kChScale) ? d.Channel(kChScale).EvalScalar(st.seed, kChScale, ctx) : 1.0f;
+    st.opacity = d.Has(kChScale) ? d.Channel(kChScale).EvalScalar(st.seed, kChScale, ctx) : 1.0f;
 
     f32 sizeCh = d.Has(kChSize) ? d.Channel(kChSize).EvalScalar(st.seed, kChSize, ctx) : 1.0f;
     f32 emitterSize = 1.0f;
-    if (d.Has(kChSizeScale)) {
+    // The two EMITTER-wide terms, both sampled once per tick off the emitter's
+    // own seed by `ParticleSystem_TickEmitter` (ch 34 -> sys+0x134 @0x71000AEF48,
+    // ch 35 -> sys+0x12C @0x71000AEF64), both defaulting to 1.0 when the path is
+    // absent, and they drive DIFFERENT things: `particle+0xD4 = ch1 * (birthSize
+    // * sys+0x134)` @0x71000BEF7C is the quad's width, while `particle+0xD0 =
+    // ch5 * sys+0x12C` @0x71000BEE28 is the opacity byte. Only the first is a
+    // size.
+    if (d.Has(kChSizeScale) || d.Has(kChEffectScale)) {
         const EvalCtx ectx = EmitterCtx();
-        emitterSize = d.Channel(kChSizeScale).EvalScalar(emitterSeed_, kChSizeScale, ectx);
+        if (d.Has(kChSizeScale))
+            emitterSize = d.Channel(kChSizeScale).EvalScalar(emitterSeed_, kChSizeScale, ectx);
+        if (d.Has(kChEffectScale))
+            st.opacity *=
+                d.Channel(kChEffectScale).EvalScalar(emitterSeed_, kChEffectScale, ectx);
     }
     st.size = std::clamp(sizeCh * st.baseSize * emitterSize, 0.0001f, 999.0f);
 
-    if (d.Has(kChChildScalar))
-        st.childScalar = d.Channel(kChChildScalar).EvalScalar(st.seed, kChChildScalar, ctx);
+    // ch2 -> `particle+0xF0`, default 1.0 @0x71000BEF98. Only the quad's HEIGHT
+    // reads it; a channel named for a size that scales one axis is why this sat
+    // parsed-but-unread until the frost weapons drew twice as tall as the blade.
+    if (d.Has(kChHeightRatio))
+        st.heightRatio = d.Channel(kChHeightRatio).EvalScalar(st.seed, kChHeightRatio, ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -1413,19 +1499,39 @@ i32 Emitter::BuildGeometry(const BuildGeometryInput& in, std::vector<Vertex>& ou
     // here. Nothing in the D3 particle program reads a normal (the family is
     // unlit; `Particle_DrawBatch` uploads no light constants for it), so the
     // three floats were already dead weight in this stream.
-    const MaterialLayer* atlasLayer =
-        (d.d3mat.atlasLayer >= 0)
-            ? &d.d3mat.layers[static_cast<usize>(d.d3mat.atlasLayer)]
-            : nullptr;
-    // A non-square tile makes a non-square quad: `Particle_WriteQuadVertices` divides the
-    // frame's V extent in PIXELS by its U extent in pixels and scales the
-    // quad's vertical half-extent by it. Square tiles — most of the corpus —
-    // leave this at 1.
+    // The four POSITIONAL uv sets, and the base RECTANGLE each one's coordinates
+    // are built over. `Particle_WriteQuadVertices` takes that rectangle off
+    // **stage 0's** sheet and no other's, and off the SHEET rather than off the
+    // flip-book: it reads the frame table before it has looked at the entry's uv
+    // mode at all, so a type-1 layer whose texture carries frames shapes the
+    // quad even when its entry is mode 0 or 2, while a flip-book on any later
+    // stage gets the unit square (and has to carry its own scale — see
+    // D3UvXform::atlasScale). A set with no layer bakes the identity rectangle.
+    struct UvSet {
+        const MaterialLayer* layer = nullptr;
+        f32 extU = 1.0f;
+        f32 extV = 1.0f;
+    };
+    UvSet sets[MaterialDesc::kMaxLayers];
+    for (u32 s = 0; s < MaterialDesc::kMaxLayers; ++s) {
+        if (d.d3mat.setLayer[s] < 0)
+            continue;
+        sets[s].layer = &d.d3mat.layers[static_cast<usize>(d.d3mat.setLayer[s])];
+        if (s == 0 && sets[s].layer->atlas) {
+            const Vector2f tile = sets[s].layer->atlas->TileSize();
+            sets[s].extU = tile.x;
+            sets[s].extV = tile.y;
+        }
+    }
+    // A non-square tile makes a non-square quad: the engine divides the frame's
+    // V extent in PIXELS by its U extent in pixels and scales the quad's
+    // vertical half-extent by it. Same sheet as the base rectangle — stage 0's.
+    // Square tiles, which is most of the corpus, leave this at 1.
     f32 atlasAspect = 1.0f;
-    if (atlasLayer && atlasLayer->atlas->width > 0 && atlasLayer->atlas->height > 0) {
-        const Vector2f tile = atlasLayer->atlas->TileSize();
-        const f32 wpx = tile.x * static_cast<f32>(atlasLayer->atlas->width);
-        const f32 hpx = tile.y * static_cast<f32>(atlasLayer->atlas->height);
+    if (sets[0].layer && sets[0].layer->atlas && sets[0].layer->atlas->width > 0 &&
+        sets[0].layer->atlas->height > 0) {
+        const f32 wpx = sets[0].extU * static_cast<f32>(sets[0].layer->atlas->width);
+        const f32 hpx = sets[0].extV * static_cast<f32>(sets[0].layer->atlas->height);
         if (wpx > kEpsilon && hpx > kEpsilon)
             atlasAspect = hpx / wpx;
     }
@@ -1487,23 +1593,69 @@ i32 Emitter::BuildGeometry(const BuildGeometryInput& in, std::vector<Vertex>& ou
             up = st.orientation.rotate_vector(up);
         }
 
-        const f32 half = st.size * st.scale * 0.5f * u;
+        // Width is `particle+0xD4` ALONE — `Particle_PrepareDrawFrame` stores it
+        // to drawDesc+4 @0x71000BCD60 and `Particle_WriteQuadVertices` halves it
+        // @0x71000BC4C4. The opacity term never reaches either extent. The
+        // height takes the same half-width through the sheet aspect and then
+        // ch2: `v55 = (v11 * v23) * drawDesc[2]` @0x71000BC4E4.
+        const f32 half = st.size * 0.5f * u;
         if (!(half > 0.0f))
             continue;
-        const f32 halfV = half * atlasAspect;
+        const u8 op = D3OpacityByte(st.opacity);
+        if (op == 0)
+            continue;
+        const f32 halfV = half * atlasAspect * st.heightRatio;
 
-        if (atlasLayer) {
-            const auto& frames = atlasLayer->atlas->frames;
-            i32 k = static_cast<i32>(st.atlasCursor);
-            k = std::clamp(k, 0, static_cast<i32>(frames.size()) - 1);
-            normal = {frames[static_cast<usize>(k)].x, frames[static_cast<usize>(k)].y, 0.0f};
+        // This particle's four texcoord transforms, one per set. Everything
+        // that varies is read out of the particle's own UV state, which is the
+        // whole reason these are baked per vertex rather than uploaded per
+        // draw: the scroll phase and its rate were drawn at emit, the rotation
+        // has been accumulating since, and each set walks its own flip-book.
+        f32 aff[MaterialDesc::kMaxLayers][6];
+        for (u32 s = 0; s < MaterialDesc::kMaxLayers; ++s) {
+            f32(&a)[6] = aff[s];
+            a[0] = 1.0f; a[1] = 0.0f; a[2] = 0.0f;
+            a[3] = 0.0f; a[4] = 1.0f; a[5] = 0.0f;
+            const MaterialLayer* L = sets[s].layer;
+            if (!L)
+                continue;
+            if (L->uv.mode == ::whiteout::flakes::io::D3UvMode::Anim2D) {
+                // `MatTex_BuildUvAffine2x3` case 3: a translation to frame k's
+                // origin, plus frame ZERO's far corner as a scale when the entry
+                // asks. Never frame k's corner — only the origin varies.
+                if (L->atlas && !L->atlas->frames.empty()) {
+                    const auto& frames = L->atlas->frames;
+                    const i32 k = std::clamp(static_cast<i32>(st.uv[s].cursor), 0,
+                                             static_cast<i32>(frames.size()) - 1);
+                    a[2] = frames[static_cast<usize>(k)].x;
+                    a[5] = frames[static_cast<usize>(k)].y;
+                    if (L->uv.atlasScale) {
+                        a[0] = frames[0].z;
+                        a[4] = frames[0].w;
+                    }
+                }
+            } else {
+                ::whiteout::flakes::io::D3UvAffineAt(L->uv, st.uv[s].u, st.uv[s].v,
+                                                     st.uv[s].rot, a);
+            }
+            // Fold the base rectangle in, so the quad's own coordinates stay the
+            // unit square and the corner below is one multiply-add.
+            a[0] *= sets[s].extU;
+            a[3] *= sets[s].extU;
+            a[1] *= sets[s].extV;
+            a[4] *= sets[s].extV;
         }
 
         // Straight, not premultiplied: the blend factors come from the `.prt`'s
         // own RenderPass and 169 of the corpus's 223 particle passes already
         // source SrcAlpha, so folding alpha into the colour here would apply it
         // twice. Same convention the WC3/WoW builder uses.
+        //
+        // The alpha is the opacity byte ALONE. Whatever `arColorPath` authored
+        // in its own alpha lane is overwritten @0x71000BCCAC, and ch6 rides
+        // COLOR1 instead.
         Vector4f vcol = st.color;
+        vcol.w = static_cast<f32>(op) * (1.0f / 255.0f);
         if (in.fogEnabled && in.fogSampler) {
             const ImVector fog = in.fogSampler(pos);
             const Vector4f f = fog.ToVec4();
@@ -1511,6 +1663,7 @@ i32 Emitter::BuildGeometry(const BuildGeometryInput& in, std::vector<Vertex>& ou
         }
 
         Vertex v[4];
+        Vector2f tc[4][MaterialDesc::kMaxLayers];
         for (i32 c = 0; c < 4; ++c) {
             const f32 sx = kCorner[c][0] * half;
             const f32 sy = kCorner[c][1] * halfV;
@@ -1522,13 +1675,25 @@ i32 Emitter::BuildGeometry(const BuildGeometryInput& in, std::vector<Vertex>& ou
             v[c].normal = normal;
             v[c].color = vcol;
             v[c].uv = {kUV[c][0], kUV[c][1]};
+            for (u32 s = 0; s < MaterialDesc::kMaxLayers; ++s) {
+                const f32* a = aff[s];
+                tc[c][s] = {a[0] * kUV[c][0] + a[1] * kUV[c][1] + a[2],
+                            a[3] * kUV[c][0] + a[4] * kUV[c][1] + a[5]};
+            }
         }
-        out.push_back(v[0]);
-        out.push_back(v[1]);
-        out.push_back(v[2]);
-        out.push_back(v[3]);
-        out.push_back(v[2]);
-        out.push_back(v[1]);
+        static constexpr i32 kWind[6] = {0, 1, 2, 3, 2, 1};
+        for (const i32 c : kWind)
+            out.push_back(v[c]);
+        if (in.d3Uv01 && in.d3Uv23) {
+            for (const i32 c : kWind) {
+                in.d3Uv01->push_back({tc[c][0].x, tc[c][0].y, tc[c][1].x, tc[c][1].y});
+                in.d3Uv23->push_back({tc[c][2].x, tc[c][2].y, tc[c][3].x, tc[c][3].y});
+            }
+        }
+        if (in.d3Color1) {
+            for (i32 c = 0; c < 6; ++c)
+                in.d3Color1->push_back(st.dissolve);
+        }
     }
 
     return static_cast<i32>(out.size()) - before;

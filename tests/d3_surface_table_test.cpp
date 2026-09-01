@@ -2440,7 +2440,7 @@ TEST_CASE("D3 corpus: the RenderParams field map and the premultiplied family",
                 constColor[-1], constColor[0], constColor[static_cast<i32>(0xFF000000u)],
                 constColor.size());
     CHECK(constColor[-1] == 931);
-    CHECK(constColor[0] == 451);
+    CHECK(constColor[0] == 453);
     CHECK(constColor[static_cast<i32>(0xFF000000u)] == 301);
 
     // The three states this build applies out of the tail of the struct. The
@@ -2459,7 +2459,7 @@ TEST_CASE("D3 corpus: the RenderParams field map and the premultiplied family",
     CHECK(stencilOn == 61);
     CHECK(colorWrite0[{0, 0}] == 68);
     CHECK(colorWrite0[{0, 1}] == 4);
-    CHECK(colorWrite0[{1, 0}] == 1164);
+    CHECK(colorWrite0[{1, 0}] == 1166);
     CHECK(colorWrite0[{1, 1}] == 270);
     CHECK(depthBias0 == 28);
     // Every shipped non-solid fill is 2 -- solid with flat shading. The
@@ -2833,7 +2833,146 @@ TEST_CASE("D3 corpus: a pass's combine block decodes to the shipped chain",
     std::printf("[d3-combine] %zu billboard passes: %zu clamp mid-chain, %zu add, %zu drop the "
                 "vertex colour, %zu take it last; %zu are SoftBillboard\n",
                 billboard, clamped, added, vcolNone, vcolLast, softShift);
-    CHECK(billboard == 243);
-    CHECK(softShift == 20);
+    CHECK(billboard == 245);
+    CHECK(softShift == 21);
     CHECK(added == 5);
+}
+
+// ===========================================================================
+// The pass NAMES its program, and its texcoord block says how wide it is.
+//
+// `szPixelShaderEntry` was read and thrown away until this pass. It is the only
+// thing that separates the 15,841 `.prt` on the fixed-function chain from the
+// 1,662 on one of eleven other programs — and for the flow shaders among them,
+// `TAG_VS_TEXCOORD{i}_FUNC` is what says whether the fourth texture is a second
+// flow map or nothing at all. Both are transcribed here from the shipped
+// assets, and the corpus-wide census is printed so the populations are on the
+// record rather than in a commit message.
+// ===========================================================================
+TEST_CASE("D3 corpus: the pass names its pixel program and its texcoord count",
+          "[d3][material][corpus]") {
+    namespace wio = ::whiteout::flakes::io;
+    struct Want {
+        const char* file;
+        const char* entry;
+        u32 texcoords;
+    };
+    const Want kWant[] = {
+        // One flow map at slot 1: two texcoords, and the second is the noise.
+        {"particle_additive_flow", "ps_particle_flow", 2},
+        // The same program with three, which is what `_flowMult_masked` means.
+        {"particle_additive_flowMult_masked", "ps_particle_flow", 4},
+        // Two diffuse layers and one flow map. The pass parks a combine code on
+        // the flow slot; the program does not run it.
+        {"particle_transparent_blood_cm2x_flow", "ps_legacy_flow", 3},
+        {"particle_additive_alphaWipe_flowMult", "ps_legacy_flow", 4},
+        // Three colour layers and the flow map last.
+        {"particle_Transparent_firewall_flow", "ps_firewall_flow", 4},
+        {"particle_Transparent_firewall_am4x_flow", "ps_firewall_am4x_flow", 4},
+        // Not a chain at all: two premultiplied layers summed.
+        {"particle_blendAdd_flow", "ps_billboard_blendAdd_flowMult", 3},
+        {"particle_blendAdd_flowMult", "ps_billboard_blendAdd_flowMult", 4},
+        // And the floor, so the census below is anchored at both ends.
+        {"particle_additive", "ps_legacy", 1},
+    };
+
+    std::size_t checked = 0;
+    for (const auto& w : kWant) {
+        const fs::path p = CorpusRoot() / "Shaders" / (std::string(w.file) + ".shd");
+        if (!fs::exists(p)) {
+            WARN("missing " << p.string() << " -- SKIPPED, not passed.");
+            continue;
+        }
+        auto sh = d3n::parseShaders(ReadAll(p));
+        REQUIRE(sh);
+        const auto st = d3p::D3PassStateOf(*sh);
+        INFO(w.file);
+        REQUIRE(st.resolved);
+        CHECK(st.pixelEntry == w.entry);
+        CHECK(st.texcoordCount == w.texcoords);
+        ++checked;
+    }
+    if (checked == 0) {
+        WARN("No D3 Shaders corpus. SKIPPED, not passed.");
+        return;
+    }
+    CHECK(checked == std::size(kWant));
+
+    // The decode itself. A live code names a vertex uv SET, and each set is the
+    // baked transform of one texture TYPE; 10 is the engine's "no such slot".
+    CHECK(wio::D3TexcoordUvSet(0) == 0);
+    CHECK(wio::D3TexcoordUvSet(1) == 0);
+    CHECK(wio::D3TexcoordUvSet(8) == 1);
+    CHECK(wio::D3TexcoordUvSet(11) == 0);
+    CHECK(wio::D3TexcoordUvSet(13) == 2);
+    CHECK(wio::D3TexcoordUvSet(15) == 3);
+    CHECK(!wio::D3TexcoordIsLive(10));
+    CHECK(wio::D3TexcoordIsLive(11));
+    CHECK(wio::kD3TexcoordSetType[0] == 1);
+    CHECK(wio::kD3TexcoordSetType[3] == 14);
+
+    const auto files = FindFiles(CorpusRoot() / "Shaders", ".shd");
+    std::map<std::string, std::size_t> entries;
+    std::map<u32, std::size_t> widths;
+    std::size_t billboard = 0, unnamed = 0, reroute = 0;
+    for (const auto& f : files) {
+        auto sh = d3n::parseShaders(ReadAll(f));
+        if (!sh || sh->arRenderPasses.empty())
+            continue;
+        const std::string& fx = sh->arRenderPasses[0].szEffectFile;
+        if (fx != "Billboard.fx" && fx != "SoftBillboard.fx")
+            continue;
+        const auto st = d3p::D3PassStateOf(*sh);
+        ++billboard;
+        ++entries[st.pixelEntry];
+        ++widths[st.texcoordCount];
+        if (st.pixelEntry.empty())
+            ++unnamed;
+        for (u32 i = 0; i < st.texcoordCount && i < 4; ++i) {
+            if (wio::D3TexcoordUvSet(st.texcoordFunc[i]) != i) {
+                ++reroute;
+                break;
+            }
+        }
+    }
+    std::printf("[d3-program] %zu billboard passes, %zu distinct pixel entries:", billboard,
+                entries.size());
+    for (const auto& [e, k] : entries)
+        std::printf(" %s=%zu", e.c_str(), k);
+    std::printf("\n[d3-program] %zu route a stage to another layer's uv; texcoord count:",
+                reroute);
+    for (const auto& [w, k] : widths)
+        std::printf(" %u=%zu", w, k);
+    std::printf("\n");
+    // 245 and not the 243 this said until 2026-08-31: two of the shipped
+    // billboard shaders have no PATH in CASC (`Base/unk_0/1997` and
+    // `.../2000`), so a by-name extraction of the corpus never wrote them and
+    // every corpus-side sweep was two short -- which is where the audit's
+    // "906 `.prt` resolve to no Shaders" came from. They carry their names
+    // internally (`particle_additive_am4x`,
+    // `particle_transparent_am4x_soft_noFog`) and are extracted under them now.
+    // The runtime always resolved them: the SNO cache reads by file id.
+    // See D3_MATERIAL_AUDIT.md 9.1.
+    CHECK(billboard == 245);
+    CHECK(entries.size() == 12);
+    // Every shipped billboard pass names its program. A blank would put the
+    // material back on the chain silently, which is the failure this replaces.
+    CHECK(unnamed == 0);
+    // Nine passes declare a FIFTH texcoord, which a particle has no texture for
+    // -- `Particle_DrawBatch` binds four. They are why the program shapes are
+    // applied only where the layer types are a prefix of the bind order, and
+    // asserted here so the day a tenth appears this says so.
+    // The vertex program has four texcoord outputs, so no pass may resolve to
+    // more than four live slots -- which is the check that catches an absent
+    // tag read as disabled rather than as its registry default, and a hole read
+    // as the end of the block.
+    CHECK(widths.find(5) == widths.end());
+    CHECK(widths.find(6) == widths.end());
+    // And the reroutes: 39 passes give some stage a uv set that is not its own
+    // index, which is the half of the block this build now acts on.
+    // `particle_additive_am4x_alphatest` tags (1, 8, 1, 8), so its stages 2 and
+    // 3 sample at stages 0 and 1's transforms. Nothing distinguishes code 1
+    // from code 13 at slot 2 except that -- both name matTex[2] -- so a matrix
+    // reading of the block makes the author's choice mean nothing.
+    CHECK(reroute == 39);
 }

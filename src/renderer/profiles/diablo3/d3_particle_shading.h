@@ -88,9 +88,11 @@ struct D3ParticleFrameInputs {
     u32 extraRtvCount = 0;
     gfx::Format dsvFormat = gfx::Format::D24_UNORM_S8_UINT;
 
-    /// The shared particle stream. Bound by @ref D3ParticleShading::Draw rather
-    /// than by the caller because `BindPipeline` re-sets the root signature on
-    /// D3D12 and discards everything bound before it.
+    /// The shared particle stream. Only the fallback needs it — @ref
+    /// D3ParticleShading::BeginFrame repacks it into a stream of its own — but
+    /// it is carried here so `Draw` can bind whichever it uses, because
+    /// `BindPipeline` re-sets the root signature on D3D12 and discards
+    /// everything bound before it.
     gfx::BufferHandle vertexBuffer = gfx::BufferHandle::Invalid;
 };
 
@@ -116,6 +118,19 @@ public:
 
     bool IsAvailable() const;
 
+    /// @brief Repack this frame's D3 quads into the stream this program takes.
+    ///
+    /// A D3 particle needs FOUR texture coordinates per vertex, which the shared
+    /// 48-byte `Vertex` has no room for — the engine's own particle vertex is 56
+    /// bytes and spends four packed texcoords of it. So the emitter builds the
+    /// ordinary stream plus a parallel `D3VertexStream`, and this interleaves the
+    /// two into a vertex of its own once per frame. Index-parallel throughout,
+    /// so a draw's `vertexOffset` addresses this buffer unchanged.
+    ///
+    /// Returns false when there is nothing to pack or the stream is absent, and
+    /// @ref Draw then falls back to the shared vertex with its raw quad uv.
+    bool BeginFrame(const std::vector<Vertex>& vertices, const particle::D3VertexStream& uv);
+
     /// @brief Draw one emitter's quads. False when it could not — no shader, no
     ///        PSO, no material — and the caller then falls back to the SD path,
     ///        which draws the diffuse layer alone.
@@ -128,6 +143,10 @@ private:
 
     RenderService& rs_;
     bool initTried_ = false;
+    /// The repacked stream and whether this frame filled it.
+    gfx::BufferHandle vb_ = gfx::BufferHandle::Invalid;
+    i32 vbCapacity_ = 0;
+    bool frameReady_ = false;
 
     gfx::ShaderHandle vs_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle ps_ = gfx::ShaderHandle::Invalid;

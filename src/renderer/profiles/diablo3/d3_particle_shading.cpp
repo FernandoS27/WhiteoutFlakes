@@ -12,9 +12,11 @@
 
 #include <whiteout/sno/d3/native/types.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace whiteout::flakes::renderer::profiles::diablo3 {
 
@@ -44,25 +46,109 @@ particle::FilterMode BlendClassOf(const pd3::MaterialDesc& m) {
     return particle::FilterMode::Blend;
 }
 
+
+/// @brief One layer's step in a combine chain the PROGRAM fixes rather than the
+///        pass, for the entry points whose passes carry no stage block at all.
+struct FixedStage {
+    u8 colorOp;
+    u8 alphaOp;
+    f32 colorGain;
+    f32 alphaGain;
+};
+
+/// @brief What a `szPixelShaderEntry` says the program does.
+///
+/// Read off the shipped bytecode of each entry point (D3_MATERIAL_AUDIT.md
+/// S12), not inferred: the four `ps_firewall_*` programs differ only in two
+/// literals, and the name is the whole of what selects between them.
+struct ProgramShape {
+    io::D3ParticleProgram program = io::D3ParticleProgram::Chain;
+    /// The first layer that is a flow map, or -1.
+    i32 flowFirst = -1;
+    bool softFade = false;
+    /// Null where the pass's own stage block is the authority.
+    const FixedStage* fixed = nullptr;
+};
+
+// `alpha = 2 * layer19.a * (vcol.a * diffuse.a) * layer12.a` and
+// `rgb = vcol.rgb * diffuse.rgb * layer12.rgb` -- the second layer feeds the
+// alpha only, and the trailing gain is the program's, not any stage's.
+constexpr FixedStage kFirewall[3] = {{io::kD3StageModulate, io::kD3StageModulate, 1.0f, 1.0f},
+                                     {io::kD3StageSkip, io::kD3StageModulate, 1.0f, 1.0f},
+                                     {io::kD3StageModulate, io::kD3StageModulate, 1.0f, 2.0f}};
+/// `_am4x` does not replace that 2 -- it multiplies it, and the shipped
+/// program's literal is 8.
+constexpr FixedStage kFirewallAm4x[3] = {{io::kD3StageModulate, io::kD3StageModulate, 1.0f, 1.0f},
+                                         {io::kD3StageSkip, io::kD3StageModulate, 1.0f, 1.0f},
+                                         {io::kD3StageModulate, io::kD3StageModulate, 1.0f, 8.0f}};
+/// `_cm2x_am4x` also stops dropping the second layer's colour.
+constexpr FixedStage kFirewallCm2xAm4x[3] = {
+    {io::kD3StageModulate, io::kD3StageModulate, 1.0f, 1.0f},
+    {io::kD3StageModulate, io::kD3StageModulate, 1.0f, 1.0f},
+    {io::kD3StageModulate, io::kD3StageModulate, 2.0f, 8.0f}};
+/// `ps_billboard_cm2x_flow`: two diffuse layers and the x2 on the colour only.
+constexpr FixedStage kCm2xFlow[2] = {{io::kD3StageModulate, io::kD3StageModulate, 1.0f, 1.0f},
+                                     {io::kD3StageModulate, io::kD3StageModulate, 2.0f, 1.0f}};
+
+ProgramShape D3ProgramShapeOf(std::string_view entry) {
+    ProgramShape sh;
+    if (entry == "ps_firewall_flow" || entry == "ps_firewall_flow_pma") {
+        sh.flowFirst = 3;
+        sh.fixed = kFirewall;
+    } else if (entry == "ps_firewall_am4x_flow") {
+        sh.flowFirst = 3;
+        sh.fixed = kFirewallAm4x;
+    } else if (entry == "ps_firewall_cm2x_am4x_flow") {
+        sh.flowFirst = 3;
+        sh.fixed = kFirewallCm2xAm4x;
+    } else if (entry == "ps_billboard_cm2x_flow") {
+        sh.flowFirst = 2;
+        sh.fixed = kCm2xFlow;
+    } else if (entry == "ps_legacy_flow") {
+        sh.flowFirst = 2;
+    } else if (entry == "ps_particle_flow") {
+        sh.flowFirst = 1;
+    } else if (entry == "ps_billboard_blendAdd_flowMult") {
+        sh.program = io::D3ParticleProgram::BlendAdd;
+        sh.flowFirst = 2;
+    } else if (entry == "ps_blend_add_pma") {
+        sh.program = io::D3ParticleProgram::BlendAdd;
+    } else if (entry == "ps_blend_add_soft_particle") {
+        sh.program = io::D3ParticleProgram::BlendAdd;
+        sh.softFade = true;
+    } else if (entry == "ps_particle_water_sim") {
+        sh.program = io::D3ParticleProgram::WaterSim;
+    }
+    return sh;
+}
+
 } // namespace
 
 void D3ResolveParticleMaterial(const d3n::Particle& prt, ::whiteout::flakes::io::D3SnoCache* cache,
                                pd3::MaterialDesc& out) {
-    // The flip-book, for a uv mode 3 layer whose sheet carries a frame table.
-    // The engine reaches that table through the STAGE's own texture -- the
-    // `.an2` the entry names is one shared asset (id 2 on all 1,456 shipped
-    // entries) and is only ever consulted for the loop mode -- so this asks the
-    // `.tex`, which owes the ShaderMap chain nothing and must therefore sit
-    // ABOVE the early-out below: 58 of the first 400 systems resolve no pass.
-    // First layer wins; see MaterialDesc::atlasLayer.
+    // The frame table, for EVERY layer and not only the uv mode 3 ones. The
+    // engine reaches it through the STAGE's own texture -- the `.an2` the entry
+    // names is only ever consulted for the loop mode -- so this asks the `.tex`,
+    // which owes the ShaderMap chain nothing and must therefore sit ABOVE the
+    // early-out below: 58 of the first 400 systems resolve no pass.
+    //
+    // Every layer, because the sheet decides two things a mode-3 test would
+    // miss. `Particle_WriteQuadVertices` takes the quad's BASE RECTANGLE and its
+    // vertical aspect off **stage 0's** sheet whenever that sheet has frames,
+    // whatever uv mode stage 0's entry carries -- the mode only picks the
+    // transform applied on top. Every stage gets its own flip-book player, so
+    // there is no single "atlas layer" to choose: 505 shipped materials carry
+    // two mode-3 stages and 5 carry three, and each walks its own sheet.
     if (cache)
-        for (u32 i = 0; i < out.layerCount; ++i) {
-            if (out.layers[i].uv.mode != ::whiteout::flakes::io::D3UvMode::Anim2D)
-                continue;
+        for (u32 i = 0; i < out.layerCount; ++i)
             out.layers[i].atlas = cache->TextureAtlas(out.layers[i].textureSno);
-            if (out.layers[i].atlas && out.atlasLayer < 0)
-                out.atlasLayer = static_cast<i32>(i);
-        }
+    // The positional slot map, which the compacted layer array cannot stand in
+    // for: `Particle_BindDrawTextures` parks type 1 in slot 0 and type 14 in
+    // slot 3 whatever else is present.
+    for (u32 i = 0; i < out.layerCount; ++i)
+        for (u32 k = 0; k < pd3::MaterialDesc::kMaxLayers; ++k)
+            if (out.layers[i].rawType == io::kD3TexcoordSetType[k])
+                out.setLayer[k] = static_cast<i8>(i);
 
     const D3PassState pass = D3PassStateFor(prt.tMaterial, cache);
     if (!pass.resolved)
@@ -81,6 +167,53 @@ void D3ResolveParticleMaterial(const d3n::Particle& prt, ::whiteout::flakes::io:
     out.alphaFunc = pass.alphaTestEnable ? pass.alphaFunc : 0u;
     out.alphaTest = pass.alphaTestEnable ? static_cast<f32>(pass.alphaRef) / 255.0f : 0.0f;
     out.effectFile = pass.effectFile;
+    out.pixelEntry = pass.pixelEntry;
+
+    // Which program the pass names, and where its flow maps sit. A flow shader
+    // reads its LAST texcoord slots as distortion rather than as colour, and
+    // how many of them are live is the pass's own texcoord count -- the same
+    // tag that says a slot exists at all.
+    ProgramShape shape = D3ProgramShapeOf(pass.pixelEntry);
+    // ...except for the one arm the entry name cannot name. A `.shd` ships one
+    // compiled permutation, so five `ps_legacy` passes are really `ps_legacy`
+    // built with BLENDADD; what says so is the hole they leave in their own
+    // stage block. See D3PassState::stageHole. Scoped to the billboard
+    // families because a hole means this only where the program addresses its
+    // units positionally: 34 `Legacy.fx` passes leave one and none is a sum.
+    if (shape.program == io::D3ParticleProgram::Chain && pass.stageHole &&
+        (pass.effectFile == "Billboard.fx" || pass.effectFile == "SoftBillboard.fx"))
+        shape.program = io::D3ParticleProgram::BlendAdd;
+    // Every one of these programs addresses its textures by SLOT -- t0 is the
+    // diffuse, t3 the flow map -- while this layer list is COMPACTED to the
+    // types the material actually carries. They agree only while the types are
+    // a prefix of the bind order, so a material missing one of them keeps the
+    // chain rather than reading its alpha mask as a flow map.
+    {
+        const u32 need = std::min<u32>(out.layerCount, pd3::MaterialDesc::kMaxLayers);
+        bool aligned = true;
+        for (u32 i = 0; aligned && i < need; ++i)
+            aligned = out.layers[i].rawType == io::kD3TexcoordSetType[i];
+        if (!aligned)
+            shape = ProgramShape{};
+    }
+    if (shape.program == io::D3ParticleProgram::BlendAdd && out.layerCount < 2)
+        shape = ProgramShape{};
+    out.program = shape.program;
+    out.softFade = shape.softFade;
+    if (shape.flowFirst >= 0) {
+        const i32 last =
+            static_cast<i32>(std::min<u32>(pass.texcoordCount, out.layerCount)) - 1;
+        // An unbound layer samples white, and white through the flow formula
+        // is a constant quarter-tile shift rather than no shift at all -- so a
+        // material that names no texture for its flow slot warps by nothing.
+        bool bound = true;
+        for (i32 i = shape.flowFirst; i <= last; ++i)
+            bound = bound && out.layers[i].textureSno >= 0;
+        if (last >= shape.flowFirst && bound) {
+            out.flowFirst = shape.flowFirst;
+            out.flowLast = last;
+        }
+    }
 
     // The address modes, which live nowhere else: `Particle_DrawBatch` binds a
     // texture id and no sampler state at all, so a particle's wrap is whatever
@@ -91,8 +224,46 @@ void D3ResolveParticleMaterial(const d3n::Particle& prt, ::whiteout::flakes::io:
     for (u32 i = 0; i < out.layerCount; ++i)
         out.layers[i].wrapFlags = pass.WrapBitsFor(out.layers[i].rawType);
 
+    // Which of the vertex's four texcoords each stage samples at. The vertex
+    // program's tag block says, and it is not always the stage's own: the code
+    // names a uv SET, and the sets are POSITIONAL over the stage types with a
+    // hole where a type is absent -- which is why the answer is a set index and
+    // not an index into this compacted array. A slot past the pass's texcoord
+    // count keeps its own set.
+    for (u32 i = 0; i < out.layerCount; ++i) {
+        u32 own = 0;
+        for (u32 k = 0; k < pd3::MaterialDesc::kMaxLayers; ++k)
+            if (out.layers[i].rawType == io::kD3TexcoordSetType[k])
+                own = k;
+        out.layers[i].uvSet = own;
+        if (i < pass.texcoordCount)
+            out.layers[i].uvSet = io::D3TexcoordUvSet(pass.texcoordFunc[i]);
+    }
+
+    // A program whose combine is its own: the firewall family carries no stage
+    // block at all on the shaders the corpus's `.prt` reach, and the two
+    // `cm2x` / `am4x` gains are literals in the bytecode rather than tags.
+    if (shape.fixed) {
+        const u32 n = out.flowFirst >= 0 ? static_cast<u32>(out.flowFirst) : out.layerCount;
+        for (u32 i = 0; i < out.layerCount; ++i) {
+            pd3::MaterialLayer& L = out.layers[i];
+            if (i >= n) {
+                L.colorOp = io::kD3StageSkip;
+                L.alphaOp = io::kD3StageSkip;
+                continue;
+            }
+            L.colorOp = shape.fixed[i].colorOp;
+            L.alphaOp = shape.fixed[i].alphaOp;
+            L.colorGain = shape.fixed[i].colorGain;
+            L.alphaGain = shape.fixed[i].alphaGain;
+            L.colorClamp = false;
+            L.alphaClamp = false;
+        }
+        return;
+    }
     if (!pass.stageArgs)
         return;
+    out.erosion = pass.erosion;
     out.colorVcolFirst = pass.colorVcolFirst;
     out.colorVcolLast = pass.colorVcolLast;
     out.alphaVcolFirst = pass.alphaVcolFirst;
@@ -122,6 +293,13 @@ void D3ResolveParticleMaterial(const d3n::Particle& prt, ::whiteout::flakes::io:
         L.alphaGain = cb->alphaGain;
         L.colorClamp = cb->colorClamp;
         L.alphaClamp = cb->alphaClamp;
+    }
+    // A flow map is not a combine stage, whatever the block parks on its slot:
+    // five of the seven `ps_legacy_flow` passes tag theirs `3`, which as a
+    // combine code would REPLACE the sprite with the noise texture.
+    for (i32 i = out.flowFirst; i >= 0 && i <= out.flowLast; ++i) {
+        out.layers[i].colorOp = io::kD3StageSkip;
+        out.layers[i].alphaOp = io::kD3StageSkip;
     }
 }
 
@@ -171,17 +349,39 @@ struct D3ParticleVsCb {
     Vector4f params;
 };
 
+/// @brief The vertex this program takes: an ordinary billboard plus the FOUR
+///        baked texture coordinates the engine's own particle vertex carries.
+///
+/// `Particle_WriteQuadVertices` writes a 56-byte vertex whose +20/+24/+28/+32
+/// are four packed texcoords, one per stage, each already transformed. It bakes
+/// them because the transform is per PARTICLE — see BuildGeometryInput::d3Uv01.
+/// Full floats rather than the engine's 16-bit pairs: the packing is a memory
+/// economy this build does not need, and a half-precision coordinate on a
+/// 64-tile sheet loses the tile.
+struct D3ParticleVertex {
+    Vector3f position;
+    Vector4f color;
+    Vector4f uv01; ///< set 0 in .xy, set 1 in .zw
+    Vector4f uv23;
+    f32 color1; ///< the whole of the engine's second D3DCOLOR — ch6, all four lanes equal
+};
+static_assert(sizeof(D3ParticleVertex) == 64, "D3ParticleVertex must stay tightly packed");
+
 struct D3ParticlePsCb {
-    Vector4f uvRow0[pd3::MaterialDesc::kMaxLayers];
-    Vector4f uvRow1[pd3::MaterialDesc::kMaxLayers];
+    /// Per layer: .x which of the vertex's four baked texcoords this stage
+    /// samples at, .y the COLOUR op, .z the ALPHA op, .w spare. There is no
+    /// transform here any more — it is per particle and rides the vertex.
+    Vector4f stage[pd3::MaterialDesc::kMaxLayers];
     /// Per layer: .x colour gain, .y alpha gain, .z/.w the two clamps.
     Vector4f gains[pd3::MaterialDesc::kMaxLayers];
-    /// .x the vertex-colour placement bits, .y spare, .z the alpha-test
-    /// reference, .w the flip-book layer or -1.
+    /// .x the vertex-colour placement bits, .y the program, .z the alpha-test
+    /// reference, .w spare.
     Vector4f params;
     /// .x the premultiplied-alpha output mode; .y the alpha-test comparison;
-    /// .zw spare.
+    /// .z the first flow layer or -1; .w the last flow layer.
     Vector4f params2;
+    /// .x the erosion exponent, or 0 for no dissolve tail; .yzw spare.
+    Vector4f params3;
 };
 
 /// Everything that can vary between two of these draws, in one key. The
@@ -262,14 +462,60 @@ void D3ParticleShading::ReleaseGpu() {
             gfxDev->Destroy(pso);
     }
     psos_.clear();
-    for (gfx::BufferHandle* b : {&vsCb_, &psCb_}) {
+    for (gfx::BufferHandle* b : {&vsCb_, &psCb_, &vb_}) {
         if (*b != gfx::BufferHandle::Invalid)
             gfxDev->Destroy(*b);
         *b = gfx::BufferHandle::Invalid;
     }
+    vbCapacity_ = 0;
+    frameReady_ = false;
     vs_ = gfx::ShaderHandle::Invalid;
     ps_ = gfx::ShaderHandle::Invalid;
     initTried_ = false;
+}
+
+bool D3ParticleShading::BeginFrame(const std::vector<Vertex>& vertices,
+                                   const particle::D3VertexStream& uv) {
+    frameReady_ = false;
+    auto* gfxDev = rs_.Pipeline().Gfx();
+    if (!gfxDev || vertices.empty())
+        return false;
+    // A length mismatch means an emitter reached the shared stream without its
+    // texcoords; packing anyway would read whatever the last frame left there.
+    if (uv.uv01.size() != vertices.size() || uv.uv23.size() != vertices.size() ||
+        uv.color1.size() != vertices.size())
+        return false;
+
+    const i32 count = static_cast<i32>(vertices.size());
+    if (vb_ == gfx::BufferHandle::Invalid || count > vbCapacity_) {
+        if (vb_ != gfx::BufferHandle::Invalid)
+            gfxDev->Destroy(vb_);
+        constexpr i32 kFloor = 4096;
+        const i32 newSize = (count > kFloor) ? count : kFloor;
+        gfx::BufferDesc bd;
+        bd.size = static_cast<u64>(sizeof(D3ParticleVertex)) * static_cast<u64>(newSize);
+        bd.usage = gfx::BufferUsage::Vertex | gfx::BufferUsage::CpuWritable;
+        bd.ringSlotsHint = 4; // mapped once per frame
+        vb_ = gfxDev->CreateBuffer(bd);
+        vbCapacity_ = newSize;
+    }
+    if (vb_ == gfx::BufferHandle::Invalid)
+        return false;
+    void* mapped = gfxDev->MapBuffer(vb_);
+    if (!mapped)
+        return false;
+    auto* dst = static_cast<D3ParticleVertex*>(mapped);
+    for (i32 i = 0; i < count; ++i) {
+        const usize k = static_cast<usize>(i);
+        dst[i].position = vertices[k].position;
+        dst[i].color = vertices[k].color;
+        dst[i].uv01 = uv.uv01[k];
+        dst[i].uv23 = uv.uv23[k];
+        dst[i].color1 = uv.color1[k];
+    }
+    gfxDev->UnmapBuffer(vb_);
+    frameReady_ = true;
+    return true;
 }
 
 bool D3ParticleShading::IsAvailable() const {
@@ -286,21 +532,26 @@ gfx::PipelineHandle D3ParticleShading::GetOrBuildPso(const pd3::MaterialDesc& m,
     if (!gfxDev)
         return gfx::PipelineHandle::Invalid;
 
-    // The shared particle stream, declared by hand: it is a plain `Vertex` and
-    // the element order has to match the VS input struct, because Vulkan,
-    // WebGPU and Metal derive shader locations from array position.
+    // The repacked stream, declared by hand: the element order has to match the
+    // VS input struct, because Vulkan, WebGPU and Metal derive shader locations
+    // from array position. The two texcoord pairs ride TEXCOORD and TANGENT
+    // because slang mangles a NUMBERED semantic on a vertex input — `TEXCOORD1`
+    // comes out as index 10 — so every element has to name a digit-free one.
     const gfx::InputElement elements[] = {
-        {"POSITION", 0, gfx::Format::R32G32B32_FLOAT, offsetof(Vertex, position), 0},
-        {"NORMAL", 0, gfx::Format::R32G32B32_FLOAT, offsetof(Vertex, normal), 0},
-        {"COLOR", 0, gfx::Format::R32G32B32A32_FLOAT, offsetof(Vertex, color), 0},
-        {"TEXCOORD", 0, gfx::Format::R32G32_FLOAT, offsetof(Vertex, uv), 0},
+        {"POSITION", 0, gfx::Format::R32G32B32_FLOAT, offsetof(D3ParticleVertex, position), 0},
+        {"COLOR", 0, gfx::Format::R32G32B32A32_FLOAT, offsetof(D3ParticleVertex, color), 0},
+        {"TEXCOORD", 0, gfx::Format::R32G32B32A32_FLOAT, offsetof(D3ParticleVertex, uv01), 0},
+        {"TANGENT", 0, gfx::Format::R32G32B32A32_FLOAT, offsetof(D3ParticleVertex, uv23), 0},
+        // BLENDWEIGHT for the same reason TANGENT carries uv23: the semantic has
+        // to be digit-free, and this is the fifth one the toolchain accepts.
+        {"BLENDWEIGHT", 0, gfx::Format::R32_FLOAT, offsetof(D3ParticleVertex, color1), 0},
     };
 
     gfx::GraphicsPipelineDesc desc{};
     desc.vs = vs_;
     desc.ps = ps_;
     desc.inputLayout = std::span<const gfx::InputElement>(elements);
-    desc.inputSlotStrides[0] = sizeof(Vertex);
+    desc.inputSlotStrides[0] = sizeof(D3ParticleVertex);
     desc.topology = gfx::PrimitiveTopology::TriangleList;
     desc.blend.enable = m.blendEnable;
     desc.blend.srcColor = D3BlendFactor(m.blendSrc, gfx::BlendFactor::SrcAlpha);
@@ -349,6 +600,13 @@ bool D3ParticleShading::Draw(gfx::IGFXCommandList* cmd, const particle::EmitterD
     if (!gfxDev)
         return false;
 
+    // Without the repacked stream this program has no coordinates to sample at:
+    // its whole UV transform lives in the vertex now. Refusing here is what
+    // routes the draw to the SD fallback, which samples the diffuse at the raw
+    // quad uv — approximate, but not garbage.
+    if (!frameReady_ || vb_ == gfx::BufferHandle::Invalid)
+        return false;
+
     const gfx::PipelineHandle pso = GetOrBuildPso(m, frame);
     if (pso == gfx::PipelineHandle::Invalid)
         return false;
@@ -361,38 +619,34 @@ bool D3ParticleShading::Draw(gfx::IGFXCommandList* cmd, const particle::EmitterD
     }
     if (auto* c = static_cast<D3ParticlePsCb*>(gfxDev->MapBuffer(psCb_))) {
         for (u32 i = 0; i < pd3::MaterialDesc::kMaxLayers; ++i) {
-            f32 a[6] = {1, 0, 0, 0, 1, 0};
+            f32 uvSet = static_cast<f32>(i);
             f32 colorOp = 0.0f;
             f32 alphaOp = 0.0f;
             Vector4f gain{1.0f, 1.0f, 0.0f, 0.0f};
             if (i < m.layerCount) {
                 const pd3::MaterialLayer& L = m.layers[i];
-                if (static_cast<i32>(i) == m.atlasLayer) {
-                    // The atlas layer's transform is the tile SIZE and nothing
-                    // else; its origin is per particle and arrives in the
-                    // vertex. `D3UvAffine` would hand back identity here —
-                    // mode 3 is not one of the two cases it builds.
-                    const Vector2f tile = L.atlas->TileSize();
-                    a[0] = tile.x;
-                    a[4] = tile.y;
-                } else {
-                    ::whiteout::flakes::io::D3UvAffine(L.uv, dl.materialTimeSec, a);
-                }
+                // The COORDINATE is one of the four the vertex carries, baked by
+                // the emitter; which one the pass's texcoord block names, and it
+                // is not always this stage's own. The ops and gains stay this
+                // stage's -- only the coordinate is routed.
+                uvSet = static_cast<f32>(L.uvSet);
                 colorOp = static_cast<f32>(L.colorOp);
                 alphaOp = static_cast<f32>(L.alphaOp);
                 gain = {L.colorGain, L.alphaGain, L.colorClamp ? 1.0f : 0.0f,
                         L.alphaClamp ? 1.0f : 0.0f};
             }
-            c->uvRow0[i] = {a[0], a[1], a[2], colorOp};
-            c->uvRow1[i] = {a[3], a[4], a[5], alphaOp};
+            c->stage[i] = {uvSet, colorOp, alphaOp, 0.0f};
             c->gains[i] = gain;
         }
         // Four bits, because the vertex colour can enter a chain at both ends.
         const f32 vcol = static_cast<f32>((m.colorVcolFirst ? 1 : 0) | (m.colorVcolLast ? 2 : 0) |
                                           (m.alphaVcolFirst ? 4 : 0) | (m.alphaVcolLast ? 8 : 0));
-        // .w names the layer whose UV origin comes from the vertex, or -1.
-        c->params = {vcol, 0.0f, m.alphaTest, static_cast<f32>(m.atlasLayer)};
-        c->params2 = {static_cast<f32>(m.pmaMode), static_cast<f32>(m.alphaFunc), 0.0f, 0.0f};
+        c->params = {vcol, static_cast<f32>(m.program), m.alphaTest, 0.0f};
+        c->params2 = {static_cast<f32>(m.pmaMode), static_cast<f32>(m.alphaFunc),
+                      static_cast<f32>(m.flowFirst), static_cast<f32>(m.flowLast)};
+        // The literal 10 of `pow(alpha, 10 * COLOR1.a)`; COLOR1.a is per
+        // particle and rides the vertex. See MaterialDesc::erosion.
+        c->params3 = {m.erosion ? 10.0f : 0.0f, 0.0f, 0.0f, 0.0f};
         gfxDev->UnmapBuffer(psCb_);
     }
 
@@ -400,8 +654,7 @@ bool D3ParticleShading::Draw(gfx::IGFXCommandList* cmd, const particle::EmitterD
     // `BindPipeline` re-sets the root signature on D3D12 and discards constant
     // buffers, textures and samplers bound before it.
     cmd->BindPipeline(pso);
-    if (frame.vertexBuffer != gfx::BufferHandle::Invalid)
-        cmd->BindVertexBuffer(0, frame.vertexBuffer, sizeof(Vertex));
+    cmd->BindVertexBuffer(0, vb_, sizeof(D3ParticleVertex));
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, vsCb_);
     // Slot 1, not 0: slang assigns registers per MODULE, so the two constant
     // buffers are pinned to b0 and b1 or they collide.

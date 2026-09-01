@@ -278,6 +278,13 @@ static int RunParticleDiff(whiteout::flakes::renderer::RenderService& renderer,
         return 4;
     }
 
+    if (dump) {
+        const auto& b = hero->bounds;
+        std::printf("[ptrace] model bounds valid=%d min=(%.2f %.2f %.2f) max=(%.2f %.2f %.2f)"
+                    " scale=%.4f\n",
+                    b.valid ? 1 : 0, b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z,
+                    hero->worldScale);
+    }
     const i32 emitters = renderer.Particles().EmitterCount();
     std::cout << "[ptrace] " << mdxPath.filename().string() << ": " << emitters << " emitter(s), "
               << traceFrames << " frames" << std::endl;
@@ -316,14 +323,27 @@ static int RunParticleDiff(whiteout::flakes::renderer::RenderService& renderer,
                 if (!d3)
                     return;
                 const auto& m = d3->D3Desc().d3mat;
+                // Where the emitter was PUT, which the world position above does
+                // not separate: a hardpoint that resolved to the wrong bone and
+                // one whose frame is wrong read the same from outside.
+                const wf::Matrix44f& hp = d3->AttachOffset();
+                const wf::Matrix44f& m2w = d3->ModelToWorld();
+                std::printf("       place: bone=%d hp=(%.2f %.2f %.2f) m2w=(%.2f %.2f %.2f)"
+                            " unit=%.4f\n",
+                            d3->AttachBone(), hp.data[3][0], hp.data[3][1], hp.data[3][2],
+                            m2w.data[3][0], m2w.data[3][1], m2w.data[3][2], d3->UnitScale());
+                // The erosion tail's exponent is `10 * ch6` and ch6 is per
+                // particle, so both halves belong in the same line.
+                f32 a6lo = 1.0f, a6hi = 1.0f;
+                d3->D3Desc().Channel(part::d3::kChAlpha).ScalarRange(a6lo, a6hi);
                 std::printf("       sno=%d caps=0x%04X type=%d shape=%d mat: pass=%d %s blend=(%u,%u) "
-                            "vcol=(%d%d %d%d) aTest=%.3f layers=%u\n",
+                            "vcol=(%d%d %d%d) aTest=%.3f erosion=%d ch6=%.2f..%.2f layers=%u\n",
                             d3->D3Desc().snoId, d3->D3Desc().caps, d3->D3Desc().systemType,
                             int(d3->D3Desc().shape), m.passResolved ? 1 : 0,
                             m.effectFile.c_str(), m.blendSrc, m.blendDst,
                             m.colorVcolFirst ? 1 : 0, m.colorVcolLast ? 1 : 0,
                             m.alphaVcolFirst ? 1 : 0, m.alphaVcolLast ? 1 : 0,
-                            m.alphaTest, m.layerCount);
+                            m.alphaTest, m.erosion ? 1 : 0, a6lo, a6hi, m.layerCount);
                 for (unsigned L = 0; L < m.layerCount; ++L) {
                     const auto& lay = m.layers[L];
                     std::printf("         L%u type=%2d sno=%d texId=%d wrap=%u op=%d/%d"
@@ -332,10 +352,11 @@ static int RunParticleDiff(whiteout::flakes::renderer::RenderService& renderer,
                                 int(lay.colorOp), int(lay.alphaOp), lay.colorGain,
                                 lay.alphaGain, lay.colorClamp ? 1 : 0,
                                 lay.alphaClamp ? 1 : 0, int(lay.uv.mode));
-                    // The flip-book. `frames=0` beside `uv=3` is the honest
-                    // degradation and not a failure: 6,934 of the corpus's
-                    // 8,390 mode-3 entries name no sheet table at all.
-                    if (lay.uv.mode == wf::io::D3UvMode::Anim2D) {
+                    // The sheet, for EVERY layer and not only the mode-3 ones:
+                    // the quad's base rectangle and its aspect come off stage
+                    // 0's frame table whatever uv mode stage 0 carries, so a
+                    // type-1 layer's sheet is worth seeing even at mode 0.
+                    if (lay.atlas) {
                         const unsigned n = lay.atlas ? unsigned(lay.atlas->frames.size()) : 0u;
                         std::printf(" atlas: frames=%u tile=%.4f,%.4f px=%ux%u rate=%.1f(+%.1f)"
                                     " start=%d..%d %s",
@@ -344,7 +365,9 @@ static int RunParticleDiff(whiteout::flakes::renderer::RenderService& renderer,
                                     n ? lay.atlas->width : 0u, n ? lay.atlas->height : 0u,
                                     lay.atlasRate, lay.atlasRateJitter, lay.atlasFrameBase,
                                     lay.atlasFrameBase + lay.atlasFrameRange,
-                                    (int(L) == m.atlasLayer) ? "ACTIVE" : "-");
+                                    lay.uv.mode == wf::io::D3UvMode::Anim2D
+                                        ? "flip"
+                                        : (lay.rawType == 1 ? "baseRect" : "-"));
                         for (unsigned k = 0; k < n && k < 3; ++k)
                             std::printf(" [%.3f,%.3f..%.3f,%.3f]", lay.atlas->frames[k].x,
                                         lay.atlas->frames[k].y, lay.atlas->frames[k].z,

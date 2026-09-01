@@ -468,6 +468,129 @@ inline constexpr u32 kD3TagStageColor = 0xA0016u;
 inline constexpr u32 kD3TagStageAlpha = 0xA001Cu;
 inline constexpr u32 kD3StageArgCount = 6;
 
+/// @brief The alpha code that marks the EROSION tail, and nothing else.
+///
+/// `ps_legacy`'s dissolve arm closes with
+/// `alpha = min(1, pow(alpha, 10 * COLOR1.a))`, which is what eats a `_wipe` /
+/// `_dissolve` / `_errosion` sprite away. It sits in the alpha block PAST the
+/// content stages, so it is not a combine at all: 86 is a marker.
+///
+/// Exact over the corpus's 245 billboard passes: only 16 carry a tens-8 alpha
+/// code at all. Eleven of those carry 86, and those eleven are precisely the
+/// reconstruction's `EROSION` permutations; the other five carry (80, 81) and
+/// mark the BLENDADD arm instead.
+inline constexpr u32 kD3StageAlphaErosion = 86u;
+
+/// @brief `TAG_VS_TEXCOORD0..5_FUNC` — what the vertex stage does with texcoord
+///        block slot `i`, and whether the slot exists at all.
+///
+/// Decoded by joining the `vs_legacy` reconstruction's `NUM_TEXCOORDS` /
+/// `TCk_UV` / `TCk_MAT` / `TCk_MODE` defines against the passes that name each
+/// permutation — 223 shaders — and the mapping is exact once two things are
+/// right about the block itself:
+///
+///  1. **An absent tag takes the registry's default**, which is 1, 1, 1, 8, 10,
+///     10 for the six. Twelve shaders (`particle_additive_am4x_alphatest` and
+///     friends) leave the tail unset and their programs still emit four
+///     texcoords; read as "absent means disabled" they came out two wide.
+///  2. **The vertex program's output slots are the LIVE tags, compacted.**
+///     `particle_blendAdd` tags `(1, 10, 10, 1, 11, 11)` and emits four, so its
+///     fourth output is block slot 5. The block index is not the output index.
+///
+/// With those, over every slot of every named permutation:
+///
+///     value   uv set   texture matrix        count
+///        1       0     matTex[block index]   227
+///        8       1     matTex[block index]   183
+///       13       2     matTex[block index]   105
+///       15       3     matTex[block index]    39
+///       11       0     matTex0                13
+///        0       0     none - RAW             10
+///       12       2     none - RAW              2
+///       14       3     none - RAW             21
+///       10       -     the slot does not exist
+///
+/// no residue in any column.
+///
+/// **The uv SET is the live half and the matrix is inert**, which is the
+/// opposite of how this first read. Two measurements say so:
+///
+///  * `particle_additive_am4x_alphatest` tags slot 2 with code **1**, not 13.
+///    Both name `matTex[2]`, so under a matrix reading the author's choice
+///    would mean nothing; they differ only in the uv set (0 against 2).
+///  * `Particle_DrawBatch` uploads no texture matrix at all. Geometry sends a
+///    stage's transform through `MatTex_UploadUvMatrix` as a 4x4; a particle
+///    gets the same transform from the same uv state as a 2x3 BAKED into its
+///    vertices by `Particle_WriteQuadVertices`. They are two delivery paths for
+///    one transform, so a particle's `matTex` is the identity and RAW and
+///    matrixed come to the same thing.
+///
+/// And the sets are reachable: uv set k is the baked transform of the stage
+/// whose type is `kD3TexcoordSetType[k]`, which is a layer this build already
+/// carries. So a slot reads the transform its code names, not its own.
+///
+/// 17 and 18 also occur, on six `Legacy.fx` actor shaders that no `.prt`
+/// reaches. They are read as live, own-matrix, not raw.
+inline constexpr u32 kD3TagTexcoordFunc = 0xA0010u;
+
+/// The registry defaults for the six slots, applied to an absent tag.
+inline constexpr u32 kD3TexcoordDefault[6] = {1u, 1u, 1u, 8u, 10u, 10u};
+
+/// @brief Does the vertex program emit this slot at all? 10 says no.
+inline bool D3TexcoordIsLive(u32 code) {
+    return code != 10u;
+}
+
+/// @brief The vertex uv set a live slot reads, 0-3.
+///
+/// 17 and 18 occur only on `Legacy.fx` actor shaders no `.prt` reaches; they
+/// fall through to set 0 rather than assert, because a surface never asks.
+inline u32 D3TexcoordUvSet(u32 code) {
+    switch (code) {
+    case 8u:
+        return 1u;
+    case 12u:
+    case 13u:
+        return 2u;
+    case 14u:
+    case 15u:
+        return 3u;
+    default:
+        return 0u;
+    }
+}
+
+/// @brief The texture TYPE each vertex uv set carries the transform of.
+///
+/// `Particle_PrepareSystemDrawRecord` fills the draw record's four uv-state
+/// slots by type in this order and leaves a hole where a type is absent, so
+/// the set index is positional and not the material's compacted layer index.
+/// An absent type bakes the identity rectangle.
+inline constexpr i32 kD3TexcoordSetType[4] = {1, 19, 12, 14};
+
+/// Codes 0, 12 and 14 pass the vertex uv through with no matrix at all. Inert
+/// for a particle, which never has a matrix to skip — kept because it is what
+/// the enum means and a surface family may yet need it.
+inline bool D3TexcoordIsRaw(u32 code) {
+    return code == 0u || code == 12u || code == 14u;
+}
+
+/// @brief Which `Billboard.fx` pixel program a pass runs, reduced to the three
+///        shapes this build implements.
+///
+/// `szPixelShaderEntry` names the program outright, so this is a lookup and not
+/// an inference. Nine of the twelve entry points the corpus's `.prt` reach are
+/// one of these; see D3_MATERIAL_AUDIT.md §12.
+enum class D3ParticleProgram : u8 {
+    /// `ps_legacy` and the flow shaders: the fixed-function combine chain.
+    Chain = 0,
+    /// `ps_blend_add*` / `ps_billboard_blendAdd_flowMult`: two premultiplied
+    /// layers summed, which is not a chain and cannot be written as one.
+    BlendAdd = 1,
+    /// `ps_particle_water_sim`: the diffuse scaled by the vertex ALPHA alone.
+    WaterSim = 2,
+};
+
 /// @brief The engine's nominal tick, and the unit every authored UV rate is in.
 ///
 /// `ActorModel_ResolveSubObjectMaterials` steps its first pose with a literal
@@ -651,6 +774,18 @@ struct D3UvXform {
     /// `MatTex_TickUvStateEntry` @0x71000F8310: set, the scroll is CLAMPED into
     /// [0,1] instead of wrapped, which turns a loop into a one-way reveal.
     bool clampUv = false;
+    /// @brief Mode 3 only: does the flip-book supply its own tile SCALE?
+    ///
+    /// `tAnim4.flAmount` (entry 0x80), tested as an INTEGER by
+    /// `MatTex_BuildUvAffine2x3` case 3 -- so `-0.0f` is set, and the golden's
+    /// `atlas: -0.0` case is a code 3 for exactly that reason. Clear, the case
+    /// writes only a translation and returns 1 (the caller adds it to the base
+    /// rectangle); set, it also writes `diag(frame0.u1, frame0.v1)` and returns
+    /// 3. Shipped on 667 of the corpus's 8,390 mode-3 particle entries, 527 of
+    /// them on a stage OTHER than 0 -- which is what it is for: only stage 0's
+    /// base rectangle is the tile, so a flip-book anywhere else has to carry
+    /// its own size.
+    bool atlasScale = false;
     /// @brief UV mode 1's authored 2x3, in @ref D3UvAffine's own output order.
     ///
     /// `MatTex_BuildUvAffine2x3` @0x71000F8FF0 case 1 copies six floats from the
@@ -660,6 +795,25 @@ struct D3UvXform {
     /// with no authored matrix carries and which would otherwise collapse every
     /// texture coordinate to the origin. Same guard as the mesh path's.
     f32 authored[6] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    /// @brief `flRate1` of the U, V and rotation triples, already x60.
+    ///
+    /// A PER-INSTANCE rate jitter: `MatTex_InitUvState` draws once per stage
+    /// instance and stores `flRate0 + flRate1 * U`, and takes the draw only when
+    /// flRate1 is non-zero (which is what keeps the stream aligned). For a
+    /// particle system the instance is the PARTICLE, so this is what stops every
+    /// member of a puff scrolling in lockstep. 9,235 shipped mode-2 entries
+    /// carry one.
+    Vector2f scrollJitter = {0.0f, 0.0f};
+    f32 rotateJitter = 0.0f;
+    /// @brief Bits 0 and 1 of the flags word: draw the initial U / V phase at
+    ///        RANDOM instead of taking it from `flAmount`. Mode 2 only.
+    ///
+    /// 12,361 of the corpus's 13,897 mode-2 entries set one or both, across
+    /// 9,981 files — so on the majority of shipped particle materials the
+    /// starting coordinate is per particle and there is no shared phase to
+    /// evaluate. See kD3UvFlagRandomPhaseU.
+    bool randomPhaseU = false;
+    bool randomPhaseV = false;
     /// @brief Does anything here move? Both the surface table and the adapter
     ///        ask, and they must agree on the answer or the palette id one
     ///        assigns names an entry the other never publishes.
@@ -728,23 +882,19 @@ inline D3UvXform D3ReadUvXform(const d3n::MaterialTextureEntry& e) {
         }
     }
     // `flRate0` is the scroll and `flAmount` a constant phase — the 736 channels
-    // that set only flAmount are a static UV shift.
-    //
-    // `flRate1` is a RATE JITTER, recovered by running `MatTex_InitUvState`
-    // @0x71000F7C60: the engine draws once per stage instance and stores
-    // `flRate0 + flRate1 * U` — and it takes that draw only when flRate1 is
-    // non-zero, which is what keeps the stream aligned. Left unread here for the
-    // same reason as the phase randomiser below: reproducing it needs a
-    // per-instance draw whose only visible effect is to desynchronise copies of
-    // the same effect, and it would put a random number in front of every
-    // existing golden. Measured, not invented, and no longer unexplained.
-    //
-    // Bits 0 and 1 of the flags word are the U and V phase randomisers, for uv
-    // mode 2 alone — G-D3P-09 settled the reading section 19.3 could not. Also
-    // not reproduced, and for the same reason.
+    // that set only flAmount are a static UV shift. `flRate1` is a per-instance
+    // RATE JITTER and flags bits 0/1 randomise the initial phase; both are read
+    // now (@ref D3UvXform::scrollJitter, @ref D3UvXform::randomPhaseU) because
+    // for a particle the "instance" is the PARTICLE, and leaving them out drew
+    // every member of a system on one shared coordinate.
     x.offset = {e.tAnimU.flAmount, e.tAnimV.flAmount};
     x.scrollPerSec = {e.tAnimU.flRate0 * kD3TicksPerSecond,
                       e.tAnimV.flRate0 * kD3TicksPerSecond};
+    x.scrollJitter = {e.tAnimU.flRate1 * kD3TicksPerSecond,
+                      e.tAnimV.flRate1 * kD3TicksPerSecond};
+    x.rotateJitter = e.tAnimRotate.flRate1 * kD3TicksPerSecond;
+    x.randomPhaseU = (D3UvFlagsOf(e) & kD3UvFlagRandomPhaseU) != 0;
+    x.randomPhaseV = (D3UvFlagsOf(e) & kD3UvFlagRandomPhaseV) != 0;
     // The engine clamps the authored rotation to 8x2pi and wraps it into
     // [0, 2pi] before it ever reaches the matrix, so a negative or multi-turn
     // amount is not the angle it looks like.
@@ -756,6 +906,8 @@ inline D3UvXform D3ReadUvXform(const d3n::MaterialTextureEntry& e) {
         u32 bits = 0;
         std::memcpy(&bits, &e.tAnim3.flAmount, sizeof(bits));
         x.clampUv = bits != 0;
+        std::memcpy(&bits, &e.tAnim4.flAmount, sizeof(bits));
+        x.atlasScale = bits != 0;
     }
     // Mode 2 alone. It is the only case that reads the per-draw animation
     // state at all — mode 1 copies a fixed matrix and the rest are driven by an
@@ -776,7 +928,12 @@ inline D3UvXform D3ReadUvXform(const d3n::MaterialTextureEntry& e) {
 ///
 ///     u' = a[0]*u + a[1]*v + a[2]
 ///     v' = a[3]*u + a[4]*v + a[5]
-inline void D3UvAffine(const D3UvXform& x, f32 seconds, f32 (&a)[6]) {
+///
+/// @p u, @p v and @p rot are mode 2's live animation STATE — the scrolled phase
+/// and the accumulated angle. On the geometry path they come from the clock (see
+/// the @ref D3UvAffine overload); on the particle path they are the emitting
+/// particle's own, because that is where the engine keeps them.
+inline void D3UvAffineAt(const D3UvXform& x, f32 u, f32 v, f32 rot, f32 (&a)[6]) {
     // Mode 1 is an authored transform, not a scale pair, and nothing about it is
     // animated. G-D3P-16; without this a mode-1 particle layer got the identity
     // plus whatever tAnimU/tAnimV happened to carry.
@@ -785,20 +942,36 @@ inline void D3UvAffine(const D3UvXform& x, f32 seconds, f32 (&a)[6]) {
             a[i] = x.authored[i];
         return;
     }
-    const f32 angle = x.rotate + x.rotatePerSec * seconds;
+    // **Only mode 2 reads the animation triples.** Every other case returns a
+    // code having written nothing, and the caller then uses the base rectangle
+    // unchanged -- G-D3P-16 recorded that ("modes 0 and >=5 ... return a code
+    // having written nothing at all") and this fell through to the mode-2 body
+    // anyway, so a mode-0 entry scrolled and rotated on data the engine never
+    // looks at. 1,488 mode-0 and 733 mode-3 particle entries carry such data,
+    // and they are not decoration: `p1_unique_mightyWeapon_remorseless_glow`'s
+    // type-19 ALPHA MASK is mode 0 with a 0.5/s diagonal scroll, which slid the
+    // mask off the sprite and left a hard-edged rectangle.
+    //
+    // Mode 3's translation is the flip-book frame's origin and is per PARTICLE,
+    // so it cannot be built here; the caller supplies it (and the tile scale
+    // @ref D3UvXform::atlasScale asks for). Mode 4 is an environment-map
+    // projection and modes 5/6 a bone -- the engine writes an affine for those,
+    // this build has neither input, and identity is what it answers with when
+    // the bone is unresolved.
+    if (x.mode != D3UvMode::ScaleRotateScroll) {
+        a[0] = 1.0f; a[1] = 0.0f; a[2] = 0.0f;
+        a[3] = 0.0f; a[4] = 1.0f; a[5] = 0.0f;
+        return;
+    }
+    const f32 angle = rot;
     const f32 c = std::cos(angle);
     const f32 sn = std::sin(angle);
     const f32 m00 = c * x.scale.x;
     const f32 m01 = sn * x.scale.x;
     const f32 m10 = -sn * x.scale.y;
     const f32 m11 = c * x.scale.y;
-    // The engine keeps the scroll as state and folds it EVERY frame, so the
-    // translation it hands the matrix is always inside [0,1] (or clamped to it).
-    // Evaluating the same thing in closed form and never folding lets the value
-    // grow until the float stops resolving the rate — a scroll that visibly
-    // stalls in a long-running session.
-    f32 tu = x.offset.x + x.scrollPerSec.x * seconds;
-    f32 tv = x.offset.y + x.scrollPerSec.y * seconds;
+    f32 tu = u;
+    f32 tv = v;
     if (x.clampUv) {
         tu = std::clamp(tu, 0.0f, 1.0f);
         tv = std::clamp(tv, 0.0f, 1.0f);
@@ -820,6 +993,24 @@ inline void D3UvAffine(const D3UvXform& x, f32 seconds, f32 (&a)[6]) {
     a[3] = m01;
     a[4] = m11;
     a[5] = tv;
+}
+
+/// @brief The six coefficients of @p x at @p seconds, for a surface.
+///
+/// The state a particle keeps per particle, a mesh has one of per material, so
+/// the clock stands in for it: phase `flAmount + rate*t`, angle
+/// `flAmount + rotRate*t`. The engine folds its state every frame and this is a
+/// closed form, so the fold happens inside @ref D3UvAffineAt instead — without
+/// it the value grows until the float stops resolving the rate, which is a
+/// scroll that visibly stalls in a long session.
+///
+/// The per-instance rate jitter is deliberately NOT applied here: a surface has
+/// one instance and drawing a random number for it would only decorrelate a
+/// golden.
+inline void D3UvAffine(const D3UvXform& x, f32 seconds, f32 (&a)[6]) {
+    D3UvAffineAt(x, x.offset.x + x.scrollPerSec.x * seconds,
+                 x.offset.y + x.scrollPerSec.y * seconds,
+                 x.rotate + x.rotatePerSec * seconds, a);
 }
 
 /// @brief @p x at @p seconds as the 4x4 the shader multiplies from the left.

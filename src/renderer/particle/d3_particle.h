@@ -18,6 +18,7 @@
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
+#include <array>
 #include <cmath>
 
 namespace whiteout::flakes::renderer::particle::d3 {
@@ -75,9 +76,18 @@ struct ParticleState {
 
     // Per-frame appearance, refreshed by the step and read by the builder.
     f32 size = 1.0f;   ///< particle+212, clamped to [1e-4, 999]
-    f32 scale = 1.0f;  ///< particle+208 (ch 5)
-    f32 childScalar = 1.0f; ///< particle+240 (ch 2)
-    Vector4f color{1, 1, 1, 1}; ///< particle+232 RGB, particle+236 alpha
+    /// particle+0xD0 — ch5 x ch35. An OPACITY, not a size: see @ref D3OpacityByte.
+    f32 opacity = 1.0f;
+    /// particle+0xF0 — ch2. The quad's HEIGHT ratio: `Particle_WriteQuadVertices`
+    /// @0x71000BC4E4 builds the vertical half-extent as `aspect * halfWidth * this`
+    /// and the horizontal one without it.
+    f32 heightRatio = 1.0f;
+    /// particle+232 (ch3). The w is the authored colour's own alpha and the
+    /// builder discards it: the engine overwrites that byte with the opacity.
+    Vector4f color{1, 1, 1, 1};
+    /// particle+236 — ch6, the whole of COLOR1. Named for its only consumer,
+    /// `ps_legacy`'s erosion tail; 21,328 of 21,593 files leave it at 1.0.
+    f32 dissolve = 1.0f;
 
     // Wind spring (system types 6 and 8). Unused by every other type, and
     // eleven floats is cheap next to giving foliage its own emitter class.
@@ -86,13 +96,29 @@ struct ParticleState {
     Vector2f swayForce{0, 0};
     f32 swayPhase = 0.0f;
 
-    // The flip-book, when the material names an atlas layer. `particle+16` in
-    // the engine is a 72-byte UV-animation state PER STAGE, of which the
-    // flip-book player is `+32`: previous cursor, cursor, integer frame,
-    // length and rate. Only the cursor and the rate have to survive a frame —
-    // the frame index is `(int)cursor` and the length is the material's.
-    f32 atlasCursor = 0.0f;
-    f32 atlasRate = 0.0f; ///< Frames per second; zeroed when a once-shot ends.
+    /// @brief The four UV animation states, one per texture stage.
+    ///
+    /// `particle+16` in the engine is an array of FOUR 72-byte states, indexed
+    /// by the POSITIONAL uv set (0 type 1, 1 type 19, 2 type 12, 3 type 14) with
+    /// a hole where a type is absent. `ParticleSystem_EmitParticle` seeds each
+    /// through `MatTex_InitUvState` at birth and `MatTex_TickUvStateEntry`
+    /// advances each per frame, so **every scalar here belongs to the particle
+    /// and not to the emitter**. That is not a nicety: 12,361 of the corpus's
+    /// 13,897 uv mode 2 entries draw their initial U/V phase at RANDOM and 9,235
+    /// carry a per-instance rate jitter, so a system evaluated on one shared
+    /// clock draws every particle of a puff on the identical tile of its sheet.
+    ///
+    /// Six scalars for the scroll and rotation (`state+4/+8/+12/+16/+20/+24`)
+    /// and two for the flip-book player at `state+32` (`+4` the cursor, `+20`
+    /// the rate; the integer frame is `(int)cursor` and the length is the
+    /// material's).
+    struct UvState {
+        f32 u = 0.0f, v = 0.0f;
+        f32 uRate = 0.0f, vRate = 0.0f;
+        f32 rot = 0.0f, rotRate = 0.0f;
+        f32 cursor = 0.0f, cursorRate = 0.0f;
+    };
+    std::array<UvState, 4> uv{};
 
     bool orbitSeeded = false;
     bool radialSeeded = false;

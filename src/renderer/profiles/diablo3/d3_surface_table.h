@@ -317,6 +317,44 @@ struct D3PassState {
     /// on outside D3PassStateFor — the flags above are the switch.
     std::string effectFile;
 
+    /// @brief `szPixelShaderEntry`, which NAMES the program the pass runs.
+    ///
+    /// Twelve entry points across the corpus's billboard `.prt`; `ps_legacy`
+    /// covers 15,841 of 17,503 and the other eleven are a different program
+    /// each. Only the particle path reads it - a surface's family is decided by
+    /// @ref effectFile and the flags above.
+    std::string pixelEntry;
+
+    /// @brief The live `TAG_VS_TEXCOORD{i}_FUNC` codes, COMPACTED.
+    ///
+    /// Index j is the code of the j-th live slot, matching the vertex
+    /// program's own output j -- `particle_blendAdd` tags
+    /// (1, 10, 10, 1, 11, 11) and emits four, so entry 1 here is block slot 3.
+    /// Storing it compacted is what lets a hole in the block stop mattering.
+    /// See io/d3/d3_types.h for what a code says.
+    std::array<u32, ::whiteout::flakes::io::kD3StageArgCount> texcoordFunc{};
+    /// How many of @ref texcoordFunc are live. This is the program's texcoord
+    /// count, and for a flow shader it is what separates one flow map from
+    /// three.
+    u32 texcoordCount = 0;
+
+    /// @brief Does a content stage sit AFTER a type-0 hole in the stage block?
+    ///
+    /// This is what selects `ps_legacy`'s own BLENDADD permutation, which the
+    /// entry name cannot: a `.shd` ships one compiled permutation and
+    /// `szPixelShaderEntry` only names the entry it was built from. All five
+    /// shipped BLENDADD shaders declare six stages as (1, 0, 0, 19, 0, 0), and
+    /// they are the only five of 245 billboard passes with a hole -- the
+    /// reconstruction's `BLENDADD_UNIT` is 3, which is that second content
+    /// stage's DECLARED index. See D3_MATERIAL_AUDIT.md 12.4.
+    bool stageHole = false;
+
+    /// @brief Does the alpha block carry the EROSION marker (code 86)?
+    ///
+    /// It sits past the content stages, so `combines` never sees it. See
+    /// io/d3/d3_types.h.
+    bool erosion = false;
+
     /// @brief Did this pass carry the fixed-function stage block at all?
     ///
     /// `Legacy.fx` is the only family this shading model reproduces that does -

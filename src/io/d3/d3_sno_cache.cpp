@@ -397,22 +397,24 @@ std::shared_ptr<const D3TextureAtlas> D3SnoCache::TextureAtlas(i32 sno) {
         const u32 tableAt = ReadU32(b, kTexAtlasOffset + 4);
         const u32 tableBytes = ReadU32(b, kTexAtlasOffset + 8);
         // The frame table does not start at `frameTableOffset`: every sheet
-        // measured declares `count * 80` bytes there and puts a JUNK RECORD
-        // first, so the real frames are `count` records starting one slot in.
-        // Six sheets, four sizes — 512x64 and 512x128 with 4 tiles of 0.25,
-        // 1024x256 and 2048x256 with 8 of 0.125 — and in every one the sheet's
-        // LAST tile is what goes missing if that slot is taken as a frame. It
-        // cannot be one anyway: the engine reads the tile SIZE off frame 0, and
-        // the junk is not a rectangle. Skipped by testing rather than by a
-        // constant, because its content varies (integers on one sheet, zeros on
-        // another) and a sheet that needs no skip must not get one.
-        u32 first = 0;
-        while (first < 4 &&
-               static_cast<u64>(tableAt) + static_cast<u64>(first + 1) * kTexFrameStride <=
-                   b.size() &&
-               !IsFrameRect(b, tableAt + static_cast<usize>(first) * kTexFrameStride)) {
-            ++first;
-        }
+        // declares `count * 80` bytes there and puts ONE record before the
+        // frames, so the real frames are `count` records starting one slot in.
+        // Taking that slot for a frame loses the sheet's LAST tile, and it
+        // cannot be one anyway — the engine reads the tile size off frame 0 and
+        // this record is not a rectangle (integers on one sheet, zeros on
+        // another).
+        //
+        // Measured over every sheet the corpus's 18,473 particle materials
+        // reach: the skip is **1 on all 34,870 of them**, so this is a fixed
+        // leading slot and not junk to be searched for. One test rather than a
+        // search, because a search that finds three junk-looking records in a
+        // row would silently eat three tiles, and one that finds none must not
+        // shift the table either. With the skip in place no one-frame sheet
+        // fails to cover its texture and only 8 multi-frame sheets do not tile.
+        const u32 first =
+            (static_cast<u64>(tableAt) + kTexFrameStride <= b.size() && !IsFrameRect(b, tableAt))
+                ? 1u
+                : 0u;
         const u64 end =
             static_cast<u64>(tableAt) + static_cast<u64>(first + count) * kTexFrameStride;
         (void)tableBytes;
@@ -420,6 +422,7 @@ std::shared_ptr<const D3TextureAtlas> D3SnoCache::TextureAtlas(i32 sno) {
             auto a = std::make_shared<D3TextureAtlas>();
             a->width = ReadU32(b, kTexDescOffset + 4);
             a->height = ReadU32(b, kTexDescOffset + 8);
+            a->leadSkip = first;
             a->frames.reserve(count);
             for (u32 i = 0; i < count; ++i) {
                 const usize at = tableAt + static_cast<usize>(first + i) * kTexFrameStride;
