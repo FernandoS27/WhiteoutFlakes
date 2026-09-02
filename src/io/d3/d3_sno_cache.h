@@ -171,6 +171,9 @@ public:
     /// on the UberMaterial. See `D3PassStateFor`.
     std::shared_ptr<const d3n::ShaderMap> ShaderMap(i32 sno);
     std::shared_ptr<const d3n::Shaders> Shaders(i32 sno);
+    /// The `.gam` GameBalance table — the Items tables the dressing room's
+    /// item registry parses. Five per 2.8 client, a few MB each.
+    std::shared_ptr<const d3n::GameBalance> GameBalance(i32 sno);
 
     /// @brief Parse @p bytes the caller already has, and cache the result
     ///        under @p sno.

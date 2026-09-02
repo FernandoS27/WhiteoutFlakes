@@ -115,6 +115,8 @@ public:
 
 private:
     static constexpr u32 kSlotCount = kD3SlotCount;
+    /// The pass-global dye ramp binds one register past the slot table.
+    static constexpr u32 kDyeRampRegister = kD3SlotCount;
 
     /// @brief Slots in the generic light array.
     ///
@@ -168,8 +170,10 @@ private:
         /// See D3PassState::colorGain.
         Vector4f params1;
         /// `.x` the pass's depth bias, applied in the vertex shader because
-        /// D3D9 states it in depth units and the modern APIs do not. `.yzw`
-        /// spare. See D3PassState::depthBias.
+        /// D3D9 states it in depth units and the modern APIs do not. `.y` the
+        /// two-tex distortion switch. `.z` the dye ramp row (`tintRampUV`,
+        /// `((dye-2)+0.5)/21`) and `.w` `bUseDyeType` — the geoset's dye, off
+        /// unless a D3 outfit dyed it. See D3PassState::depthBias.
         Vector4f params2;
         /// The `Legacy.fx` chain: `.x` live stage count (0 = run the named
         /// slots), `.y` where the vertex colour and the texture factor enter,
@@ -222,6 +226,13 @@ private:
     };
 
     gfx::PipelineHandle GetOrBuildPso(const PsoKey& key);
+
+    /// @brief The `dye_ramp` core texture, acquired once per storage through
+    ///        the asset manager (by file id where the storage answers one, by
+    ///        path for a plain tree). White until it lands, which degrades a
+    ///        dye toward "no recolour" rather than to black.
+    gfx::TextureHandle DyeRampTexture();
+    u32 rampSlot_ = 0; ///< AssetManager::kInvalidSlot until first asked.
 
     /// @brief Whether this geoset draws through the skinned entry.
     ///

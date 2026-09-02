@@ -107,7 +107,8 @@ static const int kD3SlotIrradiance = 5;
 static const int kD3SlotAlphaMask0 = 6;
 static const int kD3SlotAlphaMask1 = 7;
 static const int kD3SlotAlphaMask2 = 8;
-static const int kD3SlotCount = 9;
+static const int kD3SlotHeroTint = 9;
+static const int kD3SlotCount = 10;
 // Stages in a `Legacy.fx` chain, and the first six slots are its units.
 static const int kD3MaxChainStages = 6;
 
@@ -241,6 +242,12 @@ static const int WF_PS_BIND_OFFSET = 16;
 [[vk::binding(WF_PS_BIND_OFFSET + 6, 1)]] Texture2D texAlphaMask0 : register(t6);
 [[vk::binding(WF_PS_BIND_OFFSET + 7, 1)]] Texture2D texAlphaMask1 : register(t7);
 [[vk::binding(WF_PS_BIND_OFFSET + 8, 1)]] Texture2D texAlphaMask2 : register(t8);
+// Type 54, the per-piece dye mask -- .x picks the ramp column, .z weights the
+// recolour. See the dye block in the albedo section.
+[[vk::binding(WF_PS_BIND_OFFSET + 9, 1)]] Texture2D texHeroTint : register(t9);
+// The `dye_ramp` core asset (type 56): 21 dye rows, sampled at row centres.
+// Pass-global -- one texture for every draw -- bound past the slot table.
+[[vk::binding(WF_PS_BIND_OFFSET + 10, 1)]] Texture2D texDyeRamp : register(t10);
 // One sampler PER WRAP VARIANT, not per slot: the D3D12 root signature budgets
 // four samplers per stage, and four is exactly how many distinct states exist.
 [[vk::binding(WF_PS_BIND_OFFSET + 0, 2)]] SamplerState sampWrap0 : register(s0);
@@ -724,6 +731,20 @@ float4 psD3Standard(PSInput input, bool frontFace : SV_IsFrontFace) : SV_Target
     float4 albedo = draw.matDiffuse;
     if (SlotOn(kD3SlotDiffuse))
         albedo *= SampleSlot(kD3SlotDiffuse, texDiffuse, input.uv01);
+
+    // The dye, exactly as the `herotint` ARB programs run it: the mask's .x
+    // picks the ramp COLUMN, the dye row (`tintRampUV`, draw.params2.z) picks
+    // the ROW, and the mask's .z lerps the recolour over the base map --
+    // `MAD R2.xyz, R2.z, (ramp - diffuse), diffuse` -- gated on `bUseDyeType`
+    // (draw.params2.w). Clamped sampling: the rows are a palette, and
+    // interpolating between dyes is wrong (the 0.5 row-centre offset upstream
+    // is what makes it one).
+    if (draw.params2.w != 0.0 && SlotOn(kD3SlotHeroTint))
+    {
+        let mask = SampleSlot(kD3SlotHeroTint, texHeroTint, input.uv01);
+        let ramp = texDyeRamp.Sample(sampWrap0, float2(mask.x, draw.params2.z));
+        albedo.rgb = lerp(albedo.rgb, ramp.rgb, mask.z);
+    }
 
     if ((vertexColorMode & 0x2u) != 0u)
         albedo.a *= input.vertexCol.a;

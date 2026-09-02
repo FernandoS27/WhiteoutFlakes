@@ -22,6 +22,7 @@
 #include "renderer/profiles/wow/wow_character_appearance.h"
 #endif
 #if WDX_ENABLE_D3
+#include "io/d3/d3_item_registry.h"
 #include "io/d3/d3_sno_cache.h"
 // Included rather than forward-declared for WowCharacterAppearance's reason:
 // the accessor hands out a reference and callers reach through it.
@@ -210,6 +211,18 @@ public:
     // created for the same reason.
     profiles::diablo3::D3CharacterAppearance& D3Characters();
 
+    // The item registry the dressing room equips from: the GameBalance Items
+    // tables plus a per-item classification read off each item's Actor.
+    // Built lazily on first ask, against the active provider.
+    io::D3ItemRegistry& D3Items();
+
+    /// @brief Make @p actorHandle's equipment children match its outfit:
+    ///        spawn what is newly equipped, despawn what left, and MOVE a
+    ///        child whose hardpoint changed (the sheathe toggle) rather than
+    ///        respawning it. Runs inside RestyleD3Model, so every outfit
+    ///        change syncs; callable on its own for a sheathe-only change.
+    void SyncD3Equipment(u32 actorHandle);
+
     /// @brief The Diablo III adapter @p actorHandle draws through, or null.
     ///
     /// The outfit is addressed by the *appearance*, not by the file that was
@@ -359,6 +372,18 @@ private:
     RenderService& rs_;
 #if WDX_ENABLE_D3
     std::unique_ptr<io::D3SnoCache> d3Cache_;
+    std::unique_ptr<io::D3ItemRegistry> d3Items_;
+    /// One equipment child the outfit put on an actor. Keyed per focus actor:
+    /// the outfit is shared per appearance (the documented tradeoff), the
+    /// children are real scene actors and cannot be.
+    struct D3EquipChild {
+        i32 visualSlot = 0;
+        i32 itemGbid = -1;
+        i32 actorSno = -1;
+        std::string hardpoint;
+        u32 child = 0;
+    };
+    std::unordered_map<u32, std::vector<D3EquipChild>> d3Equipment_;
     // (appearanceSno << 8) | lookIndex -> the adapter built for it. A look
     // index above 255 does not exist in shipped content; the census tops out
     // at eight. Weak: an entry decides whether two actors *share* a drawable,

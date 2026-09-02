@@ -1070,6 +1070,11 @@ FrameState D3ModelAdapter::Evaluate(const PoseRequest& req) const {
     // per-look bit (`lookHidden_`) and whatever a host has dressed
     // (`geosetHidden_`). Without the first, Tyrael draws the Stranger, the
     // Restored angel AND the skeleton he is never both of.
+    if (!geosetDyes_.empty()) {
+        fs.geosetDyes.assign(emitted_.size(), 0);
+        for (usize g = 0; g < emitted_.size() && g < geosetDyes_.size(); ++g)
+            fs.geosetDyes[g] = geosetDyes_[g];
+    }
     if (!geosetHidden_.empty() || !lookHidden_.empty()) {
         fs.geosetHidden.assign(emitted_.size(), 0);
         for (usize g = 0; g < emitted_.size(); ++g) {

@@ -97,6 +97,11 @@ d3n::Group D3GroupOfBytes(std::span<const u8> bytes) {
         return d3n::Group::ShaderMap;
     case 25:
         return d3n::Group::Material;
+    case 2469:
+        // GameBalance in the 2.8.0.99920 install. The other groups' numbers
+        // are the v260-era corpus; `.gam` never shipped in that corpus, so
+        // the only version in the wild here is the install's.
+        return d3n::Group::GameBalance;
     // 24 is both AnimSet and PhysMesh. Left unresolved rather than guessed:
     // every reference to either states its group in an AssetRef, so the only
     // caller that could land here is a host that typed a bare id.
@@ -260,6 +265,10 @@ D3SnoCache::Loaded D3SnoCache::Load(i32 sno, std::span<const u8> bytes) {
             if (auto v = d3n::parseShaders(bytes))
                 e.value = std::make_shared<const d3n::Shaders>(std::move(*v));
             break;
+        case d3n::Group::GameBalance:
+            if (auto v = d3n::parseGameBalance(bytes))
+                e.value = std::make_shared<const d3n::GameBalance>(std::move(*v));
+            break;
         default:
             break;
         }
@@ -343,6 +352,9 @@ std::shared_ptr<const d3n::ShaderMap> D3SnoCache::ShaderMap(i32 sno) {
 }
 std::shared_ptr<const d3n::Shaders> D3SnoCache::Shaders(i32 sno) {
     return Typed<d3n::Shaders>(sno, d3n::Group::Shaders);
+}
+std::shared_ptr<const d3n::GameBalance> D3SnoCache::GameBalance(i32 sno) {
+    return Typed<d3n::GameBalance>(sno, d3n::Group::GameBalance);
 }
 
 std::shared_ptr<const d3n::Actor> D3SnoCache::AdoptActor(i32 sno, std::span<const u8> bytes) {

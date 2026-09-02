@@ -180,6 +180,10 @@ if(WDX_ENABLE_D3)
     # never says which of it draws. Counts what dressing hides, and checks that
     # a model with no wardrobe is left completely alone.
     wdx_add_test(d3_character_test d3_character_test.cpp)
+    # Gate D3-G7: equip by in-game name. The GameBalance registry over the
+    # corpus snapshot, the item -> look resolver against measured tags, and
+    # draw-set parity between item dressing and manual dressing.
+    wdx_add_test(d3_item_equip_test d3_item_equip_test.cpp)
     # The rig census the CollisionShape renames are corrected against, plus the
     # physics gates. Registered outside the WDX_ENABLE_PHYSICS guard on purpose:
     # the census reads shipped records and needs no solver, so a build without

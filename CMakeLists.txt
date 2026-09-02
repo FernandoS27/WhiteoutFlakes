@@ -1377,6 +1377,7 @@ if(WDX_ENABLE_D3)
         src/io/d3/d3_asset_provider.cpp
         src/io/d3/d3_model_adapter.cpp
         src/io/d3/d3_effect_resolver.cpp
+        src/io/d3/d3_item_registry.cpp
         src/io/d3/d3_particle_adapter.cpp
         src/io/d3/d3_sno_cache.cpp
         src/renderer/effects/d3_attachment_pool.cpp

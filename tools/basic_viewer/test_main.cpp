@@ -18,6 +18,7 @@
 #endif
 #if WDX_ENABLE_D3
 #include "io/d3/d3_model_adapter.h"
+#include "renderer/profiles/diablo3/d3_surface_table.h"
 #endif
 #include "localization.h"
 #include "log_console.h"
@@ -494,6 +495,15 @@ struct AnimScenario {
     // half of that switch, and the only way a capture can tell the two apart.
     bool ragdoll = false;
 
+    // Dress a Diablo III player character by item name before the settle:
+    // (EVisualSlot ordinal, GameBalance item name) pairs, resolved through
+    // the item registry against the content root's GameBalance snapshot.
+    // What makes the dressed-character scenarios recordable at all.
+    std::vector<std::pair<i32, std::string>> d3Equip;
+    // (EVisualSlot ordinal, dye row) pairs applied after the equips.
+    std::vector<std::pair<i32, i32>> d3Dyes;
+    bool d3Sheathed = false;
+
     // Print the skinning plumbing and a per-frame pose hash.
     //
     // Earns its place because the failure this gate is most likely to hit is
@@ -506,7 +516,7 @@ struct AnimScenario {
 
     bool Any() const {
         return !sequence.empty() || switchFrame >= 0 || layerFrame >= 0 || noGlobals || list ||
-               probe || solvers || ragdoll;
+               probe || solvers || ragdoll || !d3Equip.empty();
     }
 };
 
@@ -689,6 +699,103 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
         std::cerr << "[dtrace] SpawnUnit failed: " << wf::io::PathToUtf8(mdxPath) << std::endl;
         return 4;
     }
+#if WDX_ENABLE_D3
+    // ---- D3 outfit scenario: equip by item name, before the settle so the
+    // capture never sees the undressed frame. Registry and actors come from
+    // the content root's corpus tree (GameBalance/ + Actor/), or from the
+    // provider when one can answer.
+    if (!anim.d3Equip.empty()) {
+        auto adapter = std::dynamic_pointer_cast<wf::io::D3ModelAdapter>(hero->animation.Source());
+        if (!adapter) {
+            std::cerr << "[dtrace] --d3-equip needs a D3 model" << std::endl;
+        } else {
+            auto& items = renderer.Loader().D3Items();
+            if (!contentRoot.empty()) {
+                const auto root = wf::io::FsPathFromUtf8(contentRoot);
+                items.SetFallbackDirectory(root / "GameBalance");
+                items.SetFallbackActorDirectory(root / "Actor");
+                items.SetFallbackStringListDirectory(root / "StringList");
+            }
+            items.EnsureBuilt(scene.ActiveContentProvider());
+            auto& chars = renderer.Loader().D3Characters();
+            if (const auto body =
+                    wf::io::d3n::playerFromAppearanceStem(mdxPath.stem().string()))
+                chars.SetOutfitBody(*adapter, body->first, body->second);
+            chars.SetOutfitSheathed(*adapter, anim.d3Sheathed);
+            for (const auto& [slot, name] : anim.d3Equip) {
+                const wf::io::D3ItemRecord* rec = items.FindByName(name);
+                std::shared_ptr<const wf::io::d3n::Actor> itemActor;
+                if (rec && rec->snoActor > 0)
+                    itemActor = renderer.Loader().D3Cache().Actor(rec->snoActor);
+                const bool ok =
+                    rec && chars.SetOutfitItem(
+                               *adapter, static_cast<wf::io::d3n::EVisualSlot>(slot), rec,
+                               itemActor);
+                std::cout << "[dtrace] scenario: equip slot " << slot << " '" << name << "' "
+                          << (ok ? (itemActor ? "ok" : "ok (no actor)") : "UNKNOWN ITEM");
+                if (slot == 0 && itemActor) {
+                    // The hair cutaway a helm asks for (tag 0x10404) — the
+                    // other half of "why is his beard poking through".
+                    std::cout << " hair="
+                              << wf::io::d3n::tagMapValue(itemActor->arTagMap,
+                                                          wf::io::d3n::kTagItemHairStyle)
+                                     .value_or(0);
+                }
+                std::cout << std::endl;
+            }
+            // What the outfit resolved to — the child actor and hardpoint per
+            // attachment slot. This is where "equipped ok but nothing on the
+            // model" becomes diagnosable from a log.
+            for (const auto& att : chars.OutfitAttachments(*adapter)) {
+                std::cout << "[dtrace] scenario: attach slot " << att.visualSlot << " actor "
+                          << att.actorSno << " at " << att.hardpoint;
+                if (att.visualSlot == 0) {
+                    // The per-class art actor's own hair tag, beside the item
+                    // actor's above — which of the two the engine honours is
+                    // exactly what a wrong beard hinges on.
+                    if (auto a2 = renderer.Loader().D3Cache().Actor(att.actorSno))
+                        std::cout << " hair="
+                                  << wf::io::d3n::tagMapValue(a2->arTagMap,
+                                                              wf::io::d3n::kTagItemHairStyle)
+                                         .value_or(0);
+                }
+                std::cout << std::endl;
+            }
+            for (const auto& [slot, dye] : anim.d3Dyes) {
+                chars.SetOutfitDye(*adapter, static_cast<wf::io::d3n::EVisualSlot>(slot), dye);
+                std::cout << "[dtrace] scenario: dye slot " << slot << " = " << dye
+                          << std::endl;
+            }
+            for (auto* a2 : spawned)
+                renderer.Loader().RestyleD3Model(a2->handle);
+
+            // Per-surface material state for the VISIBLE geosets, so "dressed
+            // is too bright" becomes a table of pass flags rather than an
+            // impression. Only when asked.
+            if (anim.probe) {
+                if (const auto* st = dynamic_cast<const wf::renderer::profiles::diablo3::
+                                         D3SurfaceTable*>(hero->render.surfaceTable.get())) {
+                    const auto hidden = adapter->GeosetHidden();
+                    const auto& surfs = st->Surfaces();
+                    for (wf::u32 g = 0; g < surfs.size(); ++g) {
+                        if (g < hidden.size() && hidden[g])
+                            continue;
+                        const auto& s = surfs[g];
+                        if (!s.valid)
+                            continue;
+                        std::cout << "[dtrace] surf " << g << " fx='" << s.pass.effectFile
+                                  << "' resolved=" << s.pass.resolved << " lit=" << s.pass.lit
+                                  << " unlit=" << s.unlit
+                                  << " vcLights=" << s.pass.vertexColorLights
+                                  << " gain=" << s.pass.colorGain << " emis=" << s.emissive.x
+                                  << " chain=" << s.chainCount << std::endl;
+                    }
+                }
+            }
+        }
+    }
+#endif
+
     // Merge any `.m3a` before the scenario resolves a sequence name, because
     // an `.m3a`-driven model has no sequences of its own to resolve against.
     // Same two calls ViewerApp::AttachAnimationFile makes — attach, then re-Bind
@@ -1389,6 +1496,7 @@ int main(int argc, char* argv[]) {
     std::string particleTraceCheck;
     bool drawTrace = false;
     bool drawTraceHd = false;
+    bool drawTraceSdHdr = false;
     bool drawTraceUnlit = false;
     bool noClothDeform = false;
     bool drawTraceNoRefraction = false;
@@ -1654,6 +1762,12 @@ int main(int argc, char* argv[]) {
             drawTraceGolden = argv[++i];
         } else if (std::strcmp(a, "--draw-trace-hd") == 0) {
             drawTraceHd = true;
+        } else if (std::strcmp(a, "--draw-trace-sd-hdr") == 0) {
+            // Route SD through the HDR scene target + tonemap (SceneHdrInSd)
+            // — what the interactive viewer does for D3, where additive item
+            // glows otherwise clip to white. Off by default so the recorded
+            // baselines keep their meaning.
+            drawTraceSdHdr = true;
         } else if (std::strcmp(a, "--draw-trace-unlit") == 0) {
             drawTraceUnlit = true;
         } else if (std::strcmp(a, "--no-cloth-deform") == 0) {
@@ -1714,6 +1828,47 @@ int main(int argc, char* argv[]) {
             drawTraceAnim.solvers = true;
         } else if (std::strcmp(a, "--draw-trace-ragdoll") == 0) {
             drawTraceAnim.ragdoll = true;
+        } else if (std::strcmp(a, "--d3-equip") == 0 && i + 1 < argc) {
+            // <slot>=<ItemName>, slot by EVisualSlot name or ordinal.
+            const std::string spec = argv[++i];
+            const auto eq = spec.find('=');
+            if (eq != std::string::npos) {
+                const std::string slotName = spec.substr(0, eq);
+                i32 slot = -1;
+                const char* names[8] = {"head", "torso", "feet", "hands",
+                                        "righthand", "lefthand", "shoulders", "legs"};
+                for (i32 sIdx = 0; sIdx < 8; ++sIdx)
+                    if (slotName == names[sIdx])
+                        slot = sIdx;
+                if (slot < 0 && !slotName.empty() &&
+                    slotName.find_first_not_of("0123456789") == std::string::npos)
+                    slot = std::atoi(slotName.c_str());
+                if (slot >= 0 && slot < 8)
+                    drawTraceAnim.d3Equip.emplace_back(slot, spec.substr(eq + 1));
+                else
+                    std::cerr << "[dtrace] --d3-equip: bad slot '" << slotName << "'"
+                              << std::endl;
+            }
+        } else if (std::strcmp(a, "--d3-dye") == 0 && i + 1 < argc) {
+            const std::string spec = argv[++i];
+            const auto eq = spec.find('=');
+            if (eq != std::string::npos) {
+                const std::string slotName = spec.substr(0, eq);
+                i32 slot = -1;
+                const char* names[8] = {"head", "torso", "feet", "hands",
+                                        "righthand", "lefthand", "shoulders", "legs"};
+                for (i32 sIdx = 0; sIdx < 8; ++sIdx)
+                    if (slotName == names[sIdx])
+                        slot = sIdx;
+                if (slot < 0 && !slotName.empty() &&
+                    slotName.find_first_not_of("0123456789") == std::string::npos)
+                    slot = std::atoi(slotName.c_str());
+                if (slot >= 0 && slot < 8)
+                    drawTraceAnim.d3Dyes.emplace_back(slot,
+                                                      std::atoi(spec.c_str() + eq + 1));
+            }
+        } else if (std::strcmp(a, "--d3-sheathed") == 0) {
+            drawTraceAnim.d3Sheathed = true;
         } else if (std::strcmp(a, "--draw-trace-ground") == 0 && i + 1 < argc) {
             drawTraceAnim.groundZ = static_cast<f32>(std::atof(argv[++i]));
         } else if (std::strcmp(a, "--draw-trace-aim") == 0 && i + 3 < argc) {
@@ -1954,6 +2109,8 @@ int main(int argc, char* argv[]) {
     if (noClothDeform)
         renderer.Settings().SetClothDeform(false);
 
+    if (drawTraceSdHdr)
+        renderer.Settings().SetSceneHdrInSd(true);
     if (drawTrace)
         return RunDrawTrace(renderer, scene, backend, mdxPath, drawTraceRecord, drawTraceCheck,
                             drawTraceGolden, particleDiffFrames, drawTraceHd, drawTraceDistanceTol,

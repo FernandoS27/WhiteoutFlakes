@@ -45,13 +45,15 @@
 // `native::parseGeosetName` recovers slot / weight / variant from it, over 436
 // of the 441 sub-objects the fourteen player Appearances hold.
 //
-// What is NOT settled, and is deliberately not guessed at here: which engine
-// look *category* each of torso / legs / boots / gloves is.
-// `g_EquipSlotToLookCategory` holds four (visual slot, category) pairs and
-// nothing yet pins a body part to one. It does not matter for this: a category
-// only says which slot a value applies to, and the slot is what the shape name
-// already states. So the selection is keyed on `native::LookSlot` and the
-// engine ordinals stay unclaimed rather than being invented.
+// The engine look categories are settled now (retail 2.8 name tables:
+// TRS 2, GLV 5, BTS 7, LEG 9 -- `EEquipmentSlot` ordinals), and so is the
+// engine's matching rule: a case-sensitive substring search for "<CAT>" and
+// "<CAT>_<VALUE>", never a parse (`ActorModel_ApplyLook`, retail 0x7544A0).
+// Membership below therefore goes through `native::matchesLook` -- the same
+// substrings the engine tests -- so labelling (`parseGeosetName`) and
+// selection can no longer disagree on an oddly-spelled name. The API stays
+// keyed on `native::LookSlot`; the category is an implementation detail of
+// the matching.
 // ============================================================================
 
 #include "whiteout/flakes/types.h"
@@ -59,6 +61,10 @@
 #include <whiteout/sno/d3/native/character.h>
 #include <whiteout/sno/d3/native/d3_native.h>
 
+#include <array>
+#include <functional>
+#include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -66,6 +72,7 @@
 
 namespace whiteout::flakes::io {
 class D3ModelAdapter;
+struct D3ItemRecord;
 } // namespace whiteout::flakes::io
 
 namespace whiteout::flakes::renderer::profiles::diablo3 {
@@ -80,17 +87,15 @@ namespace d3n = ::whiteout::sno::d3::native;
 /// being a separate wardrobe entry from the legs it hangs off.
 struct D3WardrobeItem {
     std::string label;    ///< "Naked", "Heavy A", "Medium B (CLS)".
-    std::string token;    ///< The shape-name token, e.g. `N_TRS_CLS_MED_B`.
+    std::string token;    ///< The engine's match pattern, e.g. `TRS_CLS_MED_B`
+                          ///< (hair keeps its whole shape-name token).
     d3n::ArmourWeight weight = d3n::ArmourWeight::Unknown;
     char variant = 0;
-    /// @brief The engine look value that selects this piece, where the value
-    ///        space determines it.
-    ///
-    /// Only the weight's base value is a recovered fact (Naked 0, Light 1,
-    /// Medium 3, Heavy 5). Which of a group's two spare values a `B` or a `C`
-    /// takes is not: the fallback is symmetric, so the corpus cannot tell 2
-    /// from 7. A non-base variant therefore reports its group's base — the
-    /// value it degrades to — rather than a number nothing supports.
+    /// @brief The engine look value that selects this piece — exact, now that
+    ///        `g_LookValueNames` (retail 0x14777E0) names all nineteen: the
+    ///        second spare of each weight group is the `C` variant, and the
+    ///        `CLS_*` family sits at 10..18. An item whose Actor carries this
+    ///        value in tag 0x10400 draws exactly this piece.
     u32 lookValue = 0;
     std::vector<u32> geosets; ///< Emitted geoset ids, ascending.
 };
@@ -108,6 +113,38 @@ struct D3WardrobeSlot {
     /// chest and heavy boots from two different sets are one material read at
     /// two variant indices.
     u32 lookIndex = 0;
+};
+
+/// One of the engine's nine visual-equipment slots, as an outfit stores it:
+/// an item plus a dye. The armour slots (Torso/Feet/Hands/Legs) resolve into
+/// the wardrobe selection above through `resolveEquip`; the attachment slots
+/// (Head/hands/Shoulders) carry child models. -1 = nothing equipped.
+struct D3OutfitSlot {
+    i32 itemGbid = -1;
+    i32 dyeType = 0; ///< 0 undyed, 1 hidden, 2..22 a dye_ramp row.
+};
+
+/// What a character is wearing, the engine way: one record per visual slot.
+/// Kept per appearance SNO next to the wardrobe selection it drives.
+struct D3Outfit {
+    D3OutfitSlot slots[8]; ///< EVisualSlot 0..7; slot 8 (cosmetics) out of scope.
+    bool sheathed = false;
+    // Who is wearing it — only per-class/per-gender ATTACHMENT art reads
+    // these (armour tags are class-blind). Supplied by the host, which knows
+    // what it loaded; `playerFromAppearanceStem` is the usual derivation.
+    d3n::PlayerClass cls = d3n::PlayerClass::Barbarian;
+    d3n::Gender gender = d3n::Gender::Male;
+};
+
+/// One child model an equipped item wants attached: the realisable half of a
+/// resolveEquip, ready for the loader to spawn. Shoulders yield two of these.
+struct D3OutfitAttachment {
+    i32 visualSlot = 0;
+    i32 itemGbid = -1;
+    i32 actorSno = -1;                ///< what to spawn; -1 = nothing
+    std::string_view hardpoint;       ///< where; static storage, always valid
+    i32 dyeType = 0;
+    bool sheathed = false;            ///< riding a sheath hardpoint
 };
 
 /// A sub-object no equipment slot claims: a death body, a skill mesh, the
@@ -163,6 +200,64 @@ public:
     /// @brief Show or hide one unclaimed sub-object.
     void SetExtra(const io::D3ModelAdapter& adapter, u32 geoset, bool shown);
 
+    /// @name The outfit: dressing by ITEM rather than by piece
+    ///
+    /// `SetOutfitItem` is `ActorModel_ApplyItemLookForSlot` (retail 0x750DE0)
+    /// for the four armour slots: the item's Actor supplies the two look tags
+    /// through `resolveEquip`, the engine's fallback chain lands them on a
+    /// wardrobe piece, and the result is written into the same per-slot
+    /// selection the manual picker drives — so the two stay one mechanism and
+    /// the manual picker keeps working. Attachment slots are stored but not
+    /// yet realised (their child models are the next phase).
+    /// @{
+
+    /// @brief Equip @p item (with its parsed Actor) into @p slot; null
+    ///        unequips. Returns false when the adapter has no wardrobe or the
+    ///        slot is out of range. A head item also drives the hair cutaway:
+    ///        tag 0x10404 on its RESOLVED attach model (the per-class art —
+    ///        retail reads it off ActorModel_GetItemAttachModelSno's result,
+    ///        and 618 of the 699 helm-family actors carry it only there)
+    ///        picks the `Hair_<style>` wardrobe entry the way
+    ///        ActorModel_SetHairStyle does. A style with NO matching
+    ///        `Hair_*` sub-object hides them all — ApplyHairStyle
+    ///        (retail 0x764070) clears bit 1 on every non-match, which is
+    ///        how a BALD helm removes a monk's beard. Unequipping restores
+    ///        `Hair_NKD`; a later manual hair pick still wins until the next
+    ///        head equip.
+    bool SetOutfitItem(const io::D3ModelAdapter& adapter, d3n::EVisualSlot slot,
+                       const io::D3ItemRecord* item,
+                       std::shared_ptr<const d3n::Actor> itemActor);
+
+    /// @brief How this object loads an Actor it discovers it needs — today
+    ///        only the head slot's per-class attach model, for the hair tag.
+    ///        ModelLoader wires this to its D3SnoCache; without it the hair
+    ///        cutaway falls back to the item Actor's own (usually absent) tag.
+    void SetActorSource(std::function<std::shared_ptr<const d3n::Actor>(i32)> source) {
+        actorSource_ = std::move(source);
+    }
+
+    /// @brief Who wears the outfit — steers per-class attachment art only.
+    void SetOutfitBody(const io::D3ModelAdapter& adapter, d3n::PlayerClass cls,
+                       d3n::Gender gender);
+
+    /// @brief Sheathe or draw the weapons. Attachments re-resolve their
+    ///        hardpoints on the next OutfitAttachments read.
+    void SetOutfitSheathed(const io::D3ModelAdapter& adapter, bool sheathed);
+
+    /// @brief The child models the outfit's attachment slots want right now,
+    ///        resolved with the stored body and sheathe state. The loader
+    ///        diffs this against what it has spawned.
+    std::vector<D3OutfitAttachment> OutfitAttachments(const io::D3ModelAdapter& adapter) const;
+
+    /// @brief The dye stored for @p slot. For armour, dye 1 (hidden) dresses
+    ///        the slot naked the way the engine does; colours wait on the
+    ///        dye_ramp phase.
+    void SetOutfitDye(const io::D3ModelAdapter& adapter, d3n::EVisualSlot slot, i32 dyeType);
+
+    /// @brief The outfit as stored (gbids and dyes; -1 = empty slot).
+    D3Outfit OutfitOf(const io::D3ModelAdapter& adapter) const;
+    /// @}
+
     void Clear() {
         byAppearance_.clear();
     }
@@ -186,7 +281,22 @@ private:
     struct Entry {
         Wardrobe wardrobe;
         Selection selection;
+        D3Outfit outfit;
+        /// Each equipped item's parsed Actor, kept so dye flips, sheathe
+        /// toggles and per-class art changes re-resolve without re-reading.
+        /// Parallel to `outfit.slots`; null = slot empty. Cache-owned data;
+        /// the shared_ptr keeps it alive past eviction.
+        std::array<std::shared_ptr<const d3n::Actor>, 8> itemActors;
+        /// The item's type hash, for the traits lookup at resolve time.
+        std::array<u32, 8> itemTypes{};
     };
+
+    /// Re-derive the wardrobe selection for one armour slot from its outfit
+    /// entry and the stored resolution.
+    void ApplyOutfitArmour(Entry& e, const io::D3ModelAdapter& adapter, d3n::EVisualSlot slot);
+
+    /// Re-derive the hair cutaway from the head slot's item and dye.
+    void ApplyOutfitHair(Entry& e);
 
     /// Keyed on the *appearance* SNO and not on the file that was asked for:
     /// 594 actors name one appearance, ModelLoader shares one drawable between
@@ -197,7 +307,13 @@ private:
     /// Index of @p slot in the wardrobe, or -1.
     static i32 SlotIndex(const Wardrobe& w, d3n::LookSlot slot);
 
+    /// A selection.item value meaning "draw nothing for this slot" — how a
+    /// hair style with no matching sub-object hides the hair, the way
+    /// ApplyHairStyle's clear-every-non-match does.
+    static constexpr u32 kNoneItem = 0xFFFFFFFFu;
+
     mutable std::unordered_map<i32, Entry> byAppearance_;
+    std::function<std::shared_ptr<const d3n::Actor>(i32)> actorSource_;
 };
 
 } // namespace whiteout::flakes::renderer::profiles::diablo3

@@ -254,7 +254,29 @@ $entries = Get-Content $CorpusFile |
     Where-Object { $_ -ne '' } |
     ForEach-Object {
         $line = $_
-        $e = [ordered]@{ Path = $line; Seq = ''; Switch = ''; Layer = ''; Blend = ''; Weight = ''; Anim = ''; Subtrack = ''; NoGlobals = $false }
+        $e = [ordered]@{ Path = $line; Seq = ''; Switch = ''; Layer = ''; Blend = ''; Weight = ''; Anim = ''; Subtrack = ''; NoGlobals = $false; D3Equip = @(); D3Dyes = @(); D3Sheathed = $false; Tag = '' }
+        # The D3 corpus also carries scenario tokens (its paths have no
+        # spaces): `equip=slot:Item[,slot:Item...]`, `dye=slot:N[,...]`,
+        # `sheathed=on`, and `tag=` to name the baseline so two scenarios of
+        # one model do not collide.
+        if ($D3 -and ($line -match '\s')) {
+            $tok = $line -split '\s+'
+            $e.Path = $tok[0]
+            for ($t = 1; $t -lt $tok.Count; $t++) {
+                if ($tok[$t] -notmatch '^(?<k>[a-z]+)=(?<v>.+)$') {
+                    Write-Error "Malformed scenario token '$($tok[$t])' in: $line"
+                    exit 2
+                }
+                $k = $Matches.k; $v = $Matches.v
+                switch ($k) {
+                    'equip'    { $e.D3Equip = $v -split ',' | ForEach-Object { $_ -replace ':', '=' } }
+                    'dye'      { $e.D3Dyes = $v -split ',' | ForEach-Object { $_ -replace ':', '=' } }
+                    'sheathed' { $e.D3Sheathed = ($v -eq 'on' -or $v -eq '1') }
+                    'tag'      { $e.Tag = $v }
+                    default    { Write-Error "Unknown D3 scenario key '$k' in: $line"; exit 2 }
+                }
+            }
+        }
         if ($M3Anim) {
             $tok = $line -split '\s+'
             $e.Path = $tok[0]
@@ -309,6 +331,7 @@ foreach ($entry in $entries) {
     # renaming them would silently orphan all three.
     if ($entry.Subtrack -ne '') { $key += '_st' + (($entry.Subtrack -replace '-', 'neg') -replace '[^A-Za-z0-9]', '') }
     if ($entry.NoGlobals) { $key += '_nogl' }
+    if ($entry.Tag) { $key += '_' + ($entry.Tag -replace '[^A-Za-z0-9]', '') }
     $trace = Join-Path $BaselineDir "$key.txt"
     $image = Join-Path $BaselineDir "$key.raw"
 
@@ -328,6 +351,10 @@ foreach ($entry in $entries) {
     if ($entry.Weight) { $argv += @('--draw-trace-anim-weight', $entry.Weight) }
     if ($entry.Subtrack -ne '') { $argv += @('--draw-trace-anim-subtrack', $entry.Subtrack) }
     if ($entry.NoGlobals) { $argv += '--draw-trace-anim-no-globals' }
+    foreach ($eq in $entry.D3Equip) { $argv += @('--d3-equip', $eq) }
+    foreach ($dy in $entry.D3Dyes) { $argv += @('--d3-dye', $dy) }
+    if ($entry.D3Sheathed) { $argv += '--d3-sheathed' }
+    if ($entry.D3Equip.Count -gt 0) { $argv += @('--content-root', $CorpusRoot) }
     if ($Solvers) {
         $argv += @('--draw-trace-solvers', '--draw-trace-ground', $GroundZ)
         if ($Aim -and $Aim.Count -eq 3) {

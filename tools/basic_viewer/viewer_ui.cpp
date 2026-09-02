@@ -1,6 +1,7 @@
 #include "viewer_ui.h"
 
 #include "imgui_viewcube.h"
+#include "io/load_task.h" // Poll(), for the equip popup's registry-build bar
 #include "io/mdx_model_adapter.h"
 #include "io/storage/game_rules.h" // ScanArchives, for a profile that is not the active one
 #include "localization.h"
@@ -1152,19 +1153,181 @@ void ViewerUI::BuildToolbar() {
     // offers pieces out of a wardrobe rather than choices out of a database.
     // Absent for every model that is not a player character.
     if (const auto slots = app_.D3CharacterSlots(); !slots.empty()) {
+        // Asking kicks the registry build as a background task, so it runs
+        // while the user is still looking at the model and the popup usually
+        // opens ready instead of opening onto its progress bar.
+        app_.D3ItemRegistryReady();
         if (ImGui::Button(i18n::tr("toolbar.equip")))
             ImGui::OpenPopup("##d3equip");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", i18n::tr("toolbar.equip.tip"));
         if (ImGui::BeginPopup("##d3equip")) {
+            // ---- Items: dressing by in-game name ----
+            // The registry half of the dressing room. The first frame of the
+            // popup kicks the registry build as a background task (~3.4k
+            // Actor reads); a progress bar stands in until it lands. Once
+            // ready, these rows ALSO replace the per-slot wardrobe below —
+            // the registry drives the same look tags — so only Hair and the
+            // Extras survive of the manual controls.
+            const bool registryReady = app_.D3ItemRegistryReady();
+            const bool registryBuilding = app_.D3ItemRegistryBuilding();
+            if (registryBuilding) {
+                // The runner is one task at a time, so the snapshot may
+                // belong to whatever the build is queued behind — trust its
+                // numbers only when the title says it is ours.
+                const io::ProgressSnapshot snap = app_.Tasks().Poll();
+                const bool ours = snap.title == "Building item registry";
+                ImGui::TextUnformatted(ours && !snap.stage.empty()
+                                           ? snap.stage.c_str()
+                                           : i18n::tr("toolbar.equip.building"));
+                char counts[64] = "";
+                if (ours && snap.total != 0)
+                    std::snprintf(counts, sizeof(counts), "%llu / %llu",
+                                  static_cast<unsigned long long>(snap.current),
+                                  static_cast<unsigned long long>(snap.total));
+                const float fraction = (ours && !snap.indeterminate)
+                                           ? snap.fraction
+                                           : -1.0f * static_cast<float>(ImGui::GetTime());
+                ImGui::ProgressBar(fraction, ImVec2(320, 0.0f),
+                                   counts[0] ? counts : nullptr);
+            } else if (!registryReady) {
+                ImGui::TextDisabled("%s", i18n::tr("toolbar.equip.noregistry"));
+            } else if (const auto rows = app_.D3OutfitSlots(); !rows.empty()) {
+                // One filter shared by all the item combos: only one popup is
+                // ever open, and keeping the text across rows is a feature —
+                // a set is usually searched for once and equipped piecewise.
+                static char itemFilter[64] = "";
+                // Presets: a whole outfit by name. Saved beside the viewer
+                // settings as item NAMES, so a preset survives a re-parse of
+                // the item tables.
+                static char presetName[48] = "";
+                ImGui::SetNextItemWidth(150);
+                if (ImGui::BeginCombo("##d3preset", i18n::tr("toolbar.equip.preset"))) {
+                    for (const auto& p : app_.D3OutfitPresetNames()) {
+                        if (ImGui::Selectable(p.c_str(), false))
+                            app_.LoadD3OutfitPreset(p);
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(120);
+                ImGui::InputTextWithHint("##d3presetname",
+                                         i18n::tr("toolbar.equip.preset.name"), presetName,
+                                         sizeof(presetName));
+                ImGui::SameLine();
+                if (ImGui::Button(i18n::tr("toolbar.equip.preset.save")) && presetName[0])
+                    app_.SaveD3OutfitPreset(presetName);
+
+                bool sheathed = app_.D3OutfitSheathed();
+                if (ImGui::Checkbox(i18n::tr("toolbar.equip.sheathe"), &sheathed))
+                    app_.SetD3OutfitSheathed(sheathed);
+                // The class gate: the offer is what the focused character can
+                // wear (class-neutral always shows); this widens it to the
+                // whole registry.
+                static bool allClasses = false;
+                ImGui::SameLine();
+                ImGui::Checkbox(i18n::tr("toolbar.equip.allclasses"), &allClasses);
+                // A whole set in one click. Same class gate as the items.
+                ImGui::SetNextItemWidth(230);
+                if (ImGui::BeginCombo("##d3set", i18n::tr("toolbar.equip.equipset"))) {
+                    ImGui::SetNextItemWidth(-1.0f);
+                    ImGui::InputTextWithHint("##d3setfilter",
+                                             i18n::tr("toolbar.equip.item.search"), itemFilter,
+                                             sizeof(itemFilter));
+                    for (const auto& set : app_.D3OutfitSetEntries(itemFilter, allClasses)) {
+                        char setId[96];
+                        std::snprintf(setId, sizeof(setId), "%s (%d)##%s", set.label.c_str(),
+                                      static_cast<int>(set.pieces), set.key.c_str());
+                        if (ImGui::Selectable(setId, false))
+                            app_.EquipD3OutfitSet(set.key);
+                    }
+                    ImGui::EndCombo();
+                }
+                for (const auto& row : rows) {
+                    char id[64];
+                    std::snprintf(id, sizeof(id), "%s##d3out%d", row.name.c_str(),
+                                  row.visualSlot);
+                    const char* preview = row.equipped.empty()
+                                              ? i18n::tr("toolbar.equip.item.none")
+                                              : row.equippedLabel.c_str();
+                    ImGui::SetNextItemWidth(230);
+                    if (ImGui::BeginCombo(id, preview)) {
+                        ImGui::SetNextItemWidth(-1.0f);
+                        ImGui::InputTextWithHint("##d3itemfilter",
+                                                 i18n::tr("toolbar.equip.item.search"),
+                                                 itemFilter, sizeof(itemFilter));
+                        if (ImGui::Selectable(i18n::tr("toolbar.equip.item.none"),
+                                              row.equipped.empty()))
+                            app_.SetD3OutfitItem(row.visualSlot, "");
+                        for (const auto& entry : app_.D3OutfitItemEntries(
+                                 row.visualSlot, itemFilter, 200, allClasses)) {
+                            // Display names collide (the art-test dupes); the
+                            // stem keeps every row a distinct widget.
+                            char rowId[160];
+                            std::snprintf(rowId, sizeof(rowId), "%s##%s", entry.label.c_str(),
+                                          entry.stem.c_str());
+                            if (ImGui::Selectable(rowId, entry.stem == row.equipped))
+                                app_.SetD3OutfitItem(row.visualSlot, entry.stem);
+                            if (ImGui::IsItemHovered()) {
+                                const std::string tip = app_.D3OutfitItemTip(entry.stem);
+                                if (!tip.empty())
+                                    ImGui::SetTooltip("%s", tip.c_str());
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                    // The dye. One control for the whole value space: 0 is
+                    // undyed, 1 is the engine's HIDDEN (naked armour, a
+                    // despawned attachment), 2..22 the dye_ramp rows.
+                    ImGui::SameLine();
+                    std::snprintf(id, sizeof(id), "##d3dye%d", row.visualSlot);
+                    const char* dyeLabel;
+                    char dyeBuf[16];
+                    if (row.dye == 1) {
+                        dyeLabel = i18n::tr("toolbar.equip.item.hide");
+                    } else if (row.dye >= 2) {
+                        std::snprintf(dyeBuf, sizeof(dyeBuf), "Dye %d", row.dye);
+                        dyeLabel = dyeBuf;
+                    } else {
+                        dyeLabel = i18n::tr("toolbar.equip.item.undyed");
+                    }
+                    ImGui::SetNextItemWidth(90);
+                    if (ImGui::BeginCombo(id, dyeLabel)) {
+                        if (ImGui::Selectable(i18n::tr("toolbar.equip.item.undyed"),
+                                              row.dye == 0))
+                            app_.SetD3OutfitDye(row.visualSlot, 0);
+                        if (ImGui::Selectable(i18n::tr("toolbar.equip.item.hide"),
+                                              row.dye == 1))
+                            app_.SetD3OutfitDye(row.visualSlot, 1);
+                        for (i32 d = 2; d <= 22; ++d) {
+                            char dyeItem[24];
+                            std::snprintf(dyeItem, sizeof(dyeItem), "Dye %d##d3dyev%d", d,
+                                          row.visualSlot);
+                            if (ImGui::Selectable(dyeItem, row.dye == d))
+                                app_.SetD3OutfitDye(row.visualSlot, d);
+                        }
+                        ImGui::EndCombo();
+                    }
+                }
+                ImGui::Separator();
+            }
+
             // Read once: an appearance carries up to ninety-odd looks and the
             // list is the same for every row below it.
             const auto looks = app_.D3LookNames();
 
+            // The manual wardrobe below is the fallback for a storage with no
+            // item tables; with the registry up (or on its way) it would just
+            // restate the item rows in engine-internal words, so all that
+            // survives of it is Hair — the one slot no item dresses — and the
+            // Extras. `registryBuilding` counts so the redundant rows do not
+            // flash for the seconds the build takes and then vanish.
+            const bool manualWardrobe = !registryReady && !registryBuilding;
+
             // The set first, because putting one material set on every slot is
             // what wearing a set *is* — the per-slot rows underneath are for
             // mixing pieces from two of them.
-            if (!looks.empty()) {
+            if (manualWardrobe && !looks.empty()) {
                 const u32 shared = slots[0].lookIndex;
                 bool uniform = true;
                 for (const auto& s2 : slots)
@@ -1189,6 +1352,8 @@ void ViewerUI::BuildToolbar() {
             for (const auto& slot : slots) {
                 if (slot.items.empty())
                     continue;
+                if (!manualWardrobe && slot.registryDriven)
+                    continue; // the outfit rows above drive this slot now
                 const u32 sel =
                     std::min<u32>(slot.selectedItem, static_cast<u32>(slot.items.size()) - 1);
                 char id[64];

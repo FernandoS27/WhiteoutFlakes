@@ -789,6 +789,11 @@ struct FrameState {
     /// Per-geoset RGB tint (KGAC); applied multiplicatively in the PS.
     std::vector<Vector3f> geosetColors;
 
+    /// Per-geoset Diablo III dye row (0 undyed, 2..22 a `dye_ramp` row; 1 —
+    /// hidden — never reaches here: it resolves to the naked look upstream).
+    /// Empty for every other format and for an undyed D3 model.
+    std::vector<i32> geosetDyes;
+
     /// @brief Per-PE2-emitter sampled state (one entry per emitter that
     ///        contributes this frame).
     struct ParticleFrameState {

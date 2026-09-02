@@ -135,3 +135,23 @@ Actor/Monk_male_mysticAlly_alabaster_v2.acr
 # D3ChainStageTypes learned the two-tex chain. 22 of the 55 shipped two-tex
 # stages animate and every one of them stood still.
 Appearances/actor_isSlowed.app
+
+# The dressed character, end to end: eight slots equipped by in-game item
+# name through the GameBalance registry, which is the whole dressing-room
+# claim in one frame -- armour geosets flipped by look tags, helm/shoulders/
+# sword/shield spawned as children on their hardpoints. The sheathed twin
+# moves the weapons to the sheath hardpoints WITHOUT respawning them; its
+# draw count must equal the drawn run's.
+Appearances/Barbarian_Male.app equip=torso:Unique_Chest_001,legs:Unique_Pants_001,feet:Unique_Boots_001,hands:Unique_Gloves_001,head:Unique_Helm_001,shoulders:Unique_Shoulder_001,righthand:Unique_Sword_1H_017,lefthand:Unique_Shield_011 tag=dressed
+Appearances/Barbarian_Male.app equip=torso:Unique_Chest_001,legs:Unique_Pants_001,feet:Unique_Boots_001,hands:Unique_Gloves_001,head:Unique_Helm_001,shoulders:Unique_Shoulder_001,righthand:Unique_Sword_1H_017,lefthand:Unique_Shield_011 sheathed=on tag=sheathed
+
+# The dye swatches: four slots, four rows spread across the palette (2, 8,
+# 13, 22). Locks the whole dye term -- the type-54 mask slot, the ramp row
+# maths and the clamped palette sampling -- against the same dressed model.
+Appearances/Barbarian_Male.app equip=torso:Unique_Chest_001,legs:Unique_Pants_001,feet:Unique_Boots_001,hands:Unique_Gloves_001 dye=torso:2,legs:8,feet:13,hands:22 tag=dyed
+
+# A whole armour SET of class-suffixed types (ChestArmor_Wizard and friends,
+# the game's per-class item encoding out of ItemTypeNames.stl). Locks the
+# suffixed-type resolution path -- registry crack, slot narrowing off the
+# BASE word, equip by stem -- that the generic-typed `dressed` line cannot.
+Appearances/Wizard_Female.app equip=torso:Unique_Chest_Set_06_x1,legs:Unique_Pants_Set_06_x1,hands:Unique_Gloves_Set_06_x1,head:Unique_Helm_Set_06_x1 tag=dressed_set

@@ -143,6 +143,18 @@ public:
     // finishes, so a model that arrived first picks the tables up.
     void PrewarmWowTablesAsync();
 
+    // Where the Diablo III item registry build stands. Viewer-side state
+    // rather than a question to the registry, because during Building the
+    // registry belongs to the task thread and the host must not even ask.
+    enum class D3ItemsBuild : u8 { NotStarted, Building, Ready };
+    D3ItemsBuild d3ItemsBuild_ = D3ItemsBuild::NotStarted;
+
+    // Build the item registry (~3.4k Actor reads) as a background task; the
+    // equip popup draws a progress bar meanwhile. Not cancellable: the
+    // batched build is seconds, and a cancelled half-registry would need a
+    // retry state machine the popup has no honest way to draw.
+    void BuildD3ItemRegistryAsync();
+
 private:
     // Re-apply the World of Warcraft look passes to the model on screen.
     // Called when the client databases finish loading behind a model that
@@ -461,6 +473,10 @@ public:
         std::vector<std::string> items; ///< "Naked", "Heavy A", "Medium B (CLS)".
         u32 selectedItem = 0;
         u32 lookIndex = 0; ///< Index into D3LookNames().
+        /// True for the slots the item registry dresses (everything but
+        /// Hair). With the registry live these rows are redundant with the
+        /// outfit rows above them and the UI hides them.
+        bool registryDriven = false;
     };
     std::vector<D3CharacterSlot> D3CharacterSlots() const;
     void SetD3CharacterItem(i32 slot, u32 itemIndex);
@@ -481,6 +497,80 @@ public:
     };
     std::vector<D3CharacterExtra> D3CharacterExtras() const;
     void SetD3CharacterExtra(u32 geoset, bool shown);
+
+    // The outfit: dressing by in-game ITEM name, on top of the wardrobe
+    // above. One row per engine visual slot; the armour rows dress the model
+    // now, the attachment rows (helm/weapons/shoulders) are listed but wait
+    // on the attachment phase. Names resolve through the GameBalance item
+    // registry, built lazily from the active storage on first use.
+    struct D3OutfitRow {
+        std::string name;     ///< "Torso", "Right hand", ...
+        i32 visualSlot = 0;   ///< native::EVisualSlot, opaque to the UI.
+        std::string equipped; ///< Item name (the stem), empty when nothing is.
+        std::string equippedLabel; ///< Its display name; the stem when unnamed.
+        i32 dye = 0;
+        bool armour = false; ///< True for the four rows that dress today.
+    };
+    /// Empty when the focus actor is not a D3 player character, or while the
+    /// registry is not Ready.
+    std::vector<D3OutfitRow> D3OutfitSlots() const;
+    /// True once the registry holds items — false means it is still building
+    /// (see D3ItemRegistryBuilding) or the storage ships no GameBalance
+    /// tables. The first call kicks the build as a background task (a few
+    /// thousand small reads, once per storage).
+    bool D3ItemRegistryReady() const;
+    /// The background build is running — the popup should draw its progress
+    /// rather than "no tables".
+    bool D3ItemRegistryBuilding() const {
+        return d3ItemsBuild_ == D3ItemsBuild::Building;
+    }
+    /// One picker row: the in-game display name to show, the record stem that
+    /// equips it. The stem stays the key everywhere that persists (presets,
+    /// scenario tokens); the label is presentation only.
+    struct D3OutfitItemEntry {
+        std::string label;
+        std::string stem;
+    };
+    /// Up to @p max items offered for @p visualSlot whose display name OR
+    /// stem contains @p filter (case-insensitive), sorted by label. The offer
+    /// is restricted to what the focused character's class can wear —
+    /// class-neutral items always pass — unless @p allClasses. One display
+    /// name is one row: the art-test dupes ship a name on many records, and
+    /// the group's survivor is the equipped record when one is (so the picker
+    /// still shows the selection), else the first stem. A filter that spells
+    /// a stem still reaches its record — stems are unique, so a group
+    /// filtered down to one record survives as that record.
+    std::vector<D3OutfitItemEntry> D3OutfitItemEntries(i32 visualSlot, std::string_view filter,
+                                                       usize max, bool allClasses) const;
+    /// The item sets whose pieces the focused class can wear (same neutrality
+    /// and @p allClasses rules), sorted by display name.
+    struct D3OutfitSetEntry {
+        std::string label; ///< "Firebird's Finery".
+        std::string key;   ///< The ItemSets.stl key — the stable identity.
+        usize pieces = 0;  ///< Wearable pieces (rings and amulets excluded).
+    };
+    std::vector<D3OutfitSetEntry> D3OutfitSetEntries(std::string_view filter,
+                                                     bool allClasses) const;
+    /// Equip every wearable piece of the set @p key into its slot (weapons
+    /// fill right hand then left; other slots keep what they wore). False
+    /// when the key names no set.
+    bool EquipD3OutfitSet(std::string_view key);
+    /// Equip @p itemName (empty = unequip). False when the name is unknown.
+    bool SetD3OutfitItem(i32 visualSlot, std::string_view itemName);
+    void SetD3OutfitDye(i32 visualSlot, i32 dye);
+    /// Sheathe or draw the equipped weapons (moves them between the hand and
+    /// the sheath hardpoints).
+    bool D3OutfitSheathed() const;
+    void SetD3OutfitSheathed(bool sheathed);
+    /// One line about an item for the picker's tooltip: gbid, actor SNO and
+    /// the cracked type name. Empty for an unknown name.
+    std::string D3OutfitItemTip(std::string_view itemName) const;
+    /// Outfit presets: whole outfits by name (item NAMES, dyes, sheathe),
+    /// stored beside the viewer settings in `d3_outfits.ini`. Loading
+    /// tolerates unknown item names: it reports and skips them.
+    std::vector<std::string> D3OutfitPresetNames() const;
+    bool SaveD3OutfitPreset(std::string_view name);
+    bool LoadD3OutfitPreset(std::string_view name);
 
     /// @name Ragdoll
     ///

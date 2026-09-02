@@ -59,13 +59,17 @@ public:
                            TargetBit(TargetSlot::Depth),
                            0,
                            TargetBit(TargetSlot::SceneColor)});
-        // Bloom and Tonemap ride the same switch, because in a gamma-LDR frame
-        // the scene target *is* the back buffer and there is no compositing
-        // pass to fold a bloom target back in. SceneHdrInSd is the escape hatch
-        // the design names for D3's emissive materials clipping to white — the
-        // same flag WC3 SD uses — and it is what puts a real HDR scene target
-        // and a tonemap in the chain. Bloom gated on it as well keeps the
-        // bloom target from being written by a frame that will never read it.
+        // Bloom and Tonemap: D3 ALWAYS renders through the float scene target
+        // and a tonemap, because the real game does — its shading is gamma-LDR
+        // but its frame buffer is HDR, and its additive/emissive materials
+        // (skin sheen, gold trim, item glows) sum well past 1.0 and roll off
+        // in the tonemap instead of clipping to opaque white. This is NOT the
+        // host `SceneHdrInSd` opt-in that WC3 SD uses: for D3 it is intrinsic,
+        // so the tonemap must not hinge on a host flag that a viewer only
+        // flips on a profile *change* — the bug that left a dressed character
+        // a white blob, its bright cloth clipped at write while the scene
+        // target was still UNORM. Bloom still needs its own enable so its
+        // target is not written by a frame that will never read it.
         // Screen-space distortion, between the transparent scene and the
         // tonemap — where `sub_741760` runs the post-effect chain, and where
         // the buffer's contents are complete but the frame is not yet graded.
@@ -82,12 +86,12 @@ public:
                            0,
                            TargetBit(TargetSlot::SceneColor)});
         passes_.push_back({PassSlot::Bloom,
-                           [this] { return settings_.SceneHdrInSd() && settings_.BloomEnabled(); },
+                           [this] { return settings_.BloomEnabled(); },
                            TargetBit(TargetSlot::SceneColor),
                            0,
                            TargetBit(TargetSlot::Bloom)});
         passes_.push_back({PassSlot::Tonemap,
-                           [this] { return settings_.SceneHdrInSd(); },
+                           nullptr, // always: D3's frame buffer is HDR
                            TargetBit(TargetSlot::SceneColor),
                            0,
                            TargetBit(TargetSlot::Backbuffer)});
@@ -104,8 +108,10 @@ public:
         return targets_;
     }
     gfx::Format SceneColorFormat() const override {
-        return settings_.SceneHdrInSd() ? gfx::Format::R11G11B10_FLOAT
-                                        : gfx::Format::R8G8B8A8_UNORM;
+        // Always the float target — D3 tonemaps unconditionally (see the pass
+        // list). A gamma-LDR UNORM scene target would clip every additive and
+        // bright-albedo material before the tonemap could touch it.
+        return gfx::Format::R11G11B10_FLOAT;
     }
     bool LinearShading() const override {
         // The material is fixed-function and authored against a gamma pipeline;

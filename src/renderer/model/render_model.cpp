@@ -20,6 +20,9 @@ void RenderModel::ApplyGeosetStates(const FrameState& state) {
 
     for (i32 i = 0; i < (i32)state.geosetColors.size() && i < (i32)gpuGeosets.size(); i++)
         gpuGeosets[i].geosetColor = state.geosetColors[i];
+
+    for (i32 i = 0; i < (i32)state.geosetDyes.size() && i < (i32)gpuGeosets.size(); i++)
+        gpuGeosets[i].dye = state.geosetDyes[i];
 }
 
 void RenderModel::ApplyLayerStates(const FrameState& state) {

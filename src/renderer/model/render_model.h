@@ -83,6 +83,8 @@ struct GPUGeoset {
     i32 indexCount = 0;
     i32 vertexCount = 0;
     i32 materialId = -1;
+    /// Diablo III dye row for this geoset (FrameState::geosetDyes). 0 = undyed.
+    i32 dye = 0;
     u32 lod = 0;
 
     bool hasSkinning = false;

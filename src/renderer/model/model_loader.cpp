@@ -167,9 +167,19 @@ std::shared_ptr<io::D3ModelAdapter> ModelLoader::D3Drawable(
 }
 
 profiles::diablo3::D3CharacterAppearance& ModelLoader::D3Characters() {
-    if (!d3Characters_)
+    if (!d3Characters_) {
         d3Characters_ = std::make_unique<profiles::diablo3::D3CharacterAppearance>();
+        // The hair cutaway reads tag 0x10404 off the helm's per-class attach
+        // model, which is an Actor the appearance discovers it needs mid-equip.
+        d3Characters_->SetActorSource([this](i32 sno) { return D3Cache().Actor(sno); });
+    }
     return *d3Characters_;
+}
+
+io::D3ItemRegistry& ModelLoader::D3Items() {
+    if (!d3Items_)
+        d3Items_ = std::make_unique<io::D3ItemRegistry>();
+    return *d3Items_;
 }
 
 std::shared_ptr<io::D3ModelAdapter> ModelLoader::D3AdapterOf(u32 actorHandle) {
@@ -205,10 +215,132 @@ bool ModelLoader::RestyleD3Model(u32 actorHandle) {
     BuildD3Surfaces(*actor);
     StageTextures(*actor, d3->GetTextures());
     actor->render.stagedDirty = true;
+    SyncD3Equipment(actorHandle);
     return true;
 }
 
+void ModelLoader::SyncD3Equipment(u32 actorHandle) {
+    Actor* actor = rs_.Scene().Actors().Find(actorHandle);
+    if (!actor)
+        return;
+    auto d3 = std::dynamic_pointer_cast<io::D3ModelAdapter>(actor->animation.Source());
+    if (!d3)
+        return;
+    const auto wanted = D3Characters().OutfitAttachments(*d3);
+    auto& have = d3Equipment_[actorHandle];
+
+    // Drop entries whose child died some other way (a reload, a Clear), so a
+    // stale handle can never despawn an unrelated actor that reused it.
+    have.erase(std::remove_if(have.begin(), have.end(),
+                              [&](const D3EquipChild& c) {
+                                  const Actor* ch = rs_.Scene().Actors().Find(c.child);
+                                  return !ch || ch->parent != actorHandle;
+                              }),
+               have.end());
+
+    const auto& app = d3->SourceAppearance();
+
+    // Match existing children to wanted entries. A shoulder item wants two
+    // children under one (slot, gbid) — possibly the same sno — so matching
+    // consumes entries: exact hardpoint first, then same-model-anywhere,
+    // which is the sheathe toggle and becomes a MOVE, never a respawn.
+    std::vector<bool> consumed(wanted.size(), false);
+    auto claim = [&](const D3EquipChild& c, bool exactHardpoint) -> i32 {
+        for (usize i = 0; i < wanted.size(); ++i) {
+            if (consumed[i])
+                continue;
+            const auto& w = wanted[i];
+            if (w.visualSlot != c.visualSlot || w.itemGbid != c.itemGbid ||
+                w.actorSno != c.actorSno)
+                continue;
+            if (exactHardpoint && c.hardpoint != w.hardpoint)
+                continue;
+            consumed[i] = true;
+            return static_cast<i32>(i);
+        }
+        return -1;
+    };
+    std::vector<i32> match(have.size(), -1);
+    for (usize h = 0; h < have.size(); ++h)
+        match[h] = claim(have[h], /*exactHardpoint*/ true);
+    for (usize h = 0; h < have.size(); ++h)
+        if (match[h] < 0)
+            match[h] = claim(have[h], /*exactHardpoint*/ false);
+
+    // The engine stamps an attached item's dye onto every sub-object of the
+    // child (ActorModel_AttachItemModel, retail 0x750A70). The child adapter
+    // is a SHARED drawable — two dressed players' identical weapons share one
+    // — so, like the geoset outfit itself, the dye is per appearance rather
+    // than per actor: the documented tradeoff, worn here too.
+    auto stampDye = [&](u32 childHandle, i32 dye) {
+        Actor* ch = rs_.Scene().Actors().Find(childHandle);
+        if (!ch)
+            return;
+        if (auto ca = std::dynamic_pointer_cast<io::D3ModelAdapter>(ch->animation.Source()))
+            ca->SetGeosetDyes(std::vector<i32>(
+                ca->EmittedSubObjects().size(),
+                (dye >= 2 && dye <= 22) ? dye : 0));
+    };
+
+    std::vector<D3EquipChild> kept;
+    for (usize h = 0; h < have.size(); ++h) {
+        if (match[h] < 0) {
+            DestroyActor(have[h].child);
+            continue;
+        }
+        const auto& w = wanted[static_cast<usize>(match[h])];
+        stampDye(have[h].child, w.dyeType);
+        if (have[h].hardpoint != w.hardpoint) {
+            const auto at = io::d3::ResolveD3Attach(app, w.hardpoint);
+            if (Actor* ch = rs_.Scene().Actors().Find(have[h].child)) {
+                ch->attachParentBone = at.bone;
+                ch->attachParentOffset = at.offset;
+                ch->worldTransform =
+                    BoneRidingTransform(*actor, actor->render.skinning.NodeMatrices(), *ch);
+            }
+            have[h].hardpoint.assign(w.hardpoint);
+        }
+        kept.push_back(std::move(have[h]));
+    }
+    for (usize i = 0; i < wanted.size(); ++i) {
+        if (consumed[i])
+            continue;
+        const auto& w = wanted[i];
+        const auto at = io::d3::ResolveD3Attach(app, w.hardpoint);
+        Actor* child = SpawnD3ChildActor(*actor, w.actorSno, at.bone, at.offset);
+        if (!child)
+            continue;
+        stampDye(child->handle, w.dyeType);
+        D3EquipChild rec;
+        rec.visualSlot = w.visualSlot;
+        rec.itemGbid = w.itemGbid;
+        rec.actorSno = w.actorSno;
+        rec.hardpoint.assign(w.hardpoint);
+        rec.child = child->handle;
+        kept.push_back(std::move(rec));
+    }
+    have = std::move(kept);
+    if (have.empty())
+        d3Equipment_.erase(actorHandle);
+}
+
 void ModelLoader::SetupD3Actor(Actor& actor, const std::shared_ptr<io::D3ModelAdapter>& d3) {
+    // Warm the `dye_ramp` core texture with the actor. D3StandardShading binds
+    // it on EVERY D3 draw (the dye term's palette) and would otherwise acquire
+    // it on the first one — a draw-time acquire is a mid-capture asset need the
+    // dtrace harness rightly aborts on. Same ref resolution as
+    // D3StandardShading::DyeRampTexture; the AssetManager dedupes by ref, so
+    // the shading model's later Acquire lands on this already-loaded slot.
+    {
+        ContentRef rampRef = ContentRef::FromPath("Textures/dye_ramp.tex");
+        if (auto* provider = rs_.Scene().ActiveContentProvider()) {
+            if (const u32 id = provider->FileIdForPath("Base/Textures/dye_ramp.tex"))
+                rampRef = ContentRef::FromFileId(id);
+        }
+        actor.assetSlots.push_back(
+            rs_.Assets().Acquire(AssetKind::Texture, assets::kSoleSubKind, rampRef));
+    }
+
     // Built off the parsed appearance, M2's and M3's precedent — per-look
     // material data does not fit MaterialData. Stamped only when something
     // resolved: a table with no valid entry leaves the whole actor on Unlit,

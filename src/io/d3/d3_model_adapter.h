@@ -317,6 +317,17 @@ public:
     std::span<const u32> GeosetLooks() const {
         return geosetLooks_;
     }
+
+    /// @brief Per-geoset dye rows (0 undyed, 2..22 a `dye_ramp` row), parallel
+    ///        to the emitted geosets like the hidden set and the looks. Flows
+    ///        through FrameState; empty = undyed. Dye 1 (hidden) must be
+    ///        resolved to the naked look upstream and never lands here.
+    void SetGeosetDyes(std::vector<i32> dyes) {
+        geosetDyes_ = std::move(dyes);
+    }
+    std::span<const i32> GeosetDyes() const {
+        return geosetDyes_;
+    }
     /// @brief The look geoset @p g resolves under, override or not.
     u32 LookForGeoset(usize g) const {
         return (g < geosetLooks_.size()) ? geosetLooks_[g] : lookIndex_;
@@ -465,6 +476,7 @@ private:
     /// @brief Parallel to `emitted_`; both empty until something dresses this.
     std::vector<u8> geosetHidden_;
     std::vector<u32> geosetLooks_;
+    std::vector<i32> geosetDyes_;
     /// @brief Parallel to `emitted_`: the FILE's own per-look answer, as
     ///        opposed to `geosetHidden_`, which is the host's.
     ///

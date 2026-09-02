@@ -32,6 +32,7 @@
 #include "imgui_theme.h"
 #include "io/file_content_provider.h"
 #include "localization.h"
+#include "ini_file.h"
 #include "settings_ini.h"
 #include "storage_explorer_ini.h"
 #include "thumbnail_framing.h"
@@ -160,6 +161,11 @@ ViewerApp::ViewerApp(RenderService& service) : service_(service) {
 }
 
 void ViewerApp::ApplyProfile(ProductId game, bool force) {
+    // D3's HDR frame buffer + tonemap is intrinsic to the Diablo3Profile now,
+    // not a host setting we flip here — flipping it on a profile change was
+    // unreliable (a change is not the only time a D3 model is on screen) and
+    // forcing the shared SceneHdrInSd flag off for other games stomped a WC3
+    // user's own opt-in.
     auto& provider = service_.DefaultScene().GetContentProvider();
     const auto idx = static_cast<usize>(game);
     const bool first = idx >= ioProfileApplied_.size() || !ioProfileApplied_[idx];
@@ -178,6 +184,16 @@ void ViewerApp::ApplyProfile(ProductId game, bool force) {
     }
     if (game == ProductId::Wow)
         wowTablesPrewarmed_ = false; // different install, different tables
+    if (game == ProductId::D3 && d3ItemsBuild_ != D3ItemsBuild::Building) {
+        // Same idea for the item registry — but never mid-build: during
+        // Building the registry belongs to the task thread. Skipping the
+        // clear then can leave items from the previous install standing;
+        // that beats a data race, and the next profile apply clears them.
+#if WDX_ENABLE_D3
+        service_.Loader().D3Items().Clear();
+#endif
+        d3ItemsBuild_ = D3ItemsBuild::NotStarted;
+    }
     ApplyIoPathOverrides(provider, game);
     if (idx < ioProfileApplied_.size())
         ioProfileApplied_[idx] = true;
@@ -876,6 +892,8 @@ std::vector<ViewerApp::D3CharacterSlot> ViewerApp::D3CharacterSlots() const {
             row.items.push_back(item.label);
         row.selectedItem = s.selectedItem;
         row.lookIndex = s.lookIndex;
+        row.registryDriven =
+            s.slot != ::whiteout::sno::d3::native::LookSlot::Hair;
         out.push_back(std::move(row));
     }
     return out;
@@ -968,6 +986,518 @@ void ViewerApp::SetD3CharacterExtra(u32 geoset, bool shown) {
 #else
     (void)geoset;
     (void)shown;
+#endif
+}
+
+#if WDX_ENABLE_D3
+namespace d3n = ::whiteout::sno::d3::native;
+#endif
+
+namespace {
+
+#if WDX_ENABLE_D3
+constexpr const char* kD3VisualSlotNames[8] = {
+    "Head", "Torso", "Feet", "Hands", "Right hand", "Left hand", "Shoulders", "Legs",
+};
+
+bool ContainsCaseless(std::string_view hay, std::string_view needle) {
+    if (needle.empty())
+        return true;
+    if (needle.size() > hay.size())
+        return false;
+    auto lower = [](char c) {
+        return (c >= 'A' && c <= 'Z') ? static_cast<char>(c + ('a' - 'A')) : c;
+    };
+    for (usize i = 0; i + needle.size() <= hay.size(); ++i) {
+        usize j = 0;
+        while (j < needle.size() && lower(hay[i + j]) == lower(needle[j]))
+            ++j;
+        if (j == needle.size())
+            return true;
+    }
+    return false;
+}
+#endif
+
+} // namespace
+
+std::vector<ViewerApp::D3OutfitRow> ViewerApp::D3OutfitSlots() const {
+#if WDX_ENABLE_D3
+    auto& svc = const_cast<ViewerApp*>(this)->service_;
+    io::D3ModelAdapter* adapter = nullptr;
+    auto* chars = D3Characters(svc, focusActor_, &adapter);
+    if (!chars)
+        return {};
+    if (!D3ItemRegistryReady())
+        return {};
+    auto& items = svc.Loader().D3Items();
+
+    const auto outfit = chars->OutfitOf(*adapter);
+    std::vector<D3OutfitRow> out;
+    for (i32 s = 0; s < 8; ++s) {
+        D3OutfitRow row;
+        row.name = kD3VisualSlotNames[s];
+        row.visualSlot = s;
+        row.dye = outfit.slots[s].dyeType;
+        const auto v = static_cast<d3n::EVisualSlot>(s);
+        row.armour = v == d3n::EVisualSlot::Torso || v == d3n::EVisualSlot::Feet ||
+                     v == d3n::EVisualSlot::Hands || v == d3n::EVisualSlot::Legs;
+        if (outfit.slots[s].itemGbid != -1) {
+            if (const auto* rec = items.FindByGbid(static_cast<u32>(outfit.slots[s].itemGbid))) {
+                row.equipped = rec->name;
+                row.equippedLabel = rec->displayName.empty() ? rec->name : rec->displayName;
+            }
+        }
+        out.push_back(std::move(row));
+    }
+    return out;
+#else
+    return {};
+#endif
+}
+
+bool ViewerApp::D3ItemRegistryReady() const {
+#if WDX_ENABLE_D3
+    auto* self = const_cast<ViewerApp*>(this);
+    auto& items = self->service_.Loader().D3Items();
+    switch (d3ItemsBuild_) {
+    case D3ItemsBuild::Building:
+        // The registry belongs to the task thread right now — not even
+        // Built() may be asked.
+        return false;
+    case D3ItemsBuild::Ready:
+        // A profile change can clear the registry under a Ready latch;
+        // healing here re-kicks the build instead of answering "no tables"
+        // for an install that has them.
+        if (items.Built())
+            return !items.Items().empty();
+        self->d3ItemsBuild_ = D3ItemsBuild::NotStarted;
+        [[fallthrough]];
+    case D3ItemsBuild::NotStarted:
+        // A CLI path (--d3-equip) may have built it synchronously already.
+        if (items.Built()) {
+            self->d3ItemsBuild_ = D3ItemsBuild::Ready;
+            return !items.Items().empty();
+        }
+        self->BuildD3ItemRegistryAsync();
+        return false;
+    }
+    return false;
+#else
+    return false;
+#endif
+}
+
+void ViewerApp::BuildD3ItemRegistryAsync() {
+#if WDX_ENABLE_D3
+    if (d3ItemsBuild_ != D3ItemsBuild::NotStarted)
+        return;
+    auto& items = service_.Loader().D3Items();
+    auto* provider = service_.Scene().ActiveContentProvider();
+    d3ItemsBuild_ = D3ItemsBuild::Building;
+    tasks_.Run(
+        "Building item registry",
+        [&items, provider](io::ProgressMonitor& m) {
+            items.EnsureBuilt(provider, &m);
+            // Deliberately always Ok: a storage with no GameBalance tables is
+            // a normal state the popup reads off the emptiness, not an error
+            // box in front of a user who pressed a button labelled Equip.
+            return io::TaskResult::Ok();
+        },
+        [this](const io::TaskOutcome&) {
+            d3ItemsBuild_ = D3ItemsBuild::Ready;
+        },
+        /*cancellable=*/false,
+        // NOT modal: the popup draws the progress where the user is looking;
+        // taking the whole screen for a wardrobe would be worse.
+        /*modal=*/false);
+#endif
+}
+
+#if WDX_ENABLE_D3
+namespace {
+
+// The focused model's class, off the loaded Appearance stem — the same read
+// SetD3OutfitItem makes for the per-class attachment art. Nullopt for a
+// non-player, which the pickers treat as "show everything".
+std::optional<d3n::PlayerClass> D3FocusClass(const std::filesystem::path& modelPath) {
+    if (const auto body = d3n::playerFromAppearanceStem(io::PathToUtf8(modelPath.stem())))
+        return body->first;
+    return std::nullopt;
+}
+
+const std::string& D3ItemLabel(const io::D3ItemRecord& rec) {
+    return rec.displayName.empty() ? rec.name : rec.displayName;
+}
+
+} // namespace
+#endif
+
+std::vector<ViewerApp::D3OutfitItemEntry> ViewerApp::D3OutfitItemEntries(
+    i32 visualSlot, std::string_view filter, usize max, bool allClasses) const {
+#if WDX_ENABLE_D3
+    auto& svc = const_cast<ViewerApp*>(this)->service_;
+    if (!D3ItemRegistryReady())
+        return {};
+    auto& items = svc.Loader().D3Items();
+    // The equipped stem, so the survivor of a display-name collision below is
+    // the row the picker must show as selected.
+    std::string equipped;
+    {
+        io::D3ModelAdapter* adapter = nullptr;
+        if (auto* chars = D3Characters(svc, focusActor_, &adapter)) {
+            const i32 gbid = chars->OutfitOf(*adapter).slots[visualSlot].itemGbid;
+            if (gbid != -1)
+                if (const auto* rec = items.FindByGbid(static_cast<u32>(gbid)))
+                    equipped = rec->name;
+        }
+    }
+    const auto cls =
+        allClasses ? std::optional<d3n::PlayerClass>{} : D3FocusClass(currentModelPath_);
+    std::vector<D3OutfitItemEntry> out;
+    for (const u32 i : items.ItemsForSlot(static_cast<d3n::EVisualSlot>(visualSlot))) {
+        const auto& rec = items.Items()[i];
+        if (cls && !rec.CanWear(*cls))
+            continue;
+        const std::string& label = D3ItemLabel(rec);
+        if (!ContainsCaseless(label, filter) && !ContainsCaseless(rec.name, filter))
+            continue;
+        out.push_back({label, rec.name});
+    }
+    // ItemsForSlot is stem-sorted; the picker reads display names, so order
+    // by those and only then cap — a filter must reach the whole offer. The
+    // equipped stem sorts to the front of its name group so the dedup below
+    // keeps it.
+    std::sort(out.begin(), out.end(),
+              [&](const D3OutfitItemEntry& a, const D3OutfitItemEntry& b) {
+                  if (a.label != b.label)
+                      return a.label < b.label;
+                  if ((a.stem == equipped) != (b.stem == equipped))
+                      return a.stem == equipped;
+                  return a.stem < b.stem;
+              });
+    // One display name is one row: the art-test dupes ship one name on six
+    // records, and six identical rows offer nothing five of them.
+    out.erase(std::unique(out.begin(), out.end(),
+                          [](const D3OutfitItemEntry& a, const D3OutfitItemEntry& b) {
+                              return a.label == b.label;
+                          }),
+              out.end());
+    if (out.size() > max)
+        out.resize(max);
+    return out;
+#else
+    (void)visualSlot;
+    (void)filter;
+    (void)max;
+    (void)allClasses;
+    return {};
+#endif
+}
+
+std::vector<ViewerApp::D3OutfitSetEntry> ViewerApp::D3OutfitSetEntries(std::string_view filter,
+                                                                       bool allClasses) const {
+#if WDX_ENABLE_D3
+    auto& svc = const_cast<ViewerApp*>(this)->service_;
+    if (!D3ItemRegistryReady())
+        return {};
+    auto& items = svc.Loader().D3Items();
+    const auto cls =
+        allClasses ? std::optional<d3n::PlayerClass>{} : D3FocusClass(currentModelPath_);
+    std::vector<D3OutfitSetEntry> out;
+    for (const auto& set : items.Sets()) {
+        if (set.key.empty())
+            continue;
+        if (cls && !((set.classMask >> static_cast<u32>(*cls)) & 1u))
+            continue;
+        usize pieces = 0;
+        for (const u32 i : set.members)
+            pieces += items.Items()[i].slotMask != 0;
+        if (pieces == 0)
+            continue;
+        const std::string& label = set.displayName.empty() ? set.key : set.displayName;
+        if (!ContainsCaseless(label, filter) && !ContainsCaseless(set.key, filter))
+            continue;
+        out.push_back({label, set.key, pieces});
+    }
+    // One display name is one row: the crafted tiers ship one name on two
+    // keys ("Crafted Hell Set 002_104"/"_1xx", "_x1"/"P74_..."), identical to
+    // a player. Sets() is display-name sorted, so duplicates are adjacent;
+    // keep the fuller offer.
+    std::vector<D3OutfitSetEntry> dedup;
+    dedup.reserve(out.size());
+    for (auto& e : out) {
+        if (!dedup.empty() && dedup.back().label == e.label) {
+            if (e.pieces > dedup.back().pieces)
+                dedup.back() = std::move(e);
+        } else {
+            dedup.push_back(std::move(e));
+        }
+    }
+    return dedup;
+#else
+    (void)filter;
+    (void)allClasses;
+    return {};
+#endif
+}
+
+bool ViewerApp::EquipD3OutfitSet(std::string_view key) {
+#if WDX_ENABLE_D3
+    if (d3ItemsBuild_ == D3ItemsBuild::Building)
+        return false; // the registry belongs to the task thread right now
+    auto& items = service_.Loader().D3Items();
+    items.EnsureBuilt(service_.Scene().ActiveContentProvider());
+    const io::D3ItemSet* set = nullptr;
+    for (const auto& s : items.Sets()) {
+        if (s.key == key) {
+            set = &s;
+            break;
+        }
+    }
+    if (!set)
+        return false;
+    // Each piece takes its own slot; weapons fill right hand then left so a
+    // paired-blades set dual-wields. Slots the set does not cover keep what
+    // they wore — a six-piece armour set must not undress the hands.
+    using VS = d3n::EVisualSlot;
+    constexpr VS kOrder[] = {VS::Head,   VS::Shoulders, VS::Torso,     VS::Hands,
+                             VS::Legs,   VS::Feet,      VS::RightHand, VS::LeftHand};
+    bool any = false;
+    u16 taken = 0;
+    for (const u32 i : set->members) {
+        const auto& rec = items.Items()[i];
+        for (const VS slot : kOrder) {
+            const auto bit = static_cast<u16>(1u << static_cast<u32>(slot));
+            if (!rec.CanGo(slot) || (taken & bit))
+                continue;
+            if (SetD3OutfitItem(static_cast<i32>(slot), rec.name)) {
+                taken |= bit;
+                any = true;
+            }
+            break;
+        }
+    }
+    return any;
+#else
+    (void)key;
+    return false;
+#endif
+}
+
+bool ViewerApp::SetD3OutfitItem(i32 visualSlot, std::string_view itemName) {
+#if WDX_ENABLE_D3
+    io::D3ModelAdapter* adapter = nullptr;
+    auto* chars = D3Characters(service_, focusActor_, &adapter);
+    if (!chars)
+        return false;
+    if (d3ItemsBuild_ == D3ItemsBuild::Building)
+        return false; // the registry belongs to the task thread right now
+    auto& items = service_.Loader().D3Items();
+    items.EnsureBuilt(service_.Scene().ActiveContentProvider());
+
+    const auto slot = static_cast<d3n::EVisualSlot>(visualSlot);
+    if (itemName.empty()) {
+        chars->SetOutfitItem(*adapter, slot, nullptr, {});
+        RestyleD3();
+        return true;
+    }
+    const io::D3ItemRecord* rec = items.FindByName(itemName);
+    if (!rec)
+        return false;
+    // The per-class attachment art needs to know who is wearing this; the
+    // loaded path's stem says (Barbarian_Male.app and friends).
+    const std::string stem = io::PathToUtf8(currentModelPath_.stem());
+    if (const auto body = d3n::playerFromAppearanceStem(stem))
+        chars->SetOutfitBody(*adapter, body->first, body->second);
+    std::shared_ptr<const d3n::Actor> actor;
+    if (rec->snoActor > 0)
+        actor = service_.Loader().D3Cache().Actor(rec->snoActor);
+    if (!chars->SetOutfitItem(*adapter, slot, rec, std::move(actor)))
+        return false;
+    RestyleD3();
+    return true;
+#else
+    (void)visualSlot;
+    (void)itemName;
+    return false;
+#endif
+}
+
+bool ViewerApp::D3OutfitSheathed() const {
+#if WDX_ENABLE_D3
+    auto& svc = const_cast<ViewerApp*>(this)->service_;
+    io::D3ModelAdapter* adapter = nullptr;
+    auto* chars = D3Characters(svc, focusActor_, &adapter);
+    return chars && chars->OutfitOf(*adapter).sheathed;
+#else
+    return false;
+#endif
+}
+
+void ViewerApp::SetD3OutfitSheathed(bool sheathed) {
+#if WDX_ENABLE_D3
+    io::D3ModelAdapter* adapter = nullptr;
+    auto* chars = D3Characters(service_, focusActor_, &adapter);
+    if (!chars)
+        return;
+    chars->SetOutfitSheathed(*adapter, sheathed);
+    RestyleD3();
+#else
+    (void)sheathed;
+#endif
+}
+
+void ViewerApp::SetD3OutfitDye(i32 visualSlot, i32 dye) {
+#if WDX_ENABLE_D3
+    io::D3ModelAdapter* adapter = nullptr;
+    auto* chars = D3Characters(service_, focusActor_, &adapter);
+    if (!chars)
+        return;
+    chars->SetOutfitDye(*adapter, static_cast<d3n::EVisualSlot>(visualSlot), dye);
+    RestyleD3();
+#else
+    (void)visualSlot;
+    (void)dye;
+#endif
+}
+
+std::string ViewerApp::D3OutfitItemTip(std::string_view itemName) const {
+#if WDX_ENABLE_D3
+    if (d3ItemsBuild_ == D3ItemsBuild::Building)
+        return {}; // the registry belongs to the task thread right now
+    auto& svc = const_cast<ViewerApp*>(this)->service_;
+    auto& items = svc.Loader().D3Items();
+    const io::D3ItemRecord* rec = items.FindByName(itemName);
+    if (!rec)
+        return {};
+    // First line: the record stem and its type — what a preset or a corpus
+    // scenario token would spell. Below it, the set and the class lock.
+    std::string tip = rec->name;
+    const std::string_view type = items.TypeNameOf(rec->gbidItemType);
+    if (!type.empty()) {
+        tip += "   ";
+        tip += type;
+    }
+    if (const auto* set = items.SetOf(*rec); set && !set->displayName.empty()) {
+        tip += "\n";
+        tip += set->displayName;
+    }
+    const u32 m = rec->classMask;
+    if (m != io::kD3AllClasses && (m & (m - 1)) == 0) {
+        u32 bit = m, ordinal = 0;
+        while (bit >>= 1)
+            ++ordinal;
+        tip += "\n";
+        tip += d3n::playerClassName(static_cast<d3n::PlayerClass>(ordinal));
+        tip += " only";
+    }
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "\ngbid 0x%08X   actor %d", rec->gbid, rec->snoActor);
+    tip += buf;
+    return tip;
+#else
+    (void)itemName;
+    return {};
+#endif
+}
+
+#if WDX_ENABLE_D3
+namespace {
+
+std::filesystem::path D3OutfitPresetPath() {
+    return SettingsIniPath().parent_path() / "d3_outfits.ini";
+}
+
+// A preset name becomes an ini section, and the section separator is '.'.
+std::string PresetSection(std::string_view name) {
+    std::string s(name);
+    for (char& c : s)
+        if (c == '.' || c == '[' || c == ']' || c == '=')
+            c = '_';
+    return s;
+}
+
+} // namespace
+#endif
+
+std::vector<std::string> ViewerApp::D3OutfitPresetNames() const {
+#if WDX_ENABLE_D3
+    ini::IniMap map;
+    map.Load(D3OutfitPresetPath());
+    std::set<std::string> names;
+    for (const auto& [k, v] : map.values) {
+        const auto dot = k.rfind('.');
+        if (dot != std::string::npos)
+            names.insert(k.substr(0, dot));
+    }
+    return {names.begin(), names.end()};
+#else
+    return {};
+#endif
+}
+
+bool ViewerApp::SaveD3OutfitPreset(std::string_view name) {
+#if WDX_ENABLE_D3
+    if (name.empty())
+        return false;
+    io::D3ModelAdapter* adapter = nullptr;
+    auto* chars = D3Characters(service_, focusActor_, &adapter);
+    if (!chars)
+        return false;
+    if (d3ItemsBuild_ == D3ItemsBuild::Building)
+        return false; // the registry belongs to the task thread right now
+    auto& items = service_.Loader().D3Items();
+    const auto outfit = chars->OutfitOf(*adapter);
+
+    ini::IniMap map;
+    map.Load(D3OutfitPresetPath());
+    const std::string sec = PresetSection(name);
+    map.RemovePrefix(sec + ".");
+    for (i32 s = 0; s < 8; ++s) {
+        const auto& os = outfit.slots[s];
+        if (os.itemGbid != -1) {
+            if (const auto* rec = items.FindByGbid(static_cast<u32>(os.itemGbid)))
+                map.Set(sec + ".Slot" + std::to_string(s), rec->name);
+        }
+        if (os.dyeType != 0)
+            map.Set(sec + ".Dye" + std::to_string(s), std::to_string(os.dyeType));
+    }
+    map.Set(sec + ".Sheathed", outfit.sheathed ? "1" : "0");
+    map.Save(D3OutfitPresetPath());
+    return true;
+#else
+    (void)name;
+    return false;
+#endif
+}
+
+bool ViewerApp::LoadD3OutfitPreset(std::string_view name) {
+#if WDX_ENABLE_D3
+    ini::IniMap map;
+    map.Load(D3OutfitPresetPath());
+    const std::string sec = PresetSection(name);
+    bool any = false;
+    for (i32 s = 0; s < 8; ++s) {
+        const std::string* item = map.Get(sec + ".Slot" + std::to_string(s));
+        // Unknown names report and skip — a preset from a newer snapshot must
+        // not wipe the outfit it cannot fully express.
+        if (item && !SetD3OutfitItem(s, *item))
+            std::fprintf(stderr, "[d3-outfit] preset '%.*s': unknown item '%s'\n",
+                         static_cast<int>(name.size()), name.data(), item->c_str());
+        else if (item)
+            any = true;
+        if (!item)
+            SetD3OutfitItem(s, "");
+        const std::string* dye = map.Get(sec + ".Dye" + std::to_string(s));
+        SetD3OutfitDye(s, dye ? std::atoi(dye->c_str()) : 0);
+    }
+    if (const std::string* sh = map.Get(sec + ".Sheathed"))
+        SetD3OutfitSheathed(*sh == "1");
+    return any;
+#else
+    (void)name;
+    return false;
 #endif
 }
 

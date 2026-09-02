@@ -1,6 +1,9 @@
 #include "renderer/profiles/diablo3/d3_standard_shading.h"
 
 #include "core/render_detail.h"
+#include "renderer/assets/asset_manager.h"
+#include "renderer/scene_manager.h"
+#include "whiteout/flakes/content_ref.h"
 #include "core/render_profile.h"
 #include "core/surface_table.h"
 #include "renderer/assets/sampler_asset_manager.h"
@@ -367,7 +370,14 @@ bool D3StandardShading::BeginPass(const core::PassContext& ctx,
         // RE settles is the SHAPE — `colAmbient` plus lights of five types, each
         // carrying its own ambient as well as a diffuse — and the shape is what
         // this fills in. The numbers are picked; the arithmetic consuming them
-        // is the original's.
+        // is the original's. They sum past 1.0 on a camera-facing fragment by
+        // design — the Diablo3Profile renders into an HDR target and tonemaps
+        // (D3's frame buffer is HDR), so a bright albedo rolls off rather than
+        // clipping. A gamma-LDR scene target would blow every light material
+        // (skin, white cloth) to white; that is what the tonemap prevents.
+        // The magnitudes are tuned for the tonemapped result — scaled to ~0.56
+        // of a first cut that read hot post-tonemap — so a naked and a
+        // fully-plated model both sit in range.
         //
         // Two lights, which is the shipped budget: one directional (stored the
         // way the engine stores a demoted one, `.w` 0 with attenuation (1,0,0))
@@ -404,8 +414,8 @@ bool D3StandardShading::BeginPass(const core::PassContext& ctx,
                                         {0.0f, -1.0f, 0.0f});
         c->lightPos[0] = {key.x, key.y, key.z, 0.0f};
         c->lightAtten[0] = {1.0f, 0.0f, 0.0f, 1.0f};
-        c->lightDiffuse[0] = lin(0.88f, 0.86f, 0.82f);
-        c->lightSpecular[0] = lin(0.55f, 0.55f, 0.55f);
+        c->lightDiffuse[0] = lin(0.49f, 0.48f, 0.46f);
+        c->lightSpecular[0] = lin(0.31f, 0.31f, 0.31f);
 
         // Slot 1 is the hero light's counterpart: a dim fill from behind and
         // below, which is what the engine's *summed* `colAmbient` does for a
@@ -415,7 +425,7 @@ bool D3StandardShading::BeginPass(const core::PassContext& ctx,
                                          {0.0f, 1.0f, 0.0f});
         c->lightPos[1] = {fill.x, fill.y, fill.z, 0.0f};
         c->lightAtten[1] = {1.0f, 0.0f, 0.0f, 1.0f};
-        c->lightDiffuse[1] = lin(0.30f, 0.31f, 0.37f);
+        c->lightDiffuse[1] = lin(0.17f, 0.18f, 0.21f);
 
         // The cylindrical light: a vertical tube standing on the model, lighting
         // it from above and falling off linearly with distance from the axis.
@@ -428,13 +438,13 @@ bool D3StandardShading::BeginPass(const core::PassContext& ctx,
         // {1 / (end - start), end} — the engine computes exactly this
         // reciprocal, clamped, and the falloff is (end - perp) * that.
         c->cylRange = {1.0f / (std::max)(radius - radius * 0.25f, 0.001f), radius, 0.0f, 0.0f};
-        c->cylAmbient = lin(0.20f, 0.20f, 0.22f);
-        c->cylDiffuse = lin(0.52f, 0.51f, 0.47f);
+        c->cylAmbient = lin(0.11f, 0.11f, 0.13f);
+        c->cylDiffuse = lin(0.29f, 0.29f, 0.27f);
 
         // The scene ambient. In the engine this is a sum, not a setting — a
         // base plus every directional light's own ambient — so it is legitimate
         // for it to be well above any single light's ambient.
-        c->colAmbient = lin(0.50f, 0.50f, 0.54f);
+        c->colAmbient = lin(0.28f, 0.28f, 0.30f);
         // The engine's `SpecularPower` is a GLOBAL (constant 39), which is what
         // makes `flShininess` being 0.0 on 99.4% of shipped materials harmless.
         // Its own default is 1.0 — a hemisphere-wide highlight — and the real
@@ -445,6 +455,22 @@ bool D3StandardShading::BeginPass(const core::PassContext& ctx,
         gfxDev->UnmapBuffer(passCb_);
     }
     return true;
+}
+
+gfx::TextureHandle D3StandardShading::DyeRampTexture() {
+    if (rampSlot_ == assets::AssetManager::kInvalidSlot) {
+        // The core-asset registry resolves `dye_ramp` by NAME in the Textures
+        // group; a CASC storage answers the path with a file id (the SNO), a
+        // plain content tree serves the corpus snapshot's file directly.
+        ContentRef ref = ContentRef::FromPath("Textures/dye_ramp.tex");
+        if (auto* provider = rs_.Scene().ActiveContentProvider()) {
+            if (const u32 id = provider->FileIdForPath("Base/Textures/dye_ramp.tex"))
+                ref = ContentRef::FromFileId(id);
+        }
+        rampSlot_ = rs_.Assets().Acquire(assets::AssetKind::Texture, assets::kSoleSubKind, ref);
+    }
+    const gfx::TextureHandle tex = rs_.Assets().TextureOf(rampSlot_);
+    return tex != gfx::TextureHandle::Invalid ? tex : rs_.Textures().GetDefaults().White;
 }
 
 void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::PassContext& ctx) {
@@ -526,8 +552,15 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
                       static_cast<f32>(surf->alphaTestFunc)};
         // .y: the `ps_distortion2tex` re-centring, which is a bias on the whole
         // chain rather than a stage of it. See D3PassState::distortionTwoTex.
+        // The dye term: the row is the engine's own maths (dye 2..22 onto 21
+        // row centres), the enable doubles as the mask-slot gate in the PS.
+        const i32 dye = geo.dye;
+        const f32 dyeV = (dye >= 2 && dye <= 22)
+                             ? (static_cast<f32>(dye - 2) + 0.5f) / 21.0f
+                             : 0.0f;
         c->params2 = {surf->pass.resolved ? surf->pass.depthBias : 0.0f,
-                      surf->pass.distortionTwoTex ? 1.0f : 0.0f, 0.0f, 0.0f};
+                      surf->pass.distortionTwoTex ? 1.0f : 0.0f, dyeV,
+                      (dye >= 2 && dye <= 22) ? 1.0f : 0.0f};
         // Where the vertex colour and the texture factor enter each channel of
         // a `Legacy.fx` chain. Mirrors d3_standard.slang's kD3Chain* bits.
         const u32 chainBits =
@@ -616,6 +649,7 @@ void D3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
             tex = defaults.White;
         cmd->BindShaderResource(gfx::ShaderStage::Pixel, u, tex);
     }
+    cmd->BindShaderResource(gfx::ShaderStage::Pixel, kDyeRampRegister, DyeRampTexture());
     for (u32 w = 0; w <= assets::kSamplerWrapBitsMask; ++w)
         cmd->BindSampler(gfx::ShaderStage::Pixel, w, rs_.Samplers().WrapVariant(w));
 

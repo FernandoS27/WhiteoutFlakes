@@ -272,6 +272,13 @@ enum class D3SlotKind : u32 {
     AlphaMask0,
     AlphaMask1,
     AlphaMask2,
+    /// Type 54, `$heroTintMap` — the per-piece dye MASK. Its `.x` picks the
+    /// `dye_ramp` column and `.z` weights the recolour (the ARB `herotint`
+    /// programs read exactly `R2.xz`); the dye ROW is per-draw state, not a
+    /// texture. Player armour ships one per material variant
+    /// (`*_TintMask.tex`, verified in Barbarian_Male.app at entry offset 0
+    /// = 0x36).
+    HeroTint,
     Count,
 };
 inline constexpr u32 kD3SlotCount = static_cast<u32>(D3SlotKind::Count);
@@ -334,6 +341,8 @@ inline D3SlotKind D3SlotOfType(i32 type) {
         return D3SlotKind::AlphaMask1;
     case 19:
         return D3SlotKind::AlphaMask2;
+    case 54:
+        return D3SlotKind::HeroTint;
     default:
         return D3SlotKind::Count;
     }
