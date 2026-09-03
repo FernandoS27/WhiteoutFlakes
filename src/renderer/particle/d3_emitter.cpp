@@ -868,9 +868,17 @@ void Emitter::TickEmit(f32 dt, f32 emissionScaler) {
     emitAccum_ += rate * dt * emissionScaler;
 
     if (d.Has(kChDistanceRate)) {
+        // WorldPosition is in renderer units — the emitter matrix carries the
+        // model's worldScale — but `perUnit` and the 300 clamp below are both
+        // authored `.prt` speeds. Convert the move back with inv-UnitScale, the
+        // same conversion the distNorm driver applies, or a scaled-up model
+        // (worldScale 17) over-emits by that factor: the fog cloud that trails a
+        // walking hero.
+        const f32 inv = 1.0f / UnitScale();
         const Vector3f now = WorldPosition();
         const Vector3f prev = prevWorldPos_;
-        const Vector3f delta{now.x - prev.x, now.y - prev.y, now.z - prev.z};
+        const Vector3f delta{(now.x - prev.x) * inv, (now.y - prev.y) * inv,
+                             (now.z - prev.z) * inv};
         const f32 speed =
             (dt > 0.0f)
                 ? std::sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z) / dt
@@ -1481,8 +1489,6 @@ i32 Emitter::BuildGeometry(const BuildGeometryInput& in, std::vector<Vertex>& ou
         return 0;
 
     const Matrix44f& view = *in.worldToView;
-    const Vector3f camRight{view.data[0][0], view.data[1][0], view.data[2][0]};
-    const Vector3f camUp{view.data[0][1], view.data[1][1], view.data[2][1]};
     // What `Particle_PrepareDrawFrame` hands the frame builder as its last
     // argument: `view+0x28C`, the same vector the particle draw list sorts on.
     const Vector3f camForward{-view.data[0][2], -view.data[1][2], -view.data[2][2]};
@@ -1559,11 +1565,17 @@ i32 Emitter::BuildGeometry(const BuildGeometryInput& in, std::vector<Vertex>& ou
             sway = {st.swayOffset.x * u, st.swayOffset.y * u, 0.0f};
 
         // `Particle_BuildOrientationBasis`, read out as a right/up pair — see
-        // `d3_orientation.h`. Camera-facing is what stands when the mode writes
-        // nothing, which is 60.7% of the corpus (modes 0 ungated, 1 and 8), and
-        // when a frame comes out degenerate.
-        Vector3f right = camRight;
-        Vector3f up = camUp;
+        // `d3_orientation.h`. When a mode writes nothing (0 ungated, 1 and 8 —
+        // 60.7% of the corpus) or the frame comes out degenerate, the engine
+        // leaves the emitter's frozen quaternion standing and the GPU builds the
+        // quad from THAT, not from the camera: `Particle_WriteQuadVertices`
+        // carries a packed quaternion and no view (G-D3P-11/12), and the modes
+        // that do want the camera fold `camForward` in themselves (6, 13,
+        // 0-gated). So the fallback is the emitter frame's own right/up — a
+        // ground effect like player_fogRipple (mode 1) then lies flat under an
+        // upright emitter instead of standing up model-tall to face the viewer.
+        Vector3f right = st.birthEmitterQuat.rotate_vector(Vector3f{1.0f, 0.0f, 0.0f});
+        Vector3f up = st.birthEmitterQuat.rotate_vector(Vector3f{0.0f, 1.0f, 0.0f});
         if (QuadFrame frame; BuildQuadFrame(d.renderMode,
                                            {camForward,
                                             st.axis,

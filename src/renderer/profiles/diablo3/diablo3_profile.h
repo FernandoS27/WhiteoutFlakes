@@ -33,10 +33,12 @@ public:
     // Diablo III model units -> renderer units.
     //
     // Unlike WoW's and SC2's 100, this is **not** a unit conversion: it is a
-    // framing constant, and that difference is the whole of what WorldScale is
-    // for. A Barbarian's head bone sits at z = 7.30 raw units against WC3
-    // camera constants fitted to characters in the 90-120 band, so 7.30 x 17
-    // lands where the framing expects.
+    // framing constant, and matching WC3 rather than the other profiles is
+    // deliberate. A D3 character is ~6.4 raw units, so 100 would put it at ~640
+    // (in line with WoW ~960 and SC2 ~400) but ~6x a WC3 hero. 17 lands it at
+    // ~110, inside the 90-120 band the shared camera is fitted to, which is the
+    // on-screen size D3 is meant to sit at. "Match the other profiles -> 100"
+    // is the plausible wrong change; the pinned test says why.
     static constexpr f32 kD3UnitsToRendererUnits = 17.0f;
 
     explicit Diablo3Profile(RenderSettings& settings) : settings_(settings) {

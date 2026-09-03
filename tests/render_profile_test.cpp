@@ -15,6 +15,9 @@
 #if WDX_ENABLE_M3
 #include "profiles/sc2_heroes/sc2_heroes_profile.h"
 #endif
+#if WDX_ENABLE_D3
+#include "profiles/diablo3/diablo3_profile.h"
+#endif
 
 using namespace whiteout::flakes::renderer::core;
 namespace gfx = whiteout::flakes::gfx;
@@ -157,6 +160,21 @@ TEST_CASE("The non-WC3 profiles agree on units and disagree on axes") {
 #if WDX_ENABLE_M2 && WDX_ENABLE_M3
     REQUIRE(wow.WorldScale() == sc2.WorldScale());
 #endif
+}
+#endif
+
+#if WDX_ENABLE_D3
+TEST_CASE("Diablo III keeps WC3's on-screen scale, not the other profiles' 100") {
+    // D3 shares WC3's and WoW's axes but NOT the 100 unit scale the other
+    // non-WC3 profiles use. A D3 character is ~6.4 raw units, so 100 would put
+    // it at ~640 (in line with WoW ~960 / SC2 ~400) but ~6x a WC3 hero; 17
+    // lands it at ~110, inside the 90-120 band the shared camera is fitted to.
+    // Pinned because "match the other profiles -> 100" is the plausible wrong
+    // change, and the on-screen size is what disproves it.
+    RenderSettings settings;
+    whiteout::flakes::renderer::profiles::diablo3::Diablo3Profile d3(settings);
+    REQUIRE(d3.WorldScale() == 17.0f);
+    REQUIRE(d3.SourceSpace() == wfr::CoordSpace::Blizzard);
 }
 #endif
 
