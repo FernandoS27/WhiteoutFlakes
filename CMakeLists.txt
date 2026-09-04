@@ -1670,6 +1670,9 @@ set(WHITEOUTFLAKES_VIEWER_SOURCES
     tools/basic_viewer/viewer_ui.cpp
     # "Export to MDX": a foreign model converted THROUGH WEM into Warcraft III.
     tools/basic_viewer/mdx_export.cpp
+    # The one crossing a slot rename cannot make: StarCraft II's
+    # specular/gloss baked into a Reforged occlusion/roughness/metalness map.
+    tools/basic_viewer/sc2_pbr_export.cpp
     # The animation exporter: the device-free recipe/schedule and its ini, the
     # output sinks, the capture loop, and the dialog.
     tools/basic_viewer/export_recipe.cpp

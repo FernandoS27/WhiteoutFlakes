@@ -49,6 +49,30 @@ struct WemExportOptions {
     /// per tag), and a caller writing a thumbnail-grid's worth of files may not
     /// want them.
     bool importAnimation = true;
+
+    /// StarCraft II / Heroes only: rewrite a Heroes-of-the-Storm model as the
+    /// StarCraft II model it would have been before converting it.
+    ///
+    /// MD34 is one container that two engines read differently, and Heroes went
+    /// one way with it: `MADD`, the data-driven material, plus the `MODL` v30
+    /// that carries it. Measured over 18,409 shipped Heroes `.m3`, **686 (3.7%)
+    /// are Heroes-only** and every one of them is v30 — 685 for MADD and one
+    /// for a `REF_` above v2. `m3::toStarCraft2` reverses every MADD record
+    /// into a `StandardMaterial`, repoints the material map and lowers the
+    /// version; it manages **542 of the 686**, and names the material it cannot
+    /// reverse on the other 144.
+    ///
+    /// Off by default, and deliberately: a `.wem` of a Heroes model should stay
+    /// a Heroes document, because the native block is the whole reason the
+    /// format exists and the MADD blob is what it would be carrying. An export
+    /// to a *third* format has no such stake — Warcraft III cannot express a
+    /// shader graph either — so `ExportModelAsMdx` asks for it and the plain
+    /// `.wem` save does not.
+    ///
+    /// The document still declares the profile the *source* was: a Heroes model
+    /// retargeted for the crossing is still Heroes content, and its textures
+    /// belong under `Heroes\` rather than in StarCraft II's folder.
+    bool retargetHeroesToStarCraft2 = false;
 };
 
 struct WemExportResult {

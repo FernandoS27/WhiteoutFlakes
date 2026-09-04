@@ -29,6 +29,22 @@ namespace whiteout::flakes::io {
 
 namespace {
 
+/// The `.mdx` version the IN-MEMORY model is built at, which is deliberately not
+/// the version a FILE is written at (`MdxVersionForWemProfile`).
+///
+/// Nothing parses this model — it goes straight to `MdxModelAdapter` — so it has
+/// to arrive already in the shape a reader would have put it in. Below v1100 a
+/// Reforged material is six positional layers, and it is `Parser`'s own
+/// `upgradeMaterials` that merges them into the one HD layer with six
+/// sub-textures the renderer's PBR slots are read from. An in-memory build never
+/// runs that, so a foreign model opened as Reforged drew its six PBR slots as
+/// six separate passes. 1100 is where the sub-texture array exists, so `toMdx`
+/// writes the merged form directly and the view matches the file.
+u32 MdxVersionInMemory(wem::ProfileId profile) {
+    const u32 onDisk = MdxVersionForWemProfile(profile);
+    return onDisk == 1000u ? 1100u : onDisk;
+}
+
 /// The `.m2` header version the block records, or the parser's own default.
 /// `M2Converter::fromM2` puts it on the set because `m2::Model` does not carry
 /// one — the parser consumes it and keeps nothing.
@@ -315,7 +331,7 @@ WemSourceResult BuildWemSource(const WemDocument& parsed, wem::ProfileId profile
     if (formatId == "mdx") {
         wem::MdxConverter converter;
         wem::Result<::whiteout::mdx::Model> converted =
-            converter.toMdx(*source, profile, MdxVersionForWemProfile(profile));
+            converter.toMdx(*source, profile, MdxVersionInMemory(profile));
         result.diagnostics.append(converted.diagnostics);
         if (!converted.ok()) {
             result.error = "converting '" + parsed.name + "' to a Warcraft III model failed";

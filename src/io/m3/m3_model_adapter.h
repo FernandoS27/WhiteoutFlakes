@@ -408,6 +408,18 @@ public:
         return attached_;
     }
 
+    /// @brief The parsed file behind @ref AttachedAnimations()[@p index], or
+    ///        null past the end.
+    ///
+    /// Which `.m3a` belongs to a model is host state — the `.m3` names none of
+    /// them — so anything that has to reproduce what is on screen, an exporter
+    /// included, has to be handed the files. @ref tables_ is no use to one: it
+    /// is indexed for playback, and a converter needs the sequences as the file
+    /// holds them.
+    const ::whiteout::m3::Model* AttachedAnimationModel(std::size_t index) const {
+        return index < animModels_.size() ? animModels_[index].get() : nullptr;
+    }
+
     // ---- sub-tracks ------------------------------------------------------
     //
     // A `SEQS` entry is a name and a window; the keys live in the `STC_`

@@ -11,6 +11,7 @@
 #endif
 #if WDX_ENABLE_M3
 #include "io/m3/m3_model_adapter.h"
+#include <whiteout/models/m3/engine_compat.h>
 #endif
 #if WDX_ENABLE_D3
 #include <whiteout/models/wem/d3_converter.h>
@@ -82,6 +83,43 @@ void BakeM2Replaceables(wem::Document& document, const M2ModelAdapter& adapter,
             ref.key = wem::TexturePath{key};
             ref.path = key;
         }
+    }
+}
+#endif
+
+#if WDX_ENABLE_M3
+/// Bake the `.m3a` files the host attached into the document's clips.
+///
+/// StarCraft II keeps a good deal of animation outside the model: 447 `.m3a`
+/// files ship beside the StarCraft II corpus and 663 beside Heroes', and 429 of
+/// the 33,060 StarCraft II models carry no sequence of their own at all — a
+/// cinematic actor like `SM_RaynorMarine` moves entirely through attached
+/// files. The game pairs them by catalog entry (`CModel.RequiredAnims`); we
+/// have no catalog, so the pairing is the host's — the `Anims` button,
+/// `--attach-anim`. That makes an attached file as much a part of what is on
+/// screen as the Diablo III dressing below, and an export that read only the
+/// model would write one that cannot move.
+///
+/// The join inside is `animId` alone, so this adds motion for channels the
+/// document already declares and skips the rest; `mergeAnimation` reports how
+/// many of each file's sequences landed.
+void BakeM3ExternalAnimations(const M3ModelAdapter& adapter, const wem::M3Converter& converter,
+                              wem::Document& document, wem::Diagnostics& diagnostics) {
+    const std::span<const M3ModelAdapter::AttachedAnimation> attached =
+        adapter.AttachedAnimations();
+    if (attached.empty() || document.models.empty())
+        return;
+    for (usize i = 0; i < attached.size(); ++i) {
+        const ::whiteout::m3::Model* animation = adapter.AttachedAnimationModel(i);
+        if (animation == nullptr)
+            continue;
+        // `fromM3` builds a one-model document, so the target is index 0.
+        wem::Result<u32> merged = converter.mergeAnimation(document, 0, *animation);
+        diagnostics.append(merged.diagnostics);
+        diagnostics.info(wem::DiagCode::Unspecified,
+                         "external animation '" + attached[i].label + "': " +
+                             std::to_string(merged.value.value_or(0)) + " of " +
+                             std::to_string(attached[i].sequenceCount) + " sequence(s) merged");
     }
 }
 #endif
@@ -203,15 +241,55 @@ WemExportResult ExportModelToWem(renderer::model::IModelSource& source, IContent
     if (auto* m3 = dynamic_cast<M3ModelAdapter*>(&source)) {
         result.formatId = "m3";
         wem::M3Converter converter;
+
         // The profile follows the MODL version — v30+ is Heroes — and the
-        // adapter has not touched it, so the converter's own rule stands.
-        wem::Result<wem::Document> converted = converter.fromM3(m3->SourceModel());
-        result.diagnostics = std::move(converted.diagnostics);
+        // adapter has not touched it, so the converter's own rule stands. It is
+        // read here rather than left to `fromM3` because the retarget below
+        // lowers the version to v29 and the answer would change: a Heroes model
+        // written out for StarCraft II is still Heroes *content*, and its
+        // textures belong under `Heroes\`.
+        const whiteout::m3::Model& authored = m3->SourceModel();
+        const wem::ProfileId profile = wem::M3Converter::ProfileForVersion(
+            authored.getVersion() < 0 ? 30u : static_cast<u32>(authored.getVersion()));
+
+        // Heroes of the Storm's half of MD34, rewritten as StarCraft II's.
+        // Everything downstream of here — the derive, the surface crossing in
+        // `sc2_pbr_export.cpp`, `exportPbr` — is written against a
+        // `StandardMaterial`, and a shader-graph material is not one. Reversing
+        // it at the model level does the job once, in the one place that knows
+        // how, and reports per material what the reversal could not carry.
+        whiteout::m3::EngineConversion retargeted;
+        const whiteout::m3::Model* model = &authored;
+        if (options.retargetHeroesToStarCraft2 && whiteout::m3::isHeroesOnly(authored)) {
+            retargeted = whiteout::m3::toStarCraft2(authored);
+            if (retargeted.converted) {
+                model = &retargeted.model;
+                for (const std::string& loss : retargeted.lossy) {
+                    result.diagnostics.info(wem::DiagCode::LossyKindConversion,
+                                            "Heroes -> StarCraft II: " + loss);
+                }
+            } else {
+                // Not fatal: the converter reverses a MADD per material and
+                // keeps the blob beside whatever it gets, so a model this
+                // refuses whole still converts in part. Saying so is the point
+                // — the material it names is the one that will come out blank.
+                result.diagnostics.warn(wem::DiagCode::LossyKindConversion,
+                                        "this Heroes model has no StarCraft II form (" +
+                                            retargeted.blocker +
+                                            "); converting it as authored instead");
+            }
+        }
+
+        wem::Result<wem::Document> converted = converter.fromM3(*model, profile);
+        result.diagnostics.append(converted.diagnostics);
         if (!converted.ok()) {
             result.error = "the StarCraft II model did not convert";
             return result;
         }
         result.document = converted.take();
+        // What the host attached is what the model animates by — see
+        // BakeM3ExternalAnimations. Nothing in the `.m3` could have named it.
+        BakeM3ExternalAnimations(*m3, converter, *result.document, result.diagnostics);
         finish(result);
         return result;
     }
