@@ -1,6 +1,5 @@
 #include "io/d3/d3_sno_cache.h"
 
-
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -163,8 +162,7 @@ const std::string& D3SnoCache::NameOf(i32 sno) {
         const usize dot = path.find_last_of('.');
         const usize end = (dot != std::string::npos && dot > begin) ? dot : path.size();
         std::string stem = path.substr(begin, end - begin);
-        if (!stem.empty() &&
-            stem.find_first_not_of("0123456789") != std::string::npos)
+        if (!stem.empty() && stem.find_first_not_of("0123456789") != std::string::npos)
             name = std::move(stem);
     }
     // A miss is remembered too: it is answered by the same manifest that would
@@ -363,6 +361,42 @@ std::shared_ptr<const d3n::Actor> D3SnoCache::AdoptActor(i32 sno, std::span<cons
 std::shared_ptr<const d3n::Appearances> D3SnoCache::AdoptAppearance(i32 sno,
                                                                     std::span<const u8> bytes) {
     return Typed<d3n::Appearances>(sno, d3n::Group::Appearance, bytes);
+}
+
+void D3SnoCache::Insert(i32 sno, d3n::Group group, std::shared_ptr<const void> value) {
+    if (sno <= 0 || !value)
+        return;
+    if (auto found = entries_.find(sno); found != entries_.end()) {
+        stats_.bytesResident -= found->second.weight;
+        lru_.erase(found->second.lru);
+        entries_.erase(found);
+    }
+    Entry e;
+    e.group = group;
+    e.value = std::move(value);
+    e.weight = 0; // Never evicted; nothing could read it back.
+    lru_.push_front(sno);
+    e.lru = lru_.begin();
+    entries_.emplace(sno, std::move(e));
+}
+
+std::shared_ptr<const d3n::Appearances> D3SnoCache::AdoptAppearance(i32 sno,
+                                                                    d3n::Appearances value) {
+    auto held = std::make_shared<const d3n::Appearances>(std::move(value));
+    Insert(sno, d3n::Group::Appearance, held);
+    return held;
+}
+
+std::shared_ptr<const d3n::Anim> D3SnoCache::AdoptAnim(i32 sno, d3n::Anim value) {
+    auto held = std::make_shared<const d3n::Anim>(std::move(value));
+    Insert(sno, d3n::Group::Anim, held);
+    return held;
+}
+
+std::shared_ptr<const d3n::AnimSet> D3SnoCache::AdoptAnimSet(i32 sno, d3n::AnimSet value) {
+    auto held = std::make_shared<const d3n::AnimSet>(std::move(value));
+    Insert(sno, d3n::Group::AnimSet, held);
+    return held;
 }
 
 namespace {

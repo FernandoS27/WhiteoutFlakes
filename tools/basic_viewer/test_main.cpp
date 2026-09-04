@@ -7,8 +7,8 @@
 #include "renderer/model/corn_effect_source.h"
 #include "renderer/model/model_instance.h"
 #include "renderer/model/model_loader.h"
-#include "renderer/particle/particle_service.h"
 #include "renderer/particle/d3_emitter.h"
+#include "renderer/particle/particle_service.h"
 #include "renderer/particle/particle_trace.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
@@ -20,10 +20,11 @@
 #include "io/d3/d3_model_adapter.h"
 #include "renderer/profiles/diablo3/d3_surface_table.h"
 #endif
+#include "export_ini.h"
+#include "io/wem/wem_profiles.h"
 #include "localization.h"
 #include "log_console.h"
 #include "settings_ini.h"
-#include "export_ini.h"
 #include "viewer_app.h"
 #include "whiteout/flakes/gfx_types.h"
 #include "whiteout/flakes/types.h"
@@ -34,11 +35,11 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <cstdio>
 #include <iostream>
 #include <iterator>
 #include <string>
@@ -314,70 +315,66 @@ static int RunParticleDiff(whiteout::flakes::renderer::RenderService& renderer,
         // Where the host put each emitter, straight off the live service —
         // the one number that separates "the sim is wrong" from "the emitter
         // is in the wrong place", and the trace schema carries no equivalent.
-        renderer.Particles().ForEachEmitter(
-            [](const part::EmitterKey& k, const part::Emitter2& e) {
-                const wf::Vector3f& w = e.WorldPosition();
-                std::printf("  em %2d out=%u at=(%8.2f %8.2f %8.2f) visible=%d\n",
-                            k.id, unsigned(k.output), w.x, w.y, w.z, e.Visible() ? 1 : 0);
+        renderer.Particles().ForEachEmitter([](const part::EmitterKey& k, const part::Emitter2& e) {
+            const wf::Vector3f& w = e.WorldPosition();
+            std::printf("  em %2d out=%u at=(%8.2f %8.2f %8.2f) visible=%d\n", k.id,
+                        unsigned(k.output), w.x, w.y, w.z, e.Visible() ? 1 : 0);
 #if WDX_ENABLE_D3
-                const auto* d3 = dynamic_cast<const part::d3::Emitter*>(&e);
-                if (!d3)
-                    return;
-                const auto& m = d3->D3Desc().d3mat;
-                // Where the emitter was PUT, which the world position above does
-                // not separate: a hardpoint that resolved to the wrong bone and
-                // one whose frame is wrong read the same from outside.
-                const wf::Matrix44f& hp = d3->AttachOffset();
-                const wf::Matrix44f& m2w = d3->ModelToWorld();
-                std::printf("       place: bone=%d hp=(%.2f %.2f %.2f) m2w=(%.2f %.2f %.2f)"
-                            " unit=%.4f\n",
-                            d3->AttachBone(), hp.data[3][0], hp.data[3][1], hp.data[3][2],
-                            m2w.data[3][0], m2w.data[3][1], m2w.data[3][2], d3->UnitScale());
-                // The erosion tail's exponent is `10 * ch6` and ch6 is per
-                // particle, so both halves belong in the same line.
-                f32 a6lo = 1.0f, a6hi = 1.0f;
-                d3->D3Desc().Channel(part::d3::kChAlpha).ScalarRange(a6lo, a6hi);
-                std::printf("       sno=%d caps=0x%04X type=%d shape=%d mat: pass=%d %s blend=(%u,%u) "
-                            "vcol=(%d%d %d%d) aTest=%.3f erosion=%d ch6=%.2f..%.2f layers=%u\n",
-                            d3->D3Desc().snoId, d3->D3Desc().caps, d3->D3Desc().systemType,
-                            int(d3->D3Desc().shape), m.passResolved ? 1 : 0,
-                            m.effectFile.c_str(), m.blendSrc, m.blendDst,
-                            m.colorVcolFirst ? 1 : 0, m.colorVcolLast ? 1 : 0,
-                            m.alphaVcolFirst ? 1 : 0, m.alphaVcolLast ? 1 : 0,
-                            m.alphaTest, m.erosion ? 1 : 0, a6lo, a6hi, m.layerCount);
-                for (unsigned L = 0; L < m.layerCount; ++L) {
-                    const auto& lay = m.layers[L];
-                    std::printf("         L%u type=%2d sno=%d texId=%d wrap=%u op=%d/%d"
-                                " gain=%.0f/%.0f clamp=%d%d uv=%d", L,
-                                lay.rawType, lay.textureSno, lay.textureId, lay.wrapFlags,
-                                int(lay.colorOp), int(lay.alphaOp), lay.colorGain,
-                                lay.alphaGain, lay.colorClamp ? 1 : 0,
-                                lay.alphaClamp ? 1 : 0, int(lay.uv.mode));
-                    // The sheet, for EVERY layer and not only the mode-3 ones:
-                    // the quad's base rectangle and its aspect come off stage
-                    // 0's frame table whatever uv mode stage 0 carries, so a
-                    // type-1 layer's sheet is worth seeing even at mode 0.
-                    if (lay.atlas) {
-                        const unsigned n = lay.atlas ? unsigned(lay.atlas->frames.size()) : 0u;
-                        std::printf(" atlas: frames=%u tile=%.4f,%.4f px=%ux%u rate=%.1f(+%.1f)"
-                                    " start=%d..%d %s",
-                                    n, n ? lay.atlas->TileSize().x : 0.0f,
-                                    n ? lay.atlas->TileSize().y : 0.0f,
-                                    n ? lay.atlas->width : 0u, n ? lay.atlas->height : 0u,
-                                    lay.atlasRate, lay.atlasRateJitter, lay.atlasFrameBase,
-                                    lay.atlasFrameBase + lay.atlasFrameRange,
-                                    lay.uv.mode == wf::io::D3UvMode::Anim2D
-                                        ? "flip"
-                                        : (lay.rawType == 1 ? "baseRect" : "-"));
-                        for (unsigned k = 0; k < n && k < 3; ++k)
-                            std::printf(" [%.3f,%.3f..%.3f,%.3f]", lay.atlas->frames[k].x,
-                                        lay.atlas->frames[k].y, lay.atlas->frames[k].z,
-                                        lay.atlas->frames[k].w);
-                    }
-                    std::printf("\n");
+            const auto* d3 = dynamic_cast<const part::d3::Emitter*>(&e);
+            if (!d3)
+                return;
+            const auto& m = d3->D3Desc().d3mat;
+            // Where the emitter was PUT, which the world position above does
+            // not separate: a hardpoint that resolved to the wrong bone and
+            // one whose frame is wrong read the same from outside.
+            const wf::Matrix44f& hp = d3->AttachOffset();
+            const wf::Matrix44f& m2w = d3->ModelToWorld();
+            std::printf("       place: bone=%d hp=(%.2f %.2f %.2f) m2w=(%.2f %.2f %.2f)"
+                        " unit=%.4f\n",
+                        d3->AttachBone(), hp.data[3][0], hp.data[3][1], hp.data[3][2],
+                        m2w.data[3][0], m2w.data[3][1], m2w.data[3][2], d3->UnitScale());
+            // The erosion tail's exponent is `10 * ch6` and ch6 is per
+            // particle, so both halves belong in the same line.
+            f32 a6lo = 1.0f, a6hi = 1.0f;
+            d3->D3Desc().Channel(part::d3::kChAlpha).ScalarRange(a6lo, a6hi);
+            std::printf("       sno=%d caps=0x%04X type=%d shape=%d mat: pass=%d %s blend=(%u,%u) "
+                        "vcol=(%d%d %d%d) aTest=%.3f erosion=%d ch6=%.2f..%.2f layers=%u\n",
+                        d3->D3Desc().snoId, d3->D3Desc().caps, d3->D3Desc().systemType,
+                        int(d3->D3Desc().shape), m.passResolved ? 1 : 0, m.effectFile.c_str(),
+                        m.blendSrc, m.blendDst, m.colorVcolFirst ? 1 : 0, m.colorVcolLast ? 1 : 0,
+                        m.alphaVcolFirst ? 1 : 0, m.alphaVcolLast ? 1 : 0, m.alphaTest,
+                        m.erosion ? 1 : 0, a6lo, a6hi, m.layerCount);
+            for (unsigned L = 0; L < m.layerCount; ++L) {
+                const auto& lay = m.layers[L];
+                std::printf("         L%u type=%2d sno=%d texId=%d wrap=%u op=%d/%d"
+                            " gain=%.0f/%.0f clamp=%d%d uv=%d",
+                            L, lay.rawType, lay.textureSno, lay.textureId, lay.wrapFlags,
+                            int(lay.colorOp), int(lay.alphaOp), lay.colorGain, lay.alphaGain,
+                            lay.colorClamp ? 1 : 0, lay.alphaClamp ? 1 : 0, int(lay.uv.mode));
+                // The sheet, for EVERY layer and not only the mode-3 ones:
+                // the quad's base rectangle and its aspect come off stage
+                // 0's frame table whatever uv mode stage 0 carries, so a
+                // type-1 layer's sheet is worth seeing even at mode 0.
+                if (lay.atlas) {
+                    const unsigned n = lay.atlas ? unsigned(lay.atlas->frames.size()) : 0u;
+                    std::printf(" atlas: frames=%u tile=%.4f,%.4f px=%ux%u rate=%.1f(+%.1f)"
+                                " start=%d..%d %s",
+                                n, n ? lay.atlas->TileSize().x : 0.0f,
+                                n ? lay.atlas->TileSize().y : 0.0f, n ? lay.atlas->width : 0u,
+                                n ? lay.atlas->height : 0u, lay.atlasRate, lay.atlasRateJitter,
+                                lay.atlasFrameBase, lay.atlasFrameBase + lay.atlasFrameRange,
+                                lay.uv.mode == wf::io::D3UvMode::Anim2D
+                                    ? "flip"
+                                    : (lay.rawType == 1 ? "baseRect" : "-"));
+                    for (unsigned k = 0; k < n && k < 3; ++k)
+                        std::printf(" [%.3f,%.3f..%.3f,%.3f]", lay.atlas->frames[k].x,
+                                    lay.atlas->frames[k].y, lay.atlas->frames[k].z,
+                                    lay.atlas->frames[k].w);
                 }
+                std::printf("\n");
+            }
 #endif
-            });
+        });
         const auto& f = trace.frames.back();
         std::printf("[ptrace] frame %d: %zu emitter(s)\n", f.frame, f.emitters.size());
         for (const auto& e : f.emitters) {
@@ -561,20 +558,18 @@ static i32 ResolveSequenceSpec(const std::vector<whiteout::flakes::SequenceInfo>
 // disk cache, and BuildDrawLists skips geosets whose VB is still Invalid. So
 // capture is preceded by a settle phase and the capture itself fails rather
 // than emitting a divergent trace if a new need appears (§1.1 #13).
-static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
-                        whiteout::flakes::renderer::SceneManager& scene,
-                        whiteout::flakes::gfx::GfxApi backend, const std::filesystem::path& mdxPath,
-                        const std::string& recordPath, const std::string& checkPath,
-                        const std::string& goldenPath, i32 frames, bool hdMode, f32 distanceTol,
-                        i32 cameraDistance, i32 perturbSeed, i32 instances, bool unlitOddGeosets,
-                        bool lazyAnim, bool allowLateAssets, const std::string& contentRoot,
-                        const AnimScenario& anim,
-                        const std::vector<std::filesystem::path>& attachAnims,
-                        bool debugLight = false, bool noRefraction = false,
-                        bool refractionMask = false, bool noMultiTex = false,
-                        whiteout::flakes::ProductId traceGame =
-                            whiteout::flakes::ProductId::Neutral,
-                        bool noDistortion = false, bool distortionBuffer = false) {
+static int RunDrawTrace(
+    whiteout::flakes::renderer::RenderService& renderer,
+    whiteout::flakes::renderer::SceneManager& scene, whiteout::flakes::gfx::GfxApi backend,
+    const std::filesystem::path& mdxPath, const std::string& recordPath,
+    const std::string& checkPath, const std::string& goldenPath, i32 frames, bool hdMode,
+    f32 distanceTol, i32 cameraDistance, i32 perturbSeed, i32 instances, bool unlitOddGeosets,
+    bool lazyAnim, bool allowLateAssets, const std::string& contentRoot, const AnimScenario& anim,
+    const std::vector<std::filesystem::path>& attachAnims, bool debugLight = false,
+    bool noRefraction = false, bool refractionMask = false, bool noMultiTex = false,
+    whiteout::flakes::ProductId traceGame = whiteout::flakes::ProductId::Neutral,
+    bool noDistortion = false, bool distortionBuffer = false,
+    whiteout::models::wem::ProfileId wemProfile = whiteout::models::wem::ProfileId::Count) {
     namespace wf = whiteout::flakes;
     namespace dbg = wf::renderer::debug;
 
@@ -687,7 +682,13 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
         // with the bug live. Irregular spacing changes the residues.
         for (i32 burn = 0; perturbSeed > 0 && burn < ((perturbSeed >> (n & 7)) & 3) + 1; ++burn)
             (void)scene.AllocActorId();
-        auto* a = renderer.Loader().SpawnUnit(wf::io::PathToUtf8(mdxPath));
+        // A `.wem` is spawned through the WEM entry point so `--wem-profile`
+        // reaches it: SpawnUnit's own sniff would open it at the document's
+        // default, which is the right answer only when nobody said otherwise.
+        auto* a = wf::io::LooksLikeWemPath(mdxPath)
+                      ? renderer.Loader().SpawnWem(
+                            wf::ContentRef::FromPath(wf::io::PathToUtf8(mdxPath)), wemProfile)
+                      : renderer.Loader().SpawnUnit(wf::io::PathToUtf8(mdxPath));
         if (!a)
             break;
         if (!hero)
@@ -718,8 +719,7 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
             }
             items.EnsureBuilt(scene.ActiveContentProvider());
             auto& chars = renderer.Loader().D3Characters();
-            if (const auto body =
-                    wf::io::d3n::playerFromAppearanceStem(mdxPath.stem().string()))
+            if (const auto body = wf::io::d3n::playerFromAppearanceStem(mdxPath.stem().string()))
                 chars.SetOutfitBody(*adapter, body->first, body->second);
             chars.SetOutfitSheathed(*adapter, anim.d3Sheathed);
             for (const auto& [slot, name] : anim.d3Equip) {
@@ -727,10 +727,9 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
                 std::shared_ptr<const wf::io::d3n::Actor> itemActor;
                 if (rec && rec->snoActor > 0)
                     itemActor = renderer.Loader().D3Cache().Actor(rec->snoActor);
-                const bool ok =
-                    rec && chars.SetOutfitItem(
-                               *adapter, static_cast<wf::io::d3n::EVisualSlot>(slot), rec,
-                               itemActor);
+                const bool ok = rec && chars.SetOutfitItem(
+                                           *adapter, static_cast<wf::io::d3n::EVisualSlot>(slot),
+                                           rec, itemActor);
                 std::cout << "[dtrace] scenario: equip slot " << slot << " '" << name << "' "
                           << (ok ? (itemActor ? "ok" : "ok (no actor)") : "UNKNOWN ITEM");
                 if (slot == 0 && itemActor) {
@@ -763,8 +762,7 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
             }
             for (const auto& [slot, dye] : anim.d3Dyes) {
                 chars.SetOutfitDye(*adapter, static_cast<wf::io::d3n::EVisualSlot>(slot), dye);
-                std::cout << "[dtrace] scenario: dye slot " << slot << " = " << dye
-                          << std::endl;
+                std::cout << "[dtrace] scenario: dye slot " << slot << " = " << dye << std::endl;
             }
             for (auto* a2 : spawned)
                 renderer.Loader().RestyleD3Model(a2->handle);
@@ -773,8 +771,9 @@ static int RunDrawTrace(whiteout::flakes::renderer::RenderService& renderer,
             // is too bright" becomes a table of pass flags rather than an
             // impression. Only when asked.
             if (anim.probe) {
-                if (const auto* st = dynamic_cast<const wf::renderer::profiles::diablo3::
-                                         D3SurfaceTable*>(hero->render.surfaceTable.get())) {
+                if (const auto* st =
+                        dynamic_cast<const wf::renderer::profiles::diablo3::D3SurfaceTable*>(
+                            hero->render.surfaceTable.get())) {
                     const auto hidden = adapter->GeosetHidden();
                     const auto& surfs = st->Surfaces();
                     for (wf::u32 g = 0; g < surfs.size(); ++g) {
@@ -1549,6 +1548,13 @@ int main(int argc, char* argv[]) {
     // is additive and listed under "--export-clip" below; when any of those is
     // given, the positional sequence index is ignored.
     bool doExport = false;
+    // Headless WEM export: load the model, write it as a `.wem`, exit. The
+    // batch half of File ▸ Export to WEM, and the only way a script can convert
+    // a directory of models without a window.
+    std::filesystem::path exportWemPath;
+    // Which profile a `.wem` on the command line opens as. `Count` leaves it to
+    // the document — there is no dialog out here.
+    auto wemProfile = whiteout::models::wem::ProfileId::Count;
     i32 exportSeq = 0;
     // Additive surface. Each --export-clip is `name|#index[:repeats][@speed]`.
     struct CliClip {
@@ -1649,6 +1655,15 @@ int main(int argc, char* argv[]) {
             exportFps = std::atoi(argv[++i]);
             exportFpsSet = true;
             exportFolder = whiteout::flakes::io::FsPathFromUtf8(argv[++i]);
+        } else if (std::strcmp(a, "--wem-profile") == 0 && i + 1 < argc) {
+            wemProfile = whiteout::flakes::io::WemProfileFromName(argv[++i]);
+            if (wemProfile == whiteout::models::wem::ProfileId::Count) {
+                std::cerr << "Unknown WEM profile: " << argv[i]
+                          << " (wc3_classic | wc3_reforged | wow | sc2 | heroes | diablo3)\n";
+                return 1;
+            }
+        } else if (std::strcmp(a, "--export-wem") == 0 && i + 1 < argc) {
+            exportWemPath = whiteout::flakes::io::FsPathFromUtf8(argv[++i]);
         } else if (std::strcmp(a, "--attach-anim") == 0 && i + 1 < argc) {
             attachAnims.push_back(whiteout::flakes::io::FsPathFromUtf8(argv[++i]));
         } else if (std::strcmp(a, "--gif") == 0) {
@@ -1835,7 +1850,7 @@ int main(int argc, char* argv[]) {
             if (eq != std::string::npos) {
                 const std::string slotName = spec.substr(0, eq);
                 i32 slot = -1;
-                const char* names[8] = {"head", "torso", "feet", "hands",
+                const char* names[8] = {"head",      "torso",    "feet",      "hands",
                                         "righthand", "lefthand", "shoulders", "legs"};
                 for (i32 sIdx = 0; sIdx < 8; ++sIdx)
                     if (slotName == names[sIdx])
@@ -1846,8 +1861,7 @@ int main(int argc, char* argv[]) {
                 if (slot >= 0 && slot < 8)
                     drawTraceAnim.d3Equip.emplace_back(slot, spec.substr(eq + 1));
                 else
-                    std::cerr << "[dtrace] --d3-equip: bad slot '" << slotName << "'"
-                              << std::endl;
+                    std::cerr << "[dtrace] --d3-equip: bad slot '" << slotName << "'" << std::endl;
             }
         } else if (std::strcmp(a, "--d3-dye") == 0 && i + 1 < argc) {
             const std::string spec = argv[++i];
@@ -1855,7 +1869,7 @@ int main(int argc, char* argv[]) {
             if (eq != std::string::npos) {
                 const std::string slotName = spec.substr(0, eq);
                 i32 slot = -1;
-                const char* names[8] = {"head", "torso", "feet", "hands",
+                const char* names[8] = {"head",      "torso",    "feet",      "hands",
                                         "righthand", "lefthand", "shoulders", "legs"};
                 for (i32 sIdx = 0; sIdx < 8; ++sIdx)
                     if (slotName == names[sIdx])
@@ -1864,8 +1878,7 @@ int main(int argc, char* argv[]) {
                     slotName.find_first_not_of("0123456789") == std::string::npos)
                     slot = std::atoi(slotName.c_str());
                 if (slot >= 0 && slot < 8)
-                    drawTraceAnim.d3Dyes.emplace_back(slot,
-                                                      std::atoi(spec.c_str() + eq + 1));
+                    drawTraceAnim.d3Dyes.emplace_back(slot, std::atoi(spec.c_str() + eq + 1));
             }
         } else if (std::strcmp(a, "--d3-sheathed") == 0) {
             drawTraceAnim.d3Sheathed = true;
@@ -1882,7 +1895,9 @@ int main(int argc, char* argv[]) {
             whiteout::flakes::gfx::SetWebGPUBackend(argv[++i]);
         } else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-h") == 0) {
             std::cout << "Usage: WhiteoutFlakes [--backend " << kBackendsHelp
-                      << "] [--wgpu-backend d3d11|d3d12|vulkan|gl] [<mdx-path>]\n";
+                      << "] [--wgpu-backend d3d11|d3d12|vulkan|gl] [<model-path>]\n"
+                      << "       --export-wem <out.wem>   write the model as WEM and exit\n"
+                      << "       --wem-profile <name>     open a .wem as that profile\n";
             return 0;
         } else if (mdxPath.empty()) {
             mdxPath = whiteout::flakes::io::FsPathFromUtf8(a);
@@ -2116,10 +2131,9 @@ int main(int argc, char* argv[]) {
                             drawTraceGolden, particleDiffFrames, drawTraceHd, drawTraceDistanceTol,
                             drawTraceCameraDistance, drawTracePerturb, drawTraceInstances,
                             drawTraceUnlit, drawTraceLazyAnim, drawTraceAllowLate, contentRoot,
-                            drawTraceAnim,
-                            attachAnims, drawTraceDebugLight, drawTraceNoRefraction,
+                            drawTraceAnim, attachAnims, drawTraceDebugLight, drawTraceNoRefraction,
                             drawTraceRefractionMask, drawTraceNoMultiTex, traceGameId,
-                            drawTraceNoDistortion, drawTraceDistortionBuffer);
+                            drawTraceNoDistortion, drawTraceDistortionBuffer, wemProfile);
 
     whiteout::flakes::ViewerApp app(renderer);
     if (!app.Open(1024, 768, backend)) {
@@ -2195,7 +2209,11 @@ int main(int argc, char* argv[]) {
     // open them through OpenModelAsync, behind the modal. The headless flags
     // cannot: --attach-anim runs a few lines below and --export-anim counts a
     // fixed number of ticks, so both need the model in hand right now.
-    const bool headlessWork = doExport || !attachAnims.empty();
+    // Before any open: the profile decides which game's storage the document's
+    // textures resolve against, which FollowModelGame settles on the way in.
+    app.SetPreferredWemProfile(wemProfile);
+
+    const bool headlessWork = doExport || !exportWemPath.empty() || !attachAnims.empty();
 
     if (!mdxPath.empty()) {
         if (!std::filesystem::exists(mdxPath)) {
@@ -2233,6 +2251,14 @@ int main(int argc, char* argv[]) {
                         whiteout::flakes::io::PathToUtf8(anim.filename()).c_str(),
                         app.SequenceNames().size());
         }
+    }
+
+    // Headless WEM export. No warm-up ticks: the conversion reads the parsed
+    // model the load already produced and touches nothing on the GPU.
+    if (!exportWemPath.empty()) {
+        const bool ok = app.ExportWem(exportWemPath);
+        app.Close();
+        return ok ? 0 : 1;
     }
 
     // Headless export path: queue the request, run a couple of ticks to let

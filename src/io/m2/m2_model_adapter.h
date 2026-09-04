@@ -62,6 +62,7 @@
 #include <whiteout/models/m2/m2.h>
 
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -120,8 +121,8 @@ public:
 
     /// @brief Not needed: the parser resolves siblings by constructing their
     ///        names from the model's, never by listing a directory.
-    std::vector<::whiteout::interfaces::DirectoryEntry>
-    listDirectory(const std::string& path) const override {
+    std::vector<::whiteout::interfaces::DirectoryEntry> listDirectory(
+        const std::string& path) const override {
         (void)path;
         return {};
     }
@@ -193,6 +194,17 @@ public:
     /// the same way the client does.
     void SetReplaceableTextures(std::vector<std::string> byTextureType) {
         replaceableByType_ = std::move(byTextureType);
+    }
+
+    /// @brief The keys set above, so an exporter can write what the *spawn*
+    ///        resolved rather than what the file said.
+    ///
+    /// A creature names none of its own skins: `felstalker.m2` ships four
+    /// texture slots and two of them are types 11/12, which the game fills from
+    /// the display record. A WEM written from the parsed model alone therefore
+    /// carries a model whose visible texture is nothing at all.
+    std::span<const std::string> ReplaceableTextures() const {
+        return replaceableByType_;
     }
 
     /// @brief What the skin says this model's recolourable emitters look like.

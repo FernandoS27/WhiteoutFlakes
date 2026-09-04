@@ -9,14 +9,18 @@
 // ============================================================================
 
 #include "export_window.h"
+#include "io/wem/wem_profiles.h"   // WemProfileOption — the picker's rows
 #include "whiteout/flakes/enums.h" // ProductId
 #include "whiteout/flakes/types.h"
 
+#include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace whiteout::flakes::io {
 class FileContentProvider;
+struct WemDocument;
 } // namespace whiteout::flakes::io
 
 namespace whiteout::flakes {
@@ -88,6 +92,18 @@ private:
     // options modal (dialect for MDL, texture export for both).
     void SaveAsDialog();
 
+    // Export the model on screen as a `.wem`. One dialog and no options modal:
+    // which converter runs is decided by what the model IS, not by anything the
+    // user could pick here (WEM_INTEGRATION_DESIGN.md §5).
+    void ExportWemDialog();
+
+    // The profile picker a `.wem` open goes through. Renders when
+    // `wemOpenDocument_` is set and loads the document on confirm; a no-op
+    // otherwise. Not a question a default can answer: a document carrying two
+    // material sets over one geometry has two right answers and the file does
+    // not say which the user meant (§3).
+    void BuildWemProfilePopup();
+
     ViewerApp& app_;
 
     // Last `.m3a` pick the attach refused, shown in the Anims popup until
@@ -99,23 +115,32 @@ private:
     bool showViewCube_ = true;    // View > View Cube toggle
     bool showLogConsole_ = false; // Debug > Log Console toggle
 
+    // The `.wem` waiting on a profile: the parsed document, where it came from,
+    // the rows it offers and which one is selected. All cleared when the popup
+    // closes, either way.
+    std::shared_ptr<io::WemDocument> wemOpenDocument_;
+    std::filesystem::path wemOpenPath_;
+    std::vector<io::WemProfileOption> wemOpenOptions_;
+    i32 wemOpenSelection_ = 0;
+    bool openWemProfilePopup_ = false;
+
     // Save As state. `pendingSavePath_` is non-empty only between the user
     // choosing a target and confirming in the options modal.
     std::string pendingSavePath_;
-    bool pendingSaveIsMdl_ = false;    // target is .mdl → show dialect choice
+    bool pendingSaveIsMdl_ = false; // target is .mdl → show dialect choice
     bool openSaveOptionsPopup_ = false;
-    i32 saveDialect_ = 0;              // 0 = Warcraft III, 1 = Hiveworkshop
-    bool saveExportTextures_ = false;  // export used textures next to the model
-    i32 saveTexFormatIdx_ = 0;         // index into kExportFormats (0 = keep original)
+    i32 saveDialect_ = 0;             // 0 = Warcraft III, 1 = Hiveworkshop
+    bool saveExportTextures_ = false; // export used textures next to the model
+    i32 saveTexFormatIdx_ = 0;        // index into kExportFormats (0 = keep original)
 
     // IO tab edit buffers: the whole of one profile's settings. They are the
     // page's state, not a mirror of the provider — the provider only ever holds
     // the ACTIVE profile, and these have to be able to hold any of them (see
     // SeedIoBuffers / CommitIoProfile).
     std::string installPathBuf_;
-    std::string hotsPathBuf_;  // StarCraft II page: the Heroes root
-    std::string listfileBuf_;  // World of Warcraft page: the `id;path` CSV
-    std::string tactKeyBuf_;   // World of Warcraft page: the TACT key list
+    std::string hotsPathBuf_; // StarCraft II page: the Heroes root
+    std::string listfileBuf_; // World of Warcraft page: the `id;path` CSV
+    std::string tactKeyBuf_;  // World of Warcraft page: the TACT key list
     std::string newMpqEntryBuf_;
     bool ioIgnoreCascBuf_ = false;
     bool ioIgnoreMpqBuf_ = false;

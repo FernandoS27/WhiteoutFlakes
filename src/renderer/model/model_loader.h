@@ -16,6 +16,11 @@
 #include "whiteout/flakes/model_source.h"
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
+
+// The profile axis, for the two WEM entry points below. A small header — an
+// enum, a descriptor struct and a registry lookup — and the alternative is a
+// host naming a profile by integer.
+#include <whiteout/models/wem/profile.h>
 #if WDX_ENABLE_M2
 // Included rather than forward-declared: SpawnWowSkinnedModels takes its
 // nested SkinnedModel by reference, which needs the definition.
@@ -53,6 +58,7 @@ namespace whiteout::flakes::io {
 class IContentProvider;
 class M2ModelAdapter;
 class D3ModelAdapter;
+struct WemDocument;
 } // namespace whiteout::flakes::io
 namespace whiteout::flakes::renderer::profiles::wow {
 class WowReplaceableTextures;
@@ -85,8 +91,7 @@ public:
     // ModelTemplateManager keys its cache on a string and picks MDX vs MDL by
     // extension, so it cannot look one up. Generalising that cache is only
     // worth doing when a second path-addressed format needs it.
-    Actor* SpawnUnit(const ContentRef& ref,
-                     const Matrix44f& initialTm = Matrix44f::identity());
+    Actor* SpawnUnit(const ContentRef& ref, const Matrix44f& initialTm = Matrix44f::identity());
 
     // Path convenience. Every host reaches this one — a viewer, a plugin and
     // a thumbnail grid all name models by path and always will.
@@ -106,13 +111,42 @@ public:
                                const Matrix44f& initialTm = Matrix44f::identity(),
                                u32 forceHandle = 0);
 
-    // Non-MDX route: reads @p ref once, sniffs the chunk magic, and spawns
-    // through SpawnUnitFromSource when it recognises `.m2` or `.m3`. Null for
+    // Non-MDX route: reads @p ref once, sniffs the magic, and spawns through
+    // SpawnUnitFromSource when it recognises `.wem`, `.m2` or `.m3`. Null for
     // anything else — including every MDX — so SpawnUnit falls through to the
-    // path route untouched. Always null with both WDX_ENABLE_M2 and
-    // WDX_ENABLE_M3 off.
+    // path route untouched.
+    //
+    // WEM is tested first and unconditionally: it is not one of the three
+    // formats but a container that becomes one, and its module is in
+    // whiteout_lib whatever this build enables. It opens at the document's own
+    // default profile, since nothing here can ask.
     Actor* TrySpawnForeign(const ContentRef& ref,
                            const Matrix44f& initialTm = Matrix44f::identity());
+
+    // Spawn one top-level actor from a `.wem`, as @p profile.
+    //
+    // The profile is an INPUT because a document can carry a material set per
+    // profile over one geometry, so "open this file" has as many answers as it
+    // has profiles (WEM_INTEGRATION_DESIGN.md §3). `ProfileId::Count` means
+    // "decide" — `io::DefaultWemProfile`'s answer — which is what the paths
+    // with no user in front of them use: the CLI, a drop on the window, and
+    // TrySpawnForeign's own WEM arm.
+    //
+    // Sets the scene's product from the profile before anything is staged: the
+    // product selects the storage every texture reference resolves against, so
+    // a WoW model opened into a Warcraft III scene loses every texture.
+    Actor* SpawnWem(
+        const ContentRef& ref,
+        ::whiteout::models::wem::ProfileId profile = ::whiteout::models::wem::ProfileId::Count,
+        const Matrix44f& initialTm = Matrix44f::identity());
+
+    // The same, for a document a host has already parsed — which every host
+    // with a profile dialog has, because it had to read the file to know what
+    // to offer. Re-reading and re-parsing to spawn would do that work twice.
+    Actor* SpawnWemDocument(
+        const io::WemDocument& document,
+        ::whiteout::models::wem::ProfileId profile = ::whiteout::models::wem::ProfileId::Count,
+        const Matrix44f& initialTm = Matrix44f::identity());
 
     // Schedule every actor in the scene for destruction at the next
     // CommitPendingUploads() pass (which runs at the start of RenderFrame).
@@ -136,8 +170,8 @@ public:
     // and resolve a template; an `.m2` has no template to resolve — the format
     // is parsed straight into an adapter — so it links a SpawnUnitFromSource
     // actor into the tree instead of staging one.
-    Actor* SpawnChildFromSource(Actor& parent, ActorRole role,
-                                std::shared_ptr<IModelSource> source, u32 forceHandle = 0);
+    Actor* SpawnChildFromSource(Actor& parent, ActorRole role, std::shared_ptr<IModelSource> source,
+                                u32 forceHandle = 0);
 
     // One M2 model particle's geometry model, spawned as a PE1-role child of
     // @p owner. @p key is `EmitterDesc::childModelPath` — a path, or `#<id>`
@@ -205,7 +239,8 @@ public:
     // ModelTemplates off one correctly-shared parse.
     /// @brief Get-or-insert: returns the drawable already built for @p fresh's
     ///        `(appearanceSno, lookIndex)`, or records and returns @p fresh.
-    std::shared_ptr<io::D3ModelAdapter> D3Drawable(const std::shared_ptr<io::D3ModelAdapter>& fresh);
+    std::shared_ptr<io::D3ModelAdapter> D3Drawable(
+        const std::shared_ptr<io::D3ModelAdapter>& fresh);
 
     // What a player character is wearing. WowCharacters()' sibling and lazily
     // created for the same reason.
@@ -268,6 +303,19 @@ public:
 #endif
 
 private:
+    // The per-format half of a spawn: the surface table, the surface list and
+    // the shading model, chosen by what @p source actually is.
+    //
+    // Shared by the file path and the WEM path, because a `.m2` that came out
+    // of a `.wem` and one that came out of a `.m2` are the same actor — the
+    // whole point of converting to the native model rather than teaching the
+    // render path a second vocabulary (WEM_INTEGRATION_DESIGN.md §1).
+    //
+    // A Warcraft III source is left alone: its table is created on first use by
+    // Wc3TableFor and its shading model is the scene's default, so stamping
+    // Unlit on it here would take a WC3 model off the WC3 path.
+    void FinishNativeActor(Actor& actor, const std::shared_ptr<IModelSource>& source);
+
 #if WDX_ENABLE_M2
     // Spawn the collections models @p wanted names as Skinned children of
     // @p character, each showing only the geosets the appearance chose, and
@@ -283,7 +331,6 @@ private:
 #endif
 
 public:
-
 private:
     u32 AddModel(const std::vector<MeshData>& meshes, const std::vector<TextureData>& textures,
                  const std::vector<MaterialData>& materials, const SkeletonData& skeleton,
@@ -337,8 +384,7 @@ private:
     /// Register one `.m2` emitter, choosing the emitter class and the id space
     /// from the desc's output. Shared by the template and direct-source paths so
     /// "which kind of emitter is this" is decided once.
-    void AddM2Emitter(u32 handle, i32 index,
-                      std::shared_ptr<const particle::EmitterDesc> desc,
+    void AddM2Emitter(u32 handle, i32 index, std::shared_ptr<const particle::EmitterDesc> desc,
                       const core::ParticleBehavior& behavior);
     /// The geometry model behind @p key, parsed once and shared. Null (and
     /// remembered as null) when nothing resolves it.
@@ -365,8 +411,7 @@ private:
     // host pump can start fetching ahead of the first Birth /
     // attachment-load that actually needs the template.
     void PreloadChildTemplates(Actor& a, const ModelTemplate& tmpl);
-    void PreloadChildTemplates(Actor& a,
-                               const std::vector<PE1EmitterConfig>& pe1Cfgs,
+    void PreloadChildTemplates(Actor& a, const std::vector<PE1EmitterConfig>& pe1Cfgs,
                                const std::vector<AttachmentConfig>& attachCfgs);
 
     RenderService& rs_;

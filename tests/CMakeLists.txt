@@ -55,6 +55,10 @@ wdx_add_test(texture_usage_test texture_usage_test.cpp)
 # mappings are decoded through. Device-free, so it is unconditional.
 wdx_add_test(env_cube_test     env_cube_test.cpp)
 wdx_add_test(content_ref_test   content_ref_test.cpp)
+# WEM save/load: the profile table, the option list, and the identity gate
+# reaching an adapter. Every fixture is built in memory, so it needs no install
+# and no GPU. See WEM_INTEGRATION_DESIGN.md §6.
+wdx_add_test(wem_integration_test wem_integration_test.cpp)
 # Event-data SLK tables, keyed per render mode so a flip back to a mode the
 # session already parsed re-reads nothing.
 wdx_add_test(event_data_mode_test event_data_mode_test.cpp)

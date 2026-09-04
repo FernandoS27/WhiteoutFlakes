@@ -106,7 +106,7 @@ i32 D3SnoIdOfBytes(std::span<const u8> bytes);
 struct D3TextureAtlas {
     /// (u0, v0, u1, v1) per frame, in the file's own order.
     std::vector<Vector4f> frames;
-    u32 width = 0;  ///< Pixels, for the quad aspect.
+    u32 width = 0; ///< Pixels, for the quad aspect.
     u32 height = 0;
     /// @brief How many leading records the reader skipped as junk.
     ///
@@ -183,6 +183,22 @@ public:
     /// read on the very first load.
     std::shared_ptr<const d3n::Actor> AdoptActor(i32 sno, std::span<const u8> bytes);
     std::shared_ptr<const d3n::Appearances> AdoptAppearance(i32 sno, std::span<const u8> bytes);
+
+    /// @brief Put an asset the caller BUILT into the cache under @p sno,
+    ///        replacing whatever was there.
+    ///
+    /// Opening a `.wem` is the caller. Its assets are converted out of a WEM
+    /// document rather than read from a storage, and the file has to open with
+    /// no Diablo III install present at all — so there are no bytes to adopt,
+    /// only a value. Where a real install *is* open and the id collides with a
+    /// shipped one, the built value wins: the document is what the user asked
+    /// to see.
+    ///
+    /// Weighed at zero, which is also what makes it permanent: @ref
+    /// EvictToBudget skips weightless entries, since nothing can read one back.
+    std::shared_ptr<const d3n::Appearances> AdoptAppearance(i32 sno, d3n::Appearances value);
+    std::shared_ptr<const d3n::Anim> AdoptAnim(i32 sno, d3n::Anim value);
+    std::shared_ptr<const d3n::AnimSet> AdoptAnimSet(i32 sno, d3n::AnimSet value);
 
     /// @brief The raw bytes of @p sno, read fresh and **not** cached.
     ///
@@ -268,6 +284,9 @@ private:
     /// @brief Typed view of @ref Load: null on a miss *or* a group mismatch.
     template <typename T>
     std::shared_ptr<const T> Typed(i32 sno, d3n::Group want, std::span<const u8> bytes = {});
+
+    /// @brief Store an already-built value, replacing any entry at @p sno.
+    void Insert(i32 sno, d3n::Group group, std::shared_ptr<const void> value);
 
     void Touch(Entry& e);
     void EvictToBudget();

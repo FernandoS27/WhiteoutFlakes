@@ -1,5 +1,7 @@
 #include "viewer_ui.h"
 
+#include "io/wem/wem_import.h" // WemDocument, for the profile picker
+
 #include "imgui_viewcube.h"
 #include "io/load_task.h" // Poll(), for the equip popup's registry-build bar
 #include "io/mdx_model_adapter.h"
@@ -183,6 +185,7 @@ void ViewerUI::BuildFrame() {
     if (animWindowOpen_ && app_.CanAttachAnimations())
         BuildAnimationWindow();
     BuildSaveOptionsPopup();
+    BuildWemProfilePopup();
     exportWindow_.Build();
     app_.BuildStorageExplorerWindow();
     tools::LogConsole::Instance().DrawUi(&showLogConsole_);
@@ -206,18 +209,118 @@ void ViewerUI::OpenFileDialog() {
     // `char` literals on every platform — the native variant takes wchar_t
     // on Windows, which would break these inline string constants.
     NFD::UniquePathU8 outPath;
-    nfdu8filteritem_t filter[4] = {{"All supported", kOpenAllExtensions},
+    nfdu8filteritem_t filter[5] = {{"All supported", kOpenAllExtensions},
                                    {"Warcraft III Model", "mdx,mdl"},
                                    {"PKB Effect", "pkb,pkfx"},
+                                   {"WEM model", "wem"},
                                    {"Other Blizzard model", kForeignModelExtensions}};
-    const nfdfiltersize_t nFilters = kHasForeignModelFilter ? 4 : 3;
-    if (NFD::OpenDialog(outPath, filter, nFilters) == NFD_OKAY) {
-        std::filesystem::path p = io::FsPathFromUtf8(outPath.get());
-        // Async: an `.m2` or `.m3` picked here may need a game install that
-        // is not open yet, and that open is seconds long. Dispatches
-        // .pkb / .pkfx to the effect loader exactly as LoadModel does.
-        app_.OpenModelAsync(p);
+    const nfdfiltersize_t nFilters = kHasForeignModelFilter ? 5 : 4;
+    if (NFD::OpenDialog(outPath, filter, nFilters) != NFD_OKAY)
+        return;
+
+    std::filesystem::path p = io::FsPathFromUtf8(outPath.get());
+
+    // A `.wem` does not open on the strength of its name: which profile it is
+    // opened AS decides the materials, the render path and the game whose
+    // storage its textures resolve against, and only the file can say what it
+    // offers. So the pick comes first and the load waits for it.
+    if (auto document = app_.PeekWemDocument(p)) {
+        wemOpenDocument_ = std::move(document);
+        wemOpenPath_ = p;
+        wemOpenOptions_ = io::WemProfileOptions(wemOpenDocument_->document);
+        wemOpenSelection_ = 0;
+        const auto preferred = io::DefaultWemProfile(wemOpenDocument_->document);
+        for (std::size_t i = 0; i < wemOpenOptions_.size(); ++i) {
+            if (wemOpenOptions_[i].profile == preferred) {
+                wemOpenSelection_ = static_cast<i32>(i);
+                break;
+            }
+        }
+        openWemProfilePopup_ = true;
+        return;
     }
+
+    // Async: an `.m2` or `.m3` picked here may need a game install that
+    // is not open yet, and that open is seconds long. Dispatches
+    // .pkb / .pkfx to the effect loader exactly as LoadModel does.
+    app_.OpenModelAsync(p);
+}
+
+// The profile picker. Every row the file could be opened as, in the order
+// io::WemProfileOptions ranks them: carried first, derives after, and the ones
+// this build cannot open last and disabled — with the reason, because a file
+// that says "Diablo III" and a dialog with no Diablo III row reads as a bug.
+void ViewerUI::BuildWemProfilePopup() {
+    if (openWemProfilePopup_) {
+        ImGui::OpenPopup(i18n::tr("dialog.wem.title"));
+        openWemProfilePopup_ = false;
+    }
+    if (!wemOpenDocument_)
+        return;
+
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal(i18n::tr("dialog.wem.title"), nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    ImGui::TextUnformatted(io::PathToUtf8(wemOpenPath_.filename()).c_str());
+    ImGui::Separator();
+    ImGui::TextUnformatted(i18n::tr("dialog.wem.prompt"));
+    ImGui::Spacing();
+
+    for (std::size_t i = 0; i < wemOpenOptions_.size(); ++i) {
+        const io::WemProfileOption& option = wemOpenOptions_[i];
+        ImGui::BeginDisabled(!option.supported);
+        if (ImGui::RadioButton(option.displayName, wemOpenSelection_ == static_cast<i32>(i)))
+            wemOpenSelection_ = static_cast<i32>(i);
+        ImGui::EndDisabled();
+
+        // What the row costs, said on the row. "Derived" is the load-bearing
+        // one: it is always lossy (§6.6) and the alternative to saying so is a
+        // model that quietly renders as an approximation of itself.
+        ImGui::SameLine();
+        if (!option.supported) {
+            ImGui::TextDisabled("— %s", io::WemProfileUnsupportedReason(option.profile));
+        } else if (option.carried) {
+            ImGui::TextDisabled("— %s", i18n::tr(option.drawn ? "dialog.wem.carried"
+                                                              : "dialog.wem.carried_undrawn"));
+        } else {
+            ImGui::TextDisabled("— %s", i18n::tr("dialog.wem.derived"));
+        }
+    }
+
+    ImGui::Spacing();
+    const bool canOpen = wemOpenSelection_ >= 0 &&
+                         wemOpenSelection_ < static_cast<i32>(wemOpenOptions_.size()) &&
+                         wemOpenOptions_[static_cast<std::size_t>(wemOpenSelection_)].supported;
+    ImGui::BeginDisabled(!canOpen);
+    if (ImGui::Button(i18n::tr("dialog.wem.open"), ImVec2(120, 0))) {
+        const auto profile = wemOpenOptions_[static_cast<std::size_t>(wemOpenSelection_)].profile;
+        // Synchronous, unlike the OpenModelAsync path above: the file is
+        // already parsed and its textures resolve against whichever install
+        // the profile named, which OpenWemAs opens on the way through.
+        app_.OpenWemAs(wemOpenPath_, wemOpenDocument_, profile);
+        wemOpenDocument_.reset();
+        wemOpenOptions_.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button(i18n::tr("app.cancel"), ImVec2(120, 0))) {
+        wemOpenDocument_.reset();
+        wemOpenOptions_.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+void ViewerUI::ExportWemDialog() {
+    NFD::UniquePathU8 outPath;
+    nfdu8filteritem_t filter[1] = {{"WEM model", "wem"}};
+    if (NFD::SaveDialog(outPath, filter, 1) != NFD_OKAY)
+        return;
+    app_.ExportWem(io::FsPathFromUtf8(outPath.get()));
 }
 
 void ViewerUI::AttachAnimationDialog() {
@@ -424,19 +527,24 @@ bool WriteCurrentModel(ViewerApp& app, const std::string& outPath, whiteout::mdx
     // reliable source. Fall back to the (weak) path-keyed cache if there's no
     // focused actor.
     std::shared_ptr<model::ModelTemplate> tmpl;
-    if (model::Actor* actor = app.FocusActorPtr())
-        tmpl = actor->sourceTemplate;
+    model::Actor* focus = app.FocusActorPtr();
+    if (focus)
+        tmpl = focus->sourceTemplate;
     if (!tmpl || !tmpl->adapter)
         tmpl = app.Service().Scene().Templates().Lookup(io::PathToUtf8(app.CurrentModelPath()));
-    if (!tmpl || !tmpl->adapter) {
-        std::fprintf(stderr, "[viewer] Save As: no source model to write\n");
-        return false;
-    }
+
     // Save As writes an MDX/MDL through whiteout::mdx::Writer, so it needs the
     // parsed MDX model and not a format-neutral snapshot. Refuse a non-MDX
-    // template rather than writing something that is not the model the user is
+    // source rather than writing something that is not the model the user is
     // looking at.
-    const auto* mdxAdapter = dynamic_cast<const io::MdxModelAdapter*>(tmpl->adapter.get());
+    const auto* mdxAdapter =
+        tmpl ? dynamic_cast<const io::MdxModelAdapter*>(tmpl->adapter.get()) : nullptr;
+    if (!mdxAdapter && focus) {
+        // No template at all: the actor was spawned from a live source. A
+        // `.wem` opened as either Warcraft III profile is exactly that, and
+        // writing it back out as MDX is the conversion the user came for.
+        mdxAdapter = dynamic_cast<const io::MdxModelAdapter*>(focus->animation.Source().get());
+    }
     if (!mdxAdapter) {
         std::fprintf(stderr, "[viewer] Save As: this model is not MDX; nothing to write\n");
         return false;
@@ -819,10 +927,19 @@ void ViewerUI::BuildMenuBar() {
             const bool hasModel = !app_.CurrentModelPath().empty();
             // Save As writes MDX/MDL (or copies a .pkb verbatim). A `.m2` /
             // `.m3` has no writer here, so the item greys out rather than
-            // opening a dialog that can only fail at the end.
-            const bool canSave = hasModel && !app_.CurrentModelIsForeign();
+            // opening a dialog that can only fail at the end — and a `.wem`
+            // opened as one of those is the same model, so it asks the SOURCE
+            // rather than the extension.
+            const bool canSave = hasModel && !app_.CurrentModelIsForeign() && app_.CanSaveAsMdx();
             if (ImGui::MenuItem(i18n::tr("menu.file.save_as"), "Ctrl+Shift+S", false, canSave))
                 SaveAsDialog();
+            // Separate from Save As, which writes the model back in its own
+            // format. This one writes the interchange format, and every model
+            // this build can draw can be written to it — which is why it is
+            // gated on the model's SOURCE rather than on its extension.
+            if (ImGui::MenuItem(i18n::tr("menu.file.export_wem"), nullptr, false,
+                                app_.CanExportWem()))
+                ExportWemDialog();
             const bool hasAnims = hasModel && !app_.SequenceNames().empty();
             if (ImGui::MenuItem(i18n::tr("menu.file.export_frames"), nullptr,
                                 exportWindow_.IsOpen(), hasAnims)) {
@@ -1188,8 +1305,7 @@ void ViewerUI::BuildToolbar() {
                 const float fraction = (ours && !snap.indeterminate)
                                            ? snap.fraction
                                            : -1.0f * static_cast<float>(ImGui::GetTime());
-                ImGui::ProgressBar(fraction, ImVec2(320, 0.0f),
-                                   counts[0] ? counts : nullptr);
+                ImGui::ProgressBar(fraction, ImVec2(320, 0.0f), counts[0] ? counts : nullptr);
             } else if (!registryReady) {
                 ImGui::TextDisabled("%s", i18n::tr("toolbar.equip.noregistry"));
             } else if (const auto rows = app_.D3OutfitSlots(); !rows.empty()) {
@@ -1211,9 +1327,8 @@ void ViewerUI::BuildToolbar() {
                 }
                 ImGui::SameLine();
                 ImGui::SetNextItemWidth(120);
-                ImGui::InputTextWithHint("##d3presetname",
-                                         i18n::tr("toolbar.equip.preset.name"), presetName,
-                                         sizeof(presetName));
+                ImGui::InputTextWithHint("##d3presetname", i18n::tr("toolbar.equip.preset.name"),
+                                         presetName, sizeof(presetName));
                 ImGui::SameLine();
                 if (ImGui::Button(i18n::tr("toolbar.equip.preset.save")) && presetName[0])
                     app_.SaveD3OutfitPreset(presetName);
@@ -1231,9 +1346,8 @@ void ViewerUI::BuildToolbar() {
                 ImGui::SetNextItemWidth(230);
                 if (ImGui::BeginCombo("##d3set", i18n::tr("toolbar.equip.equipset"))) {
                     ImGui::SetNextItemWidth(-1.0f);
-                    ImGui::InputTextWithHint("##d3setfilter",
-                                             i18n::tr("toolbar.equip.item.search"), itemFilter,
-                                             sizeof(itemFilter));
+                    ImGui::InputTextWithHint("##d3setfilter", i18n::tr("toolbar.equip.item.search"),
+                                             itemFilter, sizeof(itemFilter));
                     for (const auto& set : app_.D3OutfitSetEntries(itemFilter, allClasses)) {
                         char setId[96];
                         std::snprintf(setId, sizeof(setId), "%s (%d)##%s", set.label.c_str(),
@@ -1245,17 +1359,15 @@ void ViewerUI::BuildToolbar() {
                 }
                 for (const auto& row : rows) {
                     char id[64];
-                    std::snprintf(id, sizeof(id), "%s##d3out%d", row.name.c_str(),
-                                  row.visualSlot);
-                    const char* preview = row.equipped.empty()
-                                              ? i18n::tr("toolbar.equip.item.none")
-                                              : row.equippedLabel.c_str();
+                    std::snprintf(id, sizeof(id), "%s##d3out%d", row.name.c_str(), row.visualSlot);
+                    const char* preview = row.equipped.empty() ? i18n::tr("toolbar.equip.item.none")
+                                                               : row.equippedLabel.c_str();
                     ImGui::SetNextItemWidth(230);
                     if (ImGui::BeginCombo(id, preview)) {
                         ImGui::SetNextItemWidth(-1.0f);
                         ImGui::InputTextWithHint("##d3itemfilter",
-                                                 i18n::tr("toolbar.equip.item.search"),
-                                                 itemFilter, sizeof(itemFilter));
+                                                 i18n::tr("toolbar.equip.item.search"), itemFilter,
+                                                 sizeof(itemFilter));
                         if (ImGui::Selectable(i18n::tr("toolbar.equip.item.none"),
                                               row.equipped.empty()))
                             app_.SetD3OutfitItem(row.visualSlot, "");
@@ -1293,11 +1405,9 @@ void ViewerUI::BuildToolbar() {
                     }
                     ImGui::SetNextItemWidth(90);
                     if (ImGui::BeginCombo(id, dyeLabel)) {
-                        if (ImGui::Selectable(i18n::tr("toolbar.equip.item.undyed"),
-                                              row.dye == 0))
+                        if (ImGui::Selectable(i18n::tr("toolbar.equip.item.undyed"), row.dye == 0))
                             app_.SetD3OutfitDye(row.visualSlot, 0);
-                        if (ImGui::Selectable(i18n::tr("toolbar.equip.item.hide"),
-                                              row.dye == 1))
+                        if (ImGui::Selectable(i18n::tr("toolbar.equip.item.hide"), row.dye == 1))
                             app_.SetD3OutfitDye(row.visualSlot, 1);
                         for (i32 d = 2; d <= 22; ++d) {
                             char dyeItem[24];

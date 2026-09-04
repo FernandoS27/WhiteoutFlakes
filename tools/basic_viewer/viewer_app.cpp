@@ -1,6 +1,9 @@
 #include "viewer_app.h"
 
 #include "io/mdx_model_adapter.h"
+#include "io/wem/wem_export.h"
+#include "io/wem/wem_import.h"
+#include "io/wem/wem_profiles.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/camera.h"
 #include "renderer/debug/debug_renderer.h"
@@ -30,9 +33,9 @@
 #include "resource.h" // IDI_WHITEOUT_ICON
 #endif
 #include "imgui_theme.h"
+#include "ini_file.h"
 #include "io/file_content_provider.h"
 #include "localization.h"
-#include "ini_file.h"
 #include "settings_ini.h"
 #include "storage_explorer_ini.h"
 #include "thumbnail_framing.h"
@@ -148,7 +151,6 @@ bool ContainsCi(const std::string& hay, const char* needle) {
     }
     return false;
 }
-
 
 } // namespace
 
@@ -746,10 +748,122 @@ bool IsForeignModelPath(const std::filesystem::path& path) {
     const std::string ext = LowerExt(path);
     return ext == ".m2" || ext == ".m3";
 }
+
+// A `.wem` is none of the above and all of them: an interchange container that
+// becomes a native model of whichever profile the user picked. Which is why it
+// is its own predicate rather than a third arm of IsForeignModelPath — the
+// Warcraft III preamble does not apply, and neither does "there is no writer
+// for it", since writing WEM is the one thing every format can do.
+bool IsWemPath(const std::filesystem::path& path) {
+    return LowerExt(path) == ".wem";
+}
 } // namespace
 
 bool ViewerApp::CurrentModelIsForeign() const {
     return IsForeignModelPath(currentModelPath_);
+}
+
+// ---- WEM interchange --------------------------------------------------------
+
+std::shared_ptr<io::WemDocument> ViewerApp::PeekWemDocument(const std::filesystem::path& path) {
+    if (!IsWemPath(path))
+        return nullptr;
+    return io::ParseWemFile(path);
+}
+
+bool ViewerApp::OpenWemAs(const std::filesystem::path& path,
+                          std::shared_ptr<io::WemDocument> document,
+                          ::whiteout::models::wem::ProfileId profile) {
+    if (!document)
+        document = PeekWemDocument(path);
+    if (!document) {
+        std::fprintf(stderr, "[viewer] '%s' is not a WEM file this build can read\n",
+                     io::PathToUtf8(path).c_str());
+        return false;
+    }
+    if (profile == ::whiteout::models::wem::ProfileId::Count)
+        profile = preferredWemProfile_;
+    if (profile == ::whiteout::models::wem::ProfileId::Count)
+        profile = io::DefaultWemProfile(document->document);
+
+    // Both before OpenDocument, because FollowModelGame runs inside it and the
+    // profile is what tells it which game's storage to point the shared
+    // provider at. A `.wem` whose textures are fileDataIDs and a provider left
+    // on Warcraft III is the same silent all-white load an `.m2` used to give.
+    pendingWemDocument_ = std::move(document);
+    pendingWemProfile_ = profile;
+    const bool ok = OpenDocument(path, /*effect=*/false);
+    pendingWemDocument_.reset();
+    return ok;
+}
+
+bool ViewerApp::CanSaveAsMdx() const {
+    ViewerApp* self = const_cast<ViewerApp*>(this);
+    // A PopcornFX effect is copied verbatim rather than written, so it answers
+    // yes on its own terms — the dialog routes it before it ever reaches the
+    // MDX writer.
+    if (IsEffectPath(currentModelPath_))
+        return true;
+    model::Actor* actor = self->FocusActorPtr();
+    if (!actor)
+        return false;
+    if (actor->sourceTemplate &&
+        dynamic_cast<const io::MdxModelAdapter*>(actor->sourceTemplate->adapter.get())) {
+        return true;
+    }
+    return dynamic_cast<const io::MdxModelAdapter*>(actor->animation.Source().get()) != nullptr;
+}
+
+bool ViewerApp::CanExportWem() const {
+    const model::Actor* actor = const_cast<ViewerApp*>(this)->FocusActorPtr();
+    if (!actor)
+        return false;
+    const auto& source = actor->animation.Source();
+    if (!source)
+        return false;
+    const auto* modelSource = dynamic_cast<const IModelSource*>(source.get());
+    return modelSource && io::CanExportModelToWem(*modelSource);
+}
+
+bool ViewerApp::ExportWem(const std::filesystem::path& outPath) {
+    model::Actor* actor = FocusActorPtr();
+    if (!actor || !actor->animation.Source()) {
+        std::fprintf(stderr, "[viewer] Export WEM: no model on screen\n");
+        return false;
+    }
+    auto* source = dynamic_cast<IModelSource*>(actor->animation.Source().get());
+    if (!source) {
+        std::fprintf(stderr, "[viewer] Export WEM: this actor has no model source\n");
+        return false;
+    }
+
+    io::WemExportOptions options;
+    options.documentName = io::PathToUtf8(currentModelPath_.stem());
+    const io::WemExportResult exported =
+        io::ExportModelToWem(*source, service_.Scene().ActiveContentProvider(), options);
+    if (!exported.ok()) {
+        std::fprintf(stderr, "[viewer] Export WEM FAILED: %s\n", exported.error.c_str());
+        return false;
+    }
+    if (!exported.diagnostics.empty()) {
+        // A lossy conversion that succeeded and one that failed are different
+        // states; both have something to say, and this is the one the user can
+        // act on — a particle emitter the format does not carry, a look that
+        // did not resolve.
+        std::fprintf(stderr, "[viewer] Export WEM: %zu diagnostic(s)\n%s",
+                     exported.diagnostics.size(),
+                     io::DescribeWemDiagnostics(exported.diagnostics).c_str());
+    }
+
+    std::string error;
+    ::whiteout::models::wem::Diagnostics writeReport;
+    if (!io::WriteWemDocument(*exported.document, outPath, &writeReport, &error)) {
+        std::fprintf(stderr, "[viewer] Export WEM FAILED: %s\n", error.c_str());
+        return false;
+    }
+    std::printf("[viewer] Saved WEM (%s): %s\n", exported.formatId.c_str(),
+                io::PathToUtf8(outPath).c_str());
+    return true;
 }
 
 // ---- World of Warcraft creature skins ---------------------------------------
@@ -892,8 +1006,7 @@ std::vector<ViewerApp::D3CharacterSlot> ViewerApp::D3CharacterSlots() const {
             row.items.push_back(item.label);
         row.selectedItem = s.selectedItem;
         row.lookIndex = s.lookIndex;
-        row.registryDriven =
-            s.slot != ::whiteout::sno::d3::native::LookSlot::Hair;
+        row.registryDriven = s.slot != ::whiteout::sno::d3::native::LookSlot::Hair;
         out.push_back(std::move(row));
     }
     return out;
@@ -1104,9 +1217,7 @@ void ViewerApp::BuildD3ItemRegistryAsync() {
             // box in front of a user who pressed a button labelled Equip.
             return io::TaskResult::Ok();
         },
-        [this](const io::TaskOutcome&) {
-            d3ItemsBuild_ = D3ItemsBuild::Ready;
-        },
+        [this](const io::TaskOutcome&) { d3ItemsBuild_ = D3ItemsBuild::Ready; },
         /*cancellable=*/false,
         // NOT modal: the popup draws the progress where the user is looking;
         // taking the whole screen for a wardrobe would be worse.
@@ -1133,8 +1244,10 @@ const std::string& D3ItemLabel(const io::D3ItemRecord& rec) {
 } // namespace
 #endif
 
-std::vector<ViewerApp::D3OutfitItemEntry> ViewerApp::D3OutfitItemEntries(
-    i32 visualSlot, std::string_view filter, usize max, bool allClasses) const {
+std::vector<ViewerApp::D3OutfitItemEntry> ViewerApp::D3OutfitItemEntries(i32 visualSlot,
+                                                                         std::string_view filter,
+                                                                         usize max,
+                                                                         bool allClasses) const {
 #if WDX_ENABLE_D3
     auto& svc = const_cast<ViewerApp*>(this)->service_;
     if (!D3ItemRegistryReady())
@@ -1168,14 +1281,13 @@ std::vector<ViewerApp::D3OutfitItemEntry> ViewerApp::D3OutfitItemEntries(
     // by those and only then cap — a filter must reach the whole offer. The
     // equipped stem sorts to the front of its name group so the dedup below
     // keeps it.
-    std::sort(out.begin(), out.end(),
-              [&](const D3OutfitItemEntry& a, const D3OutfitItemEntry& b) {
-                  if (a.label != b.label)
-                      return a.label < b.label;
-                  if ((a.stem == equipped) != (b.stem == equipped))
-                      return a.stem == equipped;
-                  return a.stem < b.stem;
-              });
+    std::sort(out.begin(), out.end(), [&](const D3OutfitItemEntry& a, const D3OutfitItemEntry& b) {
+        if (a.label != b.label)
+            return a.label < b.label;
+        if ((a.stem == equipped) != (b.stem == equipped))
+            return a.stem == equipped;
+        return a.stem < b.stem;
+    });
     // One display name is one row: the art-test dupes ship one name on six
     // records, and six identical rows offer nothing five of them.
     out.erase(std::unique(out.begin(), out.end(),
@@ -1261,8 +1373,8 @@ bool ViewerApp::EquipD3OutfitSet(std::string_view key) {
     // paired-blades set dual-wields. Slots the set does not cover keep what
     // they wore — a six-piece armour set must not undress the hands.
     using VS = d3n::EVisualSlot;
-    constexpr VS kOrder[] = {VS::Head,   VS::Shoulders, VS::Torso,     VS::Hands,
-                             VS::Legs,   VS::Feet,      VS::RightHand, VS::LeftHand};
+    constexpr VS kOrder[] = {VS::Head, VS::Shoulders, VS::Torso,     VS::Hands,
+                             VS::Legs, VS::Feet,      VS::RightHand, VS::LeftHand};
     bool any = false;
     u16 taken = 0;
     for (const u32 i : set->members) {
@@ -1794,6 +1906,14 @@ bool ViewerApp::LoadModel(const std::filesystem::path& path) {
         std::fprintf(stderr, "[viewer] file not found: %s\n", io::PathToUtf8(path).c_str());
         return false;
     }
+
+    // A `.wem` with nobody to ask: the CLI, the startup picker and a drop on
+    // the window all reach here, and none of them has a dialog in front of it.
+    // The document's own default profile is the answer, and it has to be
+    // settled *before* the document opens — see OpenWemAs.
+    if (IsWemPath(path) && !pendingWemDocument_)
+        return OpenWemAs(path, nullptr, ::whiteout::models::wem::ProfileId::Count);
+
     return OpenDocument(path, /*effect=*/false);
 }
 
@@ -1989,6 +2109,12 @@ void ViewerApp::FollowModelGame(const std::filesystem::path& path) {
         game = ProductId::D3;
     else if (ext == ".mdx" || ext == ".mdl" || ext == ".pkb" || ext == ".pkfx")
         game = ProductId::Wc3;
+    else if (ext == ".wem")
+        // The suffix says nothing here: one `.wem` can be opened as any profile
+        // it carries, and the profile is what decides which game's storage its
+        // textures resolve against. The pick is already made by the time a
+        // document opens — the dialog made it, or DefaultWemProfile did.
+        game = io::ProductForWemProfile(pendingWemProfile_);
     if (game == ProductId::Neutral)
         return;
 
@@ -2143,6 +2269,34 @@ bool ViewerApp::LoadModelIntoActiveScene(const std::filesystem::path& path) {
     // chunk, and "HD" is a Warcraft III distinction that means nothing to an
     // .m2 or .m3 anyway — their frame is chosen by the scene's ProductId, which
     // SpawnUnit sets from the magic it just sniffed.
+    if (IsWemPath(path)) {
+        // The render mode comes from the PROFILE, not from a probe: the HD
+        // question is "is this Reforged", and for a `.wem` the answer is which
+        // of the two Warcraft III profiles was picked. Every other profile is
+        // SD here for the same reason `.m2` and `.m3` are — HD is a Warcraft
+        // III distinction and their frame is chosen by the scene's product.
+        ApplyRenderMode((forceHd_ || io::WemProfileIsHd(pendingWemProfile_)) ? RenderMode::HD
+                                                                             : RenderMode::SD);
+        service_.Loader().RequestClearAll();
+
+        std::shared_ptr<io::WemDocument> document = pendingWemDocument_;
+        if (!document)
+            document = io::ParseWemFile(path);
+        if (!document) {
+            std::fprintf(stderr, "[viewer] '%s' is not a WEM file this build can read\n",
+                         io::PathToUtf8(path).c_str());
+            return false;
+        }
+        model::Actor* wemHero = service_.Loader().SpawnWemDocument(*document, pendingWemProfile_);
+        if (!wemHero) {
+            std::fprintf(stderr, "[viewer] SpawnWemDocument FAILED for %s\n",
+                         io::PathToUtf8(path).c_str());
+            return false;
+        }
+        FillModelDocState(wemHero, path);
+        return true;
+    }
+
     if (IsForeignModelPath(path)) {
         ApplyRenderMode(RenderMode::SD);
     } else {
@@ -2733,7 +2887,6 @@ void ViewerApp::RunAnimationExport(const ExportRecipe& recipe) {
 bool ViewerApp::ScrubExportRecipe(const ExportRecipe& recipe, i32 frameIndex, bool applyCamera) {
     return PreviewExportFrame(recipe, MakeExportHost(), frameIndex, applyCamera);
 }
-
 
 void ViewerApp::Tick(f32 dt) {
     // Publish the active document's scene BEFORE polling: GLFW input callbacks

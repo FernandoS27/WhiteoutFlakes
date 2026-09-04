@@ -1320,6 +1320,13 @@ add_library(WhiteoutFlakesLib STATIC
     src/io/event_data.cpp
     src/io/slk.cpp
     src/io/texture_image_usage.cpp
+    # WEM save/load. Unconditional, unlike the three formats below: the module
+    # is in whiteout_lib whatever this build enables, the profiles a `.wem` can
+    # be opened as are exactly what WDX_ENABLE_M2 / _M3 / _D3 leave reachable,
+    # and wem_profiles.cpp is what states that. See WEM_INTEGRATION_DESIGN.md.
+    src/io/wem/wem_profiles.cpp
+    src/io/wem/wem_import.cpp
+    src/io/wem/wem_export.cpp
     src/public_api/renderer_api.cpp
 )
 

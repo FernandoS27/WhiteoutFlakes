@@ -24,6 +24,9 @@
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
 
+// The WEM profile axis, for the interchange entry points below.
+#include <whiteout/models/wem/profile.h>
+
 #include <array>
 #include <filesystem>
 #include <functional>
@@ -47,6 +50,10 @@ namespace whiteout::flakes::tools {
 class StorageExplorer;
 } // namespace whiteout::flakes::tools
 
+namespace whiteout::flakes::io {
+struct WemDocument;
+} // namespace whiteout::flakes::io
+
 namespace whiteout::flakes {
 
 using namespace whiteout::flakes::renderer;
@@ -64,20 +71,25 @@ class ViewerUI;
 // (WDX_ENABLE_M2 / WDX_ENABLE_M3): offering a file type the loader will then
 // refuse is worse than not listing it. `kHasForeignModelFilter` is how a call
 // site sizes its filter array.
+//
+// `.wem` is in every one of them: the module is in whiteout_lib whatever this
+// build enables, and which profiles a given file can be opened as is a question
+// the file answers at open time (io/wem/wem_profiles.h), not one the build
+// flags answer here.
 #if WDX_ENABLE_M2 && WDX_ENABLE_M3
-inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,m2,m3";
+inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,wem,m2,m3";
 inline constexpr const char* kForeignModelExtensions = "m2,m3";
 inline constexpr bool kHasForeignModelFilter = true;
 #elif WDX_ENABLE_M2
-inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,m2";
+inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,wem,m2";
 inline constexpr const char* kForeignModelExtensions = "m2";
 inline constexpr bool kHasForeignModelFilter = true;
 #elif WDX_ENABLE_M3
-inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,m3";
+inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,wem,m3";
 inline constexpr const char* kForeignModelExtensions = "m3";
 inline constexpr bool kHasForeignModelFilter = true;
 #else
-inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx";
+inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,wem";
 inline constexpr const char* kForeignModelExtensions = "";
 inline constexpr bool kHasForeignModelFilter = false;
 #endif
@@ -247,7 +259,6 @@ public:
     void SetStorageExplorerOpen(bool on);
     // Build the panel window inside the host's ImGui frame (called by ViewerUI).
     void BuildStorageExplorerWindow();
-
 
     // ---- Current profile ----
     // Which game the user is working with. A PROFILE, not a storage: it names a
@@ -432,6 +443,49 @@ public:
     // write, so Save As has nothing to offer for one.
     bool CurrentModelIsForeign() const;
 
+    // ---- WEM interchange (WEM_INTEGRATION_DESIGN.md) -----------------------
+    //
+    // Two halves that do not mirror each other, and deliberately so. Writing a
+    // `.wem` needs nothing from the user: the model on screen decides which
+    // converter runs. *Reading* one needs a profile, because a document can
+    // carry a material set per profile over one geometry — so the open is two
+    // steps, and the dialog sits between them.
+
+    // Parse @p path far enough to ask it what profiles it offers. Null when it
+    // is not a WEM file, which is also how a host decides whether to show the
+    // dialog at all. The parse is not thrown away: hand the same pointer to
+    // @ref OpenWemAs and the file is read once.
+    std::shared_ptr<io::WemDocument> PeekWemDocument(const std::filesystem::path& path);
+
+    // The profile a `.wem` opens as when nobody picks one — the CLI's
+    // `--wem-profile`. `ProfileId::Count` (the default) leaves the choice to
+    // the document, which is what every other entry point wants.
+    void SetPreferredWemProfile(::whiteout::models::wem::ProfileId profile) {
+        preferredWemProfile_ = profile;
+    }
+
+    // Open @p document in a NEW tab as @p profile, exactly as LoadModel opens
+    // any other model. `ProfileId::Count` means @ref SetPreferredWemProfile's
+    // answer, and failing that the document's own default.
+    bool OpenWemAs(const std::filesystem::path& path, std::shared_ptr<io::WemDocument> document,
+                   ::whiteout::models::wem::ProfileId profile);
+
+    // Whether the active document can be written back as MDX / MDL.
+    //
+    // Not the same question as "is it a Warcraft III file": a `.wem` opened as
+    // either Warcraft III profile IS an `mdx::Model` in memory and writes out
+    // fine, and a document with no model at all is not. Asked of the source, so
+    // the menu item and the write cannot disagree.
+    bool CanSaveAsMdx() const;
+
+    // Whether the active document came from a format WEM can be written from.
+    // What the menu item greys out on; it asks the same question the export
+    // answers, so the two cannot disagree.
+    bool CanExportWem() const;
+
+    // Write the active document to @p outPath as a `.wem`.
+    bool ExportWem(const std::filesystem::path& outPath);
+
     // The skins the active `.m2` can wear, and which one it is wearing. Empty
     // when the model is not a creature, or with `.m2` compiled out — a UI
     // asking should hide the control rather than offer an empty one. Setting it
@@ -504,9 +558,9 @@ public:
     // on the attachment phase. Names resolve through the GameBalance item
     // registry, built lazily from the active storage on first use.
     struct D3OutfitRow {
-        std::string name;     ///< "Torso", "Right hand", ...
-        i32 visualSlot = 0;   ///< native::EVisualSlot, opaque to the UI.
-        std::string equipped; ///< Item name (the stem), empty when nothing is.
+        std::string name;          ///< "Torso", "Right hand", ...
+        i32 visualSlot = 0;        ///< native::EVisualSlot, opaque to the UI.
+        std::string equipped;      ///< Item name (the stem), empty when nothing is.
         std::string equippedLabel; ///< Its display name; the stem when unnamed.
         i32 dye = 0;
         bool armour = false; ///< True for the four rows that dress today.
@@ -805,6 +859,17 @@ private:
     i32 activeCameraPresetIdx_ = -1;
     bool cameraLocked_ = false;
     std::filesystem::path currentModelPath_;
+
+    // The WEM document the next open will spawn, and the profile it was picked
+    // at. Set by OpenWemAs (from the dialog) and by LoadModel (from the file,
+    // at its own default) — both before FollowModelGame runs, because the
+    // profile is what tells it which game's storage to point at.
+    std::shared_ptr<io::WemDocument> pendingWemDocument_;
+    /// What the CLI asked for, or `Count`.
+    ::whiteout::models::wem::ProfileId preferredWemProfile_ =
+        ::whiteout::models::wem::ProfileId::Count;
+    ::whiteout::models::wem::ProfileId pendingWemProfile_ =
+        ::whiteout::models::wem::ProfileId::Count;
 
     // ---- Input state ----
     bool lmbDown_ = false;

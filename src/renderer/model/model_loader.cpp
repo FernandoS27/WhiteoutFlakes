@@ -16,13 +16,16 @@
 #include "bls/bls_cb_layout.h"
 #include "bls/bls_draw_helpers.h"
 #include "effects/spn_spawner.h"
+#include "io/file_content_provider.h" // FileContentProvider::SetGame
+#include "io/wem/wem_import.h"
+#include "io/wem/wem_profiles.h"
 #include "model/model_instance.h"
 #include "model/model_template.h"
 #include "model/model_template_manager.h"
 #include "particle/child_model_emitter.h"
 #include "particle/model_particle_emitter.h"
-#include "particle/particle_adapters.h"
 #include "particle/particle2_emitter.h"
+#include "particle/particle_adapters.h"
 #include "render_service.h"
 #include "render_service_impl.h"
 #include "scene_manager.h"
@@ -44,11 +47,11 @@
 #include "renderer/profiles/diablo3/d3_surface_table.h"
 #endif
 #if WDX_ENABLE_M2
+#include <whiteout/models/m2/types.h>
 #include "io/m2/m2_model_adapter.h"
 #include "renderer/profiles/wow/m2_surface_table.h"
 #include "renderer/profiles/wow/wow_character_appearance.h"
 #include "renderer/profiles/wow/wow_replaceable_textures.h"
-#include <whiteout/models/m2/types.h>
 #endif
 #include "renderer/profiles/wc3/wc3_surface_table.h"
 
@@ -66,6 +69,11 @@ using namespace ::whiteout::flakes::renderer::effects;
 using namespace ::whiteout::flakes::renderer::particle;
 using namespace ::whiteout::flakes::renderer::assets;
 using namespace ::whiteout::flakes::renderer::bls;
+
+// The WEM profile axis. Named the way io/wem/ names it, so the two spellings of
+// `ProfileId` in this file — the format's and the scene's ProductId — cannot be
+// confused for each other.
+namespace wem = ::whiteout::models::wem;
 using namespace ::whiteout::flakes::io;
 
 namespace {
@@ -277,9 +285,8 @@ void ModelLoader::SyncD3Equipment(u32 actorHandle) {
         if (!ch)
             return;
         if (auto ca = std::dynamic_pointer_cast<io::D3ModelAdapter>(ch->animation.Source()))
-            ca->SetGeosetDyes(std::vector<i32>(
-                ca->EmittedSubObjects().size(),
-                (dye >= 2 && dye <= 22) ? dye : 0));
+            ca->SetGeosetDyes(std::vector<i32>(ca->EmittedSubObjects().size(),
+                                               (dye >= 2 && dye <= 22) ? dye : 0));
     };
 
     std::vector<D3EquipChild> kept;
@@ -678,7 +685,8 @@ void ModelLoader::DestroyActor(u32 handle) {
         }
     }
     for (auto slot : a.assetSlots) {
-        if (slot != 0) rs_.Assets().Release(slot);
+        if (slot != 0)
+            rs_.Assets().Release(slot);
     }
     a.assetSlots.clear();
     rs_.Replaceables().UnregisterModel(a);
@@ -722,10 +730,9 @@ void ModelLoader::AddM2Emitter(u32 handle, i32 index,
     em->SetSeed(particle::MixSeed(handle, (u32)index));
     if (!trailKey.empty())
         AttachTrailEmitters(handle, index, *em, trailKey, behavior);
-    rs_.Particles().AddEmitter(handle,
-                               models ? particle::ParticleOutput::ChildModel
-                                      : particle::ParticleOutput::Billboard,
-                               index, std::move(em));
+    rs_.Particles().AddEmitter(
+        handle, models ? particle::ParticleOutput::ChildModel : particle::ParticleOutput::Billboard,
+        index, std::move(em));
 }
 
 void ModelLoader::AttachTrailEmitters(u32 handle, i32 index, particle::Emitter2& parent,
@@ -785,8 +792,8 @@ void ModelLoader::AttachTrailEmitters(u32 handle, i32 index, particle::Emitter2&
         trail->SetBehavior(behavior);
         // A range no other emitter of this actor occupies, so the stream stays
         // a function of (actor, emitter index, trail index) alone.
-        trail->SetSeed(particle::MixSeed(
-            handle, 0xC000u + static_cast<u32>(index * kMax + childIdx)));
+        trail->SetSeed(
+            particle::MixSeed(handle, 0xC000u + static_cast<u32>(index * kMax + childIdx)));
         trail->SetTrailState(particle::TrailStateFromM2Config(tcfg));
         parent.AddTrail(std::move(trail));
         ++childIdx;
@@ -839,8 +846,7 @@ void ModelLoader::SetPE1Configs(u32 handle, const std::vector<PE1EmitterConfig>&
         em->SetDesc(particle::DescFromWc3ChildModelConfig(configs[i]));
         em->SetBehavior(rs_.Pipeline().LoadTimeProfile().Particles());
         em->SetSeed(particle::MixSeed(handle, 0x8000u + (u32)i));
-        rs_.Particles().AddEmitter(handle, particle::ParticleOutput::ChildModel, i,
-                                   std::move(em));
+        rs_.Particles().AddEmitter(handle, particle::ParticleOutput::ChildModel, i, std::move(em));
     }
 }
 
@@ -853,15 +859,16 @@ void ModelLoader::PreloadChildTemplates(Actor& a, const ModelTemplate& tmpl) {
     // AddDependency. Everything releases together with the actor.
     std::unordered_set<std::string> seenPkb;
     for (const auto& ce : tmpl.cornEmitterInits) {
-        if (ce.pkbPath.empty()) continue;
-        if (!seenPkb.insert(ce.pkbPath).second) continue;
+        if (ce.pkbPath.empty())
+            continue;
+        if (!seenPkb.insert(ce.pkbPath).second)
+            continue;
         a.assetSlots.push_back(
             rs_.Assets().Acquire(assets::AssetKind::Effect, assets::kSoleSubKind, ce.pkbPath));
     }
 }
 
-void ModelLoader::PreloadChildTemplates(Actor& a,
-                                        const std::vector<PE1EmitterConfig>& pe1Cfgs,
+void ModelLoader::PreloadChildTemplates(Actor& a, const std::vector<PE1EmitterConfig>& pe1Cfgs,
                                         const std::vector<AttachmentConfig>& attachCfgs) {
     // Acquire one ChildModel slot per unique path the actor's template
     // references. The SlotId stays on `a.assetSlots` for the actor's
@@ -873,8 +880,10 @@ void ModelLoader::PreloadChildTemplates(Actor& a,
     // refcount math is correct.
     std::unordered_set<std::string> seen;
     auto hold = [&](const std::string& path) {
-        if (path.empty()) return;
-        if (!seen.insert(path).second) return;
+        if (path.empty())
+            return;
+        if (!seen.insert(path).second)
+            return;
         a.assetSlots.push_back(
             rs_.Assets().Acquire(assets::AssetKind::Model, assets::kSoleSubKind, path));
     };
@@ -972,13 +981,11 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
     }
     for (i32 i = 0; i < (i32)tmpl->m2ParticleConfigs.size(); i++)
         AddM2Emitter(mi->handle, i, tmpl->m2ParticleDescs[i], particleBehavior);
-    mi->render.pe2State.resize(
-        (std::max)(tmpl->pe2Configs.size(), tmpl->m2ParticleConfigs.size()));
+    mi->render.pe2State.resize((std::max)(tmpl->pe2Configs.size(), tmpl->m2ParticleConfigs.size()));
 
     const ribbon::RibbonBehavior ribbonBehavior = rs_.Pipeline().LoadTimeProfile().Ribbons();
     for (i32 i = 0; i < (i32)tmpl->ribbonConfigs.size(); i++)
-        rs_.Ribbons().AddEmitter(mi->handle, i,
-                                 ribbon::DescFromWc3Config(tmpl->ribbonConfigs[i]),
+        rs_.Ribbons().AddEmitter(mi->handle, i, ribbon::DescFromWc3Config(tmpl->ribbonConfigs[i]),
                                  ribbonBehavior);
 
     // PE1 ("particles that ARE models") registers in the same service as the
@@ -1017,8 +1024,8 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
         if (cinit.pkbPath.empty())
             continue;
         auto em = std::make_unique<corn_effects::CornEffectsEmitter>(
-            rs_.Assets(), cinit.pkbPath, cinit.animVisibilityGuide,
-            cinit.replaceableId, cinit.cornEffectsScaling);
+            rs_.Assets(), cinit.pkbPath, cinit.animVisibilityGuide, cinit.replaceableId,
+            cinit.cornEffectsScaling);
         em->SetEmissionRateMultiplier(cinit.defaultEmissionRate);
         em->SetLifeSpanMultiplier(cinit.defaultLifeSpan);
         em->SetSpeedMultiplier(cinit.defaultSpeed);
@@ -1314,8 +1321,8 @@ bool LooksLikeM2(std::span<const u8> bytes) {
 // Runs at spawn, before the geosets exist: the range lands on the staged geoset
 // and rides the normal staged→GPU copy, so nothing has to re-find it later.
 void BuildM2Surfaces(Actor& actor) {
-    const auto* table = static_cast<const profiles::wow::M2SurfaceTable*>(
-        actor.render.surfaceTable.get());
+    const auto* table =
+        static_cast<const profiles::wow::M2SurfaceTable*>(actor.render.surfaceTable.get());
     if (!table)
         return;
 
@@ -1378,8 +1385,8 @@ bool LooksLikeM3(std::span<const u8> bytes) {
 // spawn, before the geosets exist, for the same reason: the range lands on
 // the staged geoset and rides the staged→GPU copy.
 void BuildM3Surfaces(Actor& actor) {
-    const auto* table = static_cast<const profiles::sc2_heroes::M3SurfaceTable*>(
-        actor.render.surfaceTable.get());
+    const auto* table =
+        static_cast<const profiles::sc2_heroes::M3SurfaceTable*>(actor.render.surfaceTable.get());
     if (!table)
         return;
     const auto& src = table->Surfaces();
@@ -1409,8 +1416,8 @@ namespace {
 // One surface per emitted SubObject — D3SurfaceTable entry g IS geoset g's
 // resolved material, so like BuildM3Surfaces there is no grouping to do.
 void BuildD3Surfaces(Actor& actor) {
-    const auto* table = static_cast<const profiles::diablo3::D3SurfaceTable*>(
-        actor.render.surfaceTable.get());
+    const auto* table =
+        static_cast<const profiles::diablo3::D3SurfaceTable*>(actor.render.surfaceTable.get());
     if (!table)
         return;
     const auto& src = table->Surfaces();
@@ -1458,7 +1465,6 @@ Actor* ModelLoader::SpawnUnit(const ContentRef& ref, const Matrix44f& initialTm)
 // they are opt-in rather than always present. With both off this reduces to
 // `return nullptr` and the single read below disappears with it.
 Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& initialTm) {
-#if WDX_ENABLE_M2 || WDX_ENABLE_M3 || WDX_ENABLE_D3
     auto* provider = rs_.Scene().ActiveContentProvider();
     if (!provider)
         return nullptr;
@@ -1466,6 +1472,15 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
     if (!bytes || bytes->empty())
         return nullptr;
     const std::span<const ::whiteout::u8> data(bytes->data(), bytes->size());
+
+    // WEM first, and unconditionally: the module is in whiteout_lib whatever
+    // this build enables, and a `.wem` is not one of the three formats below —
+    // it is a container that becomes one. Which one is the profile's answer,
+    // and with nobody here to ask, the document's own default stands.
+    if (auto document = io::ParseWemDocument(data, ref.Describe()))
+        return SpawnWemDocument(*document, wem::ProfileId::Count, initialTm);
+
+#if WDX_ENABLE_M2 || WDX_ENABLE_M3 || WDX_ENABLE_D3
 
     // Detection settles the scene's product. A model of a given format having
     // been recognised is direct evidence of one, and it outranks whatever the
@@ -1576,8 +1591,8 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
             // file that was asked for would build 594 separate drawables off
             // one correctly-shared parse. Neither the `.acr` nor the `.app` is
             // re-read to get here — both come out of D3SnoCache.
-            d3 = D3Drawable(io::D3ModelAdapter::LoadActor(ref, data, cache,
-                                                          rs_.Settings().D3LazyAnimations()));
+            d3 = D3Drawable(
+                io::D3ModelAdapter::LoadActor(ref, data, cache, rs_.Settings().D3LazyAnimations()));
         } else if (group == io::d3n::Group::Appearance) {
             d3 = D3Drawable(io::D3ModelAdapter::LoadAppearance(ref, data, cache));
         } else {
@@ -1599,55 +1614,189 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
     if (!source)
         return nullptr;
 
-    Actor* actor = SpawnUnitFromSource(std::move(source), initialTm);
+    Actor* actor = SpawnUnitFromSource(source, initialTm);
     if (!actor)
         return nullptr;
 
-    // Per actor, which model can draw this. Saying so per actor is what lets a
-    // foreign model and a WC3 model coexist in one scene.
-    actor->shadingModel = core::ShadingModelId::Unlit;
+    FinishNativeActor(*actor, source);
 
 #if WDX_ENABLE_M2
-    if (m2) {
+    // Not in FinishNativeActor: the collections models are what the character
+    // *pass* asked for, and that pass runs off the ContentRef this route has
+    // and the WEM route does not. A `.wem` names its own textures, so it has
+    // nothing to look up.
+    if (m2)
+        SpawnWowSkinnedModels(*actor, *m2, skinnedModels, provider);
+#endif
+    return actor;
+#else
+    // Nothing but WEM is compiled in, and the arm above already answered.
+    return nullptr;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// The per-format half of a spawn, shared by the file route and the WEM route
+// ---------------------------------------------------------------------------
+
+void ModelLoader::FinishNativeActor(Actor& actor, const std::shared_ptr<IModelSource>& source) {
+    // Warcraft III keeps the scene's own shading model and gets its table from
+    // Wc3TableFor on first use, so there is nothing to stamp — and stamping
+    // Unlit would take it off the WC3 path entirely.
+    if (dynamic_cast<io::MdxModelAdapter*>(source.get()))
+        return;
+
+    // Per actor, which model can draw this. Saying so per actor is what lets a
+    // foreign model and a WC3 model coexist in one scene.
+    actor.shadingModel = core::ShadingModelId::Unlit;
+
+#if WDX_ENABLE_M2
+    if (auto* m2 = dynamic_cast<io::M2ModelAdapter*>(source.get())) {
         // Built here rather than through GetMaterials: M2's per-batch binding
         // does not fit MaterialData, and the parsed model is right here.
-        actor->render.surfaceTable =
+        actor.render.surfaceTable =
             profiles::wow::BuildM2SurfaceTable(m2->SourceModel(), m2->ProfileIndex());
-        BuildM2Surfaces(*actor);
-        actor->shadingModel = core::ShadingModelId::M2Combiners;
-        // After the character's own table: the children are spawned through the
-        // same route and each builds its own.
-        SpawnWowSkinnedModels(*actor, *m2, skinnedModels, provider);
+        BuildM2Surfaces(actor);
+        actor.shadingModel = core::ShadingModelId::M2Combiners;
+        return;
     }
 #endif
 #if WDX_ENABLE_D3
-    if (d3)
-        SetupD3Actor(*actor, d3);
+    if (auto d3 = std::dynamic_pointer_cast<io::D3ModelAdapter>(source)) {
+        SetupD3Actor(actor, d3);
+        return;
+    }
 #endif
 #if WDX_ENABLE_M3
-    if (m3) {
+    if (auto* m3 = dynamic_cast<io::M3ModelAdapter*>(source.get())) {
         // Built off the raw model, M2's precedent — per-batch binding does not
         // fit MaterialData. Stamped only when something resolved: a table with
         // no valid entry (every material displacement / volume / …) leaves the
         // whole actor on Unlit, which draws where this model would vanish.
-        auto table = profiles::sc2_heroes::BuildM3SurfaceTable(m3->SourceModel(),
-                                                               m3->EmittedRegions());
+        auto table =
+            profiles::sc2_heroes::BuildM3SurfaceTable(m3->SourceModel(), m3->EmittedRegions());
         bool anyValid = false;
         for (const auto& s : table->Surfaces())
             anyValid |= s.valid;
         if (anyValid) {
-            actor->render.surfaceTable = std::move(table);
-            BuildM3Surfaces(*actor);
-            actor->shadingModel = core::ShadingModelId::M3Standard;
+            actor.render.surfaceTable = std::move(table);
+            BuildM3Surfaces(actor);
+            actor.shadingModel = core::ShadingModelId::M3Standard;
         }
+        return;
     }
 #endif
-    return actor;
+}
+
+// ---------------------------------------------------------------------------
+// WEM
+// ---------------------------------------------------------------------------
+
+Actor* ModelLoader::SpawnWem(const ContentRef& ref, wem::ProfileId profile,
+                             const Matrix44f& initialTm) {
+    auto* provider = rs_.Scene().ActiveContentProvider();
+    if (!provider)
+        return nullptr;
+    auto bytes = provider->ReadFile(ref);
+    if (!bytes || bytes->empty())
+        return nullptr;
+    auto document = io::ParseWemDocument(
+        std::span<const ::whiteout::u8>(bytes->data(), bytes->size()), ref.Describe());
+    if (!document) {
+        std::fprintf(stderr, "[wem] '%s' is not a WEM file this build can read\n",
+                     ref.Describe().c_str());
+        return nullptr;
+    }
+    return SpawnWemDocument(*document, profile, initialTm);
+}
+
+Actor* ModelLoader::SpawnWemDocument(const io::WemDocument& document, wem::ProfileId profile,
+                                     const Matrix44f& initialTm) {
+    auto* provider = rs_.Scene().ActiveContentProvider();
+
+    // The product is settled from the PROFILE and before anything is staged,
+    // for the reason the format sniff above settles it before parsing: the
+    // product picks the storage every texture reference resolves against, and
+    // a document that names its textures by fileDataID resolves them against a
+    // World of Warcraft install or against nothing at all.
+    //
+    // Which means the profile has to be decided first, and by the same call the
+    // host's dialog decided it with, so the two cannot disagree.
+    const wem::ProfileId chosen =
+        profile == wem::ProfileId::Count ? io::DefaultWemProfile(document.document) : profile;
+    if (chosen != wem::ProfileId::Count) {
+        const ProductId product = io::ProductForWemProfile(chosen);
+        if (rs_.Scene().Product() != product) {
+            const ProductId was = rs_.Scene().Product();
+            rs_.Scene().SetProduct(product);
+            rs_.Settings().MarkRenderModeDirty();
+            if (was != ProductId::Neutral) {
+                std::fprintf(stderr,
+                             "[wem] '%s' opens as %s content; switching the scene from %s\n",
+                             document.name.c_str(), ProductName(product), ProductName(was));
+            }
+        }
+        // Re-read: SetProduct re-points the provider at another game's storage.
+        provider = rs_.Scene().ActiveContentProvider();
+        // The same commitment AddModelByPath makes, for the same reason: a
+        // Warcraft III `.wem` is Warcraft III content, and the day/night rig
+        // and the environment probes are realised by nothing but a spawn. A
+        // scene that skips this draws on the fixed studio light, which is not
+        // an error and is not the game's lighting either.
+        if (product == ProductId::Wc3)
+            rs_.EnsureWc3GameData();
+    }
+
+    const io::WemSourceResult built = io::BuildWemSource(document, chosen, {}, provider,
+#if WDX_ENABLE_D3
+                                                         &D3Cache()
 #else
-    (void)ref;
-    (void)initialTm;
-    return nullptr;
+                                                         nullptr
 #endif
+    );
+    if (!built.ok()) {
+        // The diagnostics are the most useful thing there is on this path: a
+        // derive that cost 400 rows and a converter that refused the profile
+        // say very different things, and the one-line error cannot tell them
+        // apart.
+        std::fprintf(stderr, "[wem] %s\n%s", built.error.c_str(),
+                     io::DescribeWemDiagnostics(built.diagnostics).c_str());
+        return nullptr;
+    }
+    if (!built.diagnostics.empty()) {
+        // Not an error path. A lossy conversion that succeeded and one that
+        // failed are different states and both have something to say — the
+        // clips no `toX` writes are reported here every single time.
+        std::fprintf(stderr, "[wem] '%s' as %s: %zu diagnostic(s)\n%s", document.name.c_str(),
+                     wem::Profile(built.profile).displayName, built.diagnostics.size(),
+                     io::DescribeWemDiagnostics(built.diagnostics).c_str());
+    }
+
+    // The scene product is two decisions at once — which render profile draws,
+    // and which install every asset resolves against — and this is the one path
+    // where they legitimately disagree. The profile keeps the product it was
+    // opened as; the provider goes back to the game the CONTENT came from, or a
+    // Diablo III appearance opened as Warcraft III resolves none of its SNOs
+    // and stages a white placeholder per texture slot.
+    //
+    // It outlives the spawn on purpose: `Acquire` only records the reference and
+    // the host's needs pump does the read, so the install has to still be the
+    // right one several frames later. The next model added resets it, which is
+    // the same one-game-per-scene rule every other path already follows.
+    if (built.assetProduct != ProductId::Neutral && built.assetProduct != rs_.Scene().Product()) {
+        if (auto* files = dynamic_cast<io::FileContentProvider*>(provider))
+            files->SetGame(built.assetProduct);
+    }
+
+    Actor* actor = SpawnUnitFromSource(built.source, initialTm);
+    if (!actor)
+        return nullptr;
+    // Restamped, because the spawn read it off the ACTIVE profile and this is
+    // the one actor whose geometry may not be in that profile's units — a
+    // Diablo III `.wem` opened as Warcraft III is still authored at 17.
+    actor->worldScale = built.worldScale;
+    FinishNativeActor(*actor, built.source);
+    return actor;
 }
 
 #if WDX_ENABLE_M2
@@ -1722,10 +1871,9 @@ std::shared_ptr<io::M2ModelAdapter> ModelLoader::ResolveParticleModel(const std:
         // `#<id>` is ContentRef::Describe's form, and GPID is the only thing
         // that names a geometry model in shipped data — no record in the corpus
         // carries the inline filename the pre-Legion layout had.
-        const ContentRef ref =
-            (key[0] == '#') ? ContentRef::FromFileId(
-                                  static_cast<u32>(std::strtoul(key.c_str() + 1, nullptr, 10)))
-                            : ContentRef::FromPath(key);
+        const ContentRef ref = (key[0] == '#') ? ContentRef::FromFileId(static_cast<u32>(
+                                                     std::strtoul(key.c_str() + 1, nullptr, 10)))
+                                               : ContentRef::FromPath(key);
         if (auto bytes = provider->ReadFile(ref); bytes && !bytes->empty()) {
             built = io::M2ModelAdapter::Load(
                 ref, std::span<const ::whiteout::u8>(bytes->data(), bytes->size()), provider,
@@ -1757,12 +1905,12 @@ void ModelLoader::PreloadModelParticleGeometry(u32 handle, const std::string& ke
     for (const auto& tex : model->GetTextures()) {
         if (tex.sharedKey.empty())
             continue;
-        const ContentRef ref =
-            (tex.sharedKey[0] == '#')
-                ? ContentRef::FromFileId(
-                      static_cast<u32>(std::strtoul(tex.sharedKey.c_str() + 1, nullptr, 10)))
-                : ContentRef::FromPath(tex.sharedKey);
-        a->assetSlots.push_back(rs_.Assets().Acquire(AssetKind::Texture, assets::kSoleSubKind, ref));
+        const ContentRef ref = (tex.sharedKey[0] == '#')
+                                   ? ContentRef::FromFileId(static_cast<u32>(
+                                         std::strtoul(tex.sharedKey.c_str() + 1, nullptr, 10)))
+                                   : ContentRef::FromPath(tex.sharedKey);
+        a->assetSlots.push_back(
+            rs_.Assets().Acquire(AssetKind::Texture, assets::kSoleSubKind, ref));
     }
 #else
     (void)handle;
@@ -1867,8 +2015,8 @@ Actor* ModelLoader::SpawnUnitFromSource(std::shared_ptr<IModelSource> source,
             if (cinit.pkbPath.empty())
                 continue;
             auto em = std::make_unique<corn_effects::CornEffectsEmitter>(
-                rs_.Assets(), cinit.pkbPath, cinit.animVisibilityGuide,
-                cinit.replaceableId, cinit.cornEffectsScaling);
+                rs_.Assets(), cinit.pkbPath, cinit.animVisibilityGuide, cinit.replaceableId,
+                cinit.cornEffectsScaling);
             em->SetEmissionRateMultiplier(cinit.defaultEmissionRate);
             em->SetLifeSpanMultiplier(cinit.defaultLifeSpan);
             em->SetSpeedMultiplier(cinit.defaultSpeed);
@@ -1898,14 +2046,13 @@ void ModelLoader::UploadStagedTextures(Actor& mi) {
             // `#<id>` is ContentRef::Describe's form for an id-addressed ref,
             // which is how a chunked `.m2` names its textures. Everything else
             // is a path.
-            const ContentRef ref =
-                (st.sharedKey[0] == '#')
-                    ? ContentRef::FromFileId(
-                          static_cast<u32>(std::strtoul(st.sharedKey.c_str() + 1, nullptr, 10)))
-                    : ContentRef::FromPath(st.sharedKey);
+            const ContentRef ref = (st.sharedKey[0] == '#')
+                                       ? ContentRef::FromFileId(static_cast<u32>(
+                                             std::strtoul(st.sharedKey.c_str() + 1, nullptr, 10)))
+                                       : ContentRef::FromPath(st.sharedKey);
             // Cube outranks linear: the only cube slot is the environment map,
             // which is colour, so the two never contend.
-            const assets::AssetSubKind subKind = st.cubeMap  ? assets::kTextureCubeSubKind
+            const assets::AssetSubKind subKind = st.cubeMap      ? assets::kTextureCubeSubKind
                                                  : st.linearData ? assets::kTextureLinearSubKind
                                                                  : assets::kSoleSubKind;
             const auto slot = rs_.Assets().Acquire(AssetKind::Texture, subKind, ref);
@@ -1929,7 +2076,6 @@ void ModelLoader::UploadStagedTextures(Actor& mi) {
     }
     mi.render.stagedTextures.clear();
 }
-
 
 void ModelLoader::uploadTemplateGpu(ModelTemplate& tmpl) {
     if (tmpl.gpuUploaded)
