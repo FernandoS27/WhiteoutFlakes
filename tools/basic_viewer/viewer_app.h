@@ -486,6 +486,18 @@ public:
     // Write the active document to @p outPath as a `.wem`.
     bool ExportWem(const std::filesystem::path& outPath);
 
+    // Whether the active document can be written as a Warcraft III `.mdx`
+    // through WEM — that is, whether it came from a format WEM reads and is not
+    // Warcraft III already. A Warcraft III model has Save As, which writes it
+    // back without a lossy round trip through a derived material set.
+    bool CanExportMdx() const;
+
+    // Convert the active document to Warcraft III and write it to @p outPath.
+    // Textures are written beside it when @p exportTextures, converted to the
+    // container the profile reads. Returns false and logs on failure.
+    bool ExportMdx(const std::filesystem::path& outPath, ::whiteout::models::wem::ProfileId profile,
+                   bool exportTextures);
+
     // The skins the active `.m2` can wear, and which one it is wearing. Empty
     // when the model is not a creature, or with `.m2` compiled out — a UI
     // asking should hide the control rather than offer an empty one. Setting it

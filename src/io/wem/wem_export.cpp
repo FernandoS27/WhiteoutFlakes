@@ -1,5 +1,8 @@
 #include "io/wem/wem_export.h"
 
+#include "io/wem/wem_import.h"
+#include "io/wem/wem_profiles.h"
+
 #include "io/mdx_model_adapter.h"
 #include "whiteout/flakes/util/path_utf8.h"
 
@@ -16,6 +19,7 @@
 #endif
 
 #include <whiteout/models/wem/converters.h>
+#include <whiteout/models/wem/retarget.h>
 #include <whiteout/models/wem/writer.h>
 
 #include <cstdlib>
@@ -266,6 +270,49 @@ WemExportResult ExportModelToWem(renderer::model::IModelSource& source, IContent
 #endif
 
     result.error = "this model did not come from a format WEM can be written from";
+    return result;
+}
+
+MdxExportResult ConvertWemToMdx(const wem::Document& document, const MdxExportOptions& options) {
+    MdxExportResult result;
+
+    const u32 version = MdxVersionForWemProfile(options.profile);
+    if (version == 0) {
+        result.error = std::string(wem::Profile(options.profile).displayName) +
+                       " is not a Warcraft III profile";
+        return result;
+    }
+
+    WemStagingOptions staging;
+    staging.baseLodOnly = options.baseLodOnly;
+    if (options.rescale) {
+        // The profile the GEOMETRY belongs to, which is not the one being
+        // written: the derive below restates a material set and never touches a
+        // vertex. `defaultProfile` is what every importer stamps and the only
+        // thing that answers the question.
+        staging.rescale = wem::RescaleFactorBetween(document.defaultProfile, options.profile);
+    }
+
+    wem::Document scratch;
+    const WemStagingResult staged = StageWemDocument(document, options.profile, scratch, staging);
+    result.diagnostics.append(staged.diagnostics);
+    if (!staged.ok()) {
+        result.error = "this model " + staged.error;
+        return result;
+    }
+    result.derived = staged.derived;
+    result.scale = staged.rescaled;
+    result.lodMeshesDropped = staged.lodMeshesDropped;
+
+    wem::MdxConverter converter;
+    wem::Result<::whiteout::mdx::Model> converted =
+        converter.toMdx(*staged.document, options.profile, version);
+    result.diagnostics.append(converted.diagnostics);
+    if (!converted.ok()) {
+        result.error = "the conversion to a Warcraft III model failed";
+        return result;
+    }
+    result.model = converted.take();
     return result;
 }
 

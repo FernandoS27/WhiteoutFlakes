@@ -51,14 +51,6 @@ u32 M3VersionOf(const wem::Model& model, wem::ProfileId profile) {
     return profile == wem::ProfileId::Heroes ? 30u : 29u;
 }
 
-/// Warcraft III's two profiles are one file format at two versions. 800 is
-/// classic's and 1000 is what Reforged writes; `mdx_core::ExportMaterial` is
-/// what actually decides whether a layer is HD, so this only has to agree with
-/// the material rather than drive it.
-u32 MdxVersionFor(wem::ProfileId profile) {
-    return profile == wem::ProfileId::Wc3Reforged ? 1000u : 800u;
-}
-
 /// Give a texture MDX cannot name the one key the host can still resolve.
 ///
 /// MDX addresses a texture by file name and by nothing else, so a document that
@@ -148,6 +140,122 @@ std::string DescribeWemDiagnostics(const wem::Diagnostics& diagnostics, usize ma
     return out;
 }
 
+WemStagingResult StageWemDocument(const wem::Document& source, wem::ProfileId profile,
+                                  wem::Document& scratch, const WemStagingOptions& options) {
+    WemStagingResult result;
+    result.rescaled = 1.0f;
+
+    // The copy is made only when something actually has to change. A document
+    // is large — every mesh's attribute layers are in it — and opening a file as
+    // the profile it already carries should not pay for that.
+    const wem::Document* staged = &source;
+    const auto mutate = [&]() -> wem::Document& {
+        if (staged != &scratch) {
+            scratch = *staged;
+            staged = &scratch;
+        }
+        return scratch;
+    };
+
+    if (!source.carries(profile)) {
+        const wem::ProfileId from = WemDeriveSource(source, profile);
+        if (from == wem::ProfileId::Count) {
+            result.error = std::string("declares no profile to derive ") +
+                           wem::Profile(profile).displayName + " from";
+            return result;
+        }
+        wem::Document& document = mutate();
+        document.declare(profile);
+        const wem::DeriveResult derive = wem::DeriveProfile(document, from, profile);
+        result.diagnostics.append(derive.diagnostics);
+        if (!derive.ok) {
+            result.error = std::string("could not be derived as ") +
+                           wem::Profile(profile).displayName + " from " +
+                           wem::Profile(from).displayName;
+            return result;
+        }
+        result.derived = true;
+    }
+
+    // The rig convention, which a converter only WARNS about (§10.5): restating
+    // a skeleton edits the document, and a read of one may not do that
+    // silently. Nothing else in the host ran it, so a Diablo III or StarCraft
+    // II document — both `ExplicitBind` — reached `toMdx` with pivots composed
+    // from its rest chain and node tracks still keyed against the bind frame
+    // those pivots just replaced, which poses the skeleton at neither.
+    const wem::RigConvention wantedRig = wem::Profile(profile).rig;
+    const bool restateRig =
+        std::any_of(staged->models.begin(), staged->models.end(), [wantedRig](const wem::Model& m) {
+            return !m.nodes.empty() && m.nodes.rig != wantedRig;
+        });
+    if (restateRig) {
+        const wem::SkeletonRetargetResult rig = wem::RetargetSkeleton(mutate(), profile);
+        result.diagnostics.append(rig.diagnostics);
+        if (!rig.ok) {
+            result.error =
+                std::string("could not be restated as a ") + wem::ToString(wantedRig) + " rig";
+            return result;
+        }
+    }
+
+    // Before the rescale, so the numbers the rescale reports are the numbers
+    // that were written. Warcraft III has no geoset level of detail below
+    // `.mdx` v1000 and no use for one above it — a map's models are drawn at
+    // one distance — so the ladder is dropped rather than carried.
+    if (options.baseLodOnly) {
+        wem::Document* document = nullptr;
+        for (const wem::Model& model : staged->models) {
+            const bool any = std::any_of(model.meshes.begin(), model.meshes.end(),
+                                         [](const wem::Mesh& m) { return m.lodLevel != 0; });
+            if (any) {
+                document = &mutate();
+                break;
+            }
+        }
+        if (document != nullptr) {
+            for (wem::Model& model : document->models) {
+                const auto base = static_cast<u32>(
+                    std::count_if(model.meshes.begin(), model.meshes.end(),
+                                  [](const wem::Mesh& mesh) { return mesh.lodLevel == 0; }));
+                // Counted before anything moves, and never all of them: a model
+                // whose every mesh claims a non-zero level would come out empty,
+                // and an empty model is a worse answer than a coarse one.
+                if (base == 0 || base == model.meshes.size())
+                    continue;
+                result.lodMeshesDropped += static_cast<u32>(model.meshes.size()) - base;
+                model.meshes.erase(
+                    std::remove_if(model.meshes.begin(), model.meshes.end(),
+                                   [](const wem::Mesh& mesh) { return mesh.lodLevel != 0; }),
+                    model.meshes.end());
+            }
+            if (result.lodMeshesDropped != 0) {
+                result.diagnostics.info(wem::DiagCode::LevelOfDetailDropped,
+                                        std::to_string(result.lodMeshesDropped) +
+                                            " mesh(es) above the base level of detail were not "
+                                            "carried; Warcraft III draws every geoset it is given",
+                                        wem::ElementRef(), profile);
+            }
+        }
+    }
+
+    // Last, so the retarget above measures its residual in the units the model
+    // was authored in — and because a uniform scale commutes with everything
+    // either step does, which is what makes the order a matter of reporting
+    // rather than of correctness.
+    if (options.rescale != 1.0f) {
+        const wem::RescaleResult rescale = wem::RescaleDocument(mutate(), options.rescale);
+        result.diagnostics.append(rescale.diagnostics);
+        if (!rescale.ok) {
+            result.error = "could not be rescaled";
+            return result;
+        }
+        result.rescaled = options.rescale;
+    }
+
+    result.document = staged;
+    return result;
+}
+
 WemSourceResult BuildWemSource(const WemDocument& parsed, wem::ProfileId profile,
                                const std::filesystem::path& basePath, IContentProvider* provider,
                                D3SnoCache* d3Cache) {
@@ -182,56 +290,18 @@ WemSourceResult BuildWemSource(const WemDocument& parsed, wem::ProfileId profile
     result.assetProduct = ProductForWemProfile(authored);
     result.worldScale = wem::Profile(authored).sceneScale;
 
-    // The derive is the only thing that mutates, so the copy is made only when
-    // one is needed. A document is large — every mesh's attribute layers are in
-    // it — and opening a file as the profile it already carries should not pay
-    // for that.
-    const wem::Document* source = &parsed.document;
-    wem::Document derivedDocument;
-    if (!parsed.document.carries(profile)) {
-        const wem::ProfileId from = WemDeriveSource(parsed.document, profile);
-        if (from == wem::ProfileId::Count) {
-            result.error = "'" + parsed.name + "' declares no profile to derive " +
-                           wem::Profile(profile).displayName + " from";
-            return result;
-        }
-        derivedDocument = parsed.document;
-        derivedDocument.declare(profile);
-        const wem::DeriveResult derive = wem::DeriveProfile(derivedDocument, from, profile);
-        result.diagnostics.append(derive.diagnostics);
-        if (!derive.ok) {
-            result.error = std::string("deriving ") + wem::Profile(profile).displayName + " from " +
-                           wem::Profile(from).displayName + " failed";
-            return result;
-        }
-        result.derived = true;
-        source = &derivedDocument;
+    // An open leaves the geometry in the units it was authored in and stamps
+    // `worldScale` above; only a WRITTEN file has to be rescaled, which is what
+    // the export path asks the staging for.
+    wem::Document stagedDocument;
+    const WemStagingResult staged = StageWemDocument(parsed.document, profile, stagedDocument);
+    result.diagnostics.append(staged.diagnostics);
+    if (!staged.ok()) {
+        result.error = "'" + parsed.name + "' " + staged.error;
+        return result;
     }
-
-    // The rig convention, which a converter only WARNS about (§10.5): restating
-    // a skeleton edits the document, and a read of one may not do that
-    // silently. Nothing else in the host ran it, so a Diablo III or StarCraft
-    // II document — both `ExplicitBind` — reached `toMdx` with pivots composed
-    // from its rest chain and node tracks still keyed against the bind frame
-    // those pivots just replaced, which poses the skeleton at neither.
-    const wem::RigConvention wantedRig = wem::Profile(profile).rig;
-    const bool restateRig =
-        std::any_of(source->models.begin(), source->models.end(), [wantedRig](const wem::Model& m) {
-            return !m.nodes.empty() && m.nodes.rig != wantedRig;
-        });
-    if (restateRig) {
-        if (source != &derivedDocument) {
-            derivedDocument = *source;
-            source = &derivedDocument;
-        }
-        const wem::SkeletonRetargetResult rig = wem::RetargetSkeleton(derivedDocument, profile);
-        result.diagnostics.append(rig.diagnostics);
-        if (!rig.ok) {
-            result.error = std::string("restating '") + parsed.name + "' as a " +
-                           wem::ToString(wantedRig) + " rig failed";
-            return result;
-        }
-    }
+    result.derived = staged.derived;
+    const wem::Document* source = staged.document;
 
     // One converter per format, chosen by the profile's `formatId` — the same
     // join `ConverterRegistry::findForProfile` makes, spelled out because each
@@ -245,7 +315,7 @@ WemSourceResult BuildWemSource(const WemDocument& parsed, wem::ProfileId profile
     if (formatId == "mdx") {
         wem::MdxConverter converter;
         wem::Result<::whiteout::mdx::Model> converted =
-            converter.toMdx(*source, profile, MdxVersionFor(profile));
+            converter.toMdx(*source, profile, MdxVersionForWemProfile(profile));
         result.diagnostics.append(converted.diagnostics);
         if (!converted.ok()) {
             result.error = "converting '" + parsed.name + "' to a Warcraft III model failed";

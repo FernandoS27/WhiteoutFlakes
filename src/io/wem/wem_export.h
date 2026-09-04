@@ -20,6 +20,7 @@
 #include "whiteout/flakes/model_source.h"
 #include "whiteout/flakes/types.h"
 
+#include <whiteout/models/mdx/structures.h>
 #include <whiteout/models/wem/diagnostics.h>
 #include <whiteout/models/wem/document.h>
 
@@ -74,6 +75,66 @@ struct WemExportResult {
 WemExportResult ExportModelToWem(renderer::model::IModelSource& source,
                                  IContentProvider* provider = nullptr,
                                  const WemExportOptions& options = {});
+
+// ============================================================================
+// Warcraft III
+// ============================================================================
+
+struct MdxExportOptions {
+    /// Which Warcraft III generation is written. The two are one file format at
+    /// two versions and one document at two material sets, so this picks both.
+    wem::ProfileId profile = wem::ProfileId::Wc3Reforged;
+
+    /// @brief Restate the geometry in Warcraft III's units.
+    ///
+    /// On by default, and the difference between a model and a smudge. WEM does
+    /// not normalise scale — geometry stays in the units it was authored in —
+    /// and a World of Warcraft creature is two units tall where a Warcraft III
+    /// footman is a hundred. An in-memory open compensates by stamping the
+    /// actor's `worldScale`; a file written to disk has no host to stamp, so the
+    /// ratio has to be baked in. The factor is
+    /// `wem::RescaleFactorBetween(authored, profile)`.
+    bool rescale = true;
+
+    /// @brief Write only the base level of detail.
+    ///
+    /// A World of Warcraft model carries one mesh per skin profile and a Diablo
+    /// III appearance ships two geoset arrays; Warcraft III has no LOD gate
+    /// below `.mdx` v1000 and draws every geoset in the file, so a classic
+    /// export of a cow came out with its LOD 1 and LOD 2 stacked on top of it
+    /// as a white sheet. Nothing downstream wants the ladder — a map draws its
+    /// models at one distance — so it is dropped rather than carried.
+    bool baseLodOnly = true;
+};
+
+struct MdxExportResult {
+    /// Absent on failure; @ref error then says why in one line.
+    std::optional<::whiteout::mdx::Model> model;
+    /// The factor @ref MdxExportOptions::rescale applied, for the log line.
+    f32 scale = 1.0f;
+    /// Whether the Warcraft III material set had to be derived (§6.6), which is
+    /// always lossy — every `.m2`, `.m3` and `.app` export is.
+    bool derived = false;
+    /// Meshes above the base level of detail that were not written.
+    u32 lodMeshesDropped = 0;
+    wem::Diagnostics diagnostics;
+    std::string error;
+
+    bool ok() const {
+        return model.has_value();
+    }
+};
+
+/// @brief Convert @p document to the Warcraft III model @ref MdxExportOptions
+///        names, deriving, restating and rescaling on the way.
+///
+/// The write-to-disk twin of `BuildWemSource`'s MDX arm: the same staging, and
+/// then the model itself rather than an adapter over it. Kept apart from that
+/// one because the two differ in exactly the way a file differs from a view —
+/// a file has no host to stamp a `worldScale` on, so it is rescaled, and its
+/// textures have to be named rather than keyed by id.
+MdxExportResult ConvertWemToMdx(const wem::Document& document,
+                                const MdxExportOptions& options = {});
 
 /// @brief Write @p document to @p path. Returns false and fills @p error on
 ///        failure; the writer's own diagnostics land in @p diagnostics.

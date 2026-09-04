@@ -1668,6 +1668,8 @@ set(WHITEOUTFLAKES_VIEWER_SOURCES
     tools/basic_viewer/test_main.cpp
     tools/basic_viewer/viewer_app.cpp
     tools/basic_viewer/viewer_ui.cpp
+    # "Export to MDX": a foreign model converted THROUGH WEM into Warcraft III.
+    tools/basic_viewer/mdx_export.cpp
     # The animation exporter: the device-free recipe/schedule and its ini, the
     # output sinks, the capture loop, and the dialog.
     tools/basic_viewer/export_recipe.cpp

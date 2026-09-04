@@ -97,6 +97,16 @@ private:
     // user could pick here (WEM_INTEGRATION_DESIGN.md §5).
     void ExportWemDialog();
 
+    // Export the model on screen as a Warcraft III `.mdx`. Pops the native save
+    // dialog and then the options modal below — unlike the `.wem` export, this
+    // one has choices to make: which Warcraft III generation, and whether the
+    // textures come with it.
+    void ExportMdxDialog();
+
+    // The deferred "Export to MDX" options modal. Renders when
+    // `pendingMdxPath_` is set; a no-op otherwise.
+    void BuildMdxExportPopup();
+
     // The profile picker a `.wem` open goes through. Renders when
     // `wemOpenDocument_` is set and loads the document on confirm; a no-op
     // otherwise. Not a question a default can answer: a document carrying two
@@ -132,6 +142,19 @@ private:
     i32 saveDialect_ = 0;             // 0 = Warcraft III, 1 = Hiveworkshop
     bool saveExportTextures_ = false; // export used textures next to the model
     i32 saveTexFormatIdx_ = 0;        // index into kExportFormats (0 = keep original)
+
+    // Export to MDX state. `pendingMdxPath_` is non-empty only between the user
+    // choosing a target and confirming in the options modal.
+    //
+    // `mdxExportProfile_` is Reforged and is drawn disabled: the classic derive
+    // is a different material vocabulary (§7.2.1) and nothing has measured what
+    // it costs yet, so offering the choice would be offering an untested one.
+    // The row is drawn rather than hidden because the file it writes IS
+    // generation-specific and a user should see which one they are getting.
+    std::string pendingMdxPath_;
+    bool openMdxExportPopup_ = false;
+    i32 mdxExportProfile_ = 1;      // 0 = classic, 1 = Reforged
+    bool mdxExportTextures_ = true; // convert and write the textures too
 
     // IO tab edit buffers: the whole of one profile's settings. They are the
     // page's state, not a mirror of the provider — the provider only ever holds

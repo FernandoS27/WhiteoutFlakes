@@ -70,6 +70,14 @@ wem::ProfileId WemProfileFromName(const std::string& name);
 ///        host applies as `RenderMode::HD` before the spawn.
 bool WemProfileIsHd(wem::ProfileId profile);
 
+/// @brief The `.mdx` version a Warcraft III profile is written at.
+///
+/// The two profiles are one file format at two versions — 800 is classic's and
+/// 1000 is what Reforged writes — and `mdx_core::ExportMaterial` is what
+/// actually decides whether a layer is HD, so this only has to agree with the
+/// material rather than drive it. Zero for a profile that is not Warcraft III.
+u32 MdxVersionForWemProfile(wem::ProfileId profile);
+
 /// @brief Whether @p path is named like a WEM file.
 ///
 /// The *name*, not the content: a host that has not read the bytes yet — the

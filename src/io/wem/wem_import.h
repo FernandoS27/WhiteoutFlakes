@@ -70,6 +70,68 @@ std::shared_ptr<WemDocument> ParseWemDocument(std::span<const ::whiteout::u8> da
 ///        path rather than bytes.
 std::shared_ptr<WemDocument> ParseWemFile(const std::filesystem::path& path);
 
+// ============================================================================
+// Staging
+// ============================================================================
+
+struct WemStagingOptions {
+    /// @brief Multiply every length in the staged document by this.
+    ///
+    /// 1.0 — the default, and what an in-memory open wants — leaves the geometry
+    /// in the units it was authored in and lets the host stamp `worldScale`
+    /// instead. A file WRITTEN for another game has no host to stamp: a World of
+    /// Warcraft creature saved as `.mdx` at its own scale is two units tall on a
+    /// grid whose characters are two hundred, so an export asks for
+    /// `wem::RescaleFactorBetween`'s ratio.
+    f32 rescale = 1.0f;
+
+    /// @brief Keep only each model's base level of detail.
+    ///
+    /// Off for an open, which wants the ladder — the renderer's own LOD gate
+    /// picks a rung per frame. On for a file written for Warcraft III, which
+    /// has no such gate below `.mdx` v1000: a World of Warcraft model carries
+    /// one mesh per skin profile and a Diablo III appearance ships two geoset
+    /// arrays, and a v800 file draws every one of them stacked on the same
+    /// silhouette. What that looks like is a white sheet over the model, which
+    /// is how it was found.
+    bool baseLodOnly = false;
+};
+
+/// @brief What staging had to do to make @p source convertible as a profile.
+struct WemStagingResult {
+    /// Null on failure; otherwise either @p source itself — nothing had to
+    /// change — or the caller's scratch document, which now holds the edits.
+    const wem::Document* document = nullptr;
+    /// Whether the profile's material set had to be derived (§6.6), which is
+    /// always lossy and always says so in @ref diagnostics.
+    bool derived = false;
+    /// The factor actually applied, so a caller can report it.
+    f32 rescaled = 1.0f;
+    /// How many meshes `baseLodOnly` left behind.
+    u32 lodMeshesDropped = 0;
+    wem::Diagnostics diagnostics;
+    std::string error;
+
+    bool ok() const {
+        return document != nullptr;
+    }
+};
+
+/// @brief Derive, restate and (optionally) rescale @p source so a converter can
+///        write it as @p profile.
+///
+/// The three edits a conversion needs and a converter is not allowed to make on
+/// its own: `DeriveProfile` where the document does not carry the profile's
+/// material set, `RetargetSkeleton` where the rig convention differs — a
+/// converter only WARNS about that (§10.5) — and `RescaleDocument` where the
+/// caller asked for it.
+///
+/// @p scratch is where the edited copy lands and must outlive the result; the
+/// copy is made only when something actually has to change, so opening a file as
+/// a profile it already carries pays for nothing.
+WemStagingResult StageWemDocument(const wem::Document& source, wem::ProfileId profile,
+                                  wem::Document& scratch, const WemStagingOptions& options = {});
+
 /// @brief What one open produced.
 struct WemSourceResult {
     /// Null on failure; @ref error then says why in one line.

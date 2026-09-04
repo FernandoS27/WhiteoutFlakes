@@ -8,6 +8,7 @@
 #include "io/storage/game_rules.h" // ScanArchives, for a profile that is not the active one
 #include "localization.h"
 #include "log_console.h"
+#include "mdx_export.h"
 #include "progress_dialog.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/camera.h"
@@ -185,6 +186,7 @@ void ViewerUI::BuildFrame() {
     if (animWindowOpen_ && app_.CanAttachAnimations())
         BuildAnimationWindow();
     BuildSaveOptionsPopup();
+    BuildMdxExportPopup();
     BuildWemProfilePopup();
     exportWindow_.Build();
     app_.BuildStorageExplorerWindow();
@@ -310,6 +312,77 @@ void ViewerUI::BuildWemProfilePopup() {
     if (ImGui::Button(i18n::tr("app.cancel"), ImVec2(120, 0))) {
         wemOpenDocument_.reset();
         wemOpenOptions_.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+// ---- Export to MDX ---------------------------------------------------------
+//
+// Save As writes a Warcraft III model back in its own format. This writes a
+// FOREIGN one — a `.m2`, a `.m3`, a Diablo III `.app` — as Warcraft III, which
+// is the direction WEM exists for and which has choices Save As does not: the
+// generation decides both the material vocabulary and the texture container,
+// and the textures are only reachable while the model's own game is the one
+// mounted. See tools/basic_viewer/mdx_export.h.
+
+void ViewerUI::ExportMdxDialog() {
+    nfdu8filteritem_t filter[1] = {{"Warcraft III model", "mdx"}};
+    NFD::UniquePathU8 outPath;
+    if (NFD::SaveDialog(outPath, filter, 1) != NFD_OKAY)
+        return;
+    pendingMdxPath_ = outPath.get();
+    openMdxExportPopup_ = true;
+}
+
+void ViewerUI::BuildMdxExportPopup() {
+    if (openMdxExportPopup_) {
+        ImGui::OpenPopup(i18n::tr("dialog.mdx.title"));
+        openMdxExportPopup_ = false;
+    }
+    if (pendingMdxPath_.empty())
+        return;
+
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal(i18n::tr("dialog.mdx.title"), nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    ImGui::TextUnformatted(i18n::tr("dialog.mdx.prompt"));
+
+    // Drawn, and drawn disabled. The file this writes IS generation-specific —
+    // a v1000 container with PBR layers, or a v800 one with a blend stack — so
+    // hiding the row would hide what the user is getting; and classic is not
+    // offered because deriving that vocabulary has not been measured yet.
+    ImGui::BeginDisabled(true);
+    ImGui::RadioButton(i18n::tr("dialog.mdx.classic"), &mdxExportProfile_, 0);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::RadioButton(i18n::tr("dialog.mdx.reforged"), &mdxExportProfile_, 1);
+    ImGui::TextDisabled("%s", i18n::tr("dialog.mdx.classic_soon"));
+
+    ImGui::Separator();
+    ImGui::Checkbox(i18n::tr("dialog.mdx.export_textures"), &mdxExportTextures_);
+    const auto profile =
+        (mdxExportProfile_ == 0) ? wem::ProfileId::Wc3Classic : wem::ProfileId::Wc3Reforged;
+    ImGui::BeginDisabled(!mdxExportTextures_);
+    // The format is not a choice: Reforged reads `.dds` and classic Warcraft III
+    // reads BLP1, so saying which one is getting written is the whole of what
+    // there is to say about it.
+    ImGui::TextDisabled("%s: %s", i18n::tr("dialog.mdx.convert_to"), Wc3TextureExtension(profile));
+    ImGui::TextDisabled("%s", i18n::tr("dialog.mdx.export_hint"));
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    if (ImGui::Button(i18n::tr("dialog.mdx.export"), ImVec2(120, 0))) {
+        app_.ExportMdx(io::FsPathFromUtf8(pendingMdxPath_), profile, mdxExportTextures_);
+        pendingMdxPath_.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(i18n::tr("app.cancel"), ImVec2(80, 0))) {
+        pendingMdxPath_.clear();
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -940,6 +1013,13 @@ void ViewerUI::BuildMenuBar() {
             if (ImGui::MenuItem(i18n::tr("menu.file.export_wem"), nullptr, false,
                                 app_.CanExportWem()))
                 ExportWemDialog();
+            // The same argument one format over: a World of Warcraft, StarCraft
+            // II or Diablo III model becomes a Warcraft III one through WEM. A
+            // model that IS Warcraft III uses Save As, which does not have to
+            // derive a material set it already carries.
+            if (ImGui::MenuItem(i18n::tr("menu.file.export_mdx"), nullptr, false,
+                                app_.CanExportMdx()))
+                ExportMdxDialog();
             const bool hasAnims = hasModel && !app_.SequenceNames().empty();
             if (ImGui::MenuItem(i18n::tr("menu.file.export_frames"), nullptr,
                                 exportWindow_.IsOpen(), hasAnims)) {

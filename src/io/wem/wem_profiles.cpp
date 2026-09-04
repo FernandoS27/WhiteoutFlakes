@@ -98,6 +98,14 @@ bool WemProfileIsHd(wem::ProfileId profile) {
     return profile == wem::ProfileId::Wc3Reforged;
 }
 
+u32 MdxVersionForWemProfile(wem::ProfileId profile) {
+    if (profile == wem::ProfileId::Wc3Reforged)
+        return 1000u;
+    if (profile == wem::ProfileId::Wc3Classic)
+        return 800u;
+    return 0u;
+}
+
 bool LooksLikeWemPath(const std::filesystem::path& path) {
     std::string ext = path.extension().string();
     for (char& c : ext)

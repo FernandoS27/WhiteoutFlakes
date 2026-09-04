@@ -4,6 +4,7 @@
 #include "io/wem/wem_export.h"
 #include "io/wem/wem_import.h"
 #include "io/wem/wem_profiles.h"
+#include "mdx_export.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/camera.h"
 #include "renderer/debug/debug_renderer.h"
@@ -863,6 +864,63 @@ bool ViewerApp::ExportWem(const std::filesystem::path& outPath) {
     }
     std::printf("[viewer] Saved WEM (%s): %s\n", exported.formatId.c_str(),
                 io::PathToUtf8(outPath).c_str());
+    return true;
+}
+
+// ---- Warcraft III export -----------------------------------------------------
+//
+// The other half of `Save As`. That one re-serialises a Warcraft III model in
+// its own format; this converts a foreign one *into* Warcraft III, which is the
+// whole reason the interchange format exists. See tools/basic_viewer/mdx_export.h.
+
+bool ViewerApp::CanExportMdx() const {
+    if (!CanExportWem())
+        return false;
+    // A Warcraft III model is offered Save As instead: writing it back through
+    // WEM would derive a material set it already carries, which is lossy for no
+    // reason at all.
+    const model::Actor* actor = const_cast<ViewerApp*>(this)->FocusActorPtr();
+    return actor &&
+           dynamic_cast<const io::MdxModelAdapter*>(actor->animation.Source().get()) == nullptr;
+}
+
+bool ViewerApp::ExportMdx(const std::filesystem::path& outPath,
+                          ::whiteout::models::wem::ProfileId profile, bool exportTextures) {
+    model::Actor* actor = FocusActorPtr();
+    auto* source = actor ? dynamic_cast<IModelSource*>(actor->animation.Source().get()) : nullptr;
+    if (!source) {
+        std::fprintf(stderr, "[viewer] Export MDX: no model on screen\n");
+        return false;
+    }
+
+    MdxExportRequest request;
+    request.source = source;
+    request.provider = service_.Scene().ActiveContentProvider();
+    request.outPath = outPath;
+    request.modelName = io::PathToUtf8(currentModelPath_.stem());
+    request.profile = profile;
+    request.exportTextures = exportTextures;
+
+    const MdxExportReport report = ExportModelAsMdx(request);
+    if (!report.diagnostics.empty()) {
+        // A cross-format write is lossy by construction and this is the list of
+        // what it cost — the particle emitters Warcraft III has no vocabulary
+        // for, the stages the layer stack could not fold. Printed on success as
+        // well, because that is when it is worth reading.
+        std::fprintf(stderr, "[viewer] Export MDX: %zu diagnostic(s)\n%s",
+                     report.diagnostics.size(),
+                     io::DescribeWemDiagnostics(report.diagnostics).c_str());
+    }
+    if (!report.ok) {
+        std::fprintf(stderr, "[viewer] Export MDX FAILED: %s\n", report.error.c_str());
+        return false;
+    }
+    std::printf("[viewer] Saved Warcraft III model (%s, %gx scale): %s\n", report.formatId.c_str(),
+                static_cast<double>(report.scale), io::PathToUtf8(outPath).c_str());
+    if (exportTextures) {
+        std::printf("[viewer] Textures: %d exported, %d skipped, %d failed\n",
+                    report.texturesExported, report.texturesSkipped, report.texturesFailed);
+    }
     return true;
 }
 

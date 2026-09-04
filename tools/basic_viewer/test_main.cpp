@@ -1552,6 +1552,13 @@ int main(int argc, char* argv[]) {
     // batch half of File ▸ Export to WEM, and the only way a script can convert
     // a directory of models without a window.
     std::filesystem::path exportWemPath;
+    // Headless Warcraft III export: the batch half of File ▸ Export to MDX.
+    // The profile is a flag rather than the dialog's disabled radio because the
+    // classic path writes a different container AND a different texture format,
+    // and neither is testable through a control nobody can click.
+    std::filesystem::path exportMdxPath;
+    auto exportMdxProfile = whiteout::models::wem::ProfileId::Wc3Reforged;
+    bool exportMdxTextures = true;
     // Which profile a `.wem` on the command line opens as. `Count` leaves it to
     // the document — there is no dialog out here.
     auto wemProfile = whiteout::models::wem::ProfileId::Count;
@@ -1664,6 +1671,19 @@ int main(int argc, char* argv[]) {
             }
         } else if (std::strcmp(a, "--export-wem") == 0 && i + 1 < argc) {
             exportWemPath = whiteout::flakes::io::FsPathFromUtf8(argv[++i]);
+        } else if (std::strcmp(a, "--export-mdx") == 0 && i + 1 < argc) {
+            exportMdxPath = whiteout::flakes::io::FsPathFromUtf8(argv[++i]);
+        } else if (std::strcmp(a, "--export-mdx-profile") == 0 && i + 1 < argc) {
+            const std::string name = argv[++i];
+            exportMdxProfile = whiteout::flakes::io::WemProfileFromName(name);
+            if (exportMdxProfile != whiteout::models::wem::ProfileId::Wc3Classic &&
+                exportMdxProfile != whiteout::models::wem::ProfileId::Wc3Reforged) {
+                std::cerr << "Unknown Warcraft III profile: " << name
+                          << " (wc3_classic | wc3_reforged)\n";
+                return 1;
+            }
+        } else if (std::strcmp(a, "--export-mdx-no-textures") == 0) {
+            exportMdxTextures = false;
         } else if (std::strcmp(a, "--attach-anim") == 0 && i + 1 < argc) {
             attachAnims.push_back(whiteout::flakes::io::FsPathFromUtf8(argv[++i]));
         } else if (std::strcmp(a, "--gif") == 0) {
@@ -1897,6 +1917,9 @@ int main(int argc, char* argv[]) {
             std::cout << "Usage: WhiteoutFlakes [--backend " << kBackendsHelp
                       << "] [--wgpu-backend d3d11|d3d12|vulkan|gl] [<model-path>]\n"
                       << "       --export-wem <out.wem>   write the model as WEM and exit\n"
+                      << "       --export-mdx <out.mdx>   write it as Warcraft III and exit\n"
+                      << "       --export-mdx-profile <n> wc3_reforged (default) | wc3_classic\n"
+                      << "       --export-mdx-no-textures do not write the textures beside it\n"
                       << "       --wem-profile <name>     open a .wem as that profile\n";
             return 0;
         } else if (mdxPath.empty()) {
@@ -2213,7 +2236,8 @@ int main(int argc, char* argv[]) {
     // textures resolve against, which FollowModelGame settles on the way in.
     app.SetPreferredWemProfile(wemProfile);
 
-    const bool headlessWork = doExport || !exportWemPath.empty() || !attachAnims.empty();
+    const bool headlessWork =
+        doExport || !exportWemPath.empty() || !exportMdxPath.empty() || !attachAnims.empty();
 
     if (!mdxPath.empty()) {
         if (!std::filesystem::exists(mdxPath)) {
@@ -2257,6 +2281,15 @@ int main(int argc, char* argv[]) {
     // model the load already produced and touches nothing on the GPU.
     if (!exportWemPath.empty()) {
         const bool ok = app.ExportWem(exportWemPath);
+        app.Close();
+        return ok ? 0 : 1;
+    }
+
+    // Headless Warcraft III export, for the same reason and with the same
+    // absence of warm-up ticks: the conversion reads the parsed model and the
+    // texture pass reads the content provider, neither of which is the GPU.
+    if (!exportMdxPath.empty()) {
+        const bool ok = app.ExportMdx(exportMdxPath, exportMdxProfile, exportMdxTextures);
         app.Close();
         return ok ? 0 : 1;
     }
