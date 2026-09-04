@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,7 @@ using whiteout::flakes::io::BrowseTypeOfFile;
 using whiteout::flakes::io::BrowseTypesFor;
 using whiteout::flakes::io::FileContentProvider;
 using whiteout::flakes::io::MatchesFilter;
+using whiteout::flakes::io::OpenWithArchives;
 using whiteout::flakes::io::StorageBrowser;
 using whiteout::flakes::io::StorageKind;
 
@@ -447,4 +449,124 @@ TEST_CASE("The tree reads any folder, without moving the one the grid is in", "[
     br.SetFilter("grunt");
     CHECK(br.TreeChildren("").folders.empty());
     CHECK(br.TreeMatchCount() == 0);
+}
+
+// ============================================================================
+// One file, one row.
+//
+// A host may lay archives over a Reforged install — that is what the additive
+// half of OpenWithArchives is for — and the obvious thing to lay over it is the
+// classic game's own War3*.mpq. Then the same model is named twice: the install
+// spells it through the mod chain and in lower case
+// ("war3.w3mod:units\human\footman\footman.mdx"), the archive spells it however
+// its author typed it ("Units\Human\Footman\Footman.mdx").
+//
+// Folders were keyed case-insensitively and files were not, so those two landed
+// in one folder as two rows. Worse, the archive's spelling carries no mod chain,
+// and a bare Warcraft III path resolves through the chain — HD first, as the
+// reader had it — so the second "footman.mdx" previewed and imported as the HD
+// model. Hence the report: two footmen in units\human\footman, and an HD model
+// imported from an SD path.
+//
+// Needs both generations installed, which is the configuration that shows it.
+// ============================================================================
+namespace {
+
+// The classic Warcraft III archives beside @p wc3Path, in load order. Empty
+// when this machine has only the Reforged install. Found by walking the
+// siblings of the Reforged directory for one that holds War3.mpq: a downgraded
+// install lives next to the one it was downgraded from, and its folder name is
+// not fixed.
+std::vector<std::string> ClassicArchivesNear(const std::string& wc3Path) {
+    static const char* kOrder[] = {"War3xLocal.mpq", "War3Local.mpq", "War3x.mpq", "War3.mpq",
+                                   "Deprecated.mpq"};
+    std::error_code ec;
+    const std::filesystem::path parent = std::filesystem::path(wc3Path).parent_path();
+    for (std::filesystem::directory_iterator it(parent, ec), end; it != end; it.increment(ec)) {
+        if (ec)
+            break;
+        if (!it->is_directory(ec))
+            continue;
+        if (!std::filesystem::exists(it->path() / "War3.mpq", ec))
+            continue;
+        std::vector<std::string> out;
+        for (const char* name : kOrder) {
+            const std::filesystem::path p = it->path() / name;
+            if (std::filesystem::is_regular_file(p, ec))
+                out.push_back(p.string());
+        }
+        if (!out.empty())
+            return out;
+    }
+    return {};
+}
+
+} // namespace
+
+TEST_CASE("A Warcraft III folder lists each model once, by its mod-chain name",
+          "[browser][casc]") {
+    FileContentProvider probe;
+    if (probe.Wc3Path().empty())
+        SKIP("no Warcraft III install found");
+    const std::vector<std::string> archives = ClassicArchivesNear(probe.Wc3Path());
+    if (archives.empty())
+        SKIP("no classic Warcraft III archives to lay over the install");
+
+    StorageBrowser br;
+    std::string error;
+    // Exactly what a host with a configured archive list opens: the install,
+    // then its archives on top.
+    REQUIRE(OpenWithArchives(br, probe.Wc3Path(), StorageKind::Casc, archives, &error));
+    REQUIRE(br.Product() == ProductId::Wc3);
+
+    auto lower = [](std::string s) {
+        for (char& c : s)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return s;
+    };
+
+    // No folder anywhere may hold two spellings of one name. Checked over the
+    // whole tree rather than one folder: the duplication is a property of how
+    // the two namespaces overlap, so a fix that only tidied `units` would not
+    // be one.
+    std::size_t files = 0;
+    std::vector<std::string> dupes;
+    std::function<void(const std::string&)> walk = [&](const std::string& path) {
+        const auto here = br.TreeChildren(path);
+        std::vector<std::string> keys;
+        for (const std::string& f : here.files) {
+            ++files;
+            keys.push_back(lower(f));
+        }
+        std::sort(keys.begin(), keys.end());
+        for (std::size_t i = 1; i < keys.size(); ++i)
+            if (keys[i] == keys[i - 1] && dupes.size() < 10)
+                dupes.push_back(path + "\\" + keys[i]);
+        for (const std::string& d : here.folders)
+            walk(path.empty() ? d : path + "\\" + d);
+    };
+    walk("");
+    INFO("first duplicates: " << (dupes.empty() ? std::string("-") : dupes.front()));
+    CHECK(dupes.empty());
+    CHECK(files > 1000); // the walk actually walked
+
+    // And the surviving spelling is the one that says which mod it came from.
+    // A stock unit, so this is about the rule and not about one odd asset.
+    const auto sd = br.TreeChildren("units\\human\\footman");
+    REQUIRE_FALSE(sd.files.empty());
+    CHECK(sd.files.size() == 2); // footman.mdx and footman_portrait.mdx
+    const std::string archive = lower(br.ChildPathAt("units\\human\\footman", "footman.mdx"));
+    CHECK(archive.rfind("war3.w3mod:", 0) == 0);
+    CHECK(archive.find("_hd.w3mod") == std::string::npos);
+
+    // The HD model is still there — under the mod folder it belongs to.
+    const std::string hd =
+        lower(br.ChildPathAt("_hd.w3mod\\units\\human\\footman", "footman.mdx"));
+    CHECK(hd.find("_hd.w3mod:") != std::string::npos);
+    CHECK(hd != archive);
+
+    // A name the caller spells differently still resolves: the lookup is keyed
+    // the same way the tree is.
+    CHECK(br.ChildPathAt("units\\human\\footman", "FOOTMAN.MDX") ==
+          br.ChildPathAt("units\\human\\footman", "footman.mdx"));
 }

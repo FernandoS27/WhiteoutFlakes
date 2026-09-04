@@ -25,6 +25,12 @@ FetchContent_MakeAvailable(Catch2)
 list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/extras")
 include(Catch)
 
+# Viewer sources a couple of tests compile directly are named off
+# WhiteoutFlakes_SOURCE_DIR rather than CMAKE_SOURCE_DIR: the two are the same
+# in a standalone build and different when a host adds this repo with
+# add_subdirectory, where CMAKE_SOURCE_DIR is the host's root and every one of
+# those paths misses.
+
 # One executable per test file, auto-registered with CTest so `ctest` runs
 # each TEST_CASE as its own test (and `-R` filters work on case names).
 function(wdx_add_test TARGET)
@@ -76,22 +82,22 @@ wdx_add_test(storage_browser_test storage_browser_test.cpp)
 # (settings_ini.cpp) is deliberately NOT here: that one links RenderService,
 # which would drag a gfx backend into a device-free test.
 wdx_add_test(settings_ini_test settings_ini_test.cpp
-             "${CMAKE_SOURCE_DIR}/tools/basic_viewer/settings_io.cpp"
-             "${CMAKE_SOURCE_DIR}/tools/basic_viewer/storage_explorer_ini.cpp")
+             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/settings_io.cpp"
+             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/storage_explorer_ini.cpp")
 target_include_directories(settings_ini_test PRIVATE
-                           "${CMAKE_SOURCE_DIR}/tools/basic_viewer"
-                           "${CMAKE_SOURCE_DIR}/tools/model_explorer")
+                           "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer"
+                           "${WhiteoutFlakes_SOURCE_DIR}/tools/model_explorer")
 # The animation-export recipe: the schedule arithmetic (clip boundaries,
 # fill-to-duration, drift compensation, loop closure), the name templates and
 # the ini round trip. Same precedent as settings_ini_test above — both viewer
 # TUs link nothing, so this is a G0 test with no device and no corpus.
 # settings_io.cpp comes along for SettingsIniPath(), which export_ini.cpp uses.
 wdx_add_test(export_recipe_test export_recipe_test.cpp
-             "${CMAKE_SOURCE_DIR}/tools/basic_viewer/export_recipe.cpp"
-             "${CMAKE_SOURCE_DIR}/tools/basic_viewer/export_ini.cpp"
-             "${CMAKE_SOURCE_DIR}/tools/basic_viewer/settings_io.cpp")
+             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/export_recipe.cpp"
+             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/export_ini.cpp"
+             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/settings_io.cpp")
 target_include_directories(export_recipe_test PRIVATE
-                           "${CMAKE_SOURCE_DIR}/tools/basic_viewer")
+                           "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer")
 # Only when the format is compiled in — the adapter it exercises does not
 # exist otherwise. The test itself skips without a configured WoW install.
 if(WDX_ENABLE_M2)

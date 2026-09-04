@@ -202,14 +202,32 @@ const char* BrowseTypeLabel(BrowseType one) {
 
 namespace {
 
+constexpr std::string_view kWc3ModRoot = "war3.w3mod:";
+
+// Does this CASC entry name a file through Warcraft III's TVFS mod chain?
+//
+// Reforged's root lists most of its content twice: once per mod
+// ("war3.w3mod:units\human\footman\footman.mdx" for the classic model,
+// "war3.w3mod:_hd.w3mod:..." for the Reforged one) and once under a bare name
+// that is the chain already resolved — so "Units\Human\Footman\Footman.mdx"
+// reads the HD file whenever an HD copy exists and the SD one otherwise.
+//
+// Only the chained spelling says which mod the bytes came from, so it is the
+// one to keep and the one a picker hands back. Testing for the root prefix
+// rather than for a ':' anywhere is deliberate: a loose-folder entry is an
+// absolute Windows path and its drive letter is not a mod chain.
+bool HasWc3ModChain(std::string_view archivePath) {
+    return archivePath.size() > kWc3ModRoot.size() &&
+           ToLower(std::string(archivePath.substr(0, kWc3ModRoot.size()))) == kWc3ModRoot;
+}
+
 // Display form of an archive path: drop the leading "war3.w3mod:" mod prefix
 // and treat ':' as a folder separator like '\'.
 // CASC only: drop the mod prefix and fold ':' into the separator.
 std::string CascToDisplay(std::string_view archivePath) {
     std::string p(archivePath);
-    constexpr std::string_view kRoot = "war3.w3mod:";
-    if (ToLower(p).rfind(std::string(kRoot), 0) == 0)
-        p = p.substr(kRoot.size());
+    if (HasWc3ModChain(p))
+        p = p.substr(kWc3ModRoot.size());
     for (char& c : p)
         if (c == ':' || c == '/')
             c = '\\';
@@ -412,7 +430,8 @@ bool StorageBrowser::OpenAuto(const std::string& path, std::string* error) {
     return Open(path, ClassifyStorage(path), error);
 }
 
-void StorageBrowser::Insert(const std::string& original, const std::string& display) {
+void StorageBrowser::Insert(const std::string& original, const std::string& display,
+                            bool authoritative) {
     std::vector<std::string> segs;
     SplitSegments(display, segs);
     if (segs.empty())
@@ -423,7 +442,12 @@ void StorageBrowser::Insert(const std::string& original, const std::string& disp
         node->folderDisplay.emplace(key, segs[i]);
         node = &node->folders[key];
     }
-    node->files.emplace(segs.back(), original);
+    const std::string key = ToLower(segs.back());
+    auto [it, fresh] = node->files.emplace(key, Node::File{segs.back(), original, authoritative});
+    // Already there under another spelling. Take this one only when it is the
+    // better-identified of the two — see the parameter's note.
+    if (!fresh && authoritative && !it->second.authoritative)
+        it->second = Node::File{segs.back(), original, authoritative};
 }
 
 bool StorageBrowser::OpenCasc(const std::string& root, std::string* error,
@@ -491,7 +515,13 @@ bool StorageBrowser::OpenCasc(const std::string& root, std::string* error,
     bool cancelled = false;
     storage_->Storage().enumerate([&](const storages::casc::EnumerateEntry& e) {
         if (Any(BrowseTypeOfFile(e.path) & available_))
-            Insert(std::string(e.path), CascToDisplay(e.path));
+            // A chain-less Warcraft III entry is the mod chain already resolved
+            // — it reaches the file but does not say which mod it came from —
+            // so it yields to the chained spelling of the same path when the
+            // walk turns that up. No other product spells a mod chain at all,
+            // which makes every one of its entries equal here and leaves the
+            // old first-wins behaviour exactly as it was.
+            Insert(std::string(e.path), CascToDisplay(e.path), HasWc3ModChain(e.path));
         if ((++seen & 0xFFF) == 0) {
             walk.Worked(0x1000);
             if (walk.Cancelled()) {
@@ -719,12 +749,12 @@ void StorageBrowser::Refresh() {
             if (!filtered || MatchesFilter(disp, filter_))
                 listing_.folders.push_back(disp);
         }
-        for (const auto& [name, orig] : node->files) {
-            if (!Any(BrowseTypeOfFile(name) & enabled_))
+        for (const auto& [key, file] : node->files) {
+            if (!Any(BrowseTypeOfFile(file.display) & enabled_))
                 continue;
             ++listing_.fileTotal;
-            if (!filtered || MatchesFilter(name, filter_))
-                listing_.modelFiles.push_back(name);
+            if (!filtered || MatchesFilter(file.display, filter_))
+                listing_.modelFiles.push_back(file.display);
         }
         auto ci = [](const std::string& a, const std::string& b) {
             return ToLower(a) < ToLower(b);
@@ -783,12 +813,12 @@ bool StorageBrowser::MarkTreeMatches(const Node& node, const std::string& path) 
             any = true;
         }
     }
-    for (const auto& [name, orig] : node.files) {
+    for (const auto& [key, file] : node.files) {
         // The type mask first: a `.wmo` beside a matching `.m2` must not keep a
         // folder alive that has nothing browsable in it.
-        if (!Any(BrowseTypeOfFile(name) & enabled_))
+        if (!Any(BrowseTypeOfFile(file.display) & enabled_))
             continue;
-        if (MatchesFilter(ChildDisplay(path, name), filter_)) {
+        if (MatchesFilter(ChildDisplay(path, file.display), filter_)) {
             ++treeMatches_;
             any = true;
         }
@@ -809,12 +839,12 @@ StorageBrowser::TreeListing StorageBrowser::TreeChildren(const std::string& disp
             continue;
         out.folders.push_back(disp);
     }
-    for (const auto& [name, orig] : node->files) {
-        if (!Any(BrowseTypeOfFile(name) & enabled_))
+    for (const auto& [key, file] : node->files) {
+        if (!Any(BrowseTypeOfFile(file.display) & enabled_))
             continue;
-        if (filtered && !MatchesFilter(ChildDisplay(displayPath, name), filter_))
+        if (filtered && !MatchesFilter(ChildDisplay(displayPath, file.display), filter_))
             continue;
-        out.files.push_back(name);
+        out.files.push_back(file.display);
     }
     // folderDisplay is already keyed by the lowercase name; the files are not.
     auto ci = [](const std::string& a, const std::string& b) { return ToLower(a) < ToLower(b); };
@@ -827,8 +857,8 @@ std::string StorageBrowser::ChildPathAt(const std::string& displayPath,
     const Node* node = NodeAt(displayPath);
     if (!node)
         return {};
-    auto it = node->files.find(fileName);
-    return it != node->files.end() ? it->second : std::string{};
+    auto it = node->files.find(ToLower(fileName));
+    return it != node->files.end() ? it->second.archive : std::string{};
 }
 
 std::size_t StorageBrowser::TreeVisibleFolderCount() const {
@@ -845,8 +875,8 @@ std::string StorageBrowser::ChildPath(const std::string& fileName) const {
     const Node* node = NodeAt(currentPath_);
     if (!node)
         return {};
-    auto it = node->files.find(fileName);
-    return it != node->files.end() ? it->second : std::string{};
+    auto it = node->files.find(ToLower(fileName));
+    return it != node->files.end() ? it->second.archive : std::string{};
 }
 
 } // namespace whiteout::flakes::io

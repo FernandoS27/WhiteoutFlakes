@@ -339,12 +339,28 @@ public:
     std::size_t TreeMatchCount() const;
 
 private:
-    // A folder node: subfolders + the model files directly inside it (display
-    // name → original archive path).
+    // A folder node: subfolders + the model files directly inside it. Both maps
+    // are keyed by the LOWERCASE name, because every storage this browses is
+    // case-insensitive and two spellings of one path are one file. Warcraft III
+    // is why it matters: its TVFS lists a Reforged model both through the mod
+    // chain ("war3.w3mod:units\human\footman\footman.mdx") and once more under
+    // a bare, differently-cased name that resolves to whichever mod overrides
+    // it — so a case-sensitive key put "Footman.mdx" (the HD file) in the SD
+    // folder beside "footman.mdx".
     struct Node {
+        // One file in a folder: the name to show and the archive path to read.
+        struct File {
+            std::string display; // name as the user sees it
+            std::string archive; // original archive path, for the provider
+            // This spelling identifies the file rather than merely reaching it
+            // — see Insert. A non-authoritative entry is a placeholder the real
+            // one displaces if the walk turns it up later.
+            bool authoritative = true;
+        };
+
         std::map<std::string, Node> folders;              // key = lowercase name
         std::map<std::string, std::string> folderDisplay; // lowercase → display
-        std::map<std::string, std::string> files;         // display name → archive path
+        std::map<std::string, File> files;                // lowercase name → file
     };
 
     void Refresh();
@@ -359,7 +375,16 @@ private:
     bool MarkTreeMatches(const Node& node, const std::string& path) const;
     // Insert one entry into the tree: `original` is what a provider reads,
     // `display` is what the user navigates.
-    void Insert(const std::string& original, const std::string& display);
+    //
+    // @param authoritative This spelling is the one to keep when the storage
+    //        names the same file twice. Warcraft III's TVFS does exactly that
+    //        — see Node — and only the mod-chain spelling says which mod the
+    //        bytes come from, so that is the one a picker must hand back. An
+    //        authoritative entry replaces a non-authoritative one already in
+    //        the tree and never the reverse; between two of equal standing the
+    //        first inserted wins, as it always has.
+    void Insert(const std::string& original, const std::string& display,
+                bool authoritative = true);
 
     // The state every open clears, and the state every successful one sets.
     // Split out so OpenArchives, which is not one of the switch's four kinds,
