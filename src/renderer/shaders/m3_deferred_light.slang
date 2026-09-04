@@ -35,12 +35,19 @@ struct M3DeferredLightData
 }
 
 #if defined(WGSL_TARGET) || defined(METAL_TARGET)
+static const int WF_PS_CB_OFFSET = 4;
 static const int WF_PS_BIND_OFFSET = 12;
 #else
+static const int WF_PS_CB_OFFSET = 16;
 static const int WF_PS_BIND_OFFSET = 16;
 #endif
 
-[[vk::binding(0, 0)]] ConstantBuffer<M3DeferredLightData> cb : register(b0);
+// The host binds this on the PIXEL stage, so it takes the shifted binding like
+// every other pixel-stage CB (see gtao.slang for the mapping). At binding 0 it
+// landed on the vertex slot, and Vulkan/WebGPU/Metal handed the shader an
+// empty 256-byte hole instead — only D3D12, where `register(b0)` is the whole
+// answer, was ever right.
+[[vk::binding(WF_PS_CB_OFFSET + 0, 0)]] ConstantBuffer<M3DeferredLightData> cb : register(b0);
 
 [[vk::binding(WF_PS_BIND_OFFSET + 0, 1)]] Texture2D<float>  g_linearDepth : register(t0);
 [[vk::binding(WF_PS_BIND_OFFSET + 1, 1)]] Texture2D<float4> g_normalSpec  : register(t1);

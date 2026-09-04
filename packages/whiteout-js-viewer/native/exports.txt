@@ -23,8 +23,11 @@ _wf_camera_rotate
 _wf_camera_pan
 _wf_camera_zoom
 _wf_camera_reset
+_wf_camera_zoom_scale
+_wf_camera_frame_effect
 _wf_set_pe1_base
 _wf_spawn_unit
+_wf_spawn_effect
 _wf_clear_all
 _wf_clear_splats
 _wf_actor_destroy

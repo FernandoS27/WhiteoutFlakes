@@ -14,6 +14,14 @@
 //
 // Binding offsets follow gtao.slang / blit.slang — the runtime's slot N maps
 // to @binding(WF_PS_*_OFFSET + N), which differs per backend.
+//
+// Every tap below is SampleLevel(…, 0) rather than Sample. The coverage test
+// branches on the height taps, so the samples after it sit in control flow
+// WGSL calls non-uniform, and an implicit-derivative Sample there is a
+// validation error — Dawn rejects the whole module and the pass never
+// compiles. Both sources are single-mip full-screen targets, so mip 0 is the
+// level Sample would have chosen; this only drops the derivatives nothing
+// here wanted.
 // ============================================================================
 
 #if defined(WGSL_TARGET) || defined(METAL_TARGET)
@@ -67,7 +75,7 @@ ApplyVSOut vsRefractApply(uint vid : SV_VertexID)
 // the "did anything draw here" product below tests.
 float refractHeight(float2 uv)
 {
-    float h = gRefractBuffer.Sample(gApplySampler, uv).r;
+    float h = gRefractBuffer.SampleLevel(gApplySampler, uv, 0.0).r;
     float doubled = h + h;
     return (h > 0.5) ? (1.0 / doubled) : doubled;
 }
@@ -79,7 +87,7 @@ float4 psRefractApply(ApplyVSOut input) : SV_Target
     // and nothing else — a flat plateau and an empty buffer look different here
     // and nowhere else, which is the whole reason the view exists.
     if (gApplyCb.params.z > 0.0) {
-        float4 raw = gRefractBuffer.Sample(gApplySampler, input.uv);
+        float4 raw = gRefractBuffer.SampleLevel(gApplySampler, input.uv, 0.0);
         return float4(saturate(raw.r), saturate(raw.a), 0.0, 1.0);
     }
 
@@ -94,7 +102,7 @@ float4 psRefractApply(ApplyVSOut input) : SV_Target
     // and it is why the mask is cleared to zero rather than to a neutral 0.5:
     // an untouched neighbourhood multiplies to 0 and passes straight through.
     if (hR * hL * hD * hU == 0.0)
-        return gSceneCopy.Sample(gApplySampler, input.uv);
+        return gSceneCopy.SampleLevel(gApplySampler, input.uv, 0.0);
 
     // Height field → surface normal. The z component is 1 before normalising,
     // which is what makes rsqrt(dot(n,n)) equal to the normalised n.z — the
@@ -107,13 +115,13 @@ float4 psRefractApply(ApplyVSOut input) : SV_Target
     float eta = gApplyCb.params.x;
     float k = 1.0 - eta * eta * (1.0 - cosI * cosI);
     if (k < 0.0)
-        return gSceneCopy.Sample(gApplySampler, input.uv);
+        return gSceneCopy.SampleLevel(gApplySampler, input.uv, 0.0);
 
     // Snell, with the incident ray fixed at (0, 0, -1): the client refracts
     // against a flat view direction rather than a per-pixel one.
     float3 refracted = eta * float3(0.0, 0.0, -1.0) - (sqrt(k) - eta * cosI) * n;
     if (refracted.z == 0.0)
-        return gSceneCopy.Sample(gApplySampler, input.uv);
+        return gSceneCopy.SampleLevel(gApplySampler, input.uv, 0.0);
 
     // Project the refracted direction to a screen offset. `-refracted.z` is the
     // perspective divide; the y flip is ours, because our UV runs down the
@@ -128,7 +136,7 @@ float4 psRefractApply(ApplyVSOut input) : SV_Target
     // Only take the offset sample when the destination is itself inside the
     // distortion. Without this the edge of a refracting quad drags unrelated
     // background across the silhouette.
-    if (gRefractBuffer.Sample(gApplySampler, dstUv).r > 0.0)
-        return gSceneCopy.Sample(gApplySampler, dstUv);
-    return gSceneCopy.Sample(gApplySampler, input.uv);
+    if (gRefractBuffer.SampleLevel(gApplySampler, dstUv, 0.0).r > 0.0)
+        return gSceneCopy.SampleLevel(gApplySampler, dstUv, 0.0);
+    return gSceneCopy.SampleLevel(gApplySampler, input.uv, 0.0);
 }

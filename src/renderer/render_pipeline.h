@@ -302,7 +302,8 @@ private:
 
     // Shared body of CurrentLinePSO / CurrentOverlayLinePSO.
     gfx::PipelineHandle LinePSO(bool depthTest, gfx::PipelineHandle hdrPso,
-                                gfx::PipelineHandle& sdPso, gfx::Format& sdFormat) const;
+                                gfx::PipelineHandle& gbufPso, gfx::PipelineHandle& sdPso,
+                                gfx::Format& sdFormat) const;
 
     // Lazily builds every profile, then picks: the scene's product first, and
     // only the WC3 pair reads @p mode. ActiveProfile and LoadTimeProfile differ

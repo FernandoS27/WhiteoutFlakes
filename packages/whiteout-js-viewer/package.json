@@ -1,18 +1,18 @@
 {
   "name": "whiteout-js-viewer",
-  "version": "0.6.1",
+  "version": "0.8.2",
   "description": "WhiteoutFlakes WebGPU model viewer — JS API plus a Hive-style UI shell, wired to the wf-core Emscripten/wasm runtime.",
   "type": "module",
   "main": "./index.js",
   "module": "./index.js",
   "exports": {
-    ".":             "./index.js",
-    "./hive-app":    "./hive-app.js",
-    "./wf-viewer":   "./wf-viewer.js",
+    ".": "./index.js",
+    "./hive-app": "./hive-app.js",
+    "./wf-viewer": "./wf-viewer.js",
     "./wf-instance": "./wf-instance.js",
-    "./wf-math":     "./wf-math.js",
-    "./web-audio":   "./web-audio.js",
-    "./load-table":  "./load-table.js"
+    "./wf-math": "./wf-math.js",
+    "./web-audio": "./web-audio.js",
+    "./load-table": "./load-table.js"
   },
   "files": [
     "*.js",
@@ -21,12 +21,23 @@
     "shaders/webgpu/**/*.bls",
     "README.md"
   ],
+  "scripts": {
+    "release": "npm publish ../../build-web/web/whiteout-js-viewer",
+    "prepublishOnly": "node -e \"require('fs').existsSync('wf-core.wasm')||(console.error('\\n  This is the SOURCE tree - wf-core.wasm and shaders/ are build outputs and live only in the staged dir.\\n  Run: npm run release   (or: npm publish build-web/web/whiteout-js-viewer  from the repo root)\\n'),process.exit(1))\""
+  },
   "sideEffects": false,
   "repository": {
     "type": "git",
-    "url": "https://github.com/FernandoS27/WhiteoutFlakes.git",
+    "url": "git+https://github.com/FernandoS27/WhiteoutFlakes.git",
     "directory": "packages/whiteout-js-viewer"
   },
   "license": "BSD-3-Clause",
-  "keywords": ["warcraft", "mdx", "webgpu", "wasm", "viewer", "whiteoutflakes"]
+  "keywords": [
+    "warcraft",
+    "mdx",
+    "webgpu",
+    "wasm",
+    "viewer",
+    "whiteoutflakes"
+  ]
 }

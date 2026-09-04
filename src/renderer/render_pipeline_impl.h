@@ -143,6 +143,10 @@ struct RenderPipeline::Impl {
     gfx::ShaderHandle lineVS_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle linePS_ = gfx::ShaderHandle::Invalid;
     gfx::PipelineHandle linePSOHdr_ = gfx::PipelineHandle::Invalid;
+    // Sc2Heroes binds a fourth scene attachment (the M3 albedo/spec sidecar)
+    // that linePSOHdr_'s two extras do not cover. Built on first use, since no
+    // other profile declares the slot — see LinePSO.
+    gfx::PipelineHandle linePSOGbuf_ = gfx::PipelineHandle::Invalid;
     gfx::PipelineHandle linePSOSd_ = gfx::PipelineHandle::Invalid;
     // RTV format the SD line PSO was built against. Tracked so CurrentLinePSO
     // can rebuild it when the swap-chain format isn't the hardcoded RGBA8_SRGB
@@ -155,6 +159,7 @@ struct RenderPipeline::Impl {
     // Same two pipelines with the depth test off, for markers that have to be
     // visible through the model they annotate — see CurrentOverlayLinePSO.
     gfx::PipelineHandle overlayLinePSOHdr_ = gfx::PipelineHandle::Invalid;
+    gfx::PipelineHandle overlayLinePSOGbuf_ = gfx::PipelineHandle::Invalid;
     gfx::PipelineHandle overlayLinePSOSd_ = gfx::PipelineHandle::Invalid;
     gfx::Format overlayLinePsoSdFormat_ = gfx::Format::Unknown;
     // One tonemap PSO per destination RTV format. Kept per format rather than

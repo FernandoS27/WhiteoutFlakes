@@ -4,7 +4,7 @@
 # ${CMAKE_BINARY_DIR}/web/whiteout-js-viewer/:
 #
 #   whiteout-js-viewer/
-#     package.json
+#     package.json, README.md
 #     index.js, hive-app.js, wf-*.js, web-audio.js   (copied from this dir)
 #     wf-core.js, wf-core.wasm                       (built by wf_web)
 #
@@ -65,6 +65,7 @@ target_compile_options(wf_web PRIVATE -fno-exceptions -O2 -g1)
 # directory at ${_wf_pkg_dir} is publish-ready.
 foreach(_f
     package.json
+    README.md
     index.js
     hive-app.js
     load-table.js

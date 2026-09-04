@@ -18,6 +18,14 @@ export {
     Instance,
     Model,
     Scene,
+    // `.pkb` / `.pkfx` detection — hosts that build their own model list
+    // need it to decide what is listable and what a row will spawn as.
+    EFFECT_EXTENSIONS,
+    isEffectPath,
+    // Same, for the formats that spawn as a model: `.mdx` / `.mdl` and
+    // StarCraft II / Heroes `.m3`.
+    MODEL_EXTENSIONS,
+    isModelPath,
 } from './wf-viewer.js';
 
 export { WebAudioBridge } from './web-audio.js';

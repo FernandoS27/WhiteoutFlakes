@@ -60,6 +60,20 @@ public:
     ///        scrubs from Max's timeline and evaluates manually via
     ///        @ref EvaluateAndApply.
     void SetRoleExternal();
+
+    /// @brief World-space AABB of this actor's live corn-effect particles.
+    ///
+    /// A standalone `.pkb` / `.pkfx` has no mesh, so it has no static extent
+    /// to frame a camera on — the only measurable thing is the cloud the
+    /// effect has actually spawned. Which means the answer is not available
+    /// at spawn: emission takes a few frames to develop, and some effects
+    /// start on a delay. Returns `false` until then, so hosts retry over a
+    /// bounded window (see basic_viewer's deferred effect framing).
+    ///
+    /// @param emitterId Which corn emitter on the actor; `0` is the sole
+    ///        emitter a `CornEffectSource` stages.
+    /// @bind skip — out-parameter pair, a shape the emitters don't marshal.
+    bool EffectBounds(i32 emitterId, Vector3f& outMin, Vector3f& outMax) const;
     /// @}
 
     /// @name Animation cursor

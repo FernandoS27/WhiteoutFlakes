@@ -2,7 +2,9 @@
 // asset fetch pump; WASM owns the renderer and AssetManager. API mirrors
 // mdx-m3-viewer's shape so host pages can swap backends.
 
-import { Instance, Model, Scene, TEAM_COLORS, TEAM_COLOR_NAMES } from './wf-instance.js';
+import { Instance, Model, Scene, TEAM_COLORS, TEAM_COLOR_NAMES,
+         EFFECT_EXTENSIONS, isEffectPath,
+         MODEL_EXTENSIONS, isModelPath } from './wf-instance.js';
 import { pumpAssetNeeds } from './wf-asset-pump.js';
 import { prefetchEngineAssets, prefetchShaders } from './wf-prefetch.js';
 
@@ -35,7 +37,8 @@ const REQUESTED_FEATURES = [
 ];
 
 // Re-export so host pages keep `import { WhiteoutViewer, TEAM_COLORS }`.
-export { TEAM_COLORS, TEAM_COLOR_NAMES, Instance, Model, Scene };
+export { TEAM_COLORS, TEAM_COLOR_NAMES, Instance, Model, Scene,
+         EFFECT_EXTENSIONS, isEffectPath, MODEL_EXTENSIONS, isModelPath };
 
 // HD debug-vis modes — keep ordering in sync with basic_viewer's
 // kDebugVisLabels (tools/basic_viewer/viewer_ui.cpp).
@@ -112,6 +115,12 @@ export class WhiteoutViewer {
         // pushes the value to WASM each frame; otherwise the slider drives it.
         this._todHours = 11.5;
         this._dayNightAnimate = false;
+
+        // Need-path -> original `src`. AssetManager lower-cases every path it
+        // surfaces, and a standalone effect is fetched through that queue
+        // rather than pushed as bytes, so the pump would otherwise hand a
+        // case-folded URL to the solver. Populated by _loadEffectImpl.
+        this._needAliases = new Map();
     }
 
     // Bring up the WebGPU device, then instantiate the WASM module with
@@ -280,6 +289,8 @@ export class WhiteoutViewer {
             const prof = this.profileFrames;
             const t0 = prof ? performance.now() : 0;
             this._module._wf_tick(this._handle, dt);
+            // After the tick, so the framing query sees this frame's particles.
+            this._tickEffectFraming();
             const t1 = prof ? performance.now() : 0;
             this._module._wf_render(this._handle);
             const t2 = prof ? performance.now() : 0;
@@ -423,6 +434,15 @@ export class WhiteoutViewer {
             };
         }
 
+        // An effect frames the camera on its particle cloud, which is nowhere
+        // near where the next model wants it — a `.pkb` zoomed in hard leaves
+        // the following model rendered from inside its boots. Undo only the
+        // app's own move; a camera the user placed still survives a switch.
+        if (this._cameraFramedByEffect) {
+            this.resetCamera();
+            this._cameraFramedByEffect = false;
+        }
+
         // mdx-m3-viewer returns Model sync + resolves async; we await so
         // callers can `await load()` while exposing model.whenLoaded().
         const model = new Model(this, src);
@@ -452,6 +472,17 @@ export class WhiteoutViewer {
 
     resetCamera() {
         if (this._handle) this._module._wf_camera_reset(this._handle);
+    }
+    // Wheel-equivalent zoom in detent steps; positive pulls the camera in.
+    // For on-screen +/- buttons, where there is no wheel to listen to.
+    zoomBy(steps) {
+        if (this._handle) this._module._wf_camera_zoom(this._handle, steps | 0);
+    }
+    // Multiplicative zoom — `scale` > 1 pulls in. What a pinch produces.
+    zoomScale(scale) {
+        if (this._handle && this._module._wf_camera_zoom_scale) {
+            this._module._wf_camera_zoom_scale(this._handle, Number(scale) || 1);
+        }
     }
     // Wipe live splats — use on sequence change to avoid carryover.
     clearSplats() {
@@ -489,9 +520,22 @@ export class WhiteoutViewer {
     }
 
     async _loadInternalImpl(src, pathSolver, model, log) {
+        if (isEffectPath(src)) return this._loadEffectImpl(src, pathSolver, model, log);
         const M = this._module;
 
-        // Push MDX bytes under a stable key so SpawnUnit's provider lookup hits.
+        // Back to the bootstrap mode before the MDX fetch below, so the probe
+        // further down is what decides HD and not whatever was loaded last.
+        // The mode picks the CASC overlay, so a viewer left in HD (by an
+        // earlier HD model, or by a `.pkb`, which pins it) would fetch this
+        // model's MDX out of `_hd.w3mod` — and Hive hands back the Reforged
+        // variant of a model the user asked for in SD, which then probes HD
+        // and pins the viewer for good. Reforged Graphics stays pinned:
+        // `_forceHd` IS the baseline when it's on.
+        this.setHdMode(this._forceHd);
+
+        // Push the bytes under a stable key so SpawnUnit's provider lookup
+        // hits. An `.m3` rides the same route: the loader sniffs the magic
+        // rather than the name, and reads the file back through the provider.
         // The solver may hand back a single URL or a fallback chain (local
         // object URL → Hive direct → /casc-contents/), same as the asset pump.
         // A directory pick resolves to a chain, so a bare fetch(chain) would
@@ -503,7 +547,7 @@ export class WhiteoutViewer {
         let mdxFrom = '';
         for (const url of mdxCands) {
             if (!url) continue;
-            log('load: fetching MDX ' + url);
+            log('load: fetching model ' + url);
             try {
                 const r = await fetch(url, { cache: 'no-store' });
                 if (!r.ok) continue;
@@ -512,8 +556,8 @@ export class WhiteoutViewer {
                 break;
             } catch (_) { /* try next candidate */ }
         }
-        if (!mdxBytes) throw new Error('fetch MDX failed for all candidates: ' + src);
-        log('load: fetched MDX ' + mdxFrom);
+        if (!mdxBytes) throw new Error('fetch model failed for all candidates: ' + src);
+        log('load: fetched model ' + mdxFrom);
         const mdxKey = String(src).split(/[\\/]/).pop();
         this._putBytes(mdxKey, mdxBytes);
 
@@ -545,6 +589,78 @@ export class WhiteoutViewer {
         // Start fetches before the next rAF.
         pumpAssetNeeds(this);
         return model;
+    }
+
+    // Standalone `.pkb` / `.pkfx`: no MDX to fetch and no template to key on.
+    // The renderer's CornEffectSource asks the AssetManager for the effect
+    // itself, so the bytes arrive through the same needs pump that serves a
+    // model's corn-fx dependencies — we only have to spawn and let it drain.
+    async _loadEffectImpl(src, pathSolver, model, log) {
+        const M = this._module;
+        if (!M._wf_spawn_effect) {
+            throw new Error('this wf-core build has no wf_spawn_effect export');
+        }
+        // The effect file is a pump dependency, not something we fetch here,
+        // so with no persistent solver installed nothing would ever arrive —
+        // a model at least still spawns without one. Adopt this load's solver
+        // so `viewer.load(pkbUrl, solver)` works on its own.
+        if (!this._lazySolver && pathSolver) this._lazySolver = pathSolver;
+
+        // Corn effects are Reforged-only content, so one always renders
+        // through the HD pipeline regardless of the previous model's mode —
+        // same rule as basic_viewer's LoadEffectIntoActiveScene.
+        this.setHdMode(true);
+
+        const rel = String(src).replaceAll('\\', '/');
+        // Textures the effect names resolve against its own directory.
+        const dir = rel.substring(0, rel.lastIndexOf('/') + 1);
+        if (dir) this._setPe1Base(dir.replace(/^\.?\/?/, ''));
+        // The pump will see this path lower-cased; alias it back so a
+        // case-sensitive source URL still resolves.
+        this._needAliases.set(rel.toLowerCase(), src);
+
+        log('spawn effect: ' + rel);
+        const keyPtr = this._cstr(rel);
+        let handle = 0;
+        try {
+            handle = M._wf_spawn_effect(this._handle, keyPtr);
+        } finally {
+            M._free(keyPtr);
+        }
+        if (!handle) {
+            model.error = new Error('SpawnEffect returned 0: ' + this._lastErr());
+            throw model.error;
+        }
+        model.loaded = true;
+        const inst = new Instance(this, model, handle);
+        model._instances.push(inst);
+
+        pumpAssetNeeds(this);
+        this._armEffectFraming(handle);
+        return model;
+    }
+
+    // A `.pkb` has no mesh bounds, so the camera can only be framed on the
+    // particle cloud once the effect has emitted one — and the .pkb itself
+    // is still in flight through the asset pump at this point. Retry from
+    // the render loop over a bounded window, warming up first so the AABB
+    // reflects the steady-state spread rather than the first puff.
+    _armEffectFraming(actorHandle) {
+        this._effectFrameActor = actorHandle;
+        this._effectFrameTicks = 0;
+    }
+    _tickEffectFraming() {
+        if (!this._effectFrameActor) return;
+        const WARMUP_TICKS = 12;
+        const MAX_TICKS = 600; // ~10 s at 60 Hz; covers a slow CASC fetch
+        if (++this._effectFrameTicks < WARMUP_TICKS) return;
+        const M = this._module;
+        const framed = !!M._wf_camera_frame_effect
+            && M._wf_camera_frame_effect(this._handle, this._effectFrameActor) === 1;
+        if (framed) this._cameraFramedByEffect = true;
+        if (framed || !M._wf_camera_frame_effect || this._effectFrameTicks >= MAX_TICKS) {
+            this._effectFrameActor = 0;
+        }
     }
 
     // Auto-detect the actor's HD/SD mode from its own MDX material layers
@@ -633,20 +749,80 @@ export class WhiteoutViewer {
 
     _installCameraControls() {
         const c = this.canvas;
-        // Focusable + no touch-pan so wheel captures don't scroll the page.
+        // Focusable + no touch-pan so wheel/gesture captures don't scroll
+        // or bounce-zoom the host page on a phone.
         c.style.touchAction = 'none';
         c.tabIndex = 0;
-        let dragging = 0; // 0=none, 1=rotate, 2=pan
+
+        // Live pointers, in down order. A mouse contributes exactly one; a
+        // touchscreen contributes one per finger, which is what separates
+        // one-finger orbit from two-finger pan/pinch.
+        const pointers = new Map();
+        let dragging = 0;    // 0=none, 1=rotate, 2=pan
         let lastX = 0, lastY = 0;
+        // Two-finger gesture state: centroid + spread at the last move.
+        let gestureX = 0, gestureY = 0, gestureSpan = 0;
+        let lastTapMs = 0;
+
+        const touches = () => [...pointers.values()];
+        const centroid = (pts) => {
+            let x = 0, y = 0;
+            for (const p of pts) { x += p.x; y += p.y; }
+            return { x: x / pts.length, y: y / pts.length };
+        };
+        const span = (pts) => Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        // Seed the gesture baseline so the first move after a finger goes
+        // down or up measures against the new configuration, not the old.
+        const armGesture = () => {
+            const pts = touches();
+            if (pts.length < 2) return;
+            const cen = centroid(pts);
+            gestureX = cen.x; gestureY = cen.y;
+            gestureSpan = span(pts);
+        };
 
         c.addEventListener('pointerdown', (e) => {
             c.setPointerCapture(e.pointerId);
-            dragging = (e.button === 0) ? 1 : 2;
-            lastX = e.clientX; lastY = e.clientY;
+            pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+            if (pointers.size === 1) {
+                // Mouse: left orbits, every other button pans (matching the
+                // desktop viewer). Touch: a lone finger orbits.
+                dragging = (e.pointerType !== 'mouse' || e.button === 0) ? 1 : 2;
+                lastX = e.clientX; lastY = e.clientY;
+            } else {
+                dragging = 0; // two-finger gesture takes over from here
+                armGesture();
+            }
             e.preventDefault();
         });
+
         c.addEventListener('pointermove', (e) => {
-            if (!dragging || !this._handle) return;
+            if (!this._handle) return;
+            const p = pointers.get(e.pointerId);
+            if (!p) return;
+            p.x = e.clientX; p.y = e.clientY;
+
+            if (pointers.size >= 2) {
+                // Pinch to zoom, slide to pan — both read off the same two
+                // fingers, so a diagonal gesture does a bit of each.
+                const pts = touches().slice(0, 2);
+                const cen = centroid(pts);
+                const sp = span(pts);
+                // Ignore sub-pixel jitter; a stationary pinch shouldn't drift.
+                if (gestureSpan > 0 && sp > 0 && Math.abs(sp - gestureSpan) > 0.5) {
+                    this.zoomScale(sp / gestureSpan);
+                }
+                const dx = cen.x - gestureX;
+                const dy = cen.y - gestureY;
+                if (dx || dy) {
+                    this._module._wf_camera_pan(this._handle, -Math.round(dx), Math.round(dy));
+                }
+                gestureX = cen.x; gestureY = cen.y; gestureSpan = sp;
+                e.preventDefault();
+                return;
+            }
+
+            if (!dragging) return;
             const dx = e.clientX - lastX;
             const dy = e.clientY - lastY;
             lastX = e.clientX; lastY = e.clientY;
@@ -654,15 +830,29 @@ export class WhiteoutViewer {
             // Negate dx for grab-and-slide pan; +dy is already down-on-screen.
             else                this._module._wf_camera_pan(this._handle, -dx, dy);
         });
+
         const endDrag = (e) => {
-            if (dragging) {
-                try { c.releasePointerCapture(e.pointerId); } catch (_) {}
+            pointers.delete(e.pointerId);
+            try { c.releasePointerCapture(e.pointerId); } catch (_) {}
+            if (pointers.size >= 2) {
+                armGesture(); // dropped to a different pair — rebaseline
+            } else if (pointers.size === 1) {
+                // Lifting one of two fingers hands control back to orbit,
+                // starting from where the remaining finger actually is.
+                const [only] = touches();
+                lastX = only.x; lastY = only.y;
+                dragging = 1;
+                gestureSpan = 0;
+            } else {
                 dragging = 0;
+                gestureSpan = 0;
             }
         };
         c.addEventListener('pointerup',     endDrag);
         c.addEventListener('pointercancel', endDrag);
-        c.addEventListener('pointerleave',  endDrag);
+        // NB: no pointerleave handler. With pointer capture the pointer never
+        // truly leaves, and a touch that grazes the canvas edge fires it —
+        // which used to drop the drag mid-gesture.
 
         // Wheel zoom — 16 detents/notch, scroll-up zooms in.
         const ZOOM_STEPS_PER_NOTCH = 16;
@@ -677,7 +867,21 @@ export class WhiteoutViewer {
         c.addEventListener('dblclick', () => {
             if (this._handle) this._module._wf_camera_reset(this._handle);
         });
-        // Suppress context menu — interrupts right-drag pan.
+        // Double-tap resets too — a touchscreen synthesises dblclick only
+        // erratically, and it's the one recovery gesture worth having when
+        // a pinch has flung the camera somewhere useless.
+        c.addEventListener('pointerup', (e) => {
+            if (e.pointerType === 'mouse' || pointers.size) return;
+            const now = e.timeStamp || performance.now();
+            if (now - lastTapMs < 300 && this._handle) {
+                this._module._wf_camera_reset(this._handle);
+                lastTapMs = 0;
+            } else {
+                lastTapMs = now;
+            }
+        });
+        // Suppress context menu — interrupts right-drag pan, and a long
+        // press on a touchscreen would otherwise pop it mid-gesture.
         c.addEventListener('contextmenu', (e) => e.preventDefault());
     }
 }

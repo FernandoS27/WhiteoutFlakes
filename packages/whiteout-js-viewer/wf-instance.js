@@ -3,6 +3,33 @@
 
 import { composeTRS, identityMat } from './wf-math.js';
 
+// Warcraft III corn-effect containers. A `.pkb` is one baked particle effect,
+// not a model — no geometry, no animation list — so it spawns through
+// wf_spawn_effect instead of wf_spawn_unit. Mirrors basic_viewer's
+// ViewerApp::IsEffectPath. Lives here rather than in wf-viewer.js because
+// Model needs it and wf-viewer already imports this.
+//
+// `.pkfx` is the editor-side name for the same effect and is NOT a format we
+// read. It stays in the list so a row naming one is still routed as an effect
+// rather than as a model; the solver then asks CASC for the baked `.pkb`.
+export const EFFECT_EXTENSIONS = ['.pkb', '.pkfx'];
+export function isEffectPath(src) {
+    if (typeof src !== 'string') return false;
+    // Drop any query/fragment first — a load-table URL can carry either.
+    const clean = src.split(/[?#]/)[0].toLowerCase();
+    return EFFECT_EXTENSIONS.some(e => clean.endsWith(e));
+}
+
+// Everything else the loader spawns as an actor: Warcraft III's own two plus
+// StarCraft II / Heroes `.m3`. The C++ side picks the parser off the file's
+// magic, so an extension here only ever decides what a host offers.
+export const MODEL_EXTENSIONS = ['.mdx', '.mdl', '.m3'];
+export function isModelPath(src) {
+    if (typeof src !== 'string') return false;
+    const clean = src.split(/[?#]/)[0].toLowerCase();
+    return MODEL_EXTENSIONS.some(e => clean.endsWith(e));
+}
+
 // WC3 player team-color palette (0-23). Hex lifted from Hive's
 // `ratory_wc3model_preview` so the swatch grid matches their viewer.
 export const TEAM_COLORS = [
@@ -210,11 +237,19 @@ export class Instance {
 
 // Loaded MDX asset. The renderer caches the template after the first
 // successful SpawnUnit; addInstance() cheaply re-spawns from it.
+//
+// A standalone corn effect (`.pkb`) rides the same class so
+// hosts don't branch: it just spawns through wf_spawn_effect, and keys on
+// its full path rather than a basename because nothing pre-pushed its
+// bytes into the provider — the AssetManager fetches it by path.
 export class Model {
     constructor(viewer, src) {
         this._viewer = viewer;
         this._src = src;
-        this._mdxKey = String(src).split(/[\\/]/).pop();
+        this.isEffect = isEffectPath(src);
+        this._mdxKey = this.isEffect
+            ? String(src).replaceAll('\\\\', '/')
+            : String(src).split(/[\\/]/).pop();
         this._instances = [];
         this.loaded = false;
         this.error = null;
@@ -224,14 +259,16 @@ export class Model {
     addInstance() {
         if (!this.loaded) throw new Error('Model.addInstance() before load resolved');
         const M = this._viewer._module;
+        const spawn = this.isEffect ? M._wf_spawn_effect : M._wf_spawn_unit;
+        const fn = this.isEffect ? 'wf_spawn_effect' : 'wf_spawn_unit';
         const keyPtr = this._viewer._cstr(this._mdxKey);
         let handle = 0;
         try {
-            handle = M._wf_spawn_unit(this._viewer._handle, keyPtr);
+            handle = spawn(this._viewer._handle, keyPtr);
         } finally {
             M._free(keyPtr);
         }
-        if (!handle) throw new Error('addInstance: wf_spawn_unit returned 0');
+        if (!handle) throw new Error('addInstance: ' + fn + ' returned 0');
         const inst = new Instance(this._viewer, this, handle);
         this._instances.push(inst);
         return inst;

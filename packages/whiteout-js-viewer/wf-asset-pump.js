@@ -93,8 +93,14 @@ async function fetchAndApplyImpl(viewer, pathSolver, kind, subKind, relPath) {
     const origExt = dot > 0 ? fwd.slice(dot).toLowerCase() : '';
     const family = familyFor(origExt);
 
+    // AssetManager lower-cases every path it surfaces. That is harmless for
+    // a name the solver looks up case-insensitively, but a standalone effect
+    // was requested by the caller's own `src` — possibly a case-sensitive
+    // URL — so ask under the original spelling when one was registered.
+    const solverKey = (viewer._needAliases && viewer._needAliases.get(fwd)) || relPath;
+
     let urls;
-    try { urls = await Promise.resolve(pathSolver(relPath)); }
+    try { urls = await Promise.resolve(pathSolver(solverKey)); }
     catch (_) { urls = null; }
     if (urls) {
         if (!Array.isArray(urls)) urls = [urls];

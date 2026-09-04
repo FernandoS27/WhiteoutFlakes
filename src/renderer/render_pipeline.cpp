@@ -1690,8 +1690,10 @@ void RenderPipeline::CleanupGFX() {
         impl_->gfx_->Destroy(impl_->lineVS_);
         impl_->gfx_->Destroy(impl_->linePS_);
         impl_->gfx_->Destroy(impl_->linePSOHdr_);
+        impl_->gfx_->Destroy(impl_->linePSOGbuf_);
         impl_->gfx_->Destroy(impl_->linePSOSd_);
         impl_->gfx_->Destroy(impl_->overlayLinePSOHdr_);
+        impl_->gfx_->Destroy(impl_->overlayLinePSOGbuf_);
         impl_->gfx_->Destroy(impl_->overlayLinePSOSd_);
         for (auto& [fmt, pso] : impl_->tonemapPSOs_)
             impl_->gfx_->Destroy(pso);
@@ -1901,55 +1903,76 @@ bool RenderPipeline::CreatePipelines() {
 /// getters share this: the MRT branch, the lazy SD rebuild and the swap-chain
 /// format tracking are the same problem twice.
 gfx::PipelineHandle RenderPipeline::LinePSO(bool depthTest, gfx::PipelineHandle hdrPso,
+                                            gfx::PipelineHandle& gbufPso,
                                             gfx::PipelineHandle& sdPso,
                                             gfx::Format& sdFormat) const {
     // The MRT question, not the format question: linePSOHdr_ declares the two
     // extra attachments, the lazy SD one declares none. SceneHdrInSd puts an
     // LDR-shaded frame in the HDR target with a single attachment, and takes
-    // the second branch — which then builds for the HDR format below.
+    // the last branch — which then builds for the HDR format below.
     gfx::Format extra[3];
-    if (SceneExtraRtvFormats(extra) != 0)
+    const u32 extras = SceneExtraRtvFormats(extra);
+
+    if (!impl_->gfx_ || impl_->lineVS_ == gfx::ShaderHandle::Invalid ||
+        impl_->linePS_ == gfx::ShaderHandle::Invalid)
+        return gfx::PipelineHandle::Invalid;
+
+    static const gfx::InputElement lineInput[] = {
+        {"POSITION", 0, gfx::Format::R32G32B32_FLOAT, 0},
+        {"COLOR", 0, gfx::Format::R32G32B32A32_FLOAT, 12},
+    };
+    auto build = [&](gfx::Format rtv, u32 extraCount) {
+        gfx::GraphicsPipelineDesc desc{};
+        desc.vs = impl_->lineVS_;
+        desc.ps = impl_->linePS_;
+        desc.inputLayout = lineInput;
+        desc.topology = gfx::PrimitiveTopology::LineList;
+        desc.blend.enable = false;
+        desc.depthStencil.depthTest = depthTest;
+        desc.depthStencil.depthWrite = depthTest;
+        desc.rasterizer.cull = gfx::CullMode::None;
+        desc.rasterizer.frontCCW = true;
+        desc.dsvFormat = impl_->depthStencilFormat_;
+        desc.rtvFormat = rtv;
+        for (u32 i = 0; i < extraCount; ++i)
+            desc.extraRtvFormats[i] = extra[i];
+        desc.extraRtvCount = extraCount;
+        return impl_->gfx_->CreateGraphicsPipeline(desc);
+    };
+
+    // Sc2Heroes opens the scene pass with a fourth attachment, which the eager
+    // two-extra PSO does not declare — and a pipeline that disagrees with its
+    // pass on attachment count invalidates the whole command buffer on WebGPU
+    // and Vulkan, taking the frame with it. Built on demand: this is the only
+    // profile that asks.
+    if (extras == 3) {
+        if (gbufPso == gfx::PipelineHandle::Invalid)
+            gbufPso = build(SceneTargetFormat(), extras);
+        return gbufPso;
+    }
+    if (extras != 0)
         return hdrPso;
 
     const gfx::Format wantFmt = SceneTargetFormat();
     if (sdPso != gfx::PipelineHandle::Invalid && sdFormat == wantFmt)
         return sdPso;
 
-    if (!impl_->gfx_ || impl_->lineVS_ == gfx::ShaderHandle::Invalid ||
-        impl_->linePS_ == gfx::ShaderHandle::Invalid)
-        return gfx::PipelineHandle::Invalid;
-
     if (sdPso != gfx::PipelineHandle::Invalid)
         impl_->gfx_->Destroy(sdPso);
 
-    static const gfx::InputElement lineInput[] = {
-        {"POSITION", 0, gfx::Format::R32G32B32_FLOAT, 0},
-        {"COLOR", 0, gfx::Format::R32G32B32A32_FLOAT, 12},
-    };
-    gfx::GraphicsPipelineDesc desc{};
-    desc.vs = impl_->lineVS_;
-    desc.ps = impl_->linePS_;
-    desc.inputLayout = lineInput;
-    desc.topology = gfx::PrimitiveTopology::LineList;
-    desc.blend.enable = false;
-    desc.depthStencil.depthTest = depthTest;
-    desc.depthStencil.depthWrite = depthTest;
-    desc.rasterizer.cull = gfx::CullMode::None;
-    desc.rasterizer.frontCCW = true;
-    desc.dsvFormat = impl_->depthStencilFormat_;
-    desc.rtvFormat = wantFmt;
-    sdPso = impl_->gfx_->CreateGraphicsPipeline(desc);
+    sdPso = build(wantFmt, 0);
     sdFormat = wantFmt;
     return sdPso;
 }
 
 gfx::PipelineHandle RenderPipeline::CurrentLinePSO() const {
-    return LinePSO(true, impl_->linePSOHdr_, impl_->linePSOSd_, impl_->linePsoSdFormat_);
+    return LinePSO(true, impl_->linePSOHdr_, impl_->linePSOGbuf_, impl_->linePSOSd_,
+                   impl_->linePsoSdFormat_);
 }
 
 gfx::PipelineHandle RenderPipeline::CurrentOverlayLinePSO() const {
-    return LinePSO(false, impl_->overlayLinePSOHdr_, impl_->overlayLinePSOSd_,
-                   impl_->overlayLinePsoSdFormat_);
+    return LinePSO(false, impl_->overlayLinePSOHdr_, impl_->overlayLinePSOGbuf_,
+                   impl_->overlayLinePSOSd_, impl_->overlayLinePsoSdFormat_);
 }
 
 bool RenderPipeline::CreateDefaultResources() {

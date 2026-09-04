@@ -666,6 +666,12 @@ ActorRole ActorView::Role() const {
     return a ? static_cast<ActorRole>(a->role) : ActorRole::Unit;
 }
 
+bool ActorView::EffectBounds(i32 emitterId, Vector3f& outMin, Vector3f& outMax) const {
+    // Reads the ACTIVE scene's corn service, so a multi-scene host must
+    // publish the effect's scene before asking.
+    return Svc(impl_).ComputeEffectWorldBounds(handle_, emitterId, outMin, outMax);
+}
+
 Matrix44f ActorView::Transform() const {
     auto* a = FindActor(impl_, handle_);
     return a ? a->worldTransform : Matrix44f::identity();

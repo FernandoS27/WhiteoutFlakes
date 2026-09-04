@@ -2,9 +2,22 @@
 // WhiteoutViewer. Owns directory picking, sidebar population, and the
 // pathSolver chain (local index → Hive direct asset → /casc-contents/).
 
-import { WhiteoutViewer, TEAM_COLORS, HD_DEBUG_MODES } from './wf-viewer.js';
+import { WhiteoutViewer, TEAM_COLORS, HD_DEBUG_MODES,
+         EFFECT_EXTENSIONS, MODEL_EXTENSIONS, isModelPath } from './wf-viewer.js';
 import { WebAudioBridge } from './web-audio.js';
 import { buildOverrideMap, tableModels, isAbsoluteUrl } from './load-table.js';
+
+// Standalone corn effects are listed alongside models — the viewer spawns them
+// through their own path (see isEffectPath), so a row is a row as far as the
+// sidebar is concerned.
+const LISTABLE = [...MODEL_EXTENSIONS, ...EFFECT_EXTENSIONS];
+
+// Extension off, whatever it was. Beats a fixed alternation now that the list
+// of openable formats is a shared constant.
+function stripExt(name) {
+    const dot = name.lastIndexOf('.');
+    return dot > 0 ? name.slice(0, dot) : name;
+}
 
 // `els` carries the DOM nodes HiveApp drives. `canvas` is required;
 // every other slot is optional — if a host omits it, the corresponding
@@ -22,11 +35,22 @@ export class HiveApp {
         this.bgPicker     = els.bgPicker     || null;
         this.openDirBtn   = els.openDirBtn   || null;
         this.dirInput     = els.dirInput     || null;
+        // Optional `Open model…` affordance — picks model files themselves
+        // rather than a tree, and loads the first one straight away. The only
+        // way in for a format Hive's CASC does not carry (a StarCraft II
+        // `.m3`); picking its textures in the same dialog is what gives them
+        // a chance to resolve.
+        this.openModelBtn = els.openModelBtn || null;
+        this.modelInput   = els.modelInput   || null;
         // Optional `Load JSON…` affordance — triggers loadFromTable() on a
         // user-picked file matching the load-table schema (see load-table.js).
         this.loadJsonBtn  = els.loadJsonBtn  || null;
         this.jsonInput    = els.jsonInput    || null;
         this.camReset     = els.camReset     || null;
+        // On-screen zoom, for touch hosts: a phone has no scroll wheel, and
+        // a pinch needs two fingers the user may not have free.
+        this.zoomInBtn    = els.zoomInBtn    || null;
+        this.zoomOutBtn   = els.zoomOutBtn   || null;
         this.closeBtn     = els.closeBtn     || null;
         this.progress     = els.progress     || null;
         this.volSlider    = els.volSlider    || null;
@@ -133,6 +157,18 @@ export class HiveApp {
             this.dirInput.addEventListener('change',
                 (e) => this._adoptFileList(e.target.files));
         }
+        if (this.openModelBtn) {
+            this.openModelBtn.addEventListener('click', () => {
+                if (this.modelInput) this.modelInput.click();
+            });
+        }
+        if (this.modelInput) {
+            this.modelInput.addEventListener('change', (e) => {
+                this._adoptModelFiles(e.target.files);
+                // Reset so re-picking the same file fires `change` again.
+                e.target.value = '';
+            });
+        }
         if (this.loadJsonBtn) {
             this.loadJsonBtn.addEventListener('click', () => {
                 if (this.jsonInput) this.jsonInput.click();
@@ -154,6 +190,17 @@ export class HiveApp {
                 else this.viewer.resetCamera();
                 this._setActiveChip(this.cameraList, this.camReset);
             });
+        }
+        // One wheel notch is 16 steps in WhiteoutViewer's wheel handler;
+        // match it so a button press and a scroll click feel the same.
+        const ZOOM_BUTTON_STEPS = 16;
+        if (this.zoomInBtn) {
+            this.zoomInBtn.addEventListener('click',
+                () => this.viewer && this.viewer.zoomBy(ZOOM_BUTTON_STEPS));
+        }
+        if (this.zoomOutBtn) {
+            this.zoomOutBtn.addEventListener('click',
+                () => this.viewer && this.viewer.zoomBy(-ZOOM_BUTTON_STEPS));
         }
         if (this.closeBtn) {
             // Symbolic — no parent modal in the standalone page.
@@ -314,6 +361,23 @@ export class HiveApp {
         this._populateModels();
     }
 
+    // One-shot open: index whatever was picked and load the first model in it.
+    // Merges rather than replaces, so a second pick can add the textures a
+    // model already on screen is still missing.
+    _adoptModelFiles(files) {
+        if (!files || files.length === 0) return;
+        const picked = this._indexFromFileList(files);
+        for (const [key, rec] of picked) this.index.set(key, rec);
+        this._populateModels();
+
+        const first = [...picked.values()].find(rec => isModelPath(rec.path));
+        if (!first) return; // textures only — the open was a top-up
+        const idx = this.models.findIndex(m => m.path === first.path);
+        if (idx < 0) return;
+        const rows = this.modelList ? this.modelList.querySelectorAll('a') : null;
+        this._selectModel(this.models[idx], rows ? rows[idx] : null);
+    }
+
     async _adoptJsonFile(file) {
         let table;
         try {
@@ -405,16 +469,16 @@ export class HiveApp {
         for (const entry of this.index.values()) {
             if (seen.has(entry.path)) continue;
             const lp = entry.path.toLowerCase();
-            if (!(lp.endsWith('.mdx') || lp.endsWith('.mdl'))) continue;
+            if (!LISTABLE.some(e => lp.endsWith(e))) continue;
             seen.add(entry.path);
-            const name = entry.path.split('/').pop().replace(/\.(mdx|mdl)$/i, '');
+            const name = stripExt(entry.path.split('/').pop());
             list.push({ name, path: entry.path, entry });
         }
         list.sort((a, b) => a.name.localeCompare(b.name));
         this.models = list;
         // A new local-directory pick supersedes any active load-table.
         this._overrides = null;
-        this._renderModelList(list, '(no .mdx/.mdl files in directory)');
+        this._renderModelList(list, '(no model files in directory)');
     }
 
     async _selectModel(m, row) {

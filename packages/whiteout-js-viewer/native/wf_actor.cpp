@@ -47,6 +47,13 @@ uint32_t wf_spawn_unit(WfRenderer* h, const char* mdxPath) {
     return actor;
 }
 
+// A `.pkb` / `.pkfx` is one particle effect, not a model: no meshes, no
+// skeleton, one always-on emitter. Mirrors basic_viewer's LoadEffect.
+uint32_t wf_spawn_effect(WfRenderer* h, const char* pkbPath) {
+    if (!h || !pkbPath) return 0;
+    return h->renderer.Loader().SpawnEffect(std::string(pkbPath));
+}
+
 void wf_clear_all(WfRenderer* h) {
     if (!h) return;
     h->renderer.Loader().RequestClearAll();

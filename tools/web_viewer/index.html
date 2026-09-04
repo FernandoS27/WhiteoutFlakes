@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>WhiteoutFlakes — Viewer</title>
 <!-- Warm the TLS+H2 connection before the first asset fetch. -->
 <link rel="preconnect" href="https://www.hiveworkshop.com" crossorigin>
@@ -31,7 +32,16 @@
     background: var(--bg); color: var(--text);
     font: 13px/1.4 "Trebuchet MS", "Segoe UI", Tahoma, Arial, sans-serif;
   }
-  body { display: grid; grid-template-rows: auto 1fr; height: 100vh; user-select: none; }
+  body {
+    display: grid;
+    grid-template-rows: auto 1fr;
+    /* Not the implicit `auto` column: its minimum is the top bar's
+       min-content, which on a phone is wider than the screen — the whole
+       page would size to the control strip and the canvas would hang off
+       the right edge. */
+    grid-template-columns: minmax(0, 1fr);
+    height: 100vh; user-select: none;
+  }
 
   /* Top bar — title + inline controls + close. */
   #topbar {
@@ -39,6 +49,7 @@
     padding: 8px 16px; background: var(--bg);
     border-bottom: 1px solid var(--topbar-border);
     gap: 12px;
+    min-width: 0;
   }
   #topbar .title  { font-size: 22px; color: var(--title-text); font-weight: 600; letter-spacing: 0.2px; }
   #topbar .spacer { flex: 1; }
@@ -171,8 +182,8 @@
     font-style: italic;
   }
 
-  /* Model-source buttons — local directory + JSON load-table. */
-  #open-dir, #load-json {
+  /* Model-source buttons — single model, local directory, JSON load-table. */
+  #open-model, #open-dir, #load-json {
     display: block;
     margin: 6px 12px;
     background: transparent; color: var(--text);
@@ -181,8 +192,12 @@
     width: calc(100% - 24px);
     border-radius: 2px;
   }
-  #open-dir:hover, #load-json:hover  { background: var(--hover-bg); color: var(--text-bright); }
-  #open-dir:active, #load-json:active { background: rgba(255, 206, 64, 0.12); }
+  #open-model:hover, #open-dir:hover, #load-json:hover {
+    background: var(--hover-bg); color: var(--text-bright);
+  }
+  #open-model:active, #open-dir:active, #load-json:active {
+    background: rgba(255, 206, 64, 0.12);
+  }
 
   /* color-chips — 6×4 team colors, 6+picker for backgrounds. */
   .block-body.color-chips {
@@ -238,12 +253,117 @@
     100% { transform: translateX(140%); }
   }
 
+  /* Menu button + drawer scrim exist only in the narrow layout. */
+  #menu-btn {
+    display: none;
+    background: transparent; color: var(--text);
+    border: 1px solid var(--btn-border); border-radius: 3px;
+    font: inherit; font-size: 18px; line-height: 1;
+    padding: 6px 10px; cursor: pointer;
+  }
+  #scrim { display: none; }
+
+  /* Control strip. On desktop it just sits in the top bar; the narrow
+     layout drops it to its own scrollable row (see the media query). */
+  #controls {
+    display: flex; align-items: center; gap: 12px;
+    min-width: 0;
+  }
+  #controls > * { min-width: 0; }
+
+  /* Touch camera buttons — coarse-pointer only. A pinch zooms and two
+     fingers pan, but one-handed on a phone neither is available. */
+  #touch-controls {
+    display: none;
+    position: absolute;
+    right: 12px; bottom: 12px;
+    flex-direction: column; gap: 8px;
+    z-index: 15;
+  }
+  #touch-controls button {
+    width: 44px; height: 44px;          /* 44 px: the minimum comfortable tap target */
+    border-radius: 50%;
+    background: rgba(22, 22, 22, 0.72);
+    color: var(--text);
+    border: 1px solid var(--btn-border);
+    font: 20px/1 "Trebuchet MS", "Segoe UI", Tahoma, Arial, sans-serif;
+    cursor: pointer;
+    /* The canvas takes touch-action:none for gestures; these are taps. */
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #touch-controls button:active {
+    background: rgba(255, 206, 64, 0.22);
+    color: var(--text-bright);
+  }
+  @media (pointer: coarse) {
+    #touch-controls { display: flex; }
+  }
+
+  /* ---- Narrow / phone layout -------------------------------------------
+     Two changes carry it: the control strip wraps onto its own scrollable
+     row, and the sidebar becomes an off-canvas drawer so the canvas keeps
+     the whole viewport. Nothing is reparented — only laid out differently. */
+  @media (max-width: 860px) {
+    #menu-btn { display: block; }
+    #topbar {
+      flex-wrap: wrap;
+      padding: 8px 10px;
+      gap: 8px 10px;
+    }
+    #topbar .title { font-size: 17px; }
+    #topbar .spacer { display: none; }
+    #controls {
+      order: 3;
+      flex: 1 1 100%;
+      max-width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+      padding-bottom: 2px;
+    }
+    #controls::-webkit-scrollbar { display: none; }
+    /* Nothing in the strip may shrink, or it all compresses instead of
+       scrolling. */
+    #controls > * { flex: 0 0 auto; }
+    #vol-slider { width: 90px; }
+    #tod-slider { width: 80px; }
+
+    .ratory.model-viewer { grid-template-columns: 1fr; }
+    .ratory.model-viewer .sidebar {
+      position: absolute;
+      top: 0; right: 0; bottom: 0;
+      width: min(84vw, 320px);
+      z-index: 25;
+      transform: translateX(100%);
+      transition: transform 180ms ease-out;
+      box-shadow: -8px 0 24px rgba(0, 0, 0, 0.5);
+      overscroll-behavior: contain;
+    }
+    body.sidebar-open .ratory.model-viewer .sidebar { transform: none; }
+    body.sidebar-open #scrim {
+      display: block;
+      position: absolute; inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+      z-index: 20;
+    }
+    /* Keep the buttons clear of the drawer edge when it's open. */
+    body.sidebar-open #touch-controls { display: none; }
+    /* Bigger tap targets in the drawer than the desktop 3 px rows. */
+    .block-body.models > a,
+    .block-body.animations > a,
+    .block-body.cameras > a { padding: 8px 14px; }
+    #open-model, #open-dir, #load-json { padding: 9px 10px; }
+  }
+
 </style>
 </head>
 <body>
   <div id="topbar">
+    <button id="menu-btn" type="button" title="Show model list" aria-label="Toggle sidebar">&#9776;</button>
     <span class="title">View in 3D</span>
     <span class="spacer"></span>
+    <div id="controls">
     <div class="ctrl" id="fps-wrap" title="Frames per second (smoothed)">
       <label>FPS</label>
       <span id="fps-readout">—</span>
@@ -276,6 +396,7 @@
       <label for="vol-slider">Volume</label>
       <input id="vol-slider" type="range" min="0" max="100" step="1" value="50">
     </div>
+    </div><!-- /#controls -->
     <span id="close-btn" class="close" title="Close">×</span>
   </div>
 
@@ -283,17 +404,31 @@
   <div class="ratory model-viewer" id="viewer-root">
     <canvas id="wf-canvas"></canvas>
     <div class="progress" id="progress"><div></div></div>
+    <!-- Touch camera controls. One finger orbits and two pan/pinch, but a
+         phone has no wheel and no second free hand while it's being held,
+         so zoom and recentre also get buttons. -->
+    <div id="touch-controls">
+      <button id="zoom-in"  type="button" title="Zoom in"  aria-label="Zoom in">+</button>
+      <button id="zoom-out" type="button" title="Zoom out" aria-label="Zoom out">&#8722;</button>
+      <button id="cam-recenter" type="button" title="Recenter camera" aria-label="Recenter camera">&#8634;</button>
+    </div>
+    <div id="scrim"></div>
     <div class="sidebar">
 
       <div class="block models-container">
         <div class="block-container">
           <div class="block-header">Models</div>
           <div class="block-body models" id="model-list">
+            <button id="open-model" type="button"
+                    title="Open model files directly (.mdx / .mdl / .m3 / .pkb) — pick their textures in the same dialog to resolve those locally too">Open model…</button>
+            <input id="model-input" type="file" multiple
+                   accept=".mdx,.mdl,.m3,.pkb,.pkfx,.blp,.dds,.tga,.png,.tif"
+                   style="display:none">
             <button id="open-dir" type="button">Open directory…</button>
             <input id="dir-input" type="file" webkitdirectory multiple style="display:none">
             <button id="load-json" type="button">Load JSON…</button>
             <input id="json-input" type="file" accept=".json,application/json" style="display:none">
-            <span class="empty">(pick a directory or JSON to populate)</span>
+            <span class="empty">(open a model, directory or JSON to populate)</span>
           </div>
         </div>
       </div>
@@ -395,11 +530,15 @@
         teamSwatches: document.getElementById('team-swatches'),
         bgSwatches:   document.getElementById('bg-swatches'),
         bgPicker:     document.getElementById('bg-picker'),
+        openModelBtn: document.getElementById('open-model'),
+        modelInput:   document.getElementById('model-input'),
         openDirBtn:   document.getElementById('open-dir'),
         dirInput:     document.getElementById('dir-input'),
         loadJsonBtn:  document.getElementById('load-json'),
         jsonInput:    document.getElementById('json-input'),
         camReset:     document.getElementById('cam-reset'),
+        zoomInBtn:    document.getElementById('zoom-in'),
+        zoomOutBtn:   document.getElementById('zoom-out'),
         closeBtn:     document.getElementById('close-btn'),
         progress:     document.getElementById('progress'),
         volSlider:    document.getElementById('vol-slider'),
@@ -427,6 +566,28 @@
       });
       await app.start();
       window.__hive = app;
+
+      // Off-canvas sidebar (narrow layout only — the CSS ignores the class
+      // above 860 px, so this is inert on desktop).
+      const menuBtn = document.getElementById('menu-btn');
+      const scrim   = document.getElementById('scrim');
+      const closeDrawer = () => document.body.classList.remove('sidebar-open');
+      if (menuBtn) {
+        menuBtn.addEventListener('click',
+          () => document.body.classList.toggle('sidebar-open'));
+      }
+      if (scrim) scrim.addEventListener('click', closeDrawer);
+      // Picking a model is the reason the drawer was opened, so close it
+      // and let the user watch what they picked.
+      document.getElementById('model-list')
+        ?.addEventListener('click', (e) => { if (e.target.closest('a')) closeDrawer(); });
+      // The direct-open button is not a row, and its click only opens a file
+      // dialog — the model arrives on the picker's `change`.
+      document.getElementById('model-input')
+        ?.addEventListener('change', closeDrawer);
+
+      document.getElementById('cam-recenter')
+        ?.addEventListener('click', () => app.viewer.resetCamera());
     } catch (e) {
       console.error('[wf] FATAL', e);
     }

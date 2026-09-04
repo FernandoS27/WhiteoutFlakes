@@ -324,12 +324,19 @@ std::shared_ptr<M3ModelAdapter> M3ModelAdapter::Load(const ContentRef& ref,
         return nullptr;
     ::whiteout::m3::Parser parser;
     ::whiteout::m3::Model model;
+    // The web build compiles -fno-exceptions, where `try` is a hard error.
+    // The parser collects issues instead of throwing, so the handler only
+    // ever sees what the STL raised on malformed input.
+#if defined(__cpp_exceptions)
     try {
         model = parser.parse(bytes);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[m3] parse failed for '%s': %s\n", ref.Describe().c_str(), e.what());
         return nullptr;
     }
+#else
+    model = parser.parse(bytes);
+#endif
     if (parser.hasIssues()) {
         // Issues are not necessarily fatal — the parser reports what it
         // skipped. Surface them rather than letting a half-read model look
@@ -425,12 +432,16 @@ bool M3ModelAdapter::AttachAnimationFile(std::string label,
     // be skipped.
     ::whiteout::m3::Model anim;
     ::whiteout::m3::Parser parser;
+#if defined(__cpp_exceptions)
     try {
         anim = parser.parse(bytes);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[m3a] parse failed for '%s': %s\n", label.c_str(), e.what());
         return false;
     }
+#else
+    anim = parser.parse(bytes);
+#endif
     if (anim.sequences.empty()) {
         std::fprintf(stderr, "[m3a] '%s' carries no sequences — not attached\n", label.c_str());
         return false;

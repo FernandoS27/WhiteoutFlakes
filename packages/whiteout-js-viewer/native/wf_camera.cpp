@@ -24,9 +24,45 @@ void wf_camera_zoom(WfRenderer* h, int wheelDelta) {
     h->renderer.Camera().Zoom(wheelDelta);
 }
 
+// Continuous zoom by a ratio. A wheel detent is a discrete step, but a
+// pinch is a spread ratio between two fingers, so touch hosts hand that
+// ratio over directly: >1 (fingers apart) pulls the camera in.
+// CameraView::SetDistance clamps, so a runaway gesture can't escape.
+void wf_camera_zoom_scale(WfRenderer* h, float scale) {
+    if (!h || !(scale > 0.0f)) return;
+    auto cam = h->renderer.Camera();
+    cam.SetDistance(cam.GetDistance() / scale);
+}
+
 void wf_camera_reset(WfRenderer* h) {
     if (!h) return;
     h->renderer.Camera().Reset();
+}
+
+// Frame the orbital camera on a standalone effect's LIVE particle cloud.
+// A `.pkb` has no mesh, so there is nothing to frame until the sim has
+// actually emitted; returns 0 while the cloud is still empty and the host
+// retries next frame. Same math as tools/common/thumbnail_framing.cpp's
+// FrameCameraToEffect, which the web build can't call — it takes an
+// internal RenderService&.
+int wf_camera_frame_effect(WfRenderer* h, uint32_t actor) {
+    if (!h) return 0;
+    auto av = h->renderer.Actor(actor);
+    if (!av.IsValid()) return 0;
+    whiteout::flakes::Vector3f lo{}, hi{};
+    if (!av.EffectBounds(/*emitterId*/ 0, lo, hi)) return 0;
+
+    const whiteout::flakes::Vector3f center{(lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f,
+                                            (lo.z + hi.z) * 0.5f};
+    float maxAxis = hi.x - lo.x;
+    if (hi.y - lo.y > maxAxis) maxAxis = hi.y - lo.y;
+    if (hi.z - lo.z > maxAxis) maxAxis = hi.z - lo.z;
+    if (maxAxis < 30.0f) maxAxis = 30.0f; // floor for tiny / point effects
+
+    auto cam = h->renderer.Camera();
+    cam.SetTarget(center.x, center.y, center.z);
+    cam.SetDistance(maxAxis * 1.3f); // a little margin around the cloud
+    return 1;
 }
 
 // idx<0 = Reset to orbital. Stashes {actor, idx} so wf_tick re-evals
