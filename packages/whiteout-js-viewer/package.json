@@ -1,6 +1,6 @@
 {
   "name": "whiteout-js-viewer",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "WhiteoutFlakes WebGPU model viewer — JS API plus a Hive-style UI shell, wired to the wf-core Emscripten/wasm runtime.",
   "type": "module",
   "main": "./index.js",

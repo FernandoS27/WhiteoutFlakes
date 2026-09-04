@@ -4,6 +4,11 @@
 # Inputs (set via -D on the cmake command line):
 #   SHADER_DIR — directory containing the .dxbc files
 #   OUTPUT     — path to the output .h file
+#   EMBED_SPV  — ON (default) to embed the SPIR-V bytes, OFF to stub them.
+#                A build with no Vulkan backend still needs the `*Spv` symbols
+#                to exist for the per-backend selectors, but not their ~780 KB
+#                of payload: the WebGPU-only wasm carried a quarter of its size
+#                in blobs nothing could reach.
 # Variable names are derived from filenames (e.g. kLineVS.dxbc → kLineVS).
 # ============================================================================
 cmake_minimum_required(VERSION 3.16)
@@ -27,6 +32,13 @@ list(LENGTH mtl_files  mtl_count)
 # below. SPV is mandatory on every platform — bail if even those are missing.
 if(spv_count EQUAL 0)
     message(FATAL_ERROR "No .spv files found in ${SHADER_DIR}")
+endif()
+
+# The .spv list stays the master enumeration of shader names either way — the
+# DXBC and WGSL stub passes below key off it — so SPIR-V is always compiled and
+# only its bytes are optional.
+if(NOT DEFINED EMBED_SPV)
+    set(EMBED_SPV ON)
 endif()
 
 # Header preamble
@@ -67,14 +79,20 @@ endforeach()
 foreach(binpath IN LISTS spv_files)
     get_filename_component(varname "${binpath}" NAME_WE)
 
-    file(READ "${binpath}" hex HEX)
-    file(SIZE "${binpath}" bytesize)
+    if(EMBED_SPV)
+        file(READ "${binpath}" hex HEX)
+        file(SIZE "${binpath}" bytesize)
 
-    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1, " hex "${hex}")
-    string(REGEX REPLACE ", $" "" hex "${hex}")
+        string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1, " hex "${hex}")
+        string(REGEX REPLACE ", $" "" hex "${hex}")
 
-    string(APPEND header "// ${varname}Spv — ${bytesize} bytes (SPIR-V)\n")
-    string(APPEND header "inline constexpr uint8_t ${varname}Spv[] = {\n    ${hex}\n};\n\n")
+        string(APPEND header "// ${varname}Spv — ${bytesize} bytes (SPIR-V)\n")
+        string(APPEND header "inline constexpr uint8_t ${varname}Spv[] = {\n    ${hex}\n};\n\n")
+    else()
+        string(APPEND header
+            "// ${varname}Spv — stub (no Vulkan path on this build)\n"
+            "inline constexpr uint8_t ${varname}Spv[] = { 0x00 };\n\n")
+    endif()
 
     list(FIND real_dxbc_names "${varname}" found_idx)
     if(found_idx EQUAL -1)
@@ -179,6 +197,11 @@ endforeach()
 string(APPEND header "} // namespace whiteout::flakes::Shaders\n")
 
 file(WRITE "${OUTPUT}" "${header}")
+if(EMBED_SPV)
+    set(spv_note "${spv_count} spv")
+else()
+    set(spv_note "${spv_count} spv STUBBED")
+endif()
 message(STATUS
     "Generated compiled_shaders.h "
-    "(${dxbc_count} dxbc + ${spv_count} spv + ${wgsl_count} wgsl + ${mtl_count} metallib)")
+    "(${dxbc_count} dxbc + ${spv_note} + ${wgsl_count} wgsl + ${mtl_count} metallib)")

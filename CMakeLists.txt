@@ -506,11 +506,21 @@ endforeach()
 # Embed all DXBC blobs into a single C++ header
 set(COMPILED_SHADERS_H "${SHADER_OUT_DIR}/compiled_shaders.h")
 
+# Emscripten has no Vulkan backend, and the SPIR-V twin of every shader is
+# ~780 KB the browser can never reach — a quarter of the wasm. Stub the bytes
+# there; the symbols still exist, so the per-backend selectors compile.
+if(EMSCRIPTEN)
+    set(_wf_embed_spv OFF)
+else()
+    set(_wf_embed_spv ON)
+endif()
+
 add_custom_command(
     OUTPUT  "${COMPILED_SHADERS_H}"
     COMMAND "${CMAKE_COMMAND}"
             "-DSHADER_DIR=${SHADER_OUT_DIR}"
             "-DOUTPUT=${COMPILED_SHADERS_H}"
+            "-DEMBED_SPV=${_wf_embed_spv}"
             -P "${SHADER_SRC_DIR}/embed_shaders.cmake"
     DEPENDS ${SHADER_DXBC_FILES} ${SHADER_SPV_FILES} ${SHADER_WGSL_FILES}
             ${SHADER_MTL_FILES}
