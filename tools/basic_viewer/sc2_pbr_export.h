@@ -16,8 +16,8 @@
 //
 //   * **emissive -> emissive** is already a rename; `DeriveProfile` does it.
 //   * **normal -> normal**, but restated. StarCraft II packs DXT5nm — x in
-//     alpha, y in green — and Reforged ships BC5, which is x in red. The two
-//     components are swapped and the result's green inverted on the way; see
+//     alpha, y in green — and Reforged ships BC5, which is x in red. A
+//     channel move and nothing else: the axes agree between the engines; see
 //     `kNormalRestatement`.
 //   * **specular + gloss + the exponent + AO + the team mask -> ORM**, baked by
 //     `textures::pbr::BakeOrm`. The roughness comes from the material's
@@ -28,9 +28,13 @@
 //     for out of the albedo and the albedo has to be raised by the same amount
 //     or the model comes back darker than it went in. The team mask lightens it
 //     in the same pass.
-//   * **the base colour's alpha is dropped**, because in StarCraft II it is not
-//     opacity: it is the team-colour mask, and it has just been written into
-//     the ORM's alpha where Reforged reads one.
+//   * **the base colour's alpha is REPLACED**, because in StarCraft II it is
+//     not opacity: it is the team-colour mask, and it has just been written
+//     into the ORM's alpha where Reforged reads one. What goes in its place is
+//     the coverage the source actually blends and alpha-tests by — the two
+//     alpha-mask layers, composed (`cFinal.a = mask1.a * mask2.a`) — which no
+//     unbaked export could carry, Reforged having no slot for a mask texture.
+//     With no masks the alpha is opaque.
 //
 // `pbr_bake.h` carries the algebra and the measurements behind every number in
 // it; this file's job is to read StarCraft II's fields correctly and hand them
@@ -84,8 +88,12 @@ struct Sc2PbrBakeResult {
     int ormBaked = 0;
     int normalsRestated = 0;
     /// Base colours rewritten under a team mask: lightened where the mask
-    /// selects, and made opaque.
+    /// selects, and made opaque — or, where the material carries alpha-mask
+    /// layers, given the composed cutout instead (see `coverageComposed`).
     int baseColorsCleared = 0;
+    /// Of those, how many carried a real per-texel coverage — StarCraft II's
+    /// alpha-mask layers composed into the base colour's alpha, encoded BC3.
+    int coverageComposed = 0;
     /// Materials whose source layers could not be resolved or decoded. Their
     /// slots are left exactly as the derive wrote them.
     int materialsSkipped = 0;

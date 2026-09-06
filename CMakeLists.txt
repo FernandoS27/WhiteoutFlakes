@@ -1670,6 +1670,10 @@ set(WHITEOUTFLAKES_VIEWER_SOURCES
     tools/basic_viewer/viewer_ui.cpp
     # "Export to MDX": a foreign model converted THROUGH WEM into Warcraft III.
     tools/basic_viewer/mdx_export.cpp
+    # "Export to M3": the same crossing pointed at StarCraft II.
+    tools/basic_viewer/m3_export.cpp
+    # The Warcraft III -> StarCraft II game conventions that ride that export.
+    tools/basic_viewer/wc3_to_sc2_export.cpp
     # The one crossing a slot rename cannot make: StarCraft II's
     # specular/gloss baked into a Reforged occlusion/roughness/metalness map.
     tools/basic_viewer/sc2_pbr_export.cpp

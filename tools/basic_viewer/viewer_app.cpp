@@ -4,6 +4,7 @@
 #include "io/wem/wem_export.h"
 #include "io/wem/wem_import.h"
 #include "io/wem/wem_profiles.h"
+#include "m3_export.h"
 #include "mdx_export.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/camera.h"
@@ -909,13 +910,69 @@ bool ViewerApp::ExportMdx(const std::filesystem::path& outPath,
         // well, because that is when it is worth reading.
         std::fprintf(stderr, "[viewer] Export MDX: %zu diagnostic(s)\n%s",
                      report.diagnostics.size(),
-                     io::DescribeWemDiagnostics(report.diagnostics).c_str());
+                     io::DescribeWemDiagnostics(report.diagnostics, 400).c_str());
     }
     if (!report.ok) {
         std::fprintf(stderr, "[viewer] Export MDX FAILED: %s\n", report.error.c_str());
         return false;
     }
     std::printf("[viewer] Saved Warcraft III model (%s, %gx scale): %s\n", report.formatId.c_str(),
+                static_cast<double>(report.scale), io::PathToUtf8(outPath).c_str());
+    if (exportTextures) {
+        std::printf("[viewer] Textures: %d exported, %d skipped, %d failed\n",
+                    report.texturesExported, report.texturesSkipped, report.texturesFailed);
+    }
+    return true;
+}
+
+// ---- StarCraft II export ----------------------------------------------------
+//
+// ExportMdx's twin: a `.mdx`, a `.m2` or a Diablo III `.app` converted through
+// WEM and written as `.m3`. See tools/basic_viewer/m3_export.h.
+
+bool ViewerApp::CanExportM3() const {
+    if (!CanExportWem())
+        return false;
+#if WDX_ENABLE_M3
+    // A StarCraft II model is offered Save As instead, for ExportMdx's reason:
+    // writing it back through WEM would derive a material set it already
+    // carries.
+    const model::Actor* actor = const_cast<ViewerApp*>(this)->FocusActorPtr();
+    return actor &&
+           dynamic_cast<const io::M3ModelAdapter*>(actor->animation.Source().get()) == nullptr;
+#else
+    return true;
+#endif
+}
+
+bool ViewerApp::ExportM3(const std::filesystem::path& outPath,
+                         ::whiteout::models::wem::ProfileId profile, bool exportTextures) {
+    model::Actor* actor = FocusActorPtr();
+    auto* source = actor ? dynamic_cast<IModelSource*>(actor->animation.Source().get()) : nullptr;
+    if (!source) {
+        std::fprintf(stderr, "[viewer] Export M3: no model on screen\n");
+        return false;
+    }
+
+    M3ExportRequest request;
+    request.source = source;
+    request.provider = service_.Scene().ActiveContentProvider();
+    request.outPath = outPath;
+    request.modelName = io::PathToUtf8(currentModelPath_.stem());
+    request.profile = profile;
+    request.exportTextures = exportTextures;
+
+    const M3ExportReport report = ExportModelAsM3(request);
+    if (!report.diagnostics.empty()) {
+        std::fprintf(stderr, "[viewer] Export M3: %zu diagnostic(s)\n%s",
+                     report.diagnostics.size(),
+                     io::DescribeWemDiagnostics(report.diagnostics, 400).c_str());
+    }
+    if (!report.ok) {
+        std::fprintf(stderr, "[viewer] Export M3 FAILED: %s\n", report.error.c_str());
+        return false;
+    }
+    std::printf("[viewer] Saved StarCraft II model (%s, %gx scale): %s\n", report.formatId.c_str(),
                 static_cast<double>(report.scale), io::PathToUtf8(outPath).c_str());
     if (exportTextures) {
         std::printf("[viewer] Textures: %d exported, %d skipped, %d failed\n",
@@ -1960,19 +2017,25 @@ bool ViewerApp::LoadModel(const std::filesystem::path& path) {
     if (IsEffectPath(path))
         return LoadEffect(path);
 
-    if (!std::filesystem::exists(path)) {
-        std::fprintf(stderr, "[viewer] file not found: %s\n", io::PathToUtf8(path).c_str());
-        return false;
-    }
+    // A path with no file behind it may still be a storage-internal one — the
+    // CLI names `units/human/footman/footman.mdx` and the shared provider's
+    // game storage resolves it, exactly as the draw-trace harness does. The
+    // open itself is the probe: SpawnUnit fails cleanly when nothing resolves,
+    // and only then is "file not found" the truthful message.
+    const bool onDisk = std::filesystem::exists(path);
 
     // A `.wem` with nobody to ask: the CLI, the startup picker and a drop on
     // the window all reach here, and none of them has a dialog in front of it.
     // The document's own default profile is the answer, and it has to be
     // settled *before* the document opens — see OpenWemAs.
-    if (IsWemPath(path) && !pendingWemDocument_)
+    if (onDisk && IsWemPath(path) && !pendingWemDocument_)
         return OpenWemAs(path, nullptr, ::whiteout::models::wem::ProfileId::Count);
 
-    return OpenDocument(path, /*effect=*/false);
+    if (OpenDocument(path, /*effect=*/false))
+        return true;
+    if (!onDisk)
+        std::fprintf(stderr, "[viewer] file not found: %s\n", io::PathToUtf8(path).c_str());
+    return false;
 }
 
 void ViewerApp::PreloadForDocumentAsync(std::function<void()> then) {

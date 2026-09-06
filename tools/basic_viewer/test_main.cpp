@@ -1559,6 +1559,9 @@ int main(int argc, char* argv[]) {
     std::filesystem::path exportMdxPath;
     auto exportMdxProfile = whiteout::models::wem::ProfileId::Wc3Reforged;
     bool exportMdxTextures = true;
+    std::filesystem::path exportM3Path;
+    auto exportM3Profile = whiteout::models::wem::ProfileId::Sc2;
+    bool exportM3Textures = true;
     // Which profile a `.wem` on the command line opens as. `Count` leaves it to
     // the document — there is no dialog out here.
     auto wemProfile = whiteout::models::wem::ProfileId::Count;
@@ -1684,6 +1687,18 @@ int main(int argc, char* argv[]) {
             }
         } else if (std::strcmp(a, "--export-mdx-no-textures") == 0) {
             exportMdxTextures = false;
+        } else if (std::strcmp(a, "--export-m3") == 0 && i + 1 < argc) {
+            exportM3Path = whiteout::flakes::io::FsPathFromUtf8(argv[++i]);
+        } else if (std::strcmp(a, "--export-m3-profile") == 0 && i + 1 < argc) {
+            const std::string name = argv[++i];
+            exportM3Profile = whiteout::flakes::io::WemProfileFromName(name);
+            if (exportM3Profile != whiteout::models::wem::ProfileId::Sc2 &&
+                exportM3Profile != whiteout::models::wem::ProfileId::Heroes) {
+                std::cerr << "Unknown StarCraft II profile: " << name << " (sc2 | heroes)\n";
+                return 1;
+            }
+        } else if (std::strcmp(a, "--export-m3-no-textures") == 0) {
+            exportM3Textures = false;
         } else if (std::strcmp(a, "--attach-anim") == 0 && i + 1 < argc) {
             attachAnims.push_back(whiteout::flakes::io::FsPathFromUtf8(argv[++i]));
         } else if (std::strcmp(a, "--gif") == 0) {
@@ -1920,6 +1935,9 @@ int main(int argc, char* argv[]) {
                       << "       --export-mdx <out.mdx>   write it as Warcraft III and exit\n"
                       << "       --export-mdx-profile <n> wc3_reforged (default) | wc3_classic\n"
                       << "       --export-mdx-no-textures do not write the textures beside it\n"
+                      << "       --export-m3 <out.m3>     write it as StarCraft II and exit\n"
+                      << "       --export-m3-profile <n>  sc2 (default) | heroes\n"
+                      << "       --export-m3-no-textures  do not write the textures beside it\n"
                       << "       --wem-profile <name>     open a .wem as that profile\n";
             return 0;
         } else if (mdxPath.empty()) {
@@ -2237,14 +2255,18 @@ int main(int argc, char* argv[]) {
     app.SetPreferredWemProfile(wemProfile);
 
     const bool headlessWork =
-        doExport || !exportWemPath.empty() || !exportMdxPath.empty() || !attachAnims.empty();
+        doExport || !exportWemPath.empty() || !exportMdxPath.empty() || !exportM3Path.empty() ||
+        !attachAnims.empty();
 
     if (!mdxPath.empty()) {
-        if (!std::filesystem::exists(mdxPath)) {
-            std::cerr << "File not found: " << whiteout::flakes::io::PathToUtf8(mdxPath) << "\n";
-        } else if (headlessWork) {
+        // No exists() pre-check for headless work: LoadModel accepts a
+        // storage-internal path (the shared provider resolves it) and says so
+        // itself when nothing does.
+        if (headlessWork) {
             if (!app.LoadModel(mdxPath))
                 std::cerr << "Failed to load model.\n";
+        } else if (!std::filesystem::exists(mdxPath)) {
+            std::cerr << "File not found: " << whiteout::flakes::io::PathToUtf8(mdxPath) << "\n";
         } else {
             app.QueueInitialOpen(mdxPath);
         }
@@ -2290,6 +2312,13 @@ int main(int argc, char* argv[]) {
     // texture pass reads the content provider, neither of which is the GPU.
     if (!exportMdxPath.empty()) {
         const bool ok = app.ExportMdx(exportMdxPath, exportMdxProfile, exportMdxTextures);
+        app.Close();
+        return ok ? 0 : 1;
+    }
+
+    // Headless StarCraft II export -- ExportMdx's twin, same reasoning.
+    if (!exportM3Path.empty()) {
+        const bool ok = app.ExportM3(exportM3Path, exportM3Profile, exportM3Textures);
         app.Close();
         return ok ? 0 : 1;
     }

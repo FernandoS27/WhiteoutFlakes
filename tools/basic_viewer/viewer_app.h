@@ -498,6 +498,16 @@ public:
     bool ExportMdx(const std::filesystem::path& outPath, ::whiteout::models::wem::ProfileId profile,
                    bool exportTextures);
 
+    // Whether the active document can be written as a StarCraft II `.m3`
+    // through WEM — the same question as CanExportMdx with the formats
+    // swapped: it must come from a format WEM reads and not be `.m3` already.
+    bool CanExportM3() const;
+
+    // Convert the active document to StarCraft II and write it to @p outPath,
+    // textures beside it as `.dds` when @p exportTextures.
+    bool ExportM3(const std::filesystem::path& outPath, ::whiteout::models::wem::ProfileId profile,
+                  bool exportTextures);
+
     // The skins the active `.m2` can wear, and which one it is wearing. Empty
     // when the model is not a creature, or with `.m2` compiled out — a UI
     // asking should hide the control rather than offer an empty one. Setting it

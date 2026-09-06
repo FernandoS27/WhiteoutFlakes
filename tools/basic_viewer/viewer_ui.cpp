@@ -187,6 +187,7 @@ void ViewerUI::BuildFrame() {
         BuildAnimationWindow();
     BuildSaveOptionsPopup();
     BuildMdxExportPopup();
+    BuildM3ExportPopup();
     BuildWemProfilePopup();
     exportWindow_.Build();
     app_.BuildStorageExplorerWindow();
@@ -383,6 +384,69 @@ void ViewerUI::BuildMdxExportPopup() {
     ImGui::SameLine();
     if (ImGui::Button(i18n::tr("app.cancel"), ImVec2(80, 0))) {
         pendingMdxPath_.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+// ---- Export to M3 ----------------------------------------------------------
+//
+// The MDX export one game over: a `.mdx` (either generation), a `.m2` or a
+// Diablo III `.app` written as a StarCraft II `.m3` through WEM. See
+// tools/basic_viewer/m3_export.h.
+
+void ViewerUI::ExportM3Dialog() {
+    nfdu8filteritem_t filter[1] = {{"StarCraft II model", "m3"}};
+    NFD::UniquePathU8 outPath;
+    if (NFD::SaveDialog(outPath, filter, 1) != NFD_OKAY)
+        return;
+    pendingM3Path_ = outPath.get();
+    openM3ExportPopup_ = true;
+}
+
+void ViewerUI::BuildM3ExportPopup() {
+    if (openM3ExportPopup_) {
+        ImGui::OpenPopup(i18n::tr("dialog.m3.title"));
+        openM3ExportPopup_ = false;
+    }
+    if (pendingM3Path_.empty())
+        return;
+
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal(i18n::tr("dialog.m3.title"), nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    ImGui::TextUnformatted(i18n::tr("dialog.m3.prompt"));
+
+    // Both rows live, unlike the MDX popup's generation row: the games share
+    // the container and the version field is the whole of the difference
+    // (v29 imports back as StarCraft II, v30 as Heroes of the Storm).
+    ImGui::RadioButton(i18n::tr("dialog.m3.sc2"), &m3ExportProfile_, 0);
+    ImGui::SameLine();
+    ImGui::RadioButton(i18n::tr("dialog.m3.heroes"), &m3ExportProfile_, 1);
+
+    // The texture rows reuse the MDX popup's strings — they say nothing
+    // MDX-specific. No format row either: both profiles read `.dds`.
+    ImGui::Separator();
+    ImGui::Checkbox(i18n::tr("dialog.mdx.export_textures"), &m3ExportTextures_);
+    ImGui::BeginDisabled(!m3ExportTextures_);
+    ImGui::TextDisabled("%s: dds", i18n::tr("dialog.mdx.convert_to"));
+    ImGui::TextDisabled("%s", i18n::tr("dialog.mdx.export_hint"));
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    const auto m3Profile =
+        (m3ExportProfile_ == 0) ? wem::ProfileId::Sc2 : wem::ProfileId::Heroes;
+    if (ImGui::Button(i18n::tr("dialog.mdx.export"), ImVec2(120, 0))) {
+        app_.ExportM3(io::FsPathFromUtf8(pendingM3Path_), m3Profile, m3ExportTextures_);
+        pendingM3Path_.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(i18n::tr("app.cancel"), ImVec2(80, 0))) {
+        pendingM3Path_.clear();
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -1007,19 +1071,29 @@ void ViewerUI::BuildMenuBar() {
             if (ImGui::MenuItem(i18n::tr("menu.file.save_as"), "Ctrl+Shift+S", false, canSave))
                 SaveAsDialog();
             // Separate from Save As, which writes the model back in its own
-            // format. This one writes the interchange format, and every model
-            // this build can draw can be written to it — which is why it is
-            // gated on the model's SOURCE rather than on its extension.
-            if (ImGui::MenuItem(i18n::tr("menu.file.export_wem"), nullptr, false,
-                                app_.CanExportWem()))
-                ExportWemDialog();
-            // The same argument one format over: a World of Warcraft, StarCraft
-            // II or Diablo III model becomes a Warcraft III one through WEM. A
-            // model that IS Warcraft III uses Save As, which does not have to
-            // derive a material set it already carries.
-            if (ImGui::MenuItem(i18n::tr("menu.file.export_mdx"), nullptr, false,
-                                app_.CanExportMdx()))
-                ExportMdxDialog();
+            // format: everything in here CONVERTS. Every model this build can
+            // draw can be written to WEM — which is why the submenu is gated on
+            // the model's SOURCE rather than on its extension — and the game
+            // targets keep their own gates inside.
+            if (ImGui::BeginMenu(i18n::tr("menu.file.export"), app_.CanExportWem())) {
+                // The interchange format itself, always available in here.
+                if (ImGui::MenuItem(i18n::tr("menu.file.export_wem"), nullptr, false,
+                                    app_.CanExportWem()))
+                    ExportWemDialog();
+                // A World of Warcraft, StarCraft II or Diablo III model becomes
+                // a Warcraft III one through WEM. A model that IS Warcraft III
+                // uses Save As, which does not have to derive a material set it
+                // already carries.
+                if (ImGui::MenuItem(i18n::tr("menu.file.export_mdx"), nullptr, false,
+                                    app_.CanExportMdx()))
+                    ExportMdxDialog();
+                // The same argument one game over: anything but a StarCraft II
+                // model becomes a StarCraft II one.
+                if (ImGui::MenuItem(i18n::tr("menu.file.export_m3"), nullptr, false,
+                                    app_.CanExportM3()))
+                    ExportM3Dialog();
+                ImGui::EndMenu();
+            }
             const bool hasAnims = hasModel && !app_.SequenceNames().empty();
             if (ImGui::MenuItem(i18n::tr("menu.file.export_frames"), nullptr,
                                 exportWindow_.IsOpen(), hasAnims)) {

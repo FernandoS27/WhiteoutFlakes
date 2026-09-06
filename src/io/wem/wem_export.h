@@ -20,6 +20,7 @@
 #include "whiteout/flakes/model_source.h"
 #include "whiteout/flakes/types.h"
 
+#include <whiteout/models/m3/structures.h>
 #include <whiteout/models/mdx/structures.h>
 #include <whiteout/models/wem/diagnostics.h>
 #include <whiteout/models/wem/document.h>
@@ -159,6 +160,47 @@ struct MdxExportResult {
 /// textures have to be named rather than keyed by id.
 MdxExportResult ConvertWemToMdx(const wem::Document& document,
                                 const MdxExportOptions& options = {});
+
+// ============================================================================
+// StarCraft II
+// ============================================================================
+
+struct M3ExportOptions {
+    /// Which `.m3` generation is written. StarCraft II and Heroes of the Storm
+    /// are one container at two version ranges, so this picks both: `Sc2`
+    /// writes v29 (the game's own ceiling), `Heroes` writes v30.
+    wem::ProfileId profile = wem::ProfileId::Sc2;
+
+    /// Restate the geometry in StarCraft II's units — same reasoning as
+    /// @ref MdxExportOptions::rescale: a file has no host to stamp a
+    /// `worldScale` on, so the ratio is baked in.
+    bool rescale = true;
+
+    /// Write only the base level of detail. An `.m3` has no LOD ladder to
+    /// carry one into.
+    bool baseLodOnly = true;
+};
+
+struct M3ExportResult {
+    /// Absent on failure; @ref error then says why in one line.
+    std::optional<::whiteout::m3::Model> model;
+    /// The factor @ref M3ExportOptions::rescale applied, for the log line.
+    f32 scale = 1.0f;
+    /// Whether the StarCraft II material set had to be derived (§6.6).
+    bool derived = false;
+    /// Meshes above the base level of detail that were not written.
+    u32 lodMeshesDropped = 0;
+    wem::Diagnostics diagnostics;
+    std::string error;
+
+    bool ok() const {
+        return model.has_value();
+    }
+};
+
+/// @brief Convert @p document to the StarCraft II model @ref M3ExportOptions
+///        names — `ConvertWemToMdx`'s twin, pointed the other way.
+M3ExportResult ConvertWemToM3(const wem::Document& document, const M3ExportOptions& options = {});
 
 /// @brief Write @p document to @p path. Returns false and fills @p error on
 ///        failure; the writer's own diagnostics land in @p diagnostics.

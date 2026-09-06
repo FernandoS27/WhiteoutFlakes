@@ -101,6 +101,81 @@ constexpr f32 kDefaultSpecularExponent = 20.0f;
 /// measured materials.
 constexpr u32 kSimulateRoughness = 0x800u;
 
+/// How much of the envio term's native amplitude survives as an F0 bump.
+/// The native contribution is `cube * tint * mask` added to the lit colour;
+/// the exported one is `F0 * probeRadiance * lut.x + ...`, and the two
+/// radiances are different scenes' — this constant is the exchange rate,
+/// calibrated against the golden Adept (whose look is almost entirely this
+/// term). 1 = the env map's own mean luminance goes through unscaled.
+constexpr f32 kEnvReflectanceScale = 1.0f;
+
+/// What lobe width a mip-0 env-map lookup reads as once it is a probe
+/// reflection. Sharp, but not a mirror — the source cubes are small and soft.
+constexpr f32 kEnvRoughnessCap = 0.30f;
+
+/// The mean linear RGB of a texture's top mip — the flat colour a map
+/// collapses to when its target has no texture to give it.
+void MeanLinearRgb(const tx::Texture& texture, f32 out[3]) {
+    out[0] = out[1] = out[2] = 1.0f;
+    const tx::Texture rgba = texture.copyAsFormat(tx::PixelFormat::RGBA8);
+    const std::span<const u8> px = rgba.mipData(0);
+    if (px.size() < 4) {
+        return;
+    }
+    auto toLinear = [](f32 v) {
+        return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
+    };
+    f64 sum[3] = {0.0, 0.0, 0.0};
+    for (std::size_t i = 0; i < px.size(); i += 4) {
+        for (int c = 0; c < 3; ++c) {
+            sum[c] += toLinear(px[i + static_cast<std::size_t>(c)] / 255.0f);
+        }
+    }
+    const f64 count = static_cast<f64>(px.size() / 4);
+    for (int c = 0; c < 3; ++c) {
+        out[c] = static_cast<f32>(sum[c] / count);
+    }
+}
+
+/// The mean linear luminance of a texture's top mip — what an env map is
+/// "worth" when its per-direction detail has to collapse into one scalar.
+f32 MeanLinearLuminance(const tx::Texture& texture) {
+    const tx::Texture rgba = texture.copyAsFormat(tx::PixelFormat::RGBA8);
+    const std::span<const u8> px = rgba.mipData(0);
+    if (px.size() < 4) {
+        return 0.0f;
+    }
+    auto toLinear = [](f32 v) {
+        return v <= 0.04045f ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f);
+    };
+    f64 sum = 0.0;
+    const std::size_t count = px.size() / 4;
+    for (std::size_t i = 0; i < px.size(); i += 4) {
+        sum += 0.2126 * toLinear(px[i] / 255.0f) + 0.7152 * toLinear(px[i + 1] / 255.0f) +
+               0.0722 * toLinear(px[i + 2] / 255.0f);
+    }
+    return static_cast<f32>(sum / static_cast<f64>(count));
+}
+
+/// M3's layer blend vocabulary onto the bake's decal fold.
+std::optional<tx::pbr::DecalOp> DecalOpFor(nat::M3LayerBlendOp op) {
+    switch (op) {
+    case nat::M3LayerBlendOp::Mod:
+        return tx::pbr::DecalOp::Mod;
+    case nat::M3LayerBlendOp::Mod2x:
+        return tx::pbr::DecalOp::Mod2x;
+    case nat::M3LayerBlendOp::Add:
+        return tx::pbr::DecalOp::AddScaled;
+    case nat::M3LayerBlendOp::AddNoAlpha:
+        return tx::pbr::DecalOp::Add;
+    case nat::M3LayerBlendOp::Lerp:
+        return tx::pbr::DecalOp::Lerp;
+    default:
+        // The two TeamColor ops are masks, not colour.
+        return std::nullopt;
+    }
+}
+
 bool IsTeamOp(nat::M3LayerBlendOp op) {
     return op == nat::M3LayerBlendOp::TeamColorEmissiveAdd ||
            op == nat::M3LayerBlendOp::TeamColorDiffuseAdd;
@@ -207,6 +282,13 @@ std::string OrmNameFor(const std::string& sourcePath, const std::string& materia
     std::string base = Trim(sourcePath);
     if (base.empty()) {
         base = materialName.empty() ? ("material" + std::to_string(materialIndex)) : materialName;
+        // A material NAME is not a file name: `15 - Default` and `t Glow A`
+        // are shipped spellings.
+        for (char& c : base) {
+            if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-') {
+                c = '_';
+            }
+        }
     }
     const std::size_t dot = base.find_last_of('.');
     if (dot != std::string::npos && dot > base.find_last_of("/\\") + 1) {
@@ -230,6 +312,25 @@ std::string OrmNameFor(const std::string& sourcePath, const std::string& materia
     return base + "_orm.dds";
 }
 
+/// `.../Overlord_Diffuse.dds` -> `.../Overlord_Diffuse_cut.dds`.
+///
+/// A coverage-composed base colour cannot go back into the diffuse's own file:
+/// StarCraft II shares one diffuse across materials with DIFFERENT coverage --
+/// an Overlord's opaque Body and its blended Sacs read the same texture, and
+/// the Sacs' mask is the specular map's alpha -- so the composed map is a new
+/// texture and only this material's slot points at it.
+std::string CutoutNameFor(const std::string& sourcePath, u32 materialIndex) {
+    std::string base = Trim(sourcePath);
+    const std::size_t dot = base.find_last_of('.');
+    if (dot != std::string::npos && dot > base.find_last_of("/\\") + 1) {
+        base = base.substr(0, dot);
+    }
+    if (base.empty()) {
+        base = "material" + std::to_string(materialIndex);
+    }
+    return base + "_cut.dds";
+}
+
 /// The bind-pose tint of a layer, which is what the source's shader multiplies
 /// its sample by. `LayerTint` in `m3_surface_table.cpp` says the same thing from
 /// the renderer's side, including both unauthored-sentinel guards: an all-zero
@@ -249,6 +350,55 @@ void LayerTintInto(const nat::M3TextureLayer& layer, f32 extraMul, f32 out[3]) {
     for (int i = 0; i < 3; ++i) {
         out[i] = rgb[i] * mul;
     }
+}
+
+/// An alpha-mask layer is active with no texture when it is a solid colour
+/// (flag `Color`), which `LayerOf`'s path test misses — 3,466 shipped masks.
+const nat::M3TextureLayer* MaskLayerOf(const std::optional<nat::M3TextureLayer>& layer) {
+    if (!layer.has_value()) {
+        return nullptr;
+    }
+    if (hasFlag(layer->flags, nat::M3TextureLayerFlag::Color)) {
+        return &*layer;
+    }
+    return LayerOf(layer);
+}
+
+/// The coverage term one alpha-mask layer states, as the engine computes its
+/// alpha (`ComputeLayerColorInternal`): channel select, `* alphaFactor`,
+/// invert, `* rgbMultiply + rgbAdd`. The unauthored-zero guards are
+/// `LayerTintInto`'s: a zero multiplier is a field nobody touched, not
+/// "multiply by nothing".
+tx::pbr::ScalarInput CoverageOf(const nat::M3TextureLayer& layer, TextureCache& cache,
+                                const wem::ElementRef& where, wem::Diagnostics& out) {
+    tx::pbr::ScalarInput mask;
+    mask.constant = 1.0f;
+    if (hasFlag(layer.flags, nat::M3TextureLayerFlag::Color)) {
+        // A solid-colour layer's alpha is its constant colour's, with the
+        // all-zero unauthored guard.
+        const auto c = layer.color.initValue;
+        const bool authored = !(c.r == 0 && c.g == 0 && c.b == 0 && c.a == 0);
+        mask.constant = authored ? static_cast<f32>(c.a) / 255.0f : 1.0f;
+    } else if (const std::optional<tx::Channel> channel = AlphaChannelFor(layer.colorType)) {
+        mask.texture = cache.Decode(layer.texturePath);
+        mask.channel = *channel;
+        if (mask.texture == nullptr) {
+            out.warn(wem::DiagCode::TextureUnresolved,
+                     "the alpha mask '" + Trim(layer.texturePath) +
+                         "' could not be decoded; the surface exports opaque",
+                     where, wem::ProfileId::Wc3Reforged);
+        }
+    }
+    // An RGB select forces the alpha to 1 (`SelectChannels`) — and the sweep
+    // found zero shipped masks that use it — so the fall-through constant is
+    // exactly what the engine reads.
+    const f32 alphaFactor = layer.mapAlpha.initValue;
+    mask.scale = alphaFactor > 0.0f ? alphaFactor : 1.0f;
+    mask.invert = hasFlag(layer.flags, nat::M3TextureLayerFlag::ColorInvert);
+    const f32 multiply = layer.rgbMultiply.initValue;
+    mask.postScale = multiply > 0.0f ? multiply : 1.0f;
+    mask.bias = layer.rgbAdd.initValue;
+    return mask;
 }
 
 /// One material's worth of sources, resolved.
@@ -297,6 +447,10 @@ Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvi
     }
 
     TextureCache cache(document, provider);
+    // Which mask recipe claimed a cutout texture name -- two materials with the
+    // same diffuse and the same masks share one baked map; different masks get
+    // a suffixed name instead of overwriting each other's pixels.
+    std::unordered_map<std::string, std::string> cutoutClaims;
 
     for (wem::Model& model : document.models) {
         const wem::ProfileMaterialSet* sc2 = model.setFor(source);
@@ -375,6 +529,12 @@ Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvi
             // times the alpha factor -- NOT the diffuse alpha, which is the
             // team-colour mask".
             const nat::M3TextureLayer* diffuseLayer = LayerOf(standard->diffuseLayer);
+            // A material with no specular map still names its ORM after a real
+            // texture, so a constants-only bake (a whole-surface team glow)
+            // lands beside the model's other maps instead of at the root.
+            if (sources.ormNameSource.empty() && diffuseLayer != nullptr) {
+                sources.ormNameSource = Trim(diffuseLayer->texturePath);
+            }
             const bool diffuseIsTeamMasked =
                 diffuseLayer != nullptr &&
                 diffuseLayer->colorType != nat::M3ColorChannelSelect::RGB;
@@ -404,7 +564,105 @@ Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvi
 
             const bool anyTeam =
                 sources.team != nullptr || (diffuseIsTeamMasked && diffuse != nullptr);
-            if (sources.specular == nullptr && sources.occlusion == nullptr && !anyTeam) {
+
+            // --- the coverage, which never used to cross at all ------------
+            //
+            // StarCraft II's per-texel coverage is its ALPHA-MASK LAYERS --
+            // `cFinal.a = mask1.a * mask2.a * alphaFactor` (psmaterial.fx:380)
+            // -- and Reforged reads coverage off the base colour's alpha.
+            // 104,869 of 176,955 shipped materials carry a mask, and without
+            // this an alpha-tested export either leaked the team mask as the
+            // cutout (unbaked diffuse) or erased the cutout (baked opaque).
+            tx::pbr::ScalarInput coverage1{nullptr, tx::Channel::A, false, 1.0f};
+            tx::pbr::ScalarInput coverage2{nullptr, tx::Channel::A, false, 1.0f};
+            // StarCraft II tests the COMPOSED coverage against a per-material
+            // threshold; Warcraft III's Transparent filter tests the written
+            // alpha at a fixed 0.75. A keyed surface therefore bakes the
+            // test's RESULT (0/255 at the source's own cut-off).
+            const bool alphaKeyed = standard->blendMode == nat::M3BlendMode::Opaque &&
+                                    standard->alphaTestThreshold > 0;
+            // The blends that READ the written alpha. Additive and the two
+            // modulates ignore it on both engines; for them there is nothing
+            // to compose and nothing to leak.
+            const bool readsAlpha = alphaKeyed ||
+                                    standard->blendMode == nat::M3BlendMode::AlphaBlend ||
+                                    standard->blendMode == nat::M3BlendMode::AlphaAdd;
+            // Every alpha-reading surface takes the composed coverage — with
+            // no masks that is a constant 1, and writing THAT is still the
+            // fix: StarCraft II's coverage was 1 (`vertColor.a * alphaFactor`;
+            // the masks are the only per-texel term), while an unbaked export
+            // hands Warcraft III whatever the texture's own alpha holds.
+            bool hasCoverage = readsAlpha;
+            if (readsAlpha) {
+                const nat::M3TextureLayer* masks[2] = {MaskLayerOf(standard->alphaLayer1),
+                                                       MaskLayerOf(standard->alphaLayer2)};
+                tx::pbr::ScalarInput* into[2] = {&coverage1, &coverage2};
+                for (int i = 0; i < 2; ++i) {
+                    if (masks[i] == nullptr) {
+                        continue;
+                    }
+                    // The bake samples every source over the base colour's
+                    // coordinates, so a mask on another UV set cannot be
+                    // composed from pixels alone -- where the two sets land a
+                    // texel depends on the mesh. 18,792 of ~119k shipped mask
+                    // layers do this. The fallback is the DIFFUSE's own alpha
+                    // when the diffuse is not team-masked: a glow texture's
+                    // alpha usually resembles its mask, and forcing opaque
+                    // instead turned the Aiur light bridge's translucent
+                    // beams into a solid white sheet. A team-masked diffuse
+                    // still goes opaque -- its alpha is the team mask, and
+                    // leaking THAT as coverage is the original P0 bug.
+                    if (diffuseLayer != nullptr &&
+                        !hasFlag(masks[i]->flags, nat::M3TextureLayerFlag::Color) &&
+                        masks[i]->uvMapping != diffuseLayer->uvMapping) {
+                        if (!diffuseIsTeamMasked && diffuse != nullptr) {
+                            into[i]->texture = diffuse;
+                            into[i]->channel = tx::Channel::A;
+                            out.info(wem::DiagCode::LossyKindConversion,
+                                     std::string("alpha mask ") + (i == 0 ? "1" : "2") +
+                                         " samples a different UV set than the diffuse; "
+                                         "the diffuse's own alpha stands in for it",
+                                     where, wem::ProfileId::Wc3Reforged);
+                        } else {
+                            out.warn(wem::DiagCode::LossyKindConversion,
+                                     std::string("alpha mask ") + (i == 0 ? "1" : "2") +
+                                         " samples a different UV set than the diffuse; "
+                                         "the cutout cannot be baked and the surface "
+                                         "exports opaque there",
+                                     where, wem::ProfileId::Wc3Reforged);
+                        }
+                        continue;
+                    }
+                    *into[i] = CoverageOf(*masks[i], cache, where, out);
+                }
+            }
+
+            // The envio decision is repeated here without decoding: the
+            // reflectance block below runs after this gate.
+            const bool anyEnvio =
+                LayerOf(standard->environmentLayer) != nullptr &&
+                (standard->layerBlendMode == nat::M3LayerBlendOp::Add ||
+                 standard->layerBlendMode == nat::M3LayerBlendOp::AddNoAlpha ||
+                 standard->layerBlendMode == nat::M3LayerBlendOp::Lerp);
+            const bool anyOrmSource = sources.specular != nullptr ||
+                                      sources.occlusion != nullptr || anyTeam || anyEnvio;
+            // A glow-only material (two additive emissives and nothing else)
+            // has no ORM to bake and no coverage — but its summed emissive
+            // and its rim fresnel still need the blocks below.
+            const auto additiveEmissive = [&](const std::optional<nat::M3TextureLayer>& layer,
+                                              nat::M3LayerBlendOp op) {
+                return LayerOf(layer) != nullptr &&
+                       (op == nat::M3LayerBlendOp::Add || op == nat::M3LayerBlendOp::AddNoAlpha);
+            };
+            const bool emissivePair =
+                additiveEmissive(standard->emissiveLayer1, standard->emissiveBlendMode1) &&
+                additiveEmissive(standard->emissiveLayer2, standard->emissiveBlendMode2);
+            const bool emissiveRim =
+                (additiveEmissive(standard->emissiveLayer1, standard->emissiveBlendMode1) &&
+                 standard->emissiveLayer1->fresnelMode == nat::M3FresnelMode::Standard) ||
+                (additiveEmissive(standard->emissiveLayer2, standard->emissiveBlendMode2) &&
+                 standard->emissiveLayer2->fresnelMode == nat::M3FresnelMode::Standard);
+            if (!anyOrmSource && !hasCoverage && !emissivePair && !emissiveRim) {
                 // Nothing an ORM could say that the engine's neutral does not.
                 // A gloss layer alone is not a reason: without a specular map
                 // the metalness is zero, and a roughness on a surface with no
@@ -432,6 +690,17 @@ Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvi
             reflectance.exponentScale.texture = sources.gloss;
             reflectance.exponentScale.channel = sources.glossChannel;
             reflectance.exponentScale.constant = 1.0f;
+            // The engine squares the LAYER COLOUR's alpha — after the channel
+            // select, the invert flag and the multiply-add — not the raw
+            // texel (`MaterialSpecularity`, and `M3LayerValue` in our own
+            // renderer). The unauthored-zero guard is `LayerTintInto`'s.
+            if (const nat::M3TextureLayer* layer = LayerOf(standard->glossLayer)) {
+                reflectance.exponentScale.invert =
+                    hasFlag(layer->flags, nat::M3TextureLayerFlag::ColorInvert);
+                const f32 multiply = layer->rgbMultiply.initValue;
+                reflectance.exponentScale.postScale = multiply > 0.0f ? multiply : 1.0f;
+                reflectance.exponentScale.bias = layer->rgbAdd.initValue;
+            }
             if (const nat::M3TextureLayer* layer = LayerOf(standard->specularLayer)) {
                 reflectance.specular.texture = sources.specular;
                 reflectance.specular.srgb = kSpecularIsDisplayReferred;
@@ -448,8 +717,90 @@ Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvi
                 reflectance.specular.bias = layer->rgbAdd.initValue;
             }
 
+            // --- the envio layer, as reflectance ---------------------------
+            //
+            // `ApplyEnv` adds (or lerps) `cube * tint * mask` into the lit
+            // colour; Reforged's probe reflection is `F0*lut.x + lut.y` — so a
+            // real reflection crosses as an F0 bump, per texel through the
+            // EnvioMask. The op is the material's layerBlendMode (the decal's
+            // field, psmaterial.fx:332); a Mod-family op is a modulated
+            // reflection nothing additive can say. 26,894 shipped materials
+            // carry the layer, 24,491 with a mask.
+            if (const nat::M3TextureLayer* envLayer = LayerOf(standard->environmentLayer)) {
+                const nat::M3LayerBlendOp envOp = standard->layerBlendMode;
+                const bool additive = envOp == nat::M3LayerBlendOp::Add ||
+                                      envOp == nat::M3LayerBlendOp::AddNoAlpha ||
+                                      envOp == nat::M3LayerBlendOp::Lerp;
+                const tx::Texture* envTexture =
+                    additive ? cache.Decode(envLayer->texturePath) : nullptr;
+                if (!additive) {
+                    out.info(wem::DiagCode::LayerDropped,
+                             "a Mod-op envio layer is a modulated reflection; an additive "
+                             "probe term cannot say it",
+                             where, wem::ProfileId::Wc3Reforged);
+                } else if (envTexture != nullptr) {
+                    const f32 envConstant = standard->hdrEnvironmentConstant > 0.0f
+                                                ? standard->hdrEnvironmentConstant
+                                                : 1.0f;
+                    f32 tint[3];
+                    LayerTintInto(*envLayer, envConstant, tint);
+                    const f32 tintLum = 0.2126f * tint[0] + 0.7152f * tint[1] + 0.0722f * tint[2];
+                    reflectance.envReflectance =
+                        kEnvReflectanceScale * MeanLinearLuminance(*envTexture) * tintLum;
+                    reflectance.envRoughnessCap = kEnvRoughnessCap;
+                    if (const nat::M3TextureLayer* maskLayer =
+                            LayerOf(standard->environmentMaskLayer)) {
+                        reflectance.envMask.texture = cache.Decode(maskLayer->texturePath);
+                        reflectance.envMask.channel = ScalarChannelFor(maskLayer->colorType);
+                        const f32 alphaFactor = maskLayer->mapAlpha.initValue;
+                        reflectance.envMask.scale = alphaFactor > 0.0f ? alphaFactor : 1.0f;
+                        reflectance.envMask.invert =
+                            hasFlag(maskLayer->flags, nat::M3TextureLayerFlag::ColorInvert);
+                        const f32 multiply = maskLayer->rgbMultiply.initValue;
+                        reflectance.envMask.postScale = multiply > 0.0f ? multiply : 1.0f;
+                        reflectance.envMask.bias = maskLayer->rgbAdd.initValue;
+                    }
+                }
+            }
+
+            // --- the decal, composited -------------------------------------
+            //
+            // The slot map holds ONE base colour and `exportPbr` has one slot,
+            // so a decal crosses as pixels or not at all — the Marine's chest
+            // insignia was the standing casualty. Folded into the albedo where
+            // `CombineLayerColor` folds it: before the team lerp and the metal
+            // gain, in both bakes, so they split the same albedo.
+            tx::pbr::ColorInput decalInput;
+            tx::pbr::DecalOp decalOp = tx::pbr::DecalOp::Mod;
+            const nat::M3TextureLayer* decalLayer = LayerOf(standard->decalLayer);
+            if (decalLayer != nullptr && diffuse != nullptr) {
+                const std::optional<tx::pbr::DecalOp> op = DecalOpFor(standard->layerBlendMode);
+                const tx::Texture* decalTexture = cache.Decode(decalLayer->texturePath);
+                if (!op.has_value()) {
+                    // A TeamColor op on the decal never ships (0 of 176,955).
+                } else if (decalTexture == nullptr) {
+                    out.warn(wem::DiagCode::TextureUnresolved,
+                             "the decal '" + Trim(decalLayer->texturePath) +
+                                 "' could not be decoded; it is not composited",
+                             where, wem::ProfileId::Wc3Reforged);
+                } else if (decalLayer->uvMapping != diffuseLayer->uvMapping) {
+                    out.warn(wem::DiagCode::LossyKindConversion,
+                             "the decal samples a different UV set than the diffuse; it "
+                             "cannot be composited from pixels alone",
+                             where, wem::ProfileId::Wc3Reforged);
+                } else {
+                    decalInput.texture = decalTexture;
+                    decalInput.srgb = true;
+                    LayerTintInto(*decalLayer, 1.0f, decalInput.scale);
+                    decalInput.bias = decalLayer->rgbAdd.initValue;
+                    decalOp = *op;
+                }
+            }
+
             tx::pbr::OrmRecipe recipe;
             recipe.reflectance = reflectance;
+            recipe.decal = decalInput;
+            recipe.decalOp = decalOp;
             recipe.occlusion.texture = sources.occlusion;
             recipe.occlusion.channel = sources.occlusionChannel;
             recipe.occlusion.constant = 1.0f;
@@ -475,25 +826,30 @@ Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvi
             recipe.baseColor.texture = diffuse;
             recipe.baseColor.srgb = true;
 
-            std::optional<tx::Texture> orm = tx::pbr::BakeOrm(recipe);
-            if (!orm) {
-                ++result.materialsSkipped;
-                out.warn(wem::DiagCode::TextureUnresolved,
-                         "no source of the occlusion/roughness/metalness map could be decoded",
-                         where, wem::ProfileId::Wc3Reforged);
-                continue;
+            bool ormLanded = false;
+            if (anyOrmSource) {
+                std::optional<tx::Texture> orm = tx::pbr::BakeOrm(recipe);
+                if (!orm) {
+                    // The ORM failed; the coverage below may still land, so
+                    // this is a report, not a `continue`.
+                    ++result.materialsSkipped;
+                    out.warn(wem::DiagCode::TextureUnresolved,
+                             "no source of the occlusion/roughness/metalness map could be decoded",
+                             where, wem::ProfileId::Wc3Reforged);
+                } else {
+                    const std::string name = OrmNameFor(
+                        sources.ormNameSource, sc2->materials[m].name, static_cast<u32>(m));
+                    const u32 index = cache.Intern(name);
+                    wem::TextureInput input;
+                    input.texture = index;
+                    input.colorSpace = wem::ColorSpace::Linear;
+                    body->set(wem::PbrSlot::Orm, input);
+                    result.baked.insert_or_assign(
+                        index, BakedTexture{std::move(*orm), tx::PixelFormat::BC3});
+                    ++result.ormBaked;
+                    ormLanded = true;
+                }
             }
-
-            const std::string name =
-                OrmNameFor(sources.ormNameSource, sc2->materials[m].name, static_cast<u32>(m));
-            const u32 index = cache.Intern(name);
-            wem::TextureInput input;
-            input.texture = index;
-            input.colorSpace = wem::ColorSpace::Linear;
-            body->set(wem::PbrSlot::Orm, input);
-            result.baked.insert_or_assign(index,
-                                          BakedTexture{std::move(*orm), tx::PixelFormat::BC3});
-            ++result.ormBaked;
 
             // --- and the base colour pays for both of them -----------------
             //
@@ -508,10 +864,75 @@ Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvi
             // authored it — art that averages 26/255, because the engine was
             // going to replace it — is what makes Warcraft III's modulated tint
             // come out near-black.
+            if (diffuse == nullptr && hasCoverage) {
+                out.warn(wem::DiagCode::TextureUnresolved,
+                         "an alpha-reading material's diffuse could not be decoded; its "
+                         "coverage cannot be baked",
+                         where, wem::ProfileId::Wc3Reforged);
+            }
             if (diffuse != nullptr && diffuseLayer != nullptr) {
                 const u32 diffuseIndex = cache.IndexOf(diffuseLayer->texturePath);
-                if (diffuseIndex != wem::kInvalidIndex &&
-                    result.baked.find(diffuseIndex) == result.baked.end()) {
+                // A composited decal moves the bake to a per-material texture
+                // for the same reason coverage does: the diffuse is shared,
+                // and only THIS material wears the insignia.
+                if ((hasCoverage || recipe.decal.present()) &&
+                    diffuseIndex != wem::kInvalidIndex) {
+                    // The composed cutout is this MATERIAL's, not the
+                    // texture's: an Overlord's opaque Body and blended Sacs
+                    // share one diffuse, so writing coverage into the shared
+                    // file would either race the opaque bake (first writer
+                    // wins) or hand the Body the Sacs' holes. A new texture,
+                    // and only this material's slot moves.
+                    tx::pbr::BaseColorRecipe base;
+                    base.baseColor = recipe.baseColor;
+                    base.decal = recipe.decal;
+                    base.decalOp = recipe.decalOp;
+                    base.teamMask = recipe.teamMask;
+                    base.teamMaskAlt = recipe.teamMaskAlt;
+                    base.coverage1 = coverage1;
+                    base.coverage2 = coverage2;
+                    if (alphaKeyed) {
+                        base.coverageCutoff =
+                            static_cast<f32>(standard->alphaTestThreshold) / 255.0f;
+                    }
+                    base.reflectance = recipe.reflectance;
+                    if (std::optional<tx::Texture> rewritten = tx::pbr::BakeBaseColor(base)) {
+                        std::string cutName =
+                            CutoutNameFor(diffuseLayer->texturePath, static_cast<u32>(m));
+                        const std::string maskKey =
+                            (standard->alphaLayer1 ? Trim(standard->alphaLayer1->texturePath)
+                                                   : std::string()) +
+                            "|" +
+                            (standard->alphaLayer2 ? Trim(standard->alphaLayer2->texturePath)
+                                                   : std::string()) +
+                            "|" +
+                            (decalInput.present() ? Trim(decalLayer->texturePath)
+                                                  : std::string());
+                        const auto claim = cutoutClaims.find(cutName);
+                        if (claim != cutoutClaims.end() && claim->second != maskKey) {
+                            cutName.insert(cutName.size() - 4, "_" + std::to_string(m));
+                        }
+                        cutoutClaims.emplace(cutName, maskKey);
+                        const u32 cutIndex = cache.Intern(cutName);
+                        wem::TextureInput slot;
+                        if (const wem::TextureInput* existing = body->find(wem::PbrSlot::BaseColor)) {
+                            slot = *existing;
+                        }
+                        slot.texture = cutIndex;
+                        body->set(wem::PbrSlot::BaseColor, slot);
+                        // BC1's alpha is one bit; the composed cutout needs BC3.
+                        result.baked.insert_or_assign(
+                            cutIndex, BakedTexture{std::move(*rewritten), tx::PixelFormat::BC3});
+                        ++result.baseColorsCleared;
+                        ++result.coverageComposed;
+                    }
+                } else if (hasCoverage) {
+                    out.warn(wem::DiagCode::TextureUnresolved,
+                             "an alpha-reading material's diffuse has no document entry; "
+                             "its coverage cannot be baked",
+                             where, wem::ProfileId::Wc3Reforged);
+                } else if (diffuseIndex != wem::kInvalidIndex &&
+                           result.baked.find(diffuseIndex) == result.baked.end()) {
                     tx::pbr::BaseColorRecipe base;
                     base.baseColor = recipe.baseColor;
                     base.teamMask = recipe.teamMask;
@@ -525,13 +946,131 @@ Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvi
                 }
             }
 
+            // --- two additive emissives are one map, summed ----------------
+            //
+            // StarCraft II folds both layers into one accumulator before
+            // `fEmissiveMultiplier`; the slot map holds one, so the second was
+            // silently gone. A plain (alpha-weighted) add of pixels says it.
+            {
+                const nat::M3TextureLayer* emissive1 = LayerOf(standard->emissiveLayer1);
+                const nat::M3TextureLayer* emissive2 = LayerOf(standard->emissiveLayer2);
+                const auto additiveOp = [](nat::M3LayerBlendOp op) {
+                    return op == nat::M3LayerBlendOp::Add || op == nat::M3LayerBlendOp::AddNoAlpha;
+                };
+                if (emissive1 != nullptr && emissive2 != nullptr &&
+                    additiveOp(standard->emissiveBlendMode1) &&
+                    additiveOp(standard->emissiveBlendMode2)) {
+                    tx::pbr::ColorInput first;
+                    first.texture = cache.Decode(emissive1->texturePath);
+                    first.srgb = true;
+                    LayerTintInto(*emissive1, 1.0f, first.scale);
+                    first.bias = emissive1->rgbAdd.initValue;
+                    tx::pbr::ColorInput second;
+                    second.texture = cache.Decode(emissive2->texturePath);
+                    second.srgb = true;
+                    LayerTintInto(*emissive2, 1.0f, second.scale);
+                    second.bias = emissive2->rgbAdd.initValue;
+                    if (first.present() && second.present()) {
+                        std::optional<tx::Texture> sum = tx::pbr::BakeEmissiveSum(
+                            first, standard->emissiveBlendMode1 == nat::M3LayerBlendOp::Add,
+                            second, standard->emissiveBlendMode2 == nat::M3LayerBlendOp::Add);
+                        if (sum.has_value()) {
+                            std::string name = CutoutNameFor(emissive1->texturePath,
+                                                             static_cast<u32>(m));
+                            name.replace(name.size() - 8, 4, "_glow");
+                            const u32 index = cache.Intern(name);
+                            wem::TextureInput slot;
+                            if (const wem::TextureInput* existing =
+                                    body->find(wem::PbrSlot::Emissive)) {
+                                slot = *existing;
+                            }
+                            slot.texture = index;
+                            body->set(wem::PbrSlot::Emissive, slot);
+                            result.baked.insert_or_assign(
+                                index, BakedTexture{std::move(*sum), tx::PixelFormat::BC1});
+                            out.info(wem::DiagCode::LossyKindConversion,
+                                     "both additive emissive layers were summed into one map",
+                                     where, wem::ProfileId::Wc3Reforged);
+                        }
+                    }
+                }
+            }
+
+            // --- fresnel: the rim glow crosses, the rest is named ----------
+            //
+            // The MDX layer carries fresnelColor/Opacity/TeamColor and
+            // Reforged lerps the lit colour toward that flat colour by
+            // `opacity * (1-NdotV)^2`. The clean case is fresnel on an
+            // ADDITIVE emissive — a rim glow (12,226 shipped layers): the
+            // colour is the map's mean under its tint and gain, the opacity is
+            // the ramp's ceiling. Inverted mode (centre glow) and fresnel on
+            // masks or diffuse have no overlay to cross into.
+            {
+                wem::CommonMaterial& derived = wc3->materials[m].MutableCommon();
+                std::erase_if(derived.features, [](const wem::MaterialFeature& feature) {
+                    return feature.kind() == wem::FeatureKind::Fresnel;
+                });
+                const nat::M3TextureLayer* rim = nullptr;
+                f32 rimGain = 1.0f;
+                for (int slot = 0; slot < 2; ++slot) {
+                    const nat::M3TextureLayer* layer = LayerOf(
+                        slot == 0 ? standard->emissiveLayer1 : standard->emissiveLayer2);
+                    const nat::M3LayerBlendOp op =
+                        slot == 0 ? standard->emissiveBlendMode1 : standard->emissiveBlendMode2;
+                    if (layer == nullptr || layer->fresnelMode != nat::M3FresnelMode::Standard ||
+                        (op != nat::M3LayerBlendOp::Add &&
+                         op != nat::M3LayerBlendOp::AddNoAlpha)) {
+                        continue;
+                    }
+                    if (layer->fresnelMin > layer->fresnelMax) {
+                        continue; // a deliberately inverted ramp — facing-bright
+                    }
+                    rim = layer;
+                    rimGain = standard->hdrEmissiveMultiplier > 0.0f
+                                  ? standard->hdrEmissiveMultiplier
+                                  : 1.0f;
+                    break;
+                }
+                if (rim != nullptr) {
+                    const tx::Texture* map = cache.Decode(rim->texturePath);
+                    f32 tint[3];
+                    LayerTintInto(*rim, rimGain, tint);
+                    f32 mean[3] = {1.0f, 1.0f, 1.0f};
+                    if (map != nullptr) {
+                        MeanLinearRgb(*map, mean);
+                    }
+                    wem::FresnelFeature fresnel;
+                    // Capped to a unit maximum, hue kept. The native term ADDS
+                    // `emissive * ramp` on top of the lit colour; the overlay
+                    // LERPS the lit colour toward this flat colour, so a
+                    // gain-multiplied value past 1 does not glow brighter — it
+                    // bleaches. The Aiur light bridge's grazing beam planes
+                    // went out as a white flood before the cap.
+                    f32 rimColor[3] = {tint[0] * mean[0], tint[1] * mean[1], tint[2] * mean[2]};
+                    const f32 peak = std::max({rimColor[0], rimColor[1], rimColor[2], 1.0f});
+                    fresnel.color = Vector3f{rimColor[0] / peak, rimColor[1] / peak,
+                                             rimColor[2] / peak};
+                    fresnel.exponent = rim->fresnelExponent > 0.0f ? rim->fresnelExponent : 1.0f;
+                    fresnel.outMin = rim->fresnelMin;
+                    fresnel.outMax = rim->fresnelMax > 0.0f ? rim->fresnelMax : 1.0f;
+                    wem::MaterialFeature feature;
+                    feature.id = wem::NextFeatureId(derived.features);
+                    feature.layer = wem::kWholeMaterial;
+                    feature.payload = fresnel;
+                    derived.features.push_back(feature);
+                    out.info(wem::DiagCode::LossyKindConversion,
+                             "the emissive rim fresnel became the layer's fresnel overlay",
+                             where, wem::ProfileId::Wc3Reforged);
+                }
+            }
+
             // --- the team layer is not an emissive map ---------------------
             //
             // It reached the emissive slot because `channelOf` reads the layer
             // it sits in and not the op it is combined by, and a mask bound as
             // an emissive map is a surface glowing its own coverage. Its
             // content is in the ORM's alpha now.
-            if (teamLayer != nullptr) {
+            if (teamLayer != nullptr && ormLanded) {
                 const u32 teamIndex = cache.IndexOf(teamLayer->texturePath);
                 const wem::TextureInput* emissive = body->find(wem::PbrSlot::Emissive);
                 if (emissive != nullptr && emissive->texture == teamIndex) {

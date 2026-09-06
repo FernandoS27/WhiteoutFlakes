@@ -107,6 +107,14 @@ private:
     // `pendingMdxPath_` is set; a no-op otherwise.
     void BuildMdxExportPopup();
 
+    // Export the model on screen as a StarCraft II `.m3` — the MDX export one
+    // game over. Pops the native save dialog, then the options modal below.
+    void ExportM3Dialog();
+
+    // The deferred "Export to M3" options modal. Renders when `pendingM3Path_`
+    // is set; a no-op otherwise.
+    void BuildM3ExportPopup();
+
     // The profile picker a `.wem` open goes through. Renders when
     // `wemOpenDocument_` is set and loads the document on confirm; a no-op
     // otherwise. Not a question a default can answer: a document carrying two
@@ -155,6 +163,15 @@ private:
     bool openMdxExportPopup_ = false;
     i32 mdxExportProfile_ = 1;      // 0 = classic, 1 = Reforged
     bool mdxExportTextures_ = true; // convert and write the textures too
+
+    // Export to M3 state, the block above one game over. Both rows are live,
+    // unlike the MDX popup's: the two games share the container and the
+    // version field is the difference (v29 imports back as StarCraft II,
+    // v30 as Heroes of the Storm).
+    std::string pendingM3Path_;
+    bool openM3ExportPopup_ = false;
+    i32 m3ExportProfile_ = 0;      // 0 = StarCraft II, 1 = Heroes of the Storm
+    bool m3ExportTextures_ = true; // write the `.dds` textures beside it
 
     // IO tab edit buffers: the whole of one profile's settings. They are the
     // page's state, not a mirror of the provider — the provider only ever holds

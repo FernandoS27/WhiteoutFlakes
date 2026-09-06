@@ -1571,6 +1571,23 @@ renderer::model::FrameState M3ModelAdapter::Evaluate(const PoseRequest& req) con
     return fs;
 }
 
+/// The tiling a layer means, with an unauthored axis read as 1.
+///
+/// A `.m3` layer names its UV transform in one optional property, and a layer
+/// that names none leaves the pair at the struct's zero. Composed literally
+/// that is an ALL-ZERO matrix — every pixel of the layer samples texel (0,0),
+/// so the surface comes out one flat colour, and for most character skins that
+/// colour is the dark corner of the atlas. Silence, not a request to collapse
+/// the surface onto a point: 48032 of the 1039144 shipped `MAT_` layers in the
+/// Heroes corpus read (0,0), and every layer a shader-graph MADD restores does.
+///
+/// A DRIVEN track is taken at face value; only the silence is filled in.
+Vector2f M3NeutralTiling(Vector2f tiling, bool driven) {
+    if (driven)
+        return tiling;
+    return {tiling.x != 0.0f ? tiling.x : 1.0f, tiling.y != 0.0f ? tiling.y : 1.0f};
+}
+
 void M3ModelAdapter::EvaluateMaterialUvTransforms(std::span<const M3Layer> layers,
                                                   renderer::model::FrameState& fs) const {
     for (std::size_t m = 0; m < model_.standardMaterials.size(); ++m) {
@@ -1584,12 +1601,12 @@ void M3ModelAdapter::EvaluateMaterialUvTransforms(std::span<const M3Layer> layer
             // shipped AnimRef carries a non-zero animId whether or not anything
             // drives it, so "is it animated" has to ask the tables — reading
             // the id alone answers yes for all 2862196 layers in the corpus.
+            const bool tilingDriven = tables_.RowOf(layer->uvTiling.animId) >= 0;
             const bool driven = tables_.RowOf(layer->uvOffset.animId) >= 0 ||
-                                tables_.RowOf(layer->uvAngle.animId) >= 0 ||
-                                tables_.RowOf(layer->uvTiling.animId) >= 0;
+                                tables_.RowOf(layer->uvAngle.animId) >= 0 || tilingDriven;
             const Vector2f& o = layer->uvOffset.initValue;
             const Vector3f& a = layer->uvAngle.initValue;
-            const Vector2f& t = layer->uvTiling.initValue;
+            const Vector2f t = M3NeutralTiling(layer->uvTiling.initValue, tilingDriven);
             const bool moved = o.x != 0.0f || o.y != 0.0f || a.x != 0.0f || a.y != 0.0f ||
                                a.z != 0.0f || t.x != 1.0f || t.y != 1.0f;
             if (!driven && !moved)
@@ -1599,7 +1616,8 @@ void M3ModelAdapter::EvaluateMaterialUvTransforms(std::span<const M3Layer> layer
             out.textureAnimId = M3UvTransformId(static_cast<u32>(m), static_cast<M3LayerSlot>(slot));
             M3ComposeUvTransform(SampleRef(layer->uvOffset, layers),
                                  SampleRef(layer->uvAngle, layers),
-                                 SampleRef(layer->uvTiling, layers), out.row0, out.row1);
+                                 M3NeutralTiling(SampleRef(layer->uvTiling, layers), tilingDriven),
+                                 out.row0, out.row1);
             fs.texAnimMatrices.push_back(out);
         }
     }

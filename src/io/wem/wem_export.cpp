@@ -394,6 +394,53 @@ MdxExportResult ConvertWemToMdx(const wem::Document& document, const MdxExportOp
     return result;
 }
 
+M3ExportResult ConvertWemToM3(const wem::Document& document, const M3ExportOptions& options) {
+    M3ExportResult result;
+
+    // One container, two version ranges: a v30 file imports back as Heroes of
+    // the Storm (`ProfileForVersion`), so a StarCraft II export must stay at
+    // the game's own ceiling.
+    u32 version = 0;
+    if (options.profile == wem::ProfileId::Sc2) {
+        version = 29;
+    } else if (options.profile == wem::ProfileId::Heroes) {
+        version = 30;
+    }
+    if (version == 0) {
+        result.error = std::string(wem::Profile(options.profile).displayName) +
+                       " is not a StarCraft II profile";
+        return result;
+    }
+
+    WemStagingOptions staging;
+    staging.baseLodOnly = options.baseLodOnly;
+    if (options.rescale) {
+        staging.rescale = wem::RescaleFactorBetween(document.defaultProfile, options.profile);
+    }
+
+    wem::Document scratch;
+    const WemStagingResult staged = StageWemDocument(document, options.profile, scratch, staging);
+    result.diagnostics.append(staged.diagnostics);
+    if (!staged.ok()) {
+        result.error = "this model " + staged.error;
+        return result;
+    }
+    result.derived = staged.derived;
+    result.scale = staged.rescaled;
+    result.lodMeshesDropped = staged.lodMeshesDropped;
+
+    wem::M3Converter converter;
+    wem::Result<::whiteout::m3::Model> converted =
+        converter.toM3(*staged.document, options.profile, version);
+    result.diagnostics.append(converted.diagnostics);
+    if (!converted.ok()) {
+        result.error = "the conversion to a StarCraft II model failed";
+        return result;
+    }
+    result.model = converted.take();
+    return result;
+}
+
 bool WriteWemDocument(const wem::Document& document, const std::filesystem::path& path,
                       wem::Diagnostics* diagnostics, std::string* error) {
     wem::Writer writer;

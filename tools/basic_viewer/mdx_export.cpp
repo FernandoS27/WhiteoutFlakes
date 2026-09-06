@@ -40,7 +40,14 @@ namespace tx = whiteout::textures;
 /// container, and they are named here rather than spelled at the call site
 /// because they are the one thing in this file a future measurement could
 /// overturn.
-constexpr tx::pbr::NormalRestatement kNormalRestatement{/*swapXY=*/true, /*invertY=*/true};
+///
+/// Overturned once already: the original swap+invert pair rotated every
+/// tangent-space normal 90°. The reaper sweep scored identity best (5.92
+/// against 6.07 for the rotation, with a FLAT map at 6.02 between them), and
+/// the HD footman shield — the crispest normal-mapped surface in the corpus —
+/// agrees on every metric (diff, edge energy, luminance correlation). The two
+/// engines share the axis conventions; only the channel PACKING differs.
+constexpr tx::pbr::NormalRestatement kNormalRestatement{/*swapXY=*/false, /*invertY=*/false};
 
 std::string Lower(std::string value) {
     for (char& c : value)
