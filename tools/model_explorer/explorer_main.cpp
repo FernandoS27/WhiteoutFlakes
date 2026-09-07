@@ -113,7 +113,10 @@ struct PanelStateFile {
                           : v == "d3"  ? wf::ProductId::D3
                           : v == "wc3" ? wf::ProductId::Wc3
                                        : wf::ProductId::Neutral;
-            else if (k == "types")
+            // Not the old "types": that was written when a browse listed
+            // images by default (io::DefaultEnabledTypes), so a file left by an
+            // older build records a mask with Textures in it that nobody chose.
+            else if (k == "browse")
                 st.browseTypes = static_cast<wf::io::BrowseType>(std::atoi(v.c_str()));
             else if (k == "folder")
                 st.folder = v;
@@ -140,7 +143,7 @@ struct PanelStateFile {
                            : st.game == wf::ProductId::Wc3 ? "wc3"
                                                            : "";
         f << "game=" << game << "\n";
-        f << "types=" << static_cast<unsigned>(st.browseTypes) << "\n";
+        f << "browse=" << static_cast<unsigned>(st.browseTypes) << "\n";
         f << "folder=" << st.folder << "\n";
         f << "filter=" << st.filter << "\n";
         f << "selected=" << st.selected << "\n";

@@ -133,11 +133,12 @@ public:
     }
 
     // ---- Pose stages (terrain IK, turret) ----
-    // Off by default, and StarCraft II does the same thing: IK is gated on a
-    // world flag rather than per model, because a solver with no world to
-    // query has nothing to solve against. Off also means the pose is exactly
-    // what the sampler produced, which is what keeps the byte-identical gates
-    // meaningful.
+    // On by default. A solver with no world to query has nothing to solve
+    // against, but the renderer always has one — the grid plane the physics
+    // stages collide with — and against flat ground the foot IK resolves to a
+    // no-op, so leaving it on for a model standing on the grid costs nothing.
+    // A host with terrain installs its own SetGroundQuery; the byte-identical
+    // gates pin the flag themselves rather than lean on this default.
     bool PoseSolversEnabled() const {
         return poseSolvers_;
     }
@@ -644,7 +645,7 @@ private:
     bool showPhysicsCloth_ = false;
     bool clothDeform_ = true;
     bool physicsSubstepping_ = true;
-    bool poseSolvers_ = false;
+    bool poseSolvers_ = true;
     GroundQuery groundQuery_;
 
     // Render mode + dirty flag.

@@ -21,8 +21,15 @@ std::string Key(const char* k) {
 }
 
 // The keys, in the order the change key concatenates them.
-constexpr const char* kKeys[] = {"View",   "Game",     "BrowseTypes", "Folder",
-                                 "Filter", "Selected", "IconSize",    "TreeSplit"};
+constexpr const char* kKeys[] = {"View",   "Game",     "Types",    "Folder",
+                                 "Filter", "Selected", "IconSize", "TreeSplit"};
+
+// What the mask used to be written under, back when a browse listed images by
+// default (io::DefaultEnabledTypes). Every such file records a mask WITH
+// Textures in it that no user ever chose, and restoring one would put the
+// images back. So the key is not read - only dropped, so the file stops
+// carrying an answer to a question nobody asks any more.
+constexpr const char* kLegacyTypesKey = "BrowseTypes";
 
 // Stable strings rather than the enum values: ProductId is an ABI enum whose
 // numbering is not a promise the ini should depend on. Same spellings as
@@ -57,7 +64,8 @@ ProductId GameFromName(const std::string& name) {
 void WriteState(IniMap& ini, const tools::ExplorerState& st) {
     ini.Set(Key("View"), st.view == tools::ExplorerView::Tree ? "tree" : "grid");
     ini.Set(Key("Game"), GameName(st.game));
-    ini.Set(Key("BrowseTypes"), ini::ToString(static_cast<u32>(st.browseTypes)));
+    ini.Set(Key("Types"), ini::ToString(static_cast<u32>(st.browseTypes)));
+    ini.values.erase(Key(kLegacyTypesKey));
     ini.Set(Key("Folder"), st.folder);
     ini.Set(Key("Filter"), st.filter);
     ini.Set(Key("Selected"), st.selected);
@@ -77,7 +85,7 @@ tools::ExplorerState LoadStorageExplorerState() {
         st.view = (*s == "tree") ? tools::ExplorerView::Tree : tools::ExplorerView::Grid;
     if (auto* s = ini.Get(Key("Game")))
         st.game = GameFromName(*s);
-    if (auto* s = ini.Get(Key("BrowseTypes"))) {
+    if (auto* s = ini.Get(Key("Types"))) {
         i32 v = 0;
         // 0 stays BrowseType::None, which the panel reads as "not recorded" and
         // leaves the game's own default in place — an empty mask would restore

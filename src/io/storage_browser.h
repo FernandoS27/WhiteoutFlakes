@@ -136,6 +136,17 @@ constexpr bool Any(BrowseType t) {
 // what nobody can narrow.
 BrowseType BrowseTypesFor(ProductId game);
 
+// Which of @p available a freshly opened storage LISTS: everything but
+// Textures. Every game ships far more images than models - a World of Warcraft
+// install is mostly `.blp` - so listing them by default buries what the browse
+// was opened for. A checkbox turns them on, and a host that persists its mask
+// keeps that choice.
+//
+// Unless images are ALL that was walked for (SetOpenTypes(Textures), i.e. a
+// texture picker): hiding the only type there is would show an empty grid
+// rather than a narrower one.
+BrowseType DefaultEnabledTypes(BrowseType available);
+
 // Display name for a single bit, e.g. "Models (.mdx)". Empty for a mask that
 // is not exactly one type.
 const char* BrowseTypeLabel(BrowseType one);
@@ -266,9 +277,10 @@ public:
     BrowseType AvailableTypes() const {
         return available_;
     }
-    // The subset currently listed. Defaults to all of AvailableTypes at Open;
-    // setting it re-filters the current folder and nothing else, so a host can
-    // toggle a checkbox per frame without reopening the storage.
+    // The subset currently listed. Defaults to DefaultEnabledTypes at Open -
+    // AvailableTypes without the images; setting it re-filters the current
+    // folder and nothing else, so a host can toggle a checkbox per frame
+    // without reopening the storage.
     BrowseType EnabledTypes() const {
         return enabled_;
     }

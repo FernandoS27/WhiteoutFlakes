@@ -30,6 +30,7 @@ using whiteout::flakes::io::BrowseType;
 using whiteout::flakes::io::BrowseTypeLabel;
 using whiteout::flakes::io::BrowseTypeOfFile;
 using whiteout::flakes::io::BrowseTypesFor;
+using whiteout::flakes::io::DefaultEnabledTypes;
 using whiteout::flakes::io::FileContentProvider;
 using whiteout::flakes::io::MatchesFilter;
 using whiteout::flakes::io::OpenWithArchives;
@@ -37,17 +38,32 @@ using whiteout::flakes::io::StorageBrowser;
 using whiteout::flakes::io::StorageKind;
 
 TEST_CASE("Each game declares what it is worth browsing for", "[browser]") {
-    // Warcraft III as it always was.
-    CHECK(BrowseTypesFor(ProductId::Wc3) == (BrowseType::Models | BrowseType::Effects));
-    // World of Warcraft ships a world of formats this cannot draw; `.m2` is
-    // the whole list.
-    CHECK(BrowseTypesFor(ProductId::Wow) == BrowseType::M2);
-    CHECK(BrowseTypesFor(ProductId::Sc2) == BrowseType::M3);
-    CHECK(BrowseTypesFor(ProductId::D3) == BrowseType::Actor);
+    // Warcraft III as it always was, plus the images every game ships.
+    CHECK(BrowseTypesFor(ProductId::Wc3) ==
+          (BrowseType::Models | BrowseType::Effects | BrowseType::Textures));
+    // World of Warcraft ships a world of formats this cannot draw; `.m2` and
+    // its textures are the whole list.
+    CHECK(BrowseTypesFor(ProductId::Wow) == (BrowseType::M2 | BrowseType::Textures));
+    CHECK(BrowseTypesFor(ProductId::Sc2) == (BrowseType::M3 | BrowseType::Textures));
+    CHECK(BrowseTypesFor(ProductId::D3) == (BrowseType::Actor | BrowseType::Textures));
     // A loose folder has no product record, so it narrows nothing.
     CHECK(BrowseTypesFor(ProductId::Neutral) ==
           (BrowseType::Models | BrowseType::Effects | BrowseType::M2 | BrowseType::M3 |
-           BrowseType::Actor));
+           BrowseType::Actor | BrowseType::Textures));
+
+    // Every game is walked for its images and lists none of them: there are
+    // far more images than models everywhere, so they are what you go looking
+    // for rather than what you browse through.
+    for (ProductId game :
+         {ProductId::Wc3, ProductId::Wow, ProductId::Sc2, ProductId::D3, ProductId::Neutral}) {
+        const BrowseType all = BrowseTypesFor(game);
+        INFO(static_cast<unsigned>(all));
+        CHECK(Any(all & BrowseType::Textures));
+        CHECK(DefaultEnabledTypes(all) == (all & ~BrowseType::Textures));
+    }
+    // Unless images are all a host walked for (SetOpenTypes): hiding a texture
+    // picker's only type would leave an empty grid, not a narrower one.
+    CHECK(DefaultEnabledTypes(BrowseType::Textures) == BrowseType::Textures);
 
     // Extensions group by what a user would check, not by dialect: two model
     // dialects are one checkbox, two effect dialects are another.
@@ -62,14 +78,20 @@ TEST_CASE("Each game declares what it is worth browsing for", "[browser]") {
     // one without the other would hide half the corpus.
     CHECK(BrowseTypeOfFile("x.acr") == BrowseType::Actor);
     CHECK(BrowseTypeOfFile("x.app") == BrowseType::Actor);
-    // Not everything in an archive is a model.
-    CHECK(BrowseTypeOfFile("x.blp") == BrowseType::None);
+    // The three image containers are one checkbox too, and the only non-model
+    // thing an archive holds that this browses at all.
+    CHECK(BrowseTypeOfFile("textures/white.BLP") == BrowseType::Textures);
+    CHECK(BrowseTypeOfFile("x.dds") == BrowseType::Textures);
+    CHECK(BrowseTypeOfFile("x.tga") == BrowseType::Textures);
+    // Not everything in an archive is a model or a picture.
+    CHECK(BrowseTypeOfFile("x.wmo") == BrowseType::None);
     CHECK(BrowseTypeOfFile("noextension") == BrowseType::None);
     // `.m2` must not be caught by a suffix test that only looks for "m2".
     CHECK(BrowseTypeOfFile("x.m2a") == BrowseType::None);
 
     // Every offerable bit has a label; the empty mask and combinations do not.
-    for (BrowseType t : {BrowseType::Models, BrowseType::Effects, BrowseType::M2, BrowseType::M3})
+    for (BrowseType t : {BrowseType::Models, BrowseType::Effects, BrowseType::M2, BrowseType::M3,
+                         BrowseType::Actor, BrowseType::Textures})
         CHECK(std::string(BrowseTypeLabel(t)).size() > 0);
     CHECK(std::string(BrowseTypeLabel(BrowseType::None)).empty());
 }
@@ -111,7 +133,7 @@ TEST_CASE("The filter box takes the patterns a filter box is expected to take", 
     CHECK_FALSE(MatchesFilter("peasant_portrait.mdx", "peasant, -*portrait*"));
 }
 
-TEST_CASE("A Warcraft III browse offers models and effects, and honours both",
+TEST_CASE("A Warcraft III browse offers models and effects and images - and honours each",
           "[browser][casc]") {
     FileContentProvider probe;
     if (probe.Wc3Path().empty())
@@ -121,19 +143,33 @@ TEST_CASE("A Warcraft III browse offers models and effects, and honours both",
     std::string error;
     REQUIRE(br.Open(probe.Wc3Path(), StorageKind::Casc, &error));
     CHECK(br.Product() == ProductId::Wc3);
-    CHECK(br.AvailableTypes() == (BrowseType::Models | BrowseType::Effects));
-    // Everything the game has, until a host says otherwise.
-    CHECK(br.EnabledTypes() == br.AvailableTypes());
+    CHECK(br.AvailableTypes() == (BrowseType::Models | BrowseType::Effects | BrowseType::Textures));
+    // Everything the game has except its images, until a host says otherwise.
+    CHECK(br.EnabledTypes() == DefaultEnabledTypes(br.AvailableTypes()));
+    CHECK_FALSE(Any(br.EnabledTypes() & BrowseType::Textures));
 
     // Found rather than named: which folders a build ships is a property of the
-    // install, and a hardcoded one rots on the next patch.
-    for (int depth = 0; depth < 8 && br.Current().modelFiles.empty(); ++depth) {
-        if (br.Current().folders.empty())
-            break;
-        br.Descend(br.Current().folders.front());
-    }
+    // install, and a hardcoded one rots on the next patch. Not the first-folder
+    // chain it used to be either - that one ends in a folder of nothing but
+    // images, which the default mask now hides - so this searches until it
+    // finds files, within a budget.
+    int visited = 0;
+    std::function<bool()> descendToFiles = [&]() {
+        if (!br.Current().modelFiles.empty())
+            return true;
+        if (++visited > 512)
+            return false;
+        const std::vector<std::string> folders = br.Current().folders;
+        for (const auto& folder : folders) {
+            br.Descend(folder);
+            if (descendToFiles())
+                return true;
+            br.Ascend();
+        }
+        return false;
+    };
+    REQUIRE(descendToFiles());
     INFO(br.CurrentPath());
-    REQUIRE_FALSE(br.Current().modelFiles.empty());
 
     auto countAt = [&](BrowseType types) {
         br.SetEnabledTypes(types);
@@ -142,10 +178,13 @@ TEST_CASE("A Warcraft III browse offers models and effects, and honours both",
     const std::size_t all = countAt(br.AvailableTypes());
     const std::size_t models = countAt(BrowseType::Models);
     const std::size_t effects = countAt(BrowseType::Effects);
-    std::printf("[browser] wc3 %s: %zu all, %zu models, %zu effects\n", br.CurrentPath().c_str(),
-                all, models, effects);
-    // The two halves partition the whole: nothing counted twice, nothing lost.
-    CHECK(models + effects == all);
+    const std::size_t textures = countAt(BrowseType::Textures);
+    std::printf("[browser] wc3 %s: %zu all, %zu models, %zu effects, %zu textures\n",
+                br.CurrentPath().c_str(), all, models, effects, textures);
+    // The three parts partition the whole: nothing counted twice, nothing lost.
+    CHECK(models + effects + textures == all);
+    // ...and what the panel opens on is the whole minus the images.
+    CHECK(countAt(DefaultEnabledTypes(br.AvailableTypes())) == all - textures);
     CHECK(countAt(BrowseType::None) == 0);
 
     // ...and what is listed is only ever what is enabled.
@@ -213,7 +252,11 @@ TEST_CASE("A World of Warcraft browse is .m2 and nothing else", "[browser][casc]
     std::string error;
     REQUIRE(br.Open(probe.GamePath(ProductId::Wow), StorageKind::Casc, &error));
     CHECK(br.Product() == ProductId::Wow);
-    CHECK(br.AvailableTypes() == BrowseType::M2);
+    CHECK(br.AvailableTypes() == (BrowseType::M2 | BrowseType::Textures));
+    // The images beside every model are walked for and listed only once a host
+    // ticks the box - which is what makes the per-file check below hold in a
+    // directory that is mostly `.blp`.
+    CHECK(br.EnabledTypes() == BrowseType::M2);
 
     // `creature/` is a directory of directories, so descend until there are
     // files: an empty listing would pass the loop below without proving a
@@ -230,8 +273,9 @@ TEST_CASE("A World of Warcraft browse is .m2 and nothing else", "[browser][casc]
     std::printf("[browser] wow %s: %zu files\n", br.CurrentPath().c_str(),
                 br.Current().modelFiles.size());
 
-    // The point of the whole exercise: a WoW browse shows `.m2` and the `.blp`,
-    // `.skin`, `.anim` and `.phys` siblings beside each one do not appear.
+    // The point of the whole exercise: a WoW browse shows `.m2`, and the
+    // `.blp`, `.skin`, `.anim` and `.phys` siblings beside each one do not
+    // appear.
     for (const auto& f : br.Current().modelFiles) {
         INFO(f);
         CHECK(BrowseTypeOfFile(f) == BrowseType::M2);
@@ -277,7 +321,8 @@ TEST_CASE("A StarCraft II browse is .m3 and nothing else", "[browser][casc]") {
     std::string error;
     REQUIRE(br.Open(root, StorageKind::Casc, &error));
     CHECK(br.Product() == ProductId::Sc2);
-    CHECK(br.AvailableTypes() == BrowseType::M3);
+    CHECK(br.AvailableTypes() == (BrowseType::M3 | BrowseType::Textures));
+    CHECK(br.EnabledTypes() == BrowseType::M3);
 
     // No fixed entry point, unlike WoW's `creature/`: SC2 buries its assets
     // under a mod/base chain whose names moved between versions. Descend the
@@ -449,6 +494,58 @@ TEST_CASE("The tree reads any folder, without moving the one the grid is in", "[
     br.SetFilter("grunt");
     CHECK(br.TreeChildren("").folders.empty());
     CHECK(br.TreeMatchCount() == 0);
+}
+
+// ============================================================================
+// Images are walked for and not listed.
+//
+// The one type that is not a drawable, and the one there are far more of than
+// anything else: an install ships an order of magnitude more textures than
+// models, and a World of Warcraft one is mostly textures. A grid that listed
+// them by default would bury what the panel was opened for, so the checkbox
+// starts unticked in every game (io::DefaultEnabledTypes) and turns them on
+// without reopening the storage.
+//
+// Folder-backed, because this is the browser's default and not a game's.
+// ============================================================================
+TEST_CASE("A browse walks for images and lists none until asked", "[browser]") {
+    TempTree tmp("images");
+    // Textures beside the model that samples them, which is the shape content
+    // actually has on disk.
+    std::error_code ec;
+    for (const char* rel : {"units/human/footman/footman.blp",
+                            "units/human/footman/footman_team.blp",
+                            "units/human/footman/footman.dds"}) {
+        const std::filesystem::path file = tmp.root / rel;
+        std::filesystem::create_directories(file.parent_path(), ec);
+        if (std::FILE* f = std::fopen(file.string().c_str(), "wb"))
+            std::fclose(f);
+    }
+    constexpr std::size_t kImages = 3;
+
+    StorageBrowser br;
+    std::string err;
+    REQUIRE(br.Open(tmp.root.string(), StorageKind::Folder, &err));
+    CHECK(Any(br.AvailableTypes() & BrowseType::Textures));     // walked for...
+    CHECK_FALSE(Any(br.EnabledTypes() & BrowseType::Textures)); // ...not listed
+
+    br.NavigateTo("units\\human\\footman");
+    const std::size_t models = br.Current().modelFiles.size();
+    REQUIRE(models > 0);
+    for (const auto& f : br.Current().modelFiles) {
+        INFO(f);
+        CHECK(BrowseTypeOfFile(f) != BrowseType::Textures);
+    }
+    // The total is after the type filter, so a folder does not read as holding
+    // files the grid then refuses to show.
+    CHECK(br.Current().fileTotal == models);
+    // One mask, both views: the tree hides them on the same setting.
+    CHECK(br.TreeChildren("units\\human\\footman").files.size() == models);
+
+    // And ticking the box brings them back, without reopening the storage.
+    br.SetEnabledTypes(br.AvailableTypes());
+    CHECK(br.Current().modelFiles.size() == models + kImages);
+    CHECK(br.TreeChildren("units\\human\\footman").files.size() == models + kImages);
 }
 
 // ============================================================================

@@ -20,10 +20,11 @@ export function isEffectPath(src) {
     return EFFECT_EXTENSIONS.some(e => clean.endsWith(e));
 }
 
-// Everything else the loader spawns as an actor: Warcraft III's own two plus
-// StarCraft II / Heroes `.m3`. The C++ side picks the parser off the file's
-// magic, so an extension here only ever decides what a host offers.
-export const MODEL_EXTENSIONS = ['.mdx', '.mdl', '.m3'];
+// Everything else the loader spawns as an actor: Warcraft III's own two,
+// StarCraft II / Heroes `.m3`, and World of Warcraft `.m2`. The C++ side picks
+// the parser off the file's magic, so an extension here only ever decides what
+// a host offers.
+export const MODEL_EXTENSIONS = ['.mdx', '.mdl', '.m3', '.m2'];
 export function isModelPath(src) {
     if (typeof src !== 'string') return false;
     const clean = src.split(/[?#]/)[0].toLowerCase();

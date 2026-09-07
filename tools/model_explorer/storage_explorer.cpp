@@ -529,17 +529,30 @@ void StorageExplorer::BuildFilterBar() {
     }
 
     // Only the types the open storage was actually walked for. A Warcraft III
-    // install gets models and effects; World of Warcraft gets `.m2` and there
-    // is nothing else to offer.
+    // install gets models, effects and textures; World of Warcraft gets `.m2`
+    // and textures, and there is nothing else to offer. Textures come last and
+    // start unticked (io::DefaultEnabledTypes): they are what you go looking
+    // for, not what you browse through.
     const io::BrowseType available = browser_.AvailableTypes();
     io::BrowseType enabled = browser_.EnabledTypes();
-    for (io::BrowseType type : {io::BrowseType::Models, io::BrowseType::Effects, io::BrowseType::M2,
-                                io::BrowseType::M3}) {
+    // The right edge of the row, read while the cursor is still at the start of
+    // a line: six labels do not fit a narrow panel, and with no horizontal
+    // scrollbar a checkbox past the edge is one nobody can tick. So they wrap
+    // onto a second line instead.
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float rightEdge = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    for (io::BrowseType type :
+         {io::BrowseType::Models, io::BrowseType::Effects, io::BrowseType::M2, io::BrowseType::M3,
+          io::BrowseType::Actor, io::BrowseType::Textures}) {
         if (!Any(available & type))
             continue;
-        ImGui::SameLine();
+        const char* label = io::BrowseTypeLabel(type);
+        const float width = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x +
+                            ImGui::CalcTextSize(label).x;
+        if (ImGui::GetItemRectMax().x + style.ItemSpacing.x + width < rightEdge)
+            ImGui::SameLine();
         bool on = Any(enabled & type);
-        if (ImGui::Checkbox(io::BrowseTypeLabel(type), &on))
+        if (ImGui::Checkbox(label, &on))
             enabled = on ? (enabled | type) : (enabled & ~type);
     }
     browser_.SetEnabledTypes(enabled);

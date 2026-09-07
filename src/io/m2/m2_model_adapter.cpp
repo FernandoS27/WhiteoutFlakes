@@ -396,10 +396,15 @@ std::shared_ptr<M2ModelAdapter> M2ModelAdapter::Load(const ContentRef& ref,
     // Heap-allocated rather than a local, because a lazy parse reads `.anim`
     // siblings through this wrapper long after Load returns.
     std::shared_ptr<void> fsKeepAlive;
-    try {
-        // The ref's discriminant picks the route, because it is the same
-        // question: a model named by id has id-named siblings, a model named
-        // by path has its siblings on disk beside it.
+    // The ref's discriminant picks the route, because it is the same question:
+    // a model named by id has id-named siblings, a model named by path has its
+    // siblings on disk beside it.
+    //
+    // The web build compiles -fno-exceptions, where `try` is a hard error. The
+    // parser collects issues rather than throwing, so the handler only ever
+    // sees what the STL raised on malformed input; same guard as
+    // m3_model_adapter.cpp.
+    auto parsePrimary = [&] {
         if (ref.IsFileId()) {
             auto fs = std::make_shared<ContentProviderCascFs>(provider);
             model = parser.parse(*fs, bytes);
@@ -409,10 +414,17 @@ std::shared_ptr<M2ModelAdapter> M2ModelAdapter::Load(const ContentRef& ref,
             model = parser.parse(*fs, ref.path);
             fsKeepAlive = std::move(fs);
         }
+    };
+#if defined(__cpp_exceptions)
+    try {
+        parsePrimary();
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[m2] parse failed for '%s': %s\n", ref.Describe().c_str(), e.what());
         return nullptr;
     }
+#else
+    parsePrimary();
+#endif
     if (parser.hasIssues()) {
         // Issues are not necessarily fatal — the parser reports what it
         // skipped. Surface them rather than letting a half-read model look
@@ -429,17 +441,24 @@ std::shared_ptr<M2ModelAdapter> M2ModelAdapter::Load(const ContentRef& ref,
         // here: their positional `<name>NN.skin` siblings resolved above.
         ::whiteout::m2::Parser byId;
         byId.setLazyAnimations(lazyAnimations);
-        try {
+        auto parseById = [&] {
             auto fs = std::make_shared<ContentProviderCascFs>(provider);
             ::whiteout::m2::Model retry = byId.parse(*fs, bytes);
             if (!retry.skinProfiles.empty()) {
                 model = std::move(retry);
                 fsKeepAlive = std::move(fs);
             }
+        };
+#if defined(__cpp_exceptions)
+        try {
+            parseById();
         } catch (const std::exception& e) {
             std::fprintf(stderr, "[m2] id-route retry failed for '%s': %s\n",
                          ref.Describe().c_str(), e.what());
         }
+#else
+        parseById();
+#endif
     }
     if (model.skinProfiles.empty()) {
         // Both routes are exhausted: the skins are named by id and no storage

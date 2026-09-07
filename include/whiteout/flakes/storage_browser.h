@@ -29,6 +29,11 @@ enum class StorageKind : u8 {
 ///
 /// Naming matches `StorageFileFilter` in the explorer panel, which has had
 /// the same three-way choice since before the browser was bindable.
+///
+/// Images (`.blp` / `.dds` / `.tga`) are listed under none of the three. A
+/// storage is walked for them so that a panel can offer a checkbox, and it
+/// opens with that box unticked — there are far more images than models in
+/// every game, and this browser is for picking something to draw.
 /// @bind
 enum class StorageFileFilter : u8 {
     All = 0,         ///< Models and effects both.

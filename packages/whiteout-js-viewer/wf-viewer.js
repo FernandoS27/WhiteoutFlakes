@@ -561,6 +561,15 @@ export class WhiteoutViewer {
         const mdxKey = String(src).split(/[\\/]/).pop();
         this._putBytes(mdxKey, mdxBytes);
 
+        // A World of Warcraft `.m2` is not self-contained the way an MDX/M3 is:
+        // its skin profiles (the actual drawable geometry) live in sibling
+        // `.skin` files that the parser reads *synchronously* during
+        // SpawnUnit. The asset pump only runs after spawn, so unless those
+        // siblings are already in the provider the parse finds no skin, the
+        // model has no geometry, and it renders nothing. Pre-fetch them here.
+        if (mdxKey.toLowerCase().endsWith('.m2'))
+            await this._prefetchM2Skins(mdxKey, pathSolver, log);
+
         // PE1 emitter-child-MDX search base. Informational for Hive solvers.
         const srcDir = String(src).substring(0, String(src).lastIndexOf('/') + 1);
         if (srcDir) this._setPe1Base(srcDir.replace(/^\.?\/?/, ''));
@@ -707,6 +716,33 @@ export class WhiteoutViewer {
         } finally {
             M._free(dataPtr);
             M._free(pathPtr);
+        }
+    }
+    // Pre-Legion `.m2` models name their skin profiles positionally,
+    // `<stem>00.skin` upward; the header's profile count is the manifest, but
+    // it isn't known until the base file is parsed, so try a small fixed range
+    // and push whatever resolves. Keyed by the exact basename the parser's file
+    // system requests (relative to the model, which in the browser has no
+    // directory component). Legion+ models name skins by fileDataID in SFID and
+    // need a listfile the browser cannot resolve — those still won't render.
+    async _prefetchM2Skins(mdxKey, pathSolver, log) {
+        const dot = mdxKey.lastIndexOf('.');
+        const stem = dot >= 0 ? mdxKey.slice(0, dot) : mdxKey;
+        for (let i = 0; i < 4; ++i) {
+            const skinName = stem + String(i).padStart(2, '0') + '.skin';
+            let cands = await Promise.resolve(pathSolver(skinName));
+            if (!cands) continue;
+            if (!Array.isArray(cands)) cands = [cands];
+            for (const url of cands) {
+                if (!url) continue;
+                try {
+                    const r = await fetch(url, { cache: 'no-store' });
+                    if (!r.ok) continue;
+                    this._putBytes(skinName, new Uint8Array(await r.arrayBuffer()));
+                    log('load: m2 skin ' + skinName);
+                    break;
+                } catch (_) { /* try next candidate */ }
+            }
         }
     }
     _setPe1Base(p) {

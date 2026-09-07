@@ -115,8 +115,13 @@ public:
 
 private:
     static constexpr u32 kSlotCount = kD3SlotCount;
-    /// The pass-global dye ramp binds one register past the slot table.
-    static constexpr u32 kDyeRampRegister = kD3SlotCount;
+    /// The pass-global dye ramp. It binds to PS register t15, not the slot
+    /// immediately past the ten-slot table (t10): the WebGPU bind-group layout
+    /// reserves PS registers t10..t14 for shadow maps (Depth) and IBL cube
+    /// arrays, and a plain 2D texture bound there fails Dawn's sampleType check
+    /// and invalidates the whole D3 PSO. t15 is the last Float / 2D PS slot.
+    /// Must match texDyeRamp's register in d3_standard.slang.
+    static constexpr u32 kDyeRampRegister = 15;
 
     /// @brief Slots in the generic light array.
     ///

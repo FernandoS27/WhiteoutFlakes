@@ -247,7 +247,12 @@ static const int WF_PS_BIND_OFFSET = 16;
 [[vk::binding(WF_PS_BIND_OFFSET + 9, 1)]] Texture2D texHeroTint : register(t9);
 // The `dye_ramp` core asset (type 56): 21 dye rows, sampled at row centres.
 // Pass-global -- one texture for every draw -- bound past the slot table.
-[[vk::binding(WF_PS_BIND_OFFSET + 10, 1)]] Texture2D texDyeRamp : register(t10);
+// It sits at register t15, not t10: the WebGPU bind-group layout types PS
+// registers t10..t12 as Depth (shadow maps) and t13/t14 as cube arrays, so a
+// plain Texture2D there fails Dawn's sampleType check and invalidates the PSO.
+// t15 is the one remaining Float / 2D PS slot (see webgpu_handles.h and
+// D3StandardShading::kDyeRampRegister, which must match this register).
+[[vk::binding(WF_PS_BIND_OFFSET + 15, 1)]] Texture2D texDyeRamp : register(t15);
 // One sampler PER WRAP VARIANT, not per slot: the D3D12 root signature budgets
 // four samplers per stage, and four is exactly how many distinct states exist.
 [[vk::binding(WF_PS_BIND_OFFSET + 0, 2)]] SamplerState sampWrap0 : register(s0);

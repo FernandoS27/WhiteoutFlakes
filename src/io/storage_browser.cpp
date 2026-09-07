@@ -117,6 +117,13 @@ BrowseType BrowseTypesFor(ProductId game) {
     }
 }
 
+BrowseType DefaultEnabledTypes(BrowseType available) {
+    const BrowseType drawables = available & ~BrowseType::Textures;
+    // A browse walked for images alone is a texture picker; there, hiding them
+    // leaves nothing to pick.
+    return Any(drawables) ? drawables : available;
+}
+
 namespace {
 
 // `*` (any run) / `?` (any one char) against the whole string, both already
@@ -280,8 +287,9 @@ void StorageBrowser::ResetForOpen(StorageKind kind) {
 
 void StorageBrowser::FinishOpen() {
     open_ = true;
-    // Everything the game offers, until the host says otherwise.
-    enabled_ = available_;
+    // Everything the game offers except its images, until the host says
+    // otherwise (DefaultEnabledTypes).
+    enabled_ = DefaultEnabledTypes(available_);
     treeCacheDirty_ = true;
     Refresh();
 }

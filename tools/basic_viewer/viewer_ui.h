@@ -52,6 +52,11 @@ private:
     // provider's active game: editing a profile must not repoint the content
     // layer, let alone open its install.
     void BuildSettingsWindow();
+    // The settings no game owns: the frame the renderer draws for all of them
+    // and the knobs the next launch reads. Its own left-panel row, above the
+    // games, because picking a game to change the exposure was the wrong
+    // question to answer.
+    void BuildSettingsGeneralPage();
     void BuildSettingsGeneralTab(ProductId game);
     void BuildSettingsIoTab(io::FileContentProvider& provider, ProductId game);
     // Warcraft III and World of Warcraft share this page: one install root,
@@ -129,6 +134,10 @@ private:
     std::string animAttachError_;
 
     bool settingsOpen_ = false;
+    // Which left-panel row is picked: the shared page, or the game that
+    // ViewerApp::SettingsProfile() names. Not persisted — the shared page is
+    // where the window opens.
+    bool settingsGlobalPage_ = true;
     bool animWindowOpen_ = false;
     bool showViewCube_ = true;    // View > View Cube toggle
     bool showLogConsole_ = false; // Debug > Log Console toggle

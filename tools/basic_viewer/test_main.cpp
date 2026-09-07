@@ -957,8 +957,10 @@ static int RunDrawTrace(
     // (physics/ground_plane.h); the harness overrides it with a plane at
     // `groundZ` because a non-zero height is the case that makes IK visibly
     // move, and supplies the aim target the renderer has no notion of.
+    // Pinned rather than left to the default, which is on: a golden recorded
+    // without the solvers has to keep being captured without them.
+    settings.SetPoseSolversEnabled(anim.solvers);
     if (anim.solvers) {
-        settings.SetPoseSolversEnabled(true);
         const f32 planeZ = anim.groundZ;
         settings.SetGroundQuery([planeZ](const Vector3f& pos, f32 up, f32 down, f32& outZ) {
             if (planeZ > pos.z + up || planeZ < pos.z - down)

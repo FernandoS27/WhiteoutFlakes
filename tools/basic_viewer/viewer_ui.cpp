@@ -1778,11 +1778,19 @@ void ViewerUI::BuildSettingsWindow() {
     const ProductId serving = provider.Game();
 
     ImGui::BeginChild("##profiles", ImVec2(170.0f, 0.0f), ImGuiChildFlags_Borders);
+    // Above the games, and not one of them: the background colour, the frame's
+    // post chain and the backend hold whatever is loaded.
+    if (ImGui::Selectable(i18n::tr("settings.profile.general"), settingsGlobalPage_))
+        settingsGlobalPage_ = true;
+    ImGui::Separator();
     ImGui::TextDisabled("%s", i18n::tr("settings.profile.header"));
     ImGui::Separator();
     for (const auto& p : kSettingsProfiles) {
-        if (ImGui::Selectable(p.label, p.product == game) && p.product != game)
+        const bool picked = !settingsGlobalPage_ && p.product == game;
+        if (ImGui::Selectable(p.label, picked) && !picked) {
+            settingsGlobalPage_ = false;
             SelectSettingsProfile(p.product);
+        }
         // A dot on the one whose storage is actually in use, so a page showing
         // "nothing is open" is legible rather than alarming.
         if (p.product == serving) {
@@ -1795,7 +1803,11 @@ void ViewerUI::BuildSettingsWindow() {
     ImGui::SameLine();
 
     ImGui::BeginChild("##profilebody", ImVec2(0.0f, 0.0f));
-    if (ImGui::BeginTabBar("##SettingsTabs")) {
+    if (settingsGlobalPage_) {
+        // No tab bar: the shared page has no second page to sit beside. IO is
+        // a game's install, so it belongs to a game's row.
+        BuildSettingsGeneralPage();
+    } else if (ImGui::BeginTabBar("##SettingsTabs")) {
         if (ImGui::BeginTabItem(i18n::tr("settings.tab.general"))) {
             BuildSettingsGeneralTab(game);
             ImGui::EndTabItem();
@@ -1873,27 +1885,9 @@ void ViewerUI::BuildSettingsGeneralTab(ProductId game) {
         return;
     }
     if (game == ProductId::Sc2) {
-        // ---- Pose solvers (terrain IK + turret) ----
-        // Off by default because a solver needs a world to solve against, and
-        // the viewer's is the grid rather than terrain. StarCraft II gates its
-        // own IK the same way, on a world flag. The ground itself is the
-        // renderer's: the grid plane the physics stages already collide with,
-        // so nothing is installed here — a game host with terrain would
-        // SetGroundQuery its own.
-        {
-            bool on = svc.Settings().PoseSolversEnabled();
-            if (ImGui::Checkbox(i18n::tr("settings.general.m3_pose_solvers"), &on)) {
-                svc.Settings().SetPoseSolversEnabled(on);
-                SaveIni(app_);
-            }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", i18n::tr("settings.general.m3_pose_solvers.tip"));
-        }
-
         // ---- Physics substepping ----
-        // On by default, unlike the solvers above: this one needs nothing from
-        // the host, and the cadence it replaces is visibly wrong on shipped
-        // content rather than merely unsimulated.
+        // On by default: it needs nothing from the host, and the cadence it
+        // replaces is visibly wrong on shipped content.
         {
             bool on = svc.Settings().PhysicsSubstepping();
             if (ImGui::Checkbox(i18n::tr("settings.general.physics_substep"), &on)) {
@@ -1906,58 +1900,16 @@ void ViewerUI::BuildSettingsGeneralTab(ProductId game) {
         return;
     }
     if (game != ProductId::Wc3) {
-        // Nothing here yet. Everything the General tab currently offers is
-        // either a Warcraft III concept (day/night cycle rigs, Reforged HD) or
-        // a global the WC3 page already owns.
+        // Nothing here yet: this page is only what one game's data means, and
+        // the settings that hold for all of them are the General row's.
         ImGui::TextDisabled("%s", i18n::tr("settings.general.none_for_profile"));
         return;
     }
 
-    // ---- Background colour ----
-    {
-        const u32 bg = svc.Settings().BackgroundColorRaw();
-        f32 col[3] = {
-            static_cast<f32>(bg & 0xFFu) / 255.0f,
-            static_cast<f32>((bg >> 8) & 0xFFu) / 255.0f,
-            static_cast<f32>((bg >> 16) & 0xFFu) / 255.0f,
-        };
-        if (ImGui::ColorEdit3(i18n::tr("settings.general.background"), col)) {
-            svc.Settings().SetBackgroundColor(static_cast<u8>(col[0] * 255.0f),
-                                              static_cast<u8>(col[1] * 255.0f),
-                                              static_cast<u8>(col[2] * 255.0f));
-            SaveIni(app_);
-        }
-    }
-
-    // ---- Exposure ----
-    {
-        f32 exposure = svc.Settings().GetTonemapExposure();
-        if (ImGui::SliderFloat(i18n::tr("settings.general.exposure"), &exposure, 0.0f, 3.0f,
-                               "%.2f")) {
-            svc.Settings().SetTonemapExposure(exposure);
-            SaveIni(app_);
-        }
-    }
-
-    // ---- Sound volume ----
-    {
-        f32 vol = svc.Sound().GetVolume();
-        if (ImGui::SliderFloat(i18n::tr("settings.general.snd_volume"), &vol, 0.0f, 1.0f, "%.2f")) {
-            svc.Sound().SetVolume(vol);
-            SaveIni(app_);
-        }
-    }
-
-    // ---- Loop non-looping ----
-    {
-        bool on = app_.LoopNonLoopingPolicy();
-        if (ImGui::Checkbox(i18n::tr("settings.general.loop_nonlooping"), &on)) {
-            app_.SetLoopNonLoopingPolicy(on);
-            SaveIni(app_);
-        }
-    }
-
-    ImGui::Separator();
+    // What is left on this page is Warcraft III's, and only its: the day/night
+    // cycle is a rig the game ships, the IBL probes are its Reforged
+    // environment maps, the cascades are the only shadow pass any profile
+    // registers, and the depth of field is where WC3 runs its own.
 
     // ---- Time of day ----
     if (auto* dnc = svc.GetDncService()) {
@@ -2010,6 +1962,192 @@ void ViewerUI::BuildSettingsGeneralTab(ProductId game) {
             }
         }
     }
+
+    ImGui::Separator();
+
+    // ---- DNC model ----
+    // The stock DNC set is small and fully enumerable (dnc_catalog.h), so
+    // this is two combos instead of a free-text path: which light rig, and
+    // which mod layer to read it from. A path the catalog doesn't know —
+    // an older ini, or a hand-edited one — still shows and still loads.
+    if (auto* dnc = svc.GetDncService()) {
+        const auto catalog = dnc::DncCatalog();
+        const std::string current = dnc->UnitMdlPath();
+        const i32 sel = dnc::DncCatalogIndexOf(current);
+        const dnc::DncVariant variant = dnc::DncVariantOf(current);
+
+        ImGui::SetNextItemWidth(220.0f);
+        const std::string preview = (sel >= 0) ? dnc::DncEntryLabel(catalog[sel]) : current;
+        if (ImGui::BeginCombo(i18n::tr("settings.general.dnc_model"), preview.c_str())) {
+            for (usize i = 0; i < catalog.size(); ++i) {
+                const auto& e = catalog[i];
+                if (ImGui::Selectable(dnc::DncEntryLabel(e).c_str(), static_cast<i32>(i) == sel)) {
+                    dnc->SetUnitMdl(dnc::DncPathForVariant(e.path, variant));
+                    SaveIni(app_);
+                }
+                if (ImGui::IsItemHovered()) {
+                    std::string tilesets;
+                    for (const auto& ts : dnc::DncTilesets()) {
+                        if (ts.family != e.family)
+                            continue;
+                        if (!tilesets.empty())
+                            tilesets += ", ";
+                        tilesets += std::string(ts.name);
+                    }
+                    ImGui::SetTooltip("%.*s\n%s %s", static_cast<i32>(e.path.size()), e.path.data(),
+                                      i18n::tr("settings.general.dnc_tilesets"), tilesets.c_str());
+                }
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(i18n::tr("settings.general.dnc_reset"))) {
+            dnc->SetUnitMdl(dnc::DncService::kDefaultUnitMdl);
+            SaveIni(app_);
+        }
+
+        // Auto follows the provider's HD-mode mod chain; SD/HD pin the
+        // path to one layer. Only Lordaeron's legacy target rig is
+        // SD-only, so the HD entry is greyed out rather than hidden.
+        const bool hasSd = sel < 0 || catalog[sel].hasSd;
+        const bool hasHd = sel < 0 || catalog[sel].hasHd;
+        const char* variantLabels[] = {i18n::tr("settings.general.dnc_variant_auto"), "SD", "HD"};
+        ImGui::SetNextItemWidth(220.0f);
+        if (ImGui::BeginCombo(i18n::tr("settings.general.dnc_variant"),
+                              variantLabels[static_cast<usize>(variant)])) {
+            const bool enabled[] = {true, hasSd, hasHd};
+            for (usize i = 0; i < std::size(variantLabels); ++i) {
+                ImGui::BeginDisabled(!enabled[i]);
+                if (ImGui::Selectable(variantLabels[i], i == static_cast<usize>(variant))) {
+                    dnc->SetUnitMdl(
+                        dnc::DncPathForVariant(current, static_cast<dnc::DncVariant>(i)));
+                    SaveIni(app_);
+                }
+                ImGui::EndDisabled();
+            }
+            ImGui::EndCombo();
+        }
+    }
+
+    ImGui::Separator();
+
+    // ---- Depth of Field (HD-only) ----
+    // Runs the shipped depthoffield.bls. The pass self-disables until a
+    // focal distance > 0 is set, so enabling with a zero distance seeds a
+    // sensible default — otherwise the checkbox would appear to do nothing.
+    if (ImGui::CollapsingHeader(i18n::tr("settings.dof.header"))) {
+        // Focus on the subject: the camera→target distance is the model
+        // centre's view-space depth, which is what `linearDepth` carries.
+        // The CoC is hyperbolic — (1/focus − 1/depth)·focusScale — so at
+        // view-space depths (hundreds) focusScale needs to be ~tens-hundreds
+        // for visible blur, not the ~1 a normalised-depth pass would use.
+        const f32 camDist = svc.Scene().Camera().GetDistance();
+        const f32 autoFocus = camDist > 0.0f ? camDist : 600.0f;
+        bool dof = svc.Settings().DofEnabled();
+        if (ImGui::Checkbox(i18n::tr("settings.dof.enabled"), &dof)) {
+            svc.Settings().SetDofEnabled(dof);
+            if (dof) {
+                // Auto-focus on the model and seed a visible strength if the
+                // current values would produce no perceptible blur.
+                if (svc.Settings().DofFocusDistance() <= 0.0f)
+                    svc.Settings().SetDofFocusDistance(autoFocus);
+                if (svc.Settings().DofFocusScale() < 5.0f)
+                    svc.Settings().SetDofFocusScale(50.0f);
+            }
+            SaveIni(app_);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton(i18n::tr("settings.dof.reset"))) {
+            svc.Settings().SetDofFocusDistance(autoFocus);
+            svc.Settings().SetDofFocusScale(50.0f);
+            svc.Settings().SetDofMaxBlurSize(20.0f);
+            svc.Settings().SetDofRadiusScale(1.0f);
+            svc.Settings().SetDofFarFieldOnly(false);
+            SaveIni(app_);
+        }
+        f32 focusDist = svc.Settings().DofFocusDistance();
+        f32 focusScale = svc.Settings().DofFocusScale();
+        f32 maxBlur = svc.Settings().DofMaxBlurSize();
+        f32 radius = svc.Settings().DofRadiusScale();
+        bool farOnly = svc.Settings().DofFarFieldOnly();
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::SliderFloat(i18n::tr("settings.dof.focus_dist"), &focusDist, 0.0f, 3000.0f,
+                               "%.0f")) {
+            svc.Settings().SetDofFocusDistance(focusDist);
+            SaveIni(app_);
+        }
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::SliderFloat(i18n::tr("settings.dof.focus_scale"), &focusScale, 0.0f, 200.0f,
+                               "%.1f")) {
+            svc.Settings().SetDofFocusScale(focusScale);
+            SaveIni(app_);
+        }
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::SliderFloat(i18n::tr("settings.dof.max_blur"), &maxBlur, 1.0f, 40.0f, "%.1f")) {
+            svc.Settings().SetDofMaxBlurSize(maxBlur);
+            SaveIni(app_);
+        }
+        ImGui::SetNextItemWidth(180.0f);
+        if (ImGui::SliderFloat(i18n::tr("settings.dof.sample_density"), &radius, 0.25f, 4.0f,
+                               "%.2f")) {
+            svc.Settings().SetDofRadiusScale(radius);
+            SaveIni(app_);
+        }
+        if (ImGui::Checkbox(i18n::tr("settings.dof.far_field_only"), &farOnly)) {
+            svc.Settings().SetDofFarFieldOnly(farOnly);
+            SaveIni(app_);
+        }
+    }
+}
+
+void ViewerUI::BuildSettingsGeneralPage() {
+    RenderService& svc = app_.Service();
+
+    // ---- Background colour ----
+    {
+        const u32 bg = svc.Settings().BackgroundColorRaw();
+        f32 col[3] = {
+            static_cast<f32>(bg & 0xFFu) / 255.0f,
+            static_cast<f32>((bg >> 8) & 0xFFu) / 255.0f,
+            static_cast<f32>((bg >> 16) & 0xFFu) / 255.0f,
+        };
+        if (ImGui::ColorEdit3(i18n::tr("settings.general.background"), col)) {
+            svc.Settings().SetBackgroundColor(static_cast<u8>(col[0] * 255.0f),
+                                              static_cast<u8>(col[1] * 255.0f),
+                                              static_cast<u8>(col[2] * 255.0f));
+            SaveIni(app_);
+        }
+    }
+
+    // ---- Exposure ----
+    {
+        f32 exposure = svc.Settings().GetTonemapExposure();
+        if (ImGui::SliderFloat(i18n::tr("settings.general.exposure"), &exposure, 0.0f, 3.0f,
+                               "%.2f")) {
+            svc.Settings().SetTonemapExposure(exposure);
+            SaveIni(app_);
+        }
+    }
+
+    // ---- Sound volume ----
+    {
+        f32 vol = svc.Sound().GetVolume();
+        if (ImGui::SliderFloat(i18n::tr("settings.general.snd_volume"), &vol, 0.0f, 1.0f, "%.2f")) {
+            svc.Sound().SetVolume(vol);
+            SaveIni(app_);
+        }
+    }
+
+    // ---- Loop non-looping ----
+    {
+        bool on = app_.LoopNonLoopingPolicy();
+        if (ImGui::Checkbox(i18n::tr("settings.general.loop_nonlooping"), &on)) {
+            app_.SetLoopNonLoopingPolicy(on);
+            SaveIni(app_);
+        }
+    }
+
+    ImGui::Separator();
 
     // ---- Ambient occlusion (GTAO) ----
     {
@@ -2082,140 +2220,6 @@ void ViewerUI::BuildSettingsGeneralTab(ProductId game) {
                                "%.2f")) {
             svc.Settings().SetBloomSaturation(saturation);
             SaveIni(app_);
-        }
-    }
-
-    // ---- Depth of Field (HD-only) ----
-    // Runs the shipped depthoffield.bls. The pass self-disables until a
-    // focal distance > 0 is set, so enabling with a zero distance seeds a
-    // sensible default — otherwise the checkbox would appear to do nothing.
-    if (ImGui::CollapsingHeader(i18n::tr("settings.dof.header"))) {
-        // Focus on the subject: the camera→target distance is the model
-        // centre's view-space depth, which is what `linearDepth` carries.
-        // The CoC is hyperbolic — (1/focus − 1/depth)·focusScale — so at
-        // view-space depths (hundreds) focusScale needs to be ~tens-hundreds
-        // for visible blur, not the ~1 a normalised-depth pass would use.
-        const f32 camDist = svc.Scene().Camera().GetDistance();
-        const f32 autoFocus = camDist > 0.0f ? camDist : 600.0f;
-        bool dof = svc.Settings().DofEnabled();
-        if (ImGui::Checkbox(i18n::tr("settings.dof.enabled"), &dof)) {
-            svc.Settings().SetDofEnabled(dof);
-            if (dof) {
-                // Auto-focus on the model and seed a visible strength if the
-                // current values would produce no perceptible blur.
-                if (svc.Settings().DofFocusDistance() <= 0.0f)
-                    svc.Settings().SetDofFocusDistance(autoFocus);
-                if (svc.Settings().DofFocusScale() < 5.0f)
-                    svc.Settings().SetDofFocusScale(50.0f);
-            }
-            SaveIni(app_);
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton(i18n::tr("settings.dof.reset"))) {
-            svc.Settings().SetDofFocusDistance(autoFocus);
-            svc.Settings().SetDofFocusScale(50.0f);
-            svc.Settings().SetDofMaxBlurSize(20.0f);
-            svc.Settings().SetDofRadiusScale(1.0f);
-            svc.Settings().SetDofFarFieldOnly(false);
-            SaveIni(app_);
-        }
-        f32 focusDist = svc.Settings().DofFocusDistance();
-        f32 focusScale = svc.Settings().DofFocusScale();
-        f32 maxBlur = svc.Settings().DofMaxBlurSize();
-        f32 radius = svc.Settings().DofRadiusScale();
-        bool farOnly = svc.Settings().DofFarFieldOnly();
-        ImGui::SetNextItemWidth(180.0f);
-        if (ImGui::SliderFloat(i18n::tr("settings.dof.focus_dist"), &focusDist, 0.0f, 3000.0f,
-                               "%.0f")) {
-            svc.Settings().SetDofFocusDistance(focusDist);
-            SaveIni(app_);
-        }
-        ImGui::SetNextItemWidth(180.0f);
-        if (ImGui::SliderFloat(i18n::tr("settings.dof.focus_scale"), &focusScale, 0.0f, 200.0f,
-                               "%.1f")) {
-            svc.Settings().SetDofFocusScale(focusScale);
-            SaveIni(app_);
-        }
-        ImGui::SetNextItemWidth(180.0f);
-        if (ImGui::SliderFloat(i18n::tr("settings.dof.max_blur"), &maxBlur, 1.0f, 40.0f, "%.1f")) {
-            svc.Settings().SetDofMaxBlurSize(maxBlur);
-            SaveIni(app_);
-        }
-        ImGui::SetNextItemWidth(180.0f);
-        if (ImGui::SliderFloat(i18n::tr("settings.dof.sample_density"), &radius, 0.25f, 4.0f,
-                               "%.2f")) {
-            svc.Settings().SetDofRadiusScale(radius);
-            SaveIni(app_);
-        }
-        if (ImGui::Checkbox(i18n::tr("settings.dof.far_field_only"), &farOnly)) {
-            svc.Settings().SetDofFarFieldOnly(farOnly);
-            SaveIni(app_);
-        }
-    }
-
-    ImGui::Separator();
-
-    // ---- DNC model ----
-    // The stock DNC set is small and fully enumerable (dnc_catalog.h), so
-    // this is two combos instead of a free-text path: which light rig, and
-    // which mod layer to read it from. A path the catalog doesn't know —
-    // an older ini, or a hand-edited one — still shows and still loads.
-    if (auto* dnc = svc.GetDncService()) {
-        const auto catalog = dnc::DncCatalog();
-        const std::string current = dnc->UnitMdlPath();
-        const i32 sel = dnc::DncCatalogIndexOf(current);
-        const dnc::DncVariant variant = dnc::DncVariantOf(current);
-
-        ImGui::SetNextItemWidth(220.0f);
-        const std::string preview = (sel >= 0) ? dnc::DncEntryLabel(catalog[sel]) : current;
-        if (ImGui::BeginCombo(i18n::tr("settings.general.dnc_model"), preview.c_str())) {
-            for (usize i = 0; i < catalog.size(); ++i) {
-                const auto& e = catalog[i];
-                if (ImGui::Selectable(dnc::DncEntryLabel(e).c_str(), static_cast<i32>(i) == sel)) {
-                    dnc->SetUnitMdl(dnc::DncPathForVariant(e.path, variant));
-                    SaveIni(app_);
-                }
-                if (ImGui::IsItemHovered()) {
-                    std::string tilesets;
-                    for (const auto& ts : dnc::DncTilesets()) {
-                        if (ts.family != e.family)
-                            continue;
-                        if (!tilesets.empty())
-                            tilesets += ", ";
-                        tilesets += std::string(ts.name);
-                    }
-                    ImGui::SetTooltip("%.*s\n%s %s", static_cast<i32>(e.path.size()), e.path.data(),
-                                      i18n::tr("settings.general.dnc_tilesets"), tilesets.c_str());
-                }
-            }
-            ImGui::EndCombo();
-        }
-        ImGui::SameLine();
-        if (ImGui::Button(i18n::tr("settings.general.dnc_reset"))) {
-            dnc->SetUnitMdl(dnc::DncService::kDefaultUnitMdl);
-            SaveIni(app_);
-        }
-
-        // Auto follows the provider's HD-mode mod chain; SD/HD pin the
-        // path to one layer. Only Lordaeron's legacy target rig is
-        // SD-only, so the HD entry is greyed out rather than hidden.
-        const bool hasSd = sel < 0 || catalog[sel].hasSd;
-        const bool hasHd = sel < 0 || catalog[sel].hasHd;
-        const char* variantLabels[] = {i18n::tr("settings.general.dnc_variant_auto"), "SD", "HD"};
-        ImGui::SetNextItemWidth(220.0f);
-        if (ImGui::BeginCombo(i18n::tr("settings.general.dnc_variant"),
-                              variantLabels[static_cast<usize>(variant)])) {
-            const bool enabled[] = {true, hasSd, hasHd};
-            for (usize i = 0; i < std::size(variantLabels); ++i) {
-                ImGui::BeginDisabled(!enabled[i]);
-                if (ImGui::Selectable(variantLabels[i], i == static_cast<usize>(variant))) {
-                    dnc->SetUnitMdl(
-                        dnc::DncPathForVariant(current, static_cast<dnc::DncVariant>(i)));
-                    SaveIni(app_);
-                }
-                ImGui::EndDisabled();
-            }
-            ImGui::EndCombo();
         }
     }
 
