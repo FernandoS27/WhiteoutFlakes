@@ -33,7 +33,9 @@ struct StorageConfig {
     std::string secondaryPath;
     // Archive names relative to installPath, in load order.
     std::vector<std::string> archives;
-    // Community `id;path` CSV. World of Warcraft only.
+    // Community `id;path` CSV. World of Warcraft only. Empty means "not
+    // chosen", not "none": the CASC registry resolves it to a conventionally
+    // placed CSV — see DiscoverWowListfile in casc_registry.h.
     std::string listfilePath;
     // Community `keyName keyHex` list. World of Warcraft only, and for the same
     // reason as the listfile: without it a chunk of the install reads as

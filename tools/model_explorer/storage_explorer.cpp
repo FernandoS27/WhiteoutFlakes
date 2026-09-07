@@ -689,13 +689,18 @@ void StorageExplorer::BuildEmptyHint() {
     ImGui::Spacing();
     ImGui::TextWrapped("Nothing browsable in '%s'.", browser_.Root().c_str());
     ImGui::Spacing();
-    if (browser_.Product() == ProductId::Wow && listfilePath_.empty()) {
-        ImGui::TextColored(ImVec4(1, 0.8f, 0.4f, 1), "No listfile is configured.");
+    // Asked of the storage, not of the host's setting: an empty configured
+    // path resolves to a conventionally placed CSV inside the CASC registry,
+    // so "no path set" and "no listfile loaded" are different facts and only
+    // the second one explains an empty tree.
+    if (browser_.Product() == ProductId::Wow && !browser_.HasListfile()) {
+        ImGui::TextColored(ImVec4(1, 0.8f, 0.4f, 1), "No listfile was found.");
         ImGui::TextWrapped(
             "A World of Warcraft root is keyed by fileDataID, not by path: the names to "
             "browse are not in the install at all. Point the host at a community listfile "
-            "CSV (in the Basic Viewer: Settings > IO > World of Warcraft > Listfile), then "
-            "reopen this panel.");
+            "CSV (in the Basic Viewer: Settings > IO > World of Warcraft > Listfile), or "
+            "drop a listfile.csv / community-listfile.csv into the install folder or next "
+            "to this application, then reopen this panel.");
     } else {
         ImGui::TextWrapped("The storage opened, but held no file of a type this game is "
                            "browsed for.");

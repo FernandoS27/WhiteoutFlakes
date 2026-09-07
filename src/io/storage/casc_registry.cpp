@@ -105,6 +105,53 @@ std::shared_ptr<whiteout::utils::SimpleThreadPool> Pool() {
     return pool;
 }
 
+// True when the `.build.info` at @p info names a "wow"-family product
+// (wow, wowt, wow_classic, ...). The header row names its columns
+// `Name!TYPE:len` separated by '|'; data rows hold bare values in the same
+// order.
+bool BuildInfoNamesWow(const fs::path& info) {
+    std::ifstream f(info);
+    if (!f)
+        return false;
+
+    auto field = [](const std::string& line, int index) -> std::string_view {
+        usize start = 0;
+        for (int i = 0; i < index; ++i) {
+            const usize sep = line.find('|', start);
+            if (sep == std::string::npos)
+                return {};
+            start = sep + 1;
+        }
+        usize end = line.find('|', start);
+        if (end == std::string::npos)
+            end = line.size();
+        while (end > start && (line[end - 1] == '\r' || line[end - 1] == '\n'))
+            --end;
+        return std::string_view(line).substr(start, end - start);
+    };
+
+    std::string header;
+    if (!std::getline(f, header))
+        return false;
+    int col = -1;
+    for (int i = 0;; ++i) {
+        const std::string_view name = field(header, i);
+        if (name.empty())
+            break;
+        if (name.substr(0, name.find('!')) == "Product") {
+            col = i;
+            break;
+        }
+    }
+    if (col < 0)
+        return false;
+
+    for (std::string line; std::getline(f, line);)
+        if (field(line, col).substr(0, 3) == "wow")
+            return true;
+    return false;
+}
+
 /// The registry slot for one key. Present in the map from the moment a key is
 /// claimed, so a second caller finds it and waits on `mu` instead of opening
 /// the same install again — while a caller with a *different* key never
@@ -128,6 +175,51 @@ Registry() {
 
 } // namespace
 
+std::string WowInstallRoot(const std::string& root) {
+    if (root.empty())
+        return {};
+    std::error_code ec;
+    fs::path dir = FsPathFromUtf8(root);
+    // Two levels: the root as handed over, then its parent for a caller that
+    // pointed at `Data/`. A `.build.info` naming another product is decisive —
+    // no walking further up into whatever contains the install.
+    for (int up = 0; up < 2; ++up) {
+        if (const fs::path info = dir / ".build.info"; fs::is_regular_file(info, ec))
+            return BuildInfoNamesWow(info) ? PathToUtf8(dir) : std::string{};
+        const fs::path parent = dir.parent_path();
+        if (parent == dir)
+            break;
+        dir = parent;
+    }
+    return {};
+}
+
+// Unset is the common state, not the configured one: most people download the
+// community listfile once and drop it in the game folder or next to the app,
+// they do not open a settings panel to point at it. The install root is
+// checked first because it is the more specific choice — one listfile per
+// install — and the executable's directory second, for the one that serves
+// every install. Nothing else is probed: a match found by walking somewhere
+// broader (the working directory of whoever launched a test) would adopt
+// stale CSVs by accident, and a stale listfile reads as white textures with
+// nothing to say why.
+std::string DiscoverWowListfile(const std::string& installPath) {
+    const char* const kNames[] = {"listfile.csv", "community-listfile.csv"};
+    fs::path dirs[2];
+    if (!installPath.empty())
+        dirs[0] = FsPathFromUtf8(installPath);
+    dirs[1] = ExecutableDirectory();
+    std::error_code ec;
+    for (const fs::path& dir : dirs) {
+        if (dir.empty())
+            continue;
+        for (const char* name : kNames)
+            if (fs::path p = dir / name; fs::is_regular_file(p, ec))
+                return PathToUtf8(p);
+    }
+    return {};
+}
+
 SharedCasc::SharedCasc(std::string root, std::shared_ptr<whiteout::utils::SimpleThreadPool> pool,
                        std::vector<u8> listfile, casc::Storage storage)
     : root_(std::move(root)), pool_(std::move(pool)), listfile_(std::move(listfile)),
@@ -143,11 +235,26 @@ std::shared_ptr<const SharedCasc> AcquireSharedCasc(const CascOpenKey& key, std:
     }
     const std::string root = NormalizeRoot(key.root);
 
+    // An empty listfile path means "not chosen", not "none": for a World of
+    // Warcraft root it resolves to the conventional drop spots here, BEFORE the
+    // key is compared. This is the one place every consumer passes through —
+    // the per-game storage builder and the Storage Explorer's browser both —
+    // so resolving anywhere later would let two spellings of "not chosen" open
+    // the same install twice.
+    std::string listfilePath = key.listfilePath;
+    if (listfilePath.empty()) {
+        if (const std::string install = WowInstallRoot(key.root); !install.empty()) {
+            listfilePath = DiscoverWowListfile(install);
+            if (!listfilePath.empty())
+                std::printf("[casc] using discovered listfile: %s\n", listfilePath.c_str());
+        }
+    }
+
     std::shared_ptr<Slot> slot;
     {
         std::lock_guard lk(RegistryMutex());
-        auto& entry = Registry()[std::make_tuple(root, key.listfilePath, key.tactKeyFile,
-                                                 key.zeroFillEncrypted)];
+        auto& entry =
+            Registry()[std::make_tuple(root, listfilePath, key.tactKeyFile, key.zeroFillEncrypted)];
         if (!entry)
             entry = std::make_shared<Slot>();
         slot = entry;
@@ -171,14 +278,14 @@ std::shared_ptr<const SharedCasc> AcquireSharedCasc(const CascOpenKey& key, std:
     // step by not planning it is better than dropping one later: the bar never
     // reserves room for work that was never going to happen. The open itself
     // dominates by an order of magnitude, hence 90 of 100.
-    const bool wantsListfile = !key.listfilePath.empty();
+    const bool wantsListfile = !listfilePath.empty();
     const bool wantsKeys = !key.tactKeyFile.empty();
     m.Begin("Opening storage", 90 + (wantsListfile ? 8u : 0u) + (wantsKeys ? 2u : 0u));
 
     std::vector<u8> listfile;
     if (wantsListfile) {
         ProgressMonitor step = m.Split(8);
-        listfile = LoadListfile(key.listfilePath, step);
+        listfile = LoadListfile(listfilePath, step);
     }
     if (m.Cancelled()) {
         error = "Open cancelled";

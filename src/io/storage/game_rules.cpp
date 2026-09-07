@@ -55,7 +55,10 @@ void ConfigureWc3(StorageBuilder& b, const StorageConfig& c, const std::atomic<b
 // *contents* for a shipped file whose frames are TACT-encrypted without a
 // community key list — plus, on pre-Warlords installs only, a Data/ archive set
 // whose names move with the expansion. Retail has none, and that is not an
-// error.
+// error. An empty listfile path is passed through as-is: the CASC registry
+// resolves it to a conventionally placed CSV (see DiscoverWowListfile in
+// casc_registry.h), and it must be the one doing so — every consumer of the
+// install shares a storage only while they agree on the key.
 void ConfigureWow(StorageBuilder& b, const StorageConfig& c, const std::atomic<bool>*) {
     if (!c.ignoreCasc)
         b.FileIds().Listfile(c.listfilePath).TactKeys(c.tactKeyPath).Casc(c.installPath);

@@ -191,14 +191,16 @@ private:
     i32 m3ExportProfile_ = 0;      // 0 = StarCraft II, 1 = Heroes of the Storm
     bool m3ExportTextures_ = true; // write the `.dds` textures beside it
 
-    // Save M3 state. Neither option is the file's own shape: the merge folds in
-    // `.m3a` files the `.m3` never named, and the conversion lowers a Heroes
-    // model to what StarCraft II's loader accepts. Both default off, so the
-    // plain save writes the model as it stands.
+    // Save M3 state. No option is the file's own shape: the merge folds in
+    // `.m3a` files the `.m3` never named, the conversion lowers a Heroes
+    // model to what StarCraft II's loader accepts, and the texture copy adds
+    // files beside it. All default off, so the plain save writes the model as
+    // it stands.
     std::string pendingM3SavePath_;
     bool openM3SavePopup_ = false;
     bool m3SaveMergeAnims_ = false;
     bool m3SaveConvertSc2_ = false;
+    bool m3SaveExportTextures_ = false; // copy the referenced textures beside it
     // Why the last attempt wrote nothing, kept so the modal can stay open and
     // say so. A Heroes material the standard form cannot represent blocks the
     // conversion, and that is the user's cue to leave the box unticked.

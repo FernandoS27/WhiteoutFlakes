@@ -12,9 +12,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include "io/storage/casc_registry.h"
 #include "io/storage/game_rules.h"
 #include "io/storage/storage_paths.h"
+#include "whiteout/flakes/util/path_utf8.h"
 
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 using namespace whiteout::flakes::io;
@@ -98,6 +102,69 @@ TEST_CASE("Each game's archive rules are its own", "[storage]") {
     // list — reporting archives that cannot be opened would be a lie.
     CHECK(ScanArchives(ProductId::Wow, "D:/nowhere").empty());
 }
+
+#if WHITEOUT_HAS_CASC
+TEST_CASE("An unset listfile falls back to the conventional names", "[storage]") {
+    namespace fs = std::filesystem;
+    // The install root is the more specific drop spot, so it is probed first;
+    // the exe-dir leg is deliberately not asserted here — what sits beside the
+    // test binary belongs to the build tree, not to this test.
+    const fs::path root = fs::temp_directory_path() / "wf_wow_listfile_probe";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "install", ec);
+    const std::string install = whiteout::flakes::PathToUtf8(root / "install");
+
+    auto touch = [&](const char* name) {
+        std::ofstream(root / "install" / name) << "1;interface/icons/temp.blp\n";
+    };
+
+    // Both conventional names are found on their own...
+    touch("community-listfile.csv");
+    CHECK(DiscoverWowListfile(install) ==
+          whiteout::flakes::PathToUtf8(root / "install" / "community-listfile.csv"));
+    // ...and when both are present, `listfile.csv` wins.
+    touch("listfile.csv");
+    CHECK(DiscoverWowListfile(install) ==
+          whiteout::flakes::PathToUtf8(root / "install" / "listfile.csv"));
+
+    fs::remove_all(root, ec);
+}
+
+TEST_CASE("Only a wow-product .build.info makes a root a WoW install", "[storage]") {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "wf_wow_root_probe";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "install" / "Data", ec);
+    const std::string install = whiteout::flakes::PathToUtf8(root / "install");
+
+    auto writeInfo = [&](const char* product) {
+        std::ofstream(root / "install" / ".build.info")
+            << "Branch!STRING:0|Active!DEC:1|Version!STRING:0|Product!STRING:0\n"
+            << "us|1|11.0.0.99999|" << product << "\n";
+    };
+
+    // No .build.info at all: not a WoW root, whatever the folder is called.
+    CHECK(WowInstallRoot(install).empty());
+
+    // The wow family matches — retail and classic alike — and the answer is
+    // the directory holding the build info, whether the caller handed that
+    // directory or its Data/ subdirectory.
+    writeInfo("wow");
+    CHECK(WowInstallRoot(install) == install);
+    CHECK(WowInstallRoot(whiteout::flakes::PathToUtf8(root / "install" / "Data")) == install);
+    writeInfo("wow_classic");
+    CHECK(WowInstallRoot(install) == install);
+
+    // Another product's build info is decisive: no listfile probing for a
+    // Warcraft III root, however WoW-shaped its directory happens to look.
+    writeInfo("w3");
+    CHECK(WowInstallRoot(install).empty());
+
+    fs::remove_all(root, ec);
+}
+#endif // WHITEOUT_HAS_CASC
 
 TEST_CASE("A storage built from nothing misses cleanly", "[storage]") {
     // The unconfigured case has to be a well-formed empty storage, not a null

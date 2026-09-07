@@ -95,6 +95,23 @@ private:
     whiteout::storages::casc::Storage storage_;
 };
 
+/// The install root above @p root when it is a World of Warcraft install —
+/// @p root itself or, when a caller handed the `Data/` subdirectory, its
+/// parent — decided by the `.build.info` product code beside it. Empty for
+/// every other product and for a directory carrying no build info.
+std::string WowInstallRoot(const std::string& root);
+
+/// Where a World of Warcraft listfile lands when no host ever picked one:
+/// `listfile.csv` or `community-listfile.csv` (that order) in the install
+/// root, then beside the executable. Returns the first that exists, or empty.
+///
+/// Hosts do not call this. AcquireSharedCasc resolves an empty
+/// CascOpenKey::listfilePath through it for World of Warcraft roots BEFORE the
+/// key is compared, so every consumer — the per-game storage builder, the
+/// Storage Explorer's browser — lands on the same key and shares one storage.
+/// An explicitly configured path is never overridden. Public for tests.
+std::string DiscoverWowListfile(const std::string& installPath);
+
 /// The storage for @p key, opening it only if nothing else already has it.
 /// Null on failure, with @p error set. Concurrent callers asking for the same
 /// key wait for the one open rather than racing to repeat it; callers asking

@@ -259,6 +259,12 @@ public:
     bool IsHeroes() const {
         return heroes_;
     }
+    // Whether the open CASC storage actually read a listfile — asked of the
+    // storage, not of SetCascKeys: an empty configured path can still resolve
+    // to a discovered CSV inside the registry (see casc_registry.h), and a
+    // host explaining an empty World of Warcraft tree must not blame a setting
+    // the open no longer depends on. False for MPQ and folder opens.
+    bool HasListfile() const;
 
     // Narrow what the NEXT Open walks for, within what the game ships.
     //

@@ -622,6 +622,14 @@ void ViewerUI::BuildM3SavePopup() {
     ImGui::Checkbox(i18n::tr("dialog.m3save.convert_sc2"), &m3SaveConvertSc2_);
     ImGui::TextDisabled("%s", i18n::tr("dialog.m3save.convert_hint"));
 
+    // The Save As strings, reused for the M3 export popup's reason: they say
+    // nothing MDX-specific. No format row — the bytes are copied as the
+    // storage serves them, which for these games is `.dds` already.
+    ImGui::Checkbox(i18n::tr("dialog.saveas.export_textures"), &m3SaveExportTextures_);
+    ImGui::BeginDisabled(!m3SaveExportTextures_);
+    ImGui::TextDisabled("%s", i18n::tr("dialog.saveas.export_hint"));
+    ImGui::EndDisabled();
+
     if (!m3SaveError_.empty()) {
         ImGui::Separator();
         ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s: %s",
@@ -633,7 +641,7 @@ void ViewerUI::BuildM3SavePopup() {
         // Stays open on failure. The one failure this has is the conversion
         // refusing a material, and the fix for it is a box in this modal.
         if (app_.SaveM3(io::FsPathFromUtf8(pendingM3SavePath_), m3SaveMergeAnims_ && attached > 0,
-                        m3SaveConvertSc2_, &m3SaveError_)) {
+                        m3SaveConvertSc2_, m3SaveExportTextures_, &m3SaveError_)) {
             pendingM3SavePath_.clear();
             ImGui::CloseCurrentPopup();
         }

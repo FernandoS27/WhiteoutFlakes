@@ -39,64 +39,9 @@
 #include <utility>
 #include <vector>
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#elif defined(__linux__)
-#include <climits>
-#include <unistd.h>
-#elif defined(__APPLE__)
-#include <climits>
-#include <mach-o/dyld.h>
-#endif
-
 namespace whiteout::flakes::io {
 
 namespace fs = std::filesystem;
-
-// Returns the directory containing the running executable, or {} on failure.
-// Used as a fallback search root for engine-shipped assets (shaders, etc.)
-// that ship next to the binary rather than alongside the loaded model.
-static fs::path DiscoverExecutableDirectory() {
-#ifdef _WIN32
-    wchar_t buf[MAX_PATH * 4] = {};
-    DWORD len = ::GetModuleFileNameW(nullptr, buf, static_cast<DWORD>(std::size(buf)));
-    if (len == 0 || len >= std::size(buf))
-        return {};
-    return fs::path(std::wstring(buf, buf + len)).parent_path();
-#elif defined(__linux__)
-    char buf[PATH_MAX] = {};
-    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-    if (n <= 0)
-        return {};
-    return fs::path(std::string(buf, static_cast<usize>(n))).parent_path();
-#elif defined(__APPLE__)
-    // _NSGetExecutablePath writes the path used to launch the process;
-    // canonicalise via std::filesystem to resolve symlinks. When the
-    // executable lives inside a .app bundle (`.../X.app/Contents/MacOS/X`)
-    // the asset search root is Contents/Resources/ — that's where macOS
-    // wants read-only ship-with-the-binary data (and where codesign won't
-    // choke on our non-Mach-O `.bls` files). Detect that case by checking
-    // for the `Contents/MacOS` suffix on the exe's parent.
-    char buf[PATH_MAX] = {};
-    uint32_t size = sizeof(buf);
-    if (_NSGetExecutablePath(buf, &size) != 0)
-        return {};
-    std::error_code ec;
-    fs::path resolved = fs::canonical(fs::path(buf), ec);
-    if (ec)
-        resolved = fs::path(buf);
-    fs::path dir = resolved.parent_path();
-    if (dir.filename() == "MacOS" && dir.parent_path().filename() == "Contents")
-        return dir.parent_path() / "Resources";
-    return dir;
-#else
-    return {};
-#endif
-}
 
 static bool ReadDiskFile(const fs::path& resolved, std::vector<u8>& outBytes) {
     if (resolved.empty())
@@ -449,7 +394,7 @@ struct FileContentProvider::Impl {
 };
 
 FileContentProvider::FileContentProvider() : impl_(std::make_unique<Impl>()) {
-    const fs::path exeDir = DiscoverExecutableDirectory();
+    const fs::path exeDir = ExecutableDirectory();
     if (!exeDir.empty()) {
         impl_->resolver.SetSystemBasePath(exeDir);
         std::printf("[FileContentProvider] Executable dir: %s\n", PathToUtf8(exeDir).c_str());

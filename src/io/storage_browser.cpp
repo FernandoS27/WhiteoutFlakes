@@ -411,6 +411,10 @@ void StorageBrowser::SetCascKeys(std::string listfilePath, std::string tactKeyPa
     tactKeyPath_ = std::move(tactKeyPath);
 }
 
+bool StorageBrowser::HasListfile() const {
+    return storage_ && storage_->HasListfile();
+}
+
 void StorageBrowser::SetEnabledTypes(BrowseType types) {
     // Only what the open storage actually has: a host that offers a stale
     // checkbox must not be able to ask for a type nothing was walked for.

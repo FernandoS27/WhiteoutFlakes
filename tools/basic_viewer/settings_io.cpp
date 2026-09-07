@@ -188,8 +188,7 @@ fs::path AssetDir() {
 #ifdef __APPLE__
     // In a .app bundle the exe is Contents/MacOS/; bundled read-only data
     // (lang/, fonts/) ships in Contents/Resources/ — codesign rejects non-code
-    // files under MacOS/. Mirrors DiscoverExecutableDirectory() in
-    // file_content_provider.cpp.
+    // files under MacOS/. Mirrors io::ExecutableDirectory() in path_utf8.cpp.
     if (dir.filename() == "MacOS" && dir.parent_path().filename() == "Contents")
         return dir.parent_path() / "Resources";
 #endif

@@ -4,13 +4,21 @@
 #include "m3_save.h"
 
 #include "io/m3/m3_model_adapter.h"
+#include "renderer/model/model_source_utils.h"
+#include "whiteout/flakes/content_provider.h"
 #include "whiteout/flakes/util/path_utf8.h"
 
 #include <whiteout/models/m3/engine_compat.h>
 #include <whiteout/models/m3/writer.h>
 
+#include <cctype>
+#include <cstdio>
 #include <exception>
+#include <fstream>
+#include <optional>
+#include <span>
 #include <system_error>
+#include <unordered_set>
 
 namespace whiteout::flakes {
 
@@ -123,6 +131,70 @@ void PruneUnreferencedDataDriven(m3::Model& model) {
     model.dataDrivenMaterials = std::move(kept);
 }
 
+// Copy every texture the written model's layers reference next to it, each
+// under its own relative path so the file keeps resolving when reopened loose.
+//
+// The bytes go out as the provider serves them and the model is not repointed
+// — the save stays faithful. The one liberty taken is the extension: a layer
+// can say `.tga` while the storage serves `.dds` under that name, and the file
+// on disk has to be called what it is. `FileResolver::ResolveTexture` walks
+// the same alternates when the model is reopened, so the corrected name is
+// still found from the authored path.
+void ExportUsedTextures(const m3::Model& model, const M3SaveRequest& request,
+                        M3SaveReport& report) {
+    const fs::path targetDir = request.outPath.parent_path();
+    std::unordered_set<std::string> written; // lowercase path — CollectM3Textures
+                                             // dedupes by (cube, linear) too
+    for (const io::M3TextureRef& ref : io::CollectM3Textures(model)) {
+        std::string relStr = ref.path;
+        std::string key;
+        key.reserve(relStr.size());
+        for (char& c : relStr) {
+            if (c == '\\')
+                c = '/';
+            key.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+        }
+        if (!written.insert(std::move(key)).second)
+            continue;
+
+        if (!request.provider) {
+            ++report.texturesFailed;
+            continue;
+        }
+        std::string actualExt;
+        std::optional<std::vector<u8>> bytes = request.provider->ReadFile(ref.path, &actualExt);
+        if (!bytes || bytes->empty()) {
+            std::fprintf(stderr, "[viewer] Save M3: texture not readable: %s\n", ref.path.c_str());
+            ++report.texturesFailed;
+            continue;
+        }
+        if (actualExt.empty())
+            actualExt = renderer::model::SniffTextureExtension(
+                std::span<const u8>(bytes->data(), bytes->size()));
+
+        fs::path outRel = io::FsPathFromUtf8(relStr);
+        if (!actualExt.empty())
+            outRel.replace_extension(actualExt);
+        const fs::path outFile = targetDir / outRel;
+
+        std::error_code ec;
+        if (fs::exists(outFile, ec)) {
+            ++report.texturesSkipped;
+            continue;
+        }
+        fs::create_directories(outFile.parent_path(), ec);
+        std::ofstream file(outFile, std::ios::binary);
+        if (file)
+            file.write(reinterpret_cast<const char*>(bytes->data()),
+                       static_cast<std::streamsize>(bytes->size()));
+        if (!file) {
+            ++report.texturesFailed;
+            continue;
+        }
+        ++report.texturesExported;
+    }
+}
+
 } // namespace
 
 M3SaveReport SaveModelAsM3(const M3SaveRequest& request) {
@@ -178,6 +250,12 @@ M3SaveReport SaveModelAsM3(const M3SaveRequest& request) {
         report.error = "could not write the model to " + io::PathToUtf8(request.outPath);
         return report;
     }
+
+    // After the model write on purpose: a save that failed above costs no
+    // texture files. Collected off the written model, not the adapter's, so
+    // the set is what the file on disk actually references.
+    if (request.exportTextures)
+        ExportUsedTextures(model, request, report);
 
     report.ok = true;
     return report;

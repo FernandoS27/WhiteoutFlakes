@@ -537,14 +537,15 @@ public:
     // Write the active `.m3` to @p outPath through the M3 writer. @p
     // mergeAnimations folds the attached `.m3a` files into the model's own
     // animation chunks; @p convertToSc2 retargets a Heroes model so StarCraft
-    // II will load it (MODL v29, MADD reversed).
+    // II will load it (MODL v29, MADD reversed); @p exportTextures copies the
+    // textures the layers reference beside it, under their own relative paths.
     //
     // Returns false and logs on failure, filling @p error when given. Worth
     // asking for: a shader-graph material with no StandardMaterial form blocks
     // the retarget outright — 9 of 40 Heroes models sampled — and "nothing
     // happened" is not an answer a dialog can leave the user with.
     bool SaveM3(const std::filesystem::path& outPath, bool mergeAnimations, bool convertToSc2,
-                std::string* error = nullptr);
+                bool exportTextures = false, std::string* error = nullptr);
 
     // The skins the active `.m2` can wear, and which one it is wearing. Empty
     // when the model is not a creature, or with `.m2` compiled out — a UI

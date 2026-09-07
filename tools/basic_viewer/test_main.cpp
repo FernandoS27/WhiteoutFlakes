@@ -1565,10 +1565,12 @@ int main(int argc, char* argv[]) {
     auto exportM3Profile = whiteout::models::wem::ProfileId::Sc2;
     bool exportM3Textures = true;
     // Save As for a model that IS `.m3`, the export above's mirror: written
-    // back through m3::Writer with no WEM hop and no textures of its own.
+    // back through m3::Writer with no WEM hop. Every option defaults off like
+    // the dialog's, so the plain save writes the model as it stands.
     std::filesystem::path saveM3Path;
     bool saveM3MergeAnims = false;
     bool saveM3Sc2 = false;
+    bool saveM3Textures = false;
     // Which profile a `.wem` on the command line opens as. `Count` leaves it to
     // the document — there is no dialog out here.
     auto wemProfile = whiteout::models::wem::ProfileId::Count;
@@ -1717,6 +1719,8 @@ int main(int argc, char* argv[]) {
             saveM3MergeAnims = true;
         } else if (std::strcmp(a, "--save-m3-sc2") == 0) {
             saveM3Sc2 = true;
+        } else if (std::strcmp(a, "--save-m3-textures") == 0) {
+            saveM3Textures = true;
         } else if (std::strcmp(a, "--attach-anim") == 0 && i + 1 < argc) {
             attachAnims.push_back(whiteout::flakes::io::FsPathFromUtf8(argv[++i]));
         } else if (std::strcmp(a, "--list-clips") == 0) {
@@ -1961,6 +1965,7 @@ int main(int argc, char* argv[]) {
                       << "       --save-m3 <out.m3>       re-save an open .m3 and exit\n"
                       << "       --save-m3-merge-anims    fold the attached .m3a files in\n"
                       << "       --save-m3-sc2            retarget a Heroes model for SC2\n"
+                      << "       --save-m3-textures       copy the referenced textures beside it\n"
                       << "       --wem-profile <name>     open a .wem as that profile\n";
             return 0;
         } else if (mdxPath.empty()) {
@@ -2372,7 +2377,7 @@ int main(int argc, char* argv[]) {
     // Headless `.m3` save. After the --attach-anim loop above on purpose:
     // --save-m3-merge-anims folds in whatever that loop attached.
     if (!saveM3Path.empty()) {
-        const bool ok = app.SaveM3(saveM3Path, saveM3MergeAnims, saveM3Sc2);
+        const bool ok = app.SaveM3(saveM3Path, saveM3MergeAnims, saveM3Sc2, saveM3Textures);
         app.Close();
         return ok ? 0 : 1;
     }

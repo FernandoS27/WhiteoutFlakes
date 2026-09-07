@@ -1046,7 +1046,7 @@ bool ViewerApp::CanSaveM3() const {
 }
 
 bool ViewerApp::SaveM3(const std::filesystem::path& outPath, bool mergeAnimations,
-                       bool convertToSc2, std::string* error) {
+                       bool convertToSc2, bool exportTextures, std::string* error) {
     if (error)
         error->clear();
 #if WDX_ENABLE_M3
@@ -1064,9 +1064,11 @@ bool ViewerApp::SaveM3(const std::filesystem::path& outPath, bool mergeAnimation
 
     M3SaveRequest request;
     request.source = source;
+    request.provider = service_.Scene().ActiveContentProvider();
     request.outPath = outPath;
     request.mergeAnimations = mergeAnimations;
     request.convertToSc2 = convertToSc2;
+    request.exportTextures = exportTextures;
 
     const M3SaveReport report = SaveModelAsM3(request);
     for (const std::string& reason : report.lossy)
@@ -1084,11 +1086,16 @@ bool ViewerApp::SaveM3(const std::filesystem::path& outPath, bool mergeAnimation
         std::printf("[viewer] Merged %zu animation file(s), %zu sequence(s)\n", report.mergedFiles,
                     report.mergedSequences);
     }
+    if (exportTextures) {
+        std::printf("[viewer] Textures: %d exported, %d skipped, %d failed\n",
+                    report.texturesExported, report.texturesSkipped, report.texturesFailed);
+    }
     return true;
 #else
     (void)outPath;
     (void)mergeAnimations;
     (void)convertToSc2;
+    (void)exportTextures;
     return false;
 #endif
 }

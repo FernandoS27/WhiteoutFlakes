@@ -29,9 +29,18 @@ inline std::string PathToUtf8(const std::filesystem::path& p) {
     return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
 }
 
+/// @brief Directory containing the running executable, or `{}` on failure.
+///
+/// The search root for assets that ship next to the binary rather than
+/// alongside loaded content (shader packs, a dropped-in listfile). Inside a
+/// macOS `.app` bundle this is `Contents/Resources`, where read-only
+/// ship-with-the-binary data belongs and codesign accepts non-Mach-O files.
+std::filesystem::path ExecutableDirectory();
+
 } // namespace whiteout::flakes::io
 
 namespace whiteout::flakes {
+using ::whiteout::flakes::io::ExecutableDirectory;
 using ::whiteout::flakes::io::FsPathFromUtf8;
 using ::whiteout::flakes::io::PathToUtf8;
 } // namespace whiteout::flakes
