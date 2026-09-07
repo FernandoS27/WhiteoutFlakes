@@ -1382,6 +1382,7 @@ if(WDX_ENABLE_M3)
         src/io/m3/m3_pose_solvers.cpp
         src/renderer/profiles/sc2_heroes/m3_standard_shading.cpp
         src/renderer/profiles/sc2_heroes/m3_surface_table.cpp
+        src/renderer/profiles/sc2_heroes/sc2_model_catalog.cpp
         src/renderer/sc2/m3_deferred_light_service.cpp
     )
     target_compile_definitions(WhiteoutFlakesLib PUBLIC WDX_ENABLE_M3=1)

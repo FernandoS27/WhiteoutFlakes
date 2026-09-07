@@ -195,9 +195,21 @@ public:
     // open, so the panel offers a game combo and a checkbox per type that game
     // ships (io::BrowseTypesFor). Picking a game opens its detected install.
     // Returns false and fills LastError() when that install is not there.
-    bool OpenGame(ProductId game);
+    //
+    // @p heroes picks Heroes of the Storm, which is a browse TARGET rather than
+    // a product: it shares ProductId::Sc2 with StarCraft II because it shares a
+    // render profile, and the two are separate installs one path cannot name.
+    // Ignored for every other game. The browser still reads Sc2 off the build
+    // config, so the provider, the profile and the thumbnail pool need nothing.
+    bool OpenGame(ProductId game, bool heroes = false);
     ProductId Game() const {
         return browser_.Product();
+    }
+    // Whether what is open is the Heroes install rather than StarCraft II's.
+    // Detected by the browser from the build config, so a hand-picked install
+    // directory answers exactly as the combo's own entry does.
+    bool IsHeroes() const {
+        return browser_.IsHeroes();
     }
 
     void SetBrowseTypes(io::BrowseType types) {
@@ -345,7 +357,7 @@ private:
     void OpenCascDialog(); // native folder picker → OpenCasc
     // What the host says @p game's storage is, with the detected install filled
     // in where it named none. Resolves only — opens nothing.
-    GameStorageKeys ResolveGame(ProductId game) const;
+    GameStorageKeys ResolveGame(ProductId game, bool heroes = false) const;
 
     renderer::RenderService& svc_;
     io::StorageBrowser browser_;
@@ -422,6 +434,7 @@ private:
     // user who opens a different game first must not land in it.
     bool restorePending_ = false;
     ProductId restoreGame_ = ProductId::Neutral;
+    bool restoreHeroes_ = false;
     io::BrowseType restoreTypes_ = io::BrowseType::None;
     std::string restoreFolder_;
     std::string restoreFilter_;

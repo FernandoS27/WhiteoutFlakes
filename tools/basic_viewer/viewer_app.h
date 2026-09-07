@@ -155,6 +155,12 @@ public:
     // finishes, so a model that arrived first picks the tables up.
     void PrewarmWowTablesAsync();
 
+    // The same, for StarCraft II / Heroes: which `.m3a` a model wants is in the
+    // game's GameData catalog, and reading it is ~5,700 CASC reads. Without
+    // this the first `.m3` of a session pays for them inside its own load.
+    bool sc2CatalogPrewarmed_ = false;
+    void PrewarmSc2CatalogAsync();
+
     // Where the Diablo III item registry build stands. Viewer-side state
     // rather than a question to the registry, because during Building the
     // registry belongs to the task thread and the host must not even ask.

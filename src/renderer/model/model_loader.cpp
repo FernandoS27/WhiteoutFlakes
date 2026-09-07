@@ -37,6 +37,7 @@
 #if WDX_ENABLE_M3
 #include "io/m3/m3_model_adapter.h"
 #include "renderer/profiles/sc2_heroes/m3_surface_table.h"
+#include "renderer/profiles/sc2_heroes/sc2_model_catalog.h"
 #endif
 #if WDX_ENABLE_D3
 #include "io/d3/d3_effect_resolver.h"
@@ -505,6 +506,17 @@ profiles::wow::WowCharacterAppearance& ModelLoader::WowCharacters() {
         wowCharacters_ = std::make_unique<profiles::wow::WowCharacterAppearance>();
     return *wowCharacters_;
 }
+#endif
+
+#if WDX_ENABLE_M3
+profiles::sc2_heroes::Sc2ModelCatalog& ModelLoader::Sc2Catalog() {
+    if (!sc2Catalog_)
+        sc2Catalog_ = std::make_unique<profiles::sc2_heroes::Sc2ModelCatalog>();
+    return *sc2Catalog_;
+}
+#endif
+
+#if WDX_ENABLE_M2
 
 bool ModelLoader::RestyleWowModel(u32 actorHandle, const ContentRef& ref) {
     Actor* actor = rs_.Scene().Actors().Find(actorHandle);
@@ -1569,9 +1581,24 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
 #if WDX_ENABLE_M3
     std::shared_ptr<io::M3ModelAdapter> m3;
     if (isM3) {
-        // No provider: `.m3` is one self-contained file with no siblings to
-        // resolve, which is the whole difference from `.m2`.
+        // No provider needed to PARSE it: an `.m3` is one self-contained file
+        // with no siblings to resolve, which is the whole difference from `.m2`.
         m3 = io::M3ModelAdapter::Load(ref, data);
+        if (m3) {
+            // Its animations are another matter. A hero's `.m3` carries almost
+            // none of its own — Stand, Walk, Attack, the facial and portrait
+            // sets are separate `.m3a` files, and nothing in the model names
+            // them. The game reads them off the model's catalog entry, so we
+            // do too; 1,331 Heroes models and 333 StarCraft II ones need it,
+            // and without it they open in bind pose.
+            //
+            // Before the actor is built, like the `.m2` pair above: the merged
+            // sequences have to be in GetSequences() by the time the animation
+            // driver binds.
+            auto& catalog = Sc2Catalog();
+            catalog.SetContentProvider(provider);
+            catalog.Apply(*m3, ref);
+        }
         source = m3;
     }
 #endif

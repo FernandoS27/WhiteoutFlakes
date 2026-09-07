@@ -279,6 +279,7 @@ void StorageBrowser::ResetForOpen(StorageKind kind) {
     open_ = false;
     kind_ = kind;
     product_ = ProductId::Neutral;
+    heroes_ = false;
     available_ = BrowseType::None;
     storage_.reset();
     tree_ = Node{};
@@ -347,6 +348,7 @@ bool StorageBrowser::OpenArchives(const std::string& root,
     // Same statement about the format OpenMpq makes: MPQ carries no build
     // config, and the only game whose archives this browses is Warcraft III.
     product_ = ProductId::Wc3;
+    heroes_ = false;
     available_ = ResolveAvailable(product_);
 
     std::size_t opened = 0;
@@ -504,8 +506,10 @@ bool StorageBrowser::OpenCasc(const std::string& root, std::string* error,
     // nullopt (a storage that carries no build config), and an unrecognised
     // build-product string normalises to Neutral — both mean "we don't know",
     // which is a better answer than a confident wrong one.
-    if (auto prod = storage_->Storage().product())
+    if (auto prod = storage_->Storage().product()) {
         product_ = ProductIdFromBuildProduct(prod->name);
+        heroes_ = IsHeroesBuildProduct(prod->name);
+    }
 
     // Everything the game has, not just what is enabled: the walk is the
     // expensive part (three quarters of a million entries on StarCraft II), so
@@ -583,6 +587,7 @@ bool StorageBrowser::OpenMpq(const std::string& path, std::string* error) {
     // maps. Reporting Wc3 unconditionally is a statement about the format,
     // not a guess about this particular archive.
     product_ = ProductId::Wc3;
+    heroes_ = false;
     available_ = ResolveAvailable(product_);
     std::string err;
     if (InsertMpqEntries(path, &err) == 0 && !err.empty()) {
@@ -644,6 +649,7 @@ bool StorageBrowser::OpenMpqSet(const std::string& directory, std::string* error
 
     root_ = directory;
     product_ = ProductId::Wc3;
+    heroes_ = false;
     available_ = ResolveAvailable(product_);
 
     std::size_t opened = 0;
@@ -685,6 +691,7 @@ bool StorageBrowser::OpenFolder(const std::string& path, std::string* error) {
     // is the honest answer, and BrowseTypesFor turns it into "show everything"
     // — which is what a directory of mixed content deserves.
     product_ = ProductId::Neutral;
+    heroes_ = false;
     available_ = ResolveAvailable(product_);
 
     // Skip-on-error so one unreadable subdirectory does not abort the walk —

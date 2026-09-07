@@ -1613,6 +1613,11 @@ int main(int argc, char* argv[]) {
     // The UI route is the toolbar's Anims button; this is the same call, so a
     // scripted render can exercise an attached sequence.
     std::vector<std::filesystem::path> attachAnims;
+    // Print the loaded model's clip list and exit. The gate for the animations
+    // a StarCraft II / Heroes model does not carry itself: a hero's `.m3` holds
+    // a handful of its own sequences and the rest arrive from the `.m3a` its
+    // catalog entry names, so what this prints is what Sc2ModelCatalog found.
+    bool listClips = false;
     i32 exportFps = 30;
     whiteout::flakes::ExportFormat exportFmt = whiteout::flakes::ExportFormat::PngFrames;
     bool exportTransparent = false;
@@ -1714,6 +1719,8 @@ int main(int argc, char* argv[]) {
             saveM3Sc2 = true;
         } else if (std::strcmp(a, "--attach-anim") == 0 && i + 1 < argc) {
             attachAnims.push_back(whiteout::flakes::io::FsPathFromUtf8(argv[++i]));
+        } else if (std::strcmp(a, "--list-clips") == 0) {
+            listClips = true;
         } else if (std::strcmp(a, "--gif") == 0) {
             exportFmt = whiteout::flakes::ExportFormat::Gif;
             exportFmtSet = true;
@@ -2271,7 +2278,8 @@ int main(int argc, char* argv[]) {
     app.SetPreferredWemProfile(wemProfile);
 
     const bool headlessWork = doExport || !exportWemPath.empty() || !exportMdxPath.empty() ||
-                              !exportM3Path.empty() || !saveM3Path.empty() || !attachAnims.empty();
+                              !exportM3Path.empty() || !saveM3Path.empty() ||
+                              !attachAnims.empty() || listClips;
 
     if (!mdxPath.empty()) {
         // No exists() pre-check for headless work: LoadModel accepts a
@@ -2312,6 +2320,29 @@ int main(int argc, char* argv[]) {
                         whiteout::flakes::io::PathToUtf8(anim.filename()).c_str(),
                         app.SequenceNames().size());
         }
+    }
+
+    // What the model can play, and where each clip came from. The gate for the
+    // catalog attach: a Heroes hero carries a handful of sequences of its own
+    // and gets the rest from the `.m3a` its `CModel` entry names, so a run that
+    // prints only the model's own list is a run where the catalog found
+    // nothing.
+    if (listClips) {
+        const auto& names = app.SequenceNames();
+        const auto attached = app.AttachedAnimations();
+        std::size_t fromFiles = 0;
+        for (const auto& a : attached)
+            fromFiles += a.sequenceCount;
+        std::printf("[clips] %zu sequence(s): %zu from the model, %zu from %zu attached file(s)\n",
+                    names.size(), names.size() - (std::min)(names.size(), fromFiles), fromFiles,
+                    attached.size());
+        for (const auto& a : attached)
+            std::printf("[clips]   attached '%s': %zu sequence(s) at %zu\n", a.label.c_str(),
+                        a.sequenceCount, a.firstSequence);
+        for (std::size_t i = 0; i < names.size(); ++i)
+            std::printf("[clips]   [%zu] %s\n", i, names[i].c_str());
+        app.Close();
+        return names.empty() ? 1 : 0;
     }
 
     // Headless WEM export. No warm-up ticks: the conversion reads the parsed

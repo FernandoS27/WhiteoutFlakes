@@ -33,8 +33,14 @@ constexpr const char* kLegacyTypesKey = "BrowseTypes";
 
 // Stable strings rather than the enum values: ProductId is an ABI enum whose
 // numbering is not a promise the ini should depend on. Same spellings as
-// LoadIoProduct's, so a reader of the file sees one vocabulary.
-const char* GameName(ProductId game) {
+// LoadIoProduct's, so a reader of the file sees one vocabulary — plus "hots",
+// which is a browse target rather than a product (Heroes of the Storm shares
+// ProductId::Sc2 with StarCraft II and is a separate install). One key rather
+// than a second boolean one: what the panel was browsing is one answer, and it
+// keeps the change key at the same eight fields.
+const char* GameName(ProductId game, bool heroes) {
+    if (game == ProductId::Sc2 && heroes)
+        return "hots";
     switch (game) {
     case ProductId::Wow:
         return "wow";
@@ -49,7 +55,13 @@ const char* GameName(ProductId game) {
     }
 }
 
+bool HeroesFromName(const std::string& name) {
+    return name == "hots";
+}
+
 ProductId GameFromName(const std::string& name) {
+    if (name == "hots")
+        return ProductId::Sc2;
     if (name == "wow")
         return ProductId::Wow;
     if (name == "sc2")
@@ -63,7 +75,7 @@ ProductId GameFromName(const std::string& name) {
 
 void WriteState(IniMap& ini, const tools::ExplorerState& st) {
     ini.Set(Key("View"), st.view == tools::ExplorerView::Tree ? "tree" : "grid");
-    ini.Set(Key("Game"), GameName(st.game));
+    ini.Set(Key("Game"), GameName(st.game, st.heroes));
     ini.Set(Key("Types"), ini::ToString(static_cast<u32>(st.browseTypes)));
     ini.values.erase(Key(kLegacyTypesKey));
     ini.Set(Key("Folder"), st.folder);
@@ -83,8 +95,10 @@ tools::ExplorerState LoadStorageExplorerState() {
     tools::ExplorerState st;
     if (auto* s = ini.Get(Key("View")))
         st.view = (*s == "tree") ? tools::ExplorerView::Tree : tools::ExplorerView::Grid;
-    if (auto* s = ini.Get(Key("Game")))
+    if (auto* s = ini.Get(Key("Game"))) {
         st.game = GameFromName(*s);
+        st.heroes = HeroesFromName(*s);
+    }
     if (auto* s = ini.Get(Key("Types"))) {
         i32 v = 0;
         // 0 stays BrowseType::None, which the panel reads as "not recorded" and

@@ -74,4 +74,22 @@ inline ProductId ProductIdFromBuildProduct(std::string_view name) {
     return ProductId::Neutral;
 }
 
+/// @brief Whether @p name is Heroes of the Storm's build product.
+///
+/// @ref ProductIdFromBuildProduct answers Sc2 for both games, on purpose — the
+/// enum picks a render profile and Heroes renders through StarCraft II's. This
+/// answers the other question, the one a *browser* has: which of the two
+/// installs is this? They share nothing but a frame; a path into one names
+/// nothing in the other.
+///
+/// Detected from the build config rather than from the path, so a hand-picked
+/// install directory identifies itself exactly as a detected one does.
+inline bool IsHeroesBuildProduct(std::string_view name) {
+    std::string k;
+    k.reserve(name.size());
+    for (char c : name)
+        k += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return k == "hero" || k == "heroes" || k == "herot";
+}
+
 } // namespace whiteout::flakes::io

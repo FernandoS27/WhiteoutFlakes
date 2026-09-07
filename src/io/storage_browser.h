@@ -251,6 +251,14 @@ public:
     ProductId Product() const {
         return product_;
     }
+    // Heroes of the Storm rather than StarCraft II, for a storage whose
+    // Product() is Sc2 — the two games share a ProductId because they share a
+    // render profile, and are separate installs that share no paths at all.
+    // Read off the build config, so a hand-picked install answers as a detected
+    // one does. False for every other product.
+    bool IsHeroes() const {
+        return heroes_;
+    }
 
     // Narrow what the NEXT Open walks for, within what the game ships.
     //
@@ -419,6 +427,7 @@ private:
     bool open_ = false;
     StorageKind kind_ = StorageKind::Casc;
     ProductId product_ = ProductId::Neutral;
+    bool heroes_ = false;
     BrowseType available_ = BrowseType::None;
     BrowseType enabled_ = BrowseType::None;
     BrowseType openTypes_ = BrowseType::None; // see SetOpenTypes

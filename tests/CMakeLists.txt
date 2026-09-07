@@ -144,6 +144,10 @@ if(WDX_ENABLE_M3)
     # Non-bone channels: hierarchical bone visibility, geoset gating, lights.
     wdx_add_test(m3_billboard_test m3_billboard_test.cpp)
     wdx_add_test(m3_channels_test m3_channels_test.cpp)
+    # The `.m3` -> `.m3a` join, which lives in the game's GameData catalog and
+    # not in the model. Half synthetic catalog, half measured against a real
+    # StarCraft II / Heroes install when one is there.
+    wdx_add_test(sc2_model_catalog_test sc2_model_catalog_test.cpp)
     # Discrete keyframe events: the shared crossing arithmetic (previously
     # untested and private to EventEmitterPool) plus the `.m3` SDEV decode.
     wdx_add_test(m3_events_test m3_events_test.cpp)

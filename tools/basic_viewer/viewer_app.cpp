@@ -15,6 +15,9 @@
 #include "renderer/frame_ticker.h"
 #include "renderer/model/model_instance.h"
 #include "renderer/model/model_loader.h"
+#if WDX_ENABLE_M3
+#include "renderer/profiles/sc2_heroes/sc2_model_catalog.h"
+#endif
 #include "renderer/model/model_template.h"
 #if WDX_ENABLE_M3
 #include "io/m3/m3_model_adapter.h"
@@ -191,6 +194,8 @@ void ViewerApp::ApplyProfile(ProductId game, bool force) {
     }
     if (game == ProductId::Wow)
         wowTablesPrewarmed_ = false; // different install, different tables
+    if (game == ProductId::Sc2)
+        sc2CatalogPrewarmed_ = false; // different install, different catalog
     if (game == ProductId::D3 && d3ItemsBuild_ != D3ItemsBuild::Building) {
         // Same idea for the item registry — but never mid-build: during
         // Building the registry belongs to the task thread. Skipping the
@@ -272,6 +277,9 @@ void ViewerApp::OpenStoragesAsync(std::function<void(bool ok)> onDone) {
                                // thread, and the tables cannot be read before the storage
                                // that holds them is up.
                                PrewarmWowTablesAsync();
+                               // At most one of the two does anything — they are
+                               // different products.
+                               PrewarmSc2CatalogAsync();
                            }
                            if (onDone)
                                onDone(ok);
@@ -329,6 +337,42 @@ void ViewerApp::PrewarmWowTablesAsync() {
         // arrive simply shows its default look and is restyled above. Taking
         // the screen for that would be a worse trade than the wait it replaces.
         /*modal=*/false);
+}
+
+void ViewerApp::PrewarmSc2CatalogAsync() {
+#if WDX_ENABLE_M3
+    io::FileContentProvider& provider = service_.DefaultScene().GetContentProvider();
+    if (provider.Game() != ProductId::Sc2 || sc2CatalogPrewarmed_)
+        return;
+    // Same rule as the World of Warcraft tables: only once the storage is
+    // actually up, or the task thread triggers the open itself behind a bar
+    // that claims to be reading a catalog.
+    if (provider.StoragesState() != io::StorageState::Open)
+        return;
+    auto& catalog = service_.Loader().Sc2Catalog();
+    if (catalog.Loaded())
+        return;
+
+    catalog.SetContentProvider(&provider);
+    tasks_.Run(
+        "Reading the model catalog",
+        [&catalog](io::ProgressMonitor& m) {
+            catalog.Prewarm(&m);
+            // Always Ok, for the reason the World of Warcraft one is: an
+            // install with no GameData in it is a normal state, not a failed
+            // operation to put a box in front of.
+            return io::TaskResult::Ok();
+        },
+        [this](const io::TaskOutcome& out) {
+            if (!out.cancelled)
+                sc2CatalogPrewarmed_ = true;
+        },
+        /*cancellable=*/true,
+        // NOT modal, and nothing to re-apply on completion. A model that loaded
+        // first built the index inside its own load and already has its
+        // animations; this only spares the ones after it.
+        /*modal=*/false);
+#endif
 }
 
 void ViewerApp::SetSettingsProfile(ProductId game) {

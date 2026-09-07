@@ -185,6 +185,7 @@ TEST_CASE("The Storage Explorer comes back where it was left", "[settings]") {
 
     CHECK(back.view == saved.view);
     CHECK(back.game == saved.game);
+    CHECK(back.heroes == saved.heroes);
     CHECK(back.browseTypes == saved.browseTypes);
     CHECK(back.folder == saved.folder);
     CHECK(back.filter == saved.filter);
@@ -208,6 +209,36 @@ TEST_CASE("The Storage Explorer comes back where it was left", "[settings]") {
     nudged.treeSplit += 0.4f;
     CHECK(whiteout::flakes::ExplorerStateKey(nudged) ==
           whiteout::flakes::ExplorerStateKey(saved));
+}
+
+TEST_CASE("Heroes of the Storm survives the round trip as its own target", "[settings]") {
+    ScopedIni ini("test_explorer_hots.ini");
+
+    // Heroes is not a ProductId - it shares Sc2 with StarCraft II because it
+    // shares a render profile - so "which game was the panel on" is the pair,
+    // and a file that recorded only the product brings a Heroes session back
+    // on StarCraft II.
+    ExplorerState st = SampleState();
+    st.heroes = true;
+    st.folder = R"(mods\heroes.stormmod\base.stormassets\assets\units\heroes)";
+    whiteout::flakes::SaveStorageExplorerState(st);
+
+    const ExplorerState back = whiteout::flakes::LoadStorageExplorerState();
+    CHECK(back.game == ProductId::Sc2);
+    CHECK(back.heroes);
+    CHECK(back.folder == st.folder);
+
+    // The two targets are different states, so a host polling the key writes
+    // when the user switches between them.
+    ExplorerState sc2 = st;
+    sc2.heroes = false;
+    CHECK(whiteout::flakes::ExplorerStateKey(sc2) != whiteout::flakes::ExplorerStateKey(st));
+
+    // And StarCraft II still round-trips as itself.
+    whiteout::flakes::SaveStorageExplorerState(sc2);
+    const ExplorerState backSc2 = whiteout::flakes::LoadStorageExplorerState();
+    CHECK(backSc2.game == ProductId::Sc2);
+    CHECK_FALSE(backSc2.heroes);
 }
 
 TEST_CASE("Saving the explorer section keeps the IO sections beside it", "[settings]") {

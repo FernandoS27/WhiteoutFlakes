@@ -63,6 +63,9 @@ struct WemDocument;
 namespace whiteout::flakes::renderer::profiles::wow {
 class WowReplaceableTextures;
 } // namespace whiteout::flakes::renderer::profiles::wow
+namespace whiteout::flakes::renderer::profiles::sc2_heroes {
+class Sc2ModelCatalog;
+} // namespace whiteout::flakes::renderer::profiles::sc2_heroes
 
 namespace whiteout::flakes::renderer::model {
 
@@ -219,6 +222,17 @@ public:
     // False when the handle is dead or the actor was not spawned from an `.m2`,
     // which is a caller's cue to fall back to a reload.
     bool RestyleWowModel(u32 actorHandle, const ContentRef& ref);
+#endif
+
+#if WDX_ENABLE_M3
+    // What names a StarCraft II / Heroes model's external animation files. The
+    // same idea as WowReplaceables one format over: an `.m3` carries no path to
+    // its `.m3a`, so the answer comes from the game's own catalog and not from
+    // the model. Lives here because the spawn path is its only caller.
+    //
+    // Hosts reach it to prewarm it off the draw thread (the catalog is ~5,700
+    // GameData files) and to report what a model was given.
+    profiles::sc2_heroes::Sc2ModelCatalog& Sc2Catalog();
 #endif
 
 #if WDX_ENABLE_D3
@@ -444,6 +458,9 @@ private:
     // A null entry is a remembered failure: an emitter births every frame, and
     // re-reading a model that is not there would re-read it every frame.
     std::unordered_map<std::string, std::shared_ptr<io::M2ModelAdapter>> particleModels_;
+#endif
+#if WDX_ENABLE_M3
+    std::unique_ptr<profiles::sc2_heroes::Sc2ModelCatalog> sc2Catalog_;
 #endif
 };
 

@@ -108,7 +108,22 @@ void FitRect(const ImVec2& p0, const ImVec2& p1, int w, int h, ImVec2& outMin, I
 // detected install is shown disabled rather than hidden — "StarCraft II is not
 // installed" is a more useful answer than a combo that silently has two
 // entries on one machine and three on another.
-constexpr ProductId kGames[] = {ProductId::Wc3, ProductId::Wow, ProductId::Sc2, ProductId::D3};
+//
+// A target is a (product, install) pair rather than a bare ProductId because
+// one product covers two games: StarCraft II and Heroes of the Storm share
+// ProductId::Sc2 — the enum picks a RENDER PROFILE, and Heroes renders through
+// sc2_heroes — while being separate installs that no single path names. Giving
+// Heroes its own ProductId would be a bound-enum change (see
+// io/product_detect.h, where `hero` maps to Sc2 on purpose); giving it its own
+// combo entry costs a bool.
+struct BrowseTarget {
+    ProductId game;
+    bool heroes;
+};
+constexpr BrowseTarget kGames[] = {
+    {ProductId::Wc3, false}, {ProductId::Wow, false},   {ProductId::Sc2, false},
+    {ProductId::Sc2, true},  {ProductId::D3, false},
+};
 
 // Icon zoom range. The floor is the point where a thumbnail still reads as a
 // model rather than a smudge; the ceiling is about two cells across a default
@@ -177,12 +192,12 @@ std::string ChildDisplayPath(const std::string& path, const std::string& name) {
     return path.empty() ? name : path + '\\' + name;
 }
 
-const char* GameLabel(ProductId game) {
+const char* GameLabel(ProductId game, bool heroes = false) {
     switch (game) {
     case ProductId::Wow:
         return "World of Warcraft";
     case ProductId::Sc2:
-        return "StarCraft II";
+        return heroes ? "Heroes of the Storm" : "StarCraft II";
     case ProductId::Wc3:
         return "Warcraft III";
     case ProductId::D3:
@@ -370,6 +385,7 @@ ExplorerState StorageExplorer::State() const {
     ExplorerState st;
     st.view = view_;
     st.game = browser_.Product();
+    st.heroes = browser_.IsHeroes();
     st.browseTypes = browser_.EnabledTypes();
     st.folder = browser_.CurrentPath();
     // The applied filter, not searchText_: mid-debounce the box holds something
@@ -394,6 +410,7 @@ void StorageExplorer::RestoreState(const ExplorerState& state) {
     // The rest name things inside a storage nobody has opened yet.
     restorePending_ = true;
     restoreGame_ = state.game;
+    restoreHeroes_ = state.heroes;
     restoreTypes_ = state.browseTypes;
     restoreFolder_ = state.folder;
     restoreFilter_ = state.filter;
@@ -408,6 +425,10 @@ void StorageExplorer::ApplyStagedRestore() {
     // A folder, filter and selection belong to the storage they were recorded
     // in. If the user opened a different game first, they name nothing here.
     if (restoreGame_ != ProductId::Neutral && restoreGame_ != browser_.Product())
+        return;
+    // Same rule one level finer: a folder recorded in Heroes names nothing in
+    // StarCraft II, and both report ProductId::Sc2.
+    if (restoreGame_ == ProductId::Sc2 && restoreHeroes_ != browser_.IsHeroes())
         return;
 
     if (Any(restoreTypes_))
@@ -460,24 +481,38 @@ void StorageExplorer::OpenCascDialog() {
         OpenStorage(outPath.get());
 }
 
-GameStorageKeys StorageExplorer::ResolveGame(ProductId game) const {
+GameStorageKeys StorageExplorer::ResolveGame(ProductId game, bool heroes) const {
     GameStorageKeys keys = gameKeys_ ? gameKeys_(game) : GameStorageKeys{};
+    if (heroes && game == ProductId::Sc2) {
+        // Heroes has its own override and its own detected root, for the same
+        // reason it has its own combo entry: one install path cannot name two
+        // installs. A host's Sc2 keys answer for StarCraft II, so the path is
+        // replaced outright rather than filled in only when empty.
+        keys.installPath = provider_->HotsInstallPath();
+        if (keys.installPath.empty())
+            keys.installPath = provider_->HotsPath();
+        return keys;
+    }
     if (keys.installPath.empty())
         keys.installPath = provider_->GamePath(game);
     return keys;
 }
 
-bool StorageExplorer::OpenGame(ProductId game) {
-    const GameStorageKeys keys = ResolveGame(game);
+bool StorageExplorer::OpenGame(ProductId game, bool heroes) {
+    heroes = heroes && game == ProductId::Sc2;
+    const GameStorageKeys keys = ResolveGame(game, heroes);
     if (keys.installPath.empty()) {
-        lastError_ = std::string(GameLabel(game)) + " is not installed.";
+        lastError_ = std::string(GameLabel(game, heroes)) + " is not installed.";
         return false;
     }
+
     // Before the open, not after: the listfile and key list are part of the
     // CASC open key, so a storage acquired without them stays without them.
     SetCascKeys(keys.listfilePath, keys.tactKeyPath);
     // Auto: a detected Warcraft III root is CASC on Reforged and a directory
-    // of MPQs on 1.2x, and the game finder does not distinguish them.
+    // of MPQs on 1.2x, and the game finder does not distinguish them. Which of
+    // the two Sc2 installs this turned out to be is not passed along — the
+    // browser reads it off the build config either way.
     return OpenStorage(keys.installPath);
 }
 
@@ -485,11 +520,12 @@ void StorageExplorer::Sync(ProductId fallback) {
     if (!browser_.IsOpen()) {
         // A restored panel remembers which game its own combo was on, which is
         // a more specific answer than the host's current profile.
-        const ProductId want = restorePending_ && restoreGame_ != ProductId::Neutral
-                                   ? restoreGame_
-                                   : fallback;
+        const bool restoring = restorePending_ && restoreGame_ != ProductId::Neutral;
+        const ProductId want = restoring ? restoreGame_ : fallback;
+        // A host's fallback is a ProductId and so cannot ask for Heroes; only a
+        // restored panel can, which is the whole reason the flag is persisted.
         if (want != ProductId::Neutral)
-            OpenGame(want);
+            OpenGame(want, restoring && restoreHeroes_);
         return;
     }
     // Neutral is a hand-picked folder or a storage whose build config names no
@@ -497,7 +533,7 @@ void StorageExplorer::Sync(ProductId fallback) {
     const ProductId game = browser_.Product();
     if (game == ProductId::Neutral)
         return;
-    const GameStorageKeys keys = ResolveGame(game);
+    const GameStorageKeys keys = ResolveGame(game, browser_.IsHeroes());
     if (keys.listfilePath == listfilePath_ && keys.tactKeyPath == tactKeyPath_)
         return; // already showing exactly what the host knows
     SetCascKeys(keys.listfilePath, keys.tactKeyPath);
@@ -515,12 +551,16 @@ void StorageExplorer::BuildFilterBar() {
     const ProductId open = browser_.Product();
 
     ImGui::SetNextItemWidth(180);
-    if (ImGui::BeginCombo("Game", GameLabel(open))) {
-        for (ProductId game : kGames) {
-            const bool installed = !provider_->GamePath(game).empty();
+    if (ImGui::BeginCombo("Game", GameLabel(open, browser_.IsHeroes()))) {
+        for (const BrowseTarget& target : kGames) {
+            // Asked through ResolveGame rather than GamePath, so a host override
+            // and Heroes' separate root both count as installed. A target with
+            // no install is shown disabled, not hidden.
+            const bool installed = !ResolveGame(target.game, target.heroes).installPath.empty();
+            const bool current = target.game == open && target.heroes == browser_.IsHeroes();
             ImGui::BeginDisabled(!installed);
-            if (ImGui::Selectable(GameLabel(game), game == open))
-                OpenGame(game);
+            if (ImGui::Selectable(GameLabel(target.game, target.heroes), current))
+                OpenGame(target.game, target.heroes);
             ImGui::EndDisabled();
             if (!installed && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
                 ImGui::SetTooltip("Not installed");

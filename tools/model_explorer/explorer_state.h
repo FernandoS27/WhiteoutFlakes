@@ -40,6 +40,11 @@ struct ExplorerState {
     // Which game the panel's own combo was on - not the host's profile, which
     // the user is free to have moved away from since.
     ProductId game = ProductId::Neutral;
+    // Heroes of the Storm, which is a browse target but not a ProductId: it
+    // shares ProductId::Sc2 with StarCraft II because it shares a render
+    // profile, and the two are separate installs. Meaningless unless `game` is
+    // Sc2. Without this a panel closed on Heroes comes back on StarCraft II.
+    bool heroes = false;
     // None means "not recorded": keep whatever the game's default is rather
     // than restoring an empty set and showing nothing.
     io::BrowseType browseTypes = io::BrowseType::None;
