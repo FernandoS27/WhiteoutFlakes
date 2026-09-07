@@ -203,6 +203,18 @@ public:
     // differently overrides instead of branching inside it.
     virtual i32 BuildGeometry(const struct BuildGeometryInput& in, std::vector<Vertex>& out) const;
 
+    /// @brief Throw away everything this emitter has spawned and start it over,
+    ///        keeping the emitter itself registered.
+    ///
+    /// What a rewind needs. Emitters are registered when the model spawns, so
+    /// dropping them (ParticleService::Clear) would leave the model with no
+    /// particles at all until it was reloaded.
+    ///
+    /// Virtual for the same reason Update is: Diablo III runs a different
+    /// simulation, with a system clock and a pre-simulate of its own to put
+    /// back.
+    virtual void ResetParticles();
+
     // Adopt one trail emitter: from here on, every live particle of this
     // emitter drives its emission once per sub-step. Capped at four, the
     // client's MAX_CHILD_EMITTERS (ParticleSystem2.cpp:2503) — the fifth is

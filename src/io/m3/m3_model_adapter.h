@@ -157,6 +157,17 @@ bool M3LayerActive(const ::whiteout::m3::TextureLayer& layer);
 const ::whiteout::m3::TextureLayer* M3LayerForSlot(const ::whiteout::m3::StandardMaterial& mat,
                                                    M3LayerSlot slot);
 
+/// @brief The `MAT_` / `CMP_` a `MATM` entry names, or null when it names
+///        another type.
+///
+/// Neither hops: a composite is a stack of materials, and `EmittedRegions` is
+/// already one geoset per section, so every MATM index a surface is built from
+/// is a leaf by then.
+const ::whiteout::m3::StandardMaterial*
+M3StandardForMaterial(const ::whiteout::m3::Model& model, ::whiteout::u32 matmIndex);
+const ::whiteout::m3::CompositeMaterial*
+M3CompositeForMaterial(const ::whiteout::m3::Model& model, ::whiteout::u32 matmIndex);
+
 /// @brief Every texture the standard materials reference through the
 ///        supported slots, deduped case-insensitively (and by cube-ness),
 ///        first-seen order.
@@ -359,8 +370,18 @@ public:
     /// @brief The regions `GetMeshes` emits, in emission order — `geosetId` is
     ///        an index into this. `BuildM3SurfaceTable` takes it so the table
     ///        never re-derives the skip filter.
+    ///
+    /// A region repeats once per section of a composite material, which is what
+    /// makes `EmittedMaterials` rather than the region's batch the answer to
+    /// "which material does this geoset draw".
     std::span<const std::size_t> EmittedRegions() const {
         return emittedRegions_;
+    }
+
+    /// @brief The `MATM` index each emitted geoset draws, parallel to
+    ///        @ref EmittedRegions.
+    std::span<const ::whiteout::u32> EmittedMaterials() const {
+        return emittedMaterials_;
     }
 
     const ::whiteout::m3::Model& SourceModel() const {
@@ -494,8 +515,10 @@ private:
                                       std::span<const M3Layer> layers) const;
 
     /// @brief Gate each emitted geoset on its batch's visibility bone
-    ///        (@ref geosetVisibilityBone_).
-    void EvaluateGeosetVisibility(std::span<const ::whiteout::u8> visible,
+    ///        (@ref geosetVisibilityBone_) and fill its alpha from the
+    ///        composite-section multiplier (@ref emittedWeights_).
+    void EvaluateGeosetVisibility(std::span<const M3Layer> layers,
+                                  std::span<const ::whiteout::u8> visible,
                                   renderer::model::FrameState& fs) const;
 
     /// @brief Sample the `LITE` chunk into `FrameState::lights`.
@@ -540,6 +563,16 @@ private:
     std::size_t divisionIndex_ = 0;
     std::size_t regionCount_ = 0;
     std::vector<std::size_t> emittedRegions_;
+    /// @brief Geoset -> the `MATM` index it draws. Parallel to
+    ///        @ref emittedRegions_; a composite contributes one entry per
+    ///        section, all naming the same region.
+    std::vector<::whiteout::u32> emittedMaterials_;
+    /// @brief Geoset -> the composite section's animated multiplier, or a
+    ///        constant one for a geoset that is not a composite pass. Sampled
+    ///        into `FrameState::geosetAlphas`, which is where retail's
+    ///        `AlphaFactor` (psmaterial.fx:358) sits: before the alpha-mask
+    ///        layers and before the test.
+    std::vector<::whiteout::m3::AnimRef<f32>> emittedWeights_;
     std::vector<::whiteout::u32> geosetRegionFlags_;
     /// @brief Geoset -> the bone whose visibility gates its draw, `0xFFFF` for
     ///        "always drawn". Parallel to @ref emittedRegions_.

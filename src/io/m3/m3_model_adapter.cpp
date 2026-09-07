@@ -477,6 +477,18 @@ void M3ModelAdapter::ClearAnimationFiles() {
 void M3ModelAdapter::BuildClothGeosetMap() {
     geosetClothPiece_.assign(emittedRegions_.size(), -1);
     geosetClothProxy_.assign(emittedRegions_.size(), 0);
+    // `RegionFlag::ClothSimulated` alone decides that a region is a cage, and
+    // retail skips it whether or not anything simulates it. Keying the skip on
+    // the built cloth instead left the cage drawing for every cloth Sc2BuildCloth
+    // rejects — 20 of the corpus's 189, Greymane's coat and Jaina Modern's skirt
+    // among them, both over the 256-particle ceiling. It draws the visible
+    // garment's material over the proxy's own unrelated UVs, which reads as
+    // patches of the wrong texture.
+    for (std::size_t g = 0; g < geosetRegionFlags_.size(); ++g) {
+        if ((geosetRegionFlags_[g] &
+             static_cast<::whiteout::u32>(::whiteout::m3::RegionFlag::ClothSimulated)) != 0)
+            geosetClothProxy_[g] = 1;
+    }
 #if WDX_HAS_PHYSICS
     if (!cloth_)
         return;
@@ -496,6 +508,8 @@ void M3ModelAdapter::BuildClothGeosetMap() {
 
 void M3ModelAdapter::BuildEmittedRegions() {
     emittedRegions_.clear();
+    emittedMaterials_.clear();
+    emittedWeights_.clear();
     geosetRegionFlags_.clear();
     geosetVisibilityBone_.clear();
     if (divisionIndex_ >= model_.divisions.size())
@@ -504,6 +518,13 @@ void M3ModelAdapter::BuildEmittedRegions() {
     const std::size_t vertexCount = model_.vertices.vertexCount();
     const std::size_t stride = model_.vertices.vertexSize();
     const std::size_t blobSize = model_.vertices.data.size();
+
+    // A constant weight of one: what a geoset that is not a composite pass
+    // carries, and what a section whose multiplier nothing drives evaluates to.
+    ::whiteout::m3::AnimRef<f32> unitWeight;
+    unitWeight.animId = 0;
+    unitWeight.flags = 0;
+    unitWeight.initValue = 1.0f;
 
     for (std::size_t r = 0; r < div.regions.size(); ++r) {
         const auto& region = div.regions[r];
@@ -515,18 +536,51 @@ void M3ModelAdapter::BuildEmittedRegions() {
             continue;
         if (vEnd * stride > blobSize)
             continue;
-        emittedRegions_.push_back(r);
-        geosetRegionFlags_.push_back(static_cast<::whiteout::u32>(region.flags));
-        // The first batch naming the region is the one drawn (see GetMeshes),
-        // so it is also the one whose bone gates the draw.
+
+        // The first batch naming the region is the one drawn, so it is also the
+        // one whose bone gates the draw and whose MATM entry names the material.
+        // Measured over the HotS corpus, no region carries a second batch, so
+        // this pick is exact rather than a simplification there.
         ::whiteout::u16 gate = 0xFFFFu;
+        ::whiteout::u32 matm = 0xFFFFFFFFu;
         for (const auto& batch : div.batches) {
             if (batch.regionIndex == r) {
                 gate = batch.boneCount;
+                matm = batch.materialIndex;
                 break;
             }
         }
-        geosetVisibilityBone_.push_back(gate);
+
+        // A `CMP_` composite is a STACK of materials over one region, each
+        // section scaled by its own animated multiplier — not a choice between
+        // them. It becomes one geoset per section, in section order, so the
+        // later passes draw over the earlier ones at equal depth exactly as
+        // retail's multi-draw does. 1270 HotS files and 2137 StarCraft II ones
+        // draw through one, and 92% of them weight every section alike — so
+        // picking "the heaviest section" was really picking the first, which
+        // put the death ragdolls' team-coloured dissolve GLOW on the whole body
+        // instead of the skin underneath it.
+        const auto push = [&](::whiteout::u32 material,
+                              const ::whiteout::m3::AnimRef<f32>& weight) {
+            emittedRegions_.push_back(r);
+            emittedMaterials_.push_back(material);
+            emittedWeights_.push_back(weight);
+            geosetRegionFlags_.push_back(static_cast<::whiteout::u32>(region.flags));
+            geosetVisibilityBone_.push_back(gate);
+        };
+
+        const auto* composite = M3CompositeForMaterial(model_, matm);
+        if (!composite) {
+            push(matm, unitWeight);
+            continue;
+        }
+        for (const auto& section : composite->sections) {
+            // A section pointing at anything the surface table cannot resolve
+            // would emit a geoset that never draws; skip it rather than pay for
+            // a duplicate vertex range.
+            if (M3StandardForMaterial(model_, section.materialIndex))
+                push(section.materialIndex, section.mapMultiplier);
+        }
     }
 }
 
@@ -593,6 +647,28 @@ const ::whiteout::m3::TextureLayer* M3LayerForSlot(const ::whiteout::m3::Standar
     default:
         return nullptr;
     }
+}
+
+const ::whiteout::m3::StandardMaterial*
+M3StandardForMaterial(const ::whiteout::m3::Model& model, ::whiteout::u32 matmIndex) {
+    if (matmIndex >= model.materialMaps.size())
+        return nullptr;
+    const auto& map = model.materialMaps[matmIndex];
+    if (map.materialType != ::whiteout::m3::MaterialType::Standard ||
+        map.materialIndex >= model.standardMaterials.size())
+        return nullptr;
+    return &model.standardMaterials[map.materialIndex];
+}
+
+const ::whiteout::m3::CompositeMaterial*
+M3CompositeForMaterial(const ::whiteout::m3::Model& model, ::whiteout::u32 matmIndex) {
+    if (matmIndex >= model.materialMaps.size())
+        return nullptr;
+    const auto& map = model.materialMaps[matmIndex];
+    if (map.materialType != ::whiteout::m3::MaterialType::Composite ||
+        map.materialIndex >= model.compositeMaterials.size())
+        return nullptr;
+    return &model.compositeMaterials[map.materialIndex];
 }
 
 std::vector<M3TextureRef> CollectM3Textures(const ::whiteout::m3::Model& model) {
@@ -835,17 +911,10 @@ std::vector<MeshData> M3ModelAdapter::GetMeshes() {
 
         MeshData mesh;
         mesh.geosetId = static_cast<i32>(g);
-        // The MATM index of the first batch naming this region. Multiple
-        // batches can name one region with different materials (multi-pass);
-        // the simple material system draws the first and only the first.
-        mesh.materialId = -1;
-        for (const auto& batch : div.batches) {
-            if (batch.regionIndex == emittedRegions_[g]) {
-                if (batch.materialIndex < model_.materialMaps.size())
-                    mesh.materialId = static_cast<i32>(batch.materialIndex);
-                break;
-            }
-        }
+        // The MATM index BuildEmittedRegions settled on — the region's first
+        // batch, or one composite section of it.
+        const ::whiteout::u32 matm = emittedMaterials_[g];
+        mesh.materialId = matm < model_.materialMaps.size() ? static_cast<i32>(matm) : -1;
         mesh.lod = 0;
         mesh.positions.assign(positions.begin() + static_cast<std::ptrdiff_t>(vBegin),
                               positions.begin() + static_cast<std::ptrdiff_t>(vEnd));
@@ -1578,7 +1647,7 @@ renderer::model::FrameState M3ModelAdapter::Evaluate(const PoseRequest& req) con
         }
     }
 
-    EvaluateGeosetVisibility(visible, fs);
+    EvaluateGeosetVisibility(layers, visible, fs);
     EvaluateMaterialUvTransforms(layers, fs);
     EvaluateLights(layers, visible, req.world, fs);
     EvaluatePhysics(layers, fs);
@@ -1750,13 +1819,23 @@ std::vector<renderer::model::ClothOverlayData> M3ModelAdapter::GetClothOverlays(
 #endif
 }
 
-void M3ModelAdapter::EvaluateGeosetVisibility(std::span<const ::whiteout::u8> visible,
+void M3ModelAdapter::EvaluateGeosetVisibility(std::span<const M3Layer> layers,
+                                              std::span<const ::whiteout::u8> visible,
                                               renderer::model::FrameState& fs) const {
     if (emittedRegions_.empty() || divisionIndex_ >= model_.divisions.size())
         return;
     fs.geosetAlphas.assign(emittedRegions_.size(), 1.0f);
     fs.geosetHidden.assign(emittedRegions_.size(), 0);
     for (std::size_t g = 0; g < emittedRegions_.size(); ++g) {
+        // A composite section's multiplier is how much of that pass survives —
+        // one constantly, for every geoset that is not one. Zero means the
+        // section is off outright, which 142 of the corpus's 4006 ship.
+        if (g < emittedWeights_.size()) {
+            const f32 w = std::clamp(SampleRef(emittedWeights_[g], layers), 0.0f, 1.0f);
+            fs.geosetAlphas[g] = w;
+            if (w <= 0.0f)
+                fs.geosetHidden[g] = 1;
+        }
         // A geoset is gated by its BATCH's bone — `geosetVisibilityBone_`
         // explains why that is not the region's root bone. The chain walk is
         // already folded into `visible`, so this is a single lookup. Retail

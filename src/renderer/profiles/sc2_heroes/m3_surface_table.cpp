@@ -13,7 +13,6 @@ namespace {
 
 using ::whiteout::m3::BlendMode;
 using ::whiteout::m3::ColorChannelSelect;
-using ::whiteout::m3::MaterialType;
 using ::whiteout::m3::Model;
 using ::whiteout::m3::SpecularMode;
 using ::whiteout::m3::StandardMaterial;
@@ -25,41 +24,6 @@ using io::M3LayerSlot;
 static_assert(kM3LayerCount == static_cast<u32>(M3LayerSlot::Count));
 static_assert(kM3LayerNormal == static_cast<u32>(M3LayerSlot::Normal));
 static_assert(kM3LayerEnvironment == static_cast<u32>(M3LayerSlot::Environment));
-
-/// MATM index → standard material, through at most one composite hop.
-/// Composite sections reference MATM entries themselves; the highest
-/// bind-pose weight whose entry is Standard wins. No recursion — a composite
-/// naming another composite resolves to nothing, like every other type.
-const StandardMaterial* ResolveStandard(const Model& model, u32 matmIndex) {
-    if (matmIndex >= model.materialMaps.size())
-        return nullptr;
-    const auto& map = model.materialMaps[matmIndex];
-    if (map.materialType == MaterialType::Standard) {
-        return map.materialIndex < model.standardMaterials.size()
-                   ? &model.standardMaterials[map.materialIndex]
-                   : nullptr;
-    }
-    if (map.materialType == MaterialType::Composite &&
-        map.materialIndex < model.compositeMaterials.size()) {
-        const StandardMaterial* best = nullptr;
-        f32 bestWeight = -1.0f;
-        for (const auto& section : model.compositeMaterials[map.materialIndex].sections) {
-            if (section.materialIndex >= model.materialMaps.size())
-                continue;
-            const auto& inner = model.materialMaps[section.materialIndex];
-            if (inner.materialType != MaterialType::Standard ||
-                inner.materialIndex >= model.standardMaterials.size())
-                continue;
-            const f32 w = section.mapMultiplier.initValue;
-            if (w > bestWeight) {
-                bestWeight = w;
-                best = &model.standardMaterials[inner.materialIndex];
-            }
-        }
-        return best;
-    }
-    return nullptr;
-}
 
 /// Bind-pose tint. Two unauthored-sentinel guards, both of which otherwise
 /// paint models black: an all-zero ColorBGRA and a zero rgbMultiply are what
@@ -128,7 +92,8 @@ void ResolveFresnel(const TextureLayer& layer, M3Layer& out) {
 } // namespace
 
 std::unique_ptr<M3SurfaceTable> BuildM3SurfaceTable(const Model& model,
-                                                    std::span<const std::size_t> emittedRegions) {
+                                                    std::span<const std::size_t> emittedRegions,
+                                                    std::span<const u32> emittedMaterials) {
     auto table = std::make_unique<M3SurfaceTable>();
     if (model.divisions.empty())
         return table;
@@ -162,19 +127,16 @@ std::unique_ptr<M3SurfaceTable> BuildM3SurfaceTable(const Model& model,
             s.uvOffset = region.uvOffset;
         }
 
-        // The region's first batch, the same pick GetMeshes stamps into
-        // MeshData::materialId.
-        const StandardMaterial* mat = nullptr;
-        for (const auto& batch : div.batches) {
-            if (batch.regionIndex == emittedRegions[g]) {
-                mat = ResolveStandard(model, batch.materialIndex);
-                break;
-            }
-        }
+        // The MATM index the adapter settled on for this geoset — the region's
+        // first batch, or one section of the composite that batch names.
+        const StandardMaterial* mat =
+            g < emittedMaterials.size()
+                ? io::M3StandardForMaterial(model, emittedMaterials[g])
+                : nullptr;
         if (!mat)
             continue;
-        // ResolveStandard only ever points into this array, so the index the
-        // UV-transform palette is keyed on comes straight back out of it.
+        // M3StandardForMaterial only ever points into this array, so the index
+        // the UV-transform palette is keyed on comes straight back out of it.
         const u32 matIndex = static_cast<u32>(mat - model.standardMaterials.data());
 
         s.valid = true;

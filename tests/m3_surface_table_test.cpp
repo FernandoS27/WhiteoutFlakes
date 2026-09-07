@@ -60,6 +60,8 @@ m3::MaterialMap Matm(m3::MaterialType type, u32 index) {
 }
 
 constexpr std::size_t kOneRegion[] = {0};
+/// The MATM index `Division(0)` names, as the adapter would report it.
+constexpr u32 kMatm0[] = {0};
 
 // crc32 of the fragment and property names a MADD record keys on. Only the
 // handful these tests need — the full table lives in WhiteoutLib.
@@ -238,7 +240,7 @@ TEST_CASE("m3_surface_table: layer slots resolve, including the fallbacks") {
     model.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
     model.divisions = {Division(0)};
 
-    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const auto table = BuildM3SurfaceTable(model, kOneRegion, kMatm0);
     REQUIRE(table->Count() == 1);
     const M3Surface* s = table->Surface(0);
     REQUIRE(s != nullptr);
@@ -306,7 +308,7 @@ TEST_CASE("m3_surface_table: solid-colour layers and the unauthored sentinels") 
     model.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
     model.divisions = {Division(0)};
 
-    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const auto table = BuildM3SurfaceTable(model, kOneRegion, kMatm0);
     const M3Surface* s = table->Surface(0);
     REQUIRE(s != nullptr);
 
@@ -323,21 +325,19 @@ TEST_CASE("m3_surface_table: solid-colour layers and the unauthored sentinels") 
     CHECK_THAT(diffuse.tint.w, Catch::Matchers::WithinAbs(1.0f, 1e-5f));
 }
 
-TEST_CASE("m3_surface_table: composite resolves to its dominant standard section") {
+TEST_CASE("m3_surface_table: every composite section gets its own surface") {
     m3::Model model;
-    m3::StandardMaterial weak;
-    weak.diffuseLayer = TexLayer("weak.dds");
-    m3::StandardMaterial dominant;
-    dominant.diffuseLayer = TexLayer("dominant.dds");
-    model.standardMaterials = {weak, dominant};
+    m3::StandardMaterial glow;
+    glow.diffuseLayer = TexLayer("glow.dds");
+    m3::StandardMaterial skin;
+    skin.diffuseLayer = TexLayer("skin.dds");
+    model.standardMaterials = {glow, skin};
 
     m3::CompositeMaterial comp;
     m3::CompositeSection s0;
-    s0.materialIndex = 0; // MATM index of `weak`
-    s0.mapMultiplier.initValue = 0.25f;
+    s0.materialIndex = 0; // MATM index of `glow`
     m3::CompositeSection s1;
-    s1.materialIndex = 1; // MATM index of `dominant`
-    s1.mapMultiplier.initValue = 0.75f;
+    s1.materialIndex = 1; // MATM index of `skin`
     comp.sections = {s0, s1};
     model.compositeMaterials = {comp};
 
@@ -346,12 +346,19 @@ TEST_CASE("m3_surface_table: composite resolves to its dominant standard section
                           Matm(m3::MaterialType::Composite, 0)};
     model.divisions = {Division(2)}; // the batch names the composite
 
-    const auto table = BuildM3SurfaceTable(model, kOneRegion);
-    const M3Surface* s = table->Surface(0);
-    REQUIRE(s != nullptr);
-    CHECK(s->valid);
-    // dominant.dds is texture index 1 in the canonical order (weak first).
-    CHECK(s->layers[0].textureId == 1);
+    // What BuildEmittedRegions hands over for that batch: the one region twice,
+    // once per section, in section order.
+    constexpr std::size_t kRegions[] = {0, 0};
+    constexpr u32 kMaterials[] = {0, 1};
+    const auto table = BuildM3SurfaceTable(model, kRegions, kMaterials);
+    REQUIRE(table->Count() == 2);
+    REQUIRE(table->Surface(0) != nullptr);
+    REQUIRE(table->Surface(1) != nullptr);
+    CHECK(table->Surface(0)->valid);
+    CHECK(table->Surface(1)->valid);
+    // Canonical texture order is first-seen: glow.dds 0, skin.dds 1.
+    CHECK(table->Surface(0)->layers[0].textureId == 0);
+    CHECK(table->Surface(1)->layers[0].textureId == 1);
 }
 
 TEST_CASE("m3_surface_table: a data-driven material is restored as a standard one") {
@@ -398,7 +405,7 @@ TEST_CASE("m3_surface_table: a data-driven material is restored as a standard on
     CHECK(refs[0].wrapFlags == 0x3u);
     CHECK(refs[1].cube);
 
-    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const auto table = BuildM3SurfaceTable(model, kOneRegion, kMatm0);
     const M3Surface* s = table->Surface(0);
     REQUIRE(s != nullptr);
     CHECK(s->valid);
@@ -463,7 +470,7 @@ TEST_CASE("m3_surface_table: a shader-graph material is approximated, not refuse
     REQUIRE(mat.environmentMaskLayer.has_value());
     CHECK(mat.environmentMaskLayer->texturePath == "hero_spec.dds");
 
-    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const auto table = BuildM3SurfaceTable(model, kOneRegion, kMatm0);
     const M3Surface* s = table->Surface(0);
     REQUIRE(s != nullptr);
     CHECK(s->valid);
@@ -488,7 +495,7 @@ TEST_CASE("m3_surface_table: a record with no standard form keeps its data-drive
     CHECK(model.standardMaterials.empty());
     CHECK(model.materialMaps[0].materialType == m3::MaterialType::DataDriven);
 
-    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const auto table = BuildM3SurfaceTable(model, kOneRegion, kMatm0);
     const M3Surface* s = table->Surface(0);
     REQUIRE(s != nullptr);
     CHECK_FALSE(s->valid);
@@ -515,7 +522,7 @@ TEST_CASE("m3_surface_table: non-standard material types stay invalid") {
     model.materialMaps = {Matm(m3::MaterialType::Displacement, 0)};
     model.divisions = {Division(0)};
 
-    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const auto table = BuildM3SurfaceTable(model, kOneRegion, kMatm0);
     const M3Surface* s = table->Surface(0);
     REQUIRE(s != nullptr);
     CHECK_FALSE(s->valid);
@@ -557,7 +564,7 @@ TEST_CASE("m3_surface_table: REGN v5 carries the UV transform, older implies 1/2
     // Version unset (-1): the parser never read uvScale, so the defaults win.
     model.divisions = {div};
     {
-        const auto table = BuildM3SurfaceTable(model, kOneRegion);
+        const auto table = BuildM3SurfaceTable(model, kOneRegion, kMatm0);
         const M3Surface* s = table->Surface(0);
         REQUIRE(s != nullptr);
         CHECK_THAT(s->uvMultiply, Catch::Matchers::WithinAbs(1.0f / 2048.0f, 1e-9f));
@@ -565,7 +572,7 @@ TEST_CASE("m3_surface_table: REGN v5 carries the UV transform, older implies 1/2
     }
     model.divisions[0].regions[0].setVersion(5);
     {
-        const auto table = BuildM3SurfaceTable(model, kOneRegion);
+        const auto table = BuildM3SurfaceTable(model, kOneRegion, kMatm0);
         const M3Surface* s = table->Surface(0);
         REQUIRE(s != nullptr);
         CHECK_THAT(s->uvMultiply, Catch::Matchers::WithinAbs(16.0f / 32767.0f, 1e-9f));
@@ -585,7 +592,7 @@ TEST_CASE("m3_surface_table: the environment layer and its mask are separate slo
     model.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
     model.divisions = {Division(0)};
 
-    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const auto table = BuildM3SurfaceTable(model, kOneRegion, kMatm0);
     const M3Surface* s = table->Surface(0);
     REQUIRE(s != nullptr);
 
@@ -621,11 +628,11 @@ TEST_CASE("m3_surface_table: only the Reflect envio mappings reflect") {
     model.standardMaterials = {mat};
     model.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
     model.divisions = {Division(0)};
-    CHECK_FALSE(BuildM3SurfaceTable(model, kOneRegion)->Surface(0)->envReflect);
+    CHECK_FALSE(BuildM3SurfaceTable(model, kOneRegion, kMatm0)->Surface(0)->envReflect);
 
     model.standardMaterials[0].environmentLayer->uvMapping =
         m3::UVMappingMode::ReflectSphericalEnvio;
-    CHECK(BuildM3SurfaceTable(model, kOneRegion)->Surface(0)->envReflect);
+    CHECK(BuildM3SurfaceTable(model, kOneRegion, kMatm0)->Surface(0)->envReflect);
 }
 
 TEST_CASE("m3_surface_table: hdrEnvironmentConstant is only read at MAT_ v20") {
@@ -644,14 +651,14 @@ TEST_CASE("m3_surface_table: hdrEnvironmentConstant is only read at MAT_ v20") {
     const auto envSlot = static_cast<u32>(wio::M3LayerSlot::Environment);
     {
         // Version unset: no constant, so the tint keeps the layer's own value.
-        const auto table = BuildM3SurfaceTable(model, kOneRegion);
+        const auto table = BuildM3SurfaceTable(model, kOneRegion, kMatm0);
         CHECK_THAT(table->Surface(0)->layers[envSlot].tint.x,
                    Catch::Matchers::WithinAbs(1.0f, 1e-6f));
     }
     model.standardMaterials[0].setVersion(20);
     model.standardMaterials[0].hdrEnvironmentConstant = 2.0f;
     {
-        const auto table = BuildM3SurfaceTable(model, kOneRegion);
+        const auto table = BuildM3SurfaceTable(model, kOneRegion, kMatm0);
         CHECK_THAT(table->Surface(0)->layers[envSlot].tint.x,
                    Catch::Matchers::WithinAbs(2.0f, 1e-6f));
     }
@@ -678,7 +685,7 @@ TEST_CASE("m3_surface_table: rgbAdd rides the same extra multiplier the tint doe
     model.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
     model.divisions = {Division(0)};
 
-    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const auto table = BuildM3SurfaceTable(model, kOneRegion, kMatm0);
     const M3Layer& env =
         table->Surface(0)->layers[static_cast<u32>(wio::M3LayerSlot::Environment)];
     CHECK_THAT(env.tint.x, Catch::Matchers::WithinAbs(1.5f * 2.0f, 1e-6f));
@@ -783,7 +790,7 @@ TEST_CASE("m3_surface_table: every resolved layer names its UV-transform slot") 
     model.materialMaps = {Matm(m3::MaterialType::Standard, 1)};
     model.divisions = {Division(0)};
 
-    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const auto table = BuildM3SurfaceTable(model, kOneRegion, kMatm0);
     const M3Surface* s = table->Surface(0);
     REQUIRE(s != nullptr);
     REQUIRE(s->valid);
@@ -824,7 +831,7 @@ TEST_CASE("m3_surface_table: fresnel constants come off the layer") {
     model.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
     model.divisions = {Division(0)};
 
-    const auto table = BuildM3SurfaceTable(model, kOneRegion);
+    const auto table = BuildM3SurfaceTable(model, kOneRegion, kMatm0);
     const M3Surface* s = table->Surface(0);
     REQUIRE(s != nullptr);
 
@@ -855,7 +862,7 @@ TEST_CASE("m3_surface_table: fresnel constants come off the layer") {
     plain.standardMaterials = {pm};
     plain.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
     plain.divisions = {Division(0)};
-    const auto plainTable = BuildM3SurfaceTable(plain, kOneRegion);
+    const auto plainTable = BuildM3SurfaceTable(plain, kOneRegion, kMatm0);
     CHECK(plainTable->Surface(0)->layers[0].fresnelMode == 0);
 }
 

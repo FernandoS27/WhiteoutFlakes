@@ -3121,6 +3121,39 @@ bool ViewerApp::ScrubExportRecipe(const ExportRecipe& recipe, i32 frameIndex, bo
     return PreviewExportFrame(recipe, MakeExportHost(), frameIndex, applyCamera);
 }
 
+bool ViewerApp::IsPaused() const {
+    return service_.SceneAt(ActiveSceneId()).IsPaused();
+}
+
+void ViewerApp::SetPaused(bool paused) {
+    service_.SceneAt(ActiveSceneId())
+        .SetPlaybackState(paused ? PlaybackState::Paused : PlaybackState::Playing);
+}
+
+void ViewerApp::RestartPlayback() {
+    // RewindScene and the effect services it restarts all resolve through the
+    // ACTIVE scene, so publish this document's before asking.
+    PublishActiveScene();
+    service_.RewindScene();
+    service_.SceneAt(ActiveSceneId()).SetPlaybackState(PlaybackState::Playing);
+
+    // The parent-clock delta below is measured against this stamp; leaving the
+    // pre-rewind (larger) value there would report one negative frame.
+    lastParentTimeMs_ = 0;
+
+    // Walk-drift is an offset this app pushed the actor along by, not scene
+    // state the rewind touches, so take it back off — the same unwind a
+    // sequence change does.
+    if (walkDriftAccumulated_ != 0.0f) {
+        if (auto* hero = FocusActorPtr())
+            hero->worldTransform.data[3][0] -= walkDriftAccumulated_;
+        Camera& cam = service_.SceneAt(ActiveSceneId()).Camera();
+        const auto t = cam.GetTarget();
+        cam.SetTarget(t.x - walkDriftAccumulated_, t.y, t.z);
+        walkDriftAccumulated_ = 0.0f;
+    }
+}
+
 void ViewerApp::Tick(f32 dt) {
     // Publish the active document's scene BEFORE polling: GLFW input callbacks
     // fire inside glfwPollEvents and steer the active scene's camera, and every
@@ -3213,9 +3246,13 @@ void ViewerApp::Tick(f32 dt) {
             delta = -walkDriftAccumulated_;
             walkDriftPrevSeqIdx_ = idx;
         } else if (idx >= 0 && idx < static_cast<i32>(sequenceRanges_.size())) {
+            // The scene's dt, not the frame's: this drift IS the walk cycle
+            // moving the model, so a pause has to stop it too. The unwind above
+            // stays on the raw path — switching sequence while paused still
+            // snaps the model back to where it started.
             const f32 ms = effectiveMoveSpeed(sequenceRanges_[idx]);
             if (ms != 0.0f)
-                delta = ms * dt;
+                delta = ms * service_.Scene().EffectiveDt(dt);
         }
         if (delta != 0.0f) {
             walkDriftAccumulated_ += delta;

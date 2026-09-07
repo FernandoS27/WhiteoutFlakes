@@ -188,6 +188,45 @@ void RenderService::TickScenes(f32 dt) {
     }
 }
 
+// Splats and SPN instances are spawned by playback and mean nothing once the
+// clock has moved elsewhere, so they go outright. Particles, ribbons and corn-fx
+// are held by emitters the model owns, so those are restarted in place.
+void RenderService::DropTransientEffects() {
+    // Reset, not Clear, for the two that hold emitters: those are registered
+    // when the actor spawns, so clearing the maps would leave the model with no
+    // particles and no ribbons until it was reloaded.
+    Particles().ResetEmitters();
+    Ribbons().ResetTrails();
+    Splats().Clear();
+    Spn().Clear();
+    CornEffects().ResetRuntimes();
+}
+
+// Rewind to the first frame. Two things have to happen and both matter: the
+// clocks go back to zero, and whatever the effect systems have spawned since is
+// thrown away. Skipping the second leaves particles frozen in mid-air from the
+// previous run, which reads as a bug the moment you press play again.
+void RenderService::RewindScene() {
+    SceneManager& scene = ActiveScene();
+    scene.SetAnimationTime(0);
+
+    for (auto& [h, mi] : scene.Actors().All()) {
+        mi->cursor = model::Actor::Cursor{};
+        // A play remembers the clock value it started at, so a rewind that
+        // skipped this would leave every play — the model's own global loops
+        // included — stamped in the future, and the actor would sit on its
+        // first frame for as long as the rewind was long.
+        mi->animation.Playlist().Restart(0);
+        mi->animation.SetTimeMs(0);
+        // Children (PE1 / SPN / attachment) derive their cursor from
+        // wall-clock minus birth, so a birth time left in the future would
+        // make them evaluate at a negative age until the clock caught up.
+        mi->animation.SetBirthTimeMs(0);
+    }
+
+    DropTransientEffects();
+}
+
 void RenderService::SetCornBackendInitApplier(
     std::function<void(corn_effects::CornEffectsService&)> fn) {
     impl_->cornInitApplier_ = std::move(fn);

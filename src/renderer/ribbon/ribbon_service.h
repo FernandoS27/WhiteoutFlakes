@@ -62,6 +62,10 @@ public:
                     const RibbonBehavior& behavior);
     void RemoveModel(ModelId model);
     void Clear();
+    /// @brief Drop every live trail without deregistering the emitters, which
+    ///        is what a rewind wants — Clear() would leave the model with no
+    ///        ribbons at all until it was respawned.
+    void ResetTrails();
 
     RibbonEmitter* GetEmitter(ModelId model, i32 emitterId);
     const RibbonEmitter* GetEmitter(ModelId model, i32 emitterId) const;

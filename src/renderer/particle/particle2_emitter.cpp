@@ -52,6 +52,30 @@ void Emitter2::SetDesc(std::shared_ptr<const EmitterDesc> desc) {
         flags_ |= kFlagNeedSquirt;
 }
 
+void Emitter2::ResetParticles() {
+    // Through the death hook, not straight into the pool: an output can own
+    // something per particle — a PE1 child actor — and dropping the pool blind
+    // would leave it standing in the scene with nothing driving it.
+    for (usize i = 0; i < pool_.AliveCount(); ++i)
+        OnParticleDied(pool_.AliveAt(i));
+    pool_.Clear();
+
+    numNew_ = 0.0f;
+    // Unseeded, so the next SetWorldPosition re-seeds prev and curr together
+    // and no spawn is spread across a path the emitter never travelled.
+    worldPosSeeded_ = false;
+    emitterVelocity_ = {0, 0, 0};
+    spawnOffset_ = {0, 0, 0};
+    followDelta_ = {0, 0, 0};
+    velocityTimer_ = 0.0f;
+    // The one-shot burst is owed again, exactly as SetDesc armed it at
+    // registration: this emitter has not fired in the run that starts now.
+    SetFlag(kFlagNeedSquirt, desc_->emission.squirtAtStart);
+
+    for (auto& t : trails_)
+        t->ResetParticles();
+}
+
 void Emitter2::SetWorldPosition(const Vector3f& p) {
     // The first frame has no previous position, so seeding both suppresses one
     // spurious spawn-spread across whatever distance the emitter was placed at.

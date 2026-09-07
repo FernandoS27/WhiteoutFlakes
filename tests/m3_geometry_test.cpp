@@ -21,6 +21,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "io/m3/m3_model_adapter.h"
+#include "m3_anim_builders.h"
 #include "whiteout/flakes/content_ref.h"
 
 #include <algorithm>
@@ -33,6 +34,7 @@
 
 using whiteout::flakes::ContentRef;
 namespace io = whiteout::flakes::io;
+namespace m3 = whiteout::m3;
 namespace fs = std::filesystem;
 
 namespace {
@@ -213,4 +215,116 @@ TEST_CASE("corpus .m3 files load geometry", "[m3]") {
     // Not every `.m3` has a mesh, but if none of them did the adapter would be
     // returning null for reasons unrelated to the format's shape.
     CHECK(loaded > 0);
+}
+
+// ============================================================================
+// Which geosets get emitted: the two decisions that are not "one region, one
+// geoset".
+// ============================================================================
+
+namespace {
+
+/// One region of @p vertexCount vertices with one triangle, drawn by one batch
+/// naming MATM entry @p matm.
+void AddRegion(m3::Model& model, whiteout::u32 vertexCount, whiteout::u16 matm,
+               m3::RegionFlag flags = m3::RegionFlag::None) {
+    if (model.divisions.empty())
+        model.divisions.emplace_back();
+    auto& div = model.divisions[0];
+
+    m3::Region region;
+    region.firstVertex = static_cast<whiteout::u32>(model.vertices.data.size() / 32);
+    region.vertexCount = vertexCount;
+    region.firstIndex = static_cast<whiteout::u32>(div.faces.size());
+    region.indexCount = 3;
+    region.rootBone = 0;
+    region.flags = flags;
+    div.faces.insert(div.faces.end(), {0, 1, 2});
+
+    m3::Batch batch;
+    batch.regionIndex = static_cast<whiteout::u16>(div.regions.size());
+    batch.materialIndex = matm;
+    batch.boneCount = 0xFFFFu;
+    div.regions.push_back(region);
+    div.batches.push_back(batch);
+
+    // Stride 24 + 4 (one UV) + 4 (tangent) = 32.
+    model.vertices.flags = m3::VertexFormatFlag::UV1;
+    model.vertices.data.resize(model.vertices.data.size() + vertexCount * 32, 0);
+    model.vertices.initialize();
+}
+
+m3::MaterialMap Map(m3::MaterialType type, whiteout::u32 index) {
+    m3::MaterialMap m;
+    m.materialType = type;
+    m.materialIndex = index;
+    return m;
+}
+
+} // namespace
+
+TEST_CASE("A composite material emits one geoset per section, in section order", "[m3]") {
+    m3fix::ModelBuilder mb;
+    mb.StaticBone("root", -1);
+    m3::Model model = mb.Build();
+    model.standardMaterials.resize(2);
+    model.standardMaterials[0].name = "glow";
+    model.standardMaterials[1].name = "skin";
+
+    m3::CompositeMaterial comp;
+    m3::CompositeSection glow;
+    glow.materialIndex = 0;
+    glow.mapMultiplier.initValue = 1.0f;
+    m3::CompositeSection skin;
+    skin.materialIndex = 1;
+    skin.mapMultiplier.initValue = 1.0f;
+    comp.sections = {glow, skin};
+    model.compositeMaterials = {comp};
+    model.materialMaps = {Map(m3::MaterialType::Standard, 0), Map(m3::MaterialType::Standard, 1),
+                          Map(m3::MaterialType::Composite, 0)};
+
+    AddRegion(model, 4, 2); // the batch names the composite
+    io::M3ModelAdapter adapter(std::move(model));
+
+    // Both passes over the one region, MATM 0 then MATM 1 — the death ragdolls'
+    // dissolve glow draws under the skin, not instead of it.
+    REQUIRE(adapter.EmittedRegions().size() == 2);
+    CHECK(adapter.EmittedRegions()[0] == 0);
+    CHECK(adapter.EmittedRegions()[1] == 0);
+    REQUIRE(adapter.EmittedMaterials().size() == 2);
+    CHECK(adapter.EmittedMaterials()[0] == 0);
+    CHECK(adapter.EmittedMaterials()[1] == 1);
+
+    const auto meshes = adapter.GetMeshes();
+    REQUIRE(meshes.size() == 2);
+    CHECK(meshes[0].materialId == 0);
+    CHECK(meshes[1].materialId == 1);
+    CHECK(meshes[0].positions.size() == meshes[1].positions.size());
+}
+
+TEST_CASE("A cloth's simulation cage never draws, simulated or not", "[m3]") {
+    m3fix::ModelBuilder mb;
+    mb.StaticBone("root", -1);
+    m3::Model model = mb.Build();
+    model.standardMaterials.resize(1);
+    model.materialMaps = {Map(m3::MaterialType::Standard, 0)};
+
+    // The shipped pair: Hidden|ClothSimulated is the cage, Hidden|Placeholder|
+    // ClothInfluenced the garment. No PHCL at all, so nothing simulates either —
+    // which is the case that used to draw the cage over the model.
+    AddRegion(model, 4, 0);
+    AddRegion(model, 4, 0,
+              m3::RegionFlag::Hidden | m3::RegionFlag::ClothSimulated);
+    AddRegion(model, 4, 0,
+              m3::RegionFlag::Hidden | m3::RegionFlag::Placeholder |
+                  m3::RegionFlag::ClothInfluenced);
+
+    io::M3ModelAdapter adapter(std::move(model));
+    REQUIRE(adapter.EmittedRegions().size() == 3);
+
+    const auto fs = adapter.Evaluate({});
+    REQUIRE(fs.geosetHidden.size() == 3);
+    CHECK(fs.geosetHidden[0] == 0);
+    CHECK(fs.geosetHidden[1] == 1); // the cage
+    CHECK(fs.geosetHidden[2] == 0); // the garment it drives
 }

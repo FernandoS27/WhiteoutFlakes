@@ -845,48 +845,12 @@ std::vector<std::string> ActorView::ChildModelPaths() const {
 // PlaybackView
 // ============================================================================
 
-namespace {
-
-// Rewind the scene to its first frame. Two things have to happen and both
-// matter: the clocks go back to zero, and whatever the effect systems have
-// spawned since is thrown away. Skipping the second leaves particles frozen
-// in mid-air from the previous run, which reads as a bug the moment you press
-// play again.
-// Particles, splats and SPN instances are spawned by playback and mean
-// nothing once the clock has moved elsewhere, so they go. Corn-fx is the
-// exception: its emitters are registered when a model spawns, not when it
-// plays, so those are reset rather than cleared — dropping them would
-// silence the effects permanently instead of replaying them.
-void DropTransientEffects(detail::RendererImpl* p) {
-    Svc(p).Particles().Clear();
-    Svc(p).Splats().Clear();
-    Svc(p).Spn().Clear();
-    Svc(p).CornEffects().ResetRuntimes();
-}
-
-void RewindScene(detail::RendererImpl* p) {
-    Scn(p).SetAnimationTime(0);
-
-    for (auto& [h, mi] : Scn(p).Actors().All()) {
-        mi->animation.SetTimeMs(0);
-        // Children (PE1 / SPN / attachment) derive their cursor from
-        // wall-clock minus birth, so a birth time left in the future would
-        // make them evaluate at a negative age until the clock caught up.
-        mi->animation.SetBirthTimeMs(0);
-        mi->cursor = renderer::model::Actor::Cursor{};
-    }
-
-    DropTransientEffects(p);
-}
-
-} // namespace
-
 PlaybackState PlaybackView::GetState() const {
     return Scn(impl_).GetPlaybackState();
 }
 void PlaybackView::SetState(PlaybackState s) {
     if (s == PlaybackState::Stopped)
-        RewindScene(impl_);
+        Svc(impl_).RewindScene();
     Scn(impl_).SetPlaybackState(s);
 }
 
@@ -900,12 +864,12 @@ void PlaybackView::Stop() {
     SetState(PlaybackState::Stopped);
 }
 void PlaybackView::Restart() {
-    RewindScene(impl_);
+    Svc(impl_).RewindScene();
     Scn(impl_).SetPlaybackState(PlaybackState::Playing);
 }
 
 void PlaybackView::ResyncEffects() {
-    DropTransientEffects(impl_);
+    Svc(impl_).DropTransientEffects();
 }
 
 bool PlaybackView::IsPaused() const {

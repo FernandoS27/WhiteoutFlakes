@@ -519,9 +519,13 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
                                        (surf->envReflect ? 8u : 0u))};
         // The shader samples SNORM (raw/32767); fold the decode back so the
         // authored `uv = i16 * mul + add` comes out. .z rides the material's
-        // emissive multiplier (see M3Surface::emissiveMultiplier).
+        // emissive multiplier (see M3Surface::emissiveMultiplier), .w retail's
+        // AlphaFactor (psmaterial.fx:358) — the per-draw coverage scale the
+        // alpha-mask layers multiply into. It carries the composite section's
+        // multiplier, which the source samples into FrameState::geosetAlphas.
         c->uvTransform = {32767.0f * surf->uvMultiply, surf->uvOffset,
-                          surf->emissiveMultiplier, 0.0f};
+                          surf->emissiveMultiplier,
+                          geo.geosetAlpha * item.view->parentVisibility};
         // The instance's palette pair, de-gamma'd like every other authored
         // colour when the profile shades linearly.
         {

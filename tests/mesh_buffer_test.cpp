@@ -249,6 +249,7 @@ TEST_CASE("m3 baked buffers describe their own bytes", "[m3][meshbuffer]") {
                 continue; // no drawable region â€” REGN v<3 parser gap
 
             const auto& regions = adapter->SourceModel().divisions[0].regions;
+            const auto emitted = adapter->EmittedRegions();
 
             for (const auto& mesh : meshes) {
                 const MeshBuffer& b = mesh.baked;
@@ -261,8 +262,15 @@ TEST_CASE("m3 baked buffers describe their own bytes", "[m3][meshbuffer]") {
                 // region's firstVertex, so parser index (base + v) is mesh
                 // index v. That mapping is what lets the decode below be
                 // compared against the parser's rather than only sanity-checked.
-                REQUIRE(static_cast<std::size_t>(mesh.geosetId) < regions.size());
-                const std::size_t base = regions[static_cast<std::size_t>(mesh.geosetId)].firstVertex;
+                // `geosetId` indexes the emission order, not the region
+                // list: GetMeshes skips regions it cannot bake, and a
+                // composite material emits the same region once per section,
+                // so there can be more geosets than regions. EmittedRegions is
+                // the map between the two.
+                REQUIRE(static_cast<std::size_t>(mesh.geosetId) < emitted.size());
+                const std::size_t regionIndex = emitted[static_cast<std::size_t>(mesh.geosetId)];
+                REQUIRE(regionIndex < regions.size());
+                const std::size_t base = regions[regionIndex].firstVertex;
                 REQUIRE(base + b.VertexCount() <= parserNormals.size());
 
                 const VertexAttribute* pos = Find(b, VertexSemantic::Position);

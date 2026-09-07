@@ -123,6 +123,17 @@ public:
     ///        RibbonBehavior::lifespanFloorAppliesToSim.
     f32 SimLifespan() const;
 
+    /// @brief Drop the live trail and re-arm seeding, keeping the emitter
+    ///        registered. What a rewind needs: emitters are registered once at
+    ///        spawn, so RibbonService::Clear would retire them for good.
+    void ResetTrail() {
+        edges_.clear();
+        accumEmission_ = 0;
+        posSet_ = false;
+        updatedOnce_ = false;
+        headPending_ = false;
+    }
+
 private:
     bool ShouldEmit(f32 dt) const;
 

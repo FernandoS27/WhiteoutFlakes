@@ -23,6 +23,12 @@ void RibbonService::Clear() {
     emitters_.clear();
 }
 
+void RibbonService::ResetTrails() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [key, e] : emitters_)
+        e.ResetTrail();
+}
+
 RibbonEmitter* RibbonService::GetEmitter(ModelId model, i32 emitterId) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = emitters_.find({model, emitterId});

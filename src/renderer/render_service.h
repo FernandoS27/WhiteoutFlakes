@@ -148,6 +148,19 @@ public:
     // Ticker().Tick(dt)).
     void TickScenes(f32 dt);
 
+    // ---- Transport (of the ACTIVE scene) ----
+    // Pause / play is a flag on the SceneManager; these are the two operations
+    // that need the effect services as well, which only the service can reach.
+    //
+    // Drop live splat / SPN state and restart every particle, ribbon and corn-fx
+    // emitter. Forward simulations have no seek, so a host that moves the clock
+    // itself calls this to make them replay from where the cursor now is.
+    void DropTransientEffects();
+    // Rewind: scene clock to zero, every actor's cursor, playlist and birth
+    // time with it, then DropTransientEffects. Leaves the transport state
+    // alone — the caller decides whether a rewind plays or holds.
+    void RewindScene();
+
     // ---- Scene & asset accessors ----
     // Scene() returns the ACTIVE scene (default outside a render/tick scope).
     SceneManager& Scene();

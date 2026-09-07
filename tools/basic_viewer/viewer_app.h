@@ -339,6 +339,20 @@ public:
         return cameraLocked_;
     }
 
+    // ---- Transport ----
+    //
+    // On the ACTIVE document's scene, so each tab holds its own pause. Nothing
+    // here is per-format: the scene clock is what every profile's animation,
+    // particles, ribbons and corn-fx advance on, so one pair of buttons drives
+    // a `.mdx`, an `.m2`, an `.m3` and a `.prt` alike.
+    bool IsPaused() const;
+    void SetPaused(bool paused);
+    void TogglePaused() {
+        SetPaused(!IsPaused());
+    }
+    // Back to frame zero and playing, whatever the transport was.
+    void RestartPlayback();
+
     // ---- Sequences (per focus actor) ----
     const std::vector<std::string>& SequenceNames() const {
         return sequenceNames_;

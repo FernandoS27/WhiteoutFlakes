@@ -64,6 +64,125 @@ namespace whiteout::flakes {
 
 namespace {
 
+// ---- Toolbar icons ---------------------------------------------------------
+//
+// Drawn, not typed. The viewer bakes ONE static atlas (Noto SC + the merged KR
+// cut, or embedded Roboto when the fonts directory is missing), so an icon font
+// would mean a second TTF merged into that atlas plus an install rule for it —
+// and it would still be absent on the Roboto fallback. A handful of vector
+// glyphs cost nothing, scale with the DPI-baked frame height, and take the
+// theme's text colour for free.
+enum class ToolbarIcon { Play, Pause, Restart, Tracks };
+
+void DrawToolbarIcon(ImDrawList* dl, ToolbarIcon icon, ImVec2 c, f32 s, ImU32 col) {
+    constexpr f32 kPi = 3.14159265358979323846f;
+    switch (icon) {
+    case ToolbarIcon::Play: {
+        // Nudged right: a triangle centred on its bounding box reads as sitting
+        // too far left, because its mass is in the flat edge.
+        c.x += s * 0.03f;
+        const f32 w = s * 0.30f;
+        const f32 h = s * 0.30f;
+        dl->AddTriangleFilled(ImVec2(c.x - w * 0.6f, c.y - h), ImVec2(c.x + w, c.y),
+                              ImVec2(c.x - w * 0.6f, c.y + h), col);
+        break;
+    }
+    case ToolbarIcon::Pause: {
+        const f32 bar = s * 0.12f;
+        const f32 gap = s * 0.07f; // half the space between the two bars
+        const f32 h = s * 0.30f;
+        dl->AddRectFilled(ImVec2(c.x - gap - bar, c.y - h), ImVec2(c.x - gap, c.y + h), col,
+                          bar * 0.3f);
+        dl->AddRectFilled(ImVec2(c.x + gap, c.y - h), ImVec2(c.x + gap + bar, c.y + h), col,
+                          bar * 0.3f);
+        break;
+    }
+    case ToolbarIcon::Restart: {
+        // The ↻ everything else uses for "play it again": most of a circle with
+        // the gap across the top, and the head at the END of travel, so the
+        // arrow points the way the stroke was going.
+        const f32 r = s * 0.28f;
+        const f32 th = std::max(1.5f, s * 0.095f);
+        constexpr f32 kFrom = -0.28f * kPi;
+        constexpr f32 kTo = 1.28f * kPi;
+        dl->PathArcTo(c, r, kFrom, kTo);
+        dl->PathStroke(col, ImDrawFlags_None, th);
+
+        // Tangent at kTo, in the direction the arc was drawn, and its normal.
+        // The head's base sits ON the arc's last point so the two read as one
+        // stroke; longer than it is wide, or it looks like a blob.
+        const ImVec2 end(c.x + r * std::cos(kTo), c.y + r * std::sin(kTo));
+        const ImVec2 dir(-std::sin(kTo), std::cos(kTo));
+        const ImVec2 nrm(-dir.y, dir.x);
+        const f32 len = th * 2.3f;
+        const f32 wide = th * 1.15f;
+        dl->AddTriangleFilled(ImVec2(end.x + dir.x * len, end.y + dir.y * len),
+                              ImVec2(end.x + nrm.x * wide, end.y + nrm.y * wide),
+                              ImVec2(end.x - nrm.x * wide, end.y - nrm.y * wide), col);
+        break;
+    }
+    case ToolbarIcon::Tracks: {
+        // Three stacked bars of unequal length — the track list a timeline puts
+        // beside its transport, which is what the window behind this button is:
+        // layered plays, their sub-tracks, and the files they came from.
+        const f32 th = std::max(1.5f, s * 0.10f);
+        const f32 x0 = c.x - s * 0.27f;
+        const f32 w[3] = {s * 0.54f, s * 0.32f, s * 0.44f};
+        for (i32 i = 0; i < 3; ++i) {
+            const f32 y = c.y + (static_cast<f32>(i) - 1.0f) * s * 0.20f;
+            dl->AddRectFilled(ImVec2(x0, y - th * 0.5f), ImVec2(x0 + w[i], y + th * 0.5f), col,
+                              th * 0.5f);
+        }
+        break;
+    }
+    }
+}
+
+// A square icon button — a real ImGui::Button (hover, active, keyboard nav, the
+// theme's frame colours) with the glyph painted over its face. Square at the
+// frame height so it lines up with the combos beside it, and so swapping
+// play for pause cannot resize it and shuffle the toolbar sideways.
+//
+// @p active holds the button in its pressed colour, for the one that toggles a
+// window rather than firing an action: with no words on the face, the colour is
+// all that says the window is already open.
+bool IconButton(const char* id, ToolbarIcon icon, const char* nameKey, const char* tipKey,
+                bool active = false) {
+    const f32 side = ImGui::GetFrameHeight();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    if (active)
+        ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    const bool clicked = ImGui::Button(id, ImVec2(side, side));
+    if (active)
+        ImGui::PopStyleColor();
+    DrawToolbarIcon(ImGui::GetWindowDrawList(), icon, ImVec2(p.x + side * 0.5f, p.y + side * 0.5f),
+                    side, ImGui::GetColorU32(ImGuiCol_Text));
+    // The face carries no words, so the tooltip names the button before it
+    // explains it — that name is the only place the label text survives.
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s\n%s", i18n::tr(nameKey), i18n::tr(tipKey));
+    return clicked;
+}
+
+// ImGui writes a widget's label to its RIGHT. On a horizontal toolbar that
+// reads backwards — you meet the value before you are told what it is — so
+// every control here puts its caption in front by hand and carries a "##id"
+// instead.
+//
+// The wider-than-usual gap in front is what keeps a caption attached to the
+// control AFTER it rather than the one before: with uniform spacing the two
+// are equidistant and the eye has to guess. Every caller is preceded by a
+// SameLine (the transport group opens the row unconditionally), and a second
+// SameLine simply re-places the cursor with the new spacing.
+// AlignTextToFramePadding then drops the text onto the frame's baseline;
+// without it the caption rides high against a taller neighbour.
+void ToolbarLabel(const char* key) {
+    ImGui::SameLine(0.0f, ImGui::GetStyle().ItemSpacing.x * 2.5f);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(i18n::tr(key));
+    ImGui::SameLine();
+}
+
 // Persists current host state to WhiteoutFlakes.ini. Called after every UI
 // change that should survive a restart — same call shape as the old
 // HandleSettingsMessage paths used.
@@ -1368,13 +1487,34 @@ void ViewerUI::BuildToolbar() {
 
     RenderService& svc = app_.Service();
 
+    // ---- Transport ----
+    //
+    // First on the row and never hidden. The scene clock is what every profile
+    // advances on — animation, particles, ribbons and corn-fx alike — so one
+    // pair of buttons covers a Warcraft III `.mdx`, a WoW `.m2`, a StarCraft II
+    // `.m3`, a Diablo III actor and a bare `.pkb` effect, including the ones
+    // with no sequence list to sit a dropdown next to.
+    {
+        const bool paused = app_.IsPaused();
+        if (IconButton("##transport.toggle", paused ? ToolbarIcon::Play : ToolbarIcon::Pause,
+                       paused ? "toolbar.play" : "toolbar.pause",
+                       paused ? "toolbar.play.tip" : "toolbar.pause.tip"))
+            app_.SetPaused(!paused);
+        ImGui::SameLine();
+        if (IconButton("##transport.restart", ToolbarIcon::Restart, "toolbar.restart",
+                       "toolbar.restart.tip"))
+            app_.RestartPlayback();
+        ImGui::SameLine();
+    }
+
     // ---- Animation sequence ----
     const auto& seqs = app_.SequenceNames();
     if (!seqs.empty()) {
         model::Actor* focus = app_.FocusActorPtr();
         i32 sel = focus ? focus->animation.ActiveSequenceIndex() : 0;
+        ToolbarLabel("toolbar.animation");
         ImGui::SetNextItemWidth(220);
-        if (ImGui::BeginCombo(i18n::tr("toolbar.animation"),
+        if (ImGui::BeginCombo("##animation",
                               seqs[std::clamp(sel, 0, (i32)seqs.size() - 1)].c_str())) {
             for (i32 i = 0; i < static_cast<i32>(seqs.size()); ++i) {
                 const bool isSel = (i == sel);
@@ -1406,10 +1546,9 @@ void ViewerUI::BuildToolbar() {
     // once plus the global loops it starts on its own. Hidden for every model
     // that has none of those concepts.
     if (app_.CanAttachAnimations()) {
-        if (ImGui::Button(i18n::tr("toolbar.animfiles")))
+        if (IconButton("##animfiles", ToolbarIcon::Tracks, "toolbar.animfiles",
+                       "toolbar.animfiles.tip", animWindowOpen_))
             animWindowOpen_ = !animWindowOpen_;
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", i18n::tr("toolbar.animfiles.tip"));
         ImGui::SameLine();
     }
 
@@ -1420,8 +1559,9 @@ void ViewerUI::BuildToolbar() {
         const char* preview = (active < 0 || active >= static_cast<i32>(presetNames.size()))
                                   ? i18n::tr("toolbar.camera.free")
                                   : presetNames[active].c_str();
+        ToolbarLabel("toolbar.camera");
         ImGui::SetNextItemWidth(140);
-        if (ImGui::BeginCombo(i18n::tr("toolbar.camera"), preview)) {
+        if (ImGui::BeginCombo("##camera", preview)) {
             if (ImGui::Selectable(i18n::tr("toolbar.camera.free"), active < 0))
                 app_.ActivateCameraPreset(-1);
             for (i32 i = 0; i < static_cast<i32>(presetNames.size()); ++i) {
@@ -1446,8 +1586,7 @@ void ViewerUI::BuildToolbar() {
             static_cast<f32>((tcRaw >> 16) & 0xFFu) / 255.0f,
         };
         ImGuiColorEditFlags flags = ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel;
-        ImGui::TextUnformatted(i18n::tr("toolbar.team"));
-        ImGui::SameLine();
+        ToolbarLabel("toolbar.team");
         if (ImGui::ColorEdit3("##team", col, flags)) {
             if (focus) {
                 focus->SetTeamColor(static_cast<u8>(col[0] * 255.0f),
@@ -1463,8 +1602,9 @@ void ViewerUI::BuildToolbar() {
     // which fill. Absent for every other model, which is most of them.
     if (const auto skins = app_.WowSkinNames(); !skins.empty()) {
         const u32 sel = app_.WowSkin() % static_cast<u32>(skins.size());
+        ToolbarLabel("toolbar.skin");
         ImGui::SetNextItemWidth(160);
-        if (ImGui::BeginCombo(i18n::tr("toolbar.skin"), skins[sel].c_str())) {
+        if (ImGui::BeginCombo("##skin", skins[sel].c_str())) {
             for (u32 i = 0; i < static_cast<u32>(skins.size()); ++i) {
                 const bool isSel = (i == sel);
                 if (ImGui::Selectable(skins[i].c_str(), isSel))
@@ -1767,11 +1907,12 @@ void ViewerUI::BuildToolbar() {
     // ---- Lighting mode ----
     {
         i32 sel = static_cast<i32>(svc.Settings().GetLightingMode());
+        ToolbarLabel("toolbar.lighting");
         ImGui::SetNextItemWidth(120);
         const char* lightingItems[3];
         for (i32 i = 0; i < static_cast<i32>(kLightingKeys.size()); ++i)
             lightingItems[i] = i18n::tr(kLightingKeys[i]);
-        if (ImGui::Combo(i18n::tr("toolbar.lighting"), &sel, lightingItems,
+        if (ImGui::Combo("##lighting", &sel, lightingItems,
                          static_cast<i32>(kLightingLabels.size()))) {
             svc.Settings().SetLightingMode(static_cast<LightingMode>(sel));
             SaveIni(app_);

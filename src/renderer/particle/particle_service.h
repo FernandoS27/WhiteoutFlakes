@@ -145,6 +145,10 @@ public:
     /// before calling this, which is what queues the deaths.
     bool RemoveEmitter(ModelId model, ParticleOutput output, i32 emitterId);
     void Clear();
+    /// @brief Restart every emitter without deregistering any, which is what a
+    ///        rewind wants — Clear() would leave the model without particles
+    ///        until it was reloaded.
+    void ResetEmitters();
 
     Emitter2* GetEmitter(ModelId model, ParticleOutput output, i32 emitterId);
 

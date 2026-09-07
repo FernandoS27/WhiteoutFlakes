@@ -36,6 +36,12 @@ void ParticleService::Clear() {
     emitters_.clear();
 }
 
+void ParticleService::ResetEmitters() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [k, e] : emitters_)
+        e->ResetParticles();
+}
+
 Emitter2* ParticleService::GetEmitter(ModelId model, ParticleOutput output, i32 emitterId) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = emitters_.find({model, output, emitterId});

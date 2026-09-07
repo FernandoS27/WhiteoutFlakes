@@ -1700,8 +1700,8 @@ void ModelLoader::FinishNativeActor(Actor& actor, const std::shared_ptr<IModelSo
         // fit MaterialData. Stamped only when something resolved: a table with
         // no valid entry (every material displacement / volume / …) leaves the
         // whole actor on Unlit, which draws where this model would vanish.
-        auto table =
-            profiles::sc2_heroes::BuildM3SurfaceTable(m3->SourceModel(), m3->EmittedRegions());
+        auto table = profiles::sc2_heroes::BuildM3SurfaceTable(
+            m3->SourceModel(), m3->EmittedRegions(), m3->EmittedMaterials());
         bool anyValid = false;
         for (const auto& s : table->Surfaces())
             anyValid |= s.valid;

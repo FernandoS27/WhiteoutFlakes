@@ -198,6 +198,12 @@ public:
     /// re-triggers an effect rather than respawning it.
     void Restart();
 
+    /// A scene rewind is a re-trigger, so it is the same call — the base
+    /// version would leave the system clock and the pre-simulate behind.
+    void ResetParticles() override {
+        Restart();
+    }
+
 protected:
     void OnPoolResized(usize capacity) override;
 

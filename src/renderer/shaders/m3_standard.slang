@@ -102,6 +102,8 @@ struct M3DrawData
     // regions imply 1/2048 and 0. The host folds the 32767 in; .x mul, .y add.
     // .z = material hdrEmissiveMultiplier (psmaterial.fx applies it to the
     // Add-family emissive sum, team adds included, so it cannot ride a tint).
+    // .w = AlphaFactor (psmaterial.fx:358) — the per-draw coverage the alpha
+    // mask layers multiply into, carrying the composite section multiplier.
     float4 uvTransform;
     // The instance's palette pair (gamedata.xml <TeamColors>): p_cDiffuseTeamColor
     // and p_cEmissiveTeamColor. .rgb only.
@@ -497,7 +499,7 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     // the pair used to render at whichever one the slot happened to hold, so
     // it came out too opaque. Then the test; >= survives, as everywhere else
     // in this renderer.
-    float alpha = 1.0;
+    float alpha = draw.uvTransform.w;
     let ctlMask = draw.layerCtl[kM3LayerAlphaMask];
     if (ctlMask.z != 0u)
         alpha *= M3LayerValue(kM3LayerAlphaMask,

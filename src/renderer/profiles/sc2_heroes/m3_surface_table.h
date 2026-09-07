@@ -153,12 +153,17 @@ private:
     std::vector<M3Surface> surfaces_;
 };
 
-/// @brief Build the table for @p model. @p emittedRegions is the adapter's
-///        emission order (M3ModelAdapter::EmittedRegions) — entry g describes
-///        geoset g. Returns an empty table rather than null when the model has
-///        no divisions, so callers never branch on a null table.
+/// @brief Build the table for @p model. @p emittedRegions and
+///        @p emittedMaterials are the adapter's emission order
+///        (M3ModelAdapter::EmittedRegions / EmittedMaterials) — entry g
+///        describes geoset g, naming the region it covers and the `MATM` entry
+///        it draws. The two are separate because a composite material emits one
+///        geoset per section over the same region. Returns an empty table
+///        rather than null when the model has no divisions, so callers never
+///        branch on a null table.
 std::unique_ptr<M3SurfaceTable> BuildM3SurfaceTable(const ::whiteout::m3::Model& model,
-                                                    std::span<const std::size_t> emittedRegions);
+                                                    std::span<const std::size_t> emittedRegions,
+                                                    std::span<const u32> emittedMaterials);
 
 /// @brief Which bucket a surface draws in. Opaque with an alpha test is
 ///        AlphaKey; every real blend mode is transparent. Invalid surfaces are
