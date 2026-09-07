@@ -1564,6 +1564,11 @@ int main(int argc, char* argv[]) {
     std::filesystem::path exportM3Path;
     auto exportM3Profile = whiteout::models::wem::ProfileId::Sc2;
     bool exportM3Textures = true;
+    // Save As for a model that IS `.m3`, the export above's mirror: written
+    // back through m3::Writer with no WEM hop and no textures of its own.
+    std::filesystem::path saveM3Path;
+    bool saveM3MergeAnims = false;
+    bool saveM3Sc2 = false;
     // Which profile a `.wem` on the command line opens as. `Count` leaves it to
     // the document — there is no dialog out here.
     auto wemProfile = whiteout::models::wem::ProfileId::Count;
@@ -1701,6 +1706,12 @@ int main(int argc, char* argv[]) {
             }
         } else if (std::strcmp(a, "--export-m3-no-textures") == 0) {
             exportM3Textures = false;
+        } else if (std::strcmp(a, "--save-m3") == 0 && i + 1 < argc) {
+            saveM3Path = whiteout::flakes::io::FsPathFromUtf8(argv[++i]);
+        } else if (std::strcmp(a, "--save-m3-merge-anims") == 0) {
+            saveM3MergeAnims = true;
+        } else if (std::strcmp(a, "--save-m3-sc2") == 0) {
+            saveM3Sc2 = true;
         } else if (std::strcmp(a, "--attach-anim") == 0 && i + 1 < argc) {
             attachAnims.push_back(whiteout::flakes::io::FsPathFromUtf8(argv[++i]));
         } else if (std::strcmp(a, "--gif") == 0) {
@@ -1940,6 +1951,9 @@ int main(int argc, char* argv[]) {
                       << "       --export-m3 <out.m3>     write it as StarCraft II and exit\n"
                       << "       --export-m3-profile <n>  sc2 (default) | heroes\n"
                       << "       --export-m3-no-textures  do not write the textures beside it\n"
+                      << "       --save-m3 <out.m3>       re-save an open .m3 and exit\n"
+                      << "       --save-m3-merge-anims    fold the attached .m3a files in\n"
+                      << "       --save-m3-sc2            retarget a Heroes model for SC2\n"
                       << "       --wem-profile <name>     open a .wem as that profile\n";
             return 0;
         } else if (mdxPath.empty()) {
@@ -2256,9 +2270,8 @@ int main(int argc, char* argv[]) {
     // textures resolve against, which FollowModelGame settles on the way in.
     app.SetPreferredWemProfile(wemProfile);
 
-    const bool headlessWork =
-        doExport || !exportWemPath.empty() || !exportMdxPath.empty() || !exportM3Path.empty() ||
-        !attachAnims.empty();
+    const bool headlessWork = doExport || !exportWemPath.empty() || !exportMdxPath.empty() ||
+                              !exportM3Path.empty() || !saveM3Path.empty() || !attachAnims.empty();
 
     if (!mdxPath.empty()) {
         // No exists() pre-check for headless work: LoadModel accepts a
@@ -2321,6 +2334,14 @@ int main(int argc, char* argv[]) {
     // Headless StarCraft II export -- ExportMdx's twin, same reasoning.
     if (!exportM3Path.empty()) {
         const bool ok = app.ExportM3(exportM3Path, exportM3Profile, exportM3Textures);
+        app.Close();
+        return ok ? 0 : 1;
+    }
+
+    // Headless `.m3` save. After the --attach-anim loop above on purpose:
+    // --save-m3-merge-anims folds in whatever that loop attached.
+    if (!saveM3Path.empty()) {
+        const bool ok = app.SaveM3(saveM3Path, saveM3MergeAnims, saveM3Sc2);
         app.Close();
         return ok ? 0 : 1;
     }

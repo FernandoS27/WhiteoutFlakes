@@ -5,6 +5,9 @@
 #include "io/wem/wem_import.h"
 #include "io/wem/wem_profiles.h"
 #include "m3_export.h"
+#if WDX_ENABLE_M3
+#include "m3_save.h"
+#endif
 #include "mdx_export.h"
 #include "renderer/assets/replaceable_texture_manager.h"
 #include "renderer/camera.h"
@@ -979,6 +982,71 @@ bool ViewerApp::ExportM3(const std::filesystem::path& outPath,
                     report.texturesExported, report.texturesSkipped, report.texturesFailed);
     }
     return true;
+}
+
+// ---- StarCraft II save -------------------------------------------------------
+//
+// ExportM3's mirror. That one derives a StarCraft II material set for a model
+// that never had one; this writes back a model that already IS `.m3`, which is
+// why it goes straight through `m3::Writer` and not through WEM. See
+// tools/basic_viewer/m3_save.h.
+
+bool ViewerApp::CanSaveM3() const {
+#if WDX_ENABLE_M3
+    const model::Actor* actor = const_cast<ViewerApp*>(this)->FocusActorPtr();
+    return actor && actor->animation.HasSource() &&
+           dynamic_cast<const io::M3ModelAdapter*>(actor->animation.Source().get()) != nullptr;
+#else
+    return false;
+#endif
+}
+
+bool ViewerApp::SaveM3(const std::filesystem::path& outPath, bool mergeAnimations,
+                       bool convertToSc2, std::string* error) {
+    if (error)
+        error->clear();
+#if WDX_ENABLE_M3
+    model::Actor* actor = FocusActorPtr();
+    const auto* source =
+        actor && actor->animation.HasSource()
+            ? dynamic_cast<const io::M3ModelAdapter*>(actor->animation.Source().get())
+            : nullptr;
+    if (!source) {
+        if (error)
+            *error = "no StarCraft II model on screen";
+        std::fprintf(stderr, "[viewer] Save M3: no StarCraft II model on screen\n");
+        return false;
+    }
+
+    M3SaveRequest request;
+    request.source = source;
+    request.outPath = outPath;
+    request.mergeAnimations = mergeAnimations;
+    request.convertToSc2 = convertToSc2;
+
+    const M3SaveReport report = SaveModelAsM3(request);
+    for (const std::string& reason : report.lossy)
+        std::fprintf(stderr, "[viewer] Save M3: %s\n", reason.c_str());
+    if (!report.ok) {
+        if (error)
+            *error = report.error;
+        std::fprintf(stderr, "[viewer] Save M3 FAILED: %s\n", report.error.c_str());
+        return false;
+    }
+    std::printf("[viewer] Saved M3 (MODL v%d%s%s): %s\n", report.version,
+                report.retargeted ? ", retargeted for StarCraft II" : "",
+                report.mergedFiles ? ", animations merged" : "", io::PathToUtf8(outPath).c_str());
+    if (report.mergedFiles) {
+        std::printf("[viewer] Merged %zu animation file(s), %zu sequence(s)\n", report.mergedFiles,
+                    report.mergedSequences);
+    }
+    return true;
+#else
+    (void)outPath;
+    (void)mergeAnimations;
+    (void)convertToSc2;
+    return false;
+#endif
 }
 
 // ---- World of Warcraft creature skins ---------------------------------------

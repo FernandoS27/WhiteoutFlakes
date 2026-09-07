@@ -7,6 +7,8 @@
 #include "renderer/profiles/sc2_heroes/sc2_physics.h"
 #endif
 
+#include <whiteout/models/m3/engine_compat.h>
+
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -706,6 +708,17 @@ M3DataDrivenResult M3RestoreDataDrivenMaterials(::whiteout::m3::Model& model) {
     M3DataDrivenResult out;
     if (model.dataDrivenMaterials.empty())
         return out;
+    // The version the restored records are stamped with. A StandardMaterial
+    // built by the conversion carries none, and a writer takes a chunk's
+    // version from its first element -- so on a Heroes model with no MAT_ of
+    // its own (2581 of 2661 records across the corpus) leaving it unset writes
+    // MAT_ v0xFFFFFFFF, which no engine and not even this parser will read.
+    // Match what the model already has; failing that the cap Heroes enforces,
+    // which StarCraft II also accepts.
+    const i32 standardVersion =
+        model.standardMaterials.empty()
+            ? static_cast<i32>(::whiteout::m3::HOTS_MAX_STANDARD_MATERIAL_VERSION)
+            : model.standardMaterials.front().getVersion();
 
     // MADD -> StandardMaterial index, or -1 for a record with no standard form.
     // Keyed because several MATM entries can name the same record and the
@@ -746,6 +759,7 @@ M3DataDrivenResult M3RestoreDataDrivenMaterials(::whiteout::m3::Model& model) {
                             ? static_cast<LayerBlendOp>(op)
                             : LayerBlendOp::Add;
                 }
+                conv.material.forceVersion(standardVersion);
                 it->second = static_cast<i64>(model.standardMaterials.size());
                 model.standardMaterials.push_back(std::move(conv.material));
                 ++(exact ? out.restored : out.approximated);

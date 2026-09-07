@@ -188,6 +188,7 @@ void ViewerUI::BuildFrame() {
     BuildSaveOptionsPopup();
     BuildMdxExportPopup();
     BuildM3ExportPopup();
+    BuildM3SavePopup();
     BuildWemProfilePopup();
     exportWindow_.Build();
     app_.BuildStorageExplorerWindow();
@@ -447,6 +448,80 @@ void ViewerUI::BuildM3ExportPopup() {
     ImGui::SameLine();
     if (ImGui::Button(i18n::tr("app.cancel"), ImVec2(80, 0))) {
         pendingM3Path_.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+// ---- Save As, for a model that already IS `.m3` -----------------------------
+//
+// Not a branch of the Save As above: that one writes Warcraft III, and this
+// shares neither its writer nor one of its options. What it does share is the
+// menu item, because from the user's side both are "write this model back in
+// its own format" — the format just decides which questions come with it. See
+// tools/basic_viewer/m3_save.h.
+
+void ViewerUI::SaveM3Dialog() {
+    nfdu8filteritem_t filter[1] = {{"StarCraft II model", "m3"}};
+    NFD::UniquePathU8 outPath;
+    if (NFD::SaveDialog(outPath, filter, 1) != NFD_OKAY)
+        return;
+    pendingM3SavePath_ = outPath.get();
+    openM3SavePopup_ = true;
+    m3SaveError_.clear();
+}
+
+void ViewerUI::BuildM3SavePopup() {
+    if (openM3SavePopup_) {
+        ImGui::OpenPopup(i18n::tr("dialog.m3save.title"));
+        openM3SavePopup_ = false;
+    }
+    if (pendingM3SavePath_.empty())
+        return;
+
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal(i18n::tr("dialog.m3save.title"), nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    ImGui::TextUnformatted(i18n::tr("dialog.m3save.prompt"));
+    ImGui::Separator();
+
+    // The merge has nothing to fold in until a file is attached, and the
+    // Animation window is where that happens — so the row says how many are
+    // waiting rather than offering an option that would do nothing.
+    const std::size_t attached = app_.AttachedAnimations().size();
+    ImGui::BeginDisabled(attached == 0);
+    ImGui::Checkbox(i18n::tr("dialog.m3save.merge_anims"), &m3SaveMergeAnims_);
+    ImGui::EndDisabled();
+    if (attached == 0)
+        ImGui::TextDisabled("%s", i18n::tr("dialog.m3save.merge_none"));
+    else
+        ImGui::TextDisabled(i18n::tr("dialog.m3save.merge_count"), static_cast<int>(attached));
+
+    ImGui::Checkbox(i18n::tr("dialog.m3save.convert_sc2"), &m3SaveConvertSc2_);
+    ImGui::TextDisabled("%s", i18n::tr("dialog.m3save.convert_hint"));
+
+    if (!m3SaveError_.empty()) {
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s: %s",
+                           i18n::tr("dialog.m3save.failed"), m3SaveError_.c_str());
+    }
+
+    ImGui::Separator();
+    if (ImGui::Button(i18n::tr("app.save"), ImVec2(120, 0))) {
+        // Stays open on failure. The one failure this has is the conversion
+        // refusing a material, and the fix for it is a box in this modal.
+        if (app_.SaveM3(io::FsPathFromUtf8(pendingM3SavePath_), m3SaveMergeAnims_ && attached > 0,
+                        m3SaveConvertSc2_, &m3SaveError_)) {
+            pendingM3SavePath_.clear();
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(i18n::tr("app.cancel"), ImVec2(80, 0))) {
+        pendingM3SavePath_.clear();
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -754,7 +829,14 @@ bool WriteCurrentPkb(ViewerApp& app, const std::string& outPath) {
 void ViewerUI::SaveAsDialog() {
     // The output format is locked to the source's: a PopcornFX effect
     // (.pkb/.pkfx) is copied verbatim and can only be re-saved as the same
-    // effect, while a model can only be written as MDX or MDL.
+    // effect, a StarCraft II model goes back out as `.m3`, and everything else
+    // that reaches here is Warcraft III and writes as MDX or MDL. Asked of the
+    // source rather than the extension, for the menu gate's reason.
+    if (app_.CanSaveM3()) {
+        SaveM3Dialog();
+        return;
+    }
+
     std::string srcExt = app_.CurrentModelPath().extension().string();
     for (auto& c : srcExt)
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -1062,12 +1144,15 @@ void ViewerUI::BuildMenuBar() {
             if (ImGui::MenuItem(i18n::tr("menu.file.open"), "Ctrl+O"))
                 OpenFileDialog();
             const bool hasModel = !app_.CurrentModelPath().empty();
-            // Save As writes MDX/MDL (or copies a .pkb verbatim). A `.m2` /
-            // `.m3` has no writer here, so the item greys out rather than
-            // opening a dialog that can only fail at the end — and a `.wem`
-            // opened as one of those is the same model, so it asks the SOURCE
-            // rather than the extension.
-            const bool canSave = hasModel && !app_.CurrentModelIsForeign() && app_.CanSaveAsMdx();
+            // Save As writes a model back in its own format: MDX/MDL, a `.m3`
+            // through the M3 writer, or a .pkb copied verbatim. A `.m2` still
+            // has no writer here, so the item greys out rather than opening a
+            // dialog that can only fail at the end — and a `.wem` opened as any
+            // of these is the same model, so it asks the SOURCE rather than the
+            // extension.
+            const bool canSaveMdx =
+                hasModel && !app_.CurrentModelIsForeign() && app_.CanSaveAsMdx();
+            const bool canSave = canSaveMdx || app_.CanSaveM3();
             if (ImGui::MenuItem(i18n::tr("menu.file.save_as"), "Ctrl+Shift+S", false, canSave))
                 SaveAsDialog();
             // Separate from Save As, which writes the model back in its own

@@ -508,6 +508,24 @@ public:
     bool ExportM3(const std::filesystem::path& outPath, ::whiteout::models::wem::ProfileId profile,
                   bool exportTextures);
 
+    // Whether the active document IS a `.m3` and can therefore be written back
+    // in its own format. The mirror of CanExportM3, which answers for every
+    // model except this one: a StarCraft II model has nothing to derive, so it
+    // saves rather than exports.
+    bool CanSaveM3() const;
+
+    // Write the active `.m3` to @p outPath through the M3 writer. @p
+    // mergeAnimations folds the attached `.m3a` files into the model's own
+    // animation chunks; @p convertToSc2 retargets a Heroes model so StarCraft
+    // II will load it (MODL v29, MADD reversed).
+    //
+    // Returns false and logs on failure, filling @p error when given. Worth
+    // asking for: a shader-graph material with no StandardMaterial form blocks
+    // the retarget outright — 9 of 40 Heroes models sampled — and "nothing
+    // happened" is not an answer a dialog can leave the user with.
+    bool SaveM3(const std::filesystem::path& outPath, bool mergeAnimations, bool convertToSc2,
+                std::string* error = nullptr);
+
     // The skins the active `.m2` can wear, and which one it is wearing. Empty
     // when the model is not a creature, or with `.m2` compiled out — a UI
     // asking should hide the control rather than offer an empty one. Setting it

@@ -1700,6 +1700,11 @@ set(WHITEOUTFLAKES_VIEWER_SOURCES
     # itself only links the renderer-agnostic ImGui core.
     externals/imgui/backends/imgui_impl_glfw.cpp
 )
+# "Save As" for a model that IS `.m3`: written back through m3::Writer with no
+# WEM hop. Needs the `.m3` adapter, so it ships only where that adapter does.
+if(WDX_ENABLE_M3)
+    list(APPEND WHITEOUTFLAKES_VIEWER_SOURCES tools/basic_viewer/m3_save.cpp)
+endif()
 # Win32 .rc — embeds resources/flakes_icon.ico as IDI_WHITEOUT_ICON so the
 # viewer can hand it to the GLFW HWND via WM_SETICON. On Linux we instead
 # load the same icon via glfwSetWindowIcon at runtime (see ViewerApp::Open).

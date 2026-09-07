@@ -120,6 +120,15 @@ private:
     // is set; a no-op otherwise.
     void BuildM3ExportPopup();
 
+    // Save As for a model that IS a StarCraft II `.m3`: the native save dialog,
+    // then the options modal below. Separate from SaveAsDialog's MDX/MDL path
+    // because it shares neither the writer nor a single option with it.
+    void SaveM3Dialog();
+
+    // The deferred "Save M3" options modal. Renders when `pendingM3SavePath_`
+    // is set; a no-op otherwise.
+    void BuildM3SavePopup();
+
     // The profile picker a `.wem` open goes through. Renders when
     // `wemOpenDocument_` is set and loads the document on confirm; a no-op
     // otherwise. Not a question a default can answer: a document carrying two
@@ -181,6 +190,19 @@ private:
     bool openM3ExportPopup_ = false;
     i32 m3ExportProfile_ = 0;      // 0 = StarCraft II, 1 = Heroes of the Storm
     bool m3ExportTextures_ = true; // write the `.dds` textures beside it
+
+    // Save M3 state. Neither option is the file's own shape: the merge folds in
+    // `.m3a` files the `.m3` never named, and the conversion lowers a Heroes
+    // model to what StarCraft II's loader accepts. Both default off, so the
+    // plain save writes the model as it stands.
+    std::string pendingM3SavePath_;
+    bool openM3SavePopup_ = false;
+    bool m3SaveMergeAnims_ = false;
+    bool m3SaveConvertSc2_ = false;
+    // Why the last attempt wrote nothing, kept so the modal can stay open and
+    // say so. A Heroes material the standard form cannot represent blocks the
+    // conversion, and that is the user's cue to leave the box unticked.
+    std::string m3SaveError_;
 
     // IO tab edit buffers: the whole of one profile's settings. They are the
     // page's state, not a mirror of the provider — the provider only ever holds

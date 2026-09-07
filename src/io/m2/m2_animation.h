@@ -222,9 +222,9 @@ u16 SampleM2U16(const ::whiteout::m2::AnimationTrack<u16>& track, const M2AnimTi
 /// @brief The client's `AnimationData` name for @p animationId, or an empty
 ///        view when the id is outside the table.
 ///
-/// Dumped from the 6.0.1 client's `s_animationNames`, the array `CGUnit_C`
-/// reports animation warnings against. `.m2` sequences are keyed by this id, so
-/// without it a sequence list reads as bare numbers.
+/// `whiteout::m2::animationName` under the name this renderer already used —
+/// the table lives beside the parser, because the export converters need the
+/// same one to give a written-out sequence a name.
 std::string_view M2AnimationName(u16 animationId);
 
 } // namespace whiteout::flakes::io
