@@ -2,6 +2,7 @@
 
 #if WDX_ENABLE_IMGUI
 
+#include "compiled_shaders.h"
 #include "renderer/bls/bls_shader_cache.h"
 #include "renderer/perf_zone.h"
 
@@ -59,6 +60,17 @@ struct ImGuiRenderer::Impl {
     bls::BlsShader* ps = nullptr;
 
     gfx::PipelineHandle pso = gfx::PipelineHandle::Invalid;
+    // Colour-space-converting twin of `pso` for ImGui::Image draws whose
+    // texture's sample space mismatches the RTV's: a UNORM texture holds
+    // display bytes but an sRGB RTV expects linear (decode), an sRGB texture
+    // arrives linear but a UNORM RTV expects display bytes (encode). Built
+    // beside `pso` from the embedded imgui_convert entries; Invalid when they
+    // didn't ship, which falls every draw back to the retail passthrough.
+    gfx::PipelineHandle psoConvert = gfx::PipelineHandle::Invalid;
+    gfx::ShaderHandle convVs = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle convToLinearPs = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle convToDisplayPs = gfx::ShaderHandle::Invalid;
+    bool rtvIsSrgb = false;
     // Cached attachment formats — used to rebuild the PSO when SetRtvFormat
     // sees a new colour-target format (macOS / WebGPU swapchains can land
     // on BGRA8 while the rest of the engine targets RGBA8).
@@ -166,6 +178,48 @@ ImGuiRenderer::ImGuiRenderer(gfx::IGFXDevice& device, bls::BlsShaderCache& shade
         return;
     }
 
+    // Embedded conversion entries for mismatched-colour-space image draws
+    // (see Impl::psoConvert). Same per-backend bytecode chooser the
+    // post-process / blit paths use; 1-byte stubs mean "not built for this
+    // backend" and leave the handles Invalid.
+    {
+        using namespace whiteout::flakes::Shaders;
+        const u8* vsB = kImGuiConvertVS;
+        usize vsN = sizeof(kImGuiConvertVS);
+        const u8* linB = kImGuiToLinearPS;
+        usize linN = sizeof(kImGuiToLinearPS);
+        const u8* dspB = kImGuiToDisplayPS;
+        usize dspN = sizeof(kImGuiToDisplayPS);
+        const gfx::GfxApi api = device.GetApi();
+        if (api == gfx::GfxApi::Vulkan) {
+            vsB = kImGuiConvertVSSpv;
+            vsN = sizeof(kImGuiConvertVSSpv);
+            linB = kImGuiToLinearPSSpv;
+            linN = sizeof(kImGuiToLinearPSSpv);
+            dspB = kImGuiToDisplayPSSpv;
+            dspN = sizeof(kImGuiToDisplayPSSpv);
+        } else if (api == gfx::GfxApi::WebGPU) {
+            vsB = kImGuiConvertVSWgsl;
+            vsN = sizeof(kImGuiConvertVSWgsl);
+            linB = kImGuiToLinearPSWgsl;
+            linN = sizeof(kImGuiToLinearPSWgsl);
+            dspB = kImGuiToDisplayPSWgsl;
+            dspN = sizeof(kImGuiToDisplayPSWgsl);
+        } else if (api == gfx::GfxApi::Metal) {
+            vsB = kImGuiConvertVSMtl;
+            vsN = sizeof(kImGuiConvertVSMtl);
+            linB = kImGuiToLinearPSMtl;
+            linN = sizeof(kImGuiToLinearPSMtl);
+            dspB = kImGuiToDisplayPSMtl;
+            dspN = sizeof(kImGuiToDisplayPSMtl);
+        }
+        if (vsN > 1 && linN > 1 && dspN > 1) {
+            impl_->convVs = device.CreateShader(gfx::ShaderStage::Vertex, vsB, vsN);
+            impl_->convToLinearPs = device.CreateShader(gfx::ShaderStage::Pixel, linB, linN);
+            impl_->convToDisplayPs = device.CreateShader(gfx::ShaderStage::Pixel, dspB, dspN);
+        }
+    }
+
     impl_->dsvFormat = dsvFormat;
     // PSO is built lazily by SetRtvFormat below. Doing it eagerly here
     // would lock in whatever rtvFormat the caller guessed at ctor time —
@@ -216,6 +270,14 @@ ImGuiRenderer::~ImGuiRenderer() {
         return;
     if (impl_->pso != gfx::PipelineHandle::Invalid)
         impl_->device->Destroy(impl_->pso);
+    if (impl_->psoConvert != gfx::PipelineHandle::Invalid)
+        impl_->device->Destroy(impl_->psoConvert);
+    if (impl_->convVs != gfx::ShaderHandle::Invalid)
+        impl_->device->Destroy(impl_->convVs);
+    if (impl_->convToLinearPs != gfx::ShaderHandle::Invalid)
+        impl_->device->Destroy(impl_->convToLinearPs);
+    if (impl_->convToDisplayPs != gfx::ShaderHandle::Invalid)
+        impl_->device->Destroy(impl_->convToDisplayPs);
     if (impl_->vsCb != gfx::BufferHandle::Invalid)
         impl_->device->Destroy(impl_->vsCb);
     if (impl_->fontAtlas != gfx::TextureHandle::Invalid)
@@ -253,6 +315,10 @@ void ImGuiRenderer::SetRtvFormat(gfx::Format rtvFormat) {
 
     if (impl_->pso != gfx::PipelineHandle::Invalid)
         impl_->device->Destroy(impl_->pso);
+    if (impl_->psoConvert != gfx::PipelineHandle::Invalid) {
+        impl_->device->Destroy(impl_->psoConvert);
+        impl_->psoConvert = gfx::PipelineHandle::Invalid;
+    }
 
     // PS permute 0 = HAS_SRGB_DECODE on, permute 1 = passthrough. Pick by the
     // target view: an _SRGB RTV re-encodes linear→sRGB on store, so we decode
@@ -301,6 +367,33 @@ void ImGuiRenderer::SetRtvFormat(gfx::Format rtvFormat) {
                      static_cast<int>(rtvFormat));
         return;
     }
+
+    // Twin PSO for image draws whose texture arrives in the other colour
+    // space (see Impl::psoConvert): decode the texel on an sRGB RTV, encode it
+    // on a UNORM one. Same fixed-function state, different shader pair — and
+    // its own layout over the same 48-byte vertex: the convert VS reads three
+    // digit-free semantics (see imgui_convert.slang), skipping the engine
+    // vertex's ATTR1 padding by offset.
+    static const gfx::InputElement kImGuiConvertInput[] = {
+        {"POSITION", 0, gfx::Format::R32G32B32_FLOAT, 0},
+        {"COLOR", 0, gfx::Format::R32G32B32A32_FLOAT, 24},
+        {"TEXCOORD", 0, gfx::Format::R32G32_FLOAT, 40},
+    };
+    if (impl_->convVs != gfx::ShaderHandle::Invalid) {
+        const gfx::ShaderHandle convPs =
+            srgbTarget ? impl_->convToLinearPs : impl_->convToDisplayPs;
+        if (convPs != gfx::ShaderHandle::Invalid) {
+            pd.vs = impl_->convVs;
+            pd.ps = convPs;
+            pd.inputLayout = kImGuiConvertInput;
+            impl_->psoConvert = impl_->device->CreateGraphicsPipeline(pd);
+            if (impl_->psoConvert == gfx::PipelineHandle::Invalid)
+                std::fprintf(stderr, "[imgui] convert PSO creation FAILED (rtvFormat=%d)\n",
+                             static_cast<int>(rtvFormat));
+        }
+    }
+
+    impl_->rtvIsSrgb = srgbTarget;
     impl_->rtvFormat = rtvFormat;
 }
 
@@ -437,7 +530,11 @@ void ImGuiRenderer::Render(gfx::IGFXCommandList& cmd, i32 viewportW, i32 viewpor
     cmd.BindVertexBuffer(0, im.vb, sizeof(EngineImGuiVert));
     cmd.BindIndexBuffer(im.ib,
                         sizeof(ImDrawIdx) == 2 ? gfx::Format::R16_UINT : gfx::Format::R32_UINT);
+    // The retail VS reads the projection at b2; the convert VS (an engine
+    // shader with default slot assignment) reads the same buffer at b0. Both
+    // stay bound for the whole submit so pipeline swaps need no CB traffic.
     cmd.BindConstantBuffer(gfx::ShaderStage::Vertex, 2, im.vsCb);
+    cmd.BindConstantBuffer(gfx::ShaderStage::Vertex, 0, im.vsCb);
     cmd.BindSampler(gfx::ShaderStage::Pixel, 0, im.sampler);
 
     gfx::Viewport vp;
@@ -450,6 +547,7 @@ void ImGuiRenderer::Render(gfx::IGFXCommandList& cmd, i32 viewportW, i32 viewpor
     cmd.SetViewport(vp);
 
     gfx::TextureHandle lastTex = gfx::TextureHandle::Invalid;
+    gfx::PipelineHandle boundPso = im.pso;
 
     for (const ListRange& r : ranges) {
         const ImDrawList* list = r.list;
@@ -484,6 +582,22 @@ void ImGuiRenderer::Render(gfx::IGFXCommandList& cmd, i32 viewportW, i32 viewpor
             const gfx::TextureHandle bind =
                 (tex != gfx::TextureHandle::Invalid) ? tex : im.fontAtlas;
             if (bind != lastTex) {
+                // Normalise the texel's colour space to the RTV's per draw: a
+                // sampled texel arrives linear from an sRGB-typed texture and
+                // display-referred from a UNORM one, and whichever disagrees
+                // with this frame's RTV goes through the convert pipeline
+                // instead of the retail passthrough. The font atlas is exempt:
+                // its texels are colourless coverage (RGB 1.0, both transfer
+                // curves fix 1.0) and the retail pair is its reference
+                // handling, so every vector-UI draw stays on retail bytecode.
+                const bool wantConvert = im.psoConvert != gfx::PipelineHandle::Invalid &&
+                                         bind != im.fontAtlas &&
+                                         im.device->IsTextureSrgb(bind) != im.rtvIsSrgb;
+                const gfx::PipelineHandle want = wantConvert ? im.psoConvert : im.pso;
+                if (want != boundPso) {
+                    cmd.BindPipeline(want);
+                    boundPso = want;
+                }
                 cmd.BindShaderResource(gfx::ShaderStage::Pixel, 0, bind);
                 lastTex = bind;
             }

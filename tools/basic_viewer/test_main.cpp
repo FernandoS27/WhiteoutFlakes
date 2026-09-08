@@ -2017,6 +2017,11 @@ int main(int argc, char* argv[]) {
     whiteout::flakes::renderer::SceneManager scene;
     whiteout::flakes::renderer::RenderService renderer(scene);
 
+    // The gate harness scripts render modes explicitly per scenario and every
+    // golden was recorded against exactly that — the loader must not true the
+    // scene up to whatever the parsed template prefers.
+    renderer.Settings().SetFollowModelRenderMode(false);
+
     // Startup-only settings (validation layer, default backend, preferred
     // device) must land on RenderSettings before gfx::CreateDevice runs.
     whiteout::flakes::LoadStartupSettingsFromIni(renderer);

@@ -184,6 +184,20 @@ public:
         return renderModeDirty_.exchange(false);
     }
 
+    // Let the loader settle a scene's RenderMode from the parsed template
+    // (SceneManager::SetRenderMode) so every load-time latch — texture-slot
+    // colour space, particle/ribbon LinearShading, the provider's HD overlay —
+    // captures the mode the model will actually render in, on the FIRST pass.
+    // On by default (viewer + explorer behaviour). The gate harnesses turn it
+    // off: they force modes explicitly per model and record goldens against
+    // exactly that, so an auto-settle would fight the scenario script.
+    bool FollowModelRenderMode() const {
+        return followModelRenderMode_.load();
+    }
+    void SetFollowModelRenderMode(bool on) {
+        followModelRenderMode_.store(on);
+    }
+
     // Route the SD shading path through the HDR scene target + tonemap
     // instead of straight onto the LDR swap chain. Keeps authentic SD
     // shading (single RTV, no G-buffer/PBR) but lets additive / team-color
@@ -651,6 +665,7 @@ private:
     // Render mode + dirty flag.
     RenderMode renderMode_ = RenderMode::SD;
     std::atomic<bool> renderModeDirty_{false};
+    std::atomic<bool> followModelRenderMode_{true};
     std::atomic<bool> sceneHdrInSd_{false};
     std::atomic<bool> m2LazyAnimations_{false};
     std::atomic<bool> d3LazyAnimations_{false};

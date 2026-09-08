@@ -46,6 +46,15 @@ public:
         product_ = product;
     }
 
+    // The mode a fresh cell scene starts in — i.e. which texture overlay its
+    // FIRST read (the model parse) resolves through. The host sets it from
+    // what it is browsing (HD for a Reforged CASC, SD otherwise); the loader
+    // then trues the scene up to what the parse actually found, so this is an
+    // arm, not a verdict.
+    void SetDefaultCellMode(renderer::RenderMode mode) {
+        defaultCellMode_ = mode;
+    }
+
     // Resize the live-cell budget. A cell that finds no free slot renders
     // nothing, so the cap has to cover a whole screen of cells — and how many
     // that is depends on the grid's icon size, which the user drives. Shrinking
@@ -121,6 +130,7 @@ private:
     renderer::RenderService& svc_;
     std::shared_ptr<io::IContentProvider> provider_;
     ProductId product_ = ProductId::Neutral;
+    renderer::RenderMode defaultCellMode_ = renderer::RenderMode::SD;
     int cap_;
     int res_;
     std::vector<std::unique_ptr<Cell>> cells_;

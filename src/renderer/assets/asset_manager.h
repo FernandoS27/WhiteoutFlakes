@@ -143,6 +143,18 @@ public:
         gammaColorTexturesQuery_ = std::move(query);
     }
 
+    /// @brief Predicate answering whether the acquiring scene reads through
+    ///        the HD texture overlay (Reforged `_hd.w3mod`). Captured per slot
+    ///        at Acquire, like the gamma latch — but unlike gamma, which only
+    ///        changes how bytes DECODE, the overlay changes which BYTES a path
+    ///        resolves to, so it is part of every kind's slot identity and the
+    ///        host pump fetches each need under the need's own bit (see
+    ///        DrainNeedsEx). RenderService wires this to the active scene's
+    ///        effective mode.
+    void SetHdOverlayQuery(std::function<bool()> query) {
+        hdOverlayQuery_ = std::move(query);
+    }
+
     AssetManager(const AssetManager&)            = delete;
     AssetManager& operator=(const AssetManager&) = delete;
 
@@ -208,6 +220,24 @@ public:
     ///        mid-call (avoids re-entry).
     void DrainNeeds(const NeededFn& cb);
 
+    /// @brief A drained need with its full acquire-time context. `hd` is the
+    ///        overlay the acquiring scene read through: the fetch must run
+    ///        under it, because the overlay decides which bytes the path
+    ///        resolves to (an HD cell and an SD document can want the same
+    ///        path as two different files).
+    struct NeedInfo {
+        AssetKind kind = AssetKind::Texture;
+        AssetSubKind subKind = kSoleSubKind;
+        ContentRef ref;
+        bool hd = false;
+    };
+    using NeededExFn = std::function<void(const NeedInfo&)>;
+
+    /// @brief DrainNeeds with the acquire-time context attached. The plain
+    ///        DrainNeeds forwards here dropping `hd` — kept for hosts with a
+    ///        single-mode provider (the web viewer), and for the bound API.
+    void DrainNeedsEx(const NeededExFn& cb);
+
     /// @brief Re-queue every slot whose payload never arrived (still on the
     ///        placeholder) back onto the needs list, so the host's next
     ///        DrainNeeds re-fetches it. Acquire alone can't do this — an
@@ -236,6 +266,14 @@ public:
                        std::span<const u8> bytes, std::string_view foundExt = {}) {
         return ApplyPrepared(kind, subKind, ContentRef::FromPath(path), bytes, foundExt);
     }
+
+    /// @brief ApplyPrepared for bytes fetched under a specific HD overlay:
+    ///        only slots whose acquire-time overlay matches @p hd take the
+    ///        payload. The overlay-less ApplyPrepared applies to every
+    ///        matching slot, which is only correct when the host's provider
+    ///        has a single mode.
+    bool ApplyPreparedFor(AssetKind kind, AssetSubKind subKind, const ContentRef& ref, bool hd,
+                          std::span<const u8> bytes, std::string_view foundExt = {});
 
     /// @brief GPU half of Apply: drains the prepared queue and finalises
     ///        each entry against its slot — creates GPU textures, swaps
@@ -302,8 +340,17 @@ private:
         // (i.e. the acquiring model's mode). The texture is decoded under THIS,
         // not the global mode live at decode time — decode is async and the
         // active mode may have moved on (multi-document), which would otherwise
-        // give an HD model gamma textures. See ApplyPrepared / InvalidateTextures.
+        // give an HD model gamma textures. Part of the slot's identity for
+        // Texture kinds (see SlotServes): two contexts wanting the same file in
+        // different colour spaces get two slots, not a fight over one latch.
         bool      acquireGamma = false;
+        // The HD texture overlay the acquiring scene read through, captured
+        // the same way. Part of EVERY kind's identity, not just Texture's:
+        // the overlay changes which bytes the path resolves to, so an HD cell
+        // and an SD document wanting one path want two different files. The
+        // host pump fetches each need under this bit (DrainNeedsEx) and
+        // applies with ApplyPreparedFor so the two never cross.
+        bool      acquireHd = false;
 
         // Texture
         gfx::TextureHandle texHandle = gfx::TextureHandle::Invalid;
@@ -361,11 +408,30 @@ private:
         AssetKind kind = AssetKind::Texture;
         AssetSubKind subKind = kSoleSubKind;
         ContentRef ref;
+        bool hd = false; // the acquiring scene's overlay — see Slot::acquireHd
     };
+
+    bool ApplyPreparedImpl(AssetKind kind, AssetSubKind subKind, const ContentRef& ref,
+                           const bool* hdFilter, std::span<const u8> bytes,
+                           std::string_view foundExt);
 
     // Handed to every AssetPreload this manager issues; see AssetManagerLink.
     std::shared_ptr<detail::AssetManagerLink> link_ =
         std::make_shared<detail::AssetManagerLink>();
+
+    /// @brief True when an existing slot can serve an acquire of
+    ///        (kind, subKind, gamma, hd) — the binding policy that is part of
+    ///        the slot's identity alongside its ref.
+    static bool SlotServes(const Slot& s, AssetKind kind, AssetSubKind subKind, bool gamma,
+                           bool hd) {
+        // The colour-space latch splits Texture slots only: for every other
+        // kind the query result at acquire time is meaningless, and splitting
+        // on it would fetch the same .pkb twice for nothing. The HD overlay
+        // splits every kind — it changes which bytes the path resolves to,
+        // .pkb and child .mdx included.
+        return s.kind == kind && s.subKind == subKind && s.acquireHd == hd &&
+               (kind != AssetKind::Texture || s.acquireGamma == gamma);
+    }
 
     mutable std::mutex mu_;
     // Dedup does NOT cross the discriminant, deliberately. The same bytes
@@ -375,7 +441,14 @@ private:
     // path-addressed, and the two never mix within one model. std::hash
     // <ContentRef> folds the discriminant in for the same reason. Do not
     // "fix" this by normalising ids to paths.
-    std::unordered_map<ContentRef, SlotId> refToSlot_;
+    //
+    // One ref maps to a short list rather than one slot: kind, sub-kind and —
+    // for textures — the colour-space latch are all part of a slot's identity
+    // (a cube view cannot serve a 2D bind; a texture decoded sRGB for a
+    // linear frame cannot serve a gamma one). The list is almost always one
+    // entry; it grows only when the same file is genuinely wanted two ways at
+    // once, e.g. an SD document and an SD-HDR thumbnail of the same model.
+    std::unordered_map<ContentRef, std::vector<SlotId>> refToSlot_;
     std::unordered_map<SlotId, Slot> slots_;
     std::deque<Need> needs_;
     std::deque<Prepared> prepared_;
@@ -387,6 +460,8 @@ private:
     // SD (gamma) vs HD (linear) colour-texture policy — see
     // SetGammaColorTexturesQuery. Empty ⇒ default linear/HD behaviour.
     std::function<bool()> gammaColorTexturesQuery_;
+    // Acquiring scene's HD overlay — see SetHdOverlayQuery. Empty ⇒ false.
+    std::function<bool()> hdOverlayQuery_;
 
     // Particle parsing dispatcher (PkbReader for .pkb / .pkfx). The
     // arena that backs each parsed EffectAssetModel lives ON the slot

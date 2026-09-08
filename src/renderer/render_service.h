@@ -138,10 +138,27 @@ public:
     SceneManager& DefaultScene();
     SceneId DefaultSceneId() const;
     // Publish/clear the active scene (used by RenderViewport + FrameTicker).
-    // SetActiveScene(0) restores the default scene.
+    // SetActiveScene(0) restores the default scene. Activation also imposes
+    // the scene's effective HD overlay on the provider it reads through — the
+    // single chokepoint that replaced the per-host save/restore dances: every
+    // deferred consumer (asset pump, corn respawns, event-data reads, DNC
+    // re-resolve) already runs bracketed by an activation.
     void SetActiveScene(SceneId id);
     void SetActiveScene(SceneManager& scene); // by-reference overload
     SceneManager& ActiveScene();
+
+    // ---- Per-scene render state, resolved ----
+    // A scene's mode / SD-HDR opt-in override the global RenderSettings when
+    // set (SceneManager::SetRenderMode / SetSceneHdrInSdOverride); unset falls
+    // back to the global, which keeps single-scene hosts that only drive
+    // Settings() behaving as before. Everything frame- and load-time reads
+    // THESE, never the globals directly: the active scene is the loading scene
+    // during a load and the rendered scene during a frame, so both get the
+    // right answer from one rule.
+    RenderMode EffectiveRenderMode();
+    RenderMode EffectiveRenderMode(const SceneManager& scene);
+    bool EffectiveSceneHdrInSd();
+    bool EffectiveSceneHdrInSd(const SceneManager& scene);
 
     // Tick every scene's actors/clock/effect services once this frame (the
     // multi-scene per-frame entry; single-scene hosts can keep calling

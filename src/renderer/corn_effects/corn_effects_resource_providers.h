@@ -62,6 +62,9 @@ public:
 private:
     mutable std::mutex mutex_;
     io::IContentProvider* content_ = nullptr;
+    // The provider's HD-overlay state the cache was filled under — a flip
+    // re-arms the cached MISSES (see SetContentProvider).
+    bool hdSnapshot_ = false;
     // Values are stable in memory across rehash (node-based container), which
     // the span contract requires.
     std::unordered_map<std::string, std::vector<std::byte>> cache_;
@@ -94,6 +97,7 @@ private:
 
     mutable std::mutex mutex_;
     io::IContentProvider* content_ = nullptr;
+    bool hdSnapshot_ = false; // same re-arm-the-misses rule as the mesh provider
     std::unordered_map<std::string, Image> cache_;
 };
 

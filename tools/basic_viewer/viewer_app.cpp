@@ -2527,12 +2527,11 @@ bool ViewerApp::OpenStorageDocumentNow(const std::string& archivePath, bool effe
         service_.Scene().SetPE1BasePath(apath.parent_path());
 
         // HD-ness from the archive location (there's no filesystem MDX to
-        // probe). Set the global render mode + the provider's HD overlay before
-        // spawn so textures resolve correctly.
+        // probe). Arm the scene's mode before spawn so the parse resolves
+        // through the right overlay — ApplyRenderMode routes to the scene,
+        // which forwards the overlay to its provider itself.
         const bool hd = archivePath.find("_hd.w3mod") != std::string::npos;
         ApplyRenderMode(hd ? RenderMode::HD : RenderMode::SD);
-        if (provider)
-            provider->SetHdMode(hd);
 
         service_.Loader().RequestClearAll();
         currentModelPath_ = apath;
@@ -2547,6 +2546,16 @@ bool ViewerApp::OpenStorageDocumentNow(const std::string& archivePath, bool effe
             FillEffectDocState(hero);
         else
             FillModelDocState(hero, apath);
+        // The direct-open path gets this through FollowModelGame /
+        // OpenStoragesAsync; this path never did. Assets the browse already
+        // queued could drain through the WRONG viewport's provider — with no
+        // document open, the main viewport pumps the shared needs queue
+        // through the default scene's provider, which on a fresh session has
+        // no storage open and no HD overlay — and a failed drain is dropped
+        // for good (Acquire dedups, so the document's own Acquire of the same
+        // ref just returns the dead slot). Re-queue them now that this scene,
+        // with the right provider and render mode, is what pumps next.
+        service_.RetryUnloadedAssets();
         return true;
     });
 }
@@ -2773,6 +2782,10 @@ void ViewerApp::SetForceHd(bool on) {
     if (forceHd_ == on)
         return;
     forceHd_ = on;
+    // Forcing a mode IS scripting it: while the force stands, the loader must
+    // not true the scene up to the parsed template, or an SD model would snap
+    // straight back to SD on load.
+    service_.Settings().SetFollowModelRenderMode(!on);
     // Reload the active model so it re-probes (forced HD vs detected) and its
     // deps re-resolve under the new CASC overlay. Empty path ⇒ nothing loaded;
     // the next load picks it up. Effects (.pkb/.pkfx) are mode-agnostic and
@@ -2786,18 +2799,21 @@ void ViewerApp::SetForceHd(bool on) {
 }
 
 void ViewerApp::ApplyRenderMode(RenderMode wanted) {
-    const bool modeFlipped = (service_.Settings().GetRenderMode() != wanted);
+    const bool modeFlipped = (service_.EffectiveRenderMode() != wanted);
+    // The ACTIVE SCENE owns its mode now — the pipeline, the loader's latches
+    // and the CASC overlay all read it there (SceneManager::SetRenderMode
+    // forwards the overlay itself, which is why the explicit SetHdMode this
+    // function used to carry is gone). The global stays in step as the
+    // fallback for unsettled scenes and as the ini-persisted preference.
+    service_.Scene().SetRenderMode(wanted);
     service_.Settings().SetRenderMode(wanted);
     if (!modeFlipped)
         return;
 
-    // RenderSettings is data-only; the side effects of a mode flip (CASC-overlay
-    // precedence, splat / SLK caches keyed under the old mode) have to be
-    // applied here, before any subsequent texture / event-data fetch resolves
-    // under the new mode.
+    // The remaining side effects of a mode flip: splat / SLK caches keyed
+    // under the old mode have to move before any subsequent event-data fetch
+    // resolves under the new one.
     auto* p = service_.Scene().ActiveContentProvider();
-    if (p)
-        p->SetHdMode(wanted == RenderMode::HD);
     // Nothing cached under the old mode means nothing to re-resolve, and the
     // tables are loaded on demand by the first Warcraft III model — forcing
     // them in here would open that game's install for a mode flip alone.
@@ -2854,7 +2870,8 @@ void ViewerApp::SaveActiveDocState() {
     d.walkDriftAccumulated = walkDriftAccumulated_;
     d.effectFrameTicks = effectFrameTicks_;
     d.lastParentTimeMs = lastParentTimeMs_;
-    d.renderMode = service_.Settings().GetRenderMode();
+    // The render mode is not mirrored: the document's SCENE carries its own
+    // (SceneManager::SetRenderMode), which the tab switch reads back.
 }
 
 void ViewerApp::LoadActiveDocState() {
@@ -2921,9 +2938,9 @@ void ViewerApp::SetActiveDocument(i32 idx) {
     activeDoc_ = idx;
     LoadActiveDocState();
     service_.SetActiveScene(documents_[idx].scene);
-    // Re-apply this document's render mode — the pipeline reads the shared
-    // RenderSettings mode per frame, so it must match the active scene.
-    ApplyRenderMode(documents_[idx].renderMode);
+    // The scene carries its own mode; re-applying it here only runs the
+    // splat / event-data sync when the mode actually changed between docs.
+    ApplyRenderMode(service_.EffectiveRenderMode(service_.SceneAt(documents_[idx].scene)));
 }
 
 void ViewerApp::CloseDocument(i32 idx) {
@@ -2949,7 +2966,8 @@ void ViewerApp::CloseDocument(i32 idx) {
         activeDoc_ = std::min<i32>(idx, static_cast<i32>(documents_.size()) - 1);
         LoadActiveDocState();
         service_.SetActiveScene(documents_[activeDoc_].scene);
-        ApplyRenderMode(documents_[activeDoc_].renderMode);
+        ApplyRenderMode(
+            service_.EffectiveRenderMode(service_.SceneAt(documents_[activeDoc_].scene)));
         pendingTabSelect_ = activeDoc_; // tell the tab bar which neighbour won
     } else if (idx < activeDoc_) {
         --activeDoc_; // our slot shifted left

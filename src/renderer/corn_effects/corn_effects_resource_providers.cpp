@@ -21,15 +21,30 @@ std::string NormalizeKey(std::string_view path) {
 
 void CornEffectsMeshProvider::SetContentProvider(io::IContentProvider* content) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (content_ == content)
+    const bool hd = content && content->HdMode();
+    if (content_ == content && hdSnapshot_ == hd)
         return;
-    content_ = content;
-    // Cached misses were recorded against the previous provider's search
-    // scope, so a source change has to get another chance at them. Hits are
-    // dropped too: spans handed out earlier stay valid only while the buffer
-    // lives, so this is safe exclusively before any runtime binds — which is
-    // where the scene wires its provider.
-    cache_.clear();
+    if (content_ != content) {
+        content_ = content;
+        // Cached misses were recorded against the previous provider's search
+        // scope, so a source change has to get another chance at them. Hits are
+        // dropped too: spans handed out earlier stay valid only while the
+        // buffer lives, so this is safe exclusively before any runtime binds —
+        // which is where the scene wires its provider.
+        cache_.clear();
+    } else {
+        // Same provider, different HD overlay — that flip happens mid-session
+        // with runtimes already bound, so hits (whose spans are held) must
+        // stay. A cached MISS never handed a span out, and the overlay change
+        // is exactly what could make it resolve now.
+        for (auto it = cache_.begin(); it != cache_.end();) {
+            if (it->second.empty())
+                it = cache_.erase(it);
+            else
+                ++it;
+        }
+    }
+    hdSnapshot_ = hd;
 }
 
 std::span<const std::byte> CornEffectsMeshProvider::readMesh(std::string_view path) {
@@ -58,10 +73,23 @@ std::span<const std::byte> CornEffectsMeshProvider::readMesh(std::string_view pa
 
 void CornEffectsTextureProvider::SetContentProvider(io::IContentProvider* content) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (content_ == content)
+    const bool hd = content && content->HdMode();
+    if (content_ == content && hdSnapshot_ == hd)
         return;
-    content_ = content;
-    cache_.clear();
+    if (content_ != content) {
+        content_ = content;
+        cache_.clear();
+    } else {
+        // HD-overlay flip on the same provider: drop cached misses only —
+        // hits' texel buffers are referenced by bound runtimes.
+        for (auto it = cache_.begin(); it != cache_.end();) {
+            if (it->second.texels.empty())
+                it = cache_.erase(it);
+            else
+                ++it;
+        }
+    }
+    hdSnapshot_ = hd;
 }
 
 ::whiteout::cornflakes::TextureImageDesc CornEffectsTextureProvider::readTexture(

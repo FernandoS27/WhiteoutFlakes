@@ -345,6 +345,10 @@ int main(int argc, char* argv[]) {
         }
         {
             whiteout::flakes::tools::ThumbnailPool pool(renderer, provider, /*cap*/ 4, /*res*/ 256);
+            // Cell scenes carry their own mode now; mirror the HD arm above so
+            // the first read resolves through the same overlay the app's
+            // browse would arm.
+            pool.SetDefaultCellMode(whiteout::flakes::renderer::RenderMode::HD);
             const bool isEffect =
                 rsRelPath.size() > 4 && (rsRelPath.substr(rsRelPath.size() - 4) == ".pkb" ||
                                          rsRelPath.find(".pkfx") != std::string::npos);

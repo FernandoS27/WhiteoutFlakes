@@ -59,6 +59,7 @@ public:
 
     TextureHandle CreateColorTarget(i32 w, i32 h, Format f) override;
     TextureHandle CreateDepthTarget(i32 w, i32 h, Format f) override;
+    bool IsTextureSrgb(TextureHandle) const override;
 
     IGFXCommandList* GetImmediateContext() override;
 

@@ -220,6 +220,15 @@ TextureHandle WebGPUDevice::CreateDepthTarget(i32 w, i32 h, Format f) {
     return static_cast<TextureHandle>(state.textures.Insert(std::move(entry)));
 }
 
+bool WebGPUDevice::IsTextureSrgb(TextureHandle h) const {
+    const auto* tex = state_->textures.Get(static_cast<u64>(h));
+    // A linear-view proxy samples through the linear partner view even though
+    // `format` names the sRGB texture format — it must answer "linear".
+    if (!tex || tex->isLinearView)
+        return false;
+    return LinearPartnerOf(tex->format) != tex->format;
+}
+
 void WebGPUDevice::Destroy(TextureHandle h) {
     auto& state = *state_;
     auto* texture = state.textures.Get(static_cast<u64>(h));

@@ -353,6 +353,14 @@ void VulkanDevice::Destroy(TextureHandle h) {
 //     is owned by the graphics family, and when the device picked a dedicated
 //     transfer family (hasAsyncTransfer) reading it from there without an
 //     ownership transfer is undefined.
+bool VulkanDevice::IsTextureSrgb(TextureHandle h) const {
+    const auto* tex = state_->textures.Get(static_cast<u64>(h));
+    if (!tex)
+        return false;
+    // An sRGB format is exactly one that has a distinct linear partner.
+    return LinearPartnerOf(tex->format) != tex->format;
+}
+
 bool VulkanDevice::ReadbackTexture(TextureHandle h, i32 width, i32 height,
                                    std::vector<u8>& outRgba) {
     auto& state = *state_;

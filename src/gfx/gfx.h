@@ -200,6 +200,13 @@ public:
     virtual TextureHandle CreateColorTarget(i32 w, i32 h, Format f) = 0;
     virtual TextureHandle CreateDepthTarget(i32 w, i32 h, Format f) = 0;
 
+    // Whether the view a shader samples this texture through is sRGB-typed —
+    // i.e. whether a sampled texel arrives already decoded to linear. Lets a
+    // pass compositing textures of mixed provenance (ImGui image draws) pick a
+    // colour-space conversion per draw instead of assuming the frame's space.
+    // Unknown / destroyed handles answer false.
+    virtual bool IsTextureSrgb(TextureHandle) const = 0;
+
     virtual IGFXCommandList* GetImmediateContext() = 0;
 
     virtual GfxApi GetApi() const = 0;

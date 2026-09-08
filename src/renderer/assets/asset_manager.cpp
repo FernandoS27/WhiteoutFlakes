@@ -86,9 +86,19 @@ AssetManager::SlotId AssetManager::Acquire(AssetKind kind, AssetSubKind subKind,
 
     std::lock_guard<std::mutex> lk(mu_);
     ++statAcquires_;
-    if (auto it = refToSlot_.find(norm); it != refToSlot_.end()) {
-        slots_[it->second].refCount++;
-        return it->second;
+    // Capture the colour-space policy of the mode active at acquire time (the
+    // acquiring model's mode) so the async decode uses it, not the live mode.
+    const bool gamma = gammaColorTexturesQuery_ && gammaColorTexturesQuery_();
+    // And the HD overlay the acquiring scene reads through — the fetch must
+    // later run under exactly this (see DrainNeedsEx).
+    const bool hd = hdOverlayQuery_ && hdOverlayQuery_();
+    std::vector<SlotId>& ids = refToSlot_[norm];
+    for (SlotId existing : ids) {
+        Slot& s = slots_[existing];
+        if (SlotServes(s, kind, subKind, gamma, hd)) {
+            s.refCount++;
+            return existing;
+        }
     }
 
     const SlotId id = AllocSlotId();
@@ -97,17 +107,16 @@ AssetManager::SlotId AssetManager::Acquire(AssetKind kind, AssetSubKind subKind,
     s.subKind  = subKind;
     s.ref      = norm;
     s.refCount = 1;
-    // Capture the colour-space policy of the mode active at acquire time (the
-    // acquiring model's mode) so the async decode uses it, not the live mode.
-    s.acquireGamma = gammaColorTexturesQuery_ && gammaColorTexturesQuery_();
+    s.acquireGamma = gamma;
+    s.acquireHd = hd;
     // Texture: bind the manager's shared "white" default until real
     // bytes arrive. Effect/Model: leave payload null — consumers
     // null-check the typed accessors.
     if (kind == AssetKind::Texture)
         s.texHandle = textures_.GetDefaults().White;
     slots_.emplace(id, std::move(s));
-    refToSlot_.emplace(norm, id);
-    needs_.push_back(Need{kind, subKind, norm});
+    ids.push_back(id);
+    needs_.push_back(Need{kind, subKind, norm, hd});
     return id;
 }
 
@@ -135,7 +144,12 @@ void AssetManager::Release(SlotId slot) {
         }
 
         dependencies = std::move(it->second.dependencies);
-        refToSlot_.erase(it->second.ref);
+        if (auto rit = refToSlot_.find(it->second.ref); rit != refToSlot_.end()) {
+            auto& ids = rit->second;
+            ids.erase(std::remove(ids.begin(), ids.end(), slot), ids.end());
+            if (ids.empty())
+                refToSlot_.erase(rit);
+        }
         slots_.erase(it);
     }
     if (toDestroy != gfx::TextureHandle::Invalid && gfx_)
@@ -203,9 +217,13 @@ bool AssetManager::IsTextureCached(std::string_view path) const {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = refToSlot_.find(norm);
     if (it == refToSlot_.end()) return false;
-    auto slotIt = slots_.find(it->second);
-    if (slotIt == slots_.end()) return false;
-    return slotIt->second.kind == AssetKind::Texture && slotIt->second.loaded;
+    for (SlotId id : it->second) {
+        auto slotIt = slots_.find(id);
+        if (slotIt != slots_.end() && slotIt->second.kind == AssetKind::Texture &&
+            slotIt->second.loaded)
+            return true;
+    }
+    return false;
 }
 
 u32 AssetManager::GenerationOf(SlotId slot) const {
@@ -239,6 +257,14 @@ std::shared_ptr<model::ModelTemplate> AssetManager::ChildModelOf(SlotId slot) co
 }
 
 void AssetManager::DrainNeeds(const NeededFn& cb) {
+    if (!cb) {
+        DrainNeedsEx(nullptr);
+        return;
+    }
+    DrainNeedsEx([&cb](const NeedInfo& n) { cb(n.kind, n.subKind, n.ref); });
+}
+
+void AssetManager::DrainNeedsEx(const NeededExFn& cb) {
     std::deque<Need> batch;
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -246,7 +272,7 @@ void AssetManager::DrainNeeds(const NeededFn& cb) {
     }
     if (!cb) return;
     for (const Need& n : batch)
-        cb(n.kind, n.subKind, n.ref);
+        cb(NeedInfo{n.kind, n.subKind, n.ref, n.hd});
 }
 
 std::size_t AssetManager::RetryUnloaded() {
@@ -258,7 +284,7 @@ std::size_t AssetManager::RetryUnloaded() {
         // A duplicate already in needs_ (a slot Acquired but not yet drained
         // this frame) is harmless — DrainNeeds just re-fetches, and a re-Apply
         // of the same ref is idempotent.
-        needs_.push_back(Need{s.kind, s.subKind, s.ref});
+        needs_.push_back(Need{s.kind, s.subKind, s.ref, s.acquireHd});
         ++n;
     }
     return n;
@@ -397,6 +423,18 @@ bool DecodeTexture(std::span<const u8> bytes, const std::string& ext,
 
 bool AssetManager::ApplyPrepared(AssetKind kind, AssetSubKind subKind, const ContentRef& ref,
                                  std::span<const u8> bytes, std::string_view foundExt) {
+    return ApplyPreparedImpl(kind, subKind, ref, nullptr, bytes, foundExt);
+}
+
+bool AssetManager::ApplyPreparedFor(AssetKind kind, AssetSubKind subKind, const ContentRef& ref,
+                                    bool hd, std::span<const u8> bytes,
+                                    std::string_view foundExt) {
+    return ApplyPreparedImpl(kind, subKind, ref, &hd, bytes, foundExt);
+}
+
+bool AssetManager::ApplyPreparedImpl(AssetKind kind, AssetSubKind subKind, const ContentRef& ref,
+                                     const bool* hdFilter, std::span<const u8> bytes,
+                                     std::string_view foundExt) {
     if (ref.Empty() || bytes.empty()) {
         std::lock_guard<std::mutex> lk(mu_);
         ++statApplyMisses_;
@@ -410,33 +448,38 @@ bool AssetManager::ApplyPrepared(AssetKind kind, AssetSubKind subKind, const Con
     // carry the kind in the reference that produced the id instead.
     const std::string pathish = norm.IsPath() ? norm.path : std::string{};
 
-    // Locate the target slot up front. If nothing is waiting on this
+    // Locate the target slots up front. If nothing is waiting on this
     // ref, drop the bytes — happens when consumers Release before the
-    // host's fetch resolved. Stats count it as a miss.
-    SlotId target = kInvalidSlot;
-    AssetKind expectedKind = kind;
-    AssetSubKind expectedSubKind = subKind;
-    bool acquireGamma = false;
+    // host's fetch resolved. Stats count it as a miss. A Texture ref can
+    // match more than one slot: the colour-space latch is part of a Texture
+    // slot's identity, so one fetched file may owe both a gamma and a linear
+    // decode of the same path.
+    struct Target {
+        SlotId slot;
+        bool gamma;
+    };
+    std::vector<Target> targets;
     {
         std::lock_guard<std::mutex> lk(mu_);
-        auto it = refToSlot_.find(norm);
-        if (it == refToSlot_.end()) {
+        if (auto it = refToSlot_.find(norm); it != refToSlot_.end()) {
+            for (SlotId id : it->second) {
+                const Slot& s = slots_[id];
+                // Bytes fetched under a specific overlay serve only the slots
+                // acquired under it — the other variant is a different file.
+                if (hdFilter && s.acquireHd != *hdFilter)
+                    continue;
+                if (s.kind == kind && s.subKind == subKind)
+                    targets.push_back({id, s.acquireGamma});
+            }
+        }
+        if (targets.empty()) {
             ++statApplyMisses_;
             return false;
         }
-        target = it->second;
-        expectedKind = slots_[target].kind;
-        expectedSubKind = slots_[target].subKind;
-        acquireGamma = slots_[target].acquireGamma;
-    }
-    if (expectedKind != kind || expectedSubKind != subKind) {
-        std::lock_guard<std::mutex> lk(mu_);
-        ++statApplyMisses_;
-        return false;
     }
 
     Prepared prep;
-    prep.slot = target;
+    prep.slot = targets.front().slot;
     prep.kind = kind;
     prep.subKind = subKind;
 
@@ -455,15 +498,29 @@ bool AssetManager::ApplyPrepared(AssetKind kind, AssetSubKind subKind, const Con
             ext = model::SniffTextureExtension(bytes);
         }
         // Decode under the mode captured at Acquire (the model's mode), not the
-        // live mode — the decode is async and the active mode may have moved on.
-        if (!DecodeTexture(bytes, ext, pathish, textures_.SupportsBlockCompression(),
-                           acquireGamma, subKind == kTextureCubeSubKind,
-                           subKind == kTextureLinearSubKind, prep.pixels, prep.width, prep.height,
-                           prep.mipLevels, prep.arraySize, prep.isCube, prep.format)) {
+        // live mode — the decode is async and the active mode may have moved
+        // on. Once per matching slot, because each slot carries its own latch.
+        bool any = false;
+        for (const Target& t : targets) {
+            Prepared texPrep;
+            texPrep.slot = t.slot;
+            texPrep.kind = kind;
+            texPrep.subKind = subKind;
+            if (!DecodeTexture(bytes, ext, pathish, textures_.SupportsBlockCompression(), t.gamma,
+                               subKind == kTextureCubeSubKind, subKind == kTextureLinearSubKind,
+                               texPrep.pixels, texPrep.width, texPrep.height, texPrep.mipLevels,
+                               texPrep.arraySize, texPrep.isCube, texPrep.format))
+                continue;
+            std::lock_guard<std::mutex> lk(mu_);
+            ++statApplies_;
+            prepared_.emplace_back(std::move(texPrep));
+            any = true;
+        }
+        if (!any) {
             std::lock_guard<std::mutex> lk(mu_);
             ++statApplyMisses_;
-            return false;
         }
+        return any;
     } else if (kind == AssetKind::Effect) {
         // .pkb / .pkfx — parse into a FRESH per-slot arena. PkbReader
         // keeps spans into both the source buffer and the arena, so

@@ -12,6 +12,8 @@
 #include "renderer/render_settings.h"
 
 #include <array>
+#include <functional>
+#include <utility>
 #include <vector>
 
 namespace whiteout::flakes::renderer::profiles::wc3 {
@@ -27,7 +29,16 @@ using core::TargetSlot;
 // abstraction is that this case stays this small.
 class Wc3SdProfile final : public core::IRenderProfile {
 public:
-    explicit Wc3SdProfile(RenderSettings& settings) : settings_(settings) {
+    // `sceneHdrInSd` answers "does THIS frame's SD colour route through the
+    // HDR target?" — supplied by the pipeline as the ACTIVE SCENE's effective
+    // flag rather than read off RenderSettings directly, because the opt-in is
+    // per scene now (a pinned-HDR thumbnail cell and a classic gamma document
+    // render through this same profile object in one frame). The single-arg
+    // form reads the global flag — for tests and hosts with no scene overrides.
+    explicit Wc3SdProfile(RenderSettings& settings)
+        : Wc3SdProfile(settings, [&s = settings] { return s.SceneHdrInSd(); }) {}
+    Wc3SdProfile(RenderSettings& settings, std::function<bool()> sceneHdrInSd)
+        : settings_(settings), sceneHdrInSd_(std::move(sceneHdrInSd)) {
         targets_ = {
             TargetDesc{TargetSlot::SceneColor, gfx::Format::R8G8B8A8_UNORM, 1.0f},
             TargetDesc{TargetSlot::Depth, gfx::Format::D24_UNORM_S8_UINT, 1.0f},
@@ -54,7 +65,7 @@ public:
         // additive content stops clipping to white — an optional pass whose
         // consumer must therefore not be unconditional.
         passes_.push_back({PassSlot::Tonemap,
-                           [this] { return settings_.SceneHdrInSd(); },
+                           [this] { return sceneHdrInSd_(); },
                            TargetBit(TargetSlot::SceneColor),
                            0,
                            TargetBit(TargetSlot::Backbuffer)});
@@ -75,8 +86,8 @@ public:
         return targets_;
     }
     gfx::Format SceneColorFormat() const override {
-        return settings_.SceneHdrInSd() ? gfx::Format::R11G11B10_FLOAT
-                                        : gfx::Format::R8G8B8A8_UNORM;
+        return sceneHdrInSd_() ? gfx::Format::R11G11B10_FLOAT
+                               : gfx::Format::R8G8B8A8_UNORM;
     }
     bool LinearShading() const override {
         return false;
@@ -107,6 +118,7 @@ public:
 
 private:
     RenderSettings& settings_;
+    std::function<bool()> sceneHdrInSd_;
     std::vector<PassEntry> passes_;
     std::vector<TargetDesc> targets_;
     std::vector<shading::IShadingModel*> models_;

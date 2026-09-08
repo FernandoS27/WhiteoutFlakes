@@ -785,10 +785,8 @@ private:
         f32 walkDriftAccumulated = 0.0f;
         i32 effectFrameTicks = -1;
         i32 lastParentTimeMs = 0;
-        // Render mode is per scene: each document keeps the HD/SD mode it was
-        // loaded under and re-applies it when it becomes active, since the
-        // pipeline reads the (shared) RenderSettings mode at draw time.
-        RenderMode renderMode = RenderMode::SD;
+        // Render mode is genuinely per scene now (SceneManager::SetRenderMode)
+        // — the document's scene carries it, so there is no mirror here.
     };
 
     // Scene of the active document, or the default scene when none is open.

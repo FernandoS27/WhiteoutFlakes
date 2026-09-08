@@ -116,6 +116,27 @@ inline bool IsBlockCompressed(Format f) {
     }
 }
 
+/// @brief `true` if @p f is an sRGB-typed format — one whose shader-resource
+///        view decodes sRGB → linear on sample (and whose render-target view
+///        encodes linear → sRGB on store).
+///
+/// This is the question "does a sampled texel arrive linear?", which is what
+/// a pass compositing foreign textures (e.g. ImGui image draws) needs to
+/// normalise colour spaces per draw.
+inline bool IsSrgbFormat(Format f) {
+    switch (f) {
+    case Format::R8G8B8A8_UNORM_SRGB:
+    case Format::B8G8R8A8_UNORM_SRGB:
+    case Format::BC1_UNORM_SRGB:
+    case Format::BC2_UNORM_SRGB:
+    case Format::BC3_UNORM_SRGB:
+    case Format::BC7_UNORM_SRGB:
+        return true;
+    default:
+        return false;
+    }
+}
+
 /// @brief Bytes per addressable block.
 ///
 /// For block-compressed formats this is the bytes per 4x4 texel block

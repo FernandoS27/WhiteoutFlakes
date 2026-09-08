@@ -354,13 +354,19 @@ void StorageExplorer::FinishOpenCasc(const std::string& root) {
                                   : browser_.Root());
     // The `_hd.w3mod` overlay is Warcraft III's Reforged CASC chain; a classic
     // install has no mod chain to overlay and every HD lookup in one misses.
-    provider_->SetHdMode((product == ProductId::Wc3 || product == ProductId::Neutral) &&
-                         browser_.Kind() == io::StorageKind::Casc);
+    const bool browseHd = (product == ProductId::Wc3 || product == ProductId::Neutral) &&
+                          browser_.Kind() == io::StorageKind::Casc;
+    provider_->SetHdMode(browseHd);
     if (pool_) {
         // Before Clear, so the cells this open builds already know which game
         // they are showing: it decides whether a new cell scene stands the
         // Warcraft III lighting up instead of waiting for a model spawn to.
         pool_->SetProduct(product);
+        // The mode a fresh cell scene starts in — which overlay its FIRST
+        // read (the parse) resolves through. Same predicate as the provider
+        // arm above; the loader trues each cell up from what it parses.
+        pool_->SetDefaultCellMode(browseHd ? renderer::RenderMode::HD
+                                           : renderer::RenderMode::SD);
         pool_->Clear();
     }
     if (textures_)
@@ -1460,15 +1466,13 @@ void StorageExplorer::RenderThumbnails(float dt) {
     if (!pool_)
         return;
 
-    // ThumbnailPool::RenderVisible mutates GLOBAL RenderSettings per cell (render
-    // mode, SD-HDR) and we force the floor grid off + clear the cells to the
-    // panel background. Those settings are shared with the host's main view, so
-    // snapshot and restore them around the cell render. (SetDisplayFlags also
-    // carries renderMode, so restoring it restores the host's mode too.)
+    // Cell render state (mode, SD-HDR, HD overlay) is each cell SCENE's own
+    // now — nothing to save or restore on that axis. What is still global is
+    // the display styling: force the floor grid off and clear the cells to
+    // the panel background, then put both back for the host's main view.
     auto& s = svc_.Settings();
     const auto savedFlags = s.GetDisplayFlags();
     const std::uint32_t savedBg = s.BackgroundColorRaw();
-    const bool savedHdr = s.SceneHdrInSd();
 
     auto tf = savedFlags;
     tf.showGrid = false;
@@ -1484,7 +1488,6 @@ void StorageExplorer::RenderThumbnails(float dt) {
     s.SetBackgroundColor(static_cast<unsigned char>(savedBg & 0xFF),
                          static_cast<unsigned char>((savedBg >> 8) & 0xFF),
                          static_cast<unsigned char>((savedBg >> 16) & 0xFF));
-    s.SetSceneHdrInSd(savedHdr);
 }
 
 } // namespace whiteout::flakes::tools

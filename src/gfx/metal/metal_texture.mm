@@ -177,6 +177,15 @@ TextureHandle MetalDevice::CreateDepthTarget(i32 w, i32 h, Format f) {
     return CreateTexture(d, nullptr);
 }
 
+bool MetalDevice::IsTextureSrgb(TextureHandle h) const {
+    const auto* tex = state_->textures.Get(static_cast<u64>(h));
+    // Linear-view proxies sample through the linear partner even though
+    // `format` names the sRGB texture format — they must answer "linear".
+    if (!tex || tex->isLinearView)
+        return false;
+    return LinearPartnerOf(tex->format) != tex->format;
+}
+
 void MetalDevice::Destroy(TextureHandle h) {
     auto& state = *state_;
     auto* tex = state.textures.Get(static_cast<u64>(h));

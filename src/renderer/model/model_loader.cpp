@@ -1276,6 +1276,21 @@ u32 ModelLoader::AddModelByPath(const std::string& mdxPath, const Matrix44f& ini
     if (!tmpl)
         return 0;
 
+    // Settle the scene's mode from what was actually parsed, BEFORE anything
+    // below latches: the texture-slot colour space, particle/ribbon
+    // LinearShading and the provider's HD overlay are all captured at load
+    // time against the profile this choice selects. Which file the parse read
+    // was the pre-load overlay's pick (the host's arm), so this is the
+    // true-up: an HD file makes an HD scene. Hosts that script modes
+    // explicitly (the gate harnesses) turn FollowModelRenderMode off.
+    if (rs_.Settings().FollowModelRenderMode()) {
+        const RenderMode want = tmpl->PreferredRenderMode();
+        const bool changed = rs_.EffectiveRenderMode() != want;
+        rs_.Scene().SetRenderMode(want);
+        if (changed)
+            rs_.Settings().MarkRenderModeDirty();
+    }
+
     u32 handle;
     {
         handle = rs_.Scene().AllocActorId();
@@ -1571,6 +1586,12 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
                          ref.Describe().c_str(), ProductName(product), ProductName(was));
         }
     }
+    // Foreign products' profiles ignore the SD/HD axis (the product picks the
+    // profile), but the mode still feeds SceneTargetFormat's pre-latch
+    // fallback and the provider's HD overlay — settle it to what a non-WC3
+    // template always reports (see ModelTemplate::PreferredRenderMode).
+    if (rs_.Settings().FollowModelRenderMode())
+        rs_.Scene().SetRenderMode(RenderMode::SD);
 
     // Parse only now — the provider is pointed at the right game's storage.
     std::shared_ptr<IModelSource> source;
@@ -1790,6 +1811,18 @@ Actor* ModelLoader::SpawnWemDocument(const io::WemDocument& document, wem::Profi
         // an error and is not the game's lighting either.
         if (product == ProductId::Wc3)
             rs_.EnsureWc3GameData();
+        // The mode settles from the profile the same way the product does —
+        // it is the profile's HD-ness, decided by the same call the host's
+        // dialog used — and before BuildWemSource stages anything that
+        // latches (see AddModelByPath).
+        if (rs_.Settings().FollowModelRenderMode()) {
+            const RenderMode want =
+                io::WemProfileIsHd(chosen) ? RenderMode::HD : RenderMode::SD;
+            const bool changed = rs_.EffectiveRenderMode() != want;
+            rs_.Scene().SetRenderMode(want);
+            if (changed)
+                rs_.Settings().MarkRenderModeDirty();
+        }
     }
 
     const io::WemSourceResult built = io::BuildWemSource(document, chosen, {}, provider,

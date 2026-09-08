@@ -133,7 +133,7 @@ gfx::Format RenderPipeline::SceneTargetFormat() const {
     const bool sceneToHdr =
         impl_->frameProfile_
             ? impl_->frameProfile_->SceneColorFormat() == kHdrSceneFormat
-            : (impl_->frameRenderMode_ == RenderMode::HD || rs_.Settings().SceneHdrInSd());
+            : (impl_->frameRenderMode_ == RenderMode::HD || rs_.EffectiveSceneHdrInSd());
     if (sceneToHdr)
         return kHdrSceneFormat;
     // SD mode renders directly to the swap-chain back buffer — PSO
@@ -2059,12 +2059,16 @@ void RenderPipeline::RenderViewport(const Viewport& vp) {
     auto* cmd = impl_->gfx_->GetImmediateContext();
 
     // Snapshot the render mode for the duration of this frame. The
-    // host may flip Settings().SetRenderMode() from another thread
-    // (test_main.cpp does this once per model load), and every
-    // per-frame decision below must agree on the value — otherwise
-    // the scene pass attaches the SRGB swap chain while CurrentLinePSO
-    // hands out the HDR-rtv line PSO. See `Impl::frameRenderMode_`.
-    impl_->frameRenderMode_ = rs_.Settings().GetRenderMode();
+    // host may flip the mode from another thread (test_main.cpp does this
+    // once per model load), and every per-frame decision below must agree on
+    // the value — otherwise the scene pass attaches the SRGB swap chain while
+    // CurrentLinePSO hands out the HDR-rtv line PSO. See
+    // `Impl::frameRenderMode_`. The source is the scene being rendered (made
+    // active above): a scene's own mode wins, the global RenderSettings mode
+    // is the fallback for scenes nothing settled — which is what lets the
+    // thumbnail grid render an HD cell and an SD document in one frame with
+    // no global flipping in between.
+    impl_->frameRenderMode_ = rs_.EffectiveRenderMode();
     // `useHdr` gates the HD-only deferred machinery: the 3-RTV G-buffer, GTAO
     // and bloom (all need the linearDepth/normal slots the HD opaque pass
     // populates). `sceneToHdr` is the looser question of "does the scene land
@@ -3121,7 +3125,10 @@ core::IRenderProfile& RenderPipeline::ActiveProfile() {
 }
 
 core::IRenderProfile& RenderPipeline::LoadTimeProfile() {
-    return ProfileForMode(rs_.Settings().GetRenderMode());
+    // The active scene is the loading scene during a load (SpawnUnit and the
+    // thumbnail pool both activate before spawning), so its effective mode is
+    // the right answer here — the frame latch would be stale mid-load.
+    return ProfileForMode(rs_.EffectiveRenderMode());
 }
 
 core::IRenderProfile& RenderPipeline::ProfileForMode(RenderMode mode) {
@@ -3129,7 +3136,11 @@ core::IRenderProfile& RenderPipeline::ProfileForMode(RenderMode mode) {
         // Force the shading models into existence first — a profile lists the
         // models it can dispatch to, and an empty list would be a lie.
         (void)ActiveShadingModel();
-        auto sd = std::make_unique<profiles::wc3::Wc3SdProfile>(rs_.Settings());
+        // SD's SceneHdrInSd is per scene now (a pinned-HDR thumbnail cell and
+        // a gamma document share this profile object within one frame), so
+        // the profile asks the service for the ACTIVE scene's effective flag.
+        auto sd = std::make_unique<profiles::wc3::Wc3SdProfile>(
+            rs_.Settings(), [this] { return rs_.EffectiveSceneHdrInSd(); });
         auto hd = std::make_unique<profiles::wc3::Wc3HdProfile>(rs_.Settings());
         const std::vector<shading::IShadingModel*> models{impl_->wc3SdShading_.get(),
                                                           impl_->wc3HdShading_.get()};
@@ -3201,7 +3212,7 @@ core::IRenderProfile& RenderPipeline::ProfileForMode(RenderMode mode) {
             return rs_.GetDistortionService() != nullptr && rs_.Settings().D3DistortionEnabled();
         });
         d3->SetPassPredicate(core::PassSlot::Bloom, [this] {
-            return rs_.GetPostProcessService() != nullptr && rs_.Settings().SceneHdrInSd() &&
+            return rs_.GetPostProcessService() != nullptr && rs_.EffectiveSceneHdrInSd() &&
                    rs_.Settings().BloomEnabled();
         });
         const auto vd3 = core::ValidateProfile(*d3);

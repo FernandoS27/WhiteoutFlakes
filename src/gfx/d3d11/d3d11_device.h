@@ -53,6 +53,10 @@ public:
 
     TextureHandle CreateColorTarget(i32 w, i32 h, Format f) override;
     TextureHandle CreateDepthTarget(i32 w, i32 h, Format f) override;
+    bool IsTextureSrgb(TextureHandle h) const override {
+        const auto* e = textures_.Get(static_cast<u64>(h));
+        return e && IsSrgbFormat(e->desc.format);
+    }
 
     IGFXCommandList* GetImmediateContext() override;
 

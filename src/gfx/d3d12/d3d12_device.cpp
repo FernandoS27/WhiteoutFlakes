@@ -954,6 +954,11 @@ TextureHandle D3D12Device::CreateColorTarget(i32 w, i32 h, Format f) {
     return CreateTexture(desc, nullptr);
 }
 
+bool D3D12Device::IsTextureSrgb(TextureHandle h) const {
+    const auto* e = textures_.Get(static_cast<u64>(h));
+    return e && IsSrgbFormat(e->desc.format);
+}
+
 TextureHandle D3D12Device::CreateDepthTarget(i32 w, i32 h, Format f) {
     TextureDesc desc{};
     desc.width = w;

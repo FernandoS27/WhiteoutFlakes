@@ -299,6 +299,14 @@ set(SHADER_ENTRIES
     # on the engine's shipped gaussianblur.bls being staged.
     "gaussian_blur.slang|vsBlur|vertex|kGaussianBlurVS"
     "gaussian_blur.slang|psBlur|fragment|kGaussianBlurPS"
+    # ImGui colour-space-converting image draws. The retail imgui.bls permute
+    # set is fixed (differentially tested against the shipped game), so the
+    # mismatched-texture half of the colour-space matrix — a UNORM thumbnail
+    # on an sRGB RTV, an sRGB texture on a UNORM RTV — ships as engine
+    # entries that ImGuiRenderer swaps to per draw.
+    "imgui_convert.slang|vsImGuiConvert|vertex|kImGuiConvertVS"
+    "imgui_convert.slang|psImGuiToLinear|fragment|kImGuiToLinearPS"
+    "imgui_convert.slang|psImGuiToDisplay|fragment|kImGuiToDisplayPS"
     # WoW refraction particles (RefractionService). Two passes: the emitters'
     # quads into a scalar distortion mask, then a full-screen pass that bends
     # the finished scene through it. Transcribed from the retail `refraction`

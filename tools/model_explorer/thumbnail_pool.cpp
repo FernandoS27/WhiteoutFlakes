@@ -63,6 +63,15 @@ void ThumbnailPool::SetupScene(SceneId scene) {
     auto& sm = svc_.SceneAt(scene);
     // All cell scenes read files from the one shared CASC-backed provider.
     sm.SetContentProvider(provider_);
+    // Cell render state is the SCENE's, set once here — no global flipping
+    // per rendered cell, and no save/restore in the host. SD-HDR is pinned on
+    // so SD additive / team-color geosets (water foam, banners, propeller
+    // blur) accumulate in float and roll off through the tonemap instead of
+    // clipping to opaque white, while keeping authentic SD shading. The mode
+    // starts at the host's browse arm (which overlay the first read resolves
+    // through); the loader trues it up from the parsed model.
+    sm.SetSceneHdrInSdOverride(true);
+    sm.SetRenderMode(defaultCellMode_);
     // Stand the lighting up now rather than letting a model load do it.
     // EnsureWc3GameData is what realises the day/night rig (per scene) and the
     // IBL probes, and its only other caller is the Warcraft III model spawn —
@@ -154,8 +163,12 @@ void ThumbnailPool::LoadCell(Cell& cell) {
         // A standalone effect has no material layers to probe, so derive its
         // HD-ness from its archive location: an `_hd.w3mod` .pkb references HD
         // particle textures and must load + render in HD, exactly as it would
-        // when attached to an HD model.
+        // when attached to an HD model. The loader has no template to settle
+        // the scene from on this path, so settle it here — before the spawn,
+        // so the effect's texture acquires latch the right overlay (and
+        // ResetEffect's respawns inherit it from the scene).
         cell.isHd = cell.path.find("_hd.w3mod") != std::string::npos;
+        sm.SetRenderMode(cell.isHd ? renderer::RenderMode::HD : renderer::RenderMode::SD);
         auto src = std::make_shared<renderer::model::CornEffectSource>(cell.path);
         hero = svc_.Loader().SpawnUnitFromSource(src);
         cell.effectWarmup = 0; // frame once particles develop
@@ -240,13 +253,14 @@ void ThumbnailPool::EnsureCellTargetSize(Cell& cell, int wantPx) {
 void ThumbnailPool::EnsureCellTargetFormat(Cell& cell) {
     // A tonemapped frame writes LINEAR and leaves the linear->sRGB encode to
     // the RTV; a gamma frame writes display bytes that must not be encoded
-    // again. Get it wrong the first way and the cell holds linear pixels that
-    // ImGui hands to the swap chain unchanged — the whole preview, background
-    // included, comes out about a gamma step too dark. Which way a cell goes is
-    // its profile's answer, not the render mode's: a StarCraft II cell always
-    // tonemaps, a World of Warcraft one never does, and the Warcraft III SD and
-    // Diablo III frames follow SceneHdrInSd (which RenderVisible turns on).
-    // Hence here, per cell, after its model has settled the scene's product.
+    // again — so the target's format has to match the frame that draws into
+    // it. (How the finished texture then DISPLAYS is no longer this choice's
+    // problem: the ImGui renderer normalises each sampled texture's colour
+    // space to its RTV per draw.) Which way a cell goes is its profile's
+    // answer, not the render mode's: a StarCraft II cell always tonemaps, a
+    // World of Warcraft one never does, and the Warcraft III SD frame follows
+    // the scene's pinned SD-HDR opt-in (SetupScene). Hence here, per cell,
+    // after its model has settled the scene's product and mode.
     const gfx::Format want = svc_.Pipeline().CompositeColorFormat();
     if (cell.fmt == want && cell.target != 0)
         return;
@@ -287,24 +301,16 @@ void ThumbnailPool::RenderVisible(float dt) {
 
         // Each cell renders in its own NATURAL shading mode: HD Reforged
         // models / HD effects through the HD pipeline, classic SD models
-        // through the SD pipeline. SceneHdrInSd (enabled once below) routes the
-        // SD path through the same HDR scene target + tonemap as HD, so SD
-        // additive / team-color geosets (water foam, team banners, propeller
-        // blur — the clipping the standalone .pkb effects hit) roll off instead
-        // of clipping to opaque white, while keeping authentic SD shading. The
-        // provider texture overlay follows the model's real HD-ness so SD
-        // models keep their SD textures. Cells render sequentially, so a single
-        // global setting is correct per cell.
-        svc_.Settings().SetSceneHdrInSd(true);
-        svc_.Settings().SetRenderMode(cell.isHd ? renderer::RenderMode::HD
-                                                : renderer::RenderMode::SD);
-        if (provider_)
-            provider_->SetHdMode(cell.isHd);
+        // through the SD pipeline. That is now carried entirely by the CELL
+        // SCENE's own state — mode settled by the loader (or LoadCell for
+        // effects), SD-HDR pinned in SetupScene — which RenderViewport reads
+        // when it activates the scene. Nothing global is flipped here, so
+        // there is nothing for the host to save and restore.
 
         // Loop standalone effects: re-spawn every few seconds so one-shot
-        // bursts keep replaying instead of developing once and dying. Done with
-        // the cell's provider/render mode already set so the respawn resolves
-        // its textures correctly.
+        // bursts keep replaying instead of developing once and dying. The
+        // respawn resolves its textures under the cell scene's own mode
+        // (imposed by the SetActiveScene inside ResetEffect).
         if (cell.isEffect && cell.loaded) {
             cell.effectAge += dt;
             if (cell.effectAge >= kEffectResetSeconds) {
@@ -315,9 +321,9 @@ void ThumbnailPool::RenderVisible(float dt) {
 
         // The cell's scene decides its profile, and the profile decides the
         // colour space its target has to be in. Both are settled now — the
-        // model is loaded and this cell's mode + SD-HDR are applied — and this
-        // is still before the target is drawn into. A cell that is already in
-        // the right format pays a compare.
+        // model is loaded and the scene carries its own mode + SD-HDR — and
+        // this is still before the target is drawn into. A cell that is
+        // already in the right format pays a compare.
         svc_.SetActiveScene(cell.scene);
         EnsureCellTargetFormat(cell);
         svc_.SetActiveScene(svc_.DefaultSceneId());

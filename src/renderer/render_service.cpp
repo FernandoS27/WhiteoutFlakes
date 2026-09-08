@@ -155,6 +155,14 @@ void RenderService::SetActiveScene(SceneId id) {
     impl_->activeSceneId_ = id;
     impl_->activeScene_ = impl_->scenes_[id];
     impl_->activeServices_ = impl_->sceneServices_[id].get();
+    // Impose this scene's effective HD overlay on the provider it reads
+    // through. Scenes legitimately share one provider (explorer cells, viewer
+    // documents), so the overlay is whatever the last writer left it — this is
+    // the one place that re-arms it, replacing the save/restore dances the
+    // hosts used to carry. Cheap (an atomic store) and non-creating: a scene
+    // without a provider skips it entirely.
+    if (auto* p = impl_->activeScene_->ActiveContentProviderIfAny())
+        p->SetHdMode(EffectiveRenderMode() == RenderMode::HD);
 }
 
 void RenderService::SetActiveScene(SceneManager& scene) {
@@ -169,6 +177,22 @@ void RenderService::SetActiveScene(SceneManager& scene) {
 
 SceneManager& RenderService::ActiveScene() {
     return *impl_->activeScene_;
+}
+
+RenderMode RenderService::EffectiveRenderMode() {
+    return EffectiveRenderMode(*impl_->activeScene_);
+}
+
+RenderMode RenderService::EffectiveRenderMode(const SceneManager& scene) {
+    return scene.RenderModeOverride().value_or(impl_->settings_.GetRenderMode());
+}
+
+bool RenderService::EffectiveSceneHdrInSd() {
+    return EffectiveSceneHdrInSd(*impl_->activeScene_);
+}
+
+bool RenderService::EffectiveSceneHdrInSd(const SceneManager& scene) {
+    return scene.SceneHdrInSdOverride().value_or(impl_->settings_.SceneHdrInSd());
 }
 
 void RenderService::TickScenes(f32 dt) {
@@ -564,9 +588,23 @@ void RenderService::CreateDeviceAssetManagers(gfx::IGFXDevice& gfx) {
     // The policy is latched per slot at acquire time, so those textures stayed
     // dark in the shared cache and followed the model into the document opened
     // from the browser.
+    //
+    // For WC3 SD the profile read alone is NOT enough: Wc3SdProfile folds
+    // SceneHdrInSd in, so the same file legitimately wants both answers at
+    // once — sRGB for the SD-HDR thumbnail still on screen, raw UNORM for the
+    // gamma document just opened. That is resolved in AssetManager itself: the
+    // latch is part of a Texture slot's identity, and the two contexts get two
+    // slots instead of the browse poisoning the document's (or vice versa).
     impl_->assets_->SetGammaColorTexturesQuery([this]() {
         return Pipeline().LoadTimeProfile().SceneColorFormat() !=
                RenderPipeline::kHdrSceneFormat;
+    });
+    // The second acquire-time latch: which HD overlay the acquiring scene
+    // reads through. Unlike gamma (a decode policy) this decides which BYTES
+    // the fetch resolves, so the pump replays it per need — see
+    // PumpAssetsViaProvider.
+    impl_->assets_->SetHdOverlayQuery([this]() {
+        return EffectiveRenderMode() == RenderMode::HD;
     });
     // Child-model parsing lives on ModelTemplateManager (so we don't drag
     // the MDX parser into AssetManager's translation unit). Install a
@@ -641,10 +679,9 @@ dnc::DncService& RenderService::EnsureDncService() {
     } else {
         svc.dnc->SetContentProvider(Scene().ActiveContentProvider());
     }
-    // Which layer an unpinned path resolves from. RenderSettings is still
-    // service-wide, but the pipeline snapshots the render mode per viewport,
-    // so by the time a scene is published this is that scene's mode.
-    svc.dnc->SetHdPreference(impl_->settings_.GetRenderMode() == RenderMode::HD);
+    // Which layer an unpinned path resolves from — the ACTIVE scene's own
+    // effective mode, now that scenes carry it themselves.
+    svc.dnc->SetHdPreference(EffectiveRenderMode() == RenderMode::HD);
     return *svc.dnc;
 }
 
@@ -827,8 +864,16 @@ void RenderService::PumpAssetsViaProvider() {
         return false;
     };
 
-    impl_->assets_->DrainNeeds([&](assets::AssetKind kind, assets::AssetSubKind subKind,
-                                   const ContentRef& ref) {
+    impl_->assets_->DrainNeedsEx([&](const assets::AssetManager::NeedInfo& need) {
+        const assets::AssetKind kind = need.kind;
+        const assets::AssetSubKind subKind = need.subKind;
+        const ContentRef& ref = need.ref;
+        // Fetch under the overlay the acquiring scene read through. The pump
+        // serves EVERY scene's pending needs through whichever scene happens
+        // to be active, so the need's own bit — not the ambient overlay — is
+        // what decides which bytes this path resolves to.
+        if (provider->HdMode() != need.hd)
+            provider->SetHdMode(need.hd);
         std::vector<u8> bytes;
         std::string ext;
         if (ref.IsFileId()) {
@@ -855,11 +900,14 @@ void RenderService::PumpAssetsViaProvider() {
         } else {
             return;
         }
-        impl_->assets_->ApplyPrepared(
-            kind, subKind, ref,
+        impl_->assets_->ApplyPreparedFor(
+            kind, subKind, ref, need.hd,
             std::span<const u8>(bytes.data(), bytes.size()),
             ext);
     });
+    // Re-impose the active scene's overlay after serving mixed-mode needs, so
+    // reads outside the pump see the state SetActiveScene armed.
+    provider->SetHdMode(EffectiveRenderMode() == RenderMode::HD);
     impl_->assets_->CommitPrepared();
 #endif
 }

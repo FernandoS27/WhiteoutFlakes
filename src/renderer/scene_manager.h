@@ -12,6 +12,7 @@
 #include <atomic>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -88,6 +89,41 @@ public:
         // goes out of its way not to pay on an externally-provided scene.
         if (contentProvider_ && !externalContentProvider_)
             contentProvider_->SetGame(p);
+    }
+
+    /// @brief This scene's shading mode (classic SD vs HD Reforged), scene
+    ///        state for the same reason Product() is: the model explorer runs
+    ///        many scenes at once, each in its model's own mode. Unset means
+    ///        "follow the global RenderSettings mode" — the honest state for a
+    ///        scene nothing has loaded into, and what keeps hosts that only
+    ///        ever set the global (gates, bindings) behaving as before. The
+    ///        loader settles it from the parsed template before anything
+    ///        latches; RenderService::EffectiveRenderMode resolves the
+    ///        fallback.
+    std::optional<::whiteout::flakes::RenderMode> RenderModeOverride() const {
+        return renderMode_;
+    }
+    void SetRenderMode(::whiteout::flakes::RenderMode m) {
+        renderMode_ = m;
+        // Forward the HD texture overlay. Unlike SetProduct's internal-only
+        // forward, this reaches shared external providers too: the overlay is
+        // a per-read layer preference that loads flip mid-session by design,
+        // and RenderService::SetActiveScene re-imposes it per activation, so
+        // sibling scenes on the same provider get their own state back the
+        // moment they run.
+        if (auto* p = ActiveContentProviderIfAny())
+            p->SetHdMode(m == ::whiteout::flakes::RenderMode::HD);
+    }
+
+    /// @brief Scene-level override of the SD-through-HDR opt-in
+    ///        (RenderSettings::SceneHdrInSd). Unset follows the global flag;
+    ///        the thumbnail pool pins its cell scenes true once at creation
+    ///        instead of flipping the global around every render.
+    std::optional<bool> SceneHdrInSdOverride() const {
+        return sceneHdrInSd_;
+    }
+    void SetSceneHdrInSdOverride(bool on) {
+        sceneHdrInSd_ = on;
     }
 
     ::whiteout::flakes::renderer::Camera& Camera() {
@@ -183,6 +219,15 @@ public:
         // first use.
         return &const_cast<SceneManager*>(this)->EnsureInternalProvider();
     }
+    /// @brief Non-creating peek at the provider this scene reads through.
+    ///        Unlike ActiveContentProvider() it never realises the internal
+    ///        provider, so state imposition on scene activation stays free for
+    ///        scenes that never read. Null when the scene has no provider yet.
+    io::IContentProvider* ActiveContentProviderIfAny() const {
+        if (externalContentProvider_)
+            return externalContentProvider_.get();
+        return contentProvider_.get();
+    }
 
     void SetPE1BasePath(const std::filesystem::path& basePath) {
         pe1BasePath_ = basePath;
@@ -224,6 +269,8 @@ private:
     model::ActorManager actors_;
     model::ActorId nextActorId_ = 1;
     ProductId product_ = ProductId::Neutral;
+    std::optional<::whiteout::flakes::RenderMode> renderMode_;
+    std::optional<bool> sceneHdrInSd_;
 
     std::vector<std::unique_ptr<::whiteout::flakes::renderer::Camera>> cameras_;
 

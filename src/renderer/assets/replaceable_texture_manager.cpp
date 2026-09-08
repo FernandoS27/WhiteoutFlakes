@@ -122,6 +122,21 @@ void ReplaceableTextureManager::RegisterModelSlot(Actor& mi, i32 textureId, i32 
         return;
 
     auto& entry = slots_[mi.handle];
+    if (entry.actor && entry.actor != &mi) {
+        // Handles are per-scene (each scene counts from 1), but this manager
+        // is service-wide — so a document actor and a thumbnail-cell actor
+        // legitimately collide on the same handle. The standing entry
+        // describes the OTHER actor's staged textures; deduping against it
+        // would skip the bake that paints this actor's slots (they stayed
+        // white until a team-color change rebaked them). Start the entry
+        // over for the new actor, cancelling loads addressed to the old one.
+        if (contentProvider_) {
+            for (auto& s : entry.slots)
+                if (s.pendingLoad != io::kInvalidRequestId)
+                    contentProvider_->Cancel(s.pendingLoad);
+        }
+        entry.slots.clear();
+    }
     entry.actor = &mi;
     auto& list = entry.slots;
 
@@ -145,6 +160,13 @@ void ReplaceableTextureManager::RegisterModelSlot(Actor& mi, i32 textureId, i32 
 void ReplaceableTextureManager::UnregisterModel(Actor& mi) {
     auto it = slots_.find(mi.handle);
     if (it == slots_.end())
+        return;
+    // Same handle-aliasing rule as RegisterModelSlot: if another actor has
+    // since taken this handle's entry (a document actor colliding with a
+    // thumbnail-cell actor), the entry — and its pending loads — belong to
+    // that actor now. Erasing it here would silently disable the live
+    // actor's team-color rebakes.
+    if (it->second.actor && it->second.actor != &mi)
         return;
     // Cancel any in-flight canonical-asset loads so the completion callback
     // doesn't write through a dangling Actor* once the slots are gone.
