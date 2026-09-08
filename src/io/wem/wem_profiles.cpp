@@ -169,6 +169,14 @@ wem::ProfileId DefaultWemProfile(const wem::Document& document) {
         if (WemProfileOpenable(declared))
             return declared;
     }
+    // A document carrying only `Generic` — a glTF import, or something
+    // authored in WEM — derives best into Reforged: its set is PBR and
+    // Reforged's `commonKinds` is PBR, so that derive is a near-identity where
+    // classic's flattens everything (GLTF_DESIGN §2).
+    if (document.profiles.size() == 1 && document.profiles[0] == wem::ProfileId::Generic &&
+        WemProfileOpenable(wem::ProfileId::Wc3Reforged)) {
+        return wem::ProfileId::Wc3Reforged;
+    }
     // Nothing carried is openable. A derive still can be — a build with a
     // format compiled out opening someone else's document is exactly that — so
     // fall through to the option list's own preference rather than refusing.

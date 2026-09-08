@@ -123,6 +123,15 @@ param(
     # trap that made the first -M3Anim recording vacuous.
     [switch]$D3,
 
+    # The glTF arm (GLTF_DESIGN §11 gate 6). Each WC3 corpus model is exported
+    # to `.glb` by the viewer itself — the exporter is byte-stable, so the
+    # export is part of what the baseline pins — and the trace then opens the
+    # `.glb` through the glTF import path (Generic document, derived into
+    # Reforged, drawn HD). Its baselines (`gltf`) are PROGRESSIVE for
+    # -M3Anim's reason: every glTF phase legitimately changes what the round
+    # trip draws.
+    [switch]$Gltf,
+
     # SD is the default mode; -Hd records the HD profile's baselines instead.
     # A full gate run does both — they are different draw paths.
     [switch]$Hd,
@@ -178,8 +187,8 @@ if (-not (Test-Path $BaselineDir)) {
 
 $mode = if ($Hd) { 'hd' } else { 'sd' }
 if ($Unlit) { $mode += '_unlit' }
-if ((@($M2, $M3, $M3Anim, $Sc2Mat, $D3) | Where-Object { $_ }).Count -gt 1) {
-    Write-Error '-M2, -M3, -M3Anim, -Sc2Mat and -D3 are separate arms: pass one of them.'
+if ((@($M2, $M3, $M3Anim, $Sc2Mat, $D3, $Gltf) | Where-Object { $_ }).Count -gt 1) {
+    Write-Error '-M2, -M3, -M3Anim, -Sc2Mat, -D3 and -Gltf are separate arms: pass one of them.'
     exit 2
 }
 if ($Solvers -and -not $M3Anim) {
@@ -233,6 +242,11 @@ if ($D3) {
     if (-not $PSBoundParameters.ContainsKey('CorpusFile')) {
         $CorpusFile = "$PSScriptRoot/../tools/particle_diff/corpus_d3.txt"
     }
+}
+if ($Gltf) {
+    # The WC3 corpus defaults stand: the arm's inputs are the same models the
+    # plain arms draw, just round-tripped through glTF first.
+    $mode = 'gltf'
 }
 if ($Sc2Mat) {
     $mode = if ($DebugLight) { 'sc2mat_lit' } else { 'sc2mat' }
@@ -335,8 +349,25 @@ foreach ($entry in $entries) {
     $trace = Join-Path $BaselineDir "$key.txt"
     $image = Join-Path $BaselineDir "$key.raw"
 
+    # The glTF arm exports first and traces the export: the `.glb` is
+    # regenerated every run on purpose, so the baseline covers the current
+    # exporter and importer, not a stale file.
+    if ($Gltf) {
+        $gltfDir = Join-Path $BaselineDir 'gltf_models'
+        if (-not (Test-Path $gltfDir)) { New-Item -ItemType Directory -Force $gltfDir | Out-Null }
+        $glb = Join-Path $gltfDir "$key.glb"
+        & $Exe $model --export-gltf $glb 2>&1 | Out-Null
+        if (-not (Test-Path $glb)) {
+            Write-Host "SKIP (glTF export failed): $rel" -ForegroundColor DarkYellow
+            continue
+        }
+        $model = $glb
+    }
+
     $argv = @('--draw-trace', $model, '--trace-frames', $Frames,
               '--draw-trace-camera-distance', $CameraDistance)
+    # A glTF import derives into Reforged, which draws HD by construction.
+    if ($Gltf) { $argv += '--draw-trace-hd' }
     if ($entry.Anim)   { $argv += @('--attach-anim', (Join-Path $CorpusRoot $entry.Anim)) }
     if ($entry.Seq)    { $argv += @('--draw-trace-anim', $entry.Seq) }
     if ($entry.Switch) {

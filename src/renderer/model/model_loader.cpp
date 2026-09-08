@@ -1492,6 +1492,24 @@ Actor* ModelLoader::TrySpawnForeign(const ContentRef& ref, const Matrix44f& init
     if (auto document = io::ParseWemDocument(data, ref.Describe()))
         return SpawnWemDocument(*document, wem::ProfileId::Count, initialTm);
 
+    // glTF next, and through the same machinery: the import is a
+    // Generic-profile document that derives into Reforged on open
+    // (GLTF_DESIGN §2). A `.glb` announces itself by magic; a bare-JSON
+    // `.gltf` has none, so the ref's own extension is the fallback — the one
+    // entry in this cascade that needs one.
+    bool gltfByName = false;
+    if (ref.IsPath()) {
+        std::string lower = ref.path;
+        for (char& c : lower)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        gltfByName = lower.ends_with(".gltf") || lower.ends_with(".glb");
+    }
+    if (io::LooksLikeGlb(data) || gltfByName) {
+        if (auto document = io::ParseGltfDocument(data, ref.Describe()))
+            return SpawnWemDocument(*document, wem::ProfileId::Count, initialTm);
+        return nullptr; // It said glTF and did not parse; the log already says why.
+    }
+
 #if WDX_ENABLE_M2 || WDX_ENABLE_M3 || WDX_ENABLE_D3
 
     // Detection settles the scene's product. A model of a given format having

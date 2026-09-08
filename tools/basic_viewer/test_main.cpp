@@ -1564,6 +1564,11 @@ int main(int argc, char* argv[]) {
     std::filesystem::path exportM3Path;
     auto exportM3Profile = whiteout::models::wem::ProfileId::Sc2;
     bool exportM3Textures = true;
+    // Headless glTF export: the batch half of File ▸ Export to glTF. The
+    // container follows the path's extension (`.gltf` = JSON + .bin + images,
+    // anything else = one self-contained `.glb`).
+    std::filesystem::path exportGltfPath;
+    bool exportGltfTextures = true;
     // Save As for a model that IS `.m3`, the export above's mirror: written
     // back through m3::Writer with no WEM hop. Every option defaults off like
     // the dialog's, so the plain save writes the model as it stands.
@@ -1711,6 +1716,10 @@ int main(int argc, char* argv[]) {
                 std::cerr << "Unknown StarCraft II profile: " << name << " (sc2 | heroes)\n";
                 return 1;
             }
+        } else if (std::strcmp(a, "--export-gltf") == 0 && i + 1 < argc) {
+            exportGltfPath = whiteout::flakes::io::FsPathFromUtf8(argv[++i]);
+        } else if (std::strcmp(a, "--export-gltf-no-textures") == 0) {
+            exportGltfTextures = false;
         } else if (std::strcmp(a, "--export-m3-no-textures") == 0) {
             exportM3Textures = false;
         } else if (std::strcmp(a, "--save-m3") == 0 && i + 1 < argc) {
@@ -1962,6 +1971,9 @@ int main(int argc, char* argv[]) {
                       << "       --export-m3 <out.m3>     write it as StarCraft II and exit\n"
                       << "       --export-m3-profile <n>  sc2 (default) | heroes\n"
                       << "       --export-m3-no-textures  do not write the textures beside it\n"
+                      << "       --export-gltf <out.glb>  write it as glTF 2.0 and exit\n"
+                      << "                                (.gltf writes JSON + .bin + images)\n"
+                      << "       --export-gltf-no-textures leave the texture URIs unresolved\n"
                       << "       --save-m3 <out.m3>       re-save an open .m3 and exit\n"
                       << "       --save-m3-merge-anims    fold the attached .m3a files in\n"
                       << "       --save-m3-sc2            retarget a Heroes model for SC2\n"
@@ -2283,7 +2295,8 @@ int main(int argc, char* argv[]) {
     app.SetPreferredWemProfile(wemProfile);
 
     const bool headlessWork = doExport || !exportWemPath.empty() || !exportMdxPath.empty() ||
-                              !exportM3Path.empty() || !saveM3Path.empty() ||
+                              !exportM3Path.empty() || !exportGltfPath.empty() ||
+                              !saveM3Path.empty() ||
                               !attachAnims.empty() || listClips;
 
     if (!mdxPath.empty()) {
@@ -2370,6 +2383,16 @@ int main(int argc, char* argv[]) {
     // Headless StarCraft II export -- ExportMdx's twin, same reasoning.
     if (!exportM3Path.empty()) {
         const bool ok = app.ExportM3(exportM3Path, exportM3Profile, exportM3Textures);
+        app.Close();
+        return ok ? 0 : 1;
+    }
+
+    // Headless glTF export -- the crossing pointed out of the family.
+    if (!exportGltfPath.empty()) {
+        std::string ext = exportGltfPath.extension().string();
+        for (char& c : ext)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        const bool ok = app.ExportGltf(exportGltfPath, ext != ".gltf", exportGltfTextures);
         app.Close();
         return ok ? 0 : 1;
     }

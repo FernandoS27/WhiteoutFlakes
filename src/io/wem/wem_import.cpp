@@ -15,11 +15,13 @@
 #include "io/d3/d3_sno_cache.h"
 #endif
 
+#include <whiteout/models/gltf/parser.h>
 #include <whiteout/models/wem/converters.h>
 #include <whiteout/models/wem/parser.h>
 #include <whiteout/models/wem/retarget.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <fstream>
 #include <utility>
@@ -132,6 +134,46 @@ std::shared_ptr<WemDocument> ParseWemFile(const std::filesystem::path& path) {
     if (bytes.empty())
         return nullptr;
     return ParseWemDocument(bytes, PathToUtf8(path.filename()));
+}
+
+// ---- glTF -------------------------------------------------------------------
+
+bool LooksLikeGlb(std::span<const ::whiteout::u8> data) {
+    return ::whiteout::models::gltf::Parser::LooksLikeGlb(data);
+}
+
+bool LooksLikeGltfPath(const std::filesystem::path& path) {
+    std::string ext = PathToUtf8(path.extension());
+    for (char& c : ext)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext == ".gltf" || ext == ".glb";
+}
+
+std::shared_ptr<WemDocument> ParseGltfDocument(std::span<const ::whiteout::u8> data,
+                                               std::string name) {
+    const wem::GltfConverter converter;
+    wem::Result<wem::Document> imported = converter.importFromBytes(data);
+    if (!imported.ok()) {
+        std::fprintf(stderr, "[gltf] '%s' did not import:\n%s", name.c_str(),
+                     DescribeWemDiagnostics(imported.diagnostics).c_str());
+        return nullptr;
+    }
+    auto out = std::make_shared<WemDocument>();
+    out->document = imported.take();
+    out->diagnostics = std::move(imported.diagnostics);
+    out->name = std::move(name);
+    return out;
+}
+
+std::shared_ptr<WemDocument> ParseGltfFile(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file)
+        return nullptr;
+    std::vector<::whiteout::u8> bytes((std::istreambuf_iterator<char>(file)),
+                                      std::istreambuf_iterator<char>());
+    if (bytes.empty())
+        return nullptr;
+    return ParseGltfDocument(bytes, PathToUtf8(path.filename()));
 }
 
 std::string DescribeWemDiagnostics(const wem::Diagnostics& diagnostics, usize maxLines) {

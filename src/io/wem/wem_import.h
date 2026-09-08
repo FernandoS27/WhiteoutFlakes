@@ -71,6 +71,32 @@ std::shared_ptr<WemDocument> ParseWemDocument(std::span<const ::whiteout::u8> da
 std::shared_ptr<WemDocument> ParseWemFile(const std::filesystem::path& path);
 
 // ============================================================================
+// glTF (GLTF_DESIGN §2) — imports land on the same WemDocument the popup, the
+// staging and SpawnWemDocument already speak.
+// ============================================================================
+
+/// @brief True when @p data opens with the GLB container magic.
+///
+/// A `.gltf` is bare JSON with no magic at all — the one format in the sniff
+/// cascade that needs an extension fallback; @ref LooksLikeGltfPath is that.
+bool LooksLikeGlb(std::span<const ::whiteout::u8> data);
+
+/// @brief `.gltf` or `.glb`, case-insensitively.
+bool LooksLikeGltfPath(const std::filesystem::path& path);
+
+/// @brief Parse glTF/GLB bytes into a `Generic`-profile document.
+///
+/// Null when the parse or the conversion failed (stderr says why). The result
+/// opens through the existing `.wem` machinery — the profile popup lists every
+/// derive, `DefaultWemProfile` answers Reforged, and `BuildWemSource` draws it
+/// through the HD MDX adapter with zero new renderer code.
+std::shared_ptr<WemDocument> ParseGltfDocument(std::span<const ::whiteout::u8> data,
+                                               std::string name);
+
+/// @brief The same, reading the file itself.
+std::shared_ptr<WemDocument> ParseGltfFile(const std::filesystem::path& path);
+
+// ============================================================================
 // Staging
 // ============================================================================
 

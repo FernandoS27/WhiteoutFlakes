@@ -75,21 +75,23 @@ class ViewerUI;
 // `.wem` is in every one of them: the module is in whiteout_lib whatever this
 // build enables, and which profiles a given file can be opened as is a question
 // the file answers at open time (io/wem/wem_profiles.h), not one the build
-// flags answer here.
+// flags answer here. `.gltf`/`.glb` ride the same reasoning — a glTF import is
+// a Generic-profile document that opens through the WEM machinery
+// (GLTF_DESIGN §2), so the module is as unconditional as WEM's.
 #if WDX_ENABLE_M2 && WDX_ENABLE_M3
-inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,wem,m2,m3";
+inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,wem,gltf,glb,m2,m3";
 inline constexpr const char* kForeignModelExtensions = "m2,m3";
 inline constexpr bool kHasForeignModelFilter = true;
 #elif WDX_ENABLE_M2
-inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,wem,m2";
+inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,wem,gltf,glb,m2";
 inline constexpr const char* kForeignModelExtensions = "m2";
 inline constexpr bool kHasForeignModelFilter = true;
 #elif WDX_ENABLE_M3
-inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,wem,m3";
+inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,wem,gltf,glb,m3";
 inline constexpr const char* kForeignModelExtensions = "m3";
 inline constexpr bool kHasForeignModelFilter = true;
 #else
-inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,wem";
+inline constexpr const char* kOpenAllExtensions = "mdx,mdl,pkb,pkfx,wem,gltf,glb";
 inline constexpr const char* kForeignModelExtensions = "";
 inline constexpr bool kHasForeignModelFilter = false;
 #endif
@@ -527,6 +529,17 @@ public:
     // textures beside it as `.dds` when @p exportTextures.
     bool ExportM3(const std::filesystem::path& outPath, ::whiteout::models::wem::ProfileId profile,
                   bool exportTextures);
+
+    // Whether the active document can be written as glTF through WEM — the
+    // widest of the export questions: glTF export takes any carried profile
+    // (GLTF_DESIGN §2), so this is exactly CanExportWem.
+    bool CanExportGltf() const;
+
+    // Convert the active document to glTF 2.0 and write it to @p outPath —
+    // a self-contained `.glb` when @p binary, a `.gltf` + `.bin` + images
+    // otherwise. Textures embed (or land beside the file) when
+    // @p exportTextures, re-encoded as PNG.
+    bool ExportGltf(const std::filesystem::path& outPath, bool binary, bool exportTextures);
 
     // Whether the active document IS a `.m3` and can therefore be written back
     // in its own format. The mirror of CanExportM3, which answers for every

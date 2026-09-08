@@ -5,6 +5,7 @@
 
 #include <whiteout/textures/blp/blp.h>
 #include <whiteout/textures/dds/parser.h>
+#include <whiteout/textures/jpeg/parser.h>
 #include <whiteout/textures/png/parser.h>
 #include <whiteout/textures/texture.h>
 #include <whiteout/textures/tex/parser.h>
@@ -106,6 +107,10 @@ inline std::string SniffTextureExtension(std::span<const u8> b) {
         return ".dds";
     if (b.size() >= 8 && b[0] == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G')
         return ".png";
+    // JPEG's SOI marker. In the model pipeline it exists for glTF, whose
+    // embedded images are PNG or JPEG and nothing else.
+    if (b.size() >= 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF)
+        return ".jpg";
     if (tag("II*\0") || tag("MM\0*"))
         return ".tif";
     // Diablo III's SNO magic, little-endian 0xDEADBEEF. It identifies the asset
@@ -142,6 +147,10 @@ inline std::optional<whiteout::textures::Texture> DispatchTextureParser(const st
     }
     if (ext == ".tif" || ext == ".tiff") {
         whiteout::textures::tiff::Parser p;
+        return parse(p);
+    }
+    if (ext == ".jpg" || ext == ".jpeg") {
+        whiteout::textures::jpeg::Parser p;
         return parse(p);
     }
     if (ext == ".tex") {

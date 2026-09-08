@@ -307,6 +307,7 @@ void ViewerUI::BuildFrame() {
     BuildSaveOptionsPopup();
     BuildMdxExportPopup();
     BuildM3ExportPopup();
+    BuildGltfExportPopup();
     BuildM3SavePopup();
     BuildWemProfilePopup();
     exportWindow_.Build();
@@ -567,6 +568,70 @@ void ViewerUI::BuildM3ExportPopup() {
     ImGui::SameLine();
     if (ImGui::Button(i18n::tr("app.cancel"), ImVec2(80, 0))) {
         pendingM3Path_.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+// ---- Export to glTF ---------------------------------------------------------
+//
+// The export pointed out of the Blizzard family: any model WEM reads is
+// lowered to metallic-roughness and written as `.glb` or `.gltf`, for Blender
+// and everything else that speaks the interchange format the rest of the
+// world settled on. See tools/basic_viewer/gltf_export.h and GLTF_DESIGN.md.
+
+void ViewerUI::ExportGltfDialog() {
+    nfdu8filteritem_t filter[2] = {{"glTF binary", "glb"}, {"glTF text", "gltf"}};
+    NFD::UniquePathU8 outPath;
+    if (NFD::SaveDialog(outPath, filter, 2) != NFD_OKAY)
+        return;
+    pendingGltfPath_ = outPath.get();
+    openGltfExportPopup_ = true;
+}
+
+void ViewerUI::BuildGltfExportPopup() {
+    if (openGltfExportPopup_) {
+        ImGui::OpenPopup(i18n::tr("dialog.gltf.title"));
+        openGltfExportPopup_ = false;
+    }
+    if (pendingGltfPath_.empty())
+        return;
+
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (!ImGui::BeginPopupModal(i18n::tr("dialog.gltf.title"), nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    ImGui::TextUnformatted(i18n::tr("dialog.gltf.prompt"));
+
+    // The container is the filename's own choice — `.glb` embeds everything in
+    // one file, `.gltf` writes JSON + `.bin` + images for DCC editing — so the
+    // dialog states it rather than asking twice.
+    std::string ext = std::filesystem::path(io::FsPathFromUtf8(pendingGltfPath_))
+                          .extension()
+                          .string();
+    for (char& c : ext)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    const bool binary = ext != ".gltf";
+    ImGui::TextDisabled("%s", i18n::tr(binary ? "dialog.gltf.glb" : "dialog.gltf.gltf"));
+
+    ImGui::Separator();
+    ImGui::Checkbox(i18n::tr("dialog.mdx.export_textures"), &gltfExportTextures_);
+    ImGui::BeginDisabled(!gltfExportTextures_);
+    ImGui::TextDisabled("%s: png", i18n::tr("dialog.mdx.convert_to"));
+    ImGui::TextDisabled("%s", i18n::tr("dialog.mdx.export_hint"));
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    if (ImGui::Button(i18n::tr("dialog.mdx.export"), ImVec2(120, 0))) {
+        app_.ExportGltf(io::FsPathFromUtf8(pendingGltfPath_), binary, gltfExportTextures_);
+        pendingGltfPath_.clear();
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(i18n::tr("app.cancel"), ImVec2(80, 0))) {
+        pendingGltfPath_.clear();
         ImGui::CloseCurrentPopup();
     }
     ImGui::EndPopup();
@@ -1304,6 +1369,11 @@ void ViewerUI::BuildMenuBar() {
                 if (ImGui::MenuItem(i18n::tr("menu.file.export_m3"), nullptr, false,
                                     app_.CanExportM3()))
                     ExportM3Dialog();
+                // And out of the family altogether: any model WEM reads
+                // becomes glTF for Blender and everything else.
+                if (ImGui::MenuItem(i18n::tr("menu.file.export_gltf"), nullptr, false,
+                                    app_.CanExportGltf()))
+                    ExportGltfDialog();
                 ImGui::EndMenu();
             }
             const bool hasAnims = hasModel && !app_.SequenceNames().empty();

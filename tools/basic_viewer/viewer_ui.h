@@ -120,6 +120,14 @@ private:
     // is set; a no-op otherwise.
     void BuildM3ExportPopup();
 
+    // Export the model on screen as glTF 2.0 — the export pointed out of the
+    // Blizzard family. Pops the native save dialog, then the modal below.
+    void ExportGltfDialog();
+
+    // The deferred "Export to glTF" options modal. Renders when
+    // `pendingGltfPath_` is set; a no-op otherwise.
+    void BuildGltfExportPopup();
+
     // Save As for a model that IS a StarCraft II `.m3`: the native save dialog,
     // then the options modal below. Separate from SaveAsDialog's MDX/MDL path
     // because it shares neither the writer nor a single option with it.
@@ -190,6 +198,12 @@ private:
     bool openM3ExportPopup_ = false;
     i32 m3ExportProfile_ = 0;      // 0 = StarCraft II, 1 = Heroes of the Storm
     bool m3ExportTextures_ = true; // write the `.dds` textures beside it
+
+    // Export-to-glTF state. The container follows the picked filename
+    // (`.glb` = one self-contained file, `.gltf` = JSON + `.bin` + images).
+    std::string pendingGltfPath_;
+    bool openGltfExportPopup_ = false;
+    bool gltfExportTextures_ = true; // resolve + embed the textures as PNG
 
     // Save M3 state. No option is the file's own shape: the merge folds in
     // `.m3a` files the `.m3` never named, the conversion lowers a Heroes

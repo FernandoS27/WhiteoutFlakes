@@ -65,6 +65,9 @@ wdx_add_test(content_ref_test   content_ref_test.cpp)
 # reaching an adapter. Every fixture is built in memory, so it needs no install
 # and no GPU. See WEM_INTEGRATION_DESIGN.md §6.
 wdx_add_test(wem_integration_test wem_integration_test.cpp)
+# glTF import/export: the crossing out of the Blizzard family, reaching the
+# same adapter through the same seams. Device-free. See GLTF_DESIGN.md §11.
+wdx_add_test(gltf_integration_test gltf_integration_test.cpp)
 # Event-data SLK tables, keyed per render mode so a flip back to a mode the
 # session already parsed re-reads nothing.
 wdx_add_test(event_data_mode_test event_data_mode_test.cpp)

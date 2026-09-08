@@ -4,6 +4,7 @@
 #include "io/wem/wem_export.h"
 #include "io/wem/wem_import.h"
 #include "io/wem/wem_profiles.h"
+#include "gltf_export.h"
 #include "m3_export.h"
 #if WDX_ENABLE_M3
 #include "m3_save.h"
@@ -806,6 +807,21 @@ bool IsForeignModelPath(const std::filesystem::path& path) {
 bool IsWemPath(const std::filesystem::path& path) {
     return LowerExt(path) == ".wem";
 }
+
+// glTF opens through the same machinery a `.wem` does: the import is a
+// Generic-profile document, the popup lists what it derives into, and
+// `BuildWemSource` draws it (GLTF_DESIGN §2). One predicate beside IsWemPath
+// rather than folded into it, because Save As and the profile texts still
+// treat the two containers differently.
+bool IsGltfPath(const std::filesystem::path& path) {
+    const std::string ext = LowerExt(path);
+    return ext == ".gltf" || ext == ".glb";
+}
+
+// A path the WEM open path owns — the interchange containers.
+bool IsInterchangePath(const std::filesystem::path& path) {
+    return IsWemPath(path) || IsGltfPath(path);
+}
 } // namespace
 
 bool ViewerApp::CurrentModelIsForeign() const {
@@ -815,6 +831,8 @@ bool ViewerApp::CurrentModelIsForeign() const {
 // ---- WEM interchange --------------------------------------------------------
 
 std::shared_ptr<io::WemDocument> ViewerApp::PeekWemDocument(const std::filesystem::path& path) {
+    if (IsGltfPath(path))
+        return io::ParseGltfFile(path);
     if (!IsWemPath(path))
         return nullptr;
     return io::ParseWemFile(path);
@@ -1024,6 +1042,51 @@ bool ViewerApp::ExportM3(const std::filesystem::path& outPath,
     if (exportTextures) {
         std::printf("[viewer] Textures: %d exported, %d skipped, %d failed\n",
                     report.texturesExported, report.texturesSkipped, report.texturesFailed);
+    }
+    return true;
+}
+
+// ---- glTF export -------------------------------------------------------------
+
+bool ViewerApp::CanExportGltf() const {
+    // Exactly CanExportWem: glTF export takes any carried profile, so every
+    // model WEM reads — a Warcraft III one included — exports (GLTF_DESIGN §2).
+    return CanExportWem();
+}
+
+bool ViewerApp::ExportGltf(const std::filesystem::path& outPath, bool binary,
+                           bool exportTextures) {
+    model::Actor* actor = FocusActorPtr();
+    auto* source = actor ? dynamic_cast<IModelSource*>(actor->animation.Source().get()) : nullptr;
+    if (!source) {
+        std::fprintf(stderr, "[viewer] Export glTF: no model on screen\n");
+        return false;
+    }
+
+    GltfExportRequest request;
+    request.source = source;
+    request.provider = service_.Scene().ActiveContentProvider();
+    request.outPath = outPath;
+    request.modelName = io::PathToUtf8(currentModelPath_.stem());
+    request.binary = binary;
+    request.exportTextures = exportTextures;
+
+    const GltfExportReport report = ExportModelAsGltf(request);
+    if (!report.diagnostics.empty()) {
+        std::fprintf(stderr, "[viewer] Export glTF: %zu diagnostic(s)\n%s",
+                     report.diagnostics.size(),
+                     io::DescribeWemDiagnostics(report.diagnostics, 400).c_str());
+    }
+    if (!report.ok) {
+        std::fprintf(stderr, "[viewer] Export glTF FAILED: %s\n", report.error.c_str());
+        return false;
+    }
+    std::printf("[viewer] Saved glTF (%s, %s profile): %s\n", report.formatId.c_str(),
+                ::whiteout::models::wem::Profile(report.profile).displayName,
+                io::PathToUtf8(outPath).c_str());
+    if (exportTextures) {
+        std::printf("[viewer] Textures: %d %s, %d failed\n", report.texturesExported,
+                    binary ? "embedded" : "exported", report.texturesFailed);
     }
     return true;
 }
@@ -2147,7 +2210,7 @@ bool ViewerApp::LoadModel(const std::filesystem::path& path) {
     // the window all reach here, and none of them has a dialog in front of it.
     // The document's own default profile is the answer, and it has to be
     // settled *before* the document opens — see OpenWemAs.
-    if (onDisk && IsWemPath(path) && !pendingWemDocument_)
+    if (onDisk && IsInterchangePath(path) && !pendingWemDocument_)
         return OpenWemAs(path, nullptr, ::whiteout::models::wem::ProfileId::Count);
 
     if (OpenDocument(path, /*effect=*/false))
@@ -2349,11 +2412,13 @@ void ViewerApp::FollowModelGame(const std::filesystem::path& path) {
         game = ProductId::D3;
     else if (ext == ".mdx" || ext == ".mdl" || ext == ".pkb" || ext == ".pkfx")
         game = ProductId::Wc3;
-    else if (ext == ".wem")
+    else if (ext == ".wem" || ext == ".gltf" || ext == ".glb")
         // The suffix says nothing here: one `.wem` can be opened as any profile
         // it carries, and the profile is what decides which game's storage its
         // textures resolve against. The pick is already made by the time a
-        // document opens — the dialog made it, or DefaultWemProfile did.
+        // document opens — the dialog made it, or DefaultWemProfile did. A
+        // glTF rides the same rule: its import derives into Reforged, so the
+        // answer is Warcraft III.
         game = io::ProductForWemProfile(pendingWemProfile_);
     if (game == ProductId::Neutral)
         return;
@@ -2509,7 +2574,7 @@ bool ViewerApp::LoadModelIntoActiveScene(const std::filesystem::path& path) {
     // chunk, and "HD" is a Warcraft III distinction that means nothing to an
     // .m2 or .m3 anyway — their frame is chosen by the scene's ProductId, which
     // SpawnUnit sets from the magic it just sniffed.
-    if (IsWemPath(path)) {
+    if (IsInterchangePath(path)) {
         // The render mode comes from the PROFILE, not from a probe: the HD
         // question is "is this Reforged", and for a `.wem` the answer is which
         // of the two Warcraft III profiles was picked. Every other profile is
@@ -2521,9 +2586,9 @@ bool ViewerApp::LoadModelIntoActiveScene(const std::filesystem::path& path) {
 
         std::shared_ptr<io::WemDocument> document = pendingWemDocument_;
         if (!document)
-            document = io::ParseWemFile(path);
+            document = IsGltfPath(path) ? io::ParseGltfFile(path) : io::ParseWemFile(path);
         if (!document) {
-            std::fprintf(stderr, "[viewer] '%s' is not a WEM file this build can read\n",
+            std::fprintf(stderr, "[viewer] '%s' is not a file this build can read\n",
                          io::PathToUtf8(path).c_str());
             return false;
         }
