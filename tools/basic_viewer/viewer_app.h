@@ -529,9 +529,11 @@ public:
     bool CanExportM3() const;
 
     // Convert the active document to StarCraft II and write it to @p outPath,
-    // textures beside it as `.dds` when @p exportTextures.
+    // textures beside it as `.dds` when @p exportTextures. The two Warcraft
+    // III knobs (WC3_SD_MATERIAL_TO_SC2_DESIGN.md §5): a composite section
+    // for every approximate pass fold, and the keyed-alpha bake.
     bool ExportM3(const std::filesystem::path& outPath, ::whiteout::models::wem::ProfileId profile,
-                  bool exportTextures);
+                  bool exportTextures, bool exactPasses = false, bool sharpenTeamKey = false);
 
     // Whether the active document can be written as glTF through WEM — the
     // widest of the export questions: glTF export takes any carried profile

@@ -37,8 +37,14 @@ Vector4f LayerTint(const TextureLayer& layer, f32 extraMul) {
     f32 mul = layer.rgbMultiply.initValue;
     if (mul <= 0.0f)
         mul = 1.0f;
+    // Retail multiplies all four channels (`cResult * multiply`,
+    // ComputeLayerColorInternal), so a mask layer's multiply IS its weight --
+    // Blizzard's own Warcraft III conversions fade a ghost with exactly that
+    // (`alphaLayer1.rgbMultiply = 0.66`). The slot's HDR multiplier is a
+    // host-side fold of a different term and stays off the alpha.
+    const f32 alphaMul = mul;
     mul *= extraMul;
-    return {r * mul, g * mul, b * mul, a};
+    return {r * mul, g * mul, b * mul, a * alphaMul};
 }
 
 u8 ResolveUvSource(const TextureLayer& layer) {

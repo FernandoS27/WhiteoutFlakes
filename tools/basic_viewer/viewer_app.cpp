@@ -6,6 +6,8 @@
 #include "io/wem/wem_profiles.h"
 #include "gltf_export.h"
 #include "m3_export.h"
+
+#include "whiteout/flakes/util/replaceable_paths.h"
 #if WDX_ENABLE_M3
 #include "m3_save.h"
 #endif
@@ -1012,7 +1014,8 @@ bool ViewerApp::CanExportM3() const {
 }
 
 bool ViewerApp::ExportM3(const std::filesystem::path& outPath,
-                         ::whiteout::models::wem::ProfileId profile, bool exportTextures) {
+                         ::whiteout::models::wem::ProfileId profile, bool exportTextures,
+                         bool exactPasses, bool sharpenTeamKey) {
     model::Actor* actor = FocusActorPtr();
     auto* source = actor ? dynamic_cast<IModelSource*>(actor->animation.Source().get()) : nullptr;
     if (!source) {
@@ -1027,6 +1030,11 @@ bool ViewerApp::ExportM3(const std::filesystem::path& outPath,
     request.modelName = io::PathToUtf8(currentModelPath_.stem());
     request.profile = profile;
     request.exportTextures = exportTextures;
+    // The tileset the viewer currently resolves replaceables with is the one
+    // the export resolves them with.
+    request.wc3.tileset = GetCurrentTileset();
+    request.wc3.exactPasses = exactPasses;
+    request.wc3.sharpenTeamKey = sharpenTeamKey;
 
     const M3ExportReport report = ExportModelAsM3(request);
     if (!report.diagnostics.empty()) {

@@ -926,7 +926,7 @@ M3ExportReport ExportModelAsM3(const M3ExportRequest& request) {
     // whole inverse PBR bake — before anything downstream reads it. A no-op
     // for every other source.
     const Wc3ToSc2Result restated =
-        RestateWc3AsSc2(document, request.provider, report.diagnostics);
+        RestateWc3AsSc2(document, request.provider, report.diagnostics, request.wc3);
 
     // The masked-env folds and the Diablo III alpha-chain merges, baked into
     // new maps while the source's own textures are still resolvable — before
@@ -951,6 +951,8 @@ M3ExportReport ExportModelAsM3(const M3ExportRequest& request) {
 
     io::M3ExportOptions m3Options;
     m3Options.profile = request.profile;
+    m3Options.exactPasses = request.wc3.exactPasses;
+    m3Options.textureAlphaClasses = restated.textureAlphaClasses;
     io::M3ExportResult converted = io::ConvertWemToM3(document, m3Options);
     report.diagnostics.append(converted.diagnostics);
     if (!converted.ok()) {

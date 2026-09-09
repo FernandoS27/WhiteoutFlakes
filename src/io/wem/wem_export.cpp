@@ -430,8 +430,11 @@ M3ExportResult ConvertWemToM3(const wem::Document& document, const M3ExportOptio
     result.lodMeshesDropped = staged.lodMeshesDropped;
 
     wem::M3Converter converter;
+    wem::M3ExportSettings settings;
+    settings.exactPasses = options.exactPasses;
+    settings.textureAlphaClasses = options.textureAlphaClasses;
     wem::Result<::whiteout::m3::Model> converted =
-        converter.toM3(*staged.document, options.profile, version);
+        converter.toM3(*staged.document, options.profile, version, settings);
     result.diagnostics.append(converted.diagnostics);
     if (!converted.ok()) {
         result.error = "the conversion to a StarCraft II model failed";

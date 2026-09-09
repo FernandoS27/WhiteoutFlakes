@@ -179,6 +179,13 @@ struct M3ExportOptions {
     /// Write only the base level of detail. An `.m3` has no LOD ladder to
     /// carry one into.
     bool baseLodOnly = true;
+
+    /// The Warcraft III pass fold's inputs (WC3_SD_MATERIAL_TO_SC2_DESIGN.md
+    /// §5): a composite section for every approximate fold, and what the
+    /// driver learned about each texture's alpha (`m3_core::TextureAlphaClass`
+    /// per `Document::textures` entry; empty when it decoded none).
+    bool exactPasses = false;
+    std::vector<u8> textureAlphaClasses;
 };
 
 struct M3ExportResult {

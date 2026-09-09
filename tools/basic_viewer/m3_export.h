@@ -24,6 +24,7 @@
 // ============================================================================
 
 #include "io/wem/wem_export.h"
+#include "wc3_to_sc2_export.h" // Wc3ToSc2Options
 #include "whiteout/flakes/model_source.h"
 #include "whiteout/flakes/types.h"
 
@@ -62,6 +63,10 @@ struct M3ExportRequest {
     /// Diablo III only: which look's materials are written. Empty means the
     /// one the actor is wearing.
     std::string materialLook;
+
+    /// Warcraft III only: the Classic arm's knobs (tileset, the key bake, the
+    /// exact-passes composite).
+    Wc3ToSc2Options wc3;
 };
 
 /// @brief What one export did, in the shape a log line and a dialog both want.
