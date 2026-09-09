@@ -1102,15 +1102,26 @@ static int RunDrawTrace(
     const dbg::DrawTrace& trace = rec.Trace();
     std::size_t totalDraws = 0;
     i32 kinds[4] = {0, 0, 0, 0};
+    // SC2_PARTICLE_PLAN X0: the sub-count of particle draws whose shading model
+    // is M3Standard, i.e. the SC2 particle dialect. Zero by construction until
+    // the dialect draws, which is what makes it the coverage gate for the whole
+    // plan: a carrier with a firing emitter has to move it off zero.
+    i32 sc2Particles = 0;
     for (const auto& fr : trace.frames) {
         totalDraws += fr.draws.size();
-        for (const auto& d : fr.draws)
+        for (const auto& d : fr.draws) {
             if (d.producer < 4)
                 ++kinds[d.producer];
+            if (d.producer == static_cast<decltype(d.producer)>(dbg::TraceProducer::Particle)
+                && d.shadingModel
+                       == static_cast<decltype(d.shadingModel)>(dbg::TraceShadingModel::M3Standard))
+                ++sc2Particles;
+        }
     }
     std::cout << "[dtrace] " << totalDraws << " draw(s) over " << trace.frames.size()
               << " frame(s); kinds geoset=" << kinds[0] << " particle=" << kinds[1]
-              << " ribbon=" << kinds[2] << " corn=" << kinds[3] << std::endl;
+              << " ribbon=" << kinds[2] << " corn=" << kinds[3] << " sc2par=" << sc2Particles
+              << std::endl;
 
     bool pass = true;
     std::string err;
@@ -1564,6 +1575,8 @@ int main(int argc, char* argv[]) {
     std::filesystem::path exportM3Path;
     auto exportM3Profile = whiteout::models::wem::ProfileId::Sc2;
     bool exportM3Textures = true;
+    bool exportM3ExactPasses = false;
+    bool exportM3SharpenKey = false;
     // Headless glTF export: the batch half of File ▸ Export to glTF. The
     // container follows the path's extension (`.gltf` = JSON + .bin + images,
     // anything else = one self-contained `.glb`).
@@ -1722,6 +1735,10 @@ int main(int argc, char* argv[]) {
             exportGltfTextures = false;
         } else if (std::strcmp(a, "--export-m3-no-textures") == 0) {
             exportM3Textures = false;
+        } else if (std::strcmp(a, "--export-m3-exact-passes") == 0) {
+            exportM3ExactPasses = true;
+        } else if (std::strcmp(a, "--export-m3-sharpen-key") == 0) {
+            exportM3SharpenKey = true;
         } else if (std::strcmp(a, "--save-m3") == 0 && i + 1 < argc) {
             saveM3Path = whiteout::flakes::io::FsPathFromUtf8(argv[++i]);
         } else if (std::strcmp(a, "--save-m3-merge-anims") == 0) {
@@ -1971,6 +1988,9 @@ int main(int argc, char* argv[]) {
                       << "       --export-m3 <out.m3>     write it as StarCraft II and exit\n"
                       << "       --export-m3-profile <n>  sc2 (default) | heroes\n"
                       << "       --export-m3-no-textures  do not write the textures beside it\n"
+                      << "       --export-m3-exact-passes Warcraft III: a draw per pass the fold\n"
+                      << "                                would otherwise approximate\n"
+                      << "       --export-m3-sharpen-key  Warcraft III: bake keyed alpha binary\n"
                       << "       --export-gltf <out.glb>  write it as glTF 2.0 and exit\n"
                       << "                                (.gltf writes JSON + .bin + images)\n"
                       << "       --export-gltf-no-textures leave the texture URIs unresolved\n"
@@ -2392,7 +2412,8 @@ int main(int argc, char* argv[]) {
 
     // Headless StarCraft II export -- ExportMdx's twin, same reasoning.
     if (!exportM3Path.empty()) {
-        const bool ok = app.ExportM3(exportM3Path, exportM3Profile, exportM3Textures);
+        const bool ok = app.ExportM3(exportM3Path, exportM3Profile, exportM3Textures,
+                                     exportM3ExactPasses, exportM3SharpenKey);
         app.Close();
         return ok ? 0 : 1;
     }

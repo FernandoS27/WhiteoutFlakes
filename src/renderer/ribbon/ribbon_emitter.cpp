@@ -243,8 +243,11 @@ GroundHit Sc2GroundCollide(const Vector3f& oldPos, const Vector3f& newPos,
         vNew.y += friction * (vel.y - vNorm.y);
         vNew.z += friction * (vel.z - vNorm.z);
     }
-    const f32 rem = dt * (1.0f - frac);
-    r.pos = {hit.x + vNew.x * rem, hit.y + vNew.y * rem, hit.z + vNew.z * rem};
+    // Advance in the binary's op order: (v'·dt)·(1 − frac), not v'·(dt·(1 − frac))
+    // — f32 multiply is not associative, and O8 pins the binary's association.
+    const f32 rem = 1.0f - frac;
+    r.pos = {hit.x + (vNew.x * dt) * rem, hit.y + (vNew.y * dt) * rem,
+             hit.z + (vNew.z * dt) * rem};
     r.vel = vNew;
     r.hit = true;
     return r;
@@ -588,7 +591,7 @@ f32 RibbonEmitter::Sc2SegmentsPerSecond() const {
     return desc_.sc2.divisions / P;
 }
 
-void RibbonEmitter::CommitSc2Segment(f32 birthU, f32 fracToCurr) {
+RibbonElement RibbonEmitter::Sc2MakeSegment(f32 birthU, f32 fracToCurr) const {
     sc2::HeadInputs in;
     in.simTechnique = desc_.sc2.simTechnique;
     in.ribbonType = desc_.sc2.ribbonType;
@@ -682,7 +685,11 @@ void RibbonEmitter::CommitSc2Segment(f32 birthU, f32 fracToCurr) {
         e.color3[i] = state_.sc2.color3[i];
         e.color3[i].w = std::clamp(e.color3[i].w + h.alphaWave, 0.0f, 1.0f);
     }
-    edges_.push_back(e);
+    return e;
+}
+
+void RibbonEmitter::CommitSc2Segment(f32 birthU, f32 fracToCurr) {
+    edges_.push_back(Sc2MakeSegment(birthU, fracToCurr));
 }
 
 void RibbonEmitter::PrepSc2(TickCtx& t, f32 dt) {
@@ -1012,20 +1019,19 @@ i32 RibbonEmitter::BuildStripSc2(const RibbonBuildContext& ctx,
         const RibbonElement* src;
     };
     std::vector<Node> nodes;
-    nodes.reserve(edges_.size());
+    nodes.reserve(edges_.size() + 1);
 
     const bool legacy = (tech == 4);
-    for (const RibbonElement& e : edges_) {
+    // Legacy (tech 4): position/velocity were integrated per-tick and stored on
+    // the element (Simulate_Type4), so BUILD reads them directly — the VS sets
+    // b_proceduralPosition = false for tech 4. The analytic techniques (0/2/3)
+    // reconstruct pos = birthPos + closed-form drag/gravity displacement(age)
+    // here (the VS's b_proceduralPosition path). Age is the RAW seconds
+    // (ribbon_vs.slang:402); gravity takes the renderer-unit scale in world space
+    // (the velocity was already scaled into world). `e` must outlive `nodes`.
+    auto appendNode = [&](const RibbonElement& e) {
         if (e.deathU - e.birthU <= 0.0f)
-            continue;
-
-        // Legacy (tech 4): position/velocity were integrated per-tick and stored
-        // on the element (Simulate_Type4), so BUILD reads them directly — the VS
-        // sets b_proceduralPosition = false for tech 4. The analytic techniques
-        // (0/2/3) reconstruct pos = birthPos + closed-form drag/gravity
-        // displacement(age) here (the VS's b_proceduralPosition path). Age is the
-        // RAW seconds (ribbon_vs.slang:402); gravity takes the renderer-unit
-        // scale in world space (the velocity was already scaled into world).
+            return;
         Vector3f localPos, localVel;
         if (legacy) {
             localPos = e.pos;
@@ -1038,7 +1044,6 @@ i32 RibbonEmitter::BuildStripSc2(const RibbonBuildContext& ctx,
             localPos = vs::Add(e.birthPos, d.displacement);
             localVel = d.velocity;
         }
-
         Node n;
         if (worldSpace) {
             n.pos = localPos;
@@ -1052,7 +1057,21 @@ i32 RibbonEmitter::BuildStripSc2(const RibbonBuildContext& ctx,
         n.up = vs::SafeNormalize(n.up, Vector3f{0, 0, 1});
         n.src = &e;
         nodes.push_back(n);
-    }
+    };
+    for (const RibbonElement& e : edges_)
+        appendNode(e);
+    // Live head. The binary keeps a persistent head element (pBuffer[3]) that
+    // CRibbon_UpdateHeadSegment re-stamps EVERY frame at the emitter world pos
+    // with birthU == headU, and Simulate skips integrating it. Our edges_ hold
+    // only the frozen history, appended at the sub-frame emission cadence
+    // (divisions/maxLength, ~one segment per 8 frames for Tyrael's wings), so
+    // without the head the newest strip vertex is a discrete spawn: arcFront —
+    // hence rpVScale, hence every node's V→size/twist — jumps on each spawn and
+    // retire, the Tyrael-wing / Zealot-hair twinkle at rest. Synthesising the
+    // head here anchors the leading edge to the emitter (birthU == headU keeps
+    // the newest age at 0), so the arc grows continuously between spawns.
+    const RibbonElement liveHead = Sc2MakeSegment(sc2HeadU_, 1.0f);
+    appendNode(liveHead);
     if (nodes.size() < 2)
         return 0;
 
@@ -1096,6 +1115,7 @@ i32 RibbonEmitter::BuildStripSc2(const RibbonBuildContext& ctx,
         std::vector<f32> arcFromHead(nodes.size(), 0.0f); // render-space arc head→node
         f32 acc = 0.0f;
         usize keepFrom = 0;
+        bool cutFound = false;
         f32 cutU = nodes.front().src->birthU; // oldest kept birthU (no-cut default)
         for (usize i = head; i > 0; --i) {
             const f32 seg = vs::Length3(vs::Sub(nodes[i - 1].pos, nodes[i].pos));
@@ -1106,6 +1126,7 @@ i32 RibbonEmitter::BuildStripSc2(const RibbonBuildContext& ctx,
                 cutU = nodes[i].src->birthU +
                        (nodes[i - 1].src->birthU - nodes[i].src->birthU) * t;
                 keepFrom = i - 1;
+                cutFound = true;
                 break;
             }
             acc += seg;
@@ -1116,14 +1137,24 @@ i32 RibbonEmitter::BuildStripSc2(const RibbonBuildContext& ctx,
             nodes.erase(nodes.begin(), nodes.begin() + cut);
             arcFromHead.erase(arcFromHead.begin(), arcFromHead.begin() + cut);
         }
-        // rpVScale = 1/(headU − cutU) when a cut was found; otherwise the trail is
-        // shorter than maxLength, so scale the total arc over the full age span.
+        // rpVScale (Simulate_Type2/3 0x10295F520/0x10295FBE0 phase-2 arc walk):
+        // V spreads the arc fraction over the age span from the head. A cut
+        // anchors it at headU→cutU (V reaches 1 at the cut); an UNCUT trail
+        // (arc < maxLength, incl. at rest) reaches only arc/maxLength at the
+        // oldest. The binary writes uncut = v45/(v72−v41) with v72 = the newest
+        // element's birthU and v41 = the oldest's. The newest element is the
+        // persistent head (pBuffer[3]) that UpdateHeadSegment re-stamps every
+        // frame at birthU==headU, so v72==headU; the synthesised live head above
+        // is that element, so headU−cutU (cutU = the oldest birthU here) is
+        // exactly v72−v41. cutFound mirrors the binary's cut flag — any element
+        // whose cumulative arc reaches maxLength, including one landing on the
+        // oldest node (keepFrom 0 but cutFound).
         const f32 headU = sc2HeadU_;
-        const f32 ageSpan = headU - cutU;
+        const f32 span = headU - cutU;
         const f32 rpVScale =
-            (ageSpan <= 1e-6f) ? 0.0f
-            : (keepFrom > 0)   ? 1.0f / ageSpan
-                               : (arcFromHead.front() / maxLen) / ageSpan;
+            (span <= 1e-6f) ? 0.0f
+            : cutFound      ? 1.0f / span
+                            : (arcFromHead.front() / maxLen) / span;
         const bool useLengthAndTime = (s.flags & 0x1000u) != 0;
         for (usize i = 0; i < nodes.size(); ++i) {
             f32 v = legacy ? (arcFromHead[i] / maxLen)                    // tech 4
@@ -1211,10 +1242,13 @@ void RibbonEmitter::TickSc2Spline(f32 dt) {
     // Quadratic sag, per control point. The binary rotates gravity into
     // emitter-local, adds the sag there, then transforms the strip back to world
     // — a round trip that nets world-space gravity, so accel is gravity3
-    // (renderer units) with no rotation. Simulate_Spline recomputes sag =
-    // accel·age² FRESH each frame from the accumulated age (NOT `+=`, which would
-    // grow it every frame); age² is itself frame-rate independent. gravity3 == 0
-    // — the common case — leaves the spline rigid.
+    // (renderer units) with no rotation. DEVIATION (O9): Simulate_Spline
+    // ACCUMULATES `splineSagOffset += accel·dtAccumulator²` every frame (the
+    // gate's `sag-twice` vector doubles it) with dtAccumulator = the total age,
+    // and the driver never zeros it, so the retail droop is accel·Σage_i². We
+    // recompute accel·age² fresh instead: identical on the first frame and a
+    // bounded quadratic droop rather than the retail runaway. gravity3 == 0 —
+    // the common case — leaves the spline rigid, where the two agree exactly.
     const Vector3f g = desc_.sc2.gravity3;
     const f32 age2 = sc2SplineAge_ * sc2SplineAge_ * state_.unitScale;
     const Vector3f d = {g.x * age2, g.y * age2, g.z * age2};
@@ -1270,23 +1304,47 @@ i32 RibbonEmitter::BuildStripSc2Spline(const RibbonBuildContext& ctx,
     const f32 sizeWave = mainWave(3);
     const f32 alphaWave = mainWave(4);
 
-    // C0 = emissionOffset; C1 adds the RIB-rotated start tangent scaled by the
-    // base velocity factor. C3 = endOffset through the SRIB node frame; C2 adds
-    // the SRIB-rotated end tangent scaled by the end factor.
+    // The four SRIB vec3s are DIRECT Bezier control points, each a POINT in its
+    // own frame — Simulate_Spline (4.8 0x10295E170, pinned by O9) does NOT add
+    // the endpoints to the tangents. C0/C1 are emissionOffset and the
+    // RIB-rotated emissionVector·baseFactor, both through the emitter frame; C3/
+    // C2 are endOffset and the SRIB-rotated endTangent·endFactor, both through
+    // the SRIB node frame. C1 and C2 are transform_POINT (they take the frame's
+    // translation too — O9's node-translate vector records C2 = nodeTranslate +
+    // R_srib·endTangent, matching C3's translation with no cross term). Adding
+    // the endpoints to the tangents was a documented-but-wrong RE guess (§3.4).
     const Vector3f c0 = whiteout::transform_point(sp.emissionOffset, ew);
-    const Vector3f startTan =
-        whiteout::transform_normal(vs::MulVecMat3(sp.emissionVector, rRib), ew);
-    const Vector3f c1 = vs::Add(c0, vs::Scale(startTan, baseFactor));
-    const Vector3f eo = vs::MulVecMat3(sp.endOffset, rSrib);
-    const Vector3f c3 = whiteout::transform_point(eo, nw);
-    const Vector3f endTan =
-        whiteout::transform_normal(vs::MulVecMat3(sp.endTangent, rSrib), nw);
-    const Vector3f c2 = vs::Add(c3, vs::Scale(endTan, endFactor));
+    const Vector3f c1 = whiteout::transform_point(
+        vs::Scale(vs::MulVecMat3(sp.emissionVector, rRib), baseFactor), ew);
+    const Vector3f c3 = whiteout::transform_point(
+        vs::MulVecMat3(sp.endOffset, rSrib), nw);
+    const Vector3f c2 = whiteout::transform_point(
+        vs::Scale(vs::MulVecMat3(sp.endTangent, rSrib), endFactor), nw);
 
     const Vector3f p0 = vs::Add(c0, sc2Sag_[0]);
     const Vector3f p1 = vs::Add(c1, sc2Sag_[1]);
     const Vector3f p2 = vs::Add(c2, sc2Sag_[2]);
     const Vector3f p3 = vs::Add(c3, sc2Sag_[3]);
+
+    // Cross-section up. A GPU spline (no noise) computes a STABILIZED up in the
+    // VS from the control points — the mean plane normal, x-biased so near-
+    // colinear points still resolve (Ribbon.fx:361, pinned by O12's spline_up).
+    // A fixed +Z twists a tube whenever the curve runs parallel to it (the
+    // vertical Spine Crawler stalk). A noisy CPU spline (tech 4) instead writes
+    // emitter +Z per element (RE §3.4), so keep that for the noise path.
+    Vector3f splineUp;
+    if (s.noiseAmplitude > 0.001f) {
+        splineUp = vs::SafeNormalize(whiteout::transform_normal(Vector3f{0, 0, 1}, ew),
+                                     Vector3f{0, 0, 1});
+    } else {
+        Vector3f n0 = vs::Cross3(vs::Sub(p1, p0), vs::Sub(p3, p0));
+        const Vector3f n1 = vs::Cross3(vs::Sub(p2, p3), vs::Sub(p0, p3));
+        if (vs::Dot3(n0, n1) < 0.0f)
+            n0 = vs::Scale(n0, -1.0f);
+        n0 = vs::Add(n0, n1);
+        n0.x += 1.0f;
+        splineUp = vs::SafeNormalize(n0, Vector3f{0, 0, 1});
+    }
 
     // B(t) = C0(1−t)³ + 3C1·t(1−t)² + 3C2·t²(1−t) + C3·t³ (weights in the
     // binary's order).
@@ -1337,7 +1395,7 @@ i32 RibbonEmitter::BuildStripSc2Spline(const RibbonBuildContext& ctx,
                                        s.noiseFrequency, s.noiseCoherence, s.noiseEdge,
                                        /*bothEnds=*/true));
         }
-        n.up = {0, 0, 1};
+        n.up = splineUp;
         n.tangent = vs::SafeNormalize(tan, Vector3f{1, 0, 0});
         n.twist = vs::TwistAngle(t, state_.sc2.rotation3.x, state_.sc2.rotation3.y,
                                  state_.sc2.rotation3.z,
@@ -1350,7 +1408,12 @@ i32 RibbonEmitter::BuildStripSc2Spline(const RibbonBuildContext& ctx,
                                                state_.sc2.size3.z + sizeWave, s.midTime[0],
                                                invMid(s.midTime[0]), s.midHold[0],
                                                s.sizeSmoothing);
-        n.size = fSize * 0.5f * state_.unitScale;
+        // Half-extent is size·0.25 (RE §4, A7): the binary halves TWICE — the
+        // spline batch consts store half-sizes (or the tech-4 filler writes ·0.5)
+        // and the VS halves again (Ribbon.fx:442). The trail path gets both (head
+        // writer + BuildStripSc2); the spline path has no head writer, so it must
+        // apply both here or the tube renders twice as thick.
+        n.size = fSize * 0.25f * state_.unitScale;
         const Vector3f rgb = vs::InterpolateValue3(
             t, {col[0].x, col[0].y, col[0].z}, {col[1].x, col[1].y, col[1].z},
             {col[2].x, col[2].y, col[2].z}, s.midTime[1], invMid(s.midTime[1]),

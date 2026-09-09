@@ -1,0 +1,66 @@
+# Track C — StarCraft II / Heroes of the Storm `.m3` RIBBON corpus
+# (RIBBON_REVIEW_PLAN.md §4, the -M3Ribbon render-diff arm).
+#
+# Paths are relative to C:/Projects/WhiteoutLib/Corpus, same root as
+# corpus_m3.txt. Every line is a VERIFIED ribbon carrier: found by `_BIR`
+# (RIB_) chunk CONTENT and confirmed with the real WhiteoutLib parser, not by
+# filename — the `*Ribbon*.m3` files are cocoon meshes with no RIB_ chunk.
+#
+# An emitted (trail) ribbon draws nothing unless its `active` track is on, so
+# each line names a sequence that keeps it on (`seq=`, same token grammar as
+# corpus_m3_anim.txt). Verified against the model's own STC/STG animation data
+# (a scratch resolver replicating m3_animation.cpp): Griffon/Sprinkler/KingsCrest
+# are always-on (active.init=1). Overmind's ribbons also have active.init=1 but its
+# tentacle bone is visibility-gated (hidden in Stand: render ribbon=0; extended in
+# Death: ribbon=2784), so Death is its clip; Anduin's star ribbon keys active to a
+# steady 1 in Stand (and 0->1 in Birth) so Stand is the stable golden. SPLINE
+# ribbons are the exception — Simulate_Spline rebuilds the strip from control
+# points every frame and is NOT gated by `active` (ribbon_emitter.cpp
+# TickSc2Spline / BuildStripSc2Spline gate only on bone visibility), so the
+# SpineCrawler spline draws in any visible sequence regardless of its active=0.
+# (Corpus-wide fact: 0 of 3260 spline ribbons have active.init!=0, and none is
+# self-keyed on — which is why a spline carrier must not depend on `active`.)
+#
+# The set is chosen to cover every simulation/geometry path the oracle gates
+# pinned, so the look-pass exercises them all:
+#   - time-mode billboard        cross-section 0, no UseLengthAndTime (O2/O10)
+#   - length-mode trail          RibbonFlag UseLengthAndTime 0x1000 (O5/O6, DRIFT-3)
+#   - tube (cylinder)            cross-section 2 (O2 cross-section table)
+#   - star                       cross-section 3 (rare: 6 records in the corpus)
+#   - spline ribbon              one SRIB record, 4 control points (O9)
+#   - legacy gravity faller      non-zero gravity + Euler/drag integrate (O7)
+#   - colliding legacy ribbon    RibbonFlag CollideTerrain, settles on the grid (O8)
+#
+# Run (needs a build configured -DWDX_ENABLE_M3=ON; assistant must not build it):
+#   scripts/render-diff.ps1 -Record -M3Ribbon -Exe <m3-build>/standalone/RelWithDebInfo/WhiteoutFlakes.exe
+#   scripts/render-diff.ps1 -Check  -M3Ribbon -Exe <m3-build>/standalone/RelWithDebInfo/WhiteoutFlakes.exe
+# Record G1/G2 baselines only once each LOOKS right against an in-game capture.
+
+# length-mode billboard trail — the classic velocity trail (UseLengthAndTime).
+Sc2M3/Griffon.m3 seq=Stand
+
+# time-mode billboard — Overmind tentacles wave a billboard ribbon (rib 0-2/4/5,
+# flags=0). active.init=1 keeps EMISSION on, but the tentacle bone is visibility-
+# gated: it is retracted in Stand (render: ribbon=0) and extended only in Death,
+# where the billboard ribbons draw (ribbon=2784 over 120 frames, stable). Death is
+# non-looping (5334ms) so the 2s capture stays in-clip. Also carries tube + spline.
+Sc2M3/AiurOvermindTentacle.m3 seq=Death
+
+# tube (cross-section 2) + legacy gravity faller (gravity -5): the sprinkler's
+# falling water arc. Always-on, continuous — a stable golden.
+HotSM3/Storm_Doodad_KingsCrest_Sprinkler.m3 seq=GLstand
+
+# star (cross-section 3, rare) — Anduin's Leap of Faith wing ribbons. active keys
+# to a steady 1 in Stand (verified), so Stand is the stable golden.
+HotSM3/Storm_Effect_Anduin_Base_LeapOfFaith_Wings.m3 seq=Stand
+
+# spline ribbon (one SRIB, 4 control points) — the Spine Crawler's tentacle. The
+# spline path ignores `active` (builds from control points every frame), so the
+# strip draws in any visible clip; Attack is the intended extended pose. The
+# canonical content-verified spline (no Auriel file carries an SRIB — the plan's
+# guess; this replaces it).
+HotSM3/SpineCrawlerEx1.m3 seq=Attack
+
+# colliding legacy ribbon (CollideTerrain + gravity) — should settle on the grid
+# at ~contact height (§4 look check). Fired by the one-shot Death clip.
+HotSM3/Storm_Building_KingsCrest_Keep_Damage_Explosion.m3 seq=Death

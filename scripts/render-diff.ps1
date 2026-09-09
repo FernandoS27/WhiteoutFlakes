@@ -81,6 +81,14 @@ param(
     # is what the commit message has to say.
     [switch]$M3Anim,
 
+    # Track C — the `.m3` *ribbon* arm (RIBBON_REVIEW_PLAN.md §4). Same corpus
+    # root as -M3, its own corpus file (verified `_BIR` carriers) and baselines
+    # (`m3ribbon`). Each corpus line names the sequence that fires its ribbon,
+    # so the arm draws a strip rather than an empty pose. Record G1/G2 baselines
+    # only once each LOOKS right against an in-game capture — a ribbon that
+    # draws the wrong shape still records a stable, wrong golden.
+    [switch]$M3Ribbon,
+
     # GATE G6 — the `.m3` *material* arm (M3_SIMPLE_MATERIAL_DESIGN.md §7).
     # Same corpus root as -M3, its own corpus file and baselines (`sc2mat`).
     # Like -M3Anim these baselines are PROGRESSIVE: each material phase
@@ -187,8 +195,8 @@ if (-not (Test-Path $BaselineDir)) {
 
 $mode = if ($Hd) { 'hd' } else { 'sd' }
 if ($Unlit) { $mode += '_unlit' }
-if ((@($M2, $M3, $M3Anim, $Sc2Mat, $D3, $Gltf) | Where-Object { $_ }).Count -gt 1) {
-    Write-Error '-M2, -M3, -M3Anim, -Sc2Mat, -D3 and -Gltf are separate arms: pass one of them.'
+if ((@($M2, $M3, $M3Anim, $M3Ribbon, $Sc2Mat, $D3, $Gltf) | Where-Object { $_ }).Count -gt 1) {
+    Write-Error '-M2, -M3, -M3Anim, -M3Ribbon, -Sc2Mat, -D3 and -Gltf are separate arms: pass one of them.'
     exit 2
 }
 if ($Solvers -and -not $M3Anim) {
@@ -231,6 +239,21 @@ if ($M3 -or $M3Anim) {
     # pose and far too short for a cross-fade to start and settle. The scenario
     # frames in the corpus file are written against this default.
     if ($M3Anim -and -not $PSBoundParameters.ContainsKey('Frames')) {
+        $Frames = 120
+    }
+}
+if ($M3Ribbon) {
+    $mode = 'm3ribbon'
+    if (-not $PSBoundParameters.ContainsKey('CorpusRoot')) {
+        $CorpusRoot = 'C:/Projects/WhiteoutLib/Corpus'
+    }
+    if (-not $PSBoundParameters.ContainsKey('CorpusFile')) {
+        $CorpusFile = "$PSScriptRoot/../tools/particle_diff/corpus_m3_ribbon.txt"
+    }
+    # A ribbon pre-rolls a trail at spawn and then grows it frame by frame; the
+    # 30-frame default is too short to fill and settle the strip, so match
+    # -M3Anim's half-second capture. The corpus `seq=` clips are written for it.
+    if (-not $PSBoundParameters.ContainsKey('Frames')) {
         $Frames = 120
     }
 }
@@ -308,7 +331,9 @@ $entries = Get-Content $CorpusFile |
                 }
             }
         }
-        if ($M3Anim) {
+        # The ribbon arm shares this scenario grammar: every carrier names the
+        # `seq=` clip that fires its ribbon. Its corpus paths have no spaces.
+        if ($M3Anim -or $M3Ribbon) {
             $tok = $line -split '\s+'
             $e.Path = $tok[0]
             for ($t = 1; $t -lt $tok.Count; $t++) {

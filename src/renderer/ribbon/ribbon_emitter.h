@@ -448,6 +448,10 @@ private:
     /// Push this tick's emitter motion into the 8-tap ring and recompute
     /// `sc2SmoothedVel_` (inherit-parent-velocity). No-op unless inheriting.
     void Sc2UpdateSmoothedVelocity(f32 dt);
+    /// Build one segment at the interpolated emitter pose, birthU-stamped (the
+    /// UpdateHeadSegment field write). Used both for committed history and for
+    /// the live head strip synthesises each frame.
+    RibbonElement Sc2MakeSegment(f32 birthU, f32 fracToCurr) const;
     /// One committed segment at the interpolated emitter pose, birthU-stamped.
     void CommitSc2Segment(f32 birthU, f32 fracToCurr);
     /// Build the SC2 strip: per-element the vertex shader math on the CPU
