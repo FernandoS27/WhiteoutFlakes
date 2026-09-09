@@ -240,6 +240,14 @@ gfx::TextureHandle AssetManager::TextureOf(SlotId slot) const {
     return it->second.texHandle;
 }
 
+i32 AssetManager::MipLevelsOf(SlotId slot) const {
+    std::lock_guard<std::mutex> lk(mu_);
+    auto it = slots_.find(slot);
+    if (it == slots_.end() || it->second.kind != AssetKind::Texture || !it->second.loaded)
+        return 1;
+    return (std::max)(1, it->second.texMipLevels);
+}
+
 const cornflakes::EffectAssetModel* AssetManager::ParticleAssetOf(SlotId slot) const {
     std::lock_guard<std::mutex> lk(mu_);
     auto it = slots_.find(slot);
@@ -648,6 +656,7 @@ void AssetManager::CommitPrepared() {
                         toDestroy = s.texHandle;
                     }
                     s.texHandle = freshHandle;
+                    s.texMipLevels = desc.mipLevels;
                     s.loaded    = true;
                     s.generation++;
                     slotApplied = true;

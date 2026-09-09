@@ -6,6 +6,7 @@
 #include "renderer/model/model_source_utils.h"
 #include "whiteout/flakes/content_provider.h"
 #include "whiteout/flakes/content_ref.h"
+#include "whiteout/flakes/util/texture_image_usage.h"
 
 #include <whiteout/models/wem/materials/native.h>
 #include <whiteout/models/wem/retarget.h>
@@ -96,18 +97,23 @@ constexpr bool kSpecularIsDisplayReferred = true;
 /// (`m3_surface_table.cpp`, and 35.2% of measured materials need it).
 constexpr f32 kDefaultSpecularExponent = 20.0f;
 
-/// `MaterialFlag::SimulateRoughness`. Its absence is what turns
-/// `FakeEnergyConservingSpec` on, and it is absent on 13,015 of 13,091
-/// measured materials.
+/// `MaterialFlag::SimulateRoughness` — StarCraft II's own PBR styling (the
+/// StarTools guide: the spec map doubles as the envio mask, the gloss rides
+/// its alpha as a perceptual roughness), on 1,801 StarCraft II and 4,972
+/// Heroes materials. Its absence is what turns `FakeEnergyConservingSpec` on.
 constexpr u32 kSimulateRoughness = 0x800u;
 
-/// How much of the envio term's native amplitude survives as an F0 bump.
-/// The native contribution is `cube * tint * mask` added to the lit colour;
-/// the exported one is `F0 * probeRadiance * lut.x + ...`, and the two
-/// radiances are different scenes' — this constant is the exchange rate,
-/// calibrated against the golden Adept (whose look is almost entirely this
-/// term). 1 = the env map's own mean luminance goes through unscaled.
-constexpr f32 kEnvReflectanceScale = 1.0f;
+/// The mean linear luminance of Reforged's stock environment panorama
+/// (`_hd.w3mod/replaceabletextures/environmentmap.dds`, weighted by
+/// cos(latitude)) — the probe every exported material reflects, `exportPbr`
+/// naming it in slot 5 unconditionally. A StarCraft II envio layer adds (or
+/// multiplies by) `cube * tint * mask` in radiance and Reforged adds
+/// `probe * F0`, so the F0 that keeps a reflection as bright as it was is
+/// the mask times the ratio of the two environments' brightness. Measured
+/// 2026-09-09: StarCraft II's PBR cube averages 0.075, `Reflection_Silver`
+/// 0.076, Heroes' shared reflection 0.025 — the placeholder rate of 1 that
+/// stood here under-reflected by an order of magnitude.
+constexpr f32 kReforgedProbeLuminance = 0.0875f;
 
 /// What lobe width a mip-0 env-map lookup reads as once it is a probe
 /// reflection. Sharp, but not a mirror — the source cubes are small and soft.
@@ -401,6 +407,59 @@ tx::pbr::ScalarInput CoverageOf(const nat::M3TextureLayer& layer, TextureCache& 
     return mask;
 }
 
+/// The envio mask as `ApplyEnv` multiplies it: `cMaskValue.rgb` under Add
+/// and Mod — the decoded RGB's luminance for an RGB select, RGB times alpha
+/// for RGBA, one channel splatted otherwise — and `.a` under Lerp, where an
+/// RGB select is a constant 1. The texture's own colour-space policy decides
+/// the decode, the way the renderer binds it (a `_spec` map is sRGB).
+tx::pbr::ScalarInput EnvMaskOf(const nat::M3TextureLayer& layer, nat::M3LayerBlendOp op,
+                               TextureCache& cache, const wem::ElementRef& where,
+                               wem::Diagnostics& out) {
+    tx::pbr::ScalarInput mask;
+    mask.constant = 1.0f;
+    const bool byAlpha = op == nat::M3LayerBlendOp::Lerp;
+    if (hasFlag(layer.flags, nat::M3TextureLayerFlag::Color)) {
+        const auto c = layer.color.initValue;
+        if (!(c.r == 0 && c.g == 0 && c.b == 0 && c.a == 0)) {
+            mask.constant = byAlpha ? static_cast<f32>(c.a) / 255.0f
+                                    : (0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b) / 255.0f;
+        }
+    } else {
+        mask.texture = cache.Decode(layer.texturePath);
+        if (mask.texture == nullptr) {
+            out.warn(wem::DiagCode::TextureUnresolved,
+                     "the envio mask '" + Trim(layer.texturePath) +
+                         "' could not be decoded; the reflection covers the surface",
+                     where, wem::ProfileId::Wc3Reforged);
+        }
+        mask.srgb = !io::IsLinearImageUsage(io::DetermineImageUsage(Trim(layer.texturePath)));
+        switch (layer.colorType) {
+        case nat::M3ColorChannelSelect::RGB:
+            if (byAlpha) {
+                mask.texture = nullptr;
+            } else {
+                mask.luminance = true;
+            }
+            break;
+        case nat::M3ColorChannelSelect::RGBA:
+            mask.channel = tx::Channel::A;
+            mask.luminance = !byAlpha;
+            mask.alphaWeighted = !byAlpha;
+            break;
+        default:
+            mask.channel = AlphaChannelFor(layer.colorType).value_or(tx::Channel::R);
+            break;
+        }
+    }
+    const f32 alphaFactor = layer.mapAlpha.initValue;
+    mask.scale = alphaFactor > 0.0f ? alphaFactor : 1.0f;
+    mask.invert = hasFlag(layer.flags, nat::M3TextureLayerFlag::ColorInvert);
+    const f32 multiply = layer.rgbMultiply.initValue;
+    mask.postScale = multiply > 0.0f ? multiply : 1.0f;
+    mask.bias = layer.rgbAdd.initValue;
+    return mask;
+}
+
 /// One material's worth of sources, resolved.
 struct Sources {
     const tx::Texture* specular = nullptr;
@@ -642,8 +701,8 @@ Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvi
             const bool anyEnvio =
                 LayerOf(standard->environmentLayer) != nullptr &&
                 (standard->layerBlendMode == nat::M3LayerBlendOp::Add ||
-                 standard->layerBlendMode == nat::M3LayerBlendOp::AddNoAlpha ||
-                 standard->layerBlendMode == nat::M3LayerBlendOp::Lerp);
+                 standard->layerBlendMode == nat::M3LayerBlendOp::Lerp ||
+                 standard->layerBlendMode == nat::M3LayerBlendOp::Mod);
             const bool anyOrmSource = sources.specular != nullptr ||
                                       sources.occlusion != nullptr || anyTeam || anyEnvio;
             // A glow-only material (two additive emissives and nothing else)
@@ -685,8 +744,12 @@ Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvi
             reflectance.factor = standard->hdrSpecularMultiplier > 0.0f
                                      ? standard->hdrSpecularMultiplier
                                      : 1.0f;
-            reflectance.energyConserving =
-                (static_cast<u32>(standard->flags) & kSimulateRoughness) == 0;
+            const bool simulateRoughness =
+                (static_cast<u32>(standard->flags) & kSimulateRoughness) != 0;
+            reflectance.energyConserving = !simulateRoughness;
+            // Under the flag the gloss layer below is `1 - roughness` — the
+            // engine blurs the reflection by it — not an exponent scale.
+            reflectance.simulateRoughness = simulateRoughness;
             reflectance.exponentScale.texture = sources.gloss;
             reflectance.exponentScale.channel = sources.glossChannel;
             reflectance.exponentScale.constant = 1.0f;
@@ -722,23 +785,21 @@ Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvi
             // `ApplyEnv` adds (or lerps) `cube * tint * mask` into the lit
             // colour; Reforged's probe reflection is `F0*lut.x + lut.y` — so a
             // real reflection crosses as an F0 bump, per texel through the
-            // EnvioMask. The op is the material's layerBlendMode (the decal's
-            // field, psmaterial.fx:332); a Mod-family op is a modulated
-            // reflection nothing additive can say. 26,894 shipped materials
-            // carry the layer, 24,491 with a mask.
+            // EnvioMask, in the ratio of the two environments' brightness. The
+            // op is the material's layerBlendMode (the decal's field,
+            // psmaterial.fx:332): Add and Lerp cross as that bump, Mod — the
+            // league skins' `lit * cube * mask` — as a reflection in the
+            // albedo's colour (`pbr_bake.h`), and every other op draws
+            // nothing in the game either. 26,894 shipped materials carry the
+            // layer, 24,491 with a mask.
             if (const nat::M3TextureLayer* envLayer = LayerOf(standard->environmentLayer)) {
                 const nat::M3LayerBlendOp envOp = standard->layerBlendMode;
-                const bool additive = envOp == nat::M3LayerBlendOp::Add ||
-                                      envOp == nat::M3LayerBlendOp::AddNoAlpha ||
-                                      envOp == nat::M3LayerBlendOp::Lerp;
+                const bool modulated = envOp == nat::M3LayerBlendOp::Mod;
+                const bool live = modulated || envOp == nat::M3LayerBlendOp::Add ||
+                                  envOp == nat::M3LayerBlendOp::Lerp;
                 const tx::Texture* envTexture =
-                    additive ? cache.Decode(envLayer->texturePath) : nullptr;
-                if (!additive) {
-                    out.info(wem::DiagCode::LayerDropped,
-                             "a Mod-op envio layer is a modulated reflection; an additive "
-                             "probe term cannot say it",
-                             where, wem::ProfileId::Wc3Reforged);
-                } else if (envTexture != nullptr) {
+                    live ? cache.Decode(envLayer->texturePath) : nullptr;
+                if (envTexture != nullptr) {
                     const f32 envConstant = standard->hdrEnvironmentConstant > 0.0f
                                                 ? standard->hdrEnvironmentConstant
                                                 : 1.0f;
@@ -746,19 +807,21 @@ Sc2PbrBakeResult BakeSc2AsReforgedPbr(wem::Document& document, io::IContentProvi
                     LayerTintInto(*envLayer, envConstant, tint);
                     const f32 tintLum = 0.2126f * tint[0] + 0.7152f * tint[1] + 0.0722f * tint[2];
                     reflectance.envReflectance =
-                        kEnvReflectanceScale * MeanLinearLuminance(*envTexture) * tintLum;
+                        MeanLinearLuminance(*envTexture) * tintLum / kReforgedProbeLuminance;
                     reflectance.envRoughnessCap = kEnvRoughnessCap;
-                    if (const nat::M3TextureLayer* maskLayer =
-                            LayerOf(standard->environmentMaskLayer)) {
-                        reflectance.envMask.texture = cache.Decode(maskLayer->texturePath);
-                        reflectance.envMask.channel = ScalarChannelFor(maskLayer->colorType);
-                        const f32 alphaFactor = maskLayer->mapAlpha.initValue;
-                        reflectance.envMask.scale = alphaFactor > 0.0f ? alphaFactor : 1.0f;
-                        reflectance.envMask.invert =
-                            hasFlag(maskLayer->flags, nat::M3TextureLayerFlag::ColorInvert);
-                        const f32 multiply = maskLayer->rgbMultiply.initValue;
-                        reflectance.envMask.postScale = multiply > 0.0f ? multiply : 1.0f;
-                        reflectance.envMask.bias = maskLayer->rgbAdd.initValue;
+                    reflectance.envModulates = modulated;
+                    const std::optional<nat::M3TextureLayer>& maskSlot =
+                        standard->environmentMaskLayer;
+                    if (maskSlot.has_value() &&
+                        (LayerOf(maskSlot) != nullptr ||
+                         hasFlag(maskSlot->flags, nat::M3TextureLayerFlag::Color))) {
+                        reflectance.envMask = EnvMaskOf(*maskSlot, envOp, cache, where, out);
+                    }
+                    if (modulated) {
+                        out.info(wem::DiagCode::LossyKindConversion,
+                                 "a Mod-op envio layer modulates the lit colour by its "
+                                 "reflection; it crosses as a metal in the albedo's colour",
+                                 where, wem::ProfileId::Wc3Reforged);
                     }
                 }
             }

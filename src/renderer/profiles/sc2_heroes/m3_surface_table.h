@@ -40,6 +40,7 @@ inline constexpr u32 kM3LayerCount = 11;
 /// itself off until its texture lands, and the environment layer is the one
 /// cube. Mirrors of io::M3LayerSlot, which m3_model_adapter.h owns; pinned
 /// against it by static_assert in m3_surface_table.cpp.
+inline constexpr u32 kM3LayerSpecular = 2;
 inline constexpr u32 kM3LayerNormal = 5;
 inline constexpr u32 kM3LayerEnvironment = 9;
 
@@ -108,10 +109,19 @@ struct M3Surface {
     /// FakeEnergyConservingSpec could not be folded into the specular tint —
     /// the gloss layer makes the exponent, and therefore the dim, per-pixel.
     bool dimPerPixel = false;
+    /// hdrSpecularMultiplier with the folded dim: what the specular tint
+    /// carries beyond the layer's own colour, and what the team colour takes
+    /// in retail's team-coloured specular.
+    f32 specularScale = 1.0f;
     /// The environment layer looks the cube up along the REFLECTED view
     /// vector rather than along the normal — UVMappingMode Reflect*Envio
     /// against plain *Envio. 710 of the 744 shipped env layers reflect.
     bool envReflect = true;
+    /// SimulateRoughness beside a gloss layer: the cube is read at a mip
+    /// biased by `1 - gloss` (psmainshading.fx b_iBlurEnvironmentMap), so a
+    /// rough texel reflects a blur and a glossy one a mirror. The range is the
+    /// bound cube's own last level, read where the draw is written.
+    bool envBlur = false;
     /// Normalised [0,1]; 0 disables the test.
     f32 alphaTestThreshold = 0.0f;
     /// REGN v5+ per-region decode (`uv = i16 * uvMultiply + uvOffset`); older

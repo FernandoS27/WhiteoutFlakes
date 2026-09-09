@@ -542,7 +542,8 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
         c->params0 = {surf->alphaTestThreshold, unshaded ? 1.0f : 0.0f, surf->specularExponent,
                       static_cast<f32>((dblLambert ? 1u : 0u) | (key.twoSided ? 2u : 0u) |
                                        (surf->dimPerPixel ? 4u : 0u) |
-                                       (surf->envReflect ? 8u : 0u))};
+                                       (surf->envReflect ? 8u : 0u) |
+                                       (surf->envBlur ? 16u : 0u))};
         // The shader samples SNORM (raw/32767); fold the decode back so the
         // authored `uv = i16 * mul + add` comes out. .z rides the material's
         // emissive multiplier (see M3Surface::emissiveMultiplier), .w retail's
@@ -581,7 +582,16 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
                     mode = 0;
             }
             c->layerTint[i] = l.tint;
-            c->layerAdd[i] = {l.add, 0.0f, 0.0f, 0.0f};
+            // The environment slot's .y is the blur's mip range: the bound
+            // cube's last level, which is what the engine-set
+            // p_vEnvioTextureSize.z has to be for the guide's "sharp at 0,
+            // very blurry at 4" to hold for its 1024 cubes.
+            f32 addY = i == kM3LayerSpecular ? surf->specularScale : 0.0f;
+            if (i == kM3LayerEnvironment && surf->envBlur && l.textureId >= 0 &&
+                item.view->textures)
+                addY = static_cast<f32>(
+                    std::max(0, item.view->textures->MipLevels(l.textureId) - 1));
+            c->layerAdd[i] = {l.add, addY, 0.0f, 0.0f};
             // Low nibble = UV set; bits 4-5 = which of the four wrap-variant
             // samplers this layer reads through; bit 6 invert, bit 7 clamp.
             c->layerCtl[i][0] = l.uvSource |
@@ -791,7 +801,8 @@ void M3StandardShading::DrawRibbon(model::Actor& actor, i32 surfaceIndex, i32 ve
         c->params0 = {surf->alphaTestThreshold, unshaded ? 1.0f : 0.0f, surf->specularExponent,
                       static_cast<f32>((dblLambert ? 1u : 0u) | (key.twoSided ? 2u : 0u) |
                                        (surf->dimPerPixel ? 4u : 0u) |
-                                       (surf->envReflect ? 8u : 0u))};
+                                       (surf->envReflect ? 8u : 0u) |
+                                       (surf->envBlur ? 16u : 0u))};
         // No SNORM fold for the ribbon uv (.x/.y unused by its VS); .z the
         // emissive multiplier, .w the AlphaFactor coverage (parent visibility).
         c->uvTransform = {1.0f, 0.0f, surf->emissiveMultiplier, actor.parentVisibility};
@@ -809,7 +820,16 @@ void M3StandardShading::DrawRibbon(model::Actor& actor, i32 surfaceIndex, i32 ve
         for (u32 i = 0; i < kLayerCount; ++i) {
             const M3Layer& l = surf->layers[i];
             c->layerTint[i] = l.tint;
-            c->layerAdd[i] = {l.add, 0.0f, 0.0f, 0.0f};
+            // The environment slot's .y is the blur's mip range: the bound
+            // cube's last level, which is what the engine-set
+            // p_vEnvioTextureSize.z has to be for the guide's "sharp at 0,
+            // very blurry at 4" to hold for its 1024 cubes.
+            f32 addY = i == kM3LayerSpecular ? surf->specularScale : 0.0f;
+            if (i == kM3LayerEnvironment && surf->envBlur && l.textureId >= 0 &&
+                actor.render.textures)
+                addY = static_cast<f32>(
+                    std::max(0, actor.render.textures->MipLevels(l.textureId) - 1));
+            c->layerAdd[i] = {l.add, addY, 0.0f, 0.0f};
             c->layerCtl[i][0] = l.uvSource |
                                 ((l.wrapFlags & assets::kSamplerWrapBitsMask) << 4) |
                                 (l.invert ? 0x40u : 0u) | (l.clampColor ? 0x80u : 0u);

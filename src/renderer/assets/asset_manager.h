@@ -204,6 +204,8 @@ public:
     ///        placeholder while the real bytes haven't arrived (or if
     ///        the slot is the wrong kind).
     gfx::TextureHandle TextureOf(SlotId slot) const;
+    /// Mip levels of a texture slot's upload; 1 for anything else.
+    i32 MipLevelsOf(SlotId slot) const;
 
     /// @brief Parsed PopcornFX asset model. Null until Apply has run.
     const cornflakes::EffectAssetModel* ParticleAssetOf(SlotId slot) const;
@@ -354,6 +356,7 @@ private:
 
         // Texture
         gfx::TextureHandle texHandle = gfx::TextureHandle::Invalid;
+        i32 texMipLevels = 1; // of `texHandle`, for the draw that blurs by them
         // Particle / ChildModel: owned via shared_ptr so older snapshots
         // held by consumers remain valid after a swap (single-writer,
         // many-reader). Slot-swap is just pointer assignment under the

@@ -6,6 +6,7 @@
 #include "export_texture_cache.h"
 
 #include <whiteout/models/wem/retarget.h>
+#include <whiteout/textures/environment_map.h>
 #include <whiteout/textures/pbr_bake.h>
 
 #include <algorithm>
@@ -188,6 +189,48 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
     }
 
     ExportTextureCache cache(document, provider);
+
+    // The environment every HD material names in its sixth slot, resolved
+    // once per texture: Reforged ships a 2:1 panorama, which StarCraft II
+    // cannot sample, so it is projected into a cube (`tx::env`) and written
+    // beside the model under the source's own name; a cube passes through,
+    // and anything else is read as a sphere map.
+    struct EnvSource {
+        u32 texture = wem::kInvalidIndex;
+        wem::UVMappingMode mapping = wem::UVMappingMode::EnvCube;
+    };
+    std::map<u32, EnvSource> environments;
+    int environmentsProjected = 0;
+    const auto environmentOf = [&](const wem::TextureInput* slot, std::size_t material) {
+        EnvSource source;
+        if (slot == nullptr) {
+            return source;
+        }
+        if (const auto known = environments.find(slot->texture); known != environments.end()) {
+            return known->second;
+        }
+        const std::string path = PathOfTexture(document, slot->texture);
+        const tx::Texture* decoded = cache.Decode(path);
+        if (decoded == nullptr) {
+            out.warn(wem::DiagCode::TextureUnresolved,
+                     "the environment map '" + path + "' would not decode; nothing reflects",
+                     wem::ElementRef(wem::ElementKind::Material, material), wem::ProfileId::Sc2);
+        } else if (decoded->type() == tx::TextureType::TextureCube) {
+            source = {slot->texture, wem::UVMappingMode::EnvCube};
+        } else if (decoded->width() == 2 * decoded->height()) {
+            if (std::optional<tx::Texture> cube = tx::env::CubeFromPanorama(*decoded, 256)) {
+                result.baked.insert_or_assign(slot->texture,
+                                              BakedTexture{std::move(*cube), tx::PixelFormat::BC1});
+                source = {slot->texture, wem::UVMappingMode::EnvCube};
+                ++environmentsProjected;
+            }
+        } else {
+            source = {slot->texture, wem::UVMappingMode::EnvSphere};
+        }
+        environments.emplace(slot->texture, source);
+        return source;
+    };
+
     // The synthetic team under-layer: a pathless replaceable-1 reference is
     // the exact shape a Classic team stack has, so the material fold's team
     // branch (the RGBA select) fires for both generations from one rule.
@@ -212,6 +255,7 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
         const wem::TextureInput* normalSlot = SlotOf(*pbr, wem::PbrSlot::Normal);
         const wem::TextureInput* emissiveSlot = SlotOf(*pbr, wem::PbrSlot::Emissive);
         const wem::TextureInput* teamSlot = SlotOf(*pbr, wem::PbrSlot::TeamColorMask);
+        const wem::TextureInput* envSlot = SlotOf(*pbr, wem::PbrSlot::Environment);
         if (baseSlot == nullptr) {
             ++result.materialsSkipped;
             continue;
@@ -239,9 +283,10 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
         constexpr f32 kZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
         // One pass over the texels gathers everything: the team share, the
-        // roughness median, and both baked planes.
+        // roughness medians, and both baked planes.
         bool anyTeam = false;
         std::vector<f32> roughness;
+        std::vector<f32> metalRoughness;
         roughness.reserve(static_cast<std::size_t>(width) * height / 16 + 1);
         tx::Texture teamDiffuse = tx::Texture::create2D(tx::PixelFormat::RGBA8, width, height, 1);
         tx::Texture specular = tx::Texture::create2D(tx::PixelFormat::RGBA8, width, height, 1);
@@ -262,15 +307,25 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
                 anyTeam = anyTeam || share > 0.02f;
                 if (((x | y) & 3u) == 0u) {
                     roughness.push_back(o[1]);
+                    if (o[2] > 0.5f) {
+                        metalRoughness.push_back(o[1]);
+                    }
                 }
 
                 f32 albedo[3];
                 for (int c = 0; c < 3; ++c) {
                     albedo[c] = basePx[at + static_cast<std::size_t>(c)] / 255.0f;
                     // `spec = metalness * albedo` — Reforged's F0 exactly
-                    // (`reference_reforged_metalness_is_specular`).
-                    specPx[at + static_cast<std::size_t>(c)] =
-                        static_cast<u8>(std::clamp(o[2] * albedo[c], 0.0f, 1.0f) * 255.0f + 0.5f);
+                    // (`reference_reforged_metalness_is_specular`) — dimmed by
+                    // the team share. Reforged tints the albedo before taking
+                    // its F0, so a team plate reflects in the TEAM colour;
+                    // StarCraft II's reflection is untinted, and a grey one
+                    // washed the footman's shield to grey-green. The
+                    // highlight loses nothing: retail's team specular replaces
+                    // it with the team colour wherever the team shows.
+                    specPx[at + static_cast<std::size_t>(c)] = static_cast<u8>(
+                        std::clamp(o[2] * albedo[c] * (1.0f - share), 0.0f, 1.0f) * 255.0f +
+                        0.5f);
                 }
                 // Reforged BLENDS the team hue in and keeps the art's
                 // brightness; StarCraft II REPLACES the texel where the
@@ -285,22 +340,35 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
                         static_cast<u8>(std::clamp(replaced[c], 0.0f, 1.0f) * 255.0f + 0.5f);
                 }
                 teamPx[at + 3] = static_cast<u8>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f + 0.5f);
-                specPx[at + 3] = 255;
+                // The gloss rides the spec map's alpha, where StarCraft II's
+                // own roughness-simulating materials keep it.
+                specPx[at + 3] =
+                    static_cast<u8>(tx::pbr::GlossFromRoughness(o[1]) * 255.0f + 0.5f);
             }
         }
 
-        // The exponent from the roughness median; the amplitude parked in the
-        // HDR multiplier so the renderer's peak-referenced scale cancels it.
-        f32 exponent = 20.0f;
-        if (!roughness.empty()) {
-            const std::size_t mid = roughness.size() / 2;
-            std::nth_element(roughness.begin(), roughness.begin() + mid, roughness.end());
-            exponent = tx::pbr::ExponentFromRoughness(roughness[mid]);
+        // The roughness median of the METAL texels -- the only ones with a
+        // specular to shape; the whole map when nothing is metal -- fixes the
+        // exponent: the gloss layer scales the material's down per texel, so
+        // the material's is the ceiling that lands the median on its own
+        // GGX-matched width. The amplitude is parked in the HDR multiplier so
+        // the renderer's peak-referenced scale cancels it.
+        std::vector<f32>& shaping =
+            metalRoughness.size() * 100 >= roughness.size() ? metalRoughness : roughness;
+        f32 medianRoughness = 0.55f; // exponent 20
+        if (!shaping.empty()) {
+            const std::size_t mid = shaping.size() / 2;
+            std::nth_element(shaping.begin(), shaping.begin() + mid, shaping.end());
+            medianRoughness = shaping[mid];
         }
+        const f32 exponent = tx::pbr::ExponentFromRoughness(medianRoughness);
 
         wem::CompositeBody body;
-        body.specularExponent = exponent;
+        body.specularExponent = tx::pbr::GlossCeilingExponent(medianRoughness);
         body.specularFactor = Vector4f{(exponent + 2.0f) / 8.0f, 0, 0, 1};
+        // The gloss is a roughness: no fake energy dim, and the reflection
+        // blurs by it (the StarTools "Simulate Roughness" guide).
+        body.simulateRoughness = true;
 
         const std::string stem = StemOf(basePath);
         if (anyTeam) {
@@ -319,9 +387,28 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
 
         const u32 specTexture = cache.Intern(stem + "_spec.dds");
         result.baked.insert_or_assign(specTexture,
-                                      BakedTexture{std::move(specular), tx::PixelFormat::BC1});
+                                      BakedTexture{std::move(specular), tx::PixelFormat::BC3});
         body.layers.push_back(
             LayerOf(specTexture, wem::SurfaceChannel::Specular, wem::CompositeOp::Set, baseSlot));
+        body.layers.push_back(
+            LayerOf(specTexture, wem::SurfaceChannel::Gloss, wem::CompositeOp::Set, baseSlot));
+
+        // The reflection: the environment as a cube, masked by the F0 map.
+        // That is the StarTools recipe (the spec map doubles as the RGB envio
+        // mask, gloss in its alpha) and what 1,219 of the 1,523 shipped
+        // roughness-simulating env materials do; the mask being the
+        // reflectance, a dielectric (F0 = 0 in Reforged) reflects nothing and
+        // a coloured metal reflects in its own colour, as Reforged's
+        // `F0 * prefiltered` does.
+        if (const EnvSource env = environmentOf(envSlot, m); env.texture != wem::kInvalidIndex) {
+            wem::CompositeLayer reflection =
+                LayerOf(env.texture, wem::SurfaceChannel::Environment, wem::CompositeOp::Add);
+            reflection.input.mapping = env.mapping;
+            body.layers.push_back(reflection);
+            body.layers.push_back(LayerOf(specTexture, wem::SurfaceChannel::Environment,
+                                          wem::CompositeOp::Modulate, baseSlot));
+            body.environmentFactor = 1.0f;
+        }
 
         // The normal map crosses through a RESTATEMENT, not a copy: Reforged
         // ships BC5 (x in red, y in green), StarCraft II decodes DXT5nm
@@ -404,7 +491,9 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
         out.info(wem::DiagCode::LossyKindConversion,
                  std::to_string(result.materialsRestated) +
                      " Reforged material(s) restated as specular/gloss (the inverse bake); " +
-                     std::to_string(result.materialsSkipped) + " kept the derive's diffuse",
+                     std::to_string(result.materialsSkipped) + " kept the derive's diffuse; " +
+                     std::to_string(environmentsProjected) +
+                     " environment panorama(s) projected into a reflection cube",
                  wem::ElementRef(wem::ElementKind::Document, 0), wem::ProfileId::Sc2);
     }
 }

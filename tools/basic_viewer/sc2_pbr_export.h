@@ -23,6 +23,13 @@
 //     `textures::pbr::BakeOrm`. The roughness comes from the material's
 //     `specularExponent` and not from the map — the map's job is the metalness,
 //     which in Reforged is the specular knob and not a classification.
+//   * **the envio layer -> the F0**, per texel through its mask, in the ratio
+//     of the source cube's brightness to Reforged's stock panorama's
+//     (`kReforgedProbeLuminance`). Under `SimulateRoughness` — StarCraft II's
+//     own PBR styling, 1,801 materials there and 4,972 in Heroes — the spec
+//     map IS that mask and the gloss in its alpha is a perceptual roughness,
+//     so the ORM reads `1 - gloss` straight off it. A Mod-op reflection (the
+//     league skins' chrome) crosses in the albedo's colour.
 //   * **diffuse -> base colour, rewritten**, by `textures::pbr::BakeBaseColor`.
 //     Reforged reads `F0 = metalness * albedo`, so the metalness above is paid
 //     for out of the albedo and the albedo has to be raised by the same amount

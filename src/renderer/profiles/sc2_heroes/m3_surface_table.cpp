@@ -24,6 +24,7 @@ using io::M3LayerSlot;
 static_assert(kM3LayerCount == static_cast<u32>(M3LayerSlot::Count));
 static_assert(kM3LayerNormal == static_cast<u32>(M3LayerSlot::Normal));
 static_assert(kM3LayerEnvironment == static_cast<u32>(M3LayerSlot::Environment));
+static_assert(kM3LayerSpecular == static_cast<u32>(M3LayerSlot::Specular));
 
 /// Bind-pose tint. Two unauthored-sentinel guards, both of which otherwise
 /// paint models black: an all-zero ColorBGRA and a zero rgbMultiply are what
@@ -144,6 +145,10 @@ void ResolveSurfaceMaterial(const Model& model, u32 matmIndex,
          static_cast<u32>(::whiteout::m3::MaterialFlag::SimulateRoughness)) == 0;
     const TextureLayer* gloss = io::M3LayerForSlot(*mat, M3LayerSlot::Gloss);
     s.dimPerPixel = energyDim && gloss && io::M3LayerActive(*gloss);
+    // The same flag, read the other way: SimulateRoughness makes the gloss a
+    // roughness the environment reflection blurs by (the StarTools guide's
+    // "automatic mip bias of cube environment maps based on gloss").
+    s.envBlur = !energyDim && gloss && io::M3LayerActive(*gloss);
     if (energyDim && !s.dimPerPixel) {
         const f32 p = std::clamp(s.specularExponent, 1.0f, 512.0f);
         const f32 dim =
@@ -199,6 +204,7 @@ void ResolveSurfaceMaterial(const Model& model, u32 matmIndex,
             break;
         case M3LayerSlot::Specular:
             extraMul = hdrSpec;
+            s.specularScale = hdrSpec;
             if (mat->specularMode == SpecularMode::AlphaOnly)
                 out.channels = static_cast<u8>(ColorChannelSelect::Alpha);
             break;

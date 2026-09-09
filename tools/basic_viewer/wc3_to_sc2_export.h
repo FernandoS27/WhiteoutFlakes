@@ -24,7 +24,12 @@
 //    team hue in and keeps the art's brightness, StarCraft II REPLACES the
 //    texel where the diffuse alpha is LOW (both measured), so the share
 //    becomes the texel's brightness and the shading painted under the mask
-//    comes through as shades of the team colour.
+//    comes through as shades of the team colour. The reflection follows the
+//    StarTools "Simulate Roughness" recipe, which is how StarCraft II's own
+//    PBR-styled art is built: the F0 map doubles as the RGB environment
+//    mask, the gloss (`1 - roughness`) rides its alpha, the material sets
+//    `SimulateRoughness` so the engine blurs the cube by it, and the cube
+//    itself is Reforged's environment panorama projected (`tx::env`).
 // ============================================================================
 
 #include "sc2_pbr_export.h" // BakedTexture

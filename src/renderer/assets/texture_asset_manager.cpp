@@ -151,6 +151,7 @@ gfx::TextureHandle TextureAssetManager::ModelScope::Upload(i32 textureId,
     e.tex       = gfx_.CreateTexture(desc, pixels);
     e.slot      = 0;
     e.wrapFlags = wrapFlags;
+    e.mipLevels = std::max(1, desc.mipLevels);
     return e.tex;
 }
 
@@ -190,6 +191,15 @@ gfx::TextureHandle TextureAssetManager::ModelScope::Get(i32 textureId) const noe
 u32 TextureAssetManager::ModelScope::WrapFlags(i32 textureId) const noexcept {
     auto it = entries_.find(textureId);
     return (it != entries_.end()) ? it->second.wrapFlags : kSamplerWrapBitsMask;
+}
+
+i32 TextureAssetManager::ModelScope::MipLevels(i32 textureId) const noexcept {
+    auto it = entries_.find(textureId);
+    if (it == entries_.end()) return 1;
+    const auto& e = it->second;
+    if (e.slot != 0 && assets_)
+        return assets_->MipLevelsOf(e.slot);
+    return e.mipLevels;
 }
 
 } // namespace whiteout::flakes::renderer::assets

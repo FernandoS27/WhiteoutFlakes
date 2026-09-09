@@ -49,6 +49,9 @@ public:
 
         u32 WrapFlags(i32 textureId) const noexcept;
 
+        /// Mip levels of the texture `Get` resolves; 1 when unresolved.
+        i32 MipLevels(i32 textureId) const noexcept;
+
         usize Size() const noexcept {
             return entries_.size();
         }
@@ -76,6 +79,7 @@ public:
             gfx::TextureHandle tex = gfx::TextureHandle::Invalid;
             std::uint32_t slot     = 0; // AssetManager::kInvalidSlot
             u32 wrapFlags          = kSamplerWrapBitsMask;
+            i32 mipLevels          = 1; // of `tex`; a slot answers for itself
         };
         std::unordered_map<i32, Entry> entries_;
     };

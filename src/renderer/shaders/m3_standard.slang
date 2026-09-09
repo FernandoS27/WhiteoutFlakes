@@ -94,7 +94,10 @@ struct M3DrawData
     // .w flag bits: 1 = DoubleLambert (N.L remapped to 2*N.L - 1),
     //               2 = TwoSided (back faces flip the shading normal),
     //               4 = the energy-conserving specular dim is NOT folded into
-    //                   the tint and must be evaluated per pixel.
+    //                   the tint and must be evaluated per pixel,
+    //               8 = the environment lookup reflects the view vector,
+    //              16 = the environment cube is read at a mip biased by
+    //                   (1 - gloss): SimulateRoughness beside a gloss layer.
     float4 params0;
     // `.m3` UVs are i16/2048 declared R16G16B16A16_SNORM, so the sampled value
     // is raw/32767 and the true coordinate is sample * (32767 * uvMultiply) +
@@ -116,6 +119,9 @@ struct M3DrawData
     // `cResult.rgba = cResult.rgba * multiply + add`. Its own array because an
     // HLSL cbuffer array strides by 16 bytes whatever the element type, so
     // packing it into a spare component of another array would save nothing.
+    // .y on the environment slot = the blur's mip range (the cube's last
+    // level), read when params0.w bit 16 is set; on the specular slot = the
+    // extra multiplier folded into its tint, which the team lerp needs alone.
     float4 layerAdd[kM3LayerCount];
     // .x = uv set (0/1) in the low nibble, sampler wrap variant (0..3, the
     //      layer's UVWrapX/Y bits) in bits 4-5, ColorInvert in bit 6 and
@@ -484,12 +490,18 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
     if (twoSided && !isFront)
         n = -n;
 
-    // Albedo: diffuse layer, then the decal over it.
+    // Albedo: diffuse layer, then the decal over it. The team share the
+    // diffuse's select keys on is kept: retail's specular reads it too.
     float4 albedo = float4(0.0, 0.0, 0.0, 1.0);
+    float teamShare = 1.0; // fTeamColorAlpha; 1 = the art's own texel
     let ctlDiffuse = draw.layerCtl[kM3LayerDiffuse];
     if (ctlDiffuse.z != 0u)
-        albedo = M3LayerValue(kM3LayerDiffuse,
-                              M3SampleLayer(texDiffuse, kM3LayerDiffuse, input.uv01), n, toEye);
+    {
+        let diffuseTexel = M3SampleLayer(texDiffuse, kM3LayerDiffuse, input.uv01);
+        albedo = M3LayerValue(kM3LayerDiffuse, diffuseTexel, n, toEye);
+        if (ctlDiffuse.w == 1u && ctlDiffuse.y != 0u)
+            teamShare = saturate(pow(max(diffuseTexel.a, 0.0), pass.teamParams.x));
+    }
     let ctlDecal = draw.layerCtl[kM3LayerDecal];
     if (ctlDecal.z != 0u)
     {
@@ -527,18 +539,28 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
         specColor = M3LayerValue(kM3LayerSpecular,
                                  M3SampleLayer(texSpecular, kM3LayerSpecular, input.uv01), n, toEye)
                         .rgb;
+    // b_useTeamColorSpecular (psmainshading.fx; the axis defaults on): under
+    // a TEAMCOLOR_DIFFUSE diffuse the specular IS the team colour where the
+    // team shows, by the same share. The team takes the extra multiplier the
+    // tint carries (hdrSpecularMultiplier, the folded dim) and not the
+    // layer's own colour; the host parks it in the slot's add.y.
+    if (ctlSpec.z != 0u && ctlDiffuse.w == 1u && ctlDiffuse.y != 0u)
+        specColor = lerp(draw.teamDiffuse.rgb * draw.layerAdd[kM3LayerSpecular].y, specColor,
+                         teamShare);
 
     // psmaterial.fx:579 MaterialSpecularity — a gloss (SpecularExponent) layer
     // scales the material's exponent by its alpha SQUARED; without one the
     // exponent is the constant. Squared, so a mid-grey gloss pixel lands at a
     // quarter of the exponent, not half.
     float specPower = draw.params0.z;
+    float gloss = 1.0;
     let ctlGloss = draw.layerCtl[kM3LayerGloss];
     if (ctlGloss.z != 0u)
     {
         let g = M3LayerValue(kM3LayerGloss,
                              M3SampleLayer(texGloss, kM3LayerGloss, input.uv01), n, toEye)
                     .a;
+        gloss = g;
         specPower *= g * g;
         // FakeEnergyConservingSpec (psmaterial.fx:203) reads the SPECULARITY,
         // i.e. this gloss-modulated exponent — so with a gloss layer the dim
@@ -674,8 +696,17 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
         // fit the shared binding layout at all.
         let envReflect = (uint(draw.params0.w) & 8u) != 0u;
         let dir = envReflect ? reflect(-toEye, nGeom) : nGeom;
-        let env = M3LayerValue(kM3LayerEnvironment, texEnv.Sample(sampWrap0, float4(dir, 0.0)), n,
-                               toEye);
+        // b_iBlurEnvironmentMap (psmainshading.fx:368): under SimulateRoughness
+        // the cube is read `(1 - glossiness) * range` levels down, the gloss
+        // layer's alpha being the glossiness -- a rough texel reflects a blur,
+        // a glossy one the mirror at mip 0.
+        let envBlur = (uint(draw.params0.w) & 16u) != 0u;
+        let envCoord = float4(dir, 0.0);
+        let envTexel = envBlur
+            ? texEnv.SampleLevel(sampWrap0, envCoord,
+                                 (1.0 - gloss) * draw.layerAdd[kM3LayerEnvironment].y)
+            : texEnv.Sample(sampWrap0, envCoord);
+        let env = M3LayerValue(kM3LayerEnvironment, envTexel, n, toEye);
 
         // The mask defaults to the env layer's own alpha and the mask layer
         // multiplies into it, rather than replacing it (psmaterial.fx:320-325).
