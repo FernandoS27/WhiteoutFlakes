@@ -6,11 +6,14 @@
 #include "m3_surface_table.h"
 #include "renderer/assets/sampler_asset_manager.h"
 #include "renderer/assets/texture_asset_manager.h"
+#include "renderer/bls/bls_frame.h"
 #include "renderer/camera.h"
 #include "renderer/debug/draw_trace_hooks.h"
+#include "renderer/model/model_instance.h"
 #include "renderer/model/render_model.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
+#include "renderer/types.h"
 
 #include "compiled_shaders.h"
 
@@ -235,6 +238,7 @@ void M3StandardShading::Init() {
     vsSkinned_ = mk(gfx::ShaderStage::Vertex, WDX_M3_BLOB(M3StandardSkinnedVS));
     ps_ = mk(gfx::ShaderStage::Pixel, WDX_M3_BLOB(M3StandardPS));
     psMrt_ = mk(gfx::ShaderStage::Pixel, WDX_M3_BLOB(M3StandardMrtPS));
+    vsRibbon_ = mk(gfx::ShaderStage::Vertex, WDX_M3_BLOB(M3RibbonVS));
 #undef WDX_M3_BLOB
 
     // One map per draw → the Vulkan CB ring needs room for a busy frame.
@@ -249,6 +253,13 @@ void M3StandardShading::Init() {
         .size = sizeof(M3PassCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
     });
+    // One ribbon draw per emitter per frame — a small ring covers a scene of
+    // ribbon actors without churning the buffer.
+    ribbonPassCb_ = gfxDev->CreateBuffer({
+        .size = sizeof(M3PassCb),
+        .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
+        .ringSlotsHint = 256,
+    });
 }
 
 void M3StandardShading::ReleaseGpu() {
@@ -260,16 +271,25 @@ void M3StandardShading::ReleaseGpu() {
             gfxDev->Destroy(pso);
     }
     psos_.clear();
+    for (auto& [key, pso] : ribbonPsos_) {
+        if (pso != gfx::PipelineHandle::Invalid)
+            gfxDev->Destroy(pso);
+    }
+    ribbonPsos_.clear();
     if (drawCb_ != gfx::BufferHandle::Invalid)
         gfxDev->Destroy(drawCb_);
     if (passCb_ != gfx::BufferHandle::Invalid)
         gfxDev->Destroy(passCb_);
+    if (ribbonPassCb_ != gfx::BufferHandle::Invalid)
+        gfxDev->Destroy(ribbonPassCb_);
     drawCb_ = gfx::BufferHandle::Invalid;
     passCb_ = gfx::BufferHandle::Invalid;
+    ribbonPassCb_ = gfx::BufferHandle::Invalid;
     vs_ = gfx::ShaderHandle::Invalid;
     vsSkinned_ = gfx::ShaderHandle::Invalid;
     ps_ = gfx::ShaderHandle::Invalid;
     psMrt_ = gfx::ShaderHandle::Invalid;
+    vsRibbon_ = gfx::ShaderHandle::Invalid;
     initTried_ = false;
 }
 
@@ -397,71 +417,77 @@ bool M3StandardShading::BeginPass(const core::PassContext& ctx,
 
     auto* gfxDev = rs_.Pipeline().Gfx();
     if (auto* c = static_cast<M3PassCb*>(gfxDev->MapBuffer(passCb_))) {
-        c->view = passView_.transpose();
-        c->projection = passProj_.transpose();
-        c->cameraPosWS = {passCameraPos_.x, passCameraPos_.y, passCameraPos_.z, 0.0f};
-
-        // Authored in display space, de-gamma'd for this linear profile —
-        // the same discipline (and budget) as UnlitShading's constants. The
-        // multiplier applies after: the engine multiplies in shader-constant
-        // space, and >1 intensities must survive the transfer.
-        auto lin = [&](f32 r, f32 g, f32 b, f32 mul) -> Vector4f {
-            const bool linear = !ctx.profile || ctx.profile->LinearShading();
-            if (linear) {
-                r = SrgbToLinear(r);
-                g = SrgbToLinear(g);
-                b = SrgbToLinear(b);
-            }
-            return {r * mul, g * mul, b * mul, 0.0f};
-        };
-        c->teamParams = {1.0f, 1.0f, 0.0f, 0.0f};
-
-        const LightingMode mode = rs_.Settings().GetLightingMode();
-        if (mode == LightingMode::Dynamic) {
-            // The camera-relative three-quarter key UnlitShading builds, for
-            // the same reason: a model being inspected must not go black from
-            // half the orbit. Deterministic — the gate poses the camera
-            // identically every run. Fills off.
-            const Vector3f eye = passCameraPos_;
-            const Vector3f at = rs_.Pipeline().FrameCamera().GetTarget();
-            const Vector3f fwd =
-                Normalized({at.x - eye.x, at.y - eye.y, at.z - eye.z}, {0.0f, 1.0f, 0.0f});
-            const Vector3f right = Normalized(Cross(fwd, {0.0f, 0.0f, 1.0f}), {1.0f, 0.0f, 0.0f});
-            const Vector3f up = Cross(right, fwd);
-            // keyLightDir is the direction the light TRAVELS.
-            const Vector3f l = Normalized({fwd.x + 0.45f * right.x - 0.35f * up.x,
-                                           fwd.y + 0.45f * right.y - 0.35f * up.y,
-                                           fwd.z + 0.45f * right.z - 0.35f * up.z},
-                                          {0.0f, 1.0f, 0.0f});
-            c->keyLightDir = {l.x, l.y, l.z, 0.0f};
-            c->keyLightDiffuse = lin(0.62f, 0.62f, 0.62f, 1.0f);
-            c->keyLightSpecular = lin(0.28f, 0.28f, 0.28f, 1.0f);
-            c->ambient = lin(0.22f, 0.22f, 0.26f, 1.0f);
-            c->ambient.w = 1.0f;
-            c->fillLightDir = {0.0f, 0.0f, -1.0f, 0.0f};
-            c->fillLightDiffuse = {0.0f, 0.0f, 0.0f, 0.0f};
-            c->backLightDir = {0.0f, 0.0f, -1.0f, 0.0f};
-            c->backLightDiffuse = {0.0f, 0.0f, 0.0f, 0.0f};
-        } else {
-            // The recovered rigs (core lightdata.xml): the game look for
-            // InGame, the menu / portrait look for Glue. World-fixed
-            // directions, exactly as a unit on a map is lit.
-            const Sc2LightRig& rig =
-                (mode == LightingMode::Glue) ? kSc2GlueBackground : kSc2DefaultLight;
-            c->keyLightDir = {rig.keyDir.x, rig.keyDir.y, rig.keyDir.z, 0.0f};
-            c->keyLightDiffuse = lin(rig.keyColor.x, rig.keyColor.y, rig.keyColor.z, rig.keyMul);
-            c->keyLightSpecular = lin(rig.keySpecColor.x, rig.keySpecColor.y, rig.keySpecColor.z,
-                                      rig.keySpecMul * rig.hdrSpecMul);
-            c->ambient = lin(rig.ambient.x, rig.ambient.y, rig.ambient.z, 1.0f);
-            c->ambient.w = rig.hdrEmisMul;
-            c->fillLightDir = {rig.fillDir.x, rig.fillDir.y, rig.fillDir.z, 0.0f};
-            c->fillLightDiffuse = lin(rig.fillColor.x, rig.fillColor.y, rig.fillColor.z, rig.fillMul);
-            c->backLightDir = {rig.backDir.x, rig.backDir.y, rig.backDir.z, 0.0f};
-            c->backLightDiffuse = lin(rig.backColor.x, rig.backColor.y, rig.backColor.z, rig.backMul);
-        }
+        WritePassCb(*c, passView_, passProj_, passCameraPos_,
+                    !ctx.profile || ctx.profile->LinearShading());
         gfxDev->UnmapBuffer(passCb_);
     }
     return true;
+}
+
+void M3StandardShading::WritePassCb(M3PassCb& c, const Matrix44f& view, const Matrix44f& proj,
+                                    const Vector3f& camPos, bool linearShading) {
+    c = M3PassCb{};
+    c.view = view.transpose();
+    c.projection = proj.transpose();
+    c.cameraPosWS = {camPos.x, camPos.y, camPos.z, 0.0f};
+
+    // Authored in display space, de-gamma'd for this linear profile — the same
+    // discipline (and budget) as UnlitShading's constants. The multiplier
+    // applies after: the engine multiplies in shader-constant space, and >1
+    // intensities must survive the transfer.
+    auto lin = [&](f32 r, f32 g, f32 b, f32 mul) -> Vector4f {
+        if (linearShading) {
+            r = SrgbToLinear(r);
+            g = SrgbToLinear(g);
+            b = SrgbToLinear(b);
+        }
+        return {r * mul, g * mul, b * mul, 0.0f};
+    };
+    c.teamParams = {1.0f, 1.0f, 0.0f, 0.0f};
+
+    const LightingMode mode = rs_.Settings().GetLightingMode();
+    if (mode == LightingMode::Dynamic) {
+        // The camera-relative three-quarter key UnlitShading builds, for the
+        // same reason: a model being inspected must not go black from half the
+        // orbit. Deterministic — the gate poses the camera identically every
+        // run. Fills off.
+        const Vector3f eye = camPos;
+        const Vector3f at = rs_.Pipeline().FrameCamera().GetTarget();
+        const Vector3f fwd =
+            Normalized({at.x - eye.x, at.y - eye.y, at.z - eye.z}, {0.0f, 1.0f, 0.0f});
+        const Vector3f right = Normalized(Cross(fwd, {0.0f, 0.0f, 1.0f}), {1.0f, 0.0f, 0.0f});
+        const Vector3f up = Cross(right, fwd);
+        // keyLightDir is the direction the light TRAVELS.
+        const Vector3f l = Normalized({fwd.x + 0.45f * right.x - 0.35f * up.x,
+                                       fwd.y + 0.45f * right.y - 0.35f * up.y,
+                                       fwd.z + 0.45f * right.z - 0.35f * up.z},
+                                      {0.0f, 1.0f, 0.0f});
+        c.keyLightDir = {l.x, l.y, l.z, 0.0f};
+        c.keyLightDiffuse = lin(0.62f, 0.62f, 0.62f, 1.0f);
+        c.keyLightSpecular = lin(0.28f, 0.28f, 0.28f, 1.0f);
+        c.ambient = lin(0.22f, 0.22f, 0.26f, 1.0f);
+        c.ambient.w = 1.0f;
+        c.fillLightDir = {0.0f, 0.0f, -1.0f, 0.0f};
+        c.fillLightDiffuse = {0.0f, 0.0f, 0.0f, 0.0f};
+        c.backLightDir = {0.0f, 0.0f, -1.0f, 0.0f};
+        c.backLightDiffuse = {0.0f, 0.0f, 0.0f, 0.0f};
+    } else {
+        // The recovered rigs (core lightdata.xml): the game look for InGame,
+        // the menu / portrait look for Glue. World-fixed directions, exactly as
+        // a unit on a map is lit.
+        const Sc2LightRig& rig =
+            (mode == LightingMode::Glue) ? kSc2GlueBackground : kSc2DefaultLight;
+        c.keyLightDir = {rig.keyDir.x, rig.keyDir.y, rig.keyDir.z, 0.0f};
+        c.keyLightDiffuse = lin(rig.keyColor.x, rig.keyColor.y, rig.keyColor.z, rig.keyMul);
+        c.keyLightSpecular = lin(rig.keySpecColor.x, rig.keySpecColor.y, rig.keySpecColor.z,
+                                 rig.keySpecMul * rig.hdrSpecMul);
+        c.ambient = lin(rig.ambient.x, rig.ambient.y, rig.ambient.z, 1.0f);
+        c.ambient.w = rig.hdrEmisMul;
+        c.fillLightDir = {rig.fillDir.x, rig.fillDir.y, rig.fillDir.z, 0.0f};
+        c.fillLightDiffuse = lin(rig.fillColor.x, rig.fillColor.y, rig.fillColor.z, rig.fillMul);
+        c.backLightDir = {rig.backDir.x, rig.backDir.y, rig.backDir.z, 0.0f};
+        c.backLightDiffuse = lin(rig.backColor.x, rig.backColor.y, rig.backColor.z, rig.backMul);
+    }
 }
 
 void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::PassContext& ctx) {
@@ -656,6 +682,206 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     }
 
     cmd->DrawIndexed(geo.indexCount);
+}
+
+gfx::PipelineHandle M3StandardShading::GetOrBuildRibbonPso(const RibbonPsoKey& key) {
+    if (auto it = ribbonPsos_.find(key); it != ribbonPsos_.end())
+        return it->second;
+    auto* gfxDev = rs_.Pipeline().Gfx();
+    if (!gfxDev)
+        return gfx::PipelineHandle::Invalid;
+
+    // renderer::Vertex, by hand: the ribbon strip carries POSITION / COLOR / UV,
+    // no normal (the billboard has none) and no bone stream. The VS consumes
+    // exactly these three, so the layout matches the DXIL signature on D3D12
+    // with no over-declaration.
+    const gfx::InputElement elements[] = {
+        {"POSITION", 0, gfx::Format::R32G32B32_FLOAT, offsetof(Vertex, position), 0},
+        {"COLOR", 0, gfx::Format::R32G32B32A32_FLOAT, offsetof(Vertex, color), 0},
+        {"TEXCOORD", 0, gfx::Format::R32G32_FLOAT, offsetof(Vertex, uv), 0},
+    };
+
+    gfx::GraphicsPipelineDesc desc{};
+    desc.vs = vsRibbon_;
+    desc.ps = ps_; // the full material PS — same layer stack a geoset gets
+    desc.inputLayout = std::span<const gfx::InputElement>(elements);
+    desc.inputSlotStrides[0] = sizeof(Vertex);
+    desc.topology = gfx::PrimitiveTopology::TriangleList;
+    desc.blend = M3BlendDesc(key.blend);
+    desc.depthStencil.depthTest = true;
+    desc.depthStencil.depthWrite = M3BlendWritesDepth(key.blend);
+    desc.depthStencil.depthCompare = gfx::CompareOp::LessEqual;
+    desc.rasterizer.cull = key.twoSided ? gfx::CullMode::None : gfx::CullMode::Back;
+    desc.rasterizer.frontCCW = true;
+    desc.rtvFormat = key.rtv;
+    desc.dsvFormat = key.dsv;
+    desc.extraRtvFormats[0] = key.extra0;
+    desc.extraRtvFormats[1] = key.extra1;
+    desc.extraRtvFormats[2] = key.extra2;
+    desc.extraRtvCount = key.extraRtvCount;
+    // Declared only to satisfy the scene pass' attachment set; the forward
+    // ribbon PS writes SV_Target0 alone and must leave the G-buffer cleared,
+    // exactly as a transparent geoset draw does (Draw's key.mrt == false arm).
+    desc.extraColorWrite = false;
+
+    const auto pso = gfxDev->CreateGraphicsPipeline(desc);
+    ribbonPsos_.emplace(key, pso);
+    return pso;
+}
+
+void M3StandardShading::DrawRibbon(model::Actor& actor, i32 surfaceIndex, i32 vertexOffset,
+                                   i32 vertexCount, const bls::FrameInputs& frame) {
+    Init();
+    if (vsRibbon_ == gfx::ShaderHandle::Invalid || ps_ == gfx::ShaderHandle::Invalid ||
+        vertexCount <= 0)
+        return;
+    const gfx::BufferHandle vb = actor.render.ribbonVB;
+    if (vb == gfx::BufferHandle::Invalid)
+        return;
+
+    const auto* table = core::SurfaceTableCast<M3SurfaceTable>(actor.render.surfaceTable.get());
+    const M3Surface* surf = table ? table->Surface(static_cast<u32>(surfaceIndex)) : nullptr;
+    if (!surf || !surf->valid)
+        return;
+
+    auto* gfxDev = rs_.Pipeline().Gfx();
+    auto* cmd = gfxDev ? gfxDev->GetImmediateContext() : nullptr;
+    if (!cmd)
+        return;
+
+    RibbonPsoKey key;
+    key.rtv = rs_.Pipeline().SceneTargetFormat();
+    key.dsv = rs_.Pipeline().DepthStencilFormat();
+    gfx::Format extra[3] = {gfx::Format::Unknown, gfx::Format::Unknown, gfx::Format::Unknown};
+    key.extraRtvCount = rs_.Pipeline().SceneExtraRtvFormats(extra);
+    key.extra0 = extra[0];
+    key.extra1 = extra[1];
+    key.extra2 = extra[2];
+    key.blend = static_cast<u8>(surf->blendMode);
+    // A ribbon is dual-sided geometry regardless of its material's TwoSided
+    // flag: a camera-facing billboard flips winding as the camera orbits, and a
+    // tube's far wall faces away, so a single-sided cull drops half of it (the
+    // "wrong winding" look). Draw cull-none, as the WC3 path already does via
+    // dl.twoSided; the shader's back-face normal flip (params0.w bit 2, keyed on
+    // this) then lights both walls. Ribbon.fx:532 calls planar ribbons dual-sided.
+    key.twoSided = true;
+    const gfx::PipelineHandle pso = GetOrBuildRibbonPso(key);
+    if (pso == gfx::PipelineHandle::Invalid)
+        return;
+
+    // The ribbon's own pass CB, so the interleaved draw never disturbs passCb_
+    // that a later geoset transparent draw still reads. It carries the SAME
+    // lighting rig — a lit ribbon must light, not shade against zero and go
+    // black (which is exactly what an empty CB did).
+    if (auto* c = static_cast<M3PassCb*>(gfxDev->MapBuffer(ribbonPassCb_))) {
+        WritePassCb(*c, frame.view, frame.projection, rs_.Pipeline().FrameCamera().GetSource(),
+                    rs_.Pipeline().ActiveProfile().LinearShading());
+        gfxDev->UnmapBuffer(ribbonPassCb_);
+    }
+
+    const bool unshaded = (surf->materialFlags & static_cast<u32>(MaterialFlag::Unshaded)) != 0;
+    const bool dblLambert =
+        (surf->materialFlags & static_cast<u32>(MaterialFlag::DoubleLambert)) != 0;
+
+    if (auto* c = static_cast<M3DrawCb*>(gfxDev->MapBuffer(drawCb_))) {
+        *c = M3DrawCb{};
+        c->world = Matrix44f::identity(); // strip is world-space already
+        // The material decides shading, exactly as a geoset — Unshaded and the
+        // flag bits ride through so a lit ribbon lights and an emissive one glows.
+        c->params0 = {surf->alphaTestThreshold, unshaded ? 1.0f : 0.0f, surf->specularExponent,
+                      static_cast<f32>((dblLambert ? 1u : 0u) | (key.twoSided ? 2u : 0u) |
+                                       (surf->dimPerPixel ? 4u : 0u) |
+                                       (surf->envReflect ? 8u : 0u))};
+        // No SNORM fold for the ribbon uv (.x/.y unused by its VS); .z the
+        // emissive multiplier, .w the AlphaFactor coverage (parent visibility).
+        c->uvTransform = {1.0f, 0.0f, surf->emissiveMultiplier, actor.parentVisibility};
+        {
+            const bool linear = rs_.Pipeline().ActiveProfile().LinearShading();
+            const Sc2TeamColor& tc = ResolveTeamColor(actor.teamColor);
+            auto enc = [&](const Vector3f& v) -> Vector4f {
+                if (!linear)
+                    return {v.x, v.y, v.z, 0.0f};
+                return {SrgbToLinear(v.x), SrgbToLinear(v.y), SrgbToLinear(v.z), 0.0f};
+            };
+            c->teamDiffuse = enc(tc.diffuse);
+            c->teamEmissive = enc(tc.emissive);
+        }
+        for (u32 i = 0; i < kLayerCount; ++i) {
+            const M3Layer& l = surf->layers[i];
+            c->layerTint[i] = l.tint;
+            c->layerAdd[i] = {l.add, 0.0f, 0.0f, 0.0f};
+            c->layerCtl[i][0] = l.uvSource |
+                                ((l.wrapFlags & assets::kSamplerWrapBitsMask) << 4) |
+                                (l.invert ? 0x40u : 0u) | (l.clampColor ? 0x80u : 0u);
+            c->layerCtl[i][1] = l.channels;
+            c->layerCtl[i][2] = l.mode;
+            c->layerCtl[i][3] = (i == 0) ? l.teamColorMode : l.blendOp;
+            // The full material UV matrix, exactly as the geoset path. A ribbon
+            // takes the same centre-pivot TRS every other layer does (composed in
+            // M3ComposeUvTransform), so the wings' -90° and its animated scroll
+            // land where the artist authored them — width across, age along.
+            c->layerUvRow0[i] = {1.0f, 0.0f, 0.0f, 0.0f};
+            c->layerUvRow1[i] = {0.0f, 1.0f, 0.0f, 0.0f};
+            if (l.uvTransformId >= 0 &&
+                static_cast<usize>(l.uvTransformId) < actor.render.texAnimPalette.size()) {
+                const auto& e = actor.render.texAnimPalette[static_cast<usize>(l.uvTransformId)];
+                c->layerUvRow0[i] = {e.row0[0], e.row0[1], e.row0[3], 0.0f};
+                c->layerUvRow1[i] = {e.row1[0], e.row1[1], e.row1[3], 0.0f};
+            }
+            const Vector3f& fbs = l.fresnelExponentBiasScale;
+            c->layerFresnel[i] = {fbs.x, fbs.y, fbs.z, static_cast<f32>(l.fresnelMode)};
+            c->layerFresnelMask[i] = {l.fresnelMask.x, l.fresnelMask.y, l.fresnelMask.z,
+                                      (l.fresnelFlags & 0x1u) ? 1.0f : 0.0f};
+            c->layerFresnelTrans[i] = {l.fresnelTranslation.x, l.fresnelTranslation.y,
+                                       l.fresnelTranslation.z,
+                                       (l.fresnelFlags & 0x2u) ? 1.0f : 0.0f};
+        }
+        gfxDev->UnmapBuffer(drawCb_);
+    }
+
+    cmd->BindPipeline(pso);
+    cmd->BindVertexBuffer(0, vb, sizeof(Vertex));
+    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, ribbonPassCb_);
+    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 0, ribbonPassCb_);
+    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 1, drawCb_);
+    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1, drawCb_);
+
+    const auto& defaults = rs_.Textures().GetDefaults();
+    for (u32 u = 0; u < kLayerCount; ++u) {
+        const M3Layer& l = surf->layers[u];
+        const bool cubeSlot = u == kM3LayerEnvironment;
+        gfx::TextureHandle tex = gfx::TextureHandle::Invalid;
+        if (l.textureId >= 0 && actor.render.textures)
+            tex = actor.render.textures->Get(l.textureId);
+        if (tex == gfx::TextureHandle::Invalid)
+            tex = cubeSlot ? defaults.BlackCube : defaults.White;
+        cmd->BindShaderResource(gfx::ShaderStage::Pixel, kLayerRegister[u], tex);
+    }
+    for (u32 w = 0; w <= assets::kSamplerWrapBitsMask; ++w)
+        cmd->BindSampler(gfx::ShaderStage::Pixel, w, rs_.Samplers().WrapVariant(w));
+
+    if (debug::DrawTraceEnabled()) {
+        debug::TraceDraw d;
+        d.shadingModel = static_cast<u8>(debug::TraceShadingModel::M3Standard);
+        d.blendClass = static_cast<u8>(M3ClassifySurface(*surf).blend);
+        d.streamMask = debug::kStreamBase;
+        d.surface = surfaceIndex;
+        d.matFlags = static_cast<i32>(surf->materialFlags);
+        d.filterMode = static_cast<i32>(surf->blendMode);
+        d.vertexCount = vertexCount;
+        d.actor.rootActor = debug::TraceRootOrdinal(rs_.Scene().Actors().All(), actor.handle);
+        d.actor.role = static_cast<u8>(actor.role);
+        d.actor.treeDepth = static_cast<u8>(actor.treeDepth);
+        for (u32 u = 0; u < kLayerCount && u < static_cast<u32>(debug::kTraceTexSlots); ++u)
+            d.texIds[u] = surf->layers[u].textureId;
+        d.psoKey = debug::TracePsoKey({
+            .psPermute = static_cast<u32>(key.blend) | 0x400u, // ribbon marker
+            .extraRtvCount = key.extraRtvCount,
+        });
+        debug::RecordProducerDraw(d);
+    }
+
+    cmd->Draw(vertexCount, vertexOffset);
 }
 
 core::SurfaceClass M3StandardShading::Classify(const render_detail::RenderableView& view,

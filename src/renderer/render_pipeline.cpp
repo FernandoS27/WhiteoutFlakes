@@ -729,6 +729,18 @@ void RenderPipeline::PrepareRibbons(std::vector<RibbonDrawUnit>& out, bls::Frame
         ribbonActors.push_back(h);
     std::sort(ribbonActors.begin(), ribbonActors.end());
 
+    // Camera state for the SC2 billboard/camera-flattened BUILD frames; the
+    // WC3 variant ignores it.
+    ribbon::RibbonBuildContext buildCtx;
+    {
+        const auto& cam = rs_.Pipeline().FrameCamera();
+        buildCtx.cameraPos = cam.GetSource();
+        const Vector3f look = cam.GetTarget() - cam.GetSource();
+        const f32 len = look.length();
+        if (len > 1e-6f)
+            buildCtx.cameraDir = look / len;
+    }
+
     std::vector<Vertex> verts;
     std::vector<ribbon::RibbonDrawList> drawLists;
     for (u32 h : ribbonActors) {
@@ -737,7 +749,7 @@ void RenderPipeline::PrepareRibbons(std::vector<RibbonDrawUnit>& out, bls::Frame
             continue;
         verts.clear();
         drawLists.clear();
-        rs_.Ribbons().BuildGeometry(h, verts, drawLists);
+        rs_.Ribbons().BuildGeometry(h, buildCtx, verts, drawLists);
         const i32 vertCount = (i32)verts.size();
         if (vertCount <= 0)
             continue;
@@ -773,6 +785,7 @@ void RenderPipeline::PrepareRibbons(std::vector<RibbonDrawUnit>& out, bls::Frame
             u.offset = dl.vertexOffset;
             u.origin = dl.worldOrigin; // world-space strip head
             u.priorityPlane = dl.priorityPlane;
+            u.m3Surface = dl.m3Surface;
             out.push_back(u);
         }
     }
@@ -781,6 +794,15 @@ void RenderPipeline::PrepareRibbons(std::vector<RibbonDrawUnit>& out, bls::Frame
 void RenderPipeline::DrawRibbonStrip(const RibbonDrawUnit& u, const bls::FrameInputs& frame) {
     if (u.count <= 0 || !u.actor)
         return;
+#if WDX_ENABLE_M3
+    // SC2 ribbons carry a resolved M3 surface — the M3 material draws them, not
+    // the BLS SD path. The strip vertices already live in the actor's ribbonVB.
+    if (u.m3Surface >= 0) {
+        if (impl_->m3Shading_)
+            impl_->m3Shading_->DrawRibbon(*u.actor, u.m3Surface, u.offset, u.count, frame);
+        return;
+    }
+#endif
     auto* cmd = impl_->gfx_->GetImmediateContext();
     cmd->BindVertexBuffer(0, u.actor->render.ribbonVB, sizeof(Vertex));
 

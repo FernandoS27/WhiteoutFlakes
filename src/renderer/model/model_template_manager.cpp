@@ -145,6 +145,7 @@ std::shared_ptr<ModelTemplate> ModelTemplateManager::BuildFromBytes(
     tmpl->pe2Configs = adapter->GetParticleConfigs();
     tmpl->m2ParticleConfigs = adapter->GetM2ParticleConfigs();
     tmpl->ribbonConfigs = adapter->GetRibbonConfigs();
+    tmpl->sc2RibbonConfigs = adapter->GetSc2RibbonConfigs();
     tmpl->collisionConfigs = adapter->GetCollisionShapes();
     tmpl->pe1Configs = adapter->GetPE1Configs();
     tmpl->cornEmitterInits = adapter->GetCornEmitterInits();

@@ -39,27 +39,17 @@ struct EmitterKey {
     }
 };
 
-/// @brief One submittable ribbon: a vertex range plus the material state the
-///        pipeline needs to pick a PSO.
-struct RibbonDrawList {
-    ModelId model = 0;
-    i32 emitterId = 0;
-    i32 vertexOffset = 0;
-    i32 vertexCount = 0;
-    i32 priorityPlane = 0;
-    i32 textureId = -1;
-    i32 filterMode = 0;
-    bool unshaded = false;
-    bool twoSided = true;
-    /// Strip head in world space — sort key for the back-to-front transparent
-    /// pass, where ribbons interleave with geosets, particles and corn.
-    Vector3f worldOrigin = {0, 0, 0};
-};
+// RibbonDrawList and RibbonBuildContext live in ribbon_emitter.h — the BUILD
+// stage emits the records; the service only stamps model/emitterId on them.
 
 class RibbonService {
 public:
     void AddEmitter(ModelId model, i32 emitterId, const RibbonDesc& desc,
                     const RibbonBehavior& behavior);
+    /// @brief Register a desc that already knows its family — the SC2 route,
+    ///        whose desc DescFromSc2Config built (behavior is the WC3↔WoW
+    ///        sub-dialect and does not apply).
+    void AddEmitter(ModelId model, i32 emitterId, const RibbonDesc& desc);
     void RemoveModel(ModelId model);
     void Clear();
     /// @brief Drop every live trail without deregistering the emitters, which
@@ -85,11 +75,13 @@ public:
     /// @brief Tick every registered emitter. Used by tests and headless tools.
     void Simulate(f32 dt);
 
-    /// @brief Build one model's triangles into `outVertices`, appending one
-    ///        draw list per emitter that produced geometry. Offsets are
+    /// @brief Build one model's triangles into `outVertices`, appending the
+    ///        draw records each emitter's BUILD stage produced. Offsets are
     ///        relative to the start of this call, because the pipeline uploads
-    ///        each actor into its own vertex buffer.
-    void BuildGeometry(ModelId model, std::vector<Vertex>& outVertices,
+    ///        each actor into its own vertex buffer. `ctx` carries the camera
+    ///        for the SC2 billboard frames; headless callers pass a default.
+    void BuildGeometry(ModelId model, const RibbonBuildContext& ctx,
+                       std::vector<Vertex>& outVertices,
                        std::vector<RibbonDrawList>& outDrawLists) const;
 
     void ForEachEmitter(const std::function<void(const EmitterKey&, const RibbonEmitter&)>& fn)

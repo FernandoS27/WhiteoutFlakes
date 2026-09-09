@@ -173,6 +173,16 @@ if(WDX_ENABLE_M3)
     # the canonical texture set, layer fallbacks, classification. Synthetic
     # models, no device.
     wdx_add_test(m3_surface_table_test m3_surface_table_test.cpp)
+    # The SC2 ribbon module measured against the ORIGINAL: replays the goldens
+    # `tools/sc2_ribbon_oracle/` recorded from the real 4.8 client under
+    # Unicorn. No emulator or binary needed at test time — that is the point.
+    wdx_add_test(sc2_ribbon_oracle_test sc2_ribbon_oracle_test.cpp)
+    target_compile_definitions(sc2_ribbon_oracle_test PRIVATE
+        WDX_SC2_RIBBON_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../tools/sc2_ribbon_oracle/golden")
+    # SC2 ribbon load plumbing: desc conversion rules, the surface table's
+    # appended per-RIB_ block, and the HotS corpus registration sweep (which
+    # is what catches the emitterShape/ribbonType label swap).
+    wdx_add_test(sc2_ribbon_sim_test sc2_ribbon_sim_test.cpp)
 endif()
 if(WDX_ENABLE_D3)
     # Gates D3-G1 (geometry in range) and D3-G2 (the two bind poses, and the

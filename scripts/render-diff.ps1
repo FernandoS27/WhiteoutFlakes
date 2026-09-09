@@ -269,6 +269,23 @@ $entries = Get-Content $CorpusFile |
     ForEach-Object {
         $line = $_
         $e = [ordered]@{ Path = $line; Seq = ''; Switch = ''; Layer = ''; Blend = ''; Weight = ''; Anim = ''; Subtrack = ''; NoGlobals = $false; D3Equip = @(); D3Dyes = @(); D3Sheathed = $false; Tag = '' }
+        # Any corpus line may carry `|seq=<name>` after the path. `|` and not
+        # whitespace, because the WC3/WoW corpora have paths with spaces in
+        # them — this is what lets the bare arms pin a model in the one
+        # sequence whose emitters actually fire (the RIBB carriers draw zero
+        # ribbons in the default pose, which made the arm's ribbon coverage
+        # vacuous until 2026-09-08).
+        if ($line -match '\|') {
+            $parts = $line -split '\|'
+            $e.Path = $parts[0].Trim()
+            for ($t = 1; $t -lt $parts.Count; $t++) {
+                if ($parts[$t].Trim() -notmatch '^seq=(?<v>.+)$') {
+                    Write-Error "Malformed |token '$($parts[$t])' in: $line"
+                    exit 2
+                }
+                $e.Seq = $Matches.v.Trim()
+            }
+        }
         # The D3 corpus also carries scenario tokens (its paths have no
         # spaces): `equip=slot:Item[,slot:Item...]`, `dye=slot:N[,...]`,
         # `sheathed=on`, and `tag=` to name the baseline so two scenarios of

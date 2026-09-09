@@ -18,4 +18,4 @@ d3_re_shaders
 agent_logs_d3
 tools/d3_particle_oracle
 tools/d3_shader_atlas
-
+tools/sc2_ribbon_oracle

@@ -1744,6 +1744,25 @@ void ModelLoader::FinishNativeActor(Actor& actor, const std::shared_ptr<IModelSo
         bool anyValid = false;
         for (const auto& s : table->Surfaces())
             anyValid |= s.valid;
+
+        // The `RIB_` emitters register here rather than beside the WC3 loop:
+        // their descs carry the surface index this table just appended for
+        // each ribbon material and that surface's priority as the transparent
+        // sort key (RIBBON_SERVICE.md §4). An unresolved material leaves
+        // m3Surface at -1, which routes the draw down the BLS fallback.
+        const auto sc2Ribbons = m3->GetSc2RibbonConfigs();
+        const i32 ribBase = table->RibbonSurfaceBase();
+        for (i32 i = 0; i < (i32)sc2Ribbons.size(); ++i) {
+            ribbon::RibbonDesc desc = ribbon::DescFromSc2Config(sc2Ribbons[i]);
+            if (ribBase >= 0) {
+                if (const auto* s = table->Surface((u32)(ribBase + i)); s && s->valid) {
+                    desc.sc2.m3Surface = ribBase + i;
+                    desc.priorityPlane = s->priority;
+                }
+            }
+            rs_.Ribbons().AddEmitter(actor.handle, i, desc);
+        }
+
         if (anyValid) {
             actor.render.surfaceTable = std::move(table);
             BuildM3Surfaces(actor);

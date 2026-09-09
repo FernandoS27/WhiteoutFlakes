@@ -391,6 +391,9 @@ set(SHADER_ENTRIES
     "m3_standard.slang|vsM3StandardSkinned|vertex|kM3StandardSkinnedVS"
     "m3_standard.slang|psM3Standard|fragment|kM3StandardPS"
     "m3_standard.slang|psM3StandardMrt|fragment|kM3StandardMrtPS"
+    # The ribbon strip VS: world-space CPU strip into the shared full material
+    # PS (psM3Standard). No PS of its own — the ribbon runs the geoset shader.
+    "m3_standard.slang|vsM3Ribbon|vertex|kM3RibbonVS"
     # D3 standard material (Diablo III actors). One PS: the frame is gamma-LDR
     # with no G-buffer, so there is no MRT twin to split off.
     "d3_standard.slang|vsD3Standard|vertex|kD3StandardVS"
@@ -1271,6 +1274,7 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/debug/draw_trace_hooks.cpp
     src/renderer/effects/event_emitter_pool.cpp
     src/renderer/ribbon/ribbon_emitter.cpp
+    src/renderer/ribbon/ribbon_stages_sc2.cpp
     src/renderer/ribbon/ribbon_service.cpp
     src/renderer/effects/spn_spawner.cpp
     src/renderer/corn_effects/corn_effects_emitter.cpp

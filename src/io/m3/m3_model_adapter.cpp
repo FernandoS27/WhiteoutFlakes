@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -109,6 +110,11 @@ const ::whiteout::m3::AnimBlock<f32>* BlockOf(const ::whiteout::m3::SubTrackCont
                                               M3TrackHandle h, const f32*) {
     return h.slot == M3SdSlot::Float ? &stc.sdr3[h.block] : nullptr;
 }
+const ::whiteout::m3::AnimBlock<::whiteout::m3::ColorBGRA>*
+BlockOf(const ::whiteout::m3::SubTrackContainer& stc, M3TrackHandle h,
+        const ::whiteout::m3::ColorBGRA*) {
+    return h.slot == M3SdSlot::Color ? &stc.sdcc[h.block] : nullptr;
+}
 
 Vector3f MixValue(const Vector3f& a, const Vector3f& b, f32 t) {
     return {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t};
@@ -129,6 +135,27 @@ Vector2f MixTrack(const Vector2f& a, const Vector2f& b, f32 t) {
 f32 MixTrack(f32 a, f32 b, f32 t) {
     return a + (b - a) * t;
 }
+// Colours lerp per channel in float and round back to the byte — the raw
+// componentwise blend, no colour-space cleverness.
+::whiteout::m3::ColorBGRA MixColor(const ::whiteout::m3::ColorBGRA& a,
+                                   const ::whiteout::m3::ColorBGRA& b, f32 t) {
+    const auto ch = [t](u8 x, u8 y) {
+        return static_cast<u8>(
+            std::clamp(static_cast<f32>(x) + (static_cast<f32>(y) - static_cast<f32>(x)) * t +
+                           0.5f,
+                       0.0f, 255.0f));
+    };
+    ::whiteout::m3::ColorBGRA out;
+    out.b = ch(a.b, b.b);
+    out.g = ch(a.g, b.g);
+    out.r = ch(a.r, b.r);
+    out.a = ch(a.a, b.a);
+    return out;
+}
+::whiteout::m3::ColorBGRA MixTrack(const ::whiteout::m3::ColorBGRA& a,
+                                   const ::whiteout::m3::ColorBGRA& b, f32 t) {
+    return MixColor(a, b, t);
+}
 // Cross-layer: rotations really do slerp when several layers combine.
 Quaternion MixLayers(const Quaternion& a, const Quaternion& b, f32 t) {
     return M3SlerpQuat(a, b, t);
@@ -141,6 +168,10 @@ Vector2f MixLayers(const Vector2f& a, const Vector2f& b, f32 t) {
 }
 f32 MixLayers(f32 a, f32 b, f32 t) {
     return a + (b - a) * t;
+}
+::whiteout::m3::ColorBGRA MixLayers(const ::whiteout::m3::ColorBGRA& a,
+                                    const ::whiteout::m3::ColorBGRA& b, f32 t) {
+    return MixColor(a, b, t);
 }
 
 } // namespace
@@ -605,16 +636,25 @@ bool M3LayerActive(const ::whiteout::m3::TextureLayer& layer) {
 
 void M3ComposeUvTransform(const Vector2f& offset, const Vector3f& angle, const Vector2f& tiling,
                           f32 row0[4], f32 row1[4]) {
+    // SC2 (sub_102ABBDE0) rotates and scales about the texture centre (0.5,0.5)
+    // and applies the offset in source space, ahead of the rotation:
+    //   M = T(+0.5) · S · R(angle.z) · T(-(0.5 + offset)).
+    // Rotating about the origin or adding the offset after the rotation (as this
+    // once did) sends a rotated layer's scroll onto the wrong axis and mismaps
+    // the image — which is what tore the Tyrael wing ribbons. Only angle.z reaches
+    // the 2D result, matching every shipped layer.
     const f32 c = std::cos(angle.z);
     const f32 s = std::sin(angle.z);
-    row0[0] = c * tiling.x;
-    row0[1] = -s * tiling.y;
+    const f32 cx = 0.5f + offset.x;
+    const f32 cy = 0.5f + offset.y;
+    row0[0] = tiling.x * c;
+    row0[1] = -tiling.x * s;
     row0[2] = 0.0f;
-    row0[3] = offset.x;
-    row1[0] = s * tiling.x;
-    row1[1] = c * tiling.y;
+    row0[3] = tiling.x * (s * cy - c * cx) + 0.5f;
+    row1[0] = tiling.y * s;
+    row1[1] = tiling.y * c;
     row1[2] = 0.0f;
-    row1[3] = offset.y;
+    row1[3] = tiling.y * (-s * cx - c * cy) + 0.5f;
 }
 
 const ::whiteout::m3::TextureLayer* M3LayerForSlot(const ::whiteout::m3::StandardMaterial& mat,
@@ -1650,6 +1690,7 @@ renderer::model::FrameState M3ModelAdapter::Evaluate(const PoseRequest& req) con
     EvaluateGeosetVisibility(layers, visible, fs);
     EvaluateMaterialUvTransforms(layers, fs);
     EvaluateLights(layers, visible, req.world, fs);
+    EvaluateRibbons(layers, visible, req.world, fs);
     EvaluatePhysics(layers, fs);
     return fs;
 }
@@ -1908,6 +1949,183 @@ void M3ModelAdapter::EvaluateLights(std::span<const M3Layer> layers,
         st.enabled = bone >= visible.size() || visible[bone] != 0;
         fs.lights.push_back(st);
     }
+}
+
+void M3ModelAdapter::EvaluateRibbons(std::span<const M3Layer> layers,
+                                     std::span<const ::whiteout::u8> visible,
+                                     const Matrix44f& world,
+                                     renderer::model::FrameState& fs) const {
+    if (model_.ribbonEmitters.empty())
+        return;
+    // Renderer units per model unit, the M2 route's own derivation: the
+    // world matrix's uniform scale (row 0's length).
+    const f32 scale = std::sqrt(world.data[0][0] * world.data[0][0] +
+                                world.data[0][1] * world.data[0][1] +
+                                world.data[0][2] * world.data[0][2]);
+    fs.ribbonStates.reserve(model_.ribbonEmitters.size());
+
+    const auto boneWorld = [&](std::size_t bone) {
+        if (bone < fs.boneWorldMatrices.size())
+            return fs.boneWorldMatrices[bone] * world;
+        return world;
+    };
+    const auto colorOf = [](const ::whiteout::m3::ColorBGRA& c) -> Vector4f {
+        return {c.r / 255.0f, c.g / 255.0f, c.b / 255.0f, c.a / 255.0f};
+    };
+
+    for (std::size_t i = 0; i < model_.ribbonEmitters.size(); ++i) {
+        const auto& rib = model_.ribbonEmitters[i];
+        renderer::model::FrameState::RibbonFrameState st;
+        st.emitterId = static_cast<i32>(i);
+        st.transform = boneWorld(rib.boneIndex);
+        st.unitScale = (scale > 0.0f) ? scale : 1.0f;
+        // The WC3-family scalars stay at their defaults — the SC2 stages read
+        // the block below instead. `visibility` carries the bone-visibility
+        // gate the way retail's node-active bit does (pTransformNode+150 & 2).
+        st.above = 0;
+        st.below = 0;
+        st.alpha = 1.0f;
+        st.color = {1, 1, 1};
+        st.visibility = (rib.boneIndex >= visible.size() || visible[rib.boneIndex]) ? 1.0f : 0.0f;
+        st.slot = 0;
+
+        auto& s2 = st.sc2;
+        s2.speed = SampleRef(rib.initialSpeed, layers);
+        // Yaw/pitch are authored in DEGREES; the emitter converts at use — the
+        // only deg→rad in the pipeline (SC2_RIBBON_RE.md §4.7).
+        s2.yawDeg = SampleRef(rib.initialYaw, layers);
+        s2.pitchDeg = SampleRef(rib.initialPitch, layers);
+        s2.lifetime = SampleRef(rib.lifetime, layers);
+        s2.maxLength = SampleRef(rib.maxLength, layers);
+        s2.size3 = SampleRef(rib.sizeAnimation, layers);
+        // Twist keys are RADIANS end-to-end — no conversion exists anywhere.
+        s2.rotation3 = SampleRef(rib.rotationAnimation, layers);
+        s2.color3[0] = colorOf(SampleRef(rib.colorStart, layers));
+        s2.color3[1] = colorOf(SampleRef(rib.colorMid, layers));
+        s2.color3[2] = colorOf(SampleRef(rib.colorEnd, layers));
+        // Bool32, sampled in override mode like every other discrete channel;
+        // gates EMISSION only — the live trail finishes its life (RE §3.1).
+        s2.active = SampleRefOverride(rib.active, layers) != 0;
+        s2.parentVelocityScale =
+            (static_cast<u32>(rib.flags) & 0x10u) ? SampleRef(rib.particleVelocity, layers)
+                                                  : 0.0f;
+        // Overlay-wave amplitude/frequency pairs (yaw/pitch/speed/size/alpha) and
+        // the shared overlay phase (RE §4.7). The head applies them per channel
+        // whose static type is nonzero; sampling them unconditionally is cheap
+        // and inert when the type is 0.
+        s2.waveAmp[0] = SampleRef(rib.yawAmplitude, layers);
+        s2.waveFreq[0] = SampleRef(rib.yawFrequency, layers);
+        s2.waveAmp[1] = SampleRef(rib.pitchAmplitude, layers);
+        s2.waveFreq[1] = SampleRef(rib.pitchFrequency, layers);
+        s2.waveAmp[2] = SampleRef(rib.speedAmplitude, layers);
+        s2.waveFreq[2] = SampleRef(rib.speedFrequency, layers);
+        s2.waveAmp[3] = SampleRef(rib.sizeAmplitude, layers);
+        s2.waveFreq[3] = SampleRef(rib.sizeFrequency, layers);
+        s2.waveAmp[4] = SampleRef(rib.alphaAmplitude, layers);
+        s2.waveFreq[4] = SampleRef(rib.alphaFrequency, layers);
+        s2.overlayPhase = SampleRef(rib.overlay, layers);
+        if (!rib.splineRibbons.empty()) {
+            // Only record 0 — the runtime reads splineRibbons.ptr[0] alone.
+            const auto& sr = rib.splineRibbons.front();
+            s2.splineYawDeg = SampleRef(sr.yaw, layers);
+            s2.splinePitchDeg = SampleRef(sr.pitch, layers);
+            s2.velocityBaseFactor = SampleRef(sr.velocityBaseFactor, layers);
+            s2.velocityEndFactor = SampleRef(sr.velocityEndFactor, layers);
+            s2.splineNodeTransform = boneWorld(sr.boneIndex);
+            // Spline overlay waves: yaw/pitch scale the SRIB rotation tangents,
+            // velocity scales the end factor (RE §3.4).
+            s2.splineWaveAmp[0] = SampleRef(sr.yawAmplitude, layers);
+            s2.splineWaveFreq[0] = SampleRef(sr.yawFrequency, layers);
+            s2.splineWaveAmp[1] = SampleRef(sr.pitchAmplitude, layers);
+            s2.splineWaveFreq[1] = SampleRef(sr.pitchFrequency, layers);
+            s2.splineWaveAmp[2] = SampleRef(sr.velocityAmplitude, layers);
+            s2.splineWaveFreq[2] = SampleRef(sr.velocityFrequency, layers);
+        }
+        fs.ribbonStates.push_back(st);
+    }
+}
+
+std::vector<renderer::effects::Sc2RibbonEmitterConfig> M3ModelAdapter::GetSc2RibbonConfigs() {
+    using ::whiteout::m3::RibbonEmitter;
+    std::vector<renderer::effects::Sc2RibbonEmitterConfig> out;
+    out.reserve(model_.ribbonEmitters.size());
+    for (const RibbonEmitter& rib : model_.ribbonEmitters) {
+        renderer::effects::Sc2RibbonEmitterConfig c;
+        c.boneIndex = rib.boneIndex;
+        c.materialIndex = static_cast<i32>(rib.materialIndex);
+        c.flags = static_cast<u32>(rib.flags);
+        c.additionalFlags = static_cast<u32>(rib.additionalFlags);
+        // The dword Ribbon_SelectSimTechnique tests is the FALLBACK force
+        // pair at RIB_+0x174, not the primary pair (RE §3, oracle O1).
+        c.forcesFallback = static_cast<u32>(rib.localForcesFallback) |
+                           (static_cast<u32>(rib.worldForcesFallback) << 16);
+        // WhiteoutLib carries the pre-RE labels for the 0x190/0x194 pair
+        // (RE §1.1): its `emitterShape` is the cross-section and its
+        // `ribbonType` is the cull method.
+        c.ribbonType = static_cast<u8>(rib.emitterShape);
+        c.cullMethod = static_cast<u8>(rib.ribbonType);
+        c.divisions = rib.divisions;
+        c.edges = static_cast<i32>(rib.edges);
+        c.innerRadius = rib.innerRadius;
+        c.midTime[0] = rib.sizeMidTime;
+        c.midTime[1] = rib.colorMidTime;
+        c.midTime[2] = rib.alphaMidTime;
+        c.midTime[3] = rib.rotationMidTime;
+        c.midHold[0] = rib.sizeMidHoldTime;
+        c.midHold[1] = rib.colorMidHoldTime;
+        c.midHold[2] = rib.alphaMidHoldTime;
+        c.midHold[3] = rib.rotationMidHoldTime;
+        c.sizeSmoothing = static_cast<u8>(rib.sizeSmoothing);
+        c.colorSmoothing = static_cast<u8>(rib.colorSmoothing);
+        c.drag = rib.drag;
+        c.mass = rib.mass;
+        c.gravity3 = {rib.gravityX, rib.gravityY, rib.gravity};
+        c.friction = rib.friction;
+        c.bounce = rib.bounce;
+        c.noiseAmplitude = rib.noiseAmplitude;
+        c.noiseFrequency = rib.noiseFrequency;
+        c.noiseCoherence = rib.noiseCoherence;
+        c.noiseEdge = rib.noiseEdge;
+        c.lodReduce = static_cast<u8>(rib.lodReduce);
+        c.lodCut = static_cast<u8>(rib.lodCut);
+        c.waveTypes[0] = rib.yawType;
+        c.waveTypes[1] = rib.pitchType;
+        c.waveTypes[2] = rib.speedType;
+        c.waveTypes[3] = rib.sizeType;
+        c.waveTypes[4] = rib.alphaType;
+        c.lifetimeInit = rib.lifetime.initValue;
+        c.maxLengthInit = rib.maxLength.initValue;
+        c.initialSpeedInit = rib.initialSpeed.initValue;
+
+        c.splines.reserve(rib.splineRibbons.size());
+        for (const auto& sr : rib.splineRibbons) {
+            renderer::effects::Sc2SplineRibbonConfig sc;
+            sc.emissionOffset = sr.emissionOffset;
+            sc.emissionVector = sr.emissionVector;
+            // SRIB 0x18..0x2F are FOUR raw floats x2 (endTangent/endOffset)
+            // that WhiteoutLib still parses under the pre-RE labels — a
+            // 20-byte AnimRef plus `reserved` (RE §1.2). The parse is a
+            // byte-faithful field copy, so the vectors reassemble exactly
+            // from the mislabeled members until the WhiteoutLib struct is
+            // relabeled (planned with the spline phase).
+            sc.endTangent = {
+                std::bit_cast<f32>(static_cast<u32>(sr.velocity.interpType) |
+                                   (static_cast<u32>(sr.velocity.flags) << 16)),
+                std::bit_cast<f32>(sr.velocity.animId), sr.velocity.initValue};
+            sc.endOffset = {sr.velocity.nullValue,
+                            std::bit_cast<f32>(sr.velocity.unused),
+                            std::bit_cast<f32>(sr.reserved)};
+            sc.boneIndex = static_cast<i32>(sr.boneIndex);
+            sc.emissionVectorNormFactor = sr.emissionVectorNormFactor;
+            sc.velocityNormFactor = sr.velocityNormFactor;
+            sc.waveTypes[0] = sr.yawType;
+            sc.waveTypes[1] = sr.pitchType;
+            sc.waveTypes[2] = sr.velocityType;
+            c.splines.push_back(sc);
+        }
+        out.push_back(std::move(c));
+    }
+    return out;
 }
 
 } // namespace whiteout::flakes::io

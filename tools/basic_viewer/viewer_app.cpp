@@ -390,7 +390,7 @@ ViewerApp::~ViewerApp() {
     Close();
 }
 
-bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
+bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api, bool visible) {
     backend_ = api;
 
 #if defined(_WIN32)
@@ -419,6 +419,7 @@ bool ViewerApp::Open(i32 width, i32 height, gfx::GfxApi api) {
     // layer, which talks directly to d3d11 / d3d12 / vulkan.
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    glfwWindowHint(GLFW_VISIBLE, visible ? GLFW_TRUE : GLFW_FALSE);
 
     // The caller's width/height are logical (96-DPI) pixels — pre-scale them
     // for the primary monitor so a 1280x720 viewer doesn't shrink to a quarter

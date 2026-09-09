@@ -108,7 +108,10 @@ public:
     ViewerApp(const ViewerApp&) = delete;
     ViewerApp& operator=(const ViewerApp&) = delete;
 
-    bool Open(i32 width, i32 height, gfx::GfxApi api);
+    /// `visible == false` creates the GLFW window hidden: the full app runs
+    /// (device, swap chain, tick loop) but nothing appears on screen — what
+    /// scripted export/attach runs use so a corpus sweep never flashes windows.
+    bool Open(i32 width, i32 height, gfx::GfxApi api, bool visible = true);
     void Close();
 
     bool ShouldClose() const;

@@ -439,7 +439,7 @@ TEST_CASE("ribbon service builds geometry per model with local offsets", "[ribbo
 
     std::vector<whiteout::flakes::renderer::Vertex> verts;
     std::vector<RibbonDrawList> lists;
-    svc.BuildGeometry(7, verts, lists);
+    svc.BuildGeometry(7, RibbonBuildContext{}, verts, lists);
 
     REQUIRE(lists.size() == 2);
     // Offsets are relative to this call, because the pipeline uploads each
@@ -577,7 +577,7 @@ TEST_CASE("a multi-layer ribbon draws one pass per layer over one strip") {
 
     std::vector<whiteout::flakes::renderer::Vertex> verts;
     std::vector<RibbonDrawList> lists;
-    svc.BuildGeometry(1, verts, lists);
+    svc.BuildGeometry(1, RibbonBuildContext{}, verts, lists);
 
     REQUIRE(lists.size() == 3);
     // Every pass covers the identical vertex range — the strip is built once.
@@ -609,7 +609,7 @@ TEST_CASE("a single-layer ribbon still submits exactly one draw") {
 
     std::vector<whiteout::flakes::renderer::Vertex> verts;
     std::vector<RibbonDrawList> lists;
-    svc.BuildGeometry(1, verts, lists);
+    svc.BuildGeometry(1, RibbonBuildContext{}, verts, lists);
     REQUIRE(lists.size() == 1);
     CHECK(lists[0].textureId == 7);
 }

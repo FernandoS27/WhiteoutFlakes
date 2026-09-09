@@ -8,6 +8,11 @@ void RibbonService::AddEmitter(ModelId model, i32 emitterId, const RibbonDesc& d
     emitters_[{model, emitterId}] = RibbonEmitter(desc, behavior);
 }
 
+void RibbonService::AddEmitter(ModelId model, i32 emitterId, const RibbonDesc& desc) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    emitters_[{model, emitterId}] = RibbonEmitter(desc, RibbonBehavior::Wc3());
+}
+
 void RibbonService::RemoveModel(ModelId model) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto it = emitters_.begin(); it != emitters_.end();) {
@@ -89,37 +94,20 @@ void RibbonService::Simulate(f32 dt) {
         em.Update(dt);
 }
 
-void RibbonService::BuildGeometry(ModelId model, std::vector<Vertex>& outVertices,
+void RibbonService::BuildGeometry(ModelId model, const RibbonBuildContext& ctx,
+                                  std::vector<Vertex>& outVertices,
                                   std::vector<RibbonDrawList>& outDrawLists) const {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto it = emitters_.lower_bound({model, INT32_MIN});
          it != emitters_.end() && it->first.model == model; ++it) {
-        const RibbonEmitter& em = it->second;
-        const i32 offset = (i32)outVertices.size();
-        const i32 added = em.BuildStrip(outVertices);
-        if (added <= 0)
-            continue;
-
-        // One strip, drawn once per layer. `CRibbonEmitter::Render`
-        // @0x100e7e1d0 loops the emitter's CRibbonMat array rebinding texture
-        // and blend state each pass over the SAME vertex/index buffer, so the
-        // passes share a vertex range and differ only in material. Order is the
-        // array's, which the transparent queue preserves via the unit index.
-        const RibbonDesc& d = em.Desc();
-        const Vector3f origin = outVertices[(usize)offset].position;
-        for (const RibbonLayer& layer : d.layers) {
-            RibbonDrawList dl;
-            dl.model = model;
-            dl.emitterId = it->first.id;
-            dl.vertexOffset = offset;
-            dl.vertexCount = added;
-            dl.priorityPlane = d.priorityPlane;
-            dl.textureId = layer.textureId;
-            dl.filterMode = layer.filterMode;
-            dl.unshaded = layer.unshaded;
-            dl.twoSided = layer.twoSided;
-            dl.worldOrigin = origin;
-            outDrawLists.push_back(dl);
+        // The BUILD stage owns vertices AND draw records (per-layer fan-out
+        // for WC3, the m3Surface record for SC2); only the map key is stamped
+        // here, because the emitter does not know it.
+        const usize firstDraw = outDrawLists.size();
+        it->second.BuildStage(ctx, outVertices, outDrawLists);
+        for (usize i = firstDraw; i < outDrawLists.size(); ++i) {
+            outDrawLists[i].model = model;
+            outDrawLists[i].emitterId = it->first.id;
         }
     }
 }

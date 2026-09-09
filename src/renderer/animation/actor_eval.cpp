@@ -61,10 +61,14 @@ void ApplyBoneMatrices(Actor& mi, const FrameState& state) {
     mi.render.skinning.UpdateNodeMatrices(bc, worldFlat.data());
 }
 
-void ApplyRibbonFrameStates(Actor& mi, const FrameState& state, ribbon::RibbonService& ribbons) {
+void ApplyRibbonFrameStates(Actor& mi, const FrameState& state, ribbon::RibbonService& ribbons,
+                            const ribbon::GroundQuery& queryGround) {
     for (const auto& rs : state.ribbonStates) {
         ribbon::RibbonState st;
         st.transform = rs.transform;
+        // The grid (or the host's terrain) the SC2 legacy integrator collides
+        // against — the same query terrain IK plants feet on.
+        st.groundQuery = queryGround;
         st.above = rs.above;
         st.below = rs.below;
         st.alpha = rs.alpha;
@@ -74,6 +78,30 @@ void ApplyRibbonFrameStates(Actor& mi, const FrameState& state, ribbon::RibbonSe
         st.unitScale = rs.unitScale;
         std::copy(std::begin(rs.texAnimRow0), std::end(rs.texAnimRow0), std::begin(st.texAnimRow0));
         std::copy(std::begin(rs.texAnimRow1), std::end(rs.texAnimRow1), std::begin(st.texAnimRow1));
+        // SC2 sampled block: the .m3 evaluator fills rs.sc2; MDX/M2 leave it
+        // inert, so the copy is harmless for the WC3 family.
+        st.sc2.speed = rs.sc2.speed;
+        st.sc2.yawDeg = rs.sc2.yawDeg;
+        st.sc2.pitchDeg = rs.sc2.pitchDeg;
+        st.sc2.lifetime = rs.sc2.lifetime;
+        st.sc2.maxLength = rs.sc2.maxLength;
+        st.sc2.size3 = rs.sc2.size3;
+        std::copy(std::begin(rs.sc2.color3), std::end(rs.sc2.color3), std::begin(st.sc2.color3));
+        st.sc2.rotation3 = rs.sc2.rotation3;
+        st.sc2.active = rs.sc2.active;
+        st.sc2.splineNodeTransform = rs.sc2.splineNodeTransform;
+        st.sc2.velocityBaseFactor = rs.sc2.velocityBaseFactor;
+        st.sc2.velocityEndFactor = rs.sc2.velocityEndFactor;
+        st.sc2.splineYawDeg = rs.sc2.splineYawDeg;
+        st.sc2.splinePitchDeg = rs.sc2.splinePitchDeg;
+        st.sc2.parentVelocityScale = rs.sc2.parentVelocityScale;
+        std::copy(std::begin(rs.sc2.waveAmp), std::end(rs.sc2.waveAmp), std::begin(st.sc2.waveAmp));
+        std::copy(std::begin(rs.sc2.waveFreq), std::end(rs.sc2.waveFreq), std::begin(st.sc2.waveFreq));
+        st.sc2.overlayPhase = rs.sc2.overlayPhase;
+        std::copy(std::begin(rs.sc2.splineWaveAmp), std::end(rs.sc2.splineWaveAmp),
+                  std::begin(st.sc2.splineWaveAmp));
+        std::copy(std::begin(rs.sc2.splineWaveFreq), std::end(rs.sc2.splineWaveFreq),
+                  std::begin(st.sc2.splineWaveFreq));
         ribbons.SetState(mi.handle, rs.emitterId, st);
     }
 }
@@ -405,7 +433,7 @@ void Actor::ApplyFrameState(const FrameState& state, i32 localTimeMs, const Acto
     if (ctx.particles)
         ApplyParticleFrameStates(*this, state, *ctx.particles, ctx.camPos);
     if (ctx.ribbons)
-        ApplyRibbonFrameStates(*this, state, *ctx.ribbons);
+        ApplyRibbonFrameStates(*this, state, *ctx.ribbons, ctx.queryGround);
     if (ctx.particles)
         ApplyChildModelFrameStates(*this, state, *ctx.particles);
 #if WDX_ENABLE_D3

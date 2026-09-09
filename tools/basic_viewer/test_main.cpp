@@ -2221,8 +2221,18 @@ int main(int argc, char* argv[]) {
                             drawTraceRefractionMask, drawTraceNoMultiTex, traceGameId,
                             drawTraceNoDistortion, drawTraceDistortionBuffer, wemProfile);
 
+    // Export/attach/list runs load the model, do their work over a fixed tick
+    // count and exit — they still need the full app (device, asset managers,
+    // exporters), but never a window on screen. Keep it hidden so a scripted
+    // corpus sweep (render-diff's glTF arm exports one model per line) does
+    // not flash and steal focus once per model.
+    const bool headlessWork = doExport || !exportWemPath.empty() || !exportMdxPath.empty() ||
+                              !exportM3Path.empty() || !exportGltfPath.empty() ||
+                              !saveM3Path.empty() ||
+                              !attachAnims.empty() || listClips;
+
     whiteout::flakes::ViewerApp app(renderer);
-    if (!app.Open(1024, 768, backend)) {
+    if (!app.Open(1024, 768, backend, /*visible=*/!headlessWork)) {
         std::cerr << "Failed to open viewer\n";
         return 1;
     }
@@ -2298,11 +2308,6 @@ int main(int argc, char* argv[]) {
     // Before any open: the profile decides which game's storage the document's
     // textures resolve against, which FollowModelGame settles on the way in.
     app.SetPreferredWemProfile(wemProfile);
-
-    const bool headlessWork = doExport || !exportWemPath.empty() || !exportMdxPath.empty() ||
-                              !exportM3Path.empty() || !exportGltfPath.empty() ||
-                              !saveM3Path.empty() ||
-                              !attachAnims.empty() || listClips;
 
     if (!mdxPath.empty()) {
         // No exists() pre-check for headless work: LoadModel accepts a

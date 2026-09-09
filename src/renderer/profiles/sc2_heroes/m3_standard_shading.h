@@ -25,6 +25,12 @@
 namespace whiteout::flakes::renderer {
 class RenderService;
 }
+namespace whiteout::flakes::model {
+struct Actor;
+}
+namespace whiteout::flakes::renderer::bls {
+struct FrameInputs;
+}
 
 namespace whiteout::flakes::renderer::profiles::sc2_heroes {
 
@@ -55,6 +61,16 @@ public:
     bool BeginPass(const core::PassContext& ctx,
                    const render_detail::CollectedDrawLists& lists) override;
     void Draw(const render_detail::DrawItem& item, const core::PassContext& ctx) override;
+
+    /// @brief Draw one SC2 ribbon strip through the M3 material at
+    ///        `surfaceIndex` (RIBBON_SERVICE.md §7). The strip is a world-space
+    ///        `renderer::Vertex` range in the actor's `render.ribbonVB`, built
+    ///        by the ribbon service; this projects it and runs the diffuse
+    ///        layer with the material's blend. Interleaved in the transparent
+    ///        pass by RenderPipeline::DrawRibbonStrip, not the draw-item loop,
+    ///        so it writes its own pass CB rather than leaning on BeginPass.
+    void DrawRibbon(model::Actor& actor, i32 surfaceIndex, i32 vertexOffset, i32 vertexCount,
+                    const bls::FrameInputs& frame);
 
     core::SurfaceClass Classify(const render_detail::RenderableView& view,
                                 const model::GPUGeoset& geo) const override;
@@ -149,6 +165,28 @@ private:
 
     gfx::PipelineHandle GetOrBuildPso(const PsoKey& key);
 
+    /// Fill a pass CB (view/proj/camera + the key/fill/back rig + ambient +
+    /// team params) the one way, so the ribbon's own CB carries the SAME
+    /// lighting a geoset gets — otherwise a lit ribbon shades against zero
+    /// lights and comes out black.
+    void WritePassCb(M3PassCb& c, const Matrix44f& view, const Matrix44f& proj,
+                     const Vector3f& camPos, bool linearShading);
+
+    /// The ribbon strip's own PSO — its own vertex layout (renderer::Vertex),
+    /// forward entry only, blend from the surface. No skinned/MRT variants.
+    struct RibbonPsoKey {
+        gfx::Format rtv = gfx::Format::Unknown;
+        gfx::Format dsv = gfx::Format::Unknown;
+        gfx::Format extra0 = gfx::Format::Unknown;
+        gfx::Format extra1 = gfx::Format::Unknown;
+        gfx::Format extra2 = gfx::Format::Unknown;
+        u32 extraRtvCount = 0;
+        u8 blend = 0; ///< m3::BlendMode.
+        bool twoSided = false;
+        auto operator<=>(const RibbonPsoKey&) const = default;
+    };
+    gfx::PipelineHandle GetOrBuildRibbonPso(const RibbonPsoKey& key);
+
     /// @brief UnlitShading's rules verbatim: a per-geoset palette, skinning
     ///        attributes in the interleaved buffer, no per-actor palette.
     bool ResolveSkinned(const render_detail::RenderableView& view,
@@ -162,9 +200,15 @@ private:
     gfx::ShaderHandle vsSkinned_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle ps_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle psMrt_ = gfx::ShaderHandle::Invalid;
+    gfx::ShaderHandle vsRibbon_ = gfx::ShaderHandle::Invalid;
     gfx::BufferHandle passCb_ = gfx::BufferHandle::Invalid;
     gfx::BufferHandle drawCb_ = gfx::BufferHandle::Invalid;
+    // A ribbon's pass CB is its own: DrawRibbon runs in the transparent
+    // interleave after BeginPass' draws, so rewriting passCb_ would corrupt a
+    // later geoset draw's lights. Only view/projection/cameraPos are needed.
+    gfx::BufferHandle ribbonPassCb_ = gfx::BufferHandle::Invalid;
     std::map<PsoKey, gfx::PipelineHandle> psos_;
+    std::map<RibbonPsoKey, gfx::PipelineHandle> ribbonPsos_;
 
     // Captured in BeginPass, read by Draw.
     Matrix44f passView_ = Matrix44f::identity();

@@ -63,6 +63,9 @@ struct ModelTemplate {
     std::vector<M2ParticleEmitterConfig> m2ParticleConfigs;
     std::vector<std::shared_ptr<const particle::EmitterDesc>> m2ParticleDescs;
     std::vector<effects::RibbonEmitterConfig> ribbonConfigs;
+    // StarCraft II `RIB_` emitters; a model has these or ribbonConfigs, never
+    // both, so the two share the ribbon service's emitter id space.
+    std::vector<effects::Sc2RibbonEmitterConfig> sc2RibbonConfigs;
     std::vector<CollisionShapeData> collisionConfigs;
     std::vector<PE1EmitterConfig> pe1Configs;
     std::vector<std::shared_ptr<const particle::EmitterDesc>> pe1Descs;

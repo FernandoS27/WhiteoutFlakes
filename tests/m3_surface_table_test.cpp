@@ -738,9 +738,11 @@ TEST_CASE("m3_surface_table: one file bound both ways is two textures") {
     CHECK(texs[0].linear != texs[1].linear);
 }
 
-TEST_CASE("m3_surface_table: the layer UV transform is a TRS about the UV origin") {
-    // psmateriallayer.fx feeds the 2x4 (u, v, 0, 1) and keeps .xy, so only
-    // these two rows exist and only uvAngle.z can reach the output.
+TEST_CASE("m3_surface_table: the layer UV transform is a TRS about the UV centre") {
+    // SC2 (sub_102ABBDE0) rotates and scales about the texture centre (0.5,0.5)
+    // with the offset applied in source space: M = T(+0.5)·S·R·T(-(0.5+offset)).
+    // psmateriallayer.fx feeds the 2x4 (u, v, 0, 1) and keeps .xy, so only these
+    // two rows exist and only uvAngle.z can reach the output.
     f32 r0[4], r1[4];
 
     wio::M3ComposeUvTransform({0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f}, r0, r1);
@@ -751,24 +753,32 @@ TEST_CASE("m3_surface_table: the layer UV transform is a TRS about the UV origin
     CHECK(r1[1] == 1.0f);
     CHECK(r1[3] == 0.0f);
 
-    // Tiling is a plain repeat count about the origin: uv 1 lands on 3.
+    // Tiling repeats about the centre: uv 0.5 is the fixed point, so uv 1 lands
+    // on 2 (translation column = -1), not 3.
     wio::M3ComposeUvTransform({0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {3.0f, 1.0f}, r0, r1);
     CHECK(r0[0] == 3.0f);
+    CHECK(r0[3] == -1.0f);
     CHECK(r1[1] == 1.0f);
 
-    // Offset is the translation column, applied after the linear half.
+    // Offset lives in source space, ahead of the linear half, so it reaches the
+    // translation column negated.
     wio::M3ComposeUvTransform({0.25f, -0.5f}, {0.0f, 0.0f, 0.0f}, {1.0f, 1.0f}, r0, r1);
-    CHECK(r0[3] == 0.25f);
-    CHECK(r1[3] == -0.5f);
+    CHECK(r0[3] == -0.25f);
+    CHECK(r1[3] == 0.5f);
 
     // A quarter turn in the UV plane, radians — the value shipped content
-    // clusters on. (u, v) = (1, 0) has to come out (0, 1).
+    // clusters on. About the centre, (u, v) = (1, 0) comes out (0, 0) and the
+    // centre is fixed.
     constexpr f32 kHalfPi = 1.57079633f;
-    wio::M3ComposeUvTransform({0.0f, 0.0f}, {0.0f, 0.0f, kHalfPi}, {1.0f, 1.0f}, r0, r1);
+    wio::M3ComposeUvTransform({0.0f, 0.0f}, {0.0f, 0.0f, -kHalfPi}, {1.0f, 1.0f}, r0, r1);
     const f32 u = r0[0] * 1.0f + r0[1] * 0.0f + r0[3];
     const f32 v = r1[0] * 1.0f + r1[1] * 0.0f + r1[3];
     CHECK_THAT(u, Catch::Matchers::WithinAbs(0.0, 1e-6));
-    CHECK_THAT(v, Catch::Matchers::WithinAbs(1.0, 1e-6));
+    CHECK_THAT(v, Catch::Matchers::WithinAbs(0.0, 1e-6));
+    const f32 cu = r0[0] * 0.5f + r0[1] * 0.5f + r0[3];
+    const f32 cv = r1[0] * 0.5f + r1[1] * 0.5f + r1[3];
+    CHECK_THAT(cu, Catch::Matchers::WithinAbs(0.5, 1e-6));
+    CHECK_THAT(cv, Catch::Matchers::WithinAbs(0.5, 1e-6));
 
     // The two rotations that are NOT in the plane cannot reach the result.
     f32 x0[4], x1[4];
@@ -896,7 +906,9 @@ TEST_CASE("m3_surface_table: the evaluator emits a palette entry only for a laye
     const auto& e = fs.texAnimMatrices[0];
     CHECK(e.textureAnimId == wio::M3UvTransformId(0, wio::M3LayerSlot::Diffuse));
     CHECK(e.row0[0] == 3.0f);
-    CHECK(e.row0[3] == 0.25f);
+    // Centre-pivot TRS: 3x tiling puts uv 1 at 2, and the source-space +0.25
+    // offset reaches the translation column as 3·(-(0.5+0.25)) + 0.5 = -1.75.
+    CHECK(e.row0[3] == -1.75f);
     CHECK(e.row1[1] == 1.0f);
     CHECK(e.row1[3] == 0.0f);
 }

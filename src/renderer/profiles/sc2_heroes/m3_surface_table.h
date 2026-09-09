@@ -149,8 +149,20 @@ public:
         return surfaces_;
     }
 
+    /// @brief First entry of the per-`RIB_` block BuildM3SurfaceTable appends
+    ///        after the geoset entries (a material only a ribbon references
+    ///        has no geoset, so it needs its own row). Ribbon i's surface is
+    ///        `ribbonSurfaceBase + i`; -1 when the model has no ribbons.
+    i32 RibbonSurfaceBase() const {
+        return ribbonSurfaceBase_;
+    }
+    void SetRibbonSurfaceBase(i32 base) {
+        ribbonSurfaceBase_ = base;
+    }
+
 private:
     std::vector<M3Surface> surfaces_;
+    i32 ribbonSurfaceBase_ = -1;
 };
 
 /// @brief Build the table for @p model. @p emittedRegions and

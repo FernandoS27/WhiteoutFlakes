@@ -298,6 +298,12 @@ public:
     std::vector<renderer::effects::RibbonEmitterConfig> GetRibbonConfigs() override {
         return {};
     }
+    /// @brief One config per `RIB_` record, in file order — the emitter id IS
+    ///        the record index. Field mapping notes live at the definition;
+    ///        the big one: WhiteoutLib's `emitterShape`/`ribbonType` carry the
+    ///        pre-RE labels, so they land here as `ribbonType` (cross-section)
+    ///        and `cullMethod` (SC2_RIBBON_RE.md §1.1).
+    std::vector<renderer::effects::Sc2RibbonEmitterConfig> GetSc2RibbonConfigs() override;
     /// @brief The `PHRB` rigid bodies as wireframes for the Collisions view.
     ///
     /// M3 has no chunk of plain collision primitives the way MDX has CLID, so
@@ -524,6 +530,12 @@ private:
     /// @brief Sample the `LITE` chunk into `FrameState::lights`.
     void EvaluateLights(std::span<const M3Layer> layers, std::span<const ::whiteout::u8> visible,
                         const Matrix44f& world, renderer::model::FrameState& fs) const;
+
+    /// @brief Sample every `RIB_`'s animated tracks into
+    ///        `FrameState::ribbonStates` (the `sc2` block).
+    void EvaluateRibbons(std::span<const M3Layer> layers,
+                         std::span<const ::whiteout::u8> visible, const Matrix44f& world,
+                         renderer::model::FrameState& fs) const;
 
     /// @brief Sample every standard material layer's UV transform into
     ///        `FrameState::texAnimMatrices`.

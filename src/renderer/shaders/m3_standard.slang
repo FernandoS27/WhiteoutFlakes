@@ -220,6 +220,10 @@ struct PSInput
     float4 worldPos  : TEXCOORD1; // .xyz world position, .w view-space Z
     float3 normalWS  : TEXCOORD2;
     float4 tangentWS : TEXCOORD3; // .xyz tangent, .w handedness sign
+    // Per-vertex modulation. 1 on every geoset (M3Vertex writes it), the
+    // ribbon's interpolated element rgba on the ribbon VS — Ribbon.fx multiplies
+    // it into the material output, and the forward PS does the same.
+    float4 vColor    : COLOR0;
 }
 
 float3 M3DecodeBasis(float3 unorm)
@@ -272,6 +276,7 @@ PSInput M3Vertex(float3 pos, float3 nrm, float3 tan, float tanSign, float4 rawUv
     o.normalWS = normalize(mul(float4(nrm, 0.0), draw.world).xyz);
     o.tangentWS = float4(normalize(mul(float4(tan, 0.0), draw.world).xyz), tanSign);
     o.uv01 = rawUvs * draw.uvTransform.x + draw.uvTransform.y;
+    o.vColor = float4(1.0, 1.0, 1.0, 1.0);
     return o;
 }
 
@@ -713,7 +718,9 @@ M3Shaded ShadeM3(PSInput input, bool isFront)
 float4 psM3Standard(PSInput input, bool isFront : SV_IsFrontFace) : SV_Target0
 {
     let s = ShadeM3(input, isFront);
-    return float4(s.color, s.alpha);
+    // vColor is 1 on every geoset (identical output) and the ribbon's element
+    // colour on a ribbon draw.
+    return float4(s.color * input.vColor.rgb, s.alpha * input.vColor.a);
 }
 
 struct MrtOut
@@ -743,5 +750,49 @@ MrtOut psM3StandardMrt(PSInput input, bool isFront : SV_IsFrontFace)
     o.normalSpec = float4(nVS * 0.5 + 0.5, sqrt(saturate(s.specPower / 512.0)));
     o.diffuseSpec =
         float4(s.albedo, dot(s.specColor, float3(0.299, 0.587, 0.114)));
+    return o;
+}
+
+// ---- Ribbon strip (SC2 `RIB_`) --------------------------------------------
+//
+// The ribbon shares the FULL material PS (psM3Standard, ShadeM3) — same layer
+// stack, emissive, team colour, blend and lighting a geoset gets — so a glowing
+// energy ribbon renders through its real material rather than a stripped
+// diffuse-only copy. Only the VS differs: the CPU ribbon service already builds
+// the strip in WORLD space (displacement, camera frame, size/colour interp and
+// V = fAge done on the host, ribbon_vs_math.h, O12-gated), so this VS just
+// projects and hands ShadeM3 a camera-facing billboard basis plus the
+// interpolated element colour in vColor. Forward-only: ribbons are transparent
+// and never write the G-buffer sidecar (extraColorWrite off in the PSO, as a
+// transparent geoset draw stays on psM3Standard in the scene pass).
+struct RibbonVSInput
+{
+    float3 position : POSITION;   // already world-space
+    float4 color    : COLOR0;     // interpolated element rgba (renderer::Vertex)
+    float2 uv       : TEXCOORD0;  // final [0,1], NOT the SNORM `.m3` raw
+}
+
+[shader("vertex")]
+PSInput vsM3Ribbon(RibbonVSInput input)
+{
+    PSInput o;
+    // draw.world is identity — the strip is world-space already — but it rides
+    // the shared M3DrawData CB so ShadeM3's layer state is the geoset path's.
+    let worldPos = mul(float4(input.position, 1.0), draw.world);
+    let viewPos = mul(worldPos, pass.view);
+    o.position = mul(viewPos, pass.projection);
+    o.worldPos = float4(worldPos.xyz, viewPos.z);
+    // Camera-facing billboard: the shading normal is the view vector, and any
+    // tangent perpendicular to it will do (ribbons carry no tangent-space
+    // basis; a material with a normal/env layer gets a stable, if arbitrary,
+    // frame rather than a degenerate one).
+    let toEye = normalize(pass.cameraPosWS.xyz - worldPos.xyz);
+    o.normalWS = toEye;
+    let up = (abs(toEye.z) < 0.99) ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
+    o.tangentWS = float4(normalize(cross(up, toEye)), 1.0);
+    // No SNORM fold (draw.uvTransform.x/.y): the ribbon uv is a real coordinate.
+    // The layer's own animated transform still applies, in M3LayerUV.
+    o.uv01 = float4(input.uv, input.uv);
+    o.vColor = input.color;
     return o;
 }

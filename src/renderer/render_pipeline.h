@@ -64,6 +64,9 @@ struct RibbonDrawUnit {
     i32 offset = 0;
     Vector3f origin = {0, 0, 0};
     i32 priorityPlane = 0;
+    /// SC2: surface index into the actor's M3SurfaceTable; >= 0 routes the draw
+    /// through the M3 material (DrawRibbon) instead of the BLS SD path.
+    i32 m3Surface = -1;
 };
 
 class RenderPipeline {

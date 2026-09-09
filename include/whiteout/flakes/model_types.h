@@ -317,6 +317,75 @@ struct RibbonEmitterConfig {
     std::vector<RibbonLayer> layers;
 };
 
+/// @brief One `SRIB` spline segment's statics (SC2_RIBBON_RE.md §1.2: four
+///        raw vec3s, a bone, two norm factors — only record 0 is ever used
+///        by the runtime).
+struct Sc2SplineRibbonConfig {
+    Vector3f emissionOffset = {0, 0, 0}; ///< Bezier C0, emitter-local.
+    Vector3f emissionVector = {0, 0, 0}; ///< Start tangent direction.
+    Vector3f endTangent = {0, 0, 0};     ///< End tangent direction.
+    Vector3f endOffset = {0, 0, 0};      ///< End point, in boneIndex node space.
+    i32 boneIndex = 0;
+    f32 emissionVectorNormFactor = 0.0f;
+    f32 velocityNormFactor = 0.0f;
+    /// Overlay-wave types for the spline's yaw / pitch / velocity variation
+    /// (SRIB yawType/pitchType/velocityType). 0 = off; the amplitude/frequency
+    /// are animated and arrive per frame in `RibbonFrameState::sc2`.
+    u32 waveTypes[3] = {0, 0, 0};
+};
+
+/// @brief Static description of one StarCraft II `RIB_` ribbon emitter — the
+///        fields the simulation reads once at load. Everything animated flows
+///        per frame through `FrameState::RibbonFrameState::sc2`.
+///
+/// Field names follow the RUNTIME semantics settled by SC2_RIBBON_RE.md §1.1:
+/// the adapter maps WhiteoutLib's older `emitterShape`/`ribbonType` labels
+/// onto `ribbonType` (cross-section) / `cullMethod` here.
+struct Sc2RibbonEmitterConfig {
+    i32 boneIndex = 0;
+    i32 materialIndex = -1; ///< `MATM` index; resolved to an M3 surface at load.
+
+    u32 flags = 0;           ///< RIB_+0x1D8 (RE §1.3).
+    u32 additionalFlags = 0; ///< RIB_+0x08; bit 3 = world space.
+    /// The u32 at RIB_+0x174 — the localForcesFallback/worldForcesFallback
+    /// u16 pair as one dword. This is the value `Ribbon_SelectSimTechnique`
+    /// tests, NOT the primary pair at +0x170 (RE §3, oracle O1).
+    u32 forcesFallback = 0;
+
+    u8 ribbonType = 0;  ///< Cross-section: 0 billboard / 1 planar / 2 cylinder / 3 star.
+    u8 cullMethod = 0;  ///< 0 = time-based, 1 = length-based.
+    f32 divisions = 20.0f; ///< Authored density (segments per lifetime / maxLength).
+    i32 edges = 5;
+    f32 innerRadius = 0.5f;
+
+    f32 midTime[4] = {0.5f, 0.5f, 0.5f, 0.5f};  ///< size/color/alpha/rotation.
+    f32 midHold[4] = {0, 0, 0, 0};
+    u8 sizeSmoothing = 0;  ///< InterpolationMode, 0..4.
+    u8 colorSmoothing = 0;
+
+    f32 drag = 1.0f; ///< Static; the engine clamps ≥ 0.01 at load.
+    f32 mass = 1.0f;
+    Vector3f gravity3 = {0, 0, 0}; ///< Only .z reaches the analytic path.
+    f32 friction = 1.0f; ///< Tangent RETENTION on collide (RE §3.3).
+    f32 bounce = 0.0f;
+
+    f32 noiseAmplitude = 0, noiseFrequency = 0, noiseCoherence = 0, noiseEdge = 1.0f;
+
+    u8 lodReduce = 0; ///< Table ROW index, not a factor (RE §3.1).
+    u8 lodCut = 0;
+
+    /// Wave (overlay) channel types: yaw, pitch, speed, size, alpha. 0 = off;
+    /// amplitudes/frequencies are animated and arrive per frame.
+    u32 waveTypes[5] = {0, 0, 0, 0, 0};
+
+    std::vector<Sc2SplineRibbonConfig> splines; ///< SRIB records (count gates SPLINE).
+
+    /// Track initial values, for load-time derivations (catch-up bounds).
+    f32 lifetimeInit = 1.0f;
+    f32 maxLengthInit = 0.0f;
+    f32 initialSpeedInit = 0.0f;
+};
+
 } // namespace whiteout::flakes::renderer::effects
 
 namespace whiteout::flakes::renderer::model {
@@ -878,6 +947,41 @@ struct FrameState {
         /// names no transform, which is every MDX ribbon and most `.m2` ones.
         f32 texAnimRow0[4] = {1.0f, 0.0f, 0.0f, 0.0f};
         f32 texAnimRow1[4] = {0.0f, 1.0f, 0.0f, 0.0f};
+
+        /// @brief StarCraft II sampled block (`RIB_`/`SRIB` tracks). Defaults
+        ///        are inert; only the `.m3` source fills it. Two traps carried
+        ///        from the RE, restated at the field: `rotation3` is RADIANS
+        ///        end-to-end (no conversion exists anywhere for twist), and
+        ///        `active == false` stops laying segments while the live trail
+        ///        finishes its life.
+        struct Sc2 {
+            /// World transform of `SRIB.boneIndex`'s node (spline end frame).
+            Matrix44f splineNodeTransform = Matrix44f::identity();
+            f32 speed = 0;
+            f32 yawDeg = 0, pitchDeg = 0; ///< Degrees; converted at use — the
+                                          ///< ONLY deg→rad in the pipeline.
+            f32 lifetime = 1.0f;
+            f32 maxLength = 0;
+            Vector3f size3 = {1, 1, 1};
+            Vector4f color3[3] = {{1, 1, 1, 1}, {1, 1, 1, 1}, {1, 1, 1, 1}};
+            Vector3f rotation3 = {0, 0, 0}; ///< Twist keys, RADIANS.
+            f32 velocityBaseFactor = 1.0f, velocityEndFactor = 1.0f;
+            f32 splineYawDeg = 0, splinePitchDeg = 0;
+            bool active = true;             ///< Gates EMISSION only, never the trail.
+            f32 parentVelocityScale = 0;    ///< flags & 0x10 inherit.
+            /// Overlay waves. `waveAmp`/`waveFreq` are the per-frame sampled
+            /// amplitude/frequency for yaw/pitch/speed/size/alpha; the head
+            /// applies `value += SampleWave(type, freq·overlayTime + phase, amp)`
+            /// per channel whose static type (in the config) is nonzero.
+            /// `overlayPhase` is the animated `RIB_.overlay` sample; overlayTime
+            /// is the emitter clock (the emitter supplies it). The spline arrays
+            /// are the SRIB yaw/pitch/velocity variation (RE §3.4).
+            f32 waveAmp[5] = {0, 0, 0, 0, 0};
+            f32 waveFreq[5] = {0, 0, 0, 0, 0};
+            f32 overlayPhase = 0;
+            f32 splineWaveAmp[3] = {0, 0, 0};
+            f32 splineWaveFreq[3] = {0, 0, 0};
+        } sc2;
     };
     std::vector<RibbonFrameState> ribbonStates;
 
@@ -1101,6 +1205,8 @@ namespace whiteout::flakes {
 using ::whiteout::flakes::renderer::ParticleEmitterConfig;
 using ::whiteout::flakes::renderer::effects::RibbonLayer;
 using ::whiteout::flakes::renderer::effects::RibbonEmitterConfig;
+using ::whiteout::flakes::renderer::effects::Sc2RibbonEmitterConfig;
+using ::whiteout::flakes::renderer::effects::Sc2SplineRibbonConfig;
 using ::whiteout::flakes::renderer::model::AttachmentConfig;
 using ::whiteout::flakes::renderer::model::CollisionShapeData;
 using ::whiteout::flakes::renderer::model::CollisionShapeType;

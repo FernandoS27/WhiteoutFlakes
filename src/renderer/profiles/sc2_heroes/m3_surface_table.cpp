@@ -89,6 +89,161 @@ void ResolveFresnel(const TextureLayer& layer, M3Layer& out) {
     out.fresnelTranslation = layer.fresnelTranslation;
 }
 
+/// Resolve one MATM entry into @p s — the shared half of the geoset loop and
+/// the appended per-`RIB_` block. Leaves `s.valid` false when the entry does
+/// not resolve to a standard material, exactly as the loop always did.
+void ResolveSurfaceMaterial(const Model& model, u32 matmIndex,
+                            const std::unordered_map<std::string, i32>& textureIndex,
+                            M3Surface& s) {
+    const StandardMaterial* mat = io::M3StandardForMaterial(model, matmIndex);
+    if (!mat)
+        return;
+    // M3StandardForMaterial only ever points into this array, so the index
+    // the UV-transform palette is keyed on comes straight back out of it.
+    const u32 matIndex = static_cast<u32>(mat - model.standardMaterials.data());
+
+    s.valid = true;
+    s.blendMode = mat->blendMode;
+    s.materialFlags = static_cast<u32>(mat->flags);
+    s.priority = mat->priority;
+    s.specularExponent = mat->specularExponent > 0.0f ? mat->specularExponent : 20.0f;
+    if (mat->alphaTestThreshold > 0) {
+        s.alphaTestThreshold =
+            std::min(static_cast<f32>(mat->alphaTestThreshold) / 255.0f, 1.0f);
+    }
+
+    f32 hdrSpec = mat->hdrSpecularMultiplier;
+    if (hdrSpec <= 0.0f)
+        hdrSpec = 1.0f;
+    f32 hdrEmis = mat->hdrEmissiveMultiplier;
+    if (hdrEmis <= 0.0f)
+        hdrEmis = 1.0f;
+    s.emissiveMultiplier = hdrEmis;
+
+    // FakeEnergyConservingSpec (psmaterial.fx:203): dim the material
+    // specular by a polynomial fit of the relative highlight area, so high
+    // exponents keep their energy and broad ones dim. The engine sets the
+    // axis to !(flags & SimulateRoughness) (CMaterial_ApplyForDraw,
+    // 0x1028bc1a0) and no shipped corpus material carries the flag, so
+    // retail effectively always dims — the 2-5x hdrSpecularMultiplier
+    // values are authored against it.
+    //
+    // Retail feeds it the SPECULARITY, which a gloss layer varies per
+    // pixel (psmainshading.fx:154 -> MaterialSpecularity). Constant
+    // exponent, constant dim: fold it into the spec tint. Gloss layer, and
+    // the shader has to pay it per pixel instead — `dimPerPixel` is that
+    // hand-off.
+    const bool energyDim =
+        (static_cast<u32>(mat->flags) &
+         static_cast<u32>(::whiteout::m3::MaterialFlag::SimulateRoughness)) == 0;
+    const TextureLayer* gloss = io::M3LayerForSlot(*mat, M3LayerSlot::Gloss);
+    s.dimPerPixel = energyDim && gloss && io::M3LayerActive(*gloss);
+    if (energyDim && !s.dimPerPixel) {
+        const f32 p = std::clamp(s.specularExponent, 1.0f, 512.0f);
+        const f32 dim =
+            std::clamp(-0.000004444f * p * p + 0.004333f * p + 0.0020834f, 0.0f, 1.0f);
+        hdrSpec *= dim;
+    }
+
+    // p_vEnvioConstantDiffSpec.x. Only MAT_ v20 carries the three
+    // hdrEnvironment* fields, and the parser leaves them zero below that —
+    // measured, 717 of 744 shipped env materials read 0 there and the 27
+    // v20 ones read exactly 1. Taking the field at face value would
+    // multiply almost every reflection to black, so pre-v20 means "no
+    // constant", not "constant zero". The diffuse and specular
+    // multipliers are zero on all 228 v20 materials measured, so
+    // b_iEnvioMultipliers' lighting-modulated branches are dead in
+    // shipped content and this flat term is the whole of it.
+    f32 envConstant = 1.0f;
+    if (mat->getVersion() >= 20 && mat->hdrEnvironmentConstant > 0.0f)
+        envConstant = mat->hdrEnvironmentConstant;
+
+    for (u32 slot = 0; slot < kM3LayerCount; ++slot) {
+        M3Layer& out = s.layers[slot];
+        const TextureLayer* layer =
+            io::M3LayerForSlot(*mat, static_cast<M3LayerSlot>(slot));
+        if (!layer || !io::M3LayerActive(*layer))
+            continue;
+        out.mode = io::M3LayerHasTexture(*layer) ? u8{1} : u8{2};
+        if (out.mode == 1) {
+            std::string key = io::M3CleanPath(layer->texturePath);
+            std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+            if (auto it = textureIndex.find(key); it != textureIndex.end())
+                out.textureId = it->second;
+        }
+        out.uvSource = ResolveUvSource(*layer);
+        out.channels = static_cast<u8>(layer->colorType);
+        out.wrapFlags = LayerWrapFlags(*layer);
+        out.uvTransformId = io::M3UvTransformId(matIndex, static_cast<M3LayerSlot>(slot));
+        ResolveFresnel(*layer, out);
+
+        f32 extraMul = 1.0f;
+        switch (static_cast<M3LayerSlot>(slot)) {
+        case M3LayerSlot::Diffuse:
+            // TEAMCOLOR_DIFFUSE, gated the way the shader is
+            // (psmateriallayer.fx:213: ChannelSelect != RGB): the diffuse
+            // alpha is the team mask.
+            if (layer->colorType != ColorChannelSelect::RGB)
+                out.teamColorMode = 1;
+            break;
+        case M3LayerSlot::Decal:
+            out.blendOp = static_cast<u8>(mat->layerBlendMode);
+            break;
+        case M3LayerSlot::Specular:
+            extraMul = hdrSpec;
+            if (mat->specularMode == SpecularMode::AlphaOnly)
+                out.channels = static_cast<u8>(ColorChannelSelect::Alpha);
+            break;
+        case M3LayerSlot::Emissive:
+            out.blendOp = static_cast<u8>(mat->emissiveBlendMode1);
+            break;
+        case M3LayerSlot::Emissive2:
+            out.blendOp = static_cast<u8>(mat->emissiveBlendMode2);
+            break;
+        case M3LayerSlot::AlphaMask:
+        case M3LayerSlot::AlphaMask2:
+            // A mask samples its alpha unless the author picked a channel.
+            if (layer->colorType == ColorChannelSelect::RGB)
+                out.channels = static_cast<u8>(ColorChannelSelect::Alpha);
+            break;
+        case M3LayerSlot::Environment:
+            // ApplyEnv's op is the material's layer blend, the same field
+            // the decal reads (psmaterial.fx:332).
+            out.blendOp = static_cast<u8>(mat->layerBlendMode);
+            extraMul = envConstant;
+            s.envReflect = layer->uvMapping == UVMappingMode::ReflectCubicEnvio ||
+                           layer->uvMapping == UVMappingMode::ReflectSphericalEnvio;
+            break;
+        default:
+            break;
+        }
+        out.tint = LayerTint(*layer, extraMul);
+        // A Color-flag alpha mask is a fade carrier — the layer the WC3
+        // and WoW conversions (and Blizzard's own) animate. Retail
+        // multiplies `mapAlpha` into the sample; this build samples no
+        // layer tracks, so the REST is folded in statically — which is
+        // also exactly the native M2 path's own treatment of a weight
+        // (`FirstValue`). Scoped to Color-flag masks: a textured mask's
+        // mapAlpha ships unauthored more often than not.
+        if (out.mode == 2 &&
+            (static_cast<M3LayerSlot>(slot) == M3LayerSlot::AlphaMask ||
+             static_cast<M3LayerSlot>(slot) == M3LayerSlot::AlphaMask2)) {
+            out.tint.w *= std::clamp(layer->mapAlpha.initValue, 0.0f, 1.0f);
+        }
+        out.add = layer->rgbAdd.initValue * extraMul;
+        out.invert =
+            (static_cast<u32>(layer->flags) & static_cast<u32>(TextureLayerFlag::ColorInvert))
+                ? u8{1}
+                : u8{0};
+        out.clampColor =
+            (static_cast<u32>(layer->flags) & static_cast<u32>(TextureLayerFlag::ColorClamp))
+                ? u8{1}
+                : u8{0};
+    }
+}
+
 } // namespace
 
 std::unique_ptr<M3SurfaceTable> BuildM3SurfaceTable(const Model& model,
@@ -129,155 +284,20 @@ std::unique_ptr<M3SurfaceTable> BuildM3SurfaceTable(const Model& model,
 
         // The MATM index the adapter settled on for this geoset — the region's
         // first batch, or one section of the composite that batch names.
-        const StandardMaterial* mat =
-            g < emittedMaterials.size()
-                ? io::M3StandardForMaterial(model, emittedMaterials[g])
-                : nullptr;
-        if (!mat)
-            continue;
-        // M3StandardForMaterial only ever points into this array, so the index
-        // the UV-transform palette is keyed on comes straight back out of it.
-        const u32 matIndex = static_cast<u32>(mat - model.standardMaterials.data());
+        if (g < emittedMaterials.size())
+            ResolveSurfaceMaterial(model, emittedMaterials[g], textureIndex, s);
+    }
 
-        s.valid = true;
-        s.blendMode = mat->blendMode;
-        s.materialFlags = static_cast<u32>(mat->flags);
-        s.priority = mat->priority;
-        s.specularExponent = mat->specularExponent > 0.0f ? mat->specularExponent : 20.0f;
-        if (mat->alphaTestThreshold > 0) {
-            s.alphaTestThreshold =
-                std::min(static_cast<f32>(mat->alphaTestThreshold) / 255.0f, 1.0f);
-        }
-
-        f32 hdrSpec = mat->hdrSpecularMultiplier;
-        if (hdrSpec <= 0.0f)
-            hdrSpec = 1.0f;
-        f32 hdrEmis = mat->hdrEmissiveMultiplier;
-        if (hdrEmis <= 0.0f)
-            hdrEmis = 1.0f;
-        s.emissiveMultiplier = hdrEmis;
-
-        // FakeEnergyConservingSpec (psmaterial.fx:203): dim the material
-        // specular by a polynomial fit of the relative highlight area, so high
-        // exponents keep their energy and broad ones dim. The engine sets the
-        // axis to !(flags & SimulateRoughness) (CMaterial_ApplyForDraw,
-        // 0x1028bc1a0) and no shipped corpus material carries the flag, so
-        // retail effectively always dims — the 2-5x hdrSpecularMultiplier
-        // values are authored against it.
-        //
-        // Retail feeds it the SPECULARITY, which a gloss layer varies per
-        // pixel (psmainshading.fx:154 -> MaterialSpecularity). Constant
-        // exponent, constant dim: fold it into the spec tint. Gloss layer, and
-        // the shader has to pay it per pixel instead — `dimPerPixel` is that
-        // hand-off.
-        const bool energyDim =
-            (static_cast<u32>(mat->flags) &
-             static_cast<u32>(::whiteout::m3::MaterialFlag::SimulateRoughness)) == 0;
-        const TextureLayer* gloss = io::M3LayerForSlot(*mat, M3LayerSlot::Gloss);
-        s.dimPerPixel = energyDim && gloss && io::M3LayerActive(*gloss);
-        if (energyDim && !s.dimPerPixel) {
-            const f32 p = std::clamp(s.specularExponent, 1.0f, 512.0f);
-            const f32 dim =
-                std::clamp(-0.000004444f * p * p + 0.004333f * p + 0.0020834f, 0.0f, 1.0f);
-            hdrSpec *= dim;
-        }
-
-        // p_vEnvioConstantDiffSpec.x. Only MAT_ v20 carries the three
-        // hdrEnvironment* fields, and the parser leaves them zero below that —
-        // measured, 717 of 744 shipped env materials read 0 there and the 27
-        // v20 ones read exactly 1. Taking the field at face value would
-        // multiply almost every reflection to black, so pre-v20 means "no
-        // constant", not "constant zero". The diffuse and specular
-        // multipliers are zero on all 228 v20 materials measured, so
-        // b_iEnvioMultipliers' lighting-modulated branches are dead in
-        // shipped content and this flat term is the whole of it.
-        f32 envConstant = 1.0f;
-        if (mat->getVersion() >= 20 && mat->hdrEnvironmentConstant > 0.0f)
-            envConstant = mat->hdrEnvironmentConstant;
-
-        for (u32 slot = 0; slot < kM3LayerCount; ++slot) {
-            M3Layer& out = s.layers[slot];
-            const TextureLayer* layer =
-                io::M3LayerForSlot(*mat, static_cast<M3LayerSlot>(slot));
-            if (!layer || !io::M3LayerActive(*layer))
-                continue;
-            out.mode = io::M3LayerHasTexture(*layer) ? u8{1} : u8{2};
-            if (out.mode == 1) {
-                std::string key = io::M3CleanPath(layer->texturePath);
-                std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
-                    return static_cast<char>(std::tolower(c));
-                });
-                if (auto it = textureIndex.find(key); it != textureIndex.end())
-                    out.textureId = it->second;
-            }
-            out.uvSource = ResolveUvSource(*layer);
-            out.channels = static_cast<u8>(layer->colorType);
-            out.wrapFlags = LayerWrapFlags(*layer);
-            out.uvTransformId = io::M3UvTransformId(matIndex, static_cast<M3LayerSlot>(slot));
-            ResolveFresnel(*layer, out);
-
-            f32 extraMul = 1.0f;
-            switch (static_cast<M3LayerSlot>(slot)) {
-            case M3LayerSlot::Diffuse:
-                // TEAMCOLOR_DIFFUSE, gated the way the shader is
-                // (psmateriallayer.fx:213: ChannelSelect != RGB): the diffuse
-                // alpha is the team mask.
-                if (layer->colorType != ColorChannelSelect::RGB)
-                    out.teamColorMode = 1;
-                break;
-            case M3LayerSlot::Decal:
-                out.blendOp = static_cast<u8>(mat->layerBlendMode);
-                break;
-            case M3LayerSlot::Specular:
-                extraMul = hdrSpec;
-                if (mat->specularMode == SpecularMode::AlphaOnly)
-                    out.channels = static_cast<u8>(ColorChannelSelect::Alpha);
-                break;
-            case M3LayerSlot::Emissive:
-                out.blendOp = static_cast<u8>(mat->emissiveBlendMode1);
-                break;
-            case M3LayerSlot::Emissive2:
-                out.blendOp = static_cast<u8>(mat->emissiveBlendMode2);
-                break;
-            case M3LayerSlot::AlphaMask:
-            case M3LayerSlot::AlphaMask2:
-                // A mask samples its alpha unless the author picked a channel.
-                if (layer->colorType == ColorChannelSelect::RGB)
-                    out.channels = static_cast<u8>(ColorChannelSelect::Alpha);
-                break;
-            case M3LayerSlot::Environment:
-                // ApplyEnv's op is the material's layer blend, the same field
-                // the decal reads (psmaterial.fx:332).
-                out.blendOp = static_cast<u8>(mat->layerBlendMode);
-                extraMul = envConstant;
-                s.envReflect = layer->uvMapping == UVMappingMode::ReflectCubicEnvio ||
-                               layer->uvMapping == UVMappingMode::ReflectSphericalEnvio;
-                break;
-            default:
-                break;
-            }
-            out.tint = LayerTint(*layer, extraMul);
-            // A Color-flag alpha mask is a fade carrier — the layer the WC3
-            // and WoW conversions (and Blizzard's own) animate. Retail
-            // multiplies `mapAlpha` into the sample; this build samples no
-            // layer tracks, so the REST is folded in statically — which is
-            // also exactly the native M2 path's own treatment of a weight
-            // (`FirstValue`). Scoped to Color-flag masks: a textured mask's
-            // mapAlpha ships unauthored more often than not.
-            if (out.mode == 2 &&
-                (static_cast<M3LayerSlot>(slot) == M3LayerSlot::AlphaMask ||
-                 static_cast<M3LayerSlot>(slot) == M3LayerSlot::AlphaMask2)) {
-                out.tint.w *= std::clamp(layer->mapAlpha.initValue, 0.0f, 1.0f);
-            }
-            out.add = layer->rgbAdd.initValue * extraMul;
-            out.invert =
-                (static_cast<u32>(layer->flags) & static_cast<u32>(TextureLayerFlag::ColorInvert))
-                    ? u8{1}
-                    : u8{0};
-            out.clampColor =
-                (static_cast<u32>(layer->flags) & static_cast<u32>(TextureLayerFlag::ColorClamp))
-                    ? u8{1}
-                    : u8{0};
+    // One appended surface per `RIB_` material ref: a material only a ribbon
+    // references has no geoset and therefore no entry above, and the ribbon
+    // draw path routes through the same table (RIBBON_SERVICE.md §4).
+    // Registration stamps `ribbonSurfaceBase + i` into the emitter's desc.
+    if (!model.ribbonEmitters.empty()) {
+        table->SetRibbonSurfaceBase(static_cast<i32>(surfaces.size()));
+        for (const auto& rib : model.ribbonEmitters) {
+            M3Surface s;
+            ResolveSurfaceMaterial(model, rib.materialIndex, textureIndex, s);
+            surfaces.push_back(s);
         }
     }
     return table;

@@ -29,6 +29,13 @@ HoTS Maiev High Priestess Upgraded/Maiev.mdx                                    
 Emerald Ranger/EmeraldRanger.mdx                                                # 1.7k
 Moarg Overlord/MoargOverlord1.mdx                                               # 1.9k
 
+# --- RIBB carriers, pinned in the sequences whose emitters FIRE ---
+# Both models idle their ribbons in the default pose (ribbon=0 across the
+# whole arm until 2026-09-08), so the bare entries above prove nothing about
+# the WC3 ribbon path; these two are the arm's actual ribbon coverage.
+Emerald Ranger/EmeraldRanger.mdx|seq=Spell                                      # ribbon=6
+Moarg Overlord/MoargOverlord1.mdx|seq=Attack                                    # ribbon=174
+
 # --- assorted shapes / filter modes / sprite sheets ---
 Succorbenoth/Succorbenoth.mdx                                                   # 9.1k
 ChineseFairy/nwdg2.mdx                                                          # 6.7k

@@ -46,6 +46,13 @@ spells/sha_whirlwind_state_base.m2
 spells/therazane_base_01.m2
 spells/whirlwind_state_base.m2
 
+# NOTE (2026-09-08): the arm's WoW RIBBON coverage rides on two lines below —
+# `detectmagic_base` (ribbon=90 in the gate pose) and
+# `8fx_generic_water_missile` (ribbon=51). Measured by sweeping every entry;
+# nothing else here draws a single ribbon by default, so if either line is
+# ever removed the ribbon path goes ungated (the WC3 arm's carriers needed
+# `|seq=` pins for exactly that reason — see corpus.txt).
+
 # --- RPID trail-emitter carriers (M2_TRAIL_EMITTER_DESIGN.md) ---
 # The whole shipped population of the feature: 8 emitters across these 5, each
 # naming a second `.m2` whose emitters ride this one's particles. Nothing else
