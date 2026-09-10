@@ -24,22 +24,38 @@ namespace {
 
 namespace tx = ::whiteout::textures;
 
-/// `"Stand - 1"` → `"Stand 01"`, `"Attack Defend - 2"` → `"Attack Defend 02"`.
-/// Anything that does not end in ` - <number>` passes through untouched —
-/// `Stand Victory` and `Decay Flesh` are names, not variants.
-bool RenameSequence(std::string& name) {
-    const std::size_t dash = name.rfind(" - ");
-    if (dash == std::string::npos || dash + 3 >= name.size()) {
-        return false;
+/// The sequence's real name, with the `.mdx` comment and the variant number
+/// taken off it.
+///
+/// `-` opens a comment in a Warcraft III sequence name and everything after it
+/// is the author's note, so `Stand - 1` is the sequence `Stand`; Reforged
+/// writes the same variant as `Stand 1`. Either way the trailing number is a
+/// variant index, not part of the name — `Stand Victory` and `Decay Flesh`
+/// keep theirs, and StarCraft II uses `Decay` itself.
+std::string BaseSequenceName(std::string name) {
+    name = name.substr(0, name.find('-'));
+    const auto space = [&name](std::size_t i) {
+        return std::isspace(static_cast<unsigned char>(name[i])) != 0;
+    };
+    std::size_t end = name.size();
+    while (end > 0 && space(end - 1)) {
+        --end;
     }
-    const std::string digits = name.substr(dash + 3);
-    for (const char c : digits) {
-        if (!std::isdigit(static_cast<unsigned char>(c))) {
-            return false;
+    std::size_t digits = end;
+    while (digits > 0 && std::isdigit(static_cast<unsigned char>(name[digits - 1]))) {
+        --digits;
+    }
+    if (digits < end && digits > 0 && space(digits - 1)) {
+        end = digits;
+        while (end > 0 && space(end - 1)) {
+            --end;
         }
     }
-    name = name.substr(0, dash) + " " + (digits.size() < 2 ? "0" + digits : digits);
-    return true;
+    std::size_t begin = 0;
+    while (begin < end && space(begin)) {
+        ++begin;
+    }
+    return name.substr(begin, end - begin);
 }
 
 std::string PathOfTexture(const wem::Document& document, u32 index) {
@@ -746,10 +762,43 @@ Wc3ToSc2Result RestateWc3AsSc2(wem::Document& document, io::IContentProvider* pr
         return result;
     }
 
+    // Warcraft III's variant numbering is neither contiguous nor ordered — this
+    // footman ships Stand 1, 2, 4 and 6 — and StarCraft II's is both. So the
+    // clips are regrouped under their real names and renumbered: a lone variant
+    // carries the bare name (2,418 of the 2,462 single-variant groups in the
+    // shipped corpus do), and several carry `<name> <NN>` counting from 01,
+    // always two digits (571 of 571). Least rare first, because `Rarity` is
+    // what decides how often Warcraft III picks one.
     int renamed = 0;
-    for (wem::Clip& clip : document.clips) {
-        if (RenameSequence(clip.name)) {
-            ++renamed;
+    std::vector<std::string> order;
+    std::map<std::string, std::vector<std::size_t>> variants;
+    for (std::size_t i = 0; i < document.clips.size(); ++i) {
+        std::string base = BaseSequenceName(document.clips[i].name);
+        if (base.empty()) {
+            continue;
+        }
+        const auto placed = variants.try_emplace(base);
+        if (placed.second) {
+            order.push_back(base);
+        }
+        placed.first->second.push_back(i);
+    }
+    for (const std::string& base : order) {
+        std::vector<std::size_t>& group = variants[base];
+        std::stable_sort(group.begin(), group.end(), [&document](std::size_t a, std::size_t b) {
+            return document.clips[a].native.value("rarity", 0) <
+                   document.clips[b].native.value("rarity", 0);
+        });
+        for (std::size_t k = 0; k < group.size(); ++k) {
+            std::string name = base;
+            if (group.size() > 1) {
+                const std::string digits = std::to_string(k + 1);
+                name += digits.size() < 2 ? " 0" + digits : " " + digits;
+            }
+            if (document.clips[group[k]].name != name) {
+                document.clips[group[k]].name = std::move(name);
+                ++renamed;
+            }
         }
     }
 
@@ -760,7 +809,8 @@ Wc3ToSc2Result RestateWc3AsSc2(wem::Document& document, io::IContentProvider* pr
         diagnostics.info(wem::DiagCode::LossyKindConversion,
                          std::to_string(renamed) +
                              " sequence(s) renamed to the StarCraft II convention "
-                             "('Stand - 1' -> 'Stand 01')",
+                             "(a lone variant takes the bare name, several count from 01 "
+                             "least-rare-first)",
                          wem::ElementRef(wem::ElementKind::Document, 0),
                          wem::ProfileId::Sc2);
     }
