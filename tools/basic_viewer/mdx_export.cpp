@@ -3,6 +3,7 @@
 
 #include "mdx_export.h"
 
+#include "export_texture_set.h"
 #include "sc2_pbr_export.h"
 
 #include "io/wem/wem_profiles.h"
@@ -217,11 +218,18 @@ void ExportTextures(const MdxExportRequest& request, ::whiteout::mdx::Model& mod
     const char* extension = Wc3TextureExtension(request.profile);
     const fs::path targetDir = request.outPath.parent_path();
     const std::string stem = io::PathToUtf8(request.outPath.stem());
+    const std::vector<bool> used = MdxTexturesUsed(model);
 
     for (std::size_t i = 0; i < model.textures.size(); ++i) {
         ::whiteout::mdx::Texture& texture = model.textures[i];
         if (texture.replaceableId != 0)
             continue;
+        // `toMdx` writes an entry per document texture, read or not. The caller
+        // prunes the unread ones, so their files would serve nothing.
+        if (!used[i]) {
+            ++report.texturesUnused;
+            continue;
+        }
         // Past the document's own textures are the ones the CONVERSION named:
         // Warcraft III's stock neutral maps, one per HD slot a material had
         // nothing of its own for. Those ship with the game — there is no file
@@ -418,6 +426,11 @@ MdxExportReport ExportModelAsMdx(const MdxExportRequest& request) {
     if (request.exportTextures)
         ExportTextures(request, model, document.textures, pbr.baked,
                        AssetFolderFor(document.defaultProfile), report);
+    // After the writes, which join `model.textures` to the document by index.
+    // A table entry nothing reads is the same garbage whether or not its file
+    // was written: StarCraft II's specular went into the baked ORM, and a
+    // material that dropped a slot dropped its texture with it.
+    PruneMdxTextures(model, MdxTexturesUsed(model));
 
     // The folder, before the file. `ExportTextures` makes one per texture it
     // writes, which is why an export with textures beside it always worked and

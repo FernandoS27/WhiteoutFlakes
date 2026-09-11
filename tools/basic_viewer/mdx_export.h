@@ -83,6 +83,7 @@ struct MdxExportReport {
     int texturesExported = 0;
     int texturesSkipped = 0; ///< Copies already present at the target (a bake is rewritten).
     int texturesFailed = 0;  ///< Unresolvable, undecodable or unwritable.
+    int texturesUnused = 0;  ///< No layer or emitter of the written model reads them; dropped.
 
     /// Conversion + derive + rescale diagnostics. Never empty on success: every
     /// cross-format write has something to say about what it could not carry.

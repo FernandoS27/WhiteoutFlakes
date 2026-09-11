@@ -323,19 +323,6 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
         const u32 height = base.rgba.height();
         constexpr f32 kOrmFallback[4] = {1.0f, 0.55f, 0.0f, 0.0f}; // AO 1, n~20, dielectric
         constexpr f32 kZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-        // A kept texel's team share never drops under the floor, and the keyed
-        // test sits under it (m3_core writes the threshold times 256).
-        constexpr f32 kTeamCutoutFloor = 16.0f / 255.0f;
-        constexpr f32 kTeamCutoutThreshold = 8.0f / 256.0f;
-
-        // A keyed material's cutout has to ride the team diffuse's own alpha:
-        // the Galaxy editor tests by the DIFFUSE layer's alpha whatever the mask
-        // says. The footman's plume vanished under a mask that passed 92% of it
-        // because the team share passed 27%.
-        const wem::CommonMaterial& derivedCommon = target->materials[m].Common();
-        const bool keyed = derivedCommon.blend == wem::BlendMode::AlphaKey;
-        const f32 key =
-            derivedCommon.alphaTestThreshold > 0.0f ? derivedCommon.alphaTestThreshold : 0.75f;
 
         // One pass over the texels gathers everything: the team share, the
         // roughness medians, and both baked planes.
@@ -385,9 +372,13 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
                 }
                 // The diffuse is what the metal leaves: Reforged lights a metal
                 // only through its reflection, and the whole base colour kept as
-                // the diffuse lit the footman's steel twice, washed silver.
+                // the diffuse lit the footman's steel twice, washed silver. The
+                // team's share of the metal is the exception: its reflection is
+                // dimmed out above, so it stays in the diffuse for the team
+                // select to colour. Split off too, the banshee's red armbands,
+                // belt and skirt panels (metal 0.5-0.9) kept 13% of the team.
                 f32 diffuse[3];
-                tx::pbr::DiffuseFromMetalness(albedo, o[2], true, diffuse);
+                tx::pbr::DiffuseFromMetalness(albedo, o[2] * (1.0f - share), true, diffuse);
                 anyMetal = anyMetal || o[2] >= 1.0f / 255.0f;
                 // Reforged BLENDS the team hue in and keeps the art's
                 // brightness; StarCraft II REPLACES the texel where the
@@ -401,12 +392,7 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
                     teamPx[at + static_cast<std::size_t>(c)] =
                         static_cast<u8>(std::clamp(replaced[c], 0.0f, 1.0f) * 255.0f + 0.5f);
                 }
-                f32 coverage = alpha;
-                if (keyed) {
-                    coverage = basePx[at + 3] / 255.0f < key ? 0.0f
-                                                             : std::max(alpha, kTeamCutoutFloor);
-                }
-                teamPx[at + 3] = static_cast<u8>(std::clamp(coverage, 0.0f, 1.0f) * 255.0f + 0.5f);
+                teamPx[at + 3] = static_cast<u8>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f + 0.5f);
                 // The gloss rides the spec map's alpha, where StarCraft II's
                 // own roughness-simulating materials keep it.
                 specPx[at + 3] =
@@ -442,10 +428,6 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
         u32 coverageTexture = baseSlot->texture;
         if (anyTeam) {
             const u32 teamTexture = cache.Intern(stem + "_team.dds");
-            if (keyed) {
-                coverageTexture = teamTexture;
-                target->materials[m].MutableCommon().alphaTestThreshold = kTeamCutoutThreshold;
-            }
             result.baked.insert_or_assign(teamTexture,
                                           BakedTexture{std::move(teamDiffuse),
                                                        tx::PixelFormat::BC3});
@@ -455,11 +437,13 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
                                           wem::CompositeOp::AlphaBlend, baseSlot));
         } else if (anyMetal) {
             // No team, but the metal still leaves its diffuse; the base's own
-            // alpha rides along for a keyed material's test.
+            // alpha rides along so the coverage can name this map, not a copy
+            // of the source.
             for (std::size_t at = 3; at < teamPx.size(); at += 4) {
                 teamPx[at] = basePx[at];
             }
             const u32 diffuseTexture = cache.Intern(stem + "_diff.dds");
+            coverageTexture = diffuseTexture;
             result.baked.insert_or_assign(diffuseTexture,
                                           BakedTexture{std::move(teamDiffuse),
                                                        tx::PixelFormat::BC3});
@@ -545,8 +529,11 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
 
         wem::Material& derived = target->materials[m];
         // Reforged tests and blends by the base colour's alpha (a Transparent
-        // layer keys at 0.75). A keyed team material's coverage is the team
-        // diffuse itself, its cutout baked in above; any other keeps the SOURCE map.
+        // layer keys at 0.75), and so does StarCraft II's mask
+        // (`psmainshading.fx` tests `alphaFactor * mask`). The team diffuse's
+        // alpha is the team select alone: a cutout baked into it read as team
+        // wherever filtering met the cut, and the banshee's hair and ragged
+        // cloth came out edged in red.
         const wem::BlendMode blend = derived.Common().blend;
         if (blend == wem::BlendMode::AlphaKey || blend == wem::BlendMode::Transparent ||
             blend == wem::BlendMode::AlphaBlend || blend == wem::BlendMode::AdditiveAlpha) {

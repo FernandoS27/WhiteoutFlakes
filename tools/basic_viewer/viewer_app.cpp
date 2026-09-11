@@ -987,8 +987,9 @@ bool ViewerApp::ExportMdx(const std::filesystem::path& outPath,
     std::printf("[viewer] Saved Warcraft III model (%s, %gx scale): %s\n", report.formatId.c_str(),
                 static_cast<double>(report.scale), io::PathToUtf8(outPath).c_str());
     if (exportTextures) {
-        std::printf("[viewer] Textures: %d exported, %d skipped, %d failed\n",
-                    report.texturesExported, report.texturesSkipped, report.texturesFailed);
+        std::printf("[viewer] Textures: %d exported, %d skipped, %d failed, %d unused\n",
+                    report.texturesExported, report.texturesSkipped, report.texturesFailed,
+                    report.texturesUnused);
     }
     return true;
 }
@@ -1015,7 +1016,7 @@ bool ViewerApp::CanExportM3() const {
 
 bool ViewerApp::ExportM3(const std::filesystem::path& outPath,
                          ::whiteout::models::wem::ProfileId profile, bool exportTextures,
-                         bool exactPasses, bool sharpenTeamKey) {
+                         bool exactPasses, bool sharpenTeamKey, bool reuseWar3ModTextures) {
     model::Actor* actor = FocusActorPtr();
     auto* source = actor ? dynamic_cast<IModelSource*>(actor->animation.Source().get()) : nullptr;
     if (!source) {
@@ -1035,6 +1036,16 @@ bool ViewerApp::ExportM3(const std::filesystem::path& outPath,
     request.wc3.tileset = GetCurrentTileset();
     request.wc3.exactPasses = exactPasses;
     request.wc3.sharpenTeamKey = sharpenTeamKey;
+    request.reuseWar3ModTextures = reuseWar3ModTextures;
+    if (reuseWar3ModTextures) {
+        // The StarCraft II root Settings names, else the one the scan found.
+        io::FileContentProvider& provider = service_.DefaultScene().GetContentProvider();
+        request.starCraft2Install = provider.Game() == ProductId::Sc2
+                                        ? provider.InstallPath()
+                                        : LoadIoPathOverrides(ProductId::Sc2).installPath;
+        if (request.starCraft2Install.empty())
+            request.starCraft2Install = provider.GamePath(ProductId::Sc2);
+    }
 
     const M3ExportReport report = ExportModelAsM3(request);
     if (!report.diagnostics.empty()) {
@@ -1049,8 +1060,10 @@ bool ViewerApp::ExportM3(const std::filesystem::path& outPath,
     std::printf("[viewer] Saved StarCraft II model (%s, %gx scale): %s\n", report.formatId.c_str(),
                 static_cast<double>(report.scale), io::PathToUtf8(outPath).c_str());
     if (exportTextures) {
-        std::printf("[viewer] Textures: %d exported, %d skipped, %d failed\n",
-                    report.texturesExported, report.texturesSkipped, report.texturesFailed);
+        std::printf("[viewer] Textures: %d exported, %d skipped, %d failed, %d unused, "
+                    "%d in War3 (Mod)\n",
+                    report.texturesExported, report.texturesSkipped, report.texturesFailed,
+                    report.texturesUnused, report.texturesInWar3Mod);
     }
     return true;
 }

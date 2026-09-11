@@ -558,17 +558,23 @@ void ViewerUI::BuildM3ExportPopup() {
     ImGui::TextDisabled("%s", i18n::tr("dialog.m3.export_hint"));
     ImGui::EndDisabled();
 
-    // The Warcraft III fold's two knobs; inert for every other source.
+    // The Warcraft III knobs; inert for every other source. War3 (Mod) is
+    // StarCraft II's, and it only saves writing textures.
     ImGui::Separator();
     ImGui::Checkbox(i18n::tr("dialog.m3.exact_passes"), &m3ExactPasses_);
     ImGui::Checkbox(i18n::tr("dialog.m3.sharpen_team_key"), &m3SharpenTeamKey_);
+    ImGui::BeginDisabled(!m3ExportTextures_ || m3ExportProfile_ != 0);
+    ImGui::Checkbox(i18n::tr("dialog.m3.war3_mod_textures"), &m3War3ModTextures_);
+    ImGui::TextDisabled("%s", i18n::tr("dialog.m3.war3_mod_hint"));
+    ImGui::EndDisabled();
 
     ImGui::Separator();
     const auto m3Profile =
         (m3ExportProfile_ == 0) ? wem::ProfileId::Sc2 : wem::ProfileId::Heroes;
     if (ImGui::Button(i18n::tr("dialog.mdx.export"), ImVec2(120, 0))) {
         app_.ExportM3(io::FsPathFromUtf8(pendingM3Path_), m3Profile, m3ExportTextures_,
-                      m3ExactPasses_, m3SharpenTeamKey_);
+                      m3ExactPasses_, m3SharpenTeamKey_,
+                      m3War3ModTextures_ && m3ExportProfile_ == 0);
         pendingM3Path_.clear();
         ImGui::CloseCurrentPopup();
     }

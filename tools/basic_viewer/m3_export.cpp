@@ -3,8 +3,10 @@
 
 #include "m3_export.h"
 
+#include "export_texture_set.h"
 #include "wc3_to_sc2_export.h"
 
+#include "io/storage/casc_source.h"
 #include "renderer/model/model_source_utils.h"
 #include "whiteout/flakes/content_provider.h"
 #include "whiteout/flakes/content_ref.h"
@@ -21,10 +23,12 @@
 #include <cstdlib>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <tuple>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -828,11 +832,86 @@ std::optional<std::vector<u8>> EncodeBaked(const BakedTexture& baked) {
     }
 }
 
-/// Write every planned texture beside the model, converted to `.dds`.
+/// Read and decode the texture @p sourceKey names, saying why when it cannot.
+std::optional<tx::Texture> DecodeSource(const M3ExportRequest& request,
+                                        const std::string& sourceKey) {
+    if (request.provider == nullptr)
+        return std::nullopt;
+    std::string actualExt;
+    std::optional<std::vector<u8>> bytes =
+        request.provider->ReadFile(RefForTextureName(sourceKey), &actualExt);
+    if (!bytes || bytes->empty()) {
+        std::fprintf(stderr, "[viewer] Export M3: texture not readable: %s\n", sourceKey.c_str());
+        return std::nullopt;
+    }
+    actualExt = Lower(actualExt);
+    if (actualExt.empty()) {
+        actualExt = renderer::model::SniffTextureExtension(
+            std::span<const u8>(bytes->data(), bytes->size()));
+    }
+    std::optional<tx::Texture> decoded = renderer::model::DispatchTextureParser(
+        actualExt, [&](auto& parser) { return parser.parse(std::span<const u8>(*bytes)); });
+    if (!decoded)
+        std::fprintf(stderr, "[viewer] Export M3: texture not decodable: %s\n", sourceKey.c_str());
+    return decoded;
+}
+
+/// Where StarCraft II's War3 (Mod) keeps the Warcraft III textures it ships,
+/// each flattened to `war3_<name>.dds`.
+constexpr const char* kWar3ModTextureDir = "mods/war3.sc2mod/base.sc2assets/assets/textures/";
+
+/// The War3 (Mod) copies, read out of a StarCraft II install on demand.
+class War3ModCopies {
+public:
+    /// Null, with @p error saying why, when there is no storage to read.
+    static std::unique_ptr<War3ModCopies> Open(const std::string& install, std::string& error) {
+        if (install.empty()) {
+            error = "no StarCraft II install was found";
+            return nullptr;
+        }
+#if WHITEOUT_HAS_CASC
+        std::unique_ptr<io::IStorageSource> storage = io::CascSource::Open(install, {}, error);
+        if (!storage)
+            return nullptr;
+        return std::unique_ptr<War3ModCopies>(new War3ModCopies(std::move(storage)));
+#else
+        error = "this build reads no CASC storage";
+        return nullptr;
+#endif
+    }
+
+    /// The decoded copy named @p name, or nothing when the mod ships none.
+    std::optional<tx::Texture> Read(const std::string& name) const {
+        io::SourceRead read;
+        if (!storage_->Read(kWar3ModTextureDir + Lower(name), read) || read.data.empty())
+            return std::nullopt;
+        return renderer::model::DispatchTextureParser(
+            ".dds", [&](auto& parser) { return parser.parse(std::span<const u8>(read.data)); });
+    }
+
+private:
+    explicit War3ModCopies(std::unique_ptr<io::IStorageSource> storage)
+        : storage_(std::move(storage)) {}
+
+    std::unique_ptr<io::IStorageSource> storage_;
+};
+
+/// Write every planned texture the written @p model reads beside it, converted
+/// to `.dds` -- or, given @p war3, name War3 (Mod)'s own copy where it ships
+/// the same picture.
 void ExportTextures(const M3ExportRequest& request, const std::vector<TexturePlan>& plans,
-                    const std::map<u32, BakedTexture>& baked, M3ExportReport& report) {
+                    const std::map<u32, BakedTexture>& baked, const War3ModCopies* war3,
+                    ::whiteout::m3::Model& model, M3ExportReport& report) {
     const fs::path targetDir = request.outPath.parent_path();
+    // Asked of the written model rather than the plan, which names every
+    // document texture: a Reforged source's diffuse, normal and ORM are what
+    // the bake turned into StarCraft II maps, and nothing reads them after.
+    const std::unordered_set<std::string> named = M3TexturePathsNamed(model);
     for (const TexturePlan& plan : plans) {
+        if (!named.contains(TexturePathKey(plan.outName))) {
+            ++report.texturesUnused;
+            continue;
+        }
         const fs::path outFile = targetDir / io::FsPathFromUtf8(plan.outName);
 
         // A baked map has no file behind it — it was made out of the source's
@@ -842,10 +921,6 @@ void ExportTextures(const M3ExportRequest& request, const std::vector<TexturePla
         // old cutout in the map).
         const auto wasBaked = baked.find(static_cast<u32>(plan.index));
         std::error_code ec;
-        if (wasBaked == baked.end() && fs::exists(outFile, ec)) {
-            ++report.texturesSkipped;
-            continue;
-        }
         if (wasBaked != baked.end()) {
             std::optional<std::vector<u8>> made = EncodeBaked(wasBaked->second);
             if (!made) {
@@ -864,32 +939,36 @@ void ExportTextures(const M3ExportRequest& request, const std::vector<TexturePla
             ++report.texturesExported;
             continue;
         }
-        if (request.provider == nullptr) {
-            ++report.texturesFailed;
-            continue;
+
+        // Before a file already there is kept: the mod's copy is the point of
+        // asking, and that file is only an earlier export's.
+        std::optional<tx::Texture> decoded;
+        bool decodeTried = false;
+        if (war3 != nullptr && plan.sourceKey[0] != '#') {
+            const std::string name = War3ModTextureName(plan.sourceKey);
+            std::optional<tx::Texture> shipped = name.empty() ? std::nullopt : war3->Read(name);
+            if (shipped) {
+                decoded = DecodeSource(request, plan.sourceKey);
+                decodeTried = true;
+                if (decoded && SameTexturePicture(*decoded, *shipped)) {
+                    RenameM3TexturePath(model, plan.outName, kTextureDir + name);
+                    ++report.texturesInWar3Mod;
+                    continue;
+                }
+            }
         }
 
-        std::string actualExt;
-        std::optional<std::vector<u8>> bytes =
-            request.provider->ReadFile(RefForTextureName(plan.sourceKey), &actualExt);
-        if (!bytes || bytes->empty()) {
-            std::fprintf(stderr, "[viewer] Export M3: texture not readable: %s\n",
-                         plan.sourceKey.c_str());
-            ++report.texturesFailed;
+        if (fs::exists(outFile, ec)) {
+            ++report.texturesSkipped;
             continue;
         }
-        actualExt = Lower(actualExt);
-        if (actualExt.empty()) {
-            actualExt = renderer::model::SniffTextureExtension(
-                std::span<const u8>(bytes->data(), bytes->size()));
-        }
-
-        std::optional<tx::Texture> decoded = renderer::model::DispatchTextureParser(
-            actualExt, [&](auto& parser) { return parser.parse(std::span<const u8>(*bytes)); });
+        if (!decodeTried)
+            decoded = DecodeSource(request, plan.sourceKey);
         std::optional<std::vector<u8>> encoded = decoded ? EncodeForSc2(*decoded) : std::nullopt;
         if (!encoded) {
-            std::fprintf(stderr, "[viewer] Export M3: texture convert failed %s -> .dds\n",
-                         plan.sourceKey.c_str());
+            if (decoded)
+                std::fprintf(stderr, "[viewer] Export M3: texture convert failed %s -> .dds\n",
+                             plan.sourceKey.c_str());
             ++report.texturesFailed;
             continue;
         }
@@ -977,8 +1056,25 @@ M3ExportReport ExportModelAsM3(const M3ExportRequest& request) {
     report.scale = converted.scale;
     report.derived = converted.derived;
 
+    // War3 (Mod) ships Warcraft III's textures, and only StarCraft II loads it.
+    std::unique_ptr<War3ModCopies> war3;
+    const bool warcraft = document.defaultProfile == wem::ProfileId::Wc3Classic ||
+                          document.defaultProfile == wem::ProfileId::Wc3Reforged;
+    if (request.exportTextures && request.reuseWar3ModTextures && warcraft) {
+        std::string error;
+        if (request.profile != wem::ProfileId::Sc2) {
+            report.diagnostics.warn(wem::DiagCode::Unspecified,
+                                    "War3 (Mod) is StarCraft II's; a Heroes of the Storm model "
+                                    "writes every texture");
+        } else if (!(war3 = War3ModCopies::Open(request.starCraft2Install, error))) {
+            report.diagnostics.warn(wem::DiagCode::Unspecified,
+                                    "War3 (Mod) textures were asked for, but " + error +
+                                        "; every texture is written");
+        }
+    }
+
     if (request.exportTextures)
-        ExportTextures(request, plans, baked, report);
+        ExportTextures(request, plans, baked, war3.get(), *converted.model, report);
 
     std::error_code dirError;
     fs::create_directories(request.outPath.parent_path(), dirError);

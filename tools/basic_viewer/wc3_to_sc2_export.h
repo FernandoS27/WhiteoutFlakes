@@ -17,14 +17,17 @@
 //  * **Reforged (HD)**: the inverse of the SC2→Reforged PBR bake. Metal and
 //    roughness come back apart — `spec = metalness · albedo` and the diffuse
 //    what the metal leaves, `(1 − metalness) · albedo` (Reforged has no
-//    dielectric F0, so both are exact), the exponent through
+//    dielectric F0, so both are exact; under the team mask the metal stays
+//    diffuse, as StarCraft II cannot tint a reflection), the exponent through
 //    `GlossCeilingExponent`, the amplitude at the 2 StarCraft II's own
 //    roughness-simulating materials use. The team share
 //    crosses through `tx::pbr::TeamReplaceFromBlend`: Reforged BLENDS the
 //    team hue in and keeps the art's brightness, StarCraft II REPLACES the
 //    texel where the diffuse alpha is LOW (both measured), so the share
 //    becomes the texel's brightness and the shading painted under the mask
-//    comes through as shades of the team colour. The reflection follows the
+//    comes through as shades of the team colour. That alpha carries nothing
+//    else: a keyed material's cutout stays in the source's own alpha, named
+//    by the mask layer. The reflection follows the
 //    StarTools "Simulate Roughness" recipe, which is how StarCraft II's own
 //    PBR-styled art is built: the F0 map doubles as the RGB environment
 //    mask, the gloss (`1 - roughness`) rides its alpha, the material sets

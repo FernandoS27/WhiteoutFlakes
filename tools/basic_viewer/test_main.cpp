@@ -984,7 +984,12 @@ static int RunDrawTrace(
                       << (out == ParticleOutput::ChildModel ? " child" : " quad")
                       << " slots=" << d.sc2.emit.slotBones.size() << " squirt=" << squirtKeys
                       << " surf=" << d.sc2.look.m3Surface << " prio=" << d.priorityPlane
-                      << " maxLife=" << d.sc2.emit.maxLifetimeKey
+                      << " preRoll=" << d.sc2.emit.preRollInit;
+            // The peak per container, where the lifetime track is bound; the
+            // pre-roll reads the column the active sequence's number names.
+            for (std::size_t k = 0; k < d.sc2.emit.preRollPeaks.size(); ++k)
+                std::cout << (k == 0 ? "/" : ",") << d.sc2.emit.preRollPeaks[k];
+            std::cout
                       // Whether the emitter's own flipbook fields are USED is a
                       // property of the material's diffuse layer, not of the
                       // `PAR_` — so a carrier with a sheet and cells authored
@@ -1757,6 +1762,7 @@ int main(int argc, char* argv[]) {
     bool exportM3Textures = true;
     bool exportM3ExactPasses = false;
     bool exportM3SharpenKey = false;
+    bool exportM3War3ModTextures = false;
     // Headless glTF export: the batch half of File ▸ Export to glTF. The
     // container follows the path's extension (`.gltf` = JSON + .bin + images,
     // anything else = one self-contained `.glb`).
@@ -1919,6 +1925,8 @@ int main(int argc, char* argv[]) {
             exportM3ExactPasses = true;
         } else if (std::strcmp(a, "--export-m3-sharpen-key") == 0) {
             exportM3SharpenKey = true;
+        } else if (std::strcmp(a, "--export-m3-war3-mod-textures") == 0) {
+            exportM3War3ModTextures = true;
         } else if (std::strcmp(a, "--save-m3") == 0 && i + 1 < argc) {
             saveM3Path = whiteout::flakes::io::FsPathFromUtf8(argv[++i]);
         } else if (std::strcmp(a, "--save-m3-merge-anims") == 0) {
@@ -2173,6 +2181,9 @@ int main(int argc, char* argv[]) {
                       << "       --export-m3-exact-passes Warcraft III: a draw per pass the fold\n"
                       << "                                would otherwise approximate\n"
                       << "       --export-m3-sharpen-key  Warcraft III: bake keyed alpha binary\n"
+                      << "       --export-m3-war3-mod-textures\n"
+                      << "                                Warcraft III: name War3 (Mod)'s copy of a\n"
+                      << "                                texture where it ships the same picture\n"
                       << "       --export-gltf <out.glb>  write it as glTF 2.0 and exit\n"
                       << "                                (.gltf writes JSON + .bin + images)\n"
                       << "       --export-gltf-no-textures leave the texture URIs unresolved\n"
@@ -2595,7 +2606,8 @@ int main(int argc, char* argv[]) {
     // Headless StarCraft II export -- ExportMdx's twin, same reasoning.
     if (!exportM3Path.empty()) {
         const bool ok = app.ExportM3(exportM3Path, exportM3Profile, exportM3Textures,
-                                     exportM3ExactPasses, exportM3SharpenKey);
+                                     exportM3ExactPasses, exportM3SharpenKey,
+                                     exportM3War3ModTextures);
         app.Close();
         return ok ? 0 : 1;
     }

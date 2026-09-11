@@ -1692,6 +1692,8 @@ set(WHITEOUTFLAKES_VIEWER_SOURCES
     tools/basic_viewer/mdx_export.cpp
     # "Export to M3": the same crossing pointed at StarCraft II.
     tools/basic_viewer/m3_export.cpp
+    # Which textures those write: what the written model reads, less War3 (Mod)'s.
+    tools/basic_viewer/export_texture_set.cpp
     # "Export to glTF": the crossing pointed out of the Blizzard family.
     tools/basic_viewer/gltf_export.cpp
     # The Warcraft III -> StarCraft II game conventions that ride that export.

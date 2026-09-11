@@ -200,6 +200,7 @@ private:
     bool m3ExportTextures_ = true; // write the `.dds` textures beside it
     bool m3ExactPasses_ = false;   // Warcraft III: a composite for every approximate fold
     bool m3SharpenTeamKey_ = false; // Warcraft III: bake keyed alpha binary over a plate
+    bool m3War3ModTextures_ = false; // Warcraft III: name War3 (Mod)'s copies, write fewer
 
     // Export-to-glTF state. The container follows the picked filename
     // (`.glb` = one self-contained file, `.gltf` = JSON + `.bin` + images).

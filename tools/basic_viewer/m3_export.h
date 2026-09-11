@@ -57,8 +57,15 @@ struct M3ExportRequest {
     wem::ProfileId profile = wem::ProfileId::Sc2;
 
     /// Write the model's textures beside it as `.dds` and repoint the model
-    /// at them.
+    /// at them. Only the ones the written model reads.
     bool exportTextures = true;
+
+    /// Warcraft III to StarCraft II only: where StarCraft II's War3 (Mod)
+    /// ships a texture as the same picture (`war3_<name>.dds`), name that copy
+    /// instead of writing one. The map must depend on War3 (Mod) to find it.
+    bool reuseWar3ModTextures = false;
+    /// The StarCraft II install those copies are read from.
+    std::string starCraft2Install;
 
     /// Diablo III only: which look's materials are written. Empty means the
     /// one the actor is wearing.
@@ -83,8 +90,10 @@ struct M3ExportReport {
     bool derived = false;
 
     int texturesExported = 0;
-    int texturesSkipped = 0; ///< Copies already present at the target (a bake is rewritten).
-    int texturesFailed = 0;  ///< Unresolvable, undecodable or unwritable.
+    int texturesSkipped = 0;   ///< Copies already present at the target (a bake is rewritten).
+    int texturesFailed = 0;    ///< Unresolvable, undecodable or unwritable.
+    int texturesUnused = 0;    ///< Nothing the written model reads names them; not written.
+    int texturesInWar3Mod = 0; ///< Named at War3 (Mod)'s own copy instead of written.
 
     /// Conversion + derive + rescale diagnostics. Never empty on success:
     /// every cross-format write has something to say about what it could not
