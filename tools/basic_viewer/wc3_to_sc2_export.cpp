@@ -4,12 +4,14 @@
 #include "wc3_to_sc2_export.h"
 
 #include "export_texture_cache.h"
+#include "renderer/ibl/env_probe.h"
 
 #include <whiteout/models/wem/retarget.h>
 #include <whiteout/textures/environment_map.h>
 #include <whiteout/textures/pbr_bake.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -206,17 +208,22 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
 
     ExportTextureCache cache(document, provider);
 
-    // The environment every HD material names in its sixth slot, resolved
-    // once per texture: Reforged ships a 2:1 panorama, which StarCraft II
-    // cannot sample, so it is projected into a cube (`tx::env`) and written
-    // beside the model under the source's own name; a cube passes through,
-    // and anything else is read as a sphere map.
+    // The reflection every HD material names in its sixth slot, resolved once
+    // per texture. Reforged never samples that file: the engine binds the
+    // tileset's pre-filtered probe (`ps_ibl.slang` sampleIBL, the specular slice
+    // at `roughness * mipEnd`), the one the viewer's HD pass loads, so the probe
+    // crosses with every level kept -- its chain IS the blur Simulate Roughness
+    // reads down by `(1 - gloss) * range`. The photo panorama the slot names put
+    // blue sky and grass on the footman's steel. Without the probe the slot's
+    // own map stands in: a 2:1 panorama projected into a cube (`tx::env`), a
+    // cube passed through, anything else read as a sphere map.
     struct EnvSource {
         u32 texture = wem::kInvalidIndex;
         wem::UVMappingMode mapping = wem::UVMappingMode::EnvCube;
     };
     std::map<u32, EnvSource> environments;
     int environmentsProjected = 0;
+    int probesCrossed = 0;
     const auto environmentOf = [&](const wem::TextureInput* slot, std::size_t material) {
         EnvSource source;
         if (slot == nullptr) {
@@ -224,6 +231,25 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
         }
         if (const auto known = environments.find(slot->texture); known != environments.end()) {
             return known->second;
+        }
+        if (const tx::Texture* probe = cache.Decode(renderer::ibl::kDayIblPath);
+            probe != nullptr && (probe->type() == tx::TextureType::TextureCubeArray ||
+                                 probe->type() == tx::TextureType::TextureCube)) {
+            // Slice 1 is the specular chain (slice 0 the irradiance), read at the
+            // world direction's `.xzy * (1, 1, -1)`; StarCraft II looks a
+            // reflection up by the z-up direction itself.
+            constexpr std::array<f32, 9> kProbeFromWorld = {1, 0, 0, 0, 0, 1, 0, -1, 0};
+            std::optional<tx::Texture> cube =
+                tx::env::CubeFromCube(*probe, probe->arraySize() > 1 ? 1u : 0u, kProbeFromWorld,
+                                      renderer::ibl::kBlizzardProbeFaceOrder);
+            if (cube.has_value()) {
+                result.baked.insert_or_assign(slot->texture,
+                                              BakedTexture{std::move(*cube), tx::PixelFormat::BC1});
+                source = {slot->texture, wem::UVMappingMode::EnvCube};
+                ++probesCrossed;
+                environments.emplace(slot->texture, source);
+                return source;
+            }
         }
         const std::string path = PathOfTexture(document, slot->texture);
         const tx::Texture* decoded = cache.Decode(path);
@@ -297,10 +323,24 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
         const u32 height = base.rgba.height();
         constexpr f32 kOrmFallback[4] = {1.0f, 0.55f, 0.0f, 0.0f}; // AO 1, n~20, dielectric
         constexpr f32 kZero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        // A kept texel's team share never drops under the floor, and the keyed
+        // test sits under it (m3_core writes the threshold times 256).
+        constexpr f32 kTeamCutoutFloor = 16.0f / 255.0f;
+        constexpr f32 kTeamCutoutThreshold = 8.0f / 256.0f;
+
+        // A keyed material's cutout has to ride the team diffuse's own alpha:
+        // the Galaxy editor tests by the DIFFUSE layer's alpha whatever the mask
+        // says. The footman's plume vanished under a mask that passed 92% of it
+        // because the team share passed 27%.
+        const wem::CommonMaterial& derivedCommon = target->materials[m].Common();
+        const bool keyed = derivedCommon.blend == wem::BlendMode::AlphaKey;
+        const f32 key =
+            derivedCommon.alphaTestThreshold > 0.0f ? derivedCommon.alphaTestThreshold : 0.75f;
 
         // One pass over the texels gathers everything: the team share, the
         // roughness medians, and both baked planes.
         bool anyTeam = false;
+        bool anyMetal = false;
         std::vector<f32> roughness;
         std::vector<f32> metalRoughness;
         roughness.reserve(static_cast<std::size_t>(width) * height / 16 + 1);
@@ -343,6 +383,12 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
                         std::clamp(o[2] * albedo[c] * (1.0f - share), 0.0f, 1.0f) * 255.0f +
                         0.5f);
                 }
+                // The diffuse is what the metal leaves: Reforged lights a metal
+                // only through its reflection, and the whole base colour kept as
+                // the diffuse lit the footman's steel twice, washed silver.
+                f32 diffuse[3];
+                tx::pbr::DiffuseFromMetalness(albedo, o[2], true, diffuse);
+                anyMetal = anyMetal || o[2] >= 1.0f / 255.0f;
                 // Reforged BLENDS the team hue in and keeps the art's
                 // brightness; StarCraft II REPLACES the texel where the
                 // diffuse alpha is low. Solving the one for the other makes
@@ -350,12 +396,17 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
                 // under the mask comes through as shades of the team colour
                 // instead of one flat plate (`tx::pbr::TeamReplaceFromBlend`).
                 f32 replaced[3];
-                const f32 alpha = tx::pbr::TeamReplaceFromBlend(albedo, share, true, replaced);
+                const f32 alpha = tx::pbr::TeamReplaceFromBlend(diffuse, share, true, replaced);
                 for (int c = 0; c < 3; ++c) {
                     teamPx[at + static_cast<std::size_t>(c)] =
                         static_cast<u8>(std::clamp(replaced[c], 0.0f, 1.0f) * 255.0f + 0.5f);
                 }
-                teamPx[at + 3] = static_cast<u8>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f + 0.5f);
+                f32 coverage = alpha;
+                if (keyed) {
+                    coverage = basePx[at + 3] / 255.0f < key ? 0.0f
+                                                             : std::max(alpha, kTeamCutoutFloor);
+                }
+                teamPx[at + 3] = static_cast<u8>(std::clamp(coverage, 0.0f, 1.0f) * 255.0f + 0.5f);
                 // The gloss rides the spec map's alpha, where StarCraft II's
                 // own roughness-simulating materials keep it.
                 specPx[at + 3] =
@@ -367,8 +418,7 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
         // specular to shape; the whole map when nothing is metal -- fixes the
         // exponent: the gloss layer scales the material's down per texel, so
         // the material's is the ceiling that lands the median on its own
-        // GGX-matched width. The amplitude is parked in the HDR multiplier so
-        // the renderer's peak-referenced scale cancels it.
+        // GGX-matched width.
         std::vector<f32>& shaping =
             metalRoughness.size() * 100 >= roughness.size() ? metalRoughness : roughness;
         f32 medianRoughness = 0.55f; // exponent 20
@@ -377,18 +427,25 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
             std::nth_element(shaping.begin(), shaping.begin() + mid, shaping.end());
             medianRoughness = shaping[mid];
         }
-        const f32 exponent = tx::pbr::ExponentFromRoughness(medianRoughness);
-
         wem::CompositeBody body;
         body.specularExponent = tx::pbr::GlossCeilingExponent(medianRoughness);
-        body.specularFactor = Vector4f{(exponent + 2.0f) / 8.0f, 0, 0, 1};
+        // StarCraft II's own roughness-simulating materials park 2 here -- the
+        // StarTools guide's "~2", none of 637 shipped above 10. The exponent-
+        // normalised `(n + 2) / 8` this was put the footman's pauldrons at 11.9
+        // and its shield at 20.3, and the editor blew both out to flat yellow.
+        body.specularFactor = Vector4f{2.0f, 0, 0, 1};
         // The gloss is a roughness: no fake energy dim, and the reflection
         // blurs by it (the StarTools "Simulate Roughness" guide).
         body.simulateRoughness = true;
 
         const std::string stem = StemOf(basePath);
+        u32 coverageTexture = baseSlot->texture;
         if (anyTeam) {
             const u32 teamTexture = cache.Intern(stem + "_team.dds");
+            if (keyed) {
+                coverageTexture = teamTexture;
+                target->materials[m].MutableCommon().alphaTestThreshold = kTeamCutoutThreshold;
+            }
             result.baked.insert_or_assign(teamTexture,
                                           BakedTexture{std::move(teamDiffuse),
                                                        tx::PixelFormat::BC3});
@@ -396,6 +453,18 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
                 LayerOf(teamUnderRef(), wem::SurfaceChannel::Color, wem::CompositeOp::Set));
             body.layers.push_back(LayerOf(teamTexture, wem::SurfaceChannel::Color,
                                           wem::CompositeOp::AlphaBlend, baseSlot));
+        } else if (anyMetal) {
+            // No team, but the metal still leaves its diffuse; the base's own
+            // alpha rides along for a keyed material's test.
+            for (std::size_t at = 3; at < teamPx.size(); at += 4) {
+                teamPx[at] = basePx[at];
+            }
+            const u32 diffuseTexture = cache.Intern(stem + "_diff.dds");
+            result.baked.insert_or_assign(diffuseTexture,
+                                          BakedTexture{std::move(teamDiffuse),
+                                                       tx::PixelFormat::BC3});
+            body.layers.push_back(LayerOf(diffuseTexture, wem::SurfaceChannel::Color,
+                                          wem::CompositeOp::Set, baseSlot));
         } else {
             body.layers.push_back(LayerOf(baseSlot->texture, wem::SurfaceChannel::Color,
                                           wem::CompositeOp::Set, baseSlot));
@@ -476,12 +545,12 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
 
         wem::Material& derived = target->materials[m];
         // Reforged tests and blends by the base colour's alpha (a Transparent
-        // layer keys at 0.75). The team bake took that alpha for its share, so
-        // the coverage names the SOURCE map, whose alpha is still the cutout.
+        // layer keys at 0.75). A keyed team material's coverage is the team
+        // diffuse itself, its cutout baked in above; any other keeps the SOURCE map.
         const wem::BlendMode blend = derived.Common().blend;
         if (blend == wem::BlendMode::AlphaKey || blend == wem::BlendMode::Transparent ||
             blend == wem::BlendMode::AlphaBlend || blend == wem::BlendMode::AdditiveAlpha) {
-            body.layers.push_back(LayerOf(baseSlot->texture, wem::SurfaceChannel::Coverage,
+            body.layers.push_back(LayerOf(coverageTexture, wem::SurfaceChannel::Coverage,
                                           wem::CompositeOp::Set, baseSlot));
         }
         wem::CommonMaterial& common = derived.MutableCommon();
@@ -508,8 +577,8 @@ void RestateReforgedMaterials(wem::Document& document, io::IContentProvider* pro
                  std::to_string(result.materialsRestated) +
                      " Reforged material(s) restated as specular/gloss (the inverse bake); " +
                      std::to_string(result.materialsSkipped) + " kept the derive's diffuse; " +
-                     std::to_string(environmentsProjected) +
-                     " environment panorama(s) projected into a reflection cube",
+                     std::to_string(probesCrossed) + " reflection(s) from the tileset probe, " +
+                     std::to_string(environmentsProjected) + " from a projected panorama",
                  wem::ElementRef(wem::ElementKind::Document, 0), wem::ProfileId::Sc2);
     }
 }

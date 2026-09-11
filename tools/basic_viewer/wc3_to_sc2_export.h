@@ -15,11 +15,11 @@
 //  * **Classic (SD)**: sequence renames and the team-glow texture path; the
 //    material fold itself is library work (`m3_core::ExportMaterial`).
 //  * **Reforged (HD)**: the inverse of the SC2→Reforged PBR bake. Metal and
-//    roughness come back apart — `spec = metalness · albedo` (Reforged has
-//    no dielectric F0, so this is exact), the exponent through
-//    `ExponentFromRoughness` (the closed inverse of the forward map), the
-//    amplitude parked in `hdrSpecularMultiplier = (n+2)/8` so the renderer's
-//    peak-referenced `ReflectanceScale` cancels it exactly. The team share
+//    roughness come back apart — `spec = metalness · albedo` and the diffuse
+//    what the metal leaves, `(1 − metalness) · albedo` (Reforged has no
+//    dielectric F0, so both are exact), the exponent through
+//    `GlossCeilingExponent`, the amplitude at the 2 StarCraft II's own
+//    roughness-simulating materials use. The team share
 //    crosses through `tx::pbr::TeamReplaceFromBlend`: Reforged BLENDS the
 //    team hue in and keeps the art's brightness, StarCraft II REPLACES the
 //    texel where the diffuse alpha is LOW (both measured), so the share
@@ -29,7 +29,8 @@
 //    PBR-styled art is built: the F0 map doubles as the RGB environment
 //    mask, the gloss (`1 - roughness`) rides its alpha, the material sets
 //    `SimulateRoughness` so the engine blurs the cube by it, and the cube
-//    itself is Reforged's environment panorama projected (`tx::env`).
+//    itself is the tileset probe Reforged really reflects, its pre-filtered
+//    chain kept (`tx::env::CubeFromCube`).
 // ============================================================================
 
 #include "sc2_pbr_export.h" // BakedTexture
