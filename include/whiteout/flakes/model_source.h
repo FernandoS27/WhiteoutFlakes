@@ -66,6 +66,10 @@ struct ModelData {
     /// never fills both this and `ribbonConfigs`, so the two share one
     /// emitter id space in the ribbon service without colliding.
     std::vector<effects::Sc2RibbonEmitterConfig> sc2RibbonConfigs;
+    /// StarCraft II `PAR_` emitters; empty for every other format. SC2 never
+    /// enters the WC3 registration loop, so this does NOT share an id space
+    /// with `pe2Configs` — it is a separate family behind one selector.
+    std::vector<effects::Sc2ParticleEmitterConfig> sc2ParticleConfigs;
     std::vector<CollisionShapeData> collisionConfigs;
     std::vector<ClothOverlayData> clothOverlays;
     std::vector<AttachmentConfig> attachmentConfigs;
@@ -173,6 +177,10 @@ public:
     virtual std::vector<effects::Sc2RibbonEmitterConfig> GetSc2RibbonConfigs() {
         return {};
     }
+    /// @brief StarCraft II `PAR_` emitters. Empty for every other format.
+    virtual std::vector<effects::Sc2ParticleEmitterConfig> GetSc2ParticleConfigs() {
+        return {};
+    }
     virtual std::vector<CollisionShapeData> GetCollisionShapes() = 0;
     /// @brief The model's cloths, for the debug overlay. Empty for every format
     ///        but `.m3`, which is the only one with a soft-body solver behind it.
@@ -246,6 +254,7 @@ public:
         d.m2ParticleConfigs = GetM2ParticleConfigs();
         d.ribbonConfigs = GetRibbonConfigs();
         d.sc2RibbonConfigs = GetSc2RibbonConfigs();
+        d.sc2ParticleConfigs = GetSc2ParticleConfigs();
         d.collisionConfigs = GetCollisionShapes();
         d.clothOverlays = GetClothOverlays();
         d.attachmentConfigs = GetAttachmentConfigs();

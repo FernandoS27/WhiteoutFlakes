@@ -386,6 +386,112 @@ struct Sc2RibbonEmitterConfig {
     f32 initialSpeedInit = 0.0f;
 };
 
+/// @brief One authored `squirtAmount` key, with the container it lives in.
+///
+/// A squirt is not a rate: it is a burst that fires when the emitter's
+/// animation clock STEPS OVER the key (RE §7b), so the key times have to
+/// survive load rather than being sampled per frame like everything else. The
+/// container id travels with the key because one emitter's bursts are authored
+/// per sub-track container, and each playing container reads its own.
+struct Sc2SquirtKey {
+    u16 stc = 0;
+    f32 timeMs = 0.0f;
+    f32 amount = 0.0f;
+    /// The key block's `endFrame`, the same on every key of one container. A
+    /// looping player wraps its frame on it, and a block that ends at 0 is one
+    /// the reader skips outright (`M3Anim_CollectCrossedKeys`, RE §16.7).
+    i32 trackEnd = 0;
+};
+
+/// One emission slot's squirt table. `slot 0` is the `PAR_` itself; 1..n are
+/// its `PARC` copies, each of which overrides the table.
+using Sc2SquirtKeys = std::vector<Sc2SquirtKey>;
+
+/// @brief Static description of one StarCraft II `PAR_` particle emitter — the
+///        fields the simulation reads once at load. Everything animated flows
+///        per frame through `FrameState::ParticleFrameState::sc2`.
+///
+/// This is the loader-facing shape; `DescFromSc2ParticleConfig` turns it into
+/// the by-stage `particle::Sc2EmitterDesc` the kernels read. The two RE
+/// corrections WhiteoutLib's labels predate — the shape 6/7 swap and rotation
+/// keys being RADIANS — are applied in the ADAPTER, so everything downstream of
+/// this struct sees settled semantics (the same place the ribbon adapter
+/// absorbed its `emitterShape`/`ribbonType` swap).
+struct Sc2ParticleEmitterConfig {
+    i32 boneIndex = 0;
+    i32 materialIndex = -1; ///< `MATM` index; resolved to an M3 surface at load.
+
+    u32 flags = 0;           ///< PAR_ `ParticleFlag`.
+    u32 additionalFlags = 0; ///< PAR_ `ParticleAdditionalFlag`; bit 3 = world space.
+    u32 rotationFlags = 0;   ///< PAR_ `ParticleRotationFlag` (v18+).
+
+    /// Both force pairs as `local | world << 16`. `CanUseGpuMotion` tests the
+    /// FALLBACK one, so the primary is carried only to keep the pair honest.
+    u32 forces = 0, forcesFallback = 0;
+
+    // ---- emission ----
+    u8 emitShape = 0;    ///< 0 Point … 5 Disc, 6 Spline, 7 Mesh — POST-swap.
+    u32 velocityType = 0; ///< 0 cone, 1 radial, 2 axis, 3 random, 4 mesh normal.
+    u32 maxParticles = 0;
+    u8 lodReduce = 2, lodCut = 0; ///< Table ROW indices, not counts.
+    std::vector<i32> shapeRegions;
+    /// Bone per emission slot; `[0]` is this emitter's own bone and 1..n come
+    /// from the `PARC` copies named by `copyIndices`.
+    std::vector<i32> slotBones;
+    /// One table per slot, index-parallel with @ref slotBones.
+    std::vector<Sc2SquirtKeys> squirt;
+
+    bool sizeRandom = false, rotationRandom = false, colorRandom = false;
+    bool alphaRandom = false;
+
+    /// Overlay-wave types, in the order the runtime groups them: yaw, pitch,
+    /// speed, size, alpha, color, rotation, horizontal, vertical. 0 = off; the
+    /// amplitudes and frequencies are animated and arrive per frame.
+    u32 overlayType[9] = {};
+
+    // ---- motion ----
+    f32 drag = 0.0f, mass = 0.001f, massRandom = 1.0f;
+    Vector3f gravity3 = {0, 0, 0}; ///< (gravityX, gravityY, gravity).
+    f32 bounce = 0.0f, friction = 1.0f;
+    u32 collisionDieBounce = 0;
+    f32 killRadius = 0.0f, windMultiplier = 0.0f;
+    f32 noiseAmplitude = 0, noiseFrequency = 0, noiseCoherence = 0, noiseEdge = 0;
+
+    // ---- look ----
+    u8 instanceType = 0;
+    f32 midTime[4] = {0.5f, 0.5f, 0.5f, 0.5f}; ///< size/color/alpha/rotation.
+    f32 midHold[4] = {0, 0, 0, 0};
+    u8 sizeSmoothing = 0, colorSmoothing = 0, rotationSmoothing = 0;
+    f32 flipbookMidTime = 0.0f;
+    u16 flipbookColumns = 0, flipbookRows = 0;
+    f32 flipbookColumnFraction = 0.0f, flipbookRowFraction = 0.0f;
+    u8 flipbookStartInit = 0, flipbookStartStop = 0, flipbookEndInit = 0;
+    f32 tailLength = 1.0f;
+    Vector3f instanceAngle = {0, 0, 0};
+    f32 instanceDistance = 1.0f;
+
+    // ---- children ----
+    i32 collisionSpawnIndex = -1;
+    u32 collisionSpawnMin = 0, collisionSpawnMax = 0;
+    f32 collisionSpawnChance = 0.0f, collisionSpawnEnergy = 0.0f;
+    i32 trailLinkIndex = -1;
+    f32 trailChance = 0.0f;
+    i32 splatProjectorIndex = -1;
+    f32 splatChance = 0.0f;
+    /// `PAR_+0x5D0` / `+0x5D4`, which the ribbon campaign named
+    /// `spawnRibbonOnBounceChance` / `ribbonLinkIndex`. This consumer reads
+    /// them as a model-orientation preset and its variant (RE §16.16).
+    f32 modelOrientPreset = 0.0f;
+    i32 modelOrientVariant = -1;
+    /// `SCHR`. A model particle picks an entry by LIST POSITION, not identity.
+    std::vector<std::string> modelPaths;
+
+    /// Largest `lifetime` key across every container — how far `SimulateInit`
+    /// pre-rolls (RE §15.4). Derived at load because it needs the raw keys,
+    /// which per-frame sampling has already collapsed.
+    f32 maxLifetimeKey = 0.0f;
+};
+
 } // namespace whiteout::flakes::renderer::effects
 
 namespace whiteout::flakes::renderer::model {
@@ -909,6 +1015,48 @@ struct FrameState {
         /// This emitter's particles are models, not quads, so it lives in the
         /// service's ChildModel id space rather than the Billboard one.
         bool modelParticle = false;
+
+        /// @brief The StarCraft II block — everything a `PAR_` animates.
+        ///
+        /// The WC3-family scalars above stay at their defaults for an SC2
+        /// emitter: its stages read this instead. Sampled unconditionally
+        /// because sampling is cheap and every gate that could skip a channel
+        /// lives in PREP, where it can be tested against a golden.
+        struct Sc2ParticleFrame {
+            f32 speed = 0, speedRandom = 0;
+            f32 yawDeg = 0, pitchDeg = 0; ///< DEGREES; converted at use.
+            f32 horizontal = 0, vertical = 0;
+            f32 lifetime = 1, lifetimeRandom = 1;
+            Vector3f size3{0, 0, 0}, sizeRandom3{0, 0, 0};
+            /// RADIANS end to end — no conversion exists anywhere in the
+            /// pipeline, and the "degrees" reading is what made rotation keys
+            /// spin 57× too fast.
+            Vector3f rotation3{0, 0, 0}, rotationRandom3{0, 0, 0};
+            /// start / mid / end, kept PACKED because the lifetime lerp between
+            /// them is integer in the shipped code (RE §5.8) — unpacking to
+            /// floats here would round it somewhere else.
+            u32 colorBGRA[3] = {}, colorRandomBGRA[3] = {};
+            Vector3f shapeOuter{0, 0, 0}, shapeInner{0, 0, 0};
+            f32 outerRadius = 0, innerRadius = 0;
+            /// `particleVelocity`, sampled only when inheriting.
+            f32 parentVelocityScale = 0;
+            f32 overlayAmp[9] = {}, overlayFreq[9] = {}, overlayPhase = 0;
+            f32 trailEmissionRate = 0;
+            f32 splineLower = 0, splineUpper = 1;
+            /// Shape 6 ONLY; empty otherwise, and an empty vector does not
+            /// allocate — which is what makes carrying it here acceptable.
+            std::vector<Vector3f> splinePoints;
+
+            /// `PARC` slots 1..n. Empty for the 96% of carriers with no copies.
+            struct Slot {
+                f32 emissionRate = 0;
+                Matrix44f boneWorld;
+            };
+            std::vector<Slot> slots;
+
+            f32 emissionRate = 0; ///< slot 0's rate; slots 1..n carry their own.
+            bool active = true;   ///< emitter node visible and not culled.
+        } sc2;
     };
     std::vector<ParticleFrameState> particleStates;
 
@@ -927,6 +1075,24 @@ struct FrameState {
     };
     /// Filled only when some emitter reports @ref ParticleFrameState::boneGenerator.
     std::vector<BoneSpawn> boneSpawnTable;
+
+    /// @brief One animation player as StarCraft II's squirt reader walks it.
+    ///
+    /// Per *model*, not per emitter: `M3Anim_CollectCrossedKeys` walks every
+    /// live player of the model's animation state for every squirt track and
+    /// resolves the track through that player's own container (RE §16.7), so a
+    /// global loop playing above a sequence hides none of the sequence's keys.
+    /// Read by the ACTOR layer, never by the emitter.
+    struct Sc2AnimPlayer {
+        u16 stc = 0;
+        /// Unwrapped: the reader wraps a looping player on its TRACK's end,
+        /// which only the key table knows.
+        i32 timeMs = 0;
+        bool loop = false;
+    };
+    /// In layer order; empty when nothing plays. Filled only by a model with
+    /// `PAR_` emitters.
+    std::vector<Sc2AnimPlayer> sc2AnimPlayers;
 
     /// @brief Per-ribbon sampled state. `slot` is the texture slot
     ///        selected by KRTX tracks (0..3 typically).
@@ -1205,8 +1371,11 @@ namespace whiteout::flakes {
 using ::whiteout::flakes::renderer::ParticleEmitterConfig;
 using ::whiteout::flakes::renderer::effects::RibbonLayer;
 using ::whiteout::flakes::renderer::effects::RibbonEmitterConfig;
+using ::whiteout::flakes::renderer::effects::Sc2ParticleEmitterConfig;
 using ::whiteout::flakes::renderer::effects::Sc2RibbonEmitterConfig;
 using ::whiteout::flakes::renderer::effects::Sc2SplineRibbonConfig;
+using ::whiteout::flakes::renderer::effects::Sc2SquirtKey;
+using ::whiteout::flakes::renderer::effects::Sc2SquirtKeys;
 using ::whiteout::flakes::renderer::model::AttachmentConfig;
 using ::whiteout::flakes::renderer::model::CollisionShapeData;
 using ::whiteout::flakes::renderer::model::CollisionShapeType;

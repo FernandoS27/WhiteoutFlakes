@@ -27,42 +27,16 @@
 // fills it from a parsed `.app`.
 // ============================================================================
 
-#include "types.h"
-#include "whiteout/flakes/types.h"
-
-#include <array>
-#include <vector>
+#include "emit_mesh.h"
 
 namespace whiteout::flakes::renderer::particle::d3 {
 
-struct EmitMesh {
-    struct SubMesh {
-        u32 firstTri = 0;
-        u32 triCount = 0;
-    };
-
-    /// One per emitted sub-object, in emission order.
-    std::vector<SubMesh> subs;
-    /// Three indices into @ref rest per triangle, flattened and concatenated
-    /// over @ref subs. Already global: the builder offsets each sub-object's
-    /// indices by where its vertices landed.
-    std::vector<u32> tris;
-    /// Running triangle-area sum, restarting at each sub-object so a pick is
-    /// local to the one that was chosen. One entry per triangle.
-    std::vector<f32> areaCdf;
-
-    /// Bind-pose positions in `.prt` units.
-    std::vector<Vector3f> rest;
-    /// Up to three GLOBAL skeleton indices per vertex and their weights — D3
-    /// ships no per-geoset palette, so these need no remap. Both empty for a
-    /// model with no skeleton, which samples the rest pose and is 63% of the
-    /// corpus.
-    std::vector<std::array<i32, 3>> bones;
-    std::vector<Vector3f> weights;
-
-    bool Empty() const {
-        return subs.empty() || tris.empty();
-    }
-};
+/// The struct moved to `particle::EmitMesh` (emit_mesh.h) when SC2 turned out
+/// to need the same triangles, area CDF and skin weights for its own mesh
+/// emitter shape. `d3::EmitMesh` stays spellable because that is how the `.prt`
+/// adapter, the loader and this emitter all name it; the only difference the
+/// move made is a fourth bone slot, which D3 leaves at weight zero and its
+/// skinning loop therefore never reads.
+using EmitMesh = ::whiteout::flakes::renderer::particle::EmitMesh;
 
 } // namespace whiteout::flakes::renderer::particle::d3

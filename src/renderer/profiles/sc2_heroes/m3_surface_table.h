@@ -47,6 +47,13 @@ inline constexpr u32 kM3LayerEnvironment = 9;
 struct M3Layer {
     i32 textureId = -1; ///< Index into the adapter's CollectM3Textures order.
     u8 uvSource = 0;    ///< 0 = UV set 0, 1 = UV set 1.
+    /// `b_iUVMapping[slot] == UVMAP_PARTICLE_FLIPBOOK` (`Particle.fx:131`).
+    /// The mapping mode is a whole enum and @ref uvSource keeps only the two
+    /// explicit-set values out of it, so this is the one other value anything
+    /// reads — a particle's flipbook cell walk is a UV MAPPING mode on the
+    /// material, not a flag on the `PAR_`. The emitter's own flipbook fields
+    /// say how many cells and when; this says whether they are used at all.
+    bool particleFlipbookUv = false;
     u8 channels = 0;    ///< Raw ColorChannelSelect.
     u8 mode = 0;        ///< 0 off, 1 texture, 2 solid colour.
     u8 blendOp = 0;     ///< Raw LayerBlendOp; decal and emissive slots only.
@@ -170,9 +177,21 @@ public:
         ribbonSurfaceBase_ = base;
     }
 
+    /// @brief First entry of the per-`PAR_` block, appended after the ribbon
+    ///        one for the same reason: a material only a particle emitter
+    ///        references has no geoset. Particle i's surface is
+    ///        `particleSurfaceBase + i`; -1 when the model has no `PAR_`.
+    i32 ParticleSurfaceBase() const {
+        return particleSurfaceBase_;
+    }
+    void SetParticleSurfaceBase(i32 base) {
+        particleSurfaceBase_ = base;
+    }
+
 private:
     std::vector<M3Surface> surfaces_;
     i32 ribbonSurfaceBase_ = -1;
+    i32 particleSurfaceBase_ = -1;
 };
 
 /// @brief Build the table for @p model. @p emittedRegions and
@@ -191,5 +210,21 @@ std::unique_ptr<M3SurfaceTable> BuildM3SurfaceTable(const ::whiteout::m3::Model&
 ///        AlphaKey; every real blend mode is transparent. Invalid surfaces are
 ///        invisible to this model — the loader keeps them on Unlit instead.
 core::SurfaceClass M3ClassifySurface(const M3Surface& surface);
+
+/// @brief Does an SC2 `PAR_` drawn with @p surface walk its flipbook cells?
+///
+/// `b_iUVMapping[slot]` is per texture SLOT (`Particle.fx:131`) and retail
+/// builds a UV per slot in the vertex shader. A `renderer::Vertex` carries ONE
+/// UV set, so one slot has to answer for all of them, and it cannot be slot 0
+/// unconditionally: surveyed over 5037 corpus emitters, **1223 have no active
+/// diffuse layer at all** and draw out of the emissive one instead. Reading the
+/// empty slot reported "no flipbook" on every one of those — 899 emitters that
+/// retail cell-walks and this did not.
+///
+/// So: the first slot the material actually fills, which is the diffuse
+/// whenever there is one. 1057 of the 5037 have active layers that DISAGREE
+/// about the mapping; no single baked UV set can serve those, and there the
+/// dominant layer wins rather than nothing does.
+bool M3ParticleFlipbookUv(const M3Surface& surface);
 
 } // namespace whiteout::flakes::renderer::profiles::sc2_heroes

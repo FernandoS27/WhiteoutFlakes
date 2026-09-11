@@ -201,8 +201,10 @@ TEST_CASE("sc2 BuildStage emits a strip and one m3-surface draw record",
     std::vector<RibbonDrawList> draws;
     const i32 added = e.BuildStage(ctx, verts, draws);
 
-    // One quad (6 verts) per adjacent element pair.
-    CHECK(added == static_cast<i32>((n - 1) * 6));
+    // One quad (6 verts) per adjacent node pair, over the n frozen edges plus
+    // the live head BuildStage synthesises at the emitter — which keeps the
+    // leading edge anchored between spawns — so n quads.
+    CHECK(added == static_cast<i32>(n * 6));
     CHECK(verts.size() == static_cast<std::size_t>(added));
     REQUIRE(draws.size() == 1);
     CHECK(draws[0].m3Surface == 4);
@@ -364,22 +366,22 @@ TEST_CASE("sc2 spline rebuilds every frame and never accumulates elements",
 TEST_CASE("sc2 wave sampler matches M3_SampleAnimValue", "[ribbon][sc2_ribbon]") {
     constexpr f32 kPi = 3.14159265f;
     // 0 off; 1 sin·amp; 2 cos·amp; 4 square (±amp about frac 0.5).
-    CHECK(sc2::Sc2SampleWave(0, 1.23f, 5.0f) == 0.0f);
-    CHECK(sc2::Sc2SampleWave(1, 0.0f, 5.0f) == Catch::Approx(0.0f).margin(1e-5));
-    CHECK(sc2::Sc2SampleWave(1, kPi * 0.5f, 5.0f) == Catch::Approx(5.0f).margin(1e-4));
-    CHECK(sc2::Sc2SampleWave(2, 0.0f, 5.0f) == Catch::Approx(5.0f).margin(1e-4));
-    CHECK(sc2::Sc2SampleWave(4, 0.25f, 3.0f) == Catch::Approx(3.0f));  // frac < 0.5
-    CHECK(sc2::Sc2SampleWave(4, 0.75f, 3.0f) == Catch::Approx(-3.0f)); // frac > 0.5
+    CHECK(sc2::SampleWave(0, 1.23f, 5.0f) == 0.0f);
+    CHECK(sc2::SampleWave(1, 0.0f, 5.0f) == Catch::Approx(0.0f).margin(1e-5));
+    CHECK(sc2::SampleWave(1, kPi * 0.5f, 5.0f) == Catch::Approx(5.0f).margin(1e-4));
+    CHECK(sc2::SampleWave(2, 0.0f, 5.0f) == Catch::Approx(5.0f).margin(1e-4));
+    CHECK(sc2::SampleWave(4, 0.25f, 3.0f) == Catch::Approx(3.0f));  // frac < 0.5
+    CHECK(sc2::SampleWave(4, 0.75f, 3.0f) == Catch::Approx(-3.0f)); // frac > 0.5
     // 3 sawtooth: amp·(2·fmod(phase,1)−1), a bipolar ramp per unit period
     // (M3_SampleAnimValue case 3, K=1.0/C=−1.0 recovered from a clean disasm).
-    CHECK(sc2::Sc2SampleWave(3, 0.0f, 4.0f) == Catch::Approx(-4.0f)); // ramp start
-    CHECK(sc2::Sc2SampleWave(3, 0.5f, 4.0f) == Catch::Approx(0.0f));  // mid
-    CHECK(sc2::Sc2SampleWave(3, 0.75f, 4.0f) == Catch::Approx(2.0f));
-    CHECK(sc2::Sc2SampleWave(3, 1.25f, 4.0f) == Catch::Approx(-2.0f)); // wraps
+    CHECK(sc2::SampleWave(3, 0.0f, 4.0f) == Catch::Approx(-4.0f)); // ramp start
+    CHECK(sc2::SampleWave(3, 0.5f, 4.0f) == Catch::Approx(0.0f));  // mid
+    CHECK(sc2::SampleWave(3, 0.75f, 4.0f) == Catch::Approx(2.0f));
+    CHECK(sc2::SampleWave(3, 1.25f, 4.0f) == Catch::Approx(-2.0f)); // wraps
     // 5 is our deterministic stand-in for retail's RNG: same phase → same value,
     // always inside [−amp, amp].
-    const f32 r1 = sc2::Sc2SampleWave(5, 2.5f, 4.0f);
-    CHECK(sc2::Sc2SampleWave(5, 2.5f, 4.0f) == r1);
+    const f32 r1 = sc2::SampleWave(5, 2.5f, 4.0f);
+    CHECK(sc2::SampleWave(5, 2.5f, 4.0f) == r1);
     CHECK(std::abs(r1) <= 4.0f);
 }
 

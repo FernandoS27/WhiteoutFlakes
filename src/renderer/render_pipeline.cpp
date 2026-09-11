@@ -304,10 +304,30 @@ void RenderPipeline::DrawParticleEmitter(const particle::EmitterDrawList& dl,
     // one, and it needs a combiner the BLS SD program does not have. Its draw
     // is still HERE, in the sorted transparent queue, because that is where the
     // client draws it — only the shading and the vertex buffer differ.
-    if (dl.material.multiTexture) {
+    const particle::ParticleShading shading = dl.material.Shading();
+    if (shading == particle::ParticleShading::MultiTexture) {
         DrawMultiTexParticleEmitter(dl);
         return;
     }
+
+#if WDX_ENABLE_M3
+    // An SC2 `PAR_` batch carries a resolved M3 surface, exactly as a `RIB_`
+    // strip does, and the M3 material draws it out of the SHARED particle VB
+    // rather than a per-actor one. Not in the distortion pass: that target has
+    // its own format and attachment count, and no SC2 emitter reaches it —
+    // refraction is WoW's `CMultiTexParticle`, which never resolves a surface.
+    if (shading == particle::ParticleShading::M3Surface && impl_->m3Shading_ && !distortionTarget) {
+        if (Actor* owner = rs_.Scene().Actors().Find(dl.model)) {
+            impl_->m3Shading_->DrawWorldVertices(
+                *owner, dl.material.m3Surface, impl_->particleServiceVB_, dl.vertexOffset,
+                dl.vertexCount, frame, profiles::sc2_heroes::M3WorldVertexKind::Particle,
+                dl.emitterId);
+            return;
+        }
+        // No owner means no surface table to look the material up in; fall
+        // through to the BLS approximation rather than dropping the draw.
+    }
+#endif
 
     cmd->BindVertexBuffer(0, impl_->particleServiceVB_, sizeof(Vertex));
 
@@ -316,7 +336,7 @@ void RenderPipeline::DrawParticleEmitter(const particle::EmitterDrawList& dl,
     // combine chain with a UV transform each; the SD program has one texture
     // and no chain. Falling through when the D3 program is unavailable draws
     // the diffuse layer alone, which is approximate rather than missing.
-    if (dl.material.d3 && impl_->d3Particles_) {
+    if (shading == particle::ParticleShading::D3 && impl_->d3Particles_) {
         impl_->d3Particles_->Init();
         profiles::diablo3::D3ParticleFrameInputs d3f;
         d3f.view = frame.view;
@@ -798,8 +818,11 @@ void RenderPipeline::DrawRibbonStrip(const RibbonDrawUnit& u, const bls::FrameIn
     // SC2 ribbons carry a resolved M3 surface — the M3 material draws them, not
     // the BLS SD path. The strip vertices already live in the actor's ribbonVB.
     if (u.m3Surface >= 0) {
-        if (impl_->m3Shading_)
-            impl_->m3Shading_->DrawRibbon(*u.actor, u.m3Surface, u.offset, u.count, frame);
+        if (impl_->m3Shading_) {
+            impl_->m3Shading_->DrawWorldVertices(
+                *u.actor, u.m3Surface, u.actor->render.ribbonVB, u.offset, u.count, frame,
+                profiles::sc2_heroes::M3WorldVertexKind::Ribbon);
+        }
         return;
     }
 #endif
@@ -3407,7 +3430,7 @@ void RenderPipeline::RenderTransparentScene() {
         // as it did before this stream existed.
         bool anyD3 = false;
         for (const auto& dl : partDraws)
-            anyD3 = anyD3 || dl.material.d3 != nullptr;
+            anyD3 = anyD3 || dl.material.Shading() == particle::ParticleShading::D3;
         if (anyD3 && d3UvOut && !d3UvOut->Empty()) {
             impl_->d3Particles_->Init();
             impl_->d3Particles_->BeginFrame(verts, *d3UvOut);
@@ -3521,7 +3544,8 @@ void RenderPipeline::RenderTransparentScene() {
     impl_->distortionParticles_.clear();
     if (haveParticles)
         for (u32 i = 0; i < partDraws.size(); ++i) {
-            if (partDraws[i].material.d3 && partDraws[i].material.d3->distortion) {
+            if (partDraws[i].material.Shading() == particle::ParticleShading::D3 &&
+                partDraws[i].material.d3->distortion) {
                 impl_->distortionParticles_.push_back(partDraws[i]);
                 continue;
             }

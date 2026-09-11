@@ -64,6 +64,7 @@
 // ============================================================================
 
 #include "io/m3/m3_animation.h"
+#include "renderer/particle/emit_mesh.h"
 #include "whiteout/flakes/content_ref.h"
 #include "whiteout/flakes/model_source.h"
 
@@ -304,6 +305,16 @@ public:
     ///        pre-RE labels, so they land here as `ribbonType` (cross-section)
     ///        and `cullMethod` (SC2_RIBBON_RE.md §1.1).
     std::vector<renderer::effects::Sc2RibbonEmitterConfig> GetSc2RibbonConfigs() override;
+    /// @brief One config per `PAR_` record, in file order — the emitter id IS
+    ///        the record index, and its `PARC` copies become emission SLOTS of
+    ///        it rather than emitters of their own.
+    ///
+    /// Two corrections settled by the RE are applied here rather than
+    /// downstream, so everything past this call sees one meaning: WhiteoutLib's
+    /// `EmitterShape` still carries the pre-RE order (6 and 7 are swapped —
+    /// 6 is Spline and 7 is Mesh, SC2_PARTICLE_RE.md §11.1), and the rotation
+    /// tracks are RADIANS, not degrees.
+    std::vector<renderer::effects::Sc2ParticleEmitterConfig> GetSc2ParticleConfigs() override;
     /// @brief The `PHRB` rigid bodies as wireframes for the Collisions view.
     ///
     /// M3 has no chunk of plain collision primitives the way MDX has CLID, so
@@ -390,6 +401,12 @@ public:
         return emittedMaterials_;
     }
 
+    /// @brief Which division geometry is read from. Zero today — LOD selection
+    ///        is a later phase — but the emit-mesh build has to name the same
+    ///        one the geosets came from, so it asks rather than assuming.
+    std::size_t DivisionIndex() const {
+        return divisionIndex_;
+    }
     const ::whiteout::m3::Model& SourceModel() const {
         return model_;
     }
@@ -537,6 +554,13 @@ private:
                          std::span<const ::whiteout::u8> visible, const Matrix44f& world,
                          renderer::model::FrameState& fs) const;
 
+    /// @brief Sample every `PAR_`'s animated tracks into
+    ///        `FrameState::particleStates` (the `sc2` block), and the players
+    ///        their squirt keys are read against into `sc2AnimPlayers`.
+    void EvaluateParticles(std::span<const M3Layer> layers,
+                           std::span<const ::whiteout::u8> visible, const Matrix44f& world,
+                           renderer::model::FrameState& fs) const;
+
     /// @brief Sample every standard material layer's UV transform into
     ///        `FrameState::texAnimMatrices`.
     ///
@@ -635,5 +659,18 @@ private:
     ///        particles that drive it (`PHAC`).
     void RewriteClothSkin(std::size_t geoset, renderer::model::MeshData& mesh) const;
 };
+
+/// @brief Build the surface `PAR_` emitter shape 7 (Mesh) samples.
+///
+/// One sub-mesh per REGION of @p divisionIndex, so an emitter's `shapeRegions`
+/// indexes the result directly; @p wanted says which of those regions some
+/// emitter actually names, and the rest come back empty. Null when nothing was
+/// wanted or nothing had triangles, which leaves the shape on its point case.
+///
+/// Free rather than a member because it is a pure function of the parsed model
+/// and the loader calls it once per template, not once per actor.
+std::shared_ptr<const renderer::particle::EmitMesh>
+BuildM3EmitMesh(const ::whiteout::m3::Model& model, std::size_t divisionIndex,
+                std::span<const u8> wanted);
 
 } // namespace whiteout::flakes::io

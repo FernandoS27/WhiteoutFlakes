@@ -244,9 +244,9 @@ LoadedEnvProbe LoadEnvProbeFromBytes(gfx::IGFXDevice& gfx, std::span<const u8> b
         }
     }
 
-    static constexpr u32 kBlzToD3dFaceRemap[6] = {0, 5, 2, 3, 4, 1};
     static constexpr u32 kIdentityFaceMap[6] = {0, 1, 2, 3, 4, 5};
-    const u32* faceMap = applyBlizzardFaceRemap ? kBlzToD3dFaceRemap : kIdentityFaceMap;
+    const u32* faceMap =
+        applyBlizzardFaceRemap ? kBlizzardProbeFaceOrder.data() : kIdentityFaceMap;
 
     std::vector<u8> packed(static_cast<usize>(totalBytes));
     u8* cursor = packed.data();

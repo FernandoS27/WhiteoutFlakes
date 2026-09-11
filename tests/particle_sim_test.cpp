@@ -383,7 +383,7 @@ TEST_CASE("Child-model particles balance Birth against Death") {
     // destroyed twice.
     auto desc = MakeDesc(ParticleOutput::ChildModel);
     desc->shape = std::make_shared<ConeShape>();
-    desc->childModelPath = "units/human/footman/footman.mdx";
+    desc->childModelPaths = {"units/human/footman/footman.mdx"};
 
     ParticleService svc;
     u32 nextHandle = 1;
@@ -487,7 +487,7 @@ namespace {
 std::shared_ptr<EmitterDesc> MakeModelParticleDesc() {
     auto d = MakeDesc(ParticleOutput::ChildModel);
     d->shape = std::make_shared<ConeShape>();
-    d->childModelPath = "#12345";
+    d->childModelPaths = {"#12345"};
     return d;
 }
 

@@ -36,6 +36,14 @@ struct ImVector {
 
 enum class FilterMode : u8 { Blend = 0, Additive = 1, Modulate = 2, Modulate2X = 3, AlphaKey = 4 };
 
+/// Which material program shades a particle draw.
+enum class ParticleShading : u8 {
+    Bls,          ///< The BLS SD program, off `textureId` and `filterMode`.
+    MultiTexture, ///< The three-texture combiner; its offsets index its own stream.
+    M3Surface,    ///< A prebuilt SC2 surface, out of the shared particle VB.
+    D3,           ///< The Diablo III stage chain.
+};
+
 struct ParticleMaterialDesc {
     i32 textureId = -1;
     FilterMode filterMode = FilterMode::Blend;
@@ -66,6 +74,34 @@ struct ParticleMaterialDesc {
     /// emitter's own `d3::EmitterDesc`, so it costs a refcount and never a
     /// copy of the chain. See d3_particle_material.h.
     std::shared_ptr<const d3::MaterialDesc> d3;
+
+    /// @brief The prebuilt SC2 surface this draw shades through, or −1.
+    ///
+    /// Same shape as the ribbon's `m3Surface` and resolved the same way: the
+    /// loader appends one surface per `PAR_` material after the ribbon block
+    /// and stamps the index here BEFORE the desc is frozen, so nothing looks a
+    /// material up at draw time. −1 leaves the draw on the BLS fallback, which
+    /// is also what an unresolved material gets — the pipeline branches on
+    /// `>= 0` exactly as `DrawRibbonStrip` does.
+    i32 m3Surface = -1;
+
+    /// @brief The program this draw asks for, derived from the fields above.
+    ///
+    /// Never stored, so it cannot disagree with them, and in the dispatcher's
+    /// precedence: the multi-texture stream first, because its vertex offsets
+    /// index a different buffer, then a resolved SC2 surface, then the Diablo
+    /// III chain; no dialect sets two. A program the renderer cannot run here
+    /// — no M3 shading, no D3 program, no owner to look a surface up on — still
+    /// falls back to the BLS draw at the call site.
+    ParticleShading Shading() const {
+        if (multiTexture)
+            return ParticleShading::MultiTexture;
+        if (m3Surface >= 0)
+            return ParticleShading::M3Surface;
+        if (d3)
+            return ParticleShading::D3;
+        return ParticleShading::Bls;
+    }
 };
 
 } // namespace whiteout::flakes::renderer::particle

@@ -93,7 +93,7 @@ public:
     /// built once per actor and shared, the pose arrives every frame. Without
     /// either the three shapes fall back to the point case — the engine's own
     /// answer when its actor lookup fails.
-    void SetEmitMesh(std::shared_ptr<const EmitMesh> mesh) {
+    void SetEmitMesh(std::shared_ptr<const EmitMesh> mesh) override {
         emitMesh_ = std::move(mesh);
     }
     bool HasEmitMesh() const {
@@ -105,7 +105,7 @@ public:
     ///                 bone palette uploads.
     /// @param toWorld  Model space -> renderer units, scale included.
     void SetEmitMeshPose(std::span<const Matrix44f> pose, std::span<const Matrix44f> invBind,
-                         const Matrix44f& toWorld) {
+                         const Matrix44f& toWorld) override {
         emitPose_ = pose;
         emitInvBind_ = invBind;
         emitMeshToWorld_ = toWorld;
@@ -140,8 +140,16 @@ public:
         camForward_ = f;
     }
 
-    using GroundQuery = std::function<bool(const Vector3f& pos, f32 up, f32 down, f32& outZ)>;
-    void SetGroundQuery(GroundQuery q) {
+    // The base declares this virtual so the service can install one ground
+    // query on every emitter it holds without knowing the family. D3 keeps
+    // its own copy — it had the setter first and its MOVE reads it directly
+    // — so the override stores here and lets the base store its own.
+    // Overrides rather than hides: the base declares the contract so the
+    // service can install one query on every emitter it holds without knowing
+    // the family. It does NOT chain — the base stores into the SC2 runtime,
+    // and this class is `final` and never SC2, so chaining would only copy a
+    // std::function per emitter per frame into a store nothing reads.
+    void SetGroundQuery(GroundQuery q) override {
         groundQuery_ = std::move(q);
     }
 

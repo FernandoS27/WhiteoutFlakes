@@ -17,12 +17,14 @@
 #include "particle_material.h"
 #include "particle_motion.h"
 #include "particle_shape.h"
+#include "sc2_emitter_desc.h"
 #include "types.h"
 #include "whiteout/flakes/types.h"
 #include "whiteout/flakes/util/coordinate_system.h"
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace whiteout::flakes::renderer {
 struct ParticleEmitterConfig;
@@ -69,14 +71,37 @@ struct EmitterDesc {
     // the animated half travels in SpawnParams.
     std::shared_ptr<const IParticleShape> shape;
 
+    // Which client's simulation this emitter's stages run. The ONE selector:
+    // `Emitter2::SetDesc` turns it into a runtime pointer and every other
+    // touch point tests that pointer, so nothing downstream reads the enum
+    // (SC2_PARTICLE_DESIGN.md §2.1). Orthogonal to ParticleBehavior, which
+    // tunes the WC3-family simulation rather than choosing between families.
+    enum class Family : u8 { Wc3, Sc2 };
+    Family family = Family::Wc3;
+
+    // Read only when `family == Family::Sc2`; inert otherwise, and inert
+    // everywhere as of phase P0.
+    Sc2EmitterDesc sc2;
+
     ParticleOutput output = ParticleOutput::Billboard;
 
-    // Child-model output only: which model each particle becomes, and its scale.
-    std::string childModelPath;
+    // Child-model output only: which models a particle may become, and its
+    // scale. A list because an SC2 `PAR_` carries a TABLE of model paths and
+    // each particle draws one at birth (`ChildModelEvent::pathIndex`); WC3,
+    // M2 and D3 author exactly one and always fill and read index 0.
+    std::vector<std::string> childModelPaths;
     f32 childScale = 1.0f;
 
+    /// The single authored path, for the dialects that have exactly one.
+    /// Returns an empty string rather than throwing on an emitter with none,
+    /// because "no child model" is a legal desc that the trace prints.
+    const std::string& ChildModelPath() const {
+        static const std::string kNone;
+        return childModelPaths.empty() ? kNone : childModelPaths.front();
+    }
+
     /// The `.m2` whose emitters trail every particle of THIS one (M2 RPID).
-    /// Unrelated to @ref childModelPath: those particles *are* models, these
+    /// Unrelated to @ref childModelPaths: those particles *are* models, these
     /// particles *drag* emitters. Resolved by the loader, which builds the
     /// trail emitters and hands them to this one — see M2_TRAIL_EMITTER_DESIGN.md.
     std::string trailModelPath;

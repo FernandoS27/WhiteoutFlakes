@@ -83,7 +83,7 @@ struct M3ExportReport {
     bool derived = false;
 
     int texturesExported = 0;
-    int texturesSkipped = 0; ///< Already present at the target.
+    int texturesSkipped = 0; ///< Copies already present at the target (a bake is rewritten).
     int texturesFailed = 0;  ///< Unresolvable, undecodable or unwritable.
 
     /// Conversion + derive + rescale diagnostics. Never empty on success:

@@ -18,6 +18,8 @@
 // ============================================================================
 
 #include "core/ribbon_dialect.h"
+#include "ground_query.h"
+#include "renderer/sc2/sc2_element.h"
 #include "types.h"
 #include "whiteout/flakes/model_types.h"
 #include "whiteout/flakes/types.h"
@@ -33,7 +35,9 @@ using RibbonBehavior = core::RibbonBehavior;
 /// the grid unless a host registered real terrain through
 /// `RenderSettings::SetGroundQuery`. The SC2 legacy integrator sweeps its
 /// segments against it (the stand-in for the map colliders the viewer lacks).
-using GroundQuery = std::function<bool(const Vector3f& pos, f32 up, f32 down, f32& outZ)>;
+/// Declared once in ground_query.h; `ribbon::GroundQuery` stays spellable
+/// because that is how actor_eval names it.
+using GroundQuery = ::whiteout::flakes::renderer::GroundQuery;
 
 /// @brief One trail element, superset of both families.
 ///
@@ -189,6 +193,17 @@ u8 SelectSc2SimTechnique(const Sc2RibbonEmitterConfig& cfg);
 ///        stamped by the loader, which owns the surface table.
 RibbonDesc DescFromSc2Config(const Sc2RibbonEmitterConfig& cfg);
 
+/// @brief The animated vertex fillers' noise offset (SC2_RIBBON_RE §4.3, gate
+///        O13) at trail parameter @p t.
+///
+/// The particle system's seed-0 table sampled in 3-D at `(t·frequency,
+/// coherence·headU, {0, 0.33, 0.66})`, times an amplitude muted by `t/edge`
+/// below the edge — or, only on a spline, by `(1−t)/edge` above `1 − edge`.
+/// The two mutes are alternatives, never a product, and an edge of 0 mutes
+/// nothing. Returned in the ribbon's own space.
+Vector3f Sc2NoiseDisplacement(f32 t, f32 headU, f32 amplitude, f32 frequency, f32 coherence,
+                              f32 edge, bool spline);
+
 // ---- SC2 time-mode stage kernels (RIBBON_SERVICE_PLAN.md W3) ----------------
 // Pure reproductions of the shipped CPU stages, replayed at their stated
 // tolerances against the Unicorn goldens: the emit clock (O3 `UpdateEmit`), the
@@ -280,12 +295,11 @@ struct HeadInputs {
 
 HeadElement Sc2WriteHead(const HeadInputs& in);
 
-/// `M3_SampleAnimValue` (0x1028022f0), the overlay-wave sampler: type 1 =
-/// sin(phase)·amp, 2 = cos(phase)·amp, 4 = square (±amp about frac 0.5), 5 =
-/// deterministic random in [−amp, amp] (retail's is a nondeterministic global
-/// RNG — a stated deviation), 3/6 (saw/table) return 0. `phase` is
-/// `freq·overlayTime + overlayPhase`.
-f32 Sc2SampleWave(u32 type, f32 phase, f32 amp);
+/// The overlay-wave sampler, moved to `sc2/sc2_element.h` — it samples an
+/// ELEMENT's wave and a `PAR_` needs it as much as a `RIB_` does (R6). Named
+/// here so ribbon code keeps spelling it `sc2::SampleWave`; there is one
+/// definition.
+using ::whiteout::flakes::renderer::sc2::SampleWave;
 
 /// CatchUpEmission's pre-roll duration expressed as 33 ms tick count. `speed`
 /// and `lifetime` are the ALREADY-SAMPLED reduced values (min speed / max
@@ -400,13 +414,7 @@ public:
         sc2SplineAge_ = 0;
         for (Vector3f& s : sc2Sag_)
             s = {0, 0, 0};
-        sc2SmoothSlot_ = 0;
-        sc2SmoothCount_ = 0;
-        for (Vector3f& p : sc2SmoothPos_)
-            p = {0, 0, 0};
-        for (f32& w : sc2SmoothDt_)
-            w = 0;
-        sc2SmoothedVel_ = {0, 0, 0};
+        sc2Smoothed_.Reset();
     }
 
 private:
@@ -446,7 +454,7 @@ private:
     /// order. Collision is the grid stand-in for the map colliders.
     void Sc2LegacyIntegrate(f32 dt);
     /// Push this tick's emitter motion into the 8-tap ring and recompute
-    /// `sc2SmoothedVel_` (inherit-parent-velocity). No-op unless inheriting.
+    /// `sc2Smoothed_` (inherit-parent-velocity). No-op unless inheriting.
     void Sc2UpdateSmoothedVelocity(f32 dt);
     /// Build one segment at the interpolated emitter pose, birthU-stamped (the
     /// UpdateHeadSegment field write). Used both for committed history and for
@@ -515,10 +523,7 @@ private:
     // of recent per-tick position deltas and dt weights; smoothedVel =
     // Σ posDelta / Σ dt (the emitter's smoothed velocity). Retail pushes one tap
     // per emission sub-step; a per-tick tap is the CPU-side approximation.
-    Vector3f sc2SmoothPos_[8] = {};
-    f32 sc2SmoothDt_[8] = {};
-    u8 sc2SmoothSlot_ = 0, sc2SmoothCount_ = 0;
-    Vector3f sc2SmoothedVel_ = {0, 0, 0};
+    ::whiteout::flakes::renderer::sc2::SmoothedVelocity sc2Smoothed_;
 };
 
 } // namespace whiteout::flakes::renderer::ribbon

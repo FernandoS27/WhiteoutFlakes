@@ -56,6 +56,10 @@ struct SceneServices {
         : spn(std::make_unique<effects::SpnSpawner>(rs)) {}
 
     particle::ParticleService particles;
+    /// The `RenderSettings::GroundQueryGeneration` last installed on
+    /// @ref particles. Starts at "never", so a scene's first frame installs
+    /// the grid, and after that only a host's new query is installed again.
+    u32 particleGroundGeneration = 0xFFFFFFFFu;
     particle::SplatService splats;
     ribbon::RibbonService ribbons;
     std::unique_ptr<effects::SpnSpawner> spn;

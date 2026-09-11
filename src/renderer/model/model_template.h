@@ -3,6 +3,7 @@
 #include "../gfx/gfx.h"
 #include "assets/texture_asset_manager.h"
 #include "particle.h"
+#include "particle/emit_mesh.h"
 #include "particle/emitter_desc.h"
 #include "render_target.h" // RenderMode
 #include "whiteout/flakes/model_source.h" // IModelSource, ModelBounds
@@ -66,6 +67,17 @@ struct ModelTemplate {
     // StarCraft II `RIB_` emitters; a model has these or ribbonConfigs, never
     // both, so the two share the ribbon service's emitter id space.
     std::vector<effects::Sc2RibbonEmitterConfig> sc2RibbonConfigs;
+    // StarCraft II `PAR_` emitters. Not shared with pe2Configs the way the two
+    // ribbon lists share an id space: SC2 never enters the WC3 registration
+    // loop, so this is a separate family behind the desc's one selector.
+    std::vector<effects::Sc2ParticleEmitterConfig> sc2ParticleConfigs;
+    // The surface `PAR_` shape 7 is born on, built on first spawn of a model
+    // that has one and shared by every actor of this template — the same
+    // once-and-share rule as pe2Descs. Null when no emitter uses the shape,
+    // which is the overwhelming majority; the bool is what stops a model with
+    // no usable triangles from retrying the build per actor.
+    std::shared_ptr<const particle::EmitMesh> sc2EmitMesh;
+    bool sc2EmitMeshTried = false;
     std::vector<CollisionShapeData> collisionConfigs;
     std::vector<PE1EmitterConfig> pe1Configs;
     std::vector<std::shared_ptr<const particle::EmitterDesc>> pe1Descs;

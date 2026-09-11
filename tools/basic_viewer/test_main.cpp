@@ -15,6 +15,8 @@
 #include "renderer/scene_manager.h"
 #if WDX_ENABLE_M3
 #include "io/m3/m3_model_adapter.h"
+#include "renderer/particle/particle_adapters.h"
+#include "renderer/profiles/sc2_heroes/m3_surface_table.h"
 #endif
 #if WDX_ENABLE_D3
 #include "io/d3/d3_model_adapter.h"
@@ -472,6 +474,12 @@ struct AnimScenario {
     // sequence *indices* are export order and differ per model, so the corpus
     // names sequences and this is what tells you which names exist.
     bool list = false;
+    // Print every `PAR_`'s statics and stop — the SC2 particle content survey.
+    // Same purpose as @ref list and the same reason it cannot be a corpus file:
+    // which shapes, instance types, flags and slot counts the shipped data
+    // actually uses is not guessable, and X3 onward decides what to implement
+    // first from these counts (SC2_PARTICLE_PLAN.md §5).
+    bool particleList = false;
     // Turn the pose stages on and install a ground plane, so a capture can see
     // terrain IK and the turret at all. Off in every other arm, which is what
     // makes the byte-identical baselines mean "the animation did not move".
@@ -577,7 +585,7 @@ static int RunDrawTrace(
         std::cerr << "[dtrace] --draw-trace needs a model path" << std::endl;
         return 2;
     }
-    if (recordPath.empty() && checkPath.empty() && !anim.list) {
+    if (recordPath.empty() && checkPath.empty() && !anim.list && !anim.particleList) {
         std::cerr << "[dtrace] pass --draw-trace-record <file> or --draw-trace-check <file>"
                   << std::endl;
         return 2;
@@ -923,6 +931,178 @@ static int RunDrawTrace(
         pipe.Shutdown();
         return 0;
     }
+#if WDX_ENABLE_M3
+    if (anim.particleList) {
+        // The SC2 particle content survey. One line per `PAR_`, straight off
+        // the config the loader converts — so this prints what registration
+        // sees, not what the file says, and a field the adapter drops shows up
+        // here as a zero rather than being invisible.
+        auto* m3p = dynamic_cast<wf::io::M3ModelAdapter*>(hero->animation.Source().get());
+        if (!m3p) {
+            std::cout << "[dtrace] not an .m3 — no PAR_ to list" << std::endl;
+            pipe.Shutdown();
+            return 0;
+        }
+        static const char* kShape[] = {"Point", "Plane", "Sphere", "Box",
+                                       "Cyl",   "Disc",  "Spline", "Mesh"};
+        const auto cfgs = m3p->GetSc2ParticleConfigs();
+        const auto& src = m3p->SourceModel();
+
+        std::cout << "[dtrace] " << cfgs.size() << " PAR_ emitter(s):" << std::endl;
+        for (std::size_t i = 0; i < cfgs.size(); ++i) {
+            const auto& c = cfgs[i];
+            std::size_t squirtKeys = 0;
+            for (const auto& tbl : c.squirt)
+                squirtKeys += tbl.size();
+            // The desc the LOADER registered, not one this printer converted.
+            // That is the difference between "the conversion works" and "the
+            // conversion reached the emitter" — the surface index and the
+            // priority are stamped by registration, so a printer that
+            // re-converts would report -1 forever and look like a load bug.
+            // Both id spaces are asked rather than deriving which one from the
+            // flags: re-deriving would be a second spelling of the selector
+            // `DescFromSc2ParticleConfig` owns, and WHICH space answered is
+            // itself worth printing.
+            using wf::renderer::particle::ParticleOutput;
+            auto out = ParticleOutput::Billboard;
+            const auto* em =
+                renderer.Particles().GetEmitter(hero->handle, out, static_cast<wf::i32>(i));
+            if (!em) {
+                out = ParticleOutput::ChildModel;
+                em = renderer.Particles().GetEmitter(hero->handle, out, static_cast<wf::i32>(i));
+            }
+            std::cout << "[dtrace]   [" << i << "] v"
+                      << src.particleEmitters[i].getVersion() << " shape="
+                      << (c.emitShape < 8 ? kShape[c.emitShape] : "?") << " vel=" << c.velocityType
+                      << " inst=" << int(c.instanceType);
+            if (!em) {
+                std::cout << " *** NOT REGISTERED ***" << std::endl;
+                continue;
+            }
+            const auto& d = em->Desc();
+            std::cout << (d.sc2.motion.analytic ? " analytic" : " euler")
+                      << (out == ParticleOutput::ChildModel ? " child" : " quad")
+                      << " slots=" << d.sc2.emit.slotBones.size() << " squirt=" << squirtKeys
+                      << " surf=" << d.sc2.look.m3Surface << " prio=" << d.priorityPlane
+                      << " maxLife=" << d.sc2.emit.maxLifetimeKey
+                      // Whether the emitter's own flipbook fields are USED is a
+                      // property of the material's diffuse layer, not of the
+                      // `PAR_` — so a carrier with a sheet and cells authored
+                      // may still sample cell 0 forever, and the survey has to
+                      // print the material's answer to pick one that does not.
+                      << (d.sc2.look.flipbookUv ? " flipbookUV" : "")
+                      << " cells=" << d.sc2.look.flipbookColumns << "x"
+                      << d.sc2.look.flipbookRows;
+            // The material's own layers, raw. `uvMapping` is what
+            // `b_iUVMapping[slot]` is, and 6 is the flipbook; the flag word is
+            // printed beside it because 0x100 is documented as
+            // "particleUVFlipbook" by the community tools and this is the
+            // survey that says whether the two agree on real content.
+            //
+            // Printed even when nothing resolves. The first pass nested two
+            // ifs and fell silent on a material with no DIFFUSE layer, which
+            // reads exactly like a material with no flipbook — and
+            // Brightwing's three emitters are that shape.
+            std::cout << " matm=" << c.materialIndex;
+            const auto* mat = wf::io::M3StandardForMaterial(src, c.materialIndex);
+            if (!mat) {
+                std::cout << " NOT-STANDARD";
+            } else {
+                if (const auto* l0 =
+                        wf::io::M3LayerForSlot(*mat, wf::io::M3LayerSlot::Diffuse)) {
+                    std::cout << " uvMap=" << static_cast<int>(l0->uvMapping) << " lflags=0x"
+                              << std::hex << static_cast<wf::u32>(l0->flags) << std::dec
+                              << " cellFrac=" << d.sc2.look.flipbookColumnFraction << "x"
+                              << d.sc2.look.flipbookRowFraction << " tex=" << l0->texturePath;
+                } else {
+                    std::cout << " no-diffuse";
+                }
+                // Which slots the material actually fills, and which of them
+                // select the flipbook. The axis is per texture SLOT, so a
+                // material that samples an emissive layer and no diffuse still
+                // flipbooks if THAT layer says 6 — reading slot 0 alone cannot
+                // see it.
+                std::cout << " slots=";
+                for (wf::u32 s = 0; s < static_cast<wf::u32>(wf::io::M3LayerSlot::Count); ++s) {
+                    const auto* ls = wf::io::M3LayerForSlot(*mat, static_cast<wf::io::M3LayerSlot>(s));
+                    if (!ls || !wf::io::M3LayerActive(*ls))
+                        continue;
+                    std::cout << s;
+                    if (ls->uvMapping == ::whiteout::m3::UVMappingMode::ParticleFlipbook)
+                        std::cout << "*";
+                    std::cout << ",";
+                }
+            }
+            // What the settle actually produced. A registered emitter that
+            // holds nothing after 17 settle frames is the difference between
+            // "the conversion landed" and "the emitter runs", and every line
+            // above says only the first.
+            std::cout << " alive=" << em->TotalAlive();
+            // X6's two inputs: the model table a ModelParticles emitter picks
+            // from, and the regions a Mesh emitter is born on.
+            if (!d.childModelPaths.empty())
+                std::cout << " paths=" << d.childModelPaths.size() << "("
+                          << d.childModelPaths.front() << ")";
+            if (!d.sc2.emit.shapeRegions.empty())
+                std::cout << " regions=" << d.sc2.emit.shapeRegions.size();
+            // Only the bits a phase branches on, named. A dump of all 32 would
+            // be unreadable and is what the file already is.
+            const auto has = [&](::whiteout::m3::ParticleFlag f) {
+                return (c.flags & static_cast<wf::u32>(f)) != 0;
+            };
+            std::cout << " flags=";
+            if (has(::whiteout::m3::ParticleFlag::Sort))
+                std::cout << "Sort,";
+            if (has(::whiteout::m3::ParticleFlag::CollideTerrain))
+                std::cout << "Collide,";
+            if (has(::whiteout::m3::ParticleFlag::SpawnTrailingParticles))
+                std::cout << "Trail,";
+            if (has(::whiteout::m3::ParticleFlag::ModelParticles))
+                std::cout << "Model,";
+            if (has(::whiteout::m3::ParticleFlag::SimulateInit))
+                std::cout << "SimInit,";
+            if (has(::whiteout::m3::ParticleFlag::InheritParentVelocity))
+                std::cout << "Inherit,";
+            if (c.additionalFlags &
+                static_cast<wf::u32>(::whiteout::m3::ParticleAdditionalFlag::WorldSpace))
+                std::cout << "World,";
+            // What a stretched instance is sized by, and the links X5 routes
+            // requests and scale pushes along — a child index that names no
+            // emitter, or a push onto a child that is not there, only shows
+            // here.
+            std::cout << " tail=" << c.tailLength;
+            if (d.sc2.children.collisionSpawnIndex >= 0)
+                std::cout << " cspawn=" << d.sc2.children.collisionSpawnIndex << "("
+                          << d.sc2.children.collisionSpawnMin << "-"
+                          << d.sc2.children.collisionSpawnMax << "@"
+                          << d.sc2.children.collisionSpawnChance
+                          << (d.sc2.children.collisionChildIsWorldSpace ? ",world" : ",LOCAL")
+                          << ")";
+            if (d.sc2.children.trailLinkIndex >= 0)
+                std::cout << " trail=" << d.sc2.children.trailLinkIndex << "@"
+                          << d.sc2.children.trailChance;
+            if ((c.rotationFlags & 0x30u) != 0)
+                std::cout << " scalePush=0x" << std::hex << (c.rotationFlags & 0x30u) << std::dec;
+            // The squirt keys themselves while there are few enough to read, as
+            // `slot/stc:ms=amount@end` — the amount as the SIGNED value the burst
+            // sum reads, so a key that owes nothing shows as negative, and the
+            // track end a looping player wraps on.
+            if (squirtKeys != 0 && squirtKeys <= 8) {
+                std::cout << " keys=";
+                for (std::size_t s = 0; s < c.squirt.size(); ++s) {
+                    for (const auto& k : c.squirt[s]) {
+                        const auto raw = static_cast<wf::u16>(static_cast<wf::i32>(k.amount));
+                        std::cout << s << "/" << k.stc << ":" << k.timeMs << "="
+                                  << static_cast<wf::i16>(raw) << "@" << k.trackEnd << ",";
+                    }
+                }
+            }
+            std::cout << std::endl;
+        }
+        pipe.Shutdown();
+        return 0;
+    }
+#endif
     const i32 startSeq = ResolveSequenceSpec(seqs, anim.sequence);
     const i32 switchSeq = ResolveSequenceSpec(seqs, anim.switchSequence);
     const i32 layerSeq = ResolveSequenceSpec(seqs, anim.layerSequence);
@@ -1234,7 +1414,7 @@ static int RunChildModelCheck(whiteout::flakes::renderer::RenderService& rendere
               << " child-model emitter(s)" << std::endl;
     renderer.Particles().ForEachEmitter([&](const part::EmitterKey& k, const part::Emitter2& e) {
         if (k.output == part::ParticleOutput::ChildModel)
-            std::cout << "[cmcheck]   emitter " << k.id << " path='" << e.Desc().childModelPath
+            std::cout << "[cmcheck]   emitter " << k.id << " path='" << e.Desc().ChildModelPath()
                       << "' lifeSpan=" << e.Desc().lifeSpan << std::endl;
     });
     if (childEmitters == 0) {
@@ -1922,6 +2102,8 @@ int main(int argc, char* argv[]) {
             drawTraceAnim.noGlobals = true;
         } else if (std::strcmp(a, "--draw-trace-anim-list") == 0) {
             drawTraceAnim.list = true;
+        } else if (std::strcmp(a, "--draw-trace-particle-list") == 0) {
+            drawTraceAnim.particleList = true;
         } else if (std::strcmp(a, "--draw-trace-anim-probe") == 0) {
             drawTraceAnim.probe = true;
         } else if (std::strcmp(a, "--draw-trace-solvers") == 0) {

@@ -185,6 +185,7 @@ void ResolveSurfaceMaterial(const Model& model, u32 matmIndex,
                 out.textureId = it->second;
         }
         out.uvSource = ResolveUvSource(*layer);
+        out.particleFlipbookUv = layer->uvMapping == UVMappingMode::ParticleFlipbook;
         out.channels = static_cast<u8>(layer->colorType);
         out.wrapFlags = LayerWrapFlags(*layer);
         out.uvTransformId = io::M3UvTransformId(matIndex, static_cast<M3LayerSlot>(slot));
@@ -312,7 +313,28 @@ std::unique_ptr<M3SurfaceTable> BuildM3SurfaceTable(const Model& model,
             surfaces.push_back(s);
         }
     }
+
+    // And one per `PAR_` material ref, for the same reason. It follows the
+    // ribbon block rather than sharing it: the two id spaces are independent,
+    // so a model with three ribbons and two emitters gets five appended rows
+    // and each emitter still finds its own at `particleSurfaceBase + i`.
+    if (!model.particleEmitters.empty()) {
+        table->SetParticleSurfaceBase(static_cast<i32>(surfaces.size()));
+        for (const auto& par : model.particleEmitters) {
+            M3Surface s;
+            ResolveSurfaceMaterial(model, par.materialIndex, textureIndex, s);
+            surfaces.push_back(s);
+        }
+    }
     return table;
+}
+
+bool M3ParticleFlipbookUv(const M3Surface& surface) {
+    for (const auto& layer : surface.layers) {
+        if (layer.mode != 0)
+            return layer.particleFlipbookUv;
+    }
+    return false;
 }
 
 core::SurfaceClass M3ClassifySurface(const M3Surface& surface) {

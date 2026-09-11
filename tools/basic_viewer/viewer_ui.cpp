@@ -548,13 +548,14 @@ void ViewerUI::BuildM3ExportPopup() {
     ImGui::SameLine();
     ImGui::RadioButton(i18n::tr("dialog.m3.heroes"), &m3ExportProfile_, 1);
 
-    // The texture rows reuse the MDX popup's strings — they say nothing
-    // MDX-specific. No format row either: both profiles read `.dds`.
+    // The checkbox reuses the MDX popup's string; the hint does not, because a
+    // `.m3` names its textures by mod path and they go in a folder of their
+    // own. No format row either: both profiles read `.dds`.
     ImGui::Separator();
     ImGui::Checkbox(i18n::tr("dialog.mdx.export_textures"), &m3ExportTextures_);
     ImGui::BeginDisabled(!m3ExportTextures_);
     ImGui::TextDisabled("%s: dds", i18n::tr("dialog.mdx.convert_to"));
-    ImGui::TextDisabled("%s", i18n::tr("dialog.mdx.export_hint"));
+    ImGui::TextDisabled("%s", i18n::tr("dialog.m3.export_hint"));
     ImGui::EndDisabled();
 
     // The Warcraft III fold's two knobs; inert for every other source.

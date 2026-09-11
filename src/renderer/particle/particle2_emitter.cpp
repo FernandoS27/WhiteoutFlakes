@@ -1,6 +1,7 @@
 #include "renderer/particle/particle2_emitter.h"
 
 #include "renderer/particle/particle_geometry.h"
+#include "renderer/particle/sc2_tick.h"
 
 #include "whiteout/flakes/model_types.h" // FrameState::ParticleFrameState
 #include "whiteout/flakes/util/coordinate_system.h"
@@ -42,14 +43,183 @@ Emitter2::Emitter2() : desc_(DefaultDesc()) {
     SetSeed(kDefaultEmitterSeed);
 }
 
+Emitter2::~Emitter2() {
+    if (sc2_ && sc2PendingList_) {
+        std::erase_if(*sc2PendingList_, [rt = sc2_.get()](const Sc2PendingModel& entry) {
+            return entry.runtime == rt;
+        });
+    }
+}
+
 void Emitter2::SetDesc(std::shared_ptr<const EmitterDesc> desc) {
-    desc_ = (desc && desc->shape) ? std::move(desc) : DefaultDesc();
+    // A shapeless WC3/M2 desc is replaced, because `CreateParticle`
+    // dereferences `desc_->shape` unconditionally and a null there is a crash.
+    // An SC2 desc legitimately has none: its emission shape is `sc2.emit.shape`,
+    // a NUMBER the SC2 spawn kernels read, and `InternalUpdate` returns before
+    // `EmitStep` for an SC2 emitter so that dereference is unreachable.
+    //
+    // Without the family term this line silently swapped every SC2 desc for the
+    // default — which also reset `family` to Wc3, so the runtime below was never
+    // created either. Nothing crashed and every gate stayed green, because the
+    // emitters had become inert WC3 emitters that emit nothing.
+    const bool usable = desc && (desc->shape || desc->family == EmitterDesc::Family::Sc2);
+    desc_ = usable ? std::move(desc) : DefaultDesc();
+
+    // The one place `family` is read. Everything else tests `sc2_` — so a
+    // re-describe from one family to the other cannot leave a stale runtime
+    // behind, and no other touch point has to know the enum exists.
+    if (desc_->family == EmitterDesc::Family::Sc2) {
+        if (!sc2_)
+            sc2_ = std::make_unique<Sc2Runtime>();
+        // The pool is sized once, here. Retail's ceiling is
+        // `min(authored, 0x200000 / 464)` — a 2 MiB vertex arena over the
+        // 464-byte four-vertex stride — and the desc already carries it.
+        sc2_->store.Init(desc_->sc2.emit.maxParticles);
+        // The emission slots too, before anything can owe one a burst: the
+        // actor layer's first crossing arrives ahead of the first tick, and a
+        // burst queued on a slot that does not exist yet is dropped.
+        sc2_->slots.assign((std::max)(usize{1}, desc_->sc2.emit.slotBones.size()),
+                           Sc2Runtime::Slot{});
+        // The words `CParticleSystem::Init` derives from the record. Nothing
+        // set them before: every Euler emitter took the analytic path (0x10)
+        // and never left its spawn point, no emitter ever had noise (emitFlags
+        // 8), and the time-scale bits the clock reads were always clear. A
+        // reset rebuilds the clock, so it derives them again.
+        const Sc2InitWords words = Sc2InitRuntimeWords(desc_->sc2);
+        sc2_->clock.stateFlags = words.stateFlags;
+        sc2_->emitFlagsWord = words.emitFlags;
+        // The model-particle side state, with the store it indexes.
+        sc2_->host = this;
+        sc2_->pending = sc2PendingList_ ? sc2PendingList_ : &sc2_->ownPending;
+        const usize models =
+            desc_->sc2.Has(ParticleFlag::ModelParticles) ? sc2_->store.Capacity() : 0u;
+        sc2_->hasModel.assign(models, 0);
+        sc2_->modelPath.assign(models, 0);
+        sc2_->modelPose.assign(models, Sc2ModelPose{});
+        sc2_->modelDeaths.clear();
+        if (sc2_->emitMesh)
+            SetEmitMesh(sc2_->emitMesh);
+    } else {
+        sc2_.reset();
+    }
+
     spawn_.longitude = desc_->longitude;
     motion_.wind = desc_->motion.wind;
     motion_.drag = desc_->motion.drag;
     lifeSpan_ = desc_->lifeSpan;
     if (desc_->emission.squirtAtStart)
         flags_ |= kFlagNeedSquirt;
+}
+
+// ---- the dialect-neutral SC2 surface -------------------------------------
+// Each of these is a no-op while `sc2_` is null. That is not defensive: the
+// service and the actor layer call them on every emitter they hold without
+// asking what it is, which is the whole point of putting them on the base.
+
+void Emitter2::QueueSpawnRequest(const SpawnRequest& req) {
+    if (!sc2_)
+        return;
+    // Retail drops past the cap rather than growing the queue, and a dropped
+    // request is a particle that never spawns — reproduce the loss.
+    Sc2QueueSpawnRequest(sc2_->inbox, req);
+}
+
+void Emitter2::DrainSpawnRequests(std::vector<RoutedSpawnRequest>& out) {
+    if (!sc2_ || sc2_->outbox.empty())
+        return;
+    out.insert(out.end(), sc2_->outbox.begin(), sc2_->outbox.end());
+    sc2_->outbox.clear();
+}
+
+void Emitter2::QueueBurst(u32 slot, u32 count) {
+    if (!sc2_ || slot >= sc2_->slots.size())
+        return;
+    sc2_->slots[slot].burst += count;
+}
+
+void Emitter2::RequestPreRoll() {
+    if (sc2_)
+        sc2_->preRollPending = true;
+}
+
+void Emitter2::SetGroundQuery(GroundQuery q) {
+    if (sc2_)
+        sc2_->groundQuery = std::move(q);
+}
+
+void Emitter2::SetEmitMesh(std::shared_ptr<const EmitMesh> mesh) {
+    if (!sc2_)
+        return;
+    sc2_->emitMesh = std::move(mesh);
+    // The emitter's slot of retail's per-emitter-region table: the triangles of
+    // the regions this `PAR_` names. The mesh has one sub per region of the
+    // division, so a region id indexes it with no remap.
+    sc2_->meshTriangles.clear();
+    if (!sc2_->emitMesh)
+        return;
+    const EmitMesh& m = *sc2_->emitMesh;
+    for (const i32 region : desc_->sc2.emit.shapeRegions) {
+        if (region < 0 || static_cast<usize>(region) >= m.subs.size())
+            continue;
+        const EmitMesh::SubMesh& sub = m.subs[static_cast<usize>(region)];
+        for (u32 t = 0; t < sub.triCount; ++t)
+            sc2_->meshTriangles.push_back({(sub.firstTri + t) * 3u, 0u});
+    }
+}
+
+void Emitter2::SetEmitMeshPose(std::span<const Matrix44f> pose, std::span<const Matrix44f> invBind,
+                               const Matrix44f& toWorld) {
+    if (!sc2_)
+        return;
+    sc2_->emitPose = pose;
+    sc2_->emitInvBind = invBind;
+    sc2_->emitToWorld = toWorld;
+}
+
+void Emitter2::AttachSc2PendingList(Sc2PendingModels* list) {
+    sc2PendingList_ = list;
+    if (sc2_)
+        sc2_->pending = list ? list : &sc2_->ownPending;
+}
+
+void Emitter2::ServiceSc2PendingModel(i32 node) {
+    if (!sc2_ || node < 0 || static_cast<usize>(node) >= sc2_->hasModel.size())
+        return;
+    const usize n = static_cast<usize>(node);
+    const Sc2SpawnedElement& e = sc2_->store.elements[n];
+    const bool randomDirection =
+        (static_cast<u32>(desc_->sc2.rotationFlags) & 0x80u) != 0u;
+    Sc2PendingDraw draw;
+    if (!Sc2PendingSpawnDraw(sc2_->rng, e.deathTime, sc2_->clock.emitterTime,
+                             static_cast<u32>(desc_->childModelPaths.size()), randomDirection,
+                             draw))
+        return;
+    sc2_->modelPath[n] = draw.pathIndex;
+    if (draw.hasDirection) {
+        // Into the lane the quad path calls `gpuVelocity`, with its inverse
+        // mass zeroed in the same block — where retail writes it, and where a
+        // type-3 pose reads its spin axis back.
+        Sc2GpuVertex& v = sc2_->store.vertices[n];
+        v.velocity[0] = draw.direction.x;
+        v.velocity[1] = draw.direction.y;
+        v.velocity[2] = draw.direction.z;
+        v.invMass = 0.0f;
+    }
+    sc2_->hasModel[n] = 1;
+    sc2_->modelPose[n] = Sc2PoseModelParticle(
+        *sc2_, desc_->sc2, Sc2FromHostSpace(modelToWorld_, sc2_->actorWorldScale), node);
+    OnParticleBorn(static_cast<u32>(node));
+}
+
+void Emitter2::SetSc2Scene(const Matrix44f& worldToView, f32 actorWorldScale) {
+    if (!sc2_)
+        return;
+    const Sc2QuadCamera cam = Sc2CameraFromView(worldToView);
+    // Retail's three camera rows are right, view direction, up; the pose's
+    // type-0 basis is exactly them, so a model's +Y looks away from the eye
+    // and its SC2 front, −Y, faces it.
+    sc2_->camera = {cam.billboardRight, cam.direction, cam.billboardUp};
+    sc2_->actorWorldScale = actorWorldScale > 0.0f ? actorWorldScale : 1.0f;
 }
 
 void Emitter2::ResetParticles() {
@@ -71,6 +241,44 @@ void Emitter2::ResetParticles() {
     // The one-shot burst is owed again, exactly as SetDesc armed it at
     // registration: this emitter has not fired in the run that starts now.
     SetFlag(kFlagNeedSquirt, desc_->emission.squirtAtStart);
+
+    // After the shared death walk, not instead of it: model particles are
+    // child actors, and they are released by the OnParticleDied above.
+    if (sc2_) {
+        // A model particle's child actor is released through the death hook
+        // too, and one still waiting for its model has nothing to release —
+        // it simply leaves the pending list.
+        for (i32 node = sc2_->store.list.head; node >= 0;
+             node = sc2_->store.list.next[static_cast<usize>(node)]) {
+            if (static_cast<usize>(node) < sc2_->hasModel.size() &&
+                sc2_->hasModel[static_cast<usize>(node)] != 0)
+                OnParticleDied(static_cast<u32>(node));
+        }
+        std::fill(sc2_->hasModel.begin(), sc2_->hasModel.end(), u8{0});
+        sc2_->modelDeaths.clear();
+        if (sc2_->pending) {
+            std::erase_if(*sc2_->pending, [rt = sc2_.get()](const Sc2PendingModel& entry) {
+                return entry.runtime == rt;
+            });
+        }
+        sc2_->clock = Sc2EmitClock{};
+        sc2_->initState = Sc2InitState{};
+        sc2_->preRollPending = false;
+        sc2_->curPos = {0, 0, 0};
+        sc2_->store.Init(desc_->sc2.emit.maxParticles);
+        // The words `CParticleSystem::Init` derives from the record. Nothing
+        // set them before: every Euler emitter took the analytic path (0x10)
+        // and never left its spawn point, no emitter ever had noise (emitFlags
+        // 8), and the time-scale bits the clock reads were always clear. A
+        // reset rebuilds the clock, so it derives them again.
+        const Sc2InitWords words = Sc2InitRuntimeWords(desc_->sc2);
+        sc2_->clock.stateFlags = words.stateFlags;
+        sc2_->emitFlagsWord = words.emitFlags;
+        sc2_->inbox.clear();
+        sc2_->outbox.clear();
+        for (auto& slot : sc2_->slots)
+            slot = Sc2Runtime::Slot{};
+    }
 
     for (auto& t : trails_)
         t->ResetParticles();
@@ -136,8 +344,20 @@ void Emitter2::ApplyState(const model::FrameState::ParticleFrameState& st) {
 
     if (behavior_.perParticleLifespan)
         lifeSpan_ = st.lifeSpan;
-    if (behavior_.emitAlongPath || behavior_.inheritEmitterVelocity)
+    // SC2 always needs it: the spawn sweep distributes a frame's particles
+    // along `prevPos → curPos` unconditionally, so the two WC3-family reasons
+    // to track the emitter's travel are not the only ones. P1 also copies the
+    // sampled `PAR_` tracks into the runtime's frame block here.
+    if (sc2_ || behavior_.emitAlongPath || behavior_.inheritEmitterVelocity)
         SetWorldPosition(st.worldPosition);
+    // The whole `PAR_` sample set, copied once. Every EMIT and SPAWN input the
+    // tick builds is read out of it, so a stage never reaches back into the
+    // frame state and the tick can be driven from a test without one.
+    if (sc2_) {
+        sc2_->frame = st.sc2;
+        // A Bezier channel's control point, out of this frame's fresh samples.
+        Sc2ConvertBezierKeys(sc2_->frame, desc_->sc2);
+    }
 
     SetVisible(st.visibility > 0.0f && !st.squirting);
     modelToWorld_ = CoordinateSystem::ConvertTransform(CoordinateSystem::Default(),
@@ -252,6 +472,14 @@ void Emitter2::AdvanceMultiTex(u32 poolIndex, f32 dt) {
 }
 
 void Emitter2::Sync() {
+    if (sc2_) {
+        // SC2 sizes its pool from the authored `maxParticles` cap, not from
+        // `1.15 * rate * lifespan` — an emitter whose rate is momentarily zero
+        // still owns its slots, and the heuristic below would shrink it to
+        // nothing. P1 sizes here; until then an SC2 emitter simply does not
+        // reach the WC3 estimate.
+        return;
+    }
     if (emissionRate_ <= 0.0f || desc_->lifeSpan <= 0.0f)
         return;
     // The lifespan that actually decides how long a slot stays occupied. Under
@@ -556,6 +784,14 @@ void Emitter2::TickEmitterVelocity(f32 dt) {
 }
 
 void Emitter2::InternalUpdate(f32 elapsed, f32 emissionScaler) {
+    if (sc2_) {
+        // The whole sub-step loop is SC2's own: its own clocks, its own
+        // 60/30/15 Hz cadence capped at 100 steps, its own spawn sweep. None
+        // of the dt policy below applies, so this returns rather than falling
+        // through.
+        TickSc2(elapsed, emissionScaler);
+        return;
+    }
 
     if (elapsed < 0.0f)
         elapsed = 0.0f;
@@ -647,8 +883,90 @@ void Emitter2::Update(f32 elapsed, f32 emissionScaler) {
     InternalUpdate(elapsed, emissionScaler);
 }
 
+void Emitter2::TickSc2(f32 elapsed, f32 emissionScaler) {
+    if (elapsed < 0.0f)
+        elapsed = 0.0f;
+
+    Sc2TickFrame f;
+    // Milliseconds as an integer, because the time scale multiplies it while it
+    // still is one — which is where a negative scale stops being a small
+    // backwards step and becomes a 4.29-billion-ms one (RE §5.1).
+    f.dtMs = static_cast<i32>(elapsed * 1000.0f + 0.5f);
+    sc2_->wallMs += f.dtMs;
+    f.nowMs = sc2_->wallMs;
+    f.frameIndex = ++sc2_->frameIndex;
+    f.timeScale = 1.0f;
+    f.emissionScaler = emissionScaler;
+    f.modelPaused = false;
+    f.quality = 4;
+    // The game's emission scale (`Model_Set*EmissionScale`), which a viewer
+    // never sets — not `unitScale_`. The world scale is already in the world
+    // matrix, so feeding it here multiplied every count and every shape extent
+    // by 100 (design §8).
+    f.elemScaleX = 1.0f;
+    f.worldMatrix = modelToWorld_;
+    f.boneMatrix = modelToWorld_;
+    f.hasBone = false;
+    f.worldPos = worldPos_;
+    // Renderer units per SC2 unit, which the tick takes off every host-space
+    // input so the runtime runs in SC2 units; BUILD puts it back.
+    f.hostScale = sc2_->actorWorldScale;
+
+    Sc2TickEmitter(*sc2_, desc_->sc2, f);
+
+    // The children whose particles died holding one, in the order they died.
+    for (const i32 node : sc2_->modelDeaths)
+        OnParticleDied(static_cast<u32>(node));
+    sc2_->modelDeaths.clear();
+
+    // Not registered with a service, so nobody else walks this emitter's
+    // pending models: it does, once its own frame is done.
+    if (sc2_->pending == &sc2_->ownPending) {
+        for (usize i = 0; i < sc2_->ownPending.size(); ++i)
+            ServiceSc2PendingModel(sc2_->ownPending[i].node);
+        sc2_->ownPending.clear();
+    }
+}
+
 i32 Emitter2::BuildGeometry(const BuildGeometryInput& in, std::vector<Vertex>& out) const {
+    if (sc2_)
+        return BuildSc2Geometry(*this, in, out);
     return BuildEmitterGeometry(*this, in, out);
+}
+
+i32 Emitter2::BuildSc2Geometry(const Emitter2& e, const BuildGeometryInput& in,
+                               std::vector<Vertex>& out) {
+    if (!in.worldToView || e.sc2_->store.AliveCount() == 0)
+        return 0;
+    const std::size_t start = out.size();
+
+    // The runtime's space: the transform without the host's world scale, as the
+    // tick handed it to the simulation. The corners go back into the host's.
+    const f32 hostScale = e.sc2_->actorWorldScale;
+    Sc2BatchFrame frame;
+    frame.world = Sc2Mat16(Sc2FromHostSpace(e.modelToWorld_, hostScale));
+    frame.emitterTime = e.sc2_->clock.emitterTime;
+    // No model-instancing node: `b_useModelInstancing` is a render-context
+    // capability we do not turn on, so the instance transform stays identity.
+    Sc2WriteQuadBatch(e.sc2_->batch, Sc2BatchDescFrom(e.desc_->sc2), frame);
+
+    // Both UV arms are per texture SLOT and live on the MATERIAL, not on
+    // `PAR_`. The flipbook one is resolved at load into the desc; the random
+    // offset stays off because the `.m3` field behind it is unidentified
+    // (RE §16.29) — a guessed source would shift every UV by a random byte
+    // pair, which is far worse than not offsetting at all.
+    const Sc2QuadFlags flags =
+        Sc2QuadFlagsFrom(e.desc_->sc2, e.desc_->sc2.look.flipbookUv, false);
+    const Sc2SortKey sort = !e.desc_->sc2.Has(ParticleFlag::Sort)         ? Sc2SortKey::None
+                            : e.desc_->sc2.Has(ParticleFlag::SortHeight) ? Sc2SortKey::Height
+                                                                        : Sc2SortKey::Depth;
+    // The eye into SC2 units with everything else; the directions carry no scale.
+    Sc2QuadCamera camera = Sc2CameraFromView(*in.worldToView);
+    if (hostScale > 0.0f && hostScale != 1.0f)
+        camera.eye = {camera.eye.x / hostScale, camera.eye.y / hostScale, camera.eye.z / hostScale};
+    Sc2BuildQuads(e.sc2_->store, e.sc2_->batch, camera, flags,
+                  e.desc_->sc2.Has(ParticleFlag::SortReverse), out, sort, hostScale);
+    return static_cast<i32>(out.size() - start);
 }
 
 } // namespace whiteout::flakes::renderer::particle

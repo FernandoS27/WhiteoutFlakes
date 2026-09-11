@@ -3,6 +3,7 @@
 #include "gfx/gfx.h"
 #include "whiteout/flakes/types.h"
 
+#include <array>
 #include <string>
 
 namespace whiteout::flakes::io {
@@ -20,6 +21,10 @@ inline constexpr const char* kPortraitIblPath =
 
 inline constexpr const char* kDungeonIblPath = "Environment/EnvironmentMap/Dungeon/Night_IBL.dds";
 inline constexpr const char* kSunsetIblPath = "Environment/EnvironmentMap/Northrend/Sunset_IBL.dds";
+
+/// For each Direct3D cube face, the layer a shipped Warcraft III probe stores it
+/// in: the container writes -X and -Z swapped.
+inline constexpr std::array<u32, 6> kBlizzardProbeFaceOrder = {0, 5, 2, 3, 4, 1};
 
 struct LoadedEnvProbe {
     gfx::TextureHandle handle = gfx::TextureHandle::Invalid;

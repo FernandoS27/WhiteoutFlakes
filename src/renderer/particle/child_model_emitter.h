@@ -47,19 +47,28 @@ protected:
     // pool — PE1 needs none, an M2 model particle needs its orientation.
     virtual Matrix44f TransformFor(u32 poolIndex) const;
 
-    // Whether the child should draw this frame. Only twinkle answers anything
-    // but 1, and only M2 has twinkle.
+    // Whether the child should draw this frame. M2's twinkle answers 0 while a
+    // particle is blinked off, and SC2 answers 0 for a pose it cannot place.
     virtual f32 VisibilityFor(u32 poolIndex) const {
         return 1.0f;
     }
 
-private:
+    // Which of `EmitterDesc::childModelPaths` this particle became. Every
+    // dialect but SC2 authors one model; an SC2 `PAR_` draws an index per
+    // particle in its pending walk (RE §16.16), before the birth fires.
+    virtual u32 PathIndexFor(u32 poolIndex) const {
+        return 0;
+    }
+
+    // Protected rather than private for the SC2 output, whose particles live
+    // in the SC2 runtime's store instead of the pool: it walks that store for
+    // its Transform events, and the handles are keyed by store node.
     ModelId owner_;
     i32 emitterId_;
     HandleAllocator allocHandle_;
 
-    // Index-parallel with the pool; Particle2 is frozen at 32 bytes so the
-    // handle cannot live inside it. 0 means "no live child".
+    // Index-parallel with the pool (or the SC2 store); Particle2 is frozen at
+    // 32 bytes so the handle cannot live inside it. 0 means "no live child".
     std::vector<u32> childHandles_;
 
     std::vector<ChildModelEvent> pending_;

@@ -89,6 +89,16 @@ param(
     # draws the wrong shape still records a stable, wrong golden.
     [switch]$M3Ribbon,
 
+    # Track C — the `.m3` *particle* arm (SC2_PARTICLE_PLAN.md §5). Same corpus
+    # root as -M3, its own corpus file (`PAR_` carriers picked by CONTENT, from
+    # the X2 survey) and baselines (`m3par`). Like -M3Anim its baselines are
+    # PROGRESSIVE: each phase of the plan legitimately changes what an SC2
+    # emitter draws, so the commit that re-records has to name the phase. The
+    # vacuity anchor is `sc2par=` in the `[dtrace]` line — zero means the M3
+    # producer never drew a particle and the arm proved nothing, however
+    # stable its golden.
+    [switch]$M3Particle,
+
     # GATE G6 — the `.m3` *material* arm (M3_SIMPLE_MATERIAL_DESIGN.md §7).
     # Same corpus root as -M3, its own corpus file and baselines (`sc2mat`).
     # Like -M3Anim these baselines are PROGRESSIVE: each material phase
@@ -195,8 +205,8 @@ if (-not (Test-Path $BaselineDir)) {
 
 $mode = if ($Hd) { 'hd' } else { 'sd' }
 if ($Unlit) { $mode += '_unlit' }
-if ((@($M2, $M3, $M3Anim, $M3Ribbon, $Sc2Mat, $D3, $Gltf) | Where-Object { $_ }).Count -gt 1) {
-    Write-Error '-M2, -M3, -M3Anim, -M3Ribbon, -Sc2Mat, -D3 and -Gltf are separate arms: pass one of them.'
+if ((@($M2, $M3, $M3Anim, $M3Ribbon, $M3Particle, $Sc2Mat, $D3, $Gltf) | Where-Object { $_ }).Count -gt 1) {
+    Write-Error '-M2, -M3, -M3Anim, -M3Ribbon, -M3Particle, -Sc2Mat, -D3 and -Gltf are separate arms: pass one of them.'
     exit 2
 }
 if ($Solvers -and -not $M3Anim) {
@@ -253,6 +263,22 @@ if ($M3Ribbon) {
     # A ribbon pre-rolls a trail at spawn and then grows it frame by frame; the
     # 30-frame default is too short to fill and settle the strip, so match
     # -M3Anim's half-second capture. The corpus `seq=` clips are written for it.
+    if (-not $PSBoundParameters.ContainsKey('Frames')) {
+        $Frames = 120
+    }
+}
+if ($M3Particle) {
+    $mode = 'm3par'
+    if (-not $PSBoundParameters.ContainsKey('CorpusRoot')) {
+        $CorpusRoot = 'C:/Projects/WhiteoutLib/Corpus'
+    }
+    if (-not $PSBoundParameters.ContainsKey('CorpusFile')) {
+        $CorpusFile = "$PSScriptRoot/../tools/particle_diff/corpus_m3_particle.txt"
+    }
+    # An emitter fills over its particles' lifetime and then reaches a steady
+    # state; the 30-frame default catches most carriers mid-fill, where the
+    # count still depends on exactly which frame the capture stopped on. Half a
+    # second, like -M3Anim and -M3Ribbon, and the `seq=` clips are written for it.
     if (-not $PSBoundParameters.ContainsKey('Frames')) {
         $Frames = 120
     }
@@ -331,9 +357,10 @@ $entries = Get-Content $CorpusFile |
                 }
             }
         }
-        # The ribbon arm shares this scenario grammar: every carrier names the
-        # `seq=` clip that fires its ribbon. Its corpus paths have no spaces.
-        if ($M3Anim -or $M3Ribbon) {
+        # The ribbon and particle arms share this scenario grammar: a carrier
+        # names the `seq=` clip that fires its emitter. Their corpus paths have
+        # no spaces.
+        if ($M3Anim -or $M3Ribbon -or $M3Particle) {
             $tok = $line -split '\s+'
             $e.Path = $tok[0]
             for ($t = 1; $t -lt $tok.Count; $t++) {

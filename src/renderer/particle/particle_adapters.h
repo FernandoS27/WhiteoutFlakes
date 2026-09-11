@@ -15,6 +15,7 @@
 #include "whiteout/flakes/model_types.h"
 
 #include <memory>
+#include <span>
 
 namespace whiteout::flakes::renderer::particle {
 
@@ -32,6 +33,22 @@ DescFromWc3ChildModelConfig(const model::PE1EmitterConfig& cfg);
 // HDR profiles need and the gamma ones must not have.
 std::shared_ptr<const EmitterDesc> DescFromM2Config(const M2ParticleEmitterConfig& cfg,
                                                     bool linearColor);
+
+// StarCraft II `PAR_` (`Sc2ParticleEmitterConfig`) — the Family::Sc2 desc,
+// including the load-time derivations `Init` performs: the GPU/CPU motion
+// split (OP1), the legacy Bezier promotions, and the mid-time clamp.
+//
+// `siblings` is the whole emitter list this one came from, and it is here for
+// one reason: `collisionSpawnIndex` names another emitter whose SPACE the MOVE
+// stage needs, and resolving it now is what keeps that stage from looking an
+// emitter up per collision (design R4). Out-of-range indices resolve to the
+// default rather than being dropped — the child link is the loader's business.
+// Returned MUTABLE, unlike its siblings: the loader stamps `m3Surface` and
+// `priorityPlane` from the surface table before handing it to SetDesc, which
+// takes it as const. Freezing it here would only buy a const_cast there.
+std::shared_ptr<EmitterDesc>
+DescFromSc2ParticleConfig(const effects::Sc2ParticleEmitterConfig& cfg,
+                          std::span<const effects::Sc2ParticleEmitterConfig> siblings);
 
 // The frame state a trail emitter (M2 RPID) runs on for its whole life. Its
 // record's tracks are never walked — the model they came from is never placed —

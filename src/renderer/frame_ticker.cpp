@@ -606,7 +606,20 @@ void FrameTicker::DriveChildModels() {
             }
 #endif
 
-            const std::string& path = em->Desc().childModelPath;
+            // A StarCraft II `PAR_` names a TABLE, and the pending walk drew
+            // the row this particle became (RE §16.16). The loader resolves an
+            // `.m3` by path, as it resolves an `.m2` model particle below.
+            if (em->Desc().family == particle::EmitterDesc::Family::Sc2) {
+                const auto& paths = em->Desc().childModelPaths;
+                if (ev.pathIndex >= paths.size())
+                    break;
+                if (auto* child = rs_.Loader().SpawnModelParticle(*owner, paths[ev.pathIndex],
+                                                                  ev.transform, ev.childHandle))
+                    child->spawnEmitterId = ev.emitterId;
+                break;
+            }
+
+            const std::string& path = em->Desc().ChildModelPath();
             if (path.empty())
                 break;
 

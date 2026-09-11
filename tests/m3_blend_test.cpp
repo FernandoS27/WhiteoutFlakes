@@ -238,7 +238,7 @@ TEST_CASE("A step track holds its left key", "[m3blend]") {
     REQUIRE(Translation(EvalAt(a, {Clip(0, 1000)}), 0).x == Approx(50.0f));
 }
 
-TEST_CASE("interpType 0 still interpolates — it is not an interp type", "[m3blend]") {
+TEST_CASE("interpType 0 still interpolates - it is not an interp type", "[m3blend]") {
     // The `.m3a` case, and the reason Jaina juddered. A model with no sequences
     // of its own ships every bone AnimRef with that u16 zeroed, because the
     // exporter had no track to number; the tracks arrive later from an attached

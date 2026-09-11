@@ -1,11 +1,14 @@
 #pragma once
 
 // ============================================================================
-// The ribbon vertex-shader math, on the CPU.
+// The SC2 element vertex-shader math, on the CPU.
 //
 // Retail runs interpolation / twist / frame / spline math in the vertex shader
-// (SC2_RIBBON_RE.md §4.3); this host renderer builds ribbon strips on the CPU,
-// so the same math lives here. It is a transcription of the shipped `.fx`
+// (SC2_RIBBON_RE.md §4.3); this host renderer builds strips on the CPU, so the
+// same math lives here. Element math, not ribbon math: `InterpolateValue`,
+// `MakeRotation` and `CalculateDisplacementAndVelocity` are what a `PAR_`
+// particle needs as much as a `RIB_` segment, which is why this lives in
+// `sc2/` and both dialects include it (SC2_PARTICLE_DESIGN.md R6). It is a transcription of the shipped `.fx`
 // source (`Ribbon.fx` + `RibbonParticleCommon.fx` + `VSElementUtils.fx` +
 // `Common.fx` + `VSUtils.fx`) in the SOURCE's operation order — the O12 oracle
 // gate (o12_vsmath.json, recorded from `refimpl_vs.py`, the same transcription
@@ -19,9 +22,10 @@
 
 #include "whiteout/flakes/types.h"
 
+#include <array>
 #include <cmath>
 
-namespace whiteout::flakes::renderer::ribbon::vs {
+namespace whiteout::flakes::renderer::sc2::vs {
 
 using whiteout::Vector3f;
 
@@ -108,10 +112,23 @@ inline f32 InterpolateValue(f32 age, f32 v0, f32 v1, f32 v2, f32 mid, f32 invMid
         else
             ret = Lerp(v1, v2, (age - mid) / (1.0f - mid));
     } else if (mode == 1) {
-        if (age < mid)
-            ret = Lerp(v0, v1, SmoothStep(age * invMid));
-        else
-            ret = Lerp(v1, v2, SmoothStep((age - mid) / (1.0f - mid)));
+        // NOT `Lerp(v0, v1, SmoothStep(s))`, and deliberately unlike the float3
+        // overload below. The `.fx` source spells both `v0 + smoothstep(s)·(v1
+        // − v0)`, and the shipped code does that for the vector evaluator
+        // (`EvalAnimCurve2D` builds the factor first, then lerps four lanes)
+        // while the SCALAR one groups it `((v1 − v0)·(s·s))·(3 − 2s) + v0`. In
+        // float32 that is a different number on 17 of OP10's 530 mode-1
+        // vectors — and identical in every other mode, which is why nothing
+        // noticed. This renderer builds on the CPU, so the CPU function is the
+        // authority; O12's own vectors do not separate the two groupings, so
+        // the ribbon stays bit-exact through this change.
+        if (age < mid) {
+            const f32 s = age * invMid;
+            ret = (((v1 - v0) * (s * s)) * ((s * -2.0f) + 3.0f)) + v0;
+        } else {
+            const f32 s = (age - mid) / (1.0f - mid);
+            ret = (((v2 - v1) * (s * s)) * ((s * -2.0f) + 3.0f)) + v1;
+        }
     } else if (mode == 3) {
         const f32 t0 = mid - hold;
         const f32 t1 = mid + hold;
@@ -122,17 +139,20 @@ inline f32 InterpolateValue(f32 age, f32 v0, f32 v1, f32 v2, f32 mid, f32 invMid
         else
             ret = Lerp(v1, v2, (age - t1) / (1.0f - t1));
     } else if (mode == 4) {
-        // Value substitution + re-normalized age + saturate (the scalar shape).
+        // Value substitution plus a re-normalised age. The clamp belongs to the
+        // UPPER piece alone — the shipped code saturates there and hands the
+        // lower piece its raw `age / (mid − hold)`. That only ever differs when
+        // `hold > mid` makes the divisor negative, which is exactly what OP10's
+        // (mid 0.1, hold 0.15) row is for.
         const f32 t0 = mid - hold;
         const f32 t1 = mid + hold;
         if (age < t0) {
             age = age / t0;
             v2 = v1;
         } else {
-            age = (age - t1) / (1.0f - t1);
+            age = Saturate((age - t1) / (1.0f - t1));
             v0 = v1;
         }
-        age = Saturate(age);
         ret = Bezier(v0, v1, v2, age);
     }
     return ret;
@@ -220,6 +240,29 @@ inline Vector3f MulVecMat3(const Vector3f& v, const Mat3& m) {
     out.y = (v.x * m.m[0][1] + v.y * m.m[1][1]) + v.z * m.m[2][1];
     out.z = (v.x * m.m[0][2] + v.y * m.m[1][2]) + v.z * m.m[2][2];
     return out;
+}
+
+/// HLSL `mul(float4(p, 1), m).xyz` against a ROW-MAJOR float4x4, in the
+/// shader's association: `((p.x*m0 + p.y*m1) + p.z*m2) + m3`.
+///
+/// A flat 16-float array rather than `Matrix44f` on purpose — the convention
+/// is the whole content of this function, and a type that could be read either
+/// way would hide it.
+inline Vector3f MulPointMat4(const Vector3f& p, const std::array<f32, 16>& m) {
+    Vector3f out{};
+    out.x = ((p.x * m[0] + p.y * m[4]) + p.z * m[8]) + m[12];
+    out.y = ((p.x * m[1] + p.y * m[5]) + p.z * m[9]) + m[13];
+    out.z = ((p.x * m[2] + p.y * m[6]) + p.z * m[10]) + m[14];
+    return out;
+}
+
+/// `mul(v, (float3x3)m)` — the upper-left 3×3, translation dropped.
+inline Vector3f MulVecMat4As3(const Vector3f& v, const std::array<f32, 16>& m) {
+    Mat3 r{};
+    for (usize i = 0; i < 3; ++i)
+        for (usize j = 0; j < 3; ++j)
+            r.m[i][j] = m[4 * i + j];
+    return MulVecMat3(v, r);
 }
 
 // -- VSElementUtils.fx:15 — the analytic exponential-drag closed form --------
@@ -329,4 +372,4 @@ inline Frame BuildFrame(int ribbonType, Vector3f tangent, const Vector3f& up,
     return f;
 }
 
-} // namespace whiteout::flakes::renderer::ribbon::vs
+} // namespace whiteout::flakes::renderer::sc2::vs

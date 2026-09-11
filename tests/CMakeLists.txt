@@ -183,6 +183,16 @@ if(WDX_ENABLE_M3)
     # appended per-RIB_ block, and the HotS corpus registration sweep (which
     # is what catches the emitterShape/ribbonType label swap).
     wdx_add_test(sc2_ribbon_sim_test sc2_ribbon_sim_test.cpp)
+    # The SC2 particle module against the same kind of oracle:
+    # `tools/sc2_particle_oracle/` recorded these from the 4.8 client under
+    # Unicorn, and this replays them with no emulator at test time.
+    wdx_add_test(sc2_particle_oracle_test sc2_particle_oracle_test.cpp)
+    target_compile_definitions(sc2_particle_oracle_test PRIVATE
+        WDX_SC2_PARTICLE_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../tools/sc2_particle_oracle/golden")
+    # SC2 particle load plumbing: the conversion rules, the appended per-PAR_
+    # surface block, and the registration sweep over BOTH corpora (which is
+    # what catches a PARC copy list read as an emitter list).
+    wdx_add_test(sc2_particle_sim_test sc2_particle_sim_test.cpp)
 endif()
 if(WDX_ENABLE_D3)
     # Gates D3-G1 (geometry in range) and D3-G2 (the two bind poses, and the

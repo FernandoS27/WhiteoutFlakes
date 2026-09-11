@@ -60,6 +60,12 @@ struct SpawnParams {
     // Empty for every other generator, which is also what makes an unresolved
     // table a silent no-spawn rather than a crash.
     std::span<const ::whiteout::flakes::renderer::model::FrameState::BoneSpawn> boneTable;
+
+    // What the SC2 shapes read; null for every other family, and null is what
+    // keeps this a one-pointer growth on a struct the WC3 path touches on
+    // every spawn. Owned by Sc2Runtime and re-pointed per spawn, like
+    // `boneTable` above. See sc2_runtime.h.
+    const struct Sc2SpawnInputs* sc2 = nullptr;
 };
 
 // CGeneratorAniProp::MIN_ZSOURCE.
@@ -68,6 +74,11 @@ inline constexpr f32 kMinZSource = 0.001f;
 struct SpawnSample {
     Vector3f localPos{0, 0, 0};
     Vector3f localVel{0, 0, 0};
+    // Surface normal at the spawn point, for the shapes that have one. The WC3
+    // and WoW shapes never write it and `CreateParticle` never reads it, so it
+    // stays exactly zero on those paths; SC2's mesh shape writes it and its
+    // velocity type 4 emits along it.
+    Vector3f normal{0, 0, 0};
 };
 
 // Speed draw, shared by every shape. It comes off the same stream as the

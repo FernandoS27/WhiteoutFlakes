@@ -252,12 +252,15 @@ void ExportTextures(const MdxExportRequest& request, ::whiteout::mdx::Model& mod
         // leaves the model naming the file a user can drop in by hand.
         texture.fileName = ToMdxPath(relative);
 
+        // A baked map is written over any file already there: that file is an
+        // earlier export's bake, and keeping it hides every fix to the bake.
+        const bool isBaked = baked.find(static_cast<u32>(i)) != baked.end();
         std::error_code ec;
-        if (fs::exists(outFile, ec)) {
+        if (!isBaked && fs::exists(outFile, ec)) {
             ++report.texturesSkipped;
             continue;
         }
-        if (request.provider == nullptr && baked.find(static_cast<u32>(i)) == baked.end()) {
+        if (request.provider == nullptr && !isBaked) {
             ++report.texturesFailed;
             continue;
         }

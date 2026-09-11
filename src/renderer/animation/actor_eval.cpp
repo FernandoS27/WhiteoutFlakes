@@ -23,6 +23,7 @@
 #endif
 #include "particle/particle_service.h"
 #include "particle/rnd_seed.h"
+#include "particle/sc2_compose.h"
 #include "particle/splat_service.h"
 #include "ribbon/ribbon_service.h"
 #include "scene_manager.h"
@@ -107,7 +108,8 @@ void ApplyRibbonFrameStates(Actor& mi, const FrameState& state, ribbon::RibbonSe
 }
 
 void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
-                              particle::ParticleService& particles, const Vector3f& camPos) {
+                              particle::ParticleService& particles, const Vector3f& camPos,
+                              const Matrix44f& view, i32 frameDtMs) {
     // WoW fades an emitter's rate with distance, measured once per MODEL from
     // its world transform — not per emitter from the bone the emitter rides.
     // Every dialect but WoW's ignores the value entirely.
@@ -146,6 +148,38 @@ void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
         // is per model and the emitter has no route to the FrameState.
         if (ps.boneGenerator)
             em->SetBoneSpawnTable(state.boneSpawnTable);
+
+        if (em->Desc().family == particle::EmitterDesc::Family::Sc2) {
+            // What a model particle's pose reads from the scene, and the
+            // actor's world scale it runs its SC2 units against.
+            em->SetSc2Scene(view, mi.worldScale);
+            // Shape 7 is born on the live surface. Node matrices, not the
+            // palette's offsets, for the reason the Diablo III push gives:
+            // these were written by ApplyBoneMatrices at the top of this pass.
+            if (em->Desc().sc2.emit.shape == static_cast<u8>(particle::Sc2SpawnShape::Mesh)) {
+                const auto data = mi.render.skinning.SharedData();
+                em->SetEmitMeshPose(mi.render.skinning.NodeMatrices(),
+                                    data ? std::span<const Matrix44f>(data->inverseBindMatrices)
+                                         : std::span<const Matrix44f>{},
+                                    mi.ScaledWorldTransform());
+            }
+        }
+
+        // StarCraft II's squirt keys: a burst when a playhead steps over a
+        // key, which takes last frame's cursors — actor memory, like the WC3
+        // squirt edge below. Every player the model is playing, not the top
+        // layer alone.
+        if (em->Desc().family == particle::EmitterDesc::Family::Sc2 &&
+            i < mi.render.sc2ParticleClocks.size()) {
+            const particle::Sc2Crossing crossing = particle::Sc2CrossSquirtKeys(
+                em->Desc().sc2, state.sc2AnimPlayers, mi.render.sc2ParticleClocks[i], frameDtMs);
+            for (usize s = 0; s < crossing.bursts.size(); ++s) {
+                if (crossing.bursts[s] != 0)
+                    em->QueueBurst(static_cast<u32>(s), crossing.bursts[s]);
+            }
+            if (crossing.preRoll)
+                em->RequestPreRoll();
+        }
 
         // The squirt edge (rate crossing zero) is actor state, not emitter
         // state: it needs last frame's rate, which lives on the actor.
@@ -340,11 +374,10 @@ void ApplyD3ParticleFrames(Actor& mi, const FrameState& state,
         // together. Without this a particle draws at 1/17th of its authored
         // size and its whole flight path shrinks to a clump on the bone.
         d3->SetUnitScale(mi.worldScale);
-        // Render modes 9 and 10 conform their quads to the ground. The host's
-        // terrain if it registered one, otherwise the grid — the same query
-        // terrain IK plants feet on, so a decal and a foot agree about where
-        // the floor is.
-        d3->SetGroundQuery(ctx.queryGround);
+        // Render modes 9 and 10 conform their quads to the ground, through the
+        // query the scene's particle service installs on every emitter it holds
+        // — once, and again only when the host replaces it — so it is not
+        // copied into the emitter here every frame.
         // Render modes 0 and 13 turn a spawned CHILD ACTOR to the camera, and
         // that decision is made at emit rather than at draw, so the emitter has
         // to be holding the view direction before it emits.
@@ -431,7 +464,8 @@ void Actor::ApplyFrameState(const FrameState& state, i32 localTimeMs, const Acto
     render.ApplyGeosetStates(state);
     render.ApplyLayerStates(state);
     if (ctx.particles)
-        ApplyParticleFrameStates(*this, state, *ctx.particles, ctx.camPos);
+        ApplyParticleFrameStates(*this, state, *ctx.particles, ctx.camPos, ctx.view,
+                                 ctx.frameDtMs);
     if (ctx.ribbons)
         ApplyRibbonFrameStates(*this, state, *ctx.ribbons, ctx.queryGround);
     if (ctx.particles)

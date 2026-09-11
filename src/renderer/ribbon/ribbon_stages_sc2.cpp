@@ -18,20 +18,11 @@ namespace whiteout::flakes::renderer::ribbon::sc2 {
 
 namespace {
 
-// LOD tables, indexed [5*row + quality] (O3 golden o3_lodtables). The reduce
-// row scales the emission rate; a nonzero cut byte suppresses emission whole.
-constexpr f32 kLodReduce[20] = {
-    1.0f, 1.0f, 1.0f, 1.0f, 1.0f,       // row 0
-    0.75f, 1.0f, 1.0f, 1.0f, 1.0f,      // row 1
-    0.5f, 0.75f, 1.0f, 1.0f, 1.0f,      // row 2
-    0.25f, 0.5f, 0.75f, 1.0f, 1.0f,     // row 3
-};
-constexpr u8 kLodCut[20] = {
-    0, 0, 0, 0, 0,
-    1, 0, 0, 0, 0,
-    1, 1, 0, 0, 0,
-    1, 1, 1, 0, 0,
-};
+// The LOD tables live in sc2/sc2_element.h: emission LOD is element LOD, and
+// the particle dialect reads the same two rows.
+using ::whiteout::flakes::renderer::sc2::kLodCut;
+using ::whiteout::flakes::renderer::sc2::kLodReduce;
+using ::whiteout::flakes::renderer::sc2::LodIndex;
 
 constexpr f32 kFltMax = 3.4028235e38f; // dword_103AAD5F0
 constexpr f32 kStartBlend = 1.0f;      // startBlend (dword_103AD52E0)
@@ -40,45 +31,7 @@ constexpr f32 kHeadUGate = 1e-3f;      // dword_103BC8C10
 constexpr f32 kDegToRad = 0.017453292f;// dword_103C472B8
 constexpr f32 kMsPerSec = 1000.0f;     // dword_103C45910
 
-i32 lodIndex(i32 row, i32 quality) {
-    return 5 * row + quality;
-}
-
 } // namespace
-
-f32 Sc2SampleWave(u32 type, f32 phase, f32 amp) {
-    switch (type) {
-    case 1:
-        return std::sin(phase) * amp;
-    case 2:
-        return std::cos(phase) * amp;
-    case 4: {
-        // Square: ±amp about the half-period (M3_SampleAnimValue case 4).
-        const f32 frac = phase - std::floor(phase);
-        return (frac > 0.5f) ? -amp : amp;
-    }
-    case 3:
-        // Sawtooth (M3_SampleAnimValue case 3, recovered from a clean disasm):
-        // amp·(2·fmod(phase, 1) − 1) — a bipolar ramp per unit period. Retail
-        // runs the fmod in double then narrows; K=1.0, C=−1.0 (both doubles).
-        return amp * (2.0f * std::fmod(phase, 1.0f) - 1.0f);
-    case 5: {
-        // Retail is a nondeterministic global RNG; the fixed-timeline
-        // determinism the plan demands rules that out, so this is a hash of the
-        // phase bits into [−amp, amp] — a stated deviation (curve-shape only).
-        u32 h = std::bit_cast<u32>(phase);
-        h ^= h >> 16;
-        h *= 0x7feb352du;
-        h ^= h >> 15;
-        h *= 0x846ca68bu;
-        h ^= h >> 16;
-        const f32 unit = static_cast<f32>(h >> 8) * (1.0f / 16777216.0f); // [0,1)
-        return (unit * 2.0f - 1.0f) * amp;
-    }
-    default: // 0 off; 6 table lookup (unk_108254834) unextracted — no overlay.
-        return 0.0f;
-    }
-}
 
 EmitGateResult Sc2EmitGate(EmitClock& clk, const EmitGateInputs& in) {
     EmitGateResult r;
@@ -112,10 +65,10 @@ EmitGateResult Sc2EmitGate(EmitClock& clk, const EmitGateInputs& in) {
     clk.dtAccumulator = in.dt + clk.dtAccumulator;
 
     // LOD cut suppresses emission but keeps the accumulated dt.
-    if (kLodCut[lodIndex(in.lodCut, in.quality)])
+    if (kLodCut[LodIndex(in.lodCut, in.quality)])
         return r;
 
-    const f32 reduce = kLodReduce[lodIndex(in.lodReduce, in.quality)];
+    const f32 reduce = kLodReduce[LodIndex(in.lodReduce, in.quality)];
     const f32 rate = (in.emissionScale * reduce) * in.divisions;
     const f32 aux = (in.cullMethod == 1) ? in.maxLengthAux : in.lifetimeAux;
     const f32 period = (rate == 0.0f) ? kFltMax : aux / rate;
@@ -150,7 +103,7 @@ HeadElement Sc2WriteHead(const HeadInputs& in) {
     // to the caller. All inert when the type is 0, so the W3 oracle subset (all
     // types 0) replays byte-identical.
     const auto wave = [&](int i) -> f32 {
-        return in.waveTypes[i] ? Sc2SampleWave(in.waveTypes[i],
+        return in.waveTypes[i] ? SampleWave(in.waveTypes[i],
                                                in.waveFreq[i] * in.overlayTime + in.overlayPhase,
                                                in.waveAmp[i])
                                : 0.0f;

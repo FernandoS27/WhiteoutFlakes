@@ -51,6 +51,12 @@ struct ChildModelEvent {  // NOLINT: forward-declared in particle2_emitter.h
     ModelId owner = 0;
     i32 emitterId = 0;
     u32 childHandle = 0;
+    // Birth events only: which of `EmitterDesc::childModelPaths` this particle
+    // became. WC3, M2 and D3 author one model and always leave it at 0; an SC2
+    // `PAR_` carries a table and draws an index per particle, at a point in the
+    // RNG stream that is its own (RE §16.16) — so the index travels with the
+    // event rather than being re-derived by whoever spawns the actor.
+    u32 pathIndex = 0;
     Matrix44f transform = Matrix44f::identity();
     // Transform events only. Zero when the emitter wants the child hidden this
     // frame without ending its life — an M2 model particle blinked off by
@@ -206,8 +212,21 @@ public:
 
     void SetFogSampler(FogSampler sampler);
 
+    /// @brief Install the surface every emitter's particles collide against.
+    ///
+    /// Set once by the host and re-installed on every emitter registered
+    /// afterwards, so the MOVE stage never rebuilds a `std::function` per
+    /// particle per sub-step. Beside SetFogSampler because it is the same kind
+    /// of thing: one scene-wide callback the service owns and pushes down,
+    /// rather than something each emitter goes looking for.
+    void SetGroundQuery(GroundQuery query);
+
 private:
     mutable std::mutex mutex_;
+    // The SC2 ModelParticles elements every emitter registered this frame,
+    // walked once after all of them have updated. Declared before the emitters
+    // so it outlives them: an emitter's destructor takes its own entries out.
+    Sc2PendingModels sc2PendingModels_;
     std::map<EmitterKey, std::unique_ptr<Emitter2>> emitters_;
 
     // Accumulated during Simulate, moved out by DrainChildModelEvents.
@@ -216,6 +235,7 @@ private:
     f32 emissionScaler_ = 1.0f;
     bool fogEnabled_ = false;
     FogSampler fogSampler_;
+    GroundQuery groundQuery_;
 };
 
 } // namespace whiteout::flakes::renderer::particle

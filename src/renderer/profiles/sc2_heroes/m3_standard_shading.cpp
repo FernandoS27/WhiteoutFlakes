@@ -238,7 +238,7 @@ void M3StandardShading::Init() {
     vsSkinned_ = mk(gfx::ShaderStage::Vertex, WDX_M3_BLOB(M3StandardSkinnedVS));
     ps_ = mk(gfx::ShaderStage::Pixel, WDX_M3_BLOB(M3StandardPS));
     psMrt_ = mk(gfx::ShaderStage::Pixel, WDX_M3_BLOB(M3StandardMrtPS));
-    vsRibbon_ = mk(gfx::ShaderStage::Vertex, WDX_M3_BLOB(M3RibbonVS));
+    vsWorld_ = mk(gfx::ShaderStage::Vertex, WDX_M3_BLOB(M3RibbonVS));
 #undef WDX_M3_BLOB
 
     // One map per draw → the Vulkan CB ring needs room for a busy frame.
@@ -253,9 +253,9 @@ void M3StandardShading::Init() {
         .size = sizeof(M3PassCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
     });
-    // One ribbon draw per emitter per frame — a small ring covers a scene of
-    // ribbon actors without churning the buffer.
-    ribbonPassCb_ = gfxDev->CreateBuffer({
+    // One draw per ribbon or particle emitter per frame — a small ring covers
+    // a scene of effect actors without churning the buffer.
+    worldPassCb_ = gfxDev->CreateBuffer({
         .size = sizeof(M3PassCb),
         .usage = gfx::BufferUsage::Constant | gfx::BufferUsage::CpuWritable,
         .ringSlotsHint = 256,
@@ -271,25 +271,25 @@ void M3StandardShading::ReleaseGpu() {
             gfxDev->Destroy(pso);
     }
     psos_.clear();
-    for (auto& [key, pso] : ribbonPsos_) {
+    for (auto& [key, pso] : worldVertexPsos_) {
         if (pso != gfx::PipelineHandle::Invalid)
             gfxDev->Destroy(pso);
     }
-    ribbonPsos_.clear();
+    worldVertexPsos_.clear();
     if (drawCb_ != gfx::BufferHandle::Invalid)
         gfxDev->Destroy(drawCb_);
     if (passCb_ != gfx::BufferHandle::Invalid)
         gfxDev->Destroy(passCb_);
-    if (ribbonPassCb_ != gfx::BufferHandle::Invalid)
-        gfxDev->Destroy(ribbonPassCb_);
+    if (worldPassCb_ != gfx::BufferHandle::Invalid)
+        gfxDev->Destroy(worldPassCb_);
     drawCb_ = gfx::BufferHandle::Invalid;
     passCb_ = gfx::BufferHandle::Invalid;
-    ribbonPassCb_ = gfx::BufferHandle::Invalid;
+    worldPassCb_ = gfx::BufferHandle::Invalid;
     vs_ = gfx::ShaderHandle::Invalid;
     vsSkinned_ = gfx::ShaderHandle::Invalid;
     ps_ = gfx::ShaderHandle::Invalid;
     psMrt_ = gfx::ShaderHandle::Invalid;
-    vsRibbon_ = gfx::ShaderHandle::Invalid;
+    vsWorld_ = gfx::ShaderHandle::Invalid;
     initTried_ = false;
 }
 
@@ -694,17 +694,23 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
     cmd->DrawIndexed(geo.indexCount);
 }
 
-gfx::PipelineHandle M3StandardShading::GetOrBuildRibbonPso(const RibbonPsoKey& key) {
-    if (auto it = ribbonPsos_.find(key); it != ribbonPsos_.end())
+gfx::PipelineHandle M3StandardShading::GetOrBuildWorldVertexPso(const WorldVertexPsoKey& key) {
+    if (auto it = worldVertexPsos_.find(key); it != worldVertexPsos_.end())
         return it->second;
     auto* gfxDev = rs_.Pipeline().Gfx();
     if (!gfxDev)
         return gfx::PipelineHandle::Invalid;
 
-    // renderer::Vertex, by hand: the ribbon strip carries POSITION / COLOR / UV,
-    // no normal (the billboard has none) and no bone stream. The VS consumes
-    // exactly these three, so the layout matches the DXIL signature on D3D12
-    // with no over-declaration.
+    // renderer::Vertex, by hand: the stream carries POSITION / COLOR / UV and
+    // no bone weights. The VS consumes exactly these three, so the layout
+    // matches the DXIL signature on D3D12 with no over-declaration. A particle
+    // quad DOES carry a normal (OP12 writes one per corner) and this drops it:
+    // the VS builds its shading frame from the view vector instead, which for
+    // a camera-facing billboard is the vector that normal holds anyway —
+    // `Sc2ExpandQuad` writes `cross(right, up)`, and rotating the camera basis
+    // about `direction` leaves that cross alone, so it is `-direction` for
+    // every instance type this phase draws. The types where it would not be
+    // are X4's, and they are skipped rather than drawn.
     const gfx::InputElement elements[] = {
         {"POSITION", 0, gfx::Format::R32G32B32_FLOAT, offsetof(Vertex, position), 0},
         {"COLOR", 0, gfx::Format::R32G32B32A32_FLOAT, offsetof(Vertex, color), 0},
@@ -712,7 +718,7 @@ gfx::PipelineHandle M3StandardShading::GetOrBuildRibbonPso(const RibbonPsoKey& k
     };
 
     gfx::GraphicsPipelineDesc desc{};
-    desc.vs = vsRibbon_;
+    desc.vs = vsWorld_;
     desc.ps = ps_; // the full material PS — same layer stack a geoset gets
     desc.inputLayout = std::span<const gfx::InputElement>(elements);
     desc.inputSlotStrides[0] = sizeof(Vertex);
@@ -730,23 +736,22 @@ gfx::PipelineHandle M3StandardShading::GetOrBuildRibbonPso(const RibbonPsoKey& k
     desc.extraRtvFormats[2] = key.extra2;
     desc.extraRtvCount = key.extraRtvCount;
     // Declared only to satisfy the scene pass' attachment set; the forward
-    // ribbon PS writes SV_Target0 alone and must leave the G-buffer cleared,
+    // PS writes SV_Target0 alone and must leave the G-buffer cleared,
     // exactly as a transparent geoset draw does (Draw's key.mrt == false arm).
     desc.extraColorWrite = false;
 
     const auto pso = gfxDev->CreateGraphicsPipeline(desc);
-    ribbonPsos_.emplace(key, pso);
+    worldVertexPsos_.emplace(key, pso);
     return pso;
 }
 
-void M3StandardShading::DrawRibbon(model::Actor& actor, i32 surfaceIndex, i32 vertexOffset,
-                                   i32 vertexCount, const bls::FrameInputs& frame) {
+void M3StandardShading::DrawWorldVertices(model::Actor& actor, i32 surfaceIndex,
+                                          gfx::BufferHandle vb, i32 vertexOffset, i32 vertexCount,
+                                          const bls::FrameInputs& frame, M3WorldVertexKind kind,
+                                          i32 emitterId) {
     Init();
-    if (vsRibbon_ == gfx::ShaderHandle::Invalid || ps_ == gfx::ShaderHandle::Invalid ||
-        vertexCount <= 0)
-        return;
-    const gfx::BufferHandle vb = actor.render.ribbonVB;
-    if (vb == gfx::BufferHandle::Invalid)
+    if (vsWorld_ == gfx::ShaderHandle::Invalid || ps_ == gfx::ShaderHandle::Invalid ||
+        vertexCount <= 0 || vb == gfx::BufferHandle::Invalid)
         return;
 
     const auto* table = core::SurfaceTableCast<M3SurfaceTable>(actor.render.surfaceTable.get());
@@ -759,7 +764,7 @@ void M3StandardShading::DrawRibbon(model::Actor& actor, i32 surfaceIndex, i32 ve
     if (!cmd)
         return;
 
-    RibbonPsoKey key;
+    WorldVertexPsoKey key;
     key.rtv = rs_.Pipeline().SceneTargetFormat();
     key.dsv = rs_.Pipeline().DepthStencilFormat();
     gfx::Format extra[3] = {gfx::Format::Unknown, gfx::Format::Unknown, gfx::Format::Unknown};
@@ -768,25 +773,27 @@ void M3StandardShading::DrawRibbon(model::Actor& actor, i32 surfaceIndex, i32 ve
     key.extra1 = extra[1];
     key.extra2 = extra[2];
     key.blend = static_cast<u8>(surf->blendMode);
-    // A ribbon is dual-sided geometry regardless of its material's TwoSided
-    // flag: a camera-facing billboard flips winding as the camera orbits, and a
-    // tube's far wall faces away, so a single-sided cull drops half of it (the
-    // "wrong winding" look). Draw cull-none, as the WC3 path already does via
-    // dl.twoSided; the shader's back-face normal flip (params0.w bit 2, keyed on
-    // this) then lights both walls. Ribbon.fx:532 calls planar ribbons dual-sided.
+    // Dual-sided regardless of the material's TwoSided flag, and for both
+    // producers: a camera-facing billboard flips winding as the camera orbits,
+    // and a ribbon tube's far wall faces away, so a single-sided cull drops
+    // half of it (the "wrong winding" look). Draw cull-none, as the WC3 paths
+    // already do — `FromParticleDesc` sets kDisableCull on EVERY particle and
+    // the ribbon takes dl.twoSided; the shader's back-face normal flip
+    // (params0.w bit 2, keyed on this) then lights both walls. Ribbon.fx:532
+    // calls planar ribbons dual-sided.
     key.twoSided = true;
-    const gfx::PipelineHandle pso = GetOrBuildRibbonPso(key);
+    const gfx::PipelineHandle pso = GetOrBuildWorldVertexPso(key);
     if (pso == gfx::PipelineHandle::Invalid)
         return;
 
-    // The ribbon's own pass CB, so the interleaved draw never disturbs passCb_
-    // that a later geoset transparent draw still reads. It carries the SAME
-    // lighting rig — a lit ribbon must light, not shade against zero and go
+    // Its own pass CB, so the interleaved draw never disturbs passCb_ that a
+    // later geoset transparent draw still reads. It carries the SAME lighting
+    // rig — a lit strip or particle must light, not shade against zero and go
     // black (which is exactly what an empty CB did).
-    if (auto* c = static_cast<M3PassCb*>(gfxDev->MapBuffer(ribbonPassCb_))) {
+    if (auto* c = static_cast<M3PassCb*>(gfxDev->MapBuffer(worldPassCb_))) {
         WritePassCb(*c, frame.view, frame.projection, rs_.Pipeline().FrameCamera().GetSource(),
                     rs_.Pipeline().ActiveProfile().LinearShading());
-        gfxDev->UnmapBuffer(ribbonPassCb_);
+        gfxDev->UnmapBuffer(worldPassCb_);
     }
 
     const bool unshaded = (surf->materialFlags & static_cast<u32>(MaterialFlag::Unshaded)) != 0;
@@ -795,7 +802,7 @@ void M3StandardShading::DrawRibbon(model::Actor& actor, i32 surfaceIndex, i32 ve
 
     if (auto* c = static_cast<M3DrawCb*>(gfxDev->MapBuffer(drawCb_))) {
         *c = M3DrawCb{};
-        c->world = Matrix44f::identity(); // strip is world-space already
+        c->world = Matrix44f::identity(); // the stream is world-space already
         // The material decides shading, exactly as a geoset — Unshaded and the
         // flag bits ride through so a lit ribbon lights and an emissive one glows.
         c->params0 = {surf->alphaTestThreshold, unshaded ? 1.0f : 0.0f, surf->specularExponent,
@@ -803,7 +810,7 @@ void M3StandardShading::DrawRibbon(model::Actor& actor, i32 surfaceIndex, i32 ve
                                        (surf->dimPerPixel ? 4u : 0u) |
                                        (surf->envReflect ? 8u : 0u) |
                                        (surf->envBlur ? 16u : 0u))};
-        // No SNORM fold for the ribbon uv (.x/.y unused by its VS); .z the
+        // No SNORM fold for the uv (.x/.y unused by this VS); .z the
         // emissive multiplier, .w the AlphaFactor coverage (parent visibility).
         c->uvTransform = {1.0f, 0.0f, surf->emissiveMultiplier, actor.parentVisibility};
         {
@@ -836,7 +843,7 @@ void M3StandardShading::DrawRibbon(model::Actor& actor, i32 surfaceIndex, i32 ve
             c->layerCtl[i][1] = l.channels;
             c->layerCtl[i][2] = l.mode;
             c->layerCtl[i][3] = (i == 0) ? l.teamColorMode : l.blendOp;
-            // The full material UV matrix, exactly as the geoset path. A ribbon
+            // The full material UV matrix, exactly as the geoset path. A strip
             // takes the same centre-pivot TRS every other layer does (composed in
             // M3ComposeUvTransform), so the wings' -90° and its animated scroll
             // land where the artist authored them — width across, age along.
@@ -861,8 +868,8 @@ void M3StandardShading::DrawRibbon(model::Actor& actor, i32 surfaceIndex, i32 ve
 
     cmd->BindPipeline(pso);
     cmd->BindVertexBuffer(0, vb, sizeof(Vertex));
-    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, ribbonPassCb_);
-    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 0, ribbonPassCb_);
+    cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 0, worldPassCb_);
+    cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 0, worldPassCb_);
     cmd->BindConstantBuffer(gfx::ShaderStage::Vertex, 1, drawCb_);
     cmd->BindConstantBuffer(gfx::ShaderStage::Pixel, 1, drawCb_);
 
@@ -892,10 +899,15 @@ void M3StandardShading::DrawRibbon(model::Actor& actor, i32 surfaceIndex, i32 ve
         d.actor.rootActor = debug::TraceRootOrdinal(rs_.Scene().Actors().All(), actor.handle);
         d.actor.role = static_cast<u8>(actor.role);
         d.actor.treeDepth = static_cast<u8>(actor.treeDepth);
+        d.actor.emitterId = emitterId;
         for (u32 u = 0; u < kLayerCount && u < static_cast<u32>(debug::kTraceTexSlots); ++u)
             d.texIds[u] = surf->layers[u].textureId;
+        // 0x400 is the ribbon marker the baselines were recorded with, so it
+        // stays put and the particle takes the next bit up. Without one the
+        // two producers hash identically whenever they share a blend mode.
+        const u32 kindBit = kind == M3WorldVertexKind::Ribbon ? 0x400u : 0x800u;
         d.psoKey = debug::TracePsoKey({
-            .psPermute = static_cast<u32>(key.blend) | 0x400u, // ribbon marker
+            .psPermute = static_cast<u32>(key.blend) | kindBit,
             .extraRtvCount = key.extraRtvCount,
         });
         debug::RecordProducerDraw(d);

@@ -15,6 +15,7 @@
 #include <functional>
 #include "render_target.h"             // DisplayFlags, RenderMode, LightingMode, IblMode
 #include "whiteout/flakes/gfx_types.h" // gfx::GfxApi
+#include "ground_query.h"
 #include "whiteout/flakes/types.h"
 
 #include <atomic>
@@ -151,12 +152,21 @@ public:
     // ground — the grid plane the physics stages collide with
     // (physics/ground_plane.h) — so IK and physics never disagree about where
     // the floor is unless the host says otherwise.
-    using GroundQuery = std::function<bool(const Vector3f& pos, f32 up, f32 down, f32& outZ)>;
+    // One declaration for the whole renderer; see ground_query.h. Kept as a
+    // member alias because callers spell it `RenderSettings::GroundQuery`.
+    using GroundQuery = ::whiteout::flakes::renderer::GroundQuery;
     const GroundQuery& GetGroundQuery() const {
         return groundQuery_;
     }
     void SetGroundQuery(GroundQuery q) {
         groundQuery_ = std::move(q);
+        ++groundQueryGeneration_;
+    }
+    /// Bumped by every SetGroundQuery, so a consumer that installs the query
+    /// once and forwards it — the particle service — can tell when to install
+    /// it again without comparing two std::functions, which it cannot.
+    u32 GroundQueryGeneration() const {
+        return groundQueryGeneration_;
     }
 
     // ---- Render mode (HD vs SD) ----
@@ -661,6 +671,7 @@ private:
     bool physicsSubstepping_ = true;
     bool poseSolvers_ = true;
     GroundQuery groundQuery_;
+    u32 groundQueryGeneration_ = 0;
 
     // Render mode + dirty flag.
     RenderMode renderMode_ = RenderMode::SD;

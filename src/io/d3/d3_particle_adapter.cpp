@@ -276,21 +276,23 @@ std::shared_ptr<const pd3::EmitMesh> BuildD3EmitMesh(const d3n::Appearances& app
             // Bone 0 at weight 0 for a vertex past a truncated influence array,
             // which SkinEmitMeshVertex reads as "no skin" and leaves at rest —
             // the same degradation GetSkinWeights makes for the mesh itself.
-            std::array<i32, 3> b{0, 0, 0};
-            Vector3f w{0, 0, 0};
+            // The store has four slots since EmitMesh was promoted out of d3::
+            // for SC2; a `.prt` fills three and leaves the fourth at weight 0,
+            // which SkinEmitMeshVertex skips on the weight test.
+            std::array<i32, ::whiteout::flakes::renderer::particle::kEmitMeshBones> b{};
+            std::array<f32, ::whiteout::flakes::renderer::particle::kEmitMeshBones> w{};
             if (v < influenced) {
                 const d3n::VertInfluences& src = sub.arVertexInfluences[v];
                 const d3n::Influence* three[3] = {&src.tInfluence0, &src.tInfluence1,
                                                   &src.tInfluence2};
-                f32* lane[3] = {&w.x, &w.y, &w.z};
                 for (i32 k = 0; k < 3; ++k) {
-                    b[k] = three[k]->nBoneIndex;
-                    *lane[k] = three[k]->flWeight;
+                    b[static_cast<usize>(k)] = three[k]->nBoneIndex;
+                    w[static_cast<usize>(k)] = three[k]->flWeight;
                 }
             } else if (sub.arVertexInfluences.empty() && sub.nBoneIndex >= 0) {
                 // A rigid sub-object names one bone for the whole of itself.
                 b[0] = sub.nBoneIndex;
-                w.x = 1.0f;
+                w[0] = 1.0f;
             }
             mesh->bones.push_back(b);
             mesh->weights.push_back(w);
@@ -324,8 +326,9 @@ std::shared_ptr<const pd3::EmitMesh> BuildD3EmitMesh(const d3n::Appearances& app
     // weight; drop them so SkinEmitMeshVertex takes its rest-pose early-out on
     // the 63% of the corpus that has no bones at all.
     bool anyWeight = false;
-    for (const Vector3f& w : mesh->weights)
-        anyWeight |= (w.x > 0.0f || w.y > 0.0f || w.z > 0.0f);
+    for (const auto& w : mesh->weights)
+        for (f32 lane : w)
+            anyWeight |= (lane > 0.0f);
     if (!anyWeight) {
         mesh->bones.clear();
         mesh->bones.shrink_to_fit();

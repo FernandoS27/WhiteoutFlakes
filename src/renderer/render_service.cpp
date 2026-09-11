@@ -547,6 +547,16 @@ ActorEvalContext RenderService::MakeActorEvalContext() {
     ctx.queryGround = impl_->settings_.GetGroundQuery()
                           ? impl_->settings_.GetGroundQuery()
                           : RenderSettings::GroundQuery(&physics::FlatGroundQuery);
+    // SC2 particles collide against the same ground. It is installed on the
+    // scene's particle service, which forwards it to every emitter, once — and
+    // again only when the host replaces it — rather than per frame, which would
+    // copy a std::function into every emitter every frame (design §4.3, R9).
+    // Nothing called the service's setter before this, so a CollideTerrain
+    // emitter fell through the grid everywhere but in the tests.
+    if (svc->particleGroundGeneration != impl_->settings_.GroundQueryGeneration()) {
+        svc->particles.SetGroundQuery(ctx.queryGround);
+        svc->particleGroundGeneration = impl_->settings_.GroundQueryGeneration();
+    }
     ctx.scene = scene;
     ctx.particles = &svc->particles;
     ctx.splats = &svc->splats;

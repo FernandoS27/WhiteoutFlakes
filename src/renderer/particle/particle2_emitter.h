@@ -6,6 +6,7 @@
 #include "particle_pool.h"
 #include "particle_shape.h"
 #include "rnd_seed.h"
+#include "sc2_runtime.h"
 #include "types.h"
 // FrameState::ParticleFrameState is a nested type, so it cannot be forward
 // declared — ApplyState takes it by reference and needs the full definition.
@@ -41,7 +42,9 @@ enum EmitterFlag : u32 {
 class Emitter2 {
 public:
     Emitter2();
-    virtual ~Emitter2() = default;
+    /// Takes this emitter's entries out of the pending list it is attached to,
+    /// so the service's walk never reaches a runtime that is gone.
+    virtual ~Emitter2();
 
     // Per-frame animated state from the model's FrameState. Virtual so an
     // output kind that reads different fields (child models use latitude and
@@ -99,6 +102,60 @@ public:
     // Outputs that drive something outside the vertex stream (child actors
     // today) report what happened during the last Update here. Default no-op.
     virtual void CollectOutputEvents(std::vector<struct ChildModelEvent>& out) {}
+
+    // ---- the dialect-neutral SC2 surface ----
+    //
+    // All seven are no-ops while `sc2_` is null, which is every emitter of
+    // every other family. They are declared on the base rather than on an SC2
+    // subclass because their callers — the service, the actor layer, the
+    // loader — must not know which family they are holding, which is the same
+    // reason SetDesc and ApplyState are here (design §3.4).
+
+    /// A request another emitter made of this one; queued for the next EMIT.
+    /// Silently dropped past retail's 128-entry cap rather than growing.
+    void QueueSpawnRequest(const SpawnRequest& req);
+
+    /// Move this emitter's outgoing requests to @p out, leaving it empty. The
+    /// service drains after Update and delivers each to its target's inbox.
+    void DrainSpawnRequests(std::vector<RoutedSpawnRequest>& out);
+
+    /// Owe @p slot a burst of @p count particles — the actor layer's half of
+    /// the crossed squirt keys.
+    void QueueBurst(u32 slot, u32 count);
+
+    /// Ask for a pre-roll on the next tick. Whether one actually runs is
+    /// gap-driven and PREP's decision, not the caller's (RE §15.4).
+    void RequestPreRoll();
+
+    /// The surface this emitter's particles collide against. Virtual because
+    /// Diablo III keeps its own copy on the emitter and had this setter first;
+    /// its override is what routes the service's one installation to both.
+    virtual void SetGroundQuery(GroundQuery q);
+
+    /// The mesh emitter shape 7 is born on. Set once by the loader. Virtual
+    /// for SetGroundQuery's reason: Diablo III keeps its own copy and had the
+    /// setter first, so it overrides rather than hiding — a caller holding an
+    /// `Emitter2*` must not silently reach a different one.
+    virtual void SetEmitMesh(std::shared_ptr<const EmitMesh> mesh);
+
+    /// The pose that skins @ref SetEmitMesh into world space, per frame. Views
+    /// into the actor's own arrays: the caller keeps them alive across Update.
+    virtual void SetEmitMeshPose(std::span<const Matrix44f> pose,
+                                 std::span<const Matrix44f> invBind, const Matrix44f& toWorld);
+
+    /// Where this emitter registers the ModelParticles elements waiting for a
+    /// model. The service installs its frame-wide list at registration; until
+    /// then the emitter keeps its own and walks it at the end of each tick.
+    void AttachSc2PendingList(Sc2PendingModels* list);
+
+    /// One entry of the pending walk (`ProcessPendingSpawns`, OP14b): draw the
+    /// element's model path and random direction, pose it, report the birth.
+    /// An element already dead, or an emitter with no paths, draws nothing.
+    void ServiceSc2PendingModel(i32 node);
+
+    /// What an SC2 model particle's pose reads from the scene each frame: the
+    /// camera, and the owning actor's world scale.
+    void SetSc2Scene(const Matrix44f& worldToView, f32 actorWorldScale);
 
     /// @brief The clock this emitter's MATERIAL runs on, in seconds.
     ///
@@ -202,6 +259,16 @@ public:
     // `BuildEmitterGeometry`, unchanged — a dialect that builds its quads
     // differently overrides instead of branching inside it.
     virtual i32 BuildGeometry(const struct BuildGeometryInput& in, std::vector<Vertex>& out) const;
+
+    /// The SC2 arm of @ref BuildGeometry, out of line because it reaches into
+    /// `sc2_` and the WC3 builder must not.
+    static i32 BuildSc2Geometry(const Emitter2& e, const struct BuildGeometryInput& in,
+                                std::vector<Vertex>& out);
+
+    /// The SC2 arm of `InternalUpdate`. Assembles the frame `Sc2TickEmitter`
+    /// takes and runs it; the composition itself lives in `sc2_tick.cpp` so it
+    /// can be driven without an emitter.
+    void TickSc2(f32 elapsed, f32 emissionScaler);
 
     /// @brief Throw away everything this emitter has spawned and start it over,
     ///        keeping the emitter itself registered.
@@ -315,6 +382,12 @@ public:
     }
 
     i32 TotalAlive() const {
+        // An SC2 emitter keeps its elements in `Sc2ParticleStore`, never in
+        // `pool_` — reading the pool alone reported every SC2 emitter as empty
+        // in the viewer's frame stats, which is indistinguishable from an
+        // emitter that is not running.
+        if (sc2_)
+            return static_cast<i32>(sc2_->store.AliveCount());
         return static_cast<i32>(pool_.AliveCount());
     }
 
@@ -391,6 +464,15 @@ protected:
 protected:
     std::shared_ptr<const EmitterDesc> desc_;
     ParticleBehavior behavior_ = ParticleBehavior::Wc3();
+
+    // The SC2 runtime, allocated by SetDesc when the desc names that family
+    // and freed otherwise. NULL is the family test every touch point below
+    // uses, so `EmitterDesc::family` is read in exactly one place and every
+    // other dialect pays one pointer for the whole dialect (design R1, §2.1).
+    std::unique_ptr<Sc2Runtime> sc2_;
+    /// The service's pending list, kept here as well as in the runtime so an
+    /// emitter attached before its desc names the SC2 family still gets it.
+    Sc2PendingModels* sc2PendingList_ = nullptr;
 
     u32 flags_ = 0;
 

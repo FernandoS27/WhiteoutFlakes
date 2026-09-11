@@ -1,7 +1,8 @@
 #include "renderer/ribbon/ribbon_emitter.h"
 
 #include "constants.h"
-#include "renderer/ribbon/ribbon_vs_math.h"
+#include "renderer/sc2/sc2_element.h"
+#include "renderer/sc2/sc2_element_math.h"
 #include "sim_util.h"
 
 #include <algorithm>
@@ -12,7 +13,7 @@ namespace whiteout::flakes::renderer::ribbon {
 
 namespace {
 
-namespace vs = whiteout::flakes::renderer::ribbon::vs;
+namespace vs = whiteout::flakes::renderer::sc2::vs;
 
 /// One centreline sample ready to expand: world position, the frame inputs, and
 /// the interpolated per-vertex values. Both the time/length and spline BUILD
@@ -148,112 +149,37 @@ vs::Mat3 YawPitchMat(f32 yawDeg, f32 pitchDeg, bool swap) {
 }
 
 // --- Noise displacement (W6) -------------------------------------------------
-// Retail samples a global coherent-noise field; ours is a MixSeed-seeded value
-// noise — a stated deviation (RIBBON_SERVICE.md §9). The gate that matters is
-// the sample coordinates and the edge mute (RE §4.3), which this reproduces;
-// the field's exact values are compared curve-shape, not bit-exact.
-f32 NoiseHash3(i32 xi, i32 yi, i32 zi) {
-    u32 h = static_cast<u32>(xi * 73856093) ^ static_cast<u32>(yi * 19349663) ^
-            static_cast<u32>(zi * 83492791);
-    h ^= h >> 13;
-    h *= 0x5bd1e995u;
-    h ^= h >> 15;
-    return static_cast<f32>(h & 0xFFFFFFu) * (2.0f / 16777215.0f) - 1.0f; // [-1,1]
-}
+// Retail's own field and envelope, now that the particle system regenerates
+// its table: `Sc2NoiseDisplacement`, below the anonymous namespace, gated by
+// O13 against both animated fillers.
 
-/// Trilinearly-interpolated value noise in [-1, 1], smoothstep-weighted.
-f32 NoiseField(f32 x, f32 y, f32 z) {
-    const f32 fx = std::floor(x), fy = std::floor(y), fz = std::floor(z);
-    const i32 x0 = static_cast<i32>(fx), y0 = static_cast<i32>(fy), z0 = static_cast<i32>(fz);
-    auto sm = [](f32 t) { return t * t * (3.0f - 2.0f * t); };
-    const f32 tx = sm(x - fx), ty = sm(y - fy), tz = sm(z - fz);
-    auto lerp = [](f32 a, f32 b, f32 t) { return a + (b - a) * t; };
-    const f32 c00 = lerp(NoiseHash3(x0, y0, z0), NoiseHash3(x0 + 1, y0, z0), tx);
-    const f32 c10 = lerp(NoiseHash3(x0, y0 + 1, z0), NoiseHash3(x0 + 1, y0 + 1, z0), tx);
-    const f32 c01 = lerp(NoiseHash3(x0, y0, z0 + 1), NoiseHash3(x0 + 1, y0, z0 + 1), tx);
-    const f32 c11 = lerp(NoiseHash3(x0, y0 + 1, z0 + 1), NoiseHash3(x0 + 1, y0 + 1, z0 + 1), tx);
-    return lerp(lerp(c00, c10, ty), lerp(c01, c11, ty), tz);
-}
 
-/// The 3-channel noise displacement at trail parameter `t` (RE §4.3): the field
-/// sampled at (t·frequency, coherence·headU, {0, 0.33, 0.66}) × amplitude, muted
-/// by t/edge near the head (`bothEnds` adds the (1−t)/edge far-end mute splines
-/// use). Returns a positional offset in the ribbon's own space.
-Vector3f NoiseDisplacement(f32 t, f32 headU, f32 amplitude, f32 frequency,
-                           f32 coherence, f32 edge, bool bothEnds) {
-    const f32 e = (edge > 1e-6f) ? edge : 1.0f;
-    f32 mute = (std::min)(t / e, 1.0f);
-    if (bothEnds)
-        mute *= (std::min)((1.0f - t) / e, 1.0f);
-    const f32 u = t * frequency, w = coherence * headU;
-    const f32 scale = amplitude * mute;
-    return {NoiseField(u, w, 0.0f) * scale, NoiseField(u, w, 0.33f) * scale,
-            NoiseField(u, w, 0.66f) * scale};
-}
-
-// --- Terrain collision (W4) --------------------------------------------------
-// CRibbon_CollideSegment_Terrain's response, replayed against the grid. The
-// engine sweeps a segment's step through the map colliders (radius 0.03,
-// dword_103C2C9D0) and on contact reflects the post-integrate velocity off the
-// hit surface as v' = -bounce·v_norm + friction·v_tan (friction only above a
-// speed floor, dword_103C458F8 = 0.01), then advances from the contact point
-// for the rest of the step. The ground query stands in for the colliders and
-// answers a HEIGHT, so the surface is horizontal (normal = up); the dual
-// query's forward-particle-system half has nothing to hit in the viewer.
-// Positions and velocity are in the space the query answers (scene).
-constexpr f32 kCollideRadius = 0.03f;
-constexpr f32 kCollideSpeedSq = 0.01f;
-
-struct GroundHit {
-    Vector3f pos;
-    Vector3f vel;
-    bool hit = false;
-};
-
-GroundHit Sc2GroundCollide(const Vector3f& oldPos, const Vector3f& newPos,
-                           const Vector3f& vel, f32 dt, f32 friction, f32 bounce,
-                           const GroundQuery& query) {
-    GroundHit r{newPos, vel, false};
-    // Height under the step's end; a generous reach so a fast fall is not
-    // missed (the flat grid ignores x/y, a host's terrain answers in range).
-    constexpr f32 kReach = 1000.0f;
-    f32 gz = 0.0f;
-    if (!query(newPos, kReach, kReach, gz))
-        return r;
-    const f32 contactZ = gz + kCollideRadius;
-    if (newPos.z > contactZ)
-        return r; // ended above the surface: no contact this step.
-
-    // Time of impact along the (z-monotone) step, then the contact point.
-    const f32 dz = oldPos.z - newPos.z;
-    const f32 frac =
-        (dz > 1e-6f) ? std::clamp((oldPos.z - contactZ) / dz, 0.0f, 1.0f) : 0.0f;
-    const Vector3f hit = {oldPos.x + (newPos.x - oldPos.x) * frac,
-                          oldPos.y + (newPos.y - oldPos.y) * frac, contactZ};
-
-    // Reflect only a velocity moving into the surface (dot(vel, up) < 0).
-    const f32 vn = vel.z; // normal = grid up {0, 0, 1}
-    if (vn >= 0.0f)
-        return r;
-    const Vector3f vNorm = {0.0f, 0.0f, vn};
-    Vector3f vNew = {-bounce * vNorm.x, -bounce * vNorm.y, -bounce * vNorm.z};
-    const f32 speedSq = vel.x * vel.x + vel.y * vel.y + vel.z * vel.z;
-    if (speedSq > kCollideSpeedSq) {
-        vNew.x += friction * (vel.x - vNorm.x);
-        vNew.y += friction * (vel.y - vNorm.y);
-        vNew.z += friction * (vel.z - vNorm.z);
-    }
-    // Advance in the binary's op order: (v'·dt)·(1 − frac), not v'·(dt·(1 − frac))
-    // — f32 multiply is not associative, and O8 pins the binary's association.
-    const f32 rem = 1.0f - frac;
-    r.pos = {hit.x + (vNew.x * dt) * rem, hit.y + (vNew.y * dt) * rem,
-             hit.z + (vNew.z * dt) * rem};
-    r.vel = vNew;
-    r.hit = true;
-    return r;
-}
+// Terrain collision (W4) moved to sc2/sc2_element.h: a swept step against the
+// ground query is element code, and the particle MOVE stage is its second
+// caller (SC2_PARTICLE_DESIGN.md R6).
+using ::whiteout::flakes::renderer::sc2::GroundCollide;
+using ::whiteout::flakes::renderer::sc2::GroundHit;
 
 } // namespace
+
+Vector3f Sc2NoiseDisplacement(f32 t, f32 headU, f32 amplitude, f32 frequency, f32 coherence,
+                              f32 edge, bool spline) {
+    // `FillVertices_Animated`'s order: the mute first — the near edge, or else
+    // the far one on a spline — then the two coordinates, then three samples
+    // each times the muted amplitude.
+    f32 amp = amplitude;
+    if (t < edge)
+        amp = amp * (t / edge);
+    else if (edge != 0.0f && t > (1.0f - edge) && spline)
+        amp = amp * ((1.0f - t) / edge);
+    const f32 u = t * frequency;
+    const f32 w = coherence * headU;
+    const auto& table = ::whiteout::flakes::renderer::sc2::GlobalNoiseTable();
+    constexpr f32 kZ1 = 0.33f; // 0x3EA8F5C3
+    constexpr f32 kZ2 = 0.66f; // 0x3F28F5C3
+    return {table.Sample3D(u, w, 0.0f) * amp, table.Sample3D(u, w, kZ1) * amp,
+            table.Sample3D(u, w, kZ2) * amp};
+}
 
 RibbonDesc DescFromWc3Config(const RibbonEmitterConfig& cfg) {
     RibbonDesc d;
@@ -648,9 +574,9 @@ RibbonElement RibbonEmitter::Sc2MakeSegment(f32 birthU, f32 fracToCurr) const {
         e.velocity = whiteout::transform_normal(h.velocity, state_.transform);
         e.up = whiteout::transform_normal(h.up, state_.transform);
         if (inherit)
-            e.velocity = {e.velocity.x + sc2SmoothedVel_.x * k,
-                          e.velocity.y + sc2SmoothedVel_.y * k,
-                          e.velocity.z + sc2SmoothedVel_.z * k};
+            e.velocity = {e.velocity.x + sc2Smoothed_.Value().x * k,
+                          e.velocity.y + sc2Smoothed_.Value().y * k,
+                          e.velocity.z + sc2Smoothed_.Value().z * k};
         if (floorTech) {
             const f32 sq = (e.velocity.x * e.velocity.x + e.velocity.y * e.velocity.y) +
                            e.velocity.z * e.velocity.z;
@@ -663,9 +589,9 @@ RibbonElement RibbonEmitter::Sc2MakeSegment(f32 birthU, f32 fracToCurr) const {
         e.velocity = h.velocity;
         e.up = h.up;
         if (inherit)
-            e.velocity = {e.velocity.x + sc2SmoothedVel_.x * k,
-                          e.velocity.y + sc2SmoothedVel_.y * k,
-                          e.velocity.z + sc2SmoothedVel_.z * k};
+            e.velocity = {e.velocity.x + sc2Smoothed_.Value().x * k,
+                          e.velocity.y + sc2Smoothed_.Value().y * k,
+                          e.velocity.z + sc2Smoothed_.Value().z * k};
         if (floorTech) {
             const f32 sq = (e.velocity.x * e.velocity.x + e.velocity.y * e.velocity.y) +
                            e.velocity.z * e.velocity.z;
@@ -810,7 +736,7 @@ void RibbonEmitter::Sc2LegacyIntegrate(f32 dt) {
             const Vector3f nS = whiteout::transform_point(e.pos, toScene);
             const Vector3f vS = whiteout::transform_normal(e.velocity, toScene);
             const GroundHit gh =
-                Sc2GroundCollide(oS, nS, vS, dt, s.friction, s.bounce, state_.groundQuery);
+                GroundCollide(oS, nS, vS, dt, s.friction, s.bounce, state_.groundQuery);
             if (gh.hit) {
                 e.pos = whiteout::transform_point(gh.pos, fromScene);
                 e.velocity = whiteout::transform_normal(gh.vel, fromScene);
@@ -836,24 +762,9 @@ void RibbonEmitter::Sc2UpdateSmoothedVelocity(f32 dt) {
         return;
     if (!posSet_ || dt <= 0.0f)
         return;
-    sc2SmoothPos_[sc2SmoothSlot_] = {currPos_.x - prevPos_.x, currPos_.y - prevPos_.y,
-                                     currPos_.z - prevPos_.z};
-    sc2SmoothDt_[sc2SmoothSlot_] = dt;
-    sc2SmoothSlot_ = static_cast<u8>((sc2SmoothSlot_ + 1) & 7);
-    if (sc2SmoothCount_ < 8)
-        ++sc2SmoothCount_;
-    // smoothedVel = Σ posDelta / Σ dt over the window: the dt-weighted average
-    // emitter velocity (units/s).
-    Vector3f sum = {0, 0, 0};
-    f32 wsum = 0;
-    for (u8 i = 0; i < sc2SmoothCount_; ++i) {
-        sum = {sum.x + sc2SmoothPos_[i].x, sum.y + sc2SmoothPos_[i].y,
-               sum.z + sc2SmoothPos_[i].z};
-        wsum += sc2SmoothDt_[i];
-    }
-    sc2SmoothedVel_ = (wsum > 1e-6f)
-                          ? Vector3f{sum.x / wsum, sum.y / wsum, sum.z / wsum}
-                          : Vector3f{0, 0, 0};
+    sc2Smoothed_.Push({currPos_.x - prevPos_.x, currPos_.y - prevPos_.y,
+                       currPos_.z - prevPos_.z},
+                      dt);
 }
 
 i32 RibbonEmitter::VertexCount() const {
@@ -978,7 +889,7 @@ i32 RibbonEmitter::BuildStripSc2(const RibbonBuildContext& ctx,
     if (state_.visibility <= 0.0f || edges_.size() < 2)
         return 0;
 
-    namespace vs = whiteout::flakes::renderer::ribbon::vs;
+    namespace vs = whiteout::flakes::renderer::sc2::vs;
     const auto& s = desc_.sc2;
     const Matrix44f& xform = state_.transform;
     const f32 mass = (s.mass > 0.0f) ? s.mass : 1.0f;
@@ -1198,11 +1109,11 @@ i32 RibbonEmitter::BuildStripSc2(const RibbonBuildContext& ctx,
         // tech 4). n.pos is in render space, so the amplitude takes the
         // model→renderer factor; muted toward the head only (standard ribbons).
         if (legacy && s.noiseAmplitude > 0.001f) {
-            n.pos = vs::Add(n.pos, NoiseDisplacement(
+            n.pos = vs::Add(n.pos, Sc2NoiseDisplacement(
                                        n.fAge, sc2HeadU_,
                                        s.noiseAmplitude * state_.unitScale,
                                        s.noiseFrequency, s.noiseCoherence,
-                                       s.noiseEdge, /*bothEnds=*/false));
+                                       s.noiseEdge, /*spline=*/false));
         }
     }
 
@@ -1282,12 +1193,12 @@ i32 RibbonEmitter::BuildStripSc2Spline(const RibbonBuildContext& ctx,
     const u32* wt = desc_.sc2.waveTypes;      // main: yaw/pitch/speed/size/alpha
     const u32* swt = sp.waveTypes;            // spline: yaw/pitch/velocity
     const auto mainWave = [&](int i) -> f32 {
-        return wt[i] ? sc2::Sc2SampleWave(wt[i], state_.sc2.waveFreq[i] * ot + phase,
+        return wt[i] ? sc2::SampleWave(wt[i], state_.sc2.waveFreq[i] * ot + phase,
                                           state_.sc2.waveAmp[i])
                      : 0.0f;
     };
     const auto splWave = [&](int i) -> f32 {
-        return swt[i] ? sc2::Sc2SampleWave(swt[i], state_.sc2.splineWaveFreq[i] * ot + phase,
+        return swt[i] ? sc2::SampleWave(swt[i], state_.sc2.splineWaveFreq[i] * ot + phase,
                                            state_.sc2.splineWaveAmp[i])
                       : 0.0f;
     };
@@ -1386,14 +1297,15 @@ i32 RibbonEmitter::BuildStripSc2Spline(const RibbonBuildContext& ctx,
 
         StripNode n;
         n.pos = pos[u];
-        // Noise displacement (RE §4.3): splines mute BOTH ends (t/edge at the
-        // head, (1−t)/edge at the tip). Present only when noise was authored
-        // (which demotes the spline to tech 4 but keeps the spline geometry).
+        // Noise displacement (RE §4.3): a spline mutes near the head by t/edge
+        // or, past 1 − edge, near the tip by (1−t)/edge. Present only when noise
+        // was authored (which demotes the spline to tech 4 but keeps the spline
+        // geometry).
         if (s.noiseAmplitude > 0.001f) {
-            n.pos = vs::Add(n.pos, NoiseDisplacement(
+            n.pos = vs::Add(n.pos, Sc2NoiseDisplacement(
                                        t, sc2SplineAge_, s.noiseAmplitude * state_.unitScale,
                                        s.noiseFrequency, s.noiseCoherence, s.noiseEdge,
-                                       /*bothEnds=*/true));
+                                       /*spline=*/true));
         }
         n.up = splineUp;
         n.tangent = vs::SafeNormalize(tan, Vector3f{1, 0, 0});

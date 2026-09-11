@@ -1276,6 +1276,8 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/ribbon/ribbon_emitter.cpp
     src/renderer/ribbon/ribbon_stages_sc2.cpp
     src/renderer/ribbon/ribbon_service.cpp
+    src/renderer/sc2/sc2_element.cpp
+    src/renderer/sc2/sc2_rng.cpp
     src/renderer/effects/spn_spawner.cpp
     src/renderer/corn_effects/corn_effects_emitter.cpp
     src/renderer/corn_effects/corn_effects_gfx_backend.cpp
@@ -1284,6 +1286,7 @@ add_library(WhiteoutFlakesLib STATIC
     ${CORNFLAKES_SOURCES}
     src/renderer/particle/child_model_emitter.cpp
     src/renderer/particle/model_particle_emitter.cpp
+    src/renderer/particle/sc2_model_particle_emitter.cpp
     src/renderer/particle/particle_adapters.cpp
     src/renderer/particle/particle_curve.cpp
     src/renderer/particle/d3_path.cpp
@@ -1291,6 +1294,10 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/particle/particle_pool.cpp
     src/renderer/particle/particle2_emitter.cpp
     src/renderer/particle/particle_shape.cpp
+    src/renderer/particle/particle_stages_sc2.cpp
+    src/renderer/particle/particle_stages_sc2_model.cpp
+    src/renderer/particle/sc2_compose.cpp
+    src/renderer/particle/sc2_tick.cpp
     src/renderer/particle/particle_geometry.cpp
     src/renderer/particle/particle_service.cpp
     src/renderer/particle/multitex_particle_service.cpp

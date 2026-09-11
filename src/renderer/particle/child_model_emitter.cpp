@@ -31,8 +31,11 @@ void ChildModelEmitter::OnPoolResized(usize capacity) {
 }
 
 void ChildModelEmitter::OnParticleBorn(u32 poolIndex) {
+    // At least one past the index: an SC2 emitter's pool is empty and its
+    // indices are store nodes, so the pool's capacity alone would leave the
+    // slot this writes out of range.
     if (poolIndex >= childHandles_.size())
-        childHandles_.resize(pool_.Capacity(), 0);
+        childHandles_.resize((std::max)(pool_.Capacity(), static_cast<usize>(poolIndex) + 1), 0);
 
     const u32 handle = allocHandle_ ? allocHandle_() : 0;
     childHandles_[poolIndex] = handle;
@@ -44,6 +47,7 @@ void ChildModelEmitter::OnParticleBorn(u32 poolIndex) {
     ev.owner = owner_;
     ev.emitterId = emitterId_;
     ev.childHandle = handle;
+    ev.pathIndex = PathIndexFor(poolIndex);
     ev.transform = TransformFor(poolIndex);
     pending_.push_back(ev);
 }

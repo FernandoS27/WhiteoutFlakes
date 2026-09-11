@@ -43,11 +43,15 @@ $entries = Get-Content $CorpusFile |
 
 $pass = 0
 $fail = 0
+$skip = 0
 $failed = @()
+$skipped = @()
 
 foreach ($rel in $entries) {
     $model = Join-Path $CorpusRoot $rel
     if (-not (Test-Path $model)) {
+        $skip++
+        $skipped += "$rel  (missing)"
         Write-Host "SKIP (missing): $rel" -ForegroundColor DarkYellow
         continue
     }
@@ -60,6 +64,8 @@ foreach ($rel in $entries) {
     if ($Record) { $argv += @('--trace-record', $trace) }
     if ($Check) {
         if (-not (Test-Path $trace)) {
+            $skip++
+            $skipped += "$rel  (no baseline)"
             Write-Host "SKIP (no baseline): $rel" -ForegroundColor DarkYellow
             continue
         }
@@ -84,7 +90,16 @@ Write-Host ''
 if ($Record) {
     Write-Host "Recorded $pass baseline(s) into $BaselineDir"
 } else {
-    Write-Host "ALL MATCH: $pass passed, $fail failed"
+    Write-Host "ALL MATCH: $pass passed, $fail failed, $skip skipped"
+}
+# A skipped entry is a line of this corpus that did not run. Left unsaid, it
+# reads as coverage: two `|seq=` lines sat here unresolvable (Join-Path cannot
+# make a path out of `foo.mdx|seq=Spell`) and the summary still said ALL MATCH.
+# They are duplicates of the bare lines above them, so nothing was lost — but
+# nothing said so either.
+if ($skip -gt 0) {
+    Write-Host 'Skipped entries (these did NOT run):' -ForegroundColor DarkYellow
+    $skipped | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkYellow }
 }
 if ($fail -gt 0) {
     Write-Host 'Failing models:'

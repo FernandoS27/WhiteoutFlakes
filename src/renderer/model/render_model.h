@@ -4,6 +4,7 @@
 #include "animation/animation.h"
 #include "assets/texture_asset_manager.h"
 #include "particle.h"
+#include "particle/particle_stages_sc2.h"
 #include "core/surface_table.h"
 #include "core/surface_vocabulary.h"
 #include "core/vertex_layout.h"
@@ -212,6 +213,15 @@ struct PE2State {
     bool emissionValid = false;
 };
 
+/// @brief Last frame's squirt state for one SC2 `PAR_` emitter.
+///
+/// A squirt burst fires when the clock STEPS OVER an authored key, so deciding
+/// one needs the previous cursor as well as this frame's clock. It lives beside
+/// `pe2State` for the same reason that does: it is per-actor memory the
+/// emitter must not hold, because the emitter has no idea what an animation is
+/// (design R5 — the actor layer owns the crossing, the emitter owns the burst).
+using Sc2ParticleClock = particle::Sc2SquirtMemory;
+
 struct RenderModel {
 
     // Ordered by geoset id: UploadStagedGeosets drains this into gpuGeosets,
@@ -239,6 +249,8 @@ struct RenderModel {
     std::vector<i32> nodeParents;
 
     std::vector<PE2State> pe2State;
+    /// Per SC2 `PAR_`, index-parallel with the actor's registered emitters.
+    std::vector<Sc2ParticleClock> sc2ParticleClocks;
     // Trails themselves live in the scene's RibbonService, keyed by actor
     // handle; only the upload buffer is per-actor.
     gfx::BufferHandle ribbonVB = gfx::BufferHandle::Invalid;

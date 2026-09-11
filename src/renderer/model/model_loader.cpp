@@ -26,6 +26,7 @@
 #include "particle/model_particle_emitter.h"
 #include "particle/particle2_emitter.h"
 #include "particle/particle_adapters.h"
+#include "particle/sc2_model_particle_emitter.h"
 #include "render_service.h"
 #include "render_service_impl.h"
 #include "scene_manager.h"
@@ -730,7 +731,7 @@ void ModelLoader::AddM2Emitter(u32 handle, i32 index,
     const bool models = desc && desc->output == particle::ParticleOutput::ChildModel;
     std::unique_ptr<particle::Emitter2> em;
     if (models) {
-        PreloadModelParticleGeometry(handle, desc->childModelPath);
+        PreloadModelParticleGeometry(handle, desc->ChildModelPath());
         em = std::make_unique<particle::ModelParticleEmitter>(
             handle, index, [this] { return rs_.Scene().AllocActorId(); });
     } else {
@@ -1763,6 +1764,77 @@ void ModelLoader::FinishNativeActor(Actor& actor, const std::shared_ptr<IModelSo
             rs_.Ribbons().AddEmitter(actor.handle, i, desc);
         }
 
+        // The `PAR_` emitters, on the same terms and out of the same table.
+        // They register in the particle service rather than the ribbon one, and
+        // in the id space their own output declares: a ModelParticles emitter
+        // emits child models, and the two spaces are separate id ranges.
+        const auto sc2Particles = m3->GetSc2ParticleConfigs();
+        const i32 parBase = table->ParticleSurfaceBase();
+        if (!sc2Particles.empty()) {
+            // Shape 7 needs the model's own triangles. Built at most once per
+            // TEMPLATE and shared by every actor of it; an actor spawned from a
+            // live source has no template and builds its own.
+            // Which regions any Mesh-shape emitter names — the union, so a
+            // model with forty regions and one emitter born off two builds two.
+            std::vector<u8> wanted;
+            for (const auto& c : sc2Particles) {
+                if (c.emitShape != static_cast<u8>(::whiteout::m3::EmitterShape::Mesh))
+                    continue;
+                for (const i32 r : c.shapeRegions) {
+                    if (r < 0)
+                        continue;
+                    if (static_cast<usize>(r) >= wanted.size())
+                        wanted.resize(static_cast<usize>(r) + 1, 0);
+                    wanted[static_cast<usize>(r)] = 1;
+                }
+            }
+            std::shared_ptr<const particle::EmitMesh> ownEmitMesh;
+            bool ownTried = false;
+            auto& emitMeshTried =
+                actor.sourceTemplate ? actor.sourceTemplate->sc2EmitMeshTried : ownTried;
+            auto& emitMesh = actor.sourceTemplate ? actor.sourceTemplate->sc2EmitMesh : ownEmitMesh;
+            if (!wanted.empty() && !emitMeshTried) {
+                emitMeshTried = true;
+                emitMesh = io::BuildM3EmitMesh(m3->SourceModel(), m3->DivisionIndex(), wanted);
+            }
+
+            for (i32 i = 0; i < (i32)sc2Particles.size(); ++i) {
+                auto desc = particle::DescFromSc2ParticleConfig(sc2Particles[i], sc2Particles);
+                if (parBase >= 0) {
+                    if (const auto* surf = table->Surface((u32)(parBase + i)); surf && surf->valid) {
+                        // Stamped BEFORE the desc is frozen, so nothing looks a
+                        // material up at draw time. Both copies: the draw
+                        // dispatcher branches on the MATERIAL's index (as
+                        // `DrawRibbonStrip` does) while the geometry build
+                        // reads the `PAR_` block's.
+                        desc->sc2.look.m3Surface = parBase + i;
+                        desc->material.m3Surface = parBase + i;
+                        desc->sc2.look.flipbookUv =
+                            profiles::sc2_heroes::M3ParticleFlipbookUv(*surf);
+                        desc->priorityPlane = surf->priority;
+                    }
+                }
+                // A ModelParticles emitter reports its particles as child
+                // actors, through the same handle allocator M2's use.
+                std::unique_ptr<particle::Emitter2> em;
+                if (desc->output == particle::ParticleOutput::ChildModel) {
+                    for (const auto& path : desc->childModelPaths)
+                        PreloadSc2ModelParticle(actor, path);
+                    em = std::make_unique<particle::Sc2ModelParticleEmitter>(
+                        actor.handle, i, [this] { return rs_.Scene().AllocActorId(); });
+                } else {
+                    em = std::make_unique<particle::Emitter2>();
+                }
+                em->SetDesc(desc);
+                if (emitMesh && sc2Particles[i].emitShape ==
+                                    static_cast<u8>(::whiteout::m3::EmitterShape::Mesh)) {
+                    em->SetEmitMesh(emitMesh);
+                }
+                rs_.Particles().AddEmitter(actor.handle, desc->output, i, std::move(em));
+            }
+            actor.render.sc2ParticleClocks.assign(sc2Particles.size(), {});
+        }
+
         if (anyValid) {
             actor.render.surfaceTable = std::move(table);
             BuildM3Surfaces(actor);
@@ -2015,8 +2087,79 @@ void ModelLoader::PreloadModelParticleGeometry(u32 handle, const std::string& ke
 #endif
 }
 
+#if WDX_ENABLE_M3
+std::shared_ptr<io::M3ModelAdapter> ModelLoader::ResolveSc2ParticleModel(const std::string& key) {
+    if (key.empty())
+        return nullptr;
+    auto cached = sc2ParticleModels_.find(key);
+    if (cached != sc2ParticleModels_.end())
+        return cached->second;
+
+    std::shared_ptr<io::M3ModelAdapter> built;
+    if (auto* provider = rs_.Scene().ActiveContentProvider()) {
+        const ContentRef ref = ContentRef::FromPath(key);
+        if (auto bytes = provider->ReadFile(ref); bytes && !bytes->empty()) {
+            built = io::M3ModelAdapter::Load(
+                ref, std::span<const ::whiteout::u8>(bytes->data(), bytes->size()));
+            if (built) {
+                // The same catalog pass a top-level `.m3` takes, so a particle
+                // model with external animations plays them.
+                auto& catalog = Sc2Catalog();
+                catalog.SetContentProvider(provider);
+                catalog.Apply(*built, ref);
+            }
+        }
+        if (!built)
+            std::fprintf(stderr, "[sc2] particle model %s not readable\n", key.c_str());
+    }
+    return sc2ParticleModels_.emplace(key, std::move(built)).first->second;
+}
+
+void ModelLoader::PreloadSc2ModelParticle(Actor& owner, const std::string& key) {
+    // The child spawns through `SpawnChildFromSource`, and `UploadStagedTextures`
+    // binds its textures through (kind, sub-kind, ref) slots — so these are
+    // warmed under exactly those keys, or the warm-up would fill slots the
+    // child never reads. Without it a shell's textures were first asked for on
+    // the frame the first shell was born.
+    auto m3 = ResolveSc2ParticleModel(key);
+    if (!m3)
+        return;
+    for (const auto& tex : m3->GetTextures()) {
+        if (tex.sharedKey.empty())
+            continue;
+        const ContentRef ref = (tex.sharedKey[0] == '#')
+                                   ? ContentRef::FromFileId(static_cast<u32>(
+                                         std::strtoul(tex.sharedKey.c_str() + 1, nullptr, 10)))
+                                   : ContentRef::FromPath(tex.sharedKey);
+        const assets::AssetSubKind subKind = tex.cubeMap      ? assets::kTextureCubeSubKind
+                                             : tex.linearData ? assets::kTextureLinearSubKind
+                                                              : assets::kSoleSubKind;
+        owner.assetSlots.push_back(rs_.Assets().Acquire(AssetKind::Texture, subKind, ref));
+    }
+}
+#endif
+
 Actor* ModelLoader::SpawnModelParticle(Actor& owner, const std::string& key,
                                        const Matrix44f& initialTm, u32 forceHandle) {
+#if WDX_ENABLE_M3
+    // A StarCraft II model particle names its `.m3` by path. The child is a
+    // native actor like any other `.m3`: its own surfaces, and its own `PAR_`
+    // and `RIB_` emitters, under the depth and instance caps the caller holds.
+    std::string lower = key;
+    for (char& c : lower)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (lower.ends_with(".m3")) {
+        auto m3 = ResolveSc2ParticleModel(key);
+        if (!m3)
+            return nullptr;
+        Actor* child = SpawnChildFromSource(owner, ActorRole::PE1, m3, forceHandle);
+        if (!child)
+            return nullptr;
+        child->worldTransform = initialTm;
+        FinishNativeActor(*child, m3);
+        return child;
+    }
+#endif
 #if WDX_ENABLE_M2
     auto model = ResolveParticleModel(key);
     if (!model)

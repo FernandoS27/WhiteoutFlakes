@@ -14,7 +14,8 @@
 
 #include "oracle_golden.h"
 #include "renderer/ribbon/ribbon_emitter.h"
-#include "renderer/ribbon/ribbon_vs_math.h"
+#include "renderer/sc2/sc2_element.h"
+#include "renderer/sc2/sc2_element_math.h"
 
 #include <algorithm>
 #include <bit>
@@ -27,6 +28,9 @@
 
 using namespace whiteout::flakes;
 using namespace whiteout::flakes::renderer::ribbon;
+// The element math moved out of `ribbon::` into `sc2::` (R6), so the
+// using-directive above no longer reaches it.
+namespace vs = whiteout::flakes::renderer::sc2::vs;
 namespace fs = std::filesystem;
 
 namespace {
@@ -599,7 +603,6 @@ TEST_CASE("o5b: the pre-roll emission schedule composes CatchUpEmission + EmitSe
 // ---------------------------------------------------------------------------
 TEST_CASE("o6: the analytic simulators replay the drag form and the arc walk",
           "[ribbon][sc2_ribbon][oracle]") {
-    namespace vs = whiteout::flakes::renderer::ribbon::vs;
     const fs::path path = GoldenDir() / "o6_analytic.json";
     if (!fs::exists(path))
         SKIP("no golden at " + path.string());
@@ -737,7 +740,6 @@ TEST_CASE("o6: the analytic simulators replay the drag form and the arc walk",
 // ---------------------------------------------------------------------------
 TEST_CASE("o7: the legacy simulator replays Euler+drag and the tech-4 arc V",
           "[ribbon][sc2_ribbon][oracle]") {
-    namespace vs = whiteout::flakes::renderer::ribbon::vs;
     const fs::path path = GoldenDir() / "o7_legacy.json";
     if (!fs::exists(path))
         SKIP("no golden at " + path.string());
@@ -1068,9 +1070,8 @@ TEST_CASE("o9: the spline simulator replays the cubic control points",
 // component to 0x8001). Bit-exact — inline SSE, no libm. The C++ ribbon service
 // extrudes on the CPU into a float vertex instead (RIBBON_SERVICE.md §9 item 7),
 // so this pins the assembly + the element-attribute routing that path rests on,
-// not EmitSc2Strip's output. The 120-byte animated/cached fillers add a
-// runtime-noise-table position offset (§5 item 6) and are characterised, not
-// gated.
+// not EmitSc2Strip's output. The 120-byte animated fillers' noise offset is
+// O13's.
 // ---------------------------------------------------------------------------
 TEST_CASE("o10: FillVertices_Line packs the fat vertex bit-exactly",
           "[ribbon][sc2_ribbon][oracle]") {
@@ -1161,12 +1162,14 @@ TEST_CASE("o10: FillVertices_Line packs the fat vertex bit-exactly",
 }
 
 // ---------------------------------------------------------------------------
-// O11 — the overlay-wave sampler. `Sc2SampleWave` replays M3_SampleAnimValue:
-// type 0 off, 1 sin·amp, 2 cos·amp, 3 saw (amp·(2·fmod(phase,1)−1)), 4 square.
+// O11 — the overlay-wave sampler. `sc2::SampleWave` replays
+// M3_SampleAnimValue: type 0 off, 1 sin·amp, 2 cos·amp, 3 saw
+// (amp·(2·fmod(phase,1)−1)), 4 square.
 // Types 0/4 are bit-exact; 1/2 go through libm sin/cos and 3 narrows a double
-// fmod, so those carry a ULP bound. Type 5 (RNG) and type 6 (Noise1D over a
-// runtime-initialized table) are documented deviations the C++ returns 0 for and
-// the gate does not record.
+// fmod, so those carry a ULP bound. Type 6 is `Noise1D_Sample` over a second
+// seed-0 table, which the gate builds the way `InitFunc_3733` does; it reads
+// only `perm` and `grad1`, neither through rsqrt, so it is bit-exact too. Type 5
+// (the global RNG) is a documented deviation the gate does not record.
 // ---------------------------------------------------------------------------
 TEST_CASE("o11: the overlay-wave sampler replays M3_SampleAnimValue",
           "[ribbon][sc2_ribbon][oracle]") {
@@ -1176,6 +1179,7 @@ TEST_CASE("o11: the overlay-wave sampler replays M3_SampleAnimValue",
     const auto doc = wdx_golden::Load(path.string());
     const auto& cases = (*doc)["cases"];
     REQUIRE(cases.Size() >= 100);
+    usize noiseRows = 0;
     for (std::size_t i = 0; i < cases.Size(); ++i) {
         const auto& c = cases[i];
         const auto& in = c["in"];
@@ -1183,22 +1187,110 @@ TEST_CASE("o11: the overlay-wave sampler replays M3_SampleAnimValue",
         const f32 phase = Bits(in["phaseBits"]);
         const f32 amp = Bits(in["ampBits"]);
         const f32 want = Bits(c["out"]["retBits"]);
-        const f32 got = sc2::Sc2SampleWave(type, phase, amp);
+        const f32 got = sc2::SampleWave(type, phase, amp);
         INFO("case " << i << " type=" << type << " phase=" << phase << " amp=" << amp);
-        if (type == 0 || type == 4)
+        noiseRows += type == 6 ? 1u : 0u;
+        if (type == 0 || type == 4 || type == 6)
             REQUIRE(std::bit_cast<u32>(got) == std::bit_cast<u32>(want)); // exact
         else
             CloseRel(got, want, 1e-6f, "wave"); // 1/2 sin/cos, 3 double fmod
     }
+    // An older golden has no type-6 rows, and a pass over it says nothing
+    // about the noise lane.
+    CHECK(noiseRows >= 30u);
 }
 
 // ---------------------------------------------------------------------------
-// O12 — the vertex-shader math. `ribbon_vs_math.h` is the CPU transcription of
-// the shipped .fx family; this replays the refimpl golden against it so the
-// two stay identical (the slang M3_RIBBON permutation implements the same math
-// on the GPU). The W3 BUILD uses these functions; the drag closed form and the
-// GPU spline (fn "drag"/"spline"/"splineup") land with W4/W5, so those cases
-// are skipped here and picked up when their consumers exist.
+// O13 — the animated fillers' noise. `NoiseTable::Sample3D` replays the 3-D
+// sampler both 120-byte fillers call (`sub_100D69F60`) over the seed-0 table,
+// and `Sc2NoiseDisplacement` the envelope they wrap it in: which t, which of the
+// two mutes, the three z lanes. Positions inherit the table's rtol 2e-6 — its
+// gradients went through rsqrtss, which the emulator rounds correctly and the
+// hardware does not.
+// ---------------------------------------------------------------------------
+TEST_CASE("o13: Sample3D replays the fillers' 3-D noise sampler",
+          "[ribbon][sc2_ribbon][oracle]") {
+    const fs::path path = GoldenDir() / "o13_noise3d.json";
+    if (!fs::exists(path))
+        SKIP("no golden at " + path.string());
+    const auto doc = wdx_golden::Load(path.string());
+    const auto& cases = (*doc)["cases"];
+    REQUIRE(cases.Size() >= 1000);
+    const auto& table = whiteout::flakes::renderer::sc2::GlobalNoiseTable();
+    usize wraps = 0;
+    for (std::size_t i = 0; i < cases.Size(); ++i) {
+        const auto& c = cases[i];
+        const auto& in = c["in"];
+        if (in.Has("check")) {
+            // The shipped wrap copy is `grad3[i % 256]`, which is what lets the
+            // port fold its unmasked index rather than carry the copy.
+            CHECK(c["out"]["equal"].B());
+            continue;
+        }
+        wraps += c["tag"].S() == "wrap" ? 1u : 0u;
+        const f32 x = Bits(in["xBits"]), y = Bits(in["yBits"]), z = Bits(in["zBits"]);
+        INFO("case " << i << " x=" << x << " y=" << y << " z=" << z);
+        CloseRel(table.Sample3D(x, y, z), Bits(c["out"]["retBits"]), 2e-6f, "noise3d");
+    }
+    // The rows whose corner index runs past 255: without them a masked index
+    // would pass as well.
+    CHECK(wraps > 100u);
+}
+
+TEST_CASE("o13: the animated fillers displace each vertex by the retail envelope",
+          "[ribbon][sc2_ribbon][oracle]") {
+    const fs::path path = GoldenDir() / "o13_fillnoise.json";
+    if (!fs::exists(path))
+        SKIP("no golden at " + path.string());
+    const auto doc = wdx_golden::Load(path.string());
+    const auto& cases = (*doc)["cases"];
+    REQUIRE(cases.Size() >= 10);
+    for (std::size_t i = 0; i < cases.Size(); ++i) {
+        const auto& c = cases[i];
+        const auto& in = c["in"];
+        const auto& out = c["out"];
+        const bool lifetime = in["kind"].S() == "animlife";
+        const f32 headU = Bits(in["headUBits"]);
+        const f32 amp = Bits(in["ampBits"]), freq = Bits(in["freqBits"]);
+        const f32 coh = Bits(in["cohBits"]), edge = Bits(in["edgeBits"]);
+        const bool spline = in["spline"].B();
+        const u32 subdiv = in["subdiv"].U();
+        const u32 filled = out["filled"].U();
+        const auto& elems = in["elems"];
+        const auto& verts = out["verts"];
+        INFO("case " << i << " (" << c["tag"].S() << ")");
+        REQUIRE(filled <= elems.Size());
+        REQUIRE(verts.Size() == static_cast<std::size_t>(filled) * subdiv);
+        for (u32 e = 0; e < filled; ++e) {
+            const auto& el = elems[e];
+            const f32 birthU = Bits(el["birthU"]), deathU = Bits(el["deathU"]);
+            // `AnimatedLifetime` takes the life fraction, `Animated` the
+            // element's arc parameter.
+            const f32 t = lifetime ? (headU - birthU) / (deathU - birthU) : Bits(el["arcNorm"]);
+            const Vector3f off = Sc2NoiseDisplacement(t, headU, amp, freq, coh, edge, spline);
+            const f32 got[3] = {off.x + Bits(el["pos"][0]), off.y + Bits(el["pos"][1]),
+                                off.z + Bits(el["pos"][2])};
+            for (u32 s = 0; s < subdiv; ++s) {
+                const auto& v = verts[e * subdiv + s];
+                INFO("element " << e << " slot " << s << " t=" << t);
+                // The t the filler used is exact, so a wrong one shows here and
+                // not as a noise sample that happens to be off.
+                REQUIRE(std::bit_cast<u32>(t) == v["t"].U());
+                for (usize k = 0; k < 3; ++k)
+                    CloseRel(got[k], Bits(v["pos"][k]), 2e-6f, "position");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// O12 — the vertex-shader math. `sc2/sc2_element_math.h` is the CPU
+// transcription of the shipped .fx family; this replays the refimpl golden
+// against it so the two stay identical (the slang M3_RIBBON permutation
+// implements the same math on the GPU). The W3 BUILD uses these functions; the
+// drag closed form and the GPU spline (fn "drag"/"spline"/"splineup") land
+// with W4/W5, so those cases are skipped here and picked up when their
+// consumers exist.
 // ---------------------------------------------------------------------------
 namespace {
 

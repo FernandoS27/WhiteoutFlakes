@@ -912,3 +912,70 @@ TEST_CASE("m3_surface_table: the evaluator emits a palette entry only for a laye
     CHECK(e.row1[1] == 1.0f);
     CHECK(e.row1[3] == 0.0f);
 }
+
+TEST_CASE("a PAR_'s flipbook comes from the first slot the material fills",
+          "[m3_surface][sc2_particle]") {
+    // `b_iUVMapping[slot]` is per texture SLOT and retail builds one UV per
+    // slot in the vertex shader; a `renderer::Vertex` has ONE UV set, so a
+    // single slot has to answer. It cannot be slot 0 unconditionally — 1223 of
+    // 5037 corpus emitters have no active diffuse layer and draw out of the
+    // emissive one, and reading the empty slot called every one of them
+    // "no flipbook".
+    const auto build = [](std::optional<m3::TextureLayer> diffuse,
+                          std::optional<m3::TextureLayer> emissive) {
+        m3::Model model;
+        m3::StandardMaterial mat;
+        mat.diffuseLayer = std::move(diffuse);
+        mat.emissiveLayer1 = std::move(emissive);
+        model.standardMaterials = {mat};
+        model.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
+        model.divisions = {Division(0)};
+
+        m3::ParticleEmitter par;
+        par.materialIndex = 0;
+        model.particleEmitters = {par};
+        return model;
+    };
+    const auto flipbookOf = [](const m3::Model& model) {
+        const auto table = BuildM3SurfaceTable(model, kOneRegion, kMatm0);
+        REQUIRE(table->ParticleSurfaceBase() >= 0);
+        const M3Surface* s = table->Surface(static_cast<u32>(table->ParticleSurfaceBase()));
+        REQUIRE(s != nullptr);
+        REQUIRE(s->valid);
+        return M3ParticleFlipbookUv(*s);
+    };
+
+    const auto flip = [](const char* p) {
+        return TexLayer(p, m3::UVMappingMode::ParticleFlipbook);
+    };
+    const auto plain = [](const char* p) {
+        return TexLayer(p, m3::UVMappingMode::ExplicitUV0);
+    };
+
+    // The ordinary case, and the one slot 0 already answered.
+    CHECK(flipbookOf(build(flip("sheet.dds"), std::nullopt)));
+    CHECK_FALSE(flipbookOf(build(plain("one.dds"), std::nullopt)));
+
+    // The 1223: no diffuse at all, the look drawn out of the emissive slot.
+    // Reading slot 0 here reports the default of a layer nothing wrote.
+    CHECK(flipbookOf(build(std::nullopt, flip("sheet.dds"))));
+    CHECK_FALSE(flipbookOf(build(std::nullopt, plain("one.dds"))));
+
+    // A diffuse that is PRESENT but unused is the same blindness — an
+    // `M3LayerActive` layer is one with a texture or an authored colour, and
+    // this has neither, so the emissive still answers.
+    m3::TextureLayer empty;
+    CHECK(flipbookOf(build(empty, flip("sheet.dds"))));
+
+    // And where the two disagree, the dominant layer wins rather than the
+    // last one read: 1057 corpus emitters are this shape and no single baked
+    // UV set can serve them.
+    CHECK_FALSE(flipbookOf(build(plain("base.dds"), flip("sheet.dds"))));
+    CHECK(flipbookOf(build(flip("sheet.dds"), plain("glow.dds"))));
+
+    // Nothing filled: false, not the uninitialised read of slot 0.
+    m3::Model bare = build(std::nullopt, std::nullopt);
+    const auto table = BuildM3SurfaceTable(bare, kOneRegion, kMatm0);
+    const M3Surface* s = table->Surface(static_cast<u32>(table->ParticleSurfaceBase()));
+    CHECK_FALSE(M3ParticleFlipbookUv(*s));
+}

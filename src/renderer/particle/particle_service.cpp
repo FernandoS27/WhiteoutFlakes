@@ -18,6 +18,13 @@ ParticleService::~ParticleService() = default;
 void ParticleService::AddEmitter(ModelId model, ParticleOutput output, i32 emitterId,
                                  std::unique_ptr<Emitter2> emitter) {
     std::lock_guard<std::mutex> lock(mutex_);
+    // An emitter registered after the host installed its terrain has to get it
+    // too, or an actor spawned mid-scene collides against a different surface
+    // from its neighbours.
+    if (groundQuery_ && emitter)
+        emitter->SetGroundQuery(groundQuery_);
+    if (emitter)
+        emitter->AttachSc2PendingList(&sc2PendingModels_);
     emitters_[{model, output, emitterId}] = std::move(emitter);
 }
 
@@ -38,8 +45,12 @@ void ParticleService::Clear() {
 
 void ParticleService::ResetEmitters() {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& [k, e] : emitters_)
+    // Collected here, as RemoveEmitter does: the deaths a reset reports are
+    // owed to the host's next drain, not to whichever Simulate comes after.
+    for (auto& [k, e] : emitters_) {
         e->ResetParticles();
+        e->CollectOutputEvents(childEvents_);
+    }
 }
 
 Emitter2* ParticleService::GetEmitter(ModelId model, ParticleOutput output, i32 emitterId) {
@@ -103,10 +114,43 @@ bool ParticleService::RemoveEmitter(ModelId model, ParticleOutput output, i32 em
 
 void ParticleService::Simulate(f32 dt) {
     std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<RoutedSpawnRequest> routed;
     for (auto& [k, e] : emitters_) {
         e->Update(dt, emissionScaler_);
-        e->CollectOutputEvents(childEvents_);
+        // An SC2 emitter's requests of its children leave right after its own
+        // step, into the child's inbox: a child later in this walk takes them
+        // this frame and one earlier takes them next frame, as retail's update
+        // order hands them over. The inbox's 128 cap is where every parent's
+        // requests meet. A child is registered under whichever output it
+        // draws, so both id spaces are asked.
+        routed.clear();
+        e->DrainSpawnRequests(routed);
+        for (const RoutedSpawnRequest& r : routed) {
+            auto it = emitters_.find(EmitterKey{k.model, ParticleOutput::Billboard, r.targetEmitterId});
+            if (it == emitters_.end())
+                it = emitters_.find(
+                    EmitterKey{k.model, ParticleOutput::ChildModel, r.targetEmitterId});
+            if (it != emitters_.end())
+                it->second->QueueSpawnRequest(r.req);
+        }
     }
+
+    // Every SC2 model particle registered this frame gets its model now, once
+    // all emitters have run — the walk retail's frame driver makes after its
+    // update job. The count is re-read each iteration, as both of retail's
+    // loops re-read theirs.
+    for (usize i = 0; i < sc2PendingModels_.size(); ++i) {
+        const Sc2PendingModel entry = sc2PendingModels_[i];
+        if (entry.runtime != nullptr && entry.runtime->host != nullptr)
+            entry.runtime->host->ServiceSc2PendingModel(entry.node);
+    }
+    sc2PendingModels_.clear();
+
+    // Collected after the walk rather than beside each Update, so an SC2 birth
+    // leaves in the same frame it was drawn. Handles are minted at the birth,
+    // not here, so no dialect's handle order moves.
+    for (auto& [k, e] : emitters_)
+        e->CollectOutputEvents(childEvents_);
 }
 
 void ParticleService::DrainChildModelEvents(std::vector<ChildModelEvent>& out) {
@@ -249,6 +293,16 @@ f32 ParticleService::EmissionScaler() const {
 void ParticleService::SetFogSampler(FogSampler sampler) {
     std::lock_guard<std::mutex> lock(mutex_);
     fogSampler_ = sampler ? std::move(sampler) : FogSampler(&DefaultFog);
+}
+
+void ParticleService::SetGroundQuery(GroundQuery query) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    groundQuery_ = std::move(query);
+    for (auto& [key, emitter] : emitters_) {
+        (void)key;
+        if (emitter)
+            emitter->SetGroundQuery(groundQuery_);
+    }
 }
 
 } // namespace whiteout::flakes::renderer::particle

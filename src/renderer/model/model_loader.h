@@ -57,6 +57,7 @@ class Emitter2;
 namespace whiteout::flakes::io {
 class IContentProvider;
 class M2ModelAdapter;
+class M3ModelAdapter;
 class D3ModelAdapter;
 struct WemDocument;
 } // namespace whiteout::flakes::io
@@ -177,7 +178,7 @@ public:
                                 u32 forceHandle = 0);
 
     // One M2 model particle's geometry model, spawned as a PE1-role child of
-    // @p owner. @p key is `EmitterDesc::childModelPath` — a path, or `#<id>`
+    // @p owner. @p key is `EmitterDesc::ChildModelPath()` — a path, or `#<id>`
     // when GPID named the model by fileDataID, which every shipped record does.
     //
     // Not routed through the child-TEMPLATE pipeline the MDX side uses: that
@@ -454,13 +455,23 @@ private:
 #if WDX_ENABLE_M2
     std::unique_ptr<profiles::wow::WowReplaceableTextures> wowReplaceables_;
     std::unique_ptr<profiles::wow::WowCharacterAppearance> wowCharacters_;
-    // Geometry models for M2 model particles, by `EmitterDesc::childModelPath`.
+    // Geometry models for M2 model particles, by `EmitterDesc::ChildModelPath()`.
     // A null entry is a remembered failure: an emitter births every frame, and
     // re-reading a model that is not there would re-read it every frame.
     std::unordered_map<std::string, std::shared_ptr<io::M2ModelAdapter>> particleModels_;
 #endif
 #if WDX_ENABLE_M3
     std::unique_ptr<profiles::sc2_heroes::Sc2ModelCatalog> sc2Catalog_;
+    // The `.m3` models StarCraft II model particles become, by path. Null is a
+    // remembered failure, for `particleModels_`' reason.
+    std::unordered_map<std::string, std::shared_ptr<io::M3ModelAdapter>> sc2ParticleModels_;
+    /// Parse @p key once — with the catalog's external animations, as a
+    /// top-level `.m3` gets them — and share it with every particle naming it.
+    std::shared_ptr<io::M3ModelAdapter> ResolveSc2ParticleModel(const std::string& key);
+    /// Parse the `.m3` a ModelParticles emitter names and hold its texture
+    /// slots on @p owner — `PreloadModelParticleGeometry`'s job for StarCraft
+    /// II — so the first shell is not the first time its textures are asked for.
+    void PreloadSc2ModelParticle(Actor& owner, const std::string& key);
 #endif
 };
 

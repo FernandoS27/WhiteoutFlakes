@@ -749,6 +749,15 @@ struct TexturePlan {
 /// model's stem for a texture the source only had an id for. Replaceables
 /// (`replaceableId != 0`) name a runtime team colour or glow that no file
 /// backs, in either game; they are left alone for the surface pass to spend.
+/// Where a `.m3` names its textures. Every one of 9,397 texture paths across
+/// 900 shipped models is `Assets/Textures/<file>` -- three segments, never
+/// deeper and never bare -- because the path is resolved against the mod root,
+/// not against the model. Writing the bare file name, as this did, resolved to
+/// nothing: every layer fell back to the engine's null texture, and a diffuse
+/// that reads back black with a zero alpha is a whole model painted in its
+/// team colour. It doubles as the directory the files are written into.
+constexpr const char* kTextureDir = "Assets/Textures/";
+
 std::vector<TexturePlan> PlanTextures(wem::Document& document, const std::string& modelStem) {
     std::vector<TexturePlan> plans;
     std::map<std::string, std::size_t> taken;
@@ -783,10 +792,10 @@ std::vector<TexturePlan> PlanTextures(wem::Document& document, const std::string
         if (base.empty())
             base = modelStem + "_" + std::to_string(i);
 
-        std::string name = base + ".dds";
+        std::string name = kTextureDir + base + ".dds";
         const auto [it, fresh] = taken.emplace(Lower(name), i);
         if (!fresh)
-            name = base + "_" + std::to_string(i) + ".dds";
+            name = kTextureDir + base + "_" + std::to_string(i) + ".dds";
 
         ref.path = name;
         ref.key = wem::TexturePath{name};
@@ -802,8 +811,12 @@ std::optional<std::vector<u8>> EncodeBaked(const BakedTexture& baked) {
     try {
         tx::Texture texture = baked.texture;
         texture.setSrgb(false);
-        texture.generateMipmaps(
-            tx::computeMaxMipCount(texture.width(), texture.height(), texture.depth()));
+        // A bake that brings its own chain keeps it: a pre-filtered probe's
+        // levels are its roughness blur, which a chain rebuilt from level 0
+        // would sharpen away.
+        if (texture.mipCount() <= 1)
+            texture.generateMipmaps(
+                tx::computeMaxMipCount(texture.width(), texture.height(), texture.depth()));
         texture.format(baked.format);
         tx::dds::Writer writer;
         std::vector<u8> bytes = writer.write(texture);
@@ -822,15 +835,17 @@ void ExportTextures(const M3ExportRequest& request, const std::vector<TexturePla
     for (const TexturePlan& plan : plans) {
         const fs::path outFile = targetDir / io::FsPathFromUtf8(plan.outName);
 
+        // A baked map has no file behind it — it was made out of the source's
+        // own maps a moment ago — so it goes straight to the encoder, and over
+        // any file already there: that file is an earlier export's bake, and
+        // keeping it hid every fix to the bake (the footman's plume kept its
+        // old cutout in the map).
+        const auto wasBaked = baked.find(static_cast<u32>(plan.index));
         std::error_code ec;
-        if (fs::exists(outFile, ec)) {
+        if (wasBaked == baked.end() && fs::exists(outFile, ec)) {
             ++report.texturesSkipped;
             continue;
         }
-
-        // A baked map has no file behind it — it was made out of the source's
-        // own maps a moment ago — so it goes straight to the encoder.
-        const auto wasBaked = baked.find(static_cast<u32>(plan.index));
         if (wasBaked != baked.end()) {
             std::optional<std::vector<u8>> made = EncodeBaked(wasBaked->second);
             if (!made) {

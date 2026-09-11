@@ -464,12 +464,14 @@ Vector3f Emitter::SkinEmitMeshVertex(const EmitMesh& m, u32 vertex) const {
     if (m.bones.empty() || emitPose_.empty() || emitInvBind_.empty())
         return rest;
 
-    const std::array<i32, 3>& b = m.bones[vertex];
-    const Vector3f& w = m.weights[vertex];
-    const f32 lane[3] = {w.x, w.y, w.z};
+    const auto& b = m.bones[vertex];
+    const auto& lane = m.weights[vertex];
     Vector3f acc{0, 0, 0};
     f32 sum = 0.0f;
-    for (i32 k = 0; k < 3; ++k) {
+    // Four slots since the promotion out of d3::; a `.prt` never fills the
+    // fourth, and the weight test below is what makes that free rather than
+    // a behaviour change.
+    for (usize k = 0; k < kEmitMeshBones; ++k) {
         if (!(lane[k] > 0.0f) || b[k] < 0 || b[k] >= static_cast<i32>(emitPose_.size()) ||
             b[k] >= static_cast<i32>(emitInvBind_.size()))
             continue;

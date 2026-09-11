@@ -115,6 +115,14 @@ BlockOf(const ::whiteout::m3::SubTrackContainer& stc, M3TrackHandle h,
         const ::whiteout::m3::ColorBGRA*) {
     return h.slot == M3SdSlot::Color ? &stc.sdcc[h.block] : nullptr;
 }
+const ::whiteout::m3::AnimBlock<::whiteout::u16>*
+BlockOf(const ::whiteout::m3::SubTrackContainer& stc, M3TrackHandle h, const ::whiteout::u16*) {
+    return h.slot == M3SdSlot::U16 ? &stc.sdu6[h.block] : nullptr;
+}
+const ::whiteout::m3::AnimBlock<::whiteout::i16>*
+BlockOf(const ::whiteout::m3::SubTrackContainer& stc, M3TrackHandle h, const ::whiteout::i16*) {
+    return h.slot == M3SdSlot::S16 ? &stc.sds6[h.block] : nullptr;
+}
 
 Vector3f MixValue(const Vector3f& a, const Vector3f& b, f32 t) {
     return {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t};
@@ -377,11 +385,19 @@ std::shared_ptr<M3ModelAdapter> M3ModelAdapter::Load(const ContentRef& ref,
         for (const auto& issue : parser.getIssues())
             std::fprintf(stderr, "[m3] %s\n", issue.c_str());
     }
-    if (model.divisions.empty() || model.vertices.vertexCount() == 0) {
-        // Real and common: `.m3` is also the container for effect-only and
-        // physics-only assets, which carry no drawable mesh at all. Not an
-        // error, but there is nothing for this adapter to return.
-        std::fprintf(stderr, "[m3] no geometry in '%s'\n", ref.Describe().c_str());
+    // An `.m3` is also the container for effect-only and physics-only assets,
+    // which carry no drawable mesh at all. That used to end the load, because
+    // a mesh was the only thing this renderer could draw out of one. An
+    // emitter draws now, and the effect-only files are exactly where the small
+    // single-emitter cases live — `ZealotWeaponImpact.m3` is one `PAR_`, one
+    // bone and no `REGN`, and refusing it made the whole content class
+    // invisible rather than merely mesh-less. So the refusal is now about
+    // having NOTHING to draw, not about having no mesh.
+    const bool hasMesh = !model.divisions.empty() && model.vertices.vertexCount() != 0;
+    const bool hasEffects = !model.particleEmitters.empty() || !model.ribbonEmitters.empty();
+    if (!hasMesh && !hasEffects) {
+        std::fprintf(stderr, "[m3] no geometry and no emitters in '%s'\n",
+                     ref.Describe().c_str());
         return nullptr;
     }
     return std::make_shared<M3ModelAdapter>(std::move(model));
@@ -1691,6 +1707,7 @@ renderer::model::FrameState M3ModelAdapter::Evaluate(const PoseRequest& req) con
     EvaluateMaterialUvTransforms(layers, fs);
     EvaluateLights(layers, visible, req.world, fs);
     EvaluateRibbons(layers, visible, req.world, fs);
+    EvaluateParticles(layers, visible, req.world, fs);
     EvaluatePhysics(layers, fs);
     return fs;
 }
@@ -2126,6 +2143,451 @@ std::vector<renderer::effects::Sc2RibbonEmitterConfig> M3ModelAdapter::GetSc2Rib
         out.push_back(std::move(c));
     }
     return out;
+}
+
+void M3ModelAdapter::EvaluateParticles(std::span<const M3Layer> layers,
+                                       std::span<const ::whiteout::u8> visible,
+                                       const Matrix44f& world,
+                                       renderer::model::FrameState& fs) const {
+    if (model_.particleEmitters.empty())
+        return;
+    // Renderer units per model unit: the world matrix's uniform scale, the
+    // same derivation the ribbon and M2 routes take.
+    const f32 scale = std::sqrt(world.data[0][0] * world.data[0][0] +
+                                world.data[0][1] * world.data[0][1] +
+                                world.data[0][2] * world.data[0][2]);
+    fs.particleStates.reserve(model_.particleEmitters.size());
+
+    const auto boneWorld = [&](std::size_t bone) {
+        if (bone < fs.boneWorldMatrices.size())
+            return fs.boneWorldMatrices[bone] * world;
+        return world;
+    };
+    // Colours stay PACKED. The lifetime interpolation between the three stops
+    // is integer in the shipped code (RE §5.8), so unpacking to floats here
+    // would just move the rounding somewhere it cannot be checked.
+    const auto packed = [](const ::whiteout::m3::ColorBGRA& c) -> u32 {
+        return (static_cast<u32>(c.a) << 24) | (static_cast<u32>(c.r) << 16) |
+               (static_cast<u32>(c.g) << 8) | static_cast<u32>(c.b);
+    };
+
+    // The players the squirt keys are read against: every layer, once per
+    // model. Retail's reader walks each live player and resolves the track
+    // through that player's own container (RE §16.7); taking the top layer
+    // alone let a global loop above the sequence hide every one of its keys.
+    // The times stay unwrapped — the reader wraps each on its track's end.
+    // They travel to the ACTOR layer, which owns burst detection; the emitter
+    // never sees an animation clock.
+    fs.sc2AnimPlayers.clear();
+    fs.sc2AnimPlayers.reserve(layers.size());
+    for (const M3Layer& l : layers)
+        fs.sc2AnimPlayers.push_back({l.stc, l.timeMs, l.loop});
+
+    for (std::size_t i = 0; i < model_.particleEmitters.size(); ++i) {
+        const auto& par = model_.particleEmitters[i];
+        renderer::model::FrameState::ParticleFrameState st{};
+        st.emitterId = static_cast<i32>(i);
+        st.transform = boneWorld(par.boneIndex);
+        st.unitScale = (scale > 0.0f) ? scale : 1.0f;
+        // The WC3-family scalars stay at their defaults — the SC2 stages read
+        // the block below instead. `visibility` carries the bone-visibility
+        // gate the way retail's node-active bit does.
+        st.visibility = (par.boneIndex >= visible.size() || visible[par.boneIndex]) ? 1.0f : 0.0f;
+        st.modelParticle = !par.modelPaths.empty();
+
+        auto& s2 = st.sc2;
+        s2.emissionRate = SampleRef(par.emissionRate, layers);
+        s2.speed = SampleRef(par.initialSpeed, layers);
+        s2.speedRandom = SampleRef(par.initialSpeedRandom, layers);
+        // Yaw/pitch are DEGREES and convert at use — the emitter's only
+        // deg→rad. Rotation keys below are RADIANS end to end and convert
+        // nowhere, which is the correction that matters here: reading them as
+        // degrees spins a particle 57× too fast.
+        s2.yawDeg = SampleRef(par.initialYaw, layers);
+        s2.pitchDeg = SampleRef(par.initialPitch, layers);
+        s2.horizontal = SampleRef(par.initialHorizontal, layers);
+        s2.vertical = SampleRef(par.initialVertical, layers);
+        s2.lifetime = SampleRef(par.lifetime, layers);
+        s2.lifetimeRandom = SampleRef(par.lifetimeRandom, layers);
+        s2.size3 = SampleRef(par.sizeAnimation, layers);
+        s2.sizeRandom3 = SampleRef(par.sizeRandomAnimation, layers);
+        s2.rotation3 = SampleRef(par.rotationAnimation, layers);
+        s2.rotationRandom3 = SampleRef(par.rotationRandomAnimation, layers);
+        s2.colorBGRA[0] = packed(SampleRef(par.colorStart, layers));
+        s2.colorBGRA[1] = packed(SampleRef(par.colorMid, layers));
+        s2.colorBGRA[2] = packed(SampleRef(par.colorEnd, layers));
+        s2.colorRandomBGRA[0] = packed(SampleRef(par.colorStartRandom, layers));
+        s2.colorRandomBGRA[1] = packed(SampleRef(par.colorMidRandom, layers));
+        s2.colorRandomBGRA[2] = packed(SampleRef(par.colorEndRandom, layers));
+        s2.shapeOuter = SampleRef(par.shapeOuter, layers);
+        s2.shapeInner = SampleRef(par.shapeInner, layers);
+        s2.outerRadius = SampleRef(par.outerRadius, layers);
+        s2.innerRadius = SampleRef(par.innerRadius, layers);
+        // Only read when inheriting (stateFlags bit 3); sampling it otherwise
+        // would put a live track's value where the runtime keeps a zero.
+        s2.parentVelocityScale = (static_cast<u32>(par.flags) & 0x40u)
+                                     ? SampleRef(par.particleVelocity, layers)
+                                     : 0.0f;
+        s2.trailEmissionRate = SampleRef(par.trailEmissionRate, layers);
+        s2.splineLower = SampleRef(par.lowerBound, layers);
+        s2.splineUpper = SampleRef(par.upperBound, layers);
+
+        // Overlay waves, in the runtime's channel order. Their static types
+        // live in the desc; sampling the pairs unconditionally is cheap and
+        // inert wherever the type is 0.
+        const ::whiteout::m3::AnimRef<f32>* amp[9] = {
+            &par.yawAmplitude,      &par.pitchAmplitude,      &par.speedAmplitude,
+            &par.sizeAmplitude,     &par.alphaAmplitude,      &par.colorAmplitude,
+            &par.rotationAmplitude, &par.horizontalAmplitude, &par.verticalAmplitude};
+        const ::whiteout::m3::AnimRef<f32>* freq[9] = {
+            &par.yawFrequency,      &par.pitchFrequency,      &par.speedFrequency,
+            &par.sizeFrequency,     &par.alphaFrequency,      &par.colorFrequency,
+            &par.rotationFrequency, &par.horizontalFrequency, &par.verticalFrequency};
+        for (int k = 0; k < 9; ++k) {
+            s2.overlayAmp[k] = SampleRef(*amp[k], layers);
+            s2.overlayFreq[k] = SampleRef(*freq[k], layers);
+        }
+        s2.overlayPhase = SampleRef(par.phaseShift, layers);
+
+        // Shape 6 only: the control points are an AnimRef each, so the whole
+        // spline moves per frame rather than being a load-time constant.
+        if (par.emitterShape == ::whiteout::m3::EmitterShape::Spline) {
+            s2.splinePoints.reserve(par.splineLineData.size());
+            for (const auto& pt : par.splineLineData)
+                s2.splinePoints.push_back(SampleRef(pt, layers));
+        }
+
+        // `PARC` copies are emission SLOTS of this emitter, not emitters: each
+        // overrides the rate and the bone, and nothing else.
+        s2.slots.reserve(par.copyIndices.size());
+        for (const u32 ci : par.copyIndices) {
+            if (ci >= model_.particleEmitterCopies.size())
+                continue;
+            const auto& cp = model_.particleEmitterCopies[ci];
+            renderer::model::FrameState::ParticleFrameState::Sc2ParticleFrame::Slot slot;
+            slot.emissionRate = SampleRef(cp.emissionRate, layers);
+            slot.boneWorld = boneWorld(cp.boneIndex);
+            s2.slots.push_back(slot);
+        }
+
+        s2.active = st.visibility > 0.0f;
+        fs.particleStates.push_back(std::move(st));
+    }
+}
+
+std::vector<renderer::effects::Sc2ParticleEmitterConfig> M3ModelAdapter::GetSc2ParticleConfigs() {
+    using ::whiteout::m3::EmitterShape;
+    using ::whiteout::m3::ParticleEmitter;
+
+    // Every container this animId is keyed in, so a squirt table survives load
+    // with its key TIMES intact. Sampling cannot recover them: a squirt fires
+    // when the clock steps over a key (RE §7b), which is a property of the
+    // key list and not of any one frame's value.
+    //
+    // The blocks are in SDS6, the SIGNED 16-bit array — not SDU6, which the
+    // `AnimRef<u16>` declaration implies and which is EMPTY in every corpus
+    // model. Measured, not assumed: 3131 of 3131 bound `squirtAmount` refs
+    // across both corpora resolve to slot 7. The declared C++ type does not
+    // name the slot; only the container's own `animRefs` word does. Both are
+    // read anyway, because covering the declared one costs three lines and a
+    // burst count is non-negative either way.
+    const auto squirtTable = [this](const ::whiteout::m3::AnimRef<::whiteout::u16>& ref) {
+        renderer::effects::Sc2SquirtKeys keys;
+        const i32 row = tables_.RowOf(ref.animId);
+        if (ref.animId == 0 || ref.animId == 0xFFFFFFFFu || row < 0)
+            return keys;
+        // `UpdateSlotEmission` reads nothing unless the ref animates (`flags &
+        // 2`, RE §5.2), so a bound track without the bit owes no burst.
+        if ((ref.flags & 0x2u) == 0u)
+            return keys;
+        // Carried as the u16 the runtime's track table holds (OP7b's `values`
+        // are u16). `ComputeEmitCount` then reads each crossed key back SIGNED
+        // and floors a negative one at zero (RE §16.31), so a key with the high
+        // bit set owes no burst — `Sc2SquirtBurst` applies that at the sum.
+        const auto take = [&keys](u16 stc, const auto& blk) {
+            const std::size_t n = (std::min)(blk.timestamps.size(), blk.keys.size());
+            for (std::size_t k = 0; k < n; ++k) {
+                keys.push_back({stc, static_cast<f32>(blk.timestamps[k]),
+                                static_cast<f32>(static_cast<u16>(blk.keys[k])),
+                                static_cast<i32>(blk.endFrame)});
+            }
+        };
+        for (u16 stc = 0; stc < tables_.StcCount(); ++stc) {
+            const ::whiteout::m3::SubTrackContainer* coll = tables_.StcAt(stc);
+            const M3TrackHandle h = tables_.At(row, stc);
+            if (!coll || !h.Valid())
+                continue;
+            if (const auto* b = BlockOf(*coll, h, static_cast<const ::whiteout::i16*>(nullptr)))
+                take(stc, *b);
+            else if (const auto* u = BlockOf(*coll, h, static_cast<const ::whiteout::u16*>(nullptr)))
+                take(stc, *u);
+        }
+        return keys;
+    };
+    // The pre-roll length. Retail resolves the track for the ACTIVE sequence
+    // (RE §15.4) and takes that track's peak; this is the peak across every
+    // container, which is that value's upper bound and the only one a load-time
+    // desc can hold. The per-sequence lookup belongs with the pre-roll phase,
+    // where there is a sequence to look it up for.
+    const auto peakF32 = [this](const ::whiteout::m3::AnimRef<f32>& ref) {
+        f32 peak = ref.initValue;
+        const i32 row = tables_.RowOf(ref.animId);
+        if (ref.animId == 0 || ref.animId == 0xFFFFFFFFu || row < 0)
+            return peak;
+        for (u16 stc = 0; stc < tables_.StcCount(); ++stc) {
+            const ::whiteout::m3::SubTrackContainer* coll = tables_.StcAt(stc);
+            const M3TrackHandle h = tables_.At(row, stc);
+            if (!coll || !h.Valid())
+                continue;
+            if (const auto* blk = BlockOf(*coll, h, static_cast<const f32*>(nullptr))) {
+                for (const f32 v : blk->keys)
+                    peak = (std::max)(peak, v);
+            }
+        }
+        return peak;
+    };
+
+    std::vector<renderer::effects::Sc2ParticleEmitterConfig> out;
+    out.reserve(model_.particleEmitters.size());
+    for (const ParticleEmitter& par : model_.particleEmitters) {
+        renderer::effects::Sc2ParticleEmitterConfig c;
+        c.boneIndex = static_cast<i32>(par.boneIndex);
+        c.materialIndex = static_cast<i32>(par.materialIndex);
+        c.flags = static_cast<u32>(par.flags);
+        c.additionalFlags = static_cast<u32>(par.additionalFlags);
+        c.rotationFlags = static_cast<u32>(par.rotationFlags);
+        c.forces = static_cast<u32>(par.localForces) | (static_cast<u32>(par.worldForces) << 16);
+        c.forcesFallback = static_cast<u32>(par.localForcesFallback) |
+                           (static_cast<u32>(par.worldForcesFallback) << 16);
+
+        // WhiteoutLib's `EmitterShape` already carries the RE's numbering —
+        // 6 Spline, 7 Mesh — so this is a cast, not the swap the design
+        // budgeted for. The spec that had them the other way round is what the
+        // enum was corrected against.
+        c.emitShape = static_cast<u8>(par.emitterShape);
+        c.velocityType = par.velocityType;
+        c.maxParticles = par.maxParticles;
+        c.lodReduce = static_cast<u8>(par.lodReduce);
+        c.lodCut = static_cast<u8>(par.lodCut);
+        c.shapeRegions.reserve(par.shapeRegions.size());
+        for (const u32 r : par.shapeRegions)
+            c.shapeRegions.push_back(static_cast<i32>(r));
+
+        // Slot 0 is the emitter itself; 1..n are its copies, in `copyIndices`
+        // order. The squirt tables are index-parallel, so a copy that
+        // overrides nothing still occupies its slot.
+        c.slotBones.push_back(static_cast<i32>(par.boneIndex));
+        c.squirt.push_back(squirtTable(par.squirtAmount));
+        for (const u32 ci : par.copyIndices) {
+            if (ci >= model_.particleEmitterCopies.size())
+                continue;
+            const auto& cp = model_.particleEmitterCopies[ci];
+            c.slotBones.push_back(static_cast<i32>(cp.boneIndex));
+            c.squirt.push_back(squirtTable(cp.squirtAmount));
+        }
+
+        c.sizeRandom = par.sizeRandomEnable != 0;
+        c.rotationRandom = par.rotationRandomEnable != 0;
+        c.colorRandom = par.colorRandomEnable != 0;
+        c.alphaRandom = par.alphaRandomEnable != 0;
+        const u32 types[9] = {par.yawType,      par.pitchType,      par.speedType,
+                              par.sizeType,     par.alphaType,      par.colorType,
+                              par.rotationType, par.horizontalType, par.verticalType};
+        for (int k = 0; k < 9; ++k)
+            c.overlayType[k] = types[k];
+
+        c.drag = par.drag;
+        c.mass = par.mass;
+        c.massRandom = par.massRandom;
+        // gravityX/Y are u32 in the struct and floats in the file — they are
+        // documented "expected 0" and every corpus carrier has them so, but a
+        // bit pattern is what they hold, not a count.
+        c.gravity3 = {std::bit_cast<f32>(par.gravityX), std::bit_cast<f32>(par.gravityY),
+                      par.gravity};
+        c.bounce = par.bounce;
+        c.friction = par.friction;
+        c.collisionDieBounce = par.collisionDieBounce;
+        c.killRadius = par.killRadius;
+        c.windMultiplier = par.windMultiplier;
+        c.noiseAmplitude = par.noiseAmplitude;
+        c.noiseFrequency = par.noiseFrequency;
+        c.noiseCoherence = par.noiseCoherence;
+        c.noiseEdge = par.noiseEdge;
+
+        c.instanceType = static_cast<u8>(par.instanceType);
+        c.midTime[0] = par.sizeMidTime;
+        c.midTime[1] = par.colorMidTime;
+        c.midTime[2] = par.alphaMidTime;
+        c.midTime[3] = par.rotationMidTime;
+        c.midHold[0] = par.sizeMidHoldTime;
+        c.midHold[1] = par.colorMidHoldTime;
+        c.midHold[2] = par.alphaMidHoldTime;
+        c.midHold[3] = par.rotationMidHoldTime;
+        c.sizeSmoothing = static_cast<u8>(par.sizeSmoothing);
+        c.colorSmoothing = static_cast<u8>(par.colorSmoothing);
+        c.rotationSmoothing = static_cast<u8>(par.rotationSmoothing);
+        c.flipbookMidTime = par.flipbookMidTime;
+        c.flipbookColumns = par.flipbookColumns;
+        c.flipbookRows = par.flipbookRows;
+        c.flipbookColumnFraction = par.flipbookColumnFraction;
+        c.flipbookRowFraction = par.flipbookRowFraction;
+        c.flipbookStartInit = par.flipbookStartInitIndex;
+        c.flipbookStartStop = par.flipbookStartStopIndex;
+        c.flipbookEndInit = par.flipbookEndInitIndex;
+        c.tailLength = par.tailLength;
+        c.instanceAngle = par.instanceAngle;
+        c.instanceDistance = par.instanceDistance;
+
+        c.collisionSpawnIndex = par.collisionSpawnIndex;
+        c.collisionSpawnMin = par.collisionSpawnMin;
+        c.collisionSpawnMax = par.collisionSpawnMax;
+        c.collisionSpawnChance = par.collisionSpawnChance;
+        c.collisionSpawnEnergy = par.collisionSpawnEnergy;
+        c.trailLinkIndex = par.trailLinkIndex;
+        c.trailChance = par.trailChance;
+        c.splatProjectorIndex = par.splatProjectionIndex;
+        c.splatChance = par.splatChance;
+        // The ribbon campaign named this pair; OP14 settled what reads it.
+        c.modelOrientPreset = par.spawnRibbonOnBounceChance;
+        c.modelOrientVariant = par.ribbonLinkIndex;
+        // Without the terminator the reference counts: a path that keeps it
+        // never ends in `.m3`, and never reads.
+        c.modelPaths.clear();
+        c.modelPaths.reserve(par.modelPaths.size());
+        for (const auto& path : par.modelPaths)
+            c.modelPaths.emplace_back(TrimNuls(path));
+
+        // `lifetimeRandom` is the track EmitBurst peaks when the randomise bit
+        // is set, `lifetime` otherwise (RE §15.4) — not the larger of the two.
+        const bool randomiseLifespan =
+            (static_cast<u32>(par.additionalFlags) &
+             static_cast<u32>(::whiteout::m3::ParticleAdditionalFlag::LifespanRandomize)) != 0;
+        c.maxLifetimeKey = peakF32(randomiseLifespan ? par.lifetimeRandom : par.lifetime);
+
+        out.push_back(std::move(c));
+    }
+    return out;
+}
+
+std::shared_ptr<const renderer::particle::EmitMesh>
+BuildM3EmitMesh(const ::whiteout::m3::Model& model, std::size_t divisionIndex,
+                std::span<const u8> wanted) {
+    namespace pp = renderer::particle;
+    if (divisionIndex >= model.divisions.size())
+        return nullptr;
+    const auto& div = model.divisions[divisionIndex];
+    if (div.regions.empty() || wanted.empty())
+        return nullptr;
+
+    const std::vector<Vector3f> positions = model.vertices.getPositions();
+    // Shape 7 rejects positions against the R byte (OP13). A format without
+    // vertex colour leaves the array empty, which the sampler reads as 255.
+    const std::vector<::whiteout::m3::ColorBGRA> colours =
+        model.vertices.hasVertexColors() ? model.vertices.getColors()
+                                         : std::vector<::whiteout::m3::ColorBGRA>{};
+    const std::size_t stride = model.vertices.vertexSize();
+    const std::vector<u8>& blob = model.vertices.data;
+    const auto& lookup = model.boneLookup;
+    const i32 boneCount = static_cast<i32>(model.bones.size());
+    const bool skinned = stride >= 20 && boneCount > 0;
+
+    auto mesh = std::make_shared<pp::EmitMesh>();
+    // One entry per REGION of the division, so an emitter's `shapeRegions` is
+    // an index into `subs` with no remap. The regions nothing emits from get an
+    // empty entry rather than being skipped — a sparse list would make the
+    // indices lie, and an empty entry costs three words.
+    mesh->subs.resize(div.regions.size());
+
+    for (std::size_t r = 0; r < div.regions.size(); ++r) {
+        if (r >= wanted.size() || !wanted[r])
+            continue;
+        const auto& region = div.regions[r];
+        if (region.indexCount < 3 || region.vertexCount == 0)
+            continue;
+        const std::size_t vBegin = region.firstVertex;
+        const std::size_t vEnd = vBegin + region.vertexCount;
+        if (vEnd > positions.size() || vEnd * stride > blob.size())
+            continue;
+        const std::size_t iEnd = region.firstIndex + region.indexCount;
+        if (iEnd > div.faces.size())
+            continue;
+
+        // Where this region's vertices land in the shared arrays. `tris` is
+        // global by construction, so the sampler never needs the region back.
+        const u32 base = static_cast<u32>(mesh->rest.size());
+        for (std::size_t v = vBegin; v < vEnd; ++v)
+            mesh->rest.push_back(positions[v]);
+        if (colours.size() >= vEnd) {
+            for (std::size_t v = vBegin; v < vEnd; ++v)
+                mesh->colorR.push_back(colours[v].r);
+        }
+
+        if (skinned) {
+            for (std::size_t v = vBegin; v < vEnd; ++v) {
+                const u8* rec = blob.data() + v * stride;
+                std::array<i32, pp::kEmitMeshBones> b{};
+                std::array<f32, pp::kEmitMeshBones> w{};
+                for (usize k = 0; k < pp::kEmitMeshBones; ++k) {
+                    // A vertex names a slot of its REGION's bone-lookup window,
+                    // which is that region's whole palette — resolve it to a
+                    // global bone here, because EmitMesh is posed against the
+                    // actor's skeleton and knows nothing about regions.
+                    const std::size_t slot = region.firstBoneLookup + rec[16 + k];
+                    i32 gb = (slot < lookup.size()) ? static_cast<i32>(lookup[slot]) : 0;
+                    if (gb < 0 || gb >= boneCount)
+                        gb = 0;
+                    b[k] = gb;
+                    w[k] = rec[12 + k] / 255.0f;
+                }
+                mesh->bones.push_back(b);
+                mesh->weights.push_back(w);
+            }
+        }
+
+        pp::EmitMesh::SubMesh sm;
+        sm.firstTri = static_cast<u32>(mesh->tris.size() / 3);
+        f32 area = 0.0f;
+        for (std::size_t i = region.firstIndex; i + 2 < iEnd; i += 3) {
+            const u32 i0 = base + div.faces[i];
+            const u32 i1 = base + div.faces[i + 1];
+            const u32 i2 = base + div.faces[i + 2];
+            if (i0 >= mesh->rest.size() || i1 >= mesh->rest.size() || i2 >= mesh->rest.size())
+                continue;
+            mesh->tris.push_back(i0);
+            mesh->tris.push_back(i1);
+            mesh->tris.push_back(i2);
+            // The running sum is BIND-pose area, like the engine's — it caches
+            // one table per mesh and never rebuilds it, so a posed model still
+            // picks triangles in their rest-pose proportion. SC2's own shape 7
+            // picks uniformly over the triangle INDEX and ignores this, but the
+            // table costs one float per triangle and D3 shape 10 needs it.
+            const Vector3f& p0 = mesh->rest[i0];
+            const Vector3f& p1 = mesh->rest[i1];
+            const Vector3f& p2 = mesh->rest[i2];
+            const Vector3f e1{p1.x - p0.x, p1.y - p0.y, p1.z - p0.z};
+            const Vector3f e2{p2.x - p0.x, p2.y - p0.y, p2.z - p0.z};
+            const Vector3f n{e1.y * e2.z - e1.z * e2.y, e1.z * e2.x - e1.x * e2.z,
+                             e1.x * e2.y - e1.y * e2.x};
+            area += 0.5f * std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+            mesh->areaCdf.push_back(area);
+        }
+        sm.triCount = static_cast<u32>(mesh->tris.size() / 3) - sm.firstTri;
+        mesh->subs[r] = sm;
+    }
+
+    if (mesh->tris.empty())
+        return nullptr;
+    // Every region's bytes or none: a partial array would shift the index of
+    // every vertex after the first region that had no colour.
+    if (mesh->colorR.size() != mesh->rest.size())
+        mesh->colorR.clear();
+    // A model with no usable weights samples the rest pose, and saying so with
+    // empty arrays is what SkinEmitMeshVertex's early-out reads.
+    if (!skinned) {
+        mesh->bones.clear();
+        mesh->weights.clear();
+    }
+    return std::shared_ptr<const pp::EmitMesh>(std::move(mesh));
 }
 
 } // namespace whiteout::flakes::io

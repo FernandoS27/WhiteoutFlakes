@@ -1,0 +1,59 @@
+# Track C — StarCraft II / Heroes of the Storm `.m3` PARTICLE corpus
+# (SC2_PARTICLE_PLAN.md §5, the -M3Particle render-diff arm).
+#
+# Paths are relative to C:/Projects/WhiteoutLib/Corpus, same root as
+# corpus_m3.txt. Every line is a carrier CONFIRMED with
+# `--draw-trace-particle-list`, which prints the desc the loader registered —
+# version, shape, velocity type, instance type, analytic/euler, slots, squirt
+# keys, surface, flipbook UV, and how many particles are alive after the
+# settle. Picked by content, never by filename.
+#
+# The baselines are PROGRESSIVE, like -M3Anim's: every phase of the plan
+# legitimately changes what an SC2 emitter draws, so the commit that
+# re-records has to name the phase. The vacuity anchor is the `sc2par=` count
+# in the `[dtrace]` line — zero means the M3 producer never drew a particle
+# and the run proved nothing, however stable its golden.
+#
+# Two things the X2 survey CORRECTED about the provisional list in §5:
+#
+#   * `ZealotWeaponImpact` and `Reentry_Fire` are instance type 1 (Tail) and
+#     `Smoke_Battle` is on the Euler path — none of the three is an X3 case,
+#     though all three now LOAD (an effect-only `.m3` with no `REGN` used to
+#     be refused outright). They stay in as X4 carriers.
+#   * `GenericImpactSmear` emits only on a squirt crossing, so it holds zero
+#     particles until X5 wires that. It is the smallest squirt case there is,
+#     which is why it stays here rather than being swapped out.
+#
+# X3 — instance type 0 on the analytic path, alive in the default pose.
+Sc2M3/ToxicCreep.m3
+Sc2M3/FlySwarm.m3
+Sc2M3/ZergBuildingBloodLightEx1.m3
+Sc2M3/TerranSquibDeathRagdoll_00.m3
+Sc2M3/SCV.m3
+Sc2M3/XelNaga_Construct_Amon_Beam.m3
+#
+# X4 — the Euler path and the other ten instance types. These draw nothing
+# (or draw the billboard fallback) until X4; they are here so the arm's
+# baseline moves when it lands rather than being written from scratch then.
+Sc2M3/Smoke_Battle.m3
+Sc2M3/Reentry_Fire.m3
+Sc2M3/ZealotWeaponImpact.m3
+Sc2M3/PhoenixMissileImpact.m3
+#
+# X5 — the squirt crossing, emission slots, and the request/child stress.
+Sc2M3/GenericImpactSmear.m3
+Sc2M3/BattlecruiserAirMissileImpact.m3
+#
+# X6 — Mesh spawn and the ModelParticles child path. `Artillery_Mengsk_COOP`
+# is the one file that carries both, plus a sorted emitter and instance types
+# 0/1/5/9 (22 `PAR_`, contiguous surfaces); `Aiur_SpearofAdun_Arms` is the
+# Mesh-shape example the wide sweep named. The shells squirt on `Attack` at
+# 200 ms, under the `GLstand` global loop — which hid them until X7 made the
+# crossing walk every player rather than the top layer. `Aiur_SpearofAdun_Arms`
+# draws nothing in its default pose: `Stand Work Start` squirts its colliding
+# world-space Tails at 33 ms (the streaks X6 saw run 5,000 units long, a
+# renderer-unit speed in a game-unit formula), and `Stand Work End` its Mesh
+# emitter at 1,366 ms.
+Sc2M3/Artillery_Mengsk_COOP.m3 seq=Attack
+Sc2M3/Aiur_SpearofAdun_Arms.m3 seq=Stand+Work+Start
+Sc2M3/Aiur_SpearofAdun_Arms.m3 seq=Stand+Work+End

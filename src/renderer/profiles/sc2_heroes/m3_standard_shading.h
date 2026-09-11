@@ -37,6 +37,16 @@ namespace whiteout::flakes::renderer::profiles::sc2_heroes {
 struct M3Surface;
 class M3SurfaceTable;
 
+/// Which producer a @ref M3StandardShading::DrawWorldVertices call is drawing.
+///
+/// Nothing about the pipeline state, the constant buffers or the layer stack
+/// depends on it — a ribbon strip and a particle batch are the same geometry
+/// by the time they reach here, world-space `renderer::Vertex` triangles the
+/// CPU has already billboarded — so this exists ONLY so the draw trace can
+/// tell the two apart. The producer field of the trace comes from the submit
+/// context; this is the marker inside the PSO key hash.
+enum class M3WorldVertexKind : u8 { Ribbon, Particle };
+
 class M3StandardShading final : public shading::IShadingModel {
 public:
     explicit M3StandardShading(RenderService& rs) : rs_(rs) {}
@@ -62,15 +72,22 @@ public:
                    const render_detail::CollectedDrawLists& lists) override;
     void Draw(const render_detail::DrawItem& item, const core::PassContext& ctx) override;
 
-    /// @brief Draw one SC2 ribbon strip through the M3 material at
-    ///        `surfaceIndex` (RIBBON_SERVICE.md §7). The strip is a world-space
-    ///        `renderer::Vertex` range in the actor's `render.ribbonVB`, built
-    ///        by the ribbon service; this projects it and runs the diffuse
-    ///        layer with the material's blend. Interleaved in the transparent
-    ///        pass by RenderPipeline::DrawRibbonStrip, not the draw-item loop,
-    ///        so it writes its own pass CB rather than leaning on BeginPass.
-    void DrawRibbon(model::Actor& actor, i32 surfaceIndex, i32 vertexOffset, i32 vertexCount,
-                    const bls::FrameInputs& frame);
+    /// @brief Draw one world-space vertex range through the M3 material at
+    ///        `surfaceIndex`.
+    ///
+    /// Two producers reach it. A ribbon strip (RIBBON_SERVICE.md §7) lives in
+    /// the actor's `render.ribbonVB`; an SC2 `PAR_` batch lives in the shared
+    /// particle service VB. Both hand over the same thing — a `renderer::Vertex`
+    /// range already in world space, already billboarded on the CPU — so both
+    /// take the same VS, the same full material PS and the same cull-none
+    /// state, and `vb` is what separates them.
+    ///
+    /// Interleaved in the transparent pass by RenderPipeline, not by the
+    /// draw-item loop, so it writes its own pass CB rather than leaning on
+    /// BeginPass. `emitterId` is the trace's, −1 for a ribbon.
+    void DrawWorldVertices(model::Actor& actor, i32 surfaceIndex, gfx::BufferHandle vb,
+                           i32 vertexOffset, i32 vertexCount, const bls::FrameInputs& frame,
+                           M3WorldVertexKind kind, i32 emitterId = -1);
 
     core::SurfaceClass Classify(const render_detail::RenderableView& view,
                                 const model::GPUGeoset& geo) const override;
@@ -172,9 +189,12 @@ private:
     void WritePassCb(M3PassCb& c, const Matrix44f& view, const Matrix44f& proj,
                      const Vector3f& camPos, bool linearShading);
 
-    /// The ribbon strip's own PSO — its own vertex layout (renderer::Vertex),
-    /// forward entry only, blend from the surface. No skinned/MRT variants.
-    struct RibbonPsoKey {
+    /// The world-vertex PSO — its own vertex layout (renderer::Vertex),
+    /// forward entry only, blend from the surface. No skinned/MRT variants,
+    /// and no @ref M3WorldVertexKind in it: ribbons and particles that agree
+    /// on formats and blend agree on the pipeline state too, so they share
+    /// the entry rather than doubling the cache.
+    struct WorldVertexPsoKey {
         gfx::Format rtv = gfx::Format::Unknown;
         gfx::Format dsv = gfx::Format::Unknown;
         gfx::Format extra0 = gfx::Format::Unknown;
@@ -183,9 +203,9 @@ private:
         u32 extraRtvCount = 0;
         u8 blend = 0; ///< m3::BlendMode.
         bool twoSided = false;
-        auto operator<=>(const RibbonPsoKey&) const = default;
+        auto operator<=>(const WorldVertexPsoKey&) const = default;
     };
-    gfx::PipelineHandle GetOrBuildRibbonPso(const RibbonPsoKey& key);
+    gfx::PipelineHandle GetOrBuildWorldVertexPso(const WorldVertexPsoKey& key);
 
     /// @brief UnlitShading's rules verbatim: a per-geoset palette, skinning
     ///        attributes in the interleaved buffer, no per-actor palette.
@@ -200,15 +220,18 @@ private:
     gfx::ShaderHandle vsSkinned_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle ps_ = gfx::ShaderHandle::Invalid;
     gfx::ShaderHandle psMrt_ = gfx::ShaderHandle::Invalid;
-    gfx::ShaderHandle vsRibbon_ = gfx::ShaderHandle::Invalid;
+    /// `vsM3Ribbon`. Named for the shader entry, which keeps the ribbon name
+    /// it was written under; the particle batch draws through it too.
+    gfx::ShaderHandle vsWorld_ = gfx::ShaderHandle::Invalid;
     gfx::BufferHandle passCb_ = gfx::BufferHandle::Invalid;
     gfx::BufferHandle drawCb_ = gfx::BufferHandle::Invalid;
-    // A ribbon's pass CB is its own: DrawRibbon runs in the transparent
-    // interleave after BeginPass' draws, so rewriting passCb_ would corrupt a
-    // later geoset draw's lights. Only view/projection/cameraPos are needed.
-    gfx::BufferHandle ribbonPassCb_ = gfx::BufferHandle::Invalid;
+    // The world-vertex pass CB is its own: DrawWorldVertices runs in the
+    // transparent interleave after BeginPass' draws, so rewriting passCb_
+    // would corrupt a later geoset draw's lights. Only view/projection/
+    // cameraPos are needed.
+    gfx::BufferHandle worldPassCb_ = gfx::BufferHandle::Invalid;
     std::map<PsoKey, gfx::PipelineHandle> psos_;
-    std::map<RibbonPsoKey, gfx::PipelineHandle> ribbonPsos_;
+    std::map<WorldVertexPsoKey, gfx::PipelineHandle> worldVertexPsos_;
 
     // Captured in BeginPass, read by Draw.
     Matrix44f passView_ = Matrix44f::identity();
