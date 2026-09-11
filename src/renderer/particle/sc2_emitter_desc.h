@@ -78,8 +78,11 @@ struct Sc2EmitterDesc {
         /// vertical — the overlay wave type per channel group (RE §9).
         u32 overlayType[9] = {};
 
-        /// Largest lifetime key: how long `SimulateInit` pre-rolls (RE §15.4).
-        f32 maxLifetimeKey = 0.0f;
+        /// `SimulateInit`'s peak per global container, and the init value an
+        /// unbound track takes (RE §15.4, §16.33); `Sc2PreRollPeakFor` indexes
+        /// it with the active sequence.
+        std::vector<f32> preRollPeaks;
+        f32 preRollInit = 0.0f;
         bool worldSpace = false;      ///< additionalFlags & WorldSpace.
         bool inheritVelocity = false; ///< flags & InheritParentVelocity.
     } emit;

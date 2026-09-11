@@ -1688,6 +1688,21 @@ Vector3f Sc2ChildScale(const std::array<f32, 16>& w) {
             sq2 != 0.0f ? NewtonLength(sq2, 1.0f / std::sqrt(sq2)) : 0.0f};
 }
 
+Matrix44f Sc2PushChildScale(const Matrix44f& childBone, const Vector3f& localScale,
+                            const Vector3f& pushed) {
+    Matrix44f out = childBone;
+    const f32 local[3] = {localScale.x, localScale.y, localScale.z};
+    const f32 push[3] = {pushed.x, pushed.y, pushed.z};
+    for (usize r = 0; r < 3; ++r) {
+        if (local[r] == 0.0f)
+            continue;
+        const f32 k = push[r] / local[r];
+        for (usize c = 0; c < 3; ++c)
+            out.data[r][c] = childBone.data[r][c] * k;
+    }
+    return out;
+}
+
 namespace {
 
 /// The floor and the reciprocal's numerator are two separate globals in the

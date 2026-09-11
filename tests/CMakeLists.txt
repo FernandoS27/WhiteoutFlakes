@@ -101,6 +101,13 @@ wdx_add_test(export_recipe_test export_recipe_test.cpp
              "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/settings_io.cpp")
 target_include_directories(export_recipe_test PRIVATE
                            "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer")
+# Which textures the M3 and MDX exports write: the paths a written model reads,
+# the MDX table pruning, and the same-picture test that lets a Warcraft III
+# export name War3 (Mod)'s copy. Hand-built models and pixels, so a G0 test.
+wdx_add_test(export_texture_set_test export_texture_set_test.cpp
+             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/export_texture_set.cpp")
+target_include_directories(export_texture_set_test PRIVATE
+                           "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer")
 # Only when the format is compiled in — the adapter it exercises does not
 # exist otherwise. The test itself skips without a configured WoW install.
 if(WDX_ENABLE_M2)

@@ -102,6 +102,19 @@ struct Sc2TickResult {
 Sc2TickResult Sc2TickEmitter(Sc2Runtime& rt, const Sc2EmitterDesc& d,
                              const Sc2TickFrame& f);
 
+/// `UpdateEmitterState`'s last act (RE §16.31, §16.33): under `SimulateInit`,
+/// remember @p sequence and raise the pre-roll ask when it differs from the
+/// one remembered — the first resolution from −1 included. Without the flag
+/// retail never writes `+0x3F0`, so nothing is remembered or asked.
+void Sc2NoteActiveSequence(Sc2Runtime& rt, const Sc2EmitterDesc& d, i32 sequence);
+
+/// The peak `EmitBurst` budgets from for @p sequence: the lifetime track in
+/// the column the sequence's NUMBER names, although the columns are
+/// containers — every sampler indexes with the player's own container, and
+/// `EmitBurst` alone with `+0x3F0` (RE §16.33) — or the init value when the
+/// track is unbound.
+f32 Sc2PreRollPeakFor(const Sc2EmitterDesc& d, i32 sequence);
+
 /// The pose one model particle holds — the join around `Sc2ModelParticlePose`.
 ///
 /// The kernel runs in SC2 units, as the whole runtime does: @p world is the

@@ -147,10 +147,15 @@ struct Sc2Runtime {
     /// `ApplyState`; every EMIT and SPAWN input is read out of it.
     model::FrameState::ParticleFrameState::Sc2ParticleFrame frame;
 
-    /// Set by RequestPreRoll, consumed by the PREP stage. The actor layer asks
-    /// for it on a sequence change; whether it actually runs is gap-driven
-    /// (RE §15.4, oracle OP3c), which is PREP's decision and not the caller's.
+    /// Bit 31's ask, consumed by the PREP stage: raised by
+    /// `Sc2NoteActiveSequence` when the active sequence moves. Whether a
+    /// pre-roll then runs is gap-driven (RE §15.4, oracle OP3c), which is
+    /// PREP's decision and not the caller's.
     bool preRollPending = false;
+    /// `+0x3F0`: the active sequence last noted, −1 until one resolves — the
+    /// constructor's value, which makes the first resolution a change. The
+    /// pre-roll reads its peak in this column.
+    i32 activeSequence = -1;
 
     // ---- MOVE ----
     /// Installed by the service at registration and whenever the host changes

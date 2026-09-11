@@ -78,6 +78,15 @@ struct ClipRef {
     /// for this sequence, in the order it reports them. Inert for Warcraft III
     /// and World of Warcraft, which have nothing to split.
     i32 subtrack = -1;
+    /// @brief Started by the source's global loops rather than by the host.
+    ///        StarCraft II starts those with the animation state, so on a
+    ///        priority tie they are its oldest players, whatever order a
+    ///        sampler takes them in; no sampler reads it.
+    bool global = false;
+    /// @brief The play is fading out. StarCraft II marks such a player (flag 4,
+    ///        `M3Anim_StopPlayer`) and its active-sequence lookup passes over
+    ///        it; no sampler reads it.
+    bool blendingOut = false;
 };
 
 /// @brief What a bare sequence switch should do, answered by the source.

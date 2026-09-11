@@ -486,10 +486,14 @@ struct Sc2ParticleEmitterConfig {
     /// `SCHR`. A model particle picks an entry by LIST POSITION, not identity.
     std::vector<std::string> modelPaths;
 
-    /// Largest `lifetime` key across every container — how far `SimulateInit`
-    /// pre-rolls (RE §15.4). Derived at load because it needs the raw keys,
-    /// which per-frame sampling has already collapsed.
-    f32 maxLifetimeKey = 0.0f;
+    /// How far `SimulateInit` pre-rolls (RE §15.4, §16.33): the gated
+    /// `Sc2PreRollPeak` of the lifetime track in each global container, or the
+    /// init value where a container has none — and that init value alone for
+    /// an unbound track. Retail picks the column with the active SEQUENCE's
+    /// number. Derived at load because it needs the raw keys, which per-frame
+    /// sampling has already collapsed.
+    std::vector<f32> preRollPeaks;
+    f32 preRollInit = 0.0f;
 };
 
 } // namespace whiteout::flakes::renderer::effects
@@ -1089,6 +1093,13 @@ struct FrameState {
         /// which only the key table knows.
         i32 timeMs = 0;
         bool loop = false;
+        /// What the pre-roll's active-sequence lookup reads (RE §16.33): the
+        /// play's sequence and the container's priority, whether a global
+        /// loop started it, and whether it is fading out.
+        u16 sequence = 0;
+        u16 priority = 0;
+        bool global = false;
+        bool blendingOut = false;
     };
     /// In layer order; empty when nothing plays. Filled only by a model with
     /// `PAR_` emitters.

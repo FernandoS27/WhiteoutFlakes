@@ -3263,6 +3263,46 @@ TEST_CASE("op9: Update pushes the basis row lengths onto the children",
     CHECK(pushes > 0u);
 }
 
+TEST_CASE("compose: a pushed scale replaces the child bone's own",
+          "[sc2_particle][compose][children]") {
+    // RE §16.34: the push lands on the child's BONE as its local scale. So the
+    // child's matrix is its rotation rows at the PUSHED lengths, its own
+    // translation, times its parent — not its own scale times the push.
+    const f32 c = std::cos(0.5f), s = std::sin(0.5f);
+    Matrix44f local = Matrix44f::identity();
+    local.data[0] = {c * 2.0f, s * 2.0f, 0.0f, 0.0f};  // length 2
+    local.data[1] = {-s * 0.5f, c * 0.5f, 0.0f, 0.0f}; // length 0.5
+    local.data[2] = {0.0f, 0.0f, 3.0f, 0.0f};          // length 3
+    local.data[3] = {1.0f, 2.0f, 3.0f, 1.0f};
+    Matrix44f parent = Matrix44f::identity();
+    parent.data[0] = {0.0f, 1.0f, 0.0f, 0.0f};
+    parent.data[1] = {-1.0f, 0.0f, 0.0f, 0.0f};
+    parent.data[3] = {5.0f, -4.0f, 2.0f, 1.0f};
+    const Matrix44f bone = local * parent;
+    const Vector3f pushed{0.758f, 0.758f, 1.5f};
+
+    SECTION("every row takes the pushed length and the position stays") {
+        const Matrix44f got = particle::Sc2PushChildScale(bone, {2.0f, 0.5f, 3.0f}, pushed);
+        Matrix44f want = local;
+        want.data[0] = {c * 0.758f, s * 0.758f, 0.0f, 0.0f};
+        want.data[1] = {-s * 0.758f, c * 0.758f, 0.0f, 0.0f};
+        want.data[2] = {0.0f, 0.0f, 1.5f, 0.0f};
+        want = want * parent;
+        for (usize r = 0; r < 4; ++r) {
+            for (usize k = 0; k < 4; ++k) {
+                INFO("row " << r << " column " << k);
+                CHECK(got.data[r][k] == Catch::Approx(want.data[r][k]).margin(1e-5));
+            }
+        }
+    }
+
+    SECTION("a row with no length keeps what it had") {
+        const Matrix44f flat = particle::Sc2PushChildScale(bone, {2.0f, 0.0f, 3.0f}, pushed);
+        for (usize k = 0; k < 4; ++k)
+            CHECK(flat.data[1][k] == bone.data[1][k]);
+    }
+}
+
 TEST_CASE("op11: the CPU quad builder writes the element's vertex",
           "[sc2_particle][oracle][op11]") {
     const fs::path path = GoldenDir() / "op11_quadverts.json";
@@ -3741,7 +3781,6 @@ TEST_CASE("compose: the squirt crossing owes each key once and primes a frame be
         auto c = at(0, 0);
         REQUIRE(c.bursts.size() == 1u);
         CHECK(c.bursts[0] == 5u);
-        CHECK_FALSE(c.preRoll); // no SimulateInit on this record
 
         CHECK(at(0, 16).bursts[0] == 0u);   // (0, 16]
         CHECK(at(0, 100).bursts[0] == 7u);  // (16, 100]
@@ -3799,14 +3838,6 @@ TEST_CASE("compose: the squirt crossing owes each key once and primes a frame be
         // lose it.
         CHECK(at(1, 60).bursts[0] == 11u);
         CHECK(at(1, 150).bursts[0] == 17u);
-    }
-
-    SECTION("a sequence change on a SimulateInit emitter asks for the pre-roll") {
-        d.flags = particle::ParticleFlag::SimulateInit;
-        CHECK(at(0, 0).preRoll);
-        CHECK_FALSE(at(0, 16).preRoll);
-        CHECK(at(1, 16).preRoll);
-        CHECK_FALSE(at(1, 32).preRoll); // the same container, still playing
     }
 
     SECTION("a looping player wraps on its track's end, not on a caller's modulo") {
@@ -3912,6 +3943,17 @@ TEST_CASE("compose: a Bezier channel's sampled keys become its control point",
         particle::Sc2ConvertBezierKeys(s, d);
         CHECK(s.colorRandomBGRA[1] == 0x80808080u);
     }
+
+    SECTION("rotation converts, key and random, against sizeMidTime too") {
+        d.look.rotationSmoothing = 2;
+        d.look.midTime[2] = 0.9f;
+        d.look.midTime[3] = 0.9f;
+        s.rotationRandom3 = {0.0f, 1.0f, 0.0f};
+        particle::Sc2ConvertBezierKeys(s, d);
+        CHECK(s.rotation3.y == 6.0f);       // 3 / 0.5
+        CHECK(s.rotationRandom3.y == 2.0f); // 1 / 0.5
+        CHECK(s.size3.y == 4.0f);           // still linear
+    }
 }
 
 TEST_CASE("compose: a squirt burst counts in every count its host frame makes",
@@ -3928,7 +3970,8 @@ TEST_CASE("compose: a squirt burst counts in every count its host frame makes",
 
     SECTION("once per pre-roll block, as retail's stale sink is read") {
         Sc2Rig rig(4096, 0.0f, 100.0f);
-        rig.d.emit.maxLifetimeKey = 0.2f; // 200 ms: seven blocks
+        rig.d.emit.preRollInit = 0.2f; // 200 ms: seven blocks
+        rig.rt.activeSequence = 0;
         rig.rt.preRollPending = true;
         rig.rt.slots.assign(1, particle::Sc2Runtime::Slot{});
         rig.rt.slots[0].burst = 3;
@@ -3943,7 +3986,8 @@ TEST_CASE("compose: the pre-roll runs at creation and on a gap, never on a chang
           "[sc2_particle][compose][preroll]") {
     SECTION("an emitter created with the ask is populated before its first frame") {
         Sc2Rig rig(4096, 60.0f, 100.0f);
-        rig.d.emit.maxLifetimeKey = 1.0f;
+        rig.d.emit.preRollInit = 1.0f;
+        rig.rt.activeSequence = 0;
         rig.rt.preRollPending = true;
         const auto r = rig.Step(kSixtieth);
         CHECK(r.preRollBlocks == 31u); // ceil(1000 / 33)
@@ -3960,7 +4004,8 @@ TEST_CASE("compose: the pre-roll runs at creation and on a gap, never on a chang
 
     SECTION("a sequence change on an emitter ticked every frame pre-rolls nothing") {
         Sc2Rig rig(4096, 60.0f, 100.0f);
-        rig.d.emit.maxLifetimeKey = 1.0f;
+        rig.d.emit.preRollInit = 1.0f;
+        rig.rt.activeSequence = 0;
         rig.Run(10, kSixtieth);
         rig.rt.preRollPending = true;
         const auto r = rig.Step(kSixtieth);
@@ -3972,7 +4017,8 @@ TEST_CASE("compose: the pre-roll runs at creation and on a gap, never on a chang
 
     SECTION("resuming after a gap pre-rolls the gap, not the lifetime") {
         Sc2Rig rig(4096, 60.0f, 100.0f);
-        rig.d.emit.maxLifetimeKey = 1.0f;
+        rig.d.emit.preRollInit = 1.0f;
+        rig.rt.activeSequence = 0;
         rig.Run(10, kSixtieth);
         rig.rt.wallMs += 200; // 217 ms since the last tick, over 2 * 17
         rig.rt.preRollPending = true;
@@ -3981,11 +4027,116 @@ TEST_CASE("compose: the pre-roll runs at creation and on a gap, never on a chang
 
     SECTION("no lifetime peak, no blocks") {
         Sc2Rig rig(4096, 60.0f, 100.0f);
-        rig.d.emit.maxLifetimeKey = 0.0f;
+        rig.d.emit.preRollInit = 0.0f;
+        rig.rt.activeSequence = 0;
         rig.rt.preRollPending = true;
         const auto r = rig.Step(kSixtieth);
         CHECK(r.preRollBlocks == 0u);
         CHECK(r.plan.ticked);
+    }
+}
+
+TEST_CASE("compose: the pre-roll follows the active sequence, not the player list",
+          "[sc2_particle][compose][preroll]") {
+    using Sample = particle::Sc2ClockSample;
+    const auto player = [](u16 sequence, u16 priority, bool global, bool fading) {
+        Sample s;
+        s.sequence = sequence;
+        s.priority = priority;
+        s.global = global;
+        s.blendingOut = fading;
+        return s;
+    };
+
+    SECTION("the active sequence is the first player that is not fading out") {
+        // A cross-fade reports the incoming sequence the moment the outgoing
+        // one starts to fade: `GetActiveSequenceIndex` passes over flag 4.
+        const std::vector<Sample> fading = {player(3, 0, false, true), player(5, 0, false, false)};
+        CHECK(particle::Sc2ActiveSequence(fading) == 5);
+        const std::vector<Sample> steady = {player(7, 0, false, false), player(5, 0, false, false)};
+        CHECK(particle::Sc2ActiveSequence(steady) == 7);
+        const std::vector<Sample> gone = {player(3, 0, false, true)};
+        CHECK(particle::Sc2ActiveSequence(gone) == -1);
+        CHECK(particle::Sc2ActiveSequence({}) == -1);
+    }
+
+    SECTION("a global loop loses a priority tie, as the oldest player") {
+        // The playlist holds a concurrent global above the host play for the
+        // blend budget. Retail started it with the animation state, and its
+        // tie rule puts the newest player first.
+        const std::vector<Sample> tie = {player(9, 0, true, false), player(2, 0, false, false)};
+        CHECK(particle::Sc2ActiveSequence(tie) == 2);
+        // At a higher priority it leads all the same.
+        const std::vector<Sample> above = {player(9, 5, true, false), player(2, 0, false, false)};
+        CHECK(particle::Sc2ActiveSequence(above) == 9);
+        // A fading host play hands the tie back to the global.
+        const std::vector<Sample> fadingHost = {player(9, 0, true, false),
+                                                player(2, 0, false, true)};
+        CHECK(particle::Sc2ActiveSequence(fadingHost) == 9);
+        const std::vector<Sample> alone = {player(9, 0, true, false)};
+        CHECK(particle::Sc2ActiveSequence(alone) == 9);
+    }
+
+    SECTION("a SimulateInit emitter asks when the sequence moves, and only then") {
+        Sc2Rig rig(64, 0.0f, 100.0f);
+        rig.d.flags = particle::ParticleFlag::SimulateInit;
+        // The constructor's -1 makes the first resolution a change.
+        particle::Sc2NoteActiveSequence(rig.rt, rig.d, 2);
+        CHECK(rig.rt.preRollPending);
+        CHECK(rig.rt.activeSequence == 2);
+        // The same sequence again — whatever else the player list did — asks
+        // nothing.
+        rig.rt.preRollPending = false;
+        particle::Sc2NoteActiveSequence(rig.rt, rig.d, 2);
+        CHECK_FALSE(rig.rt.preRollPending);
+        particle::Sc2NoteActiveSequence(rig.rt, rig.d, 4);
+        CHECK(rig.rt.preRollPending);
+        // Nothing left playing is a change too, and is remembered.
+        rig.rt.preRollPending = false;
+        particle::Sc2NoteActiveSequence(rig.rt, rig.d, -1);
+        CHECK(rig.rt.preRollPending);
+        CHECK(rig.rt.activeSequence == -1);
+    }
+
+    SECTION("an emitter without SimulateInit remembers nothing") {
+        Sc2Rig rig(64, 0.0f, 100.0f);
+        particle::Sc2NoteActiveSequence(rig.rt, rig.d, 2);
+        CHECK_FALSE(rig.rt.preRollPending);
+        CHECK(rig.rt.activeSequence == -1);
+    }
+
+    SECTION("the peak is read in the column the sequence's number names") {
+        Sc2Rig one(4096, 60.0f, 100.0f);
+        one.d.emit.preRollPeaks = {0.1f, 1.0f, 0.2f};
+        one.d.emit.preRollInit = 5.0f;
+        one.rt.activeSequence = 1;
+        one.rt.preRollPending = true;
+        CHECK(one.Step(kSixtieth).preRollBlocks == 31u); // ceil(1000 / 33)
+
+        Sc2Rig two(4096, 60.0f, 100.0f);
+        two.d.emit.preRollPeaks = {0.1f, 1.0f, 0.2f};
+        two.d.emit.preRollInit = 5.0f;
+        two.rt.activeSequence = 2;
+        two.rt.preRollPending = true;
+        CHECK(two.Step(kSixtieth).preRollBlocks == 7u); // ceil(200 / 33)
+    }
+
+    SECTION("an unbound lifetime budgets from its init value") {
+        Sc2Rig rig(4096, 60.0f, 100.0f);
+        rig.d.emit.preRollInit = 0.5f;
+        rig.rt.activeSequence = 3;
+        rig.rt.preRollPending = true;
+        CHECK(rig.Step(kSixtieth).preRollBlocks == 16u); // ceil(500 / 33)
+    }
+
+    SECTION("no resolved sequence, no pre-roll") {
+        Sc2Rig rig(4096, 60.0f, 100.0f);
+        rig.d.emit.preRollInit = 1.0f;
+        rig.rt.preRollPending = true; // armed, but +0x3F0 is still -1
+        const auto r = rig.Step(kSixtieth);
+        CHECK(r.preRollBlocks == 0u);
+        CHECK(r.plan.ticked);
+        CHECK((rig.rt.clock.stateFlags & 0x80000000u) == 0u);
     }
 }
 

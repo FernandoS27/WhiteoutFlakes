@@ -334,7 +334,6 @@ Sc2Crossing Sc2CrossSquirtKeys(const Sc2EmitterDesc& d, std::span<const Sc2Clock
         if (Sc2CollectCrossedKeys(live, 0, sink))
             out.bursts[s] = static_cast<u32>(Sc2SquirtBurst(sink));
     }
-    out.preRoll = changed && d.Has(ParticleFlag::SimulateInit);
     memory.stcs.resize(players.size());
     memory.timeMs.resize(players.size());
     for (usize p = 0; p < players.size(); ++p) {
@@ -343,6 +342,23 @@ Sc2Crossing Sc2CrossSquirtKeys(const Sc2EmitterDesc& d, std::span<const Sc2Clock
     }
     memory.valid = true;
     return out;
+}
+
+i32 Sc2ActiveSequence(std::span<const Sc2ClockSample> players) {
+    // The players arrive in priority order, and a dead one is never among
+    // them. The playlist holds a concurrent global on top for the blend
+    // budget; retail inserted it before any host play, so a host play of the
+    // same priority is ahead of it there. Among globals, the list's own order.
+    const Sc2ClockSample* best = nullptr;
+    for (const Sc2ClockSample& p : players) {
+        if (p.blendingOut)
+            continue;
+        if (best != nullptr && (p.priority < best->priority || !best->global))
+            break;
+        if (best == nullptr || !p.global)
+            best = &p;
+    }
+    return best != nullptr ? static_cast<i32>(best->sequence) : -1;
 }
 
 } // namespace whiteout::flakes::renderer::particle

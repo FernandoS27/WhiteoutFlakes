@@ -137,9 +137,9 @@ void Emitter2::QueueBurst(u32 slot, u32 count) {
     sc2_->slots[slot].burst += count;
 }
 
-void Emitter2::RequestPreRoll() {
+void Emitter2::SetSc2ActiveSequence(i32 sequence) {
     if (sc2_)
-        sc2_->preRollPending = true;
+        Sc2NoteActiveSequence(*sc2_, desc_->sc2, sequence);
 }
 
 void Emitter2::SetGroundQuery(GroundQuery q) {

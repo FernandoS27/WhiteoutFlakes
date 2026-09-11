@@ -123,9 +123,10 @@ public:
     /// the crossed squirt keys.
     void QueueBurst(u32 slot, u32 count);
 
-    /// Ask for a pre-roll on the next tick. Whether one actually runs is
-    /// gap-driven and PREP's decision, not the caller's (RE §15.4).
-    void RequestPreRoll();
+    /// The model's active sequence this frame (`Sc2ActiveSequence`). A change
+    /// asks a `SimulateInit` emitter for a pre-roll on the next tick; whether
+    /// one runs is gap-driven and PREP's decision, not the caller's (RE §15.4).
+    void SetSc2ActiveSequence(i32 sequence);
 
     /// The surface this emitter's particles collide against. Virtual because
     /// Diablo III keeps its own copy on the emitter and had this setter first;

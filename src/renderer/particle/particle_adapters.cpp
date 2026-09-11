@@ -426,7 +426,8 @@ DescFromSc2ParticleConfig(const effects::Sc2ParticleEmitterConfig& cfg,
     s.emit.massRandom = s.Has(ParticleAdditionalFlag::MassRandomize);
     for (int k = 0; k < 9; ++k)
         s.emit.overlayType[k] = cfg.overlayType[k];
-    s.emit.maxLifetimeKey = cfg.maxLifetimeKey;
+    s.emit.preRollPeaks = cfg.preRollPeaks;
+    s.emit.preRollInit = cfg.preRollInit;
     s.emit.worldSpace = s.Has(ParticleAdditionalFlag::WorldSpace);
     s.emit.inheritVelocity = s.Has(ParticleFlag::InheritParentVelocity);
 

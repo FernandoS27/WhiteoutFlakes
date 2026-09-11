@@ -1052,6 +1052,14 @@ Sc2SimulateResult Sc2SimulateParticles(Sc2ElementList& list,
 /// each with the same Newton step, so the three lanes are not one expression.
 Vector3f Sc2ChildScale(const std::array<f32, 16>& world);
 
+/// Where that push lands (RE §16.34): on the child's BONE, as its local scale,
+/// replacing the one it had. So each basis row of @p childBone — the bone's
+/// local matrix times its parents' — is rescaled by `pushed / localScale`, and
+/// the translation row stays. A row whose local scale is zero has no direction
+/// left to rescale and is kept.
+Matrix44f Sc2PushChildScale(const Matrix44f& childBone, const Vector3f& localScale,
+                            const Vector3f& pushed);
+
 /// `Update`'s choice of step function (RE §6, gate OP9 `select`).
 ///
 /// `forceCpu` is retail's debug byte; it demotes an analytic emitter back onto

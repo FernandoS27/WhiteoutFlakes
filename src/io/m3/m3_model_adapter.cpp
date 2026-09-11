@@ -3,6 +3,7 @@
 #include "io/m3/m3_billboard.h"
 #include "io/m3/m3_pose_solvers.h"
 #if WDX_HAS_PHYSICS
+#include "renderer/particle/particle_stages_sc2.h"
 #include "renderer/profiles/sc2_heroes/sc2_cloth.h"
 #include "renderer/profiles/sc2_heroes/sc2_physics.h"
 #endif
@@ -1557,6 +1558,9 @@ void M3ModelAdapter::BuildLayers(const PoseRequest& req, std::vector<M3Layer>& o
             l.timeMs = t;
             l.weight = clip.weight;
             l.loop = clip.loop;
+            l.sequence = static_cast<::whiteout::u16>(seqIdx);
+            l.global = clip.global;
+            l.blendingOut = clip.blendingOut;
             out.push_back(l);
         }
     }
@@ -2181,13 +2185,70 @@ void M3ModelAdapter::EvaluateParticles(std::span<const M3Layer> layers,
     fs.sc2AnimPlayers.clear();
     fs.sc2AnimPlayers.reserve(layers.size());
     for (const M3Layer& l : layers)
-        fs.sc2AnimPlayers.push_back({l.stc, l.timeMs, l.loop});
+        fs.sc2AnimPlayers.push_back(
+            {l.stc, l.timeMs, l.loop, l.sequence, l.priority, l.global, l.blendingOut});
+
+    // `rotationFlags & 0x10 / 0x20`: an emitter pushes its matrix's row lengths
+    // onto its collision / trail child's BONE, replacing that bone's own local
+    // scale (RE §16.34). Composed here, where both bones are — in model space,
+    // so without the actor's own scale, and always, where retail's push onto an
+    // animated bone races the update order (design §8). A later `PAR_` pushing
+    // the same child wins, as the element order would have it.
+    const std::size_t emitterCount = model_.particleEmitters.size();
+    const auto modelBone = [&](std::size_t bone) {
+        return bone < fs.boneWorldMatrices.size() ? fs.boneWorldMatrices[bone]
+                                                  : Matrix44f::identity();
+    };
+    std::vector<Vector3f> pushedScale(emitterCount, Vector3f{0.0f, 0.0f, 0.0f});
+    std::vector<::whiteout::u8> pushed(emitterCount, 0);
+    for (std::size_t j = 0; j < emitterCount; ++j) {
+        const auto& parent = model_.particleEmitters[j];
+        const u32 rf = static_cast<u32>(parent.rotationFlags);
+        if ((rf & 0x30u) == 0u)
+            continue;
+        const Matrix44f m = modelBone(parent.boneIndex);
+        std::array<f32, 16> rows{};
+        for (std::size_t r = 0; r < 4; ++r)
+            for (std::size_t c = 0; c < 4; ++c)
+                rows[r * 4 + c] = m.data[r][c];
+        const Vector3f lengths = renderer::particle::Sc2ChildScale(rows);
+        const auto onto = [&](i32 child) {
+            if (child >= 0 && static_cast<std::size_t>(child) < emitterCount) {
+                pushedScale[static_cast<std::size_t>(child)] = lengths;
+                pushed[static_cast<std::size_t>(child)] = 1;
+            }
+        };
+        if ((rf & 0x10u) != 0u)
+            onto(parent.collisionSpawnIndex);
+        if ((rf & 0x20u) != 0u)
+            onto(parent.trailLinkIndex);
+    }
 
     for (std::size_t i = 0; i < model_.particleEmitters.size(); ++i) {
         const auto& par = model_.particleEmitters[i];
         renderer::model::FrameState::ParticleFrameState st{};
         st.emitterId = static_cast<i32>(i);
         st.transform = boneWorld(par.boneIndex);
+        if (pushed[i] != 0) {
+            // The bone's own local scale: the row lengths of its local matrix,
+            // its model-space matrix over its parent's.
+            const std::size_t bone = par.boneIndex;
+            Matrix44f local = modelBone(bone);
+            if (bone < model_.bones.size()) {
+                const u16 up = model_.bones[bone].parentIndex;
+                if (up != 0xFFFFu && up < fs.boneWorldMatrices.size())
+                    local = local * Matrix44f::inverse(fs.boneWorldMatrices[up]);
+            }
+            const auto rowLength = [&local](std::size_t r) {
+                return std::sqrt(local.data[r][0] * local.data[r][0] +
+                                 local.data[r][1] * local.data[r][1] +
+                                 local.data[r][2] * local.data[r][2]);
+            };
+            const Vector3f localScale{rowLength(0), rowLength(1), rowLength(2)};
+            st.transform = renderer::particle::Sc2PushChildScale(modelBone(bone), localScale,
+                                                                  pushedScale[i]) *
+                           world;
+        }
         st.unitScale = (scale > 0.0f) ? scale : 1.0f;
         // The WC3-family scalars stay at their defaults — the SC2 stages read
         // the block below instead. `visibility` carries the bone-visibility
@@ -2324,27 +2385,27 @@ std::vector<renderer::effects::Sc2ParticleEmitterConfig> M3ModelAdapter::GetSc2P
         }
         return keys;
     };
-    // The pre-roll length. Retail resolves the track for the ACTIVE sequence
-    // (RE §15.4) and takes that track's peak; this is the peak across every
-    // container, which is that value's upper bound and the only one a load-time
-    // desc can hold. The per-sequence lookup belongs with the pre-roll phase,
-    // where there is a sequence to look it up for.
-    const auto peakF32 = [this](const ::whiteout::m3::AnimRef<f32>& ref) {
-        f32 peak = ref.initValue;
+    // The pre-roll's peaks, one per container. `EmitBurst` reads the lifetime
+    // track in the column the ACTIVE SEQUENCE's number names (RE §16.33), which
+    // only the frame knows, so the desc holds every column's answer — each
+    // through the gated `Sc2PreRollPeak`: the curve seeded at zero, or the raw
+    // init value where the container has no track. An unbound track has no
+    // columns and budgets from its init value alone.
+    const auto preRollPeaks = [this](const ::whiteout::m3::AnimRef<f32>& ref) {
+        std::vector<f32> peaks;
         const i32 row = tables_.RowOf(ref.animId);
         if (ref.animId == 0 || ref.animId == 0xFFFFFFFFu || row < 0)
-            return peak;
+            return peaks;
+        peaks.assign(tables_.StcCount(), ref.initValue);
         for (u16 stc = 0; stc < tables_.StcCount(); ++stc) {
             const ::whiteout::m3::SubTrackContainer* coll = tables_.StcAt(stc);
             const M3TrackHandle h = tables_.At(row, stc);
             if (!coll || !h.Valid())
                 continue;
-            if (const auto* blk = BlockOf(*coll, h, static_cast<const f32*>(nullptr))) {
-                for (const f32 v : blk->keys)
-                    peak = (std::max)(peak, v);
-            }
+            if (const auto* blk = BlockOf(*coll, h, static_cast<const f32*>(nullptr)))
+                peaks[stc] = renderer::particle::Sc2PreRollPeak(blk->keys, true, ref.initValue);
         }
-        return peak;
+        return peaks;
     };
 
     std::vector<renderer::effects::Sc2ParticleEmitterConfig> out;
@@ -2462,7 +2523,9 @@ std::vector<renderer::effects::Sc2ParticleEmitterConfig> M3ModelAdapter::GetSc2P
         const bool randomiseLifespan =
             (static_cast<u32>(par.additionalFlags) &
              static_cast<u32>(::whiteout::m3::ParticleAdditionalFlag::LifespanRandomize)) != 0;
-        c.maxLifetimeKey = peakF32(randomiseLifespan ? par.lifetimeRandom : par.lifetime);
+        const auto& lifetimeRef = randomiseLifespan ? par.lifetimeRandom : par.lifetime;
+        c.preRollPeaks = preRollPeaks(lifetimeRef);
+        c.preRollInit = lifetimeRef.initValue;
 
         out.push_back(std::move(c));
     }

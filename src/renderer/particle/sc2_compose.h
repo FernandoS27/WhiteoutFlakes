@@ -118,8 +118,6 @@ using Sc2ClockSample = renderer::model::FrameState::Sc2AnimPlayer;
 struct Sc2Crossing {
     /// Per emission slot, the burst the crossed keys owe; 0 for none.
     std::vector<u32> bursts;
-    /// A sequence change on a `SimulateInit` emitter — bit 31 for the tick.
-    bool preRoll = false;
 };
 
 /// The actor layer's half of the squirt keys (design §7, R5): the crossing
@@ -139,6 +137,16 @@ struct Sc2Crossing {
 /// keys it crossed last (design §8).
 Sc2Crossing Sc2CrossSquirtKeys(const Sc2EmitterDesc& d, std::span<const Sc2ClockSample> players,
                                Sc2SquirtMemory& memory, i32 frameDtMs);
+
+/// `M3Anim_GetActiveSequenceIndex(state, 1)`, the index `UpdateEmitterState`
+/// watches for the pre-roll: the sequence of the first player in RETAIL's list
+/// that is not fading out, or −1 when every one is or nothing plays (RE
+/// §16.33). Retail's list breaks a priority tie newest first, and a global
+/// loop is the oldest player there is, so within the leading priority a host
+/// play wins however the sampler ordered them. Not the player list itself — a
+/// global loop starting, or another container of the same sequence, moves
+/// nothing.
+i32 Sc2ActiveSequence(std::span<const Sc2ClockSample> players);
 
 /// The shader's static branch set for this emitter.
 ///

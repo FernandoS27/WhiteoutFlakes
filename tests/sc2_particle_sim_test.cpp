@@ -16,6 +16,7 @@
 // ============================================================================
 
 #include "io/m3/m3_model_adapter.h"
+#include "m3_anim_builders.h"
 #include "renderer/particle/particle2_emitter.h"
 #include "renderer/particle/particle_adapters.h"
 #include "renderer/particle/particle_geometry.h"
@@ -406,8 +407,11 @@ void SweepCorpus(const fs::path& root, SweepTotals& t, std::size_t limit) {
                 REQUIRE_FALSE(c.modelPaths.empty());
             }
             REQUIRE(c.instanceType <= 10);
-            REQUIRE(c.maxLifetimeKey >= 0.0f);
-            REQUIRE(std::isfinite(c.maxLifetimeKey));
+            // A pre-roll peak per container, or none for an unbound track; the
+            // raw init value is retail's and may be negative.
+            for (const f32 peak : c.preRollPeaks)
+                REQUIRE(std::isfinite(peak));
+            REQUIRE(std::isfinite(c.preRollInit));
 
             // And the conversion survives every one of them.
             const auto desc = particle::DescFromSc2ParticleConfig(c, configs);
@@ -419,6 +423,167 @@ void SweepCorpus(const fs::path& root, SweepTotals& t, std::size_t limit) {
 }
 
 } // namespace
+
+TEST_CASE("the pre-roll peaks are the gated answer for each container",
+          "[sc2_particle][convert][preroll]") {
+    // RE §16.33. `EmitBurst` reads ONE column of the curve table, seeded at
+    // zero, or the raw init value where that column has no track. The load path
+    // once seeded every column with the init value and took the largest key
+    // over all of them; a finiteness check passes both readings, this does not.
+    constexpr u32 kLife = 500, kLifeRandom = 501;
+    m3fix::ModelBuilder mb;
+    mb.StaticBone("root", -1);
+    m3fix::StcBuilder low("low");
+    low.Float(kLife, m3fix::Block<f32>({0, 1000}, {0.25f, 0.5f}));
+    low.Float(kLifeRandom, m3fix::Block<f32>({0, 1000}, {-1.0f, -0.5f}));
+    m3fix::StcBuilder high("high");
+    high.Float(kLife, m3fix::Block<f32>({0, 1000}, {3.0f, 1.0f}));
+    m3fix::StcBuilder bare("bare");
+    bare.Float(999, m3fix::Block<f32>({0, 1000}, {7.0f, 7.0f}));
+    const u32 lowIdx = mb.AddStc(low.Build());
+    const u32 highIdx = mb.AddStc(high.Build());
+    const u32 bareIdx = mb.AddStc(bare.Build());
+    mb.Sequence("Low", 0, 1000, {lowIdx});
+    mb.Sequence("High", 0, 1000, {highIdx});
+    mb.Sequence("Bare", 0, 1000, {bareIdx});
+    m3::Model model = mb.Build();
+
+    m3::ParticleEmitter par;
+    par.lifetime = m3fix::Ref<f32>(kLife, 2.0f, 1, 6);
+    par.lifetimeRandom = m3fix::Ref<f32>(kLifeRandom, 4.0f, 1, 6);
+
+    SECTION("the lifetime track, one column per container") {
+        model.particleEmitters = {par};
+        wio::M3ModelAdapter adapter(model);
+        const auto configs = adapter.GetSc2ParticleConfigs();
+        REQUIRE(configs.size() == 1u);
+        const auto& c = configs[0];
+        REQUIRE(c.preRollPeaks.size() == 3u);
+        CHECK(c.preRollPeaks[0] == 0.5f); // keys below the init value: seeded at zero
+        CHECK(c.preRollPeaks[1] == 3.0f); // this container's own keys
+        CHECK(c.preRollPeaks[2] == 2.0f); // no track here: the raw init value
+        CHECK(c.preRollInit == 2.0f);
+    }
+
+    SECTION("the random track under LifespanRandomize, where a curve below zero reads zero") {
+        par.additionalFlags = static_cast<m3::ParticleAdditionalFlag>(
+            static_cast<u32>(m3::ParticleAdditionalFlag::LifespanRandomize));
+        model.particleEmitters = {par};
+        wio::M3ModelAdapter adapter(model);
+        const auto configs = adapter.GetSc2ParticleConfigs();
+        REQUIRE(configs.size() == 1u);
+        const auto& c = configs[0];
+        REQUIRE(c.preRollPeaks.size() == 3u);
+        CHECK(c.preRollPeaks[0] == 0.0f);
+        CHECK(c.preRollPeaks[1] == 4.0f);
+        CHECK(c.preRollPeaks[2] == 4.0f);
+        CHECK(c.preRollInit == 4.0f);
+    }
+}
+
+TEST_CASE("the parent-scale push reaches the child's transform on a shipped model",
+          "[sc2_particle][corpus][children]") {
+    // RE §16.34 on the one StarCraft II carrier where it shows:
+    // MiraHorner_NapalmBomb_Coop_Explosion's PAR_6 pushes onto its trail child
+    // PAR_9. The parent's bone rests at 0.758 and the child's at 1, so the
+    // child's rows come out at the parent's lengths with its position kept, and
+    // the parent, which nothing pushes onto, keeps its own bone.
+    const fs::path path = CorpusRoot("Sc2M3") / "MiraHorner_NapalmBomb_Coop_Explosion.m3";
+    if (!fs::exists(path))
+        SKIP("no " + path.string());
+    const auto bytes = ReadAll(path);
+    const auto adapter = wio::M3ModelAdapter::Load(ContentRef::FromPath(path.string()), bytes);
+    REQUIRE(adapter);
+    const auto& src = adapter->SourceModel();
+    REQUIRE(src.particleEmitters.size() > 9u);
+    REQUIRE((static_cast<u32>(src.particleEmitters[6].rotationFlags) & 0x20u) != 0u);
+    REQUIRE(src.particleEmitters[6].trailLinkIndex == 9);
+
+    const auto bind = adapter->Evaluate(PoseRequest{});
+    const auto stateOf = [&bind](i32 id) {
+        for (const auto& st : bind.particleStates)
+            if (st.emitterId == id)
+                return &st;
+        return static_cast<decltype(&bind.particleStates[0])>(nullptr);
+    };
+    const auto* child = stateOf(9);
+    const auto* parent = stateOf(6);
+    REQUIRE(child != nullptr);
+    REQUIRE(parent != nullptr);
+
+    const std::size_t childBone = src.particleEmitters[9].boneIndex;
+    const std::size_t parentBone = src.particleEmitters[6].boneIndex;
+    REQUIRE(childBone < bind.boneWorldMatrices.size());
+    REQUIRE(parentBone < bind.boneWorldMatrices.size());
+    const Matrix44f& own = bind.boneWorldMatrices[childBone];
+    const Matrix44f& pusher = bind.boneWorldMatrices[parentBone];
+    const auto rowLength = [](const Matrix44f& m, std::size_t r) {
+        return std::sqrt(m.data[r][0] * m.data[r][0] + m.data[r][1] * m.data[r][1] +
+                         m.data[r][2] * m.data[r][2]);
+    };
+    // Otherwise the case proves nothing: the two bones really do differ.
+    REQUIRE(rowLength(pusher, 0) == Catch::Approx(0.758f).epsilon(1e-3));
+    REQUIRE(rowLength(own, 0) == Catch::Approx(1.0f).epsilon(1e-3));
+
+    for (std::size_t r = 0; r < 3; ++r) {
+        INFO("row " << r);
+        CHECK(rowLength(child->transform, r) == Catch::Approx(rowLength(pusher, r)).epsilon(1e-4));
+    }
+    for (std::size_t k = 0; k < 3; ++k)
+        CHECK(child->transform.data[3][k] == Catch::Approx(own.data[3][k]).margin(1e-4));
+    for (std::size_t r = 0; r < 4; ++r)
+        for (std::size_t k = 0; k < 4; ++k)
+            CHECK(parent->transform.data[r][k] == pusher.data[r][k]);
+}
+
+TEST_CASE("the parent-scale push keeps the scale of the child bone's parent",
+          "[sc2_particle][convert][children]") {
+    // The shipped case is two root bones, where a bone's model-space rows ARE
+    // its local scale. Under a scaled parent they are not: the push replaces the
+    // child's LOCAL scale and its parent's scale still applies on top (RE
+    // §16.34). A pusher at 3 onto a child under a parent at 2 gives rows of 6; a
+    // port that took the child's model-space rows as its local scale gives 3.
+    m3fix::ModelBuilder mb;
+    const auto bone = [&mb](const char* name, i32 parent, Vector3f pos, f32 scale) {
+        mb.Bone(name, parent, m3fix::ConstRef(pos), m3fix::ConstRef(Quaternion{0, 0, 0, 1}),
+                m3fix::ConstRef(Vector3f{scale, scale, scale}), m3::BoneFlag::None);
+    };
+    bone("scaled", -1, {0, 0, 0}, 2.0f);
+    bone("child", 0, {1, 0, 0}, 1.0f);
+    bone("pusher", -1, {0, 0, 5}, 3.0f);
+    m3::Model model = mb.Build();
+
+    m3::ParticleEmitter pusher;
+    pusher.boneIndex = 2;
+    pusher.rotationFlags = static_cast<decltype(pusher.rotationFlags)>(0x20u);
+    pusher.trailLinkIndex = 1;
+    m3::ParticleEmitter child;
+    child.boneIndex = 1;
+    model.particleEmitters = {pusher, child};
+
+    const wio::M3ModelAdapter adapter(model);
+    const auto bind = adapter.Evaluate(PoseRequest{});
+    REQUIRE(bind.particleStates.size() == 2u);
+    REQUIRE(bind.boneWorldMatrices.size() == 3u);
+    const auto rowLength = [](const Matrix44f& m, std::size_t r) {
+        return std::sqrt(m.data[r][0] * m.data[r][0] + m.data[r][1] * m.data[r][1] +
+                         m.data[r][2] * m.data[r][2]);
+    };
+    const Matrix44f& own = bind.boneWorldMatrices[1];
+    REQUIRE(rowLength(own, 0) == Catch::Approx(2.0f));
+    for (const auto& st : bind.particleStates) {
+        if (st.emitterId == 1) {
+            for (std::size_t r = 0; r < 3; ++r) {
+                INFO("row " << r);
+                CHECK(rowLength(st.transform, r) == Catch::Approx(6.0f));
+            }
+            for (std::size_t k = 0; k < 3; ++k)
+                CHECK(st.transform.data[3][k] == Catch::Approx(own.data[3][k]).margin(1e-5));
+        } else {
+            CHECK(rowLength(st.transform, 0) == Catch::Approx(3.0f));
+        }
+    }
+}
 
 TEST_CASE("every corpus PAR_ registers with one slot per copy",
           "[sc2_particle][corpus]") {
@@ -650,6 +815,55 @@ TEST_CASE("a collision spawn reaches its child through the service",
     }
 }
 
+TEST_CASE("a collision spawn reaches a model-particle child in the ChildModel id space",
+          "[sc2_particle][service][model]") {
+    // A child registers under the output it draws, so a ModelParticles child
+    // answers to ChildModel and nothing answers index 1 in the billboard
+    // space. The service asks both; a router that asked only the billboard
+    // space would drop every request here and birth nothing.
+    auto configs = CollisionPair();
+    configs[1].flags = static_cast<u32>(m3::ParticleFlag::ModelParticles);
+    configs[1].modelPaths = {"a.m3"};
+
+    particle::ParticleService service;
+    service.SetGroundQuery([](const Vector3f& p, f32 up, f32 down, f32& outZ) {
+        constexpr f32 kGround = -1.0f;
+        if (kGround > p.z + up || kGround < p.z - down)
+            return false;
+        outZ = kGround;
+        return true;
+    });
+    auto parentEm = std::make_unique<particle::Emitter2>();
+    parentEm->SetDesc(particle::DescFromSc2ParticleConfig(configs[0], configs));
+    particle::Emitter2* parent = parentEm.get();
+    service.AddEmitter(1, particle::ParticleOutput::Billboard, 0, std::move(parentEm));
+
+    u32 nextHandle = 1;
+    auto childEm = std::make_unique<particle::Sc2ModelParticleEmitter>(
+        1u, 1, [&nextHandle] { return nextHandle++; });
+    childEm->SetDesc(particle::DescFromSc2ParticleConfig(configs[1], configs));
+    REQUIRE(childEm->Desc().output == particle::ParticleOutput::ChildModel);
+    particle::Emitter2* child = childEm.get();
+    service.AddEmitter(1, particle::ParticleOutput::ChildModel, 1, std::move(childEm));
+    REQUIRE(service.GetEmitter(1, particle::ParticleOutput::Billboard, 1) == nullptr);
+
+    std::vector<particle::ChildModelEvent> events;
+    i32 births = 0;
+    for (int k = 0; k < 140; ++k) {
+        parent->ApplyState(Sc2State(0, 30.0f));
+        child->ApplyState(Sc2State(1, 0.0f));
+        service.Simulate(1.0f / 60.0f);
+        service.DrainChildModelEvents(events);
+        for (const auto& ev : events)
+            births += ev.kind == particle::ChildModelEvent::Kind::Birth ? 1 : 0;
+        events.clear();
+    }
+    INFO("births=" << births << " child alive=" << child->TotalAlive());
+    // The child's own rate is zero: everything it holds came in as a request.
+    CHECK(child->TotalAlive() > 0);
+    CHECK(births > 0);
+}
+
 TEST_CASE("a burst queued before an emitter's first tick is not dropped",
           "[sc2_particle][service]") {
     // The actor layer's first crossing arrives ahead of the first Simulate.
@@ -759,6 +973,12 @@ TEST_CASE("an SC2 emitter at world scale 100 builds 100x its scale-1 geometry",
         usize off = 0;
         f32 worst = 0.0f;
         const auto lane = [&](f32 small, f32 big) {
+            // A non-finite lane is a mismatch: NaN compares false both ways,
+            // so it would otherwise pass here and vanish from every min.
+            if (!std::isfinite(small) || !std::isfinite(big)) {
+                ++off;
+                return;
+            }
             const f32 want = small * 100.0f;
             const f32 err = std::fabs(big - want) / (std::max)(1.0f, std::fabs(want));
             worst = (std::max)(worst, err);
@@ -807,7 +1027,11 @@ TEST_CASE("an SC2 emitter at world scale 100 builds 100x its scale-1 geometry",
     }
 
     SECTION("a world-space emitter that lands on the host's ground") {
+        // A billboard, not a Tail: a Tail at rest has no velocity to lay its
+        // quad along and builds NaN corners, which pass every comparison
+        // here. A ground asked in the wrong units hid behind exactly that.
         auto cfg = tail();
+        cfg.instanceType = 0;
         cfg.flags = static_cast<u32>(m3::ParticleFlag::CollideTerrain);
         cfg.additionalFlags = static_cast<u32>(m3::ParticleAdditionalFlag::WorldSpace);
         cfg.gravity3 = {0.0f, 0.0f, -9.8f};
@@ -817,15 +1041,20 @@ TEST_CASE("an SC2 emitter at world scale 100 builds 100x its scale-1 geometry",
         // unit down with a quad a few tenths tall. Without this the comparison
         // above holds just as well when nothing collides at either scale — and
         // without the floorless run it holds when nothing FALLS.
+        usize nonFinite = 0;
         const auto lowestOf = [&](u32 extra) {
             f32 lowest = 0.0f;
-            for (const auto& v : build(cfg, 1.0f, extra))
+            for (const auto& v : build(cfg, 1.0f, extra)) {
+                nonFinite += std::isfinite(v.position.z) ? 0u : 1u;
                 lowest = (std::min)(lowest, v.position.z);
+            }
             return lowest;
         };
         const f32 fell = lowestOf(kNone);
         const f32 landed = lowestOf(kGround);
-        INFO("lowest vertex z: " << fell << " with no floor, " << landed << " on it");
+        INFO("lowest vertex z: " << fell << " with no floor, " << landed << " on it; "
+             << nonFinite << " non-finite vertices");
+        CHECK(nonFinite == 0u);
         CHECK(fell < -1.5f);
         CHECK(landed > -1.2f);
     }

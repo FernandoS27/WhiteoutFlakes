@@ -177,8 +177,9 @@ void ApplyParticleFrameStates(Actor& mi, const FrameState& state,
                 if (crossing.bursts[s] != 0)
                     em->QueueBurst(static_cast<u32>(s), crossing.bursts[s]);
             }
-            if (crossing.preRoll)
-                em->RequestPreRoll();
+            // The pre-roll follows the ACTIVE sequence, which the player list
+            // does not name: a global loop starting under it asks nothing.
+            em->SetSc2ActiveSequence(particle::Sc2ActiveSequence(state.sc2AnimPlayers));
         }
 
         // The squirt edge (rate crossing zero) is actor state, not emitter

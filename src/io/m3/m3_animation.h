@@ -85,6 +85,12 @@ struct M3Layer {
     ::whiteout::i32 timeMs = 0;
     ::whiteout::f32 weight = 1.0f;
     bool loop = true;
+    /// @brief The play's sequence, in the global index space the containers
+    ///        share; whether a global loop started it, and whether it is
+    ///        fading out (`ClipRef`).
+    ::whiteout::u16 sequence = 0;
+    bool global = false;
+    bool blendingOut = false;
 };
 
 /// @brief Load-time resolution of the STC / animId indirection.

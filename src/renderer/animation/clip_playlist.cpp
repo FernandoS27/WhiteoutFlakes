@@ -401,6 +401,8 @@ void ClipPlaylist::Advance(i32 nowMs, std::span<const SequenceInfo> seqs, bool f
         c.mask = p.desc.mask;
         c.rootNode = p.desc.rootNode;
         c.subtrack = p.desc.subtrack;
+        c.global = p.global;
+        c.blendingOut = p.phase == Phase::BlendOut;
         clips_.push_back(c);
 
         // With no primary play the newest one reports the time, so a purely

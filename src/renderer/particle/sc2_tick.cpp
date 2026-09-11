@@ -587,6 +587,22 @@ Matrix44f Sc2FromHostSpace(const Matrix44f& m, f32 hostScale) {
     return out;
 }
 
+void Sc2NoteActiveSequence(Sc2Runtime& rt, const Sc2EmitterDesc& d, i32 sequence) {
+    if (!d.Has(ParticleFlag::SimulateInit) || sequence == rt.activeSequence)
+        return;
+    rt.activeSequence = sequence;
+    rt.preRollPending = true;
+}
+
+f32 Sc2PreRollPeakFor(const Sc2EmitterDesc& d, i32 sequence) {
+    // A sequence past the columns needs more sequences than containers; retail
+    // would read the next row there, and the init value stands in.
+    const auto& peaks = d.emit.preRollPeaks;
+    if (sequence < 0 || static_cast<usize>(sequence) >= peaks.size())
+        return d.emit.preRollInit;
+    return peaks[static_cast<usize>(sequence)];
+}
+
 Sc2TickResult Sc2TickEmitter(Sc2Runtime& rt, const Sc2EmitterDesc& d,
                              const Sc2TickFrame& host) {
     namespace bits = whiteout::flakes::renderer::sc2;
@@ -610,7 +626,11 @@ Sc2TickResult Sc2TickEmitter(Sc2Runtime& rt, const Sc2EmitterDesc& d,
     // the emitter, and would never show more than one frame.
     if (restart.armed && (restart.owed || neverTicked)) {
         const u32 gap = neverTicked ? 0xFFFFFFFFu : restart.gapMs;
-        const Sc2PreRollPlan plan = Sc2PlanPreRoll(d.emit.maxLifetimeKey, gap);
+        // `EmitBurst` returns before its first block while no sequence has
+        // resolved.
+        const Sc2PreRollPlan plan =
+            rt.activeSequence < 0 ? Sc2PreRollPlan{}
+                                  : Sc2PlanPreRoll(Sc2PreRollPeakFor(d, rt.activeSequence), gap);
         rt.clock.stateFlags |= bits::kStateRestartBusy;
         for (u32 k = 0; k < plan.blocks; ++k) {
             // `EmitBurst`: the frame index forced back so the block ticks,
