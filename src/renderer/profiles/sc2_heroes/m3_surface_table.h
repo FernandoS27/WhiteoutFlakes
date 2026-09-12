@@ -102,6 +102,13 @@ struct M3Layer {
     /// carries an entry only for the layers whose transform actually moves,
     /// and a miss is the identity.
     i32 uvTransformId = -1;
+    /// The `mapAlpha` a frame with no sample for this layer draws with —
+    /// retail's `cResult.a *= p_vMultiplyAddAlphaTrans.z` right after the
+    /// channel select. The rest is read on a solid-colour alpha mask only (a
+    /// textured layer's ships unauthored more often than not) and is one
+    /// everywhere else; a driven track overrides it through
+    /// `layerMapAlphaPalette`, keyed by @ref uvTransformId.
+    f32 mapAlpha = 1.0f;
 };
 
 struct M3Surface {

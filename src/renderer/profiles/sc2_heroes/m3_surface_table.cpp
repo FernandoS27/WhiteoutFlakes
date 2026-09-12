@@ -234,16 +234,15 @@ void ResolveSurfaceMaterial(const Model& model, u32 matmIndex,
         }
         out.tint = LayerTint(*layer, extraMul);
         // A Color-flag alpha mask is a fade carrier — the layer the WC3
-        // and WoW conversions (and Blizzard's own) animate. Retail
-        // multiplies `mapAlpha` into the sample; this build samples no
-        // layer tracks, so the REST is folded in statically — which is
-        // also exactly the native M2 path's own treatment of a weight
-        // (`FirstValue`). Scoped to Color-flag masks: a textured mask's
-        // mapAlpha ships unauthored more often than not.
+        // and WoW conversions (and Blizzard's own) animate. Its REST is the
+        // map alpha a frame without a sample draws with; the evaluator's
+        // `layerMapAlphas` replace it while a track drives it. Scoped to
+        // Color-flag masks: a textured mask's mapAlpha ships unauthored more
+        // often than not.
         if (out.mode == 2 &&
             (static_cast<M3LayerSlot>(slot) == M3LayerSlot::AlphaMask ||
              static_cast<M3LayerSlot>(slot) == M3LayerSlot::AlphaMask2)) {
-            out.tint.w *= std::clamp(layer->mapAlpha.initValue, 0.0f, 1.0f);
+            out.mapAlpha = std::clamp(layer->mapAlpha.initValue, 0.0f, 1.0f);
         }
         out.add = layer->rgbAdd.initValue * extraMul;
         out.invert =

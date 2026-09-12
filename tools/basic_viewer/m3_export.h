@@ -31,6 +31,8 @@
 #include <whiteout/models/wem/diagnostics.h>
 
 #include <filesystem>
+#include <map>
+#include <memory>
 #include <string>
 
 namespace whiteout::flakes {
@@ -74,6 +76,17 @@ struct M3ExportRequest {
     /// Warcraft III only: the Classic arm's knobs (tileset, the key bake, the
     /// exact-passes composite).
     Wc3ToSc2Options wc3;
+
+    /// The directory the written model's `Assets/...` paths resolve under:
+    /// its textures, and the models its emitters spawn. Empty is beside
+    /// `outPath`; a spawned model's export shares its parent's.
+    std::filesystem::path assetRoot;
+    /// Warcraft III only: the models this export chain wrote for
+    /// model-spawning emitters, by lower-cased source path, so a model two
+    /// emitters spawn is written once. Null starts a chain.
+    std::shared_ptr<std::map<std::string, std::string>> spawnedModels;
+    /// How deep in that chain this export is.
+    int spawnDepth = 0;
 };
 
 /// @brief What one export did, in the shape a log line and a dialog both want.
@@ -94,6 +107,13 @@ struct M3ExportReport {
     int texturesFailed = 0;    ///< Unresolvable, undecodable or unwritable.
     int texturesUnused = 0;    ///< Nothing the written model reads names them; not written.
     int texturesInWar3Mod = 0; ///< Named at War3 (Mod)'s own copy instead of written.
+
+    int particleRecords = 0; ///< `PAR_` crossed from Warcraft III emitters.
+    int ribbonRecords = 0;   ///< `RIB_` crossed from Warcraft III ribbons.
+    int cameraRecords = 0;   ///< `CAM_` aimed at their Warcraft III targets.
+    int hitTests = 0;        ///< Fuzzy hit tests written for collision shapes.
+    int modelParticles = 0;  ///< Of the `PAR_`, model particles from spawning emitters.
+    int spawnedModels = 0;   ///< `.m3` written for the models they spawn, theirs included.
 
     /// Conversion + derive + rescale diagnostics. Never empty on success:
     /// every cross-format write has something to say about what it could not

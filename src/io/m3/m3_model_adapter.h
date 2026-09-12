@@ -571,6 +571,14 @@ private:
     void EvaluateMaterialUvTransforms(std::span<const M3Layer> layers,
                                       renderer::model::FrameState& fs) const;
 
+    /// @brief Sample every standard material layer's driven `mapAlpha` into
+    ///        `FrameState::layerMapAlphas`, keyed like the UV transforms.
+    ///
+    /// A layer no track drives emits nothing and draws with the rest its
+    /// surface table resolved.
+    void EvaluateMaterialMapAlphas(std::span<const M3Layer> layers,
+                                   renderer::model::FrameState& fs) const;
+
     /// @brief Sample each `PHRB`'s `dynamicState` and place its shapes.
     ///
     /// Both halves are things only the source can do — one needs the layer

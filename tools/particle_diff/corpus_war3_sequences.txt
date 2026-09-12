@@ -1,0 +1,18 @@
+# Warcraft III -> StarCraft II gate frames that need a sequence, a frame count or a
+# camera of their own (WC3_TO_SC2_COMPLETION_PLAN.md §11, C6 and C7). Same line
+# format as corpus_war3_m3.txt; `seqm3` also picks the sequence in Blizzard's file.
+# Run one model at a time with the settings beside it, e.g.
+#   .\scripts\war3-diff.ps1 -Out c6 -CorpusFile tools\particle_diff\corpus_war3_sequences.txt -Only barrowdens -Frames 30 -CameraDistance 1000
+#
+#   barrowdens          line emitter            -Frames 30 -CameraDistance 1000
+#   cannontowermissile  AlphaKey, gravity       -Frames 30
+#   arcaneobservatory   Modulate, width/length  -Frames 30 -CameraDistance 1000
+#   arcanetowerattack   XYQuad, lives 0.4 s     -Frames 12 -CameraDistance 200
+#   heroblademaster     ribbon trail            -Frames 26
+#   ancientoflore       offset ribbon           -Frames 45
+buildings/other/barrowdens/barrowdens.mdx|War3_BarrowDens.m3|seq=Stand Work|seqm3=Stand Work
+abilities/weapons/cannontowermissile/cannontowermissile.mdx|War3_CannonTowerMissile.m3|seq=Death|seqm3=Death
+buildings/other/arcaneobservatory/arcaneobservatory.mdx|War3_ArcaneObservatory.m3|seq=Death|seqm3=Death
+abilities/spells/human/feedback/arcanetowerattack.mdx|War3_ArcaneTowerAttack.m3
+units/orc/heroblademaster/heroblademaster.mdx|War3_HeroBladeMaster.m3|seq=Attack|seqm3=Attack
+buildings/nightelf/ancientoflore/ancientoflore.mdx|War3_AncientOfLore.m3|seq=Morph|seqm3=Morph

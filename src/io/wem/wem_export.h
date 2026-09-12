@@ -22,6 +22,7 @@
 
 #include <whiteout/models/m3/structures.h>
 #include <whiteout/models/mdx/structures.h>
+#include <whiteout/models/wem/converters.h>
 #include <whiteout/models/wem/diagnostics.h>
 #include <whiteout/models/wem/document.h>
 
@@ -186,6 +187,15 @@ struct M3ExportOptions {
     /// per `Document::textures` entry; empty when it decoded none).
     bool exactPasses = false;
     std::vector<u8> textureAlphaClasses;
+
+    /// Warcraft III's node carriers (`wem::M3ExportSettings::effectNodeBones`):
+    /// emitter bones, light and camera carriers, visibility leaves.
+    bool effectNodeBones = false;
+
+    /// Hand back the document `toM3` was given -- derived, restated and
+    /// rescaled -- beside the model, for a crossing that joins records to it
+    /// through @ref M3ExportResult::map. A copy, so only when asked.
+    bool keepStagedDocument = false;
 };
 
 struct M3ExportResult {
@@ -197,6 +207,10 @@ struct M3ExportResult {
     bool derived = false;
     /// Meshes above the base level of detail that were not written.
     u32 lodMeshesDropped = 0;
+    /// Where the staged document's nodes and clips landed in @ref model.
+    wem::M3ExportMap map;
+    /// The staged document, when @ref M3ExportOptions::keepStagedDocument asked.
+    std::optional<wem::Document> staged;
     wem::Diagnostics diagnostics;
     std::string error;
 

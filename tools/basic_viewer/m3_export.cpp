@@ -6,13 +6,17 @@
 #include "export_texture_set.h"
 #include "wc3_to_sc2_export.h"
 
+#include "io/mdx_model_adapter.h"
 #include "io/storage/casc_source.h"
 #include "renderer/model/model_source_utils.h"
 #include "whiteout/flakes/content_provider.h"
 #include "whiteout/flakes/content_ref.h"
 #include "whiteout/flakes/util/path_utf8.h"
+#include "whiteout/flakes/util/team_glow_data.h"
 
+#include <whiteout/models/cross/mdx_m3_effects.h>
 #include <whiteout/models/m3/writer.h>
+#include <whiteout/models/mdx/parser.h>
 #include <whiteout/textures/dds/writer.h>
 #include <whiteout/textures/texture.h>
 
@@ -899,10 +903,14 @@ private:
 /// Write every planned texture the written @p model reads beside it, converted
 /// to `.dds` -- or, given @p war3, name War3 (Mod)'s own copy where it ships
 /// the same picture.
+fs::path AssetRootOf(const M3ExportRequest& request) {
+    return request.assetRoot.empty() ? request.outPath.parent_path() : request.assetRoot;
+}
+
 void ExportTextures(const M3ExportRequest& request, const std::vector<TexturePlan>& plans,
                     const std::map<u32, BakedTexture>& baked, const War3ModCopies* war3,
                     ::whiteout::m3::Model& model, M3ExportReport& report) {
-    const fs::path targetDir = request.outPath.parent_path();
+    const fs::path targetDir = AssetRootOf(request);
     // Asked of the written model rather than the plan, which names every
     // document texture: a Reforged source's diffuse, normal and ORM are what
     // the bake turned into StarCraft II maps, and nothing reads them after.
@@ -986,6 +994,116 @@ void ExportTextures(const M3ExportRequest& request, const std::vector<TexturePla
     }
 }
 
+/// Where a spawned model is written, as the model particle names it: the
+/// `Assets/<category>/<file>` shape shipped `PAR_` model paths take, beside
+/// the textures' `Assets/Textures/`.
+constexpr const char* kSpawnedModelDir = "Assets/Models/";
+/// A spawned model's own spawns are followed this deep, and no further.
+constexpr int kMaxSpawnDepth = 2;
+
+/// Warcraft III's model-spawning emitters name `.mdl` files, which the viewer
+/// resolves like any model. Each is exported once as a `.m3` of its own under
+/// the parent's asset root, sharing its textures folder, and the model
+/// particle names it by that path (WC3_TO_SC2_COMPLETION_PLAN.md C8.1). Index
+/// by index with `source.particleEmitters`; empty where nothing was written.
+std::vector<std::string> ExportSpawnedModels(const ::whiteout::mdx::Model& source,
+                                             const M3ExportRequest& request,
+                                             M3ExportReport& report) {
+    std::vector<std::string> paths(source.particleEmitters.size());
+    if (source.particleEmitters.empty() || request.provider == nullptr)
+        return paths;
+    if (request.spawnDepth >= kMaxSpawnDepth) {
+        report.diagnostics.warn(wem::DiagCode::FeatureDropped,
+                                "a spawned model spawns models of its own " +
+                                    std::to_string(kMaxSpawnDepth) +
+                                    " levels down; they were not written",
+                                wem::ElementRef());
+        return paths;
+    }
+    const auto written = request.spawnedModels
+                             ? request.spawnedModels
+                             : std::make_shared<std::map<std::string, std::string>>();
+    const fs::path root = AssetRootOf(request);
+    for (usize i = 0; i < source.particleEmitters.size(); ++i) {
+        const std::string& spawn = source.particleEmitters[i].spawnModelFileName;
+        if (spawn.empty())
+            continue;
+        std::string key = Lower(spawn);
+        std::replace(key.begin(), key.end(), '\\', '/');
+        if (const auto done = written->find(key); done != written->end()) {
+            paths[i] = done->second;
+            continue;
+        }
+        // Held empty while it is written, so a model that spawns itself stops.
+        (*written)[key] = std::string();
+
+        std::string actualExt;
+        std::optional<std::vector<u8>> bytes = request.provider->ReadFile(spawn, &actualExt);
+        if (!bytes || bytes->empty()) {
+            report.diagnostics.warn(wem::DiagCode::AssetUnresolved,
+                                    "spawned model '" + spawn + "' was not found",
+                                    wem::ElementRef());
+            continue;
+        }
+        const std::string ext = Lower(actualExt.empty() ? fs::path(key).extension().string()
+                                                        : actualExt);
+        ::whiteout::mdx::Model model;
+        try {
+            ::whiteout::mdx::Parser parser;
+            model = parser.parse(std::span<const u8>(bytes->data(), bytes->size()),
+                                 ext == ".mdl" ? ::whiteout::mdx::MDLXFormat::MDL
+                                               : ::whiteout::mdx::MDLXFormat::MDX);
+        } catch (const std::exception& e) {
+            report.diagnostics.warn(wem::DiagCode::AssetUnresolved,
+                                    "spawned model '" + spawn + "' did not parse: " + e.what(),
+                                    wem::ElementRef());
+            continue;
+        }
+
+        // Named by the file's stem, once: a second file with the same stem
+        // takes a number (the names meet on a case-blind file system).
+        std::string spelled = spawn;
+        std::replace(spelled.begin(), spelled.end(), '\\', '/');
+        const std::string stem = io::PathToUtf8(io::FsPathFromUtf8(spelled).stem());
+        std::string modelPath = kSpawnedModelDir + stem + ".m3";
+        for (int n = 1; std::any_of(written->begin(), written->end(),
+                                    [&](const auto& entry) {
+                                        return Lower(entry.second) == Lower(modelPath);
+                                    });
+             ++n)
+            modelPath = kSpawnedModelDir + stem + "_" + std::to_string(n) + ".m3";
+
+        io::MdxModelAdapter adapter(std::move(model), {}, request.provider);
+        M3ExportRequest child = request;
+        child.source = &adapter;
+        child.outPath = root / io::FsPathFromUtf8(modelPath);
+        child.modelName = stem;
+        child.assetRoot = root;
+        child.spawnedModels = written;
+        child.spawnDepth = request.spawnDepth + 1;
+        const M3ExportReport made = ExportModelAsM3(child);
+        if (!made.ok) {
+            report.diagnostics.warn(wem::DiagCode::AssetUnresolved,
+                                    "spawned model '" + spawn + "' was not written: " + made.error,
+                                    wem::ElementRef());
+            continue;
+        }
+        report.diagnostics.info(wem::DiagCode::LossyKindConversion,
+                                "spawned model '" + spawn + "' written as " + modelPath + " (" +
+                                    std::to_string(made.diagnostics.size()) +
+                                    " diagnostic(s) of its own)",
+                                wem::ElementRef());
+        (*written)[key] = modelPath;
+        paths[i] = modelPath;
+        report.spawnedModels += 1 + made.spawnedModels;
+        report.texturesExported += made.texturesExported;
+        report.texturesSkipped += made.texturesSkipped;
+        report.texturesFailed += made.texturesFailed;
+        report.texturesInWar3Mod += made.texturesInWar3Mod;
+    }
+    return paths;
+}
+
 } // namespace
 
 M3ExportReport ExportModelAsM3(const M3ExportRequest& request) {
@@ -1015,6 +1133,7 @@ M3ExportReport ExportModelAsM3(const M3ExportRequest& request) {
 
     wem::Document document = std::move(*exported.document);
 
+
     // The game-convention pass: a Warcraft III document gets StarCraft II's
     // spellings — sequence names, the team conventions, and for Reforged the
     // whole inverse PBR bake — before anything downstream reads it. A no-op
@@ -1031,6 +1150,45 @@ M3ExportReport ExportModelAsM3(const M3ExportRequest& request) {
         BakeD3AlphaChains(document, request.provider, baked, report);
     }
 
+    // Warcraft III's team glow as a mask: the glow's shape is on its red over a
+    // flat alpha, which an emissive slot would read gamma-decoded, so a texture
+    // with that red moved into alpha carries the shape to the team op
+    // (`mdx_m3_effects.cpp`, row 22). Only when an emitter draws the glow.
+    u32 teamGlowMask = wem::kInvalidIndex;
+    if (request.wc3.effects && request.exportTextures) {
+        if (const auto* mdx = dynamic_cast<const io::MdxModelAdapter*>(request.source)) {
+            const auto& emitters = mdx->SourceModel().particleEmitters2;
+            const bool drawsGlow =
+                std::any_of(emitters.begin(), emitters.end(),
+                            [](const ::whiteout::mdx::ParticleEmitter2& pe) {
+                                return pe.replaceableId == 2;
+                            });
+            i32 w = 0;
+            i32 h = 0;
+            const std::vector<u8> glow =
+                drawsGlow ? io::DecodeTeamGlow(255, 255, 255, w, h) : std::vector<u8>{};
+            if (w > 0 && h > 0 && glow.size() >= static_cast<usize>(w) * h * 4) {
+                tx::Texture texture = tx::Texture::create2D(tx::PixelFormat::RGBA8,
+                                                            static_cast<u32>(w),
+                                                            static_cast<u32>(h), 1);
+                const std::span<u8> px = texture.mipData(0);
+                for (usize i = 0; i + 3 < px.size() && i + 3 < glow.size(); i += 4) {
+                    px[i + 0] = 255;
+                    px[i + 1] = 255;
+                    px[i + 2] = 255;
+                    px[i + 3] = glow[i];
+                }
+                teamGlowMask = static_cast<u32>(document.textures.size());
+                wem::TextureRef mask;
+                mask.path = "ReplaceableTextures/TeamGlow/TeamGlowMask.blp";
+                mask.key = wem::TexturePath{mask.path};
+                document.textures.push_back(std::move(mask));
+                baked.insert_or_assign(teamGlowMask,
+                                       BakedTexture{std::move(texture), tx::PixelFormat::BC3});
+            }
+        }
+    }
+
     // A constant-rate UV scroll becomes a keyed global-loop clip; the derive
     // twins its channels into the target set with everything else. Diablo III
     // clip names take the StarCraft II vocabulary on the way.
@@ -1043,10 +1201,33 @@ M3ExportReport ExportModelAsM3(const M3ExportRequest& request) {
     if (request.exportTextures)
         plans = PlanTextures(document, io::PathToUtf8(request.outPath.stem()));
 
+    const bool warcraft = document.defaultProfile == wem::ProfileId::Wc3Classic ||
+                          document.defaultProfile == wem::ProfileId::Wc3Reforged;
+
+    // Warcraft III's emitters cross native to native, outside WEM, which
+    // stores their nodes and not the systems they run (WEM_DESIGN §18): the
+    // records need the parsed `.mdx` itself.
+    const ::whiteout::mdx::Model* source = nullptr;
+    if (warcraft) {
+        if (const auto* mdx = dynamic_cast<const io::MdxModelAdapter*>(request.source))
+            source = &mdx->SourceModel();
+    }
+    // Unconditional: it also puts emitter nodes back under their parents, which
+    // their bones need whether or not anything rides them.
+    if (source != nullptr)
+        ::whiteout::models::cross::PrepareWc3Effects(*source, document, report.diagnostics,
+                                                     request.wc3.effects);
+    const ::whiteout::mdx::Model* emitters = request.wc3.effects ? source : nullptr;
+
     io::M3ExportOptions m3Options;
     m3Options.profile = request.profile;
     m3Options.exactPasses = request.wc3.exactPasses;
     m3Options.textureAlphaClasses = restated.textureAlphaClasses;
+    // Warcraft III's emitter, light and camera nodes each move and hide on
+    // their own; StarCraft II says that with a bone apiece and a leaf for a
+    // visibility that must not reach the node's children.
+    m3Options.effectNodeBones = warcraft;
+    m3Options.keepStagedDocument = emitters != nullptr;
     io::M3ExportResult converted = io::ConvertWemToM3(document, m3Options);
     report.diagnostics.append(converted.diagnostics);
     if (!converted.ok()) {
@@ -1056,10 +1237,61 @@ M3ExportReport ExportModelAsM3(const M3ExportRequest& request) {
     report.scale = converted.scale;
     report.derived = converted.derived;
 
+    // The targeting volume's size is its bone's scale, a rest no retarget
+    // keeps, so it is stated here on the bone `toM3` made for the node -- the
+    // IREF inverting position and scale, as Blizzard's 1,149 volumes do -- and
+    // the ATVL is a unit sphere's half on it.
+    if (restated.volTargetNode < converted.map.nodeBone.size()) {
+        const u32 bone = converted.map.nodeBone[restated.volTargetNode];
+        ::whiteout::m3::Model& model = *converted.model;
+        if (bone < model.bones.size() && bone < model.initialReference.size()) {
+            ::whiteout::m3::Bone& target = model.bones[bone];
+            target.scale.initValue = restated.volTargetScale;
+            Matrix44f bind = Matrix44f::identity();
+            bind.data[0][0] = restated.volTargetScale.x;
+            bind.data[1][1] = restated.volTargetScale.y;
+            bind.data[2][2] = restated.volTargetScale.z;
+            bind.data[3][0] = target.position.initValue.x;
+            bind.data[3][1] = target.position.initValue.y;
+            bind.data[3][2] = target.position.initValue.z;
+            model.initialReference[bone].matrix = Matrix44f::inverse(bind);
+            ::whiteout::m3::AttachmentVolume volume;
+            volume.bone1 = bone;
+            volume.bone2 = bone;
+            volume.boneIndex = static_cast<u16>(bone);
+            volume.shapeType = ::whiteout::m3::HitTestShapeType::Sphere;
+            volume.sizeX = 0.5f;
+            model.attachmentVolumes.push_back(std::move(volume));
+            model.attachmentVolumesAddon0.push_back(0);
+            model.attachmentVolumesAddon1.push_back(0);
+        }
+    }
+
+    if (emitters != nullptr && converted.staged) {
+        ::whiteout::models::cross::Wc3EffectOptions effects;
+        effects.lengthScale = converted.scale;
+        // The document's first textures are the `.mdx`'s, in order, and the
+        // plan above has already repointed them at the names this export writes.
+        for (usize t = 0; t < emitters->textures.size(); ++t)
+            effects.texturePaths.push_back(t < document.textures.size() ? document.textures[t].path
+                                                                        : std::string());
+        if (teamGlowMask < document.textures.size())
+            effects.teamGlowMaskPath = document.textures[teamGlowMask].path;
+        effects.modelParticlePaths = ExportSpawnedModels(*emitters, request, report);
+
+        const ::whiteout::models::cross::Wc3EffectReport crossed =
+            ::whiteout::models::cross::CrossWc3Effects(*emitters, *converted.staged, converted.map,
+                                                       effects, *converted.model);
+        report.diagnostics.append(crossed.diagnostics);
+        report.particleRecords = static_cast<int>(crossed.particleRecords);
+        report.ribbonRecords = static_cast<int>(crossed.ribbonRecords);
+        report.cameraRecords = static_cast<int>(crossed.cameraRecords);
+        report.hitTests = static_cast<int>(crossed.hitTests);
+        report.modelParticles = static_cast<int>(crossed.modelParticleRecords);
+    }
+
     // War3 (Mod) ships Warcraft III's textures, and only StarCraft II loads it.
     std::unique_ptr<War3ModCopies> war3;
-    const bool warcraft = document.defaultProfile == wem::ProfileId::Wc3Classic ||
-                          document.defaultProfile == wem::ProfileId::Wc3Reforged;
     if (request.exportTextures && request.reuseWar3ModTextures && warcraft) {
         std::string error;
         if (request.profile != wem::ProfileId::Sc2) {

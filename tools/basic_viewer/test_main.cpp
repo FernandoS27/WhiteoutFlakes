@@ -10,6 +10,7 @@
 #include "renderer/particle/d3_emitter.h"
 #include "renderer/particle/particle_service.h"
 #include "renderer/particle/particle_trace.h"
+#include "renderer/ribbon/ribbon_service.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_service.h"
 #include "renderer/scene_manager.h"
@@ -480,6 +481,14 @@ struct AnimScenario {
     // actually uses is not guessable, and X3 onward decides what to implement
     // first from these counts (SC2_PARTICLE_PLAN.md §5).
     bool particleList = false;
+    // Print every `ATT_` after the first frame: its name, the bone it rides,
+    // that bone's model-space position and its rest visibility
+    // (WC3_TO_SC2_COMPLETION_PLAN.md C3.5). The check that a converted
+    // attachment sits where the source's did, without opening an editor.
+    bool attachList = false;
+    // Print every `RIB_` as registration sees it and stop — the ribbon twin of
+    // @ref particleList (WC3_TO_SC2_COMPLETION_PLAN.md C7.5).
+    bool ribbonList = false;
     // Turn the pose stages on and install a ground plane, so a capture can see
     // terrain IK and the turret at all. Off in every other arm, which is what
     // makes the byte-identical baselines mean "the animation did not move".
@@ -577,7 +586,8 @@ static int RunDrawTrace(
     bool noRefraction = false, bool refractionMask = false, bool noMultiTex = false,
     whiteout::flakes::ProductId traceGame = whiteout::flakes::ProductId::Neutral,
     bool noDistortion = false, bool distortionBuffer = false,
-    whiteout::models::wem::ProfileId wemProfile = whiteout::models::wem::ProfileId::Count) {
+    whiteout::models::wem::ProfileId wemProfile = whiteout::models::wem::ProfileId::Count,
+    f32 cameraYaw = 0.7f) {
     namespace wf = whiteout::flakes;
     namespace dbg = wf::renderer::debug;
 
@@ -585,7 +595,8 @@ static int RunDrawTrace(
         std::cerr << "[dtrace] --draw-trace needs a model path" << std::endl;
         return 2;
     }
-    if (recordPath.empty() && checkPath.empty() && !anim.list && !anim.particleList) {
+    if (recordPath.empty() && checkPath.empty() && !anim.list && !anim.particleList &&
+        !anim.ribbonList) {
         std::cerr << "[dtrace] pass --draw-trace-record <file> or --draw-trace-check <file>"
                   << std::endl;
         return 2;
@@ -860,7 +871,9 @@ static int RunDrawTrace(
     cam.SetOrbitalMode();
     cam.SetTarget(0.0f, 0.0f, 50.0f);
     cam.SetPitch(0.35f);
-    cam.SetYaw(0.7f);
+    // 0.7 unless a caller walks the camera round: a billboard is only a
+    // billboard when the view moves, so the war3-diff arm renders several.
+    cam.SetYaw(cameraYaw);
     cam.SetDistance(static_cast<f32>(cameraDistance));
 
     // ---- Settle: drain asset arrival until nothing is outstanding ----------
@@ -1107,6 +1120,39 @@ static int RunDrawTrace(
         pipe.Shutdown();
         return 0;
     }
+    if (anim.ribbonList) {
+        // One line per `RIB_`: what the loader converted, whether the service
+        // registered it, and the fields a Warcraft III crossing sets (§4.5).
+        auto* m3p = dynamic_cast<wf::io::M3ModelAdapter*>(hero->animation.Source().get());
+        if (!m3p) {
+            std::cout << "[dtrace] not an .m3 - no RIB_ to list" << std::endl;
+            pipe.Shutdown();
+            return 0;
+        }
+        const auto cfgs = m3p->GetSc2RibbonConfigs();
+        const auto& src = m3p->SourceModel();
+        std::cout << "[dtrace] " << cfgs.size() << " RIB_ emitter(s):" << std::endl;
+        for (std::size_t i = 0; i < cfgs.size(); ++i) {
+            const auto& c = cfgs[i];
+            std::string bone = "?";
+            if (c.boneIndex >= 0 && static_cast<std::size_t>(c.boneIndex) < src.bones.size()) {
+                bone = src.bones[static_cast<std::size_t>(c.boneIndex)].name;
+                while (!bone.empty() && bone.back() == '\0')
+                    bone.pop_back();
+            }
+            const bool registered =
+                renderer.Ribbons().GetEmitter(hero->handle, static_cast<wf::i32>(i)) != nullptr;
+            std::printf("[dtrace]   [%zu] bone=%d '%s' %s type=%u cull=%u divisions=%g "
+                        "lifetime=%g gravity=%g drag=%g mass=%g flags=0x%X world=%d matm=%d\n",
+                        i, c.boneIndex, bone.c_str(), registered ? "registered" : "NOT REGISTERED",
+                        static_cast<unsigned>(c.ribbonType), static_cast<unsigned>(c.cullMethod),
+                        c.divisions, c.lifetimeInit, c.gravity3.z, c.drag, c.mass, c.flags,
+                        (c.additionalFlags & 0x8u) != 0 ? 1 : 0, c.materialIndex);
+        }
+        std::fflush(stdout);
+        pipe.Shutdown();
+        return 0;
+    }
 #endif
     const i32 startSeq = ResolveSequenceSpec(seqs, anim.sequence);
     const i32 switchSeq = ResolveSequenceSpec(seqs, anim.switchSequence);
@@ -1236,6 +1282,42 @@ static int RunDrawTrace(
         }
         scene.Update(kDt);
         renderer.Ticker().Tick(kDt);
+#if WDX_ENABLE_M3
+        if (anim.attachList && i == 0) {
+            const auto* m3p =
+                dynamic_cast<const wf::io::M3ModelAdapter*>(hero->animation.Source().get());
+            if (!m3p) {
+                std::cout << "[dtrace] not an .m3 - no ATT_ to list" << std::endl;
+            } else {
+                const auto& src = m3p->SourceModel();
+                const auto nodes = hero->render.skinning.NodeMatrices();
+                const auto trim = [](std::string s) {
+                    while (!s.empty() && s.back() == '\0')
+                        s.pop_back();
+                    return s;
+                };
+                std::cout << "[dtrace] " << src.attachmentPoints.size() << " ATT_:" << std::endl;
+                for (std::size_t a = 0; a < src.attachmentPoints.size(); ++a) {
+                    const auto& point = src.attachmentPoints[a];
+                    const wf::u32 b = point.boneIndex;
+                    std::printf("[dtrace]   [%zu] '%s' bone=%u", a, trim(point.name).c_str(), b);
+                    if (b < src.bones.size()) {
+                        const auto& bone = src.bones[b];
+                        std::printf(" '%s' vis=%u%s", trim(bone.name).c_str(),
+                                    bone.visibility.initValue,
+                                    bone.visibility.animId != 0 ? " keyed" : "");
+                    }
+                    if (b < nodes.size()) {
+                        const Matrix44f& m = nodes[b];
+                        std::printf(" at=(%.4f %.4f %.4f)", m.data[3][0], m.data[3][1],
+                                    m.data[3][2]);
+                    }
+                    std::printf("\n");
+                }
+                std::fflush(stdout);
+            }
+        }
+#endif
         if (anim.probe && (i % 20) == 0) {
             // Over the offset matrices rather than the world ones: those are
             // what the palette actually carries, so a hash that moves here but
@@ -1254,6 +1336,19 @@ static int RunDrawTrace(
                 std::cout << " | clip seq=" << cl.sequence << " time=" << cl.timeMs
                           << " elapsed=" << cl.elapsedMs << " w=" << cl.weight;
             std::cout << std::endl;
+            // The model's own lights, which a golden cannot speak for: a light
+            // inside the silhouette contributes nothing however enabled it is
+            // (N·L never coincides with the attenuation window), so whether the
+            // visibility gate crossed has to be read off the list itself.
+            for (std::size_t li = 0; li < hero->render.activeLights.size(); ++li) {
+                const auto& L = hero->render.activeLights[li];
+                std::printf("[dtrace] probe: light %zu kind=%d enabled=%d pos=(%.1f %.1f %.1f)"
+                            " diffuse=(%.2f %.2f %.2f) atten=%.1f..%.1f\n",
+                            li, static_cast<int>(L.kind), L.enabled ? 1 : 0, L.worldPos.x,
+                            L.worldPos.y, L.worldPos.z, L.diffuse.x, L.diffuse.y, L.diffuse.z,
+                            L.attenStart, L.attenEnd);
+            }
+            std::fflush(stdout);
         }
         rec.BeginFrame(i);
         pipe.RenderViewport(vp);
@@ -1709,6 +1804,7 @@ int main(int argc, char* argv[]) {
     std::string drawTraceGolden;
     f32 drawTraceDistanceTol = 0.0f;
     i32 drawTraceCameraDistance = 350;
+    f32 drawTraceCameraYaw = 0.7f;
     i32 drawTracePerturb = 0;
     i32 drawTraceInstances = 3;
     AnimScenario drawTraceAnim;
@@ -1763,6 +1859,8 @@ int main(int argc, char* argv[]) {
     bool exportM3ExactPasses = false;
     bool exportM3SharpenKey = false;
     bool exportM3War3ModTextures = false;
+    bool exportM3Effects = true;
+    bool exportM3StandardRefs = true;
     // Headless glTF export: the batch half of File ▸ Export to glTF. The
     // container follows the path's extension (`.gltf` = JSON + .bin + images,
     // anything else = one self-contained `.glb`).
@@ -1927,6 +2025,10 @@ int main(int argc, char* argv[]) {
             exportM3SharpenKey = true;
         } else if (std::strcmp(a, "--export-m3-war3-mod-textures") == 0) {
             exportM3War3ModTextures = true;
+        } else if (std::strcmp(a, "--export-m3-no-effects") == 0) {
+            exportM3Effects = false;
+        } else if (std::strcmp(a, "--export-m3-no-standard-refs") == 0) {
+            exportM3StandardRefs = false;
         } else if (std::strcmp(a, "--save-m3") == 0 && i + 1 < argc) {
             saveM3Path = whiteout::flakes::io::FsPathFromUtf8(argv[++i]);
         } else if (std::strcmp(a, "--save-m3-merge-anims") == 0) {
@@ -2088,6 +2190,8 @@ int main(int argc, char* argv[]) {
             drawTraceDistanceTol = static_cast<f32>(std::atof(argv[++i]));
         } else if (std::strcmp(a, "--draw-trace-camera-distance") == 0 && i + 1 < argc) {
             drawTraceCameraDistance = std::atoi(argv[++i]);
+        } else if (std::strcmp(a, "--draw-trace-camera-yaw") == 0 && i + 1 < argc) {
+            drawTraceCameraYaw = static_cast<f32>(std::atof(argv[++i]));
         } else if (std::strcmp(a, "--draw-trace-perturb") == 0 && i + 1 < argc) {
             drawTracePerturb = std::atoi(argv[++i]);
         } else if (std::strcmp(a, "--draw-trace-instances") == 0 && i + 1 < argc) {
@@ -2112,6 +2216,10 @@ int main(int argc, char* argv[]) {
             drawTraceAnim.list = true;
         } else if (std::strcmp(a, "--draw-trace-particle-list") == 0) {
             drawTraceAnim.particleList = true;
+        } else if (std::strcmp(a, "--draw-trace-attach-list") == 0) {
+            drawTraceAnim.attachList = true;
+        } else if (std::strcmp(a, "--draw-trace-ribbon-list") == 0) {
+            drawTraceAnim.ribbonList = true;
         } else if (std::strcmp(a, "--draw-trace-anim-probe") == 0) {
             drawTraceAnim.probe = true;
         } else if (std::strcmp(a, "--draw-trace-solvers") == 0) {
@@ -2184,6 +2292,10 @@ int main(int argc, char* argv[]) {
                       << "       --export-m3-war3-mod-textures\n"
                       << "                                Warcraft III: name War3 (Mod)'s copy of a\n"
                       << "                                texture where it ships the same picture\n"
+                      << "       --export-m3-no-effects   Warcraft III: write no PAR_ / RIB_\n"
+                      << "       --export-m3-no-standard-refs  Warcraft III: add no Ref_Origin /\n"
+                      << "                                Ref_Overhead / Ref_Center / Ref_Target /\n"
+                      << "                                Vol_Target\n"
                       << "       --export-gltf <out.glb>  write it as glTF 2.0 and exit\n"
                       << "                                (.gltf writes JSON + .bin + images)\n"
                       << "       --export-gltf-no-textures leave the texture URIs unresolved\n"
@@ -2432,7 +2544,8 @@ int main(int argc, char* argv[]) {
                             drawTraceUnlit, drawTraceLazyAnim, drawTraceAllowLate, contentRoot,
                             drawTraceAnim, attachAnims, drawTraceDebugLight, drawTraceNoRefraction,
                             drawTraceRefractionMask, drawTraceNoMultiTex, traceGameId,
-                            drawTraceNoDistortion, drawTraceDistortionBuffer, wemProfile);
+                            drawTraceNoDistortion, drawTraceDistortionBuffer, wemProfile,
+                            drawTraceCameraYaw);
 
     // Export/attach/list runs load the model, do their work over a fixed tick
     // count and exit — they still need the full app (device, asset managers,
@@ -2607,7 +2720,8 @@ int main(int argc, char* argv[]) {
     if (!exportM3Path.empty()) {
         const bool ok = app.ExportM3(exportM3Path, exportM3Profile, exportM3Textures,
                                      exportM3ExactPasses, exportM3SharpenKey,
-                                     exportM3War3ModTextures);
+                                     exportM3War3ModTextures, exportM3Effects,
+                                     exportM3StandardRefs);
         app.Close();
         return ok ? 0 : 1;
     }

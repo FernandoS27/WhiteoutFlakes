@@ -78,8 +78,8 @@ Sc2StepPlan Sc2TickClock(Sc2EmitClock& clock, const Sc2ClockInputs& in) {
         plan.nSteps = 1;
         plan.subDt = rate >= 0.001f ? 1.0f / rate : (std::min)(1.0f, plan.dt);
         plan.remainder = 0.0f;
-        // `prevPos` moves ONLY here. A sub-stepping emitter never refreshes it,
-        // which is what makes the displacement below span whole frames.
+        // `Tick`'s only `prevPos` write; the sub-stepped path's is
+        // `EmitParticles`', after it has measured the frame (`Sc2SpawnSweep`).
         clock.prevPos = in.worldPos;
         clock.lastSubStepTime = clock.variationTime;
         // The resync is one-shot: it buys this one full step and is spent. The
@@ -382,6 +382,24 @@ Sc2Schedule Sc2SpawnSchedule(const Sc2ScheduleInputs& in, std::span<f32> carry,
         Sc2SpawnPass(in, targets, emitted, in.remainder + 1e-4f + t, events);
         out.accumTime = in.remainder;
     }
+    return out;
+}
+
+Sc2Sweep Sc2SpawnSweep(const Sc2SweepInputs& in) {
+    Sc2Sweep out;
+    out.prevPos = in.prevPos;
+    if (in.fullStep)
+        return out;
+    if (in.total != 0) {
+        // The reciprocal the time lane takes too: retail builds `1 / total`
+        // once and multiplies all four lanes by it.
+        const f32 inv = Sc2RcpNewton(static_cast<f32>(in.total));
+        out.spawnPosStep = {(in.worldPos.x - in.prevPos.x) * inv,
+                            (in.worldPos.y - in.prevPos.y) * inv,
+                            (in.worldPos.z - in.prevPos.z) * inv};
+    }
+    if (in.nSubSteps != 0)
+        out.prevPos = in.worldPos;
     return out;
 }
 

@@ -67,6 +67,15 @@ void RenderModel::ApplyLayerStates(const FrameState& state) {
         }
     }
 
+    i32 maxMapAlphaId = -1;
+    for (const auto& ma : state.layerMapAlphas)
+        maxMapAlphaId = std::max(maxMapAlphaId, ma.layerId);
+    layerMapAlphaPalette.assign(static_cast<usize>(maxMapAlphaId + 1), -1.0f);
+    for (const auto& ma : state.layerMapAlphas) {
+        if (ma.layerId >= 0)
+            layerMapAlphaPalette[static_cast<usize>(ma.layerId)] = ma.alpha;
+    }
+
     // The animated half of the material. It lives in the table because the
     // submission path reads it from there, but it is rewritten every frame —
     // which is why Wc3SurfaceTable is mutable rather than build-once. An actor

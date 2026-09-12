@@ -20,3 +20,4 @@ tools/d3_particle_oracle
 tools/d3_shader_atlas
 tools/sc2_ribbon_oracle
 tools/sc2_particle_oracle
+tools/war3_oracle

@@ -1698,6 +1698,7 @@ set(WHITEOUTFLAKES_VIEWER_SOURCES
     tools/basic_viewer/gltf_export.cpp
     # The Warcraft III -> StarCraft II game conventions that ride that export.
     tools/basic_viewer/wc3_to_sc2_export.cpp
+    tools/basic_viewer/wc3_attachment_names.cpp
     # The one crossing a slot rename cannot make: StarCraft II's
     # specular/gloss baked into a Reforged occlusion/roughness/metalness map.
     tools/basic_viewer/sc2_pbr_export.cpp

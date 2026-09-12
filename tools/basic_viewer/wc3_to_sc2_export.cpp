@@ -2,9 +2,11 @@
 // Copyright (c) 2026 Fernando Sahmkow
 
 #include "wc3_to_sc2_export.h"
+#include "wc3_attachment_names.h"
 
 #include "export_texture_cache.h"
 #include "renderer/ibl/env_probe.h"
+#include "whiteout/flakes/util/team_glow_data.h"
 
 #include <whiteout/models/wem/retarget.h>
 #include <whiteout/textures/environment_map.h>
@@ -18,6 +20,7 @@
 #include <map>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace whiteout::flakes {
@@ -585,6 +588,27 @@ BakedTexture StockTeamTexture() {
     return BakedTexture{std::move(texture), tx::PixelFormat::BC3};
 }
 
+/// The hero glow, synthesized rather than read: Warcraft III's own
+/// `TeamGlow00.blp` is 32x32, which is the whole glow's resolution on screen.
+/// The fold selects the layer's RED (`m3_core.cpp`, R4), so the ramp goes on
+/// the RGB and the alpha stays 255 -- an Add-family emissive is `rgb * a`, and
+/// a shaped alpha would square it. Blizzard's conversions name it
+/// `war3_TeamGlow00.dds`.
+BakedTexture StockTeamGlowTexture() {
+    i32 w = 0;
+    i32 h = 0;
+    const std::vector<u8> glow = io::DecodeTeamGlow(255, 255, 255, w, h);
+    tx::Texture texture = tx::Texture::create2D(tx::PixelFormat::RGBA8, static_cast<u32>(w),
+                                                static_cast<u32>(h), 1);
+    const std::span<u8> px = texture.mipData(0);
+    std::copy_n(glow.begin(), std::min(px.size(), glow.size()), px.begin());
+    // Uncompressed, alone among the bakes: BC1/BC3 keep RGB in a colour block
+    // whose endpoints hold five bits of red, and the fold reads THE RED, so a
+    // ramp this shallow came out in 8-level rings (measured 16/8/0 in the
+    // tail, the 5-bit grid exactly). A 512-square glow costs 1 MB.
+    return BakedTexture{std::move(texture), tx::PixelFormat::RGBA8};
+}
+
 /// What a texture's alpha holds, as the fold's `TextureAlphaClass` byte: 1
 /// opaque, 2 keyed (under 2% of texels between 8 and 247 -- the sweep's own
 /// rule), 3 a gradient.
@@ -675,10 +699,11 @@ bool TeamPlateDrawsAlone(const wem::Document& document) {
 void RestateClassicTextures(wem::Document& document, io::IContentProvider* provider,
                             const Wc3ToSc2Options& options, Wc3ToSc2Result& result,
                             wem::Diagnostics& out) {
-    // Replaceable 2 names a file the GAME supplies
-    // (`ReplaceableTextures\TeamGlow\TeamGlow00.blp`); giving the reference
-    // that path lets the texture pass export it like any other, while the
-    // replaceable id stays for the material fold to read. Replaceable 1 gets
+    // Replaceable 2 is the hero glow the GAME supplies, and Warcraft III's own
+    // file is 32x32 -- exporting it like any other texture shipped that
+    // resolution as the glow. It gets the ramp we synthesize for the renderer
+    // instead, at `kTeamGlowSize`, under the name Blizzard's own conversions
+    // use; the replaceable id stays for the material fold to read. Replaceable 1 gets
     // the alpha-0 stock, so a plate with nothing textured over it is a solid
     // team colour (design §5.2 R3); 11 and 31–37 resolve through the tileset
     // the way the renderer resolves them.
@@ -692,7 +717,8 @@ void RestateClassicTextures(wem::Document& document, io::IContentProvider* provi
         }
         std::string path;
         if (ref.replaceableId == 2) {
-            path = "ReplaceableTextures/TeamGlow/TeamGlow00.blp";
+            path = "Star2/war3_TeamGlow00.dds";
+            result.baked.insert_or_assign(static_cast<u32>(i), StockTeamGlowTexture());
         } else if (ref.replaceableId == 1) {
             if (!plateAlone) {
                 continue; // never sampled: the RGBA select reads the texture over it
@@ -808,6 +834,79 @@ void RestateClassicTextures(wem::Document& document, io::IContentProvider* provi
     }
 }
 
+/// The references StarCraft II's gameplay reads that Warcraft III models do not
+/// state (WC3_TO_SC2_COMPLETION_PLAN.md C3.2). Each is a root helper -- a bone
+/// wherever `toM3` meets one -- with the attachment on it: `Ref_Origin` at the
+/// origin (523 of 543 paired models that lack one), `Ref_OverHead` at 62 units
+/// up (the default Blizzard's tool leaves; no source quantity predicts the
+/// placed ones), `Vol_Target` around the collision shapes with `Ref_Target` on
+/// it (1,069 of 1,070), and `Ref_Center` at the volume's height (998 of 1,030).
+void AddStandardRefs(wem::Model& model, Wc3ToSc2Result& result, wem::Diagnostics& diagnostics) {
+    const auto named = [&model](std::string_view wanted) {
+        for (const wem::Node& node : model.nodes.nodes) {
+            if (node.kind != wem::NodeKind::Attachment || node.name.size() != wanted.size()) {
+                continue;
+            }
+            bool same = true;
+            for (std::size_t i = 0; i < wanted.size() && same; ++i) {
+                same = std::tolower(static_cast<unsigned char>(node.name[i])) ==
+                       std::tolower(static_cast<unsigned char>(wanted[i]));
+            }
+            if (same) {
+                return true;
+            }
+        }
+        return false;
+    };
+    // Pivot-relative like the rest of the import: the rest is the pivot.
+    const auto add = [&model](const std::string& name, wem::NodeKind kind, u32 parent,
+                              const Vector3f& at) {
+        wem::Node node;
+        node.name = name;
+        node.kind = kind;
+        node.resetPayloadForKind();
+        node.parent = parent;
+        node.pivot = at;
+        node.local.translation =
+            parent == wem::kInvalidNode ? at : Vector3f{0.0f, 0.0f, 0.0f};
+        node.poses.push_back(node.local);
+        return model.nodes.add(std::move(node));
+    };
+    const auto point = [&](const std::string& bone, const std::string& attachment,
+                           const Vector3f& at) {
+        const u32 helper = add(bone, wem::NodeKind::Helper, wem::kInvalidNode, at);
+        add(attachment, wem::NodeKind::Attachment, helper, at);
+    };
+
+    std::string added;
+    if (!named("Ref_Origin")) {
+        point("Ref_Origin", "Ref_Origin", Vector3f{0.0f, 0.0f, 0.0f});
+        added += " Ref_Origin";
+    }
+    if (!named("Ref_Overhead")) {
+        point("Ref_OverHead", "Ref_Overhead", Vector3f{0.0f, 0.0f, 62.0f});
+        added += " Ref_Overhead";
+    }
+    const Wc3TargetVolume volume = Wc3TargetVolumeOf(model);
+    const u32 target = add("Vol_Target", wem::NodeKind::Helper, wem::kInvalidNode, volume.center);
+    result.volTargetNode = target;
+    result.volTargetScale = volume.scale;
+    if (!named("Ref_Target")) {
+        add("Ref_Target", wem::NodeKind::Attachment, target, volume.center);
+        added += " Ref_Target";
+    }
+    if (!named("Ref_Center")) {
+        point("Ref_Center", "Ref_Center", Vector3f{0.0f, 0.0f, volume.center.z});
+        added += " Ref_Center";
+    }
+    diagnostics.info(wem::DiagCode::LossyKindConversion,
+                     "added StarCraft II's targeting volume" +
+                         std::string(volume.fromCollision ? " around the collision shapes"
+                                                          : " at its default") +
+                         (added.empty() ? std::string() : " and" + added),
+                     wem::ElementRef(wem::ElementKind::Node, target), wem::ProfileId::Sc2);
+}
+
 } // namespace
 
 Wc3ToSc2Result RestateWc3AsSc2(wem::Document& document, io::IContentProvider* provider,
@@ -856,6 +955,41 @@ Wc3ToSc2Result RestateWc3AsSc2(wem::Document& document, io::IContentProvider* pr
                 ++renamed;
             }
         }
+    }
+
+    // Attachment points take StarCraft II's names (WC3_TO_SC2_COMPLETION_PLAN.md
+    // §4.1). On the WEM node, so the ATT_ and the bone that carries it agree,
+    // as they do in Blizzard's own conversions.
+    if (options.attachmentNames) {
+        for (wem::Model& model : document.models) {
+            std::map<std::string, u32> seen;
+            for (u32 n = 0; n < model.nodes.size(); ++n) {
+                wem::Node& node = model.nodes.nodes[n];
+                if (node.kind != wem::NodeKind::Attachment) {
+                    continue;
+                }
+                const Wc3AttachmentName renamed = Wc3AttachmentNameToSc2(node.name);
+                if (!renamed.known) {
+                    diagnostics.info(wem::DiagCode::LossyKindConversion,
+                                     "attachment '" + node.name + "' has no StarCraft II name of "
+                                         "its own; written as '" + renamed.name + "'",
+                                     wem::ElementRef(wem::ElementKind::Node, n),
+                                     wem::ProfileId::Sc2);
+                }
+                if (++seen[renamed.name] == 2) {
+                    diagnostics.info(wem::DiagCode::LossyKindConversion,
+                                     "more than one attachment is named '" + renamed.name +
+                                         "'; Warcraft III allows it and so does the file",
+                                     wem::ElementRef(wem::ElementKind::Node, n),
+                                     wem::ProfileId::Sc2);
+                }
+                node.name = renamed.name;
+            }
+        }
+    }
+
+    if (options.standardRefs && !document.models.empty()) {
+        AddStandardRefs(document.models.front(), result, diagnostics);
     }
 
     RestateClassicTextures(document, provider, options, result, diagnostics);

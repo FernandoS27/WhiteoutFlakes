@@ -1,0 +1,32 @@
+# Warcraft III -> StarCraft II gate models (WC3_TO_SC2_COMPLETION_PLAN.md §3).
+#
+# `<source>|<oracle>[|seq=<wc3 sequence>][|seqm3=<exported sequence>]`. The source is
+# the path the viewer resolves in the Warcraft III install (CASC `war3.w3mod:`); the
+# oracle is Blizzard's own conversion under C:/Projects/WhiteoutLib/Corpus/Sc2M3.
+# Read by scripts/war3-diff.ps1. What each model covers is the plan's §3 table.
+units/human/footman/footman.mdx|War3_Footman.m3
+units/orc/grunt/grunt.mdx|War3_Grunt.m3
+units/human/herobloodelf/herobloodelf.mdx|War3_HeroBloodElf.m3
+buildings/human/humanbarracks/humanbarracks.mdx|War3_HumanBarracks.m3
+buildings/human/townhall/townhall.mdx|War3_TownHall.m3
+units/human/peasant/peasant_portrait.mdx|War3_Peasant_Portrait.m3
+abilities/weapons/ancestralguardianmissile/ancestralguardianmissile.mdx|War3_AncestralGuardianMissile.m3
+units/nightelf/wisp/wisp.mdx|War3_Wisp.m3
+units/human/phoenix/phoenix.mdx|War3_Phoenix.m3
+abilities/spells/items/aifb/aifbspecialart.mdx|War3_AIfbSpecialArt.m3
+abilities/spells/items/aida/aidacaster.mdx|War3_AIdaCaster.m3
+abilities/spells/items/aiem/aiemtarget.mdx|War3_AIemTarget.m3
+abilities/spells/items/aiso/aisotarget.mdx|War3_AIsoTarget.m3
+abilities/spells/items/aihe/aihetarget.mdx|War3_AIheTarget.m3
+buildings/human/altarofkings/altarofkings.mdx|War3_AltarOfKings.m3
+buildings/other/barrowdens/barrowdens.mdx|War3_BarrowDens.m3
+abilities/spells/human/feedback/arcanetowerattack.mdx|War3_ArcaneTowerAttack.m3
+abilities/weapons/cannontowermissile/cannontowermissile.mdx|War3_CannonTowerMissile.m3
+buildings/other/arcaneobservatory/arcaneobservatory.mdx|War3_ArcaneObservatory.m3
+units/orc/heroblademaster/heroblademaster.mdx|War3_HeroBladeMaster.m3
+buildings/nightelf/ancientoflore/ancientoflore.mdx|War3_AncientOfLore.m3
+abilities/spells/other/tinkerrocket/tinkerrocketmissile.mdx|War3_TinkerRocketMissile.m3
+abilities/spells/undead/deathcoil/deathcoilmissile.mdx|War3_DeathCoilMissile.m3
+abilities/weapons/avengermissile/avengermissile.mdx|War3_AvengerMissile.m3
+abilities/spells/human/resurrect/resurrecttarget.mdx|War3_Resurrecttarget.m3
+units/undead/gargoyle/gargoyle.mdx|War3_Gargoyle.m3|seq=Death|seqm3=Death

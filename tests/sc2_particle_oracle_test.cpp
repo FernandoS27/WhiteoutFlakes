@@ -586,6 +586,22 @@ TEST_CASE("op3b: the sub-step split replays EmitParticles' event log",
         // The reciprocal lane is an rcpps estimate plus one Newton step, so it
         // carries the golden's own tolerance rather than an equality.
         CloseRel(out.spawnTimeStep, want["spawnTimeStep"].F(), 2e-6f, "spawnTimeStep");
+
+        // The position lane. This replay once stopped at the time lane, and the
+        // tick never made the `prevPos` write the golden records.
+        particle::Sc2SweepInputs sw;
+        sw.fullStep = args.fullStep;
+        sw.nSubSteps = args.nSubSteps;
+        sw.total = out.total;
+        sw.prevPos = {in["prevPosIn"][0].F(), in["prevPosIn"][1].F(), in["prevPosIn"][2].F()};
+        sw.worldPos = {in["worldPos"][0].F(), in["worldPos"][1].F(), in["worldPos"][2].F()};
+        const particle::Sc2Sweep sweep = particle::Sc2SpawnSweep(sw);
+        REQUIRE(sweep.prevPos.x == want["prevPos"][0].F());
+        REQUIRE(sweep.prevPos.y == want["prevPos"][1].F());
+        REQUIRE(sweep.prevPos.z == want["prevPos"][2].F());
+        CloseRel(sweep.spawnPosStep.x, want["spawnPosStep"][0].F(), 2e-6f, "spawnPosStep.x");
+        CloseRel(sweep.spawnPosStep.y, want["spawnPosStep"][1].F(), 2e-6f, "spawnPosStep.y");
+        CloseRel(sweep.spawnPosStep.z, want["spawnPosStep"][2].F(), 2e-6f, "spawnPosStep.z");
     }
 }
 
@@ -4218,6 +4234,67 @@ TEST_CASE("compose: a PARC copy emits from its own bone at its own size",
         // authored 1 is a half extent of 0.5, times 256, times 2.
         CHECK(e.size[0] == 256u);
     }
+}
+
+TEST_CASE("compose: a moving world-space emitter spawns every slot where the unit is",
+          "[sc2_particle][compose][parc]") {
+    // Reaper's jets: a world-space `PAR_` and its `PARC` copy on a walking unit,
+    // at a frame rate that sub-steps. Each batch is swept from `prevPos`, slot 0
+    // first; a `prevPos` stuck on the first frame put slot 0 half the walk behind.
+    constexpr f32 kDt = 0.007f;
+    constexpr f32 kSpeed = 3.0f;
+    constexpr f32 kCopyY = -0.6f;
+    Sc2Rig rig(4096, 300.0f, 10.0f);
+    rig.d.additionalFlags = static_cast<particle::ParticleAdditionalFlag>(8u);
+    rig.d.emit.worldSpace = true;
+    rig.d.emit.slotBones = {0, 1};
+    rig.rt.frame.slots.resize(1);
+    rig.rt.frame.slots[0].emissionRate = 300.0f;
+
+    const auto at = [](f32 x, f32 y) {
+        Matrix44f m = Matrix44f::identity();
+        m.data[3][0] = x;
+        m.data[3][1] = y;
+        return m;
+    };
+    f32 x = 0.0f;
+    const auto step = [&] {
+        x = kSpeed * kDt * static_cast<f32>(rig.rt.frameIndex + 1);
+        rig.f.worldPos = {x, 0.0f, 0.0f};
+        rig.f.worldMatrix = at(x, 0.0f);
+        rig.f.boneMatrix = rig.f.worldMatrix;
+        rig.rt.frame.slots[0].boneWorld = at(x, kCopyY);
+        rig.Step(kDt);
+    };
+    for (int i = 0; i < 600; ++i)
+        step();
+
+    // A sweep spans the frames since the last sub-step (three here), and the
+    // running target may overshoot it by a few steps; ten frames bounds both.
+    const f32 reach = 10.0f * kSpeed * kDt;
+    usize seen[2] = {0, 0};
+    for (int i = 0; i < 20; ++i) {
+        std::vector<u8> was(rig.rt.store.Capacity(), 0);
+        std::vector<i32> before;
+        rig.rt.store.list.Walk(before);
+        for (const i32 n : before)
+            was[static_cast<usize>(n)] = 1;
+        step();
+        std::vector<i32> after;
+        rig.rt.store.list.Walk(after);
+        for (const i32 n : after) {
+            if (was[static_cast<usize>(n)] != 0)
+                continue;
+            const auto& e = rig.rt.store.elements[static_cast<usize>(n)];
+            INFO("frame " << i << " element " << n << " at " << e.position.x << ", unit at " << x);
+            const bool copy = std::fabs(e.position.y - kCopyY) < 1e-4f;
+            REQUIRE((copy || std::fabs(e.position.y) < 1e-4f));
+            ++seen[copy ? 1 : 0];
+            CHECK(std::fabs(e.position.x - x) <= reach);
+        }
+    }
+    CHECK(seen[0] > 0u);
+    CHECK(seen[1] > 0u);
 }
 
 // ---------------------------------------------------------------------------

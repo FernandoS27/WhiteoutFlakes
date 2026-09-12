@@ -274,6 +274,10 @@ struct RenderModel {
     };
     std::vector<TexAnimPaletteEntry> texAnimPalette;
 
+    /// @brief Per-frame `FrameState::layerMapAlphas`, dense by layer id. A
+    ///        negative entry is a layer no track drove this frame.
+    std::vector<f32> layerMapAlphaPalette;
+
     /// @brief Per-frame `FrameState::SurfaceState`, indexed by surface.
     ///
     /// Kept here rather than written back into `surfaceTable` because the table

@@ -59,12 +59,6 @@ Sc2Overlay Overlay(const Sc2EmitterDesc& d, const Sc2Frame& s, usize group) {
     return o;
 }
 
-Vector3f Sub(const Vector3f& a, const Vector3f& b) {
-    return {a.x - b.x, a.y - b.y, a.z - b.z};
-}
-
-Vector3f Scale(const Vector3f& v, f32 k) { return {v.x * k, v.y * k, v.z * k}; }
-
 /// `M3_ComputeSkinnedRegionPositions` for one vertex, in model space: the rest
 /// position through each influence's `invBind · pose`, weighted, stopping at
 /// the first zero weight as retail's loop does and never renormalised. OP13
@@ -225,15 +219,18 @@ Sc2TickResult TickOnce(Sc2Runtime& rt, const Sc2EmitterDesc& d, const Sc2TickFra
     out.events = events.size();
 
     // The batch is laid along the frame: `spawnTimeStep` from the schedule,
-    // `spawnPosStep` from the same division. The full-step path leaves the
-    // position step at zero — it has no sweep to distribute.
-    Vector3f posStep{0, 0, 0};
-    if (!out.plan.fullStep && sched.total != 0) {
-        // The same reciprocal the schedule used for the time lane: retail
-        // builds `1 / total` once and multiplies all four lanes by it.
-        const f32 inv = Sc2RcpNewton(static_cast<f32>(sched.total));
-        posStep = Scale(Sub(f.worldPos, startPos), inv);
-    }
+    // `spawnPosStep` from the sweep, which also moves `prevPos` on for the next
+    // frame. The clock touched `prevPos` only on a full step, so on the
+    // sub-stepped path it is still `startPos`.
+    Sc2SweepInputs swi;
+    swi.fullStep = out.plan.fullStep;
+    swi.nSubSteps = out.plan.nSteps;
+    swi.total = sched.total;
+    swi.prevPos = rt.clock.prevPos;
+    swi.worldPos = f.worldPos;
+    const Sc2Sweep sweep = Sc2SpawnSweep(swi);
+    const Vector3f posStep = sweep.spawnPosStep;
+    rt.clock.prevPos = sweep.prevPos;
 
     // `Sc2InitSpawned` advances these per element. The gate's fixture left
     // `curPos` at zero, so where the sweep BEGINS is a composition choice and

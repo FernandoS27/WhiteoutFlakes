@@ -1016,7 +1016,8 @@ bool ViewerApp::CanExportM3() const {
 
 bool ViewerApp::ExportM3(const std::filesystem::path& outPath,
                          ::whiteout::models::wem::ProfileId profile, bool exportTextures,
-                         bool exactPasses, bool sharpenTeamKey, bool reuseWar3ModTextures) {
+                         bool exactPasses, bool sharpenTeamKey, bool reuseWar3ModTextures,
+                         bool crossEffects, bool standardRefs) {
     model::Actor* actor = FocusActorPtr();
     auto* source = actor ? dynamic_cast<IModelSource*>(actor->animation.Source().get()) : nullptr;
     if (!source) {
@@ -1036,6 +1037,8 @@ bool ViewerApp::ExportM3(const std::filesystem::path& outPath,
     request.wc3.tileset = GetCurrentTileset();
     request.wc3.exactPasses = exactPasses;
     request.wc3.sharpenTeamKey = sharpenTeamKey;
+    request.wc3.effects = crossEffects;
+    request.wc3.standardRefs = standardRefs;
     request.reuseWar3ModTextures = reuseWar3ModTextures;
     if (reuseWar3ModTextures) {
         // The StarCraft II root Settings names, else the one the scan found.
@@ -1059,6 +1062,13 @@ bool ViewerApp::ExportM3(const std::filesystem::path& outPath,
     }
     std::printf("[viewer] Saved StarCraft II model (%s, %gx scale): %s\n", report.formatId.c_str(),
                 static_cast<double>(report.scale), io::PathToUtf8(outPath).c_str());
+    if (report.particleRecords != 0 || report.ribbonRecords != 0 || report.cameraRecords != 0 ||
+        report.hitTests != 0) {
+        std::printf("[viewer] Effects: %d PAR_ (%d model particles), %d RIB_, %d CAM_ aimed, "
+                    "%d hit tests, %d spawned models written\n",
+                    report.particleRecords, report.modelParticles, report.ribbonRecords,
+                    report.cameraRecords, report.hitTests, report.spawnedModels);
+    }
     if (exportTextures) {
         std::printf("[viewer] Textures: %d exported, %d skipped, %d failed, %d unused, "
                     "%d in War3 (Mod)\n",

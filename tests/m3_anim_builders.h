@@ -67,10 +67,10 @@ inline m3::AnimBlock<T> Block(std::vector<i32> times, std::vector<T> keys) {
     return b;
 }
 
-/// @brief An animated reference. Bit 4 of @p flags steps; nothing else does —
-///        @p interpType is dead at sample time (the loader overwrites it with a
-///        track-table row), so it is here only to keep fixtures shaped like the
-///        file.
+/// @brief An animated reference. Bit 4 of @p flags steps, and so does a zero
+///        @p interpType on a ref whose flags claim the file's own tracks (bit
+///        2) — the load fixup folds the row into bit 4 and then overwrites it,
+///        which is the only moment it means anything.
 template <typename T>
 inline m3::AnimRef<T> Ref(u32 animId, T init, u16 interpType = 1, u16 flags = 1) {
     m3::AnimRef<T> r;

@@ -216,7 +216,19 @@ T M3ModelAdapter::SampleRef(const ::whiteout::m3::AnimRef<T>& ref,
     // extra test stepped every bone of every hero model and left the shipped
     // step bit — set on 330 refs in 291027 — doing nothing it was not already
     // doing.
-    const bool interpolate = (ref.flags & 0x10u) == 0;
+    //
+    // The row does decide one thing, once, on the way in: each chunk's load
+    // fixup runs `if (interpType == 0) flags |= 0x10` before overwriting it
+    // (SC2Editor: BONE `sub_141EAB2B0`, LAYR `sub_141EABA80`), and our own
+    // exporter states a stepped track exactly that way, so Zhao Yun's DontInterp
+    // flame flipbook slid between atlas cells here. The fold is taken only
+    // where it cannot reach the models above: the ref says its own file's
+    // tracks drive it (bit 2) and the contribution is one of that file's
+    // sequences. No moving shipped track states a zero row (0 over 50,068
+    // `.m3` and 1,110 `.m3a` files).
+    const bool stepBit = (ref.flags & 0x10u) != 0;
+    const bool rowSteps = ref.interpType == 0 && (ref.flags & 0x4u) != 0;
+    const std::size_t ownSequences = model_.sequences.size();
 
     struct Contribution {
         T value;
@@ -253,6 +265,7 @@ T M3ModelAdapter::SampleRef(const ::whiteout::m3::AnimRef<T>& ref,
 
         T value;
         if (blk && !blk->keys.empty()) {
+            const bool interpolate = !stepBit && !(rowSteps && l.sequence < ownSequences);
             const M3KeySpan sp = M3LocateKey(blk->timestamps, l.timeMs, l.loop, interpolate);
             if (!sp.valid) {
                 // A bound but unusable track spends its weight and contributes
@@ -1709,6 +1722,7 @@ renderer::model::FrameState M3ModelAdapter::Evaluate(const PoseRequest& req) con
 
     EvaluateGeosetVisibility(layers, visible, fs);
     EvaluateMaterialUvTransforms(layers, fs);
+    EvaluateMaterialMapAlphas(layers, fs);
     EvaluateLights(layers, visible, req.world, fs);
     EvaluateRibbons(layers, visible, req.world, fs);
     EvaluateParticles(layers, visible, req.world, fs);
@@ -1764,6 +1778,26 @@ void M3ModelAdapter::EvaluateMaterialUvTransforms(std::span<const M3Layer> layer
                                  M3NeutralTiling(SampleRef(layer->uvTiling, layers), tilingDriven),
                                  out.row0, out.row1);
             fs.texAnimMatrices.push_back(out);
+        }
+    }
+}
+
+void M3ModelAdapter::EvaluateMaterialMapAlphas(std::span<const M3Layer> layers,
+                                               renderer::model::FrameState& fs) const {
+    for (std::size_t m = 0; m < model_.standardMaterials.size(); ++m) {
+        const auto& mat = model_.standardMaterials[m];
+        for (u32 slot = 0; slot < static_cast<u32>(M3LayerSlot::Count); ++slot) {
+            const ::whiteout::m3::TextureLayer* layer =
+                M3LayerForSlot(mat, static_cast<M3LayerSlot>(slot));
+            // Driven means a container names the id -- every shipped AnimRef
+            // carries one, driven or not. A geoset fade converted from
+            // Warcraft III is the case that needs it: alpha 0 through every
+            // Stand on a carrier whose rest is 1.
+            if (!layer || tables_.RowOf(layer->mapAlpha.animId) < 0)
+                continue;
+            fs.layerMapAlphas.push_back(
+                {M3UvTransformId(static_cast<u32>(m), static_cast<M3LayerSlot>(slot)),
+                 std::clamp(SampleRef(layer->mapAlpha, layers), 0.0f, 1.0f)});
         }
     }
 }
@@ -2249,6 +2283,10 @@ void M3ModelAdapter::EvaluateParticles(std::span<const M3Layer> layers,
                                                                   pushedScale[i]) *
                            world;
         }
+        // Where the emitter is: the spawn sweep starts a world-space particle
+        // there, and without it every one is born at the world origin.
+        st.worldPosition = {st.transform.data[3][0], st.transform.data[3][1],
+                            st.transform.data[3][2]};
         st.unitScale = (scale > 0.0f) ? scale : 1.0f;
         // The WC3-family scalars stay at their defaults — the SC2 stages read
         // the block below instead. `visibility` carries the bone-visibility

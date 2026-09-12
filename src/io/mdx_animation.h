@@ -86,6 +86,17 @@ private:
     std::vector<i32> boneIdxToNodeIdx_;
 };
 
+/// @brief One node's Warcraft III billboard, as the hierarchy walk applies it.
+///
+/// @p stack is the node's model-space matrix before billboarding (rows 0..2 its
+/// axes, row 3 its pivot), @p flags its `mdx::Node::NodeFlag` bits, @p camPos
+/// the eye in model space and @p parentPivot the parent's already-billboarded
+/// pivot (the camera-anchored slide measures from it). Exposed for the
+/// Warcraft III -> StarCraft II equivalence harness, which runs this and the
+/// `.m3` solver on one bone.
+Matrix44f MdxBillboardNodeMatrix(const Matrix44f& stack, u32 flags, const Vector3f& camPos,
+                                 const Vector3f& parentPivot);
+
 Matrix44f BindPose3x4ToMatrix44f(const std::array<whiteout::f32, 12>& bp);
 Matrix44f Vec3QuatScaleToMatrix44f(const whiteout::Vector3f& t, const whiteout::Quaternion& r,
                                    const whiteout::Vector3f& s, const whiteout::Vector3f& pivot);

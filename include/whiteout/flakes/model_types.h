@@ -1277,6 +1277,18 @@ struct FrameState {
     };
     std::vector<TexAnimMatrix> texAnimMatrices;
 
+    /// @brief One `.m3` layer's sampled `mapAlpha`, keyed by the id its UV
+    ///        transform uses (`io::M3UvTransformId`).
+    ///
+    /// Emitted only for a layer a track drives; any other layer keeps the rest
+    /// its surface table resolved at load. The geoset fades of a converted
+    /// Warcraft III model ride exactly this channel.
+    struct LayerMapAlpha {
+        i32 layerId;
+        f32 alpha;
+    };
+    std::vector<LayerMapAlpha> layerMapAlphas;
+
     /// @brief Per-(material, layer) alpha override sampled from KMTA.
     struct LayerAlphaState {
         i32 materialId;

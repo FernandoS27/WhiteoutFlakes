@@ -44,6 +44,7 @@
 #include <whiteout/models/wem/document.h>
 
 #include <map>
+#include <string>
 #include <vector>
 
 namespace whiteout::flakes {
@@ -71,6 +72,17 @@ struct Wc3ToSc2Options {
     /// tell a covering base from a partial one and to drop a team plate no
     /// texel reveals. Costs one decode per texture.
     bool classifyTextures = true;
+    /// Rename attachment points to StarCraft II's `Ref_` names (§4.1).
+    bool attachmentNames = true;
+    /// Cross the particle and ribbon emitters into `PAR_` / `RIB_`
+    /// (WC3_TO_SC2_COMPLETION_PLAN.md C5, C7). Off writes the model's nodes
+    /// and nothing they emit.
+    bool effects = true;
+    /// Add the references StarCraft II looks for and a Warcraft III model does
+    /// not name -- `Ref_Origin`, `Ref_Overhead`, `Ref_Center`, `Ref_Target` --
+    /// and the `Vol_Target` targeting volume (WC3_TO_SC2_COMPLETION_PLAN.md
+    /// C3.2-C3.3).
+    bool standardRefs = true;
 };
 
 /// What the pass produced beyond the document edits.
@@ -84,6 +96,11 @@ struct Wc3ToSc2Result {
     /// (0 unknown, 1 opaque, 2 keyed, 3 gradient); empty when none decoded.
     std::vector<u8> textureAlphaClasses;
     int texturesSharpened = 0; ///< Keyed passes whose alpha was baked binary.
+    /// The `Vol_Target` node the standard set added, and the scale its bone
+    /// takes (StarCraft II axis order) -- a rest scale no retarget keeps, so
+    /// the export states it on the bone. Invalid when none was added.
+    u32 volTargetNode = ~0u;
+    Vector3f volTargetScale{1.0f, 1.0f, 1.0f};
 };
 
 /// @brief Restate a Warcraft III document's conventions for a StarCraft II

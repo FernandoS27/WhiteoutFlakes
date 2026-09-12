@@ -141,8 +141,9 @@ private:
         Vector4f teamDiffuse;
         Vector4f teamEmissive;
         Vector4f layerTint[kLayerCount];
-        Vector4f layerAdd[kLayerCount]; // .x = rgbAdd (an HLSL cbuffer array
-                                        // strides by 16 whatever the element)
+        Vector4f layerAdd[kLayerCount]; // .x = rgbAdd, .z = mapAlpha (an HLSL
+                                        // cbuffer array strides by 16 whatever
+                                        // the element)
         u32 layerCtl[kLayerCount][4];   // x uvSet | wrap | invert | clamp,
                                         // y channels, z mode,
                                         // w blendOp / diffuse team mode

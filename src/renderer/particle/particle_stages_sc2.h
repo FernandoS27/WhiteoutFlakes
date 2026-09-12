@@ -66,8 +66,9 @@ struct Sc2EmitClock {
     i32 lastFrameIndex = -1;
     /// Wall clock at the last tick — the pre-roll gap is measured from it.
     i32 lastTimeMs = 0;
-    /// Refreshed only on the FULL-step path, so a sub-stepping emitter's
-    /// displacement is measured from wherever the last full step left it.
+    /// Where the last sweep ended: `Tick` refreshes it on the full step,
+    /// `EmitParticles` on every sub-stepped frame that runs its loop
+    /// (@ref Sc2SpawnSweep).
     Vector3f prevPos{0, 0, 0};
     /// `CParticleSystem+0x120`, the derived state word (`sc2::SystemStateFlag`).
     /// Carried here because the tick clears bit 31 on the restart check.
@@ -374,6 +375,31 @@ struct Sc2Schedule {
 /// They differ in the last bits and the golden carries both.
 Sc2Schedule Sc2SpawnSchedule(const Sc2ScheduleInputs& in, std::span<f32> carry,
                              std::span<u32> targets, std::vector<Sc2EmitEvent>& events);
+
+struct Sc2SweepInputs {
+    bool fullStep = false;
+    u32 nSubSteps = 0;
+    u32 total = 0; ///< @ref Sc2Schedule::total
+    /// The clock's `prevPos` as `Sc2TickClock` left it this frame.
+    Vector3f prevPos{0, 0, 0};
+    Vector3f worldPos{0, 0, 0};
+};
+
+struct Sc2Sweep {
+    Vector3f spawnPosStep{0, 0, 0}; ///< zero on the full step
+    Vector3f prevPos{0, 0, 0};      ///< the clock's `prevPos` after the call
+};
+
+/// `EmitParticles`' position lane — RE §16.7, gate OP3b.
+///
+/// The sub-stepped arm measures the step from `prevPos` and THEN moves
+/// `prevPos` to `worldPos`, busy or idle, so the next frame's sweep starts
+/// where this one ended. Without that write `prevPos` stayed at the first
+/// frame's position and every later sweep stretched back to it: on a moving
+/// emitter each slot but the last spawned an ever-growing distance behind.
+/// `nSubSteps == 0` leaves it alone (OP3b's vectors hold that arm at the
+/// origin, so they do not discriminate).
+Sc2Sweep Sc2SpawnSweep(const Sc2SweepInputs& in);
 
 /// `rcpps` plus the one Newton step the reciprocal lane above goes through.
 f32 Sc2RcpNewton(f32 x);

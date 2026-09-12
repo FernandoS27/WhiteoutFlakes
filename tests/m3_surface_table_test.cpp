@@ -325,6 +325,39 @@ TEST_CASE("m3_surface_table: solid-colour layers and the unauthored sentinels") 
     CHECK_THAT(diffuse.tint.w, Catch::Matchers::WithinAbs(1.0f, 1e-5f));
 }
 
+TEST_CASE("m3_surface_table: a solid-colour mask keeps its map alpha rest out of the tint") {
+    m3::Model model;
+    m3::StandardMaterial mat;
+    mat.hdrEmissiveMultiplier = 1.0f;
+    mat.hdrSpecularMultiplier = 1.0f;
+    mat.diffuseLayer = TexLayer("d.dds");
+    // The fade carrier: its rest is the map alpha a frame with no sample
+    // draws with, and it reaches the shader beside the tint, not inside it.
+    m3::TextureLayer carrier;
+    carrier.flags = m3::TextureLayerFlag::Color;
+    carrier.color.initValue = {255, 255, 255, 255};
+    carrier.rgbMultiply.initValue = 1.0f;
+    carrier.mapAlpha.initValue = 0.25f;
+    mat.alphaLayer1 = carrier;
+    // A textured mask's rest is not read.
+    mat.alphaLayer2 = TexLayer("mask.dds");
+    mat.alphaLayer2->mapAlpha.initValue = 0.5f;
+    model.standardMaterials = {mat};
+    model.materialMaps = {Matm(m3::MaterialType::Standard, 0)};
+    model.divisions = {Division(0)};
+
+    const auto table = BuildM3SurfaceTable(model, kOneRegion, kMatm0);
+    const M3Surface* s = table->Surface(0);
+    REQUIRE(s != nullptr);
+    const auto& mask = s->layers[static_cast<u32>(wio::M3LayerSlot::AlphaMask)];
+    CHECK(mask.mode == 2);
+    CHECK_THAT(mask.tint.w, Catch::Matchers::WithinAbs(1.0f, 1e-6f));
+    CHECK_THAT(mask.mapAlpha, Catch::Matchers::WithinAbs(0.25f, 1e-6f));
+    const auto& textured = s->layers[static_cast<u32>(wio::M3LayerSlot::AlphaMask2)];
+    CHECK(textured.mode == 1);
+    CHECK(textured.mapAlpha == 1.0f);
+}
+
 TEST_CASE("m3_surface_table: every composite section gets its own surface") {
     m3::Model model;
     m3::StandardMaterial glow;

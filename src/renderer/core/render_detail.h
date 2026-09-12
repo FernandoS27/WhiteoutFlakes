@@ -32,6 +32,7 @@ struct RenderableView {
     assets::TextureAssetManager::ModelScope* textures = nullptr;
     const animation::SkinningSystem* skinning = nullptr;
     const std::vector<model::RenderModel::TexAnimPaletteEntry>* texAnimPalette = nullptr;
+    const std::vector<f32>* layerMapAlphaPalette = nullptr;
     const std::vector<model::RenderModel::SurfaceAnim>* surfaceAnim = nullptr;
     Matrix44f worldTransform = Matrix44f::identity();
     // Game units per renderer unit, from Actor::worldScale — 1 for Warcraft III

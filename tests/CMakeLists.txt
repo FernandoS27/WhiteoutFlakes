@@ -108,6 +108,12 @@ wdx_add_test(export_texture_set_test export_texture_set_test.cpp
              "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/export_texture_set.cpp")
 target_include_directories(export_texture_set_test PRIVATE
                            "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer")
+# Warcraft III attachment names in StarCraft II's vocabulary: the §4.1 table of
+# WC3_TO_SC2_COMPLETION_PLAN.md, one pure function.
+wdx_add_test(wc3_attachment_names_test wc3_attachment_names_test.cpp
+             "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer/wc3_attachment_names.cpp")
+target_include_directories(wc3_attachment_names_test PRIVATE
+                           "${WhiteoutFlakes_SOURCE_DIR}/tools/basic_viewer")
 # Only when the format is compiled in — the adapter it exercises does not
 # exist otherwise. The test itself skips without a configured WoW install.
 if(WDX_ENABLE_M2)
@@ -200,6 +206,10 @@ if(WDX_ENABLE_M3)
     # surface block, and the registration sweep over BOTH corpora (which is
     # what catches a PARC copy list read as an emitter list).
     wdx_add_test(sc2_particle_sim_test sc2_particle_sim_test.cpp)
+    # Warcraft III -> StarCraft II equivalence (WC3_TO_SC2_COMPLETION_PLAN.md §3):
+    # both renderers' kernels on one input, the Warcraft III result restated
+    # through the export's basis change. Device-free.
+    wdx_add_test(wc3_sc2_equivalence_test wc3_sc2_equivalence_test.cpp)
 endif()
 if(WDX_ENABLE_D3)
     # Gates D3-G1 (geometry in range) and D3-G2 (the two bind poses, and the

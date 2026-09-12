@@ -89,6 +89,19 @@ bool M3BlendWritesDepth(u8 mode) {
     return static_cast<BlendMode>(mode) == BlendMode::Opaque;
 }
 
+// The map alpha a layer draws with this frame: the sample when a track drives
+// it (io::M3UvTransformId keys this palette as it does the UV one), its
+// surface-table rest otherwise.
+f32 LayerMapAlpha(const M3Layer& l, const std::vector<f32>* palette) {
+    if (l.uvTransformId >= 0 && palette &&
+        static_cast<usize>(l.uvTransformId) < palette->size()) {
+        const f32 sampled = (*palette)[static_cast<usize>(l.uvTransformId)];
+        if (sampled >= 0.0f)
+            return sampled;
+    }
+    return l.mapAlpha;
+}
+
 // ---- The recovered SC2 light rigs ------------------------------------------
 //
 // mods/core.sc2mod/base.sc2data/gamedata/lightdata.xml. InGame is CLight
@@ -591,7 +604,8 @@ void M3StandardShading::Draw(const render_detail::DrawItem& item, const core::Pa
                 item.view->textures)
                 addY = static_cast<f32>(
                     std::max(0, item.view->textures->MipLevels(l.textureId) - 1));
-            c->layerAdd[i] = {l.add, addY, 0.0f, 0.0f};
+            c->layerAdd[i] = {l.add, addY, LayerMapAlpha(l, item.view->layerMapAlphaPalette),
+                              0.0f};
             // Low nibble = UV set; bits 4-5 = which of the four wrap-variant
             // samplers this layer reads through; bit 6 invert, bit 7 clamp.
             c->layerCtl[i][0] = l.uvSource |
@@ -836,7 +850,8 @@ void M3StandardShading::DrawWorldVertices(model::Actor& actor, i32 surfaceIndex,
                 actor.render.textures)
                 addY = static_cast<f32>(
                     std::max(0, actor.render.textures->MipLevels(l.textureId) - 1));
-            c->layerAdd[i] = {l.add, addY, 0.0f, 0.0f};
+            c->layerAdd[i] = {l.add, addY, LayerMapAlpha(l, &actor.render.layerMapAlphaPalette),
+                              0.0f};
             c->layerCtl[i][0] = l.uvSource |
                                 ((l.wrapFlags & assets::kSamplerWrapBitsMask) << 4) |
                                 (l.invert ? 0x40u : 0u) | (l.clampColor ? 0x80u : 0u);

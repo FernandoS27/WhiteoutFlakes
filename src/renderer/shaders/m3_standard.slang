@@ -122,6 +122,7 @@ struct M3DrawData
     // .y on the environment slot = the blur's mip range (the cube's last
     // level), read when params0.w bit 16 is set; on the specular slot = the
     // extra multiplier folded into its tint, which the team lerp needs alone.
+    // .z = mapAlpha, the frame's sample or the layer's rest (one when neither).
     float4 layerAdd[kM3LayerCount];
     // .x = uv set (0/1) in the low nibble, sampler wrap variant (0..3, the
     //      layer's UVWrapX/Y bits) in bits 4-5, ColorInvert in bit 6 and
@@ -332,6 +333,9 @@ float4 M3LayerValue(uint slot, float4 texel, float3 n, float3 toEye)
     float4 v = SelectChannels(texel, ctl.y);
     if (ctl.z == 2u)
         v = float4(1.0, 1.0, 1.0, 1.0);
+    // psmateriallayer.fx: `cResult.a *= p_vMultiplyAddAlphaTrans.z` right after
+    // the channel select, so the ops below and the alpha masks all read it.
+    v.a *= draw.layerAdd[slot].z;
     if (ctl.w == 1u && ctl.y != 0u)
     {
         let mask = saturate(pow(max(texel.a, 0.0), pass.teamParams.x));

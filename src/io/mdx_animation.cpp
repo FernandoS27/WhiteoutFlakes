@@ -531,6 +531,11 @@ Matrix44f BillboardStack(const Matrix44f& M, u32 flags, const Vector3f& camPos,
 
 } // namespace
 
+Matrix44f MdxBillboardNodeMatrix(const Matrix44f& stack, u32 flags, const Vector3f& camPos,
+                                 const Vector3f& parentPivot) {
+    return BillboardStack(stack, flags, camPos, parentPivot);
+}
+
 void MdxHierarchy::Evaluate(i32 timeMs, i32 seqStart, i32 seqEnd,
                             const std::vector<u32>& globalSequences,
                             std::vector<Matrix44f>& boneWorldMatrices,

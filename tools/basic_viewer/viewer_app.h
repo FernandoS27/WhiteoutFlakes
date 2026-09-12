@@ -535,7 +535,8 @@ public:
     // (Mod)'s copy of a texture instead of writing one.
     bool ExportM3(const std::filesystem::path& outPath, ::whiteout::models::wem::ProfileId profile,
                   bool exportTextures, bool exactPasses = false, bool sharpenTeamKey = false,
-                  bool reuseWar3ModTextures = false);
+                  bool reuseWar3ModTextures = false, bool crossEffects = true,
+                  bool standardRefs = true);
 
     // Whether the active document can be written as glTF through WEM — the
     // widest of the export questions: glTF export takes any carried profile

@@ -323,3 +323,74 @@ TEST_CASE("A model with no lights emits none", "[m3chan]") {
     M3ModelAdapter a(mb.Build());
     REQUIRE(EvalAt(a, {}).lights.empty());
 }
+
+// A converted Warcraft III geoset fade is a solid-colour alpha mask whose map
+// alpha rests at 1 and is keyed to 0 in every sequence that hides the geoset.
+// Sampling only the rest drew every hidden slash of a hero across its Stand.
+TEST_CASE("A driven layer map alpha is sampled, a still one is not", "[m3chan]") {
+    constexpr u32 kFadeId = 7;
+    constexpr u32 kStillId = 9; // named by no container
+
+    m3fix::ModelBuilder mb;
+    mb.StaticBone("root", -1);
+    m3fix::StcBuilder s("Stand_full");
+    s.Float(kFadeId, m3fix::Block<f32>({0, 1000}, {1.0f, 0.0f}));
+    mb.Sequence("Stand", 0, 1000, {mb.AddStc(s.Build())});
+    m3::Model model = mb.Build();
+
+    m3::TextureLayer fade;
+    fade.flags = m3::TextureLayerFlag::Color;
+    fade.color.initValue = {255, 255, 255, 255};
+    fade.mapAlpha = m3fix::Ref<f32>(kFadeId, 1.0f);
+    m3::TextureLayer still = fade;
+    still.mapAlpha = m3fix::Ref<f32>(kStillId, 0.5f);
+    m3::StandardMaterial mat;
+    mat.alphaLayer1 = fade;
+    mat.alphaLayer2 = still;
+    model.standardMaterials = {mat};
+
+    M3ModelAdapter a(std::move(model));
+    const auto fs = EvalAt(a, {Clip(0, 500)});
+    REQUIRE(fs.layerMapAlphas.size() == 1);
+    CHECK(fs.layerMapAlphas[0].layerId == M3UvTransformId(0, M3LayerSlot::AlphaMask));
+    CHECK(fs.layerMapAlphas[0].alpha == Approx(0.5f));
+
+    // Nothing playing: the driven layer holds its rest, sampled all the same.
+    const auto rest = EvalAt(a, {});
+    REQUIRE(rest.layerMapAlphas.size() == 1);
+    CHECK(rest.layerMapAlphas[0].alpha == Approx(1.0f));
+}
+
+TEST_CASE("A track the file states as stepped holds its key", "[m3chan]") {
+    // StarCraft II's loader folds a zero `interpType` into the step flag, and
+    // our exporter spells a Warcraft III DontInterp track exactly that way. A
+    // model with no sequences of its own zeroes the row for another reason —
+    // the exporter had no track to number — and must keep interpolating, so the
+    // fold is taken only on a ref that says its own file's tracks drive it.
+    const auto alphaAt = [](u16 interpType, u16 flags) {
+        constexpr u32 kFadeId = 7;
+        m3fix::ModelBuilder mb;
+        mb.StaticBone("root", -1);
+        m3fix::StcBuilder s("Stand_full");
+        s.Float(kFadeId, m3fix::Block<f32>({0, 1000}, {1.0f, 0.0f}));
+        mb.Sequence("Stand", 0, 1000, {mb.AddStc(s.Build())});
+        m3::Model model = mb.Build();
+
+        m3::TextureLayer fade;
+        fade.flags = m3::TextureLayerFlag::Color;
+        fade.color.initValue = {255, 255, 255, 255};
+        fade.mapAlpha = m3fix::Ref<f32>(kFadeId, 1.0f, interpType, flags);
+        m3::StandardMaterial mat;
+        mat.alphaLayer1 = fade;
+        model.standardMaterials = {mat};
+
+        M3ModelAdapter a(std::move(model));
+        const auto fs = EvalAt(a, {Clip(0, 500)});
+        REQUIRE(fs.layerMapAlphas.size() == 1);
+        return fs.layerMapAlphas[0].alpha;
+    };
+    CHECK(alphaAt(0, 0x6) == Approx(1.0f));  // stepped: still the first key
+    CHECK(alphaAt(1, 0x6) == Approx(0.5f));  // a stated row interpolates
+    CHECK(alphaAt(0, 0x2) == Approx(0.5f));  // the `.m3a`-driven spelling
+    CHECK(alphaAt(0x10, 0x16) == Approx(1.0f)); // the step flag itself
+}
