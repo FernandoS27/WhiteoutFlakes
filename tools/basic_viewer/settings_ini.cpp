@@ -108,6 +108,15 @@ void LoadSettingsIni(RenderService& service, bool& loopNonLoopingPolicy, bool& f
         if (ParseBool(*s, v))
             forceHd = v;
     }
+    // Warcraft III's art tier, spelled the way the game's own launch flag
+    // does: 0 Classic, 1 Reforged, 2 Definitive. Absent or out of range means
+    // "follow the render mode", which is both the default and what every
+    // settings file written before 3.0.0 says by omission.
+    if (auto* s = ini.Get(KeyOf("Wc3ArtTier")); s && !s->empty()) {
+        const int v = std::atoi(s->c_str());
+        if (v >= 0 && v <= static_cast<int>(Wc3ArtTier::Definitive))
+            service.Settings().SetArtTier(static_cast<Wc3ArtTier>(v));
+    }
 
     {
         DisplayFlags df = service.Settings().GetDisplayFlags();
@@ -301,6 +310,13 @@ void SaveSettingsIni(const RenderService& service, bool loopNonLoopingPolicy, bo
     ini.Set(KeyOf("SoundVolume"), FloatToString(service.Sound().GetVolume()));
     ini.Set(KeyOf("LoopNonLooping"), loopNonLoopingPolicy ? "1" : "0");
     ini.Set(KeyOf("ReforgedGraphics"), forceHd ? "1" : "0");
+    // Written only when pinned: an absent key is the honest spelling of
+    // "follow the render mode", and writing a number for it would turn the
+    // default into a choice nobody made.
+    if (const auto tier = service.Settings().GetArtTier())
+        ini.Set(KeyOf("Wc3ArtTier"), std::to_string(static_cast<int>(*tier)));
+    else
+        ini.Remove(KeyOf("Wc3ArtTier"));
     ini.Set(KeyOf("Language"), languageCode);
     ini.Set(KeyOf("GraphicsDebug"), service.Settings().GraphicsDebug() ? "1" : "0");
 

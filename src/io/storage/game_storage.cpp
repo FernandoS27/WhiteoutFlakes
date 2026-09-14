@@ -75,8 +75,8 @@ std::vector<std::string> GameStorage::CascRoots() const {
 
 // ---- Builder ---------------------------------------------------------------
 
-StorageBuilder& StorageBuilder::ModChain(const std::atomic<bool>* hdMode) {
-    hdMode_ = hdMode;
+StorageBuilder& StorageBuilder::ModChain(const std::atomic<Wc3ArtTier>* artTier) {
+    artTier_ = artTier;
     return *this;
 }
 
@@ -152,7 +152,7 @@ std::unique_ptr<GameStorage> StorageBuilder::Build(ProgressMonitor* progress) {
         if (m.Cancelled())
             break;
         CascSourceOptions opts;
-        opts.hdMode = hdMode_;
+        opts.artTier = artTier_;
         opts.fileIds = fileIds_;
         opts.frameSuffixFallback = frameSuffixFallback_;
         opts.assetPrefixFallback = assetPrefixes_;

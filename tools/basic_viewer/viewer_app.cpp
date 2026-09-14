@@ -1,6 +1,7 @@
 #include "viewer_app.h"
 
 #include "io/mdx_model_adapter.h"
+#include "io/storage/storage_paths.h"
 #include "io/wem/wem_export.h"
 #include "io/wem/wem_import.h"
 #include "io/wem/wem_profiles.h"
@@ -2558,12 +2559,19 @@ bool ViewerApp::OpenStorageDocumentNow(const std::string& archivePath, bool effe
     return OpenDocumentScene(provider, apath.stem().string(), [&] {
         service_.Scene().SetPE1BasePath(apath.parent_path());
 
-        // HD-ness from the archive location (there's no filesystem MDX to
-        // probe). Arm the scene's mode before spawn so the parse resolves
-        // through the right overlay — ApplyRenderMode routes to the scene,
-        // which forwards the overlay to its provider itself.
-        const bool hd = archivePath.find("_hd.w3mod") != std::string::npos;
-        ApplyRenderMode(hd ? RenderMode::HD : RenderMode::SD);
+        // Tier from the archive location, which is the one thing a storage
+        // path states outright (there's no filesystem MDX to probe yet). Arm
+        // the scene before the spawn so the parse itself resolves through the
+        // right overlay — get this wrong and the model reads, then hunts its
+        // textures in the wrong tier and finds none.
+        //
+        // The tier decides the render mode too, but only as a starting guess:
+        // Definitive and Reforged models are both HD, and the loader trues the
+        // mode up from the layers it actually parsed.
+        const Wc3ArtTier tier =
+            io::Wc3TierOfPath(archivePath).value_or(Wc3ArtTier::Classic);
+        ApplyRenderMode(tier == Wc3ArtTier::Classic ? RenderMode::SD : RenderMode::HD);
+        service_.Scene().SetArtTier(tier);
 
         service_.Loader().RequestClearAll();
         currentModelPath_ = apath;
@@ -2828,6 +2836,27 @@ void ViewerApp::SetForceHd(bool on) {
     if (path.empty() || IsEffectPath(path) || IsForeignModelPath(path))
         return;
     LoadModelIntoActiveScene(path);
+}
+
+void ViewerApp::SetArtTier(std::optional<Wc3ArtTier> tier) {
+    if (service_.Settings().GetArtTier() == tier)
+        return;
+    service_.Settings().SetArtTier(tier);
+    // The scene may have pinned its own tier when a storage browse opened this
+    // model; clear that so the new global actually takes effect for it.
+    service_.Scene().ClearArtTier();
+    if (auto* p = service_.Scene().ActiveContentProviderIfAny())
+        p->SetArtTier(service_.EffectiveArtTier());
+    // Reload so every dependent read re-resolves under the new overlay. Same
+    // reasoning as SetForceHd, and the same exemptions: an effect is not an
+    // MDX to re-probe, and a foreign model reads through its own profile.
+    const std::filesystem::path path = currentModelPath_;
+    if (path.empty() || IsForeignModelPath(path))
+        return;
+    if (IsEffectPath(path))
+        LoadEffect(path);
+    else
+        LoadModelIntoActiveScene(path);
 }
 
 void ViewerApp::ApplyRenderMode(RenderMode wanted) {

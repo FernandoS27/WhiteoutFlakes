@@ -122,7 +122,7 @@ struct FileContentProvider::Impl {
     // HD mod-overlay precedence flag, read by the Warcraft III CASC source on
     // every path it builds. Atomic so a render-thread setter doesn't race the
     // storage workers, and a member so the source can hold a pointer to it.
-    std::atomic<bool> hdMode{false};
+    std::atomic<Wc3ArtTier> artTier{Wc3ArtTier::Classic};
 
     FileResolver resolver;
 
@@ -251,7 +251,7 @@ struct FileContentProvider::Impl {
         // Replaced wholesale rather than mutated: a storage set is only ever
         // consistent as a whole, and the old one is dropped only once the new
         // one exists.
-        s.storage = BuildGameStorage(cfg, &hdMode, progress);
+        s.storage = BuildGameStorage(cfg, &artTier, progress);
         // Cancellation is asked of the monitor rather than inferred from an
         // empty result: a product whose install simply is not there also
         // builds a storage with no sources, and that is Failed, not Cancelled.
@@ -816,12 +816,12 @@ bool FileContentProvider::IgnoreMpq() const {
     return impl_->Slot().config.ignoreArchives;
 }
 
-void FileContentProvider::SetHdMode(bool enabled) {
-    impl_->hdMode.store(enabled, std::memory_order_relaxed);
+void FileContentProvider::SetArtTier(Wc3ArtTier tier) {
+    impl_->artTier.store(tier, std::memory_order_relaxed);
 }
 
-bool FileContentProvider::HdMode() const {
-    return impl_->hdMode.load(std::memory_order_relaxed);
+Wc3ArtTier FileContentProvider::ArtTier() const {
+    return impl_->artTier.load(std::memory_order_relaxed);
 }
 
 void FileContentProvider::SetIgnoreCasc(bool ignore) {

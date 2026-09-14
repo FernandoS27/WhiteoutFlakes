@@ -53,7 +53,7 @@ struct StorageConfig {
 //        Heroes) splits it between them, so the bar walks through both rather
 //        than restarting halfway.
 std::unique_ptr<GameStorage> BuildGameStorage(const StorageConfig& config,
-                                              const std::atomic<bool>* hdMode,
+                                              const std::atomic<Wc3ArtTier>* artTier,
                                               ProgressMonitor* progress = nullptr);
 
 // The archive load order to use when the host has not chosen one. Warcraft

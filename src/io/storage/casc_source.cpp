@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <optional>
 #include <set>
+#include <span>
 
 namespace whiteout::flakes::io {
 
@@ -18,26 +19,25 @@ namespace {
 
 namespace casc = whiteout::storages::casc;
 
-constexpr const char* kPrefixSd = "war3.w3mod:";
-constexpr const char* kPrefixHd = "war3.w3mod:_hd.w3mod:";
-constexpr const char* kPrefixDeprecated = "war3.w3mod:_deprecated.w3mod:";
-constexpr const char* kPrefixNone = "";
+// The one prefix a product without a mod chain gets. Prefixing a bare-path
+// root would turn each read into a run of guaranteed misses before the one
+// that was always going to work.
+constexpr const char* kNoPrefix = "";
+constexpr std::array<const char* const, 1> kNoChain = {kNoPrefix};
 
-// Warcraft III's chain, ordered by the HD toggle. Every other product gets the
-// single empty prefix — prefixing a bare-path root would turn each read into
-// three misses before the one that was always going to work.
-std::array<const char*, 4> Prefixes(const std::atomic<bool>* hdMode) {
-    if (!hdMode)
-        return {kPrefixNone, nullptr, nullptr, nullptr};
-    if (hdMode->load(std::memory_order_relaxed))
-        return {kPrefixHd, kPrefixSd, kPrefixDeprecated, kPrefixNone};
-    return {kPrefixSd, kPrefixHd, kPrefixDeprecated, kPrefixNone};
+// Warcraft III's chain for the currently selected tier; one empty prefix for
+// every other product. The chains themselves live in storage_paths.h, which is
+// what everything else that has an opinion about them reads too.
+std::span<const char* const> Prefixes(const std::atomic<Wc3ArtTier>* artTier) {
+    if (!artTier)
+        return kNoChain;
+    return Wc3ModChain(artTier->load(std::memory_order_relaxed));
 }
 
 } // namespace
 
 CascSource::CascSource(std::shared_ptr<const SharedCasc> shared, const CascSourceOptions& opts)
-    : shared_(std::move(shared)), hdMode_(opts.hdMode), fileIds_(opts.fileIds),
+    : shared_(std::move(shared)), artTier_(opts.artTier), fileIds_(opts.fileIds),
       frameSuffixFallback_(opts.frameSuffixFallback),
       assetPrefixFallback_(opts.assetPrefixFallback) {}
 
@@ -99,10 +99,9 @@ bool CascSource::ReadPrefixed(const std::string& prefix, const std::string& stem
     return false;
 }
 
-bool CascSource::ReadStem(const std::string& stem, const std::string& ext, SourceRead& out) const {
-    for (const char* prefix : Prefixes(hdMode_)) {
-        if (!prefix)
-            break; // a bare-path root declares one prefix, not four
+bool CascSource::ReadStem(const std::string& stem, const std::string& ext,
+                          std::span<const char* const> prefixes, SourceRead& out) const {
+    for (const char* prefix : prefixes) {
         if (ReadPrefixed(prefix, stem, ext, out))
             return true;
     }
@@ -114,7 +113,17 @@ bool CascSource::Read(const std::string& path, SourceRead& out) const {
     const std::string stem = StripExtension(norm);
     const std::string ext = GetLowerExtension(norm);
 
-    if (ReadStem(stem, ext, out))
+    // A path that already names its own mod chain is answered by that chain and
+    // by no other, so it gets the one empty prefix. Prefixing it would spell
+    // "war3.w3mod:war3.w3mod:_de.w3mod:..." and miss; until 3.0.0 the empty
+    // prefix on the end of every chain rescued that, after every real prefix
+    // had missed first. The browser hands back exactly these paths, so that
+    // was the cost of opening a model from it.
+    const std::span<const char* const> prefixes =
+        artTier_ && HasWc3ModChain(norm) ? std::span<const char* const>(kNoChain)
+                                         : Prefixes(artTier_);
+
+    if (ReadStem(stem, ext, prefixes, out))
         return true;
 
     if (frameSuffixFallback_) {
@@ -122,7 +131,7 @@ bool CascSource::Read(const std::string& path, SourceRead& out) const {
         if (dash != std::string::npos && dash + 1 < stem.size() &&
             std::all_of(stem.begin() + dash + 1, stem.end(),
                         [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
-            return ReadStem(stem.substr(0, dash), ext, out);
+            return ReadStem(stem.substr(0, dash), ext, prefixes, out);
         }
     }
 

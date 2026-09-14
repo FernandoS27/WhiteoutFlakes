@@ -16,10 +16,34 @@ using ::whiteout::flakes::gfx::GfxApi;
 
 /// @brief Material-rendering path: legacy fixed-function-style (SD) vs
 ///        Reforged PBR (HD).
+///
+/// Two values, not three: Warcraft III grew a third *art tier* in 3.0.0
+/// (see Wc3ArtTier) but not a third material path — Definitive models tag
+/// their layers with the same HD shader the Reforged ones do, so they render
+/// down the HD path. The tier says which files to read; this says how to
+/// draw them.
 /// @bind
 enum class RenderMode : u8 {
     SD = 0, ///< Standard-Definition: classic WC3 materials.
     HD = 1, ///< High-Definition: Reforged PBR materials with IBL.
+};
+
+/// @brief Which Warcraft III art tier to read assets from.
+///
+/// Warcraft III's CASC storage is a TVFS mod chain, and 3.0.0 added a third
+/// overlay to it. The game selects between them with `-hd 0|1|2` and names
+/// them Classic, Reforged and Definitive; each tier reads its own overlay
+/// first and falls through to the older ones, so a tier is a starting point
+/// in a chain rather than an exclusive choice. Definitive does not replace
+/// Reforged: 2,780 paths exist only under `_hd.w3mod`, and a Definitive
+/// install still reaches them.
+///
+/// Meaningless for every other product, whose storages have one namespace.
+/// @bind
+enum class Wc3ArtTier : u8 {
+    Classic = 0,    ///< `war3.w3mod:` only. The original 2002 art.
+    Reforged = 1,   ///< `_hd.w3mod:` over Classic. The 2020 HD remake.
+    Definitive = 2, ///< `_de.w3mod:` over Reforged over Classic. Added in 3.0.0.
 };
 
 /// @brief Transport state of a scene's playback clock.

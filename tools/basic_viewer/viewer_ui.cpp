@@ -1422,6 +1422,34 @@ void ViewerUI::BuildMenuBar() {
                     SaveIni(app_);
                 }
             }
+            // Which of Warcraft III's three CASC overlays a read resolves
+            // through. Separate from the render mode above because 3.0.0 made
+            // them separate questions: Reforged and Definitive are different
+            // files drawn the same way. "Follow Render Mode" is the default and
+            // the pre-3.0.0 behaviour (SD ⇒ Classic, HD ⇒ Reforged);
+            // anything a storage browse opens still overrides this per model,
+            // from the overlay the model itself came from.
+            if (ImGui::BeginMenu(i18n::tr("menu.view.art_tier"))) {
+                const std::optional<Wc3ArtTier> cur = svc.Settings().GetArtTier();
+                struct Choice {
+                    const char* key;
+                    std::optional<Wc3ArtTier> tier;
+                };
+                const Choice choices[] = {
+                    {"menu.view.art_tier_auto", std::nullopt},
+                    {"menu.view.art_tier_classic", Wc3ArtTier::Classic},
+                    {"menu.view.art_tier_reforged", Wc3ArtTier::Reforged},
+                    {"menu.view.art_tier_definitive", Wc3ArtTier::Definitive},
+                };
+                for (const Choice& c : choices) {
+                    if (ImGui::MenuItem(i18n::tr(c.key), nullptr, cur == c.tier) &&
+                        cur != c.tier) {
+                        app_.SetArtTier(c.tier);
+                        SaveIni(app_);
+                    }
+                }
+                ImGui::EndMenu();
+            }
 
             ImGui::Separator();
             if (ImGui::BeginMenu(i18n::tr("menu.view.tileset"))) {
@@ -2323,16 +2351,18 @@ void ViewerUI::BuildSettingsGeneralTab(ProductId game) {
             SaveIni(app_);
         }
 
-        // Auto follows the provider's HD-mode mod chain; SD/HD pin the
-        // path to one layer. Only Lordaeron's legacy target rig is
-        // SD-only, so the HD entry is greyed out rather than hidden.
+        // Auto follows the scene's art tier; SD/HD/DE pin the path to one
+        // layer. Only Lordaeron's legacy target rig is SD-only, so the
+        // overlay entries are greyed out rather than hidden.
         const bool hasSd = sel < 0 || catalog[sel].hasSd;
         const bool hasHd = sel < 0 || catalog[sel].hasHd;
-        const char* variantLabels[] = {i18n::tr("settings.general.dnc_variant_auto"), "SD", "HD"};
+        const bool hasDe = sel < 0 || catalog[sel].hasDe;
+        const char* variantLabels[] = {i18n::tr("settings.general.dnc_variant_auto"), "SD", "HD",
+                                       "DE"};
         ImGui::SetNextItemWidth(220.0f);
         if (ImGui::BeginCombo(i18n::tr("settings.general.dnc_variant"),
                               variantLabels[static_cast<usize>(variant)])) {
-            const bool enabled[] = {true, hasSd, hasHd};
+            const bool enabled[] = {true, hasSd, hasHd, hasDe};
             for (usize i = 0; i < std::size(variantLabels); ++i) {
                 ImGui::BeginDisabled(!enabled[i]);
                 if (ImGui::Selectable(variantLabels[i], i == static_cast<usize>(variant))) {

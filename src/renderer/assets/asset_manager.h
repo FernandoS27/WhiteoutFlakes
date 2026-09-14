@@ -18,6 +18,7 @@
 
 #include "gfx/gfx.h"
 #include "whiteout/flakes/content_ref.h"
+#include "whiteout/flakes/enums.h" // Wc3ArtTier
 #include "whiteout/flakes/types.h"
 
 #include <cornflakes/interface/asset/asset_reader.hpp>
@@ -143,16 +144,20 @@ public:
         gammaColorTexturesQuery_ = std::move(query);
     }
 
-    /// @brief Predicate answering whether the acquiring scene reads through
-    ///        the HD texture overlay (Reforged `_hd.w3mod`). Captured per slot
-    ///        at Acquire, like the gamma latch — but unlike gamma, which only
-    ///        changes how bytes DECODE, the overlay changes which BYTES a path
-    ///        resolves to, so it is part of every kind's slot identity and the
-    ///        host pump fetches each need under the need's own bit (see
-    ///        DrainNeedsEx). RenderService wires this to the active scene's
-    ///        effective mode.
-    void SetHdOverlayQuery(std::function<bool()> query) {
-        hdOverlayQuery_ = std::move(query);
+    /// @brief Predicate answering which Warcraft III art tier the acquiring
+    ///        scene reads through. Captured per slot at Acquire, like the gamma
+    ///        latch — but unlike gamma, which only changes how bytes DECODE,
+    ///        the tier changes which BYTES a path resolves to, so it is part of
+    ///        every kind's slot identity and the host pump fetches each need
+    ///        under the need's own tier (see DrainNeedsEx). RenderService wires
+    ///        this to the active scene's selected tier.
+    ///
+    ///        A tier rather than an HD flag because Reforged and Definitive
+    ///        both answer "HD" while being different files: one bit would let a
+    ///        Definitive texture and its Reforged namesake share a slot, and
+    ///        whichever was acquired first would win for both.
+    void SetArtTierQuery(std::function<Wc3ArtTier()> query) {
+        artTierQuery_ = std::move(query);
     }
 
     AssetManager(const AssetManager&)            = delete;
@@ -222,22 +227,22 @@ public:
     ///        mid-call (avoids re-entry).
     void DrainNeeds(const NeededFn& cb);
 
-    /// @brief A drained need with its full acquire-time context. `hd` is the
-    ///        overlay the acquiring scene read through: the fetch must run
-    ///        under it, because the overlay decides which bytes the path
-    ///        resolves to (an HD cell and an SD document can want the same
+    /// @brief A drained need with its full acquire-time context. `tier` is
+    ///        the art tier the acquiring scene read through: the fetch must run
+    ///        under it, because the tier decides which bytes the path resolves
+    ///        to (a Definitive cell and a Classic document can want the same
     ///        path as two different files).
     struct NeedInfo {
         AssetKind kind = AssetKind::Texture;
         AssetSubKind subKind = kSoleSubKind;
         ContentRef ref;
-        bool hd = false;
+        Wc3ArtTier tier = Wc3ArtTier::Classic;
     };
     using NeededExFn = std::function<void(const NeedInfo&)>;
 
     /// @brief DrainNeeds with the acquire-time context attached. The plain
-    ///        DrainNeeds forwards here dropping `hd` — kept for hosts with a
-    ///        single-mode provider (the web viewer), and for the bound API.
+    ///        DrainNeeds forwards here dropping `tier` — kept for hosts with
+    ///        a single-tier provider (the web viewer), and for the bound API.
     void DrainNeedsEx(const NeededExFn& cb);
 
     /// @brief Re-queue every slot whose payload never arrived (still on the
@@ -269,13 +274,13 @@ public:
         return ApplyPrepared(kind, subKind, ContentRef::FromPath(path), bytes, foundExt);
     }
 
-    /// @brief ApplyPrepared for bytes fetched under a specific HD overlay:
-    ///        only slots whose acquire-time overlay matches @p hd take the
-    ///        payload. The overlay-less ApplyPrepared applies to every
-    ///        matching slot, which is only correct when the host's provider
-    ///        has a single mode.
-    bool ApplyPreparedFor(AssetKind kind, AssetSubKind subKind, const ContentRef& ref, bool hd,
-                          std::span<const u8> bytes, std::string_view foundExt = {});
+    /// @brief ApplyPrepared for bytes fetched under a specific art tier: only
+    ///        slots whose acquire-time tier matches @p tier take the payload.
+    ///        The tier-less ApplyPrepared applies to every matching slot, which
+    ///        is only correct when the host's provider has a single tier.
+    bool ApplyPreparedFor(AssetKind kind, AssetSubKind subKind, const ContentRef& ref,
+                          Wc3ArtTier tier, std::span<const u8> bytes,
+                          std::string_view foundExt = {});
 
     /// @brief GPU half of Apply: drains the prepared queue and finalises
     ///        each entry against its slot — creates GPU textures, swaps
@@ -352,7 +357,7 @@ private:
         // and an SD document wanting one path want two different files. The
         // host pump fetches each need under this bit (DrainNeedsEx) and
         // applies with ApplyPreparedFor so the two never cross.
-        bool      acquireHd = false;
+        Wc3ArtTier acquireTier = Wc3ArtTier::Classic;
 
         // Texture
         gfx::TextureHandle texHandle = gfx::TextureHandle::Invalid;
@@ -411,11 +416,12 @@ private:
         AssetKind kind = AssetKind::Texture;
         AssetSubKind subKind = kSoleSubKind;
         ContentRef ref;
-        bool hd = false; // the acquiring scene's overlay — see Slot::acquireHd
+        // The acquiring scene's tier — see Slot::acquireTier.
+        Wc3ArtTier tier = Wc3ArtTier::Classic;
     };
 
     bool ApplyPreparedImpl(AssetKind kind, AssetSubKind subKind, const ContentRef& ref,
-                           const bool* hdFilter, std::span<const u8> bytes,
+                           const Wc3ArtTier* tierFilter, std::span<const u8> bytes,
                            std::string_view foundExt);
 
     // Handed to every AssetPreload this manager issues; see AssetManagerLink.
@@ -423,16 +429,16 @@ private:
         std::make_shared<detail::AssetManagerLink>();
 
     /// @brief True when an existing slot can serve an acquire of
-    ///        (kind, subKind, gamma, hd) — the binding policy that is part of
-    ///        the slot's identity alongside its ref.
+    ///        (kind, subKind, gamma, tier) — the binding policy that is part
+    ///        of the slot's identity alongside its ref.
     static bool SlotServes(const Slot& s, AssetKind kind, AssetSubKind subKind, bool gamma,
-                           bool hd) {
+                           Wc3ArtTier tier) {
         // The colour-space latch splits Texture slots only: for every other
         // kind the query result at acquire time is meaningless, and splitting
-        // on it would fetch the same .pkb twice for nothing. The HD overlay
+        // on it would fetch the same .pkb twice for nothing. The art tier
         // splits every kind — it changes which bytes the path resolves to,
         // .pkb and child .mdx included.
-        return s.kind == kind && s.subKind == subKind && s.acquireHd == hd &&
+        return s.kind == kind && s.subKind == subKind && s.acquireTier == tier &&
                (kind != AssetKind::Texture || s.acquireGamma == gamma);
     }
 
@@ -463,8 +469,8 @@ private:
     // SD (gamma) vs HD (linear) colour-texture policy — see
     // SetGammaColorTexturesQuery. Empty ⇒ default linear/HD behaviour.
     std::function<bool()> gammaColorTexturesQuery_;
-    // Acquiring scene's HD overlay — see SetHdOverlayQuery. Empty ⇒ false.
-    std::function<bool()> hdOverlayQuery_;
+    // Acquiring scene's art tier — see SetArtTierQuery. Empty ⇒ Classic.
+    std::function<Wc3ArtTier()> artTierQuery_;
 
     // Particle parsing dispatcher (PkbReader for .pkb / .pkfx). The
     // arena that backs each parsed EffectAssetModel lives ON the slot

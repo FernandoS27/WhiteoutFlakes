@@ -89,13 +89,13 @@ AssetManager::SlotId AssetManager::Acquire(AssetKind kind, AssetSubKind subKind,
     // Capture the colour-space policy of the mode active at acquire time (the
     // acquiring model's mode) so the async decode uses it, not the live mode.
     const bool gamma = gammaColorTexturesQuery_ && gammaColorTexturesQuery_();
-    // And the HD overlay the acquiring scene reads through — the fetch must
+    // And the art tier the acquiring scene reads through — the fetch must
     // later run under exactly this (see DrainNeedsEx).
-    const bool hd = hdOverlayQuery_ && hdOverlayQuery_();
+    const Wc3ArtTier tier = artTierQuery_ ? artTierQuery_() : Wc3ArtTier::Classic;
     std::vector<SlotId>& ids = refToSlot_[norm];
     for (SlotId existing : ids) {
         Slot& s = slots_[existing];
-        if (SlotServes(s, kind, subKind, gamma, hd)) {
+        if (SlotServes(s, kind, subKind, gamma, tier)) {
             s.refCount++;
             return existing;
         }
@@ -108,7 +108,7 @@ AssetManager::SlotId AssetManager::Acquire(AssetKind kind, AssetSubKind subKind,
     s.ref      = norm;
     s.refCount = 1;
     s.acquireGamma = gamma;
-    s.acquireHd = hd;
+    s.acquireTier = tier;
     // Texture: bind the manager's shared "white" default until real
     // bytes arrive. Effect/Model: leave payload null — consumers
     // null-check the typed accessors.
@@ -116,7 +116,7 @@ AssetManager::SlotId AssetManager::Acquire(AssetKind kind, AssetSubKind subKind,
         s.texHandle = textures_.GetDefaults().White;
     slots_.emplace(id, std::move(s));
     ids.push_back(id);
-    needs_.push_back(Need{kind, subKind, norm, hd});
+    needs_.push_back(Need{kind, subKind, norm, tier});
     return id;
 }
 
@@ -280,7 +280,7 @@ void AssetManager::DrainNeedsEx(const NeededExFn& cb) {
     }
     if (!cb) return;
     for (const Need& n : batch)
-        cb(NeedInfo{n.kind, n.subKind, n.ref, n.hd});
+        cb(NeedInfo{n.kind, n.subKind, n.ref, n.tier});
 }
 
 std::size_t AssetManager::RetryUnloaded() {
@@ -292,7 +292,7 @@ std::size_t AssetManager::RetryUnloaded() {
         // A duplicate already in needs_ (a slot Acquired but not yet drained
         // this frame) is harmless — DrainNeeds just re-fetches, and a re-Apply
         // of the same ref is idempotent.
-        needs_.push_back(Need{s.kind, s.subKind, s.ref, s.acquireHd});
+        needs_.push_back(Need{s.kind, s.subKind, s.ref, s.acquireTier});
         ++n;
     }
     return n;
@@ -435,13 +435,13 @@ bool AssetManager::ApplyPrepared(AssetKind kind, AssetSubKind subKind, const Con
 }
 
 bool AssetManager::ApplyPreparedFor(AssetKind kind, AssetSubKind subKind, const ContentRef& ref,
-                                    bool hd, std::span<const u8> bytes,
+                                    Wc3ArtTier tier, std::span<const u8> bytes,
                                     std::string_view foundExt) {
-    return ApplyPreparedImpl(kind, subKind, ref, &hd, bytes, foundExt);
+    return ApplyPreparedImpl(kind, subKind, ref, &tier, bytes, foundExt);
 }
 
 bool AssetManager::ApplyPreparedImpl(AssetKind kind, AssetSubKind subKind, const ContentRef& ref,
-                                     const bool* hdFilter, std::span<const u8> bytes,
+                                     const Wc3ArtTier* tierFilter, std::span<const u8> bytes,
                                      std::string_view foundExt) {
     if (ref.Empty() || bytes.empty()) {
         std::lock_guard<std::mutex> lk(mu_);
@@ -474,7 +474,7 @@ bool AssetManager::ApplyPreparedImpl(AssetKind kind, AssetSubKind subKind, const
                 const Slot& s = slots_[id];
                 // Bytes fetched under a specific overlay serve only the slots
                 // acquired under it — the other variant is a different file.
-                if (hdFilter && s.acquireHd != *hdFilter)
+                if (tierFilter && s.acquireTier != *tierFilter)
                     continue;
                 if (s.kind == kind && s.subKind == subKind)
                     targets.push_back({id, s.acquireGamma});

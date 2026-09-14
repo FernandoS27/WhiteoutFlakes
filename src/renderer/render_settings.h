@@ -20,6 +20,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <optional>
 #include <string>
 
 namespace whiteout::flakes::renderer {
@@ -181,6 +182,25 @@ public:
             MarkRenderModeDirty();
         }
     }
+    // ---- Warcraft III art tier ----
+    // Unset means "whatever the render mode implies" — Classic for SD,
+    // Reforged for HD — which is the behaviour every host had before 3.0.0
+    // added Definitive. A host that wants Definitive art says so; nothing
+    // infers it, because inferring it would change what every existing HD
+    // render resolves to.
+    //
+    // Marks the render-mode dirty flag: a tier change changes which bytes
+    // every path resolves to, so the same re-stage a mode change needs.
+    std::optional<Wc3ArtTier> GetArtTier() const {
+        const i32 v = artTier_.load();
+        return v < 0 ? std::nullopt : std::optional<Wc3ArtTier>(static_cast<Wc3ArtTier>(v));
+    }
+    void SetArtTier(std::optional<Wc3ArtTier> tier) {
+        const i32 v = tier ? static_cast<i32>(*tier) : -1;
+        if (artTier_.exchange(v) != v)
+            MarkRenderModeDirty();
+    }
+
     // "The frame changed, re-stage what depends on it" — which since P5 is a
     // change of *profile*, not only of mode. A scene's ProductId selects the
     // profile directly, so setting it fires this too; the flag keeps its
@@ -676,6 +696,10 @@ private:
     // Render mode + dirty flag.
     RenderMode renderMode_ = RenderMode::SD;
     std::atomic<bool> renderModeDirty_{false};
+    // -1 for "unset"; otherwise a Wc3ArtTier. An optional<> would do the same
+    // job with no atomic to hold it @EM@ the settings object is read from the
+    // render thread and written from the host's.
+    std::atomic<i32> artTier_{-1};
     std::atomic<bool> followModelRenderMode_{true};
     std::atomic<bool> sceneHdrInSd_{false};
     std::atomic<bool> m2LazyAnimations_{false};

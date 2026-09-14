@@ -105,14 +105,56 @@ public:
     }
     void SetRenderMode(::whiteout::flakes::RenderMode m) {
         renderMode_ = m;
-        // Forward the HD texture overlay. Unlike SetProduct's internal-only
-        // forward, this reaches shared external providers too: the overlay is
-        // a per-read layer preference that loads flip mid-session by design,
-        // and RenderService::SetActiveScene re-imposes it per activation, so
-        // sibling scenes on the same provider get their own state back the
-        // moment they run.
+        // Forward the art tier this mode implies. Unlike SetProduct's
+        // internal-only forward, this reaches shared external providers too:
+        // the tier is a per-read layer preference that loads flip mid-session
+        // by design, and RenderService::SetActiveScene re-imposes it per
+        // activation, so sibling scenes on the same provider get their own
+        // state back the moment they run.
         if (auto* p = ActiveContentProviderIfAny())
-            p->SetHdMode(m == ::whiteout::flakes::RenderMode::HD);
+            p->SetArtTier(ImpliedArtTier(m));
+    }
+
+    /// @brief Scene-level override of which Warcraft III art tier to read,
+    ///        alongside RenderModeOverride and for the same reason.
+    ///
+    /// Two settings and not one because the tier and the render mode stopped
+    /// being the same question in 3.0.0: Reforged and Definitive are different
+    /// files drawn down the same HD material path, so a scene showing a
+    /// Definitive model is HD *and* Definitive. Unset follows whatever the
+    /// render mode implies, which is what every host that has never heard of
+    /// Definitive keeps getting.
+    std::optional<::whiteout::flakes::Wc3ArtTier> ArtTierOverride() const {
+        return artTier_;
+    }
+    void SetArtTier(::whiteout::flakes::Wc3ArtTier tier) {
+        artTier_ = tier;
+        if (auto* p = ActiveContentProviderIfAny())
+            p->SetArtTier(tier);
+    }
+    /// @brief Drop this scene's pin and go back to following the global
+    ///        setting (and, failing that, the render mode). What a host calls
+    ///        when the user changes the global: a scene that pinned itself
+    ///        from a browsed model's overlay would otherwise ignore the change.
+    void ClearArtTier() {
+        artTier_.reset();
+    }
+
+    /// @brief The tier a render mode alone implies: SD reads Classic art, HD
+    ///        reads Reforged. Deliberately not Definitive — a host that only
+    ///        set a render mode gets exactly the art it got before 3.0.0, and
+    ///        Definitive is asked for by name.
+    static ::whiteout::flakes::Wc3ArtTier ImpliedArtTier(::whiteout::flakes::RenderMode m) {
+        return m == ::whiteout::flakes::RenderMode::HD
+                   ? ::whiteout::flakes::Wc3ArtTier::Reforged
+                   : ::whiteout::flakes::Wc3ArtTier::Classic;
+    }
+
+    /// @brief The tier this scene actually reads through: its override if it
+    ///        has one, otherwise whatever its render mode implies.
+    ::whiteout::flakes::Wc3ArtTier EffectiveArtTier() const {
+        return artTier_.value_or(ImpliedArtTier(
+            renderMode_.value_or(::whiteout::flakes::RenderMode::SD)));
     }
 
     /// @brief Scene-level override of the SD-through-HDR opt-in
@@ -270,6 +312,7 @@ private:
     model::ActorId nextActorId_ = 1;
     ProductId product_ = ProductId::Neutral;
     std::optional<::whiteout::flakes::RenderMode> renderMode_;
+    std::optional<::whiteout::flakes::Wc3ArtTier> artTier_;
     std::optional<bool> sceneHdrInSd_;
 
     std::vector<std::unique_ptr<::whiteout::flakes::renderer::Camera>> cameras_;

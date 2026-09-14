@@ -44,9 +44,10 @@ std::vector<std::string> ToVector(const char* const* names, usize count) {
 
 // A TVFS mod chain plus the three War3*.mpq beside it. The only product with
 // the chain, and the only one that needs the Reforged frame-suffix rename.
-void ConfigureWc3(StorageBuilder& b, const StorageConfig& c, const std::atomic<bool>* hdMode) {
+void ConfigureWc3(StorageBuilder& b, const StorageConfig& c,
+                  const std::atomic<Wc3ArtTier>* artTier) {
     if (!c.ignoreCasc)
-        b.ModChain(hdMode).FrameSuffixFallback().Casc(c.installPath);
+        b.ModChain(artTier).FrameSuffixFallback().Casc(c.installPath);
     if (!c.ignoreArchives)
         b.Archives(c.installPath, c.archives);
 }
@@ -59,7 +60,7 @@ void ConfigureWc3(StorageBuilder& b, const StorageConfig& c, const std::atomic<b
 // resolves it to a conventionally placed CSV (see DiscoverWowListfile in
 // casc_registry.h), and it must be the one doing so — every consumer of the
 // install shares a storage only while they agree on the key.
-void ConfigureWow(StorageBuilder& b, const StorageConfig& c, const std::atomic<bool>*) {
+void ConfigureWow(StorageBuilder& b, const StorageConfig& c, const std::atomic<Wc3ArtTier>*) {
     if (!c.ignoreCasc)
         b.FileIds().Listfile(c.listfilePath).TactKeys(c.tactKeyPath).Casc(c.installPath);
     if (!c.ignoreArchives)
@@ -71,7 +72,7 @@ void ConfigureWow(StorageBuilder& b, const StorageConfig& c, const std::atomic<b
 // ProductId (they share a render profile). Either may be absent. The asset
 // prefixes are what let an `.m3`'s relative texture names
 // ("assets/textures/...") find the mod-rooted full paths the storage stores.
-void ConfigureSc2(StorageBuilder& b, const StorageConfig& c, const std::atomic<bool>*) {
+void ConfigureSc2(StorageBuilder& b, const StorageConfig& c, const std::atomic<Wc3ArtTier>*) {
     if (c.ignoreCasc)
         return;
     b.AssetPrefixes().Casc(c.installPath).Casc(c.secondaryPath);
@@ -80,7 +81,7 @@ void ConfigureSc2(StorageBuilder& b, const StorageConfig& c, const std::atomic<b
 // CASC only, one root, and ids that are SNO ids. The game ships its own name
 // table (CoreTOC), so there is no mod chain, no asset-prefix retry, no
 // community listfile and no TACT keys — the plainest of the four.
-void ConfigureD3(StorageBuilder& b, const StorageConfig& c, const std::atomic<bool>*) {
+void ConfigureD3(StorageBuilder& b, const StorageConfig& c, const std::atomic<Wc3ArtTier>*) {
     if (!c.ignoreCasc)
         b.FileIds().Casc(c.installPath);
 }
@@ -88,23 +89,23 @@ void ConfigureD3(StorageBuilder& b, const StorageConfig& c, const std::atomic<bo
 } // namespace
 
 std::unique_ptr<GameStorage> BuildGameStorage(const StorageConfig& config,
-                                              const std::atomic<bool>* hdMode,
+                                              const std::atomic<Wc3ArtTier>* artTier,
                                               ProgressMonitor* progress) {
     StorageBuilder b(config.game);
     switch (config.game) {
     case ProductId::Wow:
-        ConfigureWow(b, config, hdMode);
+        ConfigureWow(b, config, artTier);
         break;
     case ProductId::Sc2:
-        ConfigureSc2(b, config, hdMode);
+        ConfigureSc2(b, config, artTier);
         break;
     case ProductId::D3:
-        ConfigureD3(b, config, hdMode);
+        ConfigureD3(b, config, artTier);
         break;
     default:
         // Neutral included: a scene with nothing loaded reads Warcraft III,
         // which is what every host that never names a product expects.
-        ConfigureWc3(b, config, hdMode);
+        ConfigureWc3(b, config, artTier);
         break;
     }
     return b.Build(progress);

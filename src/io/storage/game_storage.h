@@ -78,9 +78,9 @@ class StorageBuilder {
 public:
     explicit StorageBuilder(ProductId game) : game_(game) {}
 
-    // Warcraft III's TVFS mod chain, ordered by the flag `hdMode` points at.
-    // Only this product has one.
-    StorageBuilder& ModChain(const std::atomic<bool>* hdMode);
+    // Warcraft III's TVFS mod chain, led by the overlay that the tier
+    // `artTier` points at selects. Only this product has one.
+    StorageBuilder& ModChain(const std::atomic<Wc3ArtTier>* artTier);
 
     // Read by fileDataID. World of Warcraft's root is keyed that way.
     StorageBuilder& FileIds();
@@ -119,7 +119,7 @@ public:
 
 private:
     ProductId game_;
-    const std::atomic<bool>* hdMode_ = nullptr;
+    const std::atomic<Wc3ArtTier>* artTier_ = nullptr;
     bool fileIds_ = false;
     bool frameSuffixFallback_ = false;
     bool assetPrefixes_ = false;

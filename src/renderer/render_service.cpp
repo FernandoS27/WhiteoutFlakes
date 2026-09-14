@@ -155,14 +155,14 @@ void RenderService::SetActiveScene(SceneId id) {
     impl_->activeSceneId_ = id;
     impl_->activeScene_ = impl_->scenes_[id];
     impl_->activeServices_ = impl_->sceneServices_[id].get();
-    // Impose this scene's effective HD overlay on the provider it reads
-    // through. Scenes legitimately share one provider (explorer cells, viewer
-    // documents), so the overlay is whatever the last writer left it — this is
+    // Impose this scene's effective art tier on the provider it reads through.
+    // Scenes legitimately share one provider (explorer cells, viewer
+    // documents), so the tier is whatever the last writer left it — this is
     // the one place that re-arms it, replacing the save/restore dances the
     // hosts used to carry. Cheap (an atomic store) and non-creating: a scene
     // without a provider skips it entirely.
     if (auto* p = impl_->activeScene_->ActiveContentProviderIfAny())
-        p->SetHdMode(EffectiveRenderMode() == RenderMode::HD);
+        p->SetArtTier(EffectiveArtTier());
 }
 
 void RenderService::SetActiveScene(SceneManager& scene) {
@@ -185,6 +185,22 @@ RenderMode RenderService::EffectiveRenderMode() {
 
 RenderMode RenderService::EffectiveRenderMode(const SceneManager& scene) {
     return scene.RenderModeOverride().value_or(impl_->settings_.GetRenderMode());
+}
+
+Wc3ArtTier RenderService::EffectiveArtTier() {
+    return EffectiveArtTier(*impl_->activeScene_);
+}
+
+// A scene's own tier wins; failing that the global setting; failing that the
+// tier the effective render mode implies. That last step is what keeps a host
+// which only ever set a render mode reading the same art it always did — see
+// SceneManager::ImpliedArtTier.
+Wc3ArtTier RenderService::EffectiveArtTier(const SceneManager& scene) {
+    if (auto own = scene.ArtTierOverride())
+        return *own;
+    if (auto global = impl_->settings_.GetArtTier())
+        return *global;
+    return SceneManager::ImpliedArtTier(EffectiveRenderMode(scene));
 }
 
 bool RenderService::EffectiveSceneHdrInSd() {
@@ -609,13 +625,11 @@ void RenderService::CreateDeviceAssetManagers(gfx::IGFXDevice& gfx) {
         return Pipeline().LoadTimeProfile().SceneColorFormat() !=
                RenderPipeline::kHdrSceneFormat;
     });
-    // The second acquire-time latch: which HD overlay the acquiring scene
-    // reads through. Unlike gamma (a decode policy) this decides which BYTES
-    // the fetch resolves, so the pump replays it per need — see
+    // The second acquire-time latch: which art tier the acquiring scene reads
+    // through. Unlike gamma (a decode policy) this decides which BYTES the
+    // fetch resolves, so the pump replays it per need — see
     // PumpAssetsViaProvider.
-    impl_->assets_->SetHdOverlayQuery([this]() {
-        return EffectiveRenderMode() == RenderMode::HD;
-    });
+    impl_->assets_->SetArtTierQuery([this]() { return EffectiveArtTier(); });
     // Child-model parsing lives on ModelTemplateManager (so we don't drag
     // the MDX parser into AssetManager's translation unit). Install a
     // builder that wraps BuildFromBytes — AssetManager.ApplyPrepared
@@ -691,7 +705,7 @@ dnc::DncService& RenderService::EnsureDncService() {
     }
     // Which layer an unpinned path resolves from — the ACTIVE scene's own
     // effective mode, now that scenes carry it themselves.
-    svc.dnc->SetHdPreference(EffectiveRenderMode() == RenderMode::HD);
+    svc.dnc->SetArtTierPreference(EffectiveArtTier());
     return *svc.dnc;
 }
 
@@ -832,8 +846,12 @@ void RenderService::PumpAssetsViaProvider() {
             return true;
         }
         // Try stripping a known mod-name prefix. Order matches the
-        // CASC TVFS stack (_hd overrides win first, then _deprecated).
+        // CASC TVFS stack, newest overlay first. `_de.w3mod/` joined the list
+        // in 3.0.0, where it carries 1,232 of the install's 2,165 .pkb files
+        // — without it every Definitive effect resolved its textures by
+        // accident or not at all.
         static constexpr std::string_view kModPrefixes[] = {
+            "_de.w3mod/",
             "_hd.w3mod/",
             "_deprecated.w3mod/",
         };
@@ -878,12 +896,12 @@ void RenderService::PumpAssetsViaProvider() {
         const assets::AssetKind kind = need.kind;
         const assets::AssetSubKind subKind = need.subKind;
         const ContentRef& ref = need.ref;
-        // Fetch under the overlay the acquiring scene read through. The pump
+        // Fetch under the tier the acquiring scene read through. The pump
         // serves EVERY scene's pending needs through whichever scene happens
-        // to be active, so the need's own bit — not the ambient overlay — is
+        // to be active, so the need's own tier — not the ambient one — is
         // what decides which bytes this path resolves to.
-        if (provider->HdMode() != need.hd)
-            provider->SetHdMode(need.hd);
+        if (provider->ArtTier() != need.tier)
+            provider->SetArtTier(need.tier);
         std::vector<u8> bytes;
         std::string ext;
         if (ref.IsFileId()) {
@@ -911,13 +929,13 @@ void RenderService::PumpAssetsViaProvider() {
             return;
         }
         impl_->assets_->ApplyPreparedFor(
-            kind, subKind, ref, need.hd,
+            kind, subKind, ref, need.tier,
             std::span<const u8>(bytes.data(), bytes.size()),
             ext);
     });
-    // Re-impose the active scene's overlay after serving mixed-mode needs, so
+    // Re-impose the active scene's tier after serving mixed-tier needs, so
     // reads outside the pump see the state SetActiveScene armed.
-    provider->SetHdMode(EffectiveRenderMode() == RenderMode::HD);
+    provider->SetArtTier(EffectiveArtTier());
     impl_->assets_->CommitPrepared();
 #endif
 }

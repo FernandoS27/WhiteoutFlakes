@@ -79,6 +79,7 @@ wdx_add_test(progress_test progress_test.cpp)
 # builder assembles. Opens no storage, so it needs no install at all.
 wdx_add_test(game_storage_test game_storage_test.cpp)
 wdx_add_test(storage_browser_test storage_browser_test.cpp)
+wdx_add_test(wc3_art_tier_test wc3_art_tier_test.cpp)
 # The viewer's settings file, which now stores one IO section per game.
 # Compiles the viewer's settings_io.cpp directly — it belongs to the viewer
 # executable, not to WhiteoutFlakesLib. Its display-settings sibling

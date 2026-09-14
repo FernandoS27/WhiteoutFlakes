@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -235,6 +236,12 @@ public:
         return forceHd_;
     }
     void SetForceHd(bool on);
+
+    // Which Warcraft III art overlay reads resolve through, globally. Nullopt
+    // means "whatever the render mode implies" — the behaviour before 3.0.0
+    // added a third tier. Setting it reloads the active document so its
+    // textures and child models re-resolve, the same reason SetForceHd does.
+    void SetArtTier(std::optional<Wc3ArtTier> tier);
 
     // ---- Open documents (tabs) ----
     // Each loaded file is one document, backed by its own RenderService scene.

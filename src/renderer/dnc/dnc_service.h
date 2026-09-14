@@ -1,5 +1,6 @@
 #pragma once
 
+#include "whiteout/flakes/enums.h" // Wc3ArtTier
 #include "whiteout/flakes/types.h"
 
 #include <whiteout/vector_types.h>
@@ -53,15 +54,16 @@ public:
 
     /// @brief Which mod layer an unpinned ("Auto") path resolves from.
     ///
-    /// An unpinned path names one file but reaches two — `war3.w3mod:` in SD,
-    /// `war3.w3mod:_hd.w3mod:` in HD — and the HD rigs carry a very different
-    /// curve (ambientIntensity 0 vs 0.3). This is per-scene state rather than
-    /// a read of the provider's HD flag, because the host may point several
-    /// scenes at one shared provider; resolving through a mod-pinned path
-    /// keeps each scene on its own variant regardless. A no-op if unchanged.
-    void SetHdPreference(bool hd);
-    bool HdPreference() const {
-        return hdPreference_;
+    /// An unpinned path names one file but reaches three — `war3.w3mod:` for
+    /// Classic, `_hd.w3mod:` for Reforged, `_de.w3mod:` for Definitive — and
+    /// the overlay rigs carry a very different curve (ambientIntensity 0 vs
+    /// 0.3). This is per-scene state rather than a read of the provider's
+    /// tier, because the host may point several scenes at one shared provider;
+    /// resolving through a mod-pinned path keeps each scene on its own variant
+    /// regardless. A no-op if unchanged.
+    void SetArtTierPreference(Wc3ArtTier tier);
+    Wc3ArtTier ArtTierPreference() const {
+        return tierPreference_;
     }
 
     bool HasAsset() const;
@@ -146,7 +148,7 @@ private:
     std::unique_ptr<DncCache> cache_;
     DncAsset* unitAsset_ = nullptr;
     std::string unitPath_;
-    bool hdPreference_ = false;
+    Wc3ArtTier tierPreference_ = Wc3ArtTier::Classic;
     // RealiseAsset has been called: this session wants the rig.
     bool wanted_ = false;
     // The resolved path has changed (or was never loaded) since the last

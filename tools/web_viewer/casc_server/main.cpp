@@ -61,17 +61,22 @@ std::optional<std::vector<char>> ReadDiskFile(const fs::path& p) {
                              std::istreambuf_iterator<char>());
 }
 
-// TVFS chain — _hd overrides war3.w3mod. Same stack as desktop's
-// FileContentProvider (src/io/file_content_provider.cpp).
+// TVFS chain, newest overlay first — _de overrides _hd overrides war3.w3mod.
+// The same stack as desktop's Wc3ModChain (src/io/storage/storage_paths.cpp),
+// and spelled again here on purpose: this server links none of the desktop
+// renderer, and it has no art-tier setting to switch on. It serves one chain,
+// so it serves the fullest one.
 constexpr const char* kCascPrefixes[] = {
-    "war3.w3mod:",
+    "war3.w3mod:_de.w3mod:",
     "war3.w3mod:_hd.w3mod:",
+    "war3.w3mod:",
     "war3.w3mod:_deprecated.w3mod:",
 };
 
 // corn_fx bakes mod-name prefixes into paths (`_HD.w3mod/...`).
 // Flip the trailing `\` to `:` so it slots into the TVFS chain.
 constexpr const char* kEmbeddedModPrefixes[] = {
+    "_de.w3mod\\",
     "_hd.w3mod\\",
     "_deprecated.w3mod\\",
 };

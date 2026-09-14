@@ -17,44 +17,46 @@ constexpr std::string_view kUnderground = "Underground";
 
 constexpr std::string_view kSdPrefix = "war3.w3mod:";
 constexpr std::string_view kHdPrefix = "war3.w3mod:_hd.w3mod:";
+constexpr std::string_view kDePrefix = "war3.w3mod:_de.w3mod:";
 
 // Enumerated from a retail install: everything under `environment\dnc\`, in
-// both `war3.w3mod:` and `war3.w3mod:_hd.w3mod:`. Lordaeron leads because it
-// is the engine's fallback for every unmapped tileset.
+// all three of `war3.w3mod:`, `war3.w3mod:_hd.w3mod:` and
+// `war3.w3mod:_de.w3mod:`. Lordaeron leads because it is the engine's fallback
+// for every unmapped tileset.
 constexpr std::array<DncCatalogEntry, 14> kCatalog{{
     {kLordaeron, DncRole::Unit,
-     "Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdl", true, true},
+     "Environment/DNC/DNCLordaeron/DNCLordaeronUnit/DNCLordaeronUnit.mdl", true, true, true},
     {kLordaeron, DncRole::Terrain,
-     "Environment/DNC/DNCLordaeron/DNCLordaeronTerrain/DNCLordaeronTerrain.mdl", true, true},
+     "Environment/DNC/DNCLordaeron/DNCLordaeronTerrain/DNCLordaeronTerrain.mdl", true, true, true},
     {kLordaeron, DncRole::Portrait,
-     "Environment/DNC/DNCLordaeron/DNCLordaeronPortrait/DNCLordaeronPortrait.mdl", true, true},
+     "Environment/DNC/DNCLordaeron/DNCLordaeronPortrait/DNCLordaeronPortrait.mdl", true, true, true},
     {kLordaeron, DncRole::Target,
-     "Environment/DNC/DNCLordaeron/DNCLordaeronTarget/DNCLordaeronTarget.mdl", true, false},
+     "Environment/DNC/DNCLordaeron/DNCLordaeronTarget/DNCLordaeronTarget.mdl", true, false, false},
 
     {kAshenvale, DncRole::Unit,
-     "Environment/DNC/DNCAshenvale/DNCAshenvaleUnit/DNCAshenvaleUnit.mdl", true, true},
+     "Environment/DNC/DNCAshenvale/DNCAshenvaleUnit/DNCAshenvaleUnit.mdl", true, true, true},
     {kAshenvale, DncRole::Terrain,
-     "Environment/DNC/DNCAshenvale/DNCAshenvaleTerrain/DNCAshenvaleTerrain.mdl", true, true},
+     "Environment/DNC/DNCAshenvale/DNCAshenvaleTerrain/DNCAshenvaleTerrain.mdl", true, true, true},
 
     {kDalaran, DncRole::Unit, "Environment/DNC/DNCDalaran/DNCDalaranUnit/DNCDalaranUnit.mdl", true,
-     true},
+     true, true},
     {kDalaran, DncRole::Terrain,
-     "Environment/DNC/DNCDalaran/DNCDalaranTerrain/DNCDalaranTerrain.mdl", true, true},
+     "Environment/DNC/DNCDalaran/DNCDalaranTerrain/DNCDalaranTerrain.mdl", true, true, true},
 
     {kDungeon, DncRole::Unit, "Environment/DNC/DNCDungeon/DNCDungeonUnit/DNCDungeonUnit.mdl", true,
-     true},
+     true, true},
     {kDungeon, DncRole::Terrain,
-     "Environment/DNC/DNCDungeon/DNCDungeonTerrain/DNCDungeonTerrain.mdl", true, true},
+     "Environment/DNC/DNCDungeon/DNCDungeonTerrain/DNCDungeonTerrain.mdl", true, true, true},
 
     {kFelwood, DncRole::Unit, "Environment/DNC/DNCFelwood/DNCFelwoodUnit/DNCFelwoodUnit.mdl", true,
-     true},
+     true, true},
     {kFelwood, DncRole::Terrain,
-     "Environment/DNC/DNCFelwood/DNCFelwoodTerrain/DNCFelwoodTerrain.mdl", true, true},
+     "Environment/DNC/DNCFelwood/DNCFelwoodTerrain/DNCFelwoodTerrain.mdl", true, true, true},
 
     {kUnderground, DncRole::Unit,
-     "Environment/DNC/DNCUnderground/DNCUndergroundUnit/DNCUndergroundUnit.mdl", true, true},
+     "Environment/DNC/DNCUnderground/DNCUndergroundUnit/DNCUndergroundUnit.mdl", true, true, true},
     {kUnderground, DncRole::Terrain,
-     "Environment/DNC/DNCUnderground/DNCUndergroundTerrain/DNCUndergroundTerrain.mdl", true, true},
+     "Environment/DNC/DNCUnderground/DNCUndergroundTerrain/DNCUndergroundTerrain.mdl", true, true, true},
 }};
 
 // `UI\WorldEditData.txt` [TileSets], with the family both [UnitLights] and
@@ -174,6 +176,8 @@ std::string DncPathForVariant(std::string_view path, DncVariant variant) {
         return std::string(kSdPrefix) + std::string(path);
     case DncVariant::Hd:
         return std::string(kHdPrefix) + std::string(path);
+    case DncVariant::De:
+        return std::string(kDePrefix) + std::string(path);
     case DncVariant::Auto:
         break;
     }
@@ -189,6 +193,10 @@ i32 DncCatalogIndexOf(std::string_view path) {
 }
 
 DncVariant DncVariantOf(std::string_view path) {
+    // Longest first: every overlay prefix begins with the SD one, so testing
+    // `war3.w3mod:` before them would claim all three.
+    if (path.starts_with(kDePrefix))
+        return DncVariant::De;
     if (path.starts_with(kHdPrefix))
         return DncVariant::Hd;
     if (path.starts_with(kSdPrefix))

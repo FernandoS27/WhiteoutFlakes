@@ -22,6 +22,7 @@
 #include <unordered_map>
 
 using whiteout::flakes::ContentRef;
+using whiteout::flakes::Wc3ArtTier;
 namespace io = whiteout::flakes::io;
 
 namespace {
@@ -66,11 +67,14 @@ public:
     void Wait(io::RequestId) override {}
     void Cancel(io::RequestId) override {}
     void Pump() override {}
-    void SetHdMode(bool enabled) override {
-        hd_ = enabled;
+    // The tier is what a provider actually implements; SetHdMode/HdMode are
+    // the two-state view the base class expresses in terms of it. This test
+    // only cares about "classic vs not", which is exactly what HdMode() means.
+    void SetArtTier(Wc3ArtTier tier) override {
+        hd_ = tier != Wc3ArtTier::Classic;
     }
-    bool HdMode() const override {
-        return hd_;
+    Wc3ArtTier ArtTier() const override {
+        return hd_ ? Wc3ArtTier::Reforged : Wc3ArtTier::Classic;
     }
 
     std::size_t reads = 0;

@@ -157,6 +157,13 @@ public:
     // right answer from one rule.
     RenderMode EffectiveRenderMode();
     RenderMode EffectiveRenderMode(const SceneManager& scene);
+    // Which Warcraft III art tier a scene reads through. Resolved the same way
+    // and for the same reason, with one extra step: a scene with no tier of its
+    // own and no global setting falls back to the tier its render mode implies,
+    // so a host that has never heard of Definitive keeps reading Reforged art
+    // for HD. See SceneManager::ImpliedArtTier.
+    Wc3ArtTier EffectiveArtTier();
+    Wc3ArtTier EffectiveArtTier(const SceneManager& scene);
     bool EffectiveSceneHdrInSd();
     bool EffectiveSceneHdrInSd(const SceneManager& scene);
 

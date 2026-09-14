@@ -214,11 +214,11 @@ public:
     std::vector<std::string> ScanMpqList() const;
 
     // ---- HD mod overlay ----
-    // Reorders CASC mod-prefix iteration so `_hd.w3mod` is tried
-    // before the SD base when enabled. Off by default; the host
-    // calls this whenever the user picks HD vs SD render mode.
-    void SetHdMode(bool enabled) override;
-    bool HdMode() const override;
+    // Picks which of Warcraft III's mod overlays leads the CASC prefix
+    // chain. Classic by default; the host calls this when the user picks a
+    // tier, or when it opens a model out of a known overlay.
+    void SetArtTier(Wc3ArtTier tier) override;
+    Wc3ArtTier ArtTier() const override;
 
 private:
     struct Impl;

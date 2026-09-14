@@ -1,6 +1,7 @@
 // ModelExplorer — entry point. Brings up the renderer + window and runs the
 // explorer loop. Optional CLI: [--backend d3d11|d3d12|vulkan|webgpu] [<casc-root>].
 
+#include "io/storage/storage_paths.h"
 #include "io/storage_browser.h"
 #include "explorer_app.h"
 #include "imgui_theme.h"
@@ -425,15 +426,26 @@ int main(int argc, char* argv[]) {
                      : renderer.Loader().SpawnUnit(cascRenderPath);
         if (isEffect) {
             renderer.Settings().SetBackgroundColor(33, 38, 48); // match app UI bg for effects
-            const bool effHd = cascRenderPath.find("_hd.w3mod") != std::string::npos;
+            // An effect has no material layers to probe, so its tier comes
+            // from where it lives — and in 3.0.0 that is usually `_de.w3mod`,
+            // which ships 1,232 of the install's .pkb files.
+            const wf::Wc3ArtTier effTier =
+                wf::io::Wc3TierOfPath(cascRenderPath).value_or(wf::Wc3ArtTier::Classic);
+            const bool effHd = effTier != wf::Wc3ArtTier::Classic;
             auto df = renderer.Settings().GetDisplayFlags();
             df.renderMode = effHd ? wf::renderer::RenderMode::HD : wf::renderer::RenderMode::SD;
             renderer.Settings().SetDisplayFlags(df);
-            provider->SetHdMode(effHd);
-            std::printf("[casc-render] effect hd=%d\n", effHd ? 1 : 0);
+            provider->SetArtTier(effTier);
+            std::printf("[casc-render] effect tier=%d\n", static_cast<int>(effTier));
         }
         if (hero && !isEffect) {
+            // Two separate questions: how to draw it (its layers) and which
+            // files to read (where it lives). A Definitive model answers HD to
+            // the first and Definitive to the second.
             const bool hd = whiteout::flakes::tools::IsHdModel(hero);
+            const wf::Wc3ArtTier tier =
+                wf::io::Wc3TierOfPath(cascRenderPath)
+                    .value_or(hd ? wf::Wc3ArtTier::Reforged : wf::Wc3ArtTier::Classic);
             // Render in the model's natural shading mode, but route the SD path
             // through the HDR scene target + tonemap (SceneHdrInSd) so additive
             // / team-color geosets roll off instead of clipping to opaque white
@@ -443,8 +455,9 @@ int main(int argc, char* argv[]) {
             auto df = renderer.Settings().GetDisplayFlags();
             df.renderMode = hd ? wf::renderer::RenderMode::HD : wf::renderer::RenderMode::SD;
             renderer.Settings().SetDisplayFlags(df);
-            provider->SetHdMode(hd);
-            std::printf("[casc-render] hd=%d (sd-hdr tonemap on)\n", hd ? 1 : 0);
+            provider->SetArtTier(tier);
+            std::printf("[casc-render] hd=%d tier=%d (sd-hdr tonemap on)\n", hd ? 1 : 0,
+                        static_cast<int>(tier));
             const int sidx = whiteout::flakes::tools::PickStandSequenceIndex(hero);
             if (sidx >= 0)
                 hero->animation.SetActiveSequenceIndex(sidx);

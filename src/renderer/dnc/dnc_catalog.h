@@ -14,6 +14,7 @@
 /// rig; @ref DncCatalogEntry records that so a host can offer the variants
 /// that are actually installed.
 
+#include "whiteout/flakes/enums.h" // Wc3ArtTier
 #include "whiteout/flakes/types.h"
 
 #include <span>
@@ -31,11 +32,29 @@ enum class DncRole : u8 {
 };
 
 /// @brief Which mod layer a DNC path is pinned to.
+///
+/// One value per Wc3ArtTier plus `Auto`, and in the same order, so the two
+/// convert by cast. They stay separate types because a pin is not a tier: a
+/// scene reading Definitive art can still want the classic rig's lighting, and
+/// `Auto` — which has no tier — is the whole point of the setting.
 enum class DncVariant : u8 {
-    Auto, ///< Resolve through the content provider's HD-mode mod chain.
+    Auto, ///< Resolve through the content provider's own art-tier chain.
     Sd,   ///< Pin to `war3.w3mod:`.
     Hd,   ///< Pin to `war3.w3mod:_hd.w3mod:`.
+    De,   ///< Pin to `war3.w3mod:_de.w3mod:`.
 };
+
+/// @brief The pin that names @p tier exactly.
+constexpr DncVariant DncVariantForTier(Wc3ArtTier tier) {
+    switch (tier) {
+    case Wc3ArtTier::Definitive:
+        return DncVariant::De;
+    case Wc3ArtTier::Reforged:
+        return DncVariant::Hd;
+    default:
+        return DncVariant::Sd;
+    }
+}
 
 /// @brief One installed DNC model.
 struct DncCatalogEntry {
@@ -47,6 +66,11 @@ struct DncCatalogEntry {
     std::string_view path;
     bool hasSd;
     bool hasHd;
+    /// Definitive ships every rig Reforged does — 13 of the 14 below, all but
+    /// Lordaeron's SD-only legacy target — plus three campaign rigs
+    /// (`DNCCampaign/Act2OutdoorDNC`, `CloudyDNC`, `DNCUndercityFinal`) that
+    /// are not family/role shaped and so are not in this table.
+    bool hasDe;
 };
 
 /// @brief One World Editor tileset and the DNC family it selects.

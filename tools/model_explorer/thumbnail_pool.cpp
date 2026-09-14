@@ -1,5 +1,6 @@
 #include "thumbnail_pool.h"
 
+#include "io/storage/storage_paths.h"
 #include "renderer/model/corn_effect_source.h"
 #include "thumbnail_framing.h"
 
@@ -161,14 +162,16 @@ void ThumbnailPool::LoadCell(Cell& cell) {
     renderer::model::Actor* hero = nullptr;
     if (cell.isEffect) {
         // A standalone effect has no material layers to probe, so derive its
-        // HD-ness from its archive location: an `_hd.w3mod` .pkb references HD
-        // particle textures and must load + render in HD, exactly as it would
-        // when attached to an HD model. The loader has no template to settle
-        // the scene from on this path, so settle it here — before the spawn,
-        // so the effect's texture acquires latch the right overlay (and
-        // ResetEffect's respawns inherit it from the scene).
-        cell.isHd = cell.path.find("_hd.w3mod") != std::string::npos;
+        // tier from its archive location: an `_hd.w3mod` or `_de.w3mod` .pkb
+        // references that tier's particle textures and must load + render in
+        // HD, exactly as it would when attached to an HD model. The loader has
+        // no template to settle the scene from on this path, so settle it here
+        // — before the spawn, so the effect's texture acquires latch the
+        // right tier (and ResetEffect's respawns inherit it from the scene).
+        const Wc3ArtTier effTier = io::Wc3TierOfPath(cell.path).value_or(Wc3ArtTier::Classic);
+        cell.isHd = effTier != Wc3ArtTier::Classic;
         sm.SetRenderMode(cell.isHd ? renderer::RenderMode::HD : renderer::RenderMode::SD);
+        sm.SetArtTier(effTier);
         auto src = std::make_shared<renderer::model::CornEffectSource>(cell.path);
         hero = svc_.Loader().SpawnUnitFromSource(src);
         cell.effectWarmup = 0; // frame once particles develop
@@ -176,6 +179,10 @@ void ThumbnailPool::LoadCell(Cell& cell) {
         hero = svc_.Loader().SpawnUnit(cell.path);
         if (hero) {
             cell.isHd = tools::IsHdModel(hero);
+            // The layers say how to draw it; the path says which tier's files
+            // its children and textures come from. Both, not one.
+            sm.SetArtTier(io::Wc3TierOfPath(cell.path)
+                              .value_or(cell.isHd ? Wc3ArtTier::Reforged : Wc3ArtTier::Classic));
             // Play the stand animation (or the first if there's no stand).
             const int idx = tools::PickStandSequenceIndex(hero);
             if (idx >= 0)

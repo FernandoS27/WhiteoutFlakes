@@ -2,6 +2,7 @@
 
 #include "io/product_detect.h"
 #include "io/progress.h"
+#include "io/storage/storage_paths.h"
 
 #include <filesystem>
 #include <system_error>
@@ -209,32 +210,22 @@ const char* BrowseTypeLabel(BrowseType one) {
 
 namespace {
 
-constexpr std::string_view kWc3ModRoot = "war3.w3mod:";
-
-// Does this CASC entry name a file through Warcraft III's TVFS mod chain?
-//
-// Reforged's root lists most of its content twice: once per mod
+// Reforged's root listed most of its content twice: once per mod
 // ("war3.w3mod:units\human\footman\footman.mdx" for the classic model,
 // "war3.w3mod:_hd.w3mod:..." for the Reforged one) and once under a bare name
-// that is the chain already resolved — so "Units\Human\Footman\Footman.mdx"
-// reads the HD file whenever an HD copy exists and the SD one otherwise.
-//
-// Only the chained spelling says which mod the bytes came from, so it is the
-// one to keep and the one a picker hands back. Testing for the root prefix
-// rather than for a ':' anywhere is deliberate: a loose-folder entry is an
-// absolute Windows path and its drive letter is not a mod chain.
-bool HasWc3ModChain(std::string_view archivePath) {
-    return archivePath.size() > kWc3ModRoot.size() &&
-           ToLower(std::string(archivePath.substr(0, kWc3ModRoot.size()))) == kWc3ModRoot;
-}
+// that was the chain already resolved. 3.0.0 dropped the bare spelling — five
+// entries in the whole root still have one — and nothing here changes for
+// that: the chained spelling was always the one worth keeping, because it is
+// the only one that says which mod the bytes came from, and it is what a
+// picker hands back. HasWc3ModChain itself lives in storage_paths.h, which the
+// read side shares.
 
-// Display form of an archive path: drop the leading "war3.w3mod:" mod prefix
-// and treat ':' as a folder separator like '\'.
-// CASC only: drop the mod prefix and fold ':' into the separator.
+// Display form of an archive path: drop the leading "war3.w3mod:" mod root and
+// treat ':' as a folder separator like '\', so each overlay browses as a
+// top-level folder ("_de.w3mod\units\...") instead of being flattened away.
+// Flattening them would collapse three different files into one entry.
 std::string CascToDisplay(std::string_view archivePath) {
-    std::string p(archivePath);
-    if (HasWc3ModChain(p))
-        p = p.substr(kWc3ModRoot.size());
+    std::string p(StripWc3ModRoot(archivePath));
     for (char& c : p)
         if (c == ':' || c == '/')
             c = '\\';

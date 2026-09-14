@@ -8,6 +8,7 @@
 ///        calls Pump(). Wait() and Cancel() act on a RequestId.
 
 #include "content_ref.h"
+#include "enums.h" // Wc3ArtTier
 #include "types.h"
 
 #include <functional>
@@ -146,20 +147,38 @@ public:
         return {};
     }
 
-    /// @brief Toggle HD mod-overlay precedence for subsequent reads.
-    ///        When `enabled` is true, providers that layer CASC/MPQ
-    ///        archives prefer the `_hd.w3mod` overlay before the base
-    ///        SD mod, matching Reforged's `W3Data::OpenMod` behaviour.
-    ///        Off by default. The host (viewer / plugin) is responsible
-    ///        for flipping this whenever the user switches render mode,
-    ///        plus any necessary asset-cache invalidation. Default
-    ///        implementation is a no-op for providers that don't layer
-    ///        archives.
-    virtual void SetHdMode(bool enabled) {
-        (void)enabled;
+    /// @brief Which Warcraft III art tier subsequent reads resolve through.
+    ///
+    /// Warcraft III's storage is a chain of mod overlays, and the tier says
+    /// which of them leads: `Classic` reads `war3.w3mod:`, `Reforged` puts
+    /// `_hd.w3mod:` in front of it, `Definitive` puts `_de.w3mod:` in front of
+    /// both. Each falls through to the older overlays, matching the game's own
+    /// `W3Data::OpenMod` and its `-hd 0|1|2`.
+    ///
+    /// `Classic` by default. The host (viewer / plugin) flips this when the
+    /// user picks a tier or opens a model from a known overlay, and owns any
+    /// asset-cache invalidation that follows. A no-op for providers that do not
+    /// layer archives, and meaningless for every other game — their storages
+    /// have one namespace.
+    virtual void SetArtTier(Wc3ArtTier tier) {
+        (void)tier;
     }
-    virtual bool HdMode() const {
-        return false;
+    virtual Wc3ArtTier ArtTier() const {
+        return Wc3ArtTier::Classic;
+    }
+
+    /// @brief The two-state view of @ref SetArtTier, for callers that only have
+    ///        a render mode to go on.
+    ///
+    /// `true` selects `Reforged`, which is what "HD" meant before 3.0.0 added a
+    /// third tier — so a caller that knows nothing about Definitive keeps
+    /// reading exactly the art it used to. Ask for `Definitive` by name.
+    void SetHdMode(bool enabled) {
+        SetArtTier(enabled ? Wc3ArtTier::Reforged : Wc3ArtTier::Classic);
+    }
+    /// @brief Whether any HD-material tier is selected (Reforged or Definitive).
+    bool HdMode() const {
+        return ArtTier() != Wc3ArtTier::Classic;
     }
 };
 

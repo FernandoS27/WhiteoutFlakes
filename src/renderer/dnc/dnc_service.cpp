@@ -62,7 +62,7 @@ void DncService::AcquireNow() {
     // depends on a shared provider's global HD flag.
     const std::string resolved =
         (DncVariantOf(unitPath_) == DncVariant::Auto)
-            ? DncPathForVariant(unitPath_, hdPreference_ ? DncVariant::Hd : DncVariant::Sd)
+            ? DncPathForVariant(unitPath_, DncVariantForTier(tierPreference_))
             : unitPath_;
     unitAsset_ = cache_->Acquire(resolved);
     if (!unitAsset_ || !unitAsset_->HasLight()) {
@@ -83,10 +83,10 @@ void DncService::AcquireNow() {
     warnedMissing_ = false;
 }
 
-void DncService::SetHdPreference(bool hd) {
-    if (hd == hdPreference_)
+void DncService::SetArtTierPreference(Wc3ArtTier tier) {
+    if (tier == tierPreference_)
         return;
-    hdPreference_ = hd;
+    tierPreference_ = tier;
     // Only an unpinned path changes meaning; a pinned one already names its layer.
     if (DncVariantOf(unitPath_) == DncVariant::Auto)
         ReacquireAsset();

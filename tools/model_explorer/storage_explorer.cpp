@@ -3,6 +3,7 @@
 #include "io/load_task.h"
 
 #include "io/file_content_provider.h"
+#include "io/storage/storage_paths.h"
 #include "renderer/render_pipeline.h"
 #include "renderer/render_settings.h"
 
@@ -352,11 +353,18 @@ void StorageExplorer::FinishOpenCasc(const std::string& root) {
     provider_->SetInstallPath(browser_.Kind() == io::StorageKind::Mpq
                                   ? std::filesystem::path(browser_.Root()).parent_path().string()
                                   : browser_.Root());
-    // The `_hd.w3mod` overlay is Warcraft III's Reforged CASC chain; a classic
-    // install has no mod chain to overlay and every HD lookup in one misses.
+    // Warcraft III's overlays only exist in a CASC install; a classic
+    // MPQ-only one has no mod chain and every overlay lookup in it misses.
+    //
+    // Reforged and not Definitive, even though Definitive reaches more files:
+    // this is only the tier a read falls back to when nothing else has said,
+    // and every cell re-arms its own from the path its model came from
+    // (ThumbnailPool::Spawn). Leaving the fallback where it has always been
+    // keeps a browse of a pre-3.0.0 install, and of every non-Definitive
+    // model, resolving exactly as it did.
     const bool browseHd = (product == ProductId::Wc3 || product == ProductId::Neutral) &&
                           browser_.Kind() == io::StorageKind::Casc;
-    provider_->SetHdMode(browseHd);
+    provider_->SetArtTier(browseHd ? Wc3ArtTier::Reforged : Wc3ArtTier::Classic);
     if (pool_) {
         // Before Clear, so the cells this open builds already know which game
         // they are showing: it decides whether a new cell scene stands the

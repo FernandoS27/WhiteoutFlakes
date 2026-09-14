@@ -17,15 +17,19 @@
 
 #include "io/file_content_provider.h"
 #include "io/storage/casc_registry.h"
+#include "io/storage/storage_paths.h"
 #include "io/storage_browser.h"
 #include "whiteout/flakes/content_ref.h"
 
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <string>
 
 using whiteout::flakes::ProductId;
+using whiteout::flakes::Wc3ArtTier;
 using whiteout::flakes::io::FileContentProvider;
 using whiteout::flakes::io::OpenCascCount;
 using whiteout::flakes::io::StorageBrowser;
@@ -292,6 +296,130 @@ TEST_CASE("Switching product follows that product's install", "[provider]") {
     CHECK(p.Game() == ProductId::Wc3);
     CHECK(p.InstallPath() == p.Wc3Path());
     CHECK(p.MpqList() == FileContentProvider::DefaultMpqList());
+}
+
+TEST_CASE("A Warcraft III storage reads every art tier", "[provider][tier]") {
+    FileContentProvider p;
+    if (p.GamePath(ProductId::Wc3).empty())
+        SKIP("no Warcraft III install found");
+    p.SetGame(ProductId::Wc3);
+    if (!p.HasCasc())
+        SKIP("Warcraft III install has no CASC storage (pre-Reforged?)");
+
+    // Every tier's own spelling of one path that all three ship. The chained
+    // spelling reads verbatim, whatever tier the provider is set to: it names
+    // its overlay outright, and a prefix in front of it would only spell
+    // "war3.w3mod:war3.w3mod:...".
+    const char* kTiered[] = {
+        "war3.w3mod:units\\human\\footman\\footman.mdx",
+        "war3.w3mod:_hd.w3mod:units\\human\\footman\\footman.mdx",
+        "war3.w3mod:_de.w3mod:units\\human\\footman\\footman.mdx",
+    };
+    std::size_t sizes[3] = {0, 0, 0};
+    for (int i = 0; i < 3; ++i) {
+        auto bytes = p.ReadFile(kTiered[i]);
+        if (bytes)
+            sizes[i] = bytes->size();
+        std::printf("[provider] wc3 tier %d footman: %zu bytes\n", i, sizes[i]);
+    }
+    // A 3.0.0 install has all three. An older one has no `_de.w3mod` at all,
+    // and saying so is more useful than failing: the tier chain is still right,
+    // there is just nothing in that overlay to find.
+    CHECK(sizes[0] > 0);
+    CHECK(sizes[1] > 0);
+    if (sizes[2] == 0) {
+        WARN("no _de.w3mod overlay — install predates Warcraft III 3.0.0");
+        return;
+    }
+    // Three different files, not three names for one. If a chained read were
+    // being resolved through the chain instead of verbatim, two of these would
+    // come back identical.
+    CHECK(sizes[0] != sizes[1]);
+    CHECK(sizes[1] != sizes[2]);
+
+    // The unchained spelling — what a model's own texture and child-model
+    // references look like — resolves through whichever tier is selected, and
+    // that is the whole point of the setting.
+    const char* kBare = "units\\human\\footman\\footman.mdx";
+    p.SetArtTier(Wc3ArtTier::Classic);
+    auto classic = p.ReadFile(kBare);
+    p.SetArtTier(Wc3ArtTier::Reforged);
+    auto reforged = p.ReadFile(kBare);
+    p.SetArtTier(Wc3ArtTier::Definitive);
+    auto definitive = p.ReadFile(kBare);
+    REQUIRE(classic);
+    REQUIRE(reforged);
+    REQUIRE(definitive);
+    CHECK(classic->size() == sizes[0]);
+    CHECK(reforged->size() == sizes[1]);
+    CHECK(definitive->size() == sizes[2]);
+
+    // And the part that was actually broken: a file only the Definitive
+    // overlay has. Before 3.0.0 support it was unreachable under every tier,
+    // because no chain named `_de.w3mod:` — so the model loaded and then
+    // hunted its textures through overlays that do not hold them.
+    //
+    // Scanned rather than hardcoded: which paths are Definitive-only is a
+    // property of the installed build.
+    StorageBrowser b;
+    b.SetOpenTypes(whiteout::flakes::io::BrowseType::Models);
+    std::string err;
+    if (!b.Open(p.InstallPath(), StorageKind::Casc, &err))
+        SKIP("could not browse the Warcraft III install: " + err);
+
+    // Walk the Definitive overlay for a model the older ones do not have. The
+    // browser is the right way in rather than a second enumeration: it is what
+    // the CASC Browser itself lists from, so this also checks that the display
+    // path it hands back is one the provider can actually read.
+    std::string deOnly;
+    const std::function<void(const std::string&, int)> walk =
+        [&](const std::string& dir, int depth) {
+            if (!deOnly.empty() || depth > 8)
+                return;
+            const auto kids = b.TreeChildren(dir);
+            for (const std::string& f : kids.files) {
+                if (f.size() < 4 || f.compare(f.size() - 4, 4, ".mdx") != 0)
+                    continue;
+                const std::string archive = b.ChildPathAt(dir, f);
+                const auto tier = whiteout::flakes::io::Wc3TierOfPath(archive);
+                if (tier != Wc3ArtTier::Definitive)
+                    continue;
+                // The path as a model would reference it: no chain at all.
+                const std::string bare =
+                    std::string(whiteout::flakes::io::StripWc3ModRoot(archive))
+                        .substr(std::strlen("_de.w3mod:"));
+                p.SetArtTier(Wc3ArtTier::Reforged);
+                if (auto other = p.ReadFile(bare); other && !other->empty())
+                    continue; // the older overlays have it too; not a witness
+                deOnly = bare;
+                return;
+            }
+            for (const std::string& sub : kids.folders) {
+                // Skip a nested sub-mod (`_teen.w3mod`, `_tilesets\a.w3mod`) —
+                // the browser shows each as a folder, so it has no ':' left to
+                // spot it by. Its files resolve fine, but a witness carrying a
+                // second chain proves less about an ordinary model reference
+                // than a plain `abilities\...` path does.
+                if (sub.size() >= 6 && sub.compare(sub.size() - 6, 6, ".w3mod") == 0)
+                    continue;
+                walk(dir.empty() ? sub : dir + "\\" + sub, depth + 1);
+                if (!deOnly.empty())
+                    return;
+            }
+        };
+    walk("_de.w3mod", 0);
+
+    if (deOnly.empty()) {
+        WARN("no Definitive-only .mdx found to check");
+        return;
+    }
+    std::printf("[provider] wc3 Definitive-only model: %s\n", deOnly.c_str());
+    p.SetArtTier(Wc3ArtTier::Definitive);
+    auto found = p.ReadFile(deOnly);
+    CHECK((found && !found->empty()));
+    p.SetArtTier(Wc3ArtTier::Reforged);
+    auto notFound = p.ReadFile(deOnly);
+    CHECK((!notFound || notFound->empty()));
 }
 
 TEST_CASE("A WoW storage reads by fileDataID", "[provider]") {

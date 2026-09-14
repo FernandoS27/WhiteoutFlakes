@@ -6,9 +6,9 @@
 // The three games differ here more than anywhere else, so the differences are
 // options rather than branches spread through a read:
 //
-//   Warcraft III  a TVFS mod chain (`war3.w3mod:` / `_hd.w3mod:`) that every
-//                 path is tried under, in an order the HD toggle flips, plus
-//                 the Reforged frame-suffix rename.
+//   Warcraft III  a TVFS mod chain (`war3.w3mod:` / `_hd.w3mod:` / `_de.w3mod:`)
+//                 that every path is tried under, in an order the selected art
+//                 tier picks, plus the Reforged frame-suffix rename.
 //   World of Warcraft  bare paths, but the root is keyed by fileDataID and
 //                 carries no names at all without a community listfile.
 //   StarCraft II / Heroes  readable names, but every asset lives under a mod
@@ -24,12 +24,15 @@
 #include "casc_registry.h"
 #include "storage_source.h"
 
+#include "whiteout/flakes/enums.h"
+
 #if WHITEOUT_HAS_CASC
 
 #include <whiteout/storages/casc/storage.h>
 
 #include <atomic>
 #include <memory>
+#include <span>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -39,14 +42,14 @@ namespace whiteout::flakes::io {
 class ProgressMonitor;
 
 struct CascSourceOptions {
-    // Warcraft III's mod-prefix chain. Non-null enables it, and the flag it
-    // points at picks the order: HD first when set, so `_hd.w3mod` overrides
-    // win — the same dance as Reforged's W3Data::OpenMod. Every other product
-    // stores bare paths and leaves this null.
+    // Warcraft III's mod-prefix chain. Non-null enables it, and the tier it
+    // points at picks which overlay leads — the same dance as the game's own
+    // W3Data::OpenMod, whose three tiers it names. Every other product stores
+    // bare paths and leaves this null.
     //
-    // A pointer rather than a copy because the host flips HD mode at runtime
+    // A pointer rather than a copy because the host changes tier at runtime
     // and a reopen for that would be absurd.
-    const std::atomic<bool>* hdMode = nullptr;
+    const std::atomic<Wc3ArtTier>* artTier = nullptr;
 
     // Reads by fileDataID (World of Warcraft). Costs nothing until an id is
     // actually asked for.
@@ -106,8 +109,10 @@ public:
 private:
     CascSource(std::shared_ptr<const SharedCasc> shared, const CascSourceOptions& opts);
 
-    // One stem, every prefix and extension this source knows. True on a hit.
-    bool ReadStem(const std::string& stem, const std::string& ext, SourceRead& out) const;
+    // One stem, every extension this source knows, under each of `prefixes` in
+    // turn. True on a hit.
+    bool ReadStem(const std::string& stem, const std::string& ext,
+                  std::span<const char* const> prefixes, SourceRead& out) const;
 
     // One prefix, the asked extension then its alternates. True on a hit.
     bool ReadPrefixed(const std::string& prefix, const std::string& stem, const std::string& ext,
@@ -125,7 +130,7 @@ private:
     // — `casc::Storage`'s read API takes its own shared lock, so concurrent
     // reads through one handle need nothing here.
     std::shared_ptr<const SharedCasc> shared_;
-    const std::atomic<bool>* hdMode_ = nullptr;
+    const std::atomic<Wc3ArtTier>* artTier_ = nullptr;
     bool fileIds_ = false;
     bool frameSuffixFallback_ = false;
     bool assetPrefixFallback_ = false;
