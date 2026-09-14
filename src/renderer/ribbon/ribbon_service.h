@@ -13,6 +13,7 @@
 #include "types.h"
 #include "whiteout/flakes/types.h"
 
+#include <climits>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -44,11 +45,10 @@ struct EmitterKey {
 
 class RibbonService {
 public:
-    void AddEmitter(ModelId model, i32 emitterId, const RibbonDesc& desc,
-                    const RibbonBehavior& behavior);
-    /// @brief Register a desc that already knows its family — the SC2 route,
-    ///        whose desc DescFromSc2Config built (behavior is the WC3↔WoW
-    ///        sub-dialect and does not apply).
+    /// @brief Register one emitter. The desc carries its own family AND its
+    ///        WC3/WoW sub-dialect, so there is one overload: the SC2 route
+    ///        used to take the other one and be handed a WC3 behaviour that
+    ///        described neither runtime it runs.
     void AddEmitter(ModelId model, i32 emitterId, const RibbonDesc& desc);
     void RemoveModel(ModelId model);
     void Clear();
@@ -88,6 +88,24 @@ public:
         const;
 
 private:
+    /// The map's lower bound for a model's range: smaller than any real id,
+    /// never one itself.
+    static constexpr i32 kBeforeFirstEmitterId = INT32_MIN;
+
+    /// Apply @p fn to every emitter of @p model, in id order. The map is
+    /// ordered precisely so this range exists (and so draw order is not
+    /// seeded by a hash), and four call sites were open-coding the walk.
+    template <class Self, class Fn>
+    static void ForModel(Self& self, ModelId model, Fn&& fn) {
+        for (auto it = self.emitters_.lower_bound({model, kBeforeFirstEmitterId});
+             it != self.emitters_.end() && it->first.model == model; ++it)
+            fn(it);
+    }
+
+    /// The mutex guards the map's STRUCTURE, not the emitters in it:
+    /// registration happens on the load thread and the per-frame walks are
+    /// the frame's. That is why `GetEmitter` may hand back a pointer the
+    /// caller keeps, the same contract ParticleService runs under.
     mutable std::mutex mutex_;
     std::map<EmitterKey, RibbonEmitter> emitters_;
 };

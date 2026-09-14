@@ -2,15 +2,10 @@
 
 namespace whiteout::flakes::renderer::ribbon {
 
-void RibbonService::AddEmitter(ModelId model, i32 emitterId, const RibbonDesc& desc,
-                               const RibbonBehavior& behavior) {
+void RibbonService::AddEmitter(ModelId model, i32 emitterId,
+                               const RibbonDesc& desc) {
     std::lock_guard<std::mutex> lock(mutex_);
-    emitters_[{model, emitterId}] = RibbonEmitter(desc, behavior);
-}
-
-void RibbonService::AddEmitter(ModelId model, i32 emitterId, const RibbonDesc& desc) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    emitters_[{model, emitterId}] = RibbonEmitter(desc, RibbonBehavior::Wc3());
+    emitters_[{model, emitterId}].SetDesc(desc);
 }
 
 void RibbonService::RemoveModel(ModelId model) {
@@ -48,7 +43,7 @@ const RibbonEmitter* RibbonService::GetEmitter(ModelId model, i32 emitterId) con
 
 bool RibbonService::HasEmittersForModel(ModelId model) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = emitters_.lower_bound({model, INT32_MIN});
+    auto it = emitters_.lower_bound({model, kBeforeFirstEmitterId});
     return it != emitters_.end() && it->first.model == model;
 }
 
@@ -68,9 +63,7 @@ i32 RibbonService::TotalEdgeCount() const {
 i32 RibbonService::EdgeCountForModel(ModelId model) const {
     std::lock_guard<std::mutex> lock(mutex_);
     i32 total = 0;
-    for (auto it = emitters_.lower_bound({model, INT32_MIN});
-         it != emitters_.end() && it->first.model == model; ++it)
-        total += (i32)it->second.Edges().size();
+    ForModel(*this, model, [&](auto it) { total += (i32)it->second.Edges().size(); });
     return total;
 }
 
@@ -83,9 +76,7 @@ void RibbonService::SetState(ModelId model, i32 emitterId, const RibbonState& st
 
 void RibbonService::SimulateModel(ModelId model, f32 dt) {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto it = emitters_.lower_bound({model, INT32_MIN});
-         it != emitters_.end() && it->first.model == model; ++it)
-        it->second.Update(dt);
+    ForModel(*this, model, [dt](auto it) { it->second.Update(dt); });
 }
 
 void RibbonService::Simulate(f32 dt) {
@@ -98,8 +89,7 @@ void RibbonService::BuildGeometry(ModelId model, const RibbonBuildContext& ctx,
                                   std::vector<Vertex>& outVertices,
                                   std::vector<RibbonDrawList>& outDrawLists) const {
     std::lock_guard<std::mutex> lock(mutex_);
-    for (auto it = emitters_.lower_bound({model, INT32_MIN});
-         it != emitters_.end() && it->first.model == model; ++it) {
+    ForModel(*this, model, [&](auto it) {
         // The BUILD stage owns vertices AND draw records (per-layer fan-out
         // for WC3, the m3Surface record for SC2); only the map key is stamped
         // here, because the emitter does not know it.
@@ -109,7 +99,7 @@ void RibbonService::BuildGeometry(ModelId model, const RibbonBuildContext& ctx,
             outDrawLists[i].model = model;
             outDrawLists[i].emitterId = it->first.id;
         }
-    }
+    });
 }
 
 void RibbonService::ForEachEmitter(

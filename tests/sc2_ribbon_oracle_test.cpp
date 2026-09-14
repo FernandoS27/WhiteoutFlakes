@@ -79,7 +79,7 @@ TEST_CASE("o1: technique selection replays the binary's truth table",
         cfg.noiseAmplitude = std::bit_cast<f32>(in["noiseBits"].U());
         cfg.cullMethod = static_cast<u8>(in["cull"].I());
 
-        const u8 got = SelectSc2SimTechnique(cfg);
+        const u8 got = static_cast<u8>(SelectSc2SimTechnique(cfg));
         const u8 want = static_cast<u8>(c["out"]["technique"].I());
         INFO("case " << i << ": flags=0x" << std::hex << cfg.flags << std::dec
                      << " splines=" << cfg.splines.size() << " forces=" << cfg.forcesFallback
@@ -107,7 +107,7 @@ TEST_CASE("o1: the derivation lands in the desc at conversion",
 }
 
 // ---------------------------------------------------------------------------
-// O3 — the emit clock. `Sc2EmitGate` replays UpdateEmit bit-for-bit: the
+// O3 — the emit clock. `EmitGate` replays UpdateEmit bit-for-bit: the
 // accumulate-or-not behaviour of every early-out, the one-period-per-call
 // bank, the 1.0/3.0/startBlend returns, and the renderFlag bookkeeping.
 // ---------------------------------------------------------------------------
@@ -132,7 +132,7 @@ TEST_CASE("o3: the emit clock replays UpdateEmit", "[ribbon][sc2_ribbon][oracle]
         g.splinePresent = in["spline"].I() != 0;
         g.active = in["active"].I() != 0;
         g.worldReemit = in["flag8"].I() != 0;
-        g.simTechnique = static_cast<u8>(in["tech"].I());
+        g.simTechnique = static_cast<SimTechnique>(in["tech"].I());
         g.haveHead = (buffer == "head");
         g.headU = Bits(in["headU"]);
         g.headBirthU = Bits(in["birthU"]);
@@ -140,7 +140,7 @@ TEST_CASE("o3: the emit clock replays UpdateEmit", "[ribbon][sc2_ribbon][oracle]
         g.quality = in["quality"].I();
         g.lodCut = in["lodCut"].I();
         g.lodReduce = in["lodReduce"].I();
-        g.cullMethod = static_cast<u8>(in["cull"].I());
+        g.cullMethod = static_cast<CullMethod>(in["cull"].I());
         g.emissionScale = Bits(in["scale"]);
         g.divisions = Bits(in["div"]);
         g.lifetimeAux = Bits(in["lifeAux"]);
@@ -150,7 +150,7 @@ TEST_CASE("o3: the emit clock replays UpdateEmit", "[ribbon][sc2_ribbon][oracle]
         g.nodeActive = in["nodeActive"].I() != 0;
         g.elementCount = in["elemCount"].U();
 
-        const sc2::EmitGateResult r = sc2::Sc2EmitGate(clk, g);
+        const sc2::EmitGateResult r = sc2::EmitGate(clk, g);
         INFO("case " << i << " tag=" << (c.Has("tag") ? c["tag"].S() : ""));
         REQUIRE(std::bit_cast<u32>(r.ret) == out["ret_bits"].U());
         REQUIRE(std::bit_cast<u32>(clk.dtAccumulator) == out["acc_bits"].U());
@@ -259,9 +259,9 @@ TEST_CASE("o4: the head element replays UpdateHeadSegment",
         const auto& out = c["out"];
 
         sc2::HeadInputs h;
-        h.simTechnique = static_cast<u8>(in["tech"].I());
-        h.ribbonType = static_cast<u8>(in["ribbonType"].I());
-        h.cullMethod = static_cast<u8>(in["cull"].I());
+        h.simTechnique = static_cast<SimTechnique>(in["tech"].I());
+        h.ribbonType = static_cast<whiteout::m3::RibbonType>(in["ribbonType"].I());
+        h.cullMethod = static_cast<CullMethod>(in["cull"].I());
         h.swapYawPitch = (in["flags"].U() & 0x8000u) != 0;
         h.headU = Bits(in["headU"]);
         h.yawDeg = in["yaw"].F();
@@ -276,12 +276,12 @@ TEST_CASE("o4: the head element replays UpdateHeadSegment",
         h.nowMs = in["frameMs"].U();
         h.prevExpireMs = in["expire0"].U();
 
-        sc2::HeadElement e = sc2::Sc2WriteHead(h);
-        // The 1e-4 stationary floor (techs 0/2/3) moved out of Sc2WriteHead to
+        sc2::HeadElement e = sc2::WriteHead(h);
+        // The 1e-4 stationary floor (techs 0/2/3) moved out of WriteHead to
         // the caller (DRIFT-1: the binary floors AFTER transform+inherit). This
         // golden is the full UpdateHeadSegment and its subset is local +
         // no-inherit + identity, so replay the floor here on the local dir.
-        if (h.simTechnique == 0 || h.simTechnique == 2 || h.simTechnique == 3) {
+        if (AppliesStationaryFloor(h.simTechnique)) {
             const f32 sq = (e.velocity.x * e.velocity.x + e.velocity.y * e.velocity.y) +
                            e.velocity.z * e.velocity.z;
             if (sq < 1e-4f)
@@ -320,7 +320,7 @@ TEST_CASE("o4: the head element replays UpdateHeadSegment",
 
 // ---------------------------------------------------------------------------
 // O4b — UpdateHeadSegment over its FULL surface (inherit / floor order /
-// waves / world). Replays Sc2WriteHead (waves + swap) then the
+// waves / world). Replays WriteHead (waves + swap) then the
 // CommitSc2Segment velocity/up/floor sequence (ribbon_emitter.cpp:638-672),
 // reconstructed here because that method reads member state. This pins DRIFT-1
 // (the 1e-4 floor runs AFTER the inherit add, on the post-inherit vector) and
@@ -331,7 +331,7 @@ TEST_CASE("o4: the head element replays UpdateHeadSegment",
 // Not replayed, by design: the world element position is the matrix
 // translation, which the C++ replaces with the per-frame interpolated origin
 // (the accepted A2 deviation). And length-mode expireFrameMs uses the FINAL
-// velocity magnitude in the binary, but Sc2WriteHead only has the local
+// velocity magnitude in the binary, but WriteHead only has the local
 // pre-inherit speed; expireFrameMs is a dead reclamation hint (never consumed),
 // so a length-mode ribbon that also inherits is an accepted deviation, checked
 // only where the two velocities agree.
@@ -350,9 +350,9 @@ TEST_CASE("o4b: the head element replays the full UpdateHeadSegment surface",
         INFO("case " << i << " tag=" << (c.Has("tag") ? c["tag"].S() : ""));
 
         sc2::HeadInputs h;
-        h.simTechnique = static_cast<u8>(in["tech"].I());
-        h.ribbonType = static_cast<u8>(in["ribbonType"].I());
-        h.cullMethod = static_cast<u8>(in["cull"].I());
+        h.simTechnique = static_cast<SimTechnique>(in["tech"].I());
+        h.ribbonType = static_cast<whiteout::m3::RibbonType>(in["ribbonType"].I());
+        h.cullMethod = static_cast<CullMethod>(in["cull"].I());
         h.swapYawPitch = (in["flags"].U() & 0x8000u) != 0;
         h.headU = Bits(in["headU"]);
         h.yawDeg = in["yaw"].F();
@@ -375,7 +375,7 @@ TEST_CASE("o4b: the head element replays the full UpdateHeadSegment surface",
         h.overlayPhase = in["overlayPhase"].F();
         h.overlayTime = in["overlayTime"].F();
 
-        const sc2::HeadElement e0 = sc2::Sc2WriteHead(h);
+        const sc2::HeadElement e0 = sc2::WriteHead(h);
 
         // Reconstruct CommitSc2Segment: world transform -> inherit -> floor.
         const bool world = (in["additionalFlags"].U() & 0x8u) != 0;
@@ -399,7 +399,7 @@ TEST_CASE("o4b: the head element replays the full UpdateHeadSegment surface",
             const f32 pv = in["particleVel"].F();
             vel = {vel.x + sd.x * pv, vel.y + sd.y * pv, vel.z + sd.z * pv};
         }
-        if (h.simTechnique == 0 || h.simTechnique == 2 || h.simTechnique == 3) {
+        if (AppliesStationaryFloor(h.simTechnique)) {
             const f32 sq = (vel.x * vel.x + vel.y * vel.y) + vel.z * vel.z;
             if (sq < 1e-4f)
                 vel = {dirRef.x * 1e-4f, dirRef.y * 1e-4f, dirRef.z * 1e-4f};
@@ -429,7 +429,7 @@ TEST_CASE("o4b: the head element replays the full UpdateHeadSegment surface",
         REQUIRE(std::bit_cast<u32>(e0.invMass) == out["invMass"].U());
         REQUIRE(std::bit_cast<u32>(e0.birthU) == out["birthU"].U());
         REQUIRE(std::bit_cast<u32>(e0.deathU) == out["deathU"].U());
-        if (!(h.cullMethod == 1 && inherit))
+        if (!(h.cullMethod == CullMethod::Length && inherit))
             REQUIRE(e0.expireFrameMs == out["expire"].U());
 
         // Alpha overlay wave: each stop's alpha byte + wave*255, clamped [0,255]
@@ -485,7 +485,7 @@ TEST_CASE("o5: catch-up tick count replays CatchUpEmission",
             }
         }
 
-        const sc2::CatchUpResult r = sc2::Sc2CatchUpTicks(cull, speed, lifetime, maxLen);
+        const sc2::CatchUpResult r = sc2::CatchUpTicks(static_cast<CullMethod>(cull), speed, lifetime, maxLen);
         INFO("case " << i << " tag=" << (c.Has("tag") ? c["tag"].S() : ""));
         REQUIRE(r.ticks == out["ticks"].I());
     }
@@ -497,10 +497,10 @@ TEST_CASE("o5: catch-up tick count replays CatchUpEmission",
 // carrying headU / the scroll remainder / elementCount across ticks. The golden
 // is the resulting emission SCHEDULE: per-tick emit count, headU trajectory,
 // scroll remainder, running count, and the cumulative birthU total. This is the
-// binary's own multi-tick composition; the C++ pre-roll (Sc2CatchUpTicks + the
+// binary's own multi-tick composition; the C++ pre-roll (CatchUpTicks + the
 // Sc2Append loop, ribbon_emitter.cpp:706) reimplements the same accumulator
 // (numNew = floor(accum + dt·rate), remainder carried, headU += dt), so replay
-// it here: K from the real Sc2CatchUpTicks, then the accumulator with the same
+// it here: K from the real CatchUpTicks, then the accumulator with the same
 // per-tick step (uvStep = dt·rate). Bit-exact — identical f32 accumulation.
 //
 // Pins the cross-tick composition (counts, headU, remainder, total). The
@@ -526,8 +526,8 @@ TEST_CASE("o5b: the pre-roll emission schedule composes CatchUpEmission + EmitSe
         INFO("case " << i << " tag=" << tag);
 
         // K + earlyOut from the real pre-roll clock.
-        const sc2::CatchUpResult cu = sc2::Sc2CatchUpTicks(
-            static_cast<u8>(in["cull"].I()), in["speed"].F(), in["lifetime"].F(),
+        const sc2::CatchUpResult cu = sc2::CatchUpTicks(
+            static_cast<CullMethod>(in["cull"].I()), in["speed"].F(), in["lifetime"].F(),
             in["maxLen"].F());
         // The binary signals "no pre-roll" by running zero ticks (the too-slow
         // length skip returns before the loop); the C++ reports it as earlyOut.
@@ -1267,7 +1267,7 @@ TEST_CASE("o13: the animated fillers displace each vertex by the retail envelope
             // `AnimatedLifetime` takes the life fraction, `Animated` the
             // element's arc parameter.
             const f32 t = lifetime ? (headU - birthU) / (deathU - birthU) : Bits(el["arcNorm"]);
-            const Vector3f off = Sc2NoiseDisplacement(t, headU, amp, freq, coh, edge, spline);
+            const Vector3f off = sc2::NoiseDisplacement(t, headU, amp, freq, coh, edge, spline);
             const f32 got[3] = {off.x + Bits(el["pos"][0]), off.y + Bits(el["pos"][1]),
                                 off.z + Bits(el["pos"][2])};
             for (u32 s = 0; s < subdiv; ++s) {

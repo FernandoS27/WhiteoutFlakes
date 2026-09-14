@@ -1,6 +1,5 @@
 #include "renderer/ribbon/ribbon_emitter.h"
 
-#include <bit>
 #include <cmath>
 
 // ============================================================================
@@ -24,16 +23,31 @@ using ::whiteout::flakes::renderer::sc2::kLodCut;
 using ::whiteout::flakes::renderer::sc2::kLodReduce;
 using ::whiteout::flakes::renderer::sc2::LodIndex;
 
-constexpr f32 kFltMax = 3.4028235e38f; // dword_103AAD5F0
-constexpr f32 kStartBlend = 1.0f;      // startBlend (dword_103AD52E0)
-constexpr f32 kSqDistGate = 1e-4f;     // dword_103BB6B78
-constexpr f32 kHeadUGate = 1e-3f;      // dword_103BC8C10
-constexpr f32 kDegToRad = 0.017453292f;// dword_103C472B8
-constexpr f32 kMsPerSec = 1000.0f;     // dword_103C45910
+namespace vs = ::whiteout::flakes::renderer::sc2::vs;
+
+// The measured constants live in ribbon_constants.h — they were spelled twice,
+// once here and once in the emitter, and two of the pairs cited the same
+// binary dword under two different names.
 
 } // namespace
 
-EmitGateResult Sc2EmitGate(EmitClock& clk, const EmitGateInputs& in) {
+vs::Mat3 YawPitchBasis(f32 yawDeg, f32 pitchDeg, bool swap) {
+    // Math_MatrixFromYawPitchRoll (0x100d56240) with roll = 0. Row-major, so
+    // `v·M` (vs::MulVecMat3) matches the engine; row 2 = (sin yaw, −sin pitch·
+    // cos yaw, cos pitch·cos yaw) is the emission direction. Without the swap
+    // a2 = pitch and a3 = yaw.
+    const f32 a2 = (swap ? yawDeg : pitchDeg) * kDegToRad;
+    const f32 a3 = (swap ? pitchDeg : yawDeg) * kDegToRad;
+    const f32 s2 = std::sin(a2), c2 = std::cos(a2);
+    const f32 s3 = std::sin(a3), c3 = std::cos(a3);
+    vs::Mat3 m{};
+    m.m[0][0] = c3;   m.m[0][1] = s3 * s2;   m.m[0][2] = -s3 * c2;
+    m.m[1][0] = 0.0f; m.m[1][1] = c2;        m.m[1][2] = s2;
+    m.m[2][0] = s3;   m.m[2][1] = -s2 * c3;  m.m[2][2] = c3 * c2;
+    return m;
+}
+
+EmitGateResult EmitGate(EmitClock& clk, const EmitGateInputs& in) {
     EmitGateResult r;
 
     // Spline emitters bank dt and never gate here.
@@ -48,12 +62,14 @@ EmitGateResult Sc2EmitGate(EmitClock& clk, const EmitGateInputs& in) {
     // gate on head movement (squared distance), tech {0,2,3} on the headU
     // delta. Both early-out WITHOUT accumulating.
     if (in.haveHead && in.worldReemit) {
-        if (in.simTechnique > 3 || in.simTechnique == 1) {
+        const bool gateOnDistance = (in.simTechnique == SimTechnique::Legacy ||
+                                     in.simTechnique == SimTechnique::Spline);
+        if (gateOnDistance) {
             const f32 dx = in.headElemPos.x - in.headPos.x;
             const f32 dy = in.headElemPos.y - in.headPos.y;
             const f32 dz = in.headElemPos.z - in.headPos.z;
             const f32 sq = dz * dz + (dy * dy + dx * dx);
-            if (sq < kSqDistGate)
+            if (sq < kSqStationaryFloor)
                 return r;
         } else {
             if ((in.headU - in.headBirthU) < kHeadUGate)
@@ -70,7 +86,8 @@ EmitGateResult Sc2EmitGate(EmitClock& clk, const EmitGateInputs& in) {
 
     const f32 reduce = kLodReduce[LodIndex(in.lodReduce, in.quality)];
     const f32 rate = (in.emissionScale * reduce) * in.divisions;
-    const f32 aux = (in.cullMethod == 1) ? in.maxLengthAux : in.lifetimeAux;
+    const f32 aux =
+        (in.cullMethod == CullMethod::Length) ? in.maxLengthAux : in.lifetimeAux;
     const f32 period = (rate == 0.0f) ? kFltMax : aux / rate;
     if (clk.dtAccumulator < period)
         return r; // no lapse; keep the accumulated dt.
@@ -79,22 +96,22 @@ EmitGateResult Sc2EmitGate(EmitClock& clk, const EmitGateInputs& in) {
     r.sampled = true;
     r.activeState = in.sampledActive ? 1u : 0u;
     if (!in.sampledActive || !in.nodeActive) {
-        clk.renderFlags &= static_cast<u16>(~0x2u);
+        clk.renderFlags &= static_cast<u16>(~kEmittingFlag);
         return r;
     }
     u32 combined = clk.renderFlags | (static_cast<u32>(clk.renderFlagsHi) << 16);
-    if (combined & 0x2u) {
+    if (combined & kEmittingFlag) {
         r.ret = kStartBlend; // already emitting
         return r;
     }
-    combined |= 0x2u;
+    combined |= kEmittingFlag;
     clk.renderFlagsHi = static_cast<u8>(combined >> 16);
     clk.renderFlags = static_cast<u16>(combined);
-    r.ret = (in.elementCount == 0) ? kStartBlend : 3.0f;
+    r.ret = (in.elementCount == 0) ? kStartBlend : kEmitReactivated;
     return r;
 }
 
-HeadElement Sc2WriteHead(const HeadInputs& in) {
+HeadElement WriteHead(const HeadInputs& in) {
     HeadElement e;
 
     // Overlay waves (W6): each channel whose static type is nonzero adds
@@ -102,26 +119,22 @@ HeadElement Sc2WriteHead(const HeadInputs& in) {
     // feed the emission basis; size adds to the sampled size; alpha rides back
     // to the caller. All inert when the type is 0, so the W3 oracle subset (all
     // types 0) replays byte-identical.
-    const auto wave = [&](int i) -> f32 {
+    const auto wave = [&](i32 i) -> f32 {
         return in.waveTypes[i] ? SampleWave(in.waveTypes[i],
                                                in.waveFreq[i] * in.overlayTime + in.overlayPhase,
                                                in.waveAmp[i])
                                : 0.0f;
     };
-    const f32 yawDeg = in.yawDeg + wave(0);
-    const f32 pitchDeg = in.pitchDeg + wave(1);
-    const f32 speed = in.speed + wave(2);
-    const f32 sizeWave = wave(3);
-    e.alphaWave = wave(4);
+    const f32 yawDeg = in.yawDeg + wave(WaveChannel::Yaw);
+    const f32 pitchDeg = in.pitchDeg + wave(WaveChannel::Pitch);
+    const f32 speed = in.speed + wave(WaveChannel::Speed);
+    const f32 sizeWave = wave(WaveChannel::Size);
+    e.alphaWave = wave(WaveChannel::Alpha);
 
-    // Emission basis: Math_MatrixFromYawPitchRoll(a2, a3, 0) row 2. Without the
-    // 0x8000 swap a2 = pitch, a3 = yaw; the swap exchanges them. row2 =
-    // (sin a3, -sin a2 * cos a3, cos a2 * cos a3).
-    const f32 a2 = (in.swapYawPitch ? yawDeg : pitchDeg) * kDegToRad;
-    const f32 a3 = (in.swapYawPitch ? pitchDeg : yawDeg) * kDegToRad;
-    const f32 s2 = std::sin(a2), c2 = std::cos(a2);
-    const f32 s3 = std::sin(a3), c3 = std::cos(a3);
-    const Vector3f dir = {s3, -s2 * c3, c2 * c3};
+    // Emission basis: row 2 of the yaw/pitch matrix, which the spline path
+    // takes whole — one definition, in YawPitchBasis above.
+    const vs::Mat3 basis = YawPitchBasis(yawDeg, pitchDeg, in.swapYawPitch);
+    const Vector3f dir = {basis.m[2][0], basis.m[2][1], basis.m[2][2]};
 
     // Launch velocity = direction·speed. Inherit (flags & 0x10) AND the 1e-4
     // stationary floor (techs 0/2/3) are the caller's, applied after the world
@@ -135,28 +148,34 @@ HeadElement Sc2WriteHead(const HeadInputs& in) {
 
     // Up: matrix column 1 for techs 0/1 (local identity -> +Y); techs 2..4
     // overwrite with normalized -column0 (local identity -> -X).
-    e.up = (in.simTechnique == 0 || in.simTechnique == 1) ? Vector3f{0, 1, 0}
-                                                          : Vector3f{-1, 0, 0};
+    const bool upIsColumn1 = (in.simTechnique == SimTechnique::GpuOnly ||
+                              in.simTechnique == SimTechnique::Spline);
+    e.up = upIsColumn1 ? Vector3f{0, 1, 0} : Vector3f{-1, 0, 0};
 
-    // Half-width scale (widthScale 0.5 in local billboard space); the size wave
+    // Half-width scale (widthScale in local billboard space); the size wave
     // adds to the sampled size before the halving, as the head writer does.
-    e.size3 = {(in.size3.x + sizeWave) * 0.5f, (in.size3.y + sizeWave) * 0.5f,
-               (in.size3.z + sizeWave) * 0.5f};
-    // Billboard (ribbonType 0) carries no twist; planar/tube keep it.
-    e.rotation3 = (in.ribbonType != 0) ? in.rotation3 : Vector3f{0, 0, 0};
+    e.size3 = {(in.size3.x + sizeWave) * kSizeHalfScale,
+               (in.size3.y + sizeWave) * kSizeHalfScale,
+               (in.size3.z + sizeWave) * kSizeHalfScale};
+    // A billboard carries no twist; planar/tube keep it.
+    e.rotation3 = (in.ribbonType != m3::RibbonType::Billboard) ? in.rotation3
+                                                               : Vector3f{0, 0, 0};
 
-    e.invMass = kStartBlend / in.mass;
+    const bool lengthMode = (in.cullMethod == CullMethod::Length);
+    e.invMass = 1.0f / in.mass;
     e.birthU = in.headU;
-    e.deathU = in.headU + (in.cullMethod == 1 ? kStartBlend : in.lifetime);
+    // A length-mode segment has no time death: its span is a unit, and the cut
+    // is geometric (the arc walk in BUILD).
+    e.deathU = in.headU + (lengthMode ? 1.0f : in.lifetime);
 
     u32 lifeTicks;
-    if (in.cullMethod == 1) {
+    if (lengthMode) {
         const f32 vlen = std::sqrt((e.velocity.x * e.velocity.x +
                                     e.velocity.y * e.velocity.y) +
                                    e.velocity.z * e.velocity.z);
         lifeTicks = (vlen >= kHeadUGate)
                         ? static_cast<u32>(in.maxLengthBound / vlen * kMsPerSec)
-                        : 15000u;
+                        : kLengthModeFallbackTicks;
     } else {
         lifeTicks = static_cast<u32>((e.deathU - e.birthU) * kMsPerSec);
     }
@@ -167,11 +186,11 @@ HeadElement Sc2WriteHead(const HeadInputs& in) {
     return e;
 }
 
-CatchUpResult Sc2CatchUpTicks(u8 cullMethod, f32 speed, f32 lifetime,
+CatchUpResult CatchUpTicks(CullMethod cullMethod, f32 speed, f32 lifetime,
                               f32 maxLengthBound) {
     CatchUpResult r;
     f32 rate;
-    if (cullMethod == 1) {
+    if (cullMethod == CullMethod::Length) {
         if (speed < kHeadUGate) { // too slow: no pre-roll at all
             r.earlyOut = true;
             return r;
@@ -180,16 +199,16 @@ CatchUpResult Sc2CatchUpTicks(u8 cullMethod, f32 speed, f32 lifetime,
     } else {
         rate = lifetime;
     }
-    u32 catchupMs = 2500;
+    u32 catchupMs = kCatchUpCapMs;
     const i32 v = static_cast<i32>(rate * kMsPerSec);
-    if (static_cast<u32>(v) <= 2500u)
+    if (static_cast<u32>(v) <= kCatchUpCapMs)
         catchupMs = static_cast<u32>(v);
     // The engine's quality field is not modelled (0), so the incoming emitCap
-    // never binds below catchupMs — the tick count is ceil(catchupMs / 33).
+    // never binds below catchupMs — the tick count is ceil(catchupMs / tick).
     u32 elapsed = 0;
     while (elapsed < catchupMs) {
         ++r.ticks;
-        elapsed += 33;
+        elapsed += kCatchUpTickMs;
     }
     return r;
 }

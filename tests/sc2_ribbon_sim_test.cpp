@@ -65,9 +65,9 @@ namespace {
 RibbonDesc Sc2TimeDesc(f32 divisions, f32 mass = 1.0f) {
     RibbonDesc d;
     d.family = RibbonDesc::Family::Sc2;
-    d.sc2.simTechnique = 0; // time billboard
-    d.sc2.cullMethod = 0;   // time
-    d.sc2.ribbonType = 0;   // billboard
+    d.sc2.simTechnique = SimTechnique::GpuOnly;
+    d.sc2.cullMethod = CullMethod::Time;
+    d.sc2.ribbonType = whiteout::m3::RibbonType::Billboard;
     d.sc2.divisions = divisions;
     d.sc2.mass = mass;
     return d;
@@ -240,10 +240,11 @@ TEST_CASE("sc2 BuildStage yields nothing for an unbuilt trail",
 // ---------------------------------------------------------------------------
 namespace {
 
-RibbonDesc Sc2SplineDesc(u8 ribbonType = 0) {
+RibbonDesc Sc2SplineDesc(whiteout::m3::RibbonType ribbonType =
+                             whiteout::m3::RibbonType::Billboard) {
     RibbonDesc d;
     d.family = RibbonDesc::Family::Sc2;
-    d.sc2.simTechnique = 1; // spline
+    d.sc2.simTechnique = SimTechnique::Spline;
     d.sc2.ribbonType = ribbonType;
     d.sc2.edges = 5;
     d.sc2.hasSpline = true;
@@ -319,7 +320,7 @@ TEST_CASE("sc2 star cross-section has 2x the ring vertices of a cylinder",
     // edge count → the star strip has exactly twice the vertices.
     RibbonBuildContext ctx;
     ctx.cameraDir = {0.0f, -1.0f, 0.0f};
-    const auto build = [&](u8 ribbonType) {
+    const auto build = [&](whiteout::m3::RibbonType ribbonType) {
         RibbonEmitter e;
         e.SetDesc(Sc2SplineDesc(ribbonType)); // edges = 5
         e.SetState(Sc2SplineFrame());
@@ -328,8 +329,8 @@ TEST_CASE("sc2 star cross-section has 2x the ring vertices of a cylinder",
         std::vector<RibbonDrawList> draws;
         return e.BuildStage(ctx, verts, draws);
     };
-    const i32 cyl = build(2);  // cylinder: 31 rungs × 5 edges × 6
-    const i32 star = build(3); // star:     31 rungs × 2·5 edges × 6
+    const i32 cyl = build(whiteout::m3::RibbonType::Cylinder);  // 31 rungs × 5 edges × 6
+    const i32 star = build(whiteout::m3::RibbonType::Star);     // 31 rungs × 2·5 edges × 6
     CHECK(cyl == 31 * 5 * 6);
     CHECK(star == 31 * 10 * 6);
     CHECK(star == 2 * cyl);
@@ -338,7 +339,7 @@ TEST_CASE("sc2 star cross-section has 2x the ring vertices of a cylinder",
 TEST_CASE("sc2 spline rebuilds every frame and never accumulates elements",
           "[ribbon][sc2_ribbon]") {
     RibbonEmitter e;
-    e.SetDesc(Sc2SplineDesc(2)); // cylinder section
+    e.SetDesc(Sc2SplineDesc(whiteout::m3::RibbonType::Cylinder));
     RibbonBuildContext ctx;
 
     i32 lastCount = -1;
@@ -425,9 +426,9 @@ TEST_CASE("sc2 inherit-velocity adds the emitter's motion to the launch",
     // +x. With inherit (flags & 0x10) the segments launch faster in +x.
     const auto run = [](bool inherit) {
         RibbonDesc d = Sc2TimeDesc(12.0f);
-        d.sc2.additionalFlags = 0x8; // world-space
+        d.sc2.additionalFlags = whiteout::m3::RibbonAdditionalFlag::WorldSpace;
         if (inherit)
-            d.sc2.flags |= 0x10;
+            d.sc2.flags |= whiteout::m3::RibbonFlag::InheritParentVelocity;
         RibbonEmitter e;
         e.SetDesc(d);
         f32 x = 0.0f;
@@ -457,9 +458,9 @@ TEST_CASE("sc2 local-space ribbons still inherit the emitter's motion (DRIFT-2)"
     // space and dropped inherit entirely for local ribbons.
     const auto run = [](bool inherit) {
         RibbonDesc d = Sc2TimeDesc(12.0f);
-        d.sc2.additionalFlags = 0x0; // local-space
+        d.sc2.additionalFlags = whiteout::m3::RibbonAdditionalFlag::None; // local-space
         if (inherit)
-            d.sc2.flags |= 0x10;
+            d.sc2.flags |= whiteout::m3::RibbonFlag::InheritParentVelocity;
         RibbonEmitter e;
         e.SetDesc(d);
         f32 x = 0.0f;
@@ -487,7 +488,7 @@ TEST_CASE("sc2 stationary floor runs on the post-transform velocity (DRIFT-1)",
     // gate and the true small velocity survives — magnified, NOT clamped to
     // direction·1e-4. The old code floored in local, pre-transform space.
     RibbonDesc d = Sc2TimeDesc(12.0f);
-    d.sc2.additionalFlags = 0x8; // world-space; tech 0 floors
+    d.sc2.additionalFlags = whiteout::m3::RibbonAdditionalFlag::WorldSpace; // GpuOnly floors
     RibbonEmitter e;
     e.SetDesc(d);
     constexpr f32 scale = 10.0f, baseSpeed = 0.005f; // 0.005² = 2.5e-5 < 1e-4
@@ -518,11 +519,12 @@ TEST_CASE("sc2 UseLengthAndTime (flags & 0x1000) maxes length-V with time-V (DRI
     // build lifts V toward the age fraction.
     const auto maxV = [](bool useLenAndTime) {
         RibbonDesc d = Sc2TimeDesc(100.0f);
-        d.sc2.simTechnique = 4;      // legacy CPU
-        d.sc2.cullMethod = 1;        // length mode
-        d.sc2.additionalFlags = 0x8; // world-space (arc = emitter path)
+        d.sc2.simTechnique = SimTechnique::Legacy;
+        d.sc2.cullMethod = CullMethod::Length;
+        // world-space: the arc IS the emitter path
+        d.sc2.additionalFlags = whiteout::m3::RibbonAdditionalFlag::WorldSpace;
         if (useLenAndTime)
-            d.sc2.flags |= 0x1000;
+            d.sc2.flags |= whiteout::m3::RibbonFlag::UseLengthAndTime;
         RibbonEmitter e;
         e.SetDesc(d);
         f32 x = 0.0f;
@@ -549,8 +551,8 @@ TEST_CASE("sc2 UseLengthAndTime (flags & 0x1000) maxes length-V with time-V (DRI
 
 TEST_CASE("sc2 legacy (tech 4) integrates gravity and drag", "[ribbon][sc2_ribbon]") {
     RibbonDesc d = Sc2TimeDesc(12.0f);
-    d.sc2.simTechnique = 4;      // legacy CPU
-    d.sc2.additionalFlags = 0x8; // world-space
+    d.sc2.simTechnique = SimTechnique::Legacy;
+    d.sc2.additionalFlags = whiteout::m3::RibbonAdditionalFlag::WorldSpace;
     d.sc2.gravity3 = {0, 0, -10.0f};
     d.sc2.drag = 1.0f;
     d.sc2.mass = 1.0f;
@@ -587,14 +589,14 @@ TEST_CASE("sc2 legacy (tech 4) segments collide with the ground grid",
     // A world-space legacy ribbon born 5 units up, falling under gravity. The
     // terrain-collision flag (0x2) is what forces tech 4 and gates the collide.
     RibbonDesc d = Sc2TimeDesc(12.0f);
-    d.sc2.simTechnique = 4;
-    d.sc2.additionalFlags = 0x8; // world-space
-    d.sc2.flags = 0x2;           // terrain collision
+    d.sc2.simTechnique = SimTechnique::Legacy;
+    d.sc2.additionalFlags = whiteout::m3::RibbonAdditionalFlag::WorldSpace;
+    d.sc2.flags = whiteout::m3::RibbonFlag::CollideTerrain;
     d.sc2.gravity3 = {0, 0, -10.0f};
     d.sc2.friction = 1.0f;
     d.sc2.bounce = 0.0f;
 
-    const auto run = [&](bool withQuery, u32 flags) {
+    const auto run = [&](bool withQuery, whiteout::m3::RibbonFlag flags) {
         RibbonDesc dd = d;
         dd.sc2.flags = flags;
         RibbonEmitter e;
@@ -613,17 +615,17 @@ TEST_CASE("sc2 legacy (tech 4) segments collide with the ground grid",
 
     // With the grid query the oldest segment settles on the surface (contact at
     // the collide radius, 0.03) instead of falling through.
-    CHECK(run(true, 0x2) == Catch::Approx(0.03f).margin(0.1f));
+    CHECK(run(true, whiteout::m3::RibbonFlag::CollideTerrain) == Catch::Approx(0.03f).margin(0.1f));
     // No query, and flag clear with a query: both fall well past the ground.
-    CHECK(run(false, 0x2) < -1.0f);
-    CHECK(run(true, 0x0) < -1.0f);
+    CHECK(run(false, whiteout::m3::RibbonFlag::CollideTerrain) < -1.0f);
+    CHECK(run(true, whiteout::m3::RibbonFlag::None) < -1.0f);
 
     // Local-space ribbon (no 0x8): born at the origin in local space, it collides
     // in scene space through the emitter transform and maps the result back, so
     // its scene-space height still settles on the grid.
     {
         RibbonDesc dl = d;
-        dl.sc2.additionalFlags = 0x0; // local-space
+        dl.sc2.additionalFlags = whiteout::m3::RibbonAdditionalFlag::None; // local
         RibbonEmitter e;
         e.SetDesc(dl);
         const Matrix44f xf = TranslationAt(0.0f, 0.0f, 5.0f);
@@ -644,7 +646,7 @@ TEST_CASE("sc2 noise displaces the built strip and stays deterministic",
           "[ribbon][sc2_ribbon]") {
     const auto build = [](bool noise, std::vector<renderer::Vertex>& verts) {
         RibbonDesc d = Sc2TimeDesc(12.0f);
-        d.sc2.simTechnique = 4; // noise forces legacy
+        d.sc2.simTechnique = SimTechnique::Legacy; // noise forces legacy
         if (noise) {
             d.sc2.noiseAmplitude = 2.0f;
             d.sc2.noiseFrequency = 3.0f;

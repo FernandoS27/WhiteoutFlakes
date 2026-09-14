@@ -35,6 +35,13 @@ using Catch::Approx;
 
 namespace {
 
+/// Behaviour rides on the desc since the C2 split; this keeps the cases reading
+/// as "this desc, that dialect" without a two-argument constructor.
+RibbonDesc WithBehavior(RibbonDesc d, const RibbonBehavior& b) {
+    d.behavior = b;
+    return d;
+}
+
 RibbonDesc MakeDesc() {
     RibbonDesc d;
     d.edgesPerSecond = 10.0f;
@@ -74,7 +81,7 @@ void Sweep(RibbonEmitter& em, i32 steps, f32 dt, f32 dx, i32 slot = 0) {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("wc3 ribbon seeds prev and curr from the first state", "[ribbon]") {
-    RibbonEmitter em(MakeDesc(), RibbonBehavior::Wc3());
+    RibbonEmitter em(WithBehavior(MakeDesc(), RibbonBehavior::Wc3()));
     REQUIRE_FALSE(em.PositionSeeded());
     em.SetState(StateAt({0, 0, 0}));
     REQUIRE(em.PositionSeeded());
@@ -85,7 +92,7 @@ TEST_CASE("wc3 ribbon seeds prev and curr from the first state", "[ribbon]") {
 }
 
 TEST_CASE("wc3 ribbon emits a head every frame plus the rate's edges", "[ribbon]") {
-    RibbonEmitter em(MakeDesc(), RibbonBehavior::Wc3());
+    RibbonEmitter em(WithBehavior(MakeDesc(), RibbonBehavior::Wc3()));
     em.SetState(StateAt({0, 0, 0}));
 
     // 10 edges/sec at dt = 1/60 buys 0.1667 of an edge per frame, so the
@@ -107,7 +114,7 @@ TEST_CASE("wc3 ribbon emits a head every frame plus the rate's edges", "[ribbon]
 TEST_CASE("wc3 ribbon retires edges past the lifespan", "[ribbon]") {
     RibbonDesc d = MakeDesc();
     d.edgeLifespan = 0.5f;
-    RibbonEmitter em(d, RibbonBehavior::Wc3());
+    RibbonEmitter em(WithBehavior(d, RibbonBehavior::Wc3()));
     em.SetState(StateAt({0, 0, 0}));
 
     Sweep(em, 20, 0.1f, 1.0f);
@@ -125,7 +132,7 @@ TEST_CASE("wc3 ribbon retires edges past the lifespan", "[ribbon]") {
 TEST_CASE("wc3 ribbon restarts the trail when dt exceeds the lifespan", "[ribbon]") {
     RibbonDesc d = MakeDesc();
     d.edgeLifespan = 0.3f;
-    RibbonEmitter em(d, RibbonBehavior::Wc3());
+    RibbonEmitter em(WithBehavior(d, RibbonBehavior::Wc3()));
     em.SetState(StateAt({0, 0, 0}));
     Sweep(em, 10, 1.0f / 60.0f, 0.1f);
     REQUIRE(em.Edges().size() > 1);
@@ -140,12 +147,12 @@ TEST_CASE("wc3 ribbon restarts the trail when dt exceeds the lifespan", "[ribbon
 TEST_CASE("wc3 ribbon uses the 0.25s lifespan floor", "[ribbon]") {
     RibbonDesc d = MakeDesc();
     d.edgeLifespan = 0.05f;
-    RibbonEmitter em(d, RibbonBehavior::Wc3());
+    RibbonEmitter em(WithBehavior(d, RibbonBehavior::Wc3()));
     // Below the floor the MDX path simulates and UV-maps at 0.25s, which is
     // what stops a very short-lived ribbon collapsing to a degenerate strip.
     REQUIRE(em.SimLifespan() == Approx(0.25f));
 
-    RibbonEmitter wow(d, RibbonBehavior::Wow());
+    RibbonEmitter wow(WithBehavior(d, RibbonBehavior::Wow()));
     // WoW applies the same 0.25 only where InitEdges sizes the ring; the
     // simulation and the UV mapping use the raw lifespan. Measured, not
     // assumed: gate_ribbon_edges.py, 250/250 against the binary.
@@ -157,7 +164,7 @@ TEST_CASE("wc3 ribbon gravity integrates as g*t^2, not 0.5*g*t^2", "[ribbon]") {
     d.gravity = 10.0f;
     d.edgeLifespan = 100.0f;
     d.edgesPerSecond = 1.0f;
-    RibbonEmitter em(d, RibbonBehavior::Wc3());
+    RibbonEmitter em(WithBehavior(d, RibbonBehavior::Wc3()));
     em.SetState(StateAt({0, 0, 0}, 0.0f, 0.0f));
 
     // One edge, then let it fall for a known total time in uneven steps: the
@@ -179,14 +186,13 @@ TEST_CASE("wc3 ribbon gravity integrates as g*t^2, not 0.5*g*t^2", "[ribbon]") {
 }
 
 TEST_CASE("wc3 ribbon builds two triangles per edge pair", "[ribbon]") {
-    RibbonEmitter em(MakeDesc(), RibbonBehavior::Wc3());
+    RibbonEmitter em(WithBehavior(MakeDesc(), RibbonBehavior::Wc3()));
     em.SetState(StateAt({0, 0, 0}));
     Sweep(em, 4, 1.0f / 60.0f, 0.1f);
 
     std::vector<whiteout::flakes::renderer::Vertex> verts;
     const i32 n = em.BuildStrip(verts);
     REQUIRE(n == static_cast<i32>(em.Edges().size() - 1) * 6);
-    REQUIRE(n == em.VertexCount());
     REQUIRE(static_cast<i32>(verts.size()) == n);
 
     // The strip is a ribbon, not a fan: every quad's first and fourth vertices
@@ -200,7 +206,7 @@ TEST_CASE("wc3 ribbon maps u from age over the lifespan", "[ribbon]") {
     RibbonDesc d = MakeDesc();
     d.cols = 2;
     d.rows = 2;
-    RibbonEmitter em(d, RibbonBehavior::Wc3());
+    RibbonEmitter em(WithBehavior(d, RibbonBehavior::Wc3()));
     RibbonState st = StateAt({0, 0, 0});
     st.slot = 3; // row 1, col 1 of a 2x2 sheet
     em.SetState(st);
@@ -216,7 +222,7 @@ TEST_CASE("wc3 ribbon maps u from age over the lifespan", "[ribbon]") {
 }
 
 TEST_CASE("wc3 ribbon holds when invisible and when the rate is zero", "[ribbon]") {
-    RibbonEmitter em(MakeDesc(), RibbonBehavior::Wc3());
+    RibbonEmitter em(WithBehavior(MakeDesc(), RibbonBehavior::Wc3()));
     RibbonState st = StateAt({0, 0, 0});
     st.visibility = 0.0f;
     em.SetState(st);
@@ -225,7 +231,7 @@ TEST_CASE("wc3 ribbon holds when invisible and when the rate is zero", "[ribbon]
 
     RibbonDesc zero = MakeDesc();
     zero.edgesPerSecond = 0.0f;
-    RibbonEmitter noRate(zero, RibbonBehavior::Wc3());
+    RibbonEmitter noRate(WithBehavior(zero, RibbonBehavior::Wc3()));
     noRate.SetState(StateAt({0, 0, 0}));
     noRate.SetState(StateAt({1, 0, 0}));
     noRate.Update(1.0f / 60.0f);
@@ -253,8 +259,8 @@ TEST_CASE("both dialects agree on the interpolation curve", "[ribbon]") {
     // touch a single moving step's interpolated edges.
     wowCurveOnly.firstFrameEmitsOneEdge = false;
 
-    RibbonEmitter wc3(d, RibbonBehavior::Wc3());
-    RibbonEmitter wow(d, wowCurveOnly);
+    RibbonEmitter wc3(WithBehavior(d, RibbonBehavior::Wc3()));
+    RibbonEmitter wow(WithBehavior(d, wowCurveOnly));
     for (RibbonEmitter* em : {&wc3, &wow}) {
         em->SetState(StateAt({0, 0, 0}));
         em->SetState(StateAt({1, 2, 3}));
@@ -285,7 +291,7 @@ TEST_CASE("both dialects agree on the interpolation curve", "[ribbon]") {
 TEST_CASE("wow ribbon commits exactly one edge on its first tick", "[ribbon]") {
     RibbonDesc d = MakeDesc();
     d.edgesPerSecond = 10.0f;
-    RibbonEmitter em(d, RibbonBehavior::Wow());
+    RibbonEmitter em(WithBehavior(d, RibbonBehavior::Wow()));
     em.SetState(StateAt({0, 0, 0}));
     em.SetState(StateAt({1, 0, 0}));
 
@@ -299,8 +305,8 @@ TEST_CASE("wow ribbon head is provisional and does not accumulate", "[ribbon]") 
     RibbonDesc d = MakeDesc();
     d.edgesPerSecond = 10.0f;
     d.edgeLifespan = 100.0f;
-    RibbonEmitter wow(d, RibbonBehavior::Wow());
-    RibbonEmitter wc3(d, RibbonBehavior::Wc3());
+    RibbonEmitter wow(WithBehavior(d, RibbonBehavior::Wow()));
+    RibbonEmitter wc3(WithBehavior(d, RibbonBehavior::Wc3()));
     wow.SetState(StateAt({0, 0, 0}));
     wc3.SetState(StateAt({0, 0, 0}));
 
@@ -323,7 +329,7 @@ TEST_CASE("wow ribbon head is provisional and does not accumulate", "[ribbon]") 
 TEST_CASE("wow ribbon stops emitting while stationary", "[ribbon]") {
     RibbonDesc d = MakeDesc();
     d.edgeLifespan = 100.0f;
-    RibbonEmitter em(d, RibbonBehavior::Wow());
+    RibbonEmitter em(WithBehavior(d, RibbonBehavior::Wow()));
     em.SetState(StateAt({0, 0, 0}));
     em.SetState(StateAt({1, 0, 0}));
     em.Update(1.0f / 60.0f);
@@ -339,7 +345,7 @@ TEST_CASE("wow ribbon stops emitting while stationary", "[ribbon]") {
     REQUIRE(em.Edges().size() == moved);
 
     // The MDX path has no such check and keeps stacking coincident edges.
-    RibbonEmitter wc3(d, RibbonBehavior::Wc3());
+    RibbonEmitter wc3(WithBehavior(d, RibbonBehavior::Wc3()));
     wc3.SetState(StateAt({0, 0, 0}));
     wc3.SetState(StateAt({1, 0, 0}));
     wc3.Update(1.0f / 60.0f);
@@ -355,7 +361,7 @@ TEST_CASE("wow ribbon gravity falls the other way", "[ribbon]") {
     RibbonDesc d = MakeDesc();
     d.gravity = 10.0f;
     d.edgeLifespan = 100.0f;
-    RibbonEmitter em(d, RibbonBehavior::Wow());
+    RibbonEmitter em(WithBehavior(d, RibbonBehavior::Wow()));
     em.SetState(StateAt({0, 0, 0}, 0.0f, 0.0f));
     em.SetState(StateAt({1, 0, 0}, 0.0f, 0.0f));
     em.Update(0.5f);
@@ -371,7 +377,7 @@ TEST_CASE("wow ribbon gravity falls the other way", "[ribbon]") {
 TEST_CASE("wow ribbon clamps dt instead of restarting the trail", "[ribbon]") {
     RibbonDesc d = MakeDesc();
     d.edgeLifespan = 0.3f;
-    RibbonEmitter em(d, RibbonBehavior::Wow());
+    RibbonEmitter em(WithBehavior(d, RibbonBehavior::Wow()));
     em.SetState(StateAt({0, 0, 0}));
     Sweep(em, 10, 1.0f / 60.0f, 0.1f);
     REQUIRE_FALSE(em.Edges().empty());
@@ -389,9 +395,9 @@ TEST_CASE("wow ribbon clamps dt instead of restarting the trail", "[ribbon]") {
 
 TEST_CASE("ribbon service keys emitters by model and id", "[ribbon]") {
     RibbonService svc;
-    svc.AddEmitter(1, 0, MakeDesc(), RibbonBehavior::Wc3());
-    svc.AddEmitter(1, 1, MakeDesc(), RibbonBehavior::Wc3());
-    svc.AddEmitter(2, 0, MakeDesc(), RibbonBehavior::Wow());
+    svc.AddEmitter(1, 0, WithBehavior(MakeDesc(), RibbonBehavior::Wc3()));
+    svc.AddEmitter(1, 1, WithBehavior(MakeDesc(), RibbonBehavior::Wc3()));
+    svc.AddEmitter(2, 0, WithBehavior(MakeDesc(), RibbonBehavior::Wow()));
 
     REQUIRE(svc.EmitterCount() == 3);
     REQUIRE(svc.HasEmittersForModel(1));
@@ -411,8 +417,8 @@ TEST_CASE("ribbon service keys emitters by model and id", "[ribbon]") {
 
 TEST_CASE("ribbon service simulates one model at a time", "[ribbon]") {
     RibbonService svc;
-    svc.AddEmitter(1, 0, MakeDesc(), RibbonBehavior::Wc3());
-    svc.AddEmitter(2, 0, MakeDesc(), RibbonBehavior::Wc3());
+    svc.AddEmitter(1, 0, WithBehavior(MakeDesc(), RibbonBehavior::Wc3()));
+    svc.AddEmitter(2, 0, WithBehavior(MakeDesc(), RibbonBehavior::Wc3()));
     svc.SetState(1, 0, StateAt({0, 0, 0}));
     svc.SetState(2, 0, StateAt({0, 0, 0}));
     svc.SetState(1, 0, StateAt({1, 0, 0}));
@@ -427,8 +433,8 @@ TEST_CASE("ribbon service simulates one model at a time", "[ribbon]") {
 
 TEST_CASE("ribbon service builds geometry per model with local offsets", "[ribbon]") {
     RibbonService svc;
-    svc.AddEmitter(7, 0, MakeDesc(), RibbonBehavior::Wc3());
-    svc.AddEmitter(7, 1, MakeDesc(), RibbonBehavior::Wc3());
+    svc.AddEmitter(7, 0, WithBehavior(MakeDesc(), RibbonBehavior::Wc3()));
+    svc.AddEmitter(7, 1, WithBehavior(MakeDesc(), RibbonBehavior::Wc3()));
     for (i32 id : {0, 1}) {
         svc.SetState(7, id, StateAt({0, 0, 0}));
         for (i32 i = 0; i < 5; ++i) {
@@ -497,7 +503,7 @@ TEST_CASE("a ribbon's half-widths are model units and scale to renderer units") 
     const f32 kAbove = 0.25f, kBelow = 0.75f;
 
     auto widthAfterSweep = [&](f32 unitScale) {
-        RibbonEmitter em(MakeDesc(), RibbonBehavior::Wow());
+        RibbonEmitter em(WithBehavior(MakeDesc(), RibbonBehavior::Wow()));
         for (i32 i = 0; i < 4; ++i) {
             RibbonState st = StateAt({static_cast<f32>(i) * 10.0f, 0, 0}, kAbove, kBelow);
             st.unitScale = unitScale;
@@ -527,7 +533,7 @@ TEST_CASE("ribbon gravity is model units per second squared too") {
     auto fallAfter = [](f32 unitScale) {
         RibbonDesc d = MakeDesc();
         d.gravity = -2.0f;
-        RibbonEmitter em(d, RibbonBehavior::Wow());
+        RibbonEmitter em(WithBehavior(d, RibbonBehavior::Wow()));
         for (i32 i = 0; i < 3; ++i) {
             RibbonState st = StateAt({static_cast<f32>(i) * 10.0f, 0, 0}, 0.25f, 0.25f);
             st.unitScale = unitScale;
@@ -569,7 +575,7 @@ TEST_CASE("a multi-layer ribbon draws one pass per layer over one strip") {
     }
 
     RibbonService svc;
-    svc.AddEmitter(1, 0, DescFromWc3Config(cfg), RibbonBehavior::Wow());
+    svc.AddEmitter(1, 0, WithBehavior(DescFromWc3Config(cfg), RibbonBehavior::Wow()));
     for (i32 i = 0; i < 4; ++i) {
         svc.SetState(1, 0, StateAt({static_cast<f32>(i) * 10.0f, 0, 0}));
         svc.SimulateModel(1, 0.1f);
@@ -601,7 +607,7 @@ TEST_CASE("a single-layer ribbon still submits exactly one draw") {
     cfg.textureId = 7;
 
     RibbonService svc;
-    svc.AddEmitter(1, 0, DescFromWc3Config(cfg), RibbonBehavior::Wc3());
+    svc.AddEmitter(1, 0, WithBehavior(DescFromWc3Config(cfg), RibbonBehavior::Wc3()));
     for (i32 i = 0; i < 4; ++i) {
         svc.SetState(1, 0, StateAt({static_cast<f32>(i) * 10.0f, 0, 0}));
         svc.SimulateModel(1, 0.1f);
@@ -626,7 +632,7 @@ TEST_CASE("the sprite-sheet slot indexes U by rows and V by cols") {
     cfg.cols = 2; // V is halved
 
     auto vAt = [&](i32 slot) {
-        RibbonEmitter em(DescFromWc3Config(cfg), RibbonBehavior::Wow());
+        RibbonEmitter em(WithBehavior(DescFromWc3Config(cfg), RibbonBehavior::Wow()));
         for (i32 i = 0; i < 4; ++i) {
             RibbonState st = StateAt({static_cast<f32>(i) * 10.0f, 0, 0});
             st.slot = slot;
@@ -661,7 +667,7 @@ TEST_CASE("an out-of-range sprite slot is clamped into the sheet") {
     cfg.cols = 2;
 
     auto uvFor = [&](i32 slot) {
-        RibbonEmitter em(DescFromWc3Config(cfg), RibbonBehavior::Wow());
+        RibbonEmitter em(WithBehavior(DescFromWc3Config(cfg), RibbonBehavior::Wow()));
         for (i32 i = 0; i < 4; ++i) {
             RibbonState st = StateAt({static_cast<f32>(i) * 10.0f, 0, 0});
             st.slot = slot;
@@ -701,7 +707,7 @@ TEST_CASE("the emitter's texture transform maps the strip's uvs") {
     cfg.life = 1.0f;
 
     auto uvsWith = [&](const RibbonState& seed) {
-        RibbonEmitter em(DescFromWc3Config(cfg), RibbonBehavior::Wow());
+        RibbonEmitter em(WithBehavior(DescFromWc3Config(cfg), RibbonBehavior::Wow()));
         for (i32 i = 0; i < 4; ++i) {
             RibbonState st = StateAt({static_cast<f32>(i) * 10.0f, 0, 0});
             st.texAnimRow0[0] = seed.texAnimRow0[0];

@@ -711,7 +711,9 @@ RibbonRun RunRibbon(const NodePath& path, const RibbonCase& rc, f32 seconds) {
     wcfg.emission = rc.rate;
     wcfg.life = rc.lifespan;
     wcfg.gravity = rc.gravity;
-    rib::RibbonEmitter wc3(rib::DescFromWc3Config(wcfg), rib::RibbonBehavior::Wc3());
+    rib::RibbonDesc wdesc = rib::DescFromWc3Config(wcfg);
+    wdesc.behavior = rib::RibbonBehavior::Wc3(); // behaviour rides on the desc
+    rib::RibbonEmitter wc3(wdesc);
 
     // §4.5 rows 1, 4, 5, 8 and 13, as `RibbonCrossing` writes them.
     const f32 lifetime = rc.floorLifetime ? std::max(rc.lifespan, 0.25f) : rc.lifespan;
@@ -727,7 +729,7 @@ RibbonRun RunRibbon(const NodePath& path, const RibbonCase& rc, f32 seconds) {
     for (f32& m : scfg.midTime)
         m = 0.996f;
     scfg.lifetimeInit = lifetime;
-    rib::RibbonEmitter sc2(rib::DescFromSc2Config(scfg), rib::RibbonBehavior::Wc3());
+    rib::RibbonEmitter sc2(rib::DescFromSc2Config(scfg));
     const f32 size = 2.0f * (rc.above + rc.below) * L;
     // Row 2: the helper node sits across the width, in Warcraft III node space
     // (its +Y), and is restated like any other node.

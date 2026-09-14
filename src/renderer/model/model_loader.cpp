@@ -996,10 +996,14 @@ void ModelLoader::StageActor(Actor* mi, std::shared_ptr<ModelTemplate> tmpl) {
         AddM2Emitter(mi->handle, i, tmpl->m2ParticleDescs[i], particleBehavior);
     mi->render.pe2State.resize((std::max)(tmpl->pe2Configs.size(), tmpl->m2ParticleConfigs.size()));
 
+    // The profile answers the WC3/WoW sub-dialect; it rides on the desc, so
+    // registration takes one argument and cannot disagree with the family.
     const ribbon::RibbonBehavior ribbonBehavior = rs_.Pipeline().LoadTimeProfile().Ribbons();
-    for (i32 i = 0; i < (i32)tmpl->ribbonConfigs.size(); i++)
-        rs_.Ribbons().AddEmitter(mi->handle, i, ribbon::DescFromWc3Config(tmpl->ribbonConfigs[i]),
-                                 ribbonBehavior);
+    for (i32 i = 0; i < (i32)tmpl->ribbonConfigs.size(); i++) {
+        ribbon::RibbonDesc desc = ribbon::DescFromWc3Config(tmpl->ribbonConfigs[i]);
+        desc.behavior = ribbonBehavior;
+        rs_.Ribbons().AddEmitter(mi->handle, i, desc);
+    }
 
     // PE1 ("particles that ARE models") registers in the same service as the
     // billboards — same pool, same sim, different output.
@@ -1234,8 +1238,9 @@ u32 ModelLoader::AddModel(const std::vector<MeshData>& meshes,
 
     const ribbon::RibbonBehavior ribbonBehavior = rs_.Pipeline().LoadTimeProfile().Ribbons();
     for (usize i = 0; i < ribbonConfigs.size(); i++) {
-        rs_.Ribbons().AddEmitter(handle, (i32)i, ribbon::DescFromWc3Config(ribbonConfigs[i]),
-                                 ribbonBehavior);
+        ribbon::RibbonDesc desc = ribbon::DescFromWc3Config(ribbonConfigs[i]);
+        desc.behavior = ribbonBehavior;
+        rs_.Ribbons().AddEmitter(handle, (i32)i, desc);
     }
 
     for (auto& cs : collisions) {

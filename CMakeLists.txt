@@ -1274,6 +1274,9 @@ add_library(WhiteoutFlakesLib STATIC
     src/renderer/debug/draw_trace_hooks.cpp
     src/renderer/effects/event_emitter_pool.cpp
     src/renderer/ribbon/ribbon_emitter.cpp
+    src/renderer/ribbon/ribbon_desc.cpp
+    src/renderer/ribbon/ribbon_tick_sc2.cpp
+    src/renderer/ribbon/ribbon_build.cpp
     src/renderer/ribbon/ribbon_stages_sc2.cpp
     src/renderer/ribbon/ribbon_service.cpp
     src/renderer/sc2/sc2_element.cpp

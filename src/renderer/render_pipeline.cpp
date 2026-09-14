@@ -754,7 +754,6 @@ void RenderPipeline::PrepareRibbons(std::vector<RibbonDrawUnit>& out, bls::Frame
     ribbon::RibbonBuildContext buildCtx;
     {
         const auto& cam = rs_.Pipeline().FrameCamera();
-        buildCtx.cameraPos = cam.GetSource();
         const Vector3f look = cam.GetTarget() - cam.GetSource();
         const f32 len = look.length();
         if (len > 1e-6f)
@@ -799,7 +798,9 @@ void RenderPipeline::PrepareRibbons(std::vector<RibbonDrawUnit>& out, bls::Frame
             RibbonDrawUnit u;
             u.actor = mi;
             u.filterMode = dl.filterMode;
-            u.matFlags = (dl.twoSided ? MAT_TWO_SIDED : 0) | (dl.unshaded ? MAT_UNSHADED : 0);
+            u.matFlags = (dl.twoSided ? MAT_TWO_SIDED : 0) |
+                         (dl.unshaded ? MAT_UNSHADED : 0) |
+                         (dl.unfogged ? MAT_UNFOGGED : 0);
             u.textureId = dl.textureId;
             u.count = dl.vertexCount;
             u.offset = dl.vertexOffset;
