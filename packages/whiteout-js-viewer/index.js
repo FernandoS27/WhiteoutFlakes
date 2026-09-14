@@ -30,6 +30,18 @@ export {
 
 export { WebAudioBridge } from './web-audio.js';
 
+// Hive CASC mirror URL policy. Exported because a host that supplies its
+// own pathSolver still wants the same two-route chain the built-in one
+// uses, rather than a third private copy of the rules.
+export {
+    hiveCandidates,
+    cascContentsUrl,
+    directUrl,
+    mirrorName,
+    requestName,
+    normalizePath,
+} from './hive-resolve.js';
+
 // Load-table helpers — JSON manifest of model URLs + per-asset overrides.
 // Useful both inside HiveApp (which consumes them automatically) and for
 // callers who use the raw WhiteoutViewer with their own UI.

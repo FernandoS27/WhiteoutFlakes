@@ -10,13 +10,11 @@ const PS_SHADERS = ['bloomcombine', 'bloomextract', 'crystal', 'depthoffield',
                     'distortion', 'foliage', 'gritty_hd', 'hd', 'imgui',
                     'popcornfx', 'sd', 'sd_on_hd', 'sprite', 'terrain', 'tonemap', 'toon_hd'];
 
-// Engine assets that must come from the CASC service rather than the
-// local `engineAssetRoot` mirror. The IBL probes drive HD environment
-// lighting — a stale/local copy renders the scene dark, so these always
-// resolve through viewer.cascUrl (authoritative, always current).
-// Everything else in ENGINE_ASSETS keeps the local-first, CASC-fallback
-// order. (The DNC rig is also CASC-only but has its own path — see
-// DNC_VARIANTS.)
+// Engine assets that must skip the computable direct URL and resolve
+// through /casc-contents/ only. The IBL probes are mode-agnostic files
+// that live in one layer, so the mode-derived direct base would be wrong
+// half the time; the backstop finds them either way. (The DNC rig is also
+// backstop-only but has its own path — see DNC_VARIANTS.)
 const CASC_ONLY = new Set([
     'Environment/EnvironmentMap/Portraits/PortraitDefault_IBL.dds',
     // Day/Night IBL probes — used by IblMode::DayNight (the default probe set).
@@ -133,22 +131,34 @@ async function prefetchDnc(viewer) {
     }));
 }
 
-// CASC_ONLY paths fetch straight from viewer.cascUrl; the rest try
-// `engineAssetRoot` (./ by default) first, then fall back to CASC. The IBL
-// probes are mode-agnostic files, so they go out with no context.
+// Every entry resolves through the shared Hive chain, so the startup set
+// gets the same direct-URL fast path the asset pump does — 23 of these 26
+// are plain mod content the direct tree serves in one round trip.
+//
+// There used to be a `viewer.engineAssetRoot || './'` probe ahead of the
+// CASC fetch. `engineAssetRoot` was never assigned anywhere in the package
+// or in any host, so the probe was unconditional and could only 404 — 26
+// guaranteed misses per page load, each one blocking the real fetch behind
+// it, individually measured at up to 1.5 s. If a local mirror is wanted
+// again it comes back as an explicit prefix a host sets, not as a
+// speculative probe.
 export async function prefetchEngineAssets(viewer) {
-    const root = viewer.engineAssetRoot || './';
     await Promise.all([
         prefetchDnc(viewer),
         ...ENGINE_ASSETS.map(async (p) => {
-            let res;
-            if (CASC_ONLY.has(p)) {
-                res = await fetchResult(viewer.cascUrl(p, false));
-            } else {
-                res = await fetchResult(root + p);
-                if (!res) res = await fetchResult(viewer.cascUrl(p));
+            // Mode-agnostic files: no context, and no direct arm (the
+            // direct base is mode-derived and would pick a layer).
+            const urls = CASC_ONLY.has(p)
+                ? [viewer.cascUrl(p, false)]
+                : viewer.cascCandidates(p);
+            for (const url of urls) {
+                const res = await fetchResult(url);
+                if (res) {
+                    putBytes(viewer, pathWithServedExt(p, res.finalUrl), res.bytes);
+                    return;
+                }
             }
-            if (res) putBytes(viewer, pathWithServedExt(p, res.finalUrl), res.bytes);
+            console.warn('[wf] prefetch FAIL ' + p);
         }),
     ]);
 }

@@ -46,7 +46,11 @@ async function serveCached(cacheKeyReq, fetchUrl) {
     if (hit) return hit;
     let resp;
     try {
-        resp = await fetch(fetchUrl);
+        // Forward the caller's AbortSignal. Without it an asset fetch the
+        // pump gives up on leaves this request running to completion, so
+        // an abort frees the pump's slot but not the connection it was
+        // waiting on — which is the opposite of what aborting is for.
+        resp = await fetch(fetchUrl, { signal: cacheKeyReq.signal });
     } catch (e) {
         // Surface the network error to the caller — don't synthesize a
         // 502, which would mask CORS / connectivity issues.

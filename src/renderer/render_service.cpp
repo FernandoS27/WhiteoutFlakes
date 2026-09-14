@@ -368,8 +368,18 @@ void RenderService::EnsureWc3GameData() {
     // Acquire every SPL/UBR texture and SPN child-model slot the tables name,
     // so they are resident before the first splat is born rather than being
     // fetched during it.
+    //
+    // Desktop only, for the same reason InitBlsShaders skips it there: on web
+    // every Acquire is a Hive round trip, and the tables name the whole game's
+    // spawn/splat catalog — ~300 fetches, of which a model uses a handful. The
+    // flood saturates the connection pool, and the model's OWN textures, .pkb
+    // effects and child models lose the race and time out. wf_spawn_unit calls
+    // PrefetchEventAssetsForActor instead, which Acquires only the SPL/UBR/SPN/
+    // FPT entries the spawned model's event objects actually reference.
+#ifndef __EMSCRIPTEN__
     if (io::IsSplCachePopulated())
         io::PrefetchEventAssetSlots(*impl_->assets_);
+#endif
 }
 
 u64 RenderService::AssetActivityCounter() const {

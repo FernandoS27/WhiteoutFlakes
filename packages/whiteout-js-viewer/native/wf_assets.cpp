@@ -56,6 +56,16 @@ int wf_assets_needs_get_path(WfRenderer* h, int index, char* outBuf, int bufCap)
     return n;
 }
 
+// Re-surface every slot with no bytes. The needs drain is consumptive, so
+// a slot whose need JS could not resolve is otherwise stuck on its white
+// placeholder until the model is reloaded. Call after something changes
+// what a path resolves to — a local directory picked, a load table
+// attached, the art tier switched. Returns the count re-queued.
+int wf_assets_retry_unloaded(WfRenderer* h) {
+    if (!h) return 0;
+    return static_cast<int>(h->renderer.Assets().RetryUnloaded());
+}
+
 int wf_assets_apply(WfRenderer* h, int kind, int subKind, const char* path,
                     const void* bytes, int len, const char* foundExt) {
     if (!h || !path || !bytes || len <= 0) return 0;

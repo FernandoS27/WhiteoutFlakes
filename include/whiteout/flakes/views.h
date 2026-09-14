@@ -528,6 +528,21 @@ public:
     /// @bind rename=Stats
     Stats GetStats() const;
 
+    /// @brief Re-queue every slot that has no bytes, so the next
+    ///        `DrainNeeds` surfaces it again.
+    ///
+    /// `DrainNeeds` is consumptive: once a need is handed to the host it is
+    /// the host's, and a slot the host failed to resolve stays on its
+    /// placeholder forever. `Acquire` cannot undo that — an existing slot
+    /// just takes a refcount. Call this after something changes what a path
+    /// can resolve to: a content source added or removed, an IO-settings
+    /// edit, a directory the user has just granted access to. Retrying a
+    /// mere network failure does not need it; the host's own retry covers
+    /// that, and this re-queues every unloaded slot rather than the ones
+    /// that failed.
+    /// @return Count re-queued.
+    std::size_t RetryUnloaded();
+
     /// @brief Acquire slots for every SPL/UBR texture and SPN child-model
     ///        referenced by the loaded event-data SLKs. The slots are
     ///        held by the event-data cache for the rest of the session,

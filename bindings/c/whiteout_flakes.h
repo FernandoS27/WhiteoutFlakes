@@ -49,6 +49,12 @@ typedef enum {
 } whiteout_flakes_RenderMode;
 
 typedef enum {
+    whiteout_flakes_Wc3ArtTier_Classic,
+    whiteout_flakes_Wc3ArtTier_Reforged,
+    whiteout_flakes_Wc3ArtTier_Definitive,
+} whiteout_flakes_Wc3ArtTier;
+
+typedef enum {
     whiteout_flakes_PlaybackState_Playing,
     whiteout_flakes_PlaybackState_Paused,
     whiteout_flakes_PlaybackState_Stopped,
@@ -471,6 +477,10 @@ void whiteout_flakes_FlakesLoaderView_Destroy(whiteout_FlakesLoaderView* self, u
 void whiteout_flakes_FlakesAssetsView_delete(whiteout_FlakesAssetsView* self);
 
 struct whiteout_FlakesAssetsViewStats* whiteout_flakes_FlakesAssetsView_Stats(const whiteout_FlakesAssetsView* self);
+/* Re-queue every slot that has no bytes, so the next `DrainNeeds` surfaces it again. */
+/*  */
+/* `DrainNeeds` is consumptive: once a need is handed to the host it is the host's, and a slot the host failed to resolve stays on its placeholder forever. `Acquire` cannot undo that — an existing slot just takes a refcount. Call this after something changes what a path can resolve to: a content source added or removed, an IO-settings edit, a directory the user has just granted access to. Retrying a mere network failure does not need it; the host's own retry covers that, and this re-queues every unloaded slot rather than the ones that failed. @return Count re-queued. */
+uint64_t whiteout_flakes_FlakesAssetsView_RetryUnloaded(whiteout_FlakesAssetsView* self);
 /* Acquire slots for every SPL/UBR texture and SPN child-model referenced by the loaded event-data SLKs. The slots are held by the event-data cache for the rest of the session, so the host pump fetches them eagerly and they survive animation changes. Call after `LoadEventDataFiles` finishes populating the splat tables. */
 void whiteout_flakes_FlakesAssetsView_PrefetchEventAssets(whiteout_FlakesAssetsView* self);
 /* Per-actor variant — only Acquire slots for the SPL/UBR/SPN/FPT events the actor's template actually references. Use this instead of `PrefetchEventAssets()` on backends where every Acquire costs a network fetch (web viewer hitting Hive's CASC mirror); the global variant would pull in every entry in the SLK tables regardless of whether the loaded model fires them. */

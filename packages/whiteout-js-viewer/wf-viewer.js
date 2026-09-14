@@ -5,8 +5,9 @@
 import { Instance, Model, Scene, TEAM_COLORS, TEAM_COLOR_NAMES,
          EFFECT_EXTENSIONS, isEffectPath,
          MODEL_EXTENSIONS, isModelPath } from './wf-instance.js';
-import { pumpAssetNeeds } from './wf-asset-pump.js';
+import { pumpAssetNeeds, retryFailedAssets } from './wf-asset-pump.js';
 import { prefetchEngineAssets, prefetchShaders } from './wf-prefetch.js';
+import { cascContentsUrl, hiveCandidates } from './hive-resolve.js';
 
 // Cache-bust the module URL — the ES module map ignores HTTP no-store.
 const { default: createModule } = await import(`./wf-core.js?t=${Date.now()}`);
@@ -64,7 +65,7 @@ export class WhiteoutViewer {
         this._raf = 0;
         this._lastTime = 0;
         // HD/SD is auto-detected per model from its MDX material layers
-        // (see `_applyPreferredRenderMode`), mirroring basic_viewer's
+        // (see `_reconcileRenderMode`), mirroring basic_viewer's
         // `ViewerApp::LoadModel`: any layer on a non-SD shader means HD.
         // `options.hdMode` is ignored — we always bootstrap in SD and let
         // the first load() flip to HD via setHdMode when the model needs
@@ -75,34 +76,21 @@ export class WhiteoutViewer {
         //
         // `options.forceHd` ("Reforged Graphics"): pin every model to the HD
         // pipeline + HD asset overlay regardless of its detected preference
-        // (see `setForceHd` / `_applyPreferredRenderMode`). Bootstrap in HD so
+        // (see `setForceHd` / `_reconcileRenderMode`). Bootstrap in HD so
         // the very first load fetches HD deps.
         this._forceHd = options.forceHd === true;
         this.hdMode = this._forceHd;
-        // Hive's CASC mirror — CORS-enabled, 302 to resolved asset,
-        // server-side family expansion. Override for a local proxy.
-        // Encode per-segment so `/` stays literal in the query; Hive's
-        // path normalizer doesn't always decode %2F back to a separator
-        // (observed on sound/ paths). The `context` param tells the
-        // backend which mod stack to resolve against: `hd` searches the
-        // `_hd.w3mod` overlay, `sd` forces the base/SD stack. Model deps
-        // send it so an SD model doesn't get HD textures. Engine/startup
-        // assets (DNC, IBL — base content, mode-agnostic) pass
-        // `withContext=false` to fetch them with no context at all.
-        this.cascUrl = (path, withContext = true) => {
-            const url = 'https://www.hiveworkshop.com/casc-contents/?path=' +
-                path.split('/').map(encodeURIComponent).join('/');
-            if (!withContext) return url;
-            return url + (this.hdMode ? '&context=hd' : '&context=sd');
-        };
-        // Direct-asset prefix skips the /casc-contents/ 302 (1 fewer
-        // round-trip per asset). Only used in HD mode — the direct
-        // tree only mirrors `_hd.w3mod/` content. SD viewers fall
-        // through to cascUrl, which carries `context=sd` so the backend
-        // resolves against the base/SD mod stack.
-        this.cascDirectAssetBase = this.hdMode
-            ? 'https://www.hiveworkshop.com/assets/wc3/war3.w3mod/_hd.w3mod/'
-            : null;
+        // Hive's CASC mirror. URL policy lives in hive-resolve.js — see
+        // there for why there are two routes and when each one applies.
+        // These stay on the viewer because hosts call them: `cascUrl` is
+        // the authoritative single-URL form (model deps pass the mode so
+        // an SD model doesn't get HD textures; engine/startup assets that
+        // are mode-agnostic pass `withContext=false`), and `cascCandidates`
+        // is the ordered fast-path-then-backstop chain.
+        this.cascUrl = (path, withContext = true) =>
+            cascContentsUrl(path, { hd: this.hdMode, withContext });
+        this.cascCandidates = (path, opts = {}) =>
+            hiveCandidates(path, { hd: this.hdMode, ...opts });
         // Firefox wgpu/naga emits slow fragment code for HD PBR; full
         // DPR tips into fragment-bound at zoom-in. Cap at 1 there; opt
         // back in via `viewer.backingPixelRatio = devicePixelRatio`.
@@ -381,18 +369,14 @@ export class WhiteoutViewer {
         if (this._handle) this._module._wf_set_ibl_mode(this._handle, mode | 0);
     }
 
-    // Flip HD asset preference at runtime. Updates the flag the
-    // `cascUrl` / `cascDirectAssetBase` getters read (so subsequent
-    // network fetches route through Hive's `_hd.w3mod` overlay) and
-    // mirrors it to the WASM-side RenderMode so the renderer picks
-    // the HD pipeline. Does NOT invalidate already-cached assets —
-    // call this before any spawn / asset prefetch, or evict the
-    // affected paths from the provider yourself.
+    // Flip HD asset preference at runtime. `cascUrl` / `cascCandidates`
+    // read `hdMode` per call, so subsequent network fetches route through
+    // Hive's `_hd.w3mod` overlay, and the flag is mirrored to the WASM-side
+    // RenderMode so the renderer picks the HD pipeline. Does NOT invalidate
+    // already-cached assets — call this before any spawn / asset prefetch,
+    // or evict the affected paths from the provider yourself.
     setHdMode(on) {
         this.hdMode = !!on;
-        this.cascDirectAssetBase = this.hdMode
-            ? 'https://www.hiveworkshop.com/assets/wc3/war3.w3mod/_hd.w3mod/'
-            : null;
         if (this._handle) {
             this._module._wf_set_render_mode(this._handle, this.hdMode ? 1 : 0);
         }
@@ -405,6 +389,28 @@ export class WhiteoutViewer {
     setForceHd(on) {
         this._forceHd = !!on;
         if (this._forceHd) this.setHdMode(true);
+    }
+
+    // Re-request every asset that currently has no bytes.
+    //
+    // Two halves, because a failure can be stuck on either side of the
+    // boundary. `retryFailedAssets` re-queues what the host fetched and
+    // could not resolve, ignoring its backoff. `wf_assets_retry_unloaded`
+    // re-surfaces slots on the renderer side whose need was drained and
+    // lost long ago — the needs queue is consumptive, so nothing else
+    // would ever ask for those again short of reloading the model.
+    //
+    // Call after something changes what a path can RESOLVE to: a local
+    // directory picked, a load table attached, a content source added. A
+    // plain network blip does not need this — the pump's own backoff
+    // covers that, and this re-queues every unloaded slot, not just the
+    // ones that failed.
+    retryUnloadedAssets() {
+        retryFailedAssets(this);
+        if (!this._handle || !this._module._wf_assets_retry_unloaded) return 0;
+        const n = this._module._wf_assets_retry_unloaded(this._handle);
+        if (n) pumpAssetNeeds(this);
+        return n;
     }
 
     // Live WebGPU CreateTexture+CreateBuffer bytes (deferred-delete
@@ -514,6 +520,11 @@ export class WhiteoutViewer {
 
     async _loadInternal(src, pathSolver, model) {
         const log = (s) => console.log('[wf]', s);
+        // Stamps every need this load queues. The asset pump dispatches
+        // the highest generation first, so switching models mid-fetch
+        // puts the model now on screen ahead of the one that left rather
+        // than behind its backlog.
+        this._loadGeneration = (this._loadGeneration || 0) + 1;
         // Drain any deferred cleanup before spawning.
         this._module._wf_tick(this._handle, 0);
         return this._loadInternalImpl(src, pathSolver, model, log);
@@ -581,7 +592,10 @@ export class WhiteoutViewer {
         let handle = 0;
         try {
             handle = M._wf_spawn_unit(this._handle, keyPtr);
+            if (handle) handle = this._reconcileRenderMode(handle, keyPtr, log);
             // Drop MDX bytes once SpawnUnit's template parse consumed them.
+            // After the reconcile, not before: a respawn re-enters SpawnUnit
+            // and would need them back if the template cache had dropped it.
             M._wf_provider_evict(this._handle, keyPtr);
         } finally {
             M._free(keyPtr);
@@ -590,7 +604,6 @@ export class WhiteoutViewer {
             model.error = new Error('SpawnUnit returned 0');
             throw model.error;
         }
-        this._applyPreferredRenderMode(handle);
         model.loaded = true;
         const inst = new Instance(this, model, handle);
         model._instances.push(inst);
@@ -672,27 +685,74 @@ export class WhiteoutViewer {
         }
     }
 
-    // Auto-detect the actor's HD/SD mode from its own MDX material layers
-    // and adopt it for this load — the JS analogue of basic_viewer's
-    // ViewerApp::LoadModel HD-probe. The WASM side reports HD when any
-    // material layer carries a non-zero BLS shaderId (== a non-SD shader,
-    // the same test viewer_app.cpp runs on Layer::ShaderType), so the
-    // constructor's hdMode is ignored as the mode authority. Routing
-    // through setHdMode moves the asset overlay (cascUrl `&hd=1` /
-    // `_hd.w3mod` direct prefix) in lockstep with the render pipeline —
-    // running an HD pipeline on SD data (or vice-versa) mis-blends
-    // multi-layer materials, and fetching deps from the wrong overlay
-    // pulls the wrong texture set. This fires before the load's texture
-    // pump (see _loadInternalImpl), so every dependent fetch resolves
-    // under the detected mode.
-    _applyPreferredRenderMode(actorHandle) {
-        if (!this._handle || !actorHandle) return;
-        // Reforged Graphics pins HD; skip the per-model probe entirely.
-        if (this._forceHd) { this.setHdMode(true); return; }
+    // Adopt the actor's own HD/SD preference — the JS analogue of
+    // basic_viewer's ViewerApp::LoadModel HD-probe. WASM reports HD when
+    // any material layer carries a non-zero BLS shaderId (the same test
+    // viewer_app.cpp runs on Layer::ShaderType). Running an HD pipeline on
+    // SD data mis-blends multi-layer materials, and fetching deps from the
+    // wrong overlay pulls the wrong texture set, so the mode has to move
+    // the render pipeline and the asset overlay together.
+    //
+    // Two things make this subtler than "probe, then set".
+    //
+    // The probe cannot fire for a CASC-resolved model, and that is
+    // structural rather than a bug to chase. `setHdMode(this._forceHd)`
+    // runs before the MDX fetch — it has to, since the mode picks the
+    // overlay the MDX itself comes from — so Hive is asked with
+    // `context=sd` and returns the SD variant, whose layers are all
+    // shaderId 0. The probe then says SD, which is the answer the fetch
+    // already assumed. For CASC sources the host's preference (Reforged
+    // Graphics) IS the authority, and this is a no-op. Where the probe
+    // genuinely decides something is a load-table or local-directory
+    // source, whose bytes did not come from a mode-parameterised URL.
+    //
+    // And by the time there is an actor to probe, the spawn has already
+    // Acquired every texture, child model and effect it needs, stamping
+    // each slot with the mode live at that instant — AssetManager::Acquire
+    // captures `acquireGamma` (a decode policy) and `acquireTier` (which
+    // bytes the path resolves to) and makes both part of slot identity.
+    // Flipping the mode afterwards leaves those slots stamped for the mode
+    // we just left, so the bytes arrive from one overlay and decode under
+    // the other's colour-space rule.
+    //
+    // So on disagreement we start over rather than patch it up. The
+    // respawn costs no network and no parse (ModelTemplateManager has the
+    // template cached), and the first spawn's needs have not gone out yet
+    // — pumpAssetNeeds runs after this — so discarding them costs nothing
+    // either. Returns the handle to keep.
+    _reconcileRenderMode(actorHandle, keyPtr, log) {
         const M = this._module;
-        if (!M._wf_actor_preferred_render_mode) return; // older wasm build
-        const hd = M._wf_actor_preferred_render_mode(this._handle, actorHandle) === 1;
-        this.setHdMode(hd);
+        if (!this._handle || !actorHandle) return actorHandle;
+        // Reforged Graphics pins HD; skip the per-model probe entirely.
+        if (this._forceHd) return actorHandle;
+        if (!M._wf_actor_preferred_render_mode) return actorHandle; // older wasm
+        const wantHd = M._wf_actor_preferred_render_mode(this._handle, actorHandle) === 1;
+        if (wantHd === !!this.hdMode) return actorHandle;
+
+        log('render mode: probe says ' + (wantHd ? 'HD' : 'SD') + ' but slots were '
+            + 'stamped ' + (this.hdMode ? 'HD' : 'SD') + ' — respawning');
+        M._wf_actor_destroy(this._handle, actorHandle);
+        // Draining IS discarding: DrainNeeds swaps the queue out, and we
+        // simply do not pump the result. Those needs were stamped for the
+        // mode we are leaving, and most of them name slots the destroy has
+        // just taken with it.
+        M._wf_assets_needs_count(this._handle);
+        this.setHdMode(wantHd);
+        const respawned = M._wf_spawn_unit(this._handle, keyPtr);
+        // Not all of them, though — `PrefetchEventAssetsForActor` hands its
+        // SPL/UBR/SPN slots to the event-data cache, which holds them for
+        // the session, so they survive the actor and their needs went into
+        // the batch we just dropped. Nothing would ever ask again: the
+        // drain is consumptive and Acquire on a live slot only bumps a
+        // refcount. Re-surface everything still without bytes.
+        if (M._wf_assets_retry_unloaded) M._wf_assets_retry_unloaded(this._handle);
+        if (!respawned) {
+            // Keep the mode we just moved to — the pipeline is already on
+            // it — but report the load as failed rather than handing back
+            // a destroyed handle.
+            console.warn('[wf] respawn after render-mode probe failed');
+        }
+        return respawned;
     }
 
     // ---- WASM helpers (used by sibling modules) -----------------------

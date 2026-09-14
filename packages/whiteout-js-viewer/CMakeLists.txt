@@ -68,6 +68,7 @@ foreach(_f
     README.md
     index.js
     hive-app.js
+    hive-resolve.js
     load-table.js
     web-audio.js
     wf-asset-pump.js

@@ -575,6 +575,11 @@ AssetsView::Stats AssetsView::GetStats() const {
     return out;
 }
 
+std::size_t AssetsView::RetryUnloaded() {
+    if (!impl_) return 0;
+    return Svc(impl_).Assets().RetryUnloaded();
+}
+
 void AssetsView::PrefetchEventAssets() {
     if (!impl_) return;
     io::PrefetchEventAssetSlots(Svc(impl_).Assets());

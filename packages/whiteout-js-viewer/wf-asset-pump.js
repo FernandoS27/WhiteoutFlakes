@@ -87,6 +87,16 @@ export function applyAsset(viewer, kind, subKind, path, u8, foundExt) {
     }
 }
 
+// Outcomes. The distinction that matters is "no bytes" (worth asking
+// again) vs "bytes arrived and no slot took them" (not worth asking
+// again, ever): the usual cause of the latter is the slot being released
+// while the fetch was in flight — a model switch — and Hive cannot fix
+// that. Collapsing the two makes a durable retry queue chase assets whose
+// model left the screen, forever.
+export const FETCH_OK = true;
+export const FETCH_UNCLAIMED = 'unclaimed';
+export const FETCH_FAILED = false;
+
 async function fetchAndApplyImpl(viewer, pathSolver, kind, subKind, relPath) {
     const fwd = relPath.replaceAll('\\', '/');
     const dot = fwd.lastIndexOf('.');
@@ -98,6 +108,9 @@ async function fetchAndApplyImpl(viewer, pathSolver, kind, subKind, relPath) {
     // was requested by the caller's own `src` — possibly a case-sensitive
     // URL — so ask under the original spelling when one was registered.
     const solverKey = (viewer._needAliases && viewer._needAliases.get(fwd)) || relPath;
+
+    // Did any candidate deliver bytes we were willing to hand to C++?
+    let sawBytes = false;
 
     let urls;
     try { urls = await Promise.resolve(pathSolver(solverKey)); }
@@ -129,12 +142,17 @@ async function fetchAndApplyImpl(viewer, pathSolver, kind, subKind, relPath) {
                         console.warn('[wf] texture format ' + appliedExt
                             + ' has no decoder in this build; ' + relPath
                             + ' will be skipped.');
-                        return false;
+                        // Nothing about this changes on a second look.
+                        return FETCH_UNCLAIMED;
                     }
                 }
-                if (applyAsset(viewer, kind, subKind, relPath, bytes, appliedExt)) return true;
-                // Bytes came back but C++ refused them. Log the head so
+                if (applyAsset(viewer, kind, subKind, relPath, bytes, appliedExt))
+                    return FETCH_OK;
+                // Bytes came back but nothing took them — either no slot
+                // is bound to this ref any more (released mid-flight by a
+                // model switch) or C++ refused the decode. Log the head so
                 // stale-PKB / zstd / HTML look distinguishable.
+                sawBytes = true;
                 console.warn('[wf] apply REJECTED (' + kindName(kind) + ', '
                     + bytes.byteLength + ' bytes, served as ' + servedExt
                     + ', head=' + hexHead(bytes) + '): ' + relPath + ' (from ' + r.url + ')');
@@ -142,9 +160,10 @@ async function fetchAndApplyImpl(viewer, pathSolver, kind, subKind, relPath) {
             finally { clearTimeout(timeoutId); }
         }
     }
+    if (sawBytes) return FETCH_UNCLAIMED;
     console.warn('[wf] asset MISS (' + kindName(kind)
         + ', all candidates failed): ' + relPath);
-    return false;
+    return FETCH_FAILED;
 }
 
 export async function fetchAndApplyAsset(viewer, pathSolver, kind, subKind, relPath) {
@@ -156,46 +175,164 @@ export async function fetchAndApplyAsset(viewer, pathSolver, kind, subKind, relP
     }
 }
 
-// Retry tuning for transient fetch/apply failures. AssetManager's
-// DrainNeeds is consumptive — once C++ surfaces a need and JS fails to
-// resolve it, the slot stays stuck on placeholder until something
-// releases + re-acquires. The retry queue below covers transient
-// failures (Hive 503s, network blips, partial responses) without
-// requiring renderer-side support.
-const MAX_RETRY_ATTEMPTS = 3;
-const RETRY_BACKOFF_MS    = 2000; // 2 s, then doubled per attempt
+// ── Scheduling ───────────────────────────────────────────────────────
+//
+// AssetManager's DrainNeeds is consumptive — `batch.swap(needs_)`. Once
+// C++ surfaces a need and hands it over, C++ has forgotten it: nothing
+// re-queues it, and the slot sits on its white placeholder until
+// something releases and re-Acquires. **Durability is the host's job.**
+// So everything drained goes into `_assetQueue` before any dedup or
+// solver check can discard it; the window between the drain and the
+// queue is where needs used to be lost.
+//
+// Concurrency is capped because the browser will otherwise open every
+// fetch at once. They then share one connection, each one's timeout runs
+// on wall-clock rather than on its own progress, and the slow ones abort
+// — which is how a burst of speculative Acquires once cost a model its
+// own textures, effects and child models. Under a cap a burst costs
+// ORDER, not bytes.
+// Measured, not guessed. On a 36-asset Reforged model, time-to-all-loaded
+// over a live Hive (two runs each): cap 6 ≈ 1560 ms, 12 ≈ 1000 ms, 16 ≈
+// 1360 ms, 24 ≈ 1250 ms, uncapped ≈ 1200 ms. Everything from 12 up is
+// inside the run-to-run noise of the uncapped case, and only 6 is
+// consistently slower — so 12 is the knee: it throttles a 300-request
+// burst 25-fold while costing a normal model nothing measurable.
+//
+// `viewer.maxConcurrentFetches` overrides it; 0 means uncapped, kept so
+// the cap can be measured against its own absence rather than argued
+// about.
+const MAX_CONCURRENT_FETCHES = 12;
 
-function fireFetch(viewer, kind, subKind, path, dedupKey) {
-    const p = fetchAndApplyAsset(viewer, viewer._lazySolver, kind, subKind, path)
-        .then(success => {
-            if (success) {
-                viewer._failedAssets.delete(dedupKey);
-                return;
-            }
-            recordFailure(viewer, dedupKey, kind, subKind, path);
-        })
-        .catch(() => recordFailure(viewer, dedupKey, kind, subKind, path))
-        .finally(() => { viewer._inflightAssets.delete(dedupKey); });
-    viewer._inflightAssets.set(dedupKey, p);
+function concurrencyCap(viewer) {
+    const n = viewer.maxConcurrentFetches;
+    if (n === 0) return Infinity;
+    return (typeof n === 'number' && n > 0) ? n : MAX_CONCURRENT_FETCHES;
 }
 
-function recordFailure(viewer, dedupKey, kind, subKind, path) {
-    const info = viewer._failedAssets.get(dedupKey) || { kind, subKind, path, attempts: 0 };
-    info.attempts += 1;
+// Backoff for transient failures (Hive 5xx, network blips, a partial
+// response). Doubles to a ceiling and then repeats there rather than
+// giving up after a fixed count: a slot stuck behind a fault nobody can
+// see from here recovers on its own once the fault clears, and an asset
+// that genuinely does not exist costs one request a minute against a
+// placeholder that was never going to be anything else.
+const RETRY_BACKOFF_MS = 2000;
+const RETRY_CEILING_MS = 60000;
+
+function needKey(kind, subKind, path) {
+    return kind + '/' + subKind + ':' + path;
+}
+
+function ensureQueues(viewer) {
+    if (!viewer._inflightAssets) viewer._inflightAssets = new Map();
+    if (!viewer._failedAssets)   viewer._failedAssets   = new Map();
+    if (!viewer._assetQueue)     viewer._assetQueue     = [];
+    if (!viewer._queuedKeys)     viewer._queuedKeys     = new Set();
+}
+
+function enqueueNeed(viewer, kind, subKind, path, generation) {
+    const dedupKey = needKey(kind, subKind, path);
+    // Re-surfacing cancels any standing failure record: the renderer
+    // asked again, so it is wanted again, now rather than on a backoff.
+    viewer._failedAssets.delete(dedupKey);
+
+    const inflight = viewer._inflightAssets.get(dedupKey);
+    if (inflight) {
+        // Do NOT drop it. The running fetch may fail, and this request
+        // would vanish with it — C++'s copy is already destroyed. Owed
+        // another attempt only if that fetch delivers nothing.
+        inflight.wantedAgain = true;
+        return;
+    }
+    if (viewer._queuedKeys.has(dedupKey)) return;
+    viewer._queuedKeys.add(dedupKey);
+    viewer._assetQueue.push({ kind, subKind, path, dedupKey, generation, attempts: 0 });
+}
+
+function recordFailure(viewer, entry) {
+    const info = viewer._failedAssets.get(entry.dedupKey) || entry;
+    info.attempts = (info.attempts || 0) + 1;
     info.lastTryMs = performance.now();
-    viewer._failedAssets.set(dedupKey, info);
+    const backoff = Math.min(RETRY_BACKOFF_MS * Math.pow(2, info.attempts - 1),
+                             RETRY_CEILING_MS);
+    info.dueAt = info.lastTryMs + backoff;
+    viewer._failedAssets.set(entry.dedupKey, info);
 }
 
-// Drain the needs queue. Dedup by (kind, subKind, path) for in-flight only —
-// slot teardown + re-Acquire (model switch) needs a fresh fetch.
+function fireFetch(viewer, entry) {
+    const { kind, subKind, path, dedupKey } = entry;
+    const rec = { wantedAgain: false, ok: false, startedMs: performance.now() };
+    rec.promise = fetchAndApplyAsset(viewer, viewer._lazySolver, kind, subKind, path)
+        .then((result) => {
+            rec.ok = result === FETCH_OK;
+            // FETCH_UNCLAIMED is not a failure: bytes arrived, and asking
+            // for them again would not give them somewhere to go. Clear any
+            // standing record rather than starting a retry cycle that can
+            // never end.
+            if (result === FETCH_OK || result === FETCH_UNCLAIMED)
+                viewer._failedAssets.delete(dedupKey);
+            else recordFailure(viewer, entry);
+        })
+        .catch(() => { recordFailure(viewer, entry); })
+        .finally(() => {
+            viewer._inflightAssets.delete(dedupKey);
+            // A success applies to every slot on the path, including one
+            // Acquired while the fetch was running — only a failure leaves
+            // the re-request owed.
+            if (rec.wantedAgain && !rec.ok)
+                enqueueNeed(viewer, kind, subKind, path, entry.generation);
+            dispatchAssetQueue(viewer);
+        });
+    viewer._inflightAssets.set(dedupKey, rec);
+}
+
+function dispatchAssetQueue(viewer) {
+    // No solver yet: entries stay queued rather than being discarded, and
+    // go out on the pump that follows setPathSolver.
+    if (!viewer._lazySolver) return;
+    const q = viewer._assetQueue;
+    const cap = concurrencyCap(viewer);
+    while (q.length && viewer._inflightAssets.size < cap) {
+        // Newest load first. After a model switch the model actually on
+        // screen should not wait behind the queue of the one that left.
+        let best = 0;
+        for (let i = 1; i < q.length; ++i) {
+            if (q[i].generation > q[best].generation) best = i;
+        }
+        const entry = q.splice(best, 1)[0];
+        viewer._queuedKeys.delete(entry.dedupKey);
+        const inflight = viewer._inflightAssets.get(entry.dedupKey);
+        if (inflight) { inflight.wantedAgain = true; continue; }
+        fireFetch(viewer, entry);
+    }
+}
+
+/// Re-queue every asset that has failed, ignoring its backoff. For events
+/// that invalidate a resolution failure rather than waiting one out — a
+/// local directory picked, a load table attached, the art tier switched.
+/// Pair with `wf_assets_retry_unloaded` on the renderer side, which
+/// re-surfaces slots whose needs were drained long ago.
+export function retryFailedAssets(viewer) {
+    ensureQueues(viewer);
+    for (const [dedupKey, info] of viewer._failedAssets) {
+        if (viewer._inflightAssets.has(dedupKey)) continue;
+        if (viewer._queuedKeys.has(dedupKey)) continue;
+        info.dueAt = 0;
+        viewer._queuedKeys.add(dedupKey);
+        viewer._assetQueue.push(info);
+    }
+    dispatchAssetQueue(viewer);
+}
+
+/// Drain C++'s needs into the host queue, promote any retries that have
+/// come due, and dispatch up to the concurrency cap. Called once at the
+/// end of each load and once per animation frame.
 export function pumpAssetNeeds(viewer) {
     if (!viewer._handle) return;
     const M = viewer._module;
     if (!M._wf_assets_needs_count) return;
-    if (!viewer._inflightAssets) viewer._inflightAssets = new Map();
-    if (!viewer._failedAssets)   viewer._failedAssets   = new Map();
+    ensureQueues(viewer);
+    const generation = viewer._loadGeneration || 0;
 
-    // Fresh needs surfaced by C++ since last pump.
     const n = M._wf_assets_needs_count(viewer._handle);
     if (n) {
         const CAP = 512;
@@ -209,29 +346,23 @@ export function pumpAssetNeeds(viewer) {
                 const subKind = M._wf_assets_needs_get_subkind
                     ? M._wf_assets_needs_get_subkind(viewer._handle, i) : 0;
                 M._wf_assets_needs_get_path(viewer._handle, i, buf, CAP);
-                const path = M.UTF8ToString(buf);
-                const dedupKey = kind + '/' + subKind + ':' + path;
-                if (viewer._inflightAssets.has(dedupKey)) continue;
-                if (!viewer._lazySolver) continue;
-                // Re-surfacing a need cancels any prior failure record;
-                // the renderer asked again, so it's wanted again.
-                viewer._failedAssets.delete(dedupKey);
-                fireFetch(viewer, kind, subKind, path, dedupKey);
+                enqueueNeed(viewer, kind, subKind, M.UTF8ToString(buf), generation);
             }
         } finally {
             M._free(buf);
         }
     }
 
-    // Retry slots that failed earlier, with exponential backoff.
-    if (viewer._failedAssets.size > 0 && viewer._lazySolver) {
+    if (viewer._failedAssets.size > 0) {
         const now = performance.now();
         for (const [dedupKey, info] of viewer._failedAssets) {
+            if (now < (info.dueAt || 0)) continue;
             if (viewer._inflightAssets.has(dedupKey)) continue;
-            if (info.attempts >= MAX_RETRY_ATTEMPTS) continue;
-            const dueAt = info.lastTryMs + RETRY_BACKOFF_MS * (1 << (info.attempts - 1));
-            if (now < dueAt) continue;
-            fireFetch(viewer, info.kind, info.subKind || 0, info.path, dedupKey);
+            if (viewer._queuedKeys.has(dedupKey)) continue;
+            viewer._queuedKeys.add(dedupKey);
+            viewer._assetQueue.push(info);
         }
     }
+
+    dispatchAssetQueue(viewer);
 }

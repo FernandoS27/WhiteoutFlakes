@@ -370,6 +370,13 @@ export class HiveApp {
         for (const [key, rec] of picked) this.index.set(key, rec);
         this._populateModels();
 
+        // The pick changed what paths resolve to, so anything the model on
+        // screen is still missing may be resolvable now. Nothing re-asks on
+        // its own: the renderer's needs queue is consumptive, so a slot
+        // whose fetch failed before this pick would stay white until the
+        // model was reloaded — which is the whole point of a top-up open.
+        this.viewer.retryUnloadedAssets();
+
         const first = [...picked.values()].find(rec => isModelPath(rec.path));
         if (!first) return; // textures only — the open was a top-up
         const idx = this.models.findIndex(m => m.path === first.path);
@@ -398,6 +405,10 @@ export class HiveApp {
             return;
         }
         this._overrides = buildOverrideMap(table);
+        // Same as a directory pick: the override map changes what a path
+        // resolves to, so give anything still unloaded another chance
+        // rather than leaving it white until the next model load.
+        this.viewer.retryUnloadedAssets();
         this.models = tableModels(table).map(m => ({
             name: m.name, url: m.url
         }));
@@ -527,8 +538,8 @@ export class HiveApp {
     //      or errors we fall through to the rest of the chain rather
     //      than failing the asset outright.
     //   2. Local picked-dir blob URL on hit.
-    //   3. Direct Hive asset URL (skips the /casc-contents/ 302).
-    //   4. /casc-contents/?path= backstop (handles SD/locale/aliases).
+    //   3+. The Hive chain from hive-resolve.js — the computable direct
+    //      asset URL, then the /casc-contents/ backstop.
     _rewrite(url) {
         if (!this.urlRewriter || typeof url !== 'string') return url;
         const out = this.urlRewriter(url);
@@ -560,24 +571,10 @@ export class HiveApp {
             this._objectUrls.push(url);
             chain.push(url);
         }
-        // Hive's model-family expansion can substitute .mdl/.mdx for a
-        // .pkfx request; ask for .pkb directly to avoid that.
-        let cascPath = norm;
-        if (cascPath.endsWith('.pkfx')) {
-            cascPath = cascPath.slice(0, -5) + '.pkb';
-        }
-        // Cornflakes occasionally references particles by bare name with
-        // no extension; Hive's CASC won't resolve that without a literal
-        // path, so default to .pkb (the canonical particle format).
-        const lastSlash = cascPath.lastIndexOf('/');
-        const baseName = lastSlash >= 0 ? cascPath.slice(lastSlash + 1) : cascPath;
-        if (!baseName.includes('.')) cascPath += '.pkb';
-        if (this.viewer.cascDirectAssetBase) {
-            // Preserve directory slashes; encodeURIComponent eats them.
-            const encoded = cascPath.split('/').map(encodeURIComponent).join('/');
-            chain.push(this.viewer.cascDirectAssetBase + encoded);
-        }
-        chain.push(this.viewer.cascUrl(cascPath));
+        // The Hive tail: computable direct URL first, /casc-contents/
+        // behind it. hive-resolve.js owns the whole policy, including the
+        // `.pkfx` -> `.pkb` and bare-name rewrites that used to live here.
+        for (const url of this.viewer.cascCandidates(norm)) chain.push(url);
         // Object URLs (createObjectURL output) don't need rewriting and
         // would be left alone by the host's rewriter anyway, but cycling
         // every entry keeps the contract uniform.

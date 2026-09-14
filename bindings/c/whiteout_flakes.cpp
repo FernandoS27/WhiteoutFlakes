@@ -812,6 +812,10 @@ struct whiteout_FlakesAssetsViewStats* whiteout_flakes_FlakesAssetsView_Stats(co
         new whiteout::flakes::AssetsView::Stats(reinterpret_cast<const whiteout::flakes::AssetsView*>(self)->GetStats()));
 }
 
+uint64_t whiteout_flakes_FlakesAssetsView_RetryUnloaded(whiteout_FlakesAssetsView* self) {
+    return reinterpret_cast<whiteout::flakes::AssetsView*>(self)->RetryUnloaded();
+}
+
 void whiteout_flakes_FlakesAssetsView_PrefetchEventAssets(whiteout_FlakesAssetsView* self) {
     reinterpret_cast<whiteout::flakes::AssetsView*>(self)->PrefetchEventAssets();
 }
