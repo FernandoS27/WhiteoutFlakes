@@ -83,8 +83,8 @@ export class HiveApp {
         //   2. Otherwise read the page URL's `?forceHD=1` query (or `=true`).
         //      Case-insensitive so a typo-tolerant `forcehd=1` also works.
         // The flag flows into WhiteoutViewer's `hdMode` at construction,
-        // which makes `cascUrl` append `&hd=1` on every Hive-CASC fetch
-        // and primes the WASM renderer in HD before the first spawn.
+        // which makes every Hive fetch resolve against the `_hd.w3mod`
+        // overlay and primes the WASM renderer in HD before the first spawn.
         this.forceHd = false;
         if (options.forceHd === true) {
             this.forceHd = true;
@@ -133,7 +133,12 @@ export class HiveApp {
         });
         // Matches the first chip in the Background list.
         this.viewer.setBackground(0x3e, 0x3e, 0x3e);
-        this._setActiveChip(this.bgSwatches, this.bgSwatches.firstElementChild);
+        // Guarded here, not only inside _setActiveChip: the argument is
+        // evaluated first, so an omitted `bgSwatches` threw before the
+        // helper's own null check could run — and threw out of start()
+        // before the path solver below was installed, so nothing loaded.
+        this._setActiveChip(this.bgSwatches,
+            this.bgSwatches ? this.bgSwatches.firstElementChild : null);
 
         // Persistent solver — covers deps the renderer surfaces lazily
         // (corn-fx textures, child models) after load() returned.
@@ -352,13 +357,24 @@ export class HiveApp {
             if (this.dirInput) this.dirInput.click();
             return;
         }
-        this._populateModels();
+        this._indexChanged();
     }
 
     _adoptFileList(files) {
         if (!files || files.length === 0) return;
         this.index = this._indexFromFileList(files);
+        this._indexChanged();
+    }
+
+    // Every change to the local index goes through here. Beyond refreshing
+    // the list, a new index changes what paths RESOLVE to, so anything the
+    // model on screen is still missing may be findable now — and nothing
+    // re-asks on its own: the renderer's needs queue is consumptive, so a
+    // slot whose fetch failed before the pick stays white until the model
+    // is reloaded. A top-up pick of the missing textures is exactly the case.
+    _indexChanged() {
         this._populateModels();
+        this.viewer.retryUnloadedAssets();
     }
 
     // One-shot open: index whatever was picked and load the first model in it.
@@ -368,14 +384,7 @@ export class HiveApp {
         if (!files || files.length === 0) return;
         const picked = this._indexFromFileList(files);
         for (const [key, rec] of picked) this.index.set(key, rec);
-        this._populateModels();
-
-        // The pick changed what paths resolve to, so anything the model on
-        // screen is still missing may be resolvable now. Nothing re-asks on
-        // its own: the renderer's needs queue is consumptive, so a slot
-        // whose fetch failed before this pick would stay white until the
-        // model was reloaded — which is the whole point of a top-up open.
-        this.viewer.retryUnloadedAssets();
+        this._indexChanged();
 
         const first = [...picked.values()].find(rec => isModelPath(rec.path));
         if (!first) return; // textures only — the open was a top-up

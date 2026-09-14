@@ -125,6 +125,13 @@ function splitLayers(name) {
 export function directUrl(p, hd) {
     const name = mirrorName(p);
     if (hasMountPrefix(name)) return null;
+    // StarCraft II / Heroes content. The mirror carries it too, but under
+    // /assets/sc2/mods/<mod>/base.sc2assets/, and which mod holds a given
+    // file (liberty, swarm, void, core…) is decided server-side — so there
+    // is no URL to compute, and guessing the WC3 tree cost every .m3 asset
+    // a guaranteed 404. Warcraft III's mod has no `assets/` root, so at
+    // worst a WC3 path shaped like this loses the fast path, never the file.
+    if (name.startsWith('assets/')) return null;
     const { layers, rest } = splitLayers(name);
     for (const layer of layers) {
         // The base is always rooted at war3.w3mod, and the HD base adds

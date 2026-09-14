@@ -12,6 +12,7 @@ it: a viewer API shaped like mdx-m3-viewer's, plus an optional drop-in UI shell.
 | --- | --- |
 | `.mdx` / `.mdl` | Warcraft III — classic and Reforged, HD detected per model |
 | `.m3` | StarCraft II / Heroes of the Storm |
+| `.m2` | World of Warcraft — its `.skin` siblings must resolve through the same `pathSolver` |
 | `.pkb` | Warcraft III corn effects — standalone, with no model around them |
 
 Assets stream in as the renderer discovers them. You hand the viewer a
@@ -70,6 +71,11 @@ Other element slots: `cameraList`, `teamSwatches`, `bgSwatches`, `bgPicker`,
 `gridToggle`, `dayNightToggle`, `todSlider`, `reforgedToggle`, `fpsReadout`.
 Options: `forceHd`, `serviceWorkerUrl`, `urlRewriter`.
 
+`serviceWorkerUrl` defaults to `./sw.js`, resolved against your page — a
+worker that caches mirror downloads across visits. The package does not ship
+one, so either serve your own there or pass `serviceWorkerUrl: null`; if
+neither, registration fails with a console warning and everything else works.
+
 ## The raw API
 
 ```js
@@ -91,7 +97,7 @@ array of candidates, tried in order until one answers.
 `setHdMode` / `setForceHd` · `setLightingMode` · `setShowGrid` ·
 `setShadowsEnabled` · `setBloomEnabled` · `setHdDebugMode` · `setTimeOfDay` ·
 `setDayNightAnimate` · `setIblMode` · `resetCamera` · `zoomBy` · `zoomScale` ·
-`clearSplats` · `getFps` · `toBlob` · `dispose`
+`clearSplats` · `retryUnloadedAssets` · `getFps` · `toBlob` · `dispose`
 
 **Instance** — `setLocation` · `move` · `setRotation` · `setScale` ·
 `setUniformScale` · `setTransformation` · `resetTransformation` ·
@@ -101,7 +107,40 @@ array of candidates, tried in order until one answers.
 
 Also exported: `Model`, `Scene`, `TEAM_COLORS`, `TEAM_COLOR_NAMES`,
 `HD_DEBUG_MODES`, `MODEL_EXTENSIONS` / `isModelPath`, `EFFECT_EXTENSIONS` /
-`isEffectPath`, `WebAudioBridge`, and the load-table helpers.
+`isEffectPath`, `WebAudioBridge`, the load-table helpers, and the Hive URL
+helpers below.
+
+## Asset loading
+
+Every asset a load discovers is queued and fetched at most
+`viewer.maxConcurrentFetches` at a time (default 12; `0` removes the cap). An
+asset for which no candidate returns bytes is retried on its own, backing off
+to once a minute rather than giving up. When something changes what a path
+can resolve to, such as a directory the user has just picked, call
+`viewer.retryUnloadedAssets()` to re-request everything still missing at once.
+`HiveApp` does this for you on a directory pick and on `loadFromTable`.
+
+**Hiveworkshop's mirror.** A path nothing local resolves is tried in two ways,
+in order: the mirror's static file URL, which is one round trip, then its
+`/casc-contents/` endpoint, which redirects and also finds files the path
+names in the wrong directory. Both are assignable on the viewer if you need
+to route them elsewhere, and everything that fetches — the asset pump, the
+startup prefetch and `HiveApp` — goes through them:
+
+```js
+const hive = viewer.cascUrl;
+viewer.cascUrl = (path, withContext) =>
+  hive(path, withContext).replace('https://www.hiveworkshop.com', '/my-proxy');
+viewer.cascDirectUrl = () => null;   // skip the static-file fast path
+```
+
+Wrap the original rather than rebuilding the URL: it carries the SD/HD
+`context` that keeps a classic model from being handed Reforged textures.
+
+The same rules are exported for a `pathSolver` of your own:
+`hiveCandidates(path, { hd })` returns the ordered URL list, and `directUrl`,
+`cascContentsUrl`, `mirrorName`, `requestName` and `normalizePath` are its
+parts.
 
 ## Camera
 

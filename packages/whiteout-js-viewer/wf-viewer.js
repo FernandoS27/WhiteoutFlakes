@@ -7,7 +7,7 @@ import { Instance, Model, Scene, TEAM_COLORS, TEAM_COLOR_NAMES,
          MODEL_EXTENSIONS, isModelPath } from './wf-instance.js';
 import { pumpAssetNeeds, retryFailedAssets } from './wf-asset-pump.js';
 import { prefetchEngineAssets, prefetchShaders } from './wf-prefetch.js';
-import { cascContentsUrl, hiveCandidates } from './hive-resolve.js';
+import { cascContentsUrl, directUrl, requestName } from './hive-resolve.js';
 
 // Cache-bust the module URL — the ES module map ignores HTTP no-store.
 const { default: createModule } = await import(`./wf-core.js?t=${Date.now()}`);
@@ -82,15 +82,32 @@ export class WhiteoutViewer {
         this.hdMode = this._forceHd;
         // Hive's CASC mirror. URL policy lives in hive-resolve.js — see
         // there for why there are two routes and when each one applies.
-        // These stay on the viewer because hosts call them: `cascUrl` is
-        // the authoritative single-URL form (model deps pass the mode so
-        // an SD model doesn't get HD textures; engine/startup assets that
-        // are mode-agnostic pass `withContext=false`), and `cascCandidates`
-        // is the ordered fast-path-then-backstop chain.
+        //
+        // Both routes stay on the viewer as assignable members, because
+        // hosts override them (e.g. to go through a proxy): `cascUrl` is the
+        // authoritative /casc-contents/ form — model deps pass the mode so
+        // an SD model doesn't get HD textures, mode-agnostic engine assets
+        // pass `withContext=false` — and `cascDirectUrl` is the computable
+        // fast path, returning null where there is none. Assign
+        // `cascDirectUrl = () => null` to turn the fast path off.
+        //
+        // `cascCandidates` composes the two through `this`, not through
+        // hive-resolve.js directly, so an override of either one is honoured
+        // by everything that resolves: the asset pump, the startup prefetch
+        // and HiveApp's solver. Before 0.9 `cascUrl` was the documented
+        // override point, and the pump reading it is what kept that working.
         this.cascUrl = (path, withContext = true) =>
             cascContentsUrl(path, { hd: this.hdMode, withContext });
-        this.cascCandidates = (path, opts = {}) =>
-            hiveCandidates(path, { hd: this.hdMode, ...opts });
+        this.cascDirectUrl = (path) => directUrl(path, this.hdMode);
+        this.cascCandidates = (path, { withContext = true, direct = true } = {}) => {
+            const out = [];
+            if (direct) {
+                const fast = this.cascDirectUrl(path);
+                if (fast) out.push(fast);
+            }
+            out.push(this.cascUrl(requestName(path), withContext));
+            return out;
+        };
         // Firefox wgpu/naga emits slow fragment code for HD PBR; full
         // DPR tips into fragment-bound at zoom-in. Cap at 1 there; opt
         // back in via `viewer.backingPixelRatio = devicePixelRatio`.
